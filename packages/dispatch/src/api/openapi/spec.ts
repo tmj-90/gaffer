@@ -889,7 +889,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.review,
     summary: "Delivery dossier",
     description:
-      "The tamper-evident evidence artifact. JSON by default; markdown with `?format=markdown` or `Accept: text/markdown`. `?include=packet` adds `review_packet` (outside the hashed subject): the runner-verified gates, tester verdict, cost and turns, attempts and rework, risk reasons, the reviewed-commit pin, each criterion's check result or `no machine evidence`, and any test count the agent claimed that disagrees with the runner's.",
+      "The tamper-evident evidence artifact. JSON by default; markdown with `?format=markdown` or `Accept: text/markdown`. `?include=packet` adds `review_packet` (outside the hashed subject): the runner-verified gates, tester verdict, cost and turns, attempts and rework, risk reasons, the reviewed-commit pin, each criterion's check result or `no machine evidence`, any test count the agent claimed that disagrees with the runner's, `intent` (the ticket's description), `candidate` (per write repository: the commit the runner gated, the head now, the tester's commit and the pin, with `same`), `ci` (the latest CI result for the candidate commit, or null), `run_links` (dashboard run logs that were running at the delivery or the tester verdict, found by time window) and `backing` (`{fact, holds, source, cell}` rows: what backs the delivery and what does not; no score).",
     capability: "read",
     query: {
       format: {

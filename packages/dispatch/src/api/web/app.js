@@ -17590,6 +17590,257 @@ function judgeCell(jd) {
  * Each a recorded fact (see services/reviewPacketService.ts). `setRisk(anns)`
  * adds the diff's own risk annotations once the diff has loaded.
  */
+/**
+ * REVIEW FACTS (intent): what was asked, the ticket's description as the human wrote it,
+ * above the runner's facts. Text only: a description is untrusted text.
+ */
+const INTENT_FOLD_CHARS = 600;
+function intentBlock(intent) {
+  const body = el(
+    "p",
+    { class: "rv-intent-t" },
+    intent ||
+      "The ticket has no description: the title and the acceptance criteria are all that was asked.",
+  );
+  const kids = [el("h2", { class: "rv-intent-h" }, "What was asked"), body];
+  if (intent && intent.length > INTENT_FOLD_CHARS) {
+    body.classList.add("is-folded");
+    const more = el(
+      "button",
+      {
+        type: "button",
+        class: "btn-link rv-intent-more",
+        "aria-expanded": "false",
+        onclick: () => {
+          const open = body.classList.toggle("is-folded") === false;
+          more.setAttribute("aria-expanded", String(open));
+          more.textContent = open ? "Show less" : "Show all of it";
+        },
+      },
+      "Show all of it",
+    );
+    kids.push(more);
+  }
+  return el("section", { class: "rv-intent", "aria-label": "What was asked" }, kids);
+}
+
+/** A commit id, short, in mono; or a plain word when there is none. */
+function shaOr(sha, none) {
+  return sha ? el("code", { class: "mono" }, String(sha).slice(0, 12)) : none;
+}
+/** Two commit ids name one commit (equal, or one a ≥7-hex prefix of the other). */
+function sameSha(a, b) {
+  if (!a || !b) return false;
+  const x = String(a).toLowerCase();
+  const y = String(b).toLowerCase();
+  return x.length >= 7 && y.length >= 7 && (x.startsWith(y) || y.startsWith(x));
+}
+
+/**
+ * The strip's Candidate cell: per write repo, the commit the gates ran on, the commit the
+ * diff shows, the tester's commit and the pin, and whether they are one commit (the
+ * server's `same`). Once the diff loads, `_setShown(repos)` checks the commit on screen
+ * too. Its run-log links open the delivery and tester logs.
+ */
+function candidateCell(p) {
+  const cands = p.candidate || [];
+  const allSame = cands.every((c) => c.same);
+  const unknown = cands.some((c) => !c.diff_head || !c.gated_sha);
+  const multi = cands.length > 1;
+  const sub = el("p", { class: "vd-sub vd-cand-sub" });
+  const rows = el(
+    "ul",
+    { class: "clean vd-cand-list" },
+    cands.map((c) =>
+      el("li", { class: "vd-cand" }, [
+        multi ? el("b", { class: "vd-cand-repo" }, c.repo) : null,
+        el("span", { class: "vd-cand-row" }, [
+          "Gates ran on ",
+          shaOr(c.gated_sha, "no recorded commit"),
+          c.gated_by === "agent" ? " (the agent's record)" : "",
+        ]),
+        el("span", { class: "vd-cand-row vd-cand-shown" }, [
+          "The diff shows ",
+          shaOr(c.diff_head, c.head_unavailable ? `nothing (${c.head_unavailable})` : "nothing"),
+        ]),
+        el("span", { class: "vd-cand-row" }, [
+          "Tester tested ",
+          shaOr(c.tester_tested, p.tester_expected ? "nothing yet" : "nothing (no tester)"),
+        ]),
+        c.pin ? el("span", { class: "vd-cand-row" }, ["Pinned ", shaOr(c.pin, "")]) : null,
+      ]),
+    ),
+  );
+  const words = (state) =>
+    state === "same"
+      ? "The gates ran on the commit the diff shows, and any tested or pinned commit is that commit."
+      : state === "moved"
+        ? "The branch moved after these facts were read: the diff on screen is a newer commit."
+        : unknown
+          ? "Not every commit is known, so this is not shown to be one candidate."
+          : "These are not one commit: a green gate or tester verdict is about another commit.";
+  const value = (state) =>
+    state === "same" ? "One commit" : state === "moved" ? "Moved" : unknown ? "Unknown" : "Differs";
+  let state = allSame ? "same" : "differs";
+  sub.textContent = words(state);
+  const links = (p.run_links || []).map((r) =>
+    el(
+      "button",
+      {
+        type: "button",
+        class: "btn-link vd-runlink",
+        dataset: { runId: r.run_id, role: r.role },
+        title: `The dashboard run that was running then (${r.method}), started ${fmtTime(r.started_at)}`,
+        onclick: () => {
+          // TODO(review_raw_opened): count this click as the metrics package's
+          // `ticket.review_raw_opened` event once that event exists on main.
+          viewRunLog(
+            { id: r.run_id, kind: r.kind },
+            `${r.role === "tester" ? "Tester" : "Delivery"} run log`,
+          );
+        },
+      },
+      r.role === "tester" ? "tester run log" : "delivery run log",
+    ),
+  );
+  const runLine = el("p", { class: "vd-sub vd-runlinks" }, [
+    links.length
+      ? "Open the "
+      : "No run log is recorded for this delivery (its runner was not started from the dashboard).",
+    ...links.flatMap((a, i) => (i ? [" · ", a] : [a])),
+  ]);
+  const cell = verdictCell(
+    "candidate",
+    "Candidate",
+    value(state),
+    `Candidate: ${value(state).toLowerCase()}`,
+    [rows, sub, runLine],
+    state === "same" ? "ok" : unknown ? "warn" : "bad",
+  );
+  cell._setShown = (repos) => {
+    const moved = (repos || []).some((r) => {
+      const c = cands.find((x) => x.repo_id === r.repoId);
+      return c && r.headSha && c.diff_head && !sameSha(r.headSha, c.diff_head);
+    });
+    if (!moved) return;
+    state = "moved";
+    cell.querySelector(".vd-v").textContent = value(state);
+    cell.setAttribute("aria-label", `Candidate: ${value(state).toLowerCase()}`);
+    cell.classList.remove("vd-ok");
+    cell.classList.add("vd-warn");
+    sub.textContent = words(state);
+  };
+  return cell;
+}
+
+/** The strip's CI cell: the latest recorded CI result for the candidate commit. */
+function ciCell(ci) {
+  if (!ci)
+    return verdictCell(
+      "ci",
+      "CI",
+      "None",
+      "CI: no result recorded",
+      el("p", { class: "vd-sub" }, "No CI result is recorded for this ticket."),
+    );
+  const v = { pass: "Green", fail: "Red", pending: "Running" }[ci.state] || "No result";
+  const tone = { pass: "ok", fail: "bad" }[ci.state] || "warn";
+  return verdictCell(
+    "ci",
+    "CI",
+    v,
+    `CI: ${v.toLowerCase()}${ci.commit ? ` for ${ci.commit.slice(0, 12)}` : ""}`,
+    [
+      el("p", { class: "vd-sub" }, [
+        ci.state ? "Recorded for " : "Nothing recorded for ",
+        shaOr(ci.commit, "the candidate commit (its head cannot be read)"),
+        ci.at ? ` · ${fmtTime(ci.at)}` : "",
+      ]),
+      ci.detail ? el("p", { class: "vd-say" }, ci.detail) : null,
+      !ci.state && ci.latest
+        ? el("p", { class: "vd-sub" }, [
+            `The latest result recorded is ${ci.latest.state} for `,
+            shaOr(ci.latest.commit, ""),
+            ".",
+          ])
+        : null,
+      el("p", { class: "vd-sub" }, "Approval waits for a passing result for this commit."),
+    ],
+    tone,
+  );
+}
+
+/** Where a backing row's fact is shown: its strip cell, the criteria table or the evidence. */
+const BACKING_TARGET = {
+  candidate: ".vd-cell.vd-candidate",
+  gates: ".vd-cell.vd-gates",
+  integrity: ".vd-cell.vd-gates",
+  tester: ".vd-cell.vd-tester",
+  ci: ".vd-cell.vd-ci",
+  criteria: ".rv-ac-table, .rv-checks",
+  evidence: ".rv-evid",
+  impact: ".rv-impact",
+};
+
+/**
+ * INSPECTABLE CONFIDENCE: "What backs this / What is not backed", the server's backing rows
+ * (each a fact, whether it holds, and where it comes from) as two lists. No score, no
+ * headline and no ask: the flags list stays the one list of things to check. Each row
+ * links to where the fact is shown. `_setImpact(repos)` adds the Behavioural surface's
+ * rows once the diff loads.
+ */
+function backingPanel(rows) {
+  const holds = el("ul", { class: "clean rv-backing-list rv-backs" });
+  const not = el("ul", { class: "clean rv-backing-list rv-unbacked" });
+  const rowEl = (b) =>
+    el("li", { class: `rv-backing-row ${b.holds ? "is-held" : "is-unheld"}` }, [
+      el(
+        "span",
+        { class: `dod-mark dod-${b.holds ? "pass" : "skip"}`, "aria-hidden": "true" },
+        b.holds ? "✓" : "–",
+      ),
+      el("span", { class: "rv-backing-fact" }, b.fact),
+      el("small", { class: "rv-backing-src" }, b.source),
+      BACKING_TARGET[b.cell]
+        ? el(
+            "button",
+            {
+              type: "button",
+              class: "btn-link rv-backing-go",
+              "aria-label": `Show where: ${b.fact}`,
+              onclick: (e) => {
+                const root = e.currentTarget.closest(".view-review") || document;
+                const to = root.querySelector(BACKING_TARGET[b.cell]);
+                if (to) to.scrollIntoView({ behavior: "smooth", block: "center" });
+              },
+            },
+            "show",
+          )
+        : null,
+    ]);
+  const paint = (list) => {
+    clear(holds);
+    clear(not);
+    for (const b of list) (b.holds ? holds : not).appendChild(rowEl(b));
+    if (!holds.children.length)
+      holds.appendChild(
+        el("li", { class: "rv-backing-none dim" }, "No recorded fact backs it yet."),
+      );
+    if (!not.children.length)
+      not.appendChild(el("li", { class: "rv-backing-none dim" }, "Every fact read here holds."));
+  };
+  let base = rows || [];
+  paint(base);
+  const panel = el("section", { class: "card panel rv-backing", "aria-label": "What backs this" }, [
+    el("h2", { class: "rv-h2" }, "What backs this"),
+    holds,
+    el("h3", { class: "rv-h3" }, "What is not backed"),
+    not,
+  ]);
+  panel._setImpact = (extra) => paint([...base, ...(extra || [])]);
+  return panel;
+}
+
 function verdictStrip(p) {
   const cells = [];
 
@@ -17709,6 +17960,14 @@ function verdictStrip(p) {
         ),
   );
 
+  // SAME CANDIDATE and REQUIRED CI (an older server's packet has neither).
+  let candCell = null;
+  if (Array.isArray(p.candidate) && p.candidate.length) {
+    candCell = candidateCell(p);
+    cells.push(candCell);
+  }
+  if ("ci" in p) cells.push(ciCell(p.ci));
+
   // Cost and turns so far, from the usage ledger (an estimate is said as one).
   const c = p.cost;
   const unknown = c.ledger_status === "unreadable";
@@ -17821,6 +18080,7 @@ function verdictStrip(p) {
     el("div", { class: "vd-cells" }, cells),
   );
   strip._setRisk = paintRisk;
+  strip._setShown = (repos) => candCell?._setShown(repos);
   return strip;
 }
 
@@ -18524,6 +18784,15 @@ async function renderReview(param) {
       `${d.message} The agent wrote: “${d.excerpt}”. Trust the gate output, not the summary.`,
       "Derived from the agent's evidence and the runner's test output",
     ]);
+  // SAME CANDIDATE: the runner gated one commit and the branch is now at another, so a
+  // green gate is about other code. One of the flags (the one list), never a hold.
+  for (const c of (packet && packet.candidate) || [])
+    if (c.gated_sha && c.diff_head && c.gated_by !== "agent" && !sameSha(c.gated_sha, c.diff_head))
+      flagsNow.push([
+        "Not the gated commit",
+        `The gates ran on ${c.gated_sha.slice(0, 12)}${(packet.candidate.length > 1 && ` in ${c.repo}`) || ""}, but the branch is now at ${c.diff_head.slice(0, 12)}. Read the newer commits: no gate has run on them.`,
+        "Derived from the runner's recorded delivery commit and the branch head",
+      ]);
   if (ac.length && satisfied < ac.length)
     flagsNow.push([
       "Criteria not met",
@@ -18644,6 +18913,7 @@ async function renderReview(param) {
     }
     const live = repos.filter((r) => !r.unavailable);
     strip?._setRisk(live.flatMap((r) => r.riskAnnotations || []));
+    strip?._setShown(repos);
     clear(integritySlot);
     const ib = integrityBanner(t, testModifiedAnns(live));
     if (ib) integritySlot.appendChild(ib);
@@ -18670,6 +18940,8 @@ async function renderReview(param) {
   // The verdict strip: the runner's facts, under the title and above everything
   // the agent wrote. Built before the diff so the diff's risk flags can join it.
   const strip = packet ? verdictStrip(packet) : null;
+  // INSPECTABLE CONFIDENCE: the server's backing rows (an older server sends none).
+  const backing = packet && Array.isArray(packet.backing) ? backingPanel(packet.backing) : null;
   const diffBox = renderTicketDiff(t.id, applyDiffState);
 
   // Header: the yellow card, the number, the title; then the facts in one line.
@@ -18700,6 +18972,9 @@ async function renderReview(param) {
           : null,
       ]),
       branchLine,
+      // REVIEW FACTS: what was asked, above the runner's facts (inside the header, so the
+      // strip still follows it).
+      packet && "intent" in packet ? intentBlock(packet.intent) : null,
     ]),
   );
   if (strip) wrap.appendChild(strip);
@@ -18798,6 +19073,7 @@ async function renderReview(param) {
           el("h2", { class: "rv-h2" }, ["Flags ", flagCount]),
           flagList,
         ]),
+        backing,
         checks,
         el("section", { class: "rv-evid", "aria-label": "Evidence" }, [
           el("h2", { class: "rv-h2" }, [

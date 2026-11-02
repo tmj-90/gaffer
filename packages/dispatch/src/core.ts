@@ -674,6 +674,10 @@ export class Dispatch {
       testerExpected: (t) =>
         t.acceptance === 1 ||
         ((this.testingEnabledOverride ?? isTestingEnabled()) && t.can_be_tested === 1),
+      // SAME CANDIDATE: the runner's gated commit per repo, and each write repo's head as
+      // the approval reads it (role order), so the packet compares the commit Approve binds.
+      repoDeliveries: this.repoDeliveries,
+      writeRepoHeads: (t) => this.orderedWriteRepoHeads(t),
     });
     this.reviewGateSvc = new ReviewGateService({
       db,
@@ -922,6 +926,26 @@ export class Dispatch {
       else miss("branch_missing", `its delivery branch ${branch} cannot be resolved`);
     }
     return { heads, unavailable };
+  }
+
+  /**
+   * {@link writeRepoHeads} as one list in the ticket's write-repo order (primary first):
+   * a resolved head carries its sha, an unreadable one says why. The review packet's
+   * same-candidate check reads it.
+   */
+  private orderedWriteRepoHeads(
+    ticket: Ticket,
+  ): Array<{ repoId: string; repo: string; sha: string | null; why: string | null }> {
+    const { heads, unavailable } = this.writeRepoHeads(ticket);
+    const out: Array<{ repoId: string; repo: string; sha: string | null; why: string | null }> = [];
+    for (const repo of this.repos.accessLinksForTicket(ticket.id)) {
+      if (!isActiveTicketRepoRelation(repo.relation) || repo.access !== "write") continue;
+      const h = heads.find((x) => x.repoId === repo.id);
+      const u = unavailable.find((x) => x.repoId === repo.id);
+      if (h) out.push({ repoId: h.repoId, repo: h.repo, sha: h.sha, why: null });
+      else if (u) out.push({ repoId: u.repoId, repo: u.repo, sha: null, why: u.why });
+    }
+    return out;
   }
 
   /** True when `sha` is contained in the repo's default branch (a verified landing). */

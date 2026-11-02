@@ -379,6 +379,28 @@ structural barrier the whole design hangs on.
   tabs turned into spaces and drops any that start with `GATE`, `---` or
   `gotest-tally:`, and it reads gate rows only outside the framed output blocks,
   so a test that prints a gate-shaped line cannot add a gate to the strip.
+- **What was asked, and whether this is the candidate that passed.** Above the
+  strip, **What was asked** shows the ticket's description as text. The strip's
+  **Candidate** cell puts the commits side by side for each write repo: the commit
+  the gates ran on (the runner records it right after its gates, from the same
+  worktree head), the commit the diff shows (the one Approve binds to), the commit
+  the independent tester tested and the review pin. It reads **One commit** when
+  they agree, **Differs** when they do not (and a *Not the gated commit* flag joins
+  the flags list), **Unknown** when one cannot be read, and **Moved** when the
+  branch moved between the facts and the diff on screen. A commit an agent recorded
+  for itself is shown as its record and never counts as the gated one. The **CI**
+  cell shows the latest CI result recorded for the candidate commit. When the run
+  that delivered the change (or ran the tester) was started from the dashboard,
+  the cell links its run log; the runs table does not record the ticket, so the
+  link is the poll run that was running at the time, and says so.
+- **What backs this, and what is not backed.** A panel beside the flags lists the
+  facts behind the delivery in two lists, each with where it comes from: the gates
+  ran on the commit the diff shows, the runner's gates passed or a gate did not
+  run, how many checked criteria have a passing runner check and how many rest on
+  the agent's word or nothing, the tester's verdict and on which commit, required
+  CI, whether a gating test changed, and that nothing has run the change as a user
+  would yet. There is no score and no headline: the flags list stays the one list
+  of things to check, and each row links to the strip cell it comes from.
 - **The eval judge's grade, when you turn it on.** With `GAFFER_EVAL_JUDGE=1` an
   independent judge grades every submitted delivery against its acceptance criteria
   on five dimensions (criteria, correctness, smallest change, tests, security), and

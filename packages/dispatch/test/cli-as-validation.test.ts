@@ -11,6 +11,11 @@ import { registerTicket } from "../src/cli/commands/ticket.js";
 import { Dispatch } from "../src/core.js";
 import type { Actor } from "../src/domain/types.js";
 import { DispatchError } from "../src/util/errors.js";
+import { loadCliModules } from "../src/cli/runtime.js";
+
+// The command modules load what an action needs in a preAction hook of the real
+// program; this test drives them on its own Command, so it loads them up front.
+await loadCliModules();
 
 /**
  * A `--as` typo used to pick a DIFFERENT actor type silently: `review approve --as

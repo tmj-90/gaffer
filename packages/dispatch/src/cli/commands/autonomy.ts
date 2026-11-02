@@ -2,7 +2,8 @@ import type { Command } from "commander";
 
 import { AUTONOMY_MODES } from "../../repositories/autonomyPolicyRepository.js";
 import { DispatchError } from "../../util/errors.js";
-import { open, printJson } from "../shared.js";
+import { printJson } from "../helpers.js";
+import { open } from "../runtime.js";
 
 /**
  * GRADUATED-AUTONOMY: the read-only view of the stored per-(repo × risk × gate)

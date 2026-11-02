@@ -13,6 +13,11 @@ import type { Actor, Repository } from "../src/domain/types.js";
 import { listEvents } from "../src/events/eventWriter.js";
 import { TestClock } from "../src/util/clock.js";
 import { DispatchError } from "../src/util/errors.js";
+import { loadCliModules } from "../src/cli/runtime.js";
+
+// The command modules load what an action needs in a preAction hook of the real
+// program; this test drives them on its own Command, so it loads them up front.
+await loadCliModules();
 
 const human: Actor = { type: "human", id: "tom" };
 

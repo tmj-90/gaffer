@@ -8,6 +8,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { registerRepo } from "../src/cli/commands/repo.js";
 import { Dispatch } from "../src/core.js";
 import type { Actor } from "../src/domain/types.js";
+import { loadCliModules } from "../src/cli/runtime.js";
+
+// The command modules load what an action needs in a preAction hook of the real
+// program; this test drives them on its own Command, so it loads them up front.
+await loadCliModules();
 
 /**
  * `dispatch repo list [--all]` — the registered-repo listing `gaffer status` feeds its

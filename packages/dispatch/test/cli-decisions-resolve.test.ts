@@ -8,6 +8,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { registerDecisions } from "../src/cli/commands/decisions.js";
 import { Dispatch } from "../src/core.js";
 import type { Actor } from "../src/domain/types.js";
+import { loadCliModules } from "../src/cli/runtime.js";
+
+// The command modules load what an action needs in a preAction hook of the real
+// program; this test drives them on its own Command, so it loads them up front.
+await loadCliModules();
 
 /**
  * `dispatch decisions resolve <id>` — the terminal path to answer a decision. Before

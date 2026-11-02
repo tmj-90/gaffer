@@ -1,4 +1,4 @@
-import { Command, Help, Option } from "commander";
+import { Command, CommanderError, Help, Option } from "commander";
 
 import { resolveDbPath } from "../util/paths.js";
 import { VERSION } from "../version.js";
@@ -17,10 +17,14 @@ import { registerReview } from "./commands/review.js";
 import { registerScope } from "./commands/scope.js";
 import { registerSpec } from "./commands/spec.js";
 import { registerTicket } from "./commands/ticket.js";
-import { describeCliFailure } from "./errors.js";
-import { assertPrincipalCommand } from "./principalGate.js";
-import { cliActor, cliPrincipal, open, printJson, setCliPrincipal } from "./shared.js";
 import { DispatchError } from "../util/errors.js";
+import { type CliFailure, describeCommanderFailure } from "./failure.js";
+import { cliActor, cliPrincipal, printJson, setCliPrincipal } from "./helpers.js";
+import { assertPrincipalCommand } from "./principalGate.js";
+import { needs, open } from "./runtime.js";
+import { internalErrorBody } from "./stdio.js";
+
+export { guardStdio } from "./stdio.js";
 
 /**
  * The commands the runner (or an agent through it) calls as part of its own
@@ -130,7 +134,12 @@ export function buildProgram({ name = cliName() }: { name?: string } = {}): Comm
     // Commander's own exits become CommanderErrors the error boundary turns into
     // exit codes; set before any subcommand so every one inherits it.
     .exitOverride()
-    .addHelpText("after", rootHelpText(name));
+    .addHelpText("after", rootHelpText(name))
+    // Building this tree loads only commander and the light modules, so --version,
+    // --help and `help <command>` never open the database or load zod. What an
+    // action needs loads here, before any other preAction hook could use it (see
+    // runtime.ts).
+    .hook("preAction", needs("core"));
 
   // CLI IDENTITY: resolve the principal (if any) before every command, and refuse a
   // command outside what it may do. Without a token the operator acts as $USER.
@@ -322,31 +331,6 @@ function handleHelpRequest(program: Command, args: readonly string[]): number | 
 }
 
 /**
- * A reader that stops early (`gaffer wg ticket list | head -1`) closes the pipe, and
- * the CLI's next write fails with EPIPE. Node raises that as an unhandled 'error'
- * event: a raw stack trace and exit 1, after the command had already done its work and
- * the reader had what it wanted. So EPIPE is ignored and the command keeps its own
- * exit code. Any other failure to write stdout is the one JSON error line and exit 1.
- */
-export function guardStdio(): void {
-  const closed = (err: NodeJS.ErrnoException): boolean =>
-    err.code === "EPIPE" || err.code === "ERR_STREAM_DESTROYED";
-  process.stdout.on("error", (err: NodeJS.ErrnoException) => {
-    if (closed(err)) return;
-    const body = {
-      ok: false,
-      code: "IO_ERROR",
-      message: `Could not write the output: ${err.message}`,
-      ...(err.code ? { details: { errno: err.code } } : {}),
-    };
-    process.stderr.write(`${JSON.stringify(body)}\n`);
-    process.exitCode = 1;
-  });
-  // Nowhere left to report a failure to write stderr itself.
-  process.stderr.on("error", () => undefined);
-}
-
-/**
  * Run the CLI on `argv` (process.argv shape) and return the exit code. Every failure
  * goes through the one error boundary ({@link describeCliFailure}): a single JSON
  * line on stderr, never a stack trace.
@@ -363,10 +347,30 @@ export async function runProgram(program: Command, argv: readonly string[]): Pro
     await program.parseAsync([...argv]);
     return typeof process.exitCode === "number" ? process.exitCode : 0;
   } catch (err) {
-    const failure = describeCliFailure(err, {
-      ...(action ? { command: action, commandPath: commandPath(action) } : {}),
-    });
+    // A usage error or --version needs only the light half of the boundary.
+    const failure =
+      err instanceof CommanderError
+        ? describeCommanderFailure(err)
+        : await describeLoaded(err, action);
     if (failure.body) process.stderr.write(`${JSON.stringify(failure.body)}\n`);
     return failure.exitCode;
   }
+}
+
+/**
+ * The heavy half of the boundary (errors.ts), loaded on a failure. It imports the
+ * database layer, so when the failure is that very layer not loading (a broken
+ * install), it cannot load either: the failure is then the plain INTERNAL_ERROR line
+ * (review finding testspeed-review/R-2), never an unhandled rejection with a stack.
+ */
+async function describeLoaded(err: unknown, action: Command | undefined): Promise<CliFailure> {
+  let boundary: typeof import("./errors.js");
+  try {
+    boundary = await import("./errors.js");
+  } catch {
+    return { exitCode: 1, body: internalErrorBody(err) };
+  }
+  return boundary.describeCliFailure(err, {
+    ...(action ? { command: action, commandPath: commandPath(action) } : {}),
+  });
 }

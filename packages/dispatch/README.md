@@ -72,6 +72,44 @@ pnpm cli -- expire-claims            # system recovery: release stale claims
 (Use `-- --db <path>` or `DISPATCH_DB=<path>` to choose the database;
 default is `./.dispatch/dispatch.sqlite`.)
 
+### Startup
+
+The runner spawns `dispatch` dozens of times per tick, so its startup is kept small.
+`--version` and `-v` print before anything else loads. The command tree (every name,
+option and help line) is built from light modules only, so `--help` and
+`help <command>` never load the database layer or zod. An action loads those in a
+preAction hook just before it runs (`src/cli/runtime.ts`); a new command module
+imports only light modules and reaches the database through `runtime.ts`
+(`test/cli-lazy-load.test.ts` fails otherwise). The CLI, API and MCP entries turn on
+Node's compile cache first. It lives in this package's own
+`node_modules/.cache/node-compile-cache`, not in the temp dir: Node runs whatever
+bytecode it finds there, so the cache has to be exactly as writable as `dist/`, and a
+strict-mode agent may write the temp dirs. `$NODE_COMPILE_CACHE` overrides the place
+(only point it somewhere no agent can write), `NODE_DISABLE_COMPILE_CACHE=1` turns it
+off, and an install the user cannot write just runs uncached. A database already at
+the current schema version opens without running any schema SQL unless a table or
+index is missing. `node scripts/bench-cli.mjs` prints the median startup of the common
+calls.
+
+A read command still takes about 220 ms of CPU, against a 120 ms target. Measured on a
+loaded 4-CPU box (CPU medians, compile cache warm), what is left and what it would take:
+
+- Loading the action modules (`src/cli/heavy.ts`) costs about 160 ms over a bare
+  `node`: zod with the zod 3 error map about 40 ms, the domain schemas another 20 to
+  25 ms, the rest of the core about 100 ms.
+- zod's locales: 64 of the 95 zod modules are locales its entry re-exports. Stubbing
+  them out saved 10 to 30 ms per command. It needs every `from "zod"` (the MCP
+  schemas and the zod 3 error map included) to go through an entry that does not
+  re-export them, so it is not a CLI-only change.
+- Building the domain schemas lazily (they are built when `src/domain/schemas.ts`
+  loads) would save most of those 20 to 25 ms, but every service validates with them:
+  a refactor of the domain layer.
+- Bundling the action modules with esbuild took `ticket list` from 239 to 173 ms (a
+  quarter). Left out because a bundle duplicates the classes the unbundled error
+  boundary matches with `instanceof` (DispatchError, ZodError) unless the whole CLI is
+  bundled with code splitting, it adds a build step and a dependency, and
+  `src/version.ts` reads `package.json` relative to its own file.
+
 ### Output, errors and exit codes
 
 Every command prints JSON on stdout, except `doctor`, `stats`, `human-queue` and the

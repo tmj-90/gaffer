@@ -192,3 +192,17 @@ describe("migrate-concurrent-race: processes opening an older DB together", () =
     }, 60_000);
   }
 });
+
+describe("testspeed-review: processes opening a FRESH DB together (the TS-3 fast open)", () => {
+  it("all succeed and end with the complete, stamped schema of a lone open", async () => {
+    const dir = tempDir();
+    const serial = join(dir, "serial.sqlite");
+    openDatabase(serial).close();
+    const file = join(dir, "fresh.sqlite");
+
+    const results = await raceOpen(file, 6);
+    expect(results).toEqual(Array(6).fill("ok"));
+    expect(stampOf(file)).toBe(SCHEMA_VERSION);
+    expect(ddlOf(file)).toEqual(ddlOf(serial));
+  }, 60_000);
+});

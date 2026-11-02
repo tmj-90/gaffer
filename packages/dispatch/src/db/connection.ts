@@ -184,15 +184,49 @@ function readSchemaVersion(db: Db): number | null {
   return Number.isFinite(found) ? found : null;
 }
 
+/** `table tickets`, `index idx_…`: every object SCHEMA_SQL creates (parsed once). */
+let schemaObjects: readonly string[] | undefined;
+
+/**
+ * The `type name` of every table and index SCHEMA_SQL creates. SCHEMA_SQL is only
+ * `CREATE [UNIQUE] (TABLE|INDEX) IF NOT EXISTS` statements (test/schema-fast-open
+ * pins that), so on a DB that has all of them executing it changes nothing.
+ */
+export function schemaObjectNames(): readonly string[] {
+  schemaObjects ??= [
+    ...SCHEMA_SQL.replace(/--[^\n]*/g, "").matchAll(
+      /CREATE\s+(?:UNIQUE\s+)?(TABLE|INDEX)\s+IF\s+NOT\s+EXISTS\s+(\w+)/gi,
+    ),
+  ].map((m) => `${m[1]!.toLowerCase()} ${m[2]}`);
+  return schemaObjects;
+}
+
+/**
+ * True when every table and index of SCHEMA_SQL exists. One read of sqlite_master
+ * (exploratory finding testspeed/TS-3): re-running the 67 statements on every open
+ * cost more than the rest of the open, for a self-heal that is a no-op unless an
+ * object was dropped. Only names are compared; an object with the right name is
+ * exactly what `IF NOT EXISTS` would have left alone.
+ */
+function schemaComplete(db: Db): boolean {
+  const have = new Set(
+    db
+      .prepare("SELECT type || ' ' || name FROM sqlite_master WHERE type IN ('table', 'index')")
+      .pluck()
+      .all() as string[],
+  );
+  return schemaObjectNames().every((o) => have.has(o));
+}
+
 /**
  * Apply the schema and stamp the version. Safe to call repeatedly, and safe for
  * several processes to call at once. Refuses (via {@link DatabaseTooNewError}) any
  * DB whose recorded `schema_version` exceeds {@link SCHEMA_VERSION} — checked
  * BEFORE applying schema SQL so a newer DB is never touched by an older build.
  *
- * A DB already at {@link SCHEMA_VERSION} takes a fast path that writes nothing: it
- * re-applies the idempotent CREATE ... IF NOT EXISTS schema (a lock-free self-heal
- * for a dropped index) and returns. Every open (each `wg` call, MCP server and API
+ * A DB already at {@link SCHEMA_VERSION} takes a fast path that writes nothing: when
+ * a table or index is missing it re-applies the idempotent CREATE ... IF NOT EXISTS
+ * schema (a lock-free self-heal for a dropped index), and returns. Every open (each `wg` call, MCP server and API
  * start) therefore no longer queues for the single write lock, and a long writer
  * elsewhere cannot make a read-only open fail with SQLITE_BUSY.
  *
@@ -214,7 +248,7 @@ export function migrate(db: Db): void {
     throw new DatabaseTooNewError(stamped, SCHEMA_VERSION);
   }
   if (stamped === SCHEMA_VERSION) {
-    db.exec(SCHEMA_SQL);
+    if (!schemaComplete(db)) db.exec(SCHEMA_SQL);
     return;
   }
 

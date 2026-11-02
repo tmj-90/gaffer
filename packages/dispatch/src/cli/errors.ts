@@ -5,22 +5,11 @@ import { DatabaseOpenError, DatabaseTooNewError, isReadOnlyDbError } from "../db
 import { dbBusyError, isDbBusyError } from "../util/dbBusy.js";
 import { DispatchError } from "../util/errors.js";
 import { toZod3Issues, type Zod3Issue } from "../util/zod3Compat.js";
+import { type CliErrorBody, type CliFailure, describeCommanderFailure } from "./failure.js";
 import { flagForField, ruleForField } from "./limits.js";
+import { internalErrorBody } from "./stdio.js";
 
-/** The CLI's one error shape, written as one JSON line on stderr. */
-export interface CliErrorBody {
-  ok: false;
-  code: string;
-  message: string;
-  details?: Record<string, unknown>;
-}
-
-/** What the error boundary does with a failure: the line to print (if any) and the exit code. */
-export interface CliFailure {
-  exitCode: number;
-  /** Null when the failure already printed itself (commander's usage errors). */
-  body: CliErrorBody | null;
-}
+export type { CliErrorBody, CliFailure } from "./failure.js";
 
 function body(
   code: string,
@@ -44,19 +33,7 @@ export function describeCliFailure(
   err: unknown,
   ctx: { command?: Command; commandPath?: string } = {},
 ): CliFailure {
-  if (err instanceof CommanderError) {
-    // Commander has already printed its message (and the help) to stderr. A usage
-    // mistake (unknown command or option, a missing argument or required option, a
-    // command group given no command) exits 2 and did nothing, as the `gaffer` front
-    // door promises (cli-wg/F-14); help and --version exit 0.
-    if (err.code === "commander.helpDisplayed" || err.code === "commander.version") {
-      return { exitCode: 0, body: null };
-    }
-    if (err.code === "commander.help") {
-      process.stderr.write("error: a command is missing: pick one of those listed above\n");
-    }
-    return { exitCode: 2, body: null };
-  }
+  if (err instanceof CommanderError) return describeCommanderFailure(err);
   if (err instanceof DatabaseTooNewError || err instanceof DatabaseOpenError) {
     return { exitCode: 1, body: body(err.code, err.message) };
   }
@@ -91,16 +68,7 @@ export function describeCliFailure(
       ),
     };
   }
-  const message = err instanceof Error ? err.message : String(err);
-  const debug = process.env["DISPATCH_DEBUG"] === "1" && err instanceof Error && err.stack;
-  return {
-    exitCode: 1,
-    body: body(
-      "INTERNAL_ERROR",
-      `Unexpected error: ${message}`,
-      debug ? { stack: err.stack } : undefined,
-    ),
-  };
+  return { exitCode: 1, body: internalErrorBody(err) };
 }
 
 /**

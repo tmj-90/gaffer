@@ -1,13 +1,14 @@
 import type { Command } from "commander";
 
+import { printJson, readInputFile, readStdin, writeOutputFile } from "../helpers.js";
 import {
-  EXCLUDED_TABLES,
   exportState,
+  heavy,
   importStateFromJson,
+  open,
   serializeBundle,
   verifyBundleRestores,
-} from "../../io/stateExport.js";
-import { open, printJson, readInputFile, readStdin, writeOutputFile } from "../shared.js";
+} from "../runtime.js";
 
 export function registerPortability(program: Command): void {
   // --- Portability: export / import the whole board (H5) ----------------------
@@ -46,7 +47,7 @@ export function registerPortability(program: Command): void {
             rows: verified.rowsRestored,
             verified: true,
             // Not carried, by design (machine-local): named so "whole board" is honest.
-            not_exported: Object.keys(EXCLUDED_TABLES),
+            not_exported: Object.keys(heavy().EXCLUDED_TABLES),
           });
         }
       } finally {

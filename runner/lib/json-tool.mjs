@@ -22,9 +22,14 @@
 // result) print nothing and exit 0 on bad input; fail-closed ones (dod-cmd-map,
 // pick-unskipped without a skip file) exit non-zero exactly as before.
 
-import { execFileSync } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
+
+// node:child_process costs about 10 ms to load and only two subcommands run git, so
+// it is loaded when one of them does (exploratory finding testspeed/TS-5): the runner
+// spawns this tool dozens of times per tick.
+const execFileSync = (...args) =>
+  process.getBuiltinModule("node:child_process").execFileSync(...args);
 
 const [, , cmd, ...args] = process.argv;
 

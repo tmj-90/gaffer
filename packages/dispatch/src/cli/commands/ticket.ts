@@ -1,5 +1,4 @@
 import type { Command } from "commander";
-import { z } from "zod";
 
 import type { Actor } from "../../domain/types.js";
 import {
@@ -16,7 +15,6 @@ import {
   AS_HUMAN_OR_SYSTEM_HELP,
   cliActor,
   humanOrSystemActor,
-  open,
   parseAs,
   printJson,
   readJsonInput,
@@ -25,7 +23,8 @@ import {
   warnLandedAlready,
   cliTicketFilter,
   cliUserId,
-} from "../shared.js";
+} from "../helpers.js";
+import { heavy, open } from "../runtime.js";
 import { RULES } from "../limits.js";
 
 /** A --cause value, or a VALIDATION_ERROR naming the ones there are. */
@@ -302,7 +301,7 @@ export function registerTicket(program: Command): void {
     .action((ref, opts, cmd) => {
       const as = parseAs(opts.as, ["system", "admin"] as const);
       // cli-wg/F-16: an unknown --via is refused, not treated as local.
-      z.enum(["local", "git-verified", "pr", "pr-stale"]).optional().parse(opts.via);
+      heavy().z.enum(["local", "git-verified", "pr", "pr-stale"]).optional().parse(opts.via);
       const wg = open(cmd.optsWithGlobals());
       const actor: Actor = as === "admin" ? { type: "admin", id: cliUserId() } : { type: "system" };
       const res = wg.recordLanding(
@@ -418,7 +417,7 @@ export function registerTicket(program: Command): void {
     )
     .action((opts, cmd) => {
       if (opts.status !== undefined) {
-        const statusResult = z.enum(TICKET_STATUSES).safeParse(opts.status);
+        const statusResult = heavy().z.enum(TICKET_STATUSES).safeParse(opts.status);
         if (!statusResult.success) {
           throw new DispatchError(
             "VALIDATION_ERROR",
@@ -549,7 +548,7 @@ export function registerTicket(program: Command): void {
     .option("--as <actor>", "actor type: system|admin", "system")
     .action((ref, opts, cmd) => {
       const as = parseAs(opts.as, ["system", "admin"] as const);
-      const state = z.enum(["pending", "pass", "fail"]).parse(String(opts.state));
+      const state = heavy().z.enum(["pending", "pass", "fail"]).parse(String(opts.state));
       const wg = open(cmd.optsWithGlobals());
       const actor: Actor = as === "admin" ? { type: "admin", id: cliUserId() } : { type: "system" };
       const res = wg.recordCiResult(

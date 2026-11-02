@@ -1,7 +1,8 @@
 import type { Command } from "commander";
 
 import { DispatchError } from "../../util/errors.js";
-import { cliActor, open, printJson } from "../shared.js";
+import { cliActor, printJson } from "../helpers.js";
+import { open } from "../runtime.js";
 
 /**
  * SQUAD: the operator's club identity for the dashboard's Match Day view.

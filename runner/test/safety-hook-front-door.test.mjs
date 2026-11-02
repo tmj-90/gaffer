@@ -38,6 +38,23 @@ for (const cmd of [
   `env -u GAFFER_WRITE_ROOTS ${R}/gaffer approve 3`,
   `exec node ${R}/bin/merge-ticket.mjs --ticket 3`,
   `node ${PKG}/dispatch/dist/api/bin.js`,
+  // The lazy CLI's modules and the API's server module are entry points too: each
+  // one that can open the database and act sits in the factory's dist
+  // (exploratory finding testspeed-review/R-3 checks they stay covered).
+  `node ${PKG}/dispatch/dist/api/main.js`,
+  `cd ${PKG}/dispatch && node dist/api/main.js --port 0`,
+  `node ${PKG}/dispatch/dist/cli/program.js`,
+  `node ${PKG}/dispatch/dist/cli/heavy.js`,
+  `node ${PKG}/dispatch/dist/cli/runtime.js`,
+  `node ${PKG}/dispatch/dist/cli/shared.js`,
+  `node ${PKG}/dispatch/dist/cli/helpers.js`,
+  `node ${PKG}/dispatch/dist/cli/failure.js`,
+  `node ${PKG}/dispatch/dist/cli/stdio.js`,
+  `node --input-type=module -e "const m = await import('${PKG}/dispatch/dist/cli/heavy.js'); m.open({}).reviewApprove(3)"`,
+  `node -e "import('${PKG}/dispatch/dist/cli/runtime.js').then((r) => r.loadCliModules())"`,
+  `node --import ${PKG}/dispatch/dist/cli/heavy.js -e 0`,
+  "node packages/dispatch/dist/cli/heavy.js",
+  "node packages/dispatch/dist/cli/program.js",
   "gaffer approve 3",
   "gaffer merge 3",
   // Planning a build and ratifying lore are the human's (README "What still needs

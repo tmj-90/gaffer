@@ -27,13 +27,17 @@ for f in packages/dispatch/dist/cli/index.js packages/memory/dist/bin/memory.js 
   [ -f "$ROOT/$f" ] || { echo "SKIP: $f not built (run pnpm -r build)"; exit 0; }
 done
 
-# A host with no git identity (the GitHub ubuntu runners): the delivery auto-commit in tick.sh
-# must pin its own, or an uncommitted delivery is parked as empty.
-export GIT_CONFIG_GLOBAL=/dev/null
-
 STUB_TICK_NAME=git-hooks-host
 # shellcheck source=lib/stub-tick.sh
 source "$HERE/lib/stub-tick.sh"
+
+# A host with no git identity (the GitHub ubuntu runners): the delivery auto-commit in tick.sh
+# must pin its own, or an uncommitted delivery is parked as empty. useConfigOnly stops git
+# guessing one from the hostname, and the env identities are dropped, so the case holds on
+# every host (the fixture's own commits pass -c identities).
+printf '[user]\n\tuseConfigOnly = true\n' > "$WORK/gitconfig-noid"
+export GIT_CONFIG_GLOBAL="$WORK/gitconfig-noid"
+unset EMAIL GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 
 # The operator's repository runs hooks from a TRACKED directory (core.hooksPath is
 # relative): every hook drops a line in $WORK/hook-ran.

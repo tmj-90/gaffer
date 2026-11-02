@@ -3277,8 +3277,14 @@ $_trail_q
         ':(exclude).mcp.json' ':(exclude,glob)mcp-runtime*.json' ':(exclude)dist' ':(exclude)build' \
         ':(exclude).next' ':(exclude)coverage' \
         ':(exclude).terraform' ':(exclude,glob)**/.terraform/**' >/dev/null 2>&1
-      if git -C "$rwt" -c user.email=gaffer@factory -c user.name=gaffer commit -q -m "deliver #$NUM: $TITLE" >/dev/null 2>&1; then
+      # The commit needs an identity; the repo's own when it has one (a host with none, such
+      # as a CI runner, parked every uncommitted delivery as empty before this).
+      _ac_ids=()
+      git -C "$rwt" config user.email >/dev/null 2>&1 || _ac_ids=(-c user.email=gaffer@factory -c user.name=gaffer)
+      if _ac_err="$(git -C "$rwt" ${_ac_ids[@]+"${_ac_ids[@]}"} commit -q -m "deliver #$NUM: $TITLE" 2>&1 >/dev/null)"; then
         log "auto-committed uncommitted changes for #$NUM in ${rname:-repo} (agent edited but did not commit)"
+      else
+        log "auto-commit failed for #$NUM in ${rname:-repo}: $(printf '%s' "$_ac_err" | tr '\n' ' ' | cut -c1-200)"
       fi
     fi
   done <<< "$WT_ROWS"

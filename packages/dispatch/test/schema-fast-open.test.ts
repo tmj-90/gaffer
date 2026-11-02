@@ -95,4 +95,20 @@ describe("testspeed/TS-3: a current DB opens without re-running SCHEMA_SQL", () 
     ).toBe(String(SCHEMA_VERSION));
     raw.close();
   });
+
+  it("leaves a table of its own alone and runs no schema SQL for it", () => {
+    const file = dbFile();
+    const first = openDatabase(file);
+    first.exec("CREATE TABLE operator_notes (id INTEGER PRIMARY KEY, body TEXT)");
+    first.exec("INSERT INTO operator_notes (body) VALUES ('kept')");
+    first.close();
+
+    const db = new Database(file);
+    const exec = vi.spyOn(db, "exec");
+    migrate(db);
+    expect(exec).not.toHaveBeenCalled();
+    expect(db.prepare("SELECT body FROM operator_notes").pluck().get()).toBe("kept");
+    expect(objects(db)).toContain("table operator_notes");
+    db.close();
+  });
 });

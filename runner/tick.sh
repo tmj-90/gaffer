@@ -2898,6 +2898,9 @@ $_trail_q
   # (gaffer_usage_record reads both), so spend after a send-back is charged as rework.
   read -r GAFFER_USAGE_ATTEMPT_ID GAFFER_USAGE_STARTED_AT <<<"$(gaffer_delivery_attempt_stamp "$_DELIV_ATTEMPT")" || true
   export GAFFER_USAGE_ATTEMPT_ID GAFFER_USAGE_STARTED_AT
+  # JOIN KEYS (MF4): the delivery row names its repo and the ticket's risk at call time
+  # (shell variables gaffer_usage_record reads; never exported to the agent).
+  GAFFER_USAGE_REPO="${_CARD_REPO_NAME:-}"; GAFFER_USAGE_RISK="${ROUTE_RISK:-}"
   GAFFER_LAUNCH_KIND=delivery worker_deliver "$PRIMARY_REPO" "$PROMPT$_REWORK_BLOCK" "$_ATTEMPT_IMPL_FLAG" "$MCP_RUNTIME" "$USAGE_JSON" "$WRAP" \
     "" ${_CALL_BUDGET_ARGS[@]+"${_CALL_BUDGET_ARGS[@]}"}
   rc=$?
@@ -3116,7 +3119,7 @@ $_trail_q
   _DELIVERY_SPEND_USD="$(gaffer_delivery_spend "$USAGE_JSON" 2>/dev/null || true)"
   gaffer_usage_record delivery "$NUM" "$rc" "$USAGE_JSON" "" "$_DELIV_ATTEMPT" >>"$GAFFER_LOG" 2>/dev/null || true
   rm -f "$USAGE_JSON"
-  GAFFER_USAGE_ATTEMPT_ID=""; GAFFER_USAGE_STARTED_AT=""
+  GAFFER_USAGE_ATTEMPT_ID=""; GAFFER_USAGE_STARTED_AT=""; GAFFER_USAGE_REPO=""; GAFFER_USAGE_RISK=""
   log "delivery tick for #$NUM finished (rc=$rc)"
 
   # FG-007 AC ("Dispatch event log records attempted boundary violations"):

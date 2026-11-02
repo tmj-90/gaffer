@@ -846,6 +846,174 @@ console.log("== PART A'': recordKilledCall — the .mjs sites book the same labe
   }
 }
 
+console.log(
+  "== JOIN KEYS (MF4): a judging row carries the attempt it judged, its repo and risk ==",
+);
+{
+  const dir = gafferMkdtemp(join(tmpdir(), "usage-joinkeys-"));
+  try {
+    const sampleFile = join(dir, "sample.json");
+    writeFileSync(sampleFile, JSON.stringify(SAMPLE));
+    const ledger = join(dir, LEDGER_FILENAME);
+    // Two delivery attempts on #7 and one on #8 are already in the ledger.
+    writeFileSync(
+      ledger,
+      [
+        { ts: "2026-11-01T10:00:00Z", ticket: 7, kind: "delivery", attempt_id: "c0123456789ab/1" },
+        { ts: "2026-11-01T11:00:00Z", ticket: 7, kind: "delivery", attempt_id: "c0123456789ab/2" },
+        { ts: "2026-11-01T12:00:00Z", ticket: 8, kind: "delivery", attempt_id: "cffffffffffff/1" },
+      ]
+        .map((r) => JSON.stringify(r))
+        .join("\n") + "\n",
+    );
+    const run = (args) =>
+      spawnSync(process.execPath, [MOD, ...args, "--json-file", sampleFile], {
+        env: { ...process.env, GAFFER_DATA: dir },
+        encoding: "utf8",
+      });
+    const res = run([
+      "--kind",
+      "review",
+      "--ticket",
+      "7",
+      "--rc",
+      "0",
+      "--repo",
+      "taskflow",
+      "--risk",
+      "high",
+    ]);
+    assert("CLI with join-key flags exits 0", res.status === 0);
+    const rows = readFileSync(ledger, "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+    const rec = rows[rows.length - 1];
+    assert(
+      "a review row carries the attempt id of the latest delivery it judged",
+      rec.attempt_id === "c0123456789ab/2" && rec.attempt_id_basis === "latest_delivery_row",
+    );
+    assert(
+      "the review row carries the repo and the risk at call time",
+      rec.repo === "taskflow" && rec.risk === "high",
+    );
+    run(["--kind", "delivery", "--ticket", "8", "--rc", "0", "--repo", "api", "--risk", "medium"]);
+    const del = readFileSync(ledger, "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l))
+      .pop();
+    assert(
+      "a delivery row carries repo and risk, and never borrows another attempt's id",
+      del.repo === "api" && del.risk === "medium" && !("attempt_id" in del),
+    );
+    run(["--kind", "tester", "--ticket", "9", "--rc", "0", "--risk", "nonsense", "--repo", "x\ny"]);
+    const t9 = readFileSync(ledger, "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l))
+      .pop();
+    assert(
+      "no delivery row: no attempt id; an unknown risk is dropped; the repo label is one line",
+      !("attempt_id" in t9) && !("risk" in t9) && t9.repo === "x y",
+    );
+    const { latestDeliveryAttemptId } = await import(MOD);
+    assert(
+      "latestDeliveryAttemptId reads the latest delivery row of the ticket",
+      latestDeliveryAttemptId(readFileSync(ledger, "utf8"), 7) === "c0123456789ab/2" &&
+        latestDeliveryAttemptId("", 7) === null,
+    );
+    const cli = spawnSync(process.execPath, [MOD, "--latest-delivery-attempt", "--ticket", "8"], {
+      env: { ...process.env, GAFFER_DATA: dir },
+      encoding: "utf8",
+    });
+    assert(
+      "the CLI prints a ticket's latest delivery attempt id",
+      cli.stdout.trim() === "cffffffffffff/1",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+console.log("== ROUTING (MF3): the router's tier and reasons are stamped on the row ==");
+{
+  const dir = gafferMkdtemp(join(tmpdir(), "usage-route-"));
+  try {
+    const sampleFile = join(dir, "sample.json");
+    writeFileSync(sampleFile, JSON.stringify(SAMPLE));
+    const routeFile = join(dir, "route.json");
+    writeFileSync(
+      routeFile,
+      JSON.stringify({
+        phase: "implement",
+        tier: "strong",
+        model: "m-strong",
+        reasons: ["risk high: +1 tier", "x".repeat(400), "a", "b", "c", "d", "e", "f", "g", "h"],
+      }),
+    );
+    const res = spawnSync(
+      process.execPath,
+      [
+        MOD,
+        "--kind",
+        "delivery",
+        "--ticket",
+        "7",
+        "--rc",
+        "0",
+        "--route-file",
+        routeFile,
+        "--json-file",
+        sampleFile,
+      ],
+      { env: { ...process.env, GAFFER_DATA: dir }, encoding: "utf8" },
+    );
+    assert("CLI with --route-file exits 0", res.status === 0);
+    const rec = JSON.parse(readFileSync(join(dir, LEDGER_FILENAME), "utf8").trim());
+    assert(
+      "route_tier and route_phase are recorded",
+      rec.route_tier === "strong" && rec.route_phase === "implement",
+    );
+    assert(
+      "route_reasons are bounded (at most 8, each at most 160 chars)",
+      Array.isArray(rec.route_reasons) &&
+        rec.route_reasons.length === 8 &&
+        rec.route_reasons[0] === "risk high: +1 tier" &&
+        rec.route_reasons[1].length === 160,
+    );
+    assert("the measured cost is untouched by the route stamp", rec.total_cost_usd === 0.1234);
+    const missing = spawnSync(
+      process.execPath,
+      [
+        MOD,
+        "--kind",
+        "delivery",
+        "--ticket",
+        "7",
+        "--rc",
+        "0",
+        "--route-file",
+        join(dir, "nope.json"),
+        "--json-file",
+        sampleFile,
+      ],
+      { env: { ...process.env, GAFFER_DATA: dir }, encoding: "utf8" },
+    );
+    const rec2 = readFileSync(join(dir, LEDGER_FILENAME), "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l))
+      .pop();
+    assert(
+      "a missing route file records no route and still writes the row",
+      missing.status === 0 && !("route_tier" in rec2),
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 console.log();
 if (failures.length === 0) {
   console.log(`PASS: ${passed} checks`);

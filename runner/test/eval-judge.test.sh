@@ -315,6 +315,8 @@ if [ -f "$DISPATCH_CLI" ]; then
   wg init >/dev/null 2>&1
   wg ticket create -t "Rotate the constant" -p solo_loose >/dev/null 2>&1
   rm -f "$LEDGER"
+  # MF2: the runner's lane-verdict helper, as factory.config.sh defines it.
+  eval "$(sed -n '/^gaffer_lane_verdict() {/,/^}/p' "$RUNNER_DIR/factory.config.sh")"
   gaffer_eval_judge_delivery 1 "$REPO" main gaffer/ticket-9 1 '$0.1234' demo-repo; rc=$?
   [ "$rc" -eq 0 ] && ok "judge run against a real dispatch exits 0" || no "judge run failed (rc=$rc)"
   SHOWN="$(wg ticket show 1 2>/dev/null)"
@@ -326,6 +328,16 @@ if [ -f "$DISPATCH_CLI" ]; then
   ' "$SHOWN" && ok "wg ticket show carries the verdict (system-recorded, with reasons, memory flag, spend)" \
     || no "wg ticket show has no evalJudgment: $(printf '%s' "$SHOWN" | tail -c 400)"
   [ -s "$LEDGER" ] && ok "the ledger still gets its record" || no "ledger record missing"
+  # MF2: the judge's overall verdict is a system lane verdict on the judged head.
+  JHEAD="$(git -C "$REPO" rev-parse gaffer/ticket-9 2>/dev/null)"
+  node -e '
+    const ev = (JSON.parse(process.argv[1]).events || []).filter((e) => e.event_type === "ticket.lane_verdict");
+    if (ev.length !== 1 || ev[0].actor_type !== "system") process.exit(1);
+    const p = JSON.parse(ev[0].payload_json);
+    if (p.lane !== "eval-judge" || !["pass", "borderline", "fail"].includes(p.verdict) || p.commit !== process.argv[2]) process.exit(1);
+  ' "$(wg ticket show 1 2>/dev/null)" "$JHEAD" && ok "the judge verdict is recorded as a system lane verdict on the judged head" \
+    || no "no eval-judge lane verdict: $(wg ticket show 1 2>/dev/null | tail -c 600)"
+  unset -f gaffer_lane_verdict
   AGR="$(wg judge-agreement --json --ledger "$LEDGER" 2>/dev/null)"
   node -e '
     const r = JSON.parse(process.argv[1]);

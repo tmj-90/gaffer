@@ -326,7 +326,10 @@ EOF
       GAFFER_LAUNCH_KIND=review worker_deliver "$WT" "$RPROMPT" "$REVIEW_MODEL_FLAG" "$MCP_RUNTIME" "$R_USAGE_JSON" "" \
         "$(gaffer_role_turns "${GAFFER_REVIEW_MAX_TURNS:-60}")"
       rrc=$?
-      gaffer_usage_record review "$RNUM" "$rrc" "$R_USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
+      # JOIN KEYS (MF4): the review row names the repo and the risk at call time.
+      R_REPO_NAME="$(echo "$RSHOW" | jget '((((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || {}).name) || "")' 2>/dev/null || echo '')"
+      GAFFER_USAGE_REPO="$R_REPO_NAME" GAFFER_USAGE_RISK="$RRISK" \
+        gaffer_usage_record review "$RNUM" "$rrc" "$R_USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
       gaffer_record_skill_usage "$RNUM" review "$RSTACK" "$RSKILLS" "$R_USAGE_JSON" \
         "review-$RNUM" "$WT" "$_R_SKILL_SINCE"
       # Capture the reviewer's advisory verdict (its final RECOMMEND line) from the result
@@ -371,6 +374,9 @@ EOF
       elif [ "$R_VERDICT" = "held" ]; then
         R_HELD_REASON="the reviewer's final line is not a verdict token — not a verdict"
       fi
+      # MF2: the PRIMARY reviewer's own verdict, kept apart from the combined one (a
+      # security CHANGES overrides R_VERDICT below) for its lane verdict.
+      R_PRIMARY_VERDICT="$R_VERDICT"; R_PRIMARY_HELD="$R_HELD_REASON"
 
       # ── SECURITY SECOND OPINION (a second, independent agent lane) ──────────────
       # A primary APPROVE on a HIGH-RISK ticket, or on a diff that touches a
@@ -427,7 +433,8 @@ EOF
         GAFFER_LAUNCH_KIND=review worker_deliver "$WT" "$SPROMPT" "$SEC_MODEL_FLAG" "$MCP_RUNTIME" "$S_USAGE_JSON" "" \
           "$(gaffer_role_turns "${GAFFER_SECURITY_REVIEW_MAX_TURNS:-${GAFFER_REVIEW_MAX_TURNS:-40}}")"
         src=$?
-        gaffer_usage_record security-review "$RNUM" "$src" "$S_USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
+        GAFFER_USAGE_REPO="$R_REPO_NAME" GAFFER_USAGE_RISK="$RRISK" \
+          gaffer_usage_record security-review "$RNUM" "$src" "$S_USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
         # Same worktree + mount as the first reviewer (review-$RNUM).
         gaffer_record_skill_usage "$RNUM" security-review "$RSTACK" "$RSKILLS" "$S_USAGE_JSON" \
           "review-$RNUM" "$WT" "$_S_SKILL_SINCE"
@@ -491,6 +498,17 @@ EOF
         log "SAFETY: #$RNUM reviewer modified the candidate — $_R_TAMPER; verdict discarded (HELD for a human)"
         R_HELD_REASON="reviewer modified the candidate: $_R_TAMPER"
         R_VERDICT=held
+        R_PRIMARY_VERDICT=held; R_PRIMARY_HELD="$R_HELD_REASON"
+        [ -n "$R_SECURITY" ] && R_SECURITY=held
+      fi
+      # LANE VERDICTS (MF2): what each judging lane concluded about RSHA, as system events,
+      # so whether a lane changed the decision is computable. A measurement, fail-soft;
+      # the ship plan below never reads it.
+      gaffer_lane_verdict "$RNUM" agent-review "$R_PRIMARY_VERDICT" "$RSHA" \
+        "$([ "$R_PRIMARY_VERDICT" = held ] && printf '%s' "$R_PRIMARY_HELD")" "$REVIEW_MODEL"
+      if [ -n "$R_SECURITY" ]; then
+        gaffer_lane_verdict "$RNUM" security-review "$R_SECURITY" "$RSHA" \
+          "$([ "$R_SECURITY" = held ] && printf '%s' "$R_HELD_REASON")" "${SEC_MODEL:-}"
       fi
       NEWSTATUS="$(wg ticket show "$RNUM" 2>/dev/null | jget 'd.ticket.status' 2>/dev/null || echo '')"
 

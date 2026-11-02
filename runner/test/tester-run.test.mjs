@@ -361,6 +361,15 @@ console.log("== AC9: a JSON-argv verdict command survives a path with spaces =="
 console.log(
   "== AC10: --live spawns the tester in a worktree of the delivery branch and records PASS ==",
 );
+const LANE_LOG = resolve(WORKDIR, "lane-verdicts.jsonl");
+const laneLines = () =>
+  existsSync(LANE_LOG)
+    ? readFileSync(LANE_LOG, "utf8")
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((l) => JSON.parse(l))
+    : [];
 const LIVE = (() => {
   // Repo with a delivery branch; the ticket's ticket_repos row points at it.
   const repo = resolve(WORKDIR, "live-repo");
@@ -439,12 +448,19 @@ const LIVE = (() => {
     "#!/usr/bin/env node\nimport { appendFileSync } from 'node:fs';\n" +
       `appendFileSync(${JSON.stringify(STUB_LOG)}, JSON.stringify(process.argv.slice(2)) + '\\n');\nprocess.exit(0);\n`,
   );
+  const laneStub = resolve(WORKDIR, "lane-stub.mjs");
+  writeFileSync(
+    laneStub,
+    "#!/usr/bin/env node\nimport { appendFileSync } from 'node:fs';\n" +
+      `appendFileSync(${JSON.stringify(LANE_LOG)}, JSON.stringify(process.argv.slice(2)) + '\\n');\nprocess.exit(0);\n`,
+  );
   const data = resolve(WORKDIR, "data");
   require("node:fs").mkdirSync(data, { recursive: true });
-  return { repo, g, deliverySha, stub, capture, verdictStub, data };
+  return { repo, g, deliverySha, stub, capture, verdictStub, laneStub, data };
 })();
 function runLive(verdictMode, extraEnv = {}) {
   if (existsSync(STUB_LOG)) rmSync(STUB_LOG);
+  if (existsSync(LANE_LOG)) rmSync(LANE_LOG);
   if (existsSync(LIVE.capture)) rmSync(LIVE.capture);
   const { code, out } = runCli(["--ticket", "1", "--live"], {
     GAFFER_DATA: LIVE.data,
@@ -453,6 +469,7 @@ function runLive(verdictMode, extraEnv = {}) {
     TESTER_STUB_VERDICT: verdictMode,
     ...extraEnv,
     DISPATCH_TESTER_VERDICT_CMD: JSON.stringify([process.execPath, LIVE.verdictStub]),
+    DISPATCH_LANE_VERDICT_CMD: JSON.stringify([process.execPath, LIVE.laneStub]),
   });
   const logged = existsSync(STUB_LOG) ? readFileSync(STUB_LOG, "utf8").trim() : "";
   const cap = existsSync(LIVE.capture) ? JSON.parse(readFileSync(LIVE.capture, "utf8")) : null;
@@ -466,6 +483,25 @@ function runLive(verdictMode, extraEnv = {}) {
   logged.includes('"pass"') && logged.includes('"1"')
     ? ok("verdict seam invoked with (1, pass, summary)")
     : fail(`seam log: ${logged}`);
+  // MF2: the tester lane's verdict is recorded as a system lane verdict on the tested commit.
+  const lane = laneLines();
+  lane.length === 1 &&
+  lane[0].join(" ").startsWith("ticket lane-verdict 1 --lane tester --verdict pass") &&
+  lane[0].includes(LIVE.deliverySha) &&
+  lane[0].includes("system")
+    ? ok("the tester lane verdict (pass, tested commit, as system) is recorded")
+    : fail(`lane verdict argv: ${JSON.stringify(lane)}`);
+  // MF4: the tester's ledger row carries its repo (and the risk when the ticket has one).
+  const ledgerRows = existsSync(resolve(LIVE.data, "usage-ledger.jsonl"))
+    ? readFileSync(resolve(LIVE.data, "usage-ledger.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map((l) => JSON.parse(l))
+    : [];
+  const testerRow = ledgerRows.filter((r) => r.kind === "tester").pop();
+  testerRow && testerRow.repo === "live"
+    ? ok("the tester's ledger row carries the repo it tested")
+    : fail(`tester ledger row: ${JSON.stringify(testerRow)}`);
   // ACCEPTANCE GATE: the verdict is bound to the tested commit and the contract hash.
   logged.includes('"--tested-commit"') && logged.includes(JSON.stringify(LIVE.deliverySha))
     ? ok("verdict carries --tested-commit <the delivery head it ran against>")
@@ -570,6 +606,13 @@ console.log("== AC12: no verdict token → HELD (exit 2), nothing recorded ==");
   logged === ""
     ? ok("no verdict recorded on silence (never a pass)")
     : fail(`seam was invoked: ${logged}`);
+  const lane = laneLines();
+  lane.length === 1 &&
+  lane[0].includes("held") &&
+  lane[0].includes("--held-reason") &&
+  /no verdict token/.test(lane[0].join(" "))
+    ? ok("a held tester run is recorded as a held lane verdict with its reason")
+    : fail(`held lane verdict argv: ${JSON.stringify(lane)}`);
 }
 
 console.log(

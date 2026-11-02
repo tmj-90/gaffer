@@ -105,6 +105,7 @@ import {
 } from "./services/claimService.js";
 import {
   computeTicketDiff,
+  type TicketDiffOptions,
   defaultGitRunner,
   type GitRunner,
   type RepoDiff,
@@ -711,6 +712,10 @@ export class Dispatch {
       testerExpected: (t) =>
         t.acceptance === 1 ||
         ((this.testingEnabledOverride ?? isTestingEnabled()) && t.can_be_tested === 1),
+      // SAME CANDIDATE: the runner's gated commit per repo, and each write repo's head as
+      // the approval reads it (role order), so the packet compares the commit Approve binds.
+      repoDeliveries: this.repoDeliveries,
+      writeRepoHeads: (t) => this.orderedWriteRepoHeads(t),
     });
     this.reviewGateSvc = new ReviewGateService({
       db,
@@ -859,7 +864,7 @@ export class Dispatch {
     );
   }
 
-  ticketDiff(ref: string): TicketDiff {
+  ticketDiff(ref: string, opts: TicketDiffOptions = {}): TicketDiff {
     const ticket = this.resolveTicket(ref);
     return computeTicketDiff(
       {
@@ -867,9 +872,34 @@ export class Dispatch {
         tickets: this.tickets,
         repoDeliveries: this.repoDeliveries,
         ...(this.gitRunner ? { runGit: this.gitRunner } : {}),
+        downstreamRepos: (repoId) => this.downstreamRepos(repoId),
       },
       ticket.id,
+      opts,
     );
+  }
+
+  /**
+   * CHANGE IMPACT: the repos whose scope `depends_on` a scope this repo owns or is part of
+   * (scope_edges + scope_repos). A repo that merely uses or reads a scope is not that
+   * scope, so only owning/containing/shared/deployed/write-target links count. Pure read.
+   */
+  downstreamRepos(repoId: string): Array<{ repo: string; via: string }> {
+    const IS_SCOPE = "('owns','contains','shared_by','deployed_with','write_target')";
+    const rows = this.db
+      .prepare(
+        `SELECT DISTINCT r.name AS repo, dep.name AS dep_name, mine.name AS mine_name
+           FROM scope_repos sr
+           JOIN scope_nodes mine ON mine.id = sr.scope_node_id
+           JOIN scope_edges e ON e.to_node_id = sr.scope_node_id AND e.relation = 'depends_on'
+           JOIN scope_nodes dep ON dep.id = e.from_node_id
+           JOIN scope_repos sd ON sd.scope_node_id = e.from_node_id AND sd.relation IN ${IS_SCOPE}
+           JOIN repositories r ON r.id = sd.repo_id
+          WHERE sr.repo_id = ? AND sr.relation IN ${IS_SCOPE} AND sd.repo_id <> ?
+          ORDER BY r.name LIMIT 20`,
+      )
+      .all(repoId, repoId) as Array<{ repo: string; dep_name: string; mine_name: string }>;
+    return rows.map((r) => ({ repo: r.repo, via: `${r.dep_name} depends_on ${r.mine_name}` }));
   }
 
   /**
@@ -992,6 +1022,26 @@ export class Dispatch {
         branch,
         head: resolveBranchHead(runGit, repo.local_path, branch),
       });
+    }
+    return out;
+  }
+
+  /**
+   * {@link writeRepoHeads} as one list in the ticket's write-repo order (primary first):
+   * a resolved head carries its sha, an unreadable one says why. The review packet's
+   * same-candidate check reads it.
+   */
+  private orderedWriteRepoHeads(
+    ticket: Ticket,
+  ): Array<{ repoId: string; repo: string; sha: string | null; why: string | null }> {
+    const { heads, unavailable } = this.writeRepoHeads(ticket);
+    const out: Array<{ repoId: string; repo: string; sha: string | null; why: string | null }> = [];
+    for (const repo of this.repos.accessLinksForTicket(ticket.id)) {
+      if (!isActiveTicketRepoRelation(repo.relation) || repo.access !== "write") continue;
+      const h = heads.find((x) => x.repoId === repo.id);
+      const u = unavailable.find((x) => x.repoId === repo.id);
+      if (h) out.push({ repoId: h.repoId, repo: h.repo, sha: h.sha, why: null });
+      else if (u) out.push({ repoId: u.repoId, repo: u.repo, sha: null, why: u.why });
     }
     return out;
   }

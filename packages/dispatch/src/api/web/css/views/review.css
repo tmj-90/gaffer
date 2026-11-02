@@ -1113,6 +1113,113 @@
   .vd-why {
     color: var(--ink-2);
   }
+  /* SAME CANDIDATE: the commits each repo's facts are about, one row each. */
+  .vd-cand {
+    display: grid;
+    gap: 2px;
+    padding: 2px 0;
+    overflow-wrap: anywhere;
+  }
+  .vd-cand-row code {
+    font-size: var(--t13);
+  }
+  .vd-runlinks .btn-link {
+    font-weight: 600;
+  }
+
+  /* --- what was asked: the ticket's description, above the runner's facts --- */
+  .rv-intent {
+    display: grid;
+    gap: 4px;
+    max-width: 80ch;
+    padding: 10px 14px;
+    border-left: 6px solid var(--rule);
+    background: var(--paper);
+  }
+  .rv-intent-h {
+    font: 700 var(--t12) / 1 var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--ink-2);
+  }
+  .rv-intent-t {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    color: var(--ink);
+  }
+  .rv-intent-t.is-folded {
+    max-height: 9.5em;
+    overflow: hidden;
+  }
+  .rv-intent-more {
+    justify-self: start;
+    font-size: var(--t14);
+  }
+
+  /* --- the Behavioural surface: change-impact facts above the diff ---------
+     Each line is a fact with how it was found (small, quiet) and its file link. */
+  .rv-impact {
+    display: grid;
+    gap: 8px;
+  }
+  .rv-impact-sub,
+  .rv-impact-na {
+    font-size: var(--t13);
+  }
+  .rv-impact-list {
+    display: grid;
+    gap: 2px;
+    font-size: var(--t14);
+  }
+  .rv-impact-fact {
+    padding: 2px 0;
+    overflow-wrap: anywhere;
+  }
+  .rv-impact-method {
+    color: var(--ink-2);
+    font-style: italic;
+  }
+  .rv-impact-go code {
+    font-size: var(--t13);
+  }
+  .rv-impact-none {
+    font-size: var(--t14);
+    color: var(--ink);
+  }
+  .rv-impact-repo-h {
+    font-size: var(--t14);
+  }
+  .diff-line.is-target {
+    outline: 2px solid var(--yellow);
+    outline-offset: -2px;
+  }
+
+  /* --- what backs this / what is not backed: facts, never a score ---------- */
+  .rv-backing-list {
+    display: grid;
+    gap: 2px;
+    font-size: var(--t14);
+  }
+  .rv-backing-row {
+    display: grid;
+    grid-template-columns: 22px minmax(0, 1fr) auto;
+    gap: 0 8px;
+    align-items: baseline;
+    padding: 3px 0;
+  }
+  .rv-backing-fact {
+    overflow-wrap: anywhere;
+  }
+  .rv-backing-src {
+    grid-column: 2;
+    color: var(--ink-2);
+    overflow-wrap: anywhere;
+  }
+  .rv-backing-go {
+    grid-column: 3;
+    grid-row: 1;
+    font-size: var(--t13);
+  }
 
   /* --- the criteria as the runner sees them: a machine check or a yellow card */
   .rv-ac-table {

@@ -417,6 +417,53 @@ structural barrier the whole design hangs on.
   tabs turned into spaces and drops any that start with `GATE`, `---` or
   `gotest-tally:`, and it reads gate rows only outside the framed output blocks,
   so a test that prints a gate-shaped line cannot add a gate to the strip.
+- **What was asked, and whether this is the candidate that passed.** Above the
+  strip, **What was asked** shows the ticket's description as text. The strip's
+  **Candidate** cell puts the commits side by side for each write repo: the commit
+  the gates ran on (the runner records it right after its gates, from the same
+  worktree head), the commit the diff shows (the one Approve binds to), the commit
+  the independent tester tested and the review pin. It reads **One commit** when
+  they agree, **Differs** when they do not (and a *Not the gated commit* flag joins
+  the flags list), **Unknown** when one cannot be read, and **Moved** when the
+  branch moved between the facts and the diff on screen. A rework enters review a
+  moment before the runner records the commit its gates ran on, so until that
+  record is in (or if it failed) the cell reads **Not recorded** and the flag says
+  *Gated commit not recorded yet*, rather than calling an earlier attempt's commit
+  a difference. Only the runner's own record counts as the gated commit: one an
+  agent or a person recorded is shown as their record and reads **Unknown**. The **CI**
+  cell shows the latest CI result recorded for the candidate commit. When the run
+  that delivered the change (or ran the tester) was started from the dashboard,
+  the cell links its run log; the runs table does not record the ticket, so the
+  link is the poll run that was running at the time, and says so.
+- **What backs this, and what is not backed.** A panel beside the flags lists the
+  facts behind the delivery in two lists, each with where it comes from: the gates
+  ran on the commit the diff shows, the runner's gates passed or a gate did not
+  run, how many checked criteria have a passing runner check and how many rest on
+  the agent's word or nothing, the tester's verdict and on which commit, required
+  CI, whether a gating test changed, and that nothing has run the change as a user
+  would yet. There is no score and no headline: the flags list stays the one list
+  of things to check, and each row links to the strip cell it comes from.
+- **The Behavioural surface, above the diff.** For a ticket in review the diff
+  read also lists what the change touches, worked out from the diff's own lines
+  and the tree at the head commit, with no model: exported declarations added,
+  removed or changed in TypeScript, JavaScript and Python files; migration files
+  and DDL statements; config files; environment variables newly read or no longer
+  read, and keys added to a `.env.example`; dependency entries added, removed or
+  bumped in `package.json`, `pyproject.toml`, `requirements*.txt`, `go.mod` and
+  `Cargo.toml`; generated files (lockfiles, `dist/`, anything `.gitattributes`
+  marks `linguist-generated`); changed modules that no test file in the change
+  imports (a search of the test files at the head for the module's name); route
+  files and route registrations for the common frameworks; and repos that depend
+  on this one in the Map's scope graph. Each line says how it was found ("from the
+  diff's lines", "by path", "by import text", "pattern match"…) and links to its
+  file in the diff. When the scan finds no migration, config, environment variable
+  or dependency change it says so once (never on a diff cut at its size cap, and
+  never "no dependency change" when a lockfile changed), and what it cannot work out (callers of a
+  changed symbol and whether they are tested) is said as not analysed. It is
+  advisory: nothing gates on it and it does not change the observed risk that
+  holds auto-ship. Changed modules with no test in the change also appear under
+  *What is not backed*. `GET /tickets/:id/diff?include=impact` returns the same
+  facts for any ticket.
 - **The eval judge's grade, when you turn it on.** With `GAFFER_EVAL_JUDGE=1` an
   independent judge grades every submitted delivery against its acceptance criteria
   on five dimensions (criteria, correctness, smallest change, tests, security), and

@@ -17990,6 +17990,411 @@ function judgeCell(jd) {
  * Each a recorded fact (see services/reviewPacketService.ts). `setRisk(anns)`
  * adds the diff's own risk annotations once the diff has loaded.
  */
+/**
+ * REVIEW FACTS (intent): what was asked, the ticket's description as the human wrote it,
+ * above the runner's facts. Text only: a description is untrusted text.
+ */
+const INTENT_FOLD_CHARS = 600;
+function intentBlock(intent) {
+  const body = el(
+    "p",
+    { class: "rv-intent-t" },
+    intent ||
+      "The ticket has no description: the title and the acceptance criteria are all that was asked.",
+  );
+  const kids = [el("h2", { class: "rv-intent-h" }, "What was asked"), body];
+  if (intent && intent.length > INTENT_FOLD_CHARS) {
+    body.classList.add("is-folded");
+    const more = el(
+      "button",
+      {
+        type: "button",
+        class: "btn-link rv-intent-more",
+        "aria-expanded": "false",
+        onclick: () => {
+          const open = body.classList.toggle("is-folded") === false;
+          more.setAttribute("aria-expanded", String(open));
+          more.textContent = open ? "Show less" : "Show all of it";
+        },
+      },
+      "Show all of it",
+    );
+    kids.push(more);
+  }
+  return el("section", { class: "rv-intent", "aria-label": "What was asked" }, kids);
+}
+
+/** The Behavioural surface's order: what callers see first, what was generated last. */
+const IMPACT_ORDER = [
+  "export_removed",
+  "export_changed",
+  "export_added",
+  "route",
+  "migration",
+  "ddl",
+  "config",
+  "env_added",
+  "env_removed",
+  "dependency_added",
+  "dependency_removed",
+  "dependency_bumped",
+  "untested_module",
+  "downstream_repo",
+  "generated",
+];
+
+/** "a, b or c". */
+function orList(items) {
+  return items.length < 2
+    ? items.join("")
+    : `${items.slice(0, -1).join(", ")} or ${items[items.length - 1]}`;
+}
+
+/** Open a file block of the Review diff (and its line, when the diff shows it). */
+function goToDiffFile(targetId, line) {
+  const block = document.getElementById(targetId);
+  if (!block) return;
+  block.open = true;
+  const row = line != null ? block.querySelector(`.diff-line[data-ln="${Number(line)}"]`) : null;
+  (row || block).scrollIntoView({ behavior: "smooth", block: row ? "center" : "start" });
+  if (row) {
+    row.classList.add("is-target");
+    setTimeout(() => row.classList.remove("is-target"), 2400);
+  }
+}
+
+/**
+ * CHANGE IMPACT: the "Behavioural surface" panel above the diff, from each repo's
+ * server-computed `impact` (GET /diff?include=impact). Every line says how it was found
+ * and links to its file in the diff below; what the scan finds nothing of is said once,
+ * and what it does not cover is said as not analysed. Advisory: nothing gates on it.
+ * Null when no repo carries impact facts (an older server, or no diff).
+ */
+function impactPanel(repos) {
+  const withImpact = (repos || []).map((rd, i) => ({ rd, i })).filter((x) => x.rd.impact);
+  if (!withImpact.length) return null;
+  const multi = withImpact.length > 1;
+  const blocks = withImpact.map(({ rd, i }) => {
+    const files = splitDiffFiles(rd.diff);
+    const fileIdx = (p) => files.findIndex((f) => f.path === p);
+    const facts = [...(rd.impact.facts || [])].sort(
+      (a, b) => IMPACT_ORDER.indexOf(a.kind) - IMPACT_ORDER.indexOf(b.kind),
+    );
+    const list = el(
+      "ul",
+      { class: "clean rv-impact-list" },
+      facts.map((f) => {
+        const idx = f.path ? fileIdx(f.path) : -1;
+        const target = idx >= 0 ? `diff-file-${i}-${idx}` : null;
+        return el("li", { class: `rv-impact-fact rv-k-${f.kind}` }, [
+          el("span", { class: "rv-impact-t" }, f.text),
+          " ",
+          el("small", { class: "rv-impact-method" }, f.method),
+          target
+            ? [
+                " ",
+                el(
+                  "button",
+                  {
+                    type: "button",
+                    class: "btn-link rv-impact-go",
+                    dataset: { fileTarget: target },
+                    "aria-label": `Show ${f.path} in the diff`,
+                    onclick: () => goToDiffFile(target, f.line),
+                  },
+                  el("code", { class: "mono" }, `${f.path}${f.line != null ? `:${f.line}` : ""}`),
+                ),
+              ]
+            : null,
+        ]);
+      }),
+    );
+    const none = rd.impact.none || [];
+    return el("div", { class: "rv-impact-repo" }, [
+      multi
+        ? el("h4", { class: "rv-impact-repo-h" }, el("code", { class: "mono" }, rd.repo))
+        : null,
+      facts.length
+        ? list
+        : el("p", { class: "dim" }, "The scan found nothing to list in this diff."),
+      none.length ? el("p", { class: "rv-impact-none" }, `No ${orList(none)} change found.`) : null,
+      ...(rd.impact.not_analysed || []).map((n) => el("p", { class: "rv-impact-na dim" }, n)),
+    ]);
+  });
+  return el("section", { class: "card panel rv-impact", "aria-label": "Behavioural surface" }, [
+    el("h3", { class: "rv-h3" }, "Behavioural surface"),
+    el(
+      "p",
+      { class: "rv-impact-sub dim" },
+      "Read from the diff and the tree at the head commit, each line with how it was found. Advisory: nothing gates on it.",
+    ),
+    ...blocks,
+  ]);
+}
+
+/** The Behavioural surface's rows for "What is not backed" (changed modules with no test). */
+function impactBacking(repos) {
+  const n = (repos || []).reduce(
+    (k, rd) =>
+      k + ((rd.impact && rd.impact.facts) || []).filter((f) => f.kind === "untested_module").length,
+    0,
+  );
+  if (!n) return [];
+  return [
+    {
+      fact:
+        n === 1
+          ? "1 changed module has no test in this change that imports it"
+          : `${n} changed modules have no test in this change that imports them`,
+      holds: false,
+      source: "the Behavioural surface (by import text)",
+      cell: "impact",
+    },
+  ];
+}
+
+/** A commit id, short, in mono; or a plain word when there is none. */
+function shaOr(sha, none) {
+  return sha ? el("code", { class: "mono" }, String(sha).slice(0, 12)) : none;
+}
+/** Two commit ids name one commit (equal, or one a ≥7-hex prefix of the other). */
+function sameSha(a, b) {
+  if (!a || !b) return false;
+  const x = String(a).toLowerCase();
+  const y = String(b).toLowerCase();
+  return x.length >= 7 && y.length >= 7 && (x.startsWith(y) || y.startsWith(x));
+}
+
+/**
+ * The strip's Candidate cell: per write repo, the commit the gates ran on, the commit the
+ * diff shows, the tester's commit and the pin, and whether they are one commit (the
+ * server's `same`). Once the diff loads, `_setShown(repos)` checks the commit on screen
+ * too. Its run-log links open the delivery and tester logs.
+ */
+function candidateCell(p) {
+  const cands = p.candidate || [];
+  const allSame = cands.every((c) => c.same);
+  // Only the runner's own record says the gates ran on a commit: an agent's or a person's
+  // record of the head is not shown to be one candidate, but it does not differ either.
+  const notRunner = (c) => c.gated_by === "agent" || c.gated_by === "human";
+  const unknown = cands.some((c) => !c.diff_head || !c.gated_sha || notRunner(c));
+  // A rework entered review a moment before the runner recorded its gated commit (or that
+  // record failed): the row still holds an earlier attempt's commit.
+  const earlier = !unknown && cands.some((c) => c.gated_earlier);
+  const multi = cands.length > 1;
+  const sub = el("p", { class: "vd-sub vd-cand-sub" });
+  const rows = el(
+    "ul",
+    { class: "clean vd-cand-list" },
+    cands.map((c) =>
+      el("li", { class: "vd-cand" }, [
+        multi ? el("b", { class: "vd-cand-repo" }, c.repo) : null,
+        el("span", { class: "vd-cand-row" }, [
+          "Gates ran on ",
+          shaOr(c.gated_sha, "no recorded commit"),
+          c.gated_by === "agent"
+            ? " (the agent's record)"
+            : c.gated_by === "human"
+              ? " (a person's record)"
+              : c.gated_earlier
+                ? " (an earlier attempt's record)"
+                : "",
+        ]),
+        el("span", { class: "vd-cand-row vd-cand-shown" }, [
+          "The diff shows ",
+          shaOr(c.diff_head, c.head_unavailable ? `nothing (${c.head_unavailable})` : "nothing"),
+        ]),
+        el("span", { class: "vd-cand-row" }, [
+          "Tester tested ",
+          shaOr(c.tester_tested, p.tester_expected ? "nothing yet" : "nothing (no tester)"),
+        ]),
+        c.pin ? el("span", { class: "vd-cand-row" }, ["Pinned ", shaOr(c.pin, "")]) : null,
+      ]),
+    ),
+  );
+  const words = (state) =>
+    state === "same"
+      ? "The gates ran on the commit the diff shows, and any tested or pinned commit is that commit."
+      : state === "moved"
+        ? "The branch moved after these facts were read: the diff on screen is a newer commit."
+        : unknown
+          ? "Not every commit is known from the runner's record, so this is not shown to be one candidate."
+          : earlier
+            ? "The runner records the commit its gates ran on just after the ticket enters review, and this attempt's record is not in: the commit on record is an earlier attempt's. Reload in a moment."
+            : "These are not one commit: a green gate or tester verdict is about another commit.";
+  const value = (state) =>
+    state === "same"
+      ? "One commit"
+      : state === "moved"
+        ? "Moved"
+        : unknown
+          ? "Unknown"
+          : earlier
+            ? "Not recorded"
+            : "Differs";
+  let state = allSame ? "same" : "differs";
+  sub.textContent = words(state);
+  const links = (p.run_links || []).map((r) =>
+    el(
+      "button",
+      {
+        type: "button",
+        class: "btn-link vd-runlink",
+        dataset: { runId: r.run_id, role: r.role },
+        title: `The dashboard run that was running then (${r.method}), started ${fmtTime(r.started_at)}`,
+        onclick: () => {
+          // TODO(review_raw_opened): count this click as the metrics package's
+          // `ticket.review_raw_opened` event once that event exists on main.
+          viewRunLog(
+            { id: r.run_id, kind: r.kind },
+            `${r.role === "tester" ? "Tester" : "Delivery"} run log`,
+          );
+        },
+      },
+      r.role === "tester" ? "tester run log" : "delivery run log",
+    ),
+  );
+  // The runs table carries no ticket: say on screen how the link was found.
+  const foundBy = links.length ? el("small", { class: "vd-runlink-by" }, " (found by time)") : null;
+  const runLine = el("p", { class: "vd-sub vd-runlinks" }, [
+    links.length
+      ? "Open the "
+      : "No run log is recorded for this delivery (its runner was not started from the dashboard).",
+    ...links.flatMap((a, i) => (i ? [" · ", a] : [a])),
+    foundBy,
+  ]);
+  const cell = verdictCell(
+    "candidate",
+    "Candidate",
+    value(state),
+    `Candidate: ${value(state).toLowerCase()}`,
+    [rows, sub, runLine],
+    state === "same" ? "ok" : unknown || earlier ? "warn" : "bad",
+  );
+  cell._setShown = (repos) => {
+    const moved = (repos || []).some((r) => {
+      const c = cands.find((x) => x.repo_id === r.repoId);
+      return c && r.headSha && c.diff_head && !sameSha(r.headSha, c.diff_head);
+    });
+    if (!moved) return;
+    state = "moved";
+    cell.querySelector(".vd-v").textContent = value(state);
+    cell.setAttribute("aria-label", `Candidate: ${value(state).toLowerCase()}`);
+    cell.classList.remove("vd-ok", "vd-bad");
+    cell.classList.add("vd-warn");
+    sub.textContent = words(state);
+  };
+  return cell;
+}
+
+/** The strip's CI cell: the latest recorded CI result for the candidate commit. */
+function ciCell(ci) {
+  if (!ci)
+    return verdictCell(
+      "ci",
+      "CI",
+      "None",
+      "CI: no result recorded",
+      el("p", { class: "vd-sub" }, "No CI result is recorded for this ticket."),
+    );
+  const v = { pass: "Green", fail: "Red", pending: "Running" }[ci.state] || "No result";
+  const tone = { pass: "ok", fail: "bad" }[ci.state] || "warn";
+  return verdictCell(
+    "ci",
+    "CI",
+    v,
+    `CI: ${v.toLowerCase()}${ci.commit ? ` for ${ci.commit.slice(0, 12)}` : ""}`,
+    [
+      el("p", { class: "vd-sub" }, [
+        ci.state ? "Recorded for " : "Nothing recorded for ",
+        shaOr(ci.commit, "the candidate commit (its head cannot be read)"),
+        ci.at ? ` · ${fmtTime(ci.at)}` : "",
+      ]),
+      ci.detail ? el("p", { class: "vd-say" }, ci.detail) : null,
+      !ci.state && ci.latest
+        ? el("p", { class: "vd-sub" }, [
+            `The latest result recorded is ${ci.latest.state} for `,
+            shaOr(ci.latest.commit, ""),
+            ".",
+          ])
+        : null,
+      el("p", { class: "vd-sub" }, "Approval waits for a passing result for this commit."),
+    ],
+    tone,
+  );
+}
+
+/** Where a backing row's fact is shown: its strip cell, the criteria table or the evidence. */
+const BACKING_TARGET = {
+  candidate: ".vd-cell.vd-candidate",
+  gates: ".vd-cell.vd-gates",
+  integrity: ".vd-cell.vd-gates",
+  tester: ".vd-cell.vd-tester",
+  ci: ".vd-cell.vd-ci",
+  criteria: ".rv-ac-table, .rv-checks",
+  evidence: ".rv-evid",
+  impact: ".rv-impact",
+};
+
+/**
+ * INSPECTABLE CONFIDENCE: "What backs this / What is not backed", the server's backing rows
+ * (each a fact, whether it holds, and where it comes from) as two lists. No score, no
+ * headline and no ask: the flags list stays the one list of things to check. Each row
+ * links to where the fact is shown. `_setImpact(repos)` adds the Behavioural surface's
+ * rows once the diff loads.
+ */
+function backingPanel(rows) {
+  const holds = el("ul", { class: "clean rv-backing-list rv-backs" });
+  const not = el("ul", { class: "clean rv-backing-list rv-unbacked" });
+  const rowEl = (b) =>
+    el("li", { class: `rv-backing-row ${b.holds ? "is-held" : "is-unheld"}` }, [
+      el(
+        "span",
+        { class: `dod-mark dod-${b.holds ? "pass" : "skip"}`, "aria-hidden": "true" },
+        b.holds ? "✓" : "–",
+      ),
+      el("span", { class: "rv-backing-fact" }, b.fact),
+      el("small", { class: "rv-backing-src" }, b.source),
+      BACKING_TARGET[b.cell]
+        ? el(
+            "button",
+            {
+              type: "button",
+              class: "btn-link rv-backing-go",
+              "aria-label": `Show where: ${b.fact}`,
+              onclick: (e) => {
+                const root = e.currentTarget.closest(".view-review") || document;
+                const to = root.querySelector(BACKING_TARGET[b.cell]);
+                if (to) to.scrollIntoView({ behavior: "smooth", block: "center" });
+              },
+            },
+            "show",
+          )
+        : null,
+    ]);
+  const paint = (list) => {
+    clear(holds);
+    clear(not);
+    for (const b of list) (b.holds ? holds : not).appendChild(rowEl(b));
+    if (!holds.children.length)
+      holds.appendChild(
+        el("li", { class: "rv-backing-none dim" }, "No recorded fact backs it yet."),
+      );
+    if (!not.children.length)
+      not.appendChild(el("li", { class: "rv-backing-none dim" }, "Every fact read here holds."));
+  };
+  let base = rows || [];
+  paint(base);
+  const panel = el("section", { class: "card panel rv-backing", "aria-label": "What backs this" }, [
+    el("h2", { class: "rv-h2" }, "What backs this"),
+    holds,
+    el("h3", { class: "rv-h3" }, "What is not backed"),
+    not,
+  ]);
+  panel._setImpact = (extra) => paint([...base, ...(extra || [])]);
+  return panel;
+}
+
 function verdictStrip(p) {
   const cells = [];
 
@@ -18109,6 +18514,14 @@ function verdictStrip(p) {
         ),
   );
 
+  // SAME CANDIDATE and REQUIRED CI (an older server's packet has neither).
+  let candCell = null;
+  if (Array.isArray(p.candidate) && p.candidate.length) {
+    candCell = candidateCell(p);
+    cells.push(candCell);
+  }
+  if ("ci" in p) cells.push(ciCell(p.ci));
+
   // Cost and turns so far, from the usage ledger (an estimate is said as one).
   const c = p.cost;
   const unknown = c.ledger_status === "unreadable";
@@ -18221,6 +18634,7 @@ function verdictStrip(p) {
     el("div", { class: "vd-cells" }, cells),
   );
   strip._setRisk = paintRisk;
+  strip._setShown = (repos) => candCell?._setShown(repos);
   return strip;
 }
 
@@ -18949,6 +19363,27 @@ async function renderReview(param) {
       `${d.message} The agent wrote: “${d.excerpt}”. Trust the gate output, not the summary.`,
       "Derived from the agent's evidence and the runner's test output",
     ]);
+  // SAME CANDIDATE: the runner gated one commit and the branch is now at another, so a
+  // green gate is about other code. One of the flags (the one list), never a hold.
+  for (const c of (packet && packet.candidate) || []) {
+    const runnerRecord = c.gated_by === "runner" || c.gated_by == null;
+    if (!c.gated_sha || !c.diff_head || !runnerRecord || sameSha(c.gated_sha, c.diff_head))
+      continue;
+    const inRepo = (packet.candidate.length > 1 && ` in ${c.repo}`) || "";
+    flagsNow.push(
+      c.gated_earlier
+        ? [
+            "Gated commit not recorded yet",
+            `This attempt's gated commit${inRepo} is not recorded yet (the runner records it just after the ticket enters review). The one on record, ${c.gated_sha.slice(0, 12)}, is an earlier attempt's. Reload in a moment before you rely on the gates.`,
+            "Derived from the runner's recorded delivery commits and the ticket's claim",
+          ]
+        : [
+            "Not the gated commit",
+            `The gates ran on ${c.gated_sha.slice(0, 12)}${inRepo}, but the branch is now at ${c.diff_head.slice(0, 12)}. Read the newer commits: no gate result is recorded for them.`,
+            "Derived from the runner's recorded delivery commit and the branch head",
+          ],
+    );
+  }
   if (ac.length && satisfied < ac.length)
     flagsNow.push([
       "Criteria not met",
@@ -19043,6 +19478,8 @@ async function renderReview(param) {
     prUrl ? [" · ", el("a", { href: prUrl, target: "_blank", rel: "noopener" }, "PR")] : null,
   ]);
   const diffAux = el("span", { class: "panel-aux" });
+  // CHANGE IMPACT: the Behavioural surface panel, filled above the diff once it loads.
+  const impactSlot = el("div", { class: "rv-impact-slot" });
   const applyDiffState = (state, repos = [], res = null) => {
     diffState = state || { approvable: false, reason: "The diff state is unknown." };
     outcome = (res && res.approve_outcome) || null;
@@ -19073,6 +19510,11 @@ async function renderReview(param) {
     }
     const live = repos.filter((r) => !r.unavailable);
     strip?._setRisk(live.flatMap((r) => r.riskAnnotations || []));
+    strip?._setShown(repos);
+    clear(impactSlot);
+    const surface = impactPanel(repos);
+    if (surface) impactSlot.appendChild(surface);
+    backing?._setImpact(impactBacking(repos));
     clear(integritySlot);
     const ib = integrityBanner(t, testModifiedAnns(live));
     if (ib) integritySlot.appendChild(ib);
@@ -19485,6 +19927,9 @@ async function renderReview(param) {
   // The verdict strip: the runner's facts, under the title and above everything
   // the agent wrote. Built before the diff so the diff's risk flags can join it.
   const strip = packet ? verdictStrip(packet) : null;
+  // INSPECTABLE CONFIDENCE: the server's backing rows (an older server sends none).
+  const backing = packet && Array.isArray(packet.backing) ? backingPanel(packet.backing) : null;
+  // An in_review ticket's diff carries its change-impact facts (the Behavioural surface).
   const diffBox = renderTicketDiff(t.id, applyDiffState);
 
   // Header: the yellow card, the number, the title; then the facts in one line.
@@ -19515,6 +19960,9 @@ async function renderReview(param) {
           : null,
       ]),
       branchLine,
+      // REVIEW FACTS: what was asked, above the runner's facts (inside the header, so the
+      // strip still follows it).
+      packet && "intent" in packet ? intentBlock(packet.intent) : null,
     ]),
   );
   if (strip) wrap.appendChild(strip);
@@ -19587,6 +20035,7 @@ async function renderReview(param) {
     el("h2", { class: "rv-h2" }, ["The diff ", diffAux]),
     sinceBar,
     sinceBox,
+    impactSlot,
     diffBox,
   ]);
   // A click on a line marks it, so `c` comments on it.
@@ -19630,6 +20079,7 @@ async function renderReview(param) {
           el("div", { class: "btn-row rc-toolbar" }, [ticketCommentBtn]),
           commentList,
         ]),
+        backing,
         checks,
         el("section", { class: "rv-evid", "aria-label": "Evidence" }, [
           el("h2", { class: "rv-h2" }, [

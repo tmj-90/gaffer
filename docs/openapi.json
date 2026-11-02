@@ -5201,6 +5201,18 @@
               ]
             },
             "description": "`rejected`: the interdiff since the commit a person last sent back (the latest reject pin a human or admin recorded per write repository; an agent reviewer's send-back does not move it) when that commit is an ancestor of the head; otherwise the repo's `since` entry says `history_rewritten: true` and no diff is guessed. A reading aid: it carries no `approve_outcome`, and an approval still binds to the whole change's heads."
+          },
+          {
+            "name": "include",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "impact"
+              ]
+            },
+            "description": "`impact` adds each repo's change-impact facts."
           }
         ],
         "responses": {
@@ -5270,7 +5282,7 @@
           "Review & delivery"
         ],
         "summary": "Delivery dossier",
-        "description": "The tamper-evident evidence artifact. JSON by default; markdown with `?format=markdown` or `Accept: text/markdown`. `?include=packet` adds `review_packet` (outside the hashed subject): the runner-verified gates, tester verdict, cost and turns, attempts and rework, risk reasons, the reviewed-commit pin, each criterion's check result or `no machine evidence`, and any test count the agent claimed that disagrees with the runner's.",
+        "description": "The tamper-evident evidence artifact. JSON by default; markdown with `?format=markdown` or `Accept: text/markdown`. `?include=packet` adds `review_packet` (outside the hashed subject): the runner-verified gates, tester verdict, cost and turns, attempts and rework, risk reasons, the reviewed-commit pin, each criterion's check result or `no machine evidence`, any test count the agent claimed that disagrees with the runner's, `intent` (the ticket's description), `candidate` (per write repository: the commit the runner gated, the head now, the tester's commit and the pin, with `same`, and `gated_earlier` when the commit on record is an earlier attempt's because this attempt's record is not in yet), `ci` (the latest CI result for the candidate commit, or null), `run_links` (dashboard run logs that were running at the delivery or the tester verdict, found by time window) and `backing` (`{fact, holds, source, cell}` rows: what backs the delivery and what does not; no score).",
         "parameters": [
           {
             "name": "id",
@@ -13274,6 +13286,79 @@
           }
         }
       },
+      "ImpactFact": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "export_added",
+              "export_removed",
+              "export_changed",
+              "migration",
+              "ddl",
+              "config",
+              "env_added",
+              "env_removed",
+              "dependency_added",
+              "dependency_removed",
+              "dependency_bumped",
+              "generated",
+              "untested_module",
+              "route",
+              "downstream_repo"
+            ]
+          },
+          "text": {
+            "type": "string",
+            "description": "One plain line, e.g. `export function clearDone added`."
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The file in this diff the fact is about (its anchor), or null."
+          },
+          "line": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The new-side line (old-side for a removal), when it has one."
+          },
+          "method": {
+            "type": "string",
+            "enum": [
+              "from the diff's lines",
+              "by path",
+              "from the manifest diff",
+              "by .gitattributes",
+              "by import text",
+              "pattern match",
+              "scope graph depends_on"
+            ],
+            "description": "How the fact was found. A text or path heuristic, never a certainty."
+          }
+        },
+        "required": [
+          "kind",
+          "text",
+          "path",
+          "line",
+          "method"
+        ],
+        "additionalProperties": false,
+        "description": "One deterministic change-impact fact."
+      },
       "linkTicketScopeBody": {
         "type": "object",
         "properties": {
@@ -14208,6 +14293,10 @@
               }
             ],
             "description": "The delivery branch head this diff was computed against; sent back on approve, and a moved head is refused (stale_revision)."
+          },
+          "impact": {
+            "$ref": "#/components/schemas/RepoImpact",
+            "description": "With `?include=impact`: the change-impact facts for this repo (advisory)."
           }
         },
         "required": [
@@ -14223,6 +14312,38 @@
         ],
         "additionalProperties": false,
         "description": "The delivery diff for one write repository."
+      },
+      "RepoImpact": {
+        "type": "object",
+        "properties": {
+          "facts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImpactFact"
+            }
+          },
+          "none": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Surfaces scanned with nothing found (`migration or DDL`, `config`, …). Empty when the diff was cut at its size cap: a cut diff proves no absence."
+          },
+          "not_analysed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What the scan does not cover, said plainly."
+          }
+        },
+        "required": [
+          "facts",
+          "none",
+          "not_analysed"
+        ],
+        "additionalProperties": false,
+        "description": "The Behavioural surface of one repo's delivery (`?include=impact`), read from the diff and the tree at `headSha`. Advisory: nothing gates on it."
       },
       "resolveDecisionBody": {
         "type": "object",

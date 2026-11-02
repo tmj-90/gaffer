@@ -1197,6 +1197,9 @@ export class TicketService {
           status: delivery.status,
           has_branch: delivery.branch_name !== null,
           has_pr: delivery.pr_url !== null,
+          // SAME CANDIDATE: the commit this record named, so the review packet can say who
+          // recorded the gated commit (the runner after its gates, or an agent's own word).
+          ...(input.commit_sha ? { commit_sha: input.commit_sha.trim().toLowerCase() } : {}),
         },
       });
       return { delivery, eventId };

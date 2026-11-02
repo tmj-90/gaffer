@@ -786,8 +786,12 @@ export async function routeTickets(
       sendJson(res, 200, wg.ticketDiffSince(id));
       return;
     }
-    const diff = wg.ticketDiff(id);
+    // CHANGE IMPACT: each repo's Behavioural surface facts, for a ticket in review (the
+    // Review view's read) or on request (`?include=impact`). Advisory; bounded git reads.
     const ticket = wg.resolveTicket(id);
+    const diff = wg.ticketDiff(id, {
+      impact: ticket.status === "in_review" || url.searchParams.get("include") === "impact",
+    });
     sendJson(res, 200, {
       ...diff,
       ...(ticket.status === "in_review"

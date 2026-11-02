@@ -115,6 +115,19 @@ grep -q "SECURITY-REVIEW: #$N1 qualifies.*risk=high" "$GAFFER_DATA/factory.log" 
 grep -q "SECURITY-REVIEW: #$N1 security reviewer found a defect" "$GAFFER_DATA/factory.log" && ok "A: CHANGES logged as overriding the primary approve" || fail "A: no override log"
 [ "$(st "$N1")" = "ready" ] && ok "A: #$N1 reworked → ready (not shipped)" || fail "A: #$N1 is '$(st "$N1")'"
 grep -q "CHANGES; re-queued" "$GAFFER_DATA/factory.log" && ok "A: re-queued for rework with feedback (the security findings)" || fail "A: no rework log line"
+# MF2: each judging lane's verdict is a system lane_verdict event on the reviewed commit.
+lanes() { wg ticket show "$1" 2>/dev/null | jget '(d.events||[]).filter(e => e.event_type === "ticket.lane_verdict").map(e => { const p = JSON.parse(e.payload_json); return [e.actor_type, p.lane, p.verdict, (p.commit||"").length >= 7 ? "sha" : "nosha", p.attempt_id ? (p.attempt_id_basis === "latest_delivery_row" ? "att" : "att-unlabelled") : "noatt"].join(":"); }).join(",")'; }
+LA="$(lanes "$N1")"
+[ "$LA" = "system:agent-review:approve:sha:att,system:security-review:changes:sha:att" ] \
+  && ok "A: the reviewer's approve and the security reviewer's changes are recorded as system lane verdicts on the commit and attempt" \
+  || fail "A: lane verdicts '$LA'"
+# MF4 + MF3: the review rows carry the attempt they judged, the repo and the risk; the
+# delivery row carries the router's tier and its repo and risk.
+LEDGER="$GAFFER_DATA/usage-ledger.jsonl"
+RV="$(node -e 'const rows=require("fs").readFileSync(process.argv[1],"utf8").trim().split("\n").map(JSON.parse).filter(r=>r.ticket===Number(process.argv[2]));const d=rows.filter(r=>r.kind==="delivery").pop()||{};const out=["review","security-review"].map(k=>{const r=rows.filter(x=>x.kind===k).pop()||{};return [k,r.attempt_id===d.attempt_id&&!!r.attempt_id?"att":"noatt",r.repo||"",r.risk||"",r.route_tier?"tier":"notier"].join(":")});out.push(["delivery",d.repo||"",d.risk||"",d.route_tier||"notier"].join(":"));process.stdout.write(out.join(","))' "$LEDGER" "$N1" 2>/dev/null)"
+[ "$RV" = "review:att:repo:high:tier,security-review:att:repo:high:tier,delivery:repo:high:override" ] \
+  && ok "A: review and security rows carry the judged attempt, repo, risk and route tier; the delivery row its repo, risk and tier" \
+  || fail "A: ledger join keys '$RV'"
 
 echo "== B. high-risk: both reviewers APPROVE → ships =="
 run_tick >/dev/null; [ "$(st "$N1")" = "in_review" ] && ok "B: #$N1 re-delivered → in_review" || fail "B: re-delivery failed, status=$(st "$N1")"

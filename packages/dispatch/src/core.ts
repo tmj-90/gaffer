@@ -146,6 +146,16 @@ import {
   type RecordedEvalJudgment,
 } from "./services/evalJudgment.js";
 import {
+  assertMayRecordLaneVerdict,
+  assertMayRecordReviewOpen,
+  LANE_VERDICT_EVENT,
+  normalizeLaneVerdict,
+  REVIEW_OPENED_EVENT,
+  REVIEW_RAW_OPENED_EVENT,
+  type LaneVerdict,
+  type RawOpenKind,
+} from "./services/reviewTelemetry.js";
+import {
   enteredReviewAt,
   ReviewPacketService,
   type CostReader,
@@ -430,6 +440,16 @@ function usagePauseFact(
 ): { until: string; kind: "usage_limit" | "rate_limit" } | null {
   const p = readUsagePause(env);
   return p.active ? { until: p.paused_until ?? "its end", kind: p.kind ?? "usage_limit" } : null;
+}
+
+/** What recording a review open did (recorded, or why not). */
+export interface ReviewOpenResult {
+  ticketId: string;
+  recorded: boolean;
+  /** Why nothing was written: not_in_review | no_review_round | stale_round | already_recorded. */
+  reason: string | null;
+  eventId: string | null;
+  roundEnteredAt: string | null;
 }
 
 export class Dispatch {
@@ -2200,6 +2220,130 @@ export class Dispatch {
       return id;
     });
     return { ticketId: ticket.id, eventId, judgment };
+  }
+
+  /**
+   * REVIEW TELEMETRY: a person rendered this ticket in the Review view. Recorded once per
+   * review round (the round is the ticket's last entry into in_review, computed here, not
+   * taken from the caller), with the delivery commits recorded for each repo. Only while
+   * the ticket is in review, and only for a human or admin actor. Never bumps updated_at:
+   * the Review queue re-renders on it. A measurement only; nothing gates on it.
+   */
+  recordReviewOpened(ref: string, actor: Actor, seenRound: string | null = null): ReviewOpenResult {
+    assertMayRecordReviewOpen(actor);
+    const ticket = this.resolveTicket(ref);
+    return this.recordReviewOpen(ticket, actor, seenRound, REVIEW_OPENED_EVENT, null);
+  }
+
+  /**
+   * REVIEW TELEMETRY: a person opened a raw log, the evidence in full or the full diff of
+   * a ticket in review. Once per round and kind; the same rules as recordReviewOpened.
+   */
+  recordReviewRawOpened(
+    ref: string,
+    what: RawOpenKind,
+    actor: Actor,
+    seenRound: string | null = null,
+  ): ReviewOpenResult {
+    assertMayRecordReviewOpen(actor);
+    const ticket = this.resolveTicket(ref);
+    return this.recordReviewOpen(ticket, actor, seenRound, REVIEW_RAW_OPENED_EVENT, what);
+  }
+
+  private recordReviewOpen(
+    ticket: Ticket,
+    actor: Actor,
+    seenRound: string | null,
+    eventType: typeof REVIEW_OPENED_EVENT | typeof REVIEW_RAW_OPENED_EVENT,
+    what: RawOpenKind | null,
+  ): ReviewOpenResult {
+    return inTransaction(this.db, () => {
+      const current = this.resolveTicket(ticket.id);
+      if (current.status !== "in_review")
+        return {
+          ticketId: ticket.id,
+          recorded: false,
+          reason: "not_in_review",
+          eventId: null,
+          roundEnteredAt: null,
+        };
+      const round = this.events.enteredStatusAt(ticket.id, "in_review")?.at ?? null;
+      if (round === null)
+        return {
+          ticketId: ticket.id,
+          recorded: false,
+          reason: "no_review_round",
+          eventId: null,
+          roundEnteredAt: null,
+        };
+      if (seenRound !== null && seenRound !== round)
+        return {
+          ticketId: ticket.id,
+          recorded: false,
+          reason: "stale_round",
+          eventId: null,
+          roundEnteredAt: round,
+        };
+      const seen = this.db
+        .prepare(
+          `SELECT 1 FROM work_events
+            WHERE entity_type = 'ticket' AND entity_id = ? AND event_type = ?
+              AND json_extract(payload_json, '$.round_entered_at') = ?
+              AND (? IS NULL OR json_extract(payload_json, '$.what') = ?)
+            LIMIT 1`,
+        )
+        .get(ticket.id, eventType, round, what, what);
+      if (seen)
+        return {
+          ticketId: ticket.id,
+          recorded: false,
+          reason: "already_recorded",
+          eventId: null,
+          roundEnteredAt: round,
+        };
+      const payload =
+        what === null
+          ? {
+              round_entered_at: round,
+              head_shas: this.repoDeliveries
+                .listForTicket(ticket.id)
+                .filter((d) => d.commit_sha)
+                .map((d) => ({ repo: d.repo_name, sha: d.commit_sha })),
+            }
+          : { what, round_entered_at: round };
+      const eventId = writeEvent(this.db, {
+        entity_type: "ticket",
+        entity_id: ticket.id,
+        actor,
+        event_type: eventType,
+        payload,
+      });
+      return { ticketId: ticket.id, recorded: true, reason: null, eventId, roundEnteredAt: round };
+    });
+  }
+
+  /**
+   * LANE VERDICT: what a judging lane (the reviewer agent, the security reviewer, the
+   * tester, the eval judge) concluded about one candidate, recorded by the runner as a
+   * system event so whether a lane changed the decision can be computed. System/admin
+   * only; an agent is refused. Nothing gates on it, and it never bumps updated_at.
+   */
+  recordLaneVerdict(
+    ref: string,
+    input: Record<string, unknown>,
+    actor: Actor,
+  ): { ticketId: string; eventId: string; verdict: LaneVerdict } {
+    assertMayRecordLaneVerdict(actor);
+    const ticket = this.resolveTicket(ref);
+    const verdict = normalizeLaneVerdict(input, actor);
+    const eventId = writeEvent(this.db, {
+      entity_type: "ticket",
+      entity_id: ticket.id,
+      actor,
+      event_type: LANE_VERDICT_EVENT,
+      payload: verdict,
+    });
+    return { ticketId: ticket.id, eventId, verdict };
   }
 
   /** REQUIRED CI: the latest CI state for a ticket's commit (null commit = latest overall). */

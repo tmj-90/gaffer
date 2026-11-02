@@ -694,6 +694,11 @@ exit 3
       crashRow.estimated === true &&
       crashRow.estimated_cost_usd > 0,
   );
+  // MF4: the resolver row names the repo it resolved (a join key, never a price).
+  assert(
+    "crashed resolver: the ledger row carries the repo it resolved",
+    crashRow && typeof crashRow.repo === "string" && crashRow.repo.length > 0,
+  );
 
   // The resolver resolves, but the ticket cannot be reopened for review (a locked DB, a
   // missing CLI): that used to exit 0 as conflict_resolved_pending_reapproval, and the next

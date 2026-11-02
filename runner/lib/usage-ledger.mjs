@@ -403,6 +403,105 @@ function parseCliArgs(argv) {
     // Health report charge a correction's spend to the send-back that caused it.
     else if (a === "--attempt-id") out.attemptId = argv[++i];
     else if (a === "--started-at") out.startedAt = argv[++i];
+    // JOIN KEYS (MF4): the repo and the risk at call time, and the router's decision file
+    // (MF3, written by gaffer_route_model) for the tier and reasons.
+    else if (a === "--repo") out.repo = argv[++i];
+    else if (a === "--risk") out.risk = argv[++i];
+    else if (a === "--route-file") out.routeFile = argv[++i];
+  }
+  return out;
+}
+
+/**
+ * Ledger kinds that JUDGE a delivery rather than make one. Their row carries the
+ * attempt id of the delivery they judged, so a reviewer, tester or judge call joins to
+ * the attempt it was about (MF4) instead of only by time order.
+ */
+export const JUDGING_KINDS = new Set([
+  "review",
+  "security-review",
+  "tester",
+  "eval-judge",
+  "merge-resolver",
+]);
+const RISKS = new Set(["low", "medium", "high", "critical"]);
+
+/**
+ * The attempt id of a ticket's latest delivery row in the ledger text (the last one
+ * written), or null. Deterministic: the delivery a review, tester or judge call that runs
+ * after it is judging. When that latest row carries no attempt id (an older runner, a
+ * stamp that failed) the answer is null: an earlier attempt's id is never borrowed for
+ * it. Malformed lines are skipped.
+ */
+export function latestDeliveryAttemptId(ledgerText, ticket) {
+  const n = ticket != null && /^\d+$/.test(String(ticket)) ? Number(ticket) : null;
+  if (n === null || !ledgerText) return null;
+  let found = null;
+  for (const line of String(ledgerText).split("\n")) {
+    if (!line.includes('"delivery"')) continue;
+    let r;
+    try {
+      r = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (r && r.kind === "delivery" && r.ticket === n)
+      found = typeof r.attempt_id === "string" && r.attempt_id ? r.attempt_id : null;
+  }
+  return found;
+}
+
+/** The router's decision file (gaffer_route_model): `{phase, tier, model, reasons[]}`. */
+function readRouteFile(path) {
+  if (!path) return null;
+  try {
+    const d = JSON.parse(readFileSync(path, "utf8"));
+    return d && typeof d === "object" ? d : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Stamp the JOIN KEYS on a record: the repo and risk at call time, the attempt a
+ * judging call judged (`attempt_id`, `attempt_id_basis: latest_delivery_row`, only when
+ * the call site gave none), and the router's tier and bounded reasons (`route_tier`,
+ * `route_reasons` at most 8 of at most 160 chars, `route_phase`). Labels only: nothing
+ * here prices or reweights a row. Absent inputs add nothing.
+ */
+export function withJoinKeys(record, { repo, risk, routeFile, ledgerText } = {}) {
+  const out = { ...record };
+  const r = provLabel(typeof repo === "string" ? repo.replace(/[\r\n\t]+/g, " ") : repo);
+  if (r) out.repo = r;
+  const k = typeof risk === "string" ? risk.trim().toLowerCase() : "";
+  if (RISKS.has(k)) out.risk = k;
+  if (JUDGING_KINDS.has(out.kind) && out.ticket != null && !out.attempt_id) {
+    let text = ledgerText;
+    if (text === undefined) text = readLedgerText();
+    const judged = latestDeliveryAttemptId(text, out.ticket);
+    if (judged) {
+      out.attempt_id = judged;
+      out.attempt_id_basis = "latest_delivery_row";
+    }
+  }
+  const route = readRouteFile(routeFile);
+  if (route) {
+    const tier = provLabel(route.tier);
+    if (tier) out.route_tier = tier;
+    const phase = provLabel(route.phase);
+    if (phase) out.route_phase = phase;
+    if (Array.isArray(route.reasons)) {
+      const reasons = route.reasons
+        .filter((x) => typeof x === "string" && x.trim())
+        .map((x) =>
+          x
+            .replace(/[\r\n\t]+/g, " ")
+            .trim()
+            .slice(0, 160),
+        )
+        .slice(0, 8);
+      if (reasons.length) out.route_reasons = reasons;
+    }
   }
   return out;
 }
@@ -536,7 +635,7 @@ export const KILL_ESTIMATE_DEFAULT_USD = 0.05;
  * env.GAFFER_KILL_ESTIMATE_USD here (default 0.05; 0 opts out, leaving a plain
  * "unknown" record when there is no usable history). Never throws.
  */
-export function recordKilledCall({ kind, ticket, reason, elapsedMs, env = process.env }) {
+export function recordKilledCall({ kind, ticket, reason, elapsedMs, keys, env = process.env }) {
   let record;
   try {
     const raw = env.GAFFER_KILL_ESTIMATE_USD;
@@ -547,6 +646,8 @@ export function recordKilledCall({ kind, ticket, reason, elapsedMs, env = proces
   } catch {
     record = unknownRecord({ ticket, kind, reason });
   }
+  // JOIN KEYS (MF4): a caller that knows the repo and risk stamps them on the row.
+  if (keys) record = withJoinKeys(record, { ...keys, ledgerText: readLedgerText(env) });
   return appendUsageRecord(record, env);
 }
 
@@ -603,6 +704,14 @@ function readInput(jsonFile) {
 }
 
 function cliMain(argv) {
+  // `--latest-delivery-attempt --ticket N`: print the attempt id of the ticket's latest
+  // delivery row (the lane verdict's attempt_id); writes NO ledger record.
+  if (argv.includes("--latest-delivery-attempt")) {
+    const a = parseCliArgs(argv.filter((x) => x !== "--latest-delivery-attempt"));
+    const id = latestDeliveryAttemptId(readLedgerText(), a.ticket);
+    if (id) process.stdout.write(id + "\n");
+    return;
+  }
   // `--agent-run-evidence`: print the agent-run evidence (line 1 the summary, line 2
   // the payload JSON) for tick.sh to attach; writes NO ledger record.
   if (argv.includes("--agent-run-evidence")) {
@@ -678,7 +787,7 @@ function cliMain(argv) {
   } else {
     record = buildUsageRecord({ json, ticket, kind });
   }
-  appendUsageRecord(withAttempt(withProvenance(record, args), args));
+  appendUsageRecord(withJoinKeys(withAttempt(withProvenance(record, args), args), args));
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

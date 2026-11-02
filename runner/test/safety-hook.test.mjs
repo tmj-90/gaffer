@@ -1400,6 +1400,13 @@ for (const [label, cmd] of [
   // The eval judge's verdict is the runner's to record: an agent never grades itself.
   ["wg ticket eval-score --as system", "wg ticket eval-score 5 --as system --file /tmp/grade.json"],
   ["dispatch ticket eval-score", "dispatch ticket eval-score 5 --file grade.json"],
+  // A lane verdict is the runner's measurement of a judging lane: an agent never records
+  // what the reviewer, the tester or the judge concluded.
+  [
+    "wg ticket lane-verdict --as system",
+    "wg ticket lane-verdict 5 --lane agent-review --verdict approve --as system",
+  ],
+  ["dispatch ticket lane-verdict", "dispatch ticket lane-verdict 5 --lane tester --verdict pass"],
   // attach-evidence writes a SYSTEM row with any uri: a forged review pin
   // (gaffer-reviewed-commit:) or a replay-record look-alike. The runner's, never an agent's.
   [

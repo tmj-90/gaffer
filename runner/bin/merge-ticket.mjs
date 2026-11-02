@@ -160,6 +160,7 @@ import {
   extractResultText,
   parseClaudeJson,
   recordKilledCall,
+  withJoinKeys,
 } from "../lib/usage-ledger.mjs";
 import { agentChildEnv, renderPoMcpRuntime } from "./product-owner-run.mjs";
 import { branchHead, landingDecision, reReviewCommand } from "../lib/tester-binding.mjs";
@@ -3559,6 +3560,7 @@ function main() {
         kind: "merge-resolver",
         reason: "resolver claude call timed out",
         elapsedMs: Date.now() - t0,
+        keys: { repo: repo.name },
       });
       fail(`resolver agent timed out after ${opts.timeoutMs}ms`);
       return;
@@ -3584,10 +3586,14 @@ function main() {
         kind: "merge-resolver",
         reason: `resolver claude exited ${res.status}`,
         elapsedMs: Date.now() - t0,
+        keys: { repo: repo.name },
       });
     } else {
       appendUsageRecord(
-        buildUsageRecord({ json: failedJson, ticket: resolved.number, kind: "merge-resolver" }),
+        withJoinKeys(
+          buildUsageRecord({ json: failedJson, ticket: resolved.number, kind: "merge-resolver" }),
+          { repo: repo.name },
+        ),
       );
     }
     emit(
@@ -3615,10 +3621,15 @@ function main() {
       kind: "merge-resolver",
       reason: "no parseable --output-format json on stdout",
       elapsedMs: Date.now() - t0,
+      keys: { repo: repo.name },
     });
   } else {
+    // JOIN KEYS (MF4): the repo it resolved and the delivery attempt it resolved for.
     appendUsageRecord(
-      buildUsageRecord({ json: resolverJson, ticket: resolved.number, kind: "merge-resolver" }),
+      withJoinKeys(
+        buildUsageRecord({ json: resolverJson, ticket: resolved.number, kind: "merge-resolver" }),
+        { repo: repo.name },
+      ),
     );
   }
   const summary = (

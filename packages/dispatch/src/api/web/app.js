@@ -12028,7 +12028,7 @@ async function renderTicket(id) {
               ])
             : null,
           (t.status === "done" && shippedFiles(view.evidence || [])) ||
-            renderTicketDiff(t.id, null, { collapsed: true }),
+            reviewRawWatch(renderTicketDiff(t.id, null, { collapsed: true }), t, events),
         ])
       : null;
 
@@ -12405,6 +12405,18 @@ function eventSentence(ev, repos) {
       return { text: `Now depends on #${p.depends_on_number ?? "?"}` };
     case "ticket.paused":
       return { text: "Paused at a cap", note: p.reason || null, st: "paused" };
+    // REVIEW TELEMETRY: measurements, said plainly (none of them moves the ticket).
+    case "ticket.review_opened":
+      return { text: `Opened in Review by ${who}` };
+    case "ticket.review_raw_opened":
+      return {
+        text: `${who} opened the ${{ run_log: "run log", evidence: "evidence in full", full_diff: "full diff" }[p.what] || "raw view"}`,
+      };
+    case "ticket.lane_verdict":
+      return {
+        text: `${{ "agent-review": "Reviewer agent", "security-review": "Security reviewer", tester: "Tester", "eval-judge": "Eval judge (a model's opinion)" }[p.lane] || "A lane"}: ${p.verdict || "?"}${p.commit ? ` on ${String(p.commit).slice(0, 12)}` : ""}`,
+        note: p.held_reason || null,
+      };
     default:
       return { text: humanizeEvent(ev.event_type), note: reason };
   }
@@ -12615,10 +12627,13 @@ function ticketRunsPanel(t, events) {
               {
                 class: "btn small run-viewlog",
                 type: "button",
-                onclick: () =>
-                  on
+                onclick: () => {
+                  if (t.status === "in_review")
+                    noteReviewOpen(t.id, sinceStatus(events, "in_review"), "run_log");
+                  return on
                     ? viewRunDetail(run.id, `Delivery of #${t.number}`)
-                    : viewRunLog(run, `Delivery of #${t.number} · log`),
+                    : viewRunLog(run, `Delivery of #${t.number} · log`);
+                },
               },
               on ? "View live log →" : "View log",
             ),
@@ -13614,6 +13629,65 @@ function usagePauseNote(p) {
 }
 
 /**
+ * The four top-level measures every feature must move (Release A metrics): first-pass
+ * acceptance, human review time (the median per accepted ticket), accepted-change cost
+ * and the escaped-defect rate. Each reads a server figure as served (null shows a dash,
+ * never a zero) with the sentence that says what it counts; escaped defects are not
+ * recorded yet, and the cell says what is missing.
+ */
+function fourMeasures(health) {
+  const fp = health.first_pass || null;
+  const rt = health.review_time || null;
+  const ac = health.accepted_change || null;
+  const esc = health.escaped_defects || null;
+  const pct = (v) => (typeof v === "number" ? `${v}%` : "—");
+  const per = rt && rt.per_accepted_ticket ? rt.per_accepted_ticket : null;
+  const cell = (label, value, note) =>
+    el("div", {}, [el("dt", {}, label), el("dd", {}, [value, el("small", {}, note)])]);
+  const fpNote = !fp
+    ? "not served by this server"
+    : fp.done
+      ? `${fp.first_pass} of ${fp.done} done with no send-back after review · human-approved ${pct(fp.by_approver?.human?.rate_pct)} of ${fp.by_approver?.human?.done ?? 0}, agent-approved ${pct(fp.by_approver?.agent?.rate_pct)} of ${fp.by_approver?.agent?.done ?? 0}`
+      : "nothing has been accepted yet";
+  const rtNote = !rt
+    ? "not served by this server"
+    : per && per.n
+      ? `median of ${per.n} accepted · p75 ${fmtDuration(per.p75_ms)} · p90 ${fmtDuration(per.p90_ms)}. ${rt.basis_note || ""}`
+      : rt.basis_note || "no accepted ticket has a human review decision yet";
+  const acNote =
+    ac && ac.cost_per_accepted_change_usd != null
+      ? `every attempt counted${ac.attempts_per_accepted_change != null ? ` · ${ac.attempts_per_accepted_change} attempts each` : ""}`
+      : "nothing has been accepted yet";
+  return el("section", { class: "card panel measures-panel", "aria-label": "The four measures" }, [
+    panelHead("The four measures", "what every feature has to move", null, { kit: "ink" }),
+    el("dl", { class: "measures-facts" }, [
+      cell("First-pass acceptance", fp ? pct(fp.rate_pct) : "—", fpNote),
+      cell(
+        "Human review time",
+        per && per.median_ms != null ? fmtDuration(per.median_ms) : "—",
+        rtNote,
+      ),
+      cell(
+        "Accepted-change cost",
+        ac && ac.cost_per_accepted_change_usd != null
+          ? money(ac.cost_per_accepted_change_usd)
+          : "—",
+        acNote,
+      ),
+      cell(
+        "Escaped-defect rate",
+        esc && esc.recorded && typeof esc.rate_pct === "number"
+          ? `${esc.rate_pct}%`
+          : "Not recorded yet",
+        esc && esc.note
+          ? esc.note.replace(/^Not recorded yet:\s*/, "")
+          : "an escaped defect needs a human-filed link from the defect to the accepted change it escaped from",
+      ),
+    ]),
+  ]);
+}
+
+/**
  * Factory Health / ROI surface. Reads the ONE authoritative /api/health envelope
  * and renders the ROI KPI row (cost/feature, skill hit-rate, spend-by-kind,
  * rework-cost share, measured-coverage %) plus the two newly-wired dead sources:
@@ -13896,6 +13970,8 @@ async function renderHealth() {
   // usage window / a rate limit. Say so first: it is why nothing is moving.
   const usagePause = health.usage_pause && health.usage_pause.active ? health.usage_pause : null;
   if (usagePause) wrap.appendChild(usagePauseNote(usagePause));
+  // The four top-level measures, under the verdict: what every feature has to move.
+  wrap.appendChild(fourMeasures(health));
   if (bouncing) bouncing.id = "health-injuries";
   const wait = treatment ? waitingNote(treatment._waiting) : null;
   if (wait && devFlow) devFlow.appendChild(wait);
@@ -16882,7 +16958,7 @@ function evidenceKind(type) {
  * agent-reported chip) · what kind · the first line of what it says. Longer
  * captures (a DoD report, a diff stat) fold their remaining lines.
  */
-function reviewEvidenceList(evidence, acList, { repos, asks } = {}) {
+function reviewEvidenceList(evidence, acList, { repos, asks, onRawOpen } = {}) {
   if (!evidence || evidence.length === 0) return null;
   const acText = new Map((acList || []).map((a) => [a.id, a.text]));
   const rows = evidence
@@ -16938,23 +17014,44 @@ function reviewEvidenceList(evidence, acList, { repos, asks } = {}) {
           ]),
           el("p", { class: "evi-summary" }, first),
           rest.length
-            ? el("details", { class: "evi-more" }, [
-                el("summary", {}, `${plural(rest.length, "more line")}`),
-                el(
-                  "pre",
-                  {
-                    class: "evi-pre",
-                    tabindex: "0",
-                    role: "region",
-                    "aria-label": `${evidenceKind(ev.evidence_type)}, in full`,
-                  },
-                  rest.join("\n"),
-                ),
-              ])
+            ? el(
+                "details",
+                {
+                  class: "evi-more",
+                  ontoggle: onRawOpen
+                    ? (e) => {
+                        if (e.currentTarget.open) onRawOpen();
+                      }
+                    : null,
+                },
+                [
+                  el("summary", {}, `${plural(rest.length, "more line")}`),
+                  el(
+                    "pre",
+                    {
+                      class: "evi-pre",
+                      tabindex: "0",
+                      role: "region",
+                      "aria-label": `${evidenceKind(ev.evidence_type)}, in full`,
+                    },
+                    rest.join("\n"),
+                  ),
+                ],
+              )
             : null,
           acLabel ? el("p", { class: "ac-meta evi-ac" }, `for AC: ${acLabel}`) : null,
           link
-            ? el("a", { class: "evi-link", href: link, target: "_blank", rel: "noopener" }, "open")
+            ? el(
+                "a",
+                {
+                  class: "evi-link",
+                  href: link,
+                  target: "_blank",
+                  rel: "noopener",
+                  onclick: onRawOpen ? () => onRawOpen() : null,
+                },
+                "open",
+              )
             : null,
         ]),
       ]);
@@ -17028,6 +17125,42 @@ function reviewedBy(ticket, events) {
     .filter((x) => REVIEW_ROLES.has(squad.byId.get(x.actor_id)?.role))
     .pop();
   return e ? agentWho(e.actor_id) : null;
+}
+/**
+ * REVIEW TELEMETRY (Release A metrics): tell the server, once per ticket and review
+ * round, that a person opened the ticket in Review (`what` empty) or opened a raw view
+ * of it (`what`: run_log | evidence | full_diff). Health splits time in review into
+ * queue wait and decision time with it. Best-effort and silent: a refusal (a read token
+ * is refused before any request) or a network error loses one measurement, nothing else.
+ */
+const reviewOpensSent = new Set();
+/**
+ * On a ticket page, unfolding a file of a ticket in review's folded diff opens the full
+ * diff outside the Review view: note it (full_diff). Returns `box` for inline use.
+ */
+function reviewRawWatch(box, t, events) {
+  if (box && t && t.status === "in_review" && box.addEventListener)
+    box.addEventListener(
+      "toggle",
+      (e) => {
+        if (e.target && e.target.open && e.target.classList?.contains("diff-file-block"))
+          noteReviewOpen(t.id, sinceStatus(events, "in_review"), "full_diff");
+      },
+      true,
+    );
+  return box;
+}
+function noteReviewOpen(ticketId, round, what = "") {
+  if (!ticketId || !round || readOnly()) return;
+  const key = `${ticketId}@${round}${what ? `#${what}` : ""}`;
+  if (reviewOpensSent.has(key)) return;
+  reviewOpensSent.add(key);
+  const path = what
+    ? `/tickets/${ticketId}/review-raw-opened`
+    : `/tickets/${ticketId}/review-opened`;
+  api("POST", path, what ? { what, round_entered_at: round } : { round_entered_at: round }).catch(
+    () => {},
+  );
 }
 /** When the ticket last moved into its current status (the wait starts there). */
 function sinceStatus(events, status) {
@@ -18201,6 +18334,8 @@ async function renderReview(param) {
   const by = deliveredBy(ticketEvents);
   const rby = reviewedBy(detail.ticket || t, ticketEvents);
   const since = sinceStatus(ticketEvents, "in_review");
+  // REVIEW TELEMETRY: a person has this ticket on screen in this review round.
+  noteReviewOpen(t.id, since);
   // ONE SOURCE for the gates: with a review packet, the verdict strip's rows (the server's
   // read of the runner's DoD record); without one (an older server), the evidence row.
   const dod = packet ? packetDod(packet) : parseDodEvidence(evidence);
@@ -18807,6 +18942,7 @@ async function renderReview(param) {
           reviewEvidenceList(evidence, ac, {
             repos: detail.repositories,
             asks: new Set(asks.map((a) => a.id).filter(Boolean)),
+            onRawOpen: () => noteReviewOpen(t.id, since, "evidence"),
           }) || el("p", { class: "dim" }, "No evidence recorded."),
         ]),
       ]),

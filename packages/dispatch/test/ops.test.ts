@@ -162,6 +162,7 @@ describe("stats --json projection shape", () => {
       "acceptedChange",
       "activeClaims",
       "openDecisions",
+      "reviewMeasures",
       "staleClaims",
       "ticketsByStatus",
     ]);

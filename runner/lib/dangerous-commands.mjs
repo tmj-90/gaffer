@@ -412,6 +412,8 @@ export const DANGEROUS_COMMANDS = [
     // said about the ticket's commit; a forged PASS would satisfy required CI for approval
     // and landing on checks that never ran. And the eval judge's verdict (`eval-score`):
     // the runner records the judge's grade of a delivery; an agent never grades itself.
+    // And a judging lane's verdict (`lane-verdict`): the runner's measurement of what the
+    // reviewer, the security reviewer, the tester or the judge concluded.
     // And `attach-evidence`, which writes a SYSTEM evidence row with any type and uri: the
     // runner's to call (gate output, the review pin gaffer-reviewed-commit:<sha>); an agent
     // records evidence as itself through the MCP, never as the system. And
@@ -423,7 +425,7 @@ export const DANGEROUS_COMMANDS = [
     // And `wont-do`: closing a ticket as not worth doing is a person's call, like approve.
     // And the credentials (`principal create|revoke`, `--as-principal`): a principal is
     // a person's or a bot's delegated access, never an agent's to mint or act as.
-    re: /\b(wg|dispatch|fg|crew)\b[^\n|;&]*\b(review|approve|approve-ready|mark-merged|record-landing|landing-begin|record-tester-replay|ci-result|eval-score|attach-evidence|reject|repo-access|set-testable|allow-test-changes|set-commands|test-contract|tester-pass|tester-fail|repo-delivery|require-cap|set-reviewer|decisions[ \t]+resolve|agent[ \t]+rename|club[ \t]+set|wont-do|principal[ \t]+(?:create|revoke)|as-principal)\b/,
+    re: /\b(wg|dispatch|fg|crew)\b[^\n|;&]*\b(review|approve|approve-ready|mark-merged|record-landing|landing-begin|record-tester-replay|ci-result|eval-score|lane-verdict|attach-evidence|reject|repo-access|set-testable|allow-test-changes|set-commands|test-contract|tester-pass|tester-fail|repo-delivery|require-cap|set-reviewer|decisions[ \t]+resolve|agent[ \t]+rename|club[ \t]+set|wont-do|principal[ \t]+(?:create|revoke)|as-principal)\b/,
     why: "control-plane CLI write (use the scoped MCP, not the privileged wg/dispatch/fg/crew CLI)",
     example: "wg ticket approve T-1",
     crewFlags: false,

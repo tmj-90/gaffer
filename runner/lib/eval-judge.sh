@@ -144,8 +144,13 @@ gaffer_eval_judge_delivery() (
   # budget headroom and the dashboard's cost tiles all see it. Best-effort and
   # swallowed (the ledger CLI prints the reply text; we do not want it here) — the
   # envelope file is left in place for the verdict parse below.
+  # JOIN KEYS (MF4): the judge row names the repo and the ticket's risk at call time (the
+  # attempt it judged is stamped from the ledger by usage-ledger.mjs).
+  _ej_repo="${repo_arg:-$(basename "$repo_dir")}"
+  _ej_risk="$(printf '%s' "$show_now" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write(String((JSON.parse(s).ticket||{}).risk_level||""))}catch{}})' 2>/dev/null || true)"
   if type gaffer_usage_record >/dev/null 2>&1; then
-    gaffer_usage_record eval-judge "$num" "$worker_rc" "$tmp/envelope.json" >/dev/null 2>&1 || true
+    GAFFER_USAGE_REPO="$_ej_repo" GAFFER_USAGE_RISK="$_ej_risk" \
+      gaffer_usage_record eval-judge "$num" "$worker_rc" "$tmp/envelope.json" >/dev/null 2>&1 || true
   fi
 
   # ── 4. Parse reply → verdict. An EMPTY reply means the judge never ran (worker
@@ -192,6 +197,15 @@ gaffer_eval_judge_delivery() (
   if type wg >/dev/null 2>&1; then
     wg ticket eval-score "$num" --as system --file "$tmp/record.json" >/dev/null 2>&1 \
       || { type log >/dev/null 2>&1 && log "EVAL: could not record the verdict on #$num (the ledger still has it)" || true; }
+  fi
+  # LANE VERDICT (MF2): the judge's overall verdict on the judged head, as a system event
+  # beside the reviewer's and the tester's. A measurement; fail-soft.
+  if type gaffer_lane_verdict >/dev/null 2>&1; then
+    case "${overall:-}" in
+      pass|borderline|fail)
+        gaffer_lane_verdict "$num" eval-judge "$overall" \
+          "$(git -C "$repo_dir" rev-parse --verify --quiet "$work^{commit}" 2>/dev/null || true)" "" "$judge_model" ;;
+    esac
   fi
   # The ledger is a shared append under GAFFER_CONCURRENCY>1 (N workers, one
   # $GAFFER_DATA). Route through the runner's append lock like every other

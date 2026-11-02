@@ -2894,6 +2894,9 @@ $_trail_q
   _PRESPAWN_REFS="$(gaffer_snapshot_refs "$WT_ROWS")"
   GAFFER_TICK_TIMEOUT="$_AGENT_TIMEOUT"  # the deadline guard's clamp (attempt 1 only)
   _SKILL_SINCE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"  # skill telemetry: tool-ledger rows from here on
+  # JOIN KEYS (MF4): the delivery row names its repo and the ticket's risk at call time
+  # (shell variables gaffer_usage_record reads; never exported to the agent).
+  GAFFER_USAGE_REPO="${_CARD_REPO_NAME:-}"; GAFFER_USAGE_RISK="${ROUTE_RISK:-}"
   # REWORK COST: stamp this spawn's attempt + start time onto its delivery ledger row
   # (gaffer_usage_record reads both), so spend after a send-back is charged as rework.
   read -r GAFFER_USAGE_ATTEMPT_ID GAFFER_USAGE_STARTED_AT <<<"$(gaffer_delivery_attempt_stamp "$_DELIV_ATTEMPT")" || true
@@ -3116,7 +3119,7 @@ $_trail_q
   _DELIVERY_SPEND_USD="$(gaffer_delivery_spend "$USAGE_JSON" 2>/dev/null || true)"
   gaffer_usage_record delivery "$NUM" "$rc" "$USAGE_JSON" "" "$_DELIV_ATTEMPT" >>"$GAFFER_LOG" 2>/dev/null || true
   rm -f "$USAGE_JSON"
-  GAFFER_USAGE_ATTEMPT_ID=""; GAFFER_USAGE_STARTED_AT=""
+  GAFFER_USAGE_ATTEMPT_ID=""; GAFFER_USAGE_STARTED_AT=""; GAFFER_USAGE_REPO=""; GAFFER_USAGE_RISK=""
   log "delivery tick for #$NUM finished (rc=$rc)"
 
   # FG-007 AC ("Dispatch event log records attempted boundary violations"):

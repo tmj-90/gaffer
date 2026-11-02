@@ -112,7 +112,10 @@ Its limits, also listed in the report's `limits` field:
   denominator until it lands, so the figure reads high in the middle of a run.
 - Reviewer time is wall-clock time in review that ended in a human decision. It is
   not time spent reading (the transition log cannot show attention), and a review an
-  agent decided has none.
+  agent decided has none. The median, p75 and p90 per accepted ticket are in
+  `/api/health` `review_time`, which subtracts the queue wait where the Review view
+  recorded when a person opened the ticket (`ticket.review_opened`) and says which
+  basis it used.
 - Spend is the API-equivalent cost the CLI reports; a killed call counts at its
   labelled estimate.
 - There is no baseline. The comparison the external review asked for, the same

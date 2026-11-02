@@ -106,8 +106,11 @@ import {
 import {
   appendUsageRecord,
   buildUsageRecord,
+  latestDeliveryAttemptId,
   recordKilledCall,
+  resolveLedgerPath,
   unknownRecord,
+  withJoinKeys,
 } from "../lib/usage-ledger.mjs";
 import {
   installSkillCopies,
@@ -509,6 +512,90 @@ export function recordVerdict(ticketNumber, verdict, summary, env = process.env,
   const res = spawnSync(argv[0], argv[1], { encoding: "utf8" });
   if (res.error) return { ok: false, code: null, error: String(res.error.message ?? res.error) };
   return { ok: (res.status ?? 1) === 0, code: res.status ?? null };
+}
+
+/** The ticket's declared risk (the ledger's join key), or null when unreadable. */
+export function ticketRisk(dbPath, ticketNumber) {
+  let db;
+  try {
+    const { DatabaseSync } = require("node:sqlite");
+    db = new DatabaseSync(dbPath, { readOnly: true });
+    const row = db.prepare("SELECT risk_level FROM tickets WHERE number = ?").get(ticketNumber);
+    return row && typeof row.risk_level === "string" ? row.risk_level : null;
+  } catch {
+    return null;
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      /* best-effort */
+    }
+  }
+}
+
+/**
+ * LANE VERDICT (Release A metrics, MF2): record what the tester lane concluded about the
+ * tested commit as a SYSTEM `ticket.lane_verdict` event (pass, fail, or held with the
+ * reason), so whether the tester changed the decision can be computed. A measurement:
+ * nothing gates on it, and it is fail-soft (a refusal or an unreachable dispatch only
+ * loses the measurement). DISPATCH_LANE_VERDICT_CMD (a JSON argv) is the test seam;
+ * otherwise the bundled dispatch CLI is run against this run's DB.
+ */
+export function recordLaneVerdict(
+  ticketNumber,
+  verdict,
+  { commit = null, heldReason = null } = {},
+  env = process.env,
+) {
+  let attempt;
+  try {
+    const path = resolveLedgerPath(env);
+    attempt =
+      path && existsSync(path)
+        ? latestDeliveryAttemptId(readFileSync(path, "utf8"), ticketNumber)
+        : null;
+  } catch {
+    attempt = null;
+  }
+  const args = [
+    "ticket",
+    "lane-verdict",
+    String(ticketNumber),
+    "--lane",
+    "tester",
+    "--verdict",
+    verdict,
+    ...(commit ? ["--commit", String(commit)] : []),
+    ...(attempt ? ["--attempt-id", attempt, "--attempt-id-basis", "latest_delivery_row"] : []),
+    ...(heldReason ? ["--held-reason", String(heldReason).slice(0, 300)] : []),
+    "--as",
+    "system",
+  ];
+  let argv;
+  const override = (env.DISPATCH_LANE_VERDICT_CMD ?? "").trim();
+  if (override) {
+    let tokens = null;
+    try {
+      const parsed = JSON.parse(override);
+      if (Array.isArray(parsed) && parsed.length && parsed.every((t) => typeof t === "string"))
+        tokens = parsed;
+    } catch {
+      tokens = null;
+    }
+    tokens ??= override.split(/\s+/).filter(Boolean);
+    argv = [tokens[0], [...tokens.slice(1), ...args]];
+  } else {
+    const cli = (env.DISPATCH_CLI_BIN ?? "").trim() || CONFIG.dispatchCliBin;
+    const db = (env.DISPATCH_DB ?? "").trim() || CONFIG.dispatchDb;
+    argv = [process.execPath, [cli, "--db", db, ...args]];
+  }
+  try {
+    const res = spawnSync(argv[0], argv[1], { encoding: "utf8" });
+    if (res.error || res.status !== 0)
+      log(`could not record the tester lane verdict for #${ticketNumber} (measurement only)`);
+  } catch {
+    /* fail-soft: a measurement */
+  }
 }
 
 /**
@@ -1075,24 +1162,44 @@ function runLiveTester(context) {
       log(`could not write the envelope to ${envelopeOut}: ${e?.message ?? e}`);
     }
   }
+  // JOIN KEYS (MF4): the repo it tested and the ticket's risk at call time; the attempt
+  // it judged is stamped from the ledger by withJoinKeys.
+  const joinKeys = { repo: repo.name, risk: ticketRisk(CONFIG.dispatchDb, n) };
   if (res.error) {
     // A timed-out call did paid work: book the labelled estimate, never a silent $0.
     // Any other error (ENOENT, Worker.deliver failing closed) never ran claude, so it
     // is an "unknown" row, not an estimate — the same split decompose/spec-author use.
     if (res.error.code === "ETIMEDOUT") {
-      recordKilledCall({ ticket: n, kind: "tester", reason: "tester timed out", elapsedMs });
+      recordKilledCall({
+        ticket: n,
+        kind: "tester",
+        reason: "tester timed out",
+        elapsedMs,
+        keys: joinKeys,
+      });
     } else {
       appendUsageRecord(
-        unknownRecord({ ticket: n, kind: "tester", reason: `spawn error: ${res.error.message}` }),
+        withJoinKeys(
+          unknownRecord({ ticket: n, kind: "tester", reason: `spawn error: ${res.error.message}` }),
+          joinKeys,
+        ),
       );
     }
     log(`tester did not complete (${res.error.code ?? res.error.message})`);
   } else {
     const json = parseClaudeJson(res.stdout || "");
     if (json === null) {
-      recordKilledCall({ ticket: n, kind: "tester", reason: "no parseable json", elapsedMs });
+      recordKilledCall({
+        ticket: n,
+        kind: "tester",
+        reason: "no parseable json",
+        elapsedMs,
+        keys: joinKeys,
+      });
     } else {
-      appendUsageRecord(buildUsageRecord({ json, ticket: n, kind: "tester" }));
+      appendUsageRecord(
+        withJoinKeys(buildUsageRecord({ json, ticket: n, kind: "tester" }), joinKeys),
+      );
       text = extractResultText(json) ?? "";
       // USAGE WINDOW: a call refused by the usage window / a rate limit never tested
       // anything (the same one table the delivery path reads; text rows need an error
@@ -1187,6 +1294,10 @@ function runLiveTester(context) {
   }
   if (verdict === null) {
     log(`no verdict token from the tester for #${n} — HOLDING in_testing for a human`);
+    recordLaneVerdict(n, "held", {
+      commit: testedCommit,
+      heldReason: "the tester produced no verdict token",
+    });
     emit(
       {
         phase: "held",
@@ -1203,6 +1314,7 @@ function runLiveTester(context) {
     log(
       `${inspection.reason} — HOLDING in_testing for a human (an uninspectable run is never recorded)`,
     );
+    recordLaneVerdict(n, "held", { commit: testedCommit, heldReason: inspection.reason });
     emit({ phase: "held", ticket: n, reason: inspection.reason, testsBranch, testedCommit }, 2);
     return;
   }
@@ -1210,6 +1322,10 @@ function runLiveTester(context) {
     log(
       `the tester changed implementation files (${implChanged.slice(0, 8).join(", ")}${implChanged.length > 8 ? ", …" : ""}) — its verdict is not about the candidate; HOLDING in_testing for a human`,
     );
+    recordLaneVerdict(n, "held", {
+      commit: testedCommit,
+      heldReason: "the tester modified implementation files",
+    });
     emit(
       {
         phase: "held",
@@ -1227,6 +1343,10 @@ function runLiveTester(context) {
     log(
       `the tester's PASS did not survive a clean replay (${replay.reason}) — what it ran is not the candidate; HOLDING in_testing for a human`,
     );
+    recordLaneVerdict(n, "held", {
+      commit: testedCommit,
+      heldReason: `clean replay failed: ${replay.reason}`,
+    });
     emit(
       {
         phase: "held",
@@ -1253,6 +1373,10 @@ function runLiveTester(context) {
       acceptance: context.acceptance,
     });
     log(`#${n}: ${reason.slice(0, 200)} — HOLDING in_testing for a human`);
+    recordLaneVerdict(n, "held", {
+      commit: testedCommit,
+      heldReason: reason.slice(0, 300),
+    });
     emit(
       {
         phase: "held",
@@ -1289,6 +1413,7 @@ function runLiveTester(context) {
     return;
   }
   log(`recorded tester ${verdict.toUpperCase()} for #${n}`);
+  recordLaneVerdict(n, verdict, { commit: testedCommit });
   emit(
     {
       phase: "verdict",

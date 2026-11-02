@@ -858,6 +858,23 @@ try {
     ? ok(`merge runner landed the branch: #${ticket.number} is done`)
     : bad("ticket never reached done after approval (merge runner)");
   await shot(page, "review-after-approve");
+  // REVIEW TELEMETRY: the Review view recorded that a person opened the ticket in this
+  // round, so Health measures this accepted ticket's decision time, not the queue wait.
+  if (done) {
+    const h = (await api("GET", "/api/health")).json;
+    const rt = h.review_time;
+    // One accepted ticket, approved from the Review view that recorded its open: every
+    // human round of it has an open event, so the basis is decision time.
+    rt &&
+    rt.rounds &&
+    rt.rounds.with_open_event >= 1 &&
+    rt.per_accepted_ticket.n >= 1 &&
+    rt.basis === "decision_time"
+      ? ok(
+          `Health: the accepted ticket's review time is measured from the Review view's open (basis ${rt.basis}, median ${rt.per_accepted_ticket.median_ms} ms)`,
+        )
+      : bad(`Health: no review open recorded for the accepted ticket: ${JSON.stringify(rt)}`);
+  }
 
   // ── 6. Product owner: Suggest work ────────────────────────────────────────
   await page.goto(`${BASE}/#/work`, { waitUntil: "load" });

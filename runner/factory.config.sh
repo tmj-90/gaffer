@@ -411,6 +411,9 @@ export GAFFER_MODEL_REGISTRY GAFFER_BUDGET_REMAINING GAFFER_BUDGET_LOW_THRESHOLD
 # and never aborts the tick.
 gaffer_route_model() {
   local phase="${1:-implement}" risk="${2:-}" ac="${3:-0}" stack="${4:-}" attempt="${5:-1}" ticket="${6:-}" worktree="${7:-}" repo="${8:-}" branch="${9:-}" base="${10:-main}"
+  # MF3: the decision is also written for the usage ledger (gaffer_route_record), so a
+  # row says which tier the router chose and why. A path that does not route clears it.
+  gaffer_route_record "$ticket" "$phase" "" "" ""
   # Backward-compatible EXPLICIT overrides (the two knobs that exist today). They
   # win ONLY when the operator set them in the environment — NOT when they hold the
   # config's own opus/sonnet defaults (those are the registry-equivalent baseline,
@@ -425,6 +428,7 @@ gaffer_route_model() {
   esac
   if [ "$overrode" = 1 ]; then
     log "ROUTE${ticket:+ #$ticket} phase=$phase risk=${risk:-medium} ac=$ac attempt=$attempt budget=${GAFFER_BUDGET_REMAINING:-unlimited} → model=$override (explicit GAFFER_*_MODEL override)"
+    gaffer_route_record "$ticket" "$phase" override "$override" '["explicit GAFFER_*_MODEL override"]'
     printf '%s' "$override"
     return 0
   fi
@@ -499,8 +503,41 @@ gaffer_route_model() {
   tier="$(printf '%s' "$json" | jget 'd.tier || ""' 2>/dev/null || true)"
   reasons="$(printf '%s' "$json" | jget '(d.reasons || []).join("; ")' 2>/dev/null || true)"
   log "ROUTE${ticket:+ #$ticket} phase=$phase risk=${risk:-medium} ac=$ac attempt=$attempt budget=${GAFFER_BUDGET_REMAINING:-unlimited} → tier=$tier model=$model [${reasons}]"
+  gaffer_route_record "$ticket" "$phase" "$tier" "$model" "$(printf '%s' "$json" | jget 'JSON.stringify(d.reasons || [])' 2>/dev/null || echo '[]')"
   printf '%s' "$model"
   return 0
+}
+
+# gaffer_route_record <ticket> <phase> <tier> <model> <reasons-json>
+# MF3: write the router's decision for this ticket and phase to
+# $GAFFER_DATA/.route/<ticket>.<phase>.json, where gaffer_usage_record hands it to the
+# usage ledger (route_tier, route_reasons, route_phase on the row). An empty tier removes
+# the file, so a call that was not routed never carries an older decision. Labels only;
+# fail-soft (a write failure only loses the label).
+gaffer_route_record() {
+  local ticket="${1:-}" phase="${2:-}" tier="${3:-}" model="${4:-}" reasons="${5:-[]}"
+  [ -n "$ticket" ] && [ -n "$phase" ] && [ -n "${GAFFER_DATA:-}" ] || return 0
+  # Spelled out, not a range: a bracket range follows the locale's collation in bash 3.2.
+  case "$ticket$phase" in *[!0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_-]*) return 0 ;; esac
+  local f="$GAFFER_DATA/.route/$ticket.$phase.json"
+  if [ -z "$tier" ]; then rm -f "$f" 2>/dev/null; return 0; fi
+  mkdir -p "$GAFFER_DATA/.route" 2>/dev/null || return 0
+  PHASE="$phase" TIER="$tier" MODEL="$model" REASONS="$reasons" node -e '
+    let r = []; try { r = JSON.parse(process.env.REASONS || "[]"); } catch { r = []; }
+    process.stdout.write(JSON.stringify({ phase: process.env.PHASE, tier: process.env.TIER,
+      model: process.env.MODEL || null, reasons: Array.isArray(r) ? r : [] }));' > "$f.tmp" 2>/dev/null \
+    && mv -f "$f.tmp" "$f" 2>/dev/null || rm -f "$f.tmp" 2>/dev/null
+  return 0
+}
+
+# gaffer_route_phase_of <ledger-kind> — the routing phase whose decision governs a call.
+gaffer_route_phase_of() {
+  case "${1:-}" in
+    delivery) printf implement ;;
+    review|security-review) printf review ;;
+    clarify) printf clarify ;;
+    *) printf '' ;;
+  esac
 }
 
 # Optional two-model PLANNING DEBATE (decompose only). When ON *and* the work is
@@ -1725,6 +1762,16 @@ gaffer_usage_record() {
   # from the correction that followed a send-back. Other kinds never carry them.
   local attempt="" started=""
   if [ "$kind" = delivery ]; then attempt="${GAFFER_USAGE_ATTEMPT_ID:-}"; started="${GAFFER_USAGE_STARTED_AT:-}"; fi
+  # JOIN KEYS (MF4): the repo and the ticket's risk at call time, set by the call site
+  # (GAFFER_USAGE_REPO / GAFFER_USAGE_RISK); a judging kind's row also gets the attempt
+  # it judged from the ledger itself (usage-ledger.mjs withJoinKeys). MF3: the router's
+  # decision for this ticket and phase (gaffer_route_record).
+  [ -n "${GAFFER_USAGE_REPO:-}" ] && prov+=(--repo "$GAFFER_USAGE_REPO")
+  [ -n "${GAFFER_USAGE_RISK:-}" ] && prov+=(--risk "$GAFFER_USAGE_RISK")
+  local _rphase; _rphase="$(gaffer_route_phase_of "$kind")"
+  if [ -n "$ticket" ] && [ -n "$_rphase" ] && [ -f "${GAFFER_DATA:-}/.route/$ticket.$_rphase.json" ]; then
+    prov+=(--route-file "$GAFFER_DATA/.route/$ticket.$_rphase.json")
+  fi
   if declare -F gaffer_with_lock >/dev/null 2>&1; then
     gaffer_with_lock "$GAFFER_DATA/.ledger.lock" \
       node "$mod" --kind "$kind" ${ticket:+--ticket "$ticket"} --rc "$rc" --kill-estimate "${GAFFER_KILL_ESTIMATE_USD:-0}" ${elapsed:+--elapsed-ms "$elapsed"} ${prov[@]+"${prov[@]}"} ${attempt:+--attempt-id "$attempt"} ${started:+--started-at "$started"} --json-file "$jsonfile" 2>>"$GAFFER_LOG" || true
@@ -1749,6 +1796,25 @@ gaffer_record_agent_run() {
   { IFS= read -r summary; IFS= read -r payload; } <<<"$out"
   [ -n "$summary" ] && [ -n "$payload" ] || return 0
   wg attach-evidence "$ticket" --type log --summary "$summary" --payload-json "$payload" >/dev/null 2>&1 || true
+  return 0
+}
+
+# gaffer_lane_verdict <ticket> <lane> <verdict> [commit] [held-reason] [model]
+# MF2: record what a judging lane (agent-review, security-review, tester, eval-judge)
+# concluded about the candidate as a SYSTEM `ticket.lane_verdict` event, with the attempt
+# it judged (the ticket's latest delivery row in the usage ledger). A measurement: no gate
+# reads it. Fail-soft: a refusal or an unreachable dispatch only loses the measurement.
+gaffer_lane_verdict() {
+  local ticket="${1:-}" lane="${2:-}" verdict="${3:-}" commit="${4:-}" held="${5:-}" model="${6:-}"
+  [ -n "$ticket" ] && [ -n "$lane" ] && [ -n "$verdict" ] || return 0
+  type wg >/dev/null 2>&1 || return 0
+  local mod="$RUNNER_DIR/lib/usage-ledger.mjs" attempt=""
+  [ -f "$mod" ] && attempt="$(node "$mod" --latest-delivery-attempt --ticket "$ticket" 2>/dev/null || true)"
+  model="${model#--model }"; model="${model#--model=}"
+  wg ticket lane-verdict "$ticket" --lane "$lane" --verdict "$verdict" ${commit:+--commit "$commit"} \
+    ${attempt:+--attempt-id "$attempt" --attempt-id-basis latest_delivery_row} ${held:+--held-reason "$(printf '%s' "$held" | tr '\n' ' ' | cut -c1-300)"} \
+    ${model:+--model "$model"} --as system >/dev/null 2>&1 \
+    || { type log >/dev/null 2>&1 && log "LANE-VERDICT: could not record the $lane verdict on #$ticket (a measurement only)" || true; }
   return 0
 }
 

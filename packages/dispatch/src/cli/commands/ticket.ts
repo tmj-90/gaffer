@@ -588,6 +588,49 @@ export function registerTicket(program: Command): void {
     });
 
   ticket
+    .command("lane-verdict <ref>")
+    .description(
+      "Record what a judging lane concluded about the ticket's candidate " +
+        "(the runner does this after the reviewer agent, the security reviewer, the tester " +
+        "and the eval judge). A measurement: no gate reads it; Health counts it so whether " +
+        "a lane changed the decision can be computed. System/admin only.",
+    )
+    .requiredOption("--lane <lane>", "agent-review | security-review | tester | eval-judge")
+    .requiredOption(
+      "--verdict <verdict>",
+      "approve|changes|held (reviewers), pass|fail|held (tester), pass|borderline|fail (judge)",
+    )
+    .option("--commit <sha>", "the candidate commit the lane judged")
+    .option("--attempt-id <id>", "the delivery attempt the lane judged (c<hash>/<n>)")
+    .option(
+      "--attempt-id-basis <basis>",
+      "how the attempt was found: latest_delivery_row (the runner's ledger join) | stated",
+    )
+    .option("--held-reason <text>", "why a held verdict is not a verdict")
+    .option("--model <label>", "the model the lane's call asked for")
+    .option("--as <actor>", "actor type: system|admin", "system")
+    .action((ref, opts, cmd) => {
+      const as = parseAs(opts.as, ["system", "admin"] as const);
+      const wg = open(cmd.optsWithGlobals());
+      const actor: Actor = as === "admin" ? { type: "admin", id: cliUserId() } : { type: "system" };
+      const res = wg.recordLaneVerdict(
+        ref,
+        {
+          lane: String(opts.lane),
+          verdict: String(opts.verdict),
+          ...(opts.commit ? { commit: String(opts.commit) } : {}),
+          ...(opts.attemptId ? { attempt_id: String(opts.attemptId) } : {}),
+          ...(opts.attemptIdBasis ? { attempt_id_basis: String(opts.attemptIdBasis) } : {}),
+          ...(opts.heldReason ? { held_reason: String(opts.heldReason) } : {}),
+          ...(opts.model ? { model_requested: String(opts.model) } : {}),
+        },
+        actor,
+      );
+      printJson({ ok: true, ...res });
+      wg.db.close();
+    });
+
+  ticket
     .command("ci-required <ref>")
     .description(
       "Record that this ticket needs a CI pass before it may be approved, " +

@@ -337,6 +337,13 @@ if [ -f "$DISPATCH_CLI" ]; then
     if (p.lane !== "eval-judge" || !["pass", "borderline", "fail"].includes(p.verdict) || p.commit !== process.argv[2]) process.exit(1);
   ' "$(wg ticket show 1 2>/dev/null)" "$JHEAD" && ok "the judge verdict is recorded as a system lane verdict on the judged head" \
     || no "no eval-judge lane verdict: $(wg ticket show 1 2>/dev/null | tail -c 600)"
+  # FAIL-SOFT: a dispatch that refuses the lane verdict (or is unreachable) changes
+  # nothing for the lane: the helper prints nothing on stdout and returns 0, under set -u.
+  _LV_OUT="$( (set -u; wg() { echo "refused" >&2; return 3; }; RUNNER_DIR=/nonexistent; \
+    gaffer_lane_verdict 1 eval-judge pass abc1234 "" "--model x") 2>/dev/null)"; _LV_RC=$?
+  [ "$_LV_RC" -eq 0 ] && [ -z "$_LV_OUT" ] \
+    && ok "a refused lane verdict is fail-soft (rc 0, nothing on stdout)" \
+    || no "a refused lane verdict leaked: rc=$_LV_RC out='$_LV_OUT'"
   unset -f gaffer_lane_verdict
   AGR="$(wg judge-agreement --json --ledger "$LEDGER" 2>/dev/null)"
   node -e '

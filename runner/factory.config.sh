@@ -517,7 +517,8 @@ gaffer_route_model() {
 gaffer_route_record() {
   local ticket="${1:-}" phase="${2:-}" tier="${3:-}" model="${4:-}" reasons="${5:-[]}"
   [ -n "$ticket" ] && [ -n "$phase" ] && [ -n "${GAFFER_DATA:-}" ] || return 0
-  case "$ticket$phase" in *[!A-Za-z0-9_-]*) return 0 ;; esac
+  # Spelled out, not a range: a bracket range follows the locale's collation in bash 3.2.
+  case "$ticket$phase" in *[!0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_-]*) return 0 ;; esac
   local f="$GAFFER_DATA/.route/$ticket.$phase.json"
   if [ -z "$tier" ]; then rm -f "$f" 2>/dev/null; return 0; fi
   mkdir -p "$GAFFER_DATA/.route" 2>/dev/null || return 0

@@ -863,7 +863,13 @@ try {
   if (done) {
     const h = (await api("GET", "/api/health")).json;
     const rt = h.review_time;
-    rt && rt.rounds && rt.rounds.with_open_event >= 1 && rt.per_accepted_ticket.n >= 1
+    // One accepted ticket, approved from the Review view that recorded its open: every
+    // human round of it has an open event, so the basis is decision time.
+    rt &&
+    rt.rounds &&
+    rt.rounds.with_open_event >= 1 &&
+    rt.per_accepted_ticket.n >= 1 &&
+    rt.basis === "decision_time"
       ? ok(
           `Health: the accepted ticket's review time is measured from the Review view's open (basis ${rt.basis}, median ${rt.per_accepted_ticket.median_ms} ms)`,
         )

@@ -347,6 +347,10 @@ describe("web: review comments", () => {
     rowOf("+new two").click();
     key("c");
     expect(document.querySelectorAll(".rc-composer")).toHaveLength(0);
-    expect((document.querySelector("button.fix-these") as HTMLButtonElement).disabled).toBe(true);
+    const fix = document.querySelector("button.fix-these") as HTMLButtonElement;
+    expect(fix.disabled).toBe(true);
+    // The switched-off button keeps the title that says why (s18-read-only's rule).
+    expect(fix.title).toMatch(/^Read-only/);
+    expect(btn.title).toMatch(/^Read-only/);
   });
 });

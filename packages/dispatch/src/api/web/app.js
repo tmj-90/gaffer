@@ -18985,12 +18985,15 @@ async function renderReview(param) {
     const label =
       fixOutcome && fixOutcome.requirements === n ? fixOutcome.label : `Fix these (${n})`;
     fixBtn.textContent = label;
-    if (n > 0 && !readOnly()) fixBtn.removeAttribute("disabled");
+    // A read token keeps roLock's switched-off state and the title that says why.
+    const locked = Boolean(lockReason("ticket"));
+    if (n > 0 && !locked) fixBtn.removeAttribute("disabled");
     else fixBtn.setAttribute("disabled", "");
-    fixBtn.title =
-      n > 0
-        ? "Send it back with your open must-fix comments as numbered requirements."
-        : "Mark a comment Must fix to send it back with Fix these.";
+    if (!locked)
+      fixBtn.title =
+        n > 0
+          ? "Send it back with your open must-fix comments as numbered requirements."
+          : "Mark a comment Must fix to send it back with Fix these.";
     if (n > 0 && fixOutcome && fixOutcome.requirements === n) {
       fixLine.textContent = fixOutcome.sentence;
       fixLine.dataset.outcome = fixOutcome.kind;

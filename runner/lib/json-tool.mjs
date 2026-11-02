@@ -688,11 +688,22 @@ switch (cmd) {
   // excerpt, body}] with the short id the agent replies naming. The delivery prompt lists
   // them as numbered requirements inside an untrusted envelope (deliveryPrompt.ts). Raw
   // data only: no wording here. Fail-soft: bad input or none → "[]".
+  // After a Fix these, the requirements are the set it sent (sent_round = the latest
+  // one) plus the must-fix comments written since (round >= that attempt): a comment the
+  // reviewer left out of the latest send-back is not one. With no Fix these on record,
+  // every open must-fix comment is listed.
   case "review-comments": {
     const p = tryParse(readStdin());
     const d = p.ok && isObj(p.value) ? p.value : {};
-    const rows = (Array.isArray(d.reviewComments) ? d.reviewComments : [])
-      .filter((x) => isObj(x) && x.status === "open" && x.severity === "must_fix")
+    const all = (Array.isArray(d.reviewComments) ? d.reviewComments : []).filter(isObj);
+    const sentRounds = all.map((x) => x.sent_round).filter((n) => Number.isInteger(n));
+    const latest = sentRounds.length ? Math.max(...sentRounds) : null;
+    const inLatest = (x) =>
+      latest === null ||
+      x.sent_round === latest ||
+      (!Number.isInteger(x.sent_round) && Number.isInteger(x.round) && x.round >= latest);
+    const rows = all
+      .filter((x) => x.status === "open" && x.severity === "must_fix" && inLatest(x))
       .sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")))
       .slice(0, 20)
       .map((x) => ({

@@ -52,6 +52,22 @@ export interface PromptResolvedDecision {
   answer: string;
 }
 
+/** One open must-fix review comment a "Fix these" send-back carries into the next
+ *  delivery (dispatch review_comments, via json-tool.mjs review-comments). */
+export interface PromptReviewRequirement {
+  /** The comment's short id (the agent replies naming it). */
+  id: string;
+  repo: string | null;
+  /** null: a comment on the whole change. */
+  path: string | null;
+  /** null: a comment on the file (or the whole change). */
+  line: number | null;
+  side: string | null;
+  /** The lines git held around the anchor when the comment was written, or null. */
+  excerpt: string | null;
+  body: string;
+}
+
 /** Inputs for the delivery prompt render. All values are PRE-RESOLVED by the
  *  caller (scope resolution / worktree creation are P4; skill selection stays
  *  in the runner) — this module only renders. */
@@ -71,6 +87,9 @@ export interface DeliveryPromptInputs {
   /** The human's answers to decisions on this ticket, oldest first (tick.sh's
    *  `_RD`). Absent or [] → no block, and the prompt is byte-identical to before. */
   resolvedDecisions?: PromptResolvedDecision[];
+  /** The reviewer's open must-fix comments, oldest first (tick.sh's `_RC`). Absent or
+   *  [] → no block, and the prompt is byte-identical to before. */
+  reviewRequirements?: PromptReviewRequirement[];
   /** Rendered file-cards block ("" when none) — see contextPrimer.ts. */
   fileCardsBlock: string;
   /** Rendered product-context block ("" when none) — see contextPrimer.ts. */
@@ -150,6 +169,49 @@ ${quarantined}
 `;
 }
 
+/**
+ * The REVIEW REQUIREMENTS block (Fix these): the human reviewer's open must-fix comments,
+ * numbered, one item per comment with where it points, the lines it was anchored to and
+ * what the reviewer asked, inside ONE quarantined <untrusted-review-requirements>
+ * envelope (the body is free text, the excerpt is repo content). [] → "" so a ticket
+ * without requirements renders exactly as before. It sits on the review-feedback line.
+ */
+export function renderReviewRequirementsBlock(reqs: PromptReviewRequirement[] = []): string {
+  if (reqs.length === 0) return "";
+  const where = (r: PromptReviewRequirement): string => {
+    if (!r.path) return "the whole change";
+    const at = `${r.repo ? `${r.repo}:` : ""}${r.path}`;
+    if (r.line === null || r.line === undefined) return `${at} (the file)`;
+    return `${at}:${r.line}${r.side === "old" ? " (the base, before your change)" : ""}`;
+  };
+  const body = reqs
+    .map((r, i) => {
+      const head = `  ${i + 1}. [${r.id}] ${where(r)}`;
+      const excerpt =
+        r.excerpt && r.excerpt.trim() !== ""
+          ? `\n     anchored at:\n${r.excerpt
+              .split("\n")
+              .map((l) => `       | ${l}`)
+              .join("\n")}`
+          : "";
+      const asks = `\n     asks: ${r.body.trim().replace(/\n/g, "\n           ")}`;
+      return head + excerpt + asks;
+    })
+    .join("\n");
+  const quarantined = quarantine("review-requirements", body);
+  return `
+REVIEW REQUIREMENTS — a human reviewer sent this ticket back with numbered requirements
+(Fix these). Each item inside the envelope below is one review comment: where it points
+(repo:path:line), the lines it was written against, and what the reviewer asked. You MUST
+address EVERY one before re-delivering; the lines may have moved, so find the code, not
+the line number. Then reply per id: call \`record_ac_evidence\` with evidence_type
+manual_note, no ac_id, and payload {"kind":"comment_reply","comment_id":"<id>"} saying
+what you changed (or why you did not). Your reply is your account, not a resolution: only
+the reviewer resolves a comment.
+${quarantined}
+`;
+}
+
 /** WRITE_LIST rows: worktree path + display name + branch.
  *  NOTE: the branch is UNQUOTED here — the single quotes around $WORK_BRANCH
  *  in the awk program are shell quoting (a quote-splice), not output text. */
@@ -190,6 +252,7 @@ export function renderDeliveryPrompt(i: DeliveryPromptInputs): string {
   // blocks are "" and the prompt is byte-identical to the goldens.
   const reviewFeedbackBlock =
     renderReviewFeedbackBlock(i.reviewFeedbackReasons) +
+    renderReviewRequirementsBlock(i.reviewRequirements) +
     renderResolvedDecisionsBlock(i.resolvedDecisions);
   const writeList = renderWriteList(i.writeRepos, i.workBranch);
   const readList = renderReadList(i.readRoots);

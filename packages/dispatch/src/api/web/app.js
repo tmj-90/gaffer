@@ -19236,6 +19236,12 @@ async function renderReview(param) {
     clear(sinceBox);
     clear(sinceBar);
     const files = repos.reduce((n, r) => n + (r.files || 0), 0);
+    // The attempt the person sent back (the pin's round), which an agent reviewer's later
+    // send-backs do not move; the delivery on screen is attempt attempt_count + 1.
+    const pinAttempts = since
+      .filter((x) => x.available && !x.history_rewritten && Number.isInteger(x.attempt))
+      .map((x) => x.attempt);
+    const fromAttempt = pinAttempts.length ? Math.min(...pinAttempts) : attemptNow;
     if (repos.length) {
       sinceBar.append(
         el("div", { class: "since-toggle", role: "group", "aria-label": "Which changes to show" }, [
@@ -19247,7 +19253,7 @@ async function renderReview(param) {
               dataset: { since: "1" },
               onclick: () => showSince(true),
             },
-            `Changes since your review (attempt ${attemptNow} → ${attemptNow + 1})`,
+            `Changes since your review (attempt ${fromAttempt} → ${attemptNow + 1})`,
           ),
           el(
             "button",

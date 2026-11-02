@@ -994,7 +994,7 @@ export class Dispatch {
     };
   }
 
-  /** SINCE YOUR REVIEW (A3): the interdiff from the latest reject pin per write repo. */
+  /** SINCE YOUR REVIEW (A3): the interdiff from a person's latest reject pin per write repo. */
   ticketDiffSince(ref: string): SinceDiff {
     const ticket = this.resolveTicket(ref);
     return computeSinceDiff(

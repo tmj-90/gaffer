@@ -960,7 +960,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     query: {
       since: {
         description:
-          "`rejected`: the interdiff since the commit a reviewer last sent back (the latest reject pin per write repository) when that commit is an ancestor of the head; otherwise the repo's `since` entry says `history_rewritten: true` and no diff is guessed. A reading aid: it carries no `approve_outcome`, and an approval still binds to the whole change's heads.",
+          "`rejected`: the interdiff since the commit a person last sent back (the latest reject pin a human or admin recorded per write repository; an agent reviewer's send-back does not move it) when that commit is an ancestor of the head; otherwise the repo's `since` entry says `history_rewritten: true` and no diff is guessed. A reading aid: it carries no `approve_outcome`, and an approval still binds to the whole change's heads.",
         schema: { type: "string", enum: ["rejected"] },
       },
     },

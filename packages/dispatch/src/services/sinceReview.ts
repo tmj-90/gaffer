@@ -11,14 +11,15 @@ import type { CommentRepoContext } from "./reviewCommentService.js";
 
 /**
  * SINCE YOUR REVIEW (review comments A3): what changed on each write repo since the
- * commit a reviewer last sent back (the latest reject pin, `gaffer-rejected-commit:<sha>`).
+ * commit a person last sent back (the latest human reject pin, `gaffer-rejected-commit:<sha>`).
  *
  * Deterministic and git-only:
  *  - the pin is an ancestor of the head → the interdiff `git diff <pin> <head>`;
  *  - the pin is no longer an ancestor (the branch was reset or rebuilt, e.g. a fresh
  *    branch on retry) or the commit is gone → the FACT `history_rewritten: true` and no
  *    diff: an interdiff across a rewrite would be a guess;
- *  - no pin (never sent back, or sent back before pins were recorded) → `available: false`.
+ *  - no pin (never sent back by a person, or sent back before pins were recorded) →
+ *    `available: false`.
  *
  * This is a reading aid. It never feeds a landing or an approval: an approval still binds
  * to the whole change's heads (GET /tickets/:id/diff without `since`).
@@ -50,7 +51,12 @@ export interface SinceDiff {
   since: SinceRepo[];
 }
 
-/** The latest reject pin per repo for a ticket: repoId → {sha, at, attempt}. Pure read. */
+/**
+ * The latest reject pin a PERSON recorded per repo for a ticket: repoId → {sha, at,
+ * attempt}. An agent reviewer's send-back (review.sh, `--as agent`) also records a pin,
+ * but "since your review" is since the human's: the interdiff then spans every attempt
+ * since the commit the person last sent back. Pure read.
+ */
 export function latestRejectPins(
   db: Db,
   ticketId: string,
@@ -60,6 +66,8 @@ export function latestRejectPins(
       `SELECT repo_id, uri, created_at, payload_json FROM evidence
         WHERE ticket_id = ? AND evidence_type = 'commit' AND recorded_by_actor_type = 'system'
           AND repo_id IS NOT NULL AND uri LIKE '${REJECT_PIN_PREFIX}%'
+          AND json_valid(payload_json)
+          AND json_extract(payload_json, '$.rejecter_type') IN ('human', 'admin')
         ORDER BY created_at ASC, rowid ASC`,
     )
     .all(ticketId) as Array<{

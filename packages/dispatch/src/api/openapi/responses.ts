@@ -547,7 +547,7 @@ export const SinceRepo = z
   .object({
     repo: str,
     repoId: str,
-    from_sha: nstr.describe("The commit the reviewer sent back (the latest reject pin)."),
+    from_sha: nstr.describe("The commit a person last sent back (the latest human reject pin)."),
     to_sha: nstr.describe("The head now."),
     available: z.boolean(),
     history_rewritten: z

@@ -344,6 +344,28 @@ describe("A3: since your review", () => {
     expect(d.ticketHeads(t.id).heads).toEqual([{ repo: "app", repo_id: t.repoId, sha: head2 }]);
   });
 
+  it("starts from the commit a PERSON sent back, not an agent reviewer's later send-back", () => {
+    const t = inReview(d, dir);
+    d.createReviewComment(t.id, { body: "fix", severity: "must_fix" }, human);
+    const humanPin = git(dir, "rev-parse", BRANCH);
+    d.fixThese(t.id, {}, human);
+    // Attempt 2 is delivered, and the AGENT reviewer sends it back (review.sh's path).
+    commitOnBranch(dir, "src.txt", [...LINES, "attempt 2"].join("\n") + "\n");
+    d.markReady(t.id, human);
+    deliver(d, t.id, t.repoId);
+    d.rejectReview(t.id, "ready", agentActor, "the agent reviewer wants more");
+    // Attempt 3 reaches the person.
+    const head3 = commitOnBranch(
+      dir,
+      "src.txt",
+      [...LINES, "attempt 2", "attempt 3"].join("\n") + "\n",
+    );
+    deliver(d, t.id, t.repoId);
+    const since = d.ticketDiffSince(t.id).since[0]!;
+    expect(since).toMatchObject({ from_sha: humanPin, to_sha: head3, available: true });
+    expect(d.ticketDiffSince(t.id).repos[0]!.diff).toContain("+attempt 2");
+  });
+
   it("reports a rewritten branch as a fact instead of a guessed interdiff", () => {
     const t = inReview(d, dir);
     d.createReviewComment(t.id, { body: "fix", severity: "must_fix" }, human);

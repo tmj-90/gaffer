@@ -48,6 +48,7 @@
 //   Returns the Node `SpawnSyncReturns` verbatim ({ status, stdout, stderr, error, … }).
 
 import { BUDGET_REFUSED_STATUS, paidLaunchAdmission } from "./budget-admission.mjs";
+import { pauseLine, readPause } from "./usage-pause.mjs";
 import {
   accessSync,
   closeSync,
@@ -612,6 +613,10 @@ export function maxTurnsArgv(raw) {
 
 // The bash seam's refusal status for a required-but-unavailable sandbox.
 const SANDBOX_REFUSED_STATUS = 75;
+// A usage-window pause: `gaffer run` (loop.sh) and `gaffer plan`'s code for it. The same
+// number as the sandbox refusal (both are "the runner refused, nothing spawned");
+// `usagePaused` on the result tells them apart.
+export const USAGE_PAUSED_STATUS = 75;
 // The bash seam's refusal status when the MCP bridge cannot be rendered / started.
 const BRIDGE_REFUSED_STATUS = 76;
 const BRIDGE = resolve(RUNNER_DIR, "lib", "mcp-bridge.mjs");
@@ -746,6 +751,24 @@ export function deliver({ bin, argv, cwd, timeoutMs, maxBuffer, env, kind = "wor
   if (provider !== DEFAULT_WORKER_PROVIDER && !isCommand) {
     // codex / local / any other value — FAIL CLOSED. No spawn.
     return failClosedResult(unsupportedProviderMessage(provider));
+  }
+  // USAGE WINDOW (lib/usage-pause.mjs): while $GAFFER_DATA/usage-pause.json is in force
+  // the bash seam starts no tick (tick.sh, worker.sh, loop.sh exit 75) and `gaffer plan`
+  // starts no turn (exit 75). Every Node launcher (the dashboard's planner, Suggest work,
+  // onboarding analysis, the tester, the merge resolver, the spec author) spawns here, so
+  // the same refusal is here: NO spawn, status 75, empty stdout, nothing booked, before
+  // any other check (a paused factory starts nothing, whatever else is configured).
+  const pause = readPause(process.env);
+  if (pause) {
+    const message =
+      `worker: the factory is ${pauseLine(pause)}; not starting the ${kind} call. ` +
+      "It lifts on its own; node runner/lib/usage-pause.mjs clear lifts it now.";
+    process.stderr.write(`${message}\n`);
+    const r = failClosedResult(message);
+    r.status = USAGE_PAUSED_STATUS;
+    r.usagePaused = true;
+    r.usagePause = pause;
+    return r;
   }
   let command = null;
   if (isCommand) {

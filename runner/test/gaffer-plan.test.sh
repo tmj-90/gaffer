@@ -80,7 +80,7 @@ ANSWER="archive them after 30 days"
 echo "== P1. no dollar cap: refused before the planner runs =="
 printf '{}' > "$A/settings.json"
 ga "$A" plan "$GOAL"
-[ "$RC" -eq 1 ] && has "$OUT" "dollar cap" && ok "P1: refused (exit 1) and says why" || fail "P1: rc=$RC out=$OUT"
+[ "$RC" -eq 3 ] && has "$OUT" "dollar cap" && ok "P1: refused (exit 3, gaffer run's code) and says why" || fail "P1: rc=$RC (want 3) out=$OUT"
 [ "$(calls "$A")" = 0 ] && ok "P1: no model call" || fail "P1: the stub was called $(calls "$A") time(s)"
 [ "$(tickets "$A")" = 0 ] && ok "P1: nothing created" || fail "P1: tickets exist"
 rm -f "$A/plan-draft.json"
@@ -113,8 +113,9 @@ has "$OUT" "gaffer plan --yes" && ok "P3: says how to create it" || fail "P3: no
 led() { [ -f "$1/usage-ledger.jsonl" ] && grep -c '"kind":"decompose"' "$1/usage-ledger.jsonl" | tr -d ' ' || echo 0; }
 [ "$(led "$A")" = 2 ] && ok "P9: the usage ledger booked both planner turns as decompose" || fail "P9: ledger decompose lines=$(led "$A")"
 GAFFER_DAILY_BUDGET_USD=0.0015 ga "$A" plan --now
-[ "$RC" -eq 1 ] && has "$OUT" "budget" && [ "$(calls "$A")" = 2 ] && [ "$(led "$A")" = 2 ] \
-  && ok "P9: today's spend at the daily cap: refused before the planner runs" || fail "P9: exhausted budget rc=$RC calls=$(calls "$A") out=$OUT"
+[ "$RC" -eq 3 ] && has "$OUT" "budget" && [ "$(calls "$A")" = 2 ] && [ "$(led "$A")" = 2 ] \
+  && ok "P9: today's spend at the daily cap: refused before the planner runs, exit 3 like gaffer run" || fail "P9: exhausted budget rc=$RC (want 3) calls=$(calls "$A") out=$OUT"
+has "$(bash "$G" plan --help 2>&1)" "3 refused by the budget" && ok "P9: the plan usage text names exit 3" || fail "P9: gaffer plan --help does not document exit 3: $(bash "$G" plan --help 2>&1)"
 ga "$A" plan --show
 has "$OUT" "Proposed epic: Archive completed tasks" && ok "P9: the refused turn kept the shown proposal" || fail "P9: proposal lost: $OUT"
 ga "$A" plan --show
@@ -284,6 +285,15 @@ ga "$A" plan "$GOAL"
 [ "$RC" -eq 75 ] && has "$OUT" "usage window" && [ "$(calls "$A")" = "$before" ] \
   && ok "P9: paused on the usage window: exit 75, no model call" || fail "P9: pause rc=$RC calls=$(calls "$A") out=$OUT"
 rm -f "$A/usage-pause.json" "$A/plan-draft.json"
+# The dashboard's planner (POST /plan-build → decompose.mjs → lib/worker.mjs deliver)
+# honours the same pause: an error turn that names it, and no model call.
+bbefore="$(calls "$B")"
+node -e 'const u=Date.now()+3600e3;process.stdout.write(JSON.stringify({paused_until:new Date(u).toISOString(),until_ms:u,kind:"usage_limit",basis:"default",message:"stub limit",ticket:null,lane:"delivery",recorded_at:new Date().toISOString()}))' > "$B/usage-pause.json"
+RP="$(api POST /plan-build "{\"brief\":\"$GOAL\",\"history\":[{\"role\":\"user\",\"answer\":\"$GOAL\"}]}")"
+has "$RP" '"phase":"error"' && has "$RP" "paused until" && [ "$(calls "$B")" = "$bbefore" ] \
+  && ok "P9: the dashboard's POST /plan-build while paused: an error turn naming the pause, no model call" \
+  || fail "P9: dashboard plan-build while paused: calls $bbefore -> $(calls "$B") resp=$RP"
+rm -f "$B/usage-pause.json"
 
 echo "== P10. at a terminal: EOF at a prompt keeps the draft and creates nothing =="
 nt="$(tickets "$A")"
@@ -380,6 +390,33 @@ else
 fi
 feat="$(MEMORY_DB="$A/memory.sqlite" node "$MEM" features shop 2>/dev/null; MEMORY_DB="$A/memory.sqlite" node "$MEM" features lib 2>/dev/null)"
 ! has "$feat" "Share tasks" && ok "P11: no feature hook for an epic over several repos" || fail "P11: feature hook fired: $feat"
+
+echo "== P12. a terminal plan lands in the dashboard's plan-session history =="
+# The dashboard's panel keeps each conversation as a plan session (GET /plan-sessions);
+# a plan created with gaffer plan --yes is recorded there too, confirmed, with its
+# transcript and plan, and a session the panel has open stays its active one.
+PLAN3='{"epic":{"name":"Tag tasks","description":"Labels."},"tickets":[{"title":"Tag model","acceptanceCriteria":["a task carries tags"],"repo":"shop","access":"write","dependsOn":[]}]}'
+node -e '
+  const fs=require("fs");const [f,plan,goal,ans,data,db]=process.argv.slice(1);
+  const d={version:2,brief:goal,history:[{role:"user",brief:goal},{role:"assistant",questions:["Free text tags?"]},{role:"user",answer:ans}],plan:JSON.parse(plan),
+    factory:{gaffer_data:fs.realpathSync(data),dispatch_db:fs.realpathSync(db)}};
+  fs.writeFileSync(f,JSON.stringify(d),{mode:0o600});' "$B/plan-draft.json" "$PLAN3" "tag tasks" "free text" "$B" "$B/dispatch.sqlite"
+OPEN="$(api POST /plan-sessions | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{try{process.stdout.write(JSON.parse(s).session.id)}catch{}})')"
+ga "$B" plan --yes
+[ "$RC" -eq 0 ] && has "$OUT" "plan history" && ok "P12: created, and says where the conversation is kept" || fail "P12: rc=$RC out=$OUT"
+SESS="$(api GET '/plan-sessions?status=confirmed')"
+chk="$(printf '%s' "$SESS" | node -e '
+  let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{
+    const ss=(JSON.parse(s).sessions||[]).filter(x=>x.brief==="tag tasks");
+    if(ss.length!==1){console.log("sessions="+ss.length);return;}
+    const m=JSON.parse(ss[0].messages_json), p=JSON.parse(ss[0].plan_json||"null");
+    const a=m.map(x=>x.role+":"+(x.role==="user"?x.content:JSON.parse(x.content).phase)).join(",");
+    console.log([a, p&&p.epic&&p.epic.name].join("|"));
+  })')"
+[ "$chk" = "user:tag tasks,assistant:clarify,user:free text,assistant:plan|Tag tasks" ] \
+  && ok "P12: GET /plan-sessions lists it confirmed, with the transcript and the plan created" || fail "P12: plan-session history: $chk ($(printf '%s' "$SESS" | head -c 400))"
+ACT="$(api GET /plan-sessions/active | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{const j=JSON.parse(s);process.stdout.write(j.session?j.session.id:"none")})')"
+[ -n "$OPEN" ] && [ "$ACT" = "$OPEN" ] && ok "P12: the panel's open session is still the active one" || fail "P12: active session '$ACT', the panel had '$OPEN'"
 
 stop_dash
 echo

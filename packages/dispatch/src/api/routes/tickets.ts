@@ -47,7 +47,7 @@ import {
   ticketListQuery,
   wontDoBody,
 } from "../schemas.js";
-import { API_ACTOR, apiActor, isSharedOperator, operatorActor } from "./context.js";
+import { API_ACTOR, apiActor, apiPrincipal, isSharedOperator, operatorActor } from "./context.js";
 import { forgetLoreDrafts } from "./readModels.js";
 import { requestTicketFilter } from "../scopeGate.js";
 
@@ -546,10 +546,11 @@ export async function routeTickets(
   // /tickets/:id/mark-merged — MERGE-COMPLETE callback (ready_for_merge -> done).
   // The merge runner calls this once the git merge of the delivery branch lands,
   // so `done` means actually merged. The service allows only system/admin (a board
-  // drag can never reach this); a full-capability REST caller acts as admin under its
-  // OWN principal id, so the event names who marked it merged.
+  // drag can never reach this). The shared token acts as admin (dispatch-api); a named
+  // principal needs actor type admin and acts under its OWN id, so the event names who
+  // marked it merged; a human principal is refused, as the CLI refuses it `--as admin`.
   if (segments.length === 3 && sub === TICKET_SUB.MARK_MERGED && method === "POST") {
-    const result = wg.markMerged(id, operatorActor());
+    const result = wg.markMerged(id, operatorActor("Marking a ticket merged"));
     sendJson(res, 200, { ticket: result.ticket, event_id: result.eventId });
     return;
   }
@@ -705,7 +706,7 @@ export async function routeTickets(
 
   // /tickets/:id/reopen-for-review — auto-merge re-approval callback
   // (done -> in_review). System/admin only; records the resolver's resolution under
-  // the calling principal's id (see operatorActor).
+  // the calling principal's id; a human principal is refused (see operatorActor).
   if (segments.length === 3 && sub === TICKET_SUB.REOPEN_FOR_REVIEW && method === "POST") {
     const body = reopenForReviewBody.parse(await readJsonBody(req));
     const result = wg.reopenForReview(
@@ -715,7 +716,7 @@ export async function routeTickets(
         resolution: body.resolution,
         ...(body.cause ? { cause: body.cause } : {}),
       },
-      operatorActor(),
+      operatorActor("Reopening a ticket for review"),
     );
     sendJson(res, 200, {
       ticket_id: result.ticketId,
@@ -803,8 +804,36 @@ export async function routeTickets(
   }
 
   // /tickets/:id/reviewer — assign the reviewer the strict packs gate on.
+  // A named principal names a REAL reviewer: a registered agent's id or a live
+  // principal's actor id (a made-up id would satisfy the strict packs' "has a reviewer"
+  // gate with nobody). A scoped principal names only itself or the reviewer already on
+  // the ticket, so it cannot pick who reviews its own work. The shared operator token
+  // is operator trust, like the tokenless CLI's `--reviewer <your-name>`: unchanged.
   if (segments.length === 3 && sub === TICKET_SUB.REVIEWER && method === "PUT") {
     const body = assignReviewerBody.parse(await readJsonBody(req));
+    const principal = isSharedOperator() ? null : apiPrincipal();
+    if (principal) {
+      const reviewer = body.reviewer.trim();
+      const current = wg.resolveTicket(id).reviewer;
+      if (principal.scope && reviewer !== principal.actor_id && reviewer !== current) {
+        throw new DispatchError(
+          "ACTOR_NOT_PERMITTED",
+          `A scoped principal assigns only itself ('${principal.actor_id}') or the reviewer already on the ticket${current ? ` ('${current}')` : ""}; '${reviewer}' is someone else.`,
+          { principal: principal.name, reviewer, current_reviewer: current },
+        );
+      }
+      const known =
+        reviewer === current ||
+        wg.db.prepare("SELECT 1 FROM agents WHERE id = ? LIMIT 1").get(reviewer) !== undefined ||
+        wg.listPrincipals().some((p) => p.revoked_at === null && p.actor_id === reviewer);
+      if (!known) {
+        throw new DispatchError(
+          "VALIDATION_ERROR",
+          `Reviewer '${reviewer}' is not a registered agent or principal; name one (wg agent list, principal list).`,
+          { reason: "unknown_reviewer", reviewer },
+        );
+      }
+    }
     const result = wg.assignReviewer(id, body.reviewer, apiActor());
     sendJson(res, 200, {
       ticket_id: result.ticketId,

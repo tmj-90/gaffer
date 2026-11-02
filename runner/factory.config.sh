@@ -1178,15 +1178,14 @@ gaffer_with_lock() {
       if kill -0 "$pid" 2>/dev/null; then
         :   # holder is alive — never reap, just wait
       else
-        rm -rf "$lockdir" 2>/dev/null || true   # holder PID is dead — abandoned
-        continue
+        # holder PID is dead: abandoned. Reaped under the guard, only if it still is.
+        _gaffer_lock_reap "$lockdir" "$pid" && continue
       fi
     else
       local age
       age="$(_gaffer_lock_age "$lockdir")"
       if [ "${age:-0}" -ge "$GAFFER_LOCK_STALE" ] 2>/dev/null; then
-        rm -rf "$lockdir" 2>/dev/null || true
-        continue
+        _gaffer_lock_reap "$lockdir" "" "$GAFFER_LOCK_STALE" && continue
       fi
     fi
     sleep 0.1
@@ -1219,6 +1218,38 @@ _gaffer_lock_age() {
   case "$mtime" in ''|*[!0-9]*) echo 0; return 0 ;; esac
   now="$(date +%s)"
   echo $((now - mtime))
+}
+
+# Take over an ABANDONED mkdir lock, atomically with respect to other waiters.
+#   _gaffer_lock_reap <lockdir> <seen-pid> [<min-age-seconds>]
+# Two waiters that both read the dead holder's pid used to both `rm -rf` the lock: the
+# second removed the lock the first had just taken, and both held it. The removal now
+# runs under a reap guard (<lockdir>.reap, an atomic mkdir held for a few syscalls), and
+# under it the reap condition is checked AGAIN: the pid file must still read <seen-pid>
+# (the dead pid the caller saw, or "" for a lock with no pid) and, when <min-age> is
+# given, the lock dir must be at least that old. A waiter that lost the race finds the
+# winner's fresh lock (another pid, or no pid yet and a new dir) and leaves it alone.
+# Returns 0 when it removed the lock, 1 otherwise (the caller just tries mkdir again).
+# A guard older than 10 s belongs to a reaper that died inside it and is cleared.
+_gaffer_lock_reap() {
+  local d="$1" seen="$2" min="${3:-0}" g="$1.reap" cur age rc=1
+  if ! mkdir "$g" 2>/dev/null; then
+    age="$(_gaffer_lock_age "$g")"
+    [ "${age:-0}" -ge 10 ] 2>/dev/null && rmdir "$g" 2>/dev/null
+    return 1
+  fi
+  if [ -d "$d" ]; then
+    cur="$(cat "$d/pid" 2>/dev/null)"
+    if [ "$cur" = "$seen" ]; then
+      age="$(_gaffer_lock_age "$d")"
+      case "$min" in ''|*[!0-9]*) min=0 ;; esac
+      if [ "$min" -eq 0 ] || [ "${age:-0}" -ge "$min" ] 2>/dev/null; then
+        rm -rf "$d" 2>/dev/null && rc=0
+      fi
+    fi
+  fi
+  rmdir "$g" 2>/dev/null || true
+  return "$rc"
 }
 
 # --- Agent child-env scrub (C1/M2/M3) ----------------------------------------

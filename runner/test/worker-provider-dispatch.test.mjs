@@ -122,6 +122,70 @@ console.log("== default (unset provider) is claude-code — still spawns ==");
     : bad("unset provider should default to claude-code and spawn");
 }
 
+console.log("== a usage-window pause: no spawn, status 75, like the bash seam and gaffer plan ==");
+// The bash seam (tick.sh, worker.sh, loop.sh) and `gaffer plan` start nothing while
+// $GAFFER_DATA/usage-pause.json is in force; every Node launcher (the dashboard's
+// planner, Suggest work, onboarding, the tester, the merge resolver) goes through
+// deliver(), so the refusal lives there: before any spawn, both providers.
+{
+  const PAUSE_DATA = join(WORK, "pause-data");
+  mkdirSync(PAUSE_DATA, { recursive: true });
+  const until = Date.now() + 3600e3;
+  writeFileSync(
+    join(PAUSE_DATA, "usage-pause.json"),
+    JSON.stringify({
+      paused_until: new Date(until).toISOString(),
+      until_ms: until,
+      kind: "usage_limit",
+      basis: "default",
+      message: "stub limit",
+      ticket: null,
+      lane: "delivery",
+      recorded_at: new Date().toISOString(),
+    }),
+  );
+  const prevData = process.env.GAFFER_DATA;
+  const prevFile = process.env.GAFFER_USAGE_PAUSE_FILE;
+  delete process.env.GAFFER_USAGE_PAUSE_FILE;
+  process.env.GAFFER_DATA = PAUSE_DATA;
+  try {
+    const res = callDeliver("claude-code");
+    !existsSync(MARKER)
+      ? ok("paused: claude-code did NOT spawn (no marker)")
+      : bad("paused: claude-code spawned a paid call while the factory is paused");
+    res.status === 75 && res.usagePaused === true && !res.budgetRefused
+      ? ok("paused: status 75 (gaffer run / gaffer plan's code), usagePaused set")
+      : bad(`paused: status=${res.status} usagePaused=${res.usagePaused}`);
+    res.error instanceof Error && res.error.code !== "ETIMEDOUT" && res.stdout === ""
+      ? ok(
+          "paused: res.error set, not a timeout, empty stdout (callers' error path fires, nothing to ledger)",
+        )
+      : bad(`paused: error=${res.error} stdout=${JSON.stringify(res.stdout)}`);
+    /paused until .* UTC: usage limit/.test(res.error?.message || "") &&
+    /usage-pause\.mjs clear/.test(res.error?.message || "")
+      ? ok("paused: the message names the pause line and how to lift it")
+      : bad(`paused: message '${res.error?.message}'`);
+    const cmd = callDeliver("command");
+    !existsSync(MARKER) && cmd.status === 75 && cmd.usagePaused === true
+      ? ok("paused: the command provider refuses the same way")
+      : bad(`paused: command provider status=${cmd.status} usagePaused=${cmd.usagePaused}`);
+    // An expired pause is no pause.
+    const past = Date.now() - 60e3;
+    writeFileSync(
+      join(PAUSE_DATA, "usage-pause.json"),
+      JSON.stringify({ paused_until: new Date(past).toISOString(), until_ms: past }),
+    );
+    const after = callDeliver("claude-code");
+    existsSync(MARKER) && !after.error
+      ? ok("an expired pause: claude-code spawns again")
+      : bad(`expired pause still refused (status=${after.status})`);
+  } finally {
+    if (prevData === undefined) delete process.env.GAFFER_DATA;
+    else process.env.GAFFER_DATA = prevData;
+    if (prevFile !== undefined) process.env.GAFFER_USAGE_PAUSE_FILE = prevFile;
+  }
+}
+
 console.log("== provider=codex / local / unknown FAIL CLOSED — no spawn ==");
 for (const prov of ["codex", "local", "made-up"]) {
   const res = callDeliver(prov);

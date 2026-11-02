@@ -10,6 +10,7 @@ import type { PlanBuildRunner } from "../planBuild.js";
 import type { PollWorkRunner } from "../pollWork.js";
 import type { ProductOwnerRunner } from "../productOwner.js";
 import type { SpecAuthorRunner } from "../specAuthor.js";
+import { DispatchError } from "../../util/errors.js";
 
 /**
  * The actor the API mutates state as when the request carries no per-principal
@@ -60,15 +61,27 @@ export function isSharedOperator(): boolean {
 
 /**
  * The actor for the system/admin-only machine callbacks a full-capability REST caller
- * may drive (mark-merged, reopen-for-review). A human principal — or the shared
- * token's operator — acts as ADMIN under its own id, so the event names who acted
- * (it used to be a fixed system/dispatch-api for everyone). A system or admin
- * principal keeps its own type; an agent passes through unchanged and is refused by
- * the service (agents never merge).
+ * may drive (mark-merged, reopen-for-review). These are admin acts, one rule for REST
+ * and the CLI (whose `--as admin` is refused to a human principal):
+ *   - the shared token's operator acts as ADMIN under its own id (`dispatch-api`), as
+ *     the tokenless CLI's operator may pass `--as admin`;
+ *   - a named principal needs actor type `admin` (a CI bot that records merges is
+ *     minted with `principal create <name> --admin`) and acts under its own id; a
+ *     `human` principal is refused (403 ACTOR_NOT_PERMITTED), nothing written;
+ *   - an agent passes through unchanged and is refused by the service (agents never
+ *     merge); a system actor keeps its type.
  */
-export function operatorActor(): Actor {
+export function operatorActor(what = "this"): Actor {
   const a = apiActor();
   if (a.type !== "human") return a;
+  if (!isSharedOperator()) {
+    const p = apiPrincipal();
+    throw new DispatchError(
+      "ACTOR_NOT_PERMITTED",
+      `${what} is an admin act: principal '${p?.name ?? a.id ?? "?"}' is a human principal; use an admin principal (principal create <name> --admin) or the operator token.`,
+      { actor_type: a.type, ...(p ? { principal: p.name } : {}) },
+    );
+  }
   return a.id !== undefined ? { type: "admin", id: a.id } : { type: "admin" };
 }
 

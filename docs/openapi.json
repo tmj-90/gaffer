@@ -4283,7 +4283,7 @@
           "Review & delivery"
         ],
         "summary": "Merge-complete callback",
-        "description": "ready_for_merge → done. A human principal acts as admin under its own id (the event names who marked it merged); a system or admin principal keeps its type.",
+        "description": "ready_for_merge → done. An admin act, the same rule as the CLI's `--as admin`: the shared operator token acts as admin (`dispatch-api`), a named principal needs actor type admin and acts under its own id (the event names who marked it merged), and a human principal is refused (403 `ACTOR_NOT_PERMITTED`, nothing written).",
         "parameters": [
           {
             "name": "id",
@@ -4317,7 +4317,7 @@
             }
           },
           "403": {
-            "description": "The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`). A named principal acted outside its scope (`SCOPE_DENIED`: `details.scope` names its repos and tickets, `details.reason` is `outside_repo_scope`, `outside_ticket_scope`, `no_repos`, `factory_wide` or `admin_required`, with `details.ticket`, `details.outside_repos` or `details.required` saying what put it outside).",
+            "description": "The calling principal may not do this (`ACTOR_NOT_PERMITTED`). The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`). A named principal acted outside its scope (`SCOPE_DENIED`: `details.scope` names its repos and tickets, `details.reason` is `outside_repo_scope`, `outside_ticket_scope`, `no_repos`, `factory_wide` or `admin_required`, with `details.ticket`, `details.outside_repos` or `details.required` saying what put it outside).",
             "content": {
               "application/json": {
                 "schema": {
@@ -4362,7 +4362,7 @@
           "Review & delivery"
         ],
         "summary": "Reopen a done ticket for re-review",
-        "description": "Back to review (done or ready_for_merge → in_review): the auto-merge resolver's re-approval callback, or a held ticket whose branch moved since review or whose approval missed a repository. `cause` says which, and the `ticket.reopened_for_review` event records it (`merge_conflict_resolved` is true only for `merge_conflict`). Attributed like mark-merged: a human principal acts as admin under its own id.",
+        "description": "Back to review (done or ready_for_merge → in_review): the auto-merge resolver's re-approval callback, or a held ticket whose branch moved since review or whose approval missed a repository. `cause` says which, and the `ticket.reopened_for_review` event records it (`merge_conflict_resolved` is true only for `merge_conflict`). An admin act like mark-merged: the shared operator token or an admin principal (under its own id); a human principal is refused (403 `ACTOR_NOT_PERMITTED`).",
         "parameters": [
           {
             "name": "id",
@@ -4406,7 +4406,7 @@
             }
           },
           "403": {
-            "description": "The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`). A named principal acted outside its scope (`SCOPE_DENIED`: `details.scope` names its repos and tickets, `details.reason` is `outside_repo_scope`, `outside_ticket_scope`, `no_repos`, `factory_wide` or `admin_required`, with `details.ticket`, `details.outside_repos` or `details.required` saying what put it outside).",
+            "description": "The calling principal may not do this (`ACTOR_NOT_PERMITTED`). The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`). A named principal acted outside its scope (`SCOPE_DENIED`: `details.scope` names its repos and tickets, `details.reason` is `outside_repo_scope`, `outside_ticket_scope`, `no_repos`, `factory_wide` or `admin_required`, with `details.ticket`, `details.outside_repos` or `details.required` saying what put it outside).",
             "content": {
               "application/json": {
                 "schema": {
@@ -5577,6 +5577,7 @@
           "Review & delivery"
         ],
         "summary": "Assign the reviewer",
+        "description": "The reviewer the strict policy packs gate on. A named principal names a registered agent's id or a live principal's actor id (anything else is 422 `VALIDATION_ERROR`, `details.reason` `unknown_reviewer`); a scoped principal names only itself or the reviewer already on the ticket (403 `ACTOR_NOT_PERMITTED`). The shared operator token may name anyone, like the tokenless CLI.",
         "parameters": [
           {
             "name": "id",
@@ -5620,7 +5621,7 @@
             }
           },
           "403": {
-            "description": "The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`). A named principal acted outside its scope (`SCOPE_DENIED`: `details.scope` names its repos and tickets, `details.reason` is `outside_repo_scope`, `outside_ticket_scope`, `no_repos`, `factory_wide` or `admin_required`, with `details.ticket`, `details.outside_repos` or `details.required` saying what put it outside).",
+            "description": "The calling principal may not do this (`ACTOR_NOT_PERMITTED`). The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`). A named principal acted outside its scope (`SCOPE_DENIED`: `details.scope` names its repos and tickets, `details.reason` is `outside_repo_scope`, `outside_ticket_scope`, `no_repos`, `factory_wide` or `admin_required`, with `details.ticket`, `details.outside_repos` or `details.required` saying what put it outside).",
             "content": {
               "application/json": {
                 "schema": {

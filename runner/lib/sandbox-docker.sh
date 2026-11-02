@@ -692,7 +692,8 @@ fi
 # env-config channel (no file is written): `*` is scoped to the container, whose only
 # repos are the ones this wrapper mounted.
 # (lib/worker.sh repeats this and the proxy settings below in the agent's own `env -i`
-# list, which would otherwise drop them; keep the two in step.)
+# list, and lib/dod.sh in the pre-gate install's, which would otherwise drop them; keep
+# the three in step.)
 _envs+=( -e "GIT_CONFIG_COUNT=1" -e "GIT_CONFIG_KEY_0=safe.directory" -e "GIT_CONFIG_VALUE_0=*" )
 # Route all egress through the allowlist proxy.
 _envs+=( -e "HTTP_PROXY=http://egress-proxy:8888" -e "HTTPS_PROXY=http://egress-proxy:8888" )

@@ -32,8 +32,10 @@
 // EXIT: 0 the epic was created (or --show / --discard / --list) · 4 nothing created
 //   yet, waiting for you (the planner asked questions, the proposal is shown and needs
 //   --yes, or you said no) · 1 the planner or the create failed, or the draft belongs
-//   to another factory (the reason is printed) · 2 a usage error · 75 paused on the
-//   usage window (no planner turn was run; `gaffer run` uses the same code).
+//   to another factory (the reason is printed) · 2 a usage error · 3 refused by the
+//   budget admission (no dollar cap, or the daily or lifetime cap reached; no planner
+//   turn was run; `gaffer run`'s code for the same refusal) · 75 paused on the usage
+//   window (no planner turn was run; `gaffer run` uses the same code).
 import { chmodSync, existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { dirname, join, resolve } from "node:path";
@@ -50,6 +52,8 @@ const USAGE =
 const HELD = 4;
 // The factory is paused on the usage window (lib/usage-pause.mjs); `gaffer run`'s code.
 const PAUSED = 75;
+// The budget admission refuses the turn (lib/budget-admission.mjs); `gaffer run`'s code.
+const BUDGET_REFUSED = 3;
 // A closed stdout (`gaffer plan --show | head`) ends the run quietly, not with a stack.
 process.stdout.on("error", (e) => {
   if (e && e.code === "EPIPE") process.exit(process.exitCode ?? 0);
@@ -300,6 +304,7 @@ async function createFromDraft(draft) {
     // routeEpics: the body through the route's schema, createEpic, the brownfield hook.
     const body = createEpicBody.parse({ epic, tickets });
     const result = wg.createEpic(body, shared.cliActor());
+    const sessionId = recordSession(wg, draft);
     const featureRepo = brownfieldEpicRepo(wg, body, result);
     if (featureRepo !== null) {
       createEpicFeatureRunner(process.env, wg).trigger({
@@ -309,9 +314,46 @@ async function createFromDraft(draft) {
         summary: (body.epic.description ?? "").trim().slice(0, 300),
       });
     }
-    return { result, deferred };
+    return { result, deferred, sessionId };
   } finally {
     wg.db.close();
+  }
+}
+
+// PLAN-SESSION HISTORY: the dashboard's panel keeps every conversation as a plan
+// session (GET /plan-sessions lists them). A terminal plan is recorded there too, once
+// it is created, as a confirmed session with the panel's message shape: each user turn
+// as its text, each planner turn as the POST /plan-build reply it was. Recorded straight
+// as confirmed, so a session a dashboard panel has open stays its active one. Fail-soft:
+// the epic is already created, so a failure here is a warning, not a failed create.
+function sessionMessages(draft) {
+  const msgs = [];
+  for (const h of draft.history || []) {
+    if (h.role === "user") msgs.push({ role: "user", content: String(h.brief ?? h.answer ?? "") });
+    else if (Array.isArray(h.questions))
+      msgs.push({
+        role: "assistant",
+        content: JSON.stringify({ phase: "clarify", questions: h.questions }),
+      });
+    else if (h.error)
+      msgs.push({ role: "assistant", content: JSON.stringify({ phase: "error", error: h.error }) });
+  }
+  msgs.push({ role: "assistant", content: JSON.stringify({ phase: "plan", plan: draft.plan }) });
+  return msgs;
+}
+function recordSession(wg, draft) {
+  try {
+    return wg.recordPlanSession({
+      brief: String(draft.brief),
+      messages: sessionMessages(draft),
+      plan: draft.plan,
+      status: "confirmed",
+    }).id;
+  } catch (e) {
+    process.stderr.write(
+      `  ! the epic was created, but the plan was not recorded in the plan-session history: ${describeError(e)}\n`,
+    );
+    return null;
   }
 }
 
@@ -332,7 +374,7 @@ async function create(draft) {
   } catch (e) {
     failWith(`could not create the epic, nothing was created: ${describeError(e)}`);
   }
-  const { result, deferred } = made;
+  const { result, deferred, sessionId } = made;
   dropDraft();
   const nums = result.ticketNumbers || [];
   out(
@@ -343,6 +385,8 @@ async function create(draft) {
     out(`    ${deferred} repo link(s) deferred to the bootstrap, which registers the new repo`);
   if (result.agreedRequirements)
     out(`    ${result.agreedRequirements} agreed requirement(s) are criteria of the Final`);
+  if (sessionId)
+    out(`    the conversation is in the dashboard's plan history (plan session ${sessionId})`);
   out(
     `  next: look them over (gaffer wg ticket show <n>, or the board), then ready each one: gaffer wg ticket ready <n>`,
   );
@@ -401,8 +445,28 @@ async function refuseWhilePaused() {
   process.exit(PAUSED);
 }
 
+// BUDGET: the planner turn's own launch passes the budget admission (lib/worker.mjs
+// deliver), which refuses with an error the planner reports like any other. Asked here
+// first, so a refusal leaves the draft unchanged and exits with `gaffer run`'s code for
+// it (3), and asked again after a failed turn, so a cap reached between the two still
+// reads as the budget refusal it is.
+async function budgetRefusal() {
+  const { paidLaunchAdmission } = await import(join(HERE, "..", "lib", "budget-admission.mjs"));
+  const a = paidLaunchAdmission({ kind: "decompose", env: process.env });
+  return a.ok ? null : a.reason;
+}
+function refuseOnBudget(why, changed) {
+  process.stderr.write(
+    `  ✗ the budget refuses a planner turn: ${why}. No model call was made; ` +
+      `${changed ? "the refused turn is noted in the draft" : "the draft is unchanged"}.\n`,
+  );
+  process.exit(BUDGET_REFUSED);
+}
+
 async function round(draft, forcePlan) {
   await refuseWhilePaused();
+  const before = await budgetRefusal();
+  if (before) refuseOnBudget(before, false);
   out(forcePlan ? "Planning with what it has…" : "Asking the planner…");
   const res = await planTurn(draft, forcePlan);
   if (res.phase === "clarify") {
@@ -419,6 +483,10 @@ async function round(draft, forcePlan) {
   const why = res.error || "the planner returned no plan";
   draft.history.push({ role: "assistant", error: why });
   saveDraft(draft);
+  // Only the worker's own refusal (its message is the admission's reason) maps to 3: a
+  // turn that failed otherwise and happened to spend the last of a cap is a failure.
+  const after = await budgetRefusal();
+  if (after && why.includes(after)) refuseOnBudget(after, true);
   failWith(`the planner failed: ${why}`);
 }
 

@@ -280,6 +280,32 @@ describe("wg acting as a scoped principal", () => {
   });
 });
 
+describe("wg acting as a principal: the merge callbacks are admin acts (REST parity)", () => {
+  // POST /tickets/:id/mark-merged and /reopen-for-review refuse a human principal (403
+  // ACTOR_NOT_PERMITTED) and act as an admin principal; the CLI has the same rule.
+  it("a human principal is refused --as admin for mark-merged and reopen-for-review", () => {
+    const w = seed();
+    const env = { GAFFER_PRINCIPAL_TOKEN: w.scoped.token };
+    const n = String(w.onApp.number);
+    for (const args of [
+      ["ticket", "mark-merged", n, "--as", "admin"],
+      ["ticket", "reopen-for-review", n, "--reason", "r", "--resolution", "x", "--as", "admin"],
+    ]) {
+      const r = cli(w.db, args, env);
+      expect(r.status, args.join(" ")).not.toBe(0);
+      expect(r.err, args.join(" ")).toMatchObject({ code: "ACTOR_NOT_PERMITTED" });
+    }
+  });
+
+  it("an admin principal passes the identity check (the transition rule decides)", () => {
+    const w = seed();
+    const env = { GAFFER_PRINCIPAL_TOKEN: w.admin.token };
+    const r = cli(w.db, ["ticket", "mark-merged", String(w.onApp.number), "--as", "admin"], env);
+    expect(r.status).not.toBe(0);
+    expect((r.err as { code?: string } | null)?.code).not.toBe("ACTOR_NOT_PERMITTED");
+  });
+});
+
 /**
  * Adversarial review (exploratory finding rough-scopes-review/cli-*): a principal acts
  * only as itself, and the ticket commands reach no ticket outside its scope.

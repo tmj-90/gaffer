@@ -104,6 +104,50 @@ v="$(PATH="$BIN:$PATH" SECRET_TOKEN=s3cret gaffer_ensure_node_modules "$IW" 2>/d
 grep -q 'token=none' "$MARK" 2>/dev/null && ok "the host primary prime runs with the stripped env" || fail "greenfield prime saw operator secrets: $(cat "$MARK" 2>/dev/null)"
 grep -q 'SKIPPED:sandbox_unavailable' "$RUNNER_DIR/tick.sh" && ok "tick.sh logs the refused install" || fail "tick.sh does not handle SKIPPED:sandbox_unavailable"
 
+echo "== 7: under the docker provider the install container gets the CONTAINER's env, not the host's =="
+# The install runs `env -i <install env> bash -c <install>` inside the container, so the
+# wrapper's own -e list (safe.directory, the egress proxy) never reaches it unless the
+# install env names it too (the same class as worker.sh's agent env, b279e1e). Driven
+# through the REAL lib/sandbox-docker.sh with the recording fake daemon
+# (lib/fake-docker.sh): the "container" is this host, so the stub pnpm records the env
+# the install would have seen inside.
+DBIN="$WORK/dbin"; SBX="$WORK/sbx-path"; DW="$WORK/docker-iwt"; mkdir -p "$DBIN" "$SBX" "$DW" "$WORK/sbx-home" "$WORK/host-tmp"
+cp "$HERE/lib/fake-docker.sh" "$DBIN/docker"; chmod +x "$DBIN/docker"
+for t in bash env mkdir; do ln -s "$(command -v "$t")" "$SBX/$t"; done
+cat > "$SBX/pnpm" <<'STUB'
+#!/usr/bin/env bash
+env > "$PWD/.install-env"
+mkdir -p node_modules/.x
+STUB
+chmod +x "$SBX/pnpm"
+printf '{"name":"x","version":"1.0.0"}' > "$DW/package.json"; printf "lockfileVersion: '9.0'\n" > "$DW/pnpm-lock.yaml"
+printf '%s\n' "$DW" > "$WORK/wr.txt"; : > "$WORK/rr.txt"
+v="$(cd "$DW" && PATH="$DBIN:$SBX:$PATH" FAKE_DOCKER_LOG="$WORK/docker-calls" SANDBOX_PROVIDER=docker \
+  GAFFER_SANDBOX_PATH="$SBX" GAFFER_SANDBOX_HOME="$WORK/sbx-home" GAFFER_DATA="$WORK/ddata" \
+  HTTPS_PROXY=http://host-proxy.invalid:3128 HTTP_PROXY=http://host-proxy.invalid:3128 \
+  https_proxy=http://host-proxy.invalid:3128 NO_PROXY=host.invalid TMPDIR="$WORK/host-tmp" \
+  NODE_EXTRA_CA_CERTS="$WORK/host-ca.pem" \
+  GAFFER_DOD_WRAP="bash $RUNNER_DIR/lib/sandbox-docker.sh $WORK/wr.txt $WORK/rr.txt --" \
+  gaffer_dod_install_deps "$DW" 2>"$WORK/docker-install.err")"
+IE="$DW/.install-env"
+[ "$v" = pnpm ] && [ -f "$IE" ] && ok "the install ran through sandbox-docker.sh under the fake daemon (verdict pnpm)" || fail "docker install verdict '$v': $(tail -3 "$WORK/docker-install.err" 2>/dev/null | tr '\n' '|')"
+grep -qx 'GIT_CONFIG_COUNT=1' "$IE" 2>/dev/null && grep -qx 'GIT_CONFIG_KEY_0=safe.directory' "$IE" && grep -qx 'GIT_CONFIG_VALUE_0=\*' "$IE" \
+  && ok "install container: git's safe.directory reaches the install (a host-owned mount is not 'dubious')" || fail "install container: no safe.directory in the install env"
+grep -qx 'HTTPS_PROXY=http://egress-proxy:8888' "$IE" 2>/dev/null && grep -qx 'HTTP_PROXY=http://egress-proxy:8888' "$IE" && grep -qx 'https_proxy=http://egress-proxy:8888' "$IE" \
+  && ok "install container: the registry fetch goes through the egress proxy" || fail "install container: egress proxy not in the install env ($(grep -i 'proxy=' "$IE" 2>/dev/null | tr '\n' ' '))"
+grep -qx 'NO_PROXY=localhost,127.0.0.1,egress-proxy' "$IE" 2>/dev/null && ok "install container: NO_PROXY is the container's" || fail "install container: NO_PROXY is not the container's ($(grep -i '^no_proxy=' "$IE" 2>/dev/null | tr '\n' ' '))"
+grep -qE 'host-proxy[.]invalid|host[.]invalid' "$IE" 2>/dev/null && fail "install container: the HOST's proxy leaked into the install env" || ok "install container: the host's proxy settings stay on the host"
+grep -qx 'TMPDIR=/tmp' "$IE" 2>/dev/null && ok "install container: TMPDIR is the container's /tmp" || fail "install container: TMPDIR is '$(grep '^TMPDIR=' "$IE" 2>/dev/null)', not /tmp"
+grep -q "host-ca.pem" "$IE" 2>/dev/null && fail "install container: a host CA bundle path leaked in (it does not exist in the container)" || ok "install container: no host CA bundle path"
+grep -qx "HOME=$WORK/sbx-home" "$IE" 2>/dev/null && ok "install container: the image's HOME" || fail "install container: HOME is '$(grep '^HOME=' "$IE" 2>/dev/null)'"
+# The host side (no docker): unchanged, the host's proxy, TMPDIR and CA still apply.
+_hostenv=(); _hosthome=""
+gaffer_dod_install_env _hostenv _hosthome
+[ -n "$_hosthome" ] && rm -rf "$_hosthome"
+_hostenv_s="$(printf '%s\n' "${_hostenv[@]}")"
+grep -qx "TMPDIR=${TMPDIR:-/tmp}" <<<"$_hostenv_s" && ok "host install env: the host TMPDIR (unchanged)" || fail "host install env lost the host TMPDIR"
+grep -qE 'egress-proxy|GIT_CONFIG' <<<"$_hostenv_s" && fail "host install env carries the container's settings" || ok "host install env: no container-only settings"
+
 echo "== 5: source pins — tick.sh hands the agent's wrap to the gates =="
 grep -q 'export GAFFER_DOD_WRAP="$WRAP"' "$RUNNER_DIR/tick.sh" && ok "tick.sh exports GAFFER_DOD_WRAP=\$WRAP under an active provider" || fail "tick.sh should export GAFFER_DOD_WRAP from the agent's WRAP"
 grep -q 'export GAFFER_DOD_WRAP=""' "$RUNNER_DIR/tick.sh" && ok "tick.sh resets GAFFER_DOD_WRAP per tick (no stale wrap leaks across ticks)" || fail "tick.sh should reset GAFFER_DOD_WRAP"

@@ -18,6 +18,9 @@
 #       is gone (its pid now names another process, as after a container restart): it
 #       is taken over, not waited on and refused on every Poll for as long as that
 #       unrelated process lives.
+#   S5  TWO TAKERS: three waiters that all read one dead holder's pid take the poll
+#       lock over one at a time, never two at once (the takeover is guarded).
+#   S6  the same for the repo's mkdir spinlock (gaffer_with_lock without flock).
 # Run: bash runner/test/run-state-lib.test.sh
 # =====================================================================
 . "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
@@ -110,6 +113,53 @@ case "$out" in *"rc=1"*) ok "S4: a lock younger than that bound is still waited 
   _a="$(_gaffer_lock_age "$LOCK/pid")"; [ "${_a:-999}" -lt 60 ] )
 [ "$?" = 0 ] && ok "S4: the holder refreshes its pid file before its tick (the bound counts from there)" || fail "S4: refresh did not touch the pid file"
 rm -rf "$LOCK"
+
+echo "== S5. two waiters take over one dead holder's lock: exactly one holds it =="
+# Two waiters that both read the dead holder's pid used to both remove the lock: the
+# second removed the lock the first had just taken, and both held it. `cat` is slowed
+# in the takers, by a different amount each, so every one has read the dead pid before
+# any acts and they act one after another (the race made certain, not hoped for); each
+# holder then enters a critical section marked with an atomic mkdir, so a second holder
+# inside it at the same time is caught.
+RLOG="$WORK/race.log"
+race_cs() {
+  if mkdir "$WORK/cs" 2>/dev/null; then sleep 1; rmdir "$WORK/cs"; printf 'held ' >> "$RLOG"
+  else printf 'OVERLAP ' >> "$RLOG"; fi
+}
+slow_cat() { _SLOW="$1"; cat() { command cat "$@"; sleep "$_SLOW"; }; }
+rm -rf "$LOCK" "$WORK/cs"; : > "$RLOG"
+mkdir -p "$LOCK"; printf '%s\n' "$DEAD" > "$LOCK/pid"
+TAKERS=""
+for i in 1 2 3; do
+  ( slow_cat "0.$((i * 3))"
+    if GAFFER_POLL_WAIT_TIMEOUT=10 gaffer_poll_lock_acquire >/dev/null; then race_cs; gaffer_poll_lock_release
+    else printf 'refused ' >> "$RLOG"; fi ) &
+  TAKERS="$TAKERS $!"
+done
+for p in $TAKERS; do wait "$p"; done
+case "$(cat "$RLOG")" in
+  *OVERLAP*) fail "S5: two Polls held the poll lock at once after a dead holder ($(cat "$RLOG"))" ;;
+  "held held held ") ok "S5: one dead holder, three waiters: each held the poll lock alone, in turn" ;;
+  *) fail "S5: unexpected outcome: $(cat "$RLOG")" ;;
+esac
+rm -rf "$LOCK" "$WORK/cs" "$LOCK.reap"
+
+echo "== S6. the same for the repo's mkdir spinlock (gaffer_with_lock without flock) =="
+SPIN="$WORK/spin.lock"; : > "$RLOG"
+mkdir -p "$SPIN.d"; printf '%s\n' "$DEAD" > "$SPIN.d/pid"
+TAKERS=""
+for i in 1 2 3; do
+  ( slow_cat "0.$((i * 3))"; _gaffer_can_flock() { return 1; }
+    GAFFER_LOCK_TIMEOUT=10 gaffer_with_lock "$SPIN" race_cs 2>/dev/null || printf 'refused ' >> "$RLOG" ) &
+  TAKERS="$TAKERS $!"
+done
+for p in $TAKERS; do wait "$p"; done
+case "$(cat "$RLOG")" in
+  *OVERLAP*) fail "S6: two holders of the mkdir spinlock at once after a dead holder ($(cat "$RLOG"))" ;;
+  "held held held ") ok "S6: one dead holder, three waiters: each held the spinlock alone, in turn" ;;
+  *) fail "S6: unexpected outcome: $(cat "$RLOG")" ;;
+esac
+rm -rf "$SPIN.d" "$WORK/cs" "$SPIN.d.reap"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "PASS ($PASS checks)"; exit 0; fi

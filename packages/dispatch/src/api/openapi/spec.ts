@@ -844,10 +844,12 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.review,
     summary: "Merge-complete callback",
     description:
-      "ready_for_merge → done. A human principal acts as admin under its own id (the event " +
-      "names who marked it merged); a system or admin principal keeps its type.",
+      "ready_for_merge → done. An admin act, the same rule as the CLI's `--as admin`: the " +
+      "shared operator token acts as admin (`dispatch-api`), a named principal needs actor " +
+      "type admin and acts under its own id (the event names who marked it merged), and a " +
+      "human principal is refused (403 `ACTOR_NOT_PERMITTED`, nothing written).",
     capability: "full",
-    responses: [ok("`{ ticket, event_id }`.", "TicketTransition"), notFound, conflict],
+    responses: [ok("`{ ticket, event_id }`.", "TicketTransition"), notFound, forbidden, conflict],
   },
   {
     method: "POST",
@@ -859,12 +861,14 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
       "re-approval callback, or a held ticket whose branch moved since review or whose " +
       "approval missed a repository. `cause` says which, and the `ticket.reopened_for_review` " +
       "event records it (`merge_conflict_resolved` is true only for `merge_conflict`). " +
-      "Attributed like mark-merged: a human principal acts as admin under its own id.",
+      "An admin act like mark-merged: the shared operator token or an admin principal " +
+      "(under its own id); a human principal is refused (403 `ACTOR_NOT_PERMITTED`).",
     capability: "full",
     body: "reopenForReviewBody",
     responses: [
       ok("`{ ticket_id, status, event_id }`.", "ReopenedForReview"),
       notFound,
+      forbidden,
       conflict,
       invalid,
     ],
@@ -1035,9 +1039,15 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     path: "/tickets/:id/reviewer",
     tag: T.review,
     summary: "Assign the reviewer",
+    description:
+      "The reviewer the strict policy packs gate on. A named principal names a registered " +
+      "agent's id or a live principal's actor id (anything else is 422 `VALIDATION_ERROR`, " +
+      "`details.reason` `unknown_reviewer`); a scoped principal names only itself or the " +
+      "reviewer already on the ticket (403 `ACTOR_NOT_PERMITTED`). The shared operator token " +
+      "may name anyone, like the tokenless CLI.",
     capability: "full",
     body: "assignReviewerBody",
-    responses: [ok("`{ ticket_id, reviewer, event_id }`."), notFound, invalid],
+    responses: [ok("`{ ticket_id, reviewer, event_id }`."), notFound, forbidden, invalid],
   },
   {
     method: "GET",

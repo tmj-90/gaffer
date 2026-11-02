@@ -81,13 +81,15 @@ dashboard turn would be.
   nothing to create, and the draft names the factory it was planned in (its data
   dir and dispatch database): a draft copied elsewhere, or `--yes` against another
   `DISPATCH_DB`, is refused. While the factory is paused on the usage window a
-  turn isn't started (exit 75). It exits 0 when the epic is created and 4 while
+  turn isn't started (exit 75), and a budget refusal (no dollar cap, or a cap
+  reached) exits 3 like `gaffer run`'s. It exits 0 when the epic is created and 4 while
   nothing is created yet (questions asked, a proposal waiting for `--yes`, or a no
   or Ctrl-D at the prompt).
 - `--repo <name>` extends a registered repo (brownfield), `--file <path>` reads
   the brief from a file, `--show` prints the pending proposal, `--discard` drops
   it, and `--list` lists the epics. The conversation between runs is kept in
-  `.gaffer/plan-draft.json`.
+  `.gaffer/plan-draft.json`, and once the epic is created it is recorded in the
+  dashboard's plan-session history (`GET /plan-sessions`) beside the panel's own.
 
 ### Greenfield vs brownfield
 
@@ -900,7 +902,9 @@ the reset time Claude Code printed plus a minute (a 5-hour, weekly or per-model
 limit alike, in both the older and the current CLI wording), or the **Usage-limit pause**
 setting (`GAFFER_USAGE_PAUSE_DEFAULT_MIN`, default 60 minutes, never below 10) when
 it printed none. No tick claims work meanwhile; `gaffer run --daemon`, the loop and
-a worker pool sleep instead of spinning. `gaffer status` and the **Health** view
+a worker pool sleep instead of spinning. The dashboard's model calls (Plan a build,
+Suggest work, onboarding analysis, the tester, the merge resolver) start nothing
+either: the worker seam refuses them before it spawns, with the same pause line. `gaffer status` and the **Health** view
 show "Paused until <time>: usage limit", and the ticket's timeline records the
 refusal. The pause lifts on its own. An overnight run that hits its window no longer
 parks good tickets. The same holds when the refused call was a new repo's

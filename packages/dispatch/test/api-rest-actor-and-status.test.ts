@@ -6,8 +6,10 @@
  *             (and came back as a 500). It now runs as the calling principal: a human
  *             PASS is recorded as a waiver (provenance "human"); a bound PASS is
  *             accepted; a stale contract_hash is a 409 CONTRACT_MISMATCH.
- *   merge   — mark-merged / reopen-for-review name the calling principal (as admin)
- *             instead of system/dispatch-api.
+ *   merge:  mark-merged / reopen-for-review name the calling principal instead of
+ *             system/dispatch-api. They are admin acts: a named principal needs actor
+ *             type admin (a CI bot recording a merge is an admin principal), the same
+ *             rule as the CLI's `--as admin`; a human principal is refused, 403.
  *   status  — deliberate refusals (TEST_CONTRACT_LEAK, …) are 4xx, never 500.
  */
 
@@ -40,13 +42,17 @@ afterEach(async () => {
   else process.env.DISPATCH_API_TOKEN = saved;
 });
 
-async function start(): Promise<{ base: string; wg: Dispatch; token: string }> {
+async function start(): Promise<{ base: string; wg: Dispatch; token: string; adminToken: string }> {
   process.env.DISPATCH_AUDIT_OFF = "1";
   process.env.DISPATCH_API_TOKEN = FULL;
   const wg = Dispatch.open(":memory:", new TestClock(), nonEmptyDiffRunner, {
     testingEnabled: false,
   });
   const { token } = wg.createPrincipal({ name: "ci-bot" }, human);
+  const { token: adminToken } = wg.createPrincipal(
+    { name: "ci-merger", actorType: "admin" },
+    human,
+  );
   const server = createApiServer(wg);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   close = () =>
@@ -56,7 +62,12 @@ async function start(): Promise<{ base: string; wg: Dispatch; token: string }> {
         resolve();
       }),
     );
-  return { base: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, wg, token };
+  return {
+    base: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+    wg,
+    token,
+    adminToken,
+  };
 }
 
 async function post(base: string, path: string, token: string, body?: unknown) {
@@ -181,24 +192,51 @@ describe("REST tester verdict runs as the calling principal", () => {
 });
 
 describe("REST merge callbacks name the principal", () => {
-  it("mark-merged writes the event as admin/<principal actor_id>", async () => {
-    const { base, wg, token } = await start();
+  it("mark-merged writes the event as admin/<admin principal actor_id>", async () => {
+    const { base, wg, adminToken } = await start();
     const id = readyForMerge(wg);
-    const r = await post(base, `/tickets/${id}/mark-merged`, token);
+    const r = await post(base, `/tickets/${id}/mark-merged`, adminToken);
     expect(r.status).toBe(200);
-    expect(lastEvent(wg, id)).toMatchObject({ actor_type: "admin", actor_id: "ci-bot" });
+    expect(lastEvent(wg, id)).toMatchObject({ actor_type: "admin", actor_id: "ci-merger" });
   });
 
-  it("reopen-for-review writes the event as admin/<principal actor_id>", async () => {
-    const { base, wg, token } = await start();
+  it("reopen-for-review writes the event as admin/<admin principal actor_id>", async () => {
+    const { base, wg, adminToken } = await start();
     const id = readyForMerge(wg);
     wg.markMerged(id, { type: "system" });
-    const r = await post(base, `/tickets/${id}/reopen-for-review`, token, {
+    const r = await post(base, `/tickets/${id}/reopen-for-review`, adminToken, {
       reason: "conflict resolved",
       resolution: "kept both",
     });
     expect(r.status).toBe(200);
-    expect(lastEvent(wg, id)).toMatchObject({ actor_type: "admin", actor_id: "ci-bot" });
+    expect(lastEvent(wg, id)).toMatchObject({ actor_type: "admin", actor_id: "ci-merger" });
+  });
+
+  it("a human principal may not mark a ticket merged (403, nothing written), like the CLI's --as admin", async () => {
+    const { base, wg, token } = await start();
+    const id = readyForMerge(wg);
+    const before = lastEvent(wg, id);
+    const r = await post(base, `/tickets/${id}/mark-merged`, token);
+    expect(r.status).toBe(403);
+    expect((r.body.error as { code: string; message: string }).code).toBe("ACTOR_NOT_PERMITTED");
+    expect((r.body.error as { message: string }).message).toMatch(/admin/);
+    expect(wg.resolveTicket(id).status).toBe("ready_for_merge");
+    expect(lastEvent(wg, id)).toEqual(before);
+  });
+
+  it("a human principal may not reopen a done ticket for review (403, nothing written)", async () => {
+    const { base, wg, token } = await start();
+    const id = readyForMerge(wg);
+    wg.markMerged(id, { type: "system" });
+    const before = lastEvent(wg, id);
+    const r = await post(base, `/tickets/${id}/reopen-for-review`, token, {
+      reason: "conflict resolved",
+      resolution: "kept both",
+    });
+    expect(r.status).toBe(403);
+    expect((r.body.error as { code: string }).code).toBe("ACTOR_NOT_PERMITTED");
+    expect(wg.resolveTicket(id).status).toBe("done");
+    expect(lastEvent(wg, id)).toEqual(before);
   });
 
   it("the shared token still works, attributed to its operator id", async () => {

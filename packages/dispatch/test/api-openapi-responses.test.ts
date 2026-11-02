@@ -181,6 +181,13 @@ describe("OpenAPI response schemas match the live routes", () => {
     wg.markReady(t1.id, human);
     deliver(t1.id);
     await expectContract("GET /tickets/:id/diff", `/tickets/${t1.id}/diff`);
+    // REVIEW TELEMETRY: a person opened the ticket in Review, and a raw view of it.
+    await expectContract("POST /tickets/:id/review-opened", `/tickets/${t1.id}/review-opened`, {});
+    await expectContract(
+      "POST /tickets/:id/review-raw-opened",
+      `/tickets/${t1.id}/review-raw-opened`,
+      { what: "full_diff" },
+    );
     await expectContract(
       "POST /tickets/:id/review/approve",
       `/tickets/${t1.id}/review/approve`,

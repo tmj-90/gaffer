@@ -38,6 +38,9 @@ const inputs = {
 const longInputs = {
   "2048x bun -c --yes": `yarn ${"bun -c --yes ".repeat(2048)}`,
   "2048x node <<": `node ${"x << ".repeat(2048)}`,
+  // The decoded-payload rule scanned from every decoder word to the end of the line.
+  "8000x base64 |": `${"base64 |".repeat(8000)}`,
+  "9000x base64": `${"base64 ".repeat(9000)}`,
 };
 
 // Rule level: a failed match (`zz` is no command) is where backtracking explodes.

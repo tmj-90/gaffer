@@ -119,6 +119,7 @@
 8	onboard-analyze.test.mjs
 8	run-harness.test.sh
 8	safety-hook-credentials.test.mjs
+4	safety-hook-spelling.test.mjs
 10	safety-hook.test.mjs
 8	skills-install.test.sh
 8	tick-unrecoverable-claim-release.test.sh

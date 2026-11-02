@@ -2,6 +2,7 @@ import type { FeatureInput, RepoDigestInput } from "../memory/client.js";
 import type { ScopeNodeSummary } from "../dispatch/client.js";
 import type { RepoMapping } from "./contextStore.js";
 import type { OnboardingScanResult } from "./onboardScan.js";
+import { redactRemoteUrl } from "../safety/repoBoundary.js";
 
 /**
  * Repo Digest + feature inventory derivation (FG onboarding extension).
@@ -78,7 +79,7 @@ function buildOverview(input: DeriveUnderstandingInput): string {
   const { name, scan } = input;
   const sentences: string[] = [];
   sentences.push(`'${name}' is ${stackLabel(scan.stack)} repository.`);
-  if (scan.remoteUrl) sentences.push(`Its origin remote is ${scan.remoteUrl}.`);
+  if (scan.remoteUrl) sentences.push(`Its origin remote is ${redactRemoteUrl(scan.remoteUrl)}.`);
   if (scan.riskSignals.length > 0) {
     sentences.push(`Notable signals: ${scan.riskSignals.join(", ")}.`);
   }

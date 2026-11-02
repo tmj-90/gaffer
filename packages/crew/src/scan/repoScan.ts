@@ -1,4 +1,5 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
+import { readRepoText } from "../safety/repoBoundary.js";
 import { basename, join } from "node:path";
 
 import { systemGitAdapter, type GitAdapter } from "../adapters/gitAdapter.js";
@@ -78,7 +79,7 @@ function detectNode(dir: string): DetectedStack {
 function readPackageScripts(dir: string): Record<string, string> | null {
   if (!fileExists(dir, "package.json")) return null;
   try {
-    const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as {
+    const pkg = JSON.parse(readRepoText(dir, "package.json")) as {
       scripts?: Record<string, string>;
     };
     return pkg.scripts ?? {};
@@ -89,7 +90,7 @@ function readPackageScripts(dir: string): Record<string, string> | null {
 
 function detectDeps(dir: string): Record<string, string> {
   try {
-    const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as {
+    const pkg = JSON.parse(readRepoText(dir, "package.json")) as {
       dependencies?: Record<string, string>;
       devDependencies?: Record<string, string>;
     };
@@ -133,7 +134,7 @@ function detectPython(dir: string): DetectedStack {
 function readsPyprojectTool(dir: string, tool: string): boolean {
   if (!fileExists(dir, "pyproject.toml")) return false;
   try {
-    return readFileSync(join(dir, "pyproject.toml"), "utf8").includes(tool);
+    return readRepoText(dir, "pyproject.toml").includes(tool);
   } catch {
     return false;
   }
@@ -172,7 +173,7 @@ function detectJava(dir: string): DetectedStack {
 
 function readsFile(dir: string, name: string, re: RegExp): boolean {
   try {
-    return re.test(readFileSync(join(dir, name), "utf8"));
+    return re.test(readRepoText(dir, name));
   } catch {
     return false;
   }

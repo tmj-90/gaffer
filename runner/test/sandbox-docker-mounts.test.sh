@@ -12,8 +12,9 @@
 #       ledgers, other workers' mcp-runtime files with their claim tokens, every
 #       sibling delivery worktree) and the worktree's `.git` pointed into the
 #       UNMOUNTED real repo so git failed inside → the DB dir is mounted, everything
-#       else in it is masked; the repo's `.git` is mounted read-only with only the
-#       commit-path sub-dirs read-write.
+#       else in it is masked; git works through a PRIVATE git dir mounted at the
+#       worktree's gitdir path, with the host's objects read-only and nothing else of
+#       the host's `.git` mounted (external review #9; sandbox-docker-git-isolation.test.sh).
 # Needs git + node. Run: bash test/sandbox-docker-mounts.test.sh
 # =====================================================================
 . "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
@@ -77,11 +78,15 @@ _abs_dir() { (cd "$1" 2>/dev/null && pwd -P); }
 COMMON="$(cd "$WT" && _abs_dir "$COMMON")"
 GITDIR="$(cd "$WT" && _abs_dir "$(git rev-parse --git-dir)")"
 has_mount "$WT:$WT:rw"                      && ok "delivery worktree mounted rw"                 || fail "worktree rw mount missing"
-has_mount "$COMMON:$COMMON:ro"              && ok "repo .git (common dir) mounted READ-ONLY"      || fail ".git common dir should be mounted ro (argv: $ARGV)"
-has_mount "$COMMON/objects:$COMMON/objects:rw" && ok ".git/objects rw (new commits)"             || fail ".git/objects should be rw"
-has_mount "$COMMON/refs:$COMMON/refs:rw"    && ok ".git/refs rw (branch tip)"                    || fail ".git/refs should be rw"
-has_mount "$COMMON/logs:$COMMON/logs:rw"    && ok ".git/logs rw (reflog)"                        || fail ".git/logs should be rw"
-has_mount "$GITDIR:$GITDIR:rw"              && ok ".git/worktrees/<this> rw (index, HEAD)"       || fail "worktree private git dir should be rw"
+# External review #9: the container gets a PRIVATE git dir mounted at the worktree's
+# gitdir path; the host's .git is reached only through a read-only objects mount.
+has_mount "$COMMON:$COMMON:ro"              && fail "the host .git common dir is mounted (it should not be, not even ro)" || ok "host .git (common dir) not mounted"
+has_mount "$COMMON/objects:$COMMON/objects:ro" && ok ".git/objects mounted READ-ONLY (history via alternates)" || fail ".git/objects should be ro"
+has_mount "$COMMON/objects:$COMMON/objects:rw" && fail ".git/objects must not be rw" || ok ".git/objects not writable"
+has_mount "$COMMON/refs:$COMMON/refs:rw"    && fail ".git/refs must not be rw (external review #9)" || ok ".git/refs not writable"
+has_mount "$COMMON/logs:$COMMON/logs:rw"    && fail ".git/logs must not be rw" || ok ".git/logs not writable"
+grep -qE -- "^$GAFFER_DATA/sandbox-git/sandbox-git\.[^:]+:$GITDIR:rw\$" <<<"$ARGV" && ok "a private git dir is mounted rw at the worktree's gitdir path" || fail "private git dir mount at $GITDIR missing"
+has_mount "$GITDIR:$GITDIR:rw"              && fail "the host's own worktree git dir must not be rw" || ok "host .git/worktrees/<this> not mounted"
 grep -qxF -- "$COMMON/config:$COMMON/config:rw" <<<"$ARGV" && fail ".git/config must not be rw" || ok ".git/config is not writable"
 has_arg "GIT_CONFIG_KEY_0=safe.directory" && ok "git safe.directory set for the uid-mismatched mounts" || fail "safe.directory env missing"
 
@@ -167,7 +172,10 @@ ARGV="$(GAFFER_SANDBOX_DRY_RUN=1 GAFFER_SANDBOX_PROFILE=validation GAFFER_MCP_BR
   bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- bash -c 'pnpm test' 2>"$WORK/stderr.val")"
 # The worktree itself lives under $GAFFER_DATA/worktrees — that rw mount is the point;
 # NOTHING ELSE under $GAFFER_DATA may be referenced.
-[ -n "$(grep -F -- "$GAFFER_DATA" <<<"$ARGV" | grep -vF -- "$WT")" ] && fail "validation profile references GAFFER_DATA beyond the worktree: $(printf '%s\n' "$ARGV" | grep -F -- "$GAFFER_DATA" | grep -vF -- "$WT" | head -3 | tr '\n' ' ')" || ok "validation: NOTHING under GAFFER_DATA but the worktree is mounted (no DBs, no ledgers, no socket)"
+# (The worktree's private git dir is built under $GAFFER_DATA/sandbox-git/ but mounted at
+# the gitdir path in the repo's .git: it is fresh, not any of $GAFFER_DATA's contents.)
+_beyond() { grep -F -- "$GAFFER_DATA" <<<"$ARGV" | grep -vF -- "$WT" | grep -vE -- "^$GAFFER_DATA/sandbox-git/sandbox-git\.[^:]+:$GITDIR:rw\$"; }
+[ -n "$(_beyond)" ] && fail "validation profile references GAFFER_DATA beyond the worktree: $(_beyond | head -3 | tr '\n' ' ')" || ok "validation: NOTHING under GAFFER_DATA but the worktree is mounted (no DBs, no ledgers, no socket)"
 has_mount "$WT:$WT:rw" && ok "validation: the worktree (the tests) is mounted rw" || fail "validation: worktree mount missing"
 has_arg ANTHROPIC_API_KEY && fail "validation profile forwards the model credential" || ok "validation: ANTHROPIC_API_KEY NOT forwarded (a test suite needs no model)"
 grep -q 'credentials.json' <<<"$ARGV" && fail "validation profile mounts the credentials file" || ok "validation: no credentials file mounted"
@@ -260,7 +268,7 @@ grep -q 'not mounting any git metadata' "$WORK/stderr.h" && ok "WARNING explains
 # And the legitimate linked worktree keeps its git mounts (regression guard).
 printf '%s\n' "$WT2" > "$WRF"
 ARGV="$(dry)"
-has_mount "$P2C/.git:$P2C/.git:ro" && ok "a genuine linked worktree still gets its repo's .git ro" || fail "genuine .git mount missing"
+has_mount "$P2C/.git/objects:$P2C/.git/objects:ro" && grep -qE -- ":$P2C/.git/worktrees/[^:]+:rw\$" <<<"$ARGV" && ok "a genuine linked worktree still gets its objects ro + a private git dir" || fail "genuine .git mount missing"
 
 # The agent's `.claude/skills` link (bridge / none mode) follows the same rule: no link
 # a write root holds chooses a mount. The runner installs skills as real copies inside
@@ -332,7 +340,7 @@ gaffer_link_node_modules "$SP" "$SWT"
 printf '%s\n' "$SWT" > "$WRF"
 ARGV="$(dry)"
 has_mount "$SP/node_modules:$SP/node_modules:ro" && ok "a primary path with a space: its node_modules is mounted as one argument" || fail "space-path node_modules mount missing: $(grep -F node_modules <<<"$ARGV" | tr '\n' ' ')"
-has_mount "$SP/.git:$SP/.git:ro" && ok "a primary path with a space: its .git is verified and mounted" || fail "space-path .git mount missing"
+has_mount "$SP/.git/objects:$SP/.git/objects:ro" && ok "a primary path with a space: its .git is verified and mounted" || fail "space-path .git mount missing"
 
 echo "== (j) legacy layout: the .claude/skills link cannot unmask a \$GAFFER_DATA entry (independent review) =="
 # In the legacy layout (the default on macOS) every top-level entry of the rw-mounted

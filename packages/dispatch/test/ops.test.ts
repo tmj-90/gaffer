@@ -154,11 +154,12 @@ describe("stats --json projection shape", () => {
     clock.advanceSeconds(3600);
     wg.createDecision({ title: "Q", question: "?", severity: "human_required" }, human);
 
-    const json = JSON.stringify(computeStats(wg.db, clock.now()), null, 2);
+    const json = JSON.stringify(computeStats(wg.db, clock.now(), {}), null, 2);
     const parsed = JSON.parse(json) as StatsReport;
 
     expect(Object.keys(parsed).sort()).toEqual([
       "acceptance",
+      "acceptedChange",
       "activeClaims",
       "openDecisions",
       "staleClaims",
@@ -176,6 +177,8 @@ describe("stats --json projection shape", () => {
       failed: 0,
       epics: [],
     });
+    // COST PER ACCEPTED CHANGE: null without a usage ledger (never a fake $0).
+    expect(parsed.acceptedChange).toBeNull();
     expect(typeof parsed.openDecisions).toBe("number");
     expect(typeof parsed.activeClaims).toBe("number");
     expect(typeof parsed.staleClaims).toBe("number");

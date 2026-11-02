@@ -3164,6 +3164,12 @@ function checkCommand(cmd) {
         `bash write inside .git (hooks / exec-hijack surface): ${target} — "${cmd.slice(0, 120)}"`,
       );
     }
+    if (target !== UNVERIFIABLE_TARGET) {
+      // A bash write's content is not known: a .gitattributes write is judged on the
+      // whole command (a driver assignment anywhere in it is refused).
+      const why = gitExecSurfaceReason(target, DRIVER_SELECTION.test(cmd) ? null : "");
+      if (why) block(`bash ${why} — "${cmd.slice(0, 120)}"`);
+    }
     if (target !== UNVERIFIABLE_TARGET && AGENT_SETTINGS.test(target)) {
       block(
         `bash write to the agent settings file (safety-hook removal surface): ${target} — "${cmd.slice(0, 120)}"`,
@@ -3224,7 +3230,134 @@ function checkCommand(cmd) {
   allow();
 }
 
-function checkWrite(filePath, tool = "Write") {
+// =====================================================================
+// GIT EXECUTION SURFACE (external review #9, finding 2)
+// ---------------------------------------------------------------------
+// Git runs code that its configuration names, and in many repositories that code is a
+// TRACKED file: hook scripts under a relative core.hooksPath (husky's `.husky/`,
+// `.githooks/`), hook-manager configs (lefthook, pre-commit, overcommit) whose entries
+// are commands, and git config files pulled in by include.path (`.gitconfig`) or read by
+// git-lfs (`.lfsconfig`), which can set hooksPath, filters, diff/merge drivers and
+// helpers. `.gitattributes` selects which configured filter/diff/merge driver runs on a
+// path. An agent edit to any of these is an edit to what git executes. The runner's own
+// host git runs with hooks and in-repo drivers neutralised (lib/git-safe.mjs); this is
+// the second layer: the agent may not edit them at all. A person changes them.
+const HOOK_SURFACE_DIR = /(^|\/)(\.husky|\.githooks|\.git-hooks)(\/|$)/;
+const HOOK_SURFACE_FILE =
+  /(^|\/)(\.?lefthook(-local)?\.ya?ml|\.pre-commit-config\.ya?ml|\.overcommit\.ya?ml|\.gitconfig|[\w.-]+\.gitconfig|\.lfsconfig)$/i;
+const DRIVER_SELECTION = /(^|[\s!-])(filter|diff|merge)=/;
+
+/** git output for a lookup in `dir` (never runs hooks or fsmonitor), or "". */
+function gitLookup(dir, args) {
+  try {
+    const r = spawnSync(
+      "git",
+      ["-C", dir, "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", ...args],
+      { encoding: "utf8", timeout: 4000, stdio: ["ignore", "pipe", "ignore"] },
+    );
+    return r.status === 0 ? String(r.stdout ?? "") : "";
+  } catch {
+    return "";
+  }
+}
+/** The nearest existing directory at or above `abs` (git needs a real cwd). */
+function existingDir(abs) {
+  let d = abs;
+  for (let i = 0; i < 64; i++) {
+    try {
+      if (lstatSync(d).isDirectory()) return d;
+    } catch {
+      /* keep walking up */
+    }
+    const up = dirname(d);
+    if (up === d) return null;
+    d = up;
+  }
+  return null;
+}
+const insidePath = (p, root) => p === root || p.startsWith(root.endsWith("/") ? root : root + "/");
+
+/**
+ * Why writing `abs` would change what git executes, or null. `content` is the text being
+ * written (Write content / Edit new_string), or null when it is not known (a bash write).
+ */
+function gitExecSurfaceReason(abs, content) {
+  if (HOOK_SURFACE_DIR.test(abs)) {
+    return `edit to a git hook script (${abs}): hooks run on every commit, checkout and merge, so a person changes them`;
+  }
+  if (HOOK_SURFACE_FILE.test(abs)) {
+    return `edit to repository git config or a hook manager's config (${abs}): it can name programs git runs (hooksPath, filters, diff/merge drivers, helpers), so a person changes it`;
+  }
+  if (/(^|\/)\.gitattributes$/.test(abs) && (content === null || DRIVER_SELECTION.test(content))) {
+    return `edit to .gitattributes that assigns a filter, diff or merge driver (${abs}): a driver is a program git runs, so a person changes it`;
+  }
+  // The repository's own configuration: its core.hooksPath directory and every file it
+  // includes, mapped onto this checkout (a linked worktree shares the primary's config).
+  const dir = existingDir(dirname(abs));
+  if (!dir) return null;
+  const rp = gitLookup(dir, [
+    "rev-parse",
+    "--path-format=absolute",
+    "--show-toplevel",
+    "--git-common-dir",
+  ])
+    .split("\n")
+    .map((l) => l.trim());
+  const top = rp[0];
+  if (!top) return null;
+  let topC = top;
+  try {
+    topC = realpathSync(top);
+  } catch {
+    /* keep the spelling git gave */
+  }
+  const common = rp[1] ?? "";
+  const primary = common && basename(common) === ".git" ? dirname(common) : topC;
+  // Map a path in the primary checkout onto this checkout (same relative path).
+  const onto = (p) =>
+    insidePath(p, primary) && p !== primary ? resolve(topC, p.slice(primary.length + 1)) : p;
+  const cfg = gitLookup(dir, [
+    "config",
+    "--show-origin",
+    "--get-regexp",
+    "^(core\\.hookspath|include(if\\..*)?\\.path)$",
+  ]);
+  for (const line of cfg.split("\n")) {
+    const m = /^file:(\S+)\s+(\S+)\s+(.+)$/.exec(line.trim());
+    if (!m) continue;
+    const [, originRel, key, value] = m;
+    const v = expandTildePath(value) ?? value;
+    if (key.toLowerCase() === "core.hookspath") {
+      if (v === "/dev/null") continue;
+      const h = resolve(topC, v);
+      if (insidePath(abs, h) || insidePath(abs, onto(h))) {
+        return `edit to a git hook script in core.hooksPath (${abs}): hooks run on every commit, checkout and merge, so a person changes them`;
+      }
+    } else {
+      const inc = resolve(dirname(resolve(dir, originRel)), v);
+      if (abs === inc || abs === onto(inc)) {
+        return `edit to a git config file the repository includes (${abs}): it can name programs git runs, so a person changes it`;
+      }
+    }
+  }
+  return null;
+}
+
+/** The text a file tool would write, or null when the payload does not carry it. */
+function writeContent(input) {
+  if (!input || typeof input !== "object") return null;
+  const parts = [];
+  for (const k of ["content", "new_string", "new_source"]) {
+    if (typeof input[k] === "string") parts.push(input[k]);
+  }
+  if (Array.isArray(input.edits)) {
+    for (const e of input.edits)
+      if (e && typeof e.new_string === "string") parts.push(e.new_string);
+  }
+  return parts.length ? parts.join("\n") : null;
+}
+
+function checkWrite(filePath, tool = "Write", input = null) {
   // Fail CLOSED on a missing/empty path: a legitimate Write/Edit tool call always
   // carries a non-empty file_path, so an absent one is malformed input to a security
   // boundary — allowing it would be an unbounded write escape.
@@ -3241,6 +3374,10 @@ function checkWrite(filePath, tool = "Write") {
   if (GIT_INTERNAL.test(abs)) block(`write inside .git: ${filePath}`);
   if (AGENT_SETTINGS.test(abs)) {
     block(`write to the agent settings file (would strip the safety hook): ${filePath}`);
+  }
+  {
+    const why = gitExecSurfaceReason(abs, writeContent(input));
+    if (why) block(why);
   }
   // Repo-access boundary: a write is allowed ONLY inside a write-root. A target
   // in a read-only root, or outside all roots, is denied.
@@ -3537,6 +3674,7 @@ function runDecision(raw) {
         return checkWrite(
           String(input.file_path ?? input.filePath ?? input.notebook_path ?? ""),
           tool,
+          input,
         );
       case "Read":
         return checkRead(String(input.file_path ?? input.filePath ?? ""));

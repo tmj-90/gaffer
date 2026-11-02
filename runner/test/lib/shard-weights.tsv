@@ -23,6 +23,10 @@
 #   gaffer-plan, gaffer-lore, poll-overlap-run-state: new after that run, the integration
 #   branch's estimates (poll-overlap-run-state: Linux alone under shared load, 90s, two real
 #   Polls and a loop pass).
+#   From round 4 of the integration branch, its estimates: worker-command 100 (four tick.sh
+#   runs and the seam checks; Linux alone under shared load: 145s), sandbox-docker-delivery-seam
+#   70 (Linux alone: 35s, one real tick like branch-retention), land-ignored-file 100,
+#   git-hooks-host 45, onboard-boundary 20, sandbox-docker-git-isolation 3, sandbox-docker-delivery 1.
 321	land-tester-replay.test.sh
 297	merge-lane.test.sh
 242	land-tester-replay-proof.test.sh
@@ -41,6 +45,8 @@
 120	cleanup-ownership.test.sh
 119	usage-limit-tick.test.sh
 107	security-review-lane.test.sh
+100	land-ignored-file.test.sh
+100	worker-command.test.sh
 99	branch-switch-recovery.test.sh
 97	secondary-pr-landing.test.sh
 97	tick-deadline.test.sh
@@ -48,6 +54,7 @@
 90	poll-overlap-run-state.test.sh
 89	resume-abort.test.sh
 84	e2e-memory-routing.test.sh
+70	sandbox-docker-delivery-seam.test.sh
 65	rework-final-trail.test.sh
 64	e2e-release-gate-ci-required.test.sh
 64	setup-error-circuit.test.sh
@@ -64,6 +71,7 @@
 48	merge-ticket.test.mjs
 47	replay-recovery.test.mjs
 46	ci-gate-needs-pr.test.sh
+45	git-hooks-host.test.sh
 44	parallel-stop.test.sh
 43	status.test.sh
 43	tick-dead-assignments.test.sh
@@ -103,6 +111,7 @@
 21	gaffer-colour.test.sh
 21	memory-audit-path.test.sh
 20	gaffer-lore.test.sh
+20	onboard-boundary.test.sh
 19	budget-admission.test.sh
 19	merge-one-at-a-time.test.sh
 18	onboard-analyze.test.mjs
@@ -208,6 +217,7 @@
 3	release-scripts.test.mjs
 3	role-skill-mounts.test.sh
 3	safety-hook-search.test.mjs
+3	sandbox-docker-git-isolation.test.sh
 3	turn-caps.test.sh
 3	worker-mcp-bridge.test.sh
 2	acceptance-lane.test.sh
@@ -291,6 +301,7 @@
 1	rework-escalation.test.sh
 1	safety-hook-front-door.test.mjs
 1	safety-hook-installs.test.mjs
+1	sandbox-docker-delivery.test.sh
 1	security-md-planning-agents.test.mjs
 1	self-op-ban.test.sh
 1	settings-consumers.test.mjs

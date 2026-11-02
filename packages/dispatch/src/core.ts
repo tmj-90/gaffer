@@ -2134,6 +2134,15 @@ export class Dispatch {
     return result;
   }
 
+  /** REQUIRED CI: record that a ticket needs CI before review exposes it (system/admin). */
+  recordCiRequired(
+    ref: string,
+    input: { detail?: string },
+    actor: Actor,
+  ): { required: true; eventId: string | null } {
+    return this.reviewGateSvc.recordCiRequired(ref, input, actor);
+  }
+
   /** REQUIRED CI: record a CI result for a ticket's candidate commit (system/admin). */
   recordCiResult(
     ref: string,

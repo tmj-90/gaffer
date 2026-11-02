@@ -596,8 +596,38 @@ _gaffer_inherit_amb_spawn() {  # stdin: plan JSON; args: <idx> [ticket] → answ
     rm -rf "$scratch"
     return 0
   fi
-  ( cd "$scratch" && gaffer_timeout "${GAFFER_INHERIT_AMB_TIMEOUT:-300}" "$bin" "${argv[@]}" ) \
-    >"$scratch/out.json" 2>/dev/null || rc=$?
+  if [ "${GAFFER_WORKER_PROVIDER:-claude-code}" = claude-code ]; then
+    ( cd "$scratch" && gaffer_timeout "${GAFFER_INHERIT_AMB_TIMEOUT:-300}" "$bin" "${argv[@]}" ) \
+      >"$scratch/out.json" 2>/dev/null || rc=$?
+  else
+    # Another worker provider: the classifier goes through the ONE worker seam like every
+    # other agent turn (the command worker's contract and containment rule; an unknown
+    # provider refuses rc 70), never a direct paid `claude` call behind the operator's
+    # back. The planned claude-shaped argv supplies the prompt, model and turn cap; the
+    # call stays text-only (`--tools ""`) with an empty MCP config and the scratch dir
+    # as its only write root.
+    if ! declare -F worker_deliver >/dev/null 2>&1; then
+      rm -rf "$scratch"
+      return 0
+    fi
+    local _ip="" _im="" _it="" _i=0
+    while [ "$_i" -lt "${#argv[@]}" ]; do
+      case "${argv[$_i]}" in
+        -p) _ip="${argv[$((_i + 1))]:-}"; _i=$((_i + 1)) ;;
+        --model) _im="--model ${argv[$((_i + 1))]:-}"; _i=$((_i + 1)) ;;
+        --max-turns) _it="${argv[$((_i + 1))]:-}"; _i=$((_i + 1)) ;;
+      esac
+      _i=$((_i + 1))
+    done
+    printf '{"mcpServers":{}}' > "$scratch/mcp.json"
+    mkdir -p "$scratch/cwd"
+    local _wenv_saved=( ${WORKER_CALL_ENV[@]+"${WORKER_CALL_ENV[@]}"} )
+    WORKER_CALL_ENV=( "GAFFER_WRITE_ROOTS=$scratch/cwd" "GAFFER_READ_ROOTS=" )
+    GAFFER_LAUNCH_KIND=inherit GAFFER_TICK_TIMEOUT="${GAFFER_INHERIT_AMB_TIMEOUT:-300}" \
+      worker_deliver "$scratch/cwd" "$_ip" "$_im" "$scratch/mcp.json" "$scratch/out.json" "" "$_it" --tools "" \
+      2>/dev/null || rc=$?
+    WORKER_CALL_ENV=( ${_wenv_saved[@]+"${_wenv_saved[@]}"} )
+  fi
   if type gaffer_usage_record >/dev/null 2>&1; then
     text="$(gaffer_usage_record inherit "$tnum" "$rc" "$scratch/out.json" "$(( (SECONDS - t0) * 1000 ))" 2>/dev/null)"
   fi

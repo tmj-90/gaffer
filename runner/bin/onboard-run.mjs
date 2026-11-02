@@ -52,6 +52,7 @@
 //   JSON line {"phase":"error","error":...} to stdout for the (detached) log.
 // =====================================================================
 
+import { redactRemoteUrl, redactUrlsIn } from "../lib/repo-boundary.mjs";
 import { spawnSync } from "node:child_process";
 import {
   appendFileSync,
@@ -86,7 +87,8 @@ const CONFIG = {
 // --summary: where the full log goes instead of stderr (null = stderr, the default).
 let LOG_FILE = null;
 function log(msg) {
-  const line = `[onboard-run] ${msg}\n`;
+  // External review #9: a remote URL's userinfo (password, token) never reaches a log.
+  const line = `[onboard-run] ${redactUrlsIn(msg)}\n`;
   if (LOG_FILE) {
     try {
       appendFileSync(LOG_FILE, line);
@@ -100,7 +102,7 @@ function log(msg) {
 
 /** Emit a single JSON object on stdout (for the detached log) and exit. */
 function emit(obj, code = 0) {
-  process.stdout.write(JSON.stringify(obj) + "\n");
+  process.stdout.write(redactUrlsIn(JSON.stringify(obj)) + "\n");
   process.exit(code);
 }
 function fail(reason, code = 1) {
@@ -296,7 +298,7 @@ export function extractScanFacts(stdout) {
     stack: scan.stack ?? null,
     packageManager: scan.packageManager ?? null,
     defaultBranch: scan.defaultBranch ?? null,
-    remoteUrl: scan.remoteUrl ?? null,
+    remoteUrl: redactRemoteUrl(scan.remoteUrl ?? null),
     buildCommand: scan.buildCommand ?? null,
     testCommand: scan.testCommand ?? null,
     lintCommand: scan.lintCommand ?? null,

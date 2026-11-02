@@ -304,6 +304,13 @@ usage ledger and the ticket transition log, and says only what those can show:
   Each ticket's row says how many send-backs came from review and how many from
   the runner, and whether its spend was placed by attempt or, for rows older than
   attempt ids, by the call's end time minus its duration.
+- **Per accepted change** is what a change that reached done really cost: the
+  spend of every attempt on every ticket (parked, failed and abandoned ones
+  included) divided by the tickets that reached done, with the attempts each took.
+  `gaffer wg stats` adds what the done tickets alone cost, the spend by outcome,
+  the spend with no ticket (left out) and human review time, and `gaffer eval`
+  prints it under the judge's cost per pass, which only sees submitted work
+  (docs/eval-harness.md has the definition and its limits).
 - **Flow efficiency** is the median share of a shipped ticket's lead time with
   an agent working on it (`claimed` or `in_progress`). Everything else is
   waiting, and the form guide lists it on its own: **waiting to merge** (approved,
@@ -604,7 +611,17 @@ structural barrier the whole design hangs on.
   a tester PASS) is refused until that commit's CI has passed, a red result for an
   approved ticket holds it for you (*blocked*, `ci_red`), and the merge lane reads
   CI again before landing. The CI gate asks `gh` only for the fields the real CLI
-  exposes (`gh pr checks --json name,state,bucket,link`).
+  exposes (`gh pr checks --json name,state,bucket,link`). The requirement is recorded
+  on the ticket before it reaches review (`wg ticket ci-required`), so until CI
+  reports, the Review button reads *Approve held: CI required, not reported*; when
+  CI cannot be read at all (no `gh`, no GitHub remote) the strict policy sends the
+  delivery back instead of waving it through.
+- **Landing never overwrites a file you ignore.** When an approved branch starts
+  tracking a file you keep ignored in your checkout (a `settings.local`), git would
+  replace your copy silently. Both landing paths (Merge now / `gaffer merge`, and the
+  merge lane) check for that first and merge with `--no-overwrite-ignore`; the ticket
+  is held for you (*blocked*, `ignored_file_in_the_way`) naming the file, and your
+  copy stays as it was.
 - **A merge conflict is never force-resolved.** The resolver agent merges the
   default branch into the delivery branch, and the runner **re-gates the
   resolution** — no conflict markers, and the repo's Definition-of-Done gates
@@ -733,6 +750,10 @@ human-gated knowledge the factory works from:
   conventions / stack**, seeded at onboarding and refreshed deterministically as
   tickets merge. It carries a freshness stamp and an honest caveat: it's a map
   to *verify against the code* for high-stakes work, never a substitute for it.
+  Onboarding reads only files inside the repository: a README or manifest that is a
+  symlink to a file elsewhere is not read, and the digest says which one and why. A
+  password or token in an https remote URL is stripped before the URL reaches a
+  prompt, the digest, lore or a log.
 - **Feature ledger** — what's `backlog → building → shipped` per repo, so the
   factory knows what already exists before it proposes building it again.
 - **File cards** — one per source file (path, symbols, content hash, a short
@@ -891,7 +912,49 @@ tickets are parked for a person as before.
 Enabling autonomy **requires containment**: any agent ship or mutate flag turns
 on the OS sandbox requirement, and a required-but-unavailable sandbox refuses to
 launch the agent rather than run it uncontained. The provider is auto-detected
-(`sandbox-exec` on macOS, `docker` where a Docker CLI exists).
+(`sandbox-exec` on macOS, `docker` where a Docker CLI exists). Under `docker` the
+container works in its own git repository: it can commit, but only the ticket's own
+branch comes back to your repository when it exits, so nothing run inside can move
+`main` or tag a release. On the host, the runner's own git (the auto-commit, the
+landing) never runs your repository's hooks or any filter, driver or helper that
+points into the checkout, and the agent cannot edit hook scripts or repository git
+config at all.
+
+The `docker` provider is proven on a real ticket, not only on a shell payload. A CI
+job (`sandbox-delivery`, on a Linux runner) runs one ticket through the real tick with
+`SANDBOX_PROVIDER=docker` and a stub agent installed as the delivery image's own
+`claude`: the agent runs inside the container, claims nothing itself, records its
+evidence through the MCP bridge to the host's dispatch server (the claim token never
+enters the container), commits into its private git dir (only the ticket branch is imported to the
+host; a `main` it moves inside stays inside), the DoD gates run in their
+own container under the validation profile, and the ticket reaches review. The agent
+checks from inside that the databases, `settings.json`, the host `HOME` and a host
+canary file are not there, and the tests gate refuses to pass unless it ran contained
+(`runner/test/sandbox-docker-delivery.test.sh`; its daemon-free twin
+`sandbox-docker-delivery-seam.test.sh` checks the same wiring with a fake `docker` in
+the normal suite). The same delivery with the real `claude` is the manual
+**Docker sandbox live delivery** workflow, which you run on your own fork with a
+repository secret ([docs/docker-sandbox-provider.md](docker-sandbox-provider.md)).
+**A different worker behind the factory.** `GAFFER_WORKER_PROVIDER=command` with
+`GAFFER_WORKER_COMMAND=/path/to/program` runs your own worker program for every
+agent turn instead of `claude -p`: deliveries, reviews, clarify passes, planning,
+the tester and the merge resolver alike. The program gets the prompt, the MCP config
+path and the model and turn-cap hints as `GAFFER_WORKER_*` variables in the call's
+working directory, and prints a small JSON envelope (the result text, the stop
+reason, a cap-hit flag, turns, cost, model, token counts, all optional). Budget
+admission, the scrubbed environment, the timeout and every gate after the call work
+as they do for `claude-code`, and each usage-ledger row it writes names
+`worker_provider: "command"` with how its cost is known (`reported`, `floor` or
+`unreported`). It has no in-process safety hook, so it only launches inside the docker
+sandbox with the host-side MCP bridge (`SANDBOX_PROVIDER=docker` on a Linux host) and
+refuses anywhere else, `sandbox-exec` included, unless you set `GAFFER_STRICT_REQUIRE=0`
+in the environment to say the runner is contained out-of-band, which is logged as a
+warning at every spawn. The prompt arrives in a file (`GAFFER_WORKER_PROMPT_FILE`), so a
+long one never fails the spawn; each call is booked at no less than a per-call floor
+(`GAFFER_WORKER_COMMAND_COST_USD`), so a worker can't beat the daily cap by reporting
+$0; and every lane, the greenfield repo classifier included, runs it, so a command
+factory makes no `claude` call.
+[`worker-providers.md`](worker-providers.md) has the full contract.
 
 ![The Settings panel](img/settings.png)
 

@@ -86,6 +86,14 @@ for (const cmd of [
   "$CMD ticket approve 3",
   "${TOOLS[0]} ticket ci-result 3 --status pass",
   `$(command -v ${R}/gaffer) approve 3`,
+  "$G merge 3",
+  "$X principal create bot",
+  "$P plan --yes",
+  "declare -x W=wg; $W ticket approve 3",
+  "readonly W=wg; $W ticket approve 3",
+  "node --eval \"require('child_process').execSync('wg ticket approve 3')\"",
+  "perl -le 'system(\"wg ticket approve 3\")'",
+  "xargs --max-args 1 wg ticket approve < ids.txt",
 ]) {
   t.deny(`path or runtime-built name: ${cmd}`, bash(cmd), opts);
 }
@@ -130,6 +138,20 @@ for (const cmd of [
   "grep -c 'xz|zsh' notes.txt",
   "$EDITOR docs/approve.md",
   "$(which node) test/approve.test.js",
+  // An unknown program before a common word is not a control-plane command.
+  "$GIT merge origin/main",
+  "${GIT:-git} merge main",
+  "$TF plan",
+  "$EDITOR plan",
+  "$(npm bin)/prisma migrate resolve",
+  "$(which python3) -m pytest -k approve",
+  // Quoted text keeps its quotes' meaning: no separator inside it starts a command.
+  'echo "a | xargs wg"',
+  'echo "printenv"',
+  'grep -rn "printenv" docs/',
+  'echo "env | grep -i token"',
+  'eval "$(fnm env)"',
+  'eval "$(direnv hook bash)"',
 ]) {
   t.allow(`a mention, not a command: ${cmd}`, bash(cmd), opts);
 }

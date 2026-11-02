@@ -3143,8 +3143,11 @@ function factoryExecutionReason(cmd, roots) {
 // privileged CLI whose verb would arrive on stdin through `xargs`.
 // =====================================================================
 
-// Verbs that only the control plane may receive, as whole words.
-const CP_VERBS = new Set([
+// A control-plane verb close to the program word, as the privileged CLIs take it:
+// `wg ticket approve 3`, `gaffer merge 3`, `gaffer plan --yes`, `wg principal create`.
+// Only these shapes count, so `$GIT merge origin/main`, `$TF plan`, `$EDITOR plan` and
+// `pytest -k approve` keep working when the program name is unknown to the hook.
+const CP_SINGLE_VERBS = new Set([
   "approve",
   "approve-ready",
   "mark-merged",
@@ -3154,7 +3157,6 @@ const CP_VERBS = new Set([
   "ci-result",
   "eval-score",
   "attach-evidence",
-  "reject",
   "wont-do",
   "set-testable",
   "allow-test-changes",
@@ -3165,16 +3167,29 @@ const CP_VERBS = new Set([
   "repo-delivery",
   "require-cap",
   "set-reviewer",
-  "as-principal",
-  "merge",
-  "plan",
-  "lore",
-  "principal",
-  "resolve",
-  "rename",
-  "supersede",
-  "deprecate",
+  "reject",
 ]);
+const CP_PAIRS = [
+  ["principal", /^(?:create|revoke)$/],
+  ["decisions", /^resolve$/],
+  ["agent", /^rename$/],
+  ["club", /^set$/],
+  ["lore", /^(?:approve|reject)$/],
+  ["plan", /^--yes$/],
+  ["merge", /^(?:T-)?[0-9]+$/],
+];
+function cpVerbNear(words) {
+  // words: everything after the program word; the verb sits within the first three.
+  const head = words.slice(0, 3);
+  if (head.some((w) => CP_SINGLE_VERBS.has(w))) return true;
+  if (words.some((w) => w === "--as-principal" || w.startsWith("--as-principal="))) return true;
+  for (let i = 0; i < Math.min(words.length, 4); i += 1) {
+    for (const [first, second] of CP_PAIRS) {
+      if (words[i] === first && words.slice(i + 1).some((w) => second.test(w))) return true;
+    }
+  }
+  return false;
+}
 // The privileged CLIs by name, and the dist/bin paths that are the same programs.
 const PRIV_CLIS = new Set(["wg", "dispatch", "fg", "crew", "gaffer", "memory"]);
 const PRIV_CLI_PATHS = [
@@ -3235,6 +3250,42 @@ function stripRedirects(words) {
   return out;
 }
 
+// Split a command into segments on `;`, `|`, `&`, `&&`, `||` and newlines OUTSIDE quotes.
+// The views must never read a separator inside a quoted word as a command boundary
+// (`echo "a | xargs wg"` is one echo). Unbalanced quotes take the rest as one segment;
+// commandQuotingAmbiguous fails such a command closed elsewhere.
+function splitSegmentsQuoteAware(cmd) {
+  const out = [];
+  let cur = "";
+  let q = null;
+  for (let i = 0; i < cmd.length; i += 1) {
+    const c = cmd[i];
+    if (q) {
+      cur += c;
+      if (c === q) q = null;
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      q = c;
+      cur += c;
+      continue;
+    }
+    if (c === "\\" && i + 1 < cmd.length) {
+      cur += c + cmd[i + 1];
+      i += 1;
+      continue;
+    }
+    if (c === ";" || c === "|" || c === "&" || c === "\n") {
+      out.push(cur);
+      cur = "";
+      continue; // a doubled `&&`/`||` just yields an empty segment, skipped by the caller
+    }
+    cur += c;
+  }
+  out.push(cur);
+  return out;
+}
+
 /**
  * Normalised views of `cmd`: strings the deny-list regexes are run over in addition
  * to the raw text. Returns { views, reasons }: `reasons` are fail-closed refusals
@@ -3249,14 +3300,17 @@ function normalizedCommandViews(cmd, depth = 0) {
   }
   const vars = new Map();
   const outSegments = [];
-  for (const segment of cmd.split(/(?:&&|\|\||;|\n|(?<![>&])&(?!>)|(?<!>)\|)/)) {
+  for (const segment of splitSegmentsQuoteAware(cmd)) {
     const raw = tokenizeSegment(segment.trim());
     if (raw.length === 0) continue;
     // Substitute the variables the command itself set, then normalise every word.
     let words = raw.map((t) => normalizeWord(substituteVars(t, vars)));
     // Record assignments for later segments/words: `X=wg`, `export X=wg`.
     let j = 0;
-    if (words[0] === "export" || words[0] === "declare" || words[0] === "local") j = 1;
+    if (["export", "declare", "local", "readonly", "typeset"].includes(words[0])) {
+      j = 1;
+      while (j < words.length && words[j].startsWith("-")) j += 1; // `declare -x`, `export -n`
+    }
     while (j < words.length && ASSIGNMENT_TOKEN.test(words[j])) {
       const eq = words[j].indexOf("=");
       vars.set(words[j].slice(0, eq), words[j].slice(eq + 1));
@@ -3274,7 +3328,12 @@ function normalizedCommandViews(cmd, depth = 0) {
     if (rest[0] === "xargs") {
       let k = 1;
       while (k < rest.length && rest[k].startsWith("-")) {
-        k += /^-(?:n|L|P|s|I|d|E|a)$/.test(rest[k]) ? 2 : 1;
+        k +=
+          /^(?:-(?:n|L|P|s|I|d|E|a)|--(?:max-args|max-lines|max-procs|max-chars|replace|delimiter|eof|arg-file))$/.test(
+            rest[k],
+          )
+            ? 2
+            : 1;
       }
       rest = rest.slice(k);
       const prog = rest[0] ? basename(rest[0]) : "";
@@ -3302,7 +3361,7 @@ function normalizedCommandViews(cmd, depth = 0) {
     const direct = privCliByPath(rest[0] || "");
     if (direct) rest[0] = direct;
     // A program name built at runtime before a control-plane verb: refuse.
-    if (unresolvedName(rest[0] || "") && rest.slice(1).some((w) => CP_VERBS.has(w))) {
+    if (unresolvedName(rest[0] || "") && cpVerbNear(rest.slice(1))) {
       reasons.push(
         `a program name built at runtime (${rest[0].slice(0, 40)}) in front of a control-plane verb: the hook cannot see which program runs, so it is refused`,
       );
@@ -3324,7 +3383,13 @@ function normalizedCommandViews(cmd, depth = 0) {
       // `node -e BODY`, `python3 -c BODY`, `perl -e`, `ruby -e`: flatten the body so a
       // program name called from inside it reads as a command of its own. Brackets
       // become separators and commas spaces (`run(["wg","ticket","approve"])`).
-      const f = rest.findIndex((w, idx) => idx > 0 && /^-(?:e|c|p|r)$/.test(w));
+      const f = rest.findIndex(
+        (w, idx) =>
+          idx > 0 &&
+          (/^-(?:e|c|p|r)$/.test(w) ||
+            /^--(?:eval|print)$/.test(w) ||
+            ((prog === "perl" || prog === "ruby") && /^-[a-zA-Z]*[eE][a-zA-Z]*$/.test(w))),
+      );
       if (f !== -1 && rest[f + 1]) {
         const body = rest
           .slice(f + 1)
@@ -3368,7 +3433,9 @@ function checkCommand(cmd) {
   for (const view of normalised.views) {
     if (view === cmd) continue;
     for (const rule of DENY_COMMANDS) {
-      if (rule.install) continue; // install rules are judged on the raw text (and per segment on a bootstrap tick)
+      // Install rules are judged on the raw text (and per segment on a bootstrap tick);
+      // a rule marked `spellings: false` matches mentions anywhere and is raw-only too.
+      if (rule.install || rule.spellings === false) continue;
       if (rule.re.test(view)) {
         block(
           `${rule.why} (as the shell would run it: "${view.slice(0, 100)}") — "${cmd.slice(0, 120)}"`,

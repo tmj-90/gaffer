@@ -623,12 +623,18 @@ export const DANGEROUS_COMMANDS = [
     why: "printenv (dumps the environment — including the forwarded model credential — into the agent's context)",
     example: "printenv",
     crewFlags: false,
+    // Matches the word anywhere, so it is judged on the raw text only: a quoted
+    // mention (`grep -rn "printenv" docs/`) must not become a hit once quotes go.
+    spellings: false,
   },
   {
     re: /(^|[\s;&|(])env\s*($|[|;&>#])/,
     why: "bare `env` environment dump (leaks the forwarded model credential into context); `env VAR=x cmd` to RUN a command is unaffected",
     example: "env | grep -i token",
     crewFlags: false,
+    // End-anchored: a `$(fnm env)` body seen on its own would end right after `env`.
+    // Raw text only.
+    spellings: false,
   },
   {
     // A payload decoded at run time and piped straight into a shell: the hook cannot

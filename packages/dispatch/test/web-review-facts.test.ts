@@ -394,7 +394,7 @@ describe("web: review facts on The Gaffer's Sign-off", () => {
   it("a run-log link opens the delivery run's log", async () => {
     await boot();
     const btn = document.querySelector<HTMLButtonElement>(".vd-runlink")!;
-    expect(btn.textContent).toBe("delivery run log");
+    expect(btn.textContent).toBe("View delivery run log");
     // How the link was found is said on screen, not only in a tooltip.
     expect(text(".vd-runlinks")).toContain("(found by time)");
     btn.click();

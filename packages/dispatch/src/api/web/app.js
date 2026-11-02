@@ -18171,7 +18171,7 @@ function sameSha(a, b) {
  * server's `same`). Once the diff loads, `_setShown(repos)` checks the commit on screen
  * too. Its run-log links open the delivery and tester logs.
  */
-function candidateCell(p) {
+function candidateCell(p, onRunLog) {
   const cands = p.candidate || [];
   const allSame = cands.every((c) => c.same);
   // Only the runner's own record says the gates ran on a commit: an agent's or a person's
@@ -18243,22 +18243,22 @@ function candidateCell(p) {
         dataset: { runId: r.run_id, role: r.role },
         title: `The dashboard run that was running then (${r.method}), started ${fmtTime(r.started_at)}`,
         onclick: () => {
-          // TODO(review_raw_opened): count this click as the metrics package's
-          // `ticket.review_raw_opened` event once that event exists on main.
+          // A raw view: the review-time measure counts it (ticket.review_raw_opened).
+          if (typeof onRunLog === "function") onRunLog();
           viewRunLog(
             { id: r.run_id, kind: r.kind },
             `${r.role === "tester" ? "Tester" : "Delivery"} run log`,
           );
         },
       },
-      r.role === "tester" ? "tester run log" : "delivery run log",
+      r.role === "tester" ? "View tester run log" : "View delivery run log",
     ),
   );
   // The runs table carries no ticket: say on screen how the link was found.
   const foundBy = links.length ? el("small", { class: "vd-runlink-by" }, " (found by time)") : null;
   const runLine = el("p", { class: "vd-sub vd-runlinks" }, [
     links.length
-      ? "Open the "
+      ? ""
       : "No run log is recorded for this delivery (its runner was not started from the dashboard).",
     ...links.flatMap((a, i) => (i ? [" · ", a] : [a])),
     foundBy,
@@ -18395,7 +18395,7 @@ function backingPanel(rows) {
   return panel;
 }
 
-function verdictStrip(p) {
+function verdictStrip(p, hooks = {}) {
   const cells = [];
 
   // Gates: the runner's DoD rows, each with its command; the test count it saw.
@@ -18517,7 +18517,7 @@ function verdictStrip(p) {
   // SAME CANDIDATE and REQUIRED CI (an older server's packet has neither).
   let candCell = null;
   if (Array.isArray(p.candidate) && p.candidate.length) {
-    candCell = candidateCell(p);
+    candCell = candidateCell(p, hooks.onRunLog);
     cells.push(candCell);
   }
   if ("ci" in p) cells.push(ciCell(p.ci));
@@ -19926,7 +19926,9 @@ async function renderReview(param) {
 
   // The verdict strip: the runner's facts, under the title and above everything
   // the agent wrote. Built before the diff so the diff's risk flags can join it.
-  const strip = packet ? verdictStrip(packet) : null;
+  const strip = packet
+    ? verdictStrip(packet, { onRunLog: () => noteReviewOpen(t.id, since, "run_log") })
+    : null;
   // INSPECTABLE CONFIDENCE: the server's backing rows (an older server sends none).
   const backing = packet && Array.isArray(packet.backing) ? backingPanel(packet.backing) : null;
   // An in_review ticket's diff carries its change-impact facts (the Behavioural surface).

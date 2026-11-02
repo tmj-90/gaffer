@@ -123,7 +123,7 @@ describe("PlanSessionRepository — createPlanSession archives previous active",
   });
 });
 
-describe("recordPlanSession — a terminal plan in the history", () => {
+describe("recordPlanSession: a terminal plan in the history", () => {
   it("records a finished session with its transcript and plan, leaving the active one alone", () => {
     const wg = freshWg();
     const open = wg.createPlanSession();

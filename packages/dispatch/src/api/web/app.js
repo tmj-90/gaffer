@@ -20033,9 +20033,9 @@ async function renderReview(param) {
 
   const diffSection = el("section", { class: "rv-diff", "aria-label": "The diff" }, [
     el("h2", { class: "rv-h2" }, ["The diff ", diffAux]),
+    impactSlot,
     sinceBar,
     sinceBox,
-    impactSlot,
     diffBox,
   ]);
   // A click on a line marks it, so `c` comments on it.

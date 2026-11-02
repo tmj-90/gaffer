@@ -2495,7 +2495,7 @@
           "Read models"
         ],
         "summary": "Factory health and ROI",
-        "description": "Event-log hash-chain integrity, spend, event-derived cycle time and throughput, flow efficiency, governance, skills and recall. `usage_pause` reports the runner's pause after a usage-limit or rate-limit refusal (`{ active, paused_until, kind, basis, message, ticket, lane? }`; `{ active: false }` when not paused).",
+        "description": "Event-log hash-chain integrity, spend, event-derived cycle time and throughput, flow efficiency, governance, skills and recall. `review_time` is human review time per accepted ticket (median, p75, p90; split into queue wait and decision time where the Review view recorded an open, the full span in review otherwise, named in `basis`), `first_pass` is first-pass acceptance split by approver, `lane_verdicts` counts the judging lanes' verdicts and `escaped_defects` says the rate is not recorded yet. `usage_pause` reports the runner's pause after a usage-limit or rate-limit refusal (`{ active, paused_until, kind, basis, message, ticket, lane? }`; `{ active: false }` when not paused).",
         "parameters": [
           {
             "name": "window_days",
@@ -4766,6 +4766,204 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/TestChangesAllowed"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The calling principal may not do this (`ACTOR_NOT_PERMITTED`). The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`). A named principal acted outside its scope (`SCOPE_DENIED`: `details.scope` names its repos and tickets, `details.reason` is `outside_repo_scope`, `outside_ticket_scope`, `no_repos`, `factory_wide` or `admin_required`, with `details.ticket`, `details.outside_repos` or `details.required` saying what put it outside).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource (`NOT_FOUND`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body or query failed validation (`VALIDATION_ERROR`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "full"
+      }
+    },
+    "/tickets/{id}/review-opened": {
+      "post": {
+        "operationId": "postTicketsByIdReviewOpened",
+        "tags": [
+          "Review & delivery"
+        ],
+        "summary": "Record that a person opened the ticket in Review",
+        "description": "The Review view posts this the first time a person renders the ticket in a review round. Recorded as a `ticket.review_opened` event once per round (deduped server-side on the ticket and the round), with the round's start and the recorded delivery commit of each repo; never bumps the ticket's `updated_at`. Only while the ticket is in review; `recorded: false` with a `reason` (not_in_review, no_review_round, stale_round, already_recorded) otherwise. A measurement for Health's review time; nothing gates on it. Human or admin principals only.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/reviewOpenedBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "`{ ticket_id, recorded, reason, event_id, round_entered_at }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewOpened"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The calling principal may not do this (`ACTOR_NOT_PERMITTED`). The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`). A named principal acted outside its scope (`SCOPE_DENIED`: `details.scope` names its repos and tickets, `details.reason` is `outside_repo_scope`, `outside_ticket_scope`, `no_repos`, `factory_wide` or `admin_required`, with `details.ticket`, `details.outside_repos` or `details.required` saying what put it outside).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource (`NOT_FOUND`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body or query failed validation (`VALIDATION_ERROR`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "full"
+      }
+    },
+    "/tickets/{id}/review-raw-opened": {
+      "post": {
+        "operationId": "postTicketsByIdReviewRawOpened",
+        "tags": [
+          "Review & delivery"
+        ],
+        "summary": "Record that a person opened a raw view of a ticket in review",
+        "description": "A person opened the run log, the evidence in full or the full diff of a ticket in review. Recorded as `ticket.review_raw_opened {what, round_entered_at}` once per round and kind; same rules as review-opened. Feeds Health's \"approved without opening raw logs\". Human or admin principals only.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/reviewRawOpenedBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "`{ ticket_id, recorded, reason, event_id, round_entered_at }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewOpened"
                 }
               }
             }
@@ -13180,6 +13378,94 @@
           "event_id"
         ],
         "additionalProperties": false
+      },
+      "ReviewOpened": {
+        "type": "object",
+        "properties": {
+          "ticket_id": {
+            "type": "string"
+          },
+          "recorded": {
+            "type": "boolean"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "not_in_review",
+                  "no_review_round",
+                  "stale_round",
+                  "already_recorded"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why nothing was written; null when recorded."
+          },
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "round_entered_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the ticket last entered in_review."
+          }
+        },
+        "required": [
+          "ticket_id",
+          "recorded",
+          "reason",
+          "event_id",
+          "round_entered_at"
+        ],
+        "additionalProperties": false
+      },
+      "reviewOpenedBody": {
+        "type": "object",
+        "properties": {
+          "round_entered_at": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40
+          }
+        }
+      },
+      "reviewRawOpenedBody": {
+        "type": "object",
+        "properties": {
+          "what": {
+            "type": "string",
+            "enum": [
+              "run_log",
+              "evidence",
+              "full_diff"
+            ]
+          },
+          "round_entered_at": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40
+          }
+        },
+        "required": [
+          "what"
+        ]
       },
       "RiskAnnotation": {
         "type": "object",

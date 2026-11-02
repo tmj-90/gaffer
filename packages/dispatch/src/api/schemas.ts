@@ -252,6 +252,20 @@ export const allowTestChangesBody = z.object({
 });
 export type AllowTestChangesBody = z.infer<typeof allowTestChangesBody>;
 
+// REVIEW TELEMETRY: a person opened the ticket in Review (once per round) or opened a
+// raw log / the evidence in full / the full diff. `round_entered_at` is the round the
+// viewer saw (the server records nothing for another round); optional.
+export const reviewOpenedBody = z.object({
+  round_entered_at: z.string().trim().min(1).max(40).optional(),
+});
+export type ReviewOpenedBody = z.infer<typeof reviewOpenedBody>;
+
+export const reviewRawOpenedBody = z.object({
+  what: z.enum(["run_log", "evidence", "full_diff"]),
+  round_entered_at: z.string().trim().min(1).max(40).optional(),
+});
+export type ReviewRawOpenedBody = z.infer<typeof reviewRawOpenedBody>;
+
 export const setTestContractBody = z.object({
   changed_surfaces: z.array(z.string().trim().min(1).max(500)).max(100).default([]),
   runtime_deps: z.array(z.string().trim().min(1).max(500)).max(100).default([]),

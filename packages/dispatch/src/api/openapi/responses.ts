@@ -388,6 +388,19 @@ export const TestChangesAllowed = z
   .object({ ticket_id: str, allow_test_changes: z.boolean(), event_id: eventId })
   .strict();
 
+export const ReviewOpened = z
+  .object({
+    ticket_id: str,
+    recorded: z.boolean(),
+    reason: z
+      .enum(["not_in_review", "no_review_round", "stale_round", "already_recorded"])
+      .nullable()
+      .describe("Why nothing was written; null when recorded."),
+    event_id: str.nullable(),
+    round_entered_at: str.nullable().describe("When the ticket last entered in_review."),
+  })
+  .strict();
+
 export const RiskKind = z
   .enum(RISK_KINDS)
   .describe(

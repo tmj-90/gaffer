@@ -4,6 +4,7 @@ import { DISPATCH_UPGRADE_HINT, type Db } from "../db/connection.js";
 import { SCHEMA_VERSION } from "../db/schema.js";
 import { verifyEventChain } from "../events/eventChain.js";
 import { acceptedChangeCost, type AcceptedChangeReport } from "../health/acceptedChange.js";
+import { readReviewMeasures, type ReviewMeasures } from "../health/reviewMeasures.js";
 import { readHealthRows, resolveLedgerPath } from "../health/healthAggregator.js";
 import { contractHash } from "../util/contractHash.js";
 import type { HumanQueue } from "../services/humanQueueService.js";
@@ -338,6 +339,8 @@ export interface StatsReport {
    * no usage ledger is configured or readable.
    */
   readonly acceptedChange: AcceptedChangeReport | null;
+  /** Review time, first-pass acceptance, lane verdicts (Release A metrics), or null. */
+  readonly reviewMeasures?: ReviewMeasures | null;
 }
 
 /** The accepted-change report for `wg stats`, or null without a usage ledger. */
@@ -599,6 +602,13 @@ export function computeStats(
     staleClaims,
     acceptance: computeAcceptance(db),
     acceptedChange: computeAcceptedChange(db, env),
+    reviewMeasures: (() => {
+      try {
+        return readReviewMeasures(db);
+      } catch {
+        return null;
+      }
+    })(),
   };
 }
 
@@ -630,6 +640,25 @@ export function renderStats(stats: StatsReport): string {
     lines.push(
       `  reviewer time: ${c.reviewer_time.recorded_reviews} recorded review(s), mean ${span(c.reviewer_time.mean_ms)}, ${span(c.reviewer_time.per_accepted_change_ms)} per accepted change (wall clock in review)`,
     );
+  }
+  // THE REVIEW AND ACCEPTANCE MEASURES: first-pass acceptance and human review time.
+  const m = stats.reviewMeasures;
+  if (m) {
+    const fp = m.first_pass;
+    const rt = m.review_time;
+    const p = rt.per_accepted_ticket;
+    const pc = (v: number | null): string => (v === null ? "n/a" : `${v}%`);
+    lines.push("");
+    lines.push(
+      `First-pass acceptance: ${pc(fp.rate_pct)} (${fp.first_pass} of ${fp.done} done with no send-back after review; ${pc(fp.strict.rate_pct)} with no runner retry either) · human-approved ${pc(fp.by_approver.human.rate_pct)} of ${fp.by_approver.human.done}, agent-approved ${pc(fp.by_approver.agent.rate_pct)} of ${fp.by_approver.agent.done}`,
+    );
+    lines.push(
+      `Human review time per accepted ticket: median ${span(p.median_ms)}, p75 ${span(p.p75_ms)}, p90 ${span(p.p90_ms)} over ${p.n} (${rt.basis.replace("_", " ")}; ${rt.accepted_without_human_decision} accepted with no human decision not counted)`,
+    );
+    lines.push(
+      `  queue wait median ${span(rt.queue_wait.median_ms)} · decision median ${span(rt.decision.median_ms)} (${rt.rounds.with_open_event} of ${rt.rounds.human_decided} rounds opened in Review) · review-ready to decision median ${span(rt.review_ready_to_decision.median_ms)} · approved without opening raw logs ${pc(rt.approved_without_raw_logs.pct)} of ${rt.approved_without_raw_logs.instrumented}`,
+    );
+    lines.push(`Escaped-defect rate: ${m.escaped_defects.note}`);
   }
   // ACCEPTANCE GATE: implementation merged is not build accepted.
   const a = stats.acceptance;

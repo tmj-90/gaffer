@@ -16,6 +16,7 @@ import {
 } from "../../health/deliveryFlow.js";
 import { governanceRoi, type GovTransition } from "../../health/governanceRoi.js";
 import { acceptedChangeCost } from "../../health/acceptedChange.js";
+import { readReviewMeasures } from "../../health/reviewMeasures.js";
 import { aggregateHealth, readHealthRows, type SendBack } from "../../health/healthAggregator.js";
 import { sendBacksByTicket } from "../../health/sendBacks.js";
 import { isBoardArea } from "../../services/boardService.js";
@@ -493,6 +494,12 @@ export function routeReadModels(
       govTransitions,
     );
 
+    // REVIEW AND ACCEPTANCE MEASURES (Release A metrics): human review time per accepted
+    // ticket (median/p75/p90, split into queue wait and decision time where the Review
+    // view recorded an open), first-pass acceptance split by approver, the judging lanes'
+    // verdict counts, and escaped defects as not recorded yet.
+    const reviewMeasures = readReviewMeasures(wg.db);
+
     // Two previously-DEAD data sources, surfaced best-effort (a missing source
     // degrades to a null/available:false cell, NEVER breaks the endpoint):
     //   - skills telemetry: selected-vs-applied skill hit-rate (JSONL, zero-state
@@ -516,6 +523,10 @@ export function routeReadModels(
       shipped_count: health.shipped_count,
       cost_per_shipped_usd: health.cost_per_shipped_usd,
       accepted_change: acceptedChange,
+      review_time: reviewMeasures.review_time,
+      first_pass: reviewMeasures.first_pass,
+      lane_verdicts: reviewMeasures.lane_verdicts,
+      escaped_defects: reviewMeasures.escaped_defects,
       coverage: health.coverage,
       by_kind: health.by_kind.slice(0, TOP_N),
       by_model: health.by_model.slice(0, TOP_N),

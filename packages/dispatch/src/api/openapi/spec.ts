@@ -600,7 +600,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.read,
     summary: "Factory health and ROI",
     description:
-      "Event-log hash-chain integrity, spend, event-derived cycle time and throughput, flow efficiency, governance, skills and recall. `usage_pause` reports the runner's pause after a usage-limit or rate-limit refusal (`{ active, paused_until, kind, basis, message, ticket, lane? }`; `{ active: false }` when not paused).",
+      "Event-log hash-chain integrity, spend, event-derived cycle time and throughput, flow efficiency, governance, skills and recall. `review_time` is human review time per accepted ticket (median, p75, p90; split into queue wait and decision time where the Review view recorded an open, the full span in review otherwise, named in `basis`), `first_pass` is first-pass acceptance split by approver, `lane_verdicts` counts the judging lanes' verdicts and `escaped_defects` says the rate is not recorded yet. `usage_pause` reports the runner's pause after a usage-limit or rate-limit refusal (`{ active, paused_until, kind, basis, message, ticket, lane? }`; `{ active: false }` when not paused).",
     capability: "read",
     query: {
       window_days: {
@@ -939,6 +939,47 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     body: "allowTestChangesBody",
     responses: [
       ok("`{ ticket_id, allow_test_changes, event_id }`.", "TestChangesAllowed"),
+      notFound,
+      invalid,
+      forbidden,
+    ],
+  },
+  {
+    method: "POST",
+    path: "/tickets/:id/review-opened",
+    tag: T.review,
+    summary: "Record that a person opened the ticket in Review",
+    description:
+      "The Review view posts this the first time a person renders the ticket in a review " +
+      "round. Recorded as a `ticket.review_opened` event once per round (deduped " +
+      "server-side on the ticket and the round), with the round's start and the recorded " +
+      "delivery commit of each repo; never bumps the ticket's `updated_at`. Only while the " +
+      "ticket is in review; `recorded: false` with a `reason` (not_in_review, " +
+      "no_review_round, stale_round, already_recorded) otherwise. A measurement for Health's " +
+      "review time; nothing gates on it. Human or admin principals only.",
+    capability: "full",
+    body: "reviewOpenedBody",
+    responses: [
+      ok("`{ ticket_id, recorded, reason, event_id, round_entered_at }`.", "ReviewOpened"),
+      notFound,
+      invalid,
+      forbidden,
+    ],
+  },
+  {
+    method: "POST",
+    path: "/tickets/:id/review-raw-opened",
+    tag: T.review,
+    summary: "Record that a person opened a raw view of a ticket in review",
+    description:
+      "A person opened the run log, the evidence in full or the full diff of a ticket in " +
+      "review. Recorded as `ticket.review_raw_opened {what, round_entered_at}` once per " +
+      "round and kind; same rules as review-opened. Feeds Health's \"approved without " +
+      "opening raw logs\". Human or admin principals only.",
+    capability: "full",
+    body: "reviewRawOpenedBody",
+    responses: [
+      ok("`{ ticket_id, recorded, reason, event_id, round_entered_at }`.", "ReviewOpened"),
       notFound,
       invalid,
       forbidden,

@@ -33,6 +33,8 @@ import {
   recordRepoDeliveryBody,
   rejectReviewBody,
   reopenForReviewBody,
+  reviewOpenedBody,
+  reviewRawOpenedBody,
   reopenWontDoBody,
   setPrimaryScopeBody,
   setRequiredCapabilitiesBody,
@@ -93,6 +95,9 @@ const TICKET_SUB = {
   // GATE INTEGRITY: the human's per-ticket "this ticket may change its tests" flag.
   ALLOW_TEST_CHANGES: "allow-test-changes",
   TESTER: "tester",
+  // REVIEW TELEMETRY (Release A metrics): a person opened the ticket / a raw view in Review.
+  REVIEW_OPENED: "review-opened",
+  REVIEW_RAW_OPENED: "review-raw-opened",
 } as const;
 
 /** `{ landing_state }` for an approved or held ticket, else nothing (spread into a ticket). */
@@ -600,6 +605,35 @@ export async function routeTickets(
       ticket_id: result.ticketId,
       allow_test_changes: result.allowTestChanges,
       event_id: result.eventId,
+    });
+    return;
+  }
+
+  // REVIEW TELEMETRY: /tickets/:id/review-opened — the Review view's once-per-round "a
+  // person rendered this ticket in review" mark, and /review-raw-opened {what} for a raw
+  // log, the evidence in full or the full diff. Human or admin only (the service refuses
+  // an agent or the runner; a read token never reaches here). Never bumps updated_at.
+  if (segments.length === 3 && sub === TICKET_SUB.REVIEW_OPENED && method === "POST") {
+    const body = reviewOpenedBody.parse(await readJsonBody(req));
+    const r = wg.recordReviewOpened(id, apiActor(), body.round_entered_at ?? null);
+    sendJson(res, 200, {
+      ticket_id: r.ticketId,
+      recorded: r.recorded,
+      reason: r.reason,
+      event_id: r.eventId,
+      round_entered_at: r.roundEnteredAt,
+    });
+    return;
+  }
+  if (segments.length === 3 && sub === TICKET_SUB.REVIEW_RAW_OPENED && method === "POST") {
+    const body = reviewRawOpenedBody.parse(await readJsonBody(req));
+    const r = wg.recordReviewRawOpened(id, body.what, apiActor(), body.round_entered_at ?? null);
+    sendJson(res, 200, {
+      ticket_id: r.ticketId,
+      recorded: r.recorded,
+      reason: r.reason,
+      event_id: r.eventId,
+      round_entered_at: r.roundEnteredAt,
     });
     return;
   }

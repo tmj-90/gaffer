@@ -191,8 +191,9 @@
     display: grid;
     gap: 4px;
   }
-  /* One line under the button: what the click does next. */
-  .signoff-next:not([hidden]) {
+  /* One line under the button: what the click does next (Approve, and Fix these). */
+  .signoff-next:not([hidden]),
+  .fix-next:not([hidden]) {
     margin: calc(-1 * var(--s2)) 0 0;
     color: var(--ink-2);
     font: 400 var(--t14) / 1.45 var(--f-text);

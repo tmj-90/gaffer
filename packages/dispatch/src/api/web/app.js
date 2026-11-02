@@ -19545,7 +19545,7 @@ async function renderReview(param) {
   const commentList = el("ul", { class: "clean rc-list" });
   const commentAux = el("span", { class: "panel-aux" });
   const fixLine = el("p", {
-    class: "signoff-next fix-next",
+    class: "fix-next",
     id: `fix-next-${t.id}`,
     "aria-live": "polite",
     hidden: "",

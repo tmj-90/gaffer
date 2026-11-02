@@ -89,7 +89,7 @@ _gaffer_tester_pass() {
   # lib/worker.mjs deliver() refused the launch and nothing ran: the same as a refusal
   # above, never a hold. Skip the ticket for this run; it is tested after the pause.
   if [ "$_T_PHASE" = usage_paused ]; then
-    log "TESTER: #$TNUM not started: the factory is paused on the usage window ($(printf '%s' "$_T_OUT" | jget 'String(d.reason || "").slice(0, 300)' 2>/dev/null)) — not a verdict and not a hold; tested again after the pause"
+    log "TESTER: #$TNUM not started: the factory is paused on the usage window ($(printf '%s' "$_T_OUT" | jget 'String(d.reason || "").slice(0, 300)' 2>/dev/null)): not a verdict and not a hold; tested again after the pause"
     _gaffer_locked .skip.lock _gaffer_append_line "$TESTED_FILE" "$TNUM"
     result usage_paused; exit 0
   fi

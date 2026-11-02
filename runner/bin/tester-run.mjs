@@ -59,7 +59,7 @@
 //             (exit 3) — the call was refused by the plan's usage window or a rate
 //             limit (lib/worker.mjs detectUsageLimit): not a verdict and not a hold;
 //             the runner records the pause and tests the ticket again after it.
-//   usage_paused: { "phase":"usage_paused", ticket, reason, testedCommit } (exit 3) —
+//   usage_paused: { "phase":"usage_paused", ticket, reason, testedCommit } (exit 3):
 //             the factory was already paused, so lib/worker.mjs deliver() started no
 //             tester (nothing booked); the runner skips the ticket for this run.
 //   error:    { "phase":"error", error }   (exit 1)

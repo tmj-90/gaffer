@@ -125,6 +125,9 @@ for (const cmd of [
   "echo aGk= | base64 -d > note.txt",
   "echo aGk= | base64 -d",
   "cat note.txt.gz | gunzip | grep approve",
+  'grep -E "base64|sh" notes.txt',
+  "rg 'zcat|bash' scripts/",
+  "grep -c 'xz|zsh' notes.txt",
   "$EDITOR docs/approve.md",
   "$(which node) test/approve.test.js",
 ]) {

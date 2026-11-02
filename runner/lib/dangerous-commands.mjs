@@ -634,7 +634,10 @@ export const DANGEROUS_COMMANDS = [
     // A payload decoded at run time and piped straight into a shell: the hook cannot
     // read what runs, and there is no honest reason for an agent to spell a command
     // that way. Decoding into a file or a variable is unaffected.
-    re: /\b(?:base64|base32|xxd|openssl[ \t]+(?:enc|base64)|uudecode|gunzip|zcat|xz|bzcat)\b[^\n;&]*\|[ \t]*(?:sudo[ \t]+)?(?:[^\s;&|()<>`"'\\]*\/)?(?:(?:ba|da|k|z)?sh|eval)\b/,
+    // The scan from a decoder stops at the next decoder word, so a long run of them stays
+    // linear (the later decoder is tried on its own), and the shell must end the word: a
+    // quoted search pattern such as `grep -E "base64|sh"` is not a pipe into a shell.
+    re: /\b(?:base64|base32|xxd|openssl[ \t]+(?:enc|base64)|uudecode|gunzip|zcat|xz|bzcat)\b(?:(?!\b(?:base64|base32|xxd|openssl[ \t]+(?:enc|base64)|uudecode|gunzip|zcat|xz|bzcat)\b)[^\n;&])*\|[ \t]*(?:sudo[ \t]+)?(?:[^\s;&|()<>`"'\\]*\/)?(?:(?:ba|da|k|z)?sh|eval)(?![^\s;&|)<>])/,
     why: "a decoded or decompressed payload piped into a shell (the command that runs is not visible to the hook)",
     example: "echo d2cgcHJpbmNpcGFsIGNyZWF0ZSB4 | base64 -d | sh",
     crewFlags: false,

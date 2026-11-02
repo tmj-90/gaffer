@@ -3277,7 +3277,7 @@ $_trail_q
         ':(exclude).mcp.json' ':(exclude,glob)mcp-runtime*.json' ':(exclude)dist' ':(exclude)build' \
         ':(exclude).next' ':(exclude)coverage' \
         ':(exclude).terraform' ':(exclude,glob)**/.terraform/**' >/dev/null 2>&1
-      if git -C "$rwt" commit -q -m "deliver #$NUM: $TITLE" >/dev/null 2>&1; then
+      if git -C "$rwt" -c user.email=gaffer@factory -c user.name=gaffer commit -q -m "deliver #$NUM: $TITLE" >/dev/null 2>&1; then
         log "auto-committed uncommitted changes for #$NUM in ${rname:-repo} (agent edited but did not commit)"
       fi
     fi

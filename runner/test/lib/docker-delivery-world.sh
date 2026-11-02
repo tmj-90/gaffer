@@ -168,7 +168,7 @@ ddw_common_asserts() {
     && ok "tick.sh handed the same wrap to the DoD gates" \
     || fail "the DoD gates were not given the docker wrap"
   case "$(ddw_evidence "$n")" in
-    *"# tests 2 # pass 2 # fail 0"*) ok "the DoD tests gate ran the delivered test (tally: 2 tests, 2 pass, 0 fail)" ;;
+    *"# tests 2 # pass 2 # fail 0"*|*"ℹ tests 2 ℹ pass 2 ℹ fail 0"*) ok "the DoD tests gate ran the delivered test (tally: 2 tests, 2 pass, 0 fail)" ;;
     *) fail "no DoD tally with the delivered test passing on #$n" ;;
   esac
   grep -F "$CANARY_TOKEN" "$CANARY" >/dev/null 2>&1 && [ "$(wc -l < "$CANARY" | tr -d ' ')" = 1 ] \

@@ -73,12 +73,19 @@ done
   || fail "expected >=4 worker_deliver routes across tick.sh + review/clarify libs (got $ROUTED)"
 TOTAL="$(grep -cE '"\$CLAUDE_BIN" -p' "$WORKER" || true)"
 WRAPPED="$(grep -cE 'gaffer_timeout "\$GAFFER_TICK_TIMEOUT"' "$WORKER" || true)"
-SCRUBBED="$(grep -cE 'env -i "\$\{GAFFER_AGENT_ENV\[@\]\}"' "$WORKER" || true)"
+# The scrub check reads the line before each claude launch: worker.sh has a second env -i
+# launch for the command provider (worker-command.test.sh pins that one).
+SCRUBBED="$(grep -B1 -E '"\$CLAUDE_BIN" -p' "$WORKER" | grep -cE 'env -i "\$\{GAFFER_AGENT_ENV\[@\]\}"' || true)"
+ENV_I_ALL="$(grep -cE '(^|[[:space:]])env -i([[:space:]]|$)' "$WORKER" || true)"
+ENV_I_ALLOW="$(grep -cE 'env -i "\$\{GAFFER_AGENT_ENV\[@\]\}"' "$WORKER" || true)"
 [ "$TOTAL" = "1" ] && ok "worker seam has exactly 1 claude -p invocation" || fail "expected 1 claude -p in worker.sh (got $TOTAL)"
 [ "$WRAPPED" -ge "$TOTAL" ] && ok "the invocation is wrapped in gaffer_timeout ($WRAPPED tick-cap wrapper)" \
   || fail "the worker invocation is not wrapped in gaffer_timeout"
 [ "$SCRUBBED" = "$TOTAL" ] && ok "the invocation launches via env -i agent-env allowlist (C1/M2)" \
   || fail "the worker invocation does not use the env -i allowlist scrub"
+[ "$ENV_I_ALL" -ge 1 ] && [ "$ENV_I_ALL" = "$ENV_I_ALLOW" ] \
+  && ok "every env -i launch in worker.sh ($ENV_I_ALL) uses the agent-env allowlist" \
+  || fail "an env -i launch in worker.sh bypasses the agent-env allowlist ($ENV_I_ALLOW of $ENV_I_ALL)"
 # --max-turns stays on the same line as the claude invocation, so the line-bound check holds.
 # It is $_turns_flag: the caller's role cap ($7), else $GAFFER_MAX_TURNS_FLAG (turn-caps.test.sh
 # drives the real seam to prove both).

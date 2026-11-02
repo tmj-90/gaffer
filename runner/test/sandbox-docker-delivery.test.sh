@@ -191,10 +191,17 @@ else
   EV="$(ddw_evidence "$N" | grep 'docker-delivery-stub:' | head -1)"
   [ -n "$EV" ] && ok "the agent's record_ac_evidence reached the host DB through the bridge" || fail "no agent evidence on #$N"
   echo "    $EV" | cut -c1-400
-  for want in INSIDE_CONTAINER TOKEN_ABSENT CREDENTIAL_FORWARDED MCP_CONFIG_BRIDGED GIT_SAFE_DIRECTORY EGRESS_PROXY_SET TMPDIR_USABLE PROBE_FILE DB_UNMOUNTED SETTINGS_ABSENT HOME_UNREADABLE CANARY_UNREADABLE HOST_WRITE_CONTAINED MCP_ROUND_TRIP MAIN_MOVED_INSIDE; do
+  for want in INSIDE_CONTAINER TOKEN_ABSENT CREDENTIAL_FORWARDED MCP_CONFIG_BRIDGED GIT_SAFE_DIRECTORY EGRESS_PROXY_SET TMPDIR_USABLE PROBE_FILE DB_UNMOUNTED SETTINGS_ABSENT HOME_UNREADABLE CANARY_UNREADABLE HOST_WRITE_CONTAINED MCP_ROUND_TRIP; do
     case " $EV " in *" $want "*) ok "agent probe: $want" ;; *) fail "agent probe: expected $want" ;; esac
   done
-  for bad in NOT_IN_CONTAINER MAIN_MOVE_FAIL MAIN_MOVE_SKIPPED_NO_CONTAINER TOKEN_LEAK CREDENTIAL_MISSING MCP_CONFIG_NOT_BRIDGED GIT_SAFE_DIRECTORY_MISSING EGRESS_PROXY_MISSING TMPDIR_UNUSABLE NO_PROBE_FILE DB_VISIBLE SETTINGS_VISIBLE HOME_READABLE CANARY_LEAK HOST_WRITE_POSSIBLE; do
+  # The stub moves main after its evidence write and commit, so that token is only in the
+  # result text (tick.sh logs it to factory.log).
+  RES="$(grep -F 'docker-delivery-stub probes:' "$GAFFER_DATA/factory.log" 2>/dev/null | tail -1)"
+  case " $RES " in *" MAIN_MOVED_INSIDE "*) ok "agent probe: MAIN_MOVED_INSIDE (result text)" ;; *) fail "agent probe: expected MAIN_MOVED_INSIDE in the result text: $(printf '%s' "$RES" | cut -c1-300)" ;; esac
+  for bad in MAIN_MOVE_FAIL MAIN_MOVE_SKIPPED_NO_CONTAINER; do
+    case " $RES " in *" $bad"*) fail "agent probe: saw $bad" ;; esac
+  done
+  for bad in NOT_IN_CONTAINER TOKEN_LEAK CREDENTIAL_MISSING MCP_CONFIG_NOT_BRIDGED GIT_SAFE_DIRECTORY_MISSING EGRESS_PROXY_MISSING TMPDIR_UNUSABLE NO_PROBE_FILE DB_VISIBLE SETTINGS_VISIBLE HOME_READABLE CANARY_LEAK HOST_WRITE_POSSIBLE; do
     case " $EV " in *" $bad "*) fail "agent probe: saw $bad" ;; esac
   done
   [ "$(ddw_acs_satisfied "$N")" = yes ] \

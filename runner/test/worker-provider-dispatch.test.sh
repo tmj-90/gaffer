@@ -36,6 +36,9 @@ fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/worker-provider.XXXXXX")"
 gaffer_test_check_tmp "$WORK" || exit 70
+# The worker runs under env -i without PWD, so its pwd is the resolved path (macOS keeps
+# TMPDIR under the /var -> /private/var symlink).
+WORK="$(cd "$WORK" && pwd -P)"
 trap 'gaffer_test_rm_work "$WORK"' EXIT
 export GAFFER_DATA="$WORK/.gaffer"
 mkdir -p "$GAFFER_DATA"

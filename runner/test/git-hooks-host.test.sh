@@ -27,6 +27,10 @@ for f in packages/dispatch/dist/cli/index.js packages/memory/dist/bin/memory.js 
   [ -f "$ROOT/$f" ] || { echo "SKIP: $f not built (run pnpm -r build)"; exit 0; }
 done
 
+# A host with no git identity (the GitHub ubuntu runners): the delivery auto-commit in tick.sh
+# must pin its own, or an uncommitted delivery is parked as empty.
+export GIT_CONFIG_GLOBAL=/dev/null
+
 STUB_TICK_NAME=git-hooks-host
 # shellcheck source=lib/stub-tick.sh
 source "$HERE/lib/stub-tick.sh"

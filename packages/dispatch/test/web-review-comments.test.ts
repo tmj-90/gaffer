@@ -53,6 +53,7 @@ let capability = "full";
 let heads = HEAD;
 let evidence: Array<Record<string, unknown>> = [];
 let queueStamp = "2026-10-30T10:00:00Z";
+let diffText = DIFF;
 
 const OUTCOME = (n: number) => ({
   kind: "to_refining",
@@ -121,7 +122,7 @@ function stubFetch(): void {
               headSha: HEAD,
               branch: "feat/x",
               baseBranch: "main",
-              diff: DIFF,
+              diff: diffText,
               files: 1,
               additions: 1,
               deletions: 1,
@@ -217,6 +218,7 @@ describe("web: review comments", () => {
     heads = HEAD;
     evidence = [];
     queueStamp = "2026-10-30T10:00:00Z";
+    diffText = DIFF;
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
     stubFetch();
@@ -271,6 +273,53 @@ describe("web: review comments", () => {
     (document.querySelector(".confirm-submit") as HTMLButtonElement).click();
     await settle();
     expect(posts(/\/review\/fix$/)[0]!.body).toEqual({ comment_ids: ["cmt0aaaaaaaa"] });
+  });
+
+  it("numbers a removed `-- …` line and an added `++…` line as content, not file headers", async () => {
+    // A deleted SQL comment is `--- …` in the diff, an added `++i;` is `+++i;`: inside a
+    // hunk they are lines of the file, so the numbers after them must not drift.
+    diffText = [
+      "diff --git a/src/x.ts b/src/x.ts",
+      "--- a/src/x.ts",
+      "+++ b/src/x.ts",
+      "@@ -1,3 +1,3 @@",
+      " keep one",
+      "--- a sql comment",
+      "+++i;",
+      " keep three",
+      "",
+    ].join("\n");
+    await boot();
+    const del = rowOf("--- a sql comment");
+    const add = rowOf("+++i;");
+    expect(del.className).toContain("diff-del");
+    expect(del.dataset.ol).toBe("2");
+    expect(add.className).toContain("diff-add");
+    expect(add.dataset.ln).toBe("2");
+    const after = rowOf(" keep three");
+    expect([after.dataset.ol, after.dataset.ln]).toEqual(["3", "3"]);
+    // Each of them takes a comment, on its own side.
+    expect(del.querySelector("button.diff-cmt")).not.toBeNull();
+    expect(add.querySelector("button.diff-cmt")).not.toBeNull();
+    // And neither renames the file the comments anchor to.
+    expect((del.closest(".diff-pre") as HTMLElement).dataset.path).toBe("src/x.ts");
+  });
+
+  it("a deleted file keeps its name when a removed line reads `--- …`", async () => {
+    diffText = [
+      "diff --git a/db/old.sql b/db/old.sql",
+      "deleted file mode 100644",
+      "--- a/db/old.sql",
+      "+++ /dev/null",
+      "@@ -1,2 +0,0 @@",
+      "--- drop me",
+      "-select 1;",
+      "",
+    ].join("\n");
+    await boot();
+    const del = rowOf("--- drop me");
+    expect((del.closest(".diff-pre") as HTMLElement).dataset.path).toBe("db/old.sql");
+    expect(del.dataset.ol).toBe("1");
   });
 
   it("`c` comments on the clicked line, never inside a modal", async () => {

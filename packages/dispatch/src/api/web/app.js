@@ -16409,15 +16409,20 @@ function diffPre(lines, label = "Diff", { trimHeader = false } = {}) {
   // data attribute so the copied text of a line is only the line. The old side's
   // numbers ride along (`data-ol`): a removed line shows it, and a review comment can
   // anchor to either side.
+  // Inside a hunk a `---`/`+++` line is a removed `-- …` / added `++…` line of the file,
+  // not a file header: only the lines before a file's first @@ are its header.
   let ln = null;
   let ol = null;
+  let inHunk = false;
   const rows = body.map((line) => {
     let cls = "diff-line";
     const first = line.charAt(0);
     let n = null;
     let o = null;
-    if (line.startsWith("+++") || line.startsWith("---")) cls += " diff-file";
+    if (line.startsWith("diff --git ")) inHunk = false;
+    if (!inHunk && (line.startsWith("+++") || line.startsWith("---"))) cls += " diff-file";
     else if (line.startsWith("@@")) {
+      inHunk = true;
       cls += " diff-hunk";
       const m = line.match(/\+(\d+)/);
       ln = m ? Number(m[1]) : null;
@@ -16493,8 +16498,11 @@ function splitDiffFiles(diffText) {
     }
     if (!cur) continue; // drop any preamble before the first `diff --git`
     cur.lines.push(line);
-    if (line.startsWith("+++ ")) cur.plus = line.slice(4).trim();
-    else if (line.startsWith("--- ")) cur.minus = line.slice(4).trim();
+    // The ---/+++ header precedes the first hunk; after it, such a line is content (a
+    // removed `-- …` or an added `++ …` line), never the file's name.
+    if (line.startsWith("@@")) cur.inHunk = true;
+    if (!cur.inHunk && line.startsWith("+++ ")) cur.plus = line.slice(4).trim();
+    else if (!cur.inHunk && line.startsWith("--- ")) cur.minus = line.slice(4).trim();
     else if (line.charAt(0) === "+") cur.additions += 1;
     else if (line.charAt(0) === "-") cur.deletions += 1;
   }

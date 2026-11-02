@@ -122,6 +122,40 @@ export const TEST_CONTRACT_EDITABLE_STATUSES: readonly TicketStatus[] = [
   "in_review",
 ];
 
+/**
+ * The test contract a testable ticket gets when nobody wrote one: one changed surface
+ * derived from the ticket's own title (a deterministic text derivation; the event that
+ * writes it says `seeded_from: "title"`), no runtime deps, no env vars, no run command,
+ * no harness yet. A title the leak rules would refuse as a surface (a source path, a
+ * branch, "diff") yields the title-free {@link SEEDED_GENERIC_SURFACE} instead (the event
+ * then says `seeded_from: "generic"`): seeding never fails the caller.
+ */
+export const SEEDED_GENERIC_SURFACE =
+  "the behaviour this ticket's acceptance criteria name, exercised from the outside";
+
+export function seededTestContract(title: string): TestContract {
+  const base = { runtime_deps: [], env_vars: [], run_command: "", harness_ready: false };
+  const clean = String(title ?? "")
+    .replace(/\s+/g, " ")
+    .replace(/"/g, "'")
+    .trim()
+    .slice(0, 300);
+  if (clean) {
+    const candidate: TestContract = {
+      ...base,
+      changed_surfaces: [
+        `the behaviour "${clean}" describes, exercised from the outside as its acceptance criteria state it`,
+      ],
+    };
+    try {
+      return validateTestContract(candidate);
+    } catch {
+      /* the title reads as an implementation pointer: fall through to the generic surface */
+    }
+  }
+  return { ...base, changed_surfaces: [SEEDED_GENERIC_SURFACE] };
+}
+
 /** A create-time warning: the ticket was created, but its pack will refuse it at ready. */
 export interface TicketWarning {
   code: string;
@@ -833,6 +867,31 @@ export class TicketService {
         event_type: "ticket.testable_set",
         payload: { can_be_tested: canBeTested },
       });
+      // TESTER CONTRACT: every way a ticket becomes testable comes through here (a planned
+      // epic, the dashboard switch, `wg ticket set-testable`, MCP set_ticket_testable). A ticket
+      // with no contract gets one derived from its own title, so the tester's
+      // changed_surfaces is never empty. Never over an existing contract, and never once
+      // the contract is frozen (in_testing on: the tester's verdict is bound to its hash).
+      if (
+        canBeTested &&
+        ticket.test_contract === null &&
+        TEST_CONTRACT_EDITABLE_STATUSES.includes(ticket.status)
+      ) {
+        const contract = seededTestContract(ticket.title);
+        this.tickets.setTestContract(ticket.id, JSON.stringify(contract), now);
+        writeEvent(this.db, {
+          entity_type: "ticket",
+          entity_id: ticket.id,
+          actor,
+          event_type: "ticket.test_contract_set",
+          payload: {
+            changed_surfaces: contract.changed_surfaces.length,
+            harness_ready: contract.harness_ready,
+            seeded_from:
+              contract.changed_surfaces[0] === SEEDED_GENERIC_SURFACE ? "generic" : "title",
+          },
+        });
+      }
       return { ticketId: ticket.id, canBeTested, eventId };
     });
   }

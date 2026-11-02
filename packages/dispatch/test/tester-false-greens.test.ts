@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { Dispatch } from "../src/core.js";
-import type { Actor } from "../src/domain/types.js";
+import { parseTestContract, type Actor } from "../src/domain/types.js";
 import { contractHash } from "../src/util/contractHash.js";
 import { TestClock } from "../src/util/clock.js";
 import { DispatchError } from "../src/util/errors.js";
@@ -149,6 +149,140 @@ describe("a PASS whose clean replay did not pass is never recorded (any ticket)"
     const id = ordinaryInTesting(wg);
     const res = wg.testerFail(id, { summary: "AC1 fails", replay: "skipped" }, testerAgent);
     expect(res.ticket.status).toBe("refining");
+    wg.db.close();
+  });
+});
+
+describe("implementation tickets get a test_contract", () => {
+  function plan(wg: Dispatch, extra: Record<string, unknown> = {}) {
+    wg.registerRepository({ name: "app", default_branch: "main" }, human);
+    return wg.createEpic(
+      {
+        epic: { name: "Bookmark Vault", description: "a bookmark manager", ...extra },
+        tickets: [
+          {
+            title: "Scaffold",
+            acceptanceCriteria: ["package.json exists"],
+            repo: "app",
+            bootstrap: true,
+          },
+          {
+            title: "Store bookmarks",
+            acceptanceCriteria: ["atomic writes"],
+            repo: "app",
+            dependsOn: [0],
+          },
+          { title: "HTTP API", acceptanceCriteria: ["routes"], repo: "app", dependsOn: [1] },
+        ],
+      },
+      human,
+    );
+  }
+  const tickets = (wg: Dispatch) =>
+    wg.db
+      .prepare(
+        "SELECT id, number, title, can_be_tested, test_contract, acceptance FROM tickets ORDER BY number",
+      )
+      .all() as Array<{
+      id: string;
+      number: number;
+      title: string;
+      can_be_tested: number;
+      test_contract: string | null;
+      acceptance: number;
+    }>;
+
+  it("plan/decompose (createEpic) with the lane on: every testable implementation ticket carries a contract with changed_surfaces", () => {
+    const wg = freshWg(true);
+    plan(wg);
+    const rows = tickets(wg);
+    const impl = rows.filter((r) => r.acceptance === 0 && r.can_be_tested === 1);
+    expect(impl.map((r) => r.title)).toEqual(["Store bookmarks", "HTTP API"]);
+    for (const r of impl) {
+      const c = parseTestContract(r.test_contract);
+      expect(c).not.toBeNull();
+      expect(c!.changed_surfaces.length).toBe(1);
+      expect(c!.changed_surfaces[0]).toContain(`"${r.title}"`);
+      expect(c!.harness_ready).toBe(false);
+      expect(c!.run_command).toBe("");
+    }
+    // The bootstrap is not testable and gets no contract (absent behaves as today).
+    const boot = rows.find((r) => r.title === "Scaffold")!;
+    expect(boot.can_be_tested).toBe(0);
+    expect(boot.test_contract).toBeNull();
+    wg.db.close();
+  });
+
+  it("the acceptance ticket keeps its own contract, written once", () => {
+    const wg = freshWg(true);
+    plan(wg);
+    const acc = tickets(wg).find((r) => r.acceptance === 1)!;
+    expect(parseTestContract(acc.test_contract)!.changed_surfaces[0]).toMatch(
+      /the whole build of epic "Bookmark Vault"/,
+    );
+    const sets = wg.view(acc.id).events.filter((e) => e.event_type === "ticket.test_contract_set");
+    expect(sets).toHaveLength(1);
+    wg.db.close();
+  });
+
+  it("with the lane off nothing becomes testable, so nothing is seeded (today's shape)", () => {
+    const wg = freshWg(false);
+    plan(wg);
+    for (const r of tickets(wg).filter((x) => x.acceptance === 0)) {
+      expect(r.can_be_tested).toBe(0);
+      expect(r.test_contract).toBeNull();
+    }
+    wg.db.close();
+  });
+
+  it("set-testable (CLI, dashboard switch, MCP) seeds a contract with provenance on the event", () => {
+    const wg = freshWg(true);
+    const t = wg.createTicket({ title: "Export CSV", policy_pack: "solo_loose" }, human);
+    expect(wg.resolveTicket(t.id).test_contract).toBeNull(); // wg ticket create: none
+    wg.setTestable(t.id, true, human);
+    const c = parseTestContract(wg.resolveTicket(t.id).test_contract);
+    expect(c!.changed_surfaces[0]).toContain('"Export CSV"');
+    const ev = wg.view(t.id).events.find((e) => e.event_type === "ticket.test_contract_set");
+    expect(JSON.parse(ev!.payload_json ?? "{}")).toMatchObject({ seeded_from: "title" });
+    wg.db.close();
+  });
+
+  it("an existing contract is never overwritten by the seed", () => {
+    const wg = freshWg(true);
+    const t = wg.createTicket({ title: "Export CSV", policy_pack: "solo_loose" }, human);
+    wg.setTestContract(t.id, { changed_surfaces: ["GET /export.csv"] }, human);
+    const before = contractHash(wg.db, t.id);
+    wg.setTestable(t.id, true, human);
+    expect(parseTestContract(wg.resolveTicket(t.id).test_contract)!.changed_surfaces).toEqual([
+      "GET /export.csv",
+    ]);
+    expect(contractHash(wg.db, t.id)).toBe(before);
+    wg.db.close();
+  });
+
+  it("a frozen contract (in_testing on) is never seeded: the tester's hash stays valid", () => {
+    const wg = freshWg(true);
+    const t = wg.createTicket({ title: "Export CSV", policy_pack: "solo_loose" }, human);
+    wg.db.prepare("UPDATE tickets SET status = 'in_testing' WHERE id = ?").run(t.id);
+    const before = contractHash(wg.db, t.id);
+    wg.setTestable(t.id, true, human);
+    expect(wg.resolveTicket(t.id).test_contract).toBeNull();
+    expect(contractHash(wg.db, t.id)).toBe(before);
+    wg.db.close();
+  });
+
+  it("a title that would trip the leak rules seeds a title-free surface, never an error", () => {
+    const wg = freshWg(true);
+    const t = wg.createTicket(
+      { title: "Fix the diff view in src/app.ts", policy_pack: "solo_loose" },
+      human,
+    );
+    expect(() => wg.setTestable(t.id, true, human)).not.toThrow();
+    const c = parseTestContract(wg.resolveTicket(t.id).test_contract);
+    expect(c!.changed_surfaces).toHaveLength(1);
+    expect(c!.changed_surfaces[0]).not.toContain("src/app.ts");
+    const ev = wg.view(t.id).events.find((e) => e.event_type === "ticket.test_contract_set");
+    expect(JSON.parse(ev!.payload_json ?? "{}")).toMatchObject({ seeded_from: "generic" });
     wg.db.close();
   });
 });

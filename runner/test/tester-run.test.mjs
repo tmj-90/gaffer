@@ -931,6 +931,70 @@ console.log("== prompt: the tester never asserts on git history ==");
 }
 
 console.log(
+  "== AC20: a PLANNED implementation ticket reaches the tester with a contract (changed_surfaces) ==",
+);
+{
+  // False green (gap hole 2): createEpic marked implementation tickets testable without a
+  // contract, so the tester's prompt carried `{}` and changed_surfaces was empty. Against
+  // the BUILT dispatch: plan an epic with the lane on, put the implementation ticket in
+  // testing, and read it back through the tester's own seams.
+  const CORE_JS = resolve(HERE, "..", "..", "packages", "dispatch", "dist", "core.js");
+  const HASH_JS = resolve(
+    HERE,
+    "..",
+    "..",
+    "packages",
+    "dispatch",
+    "dist",
+    "util",
+    "contractHash.js",
+  );
+  if (!existsSync(CORE_JS)) fail(`dispatch is not built (${CORE_JS}); run pnpm -r build`);
+  else {
+    const { Dispatch } = await import(CORE_JS);
+    const dispatchHash = (await import(HASH_JS)).contractHash;
+    const { buildTesterPrompt, contractHash } = await import(HELPER);
+    const dir = gafferMkdtemp(resolve(tmpdir(), "tester-run-contract-"));
+    const dbPath = resolve(dir, "dispatch.sqlite");
+    const human = { type: "human", id: "tom" };
+    const d = Dispatch.open(dbPath, undefined, undefined, { testingEnabled: true });
+    d.registerRepository({ name: "app", default_branch: "main" }, human);
+    d.createEpic(
+      {
+        epic: { name: "Vault", description: "a bookmark manager" },
+        tickets: [{ title: "Store bookmarks", acceptanceCriteria: ["atomic writes"], repo: "app" }],
+      },
+      human,
+    );
+    const row = d.db
+      .prepare("SELECT id, number FROM tickets WHERE title = 'Store bookmarks'")
+      .get();
+    d.db.prepare("UPDATE tickets SET status = 'in_testing' WHERE id = ?").run(row.id);
+    const want = dispatchHash(d.db, row.id);
+    d.db.close();
+    const ctx = assembleContext(dbPath, row.number);
+    const surfaces = (ctx && ctx.testContract && ctx.testContract.changed_surfaces) || [];
+    surfaces.length === 1 && surfaces[0].includes('"Store bookmarks"')
+      ? ok(
+          `the tester context carries changed_surfaces for the implementation ticket (${surfaces[0]})`,
+        )
+      : fail(`implementation ticket contract: ${JSON.stringify(ctx && ctx.testContract)}`);
+    const prompt = ctx
+      ? buildTesterPrompt({ context: ctx, worktree: "/tmp/wt", repoName: "app" })
+      : "";
+    surfaces[0] && prompt.includes(JSON.stringify(surfaces[0]))
+      ? ok("the tester prompt renders the contract's surface (not an empty {})")
+      : fail("the tester prompt does not render the implementation ticket's contract");
+    ctx && contractHash(ctx) === want
+      ? ok(
+          "the tester's contract hash equals dispatch's for the seeded contract (the verdict binds)",
+        )
+      : fail(`hash drift: tester ${ctx && contractHash(ctx)} vs dispatch ${want}`);
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+console.log(
   "== AC19: the tester checkout gets the installed deps, never counted as its changes ==",
 );
 {

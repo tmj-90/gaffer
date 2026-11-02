@@ -105,7 +105,12 @@ dump_survivors() {  # <case-label>
   ps -axo pid=,ppid=,pgid=,stat=,etime=,command= 2>/dev/null \
     | awk -v g="$LP" '$3 == g && (($6 ~ /(^|\/)bash$/ && $7 ~ /(worker|tick|loop)\.sh$/) || ($6 ~ /(^|\/)perl$/ && index($0, "alarm")))' \
     | sed 's/^/     /'
-  echo "  -- loop.out (tail) --"; tail -n 15 "$D/loop.out" 2>/dev/null | sed 's/^/     /'
+  # The whole loop output, not a tail: the workers' stderr lands here too (their "done
+  # after N tick(s)" lines and any lock or reservation refusal), and the run's registry
+  # is removed when the loop exits, so this is the only record of why a pool ended.
+  echo "  -- loop.out ($(wc -l < "$D/loop.out" 2>/dev/null | tr -d ' ') lines; first 200) --"; head -n 200 "$D/loop.out" 2>/dev/null | sed 's/^/     /'
+  echo "  -- factory.log (tail) --"; tail -n 20 "$D/data/factory.log" 2>/dev/null | sed 's/^/     /'
+  echo "  -- run-state --"; ls -la "$D/data/run-state" "$D/data/run-state"/* 2>/dev/null | sed 's/^/     /'
   local f; for f in "$D/data/.workers"/* "$D/data/run-state"/*/.workers/*; do [ -f "$f" ] || continue
     echo "  -- $(basename "$f") --"; tail -n 5 "$f" 2>/dev/null | sed 's/^/     /'; done
 }

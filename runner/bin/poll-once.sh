@@ -39,6 +39,30 @@ _poll_cleanup() {
 }
 trap '_poll_cleanup' EXIT
 
+# A Poll the caps would refuse anyway must not wait for the lock first: the dashboard
+# toasts a Poll's first refusal line, and "waiting for the poll already running" is
+# not the answer a person pressing Poll under a reached cap needs. These are the same
+# checks as below, read-only and before the lock; the authoritative ones (which
+# reserve the day slot) run again once the lock is held.
+if [ "$DRY_RUN" != "1" ]; then
+  if declare -F gaffer_usage_pause_active >/dev/null 2>&1 && _up_line="$(gaffer_usage_pause_active)"; then
+    echo "gaffer poll: $_up_line — not polling." >&2
+    echo "TICK_RESULT=no_work"; exit 0
+  fi
+  if declare -F gaffer_day_usd_cap_ok >/dev/null 2>&1 && ! gaffer_day_usd_cap_ok; then
+    echo "gaffer poll: per-day USD cap (GAFFER_DAILY_BUDGET_USD=${GAFFER_DAILY_BUDGET_USD:-}, spent \$$(gaffer_day_usd_spent)) reached — not polling." >&2
+    echo "TICK_RESULT=no_work"; exit 0
+  fi
+  if declare -F gaffer_budget_headroom_ok >/dev/null 2>&1 && ! gaffer_budget_headroom_ok; then
+    echo "gaffer poll: lifetime budget (GAFFER_BUDGET_USD=${GAFFER_BUDGET_USD:-}, headroom \$${GAFFER_BUDGET_REMAINING:-unknown}) exhausted — not polling." >&2
+    echo "TICK_RESULT=no_work"; exit 0
+  fi
+  if declare -F gaffer_day_count >/dev/null 2>&1 && [ "${MAX_TICKS_PER_DAY:-0}" -gt 0 ] 2>/dev/null \
+     && [ "$(gaffer_day_count)" -ge "$MAX_TICKS_PER_DAY" ] 2>/dev/null; then
+    echo "gaffer poll: per-day cap (MAX_TICKS_PER_DAY=$MAX_TICKS_PER_DAY, used $(gaffer_day_count)) reached — not polling." >&2
+    echo "TICK_RESULT=no_work"; exit 0
+  fi
+fi
 # POLL LOCK (lib/run-state.sh): one live Poll at a time per factory. A Poll pressed
 # while the previous one is still finishing (parking an empty delivery, tearing down a
 # worktree) WAITS for it, then runs: two Polls ticking at once could act on the same

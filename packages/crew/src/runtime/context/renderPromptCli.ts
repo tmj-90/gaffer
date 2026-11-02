@@ -93,6 +93,7 @@ function render(doc: InputDoc): string {
     lenses: d.lenses,
     reviewFeedbackReasons: d.reviewFeedbackReasons,
     resolvedDecisions: Array.isArray(d.resolvedDecisions) ? d.resolvedDecisions : [],
+    reviewRequirements: Array.isArray(d.reviewRequirements) ? d.reviewRequirements : [],
     fileCardsBlock: d.fileCardsBlock,
     productContextBlock: d.productContextBlock,
     workBranch,

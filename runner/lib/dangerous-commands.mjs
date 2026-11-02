@@ -423,6 +423,10 @@ export const DANGEROUS_COMMANDS = [
     // delivery's test edits (dispatch also refuses an agent actor server-side), and the
     // repo's registered DoD commands (`repo set-commands`): they ARE the gate.
     // And `wont-do`: closing a ticket as not worth doing is a person's call, like approve.
+    // And the review-comment verbs (`review comment|comments|resolve|reopen-comment|
+    // withdraw-comment|fix`, matched by `review` below): a delivery agent must never write,
+    // resolve or withdraw its reviewer's comments, or send a change back with them; it
+    // reads them through get_ticket and answers with a reply (agent evidence, a claim).
     // And the credentials (`principal create|revoke`, `--as-principal`): a principal is
     // a person's or a bot's delegated access, never an agent's to mint or act as.
     re: /\b(wg|dispatch|fg|crew)\b[^\n|;&]*\b(review|approve|approve-ready|mark-merged|record-landing|landing-begin|record-tester-replay|ci-result|eval-score|lane-verdict|attach-evidence|reject|repo-access|set-testable|allow-test-changes|set-commands|test-contract|tester-pass|tester-fail|repo-delivery|require-cap|set-reviewer|decisions[ \t]+resolve|agent[ \t]+rename|club[ \t]+set|wont-do|principal[ \t]+(?:create|revoke)|as-principal)\b/,

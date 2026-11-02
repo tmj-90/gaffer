@@ -1906,6 +1906,9 @@ if [ "$READY_COUNT" -gt 0 ]; then
   _TSHOW="$(wg ticket show "$NUM" 2>/dev/null || true)"
   _RF="$(printf '%s' "$_TSHOW" | gaffer_json review-feedback 2>/dev/null || true)"
   _RD="$(printf '%s' "$_TSHOW" | gaffer_json resolved-decisions 2>/dev/null || true)"
+  # The reviewer's open must-fix comments (Fix these) ride in as RAW data too (_RC, a JSON
+  # array): the renderer numbers them as requirements inside an untrusted envelope.
+  _RC="$(printf '%s' "$_TSHOW" | gaffer_json review-comments 2>/dev/null || true)"
 
   # ── PRIOR CONTEXT (file cards) — via shared gaffer_prime_context_block ───────
   # Runner has ALREADY resolved scope (write/read partition above). Pull the

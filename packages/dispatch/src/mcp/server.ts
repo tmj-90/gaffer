@@ -93,8 +93,10 @@ export const TOOL_DESCRIPTIONS: Record<keyof typeof toolSchemas, string> = {
     "list means the ticket is gated on a human/product call — do not try to " +
     "work around it; resolve or wait on the decision. `resolved_decisions` " +
     "carries each linked decision a human has already answered (its `answer`) — " +
-    "build to that answer. Read-only and cheap; " +
-    "prefer it over guessing the ticket's current state.",
+    "build to that answer. `review_comments` carries the human reviewer's " +
+    "comments (a `must_fix` one that is `open` is a requirement your next " +
+    "delivery must address); you can read them but never resolve them. Read-only " +
+    "and cheap; prefer it over guessing the ticket's current state.",
   heartbeat_claim:
     "**Extend your claim's lease during long work — call it BEFORE the lease " +
     "expires, not after.** Pass your `claim_token`. A claim that lapses is " +
@@ -112,7 +114,10 @@ export const TOOL_DESCRIPTIONS: Record<keyof typeof toolSchemas, string> = {
     "ci_run, …) and a truthful `summary`; attach a `uri` or `payload` " +
     "pointing at the proof whenever one exists. When `ac_id` is given and the " +
     "evidence is accepted, the AC flips to satisfied — so this is the gate " +
-    "between 'I claim it works' and 'it's demonstrably done'.\n\n" +
+    "between 'I claim it works' and 'it's demonstrably done'. To answer a " +
+    "review comment, record a `manual_note` with no `ac_id` and `payload` " +
+    '`{kind: "comment_reply", comment_id: "<id>"}`: the reviewer sees it as ' +
+    "what you say you did, and only the reviewer resolves the comment.\n\n" +
     "NEVER fabricate evidence. Do not summarise a test run you didn't run, " +
     "cite a commit that doesn't exist, or mark an AC satisfied by recording a " +
     "vague note. If an AC genuinely can't be met, use `mark_ticket_blocked` " +

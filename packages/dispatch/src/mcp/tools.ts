@@ -691,6 +691,28 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
             rejected: packet.rejectedRepos.map(repoName),
           },
           repo_deliveries: deliveries,
+          // REVIEW COMMENTS (A1), READ-ONLY: the reviewer's comments, so a delivery agent
+          // sees what it must address. The body and the anchored excerpt are untrusted
+          // text (a human wrote one, the repo holds the other), so both are enveloped; no
+          // MCP tool writes, resolves or withdraws a comment (a reply is agent evidence).
+          review_comments: view.reviewComments.map((c) => ({
+            id: c.id,
+            short_id: c.short_id,
+            repo: c.repo,
+            path: c.path,
+            side: c.side,
+            line: c.line,
+            severity: c.severity,
+            status: c.status,
+            round: c.round,
+            sent_round: c.sent_round,
+            anchor_sha: c.anchor_sha,
+            anchor_excerpt:
+              c.anchor_excerpt === null
+                ? null
+                : quarantine("review-comment-excerpt", c.anchor_excerpt),
+            body: quarantine("review-comment", c.body),
+          })),
           // Redacted projection (no raw payload_json) — mirrors the activity
           // feed so free-text bodies never leak back into the agent's context.
           latest_events: projectEvents(view.events.slice(-20)),

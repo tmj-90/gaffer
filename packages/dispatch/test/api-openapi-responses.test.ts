@@ -208,6 +208,43 @@ describe("OpenAPI response schemas match the live routes", () => {
     });
     await expectContract("POST /tickets/:id/reopen", `/tickets/${t1.id}/reopen`, {});
 
+    // --- review comments, Fix these, since your review, heads ------------------------
+    const t2 = wg.createTicket({ title: "comments", policy_pack: "solo_loose" }, human);
+    wg.addAcceptanceCriterion({ ticket_id: t2.id, text: "AC" }, human);
+    wg.markReady(t2.id, human);
+    deliver(t2.id);
+    const c1 = await expectContract(
+      "POST /tickets/:id/review/comments",
+      `/tickets/${t2.id}/review/comments`,
+      { body: "add a test", severity: "must_fix" },
+      201,
+    );
+    const cid = (c1.body as { comment: { id: string } }).comment.id;
+    await expectContract("GET /tickets/:id/review/comments", `/tickets/${t2.id}/review/comments`);
+    await expectContract(
+      "GET /tickets/:id/review/comments",
+      `/tickets/${t2.id}/review/comments?anchors=1&open=1`,
+    );
+    await expectContract(
+      "POST /tickets/:id/review/comments/:cid/resolve",
+      `/tickets/${t2.id}/review/comments/${cid}/resolve`,
+      {},
+    );
+    await expectContract(
+      "POST /tickets/:id/review/comments/:cid/reopen",
+      `/tickets/${t2.id}/review/comments/${cid.slice(0, 8)}/reopen`,
+      {},
+    );
+    await expectContract("GET /tickets/:id/heads", `/tickets/${t2.id}/heads`);
+    await expectContract("GET /tickets/:id/diff", `/tickets/${t2.id}/diff?since=rejected`);
+    await expectContract("POST /tickets/:id/review/fix", `/tickets/${t2.id}/review/fix`, {});
+    const c2 = await call("POST", `/tickets/${t2.id}/review/comments`, { body: "later" });
+    await expectContract(
+      "POST /tickets/:id/review/comments/:cid/withdraw",
+      `/tickets/${t2.id}/review/comments/${(c2.body as { comment: { id: string } }).comment.id}/withdraw`,
+      {},
+    );
+
     // --- the tester verdict (acceptance ticket in_testing) ------------------------
     wg.registerRepository({ name: "app", default_branch: "main" }, human);
     const epic = wg.createEpic(

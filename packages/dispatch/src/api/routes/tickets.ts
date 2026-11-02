@@ -21,6 +21,10 @@ import {
   addAcBody,
   addTicketDependencyBody,
   approveReviewBody,
+  createReviewCommentBody,
+  fixTheseBody,
+  reviewCommentStateBody,
+  reviewCommentsQuery,
   assignReviewerBody,
   continuePausedBody,
   createTicketBody,
@@ -69,6 +73,8 @@ const TICKET_SUB = {
   // Merge an APPROVED ticket (ready_for_merge) whose branch has not landed yet.
   MERGE: "merge",
   DIFF: "diff",
+  // A3: the write repos' delivery heads alone (the Review view's live head check).
+  HEADS: "heads",
   // DELIVERY-DOSSIER: the tamper-evident evidence artifact (JSON + markdown).
   DOSSIER: "dossier",
   REOPEN_FOR_REVIEW: "reopen-for-review",
@@ -298,6 +304,9 @@ export async function routeTickets(
         events: view.events,
         // FAILURE-DIAGNOSIS: the full ordered "why did #N fail" trail.
         rework_trail: view.reworkTrail,
+        // REVIEW COMMENTS (A1): the reviewer's comments (no git: GET …/review/comments
+        // ?anchors=1 adds each one's anchor state).
+        review_comments: view.reviewComments,
         // SQUAD: the presentation (display name, shirt number, role) of every
         // REGISTERED agent this ticket names — event actors, the reviewer, the
         // creator and any active claim holder — keyed by agent id. Additive: the
@@ -429,6 +438,77 @@ export async function routeTickets(
   // assertion. Distinct from the board's latest-only rework chip.
   if (segments.length === 3 && sub === TICKET_SUB.REWORK_TRAIL && method === "GET") {
     sendJson(res, 200, { rework_trail: wg.reworkTrail(id) });
+    return;
+  }
+
+  // REVIEW COMMENTS (A1): /tickets/:id/review/comments — list (GET) or write (POST) the
+  // reviewer's comments. Writes are human/admin acts (the service refuses an agent); a read
+  // token never reaches a POST (the method gate). `?anchors=1` adds each comment's
+  // git-derived anchor state; the counts and the Fix these outcome ride along.
+  if (segments.length === 4 && sub === TICKET_SUB.REVIEW && segments[3] === "comments") {
+    if (method === "GET") {
+      const q = reviewCommentsQuery.parse(Object.fromEntries(url.searchParams));
+      const on = (v: string | undefined) => v === "1" || v === "true";
+      const ticket = wg.resolveTicket(id);
+      sendJson(res, 200, {
+        comments: wg.listReviewComments(ticket.id, { open: on(q.open), anchors: on(q.anchors) }),
+        counts: wg.reviewCommentSvc.counts(ticket.id),
+        ...(ticket.status === "in_review" ? { reject_outcome: wg.rejectOutcome(ticket.id) } : {}),
+      });
+      return;
+    }
+    if (method === "POST") {
+      const body = createReviewCommentBody.parse(await readJsonBody(req));
+      const comment = wg.createReviewComment(id, body, apiActor());
+      sendCreated(res, `/tickets/${comment.ticket_id}/review/comments/${comment.id}`, {
+        comment,
+      });
+      return;
+    }
+    methodNotAllowed(res);
+    return;
+  }
+
+  // /tickets/:id/review/comments/:cid/(resolve|reopen|withdraw) — a human act.
+  if (
+    segments.length === 6 &&
+    sub === TICKET_SUB.REVIEW &&
+    segments[3] === "comments" &&
+    method === "POST"
+  ) {
+    const action = segments[5] as string;
+    if (action === "resolve" || action === "reopen" || action === "withdraw") {
+      reviewCommentStateBody.parse(await readJsonBody(req));
+      const comment = wg.setReviewCommentState(segments[4] as string, action, apiActor(), id);
+      sendJson(res, 200, { comment });
+      return;
+    }
+  }
+
+  // FIX THESE (A2): /tickets/:id/review/fix — send back with the open must-fix comments as
+  // numbered requirements (rejectReview with a deterministic reason). Answers the settled
+  // `reject_outcome`, the way approve answers `approve_outcome`.
+  if (segments.length === 4 && sub === TICKET_SUB.REVIEW && segments[3] === "fix") {
+    if (method !== "POST") {
+      methodNotAllowed(res);
+      return;
+    }
+    const body = fixTheseBody.parse(await readJsonBody(req));
+    const result = wg.fixThese(
+      id,
+      {
+        ...(body.comment_ids ? { commentIds: body.comment_ids } : {}),
+        ...(body.to ? { to: body.to } : {}),
+      },
+      apiActor(),
+    );
+    sendJson(res, 200, {
+      ticket: result.ticket,
+      event_id: result.eventId,
+      requirements: result.requirements,
+      reject_outcome: result.rejectOutcome,
+      ...(result.landedAlready.length > 0 ? { landed_already: result.landedAlready } : {}),
+    });
     return;
   }
 
@@ -693,6 +773,19 @@ export async function routeTickets(
   // the settings and ticket state the approve path acts on, so the sign-off button can
   // name it. Only an in_review ticket can be approved, so only it carries one.
   if (segments.length === 3 && sub === TICKET_SUB.DIFF && method === "GET") {
+    // SINCE YOUR REVIEW (A3): `?since=rejected` answers the interdiff from the latest reject
+    // pin per write repo (or `history_rewritten: true`). A reading aid: it carries no
+    // approve_outcome, and an approval still binds to the whole change's heads.
+    const since = url.searchParams.get("since");
+    if (since !== null) {
+      if (since !== "rejected") {
+        throw new DispatchError("VALIDATION_ERROR", "since takes one value: rejected.", {
+          since,
+        });
+      }
+      sendJson(res, 200, wg.ticketDiffSince(id));
+      return;
+    }
     const diff = wg.ticketDiff(id);
     const ticket = wg.resolveTicket(id);
     sendJson(res, 200, {
@@ -703,9 +796,18 @@ export async function routeTickets(
               mergeCommand: mergeRunner.configured?.() ?? false,
               repos: diff.repos, // the integrity holds read the diff just computed
             }),
+            // FIX THESE (A2): what a send-back with the open must-fix comments does now.
+            reject_outcome: wg.rejectOutcome(ticket.id),
           }
         : {}),
     });
+    return;
+  }
+
+  // A3: /tickets/:id/heads — each write repo's delivery head, from rev-parse alone, so the
+  // Review view can poll whether the change moved under the reader without a diff.
+  if (segments.length === 3 && sub === TICKET_SUB.HEADS && method === "GET") {
+    sendJson(res, 200, wg.ticketHeads(id));
     return;
   }
 

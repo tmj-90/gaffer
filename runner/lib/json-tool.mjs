@@ -411,6 +411,10 @@ switch (cmd) {
     let resolvedDecisions = [];
     const rd = tryParse(e.GF_RD || "[]");
     if (rd.ok && Array.isArray(rd.value)) resolvedDecisions = rd.value.filter(isObj);
+    // The reviewer's open must-fix comments ($_RC, from review-comments); fail-soft to [].
+    let reviewRequirements = [];
+    const rc = tryParse(e.GF_RC || "[]");
+    if (rc.ok && Array.isArray(rc.value)) reviewRequirements = rc.value.filter(isObj);
     println(
       JSON.stringify({
         kind: "delivery",
@@ -421,6 +425,7 @@ switch (cmd) {
         lenses: e.GF_LENSES ?? "",
         reviewFeedbackReasons: reasons,
         resolvedDecisions,
+        reviewRequirements,
         fileCardsBlock: e.GF_FCB ?? "",
         productContextBlock: e.GF_PCB ?? "",
         workBranch: e.GF_WORK_BRANCH ?? "",
@@ -676,6 +681,41 @@ switch (cmd) {
     const seen = new Set();
     const uniq = outList.filter((x) => (seen.has(x) ? false : (seen.add(x), true)));
     for (const r of uniq.slice(-5)) println(`  - ${r}`);
+    break;
+  }
+  // review-comments: stdin = ticket show → one JSON line, the reviewer's OPEN MUST-FIX
+  // comments (reviewComments), oldest first, at most twenty: [{id, repo, path, line, side,
+  // excerpt, body}] with the short id the agent replies naming. The delivery prompt lists
+  // them as numbered requirements inside an untrusted envelope (deliveryPrompt.ts). Raw
+  // data only: no wording here. Fail-soft: bad input or none → "[]".
+  // After a Fix these, the requirements are the set it sent (sent_round = the latest
+  // one) plus the must-fix comments written since (round >= that attempt): a comment the
+  // reviewer left out of the latest send-back is not one. With no Fix these on record,
+  // every open must-fix comment is listed.
+  case "review-comments": {
+    const p = tryParse(readStdin());
+    const d = p.ok && isObj(p.value) ? p.value : {};
+    const all = (Array.isArray(d.reviewComments) ? d.reviewComments : []).filter(isObj);
+    const sentRounds = all.map((x) => x.sent_round).filter((n) => Number.isInteger(n));
+    const latest = sentRounds.length ? Math.max(...sentRounds) : null;
+    const inLatest = (x) =>
+      latest === null ||
+      x.sent_round === latest ||
+      (!Number.isInteger(x.sent_round) && Number.isInteger(x.round) && x.round >= latest);
+    const rows = all
+      .filter((x) => x.status === "open" && x.severity === "must_fix" && inLatest(x))
+      .sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")))
+      .slice(0, 20)
+      .map((x) => ({
+        id: String(x.short_id || String(x.id || "").slice(0, 8)),
+        repo: typeof x.repo === "string" ? x.repo : null,
+        path: typeof x.path === "string" ? x.path : null,
+        line: Number.isInteger(x.line) ? x.line : null,
+        side: typeof x.side === "string" ? x.side : null,
+        excerpt: typeof x.anchor_excerpt === "string" ? x.anchor_excerpt : null,
+        body: String(x.body || ""),
+      }));
+    println(JSON.stringify(rows));
     break;
   }
   // resolved-decisions: stdin = ticket show → one JSON line, the human's answers to

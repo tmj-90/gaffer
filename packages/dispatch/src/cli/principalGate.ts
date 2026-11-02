@@ -58,6 +58,7 @@ const RULES: Record<string, Rule> = {
       "ticket repo-access packet",
       "ticket repo-delivery list",
       "ticket paused-context",
+      "review comments",
     ].map((c) => [c, READ_TICKET]),
   ),
   ...Object.fromEntries(
@@ -95,6 +96,8 @@ const RULES: Record<string, Rule> = {
       "unblock",
       "review approve",
       "review reject",
+      "review comment",
+      "review fix",
       "wont-do",
       "reopen",
     ].map((c) => [c, WRITE_TICKET]),

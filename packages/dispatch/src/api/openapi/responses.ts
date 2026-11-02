@@ -25,6 +25,11 @@ import {
   type RiskAnnotation as RiskAnnotationShape,
 } from "../../services/riskAnnotations.js";
 import type { AgentDisplay } from "../../services/squadService.js";
+import {
+  REJECT_OUTCOME_KINDS,
+  type RejectOutcome as RejectOutcomeType,
+} from "../../services/rejectOutcome.js";
+import type { ReviewComment as ReviewCommentShape } from "../../services/reviewCommentService.js";
 
 /**
  * Response-body schemas for the main ticket, gate, decision and principal
@@ -258,6 +263,9 @@ export const TicketDetail = z
     evidence: z.array(z.record(z.string(), z.unknown())),
     events: z.array(z.record(z.string(), z.unknown())),
     rework_trail: z.array(z.record(z.string(), z.unknown())),
+    review_comments: z
+      .array(z.record(z.string(), z.unknown()))
+      .describe("The reviewer's comments (the ReviewComment shape, without anchor_state)."),
     agent_display: z
       .record(z.string(), AgentDisplayView)
       .describe("Every agent the ticket's claims and events name, keyed by agent id."),
@@ -460,6 +468,110 @@ export const RepoDiff = z
   .strict()
   .describe("The delivery diff for one write repository.");
 
+/**
+ * What a "Fix these" send-back does (see services/rejectOutcome.ts): on GET /tickets/:id/diff
+ * and GET …/review/comments the prediction for an in_review ticket; on review/fix what the
+ * click did.
+ */
+export const RejectOutcome = z
+  .object({
+    kind: z.enum(REJECT_OUTCOME_KINDS),
+    label: str.describe('The button, e.g. "Fix these (3)".'),
+    sentence: str.describe("Where the ticket goes, what the next delivery gets, the AC reset."),
+    to_status: z.enum(["refining", "ready", "blocked"]),
+    attempt: int.describe("attempt_count after the send-back."),
+    max_attempts: int,
+    ac_reset: z.literal(true).describe("A send-back resets the acceptance criteria to not met."),
+    requirements: int.describe("The open must-fix comments it carries."),
+  })
+  .strict() satisfies ZodType<RejectOutcomeType>;
+
+export const ReviewComment = z
+  .object({
+    id: str,
+    ticket_id: str,
+    repo_id: nstr,
+    path: nstr.describe("Null: a comment on the whole change."),
+    side: z.enum(["new", "old"]).nullable(),
+    line: int.nullable().describe("Null: a file (or ticket) comment."),
+    anchor_sha: nstr.describe("The repo head the comment was written against."),
+    anchor_excerpt: nstr.describe("The +-3 lines git holds at the anchor (line comments)."),
+    anchor_hash: nstr.describe("sha256 of anchor_excerpt."),
+    body: str,
+    severity: z.enum(["must_fix", "consider"]),
+    status: z.enum(["open", "resolved", "withdrawn"]),
+    author_type: z.enum(["human", "admin"]),
+    author_id: nstr,
+    round: int.describe("The ticket's attempt_count when the comment was written."),
+    sent_round: int.nullable().describe("The attempt a Fix these send-back carried it into."),
+    created_at: str,
+    updated_at: str,
+    resolved_at: nstr,
+    resolved_by: nstr,
+    resolved_at_sha: nstr,
+  } satisfies Record<keyof ReviewCommentShape, ZodType>)
+  .extend({
+    short_id: str.describe("The first 8 characters of the id."),
+    repo: nstr,
+    anchor_state: z
+      .enum(["current", "untouched", "changed", "unknown"])
+      .nullable()
+      .optional()
+      .describe(
+        "`?anchors=1` only, from `git diff <anchor_sha> <head> -- <path>`: current (the head is the anchor), untouched, changed (a hunk touches the anchored lines, or the file), unknown (git cannot answer); null for a comment on the whole change.",
+      ),
+    anchor_head: nstr.optional().describe("The head the anchor state was computed against."),
+    agent_replies: z
+      .array(z.object({ evidence_id: str, summary: str, created_at: str }).strict())
+      .optional()
+      .describe("The delivery agent's replies: a claim about what it did, never a resolution."),
+  })
+  .describe("A reviewer's comment on a delivery.");
+
+export const ReviewCommentEnvelope = z.object({ comment: ReviewComment }).strict();
+
+export const ReviewCommentList = z
+  .object({
+    comments: z.array(ReviewComment),
+    counts: z.object({ open: int, open_must_fix: int, resolved: int, withdrawn: int }).strict(),
+    reject_outcome: RejectOutcome.optional().describe("An in_review ticket only."),
+  })
+  .strict();
+
+export const FixTheseResult = z
+  .object({
+    ticket: TicketRow,
+    event_id: eventId,
+    requirements: z.array(ReviewComment).describe("The comments sent, as numbered requirements."),
+    reject_outcome: RejectOutcome,
+    landed_already: TicketTransition.shape.landed_already,
+  })
+  .strict();
+
+export const TicketHeads = z
+  .object({
+    ticketId: str,
+    heads: z.array(z.object({ repo: str, repo_id: str, sha: str }).strict()),
+    unavailable: z.array(z.object({ repo: str, repo_id: str, why: str }).strict()),
+  })
+  .strict();
+
+export const SinceRepo = z
+  .object({
+    repo: str,
+    repoId: str,
+    from_sha: nstr.describe("The commit a person last sent back (the latest human reject pin)."),
+    to_sha: nstr.describe("The head now."),
+    available: z.boolean(),
+    history_rewritten: z
+      .boolean()
+      .describe("The sent-back commit is no longer an ancestor of the head (or is gone)."),
+    reason: z.enum(["no_reject_pin", "no_head", "git_error"]).optional(),
+    attempt: int.nullable().optional(),
+    sent_back_at: nstr.optional(),
+  })
+  .strict();
+
 export const TicketDiff = z
   .object({ ticketId: str, repos: z.array(RepoDiff) } satisfies Record<
     keyof TicketDiffShape,
@@ -469,12 +581,23 @@ export const TicketDiff = z
     approve_outcome: ApproveOutcome.optional().describe(
       "An in_review ticket only: the first step a human Approve would certainly take now.",
     ),
+    reject_outcome: RejectOutcome.optional().describe(
+      "An in_review ticket only: what Fix these (a send-back with the open must-fix comments) does now.",
+    ),
+    since: z
+      .array(SinceRepo)
+      .optional()
+      .describe(
+        "`?since=rejected` only: per write repo, the interdiff's endpoints, or `history_rewritten`.",
+      ),
   })
   .strict();
 
 /** Response schemas rendered as their own components and `$ref`d where nested. */
 export const SHARED_RESPONSE_COMPONENTS = [
   "ApproveOutcome",
+  "RejectOutcome",
+  "ReviewComment",
   "RepoDiff",
   "RiskAnnotation",
   "RiskKind",

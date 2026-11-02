@@ -201,6 +201,51 @@ export const rejectReviewBody = z.object({
 export type RejectReviewBody = z.infer<typeof rejectReviewBody>;
 
 /**
+ * REVIEW COMMENTS (A1). Body for POST /tickets/:id/review/comments: a comment on a diff
+ * line (`path` + `line`, `side` new by default), a file (`path` only) or the whole change
+ * (neither). `repo` names the write repository (id or name; the only one by default).
+ * `commit` is the head the reviewer saw (the diff's `headSha`): the anchor is read from it.
+ */
+export const createReviewCommentBody = z.object({
+  body: z.string().trim().min(1).max(20_000),
+  severity: z.enum(["must_fix", "consider"]).optional(),
+  repo: z.string().trim().min(1).max(200).optional(),
+  path: z.string().trim().min(1).max(4096).optional(),
+  line: z.number().int().positive().optional(),
+  side: z.enum(["new", "old"]).optional(),
+  commit: z
+    .string()
+    .regex(/^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$/, "a full commit id")
+    .optional(),
+});
+export type CreateReviewCommentBody = z.infer<typeof createReviewCommentBody>;
+
+/** Body for POST /tickets/:id/review/comments/:cid/(resolve|reopen|withdraw): no fields. */
+export const reviewCommentStateBody = z.object({});
+
+/** Query for GET /tickets/:id/review/comments. */
+export const reviewCommentsQuery = z.object({
+  open: z.enum(["0", "1", "true", "false"]).optional().describe("`1`: only the open comments."),
+  anchors: z
+    .enum(["0", "1", "true", "false"])
+    .optional()
+    .describe(
+      "`1`: add each comment's git-derived `anchor_state` against the head now (runs git).",
+    ),
+});
+
+/**
+ * FIX THESE (A2). Body for POST /tickets/:id/review/fix: send the ticket back with its open
+ * must-fix comments (all of them, or `comment_ids`) as numbered requirements. `to` is
+ * Refining unless Ready is asked for explicitly.
+ */
+export const fixTheseBody = z.object({
+  comment_ids: z.array(z.string().trim().min(6).max(64)).max(200).optional(),
+  to: z.enum(["refining", "ready"]).optional(),
+});
+export type FixTheseBody = z.infer<typeof fixTheseBody>;
+
+/**
  * Body for POST /tickets/:id/wont-do — mark a ticket terminal "won't do"
  * (`cancelled` bucket). A reason is required so the abandonment is auditable.
  */

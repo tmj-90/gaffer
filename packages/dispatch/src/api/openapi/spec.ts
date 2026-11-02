@@ -820,6 +820,82 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     ],
   },
   {
+    method: "GET",
+    path: "/tickets/:id/review/comments",
+    tag: T.review,
+    summary: "List review comments",
+    description:
+      "The reviewer's comments on the ticket, oldest first, with `counts` (open, open must-fix, resolved, withdrawn) and, for an in_review ticket, the `reject_outcome` Fix these would have now. `?open=1` lists only the open ones; `?anchors=1` adds each comment's `anchor_state`, computed from `git diff <anchor_sha> <head> -- <path>` (never from what the agent says). Each comment carries the delivery agent's replies (`agent_replies`): a claim, never a resolution.",
+    capability: "read",
+    query: "reviewCommentsQuery",
+    responses: [ok("`{ comments, counts, reject_outcome? }`.", "ReviewCommentList"), notFound],
+  },
+  {
+    method: "POST",
+    path: "/tickets/:id/review/comments",
+    tag: T.review,
+    summary: "Write a review comment",
+    description:
+      "A comment on a diff line (`path` + `line`, `side` new by default), a file (`path`) or the whole change. `repo` names the write repository (the only one by default); `commit` is the head the reviewer saw, and the anchor (the +-3 lines git holds there, hashed) is read from it. `severity` is `must_fix` or `consider` (the default). Allowed while the ticket is in review or in Refining. A human or admin act: an agent or system principal is refused (403 `ACTOR_NOT_PERMITTED`); a read token never reaches it. Records a `review.comment_created` event.",
+    capability: "full",
+    body: "createReviewCommentBody",
+    responses: [
+      created("`{ comment }`.", "ReviewCommentEnvelope"),
+      notFound,
+      forbidden,
+      conflict,
+      invalid,
+    ],
+  },
+  ...(["resolve", "reopen", "withdraw"] as const).map((action): EndpointSpec => ({
+    method: "POST",
+    path: `/tickets/:id/review/comments/:cid/${action}`,
+    tag: T.review,
+    summary: `${action === "resolve" ? "Resolve" : action === "reopen" ? "Reopen" : "Withdraw"} a review comment`,
+    description:
+      (action === "withdraw"
+        ? "Withdraw a comment you wrote (its author or an admin). "
+        : action === "resolve"
+          ? "Mark a comment resolved, against the repo head now (`resolved_at_sha`). "
+          : "Open a resolved or withdrawn comment again. ") +
+      "`:cid` is the comment id or a unique prefix of it (6+ characters). A human or admin act: an agent or system principal is refused (403 `ACTOR_NOT_PERMITTED`). Records a `review.comment_" +
+      (action === "resolve" ? "resolved" : action === "reopen" ? "reopened" : "withdrawn") +
+      "` event; `NO_OP` (409) when it is already in that state.",
+    capability: "full",
+    body: "reviewCommentStateBody",
+    responses: [ok("`{ comment }`.", "ReviewCommentEnvelope"), notFound, forbidden, conflict],
+  })),
+  {
+    method: "POST",
+    path: "/tickets/:id/review/fix",
+    tag: T.review,
+    summary: "Fix these: send back with the open must-fix comments",
+    description:
+      "Sends the ticket back with its open must-fix comments (all, or `comment_ids`) as numbered requirements: the transition reason is the deterministic `Fix these: N requirements (ids)`, each comment records the round it was sent into, and the next delivery's prompt lists them (quarantined). Everything a review/reject does applies: the acceptance criteria reset to not met, the retry cap parks it, a partly landed change is held, and a reject pin (`gaffer-rejected-commit:<sha>`, never read as an approval) is recorded per write repository. The destination is Refining unless `to: ready` is asked for. `reject_outcome` says what the click did. A human or admin act (403 `ACTOR_NOT_PERMITTED` otherwise); 422 `VALIDATION_ERROR` (`details.reason` `no_requirements`) when there is no open must-fix comment.",
+    capability: "full",
+    body: "fixTheseBody",
+    responses: [
+      ok(
+        "`{ ticket, event_id, requirements, reject_outcome, landed_already? }`.",
+        "FixTheseResult",
+      ),
+      notFound,
+      forbidden,
+      conflict,
+      invalid,
+    ],
+  },
+  {
+    method: "GET",
+    path: "/tickets/:id/heads",
+    tag: T.review,
+    summary: "Delivery heads",
+    description:
+      "Each write repository's delivery branch head now, from `rev-parse` alone (no diff), and the ones that cannot be read. The Review view polls it to tell the reader the change moved before they approve.",
+    capability: "read",
+    responses: [ok("`{ ticketId, heads, unavailable }`.", "TicketHeads"), notFound],
+  },
+  {
     method: "POST",
     path: "/tickets/:id/merge",
     tag: T.review,
@@ -879,9 +955,23 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.review,
     summary: "Delivery diff",
     description:
-      "`git diff <default branch>...<head>` per write repository, where `headSha` is the delivery branch's commit at read time (`repoId` names the repo). Send them back on approve. An in_review ticket also carries `approve_outcome` (the ApproveOutcome schema): the first step a human Approve would certainly take now — `to_tester`, `land_now`, `land_next_tick`, `waits_for_merge`, `held_ci` or `held_repo_unavailable` (a write repository's delivery head cannot be read, so the server refuses the approval) — computed from the settings and ticket state the approve path acts on; when the tests that gate it changed, `agent_hold` names the `held_test_modified` hold an agent or auto approval would hit (a human approval is not held by it).",
+      "`git diff <default branch>...<head>` per write repository, where `headSha` is the delivery branch's commit at read time (`repoId` names the repo). Send them back on approve. An in_review ticket also carries `approve_outcome` (the ApproveOutcome schema): the first step a human Approve would certainly take now — `to_tester`, `land_now`, `land_next_tick`, `waits_for_merge`, `held_ci` or `held_repo_unavailable` (a write repository's delivery head cannot be read, so the server refuses the approval) — computed from the settings and ticket state the approve path acts on; when the tests that gate it changed, `agent_hold` names the `held_test_modified` hold an agent or auto approval would hit (a human approval is not held by it). It also carries `reject_outcome`: what Fix these would do now.",
     capability: "read",
-    responses: [ok("`{ ticketId, repos: RepoDiff[], approve_outcome? }`.", "TicketDiff"), notFound],
+    query: {
+      since: {
+        description:
+          "`rejected`: the interdiff since the commit a person last sent back (the latest reject pin a human or admin recorded per write repository; an agent reviewer's send-back does not move it) when that commit is an ancestor of the head; otherwise the repo's `since` entry says `history_rewritten: true` and no diff is guessed. A reading aid: it carries no `approve_outcome`, and an approval still binds to the whole change's heads.",
+        schema: { type: "string", enum: ["rejected"] },
+      },
+    },
+    responses: [
+      ok(
+        "`{ ticketId, repos: RepoDiff[], approve_outcome?, reject_outcome?, since? }`.",
+        "TicketDiff",
+      ),
+      notFound,
+      invalid,
+    ],
   },
   {
     method: "GET",

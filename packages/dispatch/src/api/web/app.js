@@ -2874,7 +2874,7 @@ function refreshCurrentView() {
   const current = app.firstElementChild;
   // The ticket page has inline forms (a criterion, a repo, a note): text typed there and
   // left for a moment is not thrown away by a delivery that touched the ticket.
-  if (view === "ticket" && viewHasTypedText(current)) return;
+  if ((view === "ticket" || view === "review") && viewHasTypedText(current)) return;
   refreshing = true;
   (async () => {
     try {
@@ -4538,7 +4538,7 @@ function actionSheet(title, { intro, body, actions, focus }) {
  * resolves and stays open, with the error toasted, when it throws. A danger sheet
  * starts on Cancel, so Enter never destroys anything by accident.
  */
-function confirmSheet({ title, intro, confirm, tone = "primary", onConfirm }) {
+function confirmSheet({ title, intro, body, confirm, tone = "primary", onConfirm }) {
   let busy = false;
   const go = el(
     "button",
@@ -4567,7 +4567,12 @@ function confirmSheet({ title, intro, confirm, tone = "primary", onConfirm }) {
     { class: "btn", type: "button", onclick: () => closeSheet() },
     "Cancel",
   );
-  actionSheet(title, { intro, actions: [go, cancel], focus: tone === "danger" ? cancel : go });
+  actionSheet(title, {
+    intro,
+    body,
+    actions: [go, cancel],
+    focus: tone === "danger" ? cancel : go,
+  });
 }
 
 /**
@@ -16477,30 +16482,63 @@ function diffPre(lines, label = "Diff", { trimHeader = false } = {}) {
     if (h > 0) body = lines.slice(h);
   }
   // The gutter carries the new file's line numbers (from each @@ header), via a
-  // data attribute so the copied text of a line is only the line.
+  // data attribute so the copied text of a line is only the line. The old side's
+  // numbers ride along (`data-ol`): a removed line shows it, and a review comment can
+  // anchor to either side.
+  // Inside a hunk a `---`/`+++` line is a removed `-- …` / added `++…` line of the file,
+  // not a file header: only the lines before a file's first @@ are its header.
   let ln = null;
+  let ol = null;
+  let inHunk = false;
   const rows = body.map((line) => {
     let cls = "diff-line";
     const first = line.charAt(0);
     let n = null;
-    if (line.startsWith("+++") || line.startsWith("---")) cls += " diff-file";
+    let o = null;
+    if (line.startsWith("diff --git ")) inHunk = false;
+    if (!inHunk && (line.startsWith("+++") || line.startsWith("---"))) cls += " diff-file";
     else if (line.startsWith("@@")) {
+      inHunk = true;
       cls += " diff-hunk";
       const m = line.match(/\+(\d+)/);
       ln = m ? Number(m[1]) : null;
+      const mo = line.match(/^@@ -(\d+)/);
+      ol = mo ? Number(mo[1]) : null;
     } else if (first === "+") {
       cls += " diff-add";
       n = ln != null ? ln++ : null;
-    } else if (first === "-") cls += " diff-del";
-    else if (ln != null && first !== "\\") n = ln++;
+    } else if (first === "-") {
+      cls += " diff-del";
+      o = ol != null ? ol++ : null;
+    } else if (ln != null && first !== "\\") {
+      n = ln++;
+      o = ol != null ? ol++ : null;
+    }
+    const dataset = {};
+    if (n != null) dataset.ln = String(n);
+    if (o != null) dataset.ol = String(o);
     // Render an empty line as a non-breaking space so the row keeps its height.
     return el(
       "div",
-      { class: cls, dataset: n != null ? { ln: String(n) } : undefined },
+      { class: cls, dataset: n != null || o != null ? dataset : undefined },
       line === "" ? " " : line,
     );
   });
   return el("pre", { class: "diff-pre", tabindex: "0", role: "region", "aria-label": label }, rows);
+}
+
+/**
+ * REVIEW COMMENTS: mark a per-file diff `<pre>` with the repo, path and head it shows, so
+ * the Review view can put a comment button on its lines and a thread under a line. A
+ * deleted file (`+++ /dev/null`) is commented on by its old path.
+ */
+function commentAnchored(pre, rd, f) {
+  if (!pre || !rd || !f) return pre;
+  pre.dataset.path = f.path;
+  if (rd.repoId) pre.dataset.repoId = rd.repoId;
+  if (rd.headSha) pre.dataset.head = rd.headSha;
+  if (rd.truncated) pre.dataset.truncated = "1";
+  return pre;
 }
 
 /** Back-compat: render a whole unified diff as one `<pre>`. */
@@ -16536,8 +16574,11 @@ function splitDiffFiles(diffText) {
     }
     if (!cur) continue; // drop any preamble before the first `diff --git`
     cur.lines.push(line);
-    if (line.startsWith("+++ ")) cur.plus = line.slice(4).trim();
-    else if (line.startsWith("--- ")) cur.minus = line.slice(4).trim();
+    // The ---/+++ header precedes the first hunk; after it, such a line is content (a
+    // removed `-- …` or an added `++ …` line), never the file's name.
+    if (line.startsWith("@@")) cur.inHunk = true;
+    if (!cur.inHunk && line.startsWith("+++ ")) cur.plus = line.slice(4).trim();
+    else if (!cur.inHunk && line.startsWith("--- ")) cur.minus = line.slice(4).trim();
     else if (line.charAt(0) === "+") cur.additions += 1;
     else if (line.charAt(0) === "-") cur.deletions += 1;
   }
@@ -16696,7 +16737,7 @@ function repoDiffSection(rd, repoIdx = 0, { collapsed = false } = {}) {
                   .replace(/^./, (c) => c.toUpperCase())}: ${ann.detail}`,
               ])
             : null,
-          diffPre(f.lines, `Diff of ${f.path}`, { trimHeader: true }),
+          commentAnchored(diffPre(f.lines, `Diff of ${f.path}`, { trimHeader: true }), rd, f),
         ],
       ),
     );
@@ -16814,6 +16855,232 @@ function renderTicketDiff(ticketId, onState, opts = {}) {
       });
     });
   return box;
+}
+
+// ===========================================================================
+//  Review comments (A1), Fix these (A2), since your review (A3)
+// ===========================================================================
+
+/** Where a comment points, in words: repo:path:line, the file, or the whole change. */
+function commentWhere(c) {
+  if (!c.path) return "the whole change";
+  const at = `${c.repo ? `${c.repo}:` : ""}${c.path}`;
+  if (c.line == null) return `${at} (the file)`;
+  return `${at}:${c.line}${c.side === "old" ? " (old side)" : ""}`;
+}
+
+/** The git-derived anchor tag of a comment written on an earlier revision. */
+const ANCHOR_TAGS = {
+  changed: ["anchor changed in this revision", "warn"],
+  untouched: ["anchor untouched", "no-dot"],
+  current: ["written on this revision", "no-dot"],
+  unknown: ["anchor not checkable here", "no-dot"],
+};
+
+/**
+ * One comment: severity, where it points, the body (a text node), its state, the git
+ * anchor tag when it was written on an earlier revision, the delivery agent's replies
+ * (labelled as what the agent says: a claim, never a resolution) and the reviewer's
+ * Resolve / Reopen / Withdraw.
+ */
+function reviewCommentItem(c, { attempt = 0, onAct } = {}) {
+  const earlier = typeof c.round === "number" && c.round < attempt;
+  const tag = earlier && c.anchor_state ? ANCHOR_TAGS[c.anchor_state] : null;
+  const act = (action, label, kind = "") =>
+    roLock(
+      el(
+        "button",
+        {
+          class: `btn small ${kind}`.trim(),
+          type: "button",
+          dataset: { commentAct: action },
+          onclick: () => onAct && onAct(c, action),
+        },
+        label,
+      ),
+      "ticket",
+    );
+  const actions =
+    c.status === "open"
+      ? [act("resolve", "Resolve"), act("withdraw", "Withdraw")]
+      : [act("reopen", "Reopen")];
+  return el(
+    "li",
+    {
+      class: `rc-item is-${c.status} sev-${c.severity}`,
+      dataset: { commentId: c.id },
+    },
+    [
+      el("p", { class: "rc-head" }, [
+        badge(
+          c.severity === "must_fix" ? "Must fix" : "Consider",
+          c.severity === "must_fix" ? "warn" : "no-dot",
+        ),
+        " ",
+        el("code", { class: "mono rc-id" }, c.short_id || String(c.id).slice(0, 8)),
+        " ",
+        el("span", { class: "rc-where" }, commentWhere(c)),
+        c.status !== "open" ? [" ", badge(c.status, "no-dot")] : null,
+        tag
+          ? [
+              " ",
+              el(
+                "span",
+                {
+                  class: `badge rc-anchor ${tag[1]}`,
+                  title:
+                    "From git: the lines this comment points at, compared between the revision it was written on and this one.",
+                },
+                tag[0],
+              ),
+            ]
+          : null,
+      ]),
+      el("p", { class: "rc-body" }, c.body),
+      (c.agent_replies || []).map((r) =>
+        el("p", { class: "rc-reply" }, [
+          el("b", {}, "The agent says: "),
+          r.summary,
+          el("small", { class: "dim" }, " (its claim; only you resolve the comment)"),
+        ]),
+      ),
+      el("p", { class: "rc-meta dim" }, [
+        c.author_id ? `${c.author_id} · ` : "",
+        earlier ? `written on attempt ${c.round + 1}` : "this attempt",
+        c.sent_round != null ? " · sent back with Fix these" : "",
+      ]),
+      el("div", { class: "btn-row rc-actions" }, actions),
+    ],
+  );
+}
+
+/**
+ * The inline comment form: a body, Must fix / Consider, Comment and Cancel. A typed draft
+ * is a text field the refresh never throws away (viewHasTypedText).
+ */
+function reviewCommentComposer({ where, onSave, onCancel }) {
+  const ta = el("textarea", {
+    class: "rc-input",
+    rows: "3",
+    "aria-label": `Comment on ${where}`,
+    placeholder: "What should change?",
+  });
+  const name = `rc-sev-${++fieldSeq}`;
+  const radio = (value, label, checked) =>
+    el("label", { class: "rc-sev" }, [
+      el("input", { type: "radio", name, value, checked: checked ? "" : null }),
+      ` ${label}`,
+    ]);
+  let busy = false;
+  const form = el(
+    "form",
+    {
+      class: "rc-composer",
+      novalidate: "",
+      onsubmit: async (e) => {
+        e.preventDefault();
+        if (busy) return;
+        const body = ta.value.trim();
+        if (!body) {
+          ta.focus();
+          return;
+        }
+        const sev = form.querySelector(`input[name="${name}"]:checked`);
+        busy = true;
+        try {
+          await onSave(body, sev ? sev.value : "must_fix");
+          form.remove();
+        } catch (err) {
+          toast((err && err.message) || "The comment was not saved.", { code: err && err.code });
+        } finally {
+          busy = false;
+        }
+      },
+    },
+    [
+      el("p", { class: "rc-composer-h" }, ["Comment on ", el("b", {}, where)]),
+      ta,
+      el("div", { class: "rc-composer-row" }, [
+        radio("must_fix", "Must fix", true),
+        radio("consider", "Consider", false),
+        el("span", { class: "grow" }),
+        el("button", { class: "btn small primary", type: "submit" }, "Comment"),
+        el(
+          "button",
+          {
+            class: "btn small",
+            type: "button",
+            onclick: () => {
+              form.remove();
+              if (onCancel) onCancel();
+            },
+          },
+          "Cancel",
+        ),
+      ]),
+    ],
+  );
+  ta.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && ta.value.trim() === "") {
+      e.stopPropagation();
+      form.remove();
+      if (onCancel) onCancel();
+    }
+  });
+  form._focus = () => ta.focus();
+  return form;
+}
+
+/** The commentable row a diff line is (new side unless it only has an old number). */
+function diffRowAnchor(row) {
+  const pre = row && row.closest && row.closest(".diff-pre[data-path]");
+  if (!pre) return null;
+  const since = pre.dataset.since === "1";
+  if (row.dataset.ln) return { pre, line: Number(row.dataset.ln), side: "new" };
+  if (row.dataset.ol && !since) return { pre, line: Number(row.dataset.ol), side: "old" };
+  return null;
+}
+
+/**
+ * Put a comment button on every commentable line of the per-file diffs in `box`, and a
+ * "Comment on this file" button above each file. One empty button per line (its label is
+ * for a screen reader, its glyph is CSS), so a copied line is still only the line.
+ */
+function decorateCommentable(box, onLine, onFile) {
+  if (!box) return;
+  for (const pre of box.querySelectorAll(".diff-pre[data-path]")) {
+    if (pre.dataset.cmt === "1") continue;
+    pre.dataset.cmt = "1";
+    for (const row of pre.querySelectorAll(".diff-line")) {
+      const a = diffRowAnchor(row);
+      if (!a) continue;
+      const b = el("button", {
+        class: "diff-cmt",
+        type: "button",
+        tabindex: "-1",
+        "aria-label": `Comment on line ${a.line}${a.side === "old" ? " (old side)" : ""} of ${pre.dataset.path}`,
+        onclick: (e) => {
+          e.stopPropagation();
+          onLine(row);
+        },
+      });
+      roLock(b, "ticket");
+      row.prepend(b);
+    }
+    if (onFile && pre.dataset.since !== "1") {
+      const bar = el("div", { class: "rc-filebar" }, [
+        roLock(
+          el(
+            "button",
+            { class: "btn small", type: "button", onclick: () => onFile(pre, bar) },
+            "Comment on this file",
+          ),
+          "ticket",
+        ),
+      ]);
+      pre.before(bar);
+    }
+  }
 }
 
 /** True when the ticket's events show a merge-conflict-resolved reopen pending re-review. */
@@ -18328,6 +18595,29 @@ async function renderReview(param) {
   const evidence = detail.evidence || [];
   const ticketEvents = detail.events || [];
   const isReopened = reopenedForReview(ticketEvents);
+  // REVIEW COMMENTS: the reviewer's comments (the detail carries them; the anchor states
+  // come from GET …/review/comments?anchors=1, which runs git) and the server's Fix these
+  // outcome. The open ones join the one flags list below.
+  let comments = Array.isArray(detail.review_comments) ? detail.review_comments : [];
+  let fixOutcome = null;
+  const attemptNow = Number((detail.ticket || t).attempt_count) || 0;
+  const openComments = () => comments.filter((c) => c.status === "open");
+  const openMustFix = () => openComments().filter((c) => c.severity === "must_fix");
+  const commentFlag = () => {
+    const open = openComments().length;
+    if (!open) return [];
+    const must = openMustFix().length;
+    return [
+      [
+        "Open comments",
+        `Open comments: ${open} (${must} must-fix). ` +
+          (must
+            ? "Fix these sends the must-fix ones back as numbered requirements; resolve the ones this change answers."
+            : "Resolve them, or leave them as notes for later."),
+        "From the review comments on this change",
+      ],
+    ];
+  };
   const satisfied = ac.filter((a) => a.status === "satisfied").length;
   const repo =
     (detail.repositories || []).find((r) => r.access === "write") || detail.repositories?.[0];
@@ -18665,7 +18955,9 @@ async function renderReview(param) {
       `${ac.length - satisfied} of ${ac.length} acceptance criteria are not satisfied yet.`,
       "From the ticket's criteria",
     ]);
+  let lastFlagArgs = [[], []];
   const paintFlags = (riskAnns, outside = []) => {
+    lastFlagArgs = [riskAnns, outside];
     const testsChanged = riskAnns.some((a) => a.kind === "test-modified");
     shownAsks = testsChanged ? asks.filter((a) => a.topic !== "tests") : asks;
     paintAsks();
@@ -18690,6 +18982,7 @@ async function renderReview(param) {
         `${o.path} is changed, but the agent's smallest-change note does not list it. Check it belongs in this ticket.`,
         `Derived from the diff's paths and the agent's smallest-change note (evidence ${String(o.noteId || "").slice(0, 8)})`,
       ]),
+      ...commentFlag(),
       ...flagsNow,
     ];
     clear(flagList);
@@ -18753,6 +19046,7 @@ async function renderReview(param) {
   const applyDiffState = (state, repos = [], res = null) => {
     diffState = state || { approvable: false, reason: "The diff state is unknown." };
     outcome = (res && res.approve_outcome) || null;
+    if (res && res.reject_outcome) fixOutcome = res.reject_outcome;
     // A server-side hold (required CI not passed) refuses the approval: say so instead.
     if (outcome && !outcome.approvable && diffState.approvable)
       diffState = { approvable: false, reason: outcome.sentence };
@@ -18788,6 +19082,9 @@ async function renderReview(param) {
       outside,
     );
     markOutsideFiles(diffBox, outside);
+    decorateCommentable(diffBox, onLineComment, onFileComment);
+    paintComments();
+    loadSince();
     if (live.length) {
       const files = live.reduce((n, r) => n + (r.files || 0), 0);
       const add = live.reduce((n, r) => n + (r.additions || 0), 0);
@@ -18802,6 +19099,389 @@ async function renderReview(param) {
       );
     }
   };
+  // --- review comments: the panel, the threads under the lines, Fix these ------------
+  const commentList = el("ul", { class: "clean rc-list" });
+  const commentAux = el("span", { class: "panel-aux" });
+  const fixLine = el("p", {
+    class: "signoff-next fix-next",
+    id: `fix-next-${t.id}`,
+    "aria-live": "polite",
+    hidden: "",
+  });
+  const fixBtn = hasTicketAction(t.status, "rework")
+    ? el(
+        "button",
+        {
+          class: "btn fix-these",
+          type: "button",
+          disabled: "",
+          "aria-describedby": fixLine.id,
+          onclick: () => fixThese(),
+        },
+        "Fix these (0)",
+      )
+    : null;
+  roLock(fixBtn, "ticket");
+  const paintFixBtn = () => {
+    if (!fixBtn) return;
+    const n = openMustFix().length;
+    const label =
+      fixOutcome && fixOutcome.requirements === n ? fixOutcome.label : `Fix these (${n})`;
+    fixBtn.textContent = label;
+    // A read token keeps roLock's switched-off state and the title that says why.
+    const locked = Boolean(lockReason("ticket"));
+    if (n > 0 && !locked) fixBtn.removeAttribute("disabled");
+    else fixBtn.setAttribute("disabled", "");
+    if (!locked)
+      fixBtn.title =
+        n > 0
+          ? "Send it back with your open must-fix comments as numbered requirements."
+          : "Mark a comment Must fix to send it back with Fix these.";
+    if (n > 0 && fixOutcome && fixOutcome.requirements === n) {
+      fixLine.textContent = fixOutcome.sentence;
+      fixLine.dataset.outcome = fixOutcome.kind;
+      fixLine.hidden = false;
+    } else fixLine.hidden = true;
+  };
+  const reloadComments = async () => {
+    try {
+      const r = await api("GET", `/tickets/${t.id}/review/comments?anchors=1`, undefined, {
+        signal,
+      });
+      if (r && Array.isArray(r.comments)) comments = r.comments;
+      if (r && r.reject_outcome) fixOutcome = r.reject_outcome;
+    } catch (e) {
+      if (e && e.name === "AbortError") return;
+    }
+    paintComments();
+  };
+  const actOnComment = (c, action) =>
+    guard(async () => {
+      await api("POST", `/tickets/${t.id}/review/comments/${c.id}/${action}`, {});
+      toast(
+        action === "resolve"
+          ? "Comment resolved."
+          : action === "reopen"
+            ? "Comment reopened."
+            : "Comment withdrawn.",
+        { ok: true },
+      );
+      await reloadComments();
+    });
+  const saveComment = async (anchor, body, severity) => {
+    await api("POST", `/tickets/${t.id}/review/comments`, {
+      body,
+      severity,
+      ...(anchor.repoId ? { repo: anchor.repoId } : {}),
+      ...(anchor.path ? { path: anchor.path } : {}),
+      ...(anchor.line ? { line: anchor.line, side: anchor.side } : {}),
+      ...(anchor.head ? { commit: anchor.head } : {}),
+    });
+    toast(severity === "must_fix" ? "Must-fix comment added." : "Comment added.", { ok: true });
+    await reloadComments();
+  };
+  const openComposer = (anchor, place) => {
+    if (readOnly()) return;
+    const where = commentWhere({ ...anchor, repo: null });
+    const existing = [...wrap.querySelectorAll(".rc-composer")].find(
+      (f) => f.dataset.anchor === anchor.key,
+    );
+    if (existing) {
+      existing._focus();
+      return;
+    }
+    const form = reviewCommentComposer({
+      where,
+      onSave: (body, severity) => saveComment(anchor, body, severity),
+    });
+    form.dataset.anchor = anchor.key;
+    place(form);
+    form._focus();
+  };
+  let cursorRow = null;
+  const setCursor = (row) => {
+    if (cursorRow) cursorRow.classList.remove("is-cursor");
+    cursorRow = row;
+    if (row) row.classList.add("is-cursor");
+  };
+  function onLineComment(row) {
+    const a = diffRowAnchor(row);
+    if (!a) return;
+    setCursor(row);
+    openComposer(
+      {
+        key: `${a.pre.dataset.repoId || ""}|${a.pre.dataset.path}|${a.side}|${a.line}`,
+        repoId: a.pre.dataset.repoId || null,
+        path: a.pre.dataset.path,
+        line: a.line,
+        side: a.side,
+        head: a.pre.dataset.head || null,
+      },
+      (form) => {
+        let after = row;
+        while (after.nextElementSibling && after.nextElementSibling.classList.contains("rc-thread"))
+          after = after.nextElementSibling;
+        after.after(form);
+      },
+    );
+  }
+  function onFileComment(pre, bar) {
+    openComposer(
+      {
+        key: `${pre.dataset.repoId || ""}|${pre.dataset.path}|file`,
+        repoId: pre.dataset.repoId || null,
+        path: pre.dataset.path,
+        line: null,
+        side: null,
+        head: pre.dataset.head || null,
+      },
+      (form) => bar.after(form),
+    );
+  }
+  const ticketCommentBtn = roLock(
+    el(
+      "button",
+      {
+        class: "btn small",
+        type: "button",
+        onclick: () =>
+          openComposer(
+            { key: "ticket", repoId: null, path: null, line: null, side: null },
+            (form) => commentList.before(form),
+          ),
+      },
+      "Comment on the change",
+    ),
+    "ticket",
+  );
+  /** Threads under the lines they point at (only on the revision they were written on). */
+  const paintThreads = () => {
+    for (const n of wrap.querySelectorAll(".rc-thread")) n.remove();
+    const pres = [...wrap.querySelectorAll(".diff-pre[data-path]")];
+    for (const c of comments) {
+      if (!c.path || c.line == null || c.status === "withdrawn") continue;
+      for (const pre of pres) {
+        if (pre.dataset.path !== c.path) continue;
+        if ((pre.dataset.repoId || null) !== (c.repo_id || null)) continue;
+        if (!pre.dataset.head || pre.dataset.head !== c.anchor_sha) continue;
+        if (c.side === "old" && pre.dataset.since === "1") continue;
+        const attr = c.side === "old" ? "ol" : "ln";
+        const row = [...pre.querySelectorAll(`.diff-line[data-${attr}]`)].find(
+          (r) => Number(r.dataset[attr]) === c.line,
+        );
+        if (!row) continue;
+        let thread = row.nextElementSibling;
+        if (!thread || !thread.classList.contains("rc-thread")) {
+          thread = el(
+            "div",
+            { class: "rc-thread", role: "group", "aria-label": `Comments on line ${c.line}` },
+            [el("ul", { class: "clean" })],
+          );
+          row.after(thread);
+        }
+        thread
+          .querySelector("ul")
+          .appendChild(reviewCommentItem(c, { attempt: attemptNow, onAct: actOnComment }));
+      }
+    }
+  };
+  function paintComments() {
+    clear(commentList);
+    const shown = comments.filter((c) => c.status !== "withdrawn");
+    for (const c of shown)
+      commentList.appendChild(reviewCommentItem(c, { attempt: attemptNow, onAct: actOnComment }));
+    if (!shown.length)
+      commentList.appendChild(
+        el(
+          "li",
+          { class: "dim rc-none" },
+          "No comments yet. Use the + beside a line, Comment on this file, or press c on a line you clicked.",
+        ),
+      );
+    const open = openComments().length;
+    commentAux.textContent = open
+      ? `${open} open (${openMustFix().length} must-fix)`
+      : String(shown.length);
+    paintThreads();
+    paintFixBtn();
+    paintFlags(...lastFlagArgs);
+  }
+  const fixThese = () => {
+    const list = openMustFix();
+    if (!list.length) return;
+    const n = list.length;
+    confirmSheet({
+      title: `Fix these on #${t.number}`,
+      intro:
+        fixOutcome && fixOutcome.requirements === n
+          ? fixOutcome.sentence
+          : `#${t.number} goes back with ${plural(n, "numbered requirement")}. Its acceptance criteria reset to not met.`,
+      body: el(
+        "ol",
+        { class: "rc-fix-list" },
+        list.map((c) =>
+          el("li", {}, [
+            el("code", { class: "mono" }, c.short_id || String(c.id).slice(0, 8)),
+            " ",
+            el("b", {}, commentWhere(c)),
+            el("span", {}, `: ${c.body}`),
+          ]),
+        ),
+      ),
+      confirm: `Send back with ${plural(n, "requirement")}`,
+      onConfirm: async () => {
+        const r = await api("POST", `/tickets/${t.id}/review/fix`, {
+          comment_ids: list.map((c) => c.id),
+        });
+        const done = r && r.reject_outcome;
+        toast(done ? done.sentence : `#${t.number} sent back with ${plural(n, "requirement")}.`, {
+          ok: true,
+        });
+        router();
+      },
+    });
+  };
+
+  // --- since your review (A3): the interdiff from the commit you sent back --------
+  const hasRejectPin = evidence.some((e) =>
+    String(e.uri || "").startsWith("gaffer-rejected-commit:"),
+  );
+  const sinceBox = el("div", { class: "diff-box since-box", hidden: "" });
+  const sinceBar = el("div", { class: "since-bar", hidden: "" });
+  let sinceLoaded = false;
+  const showSince = (on) => {
+    sinceBox.hidden = !on;
+    diffBox.hidden = on;
+    for (const b of sinceBar.querySelectorAll("button[data-since]"))
+      b.setAttribute("aria-pressed", String(b.dataset.since === (on ? "1" : "0")));
+  };
+  async function loadSince() {
+    if (!hasRejectPin || sinceLoaded) return;
+    sinceLoaded = true;
+    let res;
+    try {
+      res = await api("GET", `/tickets/${t.id}/diff?since=rejected`, undefined, { signal });
+    } catch {
+      return;
+    }
+    const since = (res && Array.isArray(res.since) && res.since) || [];
+    const repos = (res && Array.isArray(res.repos) && res.repos) || [];
+    const rewritten = since.filter((x) => x.history_rewritten);
+    if (!repos.length && !rewritten.length) return;
+    clear(sinceBox);
+    clear(sinceBar);
+    const files = repos.reduce((n, r) => n + (r.files || 0), 0);
+    // The attempt the person sent back (the pin's round), which an agent reviewer's later
+    // send-backs do not move; the delivery on screen is attempt attempt_count + 1.
+    const pinAttempts = since
+      .filter((x) => x.available && !x.history_rewritten && Number.isInteger(x.attempt))
+      .map((x) => x.attempt);
+    const fromAttempt = pinAttempts.length ? Math.min(...pinAttempts) : attemptNow;
+    if (repos.length) {
+      sinceBar.append(
+        el("div", { class: "since-toggle", role: "group", "aria-label": "Which changes to show" }, [
+          el(
+            "button",
+            {
+              class: "btn small",
+              type: "button",
+              dataset: { since: "1" },
+              onclick: () => showSince(true),
+            },
+            `Changes since your review (attempt ${fromAttempt} → ${attemptNow + 1})`,
+          ),
+          el(
+            "button",
+            {
+              class: "btn small",
+              type: "button",
+              dataset: { since: "0" },
+              onclick: () => showSince(false),
+            },
+            "Whole change",
+          ),
+        ]),
+        el(
+          "p",
+          { class: "since-note dim" },
+          `${plural(files, "file")} changed since you sent it back. Approve still covers the whole change.`,
+        ),
+      );
+    }
+    for (const x of rewritten)
+      sinceBar.appendChild(
+        el("p", { class: "reopen-banner since-rewritten", role: "status" }, [
+          icon("alert"),
+          el("span", {}, [
+            el("b", {}, `${x.repo}: the branch history was rewritten since you sent it back. `),
+            "The commit you reviewed is not in the new head's history, so there is no interdiff to show; read the whole change.",
+          ]),
+        ]),
+      );
+    repos.forEach((rd, i) => {
+      const sec = repoDiffSection(rd, 100 + i);
+      for (const pre of sec.querySelectorAll(".diff-pre[data-path]")) pre.dataset.since = "1";
+      sinceBox.appendChild(sec);
+    });
+    sinceBar.hidden = false;
+    decorateCommentable(sinceBox, onLineComment, null);
+    paintThreads();
+    showSince(repos.length > 0);
+    // The comments written on the sent-back revision get their git anchor tags.
+    if (comments.some((c) => c.round < attemptNow)) reloadComments();
+  }
+
+  // --- the live head check (A3): the change moved under the reader -----------------
+  const HEADS_POLL_MS = 20000;
+  let movedLive = false;
+  const movedLiveBanner = el("div", {
+    class: "reopen-banner diff-moved-banner moved-live",
+    role: "alert",
+    hidden: "",
+  });
+  const checkHeads = async () => {
+    if (!wrap.isConnected || movedLive || isApproved() || !diffRepos.length) return;
+    if (document.visibilityState === "hidden") return;
+    let r;
+    try {
+      r = await api("GET", `/tickets/${t.id}/heads`, undefined, { signal });
+    } catch {
+      return;
+    }
+    const heads = r && Array.isArray(r.heads) ? r.heads : null;
+    if (!heads || movedLive) return;
+    const moved = diffRepos.filter((d) => {
+      if (!d.repoId || !d.headSha) return false;
+      const h = heads.find((x) => x.repo_id === d.repoId);
+      return Boolean(h && h.sha && h.sha !== d.headSha);
+    });
+    if (!moved.length) return;
+    movedLive = true;
+    disarm();
+    diffState = {
+      approvable: false,
+      reason:
+        "the change moved since you opened it. Reload the diff and review the new head first.",
+    };
+    if (approveBtn) approveBtn.setAttribute("disabled", "");
+    clear(movedLiveBanner);
+    movedLiveBanner.append(
+      icon("alert"),
+      el("span", {}, [
+        el("b", {}, "The change moved since you opened it. "),
+        `${moved.map((m) => m.repo).join(", ")} has a new commit, so Approve is off until you reload and review the new head. `,
+        el(
+          "button",
+          { class: "btn small", type: "button", onclick: () => router() },
+          "Reload the diff",
+        ),
+      ]),
+    );
+    movedLiveBanner.hidden = false;
+  };
+  const headsTimer = setInterval(checkHeads, HEADS_POLL_MS);
+  window.addEventListener("focus", checkHeads);
+
   // The verdict strip: the runner's facts, under the title and above everything
   // the agent wrote. Built before the diff so the diff's risk flags can join it.
   const strip = packet ? verdictStrip(packet) : null;
@@ -18851,6 +19531,7 @@ async function renderReview(param) {
       panelHead("The gaffer's sign-off", null, null, { kit: "claret" }),
       summary,
       movedBanner,
+      movedLiveBanner,
       asksSlot,
       integritySlot,
       canApprove ? diffBlockBanner : null,
@@ -18859,6 +19540,7 @@ async function renderReview(param) {
         { class: "btn-row review-card-actions" },
         [
           approveBtn,
+          fixBtn,
           hasTicketAction(t.status, "rework")
             ? roLock(
                 el(
@@ -18882,12 +19564,15 @@ async function renderReview(param) {
         ].filter(Boolean),
       ),
       canApprove ? nextLine : null,
+      fixBtn ? fixLine : null,
       armHint,
       el("p", { class: "rv-keys" }, [
         el("span", { class: "kbd" }, "a"),
         " twice to approve · ",
         el("span", { class: "kbd" }, "r"),
         " send back · ",
+        el("span", { class: "kbd" }, "c"),
+        " comment on the clicked line · ",
         el("span", { class: "kbd" }, "j"),
         el("span", { class: "kbd" }, "k"),
         " next / previous",
@@ -18900,8 +19585,15 @@ async function renderReview(param) {
 
   const diffSection = el("section", { class: "rv-diff", "aria-label": "The diff" }, [
     el("h2", { class: "rv-h2" }, ["The diff ", diffAux]),
+    sinceBar,
+    sinceBox,
     diffBox,
   ]);
+  // A click on a line marks it, so `c` comments on it.
+  diffSection.addEventListener("click", (e) => {
+    const row = e.target && e.target.closest && e.target.closest(".diff-line");
+    if (row && diffRowAnchor(row)) setCursor(row);
+  });
 
   // The referee's checks: the Definition-of-Done gates, then the criteria, in one page.
   const dodBox = dodChecklist(evidence);
@@ -18932,6 +19624,11 @@ async function renderReview(param) {
         el("section", { class: "rv-flags", "aria-label": "Flags" }, [
           el("h2", { class: "rv-h2" }, ["Flags ", flagCount]),
           flagList,
+        ]),
+        el("section", { class: "rv-comments", "aria-label": "Review comments" }, [
+          el("h2", { class: "rv-h2" }, ["Comments ", commentAux]),
+          el("div", { class: "btn-row rc-toolbar" }, [ticketCommentBtn]),
+          commentList,
         ]),
         checks,
         el("section", { class: "rv-evid", "aria-label": "Evidence" }, [
@@ -18977,6 +19674,15 @@ async function renderReview(param) {
       disarm();
       const to = tickets[idx + (e.key === "j" ? 1 : -1)];
       if (to) navigate(`#/review/${to.id}`);
+    } else if (e.key === "c") {
+      if (readOnly()) return;
+      const active = document.activeElement;
+      const row =
+        (active && active.closest && active.closest(".diff-line")) ||
+        (cursorRow && cursorRow.isConnected ? cursorRow : null);
+      if (!row || !diffRowAnchor(row)) return;
+      e.preventDefault();
+      onLineComment(row);
     } else if ((e.key === "a" || e.key === "r") && readOnly()) {
       // A read token signs nothing off: the keys do what the switched-off buttons do.
       return;
@@ -18998,6 +19704,8 @@ async function renderReview(param) {
   let observer = null;
   const teardown = () => {
     document.removeEventListener("keydown", onKey);
+    clearInterval(headsTimer);
+    window.removeEventListener("focus", checkHeads);
     if (armTimer) clearTimeout(armTimer);
     oneCol?.removeEventListener?.("change", placeDiff);
     if (observer) observer.disconnect();
@@ -19007,6 +19715,8 @@ async function renderReview(param) {
     if (!document.body.contains(wrap)) teardown();
   });
   observer.observe(app, { childList: true });
+  paintComments();
+  if (comments.length) reloadComments();
   wrap._settled = diffBox._settled ? Promise.allSettled([diffBox._settled]) : Promise.resolve();
   return wrap;
 }

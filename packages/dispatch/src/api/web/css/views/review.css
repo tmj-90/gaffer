@@ -820,7 +820,129 @@
     user-select: none;
   }
   .diff-line.diff-del::before {
+    content: attr(data-ol);
+    opacity: 0.7;
+  }
+  .diff-line.diff-del:not([data-ol])::before {
     content: "";
+  }
+  /* Review comments: a comment button on a line (the glyph is CSS, so a copied line is
+     only the line), the clicked line, and the threads and form under a line. */
+  .diff-line {
+    position: relative;
+  }
+  .diff-cmt {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 1.4em;
+    height: 100%;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--ink-2);
+    cursor: pointer;
+    opacity: 0;
+  }
+  .diff-cmt::before {
+    content: "+";
+    font-weight: 800;
+  }
+  .diff-line:hover > .diff-cmt,
+  .diff-line.is-cursor > .diff-cmt,
+  .diff-cmt:focus-visible {
+    opacity: 1;
+  }
+  .diff-cmt[aria-disabled="true"] {
+    display: none;
+  }
+  .diff-line.is-cursor {
+    outline: 2px solid var(--ink-2);
+    outline-offset: -2px;
+  }
+  .rc-thread,
+  .rc-composer {
+    white-space: normal;
+    font: 500 var(--t14) / 1.45 var(--f-text);
+    margin: 4px 12px 8px 3.2em;
+    padding: 8px 10px;
+    border: var(--frame);
+    border-radius: var(--r);
+    background: var(--ground);
+    max-width: 72ch;
+  }
+  .rc-composer .rc-input {
+    width: 100%;
+    font: inherit;
+  }
+  .rc-composer-h {
+    margin: 0 0 6px;
+  }
+  .rc-composer-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-top: 6px;
+  }
+  .rc-composer-row .grow {
+    flex: 1;
+  }
+  .rc-filebar {
+    display: flex;
+    justify-content: flex-end;
+    padding: 4px 12px;
+  }
+  .rc-list {
+    display: grid;
+    gap: 10px;
+  }
+  .rc-item {
+    padding: 8px 10px;
+    border: var(--frame);
+    border-radius: var(--r);
+    overflow-wrap: anywhere;
+  }
+  .rc-item.is-resolved {
+    opacity: 0.75;
+  }
+  .rc-head,
+  .rc-body,
+  .rc-reply,
+  .rc-meta {
+    margin: 0 0 4px;
+  }
+  .rc-body {
+    white-space: pre-wrap;
+  }
+  .rc-reply {
+    padding-left: 8px;
+    border-left: 3px solid var(--ink-2);
+  }
+  .rc-toolbar {
+    margin-bottom: 8px;
+  }
+  .rc-fix-list {
+    margin: 0 0 8px;
+    padding-left: 20px;
+    overflow-wrap: anywhere;
+  }
+  .since-bar {
+    display: grid;
+    gap: 6px;
+    margin-bottom: 8px;
+  }
+  .since-toggle {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .since-toggle .btn[aria-pressed="true"] {
+    font-weight: 800;
+    border-width: 2px;
+  }
+  .since-note {
+    margin: 0;
   }
   .diff-line.diff-add {
     background: var(--add-wash);

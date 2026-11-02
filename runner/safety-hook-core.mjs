@@ -3178,6 +3178,9 @@ const CP_PAIRS = [
   ["lore", /^(?:approve|reject)$/],
   ["plan", /^--yes$/],
   ["merge", /^(?:T-)?[0-9]+$/],
+  // Review comments (A1/A2): writing, listing, resolving, reopening or withdrawing a
+  // reviewer's comment, and Fix these, are the reviewer's acts, never a delivery agent's.
+  ["review", /^(?:comment|comments|resolve|reopen-comment|withdraw-comment|fix)$/],
 ];
 function cpVerbNear(words) {
   // words: everything after the program word; the verb sits within the first three.

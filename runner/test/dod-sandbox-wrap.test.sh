@@ -141,6 +141,7 @@ grep -qx 'TMPDIR=/tmp' "$IE" 2>/dev/null && ok "install container: TMPDIR is the
 grep -q "host-ca.pem" "$IE" 2>/dev/null && fail "install container: a host CA bundle path leaked in (it does not exist in the container)" || ok "install container: no host CA bundle path"
 grep -qx "HOME=$WORK/sbx-home" "$IE" 2>/dev/null && ok "install container: the image's HOME" || fail "install container: HOME is '$(grep '^HOME=' "$IE" 2>/dev/null)'"
 # The host side (no docker): unchanged, the host's proxy, TMPDIR and CA still apply.
+_hostenv=(); _hosthome=""
 gaffer_dod_install_env _hostenv _hosthome
 [ -n "$_hosthome" ] && rm -rf "$_hosthome"
 _hostenv_s="$(printf '%s\n' "${_hostenv[@]}")"

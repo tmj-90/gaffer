@@ -12,8 +12,8 @@ import { giveTicketRealDelivery, nonEmptyDiffRunner } from "./helpers/realDiff.j
  * accept it).
  *   1. A non-human PASS whose binding says the runner's clean replay did not pass
  *      (skipped: no registered test command, or the replay switched off; failed) is
- *      refused on EVERY ticket, not only an epic's acceptance ticket. A human PASS is a
- *      waiver and is never refused; a PASS with no binding at all keeps today's path.
+ *      refused on EVERY ticket, not only an epic's acceptance ticket, and so is a
+ *      non-human PASS with no replay at all. A human PASS is a waiver and is never refused.
  *   2. Implementation tickets get a test_contract when they become testable, so the
  *      tester's changed_surfaces is never empty: seeded from the ticket's own title,
  *      never overwriting a contract, never written once the contract is frozen.
@@ -135,10 +135,32 @@ describe("a PASS whose clean replay did not pass is never recorded (any ticket)"
     wg.db.close();
   });
 
-  it("an agent PASS with no binding at all keeps today's path (legacy / stub seam)", () => {
+  // An agent (or system) PASS with no replay at all is no more verified than one whose
+  // replay was skipped: `wg ticket tester-pass` defaults to `--as agent`, so a PASS typed
+  // by hand without a binding used to record as an automated tester PASS.
+  for (const actor of [testerAgent, { type: "system" } as Actor]) {
+    it(`${actor.type === "agent" ? "an agent" : "a system"} PASS with no binding at all is refused (BINDING_REQUIRED), the ticket stays in testing`, () => {
+      const wg = freshWg();
+      const id = ordinaryInTesting(wg);
+      let err: unknown = null;
+      try {
+        wg.testerPass(id, { summary: "PASS" }, actor);
+      } catch (e) {
+        err = e;
+      }
+      expect(err).toBeInstanceOf(DispatchError);
+      expect((err as DispatchError).code).toBe("BINDING_REQUIRED");
+      expect((err as Error).message).toMatch(/replay=passed/);
+      expect((err as Error).message).toMatch(/--as human/);
+      expect(wg.view(id).ticket.status).toBe("in_testing");
+      wg.db.close();
+    });
+  }
+
+  it("a human PASS with no binding at all is a waiver and moves the ticket on", () => {
     const wg = freshWg();
     const id = ordinaryInTesting(wg);
-    expect(wg.testerPass(id, { summary: "PASS" }, testerAgent).ticket.status).toBe(
+    expect(wg.testerPass(id, { summary: "checked by hand" }, human).ticket.status).toBe(
       "ready_for_merge",
     );
     wg.db.close();

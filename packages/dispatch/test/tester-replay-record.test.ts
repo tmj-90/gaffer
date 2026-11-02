@@ -97,7 +97,8 @@ function testedAndLanded(opts: { waiver?: boolean } = {}) {
   });
   expect(approved.ticket.status).toBe("in_testing");
   if (opts.waiver) d.testerPass(t.id, { summary: "checked by hand" }, human);
-  else d.testerPass(t.id, { summary: "black-box PASS", tested_commit: pin }, tester);
+  else
+    d.testerPass(t.id, { summary: "black-box PASS", tested_commit: pin, replay: "passed" }, tester);
   expect(d.view(t.id).ticket.status).toBe("ready_for_merge");
   git(repoDir, "merge", "-q", "--no-ff", "-m", "land", BRANCH);
   const landed = git(repoDir, "rev-parse", "main");

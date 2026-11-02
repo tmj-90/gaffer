@@ -586,7 +586,7 @@ describe("REVIEW PACKET tester verdict", () => {
     try {
       const id = forgedVerdict(wg);
       wg.approveReview(id, reviewer);
-      wg.testerPass(id, { summary: "12 black-box tests pass" }, testerAgent);
+      wg.testerPass(id, { summary: "12 black-box tests pass", replay: "passed" }, testerAgent);
       expect(wg.reviewPacket(id, cost).tester).toMatchObject({
         verdict: "pass",
         provenance: "agent",
@@ -734,7 +734,7 @@ describe("REVIEW PACKET a reworked ticket: facts from an earlier round are not t
 
   const testerPassedThenReworked = (wg: Dispatch, id: string) => {
     wg.approveReview(id, reviewer);
-    wg.testerPass(id, { summary: "12 black-box tests pass" }, testerAgent);
+    wg.testerPass(id, { summary: "12 black-box tests pass", replay: "passed" }, testerAgent);
     // The human changes their mind before the merge: back for rework.
     wg.rejectReview(id, "refining", reviewer, "Docs missing the new flag");
   };
@@ -819,7 +819,7 @@ describe("REVIEW PACKET a reworked ticket: facts from an earlier round are not t
       wg.recordAcCheck({ ticket_id: id, ac_id: acId, exit_code: 0, command: "npm test" }, system);
       expect(wg.reviewPacket(id, cost).acceptance[0]).toMatchObject({ evidence_kind: "runner" });
       wg.approveReview(id, reviewer);
-      wg.testerPass(id, { summary: "13 black-box tests pass" }, testerAgent);
+      wg.testerPass(id, { summary: "13 black-box tests pass", replay: "passed" }, testerAgent);
       expect(wg.reviewPacket(id, cost).tester).toMatchObject({
         verdict: "pass",
         summary: "13 black-box tests pass",

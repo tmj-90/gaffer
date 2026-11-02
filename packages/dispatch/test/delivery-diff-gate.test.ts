@@ -218,7 +218,11 @@ describe("git-inside-write-lock: the done gate's git never runs under the write 
     expect(wg.approveReview(ticketId, reviewer).ticket.status).toBe("in_testing");
     spy.calls.length = 0;
 
-    const res = wg.testerPass(ticketId, { summary: "black-box tests pass" }, testerAgent);
+    const res = wg.testerPass(
+      ticketId,
+      { summary: "black-box tests pass", replay: "passed" },
+      testerAgent,
+    );
     expect(res.ticket.status).toBe("ready_for_merge");
     expect(spy.calls.length).toBeGreaterThan(0);
     expect(spy.calls.filter((c) => c.inTransaction)).toEqual([]);

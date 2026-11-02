@@ -828,12 +828,15 @@ independent black-box tester; every other ticket goes from your approval straigh
 to Ready for merge. Turn the lane on with `GAFFER_TESTING=1` (Settings, or the
 environment) and testable tickets go to the tester too: a planned build's tickets
 are created testable (all but the bootstrap), and any ticket can be switched on its
-page or with `wg ticket set-testable <n>`. Either way the tester runs **after** a
-human approves (`in_review`, then `in_testing`), so you review without its evidence;
+page or with `wg ticket set-testable <n>`. Either way the tester runs **after** the
+review approves (`in_review`, then `in_testing`; that is you, unless you turned on
+agent approval), so you review without its evidence;
 its verdict decides whether the approved ticket goes on to Ready for merge or back to
 rework. A ticket that becomes testable with no test contract gets one from its title,
-so the tester always has a changed surface to probe; whoever delivers or reviews it
-can replace it with `wg ticket test-contract <n> --surface ...` until testing starts.
+so the tester's contract always names the behaviour under test (one line built
+from the title, not a real endpoint or command); you can replace it with
+`wg ticket test-contract <n> --surface ...` (the delivery agent with its MCP
+`set_test_contract` tool) until testing starts.
 A tester PASS counts only when the runner replayed the tester's tests on a clean
 checkout of the tested commit with the repo's registered test command. With no test
 command registered (or `GAFFER_TESTER_REPLAY=0`) the PASS is held in Testing on every
@@ -843,6 +846,8 @@ registered for repo ...*, with how to register one (`wg repo set-commands <repo>
 it on by recording the verdict yourself: **Record tester PASS** (reported as a
 waiver, never as verified) or **Record tester FAIL** (back to rework, tested again
 when it returns) on the ticket page, or `wg ticket tester-pass <n> --as human`.
+The `--as human` matters: an automated PASS without a passed replay is refused
+(`BINDING_REQUIRED`), and the command's default actor is the agent.
 
 **A dollar cap before the first live run.** A live run (`gaffer run`, `loop.sh`,
 the Work view's **Poll for work**) refuses to start until `GAFFER_DAILY_BUDGET_USD`

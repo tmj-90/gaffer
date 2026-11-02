@@ -362,15 +362,21 @@ function validatedBinding(
       );
     }
   }
-  // FALSE GREEN, on every ticket (not only an acceptance ticket): a non-human PASS whose
-  // own binding says the runner's clean replay did not pass (skipped: no registered test
-  // command or the replay switched off; failed) proves nothing about the candidate and is
-  // refused. A PASS with no replay field keeps today's path; a human PASS is a waiver.
-  if (opts.verdict === "pass" && !opts.human && out.replay && out.replay !== "passed") {
+  // FALSE GREEN, on every ticket (not only an acceptance ticket): a non-human PASS is
+  // recorded only when it carries the runner's clean replay as PASSED. A replay that was
+  // skipped (no registered test command, the replay switched off) or failed proves
+  // nothing about the candidate, and neither does a PASS with no replay at all (the
+  // `wg ticket tester-pass` default is `--as agent`, so an unbound PASS typed by hand used
+  // to record as an automated tester PASS). The runner's tester always sends the replay.
+  // A human PASS is a waiver and is never refused here.
+  if (opts.verdict === "pass" && !opts.human && out.replay !== "passed") {
+    const state = out.replay ?? "absent";
     throw new DispatchError(
       "BINDING_REQUIRED",
-      `An automated PASS whose clean replay is '${out.replay}' is not a verified PASS: the runner did not show the candidate passes the tester's tests (register the repo's test command and re-test). A human can record the verdict instead (tester-pass --as human), which is reported as a waiver.`,
-      { missing: ["replay=passed"], replay: out.replay },
+      out.replay
+        ? `An automated PASS whose clean replay is '${out.replay}' is not a verified PASS: the runner did not show the candidate passes the tester's tests (register the repo's test command and re-test). A human can record the verdict instead (tester-pass --as human), which is reported as a waiver.`
+        : "An automated PASS must carry the runner's clean replay (replay=passed): without it nothing shows the candidate passes the tester's tests. A human can record the verdict instead (tester-pass --as human), which is reported as a waiver.",
+      { missing: ["replay=passed"], replay: state },
     );
   }
   return out;

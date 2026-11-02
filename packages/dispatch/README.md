@@ -81,10 +81,15 @@ option and help line) is built from light modules only, so `--help` and
 preAction hook just before it runs (`src/cli/runtime.ts`); a new command module
 imports only light modules and reaches the database through `runtime.ts`
 (`test/cli-lazy-load.test.ts` fails otherwise). The CLI, API and MCP entries turn on
-Node's compile cache first (`$NODE_COMPILE_CACHE`, else `<tmpdir>/node-compile-cache`;
-`NODE_DISABLE_COMPILE_CACHE=1` turns it off), and a database already at the current
-schema version opens without running any schema SQL unless a table or index is
-missing. `node scripts/bench-cli.mjs` prints the median startup of the common calls.
+Node's compile cache first. It lives in this package's own
+`node_modules/.cache/node-compile-cache`, not in the temp dir: Node runs whatever
+bytecode it finds there, so the cache has to be exactly as writable as `dist/`, and a
+strict-mode agent may write the temp dirs. `$NODE_COMPILE_CACHE` overrides the place
+(only point it somewhere no agent can write), `NODE_DISABLE_COMPILE_CACHE=1` turns it
+off, and an install the user cannot write just runs uncached. A database already at
+the current schema version opens without running any schema SQL unless a table or
+index is missing. `node scripts/bench-cli.mjs` prints the median startup of the common
+calls.
 
 ### Output, errors and exit codes
 

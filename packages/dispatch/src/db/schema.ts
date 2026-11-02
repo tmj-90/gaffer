@@ -6,7 +6,7 @@
  * partial unique index (one active claim per ticket) are preserved — SQLite
  * supports both. Enum validation is also enforced in the application layer.
  */
-export const SCHEMA_VERSION = 31;
+export const SCHEMA_VERSION = 32;
 
 // No PRAGMAs here: migrate() runs this inside a transaction, where SQLite ignores
 // them. migrate() and openDatabase() set journal_mode/foreign_keys themselves.
@@ -729,4 +729,48 @@ CREATE TABLE IF NOT EXISTS club (
   updated_by    TEXT,
   updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
+
+-- ============================================================================
+-- REVIEW COMMENTS (schema_version 32). A human reviewer's comments on a delivery:
+-- on a diff line (repo_id + path + side + line), on a file (repo_id + path, no line)
+-- or on the whole change (no path). Each one is anchored to the commit it was written
+-- against (anchor_sha) with the +-3 lines git holds there (anchor_excerpt, hashed in
+-- anchor_hash), so a later revision can be told, from git, whether the anchored lines
+-- changed. status walks open -> resolved | withdrawn (and back to open on a reopen);
+-- resolving is a human act (author_type / resolved_by are human or admin, never an
+-- agent). round is the ticket's attempt_count when the comment was written; sent_round
+-- the attempt a "Fix these" send-back carried it into (NULL: never sent).
+--
+-- Mutable review state, so it is NOT folded into evidence (whose rows are immutable
+-- and hashed into the delivery dossier) and stays outside the dossier subject. Every
+-- write also records a review.comment_* work_event, so the hash-chained log keeps the
+-- audit. FK CASCADE with its ticket. A brand-new table created idempotently by CREATE
+-- TABLE IF NOT EXISTS, so no ADD COLUMN migration is needed.
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS review_comments (
+  id              TEXT PRIMARY KEY,
+  ticket_id       TEXT NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+  repo_id         TEXT REFERENCES repositories(id) ON DELETE SET NULL,
+  path            TEXT,
+  side            TEXT CHECK (side IS NULL OR side IN ('new','old')),
+  line            INTEGER CHECK (line IS NULL OR line >= 1),
+  anchor_sha      TEXT,
+  anchor_excerpt  TEXT,
+  anchor_hash     TEXT,
+  body            TEXT NOT NULL,
+  severity        TEXT NOT NULL DEFAULT 'consider' CHECK (severity IN ('must_fix','consider')),
+  status          TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','resolved','withdrawn')),
+  author_type     TEXT NOT NULL CHECK (author_type IN ('human','admin')),
+  author_id       TEXT,
+  round           INTEGER NOT NULL DEFAULT 0,
+  sent_round      INTEGER,
+  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  resolved_at     TEXT,
+  resolved_by     TEXT,
+  resolved_at_sha TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_review_comments_ticket
+  ON review_comments(ticket_id, status, created_at);
 `;

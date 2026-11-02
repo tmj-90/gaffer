@@ -114,9 +114,19 @@ import {
 import { readUsagePause } from "./health/usagePause.js";
 import {
   computeLandingStatus,
+  recordedLandingRepos,
   REVIEW_PIN_PREFIX,
   type LandingStatus,
 } from "./services/landingStatus.js";
+import {
+  type CommentRepoContext,
+  type CreateCommentInput,
+  fixTheseReason,
+  ReviewCommentService,
+  type ReviewCommentView,
+} from "./services/reviewCommentService.js";
+import { rejectOutcome, type RejectOutcome } from "./services/rejectOutcome.js";
+import { computeSinceDiff, type SinceDiff } from "./services/sinceReview.js";
 import { DecisionService, type ResolveDecisionInput } from "./services/decisionService.js";
 import { ScopeService, type ScopeNodeView } from "./services/scopeService.js";
 import {
@@ -334,6 +344,12 @@ export interface TicketView {
    */
   reworkTrail: ReworkAttempt[];
   /**
+   * REVIEW COMMENTS (A1): the reviewer's comments on this ticket, oldest first, with the
+   * delivery agent's replies (claims). No git here: the anchor state is computed by
+   * {@link Dispatch.listReviewComments} with `anchors`. Outside the hashed dossier subject.
+   */
+  reviewComments: ReviewCommentView[];
+  /**
    * PER-REPOSITORY LANDING: the approved commit of each write repo (its current review
    * pin) and whether that commit has landed on the repo's default branch. A ticket is
    * done only when every one has; `partial` marks a held, partly merged ticket.
@@ -474,6 +490,7 @@ export class Dispatch {
   readonly dossierSvc: DossierService;
   readonly reviewPacketSvc: ReviewPacketService;
   readonly reviewGateSvc: ReviewGateService;
+  readonly reviewCommentSvc: ReviewCommentService;
   readonly autonomyRecommendations: AutonomyRecommendationService;
   readonly pauseSvc: PauseService;
   readonly humanQueueSvc: HumanQueueService;
@@ -725,6 +742,13 @@ export class Dispatch {
       // git-ignored .npmrc), unless a human allowed test changes on the ticket.
       observedRiskResolver: (ticket) => this.observedRiskFor(ticket),
     });
+    this.reviewCommentSvc = new ReviewCommentService({
+      db,
+      clock: this.clock,
+      runGit: this.gitRunner ?? defaultGitRunner,
+      resolveTicket: (ref) => this.resolveTicket(ref),
+      repoContexts: (ticket) => this.commentRepoContexts(ticket),
+    });
     this.autonomyRecommendations = new AutonomyRecommendationService({
       reviewDecisions: () => this.events.reviewDecisions(),
     });
@@ -922,6 +946,63 @@ export class Dispatch {
       else miss("branch_missing", `its delivery branch ${branch} cannot be resolved`);
     }
     return { heads, unavailable };
+  }
+
+  /**
+   * REVIEW COMMENTS: every ACTIVE write repo with a checkout and a delivery branch, with
+   * its head now (null when the branch does not resolve). The comments anchor to these;
+   * the since-your-review interdiff and the anchor states read them. Pure read.
+   */
+  commentRepoContexts(ticket: Ticket): CommentRepoContext[] {
+    const runGit = this.gitRunner ?? defaultGitRunner;
+    const out: CommentRepoContext[] = [];
+    for (const repo of this.repos.accessLinksForTicket(ticket.id)) {
+      if (!isActiveTicketRepoRelation(repo.relation) || repo.access !== "write") continue;
+      if (!repo.local_path || !existsSync(repo.local_path)) continue;
+      const branch =
+        this.repos.ticketRepoBranch(ticket.id, repo.id) ??
+        this.repoDeliveries.find(ticket.id, repo.id)?.branch_name ??
+        ticket.branch_name;
+      if (!branch || branch.trim() === "") continue;
+      out.push({
+        repoId: repo.id,
+        repo: repo.name,
+        localPath: repo.local_path,
+        baseBranch: repo.default_branch || "main",
+        branch,
+        head: resolveBranchHead(runGit, repo.local_path, branch),
+      });
+    }
+    return out;
+  }
+
+  /**
+   * LIVE HEAD CHECK (A3): the delivery head of every write repo, and the ones that cannot
+   * be read, from `resolveBranchHead` alone (no diff), so the Review view can poll it.
+   */
+  ticketHeads(ref: string): {
+    ticketId: string;
+    heads: Array<{ repo: string; repo_id: string; sha: string }>;
+    unavailable: Array<{ repo: string; repo_id: string; why: string }>;
+  } {
+    const ticket = this.resolveTicket(ref);
+    const { heads, unavailable } = this.writeRepoHeads(ticket);
+    return {
+      ticketId: ticket.id,
+      heads: heads.map((h) => ({ repo: h.repo, repo_id: h.repoId, sha: h.sha })),
+      unavailable: unavailable.map((u) => ({ repo: u.repo, repo_id: u.repoId, why: u.why })),
+    };
+  }
+
+  /** SINCE YOUR REVIEW (A3): the interdiff from the latest reject pin per write repo. */
+  ticketDiffSince(ref: string): SinceDiff {
+    const ticket = this.resolveTicket(ref);
+    return computeSinceDiff(
+      this.db,
+      this.gitRunner ?? defaultGitRunner,
+      ticket.id,
+      this.commentRepoContexts(ticket),
+    );
   }
 
   /** True when `sha` is contained in the repo's default branch (a verified landing). */
@@ -2579,6 +2660,117 @@ export class Dispatch {
     return { ...res, landedAlready };
   }
 
+  // --- Review comments (A1) + Fix these (A2) --------------------------------
+
+  /** Write a review comment (human/admin only; see ReviewCommentService.create). */
+  createReviewComment(ref: string, input: CreateCommentInput, actor: Actor): ReviewCommentView {
+    return this.reviewCommentSvc.create(ref, input, actor);
+  }
+
+  /**
+   * A ticket's review comments, oldest first; `anchors` adds the git-derived anchor state
+   * against each repo's head now ("anchor changed in this revision" / "anchor untouched").
+   */
+  listReviewComments(
+    ref: string,
+    opts: { open?: boolean; anchors?: boolean } = {},
+  ): ReviewCommentView[] {
+    if (opts.anchors) return this.reviewCommentSvc.listWithAnchors(ref, { open: opts.open });
+    const ticket = this.resolveTicket(ref);
+    return this.reviewCommentSvc.listViews(ticket.id, { open: opts.open });
+  }
+
+  /** Resolve / reopen / withdraw a review comment (a human act). */
+  setReviewCommentState(
+    commentRef: string,
+    action: "resolve" | "reopen" | "withdraw",
+    actor: Actor,
+    ticketRef?: string,
+  ): ReviewCommentView {
+    return this.reviewCommentSvc.setState(commentRef, action, actor, ticketRef);
+  }
+
+  /**
+   * What a "Fix these" send-back would do now (see rejectOutcome.ts): the destination, the
+   * cap and the partly-landed hold read from the same facts rejectReview acts on.
+   */
+  rejectOutcome(
+    ref: string,
+    to: "refining" | "ready" = "refining",
+    requirements?: number,
+  ): RejectOutcome {
+    const ticket = this.resolveTicket(ref);
+    return rejectOutcome({
+      ticketNumber: ticket.number,
+      to,
+      attemptCount: ticket.attempt_count,
+      maxAttempts: this.maxAttempts,
+      landedRepos: recordedLandingRepos(this.db, ticket.id),
+      requirements: requirements ?? this.reviewCommentSvc.counts(ticket.id).open_must_fix,
+    });
+  }
+
+  /**
+   * FIX THESE (A2): send the ticket back with its open must-fix comments (or the named
+   * subset) as numbered requirements. A human/admin act. The transition reason is the
+   * deterministic "Fix these: N requirements (ids)"; the comments are stamped with the
+   * round they were sent into, and the next delivery's prompt lists them. Everything
+   * rejectReview does still applies: the AC reset, the retry cap, the partly-landed hold,
+   * the reject pins. The destination stays Refining unless `to: "ready"` is asked for.
+   */
+  fixThese(
+    ref: string,
+    opts: { commentIds?: readonly string[]; to?: "refining" | "ready" },
+    actor: Actor,
+  ): TransitionResult & {
+    landedAlready: LandingStarted[];
+    requirements: ReviewCommentView[];
+    rejectOutcome: RejectOutcome;
+  } {
+    if (actor.type !== "human" && actor.type !== "admin") {
+      throw new DispatchError(
+        "ACTOR_NOT_PERMITTED",
+        `Fix these is a reviewer's act: only a human or an admin may send a change back with review comments (this actor is ${actor.type}).`,
+        { actor_type: actor.type, reason: "reviewer_only" },
+      );
+    }
+    const ticket = this.resolveTicket(ref);
+    const to = opts.to ?? "refining";
+    const set = this.reviewCommentSvc.fixSet(ticket.id, opts.commentIds);
+    if (set.length === 0) {
+      throw new DispatchError(
+        "VALIDATION_ERROR",
+        `#${ticket.number ?? "?"} has no open must-fix review comment to send back. Write one, or use Send back with a reason.`,
+        { reason: "no_requirements" },
+      );
+    }
+    const predicted = this.rejectOutcome(ticket.id, to, set.length);
+    const res = this.rejectReview(ticket.id, to, actor, fixTheseReason(set));
+    this.reviewCommentSvc.markSent(
+      set.map((c) => c.id),
+      res.ticket.attempt_count,
+    );
+    const ids = new Set(set.map((c) => c.id));
+    const requirements = this.reviewCommentSvc.listViews(ticket.id).filter((c) => ids.has(c.id));
+    // Settled: what the send-back actually did (the predicted kind unless the status says
+    // otherwise, e.g. a landing recorded between the read and the write).
+    const status = res.ticket.status;
+    const settled: RejectOutcome =
+      status === predicted.to_status
+        ? predicted
+        : status === "blocked"
+          ? rejectOutcome({
+              ticketNumber: ticket.number,
+              to,
+              attemptCount: ticket.attempt_count,
+              maxAttempts: this.maxAttempts,
+              landedRepos: recordedLandingRepos(this.db, ticket.id),
+              requirements: set.length,
+            })
+          : { ...predicted, to_status: status === "ready" ? "ready" : "refining" };
+    return { ...res, requirements, rejectOutcome: settled };
+  }
+
   resetAcceptanceCriteria(
     ref: string,
     actor: Actor,
@@ -3162,6 +3354,7 @@ export class Dispatch {
       testContract: parseTestContract(ticket.test_contract),
       // FAILURE-DIAGNOSIS: the full ordered "why did #N fail" trail.
       reworkTrail: this.reworkAttempts.listForTicket(ticket.id),
+      reviewComments: this.reviewCommentSvc.listViews(ticket.id),
       // PER-REPOSITORY LANDING: each write repo's approved commit and whether it landed.
       landing: computeLandingStatus(this.db, ticket.id),
       evalJudgment: currentJudgment(events, enteredReviewAt(ticket.id, events)),

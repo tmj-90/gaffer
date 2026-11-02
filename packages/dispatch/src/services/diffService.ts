@@ -172,7 +172,7 @@ export const defaultGitRunner: GitRunner = (cwd, args, opts) => {
 };
 
 /** Parse `git diff --numstat` output into {files, additions, deletions, paths}. */
-function parseNumstat(out: string): {
+export function parseNumstat(out: string): {
   files: number;
   additions: number;
   deletions: number;
@@ -598,7 +598,7 @@ function firstLine(text: string): string {
 }
 
 /** Cap a string to at most `maxBytes` UTF-8 bytes without splitting a code point. */
-function capUtf8(text: string, maxBytes: number): string {
+export function capUtf8(text: string, maxBytes: number): string {
   const buf = Buffer.from(text, "utf8");
   if (buf.length <= maxBytes) return text;
   let end = maxBytes;

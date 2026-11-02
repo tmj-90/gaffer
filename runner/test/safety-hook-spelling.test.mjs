@@ -107,6 +107,30 @@ for (const cmd of [
   t.deny(`wont-do: ${cmd}`, bash(cmd), opts);
 }
 
+// (g) the review-comment verbs (review comments A1/A2): a delivery agent never writes,
+// resolves, reopens or withdraws its reviewer's comments, and never sends a change back
+// with them. A bare `wg` in an agent shell acts as the person running the factory, so the
+// hook is what keeps a "resolved" from being the agent's own word.
+for (const cmd of [
+  "wg review comment 3 --body 'looks fine' --must-fix",
+  "wg review comments 3",
+  "wg review resolve 1a2b3c4d",
+  "wg review reopen-comment 1a2b3c4d",
+  "wg review withdraw-comment 1a2b3c4d",
+  "wg review fix 3",
+  "dispatch review resolve 1a2b3c4d",
+  "node packages/dispatch/dist/cli/index.js review resolve 1a2b3c4d",
+  "wg 'review' res''olve 1a2b3c4d",
+  "W=wg; $W review resolve 1a2b3c4d",
+  "$X review resolve 1a2b3c4d",
+  "$(which wg) review fix 3",
+  "${TOOLS[0]} review comment 3 --body ok",
+  "$CMD review withdraw-comment 1a2b3c4d",
+  "eval 'wg review resolve 1a2b3c4d'",
+]) {
+  t.deny(`review-comment verb: ${cmd}`, bash(cmd), opts);
+}
+
 // Text that only mentions a command is not a command. Nothing here may be refused.
 // (A quoted "wg … approve" in one segment was already refused by the raw rule before
 // this file existed; that is unchanged and not pinned here.)
@@ -145,6 +169,9 @@ for (const cmd of [
   "$EDITOR plan",
   "$(npm bin)/prisma migrate resolve",
   "$(which python3) -m pytest -k approve",
+  // An unknown program before "resolve" alone (no "review" verb) stays allowed.
+  "$PKG resolve lodash",
+  'git commit -m "review resolve: comment threads"',
   // Quoted text keeps its quotes' meaning: no separator inside it starts a command.
   'echo "a | xargs wg"',
   'echo "printenv"',

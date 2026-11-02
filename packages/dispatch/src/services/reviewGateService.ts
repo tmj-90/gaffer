@@ -48,6 +48,7 @@ import {
   recordedLandingRepos,
   LANDING_PREFIX,
   type LandingStatus,
+  REJECT_PIN_PREFIX,
   REVIEW_PIN_PREFIX,
 } from "./landingStatus.js";
 import { isTestingEnabled, testerProvenance } from "../util/testingLane.js";
@@ -806,6 +807,47 @@ export class ReviewGateService {
           kind: "review_pin",
           approver_type: actor.type,
           repo: pin.repo,
+        }),
+        created_by: "dispatch",
+        recorded_by_actor_type: "system",
+        created_at: this.clock.now(),
+      });
+    }
+  }
+
+  /**
+   * REJECT PINS (review comments A2/A3): one SYSTEM `commit` evidence row per write repo
+   * naming the commit a rejection sent back (uri `gaffer-rejected-commit:<sha>`). The
+   * "changes since your review" interdiff starts from it. A distinct prefix from the review
+   * pin, so the landing check and the tester binding never read it as an approval.
+   */
+  private recordRejectPins(
+    ticket: Ticket,
+    actor: Actor,
+    heads: readonly ReviewedHead[],
+    attempt: number,
+  ): void {
+    const who =
+      actor.type === "agent"
+        ? "agent review"
+        : actor.type === "system"
+          ? "the runner"
+          : "human review";
+    for (const pin of heads) {
+      this.evidence.insert({
+        id: newId(),
+        ticket_id: ticket.id,
+        ac_id: null,
+        repo_id: pin.repoId,
+        decision_id: null,
+        evidence_type: "commit",
+        summary: `${who} (${actor.id ?? actor.type}) sent back commit ${pin.sha} of ${pin.branch} in ${pin.repo}`,
+        uri: `${REJECT_PIN_PREFIX}${pin.sha}`,
+        payload_json: JSON.stringify({
+          kind: "reject_pin",
+          rejecter_type: actor.type,
+          repo: pin.repo,
+          attempt,
         }),
         created_by: "dispatch",
         recorded_by_actor_type: "system",
@@ -2211,6 +2253,10 @@ export class ReviewGateService {
     reason?: string,
   ): TransitionResult {
     let parked: { attempt: number; requestedTarget: string; reason: string } | null = null;
+    // REJECT PINS: the heads the reviewer sent back, read before the write lock is taken
+    // (git never runs under it). Only a re-queue records them; abandoning has no next round.
+    const pinHeads =
+      to === "cancelled" ? [] : this.resolveReviewedHeads(this.ticketSvc.resolveTicket(ticketRef));
     const result = inTransaction(this.db, () => {
       const ticket = this.ticketSvc.resolveTicket(ticketRef);
       if (ticket.status !== "in_review" && ticket.status !== "ready_for_merge") {
@@ -2275,6 +2321,7 @@ export class ReviewGateService {
         });
         parked = { attempt: nextAttempt, requestedTarget: to, reason: resolvedReason };
       }
+      this.recordRejectPins(ticket, actor, pinHeads, nextAttempt);
       this.ticketSvc.resetAcceptanceCriteria(ticket.id, actor);
       const feedback: ReviewFeedback = {
         reason: resolvedReason,

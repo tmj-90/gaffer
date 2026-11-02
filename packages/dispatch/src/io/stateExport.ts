@@ -114,6 +114,10 @@ export const EXPORT_TABLES = [
   // SQUAD (v27): the operator's club identity (one row, no FK). The team name and
   // kit are part of the factory the operator carries between machines.
   "club",
+  // REVIEW COMMENTS (v32): the reviewer's comments on a delivery and their resolution
+  // (FK to tickets and repositories, so it sorts after both). Durable review history the
+  // board carries between machines, like the rework trail.
+  "review_comments",
 ] as const;
 
 export type ExportTable = (typeof EXPORT_TABLES)[number];
@@ -164,6 +168,7 @@ const TABLE_ORDER_BY: Record<ExportTable, string> = {
   paused_deliveries: "ticket_id",
   autonomy_policy: "id",
   club: "id",
+  review_comments: "id",
 };
 
 /** A single table's rows, each row a column→value map (SQLite scalar values). */

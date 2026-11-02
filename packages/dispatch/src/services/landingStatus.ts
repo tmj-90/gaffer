@@ -40,6 +40,14 @@ export const PR_LANDING_VIAS: ReadonlySet<string> = new Set(["pr", "pr-stale", "
 
 export const REVIEW_PIN_PREFIX = "gaffer-reviewed-commit:";
 export const LANDING_PREFIX = "gaffer-landed-commit:";
+/**
+ * REJECT PIN (review comments A2/A3): the commit a reviewer SENT BACK, one SYSTEM `commit`
+ * evidence row per write repo, recorded by every re-queuing rejection. It anchors the
+ * "changes since your review" interdiff and is never an approval: its prefix differs from
+ * {@link REVIEW_PIN_PREFIX}, which the landing check and runner/lib/tester-binding.mjs read
+ * as the approved commit, so nothing that lands a change ever reads this one.
+ */
+export const REJECT_PIN_PREFIX = "gaffer-rejected-commit:";
 
 export interface LandingRepoState {
   repoId: string;

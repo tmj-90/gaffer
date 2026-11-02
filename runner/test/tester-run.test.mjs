@@ -598,6 +598,52 @@ console.log(
 }
 
 console.log(
+  "== AC12c: a usage-window PAUSE in force: no tester spawned, not a hold, nothing booked ==",
+);
+{
+  // lib/worker.mjs deliver() refuses a paid launch while $GAFFER_DATA/usage-pause.json is
+  // in force (status 75, usagePaused). The tester must read that as the usage window it
+  // is (the runner skips the ticket for this run), not as "no verdict token" (a hold for
+  // a human that is remembered for the whole stay in_testing).
+  const branches = LIVE.g("branch", "--list", "gaffer-tests/ticket-1").stdout.trim();
+  if (branches) LIVE.g("branch", "-D", "gaffer-tests/ticket-1");
+  const pauseFile = resolve(LIVE.data, "usage-pause.json");
+  const ledger = resolve(LIVE.data, "usage-ledger.jsonl");
+  const until = Date.now() + 3600e3;
+  writeFileSync(
+    pauseFile,
+    JSON.stringify({
+      paused_until: new Date(until).toISOString(),
+      until_ms: until,
+      kind: "usage_limit",
+      basis: "default",
+      message: "stub limit",
+      ticket: null,
+      lane: "delivery",
+      recorded_at: new Date().toISOString(),
+    }),
+  );
+  const ledgerBefore = existsSync(ledger) ? readFileSync(ledger, "utf8") : "";
+  const { code, out, logged, cap } = runLive("PASS");
+  rmSync(pauseFile, { force: true });
+  cap === null
+    ? ok("no tester agent spawned while paused")
+    : fail("the stub claude ran while paused");
+  code === 3 && out && out.phase === "usage_paused" && out.ticket === 1
+    ? ok("paused tester → phase=usage_paused, exit 3 (not held)")
+    : fail(`paused tester wrong (code=${code}, out=${JSON.stringify(out)})`);
+  out && /paused until/.test(out.reason || "")
+    ? ok("the output names the pause")
+    : fail(`usage_paused output lacks the pause: ${JSON.stringify(out)}`);
+  logged === "" ? ok("no verdict recorded while paused") : fail(`seam was invoked: ${logged}`);
+  (existsSync(ledger) ? readFileSync(ledger, "utf8") : "") === ledgerBefore
+    ? ok("the usage ledger booked nothing for the refused launch")
+    : fail(
+        `the ledger gained a row: ${(existsSync(ledger) ? readFileSync(ledger, "utf8") : "").slice(ledgerBefore.length)}`,
+      );
+}
+
+console.log(
   "== AC13: --live HOLDS when the tester modified the implementation (verdict not about the candidate) ==",
 );
 {

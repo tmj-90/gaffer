@@ -59,10 +59,13 @@
 //             (exit 3) — the call was refused by the plan's usage window or a rate
 //             limit (lib/worker.mjs detectUsageLimit): not a verdict and not a hold;
 //             the runner records the pause and tests the ticket again after it.
+//   usage_paused: { "phase":"usage_paused", ticket, reason, testedCommit } (exit 3) —
+//             the factory was already paused, so lib/worker.mjs deliver() started no
+//             tester (nothing booked); the runner skips the ticket for this run.
 //   error:    { "phase":"error", error }   (exit 1)
 //
 // EXIT: 0 on dry-run / verdict; 1 on a hard failure (no ticket, unresolvable,
-//   record failure); 2 held; 3 usage_limited.
+//   record failure); 2 held; 3 usage_limited or usage_paused.
 // GAFFER_TESTER_ENVELOPE_OUT (optional): a --live run writes the raw `claude -p`
 //   envelope there, so lib/tester.sh classifies a usage-limit refusal with the same
 //   locked recorder the delivery path uses (gaffer_usage_pause_record).
@@ -980,6 +983,23 @@ function runLiveTester(context) {
       GAFFER_READ_ROOTS: repo.localPath,
     },
   });
+  // USAGE WINDOW: deliver() refused the launch because the factory is paused on the
+  // usage window (lib/usage-pause.mjs). Nothing ran, so nothing is booked and there is no
+  // verdict to look for: this is the window, not a hold for a human (a hold is remembered
+  // for the ticket's whole stay in_testing). lib/tester.sh skips the ticket for this run
+  // and it is tested again once the pause lifts.
+  if (res.usagePaused) {
+    try {
+      rmSync(mcpRuntime, { force: true });
+    } catch {
+      /* best-effort */
+    }
+    cleanup();
+    const reason = String(res.error?.message ?? res.stderr ?? "the factory is paused");
+    log(`the tester call for #${n} was not started: ${reason}`);
+    emit({ phase: "usage_paused", ticket: n, reason, testedCommit }, 3);
+    return;
+  }
   // SKILL TELEMETRY (fail-soft): the test role's mount and, best-effort, what was used.
   recordSkillUsage({
     ticket: n,

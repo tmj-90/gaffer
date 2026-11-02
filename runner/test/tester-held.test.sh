@@ -161,6 +161,25 @@ new_run; rm -f "$GAFFER_DATA/usage-pause.json"
 printf '{"phase":"verdict","verdict":"pass","ticket":8}' > "$WORK/reply-8.json"; echo 0 > "$WORK/rc-8"; rm -f "$WORK/envelope-8.json"
 run_lane
 [ "$(spawns_of 8)" = 2 ] && ok "#8 is tested again on the next run (after the window reset)" || fail "#8 not re-tested ($(spawns_of 8) spawns)"
+echo "== 7c: a tester NOT STARTED because the factory is already paused is not held either =="
+# lib/worker.mjs deliver() refuses a paid launch while the pause is in force (another
+# worker recorded it mid-run): tester-run says phase usage_paused, exit 3, no envelope.
+new_run; : > "$EVID"; : > "$RESULTS"
+printf '[{"number":12,"status":"in_testing"}]' > "$LIST"
+echo "2026-02-05T09:30:00.000Z" > "$WORK/entered-12"
+printf '{"phase":"usage_paused","ticket":12,"reason":"worker: the factory is paused until 2026-02-05 10:30 UTC: usage limit; not starting the tester call."}' > "$WORK/reply-12.json"; echo 3 > "$WORK/rc-12"
+run_lane
+[ "$(spawns_of 12)" = 1 ] && ok "#12 was tried once" || fail "#12 spawns: $(spawns_of 12)"
+grep -q '^12	' "$GAFFER_DATA/.tester-held" 2>/dev/null && fail "#12 was remembered as HELD for a human (it would never be re-tested)" \
+  || ok "#12 is not remembered as held"
+grep -q '^12|manual_note|tester held' "$EVID" && fail "a 'tester held' note was attached to #12: $(cat "$EVID")" \
+  || ok "no 'tester held' note on #12"
+grep -q 'TESTER: #12 not started: the factory is paused' "$LOGF" && ok "the log names the pause" || fail "no pause log line: $(grep 'TESTER: #12' "$LOGF")"
+grep -qx usage_paused "$RESULTS" && ok "the tick reports usage_paused" || fail "tick results: $(tr '\n' ' ' < "$RESULTS")"
+new_run
+printf '{"phase":"verdict","verdict":"pass","ticket":12}' > "$WORK/reply-12.json"; echo 0 > "$WORK/rc-12"
+run_lane
+[ "$(spawns_of 12)" = 2 ] && ok "#12 is tested again on the next run" || fail "#12 not re-tested ($(spawns_of 12) spawns)"
 echo "== 7b: the same words in the agent's own reply (success envelope) are still a hold =="
 new_run; : > "$EVID"
 printf '[{"number":9,"status":"in_testing"}]' > "$LIST"

@@ -157,7 +157,9 @@ console.log("== a usage-window pause: no spawn, status 75, like the bash seam an
       ? ok("paused: status 75 (gaffer run / gaffer plan's code), usagePaused set")
       : bad(`paused: status=${res.status} usagePaused=${res.usagePaused}`);
     res.error instanceof Error && res.error.code !== "ETIMEDOUT" && res.stdout === ""
-      ? ok("paused: res.error set, not a timeout, empty stdout (callers' error path fires, nothing to ledger)")
+      ? ok(
+          "paused: res.error set, not a timeout, empty stdout (callers' error path fires, nothing to ledger)",
+        )
       : bad(`paused: error=${res.error} stdout=${JSON.stringify(res.stdout)}`);
     /paused until .* UTC: usage limit/.test(res.error?.message || "") &&
     /usage-pause\.mjs clear/.test(res.error?.message || "")

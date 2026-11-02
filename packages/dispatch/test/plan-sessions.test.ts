@@ -131,7 +131,10 @@ describe("recordPlanSession — a terminal plan in the history", () => {
       brief: "tag tasks",
       messages: [
         { role: "user", content: "tag tasks" },
-        { role: "assistant", content: JSON.stringify({ phase: "plan", plan: { epic: { name: "T" } } }) },
+        {
+          role: "assistant",
+          content: JSON.stringify({ phase: "plan", plan: { epic: { name: "T" } } }),
+        },
       ],
       plan: { epic: { name: "T" } },
       status: "confirmed",

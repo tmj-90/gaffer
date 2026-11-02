@@ -849,12 +849,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
       "type admin and acts under its own id (the event names who marked it merged), and a " +
       "human principal is refused (403 `ACTOR_NOT_PERMITTED`, nothing written).",
     capability: "full",
-    responses: [
-      ok("`{ ticket, event_id }`.", "TicketTransition"),
-      notFound,
-      forbidden,
-      conflict,
-    ],
+    responses: [ok("`{ ticket, event_id }`.", "TicketTransition"), notFound, forbidden, conflict],
   },
   {
     method: "POST",

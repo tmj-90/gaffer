@@ -564,7 +564,7 @@ export function recordLaneVerdict(
     "--verdict",
     verdict,
     ...(commit ? ["--commit", String(commit)] : []),
-    ...(attempt ? ["--attempt-id", attempt] : []),
+    ...(attempt ? ["--attempt-id", attempt, "--attempt-id-basis", "latest_delivery_row"] : []),
     ...(heldReason ? ["--held-reason", String(heldReason).slice(0, 300)] : []),
     "--as",
     "system",

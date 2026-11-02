@@ -602,6 +602,10 @@ export function registerTicket(program: Command): void {
     )
     .option("--commit <sha>", "the candidate commit the lane judged")
     .option("--attempt-id <id>", "the delivery attempt the lane judged (c<hash>/<n>)")
+    .option(
+      "--attempt-id-basis <basis>",
+      "how the attempt was found: latest_delivery_row (the runner's ledger join) | stated",
+    )
     .option("--held-reason <text>", "why a held verdict is not a verdict")
     .option("--model <label>", "the model the lane's call asked for")
     .option("--as <actor>", "actor type: system|admin", "system")
@@ -616,6 +620,7 @@ export function registerTicket(program: Command): void {
           verdict: String(opts.verdict),
           ...(opts.commit ? { commit: String(opts.commit) } : {}),
           ...(opts.attemptId ? { attempt_id: String(opts.attemptId) } : {}),
+          ...(opts.attemptIdBasis ? { attempt_id_basis: String(opts.attemptIdBasis) } : {}),
           ...(opts.heldReason ? { held_reason: String(opts.heldReason) } : {}),
           ...(opts.model ? { model_requested: String(opts.model) } : {}),
         },

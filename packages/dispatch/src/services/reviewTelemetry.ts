@@ -46,6 +46,12 @@ export interface LaneVerdict {
   commit: string | null;
   /** The delivery attempt the lane judged (`c<claim hash>/<n>`), when known. */
   attempt_id: string | null;
+  /**
+   * How attempt_id was found: `latest_delivery_row` (the ticket's latest delivery row in
+   * the usage ledger when the lane ran, the runner's method: a time-order join, not a
+   * commit match) or `stated` (the caller named it). Null with no attempt_id.
+   */
+  attempt_id_basis: AttemptIdBasis | null;
   /** Who recorded it: always `system` or `admin` (an agent is refused). */
   actor: string;
   /** Why a held verdict is not a verdict (the runner's reason), when held. */
@@ -73,6 +79,9 @@ export function assertMayRecordLaneVerdict(actor: Actor): void {
       { actor_type: actor.type },
     );
 }
+
+export const ATTEMPT_ID_BASES = ["latest_delivery_row", "stated"] as const;
+export type AttemptIdBasis = (typeof ATTEMPT_ID_BASES)[number];
 
 const SHA = /^[0-9a-f]{7,64}$/i;
 const ATTEMPT = /^[A-Za-z0-9._:/-]{1,96}$/;
@@ -113,11 +122,19 @@ export function normalizeLaneVerdict(input: Record<string, unknown>, actor: Acto
     throw new DispatchError("VALIDATION_ERROR", "attempt_id is not a recorded attempt id.", {
       attempt_id: input.attempt_id,
     });
+  const basisRaw = typeof input.attempt_id_basis === "string" ? input.attempt_id_basis.trim() : "";
+  if (basisRaw && !(ATTEMPT_ID_BASES as readonly string[]).includes(basisRaw))
+    throw new DispatchError(
+      "VALIDATION_ERROR",
+      `attempt_id_basis is one of: ${ATTEMPT_ID_BASES.join(", ")}.`,
+      { attempt_id_basis: input.attempt_id_basis },
+    );
   return {
     lane,
     verdict,
     commit: commitRaw ? commitRaw.toLowerCase() : null,
     attempt_id: attemptRaw || null,
+    attempt_id_basis: attemptRaw ? ((basisRaw || "stated") as AttemptIdBasis) : null,
     actor: actor.type,
     held_reason: verdict === "held" ? label(input.held_reason, 300) : null,
     model_requested: label(input.model_requested, 80),

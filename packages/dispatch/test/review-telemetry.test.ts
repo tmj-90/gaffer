@@ -210,6 +210,7 @@ describe("ticket.lane_verdict", () => {
         verdict: "CHANGES",
         commit: "ABC1234DEF",
         attempt_id: "c0123456789ab/2",
+        attempt_id_basis: "latest_delivery_row",
         model_requested: "mid-model",
       },
       system,
@@ -219,6 +220,7 @@ describe("ticket.lane_verdict", () => {
       verdict: "changes",
       commit: "abc1234def",
       attempt_id: "c0123456789ab/2",
+      attempt_id_basis: "latest_delivery_row",
       actor: "system",
       held_reason: null,
       model_requested: "mid-model",
@@ -242,7 +244,27 @@ describe("ticket.lane_verdict", () => {
     expect(() =>
       h.wg.recordLaneVerdict(t.id, { lane: "tester", verdict: "pass", commit: "; rm" }, system),
     ).toThrow(/git sha/);
+    expect(() =>
+      h.wg.recordLaneVerdict(
+        t.id,
+        { lane: "tester", verdict: "pass", attempt_id: "c1/1", attempt_id_basis: "commit_match" },
+        system,
+      ),
+    ).toThrow(/attempt_id_basis is one of/);
     expect(eventsOf(h.wg, t.id, "ticket.lane_verdict")).toHaveLength(0);
+  });
+
+  it("labels how the attempt was found: a named attempt is stated, never a commit match", () => {
+    const t = inReview(h.wg);
+    const named = h.wg.recordLaneVerdict(
+      t.id,
+      { lane: "tester", verdict: "pass", attempt_id: "c0123456789ab/1" },
+      system,
+    );
+    expect(named.verdict.attempt_id_basis).toBe("stated");
+    const none = h.wg.recordLaneVerdict(t.id, { lane: "tester", verdict: "fail" }, system);
+    expect(none.verdict.attempt_id).toBeNull();
+    expect(none.verdict.attempt_id_basis).toBeNull();
   });
 });
 

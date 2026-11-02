@@ -301,8 +301,10 @@ usage ledger and the ticket transition log, and says only what those can show:
   nobody sent back after they first entered review (a person, the reviewer agent
   or the tester) and that were never reopened, split by who approved them, so an
   agent approval never reads as a human one (`first_pass` also has a strict figure
-  that counts the runner's own retries). **Human review time** is the median time
-  a person spent on each accepted ticket, with p75 and p90. When you open a ticket
+  that counts the runner's own retries). **Human review time** is the median, over
+  accepted tickets, of the wall-clock time from a person opening the ticket in
+  Review to their decision, summed over its review rounds, with p75 and p90. It is
+  time with the page open, not reading time. When you open a ticket
   in Review the dashboard records it once per review round
   (`ticket.review_opened`, with the round and the commits on screen; it never marks
   the ticket changed), so each round splits into the wait in the queue and the
@@ -320,11 +322,15 @@ usage ledger and the ticket transition log, and says only what those can show:
   an open. `gaffer wg stats` prints the same figures.
 - **Lane verdicts.** The reviewer agent, the security reviewer, the tester and the
   eval judge each record what they concluded as a `ticket.lane_verdict` event
-  (lane, verdict, the commit and the delivery attempt they judged), recorded by
+  (lane, verdict, the commit they judged and the delivery attempt, with
+  `attempt_id_basis`), recorded by
   the runner only: dispatch refuses an agent and the safety hook denies
   `wg ticket lane-verdict` in an agent shell. Health counts them per lane; nothing
   gates on them. Every review, tester and judge row in the usage ledger carries
-  the attempt it judged, the repo and the ticket's risk at call time, and a
+  an attempt, the repo and the ticket's risk at call time. The attempt is the
+  ticket's latest delivery row in the ledger when the call ran
+  (`attempt_id_basis: latest_delivery_row`): a join by time order, not a match on
+  the commit, and nothing when that latest row has no attempt id. A
   delivery or review row carries the router's tier and its reasons
   (`route_tier`, `route_reasons`).
 

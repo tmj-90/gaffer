@@ -923,13 +923,20 @@ console.log(
       latestDeliveryAttemptId(readFileSync(ledger, "utf8"), 7) === "c0123456789ab/2" &&
         latestDeliveryAttemptId("", 7) === null,
     );
-    const cli = spawnSync(process.execPath, [MOD, "--latest-delivery-attempt", "--ticket", "8"], {
-      env: { ...process.env, GAFFER_DATA: dir },
-      encoding: "utf8",
-    });
+    const cliFor = (n) =>
+      spawnSync(process.execPath, [MOD, "--latest-delivery-attempt", "--ticket", n], {
+        env: { ...process.env, GAFFER_DATA: dir },
+        encoding: "utf8",
+      }).stdout.trim();
     assert(
       "the CLI prints a ticket's latest delivery attempt id",
-      cli.stdout.trim() === "cffffffffffff/1",
+      cliFor("7") === "c0123456789ab/2",
+    );
+    // #8's latest delivery row (written above) carries no attempt id: the earlier
+    // attempt's id is not borrowed for it.
+    assert(
+      "a latest delivery row with no attempt id answers nothing, not an older attempt",
+      cliFor("8") === "" && latestDeliveryAttemptId(readFileSync(ledger, "utf8"), 8) === null,
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });

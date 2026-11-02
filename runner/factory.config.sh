@@ -1811,7 +1811,7 @@ gaffer_lane_verdict() {
   [ -f "$mod" ] && attempt="$(node "$mod" --latest-delivery-attempt --ticket "$ticket" 2>/dev/null || true)"
   model="${model#--model }"; model="${model#--model=}"
   wg ticket lane-verdict "$ticket" --lane "$lane" --verdict "$verdict" ${commit:+--commit "$commit"} \
-    ${attempt:+--attempt-id "$attempt"} ${held:+--held-reason "$(printf '%s' "$held" | tr '\n' ' ' | cut -c1-300)"} \
+    ${attempt:+--attempt-id "$attempt" --attempt-id-basis latest_delivery_row} ${held:+--held-reason "$(printf '%s' "$held" | tr '\n' ' ' | cut -c1-300)"} \
     ${model:+--model "$model"} --as system >/dev/null 2>&1 \
     || { type log >/dev/null 2>&1 && log "LANE-VERDICT: could not record the $lane verdict on #$ticket (a measurement only)" || true; }
   return 0

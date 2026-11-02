@@ -116,7 +116,7 @@ grep -q "SECURITY-REVIEW: #$N1 security reviewer found a defect" "$GAFFER_DATA/f
 [ "$(st "$N1")" = "ready" ] && ok "A: #$N1 reworked → ready (not shipped)" || fail "A: #$N1 is '$(st "$N1")'"
 grep -q "CHANGES; re-queued" "$GAFFER_DATA/factory.log" && ok "A: re-queued for rework with feedback (the security findings)" || fail "A: no rework log line"
 # MF2: each judging lane's verdict is a system lane_verdict event on the reviewed commit.
-lanes() { wg ticket show "$1" 2>/dev/null | jget '(d.events||[]).filter(e => e.event_type === "ticket.lane_verdict").map(e => { const p = JSON.parse(e.payload_json); return [e.actor_type, p.lane, p.verdict, (p.commit||"").length >= 7 ? "sha" : "nosha", p.attempt_id ? "att" : "noatt"].join(":"); }).join(",")'; }
+lanes() { wg ticket show "$1" 2>/dev/null | jget '(d.events||[]).filter(e => e.event_type === "ticket.lane_verdict").map(e => { const p = JSON.parse(e.payload_json); return [e.actor_type, p.lane, p.verdict, (p.commit||"").length >= 7 ? "sha" : "nosha", p.attempt_id ? (p.attempt_id_basis === "latest_delivery_row" ? "att" : "att-unlabelled") : "noatt"].join(":"); }).join(",")'; }
 LA="$(lanes "$N1")"
 [ "$LA" = "system:agent-review:approve:sha:att,system:security-review:changes:sha:att" ] \
   && ok "A: the reviewer's approve and the security reviewer's changes are recorded as system lane verdicts on the commit and attempt" \

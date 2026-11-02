@@ -429,22 +429,24 @@ const RISKS = new Set(["low", "medium", "high", "critical"]);
 /**
  * The attempt id of a ticket's latest delivery row in the ledger text (the last one
  * written), or null. Deterministic: the delivery a review, tester or judge call that runs
- * after it is judging. Malformed lines are skipped.
+ * after it is judging. When that latest row carries no attempt id (an older runner, a
+ * stamp that failed) the answer is null: an earlier attempt's id is never borrowed for
+ * it. Malformed lines are skipped.
  */
 export function latestDeliveryAttemptId(ledgerText, ticket) {
   const n = ticket != null && /^\d+$/.test(String(ticket)) ? Number(ticket) : null;
   if (n === null || !ledgerText) return null;
   let found = null;
   for (const line of String(ledgerText).split("\n")) {
-    if (!line.includes('"attempt_id"')) continue;
+    if (!line.includes('"delivery"')) continue;
     let r;
     try {
       r = JSON.parse(line);
     } catch {
       continue;
     }
-    if (r && r.kind === "delivery" && r.ticket === n && typeof r.attempt_id === "string")
-      found = r.attempt_id;
+    if (r && r.kind === "delivery" && r.ticket === n)
+      found = typeof r.attempt_id === "string" && r.attempt_id ? r.attempt_id : null;
   }
   return found;
 }

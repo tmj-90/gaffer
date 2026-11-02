@@ -91,6 +91,25 @@ the current schema version opens without running any schema SQL unless a table o
 index is missing. `node scripts/bench-cli.mjs` prints the median startup of the common
 calls.
 
+A read command still takes about 220 ms of CPU, against a 120 ms target. Measured on a
+loaded 4-CPU box (CPU medians, compile cache warm), what is left and what it would take:
+
+- Loading the action modules (`src/cli/heavy.ts`) costs about 160 ms over a bare
+  `node`: zod with the zod 3 error map about 40 ms, the domain schemas another 20 to
+  25 ms, the rest of the core about 100 ms.
+- zod's locales: 64 of the 95 zod modules are locales its entry re-exports. Stubbing
+  them out saved 10 to 30 ms per command. It needs every `from "zod"` (the MCP
+  schemas and the zod 3 error map included) to go through an entry that does not
+  re-export them, so it is not a CLI-only change.
+- Building the domain schemas lazily (they are built when `src/domain/schemas.ts`
+  loads) would save most of those 20 to 25 ms, but every service validates with them:
+  a refactor of the domain layer.
+- Bundling the action modules with esbuild took `ticket list` from 239 to 173 ms (a
+  quarter). Left out because a bundle duplicates the classes the unbundled error
+  boundary matches with `instanceof` (DispatchError, ZodError) unless the whole CLI is
+  bundled with code splitting, it adds a build step and a dependency, and
+  `src/version.ts` reads `package.json` relative to its own file.
+
 ### Output, errors and exit codes
 
 Every command prints JSON on stdout, except `doctor`, `stats`, `human-queue` and the

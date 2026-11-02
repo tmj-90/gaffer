@@ -181,6 +181,14 @@ describe("OpenAPI response schemas match the live routes", () => {
     wg.markReady(t1.id, human);
     deliver(t1.id);
     await expectContract("GET /tickets/:id/diff", `/tickets/${t1.id}/diff`);
+    // CHANGE IMPACT: the opt-in impact facts validate against RepoImpact.
+    const withImpact = await expectContract(
+      "GET /tickets/:id/diff",
+      `/tickets/${t1.id}/diff?include=impact`,
+    );
+    expect(
+      (withImpact.body as { repos: Array<{ impact?: unknown }> }).repos.every((r) => r.impact),
+    ).toBe(true);
     await expectContract(
       "POST /tickets/:id/review/approve",
       `/tickets/${t1.id}/review/approve`,

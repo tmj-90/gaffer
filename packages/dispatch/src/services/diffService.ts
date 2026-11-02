@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 
 import { isActiveTicketRepoRelation, type Ticket } from "../domain/types.js";
+import { computeRepoImpact, type DownstreamRepo, type RepoImpact } from "./changeImpact.js";
 import {
   computeRiskAnnotations,
   testModifiedAnnotation,
@@ -80,6 +81,12 @@ export interface RepoDiff {
    * branch has moved since: a human approves the commit they saw, never a later one.
    */
   headSha?: string | null;
+  /**
+   * CHANGE IMPACT (opt-in, `computeTicketDiff(..., { impact: true })`): the Behavioural
+   * surface read from this diff's lines and the tree at `headSha`, each fact labelled with
+   * its method. ADVISORY, like the risk annotations: never gating, not read by observedRisk.
+   */
+  impact?: RepoImpact;
 }
 
 /** The full diff-in-review payload: one entry per WRITE repo on the ticket. */
@@ -96,6 +103,17 @@ export interface DiffServiceDeps {
   repoDeliveries: TicketRepoDeliveryRepository;
   /** Run git in `cwd` with `args`; returns stdout + exit code. Injectable for tests. */
   runGit?: GitRunner;
+  /**
+   * CHANGE IMPACT: the repos that depend on this one in the scope graph (scope_edges
+   * depends_on). Read only when impact is asked for; a throw reads as none.
+   */
+  downstreamRepos?: (repoId: string) => DownstreamRepo[];
+}
+
+/** Per-call options for {@link computeTicketDiff}. */
+export interface TicketDiffOptions {
+  /** Add each repo's {@link RepoDiff.impact} (the Review view asks for it). */
+  impact?: boolean;
 }
 
 export interface GitResult {
@@ -429,7 +447,11 @@ function testIntegrityFor(runGit: GitRunner, t: DiffTarget): TestIntegrityFindin
  * ACTIVE write repos, and for each computes the real git diff of its delivery
  * branch against the repo's default branch. Pure read — never mutates state.
  */
-export function computeTicketDiff(deps: DiffServiceDeps, ticketRef: string): TicketDiff {
+export function computeTicketDiff(
+  deps: DiffServiceDeps,
+  ticketRef: string,
+  opts: TicketDiffOptions = {},
+): TicketDiff {
   const runGit = deps.runGit ?? defaultGitRunner;
   const ticket = deps.tickets.findById(ticketRef) ?? resolveByNumber(deps.tickets, ticketRef);
   if (!ticket) {
@@ -526,6 +548,18 @@ export function computeTicketDiff(deps: DiffServiceDeps, ticketRef: string): Tic
       truncated,
       riskAnnotations,
       ...ids,
+      ...(opts.impact
+        ? {
+            impact: computeRepoImpact({
+              diff,
+              truncated,
+              headSha: headSha ?? (t.isBootstrap ? "HEAD" : null),
+              runGit,
+              localPath: t.localPath,
+              downstream: downstreamOf(deps, t.repoId),
+            }),
+          }
+        : {}),
     };
   });
 
@@ -574,6 +608,16 @@ export function deliveryDiffProof(deps: DiffServiceDeps, ticket: Ticket): Delive
     return stat.status === 0 && parseNumstat(stat.stdout).files > 0;
   });
   return { hasDiff, fingerprint: deliveryDiffFingerprint(deps, ticket) };
+}
+
+/** The scope graph's dependents of a repo, or none when unreadable. */
+function downstreamOf(deps: DiffServiceDeps, repoId: string): DownstreamRepo[] {
+  if (!deps.downstreamRepos) return [];
+  try {
+    return deps.downstreamRepos(repoId);
+  } catch {
+    return [];
+  }
 }
 
 /** Trimmed value when non-empty, else null — for branch precedence coalescing. */

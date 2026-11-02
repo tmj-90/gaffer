@@ -401,6 +401,26 @@ structural barrier the whole design hangs on.
   CI, whether a gating test changed, and that nothing has run the change as a user
   would yet. There is no score and no headline: the flags list stays the one list
   of things to check, and each row links to the strip cell it comes from.
+- **The Behavioural surface, above the diff.** For a ticket in review the diff
+  read also lists what the change touches, worked out from the diff's own lines
+  and the tree at the head commit, with no model: exported declarations added,
+  removed or changed in TypeScript, JavaScript and Python files; migration files
+  and DDL statements; config files; environment variables newly read or no longer
+  read, and keys added to a `.env.example`; dependency entries added, removed or
+  bumped in `package.json`, `pyproject.toml`, `requirements*.txt`, `go.mod` and
+  `Cargo.toml`; generated files (lockfiles, `dist/`, anything `.gitattributes`
+  marks `linguist-generated`); changed modules that no test file in the change
+  imports (a search of the test files at the head for the module's name); route
+  files and route registrations for the common frameworks; and repos that depend
+  on this one in the Map's scope graph. Each line says how it was found ("from the
+  diff's lines", "by path", "by import text", "pattern match"…) and links to its
+  file in the diff. When the scan finds no migration, config, environment variable
+  or dependency change it says so once, and what it cannot work out (callers of a
+  changed symbol and whether they are tested) is said as not analysed. It is
+  advisory: nothing gates on it and it does not change the observed risk that
+  holds auto-ship. Changed modules with no test in the change also appear under
+  *What is not backed*. `GET /tickets/:id/diff?include=impact` returns the same
+  facts for any ticket.
 - **The eval judge's grade, when you turn it on.** With `GAFFER_EVAL_JUDGE=1` an
   independent judge grades every submitted delivery against its acceptance criteria
   on five dimensions (criteria, correctness, smallest change, tests, security), and

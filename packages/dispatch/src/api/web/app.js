@@ -17624,6 +17624,135 @@ function intentBlock(intent) {
   return el("section", { class: "rv-intent", "aria-label": "What was asked" }, kids);
 }
 
+/** The Behavioural surface's order: what callers see first, what was generated last. */
+const IMPACT_ORDER = [
+  "export_removed",
+  "export_changed",
+  "export_added",
+  "route",
+  "migration",
+  "ddl",
+  "config",
+  "env_added",
+  "env_removed",
+  "dependency_added",
+  "dependency_removed",
+  "dependency_bumped",
+  "untested_module",
+  "downstream_repo",
+  "generated",
+];
+
+/** "a, b or c". */
+function orList(items) {
+  return items.length < 2
+    ? items.join("")
+    : `${items.slice(0, -1).join(", ")} or ${items[items.length - 1]}`;
+}
+
+/** Open a file block of the Review diff (and its line, when the diff shows it). */
+function goToDiffFile(targetId, line) {
+  const block = document.getElementById(targetId);
+  if (!block) return;
+  block.open = true;
+  const row = line != null ? block.querySelector(`.diff-line[data-ln="${Number(line)}"]`) : null;
+  (row || block).scrollIntoView({ behavior: "smooth", block: row ? "center" : "start" });
+  if (row) {
+    row.classList.add("is-target");
+    setTimeout(() => row.classList.remove("is-target"), 2400);
+  }
+}
+
+/**
+ * CHANGE IMPACT: the "Behavioural surface" panel above the diff, from each repo's
+ * server-computed `impact` (GET /diff?include=impact). Every line says how it was found
+ * and links to its file in the diff below; what the scan finds nothing of is said once,
+ * and what it does not cover is said as not analysed. Advisory: nothing gates on it.
+ * Null when no repo carries impact facts (an older server, or no diff).
+ */
+function impactPanel(repos) {
+  const withImpact = (repos || []).map((rd, i) => ({ rd, i })).filter((x) => x.rd.impact);
+  if (!withImpact.length) return null;
+  const multi = withImpact.length > 1;
+  const blocks = withImpact.map(({ rd, i }) => {
+    const files = splitDiffFiles(rd.diff);
+    const fileIdx = (p) => files.findIndex((f) => f.path === p);
+    const facts = [...(rd.impact.facts || [])].sort(
+      (a, b) => IMPACT_ORDER.indexOf(a.kind) - IMPACT_ORDER.indexOf(b.kind),
+    );
+    const list = el(
+      "ul",
+      { class: "clean rv-impact-list" },
+      facts.map((f) => {
+        const idx = f.path ? fileIdx(f.path) : -1;
+        const target = idx >= 0 ? `diff-file-${i}-${idx}` : null;
+        return el("li", { class: `rv-impact-fact rv-k-${f.kind}` }, [
+          el("span", { class: "rv-impact-t" }, f.text),
+          " ",
+          el("small", { class: "rv-impact-method" }, f.method),
+          target
+            ? [
+                " ",
+                el(
+                  "button",
+                  {
+                    type: "button",
+                    class: "btn-link rv-impact-go",
+                    dataset: { fileTarget: target },
+                    "aria-label": `Show ${f.path} in the diff`,
+                    onclick: () => goToDiffFile(target, f.line),
+                  },
+                  el("code", { class: "mono" }, `${f.path}${f.line != null ? `:${f.line}` : ""}`),
+                ),
+              ]
+            : null,
+        ]);
+      }),
+    );
+    const none = rd.impact.none || [];
+    return el("div", { class: "rv-impact-repo" }, [
+      multi
+        ? el("h4", { class: "rv-impact-repo-h" }, el("code", { class: "mono" }, rd.repo))
+        : null,
+      facts.length
+        ? list
+        : el("p", { class: "dim" }, "The scan found nothing to list in this diff."),
+      none.length ? el("p", { class: "rv-impact-none" }, `No ${orList(none)} change found.`) : null,
+      ...(rd.impact.not_analysed || []).map((n) => el("p", { class: "rv-impact-na dim" }, n)),
+    ]);
+  });
+  return el("section", { class: "card panel rv-impact", "aria-label": "Behavioural surface" }, [
+    el("h3", { class: "rv-h3" }, "Behavioural surface"),
+    el(
+      "p",
+      { class: "rv-impact-sub dim" },
+      "Read from the diff and the tree at the head commit, each line with how it was found. Advisory: nothing gates on it.",
+    ),
+    ...blocks,
+  ]);
+}
+
+/** The Behavioural surface's rows for "What is not backed" (changed modules with no test). */
+function impactBacking(repos) {
+  const n = (repos || []).reduce(
+    (k, rd) =>
+      k + ((rd.impact && rd.impact.facts) || []).filter((f) => f.kind === "untested_module").length,
+    0,
+  );
+  if (!n) return [];
+  return [
+    {
+      fact:
+        n === 1
+          ? "1 changed module has no test in this change that imports it"
+          : `${n} changed modules have no test in this change that imports them`,
+      holds: false,
+      source: "the Behavioural surface (by import text)",
+      cell: "impact",
+    },
+  ];
+}
+
 /** A commit id, short, in mono; or a plain word when there is none. */
 function shaOr(sha, none) {
   return sha ? el("code", { class: "mono" }, String(sha).slice(0, 12)) : none;
@@ -18884,6 +19013,8 @@ async function renderReview(param) {
     prUrl ? [" · ", el("a", { href: prUrl, target: "_blank", rel: "noopener" }, "PR")] : null,
   ]);
   const diffAux = el("span", { class: "panel-aux" });
+  // CHANGE IMPACT: the Behavioural surface panel, filled above the diff once it loads.
+  const impactSlot = el("div", { class: "rv-impact-slot" });
   const applyDiffState = (state, repos = [], res = null) => {
     diffState = state || { approvable: false, reason: "The diff state is unknown." };
     outcome = (res && res.approve_outcome) || null;
@@ -18914,6 +19045,10 @@ async function renderReview(param) {
     const live = repos.filter((r) => !r.unavailable);
     strip?._setRisk(live.flatMap((r) => r.riskAnnotations || []));
     strip?._setShown(repos);
+    clear(impactSlot);
+    const surface = impactPanel(repos);
+    if (surface) impactSlot.appendChild(surface);
+    backing?._setImpact(impactBacking(repos));
     clear(integritySlot);
     const ib = integrityBanner(t, testModifiedAnns(live));
     if (ib) integritySlot.appendChild(ib);
@@ -18942,6 +19077,7 @@ async function renderReview(param) {
   const strip = packet ? verdictStrip(packet) : null;
   // INSPECTABLE CONFIDENCE: the server's backing rows (an older server sends none).
   const backing = packet && Array.isArray(packet.backing) ? backingPanel(packet.backing) : null;
+  // An in_review ticket's diff carries its change-impact facts (the Behavioural surface).
   const diffBox = renderTicketDiff(t.id, applyDiffState);
 
   // Header: the yellow card, the number, the title; then the facts in one line.
@@ -19040,6 +19176,7 @@ async function renderReview(param) {
 
   const diffSection = el("section", { class: "rv-diff", "aria-label": "The diff" }, [
     el("h2", { class: "rv-h2" }, ["The diff ", diffAux]),
+    impactSlot,
     diffBox,
   ]);
 

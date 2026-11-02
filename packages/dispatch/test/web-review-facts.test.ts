@@ -332,4 +332,49 @@ describe("web: review facts on The Gaffer's Sign-off", () => {
     // Each row names its source.
     expect(text(".rv-backing .rv-backs")).toContain("the runner's DoD row (system)");
   });
+
+  it("the Behavioural surface panel sits above the diff, each fact with its method and file link", async () => {
+    await boot();
+    const panel = document.querySelector(".rv-diff .rv-impact")!;
+    expect(panel).not.toBeNull();
+    expect(text(".rv-impact .rv-h3, .rv-impact h3")).toContain("Behavioural surface");
+    // Above the diff box.
+    expect(
+      panel.compareDocumentPosition(document.querySelector(".rv-diff .diff-box")!) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    const facts = [...panel.querySelectorAll(".rv-impact-fact")].map((li) =>
+      li.textContent!.replace(/\s+/g, " "),
+    );
+    expect(facts[0]).toContain("export function clearDone added");
+    expect(facts[0]).toContain("from the diff's lines");
+    expect(facts[1]).toContain("by import text");
+    expect(text(".rv-impact")).toContain(
+      "No migration or DDL, config, environment variable or dependency change found.",
+    );
+    expect(text(".rv-impact")).toContain(
+      "Callers of changed symbols and their test coverage: not analysed.",
+    );
+    expect(text(".rv-impact")).toContain("Advisory");
+    // The file link opens that file's block in the diff.
+    const go = panel.querySelector<HTMLButtonElement>(".rv-impact-go")!;
+    expect(go.dataset.fileTarget).toBe("diff-file-0-0");
+    // The untested module feeds a "not backed" row.
+    expect(text(".rv-backing .rv-unbacked")).toContain(
+      "1 changed module has no test in this change that imports it",
+    );
+  });
+
+  it("a diff without impact facts (an older server) draws no panel", async () => {
+    impact = null;
+    await boot();
+    expect(document.querySelector(".rv-impact")).toBeNull();
+  });
+
+  it("reads the impact facts with the one diff read (no second request)", async () => {
+    await boot();
+    expect(calls.filter((u) => u.includes(`/tickets/${T.id}/diff`))).toEqual([
+      expect.stringMatching(/\/diff$/),
+    ]);
+  });
 });

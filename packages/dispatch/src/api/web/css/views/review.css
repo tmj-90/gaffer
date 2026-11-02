@@ -1034,6 +1034,44 @@
     font-size: var(--t14);
   }
 
+  /* --- the Behavioural surface: change-impact facts above the diff ---------
+     Each line is a fact with how it was found (small, quiet) and its file link. */
+  .rv-impact {
+    display: grid;
+    gap: 8px;
+  }
+  .rv-impact-sub,
+  .rv-impact-na {
+    font-size: var(--t13);
+  }
+  .rv-impact-list {
+    display: grid;
+    gap: 2px;
+    font-size: var(--t14);
+  }
+  .rv-impact-fact {
+    padding: 2px 0;
+    overflow-wrap: anywhere;
+  }
+  .rv-impact-method {
+    color: var(--ink-2);
+    font-style: italic;
+  }
+  .rv-impact-go code {
+    font-size: var(--t13);
+  }
+  .rv-impact-none {
+    font-size: var(--t14);
+    color: var(--ink);
+  }
+  .rv-impact-repo-h {
+    font-size: var(--t14);
+  }
+  .diff-line.is-target {
+    outline: 2px solid var(--yellow);
+    outline-offset: -2px;
+  }
+
   /* --- what backs this / what is not backed: facts, never a score ---------- */
   .rv-backing-list {
     display: grid;

@@ -4471,7 +4471,7 @@
           "Review & delivery"
         ],
         "summary": "Delivery diff",
-        "description": "`git diff <default branch>...<head>` per write repository, where `headSha` is the delivery branch's commit at read time (`repoId` names the repo). Send them back on approve. An in_review ticket also carries `approve_outcome` (the ApproveOutcome schema): the first step a human Approve would certainly take now — `to_tester`, `land_now`, `land_next_tick`, `waits_for_merge`, `held_ci` or `held_repo_unavailable` (a write repository's delivery head cannot be read, so the server refuses the approval) — computed from the settings and ticket state the approve path acts on; when the tests that gate it changed, `agent_hold` names the `held_test_modified` hold an agent or auto approval would hit (a human approval is not held by it).",
+        "description": "`git diff <default branch>...<head>` per write repository, where `headSha` is the delivery branch's commit at read time (`repoId` names the repo). Send them back on approve. An in_review ticket also carries `approve_outcome` (the ApproveOutcome schema): the first step a human Approve would certainly take now — `to_tester`, `land_now`, `land_next_tick`, `waits_for_merge`, `held_ci` or `held_repo_unavailable` (a write repository's delivery head cannot be read, so the server refuses the approval) — computed from the settings and ticket state the approve path acts on; when the tests that gate it changed, `agent_hold` names the `held_test_modified` hold an agent or auto approval would hit (a human approval is not held by it). An in_review ticket (or any ticket with `?include=impact`) also carries each repo's `impact` (the RepoImpact schema): exports added or removed, migrations and DDL, config, environment variables, dependency entries, generated files, changed modules no test in the change imports, route patterns and downstream repos from the scope graph, each fact labelled with the method that found it; advisory, nothing gates on it.",
         "parameters": [
           {
             "name": "id",
@@ -4481,6 +4481,18 @@
               "type": "string"
             },
             "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
+          },
+          {
+            "name": "include",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "impact"
+              ]
+            },
+            "description": "`impact` adds each repo's change-impact facts."
           }
         ],
         "responses": {
@@ -11969,6 +11981,79 @@
           }
         }
       },
+      "ImpactFact": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "export_added",
+              "export_removed",
+              "export_changed",
+              "migration",
+              "ddl",
+              "config",
+              "env_added",
+              "env_removed",
+              "dependency_added",
+              "dependency_removed",
+              "dependency_bumped",
+              "generated",
+              "untested_module",
+              "route",
+              "downstream_repo"
+            ]
+          },
+          "text": {
+            "type": "string",
+            "description": "One plain line, e.g. `export function clearDone added`."
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The file in this diff the fact is about (its anchor), or null."
+          },
+          "line": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The new-side line (old-side for a removal), when it has one."
+          },
+          "method": {
+            "type": "string",
+            "enum": [
+              "from the diff's lines",
+              "by path",
+              "from the manifest diff",
+              "by .gitattributes",
+              "by import text",
+              "pattern match",
+              "scope graph depends_on"
+            ],
+            "description": "How the fact was found. A text or path heuristic, never a certainty."
+          }
+        },
+        "required": [
+          "kind",
+          "text",
+          "path",
+          "line",
+          "method"
+        ],
+        "additionalProperties": false,
+        "description": "One deterministic change-impact fact."
+      },
       "linkTicketScopeBody": {
         "type": "object",
         "properties": {
@@ -12847,6 +12932,10 @@
               }
             ],
             "description": "The delivery branch head this diff was computed against; sent back on approve, and a moved head is refused (stale_revision)."
+          },
+          "impact": {
+            "$ref": "#/components/schemas/RepoImpact",
+            "description": "With `?include=impact`: the change-impact facts for this repo (advisory)."
           }
         },
         "required": [
@@ -12862,6 +12951,38 @@
         ],
         "additionalProperties": false,
         "description": "The delivery diff for one write repository."
+      },
+      "RepoImpact": {
+        "type": "object",
+        "properties": {
+          "facts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImpactFact"
+            }
+          },
+          "none": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Surfaces scanned with nothing found (`migration or DDL`, `config`, …)."
+          },
+          "not_analysed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What the scan does not cover, said plainly."
+          }
+        },
+        "required": [
+          "facts",
+          "none",
+          "not_analysed"
+        ],
+        "additionalProperties": false,
+        "description": "The Behavioural surface of one repo's delivery (`?include=impact`), read from the diff and the tree at `headSha`. Advisory: nothing gates on it."
       },
       "resolveDecisionBody": {
         "type": "object",

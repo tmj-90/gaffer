@@ -105,6 +105,7 @@ import {
 } from "./services/claimService.js";
 import {
   computeTicketDiff,
+  type TicketDiffOptions,
   defaultGitRunner,
   type GitRunner,
   type RepoDiff,
@@ -819,7 +820,7 @@ export class Dispatch {
     );
   }
 
-  ticketDiff(ref: string): TicketDiff {
+  ticketDiff(ref: string, opts: TicketDiffOptions = {}): TicketDiff {
     const ticket = this.resolveTicket(ref);
     return computeTicketDiff(
       {
@@ -827,9 +828,34 @@ export class Dispatch {
         tickets: this.tickets,
         repoDeliveries: this.repoDeliveries,
         ...(this.gitRunner ? { runGit: this.gitRunner } : {}),
+        downstreamRepos: (repoId) => this.downstreamRepos(repoId),
       },
       ticket.id,
+      opts,
     );
+  }
+
+  /**
+   * CHANGE IMPACT: the repos whose scope `depends_on` a scope this repo owns or is part of
+   * (scope_edges + scope_repos). A repo that merely uses or reads a scope is not that
+   * scope, so only owning/containing/shared/deployed/write-target links count. Pure read.
+   */
+  downstreamRepos(repoId: string): Array<{ repo: string; via: string }> {
+    const IS_SCOPE = "('owns','contains','shared_by','deployed_with','write_target')";
+    const rows = this.db
+      .prepare(
+        `SELECT DISTINCT r.name AS repo, dep.name AS dep_name, mine.name AS mine_name
+           FROM scope_repos sr
+           JOIN scope_nodes mine ON mine.id = sr.scope_node_id
+           JOIN scope_edges e ON e.to_node_id = sr.scope_node_id AND e.relation = 'depends_on'
+           JOIN scope_nodes dep ON dep.id = e.from_node_id
+           JOIN scope_repos sd ON sd.scope_node_id = e.from_node_id AND sd.relation IN ${IS_SCOPE}
+           JOIN repositories r ON r.id = sd.repo_id
+          WHERE sr.repo_id = ? AND sr.relation IN ${IS_SCOPE} AND sd.repo_id <> ?
+          ORDER BY r.name LIMIT 20`,
+      )
+      .all(repoId, repoId) as Array<{ repo: string; dep_name: string; mine_name: string }>;
+    return rows.map((r) => ({ repo: r.repo, via: `${r.dep_name} depends_on ${r.mine_name}` }));
   }
 
   /**

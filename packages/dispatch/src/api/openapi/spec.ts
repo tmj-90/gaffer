@@ -879,8 +879,14 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.review,
     summary: "Delivery diff",
     description:
-      "`git diff <default branch>...<head>` per write repository, where `headSha` is the delivery branch's commit at read time (`repoId` names the repo). Send them back on approve. An in_review ticket also carries `approve_outcome` (the ApproveOutcome schema): the first step a human Approve would certainly take now — `to_tester`, `land_now`, `land_next_tick`, `waits_for_merge`, `held_ci` or `held_repo_unavailable` (a write repository's delivery head cannot be read, so the server refuses the approval) — computed from the settings and ticket state the approve path acts on; when the tests that gate it changed, `agent_hold` names the `held_test_modified` hold an agent or auto approval would hit (a human approval is not held by it).",
+      "`git diff <default branch>...<head>` per write repository, where `headSha` is the delivery branch's commit at read time (`repoId` names the repo). Send them back on approve. An in_review ticket also carries `approve_outcome` (the ApproveOutcome schema): the first step a human Approve would certainly take now — `to_tester`, `land_now`, `land_next_tick`, `waits_for_merge`, `held_ci` or `held_repo_unavailable` (a write repository's delivery head cannot be read, so the server refuses the approval) — computed from the settings and ticket state the approve path acts on; when the tests that gate it changed, `agent_hold` names the `held_test_modified` hold an agent or auto approval would hit (a human approval is not held by it). An in_review ticket (or any ticket with `?include=impact`) also carries each repo's `impact` (the RepoImpact schema): exports added or removed, migrations and DDL, config, environment variables, dependency entries, generated files, changed modules no test in the change imports, route patterns and downstream repos from the scope graph, each fact labelled with the method that found it; advisory, nothing gates on it.",
     capability: "read",
+    query: {
+      include: {
+        description: "`impact` adds each repo's change-impact facts.",
+        schema: { type: "string", enum: ["impact"] },
+      },
+    },
     responses: [ok("`{ ticketId, repos: RepoDiff[], approve_outcome? }`.", "TicketDiff"), notFound],
   },
   {

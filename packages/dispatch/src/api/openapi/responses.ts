@@ -17,6 +17,10 @@ import {
   type ApproveOutcome as ApproveOutcomeType,
 } from "../../services/approveOutcome.js";
 import type {
+  ImpactFact as ImpactFactShape,
+  RepoImpact as RepoImpactShape,
+} from "../../services/changeImpact.js";
+import type {
   RepoDiff as RepoDiffShape,
   TicketDiff as TicketDiffShape,
 } from "../../services/diffService.js";
@@ -420,6 +424,56 @@ export const RiskAnnotation = z
   .strict()
   .describe("An advisory risk flag on a repo's delivery diff.");
 
+export const ImpactFact = z
+  .object({
+    kind: z.enum([
+      "export_added",
+      "export_removed",
+      "export_changed",
+      "migration",
+      "ddl",
+      "config",
+      "env_added",
+      "env_removed",
+      "dependency_added",
+      "dependency_removed",
+      "dependency_bumped",
+      "generated",
+      "untested_module",
+      "route",
+      "downstream_repo",
+    ] satisfies ImpactFactShape["kind"][]),
+    text: str.describe("One plain line, e.g. `export function clearDone added`."),
+    path: nstr.describe("The file in this diff the fact is about (its anchor), or null."),
+    line: int.nullable().describe("The new-side line (old-side for a removal), when it has one."),
+    method: z
+      .enum([
+        "from the diff's lines",
+        "by path",
+        "from the manifest diff",
+        "by .gitattributes",
+        "by import text",
+        "pattern match",
+        "scope graph depends_on",
+      ] satisfies ImpactFactShape["method"][])
+      .describe("How the fact was found. A text or path heuristic, never a certainty."),
+  } satisfies Record<keyof ImpactFactShape, ZodType>)
+  .strict()
+  .describe("One deterministic change-impact fact.");
+
+export const RepoImpact = z
+  .object({
+    facts: z.array(ImpactFact),
+    none: z
+      .array(str)
+      .describe("Surfaces scanned with nothing found (`migration or DDL`, `config`, …)."),
+    not_analysed: z.array(str).describe("What the scan does not cover, said plainly."),
+  } satisfies Record<keyof RepoImpactShape, ZodType>)
+  .strict()
+  .describe(
+    "The Behavioural surface of one repo's delivery (`?include=impact`), read from the diff and the tree at `headSha`. Advisory: nothing gates on it.",
+  );
+
 export const RepoDiff = z
   .object({
     repo: str,
@@ -443,6 +497,9 @@ export const RepoDiff = z
       .describe(
         "The delivery branch head this diff was computed against; sent back on approve, and a moved head is refused (stale_revision).",
       ),
+    impact: RepoImpact.optional().describe(
+      "With `?include=impact`: the change-impact facts for this repo (advisory).",
+    ),
   } satisfies Record<keyof RepoDiffShape, ZodType>)
   .strict()
   .describe("The delivery diff for one write repository.");
@@ -462,7 +519,9 @@ export const TicketDiff = z
 /** Response schemas rendered as their own components and `$ref`d where nested. */
 export const SHARED_RESPONSE_COMPONENTS = [
   "ApproveOutcome",
+  "ImpactFact",
   "RepoDiff",
+  "RepoImpact",
   "RiskAnnotation",
   "RiskKind",
 ] as const;

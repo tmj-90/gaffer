@@ -3156,6 +3156,7 @@ const CP_SINGLE_VERBS = new Set([
   "record-tester-replay",
   "ci-result",
   "eval-score",
+  "lane-verdict",
   "attach-evidence",
   "wont-do",
   "set-testable",

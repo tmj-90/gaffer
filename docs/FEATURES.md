@@ -822,6 +822,33 @@ on**:
 | `REVIEW_MODE=both` | The agent screens first (a CHANGES verdict can bounce the delivery to rework) but a human still confirms every approval. |
 | `MEMORY_AUTO_APPROVE` | Let the memory the runner itself files (the requirement distilled from each delivered ticket, onboarding induction lore, CLI `memory suggest`) go live without a human review step. Lore a delivery agent suggests over MCP always stays a draft, and a draft is invisible to other agents (search, duplicate hints, fetch by id) until you approve it. |
 
+**The independent tester is off by default and runs after your approval.** With
+`GAFFER_TESTING` off (the default), only an epic's Acceptance ticket goes to the
+independent black-box tester; every other ticket goes from your approval straight
+to Ready for merge. Turn the lane on with `GAFFER_TESTING=1` (Settings, or the
+environment) and testable tickets go to the tester too: a planned build's tickets
+are created testable (all but the bootstrap), and any ticket can be switched on its
+page or with `wg ticket set-testable <n>`. Either way the tester runs **after** the
+review approves (`in_review`, then `in_testing`; that is you, unless you turned on
+agent approval), so you review without its evidence;
+its verdict decides whether the approved ticket goes on to Ready for merge or back to
+rework. A ticket that becomes testable with no test contract gets one from its title,
+so the tester's contract always names the behaviour under test (one line built
+from the title, not a real endpoint or command); you can replace it with
+`wg ticket test-contract <n> --surface ...` (the delivery agent with its MCP
+`set_test_contract` tool) until testing starts.
+A tester PASS counts only when the runner replayed the tester's tests on a clean
+checkout of the tested commit with the repo's registered test command. With no test
+command registered (or `GAFFER_TESTER_REPLAY=0`) the PASS is held in Testing on every
+ticket, and the note on the ticket reads *tester held: unverified: no test command
+registered for repo ...*, with how to register one (`wg repo set-commands <repo>
+--test "<cmd>"`, or Test command under Referee's checks on the repo page). You move
+it on by recording the verdict yourself: **Record tester PASS** (reported as a
+waiver, never as verified) or **Record tester FAIL** (back to rework, tested again
+when it returns) on the ticket page, or `wg ticket tester-pass <n> --as human`.
+The `--as human` matters: an automated PASS without a passed replay is refused
+(`BINDING_REQUIRED`), and the command's default actor is the agent.
+
 **A dollar cap before the first live run.** A live run (`gaffer run`, `loop.sh`,
 the Work view's **Poll for work**) refuses to start until `GAFFER_DAILY_BUDGET_USD`
 or `GAFFER_BUDGET_USD` is set, and says how to set one. In the dashboard the first

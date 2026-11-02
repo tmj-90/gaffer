@@ -12,6 +12,9 @@
 #      in_testing), it is tested again
 #   5. a held ticket does not block the next in_testing ticket in the same pass
 #   6. a recorded verdict never writes a hold
+#   8. an UNVERIFIED PASS (no registered test command, so no clean replay) is a
+#      hold whose note says "unverified: no test command registered" and how to
+#      register one or record the verdict by hand
 # No model: bin/tester-run.mjs is a stub that answers with a canned envelope.
 # Run: bash runner/test/tester-held.test.sh
 # =====================================================================
@@ -189,6 +192,32 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns"
 run_lane
 grep -q '^9	' "$GAFFER_DATA/.tester-held" && ok "#9 held as before" || fail "#9 not held"
 [ ! -e "$GAFFER_DATA/usage-pause.json" ] && ok "no pause from an agent's own reply" || fail "an agent's reply wrote a pause: $(cat "$GAFFER_DATA/usage-pause.json")"
+result() { :; }
+
+echo "== 8: an UNVERIFIED PASS (no test command registered) is a hold, with the how-to on the ticket =="
+# bin/tester-run.mjs holds a PASS the runner could not replay on a clean checkout (no
+# registered test command) for every ticket kind. The reason is the real helper's text.
+new_run; : > "$EVID"; RESULTS="$WORK/results"; : > "$RESULTS"
+result() { echo "$1" >> "$RESULTS"; }
+printf '[{"number":14,"status":"in_testing"}]' > "$LIST"
+echo "2026-02-06T09:00:00.000Z" > "$WORK/entered-14"
+# The module path goes in the env, not argv: tester-run.mjs runs as a CLI when it is argv[1].
+UNV_REASON="$(TESTER_RUN_MJS="$RUNNER_DIR/bin/tester-run.mjs" node --input-type=module -e 'const m = await import(process.env.TESTER_RUN_MJS); process.stdout.write(m.unverifiedPassReason({ replay: { state: "skipped", reason: "the repo has no test command registered" }, repoName: "app", ticket: 14 }))')"
+node -e 'process.stdout.write(JSON.stringify({ phase: "held", ticket: 14, reason: process.argv[1], unverified: true, replay: { state: "skipped", reason: "the repo has no test command registered" }, testsBranch: "gaffer-tests/ticket-14" }))' "$UNV_REASON" > "$WORK/reply-14.json"
+echo 2 > "$WORK/rc-14"
+run_lane
+case "$UNV_REASON" in "unverified: no test command registered for repo app;"*) ok "the real reason starts 'unverified: no test command registered for repo app'" ;; *) fail "reason text: $UNV_REASON" ;; esac
+grep -q '^14|manual_note|tester held: unverified: no test command registered for repo app; ' "$EVID" \
+  && ok "the evidence row on #14 reads 'tester held: unverified: no test command registered …'" || fail "unverified evidence missing: $(cat "$EVID")"
+grep -q 'wg repo set-commands app --test' "$EVID" && grep -q "Referee's checks" "$EVID" && grep -q 'tester-pass 14 --as human' "$EVID" \
+  && ok "the note says how to register the command (CLI and dashboard) and how a human moves it on" || fail "how-to missing from the note: $(cat "$EVID")"
+grep -qx $'14\t2026-02-06T09:00:00.000Z' "$GAFFER_DATA/.tester-held" \
+  && ok "the unverified hold is remembered for this stay (no re-spend on the same stay)" || fail "no hold marker for #14"
+grep -q 'TESTER: #14 HELD in_testing — unverified: no test command registered' "$LOGF" \
+  && ok "the log names the unverified hold" || fail "no unverified hold log line: $(grep 'TESTER: #14' "$LOGF")"
+grep -qx tested "$RESULTS" && ! grep -qx usage_paused "$RESULTS" \
+  && ok "the tick reports tested (a hold), never usage_paused" || fail "tick results: $(tr '\n' ' ' < "$RESULTS")"
+grep -qx 14 "$GAFFER_DATA/.tested-tickets" && ok "#14 is skipped for the rest of this run" || fail "#14 not marked tried for this run"
 result() { :; }
 
 echo "== entered-status-at reads the LATEST transition into the status =="

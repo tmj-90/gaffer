@@ -719,6 +719,86 @@ console.log("== AC17: an ACCEPTANCE ticket's PASS without a replay that ran HOLD
     .run();
   db2.close();
 }
+console.log(
+  "== AC17b: an ORDINARY ticket's PASS without a replay that ran HOLDS (unverified), never records ==",
+);
+{
+  // False green (STRATEGY section 2): with no registered test command the runner cannot
+  // replay the tester's tests on a clean checkout, so the PASS proves nothing about the
+  // candidate. It used to record (--replay skipped) and land as tester-passed.
+  LIVE.g("branch", "-D", "gaffer-tests/ticket-1");
+  const { DatabaseSync } = require("node:sqlite");
+  const db = new DatabaseSync(DB_PATH);
+  db.prepare("UPDATE repositories SET test_command = NULL WHERE id = 'r1'").run();
+  db.close();
+  const { code, out, logged } = runLive("PASS");
+  code === 2 && out && out.phase === "held"
+    ? ok(
+        "no test command → an ordinary ticket's PASS is HELD (exit 2), the same outcome as every other hold",
+      )
+    : fail(`ordinary PASS without replay not held (code=${code}, out=${JSON.stringify(out)})`);
+  logged === "" ? ok("no verdict recorded") : fail(`a verdict was recorded: ${logged}`);
+  /^unverified: no test command registered for repo live\b/.test((out && out.reason) || "")
+    ? ok("the reason starts 'unverified: no test command registered for repo live'")
+    : fail(`reason: ${JSON.stringify(out && out.reason)}`);
+  /wg repo set-commands live --test/.test((out && out.reason) || "") &&
+  /Referee's checks/.test((out && out.reason) || "") &&
+  /--as human/.test((out && out.reason) || "")
+    ? ok("the reason says how to register one (CLI and dashboard) and how a human moves it on")
+    : fail(`reason lacks the how-to: ${JSON.stringify(out && out.reason)}`);
+  out && out.unverified === true && out.replay && out.replay.state === "skipped"
+    ? ok("the held output carries unverified:true and the skipped replay")
+    : fail(`held detail: ${JSON.stringify(out)}`);
+  // The replay switched off (GAFFER_TESTER_REPLAY=0) is the same: nothing replayed.
+  LIVE.g("branch", "-D", "gaffer-tests/ticket-1");
+  const db2 = new DatabaseSync(DB_PATH);
+  db2
+    .prepare(
+      "UPDATE repositories SET test_command = 'node build.js && node --test' WHERE id = 'r1'",
+    )
+    .run();
+  db2.close();
+  const off = runLive("PASS", { GAFFER_TESTER_REPLAY: "0" });
+  off.code === 2 &&
+  off.out &&
+  off.out.phase === "held" &&
+  /^unverified: the clean replay is switched off \(GAFFER_TESTER_REPLAY is 0\)/.test(
+    off.out.reason || "",
+  )
+    ? ok("GAFFER_TESTER_REPLAY=0 → an ordinary PASS is held as unverified, not recorded")
+    : fail(`replay-off PASS not held (code=${off.code}, out=${JSON.stringify(off.out)})`);
+  off.logged === ""
+    ? ok("no verdict recorded with the replay off")
+    : fail(`recorded: ${off.logged}`);
+  // A FAIL needs no replay: it is recorded as before (a FAIL is never a false green).
+  LIVE.g("branch", "-D", "gaffer-tests/ticket-1");
+  const f = runLive("FAIL", { GAFFER_TESTER_REPLAY: "0" });
+  f.code === 0 && f.out && f.out.phase === "verdict" && f.out.verdict === "fail"
+    ? ok("a FAIL with the replay off is still recorded")
+    : fail(`FAIL with replay off: code=${f.code} out=${JSON.stringify(f.out)}`);
+  LIVE.g("branch", "-D", "gaffer-tests/ticket-1");
+}
+console.log(
+  "== AC17c: the unverified hold's register command quotes a repo name a shell would split ==",
+);
+{
+  const { unverifiedPassReason } = await import(HELPER);
+  const cmd = (repoName) =>
+    (unverifiedPassReason({
+      replay: { state: "skipped", reason: "the repo has no test command registered" },
+      repoName,
+      ticket: 3,
+    }).match(/`wg repo set-commands (.*?) --test/) || [])[1];
+  cmd("live") === "live"
+    ? ok("a plain repo name is left as it is")
+    : fail(`plain name: ${cmd("live")}`);
+  cmd("my app") === "'my app'" && cmd("$(id)") === "'$(id)'" && cmd("o'b") === "'o'\\''b'"
+    ? ok("a name with a space, `$` or a quote is single-quoted for the copied command")
+    : fail(`quoted names: ${cmd("my app")} ${cmd("$(id)")} ${cmd("o'b")}`);
+  cmd("") === "<repo>"
+    ? ok("no repo name gives a <repo> placeholder, not a wrong command")
+    : fail(`empty name: ${cmd("")}`);
+}
 console.log("== ledger: a spawn that never started books no kill estimate; a timeout does ==");
 {
   const ledger = resolve(LIVE.data, "usage-ledger.jsonl");
@@ -869,6 +949,70 @@ console.log("== prompt: the tester never asserts on git history ==");
       "prompt forbids git (bar committing the tests) and verifies history-phrased ACs by the files present",
     );
   else fail("prompt should forbid git and redirect history-phrased ACs to the checkout's files");
+}
+
+console.log(
+  "== AC20: a PLANNED implementation ticket reaches the tester with a contract (changed_surfaces) ==",
+);
+{
+  // False green (gap hole 2): createEpic marked implementation tickets testable without a
+  // contract, so the tester's prompt carried `{}` and changed_surfaces was empty. Against
+  // the BUILT dispatch: plan an epic with the lane on, put the implementation ticket in
+  // testing, and read it back through the tester's own seams.
+  const CORE_JS = resolve(HERE, "..", "..", "packages", "dispatch", "dist", "core.js");
+  const HASH_JS = resolve(
+    HERE,
+    "..",
+    "..",
+    "packages",
+    "dispatch",
+    "dist",
+    "util",
+    "contractHash.js",
+  );
+  if (!existsSync(CORE_JS)) fail(`dispatch is not built (${CORE_JS}); run pnpm -r build`);
+  else {
+    const { Dispatch } = await import(CORE_JS);
+    const dispatchHash = (await import(HASH_JS)).contractHash;
+    const { buildTesterPrompt, contractHash } = await import(HELPER);
+    const dir = gafferMkdtemp(resolve(tmpdir(), "tester-run-contract-"));
+    const dbPath = resolve(dir, "dispatch.sqlite");
+    const human = { type: "human", id: "tom" };
+    const d = Dispatch.open(dbPath, undefined, undefined, { testingEnabled: true });
+    d.registerRepository({ name: "app", default_branch: "main" }, human);
+    d.createEpic(
+      {
+        epic: { name: "Vault", description: "a bookmark manager" },
+        tickets: [{ title: "Store bookmarks", acceptanceCriteria: ["atomic writes"], repo: "app" }],
+      },
+      human,
+    );
+    const row = d.db
+      .prepare("SELECT id, number FROM tickets WHERE title = 'Store bookmarks'")
+      .get();
+    d.db.prepare("UPDATE tickets SET status = 'in_testing' WHERE id = ?").run(row.id);
+    const want = dispatchHash(d.db, row.id);
+    d.db.close();
+    const ctx = assembleContext(dbPath, row.number);
+    const surfaces = (ctx && ctx.testContract && ctx.testContract.changed_surfaces) || [];
+    surfaces.length === 1 && surfaces[0].includes('"Store bookmarks"')
+      ? ok(
+          `the tester context carries changed_surfaces for the implementation ticket (${surfaces[0]})`,
+        )
+      : fail(`implementation ticket contract: ${JSON.stringify(ctx && ctx.testContract)}`);
+    const prompt = ctx
+      ? buildTesterPrompt({ context: ctx, worktree: "/tmp/wt", repoName: "app" })
+      : "";
+    surfaces[0] && prompt.includes(JSON.stringify(surfaces[0]))
+      ? ok("the tester prompt renders the contract's surface (not an empty {})")
+      : fail("the tester prompt does not render the implementation ticket's contract");
+    ctx && contractHash(ctx) === want
+      ? ok(
+          "the tester's contract hash equals dispatch's for the seeded contract (the verdict binds)",
+        )
+      : fail(`hash drift: tester ${ctx && contractHash(ctx)} vs dispatch ${want}`);
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 console.log(

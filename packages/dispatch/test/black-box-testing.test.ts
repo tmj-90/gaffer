@@ -324,7 +324,7 @@ describe("BBT-001 tester verdict", () => {
 
     const res = wg.testerPass(
       ticketId,
-      { summary: "12 black-box tests pass against the contract" },
+      { summary: "12 black-box tests pass against the contract", replay: "passed" },
       testerAgent,
     );
     expect(res.ticket.status).toBe("ready_for_merge");
@@ -462,7 +462,7 @@ describe("BBT-001 a tester cannot approve or merge", () => {
     // Drive to in_testing, then a tester pass; the merge stays system/admin-only.
     wg.setTestable(ticketId, true, human);
     wg.approveReview(ticketId, reviewer);
-    wg.testerPass(ticketId, { summary: "pass" }, testerAgent);
+    wg.testerPass(ticketId, { summary: "pass", replay: "passed" }, testerAgent);
     expect(() => wg.markMerged(ticketId, testerAgent)).toThrowError(DispatchError);
     expect(wg.markMerged(ticketId, systemActor).ticket.status).toBe("done");
   });

@@ -48,7 +48,9 @@
 //                       STOP — never spawn a model, never record a verdict (the
 //                       test seam that asserts the diff is absent).
 //   --verdict pass|fail when given (the stubbed-tester path), record this verdict
-//                       through the seam instead of running a live tester.
+//                       through the seam instead of running a live tester. A test
+//                       seam only: it sends no binding, so through the bundled CLI
+//                       dispatch refuses its PASS (BINDING_REQUIRED, no replay).
 //   --summary <text>    the verdict summary (the passing/failing test result).
 //
 // OUTPUT (stdout, exactly ONE JSON object):
@@ -742,6 +744,47 @@ export function replayTesterTests({
   }
 }
 
+/**
+ * The hold reason for a tester PASS the runner could not replay (see the FALSE GREEN hold
+ * in runLiveTester). It starts with "unverified: <why>" (the `tester held:` note on the
+ * ticket then reads "tester held: unverified: no test command registered …"), keeps the
+ * acceptance wording for an epic's acceptance ticket, and says how a person moves the
+ * ticket on by the existing paths: register the command (so the next PASS replays) and
+ * record the verdict by hand (a human PASS is a waiver; a FAIL sends it to rework, and
+ * it is tested again when it comes back). A board move never takes a ticket out of
+ * testing, so the reason never suggests one.
+ */
+export function unverifiedPassReason({ replay, repoName, ticket, acceptance = false }) {
+  const raw = String(repoName || "").trim();
+  const name = raw || "this repo";
+  // The name goes into a command a person copies: quote one that is not a plain word (a
+  // repo name may hold spaces, quotes or `$`), and name no repo at all as <repo>.
+  const cmdName = !raw
+    ? "<repo>"
+    : /^[A-Za-z0-9._@+-]+$/.test(raw)
+      ? raw
+      : `'${raw.replace(/'/g, "'\\''")}'`;
+  const why = !replay
+    ? "no clean replay ran"
+    : /no test command/.test(replay.reason || "")
+      ? `no test command registered for repo ${name}`
+      : String(replay.reason || "").includes("GAFFER_TESTER_REPLAY")
+        ? "the clean replay is switched off (GAFFER_TESTER_REPLAY is 0)"
+        : `the clean replay did not pass (${replay.state}: ${replay.reason || "no reason given"})`;
+  const register = /no test command/.test(why)
+    ? ` Register one with \`wg repo set-commands ${cmdName} --test "<command>"\` or Test command under Referee's checks on the repo page.`
+    : /switched off/.test(why)
+      ? " Set GAFFER_TESTER_REPLAY back to 1 to replay again."
+      : "";
+  return (
+    `unverified: ${why}; the PASS was not replayed on a clean checkout, so it is not recorded` +
+    (acceptance ? " (acceptance PASS without a clean replay)" : "") +
+    "." +
+    register +
+    ` To move this ticket on, record the verdict yourself: Record tester PASS or FAIL on the ticket page, or \`wg ticket tester-pass ${ticket} --as human --summary "<what you checked>"\` (a PASS is a waiver; a FAIL sends it to rework and it is tested again when it returns).`
+  );
+}
+
 // The dispatch schema caps a ticket description at 20,000 characters, so rendering up to
 // that cap means a validated description — the whole brief — always reaches the tester.
 const MAX_BRIEF_CHARS = 20000;
@@ -1197,16 +1240,25 @@ function runLiveTester(context) {
     );
     return;
   }
-  if (verdict === "pass" && context.acceptance && (!replay || replay.state !== "passed")) {
-    const why = replay ? replay.reason : "no replay ran";
-    log(
-      `acceptance ticket #${n}: a PASS needs a clean replay and none passed (${why}) — HOLDING for a human`,
-    );
+  // FALSE GREEN: a PASS is recorded only when the runner's clean replay PASSED, for every
+  // ticket kind (it used to hold only an acceptance ticket here). Without a replay (no
+  // test command registered, the replay switched off, no replay ran) nothing the runner
+  // ran shows the candidate passes the tester's tests, so the PASS is held for a human
+  // as "unverified": a false red costs a person a look, a false green ships unproven work.
+  if (verdict === "pass" && (!replay || replay.state !== "passed")) {
+    const reason = unverifiedPassReason({
+      replay,
+      repoName: repo.name,
+      ticket: n,
+      acceptance: context.acceptance,
+    });
+    log(`#${n}: ${reason.slice(0, 200)} — HOLDING in_testing for a human`);
     emit(
       {
         phase: "held",
         ticket: n,
-        reason: `acceptance PASS without a clean replay: ${why}`,
+        reason,
+        unverified: true,
         replay,
         testsBranch,
         testedCommit,

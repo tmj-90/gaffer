@@ -208,7 +208,9 @@ export class EpicsService {
         // TESTER LANE: decided here, when the plan becomes tickets, so a person who
         // turned the tester on does not mark each planned ticket by hand. The plan's
         // own answer wins; otherwise every implementation ticket is testable while the
-        // lane is on (the bootstrap only scaffolds), and none is while it is off.
+        // lane is on (the bootstrap only scaffolds), and none is while it is off. Becoming
+        // testable also gives the ticket a test contract derived from its title
+        // (ticketService.setTestable), so the tester's changed_surfaces is never empty.
         if (spec.testable ?? (testingOn && spec.bootstrap !== true)) {
           this.tickets.setTestable(ticket.id, true, actor);
           testableTickets += 1;
@@ -319,7 +321,8 @@ export class EpicsService {
         } else if (repoSpec?.repo) {
           deferredRepoLinks += 1;
         }
-        this.tickets.setTestable(acceptance.id, true, actor);
+        // The contract first: setTestable seeds a title-derived contract on a ticket that
+        // has none, and the acceptance ticket's contract is the whole build.
         this.tickets.setTestContract(
           acceptance.id,
           {
@@ -333,6 +336,7 @@ export class EpicsService {
           },
           actor,
         );
+        this.tickets.setTestable(acceptance.id, true, actor);
         this.ticketScopes.upsert({
           ticket_id: acceptance.id,
           scope_node_id: node.id,

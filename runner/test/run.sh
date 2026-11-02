@@ -10,6 +10,11 @@
 #     .sh 120s, .mjs 300s. The long end-to-end tests (LONG_RE: ~70-110s alone,
 #     about twice that under -j load) get 600s and are queued FIRST, so they never
 #     hit a cap sized for a quiet machine and never form a serial tail at the end.
+#     On a machine that is already busy when the run starts (1-minute load average
+#     above the CPU count: other builds, other agents' runs) every cap is scaled by
+#     load / CPUs, at most 2x, so "timed out under load, passes alone" stops being a
+#     failure. GAFFER_RUN_CAP_SCALE=<1..2> fixes the factor instead (CI sets 1, so a
+#     hang is reported well inside the job's timeout); the banner prints the factor.
 #   * has its output buffered to a file and printed whole when it ends (a GitHub
 #     ::group:: in CI; locally only a failing test's output), so -j never
 #     interleaves logs.
@@ -21,6 +26,8 @@
 #   * claude TRIPWIRE: a `claude` stub is first on PATH and in CLAUDE_BIN. It answers
 #     `--version`; any other call is logged and exits 97, and a logged call fails the
 #     run. No test may make a real, billed model call on a contributor's machine.
+#   * NODE_COMPILE_CACHE points at a per-run dir, so the many short node processes a
+#     test starts (each `wg` call is one) reuse each other's compiled modules.
 #   * dollar-cap opt-out: GAFFER_ALLOW_UNCAPPED=1 is exported, because a live run with
 #     no GAFFER_DAILY_BUDGET_USD / GAFFER_BUDGET_USD refuses to start and every agent
 #     here is a stub (spend-cap-required.test.sh unsets it to prove the refusal).
@@ -40,10 +47,12 @@
 # the file names and lib/shard-weights.tsv, never on the machine. lib/shard.mjs
 # balances them by expected duration (LPT: heaviest file first, onto the lightest
 # shard; a file missing from the weights table counts 10s; shard 1 starts with a
-# small head start, as CI also gives it the macOS package tests). Within a shard
+# head start, 300 weight-seconds unless GAFFER_RUN_SHARD1_HEAD_START says otherwise:
+# CI sets it per cell, identically for every shard of that cell, because only the
+# macOS cells' shard 1 also runs the package tests). Within a shard
 # everything above still holds: LONG_RE caps and queue-first, strict skips, the
 # tripwire, the operator-state guard and the summary. After adding or removing a
-# slow test, refresh its line in lib/shard-weights.tsv (seconds on a macOS runner),
+# slow test, refresh its line in lib/shard-weights.tsv (its slowest CI cell, seconds),
 # and add it to LONG_RE once it weighs two thirds of its cap (80s for a .sh):
 # run-harness.test.sh H10 fails on a heavy test left on the short cap.
 #
@@ -63,8 +72,17 @@ SELF="$HERE/run.sh"
 # shellcheck source=lib/skip.sh
 . "$HERE/lib/skip.sh"
 
-# Long end-to-end tests: queued first, with a roomier cap.
-LONG_RE='^(gate-integrity-e2e(-retry)?|dashboard-lifecycle|gaffer-plan|eval-replay|auth-gate-delivery|merge-lane|land-tester-replay(-proof)?|parallel-stop(-live)?|waste-controls|delivery-lifecycle|security-review-lane|direct-run-isolation|review-wedge|afk-review-hold|branch-retention|branch-switch-fresh|branch-switch-recovery|rework-final-trail|memory-index-after-merge|rework-cost-live|landing-revocation|secondary-pr-landing|cleanup-ownership|poll-overlap-run-state|e2e-.*|sandbox-docker-delivery-seam|worker-command|land-ignored-file|git-hooks-host)\.test\.(sh|mjs)$|^safety-hook\.test\.mjs$'
+# Long end-to-end tests: queued first, with a roomier cap. A test belongs here once
+# its observed CI time (lib/shard-weights.tsv, the slowest of the four cells) reaches
+# two thirds of the short cap; run-harness.test.sh H10 fails when one is missing.
+# usage-limit-tick (119 s), tick-deadline (97 s) and resume-abort (89 s) were left on
+# the 120 s cap until CI run 41338925244 showed them that close to it.
+# direct-run-isolation is quick by default but stays here for its nightly
+# GAFFER_TEST_EXHAUSTIVE=1 form (~220 s). gaffer-plan and poll-overlap-run-state came in
+# with the integration branch (poll-overlap-run-state runs two real Polls, ~90 s), and
+# round 4 of it added sandbox-docker-delivery-seam, worker-command, land-ignored-file and
+# git-hooks-host.
+LONG_RE='^(gate-integrity-e2e(-retry)?|dashboard-lifecycle|gaffer-plan|eval-replay|auth-gate-delivery|merge-lane|land-tester-replay(-proof)?|parallel-stop(-live)?|waste-controls|security-review-lane|direct-run-isolation|review-wedge|afk-review-hold|branch-retention|branch-switch-fresh|branch-switch-recovery|rework-final-trail|memory-index-after-merge|rework-cost-live|landing-revocation|secondary-pr-landing|cleanup-ownership|poll-overlap-run-state|usage-limit-tick|tick-deadline|resume-abort|e2e-.*|sandbox-docker-delivery-seam|worker-command|land-ignored-file|git-hooks-host)\.test\.(sh|mjs)$|^safety-hook\.test\.mjs$'
 CAP_SH="${GAFFER_RUN_CAP_SH:-120}" CAP_MJS="${GAFFER_RUN_CAP_MJS:-300}" CAP_LONG="${GAFFER_RUN_CAP_LONG:-600}"
 
 in_ci() { [ "${GITHUB_ACTIONS:-}" = "true" ]; }
@@ -181,10 +199,45 @@ if [ ${#FILES[@]} -eq 0 ]; then
 fi
 command -v perl >/dev/null 2>&1 || { echo "run.sh: perl is required (the per-test cap)" >&2; exit 2; }
 
+# Cap scale: GAFFER_RUN_CAP_SCALE (a number, clamped to 1..2), else the 1-minute load
+# average when the run starts divided by the CPU count, clamped to 1..2. Read before
+# any test starts, so it measures what else is running, not this run. Linux has
+# /proc/loadavg, macOS `sysctl -n vm.loadavg` ("{ 1.23 1.10 0.98 }"); anything
+# unreadable counts as 1. GAFFER_RUN_LOADAVG stands in for the reading (tests).
+# awk does the decimal arithmetic: bash 3.2 has integers only.
+NUM_RE='^[0-9]+([.][0-9]+)?$'
+CAP_SCALE="${GAFFER_RUN_CAP_SCALE:-}" CAP_WHY=""
+if [ -n "$CAP_SCALE" ]; then
+  [[ "$CAP_SCALE" =~ $NUM_RE ]] || { echo "run.sh: GAFFER_RUN_CAP_SCALE must be a number from 1 to 2 (got '$CAP_SCALE')" >&2; exit 2; }
+  CAP_WHY="GAFFER_RUN_CAP_SCALE"
+else
+  LOAD1="${GAFFER_RUN_LOADAVG:-}"
+  if [ -z "$LOAD1" ]; then
+    if [ -r /proc/loadavg ]; then LOAD1="$(cut -d' ' -f1 /proc/loadavg 2>/dev/null)"
+    else LOAD1="$(sysctl -n vm.loadavg 2>/dev/null | tr -d '{}' | awk '{print $1}')"; fi
+  fi
+  NCPU="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1)"
+  if [[ "$LOAD1" =~ $NUM_RE ]] && [[ "$NCPU" =~ ^[1-9][0-9]*$ ]]; then
+    CAP_SCALE="$(awk -v l="$LOAD1" -v c="$NCPU" 'BEGIN { printf "%.2f", l / c }')"
+    CAP_WHY="load $LOAD1 on $NCPU CPUs"
+  else
+    CAP_SCALE=1 CAP_WHY="load unknown"
+  fi
+fi
+CAP_SCALE="$(awk -v f="$CAP_SCALE" 'BEGIN { if (f < 1) f = 1; if (f > 2) f = 2; printf "%.2f", f }')"
+scale_cap() { awk -v c="$1" -v f="$CAP_SCALE" 'BEGIN { printf "%d", c * f + 0.5 }'; }
+CAP_SH="$(scale_cap "$CAP_SH")" CAP_MJS="$(scale_cap "$CAP_MJS")" CAP_LONG="$(scale_cap "$CAP_LONG")"
+
 RES="$(mktemp -d "${TMPDIR:-/tmp}/gaffer-run.XXXXXX")"
 gaffer_test_check_tmp "$RES" || exit 70
 trap 'gaffer_test_rm_work "$RES"' EXIT
 export GAFFER_RUN_RES="$RES"
+# Node's on-disk compile cache (Node 22.1+): every dispatch CLI call, json-tool and
+# helper a test starts is a fresh node process that would otherwise compile the same
+# few hundred ES modules from scratch; with the cache each reuses the code a previous
+# process compiled. Per run, under $RES (removed with it), so no test sees an older
+# run's cache or the operator's.
+export NODE_COMPILE_CACHE="$RES/node-compile-cache"
 mkdir -p "$RES/tripwire"
 export GAFFER_CLAUDE_TRIPWIRE_LOG="$RES/tripwire.log"
 : >"$GAFFER_CLAUDE_TRIPWIRE_LOG"
@@ -212,7 +265,7 @@ for f in "${FILES[@]}"; do
   case "$f" in *.mjs) echo "$CAP_MJS" >"$RES/$i.cap" ;; *) echo "$CAP_SH" >"$RES/$i.cap" ;; esac
   if [[ "$(basename "$f")" =~ $LONG_RE ]]; then echo "$CAP_LONG" >"$RES/$i.cap"; LONG+=("$i"); else REST+=("$i"); fi
 done
-echo "run.sh: ${SHARD_DESC:-${#FILES[@]}} test file(s), -j $JOBS (${#LONG[@]} long, queued first)$([ "${GAFFER_TEST_STRICT:-0}" = 1 ] && echo ', strict')"
+echo "run.sh: ${SHARD_DESC:-${#FILES[@]}} test file(s), -j $JOBS (${#LONG[@]} long, queued first)$([ "${GAFFER_TEST_STRICT:-0}" = 1 ] && echo ', strict'), caps x$CAP_SCALE ($CAP_WHY: ${CAP_SH}s / ${CAP_MJS}s / long ${CAP_LONG}s)"
 T0="$(date +%s)"
 { [ ${#LONG[@]} -gt 0 ] && printf '%s\n' "${LONG[@]}"; [ ${#REST[@]} -gt 0 ] && printf '%s\n' "${REST[@]}"; } | xargs -n1 -P "$JOBS" bash "$SELF" --one
 WALL=$(($(date +%s) - T0))

@@ -91,5 +91,5 @@ describe.skipIf(!existsSync(CLI))("dispatch CLI binary", () => {
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
-  });
+  }, 20_000);
 });

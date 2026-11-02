@@ -621,7 +621,7 @@ describe("tech-debt scan", () => {
     expect(existsSync(join(process.cwd(), "PWNED"))).toBe(false);
     // And the scan still produced a sane result (1 real commit touched the file).
     expect(Array.isArray(findings)).toBe(true);
-  });
+  }, 20_000);
 
   it("detects a lexical-duplication cluster shared across two files", () => {
     const repo = tempRepo("fg-td-dup-");

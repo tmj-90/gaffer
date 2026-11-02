@@ -1,239 +1,284 @@
 # Expected seconds per runner test file, for runner/test/run.sh --shard (lib/shard.mjs
-# balances the shards with these). seconds<TAB>file. Source: CI run 41154291906 (main
-# at 692cf14), the median of the two macOS samples per file (the node 22 3-shard and
-# node 24 2-shard cells; every file ran once in each), on macOS runners under -j 3 or
-# -j 5 (the CPU count varies by runner), rounded, floor 1. The ubuntu cells (-j 4)
-# ran the slow tests at 0.9-2x these times, in much the same order. Only the ratios
-# matter.
+# balances the shards with these). seconds<TAB>file.
+# Source: CI run 41338925244 (main at cdff24e, 2026-11-01), every file's observed
+# duration in all four cells (macOS node 22 and 24 at -j 3, ubuntu node 22 and 24 at
+# -j 4), the MAXIMUM of the four passing runs, whole seconds, floor 1. The one failed
+# run (parallel-stop.test.sh, macOS node 22: 125 s against 42-44 s elsewhere, repaired
+# in 577c9e7) is left out. Max, not the macOS median: these numbers are also what
+# run-harness.test.sh H10 holds against the caps, and a cap has to fit the slowest
+# cell. The partition only uses the ratios, so the cell they came from barely matters.
 # A test missing here counts 10s; a line for a deleted test is ignored.
-# Refresh a line when a test gets much slower or faster — an off weight only unbalances
-# the shards, it never drops or duplicates a test.
-# memory-index-after-merge, rework-cost-live, export-under-load: ESTIMATES, not CI
-# medians (refresh them from the next CI run). Linux, alone: 70s / 36s / 9s; under load
-# memory-index-after-merge took 156s where merge-lane took 249s against its 171 here,
-# and the three are scaled by that ratio (rework-cost-live rounded up).
-# land-tester-replay, e2e-release-gate-tester-replay: ESTIMATES (Linux under shared load:
-# 290s / 98s while other suites ran; refresh from the next CI run). External review #7
-# added two repos' worth of deliveries to each (Linux, -j 2: 391s / 172s) and the
-# reviewer's two-repo sequence plus two real poll ticks to e2e-multi-repo-delivery (76s).
-# rework-final-trail: ESTIMATE too (Linux, alone: 33s, scaled like memory-index-after-merge).
-# dashboard-lifecycle, gaffer-colour, demo-isolation: ESTIMATES (Linux, -j 2: 37s / 13s / 48s).
-# sandbox-docker-delivery-seam: ESTIMATE (Linux, alone: 35s; one real tick like branch-retention).
-# e2e-release-gate-merge-typecheck: ESTIMATE too. Linux, one at a time under shared
-# load: 131s where e2e-release-gate-merge-combination took 103s against its 100 here.
-# landing-revocation, secondary-pr-landing, cleanup-ownership, replay-recovery: ESTIMATES
-# (external review #8; Linux alone: 77s / 81s / 169s / 34s, scaled like the others;
-# replay-recovery: 61s alone once it gained the merge-lane and red-replay cases).
-# landing-revocation-window: ESTIMATE (Linux alone: 40s, scaled like the others).
-# land-tester-replay-proof: split out of land-tester-replay (sections G-K) once the one
-# file passed run.sh's 600s long cap on ubuntu (CI run 41322221909). ESTIMATES: the old
-# 270 scaled by the ~25% the cleanup-ownership checks and the auth probe added, shared
-# by the split's measured ratio (Linux, both at once under shared load: 875s / 748s).
-# poll-overlap-run-state: ESTIMATE (Linux alone under shared load: 90s, two real Polls
-# and a loop pass; refresh from the next CI run).
-# Refreshed 2026-11-01 from CI run 41333739591 (macOS node 24 shard 2/2, -j 3) for every file it ran;
-# the files added at the end with no CI sample yet are ESTIMATES: auth-gate-delivery, budget-refused-delivery,
-# daemon-sigint, multi-repo-landing-preflight, usage-limit-lanes, tick-parked-result, paid-launch-cap-required and the small docs/docker/provenance checks.
-# worker-command: ESTIMATE (four tick.sh runs and the seam checks; Linux alone under shared load: 145s).
-171	merge-lane.test.sh
-90	poll-overlap-run-state.test.sh
-100	worker-command.test.sh
-110	landing-revocation.test.sh
-29	landing-revocation-window.test.sh
-110	secondary-pr-landing.test.sh
-112	cleanup-ownership.test.sh
-80	replay-recovery.test.mjs
-329	land-tester-replay.test.sh
-254	land-tester-replay-proof.test.sh
-161	direct-run-isolation.test.sh
+# Refresh a line when a test gets much slower or faster (an off weight only unbalances
+# the shards, it never drops or duplicates a test), and refresh the whole table from a
+# green main run's logs now and then: every runner shard's log has one
+# "::group::<file> — PASS (<n>s)" line per test.
+# ESTIMATES until the next refresh (the test changed after that run):
+#   delivery-lifecycle: 100 - 60, the two TICK_SLEEP=30 pauses it no longer sleeps (Linux alone: 95s -> 36s).
+#   e2e-release-gate-merge-typecheck: 136 x 65/141, scenarios 1-2 only (Linux alone: 141s -> 65s).
+#   direct-run-isolation: 224 x 16/213, the quick re-runs only (Linux alone: 213s -> 16s). It
+#   stays in LONG_RE: the nightly GAFFER_TEST_EXHAUSTIVE=1 run re-runs all 16 tests (~220s).
+#   land-tester-replay: 334 - 13, land-tester-replay-proof: 252 - 10, concurrency-bookkeeping: 67 - 12:
+#   ticket setup in one node process (lib/wg-batch.mjs; setup alone 13.6s -> 0.3s, 10.7s -> 0.8s,
+#   12.5s -> 0.3s on a loaded 4-CPU box). wg-batch-parity: new, 5s alone on Linux.
+#   gaffer-plan, gaffer-lore, poll-overlap-run-state: new after that run, the integration
+#   branch's estimates (poll-overlap-run-state: Linux alone under shared load, 90s, two real
+#   Polls and a loop pass).
+#   From round 4 of the integration branch, its estimates: worker-command 100 (four tick.sh
+#   runs and the seam checks; Linux alone under shared load: 145s), sandbox-docker-delivery-seam
+#   70 (Linux alone: 35s, one real tick like branch-retention), land-ignored-file 100,
+#   git-hooks-host 45, onboard-boundary 20, sandbox-docker-git-isolation 3, sandbox-docker-delivery 1.
+321	land-tester-replay.test.sh
+297	merge-lane.test.sh
+242	land-tester-replay-proof.test.sh
+237	e2e-release-gate-tester-replay.test.sh
+237	waste-controls.test.sh
+187	e2e-agent-skill-routing.test.sh
+176	gate-integrity-e2e-retry.test.sh
+154	e2e-multi-repo-delivery.test.sh
 151	gate-integrity-e2e.test.sh
-150	gate-integrity-e2e-retry.test.sh
-149	waste-controls.test.sh
-209	e2e-agent-skill-routing.test.sh
-148	e2e-release-gate-merge-typecheck.test.sh
-128	memory-index-after-merge.test.sh
-139	e2e-release-gate-merge-combination.test.sh
-252	e2e-release-gate-tester-replay.test.sh
-86	delivery-lifecycle.test.sh
-74	e2e-release-gate-ci-required.test.sh
-75	e2e-release-gate-epic-verdict.test.sh
-124	branch-retention.test.sh
-140	review-wedge.test.sh
-73	afk-review-hold.test.sh
-103	security-review-lane.test.sh
-70	branch-switch-recovery.test.sh
-65	tick-deadline.test.sh
-86	branch-switch-fresh.test.sh
-60	usage-limit-tick.test.sh
-58	e2e-per-path-stack-routing.test.sh
-55	e2e-memory-routing.test.sh
-56	rework-final-trail.test.sh
-48	demo-isolation.test.sh
+148	e2e-per-path-stack-routing.test.sh
+141	review-wedge.test.sh
+133	afk-review-hold.test.sh
+131	e2e-release-gate-merge-combination.test.sh
+130	branch-retention.test.sh
+129	memory-index-after-merge.test.sh
+120	cleanup-ownership.test.sh
+119	usage-limit-tick.test.sh
+107	security-review-lane.test.sh
+100	land-ignored-file.test.sh
+100	worker-command.test.sh
+99	branch-switch-recovery.test.sh
+97	secondary-pr-landing.test.sh
+97	tick-deadline.test.sh
+94	branch-switch-fresh.test.sh
+90	poll-overlap-run-state.test.sh
+89	resume-abort.test.sh
+84	e2e-memory-routing.test.sh
+70	sandbox-docker-delivery-seam.test.sh
+65	rework-final-trail.test.sh
+64	e2e-release-gate-ci-required.test.sh
+64	setup-error-circuit.test.sh
+63	e2e-release-gate-epic-verdict.test.sh
+63	e2e-release-gate-merge-typecheck.test.sh
 63	rework-cost-live.test.sh
-40	dashboard-lifecycle.test.sh
-49	eval-replay.test.sh
-40	resume-abort.test.sh
-90	parallel-stop.test.sh
-56	self-op-ban-integration.test.sh
-31	setup-error-circuit.test.sh
-47	ci-gate-needs-pr.test.sh
-30	concurrency-bookkeeping.test.sh
-130	parallel-stop-live.test.sh
-30	usage-pause.test.sh
-33	maintenance-lane.test.sh
-26	dashboard-qr.test.sh
-26	cli-contract-regression.test.sh
-21	memory-audit-path.test.sh
-21	recall-feedback.test.sh
-21	stabilisation-integration.test.sh
-20	boundary-no-write-repo.test.sh
-26	context-golden-drift.test.sh
+61	landing-revocation.test.sh
+60	gaffer-plan.test.sh
+60	parallel-stop-live.test.sh
+59	self-op-ban-integration.test.sh
+55	auth-gate-delivery.test.sh
+55	concurrency-bookkeeping.test.sh
+49	cli-contract-regression.test.sh
+48	merge-ticket.test.mjs
+47	replay-recovery.test.mjs
+46	ci-gate-needs-pr.test.sh
+45	git-hooks-host.test.sh
+44	parallel-stop.test.sh
+43	status.test.sh
+43	tick-dead-assignments.test.sh
+42	eval-replay.test.sh
+42	resume-dry-run.test.sh
+40	delivery-lifecycle.test.sh
+40	stabilisation-integration.test.sh
+39	demo-isolation.test.sh
+38	dashboard-lifecycle.test.sh
+38	scan-claimable-first.test.sh
+37	dry-run-preview.test.sh
+36	maintenance-lane.test.sh
+35	boundary-no-write-repo.test.sh
+35	dashboard-qr.test.sh
+35	multi-repo-landing-preflight.test.sh
+34	settings-resource.test.sh
+33	dod-flaky-rerun.test.sh
+32	gate-integrity.test.sh
+31	feature-backlog-live.test.sh
+31	landing-revocation-window.test.sh
+31	settings-unreadable-gate.test.sh
+29	context-golden-drift.test.sh
 29	lifetime-budget-gate.test.sh
-17	pr-create-e2e.test.sh
-17	status.test.sh
-16	feature-backlog-live.test.sh
-16	settings-unreadable-gate.test.sh
-15	merge-ticket.test.mjs
-44	settings-resource.test.sh
-14	day-cap-no-work.test.sh
-13	gaffer-colour.test.sh
-9	mktemp-failure-safe.test.sh
-12	model-routing.test.sh
-20	nocommit-crash-bound.test.sh
-14	registry-probe.test.sh
-7	export-under-load.test.sh
-11	auto-merge.test.sh
-11	gaffer-cli-args.test.sh
-10	autonomy-containment.test.sh
-16	budget-admission.test.sh
-10	e2e-afk-autonomous-ship.test.sh
-10	tick-outer-timeout.test.sh
-12	agent-self-submit.test.sh
-9	backpressure.test.sh
-2	dashboard-deeplink.test.sh
-9	dod-gate.test.sh
-15	e2e-lifecycle.test.sh
-8	run-summary-wording.test.sh
-8	boundary-integration.test.mjs
-8	e2e-spec-to-done.test.sh
-8	onboard-analyze.test.mjs
-8	run-harness.test.sh
-8	safety-hook-credentials.test.mjs
-4	safety-hook-spelling.test.mjs
-10	safety-hook.test.mjs
-8	skills-install.test.sh
-8	tick-unrecoverable-claim-release.test.sh
-9	status-posture.test.sh
-7	ac-checks.test.sh
-17	bootstrap-hook-fail-closed.test.sh
-7	claude-auth.test.sh
-9	launchd-render.test.sh
-7	parallel-claim.test.sh
-9	pause-on-cap.test.sh
-7	runner-claim-at-selection.test.sh
-6	bootstrap-onboard-fail.test.sh
-8	e2e-bootstrap-to-done.test.sh
-6	greenfield.test.sh
+28	usage-limit-lanes.test.sh
+27	attempt-provenance.test.sh
+27	pr-create-e2e.test.sh
+26	tick-parked-result.test.sh
+24	auto-merge.test.sh
+23	budget-refused-delivery.test.sh
+23	model-routing.test.sh
+23	usage-pause.test.sh
+22	bootstrap-hook-fail-closed.test.sh
+22	nocommit-crash-bound.test.sh
+22	onboard-identity.test.sh
+22	orphan-recovery.test.sh
+22	recall-feedback.test.sh
+21	gaffer-colour.test.sh
+21	memory-audit-path.test.sh
+20	gaffer-lore.test.sh
+20	onboard-boundary.test.sh
+19	budget-admission.test.sh
+19	merge-one-at-a-time.test.sh
+18	onboard-analyze.test.mjs
+17	daemon-sigint.test.sh
+17	day-cap-no-work.test.sh
+17	direct-run-isolation.test.sh
+17	e2e-lifecycle.test.sh
+16	parallel-claim.test.sh
+16	registry-probe.test.sh
+15	agent-self-submit.test.sh
+15	e2e-afk-autonomous-ship.test.sh
+15	gaffer-cli-args.test.sh
+15	pr-landing-not-fast-forwarded.test.sh
+14	auth-gate.test.sh
+14	e2e-spec-to-done.test.sh
+14	run-harness.test.sh
+14	run-summary-wording.test.sh
+14	tick-unrecoverable-claim-release.test.sh
+13	autonomy-containment.test.sh
+13	dod-regate-typecheck.test.sh
+13	pause-on-cap.test.sh
+13	runner-claim-at-selection.test.sh
+13	sandbox-docker-mounts.test.sh
+12	ac-checks.test.sh
+12	backpressure.test.sh
+12	bootstrap-onboard-fail.test.sh
+12	export-under-load.test.sh
+12	land-tester-binding.test.sh
 12	loop-end-ping.test.sh
-6	parallel-lock.test.sh
-14	status-human-queue.test.sh
-5	next-step-hints.test.sh
-5	autonomy-flag-parsing.test.sh
-168	e2e-multi-repo-delivery.test.sh
-6	epic-feature-live.test.sh
-5	graduated-autonomy.test.sh
-6	human-claim-skip.test.sh
-5	killed-call-ledger.test.sh
-13	land-tester-binding.test.sh
-7	parallel-regression.test.sh
-5	tester-run.test.mjs
-5	bootstrap-park-visible.test.sh
-5	budget-remaining.test.sh
-4	dashboard-token-log.test.sh
-7	e2e-tick-live.test.sh
-4	eval-judge.test.sh
-6	file-cards-onboard.test.sh
-4	greenfield-ensure-deps.test.sh
-5	hygiene.test.sh
-4	land-conflict-reapproval.test.sh
-6	lite-mode.test.sh
-4	minimalism.test.sh
+12	safety-hook-credentials.test.mjs
+12	spend-cap-required.test.sh
+12	status-human-queue.test.sh
+11	boundary-integration.test.mjs
+10	graduated-autonomy.test.sh
+10	skills-hook-claims.test.mjs
+10	status-posture.test.sh
+10	tick-outer-timeout.test.sh
+9	ac-check-bytes.test.sh
+9	claude-auth.test.sh
+9	e2e-bootstrap-to-done.test.sh
+9	e2e-tick-live.test.sh
+9	launchd-render.test.sh
+9	mktemp-failure-safe.test.sh
+9	oneshot-usage-pause.test.sh
+9	parallel-regression.test.sh
+9	run-summary.test.sh
+9	safety-hook.test.mjs
+9	tester-run.test.mjs
+8	bootstrap-park-visible.test.sh
+8	dod-gate.test.sh
+8	dod-regate-integrity.test.sh
+8	human-claim-skip.test.sh
+8	skills-install.test.sh
+7	file-cards-onboard.test.sh
 7	no-pipe-grep-q.test.sh
-4	timeout-reap.test.sh
-3	afk-delivery-loop.test.sh
-3	call-budget-cap.test.sh
-4	crew-dispatch-db-pin.test.sh
-3	dod-install-deps.test.sh
-2	h4-pr-create.test.sh
-3	intake-gate.test.sh
-5	json-tool.test.sh
-3	no-unchecked-mktemp.test.sh
-6	run-summary.test.sh
-3	safety-hook-tilde.test.mjs
+7	parallel-lock.test.sh
+7	provenance-trailers.test.mjs
+6	epic-feature-live.test.sh
+6	eval-judge.test.sh
+6	greenfield.test.sh
+6	killed-call-ledger.test.sh
+6	paid-launch-admission.test.sh
+6	setup.test.sh
+6	tester-held.test.sh
+6	tester-replay-proof.test.mjs
+6	wg-batch-parity.test.sh
+5	afk-delivery-loop.test.sh
+5	autonomy-flag-parsing.test.sh
+5	budget-remaining.test.sh
+5	call-budget-cap.test.sh
+5	dod-install-deps.test.sh
+5	intake-gate.test.sh
+5	land-conflict-reapproval.test.sh
+5	lite-mode.test.sh
+5	minimalism.test.sh
+5	paid-launch-cap-required.test.sh
+5	safety-hook-redos.test.mjs
+5	safety-hook-tilde.test.mjs
+5	skills-mount.test.sh
 5	spec-freeze-seeds-lore.test.sh
-3	tester-held.test.sh
-3	ticket-intent-distill.test.sh
+5	ticket-intent-distill.test.sh
+4	crew-dispatch-db-pin.test.sh
+4	dashboard-token-log.test.sh
+4	greenfield-ensure-deps.test.sh
+4	hygiene.test.sh
+4	json-tool.test.sh
+4	next-step-hints.test.sh
+4	onboard-usage.test.sh
+4	sandbox-docker-containment.test.sh
+4	timeout-reap.test.sh
+3	autonomy-mode.test.sh
+3	card-refresh.test.sh
+3	ci-gate-gh-contract.test.sh
+3	crew-events-no-leak.test.sh
+3	docker-persistence.test.sh
+3	gaffer-dashboard-foreground.test.sh
+3	gaffer-run-daemon.test.sh
+3	h3-ci-gate.test.sh
+3	inert-policy-warning.test.sh
+3	no-unchecked-mktemp.test.sh
+3	per-repo-cap.test.sh
+3	python3-guard.test.sh
+3	release-scripts.test.mjs
+3	role-skill-mounts.test.sh
+3	safety-hook-search.test.mjs
+3	sandbox-docker-git-isolation.test.sh
+3	turn-caps.test.sh
 3	worker-mcp-bridge.test.sh
-9	onboard-usage.test.sh
-1	acceptance-lane.test.sh
-2	autonomy-mode.test.sh
-2	card-refresh.test.sh
-2	crew-events-no-leak.test.sh
-1	db-forensics.test.sh
+2	acceptance-lane.test.sh
+2	agent-home.test.mjs
+2	agent-settings-spawners.test.mjs
+2	clarify-int-cleanup.test.sh
+2	context-primer-golden.test.sh
+2	crash-cleanup.test.sh
+2	dashboard-deeplink.test.sh
+2	day-usd-cap.test.sh
+2	db-forensics.test.sh
 2	decompose.test.mjs
 2	dod-distill-golden.test.sh
-3	gaffer-dashboard-foreground.test.sh
-2	gaffer-run-daemon.test.sh
-3	h3-ci-gate.test.sh
-2	inert-policy-warning.test.sh
+2	dod-tally.test.sh
+2	eval-cli.test.sh
+2	feature-digest.test.mjs
+2	h4-pr-create.test.sh
+2	lane-turn-caps.test.sh
 2	mcp-bridge.test.mjs
 2	minimalism-golden.test.sh
-2	per-repo-cap.test.sh
 2	product-owner-run.test.mjs
+2	prompt-quarantine.test.sh
 2	recoverable-delivery.test.sh
-2	release-scripts.test.mjs
-2	safety-hook-redos.test.mjs
-2	safety-hook-search.test.mjs
+2	rework-env-reinstall.test.sh
+2	runner-hygiene-bugs.test.sh
+2	safety-hook-secret-precision.test.mjs
+2	select-skills.test.mjs
+2	skills-dedup.test.sh
 2	skills-wiring.test.sh
-2	turn-caps.test.sh
-2	usage-limit-detect.test.mjs
 1	agent-env-scrub.test.sh
 1	agent-env-shell.test.sh
 1	agent-env.test.sh
-1	agent-home.test.mjs
 1	agent-io.test.mjs
-1	agent-settings-spawners.test.mjs
 1	budget-guard.test.sh
 1	build-log.test.mjs
 1	check-engines.test.mjs
 1	ci-gate-golden.test.sh
 1	claim-token-isolation.test.sh
-1	clarify-int-cleanup.test.sh
 1	claude-settings.test.mjs
 1	config-reference.test.mjs
 1	context-dump.test.sh
 1	context-primer-cli.test.sh
 1	context-primer-data-dir.test.mjs
-1	context-primer-golden.test.sh
-1	crash-cleanup.test.sh
 1	dashboard-pid.test.sh
-1	day-usd-cap.test.sh
 1	db-vars-guard.test.sh
 1	decompose-spec.test.mjs
 1	dependabot-config.test.mjs
 1	distill-intent-golden.test.sh
+1	docker-context.test.mjs
+1	docs-drift.test.mjs
+1	docs-first-run.test.mjs
 1	docs-hints.test.sh
-2	dod-sandbox-wrap.test.sh
+1	dod-sandbox-wrap.test.sh
 1	egress-allowlist.test.mjs
 1	empty-delivery-transition.test.sh
 1	estimate-usage.test.mjs
-1	eval-cli.test.sh
-1	feature-digest.test.mjs
 1	hygiene-forbidden-parity.test.sh
 1	hygiene-noglob.test.sh
 1	inherit-repo.test.mjs
-2	land-pr-hold.test.sh
-1	lane-turn-caps.test.sh
+1	land-pr-hold.test.sh
+1	live-skill-use.test.sh
 1	mcp-render-golden.test.sh
 1	mcp-render-seam-review-clarify.test.sh
 1	memory-auto-approve-docs.test.mjs
@@ -241,94 +286,51 @@
 1	model-override-inheritance.test.sh
 1	model-routing.test.mjs
 1	model-tiering.test.sh
+1	no-grep-count-echo-zero.test.sh
 1	no-raw-nul-bytes.test.sh
 1	onboard-memory-rules-sync.test.mjs
 1	onboard-run.test.mjs
-12	orphan-recovery.test.sh
 1	park-no-false-page.test.sh
 1	prespawn-budget-gate.test.sh
 1	product-context-block.test.sh
 1	product-owner-repo-clean.test.sh
-1	prompt-quarantine.test.sh
 1	prompt-render-cli.test.sh
 1	prompt-render-golden.test.sh
-1	python3-guard.test.sh
-2	resource-caps.test.sh
+1	resource-caps.test.sh
 1	reviewer-worktree-isolation.test.sh
-2	rework-env-reinstall.test.sh
 1	rework-escalation.test.sh
-5	role-skill-mounts.test.sh
-1	runner-hygiene-bugs.test.sh
 1	safety-hook-front-door.test.mjs
 1	safety-hook-installs.test.mjs
-1	safety-hook-secret-precision.test.mjs
-1	sandbox-docker-containment.test.sh
-70	sandbox-docker-delivery-seam.test.sh
 1	sandbox-docker-delivery.test.sh
-9	sandbox-docker-mounts.test.sh
-3	sandbox-docker-git-isolation.test.sh
 1	security-md-planning-agents.test.mjs
-1	select-skills.test.mjs
 1	self-op-ban.test.sh
 1	settings-consumers.test.mjs
-1	setup.test.sh
 1	skill-add.test.mjs
 1	skill-telemetry.test.mjs
-2	skills-dedup.test.sh
-1	skills-hook-claims.test.mjs
 1	skills-lint.test.mjs
-1	skills-mount.test.sh
-2	spec-author.test.sh
+1	spec-author.test.sh
 1	strict-mode.test.sh
 1	strict-require.test.sh
-1	tick-dead-assignments.test.sh
 1	tick-prompt-wiring.test.sh
 1	ticket-budget-enforce.test.sh
 1	timeout-fail-closed.test.sh
 1	trust-main-worktree.test.sh
 1	trust-workspace.test.mjs
 1	usage-ledger.test.mjs
+1	usage-limit-detect.test.mjs
 1	worker-mjs-bridge.test.mjs
 1	worker-parse-result.test.mjs
 1	worker-provider-dispatch.test.mjs
 1	worker-provider-dispatch.test.sh
 1	worker-seam-routing.test.sh
 1	worktree-key-golden.test.sh
-39	resume-dry-run.test.sh
-20	paid-launch-admission.test.sh
-45	git-hooks-host.test.sh
-20	onboard-boundary.test.sh
-100	land-ignored-file.test.sh
-7	ac-check-bytes.test.sh
-24	attempt-provenance.test.sh
-90	auth-gate-delivery.test.sh
-15	auth-gate.test.sh
-40	budget-refused-delivery.test.sh
-3	ci-gate-gh-contract.test.sh
-45	daemon-sigint.test.sh
-5	docker-context.test.mjs
-10	docker-persistence.test.sh
-6	docs-drift.test.mjs
-6	docs-first-run.test.mjs
-32	dod-flaky-rerun.test.sh
-10	dod-regate-integrity.test.sh
-7	dod-regate-typecheck.test.sh
-8	dod-tally.test.sh
-33	dry-run-preview.test.sh
-34	gate-integrity.test.sh
-2	live-skill-use.test.sh
-13	merge-one-at-a-time.test.sh
-60	multi-repo-landing-preflight.test.sh
-1	no-grep-count-echo-zero.test.sh
-12	onboard-identity.test.sh
-10	oneshot-usage-pause.test.sh
-25	paid-launch-cap-required.test.sh
-17	pr-landing-not-fast-forwarded.test.sh
-4	provenance-trailers.test.mjs
-31	scan-claimable-first.test.sh
-12	spend-cap-required.test.sh
-6	tester-replay-proof.test.mjs
-25	tick-parked-result.test.sh
-40	usage-limit-lanes.test.sh
-60	gaffer-plan.test.sh
-20	gaffer-lore.test.sh
+10	bootstrap-sandbox-required.test.sh
+10	ci-matrix.test.sh
+10	gaffer-principal-identity.test.sh
+10	gaffer-wg-front-door.test.sh
+10	greenfield-proxy-ca.test.sh
+10	greenfield-remote-decision.test.sh
+10	repo-boundary-redact.test.mjs
+10	run-state-lib.test.sh
+4	safety-hook-spelling.test.mjs
+10	ui-suites-jobs.test.sh

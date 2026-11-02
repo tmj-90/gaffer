@@ -229,7 +229,7 @@ describe("repo scan", () => {
     expect(result.isGitRepo).toBe(true);
     expect(result.currentBranch).toBe("trunk");
     expect(result.stack).toBe("node");
-  });
+  }, 20_000);
 
   it("flags infra/ci risk signals", () => {
     const dir = tmp();

@@ -639,7 +639,7 @@ describe.skipIf(!existsSync(REAL_MEMORY_CLI))(
       } finally {
         await h.close();
       }
-    });
+    }, 20_000);
 
     it("GET …/history reads the real CLI's versions after an update", async () => {
       const dir = mkdtempSync(join(tmpdir(), "wg-mem-real-"));
@@ -668,6 +668,6 @@ describe.skipIf(!existsSync(REAL_MEMORY_CLI))(
       } finally {
         await h.close();
       }
-    });
+    }, 20_000);
   },
 );

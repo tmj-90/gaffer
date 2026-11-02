@@ -195,7 +195,7 @@ describe("eval judge fixture run: known-quality deliveries through the judge's p
       wg.recordEvalJudgment(t.id, record, system);
     }
     expect(ticketOf.size).toBe(4);
-  });
+  }, 20_000);
 
   it("aggregates the recorded rubrics: a copied helper is only borderline, a regression fails", () => {
     const v = (name: string) => wg.view(ticketOf.get(name)!.id).evalJudgment!;

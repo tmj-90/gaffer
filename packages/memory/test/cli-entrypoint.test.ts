@@ -80,7 +80,7 @@ describe.skipIf(!distBuilt)("CLI entrypoint — never silent at the process boun
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
-    });
+    }, 20_000);
 
     it(`${name}: stats --roi on a SEEDED db prints the consulted row`, () => {
       const dir = mkdtempSync(join(tmpdir(), "memory-entry-"));
@@ -94,7 +94,7 @@ describe.skipIf(!distBuilt)("CLI entrypoint — never silent at the process boun
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
-    });
+    }, 20_000);
 
     it(`${name}: plain stats on an EMPTY db still prints its header`, () => {
       const dir = mkdtempSync(join(tmpdir(), "memory-entry-"));
@@ -105,6 +105,6 @@ describe.skipIf(!distBuilt)("CLI entrypoint — never silent at the process boun
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
-    });
+    }, 20_000);
   }
 });

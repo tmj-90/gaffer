@@ -16,7 +16,17 @@
 # NODE_OPTIONS is left alone: proxied setups need it (--use-openssl-ca) to reach a
 # registry, and a test is free to set it.
 # The test's own pass/fail is its own suite's business; only isolation is judged.
+#
+# What a run proves: the property is per test (each picks its own private state
+# before it first sources factory.config.sh or opens a DB), so re-running a test is
+# the only proof for THAT test. By default the run re-runs the quick ones (QUICK,
+# about 15 s together: bash and node tests, lib/isolate.sh users and tests that set
+# their own GAFFER_DATA / DISPATCH_DB), and for the slow ones (SLOW: 6 tests, ~190 s
+# of re-runs) checks statically that each still picks private state. The full re-run
+# of every listed test is GAFFER_TEST_EXHAUSTIVE=1, which the nightly CI run sets
+# (.github/workflows/nightly.yml); the planted-checkout sanity probe runs either way.
 # Run: bash runner/test/direct-run-isolation.test.sh
+#      GAFFER_TEST_EXHAUSTIVE=1 bash runner/test/direct-run-isolation.test.sh
 # =====================================================================
 . "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
@@ -88,14 +98,28 @@ tripped=${#FAILURES[@]}; PASS=$saved_pass; FAILURES=()
   || fail "sanity: the planted checkout did not catch a leaky probe ($tripped of 2 tripped)"
 rm -f "$CO/runner/test/zz-leaky-probe.test.sh"
 
-# The tests the operator-state audits caught falling back to the checkout.
-for t in registry-probe.test.sh status.test.sh status-human-queue.test.sh skills-install.test.sh \
-         product-owner-run.test.mjs product-owner-repo-clean.test.sh merge-ticket.test.mjs \
-         agent-self-submit.test.sh decompose.test.mjs e2e-memory-routing.test.sh model-tiering.test.sh \
-         agent-env-scrub.test.sh agent-env-shell.test.sh db-vars-guard.test.sh hygiene.test.sh \
-         self-op-ban.test.sh; do
-  check "$t"
-done
+# The tests the operator-state audits caught falling back to the checkout, split by
+# their CI time (lib/shard-weights.tsv): QUICK ones take 1-8 s each, SLOW ones 12-84 s.
+QUICK=(agent-env-scrub.test.sh agent-env-shell.test.sh db-vars-guard.test.sh model-tiering.test.sh
+       product-owner-repo-clean.test.sh self-op-ban.test.sh decompose.test.mjs
+       product-owner-run.test.mjs hygiene.test.sh skills-install.test.sh)
+SLOW=(registry-probe.test.sh status.test.sh status-human-queue.test.sh merge-ticket.test.mjs
+      agent-self-submit.test.sh e2e-memory-routing.test.sh)
+for t in "${QUICK[@]}"; do check "$t"; done
+if [ "${GAFFER_TEST_EXHAUSTIVE:-0}" = 1 ]; then
+  for t in "${SLOW[@]}"; do check "$t"; done
+else
+  # Static stand-in for the re-run: the test still chooses its own operator state
+  # (lib/isolate.sh, or it exports / assigns its own GAFFER_DATA or DISPATCH_DB).
+  for t in "${SLOW[@]}"; do
+    if grep -qE 'gaffer_test_isolate|export (GAFFER_DATA|DISPATCH_DB)=|process\.env\.(GAFFER_DATA|DISPATCH_DB) = ' "$HERE/$t"; then
+      ok "$t picks its own operator state (static; re-run under GAFFER_TEST_EXHAUSTIVE=1)"
+    else
+      fail "$t no longer sets a private GAFFER_DATA / DISPATCH_DB or calls gaffer_test_isolate"
+    fi
+  done
+  echo "  (GAFFER_TEST_EXHAUSTIVE=1 re-runs the ${#SLOW[@]} slow tests too: ${SLOW[*]})"
+fi
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "direct-run-isolation: ALL $PASS checks passed"; exit 0; fi

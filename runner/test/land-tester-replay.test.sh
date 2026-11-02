@@ -40,15 +40,17 @@ ROOT="$(cd "$RUNNER_DIR/.." && pwd)"
 source "$HERE/lib/land-replay-world.sh"
 
 echo "== setup: nine deliveries, each green on its own =="
-T1="$(new_ticket "Label by display name [read-displayName]" "label() reads profile().displayName")"
-T2="$(new_ticket "Label by display name again [read-displayName]" "label() reads profile().displayName")"
-T3="$(new_ticket "Label by display name, PR [read-displayName]" "label() reads profile().displayName")"
-T4="$(new_ticket "Label by display name, PR now [read-displayName]" "label() reads profile().displayName")"
-T5="$(new_ticket "Note five [note-5]" "a note")"
-T6="$(new_ticket "Note six [note-6]" "a note")"
-T7="$(new_ticket "Note seven [note-7]" "a note" plain)"
-T8="$(new_ticket "Note eight [note-8]" "a note")"
-T9="$(new_ticket "Label by display name, tampered [read-displayName]" "label() reads profile().displayName")"
+NT=($(new_tickets \
+  "Label by display name [read-displayName]${TAB}label() reads profile().displayName" \
+  "Label by display name again [read-displayName]${TAB}label() reads profile().displayName" \
+  "Label by display name, PR [read-displayName]${TAB}label() reads profile().displayName" \
+  "Label by display name, PR now [read-displayName]${TAB}label() reads profile().displayName" \
+  "Note five [note-5]${TAB}a note" \
+  "Note six [note-6]${TAB}a note" \
+  "Note seven [note-7]${TAB}a note${TAB}plain" \
+  "Note eight [note-8]${TAB}a note" \
+  "Label by display name, tampered [read-displayName]${TAB}label() reads profile().displayName"))
+T1="${NT[0]:-}" T2="${NT[1]:-}" T3="${NT[2]:-}" T4="${NT[3]:-}" T5="${NT[4]:-}" T6="${NT[5]:-}" T7="${NT[6]:-}" T8="${NT[7]:-}" T9="${NT[8]:-}"
 ALL_T="$T1 $T2 $T3 $T4 $T5 $T6 $T7 $T8 $T9"
 for _ in $ALL_T; do AUTO_MERGE=0 run_tick >/dev/null; done
 all_review=1; for n in $ALL_T; do [ "$(st "$n")" = in_review ] || all_review=0; done

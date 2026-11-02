@@ -204,10 +204,9 @@ jobs:
 
   # The package test suites (Vitest) on the os × node cells `checks` does not cover
   # (it is ubuntu/22). The two macOS cells are deliberately NOT in this matrix:
-  # GitHub's free/pro plans run at most 5 macOS jobs at once and `runner` already has
-  # exactly 5 macOS shards, so two more macOS jobs here would queue behind them and
-  # add a whole job's length to the wall clock. Shard 1 of each macOS node version
-  # (which builds anyway) runs `pnpm -r test` instead; see `runner` below.
+  # GitHub's free/pro plans run at most 5 macOS jobs at once, so every macOS job is
+  # a `runner` shard. Shard 1 of macOS node 22 (every push) and of macOS node 24
+  # (nightly.yml), which build anyway, run `pnpm -r test` instead; see `runner` below.
   packages:
     name: packages / ${{ matrix.os }} / node ${{ matrix.node }}
     runs-on: ${{ matrix.os }}
@@ -266,138 +265,74 @@ jobs:
   # harness, runner/test/run.sh — the same command contributors run locally
   # (`pnpm test:runner`) — split into shards: GAFFER_RUN_SHARD=K/N runs shard K of
   # N, and the N shards of one os × node partition the test files exactly (no file
-  # in two, none in neither), balanced by the expected durations in
-  # runner/test/lib/shard-weights.tsv. The suite is CPU-bound, so more runners is
-  # the only real wall-clock cut; the 3-core macOS runners get more shards than the
-  # 4-core ubuntu ones:
-  #   ubuntu-latest  node 22: 2 shards   node 24: 3 shards
-  #   macos-latest   node 22: 3 shards   node 24: 3 shards
-  # 5 macOS jobs is GitHub's free/pro concurrent-macOS limit, so the sixth macOS
-  # shard queues behind the others for a few minutes; that beats the 20-minute
-  # timeout a 2-shard node 24 leg hit once the suite grew (run 41333739591). The
-  # macOS package tests are folded into shard 1 of each macOS node version
-  # (`packages: true`) rather than being `packages` jobs of their own. macOS node 22
-  # shard 1 also runs the OS-sensitive maintenance-lane e2e and gate replay
-  # (`e2e: true`) so they keep macOS coverage; on ubuntu they run in `checks`.
+  # in two, none in neither), balanced by the observed durations in
+  # runner/test/lib/shard-weights.tsv. The steps are in runner-shard.yml, which
+  # nightly.yml calls too. The suite is CPU-bound, so more runners is the only real
+  # wall-clock cut; the 3-core macOS runners run at -j 3, the 4-core ubuntu ones at -j 4.
+  #
+  # Which cells run when:
+  #   every push / PR  ubuntu node 22: 3 shards   ubuntu node 24: 3 shards
+  #                    macOS  node 22: 3 shards
+  #   nightly          macOS  node 24: 3 shards (nightly.yml, also on workflow_dispatch)
+  #
+  # Why macOS node 24 is nightly: on run 41338925244 (cdff24e) the whole run took
+  # 26.4 min of wall clock, and 755 s of that was the sixth macOS shard queued behind
+  # GitHub's free/pro limit of 5 concurrent macOS jobs before it could start. One run
+  # is 25,234 test-seconds across the four cells (macOS n22 6124, macOS n24 6417,
+  # ubuntu n22 6427, ubuntu n24 6266). With three macOS jobs per push nothing queues.
+  # Expected from that run's per-test times, the cheaper tests since (delivery-
+  # lifecycle, merge-typecheck, direct-run-isolation, the batched ticket setups) and
+  # the shard split below: each macOS node 22 job about 13 min (shard 1: 238 s of
+  # package tests, 46 s of e2e and ~465 s of runner tests; shards 2 and 3 ~740-755 s
+  # of runner tests), each ubuntu job about 9 min, so about 13 min of wall clock per
+  # push instead of 26.4. The node 24 x macOS cell still runs every night
+  # with the same strictness and the same evidence upload, so a regression only it
+  # catches is at most a day old.
+  #
+  # The macOS package tests are folded into shard 1 of each macOS node version
+  # (`packages: true`) rather than being `packages` jobs of their own. That shard
+  # starts with a head start in the split (`head_start`, weight-seconds, passed to
+  # shard.mjs as GAFFER_RUN_SHARD1_HEAD_START and identical for every shard of a
+  # cell, so the partition stays exact): about the package tests' and e2e's wall
+  # time × the runner's -j, then tuned on the run's per-test times (macOS node 22:
+  # 800 left shard 1 ~60 s longer than the others, 1100 evens them to within ~15 s;
+  # shard.mjs caps it at half a shard's mean load). A cell without the package
+  # tests gets 0. macOS node 22 shard 1 also
+  # runs the OS-sensitive maintenance-lane e2e and gate replay (`e2e: true`) so they
+  # keep macOS coverage; on ubuntu they run in `checks`.
   runner:
     name: runner / ${{ matrix.os }} / node ${{ matrix.node }} / ${{ matrix.shard }} of ${{ matrix.shards }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest, node: 22, shard: 1, shards: 2 }
-          - { os: ubuntu-latest, node: 22, shard: 2, shards: 2 }
-          - { os: ubuntu-latest, node: 24, shard: 1, shards: 3 }
-          - { os: ubuntu-latest, node: 24, shard: 2, shards: 3 }
-          - { os: ubuntu-latest, node: 24, shard: 3, shards: 3 }
-          - { os: macos-latest, node: 22, shard: 1, shards: 3, packages: true, e2e: true }
-          - { os: macos-latest, node: 22, shard: 2, shards: 3 }
-          - { os: macos-latest, node: 22, shard: 3, shards: 3 }
-          - { os: macos-latest, node: 24, shard: 1, shards: 3, packages: true }
-          - { os: macos-latest, node: 24, shard: 2, shards: 3 }
-          - { os: macos-latest, node: 24, shard: 3, shards: 3 }
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
-
-      - name: Setup Node ${{ matrix.node }}
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: ${{ matrix.node }}
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Verify better-sqlite3 native binding loads
-        # Before the folded-in package tests; see the same step in `checks`.
-        if: matrix.packages
-        shell: bash
-        run: |
-          for pkg in dispatch memory; do
-            ( cd "packages/$pkg" && node -e "const D=require('better-sqlite3');const db=new D(':memory:');db.exec('create table t(x)');db.prepare('insert into t values (1)').run();if(db.prepare('select count(*) c from t').get().c!==1)throw new Error('better-sqlite3 binding check failed');db.close();console.log('$pkg: better-sqlite3 native binding OK')" )
-          done
-
-      # The runner tests drive the built dispatch / crew / memory CLIs (strict mode
-      # fails a "not built" skip), and the package tests import each other's dist/.
-      - name: Build
-        run: pnpm -r build
-
-      # This os × node cell's package tests, folded in here (the 5-macOS-job limit).
-      - name: Test (packages)
-        if: matrix.packages
-        run: pnpm -r test
-
-      # run.sh runs this shard's tests in parallel (-j = CPU count) with each
-      # test's output buffered into its own ::group::, a per-test wall-clock cap
-      # (perl alarm — GNU `timeout` isn't on macOS: .sh 120s, .mjs 300s; the long
-      # e2e tests are queued FIRST with a 600s cap), and exits non-zero on ANY failure.
-      # The harness also: counts exit 77 / "SKIP…" lines as skips (listed in the step
-      # summary, never as passes); under GAFFER_TEST_STRICT=1 fails every skip whose
-      # reason is not a genuine platform gap (runner/test/lib/skip.sh allowlist —
-      # this job builds every package, so "not built" is a failure here); puts a
-      # `claude` tripwire on PATH so a test that would make a real model call fails;
-      # and fails if a test wrote into the checkout's .gaffer/.dispatch/.crew dirs.
-      # Its banner names the shard and how many of the files it runs.
-      - name: Runner tests (shard ${{ matrix.shard }} of ${{ matrix.shards }})
-        shell: bash
-        env:
-          GAFFER_TEST_STRICT: "1"
-          GAFFER_RUN_SHARD: ${{ matrix.shard }}/${{ matrix.shards }}
-          GAFFER_TEST_ARTIFACTS: ${{ runner.temp }}/gaffer-test-artifacts
-        run: bash runner/test/run.sh
-
-      # Forensics for a failing runner test that left evidence (e.g. the
-      # concurrency-bookkeeping D3 snapshot: a consistent copy of its dispatch DB +
-      # the per-delivery logs). Nothing is uploaded when a test saved nothing. The
-      # name carries os/node/shard: artifact names must be unique within a run.
-      - name: Upload runner-test evidence
-        if: failure()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: runner-test-evidence-${{ matrix.os }}-node${{ matrix.node }}-shard${{ matrix.shard }}of${{ matrix.shards }}
-          path: ${{ runner.temp }}/gaffer-test-artifacts
-          if-no-files-found: ignore
-          retention-days: 14
-
-      # The maintenance lane end to end and the golden gate replay — the same steps
-      # as in `checks` (see the comments there), here on macOS.
-      - name: Maintenance lane end to end (real runner, stub worker)
-        if: matrix.e2e
-        shell: bash
-        run: perl -e 'alarm shift; exec @ARGV' 400 bash runner/test/maintenance-e2e.sh
-
-      - name: Gate replay (golden fixtures)
-        if: matrix.e2e
-        shell: bash
-        run: |
-          bash runner/eval/replay.sh --out "$RUNNER_TEMP/gate-replay"
-          echo "::group::results.json"
-          cat "$RUNNER_TEMP/gate-replay/results.json"
-          echo "::endgroup::"
-
-      # See the same step in `checks`: no test may write the checkout's operator state.
-      - name: Tests left no operator state in the checkout
-        if: ${{ !cancelled() }}
-        shell: bash
-        run: |
-          bash .github/scripts/operator-state-guard.test.sh
-          bash .github/scripts/operator-state-guard.sh
+          - { os: ubuntu-latest, node: "22", shard: 1, shards: 3, head_start: 0 }
+          - { os: ubuntu-latest, node: "22", shard: 2, shards: 3, head_start: 0 }
+          - { os: ubuntu-latest, node: "22", shard: 3, shards: 3, head_start: 0 }
+          - { os: ubuntu-latest, node: "24", shard: 1, shards: 3, head_start: 0 }
+          - { os: ubuntu-latest, node: "24", shard: 2, shards: 3, head_start: 0 }
+          - { os: ubuntu-latest, node: "24", shard: 3, shards: 3, head_start: 0 }
+          # One row per line: runner/test/ci-matrix.test.sh reads them so.
+          # prettier-ignore
+          - { os: macos-latest, node: "22", shard: 1, shards: 3, head_start: 1100, packages: true, e2e: true }
+          - { os: macos-latest, node: "22", shard: 2, shards: 3, head_start: 1100 }
+          - { os: macos-latest, node: "22", shard: 3, shards: 3, head_start: 1100 }
+    uses: ./.github/workflows/runner-shard.yml
+    with:
+      os: ${{ matrix.os }}
+      node: ${{ matrix.node }}
+      shard: ${{ matrix.shard }}
+      shards: ${{ matrix.shards }}
+      head_start: ${{ matrix.head_start }}
+      packages: ${{ matrix.packages == true }}
+      e2e: ${{ matrix.e2e == true }}
 
   # The dashboard in a REAL browser: onboard → ticket → machine-checkable AC → poll
   # (live tick with a stub worker) → review/approve → merge → product-owner run → every
   # view rendered with zero console errors, zero failed requests and zero critical /
   # serious WCAG 2.1 A/AA violations (axe-core). Its own job so a browser download or
   # rendering hiccup never reds the unit matrix, and ubuntu-only (one browser is enough).
-  # playwright-core is pinned in scripts/ui-regression/run.sh; the Chromium installed
+  # playwright-core is pinned in scripts/ui-regression/pw-install.sh; the Chromium installed
   # here MUST be the same version or playwright-core refuses to launch it.
   ui-regression:
     name: Dashboard browser regression (Playwright + axe)
@@ -444,21 +379,27 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Measured locally (suite time, one shard per machine): ~4.9, ~3.8, ~4.1 and
-          # ~3.0 min. s15 leads its shard: its empty-Floor check needs a quiet factory.
+          # Grouped by the suite times of CI run 41338925244 (seconds): rework-blocked
+          # 91+42+82 = 215; tester-decisions-settings-readonly 76+42+28+6 = 152 plus
+          # s18-read-only (~46, estimated as half its local time) ≈ 198;
+          # squad-memory-map-specs-pause-sweep 65+38+15+6+53+32 = 209;
+          # plan-health-autonomy-layout 24+19+51+0 = 94 plus s19-layout (~86, estimated
+          # the same way) ≈ 180; own-server 166 plus four world setups (its job step
+          # was 185 s). Every suite under scripts/ui-regression/suites is in exactly one
+          # group (runner/test/ci-matrix.test.sh checks it). s15 leads its shard: its
+          # empty-Floor check needs a quiet factory. s6 runs after s5.
           - name: rework-blocked
             suites: s1-rework s2-wont-do s3-blocked
-          - name: tester-decisions-settings
-            suites: s5-tester s6-decisions s12-settings s13-principals
-          - name: squad-memory-map-specs-pause
-            suites: s15-squad-floor s9-memory s14-map s8-specs s10-pause
-          - name: plan-health-autonomy-sweep
-            suites: s7-plan s11-health s4-autonomy sweep s16-review-hold
+          - name: tester-decisions-settings-readonly
+            suites: s5-tester s6-decisions s12-settings s13-principals s18-read-only
+          - name: squad-memory-map-specs-pause-sweep
+            suites: s15-squad-floor s9-memory s14-map s8-specs s10-pause sweep
+          - name: plan-health-autonomy-layout
+            suites: s7-plan s11-health s4-autonomy s16-review-hold s19-layout
           # Each of these starts ITS OWN dashboard + data dir with the env it declares
           # (`server` in the suite: a fake gh on PATH, a GitHub remote, ingest on, a
           # greenfield root, merges that rewrite main) — run-suites.sh builds one world
-          # per suite. Measured locally (suite time, a loaded machine): ~3.7, ~1, ~1 and
-          # ~2.8 min, ~10 min for the shard with four world setups.
+          # per suite.
           - name: own-server
             suites: s4b-pr-mode s12b-idle-lanes s7b-greenfield s17-conflict s20-ticket-landing
     steps:

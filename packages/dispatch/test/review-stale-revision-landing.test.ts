@@ -128,7 +128,7 @@ describe("approve names the commits it saw (stale revision)", () => {
       ["repoB", git(b, "rev-parse", BRANCH)],
     ]);
     expect(diff.repos.every((r) => typeof r.repoId === "string")).toBe(true);
-  });
+  }, 20_000);
 
   it("refuses an approval of a commit the branch has moved past, approving nothing", () => {
     const a = makeRepo("a");
@@ -143,7 +143,7 @@ describe("approve names the commits it saw (stale revision)", () => {
     expect(JSON.stringify(e.details.repos)).toContain(moved);
     expect(d.view(t.id).ticket.status).toBe("in_review");
     expect(reviewPins(d, t.id)).toHaveLength(0);
-  });
+  }, 20_000);
 
   it("refuses an approval that leaves a write repo out", () => {
     const a = makeRepo("a");
@@ -159,7 +159,7 @@ describe("approve names the commits it saw (stale revision)", () => {
         .reason,
     ).toBe("stale_revision");
     expect(d.view(t.id).ticket.status).toBe("in_review");
-  });
+  }, 20_000);
 
   it("refuses an approval that names no commit when the entry point requires one", () => {
     const a = makeRepo("a");
@@ -170,7 +170,7 @@ describe("approve names the commits it saw (stale revision)", () => {
     expect(e.code).toBe("STATE_CONFLICT");
     expect(e.details.reason).toBe("revision_required");
     expect(d.view(t.id).ticket.status).toBe("in_review");
-  });
+  }, 20_000);
 
   it("an agent approval follows the same rule", () => {
     const a = makeRepo("a");
@@ -191,7 +191,7 @@ describe("approve names the commits it saw (stale revision)", () => {
       if (prev === undefined) delete process.env.DISPATCH_ALLOW_AGENT_APPROVE;
       else process.env.DISPATCH_ALLOW_AGENT_APPROVE = prev;
     }
-  });
+  }, 20_000);
 
   it("an approval of the shown heads records one pin per repo", () => {
     const a = makeRepo("a");
@@ -209,7 +209,7 @@ describe("approve names the commits it saw (stale revision)", () => {
       ["repoA", false],
       ["repoB", false],
     ]);
-  });
+  }, 20_000);
 });
 
 describe("a two-repo ticket is done only when both repos landed", () => {
@@ -229,7 +229,7 @@ describe("a two-repo ticket is done only when both repos landed", () => {
     expect(e.code).toBe("STATE_CONFLICT");
     expect(e.details.reason).toBe("not_landed");
     expect(d.view(t.id).ticket.status).toBe("ready_for_merge");
-  });
+  }, 20_000);
 
   it("after ONE repo lands the ticket is held, partly merged, in the human queue", () => {
     const { d, t, a } = approved();
@@ -249,7 +249,7 @@ describe("a two-repo ticket is done only when both repos landed", () => {
     expect(item?.label).toBe("Partly merged");
     expect(item?.reason).toContain("Landed in repoA");
     expect(item?.reason).toContain("repoB still on the delivery branch");
-  });
+  }, 20_000);
 
   it("once the second repo's approved commit is on its default branch, the ticket is done", () => {
     const { d, t, a, b } = approved();
@@ -259,7 +259,7 @@ describe("a two-repo ticket is done only when both repos landed", () => {
     const res = d.markMerged(t.id, system); // git-verified: recorded, then done
     expect(res.ticket.status).toBe("done");
     expect(d.view(t.id).landing.repos.every((r) => r.landed)).toBe(true);
-  });
+  }, 20_000);
 
   it("only an approved commit can be recorded as landed; agents cannot record one", () => {
     const { d, t, a } = approved();
@@ -270,7 +270,7 @@ describe("a two-repo ticket is done only when both repos landed", () => {
     expect(
       refusal(() => d.recordLanding(t.id, { repo: "repoA", commit: other }, agentActor)).code,
     ).toBe("ACTOR_NOT_PERMITTED");
-  });
+  }, 20_000);
 
   it("a local landing the default branch does not contain is refused, so markMerged stays shut", () => {
     const { d, t, a, b } = approved();
@@ -285,7 +285,7 @@ describe("a two-repo ticket is done only when both repos landed", () => {
     }
     expect(refusal(() => d.markMerged(t.id, system)).details.reason).toBe("partial_landing");
     expect(d.view(t.id).ticket.status).toBe("ready_for_merge");
-  });
+  }, 20_000);
 
   it("a PR landing needs a PR on record and the change on the default branch (cli-wg/F-01)", () => {
     const { d, t, b } = approved();
@@ -366,7 +366,7 @@ describe("an approval covers every write repo (external review #7)", () => {
       d.approveReview(t.id, human, { commits: both, requireCommits: true }).ticket.status,
     ).toBe("ready_for_merge");
     expect(new Set(reviewPins(d, t.id).map((p) => p.repo_id)).size).toBe(2);
-  });
+  }, 20_000);
 
   it("B's checkout is unreadable: the same refusal, naming the path", () => {
     const a = makeRepo("a");
@@ -386,7 +386,7 @@ describe("an approval covers every write repo (external review #7)", () => {
     } finally {
       execFileSync("mv", [moved, b]);
     }
-  });
+  }, 20_000);
 
   it("B has no checkout on this machine: refused, and the refusal says what a person can do", () => {
     const a = makeRepo("a");
@@ -425,7 +425,7 @@ describe("an approval covers every write repo (external review #7)", () => {
       }).ticket.status,
     ).toBe("ready_for_merge");
     expect(d.landingStatus(t.id).repos.map((r) => r.repo)).toEqual(["repoA"]);
-  });
+  }, 20_000);
 
   it("partly landed: the status says whether the merge lane finishes it or a person must", () => {
     const a = makeRepo("a");
@@ -443,7 +443,7 @@ describe("an approval covers every write repo (external review #7)", () => {
     const on = d.landingState(t.id, { ...process.env, AUTO_MERGE: "1" });
     expect(on?.kind).toBe("partly_landed");
     expect(on?.detail).toContain("merge lane lands the rest on its next tick");
-  });
+  }, 20_000);
 
   it("an approval that pinned only A (the old rule) never makes the ticket done", () => {
     const a = makeRepo("a");
@@ -475,5 +475,5 @@ describe("an approval covers every write repo (external review #7)", () => {
     expect(ls?.hold).toBe("unpinned_repo");
     expect(ls?.detail).toContain("Not approved: repoB.");
     expect(ls?.detail).toContain("Partly landed: repoA landed; repoB held.");
-  });
+  }, 20_000);
 });

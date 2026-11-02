@@ -14,8 +14,10 @@
 #       so it fails when the code fails it — as the delivery gate does;
 #   T4  GAFFER_DOD_TYPECHECK_CMD still overrides the detected script;
 #   T5  GAFFER_DOD_TYPECHECK=0 still disables the gate (zero gates → fail closed);
-#   T6  gateProposedMerge (bin/merge-ticket.mjs) passes the gated target as the base,
-#       and land.sh / the conflict re-gate pass one too (wiring).
+#   T6  gateProposedMerge (bin/merge-ticket.mjs, the Merge now path) passes the gated
+#       target as the base: a passing typecheck-only merge passes, a merge the
+#       auto-detected typecheck fails is red with that gate named; land.sh / the
+#       conflict re-gate pass a base too (wiring).
 # Run: bash runner/test/dod-regate-typecheck.test.sh
 # =====================================================================
 . "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
@@ -91,6 +93,18 @@ res="$(node --input-type=module -e '
   process.stdout.write(r.kind + "|" + r.evidence.replace(/\n/g, " "));' \
   placeholder "$RUNNER_DIR/bin/merge-ticket.mjs" "$R" "$(git -C "$R" rev-parse feat)" "$WORK/data/worktrees/mg" 2>&1)"
 case "$res" in pass*'"gate":"typecheck"'*'"status":"PASS"'*) ok "gateProposedMerge on a typecheck-only repo runs the typecheck gate and passes" ;; *) fail "gateProposedMerge: ${res:0:400}" ;; esac
+# The same merge gate on a combination the typecheck fails (the branch commits the file
+# the script refuses): red, never landed on a skipped gate. This is the check
+# e2e-release-gate-merge-typecheck's Merge now scenario repeated end to end.
+gitc -C "$R" checkout -q -b badfeat; : > "$R/bad"; gitc -C "$R" add -A; gitc -C "$R" commit -qm "badfeat"; gitc -C "$R" checkout -q main
+res="$(node --input-type=module -e '
+  const { gateProposedMerge } = await import(process.argv[2]);
+  const r = gateProposedMerge({ repoPath: process.argv[3], branch: "badfeat", pin: process.argv[4],
+    targetRef: "refs/heads/main", label: "repo", commands: { test: "", lint: "" },
+    gateDir: process.argv[5] });
+  process.stdout.write(r.kind + "|" + r.evidence.replace(/\n/g, " "));' \
+  placeholder "$RUNNER_DIR/bin/merge-ticket.mjs" "$R" "$(git -C "$R" rev-parse badfeat)" "$WORK/data/worktrees/mg-bad" 2>&1)"
+case "$res" in red*'"gate":"typecheck"'*'"status":"FAIL"'*) ok "gateProposedMerge on a merge the auto-detected typecheck fails is red, naming the typecheck gate" ;; *) fail "gateProposedMerge red case: ${res:0:400}" ;; esac
 grep -q 'dod-regate.sh" "$wt" "$label" "${tcmd:--}" "${lcmd:--}" "$_MG_TARGET"' "$RUNNER_DIR/lib/land.sh" \
   && ok "land.sh's merge gate passes the gated target head" || fail "land.sh does not pass the target head to dod-regate.sh"
 grep -q 'base: defaultTip' "$RUNNER_DIR/bin/merge-ticket.mjs" \

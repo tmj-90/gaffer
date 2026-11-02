@@ -1,0 +1,148 @@
+name: runner shard
+
+# One shard of runner/test/run.sh on one os x node cell, called by ci.yml (every push
+# and pull request: ubuntu node 22 and 24, macOS node 22) and by nightly.yml (macOS
+# node 24). The steps live here once, so a cell moved between the two workflows keeps
+# the same strictness, the same caps and the same evidence upload.
+on:
+  workflow_call:
+    inputs:
+      os:
+        type: string
+        required: true
+      node:
+        type: string
+        required: true
+      shard:
+        type: number
+        required: true
+      shards:
+        type: number
+        required: true
+      # Weight-seconds shard 1 of this cell starts with in the split (shard.mjs
+      # GAFFER_RUN_SHARD1_HEAD_START). Must be the same for every shard of a cell;
+      # 0 when shard 1 runs nothing extra (every caller passes it).
+      head_start:
+        type: number
+        default: 0
+      # This cell's package tests (`pnpm -r test`), folded into its shard 1: see the
+      # `packages` job in ci.yml for why macOS has no package job of its own.
+      packages:
+        type: boolean
+        default: false
+      # The OS-sensitive maintenance-lane e2e and gate replay (ci.yml `checks` runs
+      # them on ubuntu).
+      e2e:
+        type: boolean
+        default: false
+      # GAFFER_TEST_EXHAUSTIVE=1: the tests that have a cheap default form run their
+      # full form (direct-run-isolation re-runs every listed test). Nightly only.
+      exhaustive:
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  shard:
+    name: tests
+    runs-on: ${{ inputs.os }}
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+
+      - name: Setup Node ${{ inputs.node }}
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ inputs.node }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify better-sqlite3 native binding loads
+        # Before the folded-in package tests; see the same step in ci.yml `checks`.
+        if: inputs.packages
+        shell: bash
+        run: |
+          for pkg in dispatch memory; do
+            ( cd "packages/$pkg" && node -e "const D=require('better-sqlite3');const db=new D(':memory:');db.exec('create table t(x)');db.prepare('insert into t values (1)').run();if(db.prepare('select count(*) c from t').get().c!==1)throw new Error('better-sqlite3 binding check failed');db.close();console.log('$pkg: better-sqlite3 native binding OK')" )
+          done
+
+      # The runner tests drive the built dispatch / crew / memory CLIs (strict mode
+      # fails a "not built" skip), and the package tests import each other's dist/.
+      - name: Build
+        run: pnpm -r build
+
+      # This os x node cell's package tests, folded in here (the 5-macOS-job limit).
+      - name: Test (packages)
+        if: inputs.packages
+        run: pnpm -r test
+
+      # run.sh runs this shard's tests in parallel (-j = CPU count) with each
+      # test's output buffered into its own ::group::, a per-test wall-clock cap
+      # (perl alarm — GNU `timeout` isn't on macOS: .sh 120s, .mjs 300s; the long
+      # e2e tests are queued FIRST with a 600s cap), and exits non-zero on ANY failure.
+      # The harness also: counts exit 77 / "SKIP…" lines as skips (listed in the step
+      # summary, never as passes); under GAFFER_TEST_STRICT=1 fails every skip whose
+      # reason is not a genuine platform gap (runner/test/lib/skip.sh allowlist —
+      # this job builds every package, so "not built" is a failure here); puts a
+      # `claude` tripwire on PATH so a test that would make a real model call fails;
+      # and fails if a test wrote into the checkout's .gaffer/.dispatch/.crew dirs.
+      # Its banner names the shard and how many of the files it runs.
+      - name: Runner tests (shard ${{ inputs.shard }} of ${{ inputs.shards }})
+        shell: bash
+        env:
+          GAFFER_TEST_STRICT: "1"
+          GAFFER_RUN_SHARD: ${{ inputs.shard }}/${{ inputs.shards }}
+          GAFFER_RUN_SHARD1_HEAD_START: ${{ inputs.head_start }}
+          GAFFER_TEST_ARTIFACTS: ${{ runner.temp }}/gaffer-test-artifacts
+          GAFFER_TEST_EXHAUSTIVE: ${{ inputs.exhaustive && '1' || '0' }}
+          # Fixed caps in CI: a load-scaled LONG cap (up to 1200s) could outlast the
+          # job's timeout and hide the TIMED OUT line. run.sh scales them locally.
+          GAFFER_RUN_CAP_SCALE: "1"
+        run: bash runner/test/run.sh
+
+      # Forensics for a failing runner test that left evidence (e.g. the
+      # concurrency-bookkeeping D3 snapshot: a consistent copy of its dispatch DB +
+      # the per-delivery logs). Nothing is uploaded when a test saved nothing. The
+      # name carries os/node/shard: artifact names must be unique within a run.
+      - name: Upload runner-test evidence
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: runner-test-evidence-${{ inputs.os }}-node${{ inputs.node }}-shard${{ inputs.shard }}of${{ inputs.shards }}
+          path: ${{ runner.temp }}/gaffer-test-artifacts
+          if-no-files-found: ignore
+          retention-days: 14
+
+      # The maintenance lane end to end and the golden gate replay — the same steps
+      # as in ci.yml `checks` (see the comments there), here on macOS.
+      - name: Maintenance lane end to end (real runner, stub worker)
+        if: inputs.e2e
+        shell: bash
+        run: perl -e 'alarm shift; exec @ARGV' 400 bash runner/test/maintenance-e2e.sh
+
+      - name: Gate replay (golden fixtures)
+        if: inputs.e2e
+        shell: bash
+        run: |
+          bash runner/eval/replay.sh --out "$RUNNER_TEMP/gate-replay"
+          echo "::group::results.json"
+          cat "$RUNNER_TEMP/gate-replay/results.json"
+          echo "::endgroup::"
+
+      # See the same step in ci.yml `checks`: no test may write the checkout's operator state.
+      - name: Tests left no operator state in the checkout
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          bash .github/scripts/operator-state-guard.test.sh
+          bash .github/scripts/operator-state-guard.sh

@@ -45,9 +45,11 @@ test wrote into this checkout's `.gaffer` / `.dispatch` / `.crew` state. CI runs
 with `GAFFER_TEST_STRICT=1`, where a skip for anything but a genuine platform gap
 (docker, macOS `sandbox-exec`, …; see `runner/test/lib/skip.sh`) is a failure. CI
 also splits the suite over several runners with `--shard K/N`: the N shards together
-run every file exactly once, balanced by `runner/test/lib/shard-weights.tsv` (seconds
-per test file on a macOS runner; a file not listed counts 10s), so give a new test
-that takes much longer than that a line there. In a
+run every file exactly once, balanced by `runner/test/lib/shard-weights.tsv` (each
+test file's observed CI seconds, the slowest of the four cells; a file not listed
+counts 10s), so give a new test that takes much longer than that a line there.
+[docs/testing.md](docs/testing.md) covers the caps, the long tests, load scaling,
+the shards, the nightly cell and how to keep a new test fast. In a
 new test, skip with `gaffer_skip "<reason>"` from `runner/test/lib/skip.sh` (exit
 77) only for a missing prerequisite — a dispatch CLI call that errors or changes
 shape is a FAIL, never a skip.

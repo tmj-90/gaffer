@@ -401,7 +401,7 @@ describe("allow_test_changes over the CLI (wg ticket allow-test-changes)", () =>
     expect(evs).toHaveLength(2);
     expect(evs[0]!.actor_type).toBe("human");
     check.db.close();
-  });
+  }, 20_000);
 });
 
 describe("gate integrity: migration v28→v29", () => {

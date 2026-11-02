@@ -11,15 +11,33 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 const BIN = resolve(__dirname, "..", "dist", "api", "bin.js");
 const TOKEN = "shutdown-test-token-0123456789abcdef";
-// The fix package's port range (exploratory fix brief: 9431-9440).
-const PORT = Number(process.env["API_SHUTDOWN_TEST_PORT"] ?? 9431);
+// API_SHUTDOWN_TEST_PORT pins the port; otherwise the OS picks a free one, so two runs
+// of this file (two checkouts, two agents on one machine) never collide on a fixed port.
+let PORT = Number(process.env["API_SHUTDOWN_TEST_PORT"] ?? 0);
+
+function freePort(): Promise<number> {
+  return new Promise((ok, fail) => {
+    const s = createServer();
+    s.once("error", fail);
+    s.listen(0, "127.0.0.1", () => {
+      const addr = s.address();
+      const port = typeof addr === "object" && addr ? addr.port : 0;
+      s.close(() => (port ? ok(port) : fail(new Error("no free port"))));
+    });
+  });
+}
+
+beforeAll(async () => {
+  if (!PORT) PORT = await freePort();
+});
 
 let child: ChildProcess | undefined;
 let dir: string | undefined;

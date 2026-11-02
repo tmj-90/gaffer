@@ -38,8 +38,8 @@ ROOT="$(cd "$RUNNER_DIR/.." && pwd)"
 source "$HERE/lib/land-replay-world.sh"
 
 echo "== setup: two deliveries for the PR-mode landings, each green on its own =="
-T10="$(new_ticket "Note ten [note-10]" "a note")"
-T11="$(new_ticket "Note eleven [note-11]" "a note")"
+NT=($(new_tickets "Note ten [note-10]${TAB}a note" "Note eleven [note-11]${TAB}a note"))
+T10="${NT[0]:-}" T11="${NT[1]:-}"
 for _ in $T10 $T11; do AUTO_MERGE=0 run_tick >/dev/null; done
 [ "$(st "$T10")" = in_review ] && [ "$(st "$T11")" = in_review ] && ok "both delivered through their DoD gates (in_review)" || fail "statuses: #$T10=$(st "$T10") #$T11=$(st "$T11")"
 
@@ -114,10 +114,10 @@ R3="$WORK/repo3"; mkdir -p "$R3/src" "$R3/test" "$R3/scripts"
   printf 'node --test test/label.test.mjs\n' > scripts/test.sh
   gitc add -A && gitc commit -qm init )
 wg repo add -n repo3 --path "$R3" --branch main --stack node --test "sh scripts/test.sh" >/dev/null 2>&1
-T12="$(new_ticket_in repo2 "Label by display name, file-scoped [read-displayName]" "label() reads profile().displayName")"
-T13="$(new_ticket_in repo2 "Note thirteen [note-13]" "a note")"
-T14="$(new_ticket_in repo3 "Note fourteen [note-14]" "a note")"
-T15="$(new_ticket_in repo3 "Note fifteen [note-15]" "a note")"
+NT=($(new_tickets -r repo2 "Label by display name, file-scoped [read-displayName]${TAB}label() reads profile().displayName" "Note thirteen [note-13]${TAB}a note"))
+T12="${NT[0]:-}" T13="${NT[1]:-}"
+NT=($(new_tickets -r repo3 "Note fourteen [note-14]${TAB}a note" "Note fifteen [note-15]${TAB}a note"))
+T14="${NT[0]:-}" T15="${NT[1]:-}"
 for _ in 1 2 3 4; do AUTO_MERGE=0 run_tick >/dev/null; done
 for n in "$T12" "$T13" "$T14" "$T15"; do approve "$n"; done
 [ "$(st "$T12")" = in_testing ] && [ "$(st "$T14")" = in_testing ] && ok "I: the file-scoped repos' deliveries passed their gates and went to the tester" || fail "I: statuses T12=$(st "$T12") T13=$(st "$T13") T14=$(st "$T14") T15=$(st "$T15")"

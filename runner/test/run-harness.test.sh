@@ -22,11 +22,18 @@
 #       disjoint), the assignment is identical across invocations and between the
 #       flag and the env var, a K/N out of range (or malformed) is a usage error, a
 #       sharded run runs only its shard and names it in the banner, and an outer
-#       GAFFER_RUN_SHARD (a CI shard job running this file) never leaks into a test
-#   H10 caps vs weights: every real test whose lib/shard-weights.tsv weight is at
-#       least two thirds of the .sh/.mjs cap matches LONG_RE (so it gets CAP_LONG,
-#       not a cap a loaded CI runner kills it under), and every LONG_RE test has a
-#       weight line (an unlisted one counts 10s and unbalances the shards)
+#       GAFFER_RUN_SHARD (a CI shard job running this file) never leaks into a test;
+#       GAFFER_RUN_SHARD1_HEAD_START moves files between shards but every value still
+#       partitions exactly, and a negative or non-numeric one is a usage error
+#   H11 load-scaled caps: with no GAFFER_RUN_CAP_SCALE the caps scale by the
+#       1-minute load / CPU count at the start, clamped to 1..2 (a quiet machine
+#       keeps them, 1.5x the CPUs gives 1.5x, 3x gives 2x, an unreadable load 1x);
+#       GAFFER_RUN_CAP_SCALE fixes the factor (clamped) and a bad one is a usage error
+#   H10 caps vs observed times: lib/shard-weights.tsv holds each test's OBSERVED CI
+#       time (the slowest cell of the run its header names), and every real test whose
+#       time there is at least two thirds of the .sh/.mjs cap matches LONG_RE (so it
+#       gets CAP_LONG, not a cap a loaded CI runner kills it under), and every LONG_RE
+#       test has a weight line (an unlisted one counts 10s and unbalances the shards)
 # Run: bash runner/test/run-harness.test.sh
 # =====================================================================
 . "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
@@ -47,7 +54,8 @@ T="$WORK/t"; mkdir -p "$T" "$WORK/root/.gaffer"
 mk() { printf '#!/usr/bin/env bash\n%s\n' "$2" > "$T/$1"; }
 # A nested run must not write into the outer CI job's step summary or annotations.
 # Nor be sharded by the outer CI job's GAFFER_RUN_SHARD.
-harness() { env -u GITHUB_STEP_SUMMARY -u GITHUB_ACTIONS -u GAFFER_TEST_STRICT -u GAFFER_RUN_SHARD GAFFER_RUN_STATE_ROOT="$WORK/root" bash "$HERE/run.sh" -j 2 "$@" >"$WORK/out" 2>&1; }
+# Caps unscaled unless a check asks (H11): the reported cap must not depend on the load.
+harness() { env -u GITHUB_STEP_SUMMARY -u GITHUB_ACTIONS -u GAFFER_TEST_STRICT -u GAFFER_RUN_SHARD GAFFER_RUN_STATE_ROOT="$WORK/root" GAFFER_RUN_CAP_SCALE="${GAFFER_RUN_CAP_SCALE:-1}" bash "$HERE/run.sh" -j 2 "$@" >"$WORK/out" 2>&1; }
 
 echo "== H1: a failure is not hidden by a later pass =="
 mk a-fail.test.sh 'echo "FAIL: deliberate"; exit 1'
@@ -118,6 +126,33 @@ mk hang.test.sh 'sleep 30'
 GAFFER_RUN_CAP_SH=1 harness "$T/hang.test.sh"; rc=$?
 [ "$rc" -ne 0 ] && grep -q 'hang.test.sh — TIMED OUT (1s)' "$WORK/out" && ok "H7 a hung test is killed and reported TIMED OUT" || fail "H7 cap (rc $rc): $(tail -5 "$WORK/out")"
 
+echo "== H11: caps scale with the load the run starts under =="
+NCPU="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1)"
+mk nap.test.sh 'sleep 1.4'
+h11() { # <loadavg> -> runs nap (1.4s) and hang (30s) with a 1s base cap
+  env -u GITHUB_STEP_SUMMARY -u GITHUB_ACTIONS -u GAFFER_TEST_STRICT -u GAFFER_RUN_SHARD -u GAFFER_RUN_CAP_SCALE \
+    GAFFER_RUN_STATE_ROOT="$WORK/root" GAFFER_RUN_LOADAVG="$1" GAFFER_RUN_CAP_SH=1 \
+    bash "$HERE/run.sh" -j 2 "$T/nap.test.sh" "$T/hang.test.sh" >"$WORK/out" 2>&1
+}
+h11 "$((NCPU * 3)).0"
+grep -q 'caps x2.00 (load' "$WORK/out" && grep -q 'hang.test.sh — TIMED OUT (2s)' "$WORK/out" && ! grep -q 'nap.test.sh — TIMED OUT' "$WORK/out" \
+  && ok "H11 load 3x the CPUs: caps x2 (a 1s cap becomes 2s: a 1.4s test passes, a hang is still killed)" \
+  || fail "H11 load x3: $(grep -E 'run.sh:|TIMED|nap' "$WORK/out" | tr '\n' ' ')"
+h11 "$(awk -v c="$NCPU" 'BEGIN { printf "%.2f", c * 1.5 }')"
+grep -q 'caps x1.50 (load' "$WORK/out" && ok "H11 load 1.5x the CPUs: caps x1.5" || fail "H11 load x1.5: $(grep 'run.sh:' "$WORK/out")"
+h11 0.25
+grep -q 'caps x1.00 (load 0.25' "$WORK/out" && grep -q 'nap.test.sh — TIMED OUT (1s)' "$WORK/out" \
+  && ok "H11 a quiet machine keeps the caps as set" || fail "H11 quiet: $(grep -E 'run.sh:|TIMED' "$WORK/out" | tr '\n' ' ')"
+h11 not-a-load
+grep -q 'caps x1.00 (load unknown' "$WORK/out" && ok "H11 an unreadable load counts as 1x" || fail "H11 unreadable load: $(grep 'run.sh:' "$WORK/out")"
+GAFFER_RUN_CAP_SCALE=1.5 GAFFER_RUN_CAP_SH=2 harness "$T/hang.test.sh"
+grep -q 'caps x1.50 (GAFFER_RUN_CAP_SCALE' "$WORK/out" && grep -q 'hang.test.sh — TIMED OUT (3s)' "$WORK/out" \
+  && ok "H11 GAFFER_RUN_CAP_SCALE=1.5 fixes the factor (2s cap -> 3s)" || fail "H11 fixed scale: $(grep -E 'run.sh:|TIMED' "$WORK/out" | tr '\n' ' ')"
+GAFFER_RUN_CAP_SCALE=7 harness "$T/z-pass.test.sh"
+grep -q 'caps x2.00' "$WORK/out" && ok "H11 a scale above 2 is clamped to 2" || fail "H11 clamp: $(grep 'run.sh:' "$WORK/out")"
+GAFFER_RUN_CAP_SCALE=fast harness "$T/z-pass.test.sh"; rc=$?
+[ "$rc" -eq 2 ] && grep -q 'GAFFER_RUN_CAP_SCALE must be a number' "$WORK/out" && ok "H11 a non-numeric GAFFER_RUN_CAP_SCALE is a usage error" || fail "H11 bad scale (rc $rc)"
+
 echo "== H8: argument parsing =="
 harness -- -j 1 "$T/z-pass.test.sh"; rc=$?
 [ "$rc" -eq 0 ] && grep -q '1 passed, 0 skipped, 0 failed' "$WORK/out" && grep -q -- '-j 1' "$WORK/out" \
@@ -175,6 +210,23 @@ for bad in 0/3 4/3 3/0 1/ x/2 2 -1/2; do
 done
 env GAFFER_RUN_SHARD=5/4 bash "$HERE/run.sh" --list >"$WORK/out" 2>&1; rc=$?
 [ "$rc" -eq 2 ] && ok "H9 GAFFER_RUN_SHARD=5/4 is a usage error too" || fail "H9 env 5/4 (rc $rc)"
+# The per-cell head start (ci.yml sets it on every shard of a cell): any value is still
+# an exact partition, it does move files, and a bad value never silently runs a split.
+for hs in 0 800; do
+  : >"$WORK/union"
+  for k in 1 2 3; do GAFFER_RUN_SHARD1_HEAD_START=$hs lst --shard "$k/3" >>"$WORK/union"; done
+  LC_ALL=C sort "$WORK/union" >"$WORK/union.sorted"
+  cmp -s "$WORK/union.sorted" "$WORK/all" && [ -z "$(LC_ALL=C uniq -d "$WORK/union.sorted")" ] \
+    && ok "H9 GAFFER_RUN_SHARD1_HEAD_START=$hs: the 3 shards still partition the set exactly" \
+    || fail "H9 head start $hs breaks the partition"
+done
+GAFFER_RUN_SHARD1_HEAD_START=0 lst --shard 1/3 >"$WORK/h0"; GAFFER_RUN_SHARD1_HEAD_START=800 lst --shard 1/3 >"$WORK/h800"
+[ "$(wc -l <"$WORK/h800")" -lt "$(wc -l <"$WORK/h0")" ] && ok "H9 a bigger head start gives shard 1 fewer files" || fail "H9 head start had no effect on shard 1"
+for bad in -5 x; do
+  GAFFER_RUN_SHARD1_HEAD_START=$bad bash "$HERE/run.sh" --shard 1/3 --list >"$WORK/out" 2>&1; rc=$?
+  [ "$rc" -eq 2 ] && grep -q 'GAFFER_RUN_SHARD1_HEAD_START must be' "$WORK/out" \
+    && ok "H9 GAFFER_RUN_SHARD1_HEAD_START=$bad is a usage error" || fail "H9 head start $bad (rc $rc): $(tail -2 "$WORK/out")"
+done
 # A real sharded run over fixtures: it runs exactly its shard's files and says so.
 for x in p1 p2 p3 p4 p5; do mk "shard-$x.test.sh" 'echo ok; exit 0'; done
 SF=("$T"/shard-p*.test.sh)
@@ -191,10 +243,14 @@ env -u GITHUB_STEP_SUMMARY -u GITHUB_ACTIONS -u GAFFER_TEST_STRICT GAFFER_RUN_ST
 [ "$rc" -eq 0 ] && ok "H9 a test never inherits the run's GAFFER_RUN_SHARD" || fail "H9 GAFFER_RUN_SHARD leaked into a test: $(grep FAIL "$WORK/out" | head -1)"
 
 echo "== H10: long tests get the long cap and a shard weight =="
-# The values run.sh actually uses: its LONG_RE and default caps, read from its source.
+# The values run.sh actually uses: its LONG_RE and default caps (before any load
+# scaling: the rule is against the cap a quiet machine gives), read from its source.
 unset GAFFER_RUN_CAP_SH GAFFER_RUN_CAP_MJS GAFFER_RUN_CAP_LONG
-eval "$(grep -E '^(LONG_RE|CAP_SH)=' "$HERE/run.sh")"
+eval "$(grep -E '^(LONG_RE=|CAP_SH="[$][{]GAFFER_RUN_CAP_SH:-)' "$HERE/run.sh")"
 W="$HERE/lib/shard-weights.tsv"
+# The weights are measurements, not guesses: the header names the CI run they came from.
+grep -qE '^# Source: CI run [0-9]+' "$W" && ok "H10 shard-weights.tsv names the CI run its times were observed on" \
+  || fail "H10 shard-weights.tsv has no '# Source: CI run <id>' line"
 short_heavy=""; long_unweighted=""
 while IFS= read -r f; do
   b="$(basename "$f")"
@@ -210,7 +266,7 @@ done <"$WORK/all"
   || fail "H10 add to LONG_RE in run.sh:$short_heavy"
 [ -z "$long_unweighted" ] && ok "H10 every LONG_RE test has a line in lib/shard-weights.tsv" \
   || fail "H10 LONG_RE tests with no shard weight:$long_unweighted"
-for t in memory-index-after-merge.test.sh rework-cost-live.test.sh; do
+for t in memory-index-after-merge.test.sh rework-cost-live.test.sh usage-limit-tick.test.sh tick-deadline.test.sh resume-abort.test.sh; do
   [[ "$t" =~ $LONG_RE ]] && ok "H10 $t (several live ticks) gets the long cap" || fail "H10 $t is not in LONG_RE"
 done
 

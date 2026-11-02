@@ -466,7 +466,9 @@ export const RepoImpact = z
     facts: z.array(ImpactFact),
     none: z
       .array(str)
-      .describe("Surfaces scanned with nothing found (`migration or DDL`, `config`, …)."),
+      .describe(
+        "Surfaces scanned with nothing found (`migration or DDL`, `config`, …). Empty when the diff was cut at its size cap: a cut diff proves no absence.",
+      ),
     not_analysed: z.array(str).describe("What the scan does not cover, said plainly."),
   } satisfies Record<keyof RepoImpactShape, ZodType>)
   .strict()

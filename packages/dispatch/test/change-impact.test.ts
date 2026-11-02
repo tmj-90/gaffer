@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Dispatch } from "../src/core.js";
 import type { Actor } from "../src/domain/types.js";
 import { computeRepoImpact, type ImpactFact } from "../src/services/changeImpact.js";
+import { defaultGitRunner } from "../src/services/diffService.js";
 import { observedRisk } from "../src/services/observedRisk.js";
 
 const human: Actor = { type: "human", id: "tom" };
@@ -177,7 +178,7 @@ describe("CHANGE IMPACT from the diff's lines (no git)", () => {
   it("a plain source change finds no migration, config, env or dependency change and says so", () => {
     const quiet = computeRepoImpact({
       diff: fileDiff("src/a.ts", ["+const a = 2;", "-const a = 1;"]),
-      truncated: true,
+      truncated: false,
       headSha: null,
     });
     expect(quiet.facts).toEqual([]);
@@ -187,9 +188,54 @@ describe("CHANGE IMPACT from the diff's lines (no git)", () => {
       "environment variable",
       "dependency",
     ]);
-    expect(quiet.not_analysed).toContain(
-      "The diff was cut at its size cap: files past the cut are not analysed.",
-    );
+    // A cut diff says no such thing (see "what it must not claim").
+  });
+});
+
+describe("CHANGE IMPACT: what it must not claim", () => {
+  it("a cut diff proves no absence: nothing is said as 'no change found'", () => {
+    const r = computeRepoImpact({
+      diff: fileDiff("src/a.ts", ["+export const a = 1;"]),
+      truncated: true,
+      headSha: null,
+    });
+    expect(r.none).toEqual([]);
+    expect(r.not_analysed.join(" ")).toMatch(/cut at its size cap/);
+  });
+
+  it("a lockfile alone is not 'no dependency change'", () => {
+    const r = computeRepoImpact({
+      diff: fileDiff("pnpm-lock.yaml", ["+lockfileVersion: '9.1'", "-lockfileVersion: '9.0'"]),
+      truncated: false,
+      headSha: null,
+    });
+    expect(r.none).not.toContain("dependency");
+    expect(r.not_analysed.join(" ")).toMatch(/Lockfile entries: not analysed/);
+  });
+
+  it("test fixtures and migration modules are not the change's env reads, DDL or exports", () => {
+    const r = computeRepoImpact({
+      diff: [
+        fileDiff("test/invoice.test.ts", [
+          "+  process.env.FIXTURE_KEY = 'x';",
+          "+  CREATE TABLE fixture (id INT);",
+          "+export const helper = 1;",
+        ]),
+        fileDiff(
+          "app/migrations/0003_auto.py",
+          ["+class Migration(migrations.Migration):", "+    pass"],
+          { added: true },
+        ),
+      ].join("\n"),
+      truncated: false,
+      headSha: null,
+    });
+    expect(kinds(r.facts, "env_added")).toEqual([]);
+    expect(kinds(r.facts, "ddl")).toEqual([]);
+    expect(kinds(r.facts, "export_added")).toEqual([]);
+    expect(kinds(r.facts, "migration")).toEqual([
+      "Migration file added: app/migrations/0003_auto.py",
+    ]);
   });
 });
 
@@ -273,6 +319,36 @@ describe("CHANGE IMPACT against a real repo (the tree at the head)", () => {
     expect(
       rd.impact!.facts.find((f) => f.text === "export function clearDone added"),
     ).toMatchObject({ path: "src/tasks.ts", line: 2 });
+  });
+
+  it("a test past a capped diff's cut still counts: the change's paths come from numstat", () => {
+    const repo = deliveredRepo();
+    const head = git("rev-parse", "feat/x");
+    // The diff as capped: only src/tasks.ts made it in; its test is past the cut.
+    const cut = git("diff", "main...feat/x", "--", "src/tasks.ts");
+    const base = {
+      diff: cut,
+      truncated: true,
+      headSha: head,
+      runGit: defaultGitRunner,
+      localPath: repo,
+    };
+    const untested = (r: ReturnType<typeof computeRepoImpact>) =>
+      r.facts.filter((f) => f.kind === "untested_module").map((f) => f.path);
+    expect(untested(computeRepoImpact(base))).toEqual(["src/tasks.ts"]);
+    expect(
+      untested(computeRepoImpact({ ...base, paths: ["src/tasks.ts", "test/tasks.test.ts"] })),
+    ).toEqual([]);
+  });
+
+  it("the repo's own grep config does not change the reading", () => {
+    const id = ticketOn(deliveredRepo());
+    const before = wg.ticketDiff(id, { impact: true }).repos[0]!.impact!.facts;
+    git("config", "grep.lineNumber", "true");
+    git("config", "grep.column", "true");
+    git("config", "color.grep", "always");
+    const after = wg.ticketDiff(id, { impact: true }).repos[0]!.impact!.facts;
+    expect(after).toEqual(before);
   });
 
   it("is opt-in and advisory: the plain diff carries no impact and the risk read is unchanged", () => {

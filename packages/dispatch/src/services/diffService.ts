@@ -557,6 +557,7 @@ export function computeTicketDiff(
               runGit,
               localPath: t.localPath,
               downstream: downstreamOf(deps, t.repoId),
+              paths,
             }),
           }
         : {}),

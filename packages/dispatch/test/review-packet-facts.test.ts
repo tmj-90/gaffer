@@ -107,6 +107,7 @@ describe("REVIEW FACTS: intent, same candidate, CI, run links, backing", () => {
         repo: "svc",
         gated_sha: FAKE_HEAD,
         gated_by: "runner",
+        gated_earlier: false,
         diff_head: FAKE_HEAD,
         head_unavailable: null,
         tester_tested: null,
@@ -122,7 +123,13 @@ describe("REVIEW FACTS: intent, same candidate, CI, run links, backing", () => {
   it("the runner gated another commit: not the same candidate, said as not backed", () => {
     const { id } = deliver({ commit: OTHER });
     const p = packetOf(id);
-    expect(p.candidate[0]).toMatchObject({ gated_sha: OTHER, diff_head: FAKE_HEAD, same: false });
+    expect(p.candidate[0]).toMatchObject({
+      gated_sha: OTHER,
+      diff_head: FAKE_HEAD,
+      same: false,
+      // Recorded in this attempt (a conflict resolution moves the head without a new claim).
+      gated_earlier: false,
+    });
     const row = p.backing.find((b) => b.cell === "candidate")!;
     expect(row.holds).toBe(false);
     expect(row.fact).toContain(`The gates ran on ${OTHER.slice(0, 12)}`);
@@ -147,6 +154,50 @@ describe("REVIEW FACTS: intent, same candidate, CI, run links, backing", () => {
     const p = packetOf(d0.id);
     expect(p.candidate[0]).toMatchObject({ gated_sha: FAKE_HEAD, gated_by: "agent", same: false });
     expect(p.backing.find((b) => b.cell === "candidate")!.fact).toMatch(/recorded by the agent/);
+  });
+
+  it("a commit a person recorded is not the runner's gated commit either", () => {
+    const d0 = deliver({ commit: FAKE_HEAD, by: human });
+    const p = packetOf(d0.id);
+    expect(p.candidate[0]).toMatchObject({ gated_sha: FAKE_HEAD, gated_by: "human", same: false });
+    expect(p.backing.find((b) => b.cell === "candidate")!.fact).toMatch(/recorded by a person/);
+  });
+
+  it("a rework in review before the runner records its commit: an earlier attempt's, not Differs", () => {
+    // Round 1: the runner gated OTHER. The human sends it back; round 2 is claimed and
+    // submitted, and the runner's record for it (right after the submit) is not in yet.
+    const d0 = deliver({ commit: OTHER });
+    clock.advanceSeconds(30);
+    d.rejectReview(d0.id, "refining", human, "Docs missing");
+    clock.advanceSeconds(5);
+    if (d.resolveTicket(d0.id).status !== "ready") d.markReady(d0.id, human);
+    const agent = d.registerAgent({ display_name: "Bot 2", max_risk: "critical" }, human);
+    const agentActor: Actor = { type: "agent", id: agent.id };
+    clock.advanceSeconds(5);
+    const claim = d.claimNextTicket({ agentId: agent.id, ttlSeconds: 600 }, agentActor)!;
+    clock.advanceSeconds(60);
+    d.submitForReview(
+      { claimToken: claim.claimToken, ticket_id: d0.id, reason: "again" },
+      agentActor,
+    );
+    let p = packetOf(d0.id);
+    expect(p.candidate[0]).toMatchObject({
+      gated_sha: OTHER,
+      diff_head: FAKE_HEAD,
+      gated_earlier: true,
+      same: false,
+    });
+    const row = p.backing.find((b) => b.cell === "candidate")!;
+    expect(row.holds).toBe(false);
+    expect(row.fact).toMatch(/This attempt's gated commit is not recorded yet/);
+    // The runner's record for this attempt lands: one candidate.
+    clock.advanceSeconds(2);
+    d.recordRepoDelivery(
+      { ticket_id: d0.id, repo_id: d0.repoId, commit_sha: FAKE_HEAD, status: "review_ready" },
+      runner,
+    );
+    p = packetOf(d0.id);
+    expect(p.candidate[0]).toMatchObject({ gated_earlier: false, same: true });
   });
 
   it("ci: no CI on record is null; a result for the candidate commit is read with its time", () => {

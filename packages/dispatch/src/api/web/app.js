@@ -17774,7 +17774,13 @@ function sameSha(a, b) {
 function candidateCell(p) {
   const cands = p.candidate || [];
   const allSame = cands.every((c) => c.same);
-  const unknown = cands.some((c) => !c.diff_head || !c.gated_sha);
+  // Only the runner's own record says the gates ran on a commit: an agent's or a person's
+  // record of the head is not shown to be one candidate, but it does not differ either.
+  const notRunner = (c) => c.gated_by === "agent" || c.gated_by === "human";
+  const unknown = cands.some((c) => !c.diff_head || !c.gated_sha || notRunner(c));
+  // A rework entered review a moment before the runner recorded its gated commit (or that
+  // record failed): the row still holds an earlier attempt's commit.
+  const earlier = !unknown && cands.some((c) => c.gated_earlier);
   const multi = cands.length > 1;
   const sub = el("p", { class: "vd-sub vd-cand-sub" });
   const rows = el(
@@ -17786,7 +17792,13 @@ function candidateCell(p) {
         el("span", { class: "vd-cand-row" }, [
           "Gates ran on ",
           shaOr(c.gated_sha, "no recorded commit"),
-          c.gated_by === "agent" ? " (the agent's record)" : "",
+          c.gated_by === "agent"
+            ? " (the agent's record)"
+            : c.gated_by === "human"
+              ? " (a person's record)"
+              : c.gated_earlier
+                ? " (an earlier attempt's record)"
+                : "",
         ]),
         el("span", { class: "vd-cand-row vd-cand-shown" }, [
           "The diff shows ",
@@ -17806,10 +17818,20 @@ function candidateCell(p) {
       : state === "moved"
         ? "The branch moved after these facts were read: the diff on screen is a newer commit."
         : unknown
-          ? "Not every commit is known, so this is not shown to be one candidate."
-          : "These are not one commit: a green gate or tester verdict is about another commit.";
+          ? "Not every commit is known from the runner's record, so this is not shown to be one candidate."
+          : earlier
+            ? "The runner records the commit its gates ran on just after the ticket enters review, and this attempt's record is not in: the commit on record is an earlier attempt's. Reload in a moment."
+            : "These are not one commit: a green gate or tester verdict is about another commit.";
   const value = (state) =>
-    state === "same" ? "One commit" : state === "moved" ? "Moved" : unknown ? "Unknown" : "Differs";
+    state === "same"
+      ? "One commit"
+      : state === "moved"
+        ? "Moved"
+        : unknown
+          ? "Unknown"
+          : earlier
+            ? "Not recorded"
+            : "Differs";
   let state = allSame ? "same" : "differs";
   sub.textContent = words(state);
   const links = (p.run_links || []).map((r) =>
@@ -17832,11 +17854,14 @@ function candidateCell(p) {
       r.role === "tester" ? "tester run log" : "delivery run log",
     ),
   );
+  // The runs table carries no ticket: say on screen how the link was found.
+  const foundBy = links.length ? el("small", { class: "vd-runlink-by" }, " (found by time)") : null;
   const runLine = el("p", { class: "vd-sub vd-runlinks" }, [
     links.length
       ? "Open the "
       : "No run log is recorded for this delivery (its runner was not started from the dashboard).",
     ...links.flatMap((a, i) => (i ? [" · ", a] : [a])),
+    foundBy,
   ]);
   const cell = verdictCell(
     "candidate",
@@ -17844,7 +17869,7 @@ function candidateCell(p) {
     value(state),
     `Candidate: ${value(state).toLowerCase()}`,
     [rows, sub, runLine],
-    state === "same" ? "ok" : unknown ? "warn" : "bad",
+    state === "same" ? "ok" : unknown || earlier ? "warn" : "bad",
   );
   cell._setShown = (repos) => {
     const moved = (repos || []).some((r) => {
@@ -17855,7 +17880,7 @@ function candidateCell(p) {
     state = "moved";
     cell.querySelector(".vd-v").textContent = value(state);
     cell.setAttribute("aria-label", `Candidate: ${value(state).toLowerCase()}`);
-    cell.classList.remove("vd-ok");
+    cell.classList.remove("vd-ok", "vd-bad");
     cell.classList.add("vd-warn");
     sub.textContent = words(state);
   };
@@ -18915,13 +18940,25 @@ async function renderReview(param) {
     ]);
   // SAME CANDIDATE: the runner gated one commit and the branch is now at another, so a
   // green gate is about other code. One of the flags (the one list), never a hold.
-  for (const c of (packet && packet.candidate) || [])
-    if (c.gated_sha && c.diff_head && c.gated_by !== "agent" && !sameSha(c.gated_sha, c.diff_head))
-      flagsNow.push([
-        "Not the gated commit",
-        `The gates ran on ${c.gated_sha.slice(0, 12)}${(packet.candidate.length > 1 && ` in ${c.repo}`) || ""}, but the branch is now at ${c.diff_head.slice(0, 12)}. Read the newer commits: no gate has run on them.`,
-        "Derived from the runner's recorded delivery commit and the branch head",
-      ]);
+  for (const c of (packet && packet.candidate) || []) {
+    const runnerRecord = c.gated_by === "runner" || c.gated_by == null;
+    if (!c.gated_sha || !c.diff_head || !runnerRecord || sameSha(c.gated_sha, c.diff_head))
+      continue;
+    const inRepo = (packet.candidate.length > 1 && ` in ${c.repo}`) || "";
+    flagsNow.push(
+      c.gated_earlier
+        ? [
+            "Gated commit not recorded yet",
+            `This attempt's gated commit${inRepo} is not recorded yet (the runner records it just after the ticket enters review). The one on record, ${c.gated_sha.slice(0, 12)}, is an earlier attempt's. Reload in a moment before you rely on the gates.`,
+            "Derived from the runner's recorded delivery commits and the ticket's claim",
+          ]
+        : [
+            "Not the gated commit",
+            `The gates ran on ${c.gated_sha.slice(0, 12)}${inRepo}, but the branch is now at ${c.diff_head.slice(0, 12)}. Read the newer commits: no gate result is recorded for them.`,
+            "Derived from the runner's recorded delivery commit and the branch head",
+          ],
+    );
+  }
   if (ac.length && satisfied < ac.length)
     flagsNow.push([
       "Criteria not met",

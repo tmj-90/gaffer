@@ -143,9 +143,18 @@ export interface PacketCandidate {
   repo_id: string;
   repo: string;
   gated_sha: string | null;
-  /** Who recorded `gated_sha`: the runner, an agent (not trusted for `same`), or null for a
-   *  row recorded before the delivery event carried the commit. */
+  /** Who recorded `gated_sha`: the runner (the `system` actor, after its gates), an agent or
+   *  a person (neither trusted for `same`: only the runner's record says the gates ran on
+   *  it), or null for a row recorded before the delivery event carried the commit. */
   gated_by: "runner" | "agent" | "human" | null;
+  /**
+   * True when the commit on record was recorded before this delivery attempt began (its
+   * claim) and is not the head: the runner records an attempt's gated commit just after it
+   * submits, so for a moment after a rework enters review (or for good, when that record
+   * failed) the row still holds an earlier attempt's commit. Not the same candidate, but
+   * not shown to differ either: this attempt's record is missing.
+   */
+  gated_earlier: boolean;
   diff_head: string | null;
   /** Why the head could not be read now (no checkout, no branch…), when it could not. */
   head_unavailable: string | null;
@@ -566,10 +575,51 @@ function gatedBy(events: WorkEvent[], repoId: string, sha: string): PacketCandid
     if (e.event_type !== "ticket.repo_delivery_recorded") continue;
     const p = payloadOf(e);
     if (str(p.repo_id) !== repoId || !sameCommit(str(p.commit_sha), sha)) continue;
-    if (e.actor_type === "system" || e.actor_type === "admin") return "runner";
+    if (e.actor_type === "system") return "runner";
     return e.actor_type === "agent" ? "agent" : "human";
   }
   return null;
+}
+
+/**
+ * When the current delivery attempt began: the latest claim at or before the ticket last
+ * entered review (a conflict resolution re-enters review without a new claim, so its
+ * attempt is the original delivery's). Null with no claim on record.
+ */
+function attemptStartedAt(
+  ticketId: string,
+  events: readonly WorkEvent[],
+  sinceReview: string | null,
+): string | null {
+  let at: string | null = null;
+  for (const e of events) {
+    if (e.event_type !== "ticket.transitioned" || e.entity_id !== ticketId) continue;
+    if (str(payloadOf(e).to) !== "claimed") continue;
+    if (sinceReview !== null && e.created_at > sinceReview) continue;
+    if (at === null || e.created_at > at) at = e.created_at;
+  }
+  return at;
+}
+
+/**
+ * The commit on record for a repo was recorded before this attempt began: some delivery
+ * event carries a commit (so the record is readable at all) and none is from this attempt.
+ */
+function gatedBeforeAttempt(
+  events: WorkEvent[],
+  repoId: string,
+  attemptAt: string | null,
+): boolean {
+  if (attemptAt === null) return false;
+  let any = false;
+  for (const e of events) {
+    if (e.event_type !== "ticket.repo_delivery_recorded") continue;
+    const p = payloadOf(e);
+    if (str(p.repo_id) !== repoId || !str(p.commit_sha)) continue;
+    any = true;
+    if (!before(e, attemptAt)) return false;
+  }
+  return any;
 }
 
 /** REQUIRED CI for `commit`: the same reading as ReviewGateService.ciStatus, with times. */
@@ -692,11 +742,18 @@ function readBacking(p: Omit<ReviewPacket, "backing">, evidence: Evidence[]): Pa
         "ticket_repo_delivery.commit_sha",
         "candidate",
       );
-    else if (c.gated_by === "agent")
+    else if (c.gated_by === "agent" || c.gated_by === "human")
       add(
-        `The gated commit${name} was recorded by the agent, not the runner`,
+        `The gated commit${name} was recorded by ${c.gated_by === "agent" ? "the agent" : "a person"}, not the runner`,
         false,
         "ticket.repo_delivery_recorded actor",
+        "candidate",
+      );
+    else if (c.gated_earlier)
+      add(
+        `This attempt's gated commit${name} is not recorded yet: the one on record, ${short(c.gated_sha)}, is from an earlier attempt`,
+        false,
+        "ticket.repo_delivery_recorded times vs the attempt's claim",
         "candidate",
       );
     else if (c.same)
@@ -967,6 +1024,7 @@ export class ReviewPacketService {
   ): PacketCandidate[] {
     const reader = this.deps.writeRepoHeads;
     if (!reader) return [];
+    const attemptAt = attemptStartedAt(ticket.id, events, sinceReview);
     let entries: readonly PacketWriteRepoHead[];
     try {
       entries = reader(ticket);
@@ -984,15 +1042,21 @@ export class ReviewPacketService {
       const same =
         gatedSha !== null &&
         e.sha !== null &&
-        by !== "agent" &&
+        (by === "runner" || by === null) &&
         sameCommit(gatedSha, e.sha) &&
         (tested === null || sameCommit(tested, e.sha)) &&
         (pin === null || sameCommit(pin, e.sha));
+      const earlier =
+        gatedSha !== null &&
+        e.sha !== null &&
+        !sameCommit(gatedSha, e.sha) &&
+        gatedBeforeAttempt(events, e.repoId, attemptAt);
       return {
         repo_id: e.repoId,
         repo: e.repo,
         gated_sha: gatedSha,
         gated_by: by,
+        gated_earlier: earlier,
         diff_head: e.sha,
         head_unavailable: e.why,
         tester_tested: tested,

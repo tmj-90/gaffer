@@ -387,8 +387,12 @@ structural barrier the whole design hangs on.
   the independent tester tested and the review pin. It reads **One commit** when
   they agree, **Differs** when they do not (and a *Not the gated commit* flag joins
   the flags list), **Unknown** when one cannot be read, and **Moved** when the
-  branch moved between the facts and the diff on screen. A commit an agent recorded
-  for itself is shown as its record and never counts as the gated one. The **CI**
+  branch moved between the facts and the diff on screen. A rework enters review a
+  moment before the runner records the commit its gates ran on, so until that
+  record is in (or if it failed) the cell reads **Not recorded** and the flag says
+  *Gated commit not recorded yet*, rather than calling an earlier attempt's commit
+  a difference. Only the runner's own record counts as the gated commit: one an
+  agent or a person recorded is shown as their record and reads **Unknown**. The **CI**
   cell shows the latest CI result recorded for the candidate commit. When the run
   that delivered the change (or ran the tester) was started from the dashboard,
   the cell links its run log; the runs table does not record the ticket, so the
@@ -415,7 +419,8 @@ structural barrier the whole design hangs on.
   on this one in the Map's scope graph. Each line says how it was found ("from the
   diff's lines", "by path", "by import text", "pattern match"…) and links to its
   file in the diff. When the scan finds no migration, config, environment variable
-  or dependency change it says so once, and what it cannot work out (callers of a
+  or dependency change it says so once (never on a diff cut at its size cap, and
+  never "no dependency change" when a lockfile changed), and what it cannot work out (callers of a
   changed symbol and whether they are tested) is said as not analysed. It is
   advisory: nothing gates on it and it does not change the observed risk that
   holds auto-ship. Changed modules with no test in the change also appear under

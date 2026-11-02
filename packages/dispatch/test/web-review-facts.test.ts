@@ -68,6 +68,7 @@ function basePacket(over: Record<string, unknown> = {}): Record<string, unknown>
         repo: "svc",
         gated_sha: HEAD,
         gated_by: "runner",
+        gated_earlier: false,
         diff_head: HEAD,
         head_unavailable: null,
         tester_tested: null,
@@ -144,6 +145,7 @@ let packet: Record<string, unknown> = basePacket();
 let diffHead: string = HEAD;
 let impact: unknown = IMPACT;
 let calls: string[] = [];
+let capability = "full";
 function stubFetch(): void {
   calls = [];
   vi.stubGlobal(
@@ -152,7 +154,9 @@ function stubFetch(): void {
       const url = String(input);
       calls.push(url);
       let body: unknown;
-      if (url.includes("status=in_review")) body = { tickets: [T] };
+      if (url.includes("/api/whoami"))
+        body = { capability, actor: { type: "human", id: "viewer" } };
+      else if (url.includes("status=in_review")) body = { tickets: [T] };
       else if (url.includes("/dossier"))
         body = { schema: "dossier.v1", hash: "x", subject: {}, review_packet: packet };
       else if (url.includes("/diff"))
@@ -220,6 +224,7 @@ describe("web: review facts on The Gaffer's Sign-off", () => {
     packet = basePacket();
     diffHead = HEAD;
     impact = IMPACT;
+    capability = "full";
     vi.resetModules();
     stubFetch();
     mount();
@@ -286,6 +291,86 @@ describe("web: review facts on The Gaffer's Sign-off", () => {
     expect(text(".signoff-sum")).not.toContain("Nothing flagged");
   });
 
+  const cand = (over: Record<string, unknown>) => [
+    {
+      repo_id: "r1",
+      repo: "svc",
+      gated_sha: OTHER,
+      gated_by: "runner",
+      gated_earlier: false,
+      diff_head: HEAD,
+      head_unavailable: null,
+      tester_tested: null,
+      pin: null,
+      same: false,
+      ...over,
+    },
+  ];
+  const approveButton = () =>
+    Array.from(document.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("Approve"),
+    ) as HTMLButtonElement | undefined;
+
+  it("Differs is a flag, never a hold: Approve stays live (holds are the server's)", async () => {
+    packet = basePacket({ candidate: cand({}) });
+    await boot();
+    expect(text(".vd-cell.vd-candidate .vd-v")).toBe("Differs");
+    const approve = approveButton();
+    expect(approve).toBeDefined();
+    expect(approve!.hasAttribute("disabled")).toBe(false);
+    // One flag for it, not two.
+    expect(text(".flag-list").match(/Not the gated commit/g)).toHaveLength(1);
+  });
+
+  it("a rework before the runner's record lands reads Not recorded, not Differs", async () => {
+    packet = basePacket({ candidate: cand({ gated_earlier: true }) });
+    await boot();
+    expect(text(".vd-cell.vd-candidate .vd-v")).toBe("Not recorded");
+    expect(document.querySelector(".vd-cell.vd-candidate")!.classList.contains("vd-warn")).toBe(
+      true,
+    );
+    expect(text(".vd-cell.vd-candidate")).toContain("an earlier attempt's record");
+    expect(text(".flag-list")).toContain("Gated commit not recorded yet");
+    expect(text(".flag-list")).not.toContain("Not the gated commit");
+    expect(text(".signoff-sum")).toContain("gated commit not recorded yet");
+  });
+
+  it("the agent's record of the head is Unknown, never Differs", async () => {
+    packet = basePacket({ candidate: cand({ gated_sha: HEAD, gated_by: "agent" }) });
+    await boot();
+    expect(text(".vd-cell.vd-candidate .vd-v")).toBe("Unknown");
+    expect(text(".vd-cell.vd-candidate")).toContain("(the agent's record)");
+    expect(text(".vd-cell.vd-candidate")).not.toContain("These are not one commit");
+    expect(text(".flag-list")).not.toContain("Not the gated commit");
+  });
+
+  it("Moved after Differs is one tone (warn), not warn and bad at once", async () => {
+    packet = basePacket({ candidate: cand({ gated_sha: "c".repeat(40) }) });
+    diffHead = OTHER;
+    await boot();
+    const cell = document.querySelector(".vd-cell.vd-candidate")!;
+    expect(cell.querySelector(".vd-v")!.textContent).toBe("Moved");
+    expect(cell.classList.contains("vd-warn")).toBe(true);
+    expect(cell.classList.contains("vd-bad")).toBe(false);
+  });
+
+  it("a read token sees the facts with no write affordance", async () => {
+    capability = "read";
+    packet = basePacket({ candidate: cand({}) });
+    await boot();
+    expect(document.querySelector(".rv-intent")).not.toBeNull();
+    expect(document.querySelector(".vd-cell.vd-candidate")).not.toBeNull();
+    expect(document.querySelector(".rv-backing")).not.toBeNull();
+    expect(document.querySelector(".rv-impact")).not.toBeNull();
+    const approve = approveButton();
+    if (approve) expect(approve.hasAttribute("disabled")).toBe(true);
+    // The new panels hold only links and folds: no form, no input.
+    for (const sel of [".rv-intent", ".vd-cell.vd-candidate", ".rv-backing", ".rv-impact"])
+      expect(
+        document.querySelector(sel)!.querySelector("form, input, textarea, select"),
+      ).toBeNull();
+  });
+
   it("the diff on screen at a newer head than the packet read: the cell says Moved", async () => {
     diffHead = OTHER;
     await boot();
@@ -310,6 +395,8 @@ describe("web: review facts on The Gaffer's Sign-off", () => {
     await boot();
     const btn = document.querySelector<HTMLButtonElement>(".vd-runlink")!;
     expect(btn.textContent).toBe("delivery run log");
+    // How the link was found is said on screen, not only in a tooltip.
+    expect(text(".vd-runlinks")).toContain("(found by time)");
     btn.click();
     for (let i = 0; i < 6; i++) await tick();
     expect(calls.some((u) => u.includes("/api/runs/run-1/log"))).toBe(true);

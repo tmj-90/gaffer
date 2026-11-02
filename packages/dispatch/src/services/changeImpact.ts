@@ -75,6 +75,11 @@ export interface ImpactInput {
   runGit?: GitRunner;
   localPath?: string;
   downstream?: readonly DownstreamRepo[];
+  /**
+   * Every changed path (the diff's `--numstat`, which is never cut): a test file past a
+   * capped diff's cut is still in the change. A rename reads `old => new` there.
+   */
+  paths?: readonly string[];
 }
 
 /** Facts listed per kind before the rest are counted as not listed. */
@@ -459,9 +464,11 @@ export function computeRepoImpact(input: ImpactInput): RepoImpact {
   }
   const authored = files.filter((f) => !generated.has(f.path));
 
-  // Exported declarations added, removed or changed (module-level lines of the diff).
+  // Exported declarations added, removed or changed (module-level lines of the diff). A
+  // test or a migration file is not a module other code imports.
   for (const f of authored) {
-    if (TEST_PATH.test(f.path)) continue;
+    if (TEST_PATH.test(f.path) || MIGRATION_PATH.test(f.deleted ? (f.oldPath ?? f.path) : f.path))
+      continue;
     const added = new Map<string, DiffLine>();
     const removed = new Map<string, DiffLine>();
     for (const l of f.plus)
@@ -510,7 +517,8 @@ export function computeRepoImpact(input: ImpactInput): RepoImpact {
         line: null,
         method: "by path",
       });
-    if (DOC_EXT.test(f.path)) continue;
+    // Prose and test fixtures are not schema changes (a migration file is, wherever it is).
+    if (DOC_EXT.test(f.path) || (!migration && TEST_PATH.test(f.path))) continue;
     for (const l of f.plus) {
       const m = l.text.match(DDL);
       if (!m) continue;
@@ -548,6 +556,8 @@ export function computeRepoImpact(input: ImpactInput): RepoImpact {
   const envPlus = new Map<string, { path: string; line: number }>();
   const envMinus = new Map<string, { path: string; line: number }>();
   for (const f of authored) {
+    // A test setting or reading a variable is not the change reading it.
+    if (TEST_PATH.test(f.path) && !ENV_EXAMPLE.test(f.path)) continue;
     for (const l of f.plus)
       for (const n of envNames(f.path, l.text))
         if (!envPlus.has(n)) envPlus.set(n, { path: f.path, line: l.n });
@@ -663,10 +673,21 @@ export function computeRepoImpact(input: ImpactInput): RepoImpact {
   const testFiles = new Set(
     authored.filter((f) => !f.deleted && TEST_PATH.test(f.path)).map((f) => f.path),
   );
+  for (const p of input.paths ?? []) {
+    // numstat writes a rename as `old => new` or `dir/{old => new}/file`: the new side.
+    const np = p.includes(" => ")
+      ? p
+          .replace(/\{[^{}]* => ([^{}]*)\}/g, "$1")
+          .replace(/^.* => /, "")
+          .replace(/\/\//g, "/")
+      : p;
+    if (TEST_PATH.test(np)) testFiles.add(np);
+  }
   const modules = authored.filter(
     (f) =>
       !f.deleted &&
       !TEST_PATH.test(f.path) &&
+      !MIGRATION_PATH.test(f.path) &&
       (JS_EXT.test(f.path) || PY_EXT.test(f.path)) &&
       !/\.d\.[cm]?ts$/.test(f.path) &&
       !CONFIG_PATH.test(f.path) &&
@@ -722,14 +743,22 @@ export function computeRepoImpact(input: ImpactInput): RepoImpact {
     notAnalysed.push(
       "Exports and test imports outside TypeScript, JavaScript and Python: not analysed.",
     );
+  const lockfile = files.some((f) => LOCKFILES.has(base(f.path)));
+  if (lockfile)
+    notAnalysed.push(
+      "Lockfile entries: not analysed (a lockfile changed, so resolved versions may have too).",
+    );
   notAnalysed.push("Callers of changed symbols and their test coverage: not analysed.");
-
   const has = (...kinds: ImpactKind[]) => kinds.some((k) => counts.has(k));
   const none: string[] = [];
-  if (!has("migration", "ddl")) none.push("migration or DDL");
-  if (!has("config")) none.push("config");
-  if (!has("env_added", "env_removed")) none.push("environment variable");
-  if (!has("dependency_added", "dependency_removed", "dependency_bumped")) none.push("dependency");
+  // A cut diff proves no absence: what is past the cut was not read.
+  if (!input.truncated) {
+    if (!has("migration", "ddl")) none.push("migration or DDL");
+    if (!has("config")) none.push("config");
+    if (!has("env_added", "env_removed")) none.push("environment variable");
+    if (!lockfile && !has("dependency_added", "dependency_removed", "dependency_bumped"))
+      none.push("dependency");
+  }
   return { facts, none, not_analysed: notAnalysed };
 }
 
@@ -755,7 +784,17 @@ function testImporters(
       "-e",
       `(from|import)[[:space:]]+[A-Za-z0-9_.]*(${py.map(ereEscape).join("|")})([^A-Za-z0-9_]|$)`,
     );
+  // The repo's own grep config must not change the output shape this parses (a line or
+  // column number, colour codes), so it is pinned here.
   const args = [
+    "-c",
+    "grep.lineNumber=false",
+    "-c",
+    "grep.column=false",
+    "-c",
+    "grep.fullName=false",
+    "-c",
+    "color.grep=never",
     "grep",
     "-I",
     "-o",
@@ -780,6 +819,8 @@ function testImporters(
   }
   if (r.status === 1) return new Map();
   if (r.status !== 0) return (r.stderr.split("\n")[0] || "git grep failed").trim();
+  // Output past the cap is unread: a module whose importer is past it would read as untested.
+  if (r.truncated) return "the search output passed its size cap";
   const out = new Map<string, Set<string>>();
   const prefix = `${input.headSha}:`;
   for (const line of r.stdout.split("\n")) {

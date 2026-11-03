@@ -112,7 +112,7 @@ gaffer_refresh_cards() {
     if iout="$(lg index build --canonical "$canonical" --repo "$repo" --repo-root "$wt" --commit "$target" --json 2>/dev/null)" && [ -n "$iout" ]; then
       log "code index: $(printf '%s' "$iout" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const r=JSON.parse(s),t=r.stats||{};process.stdout.write(`${r.mode} at ${String(r.commit||"?").slice(0,8)}: ${t.files} files, ${t.refs} imports resolved, ${t.testLinks} test links; re-read ${t.extracted}, removed ${t.removed}`)}catch{process.stdout.write("built (no report)")}})' 2>/dev/null) for #${NUM:-${RNUM:-?}}"
     else
-      log "code index: refresh failed for #${NUM:-${RNUM:-?}} — left as it was"
+      log "code index: refresh failed for #${NUM:-${RNUM:-?}}, left as it was"
     fi
   fi
 

@@ -485,7 +485,7 @@ export const DANGEROUS_COMMANDS = [
     re: new RegExp(
       String.raw`(?:\bnode\b[^\n;&|]*[\s/]memory(?:\.js)?|${CMD_POS}(?:(?:npx|bunx|pnpx)(?:[ \t]+-${TOK})*[ \t]+|(?:pnpm|npm|yarn)(?:[ \t]+-${TOK})*[ \t]+(?:(?:exec|dlx|x)[ \t]+(?:-${TOK}[ \t]+)*)?)?memory)[ \t]+["']?index["']?[ \t]+["']?build["']?${WORD_END}`,
     ),
-    why: "the memory CLI's code-index build (memory index build) — the runner builds the index the Review's callers row is read from; an agent may read it (index neighbours / stats), never rebuild it",
+    why: "the memory CLI's code-index build (memory index build): the runner builds the index the Review's callers row is read from; an agent may read it (index neighbours / stats), never rebuild it",
     example: "node packages/memory/dist/bin/memory.js index build --repo-root /tmp/x",
     crewFlags: false,
   },

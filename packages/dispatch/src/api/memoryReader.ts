@@ -706,7 +706,7 @@ export function createMemoryReader(env: NodeJS.ProcessEnv = process.env): Memory
         return { available: true, repos };
       } catch {
         return unavailable(
-          "Memory CLI `index stats --json` returned no parsable report — is the memory package up to date?",
+          "Memory CLI `index stats --json` returned no parsable report: is the memory package up to date?",
         );
       }
     },

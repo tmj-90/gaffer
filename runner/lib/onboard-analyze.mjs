@@ -1885,7 +1885,7 @@ export function refreshCodeIndex(
   const res = runMemoryCli(cfg, args, env);
   if (res.error || (res.status ?? 0) !== 0) {
     log(
-      `code index: build failed (${res.error?.message ?? ((res.stderr ?? "").trim().split("\n")[0] || `exit ${res.status}`)}) — left as it was`,
+      `code index: build failed (${res.error?.message ?? ((res.stderr ?? "").trim().split("\n")[0] || `exit ${res.status}`)}), left as it was`,
     );
     return null;
   }
@@ -1893,7 +1893,7 @@ export function refreshCodeIndex(
     const r = JSON.parse(res.stdout ?? "");
     const st = r.stats ?? {};
     log(
-      `code index: ${r.mode} at ${String(r.commit ?? "?").slice(0, 8)} — ${st.files} files, ` +
+      `code index: ${r.mode} at ${String(r.commit ?? "?").slice(0, 8)}: ${st.files} files, ` +
         `${st.exportedSymbols} exported symbols, ${st.refs} imports resolved (${st.unresolved} unresolved), ` +
         `${st.testLinks} test links; re-read ${st.extracted}, removed ${st.removed}` +
         (st.capsHit?.length ? `; caps hit: ${st.capsHit.join(", ")}` : ""),
@@ -3291,7 +3291,7 @@ export function analyzeAndWrite(
       commit: headCommit(repoPath) || null,
     });
   } catch (err) {
-    log(`code index: failed (${err?.message ?? err}) — onboard unaffected`);
+    log(`code index: failed (${err?.message ?? err}), onboard unaffected`);
   }
 
   // ── Rollup digest (top of the DAG) ──────────────────────────────────────────

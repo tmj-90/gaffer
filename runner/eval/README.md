@@ -35,7 +35,8 @@ signals are reported as **flags**: `missing_note`, `unverified_note`,
 
 Only the control plane is stubbed: `wg` (the dispatch CLI the acceptance-check
 library records through) is a recorder, so `<out>/<fixture>/wg-calls.log` shows
-exactly what the runner would have recorded.
+exactly what the runner would have recorded. The pipeline itself lives in `gates.sh`
+(`eval_gate_pipeline`), which the matched experiment runner below shares.
 
 ## The fixture set
 
@@ -104,3 +105,23 @@ fixture to `submit`).
 Shared base repos live under `fixtures/_base/` (directories starting with `_` are
 inputs, not fixtures). Keep fixtures small: the whole set runs in a few seconds and
 is part of every CI run.
+
+## Matched experiments
+
+`experiment.sh` (`gaffer eval experiment`) runs the same tickets under two or more
+arms of settings and reports the paired differences, as
+[`docs/eval-harness.md`](../../docs/eval-harness.md#matched-ticket-comparison)
+describes. The tickets are these fixtures (or recorded tickets, `--manifests`); each
+(ticket, arm) delivery goes through the worker seam and `gates.sh`:
+
+```sh
+gaffer eval experiment --only clean-feature,breaks-tests --arm baseline --arm never:stub=noop --seed 42 --out /tmp/xp
+gaffer eval experiment --arm baseline --arm cheap:tier=cheap --live --max-usd 5   # the real agent, capped
+```
+
+A fixture may carry an `experiment` block (`"acceptance_test": "<command>"`, a hidden
+test the run must also pass to count as accepted), a `memory` string (the product
+memory a `memory=on` arm primes) and a `scout` list (the files a `packet=1` arm shows).
+In stub mode (the default) `experiment-stub-agent.sh` stands in for the agent and
+applies the fixture's recorded delivery, so the run costs nothing.
+`runner/test/eval-experiment.test.sh` runs it end to end.

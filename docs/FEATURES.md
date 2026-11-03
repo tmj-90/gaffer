@@ -402,6 +402,55 @@ usage ledger and the ticket transition log, and says only what those can show:
   the spend with no ticket (left out) and human review time, and `gaffer eval`
   prints it under the judge's cost per pass, which only sees submitted work
   (docs/eval-harness.md has the definition and its limits).
+- **Replay manifests.** Every delivery attempt leaves one small JSON record under
+  `$GAFFER_DATA/manifests/<ticket>-<n>.json`, opened when the agent is spawned and
+  completed however the attempt ends (submit, a gate's rework or park, a pause at a
+  cap or the tick timeout, a usage-window or budget refusal, a kill): each write
+  repo's path, base and head commit and registered test command, the router's tier,
+  model and reasons with the declared and effective risk, the settings that shape an
+  attempt (the scout, the scout packet, the tester lane, memory priming, the skills
+  mounted, the sandbox), sha256 hashes of the prompt and scout packet (never their
+  text), the usage-ledger attempt id it joins to, and the outcome with the gate rows;
+  the judging lanes' verdicts and the landed commit are added later. It is capped at
+  16 KiB, a test command loses anything that looks like a credential, and a write
+  failure is logged and never holds up the delivery.
+- **The routing scorecard.** A card under the measures (and `routing_scorecard` in
+  `GET /api/health`, and `gaffer wg stats routing`) splits the work by provider,
+  model, role and work class (the risk the router saw, and the repo's stack where I
+  know it). For each cell it shows the calls and spend (estimates labelled, calls of
+  unknown cost counted and left out, never read as free), and for delivery the
+  attempts, how many submitted and how many went to rework (from the replay
+  manifests), and for the tickets that started there first-pass acceptance, attempts
+  and cost per accepted change, escaped defects and tester false greens. Every figure
+  shows its n; a cell with fewer than 10 attempts reads *too few to compare* and shows
+  no rate. Cells are never ranked and there is no overall score: it is a report, and
+  the router does not read it.
+- **Matched experiments.** `gaffer eval experiment --arm baseline --arm cheap:tier=cheap`
+  runs the same tickets (the gate-replay fixtures, or recorded tickets from their
+  manifests) once under each arm's settings, in a seeded random order, through the
+  same worker seam and gates a tick uses, counting every attempt, and writes
+  `results.json` and `report.md` with the paired difference per ticket in acceptance,
+  attempts, spend and the judge score where there is one, and their mean, 95% interval
+  and n. A ticket an arm never submits counts as that arm's failure. By default the
+  agent is a stub that replays the recorded change, so it costs nothing and runs in CI;
+  `--live` runs the real agent under a hard USD cap for the run (`--max-usd` or
+  `GAFFER_EXPERIMENT_MAX_USD`, required), a ticket cap and the factory's own budget
+  admission and usage pause, and books its calls as kind `experiment` with no ticket.
+  Nothing is recorded to dispatch, nothing lands and nothing is pushed.
+  [docs/eval-harness.md](eval-harness.md#matched-ticket-comparison) has the arms, the
+  report and the limits.
+- **Routing recommendations, which you apply.** `gaffer wg routing recommend` reads
+  the scorecard and any experiment results and, where the evidence is strong enough,
+  prints a proposed `runner/model-registry.json` change as a diff with the cells, n
+  and deltas behind it: only for delivery, only where another tier is cheaper per
+  accepted change and no worse on first pass or escaped defects in every work class
+  with at least 10 attempts on both (or 10 points better on first pass, labelled a
+  trade-off), or where a live experiment's paired acceptance interval is at or above
+  zero at lower spend. It never edits the registry and never proposes anything for the
+  reviewer or the tester. The Health card carries one Routing line saying whether there
+  is a proposal. To apply one, edit the registry yourself (or point
+  `GAFFER_MODEL_REGISTRY` at an edited copy); `route-model.mjs` stays the only thing
+  that routes.
 - **Flow efficiency** is the median share of a shipped ticket's lead time with
   an agent working on it (`claimed` or `in_progress`). Everything else is
   waiting, and the form guide lists it on its own: **waiting to merge** (approved,

@@ -69,8 +69,8 @@ falsifiable.
   pointer to the honest measurement below; the JSON carries
   `measure: "judge_score_gap_on_submitted_work"`, `label`, `sample`
   (`withMemory` / `withoutMemory` / `distinctTickets`), `excludes`, and
-  `matched: null` with `matchedReason`. `null` until both arms have data (never a
-  fake 0).
+  `matched` (null unless a matched priming experiment is given, see below) with
+  `matchedReason`. `null` until both arms have data (never a fake 0).
 - **cost.costPerPass** — total real spend over the costed records divided by the
   number of judge-passing deliveries: what a *good judged* delivery costs, with
   spend on judged failures amortised in. It leaves out every attempt the judge
@@ -127,32 +127,73 @@ node packages/crew/dist/eval/evalLedgerCli.js --mode summarize \
   --file "$GAFFER_DATA/eval-ledger.jsonl"
 ```
 
-## Matched-ticket comparison (the honest measurement — not built yet)
+## Matched-ticket comparison
 
-The question the memory gap cannot answer is causal: *for the same work, does
-priming memory produce better outcomes at lower total cost?* The measurement that
-answers it, and the seam it would fill (`memoryLift.matched`, today `null`):
+The question the memory gap cannot answer is causal: *for the same work, does a
+setting (memory priming, the scout packet, a model tier) produce better outcomes at
+lower total cost?* `gaffer eval experiment` (`runner/eval/experiment.sh` and
+`experiment.mjs`) measures it:
 
-1. **Same tickets, both arms.** Take a fixed set of tickets (the gate-replay
-   fixtures, or real tickets re-run from their recorded base commit) and deliver
-   each twice: once with the durable memory primed, once with priming disabled (no
-   product context, lore or file cards in the primer — a per-arm switch the
-   experiment runner adds; no setting suppresses priming today). Randomise the order
-   so model drift does not favour one arm.
-2. **Count every attempt, not only submissions.** For each ticket and arm record
-   the attempts until submission or park, the total spend from the usage ledger
-   (including killed and timed-out calls), whether it was submitted at all, the
-   judge score when it was, and whether a human accepted it (approved without a
-   rework).
-3. **Report paired differences.** Per ticket: Δ acceptance, Δ total spend, Δ
-   attempts, Δ judge score; then the mean and a confidence interval over tickets,
-   with the ticket count. A ticket that one arm never submitted counts as a failure
-   for that arm, not as missing data.
+1. **Same tickets, every arm.** Give the tickets (the gate-replay fixtures,
+   `--fixtures <dir> [--only a,b]`, or recorded tickets, `--manifests
+   $GAFFER_DATA/manifests [--tickets 3,4]`) and two or more arms, each a set of
+   setting overrides: `--arm baseline --arm cheap:tier=cheap --arm nomem:memory=off`.
+   The settings are `tier` (a registry tier), `model`, `provider`, `memory` (on/off),
+   `packet` (the scout packet, 0/1), `context` (full/minimal), `scout` and, in stub
+   mode, `stub` (apply/noop/patch:<file>). The first arm is the baseline. Each
+   (ticket, arm) run re-creates the repo at the recorded base (a fixture's base repo,
+   or a shared clone of the manifest's repo at its base commit), delivers through the
+   same worker seam a tick uses (`worker_deliver`: budget admission as kind
+   `experiment`, the agent-env scrub, the verified safety-hook settings, the timeout,
+   an empty MCP config) and runs the same gate pipeline (`runner/eval/gates.sh`,
+   shared with the gate replay), with a rework attempt on a failed gate. The runs go in
+   a random order drawn from `--seed` (recorded, so an order can be reproduced) so model
+   drift does not favour one arm.
+2. **Count every attempt, not only submissions.** For each ticket and arm it records
+   the attempts until submission or the attempt cap (`--max-attempts`, 2), the spend
+   (every call booked in the usage ledger, unknown spend counted as unknown), whether
+   it was submitted, whether it was **accepted** (every gate passed and, where the
+   ticket names one, its hidden `experiment.acceptance_test` passed on the submitted
+   head), and the judge score where the fixture records one for the change the run
+   delivered.
+3. **Report paired differences.** Per ticket: Δ acceptance, Δ attempts, Δ spend, Δ
+   judge score against the baseline; then the mean, a 95% t interval and n over
+   tickets, in `results.json` (`comparisons`) and `report.md`. A ticket an arm never
+   submitted counts as a failure for that arm, not as missing data; a run a cap or a
+   refusal stopped is left out of every pair, and the report says how many.
 
-It is not built because it needs a second, paid delivery of every ticket and an
-experiment runner that suppresses priming per arm; the ledger today records judged
-submissions only. Until then treat the memory score gap as a description of the
-work that was submitted, never as evidence that memory improved it.
+**Stub mode** is the default: the agent is `runner/eval/experiment-stub-agent.sh`,
+which applies the ticket's recorded change (nothing for `stub=noop`), so the whole
+pipeline runs in CI for free with its own data dir under `--out`. It proves the
+pipeline, not a model. **Live mode** (`--live`) runs the real agent and needs a hard
+USD cap for the run (`--max-usd` or `GAFFER_EXPERIMENT_MAX_USD`), which also caps every
+call at what is left; it stops at the ticket cap (`GAFFER_EXPERIMENT_MAX_TICKETS`, 5),
+at the factory's own budget admission and at the usage pause, and books every call in
+the factory's ledger as kind `experiment` with no ticket, so the daily caps see it and
+no ticket's figures move. Nothing is recorded to dispatch (`wg` is a recorder, as in the
+gate replay), nothing lands, nothing pushes. The safety hook denies every launch form to
+an agent, and the script refuses `--live` when it sees an agent's write roots.
+
+When two arms differ only in `memory`, `results.json` carries `memory_matched`, and
+`evalLedgerCli --mode summarize --matched-experiment <results.json>` puts it in
+`memoryLift.matched` (with `matchedReason` saying where it came from); without one
+`matched` stays null.
+
+Its limits, also in the report:
+
+- The delivery brief is the experiment's own (the task, the acceptance criteria, the
+  arm's memory and scout blocks), not the factory's rendered delivery prompt: that
+  needs the ticket in dispatch, which an offline run never touches.
+- Live mode re-delivers fixtures only. A manifest keeps a hash of the prompt, not its
+  text, so a recorded ticket can be replayed in stub mode (its recorded base..head
+  change through the gates) but not re-prompted.
+- Accepted means the gates and the hidden acceptance test, not a person's review.
+- The model scout is not run by the experiment, so the `scout` setting is recorded as
+  not applied; so is any setting a ticket gives it nothing to apply to (memory on a
+  fixture with no `memory`, the packet on one with no `scout` files).
+
+`gaffer wg routing recommend` reads these results beside the routing scorecard; a
+stub-mode experiment never proposes anything.
 
 ## Knobs
 
@@ -161,6 +202,9 @@ work that was submitted, never as evidence that memory improved it.
 | `GAFFER_EVAL_JUDGE` | `0` | `1` enables post-submit judging (one extra paid model call per delivery) |
 | `GAFFER_JUDGE_MODEL_FLAG` | plan model flag, else impl model flag | model for the judge turn |
 | `GAFFER_EVAL_LEDGER` | `$GAFFER_DATA/eval-ledger.jsonl` | ledger path |
+| `GAFFER_EXPERIMENT_MAX_USD` | _(empty)_ | hard USD cap of one live experiment run; required for `--live` |
+| `GAFFER_EXPERIMENT_MAX_TICKETS` | `5` | tickets per experiment |
+| `GAFFER_EXPERIMENT_MAX_ATTEMPTS` | `2` | attempts per ticket and arm |
 
 ## Honest limits of the current metrics (read before trusting a number)
 

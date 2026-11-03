@@ -110,6 +110,11 @@ The screens:
 
 [docs/FEATURES.md](docs/FEATURES.md) walks through each one.
 
+![The Overview a few weeks in: the Team sheet with review sign-offs, an approved change, a blocked and a paused ticket, beside the Tactics board with agents' shirts on the tickets they hold](docs/img/match-day-overview.png)
+
+*The Overview of a factory a few weeks in: the Team sheet lists what needs you, and the
+Tactics board shows every ticket in play by repo and stage.*
+
 ## 4. Give it your first ticket
 
 `runner/gaffer wg` is the dispatch CLI pinned to this factory's database. Four commands
@@ -179,6 +184,11 @@ the terminal:
 runner/gaffer approve 1 --reviewer <your-name>   # in_review → ready_for_merge (a human approval)
 runner/gaffer merge 1                            # the same merge the dashboard's Merge button runs
 ```
+
+![The gaffer's sign-off: the runner's verdict strip, Approve and Fix these, the flags, the open review comments and the diff since your review](docs/img/match-day-review.png)
+
+*The Review view for one ticket: what the runner recorded above, Approve beside the
+flags, and the diff the control plane computed from git.*
 
 `approve` shows the commit of each repository it is about to approve, with a diffstat,
 and asks; the approval covers exactly those commits, and a branch that moves before you

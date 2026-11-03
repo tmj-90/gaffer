@@ -9,10 +9,13 @@
 //   D3 docs/FEATURES.md's Specs section does not say "in progress" (it shipped)
 //   D4 CONFIG.md and the settings help say DISPATCH_ALLOW_AGENT_APPROVE and
 //      MEMORY_AUTO_APPROVE are off by default (the supervised mode's fill)
+//   D5 every image README / quickstart / docs/*.md shows exists, has alt text that
+//      says what is on it, and every file in docs/img is shown somewhere (the
+//      screenshot script, scripts/screenshots.mjs, writes them by name)
 // Run: node runner/test/docs-drift.test.mjs
 // =====================================================================
-import { readdirSync, readFileSync, statSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -93,6 +96,35 @@ const arm = cfg.slice(
 );
 for (const k of ["DISPATCH_ALLOW_AGENT_APPROVE", "MEMORY_AUTO_APPROVE"])
   check(`factory.config.sh's supervised arm sets ${k}:=0`, arm.includes(`: "\${${k}:=0}"`));
+
+console.log("== D5: every image the docs show exists, and every image is shown ==");
+const docFiles = [
+  "README.md",
+  "quickstart.md",
+  ...readdirSync(resolve(ROOT, "docs"))
+    .filter((f) => f.endsWith(".md"))
+    .map((f) => `docs/${f}`),
+];
+const shown = new Set();
+for (const f of docFiles) {
+  for (const m of read(f).matchAll(/!\[([^\]]*)\]\(([^)\s]+)\)/g)) {
+    const [, alt, src] = m;
+    if (/^https?:/.test(src)) continue;
+    const abs = resolve(ROOT, dirname(f), src);
+    shown.add(relative(ROOT, abs));
+    check(`${f}: ${src} exists`, existsSync(abs));
+    check(
+      `${f}: ${src} has alt text that describes it`,
+      alt.trim().length >= 20 && !/^(a |the )?screenshot\b/i.test(alt.trim()),
+      `alt "${alt}"`,
+    );
+  }
+}
+const imgs = readdirSync(resolve(ROOT, "docs/img")).filter((f) =>
+  /\.(png|jpe?g|gif|svg|webp)$/i.test(f),
+);
+check(`docs/img has images (${imgs.length})`, imgs.length > 0);
+for (const f of imgs) check(`docs/img/${f} is shown in a doc`, shown.has(`docs/img/${f}`));
 
 console.log();
 if (fails.length === 0) {

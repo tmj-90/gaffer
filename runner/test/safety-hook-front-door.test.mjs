@@ -118,6 +118,11 @@ for (const cmd of [
   "node packages/memory/dist/bin/memory.js index build --repo-root /tmp/x",
   `MEMORY_DB=x node ${PKG}/memory/dist/bin/memory.js index build --repo-root /tmp/x --full`,
   "npx memory 'index' build --repo-root /tmp/x",
+  // Review finding: a runtime-built program name and an xargs-fed verb, as `approve` is.
+  "$MEMORY_BIN index build --repo-root /tmp/x",
+  "${MEMORY_CLI_BIN} index build --full",
+  "echo build | xargs memory index",
+  "echo build | xargs node packages/memory/dist/bin/memory.js index",
   "node ../gaffer/runner/bin/merge-ticket.mjs --ticket 3",
   // A path-qualified wrapper or interpreter, an option's value before the script,
   // `builtin`, and launchers that run the script for you.
@@ -158,6 +163,10 @@ for (const cmd of [
   "memory search archive",
   "memory show 7vk3qm9b",
   "memory index neighbours --paths src/a.ts --json",
+  "$MEMORY_BIN index neighbours --paths src/a.ts --json",
+  "${MEMORY_CLI_BIN} index stats --json",
+  "echo src/a.ts | xargs memory index neighbours --paths",
+  "$PAGER index.md",
   "node packages/memory/dist/bin/memory.js index stats --json",
   "git commit -m 'memory index build is the runner job'",
   "memory list --status draft --json",

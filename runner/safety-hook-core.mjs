@@ -3187,6 +3187,9 @@ const CP_PAIRS = [
   // or a person, never by an agent shell.
   ["ticket", /^regression-of$/],
   ["review-rules", /^propose$/],
+  // The code index the Review's callers row is read from (memory `index build`): only the
+  // runner rebuilds it; `index neighbours` / `index stats` stay open.
+  ["index", /^build$/],
 ];
 function cpVerbNear(words) {
   // words: everything after the program word; the verb sits within the first three.
@@ -3346,10 +3349,20 @@ function normalizedCommandViews(cmd, depth = 0) {
             : 1;
       }
       rest = rest.slice(k);
-      const prog = rest[0] ? basename(rest[0]) : "";
-      if ((PRIV_CLIS.has(prog) || privCliByPath(rest[0] || "")) && rest.length <= 1) {
+      // `xargs node …/memory.js …` runs the same CLI as `xargs memory …`.
+      const viaInterp =
+        rest.length > 1 && INLINE_INTERPRETERS.has(basename(rest[0])) && privCliByPath(rest[1]);
+      const xr = viaInterp ? [viaInterp, ...rest.slice(2)] : rest;
+      const prog = xr[0] ? basename(xr[0]) : "";
+      const priv = PRIV_CLIS.has(prog) || Boolean(privCliByPath(xr[0] || ""));
+      if (priv && xr.length <= 1) {
         reasons.push(
           `a privileged CLI (${prog}) fed its arguments by xargs from stdin: the verb cannot be seen, so it is refused`,
+        );
+      } else if (priv && CP_PAIRS.some(([first]) => xr[xr.length - 1] === first)) {
+        // `echo build | xargs memory index`: the pair's second word arrives on stdin.
+        reasons.push(
+          `a privileged CLI (${prog} ${xr[xr.length - 1]}) whose control-plane verb would arrive from stdin through xargs, so it is refused`,
         );
       }
       if (rest.length === 0) {

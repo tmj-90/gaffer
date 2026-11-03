@@ -122,8 +122,27 @@ nightly CI run sets.
   guards is broken (a stranded claim, an empty diff, a missing marker).
 - Keep it hermetic: a scratch database and git repo from `lib/tmpdir.sh`, cleaned up
   on exit, and nothing written to the checkout.
-- Never weaken `runner/safety-hook.mjs`, and keep the parity tests between the hook
-  and the crew classifier green: the two are derived from one data module on purpose.
+- Never weaken `runner/safety-hook.mjs` (its rules live in `runner/safety-hook-core.mjs`
+  and `runner/lib/hook/`), and keep the parity tests between the hook and the crew
+  classifier green: the two are derived from one data module on purpose.
+
+### The safety hook's golden corpus
+
+`runner/test/safety-hook-golden-corpus.test.mjs` pins what the hook decides, not why.
+`runner/test/fixtures/safety-hook-corpus.json` holds every tool call the hook suites
+feed it (the nine `safety-hook*.test.mjs` files and `skills-hook-claims`, which feeds
+it the Bash commands in the skills), deduplicated, with the verdict the hook gave under
+three fixed environments (configured roots, no roots, a bootstrap install): allow or
+deny, the exit code, the reason up to its first colon, the whole reason and the stdout
+of an allowed Grep. The test decides every entry again in a scratch fixture (its
+paths are placeholders, documented in the file) and fails on any difference, so a
+refactor that moves one verdict shows up there even when no focused test notices.
+When you change a rule on purpose, refresh it deliberately and review the fixture's
+diff, one entry per line: `node runner/test/safety-hook-golden-corpus.test.mjs
+--update` re-records every verdict. When you add hook test cases,
+`node runner/test/lib/hook-corpus-harvest.mjs` reruns the suites through a recording
+shim and adds the calls the corpus lacks (it never re-records an existing verdict).
+A normal run never writes the fixture.
 
 ### Linux failures on a Mac
 

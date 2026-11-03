@@ -2393,7 +2393,7 @@ _GAFFER_SENSITIVE_PATH_RE='(^|/)([Mm]igrations?|\.github/|[Dd]ockerfile|[Oo]?[Aa
 #   • risk_level = low
 #   • diff within the TIGHT lite caps (GAFFER_LITE_MAX_LINES / GAFFER_LITE_MAX_FILES)
 #   • touches NO sensitive path (migrations, CI, Dockerfile, auth/security/secrets, lockfiles,
-#     the factory's own .gaffer / safety-hook and its runner/lib/hook/ rule modules) —
+#     the factory's own .gaffer / safety-hook and its runner/lib/hook/ rule modules):
 #     GAFFER_LITE_SENSITIVE_RE, operator-tunable.
 # NB: intentionally tiny caps (60 lines / 4 files) — "trivial" means a typo/doc/small-config
 # change, NOT the 400-line minimalism cap. No I/O, no side effects; echoes `trivial` or

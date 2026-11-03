@@ -487,7 +487,7 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `GAFFER_TESTER_REPLAY` | `1` | `runner/bin/tester-run.mjs`, `runner/lib/tester-replay.mjs`, `runner/status.sh` |
 | `GAFFER_TESTER_REPLAY_TIMEOUT_MS` |  | `runner/bin/tester-run.mjs` |
 | `GAFFER_TESTER_TIMEOUT_MS` | _(empty)_ | `runner/bin/tester-run.mjs` |
-| `GAFFER_TICKET` | _(empty)_ | `runner/eval/experiment.sh`, `runner/safety-hook-core.mjs` |
+| `GAFFER_TICKET` | _(empty)_ | `runner/eval/experiment.sh`, `runner/lib/hook/decide.mjs` |
 | `GAFFER_TODAY_OVERRIDE` | _(empty)_ | `runner/lib/budget.sh` |
 | `GAFFER_TRUST_LOCK_SLEEP_MS` |  | `runner/lib/trust-workspace.mjs` |
 | `GAFFER_TRUST_LOCK_TRIES` |  | `runner/lib/trust-workspace.mjs` |

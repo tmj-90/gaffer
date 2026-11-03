@@ -1948,7 +1948,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
   if [ -n "$_CARD_NAMED" ]; then
     _CARD_INDEX_OUT="$(mktemp "${TMPDIR:-/tmp}/gaffer-index.XXXXXX" 2>/dev/null)" || _CARD_INDEX_OUT=""
   fi
-  FILE_CARDS_BLOCK="$(GAFFER_RECALL_TICKET="$_RECALL_FOR" GAFFER_PRIME_NAMED="$_CARD_NAMED" GAFFER_PRIME_BASE_SHA="$_CARD_BASE_SHA" GAFFER_PRIME_INDEX_OUT="$_CARD_INDEX_OUT" gaffer_prime_context_block "$_CARD_REAL_REPO" "$_CARD_REPO_NAME" "$_CARD_QUERY" 2>/dev/null || true)"
+  FILE_CARDS_BLOCK="$(GAFFER_PRIME_NAMED="$_CARD_NAMED" GAFFER_PRIME_BASE_SHA="$_CARD_BASE_SHA" GAFFER_PRIME_INDEX_OUT="$_CARD_INDEX_OUT" GAFFER_RECALL_TICKET="$_RECALL_FOR" gaffer_prime_context_block "$_CARD_REAL_REPO" "$_CARD_REPO_NAME" "$_CARD_QUERY" 2>/dev/null || true)"
   _CARD_INDEX_METRIC=""
   if [ -n "$_CARD_INDEX_OUT" ]; then
     _CARD_INDEX_METRIC="$(gaffer_json index-metric "$_CARD_INDEX_OUT" 2>/dev/null || true)"

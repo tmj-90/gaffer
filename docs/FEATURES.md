@@ -492,8 +492,12 @@ structural barrier the whole design hangs on.
   run, how many checked criteria have a passing runner check and how many rest on
   the agent's word or nothing, the tester's verdict and on which commit, required
   CI, whether a gating test changed, and that nothing has run the change as a user
-  would yet. There is no score and no headline: the flags list stays the one list
-  of things to check, and each row links to the strip cell it comes from.
+  would yet. When the pre-work scout raised the ticket's risk before delivery, a row
+  under *What is not backed* says so and why ("Risk raised to high by the scout
+  before delivery (declared medium): migration file db/migrations/0042.sql, 14
+  callers of calculateInvoice"). There is no score and no headline: the flags list
+  stays the one list of things to check, and each row links to the strip cell it
+  comes from.
 - **The Behavioural surface, above the diff.** For a ticket in review the diff
   read also lists what the change touches, worked out from the diff's own lines
   and the tree at the head commit, with no model: exported declarations added,
@@ -962,7 +966,41 @@ human-gated knowledge the factory works from:
   calculateInvoice through src/index.ts", "tests calculateInvoice (imports it)"),
   or one line saying the index is missing or stale. Health shows each repo's index
   coverage. An agent shell can read it but not rebuild it (the safety hook denies
-  `memory index build`). `GAFFER_CODE_INDEX=0` turns it off.
+  `memory index build`). `GAFFER_CODE_INDEX=0` turns it off. With the pre-work scout on (the default) its
+  SCOUT block lists these instead, so the file cards do not repeat them.
+- **Pre-work scout**: before a delivery starts, the runner works out where the change
+  likely lands, with no model: the files the ticket names, the files in a stack
+  trace it quotes (`at fn (src/x.ts:42:7)`, `File "app/x.py", line 9`, a Java frame,
+  an absolute path from another machine matched to the tree), and what the code
+  index says imports or tests them, two hops at most. At most 25 files, each with
+  why it was picked ("named", "imports calculateInvoice through src/index.ts",
+  "tests src/invoice.ts", "stack trace (line 42)", "2 hops", config / migration /
+  schema), plus the repo's test command. The delivery prompt shows it as one SCOUT
+  block inside an untrusted envelope, a retrieval aid like the file cards. With no
+  index, or a stale one, it lists the named files and frames only and says so.
+  The same pass classifies the ticket's risk from deterministic signals (a
+  migration or schema file, an auth or permission path or words, a package entry or
+  importers in another package, race or concurrency words, more than one write repo,
+  a previous attempt sent back, a named symbol with 10 or more callers, a named
+  module no test imports): it can only raise the declared level, never lower it and
+  never to critical. The router routes on the raised level, the Review packet shows
+  it, and the packet is kept as `$GAFFER_DATA/scout/ticket-N/attempt-K.json`.
+  Each delivery launch also appends one line to `context-selection.jsonl`: the files,
+  file cards and skills it was given, each with its reason, the model and the
+  router's reasons. Health's *Pre-work scout* card counts how many attempts the scout
+  covered, how often the index added files, how often the risk was raised, the model
+  scout's runs and cost, and first-pass acceptance split by what the scout found (a
+  report: the arms are observational). `GAFFER_SCOUT_PACKET=0` turns it off.
+- **A bounded model scout, when you turn it on.** `GAFFER_SCOUT=auto` adds one
+  read-only model call for a ticket whose effective risk is medium or higher
+  (`on`: every delivery; `off`, the default: never). It reads the repo with Read,
+  Grep and Glob only, for `GAFFER_SCOUT_MAX_TURNS` turns (6), on the router's cheap
+  tier, and answers with at most 8 files, 8 symbols, 10 short implementation notes
+  and 3 questions. The runner keeps a path only when it exists at the base commit
+  and a symbol only when its file contains it, and shows the rest as "scout
+  suggested (a model's reading)". It is booked in the usage ledger as kind `scout`,
+  the budget admission and the usage pause apply as for every launch, and a
+  failed or refused call leaves the deterministic packet as it was.
 - **Lore** — the team's recorded conventions, decisions, gotchas, and cross-repo
   boundaries. It's **read-only in the product**: agents *draft* lore through an
   MCP review gate, and a human approves it in the Memory view or from the

@@ -15,7 +15,7 @@
  *   first_pass        first-pass acceptance (health/firstPass.ts, the same definition)
  *                     split by the ticket's FIRST scout record: index items / named only /
  *                     nothing found / no record (tickets delivered before the scout, or
- *                     with GAFFER_SCOUT_PACKET=0). Arms are observational, not randomised.
+ *                     with the scout packet turned off). Arms are observational, not randomised.
  * Pure.
  */
 import { firstPassAcceptance, type FirstPassCount, type FirstPassRetry } from "./firstPass.js";

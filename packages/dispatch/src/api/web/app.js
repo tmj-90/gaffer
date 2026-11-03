@@ -13984,7 +13984,7 @@ function scoutCard(health) {
     : "No delivery has been scouted yet (the runner scouts before each delivery).";
   const model = ms.runs
     ? `Model scout: ${plural(ms.runs, "run")}, ${plural(ms.kept_files, "file")} kept, ${ms.dropped} dropped as not in the checkout, ${usd}${ms.cost_unknown ? ` (${ms.cost_unknown} of unknown cost)` : ""}.`
-    : "Model scout: no run (it is off unless GAFFER_SCOUT is auto or on).";
+    : "Model scout: no run (the read-only model scout is off by default).";
   return el("section", { class: "card panel scout-panel", "aria-label": "Pre-work scout" }, [
     panelHead("Pre-work scout", "what each delivery started with, and how it went", null, {
       kit: "ink",

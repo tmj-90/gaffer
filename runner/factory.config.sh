@@ -158,6 +158,13 @@ unset _gs_out
 # gaffer_agent_env) so lg, doctor and the agent's memory-mcp all write the same file.
 : "${MEMORY_AUDIT_LOG:=$GAFFER_DATA/memory-audit.jsonl}"
 export MEMORY_AUDIT_LOG
+# CODE INDEX: memory's files -> symbols -> imports -> tests map of each repo (TS, JS,
+# Python; by import text, no model). Built at onboard and refreshed after each merge; the
+# Review's Behavioural surface reads it for the callers of changed symbols and the
+# delivery's file cards for the callers and tests of what a ticket names. 0 turns off the
+# runner's builds and the file-card lines (an index already built is then left as it is).
+: "${GAFFER_CODE_INDEX:=1}"   # 1 builds the code index at onboard / merge and primes callers into file cards; 0 off
+export GAFFER_CODE_INDEX
 
 # Shared usage-ledger READER (lib/estimate.mjs parseLedger). Every inline-node
 # consumer of the JSONL ledger imports this ONE parser instead of hand-rolling a

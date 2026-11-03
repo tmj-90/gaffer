@@ -1,3 +1,4 @@
+import type { CodeIndexAnswer, CodeIndexItem, CodeIndexReader } from "./codeIndexReader.js";
 import type { GitRunner } from "./diffService.js";
 
 /**
@@ -7,6 +8,11 @@ import type { GitRunner } from "./diffService.js";
  * lines", "by path", "from the manifest diff", "by .gitattributes", "by import text",
  * "pattern match", "scope graph depends_on"), because a text or path heuristic can be wrong
  * and must never read as certainty. What is not computed is said as "not analysed".
+ *
+ * CALLERS (symbol_callers): for each changed exported symbol, the files that import it and
+ * the tests that import its module, from the code index (memory `index neighbours`, built
+ * at onboard and after each merge from the files' import text). Listed only when the index
+ * describes the base branch's current tip; missing, stale or unreadable is said as such.
  *
  * ADVISORY ONLY: nothing gates on these facts. They are not risk annotations and do not feed
  * observedRisk (the auto-ship hold). Git work is bounded: at most two spawns per repo (the
@@ -29,7 +35,8 @@ export type ImpactKind =
   | "generated"
   | "untested_module"
   | "route"
-  | "downstream_repo";
+  | "downstream_repo"
+  | "symbol_callers";
 
 export type ImpactMethod =
   | "from the diff's lines"
@@ -38,7 +45,22 @@ export type ImpactMethod =
   | "by .gitattributes"
   | "by import text"
   | "pattern match"
-  | "scope graph depends_on";
+  | "scope graph depends_on"
+  | "by import text (index)";
+
+/** A file a callers fact names: an importer of the changed symbol, or a test of it. */
+export interface ImpactRef {
+  path: string;
+  role: "caller" | "test";
+  /** The file is changed in this diff too. */
+  in_change: boolean;
+  /** Callers: a test imports or names this file (index). Null for a test. */
+  tested: boolean | null;
+  /** The re-export barrel the import goes through, when it does. */
+  through: string | null;
+  /** The importing line (callers), when known. */
+  line: number | null;
+}
 
 export interface ImpactFact {
   kind: ImpactKind;
@@ -49,6 +71,19 @@ export interface ImpactFact {
   /** The new-side line (old-side for a removal) the fact was read from, when it has one. */
   line: number | null;
   method: ImpactMethod;
+  /** symbol_callers: the callers and tests listed (capped; the text carries the totals). */
+  refs?: ImpactRef[];
+  /** untested_module, when the code index answered: tests on the base that import or name it. */
+  index_tests?: number;
+}
+
+/** Whether the Behavioural surface's callers row has content, and why not when it has none. */
+export interface CallersStatus {
+  /** listed: symbol_callers facts; none_changed: no changed symbol other modules import; not_analysed. */
+  status: "listed" | "none_changed" | "not_analysed";
+  reason: string | null;
+  /** The commit the code index describes, when it was read. */
+  index_commit: string | null;
 }
 
 export interface RepoImpact {
@@ -57,6 +92,8 @@ export interface RepoImpact {
   none: string[];
   /** What this scan does not cover, said plainly. */
   not_analysed: string[];
+  /** The callers row's state (absent from an older server). */
+  callers?: CallersStatus;
 }
 
 /** A repo that depends on this one in the scope graph (scope_edges depends_on). */
@@ -80,6 +117,11 @@ export interface ImpactInput {
    * capped diff's cut is still in the change. A rename reads `old => new` there.
    */
   paths?: readonly string[];
+  /** The code index (memory CLI); absent or null: callers are not analysed. */
+  codeIndex?: CodeIndexReader | null;
+  /** The base branch's name and current tip: the index must describe that commit. */
+  baseBranch?: string;
+  baseSha?: string | null;
 }
 
 /** Facts listed per kind before the rest are counted as not listed. */
@@ -88,6 +130,10 @@ const MAX_FACTS_PER_KIND = 25;
 const MAX_MODULES = 40;
 /** Cap on the `git grep` output read (it is one line per import found). */
 const GREP_MAX_BUFFER = 2 * 1024 * 1024;
+/** Changed symbols asked of the code index per repo (one CLI read for all of them). */
+const MAX_INDEX_SYMBOLS = 60;
+/** Callers and tests listed per symbol (the fact's text carries the totals). */
+const INDEX_PER_ITEM = 10;
 
 interface DiffLine {
   n: number;
@@ -101,6 +147,44 @@ interface DiffFile {
   binary: boolean;
   plus: DiffLine[];
   minus: DiffLine[];
+  /**
+   * Top-level declarations (JS/TS, Python) a changed line falls in, by name, with the first
+   * changed line: read from each hunk's header context and the column-0 declarations the
+   * hunk passes. A changed body is a changed symbol even when its declaration line is not.
+   */
+  touched: Map<string, number>;
+}
+
+const DECL_JS =
+  /^(?:export\s+(?:default\s+)?)?(?:declare\s+)?(?:async\s+)?(?:abstract\s+)?(?:function\s*\*\s*|function\s+|class\s+|const\s+|let\s+|var\s+|interface\s+|type\s+|enum\s+|namespace\s+)([A-Za-z_$][\w$]*)/;
+const DECL_PY = /^(?:async\s+)?(?:def|class)\s+([A-Za-z_]\w*)/;
+
+/**
+ * What a line says about the enclosing top-level declaration: its name (a declaration at
+ * column 0), null (a column-0 statement that ends any declaration), or undefined (an
+ * indented, blank, comment or closing line: no change).
+ */
+function topLevelAt(path: string, text: string): string | null | undefined {
+  if (text === "" || /^[\s})\]]/.test(text)) return undefined;
+  if (/\.(?:[cm]?[jt]sx?)$/.test(path)) {
+    if (/^(?:\/\/|\/\*|\*)/.test(text)) return undefined;
+    const m = text.match(DECL_JS);
+    if (m) return m[1]!;
+    if (/^export\s+default\b/.test(text)) return "default";
+    return null;
+  }
+  if (/\.py$/.test(path)) {
+    if (text.startsWith("#")) return undefined;
+    const m = text.match(DECL_PY);
+    return m ? m[1]! : null;
+  }
+  return undefined;
+}
+
+/** A changed line that carries code (not blank, not only a comment). */
+function meaningful(text: string): boolean {
+  const t = text.trim();
+  return t !== "" && !/^(?:\/\/|#|\/\*|\*)/.test(t);
 }
 
 /** Split a unified diff into files with their added (new-side) and removed (old-side) lines. */
@@ -110,6 +194,8 @@ export function parseDiffFiles(diff: string): DiffFile[] {
   let oldLn = 0;
   let newLn = 0;
   let inHunk = false;
+  let declNew: string | null = null;
+  let declOld: string | null = null;
   const strip = (p: string, pfx: string) => (p.startsWith(pfx) ? p.slice(pfx.length) : p);
   for (const line of diff.split("\n")) {
     if (line.startsWith("diff --git ")) {
@@ -122,6 +208,7 @@ export function parseDiffFiles(diff: string): DiffFile[] {
         binary: false,
         plus: [],
         minus: [],
+        touched: new Map(),
       };
       files.push(cur);
       inHunk = false;
@@ -143,19 +230,33 @@ export function parseDiffFiles(diff: string): DiffFile[] {
       }
     }
     if (line.startsWith("@@")) {
-      const m = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+      const m = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@ ?(.*)$/);
       if (m) {
         oldLn = Number(m[1]);
         newLn = Number(m[2]);
         inHunk = true;
+        // git's hunk context: the last column-0 line above the hunk (its funcname).
+        declNew = declOld = topLevelAt(cur.path, m[3] ?? "") ?? null;
       }
       continue;
     }
     if (!inHunk) continue;
     const c = line.charAt(0);
-    if (c === "+") cur.plus.push({ n: newLn++, text: line.slice(1) });
-    else if (c === "-") cur.minus.push({ n: oldLn++, text: line.slice(1) });
-    else if (c === " ") {
+    const text = line.slice(1);
+    const at = c === "+" || c === "-" || c === " " ? topLevelAt(cur.path, text) : undefined;
+    const touch = (name: string | null, n: number) => {
+      if (name !== null && meaningful(text) && !cur!.touched.has(name)) cur!.touched.set(name, n);
+    };
+    if (c === "+") {
+      if (at !== undefined) declNew = at;
+      touch(declNew, newLn);
+      cur.plus.push({ n: newLn++, text });
+    } else if (c === "-") {
+      if (at !== undefined) declOld = at;
+      touch(declOld, newLn);
+      cur.minus.push({ n: oldLn++, text });
+    } else if (c === " ") {
+      if (at !== undefined) declNew = declOld = at;
       oldLn++;
       newLn++;
     }
@@ -668,6 +769,10 @@ export function computeRepoImpact(input: ImpactInput): RepoImpact {
       });
   }
 
+  // CALLERS of changed exported symbols, from the code index (one read for the repo).
+  const callers = indexCallers(input, authored, push);
+  const indexTests = callers.moduleTests;
+
   // Changed source modules with no test in this change that imports them (by import text,
   // over every test file at the head).
   const testFiles = new Set(
@@ -712,12 +817,23 @@ export function computeRepoImpact(input: ImpactInput): RepoImpact {
         const by = importers.get(spec) ?? new Set<string>();
         const inChange = [...by].filter((t) => testFiles.has(t));
         if (inChange.length > 0) continue;
+        const idx = indexTests.get(m.oldPath && m.oldPath !== m.path ? m.oldPath : m.path);
+        const base = input.baseBranch || "the base";
         push({
           kind: "untested_module",
-          text: `${m.path} changed and no test file in this change imports it${by.size ? ` (${by.size} unchanged test ${by.size === 1 ? "file imports" : "files import"} it)` : " (no test file at the head imports it)"}`,
+          text:
+            `${m.path} changed and no test file in this change imports it${by.size ? ` (${by.size} unchanged test ${by.size === 1 ? "file imports" : "files import"} it)` : " (no test file at the head imports it)"}` +
+            (idx === undefined
+              ? ""
+              : idx === 0
+                ? `, and no test on ${base} imports it or is named for it (index)`
+                : idx === 1
+                  ? `; 1 test on ${base} imports it or is named for it (index)`
+                  : `; ${idx} tests on ${base} import it or are named for it (index)`),
           path: m.path,
           line: null,
           method: "by import text",
+          ...(idx === undefined ? {} : { index_tests: idx }),
         });
       }
   }
@@ -741,14 +857,20 @@ export function computeRepoImpact(input: ImpactInput): RepoImpact {
     notAnalysed.push("The diff was cut at its size cap: files past the cut are not analysed.");
   if (files.some((f) => OTHER_SOURCE_EXT.test(f.path) && !TEST_PATH.test(f.path)))
     notAnalysed.push(
-      "Exports and test imports outside TypeScript, JavaScript and Python: not analysed.",
+      "Exports, callers and test imports outside TypeScript, JavaScript and Python: not analysed.",
     );
   const lockfile = files.some((f) => LOCKFILES.has(base(f.path)));
   if (lockfile)
     notAnalysed.push(
       "Lockfile entries: not analysed (a lockfile changed, so resolved versions may have too).",
     );
-  notAnalysed.push("Callers of changed symbols and their test coverage: not analysed.");
+  if (callers.status.status === "not_analysed") {
+    notAnalysed.push("Callers of changed symbols and their test coverage: not analysed.");
+    if (callers.status.reason) notAnalysed.push(callers.status.reason);
+  }
+  if (callers.skipped > 0)
+    notAnalysed.push(`${callers.skipped} more changed symbols: callers not looked up.`);
+  if (callers.partial) notAnalysed.push(callers.partial);
   const has = (...kinds: ImpactKind[]) => kinds.some((k) => counts.has(k));
   const none: string[] = [];
   // A cut diff proves no absence: what is past the cut was not read.
@@ -759,7 +881,262 @@ export function computeRepoImpact(input: ImpactInput): RepoImpact {
     if (!lockfile && !has("dependency_added", "dependency_removed", "dependency_bumped"))
       none.push("dependency");
   }
-  return { facts, none, not_analysed: notAnalysed };
+  return { facts, none, not_analysed: notAnalysed, callers: callers.status };
+}
+
+const short = (sha: string | null | undefined) => (sha ? sha.slice(0, 8) : "?");
+
+/**
+ * Ask the code index for the importers and tests of every changed exported symbol (and of
+ * every deleted module), push one symbol_callers fact per symbol, and return the per-module
+ * test counts the untested-module rule adds. The index describes the base branch: a symbol
+ * is looked up by its path there (a renamed module by its old path), and a module this
+ * change adds has no callers at the base to list.
+ */
+function indexCallers(
+  input: ImpactInput,
+  authored: DiffFile[],
+  push: (f: ImpactFact) => void,
+): {
+  status: CallersStatus;
+  moduleTests: Map<string, number>;
+  skipped: number;
+  /** The index stopped at a cap: its counts are partial (a not-analysed line). */
+  partial?: string;
+} {
+  const moduleTests = new Map<string, number>();
+  const sources = authored.filter((f) => {
+    const p = f.deleted ? (f.oldPath ?? f.path) : f.path;
+    return (
+      (JS_EXT.test(p) || PY_EXT.test(p)) &&
+      !TEST_PATH.test(p) &&
+      !MIGRATION_PATH.test(p) &&
+      !/\.d\.[cm]?ts$/.test(p) &&
+      !CONFIG_PATH.test(p)
+    );
+  });
+  const notAnalysed = (reason: string, commit: string | null = null) => ({
+    status: { status: "not_analysed" as const, reason, index_commit: commit },
+    moduleTests,
+    skipped: 0,
+  });
+  if (sources.length === 0)
+    return {
+      status: {
+        status: "none_changed",
+        reason: "No TypeScript, JavaScript or Python module changed.",
+        index_commit: null,
+      },
+      moduleTests,
+      skipped: 0,
+    };
+  if (!input.codeIndex)
+    return notAnalysed("Code index: not configured for this server (Memory is not set up).");
+  if (!input.localPath)
+    return notAnalysed("Code index: the repo has no local checkout to read it for.");
+  if (!input.baseSha)
+    return notAnalysed(
+      `Code index: not read (the tip of ${input.baseBranch || "the base branch"} could not be resolved to check it is current).`,
+    );
+
+  // Symbols at the base: changed declarations and changed bodies; a deleted module whole.
+  const symbols: string[] = [];
+  const paths = new Set<string>();
+  const where = new Map<
+    string,
+    { file: DiffFile; name: string; line: number | null; removed: boolean }
+  >();
+  for (const f of sources) {
+    if (f.added) continue;
+    const basePath = f.oldPath ?? f.path;
+    if (f.deleted) {
+      paths.add(basePath);
+      continue;
+    }
+    paths.add(basePath);
+    const names = new Map<string, number | null>(f.touched);
+    for (const l of f.plus)
+      for (const d of declaredExports(f.path, l.text)) addDeclName(names, d, l.n);
+    const removedNames = new Set<string>();
+    for (const l of f.minus)
+      for (const d of declaredExports(f.path, l.text)) removedNames.add(declName(d) ?? "");
+    for (const l of f.plus)
+      for (const d of declaredExports(f.path, l.text)) removedNames.delete(declName(d) ?? "");
+    for (const l of f.minus)
+      for (const d of declaredExports(f.path, l.text)) {
+        const n = declName(d);
+        if (n && !names.has(n)) names.set(n, null);
+      }
+    for (const [name, line] of names) {
+      const q = `${basePath}#${name}`;
+      if (where.has(q)) continue;
+      where.set(q, { file: f, name, line, removed: removedNames.has(name) });
+      symbols.push(q);
+    }
+  }
+  const asked = symbols.slice(0, MAX_INDEX_SYMBOLS);
+  const skipped = symbols.length - asked.length;
+  let answer: CodeIndexAnswer;
+  try {
+    answer = input.codeIndex({
+      localPath: input.localPath,
+      paths: [...paths],
+      symbols: asked,
+      commit: input.baseSha,
+      perItem: INDEX_PER_ITEM,
+    });
+  } catch (e) {
+    answer = { ok: false, reason: e instanceof Error ? e.message : String(e) };
+  }
+  if (!answer.ok) return notAnalysed(`Code index: not read (${answer.reason}).`);
+  const r = answer.result;
+  const base = input.baseBranch || "the base";
+  if (r.status === "missing")
+    return notAnalysed(
+      "Code index: none for this repo yet (it is built at onboard and refreshed after each merge).",
+    );
+  if (r.status !== "fresh")
+    return notAnalysed(
+      `Code index: stale (built at ${short(r.build?.commit)}; ${base} is at ${short(input.baseSha)}), so callers are not listed.`,
+      r.build?.commit ?? null,
+    );
+
+  const changed = new Set<string>();
+  for (const f of authored) {
+    changed.add(f.path);
+    if (f.oldPath) changed.add(f.oldPath);
+  }
+  for (const p of input.paths ?? [])
+    for (const side of p.split(" => ")) changed.add(side.replace(/[{}]/g, ""));
+  let listed = 0;
+  const byQuery = new Map<string, CodeIndexItem>();
+  for (const it of r.items) {
+    if (it.symbol === null && it.path) {
+      // A path item: the module's tests (untested rule), and a deleted module's callers.
+      // A module the index did not read (skipped, past a cap) has no count: saying "no
+      // test imports it" for it would be a claim the index never checked.
+      if (!it.note) moduleTests.set(it.path, it.testsTotal);
+      const del = sources.find((f) => f.deleted && (f.oldPath ?? f.path) === it.path);
+      if (del && !it.note) {
+        pushCallers(push, it, `${it.path} deleted`, del.oldPath ?? del.path, null, changed, base);
+        listed++;
+      }
+      continue;
+    }
+    byQuery.set(it.query, it);
+  }
+  for (const q of asked) {
+    const it = byQuery.get(q);
+    const w = where.get(q);
+    if (!it || !w || it.note || !it.exportedAs) continue;
+    const label =
+      it.exportedAs === "default" && w.name !== "default"
+        ? `${w.name} (the default export)`
+        : w.name;
+    pushCallers(
+      push,
+      it,
+      `${label} ${w.removed ? "removed" : "changed"}`,
+      w.file.path,
+      w.line,
+      changed,
+      base,
+    );
+    listed++;
+  }
+  return {
+    status: {
+      status: listed > 0 ? "listed" : "none_changed",
+      reason:
+        listed > 0 ? null : "No changed symbol here is one other modules import by name (index).",
+      index_commit: r.build?.commit ?? null,
+    },
+    moduleTests,
+    skipped,
+    ...(r.build?.capsHit?.length
+      ? {
+          partial: `Code index: partial (its build hit the ${r.build.capsHit.join(", ")} cap), so importers and tests in files past it are not counted.`,
+        }
+      : {}),
+  };
+}
+
+/** "export function calc" / "def calc" / "exports.calc" → "calc" (null for anonymous forms). */
+function declName(d: string): string | null {
+  const m = d.match(/([A-Za-z_$][\w$]*)$/);
+  if (!m || /^(?:default|exports)$/.test(m[1]!) || d.startsWith("export * from")) return null;
+  return m[1]!;
+}
+function addDeclName(names: Map<string, number | null>, d: string, line: number): void {
+  const n = declName(d);
+  if (n && !names.has(n)) names.set(n, line);
+}
+
+function pushCallers(
+  push: (f: ImpactFact) => void,
+  it: CodeIndexItem,
+  head: string,
+  path: string,
+  line: number | null,
+  changed: ReadonlySet<string>,
+  base: string,
+): void {
+  const n = it.callersTotal;
+  const callersIn = it.callers.filter((c) => changed.has(c.path)).length;
+  // The listed callers are capped; the in-change count is exact only when all are listed.
+  const exact = it.callers.length === n;
+  const parts: string[] = [];
+  if (n === 0) parts.push(`no file on ${base} imports it`);
+  else {
+    let p = `${n} ${n === 1 ? "file" : "files"} on ${base} ${n === 1 ? "imports" : "import"} it`;
+    if (exact) p += callersIn === 0 ? ", none changed here" : `, ${n - callersIn} not changed here`;
+    parts.push(p);
+    const t = it.callersTested;
+    parts.push(
+      n === 1
+        ? t === 1
+          ? "it has a test that imports it"
+          : "it has no test that imports it"
+        : t === n
+          ? "each has a test that imports it"
+          : t === 0
+            ? "none of them has a test that imports it"
+            : t === 1
+              ? `1 of the ${n} has a test that imports it`
+              : `${t} of the ${n} have a test that imports them`,
+    );
+  }
+  parts.push(
+    it.testsTotal === 0
+      ? "no test imports it"
+      : `${it.testsTotal} ${it.testsTotal === 1 ? "test imports" : "tests import"} it or ${it.testsTotal === 1 ? "is" : "are"} named for it`,
+  );
+  const refs: ImpactRef[] = [
+    ...it.callers.map((c) => ({
+      path: c.path,
+      role: "caller" as const,
+      in_change: changed.has(c.path),
+      tested: c.tested ?? null,
+      through: c.through,
+      line: c.line,
+    })),
+    ...it.tests.map((t) => ({
+      path: t.path,
+      role: "test" as const,
+      in_change: changed.has(t.path),
+      tested: null,
+      through: t.through,
+      line: null,
+    })),
+  ];
+  push({
+    kind: "symbol_callers",
+    text: `${head}: ${parts.join("; ")}`,
+    path,
+    line,
+    method: "by import text (index)",
+    refs,
+  });
 }
 
 /**

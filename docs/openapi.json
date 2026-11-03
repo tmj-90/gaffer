@@ -2495,7 +2495,7 @@
           "Read models"
         ],
         "summary": "Factory health and ROI",
-        "description": "Event-log hash-chain integrity, spend, event-derived cycle time and throughput, flow efficiency, governance, skills and recall. `review_time` is human review time per accepted ticket (median, p75, p90; split into queue wait and decision time where the Review view recorded an open, the full span in review otherwise, named in `basis`), `first_pass` is first-pass acceptance split by approver, `lane_verdicts` counts the judging lanes' verdicts, `lane_value` says what each lane changed (verdicts against the person's decision per attempt, unique catches, ledger cost per attempt; counts only), `escaped_defects` is escaped accepted changes over accepted changes in the window from the regression links a person filed, and `review_time.active` is the approximate last-open-to-decision time capped at two hours. `usage_pause` reports the runner's pause after a usage-limit or rate-limit refusal (`{ active, paused_until, kind, basis, message, ticket, lane? }`; `{ active: false }` when not paused). `tester_lane` is `{ mode, repos_without_test_command, notices }`: the GAFFER_TESTING setting (`on`, `off`, or the `auto` default) and, under `auto`, each repository where the independent tester is off because no test command is registered, with its one-line notice. `usage_pause` reports the runner's pause after a usage-limit or rate-limit refusal (`{ active, paused_until, kind, basis, message, ticket, lane? }`; `{ active: false }` when not paused).",
+        "description": "Event-log hash-chain integrity, spend, event-derived cycle time and throughput, flow efficiency, governance, skills and recall. `review_time` is human review time per accepted ticket (median, p75, p90; split into queue wait and decision time where the Review view recorded an open, the full span in review otherwise, named in `basis`), `first_pass` is first-pass acceptance split by approver, `lane_verdicts` counts the judging lanes' verdicts, `lane_value` says what each lane changed (verdicts against the person's decision per attempt, unique catches, ledger cost per attempt; counts only), `escaped_defects` is escaped accepted changes over accepted changes in the window from the regression links a person filed, `review_time.active` is the approximate last-open-to-decision time capped at two hours, `impact_callers` counts the review opens by what the Behavioural surface's callers row showed (listed, none_changed, not_analysed; `listed_pct` over the opens that recorded it), and `code_index` is each repo's code-index coverage from Memory (`available: false` when Memory is not configured). `usage_pause` reports the runner's pause after a usage-limit or rate-limit refusal (`{ active, paused_until, kind, basis, message, ticket, lane? }`; `{ active: false }` when not paused). `tester_lane` is `{ mode, repos_without_test_command, notices }`: the GAFFER_TESTING setting (`on`, `off`, or the `auto` default) and, under `auto`, each repository where the independent tester is off because no test command is registered, with its one-line notice.",
         "parameters": [
           {
             "name": "window_days",
@@ -5626,7 +5626,7 @@
           "Review & delivery"
         ],
         "summary": "Record that a person opened the ticket in Review",
-        "description": "The Review view posts this the first time a person renders the ticket in a review round. Recorded as a `ticket.review_opened` event once per round (deduped server-side on the ticket and the round), with the round's start and the recorded delivery commit of each repo; never bumps the ticket's `updated_at`. Only while the ticket is in review; `recorded: false` with a `reason` (not_in_review, no_review_round, stale_round, already_recorded) otherwise. A measurement for Health's review time; nothing gates on it. Human or admin principals only.",
+        "description": "The Review view posts this the first time a person renders the ticket in a review round. Recorded as a `ticket.review_opened` event once per round (deduped server-side on the ticket and the round), with the round's start and the recorded delivery commit of each repo; never bumps the ticket's `updated_at`. Only while the ticket is in review; `recorded: false` with a `reason` (not_in_review, no_review_round, stale_round, already_recorded) otherwise. A measurement for Health's review time; nothing gates on it. Human or admin principals only. When this server computed the ticket's Behavioural surface, the event also records `impact_callers` (listed, none_changed or not_analysed: what the callers row showed).",
         "parameters": [
           {
             "name": "id",
@@ -13454,7 +13454,8 @@
               "generated",
               "untested_module",
               "route",
-              "downstream_repo"
+              "downstream_repo",
+              "symbol_callers"
             ]
           },
           "text": {
@@ -13492,9 +13493,79 @@
               "by .gitattributes",
               "by import text",
               "pattern match",
-              "scope graph depends_on"
+              "scope graph depends_on",
+              "by import text (index)"
             ],
             "description": "How the fact was found. A text or path heuristic, never a certainty."
+          },
+          "refs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "role": {
+                  "type": "string",
+                  "enum": [
+                    "caller",
+                    "test"
+                  ]
+                },
+                "in_change": {
+                  "type": "boolean",
+                  "description": "The file is changed in this diff too."
+                },
+                "tested": {
+                  "anyOf": [
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "A caller: a test imports or names it (index). Null for a test."
+                },
+                "through": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "The re-export barrel the import goes through, when it does."
+                },
+                "line": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "The importing line, when known."
+                }
+              },
+              "required": [
+                "path",
+                "role",
+                "in_change",
+                "tested",
+                "through",
+                "line"
+              ],
+              "additionalProperties": false
+            },
+            "description": "`symbol_callers`: the files that import the symbol and the tests of it, from the code index (capped; the text carries the totals)."
+          },
+          "index_tests": {
+            "type": "integer",
+            "description": "`untested_module`, when the code index answered: the tests on the base branch that import or are named for the module."
           }
         },
         "required": [
@@ -14540,6 +14611,48 @@
               "type": "string"
             },
             "description": "What the scan does not cover, said plainly."
+          },
+          "callers": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "listed",
+                  "none_changed",
+                  "not_analysed"
+                ],
+                "description": "`listed`: `symbol_callers` facts are present; `none_changed`: no changed symbol other modules import by name; `not_analysed`: the code index is missing, stale or unreadable (the reason says which)."
+              },
+              "reason": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "index_commit": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The commit the code index describes, when it was read."
+              }
+            },
+            "required": [
+              "status",
+              "reason",
+              "index_commit"
+            ],
+            "additionalProperties": false,
+            "description": "The callers row of the Behavioural surface (by import text, code index)."
           }
         },
         "required": [

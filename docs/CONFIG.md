@@ -19,7 +19,7 @@ computed from other knobs at runtime.
 
 | Metric | Count |
 |---|---|
-| Knobs with a runner default | 151 |
+| Knobs with a runner default | 152 |
 | Knobs editable in the dashboard | 58 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
 | Env reads in code with no default and no UI entry | 80 |
@@ -39,6 +39,7 @@ computed from other knobs at runtime.
 | `MEMORY_DB` | _derived_ (`$GAFFER_DATA/memory.sqlite`) |  | crew, dispatch, memory, runner |  |
 | `CREW_CONFIG` | _derived_ (`$GAFFER_DATA/crew.yaml`) |  | crew, dispatch, runner |  |
 | `MEMORY_AUDIT_LOG` | _derived_ (`$GAFFER_DATA/memory-audit.jsonl`) |  | crew, memory, runner | memory's MCP/CLI audit trail. |
+| `GAFFER_CODE_INDEX` | `1` |  | runner | 1 builds the code index at onboard / merge and primes callers into file cards; 0 off |
 | `GAFFER_ESTIMATE_LIB` | _derived_ (`$RUNNER_DIR/lib/estimate.mjs`) |  | runner | Shared usage-ledger READER (lib/estimate.mjs parseLedger). |
 | `MCP_CONFIG` | _derived_ (`$RUNNER_DIR/.mcp.json`) |  | runner | Claude Code wiring |
 | `CLAUDE_SETTINGS` | _derived_ (`$RUNNER_DIR/claude/settings.json`) |  | runner |  |

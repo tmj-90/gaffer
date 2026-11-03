@@ -92,6 +92,16 @@ if [ -e .git ] && [ -f src/archive.ts ]; then
   esac
   printf '{"type":"result","subtype":"success","is_error":false,"result":"done.\\n\\nSmallest-change note: one edit.","total_cost_usd":0.02,"num_turns":1}\n'; exit 0
 fi
+if [ -e .git ] && [ -f src/book.ts ]; then
+  case "$prompt" in
+    *"Book total"*)
+      echo total > "$D/kind"
+      printf 'export function total(a, b) {\n  return a + b;\n}\n' >> src/book.ts
+      git -c user.email=s@s -c user.name=s add -A >/dev/null
+      git -c user.email=s@s -c user.name=s commit -qm "feat: book total" >/dev/null 2>&1 ;;
+  esac
+  printf '{"type":"result","subtype":"success","is_error":false,"result":"done.\\n\\nSmallest-change note: one edit.","total_cost_usd":0.02,"num_turns":1}\n'; exit 0
+fi
 echo other > "$D/kind"; printf '{"type":"result","subtype":"success","is_error":false,"result":"ok"}\n'
 STUB
 sed -i.bak "s|__CALLS__|$CALLS|" "$WORK/bin/claude" && rm -f "$WORK/bin/claude.bak"; chmod +x "$WORK/bin/claude"
@@ -164,6 +174,13 @@ done <<<"$(q "SELECT path, content_hash FROM file_card")"
   || fail "watermark $(q "SELECT synced_commit FROM repo_sync LIMIT 1") != main $MAIN"
 grep -q "verified .* against ${MAIN:0:8}; watermark → ${MAIN:0:8}" "$LOGF" && ok "the log records the verification against the merged commit" \
   || fail "no verification line: $(grep 'cards:' "$LOGF" | tail -3 | tr '\n' '|' | cut -c1-400)"
+# CODE INDEX (files -> symbols -> imports -> tests) follows the merged commit too.
+[ "$(q "SELECT commit_sha FROM code_index_build LIMIT 1")" = "$MAIN" ] && ok "code index = main's merged commit" \
+  || fail "code index at '$(q "SELECT commit_sha FROM code_index_build LIMIT 1")', main is $MAIN"
+[ -n "$(q "SELECT 1 FROM code_symbol WHERE path='src/ledger.ts' AND name='settleWithFees'")" ] \
+  && [ -z "$(q "SELECT 1 FROM code_index_file WHERE path='src/archive.ts'")" ] \
+  && ok "code index: settleWithFees in src/ledger.ts, no src/archive.ts" \
+  || fail "code index files: $(q "SELECT path FROM code_index_file" | tr '\n' ' ')"
 
 echo "== the same overlap through the dashboard Merge path (bin/merge-ticket.mjs) =="
 C="$(new_ticket "Move ledger to book" "move src/ledger.ts to src/book.ts")"; wg ticket ready "$C" >/dev/null 2>&1
@@ -187,6 +204,27 @@ PATHS2="$(printf '%s' "$SEARCH2" | node -e 'let s="";process.stdin.on("data",d=>
 grep -q "card-refresh: card verification: .* against ${MAIN2:0:8}" "$WORK/merge-$E.err" \
   && ok "merge-ticket verified the cards against the merged commit before the watermark" \
   || fail "no verification line from merge-ticket: $(grep 'card-refresh' "$WORK/merge-$E.err" | tail -3 | tr '\n' '|' | cut -c1-400)"
+[ "$(q "SELECT commit_sha FROM code_index_build LIMIT 1")" = "$MAIN2" ] \
+  && [ -n "$(q "SELECT 1 FROM code_symbol WHERE path='src/book.ts' AND name='settleNet'")" ] \
+  && [ -z "$(q "SELECT 1 FROM code_index_file WHERE path='src/ledger.ts'")" ] \
+  && ok "code index after the dashboard merges: main's commit, settleNet in src/book.ts, no src/ledger.ts" \
+  || fail "code index after merge-ticket: commit $(q "SELECT commit_sha FROM code_index_build LIMIT 1"), files $(q "SELECT path FROM code_index_file" | tr '\n' ' ')"
+
+echo "== the dashboard Merge path refreshes the code index without a card watermark =="
+# Review finding: merge-ticket.mjs refreshed the index only inside the card refresh, which
+# stops when the repo has no card watermark (cards off, or never carded).
+(cd "$ROOT/packages/memory" && node -e 'const D=require("better-sqlite3");const db=new D(process.argv[1]);db.prepare("DELETE FROM repo_sync").run();db.close();' "$MEMORY_DB")
+G="$(new_ticket "Book total" "add total() to src/book.ts")"; wg ticket ready "$G" >/dev/null 2>&1
+AUTO_MERGE=0 run_tick >/dev/null
+wg review approve "$G" $(approve_heads "$G") --reviewer human1 >/dev/null 2>&1
+node "$RUNNER_DIR/bin/merge-ticket.mjs" --ticket "$G" >"$WORK/merge-$G.json" 2>"$WORK/merge-$G.err" || true
+MAIN3="$(git -C "$R" rev-parse main)"
+[ "$(st "$G")" = "done" ] && [ "$MAIN3" != "$MAIN2" ] && ok "#$G merged through merge-ticket.mjs with no card watermark" \
+  || fail "no-watermark merge: #$G=$(st "$G"): $(tail -c 400 "$WORK/merge-$G.err")"
+[ "$(q "SELECT commit_sha FROM code_index_build LIMIT 1")" = "$MAIN3" ] \
+  && [ -n "$(q "SELECT 1 FROM code_symbol WHERE path='src/book.ts' AND name='total'")" ] \
+  && ok "code index follows the merged commit without a card watermark" \
+  || fail "code index at '$(q "SELECT commit_sha FROM code_index_build LIMIT 1")', main is $MAIN3: $(grep -i 'code index' "$WORK/merge-$G.err" | tail -2 | tr '\n' '|')"
 
 echo
 echo "memory-index-after-merge: $PASS passed, ${#FAILURES[@]} failed"

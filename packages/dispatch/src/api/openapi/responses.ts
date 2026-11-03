@@ -17,7 +17,9 @@ import {
   type ApproveOutcome as ApproveOutcomeType,
 } from "../../services/approveOutcome.js";
 import type {
+  CallersStatus as CallersStatusShape,
   ImpactFact as ImpactFactShape,
+  ImpactRef as ImpactRefShape,
   RepoImpact as RepoImpactShape,
 } from "../../services/changeImpact.js";
 import type {
@@ -513,6 +515,7 @@ export const ImpactFact = z
       "untested_module",
       "route",
       "downstream_repo",
+      "symbol_callers",
     ] satisfies ImpactFactShape["kind"][]),
     text: str.describe("One plain line, e.g. `export function clearDone added`."),
     path: nstr.describe("The file in this diff the fact is about (its anchor), or null."),
@@ -526,8 +529,34 @@ export const ImpactFact = z
         "by import text",
         "pattern match",
         "scope graph depends_on",
+        "by import text (index)",
       ] satisfies ImpactFactShape["method"][])
       .describe("How the fact was found. A text or path heuristic, never a certainty."),
+    refs: z
+      .array(
+        z
+          .object({
+            path: str,
+            role: z.enum(["caller", "test"]),
+            in_change: z.boolean().describe("The file is changed in this diff too."),
+            tested: z
+              .boolean()
+              .nullable()
+              .describe("A caller: a test imports or names it (index). Null for a test."),
+            through: nstr.describe("The re-export barrel the import goes through, when it does."),
+            line: int.nullable().describe("The importing line, when known."),
+          } satisfies Record<keyof ImpactRefShape, ZodType>)
+          .strict(),
+      )
+      .optional()
+      .describe(
+        "`symbol_callers`: the files that import the symbol and the tests of it, from the code index (capped; the text carries the totals).",
+      ),
+    index_tests: int
+      .optional()
+      .describe(
+        "`untested_module`, when the code index answered: the tests on the base branch that import or are named for the module.",
+      ),
   } satisfies Record<keyof ImpactFactShape, ZodType>)
   .strict()
   .describe("One deterministic change-impact fact.");
@@ -541,6 +570,19 @@ export const RepoImpact = z
         "Surfaces scanned with nothing found (`migration or DDL`, `config`, …). Empty when the diff was cut at its size cap: a cut diff proves no absence.",
       ),
     not_analysed: z.array(str).describe("What the scan does not cover, said plainly."),
+    callers: z
+      .object({
+        status: z
+          .enum(["listed", "none_changed", "not_analysed"])
+          .describe(
+            "`listed`: `symbol_callers` facts are present; `none_changed`: no changed symbol other modules import by name; `not_analysed`: the code index is missing, stale or unreadable (the reason says which).",
+          ),
+        reason: nstr,
+        index_commit: nstr.describe("The commit the code index describes, when it was read."),
+      } satisfies Record<keyof CallersStatusShape, ZodType>)
+      .strict()
+      .optional()
+      .describe("The callers row of the Behavioural surface (by import text, code index)."),
   } satisfies Record<keyof RepoImpactShape, ZodType>)
   .strict()
   .describe(

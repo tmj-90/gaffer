@@ -80,6 +80,13 @@ NEW_MSTAT="$(q "SELECT model_status FROM file_card WHERE path='foo.ts'")"
 [ -z "$(q "SELECT 1 FROM file_card WHERE path='old.ts'")" ] && ok "DELETED old.ts card removed" || no "old.ts card still present"
 [ "$(q "SELECT synced_commit FROM repo_sync LIMIT 1")" = "$HEAD" ] && ok "watermark advanced to delivered commit" || no "watermark not advanced"
 [ "$(q "SELECT length(symbols) FROM file_card WHERE path='new.ts'")" -gt 2 ] 2>/dev/null && ok "new.ts has mechanical symbols extracted" || no "no symbols on new.ts"
+# CODE INDEX: refreshed from the same merged tree, keyed by the real repo (not the worktree).
+CANON_KEY="$(lg repo-canonical --repo-root "$D" --json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s).key))')"
+[ "$(q "SELECT commit_sha FROM code_index_build WHERE repo_key='$CANON_KEY'")" = "$HEAD" ] \
+  && ok "code index refreshed at the merged commit under the real repo's key" || no "code index not refreshed at $HEAD"
+[ -n "$(q "SELECT 1 FROM code_index_file WHERE path='new.ts'")" ] && [ -z "$(q "SELECT 1 FROM code_index_file WHERE path='old.ts'")" ] \
+  && ok "code index: the added file is in, the deleted one out" || no "code index files wrong"
+[ -z "$(q "SELECT 1 FROM code_index_file WHERE path LIKE '%gaffer-cards%'")" ] && ok "code index holds repo paths, never the worktree's" || no "worktree path leaked into the index"
 # no leftover worktree
 [ -z "$(git -C "$D" worktree list 2>/dev/null | grep gaffer-cards)" ] && ok "throwaway worktree cleaned up" || no "worktree leaked"
 

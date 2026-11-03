@@ -454,6 +454,92 @@ describe("web: review facts on The Gaffer's Sign-off", () => {
     );
   });
 
+  it("a callers fact lists each importer and test with what is known, by import text (index)", async () => {
+    impact = {
+      facts: [
+        {
+          kind: "symbol_callers",
+          text: "clearDone changed: 3 files on main import it, 2 not changed here; 1 of the 3 has a test that imports it; 1 test imports it or is named for it",
+          path: "src/tasks.ts",
+          line: 12,
+          method: "by import text (index)",
+          refs: [
+            {
+              path: "src/tasks.ts",
+              role: "caller",
+              in_change: true,
+              tested: true,
+              through: null,
+              line: 3,
+            },
+            {
+              path: "src/board.ts",
+              role: "caller",
+              in_change: false,
+              tested: false,
+              through: "src/index.ts",
+              line: 7,
+            },
+            {
+              path: "test/tasks.test.ts",
+              role: "test",
+              in_change: false,
+              tested: null,
+              through: null,
+              line: null,
+            },
+          ],
+        },
+        {
+          kind: "untested_module",
+          text: "src/tasks.ts changed and no test file in this change imports it, and no test on main imports it or is named for it (index)",
+          path: "src/tasks.ts",
+          line: null,
+          method: "by import text",
+          index_tests: 0,
+        },
+      ],
+      none: [],
+      not_analysed: [],
+      callers: { status: "listed", reason: null, index_commit: "c0ffee12" },
+    };
+    await boot();
+    const fact = document.querySelector(".rv-impact .rv-k-symbol_callers")!;
+    expect(fact.textContent).toContain("by import text (index)");
+    const refs = [...fact.querySelectorAll(".rv-impact-ref")].map((li) =>
+      li.textContent!.replace(/\s+/g, " ").trim(),
+    );
+    expect(refs).toEqual([
+      "caller src/tasks.ts changed here",
+      "caller src/board.ts:7 through src/index.ts no test imports it",
+      "test test/tasks.test.ts",
+    ]);
+    // A ref in this diff links to its file block; the others are named.
+    expect(fact.querySelectorAll(".rv-impact-refs .rv-impact-go")).toHaveLength(1);
+    expect(text(".rv-impact")).not.toContain("Callers of changed symbols and their test coverage");
+    expect(text(".rv-backing .rv-unbacked")).toContain(
+      "1 of them has no test on the base branch that imports it or is named for it either",
+    );
+    expect(document.querySelector(".rv-impact")!.textContent).not.toMatch(/%|score|confiden/i);
+  });
+
+  it("no changed symbol to list says so once", async () => {
+    impact = {
+      facts: [],
+      none: ["config"],
+      not_analysed: [],
+      callers: {
+        status: "none_changed",
+        reason: "No changed symbol here is one other modules import by name (index).",
+        index_commit: "c",
+      },
+    };
+    await boot();
+    expect(text(".rv-impact")).toContain(
+      "Callers: No changed symbol here is one other modules import by name (index).",
+    );
+  });
+
   it("a diff without impact facts (an older server) draws no panel", async () => {
     impact = null;
     await boot();

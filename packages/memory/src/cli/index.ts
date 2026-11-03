@@ -51,6 +51,7 @@ import {
 } from "./commands/setup.js";
 import { cmdFlagged, cmdRecallFeedback, cmdRecallStats } from "./commands/recall.js";
 import { cmdSync } from "./commands/sync.js";
+import { cmdIndex } from "./commands/codeIndex.js";
 import { renderClaudeInstructions } from "./instructions.js";
 import { VERSION } from "../version.js";
 
@@ -312,6 +313,23 @@ COMMANDS
                             --ticket logs which items were SERVED into that
                             ticket's context (the feedback-loop read-event edge).
 
+  index build --repo-root <abs> [--canonical <c>] [--repo <name>]
+      [--commit <sha>] [--full] [--max-files N] [--max-bytes-per-file N] [--json]
+                            Build or refresh the CODE INDEX (files -> top-level
+                            symbols -> imports -> tests) for TypeScript, JavaScript
+                            and Python, from the files' text. Incremental: only the
+                            files changed since the last build's commit are re-read
+                            (a tree walk when that is unknown; unchanged content
+                            hashes skip). Skips generated and vendored paths.
+  index neighbours (--repo-root <abs> | --canonical <c>) [--paths p ...]
+      [--symbols name|path#name ...] [--per-item N] [--commit <sha>] [--json]
+                            Direct callers (files that import it) and tests of each
+                            named path or symbol, by import text (a lower bound).
+                            --commit: the status says fresh / stale against it.
+  index stats [--repo-root <abs> | --canonical <c>] [--json]
+                            The index's coverage per repo: files, symbols, imports
+                            resolved / unresolved, test links, last built.
+
   recall-feedback --repo <r> --ticket <id>
       --outcome <clean|reworked|blocked> [--json]
                             MEMORY FEEDBACK LOOP. Adjust the confidence of the
@@ -454,6 +472,8 @@ export async function main(argv: ReadonlyArray<string>): Promise<number> {
         return await cmdGetCardWatermark(parsed);
       case "cards-for-scope":
         return await cmdCardsForScope(parsed);
+      case "index":
+        return await cmdIndex(parsed);
       case "recall-feedback":
         return await cmdRecallFeedback(parsed);
       case "recall-stats":

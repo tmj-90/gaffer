@@ -124,7 +124,7 @@ _rt="$(grep -n 'gaffer_tester_route "\$NUM"' "$RUNNER_DIR/tick.sh" | head -1 | c
 grep -q 'gaffer_tester_route "\$RNUM"' "$RUNNER_DIR/lib/review.sh" && ok "the agent review pass routes a ticket it left in review" || fail "review.sh does not route"
 _H="$(awk '/_review_hold_ticket\(\) \{/{f=1} f&&/gaffer_tester_route "\$RNUM"/{print "found"; exit} f&&/^      \}/{exit}' "$RUNNER_DIR/lib/review.sh")"
 [ "$_H" = found ] && ok "a ticket the reviewer agent cannot review is routed to the tester (no sweep under agent|both)" || fail "_review_hold_ticket does not route"
-grep -q '"tester-route",' "$RUNNER_DIR/safety-hook-core.mjs" && ok "tester-route is a control-plane verb in the safety hook" || fail "hook verb missing"
+grep -q '"tester-route",' "$RUNNER_DIR/lib/hook/control-plane.mjs" && ok "tester-route is a control-plane verb in the safety hook" || fail "hook verb missing"
 
 echo "== 5: a tester FAIL is the next attempt's review feedback =="
 SHOW='{"events":[{"event_type":"ticket.transitioned","payload_json":"{\"from\":\"in_review\",\"to\":\"in_testing\",\"reason\":\"tester_before_review\"}"},{"event_type":"ticket.transitioned","payload_json":"{\"from\":\"in_testing\",\"to\":\"refining\",\"reason\":\"tester_failed:GET /todos returns 500 on an empty list [tested commit 1111111111aa of gaffer/ticket-3-x]\"}"}]}'

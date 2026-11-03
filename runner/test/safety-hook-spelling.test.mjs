@@ -154,6 +154,70 @@ for (const cmd of [
   t.deny(`human-only measure verb: ${cmd}`, bash(cmd), opts);
 }
 
+// (i) a verb the command text does not show (lane-hook R2): built at run time in the
+// verb slot of a privileged CLI, or handed to it by xargs, parallel or find from their
+// input. The verb cannot be read, so the hook refuses it, for every control-plane verb.
+for (const verb of [
+  "approve",
+  "tester-pass",
+  "tester-route",
+  "lane-verdict",
+  "regression-of",
+  "wont-do",
+  "mark-merged",
+]) {
+  const half = verb.slice(0, 3);
+  const tail = verb.slice(3);
+  for (const cmd of [
+    `echo ${verb} | xargs wg ticket`,
+    `echo ${verb} 5 | xargs dispatch ticket`,
+    `echo ${verb} | xargs -I{} wg ticket {} 5`,
+    `echo ${verb} | xargs -I % wg ticket % 5`,
+    `echo ${verb} | xargs -i wg ticket {} 5`,
+    `echo ${verb} | xargs --replace=VB wg ticket VB 5`,
+    `echo ${verb} | xargs -I{} sh -c "wg ticket {} 5"`,
+    `echo ${verb} | xargs sh -c 'wg ticket "$0" 5'`,
+    `echo ${verb} | xargs /usr/local/bin/wg ticket`,
+    `echo ${verb} | while read v; do wg ticket $v 5; done`,
+    `wg ticket ${half}$(printf %s ${tail}) 5`,
+    `wg ticket ${half}\`printf %s ${tail}\` 5`,
+    `wg ticket "$VERB" 5`,
+    `npx wg ticket ${half}$(echo ${tail}) 5`,
+    `find ${verb} -maxdepth 0 -exec wg ticket {} 5 \\;`,
+    `parallel wg ticket {} 5 ::: ${verb}`,
+  ]) {
+    t.deny(`verb not in the text: ${cmd}`, bash(cmd), opts);
+  }
+}
+for (const cmd of [
+  "echo comment | xargs wg review",
+  "echo resolve | xargs -I{} wg review {} 1a2b3c4d",
+  "wg review $(printf fix) 3",
+  "echo create | xargs wg principal",
+  "gaffer $(printf approve) 3",
+  "memory $(printf approve) 7vk3qm9b",
+  "wg ticket {appr,x}ove 5",
+  "wg ticket appr?ve 5",
+  "(wg ticket $V 5)",
+]) {
+  t.deny(`verb not in the text: ${cmd}`, bash(cmd), opts);
+}
+// Read verbs through xargs, and a runtime word after the verb, stay allowed.
+for (const cmd of [
+  "cat ids | xargs -n1 wg ticket show",
+  "cat ids | xargs wg ticket show",
+  "cat ids | xargs -I{} wg ticket show {}",
+  "wg ticket show $T",
+  'wg --db "$DISPATCH_DB" ticket show 3',
+  "for t in 1 2; do wg ticket show $t; done",
+  "memory show $ID",
+  'git commit -m "wg ticket $V"',
+  "grep -rn wg $FILE",
+  "fg %1",
+]) {
+  t.allow(`a read or a runtime operand: ${cmd}`, bash(cmd), opts);
+}
+
 // Text that only mentions a command is not a command. Nothing here may be refused.
 // (A quoted "wg … approve" in one segment was already refused by the raw rule before
 // this file existed; that is unchanged and not pinned here.)

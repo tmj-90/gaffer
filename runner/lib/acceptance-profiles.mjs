@@ -630,7 +630,6 @@ async function readBodyCapped(r, max = BODY_READ_MAX) {
     if (done) break;
     if (size + value.byteLength > max) {
       chunks.push(Buffer.from(value.buffer, value.byteOffset, max - size));
-      size = max;
       truncated = true;
       await reader.cancel().catch(() => null);
       break;

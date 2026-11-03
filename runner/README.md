@@ -168,8 +168,9 @@ scratch worktree (`GAFFER_DOD_TESTS_OUTPUT` keeps the tests gate's full output t
 **Forgery** (code under test runs in the runner's process tree): the node:test reporter writes
 to the run's stdout lines signed with HMAC-SHA256 under a per-replay key it reads from
 `GAFFER_REPLAY_PROOF_KEY` and deletes from its environment before any test file starts (so
-test processes never see it; the key is never written to a file and reaches the proof step on
-stdin), each with a per-process sequence number and a closing count; a bad signature, a gap,
+test processes do not inherit it, though same-user code can still read the runner's initial
+environment, and a registered command whose runner is not node:test passes it on; the key is
+never written to a file and reaches the proof step on stdin), each with a per-process sequence number and a closing count; a bad signature, a gap,
 a duplicate or a missing count, a by-path run that reports a file it was not given, a
 vitest/jest report naming other files or with an inconsistent count, or pytest/cargo naming
 an unrequested file makes the whole replay unverified. Plain output text (a vitest/jest

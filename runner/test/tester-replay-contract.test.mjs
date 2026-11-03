@@ -666,6 +666,70 @@ const pci = TR.replayProof({
 });
 assert("C5 cargo: an ignored bound test holds", pci.ran.length === 0, JSON.stringify(pci));
 
+console.log("== C6: name collisions, masked failures, hidden substitutions (review follow-up) ==");
+// Two tests share one full name in the tester's file (describe "a > b" vs describe "a" >
+// describe "b"): the passing twin must not credit the one the candidate skips.
+const ic6 = fakeInv("vitest run", ["test/c.test.js"], "c6");
+writeFileSync(
+  ic6.proof.report,
+  JSON.stringify({
+    numTotalTests: 2,
+    testResults: [
+      {
+        name: join(X, "test/c.test.js"),
+        assertionResults: [
+          { status: "passed", ancestorTitles: ["a > b"], title: "c" },
+          { status: "skipped", ancestorTitles: ["a", "b"], title: "c" },
+        ],
+      },
+    ],
+  }),
+);
+const pcol = TR.replayProof({
+  inv: ic6,
+  files: ["test/c.test.js"],
+  worktree: X,
+  required: [{ file: "test/c.test.js", name: "a > b > c" }],
+});
+assert(
+  "C6 a bound name shared by a passing and a skipped test holds (never credits the twin)",
+  pcol.ran.length === 0 && pcol.tests.length === 0 && pcol.skipped.length === 1,
+  JSON.stringify(pcol),
+);
+const pcolRec = TR.replayProof({ inv: ic6, files: ["test/c.test.js"], worktree: X });
+assert(
+  "C6 the clean replay does not bind an ambiguous name",
+  pcolRec.tests.length === 0,
+  JSON.stringify(pcolRec),
+);
+// The file-level (legacy) rule: a reported failure is red even when the exit status is 0.
+const il = fakeInv("trap 'exit 0' EXIT; vitest run", ["test/l.test.js"], "c6l");
+writeFileSync(
+  il.proof.report,
+  JSON.stringify({
+    numTotalTests: 2,
+    testResults: [
+      {
+        name: join(X, "test/l.test.js"),
+        assertionResults: [
+          { status: "passed", ancestorTitles: [], title: "smoke" },
+          { status: "failed", ancestorTitles: [], title: "required" },
+        ],
+      },
+    ],
+  }),
+);
+const pl = TR.replayProof({ inv: il, files: ["test/l.test.js"], worktree: X });
+assert(
+  "C6 file-level rule: a failed tester test is red whatever the exit status",
+  pl.failed.length === 1 && pl.tests.length === 0,
+  JSON.stringify(pl),
+);
+for (const c of ["FOO=${BAR:-$(id)} vitest run", "FOO=${BAR:-`id`} vitest run"]) {
+  const loc = TR.locateRunner(c);
+  assert(`C6 a substitution inside \${…} is seen: ${c}`, !loc.ok, JSON.stringify(loc));
+}
+
 console.log("== C5: real pytest / go where installed ==");
 if (!has("pytest")) console.log("  SKIP C5 pytest: pytest is not installed");
 else {

@@ -361,7 +361,11 @@ export function applyTesterTests({ worktree, testsHead, files }) {
 //   • node:test events are SIGNED: the reporter (loaded by the runner's parent process
 //     before any test file starts) reads a per-replay key from GAFFER_REPLAY_PROOF_KEY and
 //     DELETES it from its environment, so the test files (child processes spawned after)
-//     never see it; each event line carries an HMAC of its JSON, a per-process sequence
+//     never inherit it (it stays readable as the runner process's initial environment,
+//     /proc/<pid>/environ, to same-user code, and in "registered" mode a runner that is
+//     not node:test hands it to its own processes: the signature stops printed
+//     look-alikes, not code written to forge it; moving the key out of the environment
+//     is a listed follow-up); each event line carries an HMAC of its JSON, a per-process sequence
 //     number and a closing count. A line with a bad MAC, a gap, a duplicate or a missing
 //     end makes the whole replay unverified. The key is never written to a file and is
 //     handed to the proof step on stdin, never on a command line.
@@ -560,6 +564,8 @@ export function scanShellCommand(command) {
     } else if (c === "$" && s[i + 1] === "{") {
       const j = s.indexOf("}", i + 2);
       if (j < 0) return no("an unterminated ${…}");
+      // `${X:-$(cmd)}` / `${X:-\`cmd\`}` hide a command inside the expansion.
+      if (/\$\(|`/.test(s.slice(i + 2, j))) return no("a command substitution");
       word(i).text += s.slice(i, j + 1);
       i = j + 1;
     } else if ((c === "<" || c === ">") && s[i + 1] === "(") {
@@ -1624,19 +1630,40 @@ export function replayProof({ inv, files, worktree, key, required = null }) {
       evidence,
       reason: `the replay's proof of execution does not check out (${how}): ${bad}; none of the ${want.length} tester test file(s) counts as run: ${want.join(", ")}`,
     };
-  // An identity that both passed and failed (a retry, a duplicate name) did not pass.
-  const failedKeys = seen.filter((o) => o.status === "fail");
+  // An identity is credited only when EVERY test observed under it passed: one that also
+  // failed or skipped (a retry, or two tests sharing a name: describe "a > b" vs describe
+  // "a" > describe "b", a repeated test.each title) is ambiguous, and the passing twin must
+  // never stand in for the one that did not run (review 10 follow-up).
+  const notPassing = seen.filter((o) => o.status !== "pass");
   const passing = seen.filter(
-    (o) => o.status === "pass" && !failedKeys.some((x) => sameIdentity(x, o)),
+    (o) => o.status === "pass" && !notPassing.some((x) => sameIdentity(x, o)),
   );
   if (!Array.isArray(required)) {
     const ran = want.filter((f) => fileRan.has(f));
     const unproven = want.filter((f) => !fileRan.has(f));
+    // File-level rule: a tester test the runner reports FAILED is red whatever the run's
+    // exit status (a registered command that masks it, e.g. a trap or `set +e`).
+    const failedSeen = [];
+    for (const o of seen.filter((x) => x.status === "fail")) {
+      const { status: _s, ...id } = o;
+      if (!failedSeen.some((t) => sameIdentity(t, id))) failedSeen.push(id);
+    }
     const tests = [];
     for (const o of passing) {
       const { status: _s, ...id } = o;
       if (!tests.some((t) => sameIdentity(t, id))) tests.push(id);
     }
+    if (failedSeen.length)
+      return {
+        ran,
+        unproven,
+        tests: [],
+        failed: failedSeen,
+        skipped: [],
+        missing: [],
+        evidence,
+        reason: `${failedSeen.length} tester test(s) failed (${how}): ${fmtIds(failedSeen, "failed")}`,
+      };
     return {
       ran,
       unproven,
@@ -1683,7 +1710,7 @@ export function replayProof({ inv, files, worktree, key, required = null }) {
   for (const r of reqs) {
     const m = seen.filter((o) => sameIdentity(o, r));
     if (m.some((o) => o.status === "fail")) failed.push(r);
-    else if (m.some((o) => o.status === "pass")) {
+    else if (m.length && m.every((o) => o.status === "pass")) {
       const o = m.find((x) => x.status === "pass");
       tests.push({
         ...r,

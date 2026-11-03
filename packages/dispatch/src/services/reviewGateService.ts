@@ -1972,6 +1972,10 @@ export class ReviewGateService {
     if (payload.profile !== profile)
       refuse(`the record is for the ${String(payload.profile)} profile`);
     if (payload.passed !== true) refuse("the runner's acceptance run did not pass");
+    // The record must agree with itself: a pass names at least one case, and every case held.
+    const cases = Array.isArray(payload.cases) ? (payload.cases as Array<{ held?: unknown }>) : [];
+    if (cases.length === 0 || cases.some((c) => !c || c.held !== true))
+      refuse("the record's cases do not all hold");
     if (!binding.tested_commit || String(payload.tested_commit) !== binding.tested_commit)
       refuse("the record is for a different commit than the one tested");
     if (contractNow && payload.contract_hash !== contractNow)

@@ -1082,8 +1082,9 @@ tester's tests replayed on a clean checkout, as above. With `cli` or `api`, the 
 itself also runs commands you register, in a fresh checkout of the tested commit of
 their own (none of the tester's code has run there), and the PASS is
 recorded only when they behave as you said:
-- `cli`: each command is an argv list (never a shell string) with optional stdin and
-  env, and expectations: the exit code, stdout and stderr substrings or `/regex/`, text
+- `cli`: each command is an argv list (never a shell string; the runner adds no shell,
+  so write `["sh", "-c", "..."]` only if you mean one) with optional stdin and env (not
+  HOME, TMPDIR, `LD_*`, `BASH_ENV` or `GAFFER_*`, which the runner owns), and expectations: the exit code, stdout and stderr substrings or `/regex/`, text
   stdout must not contain, and files that must (or must not) exist afterwards, with
   text they contain. The runner records the transcript: argv, exit code, stdout and
   stderr (a sha256 of each and a bounded, redacted excerpt), how long it took and what

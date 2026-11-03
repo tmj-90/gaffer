@@ -15,6 +15,7 @@ import {
   type AcceptanceProfile,
 } from "../domain/acceptanceProfile.js";
 import { listEvents } from "../events/eventWriter.js";
+import { contractHash } from "../util/contractHash.js";
 import { testerOffNotice, type TesterLaneDecision } from "../util/testingLane.js";
 import { currentJudgment, type RecordedEvalJudgment } from "./evalJudgment.js";
 import { AC_CHECK_VERIFIER } from "../policy/policy.js";
@@ -286,6 +287,8 @@ export interface PacketRuntimeAcceptance {
     cases: number;
     reason: string | null;
     at: string;
+    /** The record was made against the ticket's current contract (profile, spec, criteria). */
+    current_contract: boolean;
   } | null;
 }
 
@@ -1020,10 +1023,12 @@ function readBacking(p: Omit<ReviewPacket, "backing">, _evidence: Evidence[]): P
     add(
       rt.latest.passed
         ? onHead || p.candidate.length === 0
-          ? `Runtime acceptance: ${rt.profile === "cli" ? "cli transcript replayed" : "api probes passed"} on ${short(rt.latest.tested_commit)} (${rt.latest.cases} ${rt.profile === "cli" ? "commands" : "probes"})`
+          ? rt.latest.current_contract
+            ? `Runtime acceptance: ${rt.profile === "cli" ? "cli transcript replayed" : "api probes passed"} on ${short(rt.latest.tested_commit)} (${rt.latest.cases} ${rt.profile === "cli" ? "commands" : "probes"})`
+            : `Runtime acceptance passed on ${short(rt.latest.tested_commit)} against an earlier contract (the profile, its commands or the criteria changed since)`
           : `Runtime acceptance passed on ${short(rt.latest.tested_commit)}, not the head`
         : `Runtime acceptance: the ${what} did not pass on ${short(rt.latest.tested_commit)}${rt.latest.reason ? ` (${rt.latest.reason})` : ""}`,
-      rt.latest.passed && (onHead || p.candidate.length === 0),
+      rt.latest.passed && rt.latest.current_contract && (onHead || p.candidate.length === 0),
       "the runner's acceptance evidence (system)",
       "evidence",
     );
@@ -1032,7 +1037,11 @@ function readBacking(p: Omit<ReviewPacket, "backing">, _evidence: Evidence[]): P
 }
 
 /** The ticket's acceptance profile and the runner's latest acceptance record. */
-function readRuntimeAcceptance(ticket: Ticket, rows: Evidence[]): PacketRuntimeAcceptance {
+function readRuntimeAcceptance(
+  ticket: Ticket,
+  rows: Evidence[],
+  currentHash: string | null,
+): PacketRuntimeAcceptance {
   const contract = parseTestContract(ticket.test_contract);
   const profile = contractProfile(contract);
   const row = rows
@@ -1055,6 +1064,7 @@ function readRuntimeAcceptance(ticket: Ticket, rows: Evidence[]): PacketRuntimeA
           cases: Array.isArray(pl.cases) ? pl.cases.length : 0,
           reason: typeof pl.reason === "string" ? pl.reason.slice(0, 300) : null,
           at: row.created_at,
+          current_contract: currentHash !== null && pl.contract_hash === currentHash,
         };
     } catch {
       latest = null;
@@ -1174,7 +1184,11 @@ export class ReviewPacketService {
       candidate,
       ci,
       run_links: runLinks,
-      runtime_acceptance: readRuntimeAcceptance(ticket, rows),
+      runtime_acceptance: readRuntimeAcceptance(
+        ticket,
+        rows,
+        contractHash(this.deps.db, ticket.id),
+      ),
     };
     return { ...base, backing: readBacking(base, rows) };
   }

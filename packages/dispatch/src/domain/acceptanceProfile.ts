@@ -23,11 +23,22 @@ export {
 import { type AcceptanceProfile } from "./acceptanceProfileNames.js";
 
 const argv = z.array(z.string().min(1).max(2_000)).min(1).max(64);
+/**
+ * Names a spec's env (or the api port_env) may not set: the runner's throwaway HOME and
+ * TMPDIR, the dynamic loader's and the shells' startup hooks, and the runner's own
+ * GAFFER_ / SANDBOX_ settings (the runner drops them too, runner/lib/acceptance-profiles.mjs).
+ */
+export const RESERVED_ENV_NAME =
+  /^(HOME|TMPDIR|BASH_ENV|ENV|SHELLOPTS|BASHOPTS|PROMPT_COMMAND|IFS|LD_.*|DYLD_.*|BASH_FUNC_.*|GAFFER_.*|SANDBOX_.*|STRICT_MODE)$/;
+const envName = z
+  .string()
+  .regex(/^[A-Za-z_][A-Za-z0-9_]{0,63}$/, "an environment variable name")
+  .refine(
+    (k) => !RESERVED_ENV_NAME.test(k),
+    "a name the runner reserves (HOME, TMPDIR, LD_*, DYLD_*, BASH_ENV, GAFFER_*, SANDBOX_*, ...)",
+  );
 const envMap = z
-  .record(
-    z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,63}$/, "an environment variable name"),
-    z.string().max(2_000),
-  )
+  .record(envName, z.string().max(2_000))
   .refine((m) => Object.keys(m).length <= 32, "at most 32 environment variables");
 const patterns = z.array(z.string().min(1).max(500)).max(20);
 // A path inside the checkout: relative, no `..` segment, no NUL.
@@ -99,10 +110,7 @@ export const apiProbeSpec = z.object({
 export const apiProfileSpec = z.object({
   boot_argv: argv,
   /** The environment variable the runner sets to the free port it picked. */
-  port_env: z
-    .string()
-    .regex(/^[A-Za-z_][A-Za-z0-9_]{0,63}$/)
-    .default("PORT"),
+  port_env: envName.default("PORT"),
   health_path: urlPath,
   boot_timeout_ms: timeoutMs.optional(),
   env: envMap.optional(),

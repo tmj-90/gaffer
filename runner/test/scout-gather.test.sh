@@ -187,6 +187,33 @@ has "$SCOUT_PROMPT" '"why":"sums the totals"' && has "$SCOUT_PROMPT" 'prove it i
 has "$SCOUT_PROMPT" 'src/ghost.ts' && no "a dropped path reached the prompt" || ok "the dropped path never reaches the prompt"
 gaffer_scout_cleanup
 
+echo "== G2. review findings: the provider, the subagent tool, a killed call's spend, a long ticket =="
+has "$sp" "--disallowedTools Bash,Edit,Write,MultiEdit,NotebookEdit,WebFetch,WebSearch,Task,Agent," && ok "the subagent tool is denied by its current name (Agent) too" || no "flags: $sp"
+gaffer_scout_run "$REPO" "$SHA" 1
+: > "$SPAWNS"
+GAFFER_WORKER_PROVIDER=command GAFFER_SCOUT=on GAFFER_SCOUT_MODEL_FLAG="--model cheap-x" gaffer_model_scout 7 "$REPO" "$SHA"
+[ ! -s "$SPAWNS" ] && ok "a command worker cannot be held to Read, Grep and Glob: no model scout" || no "command provider spawned"
+# A call that ran and was killed (a timeout) leaves an empty envelope: its spend is still
+# booked (the ledger estimates it), as for every other launch kind.
+worker_deliver() { printf 'kind=%s\n' "${GAFFER_LAUNCH_KIND:-}" >> "$SPAWNS"; : > "$5"; return 124; }
+: > "$LEDGER"
+GAFFER_SCOUT=on GAFFER_SCOUT_MODEL_FLAG="--model cheap-x" gaffer_model_scout 7 "$REPO" "$SHA"
+has "$(cat "$LEDGER")" "scout 7 124" && ok "a killed model scout call is booked (rc 124)" || no "ledger after a timeout: $(cat "$LEDGER")"
+# A launch the runner itself refused (budget 77, no sandbox 75, provider 70) spawned nothing: no row.
+worker_deliver() { printf 'kind=%s\n' "${GAFFER_LAUNCH_KIND:-}" >> "$SPAWNS"; : > "$5"; return 77; }
+: > "$LEDGER"
+GAFFER_SCOUT=on GAFFER_SCOUT_MODEL_FLAG="--model cheap-x" gaffer_model_scout 7 "$REPO" "$SHA"
+[ ! -s "$LEDGER" ] && ok "a launch the budget refused books nothing" || no "ledger after a refusal: $(cat "$LEDGER")"
+# A ticket whose show JSON is past the per-variable environment limit still renders the
+# scout prompt (read from the packet's temp file, not the environment).
+worker_deliver() { printf 'prompt=%s\n' "$2" | head -3 >> "$SPAWNS"; : > "$5"; return 0; }
+BIGDESC="$(head -c 200000 /dev/zero | tr '\0' 'x')"
+SHOW="{\"ticket\":{\"title\":\"Round totals\",\"description\":\"See src/invoice.ts $BIGDESC\",\"risk_level\":\"medium\"},\"repositories\":[]}"
+gaffer_scout_cleanup; gaffer_scout_run "$REPO" "$SHA" 1; : > "$SPAWNS"
+GAFFER_SCOUT=on GAFFER_SCOUT_MODEL_FLAG="--model cheap-x" gaffer_model_scout 7 "$REPO" "$SHA"
+has "$(cat "$SPAWNS")" "read-only SCOUT for ticket #7" && ok "a long ticket still renders the model scout prompt" || no "long ticket: no prompt ($(head -c 200 "$SPAWNS"))"
+gaffer_scout_cleanup
+
 echo "== H. the live path: tick.sh gathers and routes on the effective risk, no wording =="
 TICK="$RUNNER_DIR/tick.sh"
 grep -F 'gaffer_scout_run "$_CARD_REAL_REPO" "$_CARD_BASE_SHA"' "$TICK" > /dev/null && ok "tick.sh builds the packet" || no "tick.sh does not call the scout"

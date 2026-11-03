@@ -178,6 +178,12 @@ gaffer_model_scout() {
   [ "${DRY_RUN:-0}" = "1" ] && return 0
   [ -n "$num" ] && [ -n "$repo" ] && [ -d "$repo" ] && [ -n "$sha" ] || return 0
   type worker_deliver >/dev/null 2>&1 && type gaffer_write_agent_settings >/dev/null 2>&1 || return 0
+  # Read-only is a claude-code promise (--tools Read,Grep,Glob): the command worker
+  # contract can only say "all tools" or "none", so under it the scout does not run.
+  if [ "${GAFFER_WORKER_PROVIDER:-claude-code}" != "claude-code" ]; then
+    type log >/dev/null 2>&1 && log "SCOUT: model scout for #$num skipped — the ${GAFFER_WORKER_PROVIDER} worker cannot be limited to Read, Grep and Glob" || true
+    return 0
+  fi
   local cli="${CREW_DIR:-}/dist/runtime/context/renderPromptCli.js"
   [ -f "$cli" ] || return 0
   if declare -F gaffer_usage_pause_active >/dev/null 2>&1 && gaffer_usage_pause_active >/dev/null 2>&1; then
@@ -192,9 +198,11 @@ gaffer_model_scout() {
   fi
   printf '{"mcpServers":{}}' > "$t/mcp.json"
   local prompt
-  prompt="$(SC_NUM="$num" SC_REPO="$repo" SC_RISK="$SCOUT_RISK" SC_SCOUT="$SCOUT_PROMPT" SC_SHOW="$SHOW" node -e '
+  # The ticket JSON goes by FILE (gaffer_scout_run wrote it): a long ticket's show JSON
+  # can pass the per-variable environment limit, and the render would fail with E2BIG.
+  prompt="$(SC_NUM="$num" SC_REPO="$repo" SC_RISK="$SCOUT_RISK" SC_SCOUT="$SCOUT_PROMPT" SC_SHOW_FILE="$_SCOUT_TMP/show.json" node -e '
     const e = process.env; let t = {};
-    try { t = (JSON.parse(e.SC_SHOW || "{}").ticket) || {}; } catch {}
+    try { t = (JSON.parse(require("node:fs").readFileSync(e.SC_SHOW_FILE, "utf8") || "{}").ticket) || {}; } catch {}
     let scout = null; try { scout = JSON.parse(e.SC_SCOUT || "null"); } catch {}
     process.stdout.write(JSON.stringify({ kind: "scout", ticketNumber: e.SC_NUM, title: String(t.title || ""),
       description: String(t.description || ""), repoPath: e.SC_REPO, risk: e.SC_RISK || "medium", scout }));
@@ -205,20 +213,25 @@ gaffer_model_scout() {
     model="$(gaffer_route_model scout "$SCOUT_RISK" 0 "${STACK:-}" 1 "$num" 2>/dev/null || true)"
     [ -n "$model" ] && flag="--model $model"
   fi
-  local turns="${GAFFER_SCOUT_MAX_TURNS:-6}" rc=0
+  local turns="${GAFFER_SCOUT_MAX_TURNS:-6}" rc=0 _wrc=""
   declare -F gaffer_role_turns >/dev/null 2>&1 && turns="$(gaffer_role_turns "$turns")"
   # The overrides stay local to this subshell: CLAUDE_FLAGS is REPLACED (no acceptEdits;
   # the write and shell tools denied by name on top of --tools), the boundary is the
   # scratch cwd (write) and the real repo (read).
   (
     # shellcheck disable=SC2034  # read by worker_deliver
-    CLAUDE_FLAGS="--disallowedTools Bash,Edit,Write,MultiEdit,NotebookEdit,WebFetch,WebSearch,Task,TodoWrite"
+    CLAUDE_FLAGS="--disallowedTools Bash,Edit,Write,MultiEdit,NotebookEdit,WebFetch,WebSearch,Task,Agent,TodoWrite"
     # shellcheck disable=SC2034  # read by worker_deliver
     WORKER_CALL_ENV=("GAFFER_WRITE_ROOTS=$t/cwd" "GAFFER_READ_ROOTS=$repo")
     GAFFER_LAUNCH_KIND=scout worker_deliver "$t/cwd" "$prompt" "$flag" "$t/mcp.json" "$t/envelope.json" "" \
       "$turns" --tools "Read,Grep,Glob" --strict-mcp-config --disable-slash-commands >/dev/null 2>&1
-    echo "$?" > "$t/rc"
-    if type gaffer_usage_record >/dev/null 2>&1 && [ -s "$t/envelope.json" ]; then
+    _wrc=$?
+    echo "$_wrc" > "$t/rc"
+    # Booked whenever a call was spawned, an empty envelope too (a timeout or a kill: the
+    # ledger books its estimate, so the spend caps see it). The runner's own refusals
+    # (70 provider, 75 sandbox, 76 bridge, 77 budget) spawned nothing and book nothing.
+    case "$_wrc" in 70 | 75 | 76 | 77) [ -s "$t/envelope.json" ] || _wrc="" ;; esac
+    if type gaffer_usage_record >/dev/null 2>&1 && [ -n "$_wrc" ]; then
       GAFFER_USAGE_REPO="${_CARD_REPO_NAME:-}" GAFFER_USAGE_RISK="$SCOUT_RISK" \
         gaffer_usage_record scout "$num" "$(cat "$t/rc")" "$t/envelope.json" >/dev/null 2>&1 || true
     fi

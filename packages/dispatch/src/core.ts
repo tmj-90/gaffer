@@ -137,40 +137,15 @@ import {
 } from "./services/repoService.js";
 import { EpicsService, type CreateEpicResult } from "./services/epicsService.js";
 import { EPIC_MEMBER_RELATIONS, ownAcceptanceTicketId } from "./services/epicAcceptance.js";
-import { DossierService, DOSSIER_EVENT_TYPE, type Dossier } from "./services/dossierService.js";
+import { DossierService, type Dossier } from "./services/dossierService.js";
 import {
-  assertMayRecordJudgment,
   currentJudgment,
-  EVAL_JUDGED_EVENT,
-  normalizeJudgment,
   type EvalJudgment,
   type RecordedEvalJudgment,
 } from "./services/evalJudgment.js";
-import {
-  assertMayFileRegression,
-  currentRegressionLinks,
-  DEFECT_ESCAPED_EVENT,
-  DEFECT_ESCAPED_WITHDRAWN_EVENT,
-  regressionNote,
-  type RegressionEventRow,
-  type RegressionLink,
-} from "./services/escapedDefects.js";
-import {
-  assertMayRecordScout,
-  normalizeScoutRecord,
-  SCOUT_RECORDED_EVENT,
-  type ScoutRecord,
-} from "./services/scoutRecord.js";
-import {
-  assertMayRecordLaneVerdict,
-  assertMayRecordReviewOpen,
-  LANE_VERDICT_EVENT,
-  normalizeLaneVerdict,
-  REVIEW_OPENED_EVENT,
-  REVIEW_RAW_OPENED_EVENT,
-  type LaneVerdict,
-  type RawOpenKind,
-} from "./services/reviewTelemetry.js";
+import { type RegressionLink } from "./services/escapedDefects.js";
+import { type ScoutRecord } from "./services/scoutRecord.js";
+import { type LaneVerdict, type RawOpenKind } from "./services/reviewTelemetry.js";
 import {
   enteredReviewAt,
   ReviewPacketService,
@@ -268,6 +243,8 @@ import * as landing from "./services/landingFactsService.js";
 import * as reviewLifecycle from "./services/reviewLifecycleService.js";
 import * as ticketLifecycle from "./services/ticketLifecycleService.js";
 import * as testerLane from "./services/testerLaneService.js";
+import * as ticketRecords from "./services/ticketRecordsService.js";
+import * as regressions from "./services/regressionService.js";
 
 /**
  * An evidence row enriched with derived provenance for the reviewer surface.
@@ -303,17 +280,8 @@ export interface TicketDetailBatchItem {
   events?: WorkEvent[];
   evidence?: EvidenceView[];
 }
-
-/** One side of a regression link as the ticket view shows it. */
-export interface RegressionLinkView {
-  ticket_id: string;
-  number: number | null;
-  title: string;
-  status: string;
-  filed_by: { type: string; id: string | null };
-  filed_at: string;
-  note: string | null;
-}
+export type { RegressionLinkView } from "./services/regressionService.js";
+import type { RegressionLinkView } from "./services/regressionService.js";
 
 export interface TicketView {
   ticket: Ticket;
@@ -440,16 +408,8 @@ export type { CreateEpicResult } from "./services/epicsService.js";
 
 /** Result of adding a ticket dependency (EP-001). */
 export type { AddDependencyResult } from "./services/ticketService.js";
-
-/** What recording a review open did (recorded, or why not). */
-export interface ReviewOpenResult {
-  ticketId: string;
-  recorded: boolean;
-  /** Why nothing was written: not_in_review | no_review_round | stale_round | already_recorded. */
-  reason: string | null;
-  eventId: string | null;
-  roundEnteredAt: string | null;
-}
+export type { ReviewOpenResult } from "./services/ticketRecordsService.js";
+import type { ReviewOpenResult } from "./services/ticketRecordsService.js";
 
 /**
  * Dispatch core API. The single entry point used by the CLI and MCP server.
@@ -1658,312 +1618,62 @@ export class Dispatch {
     return reviewLifecycle.recordCiResult(this, this.internals, ref, input, actor);
   }
 
-  /**
-   * EVAL JUDGE: record the delivery-quality judge's verdict on a ticket (runner/lib/
-   * eval-judge.sh after a submit). System/admin only. Telemetry: nothing reads it to
-   * gate, approve or land; it is shown to the reviewer and paired with the review outcome
-   * by `wg judge-agreement`.
-   */
   recordEvalJudgment(
     ref: string,
     input: unknown,
     actor: Actor,
   ): { ticketId: string; eventId: string; judgment: EvalJudgment } {
-    assertMayRecordJudgment(actor);
-    const ticket = this.resolveTicket(ref);
-    const judgment = normalizeJudgment(input, ticket.attempt_count);
-    const eventId = inTransaction(this.db, () => {
-      const id = writeEvent(this.db, {
-        entity_type: "ticket",
-        entity_id: ticket.id,
-        actor,
-        event_type: EVAL_JUDGED_EVENT,
-        payload: judgment,
-      });
-      // The Review view shows the grade, and it (and its packet cache) re-reads a ticket
-      // only when its updated_at moves: bump it so an open page shows the grade. Nothing
-      // else changes: no status, no row_version, no gate input.
-      this.tickets.touch(ticket.id, this.clock.now());
-      return id;
-    });
-    return { ticketId: ticket.id, eventId, judgment };
+    return ticketRecords.recordEvalJudgment(this, ref, input, actor);
   }
 
-  /**
-   * REVIEW TELEMETRY: a person rendered this ticket in the Review view. Recorded once per
-   * review round (the round is the ticket's last entry into in_review, computed here, not
-   * taken from the caller), with the delivery commits recorded for each repo. Only while
-   * the ticket is in review, and only for a human or admin actor. Never bumps updated_at:
-   * the Review queue re-renders on it. A measurement only; nothing gates on it.
-   */
-  recordReviewOpened(ref: string, actor: Actor, seenRound: string | null = null): ReviewOpenResult {
-    assertMayRecordReviewOpen(actor);
-    const ticket = this.resolveTicket(ref);
-    return this.recordReviewOpen(ticket, actor, seenRound, REVIEW_OPENED_EVENT, null);
+  recordReviewOpened(ref: string, actor: Actor, seenRound?: string | null): ReviewOpenResult {
+    return ticketRecords.recordReviewOpened(this, this.internals, ref, actor, seenRound);
   }
 
-  /**
-   * REVIEW TELEMETRY: a person opened a raw log, the evidence in full or the full diff of
-   * a ticket in review. Once per round and kind; the same rules as recordReviewOpened.
-   */
   recordReviewRawOpened(
     ref: string,
     what: RawOpenKind,
     actor: Actor,
-    seenRound: string | null = null,
+    seenRound?: string | null,
   ): ReviewOpenResult {
-    assertMayRecordReviewOpen(actor);
-    const ticket = this.resolveTicket(ref);
-    return this.recordReviewOpen(ticket, actor, seenRound, REVIEW_RAW_OPENED_EVENT, what);
+    return ticketRecords.recordReviewRawOpened(this, this.internals, ref, what, actor, seenRound);
   }
 
-  private recordReviewOpen(
-    ticket: Ticket,
-    actor: Actor,
-    seenRound: string | null,
-    eventType: typeof REVIEW_OPENED_EVENT | typeof REVIEW_RAW_OPENED_EVENT,
-    what: RawOpenKind | null,
-  ): ReviewOpenResult {
-    return inTransaction(this.db, () => {
-      const current = this.resolveTicket(ticket.id);
-      if (current.status !== "in_review")
-        return {
-          ticketId: ticket.id,
-          recorded: false,
-          reason: "not_in_review",
-          eventId: null,
-          roundEnteredAt: null,
-        };
-      const round = this.events.enteredStatusAt(ticket.id, "in_review")?.at ?? null;
-      if (round === null)
-        return {
-          ticketId: ticket.id,
-          recorded: false,
-          reason: "no_review_round",
-          eventId: null,
-          roundEnteredAt: null,
-        };
-      if (seenRound !== null && seenRound !== round)
-        return {
-          ticketId: ticket.id,
-          recorded: false,
-          reason: "stale_round",
-          eventId: null,
-          roundEnteredAt: round,
-        };
-      const seen = this.db
-        .prepare(
-          `SELECT 1 FROM work_events
-            WHERE entity_type = 'ticket' AND entity_id = ? AND event_type = ?
-              AND json_extract(payload_json, '$.round_entered_at') = ?
-              AND (? IS NULL OR json_extract(payload_json, '$.what') = ?)
-            LIMIT 1`,
-        )
-        .get(ticket.id, eventType, round, what, what);
-      if (seen)
-        return {
-          ticketId: ticket.id,
-          recorded: false,
-          reason: "already_recorded",
-          eventId: null,
-          roundEnteredAt: round,
-        };
-      const payload =
-        what === null
-          ? {
-              round_entered_at: round,
-              head_shas: this.repoDeliveries
-                .listForTicket(ticket.id)
-                .filter((d) => d.commit_sha)
-                .map((d) => ({ repo: d.repo_name, sha: d.commit_sha })),
-              // What the Behavioural surface's callers row showed for this ticket when the
-              // server last computed it IN THIS ROUND (listed / none_changed / not_analysed);
-              // absent when it has not (Health counts only known rows).
-              ...(this.internals.lastCallersRow.get(ticket.id)?.round === round
-                ? { impact_callers: this.internals.lastCallersRow.get(ticket.id)!.status }
-                : {}),
-            }
-          : { what, round_entered_at: round };
-      const eventId = writeEvent(this.db, {
-        entity_type: "ticket",
-        entity_id: ticket.id,
-        actor,
-        event_type: eventType,
-        payload,
-      });
-      return { ticketId: ticket.id, recorded: true, reason: null, eventId, roundEnteredAt: round };
-    });
-  }
-
-  /**
-   * LANE VERDICT: what a judging lane (the reviewer agent, the security reviewer, the
-   * tester, the eval judge) concluded about one candidate, recorded by the runner as a
-   * system event so whether a lane changed the decision can be computed. System/admin
-   * only; an agent is refused. Nothing gates on it, and it never bumps updated_at.
-   */
   recordLaneVerdict(
     ref: string,
     input: Record<string, unknown>,
     actor: Actor,
   ): { ticketId: string; eventId: string; verdict: LaneVerdict } {
-    assertMayRecordLaneVerdict(actor);
-    const ticket = this.resolveTicket(ref);
-    const verdict = normalizeLaneVerdict(input, actor);
-    const eventId = writeEvent(this.db, {
-      entity_type: "ticket",
-      entity_id: ticket.id,
-      actor,
-      event_type: LANE_VERDICT_EVENT,
-      payload: verdict,
-    });
-    return { ticketId: ticket.id, eventId, verdict };
+    return ticketRecords.recordLaneVerdict(this, ref, input, actor);
   }
 
-  /**
-   * PRE-WORK SCOUT: the runner's scout packet summary for one delivery attempt (the risk
-   * it classified, the signals that raised it, its coverage), recorded as a system event
-   * for the Review backing rows and Health's scout read model. System/admin only; an
-   * agent is refused. Nothing gates on it, and it never bumps updated_at.
-   */
   recordScout(
     ref: string,
     input: unknown,
     actor: Actor,
   ): { ticketId: string; eventId: string; scout: ScoutRecord } {
-    assertMayRecordScout(actor);
-    const ticket = this.resolveTicket(ref);
-    const packet =
-      input && typeof input === "object" && !Array.isArray(input)
-        ? (input as Record<string, unknown>)
-        : {};
-    // The declared level is the ticket's own, not the packet's copy of it.
-    const scout = normalizeScoutRecord(packet, actor, ticket.risk_level);
-    const eventId = writeEvent(this.db, {
-      entity_type: "ticket",
-      entity_id: ticket.id,
-      actor,
-      event_type: SCOUT_RECORDED_EVENT,
-      payload: scout,
-    });
-    return { ticketId: ticket.id, eventId, scout };
+    return ticketRecords.recordScout(this, ref, input, actor);
   }
 
-  /**
-   * ESCAPED DEFECT (MF5): a person says `ref` (a defect report or its fix) is a regression
-   * of the accepted change `of` (a ticket id or number). Recorded as `ticket.defect_escaped`
-   * on `ref`, the actor columns saying who filed it. Human or admin only; the target must be
-   * another ticket that is done (an accepted change). Filing the same standing link again
-   * records nothing. A measurement: nothing gates on it, and it never bumps updated_at.
-   */
   fileRegression(
     ref: string,
     of: string,
     actor: Actor,
-    note: string | null = null,
+    note?: string | null,
   ): { ticketId: string; regressionOf: string; recorded: boolean; eventId: string | null } {
-    assertMayFileRegression(actor);
-    const ticket = this.resolveTicket(ref);
-    const target = this.resolveTicket(of);
-    if (target.id === ticket.id)
-      throw new DispatchError("VALIDATION_ERROR", "A ticket cannot be a regression of itself.", {
-        ticket_id: ticket.id,
-      });
-    if (target.status !== "done")
-      throw new DispatchError(
-        "STATE_CONFLICT",
-        `#${target.number ?? "?"} is not an accepted change (it is ${target.status}); a regression links to a change that reached done.`,
-        { regression_of: target.id, status: target.status },
-      );
-    return inTransaction(this.db, () => {
-      const standing = this.regressionLinkRows().some(
-        (l) => l.ticketId === ticket.id && l.regressionOf === target.id,
-      );
-      if (standing)
-        return { ticketId: ticket.id, regressionOf: target.id, recorded: false, eventId: null };
-      const eventId = writeEvent(this.db, {
-        entity_type: "ticket",
-        entity_id: ticket.id,
-        actor,
-        event_type: DEFECT_ESCAPED_EVENT,
-        payload: {
-          regression_of: target.id,
-          regression_of_number: target.number ?? null,
-          note: regressionNote(note),
-        },
-      });
-      return { ticketId: ticket.id, regressionOf: target.id, recorded: true, eventId };
-    });
+    return regressions.fileRegression(this, ref, of, actor, note);
   }
 
-  /** Take back a regression link filed in error (human or admin; nothing standing: no-op). */
   withdrawRegression(
     ref: string,
     of: string,
     actor: Actor,
   ): { ticketId: string; regressionOf: string; recorded: boolean; eventId: string | null } {
-    assertMayFileRegression(actor);
-    const ticket = this.resolveTicket(ref);
-    const target = this.resolveTicket(of);
-    return inTransaction(this.db, () => {
-      const standing = this.regressionLinkRows().some(
-        (l) => l.ticketId === ticket.id && l.regressionOf === target.id,
-      );
-      if (!standing)
-        return { ticketId: ticket.id, regressionOf: target.id, recorded: false, eventId: null };
-      const eventId = writeEvent(this.db, {
-        entity_type: "ticket",
-        entity_id: ticket.id,
-        actor,
-        event_type: DEFECT_ESCAPED_WITHDRAWN_EVENT,
-        payload: { regression_of: target.id, regression_of_number: target.number ?? null },
-      });
-      return { ticketId: ticket.id, regressionOf: target.id, recorded: true, eventId };
-    });
+    return regressions.withdrawRegression(this, ref, of, actor);
   }
 
-  /** Every standing regression link (the event log folded, see services/escapedDefects.ts). */
   regressionLinkRows(): RegressionLink[] {
-    const rows = this.db
-      .prepare(
-        `SELECT entity_id AS ticketId, event_type AS eventType, actor_type AS actorType,
-                actor_id AS actorId, created_at AS at,
-                json_extract(payload_json, '$.regression_of') AS regressionOf,
-                json_extract(payload_json, '$.note') AS note
-           FROM work_events
-          WHERE entity_type = 'ticket' AND event_type IN (?, ?)
-          ORDER BY rowid`,
-      )
-      .all(DEFECT_ESCAPED_EVENT, DEFECT_ESCAPED_WITHDRAWN_EVENT) as RegressionEventRow[];
-    return currentRegressionLinks(rows);
-  }
-
-  private regressionLinksOf(ticketId: string): TicketView["regression"] {
-    const links = this.regressionLinkRows();
-    const side = (otherId: string, l: RegressionLink): RegressionLinkView[] => {
-      const row = this.db
-        .prepare(`SELECT number, title, status FROM tickets WHERE id = ?`)
-        .get(otherId) as { number: number | null; title: string; status: string } | undefined;
-      if (!row) return [];
-      return [
-        {
-          ticket_id: otherId,
-          number: row.number,
-          title: row.title,
-          status: row.status,
-          filed_by: l.filedBy,
-          filed_at: l.filedAt,
-          note: l.note,
-        },
-      ];
-    };
-    return {
-      regression_of: links
-        .filter((l) => l.ticketId === ticketId)
-        .flatMap((l) => side(l.regressionOf, l)),
-      regressed_by: links
-        .filter((l) => l.regressionOf === ticketId)
-        .flatMap((l) => side(l.ticketId, l)),
-    };
+    return regressions.regressionLinkRows(this);
   }
 
   ciStatus(
@@ -2189,51 +1899,16 @@ export class Dispatch {
     return this.ticketSvc.listRepoDeliveries(ticketRef);
   }
 
-  /**
-   * DELIVERY-DOSSIER: assemble the tamper-evident evidence dossier for a ticket from
-   * EXISTING recorded state. Pure read — no write, no lifecycle change. Deterministic:
-   * unchanged ticket state always yields the same {@link Dossier.hash}.
-   */
   dossier(ref: string): Dossier {
-    const ticket = this.resolveTicket(ref);
-    return this.dossierSvc.assemble(ticket);
+    return ticketRecords.dossier(this, ref);
   }
 
-  /**
-   * REVIEW PACKET: the runner-verified facts the Review view draws above the agent's
-   * words (gates, tester, cost, attempts, risk, the review pin, per-criterion check
-   * results, test-count disagreements). Pure read; outside the dossier's hash.
-   */
   reviewPacket(ref: string, costFor: CostReader): ReviewPacket {
-    return this.reviewPacketSvc.assemble(this.resolveTicket(ref), costFor);
+    return ticketRecords.reviewPacket(this, ref, costFor);
   }
 
-  /**
-   * DELIVERY-DOSSIER: assemble the dossier AND record its hash against the control
-   * plane as a `ticket.dossier_recorded` work-event, so the dossier can later be
-   * verified. This is the ONLY write on the dossier path. Idempotent: when the freshly
-   * computed hash equals the most recently recorded one, no new event is written
-   * (`eventId` is null). Recording NEVER changes ticket status or any lifecycle state.
-   */
   recordDossier(ref: string, actor: Actor): { dossier: Dossier; eventId: string | null } {
-    const ticket = this.resolveTicket(ref);
-    const dossier = this.dossierSvc.assemble(ticket);
-    const previous = this.events.latestDossierHash(ticket.id);
-    if (previous === dossier.hash) {
-      return { dossier, eventId: null };
-    }
-    const eventId = writeEvent(this.db, {
-      entity_type: "ticket",
-      entity_id: ticket.id,
-      actor,
-      event_type: DOSSIER_EVENT_TYPE,
-      payload: {
-        dossier_hash: dossier.hash,
-        hash_algo: dossier.hash_algo,
-        schema: dossier.schema,
-      },
-    });
-    return { dossier, eventId };
+    return ticketRecords.recordDossier(this, ref, actor);
   }
 
   grantReadyApproval(ref: string, actor: Actor): { ticketId: string; eventId: string } {
@@ -2469,7 +2144,7 @@ export class Dispatch {
       // PER-REPOSITORY LANDING: each write repo's approved commit and whether it landed.
       landing: computeLandingStatus(this.db, ticket.id),
       evalJudgment: currentJudgment(events, enteredReviewAt(ticket.id, events)),
-      regression: this.regressionLinksOf(ticket.id),
+      regression: regressions.regressionLinksOf(this, ticket.id),
     };
   }
 

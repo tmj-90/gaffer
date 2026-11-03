@@ -95,7 +95,9 @@ export const TOOL_DESCRIPTIONS: Record<keyof typeof toolSchemas, string> = {
     "carries each linked decision a human has already answered (its `answer`) — " +
     "build to that answer. `review_comments` carries the human reviewer's " +
     "comments (a `must_fix` one that is `open` is a requirement your next " +
-    "delivery must address); you can read them but never resolve them. Read-only " +
+    "delivery must address); you can read them but never resolve them. " +
+    "`regression_links` lists the accepted changes a person said this ticket " +
+    "regresses (and the later tickets that regress it); only a person files one. Read-only " +
     "and cheap; prefer it over guessing the ticket's current state.",
   heartbeat_claim:
     "**Extend your claim's lease during long work — call it BEFORE the lease " +

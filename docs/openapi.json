@@ -2495,7 +2495,7 @@
           "Read models"
         ],
         "summary": "Factory health and ROI",
-        "description": "Event-log hash-chain integrity, spend, event-derived cycle time and throughput, flow efficiency, governance, skills and recall. `review_time` is human review time per accepted ticket (median, p75, p90; split into queue wait and decision time where the Review view recorded an open, the full span in review otherwise, named in `basis`), `first_pass` is first-pass acceptance split by approver, `lane_verdicts` counts the judging lanes' verdicts and `escaped_defects` says the rate is not recorded yet. `usage_pause` reports the runner's pause after a usage-limit or rate-limit refusal (`{ active, paused_until, kind, basis, message, ticket, lane? }`; `{ active: false }` when not paused).",
+        "description": "Event-log hash-chain integrity, spend, event-derived cycle time and throughput, flow efficiency, governance, skills and recall. `review_time` is human review time per accepted ticket (median, p75, p90; split into queue wait and decision time where the Review view recorded an open, the full span in review otherwise, named in `basis`), `first_pass` is first-pass acceptance split by approver, `lane_verdicts` counts the judging lanes' verdicts, `lane_value` says what each lane changed (verdicts against the person's decision per attempt, unique catches, ledger cost per attempt; counts only), `escaped_defects` is escaped accepted changes over accepted changes in the window from the regression links a person filed, and `review_time.active` is the approximate last-open-to-decision time capped at two hours. `usage_pause` reports the runner's pause after a usage-limit or rate-limit refusal (`{ active, paused_until, kind, basis, message, ticket, lane? }`; `{ active: false }` when not paused).",
         "parameters": [
           {
             "name": "window_days",
@@ -2515,6 +2515,54 @@
               "application/json": {
                 "schema": {
                   "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The Host/Origin is not permitted for a token-less request (`FORBIDDEN_HOST`). A named principal acted outside its scope (`SCOPE_DENIED`: `details.scope` names its repos and tickets, `details.reason` is `outside_repo_scope`, `outside_ticket_scope`, `no_repos`, `factory_wide` or `admin_required`, with `details.ticket`, `details.outside_repos` or `details.required` saying what put it outside).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "read"
+      }
+    },
+    "/api/review-rules": {
+      "get": {
+        "operationId": "getApiReviewRules",
+        "tags": [
+          "Read models"
+        ],
+        "summary": "Review rules proposed from repeated human feedback",
+        "description": "The same send-back reason or must-fix comment from a person (normalised: ids, paths and numbers dropped) on `threshold` or more tickets in a repo is a candidate rule; it is proposed as a lore convention draft tagged review-rule after the next person's send-back or must-fix comment, or by `wg review-rules propose`. Only a person's feedback counts. `proposed` carries each rule's lore status and its measure: rejections citing it per review round a person decided in the repo, before vs after approval over equal windows (`not_enough_data` below five rounds after). A read.",
+        "responses": {
+          "200": {
+            "description": "`{ threshold, candidates, proposed, note }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewRules"
                 }
               }
             }
@@ -5607,6 +5655,105 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ReviewOpened"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The calling principal may not do this (`ACTOR_NOT_PERMITTED`). The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`). A named principal acted outside its scope (`SCOPE_DENIED`: `details.scope` names its repos and tickets, `details.reason` is `outside_repo_scope`, `outside_ticket_scope`, `no_repos`, `factory_wide` or `admin_required`, with `details.ticket`, `details.outside_repos` or `details.required` saying what put it outside).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource (`NOT_FOUND`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body or query failed validation (`VALIDATION_ERROR`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "full"
+      }
+    },
+    "/tickets/{id}/regression-of": {
+      "post": {
+        "operationId": "postTicketsByIdRegressionOf",
+        "tags": [
+          "Review & delivery"
+        ],
+        "summary": "Link this ticket to the accepted change it regresses",
+        "description": "Escaped defects: a person says this ticket (a defect report or its fix) is a regression of the accepted change `of` (a ticket id or number), recorded as `ticket.defect_escaped` with who filed it; `withdraw: true` takes a link back (`ticket.defect_escaped_withdrawn`). The target must be another ticket that is done. `recorded: false` when the link already stood (or there was nothing to withdraw). Health's escaped-defect rate counts these links and only these. Human or admin principals only; an agent is refused.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/regressionOfBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "`{ ticket_id, regression_of, recorded, withdrawn, event_id }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegressionOf"
                 }
               }
             }
@@ -14054,6 +14201,63 @@
           "repo_id"
         ]
       },
+      "RegressionOf": {
+        "type": "object",
+        "properties": {
+          "ticket_id": {
+            "type": "string"
+          },
+          "regression_of": {
+            "type": "string",
+            "description": "The accepted change's ticket id."
+          },
+          "recorded": {
+            "type": "boolean",
+            "description": "false: the link already stood (or nothing to withdraw)."
+          },
+          "withdrawn": {
+            "type": "boolean"
+          },
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "ticket_id",
+          "regression_of",
+          "recorded",
+          "withdrawn",
+          "event_id"
+        ],
+        "additionalProperties": false
+      },
+      "regressionOfBody": {
+        "type": "object",
+        "properties": {
+          "of": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "note": {
+            "type": "string",
+            "maxLength": 2000
+          },
+          "withdraw": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "of"
+        ]
+      },
       "rejectLoreBody": {
         "type": "object",
         "properties": {
@@ -14936,6 +15140,33 @@
         "properties": {
           "comment": {
             "$ref": "#/components/schemas/ReviewComment"
+          },
+          "review_rules_proposed": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "repo": {
+                  "type": "string"
+                },
+                "lore_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "repo",
+                "lore_id"
+              ],
+              "additionalProperties": false
+            },
+            "description": "Review-rule drafts this act completed and proposed (memory configured only)."
           }
         },
         "required": [
@@ -15078,6 +15309,41 @@
         "required": [
           "what"
         ]
+      },
+      "ReviewRules": {
+        "type": "object",
+        "properties": {
+          "threshold": {
+            "type": "integer",
+            "description": "GAFFER_REVIEW_RULE_REPEAT: distinct tickets a rule needs."
+          },
+          "candidates": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": {}
+            },
+            "description": "Repeated feedback not proposed yet: repo, key, count, tickets, rule_text, examples."
+          },
+          "proposed": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": {}
+            },
+            "description": "Proposed rules: repo, key, count, lore_id, lore_status, approved_at and measure (state not_approved | not_enough_data | measured, citing before/after per review round)."
+          },
+          "note": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "threshold",
+          "candidates",
+          "proposed",
+          "note"
+        ],
+        "additionalProperties": false
       },
       "RiskAnnotation": {
         "type": "object",
@@ -16422,6 +16688,185 @@
             },
             "description": "The reviewer's comments (the ReviewComment shape, without anchor_state)."
           },
+          "regression": {
+            "type": "object",
+            "properties": {
+              "regression_of": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "ticket_id": {
+                      "type": "string"
+                    },
+                    "number": {
+                      "anyOf": [
+                        {
+                          "type": "integer"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "title": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Null for a scoped principal outside its scope."
+                    },
+                    "status": {
+                      "type": "string"
+                    },
+                    "filed_by": {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "id": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "id"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "filed_at": {
+                      "type": "string"
+                    },
+                    "note": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "outside_scope": {
+                      "const": true
+                    }
+                  },
+                  "required": [
+                    "ticket_id",
+                    "number",
+                    "title",
+                    "status",
+                    "filed_by",
+                    "filed_at",
+                    "note"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "regressed_by": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "ticket_id": {
+                      "type": "string"
+                    },
+                    "number": {
+                      "anyOf": [
+                        {
+                          "type": "integer"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "title": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Null for a scoped principal outside its scope."
+                    },
+                    "status": {
+                      "type": "string"
+                    },
+                    "filed_by": {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "id": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "id"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "filed_at": {
+                      "type": "string"
+                    },
+                    "note": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "outside_scope": {
+                      "const": true
+                    }
+                  },
+                  "required": [
+                    "ticket_id",
+                    "number",
+                    "title",
+                    "status",
+                    "filed_by",
+                    "filed_at",
+                    "note"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "regression_of",
+              "regressed_by"
+            ],
+            "additionalProperties": false,
+            "description": "Escaped defects: the accepted changes a person linked this ticket to as their regression, and the later tickets linked to this one."
+          },
           "agent_display": {
             "type": "object",
             "additionalProperties": {
@@ -16490,6 +16935,7 @@
           "events",
           "rework_trail",
           "review_comments",
+          "regression",
           "agent_display"
         ],
         "additionalProperties": false
@@ -17819,6 +18265,33 @@
               "captured"
             ],
             "description": "review/reject with captureLore only."
+          },
+          "review_rules_proposed": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "repo": {
+                  "type": "string"
+                },
+                "lore_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "repo",
+                "lore_id"
+              ],
+              "additionalProperties": false
+            },
+            "description": "Review-rule drafts this act completed and proposed (memory configured only)."
           },
           "landed_already": {
             "type": "array",

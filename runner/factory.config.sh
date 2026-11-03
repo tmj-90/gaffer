@@ -2732,7 +2732,7 @@ export GAFFER_REQUIRE_CI GAFFER_CI_POLL_ATTEMPTS GAFFER_CI_POLL_INTERVAL_SECS
 # See docs/eval-harness.md.
 : "${GAFFER_EVAL_JUDGE:=0}"
 
-# REVIEW RULES (dispatch, D6): the same send-back reason or must-fix comment from a person
+# REVIEW RULES (dispatch): the same send-back reason or must-fix comment from a person
 # (after dropping ids, paths and numbers) on this many tickets in one repo is proposed as a
 # lore convention draft tagged review-rule, which a person approves (gaffer lore approve or
 # the Memory view); it never auto-approves, MEMORY_AUTO_APPROVE included. Only a person's

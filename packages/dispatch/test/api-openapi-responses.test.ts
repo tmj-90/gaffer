@@ -202,6 +202,13 @@ describe("OpenAPI response schemas match the live routes", () => {
       shownCommits(wg, t1.id),
     );
     await expectContract("POST /tickets/:id/mark-merged", `/tickets/${t1.id}/mark-merged`);
+    // ESCAPED DEFECTS: a later ticket linked to the accepted change it regresses.
+    const defect = wg.createTicket({ title: "regressed", policy_pack: "solo_loose" }, human);
+    await expectContract("POST /tickets/:id/regression-of", `/tickets/${defect.id}/regression-of`, {
+      of: t1.id,
+      note: "broke it",
+    });
+    await expectContract("GET /tickets/:id", `/tickets/${defect.id}`);
     await expectContract(
       "POST /tickets/:id/reopen-for-review",
       `/tickets/${t1.id}/reopen-for-review`,
@@ -290,6 +297,9 @@ describe("OpenAPI response schemas match the live routes", () => {
       status: "accepted",
       answer: "yes",
     });
+
+    // REVIEW RULES: the read model (no feedback repeated yet).
+    await expectContract("GET /api/review-rules", "/api/review-rules");
 
     // --- principals ----------------------------------------------------------------
     await expectContract("GET /api/whoami", "/api/whoami");

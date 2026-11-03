@@ -312,14 +312,29 @@ usage ledger and the ticket transition log, and says only what those can show:
   history, a decision from the CLI, a read-only token, which cannot record one)
   counts its whole time in review, and the card says which basis it used. Tickets
   only an agent approved are counted apart, never as zero minutes.
-  **Accepted-change cost** is the figure below. **Escaped-defect rate** reads "Not
-  recorded yet": counting it needs a link, filed by a person, from a defect to the
-  accepted change it escaped from, and Gaffer has none yet. `review_time` also
+  **Accepted-change cost** is the figure below. **Escaped-defect rate** is the
+  share of changes accepted in the window (30 days, the Health window) that a
+  person later linked a defect to, with the all-time figure beside it. It counts
+  only what a person filed: when a later ticket (the defect report or its fix)
+  is a regression of an accepted change, say so on its ticket page (the
+  *Escaped defects* card: the change's number and, if you like, what broke), with
+  `wg ticket regression-of <ticket> --of <change> [--note "..."]`, or
+  `POST /tickets/:id/regression-of`. That records `ticket.defect_escaped` on the
+  later ticket with your name; `--withdraw` (or Withdraw on the card) takes a link
+  back. The change must be done, and both tickets show the link. Gaffer never
+  guesses a regression from a revert or a red build, and an agent can neither file
+  nor withdraw one: dispatch refuses an agent or the runner, the safety hook
+  denies the verb in an agent shell, and the MCP `get_ticket` shows the links
+  read-only (numbers and statuses, not your note). `review_time` also
   serves the median queue wait and decision time, the time from review-ready to
   decision, and the share of tickets approved without opening a raw view
   (`ticket.review_raw_opened`: the run log or the full diff from the ticket page,
   an evidence row in full from Review) among the approving rounds that recorded
-  an open. `gaffer wg stats` prints the same figures.
+  an open. Beside decision time it serves an **active** figure, an approximation of
+  attention: from the last time you opened the ticket or a raw view in the round
+  to your decision, capped at two hours (`review_time.active`), so a page left
+  open overnight does not count as hours of review. `gaffer wg stats` prints the
+  same figures.
 - **Lane verdicts.** The reviewer agent, the security reviewer, the tester and the
   eval judge each record what they concluded as a `ticket.lane_verdict` event
   (lane, verdict, the commit they judged and the delivery attempt, with
@@ -333,6 +348,32 @@ usage ledger and the ticket transition log, and says only what those can show:
   the commit, and nothing when that latest row has no attempt id. A
   delivery or review row carries the router's tier and its reasons
   (`route_tier`, `route_reasons`).
+- **What each lane changed.** A card under the four measures (and
+  `lane_value` in `GET /api/health`, and `gaffer wg stats`) says, for the reviewer
+  agent, the security review, the tester, the eval judge and the plan debate, how
+  many verdicts it recorded, how often its verdict differed from your decision on
+  the same attempt (split into "it blocked and you passed it" and "it passed and
+  you sent it back"), how often it was the only lane that asked for a send-back,
+  and its ledger cost per attempt. An attempt runs from one start of work to the
+  next; a verdict joins the attempt it falls in by time. A lane with no verdicts
+  says "no verdicts recorded" (the plan debate records none and books with the rest
+  of planning). It also counts the send-backs no lane asked for. These are counts,
+  not advice: nothing reads them to switch a lane off, and the security review and
+  the tester are safety lanes that telemetry never switches off.
+- **Review rules from your feedback.** When the same send-back reason or must-fix
+  comment from a person (compared after dropping ids, paths, file names and
+  numbers) turns up on three tickets in a repository (`GAFFER_REVIEW_RULE_REPEAT`,
+  2 to 20), the next send-back or must-fix comment proposes it as a lore
+  `convention` draft tagged `review-rule`, scoped to that repository, with the
+  source comments and reasons as examples and the count. You approve or reject it
+  like any other draft (the Memory view, `gaffer lore approve`); it never
+  approves itself, `MEMORY_AUTO_APPROVE=1` included. Only a person's feedback
+  counts: the reviewer agent's, the tester's and the runner's send-backs never
+  seed a rule. `wg review-rules` (and `GET /api/review-rules`) lists the
+  candidates and each proposed rule with its status and its measure: rejections
+  citing it per review round you decided in that repository, before and after
+  approval over equal windows, or "not enough data" until there are five rounds
+  after. `wg review-rules propose` proposes by hand.
 
 - **Rework.** A ticket is *sent back* when a reviewer or the tester rejects it,
   or when the runner retries it after a failed gate; both count. Every delivery

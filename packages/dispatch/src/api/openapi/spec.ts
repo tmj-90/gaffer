@@ -600,7 +600,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.read,
     summary: "Factory health and ROI",
     description:
-      "Event-log hash-chain integrity, spend, event-derived cycle time and throughput, flow efficiency, governance, skills and recall. `review_time` is human review time per accepted ticket (median, p75, p90; split into queue wait and decision time where the Review view recorded an open, the full span in review otherwise, named in `basis`), `first_pass` is first-pass acceptance split by approver, `lane_verdicts` counts the judging lanes' verdicts and `escaped_defects` says the rate is not recorded yet. `usage_pause` reports the runner's pause after a usage-limit or rate-limit refusal (`{ active, paused_until, kind, basis, message, ticket, lane? }`; `{ active: false }` when not paused).",
+      "Event-log hash-chain integrity, spend, event-derived cycle time and throughput, flow efficiency, governance, skills and recall. `review_time` is human review time per accepted ticket (median, p75, p90; split into queue wait and decision time where the Review view recorded an open, the full span in review otherwise, named in `basis`), `first_pass` is first-pass acceptance split by approver, `lane_verdicts` counts the judging lanes' verdicts, `lane_value` says what each lane changed (verdicts against the person's decision per attempt, unique catches, ledger cost per attempt; counts only), `escaped_defects` is escaped accepted changes over accepted changes in the window from the regression links a person filed, and `review_time.active` is the approximate last-open-to-decision time capped at two hours. `usage_pause` reports the runner's pause after a usage-limit or rate-limit refusal (`{ active, paused_until, kind, basis, message, ticket, lane? }`; `{ active: false }` when not paused).",
     capability: "read",
     query: {
       window_days: {
@@ -609,6 +609,22 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
       },
     },
     responses: [ok("`HealthView`.")],
+  },
+  {
+    method: "GET",
+    path: "/api/review-rules",
+    tag: T.read,
+    summary: "Review rules proposed from repeated human feedback",
+    description:
+      "The same send-back reason or must-fix comment from a person (normalised: ids, paths " +
+      "and numbers dropped) on `threshold` or more tickets in a repo is a candidate rule; " +
+      "it is proposed as a lore convention draft tagged review-rule after the next person's " +
+      "send-back or must-fix comment, or by `wg review-rules propose`. Only a person's " +
+      "feedback counts. `proposed` carries each rule's lore status and its measure: " +
+      "rejections citing it per review round a person decided in the repo, before vs after " +
+      "approval over equal windows (`not_enough_data` below five rounds after). A read.",
+    capability: "read",
+    responses: [ok("`{ threshold, candidates, proposed, note }`.", "ReviewRules")],
   },
 
   // --- /tickets ------------------------------------------------------------------
@@ -1055,6 +1071,28 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     body: "reviewOpenedBody",
     responses: [
       ok("`{ ticket_id, recorded, reason, event_id, round_entered_at }`.", "ReviewOpened"),
+      notFound,
+      invalid,
+      forbidden,
+    ],
+  },
+  {
+    method: "POST",
+    path: "/tickets/:id/regression-of",
+    tag: T.review,
+    summary: "Link this ticket to the accepted change it regresses",
+    description:
+      "Escaped defects: a person says this ticket (a defect report or its fix) is a " +
+      "regression of the accepted change `of` (a ticket id or number), recorded as " +
+      "`ticket.defect_escaped` with who filed it; `withdraw: true` takes a link back " +
+      "(`ticket.defect_escaped_withdrawn`). The target must be another ticket that is done. " +
+      "`recorded: false` when the link already stood (or there was nothing to withdraw). " +
+      "Health's escaped-defect rate counts these links and only these. Human or admin " +
+      "principals only; an agent is refused.",
+    capability: "full",
+    body: "regressionOfBody",
+    responses: [
+      ok("`{ ticket_id, regression_of, recorded, withdrawn, event_id }`.", "RegressionOf"),
       notFound,
       invalid,
       forbidden,

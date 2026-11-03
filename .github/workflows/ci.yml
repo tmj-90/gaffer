@@ -389,7 +389,7 @@ jobs:
           # group (runner/test/ci-matrix.test.sh checks it). s15 leads its shard: its
           # empty-Floor check needs a quiet factory. s6 runs after s5.
           - name: rework-blocked
-            suites: s1-rework s2-wont-do s3-blocked
+            suites: s1-rework s2-wont-do s3-blocked s22-tester-first
           - name: tester-decisions-settings-readonly
             suites: s5-tester s6-decisions s12-settings s13-principals s18-read-only
           - name: squad-memory-map-specs-pause-sweep

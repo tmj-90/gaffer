@@ -590,6 +590,33 @@ describe("REVIEW PACKET tester verdict", () => {
         verdict: "pass",
         provenance: "agent",
         summary: "12 black-box tests pass",
+        tester_agent: null,
+      });
+    } finally {
+      wg.db.close();
+    }
+  });
+
+  it("a PASS the runner recorded as the system names the tester agent's run (who tested)", () => {
+    const wg = Dispatch.open(":memory:", new TestClock(), nonEmptyDiffRunner, {
+      testingEnabled: true,
+    });
+    try {
+      const id = forgedVerdict(wg);
+      wg.routeToTester(id, system);
+      wg.testerPass(
+        id,
+        {
+          summary: "12 black-box tests pass",
+          replay: "passed",
+          tester_agent: { id: "tester", run: "sess-42" },
+        },
+        system,
+      );
+      expect(wg.reviewPacket(id, cost).tester).toMatchObject({
+        verdict: "pass",
+        provenance: "system",
+        tester_agent: { id: "tester", run: "sess-42" },
       });
     } finally {
       wg.db.close();

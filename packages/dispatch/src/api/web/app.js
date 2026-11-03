@@ -12920,8 +12920,14 @@ function renderTestingCard(t, evidence) {
               e.summary,
               // BBT-001 provenance badge: who produced this verdict (derived from the
               // recording actor's type), so a reviewer sees "by <agent|human|system>".
+              // A PASS the runner recorded as the system names the tester agent whose run
+              // it records: it reads as that, never as the system's own verdict.
               prov
-                ? el("span", { class: "badge no-dot", style: "margin-left:8px" }, `by ${prov}`)
+                ? el(
+                    "span",
+                    { class: "badge no-dot", style: "margin-left:8px" },
+                    testerRecordedBy(prov, parseTesterAgent(e.payload_json)) || `by ${prov}`,
+                  )
                 : null,
             ]),
             el("div", { class: "ac-meta tt-who" }, `${e.created_by} · ${fmtTime(e.created_at)}`),
@@ -12962,6 +12968,14 @@ function renderTestingCard(t, evidence) {
           const others = Array.isArray(p.not_replayed_repos)
             ? p.not_replayed_repos.filter((f) => typeof f === "string")
             : [];
+          // What the record proves: every test the tester's PASS bound, or (an older PASS
+          // without test identities) only that each file ran: file-level evidence only.
+          const tests = Array.isArray(p.tests) ? p.tests.length : 0;
+          const level = p.evidence === "identities" ? "identities" : "files";
+          const proves =
+            level === "identities"
+              ? ` (${tests} bound test${tests === 1 ? "" : "s"} passed)`
+              : " (file-level evidence only)";
           return el("li", { class: files.length ? "tt-row tt-pass" : "tt-row" }, [
             glyph(
               files.length ? "done" : "blocked",
@@ -12974,7 +12988,7 @@ function renderTestingCard(t, evidence) {
               files.length ? "Passed on the landed revision " : "Landed ",
               el("code", { class: "mono" }, sha.slice(0, 12)),
               files.length
-                ? `: ${files.join(", ")}`
+                ? `: ${files.join(", ")}${proves}`
                 : " with no tester test file replayed (not counted as accepted)",
               others.length ? `. Not replayed in ${others.join(", ")}.` : "",
             ]),
@@ -13248,6 +13262,43 @@ function renderRuntimeAcceptance(evidence) {
       ]),
     ),
   );
+}
+
+/**
+ * The tester agent a system-recorded PASS names ({ id, run }), from a test_output row's
+ * payload_json, or null (an agent's or a person's PASS, a legacy row).
+ */
+function parseTesterAgent(raw) {
+  if (!raw) return null;
+  try {
+    const o = typeof raw === "string" ? JSON.parse(raw) : raw;
+    const a = o && typeof o === "object" ? o.tester_agent : null;
+    return a && typeof a === "object" && typeof a.id === "string" && a.id
+      ? { id: a.id, run: typeof a.run === "string" ? a.run : null }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * How a tester PASS the runner recorded as the system reads: "recorded by the runner
+ * after the tester agent's run" (the runner measured the identities; the verdict is the
+ * tester agent's). "" for any other PASS, which keeps its own wording.
+ */
+function testerRecordedBy(provenance, agent) {
+  if (provenance !== "system" || !agent || !agent.id) return "";
+  const who = agent.id === "tester" ? "the tester agent" : agent.id;
+  return `recorded by the runner after ${who}'s run`;
+}
+
+/** The review packet's "by …" line for the tester verdict. */
+function testerByline(ts) {
+  const recorded = testerRecordedBy(ts.provenance, ts.tester_agent);
+  if (recorded) return ` · ${recorded}`;
+  return ts.provenance
+    ? ` · by ${ts.provenance === "agent" ? "the tester agent" : `a ${ts.provenance}`}`
+    : "";
 }
 
 /**
@@ -19150,9 +19201,7 @@ function verdictStrip(p, hooks = {}) {
             el("p", { class: "vd-sub" }, [
               "Passed ",
               el("code", { class: "mono" }, ts.tested_commit.slice(0, 12)),
-              ts.provenance
-                ? ` · by ${ts.provenance === "agent" ? "the tester agent" : `a ${ts.provenance}`}`
-                : "",
+              testerByline(ts),
               ` · ${fmtTime(ts.at)}`,
             ]),
             el(
@@ -19176,9 +19225,7 @@ function verdictStrip(p, hooks = {}) {
                 ts.tested_commit
                   ? ["Tested ", el("code", { class: "mono" }, ts.tested_commit.slice(0, 12))]
                   : "No commit recorded",
-                ts.provenance
-                  ? ` · by ${ts.provenance === "agent" ? "the tester agent" : `a ${ts.provenance}`}`
-                  : "",
+                testerByline(ts),
                 ` · ${fmtTime(ts.at)}`,
               ]),
               el("p", { class: "vd-say" }, ts.summary),

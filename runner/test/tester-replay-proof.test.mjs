@@ -11,9 +11,11 @@
 //   P1 the effective command: a package-manager `test` script is read from the gated
 //      target's package.json (never the branch's), extra args kept;
 //   P2 runner detection (node:test, vitest, jest, pytest, go, cargo; two runners or none
-//      → the registered command); node's loader flags are kept, filters are not;
-//   P3 the invocations: each runner's file-scoped command, the proof directory inside the
-//      worktree, NODE_OPTIONS reporters for the registered command;
+//      → the registered command);
+//   P3 the invocations: the registered command with each runner's file selection and
+//      proof reporter appended (tester-replay-contract.test.mjs has every dropped-semantic
+//      class), the proof directory inside the worktree, NODE_OPTIONS reporters for the
+//      registered command;
 //   P4 REAL node:test, by path: the tester's file runs even though the registered command
 //      names another file, and its events prove it; a file that defines no test is
 //      unproven;
@@ -144,10 +146,10 @@ const inv = (testCommand) =>
   replayInvocation({ worktree: R, base: BASE, testCommand, files, nonce: "n1" });
 const iNode = inv("npm test");
 assert(
-  "P3: node:test runs the tester's file by path, with the replay's reporter",
+  "P3: node:test: the base's `test` script as registered, the replay's reporter after --test, the tester's file appended",
   iNode.mode === "files" &&
     iNode.runner === "node-test" &&
-    /^node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter='[^']+\/\.gaffer-replay-n1\/reporter\.mjs' --test-reporter-destination=stdout 'test\/acceptance\.test\.mjs'$/.test(
+    /^PATH="\$PWD\/node_modules\/\.bin:\$PATH"; node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter='[^']+\/\.gaffer-replay-n1\/reporter\.mjs' --test-reporter-destination=stdout test\/label\.test\.mjs 'test\/acceptance\.test\.mjs'$/.test(
       iNode.command,
     ),
   iNode.command,
@@ -157,21 +159,22 @@ assert(
   iNode.proof.dir === join(R, ".gaffer-replay-n1"),
 );
 assert(
-  "P3: vitest — `vitest run <files>` with a JSON report",
-  /^npx --no-install vitest run .*--outputFile\.json='[^']+report\.json' 'test\/acceptance\.test\.mjs'$/.test(
+  "P3: vitest: the registered command, a JSON report and the files appended",
+  /^vitest run --reporter=default --reporter=json --outputFile\.json='[^']+report\.json' 'test\/acceptance\.test\.mjs'$/.test(
     inv("vitest run").command,
   ),
   inv("vitest run").command,
 );
 assert(
-  "P3: jest — `--runTestsByPath <files>` with a JSON report",
-  /^npx --no-install jest --ci --runTestsByPath --json --outputFile='[^']+' 'test\/acceptance\.test\.mjs'$/.test(
+  "P3: jest: the registered command, a JSON report and `--runTestsByPath <files>`",
+  /^jest --json --outputFile='[^']+' --runTestsByPath 'test\/acceptance\.test\.mjs'$/.test(
     inv("jest").command,
   ),
+  inv("jest").command,
 );
 assert(
-  "P3: pytest — the registered interpreter, verbose node ids, the files",
-  inv("python3 -m pytest -q").command === "python3 -m pytest -vv 'test/acceptance.test.mjs'",
+  "P3: pytest: the registered command (its own options kept), verbose node ids, the files",
+  inv("python3 -m pytest -q").command === "python3 -m pytest -q -vv 'test/acceptance.test.mjs'",
   inv("python3 -m pytest -q").command,
 );
 const iGo = replayInvocation({
@@ -182,8 +185,10 @@ const iGo = replayInvocation({
   nonce: "n1",
 });
 assert(
-  "P3: go — `go list` the packages' test files, then `go test` those packages",
-  /^go list -f '.*' '\.\/pkg\/a' > '[^']+golist\.txt' && go test '\.\/pkg\/a'$/.test(iGo.command),
+  "P3: go: `go list` the packages' test files, then the registered `go test -json` on those packages",
+  /^go list -f '.*' '\.\/pkg\/a' > '[^']+golist\.txt' && go test -json '\.\/pkg\/a'$/.test(
+    iGo.command,
+  ),
   iGo.command,
 );
 const iCargo = replayInvocation({

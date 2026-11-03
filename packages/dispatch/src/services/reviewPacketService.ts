@@ -20,6 +20,7 @@ import { contractHash } from "../util/contractHash.js";
 import { testerOffNotice, type TesterLaneDecision } from "../util/testingLane.js";
 import { currentJudgment, type RecordedEvalJudgment } from "./evalJudgment.js";
 import { AC_CHECK_VERIFIER } from "../policy/policy.js";
+import { parseTesterAgent } from "./testerReplay.js";
 import type { AcRepository } from "../repositories/acRepository.js";
 import type { EvidenceRepository } from "../repositories/evidenceRepository.js";
 import type { ReworkAttemptRepository } from "../repositories/reworkAttemptRepository.js";
@@ -76,6 +77,12 @@ export interface PacketGates {
 export interface PacketTester {
   verdict: "pass" | "fail";
   provenance: string | null;
+  /**
+   * On a PASS the runner recorded as the system (it binds test identities): the tester
+   * agent whose run produced the verdict, so it reads as "recorded by the runner after
+   * <agent>'s run", never as the system's own judgement. null otherwise.
+   */
+  tester_agent: { id: string; run: string | null } | null;
   /** What it tested: the commit and the contract it ran against. */
   tested_commit: string | null;
   contract_hash: string | null;
@@ -520,6 +527,13 @@ const before = (e: { created_at: string }, since: string | null): boolean =>
  * is in the rework list), so it is not this delivery's. The commit is the row's
  * tested_commit, else the head the PASS event recorded (a person's waiver).
  */
+/** The tester agent a system-recorded PASS names (see PacketTester.tester_agent). */
+function readTesterAgent(p: Record<string, unknown>): PacketTester["tester_agent"] {
+  if (p.provenance !== "system") return null;
+  const a = parseTesterAgent(p.tester_agent);
+  return a ? { id: a.id, run: a.run ?? null } : null;
+}
+
 function readTester(
   rows: Evidence[],
   events: WorkEvent[],
@@ -549,6 +563,7 @@ function readTester(
     return {
       verdict: p.verdict,
       provenance: str(p.provenance),
+      tester_agent: readTesterAgent(p),
       tested_commit: str(p.tested_commit) ?? testedHead.get(e.id) ?? null,
       contract_hash: str(p.contract_hash),
       summary: e.summary.split("\n")[0]!.slice(0, 300),

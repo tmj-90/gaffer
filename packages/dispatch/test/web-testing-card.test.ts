@@ -164,4 +164,39 @@ describe("BBT-001 web: the Independent testing card", () => {
     // …but the ordinary implementation evidence does NOT appear under the testing card.
     expect(text).not.toContain("unit suite green during implementation");
   });
+  it("a PASS the runner recorded as the system reads as recorded after the tester agent's run; agent and human PASSes keep their wording", async () => {
+    stubFetch([
+      {
+        id: "ev-sys",
+        evidence_type: "test_output",
+        summary: "runner-recorded black-box pass",
+        payload_json: JSON.stringify({
+          verdict: "pass",
+          provenance: "system",
+          tests: [{ file: "test/a.test.mjs", name: "smoke" }],
+          tester_agent: { id: "tester", run: "run-1" },
+        }),
+        created_by: "system",
+        created_at: "2026-01-03T00:00:00Z",
+      },
+      {
+        id: "ev-human",
+        evidence_type: "test_output",
+        summary: "human waiver pass",
+        payload_json: JSON.stringify({ verdict: "pass", provenance: "human" }),
+        created_by: "pat",
+        created_at: "2026-01-04T00:00:00Z",
+      },
+      ...EVIDENCE,
+    ]);
+    await bootDetail();
+    const rows = Array.from(document.querySelectorAll(".tk-testing li.tt-row")).map(
+      (li) => li.textContent ?? "",
+    );
+    const sys = rows.find((t) => t.includes("runner-recorded black-box pass")) ?? "";
+    expect(sys).toContain("recorded by the runner after the tester agent's run");
+    expect(sys).not.toContain("by system");
+    expect(rows.find((t) => t.includes("human waiver pass"))).toContain("by human");
+    expect(rows.find((t) => t.includes("12 black-box tests pass"))).toContain("by agent");
+  });
 });

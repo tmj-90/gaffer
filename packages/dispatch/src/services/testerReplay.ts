@@ -6,29 +6,118 @@ import type { Db } from "../db/connection.js";
  * The independent tester's PASS is evidence about the commit it tested. Its assertions
  * live on `gaffer-tests/ticket-<n>`, so after the default branch moved the merge of the
  * tested commit could pass the repository's own suite (the merge gate) yet fail the
- * tester's saved assertion — and the epic still read "accepted". Both runner landing paths
+ * tester's saved assertion, and the epic still read "accepted". Both runner landing paths
  * now replay the tester's test files on the exact merge candidate after the repo's gates
- * pass, and hold a red replay like a red merge gate. When the candidate lands, the runner
- * records WHICH tester assertions passed on WHICH landed revision: one SYSTEM `commit`
- * evidence row per landing, uri `gaffer-tester-replayed:<landed sha>`, payload
- * `{ kind: "tester_replay", tested, pin, files, via, repo, not_replayed_repos, note }`.
+ * pass, and hold a red replay like a red merge gate.
+ *
+ * WHAT IS RECORDED (external review 10). The runner's tester lane records, on the PASS
+ * itself (`tests`, system only), the TEST IDENTITIES its clean replay saw pass in the
+ * tester's files: { file, name, line?, column? } (node:test full name and call site,
+ * vitest / jest ancestor titles + title, pytest node id, go Test name, cargo test path).
+ * The landing replay runs the registered test command with the tester's files and requires
+ * EVERY bound identity to execute and pass on the candidate. When the candidate lands, the
+ * runner records one SYSTEM `commit` evidence row per landing, uri
+ * `gaffer-tester-replayed:<landed sha>`, payload `{ kind: "tester_replay", tested, pin,
+ * files, tests, evidence, via, repo, not_replayed_repos, note }`:
+ *   files    the tester's test FILES the replay proved ran (kept for every existing reader);
+ *   tests    the test identities proven to have run and passed there;
+ *   evidence "identities" when the bound PASS recorded identities (every one of them is in
+ *            `tests`: recordTesterReplay refuses a record that lacks one), "files" for an
+ *            older PASS without identities: FILE-LEVEL EVIDENCE ONLY (a file counted as run
+ *            when any one of its tests ran), shown as such and never as an identity-level
+ *            green.
  * A record with NO files says the landing ran no tester assertion (the PASS saved none, or
- * an older PASS's tests branch did not describe it): it never counts an epic as accepted.
+ * an older PASS's tests branch did not describe it): it never counts an epic as accepted,
+ * and neither does one whose PASS bound identities but that proves none.
  *
  * That record is the one answer the merge gate, `gaffer status`, the dashboard ticket page
  * and `wg stats` (an epic is accepted only on it) give to "did the tester's assertions pass
  * on what landed?". Only SYSTEM rows count: agents record evidence as `agent` through the
  * MCP, and the CLI that writes it (`wg ticket record-tester-replay`) is refused to agents
- * by the safety hook and to every actor but `system` by the service.
+ * by the safety hook and to every actor but `system` by the service; so are the PASS's
+ * identities (`wg ticket tester-pass --tests-json`).
  */
 export const TESTER_REPLAY_PREFIX = "gaffer-tester-replayed:";
 
 const SHA_RE = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/;
 
+/** One test the tester's PASS bound: the file and the runner's full test name. */
+export interface TesterTestIdentity {
+  file: string;
+  name: string;
+  /** node:test's call site (the tester's file is copied byte for byte, so it is stable). */
+  line?: number;
+  column?: number;
+}
+
+/** At most this many identities ride on one PASS or one replay record. */
+export const MAX_TESTER_IDENTITIES = 5000;
+
+/**
+ * A list of test identities, or null when `raw` is not one (not an array, more than
+ * MAX_TESTER_IDENTITIES, an entry without a file and a name, an oversized or NUL-bearing
+ * value). Duplicates are dropped.
+ */
+export function parseTesterIdentities(raw: unknown): TesterTestIdentity[] | null {
+  if (!Array.isArray(raw) || raw.length > MAX_TESTER_IDENTITIES) return null;
+  const out: TesterTestIdentity[] = [];
+  for (const t of raw) {
+    if (!t || typeof t !== "object") return null;
+    const o = t as Record<string, unknown>;
+    const file = typeof o.file === "string" ? o.file.trim() : "";
+    const name = typeof o.name === "string" ? o.name : "";
+    if (!file || !name || file.length > 1000 || name.length > 2000) return null;
+    if (file.includes("\0") || name.includes("\0") || /[\r\n]/.test(file)) return null;
+    const id: TesterTestIdentity = { file, name };
+    for (const k of ["line", "column"] as const) {
+      const v = o[k];
+      if (v === undefined || v === null) continue;
+      if (typeof v !== "number" || !Number.isInteger(v) || v <= 0) return null;
+      id[k] = v;
+    }
+    if (!out.some((x) => sameTesterIdentity(x, id))) out.push(id);
+  }
+  return out;
+}
+
+/** Do two identities name the same test? (line / column compared only when both carry it.) */
+export function sameTesterIdentity(a: TesterTestIdentity, b: TesterTestIdentity): boolean {
+  if (a.file !== b.file || a.name !== b.name) return false;
+  if (a.line !== undefined && b.line !== undefined && a.line !== b.line) return false;
+  if (a.column !== undefined && b.column !== undefined && a.column !== b.column) return false;
+  return true;
+}
+
+/**
+ * WHO TESTED, on a PASS the runner records as the system (it carries test identities, so
+ * the system actor records it): the tester agent whose run the verdict came from, and that
+ * run's id when the runner knew it. System only, like the identities: no agent-reachable
+ * path sets it.
+ */
+export interface TesterAgentRef {
+  id: string;
+  run?: string;
+}
+
+const TESTER_AGENT_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:@-]{0,63}$/;
+const TESTER_RUN_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+
+/** A tester-agent reference, or null when `raw` is not one. */
+export function parseTesterAgent(raw: unknown): TesterAgentRef | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const o = raw as Record<string, unknown>;
+  if (typeof o.id !== "string" || !TESTER_AGENT_ID_RE.test(o.id)) return null;
+  if (o.run === undefined || o.run === null) return { id: o.id };
+  if (typeof o.run !== "string" || !TESTER_RUN_ID_RE.test(o.run)) return null;
+  return { id: o.id, run: o.run };
+}
+
 export interface BoundTesterPass {
   evidenceId: string;
   testedCommit: string | null;
   provenance: string | null;
+  /** The test identities the PASS bound (system-recorded), or null for an older PASS. */
+  tests: TesterTestIdentity[] | null;
   at: string;
 }
 
@@ -38,6 +127,10 @@ export interface TesterReplayRecord {
   /** The tested commit whose assertions were replayed (the landing's pin). */
   tested: string;
   files: string[];
+  /** The test identities proven to have run and passed on the landed revision. */
+  tests: TesterTestIdentity[];
+  /** "identities" (the PASS bound identities) or "files" (file-level evidence only). */
+  evidence: "identities" | "files";
   via: string | null;
   repoId: string | null;
   /** The ticket's other write repos, which the tester's assertions did not cover. */
@@ -83,6 +176,9 @@ export function readBoundTesterPass(db: Db, ticketId: string): BoundTesterPass |
       evidenceId: row.id,
       testedCommit: SHA_RE.test(tested) ? tested : null,
       provenance: typeof p.provenance === "string" ? p.provenance : null,
+      // A present but malformed binding reads as an empty one (it proves nothing).
+      tests:
+        p.tests === undefined || p.tests === null ? null : (parseTesterIdentities(p.tests) ?? []),
       at: row.created_at,
     };
   } catch {
@@ -124,6 +220,8 @@ export function readTesterReplay(
         commit,
         tested: want,
         files: Array.isArray(p.files) ? p.files.filter((f) => typeof f === "string") : [],
+        tests: parseTesterIdentities(p.tests ?? []) ?? [],
+        evidence: p.evidence === "identities" ? "identities" : "files",
         via: typeof p.via === "string" ? p.via : null,
         repoId: r.repo_id ?? null,
         notReplayedRepos: Array.isArray(p.not_replayed_repos)

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // =====================================================================
-// lib/tester-replay.mjs — replay the independent tester's tests on the LANDING CANDIDATE.
+// lib/tester-replay.mjs: replay the independent tester's tests on the LANDING CANDIDATE.
 //
 // ACCEPTANCE GATE (external review #4). The tester's PASS is evidence about the commit it
 // tested (`tested_commit`), and bin/tester-run.mjs replays it on a clean checkout of THAT
@@ -20,12 +20,18 @@
 //      merge worktree (the working tree only: the gated merge COMMIT is what lands, so the
 //      tester's files are run, never landed);
 //   3. the caller runs the tester's files there through bin/dod-regate.sh (tests only):
-//      explicitly with the stack's runner where a file-scoped invocation is well defined,
-//      else the registered command (replayInvocation); a failure HOLDS the landing exactly
-//      like a red merge gate (tester_replay_red);
-//   4. replayProof reads the runner's own evidence that EACH file ran (external review #7):
-//      a file with none is not a pass — the landing is held (tester_replay_unverified,
-//      naming the files) and the record lists only files proven to have run and passed.
+//      the EFFECTIVE registered test command, with only the runner's own file selection
+//      and proof reporter appended (replayInvocation: the registered command is an
+//      execution contract, external review 10), or, where it cannot be extended safely,
+//      the registered command as it is; a failure HOLDS the landing exactly like a red
+//      merge gate (tester_replay_red);
+//   4. replayProof reads the runner's own evidence (external review #7). A PASS that
+//      recorded TEST IDENTITIES (external review 10) needs every one of them to execute
+//      and pass: a failed one is red, a skipped, todo or missing one holds
+//      (tester_replay_unverified, the identities named). An older PASS without
+//      identities keeps the file-level rule (a file with no evidence holds), and its
+//      record says "files" (file-level evidence only). The record lists only files and
+//      identities proven to have run and passed.
 // No tester PASS bound to the pinned commit → nothing extra runs and no record is due (the
 // ticket was not in the testing lane, or a human waived it). WHICH tests: the commit the
 // PASS names (`tests_commit`, recorded by bin/tester-run.mjs: the tester's own commit on the
@@ -38,11 +44,13 @@
 // CLI (lib/land.sh):
 //   node lib/tester-replay.mjs apply --db <dispatch.sqlite> --ticket <n> --repo <path>
 //        --pin <sha> --worktree <scratch merge worktree> [--test-cmd <cmd> --base <target>]
-//   → one JSON line { ok, run, record, files, tests_ref, tests_head, tested, reason,
-//     invocation? } — exit 0 (decided; files applied and, with --test-cmd, the invocation
-//     and its proof directory prepared when run) · 4 could not decide / apply (hold).
+//   → one JSON line { ok, run, record, files, tests, evidence, tests_ref, tests_head,
+//     tested, reason, invocation? }: exit 0 (decided; files applied and, with --test-cmd,
+//     the invocation (carrying the bound identities as `required`) and its proof
+//     directory prepared when run) · 4 could not decide / apply (hold).
 //   node lib/tester-replay.mjs proof --worktree <wt> --invocation <json | - (stdin)> --files-json <json>
-//   → { ran, unproven, reason } (exit 0; 4 when there is no invocation to read).
+//   → { ran, unproven, tests, failed, skipped, missing, evidence, reason } (exit 0; 4 when
+//     there is no invocation to read).
 // =====================================================================
 import { spawnSync } from "node:child_process";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
@@ -191,10 +199,12 @@ export function testerTestsOfCommit({ repoPath, ticketNumber, testedCommit, test
 
 /**
  * Should the landing of `pin` replay the tester's tests, and record that it did?
- *   → { ok, run, record, files, tests_ref, tests_head, tested, reason }
+ *   → { ok, run, record, files, tests, evidence, tests_ref, tests_head, tested, reason }
  * `record` — a bound (agent/system) tester PASS of exactly `pin` is why this lands: the
  * landing records which of its assertions passed on the landed revision. `run` — there are
- * test files to replay. ok:false — the DB or git could not answer (the caller HOLDS).
+ * test files to replay. `tests`: the test identities the PASS bound (every one must pass
+ * on the candidate), or null for an older PASS without them (`evidence` "files": the
+ * file-level rule). ok:false: the DB or git could not answer (the caller HOLDS).
  */
 export function replayPlan({ dbPath, ticketNumber, repoPath, pin, env = process.env }) {
   const none = (reason, extra = {}) => ({
@@ -244,11 +254,29 @@ export function replayPlan({ dbPath, ticketNumber, repoPath, pin, env = process.
         ? testerTestsOfCommit({ repoPath, ticketNumber, testedCommit: tested, testsCommit: bound })
         : testerTestsOnRecord({ repoPath, ticketNumber, testedCommit: tested });
   if (!t.ok) return { ...none(t.reason, { tested }), ok: false };
+  // TEST IDENTITIES (external review 10): the tests the tester lane's clean replay saw
+  // PASS in these files, recorded on the PASS by the runner (system). Every one must run
+  // and pass on the candidate. An older PASS without them: null (the file-level rule).
+  // A binding that is present but not a list of identities proves nothing: HOLD.
+  let tests = null;
+  if (pass.tests !== undefined && pass.tests !== null) {
+    const list = Array.isArray(pass.tests) ? pass.tests.map(normaliseIdentity) : [null];
+    if (list.some((x) => x === null))
+      return {
+        ...none("the tester's PASS carries test identities that are not a list of tests", {
+          tested,
+        }),
+        ok: false,
+      };
+    tests = list;
+  }
   return {
     ok: true,
     run: t.files.length > 0,
     record: true,
     files: t.files,
+    tests,
+    evidence: tests ? "identities" : "files",
     tests_ref: t.ref,
     tests_head: t.head,
     tested,
@@ -279,14 +307,51 @@ export function applyTesterTests({ worktree, testsHead, files }) {
 // file-scoped command (`node --test test/label.test.mjs`) never executed the tester's
 // test/acceptance.test.mjs, the run passed, the landing recorded that file as passed and
 // the epic counted as accepted while the assertion failed on what landed. So the replay
-// runs the tester's files EXPLICITLY with the stack's runner where a file-scoped
-// invocation is well defined, and in every case reads POSITIVE evidence per file from the
-// runner itself (a node:test reporter's events, a vitest/jest JSON report, pytest's
-// per-test node ids, `go list`'s test files, cargo's "Running tests/<name>.rs" line).
-// Where no file-scoped invocation is known the registered command runs as before, with the
-// signed node:test reporter added through NODE_OPTIONS (its events are the only proof read).
-// A tester file with no proof is NOT a pass: the caller holds the landing
-// (tester_replay_unverified, naming the files) and records nothing.
+// passes the tester's files to the stack's runner EXPLICITLY, and in every case reads
+// POSITIVE evidence from the runner itself (a node:test reporter's events, a vitest/jest
+// JSON report, pytest's per-test node ids, `go test -json` events and `go list`'s test
+// files, cargo's "Running tests/<name>.rs" and `test <path> ... ok` lines).
+//
+// THE REGISTERED COMMAND IS AN EXECUTION CONTRACT (external review 10). The replay used to
+// rebuild a generic command from the detected runner (`npx vitest run <files>`, `pytest -vv
+// <files>`, `go test <dirs>`, `cargo test --test <name>`, `node --test <files>`), and so
+// dropped what the registered command says about HOW the suite runs: leading env
+// assignments (`PROFILE_API_V2=1 node --test`), config files (`vitest -c ci.mjs`, `jest
+// --config`, `pytest -c`), markers (`pytest -m`), build tags (`go test -tags`), features and
+// toolchains (`cargo +nightly test --features x`). A tester assertion those enable then
+// SKIPPED in the replay, a smoke test in the same file passed, and the file counted as run.
+// Now replayInvocation runs the EFFECTIVE registered command (a package `test` script as
+// the gated base has it, with the worktree's node_modules/.bin on PATH as the package
+// manager would put it) and only APPENDS the runner's own file selection and the proof
+// reporter (go: the package arguments are replaced by the tester's packages; cargo: the
+// `--test <name>` targets go before a bare `--`). The string still runs through `bash -c`
+// in bin/dod-regate.sh, so every assignment, flag and option is untouched. Where the
+// command cannot be extended safely (a pipeline, `||`, `&`, a runner that is not the LAST
+// command of an `&&`/`;` chain, two runners, a subshell or substitution, a runner hidden
+// in a word the scanner cannot see into such as `bash -c "vitest run"`) it runs as
+// registered with the signed node:test reporter in NODE_OPTIONS; where that gives no
+// evidence the tester's tests are unproven and the landing HOLDS (never a green).
+//
+// TEST IDENTITIES (external review 10). A file used to count as run when any one ordinary
+// assertion in it passed or failed, so a required assertion that was skipped, todo, pending
+// or gone left its file "proven". The tester lane's clean replay (bin/tester-run.mjs) now
+// records the identities that PASSED in the tester's files on the PASS itself (dispatch's
+// tester_pass `tests`, system only): node:test file + full name (suites joined by " > ") +
+// line:column, vitest / jest file + ancestor titles + title, pytest file + node id, go file
+// + Test name (from `go test -json`, attributed to the tester file that declares the
+// top-level test), cargo integration target + test path. The landing replay requires EVERY
+// recorded identity to execute and PASS on the merge candidate: one that failed is red,
+// one skipped, todo, pending, xfail, ignored or missing holds (tester_replay_unverified,
+// the identities named); an extra test never stands in for a missing one. An older PASS
+// without identities keeps the file-level rule, and its record says "files" (file-level
+// evidence only), never an identity-level green.
+// LIMIT: the tester lane's clean replay (bin/tester-run.mjs) runs the tester's files
+// UNSANDBOXED as the runner user. Its signing key reaches only the reporter, as here (in
+// the run's environment, deleted by the reporter before any test file loads, never written
+// to a file), but test code there can read the runner's environment and files and call
+// the dispatch CLI as the system actor. So the identities it records are evidence against
+// a non-adversarial tester's tests, not against a tester's code attacking the replay;
+// sandboxing the clean replay is a listed follow-up.
 //
 // FORGERY (external review #7, the reviewer's follow-up). The code under test runs in the
 // same process tree as the runner, so anything it can print or write is no proof: a
@@ -296,17 +361,24 @@ export function applyTesterTests({ worktree, testsHead, files }) {
 //   • node:test events are SIGNED: the reporter (loaded by the runner's parent process
 //     before any test file starts) reads a per-replay key from GAFFER_REPLAY_PROOF_KEY and
 //     DELETES it from its environment, so the test files (child processes spawned after)
-//     never see it; each event line carries an HMAC of its JSON, a per-process sequence
+//     never inherit it (it stays readable as the runner process's initial environment,
+//     /proc/<pid>/environ, to same-user code, and in "registered" mode a runner that is
+//     not node:test hands it to its own processes: the signature stops printed
+//     look-alikes, not code written to forge it; moving the key out of the environment
+//     is a listed follow-up); each event line carries an HMAC of its JSON, a per-process sequence
 //     number and a closing count. A line with a bad MAC, a gap, a duplicate or a missing
 //     end makes the whole replay unverified. The key is never written to a file and is
 //     handed to the proof step on stdin, never on a command line.
-//   • the set of files the runner reports must match the files passed on the command line:
-//     a by-path run that reports any other file is unverified as a whole (vitest / jest
-//     JSON reports are shape-checked the same way: exactly the files requested, a
-//     consistent test count).
+//   • where the run is still BY PATH (the registered runner command names no test path of
+//     its own, `strict`), the files the runner reports must be the files passed to it: one
+//     it was not given makes the whole replay unverified. A registered command that names
+//     its own paths (`node --test test/unit`) legitimately runs other files too, so there
+//     the identities are what must check out. vitest / jest JSON reports are shape-checked
+//     in every mode (a test count consistent with the results).
 //   • plain stdout text is never proof for the registered command: only the signed node:test
 //     events count there (a vitest / pytest suite behind an unrecognised command holds as
-//     unverified; register the runner's own command to replay it by path).
+//     unverified; register the runner's own command to replay it by path). `go test -json`
+//     wraps whatever a test prints in an output event, so a printed event proves nothing.
 // What this does NOT stop: code that reads another process's environment (/proc/<pid>/
 // environ, `ps -E`) as the same user, a node loader module the registered command imports
 // into the runner's parent process (--import / --require are kept so TypeScript suites
@@ -326,17 +398,7 @@ function nodeOptWord(s) {
   return /\s/.test(s) ? `"${String(s).replace(/(["\\])/g, "\\$1")}"` : s;
 }
 
-/**
- * The command the registered test command runs. A package manager's `test` script
- * (`npm test`, `pnpm test`, `yarn test`, `npm run test`) is read from package.json at the
- * GATED TARGET (`base`, never the branch: a delivery that rewrote `scripts.test` cannot
- * choose how the tester's files run), then the merge's own; anything else is itself.
- */
-export function effectiveTestCommand({ worktree, base = "", testCommand }) {
-  const cmd = String(testCommand || "").trim();
-  const m =
-    /^(?:npm|pnpm|yarn|bun)\s+(?:run(?:-script)?\s+)?(?:test|t)(?:\s+(?:--\s+)?(.*))?$/.exec(cmd);
-  if (!m) return cmd;
+function readPackageJson({ worktree, base }) {
   const parse = (text) => {
     try {
       const p = JSON.parse(text);
@@ -357,16 +419,44 @@ export function effectiveTestCommand({ worktree, base = "", testCommand }) {
       pkg = null;
     }
   }
-  const script = pkg && pkg.scripts && typeof pkg.scripts.test === "string" ? pkg.scripts.test : "";
-  if (!script.trim()) return cmd;
-  return m[1] ? `${script} ${m[1]}` : script;
+  return pkg;
+}
+
+const PM_TEST_RE =
+  /^(?:npm|pnpm|yarn|bun)\s+(?:run(?:-script)?\s+)?(?:test|t)(?:\s+(?:--\s+)?(.*))?$/;
+
+/**
+ * The registered test command resolved: a package manager's `test` script (`npm test`,
+ * `pnpm test`, `yarn test`, `npm run test`) is read from package.json at the GATED TARGET
+ * (`base`, never the branch: a delivery that rewrote `scripts.test` cannot choose how the
+ * tester's files run), then the merge's own; anything else is itself.
+ *   → { command, script: boolean, pretest: string }
+ */
+export function resolveTestCommand({ worktree, base = "", testCommand }) {
+  const cmd = String(testCommand || "").trim();
+  const m = PM_TEST_RE.exec(cmd);
+  if (!m) return { command: cmd, script: false, pretest: "" };
+  const pkg = readPackageJson({ worktree, base });
+  const scripts = pkg && pkg.scripts && typeof pkg.scripts === "object" ? pkg.scripts : {};
+  const script = typeof scripts.test === "string" ? scripts.test : "";
+  if (!script.trim()) return { command: cmd, script: false, pretest: "" };
+  return {
+    command: m[1] ? `${script} ${m[1]}` : script,
+    script: true,
+    pretest: typeof scripts.pretest === "string" ? scripts.pretest.trim() : "",
+  };
+}
+
+/** The command the registered test command runs (see resolveTestCommand). */
+export function effectiveTestCommand({ worktree, base = "", testCommand }) {
+  return resolveTestCommand({ worktree, base, testCommand }).command;
 }
 
 const RUNNER_PATTERNS = {
   "node-test": /(^|[\s;&|(/])node(\.exe)?\s(?:[^;&|]*\s)?--test(?=[\s=]|$)/,
   vitest: /(^|[\s;&|(/])vitest(\s|$)/,
   jest: /(^|[\s;&|(/])jest(\s|$)/,
-  pytest: /(^|[\s;&|(/])pytest(\s|$)|(^|[\s;&|(/])python3?\s+-m\s+pytest(\s|$)/,
+  pytest: /(^|[\s;&|(/])py\.?test(\s|$)|(^|[\s;&|(/])python[0-9.]*\s+-m\s+pytest(\s|$)/,
   go: /(^|[\s;&|(])go\s+test(\s|$)/,
   cargo: /(^|[\s;&|(])cargo\s+(\+\S+\s+)?test(\s|$)/,
 };
@@ -382,7 +472,7 @@ export function detectRunner(effective) {
   return hits.length === 1 ? hits[0] : "registered";
 }
 
-/** The node flags of the registered `node … --test` invocation the replay keeps (loaders). */
+/** The node flags of the registered `node … --test` invocation (loaders). */
 export function nodeLoaderFlags(effective) {
   const segs = String(effective || "").split(/&&|\|\||;|\|/);
   const seg =
@@ -406,17 +496,589 @@ export function nodeLoaderFlags(effective) {
   return out;
 }
 
+// ── The command scanner ───────────────────────────────────────────────────────────────
+/**
+ * Split a shell command into its top-level simple commands, enough to tell which word is
+ * the test runner and where its arguments end (bash's own quoting rules for '…', "…" and
+ * \x; `$VAR` / `${VAR}` stay inside their word). → { ok: true, segments } with each
+ * segment `{ words: [{ text, start, end, redir }], op }` (op: the operator AFTER it,
+ * one of "&&", ";", "||", "|", "&", or null), or { ok: false, reason } naming what the scanner does
+ * not see through (a substitution, a subshell, a here-document, a group, an unterminated
+ * quote). It never runs anything.
+ */
+export function scanShellCommand(command) {
+  const s = String(command ?? "");
+  const segments = [];
+  let words = [];
+  let cur = null;
+  const no = (reason) => ({ ok: false, reason });
+  const endWord = (at) => {
+    if (cur) words.push({ text: cur.text, start: cur.start, end: at, raw: s.slice(cur.start, at) });
+    cur = null;
+  };
+  const word = (at) => (cur ??= { text: "", start: at });
+  const close = (op) => {
+    segments.push({ words, op });
+    words = [];
+  };
+  let i = 0;
+  while (i < s.length) {
+    const c = s[i];
+    if (c === " " || c === "\t") {
+      endWord(i);
+      i++;
+    } else if (c === "\n") {
+      endWord(i);
+      close(";");
+      i++;
+    } else if (c === "#" && !cur) {
+      while (i < s.length && s[i] !== "\n") i++;
+    } else if (c === "'") {
+      const j = s.indexOf("'", i + 1);
+      if (j < 0) return no("an unterminated quote");
+      word(i).text += s.slice(i + 1, j);
+      i = j + 1;
+    } else if (c === '"') {
+      const w = word(i);
+      let j = i + 1;
+      for (; j < s.length && s[j] !== '"'; j++) {
+        if (s[j] === "\\" && j + 1 < s.length && /["\\$`\n]/.test(s[j + 1])) {
+          w.text += s[++j];
+          continue;
+        }
+        if (s[j] === "`" || (s[j] === "$" && s[j + 1] === "(")) return no("a command substitution");
+        w.text += s[j];
+      }
+      if (j >= s.length) return no("an unterminated quote");
+      i = j + 1;
+    } else if (c === "\\") {
+      if (s[i + 1] === "\n") {
+        endWord(i);
+        i += 2;
+      } else {
+        word(i).text += s[i + 1] ?? "";
+        i += 2;
+      }
+    } else if (c === "`" || (c === "$" && s[i + 1] === "(")) {
+      return no("a command substitution");
+    } else if (c === "$" && s[i + 1] === "{") {
+      const j = s.indexOf("}", i + 2);
+      if (j < 0) return no("an unterminated ${…}");
+      // `${X:-$(cmd)}` / `${X:-\`cmd\`}` hide a command inside the expansion.
+      if (/\$\(|`/.test(s.slice(i + 2, j))) return no("a command substitution");
+      word(i).text += s.slice(i, j + 1);
+      i = j + 1;
+    } else if ((c === "<" || c === ">") && s[i + 1] === "(") {
+      return no("a process substitution");
+    } else if (c === "(" || c === ")") {
+      return no("a subshell");
+    } else if (c === "<" && s[i + 1] === "<") {
+      return no("a here-document");
+    } else if (c === "&" && s[i + 1] === "&") {
+      endWord(i);
+      close("&&");
+      i += 2;
+    } else if (c === "&" && s[i + 1] === ">") {
+      word(i).text += s[i + 2] === ">" ? "&>>" : "&>";
+      i += s[i + 2] === ">" ? 3 : 2;
+    } else if (c === "&" && cur && /[<>]$/.test(cur.text)) {
+      cur.text += "&"; // 2>&1
+      i++;
+    } else if (c === "&") {
+      endWord(i);
+      close("&");
+      i++;
+    } else if (c === "|" && s[i + 1] === "|") {
+      endWord(i);
+      close("||");
+      i += 2;
+    } else if (c === "|" && cur && /[>]$/.test(cur.text)) {
+      cur.text += "|"; // >|
+      i++;
+    } else if (c === "|") {
+      endWord(i);
+      close("|");
+      i++;
+    } else if (c === ";") {
+      endWord(i);
+      close(";");
+      i++;
+    } else {
+      word(i).text += c;
+      i++;
+    }
+  }
+  endWord(s.length);
+  close(null);
+  // Redirections: an operator word (`>`, `2>&1`, `<`, `>>`) and, when the operator carries
+  // no target of its own, the word after it.
+  const REDIR = /^(?:\d*|&)(?:>>|>&|>\||<&|<>|>|<)(.*)$/;
+  for (const seg of segments) {
+    for (let k = 0; k < seg.words.length; k++) {
+      const m = REDIR.exec(seg.words[k].raw);
+      if (!m) continue;
+      seg.words[k].redir = true;
+      if (m[1] === "" && k + 1 < seg.words.length) seg.words[++k].redir = true;
+    }
+  }
+  if (segments.some((g) => g.words.some((w) => !w.redir && /^[{}!]$|^\[\[$/.test(w.raw))))
+    return no("a command group or test expression");
+  return { ok: true, segments };
+}
+
+const ASSIGN_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
+/** Words that only launch the next one (their own options skipped). */
+const LAUNCHER_VALUE_OPTS = {
+  env: new Set(["-u", "--unset", "-C", "--chdir"]),
+  npx: new Set(["-p", "--package", "-c", "--call"]),
+  bunx: new Set(["-p", "--package"]),
+  "cross-env": new Set(),
+  dotenv: new Set(["-e", "-c", "-v"]),
+  time: new Set(["-f", "-o"]),
+  nice: new Set(["-n"]),
+  nohup: new Set(),
+};
+const PM_LAUNCHERS = new Set(["pnpm", "yarn", "bun", "npm"]);
+const RUNNER_NAMES = /^(?:node|nodejs|vitest|jest|py\.?test|python[0-9.]*|go|cargo)$/;
+/** node options that take the next word as their value. */
+const NODE_VALUE = new Set([
+  "--import",
+  "--require",
+  "-r",
+  "--loader",
+  "--experimental-loader",
+  "--conditions",
+  "-C",
+  "--env-file",
+  "--input-type",
+  "--test-reporter",
+  "--test-reporter-destination",
+  "--test-name-pattern",
+  "--test-skip-pattern",
+]);
+
+function base(word) {
+  return String(word)
+    .replace(/^.*\//, "")
+    .replace(/\.(exe|cmd)$/i, "");
+}
+
+/**
+ * Where in one simple command the test runner is: { runner, at, args } (the index of the
+ * runner's command word and of its first argument; go/cargo: after `test`), or null.
+ * Leading assignments and a known launcher (env, npx, pnpm exec, yarn, cross-env, dotenv,
+ * time, nice, nohup, `uv run`, `poetry run`, `pipenv run`, `pdm run`) are stepped over.
+ */
+function runnerOf(words) {
+  const w = words.filter((x) => !x.redir);
+  let k = 0;
+  const at = () => (k < w.length ? w[k].text : "");
+  for (let guard = 0; guard < 16 && k < w.length; guard++) {
+    if (ASSIGN_RE.test(at())) {
+      k++;
+      continue;
+    }
+    const b = base(at());
+    if (b in LAUNCHER_VALUE_OPTS) {
+      const vals = LAUNCHER_VALUE_OPTS[b];
+      k++;
+      while (k < w.length && (at().startsWith("-") || (b !== "dotenv" && ASSIGN_RE.test(at())))) {
+        if (at() === "--") {
+          k++;
+          break;
+        }
+        if (vals.has(at())) k++;
+        k++;
+      }
+      continue;
+    }
+    if (PM_LAUNCHERS.has(b)) {
+      const next = k + 1 < w.length ? w[k + 1].text : "";
+      if (/^(exec|x|dlx)$/.test(next)) {
+        k += 2;
+        while (k < w.length && at().startsWith("-")) {
+          const stop = at() === "--";
+          k++;
+          if (stop) break;
+        }
+        continue;
+      }
+      if (b !== "npm" && RUNNER_NAMES.test(base(next))) {
+        k++;
+        continue;
+      }
+      return null;
+    }
+    if (
+      /^(uv|poetry|pipenv|pdm|hatch|rye)$/.test(b) &&
+      k + 1 < w.length &&
+      w[k + 1].text === "run"
+    ) {
+      k += 2;
+      continue;
+    }
+    break;
+  }
+  if (k >= w.length) return null;
+  const b = base(at());
+  const rest = w.slice(k + 1).map((x) => x.text);
+  // { runner, at: the runner's word, sub: its last command word (`test` for go / cargo,
+  // `pytest` after `python -m`, `--test` for node), args: the first word after it } as
+  // indices into `words`.
+  const hit = (runner, n = 0) => {
+    const sub = words.indexOf(w[k + n]);
+    return { runner, at: words.indexOf(w[k]), sub, args: sub + 1 };
+  };
+  if (b === "vitest") return hit("vitest");
+  if (b === "jest") return hit("jest");
+  if (/^py\.?test$/.test(b)) return hit("pytest");
+  if (/^python[0-9.]*$/.test(b) && rest[0] === "-m" && rest[1] === "pytest")
+    return hit("pytest", 2);
+  if (b === "go" && rest[0] === "test") return hit("go", 1);
+  if (b === "cargo") {
+    const t = /^\+/.test(rest[0] || "") ? 1 : 0;
+    return rest[t] === "test" ? hit("cargo", t + 1) : null;
+  }
+  if (b === "node" || b === "nodejs") {
+    for (let j = 0; j < rest.length; j++) {
+      if (rest[j] === "--test") return hit("node-test", j + 1);
+      if (!rest[j].startsWith("-")) return null; // a script: not the test runner
+      if (NODE_VALUE.has(rest[j])) j++;
+    }
+  }
+  return null;
+}
+
+/** Options of each runner that take the NEXT word as their value (positional detection). */
+const VALUE_OPTS = {
+  "node-test": new Set([
+    "--import",
+    "--require",
+    "-r",
+    "--loader",
+    "--experimental-loader",
+    "--conditions",
+    "-C",
+    "--env-file",
+    "--test-reporter",
+    "--test-reporter-destination",
+    "--test-name-pattern",
+    "--test-skip-pattern",
+    "--test-shard",
+    "--test-concurrency",
+    "--test-timeout",
+  ]),
+  vitest: new Set([
+    "-c",
+    "--config",
+    "-r",
+    "--root",
+    "--dir",
+    "--project",
+    "--environment",
+    "--reporter",
+    "--outputFile",
+    "-t",
+    "--testNamePattern",
+    "--pool",
+    "--mode",
+    "--shard",
+    "--exclude",
+    "--maxWorkers",
+    "--minWorkers",
+    "--testTimeout",
+    "--retry",
+    "--sequence.seed",
+    "--coverage.reporter",
+    "--workspace",
+    "--globalSetup",
+    "--setupFiles",
+    "--typecheck.tsconfig",
+  ]),
+  jest: new Set([
+    "-c",
+    "--config",
+    "--selectProjects",
+    "--projects",
+    "--rootDir",
+    "--roots",
+    "-t",
+    "--testNamePattern",
+    "--testPathIgnorePatterns",
+    "--testPathPattern",
+    "--maxWorkers",
+    "-w",
+    "--reporters",
+    "--setupFiles",
+    "--testEnvironment",
+    "--env",
+    "--shard",
+    "--testTimeout",
+    "--outputFile",
+    "--coverageDirectory",
+    "--cacheDirectory",
+    "--seed",
+  ]),
+  pytest: new Set([
+    "-m",
+    "-k",
+    "-p",
+    "-o",
+    "-c",
+    "--rootdir",
+    "--confcutdir",
+    "--basetemp",
+    "--junitxml",
+    "--junit-xml",
+    "-W",
+    "--maxfail",
+    "--tb",
+    "--durations",
+    "--deselect",
+    "--ignore",
+    "--ignore-glob",
+    "--log-level",
+    "-n",
+    "--dist",
+    "--cov",
+    "--cov-report",
+    "--import-mode",
+    "--capture",
+    "--override-ini",
+    "-r",
+  ]),
+};
+/** go test's own flags that take a value (`-run X` / `-run=X`). */
+const GO_VALUE = new Set([
+  "run",
+  "skip",
+  "bench",
+  "benchtime",
+  "count",
+  "cpu",
+  "parallel",
+  "timeout",
+  "tags",
+  "p",
+  "o",
+  "exec",
+  "ldflags",
+  "gcflags",
+  "asmflags",
+  "gccgoflags",
+  "mod",
+  "modfile",
+  "C",
+  "coverprofile",
+  "covermode",
+  "coverpkg",
+  "cpuprofile",
+  "memprofile",
+  "memprofilerate",
+  "blockprofile",
+  "blockprofilerate",
+  "mutexprofile",
+  "mutexprofilefraction",
+  "trace",
+  "outputdir",
+  "fuzz",
+  "fuzztime",
+  "fuzzminimizetime",
+  "shuffle",
+  "vet",
+  "toolexec",
+  "overlay",
+  "pgo",
+  "pkgdir",
+  "installsuffix",
+  "buildmode",
+  "compiler",
+  "json-out",
+]);
+const GO_BOOL = new Set([
+  "v",
+  "race",
+  "cover",
+  "short",
+  "json",
+  "a",
+  "n",
+  "x",
+  "work",
+  "benchmem",
+  "trimpath",
+  "msan",
+  "asan",
+  "linkshared",
+  "failfast",
+  "fullpath",
+  "i",
+  "buildvcs",
+  "modcacherw",
+  "fuzzcachedir",
+]);
+
+/** The tester's go packages (`./<dir>`) and test target names of `files`. */
+function goDirs(files) {
+  return [...new Set((files || []).map((f) => `./${dirname(f)}`))];
+}
+function cargoTargets(files) {
+  return (files || [])
+    .map((f) => /^tests\/([^/]+)\.rs$/.exec(f))
+    .filter(Boolean)
+    .map((m) => m[1]);
+}
+
+/**
+ * Where the registered command's runner is, and whether it can be extended: the runner is
+ * the command word of the LAST simple command, every earlier one is joined by `&&` or `;`,
+ * no other command mentions a runner, and no word hides one (`bash -c "vitest run"`).
+ *   → { ok: true, runner, segment, words, at, args, insertAt, positional } | { ok: false, reason }
+ */
+export function locateRunner(effective) {
+  const sc = scanShellCommand(effective);
+  if (!sc.ok) return { ok: false, reason: `the test command has ${sc.reason}` };
+  const segs = sc.segments.filter((g, k) => g.words.length > 0 || k < sc.segments.length - 1);
+  const hits = [];
+  for (let k = 0; k < segs.length; k++) {
+    const g = segs[k];
+    const r = runnerOf(g.words);
+    const text = g.words.map((x) => x.text).join(" ");
+    if (r) hits.push({ k, r });
+    else if (
+      detectRunner(text) !== "registered" ||
+      /(^|[\s/])(vitest|jest|pytest|py\.test)(\s|$)/.test(text)
+    )
+      return {
+        ok: false,
+        reason: "a test runner is behind a launcher or inside a word the replay cannot see through",
+      };
+  }
+  if (hits.length === 0) return { ok: false, reason: "no test runner the replay can extend" };
+  if (hits.length > 1)
+    return { ok: false, reason: "the test command runs more than one test runner" };
+  const { k, r } = hits[0];
+  // The runner's command must be the last one; a final `;` or newline only ends it.
+  let end = segs.length - 1;
+  while (end > 0 && segs[end].words.length === 0) end--;
+  if (end !== k)
+    return { ok: false, reason: "the test runner is not the last command of the test command" };
+  for (let j = 0; j < segs.length; j++) {
+    const op = segs[j].op;
+    const okOp = j < end ? op === "&&" || op === ";" : op === null || op === ";";
+    if (!okOp)
+      return {
+        ok: false,
+        reason: `the test command uses \`${op}\` (its exit status is not the runner's)`,
+      };
+  }
+  const g = segs[k];
+  const words = g.words;
+  const dash = words.findIndex((x, j) => j >= r.args && !x.redir && x.raw === "--");
+  const lastWord = words[words.length - 1];
+  const insertAt = dash >= 0 ? words[dash].start : lastWord.end;
+  // Positional arguments of the runner itself (a path it runs on its own).
+  const args = words.slice(r.args, dash >= 0 ? dash : words.length).filter((x) => !x.redir);
+  let positional = false;
+  if (r.runner !== "go" && r.runner !== "cargo") {
+    const vals = VALUE_OPTS[r.runner] || new Set();
+    for (let j = 0; j < args.length; j++) {
+      const t = args[j].text;
+      if (t.startsWith("-")) {
+        if (!t.includes("=") && vals.has(t)) j++;
+        continue;
+      }
+      if (r.runner === "vitest" && j === 0 && /^(run|related|watch|dev)$/.test(t)) continue;
+      positional = true;
+    }
+  } else if (r.runner === "cargo") {
+    positional = args.some((x) =>
+      /^(--tests|--all-targets|--test|--workspace|--all|--benches|--examples)$/.test(x.text),
+    );
+  }
+  return {
+    ok: true,
+    runner: r.runner,
+    words,
+    at: r.at,
+    sub: r.sub,
+    args: r.args,
+    insertAt,
+    positional,
+    dash,
+  };
+}
+
+/** Insert `text` into `s` at `at`, separated by single spaces. */
+function splice(s, at, text) {
+  if (!text) return s;
+  const left = s.slice(0, at).replace(/\s+$/, "");
+  const right = s.slice(at).replace(/^\s+/, "");
+  return right ? `${left} ${text} ${right}` : `${left} ${text}`;
+}
+
+/**
+ * go: the registered `go test` with `-json` after `test`, and (by path) its package
+ * arguments replaced by `dirs`. → { command, tags } or null when the package arguments
+ * cannot be located unambiguously (an unknown flag before a bare word).
+ */
+function goCommand(effective, loc, dirs, select) {
+  const words = loc.words;
+  const stop = loc.dash >= 0 ? loc.dash : words.length;
+  const pkgs = [];
+  const tags = [];
+  let hasJson = false;
+  for (let j = loc.args; j < stop; j++) {
+    const x = words[j];
+    if (x.redir) continue;
+    const t = x.text;
+    if (t === "-args" || t === "--args") break;
+    if (t.startsWith("-")) {
+      const name = t.replace(/^--?/, "").replace(/=.*$/, "");
+      if (name === "json") hasJson = true;
+      if (name === "tags") {
+        if (t.includes("=")) tags.push(x.raw.replace(/^--?/, "-"));
+        else if (j + 1 < stop) tags.push("-tags", words[j + 1].raw);
+      }
+      if (t.includes("=")) continue;
+      if (GO_VALUE.has(name)) {
+        j++;
+        continue;
+      }
+      if (GO_BOOL.has(name)) continue;
+      // An unknown flag followed by a bare word: is it its value or a package?
+      if (j + 1 < stop && !words[j + 1].text.startsWith("-")) return null;
+      continue;
+    }
+    pkgs.push(x);
+  }
+  let out = effective;
+  if (select) {
+    // Remove the package words (right to left, so the earlier offsets hold) and put the
+    // tester's packages where the first one was, or append them.
+    const list = dirs.map(shq).join(" ");
+    if (pkgs.length) {
+      for (let j = pkgs.length - 1; j >= 1; j--)
+        out = out.slice(0, pkgs[j].start).replace(/\s+$/, "") + out.slice(pkgs[j].end);
+      out = out.slice(0, pkgs[0].start) + list + out.slice(pkgs[0].end);
+    } else out = splice(out, loc.insertAt, list);
+  }
+  if (!hasJson) out = splice(out, words[loc.sub].end, "-json");
+  return { command: out, tags };
+}
+
 /** The prefix of a signed proof line, and the env var the reporter reads its key from. */
 export const PROOF_TAG = "gaffer-replay-proof";
 export const PROOF_KEY_ENV = "GAFFER_REPLAY_PROOF_KEY";
 
 /**
  * The node:test reporter the replay adds: one SIGNED line per test that ran, with its file,
- * then a closing count — `gaffer-replay-proof <hmac-sha256 hex> <json>`. The key comes from
- * the environment and is deleted from it at load (before the runner spawns a test file),
- * so no test process can sign a line. Without a key it signs nothing (no proof).
+ * its full name (the suites it is nested in, from test:start) and its call site, then a
+ * closing count: `gaffer-replay-proof <hmac-sha256 hex> <json>`. The key comes from the
+ * environment and is deleted from it at load (before the runner spawns a test file), so no
+ * test process can sign a line. Without a key it signs nothing (no proof).
  */
-const NODE_REPORTER = `// gaffer tester replay: which test files ran (written by lib/tester-replay.mjs)
+const NODE_REPORTER = `// gaffer tester replay: which tests ran (written by lib/tester-replay.mjs)
 import { createHmac } from "node:crypto";
 const KEY = process.env.${PROOF_KEY_ENV} || "";
 delete process.env.${PROOF_KEY_ENV};
@@ -426,12 +1088,22 @@ const line = (o) => {
 };
 export default async function* gafferReplayReporter(source) {
   let seq = 0;
+  const stacks = new Map();
   for await (const ev of source) {
     if (!KEY) continue;
-    if ((ev.type === "test:pass" || ev.type === "test:fail") && ev.data && ev.data.file) {
-      const d = ev.data;
+    const d = ev.data;
+    if (ev.type === "test:start" && d && d.file) {
+      const st = stacks.get(d.file) || [];
+      st.length = Math.max(0, Number(d.nesting) || 0);
+      st.push(String(d.name ?? ""));
+      stacks.set(d.file, st);
+    }
+    if ((ev.type === "test:pass" || ev.type === "test:fail") && d && d.file) {
+      const st = (stacks.get(d.file) || []).slice(0, Math.max(0, Number(d.nesting) || 0));
       yield line({ pid: process.pid, seq: ++seq, type: ev.type, file: String(d.file),
-        name: String(d.name ?? ""), skip: Boolean(d.skip), todo: Boolean(d.todo),
+        name: String(d.name ?? ""), path: [...st, String(d.name ?? "")],
+        line: Number.isInteger(d.line) ? d.line : null, column: Number.isInteger(d.column) ? d.column : null,
+        skip: Boolean(d.skip), todo: Boolean(d.todo),
         suite: Boolean(d.details && d.details.type === "suite") });
     }
   }
@@ -441,9 +1113,14 @@ export default async function* gafferReplayReporter(source) {
 
 /**
  * HOW the replay runs the tester's `files` in the scratch merge worktree, and where the
- * proof will be: { runner, mode: "files" | "registered", command, env, proof, reason }.
- * `command` runs through bin/dod-regate.sh (the gates' wrap and timeout); `env` is added
- * to its environment; `proof.dir` is a fresh directory inside the worktree.
+ * proof will be: { runner, mode: "files" | "registered", command, env, proof, strict,
+ * effective, reason }. `command` runs through bin/dod-regate.sh (the gates' wrap and
+ * timeout) or, in the tester lane, `bash -c`; `env` is added to its environment (every
+ * entry: the caller passes them all); `proof.dir` is a fresh directory inside the worktree.
+ * `select: false` (the tester lane's clean replay, which runs the whole suite as
+ * registered) adds only the proof reporter, never a file selection. `strict`: the run is
+ * by path (the runner names no test path of its own): a reported file that was not given
+ * makes the proof fail.
  */
 export function replayInvocation({
   worktree,
@@ -452,6 +1129,7 @@ export function replayInvocation({
   files,
   nonce = "",
   key = "",
+  select = true,
 }) {
   const n = nonce || randomBytes(6).toString("hex");
   const dir = join(worktree, `.gaffer-replay-${n}`);
@@ -466,8 +1144,8 @@ export function replayInvocation({
     output: join(dir, "output.txt"),
     key: proofKey,
   };
-  const effective = effectiveTestCommand({ worktree, base, testCommand });
-  const runner = detectRunner(effective);
+  const resolved = resolveTestCommand({ worktree, base, testCommand });
+  const effective = resolved.command;
   const list = (files || []).map(shq).join(" ");
   // Both reporters write to the run's stdout (the tests gate's output, kept through
   // GAFFER_DOD_TESTS_OUTPUT): the signed lines need no file a test process could write.
@@ -489,69 +1167,108 @@ export function replayInvocation({
       [PROOF_KEY_ENV]: proofKey,
     },
     proof,
+    strict: false,
     effective,
-    reason: why,
+    reason: `${why}: it runs as registered and the tester's tests need the runner's own evidence that they ran`,
   });
-  const files_ = (command, why) => ({
+  const loc = locateRunner(effective);
+  if (!loc.ok) return registered(loc.reason);
+  const runner = loc.runner;
+  // The clean replay of a package script that runs node:test needs no change to the
+  // command at all: the registered command itself (`npm test`, its hooks and environment
+  // included) with the signed reporter in NODE_OPTIONS.
+  if (!select && resolved.script && runner === "node-test")
+    return {
+      ...registered("the package script runs node:test"),
+      reason:
+        "the registered command runs as it is, with the signed node:test reporter in NODE_OPTIONS",
+    };
+  // A package script runs as the base has it, where the package manager would run it:
+  // node_modules/.bin on PATH (dispatch's base-pinned gate command uses the same prefix),
+  // after its `pretest` hook.
+  const wrap = (command) =>
+    resolved.script
+      ? `PATH="$PWD/node_modules/.bin:$PATH"; ${resolved.pretest ? `( ${resolved.pretest} ) && ` : ""}${command}`
+      : command;
+  const files_ = (command, why, strict = select && !loc.positional) => ({
     runner,
     mode: "files",
-    command,
+    command: wrap(command),
     env: runner === "node-test" ? { [PROOF_KEY_ENV]: proofKey } : {},
     proof,
+    strict,
     effective,
     reason: why,
   });
+  const at = loc.insertAt;
   switch (runner) {
     case "node-test":
+      // node reads its options only before the first test path: the reporters go right
+      // after `--test`, the tester's files at the end.
       return files_(
-        ["node", ...nodeLoaderFlags(effective), "--test", reporters(shq), list].join(" "),
-        "node:test runs the tester's files by path",
+        splice(splice(effective, at, select ? list : ""), loc.words[loc.sub].end, reporters(shq)),
+        "the registered node:test command runs with the tester's files and the replay's signed reporter",
       );
     case "vitest":
       return files_(
-        `npx --no-install vitest run --reporter=default --reporter=json --outputFile.json=${shq(proof.report)} ${list}`,
-        "vitest runs the tester's files by path (a JSON report names each file that ran)",
+        splice(
+          effective,
+          at,
+          [
+            `--reporter=default --reporter=json --outputFile.json=${shq(proof.report)}`,
+            select ? list : "",
+          ]
+            .filter(Boolean)
+            .join(" "),
+        ),
+        "the registered vitest command runs with the tester's files (a JSON report names each test)",
       );
     case "jest":
       return files_(
-        `npx --no-install jest --ci --runTestsByPath --json --outputFile=${shq(proof.report)} ${list}`,
-        "jest runs the tester's files by path (a JSON report names each file that ran)",
+        splice(
+          effective,
+          at,
+          [`--json --outputFile=${shq(proof.report)}`, select ? `--runTestsByPath ${list}` : ""]
+            .filter(Boolean)
+            .join(" "),
+        ),
+        "the registered jest command runs with the tester's files (a JSON report names each test)",
       );
-    case "pytest": {
-      const c = ` ${effective} `;
-      const prefix = /\spython3\s+-m\s+pytest\s/.test(c)
-        ? "python3 -m pytest"
-        : /\spython\s+-m\s+pytest\s/.test(c)
-          ? "python -m pytest"
-          : "pytest";
-      return files_(`${prefix} -vv ${list}`, "pytest runs the tester's files by path");
-    }
-    case "go": {
-      const dirs = [...new Set((files || []).map((f) => `./${dirname(f)}`))].map(shq).join(" ");
-      const fmt = "{{.Dir}}{{range .TestGoFiles}} {{.}}{{end}}{{range .XTestGoFiles}} {{.}}{{end}}";
+    case "pytest":
       return files_(
-        `go list -f ${shq(fmt)} ${dirs} > ${shq(proof.golist)} && go test ${dirs}`,
-        "go test runs the packages holding the tester's files (go list names their test files)",
+        splice(effective, at, ["-vv", select ? list : ""].filter(Boolean).join(" ")),
+        "the registered pytest command runs with the tester's files (verbose node ids)",
+      );
+    case "go": {
+      const dirs = goDirs(files);
+      const g = goCommand(effective, loc, dirs, select);
+      if (!g)
+        return registered(
+          "the go test command's package arguments cannot be located unambiguously",
+        );
+      const fmt =
+        "{{.ImportPath}} {{.Dir}}{{range .TestGoFiles}} {{.}}{{end}}{{range .XTestGoFiles}} {{.}}{{end}}";
+      const golist = ["go list", ...g.tags, "-f", shq(fmt), dirs.map(shq).join(" ")].join(" ");
+      return files_(
+        dirs.length ? `${golist} > ${shq(proof.golist)} && ${g.command}` : g.command,
+        "the registered go test command runs on the tester's packages (go test -json names each test, go list their test files)",
+        select,
       );
     }
     case "cargo": {
-      const names = (files || [])
-        .map((f) => /^tests\/([^/]+)\.rs$/.exec(f))
-        .filter(Boolean)
-        .map((m) => m[1]);
-      if (names.length === 0)
+      const names = cargoTargets(files);
+      if (select && names.length === 0)
         return registered(
           "cargo has no file-scoped invocation for these files (only tests/<name>.rs)",
         );
       return files_(
-        `cargo test ${names.map((x) => `--test ${shq(x)}`).join(" ")}`,
-        "cargo runs the tester's integration-test targets by name",
+        select ? splice(effective, at, names.map((x) => `--test ${shq(x)}`).join(" ")) : effective,
+        "the registered cargo test command runs the tester's integration-test targets by name",
+        select && !loc.positional,
       );
     }
     default:
-      return registered(
-        "no file-scoped invocation is known for this test command: it runs as registered and each tester file needs the runner's own evidence that it ran",
-      );
+      return registered("no file-scoped invocation is known for this test command");
   }
 }
 
@@ -605,7 +1322,7 @@ function stripAnsi(line) {
 
 // pytest node ids (-vv): "test/test_a.py::test_x PASSED". (vitest / jest per-file text
 // lines are not read: anything the tests print can look like them.)
-const PYTEST_NODE_ID = /^(\S+?)::\S.*?\s(?:PASSED|FAILED|ERROR|XFAIL|XPASS)\b/;
+const PYTEST_NODE_ID = /^(\S+?)::(\S.*?)\s(PASSED|FAILED|ERROR|XFAIL|XPASS|SKIPPED)\b/;
 
 /** A signed node:test proof line's MAC check (constant time). */
 function macOk(key, json, mac) {
@@ -692,66 +1409,139 @@ function jsonReportResults(text) {
   return { results: rep.testResults, bad: "" };
 }
 
+/** The top-level `func TestX(t *testing.T)` names a go test file declares. */
+function goTestsDeclared(path) {
+  const out = new Set();
+  const re = /^func\s+(Test[A-Za-z0-9_]*)\s*\(\s*\w+\s+\*testing\.T\s*\)/gm;
+  for (const m of readText(path).matchAll(re)) out.add(m[1]);
+  return out;
+}
+
 /**
- * Which tester files the replay PROVES ran: { ran, unproven, reason }. Reads only what
- * the runner wrote (see replayInvocation); a file without positive evidence is unproven.
- * An integrity failure — a forged or out-of-sequence node:test line, a by-path run that
- * reports a file it was not given, a malformed report — leaves EVERY file unproven.
+ * A recorded test identity, normalised: { file, name, line?, column? }, or null when the
+ * value is not one. The key ignores line/column unless both sides carry them (see
+ * sameIdentity): node:test records them, the other runners do not.
  */
-export function replayProof({ inv, files, worktree, key }) {
+export function normaliseIdentity(t) {
+  if (!t || typeof t !== "object") return null;
+  const file = typeof t.file === "string" ? t.file.trim() : "";
+  const name = typeof t.name === "string" ? t.name : "";
+  if (!file || !name || file.length > 1000 || name.length > 2000 || /\0/.test(file + name))
+    return null;
+  const out = { file, name };
+  if (Number.isInteger(t.line) && t.line > 0) out.line = t.line;
+  if (Number.isInteger(t.column) && t.column > 0) out.column = t.column;
+  return out;
+}
+
+/** Do an observed test and a recorded identity name the same test? */
+export function sameIdentity(a, b) {
+  if (a.file !== b.file || a.name !== b.name) return false;
+  if (a.line && b.line && a.line !== b.line) return false;
+  if (a.column && b.column && a.column !== b.column) return false;
+  return true;
+}
+
+const fmtId = (t) => `${t.file} :: ${t.name}`;
+const fmtIds = (list, what) =>
+  list.length
+    ? `${list.slice(0, 8).map(fmtId).join("; ")}${list.length > 8 ? `; and ${list.length - 8} more` : ""} (${what})`
+    : "";
+
+/**
+ * Which tester tests the replay PROVES ran and passed: { ran, unproven, tests, failed,
+ * skipped, missing, evidence, reason }. Reads only what the runner wrote (see
+ * replayInvocation).
+ *   required: the identities the bound PASS recorded ([{ file, name, line?, column? }]):
+ *     EVERY one must execute and pass; `failed` / `skipped` / `missing` name the rest, the
+ *     files holding them are unproven, `ran` lists the files whose bound identities all
+ *     passed, `tests` the identities proven, evidence "identities". A PASS that bound no
+ *     identity in its files proves nothing (every file unproven).
+ *   required null (an older PASS without identities): the file-level rule: a file with
+ *     the runner's evidence that it ran is proven; `tests` lists the identities seen
+ *     passing in the tester's files; evidence "files".
+ * An integrity failure (a forged or out-of-sequence node:test line, a by-path run that
+ * reports a file it was not given, a malformed report) leaves EVERY file unproven.
+ */
+export function replayProof({ inv, files, worktree, key, required = null }) {
   const want = [...new Set((files || []).map(String))];
-  const proven = new Set();
+  const fileRan = new Set();
+  const seen = []; // { file, name, status: pass | fail | skip, line?, column? }
   let bad = "";
   const rels = (p) => [...relSpellings(worktree, p)];
-  const requested = (p) => rels(p).some((r) => want.includes(r));
-  const mark = (p) => {
-    for (const r of rels(p)) if (want.includes(r)) proven.add(r);
+  const wanted = (p) => rels(p).find((r) => want.includes(r)) || "";
+  const strict = inv.mode === "files" && inv.strict !== false;
+  const notGiven = (what, p) => {
+    if (strict) bad ||= `${what} (${rels(p)[0] || p})`;
   };
-  const byPath = inv.mode === "files";
   const runner = inv.runner;
   const output = readText(inv.proof.output);
   const proofKey = key || (inv.proof && inv.proof.key) || "";
-  // node:test events (files mode for node, and every registered run through NODE_OPTIONS).
+  const observe = (file, name, status, extra = {}) => seen.push({ file, name, status, ...extra });
+  // node:test events (node:test runs, and every registered run through NODE_OPTIONS).
   if (runner === "node-test" || runner === "registered") {
     const sig = signedNodeEvents(output, proofKey);
     bad ||= sig.bad;
     for (const ev of sig.events) {
-      // A by-path run is given exactly the tester's files: any other file is a mismatch.
-      if (byPath && !requested(ev.file)) {
-        bad ||= `the runner reported a file it was not given (${rels(ev.file)[0] || ev.file})`;
+      const f = wanted(ev.file);
+      if (!f) {
+        notGiven("the runner reported a file it was not given", ev.file);
         continue;
       }
-      if (ev.skip || ev.todo || ev.suite) continue;
+      if (ev.suite) continue;
       // node reports a file that defines no test as one synthetic test named after it:
       // nothing in it ran.
-      if (rels(ev.file).includes(String(ev.name))) continue;
-      if (ev.name === ev.file) continue;
-      mark(ev.file);
+      if (rels(ev.file).includes(String(ev.name)) || ev.name === ev.file) continue;
+      const path =
+        Array.isArray(ev.path) && ev.path.length ? ev.path.map(String) : [String(ev.name)];
+      const extra = {};
+      if (Number.isInteger(ev.line)) extra.line = ev.line;
+      if (Number.isInteger(ev.column)) extra.column = ev.column;
+      if (ev.skip || ev.todo) {
+        observe(f, path.join(" > "), "skip", extra);
+        continue;
+      }
+      fileRan.add(f);
+      observe(f, path.join(" > "), ev.type === "test:pass" ? "pass" : "fail", extra);
     }
   }
   if (runner === "vitest" || runner === "jest") {
     const rep = jsonReportResults(readText(inv.proof.report));
     bad ||= rep.bad;
     for (const r of rep.results) {
-      if (!requested(r.name)) {
-        bad ||= `the JSON report names a file that was not requested (${rels(r.name)[0] || r.name})`;
+      const f = wanted(r.name);
+      if (!f) {
+        notGiven("the JSON report names a file that was not requested", r.name);
         continue;
       }
-      const ran = r.assertionResults.some(
-        (a) => a && (a.status === "passed" || a.status === "failed"),
-      );
-      if (ran) mark(r.name);
+      for (const a of r.assertionResults) {
+        if (!a) continue;
+        const name = [
+          ...(Array.isArray(a.ancestorTitles) ? a.ancestorTitles.map(String) : []),
+          String(a.title ?? a.fullName ?? ""),
+        ].join(" > ");
+        const status = a.status === "passed" ? "pass" : a.status === "failed" ? "fail" : "skip";
+        if (status !== "skip") fileRan.add(f);
+        observe(f, name, status);
+      }
     }
   }
   if (runner === "pytest") {
     for (const line of output.split("\n")) {
       const m = PYTEST_NODE_ID.exec(stripAnsi(line));
       if (!m) continue;
-      if (!requested(m[1])) {
-        bad ||= `pytest reported a file it was not given (${m[1]})`;
+      const f = wanted(m[1]);
+      if (!f) {
+        notGiven("pytest reported a file it was not given", m[1]);
         continue;
       }
-      mark(m[1]);
+      const st = m[3];
+      if (st !== "SKIPPED") fileRan.add(f);
+      observe(
+        f,
+        m[2],
+        st === "PASSED" ? "pass" : st === "FAILED" || st === "ERROR" ? "fail" : "skip",
+      );
     }
   }
   if (runner === "go") {
@@ -766,39 +1556,192 @@ export function replayProof({ inv, files, worktree, key }) {
       .split("\n")
       .map((l) => l.trim().split(/\s+/))
       .filter((t) => t.length > 1);
+    // `go list` lines: <import path> <dir> <test files…> (an older line has no import path).
+    const pkgDir = new Map();
     for (const f of want) {
       if (!f.endsWith("_test.go")) continue;
       const dir = real(join(worktree, dirname(f)));
-      const base = f.slice(f.lastIndexOf("/") + 1);
-      if (listed.some(([d, ...names]) => names.includes(base) && real(d) === dir)) proven.add(f);
+      const b = f.slice(f.lastIndexOf("/") + 1);
+      for (const t of listed) {
+        const [ip, d, ...names] = t[0].startsWith("/") ? ["", ...t] : t;
+        if (real(d) !== dir) continue;
+        if (ip) pkgDir.set(ip, dir);
+        if (names.includes(b)) fileRan.add(f);
+      }
+    }
+    const declared = new Map(
+      want
+        .filter((f) => f.endsWith("_test.go"))
+        .map((f) => [f, goTestsDeclared(join(worktree, f))]),
+    );
+    for (const line of output.split("\n")) {
+      if (!line.startsWith("{")) continue;
+      let ev;
+      try {
+        ev = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (!ev || typeof ev.Test !== "string" || typeof ev.Package !== "string") continue;
+      if (!/^(pass|fail|skip)$/.test(ev.Action)) continue;
+      const dir = pkgDir.get(ev.Package);
+      if (!dir) continue;
+      const root = ev.Test.split("/")[0];
+      for (const [f, names] of declared) {
+        if (real(join(worktree, dirname(f))) !== dir || !names.has(root)) continue;
+        observe(f, ev.Test, ev.Action);
+      }
     }
   }
   if (runner === "cargo") {
-    for (const line of output.split("\n")) {
-      const m = /^\s*Running\s+(tests\/[^\s]+\.rs)\b/.exec(line);
-      if (!m) continue;
-      if (!requested(m[1])) {
-        bad ||= `cargo ran a test target it was not given (${m[1]})`;
+    let target = "";
+    for (const raw of output.split("\n")) {
+      const line = stripAnsi(raw);
+      const r = /^\s*Running\s+(\S+)/.exec(line);
+      if (r) {
+        target = "";
+        const m = /^(tests\/[^\s]+\.rs)$/.exec(r[1]);
+        if (!m) continue;
+        const f = wanted(m[1]);
+        if (!f) {
+          notGiven("cargo ran a test target it was not given", m[1]);
+          continue;
+        }
+        fileRan.add(f);
+        target = f;
         continue;
       }
-      mark(m[1]);
+      if (/^\s*Doc-tests\s/.test(line)) target = "";
+      const t = /^test (\S+) \.\.\. (ok|FAILED|ignored)\b/.exec(line);
+      if (t && target)
+        observe(target, t[1], t[2] === "ok" ? "pass" : t[2] === "FAILED" ? "fail" : "skip");
     }
   }
-  const how = byPath ? `${runner}, by path` : "the registered test command";
+  const how = inv.mode === "files" ? `${runner}, by path` : "the registered test command";
+  const evidence = Array.isArray(required) ? "identities" : "files";
   if (bad)
     return {
       ran: [],
       unproven: want,
-      reason: `the replay's proof of execution does not check out (${how}): ${bad} — none of the ${want.length} tester test file(s) counts as run: ${want.join(", ")}`,
+      tests: [],
+      failed: [],
+      skipped: [],
+      missing: [],
+      evidence,
+      reason: `the replay's proof of execution does not check out (${how}): ${bad}; none of the ${want.length} tester test file(s) counts as run: ${want.join(", ")}`,
     };
-  const ran = want.filter((f) => proven.has(f));
-  const unproven = want.filter((f) => !proven.has(f));
+  // An identity is credited only when EVERY test observed under it passed: one that also
+  // failed or skipped (a retry, or two tests sharing a name: describe "a > b" vs describe
+  // "a" > describe "b", a repeated test.each title) is ambiguous, and the passing twin must
+  // never stand in for the one that did not run (review 10 follow-up).
+  const notPassing = seen.filter((o) => o.status !== "pass");
+  const passing = seen.filter(
+    (o) => o.status === "pass" && !notPassing.some((x) => sameIdentity(x, o)),
+  );
+  if (!Array.isArray(required)) {
+    const ran = want.filter((f) => fileRan.has(f));
+    const unproven = want.filter((f) => !fileRan.has(f));
+    // File-level rule: a tester test the runner reports FAILED is red whatever the run's
+    // exit status (a registered command that masks it, e.g. a trap or `set +e`).
+    const failedSeen = [];
+    for (const o of seen.filter((x) => x.status === "fail")) {
+      const { status: _s, ...id } = o;
+      if (!failedSeen.some((t) => sameIdentity(t, id))) failedSeen.push(id);
+    }
+    const tests = [];
+    for (const o of passing) {
+      const { status: _s, ...id } = o;
+      if (!tests.some((t) => sameIdentity(t, id))) tests.push(id);
+    }
+    if (failedSeen.length)
+      return {
+        ran,
+        unproven,
+        tests: [],
+        failed: failedSeen,
+        skipped: [],
+        missing: [],
+        evidence,
+        reason: `${failedSeen.length} tester test(s) failed (${how}): ${fmtIds(failedSeen, "failed")}`,
+      };
+    return {
+      ran,
+      unproven,
+      tests,
+      failed: [],
+      skipped: [],
+      missing: [],
+      evidence,
+      reason: unproven.length
+        ? `${unproven.length} of ${want.length} tester test file(s) show no evidence they ran (${how}): ${unproven.join(", ")}`
+        : `every tester test file ran (${how}; file-level evidence only: the tester's PASS recorded no test identities)`,
+    };
+  }
+  const reqs = required.map(normaliseIdentity);
+  if (reqs.some((r) => r === null))
+    return {
+      ran: [],
+      unproven: want,
+      tests: [],
+      failed: [],
+      skipped: [],
+      missing: [],
+      evidence,
+      reason:
+        "the tester's PASS carries a test identity that is not one; none of its files counts as run",
+    };
+  if (reqs.length === 0)
+    return {
+      ran: [],
+      unproven: want,
+      tests: [],
+      failed: [],
+      skipped: [],
+      missing: [],
+      evidence,
+      reason: want.length
+        ? `the tester's PASS bound no passing test in its ${want.length} test file(s) (${want.join(", ")}): nothing it recorded can be required to pass`
+        : "the tester's PASS bound no test",
+    };
+  const tests = [];
+  const failed = [];
+  const skipped = [];
+  const missing = [];
+  for (const r of reqs) {
+    const m = seen.filter((o) => sameIdentity(o, r));
+    if (m.some((o) => o.status === "fail")) failed.push(r);
+    else if (m.length && m.every((o) => o.status === "pass")) {
+      const o = m.find((x) => x.status === "pass");
+      tests.push({
+        ...r,
+        ...(o.line ? { line: o.line } : {}),
+        ...(o.column ? { column: o.column } : {}),
+      });
+    } else if (m.length) skipped.push(r);
+    else missing.push(r);
+  }
+  const held = new Set([...failed, ...skipped, ...missing].map((r) => r.file));
+  const provenFiles = new Set(tests.map((t) => t.file));
+  const ran = want.filter((f) => provenFiles.has(f) && !held.has(f));
+  const unproven = want.filter((f) => held.has(f));
+  for (const r of [...failed, ...skipped, ...missing])
+    if (!want.includes(r.file) && !unproven.includes(r.file)) unproven.push(r.file);
+  const parts = [
+    fmtIds(failed, "failed"),
+    fmtIds(skipped, "skipped, todo or pending: did not run"),
+    fmtIds(missing, "missing: no such test ran"),
+  ].filter(Boolean);
   return {
     ran,
     unproven,
-    reason: unproven.length
-      ? `${unproven.length} of ${want.length} tester test file(s) show no evidence they ran (${how}): ${unproven.join(", ")}`
-      : `every tester test file ran (${how})`,
+    tests,
+    failed,
+    skipped,
+    missing,
+    evidence,
+    reason: parts.length
+      ? `${failed.length + skipped.length + missing.length} of the ${reqs.length} test(s) the tester's PASS bound did not pass on the candidate (${how}): ${parts.join("; ")}`
+      : `every one of the ${reqs.length} test(s) the tester's PASS bound ran and passed (${how})`,
   };
 }
 
@@ -831,13 +1774,21 @@ function main(argv) {
     const files = parse(opt("files-json"));
     if (!inv || !inv.proof || !Array.isArray(files) || !opt("worktree")) {
       process.stdout.write(
-        JSON.stringify({ ran: [], unproven: files || [], reason: "no replay invocation to read" }) +
-          "\n",
+        JSON.stringify({
+          ran: [],
+          unproven: files || [],
+          tests: [],
+          failed: [],
+          reason: "no replay invocation to read",
+        }) + "\n",
       );
       process.exit(4);
     }
+    // The identities the bound PASS recorded ride on the invocation `apply` printed
+    // (`required`, null for an older PASS): every one must execute and pass.
+    const required = Array.isArray(inv.required) ? inv.required : null;
     process.stdout.write(
-      JSON.stringify(replayProof({ inv, files, worktree: opt("worktree") })) + "\n",
+      JSON.stringify(replayProof({ inv, files, worktree: opt("worktree"), required })) + "\n",
     );
     process.exit(0);
   }
@@ -885,7 +1836,9 @@ function main(argv) {
         );
         process.exit(4);
       }
-      process.stdout.write(JSON.stringify({ ...plan, invocation: inv }) + "\n");
+      process.stdout.write(
+        JSON.stringify({ ...plan, invocation: { ...inv, required: plan.tests } }) + "\n",
+      );
       process.exit(0);
     }
   }

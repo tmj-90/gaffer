@@ -1239,10 +1239,14 @@ export function gateProposedMerge({
  * plan (lib/tester-replay.mjs) reads the bound tester PASS and the tester's test files on
  * gaffer-tests/ticket-<n>; those files are checked out into the working tree (the gated
  * merge commit is unchanged — they run, they never land) and run through
- * bin/dod-regate.sh (tests only): by path with the stack's runner where that is well
- * defined, else the registered command; a file without the runner's own evidence that it
- * ran is "red" with `code: "tester_replay_unverified"` (the landing holds, no record).
- *   → { kind: "pass", replay: { record, files } } | { kind: "red" | "error", code, reason, evidence }
+ * bin/dod-regate.sh (tests only): the registered test command with the tester's files and
+ * the proof reporter appended (lib/tester-replay.mjs replayInvocation: its env, config,
+ * markers, tags and features kept), else the registered command as it is; a file without
+ * the runner's own evidence that it
+ * ran is "red" with `code: "tester_replay_unverified"` (the landing holds, no record); so
+ * is a test identity the bound PASS recorded that did not run and pass (one that failed is
+ * `tester_replay_red`).
+ *   → { kind: "pass", replay: { record, files, tests, evidence } } | { kind: "red" | "error", code, reason, evidence }
  */
 function replayOnMergeCandidate({
   dbPath,
@@ -1267,13 +1271,17 @@ function replayOnMergeCandidate({
     };
   if (!plan.record) {
     log(`#${ticketNumber}: TESTER REPLAY — nothing to replay (${plan.reason})`);
-    return { kind: "pass", replay: { record: false, files: [], note: plan.reason } };
+    return { kind: "pass", replay: { record: false, files: [], tests: [], note: plan.reason } };
   }
+  const level = plan.evidence === "identities" ? "identities" : "files";
   if (!plan.run) {
     log(
       `#${ticketNumber}: TESTER REPLAY — no tester test files to replay (${plan.reason}); the merge gate's suite is what the tester ran`,
     );
-    return { kind: "pass", replay: { record: true, files: [], note: plan.reason } };
+    return {
+      kind: "pass",
+      replay: { record: true, files: [], tests: [], evidence: level, note: plan.reason },
+    };
   }
   const list = plan.files.join(", ");
   const at = `the merge of ${pin.slice(0, 12)} onto ${target.slice(0, 12)}`;
@@ -1292,9 +1300,10 @@ function replayOnMergeCandidate({
       evidence: "",
       reason: `the tester's tests could not be prepared for a replay on the merge (${a.reason})`,
     };
-  // PROOF OF EXECUTION (external review #7): the tester's files run by path with the
-  // stack's runner where that is well defined, else the registered command; then each
-  // file must show the runner's own evidence that it ran (lib/tester-replay.mjs).
+  // PROOF OF EXECUTION (external review #7): the registered test command runs with the
+  // tester's files and the proof reporter appended (external review 10: its env, config,
+  // markers, tags and features are kept), else as registered; then each file, and every
+  // test identity the PASS bound, must show the runner's own evidence (lib/tester-replay.mjs).
   const inv = replayInvocation({ worktree: wt, base: target, testCommand, files: plan.files });
   try {
     prepareReplayProof(inv);
@@ -1352,7 +1361,15 @@ function replayOnMergeCandidate({
       evidence,
       reason: `the independent tester's tests (${list}) fail on ${at} (the repo's own gates pass)`,
     };
-  const proof = replayProof({ inv, files: plan.files, worktree: wt });
+  const proof = replayProof({ inv, files: plan.files, worktree: wt, required: plan.tests });
+  // A bound identity that FAILED is a red replay, whatever the run's own exit status.
+  if (proof.failed.length > 0)
+    return {
+      kind: "red",
+      code: "tester_replay_red",
+      evidence,
+      reason: `the independent tester's tests fail on ${at}: ${proof.reason}`,
+    };
   if (proof.unproven.length > 0)
     return {
       kind: "red",
@@ -1360,14 +1377,26 @@ function replayOnMergeCandidate({
       evidence,
       unproven: proof.unproven,
       reason:
-        `the independent tester's test file(s) did not run in the replay on ${at}: ${proof.unproven.join(", ")} ` +
-        `(no evidence from the runner that they executed; replayed with ${how})`,
+        level === "identities"
+          ? `the independent tester's bound test(s) did not run and pass in the replay on ${at}: ${proof.reason} (replayed with ${how})`
+          : `the independent tester's test file(s) did not run in the replay on ${at}: ${proof.unproven.join(", ")} ` +
+            `(no evidence from the runner that they executed; replayed with ${how})`,
     };
   log(
-    `#${ticketNumber}: TESTER REPLAY PASS — the tester's tests (${list}) ran and pass on the merge candidate ${merge.slice(0, 12)}`,
+    `#${ticketNumber}: TESTER REPLAY PASS — the tester's tests (${list}) ran and pass on the merge candidate ${merge.slice(0, 12)} ` +
+      `(${proof.tests.length} test(s) proven; ${level === "identities" ? "every test the tester's PASS bound" : "file-level evidence only: the PASS recorded no test identities"})`,
   );
-  // The record lists only the files proven to have run (and the run passed).
-  return { kind: "pass", replay: { record: true, files: proof.ran, note: plan.reason } };
+  // The record lists only the files and identities proven to have run (and the run passed).
+  return {
+    kind: "pass",
+    replay: {
+      record: true,
+      files: proof.ran,
+      tests: proof.tests,
+      evidence: level,
+      note: plan.reason,
+    },
+  };
 }
 
 /** TESTER REPLAY: is a replay record on file for `pin` (a system row, any landed revision)? */
@@ -1506,6 +1535,7 @@ export function recoverMissingReplay({ ticketNumber, repo, pin, commands }) {
       rp.replay.files,
       "local",
       `regenerated on a merge retry: the earlier landing was interrupted before its replay record${rp.replay.note ? `; ${rp.replay.note}` : ""}`,
+      { tests: rp.replay.tests, evidence: rp.replay.evidence },
     );
     if (recorded === false)
       return { ok: false, reason: "the regenerated replay could not be recorded" };
@@ -1552,8 +1582,21 @@ export function testerReplayLandedRevision(repo, landed, gatedMerge) {
   return { ok: true, commit: head };
 }
 
-/** TESTER REPLAY: record which tester assertions passed on which landed revision (system). */
-function recordTesterReplayCli(ticketNumber, repoId, landedSha, pin, files, via, note = "") {
+/**
+ * TESTER REPLAY: record which tester assertions passed on which landed revision (system):
+ * the files and the test identities proven, and whether the bound PASS recorded identities
+ * (`evidence` "identities") or is an older one (file-level evidence only).
+ */
+function recordTesterReplayCli(
+  ticketNumber,
+  repoId,
+  landedSha,
+  pin,
+  files,
+  via,
+  note = "",
+  { tests = [], evidence = "files" } = {},
+) {
   const r = runDispatch([
     "ticket",
     "record-tester-replay",
@@ -1564,6 +1607,10 @@ function recordTesterReplayCli(ticketNumber, repoId, landedSha, pin, files, via,
     String(pin),
     "--files-json",
     JSON.stringify(files || []),
+    "--tests-json",
+    JSON.stringify(tests || []),
+    "--evidence",
+    evidence === "identities" ? "identities" : "files",
     "--via",
     String(via || "local"),
     ...(note ? ["--note", String(note)] : []),
@@ -2360,7 +2407,8 @@ function holdMergeGateRed(ticketNumber, gate, { branch, defaultBranch, repoName 
     code === "tester_replay_unverified"
       ? `Tester replay unverified: ${gate.reason}. Nothing landed and no replay record was written; ` +
         `${defaultBranch} was not touched. Make the repo's test command run the tester's files ` +
-        `(or register one whose runner gaffer can run by path), then re-approve.`
+        `(or register one whose runner gaffer can run by path); a test the tester's PASS bound that the candidate ` +
+        `skips, renames or removes needs the tester again. Then re-approve.`
       : (code === "tester_replay_red"
           ? `The independent tester's tests fail on the merge of ${branch} onto ${defaultBranch}@${gate.target.slice(0, 12)}${where} ` +
             `(${gate.reason}); ${defaultBranch} was not touched — see the tester-replay evidence. `
@@ -3231,7 +3279,13 @@ function main() {
       });
       if (gate.kind === "red") return holdRed(gate);
       if (gate.replay?.record)
-        replayed = { merge: gate.merge, files: gate.replay.files, note: gate.replay.note || "" };
+        replayed = {
+          merge: gate.merge,
+          files: gate.replay.files,
+          tests: gate.replay.tests || [],
+          evidence: gate.replay.evidence || "files",
+          note: gate.replay.note || "",
+        };
       if (gate.kind === "error") {
         fail(
           `refusing to merge #${resolved.number}: the merge gate could not run (${gate.reason}); nothing merged, ticket stays ready_for_merge`,
@@ -3335,7 +3389,13 @@ function main() {
         gatedTarget: res.gate.target,
       };
       replayed = res.gate.replay?.record
-        ? { merge: res.gate.merge, files: res.gate.replay.files, note: res.gate.replay.note || "" }
+        ? {
+            merge: res.gate.merge,
+            files: res.gate.replay.files,
+            tests: res.gate.replay.tests || [],
+            evidence: res.gate.replay.evidence || "files",
+            note: res.gate.replay.note || "",
+          }
         : null;
       log(
         `merged #${resolved.number} (${branch} → ${repo.defaultBranch}) — landed the gated merge ${res.gate.merge.slice(0, 12)}`,
@@ -3411,6 +3471,7 @@ function main() {
           replayed.files,
           landed.via,
           replayed.note,
+          { tests: replayed.tests, evidence: replayed.evidence },
         );
       else
         log(

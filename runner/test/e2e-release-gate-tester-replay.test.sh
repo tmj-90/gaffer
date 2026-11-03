@@ -281,6 +281,11 @@ GAFFER_MODE=autonomous AUTO_MERGE=1 run_tick >/dev/null
 REC2="$(replay_rec "$ACC2")"
 [ "${REC2%% *}" = "$(git -C "$R2" rev-parse main)" ] && case "$REC2" in *'["test/acceptance.test.mjs"]'*) true ;; *) false ;; esac \
   && ok "5: the record names the landed sha and test/acceptance.test.mjs, which ran and passed there" || fail "5: record '$REC2' vs main $(git -C "$R2" rev-parse main)"
+# TEST IDENTITIES (external review 10): the registered command is file-scoped, so the
+# tester lane's clean replay also ran the tester's file appended to it and bound the
+# tests that passed there; the record proves every one.
+EVID2="$(wg ticket show "$ACC2" | jget '((d.evidence || []).filter(e => e.recorded_by_actor_type === "system" && (e.uri || "").startsWith("gaffer-tester-replayed:")).map(e => { const p = JSON.parse(e.payload_json || "{}"); return p.evidence + " " + (p.tests || []).length; }).join(""))' 2>/dev/null)"
+case "$EVID2" in "identities "[1-9]*) ok "5: the record proves the test identities the PASS bound ($EVID2)" ;; *) fail "5: record evidence '$EVID2'" ;; esac
 [ "$(accepted)" = "2" ] && ok "5: wg stats: the second epic is accepted (2)" || fail "5: wg stats accepted=$(accepted)"
 
 echo

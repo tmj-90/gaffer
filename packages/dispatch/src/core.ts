@@ -2289,6 +2289,8 @@ export class Dispatch {
       commit: string;
       pin: string;
       files: readonly string[];
+      tests?: unknown;
+      evidence?: string | undefined;
       repo?: string | undefined;
       via?: string | undefined;
       note?: string | undefined;
@@ -2319,6 +2321,10 @@ export class Dispatch {
       replay?: string;
       tests_commit?: string;
       acceptance_evidence?: string;
+      /** The test identities the PASS binds (system only; see services/testerReplay.ts). */
+      tests?: unknown;
+      /** The tester agent (and run) whose verdict the runner records (system only). */
+      tester_agent?: unknown;
     },
     actor: Actor,
   ): TransitionResult {

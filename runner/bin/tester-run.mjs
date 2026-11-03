@@ -118,7 +118,13 @@ import {
   shadowNote,
   writeAgentSettings,
 } from "../lib/agent-home.mjs";
-import { isTestPath, testerTestFiles } from "../lib/tester-replay.mjs";
+import {
+  isTestPath,
+  prepareReplayProof,
+  replayInvocation,
+  replayProof,
+  testerTestFiles,
+} from "../lib/tester-replay.mjs";
 import {
   acceptanceTimeoutMs,
   buildEvidencePayload,
@@ -129,6 +135,9 @@ import {
 
 // node:sqlite is only reachable via createRequire in an ESM module.
 const require = createRequire(import.meta.url);
+
+/** The tester agent's actor id (dispatch's `--as agent` tester actor). */
+export const TESTER_AGENT_ID = "tester";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const RUNNER_DIR = resolve(HERE, "..");
@@ -475,6 +484,16 @@ export function recordVerdict(ticketNumber, verdict, summary, env = process.env,
     ...(binding.acceptanceEvidence
       ? ["--acceptance-evidence", String(binding.acceptanceEvidence)]
       : []),
+    ...(binding.tests ? ["--tests-json", JSON.stringify(binding.tests)] : []),
+    // WHO TESTED: a PASS recorded as the system (it carries identities) names the tester
+    // agent whose run produced the verdict, and the run when known (dispatch: system only).
+    ...(binding.tests && binding.testerAgent?.id
+      ? [
+          "--tester-agent",
+          String(binding.testerAgent.id),
+          ...(binding.testerAgent.run ? ["--tester-run", String(binding.testerAgent.run)] : []),
+        ]
+      : []),
   ];
   const override = (env.DISPATCH_TESTER_VERDICT_CMD ?? "").trim();
   let argv;
@@ -514,7 +533,9 @@ export function recordVerdict(ticketNumber, verdict, summary, env = process.env,
         "--summary",
         summary,
         "--as",
-        "agent",
+        // The PASS's test identities are the runner's own measurement: recorded as the
+        // system (dispatch refuses them from any other actor).
+        binding.tests ? "system" : "agent",
         // GAFFER_TESTER_FAIL_TO=ready (set by lib/tester.sh when the autonomy policy lets
         // the runner drive the review gate): a FAIL re-queues for REWORK with the
         // failing observation as feedback instead of holding for a human.
@@ -779,7 +800,17 @@ export function implementationChanges(worktree, baseCommit) {
  * runner re-runs the repo's test command in a FRESH detached checkout of the tested commit
  * with only the tester's TEST files copied in (deleted candidate tests are not deleted —
  * the candidate's own tests still run), dependencies linked from the primary checkout.
- * → { state: "passed" | "failed" | "skipped", reason, tail }
+ * TEST IDENTITIES (external review 10): the registered command runs with the landing
+ * replay's proof reporter added and no file selection (lib/tester-replay.mjs
+ * replayInvocation, select:false; when that does not run every tester file, the landing
+ * replay's invocation with the files appended runs too), and the tests the runner's own
+ * evidence shows PASSED in
+ * the tester's files are returned as `tests`: the PASS binds them and the landing replay
+ * requires every one to pass on the merge candidate. The signing key is in the run's
+ * environment only and the reporter deletes it before a test file loads. LIMIT: this
+ * replay is not sandboxed, so its proof is evidence against a non-adversarial tester's
+ * tests (a test here can read the runner's environment and files).
+ * → { state: "passed" | "failed" | "skipped", reason, tail, tests }
  */
 export function replayTesterTests({
   repoPath,
@@ -824,14 +855,37 @@ export function replayTesterTests({
       Number(process.env.GAFFER_TESTER_REPLAY_TIMEOUT_MS) > 0
         ? Number(process.env.GAFFER_TESTER_REPLAY_TIMEOUT_MS)
         : 10 * 60 * 1000;
-    const r = spawnSync("bash", ["-c", cmd], {
-      cwd: replay,
-      encoding: "utf8",
-      timeout,
-      maxBuffer: 16 * 1024 * 1024,
-      env: { ...agentChildEnv(), CI: "1" },
-    });
-    const tail = `${r.stdout || ""}\n${r.stderr || ""}`.trim().split("\n").slice(-12).join("\n");
+    const files = testFiles.filter((f) => existsSync(resolve(replay, f)));
+    const runInv = (select) => {
+      const inv = replayInvocation({ worktree: replay, testCommand: cmd, files, select });
+      prepareReplayProof(inv);
+      const r = spawnSync("bash", ["-c", inv.command], {
+        cwd: replay,
+        encoding: "utf8",
+        timeout,
+        maxBuffer: 16 * 1024 * 1024,
+        env: { ...agentChildEnv(), CI: "1", ...inv.env },
+      });
+      writeFileSync(inv.proof.output, `${r.stdout || ""}\n${r.stderr || ""}`);
+      const tail = `${r.stdout || ""}\n${r.stderr || ""}`
+        .split("\n")
+        .filter((l) => !l.includes("gaffer-replay-proof "))
+        .join("\n")
+        .trim()
+        .split("\n")
+        .slice(-12)
+        .join("\n");
+      return { r, tail, proof: replayProof({ inv, files, worktree: replay }) };
+    };
+    // The registered command as it is. When it does not run every tester file (a
+    // file-scoped command), the landing replay's own invocation (the registered command
+    // with the tester's files appended) runs them too: that is what the landing will
+    // require, so it is what the identities come from, and a failure there fails the
+    // replay as well.
+    let run = runInv(false);
+    if (!run.r.error && run.r.status === 0 && run.proof.unproven.length > 0) run = runInv(true);
+    const { r, tail } = run;
+    const tests = run.proof.tests;
     if (r.error)
       return {
         state: "failed",
@@ -841,11 +895,12 @@ export function replayTesterTests({
     return r.status === 0
       ? {
           state: "passed",
-          reason: `${cmd} passed on a clean checkout of ${testedCommit.slice(0, 12)}`,
+          reason: `${cmd} passed on a clean checkout of ${testedCommit.slice(0, 12)} (${tests.length} test(s) in the tester's files passed)`,
           tail,
           // ACCEPTANCE PROFILE: the person-registered commands' run (above, in its own
           // clean checkout), reported only once the tester's tests passed too.
           ...(acceptance ? { acceptance } : {}),
+          tests,
         }
       : {
           state: "failed",
@@ -1330,6 +1385,8 @@ function runLiveTester(context) {
   let verdict = null;
   let text = "";
   let usageLimit = null;
+  // The tester agent's run id (the envelope's session id), recorded on a system PASS.
+  let testerRunId = "";
   const elapsedMs = Date.now() - t0;
   // The raw envelope for the runner's usage-window pause record (lib/tester.sh).
   const envelopeOut = String(process.env.GAFFER_TESTER_ENVELOPE_OUT ?? "").trim();
@@ -1379,6 +1436,7 @@ function runLiveTester(context) {
         withJoinKeys(buildUsageRecord({ json, ticket: n, kind: "tester" }), joinKeys),
       );
       text = extractResultText(json) ?? "";
+      if (json && typeof json.session_id === "string") testerRunId = json.session_id;
       // USAGE WINDOW: a call refused by the usage window / a rate limit never tested
       // anything (the same one table the delivery path reads; text rows need an error
       // envelope, so the tester's own reply quoting the words is not a refusal).
@@ -1641,6 +1699,17 @@ function runLiveTester(context) {
     ...(verdict === "pass" && replay ? { replay: replay.state } : {}),
     ...(verdict === "pass" ? { testsCommit } : {}),
     ...(verdict === "pass" && acceptanceEvidence ? { acceptanceEvidence } : {}),
+    ...(verdict === "pass" && testsCommit !== "none" && replay && Array.isArray(replay.tests)
+      ? {
+          tests: replay.tests,
+          testerAgent: {
+            id: TESTER_AGENT_ID,
+            ...(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(testerRunId)
+              ? { run: testerRunId }
+              : {}),
+          },
+        }
+      : {}),
   });
   if (!recorded.ok) {
     fail(

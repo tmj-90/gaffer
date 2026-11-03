@@ -15140,33 +15140,6 @@
         "properties": {
           "comment": {
             "$ref": "#/components/schemas/ReviewComment"
-          },
-          "review_rules_proposed": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "repo": {
-                  "type": "string"
-                },
-                "lore_id": {
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                }
-              },
-              "required": [
-                "repo",
-                "lore_id"
-              ],
-              "additionalProperties": false
-            },
-            "description": "Review-rule drafts this act completed and proposed (memory configured only)."
           }
         },
         "required": [
@@ -18265,33 +18238,6 @@
               "captured"
             ],
             "description": "review/reject with captureLore only."
-          },
-          "review_rules_proposed": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "repo": {
-                  "type": "string"
-                },
-                "lore_id": {
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                }
-              },
-              "required": [
-                "repo",
-                "lore_id"
-              ],
-              "additionalProperties": false
-            },
-            "description": "Review-rule drafts this act completed and proposed (memory configured only)."
           },
           "landed_already": {
             "type": "array",

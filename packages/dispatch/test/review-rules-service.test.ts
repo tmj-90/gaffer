@@ -200,8 +200,9 @@ describe("the reject route and GET /api/review-rules", () => {
         body: JSON.stringify({ to: "refining", reason: RULE }),
       });
       expect(res.status).toBe(200);
-      const body = (await res.json()) as { review_rules_proposed?: unknown };
-      expect(body.review_rules_proposed).toEqual([{ repo: "app", lore_id: "rule2345" }]);
+      // The proposal runs once the response is sent (it never delays the person's reject).
+      for (let i = 0; i < 100 && filed.length === 0; i++)
+        await new Promise((r) => setTimeout(r, 20));
       expect(filed).toHaveLength(1);
       expect(filed[0]!.tags).toEqual(["review-rule"]);
 

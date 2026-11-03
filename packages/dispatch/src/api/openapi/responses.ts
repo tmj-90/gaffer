@@ -256,12 +256,6 @@ export const TicketDetailsBatch = z
   })
   .strict();
 
-/** REVIEW RULES (D6): drafts a person's feedback just completed, proposed to memory. */
-const ReviewRulesProposed = z
-  .array(z.object({ repo: str, lore_id: nstr }).strict())
-  .optional()
-  .describe("Review-rule drafts this act completed and proposed (memory configured only).");
-
 /** One side of an escaped-defect link (MF5). */
 const RegressionLinkView = z
   .object({
@@ -318,7 +312,6 @@ export const TicketTransition = z
       })
       .optional()
       .describe("review/reject with captureLore only."),
-    review_rules_proposed: ReviewRulesProposed,
     landed_already: z
       .array(
         z
@@ -644,9 +637,7 @@ export const ReviewComment = z
   })
   .describe("A reviewer's comment on a delivery.");
 
-export const ReviewCommentEnvelope = z
-  .object({ comment: ReviewComment, review_rules_proposed: ReviewRulesProposed })
-  .strict();
+export const ReviewCommentEnvelope = z.object({ comment: ReviewComment }).strict();
 
 export const ReviewCommentList = z
   .object({

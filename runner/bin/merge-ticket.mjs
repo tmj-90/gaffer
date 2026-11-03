@@ -171,6 +171,7 @@ import { agentChildEnv, renderPoMcpRuntime } from "./product-owner-run.mjs";
 import { branchHead, landingDecision, reReviewCommand } from "../lib/tester-binding.mjs";
 import {
   applyTesterTests,
+  discardReplayKey,
   prepareReplayProof,
   replayInvocation,
   replayPlan,
@@ -1346,6 +1347,9 @@ function replayOnMergeCandidate({
       maxBuffer: 8 * 1024 * 1024,
     },
   );
+  // A key file no reporter consumed goes now, whatever the run did (inv.env carries only
+  // its path; replayProof removes it too, but a red run never gets there).
+  discardReplayKey(inv);
   const evidence = (r.stdout || "").trim();
   if (r.error)
     return {

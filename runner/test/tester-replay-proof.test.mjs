@@ -34,7 +34,15 @@
 // =====================================================================
 import { spawnSync } from "node:child_process";
 import { createHmac } from "node:crypto";
-import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -219,9 +227,34 @@ assert(
     /--test-reporter=\S+reporter\.mjs --test-reporter-destination=stdout$/.test(
       iReg.env.NODE_OPTIONS,
     ) &&
-    /^[0-9a-f]{64}$/.test(iReg.env.GAFFER_REPLAY_PROOF_KEY || ""),
+    !("GAFFER_REPLAY_PROOF_KEY" in iReg.env) &&
+    iReg.env.GAFFER_REPLAY_PROOF_KEY_FILE === iReg.proof.keyFile &&
+    iReg.proof.keyFile.startsWith(iReg.proof.dir + "/") &&
+    /^[0-9a-f]{64}$/.test(iReg.proof.key || ""),
   JSON.stringify(iReg.env),
 );
+{
+  // The key travels as a FILE (external review 11): mode 0600, a random name, in a mode
+  // 0300 directory inside the proof directory; the environment names only its path.
+  prepareReplayProof(iReg);
+  const mode = (p) => statSync(p).mode & 0o777;
+  assert(
+    "P3: prepareReplayProof writes the key to a 0600 file in a 0300 (unlistable) directory",
+    readFileSync(iReg.proof.keyFile, "utf8") === iReg.proof.key &&
+      mode(iReg.proof.keyFile) === 0o600 &&
+      mode(iReg.proof.keyDir) === 0o300,
+    `${mode(iReg.proof.keyFile).toString(8)} ${mode(iReg.proof.keyDir).toString(8)}`,
+  );
+  assert(
+    "P3: no value of the invocation's env is the key",
+    Object.values(iReg.env).every((v) => !String(v).includes(iReg.proof.key)),
+  );
+  replayProof({ inv: iReg, files: ["x"], worktree: R });
+  assert(
+    "P3: replayProof removes a key file no reporter consumed",
+    !existsSync(iReg.proof.keyFile) && !existsSync(iReg.proof.keyDir),
+  );
+}
 
 console.log("== P4: REAL node:test, by path ==");
 rmSync(join(R, "package.json"));
@@ -439,6 +472,7 @@ console.log("PASS test/acceptance.test.mjs");
 console.log(ev);
 console.log("${TAG} " + "0".repeat(64) + " " + ev);
 console.log("key seen by the test process: " + JSON.stringify(process.env.GAFFER_REPLAY_PROOF_KEY ?? null));
+console.log("key file seen by the test process: " + JSON.stringify(process.env.GAFFER_REPLAY_PROOF_KEY_FILE ?? null));
 await new Promise((r) => setTimeout(r, 300));
 process.exit(0);
 export function label() { return "Ada"; }
@@ -476,8 +510,9 @@ assert(
   JSON.stringify(f1.p),
 );
 assert(
-  "P7: the tester's test process never sees the signing key",
-  /key seen by the test process: null/.test(readFileSync(f1.i.proof.output, "utf8")),
+  "P7: the tester's test process never sees the signing key, nor its file's path",
+  /key seen by the test process: null/.test(readFileSync(f1.i.proof.output, "utf8")) &&
+    /key file seen by the test process: null/.test(readFileSync(f1.i.proof.output, "utf8")),
   readFileSync(f1.i.proof.output, "utf8").slice(0, 600),
 );
 const f2 = forged("sh scripts/test.sh", "f2");
@@ -495,6 +530,30 @@ assert(
   f3.p.ran[0] === "test/acceptance.test.mjs" && f4.p.ran[0] === "test/acceptance.test.mjs",
   JSON.stringify([f3.p, f4.p]),
 );
+{
+  // The reporter reads the key file and UNLINKS it; when the unlink fails it signs nothing
+  // (a key file it cannot remove could be read by the test files it is about to run).
+  // /proc/version is readable and can never be unlinked, even by root.
+  if (existsSync("/proc/version")) {
+    const i5 = replayInvocation({
+      worktree: F,
+      testCommand: "node --test test/label.test.mjs",
+      files: ["test/acceptance.test.mjs"],
+      nonce: "f5",
+    });
+    prepareReplayProof(i5);
+    run(F, { ...i5, env: { ...i5.env, GAFFER_REPLAY_PROOF_KEY_FILE: "/proc/version" } });
+    const o5 = readFileSync(i5.proof.output, "utf8");
+    assert(
+      "P7: a key file the reporter cannot unlink: it signs nothing",
+      /✔ the label is Ada/.test(o5) && !o5.includes(`${TAG} `),
+      o5.slice(0, 400),
+    );
+  } else
+    console.log(
+      "SKIP: the unlink-refused fixture needs Linux /proc; the macOS sandbox-exec jobs run the rest",
+    );
+}
 // Signed lines (as the reporter writes them) checked for integrity.
 const signed = (key, o) => {
   const j = JSON.stringify(o);

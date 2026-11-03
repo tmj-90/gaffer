@@ -656,7 +656,7 @@ _gaffer_merge_gate() {
 _gaffer_merge_gate_tester_replay() {
   local num="$1" repo="$2" pin="$3" wt="$4" label="$5" tcmd="$6" def="$7" who="$8" dodrc="${9:-0}"
   local helper="${RUNNER_DIR:-}/lib/tester-replay.mjs" out rc run record files reason rout rrc
-  local inv icmd irunner imode iout ienv ienvok proof unproven ran failed ptests preason line
+  local inv icmd irunner imode iout ikdir ienv ienvok proof unproven ran failed ptests preason line
   if [ ! -f "$helper" ] || ! command -v node >/dev/null 2>&1; then
     _MG_REASON="the tester replay (lib/tester-replay.mjs) cannot run"; return 2
   fi
@@ -692,10 +692,12 @@ _gaffer_merge_gate_tester_replay() {
   irunner="$(printf '%s' "$out" | jget '(d.invocation && d.invocation.runner) || ""' 2>/dev/null || echo '')"
   imode="$(printf '%s' "$out" | jget '(d.invocation && d.invocation.mode) || ""' 2>/dev/null || echo '')"
   iout="$(printf '%s' "$out" | jget '(d.invocation && d.invocation.proof && d.invocation.proof.output) || ""' 2>/dev/null || echo '')"
+  ikdir="$(printf '%s' "$out" | jget '(d.invocation && d.invocation.proof && d.invocation.proof.keyDir) || ""' 2>/dev/null || echo '')"
   # EVERY entry of the invocation's env reaches the run (NODE_OPTIONS with the signed
-  # reporter, the reporter's signing key, which lives in the run's environment only and
-  # which the reporter deletes before any test file starts, and whatever else the
-  # invocation needs), one NAME=value per line. An entry that is not a plain name, or a value with a line break,
+  # reporter, the PATH of the reporter's key file, which `apply` wrote mode 0600 in an
+  # unlistable directory and the reporter unlinks before any test file starts: the key
+  # itself is never in an environment, and whatever else the invocation needs), one
+  # NAME=value per line. An entry that is not a plain name, or a value with a line break,
   # cannot be passed faithfully: the replay is not prepared (held).
   ienv="$(printf '%s' "$out" | jget 'Object.entries((d.invocation && d.invocation.env) || {}).map(([k, v]) => k + "=" + String(v)).join("\n")' 2>/dev/null)" || ienv=""
   ienvok="$(printf '%s' "$out" | jget 'Object.entries((d.invocation && d.invocation.env) || {}).every(([k, v]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k) && !/[\r\n\0]/.test(String(v))) ? "1" : ""' 2>/dev/null || echo '')"
@@ -709,6 +711,9 @@ _gaffer_merge_gate_tester_replay() {
   # The merge gate already installed this worktree's dependencies.
   [ "$dodrc" = "0" ] && _renv+=(GAFFER_DOD_INSTALL=0)
   rout="$(env "${_renv[@]}" bash "${RUNNER_DIR:-.}/bin/dod-regate.sh" "$wt" "$label:tester-replay" "$icmd" - "$_MG_TARGET" 2>/dev/null)"; rrc=$?
+  # A key file no reporter consumed goes now, whatever the run did (the proof step below
+  # removes it too; a red run never gets there).
+  if [ -n "$ikdir" ] && [ -d "$ikdir" ]; then chmod 700 "$ikdir" 2>/dev/null; rm -rf "$ikdir" 2>/dev/null; fi
   if [ "$rrc" -ne 0 ]; then
     _MG_KIND="tester_replay_red"
     _MG_EVIDENCE="$rout"

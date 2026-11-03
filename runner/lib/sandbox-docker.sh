@@ -556,7 +556,16 @@ else _MODE=legacy
 fi
 _BRIDGED=0
 if [ "$_MODE" = "validation" ]; then
-  : # nothing from $GAFFER_DATA is mounted; the write roots (the worktree) carry the tests
+  # Nothing from $GAFFER_DATA is mounted; the write roots (the worktree) carry the tests.
+  # A tester replay's proof key FILE lives in the proof directory inside the worktree, so
+  # it is already mounted; one outside every mount gets its proof directory (two levels
+  # up: <proof dir>/<unlistable key dir>/<key file>) mounted rw so the reporter can read
+  # and unlink it. Never the key itself: only its path is forwarded (below).
+  _kf="${GAFFER_REPLAY_PROOF_KEY_FILE:-}"
+  if [ -n "$_kf" ] && ! _covered "$_kf"; then
+    _kp="$(dirname "$(dirname "$_kf")")"
+    case "$(basename "$_kp")" in .gaffer-replay-*) [ -d "$_kp" ] && _add_mount "$_kp" rw ;; esac
+  fi
 elif [ "$_MODE" = "bridge" ] || [ "$_MODE" = "none" ]; then
   # ── BRIDGE MODE (lib/mcp-bridge.mjs; external review, finding 2) ─────────────
   # The MCP data plane runs on the HOST. NOTHING under $GAFFER_DATA is mounted except:
@@ -663,10 +672,10 @@ _envs=()
 # The validation profile forwards NO model credential (a test suite never needs one)
 # and no data-plane vars; only the legacy layout forwards the DB paths + server bins.
 case "$_MODE" in
-  # GAFFER_REPLAY_PROOF_KEY: the tester replay's node:test reporter signs its events with
-  # it (lib/tester-replay.mjs); it is set only for a replay run and deleted from the
-  # runner's environment before any test file starts.
-  validation) _fwd=( GAFFER_FACTORY GAFFER_REPLAY_PROOF_KEY ) ;;
+  # GAFFER_REPLAY_PROOF_KEY_FILE: the PATH of the file the tester replay's node:test
+  # reporter reads its signing key from and unlinks at load (lib/tester-replay.mjs). The
+  # key itself (GAFFER_REPLAY_PROOF_KEY, an older runner's variable) is never forwarded.
+  validation) _fwd=( GAFFER_FACTORY GAFFER_REPLAY_PROOF_KEY_FILE ) ;;
   legacy)     _fwd=( ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN GAFFER_DATA GAFFER_FACTORY DISPATCH_DB MEMORY_DB DISPATCH_MCP_BIN MEMORY_MCP_BIN ) ;;
   *)          _fwd=( ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN GAFFER_DATA GAFFER_FACTORY ) ;;
 esac

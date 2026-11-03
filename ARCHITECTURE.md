@@ -1,4 +1,4 @@
-# Gaffer — Architecture
+# Gaffer architecture
 
 A concise map of how the system fits together.
 
@@ -8,10 +8,10 @@ A concise map of how the system fits together.
 
 | Component | Package | Role |
 |---|---|---|
-| **Dispatch** | `packages/dispatch` | Control plane — tickets, epics, scopes, per-repo access, the review gate. REST API + MCP server + web dashboard (11 views) + CLI. |
-| **Crew** | `packages/crew` | Factory runtime — MCP tool server, hooks engine, idle loops (draft work, ingest issues, self-improve), repo onboarding. |
-| **Memory** | `packages/memory` | Durable, human-gated knowledge — lore knowledge base, Repo Digest, feature ledger, grounded lore drafts. Also usable standalone as `memory-mcp`. |
-| **Runner** | `runner/` | Bash orchestrator — spawns a `claude -p` agent per ticket, 118-skill library (`runner/skills/`), deterministic safety hook, git-worktree isolation, model tiering. |
+| **Dispatch** | `packages/dispatch` | Control plane: tickets, epics, scopes, per-repo access, the review gate. REST API + MCP server + web dashboard (11 views) + CLI. |
+| **Crew** | `packages/crew` | Factory runtime: MCP tool server, hooks engine, idle loops (draft work, ingest issues, self-improve), repo onboarding. |
+| **Memory** | `packages/memory` | Durable, human-gated knowledge: lore knowledge base, Repo Digest, feature ledger, grounded lore drafts. Also usable standalone as `memory-mcp`. |
+| **Runner** | `runner/` | Bash orchestrator: spawns a `claude -p` agent per ticket, 118-skill library (`runner/skills/`), deterministic safety hook, git-worktree isolation, model tiering. |
 
 All four live in a single pnpm monorepo. The runner derives every path from its own location (`runner/factory.config.sh`) so any checkout root works.
 
@@ -20,25 +20,27 @@ All four live in a single pnpm monorepo. The runner derives every path from its 
 ## A ticket's lifecycle
 
 ```
-DRAFT  ──▶  READY  ──▶  CLAIMING  ──▶  IN PROGRESS  ──▶  IN REVIEW  ──▶  DONE
-                                             │                  │
-                                    Runner spawns          Human approval
-                                    claude -p agent        (or DISPATCH_ALLOW_AGENT_APPROVE=1)
-                                             │                  │
-                                    plan ▸ implement           merge
-                                    ▸ test ▸ self-review       (AUTO_MERGE=1 optional)
-                                             │
-                                    delivers branch/PR
-                                    + evidence bundle
+DRAFT ─▶ READY ─▶ CLAIMED ─▶ IN PROGRESS ─▶ IN REVIEW ─▶ (IN TESTING) ─▶ READY FOR MERGE ─▶ DONE
+  ▲ refining               │                  │             │                  │
+  └──── send-back ◀────────┴──── rework ◀─────┴─────────────┘             merge gate
+                           │                  │                                 │
+                    runner claims,       human approval                   lands the gated
+                    spawns the agent     (or an opt-in                    merge commit
+                    in a worktree        agent approval)
 ```
 
-1. **plan** — a strong model (default: `opus`) decomposes the ticket into a concrete implementation plan. With `GAFFER_PLAN_DEBATE=1`, two models run a bounded adversarial debate before the plan is finalised.
-2. **implement** — a fast model (default: `sonnet`) executes the plan in a throwaway git worktree.
-3. **test** — the delivery agent runs the repo's test/build commands and records evidence; then the **runner** re-runs the configured Definition-of-Done gates (tests · typecheck · lint) deterministically in the worktree and executes every acceptance criterion that carries a `check_command`, recording pass/fail as runner-verified evidence. A failing gate or check auto-rejects to rework.
-4. **self-review** — the agent checks its own diff for hygiene violations and minimalism compliance.
-5. **human gate** — the ticket lands in the Review tab. A human approves or rejects. On rejection the ticket re-queues for refinement.
+A ticket can also be `blocked` (parked for a human), `paused` (stopped at a cap, to
+continue later), `cancelled` or `failed`. `in_testing` is the independent tester's lane,
+when it gates the ticket; `ready_for_merge` to `done` is a system-only merge callback.
 
-Vague or blocked tickets park as `DRAFT` rather than being forced through.
+1. **plan**: the planner, on the router's `strong` tier by default, decomposes the brief into tickets. With `GAFFER_PLAN_DEBATE=1`, two models run a bounded adversarial debate before the plan is finalised.
+2. **implement**: the delivery agent, on the `mid` tier by default (the router climbs for risk and rework; `runner/model-registry.json` maps tiers to models), executes the ticket in a throwaway git worktree.
+3. **test**: the delivery agent runs the repo's test/build commands and records evidence; then the **runner** re-runs the configured Definition-of-Done gates (tests · typecheck · lint) deterministically in the worktree and executes every acceptance criterion that carries a `check_command`, recording pass/fail as runner-verified evidence. A failing gate or check auto-rejects to rework.
+4. **self-review**: the agent checks its own diff for hygiene violations and minimalism compliance.
+5. **human gate**: the ticket lands in the Review tab. A human approves or rejects. On rejection the ticket goes back to refining with the reason.
+6. **land**: the merge gate reruns the repo's gates on the merge with the current default branch and lands that commit, or holds it for a human.
+
+A ticket the runner cannot deliver (no write repo, attempts used up, a missing sandbox) parks as `blocked` for a human rather than being forced through.
 
 ---
 
@@ -59,11 +61,11 @@ A crew-side mirror of the classifier keeps parity. Do not weaken either side.
 
 ### 2. Server-side review gate (Dispatch)
 
-- An `agent`-type actor **cannot** approve a review or merge its own work — this is enforced in the control plane, not by convention.
+- An `agent`-type actor **cannot** approve a review or merge its own work; this is enforced in the control plane, not by convention.
 - The gate verifies the **real `git diff`**, not an agent-authored evidence string.
-- `DISPATCH_ALLOW_AGENT_APPROVE` and `MERGE_ON_AGENT_REVIEW` relax this — they are **off by default** and removing the human gate is a conscious trust decision.
+- `DISPATCH_ALLOW_AGENT_APPROVE` and `MERGE_ON_AGENT_REVIEW` relax this; they are **off by default** and removing the human gate is a conscious trust decision.
 
-Optional third layer: an OS sandbox via the provider seam in `runner/lib/sandbox.sh` (`SANDBOX_PROVIDER`). Two providers are real: **`docker`** (any host with a daemon — read + egress isolation; the delivery worktree, `$GAFFER_DATA`, `runner/`, `packages/` and `node_modules/` are the only host paths mounted) and macOS **`sandbox-exec`** (write-only boundary). `lima`/microVM is a stub. The sandbox is on when `STRICT_MODE=1`; **every autonomy flag (`GAFFER_MODE=autonomous|strict|lite`, or any single ship/mutate flag) defaults `STRICT_MODE=1` and `GAFFER_STRICT_REQUIRE=1`**, so unattended runs fail closed when no provider is available. The wrap is applied inside the one worker seam (`runner/lib/worker.sh`, and its node twin `runner/lib/worker.mjs` for the merge-conflict resolver, product-owner, tester and onboarding-analysis spawns), so every spawn site is contained the same way the delivery spawn is. A stored `auto` autonomy policy row (graduated mode's allow-path) counts as an autonomy flag for this default. The same seam picks the worker program: `GAFFER_WORKER_PROVIDER=claude-code` (the default) runs `claude -p`, and `command` runs an operator-supplied program under the contract in [docs/worker-providers.md](docs/worker-providers.md). The command worker has no in-process safety hook, so it defaults `STRICT_MODE=1` and `GAFFER_STRICT_REQUIRE=1` too, and the seam refuses to launch it anywhere but the `docker` sandbox with the host-side MCP bridge (`sandbox-exec` leaves `$GAFFER_DATA` writable, and only the hook guards it) unless `GAFFER_STRICT_REQUIRE=0` is set explicitly in the environment.
+Optional third layer: an OS sandbox via the provider seam in `runner/lib/sandbox.sh` (`SANDBOX_PROVIDER`). Two providers are real: **`docker`** (any host with a daemon: read and egress isolation, the data plane on the host behind a socket, a private git dir per container; see [docs/sandbox.md](docs/sandbox.md)) and macOS **`sandbox-exec`** (a write-only boundary). An unknown provider fails closed under `GAFFER_STRICT_REQUIRE=1`. The sandbox is on when `STRICT_MODE=1`; **every autonomy flag (`GAFFER_MODE=autonomous|strict|lite`, or any single ship/mutate flag) defaults `STRICT_MODE=1` and `GAFFER_STRICT_REQUIRE=1`**, so unattended runs fail closed when no provider is available. The wrap is applied inside the one worker seam (`runner/lib/worker.sh`, and its node twin `runner/lib/worker.mjs` for the merge-conflict resolver, product-owner, tester and onboarding-analysis spawns), so every spawn site is contained the same way the delivery spawn is. A stored `auto` autonomy policy row (graduated mode's allow-path) counts as an autonomy flag for this default. The same seam picks the worker program: `GAFFER_WORKER_PROVIDER=claude-code` (the default) runs `claude -p`, and `command` runs an operator-supplied program under the contract in [docs/worker-providers.md](docs/worker-providers.md). The command worker has no in-process safety hook, so it defaults `STRICT_MODE=1` and `GAFFER_STRICT_REQUIRE=1` too, and the seam refuses to launch it anywhere but the `docker` sandbox with the host-side MCP bridge (`sandbox-exec` leaves `$GAFFER_DATA` writable, and only the hook guards it) unless `GAFFER_STRICT_REQUIRE=0` is set explicitly in the environment.
 
 ---
 
@@ -71,10 +73,10 @@ Optional third layer: an OS sandbox via the provider seam in `runner/lib/sandbox
 
 | Store | What lives there |
 |---|---|
-| SQLite (`dispatch.sqlite`) | Dispatch state — tickets, epics, scopes, reviews, claims, access grants |
-| SQLite (`memory.sqlite`) | Memory — lore, repo digests, feature ledgers, draft queue |
+| SQLite (`dispatch.sqlite`) | Dispatch state: tickets, epics, scopes, reviews, claims, access grants |
+| SQLite (`memory.sqlite`) | Memory: lore, repo digests, feature ledgers, draft queue |
 | Git worktrees | Per-ticket isolated checkouts (torn down after delivery) |
-| `crew.yaml` | Crew config — dispatch DB path, MCP wiring |
+| `crew.yaml` | Crew config: dispatch DB path, MCP wiring |
 | `usage-ledger.jsonl` | Per-call token/cost records (best-effort, never blocks a tick) |
 
 All state lives under `GAFFER_DATA` (default: `<repo-root>/.gaffer/`). Delete that directory to reset completely. Memory retrieval is hybrid: SQLite FTS5 bm25 fused with a dense vector per lore record (`lore_embeddings`; the built-in embedder is a deterministic hashed n-gram space that needs no model or network, so a typo, a joined/split compound or a subword still finds the record), then a trust-weighted re-rank. A model-backed embedder can replace the built-in one behind `packages/memory/src/core/embedding.ts`'s `Embedder` interface; there is no external vector store.
@@ -85,14 +87,14 @@ All state lives under `GAFFER_DATA` (default: `<repo-root>/.gaffer/`). Delete th
 
 Two MCP servers run during a ticket's agent session (wired via `runner/.mcp.json`):
 
-- **Dispatch MCP** (`packages/dispatch`) — the agent's ticket data plane: `get_ticket`, `record_ac_evidence`, `record_repo_delivery`, `mark_ticket_blocked`, `request_decision`, … In factory context it refuses `claim`/`submit`/`mark_ready` (submission is runner-owned) and exposes no approve tool.
-- **Memory MCP** (`packages/memory`) — `search_lore` / `get_lore` / `suggest_lore`, the repo digest, the feature ledger and file cards, for the agent to read and (gated) write durable knowledge. Two trust tiers:
-
-(The **Crew MCP** server (`crew-mcp`, `packages/crew`) is an operator/desktop tool — factory status, context packets, safety-policy explainers — and is **not** connected to the delivery agent.)
+- **Dispatch MCP** (`packages/dispatch`): the agent's ticket data plane: `get_ticket`, `record_ac_evidence`, `record_repo_delivery`, `mark_ticket_blocked`, `request_decision`, … In factory context it refuses `claim`/`submit`/`mark_ready` (submission is runner-owned) and exposes no approve tool.
+- **Memory MCP** (`packages/memory`): `search_lore` / `get_lore` / `suggest_lore`, the repo digest, the feature ledger and file cards, for the agent to read and (gated) write durable knowledge. Two trust tiers:
   - **Gated (draft → human approve).** Interpretive claims, which are lore (`suggest_lore`) and cross-repo boundaries (`declare_boundary`), land as **drafts**, invisible to default retrieval until a human approves them (the dashboard's Memory view, `gaffer lore approve`, or the memory CLI's `review` / `approve`). `MEMORY_AUTO_APPROVE=1` makes the runner's own lore writes (the ticket distiller, onboarding induction lore, CLI `memory suggest`) land active, but the agent-mounted memory server is rendered with `MEMORY_AUTO_APPROVE=0`, so an agent's `suggest_lore` is always a draft.
-  - **Direct-apply (bounded + quarantined).** Factual/proposal records — the repo digest (`update_repo_digest`), the feature ledger (`add_feature` / `advance_feature`, which only moves forward, and `release_feature`, which only hands a `building` claim back to `backlog` when its planning failed; repo-scope-guarded and audited like the other ledger writes), and file cards — apply directly (a digest is a post-merge reflection of real code, not an opinion to ratify). Because these are agent-writable and ungated, agent input is **length-bounded and sanitised on write**, and ALL agent-facing memory responses (cards, digest, lore, features) wrap agent-derived free text in a `<untrusted-…>` **quarantine envelope** so it reaches a future agent as data, never as instructions. File-card model fields additionally pass a mechanical validation + fail-closed semantic-review gate before they are ever served.
+  - **Direct-apply (bounded + quarantined).** Factual/proposal records (the repo digest (`update_repo_digest`), the feature ledger (`add_feature` / `advance_feature`, which only moves forward, and `release_feature`, which only hands a `building` claim back to `backlog` when its planning failed; repo-scope-guarded and audited like the other ledger writes), and file cards) apply directly (a digest is a post-merge reflection of real code, not an opinion to ratify). Because these are agent-writable and ungated, agent input is **length-bounded and sanitised on write**, and ALL agent-facing memory responses (cards, digest, lore, features) wrap agent-derived free text in a `<untrusted-…>` **quarantine envelope** so it reaches a future agent as data, never as instructions. File-card model fields additionally pass a mechanical validation + fail-closed semantic-review gate before they are ever served.
 
-The Dispatch REST API and MCP server are for humans and the dashboard, not the delivery agent. The safety hook explicitly denies the control-plane CLI and DB access to the agent.
+The **Crew MCP** server (`crew-mcp`, `packages/crew`) is an operator tool (factory status, context packets, safety-policy explainers) and is **not** connected to the delivery agent.
+
+The Dispatch REST API is for humans and the dashboard, not the delivery agent, and the safety hook denies the control-plane CLI and DB access to the agent.
 
 ---
 
@@ -104,7 +106,7 @@ Create `runner/skills/<name>/SKILL.md`. The runner's skill library is loaded fro
 
 ### Add a Dispatch route
 
-Extend the HTTP API in `packages/dispatch/src/api/` (TypeScript on `node:http` — a hand-rolled router in `server.ts`, zod-validated bodies in `api/schemas.ts`; no framework). Run `pnpm -r build` to rebuild.
+Extend the HTTP API in `packages/dispatch/src/api/` (TypeScript on `node:http`, a hand-rolled router in `server.ts`, zod-validated bodies in `api/schemas.ts`; no framework). Run `pnpm -r build` to rebuild.
 
 ### Add a Crew MCP tool
 
@@ -112,14 +114,14 @@ Extend the tool registry in `packages/crew/src/` (TypeScript). Run `pnpm -r buil
 
 ### Customise the idle loop / factory knobs
 
-All runtime knobs live in `runner/factory.config.sh` (sourced by every runner script). Override any variable with a real env var — env always wins over the file's `:=` defaults. The dashboard Settings panel writes to `$GAFFER_DATA/settings.json`, which `factory.config.sh` applies as a lower-priority layer before its own defaults. See `.env.example` for the full list of knobs.
+All runtime knobs live in `runner/factory.config.sh` (sourced by every runner script). Override any variable with a real env var; env always wins over the file's `:=` defaults. The dashboard Settings panel writes to `$GAFFER_DATA/settings.json`, which `factory.config.sh` applies as a lower-priority layer before its own defaults. See `.env.example` for the full list of knobs.
 
 ---
 
 ## See also
 
-- [`SECURITY.md`](SECURITY.md) — threat model, honest residual limits, and what each defence actually does
-- [`quickstart.md`](quickstart.md) — guided first run
-- [`runner/ONBOARDING.md`](runner/ONBOARDING.md) — onboarding a repo
-- [`runner/RUNBOOK.md`](runner/RUNBOOK.md) — full operational reference
-- [`CONTRIBUTING.md`](CONTRIBUTING.md) — how to contribute
+- [`SECURITY.md`](SECURITY.md): threat model, honest residual limits, and what each defence actually does
+- [`quickstart.md`](quickstart.md): guided first run
+- [`runner/ONBOARDING.md`](runner/ONBOARDING.md): onboarding a repo
+- [`runner/RUNBOOK.md`](runner/RUNBOOK.md): full operational reference
+- [`CONTRIBUTING.md`](CONTRIBUTING.md): how to contribute

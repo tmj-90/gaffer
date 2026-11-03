@@ -1,8 +1,6 @@
 # ADR-003: Conflict-records storage shape and link directionality
 
-**Status:** Accepted (ratified 2026-05-17 alongside epic-init-2026-05-17-001-03)
-**Initiative:** init-2026-05-17-001
-**Epic:** conflict-records (epic 3)
+**Status:** Accepted (2026-05-17)
 
 ## Context
 
@@ -35,7 +33,7 @@ Cons: an additional table + cascade-delete contract; a second sync-format change
 ### B. Single-id column (`conflicts_with TEXT` storing one id, not a list)
 
 Pros: simplest possible shape; matches today's use case (one counter targets one original).
-Cons: forecloses on a future "counter-record challenging multiple records at once" use case for no real save (one TEXT column either way). Rejected on YAGNI symmetry — the JSON-array shape is the same cost.
+Cons: forecloses on a future "counter-record challenging multiple records at once" use case for no real save (one TEXT column either way). Rejected on YAGNI symmetry: the JSON-array shape is the same cost.
 
 ### C. Bidirectional link (back-pointer on the original)
 
@@ -49,17 +47,17 @@ Cons: requires UPDATE on the canonical record, which is the exact invariant we'r
 - Migration is one column add, append-only, idempotent.
 - The `conflicts_with` field rides through the existing sync round-trip with a single new frontmatter line.
 - The trust boundary is bright: a `grep` for `UPDATE lore` inside `reportConflict` will fail the review.
-- Decouples cleanly from the runtime `possibleConflicts` heuristic — distinct field, distinct lifecycle.
+- Decouples cleanly from the runtime `possibleConflicts` heuristic: distinct field, distinct lifecycle.
 
 **Negative / accepted.**
 
 - Querying "find all counters against record X" requires a table scan in v1 (decode `conflicts_with` JSON per row) or a derived events lookup (`SELECT lore_id FROM events WHERE kind='conflict_reported' AND payload LIKE ...`). Acceptable while N is small; if it becomes a hot path we extract the join table (A above) in a follow-up.
-- `conflicts_with` is denormalised JSON — referential integrity of the target id is NOT enforced by SQLite. Mitigated by validating the existing-id at write time in `reportConflict`; an id later deleted will leave a dangling reference (cosmetic; CLI rendering tolerates it).
-- A counter-draft whose target is later superseded does NOT auto-update its `conflictsWith`. The reviewer sees stale linkage on display; documented here. (Deferred — see below.)
+- `conflicts_with` is denormalised JSON: referential integrity of the target id is NOT enforced by SQLite. Mitigated by validating the existing-id at write time in `reportConflict`; an id later deleted will leave a dangling reference (cosmetic; CLI rendering tolerates it).
+- A counter-draft whose target is later superseded does NOT auto-update its `conflictsWith`. The reviewer sees stale linkage on display; documented here. (Deferred; see below.)
 
 **Establishes the pattern for future cross-record relations** (clarifies, references, etc.): JSON-array column + event-on-target + counter-side ownership.
 
-## Deferred (not in scope for this epic)
+## Deferred (out of scope for this decision)
 
 - Reverse lookup ("show all counters against X").
 - Auto-rewrite of `conflictsWith` when target is superseded.

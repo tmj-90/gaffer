@@ -6,9 +6,9 @@ builds and tests the tagged commit and publishes, from that commit alone:
 | Artifact                                  | Where                                                            |
 | ----------------------------------------- | ---------------------------------------------------------------- |
 | Package tarballs (`npm pack` output)      | GitHub release assets: `dispatch-X.Y.Z.tgz`, `crew-…`, `memory-mcp-…` |
-| CycloneDX 1.5 SBOM                        | `gaffer-X.Y.Z.cdx.json` — every runtime dependency with purl, license, resolved URL and the dependency graph (`scripts/sbom.mjs`) |
+| CycloneDX 1.5 SBOM                        | `gaffer-X.Y.Z.cdx.json`: every runtime dependency with purl, license, resolved URL and the dependency graph (`scripts/sbom.mjs`) |
 | Checksums                                 | `SHA256SUMS`                                                     |
-| Provenance statement (in-toto / SLSA v1)  | `gaffer-X.Y.Z.provenance.json` — subjects (sha256 of each asset), source commit, workflow, run id (`scripts/provenance.mjs`) |
+| Provenance statement (in-toto / SLSA v1)  | `gaffer-X.Y.Z.provenance.json`: subjects (sha256 of each asset), source commit, workflow, run id (`scripts/provenance.mjs`) |
 | Container image                           | `ghcr.io/tmj-90/gaffer:X.Y.Z` and `:latest`, with BuildKit's SBOM + provenance attestations and OCI source/revision/version labels |
 | Release notes                             | The version's `CHANGELOG.md` section, verbatim (`scripts/release-notes.mjs`) |
 
@@ -50,7 +50,7 @@ deterministically. Two things it cannot cover, so I check them by hand:
    git push origin main
    ```
 
-   All packages move together — one version train — so a tag names one version in
+   All packages move together (one version train) so a tag names one version in
    the SBOM, the image label and every tarball.
 
 3. Tag and push the tag:

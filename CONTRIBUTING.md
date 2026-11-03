@@ -1,6 +1,6 @@
 # Contributing to Gaffer
 
-Thanks for your interest in Gaffer — a local-first autonomous software factory. By participating you agree to the project's [Code of Conduct](CODE_OF_CONDUCT.md).
+Thanks for your interest in Gaffer, a local-first autonomous software factory. By participating you agree to the project's [Code of Conduct](CODE_OF_CONDUCT.md).
 
 If you'd like to understand how the system fits together before diving in, read [ARCHITECTURE.md](ARCHITECTURE.md) first.
 
@@ -27,7 +27,7 @@ pnpm -r build           # build dispatch, crew, memory
 pnpm -r test            # run all package test suites
 ```
 
-Runner tests (`runner/test/*.test.sh` + `*.test.mjs`) run through one harness —
+Runner tests (`runner/test/*.test.sh` + `*.test.mjs`) run through one harness:
 the same command CI runs:
 
 ```bash
@@ -51,14 +51,14 @@ counts 10s), so give a new test that takes much longer than that a line there.
 [docs/testing.md](docs/testing.md) covers the caps, the long tests, load scaling,
 the shards, the nightly cell and how to keep a new test fast. In a
 new test, skip with `gaffer_skip "<reason>"` from `runner/test/lib/skip.sh` (exit
-77) only for a missing prerequisite — a dispatch CLI call that errors or changes
+77) only for a missing prerequisite; a dispatch CLI call that errors or changes
 shape is a FAIL, never a skip.
 
 ## Ground rules
 
 - **Never weaken `runner/safety-hook.mjs`.** It is the containment boundary that
   keeps shell-capable agents from doing harm. The crew-side mirror of the
-  classifier and its parity tests are intentional — keep them in sync, do not
+  classifier and its parity tests are intentional; keep them in sync, do not
   delete them. Changes that loosen the classifier will be rejected.
 - Keep packages green: `pnpm -r build && pnpm -r test` must pass before you open
   a PR, and the runner `.mjs`/`.sh` tests must pass too.
@@ -109,7 +109,7 @@ Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `perf`, `ci`, `build`
    - `pnpm format:check` (Prettier `--check .`, run at the ROOT)
    - `pnpm -r build` (TypeScript packages build clean)
    - `pnpm -r typecheck` (source type-check)
-   - `pnpm -r typecheck:test` (STRICTER test type-check — `noUncheckedIndexedAccess`)
+   - `pnpm -r typecheck:test` (STRICTER test type-check: `noUncheckedIndexedAccess`)
    - `pnpm -r test` (all package test suites)
    - `pnpm -r test:coverage` (per-package coverage floor; CI enforces it on ubuntu / Node 22)
    - `pnpm test:runner` (every runner test)

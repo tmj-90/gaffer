@@ -1,13 +1,11 @@
 ## What & why
 
-<!-- Describe what this PR does AND why it's the right change. "Add X" is not enough —
+<!-- Describe what this PR does AND why it's the right change. "Add X" is not enough:
 explain the motivation, the tradeoff you made, and why this approach over alternatives. -->
 
 ## How tested
 
-- [ ] `pnpm install && pnpm -r build` (TypeScript packages build clean)
-- [ ] `npx tsc --noEmit` (no type errors)
-- [ ] `pnpm -r test` (all package test suites pass)
+- [ ] `pnpm install && pnpm check` (lint, format, build, typecheck, typecheck:test, package tests)
 - [ ] Runner tests: `pnpm test:runner`
 - [ ] Manual smoke test (describe what you ran and what you saw):
 
@@ -15,7 +13,7 @@ explain the motivation, the tradeoff you made, and why this approach over altern
 
 Does this PR touch any of the following? If yes, describe the impact carefully.
 
-- [ ] `runner/safety-hook.mjs` or the crew-side classifier mirror — **flag mandatory**
+- [ ] `runner/safety-hook.mjs` or the crew-side classifier mirror (**flag mandatory**)
 - [ ] The server-side review/merge gate (`packages/dispatch`)
 - [ ] Worktree isolation or the GAFFER_WRITE_ROOTS boundary
 - [ ] Autonomy flags (`DISPATCH_ALLOW_AGENT_APPROVE`, `MERGE_ON_AGENT_REVIEW`, `MEMORY_AUTO_APPROVE`)

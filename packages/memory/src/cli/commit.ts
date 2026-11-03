@@ -1,7 +1,7 @@
 /**
  * `memory suggest --from-commit <sha>` — turn a commit message into a
  * DRAFT lore record. The "I already wrote the rationale in the commit,
- * why retype it" path (see docs/PRINCIPLES.md §6 — corpus growth).
+ * why retype it" path.
  *
  * Pure helpers live here so they're testable without a git repo: the CLI
  * wrapper in `cli/index.ts` shells out to `git show` / `git config` and

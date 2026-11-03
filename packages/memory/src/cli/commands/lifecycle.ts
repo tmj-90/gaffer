@@ -188,7 +188,7 @@ export async function cmdAdd(
 /**
  * `memory suggest --from-commit <sha>` — draft a record straight from a
  * commit message. Closes the "I wrote the rationale in the commit, why
- * retype it" gap (PRINCIPLES.md §6). Lands as a DRAFT like every other
+ * retype it" gap. Lands as a DRAFT like every other
  * agent-shaped capture; the reviewer promotes via `memory review`.
  *
  * Source URL is auto-derived from the commit + `remote.origin.url` so the

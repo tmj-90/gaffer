@@ -1190,6 +1190,22 @@
   .rv-impact-repo-h {
     font-size: var(--t14);
   }
+  /* callers and tests of a changed symbol (code index), under its fact */
+  .rv-impact-refs {
+    display: grid;
+    gap: 1px;
+    margin: 2px 0 2px 16px;
+    font-size: var(--t13);
+  }
+  .rv-impact-ref code {
+    font-size: var(--t13);
+  }
+  .rv-ref-note {
+    color: var(--ink-2);
+  }
+  .rv-ref-untested {
+    color: var(--ink);
+  }
   .diff-line.is-target {
     outline: 2px solid var(--yellow);
     outline-offset: -2px;

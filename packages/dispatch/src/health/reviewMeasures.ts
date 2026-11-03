@@ -9,6 +9,8 @@
  *                   links a person filed (health/escapedDefects.ts)
  *   lane_value      what each judging lane changed: verdicts against the person's decision,
  *                   unique catches, ledger cost per attempt (health/laneValue.ts)
+ *   impact_callers  of the review opens, how often the Behavioural surface's callers row
+ *                   listed callers (code index), had none to list, or was not analysed
  *
  * Read-only; deterministic over the recorded events.
  */
@@ -35,12 +37,29 @@ export interface LaneVerdictCounts {
   readonly by_lane: Readonly<Record<string, Readonly<Record<string, number>>>>;
 }
 
+/**
+ * What the Behavioural surface's callers row showed at each review open (one per ticket
+ * per round), from the `impact_callers` the server recorded on `ticket.review_opened`.
+ * `known` excludes opens recorded before this field existed or when the server had not
+ * computed the surface for that ticket; the share is listed / known, never over unknowns.
+ */
+export interface ImpactCallersMeasure {
+  readonly opens: number;
+  readonly known: number;
+  readonly listed: number;
+  readonly none_changed: number;
+  readonly not_analysed: number;
+  /** listed / known as a 0-100 integer, or null when nothing is known. */
+  readonly listed_pct: number | null;
+}
+
 export interface ReviewMeasures {
   readonly review_time: ReviewTimeReport;
   readonly first_pass: FirstPassReport;
   readonly lane_verdicts: LaneVerdictCounts;
   readonly escaped_defects: EscapedDefects;
   readonly lane_value: LaneValueReport;
+  readonly impact_callers: ImpactCallersMeasure;
 }
 
 /** The window the escaped-defect rate counts accepted changes over (Health's default). */
@@ -150,7 +169,29 @@ export function readReviewMeasures(db: Db, opts: ReviewMeasureOptions = {}): Rev
     lane: string | null;
     verdict: string | null;
   }>;
+  const callerRows = db
+    .prepare(
+      `SELECT json_extract(payload_json, '$.impact_callers') AS status, COUNT(*) AS n
+         FROM work_events
+        WHERE entity_type = 'ticket' AND event_type = ?
+        GROUP BY status`,
+    )
+    .all(REVIEW_OPENED_EVENT) as Array<{ status: string | null; n: number }>;
+  const callerCount = (s: string) => callerRows.find((r) => r.status === s)?.n ?? 0;
+  const opens = callerRows.reduce((k, r) => k + r.n, 0);
+  const listed = callerCount("listed");
+  const noneChanged = callerCount("none_changed");
+  const notAnalysed = callerCount("not_analysed");
+  const known = listed + noneChanged + notAnalysed;
   return {
+    impact_callers: {
+      opens,
+      known,
+      listed,
+      none_changed: noneChanged,
+      not_analysed: notAnalysed,
+      listed_pct: known > 0 ? Math.round((100 * listed) / known) : null,
+    },
     review_time: reviewTimeReport({
       transitions,
       opens: opensOf(REVIEW_OPENED_EVENT),

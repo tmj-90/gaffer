@@ -185,6 +185,7 @@ import { SpecsService } from "./services/specsService.js";
 import { SpecCoverageService } from "./services/specCoverageService.js";
 import { resolveSpecClauseSeeder } from "./services/specClauseSeeder.js";
 import { resolveSpecLoreReader } from "./services/specLoreReader.js";
+import { resolveCodeIndexReader, type CodeIndexReader } from "./services/codeIndexReader.js";
 import {
   BoardService,
   resolveMoveTarget,
@@ -547,6 +548,15 @@ export class Dispatch {
    * diff endpoint without a real repo on disk; defaults to the real `git` spawn.
    */
   private readonly gitRunner: GitRunner | undefined;
+  /** CHANGE IMPACT: the code index (memory CLI), or null when Memory is not configured. */
+  private readonly codeIndex: CodeIndexReader | null;
+  /**
+   * The callers row each ticket's last impact read produced: recorded on the
+   * next `ticket.review_opened` so Health can count the reviews that saw callers. A read
+   * measurement only (never gating); in-process, so a restart forgets it (the event then
+   * records null, "not known").
+   */
+  private readonly lastCallersRow = new Map<string, string>();
 
   /**
    * Retry cap (P1): a delivery rejected back into the queue this many times is
@@ -596,9 +606,15 @@ export class Dispatch {
        * is off so in-memory fixtures can approve with literal actor ids.
        */
       requireRegisteredAgentApprover?: boolean;
+      /**
+       * CHANGE IMPACT: the code index reader for the Behavioural surface's callers row.
+       * Defaults to the memory CLI when MEMORY_CLI_BIN + MEMORY_DB are set; null: none.
+       */
+      codeIndex?: CodeIndexReader | null;
     } = {},
   ) {
     this.db = db;
+    this.codeIndex = options.codeIndex === undefined ? resolveCodeIndexReader() : options.codeIndex;
     this.gitRunner = gitRunner;
     this.maxAttemptsOverride = options.maxAttempts;
     this.testingEnabledOverride = options.testingEnabled;
@@ -843,6 +859,7 @@ export class Dispatch {
        * is off so in-memory fixtures can approve with literal actor ids.
        */
       requireRegisteredAgentApprover?: boolean;
+      codeIndex?: CodeIndexReader | null;
     } = {},
   ): Dispatch {
     return new Dispatch(openDatabase(path), clock, gitRunner, options);
@@ -891,17 +908,36 @@ export class Dispatch {
 
   ticketDiff(ref: string, opts: TicketDiffOptions = {}): TicketDiff {
     const ticket = this.resolveTicket(ref);
-    return computeTicketDiff(
+    const diff = computeTicketDiff(
       {
         repos: this.repos,
         tickets: this.tickets,
         repoDeliveries: this.repoDeliveries,
         ...(this.gitRunner ? { runGit: this.gitRunner } : {}),
         downstreamRepos: (repoId) => this.downstreamRepos(repoId),
+        codeIndex: this.codeIndex,
       },
       ticket.id,
       opts,
     );
+    if (opts.impact) this.noteCallersRow(ticket.id, diff);
+    return diff;
+  }
+
+  /**
+   * The callers row a review saw: `listed` when any repo listed callers, else
+   * `none_changed` when every analysed repo had none to list, else `not_analysed`.
+   */
+  private noteCallersRow(ticketId: string, diff: TicketDiff): void {
+    const rows = diff.repos.map((r) => r.impact?.callers?.status).filter((s) => s !== undefined);
+    if (rows.length === 0) return;
+    const status = rows.includes("listed")
+      ? "listed"
+      : rows.every((s) => s === "none_changed")
+        ? "none_changed"
+        : "not_analysed";
+    if (this.lastCallersRow.size > 500) this.lastCallersRow.clear();
+    this.lastCallersRow.set(ticketId, status);
   }
 
   /**
@@ -2465,6 +2501,12 @@ export class Dispatch {
                 .listForTicket(ticket.id)
                 .filter((d) => d.commit_sha)
                 .map((d) => ({ repo: d.repo_name, sha: d.commit_sha })),
+              // What the Behavioural surface's callers row showed for this ticket when the
+              // server last computed it (listed / none_changed / not_analysed); absent when
+              // this server has not computed it (Health counts only known rows).
+              ...(this.lastCallersRow.has(ticket.id)
+                ? { impact_callers: this.lastCallersRow.get(ticket.id) }
+                : {}),
             }
           : { what, round_entered_at: round };
       const eventId = writeEvent(this.db, {

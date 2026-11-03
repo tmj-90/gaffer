@@ -13882,6 +13882,54 @@ function laneValueCard(health) {
 }
 
 /**
+ * CODE INDEX (delta gap 1): each repo's index coverage (files, exported symbols, imports
+ * resolved, test links, when built and at which commit) and how often the Review's
+ * callers row listed callers. Counts as served; null when the server sends neither.
+ */
+function codeIndexCard(health) {
+  const ic = health.impact_callers || null;
+  const ci = health.code_index || null;
+  if (!ic && !ci) return null;
+  const repos = ci && ci.available && Array.isArray(ci.repos) ? ci.repos : [];
+  const repoLine = (r) => {
+    const st = r.stats || {};
+    return el("li", { dataset: { repo: r.repo } }, [
+      el("strong", {}, r.repo),
+      el(
+        "span",
+        {},
+        ` ${plural(st.files || 0, "file")} (${st.testFiles || 0} tests) · ${plural(st.exportedSymbols || 0, "exported symbol")} · ${st.refs || 0} imports resolved, ${st.unresolved || 0} unresolved · ${plural(st.testLinks || 0, "test link")} over ${plural(st.modulesWithTests || 0, "module")}`,
+      ),
+      el(
+        "small",
+        { class: "dim" },
+        ` built ${r.builtAt ? fmtTime(r.builtAt) : "?"} at ${r.commit ? String(r.commit).slice(0, 8) : "an unknown commit"}${st.capsHit && st.capsHit.length ? ` · cap hit: ${st.capsHit.join(", ")}` : ""}`,
+      ),
+    ]);
+  };
+  const callersLine = !ic
+    ? "not served by this server"
+    : ic.known
+      ? `The Review's callers row listed callers in ${ic.listed} of ${plural(ic.known, "review open")} (${ic.none_changed} had no changed symbol to list, ${ic.not_analysed} were not analysed)${ic.opens > ic.known ? `; ${ic.opens - ic.known} earlier opens did not record it` : ""}.`
+      : "No review open has recorded the callers row yet.";
+  return el("section", { class: "card panel code-index-panel", "aria-label": "Code index" }, [
+    panelHead("Code index", "files, symbols, imports and tests, by import text", null, {
+      kit: "ink",
+    }),
+    el("p", { class: "code-index-callers" }, callersLine),
+    repos.length
+      ? el("ul", { class: "lane-value-list code-index-list" }, repos.map(repoLine))
+      : el(
+          "p",
+          { class: "dim" },
+          ci && !ci.available
+            ? `Index coverage: ${ci.reason || "Memory is not configured."}`
+            : "No repo has a code index yet (it is built at onboard and refreshed after each merge).",
+        ),
+  ]);
+}
+
+/**
  * Factory Health / ROI surface. Reads the ONE authoritative /api/health envelope
  * and renders the ROI KPI row (cost/feature, skill hit-rate, spend-by-kind,
  * rework-cost share, measured-coverage %) plus the two newly-wired dead sources:
@@ -14168,6 +14216,8 @@ async function renderHealth() {
   wrap.appendChild(fourMeasures(health));
   const lanes = laneValueCard(health);
   if (lanes) wrap.appendChild(lanes);
+  const codeIndex = codeIndexCard(health);
+  if (codeIndex) wrap.appendChild(codeIndex);
   if (bouncing) bouncing.id = "health-injuries";
   const wait = treatment ? waitingNote(treatment._waiting) : null;
   if (wait && devFlow) devFlow.appendChild(wait);
@@ -18220,6 +18270,7 @@ const IMPACT_ORDER = [
   "export_removed",
   "export_changed",
   "export_added",
+  "symbol_callers",
   "route",
   "migration",
   "ddl",
@@ -18271,6 +18322,43 @@ function impactPanel(repos) {
     const facts = [...(rd.impact.facts || [])].sort(
       (a, b) => IMPACT_ORDER.indexOf(a.kind) - IMPACT_ORDER.indexOf(b.kind),
     );
+    const goTo = (path, line) => {
+      const idx = path ? fileIdx(path) : -1;
+      const target = idx >= 0 ? `diff-file-${i}-${idx}` : null;
+      return target
+        ? el(
+            "button",
+            {
+              type: "button",
+              class: "btn-link rv-impact-go",
+              dataset: { fileTarget: target },
+              "aria-label": `Show ${path} in the diff`,
+              onclick: () => goToDiffFile(target, line),
+            },
+            el("code", { class: "mono" }, `${path}${line != null ? `:${line}` : ""}`),
+          )
+        : el("code", { class: "mono" }, `${path}${line != null ? `:${line}` : ""}`);
+    };
+    // CALLERS (code index): the importers and tests a symbol_callers fact lists, each with
+    // what is known about it. A file in this diff links to it; the rest are named.
+    const refList = (refs) =>
+      refs && refs.length
+        ? el(
+            "ul",
+            { class: "clean rv-impact-refs" },
+            refs.map((r) =>
+              el("li", { class: `rv-impact-ref rv-ref-${r.role}` }, [
+                el("small", { class: "dim" }, r.role === "test" ? "test " : "caller "),
+                goTo(r.path, r.in_change ? null : r.line),
+                r.through ? el("small", { class: "dim" }, ` through ${r.through}`) : null,
+                r.in_change ? el("small", { class: "rv-ref-note" }, " changed here") : null,
+                r.role === "caller" && r.tested === false
+                  ? el("small", { class: "rv-ref-note rv-ref-untested" }, " no test imports it")
+                  : null,
+              ]),
+            ),
+          )
+        : null;
     const list = el(
       "ul",
       { class: "clean rv-impact-list" },
@@ -18297,10 +18385,12 @@ function impactPanel(repos) {
                 ),
               ]
             : null,
+          f.kind === "symbol_callers" ? refList(f.refs) : null,
         ]);
       }),
     );
     const none = rd.impact.none || [];
+    const callers = rd.impact.callers;
     return el("div", { class: "rv-impact-repo" }, [
       multi
         ? el("h4", { class: "rv-impact-repo-h" }, el("code", { class: "mono" }, rd.repo))
@@ -18309,6 +18399,9 @@ function impactPanel(repos) {
         ? list
         : el("p", { class: "dim" }, "The scan found nothing to list in this diff."),
       none.length ? el("p", { class: "rv-impact-none" }, `No ${orList(none)} change found.`) : null,
+      callers && callers.status === "none_changed" && callers.reason
+        ? el("p", { class: "rv-impact-none rv-impact-callers-none" }, `Callers: ${callers.reason}`)
+        : null,
       ...(rd.impact.not_analysed || []).map((n) => el("p", { class: "rv-impact-na dim" }, n)),
     ]);
   });
@@ -18331,6 +18424,15 @@ function impactBacking(repos) {
     0,
   );
   if (!n) return [];
+  // Of those, the ones the code index finds no test for on the base branch either.
+  const bare = (repos || []).reduce(
+    (k, rd) =>
+      k +
+      ((rd.impact && rd.impact.facts) || []).filter(
+        (f) => f.kind === "untested_module" && f.index_tests === 0,
+      ).length,
+    0,
+  );
   return [
     {
       fact:
@@ -18341,6 +18443,19 @@ function impactBacking(repos) {
       source: "the Behavioural surface (by import text)",
       cell: "impact",
     },
+    ...(bare
+      ? [
+          {
+            fact:
+              bare === 1
+                ? "1 of them has no test on the base branch that imports it or is named for it either"
+                : `${bare} of them have no test on the base branch that imports them or is named for them either`,
+            holds: false,
+            source: "the Behavioural surface (by import text, code index)",
+            cell: "impact",
+          },
+        ]
+      : []),
   ];
 }
 

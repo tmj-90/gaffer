@@ -271,3 +271,85 @@ describe("web: Health shows the four top-level measures", () => {
     expect(measure("Escaped-defect rate")?.note).toMatch(/0 of 0 accepted/);
   });
 });
+
+describe("web: Health shows the code index's coverage and the callers row's share", () => {
+  beforeEach(() => {
+    stubFetch();
+    mountShell();
+    vi.resetModules();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    document.body.innerHTML = "";
+    healthPayload = FULL_HEALTH;
+  });
+
+  it("per repo: files, exported symbols, imports resolved, test links, when built; the callers share", async () => {
+    healthPayload = {
+      ...(FULL_HEALTH as object),
+      ...MEASURES,
+      impact_callers: {
+        opens: 5,
+        known: 4,
+        listed: 3,
+        none_changed: 1,
+        not_analysed: 0,
+        listed_pct: 75,
+      },
+      code_index: {
+        available: true,
+        repos: [
+          {
+            repo: "svc",
+            commit: "c0ffee1234",
+            builtAt: "2026-11-03T01:00:00Z",
+            mode: "incremental",
+            stats: {
+              files: 120,
+              testFiles: 30,
+              symbols: 900,
+              exportedSymbols: 400,
+              imports: 700,
+              refs: 500,
+              unresolved: 4,
+              testLinks: 80,
+              modulesWithTests: 60,
+              capsHit: [],
+            },
+          },
+        ],
+      },
+    };
+    await loadApp();
+    const panel = document.querySelector('[aria-label="Code index"]')!;
+    expect(panel).not.toBeNull();
+    const t = panel.textContent!.replace(/\s+/g, " ");
+    expect(t).toContain(
+      "listed callers in 3 of 4 review opens (1 had no changed symbol to list, 0 were not analysed); 1 earlier opens did not record it.",
+    );
+    expect(t).toContain(
+      "120 files (30 tests) · 400 exported symbols · 500 imports resolved, 4 unresolved · 80 test links over 60 modules",
+    );
+    expect(t).toContain("at c0ffee12");
+    expect(t).not.toMatch(/score|confiden/i);
+  });
+
+  it("memory not wired and nothing recorded say so", async () => {
+    healthPayload = {
+      ...(FULL_HEALTH as object),
+      impact_callers: {
+        opens: 0,
+        known: 0,
+        listed: 0,
+        none_changed: 0,
+        not_analysed: 0,
+        listed_pct: null,
+      },
+      code_index: { available: false, reason: "Memory is not configured." },
+    };
+    await loadApp();
+    const t = document.querySelector('[aria-label="Code index"]')!.textContent!;
+    expect(t).toContain("No review open has recorded the callers row yet.");
+    expect(t).toContain("Index coverage: Memory is not configured.");
+  });
+});

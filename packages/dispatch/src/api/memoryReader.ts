@@ -116,6 +116,26 @@ export interface RecallEffectiveness {
   readonly last_applied_at: string | null;
 }
 
+/** One repo's code-index build record, as `memory index stats --json` reports it. */
+export interface CodeIndexCoverage {
+  readonly repo: string;
+  readonly commit: string | null;
+  readonly builtAt: string;
+  readonly mode: string;
+  readonly stats: {
+    readonly files: number;
+    readonly testFiles: number;
+    readonly symbols: number;
+    readonly exportedSymbols: number;
+    readonly imports: number;
+    readonly refs: number;
+    readonly unresolved: number;
+    readonly testLinks: number;
+    readonly modulesWithTests: number;
+    readonly capsHit: readonly string[];
+  };
+}
+
 /** A read that may be unavailable. `T` carries the parsed payload when present. */
 export type MemoryResult<T> = ({ available: true } & T) | { available: false; reason: string };
 
@@ -131,6 +151,8 @@ export interface MemoryReader {
    * other read: `{ available:false, reason }` when Memory isn't wired / errors.
    */
   recallEffectiveness(opts?: { repo?: string }): MemoryResult<{ recall: RecallEffectiveness }>;
+  /** Each repo's code-index coverage (`memory index stats --json`), for Health. */
+  codeIndexStats(): MemoryResult<{ repos: CodeIndexCoverage[] }>;
   /**
    * File a lore DRAFT via the memory CLI `suggest` (the ONLY write dispatch does to
    * memory — and it's not a DB write: `suggest` lands the record in the memory review
@@ -671,6 +693,22 @@ export function createMemoryReader(env: NodeJS.ProcessEnv = process.env): Memory
       const outcome = runCli(env, ["list"]);
       if (!outcome.ok) return unavailable(outcome.reason);
       return { available: true, lore: parseLore(outcome.stdout) };
+    },
+    codeIndexStats() {
+      const outcome = runCli(env, ["index", "stats", "--json"]);
+      if (!outcome.ok) return unavailable(outcome.reason);
+      try {
+        const doc = JSON.parse(outcome.stdout) as { repos?: unknown };
+        if (!Array.isArray(doc.repos)) throw new Error("no repos");
+        const repos = (doc.repos as CodeIndexCoverage[]).filter(
+          (r) => r && typeof r.repo === "string" && r.stats && typeof r.stats.files === "number",
+        );
+        return { available: true, repos };
+      } catch {
+        return unavailable(
+          "Memory CLI `index stats --json` returned no parsable report — is the memory package up to date?",
+        );
+      }
     },
     recallEffectiveness(opts = {}) {
       const args = ["recall-stats", "--json"];

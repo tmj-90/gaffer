@@ -550,6 +550,15 @@ export function routeReadModels(
       escaped_defects: reviewMeasures.escaped_defects,
       // SPECIALIST VALUE (D1): what each judging lane changed. Counts only, no recommendation.
       lane_value: reviewMeasures.lane_value,
+      // CODE INDEX (delta gap 1): how often the Review's callers row was populated, and
+      // each repo's index coverage (memory `index stats`; available:false when unwired).
+      impact_callers: reviewMeasures.impact_callers,
+      code_index: (() => {
+        const r = memoryReader.codeIndexStats();
+        return r.available
+          ? { available: true, repos: r.repos }
+          : { available: false, reason: r.reason };
+      })(),
       coverage: health.coverage,
       by_kind: health.by_kind.slice(0, TOP_N),
       by_model: health.by_model.slice(0, TOP_N),

@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 
 import { isActiveTicketRepoRelation, type Ticket } from "../domain/types.js";
 import { computeRepoImpact, type DownstreamRepo, type RepoImpact } from "./changeImpact.js";
+import type { CodeIndexReader } from "./codeIndexReader.js";
 import {
   computeRiskAnnotations,
   testModifiedAnnotation,
@@ -108,6 +109,11 @@ export interface DiffServiceDeps {
    * depends_on). Read only when impact is asked for; a throw reads as none.
    */
   downstreamRepos?: (repoId: string) => DownstreamRepo[];
+  /**
+   * CHANGE IMPACT: the code index (memory CLI `index neighbours`) for the callers of the
+   * changed symbols. Read only when impact is asked for; absent → "not analysed".
+   */
+  codeIndex?: CodeIndexReader | null;
 }
 
 /** Per-call options for {@link computeTicketDiff}. */
@@ -558,6 +564,13 @@ export function computeTicketDiff(
               localPath: t.localPath,
               downstream: downstreamOf(deps, t.repoId),
               paths,
+              codeIndex: deps.codeIndex ?? null,
+              baseBranch: t.baseBranch,
+              // The index describes the base branch's tip; resolved only when it is asked.
+              baseSha:
+                deps.codeIndex && !t.isBootstrap
+                  ? resolveBranchHead(runGit, t.localPath, t.baseBranch)
+                  : null,
             }),
           }
         : {}),

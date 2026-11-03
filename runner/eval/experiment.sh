@@ -144,6 +144,7 @@ RUNS="$OUT/runs.ndjson"; : > "$RUNS"
 GIT_ID=(-c user.name=gaffer-experiment -c user.email=experiment@gaffer.invalid -c commit.gpgsign=false)
 SPENT=0
 STOP=""
+CAP_WHY=""
 
 # record <ticket> <arm> <order> key=value…: one run's JSON line (node does the quoting).
 record() {
@@ -209,7 +210,7 @@ run_one() {
   local attempts=0 submitted=false outcome="" spend=0 unknown=0 rc=0 n env_json pr
   for n in $(seq 1 "$MAX_ATTEMPTS"); do
     if [ "$MODE" = live ] && ! awk -v s="$SPENT" -v m="$MAX_USD" 'BEGIN { exit !(s + 0 < m + 0) }'; then
-      outcome="cap"; STOP="the run's USD cap (\$$MAX_USD) was reached"; break
+      outcome="cap"; STOP="the run's USD cap (\$$MAX_USD) was reached"; [ -n "$CAP_WHY" ] && STOP="$CAP_WHY"; break
     fi
     env_json="$work/envelope-$n.json"
     pr="$(node "$XP" prompt --plan "$PLAN" --ticket "$t" --arm "$a" ${failure:+--failure "$failure"})"
@@ -239,6 +240,13 @@ run_one() {
       SPENT="$(awk -v a="$SPENT" -v b="$s" 'BEGIN { printf "%.6f", a + b }')"
     else
       unknown=$((unknown + 1))
+      # A call whose spend cannot be read (killed, timed out, no envelope) may have spent
+      # its whole per-call cap: count that cap against the run, so the hard USD cap stays
+      # hard (adding nothing gave every later call the full cap again).
+      if [ "$MODE" = live ]; then
+        SPENT="$MAX_USD"
+        CAP_WHY="a call's spend could not be read (killed, timed out or no envelope), so its whole per-call cap counts against the run's USD cap (\$$MAX_USD)"
+      fi
     fi
     if [ "$MODE" = live ] && declare -F gaffer_usage_pause_record >/dev/null 2>&1; then
       gaffer_usage_pause_record "$env_json" "" experiment >/dev/null 2>&1

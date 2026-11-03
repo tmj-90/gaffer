@@ -174,6 +174,47 @@ RG="$WORK/g2/results.json"
   && ok "G: the run's USD cap stops the rest; spent and why are reported" || fail "G: cap $(jt "$RG" '[d.spent_usd,d.stopped,d.runs.map(r=>r.outcome)]')"
 [ "$(jt "$RG" 'd.comparisons[0].n+"/"+d.comparisons[0].excluded')" = "0/2" ] && ok "G: runs the cap stopped are left out of the pairs" || fail "G: pairs $(jt "$RG" 'd.comparisons[0]')"
 
+echo "== H. arms compared on their effective settings (review) =="
+# `memory=on` against a baseline that names no memory is the SAME arm (priming is on by
+# default): it must not read as a memory difference nor fill the matched-memory seam; and
+# the seam counts only tickets where the memory setting took effect.
+H="$(node --input-type=module -e '
+  import { report } from "'"$XP"'";
+  const arm = (name, overrides, unapplied = {}) => ({ name, overrides, unapplied });
+  const runs = [];
+  for (const t of ["t1", "t2"]) for (const a of ["base", "same", "off"])
+    runs.push({ ticket: t, arm: a, ran: true, accepted: a !== "off", attempts: 1, spend_usd: 1, judge_score: null });
+  const plan = { mode: "stub", seed: 1, baseline: "base", tickets: [{ id: "t1" }, { id: "t2" }], order: [],
+    arms: [arm("base", {}), arm("same", { memory: "on" }),
+           arm("off", { memory: "off" }, { t2: ["memory (the ticket carries no memory to prime)"] })] };
+  const r = report(plan, runs);
+  process.stdout.write([r.comparisons[0].differs_in.length, r.comparisons[1].differs_in.join(","),
+    r.memory_matched.without_memory, r.memory_matched.tickets, JSON.stringify(r.comparisons[1].vs_overrides)].join("/"));')"
+[ "$H" = "0/memory/off/1/{}" ] && ok "H: memory=on against the default is no difference; the seam counts only tickets primed differently" \
+  || fail "H: effective settings $H"
+
+# Review: a call whose spend cannot be read (killed, timed out, no envelope) used to add
+# nothing to the run's spend, so every later call got the whole cap again. It now counts
+# its whole per-call cap against the run: the run stops after it.
+cat > "$WORK/bin/silent-agent" <<'STUB'
+#!/usr/bin/env bash
+case "${1:-}" in --version) echo "9.9.9 (fake)"; exit 0 ;; esac
+prev=""; for a in "$@"; do [ "$prev" = "--max-budget-usd" ] && printf '%s\n' "$a" >> "__ARGS__"; prev="$a"; done
+exit 1
+STUB
+sed -i.bak "s|__ARGS__|$WORK/silent-args|" "$WORK/bin/silent-agent" && rm -f "$WORK/bin/silent-agent.bak"; chmod +x "$WORK/bin/silent-agent"
+LD3="$WORK/live-data3"; mkdir -p "$LD3"
+O="$(GAFFER_DATA="$LD3" CLAUDE_BIN="$WORK/bin/silent-agent" GAFFER_DAILY_BUDGET_USD=5 \
+     STRICT_MODE=0 GAFFER_STRICT_REQUIRE=0 bash "$XS" --live --max-usd 0.5 --only clean-feature,breaks-tests \
+     --arm baseline --arm cheap:tier=cheap --seed 9 --out "$WORK/g3" 2>&1)"
+RG="$WORK/g3/results.json"
+[ "$(wc -l < "$WORK/silent-args" 2>/dev/null | tr -d ' ')" = 1 ] \
+  && [ "$(jt "$RG" 'd.runs.filter(r=>r.ran===false).length+"/"+/could not be read/.test(d.stopped)')" = "3/true" ] \
+  && ok "G: a call with an unreadable spend counts its whole cap: the run stops after it" \
+  || fail "G: unknown spend: calls=$(cat "$WORK/silent-args" 2>/dev/null | tr '\n' ' ') $(jt "$RG" '[d.stopped,d.runs.map(r=>r.outcome)]')"
+[ "$(grep -c '"kind":"experiment"' "$LD3/usage-ledger.jsonl" 2>/dev/null)" = 1 ] \
+  && ok "G: the unreadable call is still booked in the factory's ledger" || fail "G: ledger3 $(cat "$LD3/usage-ledger.jsonl" 2>/dev/null)"
+
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "eval-experiment: all $PASS passed"; exit 0; fi
 echo "eval-experiment: ${#FAILURES[@]} FAILED (of $((PASS + ${#FAILURES[@]})))"

@@ -344,6 +344,10 @@ export const EXPERIMENT_LIMITS = [
   "a run the caps stopped is left out of every pair, and the report says how many",
 ];
 
+/** What an arm runs with when it names no value for a setting (the brief's defaults). */
+const ARM_DEFAULTS = { memory: "on", packet: "1", context: "full", stub: "apply" };
+const effective = (overrides, k) => overrides[k] ?? ARM_DEFAULTS[k];
+
 export function report(p, runs) {
   const byKey = new Map(runs.map((r) => [`${r.ticket}\u0000${r.arm}`, r]));
   const base = p.baseline;
@@ -352,7 +356,9 @@ export function report(p, runs) {
     if (a.name === base) continue;
     const b = p.arms.find((x) => x.name === base);
     const keys = [...new Set([...Object.keys(a.overrides), ...Object.keys(b.overrides)])].sort();
-    const differs = keys.filter((k) => a.overrides[k] !== b.overrides[k]);
+    // Compared on the EFFECTIVE setting: `memory=on` against a baseline that names no
+    // memory is the same arm (priming is on unless an arm turns it off), not a difference.
+    const differs = keys.filter((k) => effective(a.overrides, k) !== effective(b.overrides, k));
     const per = [];
     let excluded = 0;
     for (const t of p.tickets) {
@@ -382,6 +388,7 @@ export function report(p, runs) {
       excluded,
       differs_in: differs,
       overrides: a.overrides,
+      vs_overrides: b.overrides,
       acceptance: pairedSummary(per.map((d) => d.acceptance)),
       attempts: pairedSummary(per.map((d) => d.attempts)),
       spend_usd: {
@@ -392,26 +399,35 @@ export function report(p, runs) {
       per_ticket: per,
     });
   }
-  // The memory seam (evalLedger memoryLift.matched): two arms that differ only in memory.
+  // The memory seam (evalLedger memoryLift.matched): two arms that differ only in memory,
+  // over the tickets where the memory setting took effect (a ticket with no memory to
+  // prime, or a manifest replay that keeps no prompt, ran the same arm twice).
   let memoryMatched = null;
   const mem = comparisons.find((c) => c.differs_in.length === 1 && c.differs_in[0] === "memory");
   if (mem) {
-    const on = mem.overrides.memory === "on";
-    const flip = (s) =>
-      on || !s || s.mean === null
-        ? s
-        : { ...s, mean: -s.mean, ci95: s.ci95 ? [-s.ci95[1], -s.ci95[0]] : null };
-    memoryMatched = {
-      measure: "matched_memory_priming",
-      mode: p.mode,
-      tickets: mem.n,
-      with_memory: on ? mem.arm : base,
-      without_memory: on ? base : mem.arm,
-      acceptance: flip(mem.acceptance),
-      attempts: flip(mem.attempts),
-      spend_usd: flip(mem.spend_usd),
-      judge_score: mem.judge_score ? flip(mem.judge_score) : null,
-    };
+    const memArm = p.arms.find((x) => x.name === mem.arm);
+    const applied = (id) =>
+      !(memArm?.unapplied?.[id] ?? []).some((u) => /^(?:memory|prompt settings)\b/.test(u));
+    const per = mem.per_ticket.filter((d) => applied(d.ticket));
+    if (per.length > 0) {
+      const on = effective(mem.overrides, "memory") === "on";
+      const flip = (s) =>
+        on || !s || s.mean === null
+          ? s
+          : { ...s, mean: -s.mean, ci95: s.ci95 ? [-s.ci95[1], -s.ci95[0]] : null };
+      const judge = pairedSummary(per.map((d) => d.judge_score));
+      memoryMatched = {
+        measure: "matched_memory_priming",
+        mode: p.mode,
+        tickets: per.length,
+        with_memory: on ? mem.arm : base,
+        without_memory: on ? base : mem.arm,
+        acceptance: flip(pairedSummary(per.map((d) => d.acceptance))),
+        attempts: flip(pairedSummary(per.map((d) => d.attempts))),
+        spend_usd: flip(pairedSummary(per.map((d) => d.spend_usd))),
+        judge_score: judge.n ? flip(judge) : null,
+      };
+    }
   }
   const spent = runs.reduce((s, r) => s + (typeof r.spend_usd === "number" ? r.spend_usd : 0), 0);
   return {

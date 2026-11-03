@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =====================================================================
-# P1b golden-fixture capture (docs/tick-sh-runtime-migration.md) — renders
+# Golden-fixture capture (runner/CLAUDE.md) — renders
 # the REAL bash delivery context (prompt + MCP runtime config + the two
 # context-primer blocks) and checks the results in as goldens for the TS
 # renderer (packages/crew/src/runtime/context/) to byte-compare against.

@@ -1,10 +1,10 @@
-# Runner — the orchestrator
+# Runner: the orchestrator
 
-The bash orchestrator at the heart of [Gaffer](../README.md). Claude Code is the
-delivery agent; the runner is the loop that feeds it. It spawns a headless
-`claude -p` per ticket, wired to the Dispatch and Memory MCP servers, with the
-skill library mounted, the safety hook active, and each delivery sealed in a
-throwaway git worktree —
+The bash orchestrator at the heart of [Gaffer](../README.md). A headless agent CLI is
+the delivery agent; the runner is the loop that feeds it. It spawns a headless
+`claude -p` per ticket, wired to the Dispatch and Memory MCP servers, with the skill
+library mounted, the safety hook active, and each delivery sealed in a throwaway git
+worktree:
 
 ```
             ┌─────────────────────────────┐
@@ -14,7 +14,7 @@ throwaway git worktree —
                         ▲   │ claim / evidence / submit
                         │   ▼
           ┌──────────────────────────────────┐
-          │  Claude Code (the delivery agent) │  ← skills + safety hook
+          │  the delivery agent (headless)    │  ← skills + safety hook
           └──────────────────────────────────┘
                         ▲   │ search / suggest
                         │   ▼
@@ -24,10 +24,11 @@ throwaway git worktree —
             └─────────────────────────────┘
 ```
 
-There is **no long-running app and no polling daemon**. A thin driver
-(`tick.sh` + `loop.sh`, or launchd) re-invokes headless Claude Code; each tick
-claims one ready ticket, consults memory, delivers it on a branch, evidences
-every acceptance criterion, and submits for review — then stops. When nothing is
+There is **no long-running app**. A thin driver (`tick.sh` and `loop.sh`, repeated by
+`gaffer run --daemon` or launchd) re-invokes the headless agent; each tick the runner
+claims one ready ticket, the agent consults memory, delivers it on a branch and
+evidences every acceptance criterion, and the runner submits it for review, then
+stops. When nothing is
 ready, a tick first runs the **clarify intake gate** (auto-clarifies an ambiguous
 draft so it can't reach `ready` while load-bearing ambiguity remains; a draft with
 no linked repo on disk is logged and skipped for the run, so it cannot stall the
@@ -41,10 +42,10 @@ tickets.
 
 When there are no claimable tickets, the factory can do maintenance work instead
 of just polling. Turn the lane on in **Settings → Idle loops** (crew.yaml
-`loops.maintenance.enabled`; OFF by default) **and enable at least one lane** —
+`loops.maintenance.enabled`; OFF by default) **and enable at least one lane**,
 the lane only rotates through the idle loops you enabled, so the switch alone
 does nothing. A quiet tick then runs **one** maintenance loop chosen by a
-**deterministic priority + rotation scheduler — no LLM in the choice** (`fg
+**deterministic priority + rotation scheduler, no LLM in the choice** (`fg
 maintain`). `GAFFER_MAINTENANCE` in the runner's env is only an override: `0` =
 never run the lane, `1` = run it even while the switch is off, empty = the
 switch decides.
@@ -68,7 +69,7 @@ switch decides.
   lane; the **feature backlog** (`loops.idle_feature_backlog`) runs just before
   it as its own step (`fg feature-backlog`, above), and the later `fg maintain` /
   `fg idle` are told not to run it again that tick. Both use the factory's own
-  memory server and planner — no `memory.mcp` or `decompose_script`
+  memory server and planner, no `memory.mcp` or `decompose_script`
   hand-wiring. The feature backlog is the one idle step that
   spends a model call (one planning call per feature, counted against
   `MAX_TICKS_PER_DAY`). The planner runs unattended, so it is told to plan now
@@ -88,7 +89,7 @@ switch decides.
   (productive). A tick whose scans found nothing new is `no_work`: the scans
   call no model, so it counts as an empty poll (`EMPTY_POLL_LIMIT` drains the
   pool) and stays off the day cap. Only a tick that ran the paid backlog planner
-  and filed nothing is `maintenance_ran` — counted against the day cap, but an
+  and filed nothing is `maintenance_ran`, counted against the day cap, but an
   empty poll for draining. A backlog step that filed an epic reports
   `idle_drafted` before the lane runs.
 - **Strict containment:** under `GAFFER_STRICT_REQUIRE=1` the idle loops refuse
@@ -96,29 +97,29 @@ switch decides.
   tsc/semgrep oracles) unless `GAFFER_IDLE_HOST_EXEC=1`; the in-process scans
   still run.
 
-Deferred (follow-up): dedicating a fraction of the A1 concurrency pool to the
-maintenance lane so it runs alongside delivery rather than only on idle ticks.
+The maintenance lane runs only on idle ticks, never alongside delivery.
 
 ## The two MCP servers (the async delivery plane)
-- **Dispatch** — backlog/work control plane. Atomic claims/leases, evidence,
+- **Dispatch**: backlog/work control plane. Atomic claims/leases, evidence,
   append-only events; tools: `claim_next_ticket`, `get_ticket`, `record_ac_evidence`,
   `submit_ticket_for_review`, `mark_ticket_blocked`, … (also a REST API + web UI).
-- **Memory** — durable memory (conventions, ADRs, boundaries, gotchas). Tools:
+- **Memory**: durable memory (conventions, ADRs, boundaries, gotchas). Tools:
   `search_lore`, `get_lore`, `suggest_lore`, … with a suggest→ratify flow (nothing
   becomes authoritative without human review).
 
 ## How a ticket gets delivered
 1. `tick.sh` asks Dispatch if anything is `ready`.
 2. It reads the top ticket's repo + stack and computes **recommended skills** for it.
-3. It runs `claude -p` headlessly in that repo, wired to both MCP servers, with the
+3. The runner claims the ticket at selection, cuts the delivery branch in a throwaway
+   worktree, and runs `claude -p` headlessly there, wired to both MCP servers, with the
    factory **skill library** mounted and the **safety hook** active.
-4. Claude claims the ticket, `search_lore`s for relevant conventions, branches,
-   implements using the matching skill, runs the tests, records evidence per AC,
-   and submits for review. It never marks its own work `done`.
+4. The agent `search_lore`s for relevant conventions, implements using the matching
+   skill, runs the tests and records evidence per AC. It cannot claim, submit or mark
+   its own work `done`: the runner runs the gates and submits the delivery for review.
 5. `loop.sh` repeats until the queue drains or the stop conditions hit.
 
 The candidate scan walks **claimable** work (`wg ticket list -s ready --claimable`: every
-dependency done), so `MAX_CANDIDATES` bounds tickets a claim can take — a low-priority
+dependency done), so `MAX_CANDIDATES` bounds tickets a claim can take: a low-priority
 prerequisite is never starved behind higher-priority dependants that cannot start.
 
 **Landing = the merge gate.** Every landing path (`lib/land.sh` for the merge lane and the
@@ -126,10 +127,10 @@ agent review's ship, `bin/merge-ticket.mjs` for the dashboard's Merge now and `g
 merge`) builds the merge of the approved commit onto the CURRENT default branch in a
 scratch worktree, runs the repo's DoD gates on that merge through `bin/dod-regate.sh` (the
 delivery gate's gates: `test_command`, `lint_command` and the typecheck command
-`gaffer_dod_typecheck_cmd` resolves — `GAFFER_DOD_TYPECHECK_CMD`, else the package.json
+`gaffer_dod_typecheck_cmd` resolves, `GAFFER_DOD_TYPECHECK_CMD`, else the package.json
 typecheck script, detected from the gated target head first; gate integrity: each gate's
-package.json script is read from that target head and an `integrity` row — PASS/FLAG, never
-FAIL, with the ticket's human `allow_test_changes` — compares it with the merged tree), and
+package.json script is read from that target head and an `integrity` row, PASS/FLAG, never
+FAIL, with the ticket's human `allow_test_changes`, compares it with the merged tree), and
 lands exactly the gated merge commit only while the default branch is still the commit it
 gated (`update-ref <ref> <merge> <gated-head>`, or a fast-forward of a clean checked-out
 target); a target that moved is re-gated (`GAFFER_MERGE_GATE_RETRIES`, default 2). A red
@@ -139,27 +140,27 @@ default branch untouched. In PR mode the gate runs on the merge onto the freshly
 remote default branch before `gh pr merge --match-head-commit <pin>`; the repo's branch
 protection is the compare-and-land upstream.
 
-**Tester replay on the landing candidate** (external review #4). Once the repo's gates pass
-on the merge (or DoD is off), the PRIMARY repo's merge gate — `_gaffer_merge_gate` /
+**Tester replay on the landing candidate.** Once the repo's gates pass
+on the merge (or DoD is off), the PRIMARY repo's merge gate, `_gaffer_merge_gate` /
 `_gaffer_merge_gate_tester_replay` in `lib/land.sh` (PR mode's gate on `FETCH_HEAD`
-included) and `gateProposedMerge` / `replayOnMergeCandidate` in `bin/merge-ticket.mjs` —
+included) and `gateProposedMerge` / `replayOnMergeCandidate` in `bin/merge-ticket.mjs`,
 asks `lib/tester-replay.mjs` whether a bound tester PASS of exactly the pinned commit is why
 the ticket lands, and which test files the tester added or changed relative to that commit
-(`testerTestFiles`: the same rule `bin/tester-run.mjs` inspects with — test paths only, never
+(`testerTestFiles`: the same rule `bin/tester-run.mjs` inspects with, test paths only, never
 `.claude/`, `CLAUDE.factory.md`, `.mcp.json` or `node_modules`). Which tests: the commit the
 PASS is bound to (`--tests-commit`, which `bin/tester-run.mjs` records: its own commit on
-`gaffer-tests/ticket-<n>`, or `none` when the run saved no tests) — never the branch as it
+`gaffer-tests/ticket-<n>`, or `none` when the run saved no tests), never the branch as it
 stands at landing time, so a rewritten or deleted tests branch changes nothing, and a bound
 commit git cannot find holds. (A PASS recorded before that binding falls back to the branch;
 one that does not descend from the tested commit is an earlier run's and is not replayed.) Those files are checked out into the scratch merge's
 working tree (the gated merge commit is unchanged: they run, they never land) and run there
 through `bin/dod-regate.sh` (tests only; the gates' sandbox wrap and timeout).
 **Proof of execution** (`replayInvocation` / `replayProof`): the files run by path with the
-stack's runner where a file-scoped invocation is well defined — `node --test <files…>` (the
+stack's runner where a file-scoped invocation is well defined, `node --test <files…>` (the
 registered command's `--import`/`--require`/`--experimental-*` flags kept, test filters
 dropped), `vitest run <files>` / `jest --runTestsByPath <files>` with a JSON report,
 `pytest -vv <files>`, `go list` + `go test` on the files' packages, `cargo test --test <name>`
-for `tests/<name>.rs` — detected from the registered command, or the `test` script it names
+for `tests/<name>.rs`, detected from the registered command, or the `test` script it names
 read from the gated target's package.json; otherwise the registered command runs with a
 node:test reporter in `NODE_OPTIONS`. Each file then needs the runner's own evidence that it
 ran (the reporter's per-file events, the JSON report, pytest node ids, `go list`'s test files,
@@ -183,10 +184,10 @@ the record lists only the files proven to have run. A failure holds the
 ticket like a red gate (`wg ticket hold … --reason-code tester_replay_red`, the files named,
 the output attached); no tester PASS on record (not in the testing lane, or a human waiver)
 runs nothing extra; an unreadable DB or a git error holds (fail closed);
-`GAFFER_TESTER_REPLAY=0` skips it and records nothing — so while it is off **no epic can
+`GAFFER_TESTER_REPLAY=0` skips it and records nothing, so while it is off **no epic can
 count as accepted** (`gaffer status` says so). When the candidate lands, the landing path
 records which assertions passed on which landed revision with `wg ticket record-tester-replay
-<n> --commit <landed> --pin <tested> --files-json '[…]' [--note …] --as system` — system only
+<n> --commit <landed> --pin <tested> --files-json '[…]' [--note …] --as system`, system only
 (the service refuses every other actor; the safety hook refuses it, and `attach-evidence`, to
 agents; generic system evidence cannot carry the record's uri). `<landed>` is the gated merge
 for a local landing; for a PR landing it is the local default's head after the fast-forward,
@@ -263,23 +264,21 @@ a pause: they need a person to raise the cap, so they stay ordinary failures.
   `GAFFER_CONCURRENCY>1` pool stops admitting new work, and `gaffer status` and the
   dashboard's Health view say `paused until <time>: usage limit`. It lifts on its
   own; `node runner/lib/usage-pause.mjs clear` lifts it early.
-- The time left in a window is not spent on maintenance work in this release (it is
-  unclear whether headless usage shares the window); `usage-pause.mjs` documents the
-  seam for a future, opt-in lane.
+- The time left in a window is not spent on maintenance work.
 
 ## Setup & the `gaffer` CLI
 
 `setup.sh` builds the three TypeScript products and initialises factory state
-under `$GAFFER_DATA` (default `$GAFFER_HOME/.gaffer`, next to the repo) — the Dispatch DB, the Crew config
+under `$GAFFER_DATA` (default `$GAFFER_HOME/.gaffer`, next to the repo), the Dispatch DB, the Crew config
 (pointed at the shared factory DB), and the agent identity. It does **not** need
-the Claude CLI; that's only for live runs.
+the agent CLI; that's only for live runs.
 
 `gaffer` is the thin operator CLI on top:
 
 | Command | What it does |
 | --- | --- |
 | `gaffer setup` | One-command bootstrap (build + init + open the dashboard). |
-| `gaffer onboard <path> [--standalone] [--name <alias>]` | Register + scan a repo (a name match is a refresh only for the same canonical local path; any other record of that name — another checkout, a record whose checkout is gone (a moved clone, even with the same remote), or a record with no local path — is refused and left unchanged; `--name` gives it its own record), run the `claude -p` onboarding pass (real digest + feature inventory + cited lore drafts; the card-generation / card-review skills are inlined into its prompt, and its lore rules are a distillation of the memory-onboard skill's hard rules, pinned by `test/onboard-memory-rules-sync.test.mjs`), seed tags. Advanced scope mapping is done in the Factory Map dashboard tab. |
+| `gaffer onboard <path> [--standalone] [--name <alias>]` | Register + scan a repo (a name match is a refresh only for the same canonical local path; any other record of that name, another checkout, a record whose checkout is gone (a moved clone, even with the same remote), or a record with no local path, is refused and left unchanged; `--name` gives it its own record), run the `claude -p` onboarding pass (real digest + feature inventory + cited lore drafts; the card-generation / card-review skills are inlined into its prompt, and its lore rules are a distillation of the memory-onboard skill's hard rules, pinned by `test/onboard-memory-rules-sync.test.mjs`), seed tags. Advanced scope mapping is done in the Factory Map dashboard tab. |
 | `gaffer dashboard [--restart\|--stop\|--lan]` | Start the Dispatch control-room UI (`http://127.0.0.1:8787`). `--restart` stops the running server (found by its pid file, or by the port when that file is lost), rotates the login token and starts a new one; `--stop` stops it. "dashboard up" is printed only when the server this call started answers with its token (within `GAFFER_DASHBOARD_START_TIMEOUT` seconds, 30 by default); a port held by anything else is refused with its pid, and a server is only ever stopped when its environment names this factory's `GAFFER_DATA` (or its pid file does). |
 | `gaffer status` | One-pane roll-up: the posture (effective `GAFFER_MODE`, review mode, auto-merge, dollar caps, sandbox requirement), registrations, work counts, running ticks, what needs a human (reviews, blocked, unmerged approvals, decisions, paused deliveries awaiting Continue/Stop). Finds a `--foreground` dashboard (no pid file) by probing its `/healthz`. |
 | `gaffer demo` | One dry tick over a showcase repo, in a throwaway factory under a fresh temp dir (or `DEMO_DIR`, which must be empty or a previous demo's); proves both MCP servers answer. Writes nothing inside the checkout. |
@@ -292,7 +291,7 @@ and [`RUNBOOK.md`](RUNBOOK.md) for the full walkthroughs.
 Delivery never touches a real repo's working tree. For each writable repo a tick
 creates a **throwaway git worktree** under `$WORKTREES_BASE`, checked out on the
 ticket's `gaffer/ticket-<n>-<slug>` branch. The worktree shares the real repo's
-object database — so commits land on the real repo's `gaffer/*` branch — while the
+object database (so commits land on the real repo's `gaffer/*` branch) while the
 repo's main working tree and current branch stay exactly as the human left them. A
 rejected delivery's worktree is torn down; its commits live on the ephemeral
 branch and never merge. The isolation is physical (the OS enforces it), not
@@ -317,16 +316,24 @@ resume request stays queued for the next live tick (`runner/test/resume-dry-run.
 
 ## Model tiering
 
-Planning and implementation run on different models, configured in
-`factory.config.sh` and env-overridable:
+Every agent call is routed to a tier by `bin/route-model.mjs`, reading
+`model-registry.json` (override the file with `GAFFER_MODEL_REGISTRY`):
 
-```bash
-GAFFER_PLAN_MODEL=opus      # strong, slow — plan-build, plan-change, clarify, product-owner
-GAFFER_IMPL_MODEL=sonnet    # fast, cheap — delivery, bootstrap, merge-conflict, tests
-```
+- **Tiers**: `cheap`, `mid` and `strong`, each mapped to a concrete model id in the
+  registry, with the escalation order cheap, mid, strong. Adding a model or a provider,
+  or remapping a tier, is an edit to the registry, not to code.
+- **Phase defaults**: planning, decomposition and merge-conflict resolution start on
+  `strong`; delivery, tests, self-review and the reviewer on `mid`; clarify, onboarding
+  scans and the pre-work scout on `cheap`.
+- **Routing rules** move a call off its default: a high-risk or many-criteria ticket
+  climbs, a trivial one can drop, and a rework attempt escalates (the final one to
+  `GAFFER_REWORK_STRONG_MODEL`). Each ledger row records the tier and the reasons
+  (`route_tier`, `route_reasons`).
+- **Overrides**: `GAFFER_PLAN_MODEL` and `GAFFER_IMPL_MODEL` pin the planning and
+  delivery models outright and always win.
 
 An optional, size-gated, round-capped two-model **planning debate**
-(`GAFFER_PLAN_DEBATE=1`) is OFF by default — it costs N× a single plan, and every
+(`GAFFER_PLAN_DEBATE=1`) is OFF by default: it costs N× a single plan, and every
 turn is counted in the usage ledger. Cost and usage in summaries are **relayed
 from real measurements, never invented**. Under a worker pool a red tests gate is rerun once at concurrency 1 before the
 attempt counts (`lib/dod.sh` `gaffer_dod_rerun_serial`; a pass is marked flaky
@@ -356,17 +363,17 @@ failed gate) to rework.
 
 ## Configuration (env always wins)
 
-Config resolves in this precedence — highest first:
+Config resolves in this precedence, highest first:
 
 1. Real environment variables.
-2. `settings.json` (`$GAFFER_DATA/settings.json`) — the flat `{"KEY":"value"}` map
+2. `settings.json` (`$GAFFER_DATA/settings.json`), the flat `{"KEY":"value"}` map
    the dashboard **Settings** panel writes. Applied as defaults (`:=`), validated
    to env-var-name shape, never `eval`'d.
-3. `factory.config.sh` — the source-controlled defaults (paths, stop conditions,
+3. `factory.config.sh`: the source-controlled defaults (paths, stop conditions,
    cost guards, model tiers, CLI helpers).
 
 So a human can tune the factory from the dashboard, but anything exported in the
-environment overrides it — and env-locked keys show read-only in the UI. "The
+environment overrides it, and env-locked keys show read-only in the UI. "The
 environment" means the operator's REAL environment, captured once when the first
 process sources `factory.config.sh` (`_GAFFER_OPERATOR_ENV`): the values a parent
 (gaffer, `loop.sh`, a daemon pass) derived and exported are re-derived by each child,
@@ -383,11 +390,11 @@ settings file with a cap set refuses). It reads the ledger the writer appends to
 resolver, `lib/usage-ledger-path.mjs`: a relative `GAFFER_USAGE_LEDGER` lives under
 `GAFFER_DATA`), and with a cap set a ledger that is turned off
 (`GAFFER_USAGE_LEDGER=0`/`off`) or has no location refuses too: nothing would be booked
-against the cap. Both worker seams ask it — `lib/worker.sh`
+against the cap. Both worker seams ask it: `lib/worker.sh`
 `worker_deliver` (delivery, bootstrap, review, clarify, eval judge, via
 `gaffer_paid_launch_admitted`, rc 77) and `lib/worker.mjs` `deliver` (tester, decompose
 for Plan a build, product owner for Suggest work, onboarding analysis, the merge
-resolver; status 77) — as do `bin/spec-author.mjs` before its own spawn and the
+resolver; status 77), as do `bin/spec-author.mjs` before its own spawn and the
 ambiguous-sibling inherit classifier (`lib/greenfield.sh` `_gaffer_inherit_amb_spawn`,
 kind `inherit`, after a bootstrap), which on a refusal leaves the link for a human. If
 `lib/budget.sh` was not sourced, both shell callers load it; a check that still cannot be
@@ -403,13 +410,13 @@ again. The file is read the way the dashboard reads it: it lives at
 `$GAFFER_DATA/settings.json` (default `$GAFFER_HOME/.gaffer`, so an operator-set
 `GAFFER_HOME` is honoured in every process), a leading UTF-8 BOM and surrounding
 whitespace are ignored, and an empty or whitespace-only file means "nothing
-configured" (`{}`), not unreadable. The run-shape knobs a loop reads once at start —
-`MAX_TICKS`, `GAFFER_CONCURRENCY`, `TICK_SLEEP`, `EMPTY_POLL_LIMIT` — apply from the
+configured" (`{}`), not unreadable. The run-shape knobs a loop reads once at start,
+`MAX_TICKS`, `GAFFER_CONCURRENCY`, `TICK_SLEEP`, `EMPTY_POLL_LIMIT`, apply from the
 next loop pass (the next daemon pass, or the next run).
 
 ## Feature lifecycle + a fresh Repo Digest (prepare-at-delivery / apply-at-merge)
 The factory keeps the memory product's **Repo Digest** current and drives the
-**feature lifecycle** (`backlog → building → shipped`) as it works — *without* a fresh
+**feature lifecycle** (`backlog → building → shipped`) as it works, and does so *without* a fresh
 `claude -p` per merge, and *without* a rejected delivery ever polluting the digest:
 
 - **Brownfield epic → `building`.** When a brownfield epic is created through the
@@ -424,8 +431,8 @@ The factory keeps the memory product's **Repo Digest** current and drives the
   description never wipes a recorded summary). Deterministic,
   best-effort, no agent: the epic is created either way. A greenfield, mixed-repo or
   bootstrap plan writes no feature row. (`node bin/epic-feature.mjs --repo <r> --epic <ref> --name <f>`)
-- **Prepare at delivery.** The delivery agent — already running, already holding the
-  diff — runs the **`prepare-digest-delta`** skill to record ONE inert evidence row
+- **Prepare at delivery.** The delivery agent, already running, already holding the
+  diff, runs the **`prepare-digest-delta`** skill to record ONE inert evidence row
   (`GAFFER_DIGEST_DELTA_V1 {…}`): the digest section deltas + the feature note. Nothing
   is applied yet.
 - **Per-repository landing.** A ticket with write access to several repositories lands
@@ -441,12 +448,12 @@ The factory keeps the memory product's **Repo Digest** current and drives the
   landed (`already-landed`) instead of merging them again. **Every write repo** (external
   review #7): the approval is refused (`repo_unavailable`) while any write repo's head
   cannot be resolved, the plan also lists a write repo an older approval left unpinned
-  (`pinned: false` — the landing holds on it, and `lib/tester-binding.mjs` never lands its
+  (`pinned: false`, the landing holds on it, and `lib/tester-binding.mjs` never lands its
   head), and a row whose checkout is missing holds rather than being dropped. A partly
   landed ticket is merge work under the SAME policy as any approval: the merge lane
   (`lib/merge-lane.sh`) lands its remaining repos only while the decision that lets it
   land this approval holds at that moment (the merge gate earned, or a human approval with
-  AUTO_MERGE on) — otherwise it logs `is PARTLY LANDED (… landed; … pending) but the merge
+  AUTO_MERGE on), otherwise it logs `is PARTLY LANDED (… landed; … pending) but the merge
   policy now holds it` and leaves it for a human's Merge now. `bin/poll-once.sh` clears the
   lane's per-run held list, and a tick that only landed reports `TICK_RESULT=merged` (not
   `no_work`; `loop.sh` counts it as a non-empty poll, `worker.sh` as reviewed). The agent
@@ -456,15 +463,15 @@ The factory keeps the memory product's **Repo Digest** current and drives the
   is held for a human; the resolver runs for the primary repo only.
 - **Conflicts (never a force-merge).** When the landing conflicts, `bin/merge-ticket.mjs`
   spawns the resolver agent once, in a throwaway worktree of the delivery branch, then
-  **re-gates** the committed resolution with `bin/dod-regate.sh` — no conflict markers
+  **re-gates** the committed resolution with `bin/dod-regate.sh`, no conflict markers
   introduced, and the repo's DoD gates (tests · typecheck · lint, same runner, toggles,
   install step, sandbox and zero-gates rule as the delivery gate) green on a fresh detached
   checkout of the branch's committed head (never the resolver's worktree: an uncommitted fix
-  or a file it never added is discarded, not gated) — before `wg ticket reopen-for-review` sends it back for re-review with that fresh
+  or a file it never added is discarded, not gated), before `wg ticket reopen-for-review` sends it back for re-review with that fresh
   checklist as evidence. A failing resolution is parked on
   `refs/gaffer/conflict-resolved/<n>`, the branch restored, and the ticket held for a human.
 - **Apply at merge (post-review, deterministic).** On a CLEAN merge, `bin/merge-ticket.mjs`
-  reads that prepared evidence and replays it as plain Dispatch CLI writes — stamping
+  reads that prepared evidence and replays it as plain Dispatch CLI writes, stamping
   each digest section with `source: "merge:#<n>"` and the feature → `shipped`. **No agent
   is spawned in the merge hot path.** If no prepared delta is present it falls back to a
   minimal deterministic freshness stamp (+ feature → `shipped` when linked).
@@ -486,7 +493,7 @@ The factory keeps the memory product's **Repo Digest** current and drives the
   so the next merge re-diffs from there.
 
 The whole path mirrors the ledger discipline: every memory write is **gated, try/caught,
-and fully swallowed** — a memory-write failure NEVER fails or blocks a merge — and every
+and fully swallowed** (a memory-write failure NEVER fails or blocks a merge) and every
 write is **idempotent** (re-running re-stamps the same `source` / re-asserts `shipped`).
 See `lib/feature-digest.mjs` for the pure builders/parser and the full design note.
 
@@ -518,7 +525,7 @@ of the same name wins and the prompt says so. The skill telemetry
 in the output), `opened` (a read the hook **allowed**) and `refused` (a read it blocked);
 an open is never counted as an application.
 
-**Did Claude actually use the skill?** One opt-in live test answers it with the real CLI
+**Did the agent actually use the skill?** One opt-in live test answers it with the real CLI
 through the real tick on a tiny fixture repo: each role's intended skill
 (`prepare-digest-delta` for delivery, `review-ticket` for the reviewer, `black-box-test`
 for the tester) carries one harmless instruction to include `GAFFER-SKILL-<role>-<nonce>`
@@ -530,60 +537,29 @@ unless enabled, and skips when the CLI or its credentials are unusable:
 GAFFER_LIVE_SKILL_TEST=1 GAFFER_LIVE_SKILL_MODEL=<your cheapest model> bash runner/test/live-skill-use.test.sh
 ```
 
-## Security model (deterministic, not trust-based)
-The boundary is `safety-hook.mjs`, a self-contained, zero-dependency Claude Code
-**PreToolUse hook** that runs before *every* tool and **blocks** (exit 2). It is
-load-bearing: the model proposes, the hook decides, and it can't be talked out of
-it. It enforces, deterministically:
+## Security model
 
-- **Write-scoping** — writes are allowed only inside the ticket's write-roots
-  (`GAFFER_WRITE_ROOTS`); reads only inside write- ∪ read-roots. Writes outside =
-  block.
-- **Secret-path protection** — not just direct reads of `.env*`/keys/credentials,
-  but *references* to them: redirects, `source`, globs, variable indirection,
-  pipes/`xargs`, command substitution, and inline-interpreter (`python -c`,
-  `node -e`, heredocs) reads — so secrets never enter the model's context. Git
-  secret-ops (`git diff/show/add` of a secret) are blocked too.
-- **Control-plane denial** — privileged Dispatch/Crew CLI writes (review, approve,
-  mark-merged, repo-access), raw `sqlite3` on the control-plane DBs, and config
-  hijacks (`core.hooksPath`, `sudo`, `crontab`, …) are denied. The agent can read
-  the control plane but cannot drive the gate.
-- **Blanket-deny destructive ops** — force-push, protected-branch push, branch/tag
-  deletion, hard reset, `rm -rf`/`shred`, destructive `find -exec`, and dependency
-  installs (allowed only as a single `--ignore-scripts` install during a scoped
-  bootstrap).
-- **Fail-closed** — when a write's destination can't be resolved statically (a
-  variable, a concatenation), the hook blocks rather than guesses.
-
-It is **defence-in-depth, not a jail** — a fully-dynamic path assembled at runtime
-can still slip past, which is why real containment is the worktree (above) plus the
-optional OS sandbox (below). Every block is logged to
-`$GAFFER_DATA/safety-blocks.jsonl`. Context is assembled and redacted
-programmatically (Dispatch's context packet), so **no human ever pastes a repo or a
-secret into a prompt.**
-
-**Optional: strict execution mode** (`STRICT_MODE=1`, OFF by default) adds a
-best-effort OS-level containment layer *on top of* the worktree + hook, via a
-**provider seam** (`sandbox-exec` and `docker` today; a microVM provider is a design sketch).
-It is defence-in-depth, **not** a security guarantee — see
-[`STRICT_MODE.md`](STRICT_MODE.md) for the provider model, the network caveat,
-and per-repo config. Under the `docker` provider no path inside the worktree can
-choose a mount: a `node_modules` symlink is mounted only when it is the runner's own
-link to the primary checkout's `node_modules`, a `.git` file only when git's worktree
-registration confirms it, and anything else is skipped with a `WARNING`
-(`lib/sandbox-docker.sh`, [`SECURITY.md`](../SECURITY.md)).
+The boundary is `safety-hook.mjs`, a zero-dependency PreToolUse hook that runs before
+every tool call and blocks (exit 2): writes outside the ticket's write roots, reads of
+secret files (by path, on every read vector), the control-plane CLI and raw database
+access, destructive git and installs, and anything whose target it cannot resolve. It
+fails closed and logs every block to `$GAFFER_DATA/safety-blocks.jsonl`. It is defence in
+depth, not a jail, which is why the worktree and the optional OS sandbox
+(`STRICT_MODE=1`, [`docs/sandbox.md`](../docs/sandbox.md)) sit beside it.
+[`SECURITY.md`](../SECURITY.md) has what each control enforces, how it is tested and
+what it does not cover.
 
 ## Run the showcase
 ```bash
 # 1. Build the servers
 pnpm -C .. -r build   # build all three packages from the repo root
 
-# 2. Watch a dry run (no Claude invoked, nothing mutated)
+# 2. Watch a dry run (no agent invoked, nothing mutated)
 ./gaffer run --dry-run
 #   → prints each tick: what it WOULD claim, the recommended skills, the exact
-#     headless-claude command, or the idle-scan it WOULD run.
+#     headless agent command, or the idle-scan it WOULD run.
 
-# 3. Go live (only after reviewing) — claims real tickets and runs Claude.
+# 3. Go live (only after reviewing): claims real tickets and runs the agent.
 #    `gaffer run` is LIVE by default (only --dry-run / DRY_RUN=1 keeps it a preview),
 #    and refuses to start (exit 3) until a dollar cap is set — GAFFER_DAILY_BUDGET_USD or
 #    GAFFER_BUDGET_USD (lib/budget.sh gaffer_spend_cap_ok; GAFFER_ALLOW_UNCAPPED=1 opts out).
@@ -603,42 +579,3 @@ knob-by-knob reference is generated into [`docs/CONFIG.md`](../docs/CONFIG.md)
 `<repo-root>/.gaffer/factory.log`; the full audit trail is Dispatch's event log
 (`./gaffer wg ticket show <n>`) and its web UI.
 
-## Files
-- `factory.config.sh` — paths, identity, **DRY_RUN**, stop conditions, CLI helpers
-- `tick.sh` / `loop.sh` — one tick / the driver loop
-- `safety-hook.mjs` — the PreToolUse safety boundary
-- `lib/sandbox.sh` — strict-mode provider seam (`sandbox_wrap_cmd`); sourced by `factory.config.sh`
-- `lib/agent-env.sh` — the ONE agent-directory installer every spawn site uses (`gaffer_install_agent_dir`: skills mount, rendered + VERIFIED `.claude/settings.json`, workspace trust, brief — fail closed) and the worktree `node_modules` linker; sourced by `factory.config.sh`
-- `lib/ac-checks.sh` — machine-checkable acceptance criteria: runs each AC's `check_command` in the delivery worktree after the DoD gates and records the verdict through `dispatch ac check-result`
-- `lib/budget.sh` — per-day cost guard (`MAX_TICKS_PER_DAY`); halts the loop across runs; sourced by `factory.config.sh`
-- `STRICT_MODE.md` — optional OS-level containment: provider model, caveats, config
-- `claude/settings.json` — wires the hook into Claude Code
-- `claude/CLAUDE.md` — the delivery-agent brief
-- `.mcp.json` — Dispatch + Memory MCP wiring
-- `skills/` — the curated skill library (each `SKILL.md` tagged by `stack` + `area`)
-- `bin/select-skills.mjs` — stack/area skill selector (used by `tick.sh`; zero-dep)
-- `lib/feature-digest.mjs` — feature-lifecycle + Repo-Digest wiring: pure builders/parser for the prepare-at-delivery / apply-at-merge mechanism (zero-dep)
-- `bin/epic-feature.mjs` — brownfield epic → feature(`building`) hook, spawned by the dispatch API's `POST /epics` (`DISPATCH_EPIC_FEATURE_CMD`) (`node bin/epic-feature.mjs --repo <r> --epic <ref> --name <f>`)
-- `skills/prepare-digest-delta/SKILL.md` — the delivery-side **prepare** skill (records the inert `GAFFER_DIGEST_DELTA_V1` evidence the merge applies)
-- `test/feature-digest.test.mjs` — feature-lifecycle + digest wiring tests, incl. apply-on-merge + brownfield-building, no live claude (`node test/feature-digest.test.mjs`)
-- `test/select-skills.test.mjs` — selector tests (`node test/select-skills.test.mjs`)
-- `test/strict-mode.test.sh` — strict-mode provider/profile validation (`bash test/strict-mode.test.sh`)
-- `test/budget-guard.test.sh` — per-day cost-guard validation (`bash test/budget-guard.test.sh`)
-- `test/intake-gate.test.sh` — clarify intake-gate wiring (`bash test/intake-gate.test.sh`)
-- `lib/hygiene.sh` — delivery-hygiene assertions: hard-fail guard against the leaks an unattended run produced (copied src tree, leaked `.crew/events.jsonl`, self-referential/broken symlinks, `node_modules` added/deleted)
-- `lib/minimalism.sh` — minimalism post-condition (a missing smallest-change note is flagged `needs_human_review`, or sent back to rework under `MINIMALISM_REQUIRE_NOTE=1`; an oversized diff is flagged `needs_human_review: oversized_diff` whatever the note verdict, never failed)
-- `lib/dod.sh` — **enforced Definition of Done (I3)**: the runner (never the agent) runs the enabled DoD gates — **tests / typecheck / lint** — deterministically in each write repo's delivery worktree, each under `gaffer_timeout`, BEFORE a ticket may rest in the human review lane. ALL pass/skip → proceed; ANY fail → **auto-reject back to refining** (the same path R-6/HYGIENE hardened) with the failing gate name + an output tail recorded as `test_output` evidence (the Review view renders the ✓/✗ checklist). A gate with **no configured or detected command is SKIPPED, not failed** (and logged). Toggled only by env: `GAFFER_DOD=0` disables enforcement, `GAFFER_DOD_TESTS` / `GAFFER_DOD_TYPECHECK` / `GAFFER_DOD_LINT` (default 1) toggle each gate (`docs/CONFIG.md`). crew.yaml's `definition_of_done` block (factory-wide or per repo) is **not read** by the runner, and `crew doctor` warns when it is changed. Commands come from each repo's dispatch `test_command`/`lint_command` ; typecheck (no dispatch field) runs `GAFFER_DOD_TYPECHECK_CMD`, else the repo's package.json typecheck script (`typecheck` / `type-check` / `check-types` / `types:check`, or a bare `tsc --noEmit` script), auto-detected from the base branch first by `gaffer_dod_typecheck_cmd`. A repo's `coverage_command` is not a DoD gate (it feeds the idle coverage loop). **Gate integrity:** each row also carries the base COMMIT the delivery was cut from (tick.sh captures the commit at the moment `worktree add -B` cuts the branch — `_BRANCH_CUT_SHAS`, also on a retry that re-cuts — resolves it with `gaffer_delivery_base_sha`, and records it on the repo delivery with `wg ticket repo-delivery record --base-sha`, adding `--base-recut` only for a fresh cut; a kept or resumed branch and an in-tick retry that builds on the previous attempt keep the commit already known, never the branch tip; dispatch refuses to replace a stored base without `--base-recut`; a branch name, the older contract, is resolved by merge-base) and the human's `allow_test_changes`; with them, `gaffer_dod_resolve_cmd` reads a package-script gate command's body from the **base commit** (a delivery that rewrote `scripts.test`, added or changed a `pre`/`post` hook, or changed a script reached through `test: npm run unit` runs the base expansion: source `base-pinned`), each GATE row gains a 7th `source` column, and `gaffer_dod_integrity_row` appends one `integrity` row per repo — PASS, or FLAG for deleted/renamed test files, added skip/focus markers (including node:test `{ skip: true }` options, `t.skip()` / `this.skip()` / `ctx.skip()`, `it.concurrent.skip`, and a marker after a comment on the same line), any change/removal/addition among the scripts the gate scripts reach (hooks, `npm run X`, `run-s` words), touched test config (an added one too, once the base has tests; package.json `jest`/`mocha`/… keys), a tracked file hidden from git (skip-worktree / assume-unchanged), a test file that lost test cases or every assertion (counted per language family, so moved tests do not count), or a package-manager rc file (`.npmrc`, `.yarnrc`, `.yarnrc.yml`, `bunfig.toml`) added, changed, deleted or renamed — read from git and from the worktree on disk, so a git-ignored `.npmrc` counts (the typed seam is `packages/crew` `runtime/dod/gateIntegrityCli.js`, running dispatch's `testIntegrity` classifier, the same one behind the server's `test-modified` risk flag). A FLAG never fails the run and the integrity row never counts as an executed gate; `allow=1` turns it into PASS with a note; no base or no crew dist FLAGs (never a silent pass). `GAFFER_TEST_PATH_RE` adds test paths. **Ships:** tests · typecheck · lint · integrity (flag only). **Deferred follow-ups (NOT yet gates):** coverage-did-not-decrease (needs a stored baseline), SAST/SCA (needs I2), CI-green (H3), docs-updated.
-- `lib/tester.sh` — the independent black-box tester pass (in_testing → `bin/tester-run.mjs --live`). A ticket the tester cannot decide (no verdict token, the tester changed implementation files, a PASS that failed its clean replay) is HELD in_testing: the tester-run's own reason is logged and attached as a `tester held: <reason>` manual_note, and the hold is remembered in `$GAFFER_DATA/.tester-held` for that stay in_testing so later runs do not pay to re-test it (`test/tester-held.test.sh`)
-- `lib/backpressure.sh` — per-repo backpressure (unmerged `gaffer/*` branches + in_review tickets + active claims vs cap)
-- `run-summary.sh` — end-of-run report (landed / failed-safe / parked / re-queued / oversized / per-repo pressure / cleanup state); printed by `loop.sh`
-- `test/hygiene.test.sh` — delivery-hygiene validation (`bash test/hygiene.test.sh`)
-- `test/minimalism.test.sh` — minimalism post-condition validation (`bash test/minimalism.test.sh`)
-- `test/backpressure.test.sh` — per-repo backpressure validation (`bash test/backpressure.test.sh`)
-- `test/run-summary.test.sh` — run-summary report validation (`bash test/run-summary.test.sh`)
-- `test/stabilisation-integration.test.sh` — end-to-end proof the hygiene + backpressure gates fire against real `tick.sh` (`bash test/stabilisation-integration.test.sh`)
-- `test/dod-gate.test.sh` — Definition-of-Done validation: a failing `test_command` fails the gate; all-pass proceeds; an un-configured gate is skipped not failed; a disabled gate is not run; an unrunnable command is a fail not a crash; `GAFFER_DOD=0` disables enforcement; and (against the **real dispatch CLI**) a DoD failure review-rejects an in_review ticket to refining with the checklist recorded as evidence (`bash test/dod-gate.test.sh`)
-- `test/dod-tally.test.sh` — the tests gate keeps the test runner's summary lines (vitest, jest, pytest, cargo, `go test -v`, `node --test`) in a `---DOD-TALLY---` block on the DoD evidence, for the Review view's "the runner saw N", and a test that prints a tab-separated `GATE` line cannot forge a gate row (`bash test/dod-tally.test.sh`)
-- `test/lib/tmpdir.sh` / `test/lib/tmpdir.mjs` — every runner test's temp dir: a failed `mktemp` stops the test (exit 70, "refusing to run"), and `gaffer_test_rm_work` is the only removal, refusing `.`, `/`, `$HOME`, the start dir, the repo root, their ancestors and anything outside a temp root, so a passing test can never delete the checkout it ran from. `test/no-unchecked-mktemp.test.sh` lints the whole test tree for an unchecked `mktemp`, a bare `rm -rf` of a temp root or a direct `mkdtempSync(`; `test/mktemp-failure-safe.test.sh` runs representative tests with a failing `mktemp` and a missing `TMPDIR` from a scratch checkout and checks it survives
-- `test/self-op-ban.test.sh` — self-operation ban unit tests for `gaffer_is_self_target` + tick.sh wiring (`bash test/self-op-ban.test.sh`)
-- `test/self-op-ban-integration.test.sh` — end-to-end proof the self-op ban refuses a delivery whose target is a Gaffer component, honours `GAFFER_ALLOW_SELF_DELIVERY=1`, and leaves a non-Gaffer target unaffected (`bash test/self-op-ban-integration.test.sh`)
-- `launchd/com.gaffer.factory.plist.template` — scheduled-run template with `__GAFFER_REPO__` / `__GAFFER_DATA__` placeholders (disabled by default; render with `sed` before loading)

@@ -1,6 +1,6 @@
 # Memory
 
-The **durable, human-gated memory** of [Gaffer](../../README.md) — the "memory"
+The **durable, human-gated memory** of [Gaffer](../../README.md), the "memory"
 component of the Dispatch / Crew / Memory suite, and a standalone product in its
 own right (npm: `memory-mcp`). It's a local-first SQLite store fronted by an MCP
 server and a CLI: agents consult it *before* they implement and propose what they
@@ -8,24 +8,24 @@ learn *back* into it, but a human ratifies anything durable.
 
 It holds two kinds of knowledge:
 
-1. **Lore** — the gated knowledge base: conventions, decisions, gotchas, and
+1. **Lore**: the gated knowledge base: conventions, decisions, gotchas, and
    cross-repo boundaries. Agent proposals land as `draft` and stay invisible to
-   search until a human approves them — an agent **cannot** promote its own
+   search until a human approves them; an agent **cannot** promote its own
    memory. In factory context (`GAFFER_FACTORY=1`) a draft is invisible to
    agents in **every** read path: `search_lore` (even with `includeDrafts`),
    `suggest_lore`'s duplicate feedback, `get_lore` by id (answered exactly like a
    missing id) and `report_conflict`. This is the control that stops prompt-injected "facts" from poisoning
    future tickets.
-2. **Repo Understanding** — the *Repo Digest* (a living overview / structure /
+2. **Repo Understanding**: the *Repo Digest* (a living overview / structure /
    conventions / stack TLDR, one per repo) and the *feature ledger*
    (`backlog → building → shipped`). These are factual post-merge reflections, so
    they apply directly (no draft gate) but keep a full audit trail. The digest is
-   **a map, not the territory** — every digest carries the reminder to verify it
+   **a map, not the territory**: every digest carries the reminder to verify it
    against the actual code for high-stakes work.
 
 ## What it provides
 
-**MCP server** (`memory-mcp`, stdio) — the agent surface:
+**MCP server** (`memory-mcp`, stdio), the agent surface:
 
 - Lore: `search_lore`, `get_lore`, `suggest_lore` (lands a draft), `report_conflict`,
   `record_absence` (a self-expiring "we checked, no policy here" marker).
@@ -37,7 +37,7 @@ It holds two kinds of knowledge:
   planning failed; it releases only a `building` claim, is repo-scope-guarded in
   factory context, and is audited).
 
-**CLI** (`memory`) — the human surface. The headline command is `memory review`:
+**CLI** (`memory`), the human surface. The headline command is `memory review`:
 an interactive triage queue (approve / reject / edit / skip) over pending drafts,
 with `memory approve <id>` / `memory reject <id>` for direct action. It also covers
 `init`, `add` / `suggest` (incl. `--from-commit`), `search`, `show`, `list`,
@@ -67,8 +67,8 @@ MEMORY_AUTO_APPROVE=1
 
 What the flag covers depends on how memory-mcp is running:
 
-- **Standalone memory-mcp** (wired into your own Claude Code / MCP client): an
-  agent's `suggest_lore` lands `active` immediately — the operator opting into
+- **Standalone memory-mcp** (wired into your own MCP client): an
+  agent's `suggest_lore` lands `active` immediately, the operator opting into
   trusting agent writes (their machine, their call).
 - **In the Gaffer factory** the flag covers only the memory the runner itself
   files: the requirement the ticket-close distiller derives from each delivered
@@ -79,11 +79,10 @@ What the flag covers depends on how memory-mcp is running:
   setting.
 
 Auto-approve re-opens cross-ticket memory poisoning (fine for trusted input, not
-for untrusted issues); turn it on deliberately and see the package
-[`docs/SECURITY.md`](docs/SECURITY.md) and the root
+for untrusted issues); turn it on deliberately and see the root
 [`SECURITY.md`](../../SECURITY.md) for the trade-off.
 
-## How it fits — and standalone use
+## How it fits, and standalone use
 
 **In the factory:** the built `memory-mcp` server is wired into the agent via the
 runner's `.mcp.json`. Agents `search_lore` before writing code and `suggest_lore`
@@ -91,8 +90,9 @@ after; onboarding and merge steps keep each repo's digest + feature ledger curre
 The `memory` CLI is what a human uses to review and approve drafts.
 
 **Standalone:** nothing here needs the rest of Gaffer. Run `memory init` in any
-directory and you have a trust-gated memory MCP you can wire into any Claude Code
-project — `memory setup` bootstraps the MCP server, a `CLAUDE.md` retrieval rule,
-and the onboarding skill in one command. See [`CONTRIBUTING.md`](CONTRIBUTING.md)
-and [`docs/`](docs/) (`PRINCIPLES.md`, `DATA-FLOW.md`, `SECURITY.md`, `adr/`) for
-the design and trust model.
+directory and you have a trust-gated memory MCP you can wire into any MCP client;
+`memory setup` bootstraps the MCP server, a `CLAUDE.md` retrieval rule,
+and the onboarding skill in one command. See the root
+[`CONTRIBUTING.md`](../../CONTRIBUTING.md#memorys-trust-model-is-the-product) and
+[`docs/`](docs/) (`PRINCIPLES.md`, `DATA-FLOW.md`, `adr/`) for the design and trust
+model.

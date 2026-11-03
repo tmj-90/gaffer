@@ -2105,7 +2105,7 @@ export GAFFER_IDLE_HOST_EXEC
 
 # --- Strict execution mode (OPTIONAL OS-level containment) -------------------
 # Best-effort OS-level containment layered ON TOP OF the worktree isolation +
-# the deterministic safety hook. NOT a security guarantee — see STRICT_MODE.md.
+# the deterministic safety hook. NOT a security guarantee — see docs/sandbox.md.
 # Default OFF: behaviour is byte-for-byte as before unless explicitly enabled.
 : "${STRICT_MODE:=0}"          # 1 = wrap the live `claude -p` in the OS sandbox provider
 # Which provider supplies the OS-level containment. This is a PROVIDER SEAM, not

@@ -113,8 +113,8 @@ import { extractLastJsonBlock as extractJson, quarantine } from "../lib/agent-io
 // The agent turn spawns from a throwaway agent home (lib/agent-home.mjs), so this
 // helper no longer needs its own runner-dir path.
 
-// The three clause kinds the spec model is allowed to emit (locked-decisions §26 in
-// docs/spec-driven-development.md — mirrors PRODUCT_INTENT_KINDS).
+// The three clause kinds the spec model is allowed to emit (mirrors
+// PRODUCT_INTENT_KINDS).
 export const SPEC_CLAUSE_KINDS = Object.freeze(["requirement", "non-goal", "decision"]);
 
 const DEFAULTS = {

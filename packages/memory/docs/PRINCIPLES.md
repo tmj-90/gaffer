@@ -1,9 +1,9 @@
 # Principles
 
 The architectural commitments behind memory. Read this before
-proposing a feature that changes the data model or the trust loop —
-several "obvious" upgrades have been considered and rejected, and the
-reasoning is worth knowing before re-litigating.
+proposing a feature that changes the data model or the trust loop:
+several "obvious" upgrades have been considered and left out, and the
+reasoning is worth knowing first.
 
 ## 1. SQLite is the canonical store. Markdown is a sync artifact.
 
@@ -49,7 +49,7 @@ ask whether the agent could derive that from the code itself.
 **Lore covers only what the code can't tell you:**
 
 - **Why** a decision was made ("Argon2id over scrypt because of
-  INC-411") — the code shows the choice, not the reasoning
+  INC-411"), the code shows the choice, not the reasoning
 - **What NOT to do** that the code may still contain (deprecated
   patterns the team is migrating away from but haven't deleted)
 - **Cross-team policy** ("payments-svc team won't accept retries
@@ -70,7 +70,7 @@ probably premature optimisation, not a real upgrade.
 rejected). The pitch was "agent in backend sees the matching client
 record automatically via a `linksTo` field." The reframe: the agent
 can find the matching client code by walking routes, then search
-lore by token — no persisted links needed. A persisted link layer
+lore by token, no persisted links needed. A persisted link layer
 would be a *cache* of what the agent can re-derive, and caches need
 maintenance (stale on rename, missing on new routes, dead on
 deletion). Search-by-FTS plus a `repos: [...]` array already covers
@@ -79,7 +79,7 @@ of the problem.
 
 ## 3. Agents suggest; humans approve
 
-Agents can call `suggest_lore` and `report_conflict` — both land as
+Agents can call `suggest_lore` and `report_conflict`, both land as
 drafts hidden from default search. Promotion to `active` is CLI-only;
 there is no MCP approval path. This is the core poisoning-prevention
 guard.
@@ -98,7 +98,7 @@ revision is human-only via CLI.
 ## 4. Local-only by construction
 
 No telemetry, no outbound HTTP, no analytics SDKs. Read tracking
-(`stats`), audit log, hook session markers — all live under
+(`stats`), audit log, hook session markers, all live under
 `~/.memory/`. The "telemetry" naming on
 `MEMORY_NO_TELEMETRY=1` is historical; there is no outbound
 telemetry to disable. See `docs/DATA-FLOW.md` for the diagram.
@@ -106,93 +106,30 @@ telemetry to disable. See `docs/DATA-FLOW.md` for the diagram.
 If you find yourself reaching for a network call, stop. The
 trust posture is "your machine, your data, your audit log."
 
-## 5. Feature surface is closed for v0.1
+## 5. Deliberately left out
 
-Things explicitly NOT in v0.1, with rationale:
+- **Server-side dedup of `suggest_lore` / `report_conflict`.** The reviewer
+  triages duplicates in the review queue; auto-dedup would hide what the human
+  should see.
+- **Bidirectional `conflictsWith` back-references.** They would need the agent
+  to mutate the original record, which breaks principle 3.
+- **Auto-promotion of onboarding drafts.** The point of the queue is the human
+  review beat.
+- **Mechanical cold-start** (a fixed-question interview, chunking docs into
+  records). It produces generic records and floods the queue; the
+  `/memory-onboard` skill (the agent reads the repo and proposes grounded
+  drafts) is the one cold-start path.
+- **Model-backed semantic search.** Retrieval fuses FTS5 bm25 with a built-in,
+  credential-free hashed n-gram vector per record (`core/embedding.ts`), which
+  recovers typos, joined or split compounds and subwords without a model, a
+  network call or a second store. A model-backed embedder fits behind the same
+  `Embedder` interface if the labelled eval set
+  (`test/retrieval-eval.test.ts`) ever shows misses the n-gram space cannot
+  close.
+- **A web UI or server mode.** The MCP server is stdio-only, with no HTTP
+  listener.
 
-- **Typed records / linksTo cross-repo edges.** ~~See principle 2 — the
-  agent derives these. Revisit only when dogfooding produces concrete
-  cross-repo pain, not as speculative architecture.~~ **Shipped
-  (post-0.1.1) as the boundary map.** The concrete pain — "change a
-  contract in app A, what does it break in B and C?" — was judged worth
-  building to the end goal rather than waiting on dogfood. Boundaries
-  are a *typed* record (`provides` / `consumes` edges over normalised
-  contract names), deliberately coarse-grained (service/contract level,
-  not an exhaustive call graph) to avoid the review-queue blow-up that
-  fine-grained auto-derivation would cause. They keep the trust spine:
-  agents `declare_boundary` → draft; a human ratifies. Cross-repo
-  aggregation rides the existing `sync` artifact
-  (`.memory/boundaries.jsonl`), not a server — principle 4 holds.
-  See "Cross-repo impact map" in the README.
-- **Server-side dedup of `suggest_lore` / `report_conflict`.**
-  Reviewer triages duplicates in the existing review queue. Auto-dedup
-  hides surface area we want the human to see.
-- **Bidirectional `conflictsWith` back-references.** Would require
-  the agent to mutate the original (canonical) record. Violates
-  principle 3.
-- **Auto-promotion of onboarding drafts.** The whole point of the queue
-  is the human review beat.
-- **Mechanical / CLI-driven cold-start (`induct`, `ingest-md`).**
-  Removed post-0.2. A fixed-question interview produces generic records;
-  chunking docs produces ~80% noise that floods the review queue. Good
-  lore needs judgement about what's durable — the `/memory-onboard`
-  skill (agent reads the repo, proposes grounded drafts) is the single
-  cold-start path. One good door beats four mediocre ones.
-- **Model-backed semantic search.** Retrieval is hybrid: FTS5 bm25 fused
-  with a built-in, credential-free hashed n-gram vector per record
-  (`core/embedding.ts`), which recovers the measurable lexical misses
-  (typos beside a real term, joined/split compounds, subwords) without a
-  model, a network call or a second store. A model-backed embedder is a
-  drop-in behind the same `Embedder` interface, keyed by `model` so the
-  corpus re-embeds lazily; it is worth adding only when the labelled
-  eval set (`test/retrieval-eval.test.ts`) shows paraphrase misses the
-  n-gram space cannot close.
-- **Web UI / server mode.** Single-user local CLI. The MCP server
-  is stdio-only; no HTTP listener. This stays.
-
-## 6. The next material upgrades (priority order)
-
-Two near-term wins that DO move the needle, both small:
-
-1. **Corpus growth — lower the friction of creating lore.** Today's
-   dogfood reality is ~9 records after weeks of work; relationship
-   layers don't matter when N is small. Options that scale lore
-   creation without breaking the trust model:
-   - Stop-hook variant that nudges "you did X, anything worth
-     capturing?" at session end (the hook infrastructure exists).
-   - Session-grounded `/memory-onboard` follow-ups: capture what the
-     agent actually learned working in the repo this session, not just a
-     cold first-touch survey.
-   - Commit-message capture (`memory suggest --from-commit <sha>`)
-     for the "I wrote this in the commit message, why not capture it"
-     case. *(Shipped.)*
-
-2. **Cross-repo discovery in the existing shape.** Two sub-items:
-   - `memory sync pull <parent>` — recursive walk of every
-     `.memory/` directory under a parent, run sync import on each.
-     One command bootstraps a fresh machine across all the workspace
-     trees the user works in.
-   - Retrieval-rule update to teach agents about repo-context: when
-     a search hit's `repos` doesn't include the current repo, treat
-     as cross-repo guidance (not authority) and reason about
-     applicability.
-
-Both of these get implemented alongside this document. They earn
-their keep against principle 2 (they help the agent USE lore, they
-don't replace what the agent can derive).
-
-## 7. When to revise this document
-
-This file should change when:
-
-- A principle is *demonstrated* wrong by real usage (not by argument).
-- A deferred feature accumulates a real pain log that justifies it.
-- A new architectural commitment is made and shouldn't be relitigated.
-
-This file should NOT change when:
-
-- A clever-sounding feature is proposed without empirical evidence.
-- An external reviewer suggests a redesign without seeing the dogfood
-  failure modes.
-- Someone wants to add a "missing" feature that competes with what
-  the agent natively does well.
+Cross-repo boundaries are the one typed record: `provides` / `consumes` edges
+over contract names (`declare_boundary`, `find_dependents`, `memory impact`),
+deliberately coarse, landing as drafts like everything else, and shared through
+the `sync` artifact rather than a server.

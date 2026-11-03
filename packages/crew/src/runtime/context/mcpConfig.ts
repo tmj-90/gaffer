@@ -2,7 +2,7 @@ import { CrewError } from "../../util/errors.js";
 
 // =====================================================================
 // MCP runtime-config render — TS port of the tick.sh `.mcp.json` sed
-// substitution (P1b context assembly, docs/tick-sh-runtime-migration.md).
+// substitution (context assembly; runner/CLAUDE.md has the live-path rule).
 // ---------------------------------------------------------------------
 // tick.sh renders a per-tick RUNTIME copy of runner/.mcp.json by sed-
 // substituting eight ${NAME} placeholders (tick.sh main render + bootstrap

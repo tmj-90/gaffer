@@ -20,7 +20,7 @@ import { assembleDeliveryContext } from "../src/runtime/context/assembleContext.
 import { CrewError } from "../src/util/errors.js";
 
 // =====================================================================
-// P1b context-assembly parity suite (docs/tick-sh-runtime-migration.md).
+// Context-assembly parity suite (runner/CLAUDE.md has the live-path rule).
 // The goldens under fixtures/tick-context/ are captured from the REAL bash
 // path by runner/test/capture-context-golden.sh (regenerate, never
 // hand-edit); byte comparisons are strict `===` on utf8 reads — no trim.

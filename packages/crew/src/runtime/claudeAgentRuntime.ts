@@ -3,7 +3,7 @@ import type { ContextPacket } from "../context/packet.js";
 import type { AgentEvidence, AgentRunResult, AgentRuntime } from "./agentRuntime.js";
 
 // =====================================================================
-// ClaudeAgentRuntime — P0 spike + seam (docs/tick-sh-runtime-migration.md).
+// ClaudeAgentRuntime — spike + seam (runner/CLAUDE.md: the live path).
 // ---------------------------------------------------------------------
 // The live delivery runtime is `tick.sh → claude -p` (bash). This is the first
 // slice of moving that into a typed runtime behind crew's existing AgentRuntime
@@ -197,8 +197,7 @@ export function mapEnvelopeToRunResult(env: ClaudeEnvelope, packet: ContextPacke
  * injectable in the impl loop exactly like `MockAgentRuntime`.
  *
  * It deliberately does NOT spawn `claude` and does NOT read `tick.sh`. The live
- * spawn needs the seam to become async and belongs to a later slice
- * (docs/tick-sh-runtime-migration.md P1/P2).
+ * spawn needs the seam to become async and belongs to a later slice.
  */
 export class ClaudeAgentRuntime implements AgentRuntime {
   private readonly envelope: ClaudeEnvelope;

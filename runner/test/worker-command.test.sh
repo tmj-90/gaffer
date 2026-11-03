@@ -203,7 +203,7 @@ run_cmd "${BASE[@]}" SANDBOX_PROVIDER=none GAFFER_STRICT_REQUIRE=0
 case "$ERR" in *"WARNING: GAFFER_WORKER_PROVIDER=command"*"no OS sandbox"*) ok "…logged loudly at the spawn" ;; *) fail "the opt-out spawn was not logged loudly (got: $ERR)" ;; esac
 
 # sandbox-exec is a write-only boundary whose profile still grants writes under
-# $GAFFER_DATA (SECURITY.md item 32): settings.json, the databases, the usage ledger.
+# $GAFFER_DATA (SECURITY.md, command workers): settings.json, the databases, the usage ledger.
 # claude-code's in-process hook refuses those writes; a command worker has none, so
 # sandbox-exec does not count as containment for it (a fake one on PATH here, so the
 # refusal is the policy, not a missing binary).

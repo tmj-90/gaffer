@@ -1,9 +1,9 @@
-# runner/ — maintainer guide
+# runner/: maintainer guide
 
 This directory is the **LIVE production agent runtime**. `tick.sh` drives one
 delivery/review/clarify tick by shelling out to `claude -p`; `lib/*` assembles
 the context the agent receives and runs the delivery gates. The safety layer is
-`safety-hook.mjs` — never weaken it.
+`safety-hook.mjs`: never weaken it.
 
 ## RULE: production delivery features must land on the live path (not only in crew's mock loop)
 
@@ -19,18 +19,18 @@ runner shells out to:
 
 Therefore:
 
-> **Any new production delivery feature — orchestration, gates, the ticket
-> close path, or which inputs the agent receives — MUST land in
+> **Any new production delivery feature (orchestration, gates, the ticket
+> close path, or which inputs the agent receives) MUST land in
 > `runner/tick.sh` / `runner/lib`.** Text the agent reads (prompt, primer
 > blocks, MCP config) is edited in `packages/crew/src/runtime/context/*`, which
 > IS live. The crew implementation loop is a future seam; a feature added *only*
 > there silently misses the live agent.
 
-This is not hypothetical: Track 1c's `productContext` injection and the
+This is not hypothetical: the product-context injection (`productContext`) and the
 ticket→lore distiller were originally wired **only** into the crew mock loop, so
 they never ran for the live agent until they were backported here. If you add a
 delivery-facing capability to the crew mock loop, either wire it into the live
-path in the same change or leave a `TODO` referencing this rule — until a real
+path in the same change or leave a `TODO` referencing this rule: until a real
 `ClaudeAgentRuntime` replaces `MockAgentRuntime`, mock-loop changes alone do not
 reach production. The reverse mistake is just as easy: a copy of prompt text in
 `tick.sh` is never read (`runner/test/prompt-quarantine.test.sh` and

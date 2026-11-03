@@ -1,27 +1,26 @@
 # Dispatch
 
-The **control plane** of [Gaffer](../../README.md) — the "work" component of the
+The **control plane** of [Gaffer](../../README.md): the "work" component of the
 Dispatch / Crew / Memory suite. It owns the backlog and the human gate: tickets,
 epics, acceptance criteria, the **Factory Map** of scopes, per-repo access
 boundaries, decisions/blockers, lease-based claims, AC evidence, and an
-append-only event log — with every status change routed through a validated
+append-only event log, with every status change routed through a validated
 state machine and policy packs.
 
 Two structural guarantees make it the gate the rest of the factory leans on:
 
 - **Lease-based claims.** A ticket is claimed atomically (one active claim each,
   enforced by a partial unique index). The claim is an opaque lease token, stored
-  only as a sha256 hash, kept alive by heartbeat and reaped on expiry — so a
+  only as a sha256 hash, kept alive by heartbeat and reaped on expiry, so a
   crashed agent never holds work hostage.
 - **The review/merge gate.** `in_review → ready_for_merge` is a human approval by
   default (an agent **cannot** approve its own work), and `ready_for_merge → done`
-  is a system-only merge callback — so nothing ships on the agent's word alone.
+  is a system-only merge callback, so nothing ships on the agent's word alone.
 
-Local-first: SQLite, stdio MCP, loopback HTTP — no cloud, no network listener by
-default. See `docs/` for the original design specs (product, domain model, MCP
-tool plan, state machine + policy packs, schema); where they differ from the code,
-the code wins — the live MCP tool list is the generated table under
-[MCP server](#mcp-server), and the REST contract is `docs/openapi.json`.
+Local-first: SQLite, stdio MCP, loopback HTTP, no cloud, no network listener by
+default. The live MCP tool list is the generated table under
+[MCP server](#mcp-server), and the REST contract is
+[`docs/openapi.json`](../../docs/openapi.json).
 
 ## Build & test
 
@@ -205,7 +204,42 @@ from the code (`node scripts/mcp-tools-doc.mjs`; a test fails when it drifts):
 
 <!-- mcp-tools:end -->
 
-Each tool's description **coaches the operating agent** — when to call, what to
+### MCP error model
+
+A failed tool call returns `isError: true` and a structured body (the same
+payload in `structuredContent` and as JSON text in `content`):
+
+```json
+{
+  "error": {
+    "code": "CLAIM_INVALID",
+    "message": "Claim token does not match an active claim on this ticket.",
+    "details": {}
+  }
+}
+```
+
+Invalid arguments are `VALIDATION_ERROR` with the zod `issues`. The codes are the
+closed `DISPATCH_ERROR_CODES` list in `src/util/errors.ts`; the ones an agent
+meets most often:
+
+```text
+NOT_FOUND
+VALIDATION_ERROR
+POLICY_DENIED
+ILLEGAL_TRANSITION
+STATE_CONFLICT
+CONCURRENCY_CONFLICT
+CLAIM_INVALID
+CLAIM_REQUIRED
+TICKET_NOT_CLAIMABLE
+DEPENDENCY_BLOCKED
+AGENT_NOT_ELIGIBLE
+ACTOR_NOT_PERMITTED
+FACTORY_RUNNER_OWNED
+```
+
+Each tool's description **coaches the operating agent**: when to call, what to
 provide, the cost asymmetry, and the failure modes to avoid (claim one ticket
 and finish it; never fabricate evidence; never self-approve; block rather than
 guess). Every successful result returns both human-readable `content` text and
@@ -215,33 +249,36 @@ Every MCP tool call is recorded to an append-only **audit log** (`audit.jsonl`,
 beside the DB, or `DISPATCH_AUDIT`; mode `0600`). The audit log is
 content-redacted by construction: it records the tool, actor, sanitised request
 (bodies → character counts, claim tokens → a presence boolean), and the result
-ids/count — **never** descriptions, evidence bodies, or claim tokens. A
+ids/count, **never** descriptions, evidence bodies, or claim tokens. A
 deliberate policy-gate refusal (a `POLICY_DENIED` transition) is recorded in a
 distinct `blocked` field rather than `error`, so an operator can tell a fired
 gate apart from an unexpected failure. Disable with `DISPATCH_AUDIT_OFF=1`. See
-[SECURITY.md](./SECURITY.md) for the full trust model.
+the root [SECURITY.md](../../SECURITY.md) for the full trust model.
 
-## Web dashboard — the control room
+## Web dashboard
 
 `dispatch-api` (`pnpm build` then `node dist/api/bin.js`, or `runner/gaffer
-dashboard`) serves the local HTTP control surface — a JSON REST API plus a
-graphite **control-room** single-page app — over the same facade the CLI and MCP
-server use. The SPA is a framework-free ES-module app (no build step) under a
-self-only CSP. It binds `127.0.0.1` by default; there is **no RBAC yet** (every
-authenticated caller acts as one human actor), so do not expose it beyond
-localhost. Auth is a bearer token, and it gates **every data-returning
-request** — the posture does not vary by token provenance, HTTP method, or bind:
+dashboard`) serves the local HTTP control surface: a JSON REST API plus the Match Day
+single-page app, over the same facade the CLI and MCP server use. The SPA is a
+framework-free ES-module app (no build step) under a self-only CSP. It binds
+`127.0.0.1` by default. The shared token acts as one operator; named principals
+(`dispatch principal create <name> [--read] [--admin] [--repo <name>] [--ticket <n>]`)
+give each person or bot its own identity, capability and scope (see the root
+[SECURITY.md](../../SECURITY.md#dashboard-api-and-identity)). There is no TLS, so do not
+expose it beyond localhost without a TLS-terminating proxy. Auth is a bearer token,
+and it gates **every data-returning request**, whatever the token's provenance, the
+HTTP method or the bind:
 
 - `dispatch-api` **auto-provisions** a token at startup when `DISPATCH_API_TOKEN`
-  is unset — a fresh 256-bit token persisted 0600 to `$GAFFER_DATA/dashboard-token`
+  is unset, a fresh 256-bit token persisted 0600 to `$GAFFER_DATA/dashboard-token`
   (an operator-set `DISPATCH_API_TOKEN` wins if present). A token is therefore
   configured in normal operation.
 - **Every request that returns control-plane data must present
-  `Authorization: Bearer <token>`** — including read-only GET/HEAD on a loopback
+  `Authorization: Bearer <token>`**, including read-only GET/HEAD on a loopback
   bind. Only the public bootstrap surface (the static SPA shell + `/healthz`) is
   served tokenless, so every request that reaches the auth gate is data-bearing and
-  needs the token. This is the structural stop on a same-user process — e.g. a
-  token-scrubbed, prompt-injected delivery agent limited to loopback — reading
+  needs the token. This is the structural stop on a same-user process (e.g. a
+  token-scrubbed, prompt-injected delivery agent limited to loopback) reading
   `/api/tickets` (or self-approving over the REST API). The dashboard SPA sends the
   bearer on every call, adopting it from the `?token=` URL or the login gate.
 
@@ -265,33 +302,20 @@ launcher wrote (`DISPATCH_PID_FILE`, default `$GAFFER_DATA/dashboard.pid`, which
 `runner/gaffer dashboard` records), but only when the file names this process, so
 a newer server's record survives an old one's exit.
 
-The dashboard's nav is seven surfaces:
+The nav has eleven views: Overview, Work, Review, Epics, Map, Specs, Memory, Squad,
+Floor, Health and Settings, with a Create form and a `Cmd+K` command palette (navigate,
+suggest work, plan a build, onboard a repo). [docs/FEATURES.md](../../docs/FEATURES.md)
+walks through each.
 
-- **Overview** — the stat band (tickets by status, active/stale claims, decisions),
-  a "needs you" panel, the activity feed, and the redacted tool-audit tail.
-- **Work** — one ticket surface, switchable **board ⇄ list**, with status columns
-  and URL-persisted filters.
-- **Review** — the `in_review` queue with approve/reject forms and a computed diff
-  viewer (the gate verifies the real git diff, not the agent's word).
-- **Epics** — build plans, phases, and dependencies.
-- **Map** — the **Factory Map**: scope-graph nodes + edges + repo associations.
-- **Memory** — per-repo **Repo Digest**, the **feature ledger** (Current / Building
-  / Backlog), read-only **lore**, and the **"Onboard a repo"** button (POSTs
-  `/repos/onboard` to scan + register a repo and build its digest + features).
-- **Settings** — the UI-editable factory config (autonomy flags, caps, idle-loop
-  toggles); env-locked keys render read-only because **env always wins**.
-
-A New-ticket **Create** form and a `Cmd+K` command palette (navigate, suggest
-work, plan a build, onboard a repo) round it out.
-
-It is backed by read-model endpoints and mutating REST routes:
+It is backed by read-model endpoints and mutating REST routes; the full contract is
+[`docs/openapi.json`](../../docs/openapi.json). The main ones:
 
 - `GET /api/dashboard`, `GET /api/board`, `GET /api/activity?limit=&offset=`
-- `GET /api/audit?limit=` — the redacted tool-audit tail (hidden when no log exists)
-- `GET /api/settings`, `POST /api/settings` — UI-editable config (env-locked keys flagged)
-- `GET /api/memory/{digest,features}/:repo`, `GET /api/memory/lore` — read the Memory store
+- `GET /api/audit?limit=`: the redacted tool-audit tail (hidden when no log exists)
+- `GET /api/settings`, `POST /api/settings`: UI-editable config (env-locked keys flagged)
+- `GET /api/memory/{digest,features}/:repo`, `GET /api/memory/lore`: read the Memory store
 - `GET/POST /tickets`, `/tickets/:id`, plus `/tickets/:id/{acceptance-criteria,ready,move,review/approve,review/reject,diff,scopes,repo-access,dependencies}`
-- `GET/POST /scope/{nodes,edges,repos}` — Factory-Map graph ops
+- `GET/POST /scope/{nodes,edges,repos}`: Factory-Map graph ops
 - `POST /epics`, `POST /repos/onboard`, `POST /plan-build`, `POST /poll-work`
 - `GET/POST /decisions`, `POST /decisions/:id/resolve`
 - `GET /claims`, `POST /claims/:id/revoke`
@@ -303,12 +327,13 @@ the DispatchError code mapped to an appropriate HTTP status.
 ## Autonomy flags (opt-in, gated by default)
 
 The gate is on by default: only a human/admin actor can approve a review, and
-merge is a separate system-only step. Two flags relax that deliberately —
+merge is a separate system-only step. Two flags relax that deliberately:
 
 - `DISPATCH_ALLOW_AGENT_APPROVE=1` lets an `agent`-type actor approve a review
   (`in_review → ready_for_merge`). Unset, agents structurally cannot.
-- `MERGE_ON_AGENT_REVIEW=1` (a UI-editable setting consumed by the runner) fires
-  the merge on an agent approval rather than waiting for a human.
+- `MERGE_ON_AGENT_REVIEW=1` (a UI-editable setting consumed by the runner) lets
+  `AUTO_MERGE` land an agent-approved ticket too; it needs `AUTO_MERGE=1` as well, and on
+  its own merges nothing.
 
 Both are surfaced in the Settings panel under "autonomy"; an env var overrides the
 stored value and renders the key read-only in the UI. See the root
@@ -324,12 +349,12 @@ Dispatch is the single source of truth for *what to do* and *whether it shipped*
 
 ## Architecture
 
-- **State machine** (`src/services/transitionService.ts`) — the only path that
+- **State machine** (`src/services/transitionService.ts`): the only path that
   changes `ticket.status`; validates allowed transitions, evaluates the active
   policy pack (`solo_loose` / `team_light` / `factory_strict` / `regulated`),
   applies the change with optimistic concurrency, and appends an event.
-- **Claims** (`src/services/claimService.ts`) — atomic claim-next using a partial
+- **Claims** (`src/services/claimService.ts`): atomic claim-next using a partial
   unique index (one active claim per ticket); opaque tokens stored only as
   sha256 hashes; heartbeat + stale-claim expiry (system recovery).
-- **Core facade** (`src/core.ts`) — the single entry point used by the CLI and
+- **Core facade** (`src/core.ts`): the single entry point used by the CLI and
   the MCP server.

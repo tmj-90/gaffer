@@ -279,7 +279,7 @@ function auditCheck(ctx: FactoryContext, env: NodeJS.ProcessEnv): DoctorCheck {
     };
   }
   const path = resolveAuditPath({ dataDir: ctx.loaded.rootDir, env });
-  // SECURITY.md claims doctor verifies the audit log is *writable*. Honour that:
+  // The crew README says doctor verifies the audit log is *writable*. Honour that:
   // probe the real target (the file if it exists, else its parent dir) for write
   // access. A read-only disk / unwritable factory dir means MCP tool calls would
   // silently go unaudited (audit writes are best-effort and never throw), so a

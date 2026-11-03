@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // =====================================================================
 // Node entrypoint for the tick.sh delivery CONTEXT-PRIMER blocks
-// (P1b context assembly, docs/tick-sh-runtime-migration.md).
+// (context assembly; runner/CLAUDE.md has the live-path rule).
 // ---------------------------------------------------------------------
 // LIVE: the bash primer (runner/lib/context-primer.sh) fetches the memory-CLI
 // JSON and pipes it into this CLI for both delivery blocks —

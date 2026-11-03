@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // =====================================================================
 // Node entrypoint for the tick.sh `.mcp.json` runtime render
-// (P1b context assembly, docs/tick-sh-runtime-migration.md).
+// (context assembly; runner/CLAUDE.md has the live-path rule).
 // ---------------------------------------------------------------------
 // This is the LIVE render seam: tick.sh (delivery + bootstrap) invokes
 // this CLI to render its per-tick runtime .mcp.json, replacing the bash

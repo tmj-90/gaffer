@@ -1,4 +1,4 @@
-# Eval harness — measuring delivery quality (judge → ledger → metrics)
+# Eval harness: measuring delivery quality
 
 Status: **an opt-in feature, `GAFFER_EVAL_JUDGE=1`**. It stays off by default
 because it adds a paid model call to every delivery, not because its plumbing is
@@ -11,27 +11,26 @@ does not show.
 ## Why
 
 Gaffer's delivery gates are boolean (DoD, hygiene, minimalism, CI): they prove a
-delivery didn't break the rules, not how *good* it is. The eval harness scores
-every submitted delivery so quality is a **measured number, not an assertion** —
-and makes the project's core thesis ("durable memory primes better deliveries")
-falsifiable.
+delivery didn't break the rules, not how good it is. The eval harness scores every
+submitted delivery so quality is a measured number, and so is whether that score
+predicts what a reviewer then decides.
 
 ## The pipeline
 
-1. **Judge** (`packages/crew/src/eval/deliveryJudge.ts`, CLI `deliveryJudgeCli`)
-   — an independent LLM-as-judge grades the submitted diff against the ticket's
+1. **Judge** (`packages/crew/src/eval/deliveryJudge.ts`, CLI `deliveryJudgeCli`):
+   an independent LLM-as-judge grades the submitted diff against the ticket's
    acceptance criteria on five dimensions (0–5 each): `ac_coverage`,
    `correctness`, `minimalism`, `test_adequacy`, `security`. Aggregation:
    weighted mean → `pass` / `borderline` / `fail`, with correctness + security as
    hard gates (≤1 fails regardless of the mean). The judged inputs are
-   agent-produced and therefore untrusted — they're wrapped in `<untrusted-*>`
+   agent-produced and therefore untrusted: they're wrapped in `<untrusted-*>`
    envelopes with closing-tag neutralisation so a delivery cannot prompt-inject
    its own grade. The verdict is computed from the rubric scores, never read from an
    `overall` field or a "verdict: pass" line, and a reply that carries two different
    gradings (one could be a rubric the diff planted and the judge quoted) is read as
    not judged rather than taking either.
-2. **Runner seam** (`runner/lib/eval-judge.sh`, wired post-submit in `tick.sh`)
-   — after a successful submit, renders the judge prompt, runs ONE model turn
+2. **Runner seam** (`runner/lib/eval-judge.sh`, wired post-submit in `tick.sh`):
+   after a successful submit, renders the judge prompt, runs ONE model turn
    through `worker_deliver` (the single env-scrubbed, timeout-bounded `claude -p`
    seam) with an **empty MCP config** (the judge gets no tools), parses the reply
    via `worker.mjs parse-result result-text`, and appends the verdict to the
@@ -48,18 +47,18 @@ falsifiable.
    record one: the safety hook denies `eval-score` to an agent shell, so a delivery
    cannot grade itself. Additive + fail-soft: any failure (unbuilt crew, dead model turn,
    empty reply) records nothing and never blocks the delivery. An empty reply is
-   treated as an infra failure, not a quality fail — it must not poison the
+   treated as an infra failure, not a quality fail; it must not poison the
    metric. `DRY_RUN` is a no-op.
-3. **Ledger** (`packages/crew/src/eval/evalLedger.ts`, CLI `evalLedgerCli`) —
+3. **Ledger** (`packages/crew/src/eval/evalLedger.ts`, CLI `evalLedgerCli`):
    append-only JSONL at `$GAFFER_DATA/eval-ledger.jsonl`. Each record: verdict +
    per-dimension scores, ticket/repo, `memoryPresent` (was durable
    product-context primed into the delivery?), and `costUsd` (the attempt's real
-   spend from the usage envelope; omitted — never faked to 0 — when unreadable).
+   spend from the usage envelope; omitted, never faked to 0, when unreadable).
 
 ## The metrics (`evalLedgerCli --mode summarize`)
 
-- **passRate / blockRate / meanScore / dimensionMeans** — the quality baseline.
-- **memoryLift — read it as the *memory score gap*, not an uplift.** It is the mean
+- **passRate / blockRate / meanScore / dimensionMeans**: the quality baseline.
+- **memoryLift, read it as the *memory score gap*, not an uplift.** It is the mean
   judge score of submitted deliveries that had memory primed minus the mean of those
   that did not. The two arms are **different tickets** (memory tends to be primed on
   repos and tasks the factory already knows, which are also easier), and the judge
@@ -71,7 +70,7 @@ falsifiable.
   (`withMemory` / `withoutMemory` / `distinctTickets`), `excludes`, and
   `matched` (null unless a matched priming experiment is given, see below) with
   `matchedReason`. `null` until both arms have data (never a fake 0).
-- **cost.costPerPass** — total real spend over the costed records divided by the
+- **cost.costPerPass**: total real spend over the costed records divided by the
   number of judge-passing deliveries: what a *good judged* delivery costs, with
   spend on judged failures amortised in. It leaves out every attempt the judge
   never saw (see the limits below), so read the next metric for what a change
@@ -118,9 +117,9 @@ Its limits, also listed in the report's `limits` field:
   basis it used.
 - Spend is the API-equivalent cost the CLI reports; a killed call counts at its
   labelled estimate.
-- There is no baseline. The comparison the external review asked for, the same
-  changes made with the coding agent directly, is not measured; until it is, this
-  number says what Gaffer cost per accepted change, not whether that is cheaper.
+- There is no baseline: the same changes made with the coding agent directly are not
+  measured, so this number says what Gaffer cost per accepted change, not whether
+  that is cheaper.
 
 ```sh
 node packages/crew/dist/eval/evalLedgerCli.js --mode summarize \
@@ -213,19 +212,18 @@ compared against a baseline that ran the default implement tier.
 
 ## Honest limits of the current metrics (read before trusting a number)
 
-These are real conditioning biases, not polish — surfaced by an adversarial audit
-of this harness and left visible rather than hidden:
+These are real conditioning biases, left visible rather than hidden:
 
 - **Submit-success sampling.** Judging runs only after a *successful* submit
   (post-gate). Deliveries that fail DoD, park, or fail submit are never judged,
   so `passRate`/`memoryLift`/`cost.costPerPass` are conditioned on gate-passing
   work. In particular `costPerPass`'s "amortised failure spend" only includes
-  deliveries that passed every boolean gate and *then* scored badly — it does
+  deliveries that passed every boolean gate and *then* scored badly; it does
   **not** capture burn on parked/failed attempts, so it understates true
   cost-per-good-delivery. `memoryLift` is likewise measured only within
   gate-passers, so if memory mostly helps work *clear the gates*, the effect is
-  conditioned away. Widening judging to failed attempts is future work; the
-  spend on them is counted in *cost per accepted change* above.
+  conditioned away. The spend on failed attempts is counted in *cost per accepted
+  change* above.
 - **Self-grading when no plan model is set.** The judge turn uses
   `GAFFER_JUDGE_MODEL_FLAG`, else the plan model flag (`GAFFER_PLAN_MODEL_FLAG`),
   and only when neither is set the implementation model flag, when it shares the
@@ -235,15 +233,14 @@ of this harness and left visible rather than hidden:
   comparability.
 - **Prefix grading on huge diffs.** Diffs over `GAFFER_JUDGE_DIFF_BYTES`
   (120 KB default) are truncated; the judge is told so and instructed to treat
-  unseen changes as ungraded, not absent — but `minimalism`/`security` on a very
+  unseen changes as ungraded, not absent, but `minimalism`/`security` on a very
   large delivery are still graded on a prefix.
 
 ## Is the judge worth having?
 
 A judge score is worth its model call only if it tells the reviewer something the
 gates do not: a low score should come before a send-back, a high one before an
-acceptance. This is the procedure for finding out on a real factory, and what I could
-establish without one.
+acceptance. This is the procedure for finding out on a real factory.
 
 **The case for it.** The gates are blind to a class of poor deliveries. Three gate
 replay fixtures are deliveries a careful reviewer rejects that pass hygiene,
@@ -255,20 +252,17 @@ with a real test deleted and an existence check added in another file). Each rep
 to `submit`, and `gaffer eval replay` keeps it that way. Only the reviewer, or the
 judge, can see what is wrong with them.
 
-**What the evidence shows so far: the plumbing, not the judge.** No factory I have
-recorded data for has run the judge against a live model (there is no eval ledger on
-any of them), so whether a real judge model scores those deliveries low is not shown.
-What is shown, by `packages/crew/test/eval-judge-fixtures.test.ts`, is everything
-between a judge reply and the report: each fixture that carries a `judge` block is
-committed to a real repository and submitted to review in a real dispatch, the
-runner's diff goes through the real judge prompt, a deterministic stub judge returns
-the rubric the fixture records (what a careful reviewer would score), the real parse
-and aggregation turn it into a verdict, the verdict is recorded on the ticket and in
-the ledger, the fixture's review decision is applied, and the agreement report pairs
-them. It also pins one fact about the design: minimalism is not a hard gate, so a
-delivery whose only fault is a copied helper reads *borderline*, not *fail*. The
-warning a reviewer can act on is any verdict short of *pass*, and that is what the
-report counts.
+**What the tests show: the plumbing.** Whether a real judge model scores those
+deliveries low depends on the model and is what `gaffer eval agreement` measures on
+your factory. `packages/crew/test/eval-judge-fixtures.test.ts` pins everything between
+a judge reply and the report: each fixture with a `judge` block is committed and
+submitted to review in a real dispatch, the runner's diff goes through the real judge
+prompt, a deterministic stub judge returns the rubric the fixture records, the real
+parse and aggregation turn it into a verdict, the verdict is recorded, the fixture's
+review decision is applied, and the agreement report pairs them. Minimalism is not a
+hard gate, so a delivery whose only fault is a copied helper reads *borderline*, not
+*fail*; the warning a reviewer can act on is any verdict short of *pass*, and that is
+what the report counts.
 
 **The measurement.** `gaffer eval agreement` (`wg judge-agreement`, `--json` for the
 fields) pairs every judged delivery with what happened to that delivery next, from
@@ -317,25 +311,23 @@ thresholds are in the report (`thresholds`) so a reading can always be checked.
 
 **The decision.** The judge stays off by default: it costs one extra model call per
 delivery (booked in the usage ledger as kind `eval-judge`, so the budget caps and the
-cost tiles see it), and on a factory I have not measured I cannot say it is worth
-that. It is a documented feature, not an experiment: turn it on for a run of at least
+cost tiles see it), and whether that is worth it depends on the factory. Turn it on for a run of at least
 20 reviewed deliveries, review as you normally would, then run `gaffer eval
 agreement`. If it separates, keep it on and read its reasons on the Review page. If it
 does not, read the misses, then try a different judge model
 (`GAFFER_JUDGE_MODEL_FLAG`) or turn it off. What a change costs once every attempt is
-counted, the judge's own spend included, is the *cost per accepted change* metric that
-comes with the attempt accounting from external review #9 (`gaffer wg stats`, the
-Health view's wage bill); the judge does not duplicate it.
+counted, the judge's own spend included, is the *cost per accepted change* metric above (`gaffer wg stats`, the Health view's
+wage bill); the judge does not duplicate it.
 
-## Gate replay — the offline, deterministic half
+## Gate replay: the offline, deterministic half
 
 The judge measures *how good* a delivery is; the gates decide *whether it ships*
 without a human. `runner/eval/replay.sh` (`gaffer eval replay`) pins the gates:
 each fixture under `runner/eval/fixtures/` is a base repo plus a **recorded
 delivery patch** and an `expected` block, and the driver commits the delivery on a
-work branch and runs the same library functions `tick.sh` runs, in tick order —
+work branch and runs the same library functions `tick.sh` runs, in tick order,
 `gaffer_assert_clean_delivery`, `gaffer_diff_stats` + `gaffer_check_minimalism`,
-`gaffer_run_dod_gates`, `gaffer_run_ac_checks` — then derives the outcome tick.sh
+`gaffer_run_dod_gates`, `gaffer_run_ac_checks`, then derives the outcome tick.sh
 would take (`submit` or `rework:<gate>`) and the review flags it would carry
 (`missing_note`, `oversized_diff`, `unverified_note`, `zero_gates`, …). Only the
 dispatch CLI is stubbed (a recorder), so the replay needs no model, database or
@@ -356,13 +348,3 @@ expectation **and** a weakened gate. Adding a fixture is documented in
 
 This closes the "submit-success sampling" blind spot from the *outside*: the
 judge sees only gate-passers, the replay proves what the gates pass and bounce.
-
-## Later (deliberately not in this slice)
-
-- **Enforcement** — acting on a `blocking` verdict (e.g. auto-park) is a
-  separate, separately-flagged decision, and only worth making on a factory where
-  `gaffer eval agreement` reads *separates*.
-- **Benchmark runs** — a reproducible SWE-bench-subset harness for a headline
-  number sits on top of the same judge + ledger. The gate replay above is the
-  deterministic scaffold it would reuse (fixture repo + recorded delivery +
-  expected verdict); the missing piece is a live model producing the delivery.

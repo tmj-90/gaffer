@@ -2491,7 +2491,7 @@ $PRODUCT_CONTEXT_BLOCK}"
   gaffer_render_mcp_runtime "$MCP_CONFIG" "$MCP_RUNTIME" "$NUM" "$NUM" \
     || gaffer_abort_setup MCP-RENDER "failed to render delivery runtime .mcp.json — refusing live run (fail closed)"
   chmod 600 "$MCP_RUNTIME" 2>/dev/null || true  # carries the live claim token — owner-only
-  # ── P1b GOLDEN CAPTURE (docs/tick-sh-runtime-migration.md) ──────────────────
+  # ── GOLDEN CAPTURE (runner/CLAUDE.md) ───────────────────────
   # Default-OFF dump of the assembled context (the delivery PROMPT + the rendered
   # MCP runtime config) so the TS renderer (packages/crew/src/runtime/context/)
   # can be byte-compared against this bash path. With GAFFER_CONTEXT_DUMP_ONLY=1

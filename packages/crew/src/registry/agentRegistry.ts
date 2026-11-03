@@ -40,7 +40,6 @@ export class AgentRegistry {
 
   /**
    * Can `agent` take work needing `requiredCapabilities` at `riskLevel` in `repoName`?
-   * Mirrors the routing rule in docs/05-agent-and-repo-registry.md.
    */
   canClaim(
     agent: AgentConfig,

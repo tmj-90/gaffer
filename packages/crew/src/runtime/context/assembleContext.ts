@@ -2,7 +2,7 @@ import { renderDeliveryPrompt, type DeliveryPromptInputs } from "./deliveryPromp
 import { renderMcpRuntimeConfig, type McpRuntimeInputs } from "./mcpConfig.js";
 
 // =====================================================================
-// Delivery-context assembly umbrella (P1b, docs/tick-sh-runtime-migration.md).
+// Delivery-context assembly umbrella (see runner/CLAUDE.md for the live path).
 // ---------------------------------------------------------------------
 // The seam P2's live ClaudeAgentRuntime.run() will call: given pre-resolved
 // inputs (scope/worktrees/skills stay with the runner until their own

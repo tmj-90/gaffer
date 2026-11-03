@@ -1,6 +1,6 @@
 # Contributing to Gaffer
 
-Thanks for your interest in Gaffer — a local-first autonomous software factory. By participating you agree to the project's [Code of Conduct](CODE_OF_CONDUCT.md).
+Thanks for your interest in Gaffer, a local-first autonomous software factory. By participating you agree to the project's [Code of Conduct](CODE_OF_CONDUCT.md).
 
 If you'd like to understand how the system fits together before diving in, read [ARCHITECTURE.md](ARCHITECTURE.md) first.
 
@@ -27,7 +27,7 @@ pnpm -r build           # build dispatch, crew, memory
 pnpm -r test            # run all package test suites
 ```
 
-Runner tests (`runner/test/*.test.sh` + `*.test.mjs`) run through one harness —
+Runner tests (`runner/test/*.test.sh` + `*.test.mjs`) run through one harness:
 the same command CI runs:
 
 ```bash
@@ -51,18 +51,37 @@ counts 10s), so give a new test that takes much longer than that a line there.
 [docs/testing.md](docs/testing.md) covers the caps, the long tests, load scaling,
 the shards, the nightly cell and how to keep a new test fast. In a
 new test, skip with `gaffer_skip "<reason>"` from `runner/test/lib/skip.sh` (exit
-77) only for a missing prerequisite — a dispatch CLI call that errors or changes
+77) only for a missing prerequisite; a dispatch CLI call that errors or changes
 shape is a FAIL, never a skip.
 
 ## Ground rules
 
 - **Never weaken `runner/safety-hook.mjs`.** It is the containment boundary that
   keeps shell-capable agents from doing harm. The crew-side mirror of the
-  classifier and its parity tests are intentional — keep them in sync, do not
+  classifier and its parity tests are intentional; keep them in sync, do not
   delete them. Changes that loosen the classifier will be rejected.
 - Keep packages green: `pnpm -r build && pnpm -r test` must pass before you open
   a PR, and the runner `.mjs`/`.sh` tests must pass too.
 - Add or update tests for any behaviour you change.
+
+### Memory's trust model is the product
+
+Memory's whole value is that agents suggest and humans approve. A change to
+`packages/memory` that weakens any of these will be sent back:
+
+- **Agent writes land as drafts.** Nothing an agent submits over MCP becomes trusted
+  lore without a human approving it. (Standalone memory-mcp can opt into
+  `MEMORY_AUTO_APPROVE`; in the factory the runner pins it off for agents.)
+- **Confidence is clamped.** A draft cannot claim `high`, and neither can a record
+  without a source.
+- **Restricted records are gated.** They are left out of the default search, a direct
+  fetch over MCP is env-gated, and `report_conflict` against one is always refused.
+- **The audit log is sanitised per tool.** Sensitive fields are stored as character
+  counts, never as text.
+
+If your change touches one of these boundaries, add or update a test that would fail if
+the guarantee were silently removed; `packages/memory/test/mcp-redaction.test.ts` shows
+the pattern. `pnpm --filter memory-mcp test` runs that package's suite on its own.
 
 ## Commit style
 
@@ -90,7 +109,7 @@ Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `perf`, `ci`, `build`
    - `pnpm format:check` (Prettier `--check .`, run at the ROOT)
    - `pnpm -r build` (TypeScript packages build clean)
    - `pnpm -r typecheck` (source type-check)
-   - `pnpm -r typecheck:test` (STRICTER test type-check — `noUncheckedIndexedAccess`)
+   - `pnpm -r typecheck:test` (STRICTER test type-check: `noUncheckedIndexedAccess`)
    - `pnpm -r test` (all package test suites)
    - `pnpm -r test:coverage` (per-package coverage floor; CI enforces it on ubuntu / Node 22)
    - `pnpm test:runner` (every runner test)

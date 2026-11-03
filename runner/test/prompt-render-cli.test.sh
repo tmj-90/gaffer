@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =====================================================================
-# P1b prompt-render CLI (docs/tick-sh-runtime-migration.md) — proves the typed
+# Prompt-render CLI (runner/CLAUDE.md) — proves the typed
 # delivery/bootstrap PROMPT entrypoint
 # (packages/crew/src/runtime/context/renderPromptCli.ts) renders BYTE-IDENTICALLY
 # to the REAL bash heredoc, via the captured golden.

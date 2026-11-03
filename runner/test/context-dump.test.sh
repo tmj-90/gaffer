@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Proves the P1b context-dump block (docs/tick-sh-runtime-migration.md) is
+# Proves the context-dump block (runner/CLAUDE.md) is
 # present in tick.sh, DEFAULT-OFF (guarded on GAFFER_CONTEXT_DUMP_DIR being
 # non-empty, so both vars unset ⇒ byte-identical behaviour), render-only when
 # GAFFER_CONTEXT_DUMP_ONLY=1, and that tick.sh still parses. Pattern follows

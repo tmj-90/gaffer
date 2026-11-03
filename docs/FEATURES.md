@@ -1,1438 +1,709 @@
-# Gaffer — feature tour
+# Gaffer feature tour
 
-A longer walk through what the factory actually does, surface by surface. The
-[README](../README.md) is the scannable version; this is the deep-dive.
+A longer walk through what the factory does, surface by surface. The
+[README](../README.md) is the short version; [SECURITY.md](../SECURITY.md) has how each
+gate is enforced and what it does not cover.
 
-> Every screenshot here uses a neutral **demo dataset** — a fake "TaskFlow"
-> task-management product with two repos (`taskflow-mini`, the task-list
-> library, and `taskflow-web`, its web client), a club named Factory Athletic and
-> a squad of named agents. It is not anyone's real code, and it's seeded purely
-> to show the surfaces with believable content. The ticket in review was
-> delivered by a stand-in worker through a real runner tick, so its gates,
-> checks and diff are real.
+> Every screenshot uses a neutral demo dataset: a fake "TaskFlow" task-management
+> product with two repos (`taskflow-mini`, the task-list library, and `taskflow-web`,
+> its web client), a club named Factory Athletic and a squad of named agents. The
+> ticket in review was delivered by a stand-in worker through a real runner tick, so
+> its gates, checks and diff are real.
 
----
+## The planning engine: brief to dependency-ordered epic
 
-## The planning engine — brief → dependency-ordered epic
-
-The headline feature. A one-line brief becomes a **phased, dependency-ordered
-epic of tickets**, each ready to be worked through plan → implement → test →
-review.
+A one-line brief becomes a phased, dependency-ordered epic of tickets, each ready to
+be worked through plan, implement, test and review.
 
 ### How the decomposition works
 
-The "Plan a build" panel runs a real, multi-turn decomposer (the dashboard's
-`POST /plan-build` spawns `runner/bin/decompose.mjs`, a headless `claude -p`):
+The Plan a build panel runs a multi-turn planner (`POST /plan-build` spawns
+`runner/bin/decompose.mjs`):
 
-1. **Clarify.** The first turn usually comes back as a short list of
-   **clarifying questions** — cadence, scope, whether to extend an existing
-   service or stand up a new one. You answer in plain language; answered
-   questions are treated as settled on later turns.
-2. **Propose.** Once it has enough, it returns a **plan**: an epic plus an
-   ordered list of tickets. Every ticket carries a title, a description,
-   **acceptance criteria**, a target repo, a priority, and an explicit
-   **`dependsOn`** edge naming the tickets it can't start before.
-3. **Confirm.** The plan is *proposed only* — nothing is created until you press
-   **"Create as draft"** or **"Create & ready"**. Drafts never sneak work into the
-   queue; "Create & ready" readies only the tickets that pass the `ready` gate
-   (a criterion-less ticket stays draft).
-4. **What you agreed is checked.** Every answer you gave the planner is a
-   requirement. The proposal lists them under *Agreed while planning* and flags
-   any that no proposed ticket's criteria cover (a "30-minute expiry" with no
-   criterion mentioning 30 minutes). Each one you keep becomes a criterion of the
-   Final (the epic's acceptance ticket), so the independent tester checks it even
-   when the planner's tickets left it out. `POST /epics` takes them as
-   `epic.agreed_requirements`, or reads them from `plan_session_id`.
+1. **Clarify.** The first turn usually comes back with a few clarifying questions
+   (cadence, scope, whether to extend an existing service). Answered questions are
+   settled on later turns.
+2. **Propose.** It returns an epic and an ordered list of tickets, each with a title,
+   description, acceptance criteria, target repo, priority and the tickets it depends
+   on.
+3. **Confirm.** Nothing is created until you press **Create as draft** or **Create &
+   ready**; the second readies only the tickets that pass the ready gate.
+4. **What you agreed is checked.** Every answer you gave is a requirement. The
+   proposal lists them under *Agreed while planning* and flags any no criterion
+   covers; each one you keep becomes a criterion of the Final (the epic's acceptance
+   ticket), so the independent tester checks it even when the tickets left it out.
 
-You are never trapped in the clarify loop: **"Build the tickets"** forces the
-best plan from the brief and answers so far, and a long conversation
-force-plans rather than dead-ending.
+**Build the tickets** forces the best plan from what you have said so far, so you are
+never stuck in the clarify loop.
 
 ![Plan a build mid-decompose: the team talk and the proposed draw](img/plan-build.png)
 
-*The team talk on the Plan-a-build page: the brief "add recurring tasks", the
-planner's three clarifying questions, your answer, and the proposed draw, the
-**Recurring tasks** epic in four rounds plus the Final acceptance ticket.
-Proposed tickets are numbered T1–T5 until you confirm, and T2 shows `after T1`.
-Each carries its repo, priority and acceptance criteria. The guardrail banner is
-explicit: proposes only, confirmed tickets land as draft.*
+*The team talk on the Plan a build page: the brief "add recurring tasks", the
+planner's three questions, your answer, and the proposed draw, the **Recurring tasks**
+epic in four rounds plus the Final. Proposed tickets are numbered T1 to T5 until you
+confirm, and T2 shows `after T1`.*
 
 ### From the terminal: `gaffer plan`
 
-`runner/gaffer plan "<goal>"` is the same conversation without the dashboard. It
-runs the same planner through dispatch's own plan-build runner (the
-`runner/bin/decompose.mjs` helper, the same prompt, the same budget admission and
-dollar cap), so a turn costs what a dashboard turn costs and is refused when a
-dashboard turn would be.
+`runner/gaffer plan "<goal>"` is the same conversation without the dashboard, through
+the same planner, budget admission and dollar cap.
 
-- The planner's questions are printed. `gaffer plan --answer "…"` answers them and
-  `gaffer plan --now` is "Build the tickets". At a terminal it asks you in place.
-- The proposal is printed: the epic, each ticket with its repo, bootstrap flag,
-  `after T1` edges and criteria, the Final the factory adds, and every answer you
-  gave, flagged when no proposed criterion covers it.
-- Nothing is created until you type y or run `gaffer plan --yes`, which creates
-  the proposal you were shown (it never plans again). The create is the dashboard's
-  confirm: a repo that doesn't exist yet rides on `source` for the bootstrap, the
-  brief and the agreed answers ride on the epic, and the same `createEpic` makes
-  draft tickets plus the Final. Nothing is readied.
-- `--yes` runs on its own. With a goal, `--answer` or `--now` it is refused before
-  any model call, so a plan is never made and created in one step you didn't see.
-  A new answer drops the proposal it supersedes, so a failed turn after it leaves
-  nothing to create, and the draft names the factory it was planned in (its data
-  dir and dispatch database): a draft copied elsewhere, or `--yes` against another
-  `DISPATCH_DB`, is refused. While the factory is paused on the usage window a
-  turn isn't started (exit 75), and a budget refusal (no dollar cap, or a cap
-  reached) exits 3 like `gaffer run`'s. It exits 0 when the epic is created and 4 while
-  nothing is created yet (questions asked, a proposal waiting for `--yes`, or a no
-  or Ctrl-D at the prompt).
-- `--repo <name>` extends a registered repo (brownfield), `--file <path>` reads
-  the brief from a file, `--show` prints the pending proposal, `--discard` drops
-  it, and `--list` lists the epics. The conversation between runs is kept in
-  `.gaffer/plan-draft.json`, and once the epic is created it is recorded in the
-  dashboard's plan-session history (`GET /plan-sessions`) beside the panel's own.
+- The planner's questions are printed; `--answer "..."` answers them and `--now` is
+  Build the tickets. At a terminal it asks you in place.
+- The proposal is printed with each ticket's repo, dependencies and criteria, the Final
+  and every answer you gave, flagged when nothing covers it.
+- Nothing is created until you type y or run `gaffer plan --yes`, which creates the
+  proposal you were shown as draft tickets plus the Final. Nothing is readied.
+  `--yes` never plans again, and a draft planned in another factory is refused.
+- `--repo <name>` extends a registered repo, `--file <path>` reads the brief from a
+  file, `--show`, `--discard` and `--list` manage the draft. Exit codes: 0 created, 4
+  nothing created yet, 3 a budget refusal, 75 the usage window is paused.
 
-### Greenfield vs brownfield
-
-The decomposer takes one of two shapes depending on whether you point it at an
-existing repo:
+### Greenfield and brownfield
 
 | Mode | When | What the plan looks like |
 |---|---|---|
-| **Greenfield** | "New app", no target repo | Exactly **one bootstrap ticket** (`git init` + scaffold, no dependencies); every other ticket transitively depends on it. A one-liner becomes a brand-new, structured repo. |
-| **Brownfield** | "Extend existing", a target repo/scope is chosen | **Zero bootstrap tickets** — there's nothing to scaffold. Every ticket is stamped with the target repo, so the plan *extends* what's already there. |
+| **Greenfield** | a new app, no target repo | Exactly one bootstrap ticket (`git init` and scaffold); every other ticket depends on it. |
+| **Brownfield** | a target repo or scope is chosen | No bootstrap ticket; every ticket is stamped with the target repo. |
 
-On a greenfield run the factory sets the new repo up itself. The bootstrap ticket
-creates it under `GAFFER_BOOTSTRAP_ROOT` (`~/git` unless set), registers and onboards
-it with the stack, test and lint commands it detects from the scaffold, and links the
-epic's other tickets to it. Before the bootstrap agent starts it probes the package
-registry from the agent's environment (an offline machine with a warm npm cache
-installs from the cache) and, under `GAFFER_STRICT_REQUIRE`, the OS sandbox; a problem
-with either parks the ticket with the fix on the Team sheet before anything is
-created, and a dollar cap that would refuse the launch releases it back to ready. A CA bundle exported as `SSL_CERT_FILE`, `CURL_CA_BUNDLE`,
-`REQUESTS_CA_BUNDLE` or `GIT_SSL_CAINFO` reaches the agent's npm as
-`NODE_EXTRA_CA_CERTS`. Unless the independent tester is switched off (`GAFFER_TESTING=0`), the plan's
-tickets are created testable (all but the bootstrap; a plan ticket can say
-`testable` either way). In PR mode, a new repo with no remote gets one decision asking
-where it lives, which holds its tickets until you answer.
+On a greenfield run the factory sets the new repo up itself:
 
-The TaskFlow example above is brownfield: "add recurring tasks" to the existing
-`taskflow-mini` / `taskflow-web` repos — the data model first, then the API,
-then the next-occurrence logic and the repeat picker in parallel, and finally
-the docs.
+- **The repo.** The bootstrap ticket creates it under `GAFFER_BOOTSTRAP_ROOT` (`~/git`
+  unless set), registers and onboards it with the stack, test and lint commands it
+  detects from the scaffold, and links the epic's other tickets to it. A scaffold with
+  neither a test script nor a lockfile leaves the repo with no gates, and the first
+  dependent ticket parks with "Definition of Done: zero gates executed" until you
+  register a command (`wg repo set-commands`).
+- **Dependencies for the gates.** Each ticket runs its tests in a fresh worktree, so
+  before the gates the factory installs that worktree's dependencies with the package
+  manager its lockfile names, under a timeout. A failed install never passes the gate.
+  `GAFFER_DOD_INSTALL=0` turns it off.
+- **The registry.** Before the bootstrap agent starts, the runner runs `npm ping` from
+  the agent's environment. An untrusted proxy CA or a registry that does not answer
+  parks the ticket (`env_registry_unreachable`) with the npm error and the fix, before
+  any model call. An offline machine with packages in its npm cache installs from the
+  cache (`npm_config_prefer_offline=true`); under the docker sandbox the container's
+  cache is empty, so it parks. `runner/preflight.sh` runs the same probe.
+- **A TLS-intercepting proxy.** The proxy route and trust store (`HTTPS_PROXY`,
+  `NO_PROXY`, `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `CURL_CA_BUNDLE`,
+  `GIT_SSL_CAINFO`) are passed to the agent; credentials are not. A bundle exported only
+  for curl, git or python is handed to npm as `NODE_EXTRA_CA_CERTS`. TLS verification is
+  never turned off.
+- **The tester.** Unless the tester is off (`GAFFER_TESTING=0`), the plan's tickets are
+  created testable (all but the bootstrap). The epic's acceptance ticket is always
+  tested, and until the tester passes it `gaffer status`, the run report and `wg stats`
+  say the build is **not accepted**. `wg stats` reports a build as **accepted** only with
+  a replayed PASS bound to the tested commit, **waived** for a person's
+  `tester-pass --as human`, **unverified** for neither, and **stale** when the acceptance
+  ticket was edited afterwards.
+- **Sandbox and budget.** Under `GAFFER_STRICT_REQUIRE`, a host with no OS sandbox parks
+  the bootstrap (`strict_require_unavailable`) before the repo is created, and a dollar
+  cap that would refuse the launch releases it back to ready.
+- **No remote, in PR mode.** A new repo with no remote gets one decision asking where it
+  lives, which holds its tickets until you answer.
 
-### The epic as a first-class object
+### The epic
 
-Once confirmed, the epic isn't just a label on a pile of tickets — it's the
-dependency graph the board enforces. Tickets are **gated phase by phase**: a
-phase can't start until the one before it is done.
+The epic is the dependency graph the board enforces: a phase can't start until the one
+before it is done.
 
 ![The season: the Recurring tasks epic, expanded](img/epics.png)
 
-*The Recurring tasks campaign on The season (`#/epics`), as four rounds and the
-Final. Round 1 (the recurrence rule on the task model) unblocks Round 2 (the
-API), which unblocks Round 3 (the next-occurrence logic and the repeat picker,
-which run in parallel), which unblocks Round 4 (the docs); the Final acceptance
-ticket waits on all of them. Each card shows the tickets it waits on until they
-land, and the footer names the next fixture: #8, the only one ready.*
+*The Recurring tasks campaign on The season (`#/epics`), four rounds and the Final.
+Each card shows the tickets it waits on until they land, and the footer names the next
+fixture.*
 
----
+## Specs: a frozen statement of intent in front of the planner
+
+A spec is the optional power path in front of the planner; the one-line brief still
+works on its own. In the Plan a build composer, the spec step drafts a spec from your
+brief (`runner/bin/spec-author.mjs`, with the brief quarantined as untrusted text): a
+list of clauses, each a requirement, a non-goal or a decision. You edit the clauses and
+press **Freeze**, which takes an immutable snapshot. Freezing seeds each clause into
+Memory as draft lore of its kind, so once approved it reaches every delivery agent's
+product context like any other intent lore.
+
+The planner then takes the frozen spec as one more quarantined input, and each
+acceptance criterion it writes records the clause it covers. The **Specs** view
+(`#/specs/:id`, backed by `GET /specs/:id/coverage`) shows each clause with its covering
+criteria, which are satisfied and which are open, and the clauses no ticket covers.
+`GAFFER_SPEC_COVERAGE_GATE` only sets an advisory flag in that coverage read; nothing
+blocks on it. The same objects are on the MCP server (`create_spec`, `get_spec`,
+`freeze_spec`) and the CLI (`gaffer wg spec`).
 
 ## The work board
 
-Day-to-day, work lives on the board. Tickets flow through
-**draft → ready → in-progress → blocked → review** lanes:
+Tickets flow through draft, ready, in progress, blocked and review lanes:
 
-- **Draft** — being shaped; vague tickets park here for a human rather than
-  being forced through. Acceptance criteria are added before a ticket can go
-  ready.
-- **Ready** — claimable; the runner picks these up. A ready ticket with no
-  repo it may write to (the default `solo_loose` pack only warns about it) is
-  parked as blocked (`no_write_repo`) rather than delivered or retried; one
-  whose write repo has no local checkout is parked as `no_local_repo_path`.
-- **In progress** — claimed by an agent (the card shows which one).
-- **Blocked** — surfaced for a human, not silently retried forever. You can park
-  a draft, refining, ready or by-hand ticket yourself with `gaffer wg block <n>
-  --reason "…"` (recorded as you, `$USER`) and send any blocked ticket back with
-  `gaffer wg unblock <n>`: to draft or refining when you blocked it from there,
-  otherwise to ready (`--to` picks). An agent still blocks only its own claim,
-  with its claim token. The runner's park reasons name the command.
-- **In review** — delivered, awaiting your sign-off.
+- **Draft**: being shaped. Acceptance criteria are added before a ticket can go ready.
+- **Ready**: claimable. A ready ticket with no repo it may write to is parked as
+  blocked (`no_write_repo`); one whose write repo has no local checkout as
+  `no_local_repo_path`.
+- **In progress**: claimed by an agent (the card shows which).
+- **Blocked**: surfaced for a human, not retried forever. Park a ticket yourself with
+  `gaffer wg block <n> --reason "..."` and send it back with `gaffer wg unblock <n>`
+  (`--to` picks where). An agent blocks only its own claim.
+- **In review**: delivered, awaiting your sign-off.
 
-Every card carries a **risk badge**, a **priority**, and live
-**acceptance-criteria progress** (`2/3 satisfied`).
+Every card carries a risk badge, a priority and live acceptance-criteria progress
+(`2/3 satisfied`). The board is live: the control plane streams its event log to the
+browser. It stays usable with years of history: the Work view loads a window of each
+lane with the true counts in the lane heads, and the rest is one link away in the List
+view.
 
 **A ticket's contract can be fixed until it is claimed.** `gaffer wg ticket edit <n>`
-changes the title, description, policy pack or priority, and `gaffer wg ac edit <n>
-<ac>` / `gaffer wg ac rm <n> <ac>` correct or remove a criterion (`<ac>` is its
-position, 1 for the first, or its id); REST has `PATCH /tickets/{id}` and `PATCH` /
-`DELETE /tickets/{id}/acceptance-criteria/{acId}`. So every ready-gate refusal names
-something you can fix: `DESCRIPTION_REQUIRED` with `ticket edit -d`,
-`AC_VERIFICATION_REQUIRED` with `ac edit --verify`, `REVIEWER_REQUIRED` with
-`ticket set-reviewer`, `HUMAN_APPROVAL_REQUIRED` with `ticket approve-ready`, and
-`ticket create` warns when the pack will need a description it wasn't given. The
-contract (title, description, policy, criteria, check commands) is editable in
-draft, refining, ready and blocked. From claimed on it is frozen, because the
-review and the tester are held to the contract the delivery saw: every contract
-edit, `ac add` included and over MCP too, is refused with `CONTRACT_FROZEN` (409)
-until the ticket comes back for rework. The test contract the independent tester
-reads is held the same way once the tester has it: editable up to `in_review`,
-`CONTRACT_FROZEN` from `in_testing` on. An edit to a ready ticket must keep it
-passing its ready gate. Each edit is an event on the ticket (`ticket.edited`,
-`ac.edited`, `ac.removed`), and an edited criterion goes back to pending.
+changes the title, description, policy pack or priority; `gaffer wg ac edit <n> <ac>`
+and `gaffer wg ac rm <n> <ac>` correct or remove a criterion (REST: `PATCH
+/tickets/{id}` and `PATCH`/`DELETE /tickets/{id}/acceptance-criteria/{acId}`). So every
+ready-gate refusal names something you can fix: `DESCRIPTION_REQUIRED` with
+`ticket edit -d`, `AC_VERIFICATION_REQUIRED` with `ac edit --verify`,
+`REVIEWER_REQUIRED` with `ticket set-reviewer`, `HUMAN_APPROVAL_REQUIRED` with
+`ticket approve-ready`. From claimed on the contract is frozen (`CONTRACT_FROZEN`)
+until the ticket comes back for rework, because the review and the tester are held to
+the contract the delivery saw. The tester's test contract stays editable through
+`in_review`.
 
-The board stays usable on a factory with years of history. The Work view loads
-a visible window of each lane (`GET /api/board?limit=200`; Done, failed and won't-do
-newest first) and the lane heads show each lane's true size from the server's
-`counts`; the rest of a lane is one link away in the List view, which filters on
-the server. A filter typed on a windowed board applies to the loaded cards and says
-so. Without `limit` the board answers the first 500 cards of each area (its `counts`
-say how many there are, and `area` with `offset` pages one), and `GET /tickets`
-answers 500 rows with a `next_offset`, so a bare read of a big board stays small (a
-20k-ticket board used to answer 54 MB). The views that need every ticket's links (the
-Map, the Overview, Epics, a ticket's campaign card) read them in batches through
-`GET /tickets/details` (by `ids`, or a page of every ticket, with only the parts they
-use) and every repo's grounds through `GET /scope/repos?all=1`, instead of one
-`GET /tickets/:id` per ticket: the Map at 2,000 tickets settles in about 0.6 s with
-14 requests (it took 2–4 s and over 600).
-
-An acceptance criterion can be **machine-checkable**: give it a check command
-(`npm test`, a script, an HTTP probe) and the runner executes it in the delivery
-worktree after the Definition-of-Done gates. Exit 0 marks the criterion
-satisfied as *runner-verified*, with the output stored as evidence; a failure
-sends the delivery back to rework with that output as feedback — and the done
-gate refuses a checked criterion an agent merely *claimed* to have met. The
-repo page holds the Definition-of-Done gate commands (test / lint), auto-detected
-at onboarding and editable there, because a wrong gate command is the commonest
-reason a delivery bounces or ships unverified. The typecheck gate runs the repo's
-package.json typecheck script (a `typecheck`-style script or a bare
-`tsc --noEmit`), read from the base branch so a delivery cannot delete it away;
-`GAFFER_DOD_TYPECHECK_CMD` overrides it. The same holds for every gate: when a
-gate command calls a package.json script (`npm test`, `pnpm run lint`), the
-script is read from the commit the delivery branched from, and a delivery that
-rewrote it runs the base script instead, so editing `package.json` cannot
-redirect its own gate. The repo's coverage command is stored on
-the same page but is **not** a Definition-of-Done gate (coverage-did-not-decrease
-needs a stored baseline and is deferred): it feeds the idle coverage scan below.
-
-The board is **live**: the control plane streams its event log to the browser,
-so a transition shows up within a second instead of on a polling timer.
-
-**The club and the squad.** The header crest carries the club's short name and
-its name from `/api/club`; with the full token it opens *Name your club* (name,
-crest letters, the two kit colours, with a live preview), and the kit colours
-re-dress the header, crest and shirts with a contrast guard. Every agent is shown
-by its display name and shirt number (`/api/squad`, or the `agent_display` a
-payload carries) on the board cards, the Tactics board, Review, ticket timelines,
-Squad & form and Health. The **Squad** page (`#/squad`) lists the squad and
-renames an agent in place; a taken shirt number is refused with the holder's
-name, and a read-only token sees no editors.
-
-**Read-only access.** A read-scoped token (Settings → Access, `wg principal
-create <name> --read`, or `print-read-token` with the dashboard's `GAFFER_DATA`
-for its own token's twin) sees one "Read-only access" strip and every control that would
-change something switched off with a title saying why, on every view: Review's
-sign-off, Revoke and Reopen, the Map, ground and repo editors, Onboard, Author a
-spec and Freeze, and the whole Plan a build composer. The page never sends such a
-token's write, so nothing comes back as a 403; the `s18-read-only` browser suite
-walks 23 views to keep it so. The login gate sends no data call until a token is
-there: `/healthz` says whether one is wanted, and a stored token is checked once.
-
-**Scoped access.** A principal can be scoped to repositories and tickets
-(Settings → Access's Repo scope and Ticket scope, or `wg principal create <name>
---repo <name> --ticket <n>`, both repeatable). It then sees only tickets whose
-write repos are all in its repos, plus the tickets named, and the server refuses
-everything else with 403 `SCOPE_DENIED` naming its scope. On the dashboard such a
-token opens on the Work board instead of the Overview, sees one "Scoped access"
-strip naming what it holds, keeps the controls on its own tickets (Move, a
-ticket's actions, Review's Approve and Send back) and finds every factory-wide
-control (Poll for work, Suggest work, Create, Settings' Save, the Map and spec
-editors, Onboard) switched off with the title "Scoped access: this token can
-change only the tickets in its scope (…)". The live feed carries only its tickets'
-events, and the page never sends a call the server would refuse. A dependency on a
-ticket outside the scope shows as its number and "outside this token's scope",
-without the other ticket's title or a link to it. Repository-level
-changes need an admin principal (Acts as: admin): a human principal finds
-Settings' Save, Onboard and the repository editors switched off with the title
-"Admin access: …". The `s13-principals` browser suite mints a ticket-scoped
-token from Settings and walks it.
-
-**Who the CLI is.** `wg whoami` says who writes are recorded as. Without a token
-that is `$USER`, asserted and not checked, because the CLI opens the database
-directly. With `GAFFER_PRINCIPAL_TOKEN=<token>` (or `--as-principal <token>`),
-`wg`, `gaffer approve` and `gaffer merge` act as that principal: its identity on
-every write, its read-only flag and its scope enforced as on the API, and
-`whoami --can-write <n>` answers whether it may change a ticket. The runner's and
-agents' own commands (`attach-evidence`, `claim-ticket`, `submit`, `runner-release`
-and the like) write as the system or an agent, so a principal is refused them.
-`ticket create --repo <name>` gives a new ticket its write repo in the same step,
-which is how a repo-scoped principal creates one.
-
-**The Team sheet** lists everything waiting on you, one action a row: decisions,
-sign-offs, approved changes to merge, blocked tickets, a delivery paused at a cap
-(Continue… offers Continue and Stop) and one row for the lore drafts awaiting
-approval (it opens Memory). *Delivered today* counts the tickets that landed
-since midnight UTC and opens the Floor, whose lorry shows the same ones.
-
-**The headline names the work.** The Overview's scoreboard headline leads with
-the ticket's title, the number kept as a muted reference after it: "Webhook
-delivery #10 is blocked by a failing test.", never "#10 is blocked." With nothing
-blocked, the first thing waiting leads ("Export tasks to CSV #12 awaits your
-sign-off."). The same goes for every scoreboard sentence that names a ticket (an
-approved change not yet merged, the tickets the squad is on, Health's recurring
-injuries, the Review page's "moved on" card). On a phone the count is said once,
-on the Team sheet: the headline drops its "3 things need you." for the work, and
-the scoreboard keeps the three counters not already on screen.
-
-**The Floor.** `#/floor` draws the live factory as an isometric floor: stations
-along a conveyor in lifecycle order (drawing office, Stores, Assembly,
-Inspection, test rig, loading bay, Despatch), one parcel per open ticket at its
-station, a robot in the agent's shirt number on every live claim, a hazard-taped
-jam bay with a beacon for blocked, paused and failed tickets, a spend tank filled
-to today's wage bill against the daily budget, and a lorry carrying what was
-done today. It reads the Overview's own data and refreshes on the live stream.
-Parcels, robots and stations are links with sentence labels; the stations and
-benches are also listed as text under the drawing.
-
-**Health: what the numbers mean.** `#/health` (and `GET /api/health`) reads the
-usage ledger and the ticket transition log, and says only what those can show:
-
-- **The four measures.** A card under the verdict shows the four figures every
-  feature has to move. **First-pass acceptance** is the share of done tickets that
-  nobody sent back after they first entered review (a person, the reviewer agent
-  or the tester) and that were never reopened, split by who approved them, so an
-  agent approval never reads as a human one (`first_pass` also has a strict figure
-  that counts the runner's own retries). **Human review time** is the median, over
-  accepted tickets, of the wall-clock time from a person opening the ticket in
-  Review to their decision, summed over its review rounds, with p75 and p90. It is
-  time with the page open, not reading time. When you open a ticket
-  in Review the dashboard records it once per review round
-  (`ticket.review_opened`, with the round and the commits on screen; it never marks
-  the ticket changed), so each round splits into the wait in the queue and the
-  time from opening it to your decision. A round with no open recorded (older
-  history, a decision from the CLI, a read-only token, which cannot record one)
-  counts its whole time in review, and the card says which basis it used. Tickets
-  only an agent approved are counted apart, never as zero minutes.
-  **Accepted-change cost** is the figure below. **Escaped-defect rate** is the
-  share of changes accepted in the window (30 days, the Health window) that a
-  person later linked a defect to, with the all-time figure beside it. It counts
-  only what a person filed: when a later ticket (the defect report or its fix)
-  is a regression of an accepted change, say so on its ticket page (the
-  *Escaped defects* card: the change's number and, if you like, what broke), with
-  `wg ticket regression-of <ticket> --of <change> [--note "..."]`, or
-  `POST /tickets/:id/regression-of`. That records `ticket.defect_escaped` on the
-  later ticket with your name; `--withdraw` (or Withdraw on the card) takes a link
-  back. The change must be done, and both tickets show the link. Gaffer never
-  guesses a regression from a revert or a red build, and an agent can neither file
-  nor withdraw one: dispatch refuses an agent or the runner, the safety hook
-  denies the verb in an agent shell, and the MCP `get_ticket` shows the links
-  read-only (numbers and statuses, not your note). `review_time` also
-  serves the median queue wait and decision time, the time from review-ready to
-  decision, and the share of tickets approved without opening a raw view
-  (`ticket.review_raw_opened`: the run log or the full diff from the ticket page,
-  an evidence row in full from Review) among the approving rounds that recorded
-  an open. Beside decision time it serves an **active** figure, an approximation of
-  attention: from the last time you opened the ticket or a raw view in the round
-  to your decision, capped at two hours (`review_time.active`), so a page left
-  open overnight does not count as hours of review. `gaffer wg stats` prints the
-  same figures.
-- **Lane verdicts.** The reviewer agent, the security reviewer, the tester and the
-  eval judge each record what they concluded as a `ticket.lane_verdict` event
-  (lane, verdict, the commit they judged and the delivery attempt, with
-  `attempt_id_basis`), recorded by
-  the runner only: dispatch refuses an agent and the safety hook denies
-  `wg ticket lane-verdict` in an agent shell. Health counts them per lane; nothing
-  gates on them. Every review, tester and judge row in the usage ledger carries
-  an attempt, the repo and the ticket's risk at call time. The attempt is the
-  ticket's latest delivery row in the ledger when the call ran
-  (`attempt_id_basis: latest_delivery_row`): a join by time order, not a match on
-  the commit, and nothing when that latest row has no attempt id. A
-  delivery or review row carries the router's tier and its reasons
-  (`route_tier`, `route_reasons`).
-- **What each lane changed.** A card under the four measures (and
-  `lane_value` in `GET /api/health`, and `gaffer wg stats`) says, for the reviewer
-  agent, the security review, the tester, the eval judge and the plan debate, how
-  many verdicts it recorded, how often its verdict differed from your decision on
-  the same attempt (split into "it blocked and you passed it" and "it passed and
-  you sent it back"), how often it was the only lane that asked for a send-back,
-  and its ledger cost per attempt (spend over the attempt ids on the lane's ledger
-  rows, which are the latest delivery row when the call ran: a join by time order).
-  An attempt runs from one start of work to the next (resuming a delivery paused at
-  a cap continues it); a verdict joins the attempt it falls in by time. A lane with no verdicts
-  says "no verdicts recorded" (the plan debate records none and books with the rest
-  of planning). It also counts the send-backs no lane asked for. These are counts,
-  not advice: nothing reads them to switch a lane off, and the security review and
-  the tester are safety lanes that telemetry never switches off.
-- **Review rules from your feedback.** When the same send-back reason or must-fix
-  comment from a person (compared after dropping ids, paths, file names and
-  numbers) turns up on three tickets in a repository (`GAFFER_REVIEW_RULE_REPEAT`,
-  2 to 20, also in Settings under Quality), the next send-back or must-fix comment
-  proposes it, once its response has gone back to you, as a lore
-  `convention` draft tagged `review-rule`, scoped to that repository, with the
-  source comments and reasons as examples and the count. You approve or reject it
-  like any other draft (the Memory view, `gaffer lore approve`); it never
-  approves itself, `MEMORY_AUTO_APPROVE=1` included. Only a person's feedback
-  counts: the reviewer agent's, the tester's and the runner's send-backs never
-  seed a rule. `wg review-rules` (and `GET /api/review-rules`) lists the
-  candidates and each proposed rule with its status and its measure: rejections
-  citing it per review round you decided in that repository, before and after
-  approval over equal windows, or "not enough data" until there are five rounds
-  after. `wg review-rules propose` proposes by hand. The proposal never holds up
-  your reject or comment: it runs after the response, a memory failure changes
-  nothing you did, and after one the dashboard waits five minutes before it tries
-  the memory CLI again. Reading the list is bounded too: the dashboard reuses each
-  rule's status from memory for a minute (an approve or reject in the Memory view reads
-  afresh), and when memory does not answer it stops asking for the rest of that read and
-  for the next minute, so a slow memory makes the statuses read as unknown, not the page
-  slow.
-
-- **Rework.** A ticket is *sent back* when a reviewer or the tester rejects it,
-  or when the runner retries it after a failed gate; both count. Every delivery
-  ledger row carries its attempt (a hash of the claim plus the attempt number,
-  never the claim token) and the time it started, so **spent on rework** is the
-  delivery spend of the attempts that started after the ticket's first send-back.
-  A $1 attempt, a rejection and a $3 correction read as $3 on rework (75% of
-  spend), and the referee's **rework rate** as 1 of 1 merged tickets sent back.
-  Each ticket's row says how many send-backs came from review and how many from
-  the runner, and whether its spend was placed by attempt or, for rows older than
-  attempt ids, by the call's end time minus its duration.
-- **Per accepted change** is what a change that reached done really cost: the
-  spend of every attempt on every ticket (parked, failed and abandoned ones
-  included) divided by the tickets that reached done, with the attempts each took.
-  `gaffer wg stats` adds what the done tickets alone cost, the spend by outcome,
-  the spend with no ticket (left out) and human review time, and `gaffer eval`
-  prints it under the judge's cost per pass, which only sees submitted work
-  (docs/eval-harness.md has the definition and its limits).
-- **Replay manifests.** Every delivery attempt leaves one small JSON record under
-  `$GAFFER_DATA/manifests/<ticket>-<n>.json`, opened when the agent is spawned and
-  completed however the attempt ends (submit, a gate's rework or park, a pause at a
-  cap or the tick timeout, a usage-window or budget refusal, a kill): each write
-  repo's path, base and head commit and registered test command, the router's tier,
-  model and reasons with the declared and effective risk, the settings that shape an
-  attempt (the scout, the scout packet, the tester lane, memory priming, the skills
-  mounted, the sandbox), sha256 hashes of the prompt and scout packet (never their
-  text), the usage-ledger attempt id it joins to, and the outcome with the gate rows;
-  the judging lanes' verdicts and the landed commit are added later. It is capped at
-  16 KiB, a test command loses anything that looks like a credential, and a write
-  failure is logged and never holds up the delivery.
-- **The routing scorecard.** A card under the measures (and `routing_scorecard` in
-  `GET /api/health`, and `gaffer wg stats routing`) splits the work by provider,
-  model, role and work class (the risk the router saw, and the repo's stack where I
-  know it). For each cell it shows the calls and spend (estimates labelled, calls of
-  unknown cost counted and left out, never read as free), and for delivery the
-  attempts, how many submitted and how many went to rework (from the replay
-  manifests), and for the tickets that started there first-pass acceptance, attempts
-  and cost per accepted change, escaped defects and tester false greens. Every figure
-  shows its n; a cell with fewer than 10 attempts reads *too few to compare* and shows
-  no rate. Cells are never ranked and there is no overall score: it is a report, and
-  the router does not read it.
-- **Matched experiments.** `gaffer eval experiment --arm baseline --arm cheap:tier=cheap`
-  runs the same tickets (the gate-replay fixtures, or recorded tickets from their
-  manifests) once under each arm's settings, in a seeded random order, through the
-  same worker seam and gates a tick uses, counting every attempt, and writes
-  `results.json` and `report.md` with the paired difference per ticket in acceptance,
-  attempts, spend and the judge score where there is one, and their mean, 95% interval
-  and n. A ticket an arm never submits counts as that arm's failure. By default the
-  agent is a stub that replays the recorded change, so it costs nothing and runs in CI;
-  `--live` runs the real agent under a hard USD cap for the run (`--max-usd` or
-  `GAFFER_EXPERIMENT_MAX_USD`, required; a call whose spend cannot be read counts its
-  whole cap, so the run stops after it), a ticket cap and the factory's own budget
-  admission and usage pause, and books its calls as kind `experiment` with no ticket.
-  Nothing is recorded to dispatch, nothing lands and nothing is pushed.
-  [docs/eval-harness.md](eval-harness.md#matched-ticket-comparison) has the arms, the
-  report and the limits.
-- **Routing recommendations, which you apply.** `gaffer wg routing recommend` reads
-  the scorecard and any experiment results and, where the evidence is strong enough,
-  prints a proposed `runner/model-registry.json` change as a diff with the cells, n
-  and deltas behind it: only for delivery, only where another tier is cheaper per
-  accepted change and no worse on first pass or escaped defects in every work class
-  with at least 10 attempts and 10 accepted changes on both (or 10 points better on
-  first pass, labelled a trade-off), or where a live experiment against the default
-  tier has a paired acceptance interval at or above zero at lower spend. It never edits the registry and never proposes anything for the
-  reviewer or the tester. The Health card carries one Routing line saying whether there
-  is a proposal. To apply one, edit the registry yourself (or point
-  `GAFFER_MODEL_REGISTRY` at an edited copy); `route-model.mjs` stays the only thing
-  that routes.
-- **Flow efficiency** is the median share of a shipped ticket's lead time with
-  an agent working on it (`claimed` or `in_progress`). Everything else is
-  waiting, and the form guide lists it on its own: **waiting to merge** (approved,
-  in `ready_for_merge`, with the longest wait), **in review or testing**, **sent
-  back, waiting for rework** (back in draft, refining or ready after work began,
-  waiting for a human to refine it or the runner to claim it again), **blocked or
-  paused**, and **before work started** (everything before the first claim), plus
-  the share of lead time queued after work began: review, the merge queue,
-  send-backs and holds. Review counts as waiting because the transition log shows
-  how long a ticket sat in review, not how long anyone actively reviewed it. A
-  ticket that took 11 minutes to reach merge-ready and then waited a week reads
-  under 1% with a week's merge wait, not 100%. A ticket sent back to refining
-  that waited three days there shows those days as a send-back, not as time
-  before work started. With nothing shipped the figure is a dash.
+**Machine-checkable criteria.** Give a criterion a check command (`npm test`, a
+script, an HTTP probe) and the runner executes it in the delivery worktree after the
+Definition-of-Done gates. Exit 0 marks it satisfied as runner-verified with the output
+as evidence; a failure sends the delivery back with that output. The repo page holds
+the gate commands (test, lint), detected at onboarding and editable there. The
+typecheck gate runs the repo's package.json typecheck script, read from the base
+branch; `GAFFER_DOD_TYPECHECK_CMD` overrides it. The coverage command on the same page
+is not a gate; it feeds the idle coverage scan.
 
 ![The work board](img/board.png)
 
-*Tickets spread across the lanes: the Recurring tasks drafts being shaped,
-ready work waiting, two tickets claimed by Bez and Mo, one blocked after three
-rework attempts, and the CSV export Kev delivered into review. On the pitch lists
-which agent holds which ticket.*
+*Tickets across the lanes: the Recurring tasks drafts being shaped, ready work
+waiting, two tickets claimed by Bez and Mo, one blocked after three rework attempts,
+and the CSV export Kev delivered into review.*
 
----
+### The club, the squad and access
+
+- **The club and the squad.** The header crest carries the club's name and short name
+  (`/api/club`); with the full token it opens *Name your club* (name, crest letters,
+  two kit colours, with a contrast guard). Every agent is shown by its display name and
+  shirt number. The **Squad** page (`#/squad`) renames an agent in place; a taken shirt
+  number is refused with the holder's name.
+- **Read-only access.** A read-scoped token (Settings → Access,
+  `wg principal create <name> --read`, or `print-read-token` with the dashboard's
+  `GAFFER_DATA`) sees a "Read-only access" strip and every control that would change
+  something switched off, on every view. The page never sends such a token's write.
+- **Scoped access.** A principal scoped to repositories and tickets (Settings → Access,
+  or `wg principal create <name> --repo <name> --ticket <n>`) sees only its tickets,
+  opens on the Work board, keeps the controls on its own tickets and finds every
+  factory-wide control switched off. Repository-level changes need an admin principal.
+- **Who the CLI is.** `wg whoami` says who writes are recorded as: `$USER`, asserted,
+  without a token; with `GAFFER_PRINCIPAL_TOKEN=<token>`, `wg`, `gaffer approve` and
+  `gaffer merge` act as that principal, its read-only flag and scope enforced as on the
+  API. `ticket create --repo <name>` gives a new ticket its write repo in one step.
+
+### The Overview, the Floor and Health
+
+**The Team sheet** on the Overview lists everything waiting on you, one action a row:
+decisions, sign-offs, approved changes to merge, blocked tickets, a delivery paused at
+a cap (Continue offers Continue and Stop) and one row for the lore drafts awaiting
+approval. *Delivered today* counts the tickets that landed since midnight UTC. The
+scoreboard headline leads with the work, not the number ("Webhook delivery #10 is
+blocked by a failing test.").
+
+**The Floor** (`#/floor`) draws the live factory as an isometric floor: stations along
+a conveyor in lifecycle order, one parcel per open ticket, a robot in the agent's shirt
+number on every live claim, a jam bay for blocked, paused and failed tickets, a spend
+tank against the daily budget and a lorry carrying what was done today. Everything on
+it is a link, and the stations are listed as text under the drawing.
+
+**Health** (`#/health`, `GET /api/health`, and `gaffer wg stats` in the terminal) reads
+the usage ledger and the transition log, and says only what those can show:
+
+- **First-pass acceptance**: the share of done tickets nobody sent back after they
+  first entered review and that were never reopened, split by who approved them.
+- **Human review time**: the median over accepted tickets of the time from a person
+  opening the ticket in Review to their decision, summed over its rounds, with p75 and
+  p90, and an *active* figure capped at two hours per round. It is time with the page
+  open, not reading time; tickets only an agent approved are counted apart.
+- **Per accepted change**: the spend of every attempt on every ticket (parked, failed
+  and abandoned ones included) divided by the tickets that reached done.
+- **Escaped defects**: the share of accepted changes a person later linked a defect to.
+  Link one on the later ticket's page (the *Escaped defects* card) or with
+  `wg ticket regression-of <ticket> --of <change>`. Gaffer never guesses a regression,
+  and an agent can neither file nor withdraw one.
+- **Lane verdicts and what each lane changed.** The reviewer agent, the security
+  reviewer, the tester and the eval judge each record their verdict
+  (`ticket.lane_verdict`, runner-recorded only). Health counts how often each differed
+  from your decision on the same attempt, how often it alone asked for a send-back, and
+  its cost per attempt. These are counts; nothing switches a lane off from them.
+- **Rework**: a ticket is sent back when a reviewer or the tester rejects it or the
+  runner retries it after a failed gate. *Spent on rework* is the delivery spend of the
+  attempts after the first send-back.
+- **Flow efficiency**: the median share of a shipped ticket's lead time with an agent
+  working on it. Review, testing, the merge queue, send-backs, holds and the time before
+  work started are waiting, each shown on its own.
+- **Review rules from your feedback.** When the same send-back reason or must-fix
+  comment from a person turns up on three tickets in a repository
+  (`GAFFER_REVIEW_RULE_REPEAT`, 2 to 20), the next one proposes it as a repo-scoped lore
+  `convention` draft tagged `review-rule`. You approve or reject it like any other
+  draft; it never approves itself, `MEMORY_AUTO_APPROVE=1` included. Only a person's
+  feedback counts. `wg review-rules` lists the candidates and each rule's measure
+  (rejections citing it before and after approval, or "not enough data").
 
 ## The human review gate
 
-When an agent delivers, the ticket lands in **Review** — and this is the
-structural barrier the whole design hangs on.
+When an agent delivers, the ticket lands in **Review**, the structural barrier the
+design hangs on. The agent cannot approve or merge its own work (enforced
+server-side unless you opt into agent approval, see
+[Control you opt into](#control-you-opt-into)), and the diff you review is the real
+`git diff`, computed server-side from the delivery branch, not a summary the agent
+wrote. How each of these is enforced, and its limits, is in
+[SECURITY.md](../SECURITY.md#the-review-gate).
 
-- The agent **cannot approve or merge its own work**. Approval is enforced
-  server-side; an agent actor is refused unless you explicitly opt into agent
-  approval (see [Settings](#control-you-opt-into)).
-- The diff you review is the **real `git diff`**, computed server-side from the
-  delivery branch against the repo's default branch — not a summary the agent
-  wrote about itself.
-- **The runner's facts come first.** Under the title, a **verdict strip** shows
-  what the runner recorded, not what the agent says: each Definition-of-Done
-  gate (passed, failed or skipped, with the command it ran) and the test count
-  the runner saw in the test gate's own output (vitest, jest, pytest, cargo,
-  `go test -v`, `node --test`); the independent tester's verdict and the commit
-  it tested (or "not yet" before its PASS: it tests before you review); cost and turns so
-  far from the usage ledger; the attempt and who sent it back before; the risk
-  level with its reasons (recorded, then the diff's own risk flags); and the
-  reviewed-commit pin when one is recorded. The **acceptance-criteria table**
-  shows each criterion's check command and the runner's recorded exit code, or
-  **no machine evidence** on a yellow card when only the agent's word (or
-  nothing) backs it. When the agent's evidence for the current attempt claims a
-  count for the whole suite ("all 42 tests pass", "42/42", a pasted runner line,
-  or a bare "42 tests pass" outside a criterion's evidence) or "all tests pass",
-  and the runner's output contradicts it, a flag says so: "the summary says 42,
-  the runner saw 40". A count for part of the suite ("3 new tests", "30 unit
-  tests", one criterion's or one file's "3 tests pass", "1 of 2 passing") is not
-  compared, nor is a claim from an attempt that was sent back. Gate results, the test count and criterion exit codes
-  come only from rows the runner recorded as the system, and the tester's verdict
-  only from the row a tester pass or fail recorded; an agent-recorded row that
-  looks like a gate report or a tester verdict is ignored. On a reworked ticket
-  the strip shows only this round's facts: a tester verdict or a review pin
-  recorded before the ticket last entered review, and a criterion's check result
-  from before the latest send-back, are about earlier code and are left out (the
-  landing check ignores such a pin too). It is
-  one read (`GET /tickets/:id/dossier?include=packet`), no model call. The count
-  is what the test runner printed, and the tests run the delivered code, so treat
-  a match as consistency, not proof. The runner keeps those summary lines with
-  tabs turned into spaces and drops any that start with `GATE`, `---` or
-  `gotest-tally:`, and it reads gate rows only outside the framed output blocks,
-  so a test that prints a gate-shaped line cannot add a gate to the strip.
-- **What was asked, and whether this is the candidate that passed.** Above the
-  strip, **What was asked** shows the ticket's description as text. The strip's
-  **Candidate** cell puts the commits side by side for each write repo: the commit
-  the gates ran on (the runner records it right after its gates, from the same
-  worktree head), the commit the diff shows (the one Approve binds to), the commit
-  the independent tester tested and the review pin. It reads **One commit** when
-  they agree, **Differs** when they do not (and a *Not the gated commit* flag joins
-  the flags list), **Unknown** when one cannot be read, and **Moved** when the
-  branch moved between the facts and the diff on screen. A rework enters review a
-  moment before the runner records the commit its gates ran on, so until that
-  record is in (or if it failed) the cell reads **Not recorded** and the flag says
-  *Gated commit not recorded yet*, rather than calling an earlier attempt's commit
-  a difference. Only the runner's own record counts as the gated commit: one an
-  agent or a person recorded is shown as their record and reads **Unknown**. The **CI**
-  cell shows the latest CI result recorded for the candidate commit. When the run
-  that delivered the change (or ran the tester) was started from the dashboard,
-  the cell links its run log; the runs table does not record the ticket, so the
-  link is the poll run that was running at the time, and says so.
-- **What backs this, and what is not backed.** A panel beside the flags lists the
-  facts behind the delivery in two lists, each with where it comes from: the gates
-  ran on the commit the diff shows, the runner's gates passed or a gate did not
-  run, how many checked criteria have a passing runner check and how many rest on
-  the agent's word or nothing, the tester's verdict and on which commit, required
-  CI, whether a gating test changed, and that nothing has run the change as a user
-  would yet. When the pre-work scout raised the ticket's risk before delivery, a row
-  under *What is not backed* says so and why ("Risk raised to high by the scout
-  before delivery (declared medium): migration file db/migrations/0042.sql, 14
-  callers of calculateInvoice"). There is no score and no headline: the flags list
-  stays the one list of things to check, and each row links to the strip cell it
-  comes from.
-- **The Behavioural surface, above the diff.** For a ticket in review the diff
-  read also lists what the change touches, worked out from the diff's own lines
-  and the tree at the head commit, with no model: exported declarations added,
-  removed or changed in TypeScript, JavaScript and Python files; migration files
-  and DDL statements; config files; environment variables newly read or no longer
-  read, and keys added to a `.env.example`; dependency entries added, removed or
-  bumped in `package.json`, `pyproject.toml`, `requirements*.txt`, `go.mod` and
-  `Cargo.toml`; generated files (lockfiles, `dist/`, anything `.gitattributes`
-  marks `linguist-generated`); changed modules that no test file in the change
-  imports (a search of the test files at the head for the module's name); route
-  files and route registrations for the common frameworks; and repos that depend
-  on this one in the Map's scope graph. Each line says how it was found ("from the
-  diff's lines", "by path", "by import text", "pattern match"…) and links to its
-  file in the diff. When the scan finds no migration, config, environment variable
-  or dependency change it says so once (never on a diff cut at its size cap, and
-  never "no dependency change" when a lockfile changed), and what it cannot work
-  out is said as not analysed. It is advisory: nothing gates on it and it does not
-  change the observed risk that holds auto-ship. Changed modules with no test in
-  the change also appear under *What is not backed*.
-  `GET /tickets/:id/diff?include=impact` returns the same facts for any ticket.
-- **Callers and tests of the changed symbols.** For each exported symbol the
-  change touches (its declaration line, or a line in its body) the Behavioural
-  surface lists the files on the base branch that import it, directly or through
-  a re-export barrel, which of them are changed here, which have a test that
-  imports them, and the tests that import it or are named for it: "calculateInvoice
-  changed: 6 files on main import it, 4 not changed here; 4 of the 6 have a test
-  that imports them; 3 tests import it or are named for it". A removed export or a
-  deleted module lists the files that still import it. A changed module with no
-  test in the change also says whether any test on the base imports it. These come
-  from the code index (below), labelled "by import text (index)", and are a lower
-  bound. They are listed only when the index describes the base branch's current
-  tip; when it is missing, stale or cannot be read, or the code is not TypeScript,
-  JavaScript or Python, the panel says callers are not analysed and why. Health
-  counts how often the callers row listed callers when someone opened a review.
-- **The eval judge's grade, when you turn it on.** With `GAFFER_EVAL_JUDGE=1` an
-  independent judge grades every submitted delivery against its acceptance criteria
-  on five dimensions (criteria, correctness, smallest change, tests, security), and
-  the verdict strip shows its verdict and score with the judge's reason for each
-  dimension it scored 3 or lower ("Smallest change 2/5: re-implements addTask as
-  appendTask"). It is labelled as what it is, a model's grade of the diff: nothing
-  gates on it, and only the runner can record one (an agent cannot grade itself).
-  It is off by default because it is one more paid model call per delivery. Whether
-  it is worth that on your factory is measured: after 20 or more reviewed deliveries,
-  `gaffer eval agreement` pairs each score with what you did (accepted or sent back,
-  and why) and says whether the score separated them, with the misses to read. See
-  [docs/eval-harness.md](eval-harness.md#is-the-judge-worth-having). The grade is
-  recorded a moment after the delivery reaches review, and recording it marks the
-  ticket changed, so a Review page that is already open redraws with it. A CI result
-  does not do that yet: one recorded while the page is open shows after the ticket
-  next changes or you reload, and an approval made in the meantime is still checked
-  against CI on the server, which says so if it refuses.
-- **You can comment on the change, and send it back with your comments.** The +
-  beside a diff line (either side), Comment on this file, Comment on the change, or
-  `c` on a line you clicked opens a comment, marked Must fix or Consider. It is
-  anchored from git at the commit you saw (the lines around it, hashed) and shown under
-  its line; the open ones join the flags list as "Open comments: N (M must-fix)".
-  Resolve, Reopen and Withdraw are yours alone: the server refuses an agent, the
-  agent's MCP only reads them (quarantined), and the safety hook denies the `review`
-  verbs in an agent shell. **Fix these (N)** sends the ticket back to Refining with
-  the open must-fix comments as numbered requirements; the button says what the click
-  does (back to Refining, parked at the attempt cap, or held as partly landed), and the
-  acceptance criteria reset as on any send-back. The next delivery prompt lists each
-  requirement with where it points, the anchored lines and what you asked, and the
-  agent answers each by id with a reply you see as "the agent says" (a claim, never a
-  resolution). From a terminal: `wg review comment <n> --file <path> --line <n> --body
-  "…" --must-fix`, `wg review comments <n>`, `wg review resolve <id>` and `wg review
-  fix <n>`. Open comments are a flag, not a hold: Approve still works with a must-fix
-  comment open, and the summary above the button names it. `wg review fix <n> --comment
-  <id>` sends only the comments you name, and only those (and any you write after it)
-  reach the next prompt. A principal scoped to some tickets can write and list comments
-  from the CLI, but `wg review resolve|reopen-comment|withdraw-comment <id>` take a
-  comment id, not a ticket, so the CLI refuses them to a scoped principal; it resolves
-  them through the dashboard or `POST /tickets/:id/review/comments/:cid/resolve`.
-- **The next attempt opens on what changed since your review.** A send-back pins the
-  commit you sent back per repository (`gaffer-rejected-commit:<sha>`, never read as an
-  approval), and the Review view of the next attempt shows **Changes since your
-  review** with **Whole change** one click away. Approve still covers the whole change.
-  It counts from the last commit a person sent back, so an agent reviewer's send-back
-  in between does not shorten it.
-  When the branch was rewritten since (the commit you sent back is not in the new
-  head's history), it says so instead of guessing. Each earlier comment says "anchor
-  changed in this revision" or "anchor untouched", from git, whatever the agent
-  replied. While the page is open it checks the heads on focus and every 20 seconds,
-  and a branch that moved shows the moved banner and turns Approve off before you
-  click.
-- The **Approve button stays disabled until that diff actually loads.** You
-  can't sign off on a change you couldn't see; even the keyboard shortcut
-  fails closed.
-- **Your approval is bound to the commit you read.** The diff names the commit it
-  shows for each repository, and Approve sends those commits back. If a branch moved
-  between the diff loading and your click, the approval is **refused** (`409
-  stale_revision`): nothing is approved, the Review view says the change moved and
-  reloads the new diff. `wg review approve` takes `--commit <repo>=<sha>` (the values
-  `wg ticket diff <n> --heads` prints; one per repository, and naming a repository twice
-  is refused with 422 whatever the order), and `gaffer approve` shows the commits and asks
-  before approving them; the factory's own agent review names the commit its reviewer
-  judged and follows the same rule (a multi-repo ticket, whose other repositories the
-  reviewer did not read, waits for you). The approval pins each repository's commit
-  as the reviewed commit; every landing
-  path (the Merge button, `gaffer merge`, the runner's merge lane) merges only
-  that commit and **holds** a branch that moved past it ("moved since the review
-  approved it") until it is re-reviewed. A tester PASS of a commit nobody
-  reviewed holds the same way.
-- **A ticket that spans several repositories is done when every one landed.** Each
-  repository's approved commit is merged and recorded separately; the ticket only
-  becomes *done* once all of them are on their default branches. Before the first merge
-  every landing path checks every repository still to land: one whose branch moved since
-  the review approved it, one with no approved commit, one whose checkout or delivery
-  branch is missing, or one whose required CI is red refuses the **whole** ticket. Nothing
-  is merged anywhere, the ticket stays in *Ready for merge*, and `gaffer merge` exits 4
-  naming the repository and the commands that fix it (for a moved branch:
-  `gaffer wg ticket reopen-for-review <n> --as admin --reason "..." --resolution "..."`,
-  then `gaffer approve <n>`). If one lands and another cannot for a reason only the
-  landing itself finds (a conflict or a dirty checkout), the ticket stays in *Ready for
-  merge* and shows as **Partly merged** in what needs you, naming which repositories
-  landed; a red merge gate holds it for you instead (blocked, the landed repositories
-  still recorded). The next merge lands only the rest. A partly landed ticket can only
-  be finished: `wg wont-do` and a cancelling send-back are refused with `PARTLY_LANDED`
-  (every landing on record counts, so a send-back or a reopen first changes nothing), and
-  a send-back to rework is held for you (blocked, parked as `partly_landed`) instead of
-  going back to the queue as if nothing had merged. A landing (`wg ticket record-landing`, which every
-  landing path calls per repository) is recorded only when it can be shown:
-  `--via local` needs the approved commit in the default branch's history; `--via pr`
-  needs a pull request on record for that repository and the change in the local default
-  branch (its history, or, after a squash or rebase merge, merging the commit into it
-  changes nothing); `--via pr-stale` needs the PR and checks the remote-tracking copy of
-  the default branch (or, without one, the local default branch). So *done* means landed
-  (`wg ticket landing <n>` shows the state; once the
-  approval is withdrawn by a send-back, a won't-do or a reopen it shows no approved
-  commit, the same as the ticket's status). The
-  runner's merge lane (and so **Poll for work**) finishes it only under the same
-  policy that lets it land any approval, decided again at that moment: a human
-  approval with Auto-merge on, or an earned merge grant. Turn Auto-merge off, or
-  withdraw an agent approval's `MERGE_ON_AGENT_REVIEW`, and the ticket stays
-  *Approved · partly landed* (its status says nothing lands the rest on its own)
-  until someone presses **Merge now**. An approval covers
-  **every** write repository: while one's delivery head cannot be read (no checkout
-  here, an unreadable path, its delivery branch missing) the approval is refused
-  (`repo_unavailable`) and the button reads *Approve held: <repo> unavailable*,
-  with what to do: attach the checkout or restore the branch, or make the
-  repository read-only on the ticket (a read-only repository never blocks). The
-  runner's agent reviewer reads only the primary repository, so its approval of a
-  multi-repo ticket is refused: a note on the ticket says so, the ticket waits for
-  a person, and the same delivery head is not reviewed again.
-- **Approve does not merge unless you ask it to.** With `AUTO_MERGE` off (the
-  default) an approved ticket waits in *Ready for merge* for **Merge now**; with
-  it on, a human approval lands on its own (an agent's approval also needs
-  `MERGE_ON_AGENT_REVIEW`, or an earned per-repo grant).
-- **The button says what the click does.** The server works out the first step
-  an approval will certainly take from the settings and ticket state the approve
-  path itself reads, and the sign-off button names it: **Approve held: not
-  tested on this commit** (the independent tester gates the ticket and has not passed
-  the commit under review, so the server refuses and the runner sends it to the tester
-  first), **Approve and land
-  now** (Auto-merge on with a merge command: the landing check and the merge gate
-  run at once, through the PR in PR mode), **Approve, lands on next tick**
-  (Auto-merge on, or an earned merge grant, with the runner's merge lane doing
-  the landing), **Approve, merge is a separate click** (Auto-merge off: it waits in Ready for merge for Merge now), **Approve
-  held: CI not passed** (required CI has no PASS for the commit, so the server
-  would refuse), or **Approve held: <repo> unavailable** (a write repository's
-  delivery head cannot be read, so the server refuses an approval that could not
-  cover it). When the delivery changed the tests that gate it, an agent's or
-  auto approval is held (*Approve held: tests changed, a person must allow it*)
-  but a human's is not: the line under the button says so and points at the
-  test-changes banner. A line under the button says what follows; on a multi-repo
-  ticket it says every write repo lands the same way, one merge each through the
-  merge gate, and that a repo that fails is held while the landed ones stay
-  recorded; under Review mode *both* the line says this click is the human
-  confirmation. The armed button only says it lands
-  when it does ("Confirm and land now"); after approval the button and the band
-  under it say where the change went (`GET /tickets/:id/diff` carries
-  `approve_outcome`).
-- **An approved ticket's status says where its landing is.** It never reads
-  "merging" unless something merges it: *Approved · waiting for Merge now*
-  (Auto-merge off, or nothing else lands it), *Approved · lands next tick* (the
-  runner's merge lane lands it: Auto-merge on and a human approval, or an earned
-  merge grant; *(paused: usage limit)* with the time while the usage window has
-  paused the runner), *Approved · landing* (a merge the dashboard started is running;
-  a second **Merge now** meanwhile is refused with `MERGE_IN_FLIGHT` and starts nothing,
-  and `gaffer merge` beside it exits 4),
-  *Approved · partly landed* (a landing is recorded for some of its write repos'
-  approved commits, not all: Merge now lands the rest and never re-merges a
-  landed one), or the hold's own words — *Held · moved since review* (naming the
-  repo whose branch moved off its review pin), *Held · approval does not cover
-  every repository* (a write repo with no approved commit), *Held · merge gate
-  failed*, *Held · CI red*.
-  The server stamps it as `landing_state` on the ticket, the board cards, the
-  ticket list and the Team sheet. The ticket page's *Your move* says the same
-  thing in its own words and offers the action that clears it (**Back to review**
-  for a branch that moved since review or an approval that missed a repository;
-  the `ticket.reopened_for_review` event records that cause, and only the conflict
-  resolver's reopen says a merge conflict was resolved), and the page follows the
-  live stream: when a landing completes, every open tab of that ticket turns to
-  Done and drops its merge actions without a reload. Text typed in a field on the
-  page and not yet sent keeps the page as it is until it is sent or cleared.
+### What the Review view shows
+
+- **What was asked**: the ticket's description, above everything else.
+- **The verdict strip: the runner's facts, not the agent's words.** Each
+  Definition-of-Done gate (passed, failed or skipped, with the command it ran), the
+  test count the runner saw in the gate's own output, the independent tester's verdict
+  and the commit it tested, cost and turns so far, the attempt and who sent it back
+  before, the risk level with its reasons, and the reviewed-commit pin. The
+  acceptance-criteria table shows each criterion's check command and the runner's
+  exit code, or **no machine evidence** when only the agent's word backs it. When the
+  agent's summary claims a whole-suite count the runner's output contradicts, a flag
+  says so ("the summary says 42, the runner saw 40"). On a reworked ticket the strip
+  shows only this round's facts. It is one read
+  (`GET /tickets/:id/dossier?include=packet`), with no model call.
+- **The candidate.** For each write repo, the commit the gates ran on, the commit the
+  diff shows (the one Approve binds to), the commit the tester tested and the review
+  pin, side by side: **One commit** when they agree, **Differs**, **Unknown** or
+  **Moved** when they do not. The **CI** cell shows the latest result for the
+  candidate commit.
+- **What backs this, and what is not backed.** Beside the flags, the facts behind the
+  delivery in two lists, each with its source: the gates, the checked criteria, the
+  tester, required CI, whether a gating test changed, a risk the scout raised, and that
+  nothing has run the change as a user would yet. There is no score.
+- **The Behavioural surface**, above the diff, lists what the change touches, worked
+  out from the diff and the tree with no model: exported declarations added, removed
+  or changed (TypeScript, JavaScript, Python), migrations and DDL, config files,
+  environment variables read or no longer read, dependency changes, generated files,
+  changed modules no test in the change imports, routes, and repos that depend on this
+  one in the Map. For each changed exported symbol it lists the files that import it,
+  which of them have tests, and the tests that import it, from the
+  [code index](#the-code-index) and labelled as a lower bound. Each line says how it
+  was found and links to its file. It is advisory: nothing gates on it.
+  `GET /tickets/:id/diff?include=impact` returns the same facts.
+- **The eval judge's grade, when you turn it on** (`GAFFER_EVAL_JUDGE=1`): a verdict
+  and score on five dimensions with the judge's reason for each low one. Nothing gates
+  on it, and only the runner records one. `gaffer eval agreement` says whether it is
+  worth its cost on your factory; see
+  [docs/eval-harness.md](eval-harness.md#is-the-judge-worth-having).
 - **A request for a human is never "Nothing flagged".** The runner's
-  `needs_human_review` notes, a reviewer agent's CHANGES, a tester's FAIL or hold,
-  a merge-gate hold, a flagged DoD gate and an observed-risk escalation are read
-  from the same evidence rows the Evidence list shows. They head the flags, count
-  in the summary line, sit in a yellow band beside the button (a live status for
-  screen readers), and the evidence row they came from is marked *asks for a
-  human*. With the verdict strip on the page they read its gate rows, so the
-  sign-off never says a gate failed under a strip that says the gates passed; a
-  test change is one *Test modified* flag beside the test-changes banner, never
-  repeated as an integrity gate or a risk level.
-- **"Done" means the combined code passed the gates on the target.** A branch
-  that passed its gates and a default branch that passed its gates can still
-  merge cleanly into something that fails (one side renames the field the other
-  side starts reading). So before anything lands — the merge lane, **Merge now**,
-  `gaffer merge`, the agent review's ship — the factory builds the merge of the
-  approved commit onto the *current* default branch in a scratch worktree and
-  runs the repo's Definition-of-Done gates on **that** merge — the same gates the
-  delivery ran: its test and lint commands and the typecheck script detected from
-  its package.json (read from the default branch first). It lands exactly
-  the gated merge commit, and only while the default branch is still the commit
-  it gated (compare-and-land; a branch that moved meanwhile is gated again). A
-  red combination never lands: the default branch is untouched and the ticket
-  waits in your queue (*blocked*, `merge_gate_red`) with the failing gate output
-  as evidence. In PR mode the gate runs on the merge onto the freshly fetched
-  remote default branch before `gh pr merge` is asked; GitHub's branch
-  protection ("require branches to be up to date" plus required checks) is the
-  compare-and-land upstream.
-- **A cancellation or a red check during the merge gate stops the landing.** The
-  gates can take minutes, and you can cancel the ticket or a required check can
-  turn red while they run. After the gates pass and immediately before a default
-  branch moves (or the provider is asked to merge a PR), every landing path asks
-  Dispatch again, once per repository: is the ticket still *Ready for merge*, on
-  the same approval, with that repository's approved commit and green required
-  CI? That check and a record that the landing has started are one transaction.
-  If the answer is no, nothing lands, the merge says `not landed: <reason>` and
-  exits non-zero, and the ticket stays as you left it (*cancelled*, or *blocked*
-  for the red check). If a landing had already started, the cancellation or the
-  failed check says so on the spot (`landed_already` in its output and a
-  warning naming the repository and commit): it stops every landing that had not
-  started and cannot undo one that had. The won't-do button and a board move
-  back to rework report it the same way. That landing still goes on record, and
-  the merge then says `LANDED AFTER A REVOCATION` and exits 4 instead of
-  reporting a clean merge; the ticket stays cancelled or blocked, not done. Once
-  a repository's landing is on record, or git already shows a started landing
-  on its default branch, a cancellation is refused outright and names it; land
-  the rest or revert it first.
-- **Every recorded pull request lands upstream.** A repository whose delivery
-  record carries a PR lands only through that PR, secondary repositories
-  included: the merge gate runs on its freshly fetched remote default, then the
-  provider is asked to merge that PR. A merge into the local checkout is not a
-  landing for such a repository, so the ticket is done only when every recorded
-  PR has merged. If the provider refuses one, that repository does not land and
-  the ticket stays open (*partly landed*). `GAFFER_PR_LOCAL_FALLBACK=1` is still
-  the explicit way to land a PR repository locally instead, for each one.
-- **The independent tester's assertions run on what lands, not only on what it
-  tested.** The tester's PASS is about the commit it tested, and its black-box
-  tests live on their own branch (`gaffer-tests/ticket-<n>`), never on the
-  delivery branch. After the default branch moved, the merge could pass the
-  repo's own suite yet fail the tester's saved assertion. So once the merge gate
-  passes, the same scratch merge also gets the tester's test files (only the ones
-  it added or changed, never its agent wiring) and the repo's test command runs
-  there too — on every landing path, PR mode's gate on the fetched remote
-  included. What runs is **the repo's registered test command itself**, with
-  only the tester's files and a proof reporter appended (`npm test` is read as
-  the gated base's `test` script and runs with `node_modules/.bin` on PATH; for
-  go the tester's packages replace `./...`, for cargo `--test <name>` goes
-  before a bare `--`): its env assignments, config file, markers, build tags,
-  features and toolchain all still apply, so an assertion that only runs under
-  `PROFILE_API_V2=1` or `vitest -c ci.config.mjs` runs in the replay too. A
-  command the replay cannot extend safely (a pipeline, `||`, a runner that is
-  not the last command, two runners, `bash -c "..."`) runs as registered, and
-  then only the signed node:test reporter counts as evidence; without it the
-  landing holds. Each file must show the runner's own evidence that it
-  ran: a repo whose registered command runs only some files can no longer report
-  a tester file as passed that never executed. The tester's PASS also binds
-  **which tests passed**: the runner's clean replay in the tester lane records
-  each test that passed in the tester's files (file and full test name, plus
-  node:test's line and column; the pytest node id; go's test name; cargo's test
-  path) on the PASS, and the landing replay requires every one of them to run
-  and pass on the candidate. One that is skipped, todo, renamed or gone holds the
-  landing (`tester_replay_unverified`, naming the tests); one that fails is
-  `tester_replay_red`; another test that passes does not stand in for it. An
-  older PASS without these identities keeps the file-level rule, and its record
-  and ticket page say *file-level evidence only*. Because the runner measured the
-  identities, it records that PASS as the system and names the tester agent (and
-  its run) whose verdict it is: the ticket page and the review packet read
-  *recorded by the runner after the tester agent's run*, an agent's own PASS keeps
-  *by the tester agent* and a person's PASS still reads as a waiver. For node:test
-  that evidence is a line the runner's reporter signs with a per-replay key the
-  test processes do not inherit, so a delivery that stops the tester's file and
-  prints "passed" for it proves nothing (code written to read the runner's own
-  environment can still get the key; moving it out of the environment is a
-  follow-up); a run that reports a file it was not given, or a vitest/jest
-  report that names other files or miscounts, proves nothing either, and plain
-  output text never counts. A file with no such evidence
-  holds the landing (*blocked*, `tester_replay_unverified`, naming the files,
-  in `gaffer status` too) and nothing is recorded. A failing assertion holds
-  the landing exactly like a red gate
-  (*blocked*, `tester_replay_red`, naming the files, the output as evidence,
-  the default branch untouched); the tester's files run on the candidate but
-  never land. When the candidate lands, the runner records **which tester
-  assertions passed on which landed revision** (`gaffer-tester-replayed:<sha>`,
-  a system record only the landing path writes). That record is the one answer
-  everywhere: the ticket page's *On the landed revision* list, `gaffer status`,
-  and `wg stats`, which counts an epic as **accepted** only when its acceptance
-  ticket has it (*unreplayed* otherwise). A held replay keeps the epic out; a
-  repaired, re-tested retry that lands counts it once. A ticket the tester never
-  saw runs nothing extra. If a merge is interrupted after it landed but before it
-  wrote that record, the next `gaffer merge` (or the merge lane) replays the
-  tester's files on the revision that landed and writes it; when that cannot run,
-  the ticket stays *Ready for merge* with `replay missing: … run gaffer merge <n>`.
-- **An epic is accepted on its current scope, once.** A ticket you add to an epic
-  after planning (a primary or secondary scope link) makes the epic's acceptance
-  ticket wait for it, like the planned ones. If the acceptance ticket finishes
-  while a member is still open, the epic reads *pending*, and *stale* when a
-  member lands after it (`wg stats --json` marks these `scope_incomplete` and
-  `scope_changed`). Taking a ticket out of the epic (removing the link, or
-  marking it rejected) takes that wait away again; a dependency you added by
-  hand stays. A follow-up that itself waits on the acceptance ticket can still
-  be linked: it cannot also be waited on, so the epic reads *pending* until it
-  is done. A suggested or rejected scope link counts for nothing:
-  each epic is counted against its own acceptance ticket only, so linking one
-  epic's finished acceptance ticket to another epic never makes that epic
-  accepted.
-- **Required CI is required.** With *Require CI green before review* on, the
-  runner records the CI result for the exact commit under review (a result is recorded
-  only for one of the ticket's own commits: a delivery head, a recorded delivery commit
-  or an approved revision; `wg ticket ci-result` refuses any other); approval (and
-  a tester PASS) is refused until that commit's CI has passed, a red result for an
-  approved ticket holds it for you (*blocked*, `ci_red`), and the merge lane reads
-  CI again before landing. The CI gate asks `gh` only for the fields the real CLI
-  exposes (`gh pr checks --json name,state,bucket,link`). The requirement is recorded
-  on the ticket before it reaches review (`wg ticket ci-required`), so until CI
-  reports, the Review button reads *Approve held: CI required, not reported*; when
-  CI cannot be read at all (no `gh`, no GitHub remote) the strict policy sends the
-  delivery back instead of waving it through.
-- **Landing never overwrites a file you ignore.** When an approved branch starts
-  tracking a file you keep ignored in your checkout (a `settings.local`), git would
-  replace your copy silently. Both landing paths (Merge now / `gaffer merge`, and the
-  merge lane) check for that first and merge with `--no-overwrite-ignore`; the ticket
-  is held for you (*blocked*, `ignored_file_in_the_way`) naming the file, and your
-  copy stays as it was.
-- **A merge conflict is never force-resolved.** The resolver agent merges the
-  default branch into the delivery branch, and the runner **re-gates the
-  resolution** — no conflict markers, and the repo's Definition-of-Done gates
-  (tests · typecheck · lint) green on a clean checkout of the committed
-  resolution (what would land; anything the resolver left uncommitted is
-  discarded, never gated), recorded as fresh evidence — before the ticket goes
-  back to review. A resolution that fails is
-  moved off the branch (`refs/gaffer/conflict-resolved/<n>`) and held for a
-  human.
-- **A delivery that changed its own tests is flagged, and never auto-approved.**
-  The gates' **integrity** row compares the delivery with its base and FLAGs a
-  deleted or renamed test file, a new skip/focus marker (`.skip`, `.only`,
-  `xit`, `it.todo`, `it.concurrent.skip`, node:test's `{ skip: true }`,
-  `t.skip()`/`this.skip()`, `@pytest.mark.skip`/`xfail`, `t.Skip`, `#[ignore]`,
-  `@Disabled`, …), a changed gate script (or an added `pretest`/`posttest`, or a
-  changed script it runs), a touched or newly added test-runner config, a test
-  file hidden from git (skip-worktree / assume-unchanged), a test file that lost
-  test cases or all its assertions ("test cases removed: 3 → 0"), or a package-manager rc
-  file (`.npmrc`, `.yarnrc`, `.yarnrc.yml`, `bunfig.toml`) the delivery added or
-  changed, which can make `npm test` run nothing (an ignored one on disk too; the
-  runner's FLAG holds the approve even when the committed diff is clean). It compares against
-  the commit the runner recorded when it cut the branch (kept across retries,
-  never replaced by a later branch tip), so moving the base branch from the
-  worktree, or a second attempt building on the first, cannot hide a change. The
-  server recomputes the same check from the real diff (risk flag *Test
-  modified*), the sign-off shows a banner naming each change, the Team sheet
-  row carries a *Tests changed* chip, and an agent approve is held for a person
-  whatever the ticket's declared risk. When the ticket really should change its
-  tests, **Allow test changes…** on the sign-off (or
-  `gaffer wg ticket allow-test-changes <n> --reason …`) records your allowance
-  as an event: the row then reads PASS with a note. Only a person can set it.
-  It does not change what the gate runs: a changed gate script still runs as
-  the base has it, so to change the gate itself, change the repo's registered
-  test/lint command or merge the script change first.
-  The merge gate and the conflict re-gate run the same check on the merged
-  tree, against the target head (scripts read from it, an integrity row in
-  their checklist). This first slice flags; it never fails a delivery or a
-  landing.
-- **Reject** loops the ticket back for rework (or abandons it), with your reason
-  recorded and its acceptance criteria reset. A **won't-do** on delivered work
-  keeps its branch as a record, and that branch no longer counts against the
-  repo's open-branch cap, so abandoning work never starves the queue.
-- The **reviewer is never the author**, even when agent approval is allowed: the
-  server refuses an approval from the agent that delivered the ticket, and the
-  factory's own review pass approves as a distinct, registered reviewer agent (a bare reviewer string is refused).
-- The **event log is tamper-evident.** Every event is chained by a SHA-256 hash,
-  so a row rewritten, deleted or re-ordered after the fact breaks every hash
-  after it; `dispatch events verify`, `dispatch doctor` and the Health view's
-  "Event log" card re-derive the chain. Each event also carries the **runner
-  tick** that wrote it (the ticket timeline shows a `tick …` chip), so one tick's
-  whole trail — the runner's calls and the agent's MCP writes — reads as one.
-- **A flaky test does not burn an attempt.** With a worker pool
-  (`GAFFER_CONCURRENCY` above 1) a red tests gate is rerun once at concurrency 1
-  (one rerun at a time across the pool, after the other workers' gate runs finish)
-  before the attempt counts. Only the tests gate, only once. A pass on the rerun is
-  a green gate marked **Flaky suspected** on the Review card, its note naming both
-  runs, with the first run's output kept in the DoD evidence and a
-  `needs_human_review` note on the ticket; a second red is the failure, naming both
-  exit codes. `GAFFER_DOD_FLAKY_RERUN=0` turns it off.
-- **The merge commit says where it came from.** Every landing path (the Merge
-  button, `gaffer merge`, the merge lane, the AFK review pass, a PR merge) writes git
-  trailers into the merge commit, read from the dispatch DB:
-  `Gaffer-Ticket: #12`, `Gaffer-Reviewed-By: human:tom` (or `agent:<id>`) and
-  `Gaffer-Gates: DoD PASS (tests pass, lint skip); AC 3/3 satisfied; tester PASS`.
-  The tester part comes from the tester's own verdict transition since the latest
-  approval, never from evidence an agent could record.
-  The merge gate's gated merge commit, which is the commit that lands, carries
-  them, and it is then `--no-ff`, so there is a merge commit to carry them. No
-  model name is written (the usage ledger records that), and the trailers are not
-  signed. `GAFFER_PROVENANCE_TRAILERS=0` turns them off.
-- **Every attempt names its model and its CLI.** The runner records, per delivery
-  attempt, the model that served the call (and the one it asked for) and the
-  Claude Code CLI version that ran it — on the usage-ledger row (`attempt`,
-  `model_requested`, `claude_version`) and as agent-run evidence on the ticket. The
-  ticket page's **Attempts** history shows "Model … · CLI …" on each attempt: a
-  failure names the run of the attempt that failed (none when the agent never ran,
-  as when its environment could not be installed) and carries that attempt's number,
-  every other run (the attempt that passed after a failure) follows the failures on
-  its own row, and only the runner's own rows count, so an agent cannot name its own
-  model. The attempt that used up the cap is on the history as a failure too
-  ("Attempt 3/3 · definition-of-done failed"), recorded before the ticket parks.
+  `needs_human_review` notes, a reviewer agent's CHANGES, a tester's FAIL or hold, a
+  merge-gate hold, a flagged gate and a risk escalation head the flags and sit in a
+  yellow band beside the button.
+
+### Comments, send-backs and approval
+
+- **Comment on the change.** The + beside a diff line (either side), Comment on this
+  file, Comment on the change, or `c` on a line opens a comment, marked Must fix or
+  Consider and anchored from git at the commit you saw. Resolving, reopening and
+  withdrawing are yours alone. **Fix these (N)** sends the ticket back to Refining
+  with the open must-fix comments as numbered requirements; the next delivery prompt
+  lists each one, and the agent's reply to each reads as "the agent says" (a claim,
+  never a resolution). From a terminal: `wg review comment <n> --file <path> --line <n>
+  --body "..." --must-fix`, `wg review comments <n>`, `wg review resolve <id>`,
+  `wg review fix <n>`. Open comments are a flag, not a hold.
+- **The next attempt opens on what changed since your review**, with **Whole change**
+  one click away. Each earlier comment says whether its anchor changed. While the page
+  is open it checks the heads every 20 seconds, and a branch that moved turns Approve
+  off.
+- **Approve stays disabled until the diff loads**, and is bound to the commits you
+  read: a branch that moved between the diff and your click is refused
+  (`409 stale_revision`) and the view reloads the new diff. `wg review approve` takes
+  `--commit <repo>=<sha>` (the values `wg ticket diff <n> --heads` prints), and
+  `gaffer approve` shows the commits and asks first. Every landing path merges only the
+  approved commit and holds a branch that moved past it until it is re-reviewed.
+- **The button says what the click does**, worked out by the server from the same
+  settings and state the approve path reads: *Approve and land now*, *Approve, lands on
+  next tick*, *Approve, merge is a separate click*, or why it is held (*not tested on
+  this commit*, *CI not passed*, *<repo> unavailable*, *tests changed, a person must
+  allow it* for an agent's approval). After approval the button says where the change
+  went.
+- **Approve does not merge unless you ask it to.** With `AUTO_MERGE` off (the default)
+  an approved ticket waits in Ready for merge for **Merge now**; with it on, a human
+  approval lands on its own (an agent's also needs `MERGE_ON_AGENT_REVIEW`, or an earned
+  per-repo grant).
+- **Reject** sends the ticket back for rework (or abandons it) with your reason, and
+  resets its criteria. A **won't-do** keeps its branch as a record, outside the repo's
+  open-branch cap.
+- **A delivery that changed its own tests** is flagged by the gates' integrity row
+  (deleted, renamed or skipped tests, gutted test files, changed gate scripts or runner
+  config, a package-manager rc file), and the sign-off shows a banner naming each
+  change. An agent approval is held for a person; **Allow test changes...** (or
+  `gaffer wg ticket allow-test-changes <n> --reason ...`) is yours alone, and does not
+  change what the gate runs.
+- **A flaky test does not burn an attempt.** With a worker pool a red tests gate is
+  rerun once at concurrency 1; a pass on the rerun is a green gate marked **Flaky
+  suspected**, with the first run's output kept. `GAFFER_DOD_FLAKY_RERUN=0` turns it
+  off.
 
 ![The gaffer's sign-off](img/review.png)
 
-*An in-review ticket on The gaffer's sign-off: no flags, the Definition-of-Done
-gates (tests and lint passed), 3 of 3 acceptance criteria satisfied by the
-runner's own checks, the evidence trail, and the server-computed diff for
-`taskflow-mini` — the new `toCsv` export and its tests. Approve / send-back are
-the human's alone.*
+*An in-review ticket on The gaffer's sign-off: no flags, the Definition-of-Done gates
+(tests and lint passed), 3 of 3 acceptance criteria satisfied by the runner's own
+checks, the evidence trail, and the server-computed diff for `taskflow-mini`.
+Approve and send-back are the human's alone.*
 
----
+### Landing
+
+- **An approved ticket's status says where its landing is**: *Approved · waiting for
+  Merge now*, *Approved · lands next tick*, *Approved · landing*, *Approved · partly
+  landed*, or the hold's own words (*Held · moved since review*, *Held · approval does
+  not cover every repository*, *Held · merge gate failed*, *Held · CI red*). The
+  ticket page's *Your move* offers the action that clears it, and the page turns to
+  Done live when a landing completes.
+- **"Done" means the combined code passed the gates on the target.** Before anything
+  lands, the factory builds the merge of the approved commit onto the current default
+  branch in a scratch worktree, runs the repo's gates on it, and lands exactly that
+  commit only while the default branch has not moved. A red combination waits in your
+  queue (`merge_gate_red`) with the default branch untouched. In PR mode the gate runs
+  on the freshly fetched remote default before the PR merge is requested.
+- **The tester's assertions run on what lands.** The same scratch merge also runs the
+  tester's test files under the repo's registered test command, and every test the
+  tester's PASS named must run and pass; a skipped, missing or failed one holds the
+  landing (`tester_replay_unverified`, `tester_replay_red`). When the candidate lands,
+  the runner records which tester assertions passed on which landed revision, and an
+  epic counts as **accepted** only when its acceptance ticket has that record.
+- **A multi-repo ticket is done when every repository landed.** An approval must cover
+  every write repository, each lands through the merge gate on its own, and a ticket
+  where one landed and another could not reads **Partly merged** and can only be
+  finished, never cancelled. A recorded pull request lands only through that PR.
+- **A cancellation or a red check during the merge gate stops the landing.** Every
+  landing path re-checks ticket, approval and CI right before a default branch moves;
+  a landing that had already started is reported, never read as a clean merge.
+- **Required CI is required.** With *Require CI green before review* on, approval and
+  a tester PASS need a passed result for the exact commit under review, and a red
+  result for an approved ticket holds it (`ci_red`).
+- **Landing never overwrites a file you ignore**; the ticket is held naming the file.
+- **A merge conflict is never force-resolved.** The resolver agent's resolution is
+  gated again on a clean checkout (no conflict markers, the repo's gates green) before
+  the ticket goes back to review; one that fails is moved off the branch and held.
+- **The merge commit says where it came from**: `Gaffer-Ticket: #12`,
+  `Gaffer-Reviewed-By: human:tom` and `Gaffer-Gates: DoD PASS (tests pass, lint skip);
+  AC 3/3 satisfied; tester PASS` trailers, read from the dispatch database. They are
+  not signed. `GAFFER_PROVENANCE_TRAILERS=0` turns them off.
+- **The event log is tamper-evident.** Every event is hash-chained and carries the
+  runner tick that wrote it; `dispatch events verify`, `dispatch doctor` and Health's
+  Event log card check the chain.
+- **Every attempt names its model and its CLI version**, on the usage-ledger row and
+  in the ticket page's **Attempts** history.
 
 ## The Factory Map
 
-Real products are several repos, not one. The **Factory Map** models that:
-**scope nodes** group repos into products, systems and capabilities, and each
-repo is linked into a node with a **relation** and a **default access** level —
-`write`, `read`, `test`, or `none`.
+Real products are several repos. The **Factory Map** models that: scope nodes group
+repos into products, systems and capabilities, and each repo is linked into a node
+with a relation and a default access level (`write`, `read`, `test` or `none`).
 
-Scoping a ticket to a node turns the node's repos into **suggestions** on the
-ticket (ranked by relation, with the node's default access). A human confirms
-which ones the ticket gets, one click per repo on the ticket panel; until at
-least one is confirmed at `write`, `ready` refuses the ticket
-(`SCOPE_REPO_UNCONFIRMED`) rather than queueing work the runner cannot deliver.
-Once confirmed, the access is a boundary the runner enforces, not a suggestion:
-the agent can write only to the `write` repos and read the `read` ones. Repos
-with no mapping behave as standalone single-repo scopes, so nothing has to be
-mapped to start working.
+Scoping a ticket to a node turns the node's repos into suggestions on the ticket. You
+confirm which ones the ticket gets, one click per repo; until at least one is confirmed
+at `write`, `ready` refuses the ticket (`SCOPE_REPO_UNCONFIRMED`). Once confirmed, the
+access is a boundary the runner enforces: the agent writes only to the `write` repos
+and reads the `read` ones. Repos with no mapping behave as standalone single-repo
+scopes, so nothing has to be mapped to start.
 
 ![The Factory Map: scope nodes and their mapped repos](img/factory-map.png)
 
-*The scouting map (`#/map`): the TaskFlow product node owns both repos with
-`write` access and contains the Task list capability and the Web client system;
-`depends_on` lines run from the web client to the task list and from the task
-list to the Calendar feeds external dependency. Who plays where lists each
-repo's relation and access at every node it belongs to.*
+*The scouting map (`#/map`): the TaskFlow product node owns both repos with `write`
+access and contains the Task list capability and the Web client system; `depends_on`
+lines run from the web client to the task list.*
 
----
-
-## Durable repo memory — the Repo Understanding engine
+## Durable repo memory
 
 Gaffer doesn't re-learn a repo from cold on every run. **Memory** is the durable,
 human-gated knowledge the factory works from:
 
-- **Repo Digest** — a living TLDR of each repo's **overview / structure /
-  conventions / stack**, seeded at onboarding and refreshed deterministically as
-  tickets merge. It carries a freshness stamp and an honest caveat: it's a map
-  to *verify against the code* for high-stakes work, never a substitute for it.
-  Onboarding reads only files inside the repository: a README or manifest that is a
-  symlink to a file elsewhere is not read, and the digest says which one and why. A
-  password or token in an https remote URL is stripped before the URL reaches a
-  prompt, the digest, lore or a log.
-- **Feature ledger** — what's `backlog → building → shipped` per repo, so the
-  factory knows what already exists before it proposes building it again.
-- **File cards** — one per source file (path, symbols, content hash, a short
-  summary), used to choose what to read before a ticket. After every merge they
-  are brought in line with the merged commit, renames included, and each card's
-  path and content hash is checked against that commit before memory records the
-  repo as indexed there.
-- **Code index**: files, top-level symbols, imports and tests of each repo's
-  TypeScript, JavaScript and Python code, read from the files' text with no model
-  (`memory index build | neighbours | stats`). Imports resolve relative paths,
-  `index` barrels, `./x.js` for `x.ts`, workspace package names and tsconfig
-  `paths`, and Python packages; a test links to the modules it imports and to the
-  one its file name names. Built at onboard and refreshed after every merge from
-  the merged commit, re-reading only the files that changed; generated and vendored
-  paths are skipped and the walk is capped (when a build hits a cap, the Review and
-  the file cards say its counts are partial). When a ticket names a path or a symbol
-  (`calculateInvoice()`, `` `formatTotal` ``, `src/invoice.ts`), the delivery's
-  file cards add up to five callers and tests of each, with the reason ("imports
-  calculateInvoice through src/index.ts", "tests calculateInvoice (imports it)"),
-  or one line saying the index is missing or stale. Health shows each repo's index
-  coverage. An agent shell can read it but not rebuild it (the safety hook denies
-  `memory index build`). `GAFFER_CODE_INDEX=0` turns it off. With the pre-work scout on (the default) its
-  SCOUT block lists these instead, so the file cards do not repeat them.
-- **Pre-work scout**: before a delivery starts, the runner works out where the change
-  likely lands, with no model: the files the ticket names, the files in a stack
-  trace it quotes (`at fn (src/x.ts:42:7)`, `File "app/x.py", line 9`, a Java frame,
-  an absolute or Windows path from another machine matched to the tree; a frame
-  that matches two files is listed as not placed, never guessed, and one whose
-  directories the tree lacks says it matched by file name only), and what the code
-  index says imports or tests them, two hops at most. At most 25 files, each with
-  why it was picked ("named", "imports calculateInvoice through src/index.ts",
-  "tests src/invoice.ts", "stack trace (line 42)", "2 hops", config / migration /
-  schema), plus the repo's test command. The delivery prompt shows it as one SCOUT
-  block inside an untrusted envelope, a retrieval aid like the file cards. With no
-  index, or a stale one, it lists the named files and frames only and says so.
-  The same pass classifies the ticket's risk from deterministic signals (a
-  migration or schema file, an auth or permission path or words, a package entry or
-  importers in another package, race or concurrency words, more than one write repo,
-  a previous attempt sent back, a named symbol with 10 or more callers, a named
-  module no test imports): it can only raise the declared level, never lower it and
-  never to critical. The router routes on the raised level, the Review packet shows
-  it, and the packet is kept as `$GAFFER_DATA/scout/ticket-N/attempt-K.json`. The
-  delivery's usage ledger row carries that routed (effective) level as its `risk`;
-  the review rows keep the declared one. The security second-opinion lane still
-  reads the declared level, so a raise does not add a security reviewer by itself.
-  Dispatch stores the ticket's own risk level as the declared one, so no record can
-  claim a raise from a lower level.
-  Each delivery launch also appends one line to `context-selection.jsonl`: the files,
-  file cards and skills it was given, each with its reason, the model and the
-  router's reasons. Health's *Pre-work scout* card counts how many attempts the scout
-  covered, how often the index added files, how often the risk was raised, the model
-  scout's runs and cost, and first-pass acceptance split by what the scout found (a
-  report: the arms are observational). `GAFFER_SCOUT_PACKET=0` turns it off.
-- **A bounded model scout, when you turn it on.** `GAFFER_SCOUT=auto` adds one
-  read-only model call for a ticket whose effective risk is medium or higher
-  (`on`: every delivery; `off`, the default: never). A new ticket is medium unless
-  someone sets it lower, so `auto` runs on every ticket not marked low. It reads the repo with Read,
-  Grep and Glob only, for `GAFFER_SCOUT_MAX_TURNS` turns (6), on the router's cheap
-  tier, and answers with at most 8 files, 8 symbols, 10 short implementation notes
-  and 3 questions. The runner keeps a path only when it exists at the base commit
-  and a symbol only when its file contains it, and shows the rest as "scout
-  suggested (a model's reading)". It is booked in the usage ledger as kind `scout`,
-  the budget admission and the usage pause apply as for every launch, and a
-  failed or refused call leaves the deterministic packet as it was. A call that ran
-  and was killed is still booked (the ledger's estimate), and with the command worker
-  (`GAFFER_WORKER_PROVIDER=command`) the model scout does not run, because that
-  contract cannot limit the tools to Read, Grep and Glob.
-- **Lore** — the team's recorded conventions, decisions, gotchas, and cross-repo
-  boundaries. It's **read-only in the product**: agents *draft* lore through an
-  MCP review gate, and a human approves it in the Memory view or from the
-  terminal (`gaffer lore review` lists the drafts the Memory view lists,
-  `gaffer lore show <id>` prints one, `gaffer lore approve <id>` and
-  `gaffer lore reject <id> --reason "…"` decide; `gaffer lore review --json`
-  prints the page the Memory view reads). An agent shell can't run these, or the
-  memory CLI's `approve` / `reject` / `review` / `add` and the verbs that change
-  ratified lore: the safety hook denies them. It is never
-  silently rewritten. Every edit snapshots the previous version
-  (`memory history <id>`), so a change is diffable and reversible.
+- **Repo Digest**: a living summary of each repo's overview, structure, conventions
+  and stack, seeded at onboarding and refreshed as tickets merge, with a freshness
+  stamp and the caveat that it is a map to verify against the code. Onboarding reads
+  only files inside the repository and strips credentials from remote URLs.
+- **Feature ledger**: what is backlog, building and shipped per repo, so the factory
+  knows what already exists before it proposes building it again.
+- **File cards**: one per source file (path, symbols, content hash, a short summary),
+  used to choose what to read before a ticket. After every merge they are brought in
+  line with the merged commit, renames included, and checked against it before memory
+  records the repo as indexed there.
+- **Lore**: the team's recorded conventions, decisions, gotchas and cross-repo
+  boundaries. Agents draft lore through an MCP review gate, and a human approves it in
+  the Memory view or from the terminal (`gaffer lore review`, `gaffer lore show <id>`,
+  `gaffer lore approve <id>`, `gaffer lore reject <id> --reason "..."`). An agent shell
+  can't run these. Lore is never silently rewritten: every edit snapshots the previous
+  version (`memory history <id>`).
 
 ![A repo's digest and feature ledger](img/memory.png)
 
-*Club history (`#/memory`) for `taskflow-mini`: the Repo Digest (the scouting
-report) with overview, structure, conventions and stack, its freshness line and
-the "verify against the code" caveat; the feature ledger (the honours board) as
-shipped, building and backlog; and the lore, two drafts awaiting a human
-signature above the approved records.*
+*Club history (`#/memory`) for `taskflow-mini`: the Repo Digest, the feature ledger as
+shipped, building and backlog, and the lore, two drafts awaiting a human signature
+above the approved records.*
 
-Memory is also usable standalone — see
+Memory is also usable standalone; see
 [`packages/memory/README.md`](../packages/memory/README.md).
 
-**Backing up the board.** `gaffer wg export --out board.json` writes the whole
-board (tickets, epics, scope graph, criteria, repos, decisions, reviews and
-evidence, the event log, claims, planner sessions, paused deliveries) as one JSON
-bundle; `gaffer wg import` restores it into an empty database, and `import --force`
-replaces every one of those tables. What the export guarantees:
+### The code index
 
-- **One consistent snapshot.** Every table is read inside a single SQLite read
-  transaction, so an export taken while the runner, the API or another process is
-  writing holds the board exactly as it stood at one instant: never a dependency or
-  criterion whose ticket is missing. Writers are not blocked while it runs.
-- **Proven restorable before it reports success.** The export restores its own
-  bundle into a scratch in-memory database with the importer's checks (format and
-  schema version, event-log hash chain, foreign keys, every row landed) before it
-  writes the file or prints anything. If that fails it exits non-zero, writes
-  nothing and says why, while you still have the source database to copy from.
+`memory index build | neighbours | stats` maps each repo's TypeScript, JavaScript and
+Python files, top-level symbols, imports and tests, read from the text with no model.
+Imports resolve relative paths, `index` barrels, `./x.js` for `x.ts`, workspace package
+names, tsconfig `paths` and Python packages; a test links to the modules it imports and
+the one its file name names. It is built at onboarding and refreshed after every merge,
+re-reading only changed files, with generated and vendored paths skipped and the walk
+capped (a capped build says its counts are partial). When a ticket names a path or a
+symbol, the delivery's context lists up to five callers and tests of each, with the
+reason. Health shows each repo's index coverage. `GAFFER_CODE_INDEX=0` turns it off.
 
-Run-activity rows, API credentials and schema metadata are machine-local and are not
-exported; the export's summary names them (`not_exported`).
+### The pre-work scout
 
----
+Before a delivery starts, the runner works out where the change likely lands, with no
+model: the files the ticket names, the files in a stack trace it quotes (matched to the
+tree; an ambiguous frame is listed as not placed, never guessed), and what the code
+index says imports or tests them, two hops at most. At most 25 files, each with why it
+was picked, plus the repo's test command, reach the delivery prompt as one SCOUT block
+inside an untrusted envelope. The same pass classifies risk from deterministic signals
+(a migration or schema file, an auth path, a package entry imported elsewhere, race
+words, more than one write repo, a previous send-back, a symbol with 10 or more
+callers, a module no test imports): it can only raise the declared level, never lower
+it and never to critical. The router routes on the raised level, and the Review packet
+shows it. Each launch also logs what context it was given to
+`context-selection.jsonl`. `GAFFER_SCOUT_PACKET=0` turns the packet off.
+
+**A bounded model scout, when you turn it on.** `GAFFER_SCOUT=auto` adds one read-only
+model call for a ticket whose effective risk is medium or higher (`on`: every delivery;
+`off`, the default: never). It reads the repo with Read, Grep and Glob only, for
+`GAFFER_SCOUT_MAX_TURNS` turns (6), on the cheap tier, and answers with at most 8 files,
+8 symbols, 10 notes and 3 questions; the runner keeps a path only when it exists and
+shows the rest as a model's reading. It is booked as kind `scout` under the usage
+ledger and the budget, and it does not run under the command worker.
+
+### Routing evidence: manifests, a scorecard and matched experiments
+
+The router picks a tier from risk, size and history; this is the record of how each
+choice turned out. **Every delivery attempt leaves a replay manifest** under
+`$GAFFER_DATA/manifests/<ticket>-<n>.json`, opened when the agent is spawned and
+completed however the attempt ends: each write repo's path, base and head commit and
+test command, the router's tier, model and reasons with the declared and effective
+risk, the settings that shaped the attempt, sha256 hashes of the prompt and scout
+packet (never their text), the usage-ledger attempt id and the outcome with its gate
+rows. It is capped at 16 KiB, a test command loses anything that looks like a
+credential, and a write failure never holds up the delivery.
+
+**The routing scorecard** (a Health card, `routing_scorecard` in `GET /api/health`,
+`gaffer wg stats routing`) splits the work by provider, model, role and work class.
+Each cell shows calls and spend (estimates labelled, unknown-cost calls counted and
+left out), and for delivery the attempts, submissions and rework, first-pass
+acceptance, attempts and cost per accepted change, escaped defects and tester false
+greens. Every figure shows its n; a cell with fewer than 10 attempts reads *too few to
+compare*. Nothing is ranked, there is no overall score, and the router does not read it.
+
+**Matched experiments.** `gaffer eval experiment --arm baseline --arm cheap:tier=cheap`
+runs the same tickets (the gate-replay fixtures, or recorded tickets from their
+manifests) once under each arm, in a seeded order, through the same worker seam and
+gates a tick uses, and writes `results.json` and `report.md` with the paired difference
+per ticket in acceptance, attempts, spend and judge score, with mean, 95% interval and
+n. By default a stub agent replays the recorded change, so it is free and runs in CI;
+`--live` runs the real agent under a hard USD cap (`--max-usd` or
+`GAFFER_EXPERIMENT_MAX_USD`), a ticket cap and the factory's budget admission and usage
+pause, and records nothing to dispatch. [docs/eval-harness.md](eval-harness.md#matched-ticket-comparison)
+has the arms, the report and the limits.
+
+**Recommendations you apply.** `gaffer wg routing recommend` reads the scorecard and
+any experiment results and, where another tier is cheaper per accepted change and no
+worse on first pass and escaped defects in every work class with enough evidence, or a
+live experiment against the default tier says so, prints a proposed
+`runner/model-registry.json` change as a diff with the cells and deltas behind it. It
+never edits the registry and never proposes anything for the reviewer or the tester.
+Health carries one Routing line saying whether a proposal exists.
+
+### Backing up the board
+
+`gaffer wg export --out board.json` writes the whole board (tickets, epics, scope graph,
+criteria, repos, decisions, reviews and evidence, the event log, claims, planner
+sessions, paused deliveries) as one JSON bundle; `gaffer wg import` restores it into an
+empty database, and `import --force` replaces every one of those tables. The export is
+one consistent snapshot, read in a single transaction without blocking writers, and it
+restores its own bundle into a scratch database before it writes the file, so a bundle
+it reports as written is one it has restored. Run-activity rows, API credentials and
+schema metadata are machine-local and not exported.
 
 ## Control you opt into
 
-Gaffer is **supervised by default**. A human readies tickets, a human approves
-merges, and memory drafts wait for review. **Settings** is where you decide how
-much of that to hand over — and every autonomy flag is **off until you turn it
-on**:
+Gaffer is supervised by default: a human readies tickets, a human approves merges, and
+memory drafts wait for review. **Settings** is where you decide how much of that to
+hand over, and every autonomy flag is off until you turn it on:
 
 | Flag | Effect when on |
 |---|---|
 | `DISPATCH_ALLOW_AGENT_APPROVE` | An agent actor may approve a ticket's review (otherwise human-only). |
 | `AUTO_MERGE` | Land a human-approved ticket on the default branch without a second click (off: it waits for Merge now). |
-| `MERGE_ON_AGENT_REVIEW` | Extend `AUTO_MERGE` to approvals made on an agent reviewer's verdict. Needs `AUTO_MERGE` too — alone it merges nothing (the run says so). |
+| `MERGE_ON_AGENT_REVIEW` | Extend `AUTO_MERGE` to approvals made on an agent reviewer's verdict. Needs `AUTO_MERGE` too: alone it merges nothing (the run says so). |
 | `REVIEW_MODE=both` | The agent screens first (a CHANGES verdict can bounce the delivery to rework) but a human still confirms every approval. |
 | `MEMORY_AUTO_APPROVE` | Let the memory the runner itself files (the requirement distilled from each delivered ticket, onboarding induction lore, CLI `memory suggest`) go live without a human review step. Lore a delivery agent suggests over MCP always stays a draft, and a draft is invisible to other agents (search, duplicate hints, fetch by id) until you approve it. |
 
-**The independent tester tests before you review, where a PASS can stand.** With
-`GAFFER_TESTING` unset (the default), the tester lane is on for a ticket whose write
-repos all have a registered test command, and off where one has none: a tester PASS
-there could not be replayed, so it would be held as unverified. The Review view's
-*What is not backed* list and Health then say so in one line, *independent tester off:
-no test command registered for <repo>*. `GAFFER_TESTING=1` turns the lane on for every
-testable ticket and `GAFFER_TESTING=0` turns it off; an epic's Acceptance ticket is
-always tested. The Settings switch reads *Auto* until you move it, and moving it saves an
-explicit on or off. A planned build's tickets are created testable unless the lane is off
-(all but the bootstrap), and any ticket can be switched on its page or with
-`wg ticket set-testable <n>`. When the tester gates a ticket it runs after the gates
-(and the reviewer agent, when you run one) and **before** you look: the runner sends
-the delivery to Testing, a PASS brings it back to Review with the tester's verdict and
-the commit it tested in the strip, and a FAIL sends it back to rework with the
-tester's observation in the next attempt's prompt, so a FAIL or a hold costs you
-nothing. You approve the commit the tester passed: the candidate cell and the line
-under the button say *tested commit X*, and the approval goes straight to Ready for
-merge. If the branch moves after the PASS (a push, a conflict resolution), or the
-ticket's contract changes, the server refuses the approval (*Approve held: not tested
-on this commit*) and the runner sends the new head to the tester first. An agent's
-approval of an untested commit (your autonomy grant, no person in the loop) still sends
-it to the tester, whose PASS then goes to Ready for merge. With CI required, the runner
-sends a delivery to the tester only once CI has passed on its head.
-**Where the lane setting is read.** The dashboard and the runner each read
-`GAFFER_TESTING` from their own environment. The value you save in Settings
-(settings.json) reaches both as a default, and an explicit environment value wins in
-each, so the common case has one source: set it in Settings and export it in neither
-shell. If the two still differ (say `GAFFER_TESTING=0` is exported only in the shell that
-runs `gaffer run`), the runner records the lane it routed under each time it sends
-tickets to the tester, and the dashboard compares that record with its own setting.
-Health then shows *tester lane differs* first among the tester notices. On a ticket the
-two settings decide differently, the Review view adds one *Tester lane differs* flag to
-its Flags list. An approval refused as not tested then says the runner will not send the
-ticket to the tester, instead of promising a route that will not come. After a push past
-the commit the tester passed, the strip's Tester cell reads *Not this commit* instead of a
-green *Passed*. Under the default, Settings' formation shows Testing as not played, and
-Go/No-Go as No-go, when no registered repository has a test command.
-A ticket that becomes testable with no test contract gets one from its title,
-so the tester's contract always names the behaviour under test (one line built
-from the title, not a real endpoint or command); you can replace it with
-`wg ticket test-contract <n> --surface ...` (the delivery agent with its MCP
-`set_test_contract` tool) until testing starts.
-A tester PASS counts only when the runner replayed the tester's tests on a clean
-checkout of the tested commit with the repo's registered test command. With no test
-command registered (or `GAFFER_TESTER_REPLAY=0`) the PASS is held in Testing on every
-ticket, and the note on the ticket reads *tester held: unverified: no test command
-registered for repo ...*, with how to register one (`wg repo set-commands <repo>
---test "<cmd>"`, or Test command under Referee's checks on the repo page). You move
-it on by recording the verdict yourself: **Record tester PASS** (reported as a
-waiver, never as verified) or **Record tester FAIL** (back to rework, tested again
-when it returns) on the ticket page, or `wg ticket tester-pass <n> --as human`.
-The `--as human` matters: an automated PASS without a passed replay is refused
-(`BINDING_REQUIRED`), and the command's default actor is the agent.
+`GAFFER_MODE` sets the whole cluster at once (supervised, lite, graduated, autonomous,
+strict); [CONFIG.md](CONFIG.md) lists what each sets. Enabling autonomy requires
+containment: any ship or mutate flag turns on the OS sandbox requirement, and a
+required sandbox that is not available refuses to launch the agent
+([docs/sandbox.md](sandbox.md)).
 
-**Acceptance profiles: accepted means it ran the way a user meets it.** A ticket's
-test contract can name how the tester's PASS is proven. `unit` (the default) is the
-tester's tests replayed on a clean checkout, as above. With `cli` or `api`, the runner
-itself also runs commands you register, in a fresh checkout of the tested commit of
-their own (none of the tester's code has run there), and the PASS is
-recorded only when they behave as you said:
-- `cli`: each command is an argv list (never a shell string; the runner adds no shell,
-  so write `["sh", "-c", "..."]` only if you mean one) with optional stdin and env (not
-  HOME, TMPDIR, `LD_*`, `BASH_ENV` or `GAFFER_*`, which the runner owns), and expectations: the exit code, stdout and stderr substrings or `/regex/`, text
-  stdout must not contain, and files that must (or must not) exist afterwards, with
-  text they contain. The runner records the transcript: argv, exit code, stdout and
-  stderr (a sha256 of each and a bounded, redacted excerpt), how long it took and what
-  it changed in the checkout.
-- `api`: a boot argv, the env var that gets the port (`PORT` by default), a health
-  path and probes (method, path, headers, body; the expected status, body substrings,
-  JSON keys, and a `schema_ref` into an OpenAPI or JSON schema file in the repo). The
-  runner boots the service on a free port, waits for the health path, runs each probe
-  and records the status, a few headers, the body's sha256 and an excerpt; a probe that
-  should be refused (no token, bad input) expects its 4xx. The service's process group
-  is killed whatever happens.
-- `web`, `migration`, `performance`: their fields are defined so you can record what
-  should be checked, but the runner cannot run them yet, so the tester's PASS on such a
-  ticket is held for your verdict.
+![The Settings panel](img/settings.png)
 
-You set the profile on the ticket page (**Acceptance profile** in the Independent
-testing card: pick the profile, paste the spec as JSON, Save) or with
-`wg ticket acceptance-profile <n> --profile cli --spec-file cases.json`, until testing
-starts. For example:
+*The boot room (`#/settings`): the Team instructions dial on Supervised and the
+Autonomy flags, all opt-in and shown off, with Planning debate, Idle loops and the
+other groups folded below.*
+
+### The independent tester
+
+With `GAFFER_TESTING` unset (the default), the tester lane is on for a ticket whose
+write repos all have a registered test command, and off where one has none (a tester
+PASS there could not be replayed); Review and Health say so in one line.
+`GAFFER_TESTING=1` turns it on for every testable ticket and `0` turns it off; an
+epic's acceptance ticket is always tested. A planned build's tickets are created
+testable unless the lane is off, and any ticket can be switched on its page or with
+`wg ticket set-testable <n>`.
+
+When the tester gates a ticket it runs after the gates (and the reviewer agent, when
+you run one) and before you look: a PASS brings the ticket back to Review with the
+tester's verdict and the commit it tested, and a FAIL sends it back to rework with the
+tester's observation in the next prompt. You approve the commit the tester passed; if
+the branch moves or the contract changes, the approval is refused (*Approve held: not
+tested on this commit*) and the runner sends the new head to the tester first. With CI
+required, a delivery goes to the tester only once CI has passed on its head.
+
+The dashboard and the runner each read `GAFFER_TESTING` from their own environment;
+the value saved in Settings reaches both, and an explicit environment value wins. If
+the two differ, Health and the Review view say *tester lane differs*.
+
+A ticket that becomes testable with no test contract gets one from its title; replace
+it with `wg ticket test-contract <n> --surface ...` until testing starts. A tester
+PASS counts only when the runner replayed the tester's tests on a clean checkout of
+the tested commit with the repo's registered test command. With no test command (or
+`GAFFER_TESTER_REPLAY=0`) the PASS is held in Testing, with a note saying how to
+register one (`wg repo set-commands <repo> --test "<cmd>"`). You can record the verdict
+yourself: **Record tester PASS** (reported as a waiver) or **Record tester FAIL** on
+the ticket page, or `wg ticket tester-pass <n> --as human`.
+
+### Acceptance profiles
+
+A ticket's test contract can name how the tester's PASS is proven. `unit` (the default)
+is the tester's tests replayed, as above. With `cli` or `api`, the runner also runs
+commands you register, in a fresh checkout of the tested commit, and records the PASS
+only when they behave as you said:
+
+- `cli`: each command is an argv list (never a shell string) with optional stdin and
+  env, and expectations: the exit code, stdout and stderr substrings or `/regex/`, text
+  stdout must not contain, and files that must or must not exist afterwards.
+- `api`: a boot argv, the env var that gets the port (`PORT` by default), a health path
+  and probes (method, path, headers, body; the expected status, body substrings, JSON
+  keys and a `schema_ref` into a schema file in the repo). A probe that should be
+  refused expects its 4xx.
+- `web`, `migration`, `performance`: defined so you can record what should be checked,
+  but not run yet, so a PASS on such a ticket is held for your verdict.
+
+Set the profile on the ticket page (**Acceptance profile** in the Independent testing
+card) or with `wg ticket acceptance-profile <n> --profile cli --spec-file cases.json`,
+until testing starts:
 
 ```json
 { "cases": [ { "argv": ["node", "bin/cli.mjs", "--version"], "expect": { "exit": 0, "stdout": ["1.2.0"] } } ] }
 ```
 
-With `GAFFER_ACCEPTANCE_PROFILE_SEED=1` (off by default), a planned or newly testable
-ticket whose title names a CLI, a command-line verb, an endpoint or a REST or HTTP API
-gets that profile in its seeded contract, without commands: such a ticket then waits in
-Testing for you to register them, so an unattended run stops at each one. The delivery agent can
-raise a unit contract to a profile with its MCP `set_test_contract` tool, but never
-registers commands and never lowers or changes a profile you set. A profile with no
-commands registered holds the tester's PASS until you register them (the note says
-how), or set it back to `unit`. The runner records what it ran as a runner-recorded
-evidence row on the tested commit whether it passed or not, and the Independent
-testing card lists it under **Runtime acceptance**: open a row to read the transcript
-or the probe responses as plain text. In Review, *What backs this* says *Runtime
-acceptance: cli transcript replayed on X* or *api probes passed*, and *What is not
-backed* says *No runtime profile for this ticket* when the ticket has none. A PASS
-whose commands did not behave as registered is held in Testing with the first failed
-expectation in the note (*tester held: runtime acceptance (cli) did not pass ...*). The
-commands run with a stripped environment (no runner token or model credential, a
-throwaway HOME) inside the same OS sandbox as the gates when one is on; under the docker
-sandbox the api profile is held (its probes run on the host). Each command has a time
+The delivery agent can raise a unit contract to a profile but never registers commands
+or changes a profile you set; a profile with no commands holds the PASS until you
+register them. The Independent testing card lists what ran under **Runtime acceptance**
+with the transcript, and Review's *What backs this* names it. Each command has a time
 cap (30 s by default, `timeout_ms` per command) and the whole profile one more
-(`GAFFER_ACCEPTANCE_TIMEOUT_MS`, 5 minutes).
+(`GAFFER_ACCEPTANCE_TIMEOUT_MS`, 5 minutes). `GAFFER_ACCEPTANCE_PROFILE_SEED=1` (off by
+default) seeds the profile, without commands, for a ticket whose title names a CLI or an
+API. What a profile does and does not prove is in
+[SECURITY.md](../SECURITY.md#the-independent-tester-and-what-its-verdict-proves).
 
-**A dollar cap before the first live run.** A live run (`gaffer run`, `loop.sh`,
-the Work view's **Poll for work**) refuses to start until `GAFFER_DAILY_BUDGET_USD`
-or `GAFFER_BUDGET_USD` is set, and says how to set one. In the dashboard the first
-Poll asks for a daily budget, prefilled at $5, saves it under **Budget & caps** and
-then polls. Every other paid launch (onboarding analysis, Plan a build, Suggest work,
-the spec author, the merge resolver, the tester) is refused the same way; an onboard
-without a cap writes the mechanical digest and cards and says why. Dry runs are never
-refused; `GAFFER_ALLOW_UNCAPPED=1` in the environment opts out (a value in
-`settings.json` is ignored). With no cap, `POST /poll-work`
-answers `polled: false`, `reason: no_budget_cap` with the runner's fix and starts
-nothing; a poll the runner refuses once it has started (a cap already reached) is
-recorded as a `failed` run whose detail is the runner's reason, never `succeeded`.
+### Budget, polling and usage limits
 
-**One Poll at a time, each run with its own lists.** A live **Poll for work** pressed
-while the previous Poll is still running waits for it to finish (the run log says so),
-then polls; after `GAFFER_POLL_WAIT_TIMEOUT` seconds it gives up with a refusal instead.
-Every run (a Poll, a `gaffer run` pass) keeps the lists that only mean something for
-that run, such as the tickets that failed delivery this run, in its own directory under
-`$GAFFER_DATA/run-state/`, removed when the run ends, so a Poll beside a daemon pass
-never clears or reads the pass's lists.
+- **A dollar cap before the first live run.** A live run (`gaffer run`, the loop,
+  **Poll for work**) refuses to start until `GAFFER_DAILY_BUDGET_USD` or
+  `GAFFER_BUDGET_USD` is set. In the dashboard the first Poll asks for a daily budget,
+  prefilled at $5. Every other paid launch is refused the same way, checked right before
+  it starts. Dry runs are never refused; `GAFFER_ALLOW_UNCAPPED=1` in the environment
+  opts out.
+- **One Poll at a time.** A Poll pressed while the previous one runs waits for it
+  (`GAFFER_POLL_WAIT_TIMEOUT`), and each run keeps its own per-run lists.
+- **Usage limits pause the factory, they do not fail tickets.** When the model refuses
+  a call because the usage window ran out or a rate limit hit, the ticket goes back to
+  Ready without counting an attempt and the factory pauses until the window resets (the
+  printed reset time plus a minute, or `GAFFER_USAGE_PAUSE_DEFAULT_MIN`, default 60).
+  No tick claims work and the dashboard's model calls start nothing meanwhile;
+  `gaffer status` and Health show "Paused until <time>: usage limit". A spend cap is not
+  a pause: those tickets are parked for a person.
+- **Secrets are never shown back.** The Slack and webhook URLs are posting authority
+  on their own: the panel says whether one is set and names its host, with **Replace**
+  and **Remove**.
+- A value that does not fit its setting is not saved: the panel marks the field and the
+  API refuses the write with a 422 naming it. Every knob, its default and who reads it
+  is in [CONFIG.md](CONFIG.md).
 
-The same panel controls the **idle loops** (background work the factory mines
-between real tickets) and the **planning-debate** depth. Secret-bearing settings —
-the Slack and generic webhook URLs, which are posting authority on their own — are
-never shown back: the panel says whether one is set and names its host, with
-**Replace** and **Remove**; only an admin principal can read the value through the
-API. The **budget caps** (daily and lifetime, in dollars) are checked immediately
-before every paid agent launch — a delivery, a review, Plan a build, Suggest work,
-the tester, onboarding analysis, the merge resolver, the repo classifier that
-links a new app to its sibling tickets — so an exhausted budget starts
-nothing, wherever the work was asked for. A value that does not fit its setting
-(a dollar cap that is not a number of 0 or more, Concurrent ticks below 1) is not
-saved: the panel marks the field and says which one holds Save back, and the API
-refuses the whole write with a 422 that names it. Every knob the factory
-reads — its default, whether the panel can edit it, which component consumes it
-— is listed in the generated [`CONFIG.md`](CONFIG.md).
+### Idle work
 
-**Maintenance when idle.** With the queue empty, an idle tick can run one scan
-lane (security hotspots, coverage, test quality, type quality, tech debt,
-documentation, dependencies) chosen by a deterministic priority-and-rotation
-scheduler, no model in the choice. Each finding becomes a draft ticket that
-carries a behaviour-preserving acceptance criterion with the repo's own test
-command as its check, so the runner verifies the fix mechanically. The coverage
-lane files a draft only when the coverage command succeeds and reports a total
-**below** the `minimum_gap_threshold` target (a percentage); a repo at or above
-it, a run that exits non-zero, or a report with no recognisable total
-(coverage.py `TOTAL`, istanbul `All files`, Node's built-in `# all files`
-report) files nothing. The same tick ingests labelled GitHub/Jira issues and
-runs the lore-gap loop when it is on; the feature backlog runs just before the
-lane, on its own switch. The scans cost nothing, so a tick that finds nothing
-new is an empty poll (it drains the run and stays off the day cap); only the
-feature backlog spends a model call, and it stops claiming a feature whose plan
-failed twice in a row (`max_plan_failures`). The **Idle loops** panel holds the master
-switch, the lane toggles, a recommended set, the dependency lane's audit
-command, and the **self-improve** gate: opted-in repos, a risk ceiling and a
-per-tick cap under which the tick promotes its own drafts to ready so the
-delivery loop fixes them without a human in the promote step. Off by default;
-the panel's status line says what the next idle tick will do — one lane per
-tick, rotating — reading the runner's `GAFFER_MAINTENANCE`, `GAFFER_IDLE_MODE`
-and `IDLE_DRAFT_WHEN_IDLE` overrides and each lane's prerequisites (the
-coverage lane needs a repo coverage command and files only below its target).
-Repos onboarded from the dashboard are scanned without editing `crew.yaml`.
+- **Maintenance when idle.** With the queue empty, an idle tick can run one scan lane
+  (security hotspots, coverage, test quality, type quality, tech debt, documentation,
+  dependencies), chosen by a deterministic priority-and-rotation scheduler. Each finding
+  becomes a draft ticket with a behaviour-preserving criterion that runs the repo's own
+  test command. The coverage lane files a draft only when the coverage command succeeds
+  and reports a total below `minimum_gap_threshold`. The scans cost nothing; only the
+  feature backlog spends a model call. The **Idle loops** panel holds the master switch,
+  the lane toggles, the dependency lane's audit command and the **self-improve** gate
+  (opted-in repos, a risk ceiling and a per-tick cap under which the tick promotes its
+  own drafts to ready). Off by default.
+- **Feature backlog when idle.** With the toggle on, an idle tick takes one `backlog`
+  feature from the memory ledger, plans it with one model call and files the epic as
+  draft tickets behind the usual human gate. After two failed plans in a row it is left
+  for you. Off by default.
 
-**Feature backlog when idle.** With the **Feature backlog** toggle on, an idle tick
-(before the maintenance lane) takes one `backlog` feature from the memory feature
-ledger, moves it to `building`, plans it with one model call and files the epic as
-draft tickets on that feature's repo, behind the usual human gate. A plan that fails
-hands the feature back to `backlog`; after two failed plans in a row it is left there
-for you. Off by default.
-Confirming a brownfield epic yourself (every ticket on one existing repo) moves that
-feature to `building` too.
+### A different worker behind the factory
 
-**Usage limits pause the factory, they do not fail tickets.** When the model
-refuses a delivery call because the plan's usage window ran out or a rate limit
-hit, the ticket goes back to Ready without counting an attempt (any work the agent
-had committed stays on its branch) and the factory pauses until the window resets:
-the reset time Claude Code printed plus a minute (a 5-hour, weekly or per-model
-limit alike, in both the older and the current CLI wording), or the **Usage-limit pause**
-setting (`GAFFER_USAGE_PAUSE_DEFAULT_MIN`, default 60 minutes, never below 10) when
-it printed none. No tick claims work meanwhile; `gaffer run --daemon`, the loop and
-a worker pool sleep instead of spinning. The dashboard's model calls (Plan a build,
-Suggest work, onboarding analysis, the tester, the merge resolver) start nothing
-either: the worker seam refuses them before it spawns, with the same pause line. `gaffer status` and the **Health** view
-show "Paused until <time>: usage limit", and the ticket's timeline records the
-refusal. The pause lifts on its own. An overnight run that hits its window no longer
-parks good tickets. The same holds when the refused call was a new repo's
-scaffold, the independent tester or the agent reviewer: the factory pauses and the
-ticket waits where it was, rather than being parked or held for a person. A spend
-cap or an admin switch is not a pause: it needs someone to raise the cap, so those
-tickets are parked for a person as before.
+`GAFFER_WORKER_PROVIDER=command` with `GAFFER_WORKER_COMMAND=/path/to/program` runs your
+own program for every agent turn: deliveries, reviews, clarify passes, planning, the
+tester and the merge resolver. The program gets the prompt (in
+`GAFFER_WORKER_PROMPT_FILE`), the MCP config path and the model and turn-cap hints as
+`GAFFER_WORKER_*` variables, and prints a small JSON envelope. Budget admission, the
+scrubbed environment, the timeout and every gate after the call work as for the default
+worker, and each call is booked at no less than a per-call floor
+(`GAFFER_WORKER_COMMAND_COST_USD`). It has no in-process safety hook, so it launches
+only inside the docker sandbox with the host-side MCP bridge.
+[worker-providers.md](worker-providers.md) has the contract.
 
-Enabling autonomy **requires containment**: any agent ship or mutate flag turns
-on the OS sandbox requirement, and a required-but-unavailable sandbox refuses to
-launch the agent rather than run it uncontained. The provider is auto-detected
-(`sandbox-exec` on macOS, `docker` where a Docker CLI exists). Under `docker` the
-container works in its own git repository: it can commit, but only the ticket's own
-branch comes back to your repository when it exits, so nothing run inside can move
-`main` or tag a release. On the host, the runner's own git (the auto-commit, the
-landing) never runs your repository's hooks or any filter, driver or helper that
-points into the checkout, and the agent cannot edit hook scripts or repository git
-config at all.
-
-The `docker` provider is proven on a real ticket, not only on a shell payload. A CI
-job (`sandbox-delivery`, on a Linux runner) runs one ticket through the real tick with
-`SANDBOX_PROVIDER=docker` and a stub agent installed as the delivery image's own
-`claude`: the agent runs inside the container, claims nothing itself, records its
-evidence through the MCP bridge to the host's dispatch server (the claim token never
-enters the container), commits into its private git dir (only the ticket branch is imported to the
-host; a `main` it moves inside stays inside), the DoD gates run in their
-own container under the validation profile, and the ticket reaches review. The agent
-checks from inside that the databases, `settings.json`, the host `HOME` and a host
-canary file are not there, and the tests gate refuses to pass unless it ran contained
-(`runner/test/sandbox-docker-delivery.test.sh`; its daemon-free twin
-`sandbox-docker-delivery-seam.test.sh` checks the same wiring with a fake `docker` in
-the normal suite). The same delivery with the real `claude` is the manual
-**Docker sandbox live delivery** workflow, which you run on your own fork with a
-repository secret ([docs/docker-sandbox-provider.md](docker-sandbox-provider.md)).
-**A different worker behind the factory.** `GAFFER_WORKER_PROVIDER=command` with
-`GAFFER_WORKER_COMMAND=/path/to/program` runs your own worker program for every
-agent turn instead of `claude -p`: deliveries, reviews, clarify passes, planning,
-the tester and the merge resolver alike. The program gets the prompt, the MCP config
-path and the model and turn-cap hints as `GAFFER_WORKER_*` variables in the call's
-working directory, and prints a small JSON envelope (the result text, the stop
-reason, a cap-hit flag, turns, cost, model, token counts, all optional). Budget
-admission, the scrubbed environment, the timeout and every gate after the call work
-as they do for `claude-code`, and each usage-ledger row it writes names
-`worker_provider: "command"` with how its cost is known (`reported`, `floor` or
-`unreported`). It has no in-process safety hook, so it only launches inside the docker
-sandbox with the host-side MCP bridge (`SANDBOX_PROVIDER=docker` on a Linux host) and
-refuses anywhere else, `sandbox-exec` included, unless you set `GAFFER_STRICT_REQUIRE=0`
-in the environment to say the runner is contained out-of-band, which is logged as a
-warning at every spawn. The prompt arrives in a file (`GAFFER_WORKER_PROMPT_FILE`), so a
-long one never fails the spawn; each call is booked at no less than a per-call floor
-(`GAFFER_WORKER_COMMAND_COST_USD`), so a worker can't beat the daily cap by reporting
-$0; and every lane, the greenfield repo classifier included, runs it, so a command
-factory makes no `claude` call.
-[`worker-providers.md`](worker-providers.md) has the full contract.
-
-![The Settings panel](img/settings.png)
-
-*The boot room (`#/settings`): the Team instructions dial on Supervised and the
-Autonomy flags, all opt-in and shown off, with Planning debate, Idle loops and
-the other groups folded below. Nothing here is enabled by default — full
-hands-off autonomy is a deliberate choice you make, not the starting state.*
-
----
-
-## Skills — the right pack, mounted where the agent reads it
+## Skills: the right pack, mounted where the agent reads it
 
 Every agent run (delivery, review, the independent tester, intake, planning, merge)
 gets its own skill set from the factory library, chosen by role and by the ticket's
 stack: the conventions pack of the language, the lenses of the role, and the packs the
-ticket text calls for, never the whole library.
+ticket text calls for, never the whole library. [skill-selection-and-stacks.md](skill-selection-and-stacks.md)
+has the details.
 
 - **Every repo on the ticket counts.** A ticket spanning a TypeScript frontend and a
-  Java service is selected for both stacks, for delivery, review and the tester alike,
-  and each prompt names each repo's pack. Files named in the ticket (or, for review,
-  the delivery's diff) still narrow the set to the ecosystems they touch.
-- **Mounted where Claude Code looks.** Skills are copied to
-  `.claude/skills/<name>/SKILL.md` in the agent's worktree, beside a repo's own skills;
-  a repo skill of the same name wins, the prompt says so, and teardown removes only
-  Gaffer's copies. The copies sit inside the worktree, so the safety hook lets the
-  agent read them without any exception to its read boundary.
-- **Use is measured honestly.** The Health view's skill panel shows, per skill, how
-  often it was selected, applied (named in the agent's output), opened (a read the
-  safety hook allowed) and refused (a read it blocked). A refused read never counts
-  as use, and an open is never counted as an application.
+  Java service is selected for both stacks; files named in the ticket (or, for review,
+  the diff) narrow the set to the ecosystems they touch.
+- **Mounted where the agent CLI looks.** Skills are copied to
+  `.claude/skills/<name>/SKILL.md` in the agent's worktree, beside a repo's own; a repo
+  skill of the same name wins, and teardown removes only Gaffer's copies.
+- **Use is measured honestly.** Health's skill panel shows, per skill, how often it was
+  selected, applied (named in the agent's output), opened (a read the hook allowed) and
+  refused (a read it blocked). A refused read never counts as use.
 - **A live check, on demand.** `GAFFER_LIVE_SKILL_TEST=1 bash runner/test/live-skill-use.test.sh`
-  plants a harmless instruction ("include the token `GAFFER-SKILL-<role>-<nonce>`")
-  inside each role's intended skill only, runs the real Claude Code CLI through the
-  real tick on a tiny fixture repo, and checks each role's recorded result for its
-  token and its telemetry row. It skips cleanly, saying what it needs, without the
-  variable, a working CLI or credentials. Set `GAFFER_LIVE_SKILL_MODEL` to your
-  cheapest model; it prints the cost.
-
----
+  plants a harmless token in each role's intended skill, runs the real agent CLI
+  through a real tick on a tiny fixture repo, and checks each role's result for its
+  token. It skips cleanly without the variable, a working CLI or credentials. Set
+  `GAFFER_LIVE_SKILL_MODEL` to your cheapest model; it prints the cost.
 
 ## Where to go next
 
-- [`../README.md`](../README.md) — the overview, architecture, install and safety
-  model.
-- [`../quickstart.md`](../quickstart.md) — a guided first run.
-- [`../SECURITY.md`](../SECURITY.md) — the full threat model and honest residual
-  limits.
-- [`../runner/README.md`](../runner/README.md) — the runner runbook.
+- [README](../README.md): the overview, install and safety summary.
+- [quickstart.md](../quickstart.md): a guided first run.
+- [SECURITY.md](../SECURITY.md): the threat model and residual limits.
+- [runner/README.md](../runner/README.md): the runner in depth.
+- [docs/README.md](README.md): every doc, by what you need.

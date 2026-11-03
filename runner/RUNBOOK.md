@@ -1,4 +1,4 @@
-# Gaffer — build & run from fresh (advanced)
+# Gaffer: build and run by hand (advanced)
 
 > **Advanced reference.** The canonical day-one path is the root
 > [`README.md`](../README.md) → [`quickstart.md`](../quickstart.md) →
@@ -24,9 +24,9 @@ State (dbs, config, logs) lives **outside** the packages, in `<repo-root>/.gaffe
 
 ## 0. Prerequisites
 
-- macOS or Linux. OS-level containment: `sandbox-exec` (macOS, write-only) or `docker` (any host with a daemon; read + egress isolation) — auto-detected, see `STRICT_MODE.md`
-- Node ≥ 22 (`.nvmrc`; `engines` is enforced) · pnpm 10 · git · perl (the portable timeout shim; present on macOS and every mainstream Linux)
-- Claude Code CLI (`claude`) — only needed to run the *live* factory
+- macOS or Linux. OS-level containment: `sandbox-exec` (macOS, write-only) or `docker` (any host with a daemon; read + egress isolation), auto-detected; see [docs/sandbox.md](../docs/sandbox.md)
+- Node 22.22.1 or newer, or 24 (`engines` in `package.json` is enforced) · pnpm 10 · git · perl (the portable timeout shim; present on macOS and every mainstream Linux)
+- The agent CLI (`claude`), only needed to run the *live* factory
 
 ```bash
 node --version && pnpm --version && claude --version
@@ -74,12 +74,12 @@ After this, `.gaffer/` holds: `dispatch.sqlite`, `memory.sqlite`,
 DISPATCH_DB=.gaffer/dispatch.sqlite \
   node packages/dispatch/dist/api/bin.js --port 8787
 # → http://127.0.0.1:8787
-#   views: Overview · Work · Review · Epics · Map · Memory · Settings (+ detail views)
+#   views: Overview · Work · Review · Epics · Map · Specs · Memory · Squad · Floor · Health · Settings
 ```
 
 Prefer `runner/gaffer dashboard`, which wires the action commands and prints the
 `?token=` URL. Every data request needs the auto-provisioned bearer token (only the
-SPA shell and `/healthz` are tokenless). Loopback-only by default — a bind guard refuses
+SPA shell and `/healthz` are tokenless). Loopback-only by default: a bind guard refuses
 non-loopback hosts unless you pass `--unsafe-bind` (or `DISPATCH_UNSAFE_BIND=1`). Run it
 backgrounded with `nohup … &` to keep it up across shells.
 
@@ -93,7 +93,7 @@ server is up.
 
 **Named credentials.** The shared token acts as one operator identity. To give each
 person (or CI job) their own credential whose writes are attributed to them in the
-event log, mint a principal — from Settings → Access in the dashboard, or:
+event log, mint a principal from Settings → Access in the dashboard, or:
 
 ```bash
 runner/gaffer wg principal create alice            # full: read + write
@@ -105,33 +105,17 @@ runner/gaffer wg principal revoke ci-viewer
 The token (`gfp_…`) is printed once; only its hash is stored. `GET /api/whoami` tells
 a caller which principal and capability its token carries.
 
-**"Suggest work" button** (`POST /product-owner/runs`): the dashboard runs the
-product-owner skill headlessly to file fresh draft tickets. It needs two env vars on
-the dashboard process — `gaffer dashboard` exports both for you; if you start
-`api/bin.js` by hand, set them yourself:
-
-```bash
-DISPATCH_DB=.gaffer/dispatch.sqlite \
-  DISPATCH_PRODUCT_OWNER_CMD="node runner/bin/product-owner-run.mjs" \
-  DISPATCH_PRODUCT_OWNER_REPO=<repo-name> \
-  node packages/dispatch/dist/api/bin.js --port 8787
-```
-
-- `DISPATCH_PRODUCT_OWNER_CMD` — the headless runner the button spawns (detached).
-  Unset ⇒ the button errors `NOT_CONFIGURED`. Defaulted in `factory.config.sh`.
-- `DISPATCH_PRODUCT_OWNER_REPO` — the repo NAME (as registered in dispatch) to
-  suggest work for; the runner resolves it to its local path via `DISPATCH_DB` and
-  files 3–5 **draft** tickets against it (a human triages them on the board). The
-  run is headless (never asks questions) and bounded (`GAFFER_PO_MAX_TICKETS`,
-  default 5; `GAFFER_PO_TIMEOUT_MS`, default 600000).
+The dashboard's action buttons (Suggest work, Merge, Poll for work, Onboard) need
+their commands in the API's environment; `gaffer dashboard` wires them, and
+[`.env.example`](../.env.example) lists them if you start `api/bin.js` by hand.
 
 ---
 
-## 4. Wire the MCP servers into Claude Code
+## 4. Register the MCP servers with your agent CLI
 
-The agent works **through MCP**. The servers are **stdio** — there is no daemon to
-start; an MCP client (Claude Code) spawns them on demand. Register them once (paths
-are relative to the repo root — use absolute paths if you register from elsewhere):
+The agent works **through MCP**. The servers are **stdio**: there is no daemon to
+start; the MCP client (the agent CLI) spawns them on demand. Register them once (paths
+are relative to the repo root; use absolute paths if you register from elsewhere):
 
 ```bash
 claude mcp add dispatch  --env DISPATCH_DB=.gaffer/dispatch.sqlite \
@@ -143,21 +127,18 @@ claude mcp add crew \
 ```
 
 Or use the project-local config: `runner/.mcp.json` already declares `dispatch`
-+ `memory` (the runner substitutes the DB paths per tick). In Claude Code, check
-`/mcp`:
-
-```
-dispatch   16 tools  (create_ticket, claim_ticket, get_ticket, record_ac_evidence, …)
-memory    7 tools  (search_lore, get_lore, suggest_lore, …)
-crew   8 tools  (get_factory_status, list_repos, get_context_packet, run_idle_loop, …)
-```
++ `memory` (the runner substitutes the DB paths per tick). In the agent CLI, `/mcp`
+lists the servers and their tools: `dispatch` (the generated table in
+[`packages/dispatch/README.md`](../packages/dispatch/README.md#mcp-server)), `memory`
+(`search_lore`, `get_lore`, `suggest_lore`, ...) and `crew` (`get_factory_status`,
+`list_repos`, `get_context_packet`, `run_idle_loop`, ...).
 
 ---
 
 ## 5. Onboard a repo + build a Factory Map
 
 **One-command onboard** (registers in Dispatch, scans stack/commands/context, seeds
-tags — all in one). Repos are registered ONCE, in Dispatch; the orchestrator reads
+tags, all in one). Repos are registered ONCE, in Dispatch; the orchestrator reads
 them from there, so you don't register anywhere else:
 
 ```bash
@@ -165,8 +146,8 @@ node packages/crew/dist/cli/index.js -c .gaffer/crew.yaml \
   repo onboard /abs/path/to/repo --standalone        # or --scope <nodeId> to map it
 ```
 
-(NB: `crew.yaml`'s `dispatch.local.sqlite_path` must point at the factory db —
-`<repo-root>/.gaffer/dispatch.sqlite` — so onboard lands in the right place.)
+(NB: `crew.yaml`'s `dispatch.local.sqlite_path` must point at the factory db:
+`<repo-root>/.gaffer/dispatch.sqlite`, so onboard lands in the right place.)
 
 **Or the minimal register + map by hand** (or the dashboard's Factory Map tab):
 
@@ -177,37 +158,18 @@ NODE=$($WG scope node create -n "My Product" -t product | node runner/lib/json-t
 $WG scope repo link "$NODE" myservice --relation owns --access write
 ```
 
-Unmapped repos still work — they behave as their own single-repo scope (mono-fallback).
+Unmapped repos still work: they behave as their own single-repo scope (mono-fallback).
 A running dashboard sees CLI-registered repos straight away (it reads the db on every
 request).
 
 ---
 
-## 6. See the whole loop WITHOUT going live
+## 6. Run it
 
-```bash
-runner/gaffer demo          # seeds a throwaway showcase factory (a fresh mktemp dir, or DEMO_DIR), proves
-                            # both MCP servers are live, runs ONE dry-run tick — always DRY_RUN, no agent
-runner/gaffer run --dry-run # one supervisor pass over YOUR ready queue, preview only
-```
-
----
-
-## 7. Go LIVE — the actual factory
-
-```bash
-# review runner/claude/settings.json (permissions) and runner/factory.config.sh first
-runner/gaffer run                    # LIVE: one pass, delivers the ready tickets in worktrees
-runner/gaffer run --daemon           # keep going (re-run every 30 s until SIGINT/SIGTERM)
-```
-
-- **Safety:** the PreToolUse hook (`safety-hook.mjs`) is the boundary; the human never
-  pastes code or secrets. Run **one supervised ticket** before any unattended run.
-- **Isolation:** each delivery runs in a throwaway git worktree — the real checkout is
-  never touched; a failed run rolls back to nothing.
-- **Strict mode (optional, OS-level containment):**
-  `STRICT_MODE=1 runner/gaffer run` — see `STRICT_MODE.md` (best-effort, provider
-  model; `sandbox-exec` on macOS).
+The rest is the same as the [quickstart](../quickstart.md#5-run-the-factory):
+`runner/gaffer demo`, `runner/gaffer run --dry-run`, then `runner/gaffer run` with a
+dollar cap. Strict mode and the sandbox providers are in
+[docs/sandbox.md](../docs/sandbox.md).
 
 ---
 
@@ -221,9 +183,9 @@ runner/gaffer run --daemon           # keep going (re-run every 30 s until SIGIN
 | Crew MCP | `packages/crew/dist/mcp/bin.js` (`-c crew.yaml`) |
 | CLIs | `packages/<dispatch\|crew>/dist/cli/index.js` · `packages/memory/dist/bin/memory.js` |
 | State (dbs/config/logs) | `<repo-root>/.gaffer/` |
-| Config + stop conditions | `runner/factory.config.sh` — every knob, default and reader: [`docs/CONFIG.md`](../docs/CONFIG.md) |
-| Event-log integrity | `dispatch events verify` (also a `dispatch doctor` check and the Health view's "Event log" card) — the sha256 hash chain over `work_events` |
-| One tick's trail | `dispatch events list --correlation <GAFFER_TICK_ID>` — every event the runner and the agent wrote during that tick |
-| Lore history | `memory history <id>` — every earlier version of a record |
+| Config + stop conditions | `runner/factory.config.sh`; every knob, default and reader: [`docs/CONFIG.md`](../docs/CONFIG.md) |
+| Event-log integrity | `dispatch events verify` (also a `dispatch doctor` check and the Health view's "Event log" card): the sha256 hash chain over `work_events` |
+| One tick's trail | `dispatch events list --correlation <GAFFER_TICK_ID>`: every event the runner and the agent wrote during that tick |
+| Lore history | `memory history <id>`: every earlier version of a record |
 
 Architecture + status: [`../README.md`](../README.md) · [`runner/README.md`](README.md).

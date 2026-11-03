@@ -1,7 +1,7 @@
 import { skillSchema, type Skill } from "./schema.js";
 
 /**
- * v1 built-in skills (04-loops-hooks-skills.md). These are descriptive, stack-
+ * v1 built-in skills. These are descriptive, stack-
  * agnostic procedures — they `applies_to` every stack so they are always
  * selectable, scoped by capability. Parsed through the schema so the built-ins
  * are validated exactly like human-authored files.

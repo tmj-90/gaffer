@@ -1,37 +1,31 @@
-# Gaffer — Quickstart
+# Gaffer quickstart
 
-Stand up the factory from a clean checkout and onboard your first repo. Every command
-below is the real, verified path — run them in order.
-
----
+Stand up the factory from a clean checkout, onboard a repo and take one ticket all the
+way to your default branch. Run the commands in order.
 
 ## Prerequisites
 
 - **Node 22.22.1+ or 24** and **[pnpm](https://pnpm.io)** (`pnpm@10.33.0`, pinned via `packageManager`). The Node floor is a hard prerequisite; see the note under step 1.
-- **Git** (the factory branches per ticket, so your target repos should be git repos)
-- The **`claude` CLI**, authenticated with Anthropic — the factory spawns `claude -p` agents for planning, delivery, and repo analysis; required for live runs
-- `sqlite3` is handy for poking the stores, but not required
+- **Git**: the factory branches per ticket, so your target repos should be git repos.
+- The agent CLI (`claude`), installed and logged in, for any live run. Setup, the demo and dry runs work without it.
+- `sqlite3` is handy for poking the stores, but not required.
 
-Gaffer is **local-first**: the control plane, databases, repo state, worktrees, and evidence live on your machine, against your repos, with your keys. Live agent runs use your configured Claude Code CLI, so prompts and selected repo context are sent to that model provider — treat any connected model as part of your trust boundary.
+Gaffer is local-first: the control plane, databases, worktrees and evidence live on
+your machine. Live agent runs send prompts and the repo context they select to your
+model provider, so treat it as part of your trust boundary.
 
----
-
-## 1. Install + initialise
+## 1. Install and initialise
 
 From the repo root:
 
 ```bash
-bash runner/setup.sh
+runner/gaffer setup
 ```
 
-This one command:
-- installs + builds all three packages (`dispatch`, `crew`, `memory`),
-- creates fresh factory state under **`.gaffer/`** (the control-plane DB, the memory store, and `crew.yaml`),
-- wires the crew config at the shared dispatch database.
-
-> State lives in `.gaffer/` next to the repo by default (override with `GAFFER_DATA`). Delete that directory to start completely fresh.
-
-(If you only want to build, `pnpm install && pnpm -r build` builds the packages without creating `.gaffer/`. It needs the same Node: on an older one pnpm stops with `ERR_PNPM_UNSUPPORTED_ENGINE`.)
+This installs and builds the three packages (`dispatch`, `crew`, `memory`), creates
+fresh factory state under **`.gaffer/`** (the control-plane database, the memory store
+and `crew.yaml`), and starts the dashboard. State lives in `.gaffer/` by default
+(override with `GAFFER_DATA`); delete it to start again.
 
 > **An older Node stops setup before it installs anything.** On Node 22.22.0, for example:
 >
@@ -40,10 +34,11 @@ This one command:
 > ```
 >
 > Exporting `npm_config_engine_strict=false` does not get past it: pnpm then only warns,
-> but setup runs its own check and still refuses. There is no supported way to run below
-> the floor. Install Node 22.22.1 or newer (or 24) and run setup again.
+> but setup runs its own check and still refuses. Install Node 22.22.1 or newer (or 24)
+> and run setup again.
 
----
+To type `gaffer` instead of `runner/gaffer`, add `alias gaffer="$PWD/runner/gaffer"` to
+your shell profile.
 
 ## 2. Onboard your first repo
 
@@ -51,27 +46,21 @@ This one command:
 runner/gaffer onboard /path/to/your/repo
 ```
 
-This scans + registers the repo **and** runs a `claude -p` analysis that writes a real
-**Repo Digest** (what the codebase is + how it's structured), a **Feature ledger** (the
-product capabilities it ships — not infrastructure), and grounded, cited **lore drafts**
-into the memory store. Re-running it is idempotent — it refreshes rather than duplicating.
-A different repository with the same directory name (two unrelated `api` checkouts) is
-refused rather than merged into the first one's record; onboard it under its own name with
-`runner/gaffer onboard /path/to/other/api --name other-api`.
+This registers the repo and runs an analysis that writes a **Repo Digest** (what the
+codebase is and how it's structured), a **Feature ledger** (the product capabilities it
+ships) and cited **lore drafts** into the memory store. Re-running it refreshes rather
+than duplicates. A different repository with the same directory name is refused; onboard
+it under its own name with `runner/gaffer onboard /path/to/other/api --name other-api`.
 
-> Lore lands as **drafts** (gated). `runner/gaffer lore review` lists them (the same list
-> as the dashboard's **Memory** view); approve what's worth keeping with
-> `runner/gaffer lore approve <id>` and drop the rest with `runner/gaffer lore reject <id>
-> --reason "…"`. Nothing is auto-promoted.
+> Lore lands as **drafts**. `runner/gaffer lore review` lists them (the same list as the
+> dashboard's **Memory** view); keep what's worth keeping with
+> `runner/gaffer lore approve <id>` and drop the rest with
+> `runner/gaffer lore reject <id> --reason "..."`. Nothing is auto-promoted.
 
-Onboarding also files one **decision** for you — *"Onboarding intake for '<repo>'"* — a
-short bundle of questions the scan could not answer from the code (what the product is
-for, who it serves, what is deliberately out of scope). It blocks nothing. Answer it from
-the dashboard's **Overview** ("what needs you") when you have a minute, or resolve it
-without an answer; the answers become lore drafts for review, never facts the agent
-asserts on its own.
-
----
+Onboarding also files one **decision**, *"Onboarding intake for '<repo>'"*: a few
+questions the scan could not answer from the code (what the product is for, who it
+serves, what is out of scope). It blocks nothing. Answer it from the Overview when you
+have a minute; the answers become lore drafts for review.
 
 ## 3. Open the control room
 
@@ -79,61 +68,52 @@ asserts on its own.
 runner/gaffer dashboard
 ```
 
-Prints a `http://127.0.0.1:8787/?token=…` link: open it on this machine (or paste the
-token at the login prompt). The dashboard binds loopback only, and every data request
-needs that token.
+Setup already started it; this prints the `http://127.0.0.1:8787/?token=...` link again.
+Open it on this machine (or paste the token at the login prompt). The dashboard binds
+loopback only, and every data request needs that token.
 
 To use another port, set `DISPATCH_API_PORT`, e.g. `DISPATCH_API_PORT=9000 runner/gaffer
-dashboard --restart`. `gaffer status` and the runner read the same variable, so export it
-in every shell you run them from. In the container, compose publishes the host side from
-`GAFFER_PORT` (a bind address, default `127.0.0.1:8787`) and falls back to
-`DISPATCH_API_PORT` for the port, so `DISPATCH_API_PORT=9000 docker compose up -d` also
-works.
+dashboard --restart`, and export it in every shell you run `gaffer` from. In the
+container, compose publishes the host side from `GAFFER_PORT` (default
+`127.0.0.1:8787`) and falls back to `DISPATCH_API_PORT`.
 
 > **`--lan` is plain HTTP on your LAN.** `runner/gaffer dashboard --lan` binds every
-> interface so a phone or another machine can open `http://<your-lan-ip>:8787`. There is
-> no TLS, so the full token (approve, merge, run) crosses the network in the clear and
-> anyone who can see that traffic can use it. Use it only on a network you trust.
-> Otherwise keep the loopback default and reach it through an SSH tunnel
-> (`ssh -L 8787:127.0.0.1:8787 <host>`) or a reverse proxy that terminates TLS, and give
-> viewers a read-only token, not the full one (the README says how to get one).
+> interface so a phone or another machine can open it. There is no TLS, so the full token
+> (approve, merge, run) crosses the network in the clear. Use it only on a network you
+> trust; otherwise use an SSH tunnel (`ssh -L 8787:127.0.0.1:8787 <host>`) or a reverse
+> proxy that terminates TLS, and give viewers a read-only token (the README says how).
 
-`runner/gaffer dashboard --restart` stops the running server, rotates the login token and starts a fresh one; `--stop` stops it. Each reports "dashboard up" only once the server it started answers with the new token. When the port is already taken it says by which pid (`port 8787 is already in use by pid N`) and starts nothing; pick another port with `DISPATCH_API_PORT`.
+`runner/gaffer dashboard --restart` rotates the login token and starts a fresh server;
+`--stop` stops it. When the port is taken it says by which pid and starts nothing.
 
-> **Wiring reference — always launch the dashboard via `gaffer dashboard`.** It wires
+> **Wiring reference: always launch the dashboard via `gaffer dashboard`.** It wires
 > every action command (`DISPATCH_PRODUCT_OWNER_CMD`, `DISPATCH_MERGE_CMD`,
 > `DISPATCH_TICK_CMD`, `DISPATCH_ONBOARD_CMD`, `DISPATCH_EPIC_FEATURE_CMD`) into the API's
 > environment. An ad-hoc launch (`node packages/dispatch/dist/api/bin.js`) leaves them
-> unset, so the dashboard's buttons silently no-op. The API logs a
-> `dispatch-api action commands — wired: …; missing: …` line at startup so a
-> mis-launched dashboard is obvious. See [`.env.example`](.env.example) for the full
-> wiring + knob reference.
+> unset, so the dashboard's buttons do nothing; the API logs a `dispatch-api action
+> commands — wired: …; missing: …` line at startup. See [`.env.example`](.env.example)
+> for the full wiring and knob reference.
 
-In the dashboard:
-- **Overview** — the factory at a glance (throughput, what needs you, stale claims).
-- **Work** — the ticket board (plan → implement → test → review).
-- **Review** — the human gate: tickets wait here for your approval before any merge occurs. This is the structural barrier that prevents the agent from shipping its own work.
-- **Epics** — group and track tickets by epic.
-- **Map** — the Factory Map: repo registration, scope nodes, and unmapped repos.
-- **Health** — ROI and factory honesty: what the factory cost, what it delivered, where it failed.
-- **Specs** — the spec library: frozen statements of product intent, each clause traced to acceptance criteria, with the coverage gaps.
-- **Memory** — pick your repo to read its digest, feature ledger, and lore. The **Onboard a repo** button does step 2 from the UI: pick a registered repo or type a path (a typed path wins). Onboarding a repo that already has a digest asks first, because it cards the whole repo again.
-- **Squad**: every agent with its shirt number, name, role and when it was last seen; **Rename** gives one a display name and number.
-- **Floor**: the factory drawn as a live isometric floor: every open ticket a parcel at its station, every live claim a robot in its agent's shirt.
-- **Settings** — every operator knob, grouped: **autonomy**, the **delivery** cycle (auto-merge · push · PR · require-CI), **execution** & concurrency, **idle loops**, **budget & caps**, the **planning debate**, **quality gates**, the strict **sandbox**, and **notifications** — all editable, persisted to `settings.json` (a real env var always wins, and shows read-only when set).
+The screens:
 
-```bash
-runner/gaffer status     # what's registered + running
-```
+- **Overview**: the scoreboard and the Team sheet of everything waiting on you.
+- **Work**: the ticket board (plan, implement, test, review).
+- **Review**: the human gate, where tickets wait for your approval before any merge.
+- **Epics**: tickets grouped by epic, phase by phase.
+- **Map**: the Factory Map of scope nodes and repos.
+- **Health**: what the factory cost, what it delivered and where it failed.
+- **Specs**: frozen statements of product intent, each clause traced to acceptance criteria.
+- **Memory**: a repo's digest, feature ledger and lore, and the **Onboard a repo** button.
+- **Squad**: every agent with its shirt number, name and role; **Rename** renames one.
+- **Floor**: the factory as a live isometric floor.
+- **Settings**: every operator knob, grouped (autonomy, delivery, execution, idle loops, budget and caps, planning, quality gates, sandbox, notifications), saved to `settings.json`; a real environment variable always wins and shows read-only.
 
----
+[docs/FEATURES.md](docs/FEATURES.md) walks through each one.
 
 ## 4. Give it your first ticket
 
-Everything the factory delivers starts as a ticket. `runner/gaffer wg …` is the
-dispatch CLI pinned to *this* factory's database, so no `--db` flag is needed. Four
-commands take a ticket from nothing to **ready** (create it in the **Work** view instead
-if you prefer the UI — same four steps):
+`runner/gaffer wg` is the dispatch CLI pinned to this factory's database. Four commands
+take a ticket to **ready** (or create it in the **Work** view):
 
 ```bash
 runner/gaffer wg ticket create -t "Add listNotes: newest-first listing" \
@@ -145,314 +125,160 @@ runner/gaffer wg ticket ready 1
 runner/gaffer wg ticket show 1                             # status, criteria, repo access
 ```
 
-Rules the `ready` gate enforces, so you don't discover them by failing:
-- **at least one acceptance criterion** — the agent proves each one, and a criterion with
-  `--check '<cmd>'` is run by the runner itself in the delivery worktree (exit 0 ⇒ satisfied);
-- **a confirmed repo** (`repo-access set … --access write` is the default) — without it the
-  runner has nowhere to branch. The default `solo_loose` pack only *warns*
-  (`REPO_RECOMMENDED`) and lets the ticket go ready; the runner then parks it as
-  `blocked` (`no_write_repo`) for you rather than delivering it. The stricter packs
-  refuse the `ready` move outright;
-- the default policy pack is `solo_loose`; the strict packs also need a reviewer (see the
-  note in the next section).
-
-`ticket create --repo <repo-name>` does the `repo-access set` step in the same command,
-if you'd rather.
-
-The ticket number (`1`) is what every later command takes.
-
----
+The `ready` gate wants at least one acceptance criterion (one with `--check '<cmd>'` is
+run by the runner itself) and a repo the ticket may write to. The default `solo_loose`
+pack only warns about a missing repo, and the runner then parks the ticket as `blocked`
+(`no_write_repo`); the stricter packs refuse it (see
+[the aside below](#aside-readying-a-ticket-under-the-stricter-policy-packs)).
+`ticket create --repo <repo-name>` does the repo step in the same command. If **ready**
+is refused, the refusal names what is missing, and `wg ticket edit 1` or `wg ac edit 1
+<ac>` fixes it; the contract is editable until the ticket is claimed.
 
 ## 5. Run the factory
 
-The factory works tickets through **plan → implement → test → review**, each in a throwaway
-git worktree, behind a deterministic safety hook.
+The factory works tickets through plan, implement, test and review, each in a throwaway
+git worktree, behind a deterministic safety hook. Watch it first:
 
 ```bash
-runner/gaffer demo                    # one dry tick over a showcase repo (a fresh temp dir; never touches your repos or calls Claude)
-DRY_RUN=1 bash runner/tick.sh         # preview a single tick
+runner/gaffer demo              # one dry tick over a showcase repo in a fresh temp dir
+runner/gaffer run --dry-run     # preview each ready ticket once; nothing claimed or spent
 ```
 
-When you're ready to let it deliver for real, read **`runner/preflight.sh`** first, then:
+When you're ready to let it deliver for real:
 
 ```bash
 bash runner/preflight.sh              # verify the environment
 export GAFFER_DAILY_BUDGET_USD=5      # a dollar cap: a live run refuses to start without one
-runner/gaffer run                     # go live — ONE pass: drains the ready queue, then exits
-                                      #   (the same as DRY_RUN=0 bash runner/loop.sh)
-runner/gaffer run --daemon            # walk away: re-runs the loop every 30s (Linux + macOS),
-                                      #   honours MAX_TICKS_PER_DAY; SIGINT/SIGTERM stops cleanly
+runner/gaffer run                     # live: one pass, drains the ready queue, then exits
+runner/gaffer run --daemon            # or keep going: a pass every 30 s until you stop it
 ```
 
-A live run needs a dollar cap, and so does every other paid call (onboarding analysis,
-Plan a build, Suggest work, the spec author, the merge resolver, the tester; an onboard
-without one writes the mechanical digest and says why). With neither `GAFFER_DAILY_BUDGET_USD` (per UTC day) nor
-`GAFFER_BUDGET_USD` (lifetime) set, `gaffer run`, `loop.sh` and the dashboard's **Poll for
-work** refuse to start and print the fix. In the dashboard, the first **Poll for work**
-asks for a daily budget (prefilled at $5) and saves it to Settings → Budget & caps before
-it polls. A dry run is never refused; `GAFFER_ALLOW_UNCAPPED=1` in your environment opts out (for a
-key you cap somewhere else). It is ignored in `settings.json`.
+A live run needs a dollar cap, and so does every other paid call. With neither
+`GAFFER_DAILY_BUDGET_USD` (per UTC day) nor `GAFFER_BUDGET_USD` (lifetime) set,
+`gaffer run` and the dashboard's **Poll for work** refuse to start and print the fix; the
+first Poll in the dashboard asks for a daily budget, prefilled at $5. A dry run is never
+refused. `GAFFER_ALLOW_UNCAPPED=1` in your environment opts out.
 
-If the model refuses a call because your usage window ran out (or a rate limit hit),
-the ticket goes back to Ready without counting an attempt. A one-shot run stops there
-(exit 75, `paused until <time>`); `--daemon` sleeps until the window resets. `runner/gaffer status` shows `paused until <time>: usage limit`; it lifts
-on its own (`node runner/lib/usage-pause.mjs clear` lifts it early).
+If the model refuses a call because your usage window ran out, the ticket goes back to
+Ready without counting an attempt. A one-shot run stops there (exit 75,
+`paused until <time>`); `--daemon` sleeps until the window resets.
 
-A pass on the ticket from step 4 takes a minute or two: the agent claims it, works on a
-`gaffer/ticket-1-…` branch in a throwaway worktree, runs the Definition-of-Done gates and
-your `--check` commands, and **submits it for review** (`in_review`). The run summary
-printed at the end says so ("in-review: 1 awaiting review"), and `runner/gaffer wg ticket
-show 1` shows the branch name and each criterion's verdict.
+A pass on the ticket from step 4 takes a minute or two: the runner claims it, the agent
+works on a `gaffer/ticket-1-...` branch in a throwaway worktree, the runner runs the
+Definition-of-Done gates and your `--check` commands, and submits it for review
+(`in_review`). `runner/gaffer wg ticket show 1` shows the branch and each criterion's
+verdict.
 
 ### Approve and merge
 
-By default **the loop never merges** — that is the human gate. Approve and land the
-ticket from the **Review** view (inspect the diff, arm + confirm Approve, then Merge), or
-from the terminal:
+By default the loop never merges: that is the human gate. Approve and land the ticket
+from the **Review** view (read the diff, arm and confirm Approve, then Merge), or from
+the terminal:
 
 ```bash
-runner/gaffer approve 1 --reviewer <your-name>   # in_review → ready_for_merge (a HUMAN approval)
-runner/gaffer merge 1                            # the same conflict-safe merge the dashboard's Merge button runs
+runner/gaffer approve 1 --reviewer <your-name>   # in_review → ready_for_merge (a human approval)
+runner/gaffer merge 1                            # the same merge the dashboard's Merge button runs
 ```
 
 `approve` shows the commit of each repository it is about to approve, with a diffstat,
-and asks; the approval covers exactly those commits. If a branch moves before you
-confirm, the approval is refused and nothing is approved. Non-interactively, pass the
-commits you reviewed: `runner/gaffer approve 1 --commit <repo>=<sha>` (one per repo;
-`runner/gaffer wg ticket diff 1 --heads` prints them). A successful approve prints one line
-and the next command (`next: gaffer merge 1`); `runner/gaffer wg review approve` gives the raw
-JSON. `runner/gaffer status` lists every ticket waiting on you with the command for it.
-`merge` on a ticket that is not approved (or does not exist) refuses with exit 4, and on a
-done ticket says it is already merged.
+and asks; the approval covers exactly those commits, and a branch that moves before you
+confirm is refused. Non-interactively, pass what you reviewed:
+`runner/gaffer approve 1 --commit <repo>=<sha>` (`runner/gaffer wg ticket diff 1 --heads`
+prints them).
 
-`merge` first builds the merge of the approved commit onto your current default branch in
-a scratch worktree and runs your repo's test/lint gates on **that** merge (the merge gate):
-only if the combination passes does it land that exact merge commit on the default branch,
-mark the ticket **done**, refresh the repo's digest + feature ledger and delete the merged
-branch. A ticket that spans several repositories lands one such gated merge per
-repository and is done only when all of them landed. A combination that fails (each side
-passed alone) never lands: the ticket is held for you (*blocked*, with the failing output
-on it) and your default branch is untouched.
-A merge conflict is never forced: the ticket goes back for rework and re-approval.
-Run your repo's tests afterwards; the change is on your default branch, in your checkout.
+`merge` builds the merge of the approved commit onto your current default branch in a
+scratch worktree and runs your repo's gates on that merge. Only if the combination
+passes does it land that commit, mark the ticket **done** and refresh the repo's digest
+and feature ledger. A combination that fails is held for you with your default branch
+untouched, and a merge conflict is never forced.
 
-For hands-off runs (the agent reviewer approves, the merge lane lands) see the autonomy
-flags under **Safety** below — off by default.
-
-> **A delivery that changed its own tests waits for you.** If the agent deleted or renamed
-> a test, added a `.skip` / `.only` / `xfail`, or changed the `test` script (or a hook or
-> script it runs, such as an added `pretest`), the gates' **integrity** row reads FLAG, the
-> Review view shows a banner naming each change, and an agent approve is held whatever the
-> autonomy flags say. If the ticket really should change its tests (removing an obsolete
-> suite, say), allow it before or after the delivery:
+> **A delivery that changed its own tests waits for you.** If the agent deleted, renamed
+> or skipped a test, or changed the `test` script, the gates' **integrity** row reads
+> FLAG, the Review view names each change, and an agent approval is held. If the ticket
+> really should change its tests, allow it:
 >
 > ```bash
 > runner/gaffer wg ticket allow-test-changes 1 --reason "the v1 suite is obsolete"
 > ```
 >
-> or press **Allow test changes…** on the Review view. `--off` withdraws it.
->
-> The allowance turns only the integrity FLAG and the hold into a PASS with a note (and the
-> `test-modified` annotation into medium). It does **not** change what the gate runs: a
-> gate script the delivery changed still runs as the **base** commit has it, so a ticket
-> whose job is to change `scripts.test` can still fail its tests gate. To change the gate
-> itself, change the repo's registered test/lint command
-> (`runner/gaffer wg repo set-commands <repo> --test "<cmd>"`), or merge the script change
-> to the base branch first.
-
-> **Readying a ticket under the stricter policy packs.** The default policy pack is
-> `solo_loose`, which readies freely. The stricter packs each add gates to **Mark ready**,
-> and the **Product Owner** ("Suggest work") drafts its tickets under `factory_strict`.
-> A ticket that misses one fails with `POLICY_DENIED` and the code below:
->
-> - **`team_light`** and up: a description (`DESCRIPTION_REQUIRED`) and a repo with
->   write access (`REPO_REQUIRED`, `WRITE_REPO_REQUIRED`).
-> - **`factory_strict`** adds: every acceptance criterion has a verification method
->   (`AC_VERIFICATION_REQUIRED`; `--check` alone does not count, so pass `--verify`
->   too), a reviewer (`REVIEWER_REQUIRED`), no open blocking decision, and a primary
->   scope if the repo is mapped into the Factory Map (a single unmapped repo is fine).
-> - **`regulated`** adds a human ready-approval (`HUMAN_APPROVAL_REQUIRED`).
->
-> All of them, from the start:
->
-> ```bash
-> runner/gaffer wg ticket create -p factory_strict -t "Add listNotes" \
->   -d "Export listNotes(notes) from src/notes.js, newest first, input untouched."
-> runner/gaffer wg ac add <n> -t "listNotes returns a new array sorted newest-first" --verify "unit test"
-> runner/gaffer wg ac add <n> -t "the test suite passes" --verify "npm test" --check "npm test"
-> runner/gaffer wg ticket repo-access set <n> <repo-name>
-> runner/gaffer wg ticket set-reviewer <n> --reviewer <your-name>
-> runner/gaffer wg ticket approve-ready <n>      # regulated only (or Approve… on the Team sheet)
-> runner/gaffer wg ticket ready <n>
-> ```
->
-> Use the ticket number (`<n>`) or the full id; the 8-character short ref on cards won't
-> resolve. A ticket that is missing a reviewer shows on the Team sheet with an
-> **Assign…** row; assigning one is CLI-only for now. For a ticket you already made that
-> **Mark ready** refused, each code has a fix:
->
-> ```bash
-> runner/gaffer wg ticket edit <n> -d "<what + why>"                # DESCRIPTION_REQUIRED
-> runner/gaffer wg ticket set-reviewer <n> --reviewer <your-name>   # REVIEWER_REQUIRED
-> runner/gaffer wg ac edit <n> 1 --verify "unit test"               # AC_VERIFICATION_REQUIRED, once per criterion (1 = the first)
-> runner/gaffer wg ticket approve-ready <n>                         # HUMAN_APPROVAL_REQUIRED (regulated only)
-> runner/gaffer wg ticket ready <n>
-> ```
->
-> Then **Mark ready** succeeds, and the ticket flows plan → implement → test → review as
-> normal. (The reviewer is *who owns the gate*; the agent still cannot approve or merge its
-> own work.)
->
-> You can fix a ticket's title, description, policy and criteria (`wg ticket edit`,
-> `wg ac edit`, `wg ac rm`) while it is draft, refining, ready or blocked. Once it is
-> claimed the contract is frozen: the review and the tester are held to what the delivery
-> saw, so those edits (and `wg ac add`) are refused with `CONTRACT_FROZEN` until the
-> ticket comes back for rework.
-
----
+> or press **Allow test changes...** on the Review view. The allowance does not change
+> what the gate runs: a gate script the delivery changed still runs as the base commit
+> has it. To change the gate, change the repo's registered command
+> (`runner/gaffer wg repo set-commands <repo> --test "<cmd>"`).
 
 ## 6. Build a whole new app from one line (greenfield)
 
-You don't need an existing repo. From the dashboard, the **Plan a build** chat turns a
-one-line brief into a phased, dependency-ordered epic — including a **bootstrap** ticket
-that *creates a new repo* for the app, which the factory then onboards and delivers into.
+You don't need an existing repo. The **Plan a build** chat turns a one-line brief into a
+phased, dependency-ordered epic, starting with a **bootstrap** ticket that creates a new
+repo, which the factory then onboards and delivers into.
 
-1. **Plan it (UI).** Command palette (`Jump to…`) → **Plan a build** → keep **New app —
+1. **Plan it.** Command palette (`Jump to...`) → **Plan a build** → keep **New app,
    greenfield** selected → type one line (e.g. *"a full-stack calculator: a backend HTTP
    API that evaluates arithmetic expressions and a web front-end that calls it"*) → send.
-   The planner may first ask a few clarifying questions; answer them, or press **Build the
-   tickets** (enabled after your first message) to plan with what it has. Review the proposed
-   phases → **Create & ready** (or **Create as draft** to inspect the tickets first).
-   **From a terminal instead:** `runner/gaffer plan "a full-stack calculator: …"` asks the
-   same planner. Answer its questions with `runner/gaffer plan --answer "…"` (or skip them
-   with `--now`); it prints the proposed tickets and creates them as drafts only when you
-   type y or run `runner/gaffer plan --yes` on its own afterwards. Then ready them as in
-   step 2.
-   The plan always ends with one ticket the factory adds itself: **Acceptance: <epic>**.
-   It depends on every other ticket, runs last against the integrated build, and carries
-   the brief as its contract plus cross-cutting criteria (persistence, concurrent writers,
-   failure behaviour, runtime support). It is the only thing that turns "all tickets
-   merged" into "build accepted".
-2. **Ready them (drafts only).** If you created them as drafts, move the epic's tickets
-   `draft → ready` (drag on the board, or `runner/gaffer wg ticket ready <n>` for each).
-   Phase 1 is the bootstrap; the rest are gated behind it.
-3. **Deliver.** Run the loop (`runner/gaffer run`, or `--daemon`). The bootstrap ticket
-   creates the new repo at `$GAFFER_BOOTSTRAP_ROOT/<slug>` (`~/git/<slug>` unless you set
-   it; `/repos/<slug>` in the container), the factory registers + onboards it, and the
-   dependent tickets deliver into it in dependency order.
+   Answer the planner's questions, or press **Build the tickets** to plan with what it
+   has, then **Create & ready** (or **Create as draft** to inspect the tickets first).
+   From a terminal: `runner/gaffer plan "a full-stack calculator: ..."`, answer with
+   `runner/gaffer plan --answer "..."` (or `--now`), and create the drafts with
+   `runner/gaffer plan --yes`. Then ready them as in step 4.
+   The plan always ends with **Acceptance: <epic>**, a ticket the factory adds that runs
+   last against the integrated build; until the tester passes it, the build is not
+   accepted.
+2. **Ready them** if you created drafts (drag on the board, or
+   `runner/gaffer wg ticket ready <n>` for each). Phase 1 is the bootstrap.
+3. **Deliver.** `runner/gaffer run` (or `--daemon`). The bootstrap creates the repo at
+   `$GAFFER_BOOTSTRAP_ROOT/<slug>` (`~/git/<slug>` unless set; `/repos/<slug>` in the
+   container), and the other tickets deliver into it in dependency order.
 
-> **The loop delivers to `in_review`; it does not merge.** Approve each ticket in the
-> **Review** view or with `runner/gaffer approve <n>` + `runner/gaffer merge <n>` (or
-> enable the opt-in autonomy flags below for hands-off runs). The bootstrap ticket has
-> no delivery branch — approving it marks it merged directly.
+The loop delivers to `in_review`; approve and merge each ticket as above. The bootstrap
+ticket has no delivery branch, so approving it marks it merged.
 
 ### What Gaffer does on a greenfield run
 
-Nothing has to be set up before the first greenfield run beyond what any live run needs
-(a dollar cap). These are the things the factory handles on its own, and the few
-moments it stops to ask you.
+Nothing has to be set up first beyond the dollar cap. The factory installs each
+worktree's dependencies before the gates, probes the package registry before the
+bootstrap, passes a corporate proxy's CA to the agent and marks the planned tickets
+testable; [docs/FEATURES.md](docs/FEATURES.md#greenfield-and-brownfield) has the detail.
+It stops to ask you when:
 
-- **Dependencies for the test gate.** Each feature ticket runs its tests in a fresh
-  worktree with no `node_modules`, so before the Definition-of-Done gate the factory
-  installs that worktree's dependencies, picking the package manager from the lockfile
-  (`pnpm-lock.yaml`, `package-lock.json`, `yarn.lock`). It is bounded by a timeout, a
-  no-op for a repo that is not a node project or already has its modules, and a failed
-  install never passes the gate (the gate still runs and fails loudly).
-  `GAFFER_DOD_INSTALL=0` turns it off if you manage dependencies yourself.
-- **A scaffold the gates cannot run.** The bootstrap registers the new repo with the
-  test and lint commands it detects from the scaffold's manifest. When the scaffold
-  has neither, the repo has no gates and the first dependent ticket parks with
-  "Definition of Done: zero gates executed". Without a lockfile the gate's install is
-  skipped (it only installs deterministically), so the tests run with no modules and
-  fail. Either way the fix is in the new repo: commit a test script (and a lockfile),
-  run `runner/gaffer wg repo set-commands <name> --test "<cmd>"` (and `--lint`), then
-  move the parked ticket back to ready.
-- **The package registry.** Before the bootstrap spawns its agent, the factory runs
-  `npm ping` from inside the agent's environment. A proxy whose CA the agent does not
-  trust, or a registry that does not answer, parks the ticket as `blocked`
-  (`env_registry_unreachable`) with the npm error code and the fix, before any model
-  call. A machine that is simply offline but has packages in its npm cache goes ahead
-  and installs from the cache (`npm_config_prefer_offline=true`), and the card says so;
-  if the cache is missing a package the scaffold needs, the install fails and the park
-  says it ran offline from the cache. Under the docker sandbox the agent's container
-  has its own empty cache, so an offline machine parks there instead. A bootstrap your
-  dollar cap would refuse is released back to ready (`budget_refused`, not counted as
-  an attempt) before anything is created. `runner/preflight.sh` runs the same probe,
-  and warns about a CA bundle variable that names no readable file.
-- **Behind a corporate / TLS-intercepting proxy.** The proxy route and trust store
-  (`HTTPS_PROXY`, `NO_PROXY`, `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `CURL_CA_BUNDLE`,
-  `GIT_SSL_CAINFO`, …) are passed through to the agent; credentials are not. Exporting
-  them for the runner is all it takes: when you exported the bundle for curl, git or
-  python but not `NODE_EXTRA_CA_CERTS`, the agent's npm and the gate's install are
-  handed that bundle as `NODE_EXTRA_CA_CERTS`, which npm honours. TLS verification is
-  never turned off.
-- **The tester lane.** With the independent tester on (`GAFFER_TESTING=1`), the tickets
-  a planned build creates are marked testable, all but the bootstrap, so each goes
-  through the tester on approval. `runner/gaffer wg ticket set-testable <n> --off`
-  unmarks one (and `set-testable <n>` marks a ticket you wrote yourself). With the lane
-  off nothing is marked and approved work goes straight to merge.
-  **The epic's Acceptance ticket is always tested**, whatever `GAFFER_TESTING` says.
-  Until the tester passes it, `gaffer status`, the loop's closing report and `wg stats`
-  say the build is **not accepted**, even with every other ticket merged. A tester PASS
-  is bound to the exact commit and contract it tested: the merge lane will not land a
-  branch that moved after the PASS, an accepted build whose acceptance ticket was edited
-  afterwards reads **stale**, and `gaffer status` says when the default branch has moved
-  past the tested commit. A tester that changes implementation files is held, not
-  passed, and a tester PASS only counts after the runner re-runs the tester's tests
-  itself on a clean checkout of the tested commit (the repo's registered test command).
-  `wg stats` reports a build as **accepted** only when that bound, replayed PASS exists;
-  a human `tester-pass --as human` is reported as **waived**, and a done acceptance
-  ticket without either as **unverified**. To waive or decide by hand, record the
-  verdict yourself: `runner/gaffer wg ticket tester-pass <n> --as human --summary
-  "<why>"` (or `tester-fail`), which is kept as evidence.
-- **A repo with no remote, in PR mode.** The bootstrap creates the repo locally. With PR
-  mode on (`GAFFER_CREATE_PR=1`) it files one decision on the Team sheet asking you to
-  add a remote, with the commands, and the epic's tickets for that repo wait until you
-  answer it. With PR mode off nothing is asked: work merges into the local repo, and
-  `GAFFER_AUTO_PUSH` has nothing to push until you add an `origin`.
-- **Hands-off runs and the sandbox.** By default every ticket stops at `in_review` for
-  you; that is the supervised setting, and running unattended is your choice. If you
-  choose it, `GAFFER_MODE=autonomous` sets the whole group:
+- **The scaffold has no test script or lockfile.** The first dependent ticket parks with
+  "Definition of Done: zero gates executed". Commit a test script (and a lockfile) in the
+  new repo, run `runner/gaffer wg repo set-commands <name> --test "<cmd>"`, then move the
+  ticket back to ready.
+- **The registry can't be reached** from the agent's environment. The bootstrap parks
+  (`env_registry_unreachable`) with the npm error and the fix, before any model call.
+- **A repo with no remote, in PR mode.** With `GAFFER_CREATE_PR=1` it files one decision
+  asking you to add a remote, and the repo's tickets wait for your answer.
+- **A ticket is stuck.** Drag a `blocked` card back to ready, or run
+  `runner/gaffer wg unblock <n>`.
 
-  ```bash
-  export GAFFER_MODE=autonomous            # agents review, approve, merge and push
-  export SANDBOX_PROVIDER=docker           # Linux: the docker provider (macOS can keep sandbox-exec)
-  docker compose --profile sandbox build sandbox-image egress-proxy   # once: the images it runs
-  export GAFFER_DAILY_BUDGET_USD=5
-  runner/gaffer run --daemon
-  ```
+**Hands-off runs and the sandbox.** By default every ticket stops at `in_review` for
+you. Running unattended is your choice; if you make it, `GAFFER_MODE=autonomous` sets
+the whole group:
 
-  `GAFFER_MODE=autonomous` sets `REVIEW_MODE=agent` (a reviewer agent reviews each
-  delivery), `DISPATCH_ALLOW_AGENT_APPROVE=1` (the control plane accepts that reviewer's
-  approval, never the implementer's own), `MERGE_ON_AGENT_REVIEW=1` and `AUTO_MERGE=1`
-  (the merge lane lands agent-approved work through the merge gate), `GAFFER_AUTO_PUSH=1`
-  (pushes the landed default branch to `origin`) and `MEMORY_AUTO_APPROVE=1` (agent lore
-  goes live without review). With no human left in the loop it also defaults
-  `GAFFER_STRICT_REQUIRE=1` and `STRICT_MODE=1`, so no agent runs without an OS sandbox.
-  When the host has none, the factory parks the ticket as `blocked`
-  (`strict_require_unavailable`) before it creates anything, the bootstrap included, and
-  the Team sheet row says what to do for your provider (start the docker daemon and
-  build its images, or pick a provider), or that you can run supervised, or set
-  `GAFFER_STRICT_REQUIRE=0` when the whole runner already runs inside a VM or container
-  you trust. Setting `DISPATCH_ALLOW_AGENT_APPROVE=1` on its own does not make a run
-  hands-off: `REVIEW_MODE` stays `human`, so no reviewer runs and every ticket waits in
-  `in_review`, while the sandbox is still required. Any single flag you export overrides
-  the mode (`AUTO_MERGE=0` keeps merges for you).
-  The docker provider is experimental: its containment is red-team tested in CI and a CI
-  job delivers a ticket through it on Linux with a stub agent inside the container, but a live
-  delivery with the real `claude` inside it is a manual workflow you run yourself (see
-  [`docs/docker-sandbox-provider.md`](docs/docker-sandbox-provider.md#prove-it-on-your-own-fork)
-  and [`SECURITY.md`](SECURITY.md)), so watch the first few tickets before you walk away.
-- **A stuck ticket is safe to drag back.** Moving a `blocked` card to `ready` on the board
-  re-queues it cleanly (its delivery claim is released), so a parked ticket never strands.
-  From the terminal, `runner/gaffer wg unblock <n>` does the same, and
-  `runner/gaffer wg block <n> --reason "…"` parks a draft, refining or ready ticket yourself.
+```bash
+export GAFFER_MODE=autonomous            # agents review, approve, merge and push
+export SANDBOX_PROVIDER=docker           # Linux: the docker provider (macOS can keep sandbox-exec)
+docker compose --profile sandbox build sandbox-image egress-proxy   # once: the images it runs
+export GAFFER_DAILY_BUDGET_USD=5
+runner/gaffer run --daemon
+```
 
----
+`GAFFER_MODE=autonomous` sets `REVIEW_MODE=agent` (a reviewer agent reviews each
+delivery), `DISPATCH_ALLOW_AGENT_APPROVE=1` (the control plane accepts that reviewer's
+approval, never the implementer's own), `MERGE_ON_AGENT_REVIEW=1` and `AUTO_MERGE=1`,
+`GAFFER_AUTO_PUSH=1` and `MEMORY_AUTO_APPROVE=1`. With no human left in the loop it also
+defaults `GAFFER_STRICT_REQUIRE=1` and `STRICT_MODE=1`, so no agent runs without an OS
+sandbox: on a host with none, the ticket parks (`strict_require_unavailable`) before
+anything is created, and the Team sheet says what to do. Setting
+`DISPATCH_ALLOW_AGENT_APPROVE=1` on its own does not make a run hands-off: `REVIEW_MODE`
+stays `human`, so every ticket waits in `in_review`. Any single flag you export overrides
+the mode. The docker provider is experimental; a live delivery inside it is a workflow
+you run yourself ([docs/sandbox.md](docs/sandbox.md#prove-it-on-your-own-fork)), so watch
+the first few tickets before you walk away.
 
 ## Run it in a container instead
 
-If you would rather not install Node, pnpm and the Claude CLI on the machine:
+If you would rather not install Node, pnpm and the agent CLI on the machine:
 
 ```bash
 export ANTHROPIC_API_KEY=…            # or CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token`
@@ -461,39 +287,67 @@ docker compose up -d                  # builds the image, starts the dashboard o
 docker compose logs dashboard | grep token=   # the login URL, token included
 ```
 
-State lives in the `gaffer-data` volume; repos under `./repos` appear at `/repos`
-inside the container, so onboard them by that path. A repository the factory creates
-for a greenfield build is created under `/repos` too (`GAFFER_BOOTSTRAP_ROOT=/repos`),
-so it lives on the host beside the others and survives `docker compose down` / `up`
-and a rebuilt image; anything under the container's home directory does not. The build
-context is an allow-list (`.dockerignore`): only the manifests, the lockfile,
-`packages/`, `runner/`, `scripts/` and the licence files reach the image, never
-`./repos`, a `.env`, a database or `.gaffer/` (`node scripts/docker-context-check.mjs`
-lists the context and checks it; CI runs it). The container itself is the
-containment boundary there, so the runner's own OS sandbox is off; on a Docker host
-running the factory natively, `docker compose --profile sandbox build` produces the
-per-ticket delivery image and egress proxy the `docker` sandbox provider uses.
-A `.devcontainer/` is included for VS Code / Codespaces development.
+State lives in the `gaffer-data` volume; repos under `./repos` appear at `/repos` inside
+the container, so onboard them by that path. A greenfield repo is created under `/repos`
+too, so it survives `docker compose down` and a rebuilt image. The build context is an
+allow-list (`.dockerignore`): never `./repos`, a `.env`, a database or `.gaffer/`. The
+container itself is the containment boundary there, so the runner's own OS sandbox is
+off. A `.devcontainer/` is included for VS Code and Codespaces.
 
-## Safety (read before going live)
+## Safety
 
-Gaffer runs shell-capable agents, so containment is first-class — but it is **run-at-your-own-risk** software:
+Read [SECURITY.md](SECURITY.md) before going live: it has the threat model, what each
+gate enforces and the residual limits. Full autonomy is opt-in and off by default, and
+every setting is in [docs/CONFIG.md](docs/CONFIG.md).
 
-- A **deterministic PreToolUse safety hook** scopes writes to the per-ticket worktree, blocks secret reads, and **fails closed**.
-- Every ticket runs in a **throwaway git worktree** — your real checkout is never touched.
-- The **review/merge gate is server-side** — by default a human approves every merge and an agent **structurally cannot** ship its own work.
+## Aside: readying a ticket under the stricter policy packs
 
-Full autonomy is **opt-in**, off by default. `GAFFER_MODE=autonomous` sets the whole cluster at once (agent review and approval, auto-merge, auto-push, memory auto-approve) and makes the OS sandbox mandatory (`GAFFER_STRICT_REQUIRE=1`: no sandbox, no agent). `GAFFER_MODE=strict` sets the same flags; it differs only if you set `GAFFER_STRICT_REQUIRE=0`, when strict still uses the sandbox where one exists and autonomous does not. The individual flags — `DISPATCH_ALLOW_AGENT_APPROVE`, `MERGE_ON_AGENT_REVIEW`, `AUTO_MERGE`, `GAFFER_AUTO_PUSH`, `MEMORY_AUTO_APPROVE` — override the preset. For an unattended run also set `GAFFER_DAILY_BUDGET_USD` (the spend cap) and, if you want a scored quality trail, `GAFFER_EVAL_JUDGE=1` (see [`docs/eval-harness.md`](docs/eval-harness.md)). All knobs: [`docs/CONFIG.md`](docs/CONFIG.md). See [`SECURITY.md`](SECURITY.md) for the threat model and honest residual limits.
+Readying a ticket under the stricter policy packs takes a few more fields. The default
+pack is `solo_loose`, which readies freely; the stricter packs each add gates to
+**Mark ready**, and the **Product Owner** ("Suggest work") drafts its tickets under
+`factory_strict`. A ticket that misses one fails with `POLICY_DENIED` and the code below:
 
----
+- **`team_light`** and up: a description (`DESCRIPTION_REQUIRED`) and a repo with write
+  access (`REPO_REQUIRED`, `WRITE_REPO_REQUIRED`).
+- **`factory_strict`** adds: every acceptance criterion has a verification method
+  (`AC_VERIFICATION_REQUIRED`; `--check` alone does not count, so pass `--verify` too), a
+  reviewer (`REVIEWER_REQUIRED`), no open blocking decision, and a primary scope if the
+  repo is mapped into the Factory Map.
+- **`regulated`** adds a human ready-approval (`HUMAN_APPROVAL_REQUIRED`).
+
+All of them, from the start:
+
+```bash
+runner/gaffer wg ticket create -p factory_strict -t "Add listNotes" \
+  -d "Export listNotes(notes) from src/notes.js, newest first, input untouched."
+runner/gaffer wg ac add <n> -t "listNotes returns a new array sorted newest-first" --verify "unit test"
+runner/gaffer wg ac add <n> -t "the test suite passes" --verify "npm test" --check "npm test"
+runner/gaffer wg ticket repo-access set <n> <repo-name>
+runner/gaffer wg ticket set-reviewer <n> --reviewer <your-name>
+runner/gaffer wg ticket approve-ready <n>      # regulated only (or Approve... on the Team sheet)
+runner/gaffer wg ticket ready <n>
+```
+
+Use the ticket number or the full id; the 8-character short ref on cards won't resolve.
+For a ticket **Mark ready** already refused, each code has a fix:
+
+```bash
+runner/gaffer wg ticket edit <n> -d "<what + why>"                # DESCRIPTION_REQUIRED
+runner/gaffer wg ticket set-reviewer <n> --reviewer <your-name>   # REVIEWER_REQUIRED
+runner/gaffer wg ac edit <n> 1 --verify "unit test"               # AC_VERIFICATION_REQUIRED, once per criterion (1 = the first)
+runner/gaffer wg ticket approve-ready <n>                         # HUMAN_APPROVAL_REQUIRED (regulated only)
+runner/gaffer wg ticket ready <n>
+```
+
+The reviewer is who owns the gate; the agent still cannot approve or merge its own work.
 
 ## Where things live
 
 | Path | What |
 |---|---|
-| `packages/dispatch` | control plane — tickets/epics/scopes, review gate (REST + MCP + dashboard + CLI) |
-| `packages/crew` | factory runtime — MCP tools, hooks, idle loops, onboarding |
-| `packages/memory` | durable gated memory — digest + feature ledger + lore (`memory-mcp`) |
-| `runner/` | the bash orchestrator, the skill library, the safety hook |
-| `.gaffer/` | your factory state (DBs, agent id, config, token) — git-ignored |
-| `docs/CONFIG.md` | every configuration knob: its default, whether the dashboard can edit it, which component reads it (generated from the code) |
+| `packages/dispatch` | control plane: tickets, epics, scopes, the review gate (REST, MCP, dashboard, CLI) |
+| `packages/crew` | factory runtime: MCP tools, hooks, idle loops, onboarding |
+| `packages/memory` | durable gated memory: digest, feature ledger, lore (`memory-mcp`) |
+| `runner/` | the orchestrator, the skill library, the safety hook |
+| `.gaffer/` | your factory state (databases, agent id, config, token), git-ignored |
+| `docs/CONFIG.md` | every configuration knob, its default, whether the dashboard can edit it and which component reads it (generated) |

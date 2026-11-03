@@ -720,7 +720,7 @@ docker image inspect "$_IMAGE" >/dev/null 2>&1 || _die "sandbox image '$_IMAGE' 
 # no-new-privileges + pid/mem/cpu caps. The containment test asserts CapEff is
 # DAC_OVERRIDE-only + NoNewPrivs=1. (A non-root --user + --read-only root are the next
 # hardening step — they need a tmpfs-backed writable HOME for claude/npm state and are
-# validated with the live delivery workflow, sandbox-live.yml; see docs/docker-sandbox-provider.md.)
+# validated with the live delivery workflow, sandbox-live.yml; see docs/sandbox.md.)
 # Not `exec`: the wrapper outlives the container to import the worktree's own branch from
 # its private repository (see the git-metadata section above). docker runs in the
 # background so a TERM/INT/HUP sent to this wrapper (a tick timeout) is forwarded to it at

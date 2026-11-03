@@ -1,7 +1,6 @@
 import type { AcceptanceProfile } from "./domain/acceptanceProfile.js";
 
 import { type Db, inTransaction, openDatabase } from "./db/connection.js";
-import { claimTicketInput } from "./domain/schemas.js";
 import {
   type AcStatus,
   type AcceptanceCriterion,
@@ -279,6 +278,7 @@ import * as autonomyGate from "./services/autonomyGateService.js";
 import * as principalAdmin from "./services/principalAdminService.js";
 import * as landing from "./services/landingFactsService.js";
 import * as reviewLifecycle from "./services/reviewLifecycleService.js";
+import * as ticketLifecycle from "./services/ticketLifecycleService.js";
 
 /**
  * An evidence row enriched with derived provenance for the reviewer surface.
@@ -2126,33 +2126,12 @@ export class Dispatch {
     return this.pauseSvc.requestContinue(ref, actor);
   }
 
-  /**
-   * The factory loop re-entered delivery in the existing worktree (`paused ->
-   * in_progress`). Returns the resume context the runner re-invokes the agent with.
-   *
-   * With `lease`, the resume is LEASED to that runner agent in the same transaction
-   * and the claim token is returned: the runner heartbeats it and submits/releases
-   * through the normal token-gated paths, and if it dies the lease lapses and the
-   * expiry sweep returns the ticket to `paused`. Without a lease (older callers) a
-   * resumed ticket is in_progress with no claim, which nothing can recover
-   * automatically — the runner always passes one.
-   */
   beginResume(
     ref: string,
     actor: Actor,
     lease?: { agentId: string; ttlSeconds: number },
   ): { ticketId: string; eventId: string; context: PausedDelivery; claimToken?: string } {
-    return inTransaction(this.db, () => {
-      const res = this.pauseSvc.beginResume(ref, actor);
-      if (!lease) return res;
-      const { claimToken } = this.claims.leaseResumedDelivery(
-        res.ticketId,
-        lease.agentId,
-        lease.ttlSeconds,
-        actor,
-      );
-      return { ...res, claimToken };
-    });
+    return ticketLifecycle.beginResume(this, ref, actor, lease);
   }
 
   /** Stop/abandon a paused delivery (`paused -> cancelled`); drops the resume context. */
@@ -2185,50 +2164,19 @@ export class Dispatch {
     return this.claims.claimNextTicket(input, actor);
   }
 
-  /**
-   * Claim a CHOSEN ticket (by id or number) rather than the next ready one.
-   * Applies the same eligibility rules as `claimNextTicket` and the atomic claim;
-   * throws a structured `TICKET_NOT_CLAIMABLE`/`NOT_FOUND` rather than silently
-   * claiming a different ticket. Mirrors the runner's preselect-then-claim flow.
-   */
   claimTicket(raw: unknown, actor: Actor): ClaimResult {
-    const input = claimTicketInput.parse(raw);
-    const ticket = this.resolveTicket(input.ticket_id);
-    return this.claims.claimTicket(
-      {
-        ticketId: ticket.id,
-        agentId: input.agent_id,
-        ttlSeconds: input.ttl_seconds,
-        capabilities: input.capabilities,
-      },
-      actor,
-    );
+    return ticketLifecycle.claimTicket(this, raw, actor);
   }
 
-  /**
-   * TRACK-2b: a HUMAN takes a ready ticket "by hand" ("I'll do this myself"). The
-   * ticket moves `ready -> in_progress` owned by the human; the agent selection loop
-   * structurally skips it thereafter. Resolves a ticket number/id ref, then delegates
-   * to {@link ClaimService.humanClaimTicket} (reuses the atomic ready-and-unclaimed
-   * invariant). Throws `TICKET_NOT_CLAIMABLE` when the ticket isn't takeable.
-   */
   humanClaimTicket(ref: string, actor: Actor): { ticketId: string; number: number } {
-    const ticket = this.resolveTicket(ref);
-    return this.claims.humanClaimTicket({ ticketId: ticket.id }, actor);
+    return ticketLifecycle.humanClaimTicket(this, ref, actor);
   }
 
-  /**
-   * TRACK-2b: a human hands their by-hand ticket back to the queue
-   * (`in_progress -> ready`), clearing the ownership marker so agents can pick it up.
-   * Only a human-owned in-flight ticket is releasable this way — an agent's live
-   * delivery is never touched. See {@link ClaimService.humanReleaseTicket}.
-   */
   humanReleaseTicket(
     ref: string,
     actor: Actor,
   ): { ticketId: string; status: string; eventId: string } {
-    const ticket = this.resolveTicket(ref);
-    return this.claims.humanReleaseTicket({ ticketId: ticket.id }, actor);
+    return ticketLifecycle.humanReleaseTicket(this, ref, actor);
   }
 
   /**
@@ -2342,20 +2290,7 @@ export class Dispatch {
     input: SubmitForReviewInput,
     actor: Actor,
   ): { ticketId: string; status: string; eventId: string } {
-    const result = this.claims.submitForReview(input, actor);
-    // H2: the ticket has reached `in_review` and now needs a human reviewer. Fire
-    // AFTER the claim transaction commits so the notification can never roll the
-    // transition back; best-effort inside emitGate. TESTER FIRST: a ticket the tester
-    // gates goes to the tester before a person looks, so the ping waits for its PASS
-    // (testerPass below); a FAIL or a hold costs no human attention.
-    if (result.status === "in_review") {
-      // The call above already resolved the ref (id or #N), so this cannot throw.
-      const ticket = this.tickets.resolveRef(input.ticket_id);
-      if (!this.reviewGateSvc.laneApplies(ticket)) {
-        gate.emitGate(this, this.internals, "review_needed", ticket, { detail: input.reason });
-      }
-    }
-    return result;
+    return ticketLifecycle.submitForReview(this, this.internals, input, actor);
   }
 
   /**
@@ -2482,20 +2417,12 @@ export class Dispatch {
       : [this.reviewGateSvc.routeToTester(ref, actor)];
   }
 
-  /**
-   * cli-wg/F-03: a person blocks a ticket that is not in an agent's hands (draft,
-   * refining, ready, or their own by-hand in_progress). See
-   * {@link TicketService.humanBlockTicket}; fires the ticket_blocked gate like markBlocked.
-   */
   humanBlockTicket(
     ref: string,
     reason: string,
     actor: Actor,
   ): { ticketId: string; from: TicketStatus; eventId: string } {
-    const result = this.ticketSvc.humanBlockTicket(ref, reason, actor);
-    const ticket = this.tickets.findById(result.ticketId);
-    if (ticket) gate.emitGate(this, this.internals, "ticket_blocked", ticket, { detail: reason });
-    return result;
+    return ticketLifecycle.humanBlockTicket(this, this.internals, ref, reason, actor);
   }
 
   /** cli-wg/F-03: return a blocked ticket to the queue (see {@link TicketService.humanUnblockTicket}). */
@@ -2508,20 +2435,9 @@ export class Dispatch {
   }
 
   markBlocked(input: MarkBlockedInput, actor: Actor): { ticketId: string; eventId: string } {
-    const result = this.claims.markBlocked(input, actor);
-    // H2: the ticket is now `blocked` and needs a human to unblock it. Emit after
-    // the block transaction commits, best-effort.
-    const ticket = this.tickets.resolveRef(input.ticket_id);
-    gate.emitGate(this, this.internals, "ticket_blocked", ticket, { detail: input.reason });
-    return result;
+    return ticketLifecycle.markBlocked(this, this.internals, input, actor);
   }
 
-  /**
-   * RUNNER-OWNED-BOOKKEEPING: release/park a runner-held delivery claim. Failure
-   * routes the ticket to `ready` (retry); park routes to `refining` (triage,
-   * branch preserved). `claimToken` is optional so a tokenless resumed
-   * (`in_progress`) delivery can be parked too. See ClaimService.runnerRelease.
-   */
   runnerRelease(
     input: {
       ticket_id: string;
@@ -2535,15 +2451,7 @@ export class Dispatch {
     },
     actor: Actor,
   ): { status: string; eventId: string } {
-    const result = this.claims.runnerRelease(input, actor);
-    // Parking to the VISIBLE `blocked` column needs a human to unblock it — fire the
-    // gate AFTER the claim transaction commits, best-effort (mirrors markBlocked).
-    if (result.status === "blocked") {
-      // The call above already resolved the ref (id or #N), so this cannot throw.
-      const ticket = this.tickets.resolveRef(input.ticket_id);
-      gate.emitGate(this, this.internals, "ticket_blocked", ticket, { detail: input.reason });
-    }
-    return result;
+    return ticketLifecycle.runnerRelease(this, this.internals, input, actor);
   }
 
   /**
@@ -2593,65 +2501,13 @@ export class Dispatch {
   }
 
   expireStaleClaims(actor: Actor): { expired: number } {
-    const result = this.claims.expireStaleClaims(actor);
-    // A claim-expiry that lands a ticket in `blocked` (an unresolved blocking decision)
-    // needs a human to unblock it — fire the operator gate per blocked ticket AFTER the
-    // sweep commits, best-effort (mirrors markBlocked / runnerRelease). Without this the
-    // expiry-block is silent: no Slack/webhook, and queue readers keyed on the gate miss it.
-    for (const id of result.blockedTicketIds) {
-      const ticket = this.tickets.findById(id);
-      if (ticket) {
-        gate.emitGate(this, this.internals, "ticket_blocked", ticket, {
-          detail: "claim expired with an unresolved blocking decision",
-        });
-      }
-    }
-    return { expired: result.expired };
+    return ticketLifecycle.expireStaleClaims(this, this.internals, actor);
   }
 
-  /**
-   * Human override: revoke a claim by its id, mark it revoked and return its
-   * ticket to `ready` (systemOverride, bypassing policy gates). Idempotent calls
-   * on an already-terminal claim raise STATE_CONFLICT.
-   */
   revokeClaim(claimId: string, actor: Actor): { claimId: string; ticketId: string } {
-    const now = this.clock.now();
-    return inTransaction(this.db, () => {
-      const claim = this.claimsRepo.findById(claimId);
-      if (!claim) throw notFound("claim", claimId);
-      if (claim.status !== "active") {
-        throw new DispatchError(
-          "STATE_CONFLICT",
-          `Claim is '${claim.status}' and cannot be revoked.`,
-          { status: claim.status },
-        );
-      }
-      this.claimsRepo.setStatus(claim.id, "revoked", now);
-      const ticket = this.tickets.findById(claim.ticket_id);
-      if (ticket && (ticket.status === "claimed" || ticket.status === "in_progress")) {
-        this.transitions.transition({
-          ticketId: ticket.id,
-          actor,
-          toStatus: "ready",
-          reason: "claim_revoked",
-          systemOverride: true,
-        });
-      }
-      writeEvent(this.db, {
-        entity_type: "ticket",
-        entity_id: claim.ticket_id,
-        actor,
-        event_type: "claim.revoked",
-        payload: { claim_id: claim.id, agent_id: claim.agent_id },
-      });
-      return { claimId: claim.id, ticketId: claim.ticket_id };
-    });
+    return ticketLifecycle.revokeClaim(this, claimId, actor);
   }
 
-  /**
-   * Convenience for the idle loop: create a draft ticket, optionally link a repo,
-   * and attach a manual-note evidence row capturing the supplied summary.
-   */
   createDraftTicket(
     input: {
       title: string;
@@ -2662,9 +2518,7 @@ export class Dispatch {
     },
     actor: Actor,
   ): { ticketId: string; number: number } {
-    return this.ticketSvc.createDraftTicket(input, actor, (ticketId, repoName, a) =>
-      this.linkRepository(ticketId, repoName, "primary", a),
-    );
+    return ticketLifecycle.createDraftTicket(this, input, actor);
   }
 
   attachDeliveryEvidence(

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// runner/lib/replay-manifest.mjs — the REPLAY MANIFEST of one delivery attempt (delta
+// runner/lib/replay-manifest.mjs: the REPLAY MANIFEST of one delivery attempt (delta
 // roadmap gap 4, P0).
 //
 // One JSON file per attempt under $GAFFER_DATA/manifests/<ticket>-<n>.json (n counts the
@@ -10,7 +10,7 @@
 //
 //   ticket     id and number
 //   attempt    the ticket's attempt n, the in-tick attempt, its ledger attempt id, phase/role
-//   repos      each write repo: name, base ref, base commit, registered test command
+//   repos      each write repo: name, local path, base ref, base commit, registered test command
 //              (secret-looking assignments redacted), stack; the head commit at the end
 //   routing    declared and effective risk, the router's tier, model, provider and reasons
 //   settings   the knobs that shape an attempt (GAFFER_SCOUT, GAFFER_SCOUT_PACKET,
@@ -170,6 +170,8 @@ export function buildStart(inp, env = process.env) {
     repos.push({
       id: cap(rid, 64),
       name: cap(rname, 80),
+      // The real repo's local path: where an offline experiment re-creates the base.
+      path: cap(rpath, MAX_STR),
       base_ref: token(rbase) ?? "main",
       base_commit: sha(bases.get(rpath)) ?? null,
       test_command: redactCommand(meta.test),

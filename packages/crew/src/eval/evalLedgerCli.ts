@@ -7,7 +7,8 @@
 //     printf '%s' "$record_json" | node evalLedgerCli.js --mode append --file "$LEDGER"
 //
 //   summarise the ledger (prints the quality summary as JSON):
-//     node evalLedgerCli.js --mode summarize --file "$LEDGER"
+//     node evalLedgerCli.js --mode summarize --file "$LEDGER" [--matched-experiment <results.json>]
+//   (a matched priming experiment's results fill memoryLift.matched)
 //
 // The pure logic (buildRecordLine, renderSummary) is exported + unit-tested; the
 // fs read/append and the timestamp live in the script guard so this file stays
@@ -17,7 +18,13 @@
 import { appendFileSync, readFileSync } from "node:fs";
 
 import { type Overall, type RubricDimension } from "./deliveryJudge.js";
-import { formatRecord, parseLedger, summarize, type EvalRecord } from "./evalLedger.js";
+import {
+  formatRecord,
+  parseLedger,
+  parseMatchedMemory,
+  summarize,
+  type EvalRecord,
+} from "./evalLedger.js";
 
 export function flag(argv: string[], name: string): string {
   for (let i = 0; i < argv.length; i += 1) {
@@ -116,9 +123,22 @@ export function buildRecordLine(recordJson: string, ts: string): string {
   return formatRecord(record);
 }
 
-/** Read a ledger's JSONL and render its summary as pretty JSON. Pure. */
-export function renderSummary(jsonl: string): string {
-  return JSON.stringify(summarize(parseLedger(jsonl)), null, 2);
+/**
+ * Read a ledger's JSONL and render its summary as pretty JSON. Pure. `experimentJson` is
+ * a matched experiment's results.json text: its `memory_matched` block (when it ran a
+ * priming comparison) becomes `memoryLift.matched`.
+ */
+export function renderSummary(jsonl: string, experimentJson?: string, source?: string): string {
+  let matched = null;
+  if (experimentJson) {
+    try {
+      const r = JSON.parse(experimentJson) as Record<string, unknown>;
+      matched = parseMatchedMemory(r.memory_matched, source);
+    } catch {
+      matched = null;
+    }
+  }
+  return JSON.stringify(summarize(parseLedger(jsonl), { matched }), null, 2);
 }
 
 // Entrypoint: run only when executed as a script, not when imported by a test.
@@ -143,6 +163,13 @@ if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
     } catch {
       jsonl = "";
     }
-    process.stdout.write(renderSummary(jsonl) + "\n");
+    const exp = flag(argv, "--matched-experiment");
+    let expJson: string | undefined;
+    try {
+      expJson = exp ? readFileSync(exp, "utf8") : undefined;
+    } catch {
+      expJson = undefined;
+    }
+    process.stdout.write(renderSummary(jsonl, expJson, exp || undefined) + "\n");
   }
 }

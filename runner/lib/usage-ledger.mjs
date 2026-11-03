@@ -81,6 +81,9 @@ export const VALID_KINDS = new Set([
   "scout",
   // The ambiguous-sibling repo classifier (bin/inherit-repo.mjs via lib/greenfield.sh).
   "inherit",
+  // A matched experiment's delivery (runner/eval/experiment.sh): booked with no ticket, in
+  // the experiment's own ledger in stub mode and the factory's in live mode.
+  "experiment",
 ]);
 
 // parseClaudeJson / extractResultText / the numeric extractors (numOrUnknown,

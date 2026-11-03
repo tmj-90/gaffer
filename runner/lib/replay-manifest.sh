@@ -1,4 +1,4 @@
-# runner/lib/replay-manifest.sh — the REPLAY MANIFEST of each delivery attempt (delta
+# runner/lib/replay-manifest.sh: the REPLAY MANIFEST of each delivery attempt (delta
 # roadmap gap 4, P0). tick.sh gathers; lib/replay-manifest.mjs builds and writes.
 # shellcheck shell=bash
 #
@@ -19,13 +19,13 @@ GAFFER_MANIFEST_FILE=""
 
 _gaffer_manifest_log() { type log >/dev/null 2>&1 && log "MANIFEST: $*"; return 0; }
 
-# _gaffer_manifest_heads <file> — one `name<TAB>head` row per write repo ($WT_ROWS): the
+# _gaffer_manifest_heads <file>: one `name<TAB>head` row per write repo ($WT_ROWS): the
 # commit the ticket branch holds in the real repo now.
 _gaffer_manifest_heads() {
-  local out="$1" rid rname rpath rbase rwt h
+  local out="$1" rname rpath h
   : > "$out" 2>/dev/null || return 0
   [ -n "${WORK_BRANCH:-}" ] || return 0
-  while IFS=$'\t' read -r rid rname rpath rbase rwt; do
+  while IFS=$'\t' read -r _ rname rpath _ _; do
     [ -n "$rpath" ] || continue
     h="$(git -C "$rpath" rev-parse --verify --quiet "refs/heads/$WORK_BRANCH" 2>/dev/null || true)"
     [ -n "$h" ] && printf '%s\t%s\n' "$rname" "$h" >> "$out"
@@ -33,7 +33,7 @@ _gaffer_manifest_heads() {
   return 0
 }
 
-# gaffer_manifest_start <prompt> — open this attempt's manifest. Reads the delivery's
+# gaffer_manifest_start <prompt>: open this attempt's manifest. Reads the delivery's
 # globals: NUM, SHOW, WT_ROWS, _DELIV_BASE_SHAS, _DELIV_ATTEMPT, _MAX_DELIVERY_ATTEMPTS,
 # GAFFER_USAGE_ATTEMPT_ID / GAFFER_USAGE_STARTED_AT (the ledger join key), ROUTE_RISK (the
 # effective risk), ROUTE_AC, ROUTE_ATTEMPT, _ATTEMPT_IMPL_FLAG, SKILLS, LENSES,
@@ -75,7 +75,7 @@ gaffer_manifest_start() {
   return 0
 }
 
-# gaffer_manifest_gates <dod-results-file> — keep this attempt's gate rows (GATE name repo
+# gaffer_manifest_gates <dod-results-file>: keep this attempt's gate rows (GATE name repo
 # status) beside the open manifest, read by the finish. The results file is removed by
 # tick.sh right after the gates run.
 gaffer_manifest_gates() {
@@ -84,7 +84,7 @@ gaffer_manifest_gates() {
   return 0
 }
 
-# gaffer_manifest_finish <outcome> [rc] — complete this attempt's manifest. The first
+# gaffer_manifest_finish <outcome> [rc]: complete this attempt's manifest. The first
 # outcome wins: a later call for the same attempt is a no-op.
 gaffer_manifest_finish() {
   [ -n "$GAFFER_MANIFEST_FILE" ] || return 0
@@ -98,7 +98,7 @@ gaffer_manifest_finish() {
   return 0
 }
 
-# gaffer_manifest_close <signal|exit> — the crash trap's catch-all for a manifest no
+# gaffer_manifest_close <signal|exit>: the crash trap's catch-all for a manifest no
 # outcome completed: `killed` on a signal, `ended` on any other exit.
 gaffer_manifest_close() {
   [ -n "$GAFFER_MANIFEST_FILE" ] || return 0
@@ -111,7 +111,7 @@ gaffer_manifest_close() {
   return 0
 }
 
-# gaffer_manifest_annotate <ticket> <lane> <verdict> | <ticket> --landed <sha> — add a later
+# gaffer_manifest_annotate <ticket> <lane> <verdict> | <ticket> --landed <sha>: add a later
 # fact to the ticket's latest manifest (the judging lanes' verdicts, the landed commit).
 gaffer_manifest_annotate() {
   [ -n "${GAFFER_DATA:-}" ] && [ -n "${1:-}" ] || return 0

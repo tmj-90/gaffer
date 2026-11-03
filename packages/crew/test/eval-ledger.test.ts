@@ -215,3 +215,41 @@ describe("evalLedgerCli", () => {
     expect(summary.memoryLift.lift).toBe(2);
   });
 });
+
+describe("memoryLift.matched from a matched priming experiment", () => {
+  const exp = {
+    schema: "gaffer.experiment/1",
+    memory_matched: {
+      measure: "matched_memory_priming",
+      mode: "stub",
+      tickets: 2,
+      with_memory: "primed",
+      without_memory: "unprimed",
+      acceptance: { n: 2, mean: 0, ci95: [0, 0] },
+      attempts: { n: 2, mean: 0, ci95: [0, 0] },
+      spend_usd: { n: 2, mean: 0, ci95: [0, 0], unknown: 0 },
+      judge_score: null,
+    },
+  };
+  it("fills the seam and says where it came from", () => {
+    const s = JSON.parse(renderSummary("", JSON.stringify(exp), "x/results.json"));
+    expect(s.memoryLift.matched).toMatchObject({
+      measure: "matched_memory_priming",
+      tickets: 2,
+      with_memory: "primed",
+      acceptance: { n: 2, mean: 0, ci95: [0, 0] },
+      source: "x/results.json",
+    });
+    expect(s.memoryLift.matchedReason).toMatch(/from a matched priming experiment/);
+  });
+  it("an experiment without a priming comparison, or a broken file, leaves it null", () => {
+    expect(
+      JSON.parse(renderSummary("", JSON.stringify({ schema: "gaffer.experiment/1" }))).memoryLift
+        .matched,
+    ).toBeNull();
+    expect(JSON.parse(renderSummary("", "{not json")).memoryLift.matched).toBeNull();
+    expect(JSON.parse(renderSummary("")).memoryLift.matchedReason).toMatch(
+      /SAME tickets with and without memory/,
+    );
+  });
+});

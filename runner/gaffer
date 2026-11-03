@@ -50,6 +50,9 @@
 #                                     the lore drafts waiting for you, as the Memory view lists
 #                                     them, and the approve / reject it does
 #   gaffer eval replay [--out <dir>]  replay the golden gate fixtures through the real gate pipeline
+#   gaffer eval experiment --arm A --arm B [--live --max-usd X]
+#                                     a matched experiment: the same tickets under each arm's
+#                                     settings, paired differences (stub agent unless --live)
 #   gaffer eval agreement [--json]    is the eval judge worth having? each judged delivery paired with
 #                                     its review outcome, and a reading (docs/eval-harness.md)
 #   gaffer help | --version
@@ -102,7 +105,7 @@ usage() {
     status)    echo "usage: gaffer status   (doctors + work counts + what needs a human)" ;;
     setup)     echo "usage: gaffer setup   (install + build + init state + open the dashboard)" ;;
     demo)      echo "usage: gaffer demo   (one dry tick over a showcase repo in a fresh temp dir, or DEMO_DIR; always DRY_RUN, nothing spent)" ;;
-    eval)      echo "usage: gaffer eval [--json] | gaffer eval replay [--out <dir>] | gaffer eval agreement [--json]" ;;
+    eval)      echo "usage: gaffer eval [--json] | gaffer eval replay [--out <dir>] | gaffer eval experiment --arm A --arm B [--live --max-usd X] | gaffer eval agreement [--json]" ;;
     approve)   echo "usage: gaffer approve <ticket> [--reviewer <you>] [--commit <repo>=<sha>]…" ;;
     merge)     echo "usage: gaffer merge <ticket>   (the ticket must be approved: gaffer approve <ticket>; exit 0 landed, 4 held or not landed with the reason, 1 a hard failure)" ;;
     run)       echo "usage: gaffer run [--dry-run|-n] [--daemon] [--interval <seconds>]   (LIVE by default: claims ready tickets and spends model budget)" ;;
@@ -499,6 +502,10 @@ eval)
   # `gaffer eval replay` — the offline half of the harness: recorded deliveries
   # through the real gates, verdicts checked against each fixture (runner/eval/).
   if [ "${1:-}" = "replay" ]; then shift; exec bash "$HERE/eval/replay.sh" "$@"; fi
+  # `gaffer eval experiment`: the matched experiment, the same tickets under two or more
+  # arms (setting overrides), paired differences per ticket (runner/eval/experiment.sh).
+  # Stub agent by default (free); --live runs the real agent under hard caps.
+  if [ "${1:-}" = "experiment" ]; then shift; exec bash "$HERE/eval/experiment.sh" "$@"; fi
   # `gaffer eval agreement` — is the judge worth having? Every judged delivery (on the
   # ticket, plus older ledger-only records) paired with what the review then did, and a
   # reading against fixed thresholds (dispatch: `judge-agreement`).

@@ -13,9 +13,11 @@
 // submitted, so attempts that failed earlier (and their spend) are in neither
 // arm (MEMORY_GAP_EXCLUDES). The honest measure is a matched-ticket comparison —
 // the same tickets run with and without memory, counting every attempt, spend
-// and human acceptance (docs/eval-harness.md, "Matched-ticket comparison"). It
-// is not implemented; `memoryLift.matched` is its seam and stays null. The field
-// keeps its historical `memoryLift` key for compatibility.
+// and human acceptance (docs/eval-harness.md, "Matched-ticket comparison"). The
+// matched experiment runner (runner/eval/experiment.sh) measures it; when one with a
+// priming comparison has run, its `memory_matched` block fills `memoryLift.matched`
+// (summarize's `matched` option, evalLedgerCli --matched-experiment), else it stays
+// null. The field keeps its historical `memoryLift` key for compatibility.
 //
 // All functions are pure (string/array in → value out); the fs read/append and
 // the timestamp live in the CLI, so this stays fully unit-testable.
@@ -80,8 +82,11 @@ export interface EvalSummary {
     label: string;
     sample: { withMemory: number; withoutMemory: number; distinctTickets: number };
     excludes: string;
-    /** The matched-ticket comparison: not measured yet (see `matchedReason`). */
-    matched: null;
+    /**
+     * The matched-ticket comparison from a priming experiment (runner/eval/experiment.sh
+     * `memory_matched`), or null when none was given (see `matchedReason`).
+     */
+    matched: MatchedMemory | null;
     matchedReason: string;
   };
   /**
@@ -106,11 +111,70 @@ export const MEMORY_GAP_LABEL =
 export const MEMORY_GAP_EXCLUDES =
   "attempts that failed before submission (a failed DoD gate, a park, a refused submit) " +
   "are never judged, so their spend and outcome are not in either arm";
+/** A paired summary over tickets: the mean difference, a 95% interval and n. */
+export interface PairedSummary {
+  n: number;
+  mean: number | null;
+  ci95: [number, number] | null;
+}
+
+/** A priming experiment's matched comparison (experiment.mjs `memory_matched`). */
+export interface MatchedMemory {
+  measure: "matched_memory_priming";
+  mode: string;
+  tickets: number;
+  with_memory: string;
+  without_memory: string;
+  acceptance: PairedSummary;
+  attempts: PairedSummary;
+  spend_usd: PairedSummary;
+  judge_score: PairedSummary | null;
+  source?: string;
+}
+
+/** Validate an experiment's `memory_matched` block; anything else is null. */
+export function parseMatchedMemory(v: unknown, source?: string): MatchedMemory | null {
+  if (!v || typeof v !== "object") return null;
+  const m = v as Record<string, unknown>;
+  if (m.measure !== "matched_memory_priming" || typeof m.tickets !== "number") return null;
+  const ps = (x: unknown): PairedSummary | null => {
+    if (!x || typeof x !== "object") return null;
+    const o = x as Record<string, unknown>;
+    if (typeof o.n !== "number") return null;
+    const ci =
+      Array.isArray(o.ci95) && o.ci95.length === 2 && o.ci95.every((n) => typeof n === "number")
+        ? ([o.ci95[0], o.ci95[1]] as [number, number])
+        : null;
+    return { n: o.n, mean: typeof o.mean === "number" ? o.mean : null, ci95: ci };
+  };
+  const acceptance = ps(m.acceptance);
+  const attempts = ps(m.attempts);
+  const spend = ps(m.spend_usd);
+  if (!acceptance || !attempts || !spend) return null;
+  return {
+    measure: "matched_memory_priming",
+    mode: typeof m.mode === "string" ? m.mode : "stub",
+    tickets: m.tickets,
+    with_memory: String(m.with_memory ?? ""),
+    without_memory: String(m.without_memory ?? ""),
+    acceptance,
+    attempts,
+    spend_usd: spend,
+    judge_score: ps(m.judge_score),
+    ...(source ? { source } : {}),
+  };
+}
+
+/** What `matchedReason` says when a matched comparison is reported. */
+export const MATCHED_FROM_EXPERIMENT =
+  "from a matched priming experiment: the same tickets with and without memory, every attempt counted (runner/eval/experiment.sh); a stub-mode experiment proves the pipeline, not memory";
+
 /** Why the matched-ticket comparison is not reported. */
 export const MATCHED_REASON =
   "not measured: the honest comparison runs the SAME tickets with and without memory and " +
-  "counts every attempt, its spend and the human's acceptance (docs/eval-harness.md, " +
-  "Matched-ticket comparison); the ledger records judged submissions only";
+  "counts every attempt, its spend and the human's acceptance; run a priming experiment " +
+  "(gaffer eval experiment --arm primed:memory=on --arm unprimed:memory=off) and pass its " +
+  "results.json with --matched-experiment (docs/eval-harness.md, Matched-ticket comparison)";
 
 const round2 = (n: number): number => Math.round(n * 100) / 100;
 const round4 = (n: number): number => Math.round(n * 10000) / 10000; // USD precision
@@ -161,7 +225,10 @@ export function parseLedger(jsonl: string): EvalRecord[] {
 }
 
 /** Aggregate records into the quality summary, including the memory score gap. */
-export function summarize(records: EvalRecord[]): EvalSummary {
+export function summarize(
+  records: EvalRecord[],
+  opts: { matched?: MatchedMemory | null } = {},
+): EvalSummary {
   const count = records.length;
   const scores = records.map((r) => r.score);
   const passRate = count ? records.filter((r) => r.overall === "pass").length / count : 0;
@@ -201,8 +268,8 @@ export function summarize(records: EvalRecord[]): EvalSummary {
         distinctTickets: new Set(records.map((r) => r.ticketId)).size,
       },
       excludes: MEMORY_GAP_EXCLUDES,
-      matched: null,
-      matchedReason: MATCHED_REASON,
+      matched: opts.matched ?? null,
+      matchedReason: opts.matched ? MATCHED_FROM_EXPERIMENT : MATCHED_REASON,
     },
     cost: {
       costedCount: costed.length,

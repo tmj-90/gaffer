@@ -2958,14 +2958,15 @@ $_trail_q
   # JOIN KEYS (MF4): the delivery row names its repo and the ticket's risk at call time
   # (shell variables gaffer_usage_record reads; never exported to the agent).
   GAFFER_USAGE_REPO="${_CARD_REPO_NAME:-}"; GAFFER_USAGE_RISK="${ROUTE_RISK:-}"
+  # REPLAY MANIFEST (lib/replay-manifest.sh, delta gap 4): right after the stamp below,
+  # gaffer_manifest_start opens this attempt's record
+  # ($GAFFER_DATA/manifests/<ticket>-<n>.json: repos and base commits, the routing
+  # decision, the settings, hashes of the prompt and scout packet, the ledger join key).
+  # It is completed where the attempt ends. A measurement; fail-soft; nothing in a DRY_RUN.
   # REWORK COST: stamp this spawn's attempt + start time onto its delivery ledger row
   # (gaffer_usage_record reads both), so spend after a send-back is charged as rework.
   read -r GAFFER_USAGE_ATTEMPT_ID GAFFER_USAGE_STARTED_AT <<<"$(gaffer_delivery_attempt_stamp "$_DELIV_ATTEMPT")" || true
   export GAFFER_USAGE_ATTEMPT_ID GAFFER_USAGE_STARTED_AT
-  # REPLAY MANIFEST (lib/replay-manifest.sh, delta gap 4): open this attempt's record
-  # ($GAFFER_DATA/manifests/<ticket>-<n>.json: repos and base commits, the routing
-  # decision, the settings, hashes of the prompt and scout packet, the ledger join key).
-  # Completed where the attempt ends. A measurement; fail-soft; nothing in a DRY_RUN.
   gaffer_manifest_start "$PROMPT$_REWORK_BLOCK"
   GAFFER_LAUNCH_KIND=delivery worker_deliver "$PRIMARY_REPO" "$PROMPT$_REWORK_BLOCK" "$_ATTEMPT_IMPL_FLAG" "$MCP_RUNTIME" "$USAGE_JSON" "$WRAP" \
     "" ${_CALL_BUDGET_ARGS[@]+"${_CALL_BUDGET_ARGS[@]}"}

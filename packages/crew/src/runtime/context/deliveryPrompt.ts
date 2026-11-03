@@ -80,6 +80,9 @@ export interface PromptScout {
   testCommands: Array<{ repo: string; command: string }>;
   /** How many send-back reasons the PRIOR REVIEW FEEDBACK block carries. */
   priorSentBack: number;
+  /** Stack frames the scout could not place, each with why ("matches 2 files", "not in
+   *  the checkout"): a tie is said, never guessed. Absent → no line. */
+  unplacedFrames?: string[];
   /** The bounded model scout's suggestions (checked against the checkout), or null. */
   model: {
     files: Array<{ path: string; why: string }>;
@@ -295,7 +298,11 @@ export function normalizeScout(raw: unknown): PromptScout | null {
     (model.files.length || model.symbols.length || model.notes.length || model.questions.length)
       ? model
       : null;
-  if (items.length === 0 && !usefulModel) return null;
+  const unplaced = arr(r.unplacedFrames)
+    .map((y) => scoutText(y, 160))
+    .filter(Boolean)
+    .slice(0, 3);
+  if (items.length === 0 && !usefulModel && unplaced.length === 0) return null;
   const risk = r.risk ? obj(r.risk) : null;
   return {
     items,
@@ -311,6 +318,7 @@ export function normalizeScout(raw: unknown): PromptScout | null {
       .filter((x) => x.command !== "")
       .slice(0, 4),
     priorSentBack: Number.isInteger(r.priorSentBack) ? (r.priorSentBack as number) : 0,
+    ...(unplaced.length ? { unplacedFrames: unplaced } : {}),
     model: usefulModel,
     risk:
       risk && typeof risk.effective === "string"
@@ -355,10 +363,12 @@ export function renderScoutBlock(scout: PromptScout | null | undefined): string 
   if (!scout) return "";
   const items = Array.isArray(scout.items) ? scout.items : [];
   const model = scout.model ?? null;
-  if (items.length === 0 && !model) return "";
+  const unplaced = Array.isArray(scout.unplacedFrames) ? scout.unplacedFrames : [];
+  if (items.length === 0 && !model && unplaced.length === 0) return "";
   const lines: string[] = [];
   for (const it of items) lines.push(`  - ${it.path} — ${it.reasons.join("; ")}`);
   if (scout.omitted > 0) lines.push(`  (${scout.omitted} more not listed)`);
+  for (const f of unplaced) lines.push(`  stack frame not placed in the checkout: ${f}`);
   lines.push(`  ${scoutIndexLine(scout.index)}`);
   for (const t of scout.testCommands ?? []) lines.push(`  test command (${t.repo}): ${t.command}`);
   if (scout.priorSentBack > 0)

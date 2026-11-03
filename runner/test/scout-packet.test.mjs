@@ -103,6 +103,83 @@ console.log("== A. stack-trace seeds ==");
   ok(S.stackTraceSeeds(many).length === S.MAX_SEEDS, `at most ${S.MAX_SEEDS} frames`);
 }
 
+console.log("== A2. frames from other machines, ties said, a large tree ==");
+{
+  ok(
+    S.resolveSeedPath(
+      S.stackTraceSeeds(
+        "Error\n    at calc (C:\\Users\\me\\shop\\src\\billing\\invoice.ts:42:13)",
+      )[0]?.candidates ?? [],
+      files,
+    ) === "src/billing/invoice.ts",
+    "a Windows JS frame (backslashes) resolves by its suffix",
+  );
+  ok(
+    S.resolveSeedPath(
+      S.stackTraceSeeds("at calc (file:///C:/ci/shop/src/api/cart.ts:3:9)")[0]?.candidates ?? [],
+      files,
+    ) === "src/api/cart.ts",
+    "a file:///C:/ frame resolves",
+  );
+  const tie = new Set(["a/util/index.js", "b/util/index.js", "src/app.ts"]);
+  const p = S.buildPacket({
+    show: show("at f (/ci/x/util/index.js:3:1)\nat g (/elsewhere/deep/app.ts:9:1)"),
+    named: "",
+    files: tie,
+    nb1: null,
+  });
+  ok(
+    p.unresolved_frames.length === 1 && /\(matches 2 files\)$/.test(p.unresolved_frames[0]),
+    "a frame two files match is not placed, and the packet says it is a tie",
+    JSON.stringify(p.unresolved_frames),
+  );
+  ok(
+    p.items.length === 1 &&
+      p.items[0].reasons[0] === "stack trace (line 9, matched by file name only)",
+    "a frame whose directories the tree lacks says it matched by file name only",
+    JSON.stringify(p.items),
+  );
+  const sum = S.promptSummary(p, null);
+  ok(
+    sum && sum.unplacedFrames && /matches 2 files/.test(sum.unplacedFrames[0]),
+    "the prompt input carries the unplaced frame",
+    JSON.stringify(sum),
+  );
+  const only = S.buildPacket({
+    show: show("at f (/ci/x/util/index.js:3:1)"),
+    named: "",
+    files: tie,
+    nb1: null,
+  });
+  ok(
+    S.promptSummary(only, null)?.items.length === 0,
+    "a ticket whose only frame is a tie still gets a summary that says so",
+  );
+  ok(
+    !(
+      "unplacedFrames" in
+      (S.promptSummary(
+        S.buildPacket({ show: show("x"), named: "P\tsrc/api/cart.ts\n", files, nb1: null }),
+        null,
+      ) || {})
+    ),
+    "no unplaced frame: no key (the prompt input is unchanged)",
+  );
+  const big = new Set();
+  for (let i = 0; i < 200000; i++) big.add(`pkg${i % 500}/src/d${i % 37}/f${i}.ts`);
+  big.add("src/billing/invoice.ts");
+  const frames = Array.from({ length: 10 }, (_, i) => `at f (/a/b/c/d/e/f/g/h/nope${i}.ts:1:1)`);
+  frames.push("at f (/home/ci/shop/src/billing/invoice.ts:4:2)");
+  const t0 = Date.now();
+  const sd = S.seeds({ show: show(frames.join("\n")), named: "", files: big });
+  const took = Date.now() - t0;
+  ok(
+    sd.paths.length === 0 || sd.paths[0] === "src/billing/invoice.ts",
+    "a large tree: frames resolve",
+  );
+  ok(took < 5000, `a 200k-file tree with 10 frames resolves in bounded time (${took} ms)`);
+}
+
 console.log("== B. the packet: named, index expansion, reasons ==");
 {
   const named = "P\tsrc/billing/invoice.ts\nS\tcalculateInvoice\n";

@@ -81,7 +81,8 @@ const FRAME_RES = [
   /File "([^"\n]{1,300})", line (\d{1,7})/g,
   // JS/TS/Go/Rust/Ruby/PHP: path.ext:line[:col] (also inside `at fn (path:line:col)`)
   new RegExp(
-    `(?:^|[\\s(\\["'\`=])((?:[A-Za-z]:)?(?:file://)?[/~.]?[A-Za-z0-9_@~.+/-]*[A-Za-z0-9_+-]\\.(?:${SRC_EXT})):(\\d{1,7})(?::\\d{1,5})?`,
+    // (Windows paths too: `C:\\app\\src\\x.ts:3:9`, `file:///C:/app/src/x.ts:3:9`.)
+    `(?:^|[\\s(\\["'\`=])((?:file://)?/?(?:[A-Za-z]:)?[/~.\\\\]?[A-Za-z0-9_@~.+/\\\\-]*[A-Za-z0-9_+-]\\.(?:${SRC_EXT})):(\\d{1,7})(?::\\d{1,5})?`,
     "gm",
   ),
 ];
@@ -105,7 +106,7 @@ export function stackTraceSeeds(text) {
     if (/^node:/.test(raw)) return;
     // One frame per file name and line: a Java frame's `(Invoice.java:17)` also
     // matches the generic file:line pattern.
-    const key = `${candidates[0].split("/").pop()}:${line}`;
+    const key = `${candidates[0].split(/[\\/]/).pop()}:${line}`;
     if (seen.has(key)) return;
     seen.add(key);
     out.push({ raw, line: Number(line), candidates });
@@ -123,30 +124,61 @@ export function stackTraceSeeds(text) {
   return out;
 }
 
+// The base tree's paths by file name, built once per tree: a suffix match only ever looks
+// at the paths that share the frame's file name, so a 200k-file tree stays cheap.
+const BY_NAME = new WeakMap();
+function byName(files) {
+  let m = BY_NAME.get(files);
+  if (!m) {
+    m = new Map();
+    for (const f of files) {
+      const b = f.slice(f.lastIndexOf("/") + 1);
+      const l = m.get(b);
+      if (l) l.push(f);
+      else m.set(b, [f]);
+    }
+    BY_NAME.set(files, m);
+  }
+  return m;
+}
+
 /**
- * A frame's path in the base tree: exact; else the unique tree path that the frame's
- * path ends with (an absolute path from another machine), longest suffix first. null
- * when nothing in the tree matches, or more than one does.
+ * Place a frame in the base tree: exact; else the unique tree path that the frame's path
+ * ends with (an absolute path from another machine, a Windows path), longest suffix
+ * first. Returns {path, nameOnly} (nameOnly: the frame named directories the tree does
+ * not have, and only its file name matched), or {path: null, why} when nothing in the
+ * tree matches ("not in the checkout") or more than one file does ("matches N files"):
+ * a tie is said, never guessed.
  */
-export function resolveSeedPath(candidates, files) {
-  if (!files || files.size === 0) return null;
+export function placeFrame(candidates, files) {
+  if (!files || files.size === 0) return { path: null, why: "not in the checkout" };
+  let tie = 0;
   for (const c of candidates) {
-    const clean = c
-      .replace(/^[A-Za-z]:/, "")
+    const clean = String(c)
       .replace(/\\/g, "/")
+      .replace(/^\/?[A-Za-z]:/, "")
       .replace(/^~?\/+/, "");
-    if (files.has(clean)) return clean;
+    if (files.has(clean)) return { path: clean, nameOnly: false };
     const segs = clean.split("/").filter(Boolean);
-    for (let k = Math.min(segs.length, 8); k >= 1; k--) {
+    if (segs.length === 0) continue;
+    const pool = byName(files).get(segs[segs.length - 1]) || [];
+    for (let k = Math.min(segs.length, 8); k >= 1 && pool.length; k--) {
       const suffix = segs.slice(segs.length - k).join("/");
-      if (k === segs.length && files.has(suffix)) return suffix;
-      const hits = [];
-      for (const f of files) if (f === suffix || f.endsWith(`/${suffix}`)) hits.push(f);
-      if (hits.length === 1) return hits[0];
-      if (hits.length > 1) break; // ambiguous at this length: a shorter suffix is worse
+      const hits = pool.filter((f) => f === suffix || f.endsWith(`/${suffix}`));
+      if (hits.length === 1) return { path: hits[0], nameOnly: k === 1 && segs.length > 1 };
+      if (hits.length > 1) {
+        // Ambiguous at this length: a shorter suffix is worse.
+        tie = Math.max(tie, hits.length);
+        break;
+      }
     }
   }
-  return null;
+  return { path: null, why: tie > 1 ? `matches ${tie} files` : "not in the checkout" };
+}
+
+/** A frame's path in the base tree (placeFrame), or null when absent or tied. */
+export function resolveSeedPath(candidates, files) {
+  return placeFrame(candidates, files).path;
 }
 
 /** P/S lines (json-tool ticket-named-code) → {paths[], symbols[]}. */
@@ -261,9 +293,16 @@ export function buildPacket({ show, named, files, nb1, nb2, baseSha, attempt, rf
   const frames = stackTraceSeeds(ticketText(show));
   const unresolved = [];
   for (const f of frames) {
-    const p = resolveSeedPath(f.candidates, files);
-    if (p) add(p, `stack trace (line ${f.line})`, "stack");
-    else unresolved.push(f.raw.slice(0, 120));
+    const at = placeFrame(f.candidates, files);
+    if (at.path)
+      add(
+        at.path,
+        at.nameOnly
+          ? `stack trace (line ${f.line}, matched by file name only)`
+          : `stack trace (line ${f.line})`,
+        "stack",
+      );
+    else unresolved.push(`${f.raw.slice(0, 120)} (${at.why})`);
   }
   const status = nb1 && typeof nb1.status === "string" ? nb1.status : "unavailable";
   const fromIndex = listable(nb1);
@@ -471,7 +510,12 @@ export function promptSummary(packet, risk) {
   if (!packet || !Array.isArray(packet.items)) return null;
   const ms = packet.model_scout;
   const hasModel = ms && (ms.files.length || ms.notes.length || ms.symbols.length);
-  if (packet.items.length === 0 && !hasModel) return null;
+  // A frame the scout could not place (no file, or a tie) is said, never guessed.
+  const unplaced = (Array.isArray(packet.unresolved_frames) ? packet.unresolved_frames : []).slice(
+    0,
+    3,
+  );
+  if (packet.items.length === 0 && !hasModel && unplaced.length === 0) return null;
   return {
     items: packet.items.map((i) => ({ path: i.path, reasons: i.reasons })),
     omitted: packet.omitted,
@@ -482,6 +526,7 @@ export function promptSummary(packet, risk) {
     },
     testCommands: packet.test_commands,
     priorSentBack: packet.prior.sent_back,
+    ...(unplaced.length ? { unplacedFrames: unplaced } : {}),
     model: hasModel
       ? {
           files: ms.files,

@@ -441,7 +441,9 @@ export class Resolver {
       }
     }
     for (const ext of JS_EXTS) if (this.paths.has(b + ext)) return b + ext;
-    for (const ext of JS_EXTS) if (this.paths.has(`${b}/index${ext}`)) return `${b}/index${ext}`;
+    // `b` is "" for the repo root (`import from '..'` out of a top-level directory).
+    const index = b ? `${b}/index` : "index";
+    for (const ext of JS_EXTS) if (this.paths.has(index + ext)) return index + ext;
     return null;
   }
 

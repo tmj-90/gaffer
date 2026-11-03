@@ -42,7 +42,7 @@ export function emitGate(
 
 /** Fire a decision-pending gate for a raised decision, best-effort. */
 export function emitDecisionGate(
-  host: GateHost,
+  host: Pick<GateHost, "clock">,
   internals: GateInternals,
   decision: Decision,
 ): void {
@@ -85,7 +85,10 @@ export function buildTicketEvent(
 }
 
 /** Best-effort primary/first repo name for a ticket, or undefined. */
-export function primaryRepoName(host: GateHost, ticketId: string): string | undefined {
+export function primaryRepoName(
+  host: Pick<GateHost, "repos">,
+  ticketId: string,
+): string | undefined {
   const links = host.repos.accessLinksForTicket(ticketId);
   return links[0]?.name;
 }

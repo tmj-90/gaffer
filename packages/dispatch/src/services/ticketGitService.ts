@@ -121,8 +121,8 @@ export function ticketDiff(
  * `none_changed` when every analysed repo had none to list, else `not_analysed`.
  */
 export function noteCallersRow(
-  host: TicketGitHost,
-  internals: TicketGitInternals,
+  host: Pick<TicketGitHost, "events" | "resolveTicket">,
+  internals: Pick<TicketGitInternals, "lastCallersRow">,
   ticketId: string,
   diff: TicketDiff,
 ): void {
@@ -184,8 +184,8 @@ export function downstreamRepos(
  * Pure read; a missing git runner or no write repos yields `null` (unknown).
  */
 export function resolveApprovalShas(
-  host: TicketGitHost,
-  internals: TicketGitInternals,
+  host: Pick<TicketGitHost, "repoDeliveries" | "repos">,
+  internals: Pick<TicketGitInternals, "gitRunner">,
   ticket: Ticket,
 ): ApprovalShas | null {
   // Fall back to a real `git` spawn when no runner was injected — EVERY production
@@ -229,7 +229,10 @@ export function resolveApprovalShas(
  * compared here are resolved one way). A repo that is not on disk or whose branch does
  * not resolve yields no entry (nothing to compare, pin or land). Pure read.
  */
-export function resolveApprovedHeads(host: TicketGitHost, ticket: Ticket): ReviewedHead[] {
+export function resolveApprovedHeads(
+  host: Pick<TicketGitHost, "writeRepoHeads">,
+  ticket: Ticket,
+): ReviewedHead[] {
   return host.writeRepoHeads(ticket).heads;
 }
 
@@ -312,7 +315,7 @@ export function commentRepoContexts(
  * same-candidate check reads it.
  */
 export function orderedWriteRepoHeads(
-  host: TicketGitHost,
+  host: Pick<TicketGitHost, "repos" | "writeRepoHeads">,
   ticket: Ticket,
 ): Array<{ repoId: string; repo: string; sha: string | null; why: string | null }> {
   const { heads, unavailable } = host.writeRepoHeads(ticket);
@@ -365,8 +368,8 @@ export function ticketDiffSince(
 
 /** True when `sha` is contained in the repo's default branch (a verified landing). */
 export function commitOnDefaultBranch(
-  host: TicketGitHost,
-  internals: TicketGitInternals,
+  host: Pick<TicketGitHost, "repos">,
+  internals: Pick<TicketGitInternals, "gitRunner">,
   repoId: string,
   sha: string,
 ): boolean {
@@ -391,8 +394,8 @@ export function commitOnDefaultBranch(
  * refs exists here (or the checkout is missing), else true/false.
  */
 export function changeOnRefs(
-  host: TicketGitHost,
-  internals: TicketGitInternals,
+  host: Pick<TicketGitHost, "repos">,
+  internals: Pick<TicketGitInternals, "gitRunner">,
   repoId: string,
   sha: string,
   refs: ReadonlyArray<"default" | "remote-default">,
@@ -438,7 +441,10 @@ export function changeOnRefs(
  * filter used by {@link resolveApprovalShas}. A ticket with no write repo yields an
  * empty set, which the enforcement treats as "never auto" (fail-closed).
  */
-export function writeRepoIdsForTicket(host: TicketGitHost, ticket: Ticket): string[] {
+export function writeRepoIdsForTicket(
+  host: Pick<TicketGitHost, "repos">,
+  ticket: Ticket,
+): string[] {
   return host.repos
     .accessLinksForTicket(ticket.id)
     .filter((l) => isActiveTicketRepoRelation(l.relation) && l.access === "write")

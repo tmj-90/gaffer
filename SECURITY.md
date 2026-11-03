@@ -403,17 +403,16 @@ a presence boolean, and an argument not on the allowlist is never copied.
 - **`sandbox-exec` still permits writes under `$GAFFER_DATA`**, where `settings.json`,
   `usage-pause.json` and the ledgers live. The hook refuses every write vector to those
   paths that `safety-hook.test.mjs` pins, but a child's syscalls are invisible to it.
-  Narrowing the profile needs a macOS run to verify. `sandbox-exec` also isolates
-  neither reads nor egress; on a non-macOS host without Docker the hook is the only
-  boundary and `strict` reduces to `autonomous`.
+  `sandbox-exec` also isolates neither reads nor egress; on a non-macOS host without
+  Docker the hook is the only boundary and `strict` reduces to `autonomous`.
 - **The docker sandbox is proven with a stub agent.** CI runs one delivery through it on
   a Linux runner with a deterministic stub; a live agent inside it is proven only where
   someone runs the opt-in `sandbox-live.yml` workflow with their own credential
   ([docs/sandbox.md](docs/sandbox.md#prove-it-on-your-own-fork)). On macOS Docker
   Desktop the bridge is off and the masked-mount fallback applies, which no CI job
-  delivers through. The container runs as root; a non-root `--user` is the next
-  hardening step. A timeout kills the `docker run` client, and a container that ignores
-  the signal can outlive it.
+  delivers through. The container runs as root (with only `DAC_OVERRIDE` kept). A
+  timeout kills the `docker run` client, and a container that ignores the signal can
+  outlive it.
 - **The model credential is visible inside the sandbox.** The agent needs it to
   authenticate, so code inside can read it. The runner never handles the raw value and
   the egress allowlist limits where it could go, but it is present.

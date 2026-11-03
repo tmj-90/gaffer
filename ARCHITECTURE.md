@@ -20,18 +20,20 @@ All four live in a single pnpm monorepo. The runner derives every path from its 
 ## A ticket's lifecycle
 
 ```
-DRAFT ─▶ READY ─▶ CLAIMED ─▶ IN PROGRESS ─▶ IN REVIEW ─▶ (IN TESTING) ─▶ READY FOR MERGE ─▶ DONE
-  ▲ refining               │                  │             │                  │
-  └──── send-back ◀────────┴──── rework ◀─────┴─────────────┘             merge gate
-                           │                  │                                 │
-                    runner claims,       human approval                   lands the gated
-                    spawns the agent     (or an opt-in                    merge commit
-                    in a worktree        agent approval)
+DRAFT ─▶ READY ─▶ CLAIMED ─▶ IN PROGRESS ─▶ (IN TESTING) ─▶ IN REVIEW ─▶ READY FOR MERGE ─▶ DONE
+  ▲ refining               │                  │                │                  │
+  └──── send-back ◀────────┴──── rework ◀─────┴────────────────┘             merge gate
+                           │                  │                │                  │
+                    runner claims,      tester, where     human approval     lands the gated
+                    spawns the agent    it gates the      (or an opt-in      merge commit
+                    in a worktree       ticket            agent approval)
 ```
 
 A ticket can also be `blocked` (parked for a human), `paused` (stopped at a cap, to
-continue later), `cancelled` or `failed`. `in_testing` is the independent tester's lane,
-when it gates the ticket; `ready_for_merge` to `done` is a system-only merge callback.
+continue later), `cancelled` or `failed`. `in_testing` is the independent tester's lane:
+where the tester gates a ticket, a delivery goes from `in_review` to `in_testing` and
+back to `in_review` before a person can approve it, so you review the commit it passed.
+`ready_for_merge` to `done` is a system-only merge callback.
 
 1. **plan**: the planner, on the router's `strong` tier by default, decomposes the brief into tickets. With `GAFFER_PLAN_DEBATE=1`, two models run a bounded adversarial debate before the plan is finalised.
 2. **implement**: the delivery agent, on the `mid` tier by default (the router climbs for risk and rework; `runner/model-registry.json` maps tiers to models), executes the ticket in a throwaway git worktree.

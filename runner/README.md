@@ -97,8 +97,7 @@ switch decides.
   tsc/semgrep oracles) unless `GAFFER_IDLE_HOST_EXEC=1`; the in-process scans
   still run.
 
-Deferred (follow-up): dedicating a fraction of the A1 concurrency pool to the
-maintenance lane so it runs alongside delivery rather than only on idle ticks.
+The maintenance lane runs only on idle ticks, never alongside delivery.
 
 ## The two MCP servers (the async delivery plane)
 - **Dispatch**: backlog/work control plane. Atomic claims/leases, evidence,

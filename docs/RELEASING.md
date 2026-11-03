@@ -91,13 +91,9 @@ sha256sum -c SHA256SUMS --ignore-missing   # after downloading the assets you us
 ## Honest limits
 
 - The provenance statement for the tarballs is **unsigned**. It is verifiable
-  against the public workflow run, not cryptographically. Signing it through
-  GitHub Artifact Attestations (`actions/attest-build-provenance`, Sigstore) is
-  the intended next step once that action's release is vetted and pinned by SHA
-  like every other action in this repository. The image's attestations are
-  BuildKit-generated and stored in the registry.
+  against the public workflow run, not cryptographically. The image's attestations
+  are BuildKit-generated and stored in the registry.
 - Packages are published as **GitHub release tarballs, not to npm**. Their names
   (`dispatch`, `crew`, `memory-mcp`) are unscoped and generic; publishing to the
-  npm registry means claiming a scope and renaming (`@<scope>/dispatch`, …), which
-  touches the workspace imports and the docs. Decision: keep the current names
-  until a scope is claimed; the tarball install path above works today.
+  npm registry would mean a scope and a rename (`@<scope>/dispatch`, …), so install
+  from the release tarballs as shown above.

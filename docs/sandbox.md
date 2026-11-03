@@ -64,7 +64,8 @@ When the sandbox is on, `tick.sh` logs the provider it used.
 
 ## The `sandbox-exec` profile
 
-The profile (`$GAFFER_DATA/strict-profile.sb`) is SBPL, which is last-match-wins:
+Each wrap writes its own profile file (`$GAFFER_DATA/strict-profile.<pid>.XXXXXX`, so
+concurrent workers never share one). The profile is SBPL, which is last-match-wins:
 
 1. `(allow default)`: reads, and everything else, broadly allowed.
 2. `(deny file-write*)`: revoke all writes.
@@ -235,7 +236,7 @@ it runs. Without a credential it fails at once and names the two secrets.
   every developer machine; the seam test runs everywhere.
 - The container runs as root with only `DAC_OVERRIDE`, so on a Linux host the files it
   creates in the worktree are root-owned (the test hands them back with one `chown`
-  container). A non-root `--user` with a tmpfs `HOME` is the next hardening step.
+  container).
 - The default registry allowlist covers the common registries; a monorepo that pulls
   from others needs them added with `GAFFER_EGRESS_ALLOW`.
 - On macOS Docker Desktop the bridge is off and the masked legacy layout applies.

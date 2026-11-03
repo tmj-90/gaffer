@@ -54,7 +54,7 @@ _GAFFER_WORKER_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # worker then runs, with a loud WARNING at every spawn. sandbox.sh can degrade to "no
 # extra OS wrapping" for claude-code because the safety hook still applies there; the
 # command provider cannot, because the missing piece IS the safety hook. See
-# SECURITY.md ("worker provider containment").
+# SECURITY.md ("Command workers", under "The OS sandbox").
 #
 # INTERFACE  {prompt, model, env, mcpConfig, cwd, timeout, maxTurns}
 #   $1 cwd        interface: cwd       — run the agent in this directory

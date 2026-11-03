@@ -5330,7 +5330,7 @@
           "Review & delivery"
         ],
         "summary": "Delivery dossier",
-        "description": "The tamper-evident evidence artifact. JSON by default; markdown with `?format=markdown` or `Accept: text/markdown`. `?include=packet` adds `review_packet` (outside the hashed subject): the runner-verified gates, tester verdict, cost and turns, attempts and rework, risk reasons, the reviewed-commit pin, each criterion's check result or `no machine evidence`, any test count the agent claimed that disagrees with the runner's, `intent` (the ticket's description), `candidate` (per write repository: the commit the runner gated, the head now, the tester's commit and the pin, with `same`, and `gated_earlier` when the commit on record is an earlier attempt's because this attempt's record is not in yet), `ci` (the latest CI result for the candidate commit, or null), `tester_lane` (the GAFFER_TESTING setting, whether the tester lane is on for this ticket's repositories, the write repositories with no registered test command, and `runner` `{ mode, at, on, gates }` when the runner last routed under a different setting), `run_links` (dashboard run logs that were running at the delivery or the tester verdict, found by time window) and `backing` (`{fact, holds, source, cell}` rows: what backs the delivery and what does not; no score).",
+        "description": "The tamper-evident evidence artifact. JSON by default; markdown with `?format=markdown` or `Accept: text/markdown`. `?include=packet` adds `review_packet` (outside the hashed subject): the runner-verified gates, tester verdict, cost and turns, attempts and rework, risk reasons, the reviewed-commit pin, each criterion's check result or `no machine evidence`, any test count the agent claimed that disagrees with the runner's, `intent` (the ticket's description), `candidate` (per write repository: the commit the runner gated, the head now, the tester's commit and the pin, with `same`, and `gated_earlier` when the commit on record is an earlier attempt's because this attempt's record is not in yet), `ci` (the latest CI result for the candidate commit, or null), `tester_lane` (the GAFFER_TESTING setting, whether the tester lane is on for this ticket's repositories, the write repositories with no registered test command, and `runner` `{ mode, at, on, gates }` when the runner last routed under a different setting), `run_links` (dashboard run logs that were running at the delivery or the tester verdict, found by time window), `runtime_acceptance` (`{ profile, executable, spec_registered, latest }`: the ticket's acceptance profile and the runner's latest CLI transcript or API probe record, with whether it passed and the commit it ran on) and `backing` (`{fact, holds, source, cell}` rows: what backs the delivery and what does not; no score).",
         "parameters": [
           {
             "name": "id",
@@ -5968,6 +5968,115 @@
           },
           "403": {
             "description": "The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`). A named principal acted outside its scope (`SCOPE_DENIED`: `details.scope` names its repos and tickets, `details.reason` is `outside_repo_scope`, `outside_ticket_scope`, `no_repos`, `factory_wide` or `admin_required`, with `details.ticket`, `details.outside_repos` or `details.required` saying what put it outside).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource (`NOT_FOUND`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The ticket is in testing or further on (`CONTRACT_FROZEN`): the tester is bound to the test contract from in_testing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body or query failed validation (`VALIDATION_ERROR`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "full"
+      }
+    },
+    "/tickets/{id}/acceptance-profile": {
+      "post": {
+        "operationId": "postTicketsByIdAcceptanceProfile",
+        "tags": [
+          "Review & delivery"
+        ],
+        "summary": "Set the ticket's acceptance profile",
+        "description": "How the independent tester's PASS is proven: `unit` (the tester's tests replayed on a clean checkout, the default), `cli` or `api` (the runner also runs the commands registered in `spec` on the clean checkout and records a transcript or the probe responses; an automated PASS without that passed evidence is refused with 422 `ACCEPTANCE_EVIDENCE_REQUIRED`), or `web`, `migration`, `performance` (the fields are defined, the runner cannot run them yet, so only a person's verdict passes them). Human or admin principals only (403 `ACTOR_NOT_PERMITTED`): the runner executes these commands. Part of the tester's contract hash; refused with 409 `CONTRACT_FROZEN` from in_testing on.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/acceptanceProfileBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "`{ ticket_id, profile, test_contract, event_id }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AcceptanceProfileSet"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The calling principal may not do this (`ACTOR_NOT_PERMITTED`). The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`). A named principal acted outside its scope (`SCOPE_DENIED`: `details.scope` names its repos and tickets, `details.reason` is `outside_repo_scope`, `outside_ticket_scope`, `no_repos`, `factory_wide` or `admin_required`, with `details.ticket`, `details.outside_repos` or `details.required` saying what put it outside).",
             "content": {
               "application/json": {
                 "schema": {
@@ -11545,6 +11654,125 @@
       }
     },
     "schemas": {
+      "acceptanceProfileBody": {
+        "type": "object",
+        "properties": {
+          "profile": {
+            "type": "string",
+            "enum": [
+              "unit",
+              "cli",
+              "api",
+              "web",
+              "migration",
+              "performance"
+            ]
+          },
+          "spec": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": {}
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "profile"
+        ]
+      },
+      "AcceptanceProfileSet": {
+        "type": "object",
+        "properties": {
+          "ticket_id": {
+            "type": "string"
+          },
+          "profile": {
+            "type": "string",
+            "enum": [
+              "unit",
+              "cli",
+              "api",
+              "web",
+              "migration",
+              "performance"
+            ]
+          },
+          "test_contract": {
+            "type": "object",
+            "properties": {
+              "changed_surfaces": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "runtime_deps": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "env_vars": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "run_command": {
+                "type": "string"
+              },
+              "harness_ready": {
+                "type": "boolean"
+              },
+              "profile": {
+                "type": "string",
+                "enum": [
+                  "cli",
+                  "api",
+                  "web",
+                  "migration",
+                  "performance"
+                ],
+                "description": "The acceptance profile; absent means unit."
+              },
+              "profile_spec": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": {}
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The commands the runner runs for the profile, set by a person."
+              }
+            },
+            "required": [
+              "changed_surfaces",
+              "runtime_deps",
+              "env_vars",
+              "run_command",
+              "harness_ready"
+            ]
+          },
+          "event_id": {
+            "type": "string",
+            "description": "The id of the work event the change wrote."
+          }
+        },
+        "required": [
+          "ticket_id",
+          "profile",
+          "test_contract",
+          "event_id"
+        ],
+        "additionalProperties": false
+      },
       "AcCreated": {
         "type": "object",
         "properties": {
@@ -15645,6 +15873,17 @@
           "harness_ready": {
             "type": "boolean",
             "default": false
+          },
+          "profile": {
+            "type": "string",
+            "enum": [
+              "unit",
+              "cli",
+              "api",
+              "web",
+              "migration",
+              "performance"
+            ]
           }
         }
       },
@@ -15896,6 +16135,29 @@
               },
               "harness_ready": {
                 "type": "boolean"
+              },
+              "profile": {
+                "type": "string",
+                "enum": [
+                  "cli",
+                  "api",
+                  "web",
+                  "migration",
+                  "performance"
+                ],
+                "description": "The acceptance profile; absent means unit."
+              },
+              "profile_spec": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": {}
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The commands the runner runs for the profile, set by a person."
               }
             },
             "required": [
@@ -15954,6 +16216,11 @@
               "failed",
               "skipped"
             ]
+          },
+          "acceptance_evidence": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
           }
         },
         "required": [

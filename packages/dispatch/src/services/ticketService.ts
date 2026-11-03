@@ -43,6 +43,17 @@ import type { Clock } from "../util/clock.js";
 import { DispatchError, notFound } from "../util/errors.js";
 import { newId } from "../util/id.js";
 import { TESTER_REPLAY_PREFIX } from "./testerReplay.js";
+import {
+  ACCEPTANCE_EVIDENCE_PAYLOAD_MAX,
+  ACCEPTANCE_EVIDENCE_PREFIX,
+  ACCEPTANCE_PROFILES,
+  acceptanceEvidencePayload,
+  contractProfile,
+  isAcceptanceProfile,
+  parseProfileSpec,
+  profileFromTitle,
+  type AcceptanceProfile,
+} from "../domain/acceptanceProfile.js";
 
 /** System delivery evidence input (no claim token). */
 export interface DeliveryEvidenceInput {
@@ -133,8 +144,20 @@ export const TEST_CONTRACT_EDITABLE_STATUSES: readonly TicketStatus[] = [
 export const SEEDED_GENERIC_SURFACE =
   "the behaviour this ticket's acceptance criteria name, exercised from the outside";
 
-export function seededTestContract(title: string): TestContract {
-  const base = { runtime_deps: [], env_vars: [], run_command: "", harness_ready: false };
+export function seededTestContract(
+  title: string,
+  env: NodeJS.ProcessEnv = process.env,
+): TestContract {
+  // ACCEPTANCE PROFILE: a title naming a CLI or an endpoint seeds that profile (never its
+  // commands: a person registers those), so the tester's PASS needs runner evidence.
+  const profile = profileFromTitle(title, env);
+  const base = {
+    runtime_deps: [],
+    env_vars: [],
+    run_command: "",
+    harness_ready: false,
+    ...(profile ? { profile } : {}),
+  };
   const clean = String(title ?? "")
     .replace(/\s+/g, " ")
     .replace(/"/g, "'")
@@ -889,6 +912,9 @@ export class TicketService {
             harness_ready: contract.harness_ready,
             seeded_from:
               contract.changed_surfaces[0] === SEEDED_GENERIC_SURFACE ? "generic" : "title",
+            ...(contract.profile
+              ? { profile: contract.profile, profile_seeded_from: "title" }
+              : {}),
           },
         });
       }
@@ -942,29 +968,37 @@ export class TicketService {
 
   setTestContract(ticketRef: string, raw: unknown, actor: Actor): TestContract {
     const input = setTestContractInput.parse(raw);
-    const contract = validateTestContract({
-      changed_surfaces: input.changed_surfaces,
-      runtime_deps: input.runtime_deps,
-      env_vars: input.env_vars,
-      run_command: input.run_command,
-      harness_ready: input.harness_ready,
-    });
     return inTransaction(this.db, () => {
       const ticket = this.resolveTicket(ticketRef);
-      if (!TEST_CONTRACT_EDITABLE_STATUSES.includes(ticket.status)) {
-        throw new DispatchError(
-          "CONTRACT_FROZEN",
-          `Cannot set the test contract: ticket #${ticket.number ?? ticket.id} is ` +
-            `'${ticket.status}', and the tester is bound to the contract from in_testing ` +
-            "on. Send it back for rework first, or set it while it is " +
-            `${TEST_CONTRACT_EDITABLE_STATUSES.join(", ")}.`,
-          {
-            ticket_id: ticket.id,
-            status: ticket.status,
-            editable_statuses: TEST_CONTRACT_EDITABLE_STATUSES,
-          },
-        );
+      this.assertTestContractEditable(ticket, "set the test contract");
+      // ACCEPTANCE PROFILE: the operational fields are replaced; the profile and its spec
+      // are kept (they are a person's, set through setAcceptanceProfile). An agent may
+      // only RAISE a unit contract to a profile name (it never registers the commands the
+      // runner runs), and never change or drop a profile already set.
+      const existing = parseTestContract(ticket.test_contract);
+      const current = contractProfile(existing);
+      let profile: AcceptanceProfile = current;
+      let spec = existing?.profile_spec ?? null;
+      if (input.profile !== undefined && input.profile !== current) {
+        if (actor.type === "agent" && (current !== "unit" || input.profile === "unit")) {
+          throw new DispatchError(
+            "ACTOR_NOT_PERMITTED",
+            `An agent may not change the acceptance profile from '${current}' to '${input.profile}': a person sets it (wg ticket acceptance-profile, or Acceptance profile on the ticket page).`,
+            { actor_type: actor.type, current, requested: input.profile },
+          );
+        }
+        profile = input.profile;
+        spec = null; // a spec belongs to the profile it was registered for
       }
+      const contract = validateTestContract({
+        changed_surfaces: input.changed_surfaces,
+        runtime_deps: input.runtime_deps,
+        env_vars: input.env_vars,
+        run_command: input.run_command,
+        harness_ready: input.harness_ready,
+        ...(profile !== "unit" ? { profile } : {}),
+        ...(profile !== "unit" && spec ? { profile_spec: spec } : {}),
+      });
       const now = this.clock.now();
       this.tickets.setTestContract(ticket.id, JSON.stringify(contract), now);
       writeEvent(this.db, {
@@ -975,9 +1009,200 @@ export class TicketService {
         payload: {
           changed_surfaces: contract.changed_surfaces.length,
           harness_ready: contract.harness_ready,
+          ...(profile !== current ? { profile, previous_profile: current } : {}),
         },
       });
       return contract;
+    });
+  }
+
+  /** CONTRACT_FROZEN unless the ticket is in a status where its contract may change. */
+  private assertTestContractEditable(ticket: Ticket, what: string): void {
+    if (!TEST_CONTRACT_EDITABLE_STATUSES.includes(ticket.status)) {
+      throw new DispatchError(
+        "CONTRACT_FROZEN",
+        `Cannot ${what}: ticket #${ticket.number ?? ticket.id} is ` +
+          `'${ticket.status}', and the tester is bound to the contract from in_testing ` +
+          "on. Send it back for rework first, or set it while it is " +
+          `${TEST_CONTRACT_EDITABLE_STATUSES.join(", ")}.`,
+        {
+          ticket_id: ticket.id,
+          status: ticket.status,
+          editable_statuses: TEST_CONTRACT_EDITABLE_STATUSES,
+        },
+      );
+    }
+  }
+
+  /**
+   * ACCEPTANCE PROFILE (C0): a person sets how the tester's PASS is proven, and registers
+   * what the runner runs for it (the CLI cases, the API boot command and probes). Human
+   * or admin only, whatever surface it came through: these are commands the runner
+   * executes, so they never come from an agent. Frozen from in_testing on, like the rest
+   * of the contract; the change moves the contract hash, so an earlier PASS no longer
+   * covers the ticket. `unit` clears the profile (today's behaviour).
+   */
+  setAcceptanceProfile(
+    ticketRef: string,
+    input: { profile: unknown; spec?: unknown },
+    actor: Actor,
+  ): { ticketId: string; profile: AcceptanceProfile; contract: TestContract; eventId: string } {
+    if (actor.type !== "human" && actor.type !== "admin") {
+      throw new DispatchError(
+        "ACTOR_NOT_PERMITTED",
+        "Only a human or admin may set a ticket's acceptance profile: its commands are run by the runner.",
+        { actor_type: actor.type },
+      );
+    }
+    if (!isAcceptanceProfile(input.profile)) {
+      throw new DispatchError(
+        "VALIDATION_ERROR",
+        `profile must be one of ${ACCEPTANCE_PROFILES.join(", ")}.`,
+      );
+    }
+    const profile = input.profile;
+    let spec: Record<string, unknown> | null;
+    try {
+      spec = parseProfileSpec(profile, input.spec);
+    } catch (e) {
+      const issues =
+        e && typeof e === "object" && "issues" in e
+          ? (e as { issues: Array<{ path: unknown[]; message: string }> }).issues
+              .slice(0, 5)
+              .map((i) => `${i.path.join(".") || "spec"}: ${i.message}`)
+              .join("; ")
+          : String(e);
+      throw new DispatchError(
+        "VALIDATION_ERROR",
+        `The ${profile} profile spec is not valid: ${issues}`,
+      );
+    }
+    if (profile === "unit" && input.spec !== undefined && input.spec !== null) {
+      throw new DispatchError("VALIDATION_ERROR", "The unit profile takes no spec.");
+    }
+    return inTransaction(this.db, () => {
+      const ticket = this.resolveTicket(ticketRef);
+      this.assertTestContractEditable(ticket, "set the acceptance profile");
+      const existing = parseTestContract(ticket.test_contract);
+      const previous = contractProfile(existing);
+      const base =
+        existing ??
+        seededTestContract(ticket.title, {
+          GAFFER_ACCEPTANCE_PROFILE_SEED: "0",
+        });
+      const { profile: _p, profile_spec: _s, ...operational } = base;
+      void _p;
+      void _s;
+      const contract = validateTestContract({
+        ...operational,
+        ...(profile !== "unit" ? { profile } : {}),
+        ...(spec ? { profile_spec: spec } : {}),
+      });
+      const now = this.clock.now();
+      this.tickets.setTestContract(ticket.id, JSON.stringify(contract), now);
+      const counts =
+        profile === "cli" && spec
+          ? { cases: (spec.cases as unknown[]).length }
+          : profile === "api" && spec
+            ? { probes: (spec.probes as unknown[]).length }
+            : {};
+      const eventId = writeEvent(this.db, {
+        entity_type: "ticket",
+        entity_id: ticket.id,
+        actor,
+        event_type: "ticket.acceptance_profile_set",
+        payload: { profile, previous, spec: spec !== null, ...counts },
+      });
+      return { ticketId: ticket.id, profile, contract, eventId };
+    });
+  }
+
+  /**
+   * ACCEPTANCE EVIDENCE (C1/C2): the runner records what its profile run showed for the
+   * tested commit (the CLI transcript, the API probe responses) as a SYSTEM `log` row with
+   * the reserved uri `gaffer-acceptance:<profile>:<commit>`. System only (the CLI verb is
+   * denied to agents by the safety hook). The payload's shape is checked here and its
+   * size capped; its content (what ran and what came back) is the runner's record.
+   */
+  recordAcceptanceEvidence(
+    ticketRef: string,
+    payloadJson: string,
+    actor: Actor,
+  ): { evidenceId: string; eventId: string; passed: boolean } {
+    if (actor.type !== "system") {
+      throw new DispatchError(
+        "ACTOR_NOT_PERMITTED",
+        "Acceptance evidence is recorded only by the runner (system actor).",
+        { actor_type: actor.type },
+      );
+    }
+    if (payloadJson.length > ACCEPTANCE_EVIDENCE_PAYLOAD_MAX) {
+      throw new DispatchError(
+        "PAYLOAD_TOO_LARGE",
+        `Acceptance evidence payload is over ${ACCEPTANCE_EVIDENCE_PAYLOAD_MAX} characters.`,
+      );
+    }
+    let raw: unknown;
+    try {
+      raw = JSON.parse(payloadJson);
+    } catch {
+      throw new DispatchError("VALIDATION_ERROR", "Acceptance evidence payload is not JSON.");
+    }
+    const parsed = acceptanceEvidencePayload.safeParse(raw);
+    if (!parsed.success) {
+      throw new DispatchError(
+        "VALIDATION_ERROR",
+        `Acceptance evidence payload is not valid: ${parsed.error.issues
+          .slice(0, 3)
+          .map((i) => `${i.path.join(".")}: ${i.message}`)
+          .join("; ")}`,
+      );
+    }
+    const p = parsed.data;
+    if ((p.profile === "cli") !== (p.kind === "transcript")) {
+      throw new DispatchError(
+        "VALIDATION_ERROR",
+        "A cli profile records a transcript, an api profile an api_response.",
+      );
+    }
+    const now = this.clock.now();
+    return inTransaction(this.db, () => {
+      const ticket = this.resolveTicket(ticketRef);
+      const commit = p.tested_commit.toLowerCase();
+      const evidenceId = newId();
+      const ran = p.cases.length;
+      this.evidence.insert({
+        id: evidenceId,
+        ticket_id: ticket.id,
+        ac_id: null,
+        repo_id: null,
+        decision_id: null,
+        evidence_type: "log",
+        summary:
+          `runtime acceptance (${p.profile}): ${p.passed ? "passed" : "did not pass"} on ${commit.slice(0, 12)}, ` +
+          `${ran} ${p.profile === "cli" ? (ran === 1 ? "command" : "commands") : ran === 1 ? "probe" : "probes"}` +
+          (p.reason ? ` (${p.reason.slice(0, 300)})` : ""),
+        uri: `${ACCEPTANCE_EVIDENCE_PREFIX}${p.profile}:${commit}`,
+        payload_json: JSON.stringify({ ...p, tested_commit: commit }),
+        created_by: actor.id ?? actor.type,
+        recorded_by_actor_type: actor.type,
+        created_at: now,
+      });
+      const eventId = writeEvent(this.db, {
+        entity_type: "ticket",
+        entity_id: ticket.id,
+        actor,
+        event_type: "ticket.acceptance_evidence_recorded",
+        payload: {
+          evidence_id: evidenceId,
+          profile: p.profile,
+          kind: p.kind,
+          passed: p.passed,
+          tested_commit: commit,
+          cases: ran,
+        },
+      });
+      return { evidenceId, eventId, passed: p.passed };
     });
   }
 
@@ -1298,6 +1523,12 @@ export class TicketService {
       throw new DispatchError(
         "VALIDATION_ERROR",
         `The ${TESTER_REPLAY_PREFIX} uri is reserved for the landing path's tester-replay record.`,
+      );
+    }
+    if (String(input.uri ?? "").startsWith(ACCEPTANCE_EVIDENCE_PREFIX)) {
+      throw new DispatchError(
+        "VALIDATION_ERROR",
+        `The ${ACCEPTANCE_EVIDENCE_PREFIX} uri is reserved for the runner's acceptance evidence (ticket acceptance-evidence).`,
       );
     }
     let payloadJson: string | null = null;

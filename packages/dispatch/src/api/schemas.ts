@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ACCEPTANCE_PROFILES } from "../domain/acceptanceProfile.js";
 
 // Validation errors keep their zod 3 codes, fields and messages (see the module).
 import "../util/zod3Compat.js";
@@ -325,8 +326,21 @@ export const setTestContractBody = z.object({
   env_vars: z.array(z.string().trim().min(1).max(500)).max(100).default([]),
   run_command: z.string().trim().max(2_000).default(""),
   harness_ready: z.boolean().default(false),
+  /** The acceptance profile name (kept when absent); its spec is set on /acceptance-profile. */
+  profile: z.enum(ACCEPTANCE_PROFILES).optional(),
 });
 export type SetTestContractBody = z.infer<typeof setTestContractBody>;
+
+/**
+ * ACCEPTANCE PROFILE: how the tester's PASS is proven, and the commands the runner runs
+ * for it (cli: `{cases:[{argv, expect}]}`, api: `{boot_argv, health_path, probes:[...]}`).
+ * The spec is checked against the profile's schema server side.
+ */
+export const acceptanceProfileBody = z.object({
+  profile: z.enum(ACCEPTANCE_PROFILES),
+  spec: z.record(z.string(), z.unknown()).nullable().optional(),
+});
+export type AcceptanceProfileBody = z.infer<typeof acceptanceProfileBody>;
 
 export const testerVerdictBody = z.object({
   verdict: z.enum(["pass", "fail"]),
@@ -351,6 +365,8 @@ export const testerVerdictBody = z.object({
     .regex(/^[0-9a-f]{64}$/i)
     .optional(),
   replay: z.enum(REPLAY_STATES).optional(),
+  /** The runner's acceptance evidence row, for a ticket with an acceptance profile. */
+  acceptance_evidence: z.string().trim().min(1).max(200).optional(),
 });
 export type TesterVerdictBody = z.infer<typeof testerVerdictBody>;
 

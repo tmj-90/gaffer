@@ -7,6 +7,13 @@ import type {
   Ticket,
   WorkEvent,
 } from "../domain/types.js";
+import { parseTestContract } from "../domain/types.js";
+import {
+  ACCEPTANCE_EVIDENCE_PREFIX,
+  contractProfile,
+  EXECUTABLE_PROFILES,
+  type AcceptanceProfile,
+} from "../domain/acceptanceProfile.js";
 import { listEvents } from "../events/eventWriter.js";
 import { testerOffNotice, type TesterLaneDecision } from "../util/testingLane.js";
 import { currentJudgment, type RecordedEvalJudgment } from "./evalJudgment.js";
@@ -255,8 +262,31 @@ export interface ReviewPacket {
   ci: PacketCi | null;
   /** The run logs that cover this delivery's steps (see PacketRunLink). */
   run_links: PacketRunLink[];
+  /**
+   * RUNTIME ACCEPTANCE (Release C): the ticket's acceptance profile and the runner's latest
+   * record of running the change as a user meets it (the CLI transcript, the API probes).
+   */
+  runtime_acceptance: PacketRuntimeAcceptance;
   /** INSPECTABLE CONFIDENCE: the deterministic facts that back this delivery, or do not. */
   backing: PacketBacking[];
+}
+
+/** RUNTIME ACCEPTANCE: the profile and the runner's latest acceptance record. */
+export interface PacketRuntimeAcceptance {
+  profile: AcceptanceProfile;
+  /** The runner can run this profile today (cli, api). */
+  executable: boolean;
+  /** A person registered the commands the runner runs for it. */
+  spec_registered: boolean;
+  latest: {
+    evidence_id: string;
+    kind: string;
+    passed: boolean;
+    tested_commit: string;
+    cases: number;
+    reason: string | null;
+    at: string;
+  } | null;
 }
 
 /**
@@ -781,7 +811,7 @@ function readIntent(ticket: Ticket): string | null {
  * backed". Each reads a fact the packet already holds; nothing is weighted or scored, and
  * nothing here holds or asks (the flags list stays the one list of asks).
  */
-function readBacking(p: Omit<ReviewPacket, "backing">, evidence: Evidence[]): PacketBacking[] {
+function readBacking(p: Omit<ReviewPacket, "backing">, _evidence: Evidence[]): PacketBacking[] {
   const out: PacketBacking[] = [];
   const add = (fact: string, holds: boolean, source: string, cell: PacketBacking["cell"]) =>
     out.push({ fact, holds, source, cell });
@@ -957,19 +987,85 @@ function readBacking(p: Omit<ReviewPacket, "backing">, evidence: Evidence[]): Pa
       "ci",
     );
 
-  // Runtime evidence: nothing yet runs the change as a user would (Release C).
-  const runtime = evidence.some(
-    (e) => e.recorded_by_actor_type === RUNNER && e.evidence_type === "screenshot",
-  );
-  add(
-    runtime
-      ? "A runner-recorded screenshot of the change is on record"
-      : "No browser, API or CLI check of the running change is recorded",
-    runtime,
-    "runner-recorded runtime evidence",
-    "evidence",
-  );
+  // RUNTIME ACCEPTANCE (Release C): the runner ran the change as a user meets it.
+  const rt = p.runtime_acceptance;
+  const what = rt.profile === "cli" ? "cli transcript" : "api probes";
+  if (rt.profile === "unit")
+    add(
+      "No runtime profile for this ticket: nothing ran the change as a user meets it (CLI, API, browser)",
+      false,
+      "the test contract's acceptance profile",
+      "evidence",
+    );
+  else if (!rt.executable)
+    add(
+      `The ${rt.profile} acceptance profile is not run by the runner yet, so an automated PASS cannot be recorded: the verdict is yours`,
+      false,
+      "the test contract's acceptance profile",
+      "evidence",
+    );
+  else if (!rt.latest)
+    add(
+      rt.spec_registered
+        ? `Runtime acceptance: no ${what} recorded yet`
+        : `Runtime acceptance: no commands are registered for the ${rt.profile} profile, so the tester's PASS is held (register them under Acceptance profile)`,
+      false,
+      "the runner's acceptance evidence (system)",
+      "evidence",
+    );
+  else {
+    const onHead = p.candidate.some((c) =>
+      sameCommit(rt.latest?.tested_commit ?? null, c.diff_head),
+    );
+    add(
+      rt.latest.passed
+        ? onHead || p.candidate.length === 0
+          ? `Runtime acceptance: ${rt.profile === "cli" ? "cli transcript replayed" : "api probes passed"} on ${short(rt.latest.tested_commit)} (${rt.latest.cases} ${rt.profile === "cli" ? "commands" : "probes"})`
+          : `Runtime acceptance passed on ${short(rt.latest.tested_commit)}, not the head`
+        : `Runtime acceptance: the ${what} did not pass on ${short(rt.latest.tested_commit)}${rt.latest.reason ? ` (${rt.latest.reason})` : ""}`,
+      rt.latest.passed && (onHead || p.candidate.length === 0),
+      "the runner's acceptance evidence (system)",
+      "evidence",
+    );
+  }
   return out;
+}
+
+/** The ticket's acceptance profile and the runner's latest acceptance record. */
+function readRuntimeAcceptance(ticket: Ticket, rows: Evidence[]): PacketRuntimeAcceptance {
+  const contract = parseTestContract(ticket.test_contract);
+  const profile = contractProfile(contract);
+  const row = rows
+    .filter(
+      (e) =>
+        e.recorded_by_actor_type === RUNNER &&
+        String(e.uri ?? "").startsWith(ACCEPTANCE_EVIDENCE_PREFIX),
+    )
+    .pop();
+  let latest: PacketRuntimeAcceptance["latest"] = null;
+  if (row) {
+    try {
+      const pl = JSON.parse(row.payload_json ?? "{}") as Record<string, unknown>;
+      if (pl.profile === profile)
+        latest = {
+          evidence_id: row.id,
+          kind: String(pl.kind ?? ""),
+          passed: pl.passed === true,
+          tested_commit: String(pl.tested_commit ?? ""),
+          cases: Array.isArray(pl.cases) ? pl.cases.length : 0,
+          reason: typeof pl.reason === "string" ? pl.reason.slice(0, 300) : null,
+          at: row.created_at,
+        };
+    } catch {
+      latest = null;
+    }
+  }
+  return {
+    profile,
+    executable: EXECUTABLE_PROFILES.includes(profile),
+    spec_registered: !!contract?.profile_spec,
+    latest,
+  };
 }
 
 export class ReviewPacketService {
@@ -1078,6 +1174,7 @@ export class ReviewPacketService {
       candidate,
       ci,
       run_links: runLinks,
+      runtime_acceptance: readRuntimeAcceptance(ticket, rows),
     };
     return { ...base, backing: readBacking(base, rows) };
   }

@@ -756,15 +756,35 @@ export const SHARED_RESPONSE_COMPONENTS = [
   "RiskKind",
 ] as const;
 
+const testContractShape = z.object({
+  changed_surfaces: z.array(str),
+  runtime_deps: z.array(str),
+  env_vars: z.array(str),
+  run_command: str,
+  harness_ready: z.boolean(),
+  profile: z
+    .enum(["cli", "api", "web", "migration", "performance"])
+    .optional()
+    .describe("The acceptance profile; absent means unit."),
+  profile_spec: z
+    .record(z.string(), z.unknown())
+    .nullable()
+    .optional()
+    .describe("The commands the runner runs for the profile, set by a person."),
+});
+
 export const TestContractSet = z
   .object({
-    test_contract: z.object({
-      changed_surfaces: z.array(str),
-      runtime_deps: z.array(str),
-      env_vars: z.array(str),
-      run_command: str,
-      harness_ready: z.boolean(),
-    }),
+    test_contract: testContractShape,
+  })
+  .strict();
+
+export const AcceptanceProfileSet = z
+  .object({
+    ticket_id: str,
+    profile: z.enum(["unit", "cli", "api", "web", "migration", "performance"]),
+    test_contract: testContractShape,
+    event_id: eventId,
   })
   .strict();
 

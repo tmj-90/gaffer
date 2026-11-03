@@ -1,4 +1,5 @@
 import type { Command } from "commander";
+import { readFileSync } from "node:fs";
 
 import type { Actor } from "../../domain/types.js";
 import {
@@ -797,6 +798,58 @@ export function registerTicket(program: Command): void {
     });
 
   ticket
+    .command("acceptance-profile <ref>")
+    .description(
+      "Set how the tester's PASS is proven: unit (default), cli, api (the runner runs the " +
+        "commands you register here), or web | migration | performance (defined, not run " +
+        "yet: a PASS needs your verdict). Human or admin only; refused once the ticket is " +
+        "in testing (CONTRACT_FROZEN).",
+    )
+    .requiredOption("--profile <name>", "unit | cli | api | web | migration | performance")
+    .option(
+      "--spec <json>",
+      "the profile spec as JSON (cli: {cases:[...]}, api: {boot_argv, health_path, probes:[...]})",
+    )
+    .option("--spec-file <path>", "read the profile spec from a JSON file")
+    .option("--admin", "act as an admin actor", false)
+    .action((ref, opts, cmd) => {
+      let spec: unknown;
+      const text =
+        opts.specFile !== undefined
+          ? readFileSync(String(opts.specFile), "utf8")
+          : opts.spec !== undefined
+            ? String(opts.spec)
+            : undefined;
+      if (text !== undefined) {
+        try {
+          spec = JSON.parse(text);
+        } catch {
+          throw new DispatchError("VALIDATION_ERROR", "The profile spec is not valid JSON.");
+        }
+      }
+      const wg = open(cmd.optsWithGlobals());
+      const actor: Actor = opts.admin ? { type: "admin", id: cliUserId() } : cliActor();
+      const res = wg.setAcceptanceProfile(ref, { profile: opts.profile, spec }, actor);
+      printJson({ ok: true, ...res });
+      wg.db.close();
+    });
+
+  ticket
+    .command("acceptance-evidence <ref>")
+    .description(
+      "Record the runner's acceptance evidence (a CLI transcript or the API probe " +
+        "responses) for the tested commit. The runner's to call (system).",
+    )
+    .requiredOption("--payload-file <path>", "the evidence payload JSON (at most 64 KB)")
+    .action((ref, opts, cmd) => {
+      const payload = readFileSync(String(opts.payloadFile), "utf8");
+      const wg = open(cmd.optsWithGlobals());
+      const res = wg.recordAcceptanceEvidence(ref, payload, { type: "system" });
+      printJson({ ok: true, ...res });
+      wg.db.close();
+    });
+
+  ticket
     .command("tester-pass <ref>")
     .description("Record an independent tester PASS (in_testing -> ready_for_merge)")
     .requiredOption("--summary <text>", "passing test-result summary (recorded as evidence)")
@@ -817,6 +870,10 @@ export function registerTicket(program: Command): void {
       "--tests-commit <sha|none>",
       "the commit holding the test files this tester run saved (gaffer-tests/ticket-<n>), or none",
     )
+    .option(
+      "--acceptance-evidence <id>",
+      "the runner's acceptance evidence row for a ticket with an acceptance profile (cli, api)",
+    )
     .option("--as <actor>", "actor type: agent|human|admin|system", "agent")
     .action((ref, opts, cmd) => {
       const actor = testerActor(opts.as);
@@ -830,6 +887,9 @@ export function registerTicket(program: Command): void {
           ...(opts.contractHash ? { contract_hash: String(opts.contractHash) } : {}),
           ...(opts.replay ? { replay: String(opts.replay) } : {}),
           ...(opts.testsCommit ? { tests_commit: String(opts.testsCommit) } : {}),
+          ...(opts.acceptanceEvidence
+            ? { acceptance_evidence: String(opts.acceptanceEvidence) }
+            : {}),
         },
         actor,
       );

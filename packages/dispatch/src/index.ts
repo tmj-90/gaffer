@@ -29,6 +29,7 @@ export {
 } from "./repositories/scopeRepoRepository.js";
 export { openDatabase, migrate, inTransaction, type Db } from "./db/connection.js";
 export * from "./domain/types.js";
+export * from "./domain/acceptanceProfile.js";
 export {
   evaluatePolicy,
   type PolicyGate,

@@ -625,8 +625,14 @@ export function suggestLore(
   input: AddLoreInput,
   opts?: { autoApprove?: boolean },
 ): Lore {
-  return insertLore(db, input, opts?.autoApprove ? "active" : "draft");
+  // A REVIEW RULE (tag `review-rule`) is proposed from a person's repeated review feedback
+  // (Gaffer's dispatch, D6): the person approves the rule, so auto-approve never applies.
+  const reviewRule = (input.tags ?? []).some((t) => normaliseTag(t) === REVIEW_RULE_TAG);
+  return insertLore(db, input, opts?.autoApprove && !reviewRule ? "active" : "draft");
 }
+
+/** The tag that marks a proposed review rule: always a draft until a person approves it. */
+export const REVIEW_RULE_TAG = "review-rule";
 
 /**
  * Input for `reportConflict`: an agent has observed something in code

@@ -623,12 +623,13 @@ export function registerLoreTools(server: McpServer, db: Database): void {
         const out = {
           id: lore.id,
           status: lore.status,
-          message: autoApprove
-            ? "Record approved and active."
-            : "Draft created. A human will review with `memory review` and " +
-              "promote with `memory approve " +
-              lore.id +
-              "`.",
+          message:
+            lore.status === "active"
+              ? "Record approved and active."
+              : "Draft created. A human will review with `memory review` and " +
+                "promote with `memory approve " +
+                lore.id +
+                "`.",
           // Duplicate titles/summaries are AGENT-authored (drafts included) — wrap them
           // in the untrusted envelope + ship the notice, exactly like search_lore, so a
           // planted near-dupe can't inject instructions into the suggesting agent.

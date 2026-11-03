@@ -168,7 +168,10 @@ export function parseProfileSpec(
  * derivation, recorded as `profile_seeded_from: "title"`): a title naming a CLI or a
  * command-line verb -> cli; one naming an endpoint, a REST or HTTP API -> api. Only the
  * runnable profiles are suggested, and never a spec: the commands are a person's to
- * register. Off when GAFFER_ACCEPTANCE_PROFILE_SEED is 0.
+ * register. OPT-IN: only when GAFFER_ACCEPTANCE_PROFILE_SEED is on (1, true, yes, on).
+ * A profile with no registered commands holds the tester's PASS until a person registers
+ * them, so seeding by default would stall every CLI or endpoint ticket for a person
+ * (an autonomous run never moves on); the operator chooses that trade.
  */
 export function profileFromTitle(
   title: string,
@@ -178,7 +181,7 @@ export function profileFromTitle(
     env === process.env
       ? process.env.GAFFER_ACCEPTANCE_PROFILE_SEED
       : env.GAFFER_ACCEPTANCE_PROFILE_SEED;
-  if (/^(0|false|no|off)$/i.test(String(seed ?? "").trim())) return null;
+  if (!/^(1|true|yes|on)$/i.test(String(seed ?? "").trim())) return null;
   const t = String(title ?? "");
   if (/\b(cli|command[- ]line|sub-?commands?)\b/i.test(t)) return "cli";
   if (/\b(endpoints?|rest(ful)? api|http api|api routes?|api endpoints?)\b/i.test(t)) return "api";

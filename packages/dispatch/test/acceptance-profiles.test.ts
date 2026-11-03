@@ -122,32 +122,48 @@ const pass = (wg: Dispatch, id: string, extra: Record<string, unknown> = {}) =>
   );
 
 describe("C0: the profile contract", () => {
-  it("a title naming a CLI or an endpoint seeds the profile (never the commands)", () => {
-    expect(profileFromTitle("Add a --json flag to the export CLI")).toBe("cli");
-    expect(profileFromTitle("New sub-command: gaffer doctor")).toBe("cli");
-    expect(profileFromTitle("Rate-limit the /login endpoint")).toBe("api");
-    expect(profileFromTitle("Expose the REST API for invoices")).toBe("api");
-    expect(profileFromTitle("Fix the typo on the settings page")).toBeNull();
+  it("with the seed switched on, a title naming a CLI or an endpoint seeds the profile (never the commands)", () => {
+    const on = { GAFFER_ACCEPTANCE_PROFILE_SEED: "1" };
+    expect(profileFromTitle("Add a --json flag to the export CLI", on)).toBe("cli");
+    expect(profileFromTitle("New sub-command: gaffer doctor", on)).toBe("cli");
+    expect(profileFromTitle("Rate-limit the /login endpoint", on)).toBe("api");
+    expect(profileFromTitle("Expose the REST API for invoices", on)).toBe("api");
+    expect(profileFromTitle("Fix the typo on the settings page", on)).toBeNull();
+    // Opt-in: unset or 0 seeds nothing (a seeded profile with no commands holds a PASS).
+    expect(profileFromTitle("Add a CLI", {})).toBeNull();
     expect(profileFromTitle("Add a CLI", { GAFFER_ACCEPTANCE_PROFILE_SEED: "0" })).toBeNull();
-    const c = seededTestContract("Add a --json flag to the export CLI");
+    const c = seededTestContract("Add a --json flag to the export CLI", on);
     expect(c.profile).toBe("cli");
     expect(c.profile_spec).toBeUndefined();
+    expect("profile" in seededTestContract("Add a --json flag to the export CLI", {})).toBe(false);
     // An unprofiled title keeps today's contract byte for byte (no profile key).
-    expect("profile" in seededTestContract("Show done tasks")).toBe(false);
+    expect("profile" in seededTestContract("Show done tasks", on)).toBe(false);
   });
 
-  it("setTestable seeds the title's profile and says so on the event", () => {
-    const wg = freshWg();
-    const id = inReview(wg, "Add a --json flag to the export CLI");
-    expect(parseTestContract(wg.view(id).ticket.test_contract)!.profile).toBe("cli");
-    const ev = listEvents(wg.db, "ticket", id).find(
-      (e) => e.event_type === "ticket.test_contract_set",
-    );
-    expect(JSON.parse(ev!.payload_json ?? "{}")).toMatchObject({
-      profile: "cli",
-      profile_seeded_from: "title",
-    });
-    wg.db.close();
+  it("setTestable seeds the title's profile when switched on, and says so on the event", () => {
+    const prev = process.env.GAFFER_ACCEPTANCE_PROFILE_SEED;
+    process.env.GAFFER_ACCEPTANCE_PROFILE_SEED = "1";
+    try {
+      const wg = freshWg();
+      const id = inReview(wg, "Add a --json flag to the export CLI");
+      expect(parseTestContract(wg.view(id).ticket.test_contract)!.profile).toBe("cli");
+      const ev = listEvents(wg.db, "ticket", id).find(
+        (e) => e.event_type === "ticket.test_contract_set",
+      );
+      expect(JSON.parse(ev!.payload_json ?? "{}")).toMatchObject({
+        profile: "cli",
+        profile_seeded_from: "title",
+      });
+      wg.db.close();
+    } finally {
+      if (prev === undefined) delete process.env.GAFFER_ACCEPTANCE_PROFILE_SEED;
+      else process.env.GAFFER_ACCEPTANCE_PROFILE_SEED = prev;
+    }
+    // Off (the default): the same title seeds today's unit contract.
+    const wg2 = freshWg();
+    const id2 = inReview(wg2, "Add a --json flag to the export CLI");
+    expect(parseTestContract(wg2.view(id2).ticket.test_contract)!.profile).toBeUndefined();
+    wg2.db.close();
   });
 
   it("a person sets the profile and its spec; the contract hash moves, the dossier hash does not", () => {

@@ -1107,9 +1107,10 @@ starts. For example:
 { "cases": [ { "argv": ["node", "bin/cli.mjs", "--version"], "expect": { "exit": 0, "stdout": ["1.2.0"] } } ] }
 ```
 
-A planned or newly testable ticket whose title names a CLI, a command-line verb, an
-endpoint or a REST or HTTP API gets that profile in its seeded contract (without
-commands; `GAFFER_ACCEPTANCE_PROFILE_SEED=0` turns this off). The delivery agent can
+With `GAFFER_ACCEPTANCE_PROFILE_SEED=1` (off by default), a planned or newly testable
+ticket whose title names a CLI, a command-line verb, an endpoint or a REST or HTTP API
+gets that profile in its seeded contract, without commands: such a ticket then waits in
+Testing for you to register them, so an unattended run stops at each one. The delivery agent can
 raise a unit contract to a profile with its MCP `set_test_contract` tool, but never
 registers commands and never lowers or changes a profile you set. A profile with no
 commands registered holds the tester's PASS until you register them (the note says

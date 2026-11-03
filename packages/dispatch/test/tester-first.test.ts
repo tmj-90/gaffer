@@ -378,6 +378,9 @@ describe("tester first: the adaptive lane default", () => {
         mode: "auto",
         repos_without_test_command: ["web"],
         notices: ["independent tester off: no test command registered for web"],
+        // lane-hook R1: no runner record yet, so nothing to compare.
+        runner: null,
+        runner_differs: false,
       });
     } finally {
       if (saved !== undefined) process.env.GAFFER_TESTING = saved;

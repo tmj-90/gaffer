@@ -396,3 +396,60 @@ describe("web: Health shows the code index's coverage and the callers row's shar
     expect(t).toContain("Index coverage: Memory is not configured.");
   });
 });
+
+describe("Health: the pre-work scout card", () => {
+  beforeEach(() => {
+    stubFetch();
+    mountShell();
+    vi.resetModules();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    document.body.innerHTML = "";
+    healthPayload = FULL_HEALTH;
+  });
+
+  it("coverage, model scout runs and cost, and first-pass split by what the scout found", async () => {
+    healthPayload = {
+      ...(FULL_HEALTH as object),
+      scout: {
+        measure: "scout_coverage",
+        attempts: 9,
+        tickets: 7,
+        with_index_items: 5,
+        named_only: 3,
+        empty: 1,
+        index_status: { fresh: 6, missing: 3 },
+        risk_raised: 2,
+        model_scout: { runs: 2, kept_files: 5, dropped: 1, cost_usd: 0.0321, cost_unknown: 1 },
+        first_pass: {
+          index_items: { done: 4, first_pass: 3, rate_pct: 75 },
+          named_only: { done: 2, first_pass: 1, rate_pct: 50 },
+          nothing_found: { done: 0, first_pass: 0, rate_pct: null },
+          no_record: { done: 10, first_pass: 6, rate_pct: 60 },
+        },
+        limits: ["the arms are observational"],
+      },
+    };
+    await loadApp();
+    const panel = document.querySelector('[aria-label="Pre-work scout"]')!;
+    expect(panel).not.toBeNull();
+    const t = panel.textContent!.replace(/\s+/g, " ");
+    expect(t).toContain(
+      "9 delivery attempts scouted on 7 tickets: the code index added files in 5, named files and stack frames only in 3, nothing found in 1. The risk was raised in 2.",
+    );
+    expect(t).toContain(
+      "Model scout: 2 runs, 5 files kept, 1 dropped as not in the checkout, $0.0321 (1 of unknown cost).",
+    );
+    expect(t).toContain("Index added files: 75% first-pass (3 of 4 done tickets)");
+    expect(t).toContain("Nothing found: n/a first-pass (0 of 0 done tickets)");
+    expect(t).toContain("Not scouted: 60% first-pass (6 of 10 done tickets)");
+    expect(t).not.toMatch(/recommend|score|confiden/i);
+  });
+
+  it("an older server sends no scout figures: no card", async () => {
+    healthPayload = { ...(FULL_HEALTH as object) };
+    await loadApp();
+    expect(document.querySelector('[aria-label="Pre-work scout"]')).toBeNull();
+  });
+});

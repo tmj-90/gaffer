@@ -13956,6 +13956,52 @@ function codeIndexCard(health) {
 }
 
 /**
+ * PRE-WORK SCOUT (delta gap 3): what the runner's scout gave the delivery attempts (items
+ * from the code index vs named only, risk raised, model scout runs and their cost) and
+ * first-pass acceptance split by what it found. Counts as served, no recommendation;
+ * null when the server sends none.
+ */
+function scoutCard(health) {
+  const sc = health.scout || null;
+  if (!sc) return null;
+  const pct = (v) => (v === null || v === undefined ? "n/a" : `${v}%`);
+  const fp = sc.first_pass || {};
+  const arm = (k, label) => {
+    const c = fp[k] || { done: 0, first_pass: 0, rate_pct: null };
+    return el("li", { dataset: { arm: k } }, [
+      el("strong", {}, label),
+      el(
+        "span",
+        {},
+        ` ${pct(c.rate_pct)} first-pass (${c.first_pass} of ${plural(c.done, "done ticket")})`,
+      ),
+    ]);
+  };
+  const ms = sc.model_scout || { runs: 0 };
+  const usd = "$" + Number(ms.cost_usd || 0).toFixed(4);
+  const head = sc.attempts
+    ? `${plural(sc.attempts, "delivery attempt")} scouted on ${plural(sc.tickets, "ticket")}: the code index added files in ${sc.with_index_items}, named files and stack frames only in ${sc.named_only}, nothing found in ${sc.empty}. The risk was raised in ${sc.risk_raised}.`
+    : "No delivery has been scouted yet (the runner scouts before each delivery).";
+  const model = ms.runs
+    ? `Model scout: ${plural(ms.runs, "run")}, ${plural(ms.kept_files, "file")} kept, ${ms.dropped} dropped as not in the checkout, ${usd}${ms.cost_unknown ? ` (${ms.cost_unknown} of unknown cost)` : ""}.`
+    : "Model scout: no run (it is off unless GAFFER_SCOUT is auto or on).";
+  return el("section", { class: "card panel scout-panel", "aria-label": "Pre-work scout" }, [
+    panelHead("Pre-work scout", "what each delivery started with, and how it went", null, {
+      kit: "ink",
+    }),
+    el("p", { class: "scout-coverage" }, head),
+    el("p", { class: "scout-model dim" }, model),
+    el("ul", { class: "lane-value-list scout-first-pass" }, [
+      arm("index_items", "Index added files:"),
+      arm("named_only", "Named only:"),
+      arm("nothing_found", "Nothing found:"),
+      arm("no_record", "Not scouted:"),
+    ]),
+    el("p", { class: "lane-value-foot" }, (sc.limits || []).join("; ")),
+  ]);
+}
+
+/**
  * Factory Health / ROI surface. Reads the ONE authoritative /api/health envelope
  * and renders the ROI KPI row (cost/feature, skill hit-rate, spend-by-kind,
  * rework-cost share, measured-coverage %) plus the two newly-wired dead sources:
@@ -14244,6 +14290,8 @@ async function renderHealth() {
   if (lanes) wrap.appendChild(lanes);
   const codeIndex = codeIndexCard(health);
   if (codeIndex) wrap.appendChild(codeIndex);
+  const scout = scoutCard(health);
+  if (scout) wrap.appendChild(scout);
   if (bouncing) bouncing.id = "health-injuries";
   const wait = treatment ? waitingNote(treatment._waiting) : null;
   if (wait && devFlow) devFlow.appendChild(wait);

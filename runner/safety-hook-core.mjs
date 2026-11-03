@@ -3158,6 +3158,7 @@ const CP_SINGLE_VERBS = new Set([
   "ci-result",
   "eval-score",
   "lane-verdict",
+  "scout-record",
   "tester-route",
   "attach-evidence",
   "wont-do",

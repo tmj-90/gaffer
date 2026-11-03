@@ -1,3 +1,4 @@
+import { SCOUT_RECORDED_EVENT, scoutRaisedFact, type ScoutRecord } from "./scoutRecord.js";
 import type { Db } from "../db/connection.js";
 import type {
   AcStatus,
@@ -206,7 +207,7 @@ export interface PacketBacking {
   fact: string;
   holds: boolean;
   source: string;
-  cell: "candidate" | "gates" | "tester" | "ci" | "criteria" | "integrity" | "evidence";
+  cell: "candidate" | "gates" | "tester" | "ci" | "criteria" | "integrity" | "evidence" | "risk";
 }
 
 export interface ReviewPacket {
@@ -247,6 +248,12 @@ export interface ReviewPacket {
    * model's opinion of the diff, advisory, read by no gate. The Review view says so.
    */
   judge: RecordedEvalJudgment | null;
+  /**
+   * PRE-WORK SCOUT: the runner's scout record for the latest delivery attempt
+   * (`ticket.scout_recorded`): the risk it classified (it can only raise the declared
+   * level), the signals that raised it and its coverage. null when none was recorded.
+   */
+  scout: ScoutRecord | null;
   /** INTENT: what was asked, the ticket's description as the human wrote it (null when blank). */
   intent: string | null;
   /** SAME CANDIDATE: per active write repo, the gated, shown, tested and pinned commits. */
@@ -311,6 +318,21 @@ function payloadOf(e: { payload_json: string | null }): Record<string, unknown> 
   } catch {
     return {};
   }
+}
+
+/** The latest `ticket.scout_recorded` record (the scout runs before each attempt). */
+function latestScout(
+  events: ReadonlyArray<{ event_type: string; payload_json: string | null }>,
+): ScoutRecord | null {
+  for (let k = events.length - 1; k >= 0; k--) {
+    const e = events[k]!;
+    if (e.event_type !== SCOUT_RECORDED_EVENT) continue;
+    const p = payloadOf(e);
+    return typeof p.effective === "string" && typeof p.declared === "string"
+      ? (p as unknown as ScoutRecord)
+      : null;
+  }
+  return null;
 }
 
 const str = (v: unknown): string | null => (typeof v === "string" && v !== "" ? v : null);
@@ -957,6 +979,17 @@ function readBacking(p: Omit<ReviewPacket, "backing">, evidence: Evidence[]): Pa
       "ci",
     );
 
+  // PRE-WORK SCOUT: a risk the runner raised before delivery, with the signals that raised
+  // it (path patterns, the ticket text, the code index). Not backed: it says where to look.
+  const raised = scoutRaisedFact(p.scout);
+  if (raised)
+    add(
+      raised,
+      false,
+      "the runner's scout before delivery (ticket.scout_recorded): path patterns, ticket text, code index",
+      "risk",
+    );
+
   // Runtime evidence: nothing yet runs the change as a user would (Release C).
   const runtime = evidence.some(
     (e) => e.recorded_by_actor_type === RUNNER && e.evidence_type === "screenshot",
@@ -1074,6 +1107,7 @@ export class ReviewPacketService {
         .map((ac) => readCriterion(ac, rows, sentBackAt)),
       disagreements,
       judge: currentJudgment(events, sinceReview),
+      scout: latestScout(events),
       intent: readIntent(ticket),
       candidate,
       ci,

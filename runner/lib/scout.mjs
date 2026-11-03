@@ -26,9 +26,11 @@
 //        --nb2 <file> [--base-sha S] [--attempt N] [--rf <file>]   → the packet JSON
 //   node scout.mjs merge-model --packet <file> --reply <file> --files <file>
 //        --repo <dir> --base-sha S      → the packet JSON with "scout suggested" items
+//   node scout.mjs with-risk --packet <file> --risk <file>  → the packet with .risk
 //   node scout.mjs summary --packet <file>     → the prompt input (compact JSON)
-//   node scout.mjs selection --packet <file> --ticket N --skills S --lenses L
-//        --model M --cards <file>             → one context-selection.jsonl line
+//   node scout.mjs selection --packet <file> --ticket N --attempt K --skills S
+//        --lenses L --model M --route <route json> --cards <file-cards block>
+//        → one context-selection.jsonl line
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
@@ -40,7 +42,9 @@ export const MAX_NOTES = 10;
 
 const SAFE_PATH = /^[A-Za-z0-9_][A-Za-z0-9_./@+-]{0,299}$/;
 const SAFE_SYM = /^[A-Za-z_$][\w$]{1,63}$/;
-export const isSafePath = (p) => typeof p === "string" && SAFE_PATH.test(p) && !p.includes("..");
+const THIRD_PARTY = /(^|\/)(node_modules|vendor|third_party|site-packages|dist|build)\//;
+export const isSafePath = (p) =>
+  typeof p === "string" && SAFE_PATH.test(p) && !p.includes("..") && !THIRD_PARTY.test(p);
 export const isSafeSymbol = (s) => typeof s === "string" && SAFE_SYM.test(s);
 
 // ── Path classes (shared with lib/risk-classify.mjs) ──────────────────────────
@@ -177,9 +181,17 @@ export function seeds({ show, named, files }) {
 export function hop2Paths(nb1) {
   const out = [];
   if (!nb1 || !Array.isArray(nb1.items) || !listable(nb1)) return out;
+  // A seed was asked about already: its importers are first-hop, not second.
+  const asked = new Set(nb1.items.map((it) => it.path).filter(Boolean));
   for (const it of nb1.items)
     for (const c of it.callers || [])
-      if (isSafePath(c.path) && !out.includes(c.path) && out.length < MAX_HOP2) out.push(c.path);
+      if (
+        isSafePath(c.path) &&
+        !asked.has(c.path) &&
+        !out.includes(c.path) &&
+        out.length < MAX_HOP2
+      )
+        out.push(c.path);
   return out;
 }
 
@@ -637,26 +649,37 @@ async function main(argv) {
       break;
     }
     case "summary": {
-      const s = promptSummary(jsonMaybe(opt.packet), jsonMaybe(opt.risk));
+      const packet = jsonMaybe(opt.packet);
+      const s = promptSummary(packet, packet ? packet.risk : null);
       if (s) outJson(s);
       break;
     }
     case "selection": {
       const a = Number.parseInt(opt.attempt ?? "", 10);
       const route = jsonMaybe(opt.route);
+      const cardPaths = [];
+      for (const ln of readMaybe(opt.cards).split("\n")) {
+        const m = ln.match(/^ {2}- \[[^\]]*\] (.+?)(?: — .*)?$/);
+        if (m && m[1].trim() && !cardPaths.includes(m[1].trim())) cardPaths.push(m[1].trim());
+      }
       outJson(
         selectionLine({
           packet: jsonMaybe(opt.packet),
-          risk: jsonMaybe(opt.risk),
+          risk: jsonMaybe(opt.packet)?.risk ?? null,
           ticket: opt.ticket,
           attempt: Number.isFinite(a) ? a : null,
           skills: opt.skills,
           lenses: opt.lenses,
           model: opt.model,
-          routeReasons: Array.isArray(route) ? route : [],
-          cardPaths: readMaybe(opt.cards).split("\n").filter(Boolean),
+          routeReasons: route && Array.isArray(route.reasons) ? route.reasons : [],
+          cardPaths,
         }),
       );
+      break;
+    }
+    case "with-risk": {
+      const packet = jsonMaybe(opt.packet);
+      if (packet) outJson({ ...packet, risk: jsonMaybe(opt.risk) });
       break;
     }
     default:

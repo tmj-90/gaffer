@@ -19,7 +19,7 @@ computed from other knobs at runtime.
 
 | Metric | Count |
 |---|---|
-| Knobs with a runner default | 152 |
+| Knobs with a runner default | 156 |
 | Knobs editable in the dashboard | 58 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
 | Env reads in code with no default and no UI entry | 80 |
@@ -308,6 +308,15 @@ computed from other knobs at runtime.
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
 | `GAFFER_POLL_WAIT_TIMEOUT` | _derived_ (`$(( ${GAFFER_TICK_OUTER_TIMEOUT:-5520} + 60 ))`) |  | runner | Seconds a live Poll waits for the Poll already running before it refuses. |
+
+### lib/scout.sh
+
+| Variable | Default | UI | Read by | Notes |
+|---|---|---|---|---|
+| `GAFFER_SCOUT_PACKET` | `1` |  | runner | 1 = build the deterministic scout packet before each delivery (named files, stack frames, the code index's importers and tests); 0 = off |
+| `GAFFER_SCOUT` | `off` |  | runner | The bounded MODEL scout: off (default), auto (only when the effective risk is medium or higher), on (every delivery). One read-only paid call (kind scout) |
+| `GAFFER_SCOUT_MAX_TURNS` | `6` |  | runner | Turn cap of the model scout's read-only call |
+| `GAFFER_SCOUT_MODEL_FLAG` | _(empty)_ |  | runner | The model scout's model flag (e.g. "--model <id>"); empty = the router's scout phase (cheap tier) |
 
 ### lib/skills-mount.sh
 

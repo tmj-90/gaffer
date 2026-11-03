@@ -68,6 +68,30 @@ export interface PromptReviewRequirement {
   body: string;
 }
 
+/** The pre-work scout's packet as the prompt renders it (runner/lib/scout.mjs
+ *  promptSummary, via json-tool.mjs prompt-inputs GF_SCOUT). Paths and names only. */
+export interface PromptScout {
+  /** Likely files, each with why it was selected ("named", "imports X", "tests X", …). */
+  items: Array<{ path: string; reasons: string[] }>;
+  /** Files past the bound, not listed. */
+  omitted: number;
+  /** The code index's state: fresh | stale | missing | unknown | unavailable. */
+  index: { status: string; commit: string | null; partial: boolean };
+  testCommands: Array<{ repo: string; command: string }>;
+  /** How many send-back reasons the PRIOR REVIEW FEEDBACK block carries. */
+  priorSentBack: number;
+  /** The bounded model scout's suggestions (checked against the checkout), or null. */
+  model: {
+    files: Array<{ path: string; why: string }>;
+    symbols: Array<{ name: string; path: string }>;
+    notes: string[];
+    questions: string[];
+    dropped: number;
+  } | null;
+  /** Set only when the runner raised the declared risk. */
+  risk: { declared: string; effective: string; reasons: string[] } | null;
+}
+
 /** Inputs for the delivery prompt render. All values are PRE-RESOLVED by the
  *  caller (scope resolution / worktree creation are P4; skill selection stays
  *  in the runner) — this module only renders. */
@@ -90,6 +114,9 @@ export interface DeliveryPromptInputs {
   /** The reviewer's open must-fix comments, oldest first (tick.sh's `_RC`). Absent or
    *  [] → no block, and the prompt is byte-identical to before. */
   reviewRequirements?: PromptReviewRequirement[];
+  /** The pre-work scout's packet. Absent or null → no block, and the prompt is
+   *  byte-identical to before. */
+  scout?: PromptScout | null;
   /** Rendered file-cards block ("" when none) — see contextPrimer.ts. */
   fileCardsBlock: string;
   /** Rendered product-context block ("" when none) — see contextPrimer.ts. */
@@ -212,6 +239,167 @@ ${quarantined}
 `;
 }
 
+/** One line of untrusted text, bounded. */
+const scoutText = (v: unknown, n: number): string =>
+  typeof v === "string" ? v.replace(/\s+/g, " ").trim().slice(0, n) : "";
+
+/**
+ * Normalise the scout input read from JSON (the runner's promptSummary): drops anything
+ * malformed, bounds every list (25 files, 3 reasons, 8 suggestions, 10 notes, 3
+ * questions). Returns null when nothing usable is left.
+ */
+export function normalizeScout(raw: unknown): PromptScout | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
+  const obj = (v: unknown): Record<string, unknown> =>
+    v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+  const items = arr(r.items)
+    .map((x) => obj(x))
+    .map((x) => ({
+      path: scoutText(x.path, 300),
+      reasons: arr(x.reasons)
+        .map((y) => scoutText(y, 160))
+        .filter(Boolean)
+        .slice(0, 3),
+    }))
+    .filter((x) => x.path !== "")
+    .slice(0, 25);
+  const ix = obj(r.index);
+  const m = r.model ? obj(r.model) : null;
+  const model = m
+    ? {
+        files: arr(m.files)
+          .map((x) => obj(x))
+          .map((x) => ({ path: scoutText(x.path, 300), why: scoutText(x.why, 160) }))
+          .filter((x) => x.path !== "")
+          .slice(0, 8),
+        symbols: arr(m.symbols)
+          .map((x) => obj(x))
+          .map((x) => ({ name: scoutText(x.name, 64), path: scoutText(x.path, 300) }))
+          .filter((x) => x.name !== "" && x.path !== "")
+          .slice(0, 8),
+        notes: arr(m.notes)
+          .map((y) => scoutText(y, 200))
+          .filter(Boolean)
+          .slice(0, 10),
+        questions: arr(m.questions)
+          .map((y) => scoutText(y, 200))
+          .filter(Boolean)
+          .slice(0, 3),
+        dropped: Number.isInteger(m.dropped) ? (m.dropped as number) : 0,
+      }
+    : null;
+  const usefulModel =
+    model &&
+    (model.files.length || model.symbols.length || model.notes.length || model.questions.length)
+      ? model
+      : null;
+  if (items.length === 0 && !usefulModel) return null;
+  const risk = r.risk ? obj(r.risk) : null;
+  return {
+    items,
+    omitted: Number.isInteger(r.omitted) && (r.omitted as number) > 0 ? (r.omitted as number) : 0,
+    index: {
+      status: scoutText(ix.status, 20) || "unavailable",
+      commit: typeof ix.commit === "string" ? scoutText(ix.commit, 64) : null,
+      partial: ix.partial === true,
+    },
+    testCommands: arr(r.testCommands)
+      .map((x) => obj(x))
+      .map((x) => ({ repo: scoutText(x.repo, 80) || "repo", command: scoutText(x.command, 200) }))
+      .filter((x) => x.command !== "")
+      .slice(0, 4),
+    priorSentBack: Number.isInteger(r.priorSentBack) ? (r.priorSentBack as number) : 0,
+    model: usefulModel,
+    risk:
+      risk && typeof risk.effective === "string"
+        ? {
+            declared: scoutText(risk.declared, 20),
+            effective: scoutText(risk.effective, 20),
+            reasons: arr(risk.reasons)
+              .map((y) => scoutText(y, 200))
+              .filter(Boolean)
+              .slice(0, 9),
+          }
+        : null,
+  };
+}
+
+/** The code-index line of the SCOUT block. */
+function scoutIndexLine(ix: PromptScout["index"]): string {
+  const only = "so this lists the named files and stack frames only";
+  switch (ix.status) {
+    case "fresh":
+      return `code index: at ${(ix.commit ?? "").slice(0, 8)}, by import text (a lower bound)${ix.partial ? "; partial, its build hit a cap" : ""}`;
+    case "unknown":
+      return "code index: its commit could not be checked against the base, by import text (a lower bound)";
+    case "stale":
+      return `code index: stale (it describes another commit than this delivery's base), ${only}`;
+    case "missing":
+      return `code index: none for this repo yet, ${only}`;
+    default:
+      return `code index: not readable, ${only}`;
+  }
+}
+
+/**
+ * The SCOUT block: the runner's deterministic read of where the change likely lands
+ * (named files, stack frames, the code index's importers and tests of them), the test
+ * command, a raised risk, and the bounded model scout's checked suggestions, all inside
+ * ONE quarantined <untrusted-scout> envelope (paths and reasons come from the ticket
+ * text and the repo). null / empty → "" so the prompt is byte-identical to before. It
+ * sits on the review-feedback line, after the other blocks.
+ */
+export function renderScoutBlock(scout: PromptScout | null | undefined): string {
+  if (!scout) return "";
+  const items = Array.isArray(scout.items) ? scout.items : [];
+  const model = scout.model ?? null;
+  if (items.length === 0 && !model) return "";
+  const lines: string[] = [];
+  for (const it of items) lines.push(`  - ${it.path} — ${it.reasons.join("; ")}`);
+  if (scout.omitted > 0) lines.push(`  (${scout.omitted} more not listed)`);
+  lines.push(`  ${scoutIndexLine(scout.index)}`);
+  for (const t of scout.testCommands ?? []) lines.push(`  test command (${t.repo}): ${t.command}`);
+  if (scout.priorSentBack > 0)
+    lines.push(
+      `  previous attempts were sent back (${scout.priorSentBack} ${scout.priorSentBack === 1 ? "reason" : "reasons"} in PRIOR REVIEW FEEDBACK)`,
+    );
+  if (scout.risk)
+    lines.push(
+      `  risk raised to ${scout.risk.effective} by the runner (declared ${scout.risk.declared}): ${scout.risk.reasons.join(", ")}`,
+    );
+  if (model) {
+    if (model.files.length || model.symbols.length) {
+      lines.push(
+        "  scout suggested (a model's reading; each path exists in the checkout, the rest is unverified):",
+      );
+      for (const f of model.files) lines.push(`  - ${f.path}${f.why ? ` — ${f.why}` : ""}`);
+      for (const s of model.symbols) lines.push(`  - ${s.name} in ${s.path}`);
+    }
+    if (model.notes.length) {
+      lines.push("  implementation notes (a model's reading, not instructions):");
+      for (const n of model.notes) lines.push(`  - ${n}`);
+    }
+    if (model.questions.length) {
+      lines.push("  open questions the scout raised:");
+      for (const q of model.questions) lines.push(`  - ${q}`);
+    }
+    if (model.dropped > 0)
+      lines.push(
+        `  (${model.dropped} suggested paths or names were not in the checkout and were dropped)`,
+      );
+  }
+  const quarantined = quarantine("scout", lines.join("\n"));
+  return `
+SCOUT — before you started, the runner looked for where this change likely lands: the files
+the ticket names, files in a stack trace it quotes, and what the code index says imports or
+tests them. Each file inside the envelope below says why it was selected. It is a retrieval
+aid like the file cards: read a file before relying on it, and follow the code past the list.
+${quarantined}
+`;
+}
+
 /** WRITE_LIST rows: worktree path + display name + branch.
  *  NOTE: the branch is UNQUOTED here — the single quotes around $WORK_BRANCH
  *  in the awk program are shell quoting (a quote-splice), not output text. */
@@ -253,7 +441,8 @@ export function renderDeliveryPrompt(i: DeliveryPromptInputs): string {
   const reviewFeedbackBlock =
     renderReviewFeedbackBlock(i.reviewFeedbackReasons) +
     renderReviewRequirementsBlock(i.reviewRequirements) +
-    renderResolvedDecisionsBlock(i.resolvedDecisions);
+    renderResolvedDecisionsBlock(i.resolvedDecisions) +
+    renderScoutBlock(i.scout);
   const writeList = renderWriteList(i.writeRepos, i.workBranch);
   const readList = renderReadList(i.readRoots);
 

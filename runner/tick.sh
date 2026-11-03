@@ -1942,8 +1942,22 @@ if [ "$READY_COUNT" -gt 0 ]; then
   # the crew seam. The index's answer lands in a temp file for delivery-metrics.jsonl.
   _CARD_NAMED="$(printf '%s' "$SHOW" | gaffer_json ticket-named-code 2>/dev/null || true)"
   _CARD_BASE="$(printf '%s\n' "$WT_ROWS" | grep . | awk -F'\t' 'NR==1{print $4}')"
-  _CARD_BASE_SHA=""
-  [ -z "$_CARD_NAMED" ] || _CARD_BASE_SHA="$(git -C "$_CARD_REAL_REPO" rev-parse --verify --quiet "${_CARD_BASE:-main}^{commit}" 2>/dev/null || true)"
+  _CARD_BASE_SHA="$(git -C "$_CARD_REAL_REPO" rev-parse --verify --quiet "${_CARD_BASE:-main}^{commit}" 2>/dev/null || true)"
+  # PRE-WORK SCOUT (lib/scout.sh, delta roadmap gap 3): before the agent starts, the
+  # runner expands what the ticket names and any stack frame it quotes through the code
+  # index (importers and tests, two hops, at most 25 files, each with its reason), reads
+  # the repo's test command and prior send-backs, and classifies the risk (it can only
+  # raise the declared level). The bounded read-only MODEL scout adds checked
+  # suggestions when GAFFER_SCOUT asks for it. Raw inputs only: deliveryPrompt.ts renders
+  # the block. When the scout lists the named code's neighbours, the file-card primer
+  # does not repeat them; the scout's index answer feeds delivery-metrics instead.
+  _SCOUT_ATTEMPT="$(echo "$SHOW" | jget 'Math.trunc(Number(d.ticket.attempt_count || 0)) + 1' 2>/dev/null || echo 1)"
+  SCOUT_PROMPT=""; SCOUT_RISK=""; SCOUT_RAISED=""; SCOUT_INDEX_FILE=""
+  if declare -F gaffer_scout_run >/dev/null 2>&1; then
+    gaffer_scout_run "$_CARD_REAL_REPO" "$_CARD_BASE_SHA" "$_SCOUT_ATTEMPT" 2>/dev/null || true
+    gaffer_model_scout "$NUM" "$_CARD_REAL_REPO" "$_CARD_BASE_SHA" 2>/dev/null || true
+  fi
+  [ -n "$SCOUT_PROMPT" ] && [ -n "$SCOUT_INDEX_FILE" ] && _CARD_NAMED=""
   _CARD_INDEX_OUT=""
   if [ -n "$_CARD_NAMED" ]; then
     _CARD_INDEX_OUT="$(mktemp "${TMPDIR:-/tmp}/gaffer-index.XXXXXX" 2>/dev/null)" || _CARD_INDEX_OUT=""
@@ -1954,6 +1968,9 @@ if [ "$READY_COUNT" -gt 0 ]; then
     _CARD_INDEX_METRIC="$(gaffer_json index-metric "$_CARD_INDEX_OUT" 2>/dev/null || true)"
     rm -f "$_CARD_INDEX_OUT"
     [ -z "$_CARD_INDEX_METRIC" ] || log "cards: code index for what #$NUM names: $_CARD_INDEX_METRIC"
+  elif [ -n "$SCOUT_INDEX_FILE" ]; then
+    _CARD_INDEX_METRIC="$(gaffer_json index-metric "$SCOUT_INDEX_FILE" 2>/dev/null || true)"
+    [ -z "$_CARD_INDEX_METRIC" ] || log "scout: code index for what #$NUM names: $_CARD_INDEX_METRIC"
   fi
   if [ -n "$FILE_CARDS_BLOCK" ]; then
     PRIME_CONTEXT_CALLED=true
@@ -2041,6 +2058,11 @@ $PRODUCT_CONTEXT_BLOCK}"
   # wins (backward-compat). With the default registry + a normal ticket this
   # resolves to mid=sonnet — exactly today's implement model.
   ROUTE_RISK="$(echo "$SHOW" | jget 'd.ticket.risk_level || "medium"' 2>/dev/null || echo medium)"
+  # The router sees the EFFECTIVE risk: the scout's classifier can only raise it.
+  if [ -n "$SCOUT_RISK" ]; then
+    [ -z "$SCOUT_RAISED" ] || log "SCOUT: #$NUM $SCOUT_RAISED — routing on $SCOUT_RISK"
+    ROUTE_RISK="$SCOUT_RISK"
+  fi
   ROUTE_AC="$(echo "$SHOW" | jget '(d.acceptanceCriteria || []).length' 2>/dev/null || echo 0)"
   # attempt_count is 0-based (0 = first delivery); the router's attempt is 1-based
   # so a prior rejection (attempt_count≥1) escalates. Default 0 if absent.
@@ -2058,6 +2080,14 @@ $PRODUCT_CONTEXT_BLOCK}"
   ROUTE_REPO="$(printf '%s\n' "$WT_ROWS" | grep . | head -1 | awk -F'\t' '{print $3}')"
   ROUTE_BASE="$(printf '%s\n' "$WT_ROWS" | grep . | head -1 | awk -F'\t' '{print ($4==""?"main":$4)}')"
   DELIVERY_MODEL="$(gaffer_route_model implement "$ROUTE_RISK" "$ROUTE_AC" "$STACK" "$ROUTE_ATTEMPT" "$NUM" "$PRIMARY_REPO" "$ROUTE_REPO" "$WORK_BRANCH" "$ROUTE_BASE")"
+  # The scout packet is this attempt's record ($GAFFER_DATA/scout/ticket-N/attempt-K.json and
+  # a ticket.scout_recorded system event), and the launch's context selection is one
+  # context-selection.jsonl line. Measurements; fail-soft; nothing in a DRY_RUN.
+  if declare -F gaffer_scout_persist >/dev/null 2>&1; then
+    gaffer_scout_persist "$NUM" "$ROUTE_ATTEMPT" 2>/dev/null || true
+    gaffer_scout_selection "$NUM" "$ROUTE_ATTEMPT" "$SKILLS" "$LENSES" "${DELIVERY_MODEL:-default}" "$FILE_CARDS_BLOCK" 2>/dev/null || true
+    gaffer_scout_cleanup 2>/dev/null || true
+  fi
   # Per-tick implement flag: the router's model, or empty (→ Claude default) when
   # the registry/override resolves to none. Falls back to the static flag only if
   # routing yielded nothing AND the static tier is set.

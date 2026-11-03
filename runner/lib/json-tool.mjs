@@ -415,6 +415,10 @@ switch (cmd) {
     let reviewRequirements = [];
     const rc = tryParse(e.GF_RC || "[]");
     if (rc.ok && Array.isArray(rc.value)) reviewRequirements = rc.value.filter(isObj);
+    // The pre-work scout's prompt summary (lib/scout.mjs summary); absent → no key, and the
+    // inputs are byte-identical to before.
+    const sc = e.GF_SCOUT ? tryParse(e.GF_SCOUT) : { ok: false };
+    const scout = sc.ok && isObj(sc.value) ? { scout: sc.value } : {};
     println(
       JSON.stringify({
         kind: "delivery",
@@ -426,6 +430,7 @@ switch (cmd) {
         reviewFeedbackReasons: reasons,
         resolvedDecisions,
         reviewRequirements,
+        ...scout,
         fileCardsBlock: e.GF_FCB ?? "",
         productContextBlock: e.GF_PCB ?? "",
         workBranch: e.GF_WORK_BRANCH ?? "",

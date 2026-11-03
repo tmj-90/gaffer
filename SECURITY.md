@@ -28,7 +28,7 @@ Test files are under `runner/test/` (`.sh`, `.mjs`) or `packages/*/test/` (`.ts`
 
 | Control | Enforces | Tested by | Does not cover |
 | --- | --- | --- | --- |
-| Safety hook | Writes only in the worktree, no secret reads, no control-plane CLI or raw DB access, no base-branch ref rewrites, no git config or hook edits; fails closed | `safety-hook*.test.mjs`, the crew parity tests | A compiled binary or a script the agent writes and runs |
+| Safety hook | Writes only in the worktree, no secret reads, no control-plane CLI or raw DB access, no base-branch ref rewrites, no git config or hook edits; fails closed | `safety-hook*.test.mjs` (with `safety-hook-golden-corpus.test.mjs`, every verdict pinned), the crew parity tests | A compiled binary or a script the agent writes and runs |
 | Throwaway worktrees | Delivery never touches your checkout; teardown removes only what the run owns | `cleanup-ownership.test.sh`, `crash-cleanup.test.sh` | A narrow teardown race (residual limits) |
 | Runner git | The runner's own git never runs repository hooks, drivers or helpers | `git-hooks-host.test.sh` | |
 | Agent environment | Built from an allowlist; credential env vars stripped; CLI credential stores are secret paths | `agent-env-scrub.test.sh`, `safety-hook-credentials.test.mjs` | Credentials outside the listed stores while `HOME` is shared |
@@ -63,7 +63,8 @@ drives crew's advisory classifier only; see [the safety hook](#the-safety-hook).
 
 ### The safety hook
 
-`runner/safety-hook.mjs` (deny list in `runner/lib/dangerous-commands.mjs`) runs before
+`runner/safety-hook.mjs` (the decision in `runner/safety-hook-core.mjs` and the rule
+modules under `runner/lib/hook/`, the deny list in `runner/lib/dangerous-commands.mjs`) runs before
 every tool call of every factory agent and either allows it (exit 0) or blocks it
 (exit 2). It does not consult the agent, the model or any prompt; the same input
 always gets the same decision. It:

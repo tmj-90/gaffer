@@ -549,6 +549,37 @@ depth, not a jail, which is why the worktree and the optional OS sandbox
 [`SECURITY.md`](../SECURITY.md) has what each control enforces, how it is tested and
 what it does not cover.
 
+The hook is three layers of files. `safety-hook.mjs` is only the process contract
+(stdin, exit code, stderr, the fail-closed guards). `safety-hook-core.mjs` is the one
+module it and the tests import; it re-exports `decide`, `decideRaw` and the size caps
+from `lib/hook/`, where the rules live one concern per module:
+
+| Module | Holds |
+| --- | --- |
+| `lib/hook/shell.mjs` | quote-aware tokenizing, the whole-command quoting check, segments, redirects, variable substitution |
+| `lib/hook/paths.mjs` | `canonicalize`, the write and read roots, the secret-path families, tilde expansion and `cd` replay |
+| `lib/hook/verbs.mjs` | the effective verb behind assignments, wrappers and package runners; the privileged CLI names; `sh -c` bodies |
+| `lib/hook/deny-list.mjs` | loads `lib/dangerous-commands.mjs` (the deny list) so that a failure blocks |
+| `lib/hook/interpreters.mjs` | the inline-interpreter write and read boundary (`python -c`, `node -e`, heredocs) |
+| `lib/hook/reads.mjs` | secret reads and credentials, git secret operations, env templates, Bash read targets |
+| `lib/hook/writes.mjs` | Bash write targets |
+| `lib/hook/installs.mjs` | the bootstrap install allowance and `--ignore-scripts` |
+| `lib/hook/git.mjs` | branch creation, branch ref rewrites, the git execution surface |
+| `lib/hook/factory.mjs` | the factory front door (an agent running the factory's own code) |
+| `lib/hook/control-plane.mjs` | control-plane verbs and `CP_PAIRS`, verb slots, the normalised views the deny list runs over |
+| `lib/hook/decide.mjs` | the input-size cap, the verdict and its ledgers, the per-tool checks, `decideRaw` |
+
+A rule module returns a reason or null; only `decide.mjs` blocks or allows, and each
+module imports only the ones above it in that table. A missing or broken module fails
+the hook closed like a missing core (`test/safety-hook.test.mjs` checks each one),
+`preflight.sh` shows it as a failure, and `tick.sh` refuses to launch an agent when
+`lib/hook/` is missing. Loading twelve modules instead of one adds node start-up time
+to every hook call: on a loaded 4-CPU machine I measured about +5 to +25 ms per call
+(a Read went from a median of about 75 ms to 85 ms), and `NODE_COMPILE_CACHE` did
+not recover it. `test/safety-hook-golden-corpus.test.mjs` pins the verdict
+for every tool call the hook suites make ([`docs/testing.md`](../docs/testing.md) says
+how to refresh it when a rule changes on purpose).
+
 ## Run the showcase
 ```bash
 # 1. Build the servers

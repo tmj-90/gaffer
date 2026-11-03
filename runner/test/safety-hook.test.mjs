@@ -484,6 +484,7 @@ import {
   copyFileSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -2373,7 +2374,17 @@ else failures.push("ALLOW expected: whitespace-only stdin parses as {} and stays
     failures.push(
       `SIZE CAP constants: expected 65536 / 2097152, got ${MAX_INSPECTED_FIELD_BYTES} / ${MAX_PAYLOAD_BYTES}`,
     );
-  const coreSrc = readFileSync(resolve(RUNNER, "safety-hook-core.mjs"), "utf8");
+  // The decision is safety-hook-core.mjs and the lib/hook/ modules it re-exports from.
+  const hookLib = resolve(RUNNER, "lib", "hook");
+  const coreSrc = [
+    resolve(RUNNER, "safety-hook-core.mjs"),
+    ...readdirSync(hookLib)
+      .filter((f) => f.endsWith(".mjs"))
+      .sort()
+      .map((f) => resolve(hookLib, f)),
+  ]
+    .map((f) => readFileSync(f, "utf8"))
+    .join("\n");
   const capStart = coreSrc.indexOf("INPUT-SIZE CAP — an oversized tool input fails CLOSED");
   const capEnd = coreSrc.indexOf("\n}\n", coreSrc.indexOf("function checkInputSize("));
   const capSrc = capStart >= 0 && capEnd > capStart ? coreSrc.slice(capStart, capEnd) : "";
@@ -2713,7 +2724,8 @@ else failures.push("ALLOW expected: whitespace-only stdin parses as {} and stays
   );
 
   // Both guarded imports fail CLOSED (exit 2), never exit 1 (= ALLOW): the wrapper
-  // without its core, and wrapper + core without the deny-list.
+  // without its core (or the core without its lib/hook/ modules), and wrapper + core
+  // without the deny-list.
   const lone = realpathSync(gafferMkdtemp(resolve(tmpdir(), "gaffer-contract-lone-")));
   copyFileSync(HOOK, resolve(lone, "safety-hook.mjs"));
   const noCore = spawnHook(JSON.stringify(call("Bash", { command: "ls" })), {
@@ -2722,6 +2734,19 @@ else failures.push("ALLOW expected: whitespace-only stdin parses as {} and stays
   if (noCore.status === 2 && noCore.stderr.includes("cannot load the decision core")) passed += 1;
   else failures.push(`CONTRACT missing core: expected fail-closed exit 2, got ${noCore.status}`);
   copyFileSync(resolve(RUNNER, "safety-hook-core.mjs"), resolve(lone, "safety-hook-core.mjs"));
+  const noModules = spawnHook(JSON.stringify(call("Bash", { command: "ls" })), {
+    hook: resolve(lone, "safety-hook.mjs"),
+  });
+  if (noModules.status === 2 && noModules.stderr.includes("cannot load the decision core"))
+    passed += 1;
+  else
+    failures.push(
+      `CONTRACT core without lib/hook: expected fail-closed exit 2, got ${noModules.status}`,
+    );
+  mkdirSync(resolve(lone, "lib", "hook"), { recursive: true });
+  for (const f of readdirSync(resolve(RUNNER, "lib", "hook"))) {
+    copyFileSync(resolve(RUNNER, "lib", "hook", f), resolve(lone, "lib", "hook", f));
+  }
   const noRules = spawnHook(JSON.stringify(call("Bash", { command: "ls" })), {
     hook: resolve(lone, "safety-hook.mjs"),
   });
@@ -2732,6 +2757,38 @@ else failures.push("ALLOW expected: whitespace-only stdin parses as {} and stays
     passed += 1;
   else
     failures.push(`CONTRACT missing deny-list: expected fail-closed exit 2, got ${noRules.status}`);
+
+  // Every lib/hook module on its own: with the rest of the tree in place, a module
+  // that is missing, or that no longer parses, still fails CLOSED (exit 2).
+  copyFileSync(
+    resolve(RUNNER, "lib", "dangerous-commands.mjs"),
+    resolve(lone, "lib", "dangerous-commands.mjs"),
+  );
+  const lsCall = JSON.stringify(call("Bash", { command: "ls" }));
+  const whole = spawnHook(lsCall, { hook: resolve(lone, "safety-hook.mjs") });
+  const modules = readdirSync(resolve(lone, "lib", "hook")).filter((f) => f.endsWith(".mjs"));
+  if (whole.status === 0 && modules.length >= 12) passed += 1;
+  else
+    failures.push(
+      `CONTRACT per-module baseline: the whole copy should allow ls (got ${whole.status}) with every module (${modules.length})`,
+    );
+  for (const f of modules) {
+    const p = resolve(lone, "lib", "hook", f);
+    const src = readFileSync(p, "utf8");
+    for (const [how, change] of [
+      ["missing", () => rmSync(p)],
+      ["broken", () => writeFileSync(p, `${src}\n}{\n`)],
+    ]) {
+      change();
+      const r = spawnHook(lsCall, { hook: resolve(lone, "safety-hook.mjs") });
+      if (r.status === 2 && r.stderr.includes("cannot load the decision core")) passed += 1;
+      else
+        failures.push(
+          `CONTRACT ${how} lib/hook/${f}: expected fail-closed exit 2, got ${r.status}`,
+        );
+      writeFileSync(p, src);
+    }
+  }
 
   for (const d of [CT_ROOT, ledgerDir, lone]) rmSync(d, { recursive: true, force: true });
 }

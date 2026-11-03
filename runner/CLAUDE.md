@@ -3,7 +3,8 @@
 This directory is the **LIVE production agent runtime**. `tick.sh` drives one
 delivery/review/clarify tick by shelling out to `claude -p`; `lib/*` assembles
 the context the agent receives and runs the delivery gates. The safety layer is
-`safety-hook.mjs`: never weaken it.
+`safety-hook.mjs` with its rules in `safety-hook-core.mjs`, `lib/hook/` and
+`lib/dangerous-commands.mjs`: never weaken any of them.
 
 ## RULE: production delivery features must land on the live path (not only in crew's mock loop)
 

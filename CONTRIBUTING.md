@@ -56,8 +56,9 @@ shape is a FAIL, never a skip.
 
 ## Ground rules
 
-- **Never weaken `runner/safety-hook.mjs`.** It is the containment boundary that
-  keeps shell-capable agents from doing harm. The crew-side mirror of the
+- **Never weaken `runner/safety-hook.mjs`** (or its rules in `runner/safety-hook-core.mjs`,
+  `runner/lib/hook/` and `runner/lib/dangerous-commands.mjs`). It is the containment
+  boundary that keeps shell-capable agents from doing harm. The crew-side mirror of the
   classifier and its parity tests are intentional; keep them in sync, do not
   delete them. Changes that loosen the classifier will be rejected.
 - Keep packages green: `pnpm -r build && pnpm -r test` must pass before you open

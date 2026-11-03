@@ -13,7 +13,7 @@ explain the motivation, the tradeoff you made, and why this approach over altern
 
 Does this PR touch any of the following? If yes, describe the impact carefully.
 
-- [ ] `runner/safety-hook.mjs` or the crew-side classifier mirror (**flag mandatory**)
+- [ ] `runner/safety-hook.mjs`, its rules (`runner/safety-hook-core.mjs`, `runner/lib/hook/`, `runner/lib/dangerous-commands.mjs`) or the crew-side classifier mirror (**flag mandatory**)
 - [ ] The server-side review/merge gate (`packages/dispatch`)
 - [ ] Worktree isolation or the GAFFER_WRITE_ROOTS boundary
 - [ ] Autonomy flags (`DISPATCH_ALLOW_AGENT_APPROVE`, `MERGE_ON_AGENT_REVIEW`, `MEMORY_AUTO_APPROVE`)

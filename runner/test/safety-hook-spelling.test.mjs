@@ -204,8 +204,48 @@ for (const cmd of [
   "runner/gaffer eval experiment --live --max-usd 1",
   "$G eval experiment --arm a --arm b",
   "G=gaffer; $G eval 'experiment' --arm a",
+  // Through a package runner (routing review): npx / pnpm exec / npm exec run the program.
+  "npx bash runner/eval/experiment.sh --live --max-usd 1",
+  "pnpm exec bash runner/eval/experiment.sh --arm a --arm b",
+  "pnpm exec node runner/eval/experiment.mjs plan --out x --arm a --arm b",
+  "npm exec -- bash runner/eval/experiment.sh --arm a --arm b",
+  "npx gaffer eval experiment --arm a --arm b",
+  "pnpm exec gaffer eval experiment --live --max-usd 1",
 ]) {
   t.deny(`matched experiment runner: ${cmd}`, bash(cmd), opts);
+}
+// (h4) a package runner in front of the front door or the factory's own code (routing
+// review): `pnpm exec`, `npx`, `npm exec`, `yarn exec`, a bare `pnpm <bin>` run that
+// program, so they are peeled like `env` and `nice`.
+for (const cmd of [
+  "pnpm exec gaffer approve 3",
+  "pnpm exec -- gaffer merge 3",
+  "pnpm --filter x exec gaffer approve 3",
+  "pnpm gaffer merge 3",
+  "yarn exec gaffer merge 3",
+  "yarn gaffer approve 3",
+  "npm exec -- gaffer merge 3",
+  "npm x -- gaffer merge 3",
+  "npx --no-install gaffer merge 3",
+  "bunx gaffer approve 3",
+  `pnpm exec ${R}/gaffer merge 3`,
+  `pnpm exec bash ${R}/gaffer approve 3`,
+  `pnpm exec bash ${R}/tick.sh`,
+  `npx bash ${R}/tick.sh`,
+]) {
+  t.deny(`package runner: ${cmd}`, bash(cmd), opts);
+}
+for (const cmd of [
+  "pnpm test",
+  "pnpm --filter dispatch test",
+  "pnpm -r build",
+  "npm run build",
+  "npx vitest run",
+  "pnpm exec tsc --noEmit",
+  "pnpm exec vitest run test/a.test.ts",
+  "pnpm gaffer status",
+]) {
+  t.allow(`package runner, ordinary use: ${cmd}`, bash(cmd), opts);
 }
 for (const cmd of [
   "cat runner/eval/experiment.sh",

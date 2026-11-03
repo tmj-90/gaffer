@@ -25,8 +25,12 @@ describe("computeRiskAnnotations", () => {
     expect(ann!.paths).toHaveLength(6);
   });
 
-  it("flags the safety hook's files, the core and its rule modules under runner/lib/hook", () => {
-    const paths = ["runner/safety-hook-core.mjs", "runner/lib/hook/reads.mjs"];
+  it("flags the safety hook's files: the core, its rule modules under runner/lib/hook and its deny list", () => {
+    const paths = [
+      "runner/safety-hook-core.mjs",
+      "runner/lib/hook/reads.mjs",
+      "runner/lib/dangerous-commands.mjs",
+    ];
     const ann = computeRiskAnnotations(paths, 0, NOENV).find((a) => a.kind === "sensitive-path");
     expect(ann?.paths).toEqual(paths);
   });

@@ -2383,7 +2383,7 @@ gaffer_afk_ship_plan() {
 # authhandler, authconfig, authprovider) that a required word boundary would lose. The
 # other stems are PREFIX matches on purpose too — this is a security gate, so .env*
 # (incl. .envrc), secrets*, security*, migrations* keep matching.
-_GAFFER_SENSITIVE_PATH_RE='(^|/)([Mm]igrations?|\.github/|[Dd]ockerfile|[Oo]?[Aa]uth([^o]|o[^r]|ori[sz]|$)|[Ss]ecurity|[Ss]ecrets?|\.env|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|\.gaffer|safety-hook|runner/lib/hook/)'
+_GAFFER_SENSITIVE_PATH_RE='(^|/)([Mm]igrations?|\.github/|[Dd]ockerfile|[Oo]?[Aa]uth([^o]|o[^r]|ori[sz]|$)|[Ss]ecurity|[Ss]ecrets?|\.env|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|\.gaffer|safety-hook|runner/lib/hook/|runner/lib/dangerous-commands\.mjs)'
 
 # LITE MODE trivial classifier — PURE core. Decides whether a ticket is trivial enough
 # to auto-approve WITHOUT a human reviewer. This is an ADDITIONAL narrowing that only
@@ -2393,7 +2393,8 @@ _GAFFER_SENSITIVE_PATH_RE='(^|/)([Mm]igrations?|\.github/|[Dd]ockerfile|[Oo]?[Aa
 #   • risk_level = low
 #   • diff within the TIGHT lite caps (GAFFER_LITE_MAX_LINES / GAFFER_LITE_MAX_FILES)
 #   • touches NO sensitive path (migrations, CI, Dockerfile, auth/security/secrets, lockfiles,
-#     the factory's own .gaffer / safety-hook and its runner/lib/hook/ rule modules):
+#     the factory's own .gaffer / safety-hook, its runner/lib/hook/ rule modules and its
+#     deny list runner/lib/dangerous-commands.mjs):
 #     GAFFER_LITE_SENSITIVE_RE, operator-tunable.
 # NB: intentionally tiny caps (60 lines / 4 files) — "trivial" means a typo/doc/small-config
 # change, NOT the 400-line minimalism cap. No I/O, no side effects; echoes `trivial` or

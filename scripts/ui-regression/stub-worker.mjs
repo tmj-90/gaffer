@@ -393,6 +393,14 @@ async function main() {
     if (Array.isArray(modeSpec.steps) && modeSpec.steps.length) {
       const step = modeSpec.steps[Math.min(call, modeSpec.steps.length) - 1];
       const usage = applyScripted(step, cwd);
+      // As an agent is told to: record the smallest-change note as evidence.
+      const note = /Smallest-change note:[^\n]*/.exec(step.summary || "");
+      if (note)
+        await mcpCall("dispatch", "record_ac_evidence", {
+          ticket_id: t,
+          evidence_type: "manual_note",
+          summary: note[0],
+        }).catch((e) => mcpLog(`delivery #${t}: smallest-change note not recorded: ${e.message}`));
       if (mode === "pause_first" && call === 1)
         return envelope(step.summary || `Stopped #${t} at the turn cap.`, {
           ...usage,

@@ -349,6 +349,11 @@ async function pollUntil(k, want, tries = 6) {
   }
   die(`#${number} (${k}) never reached ${want.join("|")}: it is ${(await ticketOf(id)).status}`);
 }
+async function hasEvent(k, type) {
+  const { json } = await api("GET", `/tickets/${byKey[k].id}`);
+  return (json.events || []).some((e) => e.event_type === type);
+}
+const testerPassed = (k) => hasEvent(k, "ticket.tester_passed");
 async function ready(k) {
   await must("POST", `/tickets/${byKey[k].id}/ready`);
 }
@@ -393,9 +398,14 @@ async function drive(k) {
     // and a diff under .github brings in the security reviewer after it.
     await must("POST", "/api/settings", { settings: { REVIEW_MODE: "both" } });
     setStub(number, stubFor(spec));
-    await ready(k);
-    await pollUntil(k, ["in_review"]);
+    const st = (await ticketOf(byKey[k].id)).status;
+    if (st === "draft") await ready(k);
+    if (st !== "in_review") await pollUntil(k, ["in_review"]);
+    for (let i = 0; i < 4 && !(await hasEvent(k, "ticket.lane_verdict")); i++) await poll();
     await must("POST", "/api/settings", { settings: { REVIEW_MODE: "human" } });
+    // The reviewer agent has read it; back under human review, the next polls send it
+    // to the tester first.
+    for (let i = 0; i < 6 && !(await testerPassed(k)); i++) await poll();
   } else if (flow === "done" || flow === "done_rework" || flow === "regression") {
     setStub(number, stubFor(spec));
     await ready(k);
@@ -645,7 +655,8 @@ async function moveTimeline() {
 async function handWork() {
   // Two tickets the reviewer agent read too, landed this afternoon.
   for (const t of ALL().filter((x) => x.flow === "done_reviewed" && byKey[x.key]))
-    if ((await ticketOf(byKey[t.key].id)).status === "draft") await drive(t.key);
+    if (!["done", "ready_for_merge"].includes((await ticketOf(byKey[t.key].id)).status))
+      await drive(t.key);
   // The once-only part (lore, digests, the map, the club, the squad's names) is marked
   // done in the out dir, so a run picked up again with --from hand does not repeat it.
   const once = `${OUT}/hand-once.done`;
@@ -789,7 +800,7 @@ async function handClaims() {
   const toClaim = Object.keys(byKey).filter((k) => byKey[k].spec.flow === "claimed");
   for (const [i, k] of toClaim.entries()) {
     const st = (await ticketOf(byKey[k].id)).status;
-    if (st === "in_progress") continue;
+    if (!["draft", "ready"].includes(st)) continue;
     if (st !== "ready") await ready(k);
     const ag = claimers[i % Math.max(1, claimers.length)] || list[0];
     wgArgs("claim", "--agent", ag.agent_id, "--ttl", "86400");
@@ -802,24 +813,22 @@ async function handClaims() {
     if (spec.flow === "cancelled" && st !== "cancelled")
       await must("POST", `/tickets/${id}/wont-do`, { reason: spec.reason });
   }
-  await must("POST", "/decisions", {
-    title: "Recurring tasks: generate on close or on a schedule?",
-    question:
-      "Should the next occurrence of a recurring task be created when the current one is closed, or by a nightly job from the rule? Closing is simpler; the job keeps occurrences on the calendar even when nobody closes the last one.",
-    severity: "human_required",
-    ticket_id: byKey["next-occurrence"].id,
-  });
-  await must("POST", "/decisions", {
-    title: "Rate limit: per token or per user?",
-    question:
-      "A user with three API tokens gets 300 requests a minute under a per-token limit. Is that what we want?",
-    severity: "human_preferred",
-    ticket_id: byKey["rate-limit"].id,
-  });
+  const pending = ((await api("GET", "/decisions")).json.decisions || []).map((d) => d.title);
+  if (!pending.includes("Recurring tasks: generate on close or on a schedule?"))
+    await must("POST", "/decisions", {
+      title: "Recurring tasks: generate on close or on a schedule?",
+      question:
+        "Should the next occurrence of a recurring task be created when the current one is closed, or by a nightly job from the rule? Closing is simpler; the job keeps occurrences on the calendar even when nobody closes the last one.",
+      severity: "human_required",
+      ticket_id: byKey["next-occurrence"].id,
+    });
 }
 
 /** Pad any non-implement scorecard cell the run made too few calls in (onboarding, plan). */
 async function padLedger() {
+  const { roleOfKind } = await import(
+    pathToFileURL(`${ROOT}/packages/dispatch/dist/health/routingScorecard.js`).href
+  );
   const health = (await api("GET", "/api/health")).json;
   const cells = health.routing_scorecard?.cells || [];
   const ledger = `${GAFFER_DATA}/usage-ledger.jsonl`;
@@ -835,7 +844,10 @@ async function padLedger() {
       continue;
     }
     const like = rows.find(
-      (r) => (r.model_requested ?? "default") === c.model && (r.risk ?? "unknown") === c.risk,
+      (r) =>
+        roleOfKind(r.kind) === c.role &&
+        (r.model_requested ?? "default") === c.model &&
+        (r.risk ?? "unknown") === c.risk,
     );
     if (!like) continue;
     for (let i = c.n; i < 12; i++) {
@@ -969,17 +981,39 @@ async function capture() {
     );
   };
   const hero = byKey["finish-skips-done"].id;
+  // Plan a build first: its planner calls are ledger rows, and padLedger tops up any
+  // call kind still too thin for the scorecard before Health is captured.
+  if (want("plan-build")) await planBuild(page, go, save);
+  await padLedger();
 
   await go("overview", ".tactics .pitch");
   if (want("match-day-overview")) {
-    // The Tactics board grows with the Team sheet beside it and centres the pitch in
-    // that height, so the hero is the viewport scrolled until the whole pitch is in view.
+    // The Tactics board grows with the Team sheet beside it and centres its pitch in
+    // that height. The hero is the page from the top in a viewport tall enough to hold
+    // the headline, the scoreboard and the whole pitch (1100 to 1250 px); when the
+    // pitch sits lower than that, it is the viewport scrolled to the pitch, and the
+    // headline and scoreboard get a shot of their own.
     const pitch = await page.locator(".tactics .pitch").first().boundingBox();
-    if (pitch)
-      await page.evaluate((y) => window.scrollTo(0, Math.max(0, y)), pitch.y + pitch.height - 860);
-    await sleep(600);
-    await save("match-day-overview", "Overview", await page.screenshot());
-    await page.evaluate(() => window.scrollTo(0, 0));
+    const bottom = pitch ? Math.ceil(pitch.y + pitch.height + 24) : 900;
+    if (bottom <= 1250) {
+      await page.setViewportSize({ width: 1440, height: Math.max(1100, bottom) });
+      await sleep(800);
+      await save("match-day-overview", "Overview", await page.screenshot());
+      await page.setViewportSize({ width: 1440, height: 900 });
+    } else {
+      await page.evaluate((y) => window.scrollTo(0, Math.max(0, y)), bottom - 884);
+      await sleep(600);
+      await save("match-day-overview", "Overview", await page.screenshot());
+      await page.evaluate(() => window.scrollTo(0, 0));
+      await sleep(300);
+      await elShot(
+        "match-day-scoreboard",
+        "Overview: headline and scoreboard",
+        ["header", "section.scoreboard"],
+        0,
+        600,
+      );
+    }
   }
   await elShot("match-day-tactics-board", "Overview: Tactics board", [".tactics .pitch"], 12);
   await go("floor", "svg");
@@ -1008,7 +1042,7 @@ async function capture() {
   await pageShot("factory-map", "Map", 1500);
   await go("memory");
   await page
-    .locator("button", { hasText: /^\s*taskflow-core\s*$/ })
+    .getByRole("button", { name: /taskflow-core/ })
     .first()
     .click()
     .catch(() => null);
@@ -1020,7 +1054,6 @@ async function capture() {
   await elShot("health-routing", "Health: routing scorecard", ".routing-panel", 16);
   await go("settings");
   await pageShot("settings", "Settings", 1500);
-  if (want("plan-build")) await planBuild(page, go, save);
   await browser.close();
 }
 
@@ -1030,6 +1063,13 @@ async function planBuild(page, go, save) {
   const open = page.locator("button", { hasText: /Plan a build/ }).first();
   if (!(await open.count())) return log("note: no Plan a build button on Epics");
   await open.click();
+  await sleep(800);
+  // A plan left from an earlier capture is waiting for its confirmation: start afresh.
+  const fresh = page.locator("button", { hasText: /^\s*New plan\s*$/ }).first();
+  if (await fresh.isEnabled().catch(() => false)) {
+    await fresh.click().catch(() => null);
+    await sleep(800);
+  }
   const box = page.locator(".sheet textarea, textarea").first();
   await box.fill(
     "A small task list for one person: add tasks, tick them off, and see what is still open.",
@@ -1065,6 +1105,11 @@ async function planBuild(page, go, save) {
   });
   await sleep(300);
   await save("plan-build", "Plan a build", await page.screenshot());
+  // Close the sheet (it would otherwise stay open over every later view).
+  await page.keyboard.press("Escape").catch(() => null);
+  const close = page.locator('button[aria-label^="Close"]').first();
+  if (await close.isVisible().catch(() => false)) await close.click().catch(() => null);
+  await page.reload({ waitUntil: "load" });
 }
 
 // ── main ────────────────────────────────────────────────────────────────────
@@ -1122,11 +1167,19 @@ if (run("move")) {
 }
 if (run("hand")) {
   await must("POST", "/api/settings", {
-    settings: { GAFFER_DAILY_BUDGET_USD: "500", MAX_TICKS_PER_DAY: "1000" },
+    settings: {
+      GAFFER_DAILY_BUDGET_USD: "500",
+      MAX_TICKS_PER_DAY: "1000",
+      MAX_OPEN_AGENT_BRANCHES_PER_REPO: "8",
+    },
   });
   await handWork();
   await must("POST", "/api/settings", {
-    settings: { GAFFER_DAILY_BUDGET_USD: "25", MAX_TICKS_PER_DAY: "50" },
+    settings: {
+      GAFFER_DAILY_BUDGET_USD: "25",
+      MAX_TICKS_PER_DAY: "50",
+      MAX_OPEN_AGENT_BRANCHES_PER_REPO: "3",
+    },
   });
   await padLedger();
   saveState("hand");

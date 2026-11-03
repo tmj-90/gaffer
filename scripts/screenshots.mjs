@@ -5,7 +5,7 @@
 // real factory has worked through, then capture each view with Playwright.
 //
 //   pnpm -r build
-//   node scripts/screenshots.mjs                  # ~20 minutes; writes docs/img/*.png
+//   node scripts/screenshots.mjs                  # ~25 minutes; writes docs/img/*.png
 //   node scripts/screenshots.mjs --keep           # leave the dashboard up afterwards
 //   node scripts/screenshots.mjs --reuse --only health,ticket-testing
 //                                                 # recapture some shots from a kept world
@@ -82,6 +82,10 @@ const die = (m) => {
 
 // ── the world ───────────────────────────────────────────────────────────────
 const ENV_FILE = `${OUT}/world.env`;
+// The agent CLI must be the harness's stub: CLAUDE_BIN and the first `claude` on PATH
+// both resolve to ${OUT}/bin/claude, or nothing starts.
+const STUB_GUARD = `[ "\${CLAUDE_BIN:-}" = "${OUT}/bin/claude" ] && [ "$(command -v claude)" = "${OUT}/bin/claude" ] \\
+       || { echo "the stub agent CLI is not first on PATH and in CLAUDE_BIN" >&2; exit 1; }`;
 function bash(script, extraEnv = {}) {
   const r = spawnSync("bash", ["-c", script], {
     encoding: "utf8",
@@ -103,6 +107,7 @@ function boot() {
      export PATH="${OUT}/bin:$PATH"
      source "${ROOT}/scripts/ui-regression/setup.sh" >/dev/null
      export GAFFER_IMPL_MODEL=mid GAFFER_PLAN_MODEL=strong GAFFER_CARD_MODEL=cheap
+     ${STUB_GUARD}
      export -p | grep -v -E ' (ANTHROPIC_[A-Z_]*|CLAUDE_CODE_OAUTH_TOKEN|BASH_[A-Z_]*|SHLVL|PWD|OLDPWD|_)=' > "${ENV_FILE}"
      bash "${ROOT}/runner/gaffer" dashboard --restart >/dev/null 2>&1`,
   );
@@ -115,6 +120,7 @@ function restartDashboard(again = true) {
   const out = bash(
     `set -uo pipefail
      source "${ENV_FILE}"
+     ${STUB_GUARD}
      ${again ? `bash "${ROOT}/runner/gaffer" dashboard --restart >/dev/null 2>&1` : ""}
      for _ in $(seq 1 60); do curl -sf "http://127.0.0.1:${PORT}/healthz" >/dev/null 2>&1 && break; sleep 0.5; done
      printf 'TOKEN=%s\\nGAFFER_DATA=%s\\n' "$(cat "$GAFFER_DATA/dashboard-token")" "$GAFFER_DATA"`,

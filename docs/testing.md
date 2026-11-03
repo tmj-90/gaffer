@@ -190,7 +190,7 @@ Every image under `docs/img` comes from one script, so the README, the quickstar
 ```bash
 pnpm -r build
 npx playwright@1.63.0 install chromium   # once, or set PLAYWRIGHT_CHROMIUM
-node scripts/screenshots.mjs             # about 20 minutes; rewrites docs/img/*.png
+node scripts/screenshots.mjs             # about 25 minutes; rewrites docs/img/*.png
 ```
 
 It builds the browser harness's world (`scripts/ui-regression/setup.sh`: a throwaway

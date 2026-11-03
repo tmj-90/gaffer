@@ -3328,15 +3328,17 @@ export class Dispatch {
 
   /**
    * TESTER FIRST: how many in_review tickets the runner's tester pass would send to the
-   * tester now (the tester gates them and no PASS covers their head): a push after a
-   * PASS, a conflict reopen, a delivery the runner could not route. Poll for work counts
-   * them so a tick runs the sweep. Reads git per such ticket.
+   * tester now (the same decision as routeToTester: the tester gates them, no PASS covers
+   * their head, their heads read and any required CI passed): a push after a PASS, a
+   * conflict reopen, a delivery the runner could not route. Poll for work counts them so
+   * a tick runs the sweep, and never counts one the sweep would leave. Reads git per
+   * ticket the tester gates.
    */
   pendingTesterRoutes(): number {
     let n = 0;
     for (const t of this.tickets.list("in_review")) {
       try {
-        if (this.reviewGateSvc.laneApplies(t) && !this.reviewGateSvc.testerCoverage(t).covered) n++;
+        if (this.reviewGateSvc.laneApplies(t) && this.reviewGateSvc.testerRoutePlan(t).route) n++;
       } catch {
         /* a ticket that cannot be read is not counted */
       }

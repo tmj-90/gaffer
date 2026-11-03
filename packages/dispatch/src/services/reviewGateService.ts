@@ -719,7 +719,14 @@ export class ReviewGateService {
     if (allHeads.length > 0 && (tested === null || !allHeads.some((h) => same(h, tested)))) {
       return { covered: false, why: "other_commit", tested, head };
     }
-    const recorded = typeof binding.contract_hash === "string" ? binding.contract_hash : null;
+    // The contract the PASS was about: the tester's binding, else (a person's waiver
+    // before review) the hash recorded on the PASS event.
+    const recorded =
+      typeof binding.contract_hash === "string"
+        ? binding.contract_hash
+        : typeof p.contract_hash === "string"
+          ? p.contract_hash
+          : null;
     if (recorded && recorded !== contractHash(this.db, ticket.id)) {
       return { covered: false, why: "contract_changed", tested, head };
     }
@@ -755,26 +762,10 @@ export class ReviewGateService {
       why,
       head,
     });
-    if (pre.status !== "in_review") return out(false, `not in review (${pre.status})`);
-    if (!this.laneApplies(pre))
-      return out(false, "the independent tester does not gate this ticket");
-    const unavailable = this.unavailableWriteRepos(pre);
-    if (unavailable.length > 0) {
-      return out(
-        false,
-        `the delivery head of ${unavailable.map((m) => m.repo).join(", ")} cannot be read: ${unavailable[0]!.why}`,
-      );
-    }
     // git runs here, before the write transaction.
-    const heads = this.resolveReviewedHeads(pre);
-    const coverage = this.testerCoverage(pre, heads);
-    if (coverage.covered) {
-      return out(
-        false,
-        `the tester already passed ${coverage.tested ? coverage.tested.slice(0, 12) : "this candidate"}`,
-        coverage.head,
-      );
-    }
+    const plan = this.testerRoutePlan(pre);
+    if (!plan.route) return out(false, plan.why, plan.coverage?.head ?? null);
+    const coverage = plan.coverage;
     return inTransaction(this.db, () => {
       const ticket = this.ticketSvc.resolveTicket(ref);
       if (ticket.status !== "in_review") return out(false, `not in review (${ticket.status})`);
@@ -803,6 +794,56 @@ export class ReviewGateService {
       });
       return out(true, null, coverage.head);
     });
+  }
+
+  /**
+   * TESTER FIRST: would routeToTester send this ticket to the tester now, and if not, why?
+   * The one decision behind the route and Poll for work's count (Dispatch.pendingTesterRoutes),
+   * so Poll never counts a ticket the route would leave. Not when: it is not in review, the
+   * tester does not gate it, a write repo's head cannot be read, a PASS covers its head, or
+   * CI is required and has not passed on its head (the tester runs after the gates: a red or
+   * pending CI is the delivery tick's to settle, and a red one goes back to rework). Reads git.
+   */
+  testerRoutePlan(
+    ticket: Ticket,
+  ):
+    | { route: true; why: null; coverage: TesterCoverage }
+    | { route: false; why: string; coverage: TesterCoverage | null } {
+    if (ticket.status !== "in_review") {
+      return { route: false, why: `not in review (${ticket.status})`, coverage: null };
+    }
+    if (!this.laneApplies(ticket)) {
+      return {
+        route: false,
+        why: "the independent tester does not gate this ticket",
+        coverage: null,
+      };
+    }
+    const unavailable = this.unavailableWriteRepos(ticket);
+    if (unavailable.length > 0) {
+      return {
+        route: false,
+        why: `the delivery head of ${unavailable.map((m) => m.repo).join(", ")} cannot be read: ${unavailable[0]!.why}`,
+        coverage: null,
+      };
+    }
+    const coverage = this.testerCoverage(ticket, this.resolveReviewedHeads(ticket));
+    if (coverage.covered) {
+      return {
+        route: false,
+        why: `the tester already passed ${coverage.tested ? coverage.tested.slice(0, 12) : "this candidate"}`,
+        coverage,
+      };
+    }
+    const ci = this.ciStatus(ticket.id, coverage.head);
+    if (ci.required && ci.state !== "pass") {
+      return {
+        route: false,
+        why: `CI has not passed on ${coverage.head ? coverage.head.slice(0, 12) : "the candidate"} yet (${ci.state ?? "no result"}): the tester runs after the gates`,
+        coverage,
+      };
+    }
+    return { route: true, why: null, coverage };
   }
 
   /** Every in_review ticket the tester gates and has not passed, sent to it (see routeToTester). */
@@ -1912,9 +1953,10 @@ export class ReviewGateService {
           { from: ticket.status, to: target },
         );
       }
+      const contractNow = contractHash(this.db, ticket.id);
       const binding = validatedBinding(input, {
         strict: ticket.acceptance === 1 && testerProvenance(actor) !== "human",
-        currentHash: contractHash(this.db, ticket.id),
+        currentHash: contractNow,
         verdict: "pass",
         human: testerProvenance(actor) === "human",
       });
@@ -1963,6 +2005,11 @@ export class ReviewGateService {
           evidence_id: evidenceId,
           ...(toReview ? { to: "in_review", before_review: true } : {}),
           ...(testedHead ? { tested_head: testedHead } : {}),
+          // The contract a PASS before review was about, when its binding names none (a
+          // person's waiver): a contract edited after it then needs the tester again.
+          ...(toReview && !binding.contract_hash && contractNow
+            ? { contract_hash: contractNow }
+            : {}),
         },
       });
       return result;

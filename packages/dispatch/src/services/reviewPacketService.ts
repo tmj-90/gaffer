@@ -899,9 +899,9 @@ function readBacking(p: Omit<ReviewPacket, "backing">, evidence: Evidence[]): Pa
 
   // The independent tester, on which commit.
   const ts = p.tester;
-  const primary = p.candidate[0];
   if (ts) {
-    const onHead = primary ? sameCommit(ts.tested_commit, primary.diff_head) : false;
+    // On a head of the write repo it tested (any write repo: see readCandidate).
+    const onHead = p.candidate.some((c) => sameCommit(ts.tested_commit, c.diff_head));
     add(
       ts.verdict === "pass"
         ? onHead
@@ -1089,13 +1089,21 @@ export class ReviewPacketService {
     } catch {
       return [];
     }
+    // The tester runs in one write repo (runner/bin/merge-ticket.mjs's first write link),
+    // which on a multi-repo ticket need not be the first one here: its commit belongs to the
+    // repo whose head it is (as the approval's coverage check reads it), else the first.
+    const testedCommit = tester?.tested_commit ?? null;
+    const testedAt = Math.max(
+      0,
+      entries.findIndex((e) => sameCommit(testedCommit, e.sha)),
+    );
     return entries.map((e, i) => {
       const primary = i === 0;
       const gated = this.deps.repoDeliveries?.find(ticket.id, e.repoId)?.commit_sha ?? null;
       const gatedSha =
         gated && /^[0-9a-f]{7,64}$/i.test(gated.trim()) ? gated.trim().toLowerCase() : null;
       const by = gatedSha ? gatedBy(events, e.repoId, gatedSha) : null;
-      const tested = primary ? (tester?.tested_commit ?? null) : null;
+      const tested = i === testedAt ? testedCommit : null;
       const pin = readRepoPin(rows, sinceReview, e.repoId, primary);
       const same =
         gatedSha !== null &&

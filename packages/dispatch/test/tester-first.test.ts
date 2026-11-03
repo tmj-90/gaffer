@@ -414,3 +414,95 @@ describe("tester first: acceptance tickets keep their gate", () => {
     ).toBe("BINDING_REQUIRED");
   });
 });
+
+describe("tester first: review findings (coverage edges)", () => {
+  /** A git runner whose head is per delivery branch (two write repos, two heads). */
+  function perBranch(heads: Record<string, string>): GitRunner {
+    return (cwd, args) => {
+      const last = String(args.at(-1));
+      const m = /^refs\/heads\/(.+)\^\{commit\}$/.exec(last);
+      if (args[0] === "rev-parse" && m) {
+        return { status: 0, stdout: `${heads[m[1]!] ?? SHA1}\n`, stderr: "" };
+      }
+      return movableHead({ sha: SHA1 })(cwd, args);
+    };
+  }
+
+  it("two write repos: the tester's commit is shown on the repo it tested, as approval reads it", () => {
+    const heads: Record<string, string> = { "feat/delivery": SHA1 };
+    const wg = Dispatch.open(":memory:", new TestClock(), perBranch(heads), {
+      testingEnabled: true,
+    });
+    wg.registerRepository({ name: "svc", default_branch: "main" }, human);
+    const id = delivered(wg);
+    const order = wg.ticketHeads(id).heads;
+    expect(order.length).toBe(2);
+    // The tester ran in the write repo that is NOT first in dispatch's order.
+    const second = wg.view(id).repositories.find((r) => r.name === order[1]!.repo)!;
+    wg.recordRepoDelivery({ ticket_id: id, repo_id: second.id, branch_name: "feat/other" }, human);
+    heads["feat/other"] = SHA2;
+    wg.routeToTester(id, runner);
+    pass(wg, id, SHA2);
+    expect(wg.view(id).ticket.status).toBe("in_review");
+
+    const packet = wg.reviewPacket(id, noCost);
+    const tested = packet.candidate.find((c) => c.repo === second.name)!;
+    expect(tested.tester_tested).toBe(SHA2);
+    expect(tested.same || tested.gated_sha === null).toBe(true);
+    expect(packet.candidate[0]!.tester_tested).toBeNull();
+    expect(
+      packet.backing.some((b) => b.fact === "The independent tester passed this commit" && b.holds),
+    ).toBe(true);
+    expect(wg.approveReview(id, reviewer, { commits: shown(wg, id) }).ticket.status).toBe(
+      "ready_for_merge",
+    );
+  });
+
+  it("a test contract edited in review after a person's PASS (a waiver) needs the tester again", () => {
+    const { wg } = world({ testingEnabled: true });
+    const id = delivered(wg);
+    wg.routeToTester(id, runner);
+    wg.testerPass(id, { summary: "I checked it by hand" }, human);
+    expect(wg.view(id).ticket.status).toBe("in_review");
+    wg.setTestContract(
+      id,
+      {
+        changed_surfaces: ["POST /api/widgets"],
+        runtime_deps: [],
+        env_vars: [],
+        run_command: "curl localhost:3000",
+        harness_ready: true,
+      },
+      human,
+    );
+    const err = refusal(() => wg.approveReview(id, reviewer, { commits: shown(wg, id) }));
+    expect(err.details).toMatchObject({ reason: "not_tested", why: "contract_changed" });
+    expect(wg.routeToTester(id, runner)[0]!.routed).toBe(true);
+  });
+
+  it("CI required and not passed on the head: not routed and not counted; routed once it passes", () => {
+    const { wg } = world({ testingEnabled: true });
+    const id = delivered(wg);
+    wg.recordCiRequired(id, {}, runner);
+    wg.recordCiResult(id, { commit: SHA1, state: "pending" }, runner);
+    const [r] = wg.routeToTester(id, runner);
+    expect(r!.routed).toBe(false);
+    expect(r!.why).toContain("CI has not passed");
+    expect(wg.pendingTesterRoutes()).toBe(0);
+    expect(wg.view(id).ticket.status).toBe("in_review");
+
+    wg.recordCiResult(id, { commit: SHA1, state: "pass" }, runner);
+    expect(wg.pendingTesterRoutes()).toBe(1);
+    expect(wg.routeToTester(id, runner)[0]!.routed).toBe(true);
+  });
+
+  it("Poll for work does not count a ticket whose write repo head cannot be read", () => {
+    const { wg } = world({ testingEnabled: true });
+    const id = delivered(wg);
+    expect(wg.pendingTesterRoutes()).toBe(1);
+    wg.db.prepare("UPDATE repositories SET local_path = NULL").run();
+    const [r] = wg.routeToTester(id, runner);
+    expect(r!.routed).toBe(false);
+    expect(wg.pendingTesterRoutes()).toBe(0);
+  });
+});

@@ -27,23 +27,25 @@
 #   runs and the seam checks; Linux alone under shared load: 145s), sandbox-docker-delivery-seam
 #   70 (Linux alone: 35s, one real tick like branch-retention), land-ignored-file 100,
 #   git-hooks-host 45, onboard-boundary 20, sandbox-docker-git-isolation 3, sandbox-docker-delivery 1.
+#   land-tester-replay-contract 115, eval-experiment 108: missing here (so 10s each) until CI
+#   run 41710618555 (macOS node 22, shard 2: both landed in one shard and overloaded it).
 321	land-tester-replay.test.sh
 297	merge-lane.test.sh
 242	land-tester-replay-proof.test.sh
 237	e2e-release-gate-tester-replay.test.sh
-237	waste-controls.test.sh
+261	waste-controls.test.sh
 187	e2e-agent-skill-routing.test.sh
 176	gate-integrity-e2e-retry.test.sh
 154	e2e-multi-repo-delivery.test.sh
 151	gate-integrity-e2e.test.sh
 148	e2e-per-path-stack-routing.test.sh
-141	review-wedge.test.sh
+148	review-wedge.test.sh
 133	afk-review-hold.test.sh
 131	e2e-release-gate-merge-combination.test.sh
 130	branch-retention.test.sh
 129	memory-index-after-merge.test.sh
 120	cleanup-ownership.test.sh
-119	usage-limit-tick.test.sh
+151	usage-limit-tick.test.sh
 107	security-review-lane.test.sh
 100	land-ignored-file.test.sh
 100	worker-command.test.sh
@@ -337,3 +339,5 @@
 4	safety-hook-spelling.test.mjs
 10	ui-suites-jobs.test.sh
 15	tester-replay-containment.test.mjs
+115	land-tester-replay-contract.test.sh
+108	eval-experiment.test.sh

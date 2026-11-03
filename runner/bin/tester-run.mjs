@@ -848,6 +848,15 @@ export function replayTesterTests({
     profile && RUNNABLE_PROFILES.includes(profile.profile) && profile.spec
       ? runAcceptanceCheckout({ repoPath, testedCommit, n, profile })
       : null;
+  // PHASE TIMING (one stderr line per replay, in the tester lane's log): where a slow
+  // clean replay spends its time, so a slow CI runner can be told from a fixed wait.
+  const timing = [];
+  let mark = Date.now();
+  const phase = (name) => {
+    const now = Date.now();
+    timing.push(`${name} ${now - mark}`);
+    mark = now;
+  };
   const replay = resolve(GAFFER_DATA, "worktrees", `tester-replay-${n}`);
   git(repoPath, "worktree", "remove", "--force", replay);
   removeTree(replay);
@@ -858,6 +867,7 @@ export function replayTesterTests({
       reason: `could not check out ${testedCommit.slice(0, 12)} for the replay`,
     };
   let scratch = "";
+  phase("checkout");
   try {
     for (const f of testFiles) {
       const src = resolve(testerWorktree, f);
@@ -867,6 +877,7 @@ export function replayTesterTests({
       copyFileSync(src, dst);
     }
     const linked = linkNodeModules(repoPath, replay);
+    phase("copy+link");
     // CONTAINMENT: the run's own HOME, TMPDIR and PATH shadows, outside the checkout (the
     // replay must not leave them in git status) and removed afterwards.
     scratch = realpathSync(mkdtempSync(join(tmpdir(), `gaffer-replay-${n}-`)));
@@ -878,6 +889,7 @@ export function replayTesterTests({
         ...(commonDir ? [resolve(replay, commonDir)] : []),
       ],
     });
+    phase(`sandbox(${sb.label})`);
     if (!sb.ok)
       return {
         state: "held",
@@ -885,6 +897,7 @@ export function replayTesterTests({
         sandbox: sb.label,
       };
     const baseEnv = replayEnv({ scratch });
+    phase("env");
     const timeout =
       Number(process.env.GAFFER_TESTER_REPLAY_TIMEOUT_MS) > 0
         ? Number(process.env.GAFFER_TESTER_REPLAY_TIMEOUT_MS)
@@ -893,6 +906,7 @@ export function replayTesterTests({
     const runInv = (select) => {
       const inv = replayInvocation({ worktree: replay, testCommand: cmd, files, select });
       prepareReplayProof(inv);
+      phase(select ? "proof2" : "proof");
       const [bin, args, env] = wrappedSpawn(
         ["bash", "-c", inv.command],
         { ...baseEnv, ...inv.env },
@@ -906,6 +920,7 @@ export function replayTesterTests({
         env,
       });
       discardReplayKey(inv);
+      phase(select ? "run2" : "run");
       writeFileSync(inv.proof.output, `${r.stdout || ""}\n${r.stderr || ""}`);
       const tail = `${r.stdout || ""}\n${r.stderr || ""}`
         .split("\n")
@@ -915,7 +930,9 @@ export function replayTesterTests({
         .split("\n")
         .slice(-12)
         .join("\n");
-      return { r, tail, proof: replayProof({ inv, files, worktree: replay }) };
+      const proof = replayProof({ inv, files, worktree: replay });
+      phase(select ? "verify2" : "verify");
+      return { r, tail, proof };
     };
     // The registered command as it is. When it does not run every tester file (a
     // file-scoped command), the landing replay's own invocation (the registered command
@@ -953,6 +970,8 @@ export function replayTesterTests({
     git(repoPath, "worktree", "prune");
     removeTree(replay);
     if (scratch) rmSync(scratch, { recursive: true, force: true });
+    phase("cleanup");
+    log(`#${n}: clean replay timing (ms): ${timing.join(", ")}`);
   }
 }
 

@@ -41,15 +41,27 @@
 # /var to /private/*, so the literal path the agent uses and the path the kernel
 # enforces can differ; sandbox-exec matches on the canonical path. We canonicalise
 # every subpath we emit so an allow-rule actually covers what the agent writes.
+# A directory resolves in this shell (`cd && pwd -P`). A path that does not exist yet (a
+# worktree created after this runs, the replay variant's HOME secrets, most of which a
+# host does not have) resolves through its nearest existing parent with the rest
+# appended. Only a symlinked FILE needs node's realpath: a node start per path cost the
+# replay profile (16 such paths) seconds on a loaded macOS runner, every replay.
 _sandbox_realpath() {
-  local p="$1"
-  # Prefer the directory itself if it exists; else its nearest existing parent
-  # (a worktree may be created after this runs — its parent base already exists).
-  if [ -e "$p" ]; then
-    ( cd "$p" 2>/dev/null && pwd -P ) || node -e 'process.stdout.write(require("node:fs").realpathSync(process.argv[1]))' "$p" 2>/dev/null || printf '%s' "$p"
-  else
-    node -e 'process.stdout.write(require("node:fs").realpathSync(process.argv[1]))' "$p" 2>/dev/null || printf '%s' "$p"
+  local p="$1" head rest="" d
+  if [ -d "$p" ]; then
+    ( cd "$p" 2>/dev/null && pwd -P ) && return 0
+  elif [ -L "$p" ]; then
+    node -e 'process.stdout.write(require("node:fs").realpathSync(process.argv[1]))' "$p" 2>/dev/null && return 0
+    printf '%s' "$p"; return 0
   fi
+  case "$p" in /*) ;; *) printf '%s' "$p"; return 0 ;; esac
+  head="${p%/}"
+  while [ -n "$head" ] && [ ! -d "$head" ]; do
+    rest="/${head##*/}$rest"; head="${head%/*}"
+  done
+  d="$( cd "${head:-/}" 2>/dev/null && pwd -P )" || { printf '%s' "$p"; return 0; }
+  [ "$d" = / ] && d=""
+  printf '%s' "$d$rest"
 }
 
 # Emit a single SBPL `(subpath "…")` line for a path, canonicalised + escaped.

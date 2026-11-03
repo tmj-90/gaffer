@@ -82,7 +82,7 @@ SELF="$HERE/run.sh"
 # with the integration branch (poll-overlap-run-state runs two real Polls, ~90 s), and
 # round 4 of it added sandbox-docker-delivery-seam, worker-command, land-ignored-file and
 # git-hooks-host.
-LONG_RE='^(gate-integrity-e2e(-retry)?|dashboard-lifecycle|gaffer-plan|eval-replay|auth-gate-delivery|merge-lane|land-tester-replay(-proof)?|parallel-stop(-live)?|waste-controls|security-review-lane|direct-run-isolation|review-wedge|afk-review-hold|branch-retention|branch-switch-fresh|branch-switch-recovery|rework-final-trail|memory-index-after-merge|rework-cost-live|landing-revocation|secondary-pr-landing|cleanup-ownership|poll-overlap-run-state|usage-limit-tick|tick-deadline|resume-abort|replay-manifest|e2e-.*|sandbox-docker-delivery-seam|worker-command|land-ignored-file|git-hooks-host)\.test\.(sh|mjs)$|^safety-hook\.test\.mjs$'
+LONG_RE='^(gate-integrity-e2e(-retry)?|dashboard-lifecycle|gaffer-plan|eval-replay|auth-gate-delivery|merge-lane|land-tester-replay(-proof|-contract)?|eval-experiment|parallel-stop(-live)?|waste-controls|security-review-lane|direct-run-isolation|review-wedge|afk-review-hold|branch-retention|branch-switch-fresh|branch-switch-recovery|rework-final-trail|memory-index-after-merge|rework-cost-live|landing-revocation|secondary-pr-landing|cleanup-ownership|poll-overlap-run-state|usage-limit-tick|tick-deadline|resume-abort|replay-manifest|e2e-.*|sandbox-docker-delivery-seam|worker-command|land-ignored-file|git-hooks-host)\.test\.(sh|mjs)$|^safety-hook\.test\.mjs$'
 CAP_SH="${GAFFER_RUN_CAP_SH:-120}" CAP_MJS="${GAFFER_RUN_CAP_MJS:-300}" CAP_LONG="${GAFFER_RUN_CAP_LONG:-600}"
 
 in_ci() { [ "${GITHUB_ACTIONS:-}" = "true" ]; }

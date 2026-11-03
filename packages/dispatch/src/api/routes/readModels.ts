@@ -497,8 +497,9 @@ export function routeReadModels(
     // REVIEW AND ACCEPTANCE MEASURES (Release A metrics): human review time per accepted
     // ticket (median/p75/p90, split into queue wait and decision time where the Review
     // view recorded an open), first-pass acceptance split by approver, the judging lanes'
-    // verdict counts, and escaped defects as not recorded yet.
-    const reviewMeasures = readReviewMeasures(wg.db);
+    // verdict counts, and the escaped-defect rate from the regression links a person filed
+    // (accepted changes in the same window as governance).
+    const reviewMeasures = readReviewMeasures(wg.db, { nowMs, windowDays });
 
     // Two previously-DEAD data sources, surfaced best-effort (a missing source
     // degrades to a null/available:false cell, NEVER breaks the endpoint):

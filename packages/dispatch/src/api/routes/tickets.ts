@@ -38,6 +38,7 @@ import {
   rejectReviewBody,
   reopenForReviewBody,
   reviewOpenedBody,
+  regressionOfBody,
   reviewRawOpenedBody,
   reopenWontDoBody,
   setPrimaryScopeBody,
@@ -104,6 +105,8 @@ const TICKET_SUB = {
   // REVIEW TELEMETRY (Release A metrics): a person opened the ticket / a raw view in Review.
   REVIEW_OPENED: "review-opened",
   REVIEW_RAW_OPENED: "review-raw-opened",
+  // ESCAPED DEFECTS (MF5): a person links this ticket to the accepted change it regresses.
+  REGRESSION_OF: "regression-of",
 } as const;
 
 /** `{ landing_state }` for an approved or held ticket, else nothing (spread into a ticket). */
@@ -702,6 +705,24 @@ export async function routeTickets(
       reason: r.reason,
       event_id: r.eventId,
       round_entered_at: r.roundEnteredAt,
+    });
+    return;
+  }
+  // ESCAPED DEFECTS (MF5): /tickets/:id/regression-of {of, note?, withdraw?}: a person says
+  // this ticket (a defect or its fix) regresses the accepted change `of`, or takes that
+  // back. Human or admin only (the service refuses an agent or the runner; a read token
+  // never reaches here). A measurement for Health; nothing gates on it.
+  if (segments.length === 3 && sub === TICKET_SUB.REGRESSION_OF && method === "POST") {
+    const body = regressionOfBody.parse(await readJsonBody(req));
+    const r = body.withdraw
+      ? wg.withdrawRegression(id, body.of, apiActor())
+      : wg.fileRegression(id, body.of, apiActor(), body.note ?? null);
+    sendJson(res, 200, {
+      ticket_id: r.ticketId,
+      regression_of: r.regressionOf,
+      recorded: r.recorded,
+      withdrawn: Boolean(body.withdraw),
+      event_id: r.eventId,
     });
     return;
   }

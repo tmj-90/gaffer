@@ -9,7 +9,7 @@
  *  - Only a person records either; a read-only token is refused by the capability gate.
  *  - `ticket.lane_verdict` is recorded by the runner (system) or an admin only.
  *  - GET /api/health serves the review-time and first-pass read models, the lane verdict
- *    counts and an honest "not recorded yet" for escaped defects.
+ *    counts and the escaped-defect rate from the links a person filed.
  */
 import { mkdtempSync, rmSync } from "node:fs";
 import type { AddressInfo } from "node:net";
@@ -277,7 +277,7 @@ describe("GET /api/health review and first-pass measures", () => {
     await h.close();
   });
 
-  it("serves review time, first-pass acceptance, lane verdicts and the escaped-defect gap", async () => {
+  it("serves review time, first-pass acceptance, lane verdicts and the escaped-defect rate", async () => {
     const t = inReview(h.wg);
     await call(h, "POST", `/tickets/${t.id}/review-opened`, {});
     h.wg.recordLaneVerdict(t.id, { lane: "agent-review", verdict: "approve" }, system);
@@ -311,21 +311,31 @@ describe("GET /api/health review and first-pass measures", () => {
       recorded: 1,
       by_lane: { "agent-review": { approve: 1 } },
     });
-    const esc = body.escaped_defects as { recorded: boolean; rate_pct: null; note: string };
-    expect(esc.recorded).toBe(false);
+    // Escaped defects are recordable now (MF5): one accepted change, no link filed. Its
+    // move to done is not in the log here, so it counts all time but not in the window.
+    const esc = body.escaped_defects as {
+      recorded: boolean;
+      rate_pct: number | null;
+      all_time: { rate_pct: number | null };
+      note: string;
+    };
+    expect(esc.recorded).toBe(true);
     expect(esc.rate_pct).toBeNull();
-    expect(esc.note).toMatch(/human-filed/);
+    expect(esc.all_time.rate_pct).toBe(0);
+    expect(esc.note).toMatch(/Counts only what a person filed/);
   });
 });
 
 describe("wg stats and wg ticket lane-verdict", () => {
-  it("wg stats prints first-pass acceptance, the review-time percentiles and the escaped-defect gap", () => {
+  it("wg stats prints first-pass acceptance, the review-time percentiles and the escaped-defect rate", () => {
     const wg = Dispatch.open(":memory:", new TestClock());
     try {
       const out = renderStats(computeStats(wg.db, new Date().toISOString(), {}));
       expect(out).toContain("First-pass acceptance: n/a (0 of 0 done");
       expect(out).toContain("Human review time per accepted ticket: median n/a, p75 n/a, p90 n/a");
-      expect(out).toMatch(/Escaped-defect rate: Not recorded yet: .*human-filed link/);
+      expect(out).toMatch(
+        /Escaped-defect rate: n\/a \(0 of 0 accepted changes.*Counts only what a person filed/,
+      );
     } finally {
       wg.db.close();
     }

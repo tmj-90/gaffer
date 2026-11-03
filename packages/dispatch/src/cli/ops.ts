@@ -604,7 +604,7 @@ export function computeStats(
     acceptedChange: computeAcceptedChange(db, env),
     reviewMeasures: (() => {
       try {
-        return readReviewMeasures(db);
+        return readReviewMeasures(db, { nowMs: Date.parse(nowIso) || Date.now() });
       } catch {
         return null;
       }
@@ -658,7 +658,10 @@ export function renderStats(stats: StatsReport): string {
     lines.push(
       `  queue wait median ${span(rt.queue_wait.median_ms)} · decision median ${span(rt.decision.median_ms)} (${rt.rounds.with_open_event} of ${rt.rounds.human_decided} rounds opened in Review) · review-ready to decision median ${span(rt.review_ready_to_decision.median_ms)} · approved without opening raw logs ${pc(rt.approved_without_raw_logs.pct)} of ${rt.approved_without_raw_logs.instrumented}`,
     );
-    lines.push(`Escaped-defect rate: ${m.escaped_defects.note}`);
+    const e = m.escaped_defects;
+    lines.push(
+      `Escaped-defect rate: ${pc(e.rate_pct)} (${e.escaped} of ${e.accepted_changes} accepted changes in the last ${e.window_days} days were linked to a later regression; ${pc(e.all_time.rate_pct)} of ${e.all_time.accepted_changes} all time, ${e.links} link(s)). ${e.note}`,
+    );
   }
   // ACCEPTANCE GATE: implementation merged is not build accepted.
   const a = stats.acceptance;

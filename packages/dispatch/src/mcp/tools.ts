@@ -713,6 +713,22 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
                 : quarantine("review-comment-excerpt", c.anchor_excerpt),
             body: quarantine("review-comment", c.body),
           })),
+          // ESCAPED DEFECTS (MF5), READ-ONLY: the accepted changes a person said this ticket
+          // regresses, and the later tickets linked to it as regressions. Ids, numbers and
+          // statuses only (the person's note is free text and stays out); no MCP tool files
+          // or withdraws a link.
+          regression_links: {
+            regression_of: view.regression.regression_of.map((l) => ({
+              ticket_id: l.ticket_id,
+              number: l.number,
+              status: l.status,
+            })),
+            regressed_by: view.regression.regressed_by.map((l) => ({
+              ticket_id: l.ticket_id,
+              number: l.number,
+              status: l.status,
+            })),
+          },
           // Redacted projection (no raw payload_json) — mirrors the activity
           // feed so free-text bodies never leak back into the agent's context.
           latest_events: projectEvents(view.events.slice(-20)),

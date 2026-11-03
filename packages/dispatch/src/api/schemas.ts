@@ -311,6 +311,14 @@ export const reviewRawOpenedBody = z.object({
 });
 export type ReviewRawOpenedBody = z.infer<typeof reviewRawOpenedBody>;
 
+/** ESCAPED DEFECTS (MF5): link this ticket to the accepted change it regresses (or withdraw). */
+export const regressionOfBody = z.object({
+  of: z.string().trim().min(1).max(80),
+  note: z.string().max(2_000).optional(),
+  withdraw: z.boolean().optional(),
+});
+export type RegressionOfBody = z.infer<typeof regressionOfBody>;
+
 export const setTestContractBody = z.object({
   changed_surfaces: z.array(z.string().trim().min(1).max(500)).max(100).default([]),
   runtime_deps: z.array(z.string().trim().min(1).max(500)).max(100).default([]),

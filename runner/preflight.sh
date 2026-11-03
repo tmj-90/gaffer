@@ -109,6 +109,11 @@ done
 [ -f "$CLAUDE_SETTINGS" ] && ok "claude settings (hook + permissions)" || no "settings.json missing"
 node --check "$HERE/safety-hook.mjs" 2>/dev/null && ok "safety hook parses" || no "safety hook broken"
 node --check "$HERE/safety-hook-core.mjs" 2>/dev/null && ok "safety hook core parses" || no "safety hook core broken"
+# The core re-exports the rules from lib/hook/: loading it once parses every module and
+# loads the deny-list, so a missing or broken one shows here instead of as a hook that
+# blocks every tool call.
+node --input-type=module -e 'const m = await import(process.argv[1]); process.exit(typeof m.decideRaw === "function" ? 0 : 1);' "$HERE/safety-hook-core.mjs" >/dev/null 2>&1 \
+  && ok "safety hook rules load (lib/hook, lib/dangerous-commands.mjs)" || no "safety hook rules do not load (a lib/hook module or lib/dangerous-commands.mjs is missing or broken)"
 SK=$(find "$SKILLS_DIR" -name SKILL.md 2>/dev/null | wc -l | tr -d ' ')
 [ "${SK:-0}" -gt 0 ] && ok "$SK skills installed" || no "no skills found in $SKILLS_DIR"
 

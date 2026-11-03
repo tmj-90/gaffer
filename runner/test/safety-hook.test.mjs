@@ -1417,6 +1417,13 @@ for (const [label, cmd] of [
   // Tester first: only the runner sends a delivery to the tester before review.
   ["wg ticket tester-route --as system", "wg ticket tester-route 5 --as system"],
   ["dispatch ticket tester-route --all", "dispatch ticket tester-route --all --as admin"],
+  // Acceptance profiles: a person registers the commands the runner runs; the runner
+  // records the runtime evidence. Neither is ever an agent's.
+  [
+    "wg ticket acceptance-profile",
+    "wg ticket acceptance-profile 5 --profile cli --spec-file spec.json",
+  ],
+  ["wg ticket acceptance-evidence", "wg ticket acceptance-evidence 5 --payload-file p.json"],
   // attach-evidence writes a SYSTEM row with any uri: a forged review pin
   // (gaffer-reviewed-commit:) or a replay-record look-alike. The runner's, never an agent's.
   [

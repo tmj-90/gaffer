@@ -433,7 +433,10 @@ export const DANGEROUS_COMMANDS = [
     // a person's or a bot's delegated access, never an agent's to mint or act as.
     // And the escaped-defect link (`regression-of`): a person's judgement that a change
     // caused a defect, never an agent's (`review-rules propose` is matched by `review`).
-    re: /\b(wg|dispatch|fg|crew)\b[^\n|;&]*\b(review|regression-of|approve|approve-ready|mark-merged|record-landing|landing-begin|record-tester-replay|ci-result|eval-score|lane-verdict|tester-route|attach-evidence|reject|repo-access|set-testable|allow-test-changes|set-commands|test-contract|tester-pass|tester-fail|repo-delivery|require-cap|set-reviewer|decisions[ \t]+resolve|agent[ \t]+rename|club[ \t]+set|wont-do|principal[ \t]+(?:create|revoke)|as-principal)\b/,
+    // And the acceptance profile (`acceptance-profile`): the commands the runner runs for a
+    // ticket's cli/api profile are a person's to register; and the runtime evidence
+    // (`acceptance-evidence`): the runner's record of running them, never an agent's.
+    re: /\b(wg|dispatch|fg|crew)\b[^\n|;&]*\b(review|regression-of|acceptance-profile|acceptance-evidence|approve|approve-ready|mark-merged|record-landing|landing-begin|record-tester-replay|ci-result|eval-score|lane-verdict|tester-route|attach-evidence|reject|repo-access|set-testable|allow-test-changes|set-commands|test-contract|tester-pass|tester-fail|repo-delivery|require-cap|set-reviewer|decisions[ \t]+resolve|agent[ \t]+rename|club[ \t]+set|wont-do|principal[ \t]+(?:create|revoke)|as-principal)\b/,
     why: "control-plane CLI write (use the scoped MCP, not the privileged wg/dispatch/fg/crew CLI)",
     example: "wg ticket approve T-1",
     crewFlags: false,
@@ -457,9 +460,9 @@ export const DANGEROUS_COMMANDS = [
   },
   {
     re: new RegExp(
-      String.raw`(?:\bnode\b[^\n;&|]*[\s/]|${CMD_POS})(?:merge-ticket|tester-run|product-owner-run|onboard-run|plan-run|spec-author|decompose|epic-feature|inherit-repo|skill-add)\.mjs${WORD_END}|${CMD_POS}poll-once\.sh${WORD_END}`,
+      String.raw`(?:\bnode\b[^\n;&|]*[\s/]|${CMD_POS})(?:merge-ticket|tester-run|product-owner-run|onboard-run|plan-run|spec-author|decompose|epic-feature|inherit-repo|skill-add|acceptance-profiles)\.mjs${WORD_END}|${CMD_POS}poll-once\.sh${WORD_END}`,
     ),
-    why: "a factory runner entry point (merge-ticket / tester-run / product-owner-run / plan-run / … .mjs) — lands work or spawns agents outside the gates",
+    why: "a factory runner entry point (merge-ticket / tester-run / product-owner-run / plan-run / acceptance-profiles / … .mjs) — lands work or spawns agents outside the gates",
     example: "node runner/bin/merge-ticket.mjs --ticket 3",
     crewFlags: false,
   },

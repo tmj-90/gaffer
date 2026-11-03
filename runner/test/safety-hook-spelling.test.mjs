@@ -154,6 +154,34 @@ for (const cmd of [
   t.deny(`human-only measure verb: ${cmd}`, bash(cmd), opts);
 }
 
+// (h2) the acceptance profile (Release C): the commands the runner runs for a ticket's
+// cli/api profile are a person's to register, and the runtime evidence is the runner's
+// to record. An agent that could do either would choose its own acceptance test or
+// forge the transcript that backs its PASS.
+for (const cmd of [
+  "wg ticket acceptance-profile 3 --profile cli --spec '{\"cases\":[]}'",
+  "wg ticket acceptance-profile 3 --profile unit",
+  "dispatch ticket acceptance-profile 3 --profile api --spec-file spec.json --admin",
+  "node packages/dispatch/dist/cli/index.js ticket acceptance-profile 3 --profile unit",
+  "wg ticket 'acceptance-profile' 3 --profile unit",
+  "wg ticket accept''ance-profile 3 --profile unit",
+  "wg ticket acceptance\\-profile 3 --profile unit",
+  "W=wg; $W ticket acceptance-profile 3 --profile unit",
+  "$X ticket acceptance-profile 3 --profile unit",
+  "eval 'wg ticket acceptance-profile 3 --profile unit'",
+  "bash -c 'wg ticket acceptance-profile 3 --profile unit'",
+  "gaffer wg ticket acceptance-profile 3 --profile unit",
+  "wg --db x.sqlite ticket acceptance-profile 3 --profile unit",
+  "wg ticket acceptance-evidence 3 --payload-file /tmp/p.json",
+  "dispatch ticket acceptance-evidence 3 --payload-file p.json",
+  "node packages/dispatch/dist/cli/index.js ticket acceptance-evidence 3 --payload-file p.json",
+  "wg ticket 'acceptance-evidence' 3 --payload-file p.json",
+  "$(which wg) ticket acceptance-evidence 3 --payload-file p.json",
+  "node runner/lib/acceptance-profiles.mjs run --profile cli --checkout . --spec-file s.json",
+]) {
+  t.deny(`acceptance-profile verb: ${cmd}`, bash(cmd), opts);
+}
+
 // (i) a verb the command text does not show (lane-hook R2): built at run time in the
 // verb slot of a privileged CLI, or handed to it by xargs, parallel or find from their
 // input. The verb cannot be read, so the hook refuses it, for every control-plane verb.
@@ -165,6 +193,8 @@ for (const verb of [
   "regression-of",
   "wont-do",
   "mark-merged",
+  "acceptance-profile",
+  "acceptance-evidence",
 ]) {
   const half = verb.slice(0, 3);
   const tail = verb.slice(3);

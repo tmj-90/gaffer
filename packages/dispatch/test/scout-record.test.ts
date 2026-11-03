@@ -164,6 +164,25 @@ describe("scout record: on the ticket, in Review and Health", () => {
     expect(ev.n).toBe(1);
   });
 
+  it("the declared level is the ticket's own: a record cannot claim a lower one", () => {
+    const { id } = deliver();
+    // The ticket is declared medium. A record (an admin's, or a stale packet) that says
+    // "declared low" with a medium signal must not read as a raise.
+    const admin: Actor = { type: "admin", id: "root" };
+    const forged = packet({
+      risk: {
+        declared: "low",
+        effective: "medium",
+        raised: true,
+        signals: [{ kind: "schema", detail: "schema file x.sql", level: "medium", raises: true }],
+      },
+    });
+    const res = d.recordScout(id, forged, admin);
+    expect(res.scout).toMatchObject({ declared: "medium", effective: "medium", raised: false });
+    expect(res.scout.signals[0]!.raises).toBe(false);
+    expect(scoutRaisedFact(res.scout)).toBeNull();
+  });
+
   it("Review: a raised risk is a backing row with its signals; none when not raised", () => {
     const { id, claimToken, agent } = deliver();
     d.recordScout(id, packet(), runner);

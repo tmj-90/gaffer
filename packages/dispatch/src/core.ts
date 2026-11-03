@@ -2602,7 +2602,8 @@ export class Dispatch {
       input && typeof input === "object" && !Array.isArray(input)
         ? (input as Record<string, unknown>)
         : {};
-    const scout = normalizeScoutRecord(packet, actor);
+    // The declared level is the ticket's own, not the packet's copy of it.
+    const scout = normalizeScoutRecord(packet, actor, ticket.risk_level);
     const eventId = writeEvent(this.db, {
       entity_type: "ticket",
       entity_id: ticket.id,

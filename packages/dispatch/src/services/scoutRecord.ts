@@ -101,14 +101,21 @@ const obj = (v: unknown): Record<string, unknown> =>
 /**
  * Validate the runner's scout packet (the JSON lib/scout.mjs writes, with its `risk`)
  * into the stored summary. Refuses a packet without a risk classification; clamps the
- * rest. `effective` is recomputed as max(declared, signals) so a record can never say
- * the scout lowered a ticket's risk.
+ * rest. `declared` is the ticket's own risk_level when the caller passes it (the packet's
+ * copy is only a fallback), and `effective` is recomputed as max(declared, signals), so a
+ * record can never say the scout lowered a ticket's risk, nor claim a raise from a level
+ * below the one the ticket declares.
  */
-export function normalizeScoutRecord(input: Record<string, unknown>, actor: Actor): ScoutRecord {
+export function normalizeScoutRecord(
+  input: Record<string, unknown>,
+  actor: Actor,
+  ticketDeclared?: string,
+): ScoutRecord {
   const risk = obj(input.risk);
   if (!risk.declared && !risk.effective)
     throw new DispatchError("VALIDATION_ERROR", "a scout record needs the packet's risk.", {});
-  const declared = level(risk.declared, "medium");
+  const declared =
+    ticketDeclared !== undefined ? level(ticketDeclared, "medium") : level(risk.declared, "medium");
   const signals: ScoutSignal[] = (Array.isArray(risk.signals) ? risk.signals : [])
     .map((s) => obj(s))
     .filter((s) => (SCOUT_SIGNAL_KINDS as readonly string[]).includes(String(s.kind)))

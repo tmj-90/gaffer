@@ -182,11 +182,12 @@ grep -q 'credentials.json' <<<"$ARGV" && fail "validation profile mounts the cre
 has_arg DISPATCH_DB && fail "validation forwards DISPATCH_DB" || ok "validation: no DB env"
 grep -q 'no model credential' "$WORK/stderr.val" && fail "validation profile nagged about a missing credential" || ok "validation: no credential warning (none is wanted)"
 
-echo "== (e2) a tester replay under the validation profile: the proof key's PATH only =="
-# The replay's signing key never crosses: only the key FILE's path does
+echo "== (e2) the tester replay's profile: the validation layout, the proof key's PATH only =="
+# The clean replay (bin/tester-run.mjs) asks for GAFFER_SANDBOX_PROFILE=replay: here that is
+# the validation layout. Its signing key never crosses: only the key FILE's path does
 # (lib/tester-replay.mjs), and a proof directory outside every mount is mounted for it.
 KPROOF="$WORK/elsewhere/.gaffer-replay-abc"; mkdir -p "$KPROOF/k-1"; : > "$KPROOF/k-1/f00"
-ARGV="$(GAFFER_SANDBOX_DRY_RUN=1 GAFFER_SANDBOX_PROFILE=validation GAFFER_MCP_BRIDGE_SOCKET= GAFFER_SANDBOX_DATA_PLANE=none \
+ARGV="$(GAFFER_SANDBOX_DRY_RUN=1 GAFFER_SANDBOX_PROFILE=replay GAFFER_MCP_BRIDGE_SOCKET= GAFFER_SANDBOX_DATA_PLANE=none \
   GAFFER_REPLAY_PROOF_KEY="0123456789abcdef-a-key-value" GAFFER_REPLAY_PROOF_KEY_FILE="$KPROOF/k-1/f00" \
   bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- bash -c 'node --test' 2>"$WORK/stderr.replay")"
 [ -n "$(_beyond)" ] && fail "replay profile references GAFFER_DATA beyond the worktree: $(_beyond | head -3 | tr '\n' ' ')" || ok "replay: NOTHING under GAFFER_DATA but the worktree is mounted (the validation layout)"

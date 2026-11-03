@@ -133,36 +133,91 @@ export function profileEnv({ home, extra = {}, base = process.env }) {
 /**
  * The sandbox posture for a profile run: the same decision the DoD gates make (wrap when
  * the sandbox is on or required, GAFFER_DOD_SANDBOX=0 opts out), from the same provider
- * seam, with the validation profile. → { ok, wrap: string[], label, docker, message? }.
+ * seam, with the validation profile (or `profile`: the tester replay asks for "replay",
+ * see replaySandbox; `readRoots` reach the provider for it). → { ok, wrap: string[],
+ * label, docker, profile, diag?, message? }.
  */
-export function profileSandbox({ writeRoots, env = process.env }) {
+export function profileSandbox({
+  writeRoots,
+  readRoots = [],
+  env = process.env,
+  profile = "validation",
+}) {
   if (!sandboxWanted(env))
-    return { ok: true, wrap: [], label: "none (no OS sandbox configured)", docker: false };
+    return {
+      ok: true,
+      wrap: [],
+      label: "none (no OS sandbox configured)",
+      docker: false,
+      profile,
+    };
   // The provider is asked first, as tick.sh does: a REQUIRED sandbox the host cannot supply
   // refuses the run even with the GAFFER_DOD_SANDBOX=0 opt-out (which only drops the wrap).
   const wrapped = sandboxWrapArgv({
     writeRoots: writeRoots.join("\n"),
-    readRoots: "",
+    readRoots: readRoots.join("\n"),
     env: {
       ...env,
-      GAFFER_SANDBOX_PROFILE: "validation",
+      GAFFER_SANDBOX_PROFILE: profile,
       GAFFER_MCP_BRIDGE_SOCKET: "",
       GAFFER_SANDBOX_DATA_PLANE: "none",
     },
   });
   if (!wrapped.ok)
-    return { ok: false, wrap: [], label: "refused", docker: false, message: wrapped.message };
+    return {
+      ok: false,
+      wrap: [],
+      label: "refused",
+      docker: false,
+      profile,
+      message: wrapped.message,
+    };
   if (falsy(env.GAFFER_DOD_SANDBOX))
-    return { ok: true, wrap: [], label: "none (GAFFER_DOD_SANDBOX=0)", docker: false };
+    return { ok: true, wrap: [], label: "none (GAFFER_DOD_SANDBOX=0)", docker: false, profile };
   const docker = wrapped.wrap.some((w) => /(^|\/)sandbox-docker\.sh$/.test(w));
   return {
     ok: true,
     wrap: wrapped.wrap,
     label: wrapped.wrap.length
-      ? `${env.SANDBOX_PROVIDER || "sandbox-exec"} (validation profile)`
+      ? `${env.SANDBOX_PROVIDER || "sandbox-exec"} (${profile} profile)`
       : "none (the provider added no wrap)",
     docker,
+    profile,
+    diag: wrapped.diag || "",
   };
+}
+
+/**
+ * The sandbox posture for the tester lane's CLEAN REPLAY (bin/tester-run.mjs): the tester's
+ * own test files run there, so it is profileSandbox with the `replay` profile (lib/
+ * sandbox.sh: the validation profile plus read denials for $GAFFER_DATA outside the write
+ * and read roots and for HOME's secret folders under sandbox-exec; the validation layout
+ * under docker, which mounts nothing else), and it FAILS CLOSED one step further than a
+ * profile run: a sandbox that is ON (STRICT_MODE=1) but that the provider could not supply
+ * on this host (no wrap) is refused too, so the replay holds instead of running the
+ * tester's code unsandboxed. GAFFER_DOD_SANDBOX=0 (the person's opt-out for the gates)
+ * still drops the wrap, and with no sandbox configured at all the replay runs bare (the
+ * stripped environment and the proof key file still apply). Read roots go to sandbox-exec
+ * only: the docker wrapper mounts the verified dependency links and git metadata itself.
+ * → as profileSandbox.
+ */
+export function replaySandbox({ writeRoots, readRoots = [], env = process.env }) {
+  const docker = String(env.SANDBOX_PROVIDER || "sandbox-exec") === "docker";
+  const sb = profileSandbox({
+    writeRoots,
+    readRoots: docker ? [] : readRoots,
+    env,
+    profile: "replay",
+  });
+  if (!sb.ok) return sb;
+  if (sandboxWanted(env) && !falsy(env.GAFFER_DOD_SANDBOX) && sb.wrap.length === 0)
+    return {
+      ...sb,
+      ok: false,
+      label: "unavailable",
+      message: `STRICT_MODE asks for an OS sandbox and SANDBOX_PROVIDER=${env.SANDBOX_PROVIDER || "sandbox-exec"} supplied none on this host${sb.diag ? ` (${sb.diag.split("\n")[0].replace(/\s+\u2014\s.*$/, "")})` : ""}`,
+    };
+  return sb;
 }
 
 /**
@@ -190,7 +245,7 @@ export function wrappedSpawn(argv, env, sb, base = process.env) {
     RUNNER_DIR,
     GAFFER_HOME: base.GAFFER_HOME || GAFFER_HOME,
     GAFFER_DATA: base.GAFFER_DATA || resolve(GAFFER_HOME, ".gaffer"),
-    GAFFER_SANDBOX_PROFILE: "validation",
+    GAFFER_SANDBOX_PROFILE: sb.profile || "validation",
     GAFFER_MCP_BRIDGE_SOCKET: "",
     GAFFER_SANDBOX_DATA_PLANE: "none",
   };

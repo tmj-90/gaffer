@@ -353,13 +353,13 @@ export function applyTesterTests({ worktree, testsHead, files }) {
 // the identities named); an extra test never stands in for a missing one. An older PASS
 // without identities keeps the file-level rule, and its record says "files" (file-level
 // evidence only), never an identity-level green.
-// LIMIT: the tester lane's clean replay (bin/tester-run.mjs) runs the tester's files
-// UNSANDBOXED as the runner user. Its signing key reaches only the reporter, as here (in
-// a file the reporter unlinks at load, see below), but test code there can read the
-// runner's environment and files and call the dispatch CLI as the system actor. So the
-// identities it records are evidence against a non-adversarial tester's tests, not
-// against a tester's code attacking the replay; sandboxing the clean replay is a listed
-// follow-up.
+// CONTAINMENT (external review 11): the tester lane's clean replay (bin/tester-run.mjs)
+// runs the tester's files through the gate sandbox seam (the `replay` profile: the
+// validation profile plus read denials for $GAFFER_DATA outside the checkout and for
+// HOME's secret folders under sandbox-exec, the validation layout under docker), in the
+// stripped profile environment (no model credential, no GAFFER_DATA or DISPATCH_DB, `wg`
+// and `gaffer` shadowed on PATH, a scratch HOME and TMPDIR); a sandbox that strict mode
+// asks for and the host cannot supply HOLDS the replay, it never runs unsandboxed.
 //
 // FORGERY (external review #7, the reviewer's follow-up). The code under test runs in the
 // same process tree as the runner, so anything it can print or write is no proof: a

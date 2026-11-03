@@ -838,6 +838,31 @@ console.log(
   off.logged === ""
     ? ok("no verdict recorded with the replay off")
     : fail(`recorded: ${off.logged}`);
+  // CONTAINMENT (external review 11): strict mode asks for an OS sandbox and this host
+  // cannot supply one (the docker provider with no reachable daemon): the clean replay
+  // never runs the tester's files unsandboxed, it HOLDS, and the PASS is held unverified.
+  LIVE.g("branch", "-D", "gaffer-tests/ticket-1");
+  const nosb = runLive("PASS", {
+    STRICT_MODE: "1",
+    SANDBOX_PROVIDER: "docker",
+    DOCKER_HOST: "unix:///nonexistent/gaffer-test-docker.sock",
+  });
+  nosb.code === 2 &&
+  nosb.out &&
+  nosb.out.phase === "held" &&
+  nosb.out.unverified === true &&
+  nosb.out.replay &&
+  nosb.out.replay.state === "held" &&
+  /^unverified: the clean replay was held \(.*OS sandbox.*SANDBOX_PROVIDER=docker/.test(
+    nosb.out.reason || "",
+  )
+    ? ok(
+        "STRICT_MODE=1 with no sandbox on the host: the PASS is held unverified, the sandbox named",
+      )
+    : fail(`no-sandbox strict PASS not held (code=${nosb.code}, out=${JSON.stringify(nosb.out)})`);
+  nosb.logged === ""
+    ? ok("no verdict recorded when the replay could not be sandboxed")
+    : fail(`recorded: ${nosb.logged}`);
   // A FAIL needs no replay: it is recorded as before (a FAIL is never a false green).
   LIVE.g("branch", "-D", "gaffer-tests/ticket-1");
   const f = runLive("FAIL", { GAFFER_TESTER_REPLAY: "0" });

@@ -508,7 +508,9 @@ _cleanup_private_git() {
 # layout) is bind-mounted back on top of the tmpfs that hides its siblings.
 # ── DATA-PLANE MODE ──────────────────────────────────────────────────────────────
 #   validation  GAFFER_SANDBOX_PROFILE=validation (the DoD gates / AC checks): NOTHING
-#               from $GAFFER_DATA and NO model credential — a gate needs neither.
+#               from $GAFFER_DATA and NO model credential — a gate needs neither. The
+#               tester lane's clean replay asks for GAFFER_SANDBOX_PROFILE=replay, which
+#               is this same layout here (it already mounts nothing else).
 #   bridge      GAFFER_MCP_BRIDGE_SOCKET set: MCP servers on the host, only the socket.
 #   none        no --mcp-config in the argv, or GAFFER_SANDBOX_DATA_PLANE=none (an
 #               empty MCP config): no databases; the hook's ledgers only.
@@ -547,7 +549,7 @@ if [ "${1:-}" = "env" ]; then
 fi
 [ "$_CMD_WORKER" = 1 ] || { _CMD_MCP=""; _CMD_PROMPT=""; }
 [ -n "$_CMD_MCP" ] && _HAS_MCP=1
-if [ "${GAFFER_SANDBOX_PROFILE:-}" = "validation" ]; then _MODE=validation
+if [ "${GAFFER_SANDBOX_PROFILE:-}" = "validation" ] || [ "${GAFFER_SANDBOX_PROFILE:-}" = "replay" ]; then _MODE=validation
 elif [ -n "${GAFFER_MCP_BRIDGE_SOCKET:-}" ]; then _MODE=bridge
 elif [ "${GAFFER_SANDBOX_DATA_PLANE:-}" = "none" ] || [ "$_HAS_MCP" = 0 ]; then _MODE=none
 elif _bridge_wanted; then

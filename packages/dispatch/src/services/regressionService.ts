@@ -16,8 +16,7 @@ import {
   type RegressionLink,
 } from "./escapedDefects.js";
 import { DispatchError } from "../util/errors.js";
-import type { Dispatch } from "../core.js";
-import type { TicketView } from "../core.js";
+import type { Dispatch, TicketView } from "../core.js";
 
 /** What these functions read from the {@link Dispatch} facade they are handed. */
 export type RegressionHost = Pick<Dispatch, "db" | "regressionLinkRows" | "resolveTicket">;

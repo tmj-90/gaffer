@@ -1,5 +1,4 @@
 import type { AcceptanceProfile } from "./domain/acceptanceProfile.js";
-
 import { type Db, openDatabase } from "./db/connection.js";
 import {
   type AcStatus,
@@ -180,8 +179,6 @@ import {
   type PrincipalView,
 } from "./repositories/principalRepository.js";
 import { type Access, type AccessAction, type ScopeTicket } from "./services/accessScope.js";
-export { BOARD_COLUMNS } from "./services/boardService.js";
-export type { BoardColumn } from "./services/boardService.js";
 import { SuggestionService, type RepoSuggestion } from "./services/suggestionService.js";
 import { TransitionService, type TransitionResult } from "./services/transitionService.js";
 import { buildNotifierFromEnv } from "./notify/config.js";
@@ -189,6 +186,33 @@ import type { Notifier } from "./notify/types.js";
 import { type Clock, systemClock } from "./util/clock.js";
 import { newId } from "./util/id.js";
 import type { DispatchInternals } from "./services/dispatchInternals.js";
+import { type TesterLaneDecision, type TestingLaneMode } from "./util/testingLane.js";
+import type {
+  TicketDetailPart,
+  TicketDetailBatchItem,
+  TicketView,
+} from "./services/ticketReadService.js";
+import type { ReviewOpenResult } from "./services/ticketRecordsService.js";
+
+// The services whose functions hold the method bodies this facade delegates to.
+import * as gate from "./services/gateNotifications.js";
+import * as ticketGit from "./services/ticketGitService.js";
+import * as autonomyGate from "./services/autonomyGateService.js";
+import * as principalAdmin from "./services/principalAdminService.js";
+import * as landing from "./services/landingFactsService.js";
+import * as reviewLifecycle from "./services/reviewLifecycleService.js";
+import * as ticketLifecycle from "./services/ticketLifecycleService.js";
+import * as testerLane from "./services/testerLaneService.js";
+import * as ticketRecords from "./services/ticketRecordsService.js";
+import * as regressions from "./services/regressionService.js";
+import * as ticketLinks from "./services/ticketLinksService.js";
+import * as planning from "./services/planningService.js";
+import * as runRegistry from "./services/runRegistryService.js";
+import * as eventLog from "./services/eventLogService.js";
+import * as ticketReads from "./services/ticketReadService.js";
+
+export { BOARD_COLUMNS } from "./services/boardService.js";
+export type { BoardColumn } from "./services/boardService.js";
 
 /**
  * Default cap on how many times a delivery may be rejected back into the queue
@@ -216,26 +240,16 @@ export {
   testingLaneMode,
   testerOffNotice,
 } from "./util/testingLane.js";
-import { type TesterLaneDecision, type TestingLaneMode } from "./util/testingLane.js";
-import * as gate from "./services/gateNotifications.js";
-import * as ticketGit from "./services/ticketGitService.js";
-import * as autonomyGate from "./services/autonomyGateService.js";
-import * as principalAdmin from "./services/principalAdminService.js";
-import * as landing from "./services/landingFactsService.js";
-import * as reviewLifecycle from "./services/reviewLifecycleService.js";
-import * as ticketLifecycle from "./services/ticketLifecycleService.js";
-import * as testerLane from "./services/testerLaneService.js";
-import * as ticketRecords from "./services/ticketRecordsService.js";
-import * as regressions from "./services/regressionService.js";
-export type { EvidenceView } from "./services/ticketReadService.js";
+
+/** The ticket view, the batched details and their parts (see services/ticketReadService.ts). */
 export { TICKET_DETAIL_PARTS } from "./services/ticketReadService.js";
-export type { TicketDetailPart } from "./services/ticketReadService.js";
-import type { TicketDetailPart } from "./services/ticketReadService.js";
-export type { TicketDetailBatchItem } from "./services/ticketReadService.js";
-import type { TicketDetailBatchItem } from "./services/ticketReadService.js";
+export type {
+  EvidenceView,
+  TicketDetailBatchItem,
+  TicketDetailPart,
+  TicketView,
+} from "./services/ticketReadService.js";
 export type { RegressionLinkView } from "./services/regressionService.js";
-export type { TicketView } from "./services/ticketReadService.js";
-import type { TicketView } from "./services/ticketReadService.js";
 
 /**
  * The execution boundary for a ticket, partitioned by access (WG-002). Only
@@ -303,13 +317,9 @@ export type { CreateEpicResult } from "./services/epicsService.js";
 
 /** Result of adding a ticket dependency (EP-001). */
 export type { AddDependencyResult } from "./services/ticketService.js";
+
+/** What recording a review open did (see services/ticketRecordsService.ts). */
 export type { ReviewOpenResult } from "./services/ticketRecordsService.js";
-import type { ReviewOpenResult } from "./services/ticketRecordsService.js";
-import * as ticketLinks from "./services/ticketLinksService.js";
-import * as planning from "./services/planningService.js";
-import * as runRegistry from "./services/runRegistryService.js";
-import * as eventLog from "./services/eventLogService.js";
-import * as ticketReads from "./services/ticketReadService.js";
 
 /**
  * Dispatch core API. The single entry point used by the CLI and MCP server.

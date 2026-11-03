@@ -2495,7 +2495,7 @@
           "Read models"
         ],
         "summary": "Factory health and ROI",
-        "description": "Event-log hash-chain integrity, spend, event-derived cycle time and throughput, flow efficiency, governance, skills and recall. `review_time` is human review time per accepted ticket (median, p75, p90; split into queue wait and decision time where the Review view recorded an open, the full span in review otherwise, named in `basis`), `first_pass` is first-pass acceptance split by approver, `lane_verdicts` counts the judging lanes' verdicts and `escaped_defects` says the rate is not recorded yet. `usage_pause` reports the runner's pause after a usage-limit or rate-limit refusal (`{ active, paused_until, kind, basis, message, ticket, lane? }`; `{ active: false }` when not paused).",
+        "description": "Event-log hash-chain integrity, spend, event-derived cycle time and throughput, flow efficiency, governance, skills and recall. `review_time` is human review time per accepted ticket (median, p75, p90; split into queue wait and decision time where the Review view recorded an open, the full span in review otherwise, named in `basis`), `first_pass` is first-pass acceptance split by approver, `lane_verdicts` counts the judging lanes' verdicts and `escaped_defects` says the rate is not recorded yet. `tester_lane` is `{ mode, repos_without_test_command, notices }`: the GAFFER_TESTING setting (`on`, `off`, or the `auto` default) and, under `auto`, each repository where the independent tester is off because no test command is registered, with its one-line notice. `usage_pause` reports the runner's pause after a usage-limit or rate-limit refusal (`{ active, paused_until, kind, basis, message, ticket, lane? }`; `{ active: false }` when not paused).",
         "parameters": [
           {
             "name": "window_days",
@@ -3986,7 +3986,7 @@
           "Review & delivery"
         ],
         "summary": "Approve the review",
-        "description": "Moves the ticket to ready_for_merge (or in_testing on the tester lane) and pins, per write repository, the commit the reviewer saw. `commits` names them (the diff endpoint's `repoId` + `headSha`); 409 with `details.reason` `stale_revision` when any branch head moved since it was shown (nothing is approved), `revision_required` when no commit is named, `repo_unavailable` (naming each repo) when any write repository's delivery head cannot be read — an approval covers every write repository, so nothing is approved until each one resolves. Triggers the merge runner only when AUTO_MERGE is on and the approval reached ready_for_merge (an approval routed to in_testing starts no merge and carries no `merge`; one that reached ready_for_merge carries `ticket.landing_state`, as GET /tickets/:id does); otherwise `merge.skipped` is `auto_merge_off` and the ticket waits for POST /tickets/:id/merge. The reviewer may not be the delivering agent.",
+        "description": "Moves the ticket to ready_for_merge and pins, per write repository, the commit the reviewer saw. `commits` names them (the diff endpoint's `repoId` + `headSha`); 409 with `details.reason` `stale_revision` when any branch head moved since it was shown (nothing is approved), `revision_required` when no commit is named, `not_tested` when the independent tester gates the ticket (an epic's acceptance ticket, or a testable one whose tester lane is on) and has not passed the commit under review (tester first: the runner sends it to the tester, and it returns to review after a PASS; `details` names `why`, the `tested` commit and the `head`), `repo_unavailable` (naming each repo) when any write repository's delivery head cannot be read — an approval covers every write repository, so nothing is approved until each one resolves. Triggers the merge runner only when AUTO_MERGE is on and the approval reached ready_for_merge (an approval routed to in_testing starts no merge and carries no `merge`; one that reached ready_for_merge carries `ticket.landing_state`, as GET /tickets/:id does); otherwise `merge.skipped` is `auto_merge_off` and the ticket waits for POST /tickets/:id/merge. The reviewer may not be the delivering agent.",
         "parameters": [
           {
             "name": "id",
@@ -5179,7 +5179,7 @@
           "Review & delivery"
         ],
         "summary": "Delivery diff",
-        "description": "`git diff <default branch>...<head>` per write repository, where `headSha` is the delivery branch's commit at read time (`repoId` names the repo). Send them back on approve. An in_review ticket also carries `approve_outcome` (the ApproveOutcome schema): the first step a human Approve would certainly take now — `to_tester`, `land_now`, `land_next_tick`, `waits_for_merge`, `held_ci` or `held_repo_unavailable` (a write repository's delivery head cannot be read, so the server refuses the approval) — computed from the settings and ticket state the approve path acts on; when the tests that gate it changed, `agent_hold` names the `held_test_modified` hold an agent or auto approval would hit (a human approval is not held by it). It also carries `reject_outcome`: what Fix these would do now.",
+        "description": "`git diff <default branch>...<head>` per write repository, where `headSha` is the delivery branch's commit at read time (`repoId` names the repo). Send them back on approve. An in_review ticket also carries `approve_outcome` (the ApproveOutcome schema): the first step a human Approve would certainly take now — `land_now`, `land_next_tick`, `waits_for_merge`, `held_ci`, `held_untested` (the independent tester has not passed this commit, so the server refuses the approval) or `held_repo_unavailable` (a write repository's delivery head cannot be read, so the server refuses the approval) — computed from the settings and ticket state the approve path acts on; when the tests that gate it changed, `agent_hold` names the `held_test_modified` hold an agent or auto approval would hit (a human approval is not held by it). It also carries `reject_outcome`: what Fix these would do now.",
         "parameters": [
           {
             "name": "id",
@@ -5282,7 +5282,7 @@
           "Review & delivery"
         ],
         "summary": "Delivery dossier",
-        "description": "The tamper-evident evidence artifact. JSON by default; markdown with `?format=markdown` or `Accept: text/markdown`. `?include=packet` adds `review_packet` (outside the hashed subject): the runner-verified gates, tester verdict, cost and turns, attempts and rework, risk reasons, the reviewed-commit pin, each criterion's check result or `no machine evidence`, any test count the agent claimed that disagrees with the runner's, `intent` (the ticket's description), `candidate` (per write repository: the commit the runner gated, the head now, the tester's commit and the pin, with `same`, and `gated_earlier` when the commit on record is an earlier attempt's because this attempt's record is not in yet), `ci` (the latest CI result for the candidate commit, or null), `run_links` (dashboard run logs that were running at the delivery or the tester verdict, found by time window) and `backing` (`{fact, holds, source, cell}` rows: what backs the delivery and what does not; no score).",
+        "description": "The tamper-evident evidence artifact. JSON by default; markdown with `?format=markdown` or `Accept: text/markdown`. `?include=packet` adds `review_packet` (outside the hashed subject): the runner-verified gates, tester verdict, cost and turns, attempts and rework, risk reasons, the reviewed-commit pin, each criterion's check result or `no machine evidence`, any test count the agent claimed that disagrees with the runner's, `intent` (the ticket's description), `candidate` (per write repository: the commit the runner gated, the head now, the tester's commit and the pin, with `same`, and `gated_earlier` when the commit on record is an earlier attempt's because this attempt's record is not in yet), `ci` (the latest CI result for the candidate commit, or null), `tester_lane` (the GAFFER_TESTING setting, whether the tester lane is on for this ticket's repositories, and the write repositories with no registered test command), `run_links` (dashboard run logs that were running at the delivery or the tester verdict, found by time window) and `backing` (`{fact, holds, source, cell}` rows: what backs the delivery and what does not; no score).",
         "parameters": [
           {
             "name": "id",
@@ -11706,6 +11706,7 @@
             "enum": [
               "held_ci",
               "held_repo_unavailable",
+              "held_untested",
               "held_test_modified",
               "to_tester",
               "land_now",
@@ -11715,7 +11716,7 @@
           },
           "approvable": {
             "type": "boolean",
-            "description": "False only when the server would refuse (held_ci, held_repo_unavailable, or held_test_modified for an agent)."
+            "description": "False only when the server would refuse (held_ci, held_repo_unavailable, held_untested, or held_test_modified for an agent)."
           },
           "to_status": {
             "anyOf": [

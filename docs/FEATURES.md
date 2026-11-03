@@ -354,8 +354,10 @@ usage ledger and the ticket transition log, and says only what those can show:
   many verdicts it recorded, how often its verdict differed from your decision on
   the same attempt (split into "it blocked and you passed it" and "it passed and
   you sent it back"), how often it was the only lane that asked for a send-back,
-  and its ledger cost per attempt. An attempt runs from one start of work to the
-  next; a verdict joins the attempt it falls in by time. A lane with no verdicts
+  and its ledger cost per attempt (spend over the attempt ids on the lane's ledger
+  rows, which are the latest delivery row when the call ran: a join by time order).
+  An attempt runs from one start of work to the next (resuming a delivery paused at
+  a cap continues it); a verdict joins the attempt it falls in by time. A lane with no verdicts
   says "no verdicts recorded" (the plan debate records none and books with the rest
   of planning). It also counts the send-backs no lane asked for. These are counts,
   not advice: nothing reads them to switch a lane off, and the security review and
@@ -363,7 +365,8 @@ usage ledger and the ticket transition log, and says only what those can show:
 - **Review rules from your feedback.** When the same send-back reason or must-fix
   comment from a person (compared after dropping ids, paths, file names and
   numbers) turns up on three tickets in a repository (`GAFFER_REVIEW_RULE_REPEAT`,
-  2 to 20), the next send-back or must-fix comment proposes it as a lore
+  2 to 20, also in Settings under Quality), the next send-back or must-fix comment
+  proposes it, once its response has gone back to you, as a lore
   `convention` draft tagged `review-rule`, scoped to that repository, with the
   source comments and reasons as examples and the count. You approve or reject it
   like any other draft (the Memory view, `gaffer lore approve`); it never
@@ -373,7 +376,10 @@ usage ledger and the ticket transition log, and says only what those can show:
   candidates and each proposed rule with its status and its measure: rejections
   citing it per review round you decided in that repository, before and after
   approval over equal windows, or "not enough data" until there are five rounds
-  after. `wg review-rules propose` proposes by hand.
+  after. `wg review-rules propose` proposes by hand. The proposal never holds up
+  your reject or comment: it runs after the response, a memory failure changes
+  nothing you did, and after one the dashboard waits five minutes before it tries
+  the memory CLI again.
 
 - **Rework.** A ticket is *sent back* when a reviewer or the tester rejects it,
   or when the runner retries it after a failed gate; both count. Every delivery

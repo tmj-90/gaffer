@@ -82,7 +82,8 @@ export function normaliseFeedback(text: string): string | null {
     // Ticket refs (#12, T-12) and uuids, then hex ids with a digit in them.
     .replace(/#\d+\b|\bt-\d+\b/g, " ")
     .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/g, " ")
-    .replace(/\b(?=[0-9a-f]*\d)[0-9a-f]{7,64}\b/g, " ")
+    // Six characters is the shortest comment-id prefix the CLI accepts.
+    .replace(/\b(?=[0-9a-f]*\d)[0-9a-f]{6,64}\b/g, " ")
     .replace(/\d+/g, " ")
     .replace(/[^a-z\s]+/g, " ")
     .replace(/\s+/g, " ")

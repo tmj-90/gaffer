@@ -6,7 +6,9 @@
 # `node --check safety-hook-core.mjs` no longer sees a missing or broken rule
 # module. preflight loads the core once: a copy of the runner with a lib/hook/
 # module or lib/dangerous-commands.mjs gone must show a ✗ (the hook would block
-# every tool call), and the intact runner a ✓.
+# every tool call), and the intact runner a ✓. tick.sh's up-front check
+# (gaffer_assert_safety_hook) refuses a runner without lib/hook/ before it launches
+# an agent, naming the directory.
 # Zero deps. Run: bash test/preflight-hook-rules.test.sh
 # =====================================================================
 . "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
@@ -55,6 +57,24 @@ rm "$WORK/copy/lib/dangerous-commands.mjs"
 OUT="$(pf "$WORK/copy")"
 [[ "$OUT" == *"$BROKEN"* ]] && ok "a missing lib/dangerous-commands.mjs is a ✗" \
   || fail "missing deny-list not caught: $(printf '%s' "$OUT" | grep -i 'safety hook')"
+
+echo "== tick.sh's up-front check (gaffer_assert_safety_hook) names lib/hook =="
+cp "$RUNNER_DIR/lib/dangerous-commands.mjs" "$WORK/copy/lib/"
+ASSERT_FN="$(sed -n '/^gaffer_assert_safety_hook() {$/,/^}$/p' "$RUNNER_DIR/tick.sh")"
+[ -n "$ASSERT_FN" ] || fail "gaffer_assert_safety_hook() not found in tick.sh"
+assert_in() {  # $1 = runner dir; prints the log line, exits with the function's status
+  ( RUNNER_DIR="$1"; log() { printf '%s\n' "$*"; }; eval "$ASSERT_FN"; gaffer_assert_safety_hook )
+}
+OUT="$(assert_in "$WORK/copy")" && ok "the intact copy passes the up-front check" \
+  || fail "intact copy refused: $OUT"
+mv "$WORK/copy/lib/hook" "$WORK/hook-away"
+if OUT="$(assert_in "$WORK/copy")"; then
+  fail "a runner without lib/hook passes the up-front check (the tick would launch an agent whose hook blocks every call)"
+else
+  [[ "$OUT" == *"lib/hook"* ]] && ok "a runner without lib/hook is refused up front, naming lib/hook" \
+    || fail "refused without naming lib/hook: $OUT"
+fi
+mv "$WORK/hook-away" "$WORK/copy/lib/hook"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

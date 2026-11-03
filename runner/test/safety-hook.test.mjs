@@ -1407,6 +1407,9 @@ for (const [label, cmd] of [
     "wg ticket lane-verdict 5 --lane agent-review --verdict approve --as system",
   ],
   ["dispatch ticket lane-verdict", "dispatch ticket lane-verdict 5 --lane tester --verdict pass"],
+  // Tester first: only the runner sends a delivery to the tester before review.
+  ["wg ticket tester-route --as system", "wg ticket tester-route 5 --as system"],
+  ["dispatch ticket tester-route --all", "dispatch ticket tester-route --all --as admin"],
   // attach-evidence writes a SYSTEM row with any uri: a forged review pin
   // (gaffer-reviewed-commit:) or a replay-record look-alike. The runner's, never an agent's.
   [

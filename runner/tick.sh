@@ -3977,6 +3977,15 @@ $_trail_q
     log "H3: ci-gate.sh not loaded — skipping (GAFFER_REQUIRE_CI=${GAFFER_REQUIRE_CI:-0})"
   fi
 
+  # TESTER FIRST (lib/tester.sh): the gates passed and nothing reviews it before a person
+  # (REVIEW_MODE=human), so a delivery the independent tester gates goes to it now, before
+  # the person sees it in Review; its PASS brings it back to review. With a reviewer agent
+  # (agent|both) the agent review pass routes it after its verdict instead. Dispatch
+  # decides whether the tester gates the ticket; fail-soft.
+  if [ "${REVIEW_MODE:-human}" = "human" ] && declare -F gaffer_tester_route >/dev/null 2>&1; then
+    gaffer_tester_route "$NUM"
+  fi
+
   result worked; exit 0
 fi
 
@@ -3987,10 +3996,11 @@ fi
 # skipped to avoid re-review loops (loop.sh clears the file each run).
 _gaffer_agent_review_pass
 
-# ── Independent tester lane ── lib/tester.sh. When GAFFER_TESTING is on, hand the
-# next `in_testing` ticket to the black-box tester agent (bin/tester-run.mjs --live);
-# PASS → ready_for_merge, FAIL → refining, no verdict → held for a human. Exits the
-# tick when it tests one; otherwise returns and the flow falls through.
+# ── Independent tester lane ── lib/tester.sh. Sends in_review tickets the tester gates
+# to it (tester first, REVIEW_MODE=human), then hands the next `in_testing` ticket to the
+# black-box tester agent (bin/tester-run.mjs --live); PASS → back to review (or
+# ready_for_merge after an agent's approval), FAIL → refining, no verdict → held for a
+# human. Exits the tick when it tests one; otherwise returns and the flow falls through.
 declare -F _gaffer_tester_pass >/dev/null 2>&1 && _gaffer_tester_pass
 
 # ── Intake clarify gate ── extracted to lib/clarify.sh (B-H3, monolith paydown).

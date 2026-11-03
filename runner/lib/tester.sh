@@ -1,9 +1,17 @@
 # Gaffer INDEPENDENT TESTER pass — the testing analog of lib/review.sh. Sourced by
-# tick.sh; runs at the end-of-tick flow after the agent review pass. When the
-# GAFFER_TESTING lane is on, a ticket the review gate routed to `in_testing` is
-# handed to the independent black-box tester agent (bin/tester-run.mjs --live), which
-# tests it from the contract + acceptance criteria only and records PASS
-# (→ ready_for_merge) or FAIL (→ refining) through the dispatch seam. A ticket the
+# tick.sh; runs at the end-of-tick flow after the agent review pass.
+# TESTER FIRST: when the lane applies to a ticket (an epic's acceptance ticket, or a
+# testable one whose lane is on: GAFFER_TESTING on, or the default `auto` with a
+# registered test command in every write repo; dispatch decides), the tester tests a
+# delivery BEFORE a person reviews it. gaffer_tester_route sends an in_review ticket to
+# in_testing (the delivery tick right after its gates in REVIEW_MODE=human, the agent
+# review pass after the reviewer when that runs, and the sweep at the top of this pass
+# for anything left: a crash in between, a conflict reopen, a push after a PASS). The
+# in_testing ticket is handed to the independent black-box tester agent
+# (bin/tester-run.mjs --live), which tests it from the contract + acceptance criteria
+# only and records PASS (→ back to in_review for the person, who approves the tested
+# commit; → ready_for_merge when an agent's approval sent it) or FAIL (→ refining, the
+# observation is the next attempt's review feedback) through the dispatch seam. A ticket the
 # tester cannot decide (no verdict token, the tester changed implementation files,
 # a PASS that failed its clean replay, a PASS with NO clean replay because the repo
 # has no registered test command ("unverified", on every ticket kind), …) is HELD
@@ -19,10 +27,44 @@
 # shellcheck shell=bash
 # shellcheck disable=SC2154  # globals provided by tick.sh at call time
 
-_gaffer_tester_pass() {
-  local _lane_on=0
-  case "${GAFFER_TESTING:-0}" in 1|true|yes|on) _lane_on=1 ;; esac
+# TESTER FIRST: send in_review ticket $1 (or every in_review ticket with --all) to the
+# independent tester before a person reviews it. Dispatch decides whether the tester
+# gates it and whether a PASS already covers its head (a no-op then), so this can be
+# asked blindly. Fail-soft: a refusal or an older dispatch leaves the ticket in review,
+# where a person's approval of an untested commit is refused anyway (not_tested).
+gaffer_tester_route() {
   [ "${DRY_RUN:-0}" = "1" ] && return 0
+  local _tr_out _tr_n
+  if [ "${1:-}" = "--all" ]; then
+    _tr_out="$(wg ticket tester-route --all --as system 2>/dev/null)" || return 0
+  else
+    [ -n "${1:-}" ] || return 0
+    _tr_out="$(wg ticket tester-route "$1" --as system 2>/dev/null)" || {
+      log "TESTER: could not send #$1 to the independent tester (left in review; approval waits for a PASS)"
+      return 0
+    }
+  fi
+  _tr_n="$(printf '%s' "$_tr_out" | jget '(Array.isArray(d.routes) ? d.routes : []).filter(r => r && r.routed).map(r => "#" + r.number).join(" ")' 2>/dev/null || echo '')"
+  [ -n "$_tr_n" ] && log "TESTER: sent $_tr_n to the independent tester before review (tester first)"
+  return 0
+}
+
+_gaffer_tester_pass() {
+  # The lane as the operator set it: on, off, or the `auto` default (unset): dispatch
+  # sends a ticket to in_testing only where its lane applies, so under `auto` every
+  # in_testing ticket is the tester's. Only an explicit off narrows the pick below.
+  local _lane=auto
+  case "$(printf '%s' "${GAFFER_TESTING:-}" | tr '[:upper:]' '[:lower:]')" in
+    ""|auto) _lane=auto ;;
+    1|true|yes|on) _lane=on ;;
+    *) _lane=off ;;
+  esac
+  local _lane_on=1
+  [ "$_lane" = off ] && _lane_on=0
+  [ "${DRY_RUN:-0}" = "1" ] && return 0
+  # TESTER FIRST sweep: with no agent reviewer to wait for (REVIEW_MODE=human), every
+  # in_review ticket the tester gates and has not passed on its head goes to it now.
+  if [ "${REVIEW_MODE:-human}" = "human" ]; then gaffer_tester_route --all; fi
   TESTED_FILE="${GAFFER_RUN_STATE_DIR:-$GAFFER_DATA}/.tested-tickets"; touch "$TESTED_FILE"
   local _held_file="$GAFFER_DATA/.tester-held" _list_ok=1
   TJSON="$(wg ticket list -s in_testing 2>/dev/null)" || { TJSON='[]'; _list_ok=0; }
@@ -55,7 +97,8 @@ _gaffer_tester_pass() {
     _t_tries=$((_t_tries + 1)); [ "$_t_tries" -lt 50 ] || return 0
   done
   [ -f "$RUNNER_DIR/bin/tester-run.mjs" ] || { log "TESTER: bin/tester-run.mjs missing — cannot run the tester lane"; return 0; }
-  if [ "$_lane_on" -eq 1 ]; then log "TESTER: independent black-box tester for in_testing #$TNUM (lane on)"
+  if [ "$_lane" = on ]; then log "TESTER: independent black-box tester for in_testing #$TNUM (lane on)"
+  elif [ "$_lane" = auto ]; then log "TESTER: independent black-box tester for in_testing #$TNUM (lane auto: a test command is registered)"
   else log "TESTER: independent black-box tester for ACCEPTANCE #$TNUM (lane off — acceptance is a gate, not an option)"; fi
   # Where a FAIL lands: when the autonomy policy lets the runner drive the review gate
   # for this ticket (the same approve decision the review pass asks), a FAIL is a
@@ -106,6 +149,7 @@ _gaffer_tester_pass() {
       _T_NOW="$(wg ticket show "$TNUM" 2>/dev/null | jget 'd.ticket.status' 2>/dev/null || echo '?')"
       log "TESTER: #$TNUM verdict=${_T_VERDICT} recorded${_T_BRANCH:+ (tests kept on $_T_BRANCH)} → $_T_NOW"
       [ "$_T_NOW" = "ready" ] && log "TESTER: #$TNUM FAIL re-queued for REWORK with the tester's observation as feedback (autonomous; the retry cap parks at the threshold)"
+      [ "$_T_NOW" = "in_review" ] && log "TESTER: #$TNUM PASS: back in review for a person, who approves the tested commit"
       ;;
     held)
       log "TESTER: #$TNUM HELD in_testing — ${_t_reason:-the tester-run gave no reason} (rc=$_trc); a human decides${_T_BRANCH:+ (tests kept on $_T_BRANCH)}"

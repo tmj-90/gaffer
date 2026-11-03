@@ -18,10 +18,12 @@
 #      → a plan whose ticket omits expiry) is confirmed unedited through POST /epics;
 #   2  the generated acceptance ticket carries the agreed requirement as a criterion;
 #   3  the implementation ticket is delivered, approved by a human and landed; the
-#      acceptance ticket is delivered and approved → in_testing;
+#      acceptance ticket is delivered and sent to the tester before review (tester
+#      first: a person's approval before its PASS is refused);
 #   4  the independent tester LAUNCHES on it (the packet check does not refuse it),
 #      receives the agreed 30-minute requirement in its prompt, and its verdict is
-#      recorded: PASS → ready_for_merge, bound to the tested commit.
+#      recorded: PASS → back in review, bound to the tested commit, which a person then
+#      approves → ready_for_merge.
 # Run: bash runner/test/e2e-release-gate-epic-verdict.test.sh
 # =====================================================================
 . "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
@@ -134,19 +136,22 @@ AUTO_MERGE=0 run_tick >/dev/null
 wg review approve "$IMPL" $(approve_heads "$IMPL") --reviewer human1 >/dev/null 2>&1
 GAFFER_MODE=autonomous AUTO_MERGE=1 run_tick >/dev/null
 [ "$(st "$IMPL")" = "done" ] && ok "#$IMPL landed (merge gate passed)" || fail "#$IMPL status=$(st "$IMPL") $(grep "#$IMPL" "$GAFFER_DATA/factory.log" | tail -2 | tr '\n' '|' | cut -c1-300)"
-[ "$(st "$ACC")" = "in_review" ] || AUTO_MERGE=0 run_tick >/dev/null
-[ "$(st "$ACC")" = "in_review" ] && ok "acceptance #$ACC delivered on the integrated main" || fail "acceptance status=$(st "$ACC") $(grep "#$ACC" "$GAFFER_DATA/factory.log" | tail -3 | tr '\n' '|' | cut -c1-400)"
+[ "$(st "$ACC")" = "in_testing" ] || AUTO_MERGE=0 run_tick >/dev/null
+[ "$(st "$ACC")" = "in_testing" ] && ok "acceptance #$ACC delivered on the integrated main and sent to the tester before review" || fail "acceptance status=$(st "$ACC") $(grep "#$ACC" "$GAFFER_DATA/factory.log" | tail -3 | tr '\n' '|' | cut -c1-400)"
 [ -s "$WORK/prompts/acceptance-delivery.txt" ] && ok "the acceptance delivery agent got the acceptance block (it reads the criteria, the agreed one included, through get_ticket)" || fail "the acceptance delivery prompt lacks the acceptance block"
 # shellcheck disable=SC2046  # one --commit <repo>=<sha> word pair per head
 wg review approve "$ACC" $(approve_heads "$ACC") --reviewer human1 >/dev/null 2>&1
-[ "$(st "$ACC")" = "in_testing" ] && ok "approved acceptance → in_testing (acceptance always goes to the tester)" || fail "acceptance after approve: $(st "$ACC")"
+[ "$(st "$ACC")" = "in_testing" ] && ok "an approval before the tester's PASS changes nothing (acceptance always goes to the tester first)" || fail "acceptance after an early approve: $(st "$ACC")"
 
 echo "== 4: the independent tester launches, hears the agreed requirement, and records a verdict =="
 AUTO_MERGE=0 run_tick >/dev/null
 [ -s "$WORK/prompts/tester.txt" ] && ok "the tester LAUNCHED on the generated acceptance ticket (not refused before the worker)" || fail "the tester never ran: $(grep -i 'tester' "$GAFFER_DATA/factory.log" | tail -3 | tr '\n' '|' | cut -c1-400)"
 grep -qF "$ANSWER" "$WORK/prompts/tester.txt" 2>/dev/null && ok "the tester's packet carries 'Agreed during planning: $ANSWER'" || fail "the tester's prompt lacks the agreed requirement"
 grep -q "implementation pointer" "$GAFFER_DATA/factory.log" && fail "the packet check refused the ticket" || ok "no packet-check refusal in the factory log"
-[ "$(st "$ACC")" = "ready_for_merge" ] && ok "verdict recorded: tester PASS → ready_for_merge" || fail "acceptance after the tester: $(st "$ACC") $(grep -i 'TESTER' "$GAFFER_DATA/factory.log" | tail -3 | tr '\n' '|' | cut -c1-400)"
+[ "$(st "$ACC")" = "in_review" ] && ok "verdict recorded: tester PASS → back in review for a person" || fail "acceptance after the tester: $(st "$ACC") $(grep -i 'TESTER' "$GAFFER_DATA/factory.log" | tail -3 | tr '\n' '|' | cut -c1-400)"
+# shellcheck disable=SC2046  # one --commit <repo>=<sha> word pair per head
+wg review approve "$ACC" $(approve_heads "$ACC") --reviewer human1 >/dev/null 2>&1
+[ "$(st "$ACC")" = "ready_for_merge" ] && ok "a person approves the tested commit → ready_for_merge" || fail "acceptance after approve: $(st "$ACC")"
 TESTED="$(wg ticket show "$ACC" | jget '((d.evidence || []).filter(e => e.evidence_type === "test_output" && /"verdict":"pass"/.test(e.payload_json || "")).map(e => JSON.parse(e.payload_json).tested_commit).pop()) || ""')"
 [ -n "$TESTED" ] && ok "the PASS is bound to the tested commit (${TESTED:0:12})" || fail "the PASS carries no tested commit"
 

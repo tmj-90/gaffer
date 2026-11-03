@@ -41,13 +41,13 @@ echo "== setup: two deliveries for the PR-mode landings, each green on its own =
 NT=($(new_tickets "Note ten [note-10]${TAB}a note" "Note eleven [note-11]${TAB}a note"))
 T10="${NT[0]:-}" T11="${NT[1]:-}"
 for _ in $T10 $T11; do AUTO_MERGE=0 run_tick >/dev/null; done
-[ "$(st "$T10")" = in_review ] && [ "$(st "$T11")" = in_review ] && ok "both delivered through their DoD gates (in_review)" || fail "statuses: #$T10=$(st "$T10") #$T11=$(st "$T11")"
+[ "$(st "$T10")" = in_testing ] && [ "$(st "$T11")" = in_testing ] && ok "both delivered through their DoD gates and sent to the tester before review" || fail "statuses: #$T10=$(st "$T10") #$T11=$(st "$T11")"
 
 echo "== main moves: displayName removed — a clean merge, the smoke suite stays green =="
 move_main
 
 echo "== G: PR mode (lib/land.sh), green — the record names what LANDED, not the scratch merge =="
-approve "$T10"; tester_pass "$T10" "$NAME_TEST"
+tester_pass "$T10" "$NAME_TEST"; approve "$T10"
 git -C "$R" push -q origin "$(branch_of "$T10")" 2>/dev/null   # the PR's head branch, on the remote
 MAIN_G="$(git -C "$R" rev-parse main)"
 (
@@ -74,7 +74,7 @@ R10="$(replay_rec "$T10")"
 case "$R10" in *'["test/bb-label.test.js"]'*) ok "G: …and the tester file that passed on the candidate with that tree" ;; *) fail "G: record files: $R10" ;; esac
 
 echo "== H: PR mode (bin/merge-ticket.mjs) — the remote moved before GitHub merged: no record =="
-approve "$T11"; tester_pass "$T11" "$NAME_TEST"
+tester_pass "$T11" "$NAME_TEST"; approve "$T11"
 git -C "$R" push -q origin "$(branch_of "$T11")" 2>/dev/null
 node -e 'const {DatabaseSync}=require("node:sqlite");const d=new DatabaseSync(process.argv[1]);d.prepare("UPDATE tickets SET pr_url=? WHERE number=?").run("https://github.com/o/r/pull/11",Number(process.argv[2]));d.close()' "$DISPATCH_DB" "$T11" 2>/dev/null
 cat > "$WORK/bin/gh-h" <<GH
@@ -119,10 +119,10 @@ T12="${NT[0]:-}" T13="${NT[1]:-}"
 NT=($(new_tickets -r repo3 "Note fourteen [note-14]${TAB}a note" "Note fifteen [note-15]${TAB}a note"))
 T14="${NT[0]:-}" T15="${NT[1]:-}"
 for _ in 1 2 3 4; do AUTO_MERGE=0 run_tick >/dev/null; done
-for n in "$T12" "$T13" "$T14" "$T15"; do approve "$n"; done
 [ "$(st "$T12")" = in_testing ] && [ "$(st "$T14")" = in_testing ] && ok "I: the file-scoped repos' deliveries passed their gates and went to the tester" || fail "I: statuses T12=$(st "$T12") T13=$(st "$T13") T14=$(st "$T14") T15=$(st "$T15")"
 tester_pass_in "$R2" "$T12" "$ACC_LABEL"; tester_pass_in "$R2" "$T13" "$ACC_NAME"
 tester_pass_in "$R3" "$T14" "$ACC_NAME"
+for n in "$T12" "$T13" "$T14"; do approve "$n"; done
 # main moves in repo2: displayName removed; the registered (file-scoped) suite stays green.
 sed -i.bak 's/, displayName: "Ada"//' "$R2/src/profile.js" && rm -f "$R2/src/profile.js.bak"
 gitc -C "$R2" commit -qam "refactor: drop the unused displayName"
@@ -156,7 +156,7 @@ H14="$(hold_of "$T14")"
 [ -z "$(replay_rec "$T14")" ] && ok "J: no replay record for the unverified file" || fail "J: #$T14 recorded: $(replay_rec "$T14")"
 EV14="$(wg ticket show "$T14" | jget '(d.evidence || []).filter(e => (e.summary || "").startsWith("TESTER REPLAY UNVERIFIED")).map(e => e.summary).join("\n")' 2>/dev/null)"
 case "$EV14" in *"TESTER REPLAY UNVERIFIED"*test/acceptance.test.mjs*) ok "J: the ticket page's evidence says which file did not run" ;; *) fail "J: evidence: ${EV14:0:300}" ;; esac
-tester_pass_in "$R3" "$T15" "$ACC_NAME"
+tester_pass_in "$R3" "$T15" "$ACC_NAME"; approve "$T15"
 merge_now "$T15"; rc=$?
 [ "$rc" -eq 4 ] && grep -q "TESTER REPLAY UNVERIFIED" "$WORK/mn.out" && grep -q "test/acceptance.test.mjs" "$WORK/mn.out" && ok "J: Merge now refuses #$T15 the same way (exit 4, the file named)" || fail "J: Merge now rc=$rc $(tail -c 400 "$WORK/mn.out")"
 [ "$(git -C "$R3" rev-parse main)" = "$MAIN_J" ] && [ "$(st "$T15")" = blocked ] && [ -z "$(replay_rec "$T15")" ] && ok "J: …nothing landed, held, no record" || fail "J: #$T15 status=$(st "$T15") main=$(git -C "$R3" rev-parse main) rec=$(replay_rec "$T15")"
@@ -195,9 +195,9 @@ R4="$WORK/repo4"; mkdir -p "$R4/src" "$R4/test"
 wg repo add -n repo4 --path "$R4" --branch main --stack node --test "node --test test/label.test.mjs" >/dev/null 2>&1
 T16="$(new_ticket_in repo4 "Label tweak [forge-proof]" "label() reads the profile")"
 for _ in 1 2; do AUTO_MERGE=0 run_tick >/dev/null; done
-approve "$T16"
 [ "$(st "$T16")" = in_testing ] && ok "K: the forging delivery passed its own gates and went to the tester" || fail "K: #$T16 status=$(st "$T16")"
 tester_pass_in "$R4" "$T16" "$ACC_LABEL"
+approve "$T16"
 MAIN_K="$(git -C "$R4" rev-parse main)"
 rm -f "$GAFFER_DATA/.merge-held-tickets"
 GAFFER_MODE=autonomous AUTO_MERGE=1 run_tick >/dev/null

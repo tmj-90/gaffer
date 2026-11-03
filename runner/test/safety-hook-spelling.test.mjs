@@ -321,4 +321,43 @@ for (const cmd of [
   t.allow(`a mention, not a command: ${cmd}`, bash(cmd), opts);
 }
 
+// (k) TEST IDENTITIES (external review 10): the tests a tester PASS binds, and the tests a
+// replay record proves, are the runner's to record. Every spelling of the verbs that
+// carry them (`tester-pass --tests-json`, `record-tester-replay --tests-json`) is refused,
+// the identities fed from stdin, a file, a substitution or xargs included.
+const IDS = `'[{"file":"test/a.test.mjs","name":"smoke"}]'`;
+for (const cmd of [
+  `wg ticket tester-pass 5 --summary ok --tests-commit ${"a".repeat(40)} --tests-json ${IDS} --as system`,
+  `dispatch ticket tester-pass 5 --summary ok --tests-json ${IDS} --as system`,
+  `wg ticket 'tester-pass' 5 --summary ok --tests-json ${IDS}`,
+  `wg ticket tester-p''ass 5 --summary ok --tests-json ${IDS}`,
+  `wg ticket tester\\-pass 5 --summary ok --tests-json ${IDS}`,
+  `wg --db x.sqlite ticket tester-pass 5 --summary ok --tests-json ${IDS} --as system`,
+  `node ${R}/../packages/dispatch/dist/cli/index.js ticket tester-pass 5 --summary ok --tests-json ${IDS}`,
+  `wg ticket tester-pass 5 --summary ok --tests-json "$(cat ids.json)" --as system`,
+  `wg ticket tester-pass 5 --summary ok --tests-json \`cat ids.json\` --as system`,
+  `echo ${IDS} | xargs wg ticket tester-pass 5 --summary ok --as system --tests-json`,
+  `echo ${IDS} | xargs -I{} wg ticket tester-pass 5 --summary ok --tests-json {} --as system`,
+  `cat ids.json | xargs -0 wg ticket tester-pass 5 --summary ok --tests-json`,
+  `bash -c 'wg ticket tester-pass 5 --summary ok --tests-json "[]" --as system'`,
+  `bash <<< 'wg ticket tester-pass 5 --summary ok --tests-json "[]" --as system'`,
+  `echo 'wg ticket tester-pass 5 --summary ok --tests-json "[]"' | sh`,
+  `W=wg; $W ticket tester-pass 5 --summary ok --tests-json ${IDS}`,
+  `$DISPATCH_CLI ticket tester-pass 5 --summary ok --tests-json ${IDS}`,
+  `wg ticket record-tester-replay 5 --commit ${"b".repeat(40)} --pin ${"a".repeat(40)} --files-json '[]' --tests-json ${IDS} --evidence identities --as system`,
+  `dispatch ticket record-tester-replay 5 --commit x --pin y --tests-json "$(cat ids.json)" --evidence files`,
+  `echo ${IDS} | xargs wg ticket record-tester-replay 5 --commit x --pin y --tests-json`,
+  `eval 'wg ticket record-tester-replay 5 --commit x --pin y --tests-json []'`,
+]) {
+  t.deny(`test identities are the runner's: ${cmd}`, bash(cmd), opts);
+}
+// Mentions stay allowed.
+for (const cmd of [
+  'git commit -m "tester-pass now binds --tests-json identities"',
+  "grep -rn tests-json runner/lib",
+  "wg ticket show 5",
+]) {
+  t.allow(`a mention of the identity flags: ${cmd}`, bash(cmd), opts);
+}
+
 t.done();

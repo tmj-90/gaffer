@@ -170,6 +170,9 @@ GAFFER_PAUSE_KEEP_WORKTREE="${GAFFER_PAUSE_KEEP_WORKTREE:-0}"
 # the trap still releases a truly-stranded claim.
 GAFFER_CLAIM_RESOLVED="${GAFFER_CLAIM_RESOLVED:-0}"
 gaffer_crash_cleanup() {
+  # REPLAY MANIFEST (lib/replay-manifest.sh): an attempt no outcome completed ends here:
+  # `killed` on a signal, `ended` on any other exit. Fail-soft; a no-op when none is open.
+  declare -F gaffer_manifest_close >/dev/null 2>&1 && gaffer_manifest_close "${_GAFFER_EXIT_CAUSE:-exit}"
   # Reap any orphaned in-flight agent FIRST — before any branch/worktree decision.
   # A runaway `claude -p` must be torn down regardless of how this tick ends
   # (complete, paused, or crashed); on a clean finish this is a no-op because
@@ -561,6 +564,9 @@ gaffer_release_delivery() {
   local to="$1" reason="$2" code="${3:-}" attempt="${4:-}" maxa="${5:-}" until="${6:-}"
   # DRY_RUN never claims, so it never releases — keep it side-effect-free.
   [ "${DRY_RUN:-0}" = "1" ] && return 0
+  # REPLAY MANIFEST: a release ends the open attempt (the usage window, an auth or budget
+  # refusal, an empty delivery, any park) unless a sharper outcome was already written.
+  declare -F gaffer_manifest_finish >/dev/null 2>&1 && gaffer_manifest_finish "released:$to${code:+:$code}"
   local extra=()
   [ -n "$code" ]    && extra+=(--reason-code "$code")
   [ -n "$attempt" ] && extra+=(--attempt "$attempt")
@@ -2651,6 +2657,7 @@ $PRODUCT_CONTEXT_BLOCK}"
       gaffer_cleanup_worktrees
       gaffer_skip_ticket "$NUM"
       log "RECOVER: #$NUM is already 'blocked' (the agent parked it on a decision during attempt $_DELIV_ATTEMPT) — ending the rework loop without another attempt; branch $WORK_BRANCH PRESERVED, worktree removed"
+      gaffer_manifest_finish "park:agent-blocked"
       _DELIV_OUTCOME="parked"
       return 0
     fi
@@ -2718,6 +2725,7 @@ $real
       # real repo between attempts).
       gaffer_cleanup_worktrees
       log "RECOVER: #$NUM $gate failed on attempt $_DELIV_ATTEMPT — branch $WORK_BRANCH PRESERVED; re-invoking the agent with the real failure (attempt $_next/$_MAX_DELIVERY_ATTEMPTS)"
+      gaffer_manifest_finish "rework:$gate"
       _DELIV_OUTCOME="retry"
       return 0
     fi
@@ -2740,6 +2748,7 @@ $real
     # card or event; the release below sets the parked card. Without it the ticket page
     # read "Attempt N/N not taken" for an attempt that was tried. Fail-soft.
     local _fshort; _fshort="$(printf '%s' "$real" | grep -v '^[[:space:]]*$' | head -1)"
+    gaffer_manifest_finish "park:$gate"
     [ "${DRY_RUN:-0}" = "1" ] || wg runner-rework "$NUM" --attempt "$((_DELIV_ATTEMPT + 1))" --max "$_MAX_DELIVERY_ATTEMPTS" \
       --reason "${gate}: ${_fshort:-failed}" --gate "$gate" --failure "$real" --final >/dev/null 2>&1 || true
     gaffer_release_delivery blocked "$_reason" rework_exhausted "$_DELIV_ATTEMPT" "$_MAX_DELIVERY_ATTEMPTS"
@@ -2953,6 +2962,11 @@ $_trail_q
   # (gaffer_usage_record reads both), so spend after a send-back is charged as rework.
   read -r GAFFER_USAGE_ATTEMPT_ID GAFFER_USAGE_STARTED_AT <<<"$(gaffer_delivery_attempt_stamp "$_DELIV_ATTEMPT")" || true
   export GAFFER_USAGE_ATTEMPT_ID GAFFER_USAGE_STARTED_AT
+  # REPLAY MANIFEST (lib/replay-manifest.sh, delta gap 4): open this attempt's record
+  # ($GAFFER_DATA/manifests/<ticket>-<n>.json: repos and base commits, the routing
+  # decision, the settings, hashes of the prompt and scout packet, the ledger join key).
+  # Completed where the attempt ends. A measurement; fail-soft; nothing in a DRY_RUN.
+  gaffer_manifest_start "$PROMPT$_REWORK_BLOCK"
   GAFFER_LAUNCH_KIND=delivery worker_deliver "$PRIMARY_REPO" "$PROMPT$_REWORK_BLOCK" "$_ATTEMPT_IMPL_FLAG" "$MCP_RUNTIME" "$USAGE_JSON" "$WRAP" \
     "" ${_CALL_BUDGET_ARGS[@]+"${_CALL_BUDGET_ARGS[@]}"}
   rc=$?
@@ -3136,6 +3150,7 @@ $_trail_q
     _PAUSE_REASON="cap_hit"
     [ "$_TIMEOUT_HIT" = "1" ] && _PAUSE_REASON="timeout"
     [ "$_BUDGET_HIT" = "1" ] && _PAUSE_REASON="budget_cap"
+    gaffer_manifest_finish "paused:$_PAUSE_REASON" "$rc"
     gaffer_usage_record delivery "$NUM" "$rc" "$USAGE_JSON" "" "$_DELIV_ATTEMPT" >>"$GAFFER_LOG" 2>/dev/null || true
     rm -f "$USAGE_JSON"
     # Serialise the full worktree map (one entry per write repo) so a multi-repo
@@ -3208,6 +3223,7 @@ $_trail_q
       [ "$_DELIV_OUTCOME" = "retry" ] && continue
       result error; exit 0
     fi
+    gaffer_manifest_finish "failed:no-commit" "$rc"
     gaffer_cleanup_worktrees drop-branch
     # RUNNER-OWNED-BOOKKEEPING: nothing was produced — release the runner-held claim
     # back to `ready` so a later tick can retry cleanly (skip-file prevents a re-pick
@@ -3658,6 +3674,7 @@ $_trail_q
       if printf '%s\n' "$DOD_ROWS" | gaffer_run_dod_gates "$DOD_RESULTS"; then
         log "DoD: #$NUM PASSED — $(gaffer_dod_summary_line "$DOD_RESULTS")"
         gaffer_dod_log_integrity "$DOD_RESULTS"
+        gaffer_manifest_gates "$DOD_RESULTS"
         # Zero executed gates means no gate commands are configured (all skipped):
         # the delivery was never actually verified. FAIL by default so a
         # misconfigured repo cannot silently ship unverified work. Opt out with
@@ -3695,6 +3712,7 @@ $_trail_q
         _DOD_SUM="$(gaffer_dod_summary_line "$DOD_RESULTS")"
         log "DoD: #$NUM FAILED — $_DOD_SUM; auto-rejecting back to rework (not submitting for review)"
         gaffer_dod_log_integrity "$DOD_RESULTS"
+        gaffer_manifest_gates "$DOD_RESULTS"
         _DOD_EV="$(gaffer_dod_evidence_summary "$DOD_RESULTS" FAIL)"
         # THE CRUX of (b): distil the ACTUAL failure (failing test name + assertion/
         # error), not the gate-name summary, so the next attempt can self-correct.
@@ -3794,6 +3812,7 @@ $_trail_q
   declare -F gaffer_ci_require_mark >/dev/null 2>&1 && gaffer_ci_require_mark "$NUM"
   if gaffer_submit_delivery "delivered on branch $WORK_BRANCH; gates passed"; then
     log "submitted #$NUM for review (→ in_review) — runner-owned submit"
+    gaffer_manifest_finish submit 0
     # FINDING-3: this delivery attempt SUCCEEDED — reset the cross-run no-commit
     # failure counter so a flaky-then-fixed ticket is never permanently poisoned.
     gaffer_nocommit_clear "$NUM"

@@ -79,6 +79,8 @@ _gaffer_land_record() {
   [ -n "$repo_id" ] && [ -n "$sha" ] || return 0
   if wg ticket record-landing "$num" --repo "$repo_id" --commit "$sha" --via "$via" --as system >/dev/null 2>&1; then
     log "$who: #$num recorded the landing of ${sha:0:12} in repo $repo_id"
+    # REPLAY MANIFEST: the landed commit on the ticket's latest attempt manifest (fail-soft).
+    declare -F gaffer_manifest_annotate >/dev/null 2>&1 && gaffer_manifest_annotate "$num" --landed "$sha"
   else
     log "$who: #$num could not record the landing of ${sha:0:12} in repo $repo_id (the done gate re-checks git)"
   fi

@@ -1819,6 +1819,8 @@ gaffer_lane_verdict() {
   local mod="$RUNNER_DIR/lib/usage-ledger.mjs" attempt=""
   [ -f "$mod" ] && attempt="$(node "$mod" --latest-delivery-attempt --ticket "$ticket" 2>/dev/null || true)"
   model="${model#--model }"; model="${model#--model=}"
+  # REPLAY MANIFEST: the verdict also goes on the ticket's latest attempt manifest.
+  declare -F gaffer_manifest_annotate >/dev/null 2>&1 && gaffer_manifest_annotate "$ticket" "$lane" "$verdict"
   wg ticket lane-verdict "$ticket" --lane "$lane" --verdict "$verdict" ${commit:+--commit "$commit"} \
     ${attempt:+--attempt-id "$attempt" --attempt-id-basis latest_delivery_row} ${held:+--held-reason "$(printf '%s' "$held" | tr '\n' ' ' | cut -c1-300)"} \
     ${model:+--model "$model"} --as system >/dev/null 2>&1 \
@@ -2758,6 +2760,16 @@ export GAFFER_REVIEW_RULE_REPEAT
 # opt-in (GAFFER_SCOUT). Always fail-soft.
 # shellcheck source=lib/scout.sh
 [ -f "$RUNNER_DIR/lib/scout.sh" ] && source "$RUNNER_DIR/lib/scout.sh"
+# The replay manifest of each delivery attempt (gaffer_manifest_start / _finish / _close /
+# _annotate): what an offline experiment re-runs and the routing scorecard joins on.
+# Measurements only; always fail-soft. Stubs keep tick.sh's calls safe without the lib.
+# shellcheck source=lib/replay-manifest.sh
+if [ -f "$RUNNER_DIR/lib/replay-manifest.sh" ]; then
+  source "$RUNNER_DIR/lib/replay-manifest.sh"
+else
+  gaffer_manifest_start() { :; }; gaffer_manifest_gates() { :; }; gaffer_manifest_finish() { :; }
+  gaffer_manifest_close() { :; }; gaffer_manifest_annotate() { :; }
+fi
 
 # HOST GIT NEVER RUNS REPOSITORY CODE (external review #9, finding 2). Every git the
 # runner runs for bookkeeping (auto-commit, worktrees, fetch/merge/push, status) gets

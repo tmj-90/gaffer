@@ -20,11 +20,6 @@ export function isAcceptanceProfile(v: unknown): v is AcceptanceProfile {
   return typeof v === "string" && (ACCEPTANCE_PROFILES as readonly string[]).includes(v);
 }
 
-/** The evidence payload kind a profile's runner records. */
-export function evidenceKindFor(profile: AcceptanceProfile): "transcript" | "api_response" | null {
-  return profile === "cli" ? "transcript" : profile === "api" ? "api_response" : null;
-}
-
 /** The contract's profile (absent or unknown = unit). */
 export function contractProfile(contract: { profile?: unknown } | null): AcceptanceProfile {
   return contract && isAcceptanceProfile(contract.profile) ? contract.profile : "unit";

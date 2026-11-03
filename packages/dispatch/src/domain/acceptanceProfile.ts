@@ -16,7 +16,6 @@ import { z } from "zod";
 export {
   ACCEPTANCE_PROFILES,
   contractProfile,
-  evidenceKindFor,
   EXECUTABLE_PROFILES,
   isAcceptanceProfile,
   type AcceptanceProfile,

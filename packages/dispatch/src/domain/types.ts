@@ -1,7 +1,7 @@
 /** Domain enums + row shapes. Unions mirror the schema CHECK constraints. */
 
 import { DispatchError } from "../util/errors.js";
-import { isAcceptanceProfile, type AcceptanceProfile } from "./acceptanceProfile.js";
+import { isAcceptanceProfile, type AcceptanceProfile } from "./acceptanceProfileNames.js";
 
 /**
  * Why a ticket went back to review through reopen-for-review: the auto-merge resolver

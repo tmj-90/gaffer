@@ -13,27 +13,15 @@ import { z } from "zod";
  * frozen from in_testing on, like the rest of the contract. They are not in the dossier
  * subject (the dossier hash never covered the test contract).
  */
-export const ACCEPTANCE_PROFILES = [
-  "unit",
-  "cli",
-  "api",
-  "web",
-  "migration",
-  "performance",
-] as const;
-export type AcceptanceProfile = (typeof ACCEPTANCE_PROFILES)[number];
-
-/** The profiles the runner can run today. */
-export const EXECUTABLE_PROFILES: readonly AcceptanceProfile[] = ["cli", "api"];
-
-export function isAcceptanceProfile(v: unknown): v is AcceptanceProfile {
-  return typeof v === "string" && (ACCEPTANCE_PROFILES as readonly string[]).includes(v);
-}
-
-/** The evidence payload kind a profile's runner records. */
-export function evidenceKindFor(profile: AcceptanceProfile): "transcript" | "api_response" | null {
-  return profile === "cli" ? "transcript" : profile === "api" ? "api_response" : null;
-}
+export {
+  ACCEPTANCE_PROFILES,
+  contractProfile,
+  evidenceKindFor,
+  EXECUTABLE_PROFILES,
+  isAcceptanceProfile,
+  type AcceptanceProfile,
+} from "./acceptanceProfileNames.js";
+import { type AcceptanceProfile } from "./acceptanceProfileNames.js";
 
 const argv = z.array(z.string().min(1).max(2_000)).min(1).max(64);
 const envMap = z
@@ -196,11 +184,6 @@ export function profileFromTitle(
   if (/\b(cli|command[- ]line|sub-?commands?)\b/i.test(t)) return "cli";
   if (/\b(endpoints?|rest(ful)? api|http api|api routes?|api endpoints?)\b/i.test(t)) return "api";
   return null;
-}
-
-/** The contract's profile (absent or unknown = unit). */
-export function contractProfile(contract: { profile?: unknown } | null): AcceptanceProfile {
-  return contract && isAcceptanceProfile(contract.profile) ? contract.profile : "unit";
 }
 
 /** The reserved uri prefix of a runner-recorded acceptance evidence row. */

@@ -167,7 +167,11 @@ describe("C0: the profile contract", () => {
     const ev = listEvents(wg.db, "ticket", id).find(
       (e) => e.event_type === "ticket.acceptance_profile_set",
     );
-    expect(JSON.parse(ev!.payload_json ?? "{}")).toMatchObject({ profile: "cli", cases: 1, spec: true });
+    expect(JSON.parse(ev!.payload_json ?? "{}")).toMatchObject({
+      profile: "cli",
+      cases: 1,
+      spec: true,
+    });
     // Admin too; unit clears it.
     wg.setAcceptanceProfile(id, { profile: "api", spec: API_SPEC }, admin);
     expect(parseTestContract(wg.view(id).ticket.test_contract)!.profile).toBe("api");

@@ -106,6 +106,11 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
         _gaffer_locked .skip.lock _gaffer_append_line "$REVIEWED_FILE" "$RNUM"
         wg attach-evidence "$RNUM" --type manual_note \
           --summary "agent review could not run: $1 — needs a human" >/dev/null 2>&1 || true
+        # TESTER FIRST: no reviewer agent will have its say on this ticket this run, and the
+        # tester pass sweeps only under REVIEW_MODE=human, so a delivery the tester gates
+        # goes to it now (dispatch decides; a no-op otherwise). Left in review untested, a
+        # person's approval would be refused (not_tested) with nothing sending it on.
+        if declare -F gaffer_tester_route >/dev/null 2>&1; then gaffer_tester_route "$RNUM"; fi
         _review_cleanup
         _review_restore_traps
       }

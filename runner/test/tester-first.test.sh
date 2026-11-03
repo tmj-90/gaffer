@@ -113,6 +113,8 @@ _ci="$(grep -n 'H3: ci-gate.sh not loaded' "$RUNNER_DIR/tick.sh" | head -1 | cut
 _rt="$(grep -n 'gaffer_tester_route "\$NUM"' "$RUNNER_DIR/tick.sh" | head -1 | cut -d: -f1)"
 [ -n "$_ci" ] && [ -n "$_rt" ] && [ "$_rt" -gt "$_ci" ] && ok "the route comes after the CI gate (a red CI rejects from review first)" || fail "route line $_rt vs CI gate $_ci"
 grep -q 'gaffer_tester_route "\$RNUM"' "$RUNNER_DIR/lib/review.sh" && ok "the agent review pass routes a ticket it left in review" || fail "review.sh does not route"
+_H="$(awk '/_review_hold_ticket\(\) \{/{f=1} f&&/gaffer_tester_route "\$RNUM"/{print "found"; exit} f&&/^      \}/{exit}' "$RUNNER_DIR/lib/review.sh")"
+[ "$_H" = found ] && ok "a ticket the reviewer agent cannot review is routed to the tester (no sweep under agent|both)" || fail "_review_hold_ticket does not route"
 grep -q '"tester-route",' "$RUNNER_DIR/safety-hook-core.mjs" && ok "tester-route is a control-plane verb in the safety hook" || fail "hook verb missing"
 
 echo "== 5: a tester FAIL is the next attempt's review feedback =="

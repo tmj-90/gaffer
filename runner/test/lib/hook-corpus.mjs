@@ -2,13 +2,15 @@
 // corpus file's placeholders, its compact encoding of long strings, the fixture tree
 // the corpus is decided in, and the fixed environment profiles. See the test's header.
 import { spawnSync } from "node:child_process";
-import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { gafferMkdtemp } from "./tmpdir.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const RUNNER_DIR = resolve(HERE, "..", "..");
 export const FACTORY_DIR = dirname(RUNNER_DIR);
+const FACTORY_REAL = realpathSync(FACTORY_DIR);
 export const CORPUS_FILE = resolve(RUNNER_DIR, "test", "fixtures", "safety-hook-corpus.json");
 
 // The fixture tree, relative to a fresh realpath'd scratch base. {{FACTORY}} is the
@@ -20,6 +22,36 @@ export const LAYOUT = {
   "{{HOME}}": "home",
   "{{TMP}}": "tmp",
 };
+
+// A recorded reason echoes the command it refused cut at a fixed length (the deny
+// rules quote cmd.slice(0, 120), some 100 or 40), and most corpus commands name a
+// fixture path or the checkout; some climb out of the base ({{WORK}}/../..). So the
+// length and depth of those two paths are part of the recorded text: a longer TMPDIR
+// (macOS: /private/var/folders/...) or a checkout somewhere else moves where an echo
+// is cut, and the test fails with no verdict changed. Every run therefore decides with
+// the shape the corpus was recorded in: the base is a direct child of /tmp, named so
+// that its canonical path is BASE_LENGTH characters (on Linux that is
+// /tmp/gaffer-corpus-XXXXXX), and the checkout is reached through a symlink whose
+// path is FACTORY_LENGTH characters. The test re-runs itself through that link with
+// --preserve-symlinks, so {{FACTORY}} is the link; the core resolves it to the real
+// runner directory (as for a symlinked install) and also knows the link's spelling.
+export const BASE_LENGTH = 25;
+export const FACTORY_LENGTH = 27;
+
+/** { base, linkDir, factory }: a fresh base and a fresh dir holding the checkout link. */
+export function corpusTree() {
+  const tmp = realpathSync("/tmp");
+  const named = (prefix) => realpathSync(gafferMkdtemp(resolve(tmp, prefix)));
+  const room = BASE_LENGTH - tmp.length - 1 - 6;
+  if (room < 2 || FACTORY_LENGTH - (tmp.length + 1 + 2 + 6) < 2) {
+    throw new Error(`/tmp resolves to ${tmp}, too long for the corpus tree`);
+  }
+  const base = named("gaffer-corpus-".slice(0, room));
+  const linkDir = named("gf");
+  const factory = resolve(linkDir, "f".repeat(FACTORY_LENGTH - linkDir.length - 1));
+  symlinkSync(FACTORY_DIR, factory);
+  return { base, linkDir, factory };
+}
 
 /** Placeholder -> absolute path for one fixture base. */
 export function placeholderMap(base) {
@@ -57,7 +89,9 @@ const ALIASES = ["/tmp", "/etc", "/var"].flatMap((d) => {
 export function unfill(text, map, base) {
   if (typeof text !== "string") return text;
   let s = text;
-  const pairs = Object.entries(map).sort((a, b) => b[1].length - a[1].length);
+  // Through the checkout link the core still reports the canonical runner path.
+  const extra = FACTORY_REAL === map["{{FACTORY}}"] ? [] : [["{{FACTORY}}", FACTORY_REAL]];
+  const pairs = [...Object.entries(map), ...extra].sort((a, b) => b[1].length - a[1].length);
   for (const [k, v] of pairs) s = s.split(v).join(k);
   s = s.split(base).join("{{BASE}}");
   for (const [real, d] of ALIASES) s = s.replace(new RegExp(`${real}(?=/|\\b|$)`, "g"), d);

@@ -12,7 +12,9 @@
 // scratch base holding a git repo (the write root and cwd), a read root, GAFFER_DATA
 // and HOME, decided under three profiles (configured roots, no roots, bootstrap
 // installs). The test re-runs itself with HOME set to the fixture home, because the
-// core fixes its factory-code paths from os.homedir() when it loads.
+// core fixes its factory-code paths from os.homedir() when it loads, and through a
+// symlink to the checkout, so the recorded paths have the same length wherever the
+// checkout and TMPDIR are (corpusTree() in lib/hook-corpus.mjs says why).
 //
 // Refreshing it is always deliberate, never part of a normal run:
 //   node runner/test/safety-hook-golden-corpus.test.mjs --update
@@ -22,14 +24,19 @@
 //     re-runs the hook suites through a recording shim, adds the tool calls the
 //     corpus does not hold yet and records their verdicts (`--add`: an existing
 //     verdict that differs still fails).
+//   An entry whose "from" is "by-hand" was added directly to pin a rule no suite call
+//   reaches with its own reason (record it with --add, and check the pre-split or
+//   previous core gives the same verdict before committing it).
 import { spawnSync } from "node:child_process";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { scratchDir } from "./lib/hook-harness.mjs";
 import {
+  BASE_LENGTH,
   buildFixture,
+  corpusTree,
   CORPUS_FILE,
+  FACTORY_DIR,
+  FACTORY_LENGTH,
   entryRaw,
   compactVerdicts,
   placeholderMap,
@@ -44,21 +51,33 @@ const UPDATE = args.includes("--update");
 const ADD = args.includes("--add");
 
 if (!process.env.GAFFER_CORPUS_BASE) {
-  const base = scratchDir("gaffer-corpus-");
-  const r = spawnSync(process.execPath, [fileURLToPath(import.meta.url), ...args], {
-    stdio: "inherit",
-    env: {
-      PATH: process.env.PATH,
-      HOME: resolve(base, "home"),
-      LC_ALL: "C",
-      GAFFER_CORPUS_BASE: base,
+  const tree = corpusTree();
+  const self = resolve(tree.factory, "runner", "test", "safety-hook-golden-corpus.test.mjs");
+  const r = spawnSync(
+    process.execPath,
+    ["--preserve-symlinks", "--preserve-symlinks-main", self, ...args],
+    {
+      stdio: "inherit",
+      env: {
+        PATH: process.env.PATH,
+        HOME: resolve(tree.base, "home"),
+        LC_ALL: "C",
+        GAFFER_CORPUS_BASE: tree.base,
+      },
     },
-  });
-  rmSync(base, { recursive: true, force: true });
+  );
+  rmSync(tree.base, { recursive: true, force: true });
+  rmSync(tree.linkDir, { recursive: true, force: true });
   process.exit(r.status ?? 1);
 }
 
 const base = process.env.GAFFER_CORPUS_BASE;
+if (base.length !== BASE_LENGTH || FACTORY_DIR.length !== FACTORY_LENGTH) {
+  console.error(
+    `FAIL safety-hook-golden-corpus: run it as node runner/test/safety-hook-golden-corpus.test.mjs (base ${base.length} chars, want ${BASE_LENGTH}; checkout ${FACTORY_DIR} ${FACTORY_DIR.length} chars, want ${FACTORY_LENGTH})`,
+  );
+  process.exit(1);
+}
 buildFixture(base);
 const map = placeholderMap(base);
 const envs = profiles(map);

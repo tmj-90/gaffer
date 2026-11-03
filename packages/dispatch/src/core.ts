@@ -116,19 +116,14 @@ import {
   runnerLaneNotice,
   type RunnerTesterLane,
 } from "./health/runnerTesterLane.js";
-import {
-  computeLandingStatus,
-  recordedLandingRepos,
-  type LandingStatus,
-} from "./services/landingStatus.js";
+import { computeLandingStatus, type LandingStatus } from "./services/landingStatus.js";
 import {
   type CommentRepoContext,
   type CreateCommentInput,
-  fixTheseReason,
   ReviewCommentService,
   type ReviewCommentView,
 } from "./services/reviewCommentService.js";
-import { rejectOutcome, type RejectOutcome } from "./services/rejectOutcome.js";
+import { type RejectOutcome } from "./services/rejectOutcome.js";
 import { type SinceDiff } from "./services/sinceReview.js";
 import { DecisionService, type ResolveDecisionInput } from "./services/decisionService.js";
 import { ScopeService, type ScopeNodeView } from "./services/scopeService.js";
@@ -196,7 +191,6 @@ import { resolveSpecLoreReader } from "./services/specLoreReader.js";
 import { resolveCodeIndexReader, type CodeIndexReader } from "./services/codeIndexReader.js";
 import {
   BoardService,
-  resolveMoveTarget,
   type BoardCard,
   type BoardView,
   type BoardWindow,
@@ -284,6 +278,7 @@ import * as ticketGit from "./services/ticketGitService.js";
 import * as autonomyGate from "./services/autonomyGateService.js";
 import * as principalAdmin from "./services/principalAdminService.js";
 import * as landing from "./services/landingFactsService.js";
+import * as reviewLifecycle from "./services/reviewLifecycleService.js";
 
 /**
  * An evidence row enriched with derived provenance for the reviewer surface.
@@ -1480,56 +1475,8 @@ export class Dispatch {
     });
   }
 
-  /**
-   * Human/admin board move: drag a ticket card into another status column (or
-   * pick a target from the card's status menu). The headline case is un-readying
-   * a ticket — `ready -> draft` — which has no other path on the board.
-   *
-   * `target` is either a concrete {@link TicketStatus} or a {@link BoardColumn}
-   * key (the column the card was dropped into); a column key is resolved to its
-   * canonical status (e.g. column "in_progress" -> status "in_progress").
-   *
-   * This is a thin, intentful wrapper over {@link TransitionService.transition},
-   * NOT a bypass: the move is validated against the same ALLOWED state machine
-   * and policy gates as every other transition. An illegal board move (e.g.
-   * dropping a `done` card on Draft, or any move that would touch a claim) is
-   * REJECTED with `ILLEGAL_TRANSITION`; a no-op drop (same column) with `NO_OP`.
-   * The `claimed`/`in_progress` collapse means the "in_progress" column maps to
-   * `in_progress`, which is only reachable from `claimed` — so a human can never
-   * conjure a claim by dragging, the move is simply rejected as illegal.
-   */
   moveTicket(ticketRef: string, target: string, actor: Actor): TransitionResult {
-    const ticket = this.resolveTicket(ticketRef);
-    const toStatus = resolveMoveTarget(target);
-    // Dragging a reviewed ticket back for rework IS a rejection: take the reject path
-    // (AC reset, attempt bump, feedback, retry-cap park) instead of a raw move that
-    // kept the previous delivery's satisfied ACs for the next done gate.
-    if (
-      (ticket.status === "in_review" || ticket.status === "ready_for_merge") &&
-      (toStatus === "ready" || toStatus === "refining")
-    ) {
-      // (Through this.rejectReview: a landing already started is reported on the trail.)
-      return this.rejectReview(ticket.id, toStatus, actor, "board_move");
-    }
-    return inTransaction(this.db, () => {
-      // Handing in unleased in-progress work (a by-hand delivery, a tokenless resume)
-      // by a move stays legal; dragging work an agent still holds a lease on is not.
-      const unleasedSubmit =
-        ticket.status === "in_progress" &&
-        toStatus === "in_review" &&
-        !this.claimsRepo.hasActiveForTicket(ticket.id);
-      return this.transitions.transition({
-        ticketId: ticket.id,
-        actor,
-        toStatus,
-        reason: "board_move",
-        // Pin the expected source so a stale board (card moved out from under the
-        // drag) fails cleanly with STATE_CONFLICT rather than silently moving a
-        // ticket the human is no longer looking at.
-        expectedFromStatus: ticket.status,
-        ...(unleasedSubmit ? { unleasedSubmit } : {}),
-      });
-    });
+    return reviewLifecycle.moveTicket(this, ticketRef, target, actor);
   }
 
   approveReview(
@@ -1572,37 +1519,12 @@ export class Dispatch {
     return this.reviewGateSvc.beginLanding(ref, input, actor);
   }
 
-  /** The approval a landing acts on (the latest transition into ready_for_merge). */
   landingApproval(ref: string): string | null {
-    return this.reviewGateSvc.approvalRef(this.resolveTicket(ref).id);
+    return reviewLifecycle.landingApproval(this, ref);
   }
 
-  /** The landings already started or committed on the ticket's current approval. */
   landingsStarted(ref: string): LandingStarted[] {
-    return this.reviewGateSvc.landingsStarted(this.resolveTicket(ref).id);
-  }
-
-  /**
-   * A revocation (reject, a failed required check) acknowledged AFTER a landing started
-   * cannot undo it: say so on the ticket's trail and hand the landings back to the caller,
-   * which reports them ("a landing has already happened").
-   */
-  private revocationAfterLanding(
-    ticketId: string,
-    actor: Actor,
-    revocation: string,
-  ): LandingStarted[] {
-    const landed = this.reviewGateSvc.landingsStarted(ticketId);
-    if (landed.length > 0) {
-      writeEvent(this.db, {
-        entity_type: "ticket",
-        entity_id: ticketId,
-        actor,
-        event_type: "ticket.revoked_after_landing",
-        payload: { revocation, landings: landed },
-      });
-    }
-    return landed;
+    return reviewLifecycle.landingsStarted(this, ref);
   }
 
   /** TESTER REPLAY: record the tester's tests passed on the landed revision (system only). */
@@ -1651,14 +1573,7 @@ export class Dispatch {
     },
     actor: Actor,
   ): TransitionResult {
-    const result = this.reviewGateSvc.testerPass(ticketRef, input, actor);
-    // TESTER FIRST: the PASS returned the ticket to review: now a person is needed.
-    if (result.ticket.status === "in_review") {
-      gate.emitGate(this, this.internals, "review_needed", result.ticket, {
-        detail: "the independent tester passed it",
-      });
-    }
-    return result;
+    return reviewLifecycle.testerPass(this, this.internals, ticketRef, input, actor);
   }
 
   testerFail(
@@ -1723,22 +1638,12 @@ export class Dispatch {
     return this.ticketSvc.getTestContract(ticketRef);
   }
 
-  /**
-   * HOLD FOR A HUMAN (`ready_for_merge | in_testing -> blocked`, reason-coded). The
-   * runner's merge gate (the combined code failed on the target) and a late red CI
-   * result use it; the ticket waits in the human queue with the reason. System/admin.
-   */
   holdForHuman(
     ref: string,
     input: { reasonCode: string; reason: string },
     actor: Actor,
   ): TransitionResult {
-    const result = this.reviewGateSvc.holdForHuman(ref, input, actor);
-    gate.emitGate(this, this.internals, "ticket_parked", result.ticket, {
-      status: "blocked",
-      detail: input.reason,
-    });
-    return result;
+    return reviewLifecycle.holdForHuman(this, this.internals, ref, input, actor);
   }
 
   /** REQUIRED CI: record that a ticket needs CI before review exposes it (system/admin). */
@@ -1750,7 +1655,6 @@ export class Dispatch {
     return this.reviewGateSvc.recordCiRequired(ref, input, actor);
   }
 
-  /** REQUIRED CI: record a CI result for a ticket's candidate commit (system/admin). */
   recordCiResult(
     ref: string,
     input: { commit: string; state: "pending" | "pass" | "fail"; detail?: string },
@@ -1762,20 +1666,7 @@ export class Dispatch {
     eventId: string;
     landedAlready: LandingStarted[];
   } {
-    const res = this.reviewGateSvc.recordCiResult(ref, input, actor);
-    const ticket = this.tickets.resolveRef(ref);
-    if (res.held) {
-      gate.emitGate(this, this.internals, "ticket_parked", ticket, {
-        status: "blocked",
-        detail: `required CI failed for ${input.commit.slice(0, 12)}`,
-      });
-    }
-    // REVOCATION-SAFE LANDING: a red result after a landing started cannot stop it.
-    const landedAlready =
-      input.state === "fail" && ticket
-        ? this.revocationAfterLanding(ticket.id, actor, `ci_failed:${input.commit.slice(0, 12)}`)
-        : [];
-    return { ...res, landedAlready };
+    return reviewLifecycle.recordCiResult(this, this.internals, ref, input, actor);
   }
 
   /**
@@ -2086,13 +1977,11 @@ export class Dispatch {
     };
   }
 
-  /** REQUIRED CI: the latest CI state for a ticket's commit (null commit = latest overall). */
   ciStatus(
     ref: string,
-    commit: string | null = null,
+    commit?: string | null,
   ): { required: boolean; state: string | null; commit: string | null } {
-    const ticket = this.resolveTicket(ref);
-    return this.reviewGateSvc.ciStatus(ticket.id, commit);
+    return reviewLifecycle.ciStatus(this, ref, commit);
   }
 
   approveOutcomeFacts(
@@ -2146,28 +2035,12 @@ export class Dispatch {
     return this.reviewGateSvc.markMerged(ref, actor);
   }
 
-  /**
-   * Back to review (`done | ready_for_merge -> in_review`), system/admin only. `cause`
-   * says why; without one it is the ticket's hold when a fresh review is what clears it
-   * (`moved_since_review`, `unpinned_repo`), else `merge_conflict` (the resolver's
-   * reopen, the call this path was built for).
-   */
   reopenForReview(
     ref: string,
     input: { reason: string; resolution: string; cause?: ReopenForReviewCause },
     actor: Actor,
   ): { ticketId: string; status: string; eventId: string } {
-    let cause = input.cause;
-    if (cause === undefined) {
-      const ls = this.landingState(ref);
-      cause =
-        ls &&
-        ls.kind === "held" &&
-        (ls.hold === "moved_since_review" || ls.hold === "unpinned_repo")
-          ? ls.hold
-          : "merge_conflict";
-    }
-    return this.reviewGateSvc.reopenForReview(ref, { ...input, cause }, actor);
+    return reviewLifecycle.reopenForReview(this, ref, input, actor);
   }
 
   rejectReview(
@@ -2176,11 +2049,7 @@ export class Dispatch {
     actor: Actor,
     reason?: string,
   ): TransitionResult & { landedAlready: LandingStarted[] } {
-    const res = this.reviewGateSvc.rejectReview(ticketRef, to, actor, reason);
-    // REVOCATION-SAFE LANDING: a landing that started before this rejection committed is
-    // not undone by it; report it (the merge runner refuses every landing not yet started).
-    const landedAlready = this.revocationAfterLanding(res.ticket.id, actor, `rejected_to_${to}`);
-    return { ...res, landedAlready };
+    return reviewLifecycle.rejectReview(this, ticketRef, to, actor, reason);
   }
 
   // --- Review comments (A1) + Fix these (A2) --------------------------------
@@ -2190,17 +2059,11 @@ export class Dispatch {
     return this.reviewCommentSvc.create(ref, input, actor);
   }
 
-  /**
-   * A ticket's review comments, oldest first; `anchors` adds the git-derived anchor state
-   * against each repo's head now ("anchor changed in this revision" / "anchor untouched").
-   */
   listReviewComments(
     ref: string,
-    opts: { open?: boolean; anchors?: boolean } = {},
+    opts?: { open?: boolean; anchors?: boolean },
   ): ReviewCommentView[] {
-    if (opts.anchors) return this.reviewCommentSvc.listWithAnchors(ref, { open: opts.open });
-    const ticket = this.resolveTicket(ref);
-    return this.reviewCommentSvc.listViews(ticket.id, { open: opts.open });
+    return reviewLifecycle.listReviewComments(this, ref, opts);
   }
 
   /** Resolve / reopen / withdraw a review comment (a human act). */
@@ -2213,34 +2076,10 @@ export class Dispatch {
     return this.reviewCommentSvc.setState(commentRef, action, actor, ticketRef);
   }
 
-  /**
-   * What a "Fix these" send-back would do now (see rejectOutcome.ts): the destination, the
-   * cap and the partly-landed hold read from the same facts rejectReview acts on.
-   */
-  rejectOutcome(
-    ref: string,
-    to: "refining" | "ready" = "refining",
-    requirements?: number,
-  ): RejectOutcome {
-    const ticket = this.resolveTicket(ref);
-    return rejectOutcome({
-      ticketNumber: ticket.number,
-      to,
-      attemptCount: ticket.attempt_count,
-      maxAttempts: this.maxAttempts,
-      landedRepos: recordedLandingRepos(this.db, ticket.id),
-      requirements: requirements ?? this.reviewCommentSvc.counts(ticket.id).open_must_fix,
-    });
+  rejectOutcome(ref: string, to?: "refining" | "ready", requirements?: number): RejectOutcome {
+    return reviewLifecycle.rejectOutcome(this, ref, to, requirements);
   }
 
-  /**
-   * FIX THESE (A2): send the ticket back with its open must-fix comments (or the named
-   * subset) as numbered requirements. A human/admin act. The transition reason is the
-   * deterministic "Fix these: N requirements (ids)"; the comments are stamped with the
-   * round they were sent into, and the next delivery's prompt lists them. Everything
-   * rejectReview does still applies: the AC reset, the retry cap, the partly-landed hold,
-   * the reject pins. The destination stays Refining unless `to: "ready"` is asked for.
-   */
   fixThese(
     ref: string,
     opts: { commentIds?: readonly string[]; to?: "refining" | "ready" },
@@ -2250,48 +2089,7 @@ export class Dispatch {
     requirements: ReviewCommentView[];
     rejectOutcome: RejectOutcome;
   } {
-    if (actor.type !== "human" && actor.type !== "admin") {
-      throw new DispatchError(
-        "ACTOR_NOT_PERMITTED",
-        `Fix these is a reviewer's act: only a human or an admin may send a change back with review comments (this actor is ${actor.type}).`,
-        { actor_type: actor.type, reason: "reviewer_only" },
-      );
-    }
-    const ticket = this.resolveTicket(ref);
-    const to = opts.to ?? "refining";
-    const set = this.reviewCommentSvc.fixSet(ticket.id, opts.commentIds);
-    if (set.length === 0) {
-      throw new DispatchError(
-        "VALIDATION_ERROR",
-        `#${ticket.number ?? "?"} has no open must-fix review comment to send back. Write one, or use Send back with a reason.`,
-        { reason: "no_requirements" },
-      );
-    }
-    const predicted = this.rejectOutcome(ticket.id, to, set.length);
-    const res = this.rejectReview(ticket.id, to, actor, fixTheseReason(set));
-    this.reviewCommentSvc.markSent(
-      set.map((c) => c.id),
-      res.ticket.attempt_count,
-    );
-    const ids = new Set(set.map((c) => c.id));
-    const requirements = this.reviewCommentSvc.listViews(ticket.id).filter((c) => ids.has(c.id));
-    // Settled: what the send-back actually did (the predicted kind unless the status says
-    // otherwise, e.g. a landing recorded between the read and the write).
-    const status = res.ticket.status;
-    const settled: RejectOutcome =
-      status === predicted.to_status
-        ? predicted
-        : status === "blocked"
-          ? rejectOutcome({
-              ticketNumber: ticket.number,
-              to,
-              attemptCount: ticket.attempt_count,
-              maxAttempts: this.maxAttempts,
-              landedRepos: recordedLandingRepos(this.db, ticket.id),
-              requirements: set.length,
-            })
-          : { ...predicted, to_status: status === "ready" ? "ready" : "refining" };
-    return { ...res, requirements, rejectOutcome: settled };
+    return reviewLifecycle.fixThese(this, ref, opts, actor);
   }
 
   resetAcceptanceCriteria(
@@ -2306,11 +2104,7 @@ export class Dispatch {
     actor: Actor,
     reason?: string,
   ): TransitionResult & { landedAlready: LandingStarted[] } {
-    const res = this.reviewGateSvc.wontDo(ref, actor, reason);
-    // REVOCATION-SAFE LANDING: the dashboard's Won't do is a cancellation too; a landing
-    // that had already started is reported exactly as a rejection reports it.
-    const landedAlready = this.revocationAfterLanding(res.ticket.id, actor, "wont_do");
-    return { ...res, landedAlready };
+    return reviewLifecycle.wontDo(this, ref, actor, reason);
   }
 
   reopenFromWontDo(ref: string, to: "refining" | "draft", actor: Actor): TransitionResult {

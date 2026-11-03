@@ -15983,18 +15983,25 @@ function renderSettingInput(s, editors) {
     // only what settings.json stores; an autonomous mode's presets read as on.
     const eff = s.effective !== undefined ? s.effective : s.value;
     const checked = eff === "1" || eff === "true" || eff === "yes" || eff === "on";
+    // The tester lane's default is neither on nor off: unset (or "auto") runs the tester
+    // where a test command is registered. The switch says Auto until it is moved; moving
+    // it writes an explicit on or off (testingLaneOff below reads the same values).
+    const auto =
+      s.key === "GAFFER_TESTING" && !checked && !testingLaneOff(eff) && !isOnValue(s.value);
+    let touched = false;
     const input = el("input", { type: "checkbox", role: "switch", "aria-label": s.label });
     input.checked = checked;
     // `initial` lets Save send only what the user changed: an untouched switch
     // that merely reflects a mode preset must not be written as an explicit "0".
-    editors.set(s.key, { read: () => (input.checked ? "1" : "0"), initial: checked ? "1" : "0" });
-    const word = el(
-      "span",
-      { class: "switch-word", "aria-hidden": "true" },
-      checked ? "On" : "Off",
-    );
+    editors.set(s.key, {
+      read: () => (input.checked ? "1" : auto && !touched ? "" : "0"),
+      initial: checked ? "1" : auto ? "" : "0",
+    });
+    const wordFor = () => (input.checked ? "On" : auto && !touched ? "Auto" : "Off");
+    const word = el("span", { class: "switch-word", "aria-hidden": "true" }, wordFor());
     input.addEventListener("change", () => {
-      word.textContent = input.checked ? "On" : "Off";
+      touched = true;
+      word.textContent = wordFor();
     });
     return el("label", { class: "switch switch-worded" }, [
       input,

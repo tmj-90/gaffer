@@ -126,6 +126,32 @@ const commitAll = (msg, dir = cwd) => {
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * A SCRIPTED change (option `steps` on a delivery, `tester` on a tester call): write
+ * each `files` entry (path relative to the worktree: a string replaces the file,
+ * {append} adds to it, {replace:[from, to]} edits it), commit with `message`, and
+ * answer `summary` at `cost` / `turns`. The screenshot world (scripts/screenshots.mjs)
+ * uses it so a delivery reads like real work; every other caller leaves it unset.
+ */
+function applyScripted(step, dir) {
+  for (const [rel, spec] of Object.entries(step.files || {})) {
+    const file = path.join(dir, rel);
+    mkdirSync(path.dirname(file), { recursive: true });
+    const cur = existsSync(file) ? readFileSync(file, "utf8") : "";
+    if (typeof spec === "string") writeFileSync(file, spec);
+    else if (spec && spec.append) writeFileSync(file, cur + spec.append);
+    else if (spec && Array.isArray(spec.replace)) {
+      const pairs = Array.isArray(spec.replace[0]) ? spec.replace : [spec.replace];
+      writeFileSync(
+        file,
+        pairs.reduce((txt, [from, to]) => txt.split(from).join(to), cur),
+      );
+    }
+  }
+  if (step.message) commitAll(step.message, dir);
+  return { total_cost_usd: Number(step.cost ?? 0.02), num_turns: Number(step.turns ?? 6) };
+}
+
 // ── a minimal MCP client over stdio for the server the runner mounted ──────
 // The runner passes --mcp-config <bridged.json>; its "dispatch" entry is a stdio
 // command. Speak JSON-RPC to it exactly as an agent's client would.
@@ -205,10 +231,16 @@ async function main() {
     const dir = wm && existsSync(wm[1]) ? wm[1] : cwd;
     if (mode === "tester_fail")
       return envelope(
-        `Wrote black-box checks for #${t}.\nFAIL: the first acceptance criterion does not hold (stub tester observed helper${t} keeps completed tasks).\n{"verdict":"FAIL"}`,
+        modeSpec.observation
+          ? `Wrote black-box checks for #${t}.\nFAIL: ${modeSpec.observation}\n{"verdict":"FAIL"}`
+          : `Wrote black-box checks for #${t}.\nFAIL: the first acceptance criterion does not hold (stub tester observed helper${t} keeps completed tasks).\n{"verdict":"FAIL"}`,
       );
     if (mode === "tester_no_verdict")
       return envelope(`Wrote black-box checks for #${t} but ran out of budget before a verdict.`);
+    if (modeSpec.tester && typeof modeSpec.tester === "object") {
+      const usage = applyScripted(modeSpec.tester, dir);
+      return envelope(`${modeSpec.tester.summary || `Tested #${t}.`}\n{"verdict":"PASS"}`, usage);
+    }
     // tester_pass (and the default)
     mkdirSync(path.join(dir, "test"), { recursive: true });
     writeFileSync(
@@ -358,6 +390,18 @@ async function main() {
   if (kind === "delivery") {
     const t = ticket || "0";
     if (mode === "slow_claim") await sleep(1000 * Number(modeSpec.secs || 25));
+    if (Array.isArray(modeSpec.steps) && modeSpec.steps.length) {
+      const step = modeSpec.steps[Math.min(call, modeSpec.steps.length) - 1];
+      const usage = applyScripted(step, cwd);
+      if (mode === "pause_first" && call === 1)
+        return envelope(step.summary || `Stopped #${t} at the turn cap.`, {
+          ...usage,
+          subtype: "error_max_turns",
+          is_error: true,
+          num_turns: 999,
+        });
+      return envelope(step.summary || `Delivered #${t}.`, usage);
+    }
     if (mode === "clarify" && call === 1) {
       try {
         const show = await mcpCall("dispatch", "get_ticket", { ticket_id: t });

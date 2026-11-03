@@ -12192,12 +12192,126 @@ async function renderTicket(id) {
         sideBlockers,
         brief,
         acCard,
+        regressionCard(t, view.regression),
         timeline,
         sideFields,
       ]),
     ]),
   );
   return wrap;
+}
+
+/**
+ * ESCAPED DEFECTS (MF5): the accepted changes a person said this ticket regresses, the
+ * later tickets linked to this one, and the person's control to file or withdraw a link.
+ * Health's escaped-defect rate counts these links and only these: Gaffer never guesses a
+ * regression. A read-only token sees the links and no control. Null for a ticket with no
+ * link that nobody can file from (read-only).
+ */
+function regressionCard(t, reg) {
+  const of = (reg && reg.regression_of) || [];
+  const by = (reg && reg.regressed_by) || [];
+  if (readOnly() && !of.length && !by.length) return null;
+  const label = (l) =>
+    el("a", { href: `#/ticket/${l.ticket_id}` }, [
+      `#${l.number ?? "?"}`,
+      l.title ? ` ${l.title}` : "",
+    ]);
+  const filed = (l) =>
+    el(
+      "small",
+      { class: "dim" },
+      ` · filed by ${l.filed_by?.id || l.filed_by?.type || "?"} ${fmtTime(l.filed_at)}${l.note ? ` · ${l.note}` : ""}`,
+    );
+  const rows = [
+    ...of.map((l) =>
+      el("li", { class: "tk-regression", dataset: { regressionOf: l.ticket_id } }, [
+        "Regression of ",
+        label(l),
+        filed(l),
+        readOnly()
+          ? null
+          : el(
+              "button",
+              {
+                class: "btn small",
+                type: "button",
+                "aria-label": `Withdraw the regression link to #${l.number ?? "?"}`,
+                onclick: () =>
+                  guard(async () => {
+                    await api("POST", `/tickets/${t.id}/regression-of`, {
+                      of: l.ticket_id,
+                      withdraw: true,
+                    });
+                    toast(`Regression link to #${l.number ?? "?"} withdrawn.`, { ok: true });
+                    router();
+                  }),
+              },
+              "Withdraw",
+            ),
+      ]),
+    ),
+    ...by.map((l) =>
+      el("li", { class: "tk-regressed-by", dataset: { regressedBy: l.ticket_id } }, [
+        "Regressed by ",
+        label(l),
+        filed(l),
+      ]),
+    ),
+  ];
+  let form = null;
+  if (!readOnly()) {
+    const input = el("input", {
+      class: "input",
+      type: "text",
+      inputmode: "numeric",
+      maxlength: "40",
+      placeholder: "#",
+      "aria-label": "The accepted change this ticket regresses (its number)",
+    });
+    const note = el("input", {
+      class: "input",
+      type: "text",
+      maxlength: "300",
+      placeholder: "What broke (optional)",
+      "aria-label": "What broke",
+    });
+    form = el(
+      "form",
+      {
+        class: "tk-regression-form",
+        onsubmit: (e) => {
+          e.preventDefault();
+          const ref = input.value.trim().replace(/^#/, "");
+          if (!ref) return;
+          guard(async () => {
+            await api("POST", `/tickets/${t.id}/regression-of`, {
+              of: ref,
+              ...(note.value.trim() ? { note: note.value.trim() } : {}),
+            });
+            toast(`Linked as a regression of #${ref}.`, { ok: true });
+            router();
+          });
+        },
+      },
+      [
+        el("label", { class: "dim" }, "This ticket is a regression of accepted change"),
+        input,
+        note,
+        el("button", { class: "btn small", type: "submit" }, "Link"),
+      ],
+    );
+  }
+  return el("section", { class: "card panel tk-regressions", "aria-label": "Escaped defects" }, [
+    panelHead("Escaped defects"),
+    rows.length ? el("ul", { class: "tk-regression-list" }, rows) : null,
+    form,
+    el(
+      "p",
+      { class: "dim tk-regression-foot" },
+      "Health's escaped-defect rate counts only the links a person files here.",
+    ),
+  ]);
 }
 
 /** Who recorded an evidence row, as the ticket page groups the trail. */
@@ -12417,6 +12531,14 @@ function eventSentence(ev, repos) {
       return {
         text: `${who} opened the ${{ run_log: "run log", evidence: "evidence in full", full_diff: "full diff" }[p.what] || "raw view"}`,
       };
+    // ESCAPED DEFECTS (MF5): a person's link from this ticket to the change it regresses.
+    case "ticket.defect_escaped":
+      return {
+        text: `${who} linked this as a regression of #${p.regression_of_number ?? "?"}`,
+        note: p.note || null,
+      };
+    case "ticket.defect_escaped_withdrawn":
+      return { text: `${who} withdrew the regression link to #${p.regression_of_number ?? "?"}` };
     case "ticket.lane_verdict":
       return {
         text: `${{ "agent-review": "Reviewer agent", "security-review": "Security reviewer", tester: "Tester", "eval-judge": "Eval judge (a model's opinion)" }[p.lane] || "A lane"}: ${p.verdict || "?"}${p.commit ? ` on ${String(p.commit).slice(0, 12)}` : ""}`,
@@ -13637,8 +13759,8 @@ function usagePauseNote(p) {
  * The four top-level measures every feature must move (Release A metrics): first-pass
  * acceptance, human review time (the median per accepted ticket), accepted-change cost
  * and the escaped-defect rate. Each reads a server figure as served (null shows a dash,
- * never a zero) with the sentence that says what it counts; escaped defects are not
- * recorded yet, and the cell says what is missing.
+ * never a zero) with the sentence that says what it counts; the escaped-defect rate
+ * counts only the regression links a person filed, and says so.
  */
 function fourMeasures(health) {
   const fp = health.first_pass || null;
@@ -13681,12 +13803,18 @@ function fourMeasures(health) {
       ),
       cell(
         "Escaped-defect rate",
-        esc && esc.recorded && typeof esc.rate_pct === "number"
-          ? `${esc.rate_pct}%`
-          : "Not recorded yet",
-        esc && esc.note
-          ? esc.note.replace(/^Not recorded yet:\s*/, "")
-          : "an escaped defect needs a human-filed link from the defect to the accepted change it escaped from",
+        !esc
+          ? "—"
+          : esc.recorded && typeof esc.rate_pct === "number"
+            ? `${esc.rate_pct}%`
+            : esc.recorded
+              ? "—"
+              : "Not recorded yet",
+        !esc
+          ? "not served by this server"
+          : esc.recorded
+            ? `${esc.escaped ?? 0} of ${esc.accepted_changes ?? 0} accepted in the last ${esc.window_days ?? 30} days linked to a later regression · ${esc.all_time && typeof esc.all_time.rate_pct === "number" ? `${esc.all_time.rate_pct}%` : "—"} all time. ${esc.note || ""}`
+            : (esc.note || "").replace(/^Not recorded yet:\s*/, ""),
       ),
     ]),
   ]);

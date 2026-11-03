@@ -310,6 +310,20 @@ export async function routeTickets(
         // REVIEW COMMENTS (A1): the reviewer's comments (no git: GET …/review/comments
         // ?anchors=1 adds each one's anchor state).
         review_comments: view.reviewComments,
+        // ESCAPED DEFECTS (MF5): the accepted changes a person said this ticket regresses,
+        // and the later tickets linked to it. A scoped principal sees a ticket outside its
+        // scope as a number with no title or note.
+        regression: (() => {
+          const visible = requestTicketFilter(wg);
+          const hide = (l: (typeof view.regression.regression_of)[number]) =>
+            !visible || visible(l.ticket_id)
+              ? l
+              : { ...l, title: null, note: null, outside_scope: true as const };
+          return {
+            regression_of: view.regression.regression_of.map(hide),
+            regressed_by: view.regression.regressed_by.map(hide),
+          };
+        })(),
         // SQUAD: the presentation (display name, shirt number, role) of every
         // REGISTERED agent this ticket names — event actors, the reviewer, the
         // creator and any active claim holder — keyed by agent id. Additive: the
@@ -714,6 +728,13 @@ export async function routeTickets(
   // never reaches here). A measurement for Health; nothing gates on it.
   if (segments.length === 3 && sub === TICKET_SUB.REGRESSION_OF && method === "POST") {
     const body = regressionOfBody.parse(await readJsonBody(req));
+    // PRINCIPAL SCOPES: the scope gate checked this ticket; the change it names must be
+    // in scope too, or a scoped principal could mark changes it cannot see.
+    const visible = requestTicketFilter(wg);
+    if (visible && !visible(wg.resolveTicket(body.of).id))
+      throw new DispatchError("SCOPE_DENIED", "That ticket is outside this principal's scope.", {
+        of: body.of,
+      });
     const r = body.withdraw
       ? wg.withdrawRegression(id, body.of, apiActor())
       : wg.fileRegression(id, body.of, apiActor(), body.note ?? null);

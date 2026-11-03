@@ -911,4 +911,40 @@
   .tk-evidence-note {
     font: 500 var(--t14) / var(--lh-detail) var(--f-detail);
   }
+
+  /* Escaped defects: the regression links a person filed, and the control to file one. */
+  .tk-regression-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  .tk-regression-list li {
+    padding: 6px 0;
+    border-top: var(--hair);
+    overflow-wrap: anywhere;
+  }
+  .tk-regression-list li:first-child {
+    border-top: 0;
+  }
+  .tk-regression-list .btn {
+    margin-left: 8px;
+  }
+  .tk-regression-form {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+    margin-top: 8px;
+  }
+  .tk-regression-form label {
+    flex: 1 0 100%;
+  }
+  .tk-regression-form .input {
+    flex: 1 1 6rem;
+    min-width: 0;
+  }
+  .tk-regression-foot {
+    font-size: var(--t12);
+    margin: 8px 0 0;
+  }
 }

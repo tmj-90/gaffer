@@ -626,10 +626,10 @@ default) seeds the profile, without commands, for a ticket whose title names a C
 API. What a profile does and does not prove is in
 [SECURITY.md](../SECURITY.md#the-independent-tester-and-what-its-verdict-proves).
 
-![The Independent testing card: the test contract, the cli acceptance profile, the runner's transcript of the registered commands on each tested commit, and the tester's results](img/ticket-testing.png)
+![The Independent testing card: the test contract, the cli acceptance profile, the runner's runtime acceptance result for the registered commands on each tested commit, and the tester's results](img/ticket-testing.png)
 
 *The Independent testing card on a ticket page: the contract the tester read, the
-acceptance profile, the runtime transcript the runner recorded on each tested commit,
+acceptance profile, the runner's runtime acceptance result on each tested commit,
 and the tester's passes.*
 
 ![A ticket page in review: Your move, each attempt with its model, the delivery's files, the campaign it belongs to, the brief, both criteria satisfied by the runner's checks, the Escaped defects card and the match report](img/ticket.png)

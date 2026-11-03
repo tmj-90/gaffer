@@ -149,9 +149,9 @@ The other screens, each in [docs/FEATURES.md](docs/FEATURES.md):
 
 *The work board: every lifecycle lane, with the whole-board counts above it.*
 
-![The Independent testing card: the test contract, the cli acceptance profile, the runner's transcript of both registered commands and the tester's passes on each tested commit](docs/img/ticket-testing.png)
+![The Independent testing card: the test contract, the cli acceptance profile with its two registered commands, the runner's runtime acceptance result on each tested commit and the tester's passes](docs/img/ticket-testing.png)
 
-*A ticket's Independent testing card: the acceptance profile, the runtime transcript the runner recorded, and the tester's results.*
+*A ticket's Independent testing card: the acceptance profile, what the runner recorded when it ran those commands, and the tester's results.*
 
 ![Health: the four measures (first-pass acceptance, human review time, accepted-change cost, escaped-defect rate), what each lane changed, the code index, the pre-work scout and the routing scorecard](docs/img/health.png)
 

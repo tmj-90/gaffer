@@ -112,10 +112,27 @@ describe("BBT-001 REST surface", () => {
     expect(JSON.parse(ticket.test_contract).run_command).toBe("docker compose up");
   });
 
-  it("approve routes to in_testing, then POST /tickets/:id/tester pass merges through", async () => {
+  it("tester first: an untested approve is 409, the runner routes it to in_testing, a POST /tickets/:id/tester pass returns it to review, then the approve goes through", async () => {
     h = await startHarness(true);
     const ticketId = inReviewTicket(h.wg);
     await call(h.baseUrl, "POST", `/tickets/${ticketId}/testable`, { can_be_tested: true });
+
+    const held = await call(
+      h.baseUrl,
+      "POST",
+      `/tickets/${ticketId}/review/approve`,
+      shownCommits(h.wg, ticketId),
+    );
+    expect(held.status).toBe(409);
+    h.wg.routeToTester(ticketId, { type: "system" });
+    expect(h.wg.view(ticketId).ticket.status).toBe("in_testing");
+
+    const pass = await call(h.baseUrl, "POST", `/tickets/${ticketId}/tester`, {
+      verdict: "pass",
+      summary: "all black-box tests pass",
+    });
+    expect(pass.status).toBe(200);
+    expect((pass.body.ticket as { status: string }).status).toBe("in_review");
 
     const approve = await call(
       h.baseUrl,
@@ -124,26 +141,14 @@ describe("BBT-001 REST surface", () => {
       shownCommits(h.wg, ticketId),
     );
     expect(approve.status).toBe(200);
-    expect((approve.body.ticket as { status: string }).status).toBe("in_testing");
-
-    const pass = await call(h.baseUrl, "POST", `/tickets/${ticketId}/tester`, {
-      verdict: "pass",
-      summary: "all black-box tests pass",
-    });
-    expect(pass.status).toBe(200);
-    expect((pass.body.ticket as { status: string }).status).toBe("ready_for_merge");
+    expect((approve.body.ticket as { status: string }).status).toBe("ready_for_merge");
   });
 
   it("a tester FAIL via REST returns the ticket to refining", async () => {
     h = await startHarness(true);
     const ticketId = inReviewTicket(h.wg);
     await call(h.baseUrl, "POST", `/tickets/${ticketId}/testable`, { can_be_tested: true });
-    await call(
-      h.baseUrl,
-      "POST",
-      `/tickets/${ticketId}/review/approve`,
-      shownCommits(h.wg, ticketId),
-    );
+    h.wg.routeToTester(ticketId, { type: "system" });
 
     const fail = await call(h.baseUrl, "POST", `/tickets/${ticketId}/tester`, {
       verdict: "fail",

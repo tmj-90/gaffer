@@ -191,6 +191,8 @@ import {
   type ApproveReviewOptions,
   type LandingStarted,
   type ReviewedHead,
+  type TesterCoverage,
+  type TesterRoute,
   type UnavailableWriteRepo,
   ReviewGateService,
   unavailableRepoRemedy,
@@ -283,8 +285,19 @@ export function resolveMaxAttempts(env: NodeJS.ProcessEnv = process.env): number
 }
 
 /** BBT-001 global toggle: is the independent black-box testing lane ON? */
-export { isTestingEnabled, testerProvenance } from "./util/testingLane.js";
-import { isTestingEnabled } from "./util/testingLane.js";
+export {
+  isTestingEnabled,
+  testerProvenance,
+  testingLaneMode,
+  testerOffNotice,
+} from "./util/testingLane.js";
+import {
+  testerLaneFor,
+  testerOffNotice,
+  testingLaneMode,
+  type TesterLaneDecision,
+  type TestingLaneMode,
+} from "./util/testingLane.js";
 
 /**
  * An evidence row enriched with derived provenance for the reviewer surface.
@@ -665,7 +678,10 @@ export class Dispatch {
       scope: this.scope,
       tickets: this.ticketSvc,
       repos: this.repoSvc,
-      testingEnabled: () => this.testingEnabledOverride ?? isTestingEnabled(),
+      // A planned build marks its tickets testable unless the lane is switched OFF: under
+      // the `auto` default the tester then runs for each ticket whose repos have a
+      // registered test command (decided when it is routed, not when it is planned).
+      testingEnabled: () => this.testerLaneMode() !== "off",
     });
     this.specsSvc = new SpecsService({
       db,
@@ -709,9 +725,8 @@ export class Dispatch {
       maxAttempts: this.maxAttempts,
       // Mirrors approveReview's routing: an acceptance ticket always goes through the
       // tester; a testable one does when the testing lane is on.
-      testerExpected: (t) =>
-        t.acceptance === 1 ||
-        ((this.testingEnabledOverride ?? isTestingEnabled()) && t.can_be_tested === 1),
+      testerExpected: (t) => this.reviewGateSvc.laneApplies(t),
+      testerLane: (t) => this.testerLane(t),
       // SAME CANDIDATE: the runner's gated commit per repo, and each write repo's head as
       // the approval reads it (role order), so the packet compares the commit Approve binds.
       repoDeliveries: this.repoDeliveries,
@@ -726,7 +741,7 @@ export class Dispatch {
       transitions: this.transitions,
       ticketSvc: this.ticketSvc,
       maxAttempts: () => this.maxAttempts,
-      testingEnabledOverride: this.testingEnabledOverride,
+      testerLaneApplies: (t) => this.testerLane(t).on,
       // REVIEWER ≠ AUTHOR: the agents table, so an agent approver can be checked to be a
       // registered principal (see requireRegisteredAgentApprover).
       agents: this.agents,
@@ -2223,7 +2238,12 @@ export class Dispatch {
     },
     actor: Actor,
   ): TransitionResult {
-    return this.reviewGateSvc.testerPass(ticketRef, input, actor);
+    const result = this.reviewGateSvc.testerPass(ticketRef, input, actor);
+    // TESTER FIRST: the PASS returned the ticket to review: now a person is needed.
+    if (result.ticket.status === "in_review") {
+      this.emitGate("review_needed", result.ticket, { detail: "the independent tester passed it" });
+    }
+    return result;
   }
 
   testerFail(
@@ -2541,7 +2561,9 @@ export class Dispatch {
               why: m.why,
               fix: unavailableRepoRemedy(m, ticket.number),
             })),
-      toTester: this.reviewGateSvc.approveRoutesToTesting(ticket),
+      // TESTER FIRST: whether the tester's PASS covers the head (git) — read only for an
+      // approval still to come (ci !== false); the settle after an approval reads none.
+      ...this.testerApproveFacts(ticket, opts.approver ?? "human", opts.ci !== false),
       acceptance: ticket.acceptance === 1,
       autoMerge: envFlagOn(env[AUTO_MERGE_ENV]),
       mergeCommand: opts.mergeCommand,
@@ -2567,6 +2589,29 @@ export class Dispatch {
       noCheckoutRepos: writes.filter((l) => !l.local_path).map((l) => l.name),
       // The same pause read as landing_state, so the line and the status agree.
       pause: usagePauseFact(env),
+    };
+  }
+
+  /** TESTER FIRST facts for approveOutcomeFacts: route, hold, and the tested commit. */
+  private testerApproveFacts(
+    ticket: Ticket,
+    approver: "human" | "agent",
+    read: boolean,
+  ): Pick<ApproveOutcomeFacts, "toTester" | "untested" | "testedCommit"> {
+    if (!read || !this.reviewGateSvc.laneApplies(ticket)) {
+      return { toTester: false, untested: null, testedCommit: null };
+    }
+    let cov: TesterCoverage;
+    try {
+      cov = this.reviewGateSvc.testerCoverage(ticket);
+    } catch {
+      cov = { covered: false, why: "no_verdict", tested: null, head: null };
+    }
+    if (cov.covered) return { toTester: false, untested: null, testedCommit: cov.tested };
+    return {
+      toTester: true,
+      untested: approver === "human" ? { why: cov.why, tested: cov.tested, head: cov.head } : null,
+      testedCommit: null,
     };
   }
 
@@ -3222,13 +3267,74 @@ export class Dispatch {
     const result = this.claims.submitForReview(input, actor);
     // H2: the ticket has reached `in_review` and now needs a human reviewer. Fire
     // AFTER the claim transaction commits so the notification can never roll the
-    // transition back; best-effort inside emitGate.
+    // transition back; best-effort inside emitGate. TESTER FIRST: a ticket the tester
+    // gates goes to the tester before a person looks, so the ping waits for its PASS
+    // (testerPass below); a FAIL or a hold costs no human attention.
     if (result.status === "in_review") {
       // The call above already resolved the ref (id or #N), so this cannot throw.
       const ticket = this.tickets.resolveRef(input.ticket_id);
-      this.emitGate("review_needed", ticket, { detail: input.reason });
+      if (!this.reviewGateSvc.laneApplies(ticket)) {
+        this.emitGate("review_needed", ticket, { detail: input.reason });
+      }
     }
     return result;
+  }
+
+  /**
+   * The GAFFER_TESTING setting this instance acts on: the constructor's `testingEnabled`
+   * pins it on or off (tests); otherwise the env (`auto` when unset).
+   */
+  testerLaneMode(): TestingLaneMode {
+    if (this.testingEnabledOverride !== undefined) {
+      return this.testingEnabledOverride ? "on" : "off";
+    }
+    return testingLaneMode();
+  }
+
+  /**
+   * ADAPTIVE TESTER LANE: is the independent tester lane on for this ticket's
+   * repositories, and which write repos have no registered test command? An explicit
+   * GAFFER_TESTING wins; the `auto` default is on when every write repo has one.
+   */
+  testerLane(ref: string | Ticket): TesterLaneDecision {
+    const ticket = typeof ref === "string" ? this.resolveTicket(ref) : ref;
+    const writes = this.repos
+      .accessLinksForTicket(ticket.id)
+      .filter((l) => isActiveTicketRepoRelation(l.relation) && l.access === "write")
+      .map((l) => ({ name: l.name, test_command: l.test_command }));
+    return testerLaneFor(this.testerLaneMode(), writes);
+  }
+
+  /**
+   * ADAPTIVE TESTER LANE on Health: the setting, and under the `auto` default each
+   * registered (visible) repository with no test command, with the one-line notice
+   * that says the tester is off there and why.
+   */
+  testerLaneHealth(): {
+    mode: TestingLaneMode;
+    repos_without_test_command: string[];
+    notices: string[];
+  } {
+    const mode = this.testerLaneMode();
+    const missing =
+      mode === "auto"
+        ? this.repos
+            .list(false)
+            .filter((r) => !(r.test_command ?? "").trim())
+            .map((r) => r.name)
+        : [];
+    return { mode, repos_without_test_command: missing, notices: missing.map(testerOffNotice) };
+  }
+
+  /**
+   * TESTER FIRST: send in_review tickets the tester gates (and has not passed on their
+   * head) to it before a person reviews them: one ticket, or every in_review ticket. The
+   * runner's call (system) or an admin's.
+   */
+  routeToTester(ref: string | null, actor: Actor): TesterRoute[] {
+    return ref === null
+      ? this.reviewGateSvc.routeAllToTester(actor)
+      : [this.reviewGateSvc.routeToTester(ref, actor)];
   }
 
   /**

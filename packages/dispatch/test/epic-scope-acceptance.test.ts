@@ -4,7 +4,7 @@ import { computeStats, contractHash } from "../src/cli/ops.js";
 import { Dispatch } from "../src/core.js";
 import type { Actor } from "../src/domain/types.js";
 import { TestClock } from "../src/util/clock.js";
-import { giveTicketRealDelivery, nonEmptyDiffRunner } from "./helpers/realDiff.js";
+import { FAKE_HEAD, giveTicketRealDelivery, nonEmptyDiffRunner } from "./helpers/realDiff.js";
 
 /**
  * EPIC SCOPE AND ACCEPTANCE (external review #8, finding 4).
@@ -23,7 +23,8 @@ const reviewer: Actor = { type: "human", id: "rev" };
 const agentActor: Actor = { type: "agent", id: "agent-runner" };
 const testerAgent: Actor = { type: "agent", id: "tester-1" };
 const systemActor: Actor = { type: "system" };
-const SHA = "0123456789abcdef0123456789abcdef01234567";
+/** The tested commit: the delivery head the stub git reports (an approval needs it). */
+const SHA = FAKE_HEAD;
 const LANDED = "89abcdef0123456789abcdef0123456789abcdef";
 
 function freshWg(): Dispatch {
@@ -51,9 +52,9 @@ function shipImplementation(wg: Dispatch, ticketId: string, agentId: string): vo
   expect(wg.view(ticketId).ticket.status).toBe("done");
 }
 
-/** Approve, PASS (bound), record the landed replay and merge the acceptance ticket. */
+/** Tester first: test (bound PASS), approve the tested commit, record the landed replay, merge. */
 function acceptFinal(wg: Dispatch, accId: string): void {
-  wg.approveReview(accId, reviewer);
+  wg.routeToTester(accId, systemActor);
   wg.testerPass(
     accId,
     {
@@ -64,6 +65,7 @@ function acceptFinal(wg: Dispatch, accId: string): void {
     },
     testerAgent,
   );
+  wg.approveReview(accId, reviewer);
   wg.recordTesterReplay(
     accId,
     {

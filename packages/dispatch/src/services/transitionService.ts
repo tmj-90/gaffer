@@ -90,6 +90,11 @@ export const ALLOWED: ReadonlySet<string> = new Set([
   "in_review->in_testing",
   "in_testing->ready_for_merge",
   "in_testing->refining",
+  // TESTER FIRST: with the lane on, the runner sends a delivery to the tester BEFORE a
+  // person reviews it (ReviewGateService.routeToTester, `in_review -> in_testing` above,
+  // reason tester_before_review) and the tester's PASS brings it back to review for the
+  // person to approve the commit it tested. Same `testerVerdict` guard.
+  "in_testing->in_review",
   // The tester FAILED and the caller asked for REWORK rather than a human hold
   // (`testerFail(..., { to: "ready" })` — the autonomous runner's choice, mirroring
   // `review reject --to ready`): straight back to the queue with the failing
@@ -443,10 +448,11 @@ export const GUARDED_EDGES: readonly GuardedEdge[] = [
       "in_testing->ready_for_merge",
       "in_testing->refining",
       "in_testing->ready",
+      "in_testing->in_review",
     ],
     anyOf: ["testerVerdict"],
     message: "A ticket can only move into or out of testing via the testing-lane paths.",
-    why: "BBT-001: into the lane on approval, out of it on a tester verdict — never a drag.",
+    why: "BBT-001: into the lane on approval or by the runner before review, out of it on a tester verdict — never a drag.",
   },
   {
     edges: ["to:paused"],

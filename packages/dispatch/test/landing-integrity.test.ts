@@ -185,7 +185,9 @@ describe("cli-runner/F-02: a partly landed ticket cannot be cancelled", () => {
     const { id } = partlyLanded(wg);
     wg.reopenForReview(id, { reason: "repo moved", resolution: "re-review" }, { type: "admin" });
     wg.setTestable(id, true, human);
-    expect(wg.approveReview(id, human).ticket.status).toBe("in_testing");
+    // Tester first: the runner sends the reopened candidate to the tester.
+    expect(wg.routeToTester(id, { type: "system" })[0]!.routed).toBe(true);
+    expect(wg.view(id).ticket.status).toBe("in_testing");
     const res = wg.testerFail(id, { summary: "checkout breaks", to: "ready" }, agentActor);
     expect(res.ticket.status).toBe("blocked");
     expect(wg.humanQueue().items.find((i) => i.ticket?.id === id)).toMatchObject({

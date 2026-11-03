@@ -8,6 +8,7 @@ import type {
   WorkEvent,
 } from "../domain/types.js";
 import { listEvents } from "../events/eventWriter.js";
+import { testerOffNotice, type TesterLaneDecision } from "../util/testingLane.js";
 import { currentJudgment, type RecordedEvalJudgment } from "./evalJudgment.js";
 import { AC_CHECK_VERIFIER } from "../policy/policy.js";
 import type { AcRepository } from "../repositories/acRepository.js";
@@ -211,8 +212,22 @@ export interface PacketBacking {
 export interface ReviewPacket {
   gates: PacketGates | null;
   tester: PacketTester | null;
-  /** The tester runs after the review approval, when this ticket goes through one. */
+  /**
+   * The independent tester gates this ticket (an epic's acceptance ticket, or a testable
+   * one whose lane is on). With tester-first it tests the candidate before you review, and
+   * an approval needs its PASS on the commit you approve.
+   */
   tester_expected: boolean;
+  /**
+   * ADAPTIVE TESTER LANE: the GAFFER_TESTING setting (on, off, or the `auto` default),
+   * whether the lane is on for this ticket's repos, and the write repos with no
+   * registered test command (why an `auto` lane is off). Null when not read.
+   */
+  tester_lane: {
+    mode: TesterLaneDecision["mode"];
+    on: boolean;
+    missing_test_command: string[];
+  } | null;
   cost: PacketCost;
   attempts: PacketAttempts;
   risk: PacketRisk;
@@ -257,8 +272,10 @@ export interface ReviewPacketDeps {
   evidence: EvidenceRepository;
   reworkAttempts: ReworkAttemptRepository;
   maxAttempts: number;
-  /** Whether the independent tester runs for this ticket after approval. */
+  /** Whether the independent tester gates this ticket (it tests before review). */
   testerExpected: (ticket: Ticket) => boolean;
+  /** The ticket's tester lane (setting, on/off for its repos, repos with no test command). */
+  testerLane?: (ticket: Ticket) => TesterLaneDecision;
   /** Per-repo delivery rows: the commit the runner recorded after the gates. */
   repoDeliveries?: TicketRepoDeliveryRepository;
   /**
@@ -406,6 +423,23 @@ export function enteredReviewAt(ticketId: string, events: readonly WorkEvent[]):
   return at;
 }
 
+/**
+ * TESTER FIRST: when this candidate's round began, the latest entry into review that was
+ * not the tester's PASS returning it (a submit, a rework's submit, a conflict reopen). The
+ * tester now runs between the submit and the review, so its verdict on this candidate is
+ * recorded after this point and before the latest entry into review.
+ */
+export function candidateRoundAt(ticketId: string, events: readonly WorkEvent[]): string | null {
+  let at: string | null = null;
+  for (const e of events) {
+    if (e.event_type !== "ticket.transitioned" || e.entity_id !== ticketId) continue;
+    const p = payloadOf(e);
+    if (str(p.to) !== "in_review" || str(p.from) === "in_testing") continue;
+    if (at === null || e.created_at > at) at = e.created_at;
+  }
+  return at;
+}
+
 /** Recorded before `since` (a fact about an earlier candidate); same instant counts as current. */
 const before = (e: { created_at: string }, since: string | null): boolean =>
   since !== null && since > e.created_at;
@@ -415,25 +449,41 @@ const before = (e: { created_at: string }, since: string | null): boolean =>
  * or `ticket.tester_failed` event on this ticket names. Only reviewGateService's
  * testerPass/testerFail write those events, beside the row they record; a verdict-shaped
  * payload anyone else recorded (an agent's record_ac_evidence, say) is not the tester's.
- * A verdict from before the ticket last entered review tested an earlier candidate
- * (that round's fail is in the rework list), so it is not this delivery's.
+ * A verdict from before this candidate's round began (candidateRoundAt: the submit, not
+ * the tester's PASS returning it to review) tested an earlier candidate (that round's fail
+ * is in the rework list), so it is not this delivery's. The commit is the row's
+ * tested_commit, else the head the PASS event recorded (a person's waiver).
  */
 function readTester(
   rows: Evidence[],
   events: WorkEvent[],
-  sinceReview: string | null,
+  sinceRound: string | null,
 ): PacketTester | null {
   const verdictIds = testerVerdictIds(events);
+  // Each verdict is dated by its own event (written beside the row, on the event clock
+  // the transitions use), and a PASS event names the commit it is about.
+  const testedHead = new Map<string, string>();
+  const verdictAt = new Map<string, string>();
+  for (const ev of events) {
+    if (ev.event_type !== "ticket.tester_passed" && ev.event_type !== "ticket.tester_failed")
+      continue;
+    const p = payloadOf(ev);
+    const id = str(p.evidence_id);
+    if (!id) continue;
+    verdictAt.set(id, ev.created_at);
+    const head = str(p.tested_head);
+    if (head && ev.event_type === "ticket.tester_passed") testedHead.set(id, head);
+  }
   for (let i = rows.length - 1; i >= 0; i--) {
     const e = rows[i]!;
     if (e.evidence_type !== "test_output" || !verdictIds.has(e.id)) continue;
     const p = payloadOf(e);
     if (p.verdict !== "pass" && p.verdict !== "fail") continue;
-    if (before(e, sinceReview)) return null;
+    if (before({ created_at: verdictAt.get(e.id) ?? e.created_at }, sinceRound)) return null;
     return {
       verdict: p.verdict,
       provenance: str(p.provenance),
-      tested_commit: str(p.tested_commit),
+      tested_commit: str(p.tested_commit) ?? testedHead.get(e.id) ?? null,
       contract_hash: str(p.contract_hash),
       summary: e.summary.split("\n")[0]!.slice(0, 300),
       at: e.created_at,
@@ -865,12 +915,19 @@ function readBacking(p: Omit<ReviewPacket, "backing">, evidence: Evidence[]): Pa
   } else
     add(
       p.tester_expected
-        ? "The independent tester has not run (it runs after you approve)"
+        ? "The independent tester has not passed this commit yet (it tests before you approve, and approval waits for its PASS)"
         : "No independent tester runs for this ticket",
       false,
       "the tester's verdict rows",
       "tester",
     );
+  // ADAPTIVE TESTER LANE: why the tester does not run, when the `auto` default left it
+  // off because a write repo has no registered test command (a PASS there could not be
+  // replayed, so it would be held as unverified). An acceptance ticket is tested anyway.
+  const lane = p.tester_lane;
+  if (lane && lane.mode === "auto" && !lane.on && !p.tester_expected)
+    for (const repo of lane.missing_test_command)
+      add(testerOffNotice(repo), false, "the repository's registered test command", "tester");
 
   // Required CI for the candidate commit.
   const ci = p.ci;
@@ -973,7 +1030,7 @@ export class ReviewPacketService {
       cost = { ...ZERO_COST, ledger_status: "unreadable" };
     }
 
-    const tester = readTester(rows, events, sinceReview);
+    const tester = readTester(rows, events, candidateRoundAt(ticket.id, events));
     const candidate = this.readCandidate(ticket, rows, events, sinceReview, tester);
     // REQUIRED CI's candidate is the first write repo whose head resolves (ciCandidateHead).
     const ci = readCi(
@@ -989,6 +1046,7 @@ export class ReviewPacketService {
       gates,
       tester,
       tester_expected: safeBool(() => this.deps.testerExpected(ticket)),
+      tester_lane: readLane(() => this.deps.testerLane?.(ticket) ?? null),
       cost: { ...cost, budget_usd: ticket.delivery_budget_usd },
       attempts: {
         attempt_count: ticket.attempt_count,
@@ -1075,6 +1133,15 @@ const ZERO_COST: Omit<PacketCost, "budget_usd"> = {
   unknown_calls: 0,
   ledger_status: "unconfigured",
 };
+
+function readLane(fn: () => TesterLaneDecision | null): ReviewPacket["tester_lane"] {
+  try {
+    const d = fn();
+    return d ? { mode: d.mode, on: d.on, missing_test_command: [...d.missing_test_command] } : null;
+  } catch {
+    return null;
+  }
+}
 
 function safeBool(fn: () => boolean): boolean {
   try {

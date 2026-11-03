@@ -92,7 +92,7 @@ function deliver(wg: Dispatch, ticketId: string, agentId: string): void {
   wg.submitForReview({ claimToken: claim.claimToken, ticket_id: ticketId }, agentActor);
 }
 
-/** An epic's acceptance ticket, delivered and approved → in_testing. */
+/** An epic's acceptance ticket, delivered and sent to the tester before review → in_testing. */
 function acceptanceInTesting(wg: Dispatch): string {
   wg.registerRepository({ name: "app", default_branch: "main" }, human);
   const res = wg.createEpic(
@@ -111,7 +111,7 @@ function acceptanceInTesting(wg: Dispatch): string {
   wg.markMerged(id(impl), { type: "system" });
   wg.markReady(id(acc), human);
   deliver(wg, id(acc), agent.id);
-  wg.approveReview(id(acc), reviewer);
+  wg.routeToTester(id(acc), { type: "system" });
   expect(wg.resolveTicket(id(acc)).status).toBe("in_testing");
   return id(acc);
 }
@@ -145,7 +145,8 @@ describe("REST tester verdict runs as the calling principal", () => {
       summary: "I verified it by hand",
     });
     expect(r.status).toBe(200);
-    expect(wg.resolveTicket(acc).status).toBe("ready_for_merge");
+    // Tester first: the PASS returns it to review for a person.
+    expect(wg.resolveTicket(acc).status).toBe("in_review");
     const ev = wg.db
       .prepare("SELECT payload_json, created_by FROM evidence WHERE ticket_id = ? AND summary = ?")
       .get(acc, "I verified it by hand") as { payload_json: string; created_by: string };

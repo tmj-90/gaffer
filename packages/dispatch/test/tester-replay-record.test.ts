@@ -91,15 +91,18 @@ function testedAndLanded(opts: { waiver?: boolean } = {}) {
   d.recordRepoDelivery({ ticket_id: t.id, repo_id: r.id, branch_name: BRANCH }, agentActor);
   d.submitForReview({ claimToken: claim.claimToken, ticket_id: t.id, reason: "done" }, agentActor);
   const pin = git(repoDir, "rev-parse", BRANCH);
+  // TESTER FIRST: the runner sends it to the tester before review; the PASS returns it to
+  // review, and the person approves (pins) the tested commit.
+  expect(d.routeToTester(t.id, system)[0]!.routed).toBe(true);
+  if (opts.waiver) d.testerPass(t.id, { summary: "checked by hand" }, human);
+  else
+    d.testerPass(t.id, { summary: "black-box PASS", tested_commit: pin, replay: "passed" }, tester);
+  expect(d.view(t.id).ticket.status).toBe("in_review");
   const approved = d.approveReview(t.id, human, {
     commits: [{ repo: r.id, sha: pin }],
     requireCommits: true,
   });
-  expect(approved.ticket.status).toBe("in_testing");
-  if (opts.waiver) d.testerPass(t.id, { summary: "checked by hand" }, human);
-  else
-    d.testerPass(t.id, { summary: "black-box PASS", tested_commit: pin, replay: "passed" }, tester);
-  expect(d.view(t.id).ticket.status).toBe("ready_for_merge");
+  expect(approved.ticket.status).toBe("ready_for_merge");
   git(repoDir, "merge", "-q", "--no-ff", "-m", "land", BRANCH);
   const landed = git(repoDir, "rev-parse", "main");
   return { d, t, r, repoDir, pin, landed };

@@ -251,9 +251,8 @@ describe(
       const f = fixture();
       f.d.setTestable(f.id, true, human);
       f.deliver();
-      f.d.approveReview(f.id, human, {
-        commits: [{ repo: null, sha: git(f.dir, "rev-parse", BRANCH) }],
-      });
+      // Tester first: the runner sends the candidate to the tester before review.
+      f.d.routeToTester(f.id, system);
       f.clock.advanceSeconds(5);
       f.d.testerFail(
         f.id,

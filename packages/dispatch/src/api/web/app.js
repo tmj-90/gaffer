@@ -11593,12 +11593,12 @@ async function renderTicket(id) {
           class: "btn primary",
           type: "button",
           title:
-            "Record a tester PASS for this in_testing ticket (→ ready_for_merge). Use when you verified the acceptance criteria yourself or the tester lane is held.",
+            "Record a tester PASS for this in_testing ticket (→ in_review for your approval, or → ready_for_merge when an approval sent it to the tester). Use when you verified the acceptance criteria yourself or the tester lane is held.",
           onclick: () =>
             reasonSheet({
               title: `Tester pass ${ref}`,
               ticket: t,
-              intro: `Records an independent tester PASS for ${ref}. It moves to Ready for merge, and what you checked is kept as test evidence.`,
+              intro: `Records an independent tester PASS for ${ref}. It goes back to Review, where you approve the commit it was tested on (or to Ready for merge, when an approval sent it to the tester), and what you checked is kept as test evidence.`,
               label: "What did you check?",
               presets: [
                 "Checked every acceptance criterion by hand",
@@ -11607,8 +11607,16 @@ async function renderTicket(id) {
               hint: "Required. It is kept as the test evidence.",
               confirm: "Record PASS",
               onConfirm: async (summary) => {
-                await api("POST", `/tickets/${t.id}/tester`, { verdict: "pass", summary });
-                toast(`Tester PASS recorded: ${ref} is ready to merge.`, { ok: true });
+                const r = await api("POST", `/tickets/${t.id}/tester`, {
+                  verdict: "pass",
+                  summary,
+                });
+                toast(
+                  r && r.ticket && r.ticket.status === "in_review"
+                    ? `Tester PASS recorded: ${ref} is back in Review for your approval.`
+                    : `Tester PASS recorded: ${ref} is ready to merge.`,
+                  { ok: true },
+                );
                 router();
               },
             }),
@@ -12873,7 +12881,7 @@ function renderTestingCard(t, evidence) {
           { class: "setting-help dim" },
           closed
             ? `${t.status === "done" ? "Merged" : "Closed"}: this records whether it went through the independent tester. It can no longer change.`
-            : "When on (and GAFFER_TESTING is enabled), review approval routes this ticket through an independent tester before merge.",
+            : "When on (and the tester lane is on for its repositories: GAFFER_TESTING on, or by default where a test command is registered), an independent tester tests each delivery before you review it, and you approve the commit it passed.",
         ),
       ]),
       el("label", { class: "switch" }, [
@@ -13689,6 +13697,11 @@ function fourMeasures(health) {
           : "an escaped defect needs a human-filed link from the defect to the accepted change it escaped from",
       ),
     ]),
+    // ADAPTIVE TESTER LANE: where the independent tester is off and why (the server's
+    // one-line notice per repository with no registered test command).
+    ...(health.tester_lane && Array.isArray(health.tester_lane.notices)
+      ? health.tester_lane.notices.map((n) => el("p", { class: "measures-notice dim" }, n))
+      : []),
   ]);
 }
 
@@ -14500,6 +14513,17 @@ const MODE_DETENTS = [
 ];
 
 const isOnValue = (v) => v === true || v === "true" || v === "1" || v === "on" || v === "yes";
+/**
+ * The tester lane's setting (GAFFER_TESTING): unset, empty or "auto" is the adaptive
+ * default (on for a repo with a registered test command, off elsewhere), any other value
+ * not on is off.
+ */
+const testingLaneOff = (v) => {
+  const s = String(v ?? "")
+    .trim()
+    .toLowerCase();
+  return s !== "" && s !== "auto" && !isOnValue(s);
+};
 
 /**
  * The value each key would take under `mode`, given what is saved and what the
@@ -14532,7 +14556,7 @@ const FORMATION_GATES = [
     id: "testing",
     label: "Testing",
     key: "GAFFER_TESTING",
-    who: (p) => (isOnValue(p.GAFFER_TESTING?.value) ? "squad" : "none"),
+    who: (p) => (testingLaneOff(p.GAFFER_TESTING?.value) ? "none" : "squad"),
   },
   {
     id: "review",
@@ -14595,8 +14619,10 @@ function goNoGo(posture, mode, policies) {
   const checks = [
     {
       key: "GAFFER_TESTING",
-      ok: isOnValue(v("GAFFER_TESTING")),
-      go: "An independent tester checks every delivery.",
+      ok: !testingLaneOff(v("GAFFER_TESTING")),
+      go: isOnValue(v("GAFFER_TESTING"))
+        ? "An independent tester checks every delivery."
+        : "An independent tester checks each delivery in a repo with a registered test command.",
       nogo: "No independent tester: the squad marks its own work.",
     },
     {
@@ -18205,8 +18231,8 @@ function candidateCell(p) {
           shaOr(c.diff_head, c.head_unavailable ? `nothing (${c.head_unavailable})` : "nothing"),
         ]),
         el("span", { class: "vd-cand-row" }, [
-          "Tester tested ",
-          shaOr(c.tester_tested, p.tester_expected ? "nothing yet" : "nothing (no tester)"),
+          "Tested commit ",
+          shaOr(c.tester_tested, p.tester_expected ? "none yet" : "none (no tester)"),
         ]),
         c.pin ? el("span", { class: "vd-cand-row" }, ["Pinned ", shaOr(c.pin, "")]) : null,
       ]),
@@ -18500,16 +18526,20 @@ function verdictStrip(p) {
       : verdictCell(
           "tester",
           "Tester",
-          p.tester_expected ? "After you" : "None",
+          p.tester_expected ? "Not yet" : "None",
           p.tester_expected
-            ? "Independent tester: runs after your approval"
+            ? "Independent tester: has not passed this commit yet"
             : "Independent tester: not used for this ticket",
           el(
             "p",
             { class: "vd-sub" },
             p.tester_expected
-              ? "The independent tester runs once you approve, against the commit you sign."
-              : "This ticket does not go through the independent tester.",
+              ? "The independent tester tests a delivery before you review it, and approval waits for its PASS on the commit you sign."
+              : p.tester_lane &&
+                  p.tester_lane.mode === "auto" &&
+                  p.tester_lane.missing_test_command.length
+                ? `This ticket does not go through the independent tester: no test command is registered for ${p.tester_lane.missing_test_command.join(", ")}.`
+                : "This ticket does not go through the independent tester.",
           ),
         ),
   );

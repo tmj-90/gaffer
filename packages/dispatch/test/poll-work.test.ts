@@ -357,7 +357,7 @@ describe("POST /poll-work — work beyond the ready queue", () => {
         .prepare("UPDATE tickets SET status = 'in_testing', acceptance = 1 WHERE id = ?")
         .run(t.id);
     };
-    restore = withEnv({ GAFFER_TESTING: undefined, CREW_CONFIG: "/nonexistent/crew.yaml" });
+    restore = withEnv({ GAFFER_TESTING: "0", CREW_CONFIG: "/nonexistent/crew.yaml" });
     h = await startHarness({ run: () => ({ started: true, pid: 5 }) }, false, acceptanceInTesting);
     let res = await call(h.baseUrl, "POST", "/poll-work");
     expect(res.status).toBe(202);
@@ -376,6 +376,20 @@ describe("POST /poll-work — work beyond the ready queue", () => {
     expect(res.status).toBe(200);
     expect(res.body.reason).toBe("no_ready_work");
     expect(h.runCount()).toBe(0);
+  });
+
+  it("under the auto lane default (GAFFER_TESTING unset) every in_testing ticket is the tester's", async () => {
+    // Dispatch routes a ticket to the tester only where its lane applies (a registered
+    // test command), so the runner tests whatever is in testing.
+    restore = withEnv({ GAFFER_TESTING: undefined, CREW_CONFIG: "/nonexistent/crew.yaml" });
+    h = await startHarness(
+      { run: () => ({ started: true, pid: 5 }) },
+      false,
+      seedInStatus("in_testing"),
+    );
+    const res = await call(h.baseUrl, "POST", "/poll-work");
+    expect(res.status).toBe(202);
+    expect(res.body.pending).toMatchObject({ ready: 0, testing: 1 });
   });
 
   it("fires for an approved ticket the merge lane would land (AUTO_MERGE on), not otherwise", async () => {

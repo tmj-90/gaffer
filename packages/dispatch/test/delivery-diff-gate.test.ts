@@ -210,23 +210,48 @@ describe("git-inside-write-lock: the done gate's git never runs under the write 
   });
 
   it("testerPass runs the gate's git outside its outer transaction", () => {
-    const spy = spyRunner(nonEmptyDiffRunner);
-    const wg = Dispatch.open(":memory:", new TestClock(), spy.runGit, { testingEnabled: true });
-    spy.bind(wg);
-    const ticketId = inReview(wg);
-    wg.setTestable(ticketId, true, human);
-    expect(wg.approveReview(ticketId, reviewer).ticket.status).toBe("in_testing");
-    spy.calls.length = 0;
+    // The PASS that goes to ready_for_merge (an agent's approval sent it to the tester)
+    // runs the done gate; the PASS before review reads the head. Neither under the lock.
+    process.env.DISPATCH_ALLOW_AGENT_APPROVE = "1";
+    try {
+      const spy = spyRunner(nonEmptyDiffRunner);
+      const wg = Dispatch.open(":memory:", new TestClock(), spy.runGit, { testingEnabled: true });
+      spy.bind(wg);
+      const ticketId = inReview(wg);
+      wg.setTestable(ticketId, true, human);
+      const rv = wg.registerAgent({ display_name: "rv" }, human);
+      expect(wg.approveReview(ticketId, { type: "agent", id: rv.id }).ticket.status).toBe(
+        "in_testing",
+      );
+      spy.calls.length = 0;
 
-    const res = wg.testerPass(
-      ticketId,
-      { summary: "black-box tests pass", replay: "passed" },
-      testerAgent,
-    );
-    expect(res.ticket.status).toBe("ready_for_merge");
-    expect(spy.calls.length).toBeGreaterThan(0);
-    expect(spy.calls.filter((c) => c.inTransaction)).toEqual([]);
-    wg.db.close();
+      const res = wg.testerPass(
+        ticketId,
+        { summary: "black-box tests pass", replay: "passed" },
+        testerAgent,
+      );
+      expect(res.ticket.status).toBe("ready_for_merge");
+      expect(spy.calls.length).toBeGreaterThan(0);
+      expect(spy.calls.filter((c) => c.inTransaction)).toEqual([]);
+
+      wg.db.close();
+
+      const spy2 = spyRunner(nonEmptyDiffRunner);
+      const wg2 = Dispatch.open(":memory:", new TestClock(), spy2.runGit, { testingEnabled: true });
+      spy2.bind(wg2);
+      const before = inReview(wg2);
+      wg2.setTestable(before, true, human);
+      wg2.routeToTester(before, { type: "system" });
+      spy2.calls.length = 0;
+      expect(
+        wg2.testerPass(before, { summary: "pass", replay: "passed" }, testerAgent).ticket.status,
+      ).toBe("in_review");
+      expect(spy2.calls.length).toBeGreaterThan(0);
+      expect(spy2.calls.filter((c) => c.inTransaction)).toEqual([]);
+      wg2.db.close();
+    } finally {
+      delete process.env.DISPATCH_ALLOW_AGENT_APPROVE;
+    }
   });
 
   it("a stale or forged proof cannot skip the gate: a fingerprint mismatch recomputes", () => {

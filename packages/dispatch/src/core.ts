@@ -282,11 +282,12 @@ export type { BoardColumn } from "./services/boardService.js";
 import { SuggestionService, type RepoSuggestion } from "./services/suggestionService.js";
 import { TransitionService, type TransitionResult } from "./services/transitionService.js";
 import { buildNotifierFromEnv } from "./notify/config.js";
-import type { NotifyEvent, NotifyKind, Notifier } from "./notify/types.js";
+import type { Notifier } from "./notify/types.js";
 import { type Clock, systemClock } from "./util/clock.js";
 import { DispatchError, notFound } from "./util/errors.js";
 import { newId } from "./util/id.js";
 import { agreedRequirementsFromTurns } from "./util/planClarifications.js";
+import type { DispatchInternals } from "./services/dispatchInternals.js";
 
 /**
  * Default cap on how many times a delivery may be rejected back into the queue
@@ -321,6 +322,7 @@ import {
   type TesterLaneDecision,
   type TestingLaneMode,
 } from "./util/testingLane.js";
+import * as gate from "./services/gateNotifications.js";
 
 /**
  * An evidence row enriched with derived provenance for the reviewer surface.
@@ -569,20 +571,8 @@ export class Dispatch {
   readonly humanQueueSvc: HumanQueueService;
   /** SQUAD: club identity + agent display names / shirt numbers (presentation only). */
   readonly squadSvc: SquadService;
-  /**
-   * Git runner used to compute diff-in-review. Injectable so tests can drive the
-   * diff endpoint without a real repo on disk; defaults to the real `git` spawn.
-   */
-  private readonly gitRunner: GitRunner | undefined;
-  /** CHANGE IMPACT: the code index (memory CLI), or null when Memory is not configured. */
-  private readonly codeIndex: CodeIndexReader | null;
-  /**
-   * The callers row each ticket's last impact read produced: recorded on the
-   * next `ticket.review_opened` so Health can count the reviews that saw callers. A read
-   * measurement only (never gating); in-process, so a restart forgets it (the event then
-   * records null, "not known").
-   */
-  private readonly lastCallersRow = new Map<string, { status: string; round: string | null }>();
+  /** The private state the core services read (see services/dispatchInternals.ts). */
+  private readonly internals: DispatchInternals;
 
   /**
    * Retry cap (P1): a delivery rejected back into the queue this many times is
@@ -598,23 +588,7 @@ export class Dispatch {
   }
   private readonly maxAttemptsOverride: number | undefined;
 
-  /**
-   * BBT-001: per-instance override for the `GAFFER_TESTING` toggle. `undefined`
-   * (the default) means "read the env via {@link isTestingEnabled}"; a boolean
-   * pins it for tests so the testing lane can be exercised without touching the
-   * process env.
-   */
-  private readonly testingEnabledOverride: boolean | undefined;
   private readonly requireRegisteredAgentApprover: boolean;
-
-  /**
-   * H2 human-gate notifier — the opt-in seam that pings the operator when a
-   * ticket needs them (enters `in_review`, is parked/`blocked`, or a decision
-   * becomes pending). Injectable via the constructor option so tests can pass a
-   * fake; defaults to the env-built notifier (a no-op when nothing is
-   * configured). Every emit is best-effort and non-blocking — see {@link emitGate}.
-   */
-  private readonly notifier: Notifier;
 
   constructor(
     db: Db,
@@ -640,12 +614,15 @@ export class Dispatch {
     } = {},
   ) {
     this.db = db;
-    this.codeIndex = options.codeIndex === undefined ? resolveCodeIndexReader() : options.codeIndex;
-    this.gitRunner = gitRunner;
+    this.internals = {
+      codeIndex: options.codeIndex === undefined ? resolveCodeIndexReader() : options.codeIndex,
+      gitRunner,
+      lastCallersRow: new Map(),
+      testingEnabledOverride: options.testingEnabled,
+      notifier: options.notifier ?? buildNotifierFromEnv(),
+    };
     this.maxAttemptsOverride = options.maxAttempts;
-    this.testingEnabledOverride = options.testingEnabled;
     this.requireRegisteredAgentApprover = options.requireRegisteredAgentApprover ?? false;
-    this.notifier = options.notifier ?? buildNotifierFromEnv();
     this.tickets = new TicketRepository(db);
     this.acs = new AcRepository(db);
     this.repos = new RepoRepository(db);
@@ -698,8 +675,8 @@ export class Dispatch {
       db,
       clock: this.clock,
       decisions: this.decisions,
-      notifier: this.notifier,
-      onDecisionCreated: (d) => this.emitDecisionGate(d),
+      notifier: this.internals.notifier,
+      onDecisionCreated: (d) => gate.emitDecisionGate(this, this.internals, d),
     });
     this.ticketSvc = new TicketService({
       db,
@@ -803,7 +780,7 @@ export class Dispatch {
       agents: this.agents,
       requireRegisteredAgentApprover: this.requireRegisteredAgentApprover,
       onTicketParked: (ticket, detail) => {
-        this.emitGate("ticket_parked", ticket, { status: "blocked", detail });
+        gate.emitGate(this, this.internals, "ticket_parked", ticket, { status: "blocked", detail });
       },
       // GRADUATED-AUTONOMY (Spec 2, Phase 1): resolve delivery-vs-merge SHAs so the
       // approve path can emit `approved_unchanged`. Pure read; degrades to unknown.
@@ -841,7 +818,7 @@ export class Dispatch {
     this.reviewCommentSvc = new ReviewCommentService({
       db,
       clock: this.clock,
-      runGit: this.gitRunner ?? defaultGitRunner,
+      runGit: this.internals.gitRunner ?? defaultGitRunner,
       resolveTicket: (ref) => this.resolveTicket(ref),
       repoContexts: (ticket) => this.commentRepoContexts(ticket),
     });
@@ -858,7 +835,7 @@ export class Dispatch {
       // A pause is a needs-human-review checkpoint — route it through the same
       // ticket_parked gate as the retry-cap park so the existing sinks fire.
       onTicketPaused: (ticket, detail) => {
-        this.emitGate("ticket_parked", ticket, { status: "paused", detail });
+        gate.emitGate(this, this.internals, "ticket_parked", ticket, { status: "paused", detail });
       },
     });
     this.humanQueueSvc = new HumanQueueService({
@@ -943,9 +920,9 @@ export class Dispatch {
         repos: this.repos,
         tickets: this.tickets,
         repoDeliveries: this.repoDeliveries,
-        ...(this.gitRunner ? { runGit: this.gitRunner } : {}),
+        ...(this.internals.gitRunner ? { runGit: this.internals.gitRunner } : {}),
         downstreamRepos: (repoId) => this.downstreamRepos(repoId),
-        codeIndex: this.codeIndex,
+        codeIndex: this.internals.codeIndex,
       },
       ticket.id,
       opts,
@@ -966,7 +943,7 @@ export class Dispatch {
       : rows.every((s) => s === "none_changed")
         ? "none_changed"
         : "not_analysed";
-    if (this.lastCallersRow.size > 500) this.lastCallersRow.clear();
+    if (this.internals.lastCallersRow.size > 500) this.internals.lastCallersRow.clear();
     // Keyed to the review round it was computed in: a later round (a new head after a
     // send-back) must not record the previous round's row.
     const t = this.resolveTicket(ticketId);
@@ -974,7 +951,7 @@ export class Dispatch {
       t.status === "in_review"
         ? (this.events.enteredStatusAt(ticketId, "in_review")?.at ?? null)
         : null;
-    this.lastCallersRow.set(ticketId, { status, round });
+    this.internals.lastCallersRow.set(ticketId, { status, round });
   }
 
   /**
@@ -1019,7 +996,7 @@ export class Dispatch {
     // an injected runner made `approved_unchanged` ALWAYS null in prod (the merge half of
     // graduated autonomy could never fire). Mirrors computeTicketDiff's defaultGitRunner
     // fallback. Indeterminate repos still yield an unknown pair below (never overstate).
-    const runGit = this.gitRunner ?? defaultGitRunner;
+    const runGit = this.internals.gitRunner ?? defaultGitRunner;
     const links = this.repos.accessLinksForTicket(ticket.id);
     const writeRepos = links.filter(
       (l) => isActiveTicketRepoRelation(l.relation) && l.access === "write",
@@ -1066,7 +1043,7 @@ export class Dispatch {
    * (an approval covers every write repo); the Review button's outcome reads the same list.
    */
   writeRepoHeads(ticket: Ticket): { heads: ReviewedHead[]; unavailable: UnavailableWriteRepo[] } {
-    const runGit = this.gitRunner ?? defaultGitRunner;
+    const runGit = this.internals.gitRunner ?? defaultGitRunner;
     const heads: ReviewedHead[] = [];
     const unavailable: UnavailableWriteRepo[] = [];
     for (const repo of this.repos.accessLinksForTicket(ticket.id)) {
@@ -1102,7 +1079,7 @@ export class Dispatch {
    * the since-your-review interdiff and the anchor states read them. Pure read.
    */
   commentRepoContexts(ticket: Ticket): CommentRepoContext[] {
-    const runGit = this.gitRunner ?? defaultGitRunner;
+    const runGit = this.internals.gitRunner ?? defaultGitRunner;
     const out: CommentRepoContext[] = [];
     for (const repo of this.repos.accessLinksForTicket(ticket.id)) {
       if (!isActiveTicketRepoRelation(repo.relation) || repo.access !== "write") continue;
@@ -1167,7 +1144,7 @@ export class Dispatch {
     const ticket = this.resolveTicket(ref);
     return computeSinceDiff(
       this.db,
-      this.gitRunner ?? defaultGitRunner,
+      this.internals.gitRunner ?? defaultGitRunner,
       ticket.id,
       this.commentRepoContexts(ticket),
     );
@@ -1177,7 +1154,7 @@ export class Dispatch {
   private commitOnDefaultBranch(repoId: string, sha: string): boolean {
     const repo = this.repos.findById(repoId);
     if (!repo || !repo.local_path || !existsSync(repo.local_path)) return false;
-    const runGit = this.gitRunner ?? defaultGitRunner;
+    const runGit = this.internals.gitRunner ?? defaultGitRunner;
     const res = runGit(repo.local_path, [
       "merge-base",
       "--is-ancestor",
@@ -1203,7 +1180,7 @@ export class Dispatch {
     const repo = this.repos.findById(repoId);
     if (!repo || !repo.local_path || !existsSync(repo.local_path)) return null;
     const cwd = repo.local_path;
-    const runGit = this.gitRunner ?? defaultGitRunner;
+    const runGit = this.internals.gitRunner ?? defaultGitRunner;
     const def = repo.default_branch || "main";
     const names: string[] = [];
     for (const r of refs) {
@@ -2331,7 +2308,9 @@ export class Dispatch {
     const result = this.reviewGateSvc.testerPass(ticketRef, input, actor);
     // TESTER FIRST: the PASS returned the ticket to review: now a person is needed.
     if (result.ticket.status === "in_review") {
-      this.emitGate("review_needed", result.ticket, { detail: "the independent tester passed it" });
+      gate.emitGate(this, this.internals, "review_needed", result.ticket, {
+        detail: "the independent tester passed it",
+      });
     }
     return result;
   }
@@ -2409,7 +2388,10 @@ export class Dispatch {
     actor: Actor,
   ): TransitionResult {
     const result = this.reviewGateSvc.holdForHuman(ref, input, actor);
-    this.emitGate("ticket_parked", result.ticket, { status: "blocked", detail: input.reason });
+    gate.emitGate(this, this.internals, "ticket_parked", result.ticket, {
+      status: "blocked",
+      detail: input.reason,
+    });
     return result;
   }
 
@@ -2437,7 +2419,7 @@ export class Dispatch {
     const res = this.reviewGateSvc.recordCiResult(ref, input, actor);
     const ticket = this.tickets.resolveRef(ref);
     if (res.held) {
-      this.emitGate("ticket_parked", ticket, {
+      gate.emitGate(this, this.internals, "ticket_parked", ticket, {
         status: "blocked",
         detail: `required CI failed for ${input.commit.slice(0, 12)}`,
       });
@@ -2571,8 +2553,8 @@ export class Dispatch {
               // What the Behavioural surface's callers row showed for this ticket when the
               // server last computed it IN THIS ROUND (listed / none_changed / not_analysed);
               // absent when it has not (Health counts only known rows).
-              ...(this.lastCallersRow.get(ticket.id)?.round === round
-                ? { impact_callers: this.lastCallersRow.get(ticket.id)!.status }
+              ...(this.internals.lastCallersRow.get(ticket.id)?.round === round
+                ? { impact_callers: this.internals.lastCallersRow.get(ticket.id)!.status }
                 : {}),
             }
           : { what, round_entered_at: round };
@@ -3535,7 +3517,7 @@ export class Dispatch {
       // The call above already resolved the ref (id or #N), so this cannot throw.
       const ticket = this.tickets.resolveRef(input.ticket_id);
       if (!this.reviewGateSvc.laneApplies(ticket)) {
-        this.emitGate("review_needed", ticket, { detail: input.reason });
+        gate.emitGate(this, this.internals, "review_needed", ticket, { detail: input.reason });
       }
     }
     return result;
@@ -3546,8 +3528,8 @@ export class Dispatch {
    * pins it on or off (tests); otherwise the env (`auto` when unset).
    */
   testerLaneMode(): TestingLaneMode {
-    if (this.testingEnabledOverride !== undefined) {
-      return this.testingEnabledOverride ? "on" : "off";
+    if (this.internals.testingEnabledOverride !== undefined) {
+      return this.internals.testingEnabledOverride ? "on" : "off";
     }
     return testingLaneMode();
   }
@@ -3677,7 +3659,7 @@ export class Dispatch {
   ): { ticketId: string; from: TicketStatus; eventId: string } {
     const result = this.ticketSvc.humanBlockTicket(ref, reason, actor);
     const ticket = this.tickets.findById(result.ticketId);
-    if (ticket) this.emitGate("ticket_blocked", ticket, { detail: reason });
+    if (ticket) gate.emitGate(this, this.internals, "ticket_blocked", ticket, { detail: reason });
     return result;
   }
 
@@ -3695,7 +3677,7 @@ export class Dispatch {
     // H2: the ticket is now `blocked` and needs a human to unblock it. Emit after
     // the block transaction commits, best-effort.
     const ticket = this.tickets.resolveRef(input.ticket_id);
-    this.emitGate("ticket_blocked", ticket, { detail: input.reason });
+    gate.emitGate(this, this.internals, "ticket_blocked", ticket, { detail: input.reason });
     return result;
   }
 
@@ -3724,7 +3706,7 @@ export class Dispatch {
     if (result.status === "blocked") {
       // The call above already resolved the ref (id or #N), so this cannot throw.
       const ticket = this.tickets.resolveRef(input.ticket_id);
-      this.emitGate("ticket_blocked", ticket, { detail: input.reason });
+      gate.emitGate(this, this.internals, "ticket_blocked", ticket, { detail: input.reason });
     }
     return result;
   }
@@ -3784,7 +3766,7 @@ export class Dispatch {
     for (const id of result.blockedTicketIds) {
       const ticket = this.tickets.findById(id);
       if (ticket) {
-        this.emitGate("ticket_blocked", ticket, {
+        gate.emitGate(this, this.internals, "ticket_blocked", ticket, {
           detail: "claim expired with an unresolved blocking decision",
         });
       }
@@ -3859,100 +3841,6 @@ export class Dispatch {
   }
 
   // --- H2 human-gate notifications -----------------------------------------
-
-  /**
-   * Fire a human-gate notification, best-effort. Called AFTER the triggering
-   * transaction has committed (the transition is already durable), so the emit
-   * can never roll the transition back. The {@link Notifier} itself swallows any
-   * sink failure with a log, but we also guard the event-building here so a stray
-   * read error (e.g. resolving the repo name) can never bubble into the caller.
-   *
-   * When nothing is configured the notifier is a no-op and `enabled` is false, so
-   * we skip building the event entirely (zero overhead on the hot path).
-   */
-  private emitGate(
-    kind: NotifyKind,
-    ticket: Ticket,
-    extra: { detail?: string | undefined; status?: string | undefined } = {},
-  ): void {
-    if (!this.notifier.enabled) return;
-    try {
-      this.notifier.notify(this.buildTicketEvent(kind, ticket, extra));
-    } catch {
-      // Defence in depth: the notifier is contracted not to throw, but a bug in
-      // event-building must never break a transition. Swallow — the gate already
-      // committed and the dashboard remains the source of truth.
-    }
-  }
-
-  /** Fire a decision-pending gate for a raised decision, best-effort. */
-  private emitDecisionGate(decision: Decision): void {
-    if (!this.notifier.enabled) return;
-    try {
-      const url = this.decisionUrl(decision);
-      this.notifier.notify({
-        kind: "decision_pending",
-        title: decision.title,
-        status: decision.status,
-        at: this.clock.now(),
-        ...(decision.question ? { detail: decision.question } : {}),
-        // AFK-LOOP P1: mirror ticketUrl so a decision ping is one-tap actionable.
-        ...(url !== undefined ? { url } : {}),
-      });
-    } catch {
-      // See emitGate — never let a notification break the caller.
-    }
-  }
-
-  /** Build the structured {@link NotifyEvent} for a ticket-scoped gate. */
-  private buildTicketEvent(
-    kind: NotifyKind,
-    ticket: Ticket,
-    extra: { detail?: string | undefined; status?: string | undefined },
-  ): NotifyEvent {
-    const repo = this.primaryRepoName(ticket.id);
-    const url = this.ticketUrl(ticket);
-    return {
-      kind,
-      title: ticket.title,
-      status: extra.status ?? ticket.status,
-      at: this.clock.now(),
-      ...(ticket.number !== null ? { ticket_number: ticket.number } : {}),
-      ...(repo !== undefined ? { repo } : {}),
-      ...(url !== undefined ? { url } : {}),
-      ...(extra.detail !== undefined ? { detail: extra.detail } : {}),
-    };
-  }
-
-  /** Best-effort primary/first repo name for a ticket, or undefined. */
-  private primaryRepoName(ticketId: string): string | undefined {
-    const links = this.repos.accessLinksForTicket(ticketId);
-    return links[0]?.name;
-  }
-
-  /**
-   * Build a clickable dashboard link for a ticket when `GAFFER_DASHBOARD_URL` is
-   * set, so the operator can jump straight to it. Optional — undefined when the
-   * base is unconfigured.
-   */
-  private ticketUrl(ticket: Ticket): string | undefined {
-    const base = (process.env.GAFFER_DASHBOARD_URL ?? "").trim();
-    if (base === "" || ticket.number === null) return undefined;
-    return `${base.replace(/\/+$/, "")}/tickets/${ticket.number}`;
-  }
-
-  /**
-   * Build a clickable dashboard link for a raised decision when
-   * `GAFFER_DASHBOARD_URL` is set — the decision-gate analogue of
-   * {@link ticketUrl}. Decisions surface on the overview, so the link deep-links
-   * to the decision by id there. Optional — undefined when the base is
-   * unconfigured (degrades gracefully to a URL-less notification).
-   */
-  private decisionUrl(decision: Decision): string | undefined {
-    const base = (process.env.GAFFER_DASHBOARD_URL ?? "").trim();
-    if (base === "") return undefined;
-    return `${base.replace(/\/+$/, "")}/decisions/${decision.id}`;
-  }
 
   // --- Reads ---------------------------------------------------------------
 

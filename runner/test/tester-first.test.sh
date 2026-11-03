@@ -96,6 +96,15 @@ printf '[{"number":4,"status":"in_testing","acceptance":0}]' > "$LIST"
 ( unset GAFFER_TESTING; RUNNER_DIR="$FAKE" REVIEW_MODE=agent _gaffer_tester_pass )
 grep -qx 4 "$TESTED" && ok "auto (unset): an in_testing ticket is tested" || fail "auto: #4 not tested"
 grep -q 'in_testing #4 (lane auto: a test command is registered)' "$LOGF" && ok "auto log line" || fail "auto log: $(cat "$LOGF")"
+# lane-hook R4: an acceptance ticket under auto is tested whatever its repos have, so the
+# log must not say a test command is registered.
+printf '[{"number":5,"status":"in_testing","acceptance":1}]' > "$LIST"
+: > "$TESTED"; : > "$LOGF"
+( unset GAFFER_TESTING; RUNNER_DIR="$FAKE" REVIEW_MODE=agent _gaffer_tester_pass )
+grep -qx 5 "$TESTED" && ok "auto: an acceptance ticket is tested" || fail "auto: acceptance #5 not tested"
+grep -q 'ACCEPTANCE #5 (lane auto: acceptance is a gate' "$LOGF" && ok "auto acceptance log line names the gate" || fail "auto acceptance log: $(cat "$LOGF")"
+grep -q '#5 (lane auto: a test command is registered)' "$LOGF" && fail "auto acceptance log claims a test command" || ok "auto acceptance log does not claim a test command"
+printf '[{"number":4,"status":"in_testing","acceptance":0}]' > "$LIST"
 : > "$TESTED"
 GAFFER_TESTING=auto REVIEW_MODE=agent run_lane
 grep -qx 4 "$TESTED" && ok "auto (explicit word): tested" || fail "GAFFER_TESTING=auto: #4 not tested"

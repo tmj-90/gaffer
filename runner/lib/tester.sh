@@ -97,7 +97,12 @@ _gaffer_tester_pass() {
     _t_tries=$((_t_tries + 1)); [ "$_t_tries" -lt 50 ] || return 0
   done
   [ -f "$RUNNER_DIR/bin/tester-run.mjs" ] || { log "TESTER: bin/tester-run.mjs missing — cannot run the tester lane"; return 0; }
+  # An epic's acceptance ticket is tested whatever the lane says (and under `auto` whether
+  # or not its repos have a test command), so the auto line must not claim one is there.
+  local _t_acc=""
+  [ "$_lane" = auto ] && _t_acc="$(printf '%s' "$TJSON" | jget "(Array.isArray(d) ? d : []).some(t => t && Number(t.number) === Number('$TNUM') && (t.acceptance === 1 || t.acceptance === true)) ? 'yes' : ''" 2>/dev/null || echo '')"
   if [ "$_lane" = on ]; then log "TESTER: independent black-box tester for in_testing #$TNUM (lane on)"
+  elif [ "$_lane" = auto ] && [ "$_t_acc" = yes ]; then log "TESTER: independent black-box tester for ACCEPTANCE #$TNUM (lane auto: acceptance is a gate, tested with or without a registered test command)"
   elif [ "$_lane" = auto ]; then log "TESTER: independent black-box tester for in_testing #$TNUM (lane auto: a test command is registered)"
   else log "TESTER: independent black-box tester for ACCEPTANCE #$TNUM (lane off — acceptance is a gate, not an option)"; fi
   # Where a FAIL lands: when the autonomy policy lets the runner drive the review gate

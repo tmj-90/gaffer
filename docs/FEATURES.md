@@ -434,7 +434,8 @@ usage ledger and the ticket transition log, and says only what those can show:
   and n. A ticket an arm never submits counts as that arm's failure. By default the
   agent is a stub that replays the recorded change, so it costs nothing and runs in CI;
   `--live` runs the real agent under a hard USD cap for the run (`--max-usd` or
-  `GAFFER_EXPERIMENT_MAX_USD`, required), a ticket cap and the factory's own budget
+  `GAFFER_EXPERIMENT_MAX_USD`, required; a call whose spend cannot be read counts its
+  whole cap, so the run stops after it), a ticket cap and the factory's own budget
   admission and usage pause, and books its calls as kind `experiment` with no ticket.
   Nothing is recorded to dispatch, nothing lands and nothing is pushed.
   [docs/eval-harness.md](eval-harness.md#matched-ticket-comparison) has the arms, the
@@ -444,9 +445,9 @@ usage ledger and the ticket transition log, and says only what those can show:
   prints a proposed `runner/model-registry.json` change as a diff with the cells, n
   and deltas behind it: only for delivery, only where another tier is cheaper per
   accepted change and no worse on first pass or escaped defects in every work class
-  with at least 10 attempts on both (or 10 points better on first pass, labelled a
-  trade-off), or where a live experiment's paired acceptance interval is at or above
-  zero at lower spend. It never edits the registry and never proposes anything for the
+  with at least 10 attempts and 10 accepted changes on both (or 10 points better on
+  first pass, labelled a trade-off), or where a live experiment against the default
+  tier has a paired acceptance interval at or above zero at lower spend. It never edits the registry and never proposes anything for the
   reviewer or the tester. The Health card carries one Routing line saying whether there
   is a proposal. To apply one, edit the registry yourself (or point
   `GAFFER_MODEL_REGISTRY` at an edited copy); `route-model.mjs` stays the only thing

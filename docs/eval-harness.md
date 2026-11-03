@@ -167,14 +167,18 @@ which applies the ticket's recorded change (nothing for `stub=noop`), so the who
 pipeline runs in CI for free with its own data dir under `--out`. It proves the
 pipeline, not a model. **Live mode** (`--live`) runs the real agent and needs a hard
 USD cap for the run (`--max-usd` or `GAFFER_EXPERIMENT_MAX_USD`), which also caps every
-call at what is left; it stops at the ticket cap (`GAFFER_EXPERIMENT_MAX_TICKETS`, 5),
+call at what is left; a call whose spend cannot be read (killed, timed out, no
+envelope) counts its whole cap, so the run stops after it. It stops at the ticket cap (`GAFFER_EXPERIMENT_MAX_TICKETS`, 5),
 at the factory's own budget admission and at the usage pause, and books every call in
 the factory's ledger as kind `experiment` with no ticket, so the daily caps see it and
 no ticket's figures move. Nothing is recorded to dispatch (`wg` is a recorder, as in the
 gate replay), nothing lands, nothing pushes. The safety hook denies every launch form to
 an agent, and the script refuses `--live` when it sees an agent's write roots.
 
-When two arms differ only in `memory`, `results.json` carries `memory_matched`, and
+Arms are compared on their effective settings (`memory=on` against a baseline that
+names no memory is the same arm, since priming is on unless an arm turns it off). When
+two arms differ only in `memory`, `results.json` carries `memory_matched` over the
+tickets where the setting took effect (a fixture with memory to prime), and
 `evalLedgerCli --mode summarize --matched-experiment <results.json>` puts it in
 `memoryLift.matched` (with `matchedReason` saying where it came from); without one
 `matched` stays null.
@@ -193,7 +197,8 @@ Its limits, also in the report:
   fixture with no `memory`, the packet on one with no `scout` files).
 
 `gaffer wg routing recommend` reads these results beside the routing scorecard; a
-stub-mode experiment never proposes anything.
+stub-mode experiment never proposes anything, and a live one proposes only a tier
+compared against a baseline that ran the default implement tier.
 
 ## Knobs
 

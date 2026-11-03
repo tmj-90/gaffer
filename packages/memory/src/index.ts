@@ -124,6 +124,27 @@ export type {
   UpsertFileCardInput,
 } from "./core/fileCards.js";
 export { canonicalizeRepo, legacyRepoIdentityForms } from "./core/repoIdentity.js";
+export {
+  INDEX_METHOD,
+  buildCodeIndex,
+  codeIndexStats,
+  codeNeighbours,
+  extractAliases,
+  extractCodeFacts,
+  getIndexBuild,
+  isIndexTestPath,
+} from "./core/codeIndex.js";
+export type {
+  BuildIndexOptions,
+  IndexBuildRecord,
+  IndexBuildStats,
+  IndexStatus,
+  NeighbourItem,
+  NeighbourQuery,
+  NeighbourRef,
+  NeighbourTest,
+  NeighboursResult,
+} from "./core/codeIndex.js";
 export { validateMechanical, validateModel, sha256 } from "./core/cardValidation.js";
 export type {
   MechanicalValidationInput,

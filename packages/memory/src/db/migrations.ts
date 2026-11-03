@@ -587,6 +587,87 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
       );
     },
   },
+  {
+    // CODE INDEX (files -> symbols -> imports -> tests). A deterministic, regex-built map of
+    // one repo's TypeScript / JavaScript / Python modules: top-level symbols, the import
+    // text each file carries, those imports resolved to repo paths (code_ref, derived), and
+    // which test files cover which modules (code_test_link, derived: by import or by file
+    // name). Answers "which files import this symbol and which tests import that module"
+    // without a model; every answer is labelled "by import text" and is a lower bound.
+    // ADDITIVE and idempotent (IF NOT EXISTS): no existing table changes, and a DB that
+    // already has the tables (a partial earlier apply) is left as it is. Keyed by repo_key
+    // like file_card. code_index_build holds one row per repo: the commit the index
+    // describes, when it was built and its coverage counts.
+    id: "016-code-index",
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS code_index_file (
+          repo_key      TEXT NOT NULL,
+          path          TEXT NOT NULL,
+          content_hash  TEXT NOT NULL,
+          lang          TEXT NOT NULL,
+          size          INTEGER NOT NULL,
+          is_test       INTEGER NOT NULL DEFAULT 0,
+          indexed_at    TEXT NOT NULL,
+          PRIMARY KEY (repo_key, path)
+        );
+        CREATE TABLE IF NOT EXISTS code_symbol (
+          repo_key      TEXT NOT NULL,
+          path          TEXT NOT NULL,
+          name          TEXT NOT NULL,
+          kind          TEXT NOT NULL,
+          line          INTEGER NOT NULL,
+          exported_as   TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_code_symbol_path ON code_symbol(repo_key, path);
+        CREATE INDEX IF NOT EXISTS idx_code_symbol_name ON code_symbol(repo_key, name);
+        CREATE TABLE IF NOT EXISTS code_import (
+          repo_key      TEXT NOT NULL,
+          from_path     TEXT NOT NULL,
+          specifier     TEXT NOT NULL,
+          kind          TEXT NOT NULL,
+          names         TEXT NOT NULL,
+          line          INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_code_import_from ON code_import(repo_key, from_path);
+        CREATE TABLE IF NOT EXISTS code_ref (
+          repo_key      TEXT NOT NULL,
+          from_path     TEXT NOT NULL,
+          to_path       TEXT NOT NULL,
+          kind          TEXT NOT NULL,
+          names         TEXT NOT NULL,
+          line          INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_code_ref_to ON code_ref(repo_key, to_path);
+        CREATE INDEX IF NOT EXISTS idx_code_ref_from ON code_ref(repo_key, from_path);
+        CREATE TABLE IF NOT EXISTS code_test_link (
+          repo_key      TEXT NOT NULL,
+          test_path     TEXT NOT NULL,
+          target_path   TEXT NOT NULL,
+          via           TEXT NOT NULL CHECK (via IN ('import','name')),
+          PRIMARY KEY (repo_key, test_path, target_path, via)
+        );
+        CREATE INDEX IF NOT EXISTS idx_code_test_link_target ON code_test_link(repo_key, target_path);
+        CREATE TABLE IF NOT EXISTS code_index_alias (
+          repo_key      TEXT NOT NULL,
+          source_path   TEXT NOT NULL,
+          alias         TEXT NOT NULL,
+          target        TEXT NOT NULL,
+          kind          TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_code_index_alias ON code_index_alias(repo_key);
+        CREATE TABLE IF NOT EXISTS code_index_build (
+          repo_key      TEXT PRIMARY KEY,
+          repo          TEXT NOT NULL,
+          canonical     TEXT,
+          commit_sha    TEXT,
+          built_at      TEXT NOT NULL,
+          mode          TEXT NOT NULL,
+          stats         TEXT NOT NULL
+        );
+      `);
+    },
+  },
 ];
 
 /**

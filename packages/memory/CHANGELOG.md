@@ -6,6 +6,33 @@ itself is pre-1.0 so semver promises are best-effort.
 
 ## [Unreleased]
 
+### Added: a code index (files, symbols, imports, tests)
+
+- **`memory index build | neighbours | stats`.** A deterministic map of a repo's
+  TypeScript, JavaScript and Python modules, read from the files' text with the same
+  regex extractors the cards use: top-level symbols (with the name other modules
+  import them by, `default` for a default export), the import text of every file
+  (ES imports, re-exports, CommonJS `require`, Python `from` / `import` including
+  relative dots), those imports resolved to repo paths (extensions, `index` barrels,
+  `./x.js` for `x.ts`, workspace package names, tsconfig `paths`, Python packages and
+  submodules), and test links (a test file that imports a module, or one whose file
+  name names exactly one module). `neighbours` answers "which files import this path
+  or symbol, through re-export barrels, and which tests import it", with each
+  caller's tested flag, per-item caps and totals, labelled "by import text (index)"
+  and a lower bound. `--commit` gives the status (`fresh`, `stale`, `missing`).
+- **Incremental and bounded.** `build` re-reads only the files `git diff
+  --name-status -M` names since the last build's commit (a tree walk when that is
+  unknown), skips a file whose content hash is unchanged, caps the walk (5000 files,
+  512 KB per file; the build record says which cap hit) and skips generated and
+  vendored paths (`node_modules`, `dist`, `build`, `vendor`, `*.min.js`,
+  `*.generated.*`, `_pb2.py`, `linguist-generated` / `linguist-vendored` in the root
+  `.gitattributes`). Core: `buildCodeIndex`, `codeNeighbours`, `codeIndexStats`.
+- **Migration `016-code-index`** adds seven tables (`code_index_file`,
+  `code_symbol`, `code_import`, `code_ref`, `code_test_link`, `code_index_alias`,
+  `code_index_build`). It is additive (no existing table changes) and idempotent
+  (`IF NOT EXISTS`). An older memory refuses a database that has it, as for every
+  migration.
+
 ### Changed: a review-rule draft is always a draft
 
 - **A record tagged `review-rule` never auto-approves.** Gaffer proposes review

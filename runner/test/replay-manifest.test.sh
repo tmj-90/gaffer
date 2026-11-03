@@ -60,6 +60,21 @@ else
   [ "$(jt "$P" 'd.hashes.prompt_sha256.length')" = 64 ] && ok "U: the prompt is a sha256" || fail "U: prompt hash $(jt "$P" 'd.hashes')"
   [ "$(jt "$P" 'd.hashes.scout_packet_sha256.length')" = 64 ] && ok "U: the scout packet is a sha256" || fail "U: packet hash"
   grep -qE 's3cr3tvalue|hunter2' "$P" && fail "U: a credential from the test command leaked" || ok "U: credentials in the test command are redacted"
+  # Review: a bare credential name (`TOKEN=x`, `PASSWORD=x`), a header value and a URL's
+  # user:password are redacted too; the file is private to its owner (mode 600, dir 700).
+  RED="$(node --input-type=module -e '
+    import { redactCommand } from "'"$MJS"'";
+    process.stdout.write(["TOKEN=t0ken1 npm test", "PASSWORD=pw2 make test", "export SECRET=sec3 && npm test",
+      "npm test --header \"Authorization: Bearer bear4\"", "curl https://u:pw5@h/x && npm test", "npm test --api-key=k6"]
+      .map(redactCommand).join("\n"));')"
+  case "$RED" in
+    *t0ken1* | *pw2* | *sec3* | *bear4* | *pw5* | *k6*) fail "U: a credential survived the redaction: $RED" ;;
+    *"TOKEN=<redacted> npm test"*) ok "U: bare credential names, header values and URL passwords are redacted" ;;
+    *) fail "U: redaction output $RED" ;;
+  esac
+  [ "$(ls -l "$P" | cut -c1-10)" = "-rw-------" ] && ok "U: the manifest file is mode 600" || fail "U: mode $(ls -l "$P" | cut -c1-10)"
+  printf 'x' | node "$MJS" start --dir "$U/fresh/m" --ticket 7 --prompt-stdin >/dev/null 2>&1
+  [ "$(ls -ld "$U/fresh/m" | cut -c1-10)" = "drwx------" ] && ok "U: a new manifests dir is mode 700" || fail "U: dir mode $(ls -ld "$U/fresh/m" | cut -c1-10)"
   [ "$(jt "$P" 'd.repos[0].base_commit')" = "0123456789abcdef0123456789abcdef01234567" ] && ok "U: the repo's base commit" || fail "U: base $(jt "$P" 'd.repos')"
   [ "$(jt "$P" 'd.routing.declared_risk+"/"+d.routing.effective_risk+"/"+d.routing.risk_raised')" = "low/high/true" ] && ok "U: declared and effective risk" || fail "U: risk $(jt "$P" 'd.routing')"
   [ "$(jt "$P" 'd.routing.tier+"/"+d.routing.model+"/"+d.routing.reasons.length')" = "mid/model-b/2" ] && ok "U: the router's tier, model and reasons" || fail "U: routing $(jt "$P" 'd.routing')"

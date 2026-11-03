@@ -90,21 +90,23 @@ const posInt = (v) => {
 
 /**
  * A registered test command with anything that looks like a credential removed: a
- * `NAME=value` whose name says key/token/secret/password/auth/credential, a `--token x`
- * style flag value, a URL's user:password, and any long opaque token.
+ * `NAME=value` whose name says key/token/secret/password/auth/credential (`TOKEN=x` as
+ * well as `GH_TOKEN=x`), a `--token x` style flag value, a Bearer/Basic header value, a
+ * URL's user:password, and any long opaque token.
  */
 export function redactCommand(cmd) {
   const s = cap(cmd, MAX_STR);
   if (!s) return null;
   return s
     .replace(
-      /\b([A-Za-z_][A-Za-z0-9_]*(?:KEY|TOKEN|SECRET|PASS(?:WORD)?|AUTH|CREDENTIAL|PWD)[A-Za-z0-9_]*)=("[^"]*"|'[^']*'|\S+)/gi,
+      /\b((?:[A-Za-z_][A-Za-z0-9_]*)?(?:KEY|TOKEN|SECRET|PASS(?:WORD)?|AUTH|CREDENTIAL|PWD)[A-Za-z0-9_]*)=("[^"]*"|'[^']*'|\S+)/gi,
       "$1=<redacted>",
     )
     .replace(
       /(--?(?:[a-z-]*(?:token|secret|password|passwd|api-key|apikey|auth)[a-z-]*))(=|\s+)("[^"]*"|'[^']*'|\S+)/gi,
       "$1$2<redacted>",
     )
+    .replace(/\b(Bearer|Basic)\s+[^\s"']+/gi, "$1 <redacted>")
     .replace(/(\/\/)[^/\s:@]+:[^/\s@]+@/g, "$1<redacted>@")
     .replace(/\b[A-Za-z0-9+/_-]{32,}={0,2}/g, "<redacted>");
 }

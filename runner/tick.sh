@@ -170,14 +170,17 @@ GAFFER_PAUSE_KEEP_WORKTREE="${GAFFER_PAUSE_KEEP_WORKTREE:-0}"
 # the trap still releases a truly-stranded claim.
 GAFFER_CLAIM_RESOLVED="${GAFFER_CLAIM_RESOLVED:-0}"
 gaffer_crash_cleanup() {
-  # REPLAY MANIFEST (lib/replay-manifest.sh): an attempt no outcome completed ends here:
-  # `killed` on a signal, `ended` on any other exit. Fail-soft; a no-op when none is open.
-  declare -F gaffer_manifest_close >/dev/null 2>&1 && gaffer_manifest_close "${_GAFFER_EXIT_CAUSE:-exit}"
   # Reap any orphaned in-flight agent FIRST — before any branch/worktree decision.
   # A runaway `claude -p` must be torn down regardless of how this tick ends
   # (complete, paused, or crashed); on a clean finish this is a no-op because
   # gaffer_timeout already removed the PGID record.
   gaffer_reap_orphan_agent
+  # REPLAY MANIFEST (lib/replay-manifest.sh): an attempt no outcome completed ends here:
+  # `killed` on a signal, `ended` on any other exit. After the reap (a measurement never
+  # delays tearing down a runaway agent), before the claim release below (which would
+  # otherwise record the sharper `killed` as a plain release). Fail-soft; a no-op when
+  # none is open.
+  declare -F gaffer_manifest_close >/dev/null 2>&1 && gaffer_manifest_close "${_GAFFER_EXIT_CAUSE:-exit}"
   # B2: remove this tick's per-tick MCP runtime config (it carries the claim
   # token). Best-effort; a leftover file is harmless (next tick has a new PID)
   # but we don't want $GAFFER_DATA to accumulate one per tick.

@@ -64,14 +64,17 @@ gaffer_manifest_start() {
         --skills "${SKILLS:-}, ${LENSES:-}" \
         --product-context "$([ -n "${PRODUCT_CONTEXT_BLOCK:-}" ] && echo 1 || echo 0)" \
         --file-cards "$([ -n "${FILE_CARDS_BLOCK:-}" ] && echo 1 || echo 0)" \
-        --resumed "${_RESUMING:-0}" --prompt-stdin 2>&1)"
+        --resumed "${_RESUMING:-0}" --prompt-stdin 2>"$tmp/err")"
   local rc=$?
-  rm -rf "$tmp"
+  # stdout is the path alone (a warning on stderr can no longer garble it and leave a
+  # written manifest untracked, open for good).
+  out="$(printf '%s' "$out" | tail -n 1)"
   if [ "$rc" -eq 0 ] && [ -f "$out" ]; then
     GAFFER_MANIFEST_FILE="$out"
   else
-    _gaffer_manifest_log "could not write the replay manifest for #$NUM ($(printf '%s' "$out" | tail -n 1 | cut -c1-200)); the delivery continues"
+    _gaffer_manifest_log "could not write the replay manifest for #$NUM ($(tail -n 1 "$tmp/err" 2>/dev/null | cut -c1-200)); the delivery continues"
   fi
+  rm -rf "$tmp"
   return 0
 }
 

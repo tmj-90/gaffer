@@ -8,12 +8,7 @@ flow, and the implementation + idle coverage loops.
 
 Crew never stores ticket or lore content — it drives them. Everything it does is
 read-only or draft-only: the only state it ever writes is **draft** tickets and
-**draft** lore suggestions, both of which a human ratifies later. See the numbered
-specs in this package — [`01-product-spec.md`](01-product-spec.md),
-[`02-runtime-architecture.md`](02-runtime-architecture.md),
-[`03-safety-policies.md`](03-safety-policies.md),
-[`04-loops-hooks-skills.md`](04-loops-hooks-skills.md), and
-[`05-agent-and-repo-registry.md`](05-agent-and-repo-registry.md) — for the details.
+**draft** lore suggestions, both of which a human ratifies later.
 
 ## Build & test
 

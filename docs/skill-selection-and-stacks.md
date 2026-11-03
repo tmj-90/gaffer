@@ -240,7 +240,7 @@ stack still matches. It works, but it is a lexical hack:
    an explicit list of stack tags, dropping the split-on-dash guesswork.
 2. **Per-path stacks tied to the scope graph (better)** — the codebase already
    models sub-repo structure via `scope_nodes` / `ticket_scope_nodes` (see
-   `docs/spec-driven-development.md` and `packages/memory/src/core/repoUnderstanding.ts`).
+   `packages/memory/src/core/repoUnderstanding.ts`).
    Attaching a stack to a scope node lets a ticket resolve stacks from the
    *paths it actually touches* — real monorepo routing, not a repo-wide blob.
 

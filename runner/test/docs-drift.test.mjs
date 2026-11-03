@@ -6,7 +6,7 @@
 // memory-auto-approve flags as on by default). Each is pinned here against its source:
 //   D1 every skill count in README / ARCHITECTURE / runner/README = the runner/skills dirs
 //   D2 the dashboard view count in ARCHITECTURE = the NAV entries in app.js
-//   D3 docs/spec-driven-development.md does not say "in progress" (it shipped)
+//   D3 docs/FEATURES.md's Specs section does not say "in progress" (it shipped)
 //   D4 CONFIG.md and the settings help say DISPATCH_ALLOW_AGENT_APPROVE and
 //      MEMORY_AUTO_APPROVE are off by default (the supervised mode's fill)
 // Run: node runner/test/docs-drift.test.mjs
@@ -62,10 +62,13 @@ check(
   `stated ${vm?.[1]}`,
 );
 
-console.log("== D3: the spec-driven plan is not 'in progress' ==");
-const spec = read("docs/spec-driven-development.md");
-check("no 'in progress' in the spec-driven doc", !/in progress/i.test(spec));
-check("it says it shipped", /\bshipped\b/i.test(spec.split("\n").slice(0, 5).join("\n")));
+console.log("== D3: the Specs feature is described as shipped, not 'in progress' ==");
+const featuresDoc = read("docs/FEATURES.md");
+const specStart = featuresDoc.indexOf("## Specs");
+const specEnd = featuresDoc.indexOf("\n## ", specStart + 1);
+const spec = specStart === -1 ? "" : featuresDoc.slice(specStart, specEnd === -1 ? undefined : specEnd);
+check("FEATURES.md has a Specs section", spec.length > 0);
+check("no 'in progress' in the Specs section", !/in progress/i.test(spec));
 
 console.log("== D4: the two autonomy flags are off by default in the docs ==");
 const config = read("docs/CONFIG.md");

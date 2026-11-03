@@ -1,6 +1,6 @@
 // =====================================================================
-// Prompt quarantine — TS port of runner/lib/quarantine.sh (P1b context
-// assembly, docs/tick-sh-runtime-migration.md).
+// Prompt quarantine — TS port of runner/lib/quarantine.sh (context
+// assembly; runner/CLAUDE.md has the live-path rule).
 // ---------------------------------------------------------------------
 // UNTRUSTED ticket-derived fields (title, prior-review feedback, file cards,
 // product context) are embedded in the headless agent's prompt. Without an

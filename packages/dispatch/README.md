@@ -18,10 +18,9 @@ Two structural guarantees make it the gate the rest of the factory leans on:
   is a system-only merge callback — so nothing ships on the agent's word alone.
 
 Local-first: SQLite, stdio MCP, loopback HTTP — no cloud, no network listener by
-default. See `docs/` for the original design specs (product, domain model, MCP
-tool plan, state machine + policy packs, schema); where they differ from the code,
-the code wins — the live MCP tool list is the generated table under
-[MCP server](#mcp-server), and the REST contract is `docs/openapi.json`.
+default. The live MCP tool list is the generated table under
+[MCP server](#mcp-server), and the REST contract is
+[`docs/openapi.json`](../../docs/openapi.json).
 
 ## Build & test
 
@@ -204,6 +203,41 @@ from the code (`node scripts/mcp-tools-doc.mjs`; a test fails when it drifts):
 | `get_squad` | — | Read the squad: the club name and each registered agent's display name, shirt number and role. |
 
 <!-- mcp-tools:end -->
+
+### MCP error model
+
+A failed tool call returns `isError: true` and a structured body (the same
+payload in `structuredContent` and as JSON text in `content`):
+
+```json
+{
+  "error": {
+    "code": "CLAIM_INVALID",
+    "message": "Claim token does not match an active claim on this ticket.",
+    "details": {}
+  }
+}
+```
+
+Invalid arguments are `VALIDATION_ERROR` with the zod `issues`. The codes are the
+closed `DISPATCH_ERROR_CODES` list in `src/util/errors.ts`; the ones an agent
+meets most often:
+
+```text
+NOT_FOUND
+VALIDATION_ERROR
+POLICY_DENIED
+ILLEGAL_TRANSITION
+STATE_CONFLICT
+CONCURRENCY_CONFLICT
+CLAIM_INVALID
+CLAIM_REQUIRED
+TICKET_NOT_CLAIMABLE
+DEPENDENCY_BLOCKED
+AGENT_NOT_ELIGIBLE
+ACTOR_NOT_PERMITTED
+FACTORY_RUNNER_OWNED
+```
 
 Each tool's description **coaches the operating agent** — when to call, what to
 provide, the cost asymmetry, and the failure modes to avoid (claim one ticket

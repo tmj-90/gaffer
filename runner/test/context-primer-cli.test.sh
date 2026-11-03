@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =====================================================================
-# P1b context-primer CLI (docs/tick-sh-runtime-migration.md) — proves the typed
+# Context-primer CLI (runner/CLAUDE.md) — proves the typed
 # file-cards + product-context block entrypoint
 # (packages/crew/src/runtime/context/renderContextPrimerCli.ts) renders
 # BYTE-IDENTICALLY to the REAL bash primer blocks, via the captured goldens.

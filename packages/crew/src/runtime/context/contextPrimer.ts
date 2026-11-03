@@ -9,7 +9,7 @@ const execFileAsync = promisify(execFile);
 
 // =====================================================================
 // File-card + product-context primer — TS port of the DELIVERY path's
-// context blocks (P1b context assembly, docs/tick-sh-runtime-migration.md).
+// context blocks (context assembly; runner/CLAUDE.md has the live-path rule).
 // ---------------------------------------------------------------------
 // LIVE: the bash primer (runner/lib/context-primer.sh, called from tick.sh's
 // delivery path) fetches the memory JSON and renders the block text through

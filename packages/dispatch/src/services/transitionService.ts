@@ -35,7 +35,7 @@ import { TicketRepository } from "../repositories/ticketRepository.js";
 import type { Clock } from "../util/clock.js";
 import { DispatchError, notFound } from "../util/errors.js";
 
-/** Allowed ticket transitions (from docs/04-state-machine-policies.md). */
+/** Allowed ticket transitions: the single source of truth for the state machine. */
 export const ALLOWED: ReadonlySet<string> = new Set([
   "draft->refining",
   "draft->ready",

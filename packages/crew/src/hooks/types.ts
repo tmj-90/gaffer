@@ -4,7 +4,7 @@ import type { ContextPacket } from "../context/packet.js";
 import type { RuntimeEvent } from "../events/eventLog.js";
 
 /**
- * Every hook point Crew exposes (see 04-loops-hooks-skills.md). Hooks are
+ * Every hook point Crew exposes. Hooks are
  * advisory: they may veto a claim, emit events/warnings, attach evidence, and
  * *request* (never apply) policy overrides. They can never bypass safety.
  */

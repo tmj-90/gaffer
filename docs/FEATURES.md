@@ -137,6 +137,24 @@ land, and the footer names the next fixture: #8, the only one ready.*
 
 ---
 
+## Specs: a frozen statement of intent in front of the planner
+
+A spec is the optional power path in front of the planner; the one-line brief still
+works on its own. In the Plan a build composer, the spec step drafts a spec from your
+brief (`runner/bin/spec-author.mjs`, with the brief quarantined as untrusted text): a
+list of clauses, each a requirement, a non-goal or a decision. You edit the clauses and
+press **Freeze**, which takes an immutable snapshot. Freezing seeds each clause into
+Memory as draft lore of its kind, so once approved it reaches every delivery agent's
+product context like any other intent lore.
+
+The planner then takes the frozen spec as one more quarantined input, and each
+acceptance criterion it writes records the clause it covers. The **Specs** view
+(`#/specs/:id`, backed by `GET /specs/:id/coverage`) shows each clause with its covering
+criteria, which are satisfied and which are open, and the clauses no ticket covers.
+`GAFFER_SPEC_COVERAGE_GATE` only sets an advisory flag in that coverage read; nothing
+blocks on it. The same objects are on the MCP server (`create_spec`, `get_spec`,
+`freeze_spec`) and the CLI (`gaffer wg spec`).
+
 ## The work board
 
 Day-to-day, work lives on the board. Tickets flow through

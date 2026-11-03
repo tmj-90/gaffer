@@ -1,7 +1,7 @@
 // =====================================================================
 // Ticket slug + delivery branch name — TS port of `gaffer_ticket_slug` and
-// the WORK_BRANCH derivation in runner/tick.sh (P1b context assembly,
-// docs/tick-sh-runtime-migration.md).
+// the WORK_BRANCH derivation in runner/tick.sh (context assembly;
+// runner/CLAUDE.md has the live-path rule).
 // ---------------------------------------------------------------------
 // The slug derivation is SHARED by the normal delivery path AND the
 // greenfield bootstrap so both mint the identical `gaffer/ticket-N-<slug>`

@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 /**
- * Skill shape from 04-loops-hooks-skills.md. Skills are *descriptive* versioned
+ * The Crew skill shape. Skills are *descriptive* versioned
  * procedures in v1 — load/select/list only, no execution engine. Validated at
  * the boundary (built-in templates + any `skills/` YAML in the factory dir).
  */

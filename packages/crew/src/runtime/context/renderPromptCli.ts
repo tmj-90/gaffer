@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // =====================================================================
 // Node entrypoint for the tick.sh delivery/bootstrap PROMPT render
-// (P1b context assembly, docs/tick-sh-runtime-migration.md).
+// (context assembly; runner/CLAUDE.md has the live-path rule).
 // ---------------------------------------------------------------------
 // LIVE: this is how runner/tick.sh gets every delivery prompt. The fresh,
 // resume and bootstrap paths all call gaffer_render_delivery_prompt

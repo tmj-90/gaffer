@@ -4,8 +4,8 @@ import { QUARANTINE_NOTICE, quarantine } from "./quarantine.js";
 
 // =====================================================================
 // Delivery + bootstrap prompt render — the LIVE prompt text every delivery,
-// resume and greenfield bootstrap agent receives (P1b context assembly,
-// docs/tick-sh-runtime-migration.md).
+// resume and greenfield bootstrap agent receives (context assembly;
+// runner/CLAUDE.md has the live-path rule).
 // ---------------------------------------------------------------------
 // runner/tick.sh gathers only the RAW inputs (TITLE, the review-feedback
 // reasons in _RF, WT_ROWS, READ_ROOTS, the context blocks) and renders through

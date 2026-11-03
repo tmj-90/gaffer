@@ -870,6 +870,7 @@ export function computeRepoImpact(input: ImpactInput): RepoImpact {
   }
   if (callers.skipped > 0)
     notAnalysed.push(`${callers.skipped} more changed symbols: callers not looked up.`);
+  if (callers.partial) notAnalysed.push(callers.partial);
   const has = (...kinds: ImpactKind[]) => kinds.some((k) => counts.has(k));
   const none: string[] = [];
   // A cut diff proves no absence: what is past the cut was not read.
@@ -896,7 +897,13 @@ function indexCallers(
   input: ImpactInput,
   authored: DiffFile[],
   push: (f: ImpactFact) => void,
-): { status: CallersStatus; moduleTests: Map<string, number>; skipped: number } {
+): {
+  status: CallersStatus;
+  moduleTests: Map<string, number>;
+  skipped: number;
+  /** The index stopped at a cap: its counts are partial (a not-analysed line). */
+  partial?: string;
+} {
   const moduleTests = new Map<string, number>();
   const sources = authored.filter((f) => {
     const p = f.deleted ? (f.oldPath ?? f.path) : f.path;
@@ -1006,7 +1013,9 @@ function indexCallers(
   for (const it of r.items) {
     if (it.symbol === null && it.path) {
       // A path item: the module's tests (untested rule), and a deleted module's callers.
-      moduleTests.set(it.path, it.testsTotal);
+      // A module the index did not read (skipped, past a cap) has no count: saying "no
+      // test imports it" for it would be a claim the index never checked.
+      if (!it.note) moduleTests.set(it.path, it.testsTotal);
       const del = sources.find((f) => f.deleted && (f.oldPath ?? f.path) === it.path);
       if (del && !it.note) {
         pushCallers(push, it, `${it.path} deleted`, del.oldPath ?? del.path, null, changed, base);
@@ -1044,6 +1053,11 @@ function indexCallers(
     },
     moduleTests,
     skipped,
+    ...(r.build?.capsHit?.length
+      ? {
+          partial: `Code index: partial (its build hit the ${r.build.capsHit.join(", ")} cap), so importers and tests in files past it are not counted.`,
+        }
+      : {}),
   };
 }
 

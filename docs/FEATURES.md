@@ -949,7 +949,8 @@ human-gated knowledge the factory works from:
   `paths`, and Python packages; a test links to the modules it imports and to the
   one its file name names. Built at onboard and refreshed after every merge from
   the merged commit, re-reading only the files that changed; generated and vendored
-  paths are skipped and the walk is capped. When a ticket names a path or a symbol
+  paths are skipped and the walk is capped (when a build hits a cap, the Review and
+  the file cards say its counts are partial). When a ticket names a path or a symbol
   (`calculateInvoice()`, `` `formatTotal` ``, `src/invoice.ts`), the delivery's
   file cards add up to five callers and tests of each, with the reason ("imports
   calculateInvoice through src/index.ts", "tests calculateInvoice (imports it)"),

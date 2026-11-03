@@ -52,7 +52,8 @@ export interface CodeIndexItem {
 export interface CodeIndexResult {
   status: "missing" | "fresh" | "stale" | "unknown";
   method: string;
-  build: { commit: string | null; builtAt: string; files: number } | null;
+  /** capsHit (absent from an older memory): the build stopped at a cap, so counts are partial. */
+  build: { commit: string | null; builtAt: string; files: number; capsHit?: string[] } | null;
   against: string | null;
   items: CodeIndexItem[];
 }

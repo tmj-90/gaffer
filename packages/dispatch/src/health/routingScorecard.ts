@@ -104,6 +104,11 @@ export interface ScorecardCell {
   readonly first_pass_pct: Rate | null;
   readonly attempts_per_accepted_change: Rate | null;
   readonly cost_per_accepted_change_usd: Rate | null;
+  /**
+   * Implement only: ledger rows of the cell's tickets with neither a measured cost nor an
+   * estimate. They are left out of cost per accepted change (never read as $0), and said.
+   */
+  readonly cost_unknown_rows: number | null;
   readonly escaped_defect_pct: Rate | null;
   readonly tester_false_greens: Rate | null;
 }
@@ -125,16 +130,17 @@ export const ROUTING_DEFINITIONS: Readonly<Record<string, string>> = {
   n: "attempts for the implement role, ledger calls for any other role",
   spend_usd:
     "measured cost plus labelled estimates for killed calls; calls with neither are counted as unknown_rows, not as $0",
-  submission_pct: "attempts whose replay manifest says submit, over attempts with a manifest",
+  submission_pct:
+    "attempts whose replay manifest says submit, over attempts whose manifest is complete (a manifest still open, an attempt that crashed before the runner closed it, is left out)",
   rework_pct:
-    "attempts whose replay manifest says rework, park or failed, over attempts with a manifest",
+    "attempts whose replay manifest says rework, park or failed, over the same attempts (paused, released, killed and ended attempts count in the denominator only)",
   tickets: "tickets whose first delivery attempt ran in this cell",
   first_pass_pct:
     "first-pass acceptance (no send-back after review, never reopened) of those tickets that reached done",
   attempts_per_accepted_change:
     "every delivery attempt on those tickets over those that reached done",
   cost_per_accepted_change_usd:
-    "every ledger row of those tickets, every kind, estimates included, over those that reached done",
+    "every ledger row of those tickets, every kind, estimates included, over those that reached done; rows with no measured or estimated cost are left out and counted in cost_unknown_rows",
   escaped_defect_pct:
     "accepted tickets a person linked a later regression to, over accepted tickets",
   tester_false_greens: "escaped accepted tickets whose tester's last verdict was pass",
@@ -374,6 +380,7 @@ export function routingScorecard(input: ScorecardInput): RoutingScorecard {
         first_pass_pct: null,
         attempts_per_accepted_change: null,
         cost_per_accepted_change_usd: null,
+        cost_unknown_rows: null,
         escaped_defect_pct: null,
         tester_false_greens: null,
       });
@@ -407,11 +414,8 @@ export function routingScorecard(input: ScorecardInput): RoutingScorecard {
       retries: input.retries.filter((r) => ids.has(r.ticketId)),
       tickets,
     });
-    const ac = acceptedChangeCost(
-      numbers.flatMap((num) => rowsByTicket.get(num) ?? []),
-      tickets,
-      [],
-    );
+    const ticketRows = numbers.flatMap((num) => rowsByTicket.get(num) ?? []);
+    const ac = acceptedChangeCost(ticketRows, tickets, []);
     const escaped = done.filter((t) => input.escaped.has(t.id));
     const falseGreens = escaped.filter(
       (t) => (input.testerVerdict.get(t.id) ?? "").toLowerCase() === "pass",
@@ -428,6 +432,7 @@ export function routingScorecard(input: ScorecardInput): RoutingScorecard {
       first_pass_pct: tooFew ? null : rate(fp.rate_pct, dn, min),
       attempts_per_accepted_change: tooFew ? null : rate(ac.attempts_per_accepted_change, dn, min),
       cost_per_accepted_change_usd: tooFew ? null : rate(ac.cost_per_accepted_change_usd, dn, min),
+      cost_unknown_rows: ticketRows.filter((r) => r.unknown_cost).length,
       escaped_defect_pct: tooFew ? null : rate(dn ? pct(escaped.length, dn) : null, dn, min),
       tester_false_greens: tooFew ? null : rate(dn ? falseGreens : null, dn, min),
     });
@@ -549,7 +554,7 @@ export function renderRoutingScorecard(s: RoutingScorecard): string {
       continue;
     }
     lines.push(
-      `${head} · submitted ${fmtRate(c.submission_pct, "%")} · rework ${fmtRate(c.rework_pct, "%")} · ${c.tickets} ticket(s) started here, ${c.accepted} accepted · first pass ${fmtRate(c.first_pass_pct, "%")} · attempts per accepted change ${fmtRate(c.attempts_per_accepted_change, "")} · cost per accepted change ${fmtRate(c.cost_per_accepted_change_usd, "$")} · escaped ${fmtRate(c.escaped_defect_pct, "%")} · tester false greens ${fmtRate(c.tester_false_greens, "")} · ${spend}`,
+      `${head} · submitted ${fmtRate(c.submission_pct, "%")} · rework ${fmtRate(c.rework_pct, "%")} · ${c.tickets} ticket(s) started here, ${c.accepted} accepted · first pass ${fmtRate(c.first_pass_pct, "%")} · attempts per accepted change ${fmtRate(c.attempts_per_accepted_change, "")} · cost per accepted change ${fmtRate(c.cost_per_accepted_change_usd, "$")}${c.cost_unknown_rows ? ` (${c.cost_unknown_rows} call(s) of unknown cost left out)` : ""} · escaped ${fmtRate(c.escaped_defect_pct, "%")} · tester false greens ${fmtRate(c.tester_false_greens, "")} · ${spend}`,
     );
   }
   lines.push(`  ${s.footnote}`);

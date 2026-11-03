@@ -174,6 +174,11 @@ describe("routing scorecard", () => {
     const bb = lowMin.cells.find((c) => c.role === "implement" && c.model === "model-b");
     expect(bb?.spend_usd).toBe(3.2);
     expect(bb?.unknown_rows).toBe(1);
+    // Review: the ticket-level cost per accepted change leaves the same row out and says
+    // so (it is not a $0 call in the ratio without a word).
+    expect(bb?.cost_unknown_rows).toBe(1);
+    expect(renderRoutingScorecard(lowMin)).toMatch(/1 call\(s\) of unknown cost left out\)/);
+    expect(cell("implement", "model-a")?.cost_unknown_rows).toBe(0);
   });
 
   it("a rate whose denominator is under the minimum is suppressed in an otherwise full cell", () => {

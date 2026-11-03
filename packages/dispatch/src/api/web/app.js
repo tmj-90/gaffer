@@ -14264,7 +14264,7 @@ function routingCard(health) {
             `rework ${rate(c.rework_pct, "%")}`,
             `first pass ${rate(c.first_pass_pct, "%")}`,
             `attempts per accepted change ${rate(c.attempts_per_accepted_change, "")}`,
-            `cost per accepted change ${rate(c.cost_per_accepted_change_usd, "$")}`,
+            `cost per accepted change ${rate(c.cost_per_accepted_change_usd, "$")}${c.cost_unknown_rows ? ` (${plural(c.cost_unknown_rows, "call")} of unknown cost left out)` : ""}`,
             `escaped ${rate(c.escaped_defect_pct, "%")}`,
             `tester false greens ${rate(c.tester_false_greens, "")}`,
             spend,

@@ -1,10 +1,7 @@
 import type { Command } from "commander";
 
-import { createMemoryReader } from "../../api/memoryReader.js";
-import { reviewRuleThreshold } from "../../health/reviewRules.js";
-import { proposeReviewRules, reviewRulesReport } from "../../services/reviewRuleService.js";
 import { cliActor, printJson } from "../helpers.js";
-import { open } from "../runtime.js";
+import { heavy, open } from "../runtime.js";
 
 /**
  * REVIEW RULES (D6): repeated human review feedback as proposed repository rules.
@@ -13,7 +10,8 @@ import { open } from "../runtime.js";
  * candidates not proposed yet as lore convention drafts through the memory CLI
  * (MEMORY_CLI_BIN / MEMORY_DB); a person approves them with `gaffer lore approve` or the
  * Memory view, and they never auto-approve. Proposing is a person's act: the safety hook
- * denies it to an agent shell, and the service refuses an agent actor.
+ * denies it to an agent shell, and the service refuses an agent actor. Its modules load
+ * through heavy() (runtime.ts), never statically, so `--help` stays light.
  */
 export function registerReviewRules(program: Command): void {
   const rules = program
@@ -25,6 +23,7 @@ export function registerReviewRules(program: Command): void {
     .option("--repo <name>", "only this repository")
     .action((opts, cmd) => {
       const wg = open(cmd.optsWithGlobals());
+      const { createMemoryReader, reviewRuleThreshold, reviewRulesReport } = heavy();
       try {
         const memory = createMemoryReader(process.env);
         const report = reviewRulesReport(wg.db, {
@@ -56,6 +55,7 @@ export function registerReviewRules(program: Command): void {
     .option("--repo <name>", "only this repository")
     .action((opts, cmd) => {
       const wg = open(cmd.optsWithGlobals());
+      const { createMemoryReader, reviewRuleThreshold, proposeReviewRules } = heavy();
       try {
         const memory = createMemoryReader(process.env);
         const res = proposeReviewRules(wg.db, cliActor(), {

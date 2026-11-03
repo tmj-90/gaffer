@@ -38,6 +38,7 @@ import {
   rejectReviewBody,
   reopenForReviewBody,
   reviewOpenedBody,
+  regressionOfBody,
   reviewRawOpenedBody,
   reopenWontDoBody,
   setPrimaryScopeBody,
@@ -56,6 +57,8 @@ import {
 import { API_ACTOR, apiActor, apiPrincipal, isSharedOperator, operatorActor } from "./context.js";
 import { forgetLoreDrafts } from "./readModels.js";
 import { requestTicketFilter } from "../scopeGate.js";
+import { reviewRuleThreshold } from "../../health/reviewRules.js";
+import { proposeReviewRules } from "../../services/reviewRuleService.js";
 
 const TICKET_SUB = {
   ACCEPTANCE_CRITERIA: "acceptance-criteria",
@@ -104,7 +107,56 @@ const TICKET_SUB = {
   // REVIEW TELEMETRY (Release A metrics): a person opened the ticket / a raw view in Review.
   REVIEW_OPENED: "review-opened",
   REVIEW_RAW_OPENED: "review-raw-opened",
+  // ESCAPED DEFECTS (MF5): a person links this ticket to the accepted change it regresses.
+  REGRESSION_OF: "regression-of",
 } as const;
+
+/**
+ * REVIEW RULES (D6): after a person's send-back or must-fix comment, propose every repeated
+ * feedback rule not proposed yet as a lore draft. FAIL-SOFT and OUT OF THE PERSON'S WAY:
+ * it runs once the response to the person's act has been sent (`res` closed), so the memory
+ * CLI (a synchronous spawn, up to its timeout per draft) can neither delay nor fail the
+ * reject or comment, and any error is swallowed. An unconfigured memory is skipped without
+ * a spawn, and after a memory failure this server waits {@link RULE_PROPOSAL_BACKOFF_MS}
+ * before trying again, so a broken memory CLI is not spawned on every reject (`wg
+ * review-rules propose` retries by hand). The person's act triggered it; the server
+ * proposes (system).
+ */
+export const RULE_PROPOSAL_BACKOFF_MS = 5 * 60_000;
+const ruleProposalRetryAt = new WeakMap<Dispatch, number>();
+
+function proposeRulesAfterResponse(
+  res: ServerResponse,
+  wg: Dispatch,
+  memoryReader: MemoryReader,
+): void {
+  if (!(process.env.MEMORY_CLI_BIN ?? "").trim()) return;
+  res.once("close", () => {
+    setImmediate(() => {
+      try {
+        if (Date.now() < (ruleProposalRetryAt.get(wg) ?? 0)) return;
+        const r = proposeReviewRules(
+          wg.db,
+          { type: "system" },
+          {
+            threshold: reviewRuleThreshold(process.env),
+            proposer: (d) => {
+              const filed = memoryReader.proposeReviewRule(d);
+              return filed.available
+                ? { ok: true, id: filed.id }
+                : { ok: false, reason: filed.reason };
+            },
+          },
+        );
+        if (r.failed.length) ruleProposalRetryAt.set(wg, Date.now() + RULE_PROPOSAL_BACKOFF_MS);
+        if (r.proposed.length) forgetLoreDrafts(memoryReader);
+      } catch {
+        // A closed database (shutdown) or any other error: the person's act already stands.
+        ruleProposalRetryAt.set(wg, Date.now() + RULE_PROPOSAL_BACKOFF_MS);
+      }
+    });
+  });
+}
 
 /** `{ landing_state }` for an approved or held ticket, else nothing (spread into a ticket). */
 function withLanding(
@@ -307,6 +359,20 @@ export async function routeTickets(
         // REVIEW COMMENTS (A1): the reviewer's comments (no git: GET …/review/comments
         // ?anchors=1 adds each one's anchor state).
         review_comments: view.reviewComments,
+        // ESCAPED DEFECTS (MF5): the accepted changes a person said this ticket regresses,
+        // and the later tickets linked to it. A scoped principal sees a ticket outside its
+        // scope as a number with no title or note.
+        regression: (() => {
+          const visible = requestTicketFilter(wg);
+          const hide = (l: (typeof view.regression.regression_of)[number]) =>
+            !visible || visible(l.ticket_id)
+              ? l
+              : { ...l, title: null, note: null, outside_scope: true as const };
+          return {
+            regression_of: view.regression.regression_of.map(hide),
+            regressed_by: view.regression.regressed_by.map(hide),
+          };
+        })(),
         // SQUAD: the presentation (display name, shirt number, role) of every
         // REGISTERED agent this ticket names — event actors, the reviewer, the
         // creator and any active claim holder — keyed by agent id. Additive: the
@@ -460,6 +526,9 @@ export async function routeTickets(
     if (method === "POST") {
       const body = createReviewCommentBody.parse(await readJsonBody(req));
       const comment = wg.createReviewComment(id, body, apiActor());
+      // REVIEW RULES (D6): a person's must-fix comment may complete a repeated rule,
+      // proposed once this response is sent (fail-soft, never in the person's way).
+      if (comment.severity === "must_fix") proposeRulesAfterResponse(res, wg, memoryReader);
       sendCreated(res, `/tickets/${comment.ticket_id}/review/comments/${comment.id}`, {
         comment,
       });
@@ -585,6 +654,9 @@ export async function routeTickets(
     if (action === "reject") {
       const body = rejectReviewBody.parse(await readJsonBody(req));
       const result = wg.rejectReview(id, body.to, apiActor(), body.reason);
+      // REVIEW RULES (D6): a person's send-back reason may complete a repeated rule, which is
+      // proposed as a lore draft (never auto-approved) once this response is sent.
+      proposeRulesAfterResponse(res, wg, memoryReader);
       // OPT-IN: capture the reviewer's rejection reason as a lore DRAFT (human-gated) so
       // the highest-signal human correction compounds into memory. FAIL-SOFT — a memory
       // outage must never affect the rejection, which has already succeeded. Files via the
@@ -702,6 +774,31 @@ export async function routeTickets(
       reason: r.reason,
       event_id: r.eventId,
       round_entered_at: r.roundEnteredAt,
+    });
+    return;
+  }
+  // ESCAPED DEFECTS (MF5): /tickets/:id/regression-of {of, note?, withdraw?}: a person says
+  // this ticket (a defect or its fix) regresses the accepted change `of`, or takes that
+  // back. Human or admin only (the service refuses an agent or the runner; a read token
+  // never reaches here). A measurement for Health; nothing gates on it.
+  if (segments.length === 3 && sub === TICKET_SUB.REGRESSION_OF && method === "POST") {
+    const body = regressionOfBody.parse(await readJsonBody(req));
+    // PRINCIPAL SCOPES: the scope gate checked this ticket; the change it names must be
+    // in scope too, or a scoped principal could mark changes it cannot see.
+    const visible = requestTicketFilter(wg);
+    if (visible && !visible(wg.resolveTicket(body.of).id))
+      throw new DispatchError("SCOPE_DENIED", "That ticket is outside this principal's scope.", {
+        of: body.of,
+      });
+    const r = body.withdraw
+      ? wg.withdrawRegression(id, body.of, apiActor())
+      : wg.fileRegression(id, body.of, apiActor(), body.note ?? null);
+    sendJson(res, 200, {
+      ticket_id: r.ticketId,
+      regression_of: r.regressionOf,
+      recorded: r.recorded,
+      withdrawn: Boolean(body.withdraw),
+      event_id: r.eventId,
     });
     return;
   }

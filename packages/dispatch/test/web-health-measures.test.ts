@@ -2,7 +2,7 @@
 //
 // DOM test for the Health view's four top-level measures (Release A metrics package):
 // first-pass acceptance, human review time (median), accepted-change cost and the
-// escaped-defect rate, which is not recorded yet and says what is missing.
+// escaped-defect rate, which counts only the regression links a person filed.
 // The harness below is the one web-health-view.test.ts uses (src/api/web/app.js renderHealth):
 //   - renders the ROI KPI row from /api/health (cost/feature, skill hit-rate,
 //     spend-by-kind, rework-cost share, measured-coverage %),
@@ -154,12 +154,35 @@ const MEASURES = {
     basis_note: "Mixed: decision time where the Review view recorded an open.",
     per_accepted_ticket: { n: 3, median_ms: 50 * 60_000, p75_ms: 55 * 60_000, p90_ms: 58 * 60_000 },
     accepted_without_human_decision: 1,
+    active: {
+      basis: "last_open_to_decision_capped",
+      cap_ms: 2 * 60 * 60_000,
+      note: "Active (approximate)",
+      per_accepted_ticket: { n: 2, median_ms: 12 * 60_000, p75_ms: null, p90_ms: null },
+      per_round: { n: 3, median_ms: 9 * 60_000, p75_ms: null, p90_ms: null },
+      capped_rounds: 0,
+    },
   },
   escaped_defects: {
-    recorded: false,
-    rate_pct: null,
-    note: "Not recorded yet: an escaped defect needs a human-filed link from the defect to the accepted change it escaped from, and Gaffer has none yet.",
+    measure: "escaped_defect_rate",
+    recorded: true,
+    window_days: 30,
+    accepted_changes: 4,
+    escaped: 1,
+    rate_pct: 25,
+    all_time: { accepted_changes: 5, escaped: 2, rate_pct: 40 },
+    links: 3,
+    filed_by: { human: 3, admin: 0 },
+    note: "Counts only what a person filed: a later ticket linked as a regression of an accepted change (wg ticket regression-of, or the ticket page). Gaffer never guesses one from a revert or a red build.",
+    limits: [],
   },
+};
+
+// An older server (before escaped-defect links existed).
+const NOT_RECORDED = {
+  recorded: false,
+  rate_pct: null,
+  note: "Not recorded yet: an escaped defect needs a human-filed link from the defect to the accepted change it escaped from, and Gaffer has none yet.",
 };
 
 function measure(label: string): { value: string; note: string } | null {
@@ -199,15 +222,27 @@ describe("web: Health shows the four top-level measures", () => {
     expect(rt?.note).toMatch(/median of 3 accepted/);
     expect(rt?.note).toMatch(/p90 58m/);
     expect(rt?.note).toMatch(/Mixed/);
+    expect(rt?.note).toMatch(/Active, approximate: median 12m per accepted ticket/);
+    expect(rt?.note).toMatch(/capped at 2h/);
     const cost = measure("Accepted-change cost");
     expect(cost?.value).toBe("$1.25");
     expect(cost?.note).toMatch(/1\.4 attempts each/);
+    const esc = measure("Escaped-defect rate");
+    expect(esc?.value).toBe("25%");
+    expect(esc?.note).toMatch(/1 of 4 accepted in the last 30 days linked to a later regression/);
+    expect(esc?.note).toMatch(/40% all time/);
+    expect(esc?.note).toMatch(/Counts only what a person filed/);
+  });
+
+  it("an older server that does not record escaped defects still says what is missing", async () => {
+    healthPayload = { ...(FULL_HEALTH as object), ...MEASURES, escaped_defects: NOT_RECORDED };
+    await loadApp();
     const esc = measure("Escaped-defect rate");
     expect(esc?.value).toBe("Not recorded yet");
     expect(esc?.note).toMatch(/human-filed link from the defect to the accepted change/);
   });
 
-  it("an empty factory reads as no data, never as zero, and escaped defects stay not recorded", async () => {
+  it("an empty factory reads as no data, never as zero, escaped defects included", async () => {
     healthPayload = {
       ...(DEGRADED_HEALTH as object),
       first_pass: { ...MEASURES.first_pass, done: 0, first_pass: 0, rate_pct: null },
@@ -217,7 +252,13 @@ describe("web: Health shows the four top-level measures", () => {
         basis_note: "No accepted ticket has a human review decision yet.",
         per_accepted_ticket: { n: 0, median_ms: null, p75_ms: null, p90_ms: null },
       },
-      escaped_defects: MEASURES.escaped_defects,
+      escaped_defects: {
+        ...MEASURES.escaped_defects,
+        accepted_changes: 0,
+        escaped: 0,
+        rate_pct: null,
+        all_time: { accepted_changes: 0, escaped: 0, rate_pct: null },
+      },
     };
     await loadApp();
     expect(measure("First-pass acceptance")?.value).toBe("—");
@@ -226,6 +267,7 @@ describe("web: Health shows the four top-level measures", () => {
       /No accepted ticket has a human review decision yet/,
     );
     expect(measure("Accepted-change cost")?.value).toBe("—");
-    expect(measure("Escaped-defect rate")?.value).toBe("Not recorded yet");
+    expect(measure("Escaped-defect rate")?.value).toBe("—");
+    expect(measure("Escaped-defect rate")?.note).toMatch(/0 of 0 accepted/);
   });
 });

@@ -179,9 +179,17 @@ export async function cmdHistory(args: ReturnType<typeof parseArgs>): Promise<nu
     // --json: the dashboard's History disclosure. The current head, then every
     // earlier snapshot newest first; `at` is when that version was written.
     if (getBool(args.flags, "json")) {
+      // When a person last approved it (the `approved` event), or null: a review rule's
+      // effect is measured from this (Gaffer's dispatch, D6).
+      const approved = db
+        .prepare(
+          "SELECT ts FROM events WHERE lore_id = ? AND kind = 'approved' ORDER BY ts DESC LIMIT 1",
+        )
+        .get(id) as { ts: string } | undefined;
       process.stdout.write(
         JSON.stringify({
           id,
+          approvedAt: approved ? approved.ts : null,
           current: {
             version: head,
             status: lore.status,

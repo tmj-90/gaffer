@@ -1407,6 +1407,13 @@ for (const [label, cmd] of [
     "wg ticket lane-verdict 5 --lane agent-review --verdict approve --as system",
   ],
   ["dispatch ticket lane-verdict", "dispatch ticket lane-verdict 5 --lane tester --verdict pass"],
+  // An escaped-defect link is a person's judgement that a change caused a defect (MF5): an
+  // agent never files one (blaming another change) or withdraws one (hiding its own).
+  ["wg ticket regression-of", "wg ticket regression-of 7 --of 5 --note 'broke export'"],
+  ["dispatch ticket regression-of --withdraw", "dispatch ticket regression-of 7 --of 5 --withdraw"],
+  // Proposing review-rule drafts from a person's feedback is a person's (or the server's)
+  // act (D6); an agent proposes lore only through the memory MCP, as its own draft.
+  ["wg review-rules propose", "wg review-rules propose"],
   // attach-evidence writes a SYSTEM row with any uri: a forged review pin
   // (gaffer-reviewed-commit:) or a replay-record look-alike. The runner's, never an agent's.
   [

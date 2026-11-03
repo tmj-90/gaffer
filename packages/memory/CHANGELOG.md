@@ -6,6 +6,16 @@ itself is pre-1.0 so semver promises are best-effort.
 
 ## [Unreleased]
 
+### Changed: a review-rule draft is always a draft
+
+- **A record tagged `review-rule` never auto-approves.** Gaffer proposes review
+  rules from a person's repeated review feedback, and the person approves the rule,
+  so `suggestLore` (the CLI `suggest` and the MCP `suggest_lore`) keeps such a
+  record a draft even with `MEMORY_AUTO_APPROVE=1`; `suggest_lore` answers "Draft
+  created" from the record's real status. `memory history <id> --json` gains
+  `approvedAt` (the latest `approved` event, or null), so a caller can measure a
+  rule from its approval without reading the database.
+
 ### Added — verify the file-card index against a tree
 
 - **`memory card verify --canonical <c> --repo <r> --repo-root <abs> [--fix]

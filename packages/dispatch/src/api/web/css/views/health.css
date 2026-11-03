@@ -354,6 +354,37 @@
     }
   }
 
+  /* --- what each judging lane changed (counts only, no recommendation) --------- */
+  .lane-value-panel {
+    margin-bottom: var(--s5);
+  }
+  .lane-value-list {
+    list-style: none;
+    margin: 0;
+    padding: 4px 16px;
+  }
+  .lane-value-list li {
+    padding: 8px 0;
+    border-top: var(--hair);
+    font: 500 var(--t14) / var(--lh-detail) var(--f-detail);
+    overflow-wrap: anywhere;
+  }
+  .lane-value-list li:first-child {
+    border-top: 0;
+  }
+  .lane-value-safety {
+    font: 700 var(--t12) var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--ink-2);
+  }
+  .lane-value-foot {
+    margin: 0;
+    padding: 8px 16px 12px;
+    font: 500 var(--t13) / var(--lh-detail) var(--f-detail);
+    color: var(--ink-2);
+  }
+
   /* --- what has not measured anything yet: one line, not an empty page -------- */
   .hx-unmeasured {
     max-width: none;

@@ -256,6 +256,20 @@ export const TicketDetailsBatch = z
   })
   .strict();
 
+/** One side of an escaped-defect link (MF5). */
+const RegressionLinkView = z
+  .object({
+    ticket_id: str,
+    number: int.nullable(),
+    title: nstr.describe("Null for a scoped principal outside its scope."),
+    status: str,
+    filed_by: z.object({ type: str, id: nstr }).strict(),
+    filed_at: str,
+    note: nstr,
+    outside_scope: z.literal(true).optional(),
+  })
+  .strict();
+
 export const TicketDetail = z
   .object({
     ticket: TicketRow,
@@ -270,6 +284,15 @@ export const TicketDetail = z
     review_comments: z
       .array(z.record(z.string(), z.unknown()))
       .describe("The reviewer's comments (the ReviewComment shape, without anchor_state)."),
+    regression: z
+      .object({
+        regression_of: z.array(RegressionLinkView),
+        regressed_by: z.array(RegressionLinkView),
+      })
+      .strict()
+      .describe(
+        "Escaped defects: the accepted changes a person linked this ticket to as their regression, and the later tickets linked to this one.",
+      ),
     agent_display: z
       .record(z.string(), AgentDisplayView)
       .describe("Every agent the ticket's claims and events name, keyed by agent id."),
@@ -398,6 +421,33 @@ export const TestableSet = z
 
 export const TestChangesAllowed = z
   .object({ ticket_id: str, allow_test_changes: z.boolean(), event_id: eventId })
+  .strict();
+
+export const RegressionOf = z
+  .object({
+    ticket_id: str,
+    regression_of: str.describe("The accepted change's ticket id."),
+    recorded: z.boolean().describe("false: the link already stood (or nothing to withdraw)."),
+    withdrawn: z.boolean(),
+    event_id: str.nullable(),
+  })
+  .strict();
+
+export const ReviewRules = z
+  .object({
+    threshold: int.describe("GAFFER_REVIEW_RULE_REPEAT: distinct tickets a rule needs."),
+    candidates: z
+      .array(z.record(z.string(), z.unknown()))
+      .describe(
+        "Repeated feedback not proposed yet: repo, key, count, tickets, rule_text, examples.",
+      ),
+    proposed: z
+      .array(z.record(z.string(), z.unknown()))
+      .describe(
+        "Proposed rules: repo, key, count, lore_id, lore_status, approved_at and measure (state not_approved | not_enough_data | measured, citing before/after per review round).",
+      ),
+    note: str,
+  })
   .strict();
 
 export const ReviewOpened = z

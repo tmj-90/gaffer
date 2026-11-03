@@ -11,6 +11,9 @@ export { Dispatch } from "../core.js";
 export { DatabaseOpenError, DatabaseTooNewError } from "../db/connection.js";
 export { GIT_REF_SAFE } from "../domain/schemas.js";
 export { readJudgeAgreement, renderJudgeAgreement } from "../health/judgeAgreement.js";
+export { createMemoryReader } from "../api/memoryReader.js";
+export { reviewRuleThreshold } from "../health/reviewRules.js";
+export { proposeReviewRules, reviewRulesReport } from "../services/reviewRuleService.js";
 export {
   EXCLUDED_TABLES,
   exportState,

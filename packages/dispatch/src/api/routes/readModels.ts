@@ -17,6 +17,8 @@ import {
 import { governanceRoi, type GovTransition } from "../../health/governanceRoi.js";
 import { acceptedChangeCost } from "../../health/acceptedChange.js";
 import { readReviewMeasures } from "../../health/reviewMeasures.js";
+import { reviewRuleThreshold } from "../../health/reviewRules.js";
+import { reviewRulesReport } from "../../services/reviewRuleService.js";
 import { aggregateHealth, readHealthRows, type SendBack } from "../../health/healthAggregator.js";
 import { sendBacksByTicket } from "../../health/sendBacks.js";
 import { isBoardArea } from "../../services/boardService.js";
@@ -391,6 +393,23 @@ export function routeReadModels(
   //      definition the Overview now reads (was recomputed client-side).
   // Defensive: zero-state safe when the ledger is absent; lists capped so a large
   // ledger never bloats the response. Read-only, behind the same posture as /api.
+  // REVIEW RULES (D6): the repeated human feedback that is (or is about to be) a proposed
+  // rule, each proposed rule's lore status and its rejections before vs after approval.
+  // A read: proposing happens after a person's send-back or comment, or `wg review-rules
+  // propose`. Memory unavailable: statuses read null and every measure "not approved".
+  if (segments.length === 2 && segments[1] === "review-rules") {
+    if (method !== "GET") return methodNotAllowed(res);
+    const report = reviewRulesReport(wg.db, {
+      threshold: reviewRuleThreshold(process.env),
+      nowMs: Date.parse(wg.clock.now()) || Date.now(),
+      lookup: (id) => {
+        const h = memoryReader.loreHistory(id);
+        return h.available ? { status: h.current.status, approvedAt: h.approvedAt } : null;
+      },
+    });
+    return sendJson(res, 200, report);
+  }
+
   if (segments.length === 2 && segments[1] === "health") {
     if (method !== "GET") return methodNotAllowed(res);
     const TOP_N = 25;
@@ -488,8 +507,9 @@ export function routeReadModels(
     // ticket's outcome (parked, failed, abandoned, in flight), over the tickets that
     // reached done; attempts per accepted change; human review time where recorded.
     const ledgerPath = resolveLedgerPath(process.env);
+    const ledgerRows = ledgerPath ? readHealthRows(ledgerPath) : [];
     const acceptedChange = acceptedChangeCost(
-      ledgerPath ? readHealthRows(ledgerPath) : [],
+      ledgerRows,
       allTickets.map((t) => ({ id: t.id, number: t.number ?? -1, status: t.status })),
       govTransitions,
     );
@@ -497,8 +517,9 @@ export function routeReadModels(
     // REVIEW AND ACCEPTANCE MEASURES (Release A metrics): human review time per accepted
     // ticket (median/p75/p90, split into queue wait and decision time where the Review
     // view recorded an open), first-pass acceptance split by approver, the judging lanes'
-    // verdict counts, and escaped defects as not recorded yet.
-    const reviewMeasures = readReviewMeasures(wg.db);
+    // verdict counts, and the escaped-defect rate from the regression links a person filed
+    // (accepted changes in the same window as governance).
+    const reviewMeasures = readReviewMeasures(wg.db, { nowMs, windowDays, ledger: ledgerRows });
 
     // Two previously-DEAD data sources, surfaced best-effort (a missing source
     // degrades to a null/available:false cell, NEVER breaks the endpoint):
@@ -527,6 +548,8 @@ export function routeReadModels(
       first_pass: reviewMeasures.first_pass,
       lane_verdicts: reviewMeasures.lane_verdicts,
       escaped_defects: reviewMeasures.escaped_defects,
+      // SPECIALIST VALUE (D1): what each judging lane changed. Counts only, no recommendation.
+      lane_value: reviewMeasures.lane_value,
       coverage: health.coverage,
       by_kind: health.by_kind.slice(0, TOP_N),
       by_model: health.by_model.slice(0, TOP_N),

@@ -21,7 +21,7 @@ import { DispatchError } from "../util/errors.js";
 
 /** How a command's target is found. `arg0`/`arg1`: that positional argument. */
 type Rule =
-  | { kind: "read_ticket" | "write_ticket"; ticketArg?: 0 | 1; alsoRead?: 1 }
+  | { kind: "read_ticket" | "write_ticket"; ticketArg?: 0 | 1; alsoRead?: 1; alsoReadOpt?: "of" }
   | { kind: "repo_link"; repoArg?: 1 }
   | { kind: "write_repo"; repoArg?: 0 }
   | { kind: "decision" }
@@ -128,6 +128,9 @@ const RULES: Record<string, Rule> = {
   "ticket scope link": { kind: "scope_link" },
   "ticket scope primary": { kind: "scope_link" },
   "ticket scope rm": { kind: "scope_link" },
+  // An escaped-defect link (MF5) is a write to the later ticket that names the accepted
+  // change (`--of`): a scoped principal must see both (the REST rule).
+  "ticket regression-of": { kind: "write_ticket", alsoReadOpt: "of" },
   // A dependency is a write to the first ticket that names the second.
   "ticket dep add": { kind: "write_ticket", alsoRead: 1 },
   "ticket dep rm": { kind: "write_ticket", alsoRead: 1 },
@@ -163,6 +166,7 @@ const RULES: Record<string, Rule> = {
       "events list",
       "events verify",
       "stats",
+      "review-rules",
       "human-queue",
       "export",
       "principal list",
@@ -226,6 +230,12 @@ export function assertPrincipalCommand(
       check({ kind: rule.kind, ticket: wg.scopeTicket(arg(rule.ticketArg ?? 0)) });
       if (rule.alsoRead !== undefined) {
         check({ kind: "read_ticket", ticket: wg.scopeTicket(arg(rule.alsoRead)) });
+      }
+      if (rule.alsoReadOpt !== undefined) {
+        check({
+          kind: "read_ticket",
+          ticket: wg.scopeTicket(String(opts[rule.alsoReadOpt] ?? "")),
+        });
       }
       return;
     case "repo_link": {

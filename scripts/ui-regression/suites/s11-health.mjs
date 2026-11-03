@@ -2,7 +2,10 @@
 // event-log chain needs a rewritten row and is left to its unit tests). After one
 // delivery and one parked ticket: the Event log card reads intact with the server's
 // event count; the four measures card shows the server's first-pass and review-time
-// figures and escaped defects as not recorded yet; the treatment list names the
+// figures and the escaped-defect rate as the server counted it (only what a person
+// filed); the lane card lists every judging lane from lane_value; a ticket page carries the
+// Escaped defects card, and filing a link there (when an
+// accepted change exists) moves Health's count; the treatment list names the
 // blocked ticket with a link to it; a finished run's log opens in a sheet with the
 // tick's own output.
 export default async function s11(t, L) {
@@ -32,10 +35,13 @@ export default async function s11(t, L) {
   );
   // The four top-level measures, read from the same /api/health payload: first-pass
   // acceptance and the median review time as the server computed them (a dash when
-  // nothing is accepted yet), escaped defects as not recorded yet with what is missing.
+  // nothing is accepted yet), the escaped-defect rate as the server served it, with the
+  // sentence that it counts only what a person filed.
   const measures = (await p.textContent('[aria-label="The four measures"]').catch(() => "")) || "";
   const fp = health.first_pass;
   const fpShown = fp && typeof fp.rate_pct === "number" ? `${fp.rate_pct}%` : "—";
+  const esc = health.escaped_defects;
+  const escShown = esc && typeof esc.rate_pct === "number" ? `${esc.rate_pct}%` : "—";
   t.check(
     fp &&
       health.review_time &&
@@ -43,11 +49,74 @@ export default async function s11(t, L) {
       measures.includes(fpShown) &&
       measures.includes("Human review time") &&
       measures.includes("Accepted-change cost") &&
-      /Escaped-defect rate\s*Not recorded yet/.test(measures) &&
-      measures.includes("human-filed link"),
-    `Health shows the four measures (first-pass ${fpShown} over ${fp && fp.done} done, review time basis ${health.review_time && health.review_time.basis}, escaped defects not recorded yet)`,
+      health.escaped_defects &&
+      health.escaped_defects.recorded === true &&
+      new RegExp(`Escaped-defect rate\\s*${escShown.replace("%", "\\%")}`).test(measures) &&
+      measures.includes("Counts only what a person filed"),
+    `Health shows the four measures (first-pass ${fpShown} over ${fp && fp.done} done, review time basis ${health.review_time && health.review_time.basis}, escaped defects ${escShown} of ${health.escaped_defects && health.escaped_defects.accepted_changes} accepted)`,
     `four measures card: api first_pass=${JSON.stringify(fp)} page='${measures.slice(0, 300)}'`,
   );
+  // What each lane changed (D1): one line per lane from the same payload, "no verdicts
+  // recorded" where a lane has none, and the footnote that recommends nothing.
+  const laneCard =
+    (await p.textContent('[aria-label="What each lane changed"]').catch(() => "")) || "";
+  const lv = health.lane_value;
+  t.check(
+    lv &&
+      Array.isArray(lv.lanes) &&
+      lv.lanes.every(
+        (l) =>
+          laneCard.includes(l.label) &&
+          (l.note
+            ? laneCard.includes(l.note)
+            : laneCard.includes(`${l.verdicts_recorded} verdict`)),
+      ) &&
+      laneCard.includes("never switched off by telemetry"),
+    `Health shows what each lane changed (${lv && lv.attempts} attempts; ${lv && lv.lanes.filter((l) => !l.note).length} lanes with verdicts)`,
+    `lane card: api=${JSON.stringify(lv && lv.lanes.map((l) => [l.lane, l.verdicts_recorded]))} page='${laneCard.slice(0, 300)}'`,
+  );
+
+  // ── escaped defects: the ticket page's link control (MF5) ─────────────────
+  await t.visit(`ticket/${parked.id}`, { label: "ticket/:id" });
+  const regCard = p.locator('[aria-label="Escaped defects"]');
+  const hasForm = await regCard
+    .locator("form.tk-regression-form")
+    .waitFor({ timeout: 15000 })
+    .then(
+      () => true,
+      () => false,
+    );
+  t.check(
+    hasForm,
+    `#${parked.number}'s page has the Escaped defects card with the link control`,
+    "no Escaped defects card with a form on the ticket page",
+  );
+  const doneTicket = (await L.listTickets()).find((x) => x.status === "done");
+  if (hasForm && doneTicket) {
+    await regCard.locator("input").first().fill(String(doneTicket.number));
+    await regCard.locator('button[type="submit"]').click();
+    const linked = await L.maybe(
+      async () => {
+        const v = await L.ticketView(parked.id);
+        return v.regression && v.regression.regression_of.some((l) => l.ticket_id === doneTicket.id)
+          ? v
+          : null;
+      },
+      "regression link",
+      15000,
+      500,
+    );
+    const after = (await L.api("GET", "/api/health")).json.escaped_defects || {};
+    t.check(
+      linked && after.all_time && after.all_time.escaped >= 1,
+      `linking #${parked.number} as a regression of accepted #${doneTicket.number} from the page counts in Health (${after.all_time && after.all_time.escaped} escaped of ${after.all_time && after.all_time.accepted_changes} all time)`,
+      `regression link: view=${JSON.stringify(linked && linked.regression)} health=${JSON.stringify(after)}`,
+    );
+  } else if (hasForm) {
+    t.note("escaped defects: no accepted change in this world, so no link was filed");
+  }
+  await t.visit("health");
+
   const row = p
     .locator(`.needs-item a[href*="${parked.id}"], .needs-item:has-text("#${parked.number}") a`)
     .first();

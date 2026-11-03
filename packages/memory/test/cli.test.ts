@@ -293,6 +293,46 @@ describe("CLI — draft review flow", () => {
     }
   });
 
+  it("a review-rule suggest stays a DRAFT under MEMORY_AUTO_APPROVE=1", async () => {
+    const saved = process.env["MEMORY_AUTO_APPROVE"];
+    process.env["MEMORY_AUTO_APPROVE"] = "1";
+    try {
+      expect(
+        await run(
+          "suggest",
+          "--title",
+          "Review rule held",
+          "--summary",
+          "s",
+          "--body",
+          "b",
+          "--kind",
+          "convention",
+          "--tag",
+          "review-rule",
+        ),
+      ).toBe(0);
+      expect(out).toMatch(/suggested \S+ \(draft\)/);
+    } finally {
+      if (saved === undefined) delete process.env["MEMORY_AUTO_APPROVE"];
+      else process.env["MEMORY_AUTO_APPROVE"] = saved;
+    }
+  });
+
+  it("history --json carries when a person approved the record", async () => {
+    await run("suggest", "--title", "To approve", "--summary", "s", "--body", "b");
+    const id = firstId(out);
+    out = "";
+    expect(await run("history", id, "--json")).toBe(0);
+    expect((JSON.parse(out) as { approvedAt: string | null }).approvedAt).toBeNull();
+    expect(await run("approve", id)).toBe(0);
+    out = "";
+    expect(await run("history", id, "--json")).toBe(0);
+    const h = JSON.parse(out) as { approvedAt: string | null };
+    expect(typeof h.approvedAt).toBe("string");
+    expect(Number.isNaN(Date.parse(h.approvedAt ?? ""))).toBe(false);
+  });
+
   it("reject refuses a non-draft (active) record, exits 1", async () => {
     await run("add", "--title", "Active rec", "--summary", "s", "--body", "b");
     const id = firstId(out);

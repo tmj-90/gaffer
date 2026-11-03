@@ -631,6 +631,26 @@ export function registerTicket(program: Command): void {
     });
 
   ticket
+    .command("regression-of <ref>")
+    .description(
+      "Say that this ticket (a defect report or its fix) is a regression of an accepted " +
+        "change: Health's escaped-defect rate counts these links, and only what a person " +
+        "files. --withdraw takes a link back. A person's act: human or admin only.",
+    )
+    .requiredOption("--of <ref>", "the accepted change it regresses (a ticket number or id)")
+    .option("--note <text>", "what broke (one line, shown on both tickets)")
+    .option("--withdraw", "take back a link filed in error")
+    .action((ref, opts, cmd) => {
+      const wg = open(cmd.optsWithGlobals());
+      const actor = cliActor();
+      const res = opts.withdraw
+        ? wg.withdrawRegression(ref, String(opts.of), actor)
+        : wg.fileRegression(ref, String(opts.of), actor, opts.note ? String(opts.note) : null);
+      printJson({ ok: true, ...res, withdrawn: Boolean(opts.withdraw) });
+      wg.db.close();
+    });
+
+  ticket
     .command("ci-required <ref>")
     .description(
       "Record that this ticket needs a CI pass before it may be approved, " +

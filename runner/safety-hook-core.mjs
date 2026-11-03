@@ -3181,6 +3181,12 @@ const CP_PAIRS = [
   // Review comments (A1/A2): writing, listing, resolving, reopening or withdrawing a
   // reviewer's comment, and Fix these, are the reviewer's acts, never a delivery agent's.
   ["review", /^(?:comment|comments|resolve|reopen-comment|withdraw-comment|fix)$/],
+  // Escaped defects (MF5): linking a ticket to the accepted change it regresses, or taking
+  // the link back, is a person's judgement; an agent would blame another change or hide
+  // its own. Review-rule drafts (D6) are proposed from a person's feedback by the server
+  // or a person, never by an agent shell.
+  ["ticket", /^regression-of$/],
+  ["review-rules", /^propose$/],
 ];
 function cpVerbNear(words) {
   // words: everything after the program word; the verb sits within the first three.

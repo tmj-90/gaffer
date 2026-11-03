@@ -429,7 +429,9 @@ export const DANGEROUS_COMMANDS = [
     // reads them through get_ticket and answers with a reply (agent evidence, a claim).
     // And the credentials (`principal create|revoke`, `--as-principal`): a principal is
     // a person's or a bot's delegated access, never an agent's to mint or act as.
-    re: /\b(wg|dispatch|fg|crew)\b[^\n|;&]*\b(review|approve|approve-ready|mark-merged|record-landing|landing-begin|record-tester-replay|ci-result|eval-score|lane-verdict|attach-evidence|reject|repo-access|set-testable|allow-test-changes|set-commands|test-contract|tester-pass|tester-fail|repo-delivery|require-cap|set-reviewer|decisions[ \t]+resolve|agent[ \t]+rename|club[ \t]+set|wont-do|principal[ \t]+(?:create|revoke)|as-principal)\b/,
+    // And the escaped-defect link (`regression-of`): a person's judgement that a change
+    // caused a defect, never an agent's (`review-rules propose` is matched by `review`).
+    re: /\b(wg|dispatch|fg|crew)\b[^\n|;&]*\b(review|regression-of|approve|approve-ready|mark-merged|record-landing|landing-begin|record-tester-replay|ci-result|eval-score|lane-verdict|attach-evidence|reject|repo-access|set-testable|allow-test-changes|set-commands|test-contract|tester-pass|tester-fail|repo-delivery|require-cap|set-reviewer|decisions[ \t]+resolve|agent[ \t]+rename|club[ \t]+set|wont-do|principal[ \t]+(?:create|revoke)|as-principal)\b/,
     why: "control-plane CLI write (use the scoped MCP, not the privileged wg/dispatch/fg/crew CLI)",
     example: "wg ticket approve T-1",
     crewFlags: false,

@@ -105,6 +105,29 @@ describe("core/lore", () => {
       expect(live.status).toBe("active");
     });
 
+    it("a review-rule draft never auto-approves, even with auto-approve on", () => {
+      // Review rules are proposed from a person's repeated review feedback (dispatch D6):
+      // the person approves the rule, so MEMORY_AUTO_APPROVE does not apply to them.
+      const rule = suggestLore(
+        db,
+        {
+          title: "Review rule (app): explicit null",
+          summary: "s",
+          body: "b",
+          kind: "convention",
+          tags: ["review-rule"],
+        },
+        { autoApprove: true },
+      );
+      expect(rule.status).toBe("draft");
+      const other = suggestLore(
+        db,
+        { title: "other", summary: "s", body: "b", tags: ["review-rule-ish"] },
+        { autoApprove: true },
+      );
+      expect(other.status).toBe("active");
+    });
+
     it("emits a 'suggested' event so audit shows agent vs human source", () => {
       const lore = suggestLore(db, { title: "t", summary: "s", body: "b" });
       const kinds = (

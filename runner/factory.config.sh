@@ -2731,6 +2731,16 @@ export GAFFER_REQUIRE_CI GAFFER_CI_POLL_ATTEMPTS GAFFER_CI_POLL_INTERVAL_SECS
 # separates the work you accepted from the work you sent back. 0 = off.
 # See docs/eval-harness.md.
 : "${GAFFER_EVAL_JUDGE:=0}"
+
+# REVIEW RULES (dispatch): the same send-back reason or must-fix comment from a person
+# (after dropping ids, paths and numbers) on this many tickets in one repo is proposed as a
+# lore convention draft tagged review-rule, which a person approves (gaffer lore approve or
+# the Memory view); it never auto-approves, MEMORY_AUTO_APPROVE included. Only a person's
+# feedback counts, never an agent's or the tester's. 2..20; `wg review-rules` lists them.
+# Read by dispatch (the dashboard server and `gaffer wg`), so it is a dashboard setting and
+# exported like the other dispatch knobs: an unexported default here never reached it.
+: "${GAFFER_REVIEW_RULE_REPEAT:=3}"
+export GAFFER_REVIEW_RULE_REPEAT
 # Post-delivery quality judging (gaffer_eval_judge_delivery): scores a submitted
 # delivery on the crew rubric into the eval ledger (pass rate / cost-per-pass /
 # memory score gap telemetry). Always fail-soft.

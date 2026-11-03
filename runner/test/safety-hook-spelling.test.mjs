@@ -131,6 +131,29 @@ for (const cmd of [
   t.deny(`review-comment verb: ${cmd}`, bash(cmd), opts);
 }
 
+// (h) the escaped-defect link (MF5) and the review-rule proposal (D6): a person's acts.
+for (const cmd of [
+  "wg ticket regression-of 7 --of 5",
+  "wg ticket regression-of 7 --of 5 --withdraw",
+  "dispatch ticket regression-of 7 --of 5",
+  "node packages/dispatch/dist/cli/index.js ticket regression-of 7 --of 5",
+  "wg ticket 'regression-of' 7 --of 5",
+  "wg ticket regr''ession-of 7 --of 5",
+  "wg ticket regression\\-of 7 --of 5",
+  "W=wg; $W ticket regression-of 7 --of 5",
+  "$X ticket regression-of 7 --of 5",
+  "$(which wg) ticket regression-of 7 --of 5 --withdraw",
+  "eval 'wg ticket regression-of 7 --of 5'",
+  "bash -c 'wg ticket regression-of 7 --of 5'",
+  "wg --db x.sqlite ticket regression-of 7 --of 5",
+  "wg review-rules propose",
+  "wg 'review-rules' prop''ose",
+  "$X review-rules propose",
+  "dispatch review-rules propose --repo app",
+]) {
+  t.deny(`human-only measure verb: ${cmd}`, bash(cmd), opts);
+}
+
 // Text that only mentions a command is not a command. Nothing here may be refused.
 // (A quoted "wg … approve" in one segment was already refused by the raw rule before
 // this file existed; that is unchanged and not pinned here.)
@@ -172,6 +195,9 @@ for (const cmd of [
   // An unknown program before "resolve" alone (no "review" verb) stays allowed.
   "$PKG resolve lodash",
   'git commit -m "review resolve: comment threads"',
+  'git log --grep "regression-of"',
+  "grep -rn regression-of docs/",
+  "$PKG regression-of lodash",
   // Quoted text keeps its quotes' meaning: no separator inside it starts a command.
   'echo "a | xargs wg"',
   'echo "printenv"',

@@ -604,7 +604,11 @@ export function computeStats(
     acceptedChange: computeAcceptedChange(db, env),
     reviewMeasures: (() => {
       try {
-        return readReviewMeasures(db);
+        const ledgerPath = resolveLedgerPath(env);
+        return readReviewMeasures(db, {
+          nowMs: Date.parse(nowIso) || Date.now(),
+          ledger: ledgerPath && existsSync(ledgerPath) ? readHealthRows(ledgerPath) : [],
+        });
       } catch {
         return null;
       }
@@ -656,9 +660,28 @@ export function renderStats(stats: StatsReport): string {
       `Human review time per accepted ticket: median ${span(p.median_ms)}, p75 ${span(p.p75_ms)}, p90 ${span(p.p90_ms)} over ${p.n} (${rt.basis.replace("_", " ")}; ${rt.accepted_without_human_decision} accepted with no human decision not counted)`,
     );
     lines.push(
+      `  active (approximate: last open to decision, capped at ${span(rt.active.cap_ms)}): median ${span(rt.active.per_accepted_ticket.median_ms)} per accepted ticket over ${rt.active.per_accepted_ticket.n}, ${span(rt.active.per_round.median_ms)} per round over ${rt.active.per_round.n} (${rt.active.capped_rounds} capped)`,
+    );
+    lines.push(
       `  queue wait median ${span(rt.queue_wait.median_ms)} · decision median ${span(rt.decision.median_ms)} (${rt.rounds.with_open_event} of ${rt.rounds.human_decided} rounds opened in Review) · review-ready to decision median ${span(rt.review_ready_to_decision.median_ms)} · approved without opening raw logs ${pc(rt.approved_without_raw_logs.pct)} of ${rt.approved_without_raw_logs.instrumented}`,
     );
-    lines.push(`Escaped-defect rate: ${m.escaped_defects.note}`);
+    // WHAT EACH LANE CHANGED (D1): counts only, no recommendation.
+    const lv = m.lane_value;
+    lines.push(
+      `What each lane changed (${lv.attempts} attempts, ${lv.attempts_with_person_decision} decided by a person; ${lv.send_backs_no_lane_caught} of ${lv.send_backs} send-backs no lane asked for):`,
+    );
+    for (const l of lv.lanes) {
+      lines.push(
+        l.note
+          ? `  ${l.label}: ${l.note}`
+          : `  ${l.label}: ${l.verdicts_recorded} verdicts · differed from the person ${l.differed} of ${l.compared} (${l.differed_lane_blocked} it blocked and the person passed, ${l.differed_lane_passed} it passed and the person sent back) · only lane on ${l.unique_catches} send-back(s) · ${l.cost_per_attempt_usd === null ? "no ledger spend" : `${usd(l.cost_per_attempt_usd)} per attempt over ${l.ledger_attempts}`}`,
+      );
+    }
+    lines.push(`  ${lv.footnote}`);
+    const e = m.escaped_defects;
+    lines.push(
+      `Escaped-defect rate: ${pc(e.rate_pct)} (${e.escaped} of ${e.accepted_changes} accepted changes in the last ${e.window_days} days were linked to a later regression; ${pc(e.all_time.rate_pct)} of ${e.all_time.accepted_changes} all time, ${e.links} link(s)). ${e.note}`,
+    );
   }
   // ACCEPTANCE GATE: implementation merged is not build accepted.
   const a = stats.acceptance;

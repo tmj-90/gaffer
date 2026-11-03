@@ -920,6 +920,46 @@ try {
           `Health: the accepted ticket's review time is measured from the Review view's open (basis ${rt.basis}, median ${rt.per_accepted_ticket.median_ms} ms)`,
         )
       : bad(`Health: no review open recorded for the accepted ticket: ${JSON.stringify(rt)}`);
+
+    // ESCAPED DEFECTS: a person links a later ticket to the accepted change from the
+    // later ticket's page, and Health counts the accepted change as escaped.
+    const later = (
+      await api("POST", "/tickets", { title: `Regression of #${ticket.number} (golden path)` })
+    ).json;
+    const laterId = (later.ticket || later).id;
+    await page.goto(`${BASE}/#/ticket/${laterId}`, { waitUntil: "load" });
+    const card = page.locator('[aria-label="Escaped defects"]');
+    const hasForm = await card
+      .locator("form.tk-regression-form")
+      .waitFor({ timeout: 15000 })
+      .then(
+        () => true,
+        () => false,
+      );
+    if (!hasForm) bad("Ticket page: no Escaped defects card with the link form");
+    else {
+      await card.locator("input").first().fill(String(ticket.number));
+      await card.locator('button[type="submit"]').click();
+      const linked = await waitFor(
+        async () => {
+          const v = (await api("GET", `/tickets/${laterId}`)).json;
+          return v.regression && v.regression.regression_of.some((l) => l.ticket_id === ticket.id)
+            ? v
+            : null;
+        },
+        "regression link",
+        15000,
+        500,
+      ).catch(() => null);
+      const esc = (await api("GET", "/api/health")).json.escaped_defects || {};
+      linked && esc.escaped >= 1 && esc.recorded === true
+        ? ok(
+            `Ticket page: linking a later ticket as a regression of #${ticket.number} counts it in Health (${esc.escaped} of ${esc.accepted_changes} accepted, ${esc.rate_pct}%)`,
+          )
+        : bad(
+            `regression link from the ticket page: view=${JSON.stringify(linked && linked.regression)} health=${JSON.stringify(esc)}`,
+          );
+    }
   }
 
   // ── 6. Product owner: Suggest work ────────────────────────────────────────

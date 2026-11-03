@@ -157,6 +157,15 @@ import {
   type RecordedEvalJudgment,
 } from "./services/evalJudgment.js";
 import {
+  assertMayFileRegression,
+  currentRegressionLinks,
+  DEFECT_ESCAPED_EVENT,
+  DEFECT_ESCAPED_WITHDRAWN_EVENT,
+  regressionNote,
+  type RegressionEventRow,
+  type RegressionLink,
+} from "./services/escapedDefects.js";
+import {
   assertMayRecordLaneVerdict,
   assertMayRecordReviewOpen,
   LANE_VERDICT_EVENT,
@@ -321,6 +330,17 @@ export interface TicketDetailBatchItem {
   evidence?: EvidenceView[];
 }
 
+/** One side of a regression link as the ticket view shows it. */
+export interface RegressionLinkView {
+  ticket_id: string;
+  number: number | null;
+  title: string;
+  status: string;
+  filed_by: { type: string; id: string | null };
+  filed_at: string;
+  note: string | null;
+}
+
 export interface TicketView {
   ticket: Ticket;
   acceptanceCriteria: AcceptanceCriterion[];
@@ -373,6 +393,11 @@ export interface TicketView {
    * Advisory: no gate reads it.
    */
   evalJudgment: RecordedEvalJudgment | null;
+  /**
+   * ESCAPED DEFECTS (MF5): the accepted changes a person said this ticket regresses, and
+   * the later tickets a person linked to this one as its regressions. Current links only.
+   */
+  regression: { regression_of: RegressionLinkView[]; regressed_by: RegressionLinkView[] };
 }
 
 /**
@@ -2477,6 +2502,124 @@ export class Dispatch {
     return { ticketId: ticket.id, eventId, verdict };
   }
 
+  /**
+   * ESCAPED DEFECT (MF5): a person says `ref` (a defect report or its fix) is a regression
+   * of the accepted change `of` (a ticket id or number). Recorded as `ticket.defect_escaped`
+   * on `ref`, the actor columns saying who filed it. Human or admin only; the target must be
+   * another ticket that is done (an accepted change). Filing the same standing link again
+   * records nothing. A measurement: nothing gates on it, and it never bumps updated_at.
+   */
+  fileRegression(
+    ref: string,
+    of: string,
+    actor: Actor,
+    note: string | null = null,
+  ): { ticketId: string; regressionOf: string; recorded: boolean; eventId: string | null } {
+    assertMayFileRegression(actor);
+    const ticket = this.resolveTicket(ref);
+    const target = this.resolveTicket(of);
+    if (target.id === ticket.id)
+      throw new DispatchError("VALIDATION_ERROR", "A ticket cannot be a regression of itself.", {
+        ticket_id: ticket.id,
+      });
+    if (target.status !== "done")
+      throw new DispatchError(
+        "STATE_CONFLICT",
+        `#${target.number ?? "?"} is not an accepted change (it is ${target.status}); a regression links to a change that reached done.`,
+        { regression_of: target.id, status: target.status },
+      );
+    return inTransaction(this.db, () => {
+      const standing = this.regressionLinkRows().some(
+        (l) => l.ticketId === ticket.id && l.regressionOf === target.id,
+      );
+      if (standing)
+        return { ticketId: ticket.id, regressionOf: target.id, recorded: false, eventId: null };
+      const eventId = writeEvent(this.db, {
+        entity_type: "ticket",
+        entity_id: ticket.id,
+        actor,
+        event_type: DEFECT_ESCAPED_EVENT,
+        payload: {
+          regression_of: target.id,
+          regression_of_number: target.number ?? null,
+          note: regressionNote(note),
+        },
+      });
+      return { ticketId: ticket.id, regressionOf: target.id, recorded: true, eventId };
+    });
+  }
+
+  /** Take back a regression link filed in error (human or admin; nothing standing: no-op). */
+  withdrawRegression(
+    ref: string,
+    of: string,
+    actor: Actor,
+  ): { ticketId: string; regressionOf: string; recorded: boolean; eventId: string | null } {
+    assertMayFileRegression(actor);
+    const ticket = this.resolveTicket(ref);
+    const target = this.resolveTicket(of);
+    return inTransaction(this.db, () => {
+      const standing = this.regressionLinkRows().some(
+        (l) => l.ticketId === ticket.id && l.regressionOf === target.id,
+      );
+      if (!standing)
+        return { ticketId: ticket.id, regressionOf: target.id, recorded: false, eventId: null };
+      const eventId = writeEvent(this.db, {
+        entity_type: "ticket",
+        entity_id: ticket.id,
+        actor,
+        event_type: DEFECT_ESCAPED_WITHDRAWN_EVENT,
+        payload: { regression_of: target.id, regression_of_number: target.number ?? null },
+      });
+      return { ticketId: ticket.id, regressionOf: target.id, recorded: true, eventId };
+    });
+  }
+
+  /** Every standing regression link (the event log folded, see services/escapedDefects.ts). */
+  regressionLinkRows(): RegressionLink[] {
+    const rows = this.db
+      .prepare(
+        `SELECT entity_id AS ticketId, event_type AS eventType, actor_type AS actorType,
+                actor_id AS actorId, created_at AS at,
+                json_extract(payload_json, '$.regression_of') AS regressionOf,
+                json_extract(payload_json, '$.note') AS note
+           FROM work_events
+          WHERE entity_type = 'ticket' AND event_type IN (?, ?)
+          ORDER BY rowid`,
+      )
+      .all(DEFECT_ESCAPED_EVENT, DEFECT_ESCAPED_WITHDRAWN_EVENT) as RegressionEventRow[];
+    return currentRegressionLinks(rows);
+  }
+
+  private regressionLinksOf(ticketId: string): TicketView["regression"] {
+    const links = this.regressionLinkRows();
+    const side = (otherId: string, l: RegressionLink): RegressionLinkView[] => {
+      const row = this.db
+        .prepare(`SELECT number, title, status FROM tickets WHERE id = ?`)
+        .get(otherId) as { number: number | null; title: string; status: string } | undefined;
+      if (!row) return [];
+      return [
+        {
+          ticket_id: otherId,
+          number: row.number,
+          title: row.title,
+          status: row.status,
+          filed_by: l.filedBy,
+          filed_at: l.filedAt,
+          note: l.note,
+        },
+      ];
+    };
+    return {
+      regression_of: links
+        .filter((l) => l.ticketId === ticketId)
+        .flatMap((l) => side(l.regressionOf, l)),
+      regressed_by: links
+        .filter((l) => l.regressionOf === ticketId)
+        .flatMap((l) => side(l.ticketId, l)),
+    };
+  }
+
   /** REQUIRED CI: the latest CI state for a ticket's commit (null commit = latest overall). */
   ciStatus(
     ref: string,
@@ -3552,6 +3695,7 @@ export class Dispatch {
       // PER-REPOSITORY LANDING: each write repo's approved commit and whether it landed.
       landing: computeLandingStatus(this.db, ticket.id),
       evalJudgment: currentJudgment(events, enteredReviewAt(ticket.id, events)),
+      regression: this.regressionLinksOf(ticket.id),
     };
   }
 

@@ -356,5 +356,14 @@ Dispatch is the single source of truth for *what to do* and *whether it shipped*
 - **Claims** (`src/services/claimService.ts`): atomic claim-next using a partial
   unique index (one active claim per ticket); opaque tokens stored only as
   sha256 hashes; heartbeat + stale-claim expiry (system recovery).
-- **Core facade** (`src/core.ts`): the single entry point used by the CLI and
-  the MCP server.
+- **Core facade** (`src/core.ts`): the single entry point used by the CLI, the
+  REST API, the MCP server and the dashboard. The `Dispatch` class opens the
+  database, builds the repositories and services, and keeps every public method,
+  but holds no logic of its own: each method is a one-line call into a service.
+  Where a method composes several services, its body is a plain function in a
+  module under `src/services/` (for example `landingFactsService.ts`,
+  `reviewLifecycleService.ts`, `ticketReadService.ts`) that takes the `Dispatch`
+  instance, typed as a `Pick` of exactly the members it reads, and the
+  instance's private state when it needs it (`dispatchInternals.ts`). Calls
+  between public methods still go through the instance. Types the services own
+  stay importable from `core.ts`.

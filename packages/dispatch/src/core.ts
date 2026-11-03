@@ -1,8 +1,5 @@
 import type { AcceptanceProfile } from "./domain/acceptanceProfile.js";
-import { existsSync } from "node:fs";
-
-import { type Db, inTransaction, openDatabase } from "./db/connection.js";
-import { claimTicketInput } from "./domain/schemas.js";
+import { type Db, openDatabase } from "./db/connection.js";
 import {
   type AcStatus,
   type AcceptanceCriterion,
@@ -11,7 +8,6 @@ import {
   type BouncingTicket,
   type Decision,
   type DecisionSeverity,
-  type Evidence,
   type PausedDelivery,
   type ReopenForReviewCause,
   type ReworkAttempt,
@@ -33,16 +29,8 @@ import {
   type TicketScopeNode,
   type TicketStatus,
   type WorkEvent,
-  isActiveTicketRepoRelation,
-  parseTestContract,
 } from "./domain/types.js";
-import {
-  backfillEventChain,
-  latestEventHash,
-  verifyEventChain,
-  type ChainVerification,
-} from "./events/eventChain.js";
-import { listEvents, writeEvent } from "./events/eventWriter.js";
+import { verifyEventChain, type ChainVerification } from "./events/eventChain.js";
 import {
   SquadService,
   type AgentDisplay,
@@ -63,7 +51,7 @@ import {
 } from "./repositories/eventRepository.js";
 import { EvidenceRepository } from "./repositories/evidenceRepository.js";
 import { PausedDeliveryRepository } from "./repositories/pausedDeliveryRepository.js";
-import { RepoRepository, type TicketRepoLink } from "./repositories/repoRepository.js";
+import { RepoRepository } from "./repositories/repoRepository.js";
 import { RequiredCapabilityRepository } from "./repositories/requiredCapabilityRepository.js";
 import { ReworkAttemptRepository } from "./repositories/reworkAttemptRepository.js";
 import { SpecCoverageRepository } from "./repositories/specCoverageRepository.js";
@@ -90,7 +78,6 @@ import {
   type TicketScopeWithNode,
 } from "./repositories/ticketScopeNodeRepository.js";
 import {
-  TICKET_SUMMARY_COLUMNS,
   TicketRepository,
   type TicketListFilter,
   type TicketSummary,
@@ -105,36 +92,22 @@ import {
   type SubmitForReviewInput,
 } from "./services/claimService.js";
 import {
-  computeTicketDiff,
   type TicketDiffOptions,
   defaultGitRunner,
   type GitRunner,
   type RepoDiff,
-  resolveBranchHead,
   type TicketDiff,
 } from "./services/diffService.js";
-import { readUsagePause } from "./health/usagePause.js";
-import {
-  readRunnerTesterLane,
-  recordRunnerTesterLane,
-  runnerLaneNotice,
-  type RunnerTesterLane,
-} from "./health/runnerTesterLane.js";
-import {
-  computeLandingStatus,
-  recordedLandingRepos,
-  REVIEW_PIN_PREFIX,
-  type LandingStatus,
-} from "./services/landingStatus.js";
+import { readRunnerTesterLane, type RunnerTesterLane } from "./health/runnerTesterLane.js";
+import { computeLandingStatus, type LandingStatus } from "./services/landingStatus.js";
 import {
   type CommentRepoContext,
   type CreateCommentInput,
-  fixTheseReason,
   ReviewCommentService,
   type ReviewCommentView,
 } from "./services/reviewCommentService.js";
-import { rejectOutcome, type RejectOutcome } from "./services/rejectOutcome.js";
-import { computeSinceDiff, type SinceDiff } from "./services/sinceReview.js";
+import { type RejectOutcome } from "./services/rejectOutcome.js";
+import { type SinceDiff } from "./services/sinceReview.js";
 import { DecisionService, type ResolveDecisionInput } from "./services/decisionService.js";
 import { ScopeService, type ScopeNodeView } from "./services/scopeService.js";
 import {
@@ -153,43 +126,12 @@ import {
   type WorkPacketRepos,
 } from "./services/repoService.js";
 import { EpicsService, type CreateEpicResult } from "./services/epicsService.js";
-import { EPIC_MEMBER_RELATIONS, ownAcceptanceTicketId } from "./services/epicAcceptance.js";
-import { DossierService, DOSSIER_EVENT_TYPE, type Dossier } from "./services/dossierService.js";
+import { DossierService, type Dossier } from "./services/dossierService.js";
+import { type EvalJudgment } from "./services/evalJudgment.js";
+import { type RegressionLink } from "./services/escapedDefects.js";
+import { type ScoutRecord } from "./services/scoutRecord.js";
+import { type LaneVerdict, type RawOpenKind } from "./services/reviewTelemetry.js";
 import {
-  assertMayRecordJudgment,
-  currentJudgment,
-  EVAL_JUDGED_EVENT,
-  normalizeJudgment,
-  type EvalJudgment,
-  type RecordedEvalJudgment,
-} from "./services/evalJudgment.js";
-import {
-  assertMayFileRegression,
-  currentRegressionLinks,
-  DEFECT_ESCAPED_EVENT,
-  DEFECT_ESCAPED_WITHDRAWN_EVENT,
-  regressionNote,
-  type RegressionEventRow,
-  type RegressionLink,
-} from "./services/escapedDefects.js";
-import {
-  assertMayRecordScout,
-  normalizeScoutRecord,
-  SCOUT_RECORDED_EVENT,
-  type ScoutRecord,
-} from "./services/scoutRecord.js";
-import {
-  assertMayRecordLaneVerdict,
-  assertMayRecordReviewOpen,
-  LANE_VERDICT_EVENT,
-  normalizeLaneVerdict,
-  REVIEW_OPENED_EVENT,
-  REVIEW_RAW_OPENED_EVENT,
-  type LaneVerdict,
-  type RawOpenKind,
-} from "./services/reviewTelemetry.js";
-import {
-  enteredReviewAt,
   ReviewPacketService,
   type CostReader,
   type ReviewPacket,
@@ -201,8 +143,6 @@ import { resolveSpecLoreReader } from "./services/specLoreReader.js";
 import { resolveCodeIndexReader, type CodeIndexReader } from "./services/codeIndexReader.js";
 import {
   BoardService,
-  resolveMoveTarget,
-  type BoardCard,
   type BoardView,
   type BoardWindow,
   type DashboardSummary,
@@ -210,22 +150,14 @@ import {
 import { PauseService, type PauseInput } from "./services/pauseService.js";
 import { HumanQueueService, type HumanQueue } from "./services/humanQueueService.js";
 import {
-  type ApprovalShas,
   type ApproveReviewOptions,
   type LandingStarted,
   type ReviewedHead,
-  type TesterCoverage,
   type TesterRoute,
   type UnavailableWriteRepo,
   ReviewGateService,
-  unavailableRepoRemedy,
 } from "./services/reviewGateService.js";
-import {
-  type ObservedRisk,
-  observedRisk,
-  runnerIntegrityHolds,
-  withRunnerIntegrityHolds,
-} from "./services/observedRisk.js";
+import { type ObservedRisk } from "./services/observedRisk.js";
 import {
   AutonomyRecommendationService,
   type AutonomyRecommendation,
@@ -237,56 +169,50 @@ import {
   type AutonomyPolicyView,
   type AutonomyMode,
 } from "./repositories/autonomyPolicyRepository.js";
-import {
-  AUTO_MERGE_ENV,
-  envFlagOn,
-  isAutonomyAllowed,
-  policyGrantsAuto,
-} from "./services/autonomyPolicyService.js";
-import {
-  decideLandingState,
-  type LandingFacts,
-  type LandingHold,
-  type LandingState,
-} from "./services/landingState.js";
-import {
-  decideApproveOutcome,
-  type ApproveOutcome,
-  type ApproveOutcomeFacts,
-  type ReviewMode,
-} from "./services/approveOutcome.js";
+import { policyGrantsAuto } from "./services/autonomyPolicyService.js";
+import { type LandingFacts, type LandingState } from "./services/landingState.js";
+import { type ApproveOutcome, type ApproveOutcomeFacts } from "./services/approveOutcome.js";
 import {
   PrincipalRepository,
   type PrincipalActorType,
   type PrincipalCapability,
   type PrincipalView,
 } from "./repositories/principalRepository.js";
-import {
-  hashPrincipalToken,
-  mintPrincipalToken,
-  PRINCIPAL_NAME_RE,
-  principalAccess,
-  principalActor,
-} from "./services/principalService.js";
-import {
-  type Access,
-  type AccessAction,
-  type ScopeTicket,
-  authorizeAccess,
-  describeDenial,
-  isScoped,
-  evaluateTicketScope,
-} from "./services/accessScope.js";
-export { BOARD_COLUMNS } from "./services/boardService.js";
-export type { BoardColumn } from "./services/boardService.js";
+import { type Access, type AccessAction, type ScopeTicket } from "./services/accessScope.js";
 import { SuggestionService, type RepoSuggestion } from "./services/suggestionService.js";
 import { TransitionService, type TransitionResult } from "./services/transitionService.js";
 import { buildNotifierFromEnv } from "./notify/config.js";
-import type { NotifyEvent, NotifyKind, Notifier } from "./notify/types.js";
+import type { Notifier } from "./notify/types.js";
 import { type Clock, systemClock } from "./util/clock.js";
-import { DispatchError, notFound } from "./util/errors.js";
 import { newId } from "./util/id.js";
-import { agreedRequirementsFromTurns } from "./util/planClarifications.js";
+import type { DispatchInternals } from "./services/dispatchInternals.js";
+import { type TesterLaneDecision, type TestingLaneMode } from "./util/testingLane.js";
+import type {
+  TicketDetailPart,
+  TicketDetailBatchItem,
+  TicketView,
+} from "./services/ticketReadService.js";
+import type { ReviewOpenResult } from "./services/ticketRecordsService.js";
+
+// The services whose functions hold the method bodies this facade delegates to.
+import * as gate from "./services/gateNotifications.js";
+import * as ticketGit from "./services/ticketGitService.js";
+import * as autonomyGate from "./services/autonomyGateService.js";
+import * as principalAdmin from "./services/principalAdminService.js";
+import * as landing from "./services/landingFactsService.js";
+import * as reviewLifecycle from "./services/reviewLifecycleService.js";
+import * as ticketLifecycle from "./services/ticketLifecycleService.js";
+import * as testerLane from "./services/testerLaneService.js";
+import * as ticketRecords from "./services/ticketRecordsService.js";
+import * as regressions from "./services/regressionService.js";
+import * as ticketLinks from "./services/ticketLinksService.js";
+import * as planning from "./services/planningService.js";
+import * as runRegistry from "./services/runRegistryService.js";
+import * as eventLog from "./services/eventLogService.js";
+import * as ticketReads from "./services/ticketReadService.js";
+
+export { BOARD_COLUMNS } from "./services/boardService.js";
+export type { BoardColumn } from "./services/boardService.js";
 
 /**
  * Default cap on how many times a delivery may be rejected back into the queue
@@ -314,118 +240,16 @@ export {
   testingLaneMode,
   testerOffNotice,
 } from "./util/testingLane.js";
-import {
-  testerLaneFor,
-  testerOffNotice,
-  testingLaneMode,
-  type TesterLaneDecision,
-  type TestingLaneMode,
-} from "./util/testingLane.js";
 
-/**
- * An evidence row enriched with derived provenance for the reviewer surface.
- * `recorded_by_agent` is TRUE iff the row's recording actor type was "agent"
- * (`recorded_by_actor_type === "agent"`) — i.e. evidence SELF-REPORTED by a
- * delivery agent, which the reviewer should weigh with more skepticism than
- * evidence recorded by a trusted principal (a human operator or the factory
- * system). Derived from the real recorded actor type — never fabricated; legacy
- * rows (null type) read as false, so no agent chip and no trust claim is asserted.
- */
-export interface EvidenceView extends Evidence {
-  recorded_by_agent: boolean;
-}
-
-/** The parts GET /tickets/details can return per ticket (the ticket row always comes). */
-export const TICKET_DETAIL_PARTS = [
-  "repositories",
-  "scopes",
-  "dependencies",
-  "rework_trail",
-  "events",
-  "evidence",
-] as const;
-export type TicketDetailPart = (typeof TICKET_DETAIL_PARTS)[number];
-
-/** One ticket of a {@link Dispatch.ticketDetailsBatch} read: the summary row + the asked parts. */
-export interface TicketDetailBatchItem {
-  ticket: TicketSummary;
-  repositories?: TicketRepoLink[];
-  scopes?: TicketScopeWithNode[];
-  dependencies?: TicketDependencyView[];
-  rework_trail?: ReturnType<ReworkAttemptRepository["listForTicket"]>;
-  events?: WorkEvent[];
-  evidence?: EvidenceView[];
-}
-
-/** One side of a regression link as the ticket view shows it. */
-export interface RegressionLinkView {
-  ticket_id: string;
-  number: number | null;
-  title: string;
-  status: string;
-  filed_by: { type: string; id: string | null };
-  filed_at: string;
-  note: string | null;
-}
-
-export interface TicketView {
-  ticket: Ticket;
-  acceptanceCriteria: AcceptanceCriterion[];
-  repositories: TicketRepoLink[];
-  /** Confirmed (primary/secondary/implicit_repo) + suggested scope links. */
-  scopes: TicketScopeWithNode[];
-  blockingDecisions: Decision[];
-  /**
-   * Decisions linked to this ticket that a human has RESOLVED (accepted/rejected),
-   * with the relation they were linked by. Carries `resolved_answer` — the answer
-   * the agent reads (via get_ticket's `resolved_decisions`).
-   */
-  resolvedDecisions: Array<Decision & { relation: string }>;
-  /**
-   * EP-001: tickets this one must wait for, each with the depended-on ticket's
-   * number/title/status and a `satisfied` flag (true once it's `done`). An
-   * unsatisfied dependency blocks this ticket from being claimed.
-   */
-  dependencies: TicketDependencyView[];
-  /** Recorded evidence rows (oldest first), so reviewers can judge inline. */
-  evidence: EvidenceView[];
-  events: WorkEvent[];
-  /**
-   * BBT-001: the parsed test_contract (or null). Surfaced as a structured object
-   * so CLI callers and the API never receive a JSON-in-JSON string.
-   */
-  testContract: TestContract | null;
-  /**
-   * FAILURE-DIAGNOSIS: the full ordered rework failure trail (attempt 1 → 2 → …),
-   * each with the distilled failing test + assertion/stack. Empty for a ticket that
-   * never bounced. Powers the ticket-detail "why did #N fail" history.
-   */
-  reworkTrail: ReworkAttempt[];
-  /**
-   * REVIEW COMMENTS (A1): the reviewer's comments on this ticket, oldest first, with the
-   * delivery agent's replies (claims). No git here: the anchor state is computed by
-   * {@link Dispatch.listReviewComments} with `anchors`. Outside the hashed dossier subject.
-   */
-  reviewComments: ReviewCommentView[];
-  /**
-   * PER-REPOSITORY LANDING: the approved commit of each write repo (its current review
-   * pin) and whether that commit has landed on the repo's default branch. A ticket is
-   * done only when every one has; `partial` marks a held, partly merged ticket.
-   */
-  landing: LandingStatus;
-  /**
-   * EVAL JUDGE: the delivery-quality judge's verdict on the current delivery (the latest
-   * `ticket.eval_judged` event since the ticket last entered review), or null when the
-   * judge is off (the runner default), failed, or graded only an earlier attempt.
-   * Advisory: no gate reads it.
-   */
-  evalJudgment: RecordedEvalJudgment | null;
-  /**
-   * ESCAPED DEFECTS (MF5): the accepted changes a person said this ticket regresses, and
-   * the later tickets a person linked to this one as its regressions. Current links only.
-   */
-  regression: { regression_of: RegressionLinkView[]; regressed_by: RegressionLinkView[] };
-}
+/** The ticket view, the batched details and their parts (see services/ticketReadService.ts). */
+export { TICKET_DETAIL_PARTS } from "./services/ticketReadService.js";
+export type {
+  EvidenceView,
+  TicketDetailBatchItem,
+  TicketDetailPart,
+  TicketView,
+} from "./services/ticketReadService.js";
+export type { RegressionLinkView } from "./services/regressionService.js";
 
 /**
  * The execution boundary for a ticket, partitioned by access (WG-002). Only
@@ -494,33 +318,14 @@ export type { CreateEpicResult } from "./services/epicsService.js";
 /** Result of adding a ticket dependency (EP-001). */
 export type { AddDependencyResult } from "./services/ticketService.js";
 
+/** What recording a review open did (see services/ticketRecordsService.ts). */
+export type { ReviewOpenResult } from "./services/ticketRecordsService.js";
+
 /**
  * Dispatch core API. The single entry point used by the CLI and MCP server.
  * Owns the DB handle, repositories and the transition service; validates input
  * with the Zod schemas before mutating.
  */
-/**
- * USAGE-WINDOW PAUSE as a landing fact: while the runner's pause file holds a pause no
- * tick runs, so the merge lane lands nothing until it ends (health/usagePause.ts reads
- * the file exactly as the runner does). Null when no pause is active.
- */
-function usagePauseFact(
-  env: NodeJS.ProcessEnv,
-): { until: string; kind: "usage_limit" | "rate_limit" } | null {
-  const p = readUsagePause(env);
-  return p.active ? { until: p.paused_until ?? "its end", kind: p.kind ?? "usage_limit" } : null;
-}
-
-/** What recording a review open did (recorded, or why not). */
-export interface ReviewOpenResult {
-  ticketId: string;
-  recorded: boolean;
-  /** Why nothing was written: not_in_review | no_review_round | stale_round | already_recorded. */
-  reason: string | null;
-  eventId: string | null;
-  roundEnteredAt: string | null;
-}
-
 export class Dispatch {
   readonly db: Db;
   readonly tickets: TicketRepository;
@@ -569,20 +374,8 @@ export class Dispatch {
   readonly humanQueueSvc: HumanQueueService;
   /** SQUAD: club identity + agent display names / shirt numbers (presentation only). */
   readonly squadSvc: SquadService;
-  /**
-   * Git runner used to compute diff-in-review. Injectable so tests can drive the
-   * diff endpoint without a real repo on disk; defaults to the real `git` spawn.
-   */
-  private readonly gitRunner: GitRunner | undefined;
-  /** CHANGE IMPACT: the code index (memory CLI), or null when Memory is not configured. */
-  private readonly codeIndex: CodeIndexReader | null;
-  /**
-   * The callers row each ticket's last impact read produced: recorded on the
-   * next `ticket.review_opened` so Health can count the reviews that saw callers. A read
-   * measurement only (never gating); in-process, so a restart forgets it (the event then
-   * records null, "not known").
-   */
-  private readonly lastCallersRow = new Map<string, { status: string; round: string | null }>();
+  /** The private state the core services read (see services/dispatchInternals.ts). */
+  private readonly internals: DispatchInternals;
 
   /**
    * Retry cap (P1): a delivery rejected back into the queue this many times is
@@ -598,23 +391,7 @@ export class Dispatch {
   }
   private readonly maxAttemptsOverride: number | undefined;
 
-  /**
-   * BBT-001: per-instance override for the `GAFFER_TESTING` toggle. `undefined`
-   * (the default) means "read the env via {@link isTestingEnabled}"; a boolean
-   * pins it for tests so the testing lane can be exercised without touching the
-   * process env.
-   */
-  private readonly testingEnabledOverride: boolean | undefined;
   private readonly requireRegisteredAgentApprover: boolean;
-
-  /**
-   * H2 human-gate notifier — the opt-in seam that pings the operator when a
-   * ticket needs them (enters `in_review`, is parked/`blocked`, or a decision
-   * becomes pending). Injectable via the constructor option so tests can pass a
-   * fake; defaults to the env-built notifier (a no-op when nothing is
-   * configured). Every emit is best-effort and non-blocking — see {@link emitGate}.
-   */
-  private readonly notifier: Notifier;
 
   constructor(
     db: Db,
@@ -640,12 +417,15 @@ export class Dispatch {
     } = {},
   ) {
     this.db = db;
-    this.codeIndex = options.codeIndex === undefined ? resolveCodeIndexReader() : options.codeIndex;
-    this.gitRunner = gitRunner;
+    this.internals = {
+      codeIndex: options.codeIndex === undefined ? resolveCodeIndexReader() : options.codeIndex,
+      gitRunner,
+      lastCallersRow: new Map(),
+      testingEnabledOverride: options.testingEnabled,
+      notifier: options.notifier ?? buildNotifierFromEnv(),
+    };
     this.maxAttemptsOverride = options.maxAttempts;
-    this.testingEnabledOverride = options.testingEnabled;
     this.requireRegisteredAgentApprover = options.requireRegisteredAgentApprover ?? false;
-    this.notifier = options.notifier ?? buildNotifierFromEnv();
     this.tickets = new TicketRepository(db);
     this.acs = new AcRepository(db);
     this.repos = new RepoRepository(db);
@@ -698,8 +478,8 @@ export class Dispatch {
       db,
       clock: this.clock,
       decisions: this.decisions,
-      notifier: this.notifier,
-      onDecisionCreated: (d) => this.emitDecisionGate(d),
+      notifier: this.internals.notifier,
+      onDecisionCreated: (d) => gate.emitDecisionGate(this, this.internals, d),
     });
     this.ticketSvc = new TicketService({
       db,
@@ -776,7 +556,7 @@ export class Dispatch {
       acs: this.acs,
       evidence: this.evidence,
       reworkAttempts: this.reworkAttempts,
-      maxAttempts: this.maxAttempts,
+      maxAttempts: () => this.maxAttempts,
       // Mirrors approveReview's routing: an acceptance ticket always goes through the
       // tester; a testable one does when the testing lane is on.
       testerExpected: (t) => this.reviewGateSvc.laneApplies(t),
@@ -785,7 +565,7 @@ export class Dispatch {
       // SAME CANDIDATE: the runner's gated commit per repo, and each write repo's head as
       // the approval reads it (role order), so the packet compares the commit Approve binds.
       repoDeliveries: this.repoDeliveries,
-      writeRepoHeads: (t) => this.orderedWriteRepoHeads(t),
+      writeRepoHeads: (t) => ticketGit.orderedWriteRepoHeads(this, t),
     });
     this.reviewGateSvc = new ReviewGateService({
       db,
@@ -803,28 +583,30 @@ export class Dispatch {
       agents: this.agents,
       requireRegisteredAgentApprover: this.requireRegisteredAgentApprover,
       onTicketParked: (ticket, detail) => {
-        this.emitGate("ticket_parked", ticket, { status: "blocked", detail });
+        gate.emitGate(this, this.internals, "ticket_parked", ticket, { status: "blocked", detail });
       },
       // GRADUATED-AUTONOMY (Spec 2, Phase 1): resolve delivery-vs-merge SHAs so the
       // approve path can emit `approved_unchanged`. Pure read; degrades to unknown.
-      approvalShaResolver: (ticket) => this.resolveApprovalShas(ticket),
+      approvalShaResolver: (ticket) => ticketGit.resolveApprovalShas(this, this.internals, ticket),
       // REVIEW PIN for a HUMAN approval: the commit the human approved (the primary write
       // repo's delivery-branch head at approve time), recorded as system evidence so every
       // landing path holds a branch that moved past it. Pure read; null when unknown.
-      reviewedHeadsResolver: (ticket) => this.resolveApprovedHeads(ticket),
+      reviewedHeadsResolver: (ticket) => ticketGit.resolveApprovedHeads(this, ticket),
       // APPROVAL COVERS EVERY WRITE REPO: the write repos whose head cannot be read now.
       unavailableWriteReposResolver: (ticket) => this.writeRepoHeads(ticket).unavailable,
       // PER-REPOSITORY LANDING: git ancestry as positive evidence of a landing.
-      landedOnDefaultResolver: (repoId, sha) => this.commitOnDefaultBranch(repoId, sha),
+      landedOnDefaultResolver: (repoId, sha) =>
+        ticketGit.commitOnDefaultBranch(this, this.internals, repoId, sha),
       // PR LANDINGS: the approved change carried by the default branch (or its remote copy).
-      changeOnRefsResolver: (repoId, sha, refs) => this.changeOnRefs(repoId, sha, refs),
+      changeOnRefsResolver: (repoId, sha, refs) =>
+        ticketGit.changeOnRefs(this, this.internals, repoId, sha, refs),
       // GRADUATED-AUTONOMY (Spec 2, Phase 3): the pure-policy predicate the P0 gate
       // ORs with the env flag — true iff a mode='auto' approve policy covers every
       // write repo at this ticket's risk. NO env read here (that stays in the gate).
       policyAllowsAgentApprove: (ticket) =>
         policyGrantsAuto(
           this.autonomyPolicy,
-          this.writeRepoIdsForTicket(ticket),
+          ticketGit.writeRepoIdsForTicket(this, ticket),
           ticket.risk_level,
           "approve",
         ),
@@ -841,7 +623,7 @@ export class Dispatch {
     this.reviewCommentSvc = new ReviewCommentService({
       db,
       clock: this.clock,
-      runGit: this.gitRunner ?? defaultGitRunner,
+      runGit: this.internals.gitRunner ?? defaultGitRunner,
       resolveTicket: (ref) => this.resolveTicket(ref),
       repoContexts: (ticket) => this.commentRepoContexts(ticket),
     });
@@ -858,7 +640,7 @@ export class Dispatch {
       // A pause is a needs-human-review checkpoint — route it through the same
       // ticket_parked gate as the retry-cap park so the existing sinks fire.
       onTicketPaused: (ticket, detail) => {
-        this.emitGate("ticket_parked", ticket, { status: "paused", detail });
+        gate.emitGate(this, this.internals, "ticket_parked", ticket, { status: "paused", detail });
       },
     });
     this.humanQueueSvc = new HumanQueueService({
@@ -895,372 +677,44 @@ export class Dispatch {
     return new Dispatch(openDatabase(path), clock, gitRunner, options);
   }
 
-  /**
-   * Diff-in-review: the real `git diff <default-branch>...<delivery-branch>` for
-   * each WRITE repo on the ticket, so a reviewer reads the change inline before
-   * approving (and re-reads the resolved diff after a reopen-for-review). Pure
-   * read; every failure mode (no branch, repo not on disk, empty, git error) is
-   * reported per-repo rather than thrown. See {@link computeTicketDiff}.
-   */
-  /**
-   * GATE INTEGRITY: the latest DoD checklist the runner recorded on a ticket (a
-   * `test_output` evidence row whose summary starts `DoD: `), ignoring rows an agent
-   * recorded (an agent cannot mask the runner's FLAG with a cleaner checklist).
-   * Null when there is none. Pure read.
-   */
   latestDodSummary(ticketId: string): string | null {
-    const row = this.db
-      .prepare(
-        `SELECT summary FROM evidence
-          WHERE ticket_id = ? AND evidence_type = 'test_output' AND summary LIKE 'DoD: %'
-            AND (recorded_by_actor_type IS NULL OR recorded_by_actor_type <> 'agent')
-          ORDER BY created_at DESC, rowid DESC LIMIT 1`,
-      )
-      .get(ticketId) as { summary: string } | undefined;
-    return row?.summary ?? null;
+    return ticketGit.latestDodSummary(this, ticketId);
   }
 
-  /**
-   * OBSERVED RISK of a delivery as the auto-ship gate reads it (enforceObservedRiskCeiling):
-   * the real diff's risk annotations, plus — unless a human allowed test changes on the
-   * ticket — the runner's integrity FLAG from the latest trusted DoD record. Its `holds`
-   * are the GATE INTEGRITY hard holds: an agent or auto approval is refused while any is
-   * present; a human approval is not. `repos` reuses a diff already read.
-   */
   observedRiskFor(ticket: Ticket, repos?: readonly RepoDiff[]): ObservedRisk {
-    const observed = observedRisk(repos ?? this.ticketDiff(ticket.id).repos);
-    if (ticket.allow_test_changes === 1) return observed;
-    return withRunnerIntegrityHolds(
-      observed,
-      runnerIntegrityHolds(this.latestDodSummary(ticket.id)),
-    );
+    return ticketGit.observedRiskFor(this, ticket, repos);
   }
 
-  ticketDiff(ref: string, opts: TicketDiffOptions = {}): TicketDiff {
-    const ticket = this.resolveTicket(ref);
-    const diff = computeTicketDiff(
-      {
-        repos: this.repos,
-        tickets: this.tickets,
-        repoDeliveries: this.repoDeliveries,
-        ...(this.gitRunner ? { runGit: this.gitRunner } : {}),
-        downstreamRepos: (repoId) => this.downstreamRepos(repoId),
-        codeIndex: this.codeIndex,
-      },
-      ticket.id,
-      opts,
-    );
-    if (opts.impact) this.noteCallersRow(ticket.id, diff);
-    return diff;
+  ticketDiff(ref: string, opts?: TicketDiffOptions): TicketDiff {
+    return ticketGit.ticketDiff(this, this.internals, ref, opts);
   }
 
-  /**
-   * The callers row a review saw: `listed` when any repo listed callers, else
-   * `none_changed` when every analysed repo had none to list, else `not_analysed`.
-   */
-  private noteCallersRow(ticketId: string, diff: TicketDiff): void {
-    const rows = diff.repos.map((r) => r.impact?.callers?.status).filter((s) => s !== undefined);
-    if (rows.length === 0) return;
-    const status = rows.includes("listed")
-      ? "listed"
-      : rows.every((s) => s === "none_changed")
-        ? "none_changed"
-        : "not_analysed";
-    if (this.lastCallersRow.size > 500) this.lastCallersRow.clear();
-    // Keyed to the review round it was computed in: a later round (a new head after a
-    // send-back) must not record the previous round's row.
-    const t = this.resolveTicket(ticketId);
-    const round =
-      t.status === "in_review"
-        ? (this.events.enteredStatusAt(ticketId, "in_review")?.at ?? null)
-        : null;
-    this.lastCallersRow.set(ticketId, { status, round });
-  }
-
-  /**
-   * CHANGE IMPACT: the repos whose scope `depends_on` a scope this repo owns or is part of
-   * (scope_edges + scope_repos). A repo that merely uses or reads a scope is not that
-   * scope, so only owning/containing/shared/deployed/write-target links count. Pure read.
-   */
   downstreamRepos(repoId: string): Array<{ repo: string; via: string }> {
-    const IS_SCOPE = "('owns','contains','shared_by','deployed_with','write_target')";
-    const rows = this.db
-      .prepare(
-        `SELECT DISTINCT r.name AS repo, dep.name AS dep_name, mine.name AS mine_name
-           FROM scope_repos sr
-           JOIN scope_nodes mine ON mine.id = sr.scope_node_id
-           JOIN scope_edges e ON e.to_node_id = sr.scope_node_id AND e.relation = 'depends_on'
-           JOIN scope_nodes dep ON dep.id = e.from_node_id
-           JOIN scope_repos sd ON sd.scope_node_id = e.from_node_id AND sd.relation IN ${IS_SCOPE}
-           JOIN repositories r ON r.id = sd.repo_id
-          WHERE sr.repo_id = ? AND sr.relation IN ${IS_SCOPE} AND sd.repo_id <> ?
-          ORDER BY r.name LIMIT 20`,
-      )
-      .all(repoId, repoId) as Array<{ repo: string; dep_name: string; mine_name: string }>;
-    return rows.map((r) => ({ repo: r.repo, via: `${r.dep_name} depends_on ${r.mine_name}` }));
+    return ticketGit.downstreamRepos(this, repoId);
   }
 
-  /**
-   * GRADUATED-AUTONOMY (Spec 2, Phase 1): resolve the delivery-vs-merge SHAs for a
-   * ticket's WRITE repos so {@link ReviewGateService.approveReview} can emit an honest
-   * `approved_unchanged` signal. The delivery SHA is the recorded per-repo
-   * `commit_sha`; the merge SHA is the current head of the delivery branch
-   * (`git rev-parse <branch>`). Returns a representative pair the pure
-   * {@link approvalUnchanged} helper maps to unchanged/edited/unknown:
-   *   - any write repo edited (both SHAs known and differing) → an unequal pair;
-   *   - else every write repo known-and-unchanged → an equal pair;
-   *   - any repo indeterminate (no delivery SHA / branch / on-disk repo / git error)
-   *     → a null pair (unknown — never overstate agreement).
-   * Pure read; a missing git runner or no write repos yields `null` (unknown).
-   */
-  private resolveApprovalShas(ticket: Ticket): ApprovalShas | null {
-    // Fall back to a real `git` spawn when no runner was injected — EVERY production
-    // entrypoint (api/bin, cli, mcp/server) opens Dispatch without one, so gating this on
-    // an injected runner made `approved_unchanged` ALWAYS null in prod (the merge half of
-    // graduated autonomy could never fire). Mirrors computeTicketDiff's defaultGitRunner
-    // fallback. Indeterminate repos still yield an unknown pair below (never overstate).
-    const runGit = this.gitRunner ?? defaultGitRunner;
-    const links = this.repos.accessLinksForTicket(ticket.id);
-    const writeRepos = links.filter(
-      (l) => isActiveTicketRepoRelation(l.relation) && l.access === "write",
-    );
-    if (writeRepos.length === 0) return null;
-
-    const pairs: ApprovalShas[] = writeRepos.map((repo) => {
-      const delivery = this.repoDeliveries.find(ticket.id, repo.id);
-      const deliverySha = delivery?.commit_sha ?? null;
-      const branch =
-        delivery?.branch_name ??
-        this.repos.ticketRepoBranch(ticket.id, repo.id) ??
-        ticket.branch_name;
-      if (!deliverySha || !branch || !repo.local_path || !existsSync(repo.local_path)) {
-        return { deliverySha, mergeSha: null };
-      }
-      const res = runGit(repo.local_path, ["rev-parse", branch]);
-      const mergeSha = res.status === 0 ? res.stdout.trim() || null : null;
-      return { deliverySha, mergeSha };
-    });
-
-    const known = (p: ApprovalShas): boolean => p.deliverySha !== null && p.mergeSha !== null;
-    const edited = pairs.find((p) => known(p) && p.deliverySha !== p.mergeSha);
-    if (edited) return edited; // a real edited pair → helper returns false.
-    if (pairs.some((p) => !known(p))) return { deliverySha: null, mergeSha: null }; // unknown.
-    return pairs[0] ?? null; // all known-and-equal → an unchanged pair.
-  }
-
-  /**
-   * REVIEW PIN: the current delivery-branch head of EVERY active write repo on the ticket
-   * (the same repos, branch resolution and `rev-parse` the review diff uses — see
-   * diffService.resolveBranchHead — so the commit the Review view showed and the commit
-   * compared here are resolved one way). A repo that is not on disk or whose branch does
-   * not resolve yields no entry (nothing to compare, pin or land). Pure read.
-   */
-  private resolveApprovedHeads(ticket: Ticket): ReviewedHead[] {
-    return this.writeRepoHeads(ticket).heads;
-  }
-
-  /**
-   * Every ACTIVE write repo's delivery head, and the write repos whose head cannot be read
-   * now (no checkout on this machine, an unreadable path, no delivery branch, a branch git
-   * cannot find). The approval pins the heads and is refused while any repo is unavailable
-   * (an approval covers every write repo); the Review button's outcome reads the same list.
-   */
   writeRepoHeads(ticket: Ticket): { heads: ReviewedHead[]; unavailable: UnavailableWriteRepo[] } {
-    const runGit = this.gitRunner ?? defaultGitRunner;
-    const heads: ReviewedHead[] = [];
-    const unavailable: UnavailableWriteRepo[] = [];
-    for (const repo of this.repos.accessLinksForTicket(ticket.id)) {
-      if (!isActiveTicketRepoRelation(repo.relation) || repo.access !== "write") continue;
-      const miss = (kind: NonNullable<UnavailableWriteRepo["kind"]>, why: string) =>
-        unavailable.push({ repoId: repo.id, repo: repo.name, why, kind });
-      if (!repo.local_path) {
-        miss("no_checkout", "it has no checkout on this machine");
-        continue;
-      }
-      if (!existsSync(repo.local_path)) {
-        miss("unreadable_checkout", `its checkout ${repo.local_path} cannot be read`);
-        continue;
-      }
-      const branch =
-        this.repos.ticketRepoBranch(ticket.id, repo.id) ??
-        this.repoDeliveries.find(ticket.id, repo.id)?.branch_name ??
-        ticket.branch_name;
-      if (!branch || branch.trim() === "") {
-        miss("no_branch", "it has no delivery branch");
-        continue;
-      }
-      const sha = resolveBranchHead(runGit, repo.local_path, branch);
-      if (sha) heads.push({ repoId: repo.id, repo: repo.name, branch, sha });
-      else miss("branch_missing", `its delivery branch ${branch} cannot be resolved`);
-    }
-    return { heads, unavailable };
+    return ticketGit.writeRepoHeads(this, this.internals, ticket);
   }
 
-  /**
-   * REVIEW COMMENTS: every ACTIVE write repo with a checkout and a delivery branch, with
-   * its head now (null when the branch does not resolve). The comments anchor to these;
-   * the since-your-review interdiff and the anchor states read them. Pure read.
-   */
   commentRepoContexts(ticket: Ticket): CommentRepoContext[] {
-    const runGit = this.gitRunner ?? defaultGitRunner;
-    const out: CommentRepoContext[] = [];
-    for (const repo of this.repos.accessLinksForTicket(ticket.id)) {
-      if (!isActiveTicketRepoRelation(repo.relation) || repo.access !== "write") continue;
-      if (!repo.local_path || !existsSync(repo.local_path)) continue;
-      const branch =
-        this.repos.ticketRepoBranch(ticket.id, repo.id) ??
-        this.repoDeliveries.find(ticket.id, repo.id)?.branch_name ??
-        ticket.branch_name;
-      if (!branch || branch.trim() === "") continue;
-      out.push({
-        repoId: repo.id,
-        repo: repo.name,
-        localPath: repo.local_path,
-        baseBranch: repo.default_branch || "main",
-        branch,
-        head: resolveBranchHead(runGit, repo.local_path, branch),
-      });
-    }
-    return out;
+    return ticketGit.commentRepoContexts(this, this.internals, ticket);
   }
 
-  /**
-   * {@link writeRepoHeads} as one list in the ticket's write-repo order (primary first):
-   * a resolved head carries its sha, an unreadable one says why. The review packet's
-   * same-candidate check reads it.
-   */
-  private orderedWriteRepoHeads(
-    ticket: Ticket,
-  ): Array<{ repoId: string; repo: string; sha: string | null; why: string | null }> {
-    const { heads, unavailable } = this.writeRepoHeads(ticket);
-    const out: Array<{ repoId: string; repo: string; sha: string | null; why: string | null }> = [];
-    for (const repo of this.repos.accessLinksForTicket(ticket.id)) {
-      if (!isActiveTicketRepoRelation(repo.relation) || repo.access !== "write") continue;
-      const h = heads.find((x) => x.repoId === repo.id);
-      const u = unavailable.find((x) => x.repoId === repo.id);
-      if (h) out.push({ repoId: h.repoId, repo: h.repo, sha: h.sha, why: null });
-      else if (u) out.push({ repoId: u.repoId, repo: u.repo, sha: null, why: u.why });
-    }
-    return out;
-  }
-
-  /**
-   * LIVE HEAD CHECK (A3): the delivery head of every write repo, and the ones that cannot
-   * be read, from `resolveBranchHead` alone (no diff), so the Review view can poll it.
-   */
   ticketHeads(ref: string): {
     ticketId: string;
     heads: Array<{ repo: string; repo_id: string; sha: string }>;
     unavailable: Array<{ repo: string; repo_id: string; why: string }>;
   } {
-    const ticket = this.resolveTicket(ref);
-    const { heads, unavailable } = this.writeRepoHeads(ticket);
-    return {
-      ticketId: ticket.id,
-      heads: heads.map((h) => ({ repo: h.repo, repo_id: h.repoId, sha: h.sha })),
-      unavailable: unavailable.map((u) => ({ repo: u.repo, repo_id: u.repoId, why: u.why })),
-    };
+    return ticketGit.ticketHeads(this, ref);
   }
 
-  /** SINCE YOUR REVIEW (A3): the interdiff from a person's latest reject pin per write repo. */
   ticketDiffSince(ref: string): SinceDiff {
-    const ticket = this.resolveTicket(ref);
-    return computeSinceDiff(
-      this.db,
-      this.gitRunner ?? defaultGitRunner,
-      ticket.id,
-      this.commentRepoContexts(ticket),
-    );
-  }
-
-  /** True when `sha` is contained in the repo's default branch (a verified landing). */
-  private commitOnDefaultBranch(repoId: string, sha: string): boolean {
-    const repo = this.repos.findById(repoId);
-    if (!repo || !repo.local_path || !existsSync(repo.local_path)) return false;
-    const runGit = this.gitRunner ?? defaultGitRunner;
-    const res = runGit(repo.local_path, [
-      "merge-base",
-      "--is-ancestor",
-      sha,
-      `refs/heads/${repo.default_branch || "main"}`,
-    ]);
-    return res.status === 0;
-  }
-
-  /**
-   * PR LANDINGS (exploratory finding cli-wg/F-01): does any of `refs` carry the change of
-   * `sha`? "default" is the local default branch, "remote-default" every remote-tracking
-   * ref of it. A ref carries it when `sha` is its ancestor (a merge commit) or when merging
-   * `sha` into it changes nothing (`git merge-tree --write-tree` gives the ref's own tree:
-   * a squash or rebase merge of that change already applied). → null when none of the
-   * refs exists here (or the checkout is missing), else true/false.
-   */
-  private changeOnRefs(
-    repoId: string,
-    sha: string,
-    refs: ReadonlyArray<"default" | "remote-default">,
-  ): boolean | null {
-    const repo = this.repos.findById(repoId);
-    if (!repo || !repo.local_path || !existsSync(repo.local_path)) return null;
-    const cwd = repo.local_path;
-    const runGit = this.gitRunner ?? defaultGitRunner;
-    const def = repo.default_branch || "main";
-    const names: string[] = [];
-    for (const r of refs) {
-      if (r === "default") names.push(`refs/heads/${def}`);
-      else {
-        const listed = runGit(cwd, ["for-each-ref", "--format=%(refname)", "refs/remotes/"]);
-        if (listed.status === 0)
-          for (const line of listed.stdout.split("\n")) {
-            const name = line.trim();
-            if (name.endsWith(`/${def}`) && name.split("/").length === 4) names.push(name);
-          }
-      }
-    }
-    let anyRef = false;
-    for (const ref of names) {
-      const tip = runGit(cwd, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
-      if (tip.status !== 0 || tip.stdout.trim() === "") continue;
-      anyRef = true;
-      if (runGit(cwd, ["merge-base", "--is-ancestor", sha, ref]).status === 0) return true;
-      const tree = runGit(cwd, ["rev-parse", "--verify", "--quiet", `${ref}^{tree}`]);
-      const merged = runGit(cwd, ["merge-tree", "--write-tree", ref, sha]);
-      if (
-        tree.status === 0 &&
-        merged.status === 0 &&
-        merged.stdout.split("\n")[0]?.trim() === tree.stdout.trim()
-      )
-        return true;
-    }
-    return anyRef ? false : null;
+    return ticketGit.ticketDiffSince(this, this.internals, ref);
   }
 
   // --- Graduated Autonomy policy (Spec 2, Phase 3) -------------------------
 
-  /**
-   * The repo ids a ticket actually WRITES to (active relation + write access) — the
-   * set the autonomy policy must cover for an auto grant. Mirrors the write-repo
-   * filter used by {@link resolveApprovalShas}. A ticket with no write repo yields an
-   * empty set, which the enforcement treats as "never auto" (fail-closed).
-   */
-  private writeRepoIdsForTicket(ticket: Ticket): string[] {
-    return this.repos
-      .accessLinksForTicket(ticket.id)
-      .filter((l) => isActiveTicketRepoRelation(l.relation) && l.access === "write")
-      .map((l) => l.id);
-  }
-
-  /**
-   * GRADUATED-AUTONOMY (Spec 2, Phase 3): the READ-ONLY ship-decision surface the AFK
-   * runner consults per ticket instead of the raw AUTO_MERGE/MERGE_ON_AGENT_REVIEW flags
-   * (`wg ticket auto-decision <N> --gate approve|merge`). Pure — reuses the SAME
-   * {@link isAutonomyAllowed} the approve/merge chokepoints use (env floor OR an `auto`
-   * policy covering this ticket's risk × EVERY write repo), so the runner adds NO policy
-   * logic and can never diverge from the enforced decision. No mutation, no side effects.
-   * FAIL-CLOSED by construction: an empty write-repo set ⇒ deny; any uncovered write repo
-   * ⇒ deny; risk/gate match exactly. Returns the decision plus the (repo, risk) context it
-   * was computed over so the runner can log WHY a ticket held.
-   */
   autonomyGateDecision(
     ticket: Ticket,
     gate: AutonomyPolicyGate,
@@ -1270,14 +724,7 @@ export class Dispatch {
     risk_level: string;
     write_repo_ids: string[];
   } {
-    const writeRepoIds = this.writeRepoIdsForTicket(ticket);
-    const allowed = isAutonomyAllowed(this.autonomyPolicy, writeRepoIds, ticket.risk_level, gate);
-    return {
-      gate,
-      decision: allowed ? "allow" : "deny",
-      risk_level: ticket.risk_level,
-      write_repo_ids: writeRepoIds,
-    };
+    return autonomyGate.autonomyGateDecision(this, ticket, gate);
   }
 
   /** Every stored autonomy policy joined to its repo name (Settings surface). */
@@ -1285,15 +732,6 @@ export class Dispatch {
     return this.autonomyPolicy.list();
   }
 
-  /**
-   * GRADUATED-AUTONOMY (Spec 2, Phase 3): enable/disable an autonomy policy for
-   * (repo × risk × gate). Enabling (mode !== 'off') is the trust-boundary action and
-   * requires an EXPLICIT confirm (LOCKED posture: the operator confirms with the
-   * evidence shown) — on enable we SNAPSHOT the current recommendation evidence into
-   * `evidence_json` so there is an audit trail of WHY auto was granted. Reversible:
-   * mode='off' clears the enablement (and re-gates via the env fallback). Idempotent
-   * upsert keyed on (repo, risk, gate).
-   */
   setAutonomyPolicy(
     input: {
       repoId: string;
@@ -1304,59 +742,11 @@ export class Dispatch {
     },
     actor: Actor,
   ): AutonomyPolicyRow {
-    const repo = this.repos.findById(input.repoId);
-    if (!repo) throw notFound("repository", input.repoId);
-    // Trust boundary: enabling any non-off mode demands an explicit confirmation that
-    // the operator saw the evidence. Disabling (off) is always allowed (fail-safe).
-    if (input.mode !== "off" && input.confirm !== true) {
-      throw new DispatchError(
-        "VALIDATION_ERROR",
-        "Enabling an autonomy policy requires an explicit confirmation (confirm: true) that the evidence was reviewed.",
-        { gate: input.gate, mode: input.mode },
-      );
-    }
-    const now = this.clock.now();
-    const actorRef = actor.id ?? actor.type;
-    const enabling = input.mode !== "off";
-    // Snapshot the recommendation evidence shown at enable time (audit trail). The
-    // recommendation service only speaks to approve/merge; a memory gate (or a repo
-    // with no live recommendation) snapshots a null recommendation, which is honest.
-    let evidenceJson: string | null = null;
-    if (enabling) {
-      const rec =
-        this.autonomyRecommendationsList().find(
-          (r) =>
-            r.repoId === input.repoId &&
-            r.riskLevel === input.riskLevel &&
-            r.gate === (input.gate as typeof r.gate),
-        ) ?? null;
-      evidenceJson = JSON.stringify({
-        snapshot_at: now,
-        confirmed_by: actorRef,
-        recommendation: rec,
-      });
-    }
-    return this.autonomyPolicy.upsert({
-      id: newId(),
-      repoId: input.repoId,
-      riskLevel: input.riskLevel,
-      gate: input.gate,
-      mode: input.mode,
-      enabledBy: enabling ? actorRef : null,
-      enabledAt: enabling ? now : null,
-      evidenceJson,
-      now,
-    });
+    return autonomyGate.setAutonomyPolicy(this, input, actor);
   }
 
   // --- Per-principal API credentials -----------------------------------------
 
-  /**
-   * Mint a named bearer credential bound to an actor identity and a capability.
-   * Returns the token ONCE (it is never stored — only its SHA-256). The creating
-   * actor and the new principal's identity are recorded as a `principal.created`
-   * event so the credential's provenance is in the tamper-evident log.
-   */
   createPrincipal(
     input: {
       name: string;
@@ -1370,91 +760,7 @@ export class Dispatch {
     },
     actor: Actor,
   ): { principal: PrincipalView; token: string } {
-    const name = String(input.name ?? "").trim();
-    if (!PRINCIPAL_NAME_RE.test(name)) {
-      throw new DispatchError(
-        "VALIDATION_ERROR",
-        "Principal name must be 1–64 characters: letters, digits, '.', '_', '@' or '-', starting with a letter or digit.",
-        { name },
-      );
-    }
-    if (this.principals.getByName(name)) {
-      throw new DispatchError("DUPLICATE", `A principal named '${name}' already exists.`, { name });
-    }
-    const capability = input.capability ?? "full";
-    const actorType = input.actorType ?? "human";
-    const actorId = String(input.actorId ?? name).trim() || name;
-    // IDENTITY COLLISION (exploratory finding api/F8): a principal (human or admin) may not
-    // speak as a registered agent's id. One recorded "human/<agent id>" approval on that agent's
-    // own delivery, and the dashboard showed the delivering agent as its own approver.
-    // Case-insensitively: an agent id in capitals is the same id to a reader.
-    const agentWithId = this.db
-      .prepare("SELECT id FROM agents WHERE lower(id) = lower(?) LIMIT 1")
-      .get(actorId) as { id: string } | undefined;
-    if (agentWithId) {
-      throw new DispatchError(
-        "DUPLICATE",
-        `actor_id '${actorId}' is a registered agent's id; a ${actorType} principal needs its own identity (pick another actor_id). Nothing was created.`,
-        { reason: "actor_id_is_agent", actor_id: actorId, actor_type: actorType },
-      );
-    }
-    // PRINCIPAL SCOPES: resolve every repo and ticket now (an unknown one is a 404
-    // and nothing is created); the row stores ids, so a rename keeps the grant.
-    const scopeRepos =
-      input.repos && input.repos.length > 0
-        ? [
-            ...new Map(
-              input.repos.map((ref) => {
-                const r = this.repos.findByName(ref) ?? this.repos.findById(ref);
-                if (!r) throw notFound("repository", ref);
-                return [r.id, r] as const;
-              }),
-            ).values(),
-          ]
-        : undefined;
-    const scopeTickets =
-      input.tickets && input.tickets.length > 0
-        ? [
-            ...new Map(
-              input.tickets.map((ref) => {
-                const t = this.resolveTicket(String(ref));
-                return [t.id, t] as const;
-              }),
-            ).values(),
-          ]
-        : undefined;
-    const token = mintPrincipalToken();
-    const now = this.clock.now();
-    const principal = inTransaction(this.db, () => {
-      const row = this.principals.insert({
-        id: newId(),
-        name,
-        tokenHash: hashPrincipalToken(token),
-        capability,
-        actorType,
-        actorId,
-        createdBy: actor.id ?? actor.type,
-        now,
-        scopeRepos: scopeRepos?.map((r) => r.id),
-        scopeTickets: scopeTickets?.map((t) => t.id),
-      });
-      writeEvent(this.db, {
-        entity_type: "principal",
-        entity_id: row.id,
-        actor,
-        event_type: "principal.created",
-        payload: {
-          name,
-          capability,
-          actor_type: actorType,
-          actor_id: actorId,
-          ...(scopeRepos ? { scope_repos: scopeRepos.map((r) => r.name) } : {}),
-          ...(scopeTickets ? { scope_tickets: scopeTickets.map((t) => t.number) } : {}),
-        },
-      });
-      return row;
-    });
-    return { principal, token };
+    return principalAdmin.createPrincipal(this, input, actor);
   }
 
   /** Every principal, newest first, revoked ones included (never the hash). */
@@ -1462,161 +768,32 @@ export class Dispatch {
     return this.principals.list();
   }
 
-  /** One principal by id or name (revoked ones included). Throws NOT_FOUND. */
   getPrincipal(ref: string): PrincipalView {
-    const row = this.principals.get(ref) ?? this.principals.getByName(ref);
-    if (!row) throw notFound("principal", ref);
-    return row;
+    return principalAdmin.getPrincipal(this, ref);
   }
 
-  /** Revoke by id or name. Idempotent on an already-revoked principal (NO_OP). */
   revokePrincipal(ref: string, actor: Actor): PrincipalView {
-    const row = this.principals.get(ref) ?? this.principals.getByName(ref);
-    if (!row) throw notFound("principal", ref);
-    if (row.revoked_at) {
-      throw new DispatchError("NO_OP", `Principal '${row.name}' is already revoked.`, {
-        id: row.id,
-      });
-    }
-    const now = this.clock.now();
-    return inTransaction(this.db, () => {
-      this.principals.revoke(row.id, now);
-      writeEvent(this.db, {
-        entity_type: "principal",
-        entity_id: row.id,
-        actor,
-        event_type: "principal.revoked",
-        payload: { name: row.name },
-      });
-      const after = this.principals.get(row.id);
-      if (!after) throw notFound("principal", ref);
-      return after;
-    });
+    return principalAdmin.revokePrincipal(this, ref, actor);
   }
 
-  /**
-   * PRINCIPAL SCOPES: a ticket as the scope evaluation sees it. Its repos are its
-   * confirmed WRITE repos (what a delivery changes); a ticket with none is judged on
-   * every repo linked to it (rejected suggestions aside), and one with no repo at all
-   * is reachable only through a ticket scope.
-   */
   scopeTicket(ref: string): ScopeTicket {
-    const ticket = this.resolveTicket(ref);
-    return this.scopeTicketFor(ticket.id, ticket.number);
+    return principalAdmin.scopeTicket(this, ref);
   }
 
-  private scopeTicketFor(id: string, number: number | null): ScopeTicket {
-    const links = this.repos.listForTicket(id);
-    const writes = links.filter(
-      (l) =>
-        l.access === "write" &&
-        ["confirmed", "implicit_single_repo"].includes(String(l.relation ?? "")),
-    );
-    const linked = links.filter((l) => String(l.relation ?? "") !== "rejected");
-    return { id, number, repos: (writes.length > 0 ? writes : linked).map((l) => l.id) };
-  }
-
-  /**
-   * The ticket filter for a scoped principal: true for every ticket it may see (the
-   * read rule is the write rule). Null when the principal is unscoped, so a caller
-   * can skip filtering altogether.
-   */
   ticketVisibility(principal: PrincipalView): ((ticketId: string) => boolean) | null {
-    const access = principalAccess(principal);
-    if (!isScoped(access.scope)) return null;
-    const memo = new Map<string, boolean>();
-    return (ticketId: string): boolean => {
-      const hit = memo.get(ticketId);
-      if (hit !== undefined) return hit;
-      const t = this.tickets.findById(ticketId);
-      const ok = t
-        ? evaluateTicketScope(access.scope, this.scopeTicketFor(t.id, t.number)).allowed
-        : false;
-      memo.set(ticketId, ok);
-      return ok;
-    };
+    return principalAdmin.ticketVisibility(this, principal);
   }
 
-  /** The tickets a decision is linked to (blocks or informs), for the scope check. */
   decisionTicketIds(decisionId: string): string[] {
-    this.getDecision(decisionId); // NOT_FOUND for an unknown decision
-    return (
-      this.db
-        .prepare("SELECT DISTINCT ticket_id FROM ticket_decisions WHERE decision_id = ?")
-        .all(decisionId) as Array<{ ticket_id: string }>
-    ).map((r) => r.ticket_id);
+    return principalAdmin.decisionTicketIds(this, decisionId);
   }
 
-  /**
-   * PRINCIPAL SCOPES: refuse an action outside what a principal may do — the one check
-   * REST and the CLI share (services/accessScope.ts decides; this names the scope).
-   * Throws READ_ONLY_TOKEN for a write by a read-only principal, else SCOPE_DENIED
-   * with `details.scope` (the repos and tickets it holds), `details.reason`, and the
-   * ticket / repos / requirement that put the action outside it.
-   */
-  assertPrincipalAccess(
-    principal: PrincipalView,
-    action: AccessAction,
-    access: Access = principalAccess(principal),
-  ): void {
-    const d = authorizeAccess(access, action);
-    if (d.allowed) return;
-    if (d.code === "READ_ONLY_TOKEN") {
-      throw new DispatchError("READ_ONLY_TOKEN", describeDenial("read_only", { scope: "" }));
-    }
-    const scope = principal.scope ?? { repos: null, tickets: null };
-    const label =
-      [
-        scope.repos ? `repos ${scope.repos.map((r) => r.name ?? r.id).join(", ")}` : "",
-        scope.tickets
-          ? `tickets ${scope.tickets.map((t) => `#${t.number ?? t.id}`).join(", ")}`
-          : "",
-      ]
-        .filter((x) => x !== "")
-        .join(" and ") || "no scope";
-    const ticket =
-      action.kind === "read_ticket" || action.kind === "write_ticket" ? action.ticket : undefined;
-    const repoName = (id: string): string => this.repos.findById(id)?.name ?? id;
-    const outside = d.outsideRepos.map(repoName);
-    throw new DispatchError(
-      "SCOPE_DENIED",
-      describeDenial(d.reason, {
-        scope: label,
-        ticket: ticket
-          ? `ticket #${ticket.number ?? ticket.id}`
-          : action.kind === "create_ticket"
-            ? "the new ticket"
-            : undefined,
-        outsideRepos: outside,
-      }),
-      {
-        principal: principal.name,
-        scope,
-        reason: d.reason,
-        ...(ticket ? { ticket: ticket.number ?? ticket.id } : {}),
-        ...(outside.length > 0 ? { outside_repos: outside } : {}),
-        ...(d.reason === "admin_required" ? { required: "admin" } : {}),
-      },
-    );
+  assertPrincipalAccess(principal: PrincipalView, action: AccessAction, access?: Access): void {
+    return principalAdmin.assertPrincipalAccess(this, principal, action, access);
   }
 
-  /**
-   * Authenticate a bearer credential against the ACTIVE principals. Returns the
-   * principal and the actor it speaks for, or null for an unknown/revoked token.
-   * Stamps `last_used_at` at most once a minute per principal (best-effort).
-   */
   resolvePrincipalToken(token: string): { principal: PrincipalView; actor: Actor } | null {
-    const row = this.principals.findActiveByHash(hashPrincipalToken(token));
-    if (!row) return null;
-    const now = this.clock.now();
-    if (!row.last_used_at || Date.parse(now) - Date.parse(row.last_used_at) > 60_000) {
-      try {
-        this.principals.touch(row.id, now);
-      } catch {
-        // A usage stamp must never fail authentication.
-      }
-    }
-    return { principal: row, actor: principalActor(row) };
+    return principalAdmin.resolvePrincipalToken(this, token);
   }
 
   // --- Tickets -------------------------------------------------------------
@@ -1625,14 +802,6 @@ export class Dispatch {
     return this.ticketSvc.createTicket(raw, actor);
   }
 
-  /**
-   * Create a ticket AND its links in ONE transaction: the primary repo, the scope
-   * nodes (the first primary, the rest secondary) and the confirmed per-repo access.
-   * A bad reference (unknown repo or scope node) rolls the whole create back, so a
-   * failed POST /tickets or MCP create_ticket never leaves an orphan draft for a
-   * retry to duplicate. (better-sqlite3 nests the services' own transactions as
-   * savepoints, as createDraftTicket already relies on.)
-   */
   createTicketWithLinks(
     raw: unknown,
     links: {
@@ -1642,27 +811,7 @@ export class Dispatch {
     },
     actor: Actor,
   ): Ticket {
-    return inTransaction(this.db, () => {
-      const ticket = this.ticketSvc.createTicket(raw, actor);
-      if (links.repo) this.repoSvc.linkRepository(ticket.id, links.repo, "primary", actor);
-      (links.scopeNodeIds ?? []).forEach((scopeNodeId, i) => {
-        this.linkTicketScope(
-          {
-            ticket_id: ticket.id,
-            scope_node_id: scopeNodeId,
-            relation: i === 0 ? "primary" : "secondary",
-          },
-          actor,
-        );
-      });
-      for (const r of links.repoAccess ?? []) {
-        this.repoSvc.setTicketRepoAccess(
-          { ticket_id: ticket.id, repo_id: r.repo_id, access: r.access, relation: "confirmed" },
-          actor,
-        );
-      }
-      return ticket;
-    });
+    return ticketLinks.createTicketWithLinks(this, raw, links, actor);
   }
 
   /** TRACK-3a: set or clear a ticket's per-ticket delivery-budget ceiling (USD). */
@@ -1723,51 +872,8 @@ export class Dispatch {
 
   // --- Epics (EP-001) ------------------------------------------------------
 
-  /**
-   * Create an epic atomically (all-or-nothing): a scope node of type `epic` that
-   * `contains` every created ticket, the N tickets themselves (each `draft`, with
-   * ACs, per-ticket priority/risk/policy, an optional repo link + access boundary
-   * and an optional bootstrap marker), and the dependency edges declared by index
-   * within the plan. `tickets[i].dependsOn` lists OTHER ticket indexes in the same
-   * array; they're resolved to the created ticket ids after all tickets exist, so
-   * a self-contained dependency-ordered plan is created in one call. Returns the
-   * epic node id and the created ticket numbers in plan order.
-   *
-   * Validation (besides the Zod schema): every dependsOn index must be in range
-   * and not self-referential; the dependency edges must form a DAG (a cycle is
-   * rejected). The whole thing runs in one transaction — any failure rolls back
-   * the node, the tickets and the edges.
-   */
   createEpic(raw: unknown, actor: Actor): CreateEpicResult {
-    // PLANNING CLARIFICATIONS: a plan confirmed from a plan session carries the answers
-    // the human gave during clarification into the acceptance contract, unless the
-    // caller sent its own (reviewed) list. An unknown session id is refused — the
-    // caller asked for answers that cannot be found.
-    const body = raw as { plan_session_id?: unknown; epic?: { agreed_requirements?: unknown } };
-    if (
-      body &&
-      typeof body === "object" &&
-      typeof body.plan_session_id === "string" &&
-      body.plan_session_id.trim() !== "" &&
-      body.epic &&
-      typeof body.epic === "object" &&
-      body.epic.agreed_requirements === undefined
-    ) {
-      const session = this.getPlanSession(body.plan_session_id.trim());
-      if (!session) throw notFound("plan_session", body.plan_session_id);
-      let turns: Array<{ role: "user" | "assistant"; content: string }> = [];
-      try {
-        const parsed = JSON.parse(session.messages_json) as unknown;
-        if (Array.isArray(parsed)) turns = parsed as typeof turns;
-      } catch {
-        turns = [];
-      }
-      raw = {
-        ...body,
-        epic: { ...body.epic, agreed_requirements: agreedRequirementsFromTurns(turns) },
-      };
-    }
-    return this.epicsSvc.createEpic(raw, actor);
+    return planning.createEpic(this, raw, actor);
   }
 
   // --- Specs (Spec-Driven Development, Phase 1a) ---------------------------
@@ -1782,18 +888,8 @@ export class Dispatch {
     return this.specsSvc.createSpec(raw, actor);
   }
 
-  /**
-   * cli-wg/F-16: does any spec carry a clause with this (namespaced) id? `ac add
-   * --clause` checks it so an AC's spec_clause_id provenance always points at a clause.
-   */
   specClauseExists(clauseId: string): boolean {
-    const row = this.db
-      .prepare(
-        `SELECT 1 AS hit FROM specs s, json_each(s.clauses_json) c
-          WHERE json_extract(c.value, '$.clause_id') = ? LIMIT 1`,
-      )
-      .get(clauseId) as { hit: number } | undefined;
-    return row !== undefined;
+    return planning.specClauseExists(this, clauseId);
   }
 
   /** Fetch a spec by id (throws NOT_FOUND when absent). */
@@ -1860,105 +956,11 @@ export class Dispatch {
   // --- Ticket scope links (WG-001) -----------------------------------------
 
   linkTicketScope(raw: unknown, actor: Actor): TicketScopeNode {
-    return inTransaction(this.db, () => {
-      const link = this.scope.linkTicketScope(raw, actor);
-      this.wireEpicAcceptance(link.ticket_id, link.scope_node_id, link.relation, actor);
-      this.unwireEpicAcceptance(link.ticket_id, link.scope_node_id, actor);
-      return link;
-    });
+    return ticketLinks.linkTicketScope(this, raw, actor);
   }
 
   setPrimaryScope(ticketRef: string, scopeNodeId: string, actor: Actor): TicketScopeNode {
-    return inTransaction(this.db, () => {
-      const link = this.scope.setPrimaryScope(ticketRef, scopeNodeId, actor);
-      this.wireEpicAcceptance(link.ticket_id, link.scope_node_id, link.relation, actor);
-      return link;
-    });
-  }
-
-  /**
-   * EPIC MEMBERSHIP (external review #8): a ticket confirmed into an epic after it was
-   * planned (a `primary` / `secondary` link) is part of the build the epic's acceptance
-   * ticket must test, so that acceptance ticket now DEPENDS on it, exactly like the
-   * members createEpic wired: the final cannot be claimed until the new member is done.
-   * Before this the final ran (and the epic read accepted) with the new member still
-   * ready. Nothing is wired for a suggested / rejected link, an acceptance ticket, a
-   * cancelled member, or a final already done or cancelled (`wg stats` then reads the
-   * epic pending / stale instead of accepted). Inside the caller's transaction.
-   */
-  private wireEpicAcceptance(
-    ticketId: string,
-    scopeNodeId: string,
-    relation: string,
-    actor: Actor,
-  ): void {
-    if (!(EPIC_MEMBER_RELATIONS as readonly string[]).includes(relation)) return;
-    const node = this.scopeNodes.findById(scopeNodeId);
-    if (!node || node.type !== "epic") return;
-    const ticket = this.tickets.findById(ticketId);
-    if (!ticket || ticket.acceptance === 1 || ticket.status === "cancelled") return;
-    const finalId = ownAcceptanceTicketId(this.db, scopeNodeId);
-    if (finalId === null || finalId === ticket.id) return;
-    const final = this.tickets.findById(finalId);
-    if (!final || final.status === "done" || final.status === "cancelled") return;
-    if (this.ticketDependencies.exists(final.id, ticket.id)) return;
-    try {
-      this.ticketSvc.addDependency({ ticket: final.id, depends_on: ticket.id }, actor);
-    } catch (err) {
-      // A member that itself waits on the final (a follow-up that depends on it) cannot
-      // also be a dependency of it. The link stands; `wg stats` reads the epic pending,
-      // then stale, until its acceptance ticket is re-run on the finished scope.
-      if (err instanceof DispatchError && err.code === "INVALID_DEPENDENCY") return;
-      throw err;
-    }
-    // Marks this edge as the membership's, so withdrawing the membership withdraws it.
-    writeEvent(this.db, {
-      entity_type: "ticket",
-      entity_id: final.id,
-      actor,
-      event_type: "epic.member_dependency_wired",
-      payload: { epic_node_id: scopeNodeId, member_ticket_id: ticket.id },
-    });
-  }
-
-  /**
-   * EPIC MEMBERSHIP: the reverse of wireEpicAcceptance. When a ticket stops being a
-   * confirmed member of an epic (its link removed, or changed to suggested / rejected),
-   * the dependency of the epic's acceptance ticket on it goes too, but only an edge the
-   * membership wired (an explicit dependency someone added stays), and never on a final
-   * already done or cancelled. Before this, a ticket taken out of the epic kept its
-   * acceptance ticket blocked (DEPENDENCY_BLOCKED) on work that was no longer in scope.
-   */
-  private unwireEpicAcceptance(ticketId: string, scopeNodeId: string, actor: Actor): void {
-    const node = this.scopeNodes.findById(scopeNodeId);
-    if (!node || node.type !== "epic") return;
-    const finalId = ownAcceptanceTicketId(this.db, scopeNodeId);
-    if (finalId === null || finalId === ticketId) return;
-    const final = this.tickets.findById(finalId);
-    if (!final || final.status === "done" || final.status === "cancelled") return;
-    const stillMember = this.db
-      .prepare(
-        `SELECT 1 AS hit FROM ticket_scope_nodes WHERE ticket_id = ? AND scope_node_id = ?
-           AND relation IN (${EPIC_MEMBER_RELATIONS.map((r) => `'${r}'`).join(", ")})`,
-      )
-      .get(ticketId, scopeNodeId);
-    if (stillMember) return;
-    if (!this.ticketDependencies.exists(final.id, ticketId)) return;
-    const last = (eventType: string, field: string, value: string): number => {
-      const row = this.db
-        .prepare(
-          `SELECT MAX(rowid) AS r FROM work_events
-            WHERE entity_type = 'ticket' AND entity_id = ? AND event_type = ?
-              AND json_extract(payload_json, '$.' || ?) = ?`,
-        )
-        .get(final.id, eventType, field, value) as { r: number | null } | undefined;
-      return Number(row?.r ?? 0);
-    };
-    const wired = last("epic.member_dependency_wired", "member_ticket_id", ticketId);
-    // The current edge is the membership's only if nobody removed and re-added it since.
-    if (wired === 0 || last("ticket.dependency_removed", "depends_on_ticket_id", ticketId) > wired)
-      return;
-    this.ticketSvc.removeDependency(final.id, ticketId, actor);
+    return ticketLinks.setPrimaryScope(this, ticketRef, scopeNodeId, actor);
   }
 
   listTicketScopes(ticketRef: string): TicketScopeWithNode[] {
@@ -1970,11 +972,7 @@ export class Dispatch {
     scopeNodeId: string,
     actor: Actor,
   ): { ticketId: string; scopeNodeId: string; eventId: string } {
-    return inTransaction(this.db, () => {
-      const res = this.scope.removeTicketScope(ticketRef, scopeNodeId, actor);
-      this.unwireEpicAcceptance(res.ticketId, res.scopeNodeId, actor);
-      return res;
-    });
+    return ticketLinks.removeTicketScope(this, ticketRef, scopeNodeId, actor);
   }
 
   ticketScopeSummary(ticketRef: string): {
@@ -2120,18 +1118,7 @@ export class Dispatch {
     },
     actor: Actor,
   ): Decision {
-    // Accept any ticket reference (id, 15, #15, T-15) like every other ticket tool; the
-    // link table stores the id, so an unresolved number would fail its foreign key.
-    const ticketId = input.ticketId ? this.resolveTicket(input.ticketId).id : undefined;
-    const ticketIds = input.ticketIds?.map((ref) => this.resolveTicket(ref).id);
-    return this.decisionSvc.createDecision(
-      {
-        ...input,
-        ...(ticketId !== undefined ? { ticketId } : {}),
-        ...(ticketIds !== undefined ? { ticketIds } : {}),
-      },
-      actor,
-    );
+    return ticketLinks.createDecision(this, input, actor);
   }
 
   getDecision(decisionId: string): Decision {
@@ -2157,56 +1144,8 @@ export class Dispatch {
     });
   }
 
-  /**
-   * Human/admin board move: drag a ticket card into another status column (or
-   * pick a target from the card's status menu). The headline case is un-readying
-   * a ticket — `ready -> draft` — which has no other path on the board.
-   *
-   * `target` is either a concrete {@link TicketStatus} or a {@link BoardColumn}
-   * key (the column the card was dropped into); a column key is resolved to its
-   * canonical status (e.g. column "in_progress" -> status "in_progress").
-   *
-   * This is a thin, intentful wrapper over {@link TransitionService.transition},
-   * NOT a bypass: the move is validated against the same ALLOWED state machine
-   * and policy gates as every other transition. An illegal board move (e.g.
-   * dropping a `done` card on Draft, or any move that would touch a claim) is
-   * REJECTED with `ILLEGAL_TRANSITION`; a no-op drop (same column) with `NO_OP`.
-   * The `claimed`/`in_progress` collapse means the "in_progress" column maps to
-   * `in_progress`, which is only reachable from `claimed` — so a human can never
-   * conjure a claim by dragging, the move is simply rejected as illegal.
-   */
   moveTicket(ticketRef: string, target: string, actor: Actor): TransitionResult {
-    const ticket = this.resolveTicket(ticketRef);
-    const toStatus = resolveMoveTarget(target);
-    // Dragging a reviewed ticket back for rework IS a rejection: take the reject path
-    // (AC reset, attempt bump, feedback, retry-cap park) instead of a raw move that
-    // kept the previous delivery's satisfied ACs for the next done gate.
-    if (
-      (ticket.status === "in_review" || ticket.status === "ready_for_merge") &&
-      (toStatus === "ready" || toStatus === "refining")
-    ) {
-      // (Through this.rejectReview: a landing already started is reported on the trail.)
-      return this.rejectReview(ticket.id, toStatus, actor, "board_move");
-    }
-    return inTransaction(this.db, () => {
-      // Handing in unleased in-progress work (a by-hand delivery, a tokenless resume)
-      // by a move stays legal; dragging work an agent still holds a lease on is not.
-      const unleasedSubmit =
-        ticket.status === "in_progress" &&
-        toStatus === "in_review" &&
-        !this.claimsRepo.hasActiveForTicket(ticket.id);
-      return this.transitions.transition({
-        ticketId: ticket.id,
-        actor,
-        toStatus,
-        reason: "board_move",
-        // Pin the expected source so a stale board (card moved out from under the
-        // drag) fails cleanly with STATE_CONFLICT rather than silently moving a
-        // ticket the human is no longer looking at.
-        expectedFromStatus: ticket.status,
-        ...(unleasedSubmit ? { unleasedSubmit } : {}),
-      });
-    });
+    return reviewLifecycle.moveTicket(this, ticketRef, target, actor);
   }
 
   approveReview(
@@ -2249,37 +1188,12 @@ export class Dispatch {
     return this.reviewGateSvc.beginLanding(ref, input, actor);
   }
 
-  /** The approval a landing acts on (the latest transition into ready_for_merge). */
   landingApproval(ref: string): string | null {
-    return this.reviewGateSvc.approvalRef(this.resolveTicket(ref).id);
+    return reviewLifecycle.landingApproval(this, ref);
   }
 
-  /** The landings already started or committed on the ticket's current approval. */
   landingsStarted(ref: string): LandingStarted[] {
-    return this.reviewGateSvc.landingsStarted(this.resolveTicket(ref).id);
-  }
-
-  /**
-   * A revocation (reject, a failed required check) acknowledged AFTER a landing started
-   * cannot undo it: say so on the ticket's trail and hand the landings back to the caller,
-   * which reports them ("a landing has already happened").
-   */
-  private revocationAfterLanding(
-    ticketId: string,
-    actor: Actor,
-    revocation: string,
-  ): LandingStarted[] {
-    const landed = this.reviewGateSvc.landingsStarted(ticketId);
-    if (landed.length > 0) {
-      writeEvent(this.db, {
-        entity_type: "ticket",
-        entity_id: ticketId,
-        actor,
-        event_type: "ticket.revoked_after_landing",
-        payload: { revocation, landings: landed },
-      });
-    }
-    return landed;
+    return reviewLifecycle.landingsStarted(this, ref);
   }
 
   /** TESTER REPLAY: record the tester's tests passed on the landed revision (system only). */
@@ -2328,12 +1242,7 @@ export class Dispatch {
     },
     actor: Actor,
   ): TransitionResult {
-    const result = this.reviewGateSvc.testerPass(ticketRef, input, actor);
-    // TESTER FIRST: the PASS returned the ticket to review: now a person is needed.
-    if (result.ticket.status === "in_review") {
-      this.emitGate("review_needed", result.ticket, { detail: "the independent tester passed it" });
-    }
-    return result;
+    return reviewLifecycle.testerPass(this, this.internals, ticketRef, input, actor);
   }
 
   testerFail(
@@ -2398,19 +1307,12 @@ export class Dispatch {
     return this.ticketSvc.getTestContract(ticketRef);
   }
 
-  /**
-   * HOLD FOR A HUMAN (`ready_for_merge | in_testing -> blocked`, reason-coded). The
-   * runner's merge gate (the combined code failed on the target) and a late red CI
-   * result use it; the ticket waits in the human queue with the reason. System/admin.
-   */
   holdForHuman(
     ref: string,
     input: { reasonCode: string; reason: string },
     actor: Actor,
   ): TransitionResult {
-    const result = this.reviewGateSvc.holdForHuman(ref, input, actor);
-    this.emitGate("ticket_parked", result.ticket, { status: "blocked", detail: input.reason });
-    return result;
+    return reviewLifecycle.holdForHuman(this, this.internals, ref, input, actor);
   }
 
   /** REQUIRED CI: record that a ticket needs CI before review exposes it (system/admin). */
@@ -2422,7 +1324,6 @@ export class Dispatch {
     return this.reviewGateSvc.recordCiRequired(ref, input, actor);
   }
 
-  /** REQUIRED CI: record a CI result for a ticket's candidate commit (system/admin). */
   recordCiResult(
     ref: string,
     input: { commit: string; state: "pending" | "pass" | "fail"; detail?: string },
@@ -2434,352 +1335,74 @@ export class Dispatch {
     eventId: string;
     landedAlready: LandingStarted[];
   } {
-    const res = this.reviewGateSvc.recordCiResult(ref, input, actor);
-    const ticket = this.tickets.resolveRef(ref);
-    if (res.held) {
-      this.emitGate("ticket_parked", ticket, {
-        status: "blocked",
-        detail: `required CI failed for ${input.commit.slice(0, 12)}`,
-      });
-    }
-    // REVOCATION-SAFE LANDING: a red result after a landing started cannot stop it.
-    const landedAlready =
-      input.state === "fail" && ticket
-        ? this.revocationAfterLanding(ticket.id, actor, `ci_failed:${input.commit.slice(0, 12)}`)
-        : [];
-    return { ...res, landedAlready };
+    return reviewLifecycle.recordCiResult(this, this.internals, ref, input, actor);
   }
 
-  /**
-   * EVAL JUDGE: record the delivery-quality judge's verdict on a ticket (runner/lib/
-   * eval-judge.sh after a submit). System/admin only. Telemetry: nothing reads it to
-   * gate, approve or land; it is shown to the reviewer and paired with the review outcome
-   * by `wg judge-agreement`.
-   */
   recordEvalJudgment(
     ref: string,
     input: unknown,
     actor: Actor,
   ): { ticketId: string; eventId: string; judgment: EvalJudgment } {
-    assertMayRecordJudgment(actor);
-    const ticket = this.resolveTicket(ref);
-    const judgment = normalizeJudgment(input, ticket.attempt_count);
-    const eventId = inTransaction(this.db, () => {
-      const id = writeEvent(this.db, {
-        entity_type: "ticket",
-        entity_id: ticket.id,
-        actor,
-        event_type: EVAL_JUDGED_EVENT,
-        payload: judgment,
-      });
-      // The Review view shows the grade, and it (and its packet cache) re-reads a ticket
-      // only when its updated_at moves: bump it so an open page shows the grade. Nothing
-      // else changes: no status, no row_version, no gate input.
-      this.tickets.touch(ticket.id, this.clock.now());
-      return id;
-    });
-    return { ticketId: ticket.id, eventId, judgment };
+    return ticketRecords.recordEvalJudgment(this, ref, input, actor);
   }
 
-  /**
-   * REVIEW TELEMETRY: a person rendered this ticket in the Review view. Recorded once per
-   * review round (the round is the ticket's last entry into in_review, computed here, not
-   * taken from the caller), with the delivery commits recorded for each repo. Only while
-   * the ticket is in review, and only for a human or admin actor. Never bumps updated_at:
-   * the Review queue re-renders on it. A measurement only; nothing gates on it.
-   */
-  recordReviewOpened(ref: string, actor: Actor, seenRound: string | null = null): ReviewOpenResult {
-    assertMayRecordReviewOpen(actor);
-    const ticket = this.resolveTicket(ref);
-    return this.recordReviewOpen(ticket, actor, seenRound, REVIEW_OPENED_EVENT, null);
+  recordReviewOpened(ref: string, actor: Actor, seenRound?: string | null): ReviewOpenResult {
+    return ticketRecords.recordReviewOpened(this, this.internals, ref, actor, seenRound);
   }
 
-  /**
-   * REVIEW TELEMETRY: a person opened a raw log, the evidence in full or the full diff of
-   * a ticket in review. Once per round and kind; the same rules as recordReviewOpened.
-   */
   recordReviewRawOpened(
     ref: string,
     what: RawOpenKind,
     actor: Actor,
-    seenRound: string | null = null,
+    seenRound?: string | null,
   ): ReviewOpenResult {
-    assertMayRecordReviewOpen(actor);
-    const ticket = this.resolveTicket(ref);
-    return this.recordReviewOpen(ticket, actor, seenRound, REVIEW_RAW_OPENED_EVENT, what);
+    return ticketRecords.recordReviewRawOpened(this, this.internals, ref, what, actor, seenRound);
   }
 
-  private recordReviewOpen(
-    ticket: Ticket,
-    actor: Actor,
-    seenRound: string | null,
-    eventType: typeof REVIEW_OPENED_EVENT | typeof REVIEW_RAW_OPENED_EVENT,
-    what: RawOpenKind | null,
-  ): ReviewOpenResult {
-    return inTransaction(this.db, () => {
-      const current = this.resolveTicket(ticket.id);
-      if (current.status !== "in_review")
-        return {
-          ticketId: ticket.id,
-          recorded: false,
-          reason: "not_in_review",
-          eventId: null,
-          roundEnteredAt: null,
-        };
-      const round = this.events.enteredStatusAt(ticket.id, "in_review")?.at ?? null;
-      if (round === null)
-        return {
-          ticketId: ticket.id,
-          recorded: false,
-          reason: "no_review_round",
-          eventId: null,
-          roundEnteredAt: null,
-        };
-      if (seenRound !== null && seenRound !== round)
-        return {
-          ticketId: ticket.id,
-          recorded: false,
-          reason: "stale_round",
-          eventId: null,
-          roundEnteredAt: round,
-        };
-      const seen = this.db
-        .prepare(
-          `SELECT 1 FROM work_events
-            WHERE entity_type = 'ticket' AND entity_id = ? AND event_type = ?
-              AND json_extract(payload_json, '$.round_entered_at') = ?
-              AND (? IS NULL OR json_extract(payload_json, '$.what') = ?)
-            LIMIT 1`,
-        )
-        .get(ticket.id, eventType, round, what, what);
-      if (seen)
-        return {
-          ticketId: ticket.id,
-          recorded: false,
-          reason: "already_recorded",
-          eventId: null,
-          roundEnteredAt: round,
-        };
-      const payload =
-        what === null
-          ? {
-              round_entered_at: round,
-              head_shas: this.repoDeliveries
-                .listForTicket(ticket.id)
-                .filter((d) => d.commit_sha)
-                .map((d) => ({ repo: d.repo_name, sha: d.commit_sha })),
-              // What the Behavioural surface's callers row showed for this ticket when the
-              // server last computed it IN THIS ROUND (listed / none_changed / not_analysed);
-              // absent when it has not (Health counts only known rows).
-              ...(this.lastCallersRow.get(ticket.id)?.round === round
-                ? { impact_callers: this.lastCallersRow.get(ticket.id)!.status }
-                : {}),
-            }
-          : { what, round_entered_at: round };
-      const eventId = writeEvent(this.db, {
-        entity_type: "ticket",
-        entity_id: ticket.id,
-        actor,
-        event_type: eventType,
-        payload,
-      });
-      return { ticketId: ticket.id, recorded: true, reason: null, eventId, roundEnteredAt: round };
-    });
-  }
-
-  /**
-   * LANE VERDICT: what a judging lane (the reviewer agent, the security reviewer, the
-   * tester, the eval judge) concluded about one candidate, recorded by the runner as a
-   * system event so whether a lane changed the decision can be computed. System/admin
-   * only; an agent is refused. Nothing gates on it, and it never bumps updated_at.
-   */
   recordLaneVerdict(
     ref: string,
     input: Record<string, unknown>,
     actor: Actor,
   ): { ticketId: string; eventId: string; verdict: LaneVerdict } {
-    assertMayRecordLaneVerdict(actor);
-    const ticket = this.resolveTicket(ref);
-    const verdict = normalizeLaneVerdict(input, actor);
-    const eventId = writeEvent(this.db, {
-      entity_type: "ticket",
-      entity_id: ticket.id,
-      actor,
-      event_type: LANE_VERDICT_EVENT,
-      payload: verdict,
-    });
-    return { ticketId: ticket.id, eventId, verdict };
+    return ticketRecords.recordLaneVerdict(this, ref, input, actor);
   }
 
-  /**
-   * PRE-WORK SCOUT: the runner's scout packet summary for one delivery attempt (the risk
-   * it classified, the signals that raised it, its coverage), recorded as a system event
-   * for the Review backing rows and Health's scout read model. System/admin only; an
-   * agent is refused. Nothing gates on it, and it never bumps updated_at.
-   */
   recordScout(
     ref: string,
     input: unknown,
     actor: Actor,
   ): { ticketId: string; eventId: string; scout: ScoutRecord } {
-    assertMayRecordScout(actor);
-    const ticket = this.resolveTicket(ref);
-    const packet =
-      input && typeof input === "object" && !Array.isArray(input)
-        ? (input as Record<string, unknown>)
-        : {};
-    // The declared level is the ticket's own, not the packet's copy of it.
-    const scout = normalizeScoutRecord(packet, actor, ticket.risk_level);
-    const eventId = writeEvent(this.db, {
-      entity_type: "ticket",
-      entity_id: ticket.id,
-      actor,
-      event_type: SCOUT_RECORDED_EVENT,
-      payload: scout,
-    });
-    return { ticketId: ticket.id, eventId, scout };
+    return ticketRecords.recordScout(this, ref, input, actor);
   }
 
-  /**
-   * ESCAPED DEFECT (MF5): a person says `ref` (a defect report or its fix) is a regression
-   * of the accepted change `of` (a ticket id or number). Recorded as `ticket.defect_escaped`
-   * on `ref`, the actor columns saying who filed it. Human or admin only; the target must be
-   * another ticket that is done (an accepted change). Filing the same standing link again
-   * records nothing. A measurement: nothing gates on it, and it never bumps updated_at.
-   */
   fileRegression(
     ref: string,
     of: string,
     actor: Actor,
-    note: string | null = null,
+    note?: string | null,
   ): { ticketId: string; regressionOf: string; recorded: boolean; eventId: string | null } {
-    assertMayFileRegression(actor);
-    const ticket = this.resolveTicket(ref);
-    const target = this.resolveTicket(of);
-    if (target.id === ticket.id)
-      throw new DispatchError("VALIDATION_ERROR", "A ticket cannot be a regression of itself.", {
-        ticket_id: ticket.id,
-      });
-    if (target.status !== "done")
-      throw new DispatchError(
-        "STATE_CONFLICT",
-        `#${target.number ?? "?"} is not an accepted change (it is ${target.status}); a regression links to a change that reached done.`,
-        { regression_of: target.id, status: target.status },
-      );
-    return inTransaction(this.db, () => {
-      const standing = this.regressionLinkRows().some(
-        (l) => l.ticketId === ticket.id && l.regressionOf === target.id,
-      );
-      if (standing)
-        return { ticketId: ticket.id, regressionOf: target.id, recorded: false, eventId: null };
-      const eventId = writeEvent(this.db, {
-        entity_type: "ticket",
-        entity_id: ticket.id,
-        actor,
-        event_type: DEFECT_ESCAPED_EVENT,
-        payload: {
-          regression_of: target.id,
-          regression_of_number: target.number ?? null,
-          note: regressionNote(note),
-        },
-      });
-      return { ticketId: ticket.id, regressionOf: target.id, recorded: true, eventId };
-    });
+    return regressions.fileRegression(this, ref, of, actor, note);
   }
 
-  /** Take back a regression link filed in error (human or admin; nothing standing: no-op). */
   withdrawRegression(
     ref: string,
     of: string,
     actor: Actor,
   ): { ticketId: string; regressionOf: string; recorded: boolean; eventId: string | null } {
-    assertMayFileRegression(actor);
-    const ticket = this.resolveTicket(ref);
-    const target = this.resolveTicket(of);
-    return inTransaction(this.db, () => {
-      const standing = this.regressionLinkRows().some(
-        (l) => l.ticketId === ticket.id && l.regressionOf === target.id,
-      );
-      if (!standing)
-        return { ticketId: ticket.id, regressionOf: target.id, recorded: false, eventId: null };
-      const eventId = writeEvent(this.db, {
-        entity_type: "ticket",
-        entity_id: ticket.id,
-        actor,
-        event_type: DEFECT_ESCAPED_WITHDRAWN_EVENT,
-        payload: { regression_of: target.id, regression_of_number: target.number ?? null },
-      });
-      return { ticketId: ticket.id, regressionOf: target.id, recorded: true, eventId };
-    });
+    return regressions.withdrawRegression(this, ref, of, actor);
   }
 
-  /** Every standing regression link (the event log folded, see services/escapedDefects.ts). */
   regressionLinkRows(): RegressionLink[] {
-    const rows = this.db
-      .prepare(
-        `SELECT entity_id AS ticketId, event_type AS eventType, actor_type AS actorType,
-                actor_id AS actorId, created_at AS at,
-                json_extract(payload_json, '$.regression_of') AS regressionOf,
-                json_extract(payload_json, '$.note') AS note
-           FROM work_events
-          WHERE entity_type = 'ticket' AND event_type IN (?, ?)
-          ORDER BY rowid`,
-      )
-      .all(DEFECT_ESCAPED_EVENT, DEFECT_ESCAPED_WITHDRAWN_EVENT) as RegressionEventRow[];
-    return currentRegressionLinks(rows);
+    return regressions.regressionLinkRows(this);
   }
 
-  private regressionLinksOf(ticketId: string): TicketView["regression"] {
-    const links = this.regressionLinkRows();
-    const side = (otherId: string, l: RegressionLink): RegressionLinkView[] => {
-      const row = this.db
-        .prepare(`SELECT number, title, status FROM tickets WHERE id = ?`)
-        .get(otherId) as { number: number | null; title: string; status: string } | undefined;
-      if (!row) return [];
-      return [
-        {
-          ticket_id: otherId,
-          number: row.number,
-          title: row.title,
-          status: row.status,
-          filed_by: l.filedBy,
-          filed_at: l.filedAt,
-          note: l.note,
-        },
-      ];
-    };
-    return {
-      regression_of: links
-        .filter((l) => l.ticketId === ticketId)
-        .flatMap((l) => side(l.regressionOf, l)),
-      regressed_by: links
-        .filter((l) => l.regressionOf === ticketId)
-        .flatMap((l) => side(l.ticketId, l)),
-    };
-  }
-
-  /** REQUIRED CI: the latest CI state for a ticket's commit (null commit = latest overall). */
   ciStatus(
     ref: string,
-    commit: string | null = null,
+    commit?: string | null,
   ): { required: boolean; state: string | null; commit: string | null } {
-    const ticket = this.resolveTicket(ref);
-    return this.reviewGateSvc.ciStatus(ticket.id, commit);
+    return reviewLifecycle.ciStatus(this, ref, commit);
   }
 
-  /**
-   * WHAT HAPPENS ON APPROVE: the facts a HUMAN approve of this ticket acts on, read from
-   * the same predicates the approve path uses — the tester route and the CI hold come from
-   * ReviewGateService (the code approveReview runs), AUTO_MERGE as the approve route reads
-   * it, the merge gate as the runner's merge lane asks it (the autonomyGateDecision
-   * predicate), and the landing repos as every landing path plans them (the first write
-   * repo with a local path lands first, then each other write repo with one; see
-   * landingStatus.ts). `mergeCommand` is whether the API's merge runner has a command to
-   * start (the caller holds the runner). The gate-integrity holds are the auto-ship
-   * gate's own read (observedRiskFor); `approver: "agent"` asks what an agent or auto
-   * approval would do. `ci: false` skips the CI and integrity reads (they run git) for an
-   * approval that already happened; `repos` reuses a diff the caller already read.
-   */
   approveOutcomeFacts(
     ref: string,
     opts: {
@@ -2790,93 +1413,9 @@ export class Dispatch {
       repos?: readonly RepoDiff[];
     },
   ): ApproveOutcomeFacts {
-    const env = opts.env ?? process.env;
-    const ticket = this.resolveTicket(ref);
-    // GATE INTEGRITY: the hard holds the auto-ship gate would raise (the same read). A
-    // throw is indeterminate: the gate fails toward a human, and so does this fact.
-    let testModifiedHolds: string[] = [];
-    if (opts.ci !== false) {
-      try {
-        testModifiedHolds = [...(this.observedRiskFor(ticket, opts.repos).holds ?? [])];
-      } catch {
-        testModifiedHolds = ["the delivery diff could not be read to check its tests"];
-      }
-    }
-    const writes = this.repos
-      .listForTicket(ticket.id)
-      .filter((l) => isActiveTicketRepoRelation(l.relation) && l.access === "write");
-    const lands = writes.find((l) => l.local_path) ?? null;
-    const mode = (env.REVIEW_MODE ?? "human").trim().toLowerCase();
-    const method = (env.GAFFER_PR_MERGE_METHOD ?? "").trim().toLowerCase();
-    const lane = (env.GAFFER_MERGE_LANE ?? "1").trim().toLowerCase();
-    return {
-      approver: opts.approver ?? "human",
-      testModifiedHolds,
-      ciHold: opts.ci === false ? null : this.reviewGateSvc.approveCiHold(ticket),
-      // EVERY WRITE REPO: the same read approveReview refuses on (repo_unavailable).
-      unavailableRepos:
-        opts.ci === false
-          ? []
-          : this.reviewGateSvc.unavailableWriteRepos(ticket).map((m) => ({
-              repo: m.repo,
-              why: m.why,
-              fix: unavailableRepoRemedy(m, ticket.number),
-            })),
-      // TESTER FIRST: whether the tester's PASS covers the head (git) — read only for an
-      // approval still to come (ci !== false); the settle after an approval reads none.
-      ...this.testerApproveFacts(ticket, opts.approver ?? "human", opts.ci !== false),
-      acceptance: ticket.acceptance === 1,
-      autoMerge: envFlagOn(env[AUTO_MERGE_ENV]),
-      mergeCommand: opts.mergeCommand,
-      mergeLane: !["0", "false", "no", "off"].includes(lane),
-      mergeGateEarned: isAutonomyAllowed(
-        this.autonomyPolicy,
-        this.writeRepoIdsForTicket(ticket),
-        ticket.risk_level,
-        "merge",
-        env,
-      ),
-      reviewMode: (["human", "agent", "both"].includes(mode) ? mode : "human") as ReviewMode,
-      prMode: envFlagOn(env.GAFFER_CREATE_PR),
-      prUrl: lands
-        ? this.repos.ticketRepoPrUrl(ticket.id, lands.id) || ticket.pr_url || null
-        : ticket.pr_url || null,
-      prMergeMethod: ["merge", "squash", "rebase"].includes(method) ? method : "merge",
-      landsRepo: lands ? lands.name : null,
-      baseBranch: lands ? lands.default_branch || null : null,
-      // PER-REPOSITORY LANDING: every other write repo with a checkout lands too (the
-      // landing plan is the approved revisions with a local path, primary first).
-      alsoLandsRepos: writes.filter((l) => l !== lands && l.local_path).map((l) => l.name),
-      noCheckoutRepos: writes.filter((l) => !l.local_path).map((l) => l.name),
-      // The same pause read as landing_state, so the line and the status agree.
-      pause: usagePauseFact(env),
-    };
+    return landing.approveOutcomeFacts(this, ref, opts);
   }
 
-  /** TESTER FIRST facts for approveOutcomeFacts: route, hold, and the tested commit. */
-  private testerApproveFacts(
-    ticket: Ticket,
-    approver: "human" | "agent",
-    read: boolean,
-  ): Pick<ApproveOutcomeFacts, "toTester" | "untested" | "testedCommit"> {
-    if (!read || !this.reviewGateSvc.laneApplies(ticket)) {
-      return { toTester: false, untested: null, testedCommit: null };
-    }
-    let cov: TesterCoverage;
-    try {
-      cov = this.reviewGateSvc.testerCoverage(ticket);
-    } catch {
-      cov = { covered: false, why: "no_verdict", tested: null, head: null };
-    }
-    if (cov.covered) return { toTester: false, untested: null, testedCommit: cov.tested };
-    return {
-      toTester: true,
-      untested: approver === "human" ? { why: cov.why, tested: cov.tested, head: cov.head } : null,
-      testedCommit: null,
-    };
-  }
-
-  /** The first step a human approve of this ticket will certainly take (see approveOutcome.ts). */
   approveOutcome(
     ref: string,
     opts: {
@@ -2886,265 +1425,41 @@ export class Dispatch {
       repos?: readonly RepoDiff[];
     },
   ): ApproveOutcome {
-    return decideApproveOutcome(this.approveOutcomeFacts(ref, opts));
+    return landing.approveOutcome(this, ref, opts);
   }
 
-  /**
-   * WHERE AN APPROVED CHANGE IS: the facts behind a ready_for_merge (or held) ticket's
-   * status label, read from what the landing paths themselves act on — the review pin
-   * against the branch head (the landing check's "moved since review"), the merge gate's
-   * evidence and the CI result for the head, the hold a parked ticket carries, a merge run
-   * the API started that is still running, per-repo landings, and the merge lane's rule
-   * (an earned merge gate, or AUTO_MERGE and a human approval; GAFFER_MERGE_LANE).
-   * Git runs only for a ready_for_merge ticket; any other status reads no facts.
-   */
-  landingFacts(ref: string | Ticket, env: NodeJS.ProcessEnv = process.env): LandingFacts | null {
-    const ticket = typeof ref === "string" ? this.resolveTicket(ref) : ref;
-    if (ticket.status !== "ready_for_merge" && ticket.status !== "blocked") return null;
-    const events = listEvents(this.db, "ticket", ticket.id);
-    const transitions = events
-      .filter((e) => e.event_type === "ticket.transitioned")
-      .map((e) => {
-        let pl: { to?: string; reason?: string | null } = {};
-        try {
-          pl = (JSON.parse(e.payload_json || "{}") as typeof pl) || {};
-        } catch {
-          pl = {};
-        }
-        return { e, to: pl.to ?? "", reason: pl.reason ?? "" };
-      });
-    const lastInto = (st: string) => [...transitions].reverse().find((t) => t.to === st);
-    const writeLinks = () =>
-      this.repos
-        .listForTicket(ticket.id)
-        .filter((l) => isActiveTicketRepoRelation(l.relation) && l.access === "write");
-    const base = {
-      mergeRunning: false,
-      landedRepos: [] as string[],
-      writeRepos: [] as string[],
-      autoMerge: false,
-      mergeLane: false,
-      mergeGateEarned: false,
-      approver: "",
-    };
-    if (ticket.status === "blocked") {
-      const m = /^held:(merge_gate_red|ci_red)$/.exec(lastInto("blocked")?.reason ?? "");
-      if (!m) return { ...base, status: ticket.status, hold: null };
-      // A held multi-repo landing says which repos already landed (they stay landed).
-      return {
-        ...base,
-        ...this.landedAndWriteRepos(computeLandingStatus(this.db, ticket.id), writeLinks()),
-        status: ticket.status,
-        hold: m[1] as LandingHold,
-      };
-    }
-    // Everything after the ticket's latest entry into ready_for_merge, in log order (the
-    // event log's insertion order, never a clock comparison across tables).
-    const entry = lastInto("ready_for_merge")?.e;
-    const afterEntry = entry ? events.slice(events.indexOf(entry) + 1) : events;
-    const recordedSince = new Set(
-      afterEntry
-        .filter((e) => e.event_type === "evidence.recorded")
-        .map((e) => {
-          try {
-            const pl = JSON.parse(e.payload_json || "{}") as { evidence_id?: string };
-            return String(pl.evidence_id ?? "");
-          } catch {
-            return "";
-          }
-        }),
-    );
-    const evidence = this.evidence.listForTicket(ticket.id);
-    // The approval on the ticket's current path to merge (the merge lane's own rule).
-    let start = 0;
-    transitions.forEach((t, i) => {
-      if (t.to === "in_review") start = i + 1;
-    });
-    let approver = "";
-    for (const t of transitions.slice(start))
-      if (t.reason === "review_approved" || t.reason === "review_approved_to_testing")
-        approver = t.e.actor_type;
-    let hold: LandingHold | null = null;
-    // PER-REPOSITORY LANDING: the approved revision of every write repo (its review pin
-    // since the ticket last entered review) and whether a landing of it is on record.
-    const landing = computeLandingStatus(this.db, ticket.id);
-    const heads = this.resolveApprovedHeads(ticket);
-    const head = heads[0] ?? null; // the primary write repo: required CI's candidate
-    // MOVED SINCE REVIEW, per repo as the landing check reads it: a repo still to land
-    // whose delivery-branch head is no longer its pinned commit. A landed repo is done
-    // (its branch may be gone). A legacy approval with no per-repo pin compares its one
-    // pin with the primary head, as before.
-    const movedRepos = landing.repos
-      .filter((r) => !r.landed && r.pinned)
-      .filter((r) => {
-        const h = heads.find((x) => x.repoId === r.repoId);
-        return h !== undefined && h.sha !== r.sha;
-      })
-      .map((r) => r.repo);
-    if (landing.repos.length === 0) {
-      const pin = [...evidence]
-        .reverse()
-        .find(
-          (ev) =>
-            ev.repo_id === null &&
-            ev.recorded_by_actor_type === "system" &&
-            (ev.uri ?? "").startsWith(REVIEW_PIN_PREFIX),
-        );
-      const pinned = pin ? (pin.uri ?? "").slice(REVIEW_PIN_PREFIX.length).toLowerCase() : "";
-      if (head && pinned && !head.sha.startsWith(pinned) && !pinned.startsWith(head.sha))
-        movedRepos.push(head.repo);
-    }
-    if (movedRepos.length > 0) hold = "moved_since_review";
-    else if (landing.unpinned.length > 0) hold = "unpinned_repo";
-    else if (
-      evidence.some((ev) => ev.summary.startsWith("MERGE GATE FAILED") && recordedSince.has(ev.id))
-    )
-      hold = "merge_gate_red";
-    else if (head && this.reviewGateSvc.ciStatus(ticket.id, head.sha).state === "fail")
-      hold = "ci_red";
-    // A merge run the API started for this approval, still running.
-    const started = [...afterEntry].reverse().find((e) => e.event_type === "ticket.merge_started");
-    let mergeRunning = false;
-    if (started) {
-      try {
-        const runId = (JSON.parse(started.payload_json || "{}") as { run_id?: string }).run_id;
-        const row = runId
-          ? (this.db.prepare("SELECT status FROM runs WHERE id = ?").get(runId) as
-              { status: string } | undefined)
-          : undefined;
-        mergeRunning = row?.status === "running";
-      } catch {
-        mergeRunning = false;
-      }
-    }
-    const writes = writeLinks();
-    const lane = (env.GAFFER_MERGE_LANE ?? "1").trim().toLowerCase();
-    return {
-      status: ticket.status,
-      hold,
-      mergeRunning,
-      movedRepos,
-      unpinnedRepos: [...landing.unpinned],
-      ...this.landedAndWriteRepos(landing, writes),
-      pause: usagePauseFact(env),
-      autoMerge: envFlagOn(env[AUTO_MERGE_ENV]),
-      mergeLane: !["0", "false", "no", "off"].includes(lane),
-      mergeGateEarned: isAutonomyAllowed(
-        this.autonomyPolicy,
-        this.writeRepoIdsForTicket(ticket),
-        ticket.risk_level,
-        "merge",
-        env,
-      ),
-      approver,
-    };
+  landingFacts(ref: string | Ticket, env?: NodeJS.ProcessEnv): LandingFacts | null {
+    return landing.landingFacts(this, ref, env);
   }
 
-  /**
-   * The repos a landing state names: with per-repo review pins, the approved revisions
-   * and those recorded landed (`gaffer-landed-commit:` system rows, computeLandingStatus);
-   * a legacy approval with no per-repo pin names its write repos, none recorded landed.
-   */
-  private landedAndWriteRepos(
-    landing: LandingStatus,
-    writes: ReadonlyArray<{ name: string }>,
-  ): { landedRepos: string[]; writeRepos: string[] } {
-    if (landing.repos.length === 0)
-      return { landedRepos: [], writeRepos: writes.map((l) => l.name) };
-    return {
-      landedRepos: landing.repos.filter((r) => r.landed).map((r) => r.repo),
-      writeRepos: landing.repos.map((r) => r.repo),
-    };
+  landingState(ref: string | Ticket, env?: NodeJS.ProcessEnv): LandingState | null {
+    return landing.landingState(this, ref, env);
   }
 
-  /** The truthful status label for an approved or held ticket (see landingState.ts). */
-  landingState(ref: string | Ticket, env: NodeJS.ProcessEnv = process.env): LandingState | null {
-    try {
-      const facts = this.landingFacts(ref, env);
-      return facts ? decideLandingState(facts) : null;
-    } catch {
-      return null; // a status label never fails the read it rides on
-    }
-  }
-
-  /** Stamp `landing_state` on each approved or held ticket of a list (others untouched). */
   withLandingState<T extends Ticket>(
     tickets: readonly T[],
   ): Array<T & { landing_state?: LandingState }> {
-    return tickets.map((t) => {
-      if (t.status !== "ready_for_merge" && t.status !== "blocked") return t;
-      const ls = this.landingState(t);
-      return ls ? { ...t, landing_state: ls } : t;
-    });
+    return landing.withLandingState(this, tickets);
   }
 
-  /**
-   * IN-FLIGHT GUARD (exploratory finding api/F1): true while a merge run the API started
-   * for this ticket (its latest `ticket.merge_started` event) is still `running` in the
-   * run registry. The merge route refuses a second merge then (409 MERGE_IN_FLIGHT).
-   */
   mergeInFlight(ref: string): boolean {
-    const ticket = this.resolveTicket(ref);
-    const ev = this.db
-      .prepare(
-        `SELECT payload_json FROM work_events
-          WHERE entity_type = 'ticket' AND entity_id = ? AND event_type = 'ticket.merge_started'
-          ORDER BY rowid DESC LIMIT 1`,
-      )
-      .get(ticket.id) as { payload_json: string | null } | undefined;
-    if (!ev) return false;
-    try {
-      const runId = (JSON.parse(ev.payload_json || "{}") as { run_id?: string }).run_id;
-      if (!runId) return false;
-      const row = this.db.prepare("SELECT status FROM runs WHERE id = ?").get(runId) as
-        { status: string } | undefined;
-      return row?.status === "running";
-    } catch {
-      return false;
-    }
+    return landing.mergeInFlight(this, ref);
   }
 
-  /**
-   * Record that the API started a merge run for an approved ticket, so its status can say
-   * "landing" while that run is running (the runs table does not carry the ticket).
-   */
   noteMergeStarted(ref: string, runId: string | null, actor: Actor): void {
-    const ticket = this.resolveTicket(ref);
-    writeEvent(this.db, {
-      entity_type: "ticket",
-      entity_id: ticket.id,
-      actor,
-      event_type: "ticket.merge_started",
-      payload: { run_id: runId },
-    });
+    return landing.noteMergeStarted(this, ref, runId, actor);
   }
 
   markMerged(ref: string, actor: Actor): TransitionResult {
     return this.reviewGateSvc.markMerged(ref, actor);
   }
 
-  /**
-   * Back to review (`done | ready_for_merge -> in_review`), system/admin only. `cause`
-   * says why; without one it is the ticket's hold when a fresh review is what clears it
-   * (`moved_since_review`, `unpinned_repo`), else `merge_conflict` (the resolver's
-   * reopen, the call this path was built for).
-   */
   reopenForReview(
     ref: string,
     input: { reason: string; resolution: string; cause?: ReopenForReviewCause },
     actor: Actor,
   ): { ticketId: string; status: string; eventId: string } {
-    let cause = input.cause;
-    if (cause === undefined) {
-      const ls = this.landingState(ref);
-      cause =
-        ls &&
-        ls.kind === "held" &&
-        (ls.hold === "moved_since_review" || ls.hold === "unpinned_repo")
-          ? ls.hold
-          : "merge_conflict";
-    }
-    return this.reviewGateSvc.reopenForReview(ref, { ...input, cause }, actor);
+    return reviewLifecycle.reopenForReview(this, ref, input, actor);
   }
 
   rejectReview(
@@ -3153,11 +1468,7 @@ export class Dispatch {
     actor: Actor,
     reason?: string,
   ): TransitionResult & { landedAlready: LandingStarted[] } {
-    const res = this.reviewGateSvc.rejectReview(ticketRef, to, actor, reason);
-    // REVOCATION-SAFE LANDING: a landing that started before this rejection committed is
-    // not undone by it; report it (the merge runner refuses every landing not yet started).
-    const landedAlready = this.revocationAfterLanding(res.ticket.id, actor, `rejected_to_${to}`);
-    return { ...res, landedAlready };
+    return reviewLifecycle.rejectReview(this, ticketRef, to, actor, reason);
   }
 
   // --- Review comments (A1) + Fix these (A2) --------------------------------
@@ -3167,17 +1478,11 @@ export class Dispatch {
     return this.reviewCommentSvc.create(ref, input, actor);
   }
 
-  /**
-   * A ticket's review comments, oldest first; `anchors` adds the git-derived anchor state
-   * against each repo's head now ("anchor changed in this revision" / "anchor untouched").
-   */
   listReviewComments(
     ref: string,
-    opts: { open?: boolean; anchors?: boolean } = {},
+    opts?: { open?: boolean; anchors?: boolean },
   ): ReviewCommentView[] {
-    if (opts.anchors) return this.reviewCommentSvc.listWithAnchors(ref, { open: opts.open });
-    const ticket = this.resolveTicket(ref);
-    return this.reviewCommentSvc.listViews(ticket.id, { open: opts.open });
+    return reviewLifecycle.listReviewComments(this, ref, opts);
   }
 
   /** Resolve / reopen / withdraw a review comment (a human act). */
@@ -3190,34 +1495,10 @@ export class Dispatch {
     return this.reviewCommentSvc.setState(commentRef, action, actor, ticketRef);
   }
 
-  /**
-   * What a "Fix these" send-back would do now (see rejectOutcome.ts): the destination, the
-   * cap and the partly-landed hold read from the same facts rejectReview acts on.
-   */
-  rejectOutcome(
-    ref: string,
-    to: "refining" | "ready" = "refining",
-    requirements?: number,
-  ): RejectOutcome {
-    const ticket = this.resolveTicket(ref);
-    return rejectOutcome({
-      ticketNumber: ticket.number,
-      to,
-      attemptCount: ticket.attempt_count,
-      maxAttempts: this.maxAttempts,
-      landedRepos: recordedLandingRepos(this.db, ticket.id),
-      requirements: requirements ?? this.reviewCommentSvc.counts(ticket.id).open_must_fix,
-    });
+  rejectOutcome(ref: string, to?: "refining" | "ready", requirements?: number): RejectOutcome {
+    return reviewLifecycle.rejectOutcome(this, ref, to, requirements);
   }
 
-  /**
-   * FIX THESE (A2): send the ticket back with its open must-fix comments (or the named
-   * subset) as numbered requirements. A human/admin act. The transition reason is the
-   * deterministic "Fix these: N requirements (ids)"; the comments are stamped with the
-   * round they were sent into, and the next delivery's prompt lists them. Everything
-   * rejectReview does still applies: the AC reset, the retry cap, the partly-landed hold,
-   * the reject pins. The destination stays Refining unless `to: "ready"` is asked for.
-   */
   fixThese(
     ref: string,
     opts: { commentIds?: readonly string[]; to?: "refining" | "ready" },
@@ -3227,48 +1508,7 @@ export class Dispatch {
     requirements: ReviewCommentView[];
     rejectOutcome: RejectOutcome;
   } {
-    if (actor.type !== "human" && actor.type !== "admin") {
-      throw new DispatchError(
-        "ACTOR_NOT_PERMITTED",
-        `Fix these is a reviewer's act: only a human or an admin may send a change back with review comments (this actor is ${actor.type}).`,
-        { actor_type: actor.type, reason: "reviewer_only" },
-      );
-    }
-    const ticket = this.resolveTicket(ref);
-    const to = opts.to ?? "refining";
-    const set = this.reviewCommentSvc.fixSet(ticket.id, opts.commentIds);
-    if (set.length === 0) {
-      throw new DispatchError(
-        "VALIDATION_ERROR",
-        `#${ticket.number ?? "?"} has no open must-fix review comment to send back. Write one, or use Send back with a reason.`,
-        { reason: "no_requirements" },
-      );
-    }
-    const predicted = this.rejectOutcome(ticket.id, to, set.length);
-    const res = this.rejectReview(ticket.id, to, actor, fixTheseReason(set));
-    this.reviewCommentSvc.markSent(
-      set.map((c) => c.id),
-      res.ticket.attempt_count,
-    );
-    const ids = new Set(set.map((c) => c.id));
-    const requirements = this.reviewCommentSvc.listViews(ticket.id).filter((c) => ids.has(c.id));
-    // Settled: what the send-back actually did (the predicted kind unless the status says
-    // otherwise, e.g. a landing recorded between the read and the write).
-    const status = res.ticket.status;
-    const settled: RejectOutcome =
-      status === predicted.to_status
-        ? predicted
-        : status === "blocked"
-          ? rejectOutcome({
-              ticketNumber: ticket.number,
-              to,
-              attemptCount: ticket.attempt_count,
-              maxAttempts: this.maxAttempts,
-              landedRepos: recordedLandingRepos(this.db, ticket.id),
-              requirements: set.length,
-            })
-          : { ...predicted, to_status: status === "ready" ? "ready" : "refining" };
-    return { ...res, requirements, rejectOutcome: settled };
+    return reviewLifecycle.fixThese(this, ref, opts, actor);
   }
 
   resetAcceptanceCriteria(
@@ -3283,11 +1523,7 @@ export class Dispatch {
     actor: Actor,
     reason?: string,
   ): TransitionResult & { landedAlready: LandingStarted[] } {
-    const res = this.reviewGateSvc.wontDo(ref, actor, reason);
-    // REVOCATION-SAFE LANDING: the dashboard's Won't do is a cancellation too; a landing
-    // that had already started is reported exactly as a rejection reports it.
-    const landedAlready = this.revocationAfterLanding(res.ticket.id, actor, "wont_do");
-    return { ...res, landedAlready };
+    return reviewLifecycle.wontDo(this, ref, actor, reason);
   }
 
   reopenFromWontDo(ref: string, to: "refining" | "draft", actor: Actor): TransitionResult {
@@ -3309,33 +1545,12 @@ export class Dispatch {
     return this.pauseSvc.requestContinue(ref, actor);
   }
 
-  /**
-   * The factory loop re-entered delivery in the existing worktree (`paused ->
-   * in_progress`). Returns the resume context the runner re-invokes the agent with.
-   *
-   * With `lease`, the resume is LEASED to that runner agent in the same transaction
-   * and the claim token is returned: the runner heartbeats it and submits/releases
-   * through the normal token-gated paths, and if it dies the lease lapses and the
-   * expiry sweep returns the ticket to `paused`. Without a lease (older callers) a
-   * resumed ticket is in_progress with no claim, which nothing can recover
-   * automatically — the runner always passes one.
-   */
   beginResume(
     ref: string,
     actor: Actor,
     lease?: { agentId: string; ttlSeconds: number },
   ): { ticketId: string; eventId: string; context: PausedDelivery; claimToken?: string } {
-    return inTransaction(this.db, () => {
-      const res = this.pauseSvc.beginResume(ref, actor);
-      if (!lease) return res;
-      const { claimToken } = this.claims.leaseResumedDelivery(
-        res.ticketId,
-        lease.agentId,
-        lease.ttlSeconds,
-        actor,
-      );
-      return { ...res, claimToken };
-    });
+    return ticketLifecycle.beginResume(this, ref, actor, lease);
   }
 
   /** Stop/abandon a paused delivery (`paused -> cancelled`); drops the resume context. */
@@ -3368,50 +1583,19 @@ export class Dispatch {
     return this.claims.claimNextTicket(input, actor);
   }
 
-  /**
-   * Claim a CHOSEN ticket (by id or number) rather than the next ready one.
-   * Applies the same eligibility rules as `claimNextTicket` and the atomic claim;
-   * throws a structured `TICKET_NOT_CLAIMABLE`/`NOT_FOUND` rather than silently
-   * claiming a different ticket. Mirrors the runner's preselect-then-claim flow.
-   */
   claimTicket(raw: unknown, actor: Actor): ClaimResult {
-    const input = claimTicketInput.parse(raw);
-    const ticket = this.resolveTicket(input.ticket_id);
-    return this.claims.claimTicket(
-      {
-        ticketId: ticket.id,
-        agentId: input.agent_id,
-        ttlSeconds: input.ttl_seconds,
-        capabilities: input.capabilities,
-      },
-      actor,
-    );
+    return ticketLifecycle.claimTicket(this, raw, actor);
   }
 
-  /**
-   * TRACK-2b: a HUMAN takes a ready ticket "by hand" ("I'll do this myself"). The
-   * ticket moves `ready -> in_progress` owned by the human; the agent selection loop
-   * structurally skips it thereafter. Resolves a ticket number/id ref, then delegates
-   * to {@link ClaimService.humanClaimTicket} (reuses the atomic ready-and-unclaimed
-   * invariant). Throws `TICKET_NOT_CLAIMABLE` when the ticket isn't takeable.
-   */
   humanClaimTicket(ref: string, actor: Actor): { ticketId: string; number: number } {
-    const ticket = this.resolveTicket(ref);
-    return this.claims.humanClaimTicket({ ticketId: ticket.id }, actor);
+    return ticketLifecycle.humanClaimTicket(this, ref, actor);
   }
 
-  /**
-   * TRACK-2b: a human hands their by-hand ticket back to the queue
-   * (`in_progress -> ready`), clearing the ownership marker so agents can pick it up.
-   * Only a human-owned in-flight ticket is releasable this way — an agent's live
-   * delivery is never touched. See {@link ClaimService.humanReleaseTicket}.
-   */
   humanReleaseTicket(
     ref: string,
     actor: Actor,
   ): { ticketId: string; status: string; eventId: string } {
-    const ticket = this.resolveTicket(ref);
-    return this.claims.humanReleaseTicket({ ticketId: ticket.id }, actor);
+    return ticketLifecycle.humanReleaseTicket(this, ref, actor);
   }
 
   /**
@@ -3435,51 +1619,16 @@ export class Dispatch {
     return this.ticketSvc.listRepoDeliveries(ticketRef);
   }
 
-  /**
-   * DELIVERY-DOSSIER: assemble the tamper-evident evidence dossier for a ticket from
-   * EXISTING recorded state. Pure read — no write, no lifecycle change. Deterministic:
-   * unchanged ticket state always yields the same {@link Dossier.hash}.
-   */
   dossier(ref: string): Dossier {
-    const ticket = this.resolveTicket(ref);
-    return this.dossierSvc.assemble(ticket);
+    return ticketRecords.dossier(this, ref);
   }
 
-  /**
-   * REVIEW PACKET: the runner-verified facts the Review view draws above the agent's
-   * words (gates, tester, cost, attempts, risk, the review pin, per-criterion check
-   * results, test-count disagreements). Pure read; outside the dossier's hash.
-   */
   reviewPacket(ref: string, costFor: CostReader): ReviewPacket {
-    return this.reviewPacketSvc.assemble(this.resolveTicket(ref), costFor);
+    return ticketRecords.reviewPacket(this, ref, costFor);
   }
 
-  /**
-   * DELIVERY-DOSSIER: assemble the dossier AND record its hash against the control
-   * plane as a `ticket.dossier_recorded` work-event, so the dossier can later be
-   * verified. This is the ONLY write on the dossier path. Idempotent: when the freshly
-   * computed hash equals the most recently recorded one, no new event is written
-   * (`eventId` is null). Recording NEVER changes ticket status or any lifecycle state.
-   */
   recordDossier(ref: string, actor: Actor): { dossier: Dossier; eventId: string | null } {
-    const ticket = this.resolveTicket(ref);
-    const dossier = this.dossierSvc.assemble(ticket);
-    const previous = this.events.latestDossierHash(ticket.id);
-    if (previous === dossier.hash) {
-      return { dossier, eventId: null };
-    }
-    const eventId = writeEvent(this.db, {
-      entity_type: "ticket",
-      entity_id: ticket.id,
-      actor,
-      event_type: DOSSIER_EVENT_TYPE,
-      payload: {
-        dossier_hash: dossier.hash,
-        hash_algo: dossier.hash_algo,
-        schema: dossier.schema,
-      },
-    });
-    return { dossier, eventId };
+    return ticketRecords.recordDossier(this, ref, actor);
   }
 
   grantReadyApproval(ref: string, actor: Actor): { ticketId: string; eventId: string } {
@@ -3525,56 +1674,19 @@ export class Dispatch {
     input: SubmitForReviewInput,
     actor: Actor,
   ): { ticketId: string; status: string; eventId: string } {
-    const result = this.claims.submitForReview(input, actor);
-    // H2: the ticket has reached `in_review` and now needs a human reviewer. Fire
-    // AFTER the claim transaction commits so the notification can never roll the
-    // transition back; best-effort inside emitGate. TESTER FIRST: a ticket the tester
-    // gates goes to the tester before a person looks, so the ping waits for its PASS
-    // (testerPass below); a FAIL or a hold costs no human attention.
-    if (result.status === "in_review") {
-      // The call above already resolved the ref (id or #N), so this cannot throw.
-      const ticket = this.tickets.resolveRef(input.ticket_id);
-      if (!this.reviewGateSvc.laneApplies(ticket)) {
-        this.emitGate("review_needed", ticket, { detail: input.reason });
-      }
-    }
-    return result;
+    return ticketLifecycle.submitForReview(this, this.internals, input, actor);
   }
 
-  /**
-   * The GAFFER_TESTING setting this instance acts on: the constructor's `testingEnabled`
-   * pins it on or off (tests); otherwise the env (`auto` when unset).
-   */
   testerLaneMode(): TestingLaneMode {
-    if (this.testingEnabledOverride !== undefined) {
-      return this.testingEnabledOverride ? "on" : "off";
-    }
-    return testingLaneMode();
+    return testerLane.testerLaneMode(this.internals);
   }
 
-  /**
-   * ADAPTIVE TESTER LANE: is the independent tester lane on for this ticket's
-   * repositories, and which write repos have no registered test command? An explicit
-   * GAFFER_TESTING wins; the `auto` default is on when every write repo has one.
-   */
-  testerLane(
-    ref: string | Ticket,
-    mode: TestingLaneMode = this.testerLaneMode(),
-  ): TesterLaneDecision {
-    const ticket = typeof ref === "string" ? this.resolveTicket(ref) : ref;
-    const writes = this.repos
-      .accessLinksForTicket(ticket.id)
-      .filter((l) => isActiveTicketRepoRelation(l.relation) && l.access === "write")
-      .map((l) => ({ name: l.name, test_command: l.test_command }));
-    return testerLaneFor(mode, writes);
+  testerLane(ref: string | Ticket, mode?: TestingLaneMode): TesterLaneDecision {
+    return testerLane.testerLane(this, ref, mode);
   }
 
-  /**
-   * LANE-SETTING CONSISTENCY: record the GAFFER_TESTING mode this process decides under as
-   * the runner's (its CLI's tester-route calls, see health/runnerTesterLane.ts). Fail-soft.
-   */
   recordRunnerTesterLane(): boolean {
-    return recordRunnerTesterLane(this.db, this.testerLaneMode());
+    return testerLane.recordRunnerTesterLane(this);
   }
 
   /** The tester lane the runner last recorded, or null. */
@@ -3582,28 +1694,12 @@ export class Dispatch {
     return readRunnerTesterLane(this.db);
   }
 
-  /**
-   * The runner's recorded lane for one ticket, when it differs from this process's mode:
-   * the mode, when it was recorded, and whether the tester gates the ticket under it (the
-   * same rule as laneApplies: acceptance always, a testable ticket when its lane is on).
-   * Null when the runner recorded nothing or reads the same mode.
-   */
   runnerTesterLaneFor(
     ref: string | Ticket,
   ): (RunnerTesterLane & { on: boolean; gates: boolean }) | null {
-    const runner = this.runnerTesterLane();
-    if (!runner || runner.mode === this.testerLaneMode()) return null;
-    const ticket = typeof ref === "string" ? this.resolveTicket(ref) : ref;
-    const on = this.testerLane(ticket, runner.mode).on;
-    const gates = ticket.acceptance === 1 || (ticket.can_be_tested === 1 && on);
-    return { ...runner, on, gates };
+    return testerLane.runnerTesterLaneFor(this, ref);
   }
 
-  /**
-   * ADAPTIVE TESTER LANE on Health: the setting, and under the `auto` default each
-   * registered (visible) repository with no test command, with the one-line notice
-   * that says the tester is off there and why.
-   */
   testerLaneHealth(): {
     mode: TestingLaneMode;
     repos_without_test_command: string[];
@@ -3611,74 +1707,23 @@ export class Dispatch {
     runner: RunnerTesterLane | null;
     runner_differs: boolean;
   } {
-    const mode = this.testerLaneMode();
-    const missing =
-      mode === "auto"
-        ? this.repos
-            .list(false)
-            .filter((r) => !(r.test_command ?? "").trim())
-            .map((r) => r.name)
-        : [];
-    // LANE-SETTING CONSISTENCY: the runner's recorded mode, and a notice when it differs.
-    const runner = this.runnerTesterLane();
-    const differs = runner !== null && runner.mode !== mode;
-    return {
-      mode,
-      repos_without_test_command: missing,
-      notices: [
-        ...(differs && runner ? [runnerLaneNotice(mode, runner)] : []),
-        ...missing.map(testerOffNotice),
-      ],
-      runner,
-      runner_differs: differs,
-    };
+    return testerLane.testerLaneHealth(this);
   }
 
-  /**
-   * TESTER FIRST: how many in_review tickets the runner's tester pass would send to the
-   * tester now (the same decision as routeToTester: the tester gates them, no PASS covers
-   * their head, their heads read and any required CI passed): a push after a PASS, a
-   * conflict reopen, a delivery the runner could not route. Poll for work counts them so
-   * a tick runs the sweep, and never counts one the sweep would leave. Reads git per
-   * ticket the tester gates.
-   */
   pendingTesterRoutes(): number {
-    let n = 0;
-    for (const t of this.tickets.list("in_review")) {
-      try {
-        if (this.reviewGateSvc.laneApplies(t) && this.reviewGateSvc.testerRoutePlan(t).route) n++;
-      } catch {
-        /* a ticket that cannot be read is not counted */
-      }
-    }
-    return n;
+    return testerLane.pendingTesterRoutes(this);
   }
 
-  /**
-   * TESTER FIRST: send in_review tickets the tester gates (and has not passed on their
-   * head) to it before a person reviews them: one ticket, or every in_review ticket. The
-   * runner's call (system) or an admin's.
-   */
   routeToTester(ref: string | null, actor: Actor): TesterRoute[] {
-    return ref === null
-      ? this.reviewGateSvc.routeAllToTester(actor)
-      : [this.reviewGateSvc.routeToTester(ref, actor)];
+    return testerLane.routeToTester(this, ref, actor);
   }
 
-  /**
-   * cli-wg/F-03: a person blocks a ticket that is not in an agent's hands (draft,
-   * refining, ready, or their own by-hand in_progress). See
-   * {@link TicketService.humanBlockTicket}; fires the ticket_blocked gate like markBlocked.
-   */
   humanBlockTicket(
     ref: string,
     reason: string,
     actor: Actor,
   ): { ticketId: string; from: TicketStatus; eventId: string } {
-    const result = this.ticketSvc.humanBlockTicket(ref, reason, actor);
-    const ticket = this.tickets.findById(result.ticketId);
-    if (ticket) this.emitGate("ticket_blocked", ticket, { detail: reason });
-    return result;
+    return ticketLifecycle.humanBlockTicket(this, this.internals, ref, reason, actor);
   }
 
   /** cli-wg/F-03: return a blocked ticket to the queue (see {@link TicketService.humanUnblockTicket}). */
@@ -3691,20 +1736,9 @@ export class Dispatch {
   }
 
   markBlocked(input: MarkBlockedInput, actor: Actor): { ticketId: string; eventId: string } {
-    const result = this.claims.markBlocked(input, actor);
-    // H2: the ticket is now `blocked` and needs a human to unblock it. Emit after
-    // the block transaction commits, best-effort.
-    const ticket = this.tickets.resolveRef(input.ticket_id);
-    this.emitGate("ticket_blocked", ticket, { detail: input.reason });
-    return result;
+    return ticketLifecycle.markBlocked(this, this.internals, input, actor);
   }
 
-  /**
-   * RUNNER-OWNED-BOOKKEEPING: release/park a runner-held delivery claim. Failure
-   * routes the ticket to `ready` (retry); park routes to `refining` (triage,
-   * branch preserved). `claimToken` is optional so a tokenless resumed
-   * (`in_progress`) delivery can be parked too. See ClaimService.runnerRelease.
-   */
   runnerRelease(
     input: {
       ticket_id: string;
@@ -3718,15 +1752,7 @@ export class Dispatch {
     },
     actor: Actor,
   ): { status: string; eventId: string } {
-    const result = this.claims.runnerRelease(input, actor);
-    // Parking to the VISIBLE `blocked` column needs a human to unblock it — fire the
-    // gate AFTER the claim transaction commits, best-effort (mirrors markBlocked).
-    if (result.status === "blocked") {
-      // The call above already resolved the ref (id or #N), so this cannot throw.
-      const ticket = this.tickets.resolveRef(input.ticket_id);
-      this.emitGate("ticket_blocked", ticket, { detail: input.reason });
-    }
-    return result;
+    return ticketLifecycle.runnerRelease(this, this.internals, input, actor);
   }
 
   /**
@@ -3752,14 +1778,8 @@ export class Dispatch {
     return this.claims.recordReworkAttempt(input, actor);
   }
 
-  /**
-   * FAILURE-DIAGNOSIS: the "why did #N fail" read model — the full ordered rework
-   * failure trail for one ticket (attempt 1 → 2 → …), each with the distilled
-   * failing test + assertion/stack. Resolves by ticket id or number.
-   */
   reworkTrail(ref: string): ReworkAttempt[] {
-    const ticket = this.resolveTicket(ref);
-    return this.reworkAttempts.listForTicket(ticket.id);
+    return ticketReads.reworkTrail(this, ref);
   }
 
   /**
@@ -3776,65 +1796,13 @@ export class Dispatch {
   }
 
   expireStaleClaims(actor: Actor): { expired: number } {
-    const result = this.claims.expireStaleClaims(actor);
-    // A claim-expiry that lands a ticket in `blocked` (an unresolved blocking decision)
-    // needs a human to unblock it — fire the operator gate per blocked ticket AFTER the
-    // sweep commits, best-effort (mirrors markBlocked / runnerRelease). Without this the
-    // expiry-block is silent: no Slack/webhook, and queue readers keyed on the gate miss it.
-    for (const id of result.blockedTicketIds) {
-      const ticket = this.tickets.findById(id);
-      if (ticket) {
-        this.emitGate("ticket_blocked", ticket, {
-          detail: "claim expired with an unresolved blocking decision",
-        });
-      }
-    }
-    return { expired: result.expired };
+    return ticketLifecycle.expireStaleClaims(this, this.internals, actor);
   }
 
-  /**
-   * Human override: revoke a claim by its id, mark it revoked and return its
-   * ticket to `ready` (systemOverride, bypassing policy gates). Idempotent calls
-   * on an already-terminal claim raise STATE_CONFLICT.
-   */
   revokeClaim(claimId: string, actor: Actor): { claimId: string; ticketId: string } {
-    const now = this.clock.now();
-    return inTransaction(this.db, () => {
-      const claim = this.claimsRepo.findById(claimId);
-      if (!claim) throw notFound("claim", claimId);
-      if (claim.status !== "active") {
-        throw new DispatchError(
-          "STATE_CONFLICT",
-          `Claim is '${claim.status}' and cannot be revoked.`,
-          { status: claim.status },
-        );
-      }
-      this.claimsRepo.setStatus(claim.id, "revoked", now);
-      const ticket = this.tickets.findById(claim.ticket_id);
-      if (ticket && (ticket.status === "claimed" || ticket.status === "in_progress")) {
-        this.transitions.transition({
-          ticketId: ticket.id,
-          actor,
-          toStatus: "ready",
-          reason: "claim_revoked",
-          systemOverride: true,
-        });
-      }
-      writeEvent(this.db, {
-        entity_type: "ticket",
-        entity_id: claim.ticket_id,
-        actor,
-        event_type: "claim.revoked",
-        payload: { claim_id: claim.id, agent_id: claim.agent_id },
-      });
-      return { claimId: claim.id, ticketId: claim.ticket_id };
-    });
+    return ticketLifecycle.revokeClaim(this, claimId, actor);
   }
 
-  /**
-   * Convenience for the idle loop: create a draft ticket, optionally link a repo,
-   * and attach a manual-note evidence row capturing the supplied summary.
-   */
   createDraftTicket(
     input: {
       title: string;
@@ -3845,9 +1813,7 @@ export class Dispatch {
     },
     actor: Actor,
   ): { ticketId: string; number: number } {
-    return this.ticketSvc.createDraftTicket(input, actor, (ticketId, repoName, a) =>
-      this.linkRepository(ticketId, repoName, "primary", a),
-    );
+    return ticketLifecycle.createDraftTicket(this, input, actor);
   }
 
   attachDeliveryEvidence(
@@ -3860,100 +1826,6 @@ export class Dispatch {
 
   // --- H2 human-gate notifications -----------------------------------------
 
-  /**
-   * Fire a human-gate notification, best-effort. Called AFTER the triggering
-   * transaction has committed (the transition is already durable), so the emit
-   * can never roll the transition back. The {@link Notifier} itself swallows any
-   * sink failure with a log, but we also guard the event-building here so a stray
-   * read error (e.g. resolving the repo name) can never bubble into the caller.
-   *
-   * When nothing is configured the notifier is a no-op and `enabled` is false, so
-   * we skip building the event entirely (zero overhead on the hot path).
-   */
-  private emitGate(
-    kind: NotifyKind,
-    ticket: Ticket,
-    extra: { detail?: string | undefined; status?: string | undefined } = {},
-  ): void {
-    if (!this.notifier.enabled) return;
-    try {
-      this.notifier.notify(this.buildTicketEvent(kind, ticket, extra));
-    } catch {
-      // Defence in depth: the notifier is contracted not to throw, but a bug in
-      // event-building must never break a transition. Swallow — the gate already
-      // committed and the dashboard remains the source of truth.
-    }
-  }
-
-  /** Fire a decision-pending gate for a raised decision, best-effort. */
-  private emitDecisionGate(decision: Decision): void {
-    if (!this.notifier.enabled) return;
-    try {
-      const url = this.decisionUrl(decision);
-      this.notifier.notify({
-        kind: "decision_pending",
-        title: decision.title,
-        status: decision.status,
-        at: this.clock.now(),
-        ...(decision.question ? { detail: decision.question } : {}),
-        // AFK-LOOP P1: mirror ticketUrl so a decision ping is one-tap actionable.
-        ...(url !== undefined ? { url } : {}),
-      });
-    } catch {
-      // See emitGate — never let a notification break the caller.
-    }
-  }
-
-  /** Build the structured {@link NotifyEvent} for a ticket-scoped gate. */
-  private buildTicketEvent(
-    kind: NotifyKind,
-    ticket: Ticket,
-    extra: { detail?: string | undefined; status?: string | undefined },
-  ): NotifyEvent {
-    const repo = this.primaryRepoName(ticket.id);
-    const url = this.ticketUrl(ticket);
-    return {
-      kind,
-      title: ticket.title,
-      status: extra.status ?? ticket.status,
-      at: this.clock.now(),
-      ...(ticket.number !== null ? { ticket_number: ticket.number } : {}),
-      ...(repo !== undefined ? { repo } : {}),
-      ...(url !== undefined ? { url } : {}),
-      ...(extra.detail !== undefined ? { detail: extra.detail } : {}),
-    };
-  }
-
-  /** Best-effort primary/first repo name for a ticket, or undefined. */
-  private primaryRepoName(ticketId: string): string | undefined {
-    const links = this.repos.accessLinksForTicket(ticketId);
-    return links[0]?.name;
-  }
-
-  /**
-   * Build a clickable dashboard link for a ticket when `GAFFER_DASHBOARD_URL` is
-   * set, so the operator can jump straight to it. Optional — undefined when the
-   * base is unconfigured.
-   */
-  private ticketUrl(ticket: Ticket): string | undefined {
-    const base = (process.env.GAFFER_DASHBOARD_URL ?? "").trim();
-    if (base === "" || ticket.number === null) return undefined;
-    return `${base.replace(/\/+$/, "")}/tickets/${ticket.number}`;
-  }
-
-  /**
-   * Build a clickable dashboard link for a raised decision when
-   * `GAFFER_DASHBOARD_URL` is set — the decision-gate analogue of
-   * {@link ticketUrl}. Decisions surface on the overview, so the link deep-links
-   * to the decision by id there. Optional — undefined when the base is
-   * unconfigured (degrades gracefully to a URL-less notification).
-   */
-  private decisionUrl(decision: Decision): string | undefined {
-    const base = (process.env.GAFFER_DASHBOARD_URL ?? "").trim();
-    if (base === "") return undefined;
-    return `${base.replace(/\/+$/, "")}/decisions/${decision.id}`;
-  }
-
   // --- Reads ---------------------------------------------------------------
 
   resolveTicket(ref: string): Ticket {
@@ -3961,114 +1833,15 @@ export class Dispatch {
   }
 
   view(ref: string): TicketView {
-    const ticket = this.resolveTicket(ref);
-    const events = listEvents(this.db, "ticket", ticket.id);
-    return {
-      ticket,
-      acceptanceCriteria: this.acs.listForTicket(ticket.id),
-      repositories: this.repos.listForTicket(ticket.id),
-      // WG-001: ticket detail includes confirmed + suggested scopes. The repo
-      // listForTicket already excludes nothing, so 'rejected' scopes are retained
-      // and visible too (audit), but the listForTicket ordering puts the useful
-      // ones (primary/secondary/suggested/implicit) first.
-      scopes: this.ticketScopes.listForTicket(ticket.id),
-      blockingDecisions: this.decisions.blockingForTicket(ticket.id),
-      resolvedDecisions: this.decisions.resolvedForTicket(ticket.id),
-      dependencies: this.ticketDependencies.listForTicket(ticket.id),
-      evidence: this.enrichEvidenceProvenance(this.evidence.listForTicket(ticket.id)),
-      events,
-      // BBT-001: parse the JSON-encoded test_contract to a structured object so
-      // consumers (CLI, API) never receive a JSON-in-JSON string.
-      testContract: parseTestContract(ticket.test_contract),
-      // FAILURE-DIAGNOSIS: the full ordered "why did #N fail" trail.
-      reworkTrail: this.reworkAttempts.listForTicket(ticket.id),
-      reviewComments: this.reviewCommentSvc.listViews(ticket.id),
-      // PER-REPOSITORY LANDING: each write repo's approved commit and whether it landed.
-      landing: computeLandingStatus(this.db, ticket.id),
-      evalJudgment: currentJudgment(events, enteredReviewAt(ticket.id, events)),
-      regression: this.regressionLinksOf(ticket.id),
-    };
+    return ticketReads.view(this, ref);
   }
 
-  /**
-   * The parts of many tickets' detail in one read (GET /tickets/details): what the
-   * dashboard's Map, Overview and Epics need from each ticket, without one
-   * GET /tickets/:id per ticket. `ids` names the tickets (unknown ones are listed in
-   * `missing`); without it a page of every ticket is read (`limit`/`offset`). Each
-   * ticket row is the summary row (no description, test contract or review feedback).
-   */
   ticketDetailsBatch(
     select: { ids: readonly string[] } | { limit: number; offset: number },
     include: ReadonlySet<TicketDetailPart>,
-    /**
-     * PRINCIPAL SCOPES: a scoped principal's ticket filter. A ticket it may not see is
-     * reported in `missing` (asked by id) or left out of the page and the total.
-     */
     visible?: ((ticketId: string) => boolean) | null,
   ): { details: TicketDetailBatchItem[]; missing: string[]; total: number } {
-    let rows: TicketSummary[];
-    let total: number;
-    const missing: string[] = [];
-    if ("ids" in select) {
-      const byId = new Map<string, TicketSummary>();
-      const unique = [...new Set(select.ids)];
-      const get = this.db.prepare(
-        `SELECT ${TICKET_SUMMARY_COLUMNS.join(", ")} FROM tickets WHERE id = ?`,
-      );
-      for (const id of unique) {
-        const row = get.get(id) as TicketSummary | undefined;
-        if (row && (!visible || visible(row.id))) byId.set(id, row);
-        else missing.push(id);
-      }
-      rows = unique.flatMap((id) => (byId.has(id) ? [byId.get(id)!] : []));
-      total = rows.length;
-    } else if (visible) {
-      // The whole list filtered, then windowed, so `total` counts what it may see.
-      const all = (this.tickets.listPage({}, { summary: true }).tickets as TicketSummary[]).filter(
-        (t) => visible(t.id),
-      );
-      rows = all.slice(select.offset, select.offset + select.limit);
-      total = all.length;
-    } else {
-      const page = this.tickets.listPage(
-        {},
-        { limit: select.limit, offset: select.offset, summary: true },
-      );
-      rows = page.tickets as TicketSummary[];
-      total = page.total;
-    }
-    const details = rows.map((ticket) => {
-      const item: TicketDetailBatchItem = { ticket };
-      if (include.has("repositories")) item.repositories = this.repos.listForTicket(ticket.id);
-      if (include.has("scopes")) item.scopes = this.ticketScopes.listForTicket(ticket.id);
-      if (include.has("dependencies"))
-        item.dependencies = this.ticketDependencies.listForTicket(ticket.id);
-      if (include.has("rework_trail"))
-        item.rework_trail = this.reworkAttempts.listForTicket(ticket.id);
-      if (include.has("events")) item.events = listEvents(this.db, "ticket", ticket.id);
-      if (include.has("evidence"))
-        item.evidence = this.enrichEvidenceProvenance(this.evidence.listForTicket(ticket.id));
-      return item;
-    });
-    return { details, missing, total };
-  }
-
-  /**
-   * Stamp each evidence row with `recorded_by_agent` for the reviewer's trust
-   * surface, derived from the RECORDING ACTOR'S TYPE captured at record time
-   * (`recorded_by_actor_type`). A row is agent self-reported iff that type is
-   * "agent"; a human operator or the factory/system actor is a trusted principal.
-   * This is the dependable signal — `created_by` cannot be used because an agent's
-   * `created_by` is a runner-supplied id (e.g. "mcp-agent"), never the registered
-   * agent identity. Legacy rows carry a null type (recorded before this column);
-   * their flag is left `false` (⇒ no agent chip, no trust claim asserted). Never
-   * fabricated — always the real recorded actor type.
-   */
-  private enrichEvidenceProvenance(rows: Evidence[]): EvidenceView[] {
-    return rows.map((e) => ({
-      ...e,
-      recorded_by_agent: e.recorded_by_actor_type === "agent",
-    }));
+    return ticketReads.ticketDetailsBatch(this, select, include, visible);
   }
 
   list(status?: TicketStatus): Ticket[] {
@@ -4088,27 +1861,16 @@ export class Dispatch {
     return this.tickets.listPage(filter, page);
   }
 
-  /** Events for a ticket (resolved by id or number). */
   listTicketEvents(ref: string): WorkEvent[] {
-    const ticket = this.resolveTicket(ref);
-    return listEvents(this.db, "ticket", ticket.id);
+    return ticketReads.listTicketEvents(this, ref);
   }
 
-  /**
-   * Active claims joined to their ticket + agent (human "active factory" view).
-   * SQUAD: each row also carries the agent's presentation (`agent_display`).
-   */
   listActiveClaims(): Array<ActiveClaimView & { agent_display: AgentDisplay | null }> {
-    const displays = this.squadSvc.displayMap();
-    return this.claimsRepo
-      .listActive()
-      .map((c) => ({ ...c, agent_display: displays.get(c.agent_id) ?? null }));
+    return ticketReads.listActiveClaims(this);
   }
 
-  /** All registered agents, newest first, each with its presentation (`agent_display`). */
   listAgents(): Array<Agent & { agent_display: AgentDisplay | null }> {
-    const displays = this.squadSvc.displayMap();
-    return this.agents.list().map((a) => ({ ...a, agent_display: displays.get(a.id) ?? null }));
+    return ticketReads.listAgents(this);
   }
 
   // --- Squad (club identity + agent display names; presentation only) ---------
@@ -4140,19 +1902,8 @@ export class Dispatch {
     return this.squadSvc.updateAgentDisplay(ref, input, actor);
   }
 
-  /**
-   * The presentation of each REGISTERED agent among `ids`, keyed by id. Ids that
-   * are not registered agents (a human actor, "mcp-agent", …) are left out.
-   */
   agentDisplayFor(ids: Iterable<string | null | undefined>): Record<string, AgentDisplay> {
-    const displays = this.squadSvc.displayMap();
-    const out: Record<string, AgentDisplay> = {};
-    for (const id of ids) {
-      if (!id) continue;
-      const d = displays.get(id);
-      if (d) out[id] = d;
-    }
-    return out;
+    return ticketReads.agentDisplayFor(this, ids);
   }
 
   /**
@@ -4175,16 +1926,6 @@ export class Dispatch {
     return newId();
   }
 
-  /**
-   * Record the start of a background run (a detached API-spawned child). Returns
-   * the run id so the caller can later {@link markRunEnd} it (and the dashboard
-   * can poll its status). The row is created `running`; `pid`/`log_path` are
-   * stored as given (null when the platform withheld a pid or no log was opened).
-   * The repo (the run's target, when known) is recorded for the panel.
-   *
-   * `id` may be supplied by the caller (so a per-run log file can be named by the
-   * id BEFORE the row is written); when omitted a fresh id is minted.
-   */
   recordRunStart(input: {
     id?: string;
     kind: RunKind;
@@ -4192,38 +1933,14 @@ export class Dispatch {
     pid?: number | null;
     log_path?: string | null;
   }): { id: string } {
-    const id = input.id ?? newId();
-    this.runs.insertStart({
-      id,
-      kind: input.kind,
-      repo: input.repo ?? null,
-      pid: input.pid ?? null,
-      log_path: input.log_path ?? null,
-      started_at: this.clock.now(),
-    });
-    return { id };
+    return runRegistry.recordRunStart(this, input);
   }
 
-  /**
-   * Mark a tracked run ended. Derives status from the child's exit code: 0 ⇒
-   * `succeeded`, any other value (or a null/unknown code) ⇒ `failed`, unless the
-   * caller states it (a poll the runner refused exits 0 and is `failed`). A no-op if
-   * the run was already swept to `unknown` (the first writer wins — see
-   * {@link RunRepository.markEnd}), so a late exit listener never resurrects a
-   * reconciled row.
-   */
   markRunEnd(
     id: string,
     input: { exit_code: number | null; detail?: string | null; status?: Run["status"] },
   ): void {
-    const status: Run["status"] = input.status ?? (input.exit_code === 0 ? "succeeded" : "failed");
-    this.runs.markEnd({
-      id,
-      status,
-      ended_at: this.clock.now(),
-      exit_code: input.exit_code,
-      detail: input.detail ?? null,
-    });
+    return runRegistry.markRunEnd(this, id, input);
   }
 
   /**
@@ -4258,14 +1975,8 @@ export class Dispatch {
 
   // --- Plan sessions (H9 — durable async plan-build chat) -------------------
 
-  /**
-   * Create a fresh active plan session. Any currently active session is
-   * archived as 'abandoned' first so only one session is active at a time.
-   */
   createPlanSession(): PlanSession {
-    const now = this.clock.now();
-    this.planSessions.archiveAllActive(now);
-    return this.planSessions.create({ id: newId(), created_at: now, updated_at: now });
+    return planning.createPlanSession(this);
   }
 
   /**
@@ -4284,68 +1995,25 @@ export class Dispatch {
     return this.planSessions.getActive();
   }
 
-  /**
-   * Append a message to a plan session and optionally update the brief / stored
-   * plan. Returns the updated session, or null when the id is not found.
-   *
-   * `brief` should be supplied only on the first user turn (the opening line).
-   * `plan` should be supplied when the decompose helper returns a plan phase, as
-   * the raw plan JSON so the panel can restore the full proposal on reload.
-   */
   appendPlanMessage(
     id: string,
     message: Omit<PlanMessage, "ts">,
-    opts: { brief?: string | null; plan?: unknown } = {},
+    opts?: { brief?: string | null; plan?: unknown },
   ): PlanSession | null {
-    return this.planSessions.appendMessage({
-      id,
-      message: { ...message, ts: this.clock.now() },
-      ...(opts.brief !== undefined ? { brief: opts.brief } : {}),
-      ...(opts.plan !== undefined ? { plan_json: JSON.stringify(opts.plan) } : {}),
-      updated_at: this.clock.now(),
-    });
+    return planning.appendPlanMessage(this, id, message, opts);
   }
 
-  /**
-   * Archive a plan session. `status` must be 'confirmed' (the user approved the
-   * plan and tickets are being created) or 'abandoned' (the user started fresh or
-   * closed the panel without confirming). A no-op on an already-archived session.
-   */
   archivePlanSession(id: string, status: "confirmed" | "abandoned"): void {
-    this.planSessions.archive({ id, status, updated_at: this.clock.now() });
+    return planning.archivePlanSession(this, id, status);
   }
 
-  /**
-   * Record a plan conversation that happened elsewhere (`gaffer plan` in the terminal)
-   * as a finished session, so it sits in the plan-session history the dashboard reads
-   * (GET /plan-sessions) beside the panel's own. The messages are the panel's shape (a
-   * user turn's text; an assistant turn is the POST /plan-build reply as JSON) and the
-   * stored plan is the one created. Written in one transaction straight into its final
-   * status, so it is never the active session and never archives the one a dashboard
-   * panel has open (createPlanSession would abandon it).
-   */
   recordPlanSession(input: {
     brief: string;
     messages: ReadonlyArray<Omit<PlanMessage, "ts">>;
     plan: unknown;
     status: "confirmed" | "abandoned";
   }): PlanSession {
-    return inTransaction(this.db, () => {
-      const now = this.clock.now();
-      const id = newId();
-      this.planSessions.create({ id, created_at: now, updated_at: now });
-      input.messages.forEach((m, i) => {
-        this.planSessions.appendMessage({
-          id,
-          message: { role: m.role, content: m.content, ts: now },
-          ...(i === 0 ? { brief: input.brief } : {}),
-          ...(i === input.messages.length - 1 ? { plan_json: JSON.stringify(input.plan) } : {}),
-          updated_at: now,
-        });
-      });
-      this.planSessions.archive({ id, status: input.status, updated_at: now });
-      return this.planSessions.getById(id)!;
-    });
+    return planning.recordPlanSession(this, input);
   }
 
   /**
@@ -4358,32 +2026,8 @@ export class Dispatch {
 
   // --- Board + dashboard reads (read-only showcase surfaces) ----------------
 
-  /**
-   * Kanban board: tickets grouped into columns, AC progress enriched. Read-only.
-   *
-   * @param repo Optional repository name/id — when supplied, only tickets
-   *   linked to that repo are included. Omit for the full board.
-   */
   board(repo?: string, window?: BoardWindow, visible?: (ticketId: string) => boolean): BoardView {
-    const view = this.boardSvc.board(repo, window, visible);
-    // Approved and held cards carry where their landing is (one read per such ticket).
-    const states = new Map<string, LandingState>();
-    const stamp = (c: BoardCard): BoardCard => {
-      if (c.status !== "ready_for_merge" && c.status !== "blocked") return c;
-      if (!states.has(c.id)) {
-        const ls = this.landingState(c.id);
-        if (ls) states.set(c.id, ls);
-      }
-      const ls = states.get(c.id);
-      return ls ? { ...c, landing_state: ls } : c;
-    };
-    return {
-      ...view,
-      columns: view.columns.map((col) => ({ ...col, cards: col.cards.map(stamp) })),
-      closed: view.closed.map(stamp),
-      wontDo: view.wontDo.map(stamp),
-      readyForMerge: view.readyForMerge.map(stamp),
-    };
+    return ticketReads.board(this, repo, window, visible);
   }
 
   /**
@@ -4395,48 +2039,19 @@ export class Dispatch {
     return this.autonomyRecommendations.recommend();
   }
 
-  /**
-   * Cross-ticket activity feed. SQUAD: an event whose actor is a registered agent
-   * carries that agent's presentation as `agent_display` (null otherwise).
-   */
   activity(query: ActivityQuery): {
     events: Array<ActivityEvent & { agent_display: AgentDisplay | null }>;
     total: number;
   } {
-    const page = this.boardSvc.activity(query);
-    const displays = this.squadSvc.displayMap();
-    return {
-      total: page.total,
-      events: page.events.map((e) => ({
-        ...e,
-        agent_display: (e.actor_id !== null && displays.get(e.actor_id)) || null,
-      })),
-    };
+    return ticketReads.activity(this, query);
   }
 
   dashboard(): DashboardSummary {
     return this.boardSvc.dashboard();
   }
 
-  /**
-   * The HUMAN's queue (Track 2a): everything the operator owns — pending
-   * decisions the agent delegated (WITH reasons), tickets awaiting review
-   * sign-off, and regulated tickets awaiting ready-approval / reviewer
-   * assignment — each with what it is, which ticket, the reason and how long it
-   * has waited. A read model only: EXCLUDES agent-owned `blocked`/rework churn,
-   * changes no semantics and adds no gate. Read-only.
-   */
   humanQueue(): HumanQueue {
-    const q = this.humanQueueSvc.build();
-    return {
-      ...q,
-      items: q.items.map((it) => {
-        const t = it.ticket;
-        if (!t || (t.status !== "ready_for_merge" && t.status !== "blocked")) return it;
-        const ls = this.landingState(t.id);
-        return ls ? { ...it, ticket: { ...t, landing_state: ls } } : it;
-      }),
-    };
+    return ticketReads.humanQueue(this);
   }
 
   /**
@@ -4449,40 +2064,12 @@ export class Dispatch {
     return verifyEventChain(this.db);
   }
 
-  /**
-   * The EXPLICIT repair path for unhashed work_events rows (`dispatch events rechain
-   * --confirm`). Opening the DB no longer re-chains them: on a chained DB a NULL
-   * hash means the row was blanked, and silently re-hashing it is what let an edit
-   * plus "blank the hashes after it" verify clean. An operator who has checked the
-   * rows can re-anchor the chain here; the re-anchor is itself appended to the log
-   * (`events.rechained`, with the old and new head hashes and what was broken), so
-   * it never happens without a trace. Rows that already carry a hash are untouched.
-   */
   rechainEventLog(actor: Actor): {
     rechained: number;
     oldHead: string;
     newHead: string;
     verification: ChainVerification;
   } {
-    return inTransaction(this.db, () => {
-      const before = verifyEventChain(this.db);
-      const oldHead = latestEventHash(this.db);
-      const rechained = backfillEventChain(this.db);
-      const newHead = latestEventHash(this.db);
-      writeEvent(this.db, {
-        entity_type: "event_log",
-        entity_id: "work_events",
-        actor,
-        event_type: "events.rechained",
-        payload: {
-          rechained,
-          old_head: oldHead,
-          new_head: newHead,
-          was_broken_at_seq: before.brokenAtSeq,
-          was_reason: before.reason,
-        },
-      });
-      return { rechained, oldHead, newHead, verification: verifyEventChain(this.db) };
-    });
+    return eventLog.rechainEventLog(this, actor);
   }
 }

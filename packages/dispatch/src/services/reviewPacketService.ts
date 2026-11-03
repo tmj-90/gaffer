@@ -325,7 +325,12 @@ export interface ReviewPacketDeps {
   acs: AcRepository;
   evidence: EvidenceRepository;
   reworkAttempts: ReworkAttemptRepository;
-  maxAttempts: number;
+  /**
+   * The retry cap shown as attempts N/M. A function is read on each assemble, so a
+   * DISPATCH_MAX_ATTEMPTS saved from Settings shows the cap the next send back enforces
+   * (the review gate reads it the same way).
+   */
+  maxAttempts: number | (() => number);
   /** Whether the independent tester gates this ticket (it tests before review). */
   testerExpected: (ticket: Ticket) => boolean;
   /** The ticket's tester lane (setting, on/off for its repos, repos with no test command). */
@@ -1218,7 +1223,10 @@ export class ReviewPacketService {
       cost: { ...cost, budget_usd: ticket.delivery_budget_usd },
       attempts: {
         attempt_count: ticket.attempt_count,
-        max_attempts: this.deps.maxAttempts,
+        max_attempts:
+          typeof this.deps.maxAttempts === "function"
+            ? this.deps.maxAttempts()
+            : this.deps.maxAttempts,
         rework,
       },
       risk: { level: ticket.risk_level, reasons },

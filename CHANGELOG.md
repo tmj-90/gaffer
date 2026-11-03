@@ -158,6 +158,7 @@ to the same version.
 - A ticket title or criterion text is one line, contradictory flags are refused, and every REST body is parsed with invalid UTF-8 and bodies over 1 MB refused as JSON errors.
 - The event stream no longer goes silent on a cursor past the end, and the dashboard server stops on SIGTERM with a stream open.
 - Settings refuses a dollar cap that is not a number and marks the field, and saving Settings no longer turns autonomy off.
+- The review packet's attempts N/M shows the retry cap saved in Settings, the one the next send back enforces, instead of the cap the dashboard started with.
 - Poll for work says when the runner refused it, run details show "unknown" cost as unknown, and "Delivered today" counts landings.
 - The agent inside the docker sandbox can use git and reach its API on a Linux host, and the MCP bridge socket fits macOS's path limit.
 - Agent installs work behind a TLS-intercepting proxy, and a repo with no origin is "nothing to push".

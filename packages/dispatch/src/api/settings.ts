@@ -712,6 +712,14 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     label: "Oversized: max lines",
     help: "A diff changing more than this many lines is flagged needs_human_review: oversized_diff (a flag, never a fail; 0 turns the lines cap off).",
   },
+  {
+    key: "GAFFER_REVIEW_RULE_REPEAT",
+    type: "int",
+    group: "quality",
+    label: "Review rule: repeats",
+    help: "The same send-back reason or must-fix comment from a person on this many tickets in one repo is proposed as a review-rule lore draft for a person to approve (never auto-approved). 2 to 20; default 3.",
+    min: 2,
+  },
 
   // --- Sandbox: optional OS-level execution confinement ---
   {

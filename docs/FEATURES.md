@@ -751,12 +751,28 @@ structural barrier the whole design hangs on.
   passes, the same scratch merge also gets the tester's test files (only the ones
   it added or changed, never its agent wiring) and the repo's test command runs
   there too — on every landing path, PR mode's gate on the fetched remote
-  included. The tester's files run **by path** with the stack's runner
-  (`node --test <files>`, vitest/jest by path, pytest, `go test` on their
-  packages, `cargo test --test`) where that is well defined, else through the
-  registered command, and each file must show the runner's own evidence that it
+  included. What runs is **the repo's registered test command itself**, with
+  only the tester's files and a proof reporter appended (`npm test` is read as
+  the gated base's `test` script and runs with `node_modules/.bin` on PATH; for
+  go the tester's packages replace `./...`, for cargo `--test <name>` goes
+  before a bare `--`): its env assignments, config file, markers, build tags,
+  features and toolchain all still apply, so an assertion that only runs under
+  `PROFILE_API_V2=1` or `vitest -c ci.config.mjs` runs in the replay too. A
+  command the replay cannot extend safely (a pipeline, `||`, a runner that is
+  not the last command, two runners, `bash -c "..."`) runs as registered, and
+  then only the signed node:test reporter counts as evidence; without it the
+  landing holds. Each file must show the runner's own evidence that it
   ran: a repo whose registered command runs only some files can no longer report
-  a tester file as passed that never executed. For node:test that evidence is a
+  a tester file as passed that never executed. The tester's PASS also binds
+  **which tests passed**: the runner's clean replay in the tester lane records
+  each test that passed in the tester's files (file and full test name, plus
+  node:test's line and column; the pytest node id; go's test name; cargo's test
+  path) on the PASS, and the landing replay requires every one of them to run
+  and pass on the candidate. One that is skipped, todo, renamed or gone holds the
+  landing (`tester_replay_unverified`, naming the tests); one that fails is
+  `tester_replay_red`; another test that passes does not stand in for it. An
+  older PASS without these identities keeps the file-level rule, and its record
+  and ticket page say *file-level evidence only*. For node:test that evidence is a
   line the runner's reporter signs with a per-replay key the test processes never
   see, so a delivery that stops the tester's file and prints "passed" for it
   proves nothing; a run that reports a file it was not given, or a vitest/jest

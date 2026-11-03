@@ -88,6 +88,30 @@ writes to state and cache paths that vary by host and version. If a live run is
 blocked on a path it legitimately needs, the block shows in `$GAFFER_LOG` as a sandbox
 or permission error on that path; add it to `STRICT_ALLOW_HOME`.
 
+### The tester replay's profile
+
+The tester lane's clean replay runs the tester's own test files, so it asks for
+`GAFFER_SANDBOX_PROFILE=replay`. Under `sandbox-exec` that is the profile above with
+these rules after the write grant (so they win):
+
+1. `(deny file-write* (subpath $GAFFER_DATA))`, then writes granted back to the write
+   roots only (the replay's checkout, which lives under `$GAFFER_DATA/worktrees`, and
+   its scratch `HOME`, `TMPDIR` and `PATH` directory). `$GAFFER_DATA` itself and
+   `$STRICT_ALLOW_HOME` are not write roots here.
+2. `(deny file-read-data (subpath $GAFFER_DATA))`, then reads allowed back for the
+   write roots and the read roots (the dependency links and the repository's git
+   directory). Metadata stays readable, so the checkout's own path still resolves.
+3. `(deny file-read* ...)` for `~/.ssh`, `~/.aws`, `~/.config/gh`, `~/.claude`,
+   `~/.npmrc`, `~/.netrc` and `~/.gnupg`.
+
+Under `docker` the replay gets the validation layout below. In both, the command runs
+with an allowlisted environment (no model credential, no `GAFFER_DATA` or
+`DISPATCH_DB`, `wg` and `gaffer` shadowed by refusing stubs), and when `STRICT_MODE=1`
+or `GAFFER_STRICT_REQUIRE=1` asks for a sandbox the host cannot supply, the replay holds
+instead of running. `strict-mode.test.sh` asserts the refusals on macOS;
+`tester-replay-containment.test.mjs` runs everywhere (the docker path through a fake
+`docker`).
+
 ## The `docker` provider
 
 `SANDBOX_PROVIDER=docker` runs each agent in a container (`runner/lib/sandbox-docker.sh`,
@@ -133,7 +157,7 @@ and logs a warning naming the gap. `1` or `0` forces it.
 
 | Data-plane mode | When | What of `$GAFFER_DATA` is in the container |
 | --- | --- | --- |
-| `validation` | `GAFFER_SANDBOX_PROFILE=validation`: the DoD gates and criterion checks | nothing but the worktree, and no model credential |
+| `validation` | `GAFFER_SANDBOX_PROFILE=validation` (the DoD gates and criterion checks) or `replay` (the tester lane's clean replay) | nothing but the worktree, and no model credential; a tester replay gets its proof key's file path, never the key |
 | `bridge` | the launcher set `GAFFER_MCP_BRIDGE_SOCKET` | the socket, the bridged config, the telemetry ledgers, the crew events log |
 | `none` | no `--mcp-config`, or the launcher declared `GAFFER_SANDBOX_DATA_PLANE=none` | the telemetry ledgers and the crew events log |
 | `legacy` | `--mcp-config`, no socket, bridge off | the database directory rw, every non-database entry masked (warned) |

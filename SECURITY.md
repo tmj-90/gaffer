@@ -38,6 +38,7 @@ Test files are under `runner/test/` (`.sh`, `.mjs`) or `packages/*/test/` (`.ts`
 | Gate integrity | Base commit recorded at cut; gate scripts read from it; weakened tests flagged and held | `gate-integrity.test.sh`, `gate-integrity-e2e.test.sh` | It flags, it does not fail; see its limits |
 | Merge gate | Gates rerun on the merge with the current target; lands only that commit, only while the target is unchanged | `e2e-release-gate-merge-combination.test.sh`, `landing-integrity.test.ts` | |
 | Tester replay | The tester's named tests must run and pass on the tested commit and on what lands | `land-tester-replay*.test.sh`, `tester-replay-proof.test.mjs` | What the tests assert; a deliberate attack on the replay |
+| Clean replay containment | The tester's test files run in the gate sandbox seam (`replay` profile) with no model credential, `GAFFER_DATA`, `DISPATCH_DB` or reachable `wg`; strict mode without a sandbox holds; the proof key is a file the reporter unlinks, never an environment variable | `tester-replay-containment.test.mjs`, `tester-run.test.mjs`, `strict-mode.test.sh` (macOS), `sandbox-docker-mounts.test.sh` | Reads outside `$GAFFER_DATA` and HOME's secret folders under `sandbox-exec`; a loader module or the registered command's own steps reading the key file |
 | Acceptance profiles | Commands a person registered behave as registered on the tested commit | `acceptance-profiles.test.ts`, `tester-acceptance.test.mjs` | Whether those commands cover the criteria |
 | Required CI | No recorded PASS for the exact commit is a hold | `ci-required-before-review.test.ts`, `h3-ci-gate.test.sh` | |
 | Landing | Never overwrites an ignored local file; a revocation stops every landing not yet started | `land-ignored-file.test.sh`, `revocation-safe-landing.test.ts` | A landing already started is reported, not undone |
@@ -251,15 +252,45 @@ registered command on the candidate. Not what they assert. The tester's per-crit
 notes are its own claims.
 
 **How hard the evidence is to forge.** node:test events are signed by the reporter with
-a per-replay key never written to a file and removed from the environment test
-processes inherit; other runners' evidence is a JSON report with the runner's shape, a
-by-path file set, or `go test -json` events; printed text never counts. This stops
-printed look-alikes, not code written to forge them: the key stays readable to
-same-user code as the runner's initial environment, and a non-node:test runner gets it
-too. The clean replay, where the identities are measured, runs the tester's files
-unsandboxed as the runner user, so a test there could read the runner's files or call
-the dispatch CLI as the system actor. The identities are evidence against a
-non-adversarial tester, not against tester code attacking the replay.
+a per-replay key that is never in an environment variable. The runner writes it to a
+mode 0600 file with a random name inside a mode 0300 directory nobody can list, in the
+proof directory; only the file's path travels (`GAFFER_REPLAY_PROOF_KEY_FILE`). The
+reporter reads the file and unlinks it when it loads, before any test file runs, and
+signs nothing if the unlink fails; the runner removes a file no reporter consumed. So a
+test that reads every ancestor's `/proc/<pid>/environ` finds the path of a file that is
+already gone. All three replay paths (the clean replay, `land.sh`, `merge-ticket.mjs`)
+use the same helper, and the docker wrapper forwards the path, never the key. Other
+runners' evidence is a JSON report with the runner's shape, a by-path file set, or
+`go test -json` events; printed text never counts.
+
+**The clean replay is contained.** The tester's test files are the tester's own code, so
+the clean replay, where the identities are measured, runs them through the same sandbox
+seam as the gates, with the `replay` profile:
+
+- under `sandbox-exec` it is the validation profile plus read denials for `$GAFFER_DATA`
+  outside the replay's checkout and dependency links, no write grant for `$GAFFER_DATA`,
+  and read denials for `~/.ssh`, `~/.aws`, `~/.config/gh`, `~/.claude`, `~/.npmrc`,
+  `~/.netrc` and `~/.gnupg`;
+- under `docker` it is the validation layout: nothing from `$GAFFER_DATA` is mounted and
+  no model credential is forwarded;
+- the environment is an allowlist (`PATH`, locale, `CI=1`) with a scratch `HOME` and
+  `TMPDIR`: no model credential, no `GAFFER_DATA`, no `DISPATCH_DB`, and `wg` and
+  `gaffer` are shadowed on `PATH` by stubs that refuse;
+- when strict mode asks for a sandbox (`STRICT_MODE=1` or `GAFFER_STRICT_REQUIRE=1`) and
+  the host cannot supply one, the replay holds and the PASS is held unverified with the
+  reason; it never runs the tester's files unsandboxed. With no sandbox configured at
+  all (supervised mode) it runs bare with the stripped environment and the key file.
+
+What remains: a node loader module the registered command imports (`--import
+./test/setup.mjs`) loads before the reporter and can read the key file, and so can the
+registered command's own steps before node starts. In registered mode the runner still
+issues a key for a runner it cannot identify (`sh scripts/test.sh` that runs node
+--test): that wrapper, like any loader it names, comes from the tested commit, never
+from the tester's files, and a delivery's change to a script is already flagged for the
+reviewer (gate integrity). Under `sandbox-exec`, reads outside `$GAFFER_DATA` and the
+listed HOME folders stay open, as for the gates. One key signs one node:test run: a
+second run in the same command, or a pooled flaky rerun of the landing's tests gate,
+proves nothing and holds.
 
 **Acceptance profiles.** For a ticket with the `cli` or `api` profile, the runner runs
 the commands a person registered (human or admin only; refused for agents in the
@@ -450,9 +481,10 @@ a presence boolean, and an argument not on the allowlist is never copied.
   `dispatch events verify` prints somewhere the database's writers cannot reach.
 - **The tester and acceptance evidence prove execution, not intent.** See
   [what its verdict proves](#the-independent-tester-and-what-its-verdict-proves): the
-  replay does not prove what tests assert, its clean run is unsandboxed, it is not proof
-  against a deliberate attack on itself, and the acceptance record's signature is not
-  verified yet.
+  replay does not prove what tests assert, its clean run runs bare when no sandbox is
+  configured, it is not proof against a loader module or test command in the tested
+  commit that reads the key file, and the acceptance record's signature is not verified
+  yet.
 - **Spend is measured after each call.** A single call that runs long past the cap is
   bounded by the per-tick timeout and turn cap, not by the dollar figure. A command
   worker's reported cost is operator-trusted (at no less than its floor).

@@ -22,7 +22,7 @@ computed from other knobs at runtime.
 | Knobs with a runner default | 159 |
 | Knobs editable in the dashboard | 58 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
-| Env reads in code with no default and no UI entry | 85 |
+| Env reads in code with no default and no UI entry | 86 |
 
 ## Runner defaults (`runner/factory.config.sh` and `runner/lib/*.sh`)
 
@@ -468,6 +468,7 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `GAFFER_REAPPROVAL_ATTEMPTS` | _(empty)_ | `runner/bin/merge-ticket.mjs` |
 | `GAFFER_REAPPROVAL_BACKOFF_MS` | _(empty)_ | `runner/bin/merge-ticket.mjs` |
 | `GAFFER_REDACTION_MODULE` |  | `runner/lib/acceptance-profiles.mjs` |
+| `GAFFER_REPLAY_PROOF_KEY_FILE` | _(empty)_ | `runner/lib/sandbox-docker.sh` |
 | `GAFFER_REVIEW_TICKET` |  | `packages/dispatch/src/mcp/tools.ts` |
 | `GAFFER_SAFETY_HOOK` |  | `packages/crew/src/safety/liveHook.ts` |
 | `GAFFER_SANDBOX_CLAUDE_BIN` | `claude` | `runner/lib/worker.mjs`, `runner/lib/worker.sh` |

@@ -582,7 +582,11 @@ the two differ, Health and the Review view say *tester lane differs*.
 A ticket that becomes testable with no test contract gets one from its title; replace
 it with `wg ticket test-contract <n> --surface ...` until testing starts. A tester
 PASS counts only when the runner replayed the tester's tests on a clean checkout of
-the tested commit with the repo's registered test command. With no test command (or
+the tested commit with the repo's registered test command. The tester wrote those
+files, so the replay runs them inside the same sandbox as the gates (`docker`, or
+`sandbox-exec` with reads of `$GAFFER_DATA` and your HOME's secret folders denied), with
+no model credential, no factory data and no `wg` in reach. If strict mode is on and this
+host has no sandbox, the PASS is held with that reason rather than replayed bare. With no test command (or
 `GAFFER_TESTER_REPLAY=0`) the PASS is held in Testing, with a note saying how to
 register one (`wg repo set-commands <repo> --test "<cmd>"`). You can record the verdict
 yourself: **Record tester PASS** (reported as a waiver) or **Record tester FAIL** on

@@ -2758,6 +2758,38 @@ else failures.push("ALLOW expected: whitespace-only stdin parses as {} and stays
   else
     failures.push(`CONTRACT missing deny-list: expected fail-closed exit 2, got ${noRules.status}`);
 
+  // Every lib/hook module on its own: with the rest of the tree in place, a module
+  // that is missing, or that no longer parses, still fails CLOSED (exit 2).
+  copyFileSync(
+    resolve(RUNNER, "lib", "dangerous-commands.mjs"),
+    resolve(lone, "lib", "dangerous-commands.mjs"),
+  );
+  const lsCall = JSON.stringify(call("Bash", { command: "ls" }));
+  const whole = spawnHook(lsCall, { hook: resolve(lone, "safety-hook.mjs") });
+  const modules = readdirSync(resolve(lone, "lib", "hook")).filter((f) => f.endsWith(".mjs"));
+  if (whole.status === 0 && modules.length >= 12) passed += 1;
+  else
+    failures.push(
+      `CONTRACT per-module baseline: the whole copy should allow ls (got ${whole.status}) with every module (${modules.length})`,
+    );
+  for (const f of modules) {
+    const p = resolve(lone, "lib", "hook", f);
+    const src = readFileSync(p, "utf8");
+    for (const [how, change] of [
+      ["missing", () => rmSync(p)],
+      ["broken", () => writeFileSync(p, `${src}\n}{\n`)],
+    ]) {
+      change();
+      const r = spawnHook(lsCall, { hook: resolve(lone, "safety-hook.mjs") });
+      if (r.status === 2 && r.stderr.includes("cannot load the decision core")) passed += 1;
+      else
+        failures.push(
+          `CONTRACT ${how} lib/hook/${f}: expected fail-closed exit 2, got ${r.status}`,
+        );
+      writeFileSync(p, src);
+    }
+  }
+
   for (const d of [CT_ROOT, ledgerDir, lone]) rmSync(d, { recursive: true, force: true });
 }
 

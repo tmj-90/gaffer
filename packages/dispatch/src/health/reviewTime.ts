@@ -21,6 +21,12 @@
  *                         (`accepted_without_human_decision`), never as zero minutes, so widening
  *                         agent approval cannot read as faster review.
  *   review-ready to decision = the full span of every human-decided round.
+ *   active (approximate) = per human-decided round with an open event, the decision minus
+ *                         the LAST open (`ticket.review_opened` or `ticket.review_raw_opened`)
+ *                         in the round, capped at two hours: closer to the minutes a person
+ *                         spent than decision time (which starts at the first open, so a page
+ *                         left open overnight counts), still not reading time. Per accepted
+ *                         ticket only when every human round of it has an open.
  *   approved without opening raw logs = done tickets whose approving (human) round has
  *                         an open event and no `ticket.review_raw_opened` in it, over
  *                         such instrumented tickets.
@@ -54,6 +60,23 @@ export interface Percentiles {
 
 export type ReviewTimeBasis = "decision_time" | "full_span" | "mixed" | "none";
 
+/** The approximate attention figure (see the module comment). */
+export interface ActiveReviewTime {
+  readonly basis: "last_open_to_decision_capped";
+  readonly cap_ms: number;
+  readonly note: string;
+  readonly per_accepted_ticket: Percentiles;
+  readonly per_round: Percentiles;
+  /** Rounds whose last-open-to-decision span was longer than the cap. */
+  readonly capped_rounds: number;
+}
+
+/** Two hours: a longer gap from the last open to the decision is not one sitting. */
+export const ACTIVE_CAP_MS = 2 * 60 * 60_000;
+
+export const ACTIVE_NOTE =
+  "Active (approximate): from the last time a person opened the ticket or a raw view in the round to their decision, capped at 2 hours. Closer to attention than decision time, still not reading time.";
+
 export interface ReviewTimeReport {
   readonly measure: "human_review_time_per_accepted_ticket";
   readonly basis: ReviewTimeBasis;
@@ -74,6 +97,8 @@ export interface ReviewTimeReport {
     readonly count: number;
     readonly pct: number | null;
   };
+  /** Last open -> decision, capped: the approximate attention figure. */
+  readonly active: ActiveReviewTime;
   readonly limits: readonly string[];
 }
 
@@ -143,6 +168,15 @@ export function isApprovingRound(r: ReviewRound): boolean {
   return r.exitTo !== null && APPROVED_TO.has(r.exitTo);
 }
 
+function lastInRound(opens: readonly ReviewOpen[], r: ReviewRound): number | null {
+  let last: number | null = null;
+  for (const o of opens) {
+    if (o.ticketId !== r.ticketId || o.atMs < r.enteredMs || o.atMs > r.exitMs) continue;
+    if (last === null || o.atMs > last) last = o.atMs;
+  }
+  return last;
+}
+
 function firstInRound(opens: readonly ReviewOpen[], r: ReviewRound): number | null {
   let first: number | null = null;
   for (const o of opens) {
@@ -156,6 +190,7 @@ export const REVIEW_TIME_LIMITS: readonly string[] = [
   "decision time runs from the first time a person opened the ticket in Review to their decision: it is wall-clock time with the page open, not reading time",
   "a round with no open event (older history, a decision from the CLI, a read-only viewer) counts its full span in review, queue wait included",
   "only human or admin decisions count; tickets that only an agent approved are counted apart",
+  "active time runs from the last open in the round to the decision, capped at two hours: an approximation of attention, not a measurement of reading",
 ];
 
 const BASIS_NOTE: Record<ReviewTimeBasis, string> = {
@@ -204,6 +239,35 @@ export function reviewTimeReport(input: {
     ticketOpened.set(r.ticketId, o);
   }
 
+  // ACTIVE (approximate): the last open of either kind to the decision, capped.
+  const allOpens = [...input.opens, ...input.rawOpens];
+  const activeRounds: number[] = [];
+  const activeTicket = new Map<string, { sum: number; all: boolean }>();
+  let capped = 0;
+  for (const r of humanRounds) {
+    const last = lastInRound(allOpens, r);
+    const a = done.has(r.ticketId) ? (activeTicket.get(r.ticketId) ?? { sum: 0, all: true }) : null;
+    if (last === null) {
+      if (a) activeTicket.set(r.ticketId, { ...a, all: false });
+      continue;
+    }
+    const span = r.exitMs - last;
+    if (span > ACTIVE_CAP_MS) capped += 1;
+    const v = Math.min(span, ACTIVE_CAP_MS);
+    activeRounds.push(v);
+    if (a) activeTicket.set(r.ticketId, { sum: a.sum + v, all: a.all });
+  }
+  const active: ActiveReviewTime = {
+    basis: "last_open_to_decision_capped",
+    cap_ms: ACTIVE_CAP_MS,
+    note: ACTIVE_NOTE,
+    per_accepted_ticket: percentiles(
+      [...activeTicket.values()].filter((x) => x.all).map((x) => x.sum),
+    ),
+    per_round: percentiles(activeRounds),
+    capped_rounds: capped,
+  };
+
   let allOpened = true;
   let noneOpened = true;
   for (const o of ticketOpened.values()) {
@@ -246,6 +310,7 @@ export function reviewTimeReport(input: {
       count: clean,
       pct: instrumented > 0 ? Math.round((clean / instrumented) * 1000) / 10 : null,
     },
+    active,
     limits: REVIEW_TIME_LIMITS,
   };
 }

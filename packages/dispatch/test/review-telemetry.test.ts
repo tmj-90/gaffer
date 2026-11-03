@@ -333,6 +333,7 @@ describe("wg stats and wg ticket lane-verdict", () => {
       const out = renderStats(computeStats(wg.db, new Date().toISOString(), {}));
       expect(out).toContain("First-pass acceptance: n/a (0 of 0 done");
       expect(out).toContain("Human review time per accepted ticket: median n/a, p75 n/a, p90 n/a");
+      expect(out).toMatch(/active \(approximate: last open to decision, capped at /);
       expect(out).toMatch(
         /Escaped-defect rate: n\/a \(0 of 0 accepted changes.*Counts only what a person filed/,
       );

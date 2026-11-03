@@ -656,6 +656,9 @@ export function renderStats(stats: StatsReport): string {
       `Human review time per accepted ticket: median ${span(p.median_ms)}, p75 ${span(p.p75_ms)}, p90 ${span(p.p90_ms)} over ${p.n} (${rt.basis.replace("_", " ")}; ${rt.accepted_without_human_decision} accepted with no human decision not counted)`,
     );
     lines.push(
+      `  active (approximate: last open to decision, capped at ${span(rt.active.cap_ms)}): median ${span(rt.active.per_accepted_ticket.median_ms)} per accepted ticket over ${rt.active.per_accepted_ticket.n}, ${span(rt.active.per_round.median_ms)} per round over ${rt.active.per_round.n} (${rt.active.capped_rounds} capped)`,
+    );
+    lines.push(
       `  queue wait median ${span(rt.queue_wait.median_ms)} · decision median ${span(rt.decision.median_ms)} (${rt.rounds.with_open_event} of ${rt.rounds.human_decided} rounds opened in Review) · review-ready to decision median ${span(rt.review_ready_to_decision.median_ms)} · approved without opening raw logs ${pc(rt.approved_without_raw_logs.pct)} of ${rt.approved_without_raw_logs.instrumented}`,
     );
     const e = m.escaped_defects;

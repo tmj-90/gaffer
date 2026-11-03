@@ -13762,6 +13762,15 @@ function usagePauseNote(p) {
  * never a zero) with the sentence that says what it counts; the escaped-defect rate
  * counts only the regression links a person filed, and says so.
  */
+/**
+ * The active (approximate) review time beside the basis note: the last open in a round to
+ * the decision, capped, labelled as an approximation. Empty when the server has none.
+ */
+function activeNote(a) {
+  if (!a || !a.per_accepted_ticket || a.per_accepted_ticket.median_ms == null) return "";
+  return ` Active, approximate: median ${fmtDuration(a.per_accepted_ticket.median_ms)} per accepted ticket (last open to decision, capped at ${fmtDuration(a.cap_ms)}).`;
+}
+
 function fourMeasures(health) {
   const fp = health.first_pass || null;
   const rt = health.review_time || null;
@@ -13779,7 +13788,7 @@ function fourMeasures(health) {
   const rtNote = !rt
     ? "not served by this server"
     : per && per.n
-      ? `median of ${per.n} accepted · p75 ${fmtDuration(per.p75_ms)} · p90 ${fmtDuration(per.p90_ms)}. ${rt.basis_note || ""}`
+      ? `median of ${per.n} accepted · p75 ${fmtDuration(per.p75_ms)} · p90 ${fmtDuration(per.p90_ms)}. ${rt.basis_note || ""}${activeNote(rt.active)}`
       : rt.basis_note || "no accepted ticket has a human review decision yet";
   const acNote =
     ac && ac.cost_per_accepted_change_usd != null

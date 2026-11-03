@@ -154,6 +154,14 @@ const MEASURES = {
     basis_note: "Mixed: decision time where the Review view recorded an open.",
     per_accepted_ticket: { n: 3, median_ms: 50 * 60_000, p75_ms: 55 * 60_000, p90_ms: 58 * 60_000 },
     accepted_without_human_decision: 1,
+    active: {
+      basis: "last_open_to_decision_capped",
+      cap_ms: 2 * 60 * 60_000,
+      note: "Active (approximate)",
+      per_accepted_ticket: { n: 2, median_ms: 12 * 60_000, p75_ms: null, p90_ms: null },
+      per_round: { n: 3, median_ms: 9 * 60_000, p75_ms: null, p90_ms: null },
+      capped_rounds: 0,
+    },
   },
   escaped_defects: {
     measure: "escaped_defect_rate",
@@ -214,6 +222,8 @@ describe("web: Health shows the four top-level measures", () => {
     expect(rt?.note).toMatch(/median of 3 accepted/);
     expect(rt?.note).toMatch(/p90 58m/);
     expect(rt?.note).toMatch(/Mixed/);
+    expect(rt?.note).toMatch(/Active, approximate: median 12m per accepted ticket/);
+    expect(rt?.note).toMatch(/capped at 2h/);
     const cost = measure("Accepted-change cost");
     expect(cost?.value).toBe("$1.25");
     expect(cost?.note).toMatch(/1\.4 attempts each/);

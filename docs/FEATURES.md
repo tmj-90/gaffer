@@ -379,7 +379,11 @@ usage ledger and the ticket transition log, and says only what those can show:
   after. `wg review-rules propose` proposes by hand. The proposal never holds up
   your reject or comment: it runs after the response, a memory failure changes
   nothing you did, and after one the dashboard waits five minutes before it tries
-  the memory CLI again.
+  the memory CLI again. Reading the list is bounded too: the dashboard reuses each
+  rule's status from memory for a minute (an approve or reject in the Memory view reads
+  afresh), and when memory does not answer it stops asking for the rest of that read and
+  for the next minute, so a slow memory makes the statuses read as unknown, not the page
+  slow.
 
 - **Rework.** A ticket is *sent back* when a reviewer or the tester rejects it,
   or when the runner retries it after a failed gate; both count. Every delivery
@@ -1013,6 +1017,20 @@ on this commit*) and the runner sends the new head to the tester first. An agent
 approval of an untested commit (your autonomy grant, no person in the loop) still sends
 it to the tester, whose PASS then goes to Ready for merge. With CI required, the runner
 sends a delivery to the tester only once CI has passed on its head.
+**Where the lane setting is read.** The dashboard and the runner each read
+`GAFFER_TESTING` from their own environment. The value you save in Settings
+(settings.json) reaches both as a default, and an explicit environment value wins in
+each, so the common case has one source: set it in Settings and export it in neither
+shell. If the two still differ (say `GAFFER_TESTING=0` is exported only in the shell that
+runs `gaffer run`), the runner records the lane it routed under each time it sends
+tickets to the tester, and the dashboard compares that record with its own setting.
+Health then shows *tester lane differs* first among the tester notices. On a ticket the
+two settings decide differently, the Review view adds one *Tester lane differs* flag to
+its Flags list. An approval refused as not tested then says the runner will not send the
+ticket to the tester, instead of promising a route that will not come. After a push past
+the commit the tester passed, the strip's Tester cell reads *Not this commit* instead of a
+green *Passed*. Under the default, Settings' formation shows Testing as not played, and
+Go/No-Go as No-go, when no registered repository has a test command.
 A ticket that becomes testable with no test contract gets one from its title,
 so the tester's contract always names the behaviour under test (one line built
 from the title, not a real endpoint or command); you can replace it with

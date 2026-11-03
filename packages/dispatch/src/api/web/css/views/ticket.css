@@ -948,3 +948,22 @@
     margin: 8px 0 0;
   }
 }
+
+/* ACCEPTANCE PROFILES: the profile line, its editor and the runner's transcripts. */
+.tk-accept-current {
+  margin: 0 0 8px;
+}
+.tk-accept-edit textarea {
+  width: 100%;
+  margin: 8px 0;
+}
+.tk-accept-transcript summary {
+  cursor: pointer;
+}
+.tk-accept-pre {
+  max-height: 24rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.85em;
+}

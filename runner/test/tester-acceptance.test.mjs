@@ -523,6 +523,181 @@ console.log("== P3: payload binding, signature, cap, sandbox refusal ==");
     "without the redaction module nothing runs or is recorded",
   );
 }
+console.log("== P8: process hygiene, the wrapper's environment, body caps ==");
+{
+  const alivePid = (pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const waitFor = async (cond, ms = 5000) => {
+    for (const t0 = Date.now(); Date.now() - t0 < ms; await new Promise((r) => setTimeout(r, 50)))
+      if (cond()) return true;
+    return cond();
+  };
+  // A command that exits 0 but leaves a child running in its group.
+  const daemonPid = resolve(WORK, "daemon.pid");
+  const left = lib.runCliProfile({
+    checkout: SCRATCH,
+    spec: {
+      cases: [
+        {
+          argv: [
+            "node",
+            "-e",
+            `const c = require("node:child_process").spawn("sleep", ["60"], { stdio: "ignore" }); require("node:fs").writeFileSync(${JSON.stringify(daemonPid)}, String(c.pid)); c.unref(); process.exit(0);`,
+          ],
+        },
+      ],
+    },
+    redact,
+    sb: noSb,
+    env: baseEnv,
+    deadline: far(),
+  });
+  const dpid = Number(readFileSync(daemonPid, "utf8"));
+  check(
+    await waitFor(() => !alivePid(dpid)),
+    "a child a command left running is killed with its group",
+    String(dpid),
+  );
+  check(left.cases[0]?.left_running === true, "the transcript says the command left one running");
+  if (alivePid(dpid)) process.kill(dpid, "SIGKILL");
+
+  // The spec's env reaches the command only, never the sandbox wrapper; reserved names drop.
+  const penv = lib.profileEnv({
+    home: "/h",
+    extra: {
+      FOO: "1",
+      HOME: "/root",
+      TMPDIR: "/x",
+      BASH_ENV: "/evil.sh",
+      LD_PRELOAD: "/evil.so",
+      GAFFER_SANDBOX_DRY_RUN: "1",
+      SANDBOX_PROVIDER: "none",
+    },
+    base: { PATH: "/usr/bin" },
+  });
+  check(
+    penv.FOO === "1" &&
+      penv.HOME === "/h" &&
+      !("BASH_ENV" in penv) &&
+      !("LD_PRELOAD" in penv) &&
+      !("GAFFER_SANDBOX_DRY_RUN" in penv) &&
+      !("SANDBOX_PROVIDER" in penv) &&
+      penv.TMPDIR !== "/x",
+    "a spec cannot set HOME, TMPDIR, loader or shell hooks, or the runner's settings",
+    JSON.stringify(penv),
+  );
+  const [wbin, wargs, wenv] = lib.wrappedSpawn(
+    ["node", "x.mjs"],
+    { ...penv, NODE_OPTIONS: "--require ./evil.cjs" },
+    { ok: true, wrap: ["sandbox-exec", "-f", "/p.sb"], docker: false },
+    { PATH: "/usr/bin", GAFFER_SANDBOX_IMAGE: "img:1", DISPATCH_API_TOKEN: "t" },
+  );
+  check(
+    wbin === "sandbox-exec" &&
+      !("FOO" in wenv) &&
+      !("NODE_OPTIONS" in wenv) &&
+      !("DISPATCH_API_TOKEN" in wenv) &&
+      wenv.GAFFER_SANDBOX_IMAGE === "img:1" &&
+      wenv.GAFFER_SANDBOX_PROFILE === "validation" &&
+      wargs.slice(2, 4).join(" ") === "env -i" &&
+      wargs.includes("FOO=1") &&
+      wargs.slice(-2).join(" ") === "node x.mjs",
+    "the wrapper gets the runner's sandbox settings only; the command's env goes through env -i inside",
+    JSON.stringify([wbin, wargs, wenv]),
+  );
+
+  // A required sandbox the host cannot supply refuses even with GAFFER_DOD_SANDBOX=0.
+  const optOut = lib.profileSandbox({
+    writeRoots: [SCRATCH],
+    env: {
+      ...baseEnv,
+      GAFFER_STRICT_REQUIRE: "1",
+      SANDBOX_PROVIDER: "none",
+      GAFFER_DOD_SANDBOX: "0",
+    },
+  });
+  check(
+    optOut.ok === false,
+    "the GAFFER_DOD_SANDBOX=0 opt-out does not run what a required sandbox refused",
+  );
+
+  // A probe's body is read up to a cap; a service that exits during the probes fails.
+  const bigServer =
+    'require("node:http").createServer((q, s) => { if (q.url === "/health") return s.end("ok"); if (q.url === "/big") { s.writeHead(200); const c = Buffer.alloc(65536, 120); let n = 0; const w = () => { while (n < 64) { n += 1; if (!s.write(c)) return s.once("drain", w); } s.end(); }; return w(); } if (q.url === "/bye") { s.end("bye"); return setImmediate(() => process.exit(0)); } s.writeHead(404); s.end(); }).listen(Number(process.env.PORT), "127.0.0.1");';
+  const big = await lib.runApiProfile({
+    checkout: SCRATCH,
+    spec: {
+      boot_argv: ["node", "-e", bigServer],
+      health_path: "/health",
+      probes: [{ path: "/big", expect: { status: 200 } }],
+    },
+    redact,
+    sb: noSb,
+    env: baseEnv,
+    deadline: far(),
+  });
+  check(
+    big.passed === true &&
+      big.cases[0].response.body.bytes === lib.BODY_READ_MAX &&
+      big.cases[0].response.body.truncated_at === lib.BODY_READ_MAX,
+    "a 4 MB body is read only up to the cap, and the record says so",
+    JSON.stringify(big.cases[0]?.response?.body)?.slice(0, 200),
+  );
+  const bye = await lib.runApiProfile({
+    checkout: SCRATCH,
+    spec: {
+      boot_argv: ["node", "-e", bigServer],
+      health_path: "/health",
+      probes: [{ path: "/bye", expect: { status: 200 } }],
+    },
+    redact,
+    sb: noSb,
+    env: baseEnv,
+    deadline: far(),
+  });
+  check(
+    bye.passed === false,
+    "a service that exits during the probes does not pass",
+    JSON.stringify(bye.cases.map((c) => c.checks)),
+  );
+
+  // SIGTERM to the profile process kills the service it booted.
+  const pidFile2 = resolve(WORK, "server2.pid");
+  const specFile = resolve(WORK, "sigterm-spec.json");
+  writeFileSync(
+    specFile,
+    JSON.stringify({
+      boot_argv: ["node", "server.mjs"],
+      env: { NEVER_HEALTHY: "1", PID_FILE: pidFile2 },
+      health_path: "/health",
+      boot_timeout_ms: 60000,
+      probes: [{ path: "/items", expect: { status: 200 } }],
+    }),
+  );
+  rmSync(pidFile2, { force: true });
+  const { spawn: spawnAsync } = await import("node:child_process");
+  const proc = spawnAsync(
+    process.execPath,
+    [LIB, "run", "--profile", "api", "--checkout", SCRATCH, "--spec-file", specFile],
+    { env: baseEnv, stdio: "ignore" },
+  );
+  await waitFor(() => existsSync(pidFile2) && readFileSync(pidFile2, "utf8").length > 0, 10000);
+  const spid = Number(readFileSync(pidFile2, "utf8"));
+  proc.kill("SIGTERM");
+  await new Promise((r) => proc.once("exit", r));
+  check(
+    await waitFor(() => !alivePid(spid)),
+    "SIGTERM to the profile process kills the service it booted",
+    String(spid),
+  );
+  if (alivePid(spid)) process.kill(spid, "SIGKILL");
+}
 spawnSync("git", ["-C", REPO, "worktree", "remove", "--force", SCRATCH]);
 
 // ── tester-run --live with a fixture dispatch DB ───────────────────────────

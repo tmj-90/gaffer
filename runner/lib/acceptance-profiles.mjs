@@ -102,9 +102,18 @@ export function acceptanceTimeoutMs(env = process.env) {
 }
 
 /**
+ * Names a spec's env may not set (dispatch refuses them too): the runner's throwaway HOME
+ * and TMPDIR, the dynamic loader's and the shells' startup hooks, and the runner's own
+ * GAFFER_ / SANDBOX_ settings.
+ */
+export const RESERVED_ENV =
+  /^(HOME|TMPDIR|BASH_ENV|ENV|SHELLOPTS|BASHOPTS|PROMPT_COMMAND|IFS|LD_.*|DYLD_.*|BASH_FUNC_.*|GAFFER_.*|SANDBOX_.*|STRICT_MODE)$/;
+
+/**
  * The stripped environment a profile command runs in (an allowlist, never the runner's
- * env): PATH, the throwaway HOME, TMPDIR, locale, CI=1, then the spec's own variables.
- * No DISPATCH_API_TOKEN, GITHUB_TOKEN, model credential or cloud key crosses.
+ * env): PATH, the throwaway HOME, TMPDIR, locale, CI=1, then the spec's own variables
+ * (a reserved name, RESERVED_ENV, is dropped). No DISPATCH_API_TOKEN, GITHUB_TOKEN, model
+ * credential or cloud key crosses.
  */
 export function profileEnv({ home, extra = {}, base = process.env }) {
   const env = {
@@ -117,7 +126,7 @@ export function profileEnv({ home, extra = {}, base = process.env }) {
   };
   if (base.LC_ALL) env.LC_ALL = base.LC_ALL;
   for (const [k, v] of Object.entries(extra || {}))
-    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(k)) env[k] = String(v);
+    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(k) && !RESERVED_ENV.test(k)) env[k] = String(v);
   return env;
 }
 
@@ -129,8 +138,8 @@ export function profileEnv({ home, extra = {}, base = process.env }) {
 export function profileSandbox({ writeRoots, env = process.env }) {
   if (!sandboxWanted(env))
     return { ok: true, wrap: [], label: "none (no OS sandbox configured)", docker: false };
-  if (falsy(env.GAFFER_DOD_SANDBOX))
-    return { ok: true, wrap: [], label: "none (GAFFER_DOD_SANDBOX=0)", docker: false };
+  // The provider is asked first, as tick.sh does: a REQUIRED sandbox the host cannot supply
+  // refuses the run even with the GAFFER_DOD_SANDBOX=0 opt-out (which only drops the wrap).
   const wrapped = sandboxWrapArgv({
     writeRoots: writeRoots.join("\n"),
     readRoots: "",
@@ -143,6 +152,8 @@ export function profileSandbox({ writeRoots, env = process.env }) {
   });
   if (!wrapped.ok)
     return { ok: false, wrap: [], label: "refused", docker: false, message: wrapped.message };
+  if (falsy(env.GAFFER_DOD_SANDBOX))
+    return { ok: true, wrap: [], label: "none (GAFFER_DOD_SANDBOX=0)", docker: false };
   const docker = wrapped.wrap.some((w) => /(^|\/)sandbox-docker\.sh$/.test(w));
   return {
     ok: true,
@@ -154,12 +165,28 @@ export function profileSandbox({ writeRoots, env = process.env }) {
   };
 }
 
-/** The spawn [bin, args, env] for argv under the sandbox posture `sb` (see profileSandbox). */
+/**
+ * The spawn [bin, args, env] for argv under the sandbox posture `sb` (see profileSandbox).
+ * The wrapper (the provider lib/sandbox.sh named) starts OUTSIDE the sandbox, so it gets
+ * the runner's sandbox settings and nothing from the spec: the command's own environment
+ * reaches only the command, through `env -i` inside the wrap.
+ */
 export function wrappedSpawn(argv, env, sb, base = process.env) {
   if (!sb.wrap.length) return [argv[0], argv.slice(1), env];
+  const fromRunner = Object.fromEntries(
+    Object.entries(base).filter(
+      ([k]) =>
+        /^(GAFFER_SANDBOX_|DOCKER_)/.test(k) ||
+        k === "GAFFER_EGRESS_ALLOW_FILE" ||
+        k === "SANDBOX_PROVIDER",
+    ),
+  );
   const wrapperEnv = {
-    ...env,
+    ...fromRunner,
     PATH: base.PATH || env.PATH,
+    HOME: env.HOME,
+    TMPDIR: env.TMPDIR,
+    LANG: env.LANG,
     RUNNER_DIR,
     GAFFER_HOME: base.GAFFER_HOME || GAFFER_HOME,
     GAFFER_DATA: base.GAFFER_DATA || resolve(GAFFER_HOME, ".gaffer"),
@@ -167,21 +194,17 @@ export function wrappedSpawn(argv, env, sb, base = process.env) {
     GAFFER_MCP_BRIDGE_SOCKET: "",
     GAFFER_SANDBOX_DATA_PLANE: "none",
   };
-  const inner = sb.docker
-    ? [
-        "env",
-        "-i",
-        ...Object.entries({
-          ...env,
-          HOME: base.GAFFER_SANDBOX_HOME || "/root",
-          PATH:
-            base.GAFFER_SANDBOX_PATH ||
-            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-          TMPDIR: "/tmp",
-        }).map(([k, v]) => `${k}=${v}`),
-        ...argv,
-      ]
-    : argv;
+  const innerEnv = sb.docker
+    ? {
+        ...env,
+        HOME: base.GAFFER_SANDBOX_HOME || "/root",
+        PATH:
+          base.GAFFER_SANDBOX_PATH ||
+          "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        TMPDIR: "/tmp",
+      }
+    : env;
+  const inner = ["env", "-i", ...Object.entries(innerEnv).map(([k, v]) => `${k}=${v}`), ...argv];
   return [sb.wrap[0], [...sb.wrap.slice(1), ...inner], wrapperEnv];
 }
 
@@ -395,8 +418,14 @@ export function runCliProfile({ checkout, spec, redact, sb, env = process.env, d
         maxBuffer: MAX_OUTPUT_BYTES,
         detached: true,
       });
-      if (r.pid && (r.signal || r.error)) {
+      // The command's process group is killed whatever happened: a command that exits 0
+      // can still leave a child running (a daemon, a watcher) that would outlive the run
+      // and the checkout. Whether one was left is recorded.
+      let leftRunning = false;
+      if (r.pid) {
         try {
+          process.kill(-r.pid, 0);
+          leftRunning = !r.signal && !r.error;
           process.kill(-r.pid, "SIGKILL");
         } catch {
           /* the group is already gone */
@@ -433,6 +462,7 @@ export function runCliProfile({ checkout, spec, redact, sb, env = process.env, d
         stdout: streamRecord(ran.stdoutText, redact),
         stderr: streamRecord(ran.stderrText, redact),
         fs: diffTrees(before, after),
+        ...(leftRunning ? { left_running: true } : {}),
         checks,
         held: checks.every((k) => k.held),
       });
@@ -585,6 +615,38 @@ export function probeChecks(expect, resp, schemaDoc) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** The most of one probe's response body the runner reads (the rest is not read). */
+export const BODY_READ_MAX = 1024 * 1024;
+
+/** Read a fetch response's body as text, at most `max` bytes. → { text, truncated } */
+async function readBodyCapped(r, max = BODY_READ_MAX) {
+  if (!r.body) return { text: "", truncated: false };
+  const reader = r.body.getReader();
+  const chunks = [];
+  let size = 0;
+  let truncated = false;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (size + value.byteLength > max) {
+      chunks.push(Buffer.from(value.buffer, value.byteOffset, max - size));
+      size = max;
+      truncated = true;
+      await reader.cancel().catch(() => null);
+      break;
+    }
+    chunks.push(Buffer.from(value.buffer, value.byteOffset, value.byteLength));
+    size += value.byteLength;
+  }
+  return { text: Buffer.concat(chunks).toString("utf8"), truncated };
+}
+
+/**
+ * The process groups a profile run has started and not yet killed: the runner's own
+ * SIGTERM / SIGINT / SIGHUP kills them before this process exits (see main).
+ */
+const LIVE_GROUPS = new Set();
+
 /** Kill a detached process group: TERM, a short grace, then KILL. Never throws. */
 async function killGroup(child) {
   if (!child || !child.pid) return;
@@ -645,6 +707,7 @@ export async function runApiProfile({ checkout, spec, redact, sb, env = process.
         detached: true,
         stdio: ["ignore", "pipe", "pipe"],
       });
+      if (child.pid) LIVE_GROUPS.add(child.pid);
     } catch (e) {
       return {
         passed: false,
@@ -736,10 +799,10 @@ export async function runApiProfile({ checkout, spec, redact, sb, env = process.
           redirect: "manual",
           signal: AbortSignal.timeout(Math.max(1000, Math.min(10000, deadline - Date.now()))),
         });
-        const text = await r.text();
+        const { text, truncated } = await readBodyCapped(r);
         const h = {};
         for (const k of HEADER_SUBSET) if (r.headers.get(k) !== null) h[k] = r.headers.get(k);
-        resp = { status: r.status, headers: h, body: text };
+        resp = { status: r.status, headers: h, body: text, truncated };
       } catch (e) {
         cases.push({
           name,
@@ -773,15 +836,36 @@ export async function runApiProfile({ checkout, spec, redact, sb, env = process.
         response: {
           status: resp.status,
           headers: resp.headers,
-          body: streamRecord(resp.body, redact, BODY_EXCERPT_CHARS),
+          body: {
+            ...streamRecord(resp.body, redact, BODY_EXCERPT_CHARS),
+            ...(resp.truncated ? { truncated_at: BODY_READ_MAX } : {}),
+          },
         },
         duration_ms: Date.now() - t1,
         checks,
         held: checks.every((k) => k.held),
       });
     }
+    // The probes are evidence about the booted service only while it was running: one that
+    // exited during them may have left the port to something else (a short settle lets an
+    // exit right after the last answer be seen).
+    if (cases.length) await sleep(200);
+    if (child && (child.exitCode !== null || child.signalCode !== null) && cases.length) {
+      cases.push({
+        name: "the service kept running",
+        held: false,
+        checks: [
+          {
+            what: "the service kept running through the probes",
+            held: false,
+            detail: `exited ${child.exitCode ?? child.signalCode}`,
+          },
+        ],
+      });
+    }
   } finally {
     await killGroup(child);
+    if (child?.pid) LIVE_GROUPS.delete(child.pid);
     boot.stdout = streamRecord(stdout, redact, 1500);
     boot.stderr = streamRecord(stderr, redact, 1500);
     rmSync(home, { recursive: true, force: true });
@@ -944,6 +1028,19 @@ export function verifyEvidencePayload(payload, key) {
 
 // ── CLI entry ────────────────────────────────────────────────────────────────
 async function main(argv) {
+  // A runner stopping this process (its own timeout, a shutdown) must not leave a booted
+  // service behind: kill every live group, then exit.
+  for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"])
+    process.on(sig, () => {
+      for (const pid of LIVE_GROUPS) {
+        try {
+          process.kill(-pid, "SIGKILL");
+        } catch {
+          /* gone */
+        }
+      }
+      process.exit(128 + (sig === "SIGHUP" ? 1 : sig === "SIGINT" ? 2 : 15));
+    });
   const opts = {};
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === "--profile") opts.profile = argv[++i];

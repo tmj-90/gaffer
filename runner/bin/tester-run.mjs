@@ -912,7 +912,8 @@ export function runAcceptanceProfile({ profile, spec }, checkout, env = process.
       {
         encoding: "utf8",
         timeout: acceptanceTimeoutMs(env) + 60000,
-        killSignal: "SIGKILL",
+        // SIGTERM, so the profile process kills the service group it booted before it exits.
+        killSignal: "SIGTERM",
         maxBuffer: 16 * 1024 * 1024,
         env: { ...env, GAFFER_DATA },
       },

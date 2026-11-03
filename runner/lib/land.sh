@@ -719,12 +719,16 @@ _gaffer_merge_gate_tester_replay() {
   [ "$dodrc" = "0" ] && _renv+=(GAFFER_DOD_INSTALL=0)
   # The key reaches dod-regate.sh on stdin (printf is a builtin: on no command line), never
   # in its environment.
+  local _rt0="$SECONDS"
   if [ -n "$ikey" ]; then
     rout="$(printf '%s\n' "$ikey" | env "${_renv[@]}" GAFFER_REPLAY_PROOF_KEY_STDIN=1 bash "${RUNNER_DIR:-.}/bin/dod-regate.sh" "$wt" "$label:tester-replay" "$icmd" - "$_MG_TARGET" 2>/dev/null)"; rrc=$?
   else
     rout="$(env "${_renv[@]}" bash "${RUNNER_DIR:-.}/bin/dod-regate.sh" "$wt" "$label:tester-replay" "$icmd" - "$_MG_TARGET" 2>/dev/null)"; rrc=$?
   fi
   ikey=""
+  # Phase timing: the replay's gate run on the merge candidate, so a slow landing on a CI
+  # runner can be told from a fixed wait.
+  log "$who: #$num TESTER REPLAY: the gate run on the candidate took $((SECONDS - _rt0))s (rc $rrc)"
   # A key file no reporter consumed goes now, whatever the run did (the proof step below
   # removes it too; a red run never gets there).
   if [ -n "$ikdir" ] && [ -d "$ikdir" ]; then chmod 700 "$ikdir" 2>/dev/null; rm -rf "$ikdir" 2>/dev/null; fi

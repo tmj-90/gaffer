@@ -13,7 +13,7 @@
 [![Nightly](https://github.com/tmj-90/gaffer/actions/workflows/nightly.yml/badge.svg)](https://github.com/tmj-90/gaffer/actions/workflows/nightly.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
-![The Overview: the Team sheet with sign-offs, an approved change, a blocked and a paused ticket beside the Tactics board, where numbered shirts stand on the tickets three agents hold](docs/img/match-day-overview.png)
+![The Overview headline and scoreboard: eight things need you, the blocked ticket that leads them, three agents on the pitch, six tickets delivered today and the wage bill against a $25 daily budget](docs/img/match-day-scoreboard.png)
 
 Gaffer is a software factory I run on my own machine. I give it tickets, or a one-line idea that it breaks into tickets, and it works through them in throwaway git worktrees while I get on with something else. When I come back there's a short list of diffs waiting for me, each with evidence that the tests really ran. Nothing merges until I've read the diff and approved it.
 
@@ -125,6 +125,8 @@ To run it in a container instead, export `ANTHROPIC_API_KEY` (or `CLAUDE_CODE_OA
 
 A gaffer is the manager, so the dashboard is match day. The Overview opens on a scoreboard showing how many things need you, how many agents are on the pitch, what's been delivered today (the tickets that landed since midnight UTC, the same ones the Floor's lorry shows) and the wage bill against the daily budget. Beside it is the Team sheet, a numbered list of everything waiting on you with one action on each row: deliveries to sign off, decisions to answer, blocked tickets, approved work waiting to merge, strict-pack tickets that need a reviewer or a ready approval, tickets whose dependency was cancelled, deliveries paused at a cap (Continue… offers Continue and Stop) and, as one row, the lore drafts awaiting your approval (it opens Memory). The Tactics board is a drawn pitch with the ticket lifecycle running left to right and one channel per repo. Each agent is a numbered shirt standing on the ticket it holds, and chalk arrows show the moves of the last three hours. Review becomes The gaffer's sign-off, with the flags, the gates, the acceptance criteria and the diff on one screen. Under the title, a verdict strip puts what the runner recorded above what the agent wrote: each gate and the command it ran, the test count the runner saw, the tester's verdict, cost and turns, the attempt and its rework, the risk reasons and the reviewed-commit pin. Each acceptance criterion shows the runner's exit code or "no machine evidence", and an agent summary that claims a whole-suite test count the runner didn't see is flagged.
 
+![The Overview: the Team sheet with sign-offs, an approved change, a blocked and a paused ticket beside the Tactics board, where numbered shirts stand on the tickets the agents hold](docs/img/match-day-overview.png)
+
 ![The Tactics board: the lifecycle from Ready to Done drawn as a pitch with one channel per repo, three agents' shirts on claimed tickets and chalk arrows for the last three hours' moves](docs/img/match-day-tactics-board.png)
 
 ![The review packet: gates passed with their commands, the tester's PASS on the tested commit, one commit across gates, diff and tester, cost, attempt 2 after a Fix-these round, and the Behavioural surface listing completeTask's caller and test](docs/img/review-packet.png)
@@ -155,7 +157,7 @@ The other screens, each in [docs/FEATURES.md](docs/FEATURES.md):
 
 *Health: what the usage ledger and the event log can show, and nothing they can't.*
 
-![Club history for taskflow-core: approved lore and a draft awaiting signature, the repo digest, and the feature ledger as shipped, building and backlog](docs/img/memory.png)
+![Club history for one repo: approved lore and a draft awaiting signature, the repo digest, and the feature ledger as shipped, building and backlog](docs/img/memory.png)
 
 *Memory: a repo's digest, its feature ledger and the lore delivery agents read.*
 

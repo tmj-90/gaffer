@@ -350,7 +350,7 @@ has backed yet.*
   suspected**, with the first run's output kept. `GAFFER_DOD_FLAKY_RERUN=0` turns it
   off.
 
-![The gaffer's sign-off for a ticket whose risk the scout raised: the verdict strip, the sign-off box, the flags and the diff](img/review.png)
+![The gaffer's sign-off for a second ticket in review: the verdict strip, the sign-off box, the flags and the diff](img/review.png)
 
 *The sign-off for a delivery the tester passed, waiting for a person: the runner's
 verdict strip above, Approve beside the flags, and the server-computed diff.*
@@ -439,7 +439,7 @@ human-gated knowledge the factory works from:
   can't run these. Lore is never silently rewritten: every edit snapshots the previous
   version (`memory history <id>`).
 
-![Club history for taskflow-core: the lore on the record and a draft awaiting signature, the repo digest, and the feature ledger as shipped, building and backlog](img/memory.png)
+![Club history for one repo: the lore on the record and a draft awaiting signature, the repo digest, and the feature ledger as shipped, building and backlog](img/memory.png)
 
 *Club history (`#/memory`) for one repo: its digest, the feature ledger, and the lore
 delivery agents read, with a draft waiting for your signature.*
@@ -632,7 +632,7 @@ API. What a profile does and does not prove is in
 acceptance profile, the runtime transcript the runner recorded on each tested commit,
 and the tester's passes.*
 
-![A ticket page: its state and the action that is yours, the criteria with the runner's checks, the attempts with their model and cost, the Independent testing card and the timeline](img/ticket.png)
+![A ticket page in review: Your move, each attempt with its model, the delivery's files, the campaign it belongs to, the brief, both criteria satisfied by the runner's checks, the Escaped defects card and the match report](img/ticket.png)
 
 ### Budget, polling and usage limits
 

@@ -971,7 +971,9 @@ human-gated knowledge the factory works from:
 - **Pre-work scout**: before a delivery starts, the runner works out where the change
   likely lands, with no model: the files the ticket names, the files in a stack
   trace it quotes (`at fn (src/x.ts:42:7)`, `File "app/x.py", line 9`, a Java frame,
-  an absolute path from another machine matched to the tree), and what the code
+  an absolute or Windows path from another machine matched to the tree; a frame
+  that matches two files is listed as not placed, never guessed, and one whose
+  directories the tree lacks says it matched by file name only), and what the code
   index says imports or tests them, two hops at most. At most 25 files, each with
   why it was picked ("named", "imports calculateInvoice through src/index.ts",
   "tests src/invoice.ts", "stack trace (line 42)", "2 hops", config / migration /
@@ -984,7 +986,12 @@ human-gated knowledge the factory works from:
   a previous attempt sent back, a named symbol with 10 or more callers, a named
   module no test imports): it can only raise the declared level, never lower it and
   never to critical. The router routes on the raised level, the Review packet shows
-  it, and the packet is kept as `$GAFFER_DATA/scout/ticket-N/attempt-K.json`.
+  it, and the packet is kept as `$GAFFER_DATA/scout/ticket-N/attempt-K.json`. The
+  delivery's usage ledger row carries that routed (effective) level as its `risk`;
+  the review rows keep the declared one. The security second-opinion lane still
+  reads the declared level, so a raise does not add a security reviewer by itself.
+  Dispatch stores the ticket's own risk level as the declared one, so no record can
+  claim a raise from a lower level.
   Each delivery launch also appends one line to `context-selection.jsonl`: the files,
   file cards and skills it was given, each with its reason, the model and the
   router's reasons. Health's *Pre-work scout* card counts how many attempts the scout
@@ -993,14 +1000,18 @@ human-gated knowledge the factory works from:
   report: the arms are observational). `GAFFER_SCOUT_PACKET=0` turns it off.
 - **A bounded model scout, when you turn it on.** `GAFFER_SCOUT=auto` adds one
   read-only model call for a ticket whose effective risk is medium or higher
-  (`on`: every delivery; `off`, the default: never). It reads the repo with Read,
+  (`on`: every delivery; `off`, the default: never). A new ticket is medium unless
+  someone sets it lower, so `auto` runs on every ticket not marked low. It reads the repo with Read,
   Grep and Glob only, for `GAFFER_SCOUT_MAX_TURNS` turns (6), on the router's cheap
   tier, and answers with at most 8 files, 8 symbols, 10 short implementation notes
   and 3 questions. The runner keeps a path only when it exists at the base commit
   and a symbol only when its file contains it, and shows the rest as "scout
   suggested (a model's reading)". It is booked in the usage ledger as kind `scout`,
   the budget admission and the usage pause apply as for every launch, and a
-  failed or refused call leaves the deterministic packet as it was.
+  failed or refused call leaves the deterministic packet as it was. A call that ran
+  and was killed is still booked (the ledger's estimate), and with the command worker
+  (`GAFFER_WORKER_PROVIDER=command`) the model scout does not run, because that
+  contract cannot limit the tools to Read, Grep and Glob.
 - **Lore** — the team's recorded conventions, decisions, gotchas, and cross-repo
   boundaries. It's **read-only in the product**: agents *draft* lore through an
   MCP review gate, and a human approves it in the Memory view or from the

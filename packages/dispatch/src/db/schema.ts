@@ -1,5 +1,5 @@
 /**
- * Dispatch SQLite schema (adapted from docs/05-database-schema.sql).
+ * Dispatch SQLite schema.
  *
  * Differences from the Postgres reference: booleans are stored as INTEGER (0/1),
  * timestamps as TEXT (ISO-8601, UTC), IDs as TEXT. CHECK constraints and the

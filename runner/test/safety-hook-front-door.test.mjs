@@ -113,6 +113,11 @@ for (const cmd of [
   "env memory approve 7vk3qm9b",
   'eval "memory approve 7vk3qm9b"',
   "echo 7vk3qm9b | xargs memory approve",
+  // The code-index writer: the Review's callers row is read from it (reading stays open).
+  "memory index build --repo-root /tmp/x --canonical github.com/o/r",
+  "node packages/memory/dist/bin/memory.js index build --repo-root /tmp/x",
+  `MEMORY_DB=x node ${PKG}/memory/dist/bin/memory.js index build --repo-root /tmp/x --full`,
+  "npx memory 'index' build --repo-root /tmp/x",
   "node ../gaffer/runner/bin/merge-ticket.mjs --ticket 3",
   // A path-qualified wrapper or interpreter, an option's value before the script,
   // `builtin`, and launchers that run the script for you.
@@ -152,6 +157,9 @@ for (const cmd of [
   'grep -rn "memory approve" docs',
   "memory search archive",
   "memory show 7vk3qm9b",
+  "memory index neighbours --paths src/a.ts --json",
+  "node packages/memory/dist/bin/memory.js index stats --json",
+  "git commit -m 'memory index build is the runner job'",
   "memory list --status draft --json",
   'eval "$(ssh-agent -s)"',
   "eval 'echo gaffer plan'",

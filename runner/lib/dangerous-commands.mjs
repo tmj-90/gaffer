@@ -477,6 +477,19 @@ export const DANGEROUS_COMMANDS = [
     crewFlags: false,
   },
   {
+    // The memory CLI's CODE INDEX writer. The runner builds the index at onboard and after
+    // a merge; the Review's Behavioural surface lists a change's callers and tests from it,
+    // so an agent rebuilding it (from a doctored tree, under the repo's canonical) could
+    // hide the files its change breaks. Reading it (`index neighbours`, `index stats`)
+    // stays allowed. Same launch forms as the human verbs above.
+    re: new RegExp(
+      String.raw`(?:\bnode\b[^\n;&|]*[\s/]memory(?:\.js)?|${CMD_POS}(?:(?:npx|bunx|pnpx)(?:[ \t]+-${TOK})*[ \t]+|(?:pnpm|npm|yarn)(?:[ \t]+-${TOK})*[ \t]+(?:(?:exec|dlx|x)[ \t]+(?:-${TOK}[ \t]+)*)?)?memory)[ \t]+["']?index["']?[ \t]+["']?build["']?${WORD_END}`,
+    ),
+    why: "the memory CLI's code-index build (memory index build) — the runner builds the index the Review's callers row is read from; an agent may read it (index neighbours / stats), never rebuild it",
+    example: "node packages/memory/dist/bin/memory.js index build --repo-root /tmp/x",
+    crewFlags: false,
+  },
+  {
     re: /\bsqlite3\b[^\n|;&]*(?:\$\{?(?:DISPATCH_DB|MEMORY_DB)\}?|[^\s'"]*(?:dispatch|memory)[^\s'"]*\.sqlite\b)/i,
     why: "raw sqlite3 on the Dispatch/Memory database (use the scoped MCP, not the raw DB)",
     example: "sqlite3 dispatch.sqlite 'update tickets'",

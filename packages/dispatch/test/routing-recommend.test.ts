@@ -200,6 +200,7 @@ describe("routing recommend", () => {
       n: 12,
       differs_in: ["tier"],
       overrides: { tier: "cheap" },
+      vs_overrides: {},
       acceptance: { mean: 0.08, ci95: [0, 0.2] as [number, number] },
       spend_usd: { mean: -0.4, ci95: [-0.6, -0.2] as [number, number] },
       attempts: { mean: 0 },
@@ -215,6 +216,48 @@ describe("routing recommend", () => {
     ]);
     expect(few.proposals).toEqual([]);
     expect(few.not_proposed.join("\n")).toMatch(/4 tickets, under the minimum 10/);
+  });
+
+  it("an experiment proposes only against a baseline that ran the default tier", () => {
+    // Review: `--arm a:tier=premium --arm b:tier=cheap` differs only in the tier, but its
+    // evidence compares cheap with premium, not with the default tier the diff replaces.
+    const card = world([{ model: "model-b", usd: 0.9, from: 1, count: 12 }]);
+    const cmp = {
+      arm: "cheap",
+      vs: "baseline",
+      n: 12,
+      differs_in: ["tier"],
+      overrides: { tier: "cheap" },
+      acceptance: { mean: 0.08, ci95: [0, 0.2] as [number, number] },
+      spend_usd: { mean: -0.4, ci95: [-0.6, -0.2] as [number, number] },
+      attempts: { mean: 0 },
+    };
+    const other = Object.keys(reg!.registry.tiers).find(
+      (t) => t !== "cheap" && t !== reg!.registry.phaseDefaults.implement,
+    ) as string;
+    const onOther = recommend(card, [
+      {
+        path: "o/results.json",
+        mode: "live",
+        comparisons: [{ ...cmp, vs_overrides: { tier: other } }],
+      },
+    ]);
+    expect(onOther.proposals).toEqual([]);
+    expect(onOther.not_proposed.join("\n")).toMatch(
+      /its baseline did not run the default implement tier/,
+    );
+    const unsaid = recommend(card, [{ path: "u/results.json", mode: "live", comparisons: [cmp] }]);
+    expect(unsaid.proposals).toEqual([]);
+    const named = recommend(card, [
+      {
+        path: "n/results.json",
+        mode: "live",
+        comparisons: [
+          { ...cmp, vs_overrides: { tier: reg!.registry.phaseDefaults.implement as string } },
+        ],
+      },
+    ]);
+    expect(named.proposals).toHaveLength(1);
   });
 
   it("the Health line is report-only wording", () => {

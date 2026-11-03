@@ -18,7 +18,7 @@
  *     such class ("cheaper, no worse"), or when it is at least 10 points better on first-pass
  *     acceptance in every such class ("better, costs more": a trade-off a person weighs).
  *   - experiment: a live matched experiment whose arm differs from its baseline only in the
- *     implement tier, over at least the minimum number of tickets, whose paired difference in
+ *     implement tier, whose baseline ran the default implement tier, over at least the minimum number of tickets, whose paired difference in
  *     acceptance has a 95% interval at or above zero and whose mean spend difference is below
  *     zero. A stub-mode experiment proves the pipeline only and never proposes.
  */
@@ -42,6 +42,8 @@ export interface ExperimentComparison {
   readonly n: number;
   readonly differs_in: readonly string[];
   readonly overrides: Readonly<Record<string, string>>;
+  /** The baseline arm's overrides (absent in results written before the field). */
+  readonly vs_overrides?: Readonly<Record<string, string>>;
   readonly acceptance: {
     readonly mean: number | null;
     readonly ci95: readonly [number, number] | null;
@@ -247,6 +249,16 @@ export function recommendRouting(input: {
       if (c.differs_in.length !== 1 || c.differs_in[0] !== "tier") continue;
       const tier = c.overrides.tier;
       if (!tier || tier === defTier || !registry.tiers[tier]) continue;
+      // The proposal moves the DEFAULT tier, so the baseline must have run the default
+      // tier (named, or left to the registry). A baseline on another tier, or results
+      // that do not say what the baseline ran, compare two other tiers: never proposed.
+      const vsTier: string | null = c.vs_overrides ? (c.vs_overrides.tier ?? defTier) : null;
+      if (vsTier !== defTier || c.vs_overrides?.model) {
+        notProposed.push(
+          `experiment ${ex.path} arm ${c.arm}: its baseline did not run the default ${PROPOSABLE_ROLE} tier ${defTier}`,
+        );
+        continue;
+      }
       const lo = c.acceptance.ci95?.[0];
       const spend = c.spend_usd.mean;
       if (c.n < min) {

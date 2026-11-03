@@ -53,6 +53,8 @@
 94	branch-switch-fresh.test.sh
 90	poll-overlap-run-state.test.sh
 89	resume-abort.test.sh
+# replay-manifest came in after that run: its slowest LOCAL run (-j 1 on a shared box), until the next refresh.
+160	replay-manifest.test.sh
 84	e2e-memory-routing.test.sh
 70	sandbox-docker-delivery-seam.test.sh
 65	rework-final-trail.test.sh

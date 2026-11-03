@@ -1819,6 +1819,8 @@ gaffer_lane_verdict() {
   local mod="$RUNNER_DIR/lib/usage-ledger.mjs" attempt=""
   [ -f "$mod" ] && attempt="$(node "$mod" --latest-delivery-attempt --ticket "$ticket" 2>/dev/null || true)"
   model="${model#--model }"; model="${model#--model=}"
+  # REPLAY MANIFEST: the verdict also goes on the ticket's latest attempt manifest.
+  declare -F gaffer_manifest_annotate >/dev/null 2>&1 && gaffer_manifest_annotate "$ticket" "$lane" "$verdict"
   wg ticket lane-verdict "$ticket" --lane "$lane" --verdict "$verdict" ${commit:+--commit "$commit"} \
     ${attempt:+--attempt-id "$attempt" --attempt-id-basis latest_delivery_row} ${held:+--held-reason "$(printf '%s' "$held" | tr '\n' ' ' | cut -c1-300)"} \
     ${model:+--model "$model"} --as system >/dev/null 2>&1 \
@@ -2739,6 +2741,15 @@ export GAFFER_REQUIRE_CI GAFFER_CI_POLL_ATTEMPTS GAFFER_CI_POLL_INTERVAL_SECS
 # See docs/eval-harness.md.
 : "${GAFFER_EVAL_JUDGE:=0}"
 
+# MATCHED EXPERIMENTS (runner/eval/experiment.sh, `gaffer eval experiment`): the same
+# tickets under two or more arms of settings, paired differences per ticket. Stub mode (the
+# default) is free and ignores the dollar cap; a LIVE run (--live) needs a hard USD cap for
+# the whole run, which also caps every call, and still passes the factory's own budget
+# admission and usage pause. A person starts one: the safety hook denies it to an agent.
+: "${GAFFER_EXPERIMENT_MAX_USD:=}"       # Hard USD cap of one LIVE experiment run (every call is capped at what is left); required for --live, empty = live mode refuses
+: "${GAFFER_EXPERIMENT_MAX_TICKETS:=5}"  # At most this many tickets in one experiment (each runs once per arm)
+: "${GAFFER_EXPERIMENT_MAX_ATTEMPTS:=2}" # Attempts per ticket and arm: the first plus reworks after a failed gate, every one counted
+
 # REVIEW RULES (dispatch): the same send-back reason or must-fix comment from a person
 # (after dropping ids, paths and numbers) on this many tickets in one repo is proposed as a
 # lore convention draft tagged review-rule, which a person approves (gaffer lore approve or
@@ -2758,6 +2769,16 @@ export GAFFER_REVIEW_RULE_REPEAT
 # opt-in (GAFFER_SCOUT). Always fail-soft.
 # shellcheck source=lib/scout.sh
 [ -f "$RUNNER_DIR/lib/scout.sh" ] && source "$RUNNER_DIR/lib/scout.sh"
+# The replay manifest of each delivery attempt (gaffer_manifest_start / _finish / _close /
+# _annotate): what an offline experiment re-runs and the routing scorecard joins on.
+# Measurements only; always fail-soft. Stubs keep tick.sh's calls safe without the lib.
+# shellcheck source=lib/replay-manifest.sh
+if [ -f "$RUNNER_DIR/lib/replay-manifest.sh" ]; then
+  source "$RUNNER_DIR/lib/replay-manifest.sh"
+else
+  gaffer_manifest_start() { :; }; gaffer_manifest_gates() { :; }; gaffer_manifest_finish() { :; }
+  gaffer_manifest_close() { :; }; gaffer_manifest_annotate() { :; }
+fi
 
 # HOST GIT NEVER RUNS REPOSITORY CODE (external review #9, finding 2). Every git the
 # runner runs for bookkeeping (auto-commit, worktrees, fetch/merge/push, status) gets

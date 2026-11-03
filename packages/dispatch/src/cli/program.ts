@@ -7,6 +7,7 @@ import { registerAgent, registerAgentSystem } from "./commands/agent.js";
 import { registerAutonomy } from "./commands/autonomy.js";
 import { registerClub } from "./commands/club.js";
 import { registerReviewRules } from "./commands/reviewRules.js";
+import { registerRouting } from "./commands/routing.js";
 import { registerDecisions } from "./commands/decisions.js";
 import { registerDiagnostics } from "./commands/diagnostics.js";
 import { registerEpic } from "./commands/epic.js";
@@ -198,6 +199,7 @@ export function buildProgram({ name = cliName() }: { name?: string } = {}): Comm
   registerReview(program);
   registerAgentSystem(program);
   registerDiagnostics(program);
+  registerRouting(program);
   registerPortability(program);
   registerPrincipal(program);
   registerNotify(program);

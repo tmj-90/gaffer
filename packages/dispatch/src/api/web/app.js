@@ -14283,6 +14283,66 @@ function scoutCard(health) {
 }
 
 /**
+ * ROUTING SCORECARD (delta gap 4): per provider x model x role x work class, what each
+ * routed model did, with n on every figure; a cell under the minimum reads "too few to
+ * compare" and shows no rate. Cells come in the server's fixed order, never ranked, and
+ * there is no composite score. The one Routing line says whether `wg routing recommend`
+ * has an advisory registry change to show; nothing is applied from here. Null when the
+ * server sends no scorecard.
+ */
+function routingCard(health) {
+  const rs = health.routing_scorecard || null;
+  if (!rs || !Array.isArray(rs.cells)) return null;
+  const rate = (r, unit) => {
+    if (!r) return "n/a";
+    if (r.value === null || r.value === undefined) return `too few to compare (n=${r.n})`;
+    const v = unit === "$" ? money(r.value) : unit === "%" ? `${r.value}%` : `${r.value}`;
+    return `${v} (n=${r.n})`;
+  };
+  const line = (c) => {
+    const head = `${c.role} · ${c.provider} · ${c.model} · risk ${c.risk} · stack ${c.stack}`;
+    if (c.too_few)
+      return el("li", { dataset: { role: c.role, model: c.model } }, [
+        el("strong", {}, head),
+        el("span", { class: "dim" }, ` n=${c.n} · ${c.note || "too few to compare"}`),
+      ]);
+    const spend = `${money(c.spend_usd || 0)} over ${plural(c.calls, "call")}${c.estimated_rows ? `, ${c.estimated_rows} estimated` : ""}${c.unknown_rows ? `, ${c.unknown_rows} of unknown cost left out` : ""}`;
+    const facts =
+      c.role === "implement"
+        ? [
+            `n=${c.n}`,
+            `submitted ${rate(c.submission_pct, "%")}`,
+            `rework ${rate(c.rework_pct, "%")}`,
+            `first pass ${rate(c.first_pass_pct, "%")}`,
+            `attempts per accepted change ${rate(c.attempts_per_accepted_change, "")}`,
+            `cost per accepted change ${rate(c.cost_per_accepted_change_usd, "$")}${c.cost_unknown_rows ? ` (${plural(c.cost_unknown_rows, "call")} of unknown cost left out)` : ""}`,
+            `escaped ${rate(c.escaped_defect_pct, "%")}`,
+            `tester false greens ${rate(c.tester_false_greens, "")}`,
+            spend,
+          ]
+        : [`n=${c.n}`, spend];
+    return el("li", { dataset: { role: c.role, model: c.model } }, [
+      el("strong", {}, head),
+      el("span", {}, ` ${facts.join(" · ")}`),
+    ]);
+  };
+  const r = health.routing || null;
+  return el("section", { class: "card panel routing-panel", "aria-label": "Routing scorecard" }, [
+    panelHead(
+      "Routing scorecard",
+      `${plural(rs.rows, "ledger row")} · ${plural(rs.manifests, "replay manifest")} · minimum n ${rs.min_n}`,
+      null,
+      { kit: "ink" },
+    ),
+    rs.cells.length
+      ? el("ul", { class: "lane-value-list routing-cells" }, rs.cells.map(line))
+      : el("p", { class: "dim" }, "No routed call is in the usage ledger yet."),
+    r ? el("p", { class: "routing-line" }, r.line) : null,
+    el("p", { class: "lane-value-foot" }, rs.footnote || ""),
+  ]);
+}
+
+/**
  * Factory Health / ROI surface. Reads the ONE authoritative /api/health envelope
  * and renders the ROI KPI row (cost/feature, skill hit-rate, spend-by-kind,
  * rework-cost share, measured-coverage %) plus the two newly-wired dead sources:
@@ -14573,6 +14633,8 @@ async function renderHealth() {
   if (codeIndex) wrap.appendChild(codeIndex);
   const scout = scoutCard(health);
   if (scout) wrap.appendChild(scout);
+  const routing = routingCard(health);
+  if (routing) wrap.appendChild(routing);
   if (bouncing) bouncing.id = "health-injuries";
   const wait = treatment ? waitingNote(treatment._waiting) : null;
   if (wait && devFlow) devFlow.appendChild(wait);

@@ -1813,6 +1813,22 @@ const WRAPPER_VALUE_FLAGS = {
   time: new Set(["-f", "--format", "-o", "--output"]),
 };
 
+// Package runners (see resolveEffectiveTokens) and the options of theirs that take
+// their value as the NEXT token (`npx -p pkg cmd`, `pnpm exec --filter x cmd`).
+const PKG_RUNNER_WORDS = new Set(["npx", "bunx", "pnpx"]);
+const PKG_MANAGER_WORDS = new Set(["pnpm", "npm", "yarn"]);
+const PKG_RUNNER_VALUE_FLAGS = new Set([
+  "-p",
+  "--package",
+  "--filter",
+  "-F",
+  "-C",
+  "--dir",
+  "-w",
+  "--workspace",
+  "--prefix",
+]);
+
 // `VAR=value` leading assignment (one or more, space-separated) — these set
 // environment for the command that follows and are NOT the verb.
 const ASSIGNMENT_TOKEN = /^[A-Za-z_][A-Za-z0-9_]*=/;
@@ -1836,6 +1852,34 @@ function resolveEffectiveTokens(tokens) {
     while (i < tokens.length && ASSIGNMENT_TOKEN.test(tokens[i])) i += 1;
     if (i >= tokens.length) return null;
     const word = basename(normalizeVerb(tokens[i]));
+    // A PACKAGE RUNNER runs the program it is given: `npx X`, `bunx X`, `pnpx X`,
+    // `pnpm exec X` / `pnpm dlx X`, `npm exec X` / `npm x X`, `yarn exec X` / `yarn dlx X`
+    // (routing review: `pnpm exec <runner>/gaffer approve 3` and `npx bash <runner>/tick.sh`
+    // read as the package manager's own verb and slipped past the front-door rules and
+    // the factory-code guard). Peel it with its flags (and the value of the ones that
+    // take one) so the real program is the verb. `pnpm test` / `npm run x` stay as they are.
+    const skipPkgFlags = (k) => {
+      while (k < tokens.length && (tokens[k].startsWith("-") || ASSIGNMENT_TOKEN.test(tokens[k])))
+        k += PKG_RUNNER_VALUE_FLAGS.has(normalizeVerb(tokens[k])) ? 2 : 1;
+      return k;
+    };
+    if (PKG_RUNNER_WORDS.has(word)) {
+      i = skipPkgFlags(i + 1);
+      continue;
+    }
+    if (PKG_MANAGER_WORDS.has(word)) {
+      const k = skipPkgFlags(i + 1);
+      const sub = normalizeVerb(tokens[k] ?? "");
+      if (/^(?:exec|dlx|x)$/.test(sub)) {
+        i = skipPkgFlags(k + 1);
+        continue;
+      }
+      // `pnpm gaffer …` / `yarn wg …` run a binary of that name when it is no script.
+      if (sub && PRIV_CLIS.has(basename(sub))) {
+        i = k;
+        continue;
+      }
+    }
     if (!WRAPPER_COMMANDS.has(word)) break;
     // (b) Skip the wrapper word itself…
     i += 1;
@@ -3195,6 +3239,9 @@ const CP_PAIRS = [
   // The code index the Review's callers row is read from (memory `index build`): only the
   // runner rebuilds it; `index neighbours` / `index stats` stay open.
   ["index", /^build$/],
+  // A matched experiment (`gaffer eval experiment`, routing gap 4): a person starts one;
+  // its live mode spends the factory's budget. `eval replay` and `eval agreement` are reads.
+  ["eval", /^experiment$/],
 ];
 function cpVerbNear(words) {
   // words: everything after the program word; the verb sits within the first three.

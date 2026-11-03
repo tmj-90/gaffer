@@ -182,6 +182,82 @@ for (const cmd of [
   t.deny(`acceptance-profile verb: ${cmd}`, bash(cmd), opts);
 }
 
+// (h3) the matched experiment runner (routing gap 4): a person starts an experiment, never
+// an agent; its live mode spends the factory's budget and its results feed the routing
+// recommendations. Every launch form is refused; reading the files is not.
+for (const cmd of [
+  "bash runner/eval/experiment.sh --arm a --arm b:tier=cheap",
+  "bash runner/eval/experiment.sh --live --max-usd 5 --arm a --arm b:tier=cheap",
+  "runner/eval/experiment.sh --arm a --arm b",
+  "./runner/eval/experiment.sh --arm a --arm b",
+  "node runner/eval/experiment.mjs plan --out x --arm a --arm b",
+  "sh /opt/gaffer/runner/eval/experiment-stub-agent.sh",
+  "env A=1 bash runner/eval/experiment.sh --arm a --arm b",
+  "cd runner/eval && bash experiment.sh --live --max-usd 1 --arm a --arm b",
+  "./experiment.sh --live --max-usd 1",
+  "b''ash runner/eval/exp''eriment.sh --arm a --arm b",
+  "bash 'runner/eval/experiment.sh' --live",
+  "X=runner/eval/experiment.sh; bash $X --arm a --arm b",
+  "eval 'bash runner/eval/experiment.sh --arm a --arm b'",
+  "bash -c 'bash runner/eval/experiment.sh --live --max-usd 1'",
+  "gaffer eval experiment --arm a --arm b",
+  "runner/gaffer eval experiment --live --max-usd 1",
+  "$G eval experiment --arm a --arm b",
+  "G=gaffer; $G eval 'experiment' --arm a",
+  // Through a package runner (routing review): npx / pnpm exec / npm exec run the program.
+  "npx bash runner/eval/experiment.sh --live --max-usd 1",
+  "pnpm exec bash runner/eval/experiment.sh --arm a --arm b",
+  "pnpm exec node runner/eval/experiment.mjs plan --out x --arm a --arm b",
+  "npm exec -- bash runner/eval/experiment.sh --arm a --arm b",
+  "npx gaffer eval experiment --arm a --arm b",
+  "pnpm exec gaffer eval experiment --live --max-usd 1",
+]) {
+  t.deny(`matched experiment runner: ${cmd}`, bash(cmd), opts);
+}
+// (h4) a package runner in front of the front door or the factory's own code (routing
+// review): `pnpm exec`, `npx`, `npm exec`, `yarn exec`, a bare `pnpm <bin>` run that
+// program, so they are peeled like `env` and `nice`.
+for (const cmd of [
+  "pnpm exec gaffer approve 3",
+  "pnpm exec -- gaffer merge 3",
+  "pnpm --filter x exec gaffer approve 3",
+  "pnpm gaffer merge 3",
+  "yarn exec gaffer merge 3",
+  "yarn gaffer approve 3",
+  "npm exec -- gaffer merge 3",
+  "npm x -- gaffer merge 3",
+  "npx --no-install gaffer merge 3",
+  "bunx gaffer approve 3",
+  `pnpm exec ${R}/gaffer merge 3`,
+  `pnpm exec bash ${R}/gaffer approve 3`,
+  `pnpm exec bash ${R}/tick.sh`,
+  `npx bash ${R}/tick.sh`,
+]) {
+  t.deny(`package runner: ${cmd}`, bash(cmd), opts);
+}
+for (const cmd of [
+  "pnpm test",
+  "pnpm --filter dispatch test",
+  "pnpm -r build",
+  "npm run build",
+  "npx vitest run",
+  "pnpm exec tsc --noEmit",
+  "pnpm exec vitest run test/a.test.ts",
+  "pnpm gaffer status",
+]) {
+  t.allow(`package runner, ordinary use: ${cmd}`, bash(cmd), opts);
+}
+for (const cmd of [
+  "cat runner/eval/experiment.sh",
+  "grep -n arm runner/eval/experiment.mjs",
+  "git add runner/eval/experiment.sh runner/eval/experiment.mjs",
+  "node scripts/experiment.mjs",
+  "bash run-experiment.sh",
+  'git commit -m "eval experiment: add arms"',
+]) {
+  t.allow(`reads or an unrelated experiment file: ${cmd}`, bash(cmd), opts);
+}
+
 // (i) a verb the command text does not show (lane-hook R2): built at run time in the
 // verb slot of a privileged CLI, or handed to it by xargs, parallel or find from their
 // input. The verb cannot be read, so the hook refuses it, for every control-plane verb.

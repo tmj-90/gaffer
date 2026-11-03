@@ -19,7 +19,7 @@ computed from other knobs at runtime.
 
 | Metric | Count |
 |---|---|
-| Knobs with a runner default | 156 |
+| Knobs with a runner default | 159 |
 | Knobs editable in the dashboard | 58 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
 | Env reads in code with no default and no UI entry | 85 |
@@ -63,7 +63,7 @@ computed from other knobs at runtime.
 
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
-| `GAFFER_MODEL_REGISTRY` | _derived_ (`$RUNNER_DIR/model-registry.json`) |  | runner | The static GAFFER_PLAN_MODEL / GAFFER_IMPL_MODEL tiers above give EVERY ticket the same model regardless of risk/complexity/history. |
+| `GAFFER_MODEL_REGISTRY` | _derived_ (`$RUNNER_DIR/model-registry.json`) |  | dispatch, runner | The static GAFFER_PLAN_MODEL / GAFFER_IMPL_MODEL tiers above give EVERY ticket the same model regardless of risk/complexity/history. |
 | `GAFFER_BUDGET_USD` | _(empty)_ | yes (number) | dispatch, runner | Total factory spend ceiling in USD (summed from the usage-ledger). As headroom runs low the router biases cheaper; at $0 headroom no new paid work starts (ticks, Poll and the daemon refuse, and every paid agent launch — including Plan a build and Suggest work — is refused right before it would start) and in-flight work pauses. Empty = unlimited, though a live run needs this or the daily budget set. |
 | `GAFFER_MAX_CALL_USD` | _(empty)_ |  | runner | GAFFER_MAX_CALL_USD — a HARD per-call dollar cap, passed to `claude --max-budget-usd` so ONE runaway call is stopped while it runs (every other guard acts only between calls). |
 | `GAFFER_BUDGET_LOW_THRESHOLD` | `0` | yes (number) | dispatch, runner | USD headroom at/under which routing biases one tier CHEAPER. Empty auto-derives ~20% of the budget ceiling; set explicitly to override. |
@@ -253,6 +253,9 @@ computed from other knobs at runtime.
 | `GAFFER_CI_POLL_ATTEMPTS` | `20` | yes (int) | dispatch, runner | How many times to poll CI checks (when Require-CI is on) before giving up. |
 | `GAFFER_CI_POLL_INTERVAL_SECS` | `30` | yes (int) | dispatch, runner | Seconds between CI check polls. |
 | `GAFFER_EVAL_JUDGE` | `0` |  | runner | EVAL JUDGE (lib/eval-judge.sh): 1 = after every submitted delivery an independent judge scores the diff against the ticket on the crew rubric (AC coverage, correctness, minimalism, test adequacy, security) with a reason… |
+| `GAFFER_EXPERIMENT_MAX_USD` | _(empty)_ |  | runner | Hard USD cap of one LIVE experiment run (every call is capped at what is left); required for --live, empty = live mode refuses |
+| `GAFFER_EXPERIMENT_MAX_TICKETS` | `5` |  | runner | At most this many tickets in one experiment (each runs once per arm) |
+| `GAFFER_EXPERIMENT_MAX_ATTEMPTS` | `2` |  | runner | Attempts per ticket and arm: the first plus reworks after a failed gate, every one counted |
 | `GAFFER_REVIEW_RULE_REPEAT` | `3` | yes (int) | dispatch, runner | The same send-back reason or must-fix comment from a person on this many tickets in one repo is proposed as a review-rule lore draft for a person to approve (never auto-approved). 2 to 20; default 3. |
 
 ### lib/automerge.sh
@@ -484,7 +487,7 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `GAFFER_TESTER_REPLAY` | `1` | `runner/bin/tester-run.mjs`, `runner/lib/tester-replay.mjs`, `runner/status.sh` |
 | `GAFFER_TESTER_REPLAY_TIMEOUT_MS` |  | `runner/bin/tester-run.mjs` |
 | `GAFFER_TESTER_TIMEOUT_MS` | _(empty)_ | `runner/bin/tester-run.mjs` |
-| `GAFFER_TICKET` |  | `runner/safety-hook-core.mjs` |
+| `GAFFER_TICKET` | _(empty)_ | `runner/eval/experiment.sh`, `runner/safety-hook-core.mjs` |
 | `GAFFER_TODAY_OVERRIDE` | _(empty)_ | `runner/lib/budget.sh` |
 | `GAFFER_TRUST_LOCK_SLEEP_MS` |  | `runner/lib/trust-workspace.mjs` |
 | `GAFFER_TRUST_LOCK_TRIES` |  | `runner/lib/trust-workspace.mjs` |

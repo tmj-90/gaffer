@@ -803,7 +803,7 @@ console.log("== PART A'': recordKilledCall — the .mjs sites book the same labe
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
-  for (const k of ["spec-author", "onboard-review", "inherit"]) {
+  for (const k of ["spec-author", "onboard-review", "inherit", "experiment"]) {
     assert(`VALID_KINDS includes '${k}' (booked by a call site)`, VALID_KINDS.has(k));
   }
 }

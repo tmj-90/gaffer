@@ -469,6 +469,22 @@ export const DANGEROUS_COMMANDS = [
     crewFlags: false,
   },
   {
+    // The MATCHED EXPERIMENT runner (runner/eval/experiment.sh + experiment.mjs, routing gap
+    // 4): an experiment is a person's to start. Its live mode runs the real agent on the
+    // factory's budget outside the delivery gates, and its results feed the advisory routing
+    // recommendations, so an agent may neither spend on one nor manufacture one. Matched by
+    // its path (`eval/experiment.sh|mjs`, also the stub agent) run in command position, by
+    // node, a shell or `source`, or by the bare file name run with `--live`; a file of that
+    // name anywhere else (`node scripts/experiment.mjs`) and reading or grepping it stay allowed.
+    // `gaffer eval experiment` is the front door's `eval` (denied above).
+    re: new RegExp(
+      String.raw`${CMD_POS}(?:(?:node|nodejs|(?:ba|da|k|z)?sh|source|\.)[ \t]+(?:-${TOK}[ \t]+)*)?${PATH_QUAL}eval\/experiment(?:-stub-agent)?\.(?:sh|mjs)${WORD_END}|${CMD_POS}(?:(?:node|nodejs|(?:ba|da|k|z)?sh)[ \t]+(?:-${TOK}[ \t]+)*)?${PATH_QUAL}experiment\.(?:sh|mjs)${WORD_END}[^\n;&|]*[ \t]--live\b`,
+    ),
+    why: "the matched experiment runner (runner/eval/experiment.sh / experiment.mjs): a person starts an experiment; its live mode spends the factory's budget outside the delivery gates and its results feed the routing recommendations",
+    example: "bash runner/eval/experiment.sh --live --max-usd 5 --arm a --arm b:tier=cheap",
+    crewFlags: false,
+  },
+  {
     // The memory CLI's HUMAN verbs: approving, rejecting or triaging (`review`) a lore
     // draft is the human trust gate on what delivery agents are told; `add` writes ACTIVE
     // lore past it; supersede / deprecate / delete / update change ratified lore. The

@@ -23,4 +23,20 @@ export {
 } from "../io/stateExport.js";
 export { buildNotifierFromEnv } from "../notify/config.js";
 export { computeStats, renderDoctor, renderHumanQueue, renderStats, runDoctor } from "./ops.js";
+export {
+  manifestsDir,
+  readManifestFacts,
+  readRoutingRows,
+  readRoutingScorecard,
+  renderRoutingScorecard,
+} from "../health/routingScorecard.js";
+export {
+  readExperimentDir,
+  readExperimentResults,
+  readRegistry,
+  recommendRouting,
+  renderRecommendation,
+  resolveRegistryPath,
+} from "../health/routingRecommend.js";
+export { resolveLedgerPath } from "../cost/costAggregator.js";
 export { open } from "./shared.js";

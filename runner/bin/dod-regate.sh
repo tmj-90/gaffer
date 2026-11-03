@@ -37,6 +37,17 @@
 #         OFF (GAFFER_DOD=0): nothing ran, the caller decides.
 # shellcheck shell=bash
 set -uo pipefail
+# TESTER REPLAY RERUN KEY (review 11 follow-up): with GAFFER_REPLAY_PROOF_KEY_STDIN=1 the
+# caller (lib/land.sh, bin/merge-ticket.mjs) writes the replay's proof key as the first
+# line of stdin. It stays in this shell's memory only (never exported, never on a command
+# line), stdin is closed at once, and lib/dod.sh writes it to a FRESH key file just
+# before a flaky rerun of the tests gate: the first run's reporter consumed the original.
+_GAFFER_REPLAY_RERUN_KEY=""
+if [ "${GAFFER_REPLAY_PROOF_KEY_STDIN:-0}" = "1" ]; then
+  IFS= read -r _GAFFER_REPLAY_RERUN_KEY || true
+  exec </dev/null
+fi
+unset GAFFER_REPLAY_PROOF_KEY_STDIN
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WT="${1:-}" LABEL="${2:-repo}" TEST_CMD="${3:--}" LINT_CMD="${4:--}" BASE="${5:-}" ALLOW="${6:-0}"
 [ "$ALLOW" = "1" ] || ALLOW=0

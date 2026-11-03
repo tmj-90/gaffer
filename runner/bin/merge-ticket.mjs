@@ -171,7 +171,10 @@ import { agentChildEnv, renderPoMcpRuntime } from "./product-owner-run.mjs";
 import { branchHead, landingDecision, reReviewCommand } from "../lib/tester-binding.mjs";
 import {
   applyTesterTests,
+  discardReplayKey,
   prepareReplayProof,
+  PROOF_KEY_FILE_ENV,
+  removeTree,
   replayInvocation,
   replayPlan,
   replayProof,
@@ -1113,10 +1116,10 @@ export function gateProposedMerge({
     gateDir || resolve(GAFFER_DATA, "worktrees", `merge-gate-${process.pid}-${Date.now()}`);
   mkdirSync(dirname(wt), { recursive: true });
   git(repoPath, "worktree", "remove", "--force", wt);
-  rmSync(wt, { recursive: true, force: true });
+  removeTree(wt);
   const cleanup = () => {
     git(repoPath, "worktree", "remove", "--force", wt);
-    rmSync(wt, { recursive: true, force: true });
+    removeTree(wt);
     git(repoPath, "worktree", "prune");
   };
   const add = git(repoPath, "worktree", "add", "--quiet", "--detach", "--force", wt, target);
@@ -1320,6 +1323,9 @@ function replayOnMergeCandidate({
     `#${ticketNumber}: TESTER REPLAY — running the tester's ${plan.files.length} test file(s) (${list}) on the merge candidate ${merge.slice(0, 12)} (${how})`,
   );
   const perGate = Math.max(1, parseInt(env.GAFFER_DOD_TIMEOUT ?? "", 10) || 900);
+  // A flaky rerun of the tests gate gets a fresh key file (lib/dod.sh
+  // _gaffer_dod_replay_key_file): dod-regate.sh reads the key from stdin, never the env.
+  const rerunKey = inv.env && inv.env[PROOF_KEY_FILE_ENV] ? String(inv.proof.key || "") : "";
   const r = spawnSync(
     "bash",
     [
@@ -1341,11 +1347,16 @@ function replayOnMergeCandidate({
         GAFFER_DOD_LINT: "0",
         GAFFER_DOD_TESTS_OUTPUT: inv.proof.output,
         ...(installed ? { GAFFER_DOD_INSTALL: "0" } : {}),
+        ...(rerunKey ? { GAFFER_REPLAY_PROOF_KEY_STDIN: "1" } : {}),
       },
+      ...(rerunKey ? { input: `${rerunKey}\n` } : {}),
       timeout: (perGate * 2 + 60) * 1000,
       maxBuffer: 8 * 1024 * 1024,
     },
   );
+  // A key file no reporter consumed goes now, whatever the run did (inv.env carries only
+  // its path; replayProof removes it too, but a red run never gets there).
+  discardReplayKey(inv);
   const evidence = (r.stdout || "").trim();
   if (r.error)
     return {
@@ -1483,7 +1494,7 @@ export function recoverMissingReplay({ ticketNumber, repo, pin, commands }) {
   mkdirSync(dirname(wt), { recursive: true });
   const cleanup = () => {
     git(repo.localPath, "worktree", "remove", "--force", wt);
-    rmSync(wt, { recursive: true, force: true });
+    removeTree(wt);
     git(repo.localPath, "worktree", "prune");
   };
   cleanup();

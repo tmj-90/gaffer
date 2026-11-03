@@ -74,9 +74,30 @@ _sandbox_subpath_rule() {
 # $STRICT_ALLOW_HOME entry, and the std streams. process-exec + network are
 # allowed (network gated on $STRICT_ALLOW_NETWORK). READ-roots need no rule —
 # reads are broadly allowed by (allow default).
+#
+# THE REPLAY VARIANT (GAFFER_SANDBOX_PROFILE=replay: the tester lane's clean replay of the
+# tester's own test files, bin/tester-run.mjs). The validation profile above stays as it
+# is for the gates and acceptance profiles; the replay gets it with three changes, each
+# appended after the write grant so it wins (last match):
+#   • $GAFFER_DATA is NOT a write root, and writes into it are denied (a temp-dir grant
+#     that contains it included), then the write roots (the replay checkout and its
+#     scratch dirs, which may live under it) are granted again;
+#   • READS of file contents under $GAFFER_DATA are denied (the databases, settings, the
+#     dashboard token, other worktrees, the factory log), then allowed again for the write
+#     roots and the read roots (the dependency links and the repo's git directory);
+#   • HOME's secret folders and files (_SANDBOX_REPLAY_HOME_SECRETS: .ssh, .aws, the gh
+#     and gcloud configs, .claude, .npmrc, .netrc, .git-credentials, cargo's credentials,
+#     .gnupg, ...) cannot be read or written at all, and $STRICT_ALLOW_HOME is not
+#     granted (the replay's HOME is a scratch directory).
+# Only file-read-data is denied under $GAFFER_DATA (metadata stays readable, so resolving
+# the checkout's own path through it still works).
+#   _sandbox_exec_profile <write-roots> <profile-path> [read-roots]
 _sandbox_exec_profile() {
   local write_roots="$1"
   local profile_path="$2"
+  local read_roots="${3:-}"
+  local replay=0
+  [ "${GAFFER_SANDBOX_PROFILE:-}" = "replay" ] && replay=1
   {
     printf '(version 1)\n'
     printf ';; Gaffer strict-mode profile — generated, do not edit. Best-effort only.\n'
@@ -103,21 +124,61 @@ _sandbox_exec_profile() {
 $write_roots
 EOF
     # GAFFER_DATA: MCP sqlite dbs, agent id/log, the mcp runtime, and this profile.
-    _sandbox_subpath_rule "${GAFFER_DATA:-}"
+    # (Not for the replay variant: its test code never writes the factory's state.)
+    [ "$replay" = 1 ] || _sandbox_subpath_rule "${GAFFER_DATA:-}"
     # Temp dirs: many tools (python tempfile, pytest, build caches) write here.
     _sandbox_subpath_rule "${TMPDIR:-/tmp}"
     _sandbox_subpath_rule "/private/var/folders"
     _sandbox_subpath_rule "/tmp"
-    # Operator-allowed HOME paths (e.g. Claude's own state/cache dirs).
+    # Operator-allowed HOME paths (e.g. Claude's own state/cache dirs). Not for the
+    # replay variant: its test code runs with a scratch HOME and must never write the
+    # runner's real one (a planted ~/.claude/settings.json hook would run outside the
+    # sandbox on the next agent start).
     local home_entry
-    for home_entry in ${STRICT_ALLOW_HOME:-}; do
-      _sandbox_subpath_rule "$home_entry"
-    done
+    if [ "$replay" != 1 ]; then
+      for home_entry in ${STRICT_ALLOW_HOME:-}; do
+        _sandbox_subpath_rule "$home_entry"
+      done
+    fi
     # Std streams + the null sink.
     printf '  (literal "/dev/null")\n'
     printf '  (literal "/dev/stdout")\n'
     printf '  (literal "/dev/stderr"))\n'
+    if [ "$replay" = 1 ]; then _sandbox_exec_replay_rules "$write_roots" "$read_roots"; fi
   } > "$profile_path"
+}
+
+# HOME's folders and files the replay variant can neither read nor write (credentials and
+# the agent's own configuration). Paths relative to $HOME, space separated.
+_SANDBOX_REPLAY_HOME_SECRETS=".ssh .aws .config/gh .config/gcloud .azure .kube .docker .claude .npmrc .netrc .pypirc .git-credentials .cargo/credentials .cargo/credentials.toml .gnupg"
+# The replay variant's extra rules (see above), printed after the write grant.
+#   _sandbox_exec_replay_rules <write-roots> <read-roots>
+_sandbox_exec_replay_rules() {
+  local write_roots="$1" read_roots="$2" data_rule root secret
+  data_rule="$(_sandbox_subpath_rule "${GAFFER_DATA:-}")"
+  if [ -n "$data_rule" ]; then
+    printf '(deny file-write*\n%s)\n' "$data_rule"
+    printf '(allow file-write*\n'
+    while IFS= read -r root; do _sandbox_subpath_rule "$root"; done <<EOF
+$write_roots
+EOF
+    printf '  (literal "/dev/null"))\n'
+    printf '(deny file-read-data\n%s)\n' "$data_rule"
+    printf '(allow file-read-data\n'
+    while IFS= read -r root; do _sandbox_subpath_rule "$root"; done <<EOF
+$write_roots
+$read_roots
+EOF
+    printf '  (literal "/dev/null"))\n'
+  fi
+  if [ -n "${HOME:-}" ]; then
+    printf '(deny file-read* file-write*\n'
+    for secret in $_SANDBOX_REPLAY_HOME_SECRETS; do
+      _sandbox_subpath_rule "$HOME/$secret"
+    done
+    printf ')\n'
+  fi
+  return 0
 }
 
 # ── The provider seam ────────────────────────────────────────────────────────
@@ -153,7 +214,7 @@ gaffer_sandbox_unavailable_hint() {
 
 sandbox_wrap_cmd() {
   local write_roots="${1:-}"
-  local read_roots="${2:-}"   # accepted for symmetry; unused by sandbox-exec (reads broad)
+  local read_roots="${2:-}"   # used only by sandbox-exec's replay variant (reads are broad otherwise)
 
   case "${SANDBOX_PROVIDER:-sandbox-exec}" in
     none)
@@ -187,7 +248,7 @@ sandbox_wrap_cmd() {
         printf 'strict-mode: sandbox-exec provider could not create the per-call profile file under %s\n' "${GAFFER_DATA:-/tmp}" >&2
         return 1
       }
-      _sandbox_exec_profile "$write_roots" "$profile_path"
+      _sandbox_exec_profile "$write_roots" "$profile_path" "$read_roots"
       printf 'sandbox-exec -f %s' "$profile_path"
       return 0
       ;;

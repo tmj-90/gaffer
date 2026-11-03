@@ -182,6 +182,25 @@ grep -q 'credentials.json' <<<"$ARGV" && fail "validation profile mounts the cre
 has_arg DISPATCH_DB && fail "validation forwards DISPATCH_DB" || ok "validation: no DB env"
 grep -q 'no model credential' "$WORK/stderr.val" && fail "validation profile nagged about a missing credential" || ok "validation: no credential warning (none is wanted)"
 
+echo "== (e2) the tester replay's profile: the validation layout, the proof key's PATH only =="
+# The clean replay (bin/tester-run.mjs) asks for GAFFER_SANDBOX_PROFILE=replay: here that is
+# the validation layout. Its signing key never crosses: only the key FILE's path does
+# (lib/tester-replay.mjs), and a proof directory outside every mount is mounted for it.
+KPROOF="$WORK/elsewhere/.gaffer-replay-abc"; mkdir -p "$KPROOF/k-1"; : > "$KPROOF/k-1/f00"
+ARGV="$(GAFFER_SANDBOX_DRY_RUN=1 GAFFER_SANDBOX_PROFILE=replay GAFFER_MCP_BRIDGE_SOCKET= GAFFER_SANDBOX_DATA_PLANE=none \
+  GAFFER_REPLAY_PROOF_KEY="0123456789abcdef-a-key-value" GAFFER_REPLAY_PROOF_KEY_FILE="$KPROOF/k-1/f00" \
+  bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- bash -c 'node --test' 2>"$WORK/stderr.replay")"
+[ -n "$(_beyond)" ] && fail "replay profile references GAFFER_DATA beyond the worktree: $(_beyond | head -3 | tr '\n' ' ')" || ok "replay: NOTHING under GAFFER_DATA but the worktree is mounted (the validation layout)"
+has_arg ANTHROPIC_API_KEY && fail "replay profile forwards the model credential" || ok "replay: no model credential forwarded"
+has_arg GAFFER_REPLAY_PROOF_KEY && fail "replay profile forwards the proof KEY itself" || ok "replay: the proof key itself is NOT forwarded"
+grep -qF -- "0123456789abcdef-a-key-value" <<<"$ARGV" && fail "the key's value appears in the docker argv" || ok "replay: the key's value is nowhere in the docker argv"
+has_arg GAFFER_REPLAY_PROOF_KEY_FILE && ok "replay: the key FILE's path is forwarded" || fail "replay: GAFFER_REPLAY_PROOF_KEY_FILE not forwarded"
+has_mount "$KPROOF:$KPROOF:rw" && ok "replay: a proof directory outside the mounts is mounted rw (the reporter unlinks the key file)" || fail "replay: the proof directory is not mounted: $(grep -F -- "$KPROOF" <<<"$ARGV" | tr '\n' ' ')"
+ARGV="$(GAFFER_SANDBOX_DRY_RUN=1 GAFFER_SANDBOX_PROFILE=validation GAFFER_MCP_BRIDGE_SOCKET= GAFFER_SANDBOX_DATA_PLANE=none \
+  GAFFER_REPLAY_PROOF_KEY="0123456789abcdef-a-key-value" \
+  bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- bash -c 'pnpm test' 2>/dev/null)"
+has_arg GAFFER_REPLAY_PROOF_KEY && fail "validation forwards an older runner's proof KEY variable" || ok "validation: an older runner's GAFFER_REPLAY_PROOF_KEY is not forwarded either"
+
 echo "== (f) bridge ON + MCP config + NO socket ⇒ REFUSED (never an implicit legacy layout) =="
 if GAFFER_SANDBOX_DRY_RUN=1 GAFFER_MCP_BRIDGE=1 bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- claude -p hi --mcp-config "$GAFFER_DATA/mcp-runtime.1111.json" >/dev/null 2>"$WORK/stderr.refuse"; then
   fail "bridge on + config + no socket should REFUSE"; else ok "refused (non-zero) — the wrapper does not infer legacy from an absent socket"; fi

@@ -77,9 +77,11 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   appendFileSync,
+  chmodSync,
   copyFileSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readdirSync,
   readFileSync,
   realpathSync,
@@ -89,7 +91,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, resolve, sep } from "node:path";
+import { tmpdir } from "node:os";
+import { delimiter, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { resolveTicket } from "./merge-ticket.mjs";
@@ -119,7 +122,9 @@ import {
   writeAgentSettings,
 } from "../lib/agent-home.mjs";
 import {
+  discardReplayKey,
   isTestPath,
+  removeTree,
   prepareReplayProof,
   replayInvocation,
   replayProof,
@@ -129,8 +134,11 @@ import {
   acceptanceTimeoutMs,
   buildEvidencePayload,
   contractProfile,
+  profileEnv,
+  replaySandbox,
   RUNNABLE_PROFILES,
   signingKey,
+  wrappedSpawn,
 } from "../lib/acceptance-profiles.mjs";
 
 // node:sqlite is only reachable via createRequire in an ESM module.
@@ -806,11 +814,18 @@ export function implementationChanges(worktree, baseCommit) {
  * replay's invocation with the files appended runs too), and the tests the runner's own
  * evidence shows PASSED in
  * the tester's files are returned as `tests`: the PASS binds them and the landing replay
- * requires every one to pass on the merge candidate. The signing key is in the run's
- * environment only and the reporter deletes it before a test file loads. LIMIT: this
- * replay is not sandboxed, so its proof is evidence against a non-adversarial tester's
- * tests (a test here can read the runner's environment and files).
- * → { state: "passed" | "failed" | "skipped", reason, tail, tests }
+ * requires every one to pass on the merge candidate.
+ * CONTAINMENT (external review 11): the files run are the tester's own code, so the run
+ * goes through the gate sandbox seam (lib/acceptance-profiles.mjs replaySandbox: the
+ * `replay` profile, write roots = the checkout and the run's scratch dirs, read roots =
+ * the dependency links and the repo's git directory) in a stripped environment
+ * (replayEnv: the profile allowlist, no model credential, no GAFFER_DATA or DISPATCH_DB,
+ * `wg` and `gaffer` shadowed on PATH, a scratch HOME and TMPDIR). A sandbox strict mode
+ * asks for that the host cannot supply HOLDS the replay (state "held"): the tester's code
+ * never runs unsandboxed then. The reporter's signing key is in a file the reporter
+ * unlinks at load (lib/tester-replay.mjs prepareReplayProof); only its path is in the
+ * environment.
+ * → { state: "passed" | "failed" | "skipped" | "held", reason, tail, tests, sandbox? }
  */
 export function replayTesterTests({
   repoPath,
@@ -835,13 +850,14 @@ export function replayTesterTests({
       : null;
   const replay = resolve(GAFFER_DATA, "worktrees", `tester-replay-${n}`);
   git(repoPath, "worktree", "remove", "--force", replay);
-  rmSync(replay, { recursive: true, force: true });
+  removeTree(replay);
   const add = git(repoPath, "worktree", "add", "--force", "--detach", replay, testedCommit);
   if (add.status !== 0)
     return {
       state: "failed",
       reason: `could not check out ${testedCommit.slice(0, 12)} for the replay`,
     };
+  let scratch = "";
   try {
     for (const f of testFiles) {
       const src = resolve(testerWorktree, f);
@@ -850,7 +866,25 @@ export function replayTesterTests({
       mkdirSync(dirname(dst), { recursive: true });
       copyFileSync(src, dst);
     }
-    linkNodeModules(repoPath, replay);
+    const linked = linkNodeModules(repoPath, replay);
+    // CONTAINMENT: the run's own HOME, TMPDIR and PATH shadows, outside the checkout (the
+    // replay must not leave them in git status) and removed afterwards.
+    scratch = realpathSync(mkdtempSync(join(tmpdir(), `gaffer-replay-${n}-`)));
+    const commonDir = (git(replay, "rev-parse", "--git-common-dir").stdout || "").trim();
+    const sb = replaySandbox({
+      writeRoots: [realpathSync(replay), scratch],
+      readRoots: [
+        ...linked.map((rel) => resolve(repoPath, rel)),
+        ...(commonDir ? [resolve(replay, commonDir)] : []),
+      ],
+    });
+    if (!sb.ok)
+      return {
+        state: "held",
+        reason: `the clean replay runs the tester's test files inside an OS sandbox and none is available: ${String(sb.message || "the sandbox provider refused").replace(/^worker: /, "")}; the tester's tests were not run unsandboxed`,
+        sandbox: sb.label,
+      };
+    const baseEnv = replayEnv({ scratch });
     const timeout =
       Number(process.env.GAFFER_TESTER_REPLAY_TIMEOUT_MS) > 0
         ? Number(process.env.GAFFER_TESTER_REPLAY_TIMEOUT_MS)
@@ -859,13 +893,19 @@ export function replayTesterTests({
     const runInv = (select) => {
       const inv = replayInvocation({ worktree: replay, testCommand: cmd, files, select });
       prepareReplayProof(inv);
-      const r = spawnSync("bash", ["-c", inv.command], {
+      const [bin, args, env] = wrappedSpawn(
+        ["bash", "-c", inv.command],
+        { ...baseEnv, ...inv.env },
+        sb,
+      );
+      const r = spawnSync(bin, args, {
         cwd: replay,
         encoding: "utf8",
         timeout,
         maxBuffer: 16 * 1024 * 1024,
-        env: { ...agentChildEnv(), CI: "1", ...inv.env },
+        env,
       });
+      discardReplayKey(inv);
       writeFileSync(inv.proof.output, `${r.stdout || ""}\n${r.stderr || ""}`);
       const tail = `${r.stdout || ""}\n${r.stderr || ""}`
         .split("\n")
@@ -897,6 +937,7 @@ export function replayTesterTests({
           state: "passed",
           reason: `${cmd} passed on a clean checkout of ${testedCommit.slice(0, 12)} (${tests.length} test(s) in the tester's files passed)`,
           tail,
+          sandbox: sb.label,
           // ACCEPTANCE PROFILE: the person-registered commands' run (above, in its own
           // clean checkout), reported only once the tester's tests passed too.
           ...(acceptance ? { acceptance } : {}),
@@ -910,8 +951,69 @@ export function replayTesterTests({
   } finally {
     git(repoPath, "worktree", "remove", "--force", replay);
     git(repoPath, "worktree", "prune");
-    rmSync(replay, { recursive: true, force: true });
+    removeTree(replay);
+    if (scratch) rmSync(scratch, { recursive: true, force: true });
   }
+}
+
+/**
+ * The toolchain LOCATION variables the clean replay keeps from the runner's environment
+ * (its HOME is a scratch directory, so rustup, cargo and go would otherwise not find their
+ * installed toolchains and caches). Locations only: no token, proxy URL or credential.
+ */
+export const REPLAY_TOOLCHAIN_ENV = Object.freeze([
+  "GOROOT",
+  "GOPATH",
+  "GOMODCACHE",
+  "GOFLAGS",
+  "GOTOOLCHAIN",
+  "CARGO_HOME",
+  "RUSTUP_HOME",
+  "RUSTUP_TOOLCHAIN",
+  "JAVA_HOME",
+  "VIRTUAL_ENV",
+  "PYENV_ROOT",
+]);
+
+/** The CLI names the clean replay shadows on PATH (the dispatch CLI and the gaffer CLI). */
+export const REPLAY_SHADOWED_BINS = Object.freeze(["wg", "gaffer"]);
+
+/**
+ * The clean replay's environment (an allowlist, never the runner's env): lib/acceptance-
+ * profiles.mjs profileEnv (PATH, locale, CI=1, NO_COLOR) with a scratch HOME and TMPDIR,
+ * the toolchain locations (REPLAY_TOOLCHAIN_ENV, and ~/.cargo, ~/.rustup, ~/go when they
+ * exist),
+ * and a PATH whose first entry holds a refusing stub for every REPLAY_SHADOWED_BINS name,
+ * so `wg ticket tester-pass … --as system` from a test file never reaches the dispatch CLI.
+ * No model credential, GAFFER_DATA, DISPATCH_DB, token or cloud key crosses.
+ */
+export function replayEnv({ scratch, base = process.env }) {
+  const home = join(scratch, "home");
+  const tmp = join(scratch, "tmp");
+  const shadow = join(scratch, "bin");
+  for (const d of [home, tmp, shadow]) mkdirSync(d, { recursive: true });
+  for (const name of REPLAY_SHADOWED_BINS) {
+    const p = join(shadow, name);
+    writeFileSync(
+      p,
+      `#!/bin/sh\necho "${name}: not available inside the tester's clean replay (the dispatch CLI and the factory's data are outside it)" >&2\nexit 126\n`,
+    );
+    chmodSync(p, 0o755);
+  }
+  const env = profileEnv({ home, base });
+  env.TMPDIR = tmp;
+  // The scratch HOME must not hide the host's toolchains (rustup's and cargo's homes, the
+  // go module cache): where they live is passed through, never a credential.
+  for (const k of REPLAY_TOOLCHAIN_ENV) if (base[k]) env[k] = String(base[k]);
+  if (base.HOME)
+    for (const [k, rel] of [
+      ["CARGO_HOME", ".cargo"],
+      ["RUSTUP_HOME", ".rustup"],
+      ["GOPATH", "go"],
+    ])
+      if (!env[k] && existsSync(join(base.HOME, rel))) env[k] = join(base.HOME, rel);
+  env.PATH = [shadow, ...String(env.PATH || "").split(delimiter)].filter(Boolean).join(delimiter);
+  return env;
 }
 
 /**
@@ -1085,7 +1187,9 @@ export function unverifiedPassReason({ replay, repoName, ticket, acceptance = fa
       ? `no test command registered for repo ${name}`
       : String(replay.reason || "").includes("GAFFER_TESTER_REPLAY")
         ? "the clean replay is switched off (GAFFER_TESTER_REPLAY is 0)"
-        : `the clean replay did not pass (${replay.state}: ${replay.reason || "no reason given"})`;
+        : replay.state === "held"
+          ? `the clean replay was held (${replay.reason || "no reason given"})`
+          : `the clean replay did not pass (${replay.state}: ${replay.reason || "no reason given"})`;
   const register = /no test command/.test(why)
     ? ` Register one with \`wg repo set-commands ${cmdName} --test "<command>"\` or Test command under Referee's checks on the repo page.`
     : /switched off/.test(why)

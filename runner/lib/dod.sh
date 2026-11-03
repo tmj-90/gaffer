@@ -374,10 +374,42 @@ gaffer_dod_rerun_serial() {
     sleep 1; w=$((w + 1))
   done
   _GAFFER_DOD_EXTRA_ENV=(GAFFER_DOD_SERIAL=1 RUST_TEST_THREADS=1 PYTEST_XDIST_AUTO_NUM_WORKERS=1)
+  # A tester replay's run 1 consumed its proof key file: the rerun gets a fresh one.
+  local _rkf=""
+  if _rkf="$(_gaffer_dod_replay_key_file)" && [ -n "$_rkf" ]; then
+    # (Runner-set plumbing, never an operator knob: docs/CONFIG.md leaves it out.)
+    _GAFFER_DOD_EXTRA_ENV+=( GAFFER_REPLAY_PROOF_KEY_FILE="$_rkf" )
+  fi
   gaffer_dod_run_one "$wt" "$outfile" "$cmd"; rc=$?
   _GAFFER_DOD_EXTRA_ENV=()
+  if [ -n "$_rkf" ]; then chmod 700 "${_rkf%/*}" 2>/dev/null; rm -rf "${_rkf%/*}" 2>/dev/null; fi
   rm -rf "$lock" 2>/dev/null
   return "$rc"
+}
+
+# TESTER REPLAY RERUN KEY (lib/tester-replay.mjs prepareReplayProof, review 11 follow-up).
+# The replay's node:test reporter reads its signing key from the file
+# GAFFER_REPLAY_PROOF_KEY_FILE names and unlinks it when it loads, so run 1 of a tests
+# gate consumes it and a flaky rerun would sign nothing (its files unproven: held). When
+# bin/dod-regate.sh was handed the key on stdin (_GAFFER_REPLAY_RERUN_KEY, this shell's
+# memory only), this writes it to a NEW file the same way, mode 0600 with a random name
+# in a new mode 0300 `k-<random>` directory of the same proof directory, and prints its
+# path. Nothing to do (rc 1) without a key, a key file variable or a proof directory.
+_gaffer_dod_replay_key_file() {
+  [ -n "${_GAFFER_REPLAY_RERUN_KEY:-}" ] && [ -n "${GAFFER_REPLAY_PROOF_KEY_FILE:-}" ] || return 1
+  local pdir dname fname
+  pdir="${GAFFER_REPLAY_PROOF_KEY_FILE%/*}"; pdir="${pdir%/*}"
+  case "${pdir##*/}" in .gaffer-replay-*) ;; *) return 1 ;; esac
+  [ -d "$pdir" ] || return 1
+  dname="$(od -An -tx1 -N12 /dev/urandom 2>/dev/null | tr -d ' \n')"
+  fname="$(od -An -tx1 -N16 /dev/urandom 2>/dev/null | tr -d ' \n')"
+  [ "${#dname}" -eq 24 ] && [ "${#fname}" -eq 32 ] || return 1
+  # printf is a builtin: the key is on no command line; umask 077 makes the file 0600.
+  ( umask 077 && mkdir "$pdir/k-$dname" && printf '%s' "$_GAFFER_REPLAY_RERUN_KEY" > "$pdir/k-$dname/$fname" ) 2>/dev/null || {
+    rm -rf "$pdir/k-$dname" 2>/dev/null; return 1; }
+  chmod 600 "$pdir/k-$dname/$fname" 2>/dev/null && chmod 300 "$pdir/k-$dname" 2>/dev/null || {
+    chmod 700 "$pdir/k-$dname" 2>/dev/null; rm -rf "$pdir/k-$dname" 2>/dev/null; return 1; }
+  printf '%s\n' "$pdir/k-$dname/$fname"
 }
 
 # TESTER REPLAY (lib/tester-replay.mjs): the replay reads the runner's own per-file

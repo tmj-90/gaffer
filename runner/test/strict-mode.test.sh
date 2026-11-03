@@ -140,6 +140,37 @@ else
   fail "python3 -m unittest failed under the profile"
 fi
 
+echo "== the REPLAY variant (the tester lane's clean replay, GAFFER_SANDBOX_PROFILE=replay) =="
+# The tester's own test files run under it (bin/tester-run.mjs replayTesterTests): the
+# validation profile plus read denials for $GAFFER_DATA outside the write and read roots
+# and for HOME's secret folders, and no write grant for $GAFFER_DATA. The checkout lives
+# under $GAFFER_DATA/worktrees, as the replay's does.
+RHOME="$WORK/home"; mkdir -p "$RHOME/.ssh"; echo "dummy key, not a secret" > "$RHOME/.ssh/id_test"
+CHECKOUT="$GAFFER_DATA/worktrees/tester-replay-1"; mkdir -p "$CHECKOUT"
+echo "dummy factory log, not a secret" > "$GAFFER_DATA/factory.log"
+DEPS="$WORK/deps"; mkdir -p "$DEPS"; echo "dep" > "$DEPS/index.js"
+echo "in the checkout" > "$CHECKOUT/own.txt"
+mkdir -p "$RHOME/.claude"
+RWRAP="$(HOME="$RHOME" STRICT_ALLOW_HOME="$RHOME/.claude $RHOME/.cache" GAFFER_SANDBOX_PROFILE=replay SANDBOX_PROVIDER=sandbox-exec sandbox_wrap_cmd "$CHECKOUT" "$DEPS")"
+RPROFILE="${RWRAP#sandbox-exec -f }"
+[ -f "$RPROFILE" ] && ok "replay: profile generated" || fail "replay: profile missing ($RWRAP)"
+grep -q 'deny file-read-data' "$RPROFILE" && ok "replay: profile denies reads under GAFFER_DATA" || fail "replay: no read denial in $(cat "$RPROFILE")"
+rsb() { sandbox-exec -f "$RPROFILE" "$@" 2>/dev/null; }
+if rsb cat "$GAFFER_DATA/factory.log" >/dev/null; then fail "replay: \$GAFFER_DATA/factory.log was READ"; else ok "replay: \$GAFFER_DATA/factory.log cannot be read"; fi
+if rsb cat "$RHOME/.ssh/id_test" >/dev/null; then fail "replay: \$HOME/.ssh/id_test was READ"; else ok "replay: \$HOME/.ssh/id_test cannot be read"; fi
+if rsb ls "$GAFFER_DATA/worktrees" >/dev/null; then fail "replay: \$GAFFER_DATA/worktrees could be LISTED"; else ok "replay: the other worktrees under \$GAFFER_DATA cannot be listed"; fi
+[ "$(rsb cat "$CHECKOUT/own.txt")" = "in the checkout" ] && ok "replay: the checkout's own files are readable" || fail "replay: the checkout could not be read"
+[ "$(rsb cat "$DEPS/index.js")" = "dep" ] && ok "replay: a read root (the dependency link) is readable" || fail "replay: the read root could not be read"
+if rsb sh -c "echo x > '$GAFFER_DATA/planted'"; then fail "replay: a write into \$GAFFER_DATA LEAKED"; else [ ! -f "$GAFFER_DATA/planted" ] && ok "replay: a write into \$GAFFER_DATA is OS-blocked" || fail "replay: the blocked write left a file"; fi
+# The runner's HOME is never writable from the replay (STRICT_ALLOW_HOME is a gate grant):
+# a planted ~/.claude/settings.json hook would run outside the sandbox later.
+if rsb sh -c "echo x > '$RHOME/.claude/settings.json'"; then fail "replay: a write into \$HOME/.claude LEAKED"; else [ ! -f "$RHOME/.claude/settings.json" ] && ok "replay: a write into \$HOME/.claude is OS-blocked" || fail "replay: the blocked write left a file"; fi
+if rsb sh -c "echo x > '$CHECKOUT/written'" && [ -f "$CHECKOUT/written" ]; then ok "replay: a write inside the checkout succeeds"; else fail "replay: a write inside the checkout was blocked"; fi
+if command -v node >/dev/null 2>&1; then
+  printf 'require("fs").writeFileSync("ran.txt", "ok")\n' > "$CHECKOUT/t.cjs"
+  if ( cd "$CHECKOUT" && rsb node t.cjs ) && [ -f "$CHECKOUT/ran.txt" ]; then ok "replay: node runs a file in the checkout under the profile"; else fail "replay: node could not run in the checkout"; fi
+fi
+
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then
   echo "PASS: $PASS checks"

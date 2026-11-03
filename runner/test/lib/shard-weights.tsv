@@ -336,3 +336,4 @@
 10	run-state-lib.test.sh
 4	safety-hook-spelling.test.mjs
 10	ui-suites-jobs.test.sh
+15	tester-replay-containment.test.mjs

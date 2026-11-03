@@ -568,6 +568,34 @@ describe("acceptance gate: a tester PASS binds TEST IDENTITIES (external review 
     expect(JSON.parse(row.payload_json).tests).toEqual([ID_SMOKE, ID_V2]);
   });
 
+  it("a system PASS names WHO TESTED: the tester agent and its run ride on the binding, and only the system actor sets them", () => {
+    const wg = freshWg({ testingEnabled: false });
+    const accId = reachTester(wg);
+    const who = { id: "tester", run: "run-123" };
+    for (const actor of [testerAgent, human, { type: "admin", id: "root" } as Actor]) {
+      expectCode(
+        () => wg.testerPass(accId, { ...boundPass(wg, accId), tester_agent: who }, actor),
+        "ACTOR_NOT_PERMITTED",
+      );
+    }
+    for (const bad of ["tester", { id: "" }, { id: "a b" }, { id: "tester", run: "x\ny" }]) {
+      expectCode(
+        () => wg.testerPass(accId, { ...withIds(wg, accId), tester_agent: bad }, systemActor),
+        "VALIDATION_ERROR",
+      );
+    }
+    expect(wg.view(accId).ticket.status).toBe("in_testing");
+    wg.testerPass(accId, { ...withIds(wg, accId), tester_agent: who }, systemActor);
+    const row = wg.db
+      .prepare(
+        "SELECT payload_json FROM evidence WHERE ticket_id = ? AND evidence_type = 'test_output' ORDER BY rowid DESC LIMIT 1",
+      )
+      .get(accId) as { payload_json: string };
+    const p = JSON.parse(row.payload_json);
+    expect(p.provenance).toBe("system");
+    expect(p.tester_agent).toEqual(who);
+  });
+
   it("the identities are validated: not a list, an entry without a name, or identities without a tests commit", () => {
     const wg = freshWg({ testingEnabled: false });
     const accId = reachTester(wg);

@@ -153,7 +153,7 @@ export default async function s5(t, L) {
   const rows = await p.locator(".tk-testing .tt-row.tt-pass").count();
   const rowTxt = (await p.textContent(".tk-testing").catch(() => "")) || "";
   t.check(
-    rows >= 1 && /by agent|by system/.test(rowTxt),
+    rows >= 1 && /by agent|recorded by the runner after the tester agent's run/.test(rowTxt),
     `the ticket page lists the tester's PASS under Tester results with its provenance (${rows} row)`,
     `Tester results on #${pass.number}: ${rows} pass rows, '${rowTxt.slice(0, 200)}'`,
   );

@@ -348,6 +348,9 @@ for (const cmd of [
   `dispatch ticket record-tester-replay 5 --commit x --pin y --tests-json "$(cat ids.json)" --evidence files`,
   `echo ${IDS} | xargs wg ticket record-tester-replay 5 --commit x --pin y --tests-json`,
   `eval 'wg ticket record-tester-replay 5 --commit x --pin y --tests-json []'`,
+  // WHO TESTED rides on the same system-only PASS.
+  `wg ticket tester-pass 5 --summary ok --tester-agent tester --tester-run r1 --as system`,
+  `echo tester | xargs wg ticket tester-pass 5 --summary ok --as system --tester-agent`,
 ]) {
   t.deny(`test identities are the runner's: ${cmd}`, bash(cmd), opts);
 }

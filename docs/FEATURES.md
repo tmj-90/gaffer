@@ -772,10 +772,16 @@ structural barrier the whole design hangs on.
   landing (`tester_replay_unverified`, naming the tests); one that fails is
   `tester_replay_red`; another test that passes does not stand in for it. An
   older PASS without these identities keeps the file-level rule, and its record
-  and ticket page say *file-level evidence only*. For node:test that evidence is a
-  line the runner's reporter signs with a per-replay key the test processes never
-  see, so a delivery that stops the tester's file and prints "passed" for it
-  proves nothing; a run that reports a file it was not given, or a vitest/jest
+  and ticket page say *file-level evidence only*. Because the runner measured the
+  identities, it records that PASS as the system and names the tester agent (and
+  its run) whose verdict it is: the ticket page and the review packet read
+  *recorded by the runner after the tester agent's run*, an agent's own PASS keeps
+  *by the tester agent* and a person's PASS still reads as a waiver. For node:test
+  that evidence is a line the runner's reporter signs with a per-replay key the
+  test processes do not inherit, so a delivery that stops the tester's file and
+  prints "passed" for it proves nothing (code written to read the runner's own
+  environment can still get the key; moving it out of the environment is a
+  follow-up); a run that reports a file it was not given, or a vitest/jest
   report that names other files or miscounts, proves nothing either, and plain
   output text never counts. A file with no such evidence
   holds the landing (*blocked*, `tester_replay_unverified`, naming the files,

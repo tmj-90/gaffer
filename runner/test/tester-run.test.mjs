@@ -357,6 +357,31 @@ console.log("== AC9: a JSON-argv verdict command survives a path with spaces =="
     fail(`spaced-path verdict wrong (code=${code}, out=${JSON.stringify(out)}, log=${logged})`);
 }
 
+console.log("== AC9b: a PASS that binds identities names WHO TESTED (system-only flags) ==");
+{
+  const { recordVerdict, TESTER_AGENT_ID } = await import("../bin/tester-run.mjs");
+  if (existsSync(STUB_LOG)) rmSync(STUB_LOG);
+  const env = { ...process.env, DISPATCH_TESTER_VERDICT_CMD: STUB_CMD };
+  const r1 = recordVerdict(1, "pass", "ok", env, {
+    testsCommit: "a".repeat(40),
+    tests: [{ file: "test/a.test.mjs", name: "smoke" }],
+    testerAgent: { id: TESTER_AGENT_ID, run: "sess-1" },
+  });
+  const withIds = existsSync(STUB_LOG) ? readFileSync(STUB_LOG, "utf8").trim() : "";
+  rmSync(STUB_LOG, { force: true });
+  // Without identities the PASS is the tester agent's own (--as agent): no who-tested flags.
+  recordVerdict(1, "pass", "ok", env, { testerAgent: { id: TESTER_AGENT_ID, run: "sess-1" } });
+  const plain = existsSync(STUB_LOG) ? readFileSync(STUB_LOG, "utf8").trim() : "";
+  if (
+    r1.ok &&
+    withIds.includes('"--tester-agent","tester","--tester-run","sess-1"') &&
+    withIds.includes('"--tests-json"') &&
+    !plain.includes("--tester-agent")
+  )
+    ok("identities ride with --tester-agent/--tester-run; a plain agent PASS carries neither");
+  else fail(`who-tested flags wrong (ids=${withIds}, plain=${plain})`);
+}
+
 // ── AC10–AC12: --live runs the INDEPENDENT tester agent lane end to end (stub claude) ──
 console.log(
   "== AC10: --live spawns the tester in a worktree of the delivery branch and records PASS ==",

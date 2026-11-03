@@ -286,6 +286,33 @@ describe("web: the tester cell and the lane flag (lane-hook R1, R3)", () => {
     );
   });
 
+  it("who tested: a runner-recorded PASS names the tester agent's run; an agent PASS and a human PASS keep today's wording", async () => {
+    packet = {
+      ...PACKET,
+      tester: { ...passed, provenance: "system", tester_agent: { id: "tester", run: "r1" } },
+      candidate: cand(SHA_TESTED),
+    };
+    await boot();
+    expect(text(".vd-cell.vd-tester")).toContain(
+      "recorded by the runner after the tester agent's run",
+    );
+    expect(text(".vd-cell.vd-tester")).not.toContain("by a system");
+    document.body.innerHTML = "";
+    vi.resetModules();
+    stubFetch();
+    mount();
+    packet = { ...PACKET, tester: passed, candidate: cand(SHA_TESTED) };
+    await boot();
+    expect(text(".vd-cell.vd-tester")).toContain("by the tester agent");
+    document.body.innerHTML = "";
+    vi.resetModules();
+    stubFetch();
+    mount();
+    packet = { ...PACKET, tester: { ...passed, provenance: "human" }, candidate: cand(SHA_TESTED) };
+    await boot();
+    expect(text(".vd-cell.vd-tester")).toContain("by a human");
+  });
+
   it("a PASS with no readable head keeps its verdict (the strip cannot tell)", async () => {
     packet = {
       ...PACKET,

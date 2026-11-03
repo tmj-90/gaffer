@@ -847,6 +847,11 @@ export function registerTicket(program: Command): void {
       "--tests-json <json>",
       "the test identities ({ file, name, line?, column? }) the runner's clean replay saw pass in the tester's files; the landing replay requires every one (system only)",
     )
+    .option(
+      "--tester-agent <id>",
+      "the tester agent whose run this PASS records (system only: the runner names who tested when it records the PASS)",
+    )
+    .option("--tester-run <id>", "that tester agent's run id (system only; with --tester-agent)")
     .option("--as <actor>", "actor type: agent|human|admin|system", "agent")
     .action((ref, opts, cmd) => {
       const actor = testerActor(opts.as);
@@ -863,6 +868,25 @@ export function registerTicket(program: Command): void {
         }
         tests = parseJsonArrayOption(String(opts.testsJson), "--tests-json");
       }
+      // WHO TESTED: the runner's record of the tester agent's run; system only, like the
+      // identities.
+      let testerAgent: { id: string; run?: string } | undefined;
+      if (opts.testerAgent !== undefined || opts.testerRun !== undefined) {
+        if (actor.type !== "system") {
+          throw new DispatchError(
+            "ACTOR_NOT_PERMITTED",
+            "--tester-agent / --tester-run are recorded by the runner only (--as system).",
+            { actor_type: actor.type },
+          );
+        }
+        if (opts.testerAgent === undefined) {
+          throw new DispatchError("VALIDATION_ERROR", "--tester-run needs --tester-agent.");
+        }
+        testerAgent = {
+          id: String(opts.testerAgent),
+          ...(opts.testerRun !== undefined ? { run: String(opts.testerRun) } : {}),
+        };
+      }
       const wg = open(cmd.optsWithGlobals());
       const res = wg.testerPass(
         ref,
@@ -874,6 +898,7 @@ export function registerTicket(program: Command): void {
           ...(opts.replay ? { replay: String(opts.replay) } : {}),
           ...(opts.testsCommit ? { tests_commit: String(opts.testsCommit) } : {}),
           ...(tests !== undefined ? { tests } : {}),
+          ...(testerAgent !== undefined ? { tester_agent: testerAgent } : {}),
         },
         actor,
       );

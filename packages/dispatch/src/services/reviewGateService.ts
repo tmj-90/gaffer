@@ -53,6 +53,7 @@ import {
 } from "./landingStatus.js";
 import { isTestingEnabled, testerProvenance } from "../util/testingLane.js";
 import {
+  parseTesterAgent,
   parseTesterIdentities,
   readBoundTesterPass,
   sameTesterIdentity,
@@ -2019,6 +2020,8 @@ export class ReviewGateService {
       tests_commit?: string;
       /** TEST IDENTITIES the runner's clean replay saw pass (system only, see testerReplay.ts). */
       tests?: unknown;
+      /** The tester agent (and run) whose verdict the runner records (system only). */
+      tester_agent?: unknown;
     },
     actor: Actor,
   ): TransitionResult {
@@ -2053,6 +2056,27 @@ export class ReviewGateService {
         );
       }
       tests = parsed;
+    }
+    // WHO TESTED: a PASS the runner records as the system names the tester agent whose run
+    // produced the verdict, so the record never reads as the system's own judgement. The
+    // runner's measurement, so the system actor only, like the identities.
+    let testerAgent: { id: string; run?: string } | undefined;
+    if (input.tester_agent !== undefined) {
+      if (actor.type !== "system") {
+        throw new DispatchError(
+          "ACTOR_NOT_PERMITTED",
+          "Only the runner (the system actor) may record which tester agent's run a PASS comes from.",
+          { actor_type: actor.type },
+        );
+      }
+      const parsed = parseTesterAgent(input.tester_agent);
+      if (parsed === null) {
+        throw new DispatchError(
+          "VALIDATION_ERROR",
+          "tester_agent must be { id, run? } with a plain agent id and run id.",
+        );
+      }
+      testerAgent = parsed;
     }
     // The done gate needs real git; run it BEFORE the outer write transaction (a
     // nested transition() is only a savepoint inside it, so "before transition()" is
@@ -2112,6 +2136,7 @@ export class ReviewGateService {
           provenance: testerProvenance(actor),
           ...binding,
           ...(tests !== undefined ? { tests } : {}),
+          ...(testerAgent !== undefined ? { tester_agent: testerAgent } : {}),
         }),
         created_by: actor.id ?? actor.type,
         recorded_by_actor_type: actor.type,

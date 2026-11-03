@@ -129,6 +129,9 @@ import {
 // node:sqlite is only reachable via createRequire in an ESM module.
 const require = createRequire(import.meta.url);
 
+/** The tester agent's actor id (dispatch's `--as agent` tester actor). */
+export const TESTER_AGENT_ID = "tester";
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 const RUNNER_DIR = resolve(HERE, "..");
 const GAFFER_HOME = resolve(RUNNER_DIR, "..");
@@ -466,6 +469,15 @@ export function recordVerdict(ticketNumber, verdict, summary, env = process.env,
     ...(binding.replay ? ["--replay", String(binding.replay)] : []),
     ...(binding.testsCommit ? ["--tests-commit", String(binding.testsCommit)] : []),
     ...(binding.tests ? ["--tests-json", JSON.stringify(binding.tests)] : []),
+    // WHO TESTED: a PASS recorded as the system (it carries identities) names the tester
+    // agent whose run produced the verdict, and the run when known (dispatch: system only).
+    ...(binding.tests && binding.testerAgent?.id
+      ? [
+          "--tester-agent",
+          String(binding.testerAgent.id),
+          ...(binding.testerAgent.run ? ["--tester-run", String(binding.testerAgent.run)] : []),
+        ]
+      : []),
   ];
   const override = (env.DISPATCH_TESTER_VERDICT_CMD ?? "").trim();
   let argv;
@@ -1195,6 +1207,8 @@ function runLiveTester(context) {
   let verdict = null;
   let text = "";
   let usageLimit = null;
+  // The tester agent's run id (the envelope's session id), recorded on a system PASS.
+  let testerRunId = "";
   const elapsedMs = Date.now() - t0;
   // The raw envelope for the runner's usage-window pause record (lib/tester.sh).
   const envelopeOut = String(process.env.GAFFER_TESTER_ENVELOPE_OUT ?? "").trim();
@@ -1244,6 +1258,7 @@ function runLiveTester(context) {
         withJoinKeys(buildUsageRecord({ json, ticket: n, kind: "tester" }), joinKeys),
       );
       text = extractResultText(json) ?? "";
+      if (json && typeof json.session_id === "string") testerRunId = json.session_id;
       // USAGE WINDOW: a call refused by the usage window / a rate limit never tested
       // anything (the same one table the delivery path reads; text rows need an error
       // envelope, so the tester's own reply quoting the words is not a refusal).
@@ -1449,7 +1464,15 @@ function runLiveTester(context) {
     ...(verdict === "pass" && replay ? { replay: replay.state } : {}),
     ...(verdict === "pass" ? { testsCommit } : {}),
     ...(verdict === "pass" && testsCommit !== "none" && replay && Array.isArray(replay.tests)
-      ? { tests: replay.tests }
+      ? {
+          tests: replay.tests,
+          testerAgent: {
+            id: TESTER_AGENT_ID,
+            ...(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(testerRunId)
+              ? { run: testerRunId }
+              : {}),
+          },
+        }
       : {}),
   });
   if (!recorded.ok) {

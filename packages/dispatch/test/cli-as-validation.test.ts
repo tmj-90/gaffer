@@ -119,6 +119,31 @@ describe("CLI --as is validated", () => {
     });
   }
 
+  // WHO TESTED: the tester agent a system PASS names is the runner's record too.
+  for (const as of ["agent", "human", "admin"]) {
+    it(`ticket tester-pass --tester-agent --as ${as} is refused (ACTOR_NOT_PERMITTED) and writes nothing`, () => {
+      const before = eventCount(dbPath);
+      const err = thrown(() =>
+        run(
+          dbPath,
+          "ticket",
+          "tester-pass",
+          "1",
+          "--summary",
+          "ok",
+          "--tester-agent",
+          "tester",
+          "--tester-run",
+          "r1",
+          "--as",
+          as,
+        ),
+      );
+      expect(err?.code).toBe("ACTOR_NOT_PERMITTED");
+      expect(eventCount(dbPath)).toBe(before);
+    });
+  }
+
   it("ticket reopen-for-review --cause takes only a known cause, and writes nothing", () => {
     const before = eventCount(dbPath);
     const err = thrown(() =>

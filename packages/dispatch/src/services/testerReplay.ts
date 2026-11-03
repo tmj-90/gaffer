@@ -88,6 +88,30 @@ export function sameTesterIdentity(a: TesterTestIdentity, b: TesterTestIdentity)
   return true;
 }
 
+/**
+ * WHO TESTED, on a PASS the runner records as the system (it carries test identities, so
+ * the system actor records it): the tester agent whose run the verdict came from, and that
+ * run's id when the runner knew it. System only, like the identities: no agent-reachable
+ * path sets it.
+ */
+export interface TesterAgentRef {
+  id: string;
+  run?: string;
+}
+
+const TESTER_AGENT_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:@-]{0,63}$/;
+const TESTER_RUN_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+
+/** A tester-agent reference, or null when `raw` is not one. */
+export function parseTesterAgent(raw: unknown): TesterAgentRef | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const o = raw as Record<string, unknown>;
+  if (typeof o.id !== "string" || !TESTER_AGENT_ID_RE.test(o.id)) return null;
+  if (o.run === undefined || o.run === null) return { id: o.id };
+  if (typeof o.run !== "string" || !TESTER_RUN_ID_RE.test(o.run)) return null;
+  return { id: o.id, run: o.run };
+}
+
 export interface BoundTesterPass {
   evidenceId: string;
   testedCommit: string | null;

@@ -2315,6 +2315,8 @@ export class Dispatch {
       tests_commit?: string;
       /** The test identities the PASS binds (system only; see services/testerReplay.ts). */
       tests?: unknown;
+      /** The tester agent (and run) whose verdict the runner records (system only). */
+      tester_agent?: unknown;
     },
     actor: Actor,
   ): TransitionResult {

@@ -558,7 +558,7 @@ pnpm -C .. -r build   # build all three packages from the repo root
 # 2. Watch a dry run (no agent invoked, nothing mutated)
 ./gaffer run --dry-run
 #   → prints each tick: what it WOULD claim, the recommended skills, the exact
-#     headless-claude command, or the idle-scan it WOULD run.
+#     headless agent command, or the idle-scan it WOULD run.
 
 # 3. Go live (only after reviewing): claims real tickets and runs the agent.
 #    `gaffer run` is LIVE by default (only --dry-run / DRY_RUN=1 keeps it a preview),

@@ -57,7 +57,7 @@ Two refinements apply across buckets:
   role's review lens. `caveman` (a chat mode a user switches on) and `create-branch`
   (the runner creates every factory branch; the delivery brief carries the branch and
   clean-tree check) are **user-only**: shipped for `gaffer skills install` into a
-  human's own Claude Code, never mounted on a factory agent.
+  human's own agent CLI setup, never mounted on a factory agent.
 
 ### Why broad inclusion for the task packs
 
@@ -65,7 +65,7 @@ The earlier allowlist gated packs on the repo's `stack` string, and when that
 string was mis-registered or incomplete it *silently excluded* the pack the
 files in front of the agent needed (`java-conventions` never mounted on a Java
 ticket whose repo `stack` didn't list `java`). An excluded skill is invisible:
-the agent cannot ask for what it cannot see. Claude Code's progressive
+the agent cannot ask for what it cannot see. The agent CLI's progressive
 disclosure loads only a mounted skill's name + description until it is invoked,
 so an unused task pack costs one cached description line, while a missing one
 costs the delivery its guidance. For the task-shaped packs (API endpoint,

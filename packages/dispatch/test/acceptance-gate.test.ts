@@ -523,6 +523,135 @@ describe("acceptance gate: an acceptance ticket always goes to the tester (befor
   });
 });
 
+describe("acceptance gate: a tester PASS binds TEST IDENTITIES (external review 10)", () => {
+  const ID_SMOKE = { file: "test/bb-acceptance.test.js", name: "smoke", line: 3, column: 1 };
+  const ID_V2 = { file: "test/bb-acceptance.test.js", name: "api > v2 name", line: 5, column: 3 };
+  const reachTester = (wg: Dispatch) => {
+    const { accId } = epicToReviewWith(wg);
+    toTester(wg, accId);
+    return accId;
+  };
+  const withIds = (wg: Dispatch, accId: string, tests: unknown = [ID_SMOKE, ID_V2]) => ({
+    ...boundPass(wg, accId),
+    tests_commit: LANDED,
+    tests,
+  });
+  const record = (wg: Dispatch, accId: string, tests: unknown, evidence?: string) =>
+    wg.recordTesterReplay(
+      accId,
+      {
+        commit: LANDED,
+        pin: SHA,
+        files: ["test/bb-acceptance.test.js"],
+        tests,
+        ...(evidence ? { evidence } : {}),
+        repo: `delivery-${accId}`,
+        via: "local",
+      },
+      systemActor,
+    );
+
+  it("only the system actor records the identities: an agent, a person or an admin is refused and nothing is written", () => {
+    const wg = freshWg({ testingEnabled: false });
+    const accId = reachTester(wg);
+    for (const actor of [testerAgent, human, { type: "admin", id: "root" } as Actor]) {
+      expectCode(() => wg.testerPass(accId, withIds(wg, accId), actor), "ACTOR_NOT_PERMITTED");
+    }
+    expect(wg.view(accId).ticket.status).toBe("in_testing");
+    const pass = wg.testerPass(accId, withIds(wg, accId), systemActor);
+    expect(pass.ticket.status).toBe("in_review");
+    const row = wg.db
+      .prepare(
+        "SELECT payload_json FROM evidence WHERE ticket_id = ? AND evidence_type = 'test_output' ORDER BY rowid DESC LIMIT 1",
+      )
+      .get(accId) as { payload_json: string };
+    expect(JSON.parse(row.payload_json).tests).toEqual([ID_SMOKE, ID_V2]);
+  });
+
+  it("the identities are validated: not a list, an entry without a name, or identities without a tests commit", () => {
+    const wg = freshWg({ testingEnabled: false });
+    const accId = reachTester(wg);
+    for (const bad of ["x", [{ file: "a" }], [{ file: "a", name: "b", line: -1 }], [null]]) {
+      expectCode(
+        () => wg.testerPass(accId, withIds(wg, accId, bad), systemActor),
+        "VALIDATION_ERROR",
+      );
+    }
+    expectCode(
+      () =>
+        wg.testerPass(
+          accId,
+          { ...boundPass(wg, accId), tests_commit: "none", tests: [ID_SMOKE] },
+          systemActor,
+        ),
+      "VALIDATION_ERROR",
+    );
+    expect(wg.view(accId).ticket.status).toBe("in_testing");
+  });
+
+  it("a replay record that does not prove EVERY bound identity is refused (a hold never becomes a green); one that does counts the epic as accepted", () => {
+    const wg = freshWg({ testingEnabled: false });
+    const accId = reachTester(wg);
+    wg.testerPass(accId, withIds(wg, accId), systemActor);
+    approveTested(wg, accId);
+    // A renamed / skipped / missing bound test: the runner's proof lacks it.
+    expectCode(() => record(wg, accId, [ID_SMOKE], "identities"), "STATE_CONFLICT");
+    // An extra passing test does not stand in for the missing one.
+    expectCode(
+      () => record(wg, accId, [ID_SMOKE, { ...ID_V2, name: "api > v3 name" }], "identities"),
+      "STATE_CONFLICT",
+    );
+    // The same name at another call site is another test.
+    expectCode(
+      () => record(wg, accId, [ID_SMOKE, { ...ID_V2, line: 9 }], "identities"),
+      "STATE_CONFLICT",
+    );
+    // The runner claiming file-level evidence for a PASS that bound identities: refused.
+    expectCode(() => record(wg, accId, [ID_SMOKE, ID_V2], "files"), "STATE_CONFLICT");
+    expect(computeStats(wg.db).acceptance.epics[0]!.replayed_commit).toBeNull();
+    const ok = record(wg, accId, [ID_SMOKE, ID_V2], "identities");
+    expect(ok.recorded).toBe(true);
+    expect(ok.evidence).toBe("identities");
+    wg.markMerged(accId, systemActor);
+    const e = computeStats(wg.db).acceptance.epics[0]!;
+    expect(e.result).toBe("accepted");
+    expect(e.replay_evidence).toBe("identities");
+    expect(e.replayed_tests).toBe(2);
+  });
+
+  it("a PASS that bound NO identity in its files never counts the epic as accepted", () => {
+    const wg = freshWg({ testingEnabled: false });
+    const accId = reachTester(wg);
+    wg.testerPass(accId, withIds(wg, accId, []), systemActor);
+    approveTested(wg, accId);
+    expect(record(wg, accId, [], "identities").recorded).toBe(true);
+    wg.markMerged(accId, systemActor);
+    expect(computeStats(wg.db).acceptance.epics[0]!.result).toBe("unreplayed");
+  });
+
+  it("an older PASS without identities keeps the file-level rule, recorded and shown as file-level evidence only", () => {
+    const wg = freshWg({ testingEnabled: false });
+    const accId = reachTester(wg);
+    wg.testerPass(accId, { ...boundPass(wg, accId), tests_commit: LANDED }, testerAgent);
+    approveTested(wg, accId);
+    expectCode(() => record(wg, accId, [ID_SMOKE], "identities"), "STATE_CONFLICT");
+    const r = record(wg, accId, [ID_SMOKE], "files");
+    expect(r.recorded).toBe(true);
+    expect(r.evidence).toBe("files");
+    const row = wg.db
+      .prepare(
+        "SELECT summary, payload_json FROM evidence WHERE ticket_id = ? AND uri LIKE 'gaffer-tester-replayed:%'",
+      )
+      .get(accId) as { summary: string; payload_json: string };
+    expect(row.summary).toMatch(/file-level evidence only/);
+    expect(JSON.parse(row.payload_json).evidence).toBe("files");
+    wg.markMerged(accId, systemActor);
+    const e = computeStats(wg.db).acceptance.epics[0]!;
+    expect(e.result).toBe("accepted");
+    expect(e.replay_evidence).toBe("files");
+  });
+});
+
 describe("acceptance gate: a verdict is bound to the tested commit and contract", () => {
   it("the binding is stored; a contract edited after the PASS makes the build stale (unaccepted)", () => {
     const wg = freshWg({ testingEnabled: false });

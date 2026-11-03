@@ -36,6 +36,20 @@ function parseCause(v: string): ReopenForReviewCause {
   );
 }
 
+/** A JSON array option's value, or a VALIDATION_ERROR naming the option. */
+function parseJsonArrayOption(v: string, name: string): unknown[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(v);
+  } catch {
+    parsed = null;
+  }
+  if (!Array.isArray(parsed)) {
+    throw new DispatchError("VALIDATION_ERROR", `${name} must be a JSON array.`);
+  }
+  return parsed;
+}
+
 export function registerTicket(program: Command): void {
   const ticket = program.command("ticket").description("Ticket commands");
 
@@ -323,6 +337,15 @@ export function registerTicket(program: Command): void {
     .requiredOption("--commit <sha>", "the landed revision (the gated merge commit)")
     .requiredOption("--pin <sha>", "the tested commit whose assertions were replayed")
     .option("--files-json <json>", "JSON array of the tester's test files that ran", "[]")
+    .option(
+      "--tests-json <json>",
+      "JSON array of the test identities ({ file, name, line?, column? }) proven to have run and passed",
+      "[]",
+    )
+    .option(
+      "--evidence <level>",
+      "what the replay proved: identities (every test the PASS bound) | files (an older PASS: file-level evidence only)",
+    )
     .option("--repo <repo>", "repo name or id (default: the ticket's primary repo)")
     .option("--via <how>", "local | pr")
     .option("--note <text>", "why these (or no) tester files were replayed")
@@ -338,6 +361,7 @@ export function registerTicket(program: Command): void {
       if (!Array.isArray(files) || !files.every((f) => typeof f === "string")) {
         throw new DispatchError("VALIDATION_ERROR", "--files-json must be a JSON array of paths");
       }
+      const tests = parseJsonArrayOption(String(opts.testsJson), "--tests-json");
       const wg = open(cmd.optsWithGlobals());
       const res = wg.recordTesterReplay(
         ref,
@@ -345,6 +369,8 @@ export function registerTicket(program: Command): void {
           commit: String(opts.commit),
           pin: String(opts.pin),
           files: files as string[],
+          tests,
+          evidence: opts.evidence ? String(opts.evidence) : undefined,
           repo: opts.repo ? String(opts.repo) : undefined,
           via: opts.via ? String(opts.via) : undefined,
           note: opts.note ? String(opts.note) : undefined,
@@ -817,9 +843,26 @@ export function registerTicket(program: Command): void {
       "--tests-commit <sha|none>",
       "the commit holding the test files this tester run saved (gaffer-tests/ticket-<n>), or none",
     )
+    .option(
+      "--tests-json <json>",
+      "the test identities ({ file, name, line?, column? }) the runner's clean replay saw pass in the tester's files; the landing replay requires every one (system only)",
+    )
     .option("--as <actor>", "actor type: agent|human|admin|system", "agent")
     .action((ref, opts, cmd) => {
       const actor = testerActor(opts.as);
+      // TEST IDENTITIES are the runner's measurement: refused to every other actor here
+      // as well as in the service.
+      let tests: unknown;
+      if (opts.testsJson !== undefined) {
+        if (actor.type !== "system") {
+          throw new DispatchError(
+            "ACTOR_NOT_PERMITTED",
+            "--tests-json is recorded by the runner only (--as system); an agent, a person or an admin cannot bind test identities.",
+            { actor_type: actor.type },
+          );
+        }
+        tests = parseJsonArrayOption(String(opts.testsJson), "--tests-json");
+      }
       const wg = open(cmd.optsWithGlobals());
       const res = wg.testerPass(
         ref,
@@ -830,6 +873,7 @@ export function registerTicket(program: Command): void {
           ...(opts.contractHash ? { contract_hash: String(opts.contractHash) } : {}),
           ...(opts.replay ? { replay: String(opts.replay) } : {}),
           ...(opts.testsCommit ? { tests_commit: String(opts.testsCommit) } : {}),
+          ...(tests !== undefined ? { tests } : {}),
         },
         actor,
       );

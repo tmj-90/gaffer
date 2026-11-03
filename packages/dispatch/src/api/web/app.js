@@ -12962,6 +12962,14 @@ function renderTestingCard(t, evidence) {
           const others = Array.isArray(p.not_replayed_repos)
             ? p.not_replayed_repos.filter((f) => typeof f === "string")
             : [];
+          // What the record proves: every test the tester's PASS bound, or (an older PASS
+          // without test identities) only that each file ran: file-level evidence only.
+          const tests = Array.isArray(p.tests) ? p.tests.length : 0;
+          const level = p.evidence === "identities" ? "identities" : "files";
+          const proves =
+            level === "identities"
+              ? ` (${tests} bound test${tests === 1 ? "" : "s"} passed)`
+              : " (file-level evidence only)";
           return el("li", { class: files.length ? "tt-row tt-pass" : "tt-row" }, [
             glyph(
               files.length ? "done" : "blocked",
@@ -12974,7 +12982,7 @@ function renderTestingCard(t, evidence) {
               files.length ? "Passed on the landed revision " : "Landed ",
               el("code", { class: "mono" }, sha.slice(0, 12)),
               files.length
-                ? `: ${files.join(", ")}`
+                ? `: ${files.join(", ")}${proves}`
                 : " with no tester test file replayed (not counted as accepted)",
               others.length ? `. Not replayed in ${others.join(", ")}.` : "",
             ]),

@@ -52,7 +52,13 @@ import {
   REVIEW_PIN_PREFIX,
 } from "./landingStatus.js";
 import { isTestingEnabled, testerProvenance } from "../util/testingLane.js";
-import { readBoundTesterPass, TESTER_REPLAY_PREFIX } from "./testerReplay.js";
+import {
+  parseTesterIdentities,
+  readBoundTesterPass,
+  sameTesterIdentity,
+  TESTER_REPLAY_PREFIX,
+  type TesterTestIdentity,
+} from "./testerReplay.js";
 import {
   contractHash,
   REPLAY_STATES,
@@ -1561,12 +1567,24 @@ export class ReviewGateService {
       commit: string;
       pin: string;
       files: readonly string[];
+      /** The test identities proven to have run and passed on `commit`. */
+      tests?: unknown;
+      /** What the runner proved: "identities" or "files" (checked against the bound PASS). */
+      evidence?: string | undefined;
       repo?: string | undefined;
       via?: string | undefined;
       note?: string | undefined;
     },
     actor: Actor,
-  ): { ticketId: string; commit: string; tested: string; files: string[]; recorded: boolean } {
+  ): {
+    ticketId: string;
+    commit: string;
+    tested: string;
+    files: string[];
+    tests: TesterTestIdentity[];
+    evidence: "identities" | "files";
+    recorded: boolean;
+  } {
     if (actor.type !== "system") {
       throw new DispatchError(
         "ACTOR_NOT_PERMITTED",
@@ -1599,6 +1617,20 @@ export class ReviewGateService {
       .replace(/[\r\n\t]+/g, " ")
       .trim()
       .slice(0, 500);
+    const tests = parseTesterIdentities(input.tests ?? []);
+    if (tests === null) {
+      throw new DispatchError(
+        "VALIDATION_ERROR",
+        "tests must be a JSON array of at most 5000 { file, name, line?, column? } test identities.",
+      );
+    }
+    if (
+      input.evidence !== undefined &&
+      input.evidence !== "identities" &&
+      input.evidence !== "files"
+    ) {
+      throw new DispatchError("VALIDATION_ERROR", 'evidence must be "identities" or "files".');
+    }
     // PR-STALE: the PR merged upstream but the local default branch was not fast-forwarded,
     // so nothing here can show which revision landed. No record: never accepted on a guess.
     if (input.via === "pr-stale") {
@@ -1624,6 +1656,32 @@ export class ReviewGateService {
           `#${ticket.number} has no tester PASS bound to ${pin.slice(0, 12)}; a replay is recorded only for the tested commit that landed.`,
           { reason: "not_tested_commit", tested: bound?.testedCommit ?? null },
         );
+      }
+      // TEST IDENTITIES: the PASS decides what the record must prove. One that bound
+      // identities is satisfied only by a record in which EVERY one of them passed (a hold
+      // never becomes a green here); an older PASS without them is file-level evidence only.
+      const evidence: "identities" | "files" = bound.tests !== null ? "identities" : "files";
+      if (input.evidence !== undefined && input.evidence !== evidence) {
+        throw new DispatchError(
+          "STATE_CONFLICT",
+          `the replay proved ${input.evidence}, but #${ticket.number}'s tester PASS ${evidence === "identities" ? "bound test identities" : "bound no test identities"}; nothing is recorded.`,
+          { reason: "evidence_mismatch", evidence },
+        );
+      }
+      if (bound.tests !== null) {
+        const unproven = bound.tests.filter((b) => !tests.some((t) => sameTesterIdentity(t, b)));
+        if (unproven.length > 0) {
+          throw new DispatchError(
+            "STATE_CONFLICT",
+            `${unproven.length} test(s) #${ticket.number}'s tester PASS bound are not proven by this replay (${unproven
+              .slice(0, 3)
+              .map((t) => `${t.file} :: ${t.name}`)
+              .join(
+                "; ",
+              )}${unproven.length > 3 ? "; ..." : ""}); a replay is recorded only when every one passed.`,
+            { reason: "identities_not_proven", unproven: unproven.slice(0, 20) },
+          );
+        }
       }
       // The repo: the one named, else the ticket's primary repo.
       const landing = computeLandingStatus(this.db, ticket.id);
@@ -1656,7 +1714,16 @@ export class ReviewGateService {
           "SELECT 1 FROM evidence WHERE ticket_id = ? AND evidence_type = 'commit' AND recorded_by_actor_type = 'system' AND uri = ? LIMIT 1",
         )
         .get(ticket.id, uri);
-      if (existing) return { ticketId: ticket.id, commit, tested: pin, files, recorded: false };
+      if (existing)
+        return {
+          ticketId: ticket.id,
+          commit,
+          tested: pin,
+          files,
+          tests,
+          evidence,
+          recorded: false,
+        };
       // The landed revision must be on the default branch for EVERY landing path: a PR
       // landing records the local default's head after the fast-forward (whose tree the
       // runner checked equals the candidate it replayed on), never the scratch candidate.
@@ -1701,7 +1768,10 @@ export class ReviewGateService {
         evidence_type: "commit",
         summary:
           (files.length
-            ? `the independent tester's ${files.length} test file(s) (${files.slice(0, 5).join(", ")}${files.length > 5 ? ", …" : ""}) passed`
+            ? `the independent tester's ${files.length} test file(s) (${files.slice(0, 5).join(", ")}${files.length > 5 ? ", …" : ""}) passed` +
+              (evidence === "identities"
+                ? `, every one of the ${tests.length} test(s) its PASS bound`
+                : " (file-level evidence only: the PASS recorded no test identities)")
             : "NO tester test file was replayed (the repository's own suite passed)") +
           ` on the landed revision ${commit} (the merge of tested commit ${pin.slice(0, 12)})${input.via ? ` via ${input.via}` : ""}` +
           (notReplayed.length ? `; not replayed in ${notReplayed.join(", ")}` : "") +
@@ -1712,6 +1782,8 @@ export class ReviewGateService {
           tested: pin,
           pin,
           files,
+          tests,
+          evidence,
           via: input.via ?? null,
           repo: repoName,
           not_replayed_repos: notReplayed,
@@ -1727,9 +1799,16 @@ export class ReviewGateService {
         entity_id: ticket.id,
         actor,
         event_type: "ticket.tester_replayed",
-        payload: { commit, tested: pin, files, via: input.via ?? null },
+        payload: {
+          commit,
+          tested: pin,
+          files,
+          tests: tests.length,
+          evidence,
+          via: input.via ?? null,
+        },
       });
-      return { ticketId: ticket.id, commit, tested: pin, files, recorded: true };
+      return { ticketId: ticket.id, commit, tested: pin, files, tests, evidence, recorded: true };
     });
   }
 
@@ -1938,12 +2017,42 @@ export class ReviewGateService {
       contract_hash?: string;
       replay?: string;
       tests_commit?: string;
+      /** TEST IDENTITIES the runner's clean replay saw pass (system only, see testerReplay.ts). */
+      tests?: unknown;
     },
     actor: Actor,
   ): TransitionResult {
     const summary = input.summary.trim();
     if (summary.length === 0) {
       throw new DispatchError("VALIDATION_ERROR", "A test-result summary is required.");
+    }
+    // TEST IDENTITIES (external review 10): the tests the landing replay must see pass. Only
+    // the runner's tester lane measures them (its own clean replay), so only the system
+    // actor records them: an agent, a person or an admin naming a narrower list would
+    // choose what the landing requires.
+    let tests: TesterTestIdentity[] | undefined;
+    if (input.tests !== undefined) {
+      if (actor.type !== "system") {
+        throw new DispatchError(
+          "ACTOR_NOT_PERMITTED",
+          "Only the runner (the system actor) may record the test identities a tester PASS binds.",
+          { actor_type: actor.type },
+        );
+      }
+      const parsed = parseTesterIdentities(input.tests);
+      if (parsed === null) {
+        throw new DispatchError(
+          "VALIDATION_ERROR",
+          "tests must be a JSON array of at most 5000 { file, name, line?, column? } test identities.",
+        );
+      }
+      if (parsed.length > 0 && !/^[0-9a-f]{40}$|^[0-9a-f]{64}$/i.test(input.tests_commit ?? "")) {
+        throw new DispatchError(
+          "VALIDATION_ERROR",
+          "test identities need the commit holding the tester's tests (tests_commit).",
+        );
+      }
+      tests = parsed;
     }
     // The done gate needs real git; run it BEFORE the outer write transaction (a
     // nested transition() is only a savepoint inside it, so "before transition()" is
@@ -2002,6 +2111,7 @@ export class ReviewGateService {
           verdict: "pass",
           provenance: testerProvenance(actor),
           ...binding,
+          ...(tests !== undefined ? { tests } : {}),
         }),
         created_by: actor.id ?? actor.type,
         recorded_by_actor_type: actor.type,

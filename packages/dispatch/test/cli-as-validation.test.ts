@@ -95,6 +95,30 @@ describe("CLI --as is validated", () => {
     });
   }
 
+  // TEST IDENTITIES (external review 10): the tests a tester PASS binds are the runner's
+  // measurement; the CLI refuses them from every other actor before opening the DB.
+  for (const as of ["agent", "human", "admin"]) {
+    it(`ticket tester-pass --tests-json --as ${as} is refused (ACTOR_NOT_PERMITTED) and writes nothing`, () => {
+      const before = eventCount(dbPath);
+      const err = thrown(() =>
+        run(
+          dbPath,
+          "ticket",
+          "tester-pass",
+          "1",
+          "--summary",
+          "ok",
+          "--tests-json",
+          '[{"file":"test/a.test.mjs","name":"smoke"}]',
+          "--as",
+          as,
+        ),
+      );
+      expect(err?.code).toBe("ACTOR_NOT_PERMITTED");
+      expect(eventCount(dbPath)).toBe(before);
+    });
+  }
+
   it("ticket reopen-for-review --cause takes only a known cause, and writes nothing", () => {
     const before = eventCount(dbPath);
     const err = thrown(() =>

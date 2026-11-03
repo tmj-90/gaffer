@@ -257,7 +257,9 @@ export interface EpicAcceptance {
    *              tested commit, the contract on record (hash matches) and a clean replay,
    *              AND the runner's landing path recorded that the tester's assertions passed
    *              on the revision that LANDED (a `gaffer-tester-replayed:<sha>` system row
-   *              for that tested commit — see services/testerReplay.ts);
+   *              for that tested commit; see services/testerReplay.ts), and, when the
+   *              PASS bound test identities, that record proves them (it is refused
+   *              otherwise) and names at least one;
    * unreplayed — done on a bound PASS, but no record that the tester's assertions passed on
    *              the landed revision (they were never run against what landed), or a
    *              record that replayed NO tester test file there (the PASS saved none, or an
@@ -301,6 +303,13 @@ export interface EpicAcceptance {
    */
   readonly replayed_commit: string | null;
   readonly replayed_files: readonly string[];
+  /**
+   * The test identities the record proves passed there, and what it proves: "identities"
+   * (every test the PASS bound) or "files" (an older PASS: file-level evidence only);
+   * null when there is no record.
+   */
+  readonly replayed_tests: number;
+  readonly replay_evidence: "identities" | "files" | null;
   /** The acceptance ticket's other write repos the tester's assertions did not cover. */
   readonly not_replayed_repos: readonly string[];
   /** Where the build lives, so a status pane can tell whether the default branch has moved past accepted_commit. */
@@ -487,6 +496,7 @@ export function computeAcceptance(db: Db): AcceptanceSummary {
     let acceptedHash: string | null = null;
     let provenance: string | null = null;
     let replay: string | null = null;
+    let boundIdentities = false;
     try {
       const ev = db
         .prepare(
@@ -500,11 +510,13 @@ export function computeAcceptance(db: Db): AcceptanceSummary {
           contract_hash?: unknown;
           provenance?: unknown;
           replay?: unknown;
+          tests?: unknown;
         };
         if (typeof p.tested_commit === "string") acceptedCommit = p.tested_commit;
         if (typeof p.contract_hash === "string") acceptedHash = p.contract_hash;
         if (typeof p.provenance === "string") provenance = p.provenance;
         if (typeof p.replay === "string") replay = p.replay;
+        if (p.tests !== undefined && p.tests !== null) boundIdentities = true;
       }
     } catch {
       /* no binding recorded */
@@ -525,8 +537,14 @@ export function computeAcceptance(db: Db): AcceptanceSummary {
       if (provenance === "human") result = "waived";
       else if (contractChanged || scopeChanged) result = "stale";
       else if (acceptedCommit !== null && acceptedHash !== null && replay === "passed")
-        // Zero tester files replayed is zero independent assertions on what landed.
-        result = replayed && replayed.files.length > 0 ? "accepted" : "unreplayed";
+        // Zero tester files replayed is zero independent assertions on what landed; a PASS
+        // that bound test identities is accepted only on a record that proves them.
+        result =
+          replayed &&
+          replayed.files.length > 0 &&
+          (!boundIdentities || (replayed.evidence === "identities" && replayed.tests.length > 0))
+            ? "accepted"
+            : "unreplayed";
       else result = "unverified";
     } else if (r.status === "in_testing") result = "testing";
     else if (r.status === "refining" || r.status === "blocked" || r.status === "failed")
@@ -555,6 +573,8 @@ export function computeAcceptance(db: Db): AcceptanceSummary {
       contract_changed: contractChanged,
       replayed_commit: replayed?.commit ?? null,
       replayed_files: replayed?.files ?? [],
+      replayed_tests: replayed?.tests.length ?? 0,
+      replay_evidence: replayed?.evidence ?? null,
       not_replayed_repos: replayed?.notReplayedRepos ?? [],
       repo_path: r.repo_path ?? null,
       default_branch: r.default_branch ?? null,

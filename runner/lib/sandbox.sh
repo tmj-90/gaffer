@@ -85,8 +85,10 @@ _sandbox_subpath_rule() {
 #   • READS of file contents under $GAFFER_DATA are denied (the databases, settings, the
 #     dashboard token, other worktrees, the factory log), then allowed again for the write
 #     roots and the read roots (the dependency links and the repo's git directory);
-#   • HOME's secret folders (.ssh, .aws, .config/gh, .claude, .npmrc, .netrc, .gnupg)
-#     cannot be read at all.
+#   • HOME's secret folders and files (_SANDBOX_REPLAY_HOME_SECRETS: .ssh, .aws, the gh
+#     and gcloud configs, .claude, .npmrc, .netrc, .git-credentials, cargo's credentials,
+#     .gnupg, ...) cannot be read or written at all, and $STRICT_ALLOW_HOME is not
+#     granted (the replay's HOME is a scratch directory).
 # Only file-read-data is denied under $GAFFER_DATA (metadata stays readable, so resolving
 # the checkout's own path through it still works).
 #   _sandbox_exec_profile <write-roots> <profile-path> [read-roots]
@@ -128,11 +130,16 @@ EOF
     _sandbox_subpath_rule "${TMPDIR:-/tmp}"
     _sandbox_subpath_rule "/private/var/folders"
     _sandbox_subpath_rule "/tmp"
-    # Operator-allowed HOME paths (e.g. Claude's own state/cache dirs).
+    # Operator-allowed HOME paths (e.g. Claude's own state/cache dirs). Not for the
+    # replay variant: its test code runs with a scratch HOME and must never write the
+    # runner's real one (a planted ~/.claude/settings.json hook would run outside the
+    # sandbox on the next agent start).
     local home_entry
-    for home_entry in ${STRICT_ALLOW_HOME:-}; do
-      _sandbox_subpath_rule "$home_entry"
-    done
+    if [ "$replay" != 1 ]; then
+      for home_entry in ${STRICT_ALLOW_HOME:-}; do
+        _sandbox_subpath_rule "$home_entry"
+      done
+    fi
     # Std streams + the null sink.
     printf '  (literal "/dev/null")\n'
     printf '  (literal "/dev/stdout")\n'
@@ -141,6 +148,9 @@ EOF
   } > "$profile_path"
 }
 
+# HOME's folders and files the replay variant can neither read nor write (credentials and
+# the agent's own configuration). Paths relative to $HOME, space separated.
+_SANDBOX_REPLAY_HOME_SECRETS=".ssh .aws .config/gh .config/gcloud .azure .kube .docker .claude .npmrc .netrc .pypirc .git-credentials .cargo/credentials .cargo/credentials.toml .gnupg"
 # The replay variant's extra rules (see above), printed after the write grant.
 #   _sandbox_exec_replay_rules <write-roots> <read-roots>
 _sandbox_exec_replay_rules() {
@@ -162,8 +172,8 @@ EOF
     printf '  (literal "/dev/null"))\n'
   fi
   if [ -n "${HOME:-}" ]; then
-    printf '(deny file-read*\n'
-    for secret in .ssh .aws .config/gh .claude .npmrc .netrc .gnupg; do
+    printf '(deny file-read* file-write*\n'
+    for secret in $_SANDBOX_REPLAY_HOME_SECRETS; do
       _sandbox_subpath_rule "$HOME/$secret"
     done
     printf ')\n'

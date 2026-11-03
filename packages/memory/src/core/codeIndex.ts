@@ -672,12 +672,11 @@ function writeFileRows(
 
 /** The stem a test file names: `foo.test.ts`, `test_foo.py`, `foo_test.py` → `foo`. */
 function testStem(path: string): string {
-  return posix
-    .basename(path)
-    .replace(/\.(?:test|spec)\.[cm]?[jt]sx?$/, "")
-    .replace(/\.[^.]+$/, "")
-    .replace(/^test_/, "")
-    .replace(/_test$/, "");
+  const b = posix.basename(path);
+  // `board.helpers.test.ts` names `board.helpers`, never `board`: only the test suffix
+  // (or, for a Python test, the extension) comes off.
+  const js = b.replace(/\.(?:test|spec)\.[cm]?[jt]sx?$/, "");
+  return (js !== b ? js : b.replace(/\.[^.]+$/, "")).replace(/^test_/, "").replace(/_test$/, "");
 }
 function moduleStem(path: string): string {
   return posix.basename(path).replace(/\.[^.]+$/, "");
@@ -1245,7 +1244,11 @@ export interface NeighbourItem {
 export interface NeighboursResult {
   status: IndexStatus;
   method: typeof INDEX_METHOD;
-  build: { commit: string | null; builtAt: string; files: number } | null;
+  /**
+   * capsHit: the build stopped at a cap (maxFiles, maxBytesPerFile), so files past it were
+   * not read and the counts are partial; a reader says so where it shows them.
+   */
+  build: { commit: string | null; builtAt: string; files: number; capsHit: string[] } | null;
   /** The commit the caller compared against (status), when given. */
   against: string | null;
   items: NeighbourItem[];
@@ -1550,7 +1553,12 @@ export function codeNeighbours(db: Database, q: NeighbourQuery): NeighboursResul
   return {
     status,
     method: INDEX_METHOD,
-    build: { commit: build.commit, builtAt: build.builtAt, files: build.stats.files },
+    build: {
+      commit: build.commit,
+      builtAt: build.builtAt,
+      files: build.stats.files,
+      capsHit: Array.isArray(build.stats.capsHit) ? build.stats.capsHit : [],
+    },
     against,
     items,
     lowerBound: true,

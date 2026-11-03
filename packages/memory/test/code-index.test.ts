@@ -362,6 +362,27 @@ describe("build and neighbours", () => {
     });
     expect(b.stats.capsHit).toEqual(["maxBytesPerFile"]);
     expect(b.stats.files).toBeGreaterThan(3);
+    // The answer carries the cap, so a reader can say the counts are partial.
+    expect(codeNeighbours(db, { repoKey: KEY, paths: ["src/util.ts"] }).build?.capsHit).toEqual([
+      "maxBytesPerFile",
+    ]);
+  });
+
+  it("links a dotted test name to its own module, not to the shorter stem", () => {
+    // Review finding: `board.helpers.test.ts` lost `.helpers` and linked to board.ts.
+    write(root, "src/board.ts", "export const board = 1;\n");
+    write(root, "src/board.helpers.ts", "export const helper = 1;\n");
+    write(root, "test/board.helpers.test.ts", "// by file name only\n");
+    buildCodeIndex(db, { repoKey: KEY, repo: "acme", repoRoot: root, commit: "c1" });
+    const r = codeNeighbours(db, {
+      repoKey: KEY,
+      paths: ["src/board.ts", "src/board.helpers.ts"],
+    });
+    expect(r.build?.capsHit).toEqual([]);
+    expect(r.items.map((i) => [i.path, i.tests.map((t) => `${t.path} ${t.via}`)])).toEqual([
+      ["src/board.ts", []],
+      ["src/board.helpers.ts", ["test/board.helpers.test.ts name"]],
+    ]);
   });
 });
 

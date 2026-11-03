@@ -23,7 +23,8 @@ itself is pre-1.0 so semver promises are best-effort.
 - **Incremental and bounded.** `build` re-reads only the files `git diff
   --name-status -M` names since the last build's commit (a tree walk when that is
   unknown), skips a file whose content hash is unchanged, caps the walk (5000 files,
-  512 KB per file; the build record says which cap hit) and skips generated and
+  512 KB per file; the build record says which cap hit, and so does every
+  `neighbours` answer as `build.capsHit`) and skips generated and
   vendored paths (`node_modules`, `dist`, `build`, `vendor`, `*.min.js`,
   `*.generated.*`, `_pb2.py`, `linguist-generated` / `linguist-vendored` in the root
   `.gitattributes`). Core: `buildCodeIndex`, `codeNeighbours`, `codeIndexStats`.

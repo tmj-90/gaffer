@@ -132,6 +132,10 @@ function renderNeighbours(r: NeighboursResult): string {
   const lines: string[] = [
     `code index: ${r.status}${r.build ? ` (built at ${r.build.commit?.slice(0, 12) ?? "?"}, ${r.build.builtAt})` : ""}; ${r.method}, a lower bound`,
   ];
+  if (r.build && r.build.capsHit.length > 0)
+    lines.push(
+      `  partial: the build hit its ${r.build.capsHit.join(", ")} cap, so files past it are not counted`,
+    );
   for (const it of r.items) {
     const head = it.symbol ? `${it.symbol} (${it.path ?? "?"})` : (it.path ?? it.query);
     if (it.note && it.callersTotal === 0 && it.testsTotal === 0) {

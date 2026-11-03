@@ -950,7 +950,8 @@ there could not be replayed, so it would be held as unverified. The Review view'
 *What is not backed* list and Health then say so in one line, *independent tester off:
 no test command registered for <repo>*. `GAFFER_TESTING=1` turns the lane on for every
 testable ticket and `GAFFER_TESTING=0` turns it off; an epic's Acceptance ticket is
-always tested. A planned build's tickets are created testable unless the lane is off
+always tested. The Settings switch reads *Auto* until you move it, and moving it saves an
+explicit on or off. A planned build's tickets are created testable unless the lane is off
 (all but the bootstrap), and any ticket can be switched on its page or with
 `wg ticket set-testable <n>`. When the tester gates a ticket it runs after the gates
 (and the reviewer agent, when you run one) and **before** you look: the runner sends
@@ -963,7 +964,8 @@ merge. If the branch moves after the PASS (a push, a conflict resolution), or th
 ticket's contract changes, the server refuses the approval (*Approve held: not tested
 on this commit*) and the runner sends the new head to the tester first. An agent's
 approval of an untested commit (your autonomy grant, no person in the loop) still sends
-it to the tester, whose PASS then goes to Ready for merge.
+it to the tester, whose PASS then goes to Ready for merge. With CI required, the runner
+sends a delivery to the tester only once CI has passed on its head.
 A ticket that becomes testable with no test contract gets one from its title,
 so the tester's contract always names the behaviour under test (one line built
 from the title, not a real endpoint or command); you can replace it with

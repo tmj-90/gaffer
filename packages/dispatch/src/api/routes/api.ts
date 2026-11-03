@@ -26,7 +26,7 @@ import {
 } from "../schemas.js";
 import { listSettings, readSecretSetting, settingProblems, writeSettings } from "../settings.js";
 import { apiActor, apiPrincipal } from "./context.js";
-import { forgetLoreDrafts, routeReadModels } from "./readModels.js";
+import { forgetLoreDrafts, forgetLoreStatus, routeReadModels } from "./readModels.js";
 
 /**
  * The `/api` control surface. The mutating config routes (settings, idle-loops,
@@ -353,6 +353,7 @@ export async function routeApi(
     }
     if (result.available) {
       forgetLoreDrafts(memoryReader); // the human queue's Memory row re-reads the count
+      forgetLoreStatus(memoryReader, id); // a review rule's status reads afresh
       sendJson(res, 200, { id: result.id, status: result.status });
       return;
     }

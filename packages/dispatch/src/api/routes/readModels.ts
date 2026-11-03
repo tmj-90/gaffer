@@ -18,7 +18,7 @@ import { governanceRoi, type GovTransition } from "../../health/governanceRoi.js
 import { acceptedChangeCost } from "../../health/acceptedChange.js";
 import { readReviewMeasures } from "../../health/reviewMeasures.js";
 import { reviewRuleThreshold } from "../../health/reviewRules.js";
-import { reviewRulesReport } from "../../services/reviewRuleService.js";
+import { createLoreStatusCache, reviewRulesReport } from "../../services/reviewRuleService.js";
 import { aggregateHealth, readHealthRows, type SendBack } from "../../health/healthAggregator.js";
 import { sendBacksByTicket } from "../../health/sendBacks.js";
 import { isBoardArea } from "../../services/boardService.js";
@@ -49,11 +49,18 @@ const loreDraftMemo = new WeakMap<
   MemoryReader,
   { at: number; ttl: number; total: number; titles: string[] }
 >();
+/** One lore-status cache per memory reader (one per server), for GET /api/review-rules. */
+const LORE_STATUS_CACHES = new WeakMap<MemoryReader, ReturnType<typeof createLoreStatusCache>>();
 /** Cards per board area a bare GET /api/board returns (see the board route). */
 export const BOARD_DEFAULT_LIMIT = 500;
 
 export function forgetLoreDrafts(reader: MemoryReader): void {
   loreDraftMemo.delete(reader);
+}
+
+/** A person approved or rejected lore `id` here: the review-rules report reads it afresh. */
+export function forgetLoreStatus(reader: MemoryReader, id: string): void {
+  LORE_STATUS_CACHES.get(reader)?.forget(id);
 }
 function pendingLoreDrafts(reader: MemoryReader): { total: number; titles: string[] } {
   const now = Date.now();
@@ -399,13 +406,20 @@ export function routeReadModels(
   // propose`. Memory unavailable: statuses read null and every measure "not approved".
   if (segments.length === 2 && segments[1] === "review-rules") {
     if (method !== "GET") return methodNotAllowed(res);
+    // Memory reads are bounded: answers reused for a minute, nothing asked for a minute
+    // after memory could not answer (see createLoreStatusCache).
+    let cache = LORE_STATUS_CACHES.get(memoryReader);
+    if (!cache) {
+      cache = createLoreStatusCache();
+      LORE_STATUS_CACHES.set(memoryReader, cache);
+    }
     const report = reviewRulesReport(wg.db, {
       threshold: reviewRuleThreshold(process.env),
       nowMs: Date.parse(wg.clock.now()) || Date.now(),
-      lookup: (id) => {
+      lookup: cache.lookup((id) => {
         const h = memoryReader.loreHistory(id);
         return h.available ? { status: h.current.status, approvedAt: h.approvedAt } : null;
-      },
+      }),
     });
     return sendJson(res, 200, report);
   }

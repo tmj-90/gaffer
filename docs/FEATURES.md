@@ -505,12 +505,25 @@ structural barrier the whole design hangs on.
   diff's lines", "by path", "by import text", "pattern match"…) and links to its
   file in the diff. When the scan finds no migration, config, environment variable
   or dependency change it says so once (never on a diff cut at its size cap, and
-  never "no dependency change" when a lockfile changed), and what it cannot work out (callers of a
-  changed symbol and whether they are tested) is said as not analysed. It is
-  advisory: nothing gates on it and it does not change the observed risk that
-  holds auto-ship. Changed modules with no test in the change also appear under
-  *What is not backed*. `GET /tickets/:id/diff?include=impact` returns the same
-  facts for any ticket.
+  never "no dependency change" when a lockfile changed), and what it cannot work
+  out is said as not analysed. It is advisory: nothing gates on it and it does not
+  change the observed risk that holds auto-ship. Changed modules with no test in
+  the change also appear under *What is not backed*.
+  `GET /tickets/:id/diff?include=impact` returns the same facts for any ticket.
+- **Callers and tests of the changed symbols.** For each exported symbol the
+  change touches (its declaration line, or a line in its body) the Behavioural
+  surface lists the files on the base branch that import it, directly or through
+  a re-export barrel, which of them are changed here, which have a test that
+  imports them, and the tests that import it or are named for it: "calculateInvoice
+  changed: 6 files on main import it, 4 not changed here; 4 of the 6 have a test
+  that imports them; 3 tests import it or are named for it". A removed export or a
+  deleted module lists the files that still import it. A changed module with no
+  test in the change also says whether any test on the base imports it. These come
+  from the code index (below), labelled "by import text (index)", and are a lower
+  bound. They are listed only when the index describes the base branch's current
+  tip; when it is missing, stale or cannot be read, or the code is not TypeScript,
+  JavaScript or Python, the panel says callers are not analysed and why. Health
+  counts how often the callers row listed callers when someone opened a review.
 - **The eval judge's grade, when you turn it on.** With `GAFFER_EVAL_JUDGE=1` an
   independent judge grades every submitted delivery against its acceptance criteria
   on five dimensions (criteria, correctness, smallest change, tests, security), and
@@ -929,6 +942,20 @@ human-gated knowledge the factory works from:
   are brought in line with the merged commit, renames included, and each card's
   path and content hash is checked against that commit before memory records the
   repo as indexed there.
+- **Code index**: files, top-level symbols, imports and tests of each repo's
+  TypeScript, JavaScript and Python code, read from the files' text with no model
+  (`memory index build | neighbours | stats`). Imports resolve relative paths,
+  `index` barrels, `./x.js` for `x.ts`, workspace package names and tsconfig
+  `paths`, and Python packages; a test links to the modules it imports and to the
+  one its file name names. Built at onboard and refreshed after every merge from
+  the merged commit, re-reading only the files that changed; generated and vendored
+  paths are skipped and the walk is capped. When a ticket names a path or a symbol
+  (`calculateInvoice()`, `` `formatTotal` ``, `src/invoice.ts`), the delivery's
+  file cards add up to five callers and tests of each, with the reason ("imports
+  calculateInvoice through src/index.ts", "tests calculateInvoice (imports it)"),
+  or one line saying the index is missing or stale. Health shows each repo's index
+  coverage. An agent shell can read it but not rebuild it (the safety hook denies
+  `memory index build`). `GAFFER_CODE_INDEX=0` turns it off.
 - **Lore** — the team's recorded conventions, decisions, gotchas, and cross-repo
   boundaries. It's **read-only in the product**: agents *draft* lore through an
   MCP review gate, and a human approves it in the Memory view or from the

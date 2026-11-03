@@ -25,6 +25,12 @@ describe("computeRiskAnnotations", () => {
     expect(ann!.paths).toHaveLength(6);
   });
 
+  it("flags the safety hook's files, the core and its rule modules under runner/lib/hook", () => {
+    const paths = ["runner/safety-hook-core.mjs", "runner/lib/hook/reads.mjs"];
+    const ann = computeRiskAnnotations(paths, 0, NOENV).find((a) => a.kind === "sensitive-path");
+    expect(ann?.paths).toEqual(paths);
+  });
+
   it("does NOT trip 'auth' on 'author.ts' (segment-anchored)", () => {
     expect(computeRiskAnnotations(["src/author.ts", "src/oauthClient.ts"], 0, NOENV)).toEqual([]);
   });

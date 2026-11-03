@@ -57,7 +57,7 @@ export interface RiskAnnotation {
  * Operator-overridable via DISPATCH_SENSITIVE_PATH_RE.
  */
 const DEFAULT_SENSITIVE_SRC =
-  "(^|/)(migrations?|\\.github|dockerfile|auth|authz|security|secrets?|credentials?|\\.env|\\.gaffer|safety-hook)(/|\\.|-|_|$)|(\\.pem|\\.key|id_rsa[a-z0-9_]*)$";
+  "(^|/)(migrations?|\\.github|dockerfile|auth|authz|security|secrets?|credentials?|\\.env|\\.gaffer|safety-hook|runner/lib/hook)(/|\\.|-|_|$)|(\\.pem|\\.key|id_rsa[a-z0-9_]*)$";
 
 /** Dependency/manifest files — a change here can pull in new transitive code. */
 const DEPENDENCY_RE =

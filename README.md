@@ -152,13 +152,15 @@ gaffer/
 │   ├── crew/       factory runtime: onboarding, context packets, hooks, idle loops, MCP tools
 │   └── memory/     lore and repo memory: digest, feature ledger, gated lore (memory-mcp)
 ├── runner/         the live runtime: tick.sh, loop.sh, the safety hook, 118 skills
-├── docs/           configuration reference, feature tour, design notes
+├── docs/           the docs index, configuration reference, feature tour, guides
 └── quickstart.md
 ```
 
 `runner/gaffer skills install` links the skill library into `.claude/skills` in the current directory (`--user` for `~/.claude/skills`), and `runner/gaffer skills add <path|git-url>` validates an outside skill against the same lint gate the bundled library passes (a known `area`, a trigger-phrased description, a real procedure, real MCP tool names) before adding it to the factory's library.
 
 ## Further reading
+
+[docs/README.md](docs/README.md) lists every doc by what you need. The main ones:
 
 - [quickstart.md](quickstart.md): the guided first run
 - [docs/FEATURES.md](docs/FEATURES.md): each surface in more detail

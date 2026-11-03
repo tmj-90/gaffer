@@ -3327,6 +3327,24 @@ export class Dispatch {
   }
 
   /**
+   * TESTER FIRST: how many in_review tickets the runner's tester pass would send to the
+   * tester now (the tester gates them and no PASS covers their head): a push after a
+   * PASS, a conflict reopen, a delivery the runner could not route. Poll for work counts
+   * them so a tick runs the sweep. Reads git per such ticket.
+   */
+  pendingTesterRoutes(): number {
+    let n = 0;
+    for (const t of this.tickets.list("in_review")) {
+      try {
+        if (this.reviewGateSvc.laneApplies(t) && !this.reviewGateSvc.testerCoverage(t).covered) n++;
+      } catch {
+        /* a ticket that cannot be read is not counted */
+      }
+    }
+    return n;
+  }
+
+  /**
    * TESTER FIRST: send in_review tickets the tester gates (and has not passed on their
    * head) to it before a person reviews them: one ticket, or every in_review ticket. The
    * runner's call (system) or an admin's.

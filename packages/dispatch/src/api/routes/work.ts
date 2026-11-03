@@ -279,10 +279,14 @@ export function pollablePending(wg: Dispatch, env: NodeJS.ProcessEnv): PollableP
   // where a test command is registered). With it off the runner still tests an epic's
   // ACCEPTANCE ticket (runner/lib/tester.sh: acceptance is a gate, not an option).
   const inTesting = wg.listTickets({ status: "in_testing" });
+  // TESTER FIRST: with no reviewer agent, the tester pass also sends in_review tickets the
+  // tester gates and has not passed on their head to it (a push after a PASS, a conflict
+  // reopen), so those count too.
   const testing =
-    testingLaneMode(env) !== "off"
+    (testingLaneMode(env) !== "off"
       ? inTesting.length
-      : inTesting.filter((t) => t.acceptance === 1).length;
+      : inTesting.filter((t) => t.acceptance === 1).length) +
+    (reviewMode === "human" ? wg.pendingTesterRoutes() : 0);
   const clarify =
     flagOn(env["CLARIFY_DRAFTS_WHEN_IDLE"]) && ready === 0
       ? wg

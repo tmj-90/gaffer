@@ -196,6 +196,17 @@ describe("tester first: the lifecycle with the lane on", () => {
     );
   });
 
+  it("Poll for work counts an in_review ticket the tester pass would send to the tester", () => {
+    const { wg, head } = world({ testingEnabled: true });
+    const id = delivered(wg);
+    expect(wg.pendingTesterRoutes()).toBe(1);
+    wg.routeToTester(id, runner);
+    pass(wg, id, SHA1);
+    expect(wg.pendingTesterRoutes()).toBe(0);
+    head.sha = SHA2; // a push after the PASS
+    expect(wg.pendingTesterRoutes()).toBe(1);
+  });
+
   it("routing is a no-op once a PASS covers the head, and refuses an agent", () => {
     const { wg } = world({ testingEnabled: true });
     const id = delivered(wg);

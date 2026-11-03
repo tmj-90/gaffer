@@ -50,7 +50,7 @@ function assert(name, cond, detail = "") {
     console.log(`  ok   ${name}`);
   } else {
     fails.push(name);
-    console.log(`  FAIL ${name}${detail ? ` — ${detail}` : ""}`);
+    console.log(`  FAIL ${name}${detail ? `: ${detail}` : ""}`);
   }
 }
 function skip(reason) {

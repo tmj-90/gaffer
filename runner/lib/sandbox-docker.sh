@@ -508,7 +508,7 @@ _cleanup_private_git() {
 # layout) is bind-mounted back on top of the tmpfs that hides its siblings.
 # ── DATA-PLANE MODE ──────────────────────────────────────────────────────────────
 #   validation  GAFFER_SANDBOX_PROFILE=validation (the DoD gates / AC checks): NOTHING
-#               from $GAFFER_DATA and NO model credential — a gate needs neither. The
+#               from $GAFFER_DATA and NO model credential: a gate needs neither. The
 #               tester lane's clean replay asks for GAFFER_SANDBOX_PROFILE=replay, which
 #               is this same layout here (it already mounts nothing else).
 #   bridge      GAFFER_MCP_BRIDGE_SOCKET set: MCP servers on the host, only the socket.

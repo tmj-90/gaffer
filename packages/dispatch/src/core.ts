@@ -9,7 +9,6 @@ import {
   type BouncingTicket,
   type Decision,
   type DecisionSeverity,
-  type Evidence,
   type PausedDelivery,
   type ReopenForReviewCause,
   type ReworkAttempt,
@@ -31,10 +30,8 @@ import {
   type TicketScopeNode,
   type TicketStatus,
   type WorkEvent,
-  parseTestContract,
 } from "./domain/types.js";
 import { verifyEventChain, type ChainVerification } from "./events/eventChain.js";
-import { listEvents } from "./events/eventWriter.js";
 import {
   SquadService,
   type AgentDisplay,
@@ -55,7 +52,7 @@ import {
 } from "./repositories/eventRepository.js";
 import { EvidenceRepository } from "./repositories/evidenceRepository.js";
 import { PausedDeliveryRepository } from "./repositories/pausedDeliveryRepository.js";
-import { RepoRepository, type TicketRepoLink } from "./repositories/repoRepository.js";
+import { RepoRepository } from "./repositories/repoRepository.js";
 import { RequiredCapabilityRepository } from "./repositories/requiredCapabilityRepository.js";
 import { ReworkAttemptRepository } from "./repositories/reworkAttemptRepository.js";
 import { SpecCoverageRepository } from "./repositories/specCoverageRepository.js";
@@ -82,7 +79,6 @@ import {
   type TicketScopeWithNode,
 } from "./repositories/ticketScopeNodeRepository.js";
 import {
-  TICKET_SUMMARY_COLUMNS,
   TicketRepository,
   type TicketListFilter,
   type TicketSummary,
@@ -132,16 +128,11 @@ import {
 } from "./services/repoService.js";
 import { EpicsService, type CreateEpicResult } from "./services/epicsService.js";
 import { DossierService, type Dossier } from "./services/dossierService.js";
-import {
-  currentJudgment,
-  type EvalJudgment,
-  type RecordedEvalJudgment,
-} from "./services/evalJudgment.js";
+import { type EvalJudgment } from "./services/evalJudgment.js";
 import { type RegressionLink } from "./services/escapedDefects.js";
 import { type ScoutRecord } from "./services/scoutRecord.js";
 import { type LaneVerdict, type RawOpenKind } from "./services/reviewTelemetry.js";
 import {
-  enteredReviewAt,
   ReviewPacketService,
   type CostReader,
   type ReviewPacket,
@@ -153,7 +144,6 @@ import { resolveSpecLoreReader } from "./services/specLoreReader.js";
 import { resolveCodeIndexReader, type CodeIndexReader } from "./services/codeIndexReader.js";
 import {
   BoardService,
-  type BoardCard,
   type BoardView,
   type BoardWindow,
   type DashboardSummary,
@@ -237,102 +227,15 @@ import * as ticketLifecycle from "./services/ticketLifecycleService.js";
 import * as testerLane from "./services/testerLaneService.js";
 import * as ticketRecords from "./services/ticketRecordsService.js";
 import * as regressions from "./services/regressionService.js";
-
-/**
- * An evidence row enriched with derived provenance for the reviewer surface.
- * `recorded_by_agent` is TRUE iff the row's recording actor type was "agent"
- * (`recorded_by_actor_type === "agent"`) — i.e. evidence SELF-REPORTED by a
- * delivery agent, which the reviewer should weigh with more skepticism than
- * evidence recorded by a trusted principal (a human operator or the factory
- * system). Derived from the real recorded actor type — never fabricated; legacy
- * rows (null type) read as false, so no agent chip and no trust claim is asserted.
- */
-export interface EvidenceView extends Evidence {
-  recorded_by_agent: boolean;
-}
-
-/** The parts GET /tickets/details can return per ticket (the ticket row always comes). */
-export const TICKET_DETAIL_PARTS = [
-  "repositories",
-  "scopes",
-  "dependencies",
-  "rework_trail",
-  "events",
-  "evidence",
-] as const;
-export type TicketDetailPart = (typeof TICKET_DETAIL_PARTS)[number];
-
-/** One ticket of a {@link Dispatch.ticketDetailsBatch} read: the summary row + the asked parts. */
-export interface TicketDetailBatchItem {
-  ticket: TicketSummary;
-  repositories?: TicketRepoLink[];
-  scopes?: TicketScopeWithNode[];
-  dependencies?: TicketDependencyView[];
-  rework_trail?: ReturnType<ReworkAttemptRepository["listForTicket"]>;
-  events?: WorkEvent[];
-  evidence?: EvidenceView[];
-}
+export type { EvidenceView } from "./services/ticketReadService.js";
+export { TICKET_DETAIL_PARTS } from "./services/ticketReadService.js";
+export type { TicketDetailPart } from "./services/ticketReadService.js";
+import type { TicketDetailPart } from "./services/ticketReadService.js";
+export type { TicketDetailBatchItem } from "./services/ticketReadService.js";
+import type { TicketDetailBatchItem } from "./services/ticketReadService.js";
 export type { RegressionLinkView } from "./services/regressionService.js";
-import type { RegressionLinkView } from "./services/regressionService.js";
-
-export interface TicketView {
-  ticket: Ticket;
-  acceptanceCriteria: AcceptanceCriterion[];
-  repositories: TicketRepoLink[];
-  /** Confirmed (primary/secondary/implicit_repo) + suggested scope links. */
-  scopes: TicketScopeWithNode[];
-  blockingDecisions: Decision[];
-  /**
-   * Decisions linked to this ticket that a human has RESOLVED (accepted/rejected),
-   * with the relation they were linked by. Carries `resolved_answer` — the answer
-   * the agent reads (via get_ticket's `resolved_decisions`).
-   */
-  resolvedDecisions: Array<Decision & { relation: string }>;
-  /**
-   * EP-001: tickets this one must wait for, each with the depended-on ticket's
-   * number/title/status and a `satisfied` flag (true once it's `done`). An
-   * unsatisfied dependency blocks this ticket from being claimed.
-   */
-  dependencies: TicketDependencyView[];
-  /** Recorded evidence rows (oldest first), so reviewers can judge inline. */
-  evidence: EvidenceView[];
-  events: WorkEvent[];
-  /**
-   * BBT-001: the parsed test_contract (or null). Surfaced as a structured object
-   * so CLI callers and the API never receive a JSON-in-JSON string.
-   */
-  testContract: TestContract | null;
-  /**
-   * FAILURE-DIAGNOSIS: the full ordered rework failure trail (attempt 1 → 2 → …),
-   * each with the distilled failing test + assertion/stack. Empty for a ticket that
-   * never bounced. Powers the ticket-detail "why did #N fail" history.
-   */
-  reworkTrail: ReworkAttempt[];
-  /**
-   * REVIEW COMMENTS (A1): the reviewer's comments on this ticket, oldest first, with the
-   * delivery agent's replies (claims). No git here: the anchor state is computed by
-   * {@link Dispatch.listReviewComments} with `anchors`. Outside the hashed dossier subject.
-   */
-  reviewComments: ReviewCommentView[];
-  /**
-   * PER-REPOSITORY LANDING: the approved commit of each write repo (its current review
-   * pin) and whether that commit has landed on the repo's default branch. A ticket is
-   * done only when every one has; `partial` marks a held, partly merged ticket.
-   */
-  landing: LandingStatus;
-  /**
-   * EVAL JUDGE: the delivery-quality judge's verdict on the current delivery (the latest
-   * `ticket.eval_judged` event since the ticket last entered review), or null when the
-   * judge is off (the runner default), failed, or graded only an earlier attempt.
-   * Advisory: no gate reads it.
-   */
-  evalJudgment: RecordedEvalJudgment | null;
-  /**
-   * ESCAPED DEFECTS (MF5): the accepted changes a person said this ticket regresses, and
-   * the later tickets a person linked to this one as its regressions. Current links only.
-   */
-  regression: { regression_of: RegressionLinkView[]; regressed_by: RegressionLinkView[] };
-}
+export type { TicketView } from "./services/ticketReadService.js";
+import type { TicketView } from "./services/ticketReadService.js";
 
 /**
  * The execution boundary for a ticket, partitioned by access (WG-002). Only
@@ -406,6 +309,7 @@ import * as ticketLinks from "./services/ticketLinksService.js";
 import * as planning from "./services/planningService.js";
 import * as runRegistry from "./services/runRegistryService.js";
 import * as eventLog from "./services/eventLogService.js";
+import * as ticketReads from "./services/ticketReadService.js";
 
 /**
  * Dispatch core API. The single entry point used by the CLI and MCP server.
@@ -1864,14 +1768,8 @@ export class Dispatch {
     return this.claims.recordReworkAttempt(input, actor);
   }
 
-  /**
-   * FAILURE-DIAGNOSIS: the "why did #N fail" read model — the full ordered rework
-   * failure trail for one ticket (attempt 1 → 2 → …), each with the distilled
-   * failing test + assertion/stack. Resolves by ticket id or number.
-   */
   reworkTrail(ref: string): ReworkAttempt[] {
-    const ticket = this.resolveTicket(ref);
-    return this.reworkAttempts.listForTicket(ticket.id);
+    return ticketReads.reworkTrail(this, ref);
   }
 
   /**
@@ -1925,114 +1823,15 @@ export class Dispatch {
   }
 
   view(ref: string): TicketView {
-    const ticket = this.resolveTicket(ref);
-    const events = listEvents(this.db, "ticket", ticket.id);
-    return {
-      ticket,
-      acceptanceCriteria: this.acs.listForTicket(ticket.id),
-      repositories: this.repos.listForTicket(ticket.id),
-      // WG-001: ticket detail includes confirmed + suggested scopes. The repo
-      // listForTicket already excludes nothing, so 'rejected' scopes are retained
-      // and visible too (audit), but the listForTicket ordering puts the useful
-      // ones (primary/secondary/suggested/implicit) first.
-      scopes: this.ticketScopes.listForTicket(ticket.id),
-      blockingDecisions: this.decisions.blockingForTicket(ticket.id),
-      resolvedDecisions: this.decisions.resolvedForTicket(ticket.id),
-      dependencies: this.ticketDependencies.listForTicket(ticket.id),
-      evidence: this.enrichEvidenceProvenance(this.evidence.listForTicket(ticket.id)),
-      events,
-      // BBT-001: parse the JSON-encoded test_contract to a structured object so
-      // consumers (CLI, API) never receive a JSON-in-JSON string.
-      testContract: parseTestContract(ticket.test_contract),
-      // FAILURE-DIAGNOSIS: the full ordered "why did #N fail" trail.
-      reworkTrail: this.reworkAttempts.listForTicket(ticket.id),
-      reviewComments: this.reviewCommentSvc.listViews(ticket.id),
-      // PER-REPOSITORY LANDING: each write repo's approved commit and whether it landed.
-      landing: computeLandingStatus(this.db, ticket.id),
-      evalJudgment: currentJudgment(events, enteredReviewAt(ticket.id, events)),
-      regression: regressions.regressionLinksOf(this, ticket.id),
-    };
+    return ticketReads.view(this, ref);
   }
 
-  /**
-   * The parts of many tickets' detail in one read (GET /tickets/details): what the
-   * dashboard's Map, Overview and Epics need from each ticket, without one
-   * GET /tickets/:id per ticket. `ids` names the tickets (unknown ones are listed in
-   * `missing`); without it a page of every ticket is read (`limit`/`offset`). Each
-   * ticket row is the summary row (no description, test contract or review feedback).
-   */
   ticketDetailsBatch(
     select: { ids: readonly string[] } | { limit: number; offset: number },
     include: ReadonlySet<TicketDetailPart>,
-    /**
-     * PRINCIPAL SCOPES: a scoped principal's ticket filter. A ticket it may not see is
-     * reported in `missing` (asked by id) or left out of the page and the total.
-     */
     visible?: ((ticketId: string) => boolean) | null,
   ): { details: TicketDetailBatchItem[]; missing: string[]; total: number } {
-    let rows: TicketSummary[];
-    let total: number;
-    const missing: string[] = [];
-    if ("ids" in select) {
-      const byId = new Map<string, TicketSummary>();
-      const unique = [...new Set(select.ids)];
-      const get = this.db.prepare(
-        `SELECT ${TICKET_SUMMARY_COLUMNS.join(", ")} FROM tickets WHERE id = ?`,
-      );
-      for (const id of unique) {
-        const row = get.get(id) as TicketSummary | undefined;
-        if (row && (!visible || visible(row.id))) byId.set(id, row);
-        else missing.push(id);
-      }
-      rows = unique.flatMap((id) => (byId.has(id) ? [byId.get(id)!] : []));
-      total = rows.length;
-    } else if (visible) {
-      // The whole list filtered, then windowed, so `total` counts what it may see.
-      const all = (this.tickets.listPage({}, { summary: true }).tickets as TicketSummary[]).filter(
-        (t) => visible(t.id),
-      );
-      rows = all.slice(select.offset, select.offset + select.limit);
-      total = all.length;
-    } else {
-      const page = this.tickets.listPage(
-        {},
-        { limit: select.limit, offset: select.offset, summary: true },
-      );
-      rows = page.tickets as TicketSummary[];
-      total = page.total;
-    }
-    const details = rows.map((ticket) => {
-      const item: TicketDetailBatchItem = { ticket };
-      if (include.has("repositories")) item.repositories = this.repos.listForTicket(ticket.id);
-      if (include.has("scopes")) item.scopes = this.ticketScopes.listForTicket(ticket.id);
-      if (include.has("dependencies"))
-        item.dependencies = this.ticketDependencies.listForTicket(ticket.id);
-      if (include.has("rework_trail"))
-        item.rework_trail = this.reworkAttempts.listForTicket(ticket.id);
-      if (include.has("events")) item.events = listEvents(this.db, "ticket", ticket.id);
-      if (include.has("evidence"))
-        item.evidence = this.enrichEvidenceProvenance(this.evidence.listForTicket(ticket.id));
-      return item;
-    });
-    return { details, missing, total };
-  }
-
-  /**
-   * Stamp each evidence row with `recorded_by_agent` for the reviewer's trust
-   * surface, derived from the RECORDING ACTOR'S TYPE captured at record time
-   * (`recorded_by_actor_type`). A row is agent self-reported iff that type is
-   * "agent"; a human operator or the factory/system actor is a trusted principal.
-   * This is the dependable signal — `created_by` cannot be used because an agent's
-   * `created_by` is a runner-supplied id (e.g. "mcp-agent"), never the registered
-   * agent identity. Legacy rows carry a null type (recorded before this column);
-   * their flag is left `false` (⇒ no agent chip, no trust claim asserted). Never
-   * fabricated — always the real recorded actor type.
-   */
-  private enrichEvidenceProvenance(rows: Evidence[]): EvidenceView[] {
-    return rows.map((e) => ({
-      ...e,
-      recorded_by_agent: e.recorded_by_actor_type === "agent",
-    }));
+    return ticketReads.ticketDetailsBatch(this, select, include, visible);
   }
 
   list(status?: TicketStatus): Ticket[] {
@@ -2052,27 +1851,16 @@ export class Dispatch {
     return this.tickets.listPage(filter, page);
   }
 
-  /** Events for a ticket (resolved by id or number). */
   listTicketEvents(ref: string): WorkEvent[] {
-    const ticket = this.resolveTicket(ref);
-    return listEvents(this.db, "ticket", ticket.id);
+    return ticketReads.listTicketEvents(this, ref);
   }
 
-  /**
-   * Active claims joined to their ticket + agent (human "active factory" view).
-   * SQUAD: each row also carries the agent's presentation (`agent_display`).
-   */
   listActiveClaims(): Array<ActiveClaimView & { agent_display: AgentDisplay | null }> {
-    const displays = this.squadSvc.displayMap();
-    return this.claimsRepo
-      .listActive()
-      .map((c) => ({ ...c, agent_display: displays.get(c.agent_id) ?? null }));
+    return ticketReads.listActiveClaims(this);
   }
 
-  /** All registered agents, newest first, each with its presentation (`agent_display`). */
   listAgents(): Array<Agent & { agent_display: AgentDisplay | null }> {
-    const displays = this.squadSvc.displayMap();
-    return this.agents.list().map((a) => ({ ...a, agent_display: displays.get(a.id) ?? null }));
+    return ticketReads.listAgents(this);
   }
 
   // --- Squad (club identity + agent display names; presentation only) ---------
@@ -2104,19 +1892,8 @@ export class Dispatch {
     return this.squadSvc.updateAgentDisplay(ref, input, actor);
   }
 
-  /**
-   * The presentation of each REGISTERED agent among `ids`, keyed by id. Ids that
-   * are not registered agents (a human actor, "mcp-agent", …) are left out.
-   */
   agentDisplayFor(ids: Iterable<string | null | undefined>): Record<string, AgentDisplay> {
-    const displays = this.squadSvc.displayMap();
-    const out: Record<string, AgentDisplay> = {};
-    for (const id of ids) {
-      if (!id) continue;
-      const d = displays.get(id);
-      if (d) out[id] = d;
-    }
-    return out;
+    return ticketReads.agentDisplayFor(this, ids);
   }
 
   /**
@@ -2239,32 +2016,8 @@ export class Dispatch {
 
   // --- Board + dashboard reads (read-only showcase surfaces) ----------------
 
-  /**
-   * Kanban board: tickets grouped into columns, AC progress enriched. Read-only.
-   *
-   * @param repo Optional repository name/id — when supplied, only tickets
-   *   linked to that repo are included. Omit for the full board.
-   */
   board(repo?: string, window?: BoardWindow, visible?: (ticketId: string) => boolean): BoardView {
-    const view = this.boardSvc.board(repo, window, visible);
-    // Approved and held cards carry where their landing is (one read per such ticket).
-    const states = new Map<string, LandingState>();
-    const stamp = (c: BoardCard): BoardCard => {
-      if (c.status !== "ready_for_merge" && c.status !== "blocked") return c;
-      if (!states.has(c.id)) {
-        const ls = this.landingState(c.id);
-        if (ls) states.set(c.id, ls);
-      }
-      const ls = states.get(c.id);
-      return ls ? { ...c, landing_state: ls } : c;
-    };
-    return {
-      ...view,
-      columns: view.columns.map((col) => ({ ...col, cards: col.cards.map(stamp) })),
-      closed: view.closed.map(stamp),
-      wontDo: view.wontDo.map(stamp),
-      readyForMerge: view.readyForMerge.map(stamp),
-    };
+    return ticketReads.board(this, repo, window, visible);
   }
 
   /**
@@ -2276,48 +2029,19 @@ export class Dispatch {
     return this.autonomyRecommendations.recommend();
   }
 
-  /**
-   * Cross-ticket activity feed. SQUAD: an event whose actor is a registered agent
-   * carries that agent's presentation as `agent_display` (null otherwise).
-   */
   activity(query: ActivityQuery): {
     events: Array<ActivityEvent & { agent_display: AgentDisplay | null }>;
     total: number;
   } {
-    const page = this.boardSvc.activity(query);
-    const displays = this.squadSvc.displayMap();
-    return {
-      total: page.total,
-      events: page.events.map((e) => ({
-        ...e,
-        agent_display: (e.actor_id !== null && displays.get(e.actor_id)) || null,
-      })),
-    };
+    return ticketReads.activity(this, query);
   }
 
   dashboard(): DashboardSummary {
     return this.boardSvc.dashboard();
   }
 
-  /**
-   * The HUMAN's queue (Track 2a): everything the operator owns — pending
-   * decisions the agent delegated (WITH reasons), tickets awaiting review
-   * sign-off, and regulated tickets awaiting ready-approval / reviewer
-   * assignment — each with what it is, which ticket, the reason and how long it
-   * has waited. A read model only: EXCLUDES agent-owned `blocked`/rework churn,
-   * changes no semantics and adds no gate. Read-only.
-   */
   humanQueue(): HumanQueue {
-    const q = this.humanQueueSvc.build();
-    return {
-      ...q,
-      items: q.items.map((it) => {
-        const t = it.ticket;
-        if (!t || (t.status !== "ready_for_merge" && t.status !== "blocked")) return it;
-        const ls = this.landingState(t.id);
-        return ls ? { ...it, ticket: { ...t, landing_state: ls } } : it;
-      }),
-    };
+    return ticketReads.humanQueue(this);
   }
 
   /**

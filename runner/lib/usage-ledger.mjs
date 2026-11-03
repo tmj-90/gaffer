@@ -77,6 +77,8 @@ export const VALID_KINDS = new Set([
   // (lib/onboard-analyze.mjs) but missing here, so `estimate-usage --kind` refused them.
   "spec-author",
   "onboard-review",
+  // The bounded read-only pre-work scout (lib/scout.sh gaffer_model_scout, GAFFER_SCOUT).
+  "scout",
   // The ambiguous-sibling repo classifier (bin/inherit-repo.mjs via lib/greenfield.sh).
   "inherit",
 ]);

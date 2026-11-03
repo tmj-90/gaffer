@@ -172,6 +172,12 @@ import {
   type RegressionLink,
 } from "./services/escapedDefects.js";
 import {
+  assertMayRecordScout,
+  normalizeScoutRecord,
+  SCOUT_RECORDED_EVENT,
+  type ScoutRecord,
+} from "./services/scoutRecord.js";
+import {
   assertMayRecordLaneVerdict,
   assertMayRecordReviewOpen,
   LANE_VERDICT_EVENT,
@@ -2577,6 +2583,35 @@ export class Dispatch {
       payload: verdict,
     });
     return { ticketId: ticket.id, eventId, verdict };
+  }
+
+  /**
+   * PRE-WORK SCOUT: the runner's scout packet summary for one delivery attempt (the risk
+   * it classified, the signals that raised it, its coverage), recorded as a system event
+   * for the Review backing rows and Health's scout read model. System/admin only; an
+   * agent is refused. Nothing gates on it, and it never bumps updated_at.
+   */
+  recordScout(
+    ref: string,
+    input: unknown,
+    actor: Actor,
+  ): { ticketId: string; eventId: string; scout: ScoutRecord } {
+    assertMayRecordScout(actor);
+    const ticket = this.resolveTicket(ref);
+    const packet =
+      input && typeof input === "object" && !Array.isArray(input)
+        ? (input as Record<string, unknown>)
+        : {};
+    // The declared level is the ticket's own, not the packet's copy of it.
+    const scout = normalizeScoutRecord(packet, actor, ticket.risk_level);
+    const eventId = writeEvent(this.db, {
+      entity_type: "ticket",
+      entity_id: ticket.id,
+      actor,
+      event_type: SCOUT_RECORDED_EVENT,
+      payload: scout,
+    });
+    return { ticketId: ticket.id, eventId, scout };
   }
 
   /**

@@ -359,7 +359,7 @@ try {
   // the single-ticket form is the "One ticket" section beside it.
   await page.fill(
     "#one-ticket textarea",
-    "Users need to drop completed tasks. Add clearDone(list) with a unit test, and completeTask() must skip done tasks.",
+    "Users need to drop completed tasks. Add clearDone(list) with a unit test, and completeTask() must skip done tasks. Only the list owner has permission to clear it.",
   );
   // Create waits for a write repo: held (aria-disabled) and saying so before one is on.
   const createSel = '#one-ticket button:has-text("Create ticket")';
@@ -698,8 +698,10 @@ try {
     !/Callers of changed symbols and their test coverage: not analysed/.test(surface || "")
       ? ok("Review facts: callers are no longer 'not analysed' on the delivered ticket")
       : bad("Review facts: the panel still says callers are not analysed");
-    // The delivery prompt's file cards named completeTask's callers and tests (the ticket
-    // names completeTask()): read from the stub's call record.
+    // PRE-WORK SCOUT: the delivery prompt's SCOUT block listed completeTask's caller and
+    // test from the code index, each with why it was selected, and the raised risk (the
+    // ticket names completeTask() and talks about permission): read from the stub's call
+    // record. The file cards no longer repeat the named code's neighbours.
     if (process.env.GAFFER_DATA) {
       let primed = "";
       try {
@@ -713,20 +715,52 @@ try {
       } catch {
         primed = "";
       }
-      /Callers and tests of what the ticket names \(code index at/.test(primed) &&
-      /src\/board\.js: imports completeTask/.test(primed) &&
-      /test\/tasks\.test\.js: tests completeTask \(imports it\)/.test(primed)
+      const scoutBlock = (primed.match(/<untrusted-scout>[^]*?<\/untrusted-scout>/) || [""])[0];
+      /SCOUT — before you started, the runner looked/.test(primed) &&
+      /src\/board\.js — imports completeTask/.test(scoutBlock) &&
+      /test\/tasks\.test\.js — tests/.test(scoutBlock) &&
+      /code index: at [0-9a-f]{8}, by import text/.test(scoutBlock)
         ? ok(
-            "File cards: the delivery prompt listed completeTask's caller and test, with the reason",
+            "Scout: the delivery prompt's SCOUT block listed completeTask's caller and test from the code index, with the reason",
           )
-        : bad(
-            `File cards: no code-index lines in the delivery prompt '${(primed.match(/Callers and tests[^]{0,300}|Code index:[^\n]*/) || [""])[0]}'`,
-          );
-    } else note("GAFFER_DATA not set: the file-cards callers check is skipped");
+        : bad(`Scout: SCOUT block in the delivery prompt '${scoutBlock.slice(0, 400)}'`);
+      /risk raised to high by the runner \(declared medium\): the ticket talks about permission/.test(
+        scoutBlock,
+      )
+        ? ok("Scout: the prompt says the runner raised the risk, and why")
+        : bad("Scout: no raised-risk line in the SCOUT block");
+      !/Callers and tests of what the ticket names/.test(primed)
+        ? ok("Scout: the file cards do not repeat the named code's callers")
+        : bad("Scout: the file cards repeat the scout's callers");
+      let sel = "";
+      try {
+        sel =
+          readFileSync(path.join(process.env.GAFFER_DATA, "context-selection.jsonl"), "utf8")
+            .split("\n")
+            .filter(Boolean)
+            .map((l) => JSON.parse(l))
+            .filter((c) => String(c.ticket) === String(ticket.number))
+            .map((c) => JSON.stringify(c))
+            .pop() ?? "";
+      } catch {
+        sel = "";
+      }
+      /"path":"src\/board\.js","reasons":\["imports completeTask/.test(sel) &&
+      /"raised":true/.test(sel)
+        ? ok(
+            "Scout: context-selection.jsonl records the files with their reasons and the raised risk",
+          )
+        : bad(`Scout: context-selection line '${sel.slice(0, 300)}'`);
+    } else note("GAFFER_DATA not set: the scout prompt check is skipped");
     const backing = (await page.textContent(".rv-backing").catch(() => "")) || "";
     /What backs this/.test(backing) && /What is not backed/.test(backing) && !/%/.test(backing)
       ? ok("Review facts: 'What backs this / What is not backed' drawn, with no percentage")
       : bad(`Review facts: backing panel '${backing.slice(0, 200)}'`);
+    /Risk raised to high by the scout before delivery \(declared medium\): the ticket talks about permission/.test(
+      (await page.textContent(".rv-backing .rv-unbacked").catch(() => "")) || "",
+    )
+      ? ok("Review facts: What is not backed says the scout raised the risk to high, and why")
+      : bad("Review facts: no raised-risk row under What is not backed");
     await shot(page, "review-facts");
   }
 

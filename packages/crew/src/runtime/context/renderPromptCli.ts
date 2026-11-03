@@ -46,11 +46,13 @@ import { readFileSync, writeFileSync } from "node:fs";
 
 import { CrewError } from "../../util/errors.js";
 import {
+  normalizeScout,
   renderBootstrapPrompt,
   renderDeliveryPrompt,
   type BootstrapPromptInputs,
   type DeliveryPromptInputs,
 } from "./deliveryPrompt.js";
+import { renderScoutPrompt, type ScoutPromptInputs } from "./scoutPrompt.js";
 import { workBranchName } from "./ticketSlug.js";
 
 /** Parse the optional `--out <value>` path arg; unknown flags are ignored. */
@@ -69,9 +71,23 @@ interface DeliveryDoc extends Omit<DeliveryPromptInputs, "workBranch"> {
 interface BootstrapDoc extends BootstrapPromptInputs {
   kind: "bootstrap";
 }
-type InputDoc = DeliveryDoc | BootstrapDoc;
+interface ScoutDoc extends Omit<ScoutPromptInputs, "scout"> {
+  kind: "scout";
+  scout?: unknown;
+}
+type InputDoc = DeliveryDoc | BootstrapDoc | ScoutDoc;
 
 function render(doc: InputDoc): string {
+  if (doc.kind === "scout") {
+    return renderScoutPrompt({
+      ticketNumber: String(doc.ticketNumber ?? ""),
+      title: String(doc.title ?? ""),
+      description: String(doc.description ?? ""),
+      repoPath: String(doc.repoPath ?? ""),
+      risk: String(doc.risk ?? "medium"),
+      scout: normalizeScout(doc.scout),
+    });
+  }
   if (doc.kind === "bootstrap") {
     return renderBootstrapPrompt({
       ticketNumber: doc.ticketNumber,
@@ -94,6 +110,7 @@ function render(doc: InputDoc): string {
     reviewFeedbackReasons: d.reviewFeedbackReasons,
     resolvedDecisions: Array.isArray(d.resolvedDecisions) ? d.resolvedDecisions : [],
     reviewRequirements: Array.isArray(d.reviewRequirements) ? d.reviewRequirements : [],
+    scout: normalizeScout(d.scout),
     fileCardsBlock: d.fileCardsBlock,
     productContextBlock: d.productContextBlock,
     workBranch,

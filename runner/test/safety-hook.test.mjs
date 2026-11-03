@@ -1407,6 +1407,10 @@ for (const [label, cmd] of [
     "wg ticket lane-verdict 5 --lane agent-review --verdict approve --as system",
   ],
   ["dispatch ticket lane-verdict", "dispatch ticket lane-verdict 5 --lane tester --verdict pass"],
+  // The pre-work scout's record is the runner's classification of the ticket's risk before
+  // delivery: an agent never writes the risk its own work is reviewed under.
+  ["wg ticket scout-record --as system", "wg ticket scout-record 5 --file packet.json --as system"],
+  ["dispatch ticket scout-record", "dispatch ticket scout-record 5 --file /tmp/p.json"],
   // An escaped-defect link is a person's judgement that a change caused a defect (MF5): an
   // agent never files one (blaming another change) or withdraws one (hiding its own).
   ["wg ticket regression-of", "wg ticket regression-of 7 --of 5 --note 'broke export'"],

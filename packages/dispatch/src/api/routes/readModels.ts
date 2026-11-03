@@ -566,6 +566,8 @@ export function routeReadModels(
       accepted_change: acceptedChange,
       review_time: reviewMeasures.review_time,
       first_pass: reviewMeasures.first_pass,
+      // PRE-WORK SCOUT: coverage and first-pass split by what the scout found. A report only.
+      scout: reviewMeasures.scout,
       lane_verdicts: reviewMeasures.lane_verdicts,
       escaped_defects: reviewMeasures.escaped_defects,
       // SPECIALIST VALUE (D1): what each judging lane changed. Counts only, no recommendation.

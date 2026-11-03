@@ -162,6 +162,7 @@ for (const verb of [
   "tester-pass",
   "tester-route",
   "lane-verdict",
+  "scout-record",
   "regression-of",
   "wont-do",
   "mark-merged",

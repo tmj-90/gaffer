@@ -40,6 +40,8 @@ export const FALLBACK_REGISTRY = Object.freeze({
     clarify: "cheap",
     "merge-conflict-resolve": "strong",
     onboarding: "cheap",
+    // The bounded read-only pre-work scout (lib/scout.sh gaffer_model_scout).
+    scout: "cheap",
   },
   localSeam: { enabled: false, tier: "cheap", phases: ["onboarding"] },
   // Owner-tunable routing thresholds (model-registry.json `thresholds`). The values

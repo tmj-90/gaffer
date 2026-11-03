@@ -413,7 +413,9 @@ export const DANGEROUS_COMMANDS = [
     // and landing on checks that never ran. And the eval judge's verdict (`eval-score`):
     // the runner records the judge's grade of a delivery; an agent never grades itself.
     // And a judging lane's verdict (`lane-verdict`): the runner's measurement of what the
-    // reviewer, the security reviewer, the tester or the judge concluded. And the tester
+    // reviewer, the security reviewer, the tester or the judge concluded. And the pre-work
+    // scout's record (`scout-record`): the runner's classification of a ticket's risk
+    // before delivery; an agent never writes the risk its own work is reviewed under. And the tester
     // route (`tester-route`): only the runner sends a delivery to the independent tester
     // before review; an agent never moves its own work between the review lanes.
     // And `attach-evidence`, which writes a SYSTEM evidence row with any type and uri: the
@@ -433,7 +435,7 @@ export const DANGEROUS_COMMANDS = [
     // a person's or a bot's delegated access, never an agent's to mint or act as.
     // And the escaped-defect link (`regression-of`): a person's judgement that a change
     // caused a defect, never an agent's (`review-rules propose` is matched by `review`).
-    re: /\b(wg|dispatch|fg|crew)\b[^\n|;&]*\b(review|regression-of|approve|approve-ready|mark-merged|record-landing|landing-begin|record-tester-replay|ci-result|eval-score|lane-verdict|tester-route|attach-evidence|reject|repo-access|set-testable|allow-test-changes|set-commands|test-contract|tester-pass|tester-fail|repo-delivery|require-cap|set-reviewer|decisions[ \t]+resolve|agent[ \t]+rename|club[ \t]+set|wont-do|principal[ \t]+(?:create|revoke)|as-principal)\b/,
+    re: /\b(wg|dispatch|fg|crew)\b[^\n|;&]*\b(review|regression-of|approve|approve-ready|mark-merged|record-landing|landing-begin|record-tester-replay|ci-result|eval-score|lane-verdict|scout-record|tester-route|attach-evidence|reject|repo-access|set-testable|allow-test-changes|set-commands|test-contract|tester-pass|tester-fail|repo-delivery|require-cap|set-reviewer|decisions[ \t]+resolve|agent[ \t]+rename|club[ \t]+set|wont-do|principal[ \t]+(?:create|revoke)|as-principal)\b/,
     why: "control-plane CLI write (use the scoped MCP, not the privileged wg/dispatch/fg/crew CLI)",
     example: "wg ticket approve T-1",
     crewFlags: false,

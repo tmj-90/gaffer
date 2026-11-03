@@ -31,6 +31,8 @@ import { firstPassAcceptance, type FirstPassReport } from "./firstPass.js";
 import type { HealthRow } from "./healthAggregator.js";
 import { laneValueReport, type LaneValueReport } from "./laneValue.js";
 import { reviewTimeReport, type ReviewOpen, type ReviewTimeReport } from "./reviewTime.js";
+import { scoutCoverage, type ScoutCoverage } from "./scoutMeasures.js";
+import { SCOUT_RECORDED_EVENT } from "../services/scoutRecord.js";
 
 export interface LaneVerdictCounts {
   readonly recorded: number;
@@ -60,6 +62,8 @@ export interface ReviewMeasures {
   readonly escaped_defects: EscapedDefects;
   readonly lane_value: LaneValueReport;
   readonly impact_callers: ImpactCallersMeasure;
+  /** The pre-work scout's coverage, joined to first-pass acceptance (health/scoutMeasures.ts). */
+  readonly scout: ScoutCoverage;
 }
 
 /** The window the escaped-defect rate counts accepted changes over (Health's default). */
@@ -199,6 +203,35 @@ export function readReviewMeasures(db: Db, opts: ReviewMeasureOptions = {}): Rev
       tickets,
     }),
     first_pass: firstPassAcceptance({ transitions, retries, tickets }),
+    scout: scoutCoverage({
+      events: (
+        db
+          .prepare(
+            `SELECT entity_id AS ticketId, created_at AS at, payload_json AS payload
+               FROM work_events
+              WHERE entity_type = 'ticket' AND event_type = ?
+              ORDER BY rowid`,
+          )
+          .all(SCOUT_RECORDED_EVENT) as Array<{
+          ticketId: string;
+          at: string;
+          payload: string | null;
+        }>
+      ).map((r) => {
+        let payload: Record<string, unknown> = {};
+        try {
+          const v = JSON.parse(r.payload ?? "{}") as unknown;
+          if (v && typeof v === "object" && !Array.isArray(v))
+            payload = v as Record<string, unknown>;
+        } catch {
+          payload = {};
+        }
+        return { ticketId: r.ticketId, atMs: ms(r.at), payload };
+      }),
+      transitions,
+      retries,
+      tickets,
+    }),
     lane_verdicts: { recorded, by_lane: byLane },
     escaped_defects: escapedDefectReport({
       links: currentRegressionLinks(regressionRows),

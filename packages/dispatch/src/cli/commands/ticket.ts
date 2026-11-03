@@ -631,6 +631,27 @@ export function registerTicket(program: Command): void {
     });
 
   ticket
+    .command("scout-record <ref>")
+    .description(
+      "Record the runner's pre-work scout packet for a delivery attempt (the runner does " +
+        "this before each delivery): the risk it classified, the signals that raised the " +
+        "declared level, and its coverage. Reads the packet JSON from --file or stdin. A " +
+        "measurement: no gate reads it; Review shows a raised risk and Health counts the " +
+        "scout's coverage. System/admin only.",
+    )
+    .option("--file <path>", "the scout packet JSON (default: stdin)")
+    .option("--as <actor>", "actor type: system|admin", "system")
+    .action((ref, opts, cmd) => {
+      const as = parseAs(opts.as, ["system", "admin"] as const);
+      const input = readJsonInput(opts.file ? String(opts.file) : undefined);
+      const wg = open(cmd.optsWithGlobals());
+      const actor: Actor = as === "admin" ? { type: "admin", id: cliUserId() } : { type: "system" };
+      const res = wg.recordScout(ref, input, actor);
+      printJson({ ok: true, ...res });
+      wg.db.close();
+    });
+
+  ticket
     .command("regression-of <ref>")
     .description(
       "Say that this ticket (a defect report or its fix) is a regression of an accepted " +

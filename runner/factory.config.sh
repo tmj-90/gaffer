@@ -1145,7 +1145,7 @@ _gaffer_prompt_inputs_json() {
   local resuming=false
   [ "$variant" = "resume" ] && resuming=true
   GF_NUM="${NUM:-}" GF_TITLE="${TITLE:-}" GF_RESUMING="$resuming" GF_SKILLS="${SKILLS:-}${SKILLS_NOTE:-}" \
-  GF_LENSES="${LENSES:-}" GF_RF="${_RF:-}" GF_RD="${_RD:-}" GF_RC="${_RC:-}" GF_FCB="${FILE_CARDS_BLOCK:-}" \
+  GF_LENSES="${LENSES:-}" GF_RF="${_RF:-}" GF_RD="${_RD:-}" GF_RC="${_RC:-}" GF_SCOUT="${SCOUT_PROMPT:-}" GF_FCB="${FILE_CARDS_BLOCK:-}" \
   GF_PCB="${PRODUCT_CONTEXT_BLOCK:-}" GF_WORK_BRANCH="${WORK_BRANCH:-}" \
   GF_WT_ROWS="${WT_ROWS:-}" GF_READ_ROOTS="${READ_ROOTS:-}" GF_PRIMARY="${PRIMARY_REPO:-}" gaffer_json prompt-inputs "$variant"
 }
@@ -2753,6 +2753,11 @@ export GAFFER_REVIEW_RULE_REPEAT
 # memory score gap telemetry). Always fail-soft.
 # shellcheck source=lib/eval-judge.sh
 [ -f "$RUNNER_DIR/lib/eval-judge.sh" ] && source "$RUNNER_DIR/lib/eval-judge.sh"
+# The pre-work scout (gaffer_scout_run, gaffer_model_scout): the deterministic packet of
+# likely files and the risk classifier before each delivery; the bounded model scout is
+# opt-in (GAFFER_SCOUT). Always fail-soft.
+# shellcheck source=lib/scout.sh
+[ -f "$RUNNER_DIR/lib/scout.sh" ] && source "$RUNNER_DIR/lib/scout.sh"
 
 # HOST GIT NEVER RUNS REPOSITORY CODE (external review #9, finding 2). Every git the
 # runner runs for bookkeeping (auto-commit, worktrees, fetch/merge/push, status) gets

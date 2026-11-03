@@ -453,3 +453,94 @@ describe("Health: the pre-work scout card", () => {
     expect(document.querySelector('[aria-label="Pre-work scout"]')).toBeNull();
   });
 });
+
+describe("Health: the routing scorecard card", () => {
+  beforeEach(() => {
+    stubFetch();
+    mountShell();
+    vi.resetModules();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    document.body.innerHTML = "";
+    healthPayload = FULL_HEALTH;
+  });
+
+  const rate = (value: number | null, n: number) => ({ value, n });
+  it("n on every figure, too few to compare under the minimum, and the Routing line", async () => {
+    healthPayload = {
+      ...(FULL_HEALTH as object),
+      routing_scorecard: {
+        measure: "routing_scorecard",
+        report_only: true,
+        min_n: 10,
+        rows: 30,
+        manifests: 12,
+        cells: [
+          {
+            provider: "claude-code",
+            model: "model-a",
+            role: "implement",
+            risk: "low",
+            stack: "node",
+            n: 13,
+            too_few: false,
+            note: null,
+            calls: 13,
+            spend_usd: 7.7,
+            estimated_usd: 0,
+            estimated_rows: 0,
+            unknown_rows: 1,
+            submission_pct: rate(92.3, 13),
+            rework_pct: rate(7.7, 13),
+            first_pass_pct: rate(83.3, 12),
+            attempts_per_accepted_change: rate(1.17, 12),
+            cost_per_accepted_change_usd: rate(0.64, 12),
+            escaped_defect_pct: rate(null, 4),
+            tester_false_greens: rate(1, 12),
+          },
+          {
+            provider: "claude-code",
+            model: "model-b",
+            role: "implement",
+            risk: "low",
+            stack: "node",
+            n: 4,
+            too_few: true,
+            note: "too few to compare",
+            calls: 4,
+            spend_usd: null,
+          },
+        ],
+        footnote: "Report only: no composite score, cells are never ranked.",
+      },
+      routing: {
+        available: true,
+        proposals: 0,
+        line: "Routing: no registry change proposed. Report only.",
+      },
+    };
+    await loadApp();
+    const panel = document.querySelector('[aria-label="Routing scorecard"]')!;
+    expect(panel).not.toBeNull();
+    const t = panel.textContent!.replace(/\s+/g, " ");
+    expect(t).toContain("30 ledger rows · 12 replay manifests · minimum n 10");
+    expect(t).toContain(
+      "implement · claude-code · model-a · risk low · stack node n=13 · submitted 92.3% (n=13)",
+    );
+    expect(t).toContain("first pass 83.3% (n=12)");
+    expect(t).toContain("escaped too few to compare (n=4)");
+    expect(t).toContain("1 of unknown cost left out");
+    expect(t).toContain(
+      "implement · claude-code · model-b · risk low · stack node n=4 · too few to compare",
+    );
+    expect(t).toContain("Routing: no registry change proposed. Report only.");
+    expect(t).not.toMatch(/recommend|best|winner|confiden/i);
+  });
+
+  it("an older server sends no scorecard: no card", async () => {
+    healthPayload = { ...(FULL_HEALTH as object) };
+    await loadApp();
+    expect(document.querySelector('[aria-label="Routing scorecard"]')).toBeNull();
+  });
+});

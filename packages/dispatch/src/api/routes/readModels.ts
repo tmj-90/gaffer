@@ -17,6 +17,19 @@ import {
 import { governanceRoi, type GovTransition } from "../../health/governanceRoi.js";
 import { acceptedChangeCost } from "../../health/acceptedChange.js";
 import { readReviewMeasures } from "../../health/reviewMeasures.js";
+import {
+  manifestsDir,
+  readManifestFacts,
+  readRoutingRows,
+  readRoutingScorecard,
+} from "../../health/routingScorecard.js";
+import {
+  readExperimentDir,
+  readRegistry,
+  recommendRouting,
+  resolveRegistryPath,
+  routingHealthLine,
+} from "../../health/routingRecommend.js";
 import { reviewRuleThreshold } from "../../health/reviewRules.js";
 import {
   createLoreStatusCache,
@@ -540,6 +553,19 @@ export function routeReadModels(
     // verdict counts, and the escaped-defect rate from the regression links a person filed
     // (accepted changes in the same window as governance).
     const reviewMeasures = readReviewMeasures(wg.db, { nowMs, windowDays, ledger: ledgerRows });
+    // ROUTING SCORECARD (delta gap 4): per provider x model x role x work class, from the
+    // ledger, the runner's replay manifests and the outcomes above. Report only; n on every
+    // figure; under the minimum a cell reads "too few to compare". A read failure omits it.
+    const routingScorecard = (() => {
+      try {
+        return readRoutingScorecard(wg.db, {
+          rows: readRoutingRows(ledgerPath),
+          manifests: readManifestFacts(manifestsDir(process.env)),
+        });
+      } catch {
+        return null;
+      }
+    })();
 
     // Two previously-DEAD data sources, surfaced best-effort (a missing source
     // degrades to a null/available:false cell, NEVER breaks the endpoint):
@@ -572,6 +598,34 @@ export function routeReadModels(
       escaped_defects: reviewMeasures.escaped_defects,
       // SPECIALIST VALUE (D1): what each judging lane changed. Counts only, no recommendation.
       lane_value: reviewMeasures.lane_value,
+      ...(routingScorecard ? { routing_scorecard: routingScorecard } : {}),
+      // ROUTING (P3): one advisory line; the proposed diff itself is `wg routing recommend`.
+      // Nothing is applied: a person edits the model registry.
+      ...(routingScorecard
+        ? {
+            routing: (() => {
+              try {
+                const path = resolveRegistryPath(process.env);
+                const reg = readRegistry(path);
+                return routingHealthLine(
+                  reg
+                    ? recommendRouting({
+                        scorecard: routingScorecard,
+                        registry: reg.registry,
+                        registryText: reg.text,
+                        registryPath: path,
+                        experiments: readExperimentDir(
+                          process.env.GAFFER_DATA ? `${process.env.GAFFER_DATA}/experiments` : null,
+                        ),
+                      })
+                    : null,
+                );
+              } catch {
+                return routingHealthLine(null);
+              }
+            })(),
+          }
+        : {}),
       // ADAPTIVE TESTER LANE: the GAFFER_TESTING setting and, under the `auto` default,
       // the repos where the independent tester is off because no test command is
       // registered (one notice line each). Best-effort: a read failure leaves it off.

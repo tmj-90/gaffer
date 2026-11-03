@@ -1,0 +1,305 @@
+/**
+ * ADVISORY ROUTING RECOMMENDATIONS (delta roadmap gap 4, P3): `wg routing recommend` reads
+ * the scorecard and experiment results and PRINTS a proposed model-registry.json change as
+ * a diff with its evidence. It never writes the registry (byte-identical after), never
+ * proposes for a safety lane, never proposes from a stub-mode experiment, and proposes
+ * nothing under the minimum n.
+ */
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { describe, expect, it } from "vitest";
+
+import { Dispatch } from "../src/core.js";
+import { writeEvent } from "../src/events/eventWriter.js";
+import {
+  readRegistry,
+  recommendRouting,
+  renderRecommendation,
+  routingHealthLine,
+  type ExperimentResults,
+} from "../src/health/routingRecommend.js";
+import {
+  parseRoutingLine,
+  routingScorecard,
+  type RoutingRow,
+  type ScorecardTransition,
+} from "../src/health/routingScorecard.js";
+import { TestClock } from "../src/util/clock.js";
+
+import { CLI_BUILT, runBin } from "./helpers/cliBin.js";
+
+const T0 = Date.parse("2026-06-01T09:00:00.000Z");
+const REGISTRY = resolve(__dirname, "..", "..", "..", "runner", "model-registry.json");
+/** The shipped registry with its tiers pointed at neutral test model ids. */
+const registryText = readFileSync(REGISTRY, "utf8")
+  .replace(/("cheap"\s*:\s*)"[^"]*"/, '$1"model-a"')
+  .replace(/("mid"\s*:\s*)"[^"]*"/, '$1"model-b"')
+  .replace(/("strong"\s*:\s*)"[^"]*"/, '$1"model-c"');
+
+interface Spec {
+  model: string;
+  role?: string;
+  usd: number;
+  sentBack?: number;
+  escaped?: number;
+  from: number;
+  count: number;
+}
+
+/** Build scorecard inputs: `count` tickets per spec, each one attempt, all done. */
+function world(specs: Spec[]) {
+  const tickets: Array<{ id: string; number: number; status: string }> = [];
+  const transitions: ScorecardTransition[] = [];
+  const rows: RoutingRow[] = [];
+  const escaped = new Set<string>();
+  for (const s of specs) {
+    for (let i = 0; i < s.count; i += 1) {
+      const n = s.from + i;
+      tickets.push({ id: `t${n}`, number: n, status: "done" });
+      rows.push(
+        parseRoutingLine(
+          JSON.stringify({
+            ts: new Date(T0 + n * 60_000).toISOString(),
+            ticket: n,
+            kind: s.role === "review" ? "review" : "delivery",
+            measured: true,
+            total_cost_usd: s.usd,
+            attempt_id: `c${n}/1`,
+            model_requested: s.model,
+            risk: "medium",
+            repo: "app",
+          }),
+        ) as RoutingRow,
+      );
+      const at = T0 + n * 600_000;
+      const tr = (from: string, to: string, d: number, actorType = "human") =>
+        transitions.push({
+          ticketId: `t${n}`,
+          actorType,
+          fromStatus: from,
+          toStatus: to,
+          reason: null,
+          atMs: at + d,
+        });
+      tr("in_progress", "in_review", 1, "system");
+      if (i < (s.sentBack ?? 0)) {
+        tr("in_review", "refining", 2);
+        tr("refining", "in_progress", 3, "system");
+        tr("in_progress", "in_review", 4, "system");
+      }
+      tr("in_review", "done", 5);
+      if (i < (s.escaped ?? 0)) escaped.add(`t${n}`);
+    }
+  }
+  return routingScorecard({
+    rows,
+    manifests: [],
+    tickets,
+    transitions,
+    retries: [],
+    escaped,
+    testerVerdict: new Map(),
+    repoStack: new Map([["app", "node"]]),
+  });
+}
+
+const reg = (() => {
+  const dir = mkdtempSync(join(tmpdir(), "rr-reg-"));
+  try {
+    writeFileSync(join(dir, "r.json"), registryText);
+    return readRegistry(join(dir, "r.json"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+})();
+
+const recommend = (card: ReturnType<typeof world>, experiments: ExperimentResults[] = []) =>
+  recommendRouting({
+    scorecard: card,
+    registry: reg!.registry,
+    registryText,
+    registryPath: "/r.json",
+    experiments,
+  });
+
+describe("routing recommend", () => {
+  it("proposes a cheaper tier that is no worse, as a registry diff with its evidence", () => {
+    const card = world([
+      { model: "model-a", usd: 0.3, from: 1, count: 12, sentBack: 1 },
+      { model: "model-b", usd: 0.9, from: 101, count: 12, sentBack: 2 },
+    ]);
+    const r = recommend(card);
+    expect(r.advisory).toBe(true);
+    expect(r.proposals).toHaveLength(1);
+    const p = r.proposals[0]!;
+    expect(p).toMatchObject({
+      role: "implement",
+      from_tier: "mid",
+      to_tier: "cheap",
+      kind: "cheaper_no_worse",
+    });
+    expect(p.evidence[0]).toMatchObject({
+      work_class: "provider claude-code, risk medium, stack node",
+      to: { model: "model-a", n: 12, first_pass_pct: 91.7 },
+      from: { model: "model-b", n: 12, first_pass_pct: 83.3 },
+      delta_first_pass_points: 8.4,
+      delta_cost_usd: -0.6,
+    });
+    expect(p.diff).toMatch(
+      /^--- a\/runner\/model-registry\.json\n\+\+\+ b\/runner\/model-registry\.json\n@@ /,
+    );
+    expect(p.diff).toMatch(/\n-\s+"implement": "mid",\n\+\s+"implement": "cheap",\n/);
+    const text = renderRecommendation(r);
+    expect(text).toMatch(/advisory: nothing was changed/);
+    expect(text).toMatch(/1\. implement: default tier mid -> cheap/);
+    expect(text).toMatch(/model-a n=12 first pass 91\.7%/);
+    expect(text).toMatch(/apply it yourself by editing the registry/);
+  });
+
+  it("proposes nothing under the minimum n", () => {
+    const card = world([
+      { model: "model-a", usd: 0.3, from: 1, count: 9 },
+      { model: "model-b", usd: 0.9, from: 101, count: 12 },
+    ]);
+    const r = recommend(card);
+    expect(r.proposals).toEqual([]);
+    expect(r.not_proposed.join("\n")).toMatch(/no other tier is cheaper and no worse/);
+    expect(renderRecommendation(r)).toMatch(/No change proposed\./);
+    const none = recommend(world([{ model: "model-b", usd: 0.9, from: 1, count: 3 }]));
+    expect(none.not_proposed.join("\n")).toMatch(/no cell has 10 attempts yet/);
+  });
+
+  it("never proposes a tier that escaped more defects, however cheap", () => {
+    const card = world([
+      { model: "model-a", usd: 0.3, from: 1, count: 12, escaped: 3 },
+      { model: "model-b", usd: 0.9, from: 101, count: 12, sentBack: 2 },
+    ]);
+    expect(recommend(card).proposals).toEqual([]);
+  });
+
+  it("never proposes for the reviewer or the tester (safety lanes)", () => {
+    const card = world([
+      { model: "model-a", role: "review", usd: 0.01, from: 1, count: 20 },
+      { model: "model-b", role: "review", usd: 0.9, from: 101, count: 20 },
+    ]);
+    const r = recommend(card);
+    expect(r.proposals).toEqual([]);
+    expect(r.not_proposed.join("\n")).toMatch(
+      /security second opinion \(a safety lane\); never proposed/,
+    );
+    expect(r.not_proposed.join("\n")).toMatch(/the tester is a safety lane; never proposed/);
+  });
+
+  it("a stub-mode experiment never proposes; a live one with a clear paired difference does", () => {
+    const card = world([{ model: "model-b", usd: 0.9, from: 1, count: 12 }]);
+    const cmp = {
+      arm: "cheap",
+      vs: "baseline",
+      n: 12,
+      differs_in: ["tier"],
+      overrides: { tier: "cheap" },
+      acceptance: { mean: 0.08, ci95: [0, 0.2] as [number, number] },
+      spend_usd: { mean: -0.4, ci95: [-0.6, -0.2] as [number, number] },
+      attempts: { mean: 0 },
+    };
+    const stub = recommend(card, [{ path: "s/results.json", mode: "stub", comparisons: [cmp] }]);
+    expect(stub.proposals).toEqual([]);
+    expect(stub.not_proposed.join("\n")).toMatch(/stub mode proves the pipeline, not a model/);
+    const live = recommend(card, [{ path: "l/results.json", mode: "live", comparisons: [cmp] }]);
+    expect(live.proposals).toHaveLength(1);
+    expect(live.proposals[0]).toMatchObject({ basis: "experiment", to_tier: "cheap" });
+    const few = recommend(card, [
+      { path: "f/results.json", mode: "live", comparisons: [{ ...cmp, n: 4 }] },
+    ]);
+    expect(few.proposals).toEqual([]);
+    expect(few.not_proposed.join("\n")).toMatch(/4 tickets, under the minimum 10/);
+  });
+
+  it("the Health line is report-only wording", () => {
+    expect(routingHealthLine(null).available).toBe(false);
+    const r = recommend(world([{ model: "model-b", usd: 0.9, from: 1, count: 3 }]));
+    expect(routingHealthLine(r).line).toBe("Routing: no registry change proposed. Report only.");
+  });
+});
+
+describe.skipIf(!CLI_BUILT)(
+  "wg routing recommend / wg stats routing (built CLI)",
+  { timeout: 60_000 },
+  () => {
+    it("prints a diff only and leaves the registry byte-identical", () => {
+      const dir = mkdtempSync(join(tmpdir(), "rr-cli-"));
+      try {
+        const db = join(dir, "d.sqlite");
+        const data = join(dir, "data");
+        mkdirSync(data);
+        const regPath = join(dir, "model-registry.json");
+        writeFileSync(regPath, registryText);
+        const before = createHash("sha256").update(readFileSync(regPath)).digest("hex");
+        const wg = Dispatch.open(db, new TestClock());
+        const ledger: string[] = [];
+        for (const [model, usd, base] of [
+          ["model-a", 0.3, 0],
+          ["model-b", 0.9, 100],
+        ] as const) {
+          for (let i = 0; i < 12; i += 1) {
+            const t = wg.createTicket({ title: `t${base + i}` }, { type: "human", id: "tom" });
+            for (const [from, to] of [
+              ["ready", "in_progress"],
+              ["in_progress", "in_review"],
+              ["in_review", "done"],
+            ] as const)
+              writeEvent(wg.db, {
+                entity_type: "ticket",
+                entity_id: t.id,
+                actor: to === "done" ? { type: "human", id: "tom" } : { type: "system" },
+                event_type: "ticket.transitioned",
+                payload: { from, to },
+              });
+            wg.db.prepare("UPDATE tickets SET status = 'done' WHERE id = ?").run(t.id);
+            ledger.push(
+              JSON.stringify({
+                ts: new Date(T0).toISOString(),
+                ticket: t.number,
+                kind: "delivery",
+                measured: true,
+                total_cost_usd: usd,
+                attempt_id: `c${t.number}/1`,
+                model_requested: model,
+                risk: "medium",
+              }),
+            );
+          }
+        }
+        wg.db.close();
+        writeFileSync(join(data, "usage-ledger.jsonl"), ledger.join("\n") + "\n");
+        const env = {
+          GAFFER_DATA: data,
+          GAFFER_USAGE_LEDGER: undefined,
+          GAFFER_MODEL_REGISTRY: undefined,
+        };
+        const out = runBin(db, ["routing", "recommend", "--registry", regPath], { env });
+        expect(out.status).toBe(0);
+        expect(out.stdout).toMatch(/implement: default tier mid -> cheap/);
+        expect(out.stdout).toMatch(/-\s+"implement": "mid",\n\s+\+\s+"implement": "cheap",/);
+        const after = createHash("sha256").update(readFileSync(regPath)).digest("hex");
+        expect(after).toBe(before);
+        const json = runBin(db, ["routing", "recommend", "--registry", regPath, "--json"], { env });
+        expect(JSON.parse(json.stdout)).toMatchObject({
+          measure: "routing_recommendation",
+          advisory: true,
+        });
+        const stats = runBin(db, ["stats", "routing", "--min", "13"], { env });
+        expect(stats.status).toBe(0);
+        expect(stats.stdout).toMatch(
+          /implement · claude-code · model-a · risk medium · stack unknown: n=12 · too few to compare/,
+        );
+        const bad = runBin(db, ["stats", "routing", "--min", "0"], { env });
+        expect(bad.status).not.toBe(0);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  },
+);

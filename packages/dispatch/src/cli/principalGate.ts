@@ -168,6 +168,8 @@ const RULES: Record<string, Rule> = {
       "events list",
       "events verify",
       "stats",
+      "stats routing",
+      "routing recommend",
       "review-rules",
       "human-queue",
       "export",

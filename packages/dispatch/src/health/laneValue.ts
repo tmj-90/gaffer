@@ -3,7 +3,8 @@
  * must earn their keep"): for each judging lane, what it changed.
  *
  * Attempts are segmented on each ticket's timeline: an attempt starts at each start of
- * work (a move into in_progress or claimed from anywhere else) and runs to the next one.
+ * work (a move into in_progress or claimed from anywhere else but a pause: resuming a
+ * delivery paused at a cap continues the same attempt) and runs to the next one.
  * Its outcome is its first send-back (health/sendBacks.ts isReviewSendBack, by anyone) or
  * its move to done. A lane verdict (`ticket.lane_verdict`) belongs to the attempt it falls
  * in by time; the tester records its verdict just after its own transition, which is still
@@ -20,8 +21,10 @@
  *   unique catches    attempts that ended in a send-back where this lane was the only lane
  *                     that said block (whether a person or the lane itself sent it back)
  *   cost per attempt  the lane's ledger spend (its own `kind`, estimates included) over the
- *                     distinct attempt ids on those rows; a row with no attempt id counts as
- *                     its own attempt. The plan debate books its turns as `decompose` with
+ *                     distinct attempt ids on those rows (`cost_per_attempt_basis`
+ *                     ledger_attempt_id: the runner stamps a judging row with the ticket's
+ *                     latest delivery row's id when it ran, a join by time order); a row with
+ *                     no attempt id counts as its own attempt. The plan debate books its turns as `decompose` with
  *                     the rest of planning, so it has no spend of its own here.
  *
  * Counts only. Nothing here recommends switching a lane off: that is a person's call, and
@@ -79,6 +82,11 @@ export interface LaneValueReport {
   /** Send-backs where no lane said block: a person (or a gate) caught them. */
   readonly send_backs_no_lane_caught: number;
   readonly lanes: readonly LaneValue[];
+  /**
+   * What `cost_per_attempt_usd` divides by: the distinct `attempt_id`s on the lane's ledger
+   * rows (the latest delivery row's id when the call ran; a row without one is its own).
+   */
+  readonly cost_per_attempt_basis: "ledger_attempt_id";
   readonly footnote: string;
   readonly limits: readonly string[];
 }
@@ -105,9 +113,12 @@ export const LANE_VALUE_LIMITS: readonly string[] = [
   "a unique catch is a send-back only this lane asked for; it is not confirmed as a real defect",
   "compared counts only attempts a person decided; an agent's own approval or send-back is not a person's decision",
   "spend is the lane's ledger kind, estimates included; the plan debate books with the rest of planning and has no spend of its own here",
+  "cost per attempt divides by the attempt ids on the lane's ledger rows: the ticket's latest delivery row when the call ran (a join by time order, not a commit match); a row without one counts as its own attempt",
 ];
 
 const START_OF_WORK = new Set(["in_progress", "claimed"]);
+/** A move into work from here continues the attempt (a resume after a pause at a cap). */
+const CONTINUES_FROM = new Set(["in_progress", "claimed", "paused"]);
 const APPROVED_TO = new Set(["ready_for_merge", "in_testing", "done"]);
 const isPerson = (a: string): boolean => a === "human" || a === "admin";
 
@@ -169,7 +180,7 @@ export function laneValueReport(input: {
       if (it.kind === "t") {
         const t = it.t;
         const starts =
-          START_OF_WORK.has(t.toStatus ?? "") && !START_OF_WORK.has(t.fromStatus ?? "");
+          START_OF_WORK.has(t.toStatus ?? "") && !CONTINUES_FROM.has(t.fromStatus ?? "");
         if (starts || cur === null) cur = open();
         if (t.fromStatus === "in_review" && isPerson(t.actorType)) {
           if (APPROVED_TO.has(t.toStatus ?? "")) cur.person = "pass";
@@ -252,6 +263,7 @@ export function laneValueReport(input: {
     send_backs_no_lane_caught: sentBack.filter((a) => ![...a.lanes.values()].includes("block"))
       .length,
     lanes,
+    cost_per_attempt_basis: "ledger_attempt_id",
     footnote: LANE_VALUE_FOOTNOTE,
     limits: LANE_VALUE_LIMITS,
   };

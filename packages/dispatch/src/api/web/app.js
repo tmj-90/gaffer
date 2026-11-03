@@ -13853,7 +13853,7 @@ function laneValueCard(health) {
       `only lane on ${plural(l.unique_catches, "send-back")}`,
       l.cost_per_attempt_usd == null
         ? "no ledger spend of its own"
-        : `${money(l.cost_per_attempt_usd)} per attempt over ${l.ledger_attempts}`,
+        : `${money(l.cost_per_attempt_usd)} per attempt over ${plural(l.ledger_attempts, "ledger attempt")}`,
     ];
     return el("li", { dataset: { lane: l.lane } }, [
       el("strong", {}, l.label),

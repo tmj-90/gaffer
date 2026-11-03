@@ -875,7 +875,29 @@ export const EPICS = [
           "snooze(task, days, now) pushes the due date forward and clears the reminded flag.",
         acs: ["snooze moves the due date by whole days", "snooze clears the reminded flag"],
         risk: "medium",
-        flow: "ready",
+        flow: "done_reviewed",
+        steps: [
+          mod(
+            "src/snooze.js",
+            "const DAY = 86400000;\n\nexport function snooze(task, days = 1) {\n  const due = new Date(Date.parse(task.due) + days * DAY).toISOString();\n  return { ...task, due, reminded: false };\n}\n",
+            "test/snooze.test.js",
+            T(
+              'import { snooze } from "../src/snooze.js";',
+              'test("snooze moves the date and clears reminded", () => {\n  const t = snooze({ due: "2026-05-01T09:00:00.000Z", reminded: true }, 2);\n  assert.deepEqual(t, { due: "2026-05-03T09:00:00.000Z", reminded: false });\n});',
+            ),
+            "feat(reminders): snooze a task by whole days",
+            "Added snooze(task, days) with a test covering both criteria.",
+            0.48,
+            11,
+          ),
+        ],
+        tester: testerOf(
+          "snooze",
+          'import { snooze } from "../../src/snooze.js";',
+          'test("the default snooze is one day", () => {\n  assert.equal(snooze({ due: "2026-05-01T00:00:00.000Z" }).due, "2026-05-02T00:00:00.000Z");\n});',
+          "Snoozing moves the date by whole days and clears the reminder.",
+          0.1,
+        ),
       },
     ],
   },
@@ -1632,6 +1654,43 @@ export const LOOSE = [
     ),
   },
   {
+    key: "ci-workflow",
+    repo: "taskflow-web",
+    title: "Run the tests on every push",
+    description:
+      "A workflow that installs and runs npm test on every push and pull request, on the two supported node versions.",
+    acs: [
+      "The workflow runs npm test on push and pull request",
+      "Both supported node versions are covered",
+    ],
+    risk: "medium",
+    flow: "done_reviewed",
+    steps: [
+      {
+        files: {
+          ".github/workflows/test.yml":
+            "name: test\non: [push, pull_request]\npermissions:\n  contents: read\njobs:\n  test:\n    runs-on: ubuntu-latest\n    strategy:\n      matrix:\n        node: [22, 24]\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-node@v4\n        with:\n          node-version: ${{ matrix.node }}\n      - run: npm test\n",
+          "test/workflow.test.js": T(
+            'import { readFileSync } from "node:fs";',
+            'test("the workflow runs npm test on both node versions", () => {\n  const y = readFileSync(new URL("../.github/workflows/test.yml", import.meta.url), "utf8");\n  assert.match(y, /run: npm test/);\n  assert.match(y, /node: \\[22, 24\\]/);\n});',
+          ),
+        },
+        message: "ci: run the tests on every push and pull request",
+        summary:
+          "Added a test workflow (push and pull request, node 22 and 24, read-only token) and a test that reads it.",
+        cost: 0.39,
+        turns: 9,
+      },
+    ],
+    tester: testerOf(
+      "ci-workflow",
+      'import { readFileSync } from "node:fs";',
+      'test("the workflow token is read-only", () => {\n  const y = readFileSync(new URL("../../.github/workflows/test.yml", import.meta.url), "utf8");\n  assert.match(y, /contents: read/);\n});',
+      "The workflow covers push, pull request and both node versions with a read-only token.",
+      0.09,
+    ),
+  },
+  {
     key: "flaky-clock",
     repo: "taskflow-core",
     title: "Fix the flaky digest test around midnight",
@@ -1799,4 +1858,6 @@ export const DRAFT_LORE = [
 for (const t of [...EPICS.flatMap((e) => e.tickets), ...LOOSE])
   for (const s of t.steps || [])
     if (s.summary && !/Smallest-change note/.test(s.summary))
-      s.summary += `\n\nSmallest-change note: touched ${Object.keys(s.files).join(" and ")} only.`;
+      s.summary +=
+        `\n\nSkills used: ${/^fix|^test/.test(s.message || "") ? "fix-bug, add-unit-test" : "add-unit-test, engineering-craft"}.` +
+        `\n\nSmallest-change note: touched ${Object.keys(s.files).join(" and ")} only.`;

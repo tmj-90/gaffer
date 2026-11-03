@@ -130,7 +130,9 @@ const stopDashboard = () => {
   }
 };
 
-async function api(method, p, body) {
+async function api(method, p, body, retry = 2) {
+  // An idle keep-alive socket the server has just closed fails the next request; one
+  // retry on a fresh socket is the whole fix.
   const res = await fetch(BASE + p, {
     method,
     headers: {
@@ -138,7 +140,11 @@ async function api(method, p, body) {
       ...(body ? { "content-type": "application/json" } : {}),
     },
     body: body ? JSON.stringify(body) : undefined,
-  });
+  }).catch((e) => (retry > 0 ? null : Promise.reject(e)));
+  if (!res) {
+    await sleep(300);
+    return api(method, p, body, retry - 1);
+  }
   const text = await res.text();
   let json;
   try {
@@ -224,7 +230,8 @@ function mark(jumpMs = 0, stretch = STRETCH) {
   fakeCursor += jumpMs;
   marks.push({ real: now, fake: fakeCursor });
 }
-const HOUR = 3600000;
+const MINUTE = 60000;
+const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 // A deterministic jitter so two runs land on the same timeline shape.
 let seed = 7;
@@ -349,8 +356,16 @@ async function headCommits(k) {
   const d = (await api("GET", `/tickets/${byKey[k].id}/diff`)).json;
   return (d.repos || []).map((r) => ({ repo: r.repoId, sha: r.headSha }));
 }
-async function approve(k) {
+/**
+ * A person opens the ticket in Review: the diff with its Behavioural surface, and the
+ * once-a-round review-opened event the dashboard sends (Health's review time and its
+ * callers-row measure read it).
+ */
+async function openReview(k) {
   await api("GET", `/tickets/${byKey[k].id}/diff?include=impact`);
+  await api("POST", `/tickets/${byKey[k].id}/review-opened`, {});
+}
+async function approve(k) {
   await must("POST", `/tickets/${byKey[k].id}/review/approve`, { commits: await headCommits(k) });
 }
 async function land(k) {
@@ -373,7 +388,15 @@ async function drive(k) {
   const { spec, number } = byKey[k];
   const flow = spec.flow;
   log(`#${number} ${spec.title} → ${flow}`);
-  if (flow === "done" || flow === "done_rework" || flow === "regression") {
+  if (flow === "done_reviewed") {
+    // The reviewer agent reads it as well (REVIEW_MODE both: a person still signs off),
+    // and a diff under .github brings in the security reviewer after it.
+    await must("POST", "/api/settings", { settings: { REVIEW_MODE: "both" } });
+    setStub(number, stubFor(spec));
+    await ready(k);
+    await pollUntil(k, ["in_review"]);
+    await must("POST", "/api/settings", { settings: { REVIEW_MODE: "human" } });
+  } else if (flow === "done" || flow === "done_rework" || flow === "regression") {
     setStub(number, stubFor(spec));
     await ready(k);
     await pollUntil(k, ["in_review"]);
@@ -405,6 +428,8 @@ async function drive(k) {
     await ready(k);
     await pollUntil(k, ["in_review"]);
     mark(HOUR * 1.5);
+    await openReview(k);
+    mark(MINUTE * 18);
     await reviewComments(k);
     mark(HOUR * 0.4);
     await must("POST", `/tickets/${byKey[k].id}/review/fix`, { to: "ready" });
@@ -440,6 +465,8 @@ async function drive(k) {
   } else return;
   // done flows: the person reads it after a while, approves the tested commit, lands it.
   mark(HOUR * (0.5 + rand() * 5));
+  await openReview(k);
+  mark(MINUTE * (3 + rand() * 25));
   await approve(k);
   mark(HOUR * (0.1 + rand() * 0.5));
   await land(k);
@@ -616,7 +643,21 @@ async function moveTimeline() {
 
 // ── 4. what a person adds by hand ───────────────────────────────────────────
 async function handWork() {
-  log("lore, the map, the club, the squad, decisions and claims");
+  // Two tickets the reviewer agent read too, landed this afternoon.
+  for (const t of ALL().filter((x) => x.flow === "done_reviewed" && byKey[x.key]))
+    if ((await ticketOf(byKey[t.key].id)).status === "draft") await drive(t.key);
+  // The once-only part (lore, digests, the map, the club, the squad's names) is marked
+  // done in the out dir, so a run picked up again with --from hand does not repeat it.
+  const once = `${OUT}/hand-once.done`;
+  if (!existsSync(once)) {
+    await handOnce();
+    writeFileSync(once, new Date().toISOString());
+  }
+  await handClaims();
+}
+
+async function handOnce() {
+  log("lore, digests, the map, the club and the squad");
   // The harness seeds one draft for its own sample repo; this world never onboards it.
   for (const d of (await api("GET", "/api/memory/lore?status=draft")).json.lore || [])
     if (!REPOS[d.repo])
@@ -737,18 +778,28 @@ async function handWork() {
     const [n, num] = squadNames[i % squadNames.length];
     wgArgs("agent", "rename", a.agent_id, "--name", n, "--number", String(num));
   });
+}
+
+async function handClaims() {
+  log("claims, the queue and decisions");
+  for (const k of Object.keys(byKey))
+    if ((await ticketOf(byKey[k].id)).status === "in_review") await openReview(k);
+  const list = wgArgs("agent", "list").agents || [];
   const claimers = list.filter((a) => /Delivery [234]/.test(a.registered_name || ""));
   const toClaim = Object.keys(byKey).filter((k) => byKey[k].spec.flow === "claimed");
   for (const [i, k] of toClaim.entries()) {
-    await ready(k);
+    const st = (await ticketOf(byKey[k].id)).status;
+    if (st === "in_progress") continue;
+    if (st !== "ready") await ready(k);
     const ag = claimers[i % Math.max(1, claimers.length)] || list[0];
     wgArgs("claim", "--agent", ag.agent_id, "--ttl", "86400");
   }
 
   for (const k of Object.keys(byKey)) {
     const { spec, id } = byKey[k];
-    if (spec.flow === "ready") await ready(k);
-    if (spec.flow === "cancelled")
+    const st = (await ticketOf(id)).status;
+    if (spec.flow === "ready" && st !== "ready") await ready(k);
+    if (spec.flow === "cancelled" && st !== "cancelled")
       await must("POST", `/tickets/${id}/wont-do`, { reason: spec.reason });
   }
   await must("POST", "/decisions", {
@@ -920,7 +971,16 @@ async function capture() {
   const hero = byKey["finish-skips-done"].id;
 
   await go("overview", ".tactics .pitch");
-  await pageShot("match-day-overview", "Overview", 1250);
+  if (want("match-day-overview")) {
+    // The Tactics board grows with the Team sheet beside it and centres the pitch in
+    // that height, so the hero is the viewport scrolled until the whole pitch is in view.
+    const pitch = await page.locator(".tactics .pitch").first().boundingBox();
+    if (pitch)
+      await page.evaluate((y) => window.scrollTo(0, Math.max(0, y)), pitch.y + pitch.height - 860);
+    await sleep(600);
+    await save("match-day-overview", "Overview", await page.screenshot());
+    await page.evaluate(() => window.scrollTo(0, 0));
+  }
   await elShot("match-day-tactics-board", "Overview: Tactics board", [".tactics .pitch"], 12);
   await go("floor", "svg");
   await pageShot("match-day-floor", "Floor", 1500);
@@ -1057,14 +1117,17 @@ if (run("open")) {
   saveState("open");
 }
 if (run("move")) {
-  await must("POST", "/api/settings", {
-    settings: { GAFFER_DAILY_BUDGET_USD: "25", MAX_TICKS_PER_DAY: "50" },
-  });
   await moveTimeline();
   saveState("move");
 }
 if (run("hand")) {
+  await must("POST", "/api/settings", {
+    settings: { GAFFER_DAILY_BUDGET_USD: "500", MAX_TICKS_PER_DAY: "1000" },
+  });
   await handWork();
+  await must("POST", "/api/settings", {
+    settings: { GAFFER_DAILY_BUDGET_USD: "25", MAX_TICKS_PER_DAY: "50" },
+  });
   await padLedger();
   saveState("hand");
 }

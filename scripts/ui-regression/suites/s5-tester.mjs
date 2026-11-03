@@ -1,9 +1,10 @@
 // S5 the independent tester lane. GAFFER_TESTING is switched on in Settings; a
-// ticket's "Eligible for black-box testing" switch is flipped on its page; approval in
-// Review then routes it to Testing instead of Ready for merge; the next Poll runs the
-// tester (stub verdicts): PASS → Ready for merge with a tester result row, FAIL →
-// Refining with the observation as rework feedback, no verdict token → held in
-// Testing, where a human records the PASS from the ticket page (a summary required).
+// ticket's "Eligible for black-box testing" switch is flipped on its page. TESTER FIRST:
+// the delivery tick sends each one to Testing BEFORE the human review (an approval of
+// the untested commit is refused); the next Poll runs the tester (stub verdicts): PASS →
+// back in Review, where the person approves the tested commit → Ready for merge, FAIL →
+// Refining with the observation as rework feedback, no verdict token → held in Testing,
+// where a human records the PASS from the ticket page (a summary required) → Review.
 export default async function s5(t, L) {
   const p = t.page;
 
@@ -49,14 +50,14 @@ export default async function s5(t, L) {
     await L.waitStatus(tk.id, ["ready"], 10000, 400);
   }
 
-  // ── deliver all three, approve each in Review → Testing ───────────────────
+  // ── deliver all three: each goes to Testing before the human review ──────
   for (let i = 0; i < tks.length; i++) {
     await t.visit("work");
     await t.poll();
     await L.maybe(
       async () => {
         const st = await Promise.all(tks.map((x) => L.ticketOf(x.id)));
-        return st.filter((x) => x.status === "in_review").length >= i + 1 ? true : null;
+        return st.filter((x) => x.status === "in_testing").length >= i + 1 ? true : null;
       },
       "delivery",
       240000,
@@ -70,17 +71,25 @@ export default async function s5(t, L) {
     );
   }
   for (const tk of tks) {
-    if ((await L.ticketOf(tk.id)).status !== "in_review") {
-      t.bad(`#${tk.number} was not delivered to Review (${(await L.ticketOf(tk.id)).status})`);
-      continue;
-    }
-    const st = await t.approve(tk);
+    const st = await L.ticketOf(tk.id);
     t.check(
-      st?.status === "in_testing",
-      `with the tester lane on, approving eligible #${tk.number} in Review routed it to Testing (not Ready for merge)`,
-      `approve of testable #${tk.number} went to '${st?.status}'`,
+      st.status === "in_testing",
+      `with the tester lane on, delivered eligible #${tk.number} went to Testing before the human review`,
+      `#${tk.number} after delivery is '${st.status}' (expected in_testing)`,
     );
   }
+  // A person cannot approve a commit the tester has not passed (server-side hold).
+  const shownHeads = ((await L.api("GET", `/tickets/${tks[0].id}/diff`)).json.repos || []).map(
+    (r) => ({ repo: r.repoId, sha: r.headSha }),
+  );
+  const early = await L.api("POST", `/tickets/${tks[0].id}/review/approve`, {
+    commits: shownHeads,
+  });
+  t.check(
+    early.status === 409 && early.json?.error?.details?.reason === "not_tested",
+    `an approval of #${tks[0].number} before the tester's verdict is refused (409)`,
+    `early approve of #${tks[0].number}: ${early.status} ${JSON.stringify(early.json).slice(0, 200)}`,
+  );
 
   // ── Poll runs the tester on each in_testing ticket ────────────────────────
   for (let i = 0; i < tks.length; i++) {
@@ -112,13 +121,33 @@ export default async function s5(t, L) {
   const [pass, fail, held] = tks;
   const sp = await L.waitStatus(
     pass.id,
-    ["ready_for_merge", "refining", "in_testing", "done"],
+    ["in_review", "ready_for_merge", "refining", "in_testing", "done"],
     30000,
   );
   t.check(
-    sp?.status === "ready_for_merge",
-    `tester PASS → #${pass.number} is Ready for merge`,
+    sp?.status === "in_review",
+    `tester PASS → #${pass.number} is back in Review for the person`,
     `after a tester PASS #${pass.number} is '${sp?.status}'`,
+  );
+  await t.visit(`review/${pass.id}`, { label: "review/:id" });
+  await L.maybe(
+    async () => ((await p.textContent(".signoff-next").catch(() => "")) || "").trim() || null,
+    "sign-off line",
+    20000,
+    500,
+  );
+  const line = (await p.textContent(".signoff-next").catch(() => "")) || "";
+  const cand = (await p.textContent(".vd-cell.vd-candidate").catch(() => "")) || "";
+  t.check(
+    /You approve tested commit [0-9a-f]{12}/.test(line) && /Tested commit [0-9a-f]{12}/.test(cand),
+    "the sign-off line and the candidate cell name the tested commit",
+    `sign-off line: '${line.slice(0, 200)}' · candidate: '${cand.slice(0, 200)}'`,
+  );
+  const ap = await t.approve(pass);
+  t.check(
+    ap?.status === "ready_for_merge",
+    `approving the tested commit of #${pass.number} in Review → Ready for merge (no second testing pass)`,
+    `approve after the PASS: '${ap?.status}' ${ap?.held || ""}`,
   );
   await t.visit(`ticket/${pass.id}`);
   const rows = await p.locator(".tk-testing .tt-row.tt-pass").count();
@@ -174,10 +203,10 @@ export default async function s5(t, L) {
   await p.locator(".reject-dialog .reject-submit").click();
   const res = await resP.catch(() => null);
   const body = res ? JSON.parse(res.request().postData() || "{}") : {};
-  const sh2 = await L.waitStatus(held.id, ["ready_for_merge"], 10000, 400);
+  const sh2 = await L.waitStatus(held.id, ["in_review"], 10000, 400);
   t.check(
     body.verdict === "pass" && /by hand/.test(body.summary || "") && sh2,
-    `a human recorded the tester PASS for held #${held.number} → Ready for merge`,
+    `a human recorded the tester PASS for held #${held.number} → back in Review for the approval`,
     `human tester PASS: ${JSON.stringify(body)} status=${(await L.ticketOf(held.id)).status}`,
   );
 }

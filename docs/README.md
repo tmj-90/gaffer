@@ -47,7 +47,8 @@ overview; start there if you're new.
 
 ## Run and test
 
-- [testing.md](testing.md): the test layers, the runner harness, what CI runs.
+- [testing.md](testing.md): the test layers, the runner harness, what CI runs, and
+  how the screenshots under `docs/img` are made.
 - [scripts/ui-regression/README.md](../scripts/ui-regression/README.md): the browser
   regression and scenario suites.
 - [runner/eval/README.md](../runner/eval/README.md): the gate replay fixtures.

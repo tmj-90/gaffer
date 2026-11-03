@@ -207,3 +207,44 @@ in exactly one group.
 port, data dir, sample repo, stub worker and dashboard) and runs N at once. The
 default is 1, which is what CI runs. Details are in
 [scripts/ui-regression/README.md](../scripts/ui-regression/README.md#several-worlds-at-once--j-n).
+
+## Screenshots: `scripts/screenshots.mjs`
+
+Every image under `docs/img` comes from one script, so the README, the quickstart and
+[FEATURES.md](FEATURES.md) show the dashboard as it is on the commit that holds them.
+
+```bash
+pnpm -r build
+npx playwright@1.63.0 install chromium   # once, or set PLAYWRIGHT_CHROMIUM
+node scripts/screenshots.mjs             # about 25 minutes; rewrites docs/img/*.png
+```
+
+It builds the browser harness's world (`scripts/ui-regression/setup.sh`: a throwaway
+data dir, the stub worker in place of the agent CLI, the dashboard), so no model is
+called and nothing is spent. Into it go three small TaskFlow repos with real code and
+passing tests (`scripts/screenshots-world.mjs`), onboarded through the API, and five
+epics of tickets. Every ticket that is delivered goes through the live path: Poll for
+work, the stub's scripted change, the gates and criteria checks, the tester first with
+its clean replay and a `cli` acceptance profile, an approval of the tested commit, and
+Merge now with the tester's replay on the merge candidate. On the way the script leaves
+a rework attempt, a tester FAIL, review comments and a Fix-these round, a paused, a
+blocked and a held ticket, and an escaped-defect link.
+
+The run takes minutes, so the script then moves every timestamp it wrote (both
+databases, the usage ledger, the replay manifests) onto a timeline of a few weeks that
+ends now, and recomputes the event log's hash chain over the moved rows. What a person
+adds by hand comes last: approved lore, digests, the Factory Map, the club and squad
+names, open decisions, agents holding claims, and enough usage-ledger rows for call
+kinds the run made too few of (onboarding, the tester) that the routing scorecard has
+numbers to show.
+
+The captures are 1440x900 at device scale 2, with fonts loaded and animations stopped,
+each cut to its content, and written as palette PNGs through
+[sharp](https://sharp.pixelplumbing.com/), which the script installs into the
+harness's Playwright cache dir beside playwright-core when it does not resolve. If that
+install fails the PNGs are written as captured, two to three times larger. `--keep` leaves the
+dashboard up afterwards, `--reuse --only health,ticket-testing` recaptures a few shots
+from that kept world, and `--from <phase>` picks a stopped run up again. `SCREENS_OUT`
+(default `/tmp/gaffer-screenshots`) and `SCREENS_PORT` (default 8799) move it. The
+docs-drift test checks that every image a doc shows exists and every file in `docs/img`
+is shown somewhere.

@@ -86,6 +86,7 @@ to the same version.
 - **Fonts are self-hosted** and the CSP allows no third-party origin.
 - **Accessibility and layout.** Every form label is associated with its control, the palette, More menu and Floor work from the keyboard, and no view scrolls sideways at phone, tablet or desktop widths.
 - **The board has no ticket ceiling**, and the Map, Overview and Epics read ticket details in batches.
+- **Every dashboard image in the docs comes from one script.** `node scripts/screenshots.mjs` builds a demo world on the browser harness, works its tickets through the live path with the stub worker (no model is called and nothing is spent) and rewrites `docs/img`; `--reuse --only <names>` recaptures a few shots. The stub worker gains scripted deliveries for it (`steps`, `tester` and `observation`), and a caller that sets none of them sees no change ([docs/testing.md](docs/testing.md#screenshots-scriptsscreenshotsmjs)).
 
 ### Runner and sandbox
 

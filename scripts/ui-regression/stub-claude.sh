@@ -58,6 +58,12 @@
 #                      ticket-specific body, so two such tickets conflict on merge.
 #                      {"mode":"conflict","resolver":"markers"}: the resolver commits the
 #                      conflicted files with the markers still in (a bad resolution).
+# Option "steps" (any mode): a list of scripted deliveries, one per delivery call (the
+# last repeats): {files: {path: content | {append} | {replace: [from, to]}}, message,
+# summary, cost, turns}; option "tester" on a tester_pass call does the same for the
+# tester's commit, and option "observation" is a tester_fail's FAIL line. A scripted
+# file's {replace} takes one [from, to] pair or a list of them. The screenshot world
+# (scripts/screenshots.mjs) uses these.
 # Every call is RECORDED as one JSON line in $GAFFER_DATA/stub-calls.jsonl:
 #   {ts, kind, ticket, mode, call, cwd, argv (prompt elided), env (GAFFER_* names and
 #    values the agent saw), prompt}

@@ -36,12 +36,11 @@ The Plan a build panel runs a multi-turn planner (`POST /plan-build` spawns
 **Build the tickets** forces the best plan from what you have said so far, so you are
 never stuck in the clarify loop.
 
-![Plan a build mid-decompose: the team talk and the proposed draw](img/plan-build.png)
+![Plan a build: the brief, the planner's two questions, your answer, and the proposed draw in rounds with each ticket's repo, priority and dependencies](img/plan-build.png)
 
-*The team talk on the Plan a build page: the brief "add recurring tasks", the
-planner's three questions, your answer, and the proposed draw, the **Recurring tasks**
-epic in four rounds plus the Final. Proposed tickets are numbered T1 to T5 until you
-confirm, and T2 shows `after T1`.*
+*Plan a build from The season: your brief, the planner's questions and your answer,
+then the proposed draw, numbered T1, T2 and so on until you confirm. Nothing is
+created until **Create as draft** or **Create & ready**.*
 
 ### From the terminal: `gaffer plan`
 
@@ -107,11 +106,10 @@ On a greenfield run the factory sets the new repo up itself:
 The epic is the dependency graph the board enforces: a phase can't start until the one
 before it is done.
 
-![The season: the Recurring tasks epic, expanded](img/epics.png)
+![The season: five campaigns with their rounds and done counts, and the Board polish campaign expanded into one card per ticket with its state](img/epics.png)
 
-*The Recurring tasks campaign on The season (`#/epics`), four rounds and the Final.
-Each card shows the tickets it waits on until they land, and the footer names the next
-fixture.*
+*The season (`#/epics`): each campaign's rounds, how many of its tickets are done and
+where it stands, with one campaign opened below.*
 
 ## Specs: a frozen statement of intent in front of the planner
 
@@ -172,11 +170,11 @@ typecheck gate runs the repo's package.json typecheck script, read from the base
 branch; `GAFFER_DOD_TYPECHECK_CMD` overrides it. The coverage command on the same page
 is not a gate; it feeds the idle coverage scan.
 
-![The work board](img/board.png)
+![The work board: lanes from Draft to Done with whole-board counts, claimed cards wearing their agent's shirt, a blocked card in red, a paused one, and the review, testing and ready-for-merge lanes](img/board.png)
 
-*Tickets across the lanes: the Recurring tasks drafts being shaped, ready work
-waiting, two tickets claimed by Bez and Mo, one blocked after three rework attempts,
-and the CSV export Kev delivered into review.*
+*The work board: drafts being shaped, ready work, three tickets claimed by agents,
+a blocked and a paused ticket, three in review, one in testing, one approved and
+waiting for Merge now, and the done lane.*
 
 ### The club, the squad and access
 
@@ -247,6 +245,8 @@ the usage ledger and the transition log, and says only what those can show:
   feedback counts. `wg review-rules` lists the candidates and each rule's measure
   (rejections citing it before and after approval, or "not enough data").
 
+![The four measures on Health: first-pass acceptance, human review time, the cost of an accepted change and the escaped-defect rate, each with its n](img/health-measures.png)
+
 ## The human review gate
 
 When an agent delivers, the ticket lands in **Review**, the structural barrier the
@@ -300,6 +300,11 @@ wrote. How each of these is enforced, and its limits, is in
   merge-gate hold, a flagged gate and a risk escalation head the flags and sit in a
   yellow band beside the button.
 
+![What backs this: the facts behind a delivery with their sources (gates, checked criteria, the tester's replay, the acceptance transcript) and what is not backed yet](img/review-backing.png)
+
+*What backs this, beside the flags: each fact with where it came from, and what nothing
+has backed yet.*
+
 ### Comments, send-backs and approval
 
 - **Comment on the change.** The + beside a diff line (either side), Comment on this
@@ -345,12 +350,10 @@ wrote. How each of these is enforced, and its limits, is in
   suspected**, with the first run's output kept. `GAFFER_DOD_FLAKY_RERUN=0` turns it
   off.
 
-![The gaffer's sign-off](img/review.png)
+![The gaffer's sign-off for a second ticket in review: the verdict strip, the sign-off box, the flags and the diff](img/review.png)
 
-*An in-review ticket on The gaffer's sign-off: no flags, the Definition-of-Done gates
-(tests and lint passed), 3 of 3 acceptance criteria satisfied by the runner's own
-checks, the evidence trail, and the server-computed diff for `taskflow-mini`.
-Approve and send-back are the human's alone.*
+*The sign-off for a delivery the tester passed, waiting for a person: the runner's
+verdict strip above, Approve beside the flags, and the server-computed diff.*
 
 ### Landing
 
@@ -409,11 +412,10 @@ access is a boundary the runner enforces: the agent writes only to the `write` r
 and reads the `read` ones. Repos with no mapping behave as standalone single-repo
 scopes, so nothing has to be mapped to start.
 
-![The Factory Map: scope nodes and their mapped repos](img/factory-map.png)
+![The scouting map: campaigns, a domain, two products and two services, each with its repos and the live tickets on it, and the Who plays where table below](img/factory-map.png)
 
-*The scouting map (`#/map`): the TaskFlow product node owns both repos with `write`
-access and contains the Task list capability and the Web client system; `depends_on`
-lines run from the web client to the task list.*
+*The scouting map (`#/map`): each ground with the repos mapped to it and its tickets
+in play, blocked or waiting on you, and which repo plays where.*
 
 ## Durable repo memory
 
@@ -437,11 +439,10 @@ human-gated knowledge the factory works from:
   can't run these. Lore is never silently rewritten: every edit snapshots the previous
   version (`memory history <id>`).
 
-![A repo's digest and feature ledger](img/memory.png)
+![Club history for one repo: the lore on the record and a draft awaiting signature, the repo digest, and the feature ledger as shipped, building and backlog](img/memory.png)
 
-*Club history (`#/memory`) for `taskflow-mini`: the Repo Digest, the feature ledger as
-shipped, building and backlog, and the lore, two drafts awaiting a human signature
-above the approved records.*
+*Club history (`#/memory`) for one repo: its digest, the feature ledger, and the lore
+delivery agents read, with a draft waiting for your signature.*
 
 Memory is also usable standalone; see
 [`packages/memory/README.md`](../packages/memory/README.md).
@@ -501,6 +502,8 @@ acceptance, attempts and cost per accepted change, escaped defects and tester fa
 greens. Every figure shows its n; a cell with fewer than 10 attempts reads *too few to
 compare*. Nothing is ranked, there is no overall score, and the router does not read it.
 
+![The routing scorecard: one row per provider, model, role and work class, with n on every figure, submission and rework, first pass, attempts and cost per accepted change, escaped defects and spend](img/health-routing.png)
+
 **Matched experiments.** `gaffer eval experiment --arm baseline --arm cheap:tier=cheap`
 runs the same tickets (the gate-replay fixtures, or recorded tickets from their
 manifests) once under each arm, in a seeded order, through the same worker seam and
@@ -551,11 +554,11 @@ containment: any ship or mutate flag turns on the OS sandbox requirement, and a
 required sandbox that is not available refuses to launch the agent
 ([docs/sandbox.md](sandbox.md)).
 
-![The Settings panel](img/settings.png)
+![The boot room: the Team instructions dial on Supervised, who plays each position, and autonomy suggestions drawn from the review record](img/settings.png)
 
-*The boot room (`#/settings`): the Team instructions dial on Supervised and the
-Autonomy flags, all opt-in and shown off, with Planning debate, Idle loops and the
-other groups folded below.*
+*The boot room (`#/settings`): the Team instructions dial on Supervised, and below it
+suggestions for what could be handed over, from your own review record. Nothing
+changes until you enable one.*
 
 ### The independent tester
 
@@ -626,6 +629,14 @@ cap (30 s by default, `timeout_ms` per command) and the whole profile one more
 default) seeds the profile, without commands, for a ticket whose title names a CLI or an
 API. What a profile does and does not prove is in
 [SECURITY.md](../SECURITY.md#the-independent-tester-and-what-its-verdict-proves).
+
+![The Independent testing card: the test contract, the cli acceptance profile, the runner's runtime acceptance result for the registered commands on each tested commit, and the tester's results](img/ticket-testing.png)
+
+*The Independent testing card on a ticket page: the contract the tester read, the
+acceptance profile, the runner's runtime acceptance result on each tested commit,
+and the tester's passes.*
+
+![A ticket page in review: Your move, each attempt with its model, the delivery's files, the campaign it belongs to, the brief, both criteria satisfied by the runner's checks, the Escaped defects card and the match report](img/ticket.png)
 
 ### Budget, polling and usage limits
 

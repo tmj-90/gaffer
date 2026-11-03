@@ -12,10 +12,35 @@ builds and tests the tagged commit and publishes, from that commit alone:
 | Container image                           | `ghcr.io/tmj-90/gaffer:X.Y.Z` and `:latest`, with BuildKit's SBOM + provenance attestations and OCI source/revision/version labels |
 | Release notes                             | The version's `CHANGELOG.md` section, verbatim (`scripts/release-notes.mjs`) |
 
+## Before a release
+
+CI covers the state machine, the gates, the bookkeeping and the safety hook
+deterministically. Two things it cannot cover, so I check them by hand:
+
+- **A clean clone passes.** CI starts from a fresh checkout; a local tree can pass on
+  an uncommitted file or a stale `dist/`. From a throwaway directory:
+
+  ```sh
+  git clone <repo-url> gaffer-clean && cd gaffer-clean
+  pnpm install --frozen-lockfile
+  pnpm -r build
+  pnpm -r test
+  GAFFER_TEST_STRICT=1 pnpm test:runner
+  ```
+
+- **One live delivery on a small, disposable repo.** File one low-risk ticket with a
+  clear acceptance criterion and run one live tick with a dollar cap
+  (`GAFFER_DAILY_BUDGET_USD=5`). It passes when the agent delivers on a `gaffer/`
+  branch, the repo's real test command runs as the gate, the ticket reaches review
+  with a non-empty diff, and the repo's own checkout is clean afterwards. Then open
+  the dashboard on that data, read the diff on the Review card, and approve one
+  ticket and reject another: the board should reflect both at once, and an agent
+  must not be able to approve.
+
 ## Cutting a release
 
-1. Make sure `main` is green and the `[Unreleased]` section of `CHANGELOG.md` says
-   what shipped.
+1. Make sure `main` is green, the checks above pass, and the `[Unreleased]` section
+   of `CHANGELOG.md` says what shipped.
 2. Set the version everywhere and cut the changelog:
 
    ```sh

@@ -441,7 +441,7 @@ moments it stops to ask you.
   The docker provider is experimental: its containment is red-team tested in CI and a CI
   job delivers a ticket through it on Linux with a stub agent inside the container, but a live
   delivery with the real `claude` inside it is a manual workflow you run yourself (see
-  [`docs/docker-sandbox-provider.md`](docs/docker-sandbox-provider.md#prove-it-on-your-own-fork)
+  [`docs/sandbox.md`](docs/sandbox.md#prove-it-on-your-own-fork)
   and [`SECURITY.md`](SECURITY.md)), so watch the first few tickets before you walk away.
 - **A stuck ticket is safe to drag back.** Moving a `blocked` card to `ready` on the board
   re-queues it cleanly (its delivery claim is released), so a parked ticket never strands.

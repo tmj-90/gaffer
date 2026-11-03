@@ -4,7 +4,7 @@
 # secret. It spends real credits, so it never runs on a push or a pull request: only
 # when someone starts it from the Actions tab (workflow_dispatch). Without a secret it
 # fails at once and names the missing secret. How to run it on your own fork:
-# docs/docker-sandbox-provider.md ("Prove it on your own fork").
+# docs/sandbox.md ("Prove it on your own fork").
 name: Docker sandbox live delivery
 
 on:

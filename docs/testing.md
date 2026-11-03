@@ -113,6 +113,38 @@ nightly CI run sets.
 - Bash 3.2 (macOS): no GNU `timeout`, no associative arrays, no `${!name}`, guard
   empty arrays with `${arr[@]+"${arr[@]}"}`, temp dirs through `lib/tmpdir.sh`.
 
+### Conventions
+
+- Drive the real function or CLI and assert the outcome. A grep over source is fine
+  only as a second guard on top of a behavioural assertion, never as the only check
+  of a real invariant.
+- Include a negative control where you can: show the test fails when the thing it
+  guards is broken (a stranded claim, an empty diff, a missing marker).
+- Keep it hermetic: a scratch database and git repo from `lib/tmpdir.sh`, cleaned up
+  on exit, and nothing written to the checkout.
+- Never weaken `runner/safety-hook.mjs`, and keep the parity tests between the hook
+  and the crew classifier green: the two are derived from one data module on purpose.
+
+### Linux failures on a Mac
+
+CI runs Linux with GNU coreutils; macOS ships the BSD tools. A runner test can pass on
+a Mac and fail in CI over `grep`, `sed`, `awk` or `date` semantics (a bare `\t` in a
+`grep` pattern is the usual one). To reproduce, put the GNU tools first on `PATH` for
+one run:
+
+```bash
+brew install coreutils grep gnu-sed gawk   # ggrep, gsed, gawk, gdate
+SHIM="$(mktemp -d)"
+ln -s "$(command -v ggrep)" "$SHIM/grep"
+ln -s "$(command -v gsed)"  "$SHIM/sed"
+ln -s "$(command -v gawk)"  "$SHIM/awk"
+ln -s "$(command -v gdate)" "$SHIM/date"
+PATH="$SHIM:$PATH" bash runner/test/<suspect>.test.sh
+```
+
+Prefer portable constructs in new tests (`perl -0777` for multiline matching,
+`printf` over `echo -e`, `$'\t'` for a tab) so the shim stays a diagnostic.
+
 ## Package tests
 
 Vitest's default timeout is 5 s. A test that starts a process or runs real git

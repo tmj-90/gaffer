@@ -194,7 +194,7 @@ sandbox_wrap_cmd() {
 
     docker)
       # Mode 2: run the agent inside a container with read + egress isolation (see
-      # lib/sandbox-docker.sh + docs/docker-sandbox-provider.md). Unlike sandbox-exec this
+      # lib/sandbox-docker.sh + docs/sandbox.md). Unlike sandbox-exec this
       # is a full execution context, not a syscall filter — so it wraps by emitting a
       # prefix that runs the command in the container. Needs a live docker daemon.
       if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then

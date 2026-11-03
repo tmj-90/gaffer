@@ -1335,7 +1335,7 @@ canary file are not there, and the tests gate refuses to pass unless it ran cont
 `sandbox-docker-delivery-seam.test.sh` checks the same wiring with a fake `docker` in
 the normal suite). The same delivery with the real `claude` is the manual
 **Docker sandbox live delivery** workflow, which you run on your own fork with a
-repository secret ([docs/docker-sandbox-provider.md](docker-sandbox-provider.md)).
+repository secret ([docs/sandbox.md](sandbox.md#prove-it-on-your-own-fork)).
 **A different worker behind the factory.** `GAFFER_WORKER_PROVIDER=command` with
 `GAFFER_WORKER_COMMAND=/path/to/program` runs your own worker program for every
 agent turn instead of `claude -p`: deliveries, reviews, clarify passes, planning,

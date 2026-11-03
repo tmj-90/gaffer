@@ -79,8 +79,7 @@ What the flag covers depends on how memory-mcp is running:
   setting.
 
 Auto-approve re-opens cross-ticket memory poisoning (fine for trusted input, not
-for untrusted issues); turn it on deliberately and see the package
-[`docs/SECURITY.md`](docs/SECURITY.md) and the root
+for untrusted issues); turn it on deliberately and see the root
 [`SECURITY.md`](../../SECURITY.md) for the trade-off.
 
 ## How it fits — and standalone use
@@ -93,6 +92,7 @@ The `memory` CLI is what a human uses to review and approve drafts.
 **Standalone:** nothing here needs the rest of Gaffer. Run `memory init` in any
 directory and you have a trust-gated memory MCP you can wire into any Claude Code
 project — `memory setup` bootstraps the MCP server, a `CLAUDE.md` retrieval rule,
-and the onboarding skill in one command. See [`CONTRIBUTING.md`](CONTRIBUTING.md)
-and [`docs/`](docs/) (`PRINCIPLES.md`, `DATA-FLOW.md`, `SECURITY.md`, `adr/`) for
-the design and trust model.
+and the onboarding skill in one command. See the root
+[`CONTRIBUTING.md`](../../CONTRIBUTING.md#memorys-trust-model-is-the-product) and
+[`docs/`](docs/) (`PRINCIPLES.md`, `DATA-FLOW.md`, `adr/`) for the design and trust
+model.

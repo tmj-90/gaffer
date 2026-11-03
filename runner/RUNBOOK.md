@@ -24,7 +24,7 @@ State (dbs, config, logs) lives **outside** the packages, in `<repo-root>/.gaffe
 
 ## 0. Prerequisites
 
-- macOS or Linux. OS-level containment: `sandbox-exec` (macOS, write-only) or `docker` (any host with a daemon; read + egress isolation) — auto-detected, see `STRICT_MODE.md`
+- macOS or Linux. OS-level containment: `sandbox-exec` (macOS, write-only) or `docker` (any host with a daemon; read + egress isolation) — auto-detected, see [docs/sandbox.md](../docs/sandbox.md)
 - Node ≥ 22 (`.nvmrc`; `engines` is enforced) · pnpm 10 · git · perl (the portable timeout shim; present on macOS and every mainstream Linux)
 - Claude Code CLI (`claude`) — only needed to run the *live* factory
 
@@ -206,7 +206,7 @@ runner/gaffer run --daemon           # keep going (re-run every 30 s until SIGIN
 - **Isolation:** each delivery runs in a throwaway git worktree — the real checkout is
   never touched; a failed run rolls back to nothing.
 - **Strict mode (optional, OS-level containment):**
-  `STRICT_MODE=1 runner/gaffer run` — see `STRICT_MODE.md` (best-effort, provider
+  `STRICT_MODE=1 runner/gaffer run` — see [docs/sandbox.md](../docs/sandbox.md) (best-effort, provider
   model; `sandbox-exec` on macOS).
 
 ---

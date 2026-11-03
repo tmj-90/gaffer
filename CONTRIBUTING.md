@@ -64,6 +64,25 @@ shape is a FAIL, never a skip.
   a PR, and the runner `.mjs`/`.sh` tests must pass too.
 - Add or update tests for any behaviour you change.
 
+### Memory's trust model is the product
+
+Memory's whole value is that agents suggest and humans approve. A change to
+`packages/memory` that weakens any of these will be sent back:
+
+- **Agent writes land as drafts.** Nothing an agent submits over MCP becomes trusted
+  lore without a human approving it. (Standalone memory-mcp can opt into
+  `MEMORY_AUTO_APPROVE`; in the factory the runner pins it off for agents.)
+- **Confidence is clamped.** A draft cannot claim `high`, and neither can a record
+  without a source.
+- **Restricted records are gated.** They are left out of the default search, a direct
+  fetch over MCP is env-gated, and `report_conflict` against one is always refused.
+- **The audit log is sanitised per tool.** Sensitive fields are stored as character
+  counts, never as text.
+
+If your change touches one of these boundaries, add or update a test that would fail if
+the guarantee were silently removed; `packages/memory/test/mcp-redaction.test.ts` shows
+the pattern. `pnpm --filter memory-mcp test` runs that package's suite on its own.
+
 ## Commit style
 
 Use [Conventional Commits](https://www.conventionalcommits.org/):

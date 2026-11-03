@@ -244,6 +244,12 @@ for (const cmd of [
   "pnpm exec tsc --noEmit",
   "pnpm exec vitest run test/a.test.ts",
   "pnpm gaffer status",
+  // A runner or wrapper with nothing runnable after it (a placeholder a skill quotes,
+  // `npx <tool>`, reads as `npx` plus a redirect): no program to judge, never a crash.
+  "npx <tool>",
+  "npx",
+  "env <x",
+  "pnpm exec",
 ]) {
   t.allow(`package runner, ordinary use: ${cmd}`, bash(cmd), opts);
 }

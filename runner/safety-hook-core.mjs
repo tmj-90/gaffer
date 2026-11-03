@@ -3712,6 +3712,12 @@ function normalizedCommandViews(cmd, depth = 0) {
       continue;
     }
     let rest = stripRedirects(eff.rest);
+    // A package runner or wrapper with nothing runnable after it (`npx <tool>` reads as
+    // `npx` plus a redirect): there is no program to judge, so the segment stands as is.
+    if (rest.length === 0) {
+      outSegments.push(words.join(" "));
+      continue;
+    }
     // `xargs [flags] prog …`: the program after xargs is what runs; its verb may come
     // from stdin. A privileged CLI with nothing after it is fail-closed.
     if (rest[0] === "xargs") {

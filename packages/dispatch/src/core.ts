@@ -1,6 +1,6 @@
 import type { AcceptanceProfile } from "./domain/acceptanceProfile.js";
 
-import { type Db, inTransaction, openDatabase } from "./db/connection.js";
+import { type Db, openDatabase } from "./db/connection.js";
 import {
   type AcStatus,
   type AcceptanceCriterion,
@@ -33,13 +33,8 @@ import {
   type WorkEvent,
   parseTestContract,
 } from "./domain/types.js";
-import {
-  backfillEventChain,
-  latestEventHash,
-  verifyEventChain,
-  type ChainVerification,
-} from "./events/eventChain.js";
-import { listEvents, writeEvent } from "./events/eventWriter.js";
+import { verifyEventChain, type ChainVerification } from "./events/eventChain.js";
+import { listEvents } from "./events/eventWriter.js";
 import {
   SquadService,
   type AgentDisplay,
@@ -136,7 +131,6 @@ import {
   type WorkPacketRepos,
 } from "./services/repoService.js";
 import { EpicsService, type CreateEpicResult } from "./services/epicsService.js";
-import { EPIC_MEMBER_RELATIONS, ownAcceptanceTicketId } from "./services/epicAcceptance.js";
 import { DossierService, type Dossier } from "./services/dossierService.js";
 import {
   currentJudgment,
@@ -203,9 +197,7 @@ import { TransitionService, type TransitionResult } from "./services/transitionS
 import { buildNotifierFromEnv } from "./notify/config.js";
 import type { Notifier } from "./notify/types.js";
 import { type Clock, systemClock } from "./util/clock.js";
-import { DispatchError, notFound } from "./util/errors.js";
 import { newId } from "./util/id.js";
-import { agreedRequirementsFromTurns } from "./util/planClarifications.js";
 import type { DispatchInternals } from "./services/dispatchInternals.js";
 
 /**
@@ -410,6 +402,10 @@ export type { CreateEpicResult } from "./services/epicsService.js";
 export type { AddDependencyResult } from "./services/ticketService.js";
 export type { ReviewOpenResult } from "./services/ticketRecordsService.js";
 import type { ReviewOpenResult } from "./services/ticketRecordsService.js";
+import * as ticketLinks from "./services/ticketLinksService.js";
+import * as planning from "./services/planningService.js";
+import * as runRegistry from "./services/runRegistryService.js";
+import * as eventLog from "./services/eventLogService.js";
 
 /**
  * Dispatch core API. The single entry point used by the CLI and MCP server.
@@ -892,14 +888,6 @@ export class Dispatch {
     return this.ticketSvc.createTicket(raw, actor);
   }
 
-  /**
-   * Create a ticket AND its links in ONE transaction: the primary repo, the scope
-   * nodes (the first primary, the rest secondary) and the confirmed per-repo access.
-   * A bad reference (unknown repo or scope node) rolls the whole create back, so a
-   * failed POST /tickets or MCP create_ticket never leaves an orphan draft for a
-   * retry to duplicate. (better-sqlite3 nests the services' own transactions as
-   * savepoints, as createDraftTicket already relies on.)
-   */
   createTicketWithLinks(
     raw: unknown,
     links: {
@@ -909,27 +897,7 @@ export class Dispatch {
     },
     actor: Actor,
   ): Ticket {
-    return inTransaction(this.db, () => {
-      const ticket = this.ticketSvc.createTicket(raw, actor);
-      if (links.repo) this.repoSvc.linkRepository(ticket.id, links.repo, "primary", actor);
-      (links.scopeNodeIds ?? []).forEach((scopeNodeId, i) => {
-        this.linkTicketScope(
-          {
-            ticket_id: ticket.id,
-            scope_node_id: scopeNodeId,
-            relation: i === 0 ? "primary" : "secondary",
-          },
-          actor,
-        );
-      });
-      for (const r of links.repoAccess ?? []) {
-        this.repoSvc.setTicketRepoAccess(
-          { ticket_id: ticket.id, repo_id: r.repo_id, access: r.access, relation: "confirmed" },
-          actor,
-        );
-      }
-      return ticket;
-    });
+    return ticketLinks.createTicketWithLinks(this, raw, links, actor);
   }
 
   /** TRACK-3a: set or clear a ticket's per-ticket delivery-budget ceiling (USD). */
@@ -990,51 +958,8 @@ export class Dispatch {
 
   // --- Epics (EP-001) ------------------------------------------------------
 
-  /**
-   * Create an epic atomically (all-or-nothing): a scope node of type `epic` that
-   * `contains` every created ticket, the N tickets themselves (each `draft`, with
-   * ACs, per-ticket priority/risk/policy, an optional repo link + access boundary
-   * and an optional bootstrap marker), and the dependency edges declared by index
-   * within the plan. `tickets[i].dependsOn` lists OTHER ticket indexes in the same
-   * array; they're resolved to the created ticket ids after all tickets exist, so
-   * a self-contained dependency-ordered plan is created in one call. Returns the
-   * epic node id and the created ticket numbers in plan order.
-   *
-   * Validation (besides the Zod schema): every dependsOn index must be in range
-   * and not self-referential; the dependency edges must form a DAG (a cycle is
-   * rejected). The whole thing runs in one transaction — any failure rolls back
-   * the node, the tickets and the edges.
-   */
   createEpic(raw: unknown, actor: Actor): CreateEpicResult {
-    // PLANNING CLARIFICATIONS: a plan confirmed from a plan session carries the answers
-    // the human gave during clarification into the acceptance contract, unless the
-    // caller sent its own (reviewed) list. An unknown session id is refused — the
-    // caller asked for answers that cannot be found.
-    const body = raw as { plan_session_id?: unknown; epic?: { agreed_requirements?: unknown } };
-    if (
-      body &&
-      typeof body === "object" &&
-      typeof body.plan_session_id === "string" &&
-      body.plan_session_id.trim() !== "" &&
-      body.epic &&
-      typeof body.epic === "object" &&
-      body.epic.agreed_requirements === undefined
-    ) {
-      const session = this.getPlanSession(body.plan_session_id.trim());
-      if (!session) throw notFound("plan_session", body.plan_session_id);
-      let turns: Array<{ role: "user" | "assistant"; content: string }> = [];
-      try {
-        const parsed = JSON.parse(session.messages_json) as unknown;
-        if (Array.isArray(parsed)) turns = parsed as typeof turns;
-      } catch {
-        turns = [];
-      }
-      raw = {
-        ...body,
-        epic: { ...body.epic, agreed_requirements: agreedRequirementsFromTurns(turns) },
-      };
-    }
-    return this.epicsSvc.createEpic(raw, actor);
+    return planning.createEpic(this, raw, actor);
   }
 
   // --- Specs (Spec-Driven Development, Phase 1a) ---------------------------
@@ -1049,18 +974,8 @@ export class Dispatch {
     return this.specsSvc.createSpec(raw, actor);
   }
 
-  /**
-   * cli-wg/F-16: does any spec carry a clause with this (namespaced) id? `ac add
-   * --clause` checks it so an AC's spec_clause_id provenance always points at a clause.
-   */
   specClauseExists(clauseId: string): boolean {
-    const row = this.db
-      .prepare(
-        `SELECT 1 AS hit FROM specs s, json_each(s.clauses_json) c
-          WHERE json_extract(c.value, '$.clause_id') = ? LIMIT 1`,
-      )
-      .get(clauseId) as { hit: number } | undefined;
-    return row !== undefined;
+    return planning.specClauseExists(this, clauseId);
   }
 
   /** Fetch a spec by id (throws NOT_FOUND when absent). */
@@ -1127,105 +1042,11 @@ export class Dispatch {
   // --- Ticket scope links (WG-001) -----------------------------------------
 
   linkTicketScope(raw: unknown, actor: Actor): TicketScopeNode {
-    return inTransaction(this.db, () => {
-      const link = this.scope.linkTicketScope(raw, actor);
-      this.wireEpicAcceptance(link.ticket_id, link.scope_node_id, link.relation, actor);
-      this.unwireEpicAcceptance(link.ticket_id, link.scope_node_id, actor);
-      return link;
-    });
+    return ticketLinks.linkTicketScope(this, raw, actor);
   }
 
   setPrimaryScope(ticketRef: string, scopeNodeId: string, actor: Actor): TicketScopeNode {
-    return inTransaction(this.db, () => {
-      const link = this.scope.setPrimaryScope(ticketRef, scopeNodeId, actor);
-      this.wireEpicAcceptance(link.ticket_id, link.scope_node_id, link.relation, actor);
-      return link;
-    });
-  }
-
-  /**
-   * EPIC MEMBERSHIP (external review #8): a ticket confirmed into an epic after it was
-   * planned (a `primary` / `secondary` link) is part of the build the epic's acceptance
-   * ticket must test, so that acceptance ticket now DEPENDS on it, exactly like the
-   * members createEpic wired: the final cannot be claimed until the new member is done.
-   * Before this the final ran (and the epic read accepted) with the new member still
-   * ready. Nothing is wired for a suggested / rejected link, an acceptance ticket, a
-   * cancelled member, or a final already done or cancelled (`wg stats` then reads the
-   * epic pending / stale instead of accepted). Inside the caller's transaction.
-   */
-  private wireEpicAcceptance(
-    ticketId: string,
-    scopeNodeId: string,
-    relation: string,
-    actor: Actor,
-  ): void {
-    if (!(EPIC_MEMBER_RELATIONS as readonly string[]).includes(relation)) return;
-    const node = this.scopeNodes.findById(scopeNodeId);
-    if (!node || node.type !== "epic") return;
-    const ticket = this.tickets.findById(ticketId);
-    if (!ticket || ticket.acceptance === 1 || ticket.status === "cancelled") return;
-    const finalId = ownAcceptanceTicketId(this.db, scopeNodeId);
-    if (finalId === null || finalId === ticket.id) return;
-    const final = this.tickets.findById(finalId);
-    if (!final || final.status === "done" || final.status === "cancelled") return;
-    if (this.ticketDependencies.exists(final.id, ticket.id)) return;
-    try {
-      this.ticketSvc.addDependency({ ticket: final.id, depends_on: ticket.id }, actor);
-    } catch (err) {
-      // A member that itself waits on the final (a follow-up that depends on it) cannot
-      // also be a dependency of it. The link stands; `wg stats` reads the epic pending,
-      // then stale, until its acceptance ticket is re-run on the finished scope.
-      if (err instanceof DispatchError && err.code === "INVALID_DEPENDENCY") return;
-      throw err;
-    }
-    // Marks this edge as the membership's, so withdrawing the membership withdraws it.
-    writeEvent(this.db, {
-      entity_type: "ticket",
-      entity_id: final.id,
-      actor,
-      event_type: "epic.member_dependency_wired",
-      payload: { epic_node_id: scopeNodeId, member_ticket_id: ticket.id },
-    });
-  }
-
-  /**
-   * EPIC MEMBERSHIP: the reverse of wireEpicAcceptance. When a ticket stops being a
-   * confirmed member of an epic (its link removed, or changed to suggested / rejected),
-   * the dependency of the epic's acceptance ticket on it goes too, but only an edge the
-   * membership wired (an explicit dependency someone added stays), and never on a final
-   * already done or cancelled. Before this, a ticket taken out of the epic kept its
-   * acceptance ticket blocked (DEPENDENCY_BLOCKED) on work that was no longer in scope.
-   */
-  private unwireEpicAcceptance(ticketId: string, scopeNodeId: string, actor: Actor): void {
-    const node = this.scopeNodes.findById(scopeNodeId);
-    if (!node || node.type !== "epic") return;
-    const finalId = ownAcceptanceTicketId(this.db, scopeNodeId);
-    if (finalId === null || finalId === ticketId) return;
-    const final = this.tickets.findById(finalId);
-    if (!final || final.status === "done" || final.status === "cancelled") return;
-    const stillMember = this.db
-      .prepare(
-        `SELECT 1 AS hit FROM ticket_scope_nodes WHERE ticket_id = ? AND scope_node_id = ?
-           AND relation IN (${EPIC_MEMBER_RELATIONS.map((r) => `'${r}'`).join(", ")})`,
-      )
-      .get(ticketId, scopeNodeId);
-    if (stillMember) return;
-    if (!this.ticketDependencies.exists(final.id, ticketId)) return;
-    const last = (eventType: string, field: string, value: string): number => {
-      const row = this.db
-        .prepare(
-          `SELECT MAX(rowid) AS r FROM work_events
-            WHERE entity_type = 'ticket' AND entity_id = ? AND event_type = ?
-              AND json_extract(payload_json, '$.' || ?) = ?`,
-        )
-        .get(final.id, eventType, field, value) as { r: number | null } | undefined;
-      return Number(row?.r ?? 0);
-    };
-    const wired = last("epic.member_dependency_wired", "member_ticket_id", ticketId);
-    // The current edge is the membership's only if nobody removed and re-added it since.
-    if (wired === 0 || last("ticket.dependency_removed", "depends_on_ticket_id", ticketId) > wired)
-      return;
-    this.ticketSvc.removeDependency(final.id, ticketId, actor);
+    return ticketLinks.setPrimaryScope(this, ticketRef, scopeNodeId, actor);
   }
 
   listTicketScopes(ticketRef: string): TicketScopeWithNode[] {
@@ -1237,11 +1058,7 @@ export class Dispatch {
     scopeNodeId: string,
     actor: Actor,
   ): { ticketId: string; scopeNodeId: string; eventId: string } {
-    return inTransaction(this.db, () => {
-      const res = this.scope.removeTicketScope(ticketRef, scopeNodeId, actor);
-      this.unwireEpicAcceptance(res.ticketId, res.scopeNodeId, actor);
-      return res;
-    });
+    return ticketLinks.removeTicketScope(this, ticketRef, scopeNodeId, actor);
   }
 
   ticketScopeSummary(ticketRef: string): {
@@ -1387,18 +1204,7 @@ export class Dispatch {
     },
     actor: Actor,
   ): Decision {
-    // Accept any ticket reference (id, 15, #15, T-15) like every other ticket tool; the
-    // link table stores the id, so an unresolved number would fail its foreign key.
-    const ticketId = input.ticketId ? this.resolveTicket(input.ticketId).id : undefined;
-    const ticketIds = input.ticketIds?.map((ref) => this.resolveTicket(ref).id);
-    return this.decisionSvc.createDecision(
-      {
-        ...input,
-        ...(ticketId !== undefined ? { ticketId } : {}),
-        ...(ticketIds !== undefined ? { ticketIds } : {}),
-      },
-      actor,
-    );
+    return ticketLinks.createDecision(this, input, actor);
   }
 
   getDecision(decisionId: string): Decision {
@@ -2333,16 +2139,6 @@ export class Dispatch {
     return newId();
   }
 
-  /**
-   * Record the start of a background run (a detached API-spawned child). Returns
-   * the run id so the caller can later {@link markRunEnd} it (and the dashboard
-   * can poll its status). The row is created `running`; `pid`/`log_path` are
-   * stored as given (null when the platform withheld a pid or no log was opened).
-   * The repo (the run's target, when known) is recorded for the panel.
-   *
-   * `id` may be supplied by the caller (so a per-run log file can be named by the
-   * id BEFORE the row is written); when omitted a fresh id is minted.
-   */
   recordRunStart(input: {
     id?: string;
     kind: RunKind;
@@ -2350,38 +2146,14 @@ export class Dispatch {
     pid?: number | null;
     log_path?: string | null;
   }): { id: string } {
-    const id = input.id ?? newId();
-    this.runs.insertStart({
-      id,
-      kind: input.kind,
-      repo: input.repo ?? null,
-      pid: input.pid ?? null,
-      log_path: input.log_path ?? null,
-      started_at: this.clock.now(),
-    });
-    return { id };
+    return runRegistry.recordRunStart(this, input);
   }
 
-  /**
-   * Mark a tracked run ended. Derives status from the child's exit code: 0 ⇒
-   * `succeeded`, any other value (or a null/unknown code) ⇒ `failed`, unless the
-   * caller states it (a poll the runner refused exits 0 and is `failed`). A no-op if
-   * the run was already swept to `unknown` (the first writer wins — see
-   * {@link RunRepository.markEnd}), so a late exit listener never resurrects a
-   * reconciled row.
-   */
   markRunEnd(
     id: string,
     input: { exit_code: number | null; detail?: string | null; status?: Run["status"] },
   ): void {
-    const status: Run["status"] = input.status ?? (input.exit_code === 0 ? "succeeded" : "failed");
-    this.runs.markEnd({
-      id,
-      status,
-      ended_at: this.clock.now(),
-      exit_code: input.exit_code,
-      detail: input.detail ?? null,
-    });
+    return runRegistry.markRunEnd(this, id, input);
   }
 
   /**
@@ -2416,14 +2188,8 @@ export class Dispatch {
 
   // --- Plan sessions (H9 — durable async plan-build chat) -------------------
 
-  /**
-   * Create a fresh active plan session. Any currently active session is
-   * archived as 'abandoned' first so only one session is active at a time.
-   */
   createPlanSession(): PlanSession {
-    const now = this.clock.now();
-    this.planSessions.archiveAllActive(now);
-    return this.planSessions.create({ id: newId(), created_at: now, updated_at: now });
+    return planning.createPlanSession(this);
   }
 
   /**
@@ -2442,68 +2208,25 @@ export class Dispatch {
     return this.planSessions.getActive();
   }
 
-  /**
-   * Append a message to a plan session and optionally update the brief / stored
-   * plan. Returns the updated session, or null when the id is not found.
-   *
-   * `brief` should be supplied only on the first user turn (the opening line).
-   * `plan` should be supplied when the decompose helper returns a plan phase, as
-   * the raw plan JSON so the panel can restore the full proposal on reload.
-   */
   appendPlanMessage(
     id: string,
     message: Omit<PlanMessage, "ts">,
-    opts: { brief?: string | null; plan?: unknown } = {},
+    opts?: { brief?: string | null; plan?: unknown },
   ): PlanSession | null {
-    return this.planSessions.appendMessage({
-      id,
-      message: { ...message, ts: this.clock.now() },
-      ...(opts.brief !== undefined ? { brief: opts.brief } : {}),
-      ...(opts.plan !== undefined ? { plan_json: JSON.stringify(opts.plan) } : {}),
-      updated_at: this.clock.now(),
-    });
+    return planning.appendPlanMessage(this, id, message, opts);
   }
 
-  /**
-   * Archive a plan session. `status` must be 'confirmed' (the user approved the
-   * plan and tickets are being created) or 'abandoned' (the user started fresh or
-   * closed the panel without confirming). A no-op on an already-archived session.
-   */
   archivePlanSession(id: string, status: "confirmed" | "abandoned"): void {
-    this.planSessions.archive({ id, status, updated_at: this.clock.now() });
+    return planning.archivePlanSession(this, id, status);
   }
 
-  /**
-   * Record a plan conversation that happened elsewhere (`gaffer plan` in the terminal)
-   * as a finished session, so it sits in the plan-session history the dashboard reads
-   * (GET /plan-sessions) beside the panel's own. The messages are the panel's shape (a
-   * user turn's text; an assistant turn is the POST /plan-build reply as JSON) and the
-   * stored plan is the one created. Written in one transaction straight into its final
-   * status, so it is never the active session and never archives the one a dashboard
-   * panel has open (createPlanSession would abandon it).
-   */
   recordPlanSession(input: {
     brief: string;
     messages: ReadonlyArray<Omit<PlanMessage, "ts">>;
     plan: unknown;
     status: "confirmed" | "abandoned";
   }): PlanSession {
-    return inTransaction(this.db, () => {
-      const now = this.clock.now();
-      const id = newId();
-      this.planSessions.create({ id, created_at: now, updated_at: now });
-      input.messages.forEach((m, i) => {
-        this.planSessions.appendMessage({
-          id,
-          message: { role: m.role, content: m.content, ts: now },
-          ...(i === 0 ? { brief: input.brief } : {}),
-          ...(i === input.messages.length - 1 ? { plan_json: JSON.stringify(input.plan) } : {}),
-          updated_at: now,
-        });
-      });
-      this.planSessions.archive({ id, status: input.status, updated_at: now });
-      return this.planSessions.getById(id)!;
-    });
+    return planning.recordPlanSession(this, input);
   }
 
   /**
@@ -2607,40 +2330,12 @@ export class Dispatch {
     return verifyEventChain(this.db);
   }
 
-  /**
-   * The EXPLICIT repair path for unhashed work_events rows (`dispatch events rechain
-   * --confirm`). Opening the DB no longer re-chains them: on a chained DB a NULL
-   * hash means the row was blanked, and silently re-hashing it is what let an edit
-   * plus "blank the hashes after it" verify clean. An operator who has checked the
-   * rows can re-anchor the chain here; the re-anchor is itself appended to the log
-   * (`events.rechained`, with the old and new head hashes and what was broken), so
-   * it never happens without a trace. Rows that already carry a hash are untouched.
-   */
   rechainEventLog(actor: Actor): {
     rechained: number;
     oldHead: string;
     newHead: string;
     verification: ChainVerification;
   } {
-    return inTransaction(this.db, () => {
-      const before = verifyEventChain(this.db);
-      const oldHead = latestEventHash(this.db);
-      const rechained = backfillEventChain(this.db);
-      const newHead = latestEventHash(this.db);
-      writeEvent(this.db, {
-        entity_type: "event_log",
-        entity_id: "work_events",
-        actor,
-        event_type: "events.rechained",
-        payload: {
-          rechained,
-          old_head: oldHead,
-          new_head: newHead,
-          was_broken_at_seq: before.brokenAtSeq,
-          was_reason: before.reason,
-        },
-      });
-      return { rechained, oldHead, newHead, verification: verifyEventChain(this.db) };
-    });
+    return eventLog.rechainEventLog(this, actor);
   }
 }

@@ -11,6 +11,7 @@ import {
   parseTestContract,
 } from "../domain/types.js";
 import type { Spec } from "../domain/types.js";
+import { ACCEPTANCE_PROFILES } from "../domain/acceptanceProfile.js";
 import type { Actor } from "../domain/types.js";
 import { evaluateTicketScope } from "../services/accessScope.js";
 import { DispatchError } from "../util/errors.js";
@@ -226,6 +227,10 @@ export const toolSchemas = {
     env_vars: z.array(z.string()).optional(),
     run_command: z.string().optional(),
     harness_ready: z.boolean().optional(),
+    // ACCEPTANCE PROFILE: the profile NAME only. An agent may raise a unit contract to a
+    // profile (cli, api, ...); it never changes one a person set and never registers the
+    // commands the runner runs for it (a person does: wg ticket acceptance-profile).
+    profile: z.enum(ACCEPTANCE_PROFILES).optional(),
   },
   create_epic: {
     epic: z.object({
@@ -884,6 +889,7 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
             env_vars: a.env_vars,
             run_command: a.run_command,
             harness_ready: a.harness_ready,
+            ...(a.profile ? { profile: a.profile } : {}),
           },
           actor,
         );

@@ -226,7 +226,10 @@ export const TOOL_DESCRIPTIONS: Record<keyof typeof toolSchemas, string> = {
     "surface), and `harness_ready` (whether a black-box harness already exists). The " +
     "tester gets THIS operational contract + the acceptance criteria — and probes " +
     "from the outside; it must never be handed the diff. Write it before testing starts: " +
-    "from `in_testing` on it is frozen (CONTRACT_FROZEN).",
+    "from `in_testing` on it is frozen (CONTRACT_FROZEN). Optional `profile` (cli, api, " +
+    "web, migration, performance) says the change is met at a CLI, an API, ...: you may " +
+    "raise a unit contract to a profile, never change or drop one a person set, and the " +
+    "commands the runner runs for it are registered by a person, not here.",
   create_epic:
     "**Create a whole dependency-ordered plan in one atomic call: an `epic` scope " +
     "node that groups N draft tickets, with their acceptance criteria, per-ticket " +

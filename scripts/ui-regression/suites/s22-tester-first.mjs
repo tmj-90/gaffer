@@ -111,6 +111,15 @@ export default async function s22(t, L) {
     `sign-off: '${line1.slice(0, 200)}' · tester cell: '${tcell.slice(0, 160)}'`,
   );
 
+  // ACCEPTANCE PROFILES: a ticket with no runtime profile says so in the packet's backing.
+  const pk = (await L.api("GET", `/tickets/${tk.id}/dossier?include=packet`)).json || {};
+  const rt = (pk.review_packet?.backing || []).find((b) => b.cell === "evidence");
+  t.check(
+    rt?.holds === false && /^No runtime profile for this ticket/.test(rt.fact || ""),
+    "the packet says no runtime profile backs this ticket (not a CLI or API change)",
+    JSON.stringify(rt),
+  );
+
   // ── 5. a push after the PASS: not approvable until re-tested ────────────────
   const wt = `${L.GAFFER_DATA}/s22-push-${tk.number}`;
   L.git(L.REPO_PATH, "worktree", "add", "-q", wt, branch);

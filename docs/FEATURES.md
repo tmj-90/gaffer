@@ -1125,6 +1125,60 @@ when it returns) on the ticket page, or `wg ticket tester-pass <n> --as human`.
 The `--as human` matters: an automated PASS without a passed replay is refused
 (`BINDING_REQUIRED`), and the command's default actor is the agent.
 
+**Acceptance profiles: accepted means it ran the way a user meets it.** A ticket's
+test contract can name how the tester's PASS is proven. `unit` (the default) is the
+tester's tests replayed on a clean checkout, as above. With `cli` or `api`, the runner
+itself also runs commands you register, in a fresh checkout of the tested commit of
+their own (none of the tester's code has run there), and the PASS is
+recorded only when they behave as you said:
+- `cli`: each command is an argv list (never a shell string; the runner adds no shell,
+  so write `["sh", "-c", "..."]` only if you mean one) with optional stdin and env (not
+  HOME, TMPDIR, `LD_*`, `BASH_ENV` or `GAFFER_*`, which the runner owns), and expectations: the exit code, stdout and stderr substrings or `/regex/`, text
+  stdout must not contain, and files that must (or must not) exist afterwards, with
+  text they contain. The runner records the transcript: argv, exit code, stdout and
+  stderr (a sha256 of each and a bounded, redacted excerpt), how long it took and what
+  it changed in the checkout.
+- `api`: a boot argv, the env var that gets the port (`PORT` by default), a health
+  path and probes (method, path, headers, body; the expected status, body substrings,
+  JSON keys, and a `schema_ref` into an OpenAPI or JSON schema file in the repo). The
+  runner boots the service on a free port, waits for the health path, runs each probe
+  and records the status, a few headers, the body's sha256 and an excerpt; a probe that
+  should be refused (no token, bad input) expects its 4xx. The service's process group
+  is killed whatever happens.
+- `web`, `migration`, `performance`: their fields are defined so you can record what
+  should be checked, but the runner cannot run them yet, so the tester's PASS on such a
+  ticket is held for your verdict.
+
+You set the profile on the ticket page (**Acceptance profile** in the Independent
+testing card: pick the profile, paste the spec as JSON, Save) or with
+`wg ticket acceptance-profile <n> --profile cli --spec-file cases.json`, until testing
+starts. For example:
+
+```json
+{ "cases": [ { "argv": ["node", "bin/cli.mjs", "--version"], "expect": { "exit": 0, "stdout": ["1.2.0"] } } ] }
+```
+
+With `GAFFER_ACCEPTANCE_PROFILE_SEED=1` (off by default), a planned or newly testable
+ticket whose title names a CLI, a command-line verb, an endpoint or a REST or HTTP API
+gets that profile in its seeded contract, without commands: such a ticket then waits in
+Testing for you to register them, so an unattended run stops at each one. The delivery agent can
+raise a unit contract to a profile with its MCP `set_test_contract` tool, but never
+registers commands and never lowers or changes a profile you set. A profile with no
+commands registered holds the tester's PASS until you register them (the note says
+how), or set it back to `unit`. The runner records what it ran as a runner-recorded
+evidence row on the tested commit whether it passed or not, and the Independent
+testing card lists it under **Runtime acceptance**: open a row to read the transcript
+or the probe responses as plain text. In Review, *What backs this* says *Runtime
+acceptance: cli transcript replayed on X* or *api probes passed*, and *What is not
+backed* says *No runtime profile for this ticket* when the ticket has none. A PASS
+whose commands did not behave as registered is held in Testing with the first failed
+expectation in the note (*tester held: runtime acceptance (cli) did not pass ...*). The
+commands run with a stripped environment (no runner token or model credential, a
+throwaway HOME) inside the same OS sandbox as the gates when one is on; under the docker
+sandbox the api profile is held (its probes run on the host). Each command has a time
+cap (30 s by default, `timeout_ms` per command) and the whole profile one more
+(`GAFFER_ACCEPTANCE_TIMEOUT_MS`, 5 minutes).
+
 **A dollar cap before the first live run.** A live run (`gaffer run`, `loop.sh`,
 the Work view's **Poll for work**) refuses to start until `GAFFER_DAILY_BUDGET_USD`
 or `GAFFER_BUDGET_USD` is set, and says how to set one. In the dashboard the first

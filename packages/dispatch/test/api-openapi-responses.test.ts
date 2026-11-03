@@ -171,6 +171,11 @@ describe("OpenAPI response schemas match the live routes", () => {
     await expectContract("POST /tickets/:id/test-contract", `/tickets/${id}/test-contract`, {
       run_command: "npm start",
     });
+    await expectContract(
+      "POST /tickets/:id/acceptance-profile",
+      `/tickets/${id}/acceptance-profile`,
+      { profile: "cli", spec: { cases: [{ argv: ["node", "cli.mjs", "--help"] }] } },
+    );
     await expectContract("POST /tickets/:id/mono-fallback", `/tickets/${id}/mono-fallback`);
     await expectContract("POST /tickets/:id/ready", `/tickets/${id}/ready`);
     await expectContract("POST /tickets/:id/move", `/tickets/${id}/move`, { to: "draft" });

@@ -30,6 +30,7 @@ const STATUS_FOR_CODE: Record<DispatchErrorCode, number> = {
   // or an acceptance PASS is not bound to what was tested.
   TEST_CONTRACT_LEAK: 422,
   BINDING_REQUIRED: 422,
+  ACCEPTANCE_EVIDENCE_REQUIRED: 422,
   POLICY_DENIED: 400,
   STATE_CONFLICT: 409,
   PARTLY_LANDED: 409,

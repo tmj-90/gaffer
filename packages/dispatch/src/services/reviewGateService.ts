@@ -28,6 +28,7 @@ import {
   type ReviewFeedback,
   type Ticket,
   type TicketStatus,
+  parseTestContract,
 } from "../domain/types.js";
 import { type ObservedRisk, shouldEscalate } from "./observedRisk.js";
 import { envFlagOn } from "./autonomyPolicyService.js";
@@ -53,6 +54,12 @@ import {
 } from "./landingStatus.js";
 import { isTestingEnabled, testerProvenance } from "../util/testingLane.js";
 import { readBoundTesterPass, TESTER_REPLAY_PREFIX } from "./testerReplay.js";
+import {
+  ACCEPTANCE_EVIDENCE_PREFIX,
+  contractProfile,
+  EXECUTABLE_PROFILES,
+  type AcceptanceProfile,
+} from "../domain/acceptanceProfile.js";
 import {
   contractHash,
   REPLAY_STATES,
@@ -1923,6 +1930,60 @@ export class ReviewGateService {
   }
 
   /**
+   * ACCEPTANCE PROFILE guard (C1/C2, like BINDING_REQUIRED): an automated PASS on a ticket
+   * whose test contract names a profile other than unit must point at a runner-recorded
+   * (system) acceptance evidence row on this ticket that passed, for the same profile, the
+   * tested commit and the current contract. A profile the runner cannot run yet (web,
+   * migration, performance) can never meet this: a person records the verdict. Returns the
+   * binding to store with the PASS, or null for a unit ticket.
+   */
+  private assertAcceptanceEvidence(
+    ticket: Ticket,
+    evidenceId: string | undefined,
+    binding: VerdictBinding,
+    contractNow: string | null,
+  ): { profile: AcceptanceProfile; evidence_id: string } | null {
+    const profile = contractProfile(parseTestContract(ticket.test_contract));
+    if (profile === "unit") return null;
+    const refuse = (why: string): never => {
+      throw new DispatchError(
+        "ACCEPTANCE_EVIDENCE_REQUIRED",
+        `An automated PASS on a ticket with the ${profile} acceptance profile needs the runner's passed ${profile} evidence for the tested commit: ${why}. A human can record the verdict instead (tester-pass --as human), which is reported as a waiver.`,
+        { profile, ...(evidenceId ? { acceptance_evidence: evidenceId } : {}) },
+      );
+    };
+    if (!EXECUTABLE_PROFILES.includes(profile))
+      refuse(`the runner cannot run the ${profile} profile yet`);
+    if (!evidenceId) refuse("no acceptance evidence was named");
+    const row = this.evidence.listForTicket(ticket.id).find((e) => e.id === evidenceId);
+    if (!row) refuse(`evidence ${evidenceId} is not on this ticket`);
+    const r = row as NonNullable<typeof row>;
+    if (
+      r.recorded_by_actor_type !== "system" ||
+      !String(r.uri ?? "").startsWith(ACCEPTANCE_EVIDENCE_PREFIX)
+    )
+      refuse("the named evidence is not the runner's acceptance record");
+    let payload: Record<string, unknown> = {};
+    try {
+      payload = JSON.parse(r.payload_json ?? "{}") as Record<string, unknown>;
+    } catch {
+      refuse("the acceptance record cannot be read");
+    }
+    if (payload.profile !== profile)
+      refuse(`the record is for the ${String(payload.profile)} profile`);
+    if (payload.passed !== true) refuse("the runner's acceptance run did not pass");
+    // The record must agree with itself: a pass names at least one case, and every case held.
+    const cases = Array.isArray(payload.cases) ? (payload.cases as Array<{ held?: unknown }>) : [];
+    if (cases.length === 0 || cases.some((c) => !c || c.held !== true))
+      refuse("the record's cases do not all hold");
+    if (!binding.tested_commit || String(payload.tested_commit) !== binding.tested_commit)
+      refuse("the record is for a different commit than the one tested");
+    if (contractNow && payload.contract_hash !== contractNow)
+      refuse("the record was made against a different contract");
+    return { profile, evidence_id: r.id };
+  }
+
+  /**
    * The independent black-box tester PASSED. TESTER FIRST: a ticket the runner sent to
    * the tester before review (routeToTester) returns to `in_review` for a person, with
    * the commit it tested recorded on the `ticket.tester_passed` event (`tested_head`);
@@ -1938,6 +1999,8 @@ export class ReviewGateService {
       contract_hash?: string;
       replay?: string;
       tests_commit?: string;
+      /** The runner's acceptance evidence row for a profiled ticket (cli, api, ...). */
+      acceptance_evidence?: string;
     },
     actor: Actor,
   ): TransitionResult {
@@ -1981,6 +2044,13 @@ export class ReviewGateService {
         verdict: "pass",
         human: testerProvenance(actor) === "human",
       });
+      // ACCEPTANCE PROFILE: on a ticket whose contract names a profile, an automated PASS
+      // also needs the runner's own evidence of the running change (the CLI transcript,
+      // the API probes) for the tested commit and the current contract.
+      const acceptanceEvidence =
+        testerProvenance(actor) === "human"
+          ? null
+          : this.assertAcceptanceEvidence(ticket, input.acceptance_evidence, binding, contractNow);
       // REQUIRED CI: the tester's PASS is the other way into ready_for_merge.
       if (!toReview) this.assertCiPassed(ticket, ciCandidate);
       // Record the passing test result as evidence so it is visible in review.
@@ -2002,6 +2072,7 @@ export class ReviewGateService {
           verdict: "pass",
           provenance: testerProvenance(actor),
           ...binding,
+          ...(acceptanceEvidence ? { acceptance: acceptanceEvidence } : {}),
         }),
         created_by: actor.id ?? actor.type,
         recorded_by_actor_type: actor.type,

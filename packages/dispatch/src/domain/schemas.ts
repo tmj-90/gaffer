@@ -18,6 +18,7 @@ import {
   TICKET_REPO_SOURCES,
   TICKET_SCOPE_RELATIONS,
 } from "./types.js";
+import { ACCEPTANCE_PROFILES } from "./acceptanceProfile.js";
 
 /** Zod input schemas — validate at the CLI/MCP boundary before touching the DB. */
 
@@ -500,6 +501,9 @@ export const setTestContractInput = z.object({
   env_vars: z.array(z.string().trim().min(1).max(500)).max(100).default([]),
   run_command: z.string().trim().max(2_000).default(""),
   harness_ready: z.boolean().default(false),
+  // ACCEPTANCE PROFILE: the profile NAME only (an agent may raise unit to a profile; the
+  // spec the runner executes is set by a person through setAcceptanceProfile).
+  profile: z.enum(ACCEPTANCE_PROFILES).optional(),
 });
 export type SetTestContractInput = z.infer<typeof setTestContractInput>;
 

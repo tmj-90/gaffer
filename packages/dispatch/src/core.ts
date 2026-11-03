@@ -1,3 +1,4 @@
+import type { AcceptanceProfile } from "./domain/acceptanceProfile.js";
 import { existsSync } from "node:fs";
 
 import { type Db, inTransaction, openDatabase } from "./db/connection.js";
@@ -2317,6 +2318,7 @@ export class Dispatch {
       contract_hash?: string;
       replay?: string;
       tests_commit?: string;
+      acceptance_evidence?: string;
     },
     actor: Actor,
   ): TransitionResult {
@@ -2356,6 +2358,24 @@ export class Dispatch {
 
   setTestContract(ticketRef: string, raw: unknown, actor: Actor): TestContract {
     return this.ticketSvc.setTestContract(ticketRef, raw, actor);
+  }
+
+  /** ACCEPTANCE PROFILE: a person sets the profile and the commands the runner runs. */
+  setAcceptanceProfile(
+    ticketRef: string,
+    input: { profile: unknown; spec?: unknown },
+    actor: Actor,
+  ): { ticketId: string; profile: AcceptanceProfile; contract: TestContract; eventId: string } {
+    return this.ticketSvc.setAcceptanceProfile(ticketRef, input, actor);
+  }
+
+  /** ACCEPTANCE EVIDENCE: the runner's record of a profile run (system only). */
+  recordAcceptanceEvidence(
+    ticketRef: string,
+    payloadJson: string,
+    actor: Actor,
+  ): { evidenceId: string; eventId: string; passed: boolean } {
+    return this.ticketSvc.recordAcceptanceEvidence(ticketRef, payloadJson, actor);
   }
 
   /** GATE INTEGRITY: a human allows this ticket to change its tests (human/admin only). */

@@ -999,7 +999,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.review,
     summary: "Delivery dossier",
     description:
-      "The tamper-evident evidence artifact. JSON by default; markdown with `?format=markdown` or `Accept: text/markdown`. `?include=packet` adds `review_packet` (outside the hashed subject): the runner-verified gates, tester verdict, cost and turns, attempts and rework, risk reasons, the reviewed-commit pin, each criterion's check result or `no machine evidence`, any test count the agent claimed that disagrees with the runner's, `intent` (the ticket's description), `candidate` (per write repository: the commit the runner gated, the head now, the tester's commit and the pin, with `same`, and `gated_earlier` when the commit on record is an earlier attempt's because this attempt's record is not in yet), `ci` (the latest CI result for the candidate commit, or null), `tester_lane` (the GAFFER_TESTING setting, whether the tester lane is on for this ticket's repositories, the write repositories with no registered test command, and `runner` `{ mode, at, on, gates }` when the runner last routed under a different setting), `scout` (the runner's pre-work scout record for the latest attempt: declared and effective risk, the signals that raised it, coverage counts; null when none), `run_links` (dashboard run logs that were running at the delivery or the tester verdict, found by time window) and `backing` (`{fact, holds, source, cell}` rows: what backs the delivery and what does not; no score).",
+      "The tamper-evident evidence artifact. JSON by default; markdown with `?format=markdown` or `Accept: text/markdown`. `?include=packet` adds `review_packet` (outside the hashed subject): the runner-verified gates, tester verdict, cost and turns, attempts and rework, risk reasons, the reviewed-commit pin, each criterion's check result or `no machine evidence`, any test count the agent claimed that disagrees with the runner's, `intent` (the ticket's description), `candidate` (per write repository: the commit the runner gated, the head now, the tester's commit and the pin, with `same`, and `gated_earlier` when the commit on record is an earlier attempt's because this attempt's record is not in yet), `ci` (the latest CI result for the candidate commit, or null), `tester_lane` (the GAFFER_TESTING setting, whether the tester lane is on for this ticket's repositories, the write repositories with no registered test command, and `runner` `{ mode, at, on, gates }` when the runner last routed under a different setting), `scout` (the runner's pre-work scout record for the latest attempt: declared and effective risk, the signals that raised it, coverage counts; null when none), `run_links` (dashboard run logs that were running at the delivery or the tester verdict, found by time window), `runtime_acceptance` (`{ profile, executable, spec_registered, latest }`: the ticket's acceptance profile and the runner's latest CLI transcript or API probe record, with whether it passed and the commit it ran on) and `backing` (`{fact, holds, source, cell}` rows: what backs the delivery and what does not; no score).",
     capability: "read",
     query: {
       format: {
@@ -1131,6 +1131,23 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     responses: [
       ok("`{ test_contract }`.", "TestContractSet"),
       notFound,
+      testContractFrozen,
+      invalid,
+    ],
+  },
+  {
+    method: "POST",
+    path: "/tickets/:id/acceptance-profile",
+    tag: T.review,
+    summary: "Set the ticket's acceptance profile",
+    description:
+      "How the independent tester's PASS is proven: `unit` (the tester's tests replayed on a clean checkout, the default), `cli` or `api` (the runner also runs the commands registered in `spec` on the clean checkout and records a transcript or the probe responses; an automated PASS without that passed evidence is refused with 422 `ACCEPTANCE_EVIDENCE_REQUIRED`), or `web`, `migration`, `performance` (the fields are defined, the runner cannot run them yet, so only a person's verdict passes them). Human or admin principals only (403 `ACTOR_NOT_PERMITTED`): the runner executes these commands. Part of the tester's contract hash; refused with 409 `CONTRACT_FROZEN` from in_testing on.",
+    capability: "full",
+    body: "acceptanceProfileBody",
+    responses: [
+      ok("`{ ticket_id, profile, test_contract, event_id }`.", "AcceptanceProfileSet"),
+      notFound,
+      forbidden,
       testContractFrozen,
       invalid,
     ],

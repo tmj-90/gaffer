@@ -3161,6 +3161,8 @@ const CP_SINGLE_VERBS = new Set([
   "scout-record",
   "tester-route",
   "attach-evidence",
+  "acceptance-profile",
+  "acceptance-evidence",
   "wont-do",
   "set-testable",
   "allow-test-changes",

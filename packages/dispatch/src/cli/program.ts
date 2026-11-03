@@ -50,6 +50,7 @@ export const RUNNER_INTERNAL_COMMANDS: Readonly<Record<string, readonly string[]
     "landing-begin",
     "record-landing",
     "record-tester-replay",
+    "acceptance-evidence",
     "auto-decision",
     "ci-result",
     "hold",

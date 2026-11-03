@@ -40,6 +40,9 @@ export const DISPATCH_ERROR_CODES = [
   "NOT_CONFIGURED",
   "TEST_CONTRACT_LEAK",
   "BINDING_REQUIRED",
+  // An automated tester PASS on a ticket with an acceptance profile (cli, api, ...) that
+  // carries no passed runner-recorded acceptance evidence for the tested commit.
+  "ACCEPTANCE_EVIDENCE_REQUIRED",
   "CONTRACT_MISMATCH",
   "CONTRACT_FROZEN",
   "OBSERVED_RISK_ESCALATED",

@@ -46,6 +46,7 @@ import {
   setTestableBody,
   allowTestChangesBody,
   setTestContractBody,
+  acceptanceProfileBody,
   setTicketRepoAccessBody,
   stopPausedBody,
   testerVerdictBody,
@@ -101,6 +102,7 @@ const TICKET_SUB = {
   // BBT-001: independent black-box testing handover + tester verdict.
   TESTABLE: "testable",
   TEST_CONTRACT: "test-contract",
+  ACCEPTANCE_PROFILE: "acceptance-profile",
   // GATE INTEGRITY: the human's per-ticket "this ticket may change its tests" flag.
   ALLOW_TEST_CHANGES: "allow-test-changes",
   TESTER: "tester",
@@ -840,6 +842,20 @@ export async function routeTickets(
     return;
   }
 
+  // ACCEPTANCE PROFILE: a person sets how the tester's PASS is proven and the commands
+  // the runner runs for it (human/admin only, enforced in the service).
+  if (segments.length === 3 && sub === TICKET_SUB.ACCEPTANCE_PROFILE && method === "POST") {
+    const body = acceptanceProfileBody.parse(await readJsonBody(req));
+    const r = wg.setAcceptanceProfile(id, { profile: body.profile, spec: body.spec }, apiActor());
+    sendJson(res, 200, {
+      ticket_id: r.ticketId,
+      profile: r.profile,
+      test_contract: r.contract,
+      event_id: r.eventId,
+    });
+    return;
+  }
+
   // BBT-001: /tickets/:id/tester — record a tester verdict (pass → ready_for_merge,
   // fail → refining) as the calling principal. A human principal (the dashboard
   // button) records a WAIVER on an acceptance ticket, as the gate intends; an
@@ -853,6 +869,7 @@ export async function routeTickets(
       ...(body.tested_commit ? { tested_commit: body.tested_commit } : {}),
       ...(body.contract_hash ? { contract_hash: body.contract_hash } : {}),
       ...(body.replay ? { replay: body.replay } : {}),
+      ...(body.acceptance_evidence ? { acceptance_evidence: body.acceptance_evidence } : {}),
     };
     const result =
       body.verdict === "pass"

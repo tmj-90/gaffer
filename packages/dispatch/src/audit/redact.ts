@@ -144,6 +144,7 @@ const SANITISERS: Record<ToolName, Sanitiser> = {
       env_var_count: Array.isArray(a.env_vars) ? a.env_vars.length : undefined,
       run_command_chars: chars(a.run_command),
       harness_ready: a.harness_ready,
+      profile: asString(a.profile),
     }),
   create_epic: (a) => {
     // Record only the shape of the plan (name + counts) — never the ticket

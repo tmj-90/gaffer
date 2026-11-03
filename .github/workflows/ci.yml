@@ -393,7 +393,7 @@ jobs:
           - name: tester-decisions-settings-readonly
             suites: s5-tester s6-decisions s12-settings s13-principals s18-read-only
           - name: squad-memory-map-specs-pause-sweep
-            suites: s15-squad-floor s9-memory s14-map s8-specs s10-pause sweep
+            suites: s15-squad-floor s9-memory s14-map s8-specs s10-pause s23-acceptance-cli sweep
           - name: plan-health-autonomy-layout
             suites: s7-plan s11-health s4-autonomy s16-review-hold s19-layout s21-review-comments
           # Each of these starts ITS OWN dashboard + data dir with the env it declares

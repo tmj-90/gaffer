@@ -1,6 +1,7 @@
 /** Domain enums + row shapes. Unions mirror the schema CHECK constraints. */
 
 import { DispatchError } from "../util/errors.js";
+import { isAcceptanceProfile, type AcceptanceProfile } from "./acceptanceProfileNames.js";
 
 /**
  * Why a ticket went back to review through reopen-for-review: the auto-merge resolver
@@ -311,6 +312,18 @@ export interface TestContract {
    * tester gets the contract ONLY and extends tests against the existing harness).
    */
   harness_ready: boolean;
+  /**
+   * ACCEPTANCE PROFILE (Release C): how a tester PASS is proven (see
+   * domain/acceptanceProfile.ts). Absent = `unit`, today's behaviour. Only present in the
+   * JSON when a profile other than unit was set, so an older contract's raw column (and
+   * so its contract hash) is unchanged.
+   */
+  profile?: AcceptanceProfile;
+  /**
+   * The person-registered spec for the profile (the CLI cases, the API boot command and
+   * probes, ...). Never set by an agent: the runner runs these commands.
+   */
+  profile_spec?: Record<string, unknown> | null;
 }
 
 /**
@@ -334,6 +347,16 @@ export function parseTestContract(raw: string | null): TestContract | null {
       env_vars: stringList(parsed.env_vars),
       run_command: typeof parsed.run_command === "string" ? parsed.run_command : "",
       harness_ready: parsed.harness_ready === true,
+      ...(isAcceptanceProfile(parsed.profile) && parsed.profile !== "unit"
+        ? { profile: parsed.profile }
+        : {}),
+      ...(isAcceptanceProfile(parsed.profile) &&
+      parsed.profile !== "unit" &&
+      parsed.profile_spec &&
+      typeof parsed.profile_spec === "object" &&
+      !Array.isArray(parsed.profile_spec)
+        ? { profile_spec: parsed.profile_spec }
+        : {}),
     };
   } catch {
     return null;
@@ -435,6 +458,26 @@ export function validateTestContract(contract: TestContract): TestContract {
         return [contract.run_command];
     }
   };
+  // The profile spec (argv, paths, probe bodies): the branch and PR/commit URL rules.
+  const specStrings: string[] = [];
+  const walk = (v: unknown): void => {
+    if (typeof v === "string") specStrings.push(v);
+    else if (Array.isArray(v)) v.forEach(walk);
+    else if (v && typeof v === "object") Object.values(v).forEach(walk);
+  };
+  walk(contract.profile_spec ?? null);
+  for (const rule of LEAK_RULES.slice(0, 2)) {
+    for (const entry of specStrings) {
+      if (rule.test.test(entry)) {
+        throw new DispatchError(
+          "TEST_CONTRACT_LEAK",
+          `test_contract.profile_spec leaks an implementation pointer (${rule.marker}). Offending entry: ` +
+            JSON.stringify(entry.slice(0, 200)),
+          { field: "profile_spec", marker: rule.marker, entry: entry.slice(0, 200) },
+        );
+      }
+    }
+  }
   for (const rule of LEAK_RULES) {
     for (const field of rule.fields) {
       for (const entry of valueFor(field)) {

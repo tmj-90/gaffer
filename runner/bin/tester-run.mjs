@@ -794,6 +794,14 @@ export function replayTesterTests({
     return { state: "skipped", reason: "GAFFER_TESTER_REPLAY=0" };
   const cmd = String(testCommand || "").trim();
   if (!cmd) return { state: "skipped", reason: "the repo has no test command registered" };
+  // ACCEPTANCE PROFILE: the person-registered commands run FIRST, in their own fresh
+  // checkout of the tested commit that no tester code has run in (the tester's test files
+  // are the tester's own code: run in the replay checkout, they could rewrite the CLI or
+  // the service the profile then exercises). The result counts only if the replay passes.
+  const acceptance =
+    profile && RUNNABLE_PROFILES.includes(profile.profile) && profile.spec
+      ? runAcceptanceCheckout({ repoPath, testedCommit, n, profile })
+      : null;
   const replay = resolve(GAFFER_DATA, "worktrees", `tester-replay-${n}`);
   git(repoPath, "worktree", "remove", "--force", replay);
   rmSync(replay, { recursive: true, force: true });
@@ -835,11 +843,9 @@ export function replayTesterTests({
           state: "passed",
           reason: `${cmd} passed on a clean checkout of ${testedCommit.slice(0, 12)}`,
           tail,
-          // ACCEPTANCE PROFILE: the person-registered commands, run by the runner in this
-          // same clean checkout once the tester's tests passed in it.
-          ...(profile && RUNNABLE_PROFILES.includes(profile.profile) && profile.spec
-            ? { acceptance: runAcceptanceProfile(profile, replay) }
-            : {}),
+          // ACCEPTANCE PROFILE: the person-registered commands' run (above, in its own
+          // clean checkout), reported only once the tester's tests passed too.
+          ...(acceptance ? { acceptance } : {}),
         }
       : {
           state: "failed",
@@ -850,6 +856,33 @@ export function replayTesterTests({
     git(repoPath, "worktree", "remove", "--force", replay);
     git(repoPath, "worktree", "prune");
     rmSync(replay, { recursive: true, force: true });
+  }
+}
+
+/**
+ * ACCEPTANCE PROFILE: a fresh detached checkout of the tested commit for the profile run
+ * (dependencies linked from the primary checkout, as the replay's), removed afterwards.
+ * Nothing the tester wrote is copied in and none of its code has run there.
+ * → the runAcceptanceProfile result
+ */
+export function runAcceptanceCheckout({ repoPath, testedCommit, n, profile }) {
+  const dir = resolve(GAFFER_DATA, "worktrees", `tester-accept-${n}`);
+  git(repoPath, "worktree", "remove", "--force", dir);
+  rmSync(dir, { recursive: true, force: true });
+  const add = git(repoPath, "worktree", "add", "--force", "--detach", dir, testedCommit);
+  if (add.status !== 0)
+    return {
+      passed: false,
+      reason: `could not check out ${String(testedCommit).slice(0, 12)} for the profile run`,
+      cases: [],
+    };
+  try {
+    linkNodeModules(repoPath, dir);
+    return runAcceptanceProfile(profile, dir);
+  } finally {
+    git(repoPath, "worktree", "remove", "--force", dir);
+    git(repoPath, "worktree", "prune");
+    rmSync(dir, { recursive: true, force: true });
   }
 }
 

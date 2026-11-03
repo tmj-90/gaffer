@@ -1079,7 +1079,8 @@ The `--as human` matters: an automated PASS without a passed replay is refused
 **Acceptance profiles: accepted means it ran the way a user meets it.** A ticket's
 test contract can name how the tester's PASS is proven. `unit` (the default) is the
 tester's tests replayed on a clean checkout, as above. With `cli` or `api`, the runner
-itself also runs commands you register, in that same clean checkout, and the PASS is
+itself also runs commands you register, in a fresh checkout of the tested commit of
+their own (none of the tester's code has run there), and the PASS is
 recorded only when they behave as you said:
 - `cli`: each command is an argv list (never a shell string) with optional stdin and
   env, and expectations: the exit code, stdout and stderr substrings or `/regex/`, text

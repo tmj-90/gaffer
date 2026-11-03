@@ -53,8 +53,8 @@ const fail = (l) => {
 const check = (cond, label, detail = "") =>
   cond ? ok(label) : fail(`${label}${detail ? `: ${detail}` : ""}`);
 
-// Probes in this file use the package's port range (9831-9850).
-process.env.GAFFER_ACCEPTANCE_PORT_BASE = "9831";
+// Probes in this file use the package's port range (9831-9850) unless GAFFER_ACCEPTANCE_PORT_BASE is set.
+process.env.GAFFER_ACCEPTANCE_PORT_BASE ??= "9831";
 const baseEnv = {
   ...process.env,
   STRICT_MODE: "0",
@@ -345,7 +345,10 @@ console.log("== P2: the API profile boots, probes and always kills the service =
     r.reason,
   );
   check(
-    r.boot && r.boot.health.healthy && r.boot.port >= 9831 && r.boot.port <= 9850,
+    r.boot &&
+      r.boot.health.healthy &&
+      r.boot.port >= Number(process.env.GAFFER_ACCEPTANCE_PORT_BASE) &&
+      r.boot.port < Number(process.env.GAFFER_ACCEPTANCE_PORT_BASE) + 20,
     "the service was healthy on a free port in the configured range",
     JSON.stringify(r.boot?.health),
   );
@@ -574,6 +577,9 @@ writeFileSync(
     'prompt=""; prev=""; for a in "$@"; do [ "$prev" = "-p" ] && prompt="$a"; prev="$a"; done\n' +
     `printf '%s' "$prompt" > ${JSON.stringify(CAPTURE)}\n` +
     'mkdir -p test && printf \'import test from "node:test"; import assert from "node:assert/strict"; import { readFileSync } from "node:fs"; test("v", () => assert.match(readFileSync("VERSION","utf8"), /1.2.0/));\\n\' > test/v.test.js\n' +
+    // TAMPER: the tester's test rewrites the CLI in the checkout it runs in (a test file is
+    // the tester's own code, and the replay runs it). The profile must not see the rewrite.
+    'if [ -n "${TAMPER:-}" ]; then printf \'import test from "node:test"; import { writeFileSync } from "node:fs"; test("t", () => writeFileSync("bin/cli.mjs", "console.log(\\\\"fx 9.9.9\\\\")\\\\n"));\\n\' > test/t.test.js; fi\n' +
     "git add -A >/dev/null 2>&1 && git -c user.email=t@t -c user.name=t commit -q -m tests >/dev/null 2>&1 || true\n" +
     'printf \'{"type":"result","subtype":"success","is_error":false,"result":"PASS: version shown\\\\n{\\\\"verdict\\\\":\\\\"PASS\\\\"}","total_cost_usd":0.01,"num_turns":2}\\n\'\n',
 );
@@ -666,7 +672,7 @@ console.log(
         {
           name: "where",
           argv: ["node", "bin/cli.mjs", "where"],
-          expect: { stdout: ["tester-replay-1"] },
+          expect: { stdout: ["tester-accept-1"] },
         },
       ],
     },
@@ -689,7 +695,7 @@ console.log(
   );
   check(
     ev && ev.cases.length === 2 && ev.cases[1].held,
-    "the commands ran in the clean replay checkout (not the tester's worktree)",
+    "the commands ran in their own clean checkout of the tested commit (not the tester's worktree or the replay's)",
     JSON.stringify(ev?.cases?.[1]?.stdout),
   );
   check(
@@ -781,6 +787,31 @@ console.log("== P5: a profiled PASS without passed runtime evidence is HELD ==")
       !(r.verdicts[0] || []).includes("--acceptance-evidence"),
     "a unit ticket is tested as before (no profile run)",
     JSON.stringify(r.out)?.slice(0, 200),
+  );
+}
+
+console.log("== P7: the tester's tests cannot change what the profile runs ==");
+{
+  setContract({
+    ...BASE_CONTRACT,
+    profile: "cli",
+    profile_spec: {
+      cases: [{ argv: ["node", "bin/cli.mjs", "--version"], expect: { stdout: ["fx 9.9.9"] } }],
+    },
+  });
+  const r = live({ TAMPER: "1" });
+  check(
+    r.code === 2 &&
+      r.out?.phase === "held" &&
+      /runtime acceptance \(cli\) did not pass/.test(r.out?.reason || "") &&
+      r.verdicts.length === 0,
+    "a test file that rewrites the CLI in the replay checkout does not make the profile pass",
+    `${r.code} ${JSON.stringify(r.out)?.slice(0, 300)}`,
+  );
+  check(
+    /fx 1\.2\.0/.test(r.evidence[0]?.payload?.cases?.[0]?.stdout?.excerpt || ""),
+    "the transcript shows the delivered CLI's own output",
+    JSON.stringify(r.evidence[0]?.payload?.cases?.[0]?.stdout),
   );
 }
 

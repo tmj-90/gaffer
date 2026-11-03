@@ -4,8 +4,10 @@
 // "Accepted" should mean the change was exercised the way a user meets it, with evidence
 // the RUNNER recorded, never the agent's word. A ticket's test contract can name a profile
 // (packages/dispatch/src/domain/acceptanceProfile.ts) and a PERSON registers what to run
-// for it. After the tester's PASS survived the clean replay (bin/tester-run.mjs), the
-// runner runs those commands itself, in the same clean checkout of the tested commit:
+// for it. For a tester's PASS (bin/tester-run.mjs) the runner runs those commands itself,
+// in their own fresh checkout of the tested commit that none of the tester's code has run
+// in (before the clean replay of the tester's tests, which run in a checkout of their
+// own), and counts the result only when that replay passes too:
 //   cli  each registered argv (never a shell string), with stdin, a throwaway HOME and a
 //        time cap: argv, exit code, stdout/stderr (sha256 + a bounded, redacted excerpt),
 //        duration and the checkout's filesystem diff; then the expectations (exit code,

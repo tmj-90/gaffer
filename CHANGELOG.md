@@ -39,7 +39,8 @@ to the same version.
 - **Accepted means verified.** An automated PASS needs a passed replay of the tested commit and contract; a PASS the runner could not replay is held for a human.
 - **The tester gets the requirements it verifies**, its verdict is bound to the code and contract it tested, and it can no longer advance the reviewed delivery branch.
 - **A tester FAIL is a bounded rework** in autonomous mode, not a silent stop, and a reworked ticket is tested again in the same run.
-- **Planned tickets reach the tester with a test contract**, and with the lane on, `createEpic` marks implementation tickets testable.
+- **Planned tickets reach the tester with a test contract**, and while the tester is on, a planned epic's implementation tickets are created testable.
+- **What you agree while planning is tested.** Each answer you give the planner becomes a criterion of the epic's acceptance ticket, and the proposal flags any answer no criterion covers.
 
 ### Landing
 
@@ -57,7 +58,7 @@ to the same version.
 - **A pre-work scout** tells the delivery agent where a change likely lands and can raise a ticket's risk. The deterministic scout is always on; the model scout is opt-in (`GAFFER_SCOUT=auto|on`) and read-only.
 - **The reviewer and clarify passes are routed** by the same tier router as delivery, and every attempt records the model it asked for and the CLI version.
 - **Skills follow the role, the stack and the paths a job touches.** Each agent gets its role's skills for its repo's stack, a mixed repo routes per path, a two-repo ticket gets each repo's stack, and the ticket text can pull in a matching skill.
-- **117 skills, each rewritten against primary sources, behind a lint gate**, mounted beside a repo's own `.claude/skills` where the agent CLI looks.
+- **Every bundled skill rewritten against primary sources, behind a lint gate**, mounted beside a repo's own `.claude/skills` where the agent CLI looks.
 - **An opt-in live test** checks that the agent actually uses the skill Gaffer chose (`GAFFER_LIVE_SKILL_TEST=1`).
 
 ### Memory and index
@@ -113,9 +114,19 @@ to the same version.
 - **Tamper-evident event log.** Every event is hash-chained (`dispatch events verify`) and carries the tick that wrote it.
 - **An OpenAPI 3.1 contract** at `GET /api/openapi.json` and [docs/openapi.json](docs/openapi.json).
 - **A generated configuration reference**, [docs/CONFIG.md](docs/CONFIG.md), checked in CI.
-- **Gate replay and an eval ledger.** `gaffer eval replay` replays recorded deliveries through the real gates, and `gaffer eval agreement` measures whether the opt-in judge agrees with reviewers ([docs/eval-harness.md](docs/eval-harness.md)).
+- **Gate replay and an eval ledger.** `gaffer eval replay` replays recorded deliveries through the real gates, and `gaffer eval agreement` measures whether the opt-in judge agrees with reviewers ([docs/eval-harness.md](docs/eval-harness.md)). `gaffer eval` now labels its old "memory lift" figure as the *memory score gap*, since it compares different tickets and proves no uplift.
 - **A release pipeline.** A `vX.Y.Z` tag builds, tests and publishes tarballs, an SBOM, checksums, a provenance statement and the image ([docs/RELEASING.md](docs/RELEASING.md)).
 - **`dispatch export` is a consistent snapshot** that proves it restores, and a rejected restore leaves the previous state intact.
+
+### Security
+
+- **Notifications are redacted and SSRF-checked by default.** Webhook and Slack bodies carry only the event kind, ticket number, status and dashboard URL unless you set `GAFFER_NOTIFY_FULL_PAYLOAD=1`. A sink URL must be http(s) and must not point at loopback, link-local or a private range unless you set `GAFFER_NOTIFY_ALLOW_PRIVATE=1`, so a LAN relay needs that flag now. The settings API no longer returns a webhook URL to any principal but an admin.
+- **The container image's build context is an allow-list.** `.dockerignore` used to let `./repos` and a root `.env` into the image; now only the build inputs enter it. If you built an image from a checkout with either present, rebuild it.
+- **Onboarding stays inside the repository.** A file that resolves outside the repo root (a symlinked README, say) is never read, and a password embedded in an https remote URL is stripped before it reaches a prompt, the digest, lore, events or logs.
+- **The docker sandbox cannot move your branches.** The container works in a private git dir; only the ticket branch is imported back, and a gate run imports nothing.
+- **Every agent spawn is checked for the safety hook.** The bootstrap, reviewer and clarify agents refuse to launch when their rendered settings do not name the hook, as delivery already did, and the macOS sandbox profile is written per call so concurrent workers cannot swap each other's write roots.
+- **Dependency advisories.** The MCP SDK moves to ^1.32.2 and every package to zod 4 (GHSA-mrhx-c7xc-m3w5), and `fast-uri` to 3.1.6 or later (four SSRF and host-confusion advisories). REST and MCP validation errors keep their shape.
+- **CodeQL and gitleaks run in CI**, and every action is pinned by commit.
 
 ### Fixed
 
@@ -123,7 +134,7 @@ to the same version.
 - An epic's acceptance ticket tracks the epic's current scope, counts each member once, and no longer rejects itself.
 - A merge interrupted before its tester replay record was written recovers on retry.
 - A Poll pressed while the previous one was finishing no longer skips a ticket, and two waiters taking over a dead lock no longer both hold it.
-- `gaffer run` was always a dry run; `--dry-run` previews each ready ticket once and leaves no trace; a one-shot run no longer sleeps out a usage-window pause; Ctrl-C on `--daemon` finishes the current pass.
+- `gaffer run` delivers again (it had been running dry); `--dry-run` previews each ready ticket once and leaves no trace; a one-shot run no longer sleeps out a usage-window pause; Ctrl-C on `--daemon` finishes the current pass.
 - A logged-out agent CLI no longer spends attempts or parks good tickets.
 - The scheduler no longer starves a low-priority prerequisite, and an approved but unmerged ticket no longer reads as all clear.
 - A parked delivery keeps its branch, an emptied `node_modules` is primed again, and a delivery on a host with no git identity is no longer parked as empty.
@@ -150,7 +161,7 @@ Initial public release of Gaffer — a local-first, supervised software factory.
 
 **Dispatch** (`packages/dispatch`) — the control plane. Manages tickets, epics, scopes, and per-repo access. Exposes a REST API, an MCP server, a web dashboard, and a CLI. Enforces the server-side review/merge gate: by default, an agent actor cannot approve or merge its own work.
 
-**Crew** (`packages/crew`) — the factory runtime. An MCP tool server that exposes factory-level tools to Claude agents, plus a hooks engine and idle loops for drafting work, ingesting issues, and repo onboarding.
+**Crew** (`packages/crew`) — the factory runtime. An MCP tool server that exposes factory-level tools to agents, plus a hooks engine and idle loops for drafting work, ingesting issues, and repo onboarding.
 
 **Memory** (`packages/memory`) — durable, human-gated knowledge. A knowledge base (lore) plus the Repo Understanding engine: Repo Digest, feature ledger, and grounded lore drafts. Seeded at onboarding; refreshed as tickets merge. Also usable standalone as `memory-mcp`.
 

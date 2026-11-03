@@ -934,7 +934,13 @@ export function recordAcceptanceEvidence(ticketNumber, payload, env = process.en
     }
     const r = spawnSync(argv[0], argv[1], { encoding: "utf8" });
     if (r.error || r.status !== 0) return { ok: false, evidenceId: null };
-    const out = JSON.parse((r.stdout || "").trim().split("\n").pop() || "{}");
+    // The dispatch CLI prints its answer as indented JSON: read the whole of stdout.
+    let out;
+    try {
+      out = JSON.parse((r.stdout || "").trim() || "{}");
+    } catch {
+      out = JSON.parse((r.stdout || "").trim().split("\n").pop() || "{}");
+    }
     return out && typeof out.evidenceId === "string"
       ? { ok: true, evidenceId: out.evidenceId }
       : { ok: false, evidenceId: null };

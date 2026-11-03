@@ -599,7 +599,8 @@ writeFileSync(
     "const [ticket, file] = process.argv.slice(2);\n" +
     `appendFileSync(${JSON.stringify(EVIDENCE_LOG)}, JSON.stringify({ ticket, payload: JSON.parse(readFileSync(file, 'utf8')) }) + '\\n');\n` +
     "if (process.env.EVIDENCE_STUB_FAIL) process.exit(1);\n" +
-    "console.log(JSON.stringify({ ok: true, evidenceId: 'ev-' + ticket, passed: true }));\n",
+    // Indented, as the dispatch CLI prints it (printJson).
+    "console.log(JSON.stringify({ ok: true, evidenceId: 'ev-' + ticket, passed: true }, null, 2));\n",
 );
 const lines = (f) =>
   existsSync(f)

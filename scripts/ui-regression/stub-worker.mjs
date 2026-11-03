@@ -402,6 +402,27 @@ async function main() {
       commitAll(`feat: addTask variant for #${t} (stub conflict delivery)`);
     }
     if (!src.includes(`export function ${fn}`)) {
+      // A ticket that asks for it changes completeTask's body too, so the Review's callers
+      // row (code index) has an existing symbol with an importer to list.
+      // It reads the ticket as an agent would (the prompt carries only the title).
+      const ORIGINAL = "list.map(t => t.title === title ? { ...t, done: true } : t)";
+      let asked = false;
+      if (/clearDone/.test(prompt) && src.includes(ORIGINAL)) {
+        try {
+          const show = await mcpCall("dispatch", "get_ticket", { ticket_id: t });
+          asked = /completeTask\(\) must skip done tasks/.test(JSON.stringify(show));
+        } catch (e) {
+          mcpLog(`delivery #${t} get_ticket failed: ${e.message}`);
+        }
+      }
+      if (asked)
+        writeFileSync(
+          tasks,
+          src.replace(
+            ORIGINAL,
+            "list.map(t => t.title === title && !t.done ? { ...t, done: true } : t)",
+          ),
+        );
       appendFileSync(tasks, `export function ${fn}(list) { return list.filter(t => !t.done); }\n`);
       appendFileSync(
         tests,

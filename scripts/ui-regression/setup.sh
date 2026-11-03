@@ -55,6 +55,12 @@ JSON
 export function addTask(list, title) { return [...list, { title, done: false }]; }
 export function completeTask(list, title) { return list.map(t => t.title === title ? { ...t, done: true } : t); }
 JS
+  # A caller of completeTask with no test of its own: the Review's callers row (code index)
+  # lists it when a delivery changes completeTask.
+  cat > src/board.js <<'JS'
+import { completeTask } from "./tasks.js";
+export function finishAll(list) { return list.reduce((l, t) => completeTask(l, t.title), list); }
+JS
   cat > test/tasks.test.js <<'JS'
 import test from "node:test"; import assert from "node:assert/strict";
 import { addTask, completeTask } from "../src/tasks.js";

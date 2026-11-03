@@ -359,7 +359,7 @@ try {
   // the single-ticket form is the "One ticket" section beside it.
   await page.fill(
     "#one-ticket textarea",
-    "Users need to drop completed tasks. Add clearDone(list) with a unit test.",
+    "Users need to drop completed tasks. Add clearDone(list) with a unit test, and completeTask() must skip done tasks.",
   );
   // Create waits for a write repo: held (aria-disabled) and saying so before one is on.
   const createSel = '#one-ticket button:has-text("Create ticket")';
@@ -684,6 +684,45 @@ try {
     (await page.locator(".rv-impact .rv-impact-go").count()) > 0
       ? ok("Review facts: each impact line links to its file in the diff")
       : bad("Review facts: no file link on the impact lines");
+    // CODE INDEX (built at onboard): the changed completeTask's importer, from the index.
+    const callersRow =
+      (await page.textContent(".rv-impact .rv-k-symbol_callers").catch(() => "")) || "";
+    /completeTask changed: 1 file on main imports it, none changed here/.test(callersRow) &&
+    /by import text \(index\)/.test(callersRow) &&
+    /caller\s*src\/board\.js/.test(callersRow) &&
+    /no test imports it/.test(callersRow)
+      ? ok(
+          "Review facts: the callers row lists completeTask's importer (src/board.js, untested), by import text (index)",
+        )
+      : bad(`Review facts: callers row '${callersRow.slice(0, 300)}'`);
+    !/Callers of changed symbols and their test coverage: not analysed/.test(surface || "")
+      ? ok("Review facts: callers are no longer 'not analysed' on the delivered ticket")
+      : bad("Review facts: the panel still says callers are not analysed");
+    // The delivery prompt's file cards named completeTask's callers and tests (the ticket
+    // names completeTask()): read from the stub's call record.
+    if (process.env.GAFFER_DATA) {
+      let primed = "";
+      try {
+        primed =
+          readFileSync(path.join(process.env.GAFFER_DATA, "stub-calls.jsonl"), "utf8")
+            .split("\n")
+            .filter(Boolean)
+            .map((l) => JSON.parse(l))
+            .find((c) => c.kind === "delivery" && String(c.ticket) === String(ticket.number))
+            ?.prompt ?? "";
+      } catch {
+        primed = "";
+      }
+      /Callers and tests of what the ticket names \(code index at/.test(primed) &&
+      /src\/board\.js: imports completeTask/.test(primed) &&
+      /test\/tasks\.test\.js: tests completeTask \(imports it\)/.test(primed)
+        ? ok(
+            "File cards: the delivery prompt listed completeTask's caller and test, with the reason",
+          )
+        : bad(
+            `File cards: no code-index lines in the delivery prompt '${(primed.match(/Callers and tests[^]{0,300}|Code index:[^\n]*/) || [""])[0]}'`,
+          );
+    } else note("GAFFER_DATA not set: the file-cards callers check is skipped");
     const backing = (await page.textContent(".rv-backing").catch(() => "")) || "";
     /What backs this/.test(backing) && /What is not backed/.test(backing) && !/%/.test(backing)
       ? ok("Review facts: 'What backs this / What is not backed' drawn, with no percentage")

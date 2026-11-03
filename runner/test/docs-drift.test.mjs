@@ -66,7 +66,8 @@ console.log("== D3: the Specs feature is described as shipped, not 'in progress'
 const featuresDoc = read("docs/FEATURES.md");
 const specStart = featuresDoc.indexOf("## Specs");
 const specEnd = featuresDoc.indexOf("\n## ", specStart + 1);
-const spec = specStart === -1 ? "" : featuresDoc.slice(specStart, specEnd === -1 ? undefined : specEnd);
+const spec =
+  specStart === -1 ? "" : featuresDoc.slice(specStart, specEnd === -1 ? undefined : specEnd);
 check("FEATURES.md has a Specs section", spec.length > 0);
 check("no 'in progress' in the Specs section", !/in progress/i.test(spec));
 

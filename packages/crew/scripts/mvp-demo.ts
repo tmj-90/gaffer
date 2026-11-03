@@ -1,5 +1,5 @@
 /**
- * End-to-end MVP demo (docs/_suite/implementation/01-mvp-plan.md).
+ * End-to-end MVP demo of the mock implementation loop.
  *
  * Drives the REAL Crew loops against a REAL shared Dispatch instance to
  * prove the full path without hand-edited DB rows:

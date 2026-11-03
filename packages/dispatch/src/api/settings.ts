@@ -199,13 +199,15 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     group: "autonomy",
     label: "Independent black-box testing",
     help:
-      "When on, an approved testable ticket routes through the independent testing " +
-      "lane (in_review → in_testing) instead of straight to merge. The lane, the " +
-      "contract, and the runner seam are live; the seam hands an independent tester " +
-      "the contract + AC (never the diff). Only tickets carrying the testable flag are " +
-      "routed. While this is on, the tickets a planned build creates are testable (all " +
-      "but the bootstrap); `wg ticket set-testable <n>` marks or unmarks one. The rest go " +
-      "straight from approval to merge, as does everything when this is off.",
+      "The independent black-box tester tests a testable ticket's delivery BEFORE you " +
+      "review it (in_review → in_testing → back to in_review on a PASS; a FAIL sends it " +
+      "back to rework), and you approve only the commit it passed. The tester gets the " +
+      "contract + AC, never the diff. Unset (the default, auto): on for a ticket whose " +
+      "write repos all have a registered test command, off where one has none (a PASS " +
+      "there cannot be replayed, so it would be held as unverified; Review and Health say " +
+      "so). On: every testable ticket. Off: none, except an epic's acceptance ticket, " +
+      "which is always tested. A planned build's tickets are testable unless this is " +
+      "off (all but the bootstrap); `wg ticket set-testable <n>` marks or unmarks one.",
   },
 
   // --- Idle loops: the between-work background loops + their mode ---

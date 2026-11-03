@@ -284,17 +284,19 @@ describe("BBT-001 contract leak validator", () => {
 });
 
 describe("BBT-001 approval routing", () => {
-  it("toggle ON + can_be_tested -> in_review goes to in_testing (not ready_for_merge)", () => {
+  it("toggle ON + can_be_tested -> the tester first: an untested approval is refused, the runner routes it to in_testing", () => {
     const wg = freshWg({ testingEnabled: true });
     const { ticketId } = inReviewReadyTicket(wg);
     wg.setTestable(ticketId, true, human);
 
-    const res = wg.approveReview(ticketId, reviewer);
-    expect(res.ticket.status).toBe("in_testing");
+    // TESTER FIRST: a person approves only the commit the tester passed.
+    expect(() => wg.approveReview(ticketId, reviewer)).toThrowError(/not tested on this commit/);
+    const [res] = wg.routeToTester(ticketId, systemActor);
+    expect(res!.routed).toBe(true);
     expect(wg.view(ticketId).ticket.status).toBe("in_testing");
-    // A routed-to-testing event is recorded.
+    // A routed-to-testing event is recorded, marked as before review.
     const ev = wg.view(ticketId).events.find((e) => e.event_type === "ticket.routed_to_testing");
-    expect(ev).toBeDefined();
+    expect(JSON.parse(ev?.payload_json ?? "{}")).toMatchObject({ before_review: true });
   });
 
   it("toggle OFF -> in_review goes straight to ready_for_merge (unchanged)", () => {
@@ -316,18 +318,18 @@ describe("BBT-001 approval routing", () => {
 });
 
 describe("BBT-001 tester verdict", () => {
-  it("tester PASS moves in_testing -> ready_for_merge with evidence", () => {
+  it("tester PASS moves in_testing -> in_review (tester first) with evidence; approval then goes to ready_for_merge", () => {
     const wg = freshWg({ testingEnabled: true });
     const { ticketId } = inReviewReadyTicket(wg);
     wg.setTestable(ticketId, true, human);
-    wg.approveReview(ticketId, reviewer);
+    wg.routeToTester(ticketId, systemActor);
 
     const res = wg.testerPass(
       ticketId,
       { summary: "12 black-box tests pass against the contract", replay: "passed" },
       testerAgent,
     );
-    expect(res.ticket.status).toBe("ready_for_merge");
+    expect(res.ticket.status).toBe("in_review");
     // The passing result is visible as the latest test_output evidence (the AC
     // evidence is also test_output, so take the most recent — list is oldest-first).
     const ev = wg
@@ -340,7 +342,8 @@ describe("BBT-001 tester verdict", () => {
       verdict: "pass",
       provenance: "agent",
     });
-    // The merge then completes normally.
+    // A person approves the tested commit (no second testing pass); the merge completes.
+    expect(wg.approveReview(ticketId, reviewer).ticket.status).toBe("ready_for_merge");
     expect(wg.markMerged(ticketId, systemActor).ticket.status).toBe("done");
   });
 
@@ -348,7 +351,7 @@ describe("BBT-001 tester verdict", () => {
     const wg = freshWg({ testingEnabled: true });
     const { ticketId, acId } = inReviewReadyTicket(wg);
     wg.setTestable(ticketId, true, human);
-    wg.approveReview(ticketId, reviewer);
+    wg.routeToTester(ticketId, systemActor);
     // Pre-condition: the AC was satisfied by the delivery.
     expect(wg.view(ticketId).acceptanceCriteria.find((a) => a.id === acId)?.status).toBe(
       "satisfied",
@@ -403,7 +406,7 @@ describe("BBT-001 tester verdict", () => {
     wg.submitForReview({ claimToken: claim!.claimToken, ticket_id: t.id }, agentActor);
     giveTicketRealDelivery(wg, t.id, human);
     wg.setTestable(t.id, true, human);
-    wg.approveReview(t.id, reviewer);
+    wg.routeToTester(t.id, systemActor);
     expect(wg.view(t.id).ticket.status).toBe("in_testing");
 
     const res = wg.testerFail(t.id, { summary: "fails" }, testerAgent);
@@ -417,7 +420,7 @@ describe("BBT-001 tester verdict", () => {
     const wg = freshWg({ testingEnabled: true });
     const { ticketId } = inReviewReadyTicket(wg);
     wg.setTestable(ticketId, true, human);
-    wg.approveReview(ticketId, reviewer);
+    wg.routeToTester(ticketId, systemActor);
     expect(wg.view(ticketId).ticket.status).toBe("in_testing");
     const res = wg.testerFail(
       ticketId,
@@ -434,7 +437,7 @@ describe("BBT-001 tester verdict", () => {
     const wg2 = freshWg({ testingEnabled: true });
     const again = inReviewReadyTicket(wg2);
     wg2.setTestable(again.ticketId, true, human);
-    wg2.approveReview(again.ticketId, reviewer);
+    wg2.routeToTester(again.ticketId, systemActor);
     expect(wg2.testerFail(again.ticketId, { summary: "fails" }, testerAgent).ticket.status).toBe(
       "refining",
     );
@@ -461,8 +464,11 @@ describe("BBT-001 a tester cannot approve or merge", () => {
 
     // Drive to in_testing, then a tester pass; the merge stays system/admin-only.
     wg.setTestable(ticketId, true, human);
-    wg.approveReview(ticketId, reviewer);
+    wg.routeToTester(ticketId, systemActor);
     wg.testerPass(ticketId, { summary: "pass", replay: "passed" }, testerAgent);
+    // Back in review: the tester still cannot approve; a person does.
+    expect(() => wg.approveReview(ticketId, testerAgent)).toThrowError(DispatchError);
+    wg.approveReview(ticketId, reviewer);
     expect(() => wg.markMerged(ticketId, testerAgent)).toThrowError(DispatchError);
     expect(wg.markMerged(ticketId, systemActor).ticket.status).toBe("done");
   });
@@ -474,10 +480,11 @@ describe("BBT-001 a tester cannot approve or merge", () => {
     expect(() => wg.moveTicket(ticketId, "in_testing", human)).toThrowError(DispatchError);
 
     wg.setTestable(ticketId, true, human);
-    wg.approveReview(ticketId, reviewer);
-    // Drag in_testing -> ready_for_merge / refining is rejected too.
+    wg.routeToTester(ticketId, systemActor);
+    // Drag in_testing -> ready_for_merge / refining / in_review is rejected too.
     expect(() => wg.moveTicket(ticketId, "ready_for_merge", human)).toThrowError(DispatchError);
     expect(() => wg.moveTicket(ticketId, "refining", human)).toThrowError(DispatchError);
+    expect(() => wg.moveTicket(ticketId, "in_review", human)).toThrowError(DispatchError);
   });
 });
 
@@ -486,7 +493,7 @@ describe("BBT-001 stats + board surface in_testing", () => {
     const wg = freshWg({ testingEnabled: true });
     const { ticketId } = inReviewReadyTicket(wg);
     wg.setTestable(ticketId, true, human);
-    wg.approveReview(ticketId, reviewer);
+    wg.routeToTester(ticketId, systemActor);
 
     const summary = wg.dashboard();
     expect(summary.ticketsByStatus.in_testing).toBe(1);

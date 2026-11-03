@@ -106,6 +106,11 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
         _gaffer_locked .skip.lock _gaffer_append_line "$REVIEWED_FILE" "$RNUM"
         wg attach-evidence "$RNUM" --type manual_note \
           --summary "agent review could not run: $1 — needs a human" >/dev/null 2>&1 || true
+        # TESTER FIRST: no reviewer agent will have its say on this ticket this run, and the
+        # tester pass sweeps only under REVIEW_MODE=human, so a delivery the tester gates
+        # goes to it now (dispatch decides; a no-op otherwise). Left in review untested, a
+        # person's approval would be refused (not_tested) with nothing sending it on.
+        if declare -F gaffer_tester_route >/dev/null 2>&1; then gaffer_tester_route "$RNUM"; fi
         _review_cleanup
         _review_restore_traps
       }
@@ -673,6 +678,14 @@ EOF
           log "agent review of #$RNUM finished (rc=$rrc, status=$NEWSTATUS, verdict=$R_VERDICT${R_SECURITY:+, security=$R_SECURITY}, approve_gate=$_SHIP_APPROVE) — ADVISORY/HELD; awaiting HUMAN approval${R_HELD_REASON:+ [$R_HELD_REASON]}"
           ;;
       esac
+      # TESTER FIRST (lib/tester.sh): the reviewer agent has had its say and the ticket is
+      # still in review for a person (an advisory or held verdict, a refused approval), so a
+      # delivery the independent tester gates goes to it now: the person then reads the
+      # tester's evidence, and a FAIL costs them nothing. Dispatch decides; fail-soft.
+      if declare -F gaffer_tester_route >/dev/null 2>&1 \
+         && [ "$(wg ticket show "$RNUM" 2>/dev/null | jget 'd.ticket.status' 2>/dev/null || echo '')" = "in_review" ]; then
+        gaffer_tester_route "$RNUM"
+      fi
       # Restore the global traps now that the review block is complete. Run cleanup
       # once explicitly here so the worktree is gone before the result line fires;
       # trap - EXIT clears our review-scoped EXIT handler so gaffer_on_exit (the

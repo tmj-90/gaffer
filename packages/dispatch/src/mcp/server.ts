@@ -211,8 +211,9 @@ export const TOOL_DESCRIPTIONS: Record<keyof typeof toolSchemas, string> = {
     "Pass `ticket_id` and `can_be_tested`. Set it when an OBSERVABLE BOUNDARY may " +
     "have changed — an API, endpoint, CLI verb or page — including for a refactor or " +
     "internal-util change that can shift a surface's underlying behaviour (so it is " +
-    "NOT 'is this an API ticket'). When on AND the GAFFER_TESTING toggle is enabled, " +
-    "review approval routes the ticket through an INDEPENDENT tester before merge. " +
+    "NOT 'is this an API ticket'). When on AND the tester lane is on for its repos " +
+    "(GAFFER_TESTING on, or the default with a registered test command), an INDEPENDENT " +
+    "tester tests the delivery before the human review, and approval needs its PASS. " +
     "Marking it testable only ADDS scrutiny. In the factory an agent may only turn it " +
     "ON: clearing it (`can_be_tested: false`) is a human/runner decision and is refused " +
     "with FACTORY_RUNNER_OWNED.",

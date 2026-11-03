@@ -18,7 +18,9 @@
 #   3  the landing must run that assertion on the EXACT merge candidate, fail, leave main
 #      untouched (head and tree), hold the ticket and keep the epic out of `wg stats`'
 #      accepted count — the old runner landed the combination and counted the epic;
-#   4  a repair commit on the delivery branch (re-delivered, re-approved with --commit,
+#   (TESTER FIRST: each acceptance delivery goes to the tester before review; its PASS
+#   returns it to review and the person approves the tested commit.)
+#   4  a repair commit on the delivery branch (re-delivered, re-tested, re-approved with --commit,
 #      re-tested) lands; the assertion passes on the landed candidate, the replay record
 #      names that landed sha, and the epic counts as accepted exactly once.
 #   5  external review #7, the same steps in a repo whose registered test command is
@@ -137,15 +139,17 @@ AUTO_MERGE=0 run_tick >/dev/null
 approve "$IMPL"
 GAFFER_MODE=autonomous AUTO_MERGE=1 run_tick >/dev/null
 [ "$(st "$IMPL")" = "done" ] && ok "#$IMPL delivered, approved and landed" || fail "#$IMPL status=$(st "$IMPL")"
-[ "$(st "$ACC")" = in_review ] || AUTO_MERGE=0 run_tick >/dev/null
-[ "$(st "$ACC")" = in_review ] && ok "acceptance #$ACC delivered through its gates" || fail "acceptance status=$(st "$ACC") $(grep "#$ACC" "$LOGF" | tail -3 | tr '\n' '|' | cut -c1-400)"
+[ "$(st "$ACC")" = in_testing ] || AUTO_MERGE=0 run_tick >/dev/null
+[ "$(st "$ACC")" = in_testing ] && ok "acceptance #$ACC delivered through its gates and sent to the tester before review" || fail "acceptance status=$(st "$ACC") $(grep "#$ACC" "$LOGF" | tail -3 | tr '\n' '|' | cut -c1-400)"
 BR="$(branch_of "$ACC")"
 grep -q 'profile().displayName;' <<<"$(git -C "$R" show "refs/heads/$BR:src/label.js" 2>/dev/null)" && ok "the delivery changes the label to read displayName" || fail "fixture: the delivery's label: $(git -C "$R" show "refs/heads/$BR:src/label.js" 2>/dev/null | tr '\n' ' ')"
 suite_on "refs/heads/$BR" && ok "the delivery branch passes the registered smoke suite" || fail "fixture: the delivery branch is red"
 approve "$ACC"
-[ "$(st "$ACC")" = in_testing ] && ok "approved acceptance → in_testing" || fail "acceptance after approve: $(st "$ACC")"
+[ "$(st "$ACC")" = in_testing ] && ok "an approval before the tester's PASS is refused (still in_testing)" || fail "acceptance after an early approve: $(st "$ACC")"
 AUTO_MERGE=0 run_tick >/dev/null
-[ "$(st "$ACC")" = ready_for_merge ] && ok "the independent tester's PASS → ready_for_merge" || fail "acceptance after the tester: $(st "$ACC") $(grep -i 'tester' "$LOGF" | tail -3 | tr '\n' '|' | cut -c1-400)"
+[ "$(st "$ACC")" = in_review ] && ok "the independent tester's PASS → back in review" || fail "acceptance after the tester: $(st "$ACC") $(grep -i 'tester' "$LOGF" | tail -3 | tr '\n' '|' | cut -c1-400)"
+approve "$ACC"
+[ "$(st "$ACC")" = ready_for_merge ] && ok "a person approves the tested commit → ready_for_merge" || fail "acceptance after approve: $(st "$ACC")"
 TESTED1="$(git -C "$R" rev-parse "refs/heads/$BR")"
 git -C "$R" show "gaffer-tests/ticket-$ACC:test/bb-label.test.js" >/dev/null 2>&1 && ok "the tester's assertion is saved on gaffer-tests/ticket-$ACC" || fail "no tester test on gaffer-tests/ticket-$ACC"
 git -C "$R" show "refs/heads/$BR:test/bb-label.test.js" >/dev/null 2>&1 && fail "fixture: the tester's assertion is on the delivery branch" || ok "…and only there (never on the delivery branch)"
@@ -187,15 +191,15 @@ suite_on main && ok "main is still green" || fail "main is red"
 echo "== 4: repair on the delivery branch, re-approve with --commit, re-test, land — accepted once =="
 wg ticket move "$ACC" ready >/dev/null 2>&1
 AUTO_MERGE=0 run_tick >/dev/null
-[ "$(st "$ACC")" = in_review ] && ok "the repair was re-delivered on the branch (in_review)" || fail "after the repair delivery: $(st "$ACC") $(grep "#$ACC" "$LOGF" | tail -3 | tr '\n' '|' | cut -c1-400)"
+[ "$(st "$ACC")" = in_testing ] && ok "the repair was re-delivered on the branch and sent to the tester" || fail "after the repair delivery: $(st "$ACC") $(grep "#$ACC" "$LOGF" | tail -3 | tr '\n' '|' | cut -c1-400)"
 REPAIRED="$(git -C "$R" rev-parse "refs/heads/$BR")"
 [ "$REPAIRED" != "$TESTED1" ] && git -C "$R" merge-base --is-ancestor "$TESTED1" "$REPAIRED" && ok "the repair is a new commit on the same delivery branch" || fail "the delivery branch did not gain a repair commit"
 suite_on "$REPAIRED" && ok "the repaired branch passes the registered smoke suite" || fail "fixture: the repaired branch is red"
 [ "$(accepted)" = "0" ] && ok "wg stats while the repair is in flight: accepted 0" || fail "wg stats accepted=$(accepted) before the repair landed"
-approve "$ACC"
-[ "$(st "$ACC")" = in_testing ] && ok "re-approved with --commit $(printf '%s' "$REPAIRED" | cut -c1-12) → in_testing" || fail "re-approve: $(st "$ACC")"
 AUTO_MERGE=0 run_tick >/dev/null
-[ "$(st "$ACC")" = ready_for_merge ] && ok "the tester re-tested the repair: PASS" || fail "after re-test: $(st "$ACC")"
+[ "$(st "$ACC")" = in_review ] && ok "the tester re-tested the repair: PASS (back in review)" || fail "after re-test: $(st "$ACC")"
+approve "$ACC"
+[ "$(st "$ACC")" = ready_for_merge ] && ok "re-approved with --commit $(printf '%s' "$REPAIRED" | cut -c1-12) (the tested commit) → ready_for_merge" || fail "re-approve: $(st "$ACC")"
 # A new run: loop.sh clears the per-run list of tickets the merge lane held this run.
 rm -f "$GAFFER_DATA/.merge-held-tickets"
 GAFFER_MODE=autonomous AUTO_MERGE=1 run_tick >/dev/null
@@ -238,12 +242,12 @@ approve "$IMPL2"
 rm -f "$GAFFER_DATA/.merge-held-tickets"
 GAFFER_MODE=autonomous AUTO_MERGE=1 run_tick >/dev/null
 [ "$(st "$IMPL2")" = "done" ] && ok "5: #$IMPL2 landed" || fail "5: #$IMPL2 status=$(st "$IMPL2")"
-[ "$(st "$ACC2")" = in_review ] || AUTO_MERGE=0 run_tick >/dev/null
+[ "$(st "$ACC2")" = in_testing ] || AUTO_MERGE=0 run_tick >/dev/null
 BR2="$(branch_of "$ACC2")"
 grep -q 'profile().displayName;' <<<"$(git -C "$R2" show "refs/heads/$BR2:src/label.js" 2>/dev/null)" && ok "5: the acceptance delivery reads displayName" || fail "5: acceptance #$ACC2 status=$(st "$ACC2") label: $(git -C "$R2" show "refs/heads/$BR2:src/label.js" 2>/dev/null | tr '\n' ' ')"
-approve "$ACC2"
 AUTO_MERGE=0 run_tick >/dev/null
-[ "$(st "$ACC2")" = ready_for_merge ] && ok "5: the tester's PASS → ready_for_merge" || fail "5: acceptance after the tester: $(st "$ACC2")"
+approve "$ACC2"
+[ "$(st "$ACC2")" = ready_for_merge ] && ok "5: the tester's PASS, then the approval of the tested commit → ready_for_merge" || fail "5: acceptance after the tester: $(st "$ACC2")"
 git -C "$R2" show "gaffer-tests/ticket-$ACC2:test/acceptance.test.mjs" >/dev/null 2>&1 && ok "5: the tester saved test/acceptance.test.mjs" || fail "5: no test/acceptance.test.mjs on gaffer-tests/ticket-$ACC2"
 sed -i.bak 's/, displayName: "Ada"//' "$R2/src/profile.js" && rm -f "$R2/src/profile.js.bak"
 gitc -C "$R2" commit -qam "refactor: drop the unused displayName"
@@ -269,8 +273,8 @@ grep -q "MERGE: #$ACC2 TESTER REPLAY — running the tester's 1 test file(s) (te
 wg ticket move "$ACC2" ready >/dev/null 2>&1
 AUTO_MERGE=0 run_tick >/dev/null
 REP2="$(git -C "$R2" rev-parse "refs/heads/$BR2")"
-approve "$ACC2"
 AUTO_MERGE=0 run_tick >/dev/null
+approve "$ACC2"
 rm -f "$GAFFER_DATA/.merge-held-tickets"
 GAFFER_MODE=autonomous AUTO_MERGE=1 run_tick >/dev/null
 [ "$(st "$ACC2")" = "done" ] && git -C "$R2" merge-base --is-ancestor "$REP2" main && ok "5: the repaired candidate landed (done)" || fail "5: acceptance #$ACC2 status=$(st "$ACC2") $(grep "#$ACC2" "$LOGF" | tail -3 | tr '\n' '|' | cut -c1-500)"

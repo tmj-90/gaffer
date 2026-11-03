@@ -273,7 +273,9 @@ describe("OpenAPI response schemas match the live routes", () => {
     for (const t of [impl!, acc!]) {
       wg.markReady(t, human);
       deliver(t);
-      wg.approveReview(t, reviewer);
+      // The acceptance ticket is tested before review (tester first).
+      if (t === acc) wg.routeToTester(t, { type: "system" });
+      else wg.approveReview(t, reviewer);
       if (t === impl) wg.markMerged(t, { type: "system" });
     }
     await expectContract("POST /tickets/:id/tester", `/tickets/${acc}/tester`, {

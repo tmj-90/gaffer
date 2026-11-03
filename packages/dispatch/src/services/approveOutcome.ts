@@ -23,8 +23,15 @@
  *                    changes. A HUMAN approval is not held by it: the human's outcome is
  *                    the usual one, its line says the tests changed and that the
  *                    Flags below the button name them, and `agent_hold` names the hold.
- *   to_tester        an epic's acceptance ticket, or GAFFER_TESTING on and the ticket is
- *                    testable: approveReview routes it in_review → in_testing.
+ *   held_untested    TESTER FIRST, a HUMAN approval: the independent tester gates this
+ *                    ticket (an epic's acceptance ticket, or a testable one whose lane is
+ *                    on) and has not passed the commit under review (not tested yet, a
+ *                    push after its PASS, a FAIL, a contract edited since): approveReview
+ *                    refuses (STATE_CONFLICT, not_tested) and the runner sends that commit
+ *                    to the tester; it returns to review after a PASS.
+ *   to_tester        an AGENT or auto approval of a ticket the tester gates whose commit it
+ *                    has not passed: approveReview routes it in_review → in_testing, and the
+ *                    PASS takes it to ready_for_merge (no person in that loop).
  *   land_now         AUTO_MERGE on and DISPATCH_MERGE_CMD set: the route fires the merge
  *                    runner the moment the ticket reaches ready_for_merge.
  *   land_next_tick   AUTO_MERGE on (or an earned merge gate) but no merge command on this
@@ -48,6 +55,7 @@
 export const APPROVE_OUTCOME_KINDS = [
   "held_ci",
   "held_repo_unavailable",
+  "held_untested",
   "held_test_modified",
   "to_tester",
   "land_now",
@@ -75,8 +83,23 @@ export interface ApproveOutcomeFacts {
    * list approveReview refuses on (repo_unavailable). Empty or absent when all resolve.
    */
   unavailableRepos?: Array<{ repo: string; why: string; fix?: string }>;
-  /** approveReview routes this ticket to the independent tester (in_testing). */
+  /**
+   * An AGENT or auto approval of this ticket would route it to the independent tester
+   * (in_testing): the tester gates it and has not passed the commit under review.
+   */
   toTester: boolean;
+  /**
+   * TESTER FIRST: a HUMAN approval is refused because the tester gates this ticket and has
+   * not passed the commit under review (why, the commit it tested, the head now). Null
+   * when the tester does not gate it or its PASS covers the head.
+   */
+  untested?: {
+    why: "no_verdict" | "failed" | "other_commit" | "contract_changed" | null;
+    tested: string | null;
+    head: string | null;
+  } | null;
+  /** The commit the tester passed when that PASS covers the head (the commit you approve). */
+  testedCommit?: string | null;
   /** …because it is an epic's acceptance ticket (the toggle does not apply). */
   acceptance: boolean;
   /** AUTO_MERGE ("Auto-merge on approval"): the route fires the merge runner. */
@@ -193,6 +216,13 @@ function bothClause(f: ApproveOutcomeFacts): string {
     : "";
 }
 
+/** "You approve tested commit X", when the tester's PASS covers the commit under review. */
+function testedClause(f: ApproveOutcomeFacts): string {
+  return f.testedCommit
+    ? ` You approve tested commit ${f.testedCommit.slice(0, 12)}: the independent tester passed it before your review.`
+    : "";
+}
+
 /** After the tester's PASS (ready_for_merge): who lands it. */
 function afterPass(f: ApproveOutcomeFacts): string {
   if ((f.autoMerge || f.mergeGateEarned) && f.mergeLane) return "the runner's merge lane lands it";
@@ -280,6 +310,33 @@ export function decideApproveOutcome(f: ApproveOutcomeFacts): ApproveOutcome {
       not_landed_repos: [],
     };
   }
+  if (!agent && f.untested) {
+    const u = f.untested;
+    const head = u.head ? ` ${u.head.slice(0, 12)}` : "";
+    const label = "Approve held: not tested on this commit";
+    return {
+      ...base,
+      kind: "held_untested",
+      approvable: false,
+      to_status: null,
+      label,
+      confirm_label: label,
+      done_label: "Approve held",
+      sentence:
+        (u.why === "other_commit"
+          ? `Not tested on this commit: the independent tester passed ${u.tested ? u.tested.slice(0, 12) : "another commit"}, and the branch is now at${head}.`
+          : u.why === "failed"
+            ? "Not tested on this commit: the independent tester's latest verdict is a FAIL."
+            : u.why === "contract_changed"
+              ? "Not tested on this contract: the ticket's title, description, criteria or test contract changed after the tester passed it."
+              : `Not tested on this commit yet: the independent tester has not passed${head || " it"}.`) +
+        " The server refuses approval of a commit the tester did not pass; the runner sends it to the tester, and it comes back here after a PASS.",
+      via: null,
+      lands_repo: null,
+      also_lands_repos: [],
+      not_landed_repos: [],
+    };
+  }
   if (agent && hold) {
     return {
       ...base,
@@ -296,11 +353,11 @@ export function decideApproveOutcome(f: ApproveOutcomeFacts): ApproveOutcome {
       not_landed_repos: [],
     };
   }
-  const tests = agent ? "" : testChangesClause(hold);
+  const tests = (agent ? "" : testChangesClause(hold)) + (agent ? "" : testedClause(f));
   if (f.toTester) {
     const why = f.acceptance
       ? "An epic's acceptance ticket always goes to the independent tester."
-      : "Independent testing is on and this ticket is testable.";
+      : "The independent tester gates this ticket and has not passed this commit.";
     return {
       ...base,
       kind: "to_tester",
@@ -382,7 +439,7 @@ export function settleApproveOutcome(
     merge?: { triggered: boolean; skipped?: string | undefined } | undefined;
   },
 ): ApproveOutcome {
-  const free = { ...facts, ciHold: null, unavailableRepos: [] };
+  const free = { ...facts, ciHold: null, unavailableRepos: [], untested: null };
   if (actual.toStatus === "in_testing") return decideApproveOutcome({ ...free, toTester: true });
   const predicted = decideApproveOutcome({ ...free, toTester: false });
   const m = actual.merge;

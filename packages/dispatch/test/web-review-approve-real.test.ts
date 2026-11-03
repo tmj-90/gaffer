@@ -189,24 +189,32 @@ describe(
       rmSync(work, { recursive: true, force: true });
     });
 
-    it("the testing lane with AUTO_MERGE and a merge command: sent to the tester, no merge started", async () => {
+    it("the testing lane with AUTO_MERGE and a merge command: held until the tester passes, then the tested commit lands", async () => {
       process.env.GAFFER_TESTING = "1";
       process.env.AUTO_MERGE = "1";
       const d = Dispatch.open(join(work, "dispatch.db"));
       const id = inReview(d, { testable: true });
       await serve(d, true);
       await openReview(id);
-      expect(btn().textContent).toBe("Approve and send to tester");
-      expect(nextLine()).toContain("not to merge");
-      btn().click();
-      expect(btn().textContent).toBe("Confirm: send to tester");
-      btn().click();
-      await approved();
-      const page = await ticketPage(id);
-      expect(page.ticket.status).toBe("in_testing");
+      // TESTER FIRST: the commit has not been tested yet, so the server refuses approval.
+      expect(btn().textContent).toBe("Approve held: not tested on this commit");
+      expect(btn().disabled).toBe(true);
+      expect(nextLine()).toContain("Not tested on this commit yet");
       expect(triggers).toEqual([]);
-      expect(page.events.map((e) => e.event_type)).not.toContain("ticket.merge_started");
-      expect(btn().textContent).toContain("Sent to tester");
+      // The runner sends it to the tester; its PASS on the head returns it to review.
+      d.routeToTester(id, { type: "system" });
+      const head = git(join(work, "taskflow-api"), "rev-parse", BRANCH);
+      d.testerPass(
+        id,
+        { summary: "black-box PASS", tested_commit: head, replay: "passed" },
+        { type: "agent", id: "tester-1" },
+      );
+      await openReview(id);
+      expect(btn().textContent).toBe("Approve and land now");
+      expect(nextLine()).toContain(`You approve tested commit ${head.slice(0, 12)}`);
+      await approve();
+      const page = await ticketPage(id);
+      expect(page.ticket.status).toBe("ready_for_merge");
     });
 
     it("AUTO_MERGE on, no merge command, a usage pause: the line, the Review status and the ticket page all say the pause", async () => {

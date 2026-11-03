@@ -384,13 +384,22 @@ function inReview(
 }
 
 describe("Dispatch.approveOutcome: read from the approve path's own predicates", () => {
-  it("GAFFER_TESTING on + testable: to_tester, and approveReview really goes there", () => {
+  it("GAFFER_TESTING on + testable: a person's approve is held until the tester passes the commit (tester first)", () => {
     process.env.GAFFER_TESTING = "1";
     const wg = freshWg();
     const { id } = inReview(wg);
     wg.setTestable(id, true, human);
-    expect(wg.approveOutcome(id, { mergeCommand: true }).kind).toBe("to_tester");
-    expect(wg.approveReview(id, human).ticket.status).toBe("in_testing");
+    // Untested: the human's approval is refused; an agent's would go to the tester.
+    expect(wg.approveOutcome(id, { mergeCommand: true }).kind).toBe("held_untested");
+    expect(wg.approveOutcome(id, { mergeCommand: true, approver: "agent" }).kind).toBe("to_tester");
+    expect(() => wg.approveReview(id, human)).toThrow(/not tested on this commit/);
+    // The runner sends it to the tester; its PASS returns it to review.
+    wg.routeToTester(id, { type: "system" });
+    wg.testerPass(id, { summary: "black-box PASS", replay: "passed" }, { type: "agent", id: "t1" });
+    const o = wg.approveOutcome(id, { mergeCommand: false });
+    expect(o.kind).toBe("waits_for_merge");
+    expect(o.sentence).toContain("You approve tested commit");
+    expect(wg.approveReview(id, human).ticket.status).toBe("ready_for_merge");
     wg.db.close();
   });
 
@@ -637,41 +646,45 @@ describe("routes: GET /diff predicts, review/approve says what happened", () => 
     expect(body.approve_outcome?.kind).toBe("land_next_tick");
   });
 
-  it("'Approve and send to tester' starts no merge, even with AUTO_MERGE and a merge command", async () => {
-    // The button says "It moves to In testing, not to merge": the click must not spawn the
-    // merge runner for a ticket that is in_testing (merge-ticket refuses it, leaving a failed
-    // merge run behind and a merge_started note on a ticket nothing is landing).
+  it("an untested commit's approve is held (409 not_tested) and starts no merge, even with AUTO_MERGE and a merge command", async () => {
+    // TESTER FIRST: the independent tester tests before a person reviews; an approval of a
+    // commit it has not passed is refused server-side, so no merge can start either.
     process.env.AUTO_MERGE = "1";
     process.env.GAFFER_TESTING = "1";
     const { id, number } = inReview(wg);
     wg.setTestable(id, true, human);
     const diff = (await (await fetch(`${baseUrl}/tickets/${id}/diff`)).json()) as {
+      approve_outcome?: { kind: string; approvable: boolean };
+    };
+    expect(diff.approve_outcome).toMatchObject({ kind: "held_untested", approvable: false });
+    const res = await approve(id);
+    const body = (await res.json()) as { error?: { code: string; details?: { reason?: string } } };
+    expect(res.status).toBe(409);
+    expect(body.error?.details?.reason).toBe("not_tested");
+    expect(triggers, `no merge triggered for #${number}`).toEqual([]);
+    expect(wg.view(id).ticket.status).toBe("in_review");
+    // Tested and passed: the same click now approves the tested commit and lands it.
+    wg.routeToTester(id, { type: "system" });
+    wg.testerPass(id, { summary: "black-box PASS", replay: "passed" }, { type: "agent", id: "t1" });
+    const ok = await approve(id);
+    const done = (await ok.json()) as {
+      ticket: { status: string };
       approve_outcome?: { kind: string };
     };
-    expect(diff.approve_outcome?.kind).toBe("to_tester");
-    const res = await approve(id);
-    const body = (await res.json()) as {
-      ticket: { status: string };
-      merge?: { triggered: boolean };
-      approve_outcome?: { kind: string; done_label: string };
-    };
-    expect(res.status).toBe(200);
-    expect(body.ticket.status).toBe("in_testing");
-    expect(body.approve_outcome?.kind).toBe("to_tester");
-    expect(triggers, `no merge triggered for #${number}`).toEqual([]);
-    expect(body.merge?.triggered ?? false).toBe(false);
+    expect(ok.status).toBe(200);
+    expect(done.ticket.status).toBe("ready_for_merge");
+    expect(done.approve_outcome?.kind).toBe("land_now");
     const events = wg.listTicketEvents(id).map((e) => e.event_type);
     expect(events).toContain("ticket.routed_to_testing");
-    expect(events).not.toContain("ticket.merge_started");
   });
 
-  it("an epic's acceptance ticket goes to the tester and starts no merge either", async () => {
+  it("an epic's acceptance ticket is held until the tester passes it and starts no merge either", async () => {
     process.env.AUTO_MERGE = "1";
     const { id } = inReview(wg);
     wg.db.prepare("UPDATE tickets SET acceptance = 1 WHERE id = ?").run(id);
     const res = await approve(id);
-    const body = (await res.json()) as { ticket: { status: string } };
-    expect(body.ticket.status).toBe("in_testing");
+    expect(res.status).toBe(409);
+    expect(wg.view(id).ticket.status).toBe("in_review");
     expect(triggers).toEqual([]);
   });
 });

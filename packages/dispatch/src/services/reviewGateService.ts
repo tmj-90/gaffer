@@ -201,8 +201,13 @@ export interface ReviewGateServiceDeps {
   readonly ticketSvc: TicketService;
   /** The reject cap, or a function answering it now (read per reject, never cached). */
   readonly maxAttempts: number | (() => number);
-  /** Per-instance override for the GAFFER_TESTING toggle (undefined = read env). */
-  readonly testingEnabledOverride?: boolean | undefined;
+  /**
+   * Does the independent tester gate this ticket (an epic's acceptance ticket, or a
+   * testable one whose tester lane is on: GAFFER_TESTING on, or the `auto` default with a
+   * registered test command in every write repo)? Undefined: acceptance tickets, plus
+   * testable ones while GAFFER_TESTING is on.
+   */
+  readonly testerLaneApplies?: ((ticket: Ticket) => boolean) | undefined;
   /** The agents table — lets the approve path verify an agent approver is REGISTERED. */
   readonly agents?: AgentRepository | undefined;
   /**
@@ -416,7 +421,7 @@ export class ReviewGateService {
   private get maxAttempts(): number {
     return this.maxAttemptsOf();
   }
-  private readonly testingEnabledOverride: boolean | undefined;
+  private readonly testerLaneAppliesFn: ((ticket: Ticket) => boolean) | undefined;
   private readonly agents: AgentRepository | undefined;
   private readonly requireRegisteredAgentApprover: boolean;
   private readonly onTicketParked:
@@ -439,7 +444,7 @@ export class ReviewGateService {
     this.ticketSvc = deps.ticketSvc;
     const cap = deps.maxAttempts;
     this.maxAttemptsOf = typeof cap === "function" ? cap : () => cap;
-    this.testingEnabledOverride = deps.testingEnabledOverride;
+    this.testerLaneAppliesFn = deps.testerLaneApplies;
     this.agents = deps.agents;
     this.requireRegisteredAgentApprover = deps.requireRegisteredAgentApprover ?? false;
     this.onTicketParked = deps.onTicketParked;
@@ -569,14 +574,26 @@ export class ReviewGateService {
     // is pinned by the runner (lib/review.sh) only.
     const heads = this.resolveReviewedHeads(ticket);
     const pins = this.checkShownCommits(ticket, heads, actor, opts, unavailable);
-    // BBT-001: when the testing lane is ON and this ticket is eligible, route
-    // through the independent tester (`in_review -> in_testing`) instead of
-    // straight to merge. testerVerdict:true guards this transition.
-    // ACCEPTANCE GATE: an epic's acceptance ticket ALWAYS takes this route — the
-    // GAFFER_TESTING toggle does not apply. Acceptance is a gate, not an option: the
-    // only ways out of in_testing are a recorded tester verdict or a human's
-    // tester-pass / tester-fail (auditable evidence), never a plain approve.
-    if (this.approveRoutesToTesting(ticket)) {
+    // TESTER FIRST: when the independent tester gates this ticket (an epic's acceptance
+    // ticket always; a testable one while its lane is on), it tests the candidate BEFORE
+    // a person reviews it (the runner routes in_review -> in_testing, see routeToTester,
+    // and a PASS returns it to in_review). A person approves only the commit the tester
+    // passed: an approval of any other commit (none tested yet, a push after the PASS, a
+    // contract edited since) is REFUSED here (STATE_CONFLICT, reason not_tested), and the
+    // runner sends that commit to the tester. An agent's approval (the runner's earned
+    // autonomy; no person in the loop) of an untested commit routes it to the tester, as
+    // the lane always has: its PASS then goes straight to ready_for_merge. A covered
+    // commit goes to ready_for_merge below: there is no second testing pass.
+    const coverage = this.laneApplies(ticket) ? this.testerCoverage(ticket, heads) : null;
+    if (coverage && !coverage.covered && (actor.type === "human" || actor.type === "admin")) {
+      throw new DispatchError("STATE_CONFLICT", notTestedMessage(ticket, coverage), {
+        reason: "not_tested",
+        why: coverage.why,
+        tested: coverage.tested,
+        head: coverage.head,
+      });
+    }
+    if (coverage && !coverage.covered) {
       return inTransaction(this.db, () => {
         const result = this.transitions.transition({
           ticketId: ticket.id,
@@ -626,7 +643,251 @@ export class ReviewGateService {
    * routes on, public so the Review view's "what happens on approve" names the same route.
    */
   approveRoutesToTesting(ticket: Ticket): boolean {
-    return ticket.acceptance === 1 || (this.testingEnabled() && ticket.can_be_tested === 1);
+    return this.laneApplies(ticket) && !this.testerCoverage(ticket).covered;
+  }
+
+  /**
+   * Does the independent tester gate this ticket at all: an epic's acceptance ticket
+   * (always), or a testable one whose lane is on (see util/testingLane.ts)?
+   */
+  laneApplies(ticket: Ticket): boolean {
+    if (ticket.acceptance === 1) return true;
+    if (ticket.can_be_tested !== 1) return false;
+    return this.testerLaneAppliesFn ? this.testerLaneAppliesFn(ticket) : isTestingEnabled();
+  }
+
+  /**
+   * TESTER FIRST: does a tester PASS cover the candidate a person would approve now?
+   * Covered when the latest tester verdict since this round began (the latest entry into
+   * in_review that was not a tester PASS returning it) is a PASS, the commit it tested is
+   * the primary write repo's head now (compared when both are known: the tester runs in
+   * the primary repo), and the contract it tested is the one on record (when it recorded
+   * one). `heads` reuses a read the caller already made (git).
+   */
+  testerCoverage(ticket: Ticket, heads?: readonly ReviewedHead[]): TesterCoverage {
+    // The tester runs in one write repo (runner/bin/merge-ticket.mjs resolveTicket's pick,
+    // the first write link); its tested commit must be that repo's head now, so it is
+    // compared with every write repo's head (a commit id names one commit).
+    const allHeads = (heads ?? this.resolveReviewedHeads(ticket))
+      .map((h) => h.sha?.toLowerCase())
+      .filter((h): h is string => Boolean(h));
+    const head = allHeads[0] ?? null;
+    const round = this.db
+      .prepare(
+        `SELECT rowid AS rid FROM work_events
+          WHERE entity_type = 'ticket' AND entity_id = ? AND event_type = 'ticket.transitioned'
+            AND json_extract(payload_json, '$.to') = 'in_review'
+            AND COALESCE(json_extract(payload_json, '$.from'), '') <> 'in_testing'
+          ORDER BY rowid DESC LIMIT 1`,
+      )
+      .get(ticket.id) as { rid: number } | undefined;
+    const verdict = this.db
+      .prepare(
+        `SELECT rowid AS rid, event_type, payload_json FROM work_events
+          WHERE entity_type = 'ticket' AND entity_id = ?
+            AND event_type IN ('ticket.tester_passed', 'ticket.tester_failed')
+          ORDER BY rowid DESC LIMIT 1`,
+      )
+      .get(ticket.id) as
+      { rid: number; event_type: string; payload_json: string | null } | undefined;
+    if (!verdict || (round && verdict.rid < round.rid)) {
+      return { covered: false, why: "no_verdict", tested: null, head };
+    }
+    const parse = (raw: string | null | undefined): Record<string, unknown> => {
+      try {
+        const v: unknown = JSON.parse(raw ?? "{}");
+        return v && typeof v === "object" ? (v as Record<string, unknown>) : {};
+      } catch {
+        return {};
+      }
+    };
+    const p = parse(verdict.payload_json);
+    const row =
+      typeof p.evidence_id === "string"
+        ? (this.db
+            .prepare("SELECT payload_json FROM evidence WHERE id = ? AND ticket_id = ?")
+            .get(p.evidence_id, ticket.id) as { payload_json: string | null } | undefined)
+        : undefined;
+    const binding = parse(row?.payload_json);
+    const asSha = (v: unknown): string | null =>
+      typeof v === "string" && /^[0-9a-f]{7,64}$/i.test(v.trim()) ? v.trim().toLowerCase() : null;
+    const tested = asSha(p.tested_head) ?? asSha(binding.tested_commit);
+    if (verdict.event_type !== "ticket.tester_passed") {
+      return { covered: false, why: "failed", tested, head };
+    }
+    const same = (a: string, b: string) => a.startsWith(b) || b.startsWith(a);
+    if (allHeads.length > 0 && (tested === null || !allHeads.some((h) => same(h, tested)))) {
+      return { covered: false, why: "other_commit", tested, head };
+    }
+    // The contract the PASS was about: the tester's binding, else (a person's waiver
+    // before review) the hash recorded on the PASS event.
+    const recorded =
+      typeof binding.contract_hash === "string"
+        ? binding.contract_hash
+        : typeof p.contract_hash === "string"
+          ? p.contract_hash
+          : null;
+    if (recorded && recorded !== contractHash(this.db, ticket.id)) {
+      return { covered: false, why: "contract_changed", tested, head };
+    }
+    return {
+      covered: true,
+      why: null,
+      tested,
+      head: (tested && allHeads.find((h) => same(h, tested))) ?? head,
+    };
+  }
+
+  /**
+   * TESTER FIRST: send an in_review ticket to the independent tester before a person
+   * reviews it (`in_review -> in_testing`, reason tester_before_review). The runner's
+   * call (system) or an admin's; anyone else is refused. Not an error when nothing is to
+   * do: a ticket that is not in review, that the tester does not gate, whose write repo
+   * cannot be read, or whose head a PASS already covers comes back `routed: false` with
+   * why, so the runner can ask for every in_review ticket.
+   */
+  routeToTester(ref: string, actor: Actor): TesterRoute {
+    if (actor.type !== "system" && actor.type !== "admin") {
+      throw new DispatchError(
+        "ACTOR_NOT_PERMITTED",
+        "Only the runner (system) or an admin may send a ticket to the independent tester.",
+        { actor_type: actor.type },
+      );
+    }
+    const pre = this.ticketSvc.resolveTicket(ref);
+    const out = (routed: boolean, why: string | null, head: string | null = null): TesterRoute => ({
+      ticketId: pre.id,
+      number: pre.number,
+      routed,
+      why,
+      head,
+    });
+    // git runs here, before the write transaction.
+    const plan = this.testerRoutePlan(pre);
+    if (!plan.route) return out(false, plan.why, plan.coverage?.head ?? null);
+    const coverage = plan.coverage;
+    return inTransaction(this.db, () => {
+      const ticket = this.ticketSvc.resolveTicket(ref);
+      if (ticket.status !== "in_review") return out(false, `not in review (${ticket.status})`);
+      this.transitions.transition({
+        ticketId: ticket.id,
+        actor,
+        toStatus: "in_testing",
+        reason: "tester_before_review",
+        expectedFromStatus: "in_review",
+        testerVerdict: true,
+      });
+      writeEvent(this.db, {
+        entity_type: "ticket",
+        entity_id: ticket.id,
+        actor,
+        event_type: "ticket.routed_to_testing",
+        payload: {
+          from: "in_review",
+          before_review: true,
+          head: coverage.head,
+          ...(coverage.why === "other_commit" && coverage.tested
+            ? { tested: coverage.tested }
+            : {}),
+          ...(ticket.acceptance === 1 ? { acceptance: true } : {}),
+        },
+      });
+      return out(true, null, coverage.head);
+    });
+  }
+
+  /**
+   * TESTER FIRST: would routeToTester send this ticket to the tester now, and if not, why?
+   * The one decision behind the route and Poll for work's count (Dispatch.pendingTesterRoutes),
+   * so Poll never counts a ticket the route would leave. Not when: it is not in review, the
+   * tester does not gate it, a write repo's head cannot be read, a PASS covers its head, or
+   * CI is required and has not passed on its head (the tester runs after the gates: a red or
+   * pending CI is the delivery tick's to settle, and a red one goes back to rework). Reads git.
+   */
+  testerRoutePlan(
+    ticket: Ticket,
+  ):
+    | { route: true; why: null; coverage: TesterCoverage }
+    | { route: false; why: string; coverage: TesterCoverage | null } {
+    if (ticket.status !== "in_review") {
+      return { route: false, why: `not in review (${ticket.status})`, coverage: null };
+    }
+    if (!this.laneApplies(ticket)) {
+      return {
+        route: false,
+        why: "the independent tester does not gate this ticket",
+        coverage: null,
+      };
+    }
+    const unavailable = this.unavailableWriteRepos(ticket);
+    if (unavailable.length > 0) {
+      return {
+        route: false,
+        why: `the delivery head of ${unavailable.map((m) => m.repo).join(", ")} cannot be read: ${unavailable[0]!.why}`,
+        coverage: null,
+      };
+    }
+    const coverage = this.testerCoverage(ticket, this.resolveReviewedHeads(ticket));
+    if (coverage.covered) {
+      return {
+        route: false,
+        why: `the tester already passed ${coverage.tested ? coverage.tested.slice(0, 12) : "this candidate"}`,
+        coverage,
+      };
+    }
+    const ci = this.ciStatus(ticket.id, coverage.head);
+    if (ci.required && ci.state !== "pass") {
+      return {
+        route: false,
+        why: `CI has not passed on ${coverage.head ? coverage.head.slice(0, 12) : "the candidate"} yet (${ci.state ?? "no result"}): the tester runs after the gates`,
+        coverage,
+      };
+    }
+    return { route: true, why: null, coverage };
+  }
+
+  /** Every in_review ticket the tester gates and has not passed, sent to it (see routeToTester). */
+  routeAllToTester(actor: Actor): TesterRoute[] {
+    if (actor.type !== "system" && actor.type !== "admin") {
+      throw new DispatchError(
+        "ACTOR_NOT_PERMITTED",
+        "Only the runner (system) or an admin may send a ticket to the independent tester.",
+        { actor_type: actor.type },
+      );
+    }
+    const ids = (
+      this.db
+        .prepare("SELECT id FROM tickets WHERE status = 'in_review' ORDER BY number ASC")
+        .all() as Array<{ id: string }>
+    ).map((r) => r.id);
+    const out: TesterRoute[] = [];
+    for (const id of ids) {
+      try {
+        out.push(this.routeToTester(id, actor));
+      } catch (err) {
+        // One ticket's failure (a concurrent move) never stops the others.
+        out.push({
+          ticketId: id,
+          number: null,
+          routed: false,
+          why: err instanceof Error ? err.message : String(err),
+          head: null,
+        });
+      }
+    }
+    return out;
+  }
+
+  /** The latest entry into in_testing was the runner's tester-first route (not an approval). */
+  private enteredTestingBeforeReview(ticketId: string): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT json_extract(payload_json, '$.before_review') AS before_review FROM work_events
+          WHERE entity_type = 'ticket' AND entity_id = ? AND event_type = 'ticket.routed_to_testing'
+          ORDER BY rowid DESC LIMIT 1`,
+      )
+      .get(ticketId) as { before_review: number | null } | undefined;
+    return row?.before_review === 1;
   }
 
   /** The candidate commit REQUIRED CI is read for on approve (null when no CI is recorded). */
@@ -1641,8 +1902,11 @@ export class ReviewGateService {
   }
 
   /**
-   * The independent black-box tester PASSED (`in_testing -> ready_for_merge`).
-   * testerVerdict:true guards this transition.
+   * The independent black-box tester PASSED. TESTER FIRST: a ticket the runner sent to
+   * the tester before review (routeToTester) returns to `in_review` for a person, with
+   * the commit it tested recorded on the `ticket.tester_passed` event (`tested_head`);
+   * a ticket an approval sent (an agent's approval, or a person's before tester-first)
+   * goes on to `ready_for_merge` as before. testerVerdict:true guards both transitions.
    */
   testerPass(
     ticketRef: string,
@@ -1664,30 +1928,40 @@ export class ReviewGateService {
     // nested transition() is only a savepoint inside it, so "before transition()" is
     // not enough). The gate re-checks the proof's fingerprint inside the transaction.
     const pre = this.ticketSvc.resolveTicket(ticketRef);
+    const toReview = pre.status === "in_testing" && this.enteredTestingBeforeReview(pre.id);
+    const target: TicketStatus = toReview ? "in_review" : "ready_for_merge";
     const deliveryDiff =
-      pre.status === "in_testing" ? this.transitions.deliveryDiffProof(pre.id) : undefined;
+      pre.status === "in_testing" && !toReview
+        ? this.transitions.deliveryDiffProof(pre.id)
+        : undefined;
     // REQUIRED CI's candidate: the tested commit, else the branch head — resolved (git)
-    // here, outside the write transaction, and only when CI results exist at all.
-    const ciCandidate =
-      input.tested_commit ??
-      (this.ciStatus(pre.id, null).required ? (this.ciCandidateHead(pre)?.sha ?? null) : null);
+    // here, outside the write transaction, and only when CI results exist at all. A PASS
+    // that returns the ticket to review approves nothing: approval reads CI itself.
+    const ciCandidate = toReview
+      ? null
+      : (input.tested_commit ??
+        (this.ciStatus(pre.id, null).required ? (this.ciCandidateHead(pre)?.sha ?? null) : null));
+    // The commit this PASS is about, for the approval's same-commit check: the tested
+    // commit the runner's tester names, else (a person's waiver) the head now.
+    const headNow = toReview ? (this.ciCandidateHead(pre)?.sha ?? null) : null;
     return inTransaction(this.db, () => {
       const ticket = this.ticketSvc.resolveTicket(ticketRef);
       if (ticket.status !== "in_testing") {
         throw new DispatchError(
           "ILLEGAL_TRANSITION",
           "Only a ticket in testing can be passed by the tester.",
-          { from: ticket.status, to: "ready_for_merge" },
+          { from: ticket.status, to: target },
         );
       }
+      const contractNow = contractHash(this.db, ticket.id);
       const binding = validatedBinding(input, {
         strict: ticket.acceptance === 1 && testerProvenance(actor) !== "human",
-        currentHash: contractHash(this.db, ticket.id),
+        currentHash: contractNow,
         verdict: "pass",
         human: testerProvenance(actor) === "human",
       });
       // REQUIRED CI: the tester's PASS is the other way into ready_for_merge.
-      this.assertCiPassed(ticket, ciCandidate);
+      if (!toReview) this.assertCiPassed(ticket, ciCandidate);
       // Record the passing test result as evidence so it is visible in review.
       const evidenceId = newId();
       const now = this.clock.now();
@@ -1715,18 +1989,28 @@ export class ReviewGateService {
       const result = this.transitions.transition({
         ticketId: ticket.id,
         actor,
-        toStatus: "ready_for_merge",
+        toStatus: target,
         reason: "tester_passed",
         expectedFromStatus: "in_testing",
         testerVerdict: true,
         ...(deliveryDiff ? { deliveryDiff } : {}),
       });
+      const testedHead = binding.tested_commit ?? headNow?.toLowerCase() ?? null;
       writeEvent(this.db, {
         entity_type: "ticket",
         entity_id: ticket.id,
         actor,
         event_type: "ticket.tester_passed",
-        payload: { evidence_id: evidenceId },
+        payload: {
+          evidence_id: evidenceId,
+          ...(toReview ? { to: "in_review", before_review: true } : {}),
+          ...(testedHead ? { tested_head: testedHead } : {}),
+          // The contract a PASS before review was about, when its binding names none (a
+          // person's waiver): a contract edited after it then needs the tester again.
+          ...(toReview && !binding.contract_hash && contractNow
+            ? { contract_hash: contractNow }
+            : {}),
+        },
       });
       return result;
     });
@@ -2549,12 +2833,39 @@ export class ReviewGateService {
     });
     return why;
   }
+}
 
-  /**
-   * BBT-001 toggle accessor — overridable per-instance for tests. Defaults to the
-   * `GAFFER_TESTING` env read via `isTestingEnabled`.
-   */
-  private testingEnabled(): boolean {
-    return this.testingEnabledOverride ?? isTestingEnabled();
-  }
+/** TESTER FIRST: whether a tester PASS covers the candidate (see testerCoverage). */
+export interface TesterCoverage {
+  covered: boolean;
+  /** Why not: no verdict this round, the latest one failed, another commit, a new contract. */
+  why: "no_verdict" | "failed" | "other_commit" | "contract_changed" | null;
+  /** The commit the latest verdict tested, when recorded. */
+  tested: string | null;
+  /** The primary write repo's head now, when it resolves. */
+  head: string | null;
+}
+
+/** What routeToTester did for one ticket. */
+export interface TesterRoute {
+  ticketId: string;
+  number: number | null;
+  routed: boolean;
+  why: string | null;
+  head: string | null;
+}
+
+/** The refusal a person's approval of a commit the tester did not pass gets. */
+function notTestedMessage(ticket: Ticket, c: TesterCoverage): string {
+  const n = ticket.number !== null ? `#${ticket.number}` : "This ticket";
+  const head = c.head ? ` ${c.head.slice(0, 12)}` : "";
+  const what =
+    c.why === "other_commit"
+      ? `the independent tester passed ${c.tested ? c.tested.slice(0, 12) : "another commit"}, but the branch is now at${head}`
+      : c.why === "failed"
+        ? "the independent tester's latest verdict is a FAIL"
+        : c.why === "contract_changed"
+          ? "the ticket's contract changed after the tester passed it"
+          : `the independent tester has not passed this commit${head} yet`;
+  return `${n} is not tested on this commit: ${what}. A person approves only the commit the tester passed; the runner sends this one to the tester, and it returns to review after a PASS.`;
 }

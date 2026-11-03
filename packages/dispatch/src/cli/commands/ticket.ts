@@ -651,6 +651,29 @@ export function registerTicket(program: Command): void {
     });
 
   ticket
+    .command("tester-route [ref]")
+    .description(
+      "Send an in_review ticket to the independent tester before a person reviews it " +
+        "(tester first: in_review -> in_testing; a PASS brings it back to review). A no-op " +
+        "with the reason when the tester does not gate the ticket, it is not in review, or a " +
+        "PASS already covers its head. --all sends every such in_review ticket. The runner " +
+        "calls this after its gates (and the agent review, when that runs). System/admin only.",
+    )
+    .option("--all", "every in_review ticket the tester gates and has not passed")
+    .option("--as <actor>", "actor type: system|admin", "system")
+    .action((ref, opts, cmd) => {
+      const as = parseAs(opts.as, ["system", "admin"] as const);
+      if (!ref && !opts.all) {
+        throw new DispatchError("VALIDATION_ERROR", "Name a ticket, or pass --all.");
+      }
+      const wg = open(cmd.optsWithGlobals());
+      const actor: Actor = as === "admin" ? { type: "admin", id: cliUserId() } : { type: "system" };
+      const routes = wg.routeToTester(opts.all ? null : String(ref), actor);
+      printJson({ ok: true, routed: routes.filter((r) => r.routed).length, routes });
+      wg.db.close();
+    });
+
+  ticket
     .command("ci-required <ref>")
     .description(
       "Record that this ticket needs a CI pass before it may be approved, " +
@@ -705,7 +728,7 @@ export function registerTicket(program: Command): void {
     .command("set-testable <ref>")
     .description(
       "Mark a ticket eligible for the independent black-box testing lane " +
-        "(--off to clear). Gates entry to in_testing on review approval when GAFFER_TESTING is on.",
+        "(--off to clear). The tester then tests each delivery before review when its tester lane is on (GAFFER_TESTING on, or the default with a registered test command).",
     )
     .option("--off", "clear the flag (mark NOT testable)", false)
     .option("--admin", "act as an admin actor", false)

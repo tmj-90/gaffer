@@ -10,7 +10,8 @@ import { SCHEMA_VERSION } from "../src/db/schema.js";
 import type { Actor } from "../src/domain/types.js";
 import { ACCEPTANCE_CRITERIA } from "../src/services/epicsService.js";
 import { TestClock } from "../src/util/clock.js";
-import { giveTicketRealDelivery, nonEmptyDiffRunner } from "./helpers/realDiff.js";
+import type { GitRunner } from "../src/services/diffService.js";
+import { FAKE_HEAD, giveTicketRealDelivery, nonEmptyDiffRunner } from "./helpers/realDiff.js";
 
 /**
  * ACCEPTANCE GATE — "implementation tickets merged" is not "build accepted".
@@ -21,8 +22,10 @@ import { giveTicketRealDelivery, nonEmptyDiffRunner } from "./helpers/realDiff.j
  *   1. every epic gets a factory-created acceptance ticket — dependent on every
  *      implementation ticket, testable, with a contract and the cross-cutting criteria;
  *      `epic.acceptance:false` opts out; the brief rides on it as the contract;
- *   2. approving an acceptance ticket ALWAYS routes to in_testing, GAFFER_TESTING off
- *      or on, while an ordinary ticket still goes straight to ready_for_merge;
+ *   2. an acceptance ticket is ALWAYS tested, GAFFER_TESTING off or on: TESTER FIRST, the
+ *      runner sends it to the tester before a person reviews it (a person's approval of
+ *      an untested commit is refused), while an ordinary ticket with the lane off still
+ *      goes straight from approval to ready_for_merge;
  *   3. the regression fixture: an implementation whose ticket tests all pass, whose
  *      acceptance the tester FAILS → stats report the build as failed / not accepted,
  *      never "all clear"; a tester PASS → accepted;
@@ -34,8 +37,19 @@ const agentActor: Actor = { type: "agent", id: "agent-runner" };
 const testerAgent: Actor = { type: "agent", id: "tester-1" };
 const systemActor: Actor = { type: "system" };
 
+/** The delivery head the stub git reports (a re-delivery moves it). */
+const head = { sha: FAKE_HEAD };
+const movableHeadRunner: GitRunner = (cwd, args) => {
+  const last = String(args[args.length - 1] ?? "");
+  if (args[0] === "rev-parse" && /^refs\/heads\/.+\^\{commit\}$/.test(last)) {
+    return { status: 0, stdout: `${head.sha}\n`, stderr: "" };
+  }
+  return nonEmptyDiffRunner(cwd, args);
+};
+
 function freshWg(opts: { testingEnabled?: boolean } = {}): Dispatch {
-  return Dispatch.open(":memory:", new TestClock(), nonEmptyDiffRunner, {
+  head.sha = FAKE_HEAD;
+  return Dispatch.open(":memory:", new TestClock(), movableHeadRunner, {
     ...(opts.testingEnabled !== undefined ? { testingEnabled: opts.testingEnabled } : {}),
   });
 }
@@ -69,7 +83,8 @@ function planWithTwoTickets(wg: Dispatch, extra: Record<string, unknown> = {}) {
   );
 }
 
-const SHA = "0123456789abcdef0123456789abcdef01234567";
+/** The commit the tester tested: the delivery head (an approval needs its PASS on it). */
+const SHA = FAKE_HEAD;
 /** The revision that LANDED (the gated merge of SHA onto the default branch). */
 const LANDED = "89abcdef0123456789abcdef0123456789abcdef";
 
@@ -101,6 +116,19 @@ function boundPass(wg: Dispatch, ticketId: string) {
     contract_hash: contractHash(wg.db, ticketId)!,
     replay: "passed",
   };
+}
+
+/** TESTER FIRST: the runner sends the in_review ticket to the tester before review. */
+function toTester(wg: Dispatch, ticketId: string): void {
+  const [r] = wg.routeToTester(ticketId, systemActor);
+  expect(r!.routed).toBe(true);
+  expect(wg.view(ticketId).ticket.status).toBe("in_testing");
+}
+
+/** After the tester's PASS returned it to review, a person approves the tested commit. */
+function approveTested(wg: Dispatch, ticketId: string): void {
+  expect(wg.view(ticketId).ticket.status).toBe("in_review");
+  expect(wg.approveReview(ticketId, reviewer).ticket.status).toBe("ready_for_merge");
 }
 
 function expectCode(fn: () => unknown, code: string): void {
@@ -158,10 +186,11 @@ describe("acceptance gate: every epic gets a factory-created acceptance ticket",
     expect(deps).toEqual([res.ticketNumbers[0], res.ticketNumbers[1]].sort());
     // Linked to the plan's repo like its siblings; contained by the epic.
     expect(wg.view(acc.id).repositories.map((r) => r.name)).toContain("app");
-    // Implementation tickets are untouched: not acceptance, not testable.
+    // Implementation tickets are not acceptance tickets. Under the `auto` lane default they
+    // are testable (eligible): the tester runs where their repo has a test command.
     const store = wg.view(String(res.ticketNumbers[0])).ticket;
     expect(store.acceptance).toBe(0);
-    expect(store.can_be_tested).toBe(0);
+    expect(store.can_be_tested).toBe(1);
   });
 
   it("epic.acceptance:false opts out; the epic description is the contract when no brief is given", () => {
@@ -199,7 +228,7 @@ describe("acceptance gate: every epic gets a factory-created acceptance ticket",
   });
 });
 
-describe("acceptance gate: approval always routes an acceptance ticket to the tester", () => {
+describe("acceptance gate: an acceptance ticket always goes to the tester (before review)", () => {
   function epicToReview(wg: Dispatch) {
     return epicToReviewWith(wg);
   }
@@ -207,8 +236,9 @@ describe("acceptance gate: approval always routes an acceptance ticket to the te
   it("GAFFER_TESTING OFF: an ordinary testable ticket goes to ready_for_merge, the acceptance ticket goes to in_testing", () => {
     const wg = freshWg({ testingEnabled: false });
     const { accId } = epicToReview(wg);
-    const res = wg.approveReview(accId, reviewer);
-    expect(res.ticket.status).toBe("in_testing");
+    // A person cannot approve it untested; the runner sends it to the tester first.
+    expectCode(() => wg.approveReview(accId, reviewer), "STATE_CONFLICT");
+    toTester(wg, accId);
     const ev = wg.view(accId).events.find((e) => e.event_type === "ticket.routed_to_testing");
     if (!ev || typeof ev.payload_json !== "string") {
       throw new Error("expected a ticket.routed_to_testing event with a JSON payload");
@@ -230,7 +260,7 @@ describe("acceptance gate: approval always routes an acceptance ticket to the te
   it("REGRESSION FIXTURE: implementation all merged, tester FAILS the acceptance → the build reads failed / not accepted, never all clear", () => {
     const wg = freshWg({ testingEnabled: false });
     const { accId } = epicToReview(wg);
-    wg.approveReview(accId, reviewer);
+    toTester(wg, accId);
     // Stats BEFORE the verdict: the build is in acceptance testing and counted as unaccepted.
     let a = computeStats(wg.db).acceptance;
     expect(a.epics).toHaveLength(1);
@@ -258,7 +288,7 @@ describe("acceptance gate: approval always routes an acceptance ticket to the te
   it("an automated PASS on an acceptance ticket WITHOUT a binding is refused (BINDING_REQUIRED) — it cannot become verified", () => {
     const wg = freshWg({ testingEnabled: false });
     const { accId } = epicToReview(wg);
-    wg.approveReview(accId, reviewer);
+    toTester(wg, accId);
     for (const input of [
       { summary: "acceptance suite 13/13" },
       { summary: "no hash", tested_commit: SHA },
@@ -278,9 +308,10 @@ describe("acceptance gate: approval always routes an acceptance ticket to the te
   it("a bound PASS (commit + current contract + clean replay) whose assertions passed on the LANDED revision → done reads accepted (verified) and leaves the attention count", () => {
     const wg = freshWg({ testingEnabled: false });
     const { accId } = epicToReview(wg);
-    wg.approveReview(accId, reviewer);
+    toTester(wg, accId);
     const pass = wg.testerPass(accId, boundPass(wg, accId), testerAgent);
-    expect(pass.ticket.status).toBe("ready_for_merge");
+    expect(pass.ticket.status).toBe("in_review");
+    approveTested(wg, accId);
     expect(recordReplay(wg, accId).recorded).toBe(true);
     wg.markMerged(accId, systemActor);
     const a = computeStats(wg.db).acceptance;
@@ -296,8 +327,9 @@ describe("acceptance gate: approval always routes an acceptance ticket to the te
   it("TESTER REPLAY: a bound PASS that landed with NO record of its assertions passing on the landed revision reads unreplayed — never accepted", () => {
     const wg = freshWg({ testingEnabled: false });
     const { accId } = epicToReview(wg);
-    wg.approveReview(accId, reviewer);
+    toTester(wg, accId);
     wg.testerPass(accId, boundPass(wg, accId), testerAgent);
+    approveTested(wg, accId);
     wg.markMerged(accId, systemActor);
     const a = computeStats(wg.db).acceptance;
     expect(a.epics[0]!.result).toBe("unreplayed");
@@ -310,8 +342,9 @@ describe("acceptance gate: approval always routes an acceptance ticket to the te
   it("TESTER REPLAY: a landing that replayed NO tester test file (stale or empty tests branch, or a PASS that saved none) reads unreplayed — zero assertions on what landed is not accepted", () => {
     const wg = freshWg({ testingEnabled: false });
     const { accId } = epicToReview(wg);
-    wg.approveReview(accId, reviewer);
+    toTester(wg, accId);
     wg.testerPass(accId, { ...boundPass(wg, accId), tests_commit: "none" }, testerAgent);
+    approveTested(wg, accId);
     expect(
       wg.recordTesterReplay(
         accId,
@@ -340,7 +373,7 @@ describe("acceptance gate: approval always routes an acceptance ticket to the te
   it("TESTER REPLAY: the PASS's tests_commit binding is validated (a sha or none)", () => {
     const wg = freshWg({ testingEnabled: false });
     const { accId } = epicToReview(wg);
-    wg.approveReview(accId, reviewer);
+    toTester(wg, accId);
     expectCode(
       () => wg.testerPass(accId, { ...boundPass(wg, accId), tests_commit: "HEAD" }, testerAgent),
       "VALIDATION_ERROR",
@@ -371,8 +404,9 @@ describe("acceptance gate: approval always routes an acceptance ticket to the te
   it("TESTER REPLAY: a row shaped like the record but recorded by an agent does not count the epic", () => {
     const wg = freshWg({ testingEnabled: false });
     const { accId } = epicToReview(wg);
-    wg.approveReview(accId, reviewer);
+    toTester(wg, accId);
     wg.testerPass(accId, boundPass(wg, accId), testerAgent);
+    approveTested(wg, accId);
     wg.db
       .prepare(
         "INSERT INTO evidence (id, ticket_id, evidence_type, summary, uri, payload_json, created_by, recorded_by_actor_type, created_at) VALUES ('forged', ?, 'commit', 'forged', ?, ?, 'agent-runner', 'agent', '2099-01-01T00:00:00.000Z')",
@@ -391,8 +425,9 @@ describe("acceptance gate: approval always routes an acceptance ticket to the te
   it("TESTER REPLAY: a held replay keeps the epic out; a repaired retry that lands counts it exactly once", () => {
     const wg = freshWg({ testingEnabled: false });
     const { accId } = epicToReview(wg);
-    wg.approveReview(accId, reviewer);
+    toTester(wg, accId);
     wg.testerPass(accId, boundPass(wg, accId), testerAgent);
+    approveTested(wg, accId);
     // The landing replayed the tester's assertion on the merge candidate and it FAILED:
     // held for a human, nothing recorded, the epic is not accepted.
     wg.holdForHuman(
@@ -424,8 +459,10 @@ describe("acceptance gate: approval always routes an acceptance ticket to the te
     );
     wg.submitForReview({ claimToken: claim.claimToken, ticket_id: accId }, agentActor);
     expect(wg.view(accId).ticket.status).toBe("in_review");
-    wg.approveReview(accId, reviewer);
+    head.sha = REPAIRED; // the re-delivery's commit is the head now
+    toTester(wg, accId);
     wg.testerPass(accId, { ...boundPass(wg, accId), tested_commit: REPAIRED }, testerAgent);
+    approveTested(wg, accId);
     // A record of the EARLIER tested commit does not describe this PASS.
     wg.db
       .prepare(
@@ -451,8 +488,9 @@ describe("acceptance gate: approval always routes an acceptance ticket to the te
   it("a HUMAN tester-pass is a waiver: allowed without a binding, reported as waived — never as verified", () => {
     const wg = freshWg({ testingEnabled: false });
     const { accId } = epicToReview(wg);
-    wg.approveReview(accId, reviewer);
+    toTester(wg, accId);
     wg.testerPass(accId, { summary: "waived: acceptance reviewed by hand" }, human);
+    approveTested(wg, accId);
     wg.markMerged(accId, systemActor);
     const a = computeStats(wg.db).acceptance;
     expect(a.epics[0]!.result).toBe("waived");
@@ -465,7 +503,7 @@ describe("acceptance gate: approval always routes an acceptance ticket to the te
   it("a done acceptance ticket with NO PASS evidence (or a legacy unbound one) reads unverified and needs attention", () => {
     const wg = freshWg({ testingEnabled: false });
     const { accId } = epicToReview(wg);
-    wg.approveReview(accId, reviewer);
+    toTester(wg, accId);
     // Simulate a legacy row: a PASS recorded before bindings existed, then merged.
     wg.db
       .prepare(
@@ -489,9 +527,10 @@ describe("acceptance gate: a verdict is bound to the tested commit and contract"
   it("the binding is stored; a contract edited after the PASS makes the build stale (unaccepted)", () => {
     const wg = freshWg({ testingEnabled: false });
     const { accId } = epicToReviewWith(wg, { brief: "Bookmark Vault brief v1" });
-    wg.approveReview(accId, reviewer);
+    toTester(wg, accId);
     const bound = boundPass(wg, accId);
     wg.testerPass(accId, bound, testerAgent);
+    approveTested(wg, accId);
     const ev = wg
       .view(accId)
       .evidence.filter((e) => e.evidence_type === "test_output")
@@ -520,7 +559,7 @@ describe("acceptance gate: a verdict is bound to the tested commit and contract"
   it("a verdict recorded against a DIFFERENT contract than the one on record is refused (CONTRACT_MISMATCH)", () => {
     const wg = freshWg({ testingEnabled: false });
     const { accId } = epicToReviewWith(wg);
-    wg.approveReview(accId, reviewer);
+    toTester(wg, accId);
     const stale = { ...boundPass(wg, accId), contract_hash: "f".repeat(64) };
     expectCode(() => wg.testerPass(accId, stale, testerAgent), "CONTRACT_MISMATCH");
   });
@@ -528,7 +567,7 @@ describe("acceptance gate: a verdict is bound to the tested commit and contract"
   it("malformed bindings are REFUSED (never silently dropped) — on PASS and FAIL, acceptance or not", () => {
     const wg = freshWg({ testingEnabled: false });
     const { accId } = epicToReviewWith(wg);
-    wg.approveReview(accId, reviewer);
+    toTester(wg, accId);
     const good = boundPass(wg, accId);
     for (const bad of [
       { tested_commit: "not a sha; rm -rf" },

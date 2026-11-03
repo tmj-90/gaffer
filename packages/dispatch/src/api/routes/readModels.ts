@@ -550,6 +550,16 @@ export function routeReadModels(
       escaped_defects: reviewMeasures.escaped_defects,
       // SPECIALIST VALUE (D1): what each judging lane changed. Counts only, no recommendation.
       lane_value: reviewMeasures.lane_value,
+      // ADAPTIVE TESTER LANE: the GAFFER_TESTING setting and, under the `auto` default,
+      // the repos where the independent tester is off because no test command is
+      // registered (one notice line each). Best-effort: a read failure leaves it off.
+      ...(() => {
+        try {
+          return { tester_lane: wg.testerLaneHealth() };
+        } catch {
+          return {};
+        }
+      })(),
       coverage: health.coverage,
       by_kind: health.by_kind.slice(0, TOP_N),
       by_model: health.by_model.slice(0, TOP_N),

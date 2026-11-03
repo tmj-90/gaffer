@@ -30,6 +30,13 @@ git init -q --bare "$WORK/origin.git"; git -C "$R" remote add origin "$WORK/orig
 cat > "$WORK/bin/claude" <<'STUB'
 #!/usr/bin/env bash
 prompt=""; prev=""; for a in "$@"; do [ "$prev" = "-p" ] && prompt="$a"; prev="$a"; done
+# TESTER FIRST: a delivery goes to the tester before review, so the live tester lane may
+# pick an in_testing ticket in a later tick. These tests play the tester themselves
+# (tester_pass below): the stub tester answers no verdict, so the lane holds the ticket
+# for a person and changes nothing.
+case "$prompt" in *"You are an INDEPENDENT TESTER agent"*)
+  printf '{"type":"result","subtype":"success","is_error":false,"result":"ok"}\n'; exit 0 ;;
+esac
 if [ -e .git ]; then
   case "$prompt" in
     *"[read-displayName]"*) sed -i.bak 's/profile().name;/profile().displayName;/' src/label.js ;;

@@ -19,7 +19,6 @@ import { giveTicketRealDelivery, nonEmptyDiffRunner } from "./helpers/realDiff.j
  *      never overwriting a contract, never written once the contract is frozen.
  */
 const human: Actor = { type: "human", id: "tom" };
-const reviewer: Actor = { type: "human", id: "rev" };
 const agentActor: Actor = { type: "agent", id: "agent-runner" };
 const testerAgent: Actor = { type: "agent", id: "tester-1" };
 const SHA = "0123456789abcdef0123456789abcdef01234567";
@@ -56,7 +55,9 @@ function ordinaryInTesting(wg: Dispatch): string {
   );
   giveTicketRealDelivery(wg, t.id, human);
   wg.setTestable(t.id, true, human);
-  expect(wg.approveReview(t.id, reviewer).ticket.status).toBe("in_testing");
+  // TESTER FIRST: the runner sends it to the tester before a person reviews it.
+  expect(wg.routeToTester(t.id, { type: "system" })[0]!.routed).toBe(true);
+  expect(wg.view(t.id).ticket.status).toBe("in_testing");
   return t.id;
 }
 
@@ -114,7 +115,8 @@ describe("a PASS whose clean replay did not pass is never recorded (any ticket)"
       { summary: "Checked every acceptance criterion by hand", replay: "skipped" },
       human,
     );
-    expect(res.ticket.status).toBe("ready_for_merge");
+    // Moved on: back to review for a person (tester first).
+    expect(res.ticket.status).toBe("in_review");
     wg.db.close();
   });
 
@@ -131,7 +133,8 @@ describe("a PASS whose clean replay did not pass is never recorded (any ticket)"
       },
       testerAgent,
     );
-    expect(res.ticket.status).toBe("ready_for_merge");
+    // Moved on: back to review for a person (tester first).
+    expect(res.ticket.status).toBe("in_review");
     wg.db.close();
   });
 
@@ -161,7 +164,7 @@ describe("a PASS whose clean replay did not pass is never recorded (any ticket)"
     const wg = freshWg();
     const id = ordinaryInTesting(wg);
     expect(wg.testerPass(id, { summary: "checked by hand" }, human).ticket.status).toBe(
-      "ready_for_merge",
+      "in_review",
     );
     wg.db.close();
   });

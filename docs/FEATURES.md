@@ -110,7 +110,7 @@ installs from the cache) and, under `GAFFER_STRICT_REQUIRE`, the OS sandbox; a p
 with either parks the ticket with the fix on the Team sheet before anything is
 created, and a dollar cap that would refuse the launch releases it back to ready. A CA bundle exported as `SSL_CERT_FILE`, `CURL_CA_BUNDLE`,
 `REQUESTS_CA_BUNDLE` or `GIT_SSL_CAINFO` reaches the agent's npm as
-`NODE_EXTRA_CA_CERTS`. With the independent tester on (`GAFFER_TESTING`), the plan's
+`NODE_EXTRA_CA_CERTS`. Unless the independent tester is switched off (`GAFFER_TESTING=0`), the plan's
 tickets are created testable (all but the bootstrap; a plan ticket can say
 `testable` either way). In PR mode, a new repo with no remote gets one decision asking
 where it lives, which holds its tickets until you answer.
@@ -438,7 +438,7 @@ structural barrier the whole design hangs on.
   gate (passed, failed or skipped, with the command it ran) and the test count
   the runner saw in the test gate's own output (vitest, jest, pytest, cargo,
   `go test -v`, `node --test`); the independent tester's verdict and the commit
-  it tested (or "after you" when it runs after your approval); cost and turns so
+  it tested (or "not yet" before its PASS: it tests before you review); cost and turns so
   far from the usage ledger; the attempt and who sent it back before; the risk
   level with its reasons (recorded, then the diff's own risk flags); and the
   reviewed-commit pin when one is recorded. The **acceptance-criteria table**
@@ -627,8 +627,10 @@ structural barrier the whole design hangs on.
   `MERGE_ON_AGENT_REVIEW`, or an earned per-repo grant).
 - **The button says what the click does.** The server works out the first step
   an approval will certainly take from the settings and ticket state the approve
-  path itself reads, and the sign-off button names it: **Approve and send to
-  tester** (the testing lane, or an epic's acceptance ticket), **Approve and land
+  path itself reads, and the sign-off button names it: **Approve held: not
+  tested on this commit** (the independent tester gates the ticket and has not passed
+  the commit under review, so the server refuses and the runner sends it to the tester
+  first), **Approve and land
   now** (Auto-merge on with a merge command: the landing check and the merge gate
   run at once, through the PR in PR mode), **Approve, lands on next tick**
   (Auto-merge on, or an earned merge grant, with the runner's merge lane doing
@@ -988,17 +990,30 @@ on**:
 | `REVIEW_MODE=both` | The agent screens first (a CHANGES verdict can bounce the delivery to rework) but a human still confirms every approval. |
 | `MEMORY_AUTO_APPROVE` | Let the memory the runner itself files (the requirement distilled from each delivered ticket, onboarding induction lore, CLI `memory suggest`) go live without a human review step. Lore a delivery agent suggests over MCP always stays a draft, and a draft is invisible to other agents (search, duplicate hints, fetch by id) until you approve it. |
 
-**The independent tester is off by default and runs after your approval.** With
-`GAFFER_TESTING` off (the default), only an epic's Acceptance ticket goes to the
-independent black-box tester; every other ticket goes from your approval straight
-to Ready for merge. Turn the lane on with `GAFFER_TESTING=1` (Settings, or the
-environment) and testable tickets go to the tester too: a planned build's tickets
-are created testable (all but the bootstrap), and any ticket can be switched on its
-page or with `wg ticket set-testable <n>`. Either way the tester runs **after** the
-review approves (`in_review`, then `in_testing`; that is you, unless you turned on
-agent approval), so you review without its evidence;
-its verdict decides whether the approved ticket goes on to Ready for merge or back to
-rework. A ticket that becomes testable with no test contract gets one from its title,
+**The independent tester tests before you review, where a PASS can stand.** With
+`GAFFER_TESTING` unset (the default), the tester lane is on for a ticket whose write
+repos all have a registered test command, and off where one has none: a tester PASS
+there could not be replayed, so it would be held as unverified. The Review view's
+*What is not backed* list and Health then say so in one line, *independent tester off:
+no test command registered for <repo>*. `GAFFER_TESTING=1` turns the lane on for every
+testable ticket and `GAFFER_TESTING=0` turns it off; an epic's Acceptance ticket is
+always tested. The Settings switch reads *Auto* until you move it, and moving it saves an
+explicit on or off. A planned build's tickets are created testable unless the lane is off
+(all but the bootstrap), and any ticket can be switched on its page or with
+`wg ticket set-testable <n>`. When the tester gates a ticket it runs after the gates
+(and the reviewer agent, when you run one) and **before** you look: the runner sends
+the delivery to Testing, a PASS brings it back to Review with the tester's verdict and
+the commit it tested in the strip, and a FAIL sends it back to rework with the
+tester's observation in the next attempt's prompt, so a FAIL or a hold costs you
+nothing. You approve the commit the tester passed: the candidate cell and the line
+under the button say *tested commit X*, and the approval goes straight to Ready for
+merge. If the branch moves after the PASS (a push, a conflict resolution), or the
+ticket's contract changes, the server refuses the approval (*Approve held: not tested
+on this commit*) and the runner sends the new head to the tester first. An agent's
+approval of an untested commit (your autonomy grant, no person in the loop) still sends
+it to the tester, whose PASS then goes to Ready for merge. With CI required, the runner
+sends a delivery to the tester only once CI has passed on its head.
+A ticket that becomes testable with no test contract gets one from its title,
 so the tester's contract always names the behaviour under test (one line built
 from the title, not a real endpoint or command); you can replace it with
 `wg ticket test-contract <n> --surface ...` (the delivery agent with its MCP

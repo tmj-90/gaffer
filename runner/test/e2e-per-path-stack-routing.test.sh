@@ -193,30 +193,37 @@ if [ -n "$RD" ] && [ "$RD" != "$RB" ]; then
 else fail "D: no new reviewer spawn"; fi
 # A two-repo ticket is never agent-approved: the reviewer's approval names only the
 # primary repo's commit, so dispatch refuses it and the ticket is held for a HUMAN
-# approval of every repo (lib/review.sh, STALE REVISION). A human approves both heads.
-[ "$(st "$TD")" = "in_review" ] && ok "D: the agent approval of a two-repo ticket is held for a human" \
-  || fail "D: #$TD is '$(st "$TD")' after the agent review (expected held in_review)"
-# External review #7: the refusal is on the ticket (a note), not only in the log, and a
-# later run does not spend another review call on the same head.
+# approval of every repo (lib/review.sh, STALE REVISION). TESTER FIRST: the review pass
+# then sends it to the independent tester, so the human reviews it with the tester's
+# verdict in hand.
+[ "$(st "$TD")" = "in_testing" ] && ok "D: the agent approval of a two-repo ticket is refused, and it goes to the tester before the human review" \
+  || fail "D: #$TD is '$(st "$TD")' after the agent review (expected in_testing: refused approval, then tester first)"
+# External review #7: the refusal is on the ticket (a note), not only in the log.
 grep -q "agent review approval refused for [0-9a-f]\{40\}: .*needs a human" <<<"$(wg ticket show "$TD" 2>/dev/null)" \
   && ok "D: the refused agent approval is noted on the ticket (why, and that it needs a human)" || fail "D: no refusal note on #$TD"
 review_spawns() { grep -l "#$TD" "$CALLS"/*/prompt 2>/dev/null | xargs -n1 dirname 2>/dev/null | while read -r d; do [ "$(cat "$d/kind")" = review ] && echo "$d"; done | grep -c .; }
 NREV="$(review_spawns)"
 rm -f "$GAFFER_DATA/.reviewed-tickets"
-( cd "$RUNNER_DIR" && REVIEW_MODE=agent DISPATCH_ALLOW_AGENT_APPROVE=1 GAFFER_TESTING=1 bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" ) >/dev/null
-[ "$(review_spawns)" = "$NREV" ] && [ "$NREV" -ge 1 ] && [ "$(st "$TD")" = "in_review" ] \
-  && ok "D: a later run does not review the same head again ($NREV review call(s) in all); still in_review" \
+( cd "$RUNNER_DIR" && REVIEW_MODE=agent DISPATCH_ALLOW_AGENT_APPROVE=1 GAFFER_TESTING=1 bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" ) >/dev/null || true
+[ "$(review_spawns)" = "$NREV" ] && [ "$NREV" -ge 1 ] \
+  && ok "D: a later run spends no other review call on it ($NREV review call(s) in all); the tester runs instead" \
   || fail "D: review calls for #$TD went $NREV → $(review_spawns) (status $(st "$TD"))"
-# shellcheck disable=SC2046
-GAFFER_TESTING=1 wg review approve "$TD" --reviewer human1 $(wg ticket diff "$TD" --heads 2>/dev/null | sed 's/^/--commit /') >/dev/null 2>&1
-[ "$(st "$TD")" = "in_testing" ] && ok "D: a human approval of both repos → in_testing" || fail "D: #$TD is '$(st "$TD")' after the human approval"
-( cd "$RUNNER_DIR" && GAFFER_TESTING=1 bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" ) >/dev/null || true
 TT="$(last_call tester)"
 if [ -n "$TT" ]; then
   assert_skills "D: tester" "$TT" "$PACKS,black-box-test" "python-conventions,csharp-conventions"
   grep -qF "svc (java): java-conventions" "$TT/prompt" && grep -qF "web (typescript-react): typescript-conventions" "$TT/prompt" \
     && ok "D: tester prompt names each repo's pack" || fail "D: tester prompt lacks the per-repo pack note: $(grep -o 'Skills mounted[^.]*' "$TT/prompt" | cut -c1-400)"
 else fail "D: the tester did not run (#$TD is '$(st "$TD")')"; fi
+# After a PASS it is back in review, and a human approval of both repos names the tested
+# primary commit; a held tester leaves it in testing for a person.
+case "$(st "$TD")" in
+  in_review)
+    # shellcheck disable=SC2046
+    GAFFER_TESTING=1 wg review approve "$TD" --reviewer human1 $(wg ticket diff "$TD" --heads 2>/dev/null | sed 's/^/--commit /') >/dev/null 2>&1
+    [ "$(st "$TD")" = "ready_for_merge" ] && ok "D: after the tester's PASS a human approval of both repos → ready_for_merge" || fail "D: #$TD is '$(st "$TD")' after the human approval" ;;
+  in_testing) ok "D: the tester held #$TD for a person (no verdict from the stub)" ;;
+  *) fail "D: #$TD is '$(st "$TD")' after the tester" ;;
+esac
 TELROW="$(grep "\"ticket\":\"$TD\"" "$GAFFER_DATA/skills-telemetry.jsonl" 2>/dev/null | grep '"role":"delivery"' | tail -1)"
 grep -q '"stack":"java,typescript-react"\|"stack":"typescript-react,java"' <<<"$TELROW" && ok "D: the delivery telemetry row records both stacks" || fail "D: telemetry stack: $(grep -o '"stack":"[^"]*"' <<<"$TELROW")"
 

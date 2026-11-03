@@ -110,7 +110,7 @@ function basePacket(over: Record<string, unknown> = {}): Record<string, unknown>
         cell: "gates",
       },
       {
-        fact: "The independent tester has not run (it runs after you approve)",
+        fact: "The independent tester has not passed this commit yet (it tests before you approve, and approval waits for its PASS)",
         holds: false,
         source: "the tester's verdict rows",
         cell: "tester",
@@ -262,7 +262,7 @@ describe("web: review facts on The Gaffer's Sign-off", () => {
     expect(cell.classList.contains("vd-ok")).toBe(true);
     expect(text(".vd-cell.vd-candidate")).toContain("Gates ran on aaaaaaaaaaaa");
     expect(text(".vd-cell.vd-candidate")).toContain("The diff shows aaaaaaaaaaaa");
-    expect(text(".vd-cell.vd-candidate")).toContain("Tester tested nothing yet");
+    expect(text(".vd-cell.vd-candidate")).toContain("Tested commit none yet");
     expect(text(".signoff-sum")).toContain("Nothing flagged");
   });
 
@@ -414,7 +414,9 @@ describe("web: review facts on The Gaffer's Sign-off", () => {
     const panel = document.querySelector(".rv-backing")!;
     expect(panel).not.toBeNull();
     expect(text(".rv-backing .rv-backs")).toContain("The runner's gates passed");
-    expect(text(".rv-backing .rv-unbacked")).toContain("The independent tester has not run");
+    expect(text(".rv-backing .rv-unbacked")).toContain(
+      "The independent tester has not passed this commit yet",
+    );
     expect(panel.textContent).not.toMatch(/%|score|confiden|Nothing flagged/i);
     // Each row names its source.
     expect(text(".rv-backing .rv-backs")).toContain("the runner's DoD row (system)");
@@ -427,7 +429,7 @@ describe("web: review facts on The Gaffer's Sign-off", () => {
     expect(text(".rv-impact .rv-h3, .rv-impact h3")).toContain("Behavioural surface");
     // Above the diff box.
     expect(
-      panel.compareDocumentPosition(document.querySelector(".rv-diff .diff-box")!) &
+      panel.compareDocumentPosition(document.querySelector(".rv-diff .diff-box:not(.since-box)")!) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
     const facts = [...panel.querySelectorAll(".rv-impact-fact")].map((li) =>

@@ -210,6 +210,23 @@ describe("web: Health shows the four top-level measures", () => {
     healthPayload = FULL_HEALTH;
   });
 
+  it("says where the independent tester is off because no test command is registered", async () => {
+    healthPayload = {
+      ...(FULL_HEALTH as object),
+      ...MEASURES,
+      tester_lane: {
+        mode: "auto",
+        repos_without_test_command: ["taskflow-web"],
+        notices: ["independent tester off: no test command registered for taskflow-web"],
+      },
+    };
+    await loadApp();
+    const notes = [
+      ...document.querySelectorAll('[aria-label="The four measures"] .measures-notice'),
+    ].map((n) => n.textContent);
+    expect(notes).toEqual(["independent tester off: no test command registered for taskflow-web"]);
+  });
+
   it("first-pass acceptance, median human review time, accepted-change cost and escaped defects", async () => {
     healthPayload = { ...(FULL_HEALTH as object), ...MEASURES };
     await loadApp();

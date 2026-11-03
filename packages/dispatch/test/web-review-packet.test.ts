@@ -427,8 +427,9 @@ describe("web: the review packet on The Gaffer's Sign-off", () => {
   it("shows when the tester comes, and leaves the pin out when none is recorded", async () => {
     packet = { ...PACKET, tester: null, pin: null };
     await boot();
-    expect(text(".vd-cell.vd-tester .vd-v")).toBe("After you");
-    expect(label(".vd-cell.vd-tester")).toBe("Independent tester: runs after your approval");
+    // Tester first: the tester tests before the review, so a missing verdict is "not yet".
+    expect(text(".vd-cell.vd-tester .vd-v")).toBe("Not yet");
+    expect(label(".vd-cell.vd-tester")).toBe("Independent tester: has not passed this commit yet");
     expect(document.querySelector(".vd-cell.vd-pin")).toBeNull();
   });
 

@@ -167,7 +167,11 @@ async function setup(w) {
   );
   const [impl, final] = plan.ticketNumbers;
   const worker = d.registerAgent({ display_name: "builder", max_risk: "high" }, human);
-  const deliver = (number, file, text) => {
+  // TESTER FIRST: a ticket the tester gates is tested before review (the runner routes
+  // it), and the person approves the commit its PASS covers. `test` runs the live tester
+  // on the routed ticket first and answers its verdict.
+  let verdict = null;
+  const deliver = (number, file, text, test = false) => {
     const branch = `gaffer/ticket-${number}-x`;
     git("switch", "-qc", branch);
     writeFileSync(join(repo, file), text);
@@ -200,18 +204,23 @@ async function setup(w) {
     );
     d.submitForReview({ ticket_id: t.id, claimToken, reason: "ready" }, agent);
     d.db.close();
+    if (test) {
+      wg("ticket", "tester-route", number, "--as", "system");
+      verdict = JSON.parse(must(process.execPath, [tester, "--ticket", number, "--live"]));
+    }
     wg("review", "approve", number, "--commit", `profiles=${sha}`, "--reviewer", "rev");
     d = Dispatch.open(env.DISPATCH_DB);
     return sha;
   };
+  // The implementation ticket is not the point here: it lands untested.
+  d.setTestable(d.view(String(impl)).ticket.id, false, human);
   deliver(impl, "README.md", "Call label().\n");
   d.db.close();
   must("bash", [runner, "merge", impl]);
   d = Dispatch.open(env.DISPATCH_DB);
-  deliver(final, "label.mjs", 'export function label() { return "Ada"; }\n');
+  deliver(final, "label.mjs", 'export function label() { return "Ada"; }\n', true);
   d.db.close();
-  const verdict = JSON.parse(must(process.execPath, [tester, "--ticket", final, "--live"]));
-  if (verdict.replay !== "passed")
+  if (!verdict || verdict.replay !== "passed")
     throw new Error(`tester did not pass: ${JSON.stringify(verdict)}`);
   return { final };
 }

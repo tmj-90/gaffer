@@ -499,7 +499,6 @@ describe("REVIEW PACKET test-count flag: whole-suite claims of the current attem
 });
 
 describe("REVIEW PACKET tester verdict", () => {
-  const reviewer: Actor = { type: "human", id: "rev" };
   const testerAgent: Actor = { type: "agent", id: "tester-1" };
 
   /** A testable ticket in review whose delivery agent forged a tester verdict. */
@@ -552,7 +551,7 @@ describe("REVIEW PACKET tester verdict", () => {
       const id = forgedVerdict(wg);
       expect(wg.reviewPacket(id, cost).tester).toBeNull();
       // Still null once the ticket is waiting on the real tester.
-      wg.approveReview(id, reviewer);
+      wg.routeToTester(id, system); // tester first: before review
       expect(wg.reviewPacket(id, cost).tester).toBeNull();
     } finally {
       wg.db.close();
@@ -565,7 +564,7 @@ describe("REVIEW PACKET tester verdict", () => {
     });
     try {
       const id = forgedVerdict(wg);
-      wg.approveReview(id, reviewer);
+      wg.routeToTester(id, system); // tester first: before review
       wg.testerFail(id, { summary: "POST /items returns 500" }, testerAgent);
       expect(wg.reviewPacket(id, cost).tester).toMatchObject({
         verdict: "fail",
@@ -585,7 +584,7 @@ describe("REVIEW PACKET tester verdict", () => {
     });
     try {
       const id = forgedVerdict(wg);
-      wg.approveReview(id, reviewer);
+      wg.routeToTester(id, system); // tester first: before review
       wg.testerPass(id, { summary: "12 black-box tests pass", replay: "passed" }, testerAgent);
       expect(wg.reviewPacket(id, cost).tester).toMatchObject({
         verdict: "pass",
@@ -733,7 +732,7 @@ describe("REVIEW PACKET a reworked ticket: facts from an earlier round are not t
   }
 
   const testerPassedThenReworked = (wg: Dispatch, id: string) => {
-    wg.approveReview(id, reviewer);
+    wg.routeToTester(id, system); // tester first: before review
     wg.testerPass(id, { summary: "12 black-box tests pass", replay: "passed" }, testerAgent);
     // The human changes their mind before the merge: back for rework.
     wg.rejectReview(id, "refining", reviewer, "Docs missing the new flag");
@@ -744,7 +743,7 @@ describe("REVIEW PACKET a reworked ticket: facts from an earlier round are not t
     try {
       const p = wg.reviewPacket(id, cost);
       expect(p.tester).toBeNull();
-      // The tester runs again once this round is approved.
+      // The tester tests this round too (before the review).
       expect(p.tester_expected).toBe(true);
       expect(p.attempts.rework.map((r) => r.by)).toEqual(["review"]);
     } finally {
@@ -754,7 +753,7 @@ describe("REVIEW PACKET a reworked ticket: facts from an earlier round are not t
 
   it("the tester's fail of the earlier round is in the rework list, not the tester cell", () => {
     const { wg, id } = redelivered((w, tid) => {
-      w.approveReview(tid, reviewer);
+      w.routeToTester(tid, system);
       w.testerFail(tid, { summary: "POST /items returns 500" }, testerAgent);
     });
     try {
@@ -818,7 +817,7 @@ describe("REVIEW PACKET a reworked ticket: facts from an earlier round are not t
       const acId = wg.reviewPacket(id, cost).acceptance[0]!.id;
       wg.recordAcCheck({ ticket_id: id, ac_id: acId, exit_code: 0, command: "npm test" }, system);
       expect(wg.reviewPacket(id, cost).acceptance[0]).toMatchObject({ evidence_kind: "runner" });
-      wg.approveReview(id, reviewer);
+      wg.routeToTester(id, system); // tester first: before review
       wg.testerPass(id, { summary: "13 black-box tests pass", replay: "passed" }, testerAgent);
       expect(wg.reviewPacket(id, cost).tester).toMatchObject({
         verdict: "pass",

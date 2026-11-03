@@ -53,13 +53,16 @@ NT=($(new_tickets \
 T1="${NT[0]:-}" T2="${NT[1]:-}" T3="${NT[2]:-}" T4="${NT[3]:-}" T5="${NT[4]:-}" T6="${NT[5]:-}" T7="${NT[6]:-}" T8="${NT[7]:-}" T9="${NT[8]:-}"
 ALL_T="$T1 $T2 $T3 $T4 $T5 $T6 $T7 $T8 $T9"
 for _ in $ALL_T; do AUTO_MERGE=0 run_tick >/dev/null; done
-all_review=1; for n in $ALL_T; do [ "$(st "$n")" = in_review ] || all_review=0; done
-[ "$all_review" = 1 ] && ok "all nine delivered through their DoD gates (in_review)" || fail "statuses: $(for n in $ALL_T; do printf '#%s=%s ' "$n" "$(st "$n")"; done)"
-for n in "$T1" "$T5" "$T6"; do approve "$n"; done
+# TESTER FIRST: a testable delivery goes to the tester before review; an ordinary one
+# (T7) waits in review.
+all_lane=1; for n in $ALL_T; do want=in_testing; [ "$n" = "$T7" ] && want=in_review; [ "$(st "$n")" = "$want" ] || all_lane=0; done
+[ "$all_lane" = 1 ] && ok "all nine delivered through their DoD gates (testable ones sent to the tester, the plain one in review)" || fail "statuses: $(for n in $ALL_T; do printf '#%s=%s ' "$n" "$(st "$n")"; done)"
 approve "$T7"
-[ "$(st "$T1")" = in_testing ] && [ "$(st "$T7")" = ready_for_merge ] && ok "a testable approval goes to the tester (in_testing); an ordinary one to ready_for_merge" || fail "after approve: T1=$(st "$T1") T7=$(st "$T7")"
+[ "$(st "$T7")" = ready_for_merge ] && ok "an ordinary approval goes to ready_for_merge" || fail "after approve: T7=$(st "$T7")"
 tester_pass "$T1" "$LABEL_TEST"; tester_pass "$T5"; tester_pass "$T6" "$NAME_TEST"
-[ "$(st "$T1")" = ready_for_merge ] && [ "$(st "$T5")" = ready_for_merge ] && [ "$(st "$T6")" = ready_for_merge ] && ok "the tester's bound PASS → ready_for_merge" || fail "after tester: T1=$(st "$T1") T5=$(st "$T5") T6=$(st "$T6")"
+[ "$(st "$T1")" = in_review ] && [ "$(st "$T5")" = in_review ] && [ "$(st "$T6")" = in_review ] && ok "the tester's bound PASS → back in review" || fail "after tester: T1=$(st "$T1") T5=$(st "$T5") T6=$(st "$T6")"
+for n in "$T1" "$T5" "$T6"; do approve "$n"; done
+[ "$(st "$T1")" = ready_for_merge ] && [ "$(st "$T5")" = ready_for_merge ] && [ "$(st "$T6")" = ready_for_merge ] && ok "a person approves each tested commit → ready_for_merge" || fail "after approve: T1=$(st "$T1") T5=$(st "$T5") T6=$(st "$T6")"
 main_tests "$(branch_of "$T1")" && ok "the delivery branch passes the smoke suite" || fail "fixture: T1 branch red"
 ( wt="$WORK/tc"; git -C "$R" worktree add -q --detach "$wt" "gaffer-tests/ticket-$T1" >/dev/null 2>&1; cd "$wt" && npm test >/dev/null 2>&1 ); rc=$?; git -C "$R" worktree remove --force "$WORK/tc" >/dev/null 2>&1
 [ "$rc" -eq 0 ] && ok "the tester's assertion passes on the delivery branch (tested commit)" || fail "fixture: the tester's assertion fails on the tested commit"
@@ -102,14 +105,14 @@ MAIN1="$(git -C "$R" rev-parse main)"; TREE1="$(tree_of main)"
 git -C "$R" push -q origin main 2>/dev/null
 
 echo "== B: Merge now (bin/merge-ticket.mjs) replays and holds the same way =="
-approve "$T2"; tester_pass "$T2" "$LABEL_TEST"
+tester_pass "$T2" "$LABEL_TEST"; approve "$T2"
 merge_now "$T2"; rc=$?
 [ "$rc" -eq 4 ] && ok "B: Merge now refuses #$T2 (exit 4)" || fail "B: rc=$rc $(tail -c 400 "$WORK/mn.out")"
 grep -q "TESTER REPLAY FAILED" "$WORK/mn.out" && grep -q "test/bb-label.test.js" "$WORK/mn.out" && ok "B: …saying the tester's replay failed, naming the file" || fail "B: output: $(tail -c 400 "$WORK/mn.out")"
 [ "$(git -C "$R" rev-parse main)" = "$MAIN1" ] && [ "$(tree_of main)" = "$TREE1" ] && ok "B: main untouched (head and tree)" || fail "B: main moved"
 [ "$(st "$T2")" = "blocked" ] && case "$(hold_of "$T2")" in *tester_replay_red*) true ;; *) false ;; esac && ok "B: #$T2 held (blocked, tester_replay_red)" || fail "B: #$T2 status=$(st "$T2") hold=$(hold_of "$T2" | cut -c1-200)"
 [ -z "$(replay_rec "$T2")" ] && ok "B: a held replay records nothing" || fail "B: #$T2 has a replay record"
-approve "$T8"; tester_pass "$T8" "$NAME_TEST"
+tester_pass "$T8" "$NAME_TEST"; approve "$T8"
 merge_now "$T8"; rc=$?
 [ "$rc" -eq 0 ] && [ "$(st "$T8")" = "done" ] && ok "B: Merge now lands #$T8 once the tester's assertion passes on the candidate" || fail "B: #$T8 rc=$rc status=$(st "$T8") $(tail -c 300 "$WORK/mn.out")"
 R8="$(replay_rec "$T8")"; S8="${R8%% *}"
@@ -118,7 +121,7 @@ R8="$(replay_rec "$T8")"; S8="${R8%% *}"
 MAIN1="$(git -C "$R" rev-parse main)"; TREE1="$(tree_of main)"; git -C "$R" push -q origin main 2>/dev/null
 
 echo "== C: PR mode (lib/land.sh) gates the fetched remote default and never asks GitHub =="
-approve "$T3"; tester_pass "$T3" "$LABEL_TEST"
+tester_pass "$T3" "$LABEL_TEST"; approve "$T3"
 (
   # shellcheck source=../lib/land.sh
   source "$RUNNER_DIR/lib/land.sh"
@@ -135,7 +138,7 @@ grep -q "MERGE: #$T3 TESTER REPLAY — running the tester's 1 test file(s)" "$LO
 [ "$(st "$T3")" = "blocked" ] && ok "C: #$T3 held (blocked)" || fail "C: #$T3 status=$(st "$T3")"
 
 echo "== D: PR mode (bin/merge-ticket.mjs) — the same, with a gh that would merge =="
-approve "$T4"; tester_pass "$T4" "$LABEL_TEST"
+tester_pass "$T4" "$LABEL_TEST"; approve "$T4"
 node -e 'const {DatabaseSync}=require("node:sqlite");const d=new DatabaseSync(process.argv[1]);d.prepare("UPDATE tickets SET pr_url=? WHERE number=?").run("https://github.com/o/r/pull/4",Number(process.argv[2]));d.close()' "$DISPATCH_DB" "$T4" 2>/dev/null
 cat > "$WORK/bin/gh" <<GH
 #!/usr/bin/env bash
@@ -150,7 +153,7 @@ grep -q "pr merge" "$WORK/gh-calls" 2>/dev/null && fail "D: gh pr merge ran on a
 [ "$(st "$T4")" = "blocked" ] && ok "D: #$T4 held (blocked)" || fail "D: #$T4 status=$(st "$T4")"
 
 echo "== F: a tests branch rewritten after the PASS cannot stand in for the bound assertion =="
-approve "$T9"; tester_pass "$T9" "$LABEL_TEST"
+tester_pass "$T9" "$LABEL_TEST"; approve "$T9"
 BOUND9="$(git -C "$R" rev-parse "gaffer-tests/ticket-$T9")"
 # Another process with the repository (any agent's worktree shares its refs) swaps in an
 # assertion that always passes, on a commit that descends from the tested commit.

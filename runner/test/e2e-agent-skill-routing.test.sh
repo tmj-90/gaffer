@@ -217,7 +217,10 @@ echo "== 1. DELIVERY on alpha (Node): the TS pack + what the ticket calls for, a
 A1="$(new_ticket alpha "Add a REST API endpoint for paginated tasks" "GET /tasks returns a page of tasks with a cursor; add pagination and filtering by status." high)"
 wg ticket set-testable "$A1" >/dev/null 2>&1
 wg ticket ready "$A1" >/dev/null 2>&1
-run_tick >/dev/null
+# The factory runs with a reviewer agent (REVIEW_MODE=agent), so the delivery waits in
+# review for it (tester first routes a ticket to the tester after the agent review, or on
+# the agent's approval, never before it).
+REVIEW_MODE=agent run_tick >/dev/null
 [ "$(st "$A1")" = "in_review" ] && ok "1: #$A1 delivered → in_review" || fail "1: delivery did not land (status=$(st "$A1"))"
 D1="$(last_call delivery)"
 if [ -z "$D1" ]; then fail "1: no delivery agent spawn recorded"; else
@@ -322,7 +325,7 @@ echo FAIL > "$WORK/tester-verdict"
 tester_fail_case() { # $1 label, $2 autonomous(1|0) → prints the final status
   local n; n="$(new_ticket alpha "Add a CSV export endpoint ($1)" "GET /export returns CSV" medium)"
   wg ticket set-testable "$n" >/dev/null 2>&1; wg ticket ready "$n" >/dev/null 2>&1
-  run_tick >/dev/null; review_tick >/dev/null
+  REVIEW_MODE=agent run_tick >/dev/null; review_tick >/dev/null
   [ "$(st "$n")" = "in_testing" ] || { echo "$n setup:$(st "$n")"; return; }
   if [ "$2" = 1 ]; then
     ( cd "$RUNNER_DIR" && GAFFER_TESTING=1 GAFFER_MODE=autonomous AUTO_MERGE=1 DISPATCH_ALLOW_AGENT_APPROVE=1 MERGE_ON_AGENT_REVIEW=1 bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" ) >/dev/null || true
@@ -339,7 +342,7 @@ grep -q "TESTER: #$N_AUTO FAIL re-queued for REWORK" "$GAFFER_DATA/factory.log" 
 # The rework comes back through review into in_testing IN THE SAME RUN: the tester must
 # test it again (a recorded verdict is not a per-run skip — that deadlocked a live run).
 echo PASS > "$WORK/tester-verdict"
-run_tick >/dev/null; review_tick >/dev/null
+REVIEW_MODE=agent run_tick >/dev/null; review_tick >/dev/null
 [ "$(st "$N_AUTO")" = "in_testing" ] && ok "3b: the reworked #$N_AUTO is back in_testing" || fail "3b: reworked #$N_AUTO is '$(st "$N_AUTO")' (expected in_testing)"
 ( cd "$RUNNER_DIR" && GAFFER_TESTING=1 GAFFER_MODE=autonomous AUTO_MERGE=1 DISPATCH_ALLOW_AGENT_APPROVE=1 MERGE_ON_AGENT_REVIEW=1 bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" ) >/dev/null || true
 case "$(st "$N_AUTO")" in ready_for_merge|done) ok "3b: the tester RE-TESTED the reworked ticket in the same run (now $(st "$N_AUTO"))" ;; *) fail "3b: reworked #$N_AUTO was not re-tested (status '$(st "$N_AUTO")')" ;; esac

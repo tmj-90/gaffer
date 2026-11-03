@@ -244,7 +244,9 @@ describe("tester evidence (no claim token) on an in_testing ticket", () => {
     });
     const { ticketId, acId } = inReview(wg);
     wg.setTestable(ticketId, true, human);
-    expect(wg.approveReview(ticketId, reviewer).ticket.status).toBe("in_testing");
+    // Tester first: the runner sends it to the tester before review.
+    expect(wg.routeToTester(ticketId, { type: "system" })[0]!.routed).toBe(true);
+    expect(wg.view(ticketId).ticket.status).toBe("in_testing");
     const res = wg.recordEvidence(
       {
         reviewOf: ticketId,

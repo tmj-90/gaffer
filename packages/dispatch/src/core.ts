@@ -114,6 +114,12 @@ import {
 } from "./services/diffService.js";
 import { readUsagePause } from "./health/usagePause.js";
 import {
+  readRunnerTesterLane,
+  recordRunnerTesterLane,
+  runnerLaneNotice,
+  type RunnerTesterLane,
+} from "./health/runnerTesterLane.js";
+import {
   computeLandingStatus,
   recordedLandingRepos,
   REVIEW_PIN_PREFIX,
@@ -752,6 +758,7 @@ export class Dispatch {
       // tester; a testable one does when the testing lane is on.
       testerExpected: (t) => this.reviewGateSvc.laneApplies(t),
       testerLane: (t) => this.testerLane(t),
+      runnerTesterLane: (t) => this.runnerTesterLaneFor(t),
       // SAME CANDIDATE: the runner's gated commit per repo, and each write repo's head as
       // the approval reads it (role order), so the packet compares the commit Approve binds.
       repoDeliveries: this.repoDeliveries,
@@ -767,6 +774,7 @@ export class Dispatch {
       ticketSvc: this.ticketSvc,
       maxAttempts: () => this.maxAttempts,
       testerLaneApplies: (t) => this.testerLane(t).on,
+      runnerTesterLane: (t) => this.runnerTesterLaneFor(t),
       // REVIEWER ≠ AUTHOR: the agents table, so an agent approver can be checked to be a
       // registered principal (see requireRegisteredAgentApprover).
       agents: this.agents,
@@ -3439,13 +3447,46 @@ export class Dispatch {
    * repositories, and which write repos have no registered test command? An explicit
    * GAFFER_TESTING wins; the `auto` default is on when every write repo has one.
    */
-  testerLane(ref: string | Ticket): TesterLaneDecision {
+  testerLane(
+    ref: string | Ticket,
+    mode: TestingLaneMode = this.testerLaneMode(),
+  ): TesterLaneDecision {
     const ticket = typeof ref === "string" ? this.resolveTicket(ref) : ref;
     const writes = this.repos
       .accessLinksForTicket(ticket.id)
       .filter((l) => isActiveTicketRepoRelation(l.relation) && l.access === "write")
       .map((l) => ({ name: l.name, test_command: l.test_command }));
-    return testerLaneFor(this.testerLaneMode(), writes);
+    return testerLaneFor(mode, writes);
+  }
+
+  /**
+   * LANE-SETTING CONSISTENCY: record the GAFFER_TESTING mode this process decides under as
+   * the runner's (its CLI's tester-route calls, see health/runnerTesterLane.ts). Fail-soft.
+   */
+  recordRunnerTesterLane(): boolean {
+    return recordRunnerTesterLane(this.db, this.testerLaneMode());
+  }
+
+  /** The tester lane the runner last recorded, or null. */
+  runnerTesterLane(): RunnerTesterLane | null {
+    return readRunnerTesterLane(this.db);
+  }
+
+  /**
+   * The runner's recorded lane for one ticket, when it differs from this process's mode:
+   * the mode, when it was recorded, and whether the tester gates the ticket under it (the
+   * same rule as laneApplies: acceptance always, a testable ticket when its lane is on).
+   * Null when the runner recorded nothing or reads the same mode.
+   */
+  runnerTesterLaneFor(
+    ref: string | Ticket,
+  ): (RunnerTesterLane & { on: boolean; gates: boolean }) | null {
+    const runner = this.runnerTesterLane();
+    if (!runner || runner.mode === this.testerLaneMode()) return null;
+    const ticket = typeof ref === "string" ? this.resolveTicket(ref) : ref;
+    const on = this.testerLane(ticket, runner.mode).on;
+    const gates = ticket.acceptance === 1 || (ticket.can_be_tested === 1 && on);
+    return { ...runner, on, gates };
   }
 
   /**
@@ -3457,6 +3498,8 @@ export class Dispatch {
     mode: TestingLaneMode;
     repos_without_test_command: string[];
     notices: string[];
+    runner: RunnerTesterLane | null;
+    runner_differs: boolean;
   } {
     const mode = this.testerLaneMode();
     const missing =
@@ -3466,7 +3509,19 @@ export class Dispatch {
             .filter((r) => !(r.test_command ?? "").trim())
             .map((r) => r.name)
         : [];
-    return { mode, repos_without_test_command: missing, notices: missing.map(testerOffNotice) };
+    // LANE-SETTING CONSISTENCY: the runner's recorded mode, and a notice when it differs.
+    const runner = this.runnerTesterLane();
+    const differs = runner !== null && runner.mode !== mode;
+    return {
+      mode,
+      repos_without_test_command: missing,
+      notices: [
+        ...(differs && runner ? [runnerLaneNotice(mode, runner)] : []),
+        ...missing.map(testerOffNotice),
+      ],
+      runner,
+      runner_differs: differs,
+    };
   }
 
   /**

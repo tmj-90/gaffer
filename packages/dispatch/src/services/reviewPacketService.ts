@@ -227,6 +227,13 @@ export interface ReviewPacket {
     mode: TesterLaneDecision["mode"];
     on: boolean;
     missing_test_command: string[];
+    /**
+     * LANE-SETTING CONSISTENCY: the lane the runner last routed under, when it differs
+     * from this dashboard's mode: that mode, when it was recorded, whether the lane is on
+     * for this ticket's repos under it, and whether the tester gates the ticket under it.
+     * Absent when the runner recorded nothing or reads the same mode.
+     */
+    runner?: { mode: TesterLaneDecision["mode"]; at: string; on: boolean; gates: boolean };
   } | null;
   cost: PacketCost;
   attempts: PacketAttempts;
@@ -276,6 +283,10 @@ export interface ReviewPacketDeps {
   testerExpected: (ticket: Ticket) => boolean;
   /** The ticket's tester lane (setting, on/off for its repos, repos with no test command). */
   testerLane?: (ticket: Ticket) => TesterLaneDecision;
+  /** The runner's differing tester lane for this ticket (Dispatch.runnerTesterLaneFor). */
+  runnerTesterLane?: (
+    ticket: Ticket,
+  ) => { mode: TesterLaneDecision["mode"]; at: string; on: boolean; gates: boolean } | null;
   /** Per-repo delivery rows: the commit the runner recorded after the gates. */
   repoDeliveries?: TicketRepoDeliveryRepository;
   /**
@@ -1046,7 +1057,10 @@ export class ReviewPacketService {
       gates,
       tester,
       tester_expected: safeBool(() => this.deps.testerExpected(ticket)),
-      tester_lane: readLane(() => this.deps.testerLane?.(ticket) ?? null),
+      tester_lane: readLane(
+        () => this.deps.testerLane?.(ticket) ?? null,
+        () => this.deps.runnerTesterLane?.(ticket) ?? null,
+      ),
       cost: { ...cost, budget_usd: ticket.delivery_budget_usd },
       attempts: {
         attempt_count: ticket.attempt_count,
@@ -1142,13 +1156,29 @@ const ZERO_COST: Omit<PacketCost, "budget_usd"> = {
   ledger_status: "unconfigured",
 };
 
-function readLane(fn: () => TesterLaneDecision | null): ReviewPacket["tester_lane"] {
+function readLane(
+  fn: () => TesterLaneDecision | null,
+  runnerFn: () => NonNullable<ReviewPacket["tester_lane"]>["runner"] | null,
+): ReviewPacket["tester_lane"] {
+  let d: TesterLaneDecision | null;
   try {
-    const d = fn();
-    return d ? { mode: d.mode, on: d.on, missing_test_command: [...d.missing_test_command] } : null;
+    d = fn();
   } catch {
     return null;
   }
+  if (!d) return null;
+  let runner: NonNullable<ReviewPacket["tester_lane"]>["runner"] | null;
+  try {
+    runner = runnerFn();
+  } catch {
+    runner = null;
+  }
+  return {
+    mode: d.mode,
+    on: d.on,
+    missing_test_command: [...d.missing_test_command],
+    ...(runner ? { runner: { ...runner } } : {}),
+  };
 }
 
 function safeBool(fn: () => boolean): boolean {

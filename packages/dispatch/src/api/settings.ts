@@ -207,7 +207,10 @@ export const SETTING_DEFS: readonly SettingDef[] = [
       "there cannot be replayed, so it would be held as unverified; Review and Health say " +
       "so). On: every testable ticket. Off: none, except an epic's acceptance ticket, " +
       "which is always tested. A planned build's tickets are testable unless this is " +
-      "off (all but the bootstrap); `wg ticket set-testable <n>` marks or unmarks one.",
+      "off (all but the bootstrap); `wg ticket set-testable <n>` marks or unmarks one. " +
+      "The dashboard and the runner each read it: the value saved here reaches both, and a " +
+      "value exported in one environment wins only there, so set it here and export it in " +
+      "neither (Health and Review say when the runner last routed under a different one).",
   },
 
   // --- Idle loops: the between-work background loops + their mode ---

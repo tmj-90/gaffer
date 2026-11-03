@@ -31,7 +31,6 @@ import {
   type TicketScopeNode,
   type TicketStatus,
   type WorkEvent,
-  isActiveTicketRepoRelation,
   parseTestContract,
 } from "./domain/types.js";
 import {
@@ -109,12 +108,7 @@ import {
   type RepoDiff,
   type TicketDiff,
 } from "./services/diffService.js";
-import {
-  readRunnerTesterLane,
-  recordRunnerTesterLane,
-  runnerLaneNotice,
-  type RunnerTesterLane,
-} from "./health/runnerTesterLane.js";
+import { readRunnerTesterLane, type RunnerTesterLane } from "./health/runnerTesterLane.js";
 import { computeLandingStatus, type LandingStatus } from "./services/landingStatus.js";
 import {
   type CommentRepoContext,
@@ -265,13 +259,7 @@ export {
   testingLaneMode,
   testerOffNotice,
 } from "./util/testingLane.js";
-import {
-  testerLaneFor,
-  testerOffNotice,
-  testingLaneMode,
-  type TesterLaneDecision,
-  type TestingLaneMode,
-} from "./util/testingLane.js";
+import { type TesterLaneDecision, type TestingLaneMode } from "./util/testingLane.js";
 import * as gate from "./services/gateNotifications.js";
 import * as ticketGit from "./services/ticketGitService.js";
 import * as autonomyGate from "./services/autonomyGateService.js";
@@ -279,6 +267,7 @@ import * as principalAdmin from "./services/principalAdminService.js";
 import * as landing from "./services/landingFactsService.js";
 import * as reviewLifecycle from "./services/reviewLifecycleService.js";
 import * as ticketLifecycle from "./services/ticketLifecycleService.js";
+import * as testerLane from "./services/testerLaneService.js";
 
 /**
  * An evidence row enriched with derived provenance for the reviewer surface.
@@ -2293,40 +2282,16 @@ export class Dispatch {
     return ticketLifecycle.submitForReview(this, this.internals, input, actor);
   }
 
-  /**
-   * The GAFFER_TESTING setting this instance acts on: the constructor's `testingEnabled`
-   * pins it on or off (tests); otherwise the env (`auto` when unset).
-   */
   testerLaneMode(): TestingLaneMode {
-    if (this.internals.testingEnabledOverride !== undefined) {
-      return this.internals.testingEnabledOverride ? "on" : "off";
-    }
-    return testingLaneMode();
+    return testerLane.testerLaneMode(this.internals);
   }
 
-  /**
-   * ADAPTIVE TESTER LANE: is the independent tester lane on for this ticket's
-   * repositories, and which write repos have no registered test command? An explicit
-   * GAFFER_TESTING wins; the `auto` default is on when every write repo has one.
-   */
-  testerLane(
-    ref: string | Ticket,
-    mode: TestingLaneMode = this.testerLaneMode(),
-  ): TesterLaneDecision {
-    const ticket = typeof ref === "string" ? this.resolveTicket(ref) : ref;
-    const writes = this.repos
-      .accessLinksForTicket(ticket.id)
-      .filter((l) => isActiveTicketRepoRelation(l.relation) && l.access === "write")
-      .map((l) => ({ name: l.name, test_command: l.test_command }));
-    return testerLaneFor(mode, writes);
+  testerLane(ref: string | Ticket, mode?: TestingLaneMode): TesterLaneDecision {
+    return testerLane.testerLane(this, ref, mode);
   }
 
-  /**
-   * LANE-SETTING CONSISTENCY: record the GAFFER_TESTING mode this process decides under as
-   * the runner's (its CLI's tester-route calls, see health/runnerTesterLane.ts). Fail-soft.
-   */
   recordRunnerTesterLane(): boolean {
-    return recordRunnerTesterLane(this.db, this.testerLaneMode());
+    return testerLane.recordRunnerTesterLane(this);
   }
 
   /** The tester lane the runner last recorded, or null. */
@@ -2334,28 +2299,12 @@ export class Dispatch {
     return readRunnerTesterLane(this.db);
   }
 
-  /**
-   * The runner's recorded lane for one ticket, when it differs from this process's mode:
-   * the mode, when it was recorded, and whether the tester gates the ticket under it (the
-   * same rule as laneApplies: acceptance always, a testable ticket when its lane is on).
-   * Null when the runner recorded nothing or reads the same mode.
-   */
   runnerTesterLaneFor(
     ref: string | Ticket,
   ): (RunnerTesterLane & { on: boolean; gates: boolean }) | null {
-    const runner = this.runnerTesterLane();
-    if (!runner || runner.mode === this.testerLaneMode()) return null;
-    const ticket = typeof ref === "string" ? this.resolveTicket(ref) : ref;
-    const on = this.testerLane(ticket, runner.mode).on;
-    const gates = ticket.acceptance === 1 || (ticket.can_be_tested === 1 && on);
-    return { ...runner, on, gates };
+    return testerLane.runnerTesterLaneFor(this, ref);
   }
 
-  /**
-   * ADAPTIVE TESTER LANE on Health: the setting, and under the `auto` default each
-   * registered (visible) repository with no test command, with the one-line notice
-   * that says the tester is off there and why.
-   */
   testerLaneHealth(): {
     mode: TestingLaneMode;
     repos_without_test_command: string[];
@@ -2363,58 +2312,15 @@ export class Dispatch {
     runner: RunnerTesterLane | null;
     runner_differs: boolean;
   } {
-    const mode = this.testerLaneMode();
-    const missing =
-      mode === "auto"
-        ? this.repos
-            .list(false)
-            .filter((r) => !(r.test_command ?? "").trim())
-            .map((r) => r.name)
-        : [];
-    // LANE-SETTING CONSISTENCY: the runner's recorded mode, and a notice when it differs.
-    const runner = this.runnerTesterLane();
-    const differs = runner !== null && runner.mode !== mode;
-    return {
-      mode,
-      repos_without_test_command: missing,
-      notices: [
-        ...(differs && runner ? [runnerLaneNotice(mode, runner)] : []),
-        ...missing.map(testerOffNotice),
-      ],
-      runner,
-      runner_differs: differs,
-    };
+    return testerLane.testerLaneHealth(this);
   }
 
-  /**
-   * TESTER FIRST: how many in_review tickets the runner's tester pass would send to the
-   * tester now (the same decision as routeToTester: the tester gates them, no PASS covers
-   * their head, their heads read and any required CI passed): a push after a PASS, a
-   * conflict reopen, a delivery the runner could not route. Poll for work counts them so
-   * a tick runs the sweep, and never counts one the sweep would leave. Reads git per
-   * ticket the tester gates.
-   */
   pendingTesterRoutes(): number {
-    let n = 0;
-    for (const t of this.tickets.list("in_review")) {
-      try {
-        if (this.reviewGateSvc.laneApplies(t) && this.reviewGateSvc.testerRoutePlan(t).route) n++;
-      } catch {
-        /* a ticket that cannot be read is not counted */
-      }
-    }
-    return n;
+    return testerLane.pendingTesterRoutes(this);
   }
 
-  /**
-   * TESTER FIRST: send in_review tickets the tester gates (and has not passed on their
-   * head) to it before a person reviews them: one ticket, or every in_review ticket. The
-   * runner's call (system) or an admin's.
-   */
   routeToTester(ref: string | null, actor: Actor): TesterRoute[] {
-    return ref === null
-      ? this.reviewGateSvc.routeAllToTester(actor)
-      : [this.reviewGateSvc.routeToTester(ref, actor)];
+    return testerLane.routeToTester(this, ref, actor);
   }
 
   humanBlockTicket(

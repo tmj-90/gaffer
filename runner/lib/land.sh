@@ -140,6 +140,7 @@ _gaffer_land_replay_record() {
   local -a _rr=()
   [ -n "$repo_id" ] && _rr=(--repo "$repo_id")
   if wg ticket record-tester-replay "$num" --commit "$landed" --pin "$pin" --files-json "${_MG_REPLAY_FILES:-[]}" \
+       --tests-json "${_MG_REPLAY_TESTS:-[]}" --evidence "${_MG_REPLAY_EVIDENCE:-files}" \
        --via "$via" --note "${_MG_REPLAY_NOTE:-}" ${_rr[@]+"${_rr[@]}"} --as system >/dev/null 2>&1; then
     log "$who: #$num recorded the tester replay: ${_MG_REPLAY_COUNT:-0} tester test file(s) passed on the landed revision ${landed:0:12}"
   else
@@ -570,14 +571,17 @@ _gaffer_land_one() {
 #     _MG_EVIDENCE (the gate's checklist), _MG_REASON, _MG_KIND (merge_gate_red |
 #     tester_replay_red | tester_replay_unverified on a held gate) and, for the replay
 #     record, _MG_REPLAY_RECORD (1 when a bound tester PASS's tests ran and passed on
-#     _MG_MERGE), _MG_REPLAY_FILES (JSON array: the files proven to have run) and
-#     _MG_REPLAY_COUNT.
+#     _MG_MERGE), _MG_REPLAY_FILES (JSON array: the files proven to have run),
+#     _MG_REPLAY_COUNT, _MG_REPLAY_TESTS (JSON array: the test identities proven to have
+#     run and passed) and _MG_REPLAY_EVIDENCE ("identities" when the bound PASS recorded
+#     identities, "files" for an older PASS: file-level evidence only).
 _gaffer_merge_gate() {
   local num="$1" repo="$2" branch="$3" def="$4" pin="$5" show="$6" target_ref="$7" who="${8:-MERGE}" trailers="${9:-}" secondary="${10:-0}"
   local msg="Merge branch '$branch'" ffopt=()
   if [ -n "$trailers" ]; then msg="$msg"$'\n\n'"$trailers"; ffopt=(--no-ff); fi
   _MG_TARGET=""; _MG_MERGE=""; _MG_EVIDENCE=""; _MG_REASON=""; _MG_KIND=""
   _MG_REPLAY_RECORD=0; _MG_REPLAY_FILES="[]"; _MG_REPLAY_COUNT=0; _MG_REPLAY_NOTE=""
+  _MG_REPLAY_TESTS="[]"; _MG_REPLAY_EVIDENCE="files"
   [ -n "$pin" ] || { _MG_REASON="no pinned commit to gate"; return 2; }
   _MG_TARGET="$(git -C "$repo" rev-parse --verify --quiet "$target_ref^{commit}" 2>/dev/null)" \
     || { _MG_TARGET=""; _MG_REASON="the target $target_ref cannot be resolved"; return 2; }
@@ -631,22 +635,26 @@ _gaffer_merge_gate() {
 # bound tester PASS of exactly <pin> is why this lands, and checks the tester's test files
 # (only those it added or changed on gaffer-tests/ticket-<n>, never its wiring) out into
 # <wt>'s working tree — the gated merge COMMIT is unchanged, so the tester's files are
-# run, never landed. PROOF OF EXECUTION (external review #7): the files run explicitly
-# with the stack's runner where a file-scoped invocation is well defined (`node --test
-# <files…>`, vitest/jest by path, pytest, go, cargo), else the registered command runs, in
-# both cases through bin/dod-regate.sh (tests only; the same runner, sandbox and timeouts
-# as the merge gate); then the runner's own per-file evidence is read. A registered
-# `node --test test/label.test.mjs` never executed the tester's file, the run passed and
-# the record named that file as passed: now a file with no proof HOLDS the landing.
-#   → 0 passed and every file proven, or nothing to replay (no tester PASS on record: the
-#     ticket was not in the testing lane) · 4 the tester's tests FAIL on the candidate
-#     (red; _MG_KIND tester_replay_red) or a file shows no evidence it ran (_MG_KIND
-#     tester_replay_unverified, the files named) · 2 the replay could not be prepared
-#     (held, fail closed).
+# run, never landed. PROOF OF EXECUTION (external review #7): the tester's files are
+# passed to the stack's runner explicitly, through bin/dod-regate.sh (tests only; the same
+# runner, sandbox and timeouts as the merge gate); then the runner's own evidence is read.
+# A registered `node --test test/label.test.mjs` never executed the tester's file, the run
+# passed and the record named that file as passed: now a file with no proof HOLDS.
+# EXECUTION CONTRACT (external review 10): what runs is the registered test command
+# itself (its env assignments, config, markers, tags, features and toolchain kept) with
+# only the file selection and the proof reporter appended (lib/tester-replay.mjs
+# replayInvocation), and every entry of the invocation's env reaches the run. A PASS that
+# recorded TEST IDENTITIES needs every one of them to execute and pass on the candidate.
+#   → 0 passed and every file (and bound identity) proven, or nothing to replay (no tester
+#     PASS on record: the ticket was not in the testing lane) · 4 the tester's tests FAIL
+#     on the candidate, a bound identity included (red; _MG_KIND tester_replay_red), or a
+#     file or bound identity shows no evidence it ran and passed (_MG_KIND
+#     tester_replay_unverified, named) · 2 the replay could not be prepared (held, fail
+#     closed).
 _gaffer_merge_gate_tester_replay() {
   local num="$1" repo="$2" pin="$3" wt="$4" label="$5" tcmd="$6" def="$7" who="$8" dodrc="${9:-0}"
   local helper="${RUNNER_DIR:-}/lib/tester-replay.mjs" out rc run record files reason rout rrc
-  local inv icmd irunner imode iout inodeopt ikey proof unproven ran
+  local inv icmd irunner imode iout ienv ienvok proof unproven ran failed ptests preason line
   if [ ! -f "$helper" ] || ! command -v node >/dev/null 2>&1; then
     _MG_REASON="the tester replay (lib/tester-replay.mjs) cannot run"; return 2
   fi
@@ -666,6 +674,7 @@ _gaffer_merge_gate_tester_replay() {
   _MG_REPLAY_FILES="$(printf '%s' "$out" | jget 'JSON.stringify(d.files || [])' 2>/dev/null || echo '[]')"
   _MG_REPLAY_COUNT="$(printf '%s' "$out" | jget 'String((d.files || []).length)' 2>/dev/null || echo 0)"
   _MG_REPLAY_NOTE="$reason"
+  _MG_REPLAY_EVIDENCE="$(printf '%s' "$out" | jget 'd.evidence === "identities" ? "identities" : "files"' 2>/dev/null || echo files)"
   if [ "$run" != "1" ]; then
     log "$who: #$num TESTER REPLAY — no tester test files to replay (${reason}); the merge gate's suite is what the tester ran"
     _MG_REPLAY_RECORD=1; return 0
@@ -681,17 +690,20 @@ _gaffer_merge_gate_tester_replay() {
   irunner="$(printf '%s' "$out" | jget '(d.invocation && d.invocation.runner) || ""' 2>/dev/null || echo '')"
   imode="$(printf '%s' "$out" | jget '(d.invocation && d.invocation.mode) || ""' 2>/dev/null || echo '')"
   iout="$(printf '%s' "$out" | jget '(d.invocation && d.invocation.proof && d.invocation.proof.output) || ""' 2>/dev/null || echo '')"
-  inodeopt="$(printf '%s' "$out" | jget '(d.invocation && d.invocation.env && d.invocation.env.NODE_OPTIONS) || ""' 2>/dev/null || echo '')"
-  # The node:test reporter's signing key: in the run's environment only (the reporter
-  # deletes it before any test file starts) and handed to the proof step on stdin.
-  ikey="$(printf '%s' "$out" | jget '(d.invocation && d.invocation.env && d.invocation.env.GAFFER_REPLAY_PROOF_KEY) || ""' 2>/dev/null || echo '')"
-  if [ -z "$icmd" ] || [ -z "$iout" ]; then
-    _MG_REASON="the tester replay produced no invocation for the tester's tests ($files)"; return 2
+  # EVERY entry of the invocation's env reaches the run (NODE_OPTIONS with the signed
+  # reporter, the reporter's signing key, which lives in the run's environment only and
+  # which the reporter deletes before any test file starts, and whatever else the
+  # invocation needs), one NAME=value per line. An entry that is not a plain name, or a value with a line break,
+  # cannot be passed faithfully: the replay is not prepared (held).
+  ienv="$(printf '%s' "$out" | jget 'Object.entries((d.invocation && d.invocation.env) || {}).map(([k, v]) => k + "=" + String(v)).join("\n")' 2>/dev/null)" || ienv=""
+  ienvok="$(printf '%s' "$out" | jget 'Object.entries((d.invocation && d.invocation.env) || {}).every(([k, v]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k) && !/[\r\n\0]/.test(String(v))) ? "1" : ""' 2>/dev/null || echo '')"
+  if [ -z "$icmd" ] || [ -z "$iout" ] || [ "$ienvok" != "1" ]; then
+    _MG_REASON="the tester replay produced no usable invocation for the tester's tests ($files)"; return 2
   fi
   log "$who: #$num TESTER REPLAY — running the tester's $_MG_REPLAY_COUNT test file(s) ($files) on the merge candidate ${_MG_MERGE:0:12} ($irunner, $([ "$imode" = files ] && echo "by path" || echo "the registered command"))"
-  local -a _renv=(GAFFER_DOD=1 GAFFER_DOD_TESTS=1 GAFFER_DOD_TYPECHECK=0 GAFFER_DOD_LINT=0 "GAFFER_DOD_TESTS_OUTPUT=$iout")
-  [ -n "$inodeopt" ] && _renv+=("NODE_OPTIONS=$inodeopt")
-  [ -n "$ikey" ] && _renv+=("GAFFER_REPLAY_PROOF_KEY=$ikey")
+  local -a _renv=()
+  while IFS= read -r line; do [ -n "$line" ] && _renv+=("$line"); done <<< "$ienv"
+  _renv+=(GAFFER_DOD=1 GAFFER_DOD_TESTS=1 GAFFER_DOD_TYPECHECK=0 GAFFER_DOD_LINT=0 "GAFFER_DOD_TESTS_OUTPUT=$iout")
   # The merge gate already installed this worktree's dependencies.
   [ "$dodrc" = "0" ] && _renv+=(GAFFER_DOD_INSTALL=0)
   rout="$(env "${_renv[@]}" bash "${RUNNER_DIR:-.}/bin/dod-regate.sh" "$wt" "$label:tester-replay" "$icmd" - "$_MG_TARGET" 2>/dev/null)"; rrc=$?
@@ -701,23 +713,40 @@ _gaffer_merge_gate_tester_replay() {
     _MG_REASON="the independent tester's tests ($files) fail on the merge of ${pin:0:12} onto $def@${_MG_TARGET:0:12} (the repo's own gates pass)"
     return 4
   fi
-  # PROOF: every tester file must show the runner's own evidence that it ran. Unreadable
-  # proof proves nothing (every file unproven).
+  # PROOF: every tester file (and every test identity the PASS bound) must show the
+  # runner's own evidence that it ran and passed. Unreadable proof proves nothing (every
+  # file unproven). The invocation carries the bound identities (`required`).
   proof="$(printf '%s' "$inv" | node "$helper" proof --worktree "$wt" --invocation - --files-json "$_MG_REPLAY_FILES" 2>/dev/null)" \
     || proof=""
   unproven="$(printf '%s' "$proof" | jget '(d.unproven || []).join(", ")' 2>/dev/null || echo '')"
+  failed="$(printf '%s' "$proof" | jget 'String((d.failed || []).length)' 2>/dev/null || echo 0)"
   ran="$(printf '%s' "$proof" | jget 'JSON.stringify(d.ran || [])' 2>/dev/null || echo '[]')"
-  [ -n "$proof" ] || { unproven="$files"; ran="[]"; }
+  ptests="$(printf '%s' "$proof" | jget 'JSON.stringify(d.tests || [])' 2>/dev/null || echo '[]')"
+  preason="$(printf '%s' "$proof" | jget 'd.reason || ""' 2>/dev/null || echo '')"
+  [ -n "$proof" ] || { unproven="$files"; ran="[]"; ptests="[]"; failed=0; }
+  local how; how="$([ "$imode" = files ] && echo "by path" || echo "the registered test command")"
+  if [ "${failed:-0}" != "0" ]; then
+    # A bound identity that FAILED is a red replay (the run's own exit status aside).
+    _MG_KIND="tester_replay_red"
+    _MG_EVIDENCE="$rout"
+    _MG_REASON="the independent tester's tests fail on the merge of ${pin:0:12} onto $def@${_MG_TARGET:0:12}: $preason"
+    return 4
+  fi
   if [ -n "$unproven" ]; then
     _MG_KIND="tester_replay_unverified"
     _MG_EVIDENCE="$rout"
-    _MG_REASON="the independent tester's test file(s) did not run in the replay on the merge of ${pin:0:12} onto $def@${_MG_TARGET:0:12}: $unproven (no evidence from the runner that they executed; replayed with $irunner, $([ "$imode" = files ] && echo "by path" || echo "the registered test command"))"
+    if [ "$_MG_REPLAY_EVIDENCE" = identities ]; then
+      _MG_REASON="the independent tester's bound test(s) did not run and pass in the replay on the merge of ${pin:0:12} onto $def@${_MG_TARGET:0:12}: ${preason:-$unproven} (replayed with $irunner, $how)"
+    else
+      _MG_REASON="the independent tester's test file(s) did not run in the replay on the merge of ${pin:0:12} onto $def@${_MG_TARGET:0:12}: $unproven (no evidence from the runner that they executed; replayed with $irunner, $how)"
+    fi
     return 4
   fi
-  # The record lists only the files proven to have run (and the run passed).
+  # The record lists only the files and identities proven to have run (and the run passed).
   _MG_REPLAY_FILES="$ran"
+  _MG_REPLAY_TESTS="$ptests"
   _MG_REPLAY_COUNT="$(printf '%s' "$ran" | jget 'String(d.length)' 2>/dev/null || echo 0)"
-  log "$who: #$num TESTER REPLAY PASS — the tester's tests ($files) ran and pass on the merge candidate ${_MG_MERGE:0:12}"
+  log "$who: #$num TESTER REPLAY PASS — the tester's tests ($files) ran and pass on the merge candidate ${_MG_MERGE:0:12} ($(printf '%s' "$ptests" | jget 'String(d.length)' 2>/dev/null || echo 0) test(s) proven; $([ "$_MG_REPLAY_EVIDENCE" = identities ] && echo "every test the tester's PASS bound" || echo "file-level evidence only: the PASS recorded no test identities"))"
   _MG_REPLAY_RECORD=1; return 0
 }
 
@@ -733,7 +762,7 @@ _gaffer_merge_gate_hold() {
   elif [ "$code" = "tester_replay_unverified" ]; then
     # PROOF OF EXECUTION: a tester file the replay cannot show ran is not a pass.
     head="TESTER REPLAY UNVERIFIED"
-    why="Tester replay unverified: $_MG_REASON. Nothing landed and no replay record was written; $def was not touched. Make the repo's test command run the tester's files (or register one whose runner gaffer can run by path), then re-approve."
+    why="Tester replay unverified: $_MG_REASON. Nothing landed and no replay record was written; $def was not touched. Make the repo's test command run the tester's files (or register one whose runner gaffer can run by path); a test the tester's PASS bound that the candidate skips, renames or removes needs the tester again. Then re-approve."
   else
     code="merge_gate_red"; head="MERGE GATE FAILED"
     why="The merge of $branch onto $def@${_MG_TARGET:0:12} fails its gates (each side passed alone); $def was not touched — see the merge-gate evidence. Rework the branch on the current $def, then re-approve."

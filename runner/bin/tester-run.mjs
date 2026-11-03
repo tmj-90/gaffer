@@ -118,7 +118,13 @@ import {
   shadowNote,
   writeAgentSettings,
 } from "../lib/agent-home.mjs";
-import { isTestPath, testerTestFiles } from "../lib/tester-replay.mjs";
+import {
+  isTestPath,
+  prepareReplayProof,
+  replayInvocation,
+  replayProof,
+  testerTestFiles,
+} from "../lib/tester-replay.mjs";
 
 // node:sqlite is only reachable via createRequire in an ESM module.
 const require = createRequire(import.meta.url);
@@ -459,6 +465,7 @@ export function recordVerdict(ticketNumber, verdict, summary, env = process.env,
     ...(binding.contractHash ? ["--contract-hash", String(binding.contractHash)] : []),
     ...(binding.replay ? ["--replay", String(binding.replay)] : []),
     ...(binding.testsCommit ? ["--tests-commit", String(binding.testsCommit)] : []),
+    ...(binding.tests ? ["--tests-json", JSON.stringify(binding.tests)] : []),
   ];
   const override = (env.DISPATCH_TESTER_VERDICT_CMD ?? "").trim();
   let argv;
@@ -498,7 +505,9 @@ export function recordVerdict(ticketNumber, verdict, summary, env = process.env,
         "--summary",
         summary,
         "--as",
-        "agent",
+        // The PASS's test identities are the runner's own measurement: recorded as the
+        // system (dispatch refuses them from any other actor).
+        binding.tests ? "system" : "agent",
         // GAFFER_TESTER_FAIL_TO=ready (set by lib/tester.sh when the autonomy policy lets
         // the runner drive the review gate): a FAIL re-queues for REWORK with the
         // failing observation as feedback instead of holding for a human.
@@ -763,7 +772,14 @@ export function implementationChanges(worktree, baseCommit) {
  * runner re-runs the repo's test command in a FRESH detached checkout of the tested commit
  * with only the tester's TEST files copied in (deleted candidate tests are not deleted —
  * the candidate's own tests still run), dependencies linked from the primary checkout.
- * → { state: "passed" | "failed" | "skipped", reason, tail }
+ * TEST IDENTITIES (external review 10): the registered command runs with the landing
+ * replay's proof reporter added and no file selection (lib/tester-replay.mjs
+ * replayInvocation, select:false; when that does not run every tester file, the landing
+ * replay's invocation with the files appended runs too), and the tests the runner's own
+ * evidence shows PASSED in
+ * the tester's files are returned as `tests`: the PASS binds them and the landing replay
+ * requires every one to pass on the merge candidate.
+ * → { state: "passed" | "failed" | "skipped", reason, tail, tests }
  */
 export function replayTesterTests({
   repoPath,
@@ -799,14 +815,37 @@ export function replayTesterTests({
       Number(process.env.GAFFER_TESTER_REPLAY_TIMEOUT_MS) > 0
         ? Number(process.env.GAFFER_TESTER_REPLAY_TIMEOUT_MS)
         : 10 * 60 * 1000;
-    const r = spawnSync("bash", ["-c", cmd], {
-      cwd: replay,
-      encoding: "utf8",
-      timeout,
-      maxBuffer: 16 * 1024 * 1024,
-      env: { ...agentChildEnv(), CI: "1" },
-    });
-    const tail = `${r.stdout || ""}\n${r.stderr || ""}`.trim().split("\n").slice(-12).join("\n");
+    const files = testFiles.filter((f) => existsSync(resolve(replay, f)));
+    const runInv = (select) => {
+      const inv = replayInvocation({ worktree: replay, testCommand: cmd, files, select });
+      prepareReplayProof(inv);
+      const r = spawnSync("bash", ["-c", inv.command], {
+        cwd: replay,
+        encoding: "utf8",
+        timeout,
+        maxBuffer: 16 * 1024 * 1024,
+        env: { ...agentChildEnv(), CI: "1", ...inv.env },
+      });
+      writeFileSync(inv.proof.output, `${r.stdout || ""}\n${r.stderr || ""}`);
+      const tail = `${r.stdout || ""}\n${r.stderr || ""}`
+        .split("\n")
+        .filter((l) => !l.includes("gaffer-replay-proof "))
+        .join("\n")
+        .trim()
+        .split("\n")
+        .slice(-12)
+        .join("\n");
+      return { r, tail, proof: replayProof({ inv, files, worktree: replay }) };
+    };
+    // The registered command as it is. When it does not run every tester file (a
+    // file-scoped command), the landing replay's own invocation (the registered command
+    // with the tester's files appended) runs them too: that is what the landing will
+    // require, so it is what the identities come from, and a failure there fails the
+    // replay as well.
+    let run = runInv(false);
+    if (!run.r.error && run.r.status === 0 && run.proof.unproven.length > 0) run = runInv(true);
+    const { r, tail } = run;
+    const tests = run.proof.tests;
     if (r.error)
       return {
         state: "failed",
@@ -816,8 +855,9 @@ export function replayTesterTests({
     return r.status === 0
       ? {
           state: "passed",
-          reason: `${cmd} passed on a clean checkout of ${testedCommit.slice(0, 12)}`,
+          reason: `${cmd} passed on a clean checkout of ${testedCommit.slice(0, 12)} (${tests.length} test(s) in the tester's files passed)`,
           tail,
+          tests,
         }
       : {
           state: "failed",
@@ -1405,6 +1445,9 @@ function runLiveTester(context) {
     contractHash: testedContractHash,
     ...(verdict === "pass" && replay ? { replay: replay.state } : {}),
     ...(verdict === "pass" ? { testsCommit } : {}),
+    ...(verdict === "pass" && testsCommit !== "none" && replay && Array.isArray(replay.tests)
+      ? { tests: replay.tests }
+      : {}),
   });
   if (!recorded.ok) {
     fail(

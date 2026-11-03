@@ -9,8 +9,8 @@
 // evidence (the tester's files replayed on the revision that landed), or holds with a
 // targeted "replay missing: run …" line and leaves the ticket not done.
 //   R1 the interrupted merge: landed + landing recorded, no replay record, not done
-//   R2 the retry regenerates the replay on the landed revision, marks the ticket done,
-//      and the epic reads accepted
+//   R2 the retry regenerates the replay on the landed revision (the test identities the
+//      PASS bound proven), marks the ticket done, and the epic reads accepted
 //   R3 when the replay cannot be regenerated (the tester's tests are gone), the retry
 //      holds: "replay missing: … run `gaffer merge <n>`", exit 4, the ticket not done
 //   R4 the merge lane's retry (lib/land.sh, through merge-ticket.mjs --recover-replay)
@@ -302,6 +302,13 @@ async function main() {
     ok(
       rows[0] && rows[0].uri === `gaffer-tester-replayed:${landedRev}`,
       "R2: it names the landed revision",
+    );
+    // TEST IDENTITIES (external review 10): the tester lane's clean replay bound the tests
+    // that passed, and the regenerated record proves every one of them.
+    const payload = rows[0] ? JSON.parse(rows[0].payload_json || "{}") : {};
+    ok(
+      payload.evidence === "identities" && Array.isArray(payload.tests) && payload.tests.length > 0,
+      `R2: the regenerated record proves the test identities the PASS bound (${payload.evidence}, ${JSON.stringify(payload.tests)})`,
     );
     ok(status(w, final) === "done", `R2: the final is done (${status(w, final)})`);
     const a = acceptance(w);

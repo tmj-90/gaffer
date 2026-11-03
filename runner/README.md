@@ -570,8 +570,13 @@ from `lib/hook/`, where the rules live one concern per module:
 | `lib/hook/decide.mjs` | the input-size cap, the verdict and its ledgers, the per-tool checks, `decideRaw` |
 
 A rule module returns a reason or null; only `decide.mjs` blocks or allows, and each
-module imports only the ones above it in that table. A missing module fails the hook
-closed like a missing core. `test/safety-hook-golden-corpus.test.mjs` pins the verdict
+module imports only the ones above it in that table. A missing or broken module fails
+the hook closed like a missing core (`test/safety-hook.test.mjs` checks each one),
+`preflight.sh` shows it as a failure, and `tick.sh` refuses to launch an agent when
+`lib/hook/` is missing. Loading twelve modules instead of one adds node start-up time
+to every hook call: on a loaded 4-CPU machine I measured about +5 to +25 ms per call
+(a Read went from a median of about 75 ms to 85 ms), and `NODE_COMPILE_CACHE` did
+not recover it. `test/safety-hook-golden-corpus.test.mjs` pins the verdict
 for every tool call the hook suites make ([`docs/testing.md`](../docs/testing.md) says
 how to refresh it when a rule changes on purpose).
 

@@ -129,7 +129,7 @@ missing config points you at `crew init`, an unbuilt Dispatch at
 Every MCP tool call is recorded to an append-only, **content-redacted** audit log
 (tool name + ids/counts, never prompts/contents/secrets) at `GAFFER_AUDIT`, else
 `<factory>/audit.jsonl`, else `~/.crew/audit.jsonl`. Disable with
-`GAFFER_AUDIT_OFF=1`. See [SECURITY.md](./SECURITY.md) for the full trust model.
+`GAFFER_AUDIT_OFF=1`. See the root [SECURITY.md](../../SECURITY.md) for the full trust model.
 
 ## Design
 

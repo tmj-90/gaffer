@@ -253,7 +253,7 @@ ids/count — **never** descriptions, evidence bodies, or claim tokens. A
 deliberate policy-gate refusal (a `POLICY_DENIED` transition) is recorded in a
 distinct `blocked` field rather than `error`, so an operator can tell a fired
 gate apart from an unexpected failure. Disable with `DISPATCH_AUDIT_OFF=1`. See
-[SECURITY.md](./SECURITY.md) for the full trust model.
+the root [SECURITY.md](../../SECURITY.md) for the full trust model.
 
 ## Web dashboard — the control room
 

@@ -182,6 +182,42 @@ for (const cmd of [
   t.deny(`acceptance-profile verb: ${cmd}`, bash(cmd), opts);
 }
 
+// (h3) the matched experiment runner (routing gap 4): a person starts an experiment, never
+// an agent; its live mode spends the factory's budget and its results feed the routing
+// recommendations. Every launch form is refused; reading the files is not.
+for (const cmd of [
+  "bash runner/eval/experiment.sh --arm a --arm b:tier=cheap",
+  "bash runner/eval/experiment.sh --live --max-usd 5 --arm a --arm b:tier=cheap",
+  "runner/eval/experiment.sh --arm a --arm b",
+  "./runner/eval/experiment.sh --arm a --arm b",
+  "node runner/eval/experiment.mjs plan --out x --arm a --arm b",
+  "sh /opt/gaffer/runner/eval/experiment-stub-agent.sh",
+  "env A=1 bash runner/eval/experiment.sh --arm a --arm b",
+  "cd runner/eval && bash experiment.sh --live --max-usd 1 --arm a --arm b",
+  "./experiment.sh --live --max-usd 1",
+  "b''ash runner/eval/exp''eriment.sh --arm a --arm b",
+  "bash 'runner/eval/experiment.sh' --live",
+  "X=runner/eval/experiment.sh; bash $X --arm a --arm b",
+  "eval 'bash runner/eval/experiment.sh --arm a --arm b'",
+  "bash -c 'bash runner/eval/experiment.sh --live --max-usd 1'",
+  "gaffer eval experiment --arm a --arm b",
+  "runner/gaffer eval experiment --live --max-usd 1",
+  "$G eval experiment --arm a --arm b",
+  "G=gaffer; $G eval 'experiment' --arm a",
+]) {
+  t.deny(`matched experiment runner: ${cmd}`, bash(cmd), opts);
+}
+for (const cmd of [
+  "cat runner/eval/experiment.sh",
+  "grep -n arm runner/eval/experiment.mjs",
+  "git add runner/eval/experiment.sh runner/eval/experiment.mjs",
+  "node scripts/experiment.mjs",
+  "bash run-experiment.sh",
+  'git commit -m "eval experiment: add arms"',
+]) {
+  t.allow(`reads or an unrelated experiment file: ${cmd}`, bash(cmd), opts);
+}
+
 // (i) a verb the command text does not show (lane-hook R2): built at run time in the
 // verb slot of a privileged CLI, or handed to it by xargs, parallel or find from their
 // input. The verb cannot be read, so the hook refuses it, for every control-plane verb.

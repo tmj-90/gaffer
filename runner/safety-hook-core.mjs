@@ -3195,6 +3195,9 @@ const CP_PAIRS = [
   // The code index the Review's callers row is read from (memory `index build`): only the
   // runner rebuilds it; `index neighbours` / `index stats` stay open.
   ["index", /^build$/],
+  // A matched experiment (`gaffer eval experiment`, routing gap 4): a person starts one;
+  // its live mode spends the factory's budget. `eval replay` and `eval agreement` are reads.
+  ["eval", /^experiment$/],
 ];
 function cpVerbNear(words) {
   // words: everything after the program word; the verb sits within the first three.

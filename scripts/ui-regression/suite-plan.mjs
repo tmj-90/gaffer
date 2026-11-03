@@ -54,6 +54,7 @@ export const ORDER = [
   "s20-ticket-landing",
   "s21-review-comments",
   "s22-tester-first",
+  "s23-acceptance-cli",
 ];
 
 export const available = () =>

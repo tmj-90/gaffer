@@ -181,14 +181,17 @@ export function parseProfileSpec(
  * derivation, recorded as `profile_seeded_from: "title"`): a title naming a CLI or a
  * command-line verb -> cli; one naming an endpoint, a REST or HTTP API -> api. Only the
  * runnable profiles are suggested, and never a spec: the commands are a person's to
- * register. Off with GAFFER_ACCEPTANCE_PROFILE_SEED=0.
+ * register. Off when GAFFER_ACCEPTANCE_PROFILE_SEED is 0.
  */
 export function profileFromTitle(
   title: string,
   env: NodeJS.ProcessEnv = process.env,
 ): AcceptanceProfile | null {
-  if (/^(0|false|no|off)$/i.test(String(env.GAFFER_ACCEPTANCE_PROFILE_SEED ?? "").trim()))
-    return null;
+  const seed =
+    env === process.env
+      ? process.env.GAFFER_ACCEPTANCE_PROFILE_SEED
+      : env.GAFFER_ACCEPTANCE_PROFILE_SEED;
+  if (/^(0|false|no|off)$/i.test(String(seed ?? "").trim())) return null;
   const t = String(title ?? "");
   if (/\b(cli|command[- ]line|sub-?commands?)\b/i.test(t)) return "cli";
   if (/\b(endpoints?|rest(ful)? api|http api|api routes?|api endpoints?)\b/i.test(t)) return "api";

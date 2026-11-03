@@ -22,7 +22,7 @@ computed from other knobs at runtime.
 | Knobs with a runner default | 152 |
 | Knobs editable in the dashboard | 58 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
-| Env reads in code with no default and no UI entry | 80 |
+| Env reads in code with no default and no UI entry | 85 |
 
 ## Runner defaults (`runner/factory.config.sh` and `runner/lib/*.sh`)
 
@@ -404,6 +404,7 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 
 | Variable | Default in code | Read in |
 |---|---|---|
+| `DISPATCH_ACCEPTANCE_EVIDENCE_CMD` | _(empty)_ | `runner/bin/tester-run.mjs` |
 | `DISPATCH_AGENT_ID` | `mcp-agent` | `packages/dispatch/src/mcp/server.ts` |
 | `DISPATCH_ALLOWED_HOSTS` | _(empty)_ | `packages/dispatch/src/api/security.ts` |
 | `DISPATCH_API_PORT` | `8787` | `packages/dispatch/src/api/main.ts`, `runner/gaffer`, `runner/setup.sh`, `runner/status.sh` |
@@ -419,6 +420,9 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `DISPATCH_PID_FILE` | _(empty)_ | `packages/dispatch/src/api/main.ts` |
 | `DISPATCH_SENSITIVE_PATH_RE` | _(empty)_ | `packages/dispatch/src/services/riskAnnotations.ts` |
 | `DISPATCH_TESTER_VERDICT_CMD` | _(empty)_ | `runner/bin/tester-run.mjs` |
+| `GAFFER_ACCEPTANCE_PORT_BASE` |  | `runner/lib/acceptance-profiles.mjs` |
+| `GAFFER_ACCEPTANCE_PROFILE_SEED` |  | `packages/dispatch/src/domain/acceptanceProfile.ts` |
+| `GAFFER_ACCEPTANCE_TIMEOUT_MS` |  | `runner/lib/acceptance-profiles.mjs` |
 | `GAFFER_AGENT_EMAIL` | `gaffer-factory@users.noreply.invalid` | `runner/lib/greenfield.sh` |
 | `GAFFER_BLOCK_LEDGER` | `$GAFFER_DATA/safety-blocks.jsonl` | `runner/bin/build-log.mjs`, `runner/run-summary.sh` |
 | `GAFFER_BP_FILE` | `$GAFFER_RUN_STATE_DIR/.backpressure-repos` | `runner/run-summary.sh` |
@@ -451,6 +455,7 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `GAFFER_PLAN_BUILD_TIMEOUT_MS` |  | `packages/dispatch/src/api/planBuild.ts` |
 | `GAFFER_REAPPROVAL_ATTEMPTS` | _(empty)_ | `runner/bin/merge-ticket.mjs` |
 | `GAFFER_REAPPROVAL_BACKOFF_MS` | _(empty)_ | `runner/bin/merge-ticket.mjs` |
+| `GAFFER_REDACTION_MODULE` |  | `runner/lib/acceptance-profiles.mjs` |
 | `GAFFER_REVIEW_TICKET` |  | `packages/dispatch/src/mcp/tools.ts` |
 | `GAFFER_SAFETY_HOOK` |  | `packages/crew/src/safety/liveHook.ts` |
 | `GAFFER_SANDBOX_CLAUDE_BIN` | `claude` | `runner/lib/worker.mjs`, `runner/lib/worker.sh` |

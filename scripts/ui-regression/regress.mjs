@@ -1000,7 +1000,16 @@ try {
       await api("POST", "/tickets", { title: `Regression of #${ticket.number} (golden path)` })
     ).json;
     const laterId = (later.ticket || later).id;
+    // The page is already on a ticket route, so a hash-only goto returns before the
+    // router swaps the view: reload, then wait for the later ticket's own view before
+    // touching its card (ticket #1's page has an Escaped defects form too).
     await page.goto(`${BASE}/#/ticket/${laterId}`, { waitUntil: "load" });
+    await page.reload({ waitUntil: "load" });
+    await page
+      .getByText(`Regression of #${ticket.number} (golden path)`)
+      .first()
+      .waitFor({ timeout: 15000 })
+      .catch(() => {});
     const card = page.locator('[aria-label="Escaped defects"]');
     const hasForm = await card
       .locator("form.tk-regression-form")

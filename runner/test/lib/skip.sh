@@ -32,7 +32,11 @@
 #                                     which run every test that needs it
 #   GAFFER_LIVE_ / real model calls   an opt-in live test (live-skill-use) that spends
 #                                     real credits; CI never sets the opt-in
-GAFFER_SKIP_ALLOWLIST_RE='docker|sandbox-exec|macos-only|setpriv|running as root|flock|shellcheck|GAFFER_LIVE_|real model calls'
+#   pytest / go is not installed      the real pytest and go runs in
+#                                     tester-replay-contract C5 are optional extras on
+#                                     top of its parser-level checks, which always run;
+#                                     the CI images ship neither tool everywhere
+GAFFER_SKIP_ALLOWLIST_RE='docker|sandbox-exec|macos-only|setpriv|running as root|flock|shellcheck|GAFFER_LIVE_|real model calls|pytest is not installed|go is not installed'
 
 gaffer_skip_allowed() {
   # A here-string, not a pipe: under a caller's pipefail an early-exiting grep can

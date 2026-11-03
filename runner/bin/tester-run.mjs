@@ -778,7 +778,10 @@ export function implementationChanges(worktree, baseCommit) {
  * replay's invocation with the files appended runs too), and the tests the runner's own
  * evidence shows PASSED in
  * the tester's files are returned as `tests`: the PASS binds them and the landing replay
- * requires every one to pass on the merge candidate.
+ * requires every one to pass on the merge candidate. The signing key is in the run's
+ * environment only and the reporter deletes it before a test file loads. LIMIT: this
+ * replay is not sandboxed, so its proof is evidence against a non-adversarial tester's
+ * tests (a test here can read the runner's environment and files).
  * → { state: "passed" | "failed" | "skipped", reason, tail, tests }
  */
 export function replayTesterTests({

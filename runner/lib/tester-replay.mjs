@@ -345,6 +345,13 @@ export function applyTesterTests({ worktree, testsHead, files }) {
 // the identities named); an extra test never stands in for a missing one. An older PASS
 // without identities keeps the file-level rule, and its record says "files" (file-level
 // evidence only), never an identity-level green.
+// LIMIT: the tester lane's clean replay (bin/tester-run.mjs) runs the tester's files
+// UNSANDBOXED as the runner user. Its signing key reaches only the reporter, as here (in
+// the run's environment, deleted by the reporter before any test file loads, never written
+// to a file), but test code there can read the runner's environment and files and call
+// the dispatch CLI as the system actor. So the identities it records are evidence against
+// a non-adversarial tester's tests, not against a tester's code attacking the replay;
+// sandboxing the clean replay is a listed follow-up.
 //
 // FORGERY (external review #7, the reviewer's follow-up). The code under test runs in the
 // same process tree as the runner, so anything it can print or write is no proof: a

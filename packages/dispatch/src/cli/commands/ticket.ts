@@ -657,7 +657,8 @@ export function registerTicket(program: Command): void {
         "(tester first: in_review -> in_testing; a PASS brings it back to review). A no-op " +
         "with the reason when the tester does not gate the ticket, it is not in review, or a " +
         "PASS already covers its head. --all sends every such in_review ticket. The runner " +
-        "calls this after its gates (and the agent review, when that runs). System/admin only.",
+        "calls this after its gates (and the agent review, when that runs), and as system it " +
+        "records the tester lane it ran under (runner.tester_lane) for the dashboard. System/admin only.",
     )
     .option("--all", "every in_review ticket the tester gates and has not passed")
     .option("--as <actor>", "actor type: system|admin", "system")
@@ -668,6 +669,9 @@ export function registerTicket(program: Command): void {
       }
       const wg = open(cmd.optsWithGlobals());
       const actor: Actor = as === "admin" ? { type: "admin", id: cliUserId() } : { type: "system" };
+      // LANE-SETTING CONSISTENCY: the runner's route records the GAFFER_TESTING mode it
+      // decides under, so the dashboard can say when its own differs. Fail-soft.
+      if (actor.type === "system") wg.recordRunnerTesterLane();
       const routes = wg.routeToTester(opts.all ? null : String(ref), actor);
       printJson({ ok: true, routed: routes.filter((r) => r.routed).length, routes });
       wg.db.close();

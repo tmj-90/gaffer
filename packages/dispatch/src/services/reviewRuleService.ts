@@ -360,6 +360,81 @@ export const REVIEW_RULES_NOTE =
 /** At most this many proposed rules have their lore status read per report. */
 const MAX_LOOKUPS = 20;
 
+/** A proposed rule's lore status as memory reports it. */
+export interface LoreStatus {
+  readonly status: string;
+  readonly approvedAt: string | null;
+}
+
+/** How long a lore status memory reported is reused (a person's approval shows within it). */
+export const LORE_STATUS_TTL_MS = 60_000;
+/** After memory could not answer, how long no report asks it again. */
+export const LORE_STATUS_BACKOFF_MS = 60_000;
+/**
+ * What a lookup returns when memory answered but has no such record (a deleted lore
+ * record, an id it does not know): that rule reads null, and the report goes on.
+ */
+export const LORE_ABSENT = "absent";
+
+/**
+ * BOUNDED MEMORY READS for the review-rules report (measure review O2). Each lore status
+ * is a synchronous memory CLI call with a 10 s timeout, and a report read up to 20 of
+ * them, so a slow or hung memory held the request (and the server's event loop) for up
+ * to 200 s. This cache reuses an answer for {@link LORE_STATUS_TTL_MS}; once memory
+ * cannot answer, the rest of that report asks nothing and later reports wait
+ * {@link LORE_STATUS_BACKOFF_MS} before asking again. An unknown status reads null
+ * ("not approved"), never a stale one. A record memory says it does not have
+ * ({@link LORE_ABSENT}) is not "memory down": it reads null for a minute and the rest of
+ * the report is still read.
+ */
+export function createLoreStatusCache(
+  opts: { ttlMs?: number; backoffMs?: number; now?: () => number } = {},
+): {
+  lookup(
+    base: (loreId: string) => LoreStatus | typeof LORE_ABSENT | null,
+  ): (loreId: string) => LoreStatus | null;
+  forget(loreId: string): void;
+} {
+  const ttl = opts.ttlMs ?? LORE_STATUS_TTL_MS;
+  const backoff = opts.backoffMs ?? LORE_STATUS_BACKOFF_MS;
+  const now = opts.now ?? Date.now;
+  const known = new Map<string, { at: number; value: LoreStatus | null }>();
+  let quietUntil = 0;
+  return {
+    forget(loreId) {
+      known.delete(loreId);
+    },
+    lookup(base) {
+      let missed = false; // one report: after one miss, ask nothing more
+      return (loreId) => {
+        const t = now();
+        const hit = known.get(loreId);
+        if (hit && t - hit.at < ttl) return hit.value;
+        if (missed || t < quietUntil) return null;
+        let value: LoreStatus | typeof LORE_ABSENT | null;
+        try {
+          value = base(loreId);
+        } catch {
+          value = null;
+        }
+        if (value === LORE_ABSENT) {
+          known.set(loreId, { at: t, value: null });
+          if (known.size > 500) known.delete(known.keys().next().value as string);
+          return null;
+        }
+        if (!value) {
+          missed = true;
+          quietUntil = t + backoff;
+          return null;
+        }
+        known.set(loreId, { at: t, value });
+        if (known.size > 500) known.delete(known.keys().next().value as string);
+        return value;
+      };
+    },
+  };
+}
+
 /** The report: candidates, proposed rules with their status and before/after measure. */
 export function reviewRulesReport(
   db: Db,

@@ -13836,8 +13836,21 @@ function fourMeasures(health) {
     ]),
     // ADAPTIVE TESTER LANE: where the independent tester is off and why (the server's
     // one-line notice per repository with no registered test command).
+    // LANE-SETTING CONSISTENCY: the runner's recorded lane differs from this dashboard's
+    // (the server puts that notice first); said as a warning, not a dim note.
     ...(health.tester_lane && Array.isArray(health.tester_lane.notices)
-      ? health.tester_lane.notices.map((n) => el("p", { class: "measures-notice dim" }, n))
+      ? health.tester_lane.notices.map((n, i) =>
+          el(
+            "p",
+            {
+              class:
+                i === 0 && health.tester_lane.runner_differs
+                  ? "measures-notice warn-text"
+                  : "measures-notice dim",
+            },
+            n,
+          ),
+        )
       : []),
   ]);
 }
@@ -14317,7 +14330,7 @@ async function renderSettings() {
   ] = await Promise.all([
     get("/api/settings"),
     get("/api/idle-loops").catch(() => null),
-    get("/repositories").catch(() => ({ repositories: [] })),
+    get("/repositories").catch(() => ({ repositories: [], unread: true })),
     get("/scope/nodes").catch(() => ({ nodes: [] })),
     // GRADUATED-AUTONOMY (Spec 2): advisory recommendations — best-effort, must never
     // blank the page if the endpoint is unavailable.
@@ -14333,6 +14346,15 @@ async function renderSettings() {
   settingsModeName = (modeRow && (modeRow.effective || modeRow.value)) || "supervised";
   const idleLoops = idleLoopsRes && idleLoopsRes.idle_loops ? idleLoopsRes.idle_loops : null;
   const repos = reposRes.repositories || [];
+  // The formation and Go/No-Go read whether any repository has a test command (the `auto`
+  // tester lane runs only there); unknown when the list could not be read.
+  formationLaneRepos =
+    reposRes.unread || !Array.isArray(reposRes.repositories)
+      ? null
+      : {
+          total: repos.length,
+          withTest: repos.filter((r) => String(r.test_command || "").trim()).length,
+        };
   const nodes = nodesRes.nodes || [];
   const autonomyRecs =
     autonomyRecRes && Array.isArray(autonomyRecRes.recommendations)
@@ -14765,6 +14787,16 @@ const testingLaneOff = (v) => {
     .toLowerCase();
   return s !== "" && s !== "auto" && !isOnValue(s);
 };
+/**
+ * The registered repositories as the Settings view last read them: how many, and how many
+ * have a registered test command. Null when unread. Under `auto` the tester runs only where
+ * a repository has one (lane-hook R5).
+ */
+let formationLaneRepos = null;
+/** Under `v`, does the independent tester run nowhere: off, or `auto` with no test command anywhere? */
+const testingPlaysNowhere = (v) =>
+  testingLaneOff(v) ||
+  (!isOnValue(v) && formationLaneRepos !== null && formationLaneRepos.withTest === 0);
 
 /**
  * The value each key would take under `mode`, given what is saved and what the
@@ -14797,7 +14829,7 @@ const FORMATION_GATES = [
     id: "testing",
     label: "Testing",
     key: "GAFFER_TESTING",
-    who: (p) => (testingLaneOff(p.GAFFER_TESTING?.value) ? "none" : "squad"),
+    who: (p) => (testingPlaysNowhere(p.GAFFER_TESTING?.value) ? "none" : "squad"),
   },
   {
     id: "review",
@@ -14860,11 +14892,13 @@ function goNoGo(posture, mode, policies) {
   const checks = [
     {
       key: "GAFFER_TESTING",
-      ok: !testingLaneOff(v("GAFFER_TESTING")),
+      ok: !testingPlaysNowhere(v("GAFFER_TESTING")),
       go: isOnValue(v("GAFFER_TESTING"))
         ? "An independent tester checks every delivery."
         : "An independent tester checks each delivery in a repo with a registered test command.",
-      nogo: "No independent tester: the squad marks its own work.",
+      nogo: testingLaneOff(v("GAFFER_TESTING"))
+        ? "No independent tester: the squad marks its own work."
+        : "No repository has a registered test command, so by default the independent tester runs nowhere: the squad marks its own work.",
     },
     {
       key: "GAFFER_DAILY_BUDGET_USD",
@@ -18813,48 +18847,87 @@ function verdictStrip(p, hooks = {}) {
 
   // The independent tester: its verdict and what it tested, or when it comes.
   const ts = p.tester;
+  // A PASS on a commit the branch has moved past is not a PASS of this commit (lane-hook
+  // R3): the same comparison as the server's backing row, on any write repo's head, and
+  // only when a head was read (otherwise the strip cannot tell).
+  const cands = Array.isArray(p.candidate) ? p.candidate : [];
+  const passMoved =
+    ts &&
+    ts.verdict === "pass" &&
+    ts.tested_commit &&
+    cands.some((c) => c.diff_head) &&
+    !cands.some((c) => sameSha(ts.tested_commit, c.diff_head));
+  // LANE-SETTING CONSISTENCY: the runner last routed under a lane that does not gate this
+  // ticket, so "it tests before you review" is not what will happen (the flag says why).
+  const runnerLane = p.tester_lane && p.tester_lane.runner;
+  const runnerSkips = !!(runnerLane && p.tester_expected && !runnerLane.gates);
   cells.push(
-    ts
+    passMoved
       ? verdictCell(
           "tester",
           "Tester",
-          ts.verdict === "pass" ? "Passed" : "Failed",
-          `Independent tester: ${ts.verdict === "pass" ? "passed" : "failed"}${
-            ts.tested_commit ? `, tested commit ${ts.tested_commit.slice(0, 12)}` : ""
-          }`,
+          "Not this commit",
+          `Independent tester: passed ${ts.tested_commit.slice(0, 12)}, not tested on this commit`,
           [
             el("p", { class: "vd-sub" }, [
-              ts.tested_commit
-                ? ["Tested ", el("code", { class: "mono" }, ts.tested_commit.slice(0, 12))]
-                : "No commit recorded",
+              "Passed ",
+              el("code", { class: "mono" }, ts.tested_commit.slice(0, 12)),
               ts.provenance
                 ? ` · by ${ts.provenance === "agent" ? "the tester agent" : `a ${ts.provenance}`}`
                 : "",
               ` · ${fmtTime(ts.at)}`,
             ]),
-            el("p", { class: "vd-say" }, ts.summary),
+            el(
+              "p",
+              { class: "vd-say" },
+              "Not tested on this commit: the branch has moved past the commit the tester passed, and approval waits for a PASS on the new one.",
+            ),
           ],
-          ts.verdict === "pass" ? "ok" : "bad",
+          "warn",
         )
-      : verdictCell(
-          "tester",
-          "Tester",
-          p.tester_expected ? "Not yet" : "None",
-          p.tester_expected
-            ? "Independent tester: has not passed this commit yet"
-            : "Independent tester: not used for this ticket",
-          el(
-            "p",
-            { class: "vd-sub" },
+      : ts
+        ? verdictCell(
+            "tester",
+            "Tester",
+            ts.verdict === "pass" ? "Passed" : "Failed",
+            `Independent tester: ${ts.verdict === "pass" ? "passed" : "failed"}${
+              ts.tested_commit ? `, tested commit ${ts.tested_commit.slice(0, 12)}` : ""
+            }`,
+            [
+              el("p", { class: "vd-sub" }, [
+                ts.tested_commit
+                  ? ["Tested ", el("code", { class: "mono" }, ts.tested_commit.slice(0, 12))]
+                  : "No commit recorded",
+                ts.provenance
+                  ? ` · by ${ts.provenance === "agent" ? "the tester agent" : `a ${ts.provenance}`}`
+                  : "",
+                ` · ${fmtTime(ts.at)}`,
+              ]),
+              el("p", { class: "vd-say" }, ts.summary),
+            ],
+            ts.verdict === "pass" ? "ok" : "bad",
+          )
+        : verdictCell(
+            "tester",
+            "Tester",
+            p.tester_expected ? "Not yet" : "None",
             p.tester_expected
-              ? "The independent tester tests a delivery before you review it, and approval waits for its PASS on the commit you sign."
-              : p.tester_lane &&
-                  p.tester_lane.mode === "auto" &&
-                  p.tester_lane.missing_test_command.length
-                ? `This ticket does not go through the independent tester: no test command is registered for ${p.tester_lane.missing_test_command.join(", ")}.`
-                : "This ticket does not go through the independent tester.",
+              ? "Independent tester: has not passed this commit yet"
+              : "Independent tester: not used for this ticket",
+            el(
+              "p",
+              { class: "vd-sub" },
+              runnerSkips
+                ? `Approval waits for the independent tester's PASS, but the runner last routed with GAFFER_TESTING ${runnerLane.mode}, which does not send this ticket to the tester. See Flags.`
+                : p.tester_expected
+                  ? "The independent tester tests a delivery before you review it, and approval waits for its PASS on the commit you sign."
+                  : p.tester_lane &&
+                      p.tester_lane.mode === "auto" &&
+                      p.tester_lane.missing_test_command.length
+                    ? `This ticket does not go through the independent tester: no test command is registered for ${p.tester_lane.missing_test_command.join(", ")}.`
+                    : "This ticket does not go through the independent tester.",
+            ),
           ),
-        ),
   );
 
   // SAME CANDIDATE and REQUIRED CI (an older server's packet has neither).
@@ -19727,6 +19800,19 @@ async function renderReview(param) {
           ],
     );
   }
+  // LANE-SETTING CONSISTENCY (lane-hook R1): the runner last routed under a GAFFER_TESTING
+  // that decides this ticket differently from this dashboard's. One of the flags.
+  const laneSplit = packet && packet.tester_lane && packet.tester_lane.runner;
+  if (laneSplit && laneSplit.gates !== !!packet.tester_expected)
+    flagsNow.push([
+      "Tester lane differs",
+      `The runner last routed with GAFFER_TESTING ${laneSplit.mode} and this dashboard reads ${packet.tester_lane.mode}. ${
+        packet.tester_expected
+          ? "The runner will not send this ticket to the tester, and approval waits for a PASS."
+          : "The runner sends tickets like this to the tester, but this dashboard lets you approve without a PASS."
+      } Set GAFFER_TESTING the same for both (Settings, with neither environment overriding it).`,
+      "Derived from the runner's recorded tester lane (runner.tester_lane) and this dashboard's GAFFER_TESTING",
+    ]);
   if (ac.length && satisfied < ac.length)
     flagsNow.push([
       "Criteria not met",

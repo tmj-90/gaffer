@@ -3140,7 +3140,8 @@ function factoryExecutionReason(cmd, roots) {
 // Fail closed where the name is still unknowable: a program name built at runtime
 // (`$(…)`, a variable the command never assigns, an array expansion) in command
 // position, followed by a control-plane verb, is refused outright; so is a
-// privileged CLI whose verb would arrive on stdin through `xargs`.
+// privileged CLI whose verb would arrive on stdin through `xargs`, and one whose verb
+// slot holds a word the shell builds at run time (see cpVerbSlotReason).
 // =====================================================================
 
 // A control-plane verb close to the program word, as the privileged CLIs take it:
@@ -3300,6 +3301,326 @@ function splitSegmentsQuoteAware(cmd) {
   return out;
 }
 
+// ---------------------------------------------------------------------
+// THE VERB SLOTS OF A PRIVILEGED CLI (lane-hook R2)
+// The deny rules read a control-plane verb off the command text. Two shapes put the
+// verb somewhere the text does not show it: a verb word the shell builds at run time
+// (`wg ticket tester-r$(printf o)ute 5`, `wg ticket $V 5` with V set by `read`, a glob
+// or a brace expansion), and a verb the CLI only receives from xargs or parallel
+// (`echo approve | xargs wg ticket`, `xargs -I{} wg ticket {} 5`, the same through
+// `sh -c` or `find -exec … {}`). Both are refused: in the words that name what the CLI
+// does (the noun and verb for wg / dispatch / fg / crew, the verb for gaffer / memory)
+// every word must be a plain literal, and when xargs or parallel feeds the CLI those
+// words must all be on the command line already. Words after them (a ticket id, a
+// file, `$T`) are not looked at, so `wg ticket show $T` and
+// `cat ids | xargs -n1 wg ticket show` keep working.
+// ---------------------------------------------------------------------
+// How deep feeders, wrappers and shell bodies are followed before failing closed.
+const CP_SLOT_MAX_DEPTH = 8;
+const CP_VERB_SLOTS = { wg: 2, dispatch: 2, fg: 2, crew: 2, gaffer: 1, memory: 1 };
+// Root options that take their value as the next word (`wg --db x.sqlite ticket show 3`,
+// `crew -c crew.yaml scan`).
+const CP_CLI_VALUE_FLAGS = new Set(["--db", "--as-principal"]);
+const CP_CLI_EXTRA_VALUE_FLAGS = { crew: new Set(["-c", "--config"]) };
+// A verb-slot word the shell passes through unchanged: no expansion, glob or brace.
+const PLAIN_VERB_WORD = /^[A-Za-z0-9_.:@%+,=/~-]*$/;
+// Shell keywords and builtins that put the next word in command position.
+const SHELL_LEADS = new Set([
+  "do",
+  "then",
+  "else",
+  "elif",
+  "if",
+  "while",
+  "until",
+  "!",
+  "{",
+  "exec",
+  "coproc",
+]);
+// Programs that run the rest of their arguments as a command (`watch wg …`,
+// `strace -f wg …`, `taskset 1 wg …`), or a shell string they are given
+// (`script -c "wg …"`, `su -c "…"`, `ssh host wg …`, `watchexec -- wg …`). Their own
+// options vary, so the privileged CLI is looked for among their words (lane-hook review).
+const CP_CMD_RUNNERS = new Set([
+  "watch",
+  "strace",
+  "ltrace",
+  "taskset",
+  "chrt",
+  "flock",
+  "unbuffer",
+  "catchsegv",
+  "script",
+  "su",
+  "sudo",
+  "runuser",
+  "ssh",
+  "watchexec",
+  "chronic",
+  "ts",
+]);
+const PKG_RUNNERS = new Set(["npx", "bunx", "pnpx"]);
+const PKG_MANAGERS = new Set(["pnpm", "npm", "yarn"]);
+const PARALLEL_VALUE_FLAGS = new Set([
+  "-j",
+  "--jobs",
+  "-N",
+  "-n",
+  "--max-args",
+  "-S",
+  "--sshlogin",
+  "-I",
+  "--colsep",
+  "-C",
+  "-d",
+  "--delimiter",
+  "-a",
+  "--arg-file",
+  "--delay",
+  "--timeout",
+  "--joblog",
+  "--results",
+  "--tmpdir",
+  "-E",
+  "--env",
+  "--tag-string",
+  "--rpl",
+  "--sshloginfile",
+  "--workdir",
+  "--wd",
+]);
+
+// `xargs [flags] …`: the index of the program word and the replace string, if any
+// (`-I R`, `-IR`, `-i`, `-iR`, `--replace[=R]`, BSD `-J R`).
+function xargsSplit(words) {
+  let k = 1;
+  let replace = null;
+  while (k < words.length && words[k].startsWith("-") && words[k] !== "--") {
+    const w = words[k];
+    let m;
+    if ((m = /^-[0prtx]*[IJ](.*)$/.exec(w))) {
+      if (m[1]) {
+        replace = m[1];
+        k += 1;
+      } else {
+        replace = words[k + 1] ?? "";
+        k += 2;
+      }
+      continue;
+    }
+    if ((m = /^-[0prtx]*i(.*)$/.exec(w))) {
+      replace = m[1] || "{}";
+      k += 1;
+      continue;
+    }
+    if ((m = /^--replace(?:=(.*))?$/.exec(w))) {
+      replace = m[1] || "{}";
+      k += 1;
+      continue;
+    }
+    k += XARGS_VALUE_FLAGS.has(w) || /^-[RS]$/.test(w) ? 2 : 1;
+  }
+  if (words[k] === "--") k += 1;
+  return { at: k, replace };
+}
+
+// A word as the program receives it, for reading names and flags (quotes, backslashes gone).
+function shellWord(token) {
+  return token.replace(/['"\\]/g, "");
+}
+
+/**
+ * Why the command `words` (one segment: raw tokens, same-command variables filled in) runs a privileged CLI whose verb
+ * slots the hook cannot read, or null. `feed` is set when xargs, parallel or find -exec
+ * builds the command line: { placeholder } (a string the feeder replaces) and
+ * { appends } (the feeder adds words of its own at the end).
+ */
+function cpVerbSlotReason(words, feed = null, depth = 0) {
+  // Nesting past what is read (`xargs xargs … wg`, `{ { … wg`): fail closed when a
+  // privileged CLI is still in the words.
+  const tooDeep = (rest) =>
+    rest.some((x) => PRIV_CLIS.has(basename(shellWord(x))) || privCliByPath(shellWord(x)))
+      ? "a privileged CLI nested deeper than the hook reads (wrappers, xargs, shells, groups): the verb cannot be seen, so it is refused"
+      : null;
+  if (depth > CP_SLOT_MAX_DEPTH) return tooDeep(words);
+  let w = words.slice();
+  // Keywords, assignments, no-op wrappers and package runners in front of the program.
+  for (let guard = 0; w.length; guard += 1) {
+    if (guard >= 64) return tooDeep(w);
+    if (/^\(/.test(w[0])) {
+      // A subshell or group: `( prog …`, `((prog …`.
+      const stripped = w[0].replace(/^\(+/, "");
+      w = stripped ? [stripped, ...w.slice(1)] : w.slice(1);
+      continue;
+    }
+    const first = shellWord(w[0]);
+    if (first === "exec") {
+      // `exec -a NAME prog …`, `exec -cl prog …`: the flags are exec's own.
+      let k = 1;
+      while (k < w.length && /^-[acl]+$/.test(shellWord(w[k]))) {
+        k += /a/.test(w[k]) ? 2 : 1;
+      }
+      w = w.slice(k);
+    } else if (first === "" || SHELL_LEADS.has(first)) w = w.slice(1);
+    else if (first === "case" && w.length > 2 && shellWord(w[2]) === "in") {
+      // `case WORD in PATTERN) prog …`: the command after the pattern runs.
+      w = w.slice(3);
+    } else if (/^\(?[^()]*\)$/.test(first)) {
+      // A case pattern in front of its command: `x) prog …`, `*) prog …`.
+      w = w.slice(1);
+    } else if (first === "function" && w.length > 1) {
+      // `function NAME { body`: the body runs when the function is called.
+      w = w.slice(/^[^(){}]+$/.test(shellWord(w[1])) ? 2 : 1);
+    } else if (/^[A-Za-z_][\w.:-]*\(\)\{?$/.test(first)) {
+      // `NAME() { body` / `NAME(){ body`: likewise.
+      w = w.slice(1);
+    } else if (first.startsWith("{") && first.length > 1) {
+      w = [first.slice(1), ...w.slice(1)];
+    } else if (PKG_RUNNERS.has(basename(first))) {
+      let k = 1;
+      while (k < w.length && w[k].startsWith("-")) k += 1;
+      w = w.slice(k);
+    } else if (PKG_MANAGERS.has(basename(first))) {
+      let k = 1;
+      while (k < w.length && w[k].startsWith("-")) k += 1;
+      const sub = shellWord(w[k] || "");
+      // `pnpm wg …` / `yarn wg …` run a binary of that name when it is no script.
+      if (PRIV_CLIS.has(basename(sub)) || privCliByPath(sub)) {
+        w = w.slice(k);
+        continue;
+      }
+      if (!/^(?:exec|dlx|x)$/.test(sub)) break;
+      k += 1;
+      while (k < w.length && w[k].startsWith("-")) k += 1;
+      w = w.slice(k);
+    } else {
+      const eff = resolveEffectiveTokens(w);
+      if (!eff || eff.rest.length === w.length) break;
+      w = eff.rest;
+    }
+  }
+  w = stripRedirects(w);
+  if (w.length === 0) return null;
+  const n = w.map(shellWord);
+  const head = basename(n[0]);
+  if (head === "xargs") {
+    const { at, replace } = xargsSplit(n);
+    return cpVerbSlotReason(w.slice(at), { placeholder: replace, appends: true }, depth + 1);
+  }
+  if (CP_CMD_RUNNERS.has(head)) {
+    // The command among its words: a word that is itself a shell string, or the first
+    // privileged CLI / feeder / shell / interpreter word from which the rest runs.
+    for (let k = 1; k < w.length; k += 1) {
+      const word = unquote(w[k]);
+      if (/\s/.test(word)) {
+        for (const segment of splitSegmentsQuoteAware(word)) {
+          const why = cpVerbSlotReason(tokenizeSegment(segment.trim()), feed, depth + 1);
+          if (why) return why;
+        }
+        continue;
+      }
+      const b = basename(n[k]);
+      if (
+        PRIV_CLIS.has(b) ||
+        privCliByPath(n[k]) ||
+        SHELL_NAMES.has(b) ||
+        INLINE_INTERPRETERS.has(b) ||
+        /^(?:xargs|parallel|find|fd|fdfind|env|nice|nohup|timeout|time|command)$/.test(b)
+      ) {
+        return cpVerbSlotReason(w.slice(k), feed, depth + 1);
+      }
+    }
+    return null;
+  }
+  if (head === "fd" || head === "fdfind") {
+    // `fd PATTERN -x CMD …` / `--exec`, `-X` / `--exec-batch`: CMD gets `{}`-style
+    // placeholders, or the found path appended when it has none.
+    const k = n.findIndex((x, idx) => idx > 0 && /^(?:-x|--exec|-X|--exec-batch)$/.test(x));
+    if (k === -1) return null;
+    let end = k + 1;
+    while (end < n.length && n[end] !== ";") end += 1;
+    return cpVerbSlotReason(w.slice(k + 1, end), { placeholder: "{", appends: true }, depth + 1);
+  }
+  if (head === "parallel") {
+    let k = 1;
+    let placeholder = "{";
+    while (k < n.length && n[k].startsWith("-")) {
+      // `-I R` / `-IR` / `--replace=R`: the replace string parallel fills in.
+      const m = /^(?:-I(.+)|--replace=(.+))$/.exec(n[k]);
+      if (m) placeholder = m[1] || m[2];
+      else if (n[k] === "-I" && n[k + 1]) placeholder = n[k + 1];
+      k += PARALLEL_VALUE_FLAGS.has(n[k]) ? 2 : 1;
+    }
+    let end = n.findIndex((x, idx) => idx >= k && /^:{3,4}\+?$/.test(x));
+    if (end === -1) end = n.length;
+    // A single quoted command string is split by the shell parallel runs it in.
+    const inner = n.slice(k, end).join(" ").split(/\s+/).filter(Boolean);
+    const why = cpVerbSlotReason(inner, { placeholder, appends: true }, depth + 1);
+    if (why || placeholder === "{") return why;
+    return cpVerbSlotReason(inner, { placeholder: "{", appends: true }, depth + 1);
+  }
+  if (head === "find") {
+    for (let k = 1; k < n.length; k += 1) {
+      if (!/^-(?:exec|execdir|ok|okdir)$/.test(n[k])) continue;
+      let end = k + 1;
+      while (end < n.length && !/^(?:;|\+)$/.test(n[end])) end += 1;
+      const why = cpVerbSlotReason(
+        w.slice(k + 1, end),
+        { placeholder: "{}", appends: false },
+        depth + 1,
+      );
+      if (why) return why;
+      k = end;
+    }
+    return null;
+  }
+  const c = SHELL_NAMES.has(head)
+    ? n.findIndex((x, idx) => idx > 0 && /^-[A-Za-z]*c[A-Za-z]*$/.test(x))
+    : -1;
+  if (c !== -1) {
+    // `sh -c BODY`: the body's commands, with the same feeder (its placeholder).
+    if (!w[c + 1]) return null;
+    for (const segment of splitSegmentsQuoteAware(unquote(w[c + 1]))) {
+      const inner = tokenizeSegment(segment.trim());
+      const why = cpVerbSlotReason(inner, feed && { placeholder: feed.placeholder }, depth + 1);
+      if (why) return why;
+    }
+    return null;
+  }
+  let cli = PRIV_CLIS.has(head) ? head : privCliByPath(n[0]);
+  let args = n.slice(1);
+  if (!cli && (INLINE_INTERPRETERS.has(head) || SHELL_NAMES.has(head))) {
+    let k = 1;
+    while (k < n.length && n[k].startsWith("-")) k += 1;
+    cli = privCliByPath(n[k] || "");
+    args = n.slice(k + 1);
+  }
+  if (!cli || !CP_VERB_SLOTS[cli]) return null;
+  const slots = [];
+  for (let i = 0; i < args.length && slots.length < CP_VERB_SLOTS[cli]; i += 1) {
+    if (args[i].startsWith("-")) {
+      if (CP_CLI_VALUE_FLAGS.has(args[i]) || CP_CLI_EXTRA_VALUE_FLAGS[cli]?.has(args[i])) i += 1;
+      continue;
+    }
+    slots.push(args[i]);
+    // `wg help <command>` only prints help: what follows it is not a verb.
+    if (slots.length === 1 && args[i] === "help") break;
+  }
+  for (const s of slots) {
+    if (feed?.placeholder && s.includes(feed.placeholder)) {
+      return `a privileged CLI (${cli}) whose verb is filled in by xargs, parallel or find from their input ("${s.slice(0, 40)}"): the verb cannot be seen, so it is refused`;
+    }
+    if (!PLAIN_VERB_WORD.test(s)) {
+      return `a privileged CLI (${cli}) whose verb is built at run time ("${s.slice(0, 40)}"): the verb cannot be seen, so it is refused`;
+    }
+  }
+  if (feed?.appends && slots.length < CP_VERB_SLOTS[cli]) {
+    return `a privileged CLI (${cli}) fed its verb by xargs or parallel from their input: the verb cannot be seen, so it is refused`;
+  }
+  return null;
+}
+
 /**
  * Normalised views of `cmd`: strings the deny-list regexes are run over in addition
  * to the raw text. Returns { views, reasons }: `reasons` are fail-closed refusals
@@ -3318,7 +3639,8 @@ function normalizedCommandViews(cmd, depth = 0) {
     const raw = tokenizeSegment(segment.trim());
     if (raw.length === 0) continue;
     // Substitute the variables the command itself set, then normalise every word.
-    let words = raw.map((t) => normalizeWord(substituteVars(t, vars)));
+    const filled = raw.map((t) => substituteVars(t, vars));
+    let words = filled.map(normalizeWord);
     // Record assignments for later segments/words: `X=wg`, `export X=wg`.
     let j = 0;
     if (["export", "declare", "local", "readonly", "typeset"].includes(words[0])) {
@@ -3330,6 +3652,9 @@ function normalizedCommandViews(cmd, depth = 0) {
       vars.set(words[j].slice(0, eq), words[j].slice(eq + 1));
       j += 1;
     }
+    // A privileged CLI whose verb slots are built at run time or fed by xargs: refuse.
+    const slotWhy = cpVerbSlotReason(filled.slice(j));
+    if (slotWhy) reasons.push(slotWhy);
     // Peel assignments and wrappers so the program is in command position.
     const eff = resolveEffectiveTokens(words);
     if (!eff) {

@@ -227,6 +227,32 @@ describe("web: Health shows the four top-level measures", () => {
     expect(notes).toEqual(["independent tester off: no test command registered for taskflow-web"]);
   });
 
+  it("says the runner's tester lane differs as a warning, ahead of the repository notices (lane-hook R1)", async () => {
+    const split =
+      "tester lane differs: the runner last routed with GAFFER_TESTING off (recorded 2026-11-03 09:00 UTC) and this dashboard reads auto.";
+    healthPayload = {
+      ...(FULL_HEALTH as object),
+      ...MEASURES,
+      tester_lane: {
+        mode: "auto",
+        repos_without_test_command: ["taskflow-web"],
+        notices: [split, "independent tester off: no test command registered for taskflow-web"],
+        runner: { mode: "off", at: "2026-11-03T09:00:00.000Z" },
+        runner_differs: true,
+      },
+    };
+    await loadApp();
+    const notes = [
+      ...document.querySelectorAll('[aria-label="The four measures"] .measures-notice'),
+    ];
+    expect(notes.map((n) => n.textContent)).toEqual([
+      split,
+      "independent tester off: no test command registered for taskflow-web",
+    ]);
+    expect(notes[0]!.classList.contains("warn-text")).toBe(true);
+    expect(notes[1]!.classList.contains("warn-text")).toBe(false);
+  });
+
   it("first-pass acceptance, median human review time, accepted-change cost and escaped defects", async () => {
     healthPayload = { ...(FULL_HEALTH as object), ...MEASURES };
     await loadApp();

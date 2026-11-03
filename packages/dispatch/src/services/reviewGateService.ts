@@ -208,6 +208,13 @@ export interface ReviewGateServiceDeps {
    * testable ones while GAFFER_TESTING is on.
    */
   readonly testerLaneApplies?: ((ticket: Ticket) => boolean) | undefined;
+  /**
+   * LANE-SETTING CONSISTENCY: the tester lane the runner last recorded, when it differs
+   * from this process's (its mode, and whether the tester gates the ticket under it), or
+   * null. The not-tested refusal names a split instead of promising a route.
+   */
+  readonly runnerTesterLane?:
+    ((ticket: Ticket) => { mode: string; at: string; gates: boolean } | null) | undefined;
   /** The agents table — lets the approve path verify an agent approver is REGISTERED. */
   readonly agents?: AgentRepository | undefined;
   /**
@@ -422,6 +429,7 @@ export class ReviewGateService {
     return this.maxAttemptsOf();
   }
   private readonly testerLaneAppliesFn: ((ticket: Ticket) => boolean) | undefined;
+  private readonly runnerTesterLaneFn: ReviewGateServiceDeps["runnerTesterLane"];
   private readonly agents: AgentRepository | undefined;
   private readonly requireRegisteredAgentApprover: boolean;
   private readonly onTicketParked:
@@ -445,6 +453,7 @@ export class ReviewGateService {
     const cap = deps.maxAttempts;
     this.maxAttemptsOf = typeof cap === "function" ? cap : () => cap;
     this.testerLaneAppliesFn = deps.testerLaneApplies;
+    this.runnerTesterLaneFn = deps.runnerTesterLane;
     this.agents = deps.agents;
     this.requireRegisteredAgentApprover = deps.requireRegisteredAgentApprover ?? false;
     this.onTicketParked = deps.onTicketParked;
@@ -586,11 +595,14 @@ export class ReviewGateService {
     // commit goes to ready_for_merge below: there is no second testing pass.
     const coverage = this.laneApplies(ticket) ? this.testerCoverage(ticket, heads) : null;
     if (coverage && !coverage.covered && (actor.type === "human" || actor.type === "admin")) {
-      throw new DispatchError("STATE_CONFLICT", notTestedMessage(ticket, coverage), {
+      const runner = this.runnerLaneSafe(ticket);
+      const split = runner && !runner.gates ? runner : null;
+      throw new DispatchError("STATE_CONFLICT", notTestedMessage(ticket, coverage, split), {
         reason: "not_tested",
         why: coverage.why,
         tested: coverage.tested,
         head: coverage.head,
+        ...(split ? { runner_tester_lane: split.mode, runner_lane_at: split.at } : {}),
       });
     }
     if (coverage && !coverage.covered) {
@@ -644,6 +656,15 @@ export class ReviewGateService {
    */
   approveRoutesToTesting(ticket: Ticket): boolean {
     return this.laneApplies(ticket) && !this.testerCoverage(ticket).covered;
+  }
+
+  /** The runner's differing lane for a ticket (see the dep), or null; never throws. */
+  private runnerLaneSafe(ticket: Ticket): { mode: string; at: string; gates: boolean } | null {
+    try {
+      return this.runnerTesterLaneFn?.(ticket) ?? null;
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -2856,7 +2877,11 @@ export interface TesterRoute {
 }
 
 /** The refusal a person's approval of a commit the tester did not pass gets. */
-function notTestedMessage(ticket: Ticket, c: TesterCoverage): string {
+function notTestedMessage(
+  ticket: Ticket,
+  c: TesterCoverage,
+  split: { mode: string; at: string } | null = null,
+): string {
   const n = ticket.number !== null ? `#${ticket.number}` : "This ticket";
   const head = c.head ? ` ${c.head.slice(0, 12)}` : "";
   const what =
@@ -2867,5 +2892,10 @@ function notTestedMessage(ticket: Ticket, c: TesterCoverage): string {
         : c.why === "contract_changed"
           ? "the ticket's contract changed after the tester passed it"
           : `the independent tester has not passed this commit${head} yet`;
+  // LANE-SETTING CONSISTENCY: the runner last routed under a lane that does not gate this
+  // ticket, so it will not send it to the tester. Say so instead of promising a route.
+  if (split) {
+    return `${n} is not tested on this commit: ${what}. A person approves only the commit the tester passed, but the runner last routed with GAFFER_TESTING ${split.mode} (recorded ${split.at.slice(0, 16).replace("T", " ")} UTC), which does not send this ticket to the tester, while this dashboard's setting does. Set GAFFER_TESTING the same for the dashboard and the runner (Settings, with neither environment overriding it); the runner then sends it to the tester.`;
+  }
   return `${n} is not tested on this commit: ${what}. A person approves only the commit the tester passed; the runner sends this one to the tester, and it returns to review after a PASS.`;
 }

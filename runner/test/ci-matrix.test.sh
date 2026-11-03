@@ -4,7 +4,7 @@
 # every scenario suite is in a CI group. Static reads of .github/workflows/*.yml
 # (no YAML parser on a bare macOS bash, so each check reads the lines it names).
 #   C1  ci.yml (every push / PR): ubuntu node 22 and node 24 in 3 shards each, macOS
-#       node 22 in 3 shards, and NO macOS node 24 row: that cell queued 755 s behind
+#       node 22 in 4 shards, and NO macOS node 24 row: that cell queued 755 s behind
 #       GitHub's 5-concurrent-macOS limit on run 41338925244 (26.4 min wall); in
 #       ci.yml and nightly.yml every cell's rows are shards 1..N once each (a doubled
 #       or missing K would run some files twice and others never), and macOS node 22
@@ -45,9 +45,9 @@ echo "== C1: the per-push cells =="
 CI_ROWS="$(rows "$WF/ci.yml")"
 [ "$(count_cell "$CI_ROWS" ubuntu-latest 22 3)" = 3 ] && ok "C1 ubuntu node 22: 3 shards" || fail "C1 ubuntu node 22 is not 3 shards of 3: $(tr '\n' ';' <<<"$CI_ROWS")"
 [ "$(count_cell "$CI_ROWS" ubuntu-latest 24 3)" = 3 ] && ok "C1 ubuntu node 24: 3 shards" || fail "C1 ubuntu node 24 is not 3 shards of 3"
-[ "$(count_cell "$CI_ROWS" macos-latest 22 3)" = 3 ] && ok "C1 macOS node 22: 3 shards" || fail "C1 macOS node 22 is not 3 shards of 3"
+[ "$(count_cell "$CI_ROWS" macos-latest 22 4)" = 4 ] && ok "C1 macOS node 22: 4 shards" || fail "C1 macOS node 22 is not 4 shards of 4"
 if grep -qE 'os: macos-latest, node: "?24"?' "$WF/ci.yml"; then fail "C1 ci.yml still runs macOS node 24 on every push"
-else ok "C1 ci.yml runs no macOS node 24 shard on a push (3 macOS jobs, under the limit of 5)"; fi
+else ok "C1 ci.yml runs no macOS node 24 shard on a push (4 macOS jobs, under the limit of 5)"; fi
 
 # Every cell of a caller: its rows are shards 1..N, each exactly once.
 shards_exact() { # <workflow file> -> the cells whose shard numbers are not 1..N once each
@@ -66,7 +66,7 @@ for caller in ci.yml nightly.yml; do
   bad="$(shards_exact "$WF/$caller")"
   [ -z "$bad" ] && ok "C1 $caller: every cell's rows are shards 1..N, each once" || fail "C1 $caller: cells whose shards are not 1..N once each:$bad"
 done
-grep -qE '^ *- \{ os: macos-latest, node: "?22"?, shard: 1, shards: 3, head_start: [0-9]+, packages: true, e2e: true \}' "$WF/ci.yml" \
+grep -qE '^ *- \{ os: macos-latest, node: "?22"?, shard: 1, shards: 4, head_start: [0-9]+, packages: true, e2e: true \}' "$WF/ci.yml" \
   && ok "C1 macOS node 22 shard 1 runs the package tests and the macOS e2e (packages, e2e)" \
   || fail "C1 ci.yml macOS node 22 shard 1 lost packages: true / e2e: true (no macOS vitest or e2e on a push)"
 

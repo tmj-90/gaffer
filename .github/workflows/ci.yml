@@ -297,7 +297,8 @@ jobs:
   # time × the runner's -j, then tuned on the run's per-test times (macOS node 22:
   # 800 left shard 1 ~60 s longer than the others, 1100 evens them to within ~15 s;
   # shard.mjs caps it at half a shard's mean load). A cell without the package
-  # tests gets 0. macOS node 22 shard 1 also
+  # tests gets 0. macOS runs four shards (its heaviest shard reached 20 of the job's 25
+  # minutes on three). macOS node 22 shard 1 also
   # runs the OS-sensitive maintenance-lane e2e and gate replay (`e2e: true`) so they
   # keep macOS coverage; on ubuntu they run in `checks`.
   runner:
@@ -314,9 +315,10 @@ jobs:
           - { os: ubuntu-latest, node: "24", shard: 3, shards: 3, head_start: 0 }
           # One row per line: runner/test/ci-matrix.test.sh reads them so.
           # prettier-ignore
-          - { os: macos-latest, node: "22", shard: 1, shards: 3, head_start: 1100, packages: true, e2e: true }
-          - { os: macos-latest, node: "22", shard: 2, shards: 3, head_start: 1100 }
-          - { os: macos-latest, node: "22", shard: 3, shards: 3, head_start: 1100 }
+          - { os: macos-latest, node: "22", shard: 1, shards: 4, head_start: 1100, packages: true, e2e: true }
+          - { os: macos-latest, node: "22", shard: 2, shards: 4, head_start: 1100 }
+          - { os: macos-latest, node: "22", shard: 3, shards: 4, head_start: 1100 }
+          - { os: macos-latest, node: "22", shard: 4, shards: 4, head_start: 1100 }
     uses: ./.github/workflows/runner-shard.yml
     with:
       os: ${{ matrix.os }}

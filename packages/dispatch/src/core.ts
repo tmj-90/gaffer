@@ -556,7 +556,7 @@ export class Dispatch {
       acs: this.acs,
       evidence: this.evidence,
       reworkAttempts: this.reworkAttempts,
-      maxAttempts: this.maxAttempts,
+      maxAttempts: () => this.maxAttempts,
       // Mirrors approveReview's routing: an acceptance ticket always goes through the
       // tester; a testable one does when the testing lane is on.
       testerExpected: (t) => this.reviewGateSvc.laneApplies(t),

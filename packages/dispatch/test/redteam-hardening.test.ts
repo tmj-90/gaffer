@@ -477,6 +477,33 @@ describe("P1 fix 3: max-attempts config", () => {
     }
   });
 
+  it("the review packet's attempt cap follows a saved cap too, as the reject gate does", () => {
+    const prev = process.env.DISPATCH_MAX_ATTEMPTS;
+    delete process.env.DISPATCH_MAX_ATTEMPTS;
+    try {
+      const wg = Dispatch.open(":memory:", new TestClock(), nonEmptyDiffRunner);
+      const ticketId = inReviewWithWriteRepo(wg);
+      const noCost = () => ({
+        cost_usd: 0,
+        measured_usd: 0,
+        estimated_usd: 0,
+        num_turns: 0,
+        unknown_calls: 0,
+        ledger_status: "ok",
+      });
+      const cap = () => wg.reviewPacket(ticketId, noCost).attempts.max_attempts;
+      expect(cap()).toBe(DEFAULT_MAX_ATTEMPTS);
+      // The operator saves DISPATCH_MAX_ATTEMPTS=1; the packet must show the cap the
+      // next send back will enforce, not the one the process started with.
+      process.env.DISPATCH_MAX_ATTEMPTS = "1";
+      expect(cap()).toBe(1);
+      wg.db.close();
+    } finally {
+      if (prev === undefined) delete process.env.DISPATCH_MAX_ATTEMPTS;
+      else process.env.DISPATCH_MAX_ATTEMPTS = prev;
+    }
+  });
+
   it("falls back to the default on a non-positive / unparseable value (fail-safe)", () => {
     expect(resolveMaxAttempts({ DISPATCH_MAX_ATTEMPTS: "0" })).toBe(DEFAULT_MAX_ATTEMPTS);
     expect(resolveMaxAttempts({ DISPATCH_MAX_ATTEMPTS: "-3" })).toBe(DEFAULT_MAX_ATTEMPTS);

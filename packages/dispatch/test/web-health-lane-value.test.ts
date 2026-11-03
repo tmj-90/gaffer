@@ -66,32 +66,6 @@ const FULL_HEALTH: unknown = {
   last_record_at: "2025-01-11T11:00:00Z",
 };
 
-// A degraded payload: no skill telemetry, Memory unwired.
-const DEGRADED_HEALTH: unknown = {
-  total_usd: 0,
-  ticket_count: 0,
-  shipped_count: 0,
-  cost_per_shipped_usd: null,
-  coverage: { measured_count: 0, total_count: 0, coverage_pct: 0 },
-  by_kind: [],
-  by_model: [],
-  daily_spend: [],
-  rework: { total_rework_cost_usd: 0, rework_cost_share_pct: 0, by_ticket: [] },
-  duration: { total_ms: 0, measured_calls: 0, avg_ms: 0 },
-  cycle_time: { median_days: 0, series: [] },
-  throughput: { last7: 0, prev7: 0, series: [] },
-  skills: {
-    total_records: 0,
-    total_selected: 0,
-    total_applied: 0,
-    overall_hit_rate_pct: null,
-    by_skill: [],
-    last_record_at: null,
-  },
-  recall: { available: false, reason: "Memory is not configured — set MEMORY_CLI_BIN." },
-  last_record_at: null,
-};
-
 let healthPayload: unknown = FULL_HEALTH;
 
 function stubFetch(): void {

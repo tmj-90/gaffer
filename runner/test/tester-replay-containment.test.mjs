@@ -16,7 +16,10 @@
 //   (d) STRICT MODE with no sandbox on the host: the replay holds (never runs), and the
 //       tester's PASS is held unverified with a reason naming the sandbox;
 //   (e) MODEL CREDENTIALS: ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN, GAFFER_DATA and
-//       DISPATCH_DB are absent from the probe's environment.
+//       DISPATCH_DB are absent from the probe's environment;
+//   (f) THE LANDING'S POOLED FLAKY RERUN (bin/dod-regate.sh, lib/dod.sh): run 1 consumes
+//       the key file, the rerun gets a fresh one from the key dod-regate.sh read on stdin,
+//       and its evidence proves the tester's file.
 // The docker provider is driven through lib/fake-docker.sh (no daemon): the wrapper is the
 // real lib/sandbox-docker.sh, and the recorded `docker run` argv shows what the container
 // would have been given.
@@ -408,7 +411,13 @@ console.log("== the replay sandbox-exec profile (generated on any host) ==");
     ],
     {
       encoding: "utf8",
-      env: { ...process.env, GAFFER_SANDBOX_PROFILE: "replay", GAFFER_DATA: DATA, HOME },
+      env: {
+        ...process.env,
+        GAFFER_SANDBOX_PROFILE: "replay",
+        GAFFER_DATA: DATA,
+        HOME,
+        STRICT_ALLOW_HOME: `${HOME}/.claude ${HOME}/.cache`,
+      },
     },
   );
   const sb = existsSync(out) ? readFileSync(out, "utf8") : "";
@@ -437,6 +446,22 @@ console.log("== the replay sandbox-exec profile (generated on any host) ==");
       ),
     sb,
   );
+  // Review 11 follow-up: the runner's real HOME is never writable from the replay. The
+  // agent's ~/.claude (a planted settings.json hook would run outside the sandbox on the
+  // next agent start) and ~/.cache are STRICT_ALLOW_HOME write grants for the gates; the
+  // replay neither grants them nor lets a secret folder be written.
+  assert(
+    "replay profile: HOME's secret folders cannot be WRITTEN either (deny file-read* file-write*)",
+    sb.slice(denyHome).startsWith("(deny file-read* file-write*"),
+    sb,
+  );
+  assert(
+    "replay profile: STRICT_ALLOW_HOME (~/.claude, ~/.cache) is not a write grant",
+    !sb.includes(`(subpath "${HOME}/.cache")`) &&
+      sb.indexOf(`(subpath "${HOME}/.claude")`) ===
+        sb.indexOf(`(subpath "${HOME}/.claude")`, denyHome),
+    sb,
+  );
   const denyWrite = sb.indexOf(`(deny file-write*\n  (subpath "${DATA}"))`);
   const regrant = sb.indexOf("(allow file-write*", denyWrite);
   assert(
@@ -455,7 +480,13 @@ console.log("== the replay sandbox-exec profile (generated on any host) ==");
     ],
     {
       encoding: "utf8",
-      env: { ...process.env, GAFFER_SANDBOX_PROFILE: "validation", GAFFER_DATA: DATA, HOME },
+      env: {
+        ...process.env,
+        GAFFER_SANDBOX_PROFILE: "validation",
+        GAFFER_DATA: DATA,
+        HOME,
+        STRICT_ALLOW_HOME: `${HOME}/.claude ${HOME}/.cache`,
+      },
     },
   );
   const vsb = existsSync(join(WORK, "validation.sb"))
@@ -463,8 +494,138 @@ console.log("== the replay sandbox-exec profile (generated on any host) ==");
     : "";
   assert(
     "the validation profile is unchanged (no read denials, $GAFFER_DATA writable)",
-    v.status === 0 && !/deny file-read/.test(vsb) && vsb.includes(`(subpath "${DATA}")`),
+    v.status === 0 &&
+      !/deny file-read/.test(vsb) &&
+      vsb.includes(`(subpath "${DATA}")`) &&
+      vsb.includes(`(subpath "${HOME}/.claude")`),
     vsb,
+  );
+}
+
+console.log("== the replay environment keeps the host's toolchain locations ==");
+{
+  const { replayEnv } = await import("../bin/tester-run.mjs");
+  const H = join(WORK, "toolchain-home");
+  mkdirSync(join(H, ".cargo"), { recursive: true });
+  mkdirSync(join(H, ".rustup"), { recursive: true });
+  const sc = join(WORK, "toolchain-scratch");
+  const env = replayEnv({
+    scratch: sc,
+    base: {
+      HOME: H,
+      PATH: "/usr/bin:/bin",
+      GOMODCACHE: "/opt/gomod",
+      ANTHROPIC_API_KEY: "dummy",
+      GITHUB_TOKEN: "dummy",
+      GOPROXY: "https://user:secret@proxy.invalid",
+    },
+  });
+  assert(
+    "the scratch HOME does not hide rustup, cargo or the go module cache",
+    env.HOME === join(sc, "home") &&
+      env.CARGO_HOME === join(H, ".cargo") &&
+      env.RUSTUP_HOME === join(H, ".rustup") &&
+      env.GOMODCACHE === "/opt/gomod" &&
+      !("GOPATH" in env),
+    JSON.stringify(env),
+  );
+  assert(
+    "…and still no credential, token or proxy URL crosses",
+    !("ANTHROPIC_API_KEY" in env) && !("GITHUB_TOKEN" in env) && !("GOPROXY" in env),
+    JSON.stringify(Object.keys(env)),
+  );
+  rmSync(sc, { recursive: true, force: true });
+}
+
+console.log("== (f) a pooled flaky rerun of the landing's tests gate gets a fresh key file ==");
+{
+  // The landing runs the tester's files through bin/dod-regate.sh (lib/dod.sh). Under a
+  // pool (GAFFER_CONCURRENCY>1) a red tests gate is rerun once at concurrency 1. Run 1's
+  // reporter consumed the key file, so the rerun used to sign nothing: a flaky first run
+  // held every such landing unverified. Now the caller hands dod-regate.sh the key on
+  // stdin and lib/dod.sh writes it to a fresh key file for the rerun.
+  const { discardReplayKey, prepareReplayProof, replayInvocation, replayProof } =
+    await import("../lib/tester-replay.mjs");
+  const FR = join(WORK, "flaky-repo");
+  const COUNT = join(WORK, "flaky-count");
+  mkdirSync(join(FR, "test"), { recursive: true });
+  git(FR, "init", "-q", "-b", "main");
+  writeFileSync(join(FR, "package.json"), JSON.stringify({ type: "module" }));
+  writeFileSync(
+    join(FR, "test", "acceptance.test.mjs"),
+    [
+      'import test from "node:test";',
+      'import { existsSync, readFileSync, writeFileSync } from "node:fs";',
+      `const C = ${JSON.stringify(COUNT)};`,
+      'const n = (existsSync(C) ? Number(readFileSync(C, "utf8")) : 0) + 1;',
+      "writeFileSync(C, String(n));",
+      'test("passes from the second run on", () => { if (n < 2) throw new Error("flaky run " + n); });',
+      "",
+    ].join("\n"),
+  );
+  git(FR, "add", "-A");
+  git(FR, "commit", "-qm", "init");
+  const files = ["test/acceptance.test.mjs"];
+  const regate = (withKey) => {
+    rmSync(COUNT, { force: true });
+    const inv = replayInvocation({ worktree: FR, testCommand: "node --test", files });
+    prepareReplayProof(inv);
+    const r = spawnSync(
+      "bash",
+      [resolve(HERE, "..", "bin", "dod-regate.sh"), FR, "repo:tester-replay", inv.command, "-", ""],
+      {
+        encoding: "utf8",
+        input: withKey ? `${inv.proof.key}\n` : "",
+        env: {
+          ...process.env,
+          ...inv.env,
+          ...(withKey ? { GAFFER_REPLAY_PROOF_KEY_STDIN: "1" } : {}),
+          GAFFER_DOD: "1",
+          GAFFER_DOD_TESTS: "1",
+          GAFFER_DOD_TYPECHECK: "0",
+          GAFFER_DOD_LINT: "0",
+          GAFFER_DOD_INSTALL: "0",
+          GAFFER_DOD_TESTS_OUTPUT: inv.proof.output,
+          GAFFER_CONCURRENCY: "2",
+          GAFFER_DOD_RERUN_WAIT: "1",
+        },
+        timeout: 120_000,
+      },
+    );
+    discardReplayKey(inv);
+    const left = existsSync(inv.proof.dir)
+      ? readdirSync(inv.proof.dir).filter((d) => d.startsWith("k-"))
+      : [];
+    const proof = replayProof({ inv, files, worktree: FR });
+    rmSync(inv.proof.dir, { recursive: true, force: true });
+    const runs = existsSync(COUNT) ? Number(readFileSync(COUNT, "utf8")) : 0;
+    return { r, proof, left, runs };
+  };
+  const keyed = regate(true);
+  assert(
+    "(f) run 1 red, the pooled rerun green: the gate passes on its rerun",
+    keyed.r.status === 0 && keyed.runs === 2,
+    `rc=${keyed.r.status} runs=${keyed.runs} ${String(keyed.r.stdout).slice(0, 300)}`,
+  );
+  assert(
+    "(f) …and the rerun's signed evidence proves the tester's file (a fresh key file)",
+    JSON.stringify(keyed.proof.ran) === JSON.stringify(files) && keyed.proof.unproven.length === 0,
+    JSON.stringify({
+      ran: keyed.proof.ran,
+      unproven: keyed.proof.unproven,
+      reason: keyed.proof.reason,
+    }),
+  );
+  assert(
+    "(f) no key directory is left in the proof directory",
+    keyed.left.length === 0,
+    JSON.stringify(keyed.left),
+  );
+  const unkeyed = regate(false);
+  assert(
+    "(f) a caller that hands no key: the rerun signs nothing and the file stays unproven (held)",
+    unkeyed.r.status === 0 && unkeyed.runs === 2 && unkeyed.proof.unproven.length === 1,
+    JSON.stringify({ rc: unkeyed.r.status, runs: unkeyed.runs, unproven: unkeyed.proof.unproven }),
   );
 }
 

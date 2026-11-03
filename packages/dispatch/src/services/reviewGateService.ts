@@ -658,10 +658,6 @@ export class ReviewGateService {
     return this.laneApplies(ticket) && !this.testerCoverage(ticket).covered;
   }
 
-  /**
-   * Does the independent tester gate this ticket at all: an epic's acceptance ticket
-   * (always), or a testable one whose lane is on (see util/testingLane.ts)?
-   */
   /** The runner's differing lane for a ticket (see the dep), or null; never throws. */
   private runnerLaneSafe(ticket: Ticket): { mode: string; at: string; gates: boolean } | null {
     try {
@@ -671,6 +667,10 @@ export class ReviewGateService {
     }
   }
 
+  /**
+   * Does the independent tester gate this ticket at all: an epic's acceptance ticket
+   * (always), or a testable one whose lane is on (see util/testingLane.ts)?
+   */
   laneApplies(ticket: Ticket): boolean {
     if (ticket.acceptance === 1) return true;
     if (ticket.can_be_tested !== 1) return false;

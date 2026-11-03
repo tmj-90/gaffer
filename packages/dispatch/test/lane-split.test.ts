@@ -9,6 +9,7 @@ import type { Actor } from "../src/domain/types.js";
 import type { GitRunner } from "../src/services/diffService.js";
 import { TestClock } from "../src/util/clock.js";
 import { DispatchError } from "../src/util/errors.js";
+import { recordRunnerTesterLane } from "../src/health/runnerTesterLane.js";
 import { runCli } from "./helpers/cli.js";
 import { FAKE_MERGE_BASE, giveTicketRealDelivery } from "./helpers/realDiff.js";
 
@@ -136,6 +137,20 @@ describe("lane-setting consistency: the runner records the tester lane it routes
     expect(laneRows(wg)).toHaveLength(2);
     expect(wg.runnerTesterLane()?.mode).toBe("on");
     wg.db.close();
+  });
+
+  it("re-records an unchanged mode only once a day, and a broken database records nothing", () => {
+    const wg = dashboard();
+    expect(recordRunnerTesterLane(wg.db, "off")).toBe(true);
+    const at = Date.parse(wg.runnerTesterLane()!.at);
+    expect(recordRunnerTesterLane(wg.db, "off", at + 23 * 3600_000)).toBe(false);
+    expect(recordRunnerTesterLane(wg.db, "off", at + 25 * 3600_000)).toBe(true);
+    expect(laneRows(wg).map((r) => JSON.parse(r.payload_json))).toEqual([
+      { mode: "off" },
+      { mode: "off" },
+    ]);
+    wg.db.close();
+    expect(recordRunnerTesterLane(wg.db, "on")).toBe(false); // closed: fail-soft
   });
 
   it("the refusal names the split instead of promising a route the runner will not make", () => {

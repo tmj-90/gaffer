@@ -370,6 +370,11 @@ export interface LoreStatus {
 export const LORE_STATUS_TTL_MS = 60_000;
 /** After memory could not answer, how long no report asks it again. */
 export const LORE_STATUS_BACKOFF_MS = 60_000;
+/**
+ * What a lookup returns when memory answered but has no such record (a deleted lore
+ * record, an id it does not know): that rule reads null, and the report goes on.
+ */
+export const LORE_ABSENT = "absent";
 
 /**
  * BOUNDED MEMORY READS for the review-rules report (measure review O2). Each lore status
@@ -378,18 +383,22 @@ export const LORE_STATUS_BACKOFF_MS = 60_000;
  * to 200 s. This cache reuses an answer for {@link LORE_STATUS_TTL_MS}; once memory
  * cannot answer, the rest of that report asks nothing and later reports wait
  * {@link LORE_STATUS_BACKOFF_MS} before asking again. An unknown status reads null
- * ("not approved"), never a stale one.
+ * ("not approved"), never a stale one. A record memory says it does not have
+ * ({@link LORE_ABSENT}) is not "memory down": it reads null for a minute and the rest of
+ * the report is still read.
  */
 export function createLoreStatusCache(
   opts: { ttlMs?: number; backoffMs?: number; now?: () => number } = {},
 ): {
-  lookup(base: (loreId: string) => LoreStatus | null): (loreId: string) => LoreStatus | null;
+  lookup(
+    base: (loreId: string) => LoreStatus | typeof LORE_ABSENT | null,
+  ): (loreId: string) => LoreStatus | null;
   forget(loreId: string): void;
 } {
   const ttl = opts.ttlMs ?? LORE_STATUS_TTL_MS;
   const backoff = opts.backoffMs ?? LORE_STATUS_BACKOFF_MS;
   const now = opts.now ?? Date.now;
-  const known = new Map<string, { at: number; value: LoreStatus }>();
+  const known = new Map<string, { at: number; value: LoreStatus | null }>();
   let quietUntil = 0;
   return {
     forget(loreId) {
@@ -402,11 +411,16 @@ export function createLoreStatusCache(
         const hit = known.get(loreId);
         if (hit && t - hit.at < ttl) return hit.value;
         if (missed || t < quietUntil) return null;
-        let value: LoreStatus | null;
+        let value: LoreStatus | typeof LORE_ABSENT | null;
         try {
           value = base(loreId);
         } catch {
           value = null;
+        }
+        if (value === LORE_ABSENT) {
+          known.set(loreId, { at: t, value: null });
+          if (known.size > 500) known.delete(known.keys().next().value as string);
+          return null;
         }
         if (!value) {
           missed = true;

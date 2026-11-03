@@ -18,7 +18,11 @@ import { governanceRoi, type GovTransition } from "../../health/governanceRoi.js
 import { acceptedChangeCost } from "../../health/acceptedChange.js";
 import { readReviewMeasures } from "../../health/reviewMeasures.js";
 import { reviewRuleThreshold } from "../../health/reviewRules.js";
-import { createLoreStatusCache, reviewRulesReport } from "../../services/reviewRuleService.js";
+import {
+  createLoreStatusCache,
+  LORE_ABSENT,
+  reviewRulesReport,
+} from "../../services/reviewRuleService.js";
 import { aggregateHealth, readHealthRows, type SendBack } from "../../health/healthAggregator.js";
 import { sendBacksByTicket } from "../../health/sendBacks.js";
 import { isBoardArea } from "../../services/boardService.js";
@@ -418,7 +422,9 @@ export function routeReadModels(
       nowMs: Date.parse(wg.clock.now()) || Date.now(),
       lookup: cache.lookup((id) => {
         const h = memoryReader.loreHistory(id);
-        return h.available ? { status: h.current.status, approvedAt: h.approvedAt } : null;
+        if (h.available) return { status: h.current.status, approvedAt: h.approvedAt };
+        // The CLI ran and said no (a deleted record): that rule only, not memory down.
+        return /^Memory CLI exited |is not a memory lore id/.test(h.reason) ? LORE_ABSENT : null;
       }),
     });
     return sendJson(res, 200, report);

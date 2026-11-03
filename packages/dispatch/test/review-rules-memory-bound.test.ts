@@ -144,3 +144,29 @@ describe("the lore-status cache", () => {
     expect(calls).toBe(4);
   });
 });
+
+describe("a proposed rule whose lore record is gone (lane-hook review)", () => {
+  it("does not stop the report reading the other rules: memory answered, it just has no such record", async () => {
+    const asked: string[] = [];
+    const s = await serverWith((id) => {
+      asked.push(id);
+      return id === "rulea234"
+        ? ({
+            available: false,
+            reason: "Memory CLI exited 1: memory: no record with id rulea234",
+          } as ReturnType<MemoryReader["loreHistory"]>)
+        : active(id);
+    });
+    try {
+      const first = await s.read();
+      expect(first.proposed.map((p) => p.lore_status)).toEqual([null, "active", "active"]);
+      expect(asked).toEqual(IDS);
+      // The gone record is not asked again within the minute either.
+      const second = await s.read();
+      expect(second.proposed.map((p) => p.lore_status)).toEqual([null, "active", "active"]);
+      expect(asked).toEqual(IDS);
+    } finally {
+      await s.close();
+    }
+  });
+});

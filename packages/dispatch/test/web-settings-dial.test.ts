@@ -45,6 +45,9 @@ const SETTINGS = [
 ];
 
 let lastPost: { url: string; body: { settings: Record<string, string> } } | null = null;
+// lane-hook R5: the settings and the repository list a case serves (null: not served).
+let settingsServed = SETTINGS;
+let reposServed: unknown[] | null = null;
 
 function stubFetch(): void {
   lastPost = null;
@@ -60,9 +63,15 @@ function stubFetch(): void {
         });
       if (url.includes("/api/settings") && method === "POST") {
         lastPost = { url, body: JSON.parse(String(init?.body ?? "{}")) };
-        return json({ settings: SETTINGS, written: ["GAFFER_MODE"], rejected: [], ignored: [] });
+        return json({
+          settings: settingsServed,
+          written: ["GAFFER_MODE"],
+          rejected: [],
+          ignored: [],
+        });
       }
-      if (url.includes("/api/settings")) return json({ settings: SETTINGS });
+      if (url.includes("/api/settings")) return json({ settings: settingsServed });
+      if (url.endsWith("/repositories") && reposServed) return json({ repositories: reposServed });
       return json({});
     }),
   );
@@ -96,6 +105,55 @@ describe("web: the boot room's team instructions", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     document.body.innerHTML = "";
+    settingsServed = SETTINGS;
+    reposServed = null;
+  });
+
+  // lane-hook R5: under the `auto` default the tester runs only in a repository with a
+  // registered test command, so with none anywhere nobody plays the Testing position.
+  const autoLane = () =>
+    SETTINGS.map((x) =>
+      x.key === "GAFFER_TESTING" ? { ...x, value: "", effective: "", source: "default" } : x,
+    );
+  const raise = async () => {
+    const up = document.querySelector('.dial-input[value="autonomous"]') as HTMLInputElement;
+    up.checked = true;
+    up.dispatchEvent(new Event("change", { bubbles: true }));
+    await tick();
+  };
+  const testingCheck = () =>
+    Array.from(document.querySelectorAll(".gng li")).find((li) =>
+      /independent tester/i.test(li.textContent || ""),
+    );
+
+  it("under auto with no test command anywhere, Testing is not played and Go/No-Go says so", async () => {
+    settingsServed = autoLane();
+    reposServed = [
+      { id: "r1", name: "app", test_command: null },
+      { id: "r2", name: "web", test_command: "  " },
+    ];
+    mountShell("#/settings");
+    await boot();
+    expect(spot("GAFFER_TESTING").className).toContain("who-none");
+    await raise();
+    const check = testingCheck()!;
+    expect(check.className).toContain("is-nogo");
+    expect(check.textContent).toContain("No repository has a registered test command");
+  });
+
+  it("under auto with a test command registered somewhere, the squad plays Testing", async () => {
+    settingsServed = autoLane();
+    reposServed = [
+      { id: "r1", name: "app", test_command: "npm test" },
+      { id: "r2", name: "web", test_command: null },
+    ];
+    mountShell("#/settings");
+    await boot();
+    expect(spot("GAFFER_TESTING").className).toContain("who-squad");
+    await raise();
+    const check = testingCheck()!;
+    expect(check.className).toContain("is-go");
+    expect(check.textContent).toContain("in a repo with a registered test command");
   });
 
   it("the dial reads the saved mode and draws who plays each gate", async () => {

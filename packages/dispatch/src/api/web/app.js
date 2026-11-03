@@ -14280,7 +14280,7 @@ async function renderSettings() {
   ] = await Promise.all([
     get("/api/settings"),
     get("/api/idle-loops").catch(() => null),
-    get("/repositories").catch(() => ({ repositories: [] })),
+    get("/repositories").catch(() => ({ repositories: [], unread: true })),
     get("/scope/nodes").catch(() => ({ nodes: [] })),
     // GRADUATED-AUTONOMY (Spec 2): advisory recommendations — best-effort, must never
     // blank the page if the endpoint is unavailable.
@@ -14296,6 +14296,15 @@ async function renderSettings() {
   settingsModeName = (modeRow && (modeRow.effective || modeRow.value)) || "supervised";
   const idleLoops = idleLoopsRes && idleLoopsRes.idle_loops ? idleLoopsRes.idle_loops : null;
   const repos = reposRes.repositories || [];
+  // The formation and Go/No-Go read whether any repository has a test command (the `auto`
+  // tester lane runs only there); unknown when the list could not be read.
+  formationLaneRepos =
+    reposRes.unread || !Array.isArray(reposRes.repositories)
+      ? null
+      : {
+          total: repos.length,
+          withTest: repos.filter((r) => String(r.test_command || "").trim()).length,
+        };
   const nodes = nodesRes.nodes || [];
   const autonomyRecs =
     autonomyRecRes && Array.isArray(autonomyRecRes.recommendations)
@@ -14728,6 +14737,16 @@ const testingLaneOff = (v) => {
     .toLowerCase();
   return s !== "" && s !== "auto" && !isOnValue(s);
 };
+/**
+ * The registered repositories as the Settings view last read them: how many, and how many
+ * have a registered test command. Null when unread. Under `auto` the tester runs only where
+ * a repository has one (lane-hook R5).
+ */
+let formationLaneRepos = null;
+/** Under `v`, does the independent tester run nowhere: off, or `auto` with no test command anywhere? */
+const testingPlaysNowhere = (v) =>
+  testingLaneOff(v) ||
+  (!isOnValue(v) && formationLaneRepos !== null && formationLaneRepos.withTest === 0);
 
 /**
  * The value each key would take under `mode`, given what is saved and what the
@@ -14760,7 +14779,7 @@ const FORMATION_GATES = [
     id: "testing",
     label: "Testing",
     key: "GAFFER_TESTING",
-    who: (p) => (testingLaneOff(p.GAFFER_TESTING?.value) ? "none" : "squad"),
+    who: (p) => (testingPlaysNowhere(p.GAFFER_TESTING?.value) ? "none" : "squad"),
   },
   {
     id: "review",
@@ -14823,11 +14842,13 @@ function goNoGo(posture, mode, policies) {
   const checks = [
     {
       key: "GAFFER_TESTING",
-      ok: !testingLaneOff(v("GAFFER_TESTING")),
+      ok: !testingPlaysNowhere(v("GAFFER_TESTING")),
       go: isOnValue(v("GAFFER_TESTING"))
         ? "An independent tester checks every delivery."
         : "An independent tester checks each delivery in a repo with a registered test command.",
-      nogo: "No independent tester: the squad marks its own work.",
+      nogo: testingLaneOff(v("GAFFER_TESTING"))
+        ? "No independent tester: the squad marks its own work."
+        : "No repository has a registered test command, so by default the independent tester runs nowhere: the squad marks its own work.",
     },
     {
       key: "GAFFER_DAILY_BUDGET_USD",

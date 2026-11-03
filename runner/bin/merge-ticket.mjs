@@ -150,7 +150,12 @@ import {
   selectPreparedDelta,
   featureIdFromView,
 } from "../lib/feature-digest.mjs";
-import { refreshCodeIndex, refreshFileCards, repoCanonical } from "../lib/onboard-analyze.mjs";
+import {
+  codeIndexEnabled,
+  refreshCodeIndex,
+  refreshFileCards,
+  repoCanonical,
+} from "../lib/onboard-analyze.mjs";
 import { maxTurnsArgv, roleTurnCap, Worker } from "../lib/worker.mjs";
 import { mountRoleSkills, writeAgentSettings } from "../lib/agent-home.mjs";
 import { mountedNames, recordSkillUsage } from "./record-skill-usage.mjs";
@@ -1920,14 +1925,17 @@ function refreshCardsForMergedCommit(repo, landed, log) {
   }
   const canonical = repoCanonical(repo.localPath);
   const syncedCommit = readCardWatermark(canonical, repo.name);
+  const merged = git(repo.localPath, "rev-parse", "--verify", `refs/heads/${repo.defaultBranch}`);
+  const target = merged.status === 0 ? String(merged.stdout ?? "").trim() : "";
   if (!syncedCommit) {
     log(
       "card-refresh: no watermark recorded for this repo — skipping (run `gaffer onboard` to initialise)",
     );
+    // The code index does not depend on the cards: with no card watermark (cards off, or
+    // never carded) it still follows the merged commit, as the tick merge lane's does.
+    if (target) indexMergedCommit(repo, canonical, target, log);
     return;
   }
-  const merged = git(repo.localPath, "rev-parse", "--verify", `refs/heads/${repo.defaultBranch}`);
-  const target = merged.status === 0 ? String(merged.stdout ?? "").trim() : "";
   if (!target) {
     log(`card-refresh: cannot resolve ${repo.defaultBranch} — skipped`);
     return;
@@ -1973,6 +1981,36 @@ function refreshCardsForMergedCommit(repo, landed, log) {
       repo: repo.name,
       commit: target,
     });
+  } finally {
+    git(repo.localPath, "worktree", "remove", "--force", wt);
+    git(repo.localPath, "worktree", "prune");
+    rmSync(wt, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Refresh only the CODE INDEX at the merged commit, from a throwaway detached worktree of
+ * it (the cards' path does this beside its own refresh). Fail-soft: logged, never thrown.
+ */
+function indexMergedCommit(repo, canonical, target, log) {
+  if (!codeIndexEnabled(process.env)) return;
+  const wt = mkdtempSync(join(tmpdir(), "gaffer-index-"));
+  try {
+    const add = git(repo.localPath, "worktree", "add", "--detach", "--quiet", wt, target);
+    if (add.status !== 0) {
+      log(`code index: could not check out ${target.slice(0, 8)}, left as it was`);
+      return;
+    }
+    refreshCodeIndex(wt, {
+      cfg: { cliBin: MEMORY_CLI, db: CONFIG.memoryDb },
+      env: { ...process.env, MEMORY_DB: CONFIG.memoryDb },
+      log,
+      canonical,
+      repo: repo.name,
+      commit: target,
+    });
+  } catch (err) {
+    log(`code index: refresh failed (${err?.message ?? err}), left as it was`);
   } finally {
     git(repo.localPath, "worktree", "remove", "--force", wt);
     git(repo.localPath, "worktree", "prune");

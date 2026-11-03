@@ -17,6 +17,8 @@ import {
 import { governanceRoi, type GovTransition } from "../../health/governanceRoi.js";
 import { acceptedChangeCost } from "../../health/acceptedChange.js";
 import { readReviewMeasures } from "../../health/reviewMeasures.js";
+import { reviewRuleThreshold } from "../../health/reviewRules.js";
+import { reviewRulesReport } from "../../services/reviewRuleService.js";
 import { aggregateHealth, readHealthRows, type SendBack } from "../../health/healthAggregator.js";
 import { sendBacksByTicket } from "../../health/sendBacks.js";
 import { isBoardArea } from "../../services/boardService.js";
@@ -391,6 +393,23 @@ export function routeReadModels(
   //      definition the Overview now reads (was recomputed client-side).
   // Defensive: zero-state safe when the ledger is absent; lists capped so a large
   // ledger never bloats the response. Read-only, behind the same posture as /api.
+  // REVIEW RULES (D6): the repeated human feedback that is (or is about to be) a proposed
+  // rule, each proposed rule's lore status and its rejections before vs after approval.
+  // A read: proposing happens after a person's send-back or comment, or `wg review-rules
+  // propose`. Memory unavailable: statuses read null and every measure "not approved".
+  if (segments.length === 2 && segments[1] === "review-rules") {
+    if (method !== "GET") return methodNotAllowed(res);
+    const report = reviewRulesReport(wg.db, {
+      threshold: reviewRuleThreshold(process.env),
+      nowMs: Date.parse(wg.clock.now()) || Date.now(),
+      lookup: (id) => {
+        const h = memoryReader.loreHistory(id);
+        return h.available ? { status: h.current.status, approvedAt: h.approvedAt } : null;
+      },
+    });
+    return sendJson(res, 200, report);
+  }
+
   if (segments.length === 2 && segments[1] === "health") {
     if (method !== "GET") return methodNotAllowed(res);
     const TOP_N = 25;

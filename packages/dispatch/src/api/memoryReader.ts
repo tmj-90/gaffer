@@ -146,6 +146,19 @@ export interface MemoryReader {
     tags?: string[];
   }): MemoryResult<{ id: string | null }>;
   /**
+   * REVIEW RULE (D6): file a proposed review rule as a lore `convention` DRAFT tagged
+   * `review-rule` through the memory CLI `suggest`, with MEMORY_AUTO_APPROVE taken out of
+   * the child's environment (memory itself also keeps a review-rule a draft): a person
+   * approves it in the Memory view or with `gaffer lore approve`. Best-effort.
+   */
+  proposeReviewRule(input: {
+    title: string;
+    summary: string;
+    body: string;
+    repo: string;
+    tags: readonly string[];
+  }): MemoryResult<{ id: string | null }>;
+  /**
    * Browse lore by lifecycle status / repo / kind with pagination — the dashboard's
    * ratification read (`memory list --json …`). Unlike {@link MemoryReader.lore}
    * (the 50 freshest records, text-parsed) this can ask for ONLY drafts, per repo,
@@ -182,6 +195,8 @@ export interface LoreVersionSummary {
 /** {@link MemoryReader.loreHistory}: the head and the earlier versions, newest first. */
 export interface LoreHistory {
   readonly id: string;
+  /** When a person last approved it (`memory history --json` approvedAt), or null. */
+  readonly approvedAt: string | null;
   readonly current: LoreVersionSummary;
   readonly versions: readonly LoreVersionSummary[];
 }
@@ -212,6 +227,7 @@ export function parseLoreHistory(stdout: string): LoreHistory | null {
   if (typeof o.id !== "string" || !current || !Array.isArray(o.versions)) return null;
   return {
     id: o.id,
+    approvedAt: typeof o.approvedAt === "string" ? o.approvedAt : null,
     current,
     versions: o.versions.map(ver).filter((v): v is LoreVersionSummary => v !== null),
   };
@@ -662,6 +678,29 @@ export function createMemoryReader(env: NodeJS.ProcessEnv = process.env): Memory
       const outcome = runCli(env, args);
       if (!outcome.ok) return unavailable(outcome.reason);
       return { available: true, recall: parseRecallStats(outcome.stdout) };
+    },
+    proposeReviewRule(input) {
+      const title = (input.title ?? "").trim();
+      const summary = (input.summary ?? "").trim();
+      const repo = (input.repo ?? "").trim();
+      if (title === "" || summary === "" || repo === "") {
+        return unavailable("a review rule needs a title, a summary and a repo");
+      }
+      // Discrete argv elements (runCli uses no shell): the person's feedback text cannot
+      // become a flag. --body is given so the CLI never prompts.
+      const args = ["suggest", "--title", title, "--summary", summary, "--body", input.body];
+      args.push("--kind", "convention", "--repo", repo);
+      for (const tag of input.tags) {
+        const t = String(tag).trim();
+        if (t !== "") args.push("--tag", t);
+      }
+      // Never auto-approved: the operator's MEMORY_AUTO_APPROVE does not reach the child.
+      const { MEMORY_AUTO_APPROVE: _auto, ...gated } = env;
+      void _auto;
+      const outcome = runCli(gated, args);
+      if (!outcome.ok) return unavailable(outcome.reason);
+      const m = /\bsuggested\s+([a-z0-9]{4,})\b/i.exec(outcome.stdout ?? "");
+      return { available: true, id: m ? m[1]! : null };
     },
     captureLoreDraft(input) {
       const title = (input.title ?? "").trim();

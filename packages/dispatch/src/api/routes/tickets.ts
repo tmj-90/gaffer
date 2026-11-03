@@ -57,6 +57,8 @@ import {
 import { API_ACTOR, apiActor, apiPrincipal, isSharedOperator, operatorActor } from "./context.js";
 import { forgetLoreDrafts } from "./readModels.js";
 import { requestTicketFilter } from "../scopeGate.js";
+import { reviewRuleThreshold } from "../../health/reviewRules.js";
+import { proposeReviewRules } from "../../services/reviewRuleService.js";
 
 const TICKET_SUB = {
   ACCEPTANCE_CRITERIA: "acceptance-criteria",
@@ -108,6 +110,36 @@ const TICKET_SUB = {
   // ESCAPED DEFECTS (MF5): a person links this ticket to the accepted change it regresses.
   REGRESSION_OF: "regression-of",
 } as const;
+
+/**
+ * REVIEW RULES (D6): after a person's send-back or must-fix comment, propose every repeated
+ * feedback rule not proposed yet as a lore draft. FAIL-SOFT: a memory outage or any error
+ * never touches the act that triggered it (already done), and an unconfigured memory is
+ * skipped without a spawn. The person's act triggered it; the server proposes (system).
+ */
+function proposeRulesSoftly(
+  wg: Dispatch,
+  memoryReader: MemoryReader,
+): Array<{ repo: string; lore_id: string | null }> {
+  if (!(process.env.MEMORY_CLI_BIN ?? "").trim()) return [];
+  try {
+    const r = proposeReviewRules(
+      wg.db,
+      { type: "system" },
+      {
+        threshold: reviewRuleThreshold(process.env),
+        proposer: (d) => {
+          const filed = memoryReader.proposeReviewRule(d);
+          return filed.available ? { ok: true, id: filed.id } : { ok: false, reason: filed.reason };
+        },
+      },
+    );
+    if (r.proposed.length) forgetLoreDrafts(memoryReader);
+    return r.proposed.map((p) => ({ repo: p.repo, lore_id: p.lore_id }));
+  } catch {
+    return [];
+  }
+}
 
 /** `{ landing_state }` for an approved or held ticket, else nothing (spread into a ticket). */
 function withLanding(
@@ -477,8 +509,11 @@ export async function routeTickets(
     if (method === "POST") {
       const body = createReviewCommentBody.parse(await readJsonBody(req));
       const comment = wg.createReviewComment(id, body, apiActor());
+      // REVIEW RULES (D6): a person's must-fix comment may complete a repeated rule.
+      const rules = comment.severity === "must_fix" ? proposeRulesSoftly(wg, memoryReader) : [];
       sendCreated(res, `/tickets/${comment.ticket_id}/review/comments/${comment.id}`, {
         comment,
+        ...(rules.length ? { review_rules_proposed: rules } : {}),
       });
       return;
     }
@@ -602,6 +637,9 @@ export async function routeTickets(
     if (action === "reject") {
       const body = rejectReviewBody.parse(await readJsonBody(req));
       const result = wg.rejectReview(id, body.to, apiActor(), body.reason);
+      // REVIEW RULES (D6): a person's send-back reason may complete a repeated rule, which is
+      // then proposed as a lore draft (never auto-approved). Fail-soft, after the reject.
+      const rules = proposeRulesSoftly(wg, memoryReader);
       // OPT-IN: capture the reviewer's rejection reason as a lore DRAFT (human-gated) so
       // the highest-signal human correction compounds into memory. FAIL-SOFT — a memory
       // outage must never affect the rejection, which has already succeeded. Files via the
@@ -638,6 +676,7 @@ export async function routeTickets(
         ticket: result.ticket,
         event_id: result.eventId,
         ...(loreCapture ? { lore_capture: loreCapture } : {}),
+        ...(rules.length ? { review_rules_proposed: rules } : {}),
         // REVOCATION-SAFE LANDING: landings that had started before the rejection.
         ...(result.landedAlready.length > 0 ? { landed_already: result.landedAlready } : {}),
       });

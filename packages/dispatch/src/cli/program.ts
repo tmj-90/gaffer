@@ -6,6 +6,7 @@ import { registerAc } from "./commands/ac.js";
 import { registerAgent, registerAgentSystem } from "./commands/agent.js";
 import { registerAutonomy } from "./commands/autonomy.js";
 import { registerClub } from "./commands/club.js";
+import { registerReviewRules } from "./commands/reviewRules.js";
 import { registerDecisions } from "./commands/decisions.js";
 import { registerDiagnostics } from "./commands/diagnostics.js";
 import { registerEpic } from "./commands/epic.js";
@@ -201,6 +202,7 @@ export function buildProgram({ name = cliName() }: { name?: string } = {}): Comm
   registerNotify(program);
   registerAutonomy(program);
   registerClub(program);
+  registerReviewRules(program);
 
   // CLI IDENTITY: who this invocation records writes as, and whether that was checked.
   program

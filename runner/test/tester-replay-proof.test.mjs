@@ -219,6 +219,14 @@ const iCargoSrc = replayInvocation({
   nonce: "n1",
 });
 assert("P3: cargo outside tests/ → the registered command", iCargoSrc.mode === "registered");
+// Review 11 follow-up: no node:test reporter can ever load in a cargo (or go) run, so no
+// key file is issued for it: one would sit readable for the whole run.
+assert(
+  "P3: …with NO key file (its runner is not node:test, nothing would consume it)",
+  !("GAFFER_REPLAY_PROOF_KEY_FILE" in iCargoSrc.env) &&
+    !("GAFFER_REPLAY_PROOF_KEY" in iCargoSrc.env),
+  JSON.stringify(iCargoSrc.env),
+);
 const iReg = inv("sh scripts/test.sh");
 assert(
   "P3: an unknown runner runs the registered command with the reporter in NODE_OPTIONS",
@@ -650,6 +658,29 @@ assert(
   replayProof({ inv: iv7, files: ["test/a.test.ts"], worktree: R }).ran.length === 0,
 );
 void appendFileSync;
+
+console.log("== P8: a killed run's key file never wedges the next replay's cleanup ==");
+{
+  // A run killed before its reporter loaded leaves the key file inside its mode 0300
+  // directory. A recursive remove cannot list that directory (EACCES for any user but
+  // root), and the clean replay and the replay recovery reuse a fixed checkout path.
+  const T = join(WORK, "killed-run");
+  const kd = join(T, ".gaffer-replay-x", "k-y");
+  mkdirSync(kd, { recursive: true });
+  writeFileSync(join(kd, "f"), "k", { mode: 0o600 });
+  spawnSync("chmod", ["300", kd]);
+  let threw = "";
+  try {
+    TR.removeTree(T);
+  } catch (e) {
+    threw = e.code || String(e);
+  }
+  assert(
+    "P8: removeTree removes a tree holding a non-empty 0300 key directory",
+    !threw && !existsSync(T),
+    threw,
+  );
+}
 
 console.log();
 if (fails.length === 0) {

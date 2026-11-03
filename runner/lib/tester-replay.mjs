@@ -57,6 +57,7 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import {
   chmodSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmdirSync,
@@ -378,13 +379,21 @@ export function applyTesterTests({ worktree, testsHead, files }) {
 //     JSON, a per-process sequence number and a closing count. A line with a bad MAC, a
 //     gap, a duplicate or a missing end makes the whole replay unverified. The proof step
 //     gets the key on stdin, never on a command line. One run consumes the key: a second
-//     node:test run in the same registered command (or a pooled flaky rerun of the
-//     landing's tests gate) signs nothing, so its files stay unproven (held).
+//     node:test run in the same registered command signs nothing, so its files stay
+//     unproven (held, the reason says why). A pooled flaky rerun of the landing's tests
+//     gate gets a FRESH key file: land.sh and merge-ticket.mjs hand the key to
+//     bin/dod-regate.sh on stdin and lib/dod.sh _gaffer_dod_replay_key_file writes it just
+//     before the rerun. The file modes keep other users out; they do not stop code running
+//     as the runner's user (it can chmod the directory), so what protects the key is that
+//     the file is gone before any test runs.
 //     REGISTERED MODE still issues a key for a runner it cannot identify (`sh
 //     scripts/test.sh` running node --test): that wrapper comes from the TESTED COMMIT,
 //     never from the tester's files, and a delivery agent's change to a script is already
 //     a flagged vector the reviewer sees; code it runs before node loads the reporter can
-//     read the key file, as it could read the variable before.
+//     read the key file, as it could read the variable before, and if the wrapper runs a
+//     runner that is not node:test, no reporter consumes the key and that runner's tests
+//     can read it for the whole run (SECURITY.md says so). A go or cargo command the
+//     replay cannot scope gets no key (`registered(..., { key: false })`).
 //   • where the run is still BY PATH (the registered runner command names no test path of
 //     its own, `strict`), the files the runner reports must be the files passed to it: one
 //     it was not given makes the whole replay unverified. A registered command that names
@@ -1196,7 +1205,11 @@ export function replayInvocation({
       `--test-reporter=${q(proof.reporter)}`,
       "--test-reporter-destination=stdout",
     ].join(" ");
-  const registered = (why) => ({
+  // `key: false` (review 11 follow-up): a registered run whose runner is known NOT to be
+  // node:test (a go or cargo command gaffer cannot scope) gets no key file. No reporter
+  // would ever consume it, so it would sit readable for the whole run and the code under
+  // test could sign node:test events with it.
+  const registered = (why, { key: withKey = true } = {}) => ({
     runner: "registered",
     mode: "registered",
     command: String(testCommand || ""),
@@ -1204,7 +1217,7 @@ export function replayInvocation({
       NODE_OPTIONS: [process.env.NODE_OPTIONS || "", reporters(nodeOptWord)]
         .filter(Boolean)
         .join(" "),
-      [PROOF_KEY_FILE_ENV]: proof.keyFile,
+      ...(withKey ? { [PROOF_KEY_FILE_ENV]: proof.keyFile } : {}),
     },
     proof,
     strict: false,
@@ -1285,6 +1298,7 @@ export function replayInvocation({
       if (!g)
         return registered(
           "the go test command's package arguments cannot be located unambiguously",
+          { key: false },
         );
       const fmt =
         "{{.ImportPath}} {{.Dir}}{{range .TestGoFiles}} {{.}}{{end}}{{range .XTestGoFiles}} {{.}}{{end}}";
@@ -1300,6 +1314,7 @@ export function replayInvocation({
       if (select && names.length === 0)
         return registered(
           "cargo has no file-scoped invocation for these files (only tests/<name>.rs)",
+          { key: false },
         );
       return files_(
         select ? splice(effective, at, names.map((x) => `--test ${shq(x)}`).join(" ")) : effective,
@@ -1315,7 +1330,8 @@ export function replayInvocation({
 /**
  * Create the proof directory, the node:test reporter and, when the run is handed a key
  * (inv.env names the key file), the key file: mode 0600, a random name, inside a mode 0300
- * directory nobody can list. The ONE helper the clean replay (bin/tester-run.mjs) and both
+ * directory (other users cannot reach it; the runner's own user could chmod it, so the
+ * protection is that the reporter unlinks it before any test runs). The ONE helper the clean replay (bin/tester-run.mjs) and both
  * landing paths (lib/land.sh through `apply`, bin/merge-ticket.mjs) use. Throws when the
  * directory or the file cannot be created (the caller holds).
  */
@@ -1352,6 +1368,40 @@ export function discardReplayKey(inv) {
   } catch {
     return false;
   }
+}
+
+/**
+ * Remove a replay checkout (or any tree holding a proof directory). A run killed before
+ * its reporter loaded, or the runner itself killed mid-run, leaves a key file inside a
+ * mode 0300 directory, and a recursive remove cannot list that directory (EACCES for any
+ * user but root): the next replay at the same fixed path (tester-replay-<n>,
+ * replay-recovery-<n>) would throw at its first cleanup, every time. On a failed remove
+ * this gives the owner back every directory in the tree (symlinks are not followed) and
+ * removes it again. Throws only when that second remove fails too.
+ */
+export function removeTree(p) {
+  try {
+    rmSync(p, { recursive: true, force: true });
+    return;
+  } catch {
+    /* an unlistable directory inside: open the tree up and retry */
+  }
+  const open = (d) => {
+    try {
+      chmodSync(d, 0o700);
+    } catch {
+      return;
+    }
+    let entries;
+    try {
+      entries = readdirSync(d, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) if (e.isDirectory()) open(join(d, e.name));
+  };
+  open(p);
+  rmSync(p, { recursive: true, force: true });
 }
 
 function readText(p) {
@@ -1552,6 +1602,12 @@ export function replayProof({ inv, files, worktree, key, required = null }) {
   const runner = inv.runner;
   // A key file the reporter never consumed goes now: the run is over.
   discardReplayKey(inv);
+  // ONE KEY, ONE RUN: the key file is consumed by the first node:test reporter that loads,
+  // so in a registered command only that run can prove anything. Said in a hold's reason.
+  const oneRunHint =
+    runner === "registered" && inv.env && inv.env[PROOF_KEY_FILE_ENV]
+      ? " (the replay's signing key is good for one node:test run: a registered command that starts `node --test` more than once proves only the files of the first one; register a single `node --test` run, or a command gaffer can run by path)"
+      : "";
   const output = readText(inv.proof.output);
   const proofKey = key || (inv.proof && inv.proof.key) || "";
   const observe = (file, name, status, extra = {}) => seen.push({ file, name, status, ...extra });
@@ -1750,7 +1806,7 @@ export function replayProof({ inv, files, worktree, key, required = null }) {
       missing: [],
       evidence,
       reason: unproven.length
-        ? `${unproven.length} of ${want.length} tester test file(s) show no evidence they ran (${how}): ${unproven.join(", ")}`
+        ? `${unproven.length} of ${want.length} tester test file(s) show no evidence they ran (${how}): ${unproven.join(", ")}${oneRunHint}`
         : `every tester test file ran (${how}; file-level evidence only: the tester's PASS recorded no test identities)`,
     };
   }
@@ -1817,7 +1873,7 @@ export function replayProof({ inv, files, worktree, key, required = null }) {
     missing,
     evidence,
     reason: parts.length
-      ? `${failed.length + skipped.length + missing.length} of the ${reqs.length} test(s) the tester's PASS bound did not pass on the candidate (${how}): ${parts.join("; ")}`
+      ? `${failed.length + skipped.length + missing.length} of the ${reqs.length} test(s) the tester's PASS bound did not pass on the candidate (${how}): ${parts.join("; ")}${missing.length ? oneRunHint : ""}`
       : `every one of the ${reqs.length} test(s) the tester's PASS bound ran and passed (${how})`,
   };
 }

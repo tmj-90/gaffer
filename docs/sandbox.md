@@ -101,12 +101,17 @@ these rules after the write grant (so they win):
 2. `(deny file-read-data (subpath $GAFFER_DATA))`, then reads allowed back for the
    write roots and the read roots (the dependency links and the repository's git
    directory). Metadata stays readable, so the checkout's own path still resolves.
-3. `(deny file-read* ...)` for `~/.ssh`, `~/.aws`, `~/.config/gh`, `~/.claude`,
-   `~/.npmrc`, `~/.netrc` and `~/.gnupg`.
+3. `(deny file-read* file-write* ...)` for HOME's credential and agent folders:
+   `~/.ssh`, `~/.aws`, `~/.config/gh`, `~/.config/gcloud`, `~/.azure`, `~/.kube`,
+   `~/.docker`, `~/.claude`, `~/.npmrc`, `~/.netrc`, `~/.pypirc`, `~/.git-credentials`,
+   cargo's `credentials` files and `~/.gnupg`. The replay's own `HOME` is a scratch
+   directory, so nothing it runs needs the real one, and a test cannot plant a hook in
+   the agent's settings.
 
 Under `docker` the replay gets the validation layout below. In both, the command runs
 with an allowlisted environment (no model credential, no `GAFFER_DATA` or
-`DISPATCH_DB`, `wg` and `gaffer` shadowed by refusing stubs), and when `STRICT_MODE=1`
+`DISPATCH_DB`, `wg` and `gaffer` shadowed by refusing stubs, the toolchain locations
+such as `CARGO_HOME` and `GOPATH` kept), and when `STRICT_MODE=1`
 or `GAFFER_STRICT_REQUIRE=1` asks for a sandbox the host cannot supply, the replay holds
 instead of running. `strict-mode.test.sh` asserts the refusals on macOS;
 `tester-replay-containment.test.mjs` runs everywhere (the docker path through a fake

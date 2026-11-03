@@ -124,6 +124,7 @@ import {
 import {
   discardReplayKey,
   isTestPath,
+  removeTree,
   prepareReplayProof,
   replayInvocation,
   replayProof,
@@ -849,7 +850,7 @@ export function replayTesterTests({
       : null;
   const replay = resolve(GAFFER_DATA, "worktrees", `tester-replay-${n}`);
   git(repoPath, "worktree", "remove", "--force", replay);
-  rmSync(replay, { recursive: true, force: true });
+  removeTree(replay);
   const add = git(repoPath, "worktree", "add", "--force", "--detach", replay, testedCommit);
   if (add.status !== 0)
     return {
@@ -950,10 +951,29 @@ export function replayTesterTests({
   } finally {
     git(repoPath, "worktree", "remove", "--force", replay);
     git(repoPath, "worktree", "prune");
-    rmSync(replay, { recursive: true, force: true });
+    removeTree(replay);
     if (scratch) rmSync(scratch, { recursive: true, force: true });
   }
 }
+
+/**
+ * The toolchain LOCATION variables the clean replay keeps from the runner's environment
+ * (its HOME is a scratch directory, so rustup, cargo and go would otherwise not find their
+ * installed toolchains and caches). Locations only: no token, proxy URL or credential.
+ */
+export const REPLAY_TOOLCHAIN_ENV = Object.freeze([
+  "GOROOT",
+  "GOPATH",
+  "GOMODCACHE",
+  "GOFLAGS",
+  "GOTOOLCHAIN",
+  "CARGO_HOME",
+  "RUSTUP_HOME",
+  "RUSTUP_TOOLCHAIN",
+  "JAVA_HOME",
+  "VIRTUAL_ENV",
+  "PYENV_ROOT",
+]);
 
 /** The CLI names the clean replay shadows on PATH (the dispatch CLI and the gaffer CLI). */
 export const REPLAY_SHADOWED_BINS = Object.freeze(["wg", "gaffer"]);
@@ -961,6 +981,8 @@ export const REPLAY_SHADOWED_BINS = Object.freeze(["wg", "gaffer"]);
 /**
  * The clean replay's environment (an allowlist, never the runner's env): lib/acceptance-
  * profiles.mjs profileEnv (PATH, locale, CI=1, NO_COLOR) with a scratch HOME and TMPDIR,
+ * the toolchain locations (REPLAY_TOOLCHAIN_ENV, and ~/.cargo, ~/.rustup, ~/go when they
+ * exist),
  * and a PATH whose first entry holds a refusing stub for every REPLAY_SHADOWED_BINS name,
  * so `wg ticket tester-pass … --as system` from a test file never reaches the dispatch CLI.
  * No model credential, GAFFER_DATA, DISPATCH_DB, token or cloud key crosses.
@@ -980,6 +1002,16 @@ export function replayEnv({ scratch, base = process.env }) {
   }
   const env = profileEnv({ home, base });
   env.TMPDIR = tmp;
+  // The scratch HOME must not hide the host's toolchains (rustup's and cargo's homes, the
+  // go module cache): where they live is passed through, never a credential.
+  for (const k of REPLAY_TOOLCHAIN_ENV) if (base[k]) env[k] = String(base[k]);
+  if (base.HOME)
+    for (const [k, rel] of [
+      ["CARGO_HOME", ".cargo"],
+      ["RUSTUP_HOME", ".rustup"],
+      ["GOPATH", "go"],
+    ])
+      if (!env[k] && existsSync(join(base.HOME, rel))) env[k] = join(base.HOME, rel);
   env.PATH = [shadow, ...String(env.PATH || "").split(delimiter)].filter(Boolean).join(delimiter);
   return env;
 }

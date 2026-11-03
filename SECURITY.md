@@ -38,7 +38,7 @@ Test files are under `runner/test/` (`.sh`, `.mjs`) or `packages/*/test/` (`.ts`
 | Gate integrity | Base commit recorded at cut; gate scripts read from it; weakened tests flagged and held | `gate-integrity.test.sh`, `gate-integrity-e2e.test.sh` | It flags, it does not fail; see its limits |
 | Merge gate | Gates rerun on the merge with the current target; lands only that commit, only while the target is unchanged | `e2e-release-gate-merge-combination.test.sh`, `landing-integrity.test.ts` | |
 | Tester replay | The tester's named tests must run and pass on the tested commit and on what lands | `land-tester-replay*.test.sh`, `tester-replay-proof.test.mjs` | What the tests assert; a deliberate attack on the replay |
-| Clean replay containment | The tester's test files run in the gate sandbox seam (`replay` profile) with no model credential, `GAFFER_DATA`, `DISPATCH_DB` or reachable `wg`; strict mode without a sandbox holds; the proof key is a file the reporter unlinks, never an environment variable | `tester-replay-containment.test.mjs`, `tester-run.test.mjs`, `strict-mode.test.sh` (macOS), `sandbox-docker-mounts.test.sh` | Reads outside `$GAFFER_DATA` and HOME's secret folders under `sandbox-exec`; a loader module or the registered command's own steps reading the key file |
+| Clean replay containment | The tester's test files run in the gate sandbox seam (`replay` profile) with no model credential, `GAFFER_DATA` or `DISPATCH_DB` in the environment and `wg` shadowed on `PATH`; strict mode without a sandbox holds; the proof key is a file the reporter unlinks, never an environment variable | `tester-replay-containment.test.mjs`, `tester-run.test.mjs`, `strict-mode.test.sh` (macOS), `sandbox-docker-mounts.test.sh` | With no sandbox configured, the factory's files by path; reads outside `$GAFFER_DATA` and HOME's secret folders under `sandbox-exec`; code that runs before the node:test reporter loads (a loader module, the registered command's own steps, a wrapper's non-node:test runner) reading the key file |
 | Acceptance profiles | Commands a person registered behave as registered on the tested commit | `acceptance-profiles.test.ts`, `tester-acceptance.test.mjs` | Whether those commands cover the criteria |
 | Required CI | No recorded PASS for the exact commit is a hold | `ci-required-before-review.test.ts`, `h3-ci-gate.test.sh` | |
 | Landing | Never overwrites an ignored local file; a revocation stops every landing not yet started | `land-ignored-file.test.sh`, `revocation-safe-landing.test.ts` | A landing already started is reported, not undone |
@@ -253,12 +253,14 @@ notes are its own claims.
 
 **How hard the evidence is to forge.** node:test events are signed by the reporter with
 a per-replay key that is never in an environment variable. The runner writes it to a
-mode 0600 file with a random name inside a mode 0300 directory nobody can list, in the
-proof directory; only the file's path travels (`GAFFER_REPLAY_PROOF_KEY_FILE`). The
-reporter reads the file and unlinks it when it loads, before any test file runs, and
-signs nothing if the unlink fails; the runner removes a file no reporter consumed. So a
-test that reads every ancestor's `/proc/<pid>/environ` finds the path of a file that is
-already gone. All three replay paths (the clean replay, `land.sh`, `merge-ticket.mjs`)
+mode 0600 file with a random name inside a mode 0300 directory in the proof directory;
+only the file's path travels (`GAFFER_REPLAY_PROOF_KEY_FILE`). The reporter reads the
+file and unlinks it when it loads, before any test file runs, and signs nothing if the
+unlink fails; the runner removes a file no reporter consumed. So a test that reads every
+ancestor's `/proc/<pid>/environ` finds the path of a file that is already gone. The
+modes keep other users out and the directory out of a plain listing; they do not stop
+code running as the runner's user, which can change them. What protects the key is that
+the file is gone before a test runs. All three replay paths (the clean replay, `land.sh`, `merge-ticket.mjs`)
 use the same helper, and the docker wrapper forwards the path, never the key. Other
 runners' evidence is a JSON report with the runner's shape, a by-path file set, or
 `go test -json` events; printed text never counts.
@@ -268,29 +270,45 @@ the clean replay, where the identities are measured, runs them through the same 
 seam as the gates, with the `replay` profile:
 
 - under `sandbox-exec` it is the validation profile plus read denials for `$GAFFER_DATA`
-  outside the replay's checkout and dependency links, no write grant for `$GAFFER_DATA`,
-  and read denials for `~/.ssh`, `~/.aws`, `~/.config/gh`, `~/.claude`, `~/.npmrc`,
-  `~/.netrc` and `~/.gnupg`;
+  outside the replay's checkout and dependency links, no write grant for `$GAFFER_DATA`
+  or `$STRICT_ALLOW_HOME`, and no reads or writes at all of HOME's credential and agent
+  folders (`~/.ssh`, `~/.aws`, `~/.config/gh`, `~/.config/gcloud`, `~/.azure`, `~/.kube`,
+  `~/.docker`, `~/.claude`, `~/.npmrc`, `~/.netrc`, `~/.pypirc`, `~/.git-credentials`,
+  cargo's credentials, `~/.gnupg`), so a test cannot plant a hook in the agent's
+  settings;
 - under `docker` it is the validation layout: nothing from `$GAFFER_DATA` is mounted and
   no model credential is forwarded;
-- the environment is an allowlist (`PATH`, locale, `CI=1`) with a scratch `HOME` and
-  `TMPDIR`: no model credential, no `GAFFER_DATA`, no `DISPATCH_DB`, and `wg` and
-  `gaffer` are shadowed on `PATH` by stubs that refuse;
+- the environment is an allowlist (`PATH`, locale, `CI=1`, and where the host's
+  toolchains live, such as `CARGO_HOME`, `RUSTUP_HOME` and `GOPATH`) with a scratch
+  `HOME` and `TMPDIR`: no model credential, no `GAFFER_DATA`, no `DISPATCH_DB`, and `wg`
+  and `gaffer` are shadowed on `PATH` by stubs that refuse;
 - when strict mode asks for a sandbox (`STRICT_MODE=1` or `GAFFER_STRICT_REQUIRE=1`) and
   the host cannot supply one, the replay holds and the PASS is held unverified with the
-  reason; it never runs the tester's files unsandboxed. With no sandbox configured at
-  all (supervised mode) it runs bare with the stripped environment and the key file.
+  reason; it never runs the tester's files unsandboxed. `GAFFER_DOD_SANDBOX=0` drops the
+  wrap here as it does for the gates (the stripped environment and the key file stay).
+  With no sandbox configured at all (supervised mode) it runs bare with the stripped
+  environment and the key file. That stops the environment and `PATH` routes only: the
+  checkout lives under `$GAFFER_DATA/worktrees`, so a bare test can still find the
+  factory's database and the dispatch CLI by path. Containment needs a sandbox.
 
 What remains: a node loader module the registered command imports (`--import
 ./test/setup.mjs`) loads before the reporter and can read the key file, and so can the
 registered command's own steps before node starts. In registered mode the runner still
 issues a key for a runner it cannot identify (`sh scripts/test.sh` that runs node
---test): that wrapper, like any loader it names, comes from the tested commit, never
-from the tester's files, and a delivery's change to a script is already flagged for the
-reviewer (gate integrity). Under `sandbox-exec`, reads outside `$GAFFER_DATA` and the
-listed HOME folders stay open, as for the gates. One key signs one node:test run: a
-second run in the same command, or a pooled flaky rerun of the landing's tests gate,
-proves nothing and holds.
+--test). If that wrapper runs something other than node:test (vitest, jest, pytest), no
+reporter ever consumes the key, so that runner's tests and the code they import can
+read the file for the whole run and sign node:test events with it: evidence from an
+unidentified registered command proves execution against code that is not attacking the
+replay, nothing more. Register the runner's own command (`node --test`, `vitest run`,
+`pytest`) and the replay runs it by path instead. A go or cargo command the replay cannot
+scope gets no key at all. The wrapper, like any loader it names, comes from the tested
+commit, never from the tester's files, and a delivery's change to a script is already
+flagged for the reviewer (gate integrity). Under `sandbox-exec`, reads outside
+`$GAFFER_DATA` and the listed HOME folders stay open, as for the gates. One key signs one
+node:test run: a second `node --test` in the same registered command proves nothing and
+holds, and the hold says so. A pooled flaky rerun of the landing's tests gate gets a
+fresh key file: `land.sh` and `merge-ticket.mjs` hand the key to `dod-regate.sh` on
+stdin, and `lib/dod.sh` writes it to a new file just before the rerun.
 
 **Acceptance profiles.** For a ticket with the `cli` or `api` profile, the runner runs
 the commands a person registered (human or admin only; refused for agents in the
@@ -482,9 +500,9 @@ a presence boolean, and an argument not on the allowlist is never copied.
 - **The tester and acceptance evidence prove execution, not intent.** See
   [what its verdict proves](#the-independent-tester-and-what-its-verdict-proves): the
   replay does not prove what tests assert, its clean run runs bare when no sandbox is
-  configured, it is not proof against a loader module or test command in the tested
-  commit that reads the key file, and the acceptance record's signature is not verified
-  yet.
+  configured, it is not proof against code that runs before the node:test reporter
+  loads (a loader module, the test command's own steps, a wrapper's other runner) and
+  reads the key file, and the acceptance record's signature is not verified yet.
 - **Spend is measured after each call.** A single call that runs long past the cap is
   bounded by the per-tick timeout and turn cap, not by the dollar figure. A command
   worker's reported cost is operator-trusted (at no less than its floor).

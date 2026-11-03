@@ -538,4 +538,38 @@ describe("CALLERS against a real repo and the real memory CLI", () => {
       listed_pct: 100,
     });
   });
+
+  it("a later review round does not record the previous round's callers row", () => {
+    // Review finding: the row was remembered per ticket, so round 2's open (a new head
+    // after a send-back, the surface not yet re-read) recorded round 1's status.
+    const id = setup();
+    const enterReview = (at: string) => {
+      wg.db.prepare("UPDATE tickets SET status='in_review' WHERE id=?").run(id);
+      writeEvent(wg.db, {
+        entity_type: "ticket",
+        entity_id: id,
+        actor: system,
+        event_type: "ticket.transitioned",
+        payload: { from: "in_progress", to: "in_review", reason: "submitted" },
+      });
+      wg.db
+        .prepare(
+          "UPDATE work_events SET created_at = ? WHERE rowid = (SELECT MAX(rowid) FROM work_events)",
+        )
+        .run(at);
+    };
+    enterReview("2026-01-01T00:00:00.000Z");
+    wg.ticketDiff(id, { impact: true });
+    expect(wg.recordReviewOpened(id, human).recorded).toBe(true);
+    enterReview("2026-01-02T00:00:00.000Z");
+    expect(wg.recordReviewOpened(id, human).recorded).toBe(true);
+    const rows = (
+      wg.db
+        .prepare(
+          "SELECT payload_json FROM work_events WHERE entity_id = ? AND event_type = 'ticket.review_opened' ORDER BY rowid",
+        )
+        .all(id) as Array<{ payload_json: string }>
+    ).map((r) => JSON.parse(r.payload_json).impact_callers ?? null);
+    expect(rows).toEqual(["listed", null]);
+  });
 });

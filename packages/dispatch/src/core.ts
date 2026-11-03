@@ -556,7 +556,7 @@ export class Dispatch {
    * measurement only (never gating); in-process, so a restart forgets it (the event then
    * records null, "not known").
    */
-  private readonly lastCallersRow = new Map<string, string>();
+  private readonly lastCallersRow = new Map<string, { status: string; round: string | null }>();
 
   /**
    * Retry cap (P1): a delivery rejected back into the queue this many times is
@@ -937,7 +937,14 @@ export class Dispatch {
         ? "none_changed"
         : "not_analysed";
     if (this.lastCallersRow.size > 500) this.lastCallersRow.clear();
-    this.lastCallersRow.set(ticketId, status);
+    // Keyed to the review round it was computed in: a later round (a new head after a
+    // send-back) must not record the previous round's row.
+    const t = this.resolveTicket(ticketId);
+    const round =
+      t.status === "in_review"
+        ? (this.events.enteredStatusAt(ticketId, "in_review")?.at ?? null)
+        : null;
+    this.lastCallersRow.set(ticketId, { status, round });
   }
 
   /**
@@ -2502,10 +2509,10 @@ export class Dispatch {
                 .filter((d) => d.commit_sha)
                 .map((d) => ({ repo: d.repo_name, sha: d.commit_sha })),
               // What the Behavioural surface's callers row showed for this ticket when the
-              // server last computed it (listed / none_changed / not_analysed); absent when
-              // this server has not computed it (Health counts only known rows).
-              ...(this.lastCallersRow.has(ticket.id)
-                ? { impact_callers: this.lastCallersRow.get(ticket.id) }
+              // server last computed it IN THIS ROUND (listed / none_changed / not_analysed);
+              // absent when it has not (Health counts only known rows).
+              ...(this.lastCallersRow.get(ticket.id)?.round === round
+                ? { impact_callers: this.lastCallersRow.get(ticket.id)!.status }
                 : {}),
             }
           : { what, round_entered_at: round };

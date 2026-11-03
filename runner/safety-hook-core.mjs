@@ -3312,9 +3312,13 @@ function splitSegmentsQuoteAware(cmd) {
 // file, `$T`) are not looked at, so `wg ticket show $T` and
 // `cat ids | xargs -n1 wg ticket show` keep working.
 // ---------------------------------------------------------------------
+// How deep feeders, wrappers and shell bodies are followed before failing closed.
+const CP_SLOT_MAX_DEPTH = 8;
 const CP_VERB_SLOTS = { wg: 2, dispatch: 2, fg: 2, crew: 2, gaffer: 1, memory: 1 };
-// Root options that take their value as the next word (`wg --db x.sqlite ticket show 3`).
+// Root options that take their value as the next word (`wg --db x.sqlite ticket show 3`,
+// `crew -c crew.yaml scan`).
 const CP_CLI_VALUE_FLAGS = new Set(["--db", "--as-principal"]);
+const CP_CLI_EXTRA_VALUE_FLAGS = { crew: new Set(["-c", "--config"]) };
 // A verb-slot word the shell passes through unchanged: no expansion, glob or brace.
 const PLAIN_VERB_WORD = /^[A-Za-z0-9_.:@%+,=/~-]*$/;
 // Shell keywords and builtins that put the next word in command position.
@@ -3329,6 +3333,29 @@ const SHELL_LEADS = new Set([
   "!",
   "{",
   "exec",
+  "coproc",
+]);
+// Programs that run the rest of their arguments as a command (`watch wg …`,
+// `strace -f wg …`, `taskset 1 wg …`), or a shell string they are given
+// (`script -c "wg …"`, `su -c "…"`, `ssh host wg …`, `watchexec -- wg …`). Their own
+// options vary, so the privileged CLI is looked for among their words (lane-hook review).
+const CP_CMD_RUNNERS = new Set([
+  "watch",
+  "strace",
+  "ltrace",
+  "taskset",
+  "chrt",
+  "flock",
+  "unbuffer",
+  "catchsegv",
+  "script",
+  "su",
+  "sudo",
+  "runuser",
+  "ssh",
+  "watchexec",
+  "chronic",
+  "ts",
 ]);
 const PKG_RUNNERS = new Set(["npx", "bunx", "pnpx"]);
 const PKG_MANAGERS = new Set(["pnpm", "npm", "yarn"]);
@@ -3407,21 +3434,60 @@ function shellWord(token) {
  * { appends } (the feeder adds words of its own at the end).
  */
 function cpVerbSlotReason(words, feed = null, depth = 0) {
-  if (depth > MAX_VIEW_DEPTH) return null;
+  // Nesting past what is read (`xargs xargs … wg`, `{ { … wg`): fail closed when a
+  // privileged CLI is still in the words.
+  const tooDeep = (rest) =>
+    rest.some((x) => PRIV_CLIS.has(basename(shellWord(x))) || privCliByPath(shellWord(x)))
+      ? "a privileged CLI nested deeper than the hook reads (wrappers, xargs, shells, groups): the verb cannot be seen, so it is refused"
+      : null;
+  if (depth > CP_SLOT_MAX_DEPTH) return tooDeep(words);
   let w = words.slice();
-  if (w[0]) w[0] = w[0].replace(/^\(+/, "");
   // Keywords, assignments, no-op wrappers and package runners in front of the program.
-  for (let guard = 0; guard < 8 && w.length; guard += 1) {
+  for (let guard = 0; w.length; guard += 1) {
+    if (guard >= 64) return tooDeep(w);
+    if (/^\(/.test(w[0])) {
+      // A subshell or group: `( prog …`, `((prog …`.
+      const stripped = w[0].replace(/^\(+/, "");
+      w = stripped ? [stripped, ...w.slice(1)] : w.slice(1);
+      continue;
+    }
     const first = shellWord(w[0]);
-    if (first === "" || SHELL_LEADS.has(first)) w = w.slice(1);
-    else if (PKG_RUNNERS.has(basename(first))) {
+    if (first === "exec") {
+      // `exec -a NAME prog …`, `exec -cl prog …`: the flags are exec's own.
+      let k = 1;
+      while (k < w.length && /^-[acl]+$/.test(shellWord(w[k]))) {
+        k += /a/.test(w[k]) ? 2 : 1;
+      }
+      w = w.slice(k);
+    } else if (first === "" || SHELL_LEADS.has(first)) w = w.slice(1);
+    else if (first === "case" && w.length > 2 && shellWord(w[2]) === "in") {
+      // `case WORD in PATTERN) prog …`: the command after the pattern runs.
+      w = w.slice(3);
+    } else if (/^\(?[^()]*\)$/.test(first)) {
+      // A case pattern in front of its command: `x) prog …`, `*) prog …`.
+      w = w.slice(1);
+    } else if (first === "function" && w.length > 1) {
+      // `function NAME { body`: the body runs when the function is called.
+      w = w.slice(/^[^(){}]+$/.test(shellWord(w[1])) ? 2 : 1);
+    } else if (/^[A-Za-z_][\w.:-]*\(\)\{?$/.test(first)) {
+      // `NAME() { body` / `NAME(){ body`: likewise.
+      w = w.slice(1);
+    } else if (first.startsWith("{") && first.length > 1) {
+      w = [first.slice(1), ...w.slice(1)];
+    } else if (PKG_RUNNERS.has(basename(first))) {
       let k = 1;
       while (k < w.length && w[k].startsWith("-")) k += 1;
       w = w.slice(k);
     } else if (PKG_MANAGERS.has(basename(first))) {
       let k = 1;
       while (k < w.length && w[k].startsWith("-")) k += 1;
-      if (!/^(?:exec|dlx|x)$/.test(shellWord(w[k] || ""))) break;
+      const sub = shellWord(w[k] || "");
+      // `pnpm wg …` / `yarn wg …` run a binary of that name when it is no script.
+      if (PRIV_CLIS.has(basename(sub)) || privCliByPath(sub)) {
+        w = w.slice(k);
+        continue;
+      }
+      if (!/^(?:exec|dlx|x)$/.test(sub)) break;
       k += 1;
       while (k < w.length && w[k].startsWith("-")) k += 1;
       w = w.slice(k);
@@ -3439,13 +3505,56 @@ function cpVerbSlotReason(words, feed = null, depth = 0) {
     const { at, replace } = xargsSplit(n);
     return cpVerbSlotReason(w.slice(at), { placeholder: replace, appends: true }, depth + 1);
   }
+  if (CP_CMD_RUNNERS.has(head)) {
+    // The command among its words: a word that is itself a shell string, or the first
+    // privileged CLI / feeder / shell / interpreter word from which the rest runs.
+    for (let k = 1; k < w.length; k += 1) {
+      const word = unquote(w[k]);
+      if (/\s/.test(word)) {
+        for (const segment of splitSegmentsQuoteAware(word)) {
+          const why = cpVerbSlotReason(tokenizeSegment(segment.trim()), feed, depth + 1);
+          if (why) return why;
+        }
+        continue;
+      }
+      const b = basename(n[k]);
+      if (
+        PRIV_CLIS.has(b) ||
+        privCliByPath(n[k]) ||
+        SHELL_NAMES.has(b) ||
+        INLINE_INTERPRETERS.has(b) ||
+        /^(?:xargs|parallel|find|fd|fdfind|env|nice|nohup|timeout|time|command)$/.test(b)
+      ) {
+        return cpVerbSlotReason(w.slice(k), feed, depth + 1);
+      }
+    }
+    return null;
+  }
+  if (head === "fd" || head === "fdfind") {
+    // `fd PATTERN -x CMD …` / `--exec`, `-X` / `--exec-batch`: CMD gets `{}`-style
+    // placeholders, or the found path appended when it has none.
+    const k = n.findIndex((x, idx) => idx > 0 && /^(?:-x|--exec|-X|--exec-batch)$/.test(x));
+    if (k === -1) return null;
+    let end = k + 1;
+    while (end < n.length && n[end] !== ";") end += 1;
+    return cpVerbSlotReason(w.slice(k + 1, end), { placeholder: "{", appends: true }, depth + 1);
+  }
   if (head === "parallel") {
     let k = 1;
-    while (k < n.length && n[k].startsWith("-")) k += PARALLEL_VALUE_FLAGS.has(n[k]) ? 2 : 1;
+    let placeholder = "{";
+    while (k < n.length && n[k].startsWith("-")) {
+      // `-I R` / `-IR` / `--replace=R`: the replace string parallel fills in.
+      const m = /^(?:-I(.+)|--replace=(.+))$/.exec(n[k]);
+      if (m) placeholder = m[1] || m[2];
+      else if (n[k] === "-I" && n[k + 1]) placeholder = n[k + 1];
+      k += PARALLEL_VALUE_FLAGS.has(n[k]) ? 2 : 1;
+    }
     let end = n.findIndex((x, idx) => idx >= k && /^:{3,4}\+?$/.test(x));
     if (end === -1) end = n.length;
     // A single quoted command string is split by the shell parallel runs it in.
     const inner = n.slice(k, end).join(" ").split(/\s+/).filter(Boolean);
+    const why = cpVerbSlotReason(inner, { placeholder, appends: true }, depth + 1);
+    if (why || placeholder === "{") return why;
     return cpVerbSlotReason(inner, { placeholder: "{", appends: true }, depth + 1);
   }
   if (head === "find") {
@@ -3488,10 +3597,12 @@ function cpVerbSlotReason(words, feed = null, depth = 0) {
   const slots = [];
   for (let i = 0; i < args.length && slots.length < CP_VERB_SLOTS[cli]; i += 1) {
     if (args[i].startsWith("-")) {
-      if (CP_CLI_VALUE_FLAGS.has(args[i])) i += 1;
+      if (CP_CLI_VALUE_FLAGS.has(args[i]) || CP_CLI_EXTRA_VALUE_FLAGS[cli]?.has(args[i])) i += 1;
       continue;
     }
     slots.push(args[i]);
+    // `wg help <command>` only prints help: what follows it is not a verb.
+    if (slots.length === 1 && args[i] === "help") break;
   }
   for (const s of slots) {
     if (feed?.placeholder && s.includes(feed.placeholder)) {

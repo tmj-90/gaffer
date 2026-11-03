@@ -218,6 +218,54 @@ for (const cmd of [
   t.allow(`a read or a runtime operand: ${cmd}`, bash(cmd), opts);
 }
 
+// (j) lane-hook review: the same verb slot behind shell syntax, programs that run their
+// arguments as a command, other feeders, and nesting past what the hook reads (fails closed).
+for (const cmd of [
+  "exec -a x wg ticket $V 5",
+  "case x in x) wg ticket $V 5;; esac",
+  'f() { wg ticket "$1" 5; }; f approve',
+  'f(){ wg ticket "$1" 5; }; f approve',
+  "function f { wg ticket $1 5; }; f approve",
+  "coproc wg ticket $V 5",
+  "pnpm wg ticket $V 5",
+  "yarn wg ticket $V 5",
+  "watch -n 1 wg ticket $V 5",
+  "strace -f wg ticket $V 5",
+  "taskset 1 wg ticket $V 5",
+  'script -qc "wg ticket $V 5" /dev/null',
+  "watchexec -- wg ticket $V 5",
+  "ssh host wg ticket $V 5",
+  "cat v | parallel -I@@ wg ticket @@ 5",
+  "fd approve -x wg ticket {} 5",
+  "fd approve --exec wg ticket",
+  "echo approve | xargs xargs xargs xargs wg ticket",
+  "{ { { { { { { { { { { { { { { { { wg ticket $V 5; }; }; }; }; }; }; }; }; }; }; }; }; }; }; }; }; }",
+  "( ( wg ticket $V 5 ) )",
+]) {
+  t.deny(`verb not in the text: ${cmd}`, bash(cmd), opts);
+}
+for (const cmd of [
+  "wg help $X",
+  "crew help $X",
+  'crew -c "$CFG" scan',
+  "watch -n 5 git status",
+  "watch wg ticket show 3",
+  "strace -f node app.js",
+  "ssh host ls -la",
+  "case $x in a) echo hi;; *) echo no;; esac",
+  "f() { echo hi; }; f",
+  "{ echo a; echo b; } > out.txt",
+  "( wg ticket show 3 )",
+  "pnpm test",
+  "pnpm wg ticket show 3",
+  "fd -e ts -x prettier --check {}",
+  "fd ticket -x wg ticket show",
+  "parallel -I@@ wg ticket show @@ ::: 1 2",
+  "exec -a x node app.js",
+]) {
+  t.allow(`a read or a runtime operand: ${cmd}`, bash(cmd), opts);
+}
+
 // Text that only mentions a command is not a command. Nothing here may be refused.
 // (A quoted "wg … approve" in one segment was already refused by the raw rule before
 // this file existed; that is unchanged and not pinned here.)

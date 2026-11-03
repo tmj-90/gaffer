@@ -104,6 +104,18 @@ gaffer_refresh_cards() {
       process.stdout.write(`${r.checked} card(s); fixed ${r.fixed.deleted} missing, ${r.fixed.refreshed} stale; `+
         `${r.remaining.missing.length + r.remaining.stale.length} left`)}catch{process.stdout.write("no report")}})' 2>/dev/null || true)"
 
+  # CODE INDEX (files -> symbols -> imports -> tests) from the same merged tree: memory
+  # re-reads only the files changed since the index's own last commit. Keyed by the REAL
+  # repo's canonical (never the throwaway worktree's path). Fail-soft, logged.
+  if [ "${GAFFER_CODE_INDEX:-1}" != "0" ]; then
+    local iout
+    if iout="$(lg index build --canonical "$canonical" --repo "$repo" --repo-root "$wt" --commit "$target" --json 2>/dev/null)" && [ -n "$iout" ]; then
+      log "code index: $(printf '%s' "$iout" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const r=JSON.parse(s),t=r.stats||{};process.stdout.write(`${r.mode} at ${String(r.commit||"?").slice(0,8)}: ${t.files} files, ${t.refs} imports resolved, ${t.testLinks} test links; re-read ${t.extracted}, removed ${t.removed}`)}catch{process.stdout.write("built (no report)")}})' 2>/dev/null) for #${NUM:-${RNUM:-?}}"
+    else
+      log "code index: refresh failed for #${NUM:-${RNUM:-?}} — left as it was"
+    fi
+  fi
+
   git -C "$root" worktree remove --force "$wt" >/dev/null 2>&1 || true
   git -C "$root" worktree prune >/dev/null 2>&1 || true
   rm -rf "$wt" 2>/dev/null || true

@@ -150,7 +150,7 @@ import {
   selectPreparedDelta,
   featureIdFromView,
 } from "../lib/feature-digest.mjs";
-import { refreshFileCards, repoCanonical } from "../lib/onboard-analyze.mjs";
+import { refreshCodeIndex, refreshFileCards, repoCanonical } from "../lib/onboard-analyze.mjs";
 import { maxTurnsArgv, roleTurnCap, Worker } from "../lib/worker.mjs";
 import { mountRoleSkills, writeAgentSettings } from "../lib/agent-home.mjs";
 import { mountedNames, recordSkillUsage } from "./record-skill-usage.mjs";
@@ -1963,6 +1963,16 @@ function refreshCardsForMergedCommit(repo, landed, log) {
         `skipped=${rStats.skipped} failed=${rStats.failed} ` +
         `watermark=${rStats.watermark ?? "held"}`,
     );
+    // CODE INDEX: the same merged tree; memory re-reads only the files changed since the
+    // index's own last commit. Fail-soft (logged), like the cards.
+    refreshCodeIndex(wt, {
+      cfg,
+      env: { ...process.env, MEMORY_DB: CONFIG.memoryDb },
+      log,
+      canonical,
+      repo: repo.name,
+      commit: target,
+    });
   } finally {
     git(repo.localPath, "worktree", "remove", "--force", wt);
     git(repo.localPath, "worktree", "prune");

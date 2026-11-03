@@ -41,6 +41,14 @@ fi
 # The block's framing emphasises cards are RETRIEVAL AIDS, never authoritative
 # source: the agent must read the real file before editing or relying on a
 # card's summary.
+#
+# CODE INDEX (opt-in per call): when the caller sets GAFFER_PRIME_NAMED (the code the
+# ticket names, `P<TAB>path` / `S<TAB>symbol` lines from json-tool ticket-named-code),
+# the block also lists the direct callers and tests of each from `memory index
+# neighbours` (5 per named item), checked against GAFFER_PRIME_BASE_SHA (the base
+# branch tip: a different index commit is said as stale, never listed). The answer is
+# also written to GAFFER_PRIME_INDEX_OUT when set (the delivery's telemetry). Unset:
+# the block is exactly as before. GAFFER_CODE_INDEX=0 turns it off.
 gaffer_prime_context_block() {
   local _gpc_real_repo="${1:-}" _gpc_display="${2:-}" _gpc_query="${3:-}"
   shift 3 2>/dev/null || true
@@ -106,7 +114,31 @@ gaffer_prime_context_block() {
   local _gpc_body
   _gpc_body="$(printf '%s' "$_gpc_json" | node "$_GAFFER_JSON_TOOL" context-file-cards 2>/dev/null)" || return 0
 
-  [ -n "$_gpc_body" ] || return 0
+  # CODE INDEX: the callers and tests of what the ticket names (see the header). The
+  # names are identifier / path characters only (ticket-named-code), passed as
+  # `--flag=value` so none can read as a flag. No answer is said as "not readable".
+  local _gpc_nb=""
+  if [ -n "${GAFFER_PRIME_NAMED:-}" ] && [ "${GAFFER_CODE_INDEX:-1}" != "0" ]; then
+    local _gpc_nbargv=(index neighbours --canonical "$_gpc_canonical" --per-item 5 --json)
+    [ -n "${GAFFER_PRIME_BASE_SHA:-}" ] && _gpc_nbargv+=("--commit=$GAFFER_PRIME_BASE_SHA")
+    local _gpc_k _gpc_v _gpc_named=0
+    while IFS=$'\t' read -r _gpc_k _gpc_v; do
+      [ -n "$_gpc_v" ] || continue
+      case "$_gpc_k" in
+        P) _gpc_nbargv+=("--paths=$_gpc_v"); _gpc_named=$((_gpc_named + 1)) ;;
+        S) _gpc_nbargv+=("--symbols=$_gpc_v"); _gpc_named=$((_gpc_named + 1)) ;;
+      esac
+    done <<< "$GAFFER_PRIME_NAMED"
+    if [ "$_gpc_named" -gt 0 ]; then
+      _gpc_nb="$(lg "${_gpc_nbargv[@]}" 2>/dev/null)" || _gpc_nb=""
+      [ -n "$_gpc_nb" ] || _gpc_nb='{"status":"unavailable"}'
+      if [ -n "${GAFFER_PRIME_INDEX_OUT:-}" ]; then
+        printf '%s' "$_gpc_nb" > "$GAFFER_PRIME_INDEX_OUT" 2>/dev/null || true
+      fi
+    fi
+  fi
+
+  [ -n "$_gpc_body" ] || [ -n "$_gpc_nb" ] || return 0
 
   # MEMORY ATTRIBUTION (PO-r2 #2): when this is a DELIVERY prime (GAFFER_RECALL_TICKET
   # set), record WHAT memory was primed into the agent onto the ticket — the card paths
@@ -141,7 +173,9 @@ gaffer_prime_context_block() {
   # gets an EMPTY block — a missing primer never blocks a delivery, and an unframed
   # (unquarantined) render is never produced.
   [ -f "$CREW_DIR/dist/runtime/context/renderContextPrimerCli.js" ] || return 1
-  printf '%s' "$_gpc_json" | node "$CREW_DIR/dist/runtime/context/renderContextPrimerCli.js" --kind file-cards
+  local _gpc_render=(--kind file-cards)
+  [ -n "$_gpc_nb" ] && _gpc_render+=(--neighbours "$_gpc_nb")
+  printf '%s' "$_gpc_json" | node "$CREW_DIR/dist/runtime/context/renderContextPrimerCli.js" "${_gpc_render[@]}"
 }
 
 # gaffer_product_context_block <repo_display>

@@ -1856,6 +1856,55 @@ function cardEmissionEnabled(env = process.env) {
   return String(env.GAFFER_CARD_EMIT ?? "1").trim() !== "0";
 }
 
+/** The code index (memory `index build`) is on unless GAFFER_CODE_INDEX=0. */
+export function codeIndexEnabled(env = process.env) {
+  return String(env.GAFFER_CODE_INDEX ?? "1").trim() !== "0";
+}
+
+/**
+ * Build or refresh the repo's CODE INDEX (memory `index build`): files -> symbols ->
+ * imports -> tests, by import text. `root` is the checkout to read (the repo itself at
+ * onboard, a throwaway worktree of the merged commit after a merge); `canonical` is the
+ * REAL repo's identity, so a worktree's path never becomes the key. Incremental inside
+ * memory: only the files changed since the last build's commit are re-read. FAIL-SOFT:
+ * returns null (logged) on any error; an index hiccup never fails onboard or a merge.
+ */
+export function refreshCodeIndex(
+  root,
+  { cfg, env = process.env, log = () => {}, canonical, repo, commit },
+) {
+  if (!codeIndexEnabled(env)) {
+    log("code index: off (GAFFER_CODE_INDEX=0)");
+    return null;
+  }
+  if (!cfg) return null;
+  const args = ["index", "build", "--repo-root", root, "--json"];
+  if (canonical) args.push("--canonical", canonical);
+  if (repo) args.push("--repo", repo);
+  if (commit) args.push("--commit", commit);
+  const res = runMemoryCli(cfg, args, env);
+  if (res.error || (res.status ?? 0) !== 0) {
+    log(
+      `code index: build failed (${res.error?.message ?? ((res.stderr ?? "").trim().split("\n")[0] || `exit ${res.status}`)}) — left as it was`,
+    );
+    return null;
+  }
+  try {
+    const r = JSON.parse(res.stdout ?? "");
+    const st = r.stats ?? {};
+    log(
+      `code index: ${r.mode} at ${String(r.commit ?? "?").slice(0, 8)} — ${st.files} files, ` +
+        `${st.exportedSymbols} exported symbols, ${st.refs} imports resolved (${st.unresolved} unresolved), ` +
+        `${st.testLinks} test links; re-read ${st.extracted}, removed ${st.removed}` +
+        (st.capsHit?.length ? `; caps hit: ${st.capsHit.join(", ")}` : ""),
+    );
+    return r;
+  } catch {
+    log("code index: build answered no report");
+    return null;
+  }
+}
+
 /** Resolve the per-pass card caps from env, falling back to the defaults. */
 export function cardCaps(env = process.env) {
   const num = (key, dflt) => {
@@ -3229,6 +3278,22 @@ export function analyzeAndWrite(
     log("cards: file-card pass disabled (GAFFER_CARD_EMIT=0)");
   }
 
+  // ── Code index (files -> symbols -> imports -> tests) ─────────────────────────
+  // Deterministic, no model; built from the files at HEAD. Best-effort: never fails onboard.
+  let codeIndex = null;
+  try {
+    codeIndex = refreshCodeIndex(repoPath, {
+      cfg,
+      env,
+      log,
+      canonical: repoCanonical(repoPath),
+      repo,
+      commit: headCommit(repoPath) || null,
+    });
+  } catch (err) {
+    log(`code index: failed (${err?.message ?? err}) — onboard unaffected`);
+  }
+
   // ── Rollup digest (top of the DAG) ──────────────────────────────────────────
   // Generate the digest AFTER the cards exist so it can reflect the real
   // architecture rather than just the tree/README signals seen at prompt-build time.
@@ -3279,6 +3344,9 @@ export function analyzeAndWrite(
     usedModel,
     stats,
     ...(cardStats ? { cardStats } : {}),
+    ...(codeIndex
+      ? { codeIndex: { mode: codeIndex.mode, commit: codeIndex.commit, stats: codeIndex.stats } }
+      : {}),
     // Why model analysis was unavailable (claude's own error line), for the onboard
     // summary + the dashboard run record. Absent when claude worked.
     ...(breaker.error ? { modelError: breaker.error } : {}),

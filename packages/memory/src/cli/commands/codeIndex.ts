@@ -139,7 +139,7 @@ function renderNeighbours(r: NeighboursResult): string {
       continue;
     }
     lines.push(
-      `  ${head}: ${it.callersTotal} importing files (${it.callersTested} with a test), ${it.testsTotal} tests` +
+      `  ${head}: ${it.callersTotal} importing ${it.callersTotal === 1 ? "file" : "files"} (${it.callersTested} with a test), ${it.testsTotal} ${it.testsTotal === 1 ? "test" : "tests"}` +
         (it.note ? ` (${it.note})` : ""),
     );
     for (const c of it.callers)

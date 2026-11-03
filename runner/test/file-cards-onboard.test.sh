@@ -87,6 +87,22 @@ WATERMARK="$(printf '%s\n' "$EMIT_OUT" | grep -c '"watermark":"[0-9a-f]')"
   || fail "expected ≥1 card, got carded=$CARDED"
 [ "$WATERMARK" = "1" ] && ok "watermark (HEAD) recorded" || fail "watermark not recorded"
 
+echo "== A1. onboard builds the code index (files -> symbols -> imports -> tests) =="
+IDX_OUT="$(MEMORY_CLI_BIN="$MEMORY_CLI" MEMORY_DB="$MEM_DB" node --input-type=module -e '
+import { headCommit, memoryCliConfig, refreshCodeIndex, repoCanonical } from "'"$RUNNER_DIR"'/lib/onboard-analyze.mjs";
+const repo = "'"$REPO"'";
+const lines = [];
+const r = refreshCodeIndex(repo, { cfg: memoryCliConfig(process.env), log: (m) => lines.push(m), canonical: repoCanonical(repo), repo: "demo", commit: headCommit(repo) });
+const off = refreshCodeIndex(repo, { cfg: memoryCliConfig(process.env), env: { ...process.env, GAFFER_CODE_INDEX: "0" }, canonical: repoCanonical(repo), repo: "demo" });
+process.stdout.write(JSON.stringify({ mode: r && r.mode, files: r && r.stats.files, off, log: lines }) + "\n");
+' 2>&1)"
+case "$IDX_OUT" in
+  *'"mode":"full","files":2,"off":null'*) ok "the code index is built at onboard (2 files), and GAFFER_CODE_INDEX=0 skips it" ;;
+  *) fail "code index at onboard: $IDX_OUT" ;;
+esac
+grep -q 'refreshCodeIndex(repoPath' "$RUNNER_DIR/lib/onboard-analyze.mjs" \
+  && ok "analyzeAndWrite builds the code index after the card pass" || fail "analyzeAndWrite does not build the code index"
+
 echo "== A2. the card is retrievable with the model summary served =="
 SEARCH="$(node "$MEMORY_CLI" card search --canonical "$CANONICAL" --repo demo --query add --json 2>/dev/null)"
 case "$SEARCH" in

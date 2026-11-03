@@ -18,6 +18,7 @@
 //
 // CONTRACT (the raw memory-CLI JSON on STDIN; kind + optional out on argv):
 //   node renderContextPrimerCli.js --kind file-cards      [--out <path>]  < packet.json
+//        [--neighbours '<memory index neighbours --json>']
 //   node renderContextPrimerCli.js --kind product-context [--out <path>]  < rows.json
 // The stdin payload is the EXACT memory-CLI output the bash primer already
 // captures — for file-cards the `memory cards-for-scope --json` packet, for
@@ -45,6 +46,7 @@ import {
   formatFileCardsBlock,
   formatProductContextBlock,
   type CardsForScopePacket,
+  type CodeNeighbours,
   type ProductContextRow,
 } from "./contextPrimer.js";
 
@@ -60,6 +62,18 @@ function main(): void {
   const argv = process.argv.slice(2);
   const kind = parseFlag(argv, "--kind");
   const out = parseFlag(argv, "--out");
+  // file-cards only: the code index's answer for what the ticket names (`memory index
+  // neighbours --json`), or `{"status":"unavailable"}`. Bad JSON is ignored (fail-soft).
+  const nbRaw = parseFlag(argv, "--neighbours");
+  let neighbours: CodeNeighbours | null = null;
+  if (nbRaw) {
+    try {
+      const v: unknown = JSON.parse(nbRaw);
+      neighbours = v && typeof v === "object" ? (v as CodeNeighbours) : null;
+    } catch {
+      neighbours = null;
+    }
+  }
 
   let rendered: string;
   try {
@@ -73,7 +87,9 @@ function main(): void {
       // memory cards-for-scope --json → CardsForScopePacket; a non-object packet
       // renders empty (fail-soft), matching gaffer_prime_context_block.
       rendered =
-        doc && typeof doc === "object" ? formatFileCardsBlock(doc as CardsForScopePacket) : "";
+        doc && typeof doc === "object"
+          ? formatFileCardsBlock(doc as CardsForScopePacket, neighbours)
+          : "";
     } else {
       // Unknown/absent kind: nothing sensible to render — fail soft to empty.
       process.stderr.write(

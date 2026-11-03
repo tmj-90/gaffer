@@ -1935,7 +1935,26 @@ if [ "$READY_COUNT" -gt 0 ]; then
   # A DRY_RUN prime is a preview: no recall ticket, so memory logs no read events and
   # no memory_primed evidence lands on the ticket (exploratory finding cli-runner/F-06).
   _RECALL_FOR=""; [ "${DRY_RUN:-0}" = "1" ] || _RECALL_FOR="$NUM"
-  FILE_CARDS_BLOCK="$(GAFFER_RECALL_TICKET="$_RECALL_FOR" gaffer_prime_context_block "$_CARD_REAL_REPO" "$_CARD_REPO_NAME" "$_CARD_QUERY" 2>/dev/null || true)"
+  # CODE INDEX: the paths and symbols the ticket NAMES (json-tool ticket-named-code:
+  # identifier and path characters only) and the base branch's tip in the real repo, so
+  # the primer lists their direct callers and tests from memory's code index, and says
+  # "stale" instead when the index describes another commit. Gathered here, rendered by
+  # the crew seam. The index's answer lands in a temp file for delivery-metrics.jsonl.
+  _CARD_NAMED="$(printf '%s' "$SHOW" | gaffer_json ticket-named-code 2>/dev/null || true)"
+  _CARD_BASE="$(printf '%s\n' "$WT_ROWS" | grep . | awk -F'\t' 'NR==1{print $4}')"
+  _CARD_BASE_SHA=""
+  [ -z "$_CARD_NAMED" ] || _CARD_BASE_SHA="$(git -C "$_CARD_REAL_REPO" rev-parse --verify --quiet "${_CARD_BASE:-main}^{commit}" 2>/dev/null || true)"
+  _CARD_INDEX_OUT=""
+  if [ -n "$_CARD_NAMED" ]; then
+    _CARD_INDEX_OUT="$(mktemp "${TMPDIR:-/tmp}/gaffer-index.XXXXXX" 2>/dev/null)" || _CARD_INDEX_OUT=""
+  fi
+  FILE_CARDS_BLOCK="$(GAFFER_RECALL_TICKET="$_RECALL_FOR" GAFFER_PRIME_NAMED="$_CARD_NAMED" GAFFER_PRIME_BASE_SHA="$_CARD_BASE_SHA" GAFFER_PRIME_INDEX_OUT="$_CARD_INDEX_OUT" gaffer_prime_context_block "$_CARD_REAL_REPO" "$_CARD_REPO_NAME" "$_CARD_QUERY" 2>/dev/null || true)"
+  _CARD_INDEX_METRIC=""
+  if [ -n "$_CARD_INDEX_OUT" ]; then
+    _CARD_INDEX_METRIC="$(gaffer_json index-metric "$_CARD_INDEX_OUT" 2>/dev/null || true)"
+    rm -f "$_CARD_INDEX_OUT"
+    [ -z "$_CARD_INDEX_METRIC" ] || log "cards: code index for what #$NUM names: $_CARD_INDEX_METRIC"
+  fi
   if [ -n "$FILE_CARDS_BLOCK" ]; then
     PRIME_CONTEXT_CALLED=true
     # Count card lines only: the recalled-lore section that may follow the cards
@@ -1958,7 +1977,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
   if [ -n "${GAFFER_DATA:-}" ] && [ "${DRY_RUN:-0}" != "1" ]; then
     {
       printf '%s\n' "$FILE_CARDS_BLOCK" \
-        | node "$RUNNER_DIR/lib/json-tool.mjs" delivery-metric "$NUM" "$PRIME_CONTEXT_CALLED" "${CARDS_SERVED:-0}" \
+        | node "$RUNNER_DIR/lib/json-tool.mjs" delivery-metric "$NUM" "$PRIME_CONTEXT_CALLED" "${CARDS_SERVED:-0}" "$_CARD_INDEX_METRIC" \
         >> "$GAFFER_DATA/delivery-metrics.jsonl"
     } 2>/dev/null || true
   fi

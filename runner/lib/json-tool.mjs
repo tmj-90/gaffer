@@ -1481,6 +1481,73 @@ switch (cmd) {
     break;
   }
 
+  // ticket-named-code: stdin = `wg ticket show` JSON. Prints the code the ticket NAMES, one
+  // per line: `P\t<path>` for a TypeScript / JavaScript / Python path, `S\t<symbol>` for an
+  // identifier in backticks or written as a call (`calculateInvoice()`). The text is
+  // untrusted: only path and identifier characters survive, and each list is capped, so
+  // nothing but a name can reach the memory CLI's argv or the agent's prompt. Fail-soft.
+  case "ticket-named-code": {
+    const p = tryParse(readStdin());
+    if (!p.ok) process.exit(0);
+    const t = (p.value && p.value.ticket) || {};
+    const text = `${t.title ?? ""}\n${t.description ?? ""}`.slice(0, 20000);
+    const paths = [];
+    const symbols = [];
+    const addPath = (x) => {
+      const v = x.replace(/^\.\//, "");
+      if (!paths.includes(v) && paths.length < 6) paths.push(v);
+    };
+    for (const m of text.matchAll(
+      /(?:^|[\s(`'"[])((?:\.\/)?(?:[A-Za-z0-9_][A-Za-z0-9_.-]*\/)*[A-Za-z0-9_][A-Za-z0-9_.-]*\.(?:tsx?|jsx?|mjs|cjs|mts|cts|py))(?=$|[\s)`'",.:;\]])/g,
+    ))
+      if (!m[1].includes("..")) addPath(m[1]);
+    const SKIP = new Set(
+      "if for while switch return function console require import export new typeof await async catch then this super print len str int list dict set map filter".split(
+        " ",
+      ),
+    );
+    const addSym = (x) => {
+      const v = x.split(".").pop();
+      if (!/^[A-Za-z_$][\w$]{2,63}$/.test(v) || SKIP.has(v)) return;
+      if (!symbols.includes(v) && symbols.length < 6) symbols.push(v);
+    };
+    for (const m of text.matchAll(/`([A-Za-z_$][\w$.]*)(?:\(\))?`/g)) addSym(m[1]);
+    for (const m of text.matchAll(/(?:^|[^\w$.`])([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\(\)/g))
+      addSym(m[1]);
+    for (const v of paths) println(`P\t${v}`);
+    for (const v of symbols) println(`S\t${v}`);
+    break;
+  }
+  // index-metric <neighbours.json>: the code-index part of a delivery-metrics line, from
+  // the `memory index neighbours --json` answer the primer kept: {status, items, callers,
+  // tests, commit}. Prints nothing when the file is absent or unreadable.
+  case "index-metric": {
+    let raw = "";
+    try {
+      raw = readFileSync(args[0] ?? "", "utf8");
+    } catch {
+      process.exit(0);
+    }
+    const p = tryParse(raw);
+    if (!p.ok || !p.value || typeof p.value.status !== "string") process.exit(0);
+    const r = p.value;
+    const items = Array.isArray(r.items) ? r.items : [];
+    const listable = r.status === "fresh" || r.status === "unknown";
+    println(
+      JSON.stringify({
+        index_status: r.status,
+        index_commit: (r.build && r.build.commit) || null,
+        index_items: items.length,
+        index_callers: listable
+          ? items.reduce((k, it) => k + Math.min(5, (it.callers || []).length), 0)
+          : 0,
+        index_tests: listable
+          ? items.reduce((k, it) => k + Math.min(5, (it.tests || []).length), 0)
+          : 0,
+      }),
+    );
+    break;
+  }
   // delivery-metric <ticket> <prime_called> <cards_served>: stdin = the delivery's
   // file-card block. Prints the delivery-metrics.jsonl line tick.sh appends, carrying
   // the served cards' repo-relative paths so summary-retrieval can tell which of
@@ -1492,6 +1559,8 @@ switch (cmd) {
       if (m && m[1].trim()) cardPaths.push(m[1].trim());
     }
     const served = Number.parseInt(args[2] ?? "0", 10);
+    // Optional 4th arg: the index-metric JSON (the code index's callers and tests primed).
+    const idx = args[3] ? tryParse(args[3]) : { ok: false };
     println(
       JSON.stringify({
         ts: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
@@ -1499,6 +1568,7 @@ switch (cmd) {
         prime_context_called: args[1] === "true",
         cards_served: Number.isFinite(served) ? served : 0,
         card_paths: cardPaths.slice(0, 50),
+        ...(idx.ok && idx.value && typeof idx.value === "object" ? idx.value : {}),
       }),
     );
     break;

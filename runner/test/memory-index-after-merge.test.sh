@@ -164,6 +164,13 @@ done <<<"$(q "SELECT path, content_hash FROM file_card")"
   || fail "watermark $(q "SELECT synced_commit FROM repo_sync LIMIT 1") != main $MAIN"
 grep -q "verified .* against ${MAIN:0:8}; watermark → ${MAIN:0:8}" "$LOGF" && ok "the log records the verification against the merged commit" \
   || fail "no verification line: $(grep 'cards:' "$LOGF" | tail -3 | tr '\n' '|' | cut -c1-400)"
+# CODE INDEX (files -> symbols -> imports -> tests) follows the merged commit too.
+[ "$(q "SELECT commit_sha FROM code_index_build LIMIT 1")" = "$MAIN" ] && ok "code index = main's merged commit" \
+  || fail "code index at '$(q "SELECT commit_sha FROM code_index_build LIMIT 1")', main is $MAIN"
+[ -n "$(q "SELECT 1 FROM code_symbol WHERE path='src/ledger.ts' AND name='settleWithFees'")" ] \
+  && [ -z "$(q "SELECT 1 FROM code_index_file WHERE path='src/archive.ts'")" ] \
+  && ok "code index: settleWithFees in src/ledger.ts, no src/archive.ts" \
+  || fail "code index files: $(q "SELECT path FROM code_index_file" | tr '\n' ' ')"
 
 echo "== the same overlap through the dashboard Merge path (bin/merge-ticket.mjs) =="
 C="$(new_ticket "Move ledger to book" "move src/ledger.ts to src/book.ts")"; wg ticket ready "$C" >/dev/null 2>&1
@@ -187,6 +194,11 @@ PATHS2="$(printf '%s' "$SEARCH2" | node -e 'let s="";process.stdin.on("data",d=>
 grep -q "card-refresh: card verification: .* against ${MAIN2:0:8}" "$WORK/merge-$E.err" \
   && ok "merge-ticket verified the cards against the merged commit before the watermark" \
   || fail "no verification line from merge-ticket: $(grep 'card-refresh' "$WORK/merge-$E.err" | tail -3 | tr '\n' '|' | cut -c1-400)"
+[ "$(q "SELECT commit_sha FROM code_index_build LIMIT 1")" = "$MAIN2" ] \
+  && [ -n "$(q "SELECT 1 FROM code_symbol WHERE path='src/book.ts' AND name='settleNet'")" ] \
+  && [ -z "$(q "SELECT 1 FROM code_index_file WHERE path='src/ledger.ts'")" ] \
+  && ok "code index after the dashboard merges: main's commit, settleNet in src/book.ts, no src/ledger.ts" \
+  || fail "code index after merge-ticket: commit $(q "SELECT commit_sha FROM code_index_build LIMIT 1"), files $(q "SELECT path FROM code_index_file" | tr '\n' ' ')"
 
 echo
 echo "memory-index-after-merge: $PASS passed, ${#FAILURES[@]} failed"

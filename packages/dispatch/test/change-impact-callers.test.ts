@@ -491,6 +491,25 @@ describe("CALLERS against a real repo and the real memory CLI", () => {
     expect(again.impact!.callers?.status).toBe("listed");
   });
 
+  it("a capped index says partial and makes no test claim for a module it did not read", () => {
+    // Review finding: a module past the index's file cap read as "no test on main imports
+    // it (index)" although test/invoice.test.ts does; the cap was said only on Health.
+    const id = setup();
+    execFileSync(
+      process.execPath,
+      [MEMORY_BIN, "index", "build", `--repo-root=${dir}`, "--full", "--max-files=2", "--json"],
+      { encoding: "utf8", env: memoryEnv() },
+    );
+    const rd = wg.ticketDiff(id, { impact: true }).repos[0]!;
+    const untested = rd.impact!.facts.filter((f) => f.kind === "untested_module");
+    const invoice = untested.find((f) => f.path === "src/invoice.ts")!;
+    expect(invoice.text).not.toMatch(/\(index\)/);
+    expect(invoice.index_tests).toBeUndefined();
+    expect(rd.impact!.not_analysed).toContain(
+      "Code index: partial (its build hit the maxFiles cap), so importers and tests in files past it are not counted.",
+    );
+  });
+
   it("the review open records what the callers row showed", () => {
     const id = setup();
     wg.db.prepare("UPDATE tickets SET status='in_review' WHERE id=?").run(id);

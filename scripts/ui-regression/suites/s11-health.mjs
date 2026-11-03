@@ -3,7 +3,8 @@
 // delivery and one parked ticket: the Event log card reads intact with the server's
 // event count; the four measures card shows the server's first-pass and review-time
 // figures and the escaped-defect rate as the server counted it (only what a person
-// filed); a ticket page carries the Escaped defects card, and filing a link there (when an
+// filed); the lane card lists every judging lane from lane_value; a ticket page carries the
+// Escaped defects card, and filing a link there (when an
 // accepted change exists) moves Health's count; the treatment list names the
 // blocked ticket with a link to it; a finished run's log opens in a sheet with the
 // tick's own output.
@@ -55,6 +56,26 @@ export default async function s11(t, L) {
     `Health shows the four measures (first-pass ${fpShown} over ${fp && fp.done} done, review time basis ${health.review_time && health.review_time.basis}, escaped defects ${escShown} of ${health.escaped_defects && health.escaped_defects.accepted_changes} accepted)`,
     `four measures card: api first_pass=${JSON.stringify(fp)} page='${measures.slice(0, 300)}'`,
   );
+  // What each lane changed (D1): one line per lane from the same payload, "no verdicts
+  // recorded" where a lane has none, and the footnote that recommends nothing.
+  const laneCard =
+    (await p.textContent('[aria-label="What each lane changed"]').catch(() => "")) || "";
+  const lv = health.lane_value;
+  t.check(
+    lv &&
+      Array.isArray(lv.lanes) &&
+      lv.lanes.every(
+        (l) =>
+          laneCard.includes(l.label) &&
+          (l.note
+            ? laneCard.includes(l.note)
+            : laneCard.includes(`${l.verdicts_recorded} verdict`)),
+      ) &&
+      laneCard.includes("never switched off by telemetry"),
+    `Health shows what each lane changed (${lv && lv.attempts} attempts; ${lv && lv.lanes.filter((l) => !l.note).length} lanes with verdicts)`,
+    `lane card: api=${JSON.stringify(lv && lv.lanes.map((l) => [l.lane, l.verdicts_recorded]))} page='${laneCard.slice(0, 300)}'`,
+  );
+
   // ── escaped defects: the ticket page's link control (MF5) ─────────────────
   await t.visit(`ticket/${parked.id}`, { label: "ticket/:id" });
   const regCard = p.locator('[aria-label="Escaped defects"]');

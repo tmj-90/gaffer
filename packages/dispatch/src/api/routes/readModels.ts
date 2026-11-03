@@ -488,8 +488,9 @@ export function routeReadModels(
     // ticket's outcome (parked, failed, abandoned, in flight), over the tickets that
     // reached done; attempts per accepted change; human review time where recorded.
     const ledgerPath = resolveLedgerPath(process.env);
+    const ledgerRows = ledgerPath ? readHealthRows(ledgerPath) : [];
     const acceptedChange = acceptedChangeCost(
-      ledgerPath ? readHealthRows(ledgerPath) : [],
+      ledgerRows,
       allTickets.map((t) => ({ id: t.id, number: t.number ?? -1, status: t.status })),
       govTransitions,
     );
@@ -499,7 +500,7 @@ export function routeReadModels(
     // view recorded an open), first-pass acceptance split by approver, the judging lanes'
     // verdict counts, and the escaped-defect rate from the regression links a person filed
     // (accepted changes in the same window as governance).
-    const reviewMeasures = readReviewMeasures(wg.db, { nowMs, windowDays });
+    const reviewMeasures = readReviewMeasures(wg.db, { nowMs, windowDays, ledger: ledgerRows });
 
     // Two previously-DEAD data sources, surfaced best-effort (a missing source
     // degrades to a null/available:false cell, NEVER breaks the endpoint):
@@ -528,6 +529,8 @@ export function routeReadModels(
       first_pass: reviewMeasures.first_pass,
       lane_verdicts: reviewMeasures.lane_verdicts,
       escaped_defects: reviewMeasures.escaped_defects,
+      // SPECIALIST VALUE (D1): what each judging lane changed. Counts only, no recommendation.
+      lane_value: reviewMeasures.lane_value,
       coverage: health.coverage,
       by_kind: health.by_kind.slice(0, TOP_N),
       by_model: health.by_model.slice(0, TOP_N),

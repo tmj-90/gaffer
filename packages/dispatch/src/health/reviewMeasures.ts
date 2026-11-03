@@ -7,6 +7,8 @@
  *   lane_verdicts   `ticket.lane_verdict` counts per lane and verdict
  *   escaped_defects escaped accepted changes over accepted changes, from the regression
  *                   links a person filed (health/escapedDefects.ts)
+ *   lane_value      what each judging lane changed: verdicts against the person's decision,
+ *                   unique catches, ledger cost per attempt (health/laneValue.ts)
  *
  * Read-only; deterministic over the recorded events.
  */
@@ -24,6 +26,8 @@ import {
 } from "../services/escapedDefects.js";
 import { escapedDefectReport, type EscapedDefects } from "./escapedDefects.js";
 import { firstPassAcceptance, type FirstPassReport } from "./firstPass.js";
+import type { HealthRow } from "./healthAggregator.js";
+import { laneValueReport, type LaneValueReport } from "./laneValue.js";
 import { reviewTimeReport, type ReviewOpen, type ReviewTimeReport } from "./reviewTime.js";
 
 export interface LaneVerdictCounts {
@@ -36,6 +40,7 @@ export interface ReviewMeasures {
   readonly first_pass: FirstPassReport;
   readonly lane_verdicts: LaneVerdictCounts;
   readonly escaped_defects: EscapedDefects;
+  readonly lane_value: LaneValueReport;
 }
 
 /** The window the escaped-defect rate counts accepted changes over (Health's default). */
@@ -46,6 +51,8 @@ export interface ReviewMeasureOptions {
   readonly nowMs?: number;
   /** Accepted in the last N days (default 30, Health's governance window). */
   readonly windowDays?: number;
+  /** The usage ledger's rows, for each lane's cost per attempt (none: no spend). */
+  readonly ledger?: readonly HealthRow[];
 }
 
 const ms = (iso: string): number => Date.parse(iso) || 0;
@@ -128,6 +135,21 @@ export function readReviewMeasures(db: Db, opts: ReviewMeasureOptions = {}): Rev
         ORDER BY rowid`,
     )
     .all(DEFECT_ESCAPED_EVENT, DEFECT_ESCAPED_WITHDRAWN_EVENT) as RegressionEventRow[];
+  const verdictRows = db
+    .prepare(
+      `SELECT entity_id AS ticketId, created_at AS at,
+              json_extract(payload_json, '$.lane') AS lane,
+              json_extract(payload_json, '$.verdict') AS verdict
+         FROM work_events
+        WHERE entity_type = 'ticket' AND event_type = ?
+        ORDER BY rowid`,
+    )
+    .all(LANE_VERDICT_EVENT) as Array<{
+    ticketId: string;
+    at: string;
+    lane: string | null;
+    verdict: string | null;
+  }>;
   return {
     review_time: reviewTimeReport({
       transitions,
@@ -143,6 +165,16 @@ export function readReviewMeasures(db: Db, opts: ReviewMeasureOptions = {}): Rev
       tickets,
       nowMs: opts.nowMs ?? Date.now(),
       windowDays: opts.windowDays ?? DEFAULT_WINDOW_DAYS,
+    }),
+    lane_value: laneValueReport({
+      transitions,
+      verdicts: verdictRows.map((r) => ({
+        ticketId: r.ticketId,
+        lane: r.lane ?? "unknown",
+        verdict: r.verdict ?? "unknown",
+        atMs: ms(r.at),
+      })),
+      ledger: opts.ledger ?? [],
     }),
   };
 }

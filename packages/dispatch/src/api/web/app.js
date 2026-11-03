@@ -13830,6 +13830,58 @@ function fourMeasures(health) {
 }
 
 /**
+ * WHAT EACH LANE CHANGED (D1): per judging lane, how often its verdict differed from the
+ * person's decision on the same attempt, how often it was the only lane on a send-back,
+ * and its ledger cost per attempt; "no verdicts recorded" where a lane has none. Counts
+ * only: the footnote says nothing here recommends switching a lane off, and that a safety
+ * lane is never switched off by telemetry. Null when the server does not serve it.
+ */
+function laneValueCard(health) {
+  const lv = health.lane_value || null;
+  if (!lv || !Array.isArray(lv.lanes)) return null;
+  const line = (l) => {
+    if (l.note)
+      return el("li", { dataset: { lane: l.lane } }, [
+        el("strong", {}, l.label),
+        el("span", { class: "dim" }, ` ${l.note}`),
+      ]);
+    const facts = [
+      `${plural(l.verdicts_recorded, "verdict")}`,
+      l.compared
+        ? `differed from the person ${l.differed} of ${l.compared} (${l.differed_lane_blocked} it blocked and the person passed, ${l.differed_lane_passed} it passed and the person sent back)`
+        : "no attempt a person also decided",
+      `only lane on ${plural(l.unique_catches, "send-back")}`,
+      l.cost_per_attempt_usd == null
+        ? "no ledger spend of its own"
+        : `${money(l.cost_per_attempt_usd)} per attempt over ${l.ledger_attempts}`,
+    ];
+    return el("li", { dataset: { lane: l.lane } }, [
+      el("strong", {}, l.label),
+      l.safety ? el("span", { class: "lane-value-safety" }, " safety lane") : null,
+      el("span", {}, ` ${facts.join(" · ")}`),
+    ]);
+  };
+  return el(
+    "section",
+    { class: "card panel lane-value-panel", "aria-label": "What each lane changed" },
+    [
+      panelHead(
+        "What each lane changed",
+        `${plural(lv.attempts, "attempt")} · ${lv.attempts_with_person_decision} decided by a person`,
+        null,
+        { kit: "ink" },
+      ),
+      el("ul", { class: "lane-value-list" }, lv.lanes.map(line)),
+      el(
+        "p",
+        { class: "lane-value-foot" },
+        `${lv.send_backs_no_lane_caught} of ${plural(lv.send_backs, "send-back")} no lane asked for. ${lv.footnote || ""}`,
+      ),
+    ],
+  );
+}
+
+/**
  * Factory Health / ROI surface. Reads the ONE authoritative /api/health envelope
  * and renders the ROI KPI row (cost/feature, skill hit-rate, spend-by-kind,
  * rework-cost share, measured-coverage %) plus the two newly-wired dead sources:
@@ -14114,6 +14166,8 @@ async function renderHealth() {
   if (usagePause) wrap.appendChild(usagePauseNote(usagePause));
   // The four top-level measures, under the verdict: what every feature has to move.
   wrap.appendChild(fourMeasures(health));
+  const lanes = laneValueCard(health);
+  if (lanes) wrap.appendChild(lanes);
   if (bouncing) bouncing.id = "health-injuries";
   const wait = treatment ? waitingNote(treatment._waiting) : null;
   if (wait && devFlow) devFlow.appendChild(wait);

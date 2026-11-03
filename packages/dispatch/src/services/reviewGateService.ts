@@ -665,7 +665,13 @@ export class ReviewGateService {
    * one). `heads` reuses a read the caller already made (git).
    */
   testerCoverage(ticket: Ticket, heads?: readonly ReviewedHead[]): TesterCoverage {
-    const head = (heads ?? this.resolveReviewedHeads(ticket))[0]?.sha?.toLowerCase() ?? null;
+    // The tester runs in one write repo (runner/bin/merge-ticket.mjs resolveTicket's pick,
+    // the first write link); its tested commit must be that repo's head now, so it is
+    // compared with every write repo's head (a commit id names one commit).
+    const allHeads = (heads ?? this.resolveReviewedHeads(ticket))
+      .map((h) => h.sha?.toLowerCase())
+      .filter((h): h is string => Boolean(h));
+    const head = allHeads[0] ?? null;
     const round = this.db
       .prepare(
         `SELECT rowid AS rid FROM work_events
@@ -709,17 +715,20 @@ export class ReviewGateService {
     if (verdict.event_type !== "ticket.tester_passed") {
       return { covered: false, why: "failed", tested, head };
     }
-    if (
-      head !== null &&
-      (tested === null || !(head.startsWith(tested) || tested.startsWith(head)))
-    ) {
+    const same = (a: string, b: string) => a.startsWith(b) || b.startsWith(a);
+    if (allHeads.length > 0 && (tested === null || !allHeads.some((h) => same(h, tested)))) {
       return { covered: false, why: "other_commit", tested, head };
     }
     const recorded = typeof binding.contract_hash === "string" ? binding.contract_hash : null;
     if (recorded && recorded !== contractHash(this.db, ticket.id)) {
       return { covered: false, why: "contract_changed", tested, head };
     }
-    return { covered: true, why: null, tested, head };
+    return {
+      covered: true,
+      why: null,
+      tested,
+      head: (tested && allHeads.find((h) => same(h, tested))) ?? head,
+    };
   }
 
   /**

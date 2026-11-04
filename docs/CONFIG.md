@@ -438,7 +438,7 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `GAFFER_AGENT_EMAIL` | `gaffer-factory@users.noreply.invalid` | `runner/lib/greenfield.sh` |
 | `GAFFER_BLOCK_LEDGER` | `$GAFFER_DATA/safety-blocks.jsonl` | `runner/bin/build-log.mjs`, `runner/run-summary.sh` |
 | `GAFFER_BP_FILE` | `$GAFFER_RUN_STATE_DIR/.backpressure-repos` | `runner/run-summary.sh` |
-| `GAFFER_BUDGET_LOW_FRACTION` | `0.20` | `runner/factory.config.sh` |
+| `GAFFER_BUDGET_LOW_FRACTION` | `0.20` | `runner/config/05-budget.sh` |
 | `GAFFER_CARD_BATCH` | _(empty)_ | `runner/lib/onboard-analyze.mjs` |
 | `GAFFER_CARD_MODEL` | _(empty)_ | `runner/lib/onboard-analyze.mjs` |
 | `GAFFER_CARD_SNIPPET_CHARS` | _(empty)_ | `runner/lib/onboard-analyze.mjs` |

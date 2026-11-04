@@ -131,7 +131,7 @@ SPENT="$(GAFFER_USAGE_LEDGER="$LEDGER" gaffer_ticket_delivery_spend 88)"
 awk "BEGIN{exit !(($SPENT+0) > 0.349 && ($SPENT+0) < 0.351)}" \
   && ok "B1 gaffer_ticket_delivery_spend sums ONLY ticket 88's DELIVERY spend (0.35)" \
   || fail "B1 expected ~0.35 delivery spend for ticket 88, got $SPENT"
-grep -q '_hist="$(gaffer_ticket_delivery_spend "$ticket"' "$CFG" \
+grep -q '_hist="$(gaffer_ticket_delivery_spend "$ticket"' "$RUNNER_DIR/config/06-routing.sh" \
   && ok "B1 the router's --historical-cost reads the delivery-only figure" \
   || fail "B1 gaffer_route_model should feed --historical-cost from gaffer_ticket_delivery_spend"
 

@@ -1,6 +1,6 @@
 # shellcheck shell=bash
-# runner/config/03-wiring.sh: Claude Code wiring (MCP config, settings, skills, the claude binary and
-# flags) and the worker provider knobs (environment only).
+# runner/config/03-wiring.sh: the agent CLI wiring (MCP config, CLI settings, skills, the CLI binary and
+# its flags) and the worker provider knobs (environment only).
 # Sourced by runner/factory.config.sh only, in its fixed order, never directly or on
 # its own: it reads what the parts before it set. Lines moved verbatim from
 # factory.config.sh. The last line tells factory.config.sh this part loaded whole.

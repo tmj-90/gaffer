@@ -8,6 +8,7 @@
 // helpers below (el/field/icon/glyph, viewHead, panelHead, emptyState,
 // skeleton, statCell, charts). Every mark carries data the server gave us.
 
+import { appState } from "./js/state.js";
 // --- API client ------------------------------------------------------------
 
 // Bearer token (set when the server enforces DISPATCH_API_TOKEN). Stored in
@@ -243,9 +244,8 @@ function clear(node) {
  * rendered a visually adjacent but programmatically unrelated label (axe: select-name /
  * label). `attrs` extends the wrapper (`class` is appended to "field").
  */
-let fieldSeq = 0;
 function field(labelText, control, attrs = {}) {
-  if (!control.id) control.id = `field-${++fieldSeq}`;
+  if (!control.id) control.id = `field-${++appState.fieldSeq}`;
   const { class: extra, ...rest } = attrs;
   return el("div", { ...rest, class: extra ? `field ${extra}` : "field" }, [
     el("label", { for: control.id }, labelText),
@@ -417,7 +417,6 @@ function ycard(size = 14, cls = "") {
 const SHIRT_PATH =
   "M13 4 L7 6.5 L1.5 12.5 L6 18 L10 15.5 L10 37 L30 37 L30 15.5 L34 18 L38.5 12.5 L33 6.5 L27 4 Q20 9.5 13 4 Z";
 const KIT_PATTERNS = ["stripes", "hoops", "halves", "sash", "quarters"];
-let svgUid = 0;
 // Every repo name the server has shown us. Patterns are assigned over the whole
 // roster so no two repos wear the same kit (while there are patterns to go round).
 const kitRoster = new Set();
@@ -459,7 +458,7 @@ function kitPattern(name) {
   return kitAssigned.get(key);
 }
 function kitShirt(repoName, size = 18) {
-  const id = "kit" + ++svgUid;
+  const id = "kit" + ++appState.svgUid;
   const pat = kitPattern(repoName);
   const fill = svgEl("g", { "clip-path": `url(#${id})`, fill: "currentColor" });
   if (pat === "stripes")
@@ -513,7 +512,7 @@ function agentNo(name) {
  * it falls back to the trailing digits of `name` (crew-delivery-02 wears 02).
  */
 function agentShirt(name, size = 24, no) {
-  const id = "shirt" + ++svgUid;
+  const id = "shirt" + ++appState.svgUid;
   return svgEl(
     "svg",
     {
@@ -1997,7 +1996,7 @@ async function router() {
   if (view === "work" || view === "review") detailBackHash = "#/" + view;
 
   const gen = ++routeGen;
-  workRefCache = null; // a navigation re-reads repos/nodes (the refresh reuses them)
+  appState.workRefCache = null; // a navigation re-reads repos/nodes (the refresh reuses them)
   if (routeAbort) routeAbort.abort();
   routeAbort = typeof AbortController !== "undefined" ? new AbortController() : null;
   const isCurrent = () => gen === routeGen;
@@ -3513,7 +3512,7 @@ function pitchBall(r = 7) {
 }
 /** The club shirt as a group, placed at (x, y) and scaled (40 units across). */
 function shirtGroup(no, x = 0, y = 0, scale = 1, numPx) {
-  const id = "sg" + ++svgUid;
+  const id = "sg" + ++appState.svgUid;
   return svgS(
     "g",
     { transform: `translate(${x} ${y}) scale(${scale})` },
@@ -4581,7 +4580,7 @@ function confirmSheet({ title, intro, body, confirm, tone = "primary", onConfirm
  * just closes. `onSave(value)` does the work and may throw to keep the sheet open.
  */
 function valueSheet({ title, intro, label, value = "", hint, confirm = "Save", onSave }) {
-  const hintId = `vs-hint-${++fieldSeq}`;
+  const hintId = `vs-hint-${++appState.fieldSeq}`;
   const input = el("input", {
     type: "text",
     class: "value-sheet-input",
@@ -4703,7 +4702,7 @@ function reasonSheet({
   capture = false,
   onConfirm,
 }) {
-  const hintId = `rs-hint-${++fieldSeq}`;
+  const hintId = `rs-hint-${++appState.fieldSeq}`;
   const input = el("textarea", {
     class: "reject-reason-input",
     name: "reason",
@@ -5247,7 +5246,7 @@ function pitchBoard(f, orientation, k = orientation === "portrait" ? 2 : 1.26) {
     obs.push(b);
     return b;
   };
-  const tid = `pitch-t-${orientation}-${++svgUid}`;
+  const tid = `pitch-t-${orientation}-${++appState.svgUid}`;
   const svg = svgS(
     "svg",
     {
@@ -5526,7 +5525,7 @@ function pitchBoard(f, orientation, k = orientation === "portrait" ? 2 : 1.26) {
   svg.append(net);
 
   const arrows = svgS("g", { class: "arrows" });
-  const mid = `ah-${orientation}-${svgUid}`;
+  const mid = `ah-${orientation}-${appState.svgUid}`;
   svg.prepend(
     svgS(
       "defs",
@@ -9184,9 +9183,9 @@ function runActivityPanel() {
 // Repos + scope nodes change rarely; the 9s refresh reuses them for a minute
 // instead of re-fetching both on every tick (board-unbounded-render).
 const WORK_REF_TTL_MS = 60000;
-let workRefCache = null;
 async function workReference() {
-  if (workRefCache && Date.now() - workRefCache.at < WORK_REF_TTL_MS) return workRefCache;
+  if (appState.workRefCache && Date.now() - appState.workRefCache.at < WORK_REF_TTL_MS)
+    return appState.workRefCache;
   const [reposRes, nodesRes] = await Promise.all([
     api("GET", "/repositories"),
     // A scoped token does not read the map (factory-wide): no nodes, the board still draws.
@@ -9195,12 +9194,12 @@ async function workReference() {
       throw e;
     }),
   ]);
-  workRefCache = {
+  appState.workRefCache = {
     at: Date.now(),
     repos: reposRes.repositories || [],
     nodes: nodesRes.nodes || [],
   };
-  return workRefCache;
+  return appState.workRefCache;
 }
 
 // --- View: Work (the board on mown lanes, and the list as a league table) ----
@@ -16783,7 +16782,7 @@ async function renderCreate(param) {
   const validationMsg = el("p", { class: "form-error", role: "alert", hidden: "" });
   // Create waits for a write repo: aria-disabled (not disabled) keeps it focusable,
   // and the line under it says what is missing before anyone presses it.
-  const createHintId = `create-hint-${++fieldSeq}`;
+  const createHintId = `create-hint-${++appState.fieldSeq}`;
   const createHint = el("p", { class: "act-hint create-hint", id: createHintId });
   const createBtn = el(
     "button",
@@ -17664,7 +17663,7 @@ function reviewCommentComposer({ where, onSave, onCancel }) {
     "aria-label": `Comment on ${where}`,
     placeholder: "What should change?",
   });
-  const name = `rc-sev-${++fieldSeq}`;
+  const name = `rc-sev-${++appState.fieldSeq}`;
   const radio = (value, label, checked) =>
     el("label", { class: "rc-sev" }, [
       el("input", { type: "radio", name, value, checked: checked ? "" : null }),
@@ -28255,7 +28254,7 @@ function openClubSheet() {
   const club = squad.club || {};
   const house = houseColours();
   const dirty = { primary: false, secondary: false, cleared: false };
-  const hintId = `club-hint-${++fieldSeq}`;
+  const hintId = `club-hint-${++appState.fieldSeq}`;
   const nameIn = el("input", {
     type: "text",
     name: "club_name",
@@ -28484,7 +28483,7 @@ function squadRow(a, edit) {
   };
   function editRow() {
     const w = agentWho(a.agent_id, a.registered_name);
-    const errId = `sq-err-${++fieldSeq}`;
+    const errId = `sq-err-${++appState.fieldSeq}`;
     const nameIn = el("input", {
       type: "text",
       class: "sq-name-in",

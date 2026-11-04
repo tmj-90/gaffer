@@ -153,11 +153,13 @@ export function assertSafeBind(
 
 /**
  * Content-Security-Policy for the dashboard. Scripts are `'self'` ONLY — the SPA
- * loads a single external module (`/app.js`), so no inline-script allowance is
- * needed (and none is granted: an injected inline `<script>` is refused).
+ * loads one external entry module (`/app.js`) and the same-origin modules it
+ * imports (`/js/*.js`, `/js/views/*.js`), all covered by `'self'`, so no other
+ * script source and no inline-script allowance is needed (and none is granted: an
+ * injected inline `<script>` is refused).
  *
  * `style-src` permits `'unsafe-inline'` because the shell uses an inline
- * `style=""` attribute (the hidden SVG sprite) and `app.js` sets element styles
+ * `style=""` attribute (the hidden SVG sprite) and the SPA sets element styles
  * via innerHTML. Fonts are self-hosted under `/assets/fonts/` (see
  * `scripts/vendor-fonts.sh`), so `style-src` and `font-src` are `'self'` only:
  * the dashboard makes NO third-party request, and a compromised CDN cannot ship

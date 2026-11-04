@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { Dispatch } from "../src/core.js";
 import { createApiServer } from "../src/api/server.js";
+import { serveStatic } from "../src/api/static.js";
 
 interface Harness {
   baseUrl: string;
@@ -103,6 +104,32 @@ describe("API: SPA static surface", () => {
       });
     expect(await raw("/css/../api/static.css")).toBe(404);
     expect(await raw("/css/views/../../index.css")).toBe(404);
+  });
+
+  it("refuses non-JS and traversal under /js/ (JSON 404)", async () => {
+    for (const p of ["/js/state.css", "/js/missing.js", "/js/views/missing.js", "/js/"]) {
+      const res = await fetch(`${h.baseUrl}${p}`);
+      expect(res.status, p).toBe(404);
+      expect(res.headers.get("content-type"), p).toMatch(/application\/json/);
+    }
+    // fetch() normalises dot segments, so send the raw path to reach the server's guard.
+    const raw = (path: string) =>
+      new Promise<number>((resolve, reject) => {
+        const req = httpRequest(`${h.baseUrl}${path}`, { method: "GET", path }, (res) => {
+          res.resume();
+          resolve(res.statusCode ?? 0);
+        });
+        req.on("error", reject);
+        req.end();
+      });
+    expect(await raw("/js/../api/static.js")).toBe(404);
+    expect(await raw("/js/views/../../server.js")).toBe(404);
+    expect(await raw("/js/%2e%2e/static.js")).toBe(404);
+    // The server normalises dot segments before routing; the guard itself must still
+    // refuse a path that resolves outside web/js (src/api/static.ts sits beside web/).
+    const untouched = { writeHead: () => untouched, end: () => untouched } as never;
+    for (const p of ["/js/../../static.js", "/js/../app.js", "/js/views/../../../server.js"])
+      expect(serveStatic(p, untouched), p).toBe(false);
   });
 
   it("does not let the SPA fallback swallow an unknown API path (still JSON 404)", async () => {

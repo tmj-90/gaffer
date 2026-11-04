@@ -114,11 +114,11 @@ tick="$RUNNER_DIR/tick.sh"
 grep -q 'export GAFFER_TIMEOUT_PGID_FILE=' "$tick" \
   && ok "tick exports GAFFER_TIMEOUT_PGID_FILE so live agents are recorded" \
   || fail "tick does not export GAFFER_TIMEOUT_PGID_FILE"
-grep -q 'gaffer_reap_orphan_agent' "$tick" \
+grep -q 'gaffer_reap_orphan_agent' "$RUNNER_DIR/lib/tick-recovery.sh" \
   && ok "tick defines/uses gaffer_reap_orphan_agent" \
   || fail "tick has no orphan reaper"
 # The reaper must be invoked from the crash-cleanup path.
-grep -q gaffer_reap_orphan_agent <<<"$(awk '/^gaffer_crash_cleanup\(\) \{/{f=1} f&&/gaffer_reap_orphan_agent/{print;exit}' "$tick")" \
+grep -q gaffer_reap_orphan_agent <<<"$(awk '/^gaffer_crash_cleanup\(\) \{/{f=1} f&&/gaffer_reap_orphan_agent/{print;exit}' "$RUNNER_DIR/lib/tick-recovery.sh")" \
   && ok "crash-cleanup invokes the orphan reaper" \
   || fail "crash-cleanup does not invoke the orphan reaper"
 

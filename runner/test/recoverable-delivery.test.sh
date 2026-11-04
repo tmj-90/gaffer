@@ -204,7 +204,7 @@ if [ -f "$TICK" ]; then
   fi
   # The crash-cleanup trap must skip teardown for a paused worktree (the survival
   # invariant), and orphan-recovery must protect a paused ticket's worktree.
-  if grep -q 'GAFFER_PAUSE_KEEP_WORKTREE.*= "1"' "$TICK" || grep -q 'GAFFER_PAUSE_KEEP_WORKTREE:-0.*= "1"' "$TICK"; then
+  if grep -q 'GAFFER_PAUSE_KEEP_WORKTREE.*= "1"' "$RUNNER_DIR/lib/tick-recovery.sh" || grep -q 'GAFFER_PAUSE_KEEP_WORKTREE:-0.*= "1"' "$TICK"; then
     ok "tick.sh crash-cleanup honours the paused worktree-keep flag"
   else
     fail "tick.sh crash-cleanup does not skip teardown for a paused worktree"

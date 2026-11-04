@@ -154,7 +154,7 @@ grep -q 'export GAFFER_DOD_WRAP=""' "$RUNNER_DIR/tick.sh" && ok "tick.sh resets 
 grep -q 'GAFFER_DOD_SANDBOX' "$RUNNER_DIR/tick.sh" && ok "GAFFER_DOD_SANDBOX=0 is the documented opt-out" || fail "opt-out knob missing"
 grep -q 'gaffer_dod_run_one "$wt" "$tmpout" "$cmd"' "$RUNNER_DIR/lib/ac-checks.sh" && ok "AC check commands use the same (wrapped) runner" || fail "ac-checks.sh no longer routes through gaffer_dod_run_one"
 grep -q 'strict-profile.\$\$.XXXXXX' "$RUNNER_DIR/lib/sandbox.sh" && ok "sandbox-exec profile is a per-call mktemp file (no shared-filename race)" || fail "sandbox-exec still writes a fixed strict-profile.sb"
-grep -q 'strict-profile.\$\$.\*' "$RUNNER_DIR/tick.sh" && ok "tick.sh sweeps its own per-call profile on exit" || fail "tick.sh cleanup does not sweep strict-profile.\$\$.*"
+grep -q 'strict-profile.\$\$.\*' "$RUNNER_DIR/lib/tick-recovery.sh" && ok "tick.sh sweeps its own per-call profile on exit" || fail "tick.sh cleanup does not sweep strict-profile.\$\$.*"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "dod-sandbox-wrap: ALL $PASS checks passed"; exit 0

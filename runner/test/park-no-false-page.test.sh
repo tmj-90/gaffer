@@ -167,7 +167,7 @@ run_child park 0
   || fail "unguarded park did not reproduce the false page — the test would not catch a regression"
 
 echo "== 5. tick.sh wires the GAFFER_CLAIM_RESOLVED guard into the trap =="
-grep -q 'GAFFER_CLAIM_RESOLVED:-0.*!= "1"' "$RUNNER_DIR/tick.sh" \
+grep -q 'GAFFER_CLAIM_RESOLVED:-0.*!= "1"' "$RUNNER_DIR/lib/tick-recovery.sh" \
   && ok "crash trap release block is guarded by GAFFER_CLAIM_RESOLVED" \
   || fail "crash trap no longer guarded by GAFFER_CLAIM_RESOLVED"
 

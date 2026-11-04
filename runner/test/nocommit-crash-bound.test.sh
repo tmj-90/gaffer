@@ -111,7 +111,7 @@ extract_fn() {  # $1 = function name → prints its verbatim definition from tic
   awk -v fn="$1" '
     $0 ~ "^" fn "\\(\\) \\{" {print; if ($0 ~ /\}[[:space:]]*$/) exit; p=1; next}
     p {print; if ($0 ~ /^\}/) exit}
-  ' "$TICK"
+  ' "$TICK" "$RUNNER_DIR"/lib/tick-*.sh
 }
 SRC="$WORK/real-fns.sh"
 {

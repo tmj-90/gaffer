@@ -9,6 +9,7 @@ import { announce, syncNav, updateNavBadges } from "./live.js";
 import { openPalette } from "./palette.js";
 import { appState } from "./state.js";
 import { overviewError, renderOverview } from "./views/overview.js";
+import { renderWork } from "./views/work.js";
 import {
   refCard,
   renderCreate,
@@ -25,7 +26,6 @@ import {
   renderSpecs,
   renderSquad,
   renderTicket,
-  renderWork,
 } from "../app.js";
 
 // --- Routing & IA -----------------------------------------------------------

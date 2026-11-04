@@ -6,7 +6,7 @@ const appState = {
   fieldSeq: 0,
   // `let svgUid = 0;` (js/icons.js)
   svgUid: 0,
-  // `let workRefCache = null;` (app.js)
+  // `let workRefCache = null;` (js/views/work.js)
   workRefCache: null,
 };
 

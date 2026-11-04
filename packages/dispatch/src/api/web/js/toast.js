@@ -3,7 +3,7 @@
 
 import { api } from "./api.js";
 import { clear, el } from "./dom.js";
-import { RUN_KIND_LABELS } from "../app.js";
+import { RUN_KIND_LABELS } from "./runs.js";
 
 // --- Toast ------------------------------------------------------------------
 

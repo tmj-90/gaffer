@@ -10,7 +10,8 @@ import { fmtDuration, money, moneyW, plural } from "../format.js";
 import { agentChip, glyph, ycard } from "../icons.js";
 import { allTickets } from "../matchday.js";
 import { devFlowPanel, needsPanel } from "../panels.js";
-import { healthBarRow, runActivityPanel } from "../../app.js";
+import { runActivityPanel } from "../runs.js";
+import { healthBarRow } from "../../app.js";
 
 /**
  * The physio room's flow panels (moved off the Overview, which is the comp's

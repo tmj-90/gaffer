@@ -18,7 +18,7 @@ import {
 } from "./programme.js";
 import { pitchBoard, tacticsBoard } from "./tactics.js";
 import { whatIOwnPanel } from "./teamsheet.js";
-import { hashText } from "../../app.js";
+import { hashText } from "./work.js";
 
 /**
  * The Overview while it loads: the ground before kick-off. The scoreboard is lit

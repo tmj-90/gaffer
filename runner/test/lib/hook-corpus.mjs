@@ -74,9 +74,12 @@ export function fill(value, map) {
   return value;
 }
 
-// Top-level directories some platforms alias (macOS: /tmp, /etc and /var live under
-// /private). The core reports canonical paths; the corpus records the portable form.
-const ALIASES = ["/tmp", "/etc", "/var"].flatMap((d) => {
+// Directories some platforms alias (macOS: /tmp, /etc and /var live under /private and
+// /home is an automount under /System/Volumes/Data; Linux: /var/run is /run). The core
+// reports canonical paths; the corpus records the portable spelling, the one a command
+// writes. Only a path that starts there is rewritten (not /var/run inside an echoed
+// command when /run is the alias), so the echoed command text stays as recorded.
+const ALIASES = ["/tmp", "/etc", "/var", "/var/run", "/home"].flatMap((d) => {
   try {
     const real = realpathSync(d);
     return real === d ? [] : [[real, d]];
@@ -94,7 +97,9 @@ export function unfill(text, map, base) {
   const pairs = [...Object.entries(map), ...extra].sort((a, b) => b[1].length - a[1].length);
   for (const [k, v] of pairs) s = s.split(v).join(k);
   s = s.split(base).join("{{BASE}}");
-  for (const [real, d] of ALIASES) s = s.replace(new RegExp(`${real}(?=/|\\b|$)`, "g"), d);
+  for (const [real, d] of ALIASES) {
+    s = s.replace(new RegExp(`(?<![\\w/.-])${real}(?=/|\\b|$)`, "g"), d);
+  }
   return s;
 }
 

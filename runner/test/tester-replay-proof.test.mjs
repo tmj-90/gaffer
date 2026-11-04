@@ -70,7 +70,15 @@ function assert(name, cond, detail = "") {
 }
 
 const WORK = gafferMkdtemp(join(tmpdir(), "tester-replay-proof-"));
-process.on("exit", () => rmSync(WORK, { recursive: true, force: true }));
+// The cases leave mode 0300 key directories behind, which a plain recursive remove
+// cannot list; removeTree opens them first (P8 is the case that proves it).
+process.on("exit", () => {
+  try {
+    TR.removeTree(WORK);
+  } catch {
+    rmSync(WORK, { recursive: true, force: true });
+  }
+});
 const git = (cwd, ...a) =>
   spawnSync("git", ["-C", cwd, "-c", "user.email=t@t", "-c", "user.name=t", ...a], {
     encoding: "utf8",

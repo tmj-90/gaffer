@@ -139,6 +139,10 @@ to the same version.
 - **Dependency advisories.** The MCP SDK moves to ^1.32.2 and every package to zod 4 (GHSA-mrhx-c7xc-m3w5), and `fast-uri` to 3.1.6 or later (four SSRF and host-confusion advisories). REST and MCP validation errors keep their shape.
 - **CodeQL and gitleaks run in CI**, and every action is pinned by commit.
 
+### Changed
+
+- The dashboard's single 30,000-line `app.js` is now a small entry that imports one ES module per view and a set of shared modules under `js/`, served from the same origin under the same CSP; nothing on screen changes.
+
 ### Fixed
 
 - The independent tester's lane, timing and per-criterion evidence read the same in the dashboard and the runner, and its verdict cell says *Not this commit* after a push.

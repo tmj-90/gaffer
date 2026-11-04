@@ -324,6 +324,28 @@ It is backed by read-model endpoints and mutating REST routes; the full contract
 Errors return a structured `{ error: { code, message, details? } }` envelope with
 the DispatchError code mapped to an appropriate HTTP status.
 
+### The SPA's modules
+
+The SPA lives in `src/api/web/`. `app.js` is the entry the page loads: it imports the
+modules under `js/`, registers the page's load-time listeners and starts the router.
+The server serves `/app.js`, `/js/*.js` and `/js/views/*.js` as same-origin scripts,
+which `script-src 'self'` covers.
+
+| Module | What it holds |
+| --- | --- |
+| `js/api.js`, `js/state.js` | the API client and token helpers; the few bindings several modules assign |
+| `js/dom.js`, `js/icons.js`, `js/format.js` | `el`/`field` and mount points; icons, glyphs, shirts, crest; formatting |
+| `js/club.js`, `js/access.js`, `js/kit.js` | club and squad state; read-only and scoped access; kit colours |
+| `js/toast.js`, `js/login.js`, `js/status.js` | toasts and guarded actions; the login gate; status vocabulary and ticket action sets |
+| `js/components.js`, `js/sheet.js`, `js/sheets.js` | view scaffolding; the detail sheet; the action sheets |
+| `js/router.js`, `js/freshness.js`, `js/chrome.js`, `js/live.js`, `js/palette.js` | routing and tab titles; Data as of; header and nav; auto refresh and the live stream; the command palette |
+| `js/matchday.js`, `js/charts.js`, `js/panels.js`, `js/runs.js`, `js/diff.js` | reads shared by the views; SVG charts; shared panels; Running now; the diff |
+| `js/views/*.js` | one module per view or view part: overview, teamsheet, tactics, programme, fitness, work, board, ticket, ticket-cards, acceptance, repo-panel, create, settings, formation, autonomy, health, review, review-comments, review-packet, map, scope-node, repo, epics, plan, spec-build, specs, memory, onboarding, squad, floor |
+
+The DOM tests boot the SPA afresh per test with `import(app.js?t=<n>)`;
+`test/setup-web-modules.ts` carries that query onto every module the entry imports, so
+each boot gets its own instance of every module.
+
 ## Autonomy flags (opt-in, gated by default)
 
 The gate is on by default: only a human/admin actor can approve a review, and

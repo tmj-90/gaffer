@@ -18,7 +18,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
 TICK="$RUNNER_DIR/tick.sh"
-CFG="$RUNNER_DIR/factory.config.sh"
+CFG="$RUNNER_DIR/config/08-guards.sh"
 
 PASS=0
 FAILURES=()
@@ -195,7 +195,7 @@ grep -q 'not converging' <<<"$RP_SRC" \
 grep -q 'GAFFER_MAX_DELIVERY_ATTEMPTS:-3' "$TICK" \
   && ok "C the attempt cap default is raised to 3 (room for the ladder)" \
   || fail "C tick.sh default GAFFER_MAX_DELIVERY_ATTEMPTS should be 3"
-grep -qE 'GAFFER_MAX_DELIVERY_ATTEMPTS:=3' "$CFG" \
+grep -qE 'GAFFER_MAX_DELIVERY_ATTEMPTS:=3' "$RUNNER_DIR/config/07-limits.sh" \
   && ok "C factory.config.sh documents/defaults the attempt cap to 3" \
   || fail "C factory.config.sh default GAFFER_MAX_DELIVERY_ATTEMPTS should be 3"
 

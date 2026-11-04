@@ -413,10 +413,9 @@ describe("approved-but-unmerged: human queue + POST /tickets/:id/merge", () => {
 });
 
 describe("SPA: ready_for_merge offers Merge now", () => {
-  const appJs = readFileSync(
-    fileURLToPath(new URL("../src/api/web/app.js", import.meta.url)),
-    "utf8",
-  );
+  const appJs = ["../src/api/web/js/status.js", "../src/api/web/app.js"]
+    .map((p) => readFileSync(fileURLToPath(new URL(p, import.meta.url)), "utf8"))
+    .join("\n");
   it("action map lists merge_now first for ready_for_merge and posts to /tickets/:id/merge", () => {
     const map = appJs.slice(appJs.indexOf("const TICKET_ACTION_KEYS"));
     const m = /ready_for_merge:\s*\[([^\]]*)\]/.exec(map);

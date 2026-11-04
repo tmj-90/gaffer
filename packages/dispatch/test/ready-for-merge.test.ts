@@ -227,7 +227,7 @@ describe("rework / won't-do from ready_for_merge", () => {
 
 describe("SPA state -> action map (single source of truth)", () => {
   const appJs = readFileSync(
-    fileURLToPath(new URL("../src/api/web/app.js", import.meta.url)),
+    fileURLToPath(new URL("../src/api/web/js/status.js", import.meta.url)),
     "utf8",
   );
 

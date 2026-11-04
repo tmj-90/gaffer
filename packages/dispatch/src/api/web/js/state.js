@@ -2,9 +2,9 @@
 // Moved verbatim from app.js (the entry); the module map is in app.js.
 
 const appState = {
-  // `let fieldSeq = 0;` (app.js)
+  // `let fieldSeq = 0;` (js/dom.js)
   fieldSeq: 0,
-  // `let svgUid = 0;` (app.js)
+  // `let svgUid = 0;` (js/icons.js)
   svgUid: 0,
   // `let workRefCache = null;` (app.js)
   workRefCache: null,

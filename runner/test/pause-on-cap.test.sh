@@ -160,7 +160,7 @@ echo "== 5b. the resumed agent's final report is recorded as evidence the gates 
 # The function under test, extracted from factory.config.sh (this harness defines its own
 # wg/jget over the built CLI instead of sourcing the whole config).
 gaffer_json() { node "$RUNNER_DIR/lib/json-tool.mjs" "$@"; }
-eval "$(sed -n '/^gaffer_record_resume_report() {/,/^}/p' "$RUNNER_DIR/factory.config.sh")"
+eval "$(sed -n '/^gaffer_record_resume_report() {/,/^}/p' "$RUNNER_DIR/config/18-review.sh")"
 USAGE="$WORK/usage-resume.json"
 printf '%s' '{"result":"AC 1 -> test/store.test.js::persists — asserts the note survives a restart\nsmallest-change check: src/store.js only; cut nothing"}' > "$USAGE"
 gaffer_record_resume_report "$NUM" "$USAGE" && ok "resume report recorded (rc 0)" || fail "resume report write failed"

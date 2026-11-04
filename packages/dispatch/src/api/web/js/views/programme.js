@@ -11,9 +11,10 @@ import { agentShirt, glyph, repoTag } from "../icons.js";
 import { OFF_PITCH, benchedCampaignLine, svgS } from "../matchday.js";
 import { humanizeEvent, renderFeedRow } from "../panels.js";
 import { statusBadge, statusLabel } from "../status.js";
+import { computePhases } from "./epics.js";
 import { pausedInfo } from "./review-comments.js";
 import { repoRelative } from "./ticket.js";
-import { computePhases, openPlanBuild } from "../../app.js";
+import { openPlanBuild } from "../../app.js";
 
 // --- The programme pages -----------------------------------------------------
 

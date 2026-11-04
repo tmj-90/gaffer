@@ -15,8 +15,8 @@ import { actionSheet } from "../sheets.js";
 import { riskBadge } from "../status.js";
 import { guard, toast } from "../toast.js";
 import { testerByline } from "./acceptance.js";
+import { redCard } from "./epics.js";
 import { parseDodEvidence } from "./review-comments.js";
-import { redCard } from "../../app.js";
 
 // --- Gate integrity: the delivery changed the tests that decide it is done -----
 

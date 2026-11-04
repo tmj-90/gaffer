@@ -9,23 +9,17 @@ import { announce, syncNav, updateNavBadges } from "./live.js";
 import { openPalette } from "./palette.js";
 import { appState } from "./state.js";
 import { renderCreate } from "./views/create.js";
+import { renderEpics } from "./views/epics.js";
 import { renderHealth } from "./views/health.js";
+import { renderFactory, renderHidden } from "./views/map.js";
 import { overviewError, renderOverview } from "./views/overview.js";
+import { renderRepo } from "./views/repo.js";
 import { renderReview } from "./views/review.js";
+import { renderNode } from "./views/scope-node.js";
 import { renderSettings } from "./views/settings.js";
 import { refCard, renderTicket } from "./views/ticket.js";
 import { renderWork } from "./views/work.js";
-import {
-  renderEpics,
-  renderFactory,
-  renderFloor,
-  renderHidden,
-  renderMemory,
-  renderNode,
-  renderRepo,
-  renderSpecs,
-  renderSquad,
-} from "../app.js";
+import { renderFloor, renderMemory, renderSpecs, renderSquad } from "../app.js";
 
 // --- Routing & IA -----------------------------------------------------------
 //

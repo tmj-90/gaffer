@@ -23,6 +23,8 @@ import {
 } from "../status.js";
 import { guard, toast } from "../toast.js";
 import { renderAddAcForm } from "./acceptance.js";
+import { computePhases, isAcceptanceTicket } from "./epics.js";
+import { backLink } from "./map.js";
 import { CLAIM_ONLY_BLOCKERS, loadClaimability, renderRepoPanel } from "./repo-panel.js";
 import {
   REJECT_REASON_PRESETS,
@@ -46,7 +48,6 @@ import {
   ticketRunsPanel,
 } from "./ticket-cards.js";
 import { renderWork } from "./work.js";
-import { backLink, computePhases, isAcceptanceTicket } from "../../app.js";
 
 // ===========================================================================
 //  View: Ticket detail

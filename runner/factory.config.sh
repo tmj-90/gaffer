@@ -95,112 +95,39 @@ _GAFFER_EXPORTED_AT_START=" $(compgen -e 2>/dev/null | tr '\n' ' ') "
 # the factory root; this keeps runner-spawned crew calls on the one log tick reads.
 export GAFFER_CREW_EVENTS="${GAFFER_CREW_EVENTS:-$GAFFER_DATA/events.jsonl}"
 
-# UI-editable settings. The dashboard Settings panel persists a flat {"KEY":"value"}
-# map to $GAFFER_DATA/settings.json. Apply them as defaults HERE — before the config
-# defaults below — so a real env var ALWAYS overrides the file (env wins).
-# SECURITY: do NOT eval. eval re-parses the whole string, so BOTH a crafted key and a
-# crafted value are command-injection vectors — the old `case "$_sk" in [A-Z_][A-Z0-9_]*`
-# glob pinned only the first two chars ('*' swallows `}; cmd; :`), and a value with a `}`
-# closes the `${...}` early and runs the trailing text. Instead: FULLY anchor the key to
-# a shell identifier, then test-and-assign with indirect expansion (`${!_sk}`) + `printf
-# -v`, neither of which re-parses $_sk or $_sv as a command.
-# The file was read (strictly) at the top of this file, into $_gs_out; an unreadable
-# one applied nothing and set _GAFFER_SETTINGS_UNREADABLE (see FAIL CLOSED above).
-if [ -n "$_gs_out" ]; then
-  while IFS=$'\t' read -r _sk _sv; do
-    [[ "$_sk" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue   # whole-key anchor (^…$)
-    # ENVIRONMENT-ONLY keys are never taken from the file. GAFFER_ALLOW_UNCAPPED lifts
-    # the dollar-cap requirement (lib/budget.sh gaffer_spend_cap_ok); a hand-edited or
-    # otherwise written settings.json must not be able to switch that off. Only the
-    # operator's real environment can (SECURITY.md).
-    # The worker provider knobs are environment-only too: settings.json lives in
-    # $GAFFER_DATA, and a file that picks which program runs every agent turn (and which
-    # secrets it gets) must not be one an agent's sandbox might reach. The same list is
-    # packages/dispatch/src/api/settings.ts ENV_ONLY_KEYS.
-    case "$_sk" in
-      GAFFER_ALLOW_UNCAPPED | GAFFER_WORKER_PROVIDER | GAFFER_WORKER_COMMAND | GAFFER_WORKER_COMMAND_ENV | \
-        GAFFER_WORKER_COMMAND_COST_USD | GAFFER_SANDBOX_WORKER_COMMAND) continue ;;
-    esac
-    # Under the command provider, a settings.json GAFFER_STRICT_REQUIRE=0 is NOT the
-    # operator's out-of-band assertion (the opt-out from the sandbox requirement): only
-    # the real environment can make it. Skipped, so the requirement stays on.
-    if [ "$_sk" = GAFFER_STRICT_REQUIRE ] && [ "${GAFFER_WORKER_PROVIDER:-}" = command ]; then
-      case "$(printf '%s' "$_sv" | tr '[:upper:]' '[:lower:]')" in
-        0 | false | no | off)
-          printf 'worker: ignoring GAFFER_STRICT_REQUIRE=%s from settings.json: under GAFFER_WORKER_PROVIDER=command only the environment can opt out of the OS sandbox\n' "$_sv" >&2
-          continue ;;
-      esac
-    fi
-    # assign-if-unset, no eval — and EXPORT: a dashboard setting must reach the
-    # processes that read it (the dispatch CLI's notifier, the memory server, crew),
-    # not only this shell. Unexported, notifications/auto-approve set in the UI
-    # silently never fired.
-    if [ -z "${!_sk:-}" ]; then printf -v "$_sk" '%s' "$_sv"; export "${_sk?}"; fi
-  done <<<"$_gs_out"
-  unset _sk _sv
-fi
-unset _gs_out
-
-# Product locations (mono layout: packages/* under the repo root)
-: "${DISPATCH_DIR:=$GAFFER_HOME/packages/dispatch}"
-: "${CREW_DIR:=$GAFFER_HOME/packages/crew}"
-: "${MEMORY_DIR:=$GAFFER_HOME/packages/memory}"   # memory-mcp, vendored into the mono
-
-# Shared databases (the two MCP servers read these)
-: "${DISPATCH_DB:=$GAFFER_DATA/dispatch.sqlite}"
-: "${MEMORY_DB:=$GAFFER_DATA/memory.sqlite}"
-: "${CREW_CONFIG:=$GAFFER_DATA/crew.yaml}"
-# memory's MCP/CLI audit trail. memory-mcp's own default is per-user
-# ($HOME/.memory/audit.jsonl), which every factory on a machine would share, which
-# survives deleting .gaffer, and which in the container sits outside the /data
-# volume. Pin it into this factory's data dir. Not `audit.jsonl`: dispatch already
-# writes that name beside dispatch.sqlite here. Exported (and kept by
-# gaffer_agent_env) so lg, doctor and the agent's memory-mcp all write the same file.
-: "${MEMORY_AUDIT_LOG:=$GAFFER_DATA/memory-audit.jsonl}"
-export MEMORY_AUDIT_LOG
-# CODE INDEX: memory's files -> symbols -> imports -> tests map of each repo (TS, JS,
-# Python; by import text, no model). Built at onboard and refreshed after each merge; the
-# Review's Behavioural surface reads it for the callers of changed symbols and the
-# delivery's file cards for the callers and tests of what a ticket names. 0 turns off the
-# runner's builds and the file-card lines (an index already built is then left as it is).
-: "${GAFFER_CODE_INDEX:=1}"   # 1 builds the code index at onboard / merge and primes callers into file cards; 0 off
-export GAFFER_CODE_INDEX
-
-# Shared usage-ledger READER (lib/estimate.mjs parseLedger). Every inline-node
-# consumer of the JSONL ledger imports this ONE parser instead of hand-rolling a
-# per-call-site parse loop. Exported because gaffer_ticket_rework_spend is
-# `export -f`'d and must resolve the module in child shells where RUNNER_DIR
-# (deliberately unexported) is absent.
-: "${GAFFER_ESTIMATE_LIB:=$RUNNER_DIR/lib/estimate.mjs}"
-export GAFFER_ESTIMATE_LIB
-
-# Claude Code wiring
-: "${MCP_CONFIG:=$RUNNER_DIR/.mcp.json}"
-: "${CLAUDE_SETTINGS:=$RUNNER_DIR/claude/settings.json}"
-: "${SKILLS_DIR:=$RUNNER_DIR/skills}"
-# Exported so the crew CLI the runner spawns (`fg skills`, `fg idle`, `fg maintain`)
-# reads the SAME SKILL.md library the agents are mounted (crew's loadSkillRegistry).
-export SKILLS_DIR
-: "${CLAUDE_BIN:=claude}"                                   # headless `claude -p`
-: "${CLAUDE_FLAGS:=--permission-mode acceptEdits}"          # tune to your Claude Code version
-
-# --- Worker provider ---
-# Which worker program the runner launches for every agent turn (lib/worker.sh and
-# lib/worker.mjs dispatch on it; docs/worker-providers.md is the contract).
-: "${GAFFER_WORKER_PROVIDER:=claude-code}"   # which worker runs agent turns: claude-code (headless `claude -p`, guarded by the in-process safety hook) or command (your own program at GAFFER_WORKER_COMMAND, under the contract in docs/worker-providers.md; it has no in-process safety hook, so it requires the docker sandbox with the host-side MCP bridge, SANDBOX_PROVIDER=docker on a Linux host, unless you set GAFFER_STRICT_REQUIRE=0 in the environment to say the runner is contained out-of-band). Any other value refuses to run. Environment only: settings.json cannot set it.
-: "${GAFFER_WORKER_COMMAND:=}"   # absolute path of the worker program GAFFER_WORKER_PROVIDER=command runs, with no arguments, in the call's working directory; it must live outside $GAFFER_DATA and every write root and not be writable by its group or others. It reads GAFFER_WORKER_PROMPT_FILE, GAFFER_WORKER_MCP_CONFIG, GAFFER_WORKER_MODEL, GAFFER_WORKER_MAX_TURNS and the other GAFFER_WORKER_* variables, prints one JSON object on stdout (result, stop_reason, cap_hit, num_turns, cost_usd, model, usage; all optional) and exits 0 when it finished (docs/worker-providers.md). Environment only.
-: "${GAFFER_WORKER_COMMAND_ENV:=}"   # space-separated env var names the command worker also receives (its own model credential, for example); the scrub drops them otherwise. The runner-only secrets (DISPATCH_API_TOKEN, GAFFER_CLAIM_TOKEN, GITHUB_TOKEN, GH_TOKEN, notify and webhook settings) are never passed. Environment only.
-: "${GAFFER_WORKER_COMMAND_COST_USD:=}"   # the least each command-worker call is booked at in the usage ledger, in USD, because the cost it reports is its own word: a cost it leaves out or reports lower is booked at this floor (cost_basis floor). Empty = this call's dollar cap (GAFFER_MAX_CALL_USD) when set, else GAFFER_KILL_ESTIMATE_USD; 0 = trust the worker's figure. Environment only.
-: "${GAFFER_SANDBOX_WORKER_COMMAND:=}"   # where the command worker's program lives INSIDE the docker sandbox image; empty = the same path as GAFFER_WORKER_COMMAND (the runner dir is mounted read-only at its host path, so a program kept under it works as is). Environment only.
-
-# SINGLE RUNTIME. The runner's text processing — prompt / MCP / context-primer
-# renders, the DoD distill helpers, the worktree key, the hygiene forbidden-path
-# scan, minimalism and the CI-check parse — runs through packages/crew's typed CLIs
-# only. The bash/awk twins that once backed a GAFFER_RUNTIME / GAFFER_DOD_DISTILL
-# switch were deleted after the typed defaults soaked green; their outputs are
-# pinned by runner/test/*-golden.test.sh. A gate whose CLI cannot run FAILS CLOSED
-# (never decides); a feedback helper prints nothing. The crew dist is therefore a
-# runtime requirement, like the dispatch CLI: `pnpm -r build` before running.
+# CONFIG PARTS. The defaults below the prologue live in runner/config/*.sh, one file per
+# area, sourced here in this FIXED order: each part reads what the parts before it set,
+# and the order is the order this file had when it was one file (the map and the order
+# dependencies are in runner/CLAUDE.md). Parts are sourced, never run, so they share
+# this shell and the record block at the end sees every export they made. A part that
+# is missing, unreadable or did not load to its last line stops the process (fail
+# closed): a half-loaded config must never run a tick. The parts are found next to this
+# file (symlinks resolved), not under $RUNNER_DIR, which an operator may point elsewhere.
+_GAFFER_CONFIG_DIR="${BASH_SOURCE[0]}"
+while [ -h "$_GAFFER_CONFIG_DIR" ]; do
+  _GAFFER_CONFIG_PART="$(readlink "$_GAFFER_CONFIG_DIR")"
+  case "$_GAFFER_CONFIG_PART" in
+    /*) _GAFFER_CONFIG_DIR="$_GAFFER_CONFIG_PART" ;;
+    *) _GAFFER_CONFIG_DIR="$(dirname "$_GAFFER_CONFIG_DIR")/$_GAFFER_CONFIG_PART" ;;
+  esac
+done
+_GAFFER_CONFIG_DIR="$(cd "$(dirname "$_GAFFER_CONFIG_DIR")" && pwd)/config"
+_GAFFER_CONFIG_PART=""
+# Every part ends with `_GAFFER_CONFIG_PART=<its name>`; anything else here means it did
+# not load whole.
+_gaffer_config_loaded() {
+  [ "${_GAFFER_CONFIG_PART:-}" = "$1" ] && { _GAFFER_CONFIG_PART=""; return 0; }
+  printf 'gaffer: runner/config/%s.sh is missing, unreadable or did not load to its end (looked in %s); refusing to go on with a half-loaded config (fail closed)\n' "$1" "$_GAFFER_CONFIG_DIR" >&2
+  exit 1
+}
+# shellcheck source=config/01-settings.sh
+[ -r "$_GAFFER_CONFIG_DIR/01-settings.sh" ] && . "$_GAFFER_CONFIG_DIR/01-settings.sh"; _gaffer_config_loaded 01-settings
+# shellcheck source=config/02-paths.sh
+[ -r "$_GAFFER_CONFIG_DIR/02-paths.sh" ] && . "$_GAFFER_CONFIG_DIR/02-paths.sh"; _gaffer_config_loaded 02-paths
+# shellcheck source=config/03-wiring.sh
+[ -r "$_GAFFER_CONFIG_DIR/03-wiring.sh" ] && . "$_GAFFER_CONFIG_DIR/03-wiring.sh"; _gaffer_config_loaded 03-wiring
+unset -f _gaffer_config_loaded
+unset _GAFFER_CONFIG_DIR _GAFFER_CONFIG_PART
 
 # Model tiering: a strong model PLANS, a fast model IMPLEMENTS + TESTS. Set either
 # to empty to fall back to the Claude default for that step. The steps split as:

@@ -168,7 +168,7 @@ mkdir -p "$WORK/real"; ln -s "$WORK/real" "$WORK/link"
 
 echo "== 9: the runner is python-free =="
 grep -q '^jget() { gaffer_json expr "\$1"; }' "$RUNNER_DIR/factory.config.sh" && ok "factory.config.sh jget is node-backed" || no "jget definition"
-left="$(grep -n "python3" "$RUNNER_DIR"/tick.sh "$RUNNER_DIR"/factory.config.sh "$RUNNER_DIR"/gaffer "$RUNNER_DIR"/loop.sh "$RUNNER_DIR"/status.sh "$RUNNER_DIR"/run-summary.sh "$RUNNER_DIR"/lib/*.sh "$RUNNER_DIR"/eval/*.sh | grep -v ':[0-9]*:\s*#' || true)"
+left="$(grep -n "python3" "$RUNNER_DIR"/tick.sh "$RUNNER_DIR"/factory.config.sh "$RUNNER_DIR"/config/*.sh "$RUNNER_DIR"/gaffer "$RUNNER_DIR"/loop.sh "$RUNNER_DIR"/status.sh "$RUNNER_DIR"/run-summary.sh "$RUNNER_DIR"/lib/*.sh "$RUNNER_DIR"/eval/*.sh | grep -v ':[0-9]*:\s*#' || true)"
 [ -z "$left" ] && ok "no runner script invokes python3" || no "python3 still invoked: $left"
 
 echo; echo "json-tool: $P passed, $F failed"

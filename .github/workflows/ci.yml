@@ -100,7 +100,7 @@ jobs:
         run: |
           sudo apt-get install -y -q shellcheck >/dev/null
           shellcheck --version | head -2
-          FILES=(runner/tick.sh runner/loop.sh runner/worker.sh runner/factory.config.sh runner/gaffer
+          FILES=(runner/tick.sh runner/loop.sh runner/worker.sh runner/factory.config.sh runner/config/*.sh runner/gaffer
                  runner/setup.sh runner/preflight.sh runner/status.sh runner/run-summary.sh runner/demo.sh
                  runner/lib/*.sh runner/eval/*.sh runner/sandbox/smoke-test.sh runner/bin/poll-once.sh runner/test/*.sh
                  runner/test/lib/*.sh)

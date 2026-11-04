@@ -35,7 +35,7 @@ fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 echo "== G1: no pipe into an early-exiting grep =="
 # Every production script and sourced lib (they inherit tick.sh's pipefail), and every
 # test that turns pipefail on itself.
-FILES=("$RUNNER_DIR"/*.sh "$RUNNER_DIR"/gaffer "$RUNNER_DIR"/lib/*.sh "$RUNNER_DIR"/bin/*.sh
+FILES=("$RUNNER_DIR"/*.sh "$RUNNER_DIR"/config/*.sh "$RUNNER_DIR"/gaffer "$RUNNER_DIR"/lib/*.sh "$RUNNER_DIR"/bin/*.sh
        "$RUNNER_DIR"/eval/*.sh "$RUNNER_DIR"/test/lib/*.sh)
 for f in "$RUNNER_DIR"/test/*.sh; do grep -q 'pipefail' "$f" && FILES+=("$f"); done
 # A `|` (not `||`) followed by grep whose flags include q, or --quiet. Lines that

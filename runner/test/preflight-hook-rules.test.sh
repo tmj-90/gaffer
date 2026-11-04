@@ -41,6 +41,7 @@ mkdir -p "$WORK/copy/lib"
 cp -R "$RUNNER_DIR/lib/hook" "$RUNNER_DIR/lib/dangerous-commands.mjs" "$WORK/copy/lib/"
 cp "$RUNNER_DIR"/lib/*.sh "$WORK/copy/lib/" 2>/dev/null
 for f in "$RUNNER_DIR"/*.sh; do cp "$f" "$WORK/copy/"; done
+cp -R "$RUNNER_DIR/config" "$WORK/copy/"
 OUT="$(pf "$WORK/copy")"
 [[ "$OUT" == *"$LOADS"* ]] && ok "the copy loads before anything is removed" \
   || fail "copy baseline: $(printf '%s' "$OUT" | grep -i 'safety hook')"

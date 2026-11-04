@@ -135,7 +135,7 @@ done
 # GAFFER_CONCURRENCY block, default 1) — NOT re-defaulted in the backpressure block,
 # where a second `:=` would be a dead no-op (FIX-4). Assert exactly one default and
 # that it is :=1.
-conc_defaults="$(grep -Ec '^: "\$\{MAX_CONCURRENT_TICKETS_PER_REPO:=' "$RUNNER_DIR/factory.config.sh")"
+conc_defaults="$(cat "$RUNNER_DIR"/factory.config.sh "$RUNNER_DIR"/config/*.sh | grep -Ec '^: "\$\{MAX_CONCURRENT_TICKETS_PER_REPO:=')"
 [ "$conc_defaults" = "1" ] \
   && ok "MAX_CONCURRENT_TICKETS_PER_REPO defaulted exactly once (no dead duplicate)" \
   || fail "MAX_CONCURRENT_TICKETS_PER_REPO defaulted $conc_defaults time(s) — expected exactly 1"

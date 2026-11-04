@@ -28,7 +28,7 @@ bad="$(grep -nH 'dispatch/dist/cli/index\.js' "${DOCS[@]}" 2>/dev/null \
 $bad"
 
 # Hints the runner PRINTS live in its scripts; the rest in the docs.
-SCRIPTS=("$RUNNER_DIR"/*.sh "$RUNNER_DIR/gaffer")
+SCRIPTS=("$RUNNER_DIR"/*.sh "$RUNNER_DIR"/config/*.sh "$RUNNER_DIR/gaffer")
 MDS=("$ROOT/README.md" "$ROOT/quickstart.md" "$RUNNER_DIR/ONBOARDING.md" "$RUNNER_DIR/RUNBOOK.md" "$RUNNER_DIR/README.md")
 
 echo "== next-step hints use the front door, not cwd-relative scripts =="

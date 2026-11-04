@@ -95,7 +95,7 @@ gaffer_timeout 5 bash -c 'sleep 0.8; true' ; rc=$?
   || ok "PGID record removed on normal completion (never stale)"
 
 echo "== AC4: perl teardown forwards TERM/INT + escalates TERM->KILL (source) =="
-cfg="$RUNNER_DIR/factory.config.sh"
+cfg="$RUNNER_DIR/config/09-render.sh"
 grep -q 'SIG{TERM} = sub { $reap->(143) }' "$cfg" \
   && ok "parent forwards SIGTERM to the child group (no orphan on parent kill)" \
   || fail "perl parent does not forward SIGTERM"

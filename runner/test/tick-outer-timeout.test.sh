@@ -159,7 +159,7 @@ elapsed=$((SECONDS - start))
   || fail "AC5 reap took ${elapsed}s — the KILL did not fire at the configured grace"
 
 echo "== AC6: GNU/BSD timeout fallbacks escalate with the configurable grace =="
-grep -Eq 'timeout -s TERM -k "\$GAFFER_REAP_GRACE"' "$CFG" \
+grep -Eq 'timeout -s TERM -k "\$GAFFER_REAP_GRACE"' "$RUNNER_DIR/config/09-render.sh" \
   && ok "AC6 timeout/gtimeout fallbacks use -k \$GAFFER_REAP_GRACE" \
   || fail "AC6 fallbacks still hardcode the TERM->KILL grace"
 

@@ -329,7 +329,11 @@ the DispatchError code mapped to an appropriate HTTP status.
 The SPA lives in `src/api/web/`. `app.js` is the entry the page loads: it imports the
 modules under `js/`, registers the page's load-time listeners and starts the router.
 The server serves `/app.js`, `/js/*.js` and `/js/views/*.js` as same-origin scripts,
-which `script-src 'self'` covers.
+which `script-src 'self'` covers. A first load fetches 56 scripts instead of 2: `theme.js`,
+`app.js` and its 54 modules, found in four waves (the entry's 10 imports, then 27, then 17),
+all served `no-store`. On loopback the page's DOMContentLoaded moves from about 170-195 ms to
+about 310 ms; the Overview itself still renders in about one second either way, bound by its
+API reads.
 
 | Module | What it holds |
 | --- | --- |

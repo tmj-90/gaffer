@@ -20,7 +20,7 @@ Output: `/tmp/gaffer-ui-regression/shots/` (one screenshot per step) and
 hard failure. `KEEP_DASHBOARD=1` leaves the dashboard up with its token printed.
 
 Runs in CI as the `ui-regression` job (`.github/workflows/ci.yml`). Run it locally too
-before a release or after touching `app.js`, the runner's delivery loop, or the review gate.
+before a release or after touching the dashboard (`app.js` and its modules under `js/`), the runner's delivery loop, or the review gate.
 
 ## Accessibility audit
 

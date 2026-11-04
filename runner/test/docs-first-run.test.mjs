@@ -19,7 +19,7 @@
 //   UI F-15 the README says how to get a read-only token
 // Run: node runner/test/docs-first-run.test.mjs
 // =====================================================================
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -51,7 +51,18 @@ const quick = read("quickstart.md");
 const security = read("SECURITY.md");
 const features = read("docs/FEATURES.md");
 const config = read("docs/CONFIG.md");
-const app = read("packages/dispatch/src/api/web/app.js");
+// The SPA: the entry app.js and the modules it imports under web/js/.
+const WEB = "packages/dispatch/src/api/web";
+const app = ["app.js"]
+  .concat(
+    readdirSync(resolve(ROOT, WEB, "js"), { recursive: true })
+      .map(String)
+      .filter((f) => f.endsWith(".js"))
+      .sort()
+      .map((f) => `js/${f}`),
+  )
+  .map((f) => read(`${WEB}/${f}`))
+  .join("\n");
 
 console.log("== F-01: the unattended greenfield recipe ==");
 const gotchas = section(quick, "### What Gaffer does on a greenfield run");

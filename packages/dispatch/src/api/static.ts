@@ -10,7 +10,7 @@ import { errorBody, sendJson } from "./http.js";
  * server.ts unchanged (a pure move).
  */
 
-/** Directory holding the bundled SPA (index.html, app.js, theme.js, css/). */
+/** Directory holding the bundled SPA (index.html, app.js, js/, theme.js, css/). */
 const WEB_DIR = join(dirname(fileURLToPath(import.meta.url)), "web");
 
 /**
@@ -34,6 +34,8 @@ const STATIC_ROUTES: ReadonlyMap<string, { file: string; type: string }> = new M
 const ASSETS_DIR = join(WEB_DIR, "assets");
 /** The layered stylesheets under /css/ (tokens, base, layout, components, views/*). */
 const CSS_DIR = join(WEB_DIR, "css");
+/** The dashboard's ES modules under /js/ (shared helpers, views/*), imported by /app.js. */
+const JS_DIR = join(WEB_DIR, "js");
 const ASSET_MIME: ReadonlyMap<string, string> = new Map([
   // Self-hosted fonts + their @font-face sheet (assets/fonts/).
   [".woff2", "font/woff2"],
@@ -74,6 +76,26 @@ export function serveStatic(pathname: string, res: ServerResponse): boolean {
       const body = readFileSync(full);
       res.writeHead(200, {
         "content-type": "text/css; charset=utf-8",
+        "content-length": body.length,
+        "cache-control": "no-store, must-revalidate",
+      });
+      res.end(body);
+    } catch {
+      return false;
+    }
+    return true;
+  }
+  // The SPA's modules under /js/ (app.js is the entry and imports them): .js only,
+  // and the resolved path MUST stay inside WEB_DIR/js (blocks ../ traversal). Same
+  // no-store policy as the entry: a stale module beside a fresh entry would mix builds.
+  if (pathname.startsWith("/js/")) {
+    if (extname(pathname).toLowerCase() !== ".js") return false;
+    const full = resolve(JS_DIR, "." + pathname.slice("/js".length));
+    if (!full.startsWith(JS_DIR + sep)) return false;
+    try {
+      const body = readFileSync(full);
+      res.writeHead(200, {
+        "content-type": "text/javascript; charset=utf-8",
         "content-length": body.length,
         "cache-control": "no-store, must-revalidate",
       });

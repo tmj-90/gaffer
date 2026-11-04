@@ -5,7 +5,7 @@
 // shipped spec plan still "in progress", and CONFIG.md listing the agent-approve and
 // memory-auto-approve flags as on by default). Each is pinned here against its source:
 //   D1 every skill count in README / ARCHITECTURE / runner/README = the runner/skills dirs
-//   D2 the dashboard view count in ARCHITECTURE = the NAV entries in app.js
+//   D2 the dashboard view count in ARCHITECTURE = the NAV entries in the SPA (web/js/chrome.js)
 //   D3 docs/FEATURES.md's Specs section does not say "in progress" (it shipped)
 //   D4 CONFIG.md and the settings help say DISPATCH_ALLOW_AGENT_APPROVE and
 //      MEMORY_AUTO_APPROVE are off by default (the supervised mode's fill)
@@ -49,7 +49,7 @@ for (const f of ["README.md", "ARCHITECTURE.md", "runner/README.md"]) {
 }
 
 console.log("== D2: dashboard view count ==");
-const app = read("packages/dispatch/src/api/web/app.js");
+const app = read("packages/dispatch/src/api/web/js/chrome.js");
 const navBlock = app.slice(
   app.indexOf("const NAV = ["),
   app.indexOf("];", app.indexOf("const NAV = [")),

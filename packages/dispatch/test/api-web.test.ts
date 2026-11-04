@@ -1,10 +1,14 @@
+import { readdirSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import type { AddressInfo } from "node:net";
+import { dirname, join, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { Dispatch } from "../src/core.js";
 import { createApiServer } from "../src/api/server.js";
+import { serveStatic } from "../src/api/static.js";
 
 interface Harness {
   baseUrl: string;
@@ -70,6 +74,35 @@ describe("API: SPA static surface", () => {
     expect(body.length).toBeGreaterThan(0);
   });
 
+  it("serves every module the entry imports, and only those, as no-store JavaScript", async () => {
+    // Walk the page's module graph the way a browser does: every relative import of
+    // every module the server hands out must come back 200 text/javascript, no-store.
+    const seen = new Set<string>();
+    const queue = [`${h.baseUrl}/app.js`];
+    while (queue.length) {
+      const url = queue.shift() ?? "";
+      if (seen.has(url)) continue;
+      seen.add(url);
+      const res = await fetch(url);
+      const at = new URL(url).pathname;
+      expect(res.status, at).toBe(200);
+      expect(res.headers.get("content-type"), at).toBe("text/javascript; charset=utf-8");
+      expect(res.headers.get("cache-control"), at).toMatch(/no-store/);
+      const src = await res.text();
+      for (const m of src.matchAll(/^import [^;]*? from "(\.{1,2}\/[^"]+)";/gms))
+        queue.push(new URL(m[1] ?? "", url).href);
+    }
+    // Every module on disk is reachable from the entry (no orphan the page never loads).
+    const jsDir = join(dirname(fileURLToPath(import.meta.url)), "../src/api/web/js");
+    const onDisk = readdirSync(jsDir, { recursive: true })
+      .map(String)
+      .filter((f) => f.endsWith(".js"))
+      .map((f) => `/js/${f.split(sep).join("/")}`);
+    const served = [...seen].map((u) => new URL(u).pathname).filter((p) => p !== "/app.js");
+    expect(served.sort()).toEqual(onDisk.sort());
+    expect(served.length).toBeGreaterThan(50);
+  });
+
   it("serves the layered stylesheets under /css/ and the pre-paint theme script", async () => {
     // styles.css was split into css/*.css (@layer reset, tokens, base, layout,
     // components, views, utilities); tokens.css declares the layer order.
@@ -103,6 +136,32 @@ describe("API: SPA static surface", () => {
       });
     expect(await raw("/css/../api/static.css")).toBe(404);
     expect(await raw("/css/views/../../index.css")).toBe(404);
+  });
+
+  it("refuses non-JS and traversal under /js/ (JSON 404)", async () => {
+    for (const p of ["/js/state.css", "/js/missing.js", "/js/views/missing.js", "/js/"]) {
+      const res = await fetch(`${h.baseUrl}${p}`);
+      expect(res.status, p).toBe(404);
+      expect(res.headers.get("content-type"), p).toMatch(/application\/json/);
+    }
+    // fetch() normalises dot segments, so send the raw path to reach the server's guard.
+    const raw = (path: string) =>
+      new Promise<number>((resolve, reject) => {
+        const req = httpRequest(`${h.baseUrl}${path}`, { method: "GET", path }, (res) => {
+          res.resume();
+          resolve(res.statusCode ?? 0);
+        });
+        req.on("error", reject);
+        req.end();
+      });
+    expect(await raw("/js/../api/static.js")).toBe(404);
+    expect(await raw("/js/views/../../server.js")).toBe(404);
+    expect(await raw("/js/%2e%2e/static.js")).toBe(404);
+    // The server normalises dot segments before routing; the guard itself must still
+    // refuse a path that resolves outside web/js (src/api/static.ts sits beside web/).
+    const untouched = { writeHead: () => untouched, end: () => untouched } as never;
+    for (const p of ["/js/../../static.js", "/js/../app.js", "/js/views/../../../server.js"])
+      expect(serveStatic(p, untouched), p).toBe(false);
   });
 
   it("does not let the SPA fallback swallow an unknown API path (still JSON 404)", async () => {

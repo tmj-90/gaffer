@@ -7,7 +7,9 @@ export default defineConfig({
     // Clears long-lived pollers/timeouts the web SPA (app.js) leaves running
     // after each DOM test, so a timer can't fire after JSDOM teardown (vitest 3
     // fails the run on that). See test/setup-timers.ts.
-    setupFiles: ["test/setup-timers.ts"],
+    // test/setup-web-modules.ts carries a boot's cache-busting query onto every module
+    // app.js imports (src/api/web/js/), so each boot gets a whole fresh module graph.
+    setupFiles: ["test/setup-timers.ts", "test/setup-web-modules.ts"],
     // Audit writes are off by default in tests so the suite doesn't litter an
     // audit.jsonl beside the cwd DB. The dedicated audit tests opt back in by
     // pointing DISPATCH_AUDIT at a temp file and clearing this flag locally.
@@ -20,7 +22,8 @@ export default defineConfig({
     // 7 GB macOS runner. app.js is plain ESM that needs no transform (and is
     // excluded from coverage), so hand it to Node's own loader in the worker:
     // the per-test instances then live and die with that test file's process.
-    server: { deps: { external: [/\/src\/api\/web\/app\.js(\?|$)/] } },
+    // The same holds for the modules app.js imports under src/api/web/js/.
+    server: { deps: { external: [/\/src\/api\/web\/(app|js\/.+)\.js(\?|$)/] } },
     coverage: {
       provider: "v8",
       reporter: ["text", "html", "lcov"],

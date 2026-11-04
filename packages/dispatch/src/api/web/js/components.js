@@ -1,8 +1,9 @@
 // View scaffolding: view and panel heads, empty states, skeletons, stat cells, KPI cards, bands.
 // Moved verbatim from app.js (the entry); the module map is in app.js.
 
+import { svgSpark } from "./charts.js";
 import { el } from "./dom.js";
-import { overviewSkeleton, svgSpark } from "../app.js";
+import { overviewSkeleton } from "./views/overview.js";
 
 // --- View scaffolding -------------------------------------------------------
 

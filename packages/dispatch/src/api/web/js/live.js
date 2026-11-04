@@ -9,6 +9,7 @@ import { parseJsonSafe } from "./format.js";
 import { freshness } from "./freshness.js";
 import { clubName } from "./kit.js";
 import { renderLogin } from "./login.js";
+import { OFF_PITCH, ON_PITCH, allTickets } from "./matchday.js";
 import {
   VIEWS,
   activeArea,
@@ -21,7 +22,7 @@ import {
   routeGen,
 } from "./router.js";
 import { toast } from "./toast.js";
-import { OFF_PITCH, ON_PITCH, allTickets, hashText, isModalOpen } from "../app.js";
+import { hashText, isModalOpen } from "../app.js";
 
 /**
  * The gate is up, so the page stops asking. A token revoked or rotated server-side

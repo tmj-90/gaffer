@@ -5,9 +5,10 @@ import { readOnly } from "./access.js";
 import { effectiveTheme, setTheme, storedTheme, toggleTheme } from "./chrome.js";
 import { clear, el } from "./dom.js";
 import { icon } from "./icons.js";
+import { allTickets } from "./matchday.js";
 import { navigate } from "./router.js";
 import { statusLabel } from "./status.js";
-import { allTickets, openPlanBuild, openSpecBuild } from "../app.js";
+import { openPlanBuild, openSpecBuild } from "../app.js";
 
 // --- Command palette (⌘K) ---------------------------------------------------
 

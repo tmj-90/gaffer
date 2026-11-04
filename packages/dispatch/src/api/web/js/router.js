@@ -8,8 +8,8 @@ import { icon } from "./icons.js";
 import { announce, syncNav, updateNavBadges } from "./live.js";
 import { openPalette } from "./palette.js";
 import { appState } from "./state.js";
+import { overviewError, renderOverview } from "./views/overview.js";
 import {
-  overviewError,
   refCard,
   renderCreate,
   renderEpics,
@@ -19,7 +19,6 @@ import {
   renderHidden,
   renderMemory,
   renderNode,
-  renderOverview,
   renderRepo,
   renderReview,
   renderSettings,

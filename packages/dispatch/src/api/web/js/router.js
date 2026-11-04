@@ -8,11 +8,11 @@ import { icon } from "./icons.js";
 import { announce, syncNav, updateNavBadges } from "./live.js";
 import { openPalette } from "./palette.js";
 import { appState } from "./state.js";
+import { renderCreate } from "./views/create.js";
 import { overviewError, renderOverview } from "./views/overview.js";
+import { refCard, renderTicket } from "./views/ticket.js";
 import { renderWork } from "./views/work.js";
 import {
-  refCard,
-  renderCreate,
   renderEpics,
   renderFactory,
   renderFloor,
@@ -25,7 +25,6 @@ import {
   renderSettings,
   renderSpecs,
   renderSquad,
-  renderTicket,
 } from "../app.js";
 
 // --- Routing & IA -----------------------------------------------------------

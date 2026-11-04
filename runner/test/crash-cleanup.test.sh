@@ -287,7 +287,7 @@ if [ -f "$TICK" ]; then
   # success teardown is the last BARE `gaffer_cleanup_worktrees` (no drop-branch) call
   # that precedes it. Find both line numbers and assert teardown comes first.
   set_line="$(grep -n '^[[:space:]]*GAFFER_DELIVERY_COMPLETE=1[[:space:]]*$' "$HERE/../lib/tick-close.sh" | tail -1 | cut -d: -f1)"
-  teardown_line="$(grep -n '^[[:space:]]*gaffer_cleanup_worktrees[[:space:]]*$' "$HERE/../lib/tick-recovery.sh" | awk -F: -v s="${set_line:-0}" '$1 < s {l=$1} END {print l}')"
+  teardown_line="$(grep -n '^[[:space:]]*gaffer_cleanup_worktrees[[:space:]]*$' "$HERE/../lib/tick-close.sh" | awk -F: -v s="${set_line:-0}" '$1 < s {l=$1} END {print l}')"
   if [ -n "$set_line" ] && [ -n "$teardown_line" ] && [ "$teardown_line" -lt "$set_line" ]; then
     ok "GAFFER_DELIVERY_COMPLETE=1 (line $set_line) is AFTER the success teardown (line $teardown_line)"
   else

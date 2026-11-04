@@ -341,7 +341,7 @@ git -C "$R" update-ref refs/heads/main "$(git -C "$R" rev-parse fresh)"   # main
 [ -z "$(gaffer_delivery_base_sha "$R" main no-such-branch "")" ] && ok "I7 nothing resolvable prints nothing" \
   || fail "I7 printed something for a missing branch"
 grep -q '_gaffer_note_branch_cut "$rpath"            # GATE INTEGRITY' "$RUNNER_DIR/lib/tick-launch.sh" \
-  && [ "$(cat "$RUNNER_DIR/lib/tick-launch.sh" "$RUNNER_DIR"/lib/tick-*.sh | grep -c '_gaffer_note_branch_cut "$rpath"')" -ge 2 ] \
+  && [ "$(cat "$TICK" "$RUNNER_DIR"/lib/tick-*.sh | grep -c '_gaffer_note_branch_cut "$rpath"')" -ge 2 ] \
   && ! grep -q 'gaffer_delivery_base_sha "$rpath" "$rbase" "$WORK_BRANCH" "$_created"' "$TICK" "$RUNNER_DIR"/lib/tick-*.sh \
   && ok "I8 tick.sh captures the cut commit at every worktree add -B (first cut and retry re-cut), never a later tip" \
   || fail "I8 tick.sh does not capture the cut commit at each -B"

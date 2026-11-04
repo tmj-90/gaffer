@@ -71,7 +71,7 @@ GAFFER_REPO_CANONICALS="$_CANON_MAP" gaffer_render_mcp_runtime "$TEMPLATE" "$WOR
 # Call sites: bootstrap + delivery (tick.sh) and clarify bind their ticket through the
 # render's scope argument, and nothing re-edits the rendered JSON to add it (a
 # post-render edit re-serialises the file, drifting the bash render from the TS golden).
-grep -Eq 'gaffer_render_mcp_runtime "\$MCP_CONFIG" "\$MCP_RUNTIME" "" "\$NUM"' "$RUNNER_DIR/tick.sh" \
+grep -Eq 'gaffer_render_mcp_runtime "\$MCP_CONFIG" "\$MCP_RUNTIME" "" "\$NUM"' "$RUNNER_DIR/lib/tick-bootstrap.sh" \
   && ok "bootstrap render binds scope ticket \$NUM" || no "bootstrap render does not pass the scope ticket"
 grep -Eq 'gaffer_render_mcp_runtime "\$MCP_CONFIG" "\$MCP_RUNTIME" "\$NUM" "\$NUM"' "$RUNNER_DIR/lib/tick-launch.sh" \
   && ok "delivery render binds scope ticket \$NUM" || no "delivery render does not pass the scope ticket"

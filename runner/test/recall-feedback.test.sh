@@ -196,7 +196,7 @@ else
   fail "delivery render does not set GAFFER_RECALL_TICKET to \$NUM"
 fi
 # The BOOTSTRAP render leaves it empty (no delivery-recall context → inert).
-if grep -Eq 'gaffer_render_mcp_runtime[[:space:]]+"\$MCP_CONFIG"[[:space:]]+"\$MCP_RUNTIME"[[:space:]]+""' "$TICK"; then
+if grep -Eq 'gaffer_render_mcp_runtime[[:space:]]+"\$MCP_CONFIG"[[:space:]]+"\$MCP_RUNTIME"[[:space:]]+""' "$RUNNER_DIR/lib/tick-bootstrap.sh"; then
   ok "bootstrap render leaves GAFFER_RECALL_TICKET empty (inert, seam recall arg)"
 else
   fail "bootstrap render does not leave GAFFER_RECALL_TICKET empty"

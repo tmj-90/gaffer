@@ -446,7 +446,7 @@ console.log("== AC6: buildClaudeArgv shape + tick.sh wiring ==");
     "sonnet",
   );
 
-  const tick = readFileSync(resolve(RUNNER_DIR, "tick.sh"), "utf8");
+  const tick = readFileSync(resolve(RUNNER_DIR, "lib", "tick-bootstrap.sh"), "utf8");
   if (tick.includes("gaffer_inherit_repo")) ok("tick.sh calls gaffer_inherit_repo after onboard");
   else fail("tick.sh does not wire gaffer_inherit_repo");
 

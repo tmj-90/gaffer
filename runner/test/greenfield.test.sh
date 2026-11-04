@@ -189,7 +189,7 @@ _newbr="$(git -C "$UNB" symbolic-ref --short HEAD 2>/dev/null || echo main)"
 [ "$(printf '%s' "$_newbr" | wc -l | tr -d ' ')" = "0" ] \
   && ok "captured branch has no embedded newline (the exact failure signature)" \
   || fail "captured branch must be single-line (got '$(printf %q "$_newbr")')"
-grep -q 'B_DEFAULT_BRANCH="\$(gaffer_bootstrap_base_branch "\$B_DIR")"' "$RUNNER_DIR/tick.sh" \
+grep -q 'B_DEFAULT_BRANCH="\$(gaffer_bootstrap_base_branch "\$B_DIR")"' "$RUNNER_DIR/lib/tick-bootstrap.sh" \
   && ok "tick.sh captures B_DEFAULT_BRANCH via gaffer_bootstrap_base_branch (fix guarded in place)" \
   || fail "tick.sh must capture B_DEFAULT_BRANCH via gaffer_bootstrap_base_branch (regression guard)"
 grep -q 'symbolic-ref --short HEAD' "$RUNNER_DIR/lib/greenfield.sh" \
@@ -240,14 +240,14 @@ grep -q 'lib/greenfield.sh' "$RUNNER_DIR/factory.config.sh" \
 echo "== AC8: tick.sh wires the bootstrap create-a-repo branch =="
 grep -q "d.ticket.bootstrap" "$RUNNER_DIR/lib/tick-claim.sh" \
   && ok "tick.sh reads ticket.bootstrap" || fail "tick.sh does not read ticket.bootstrap"
-grep -q 'gaffer_bootstrap_repo_dir' "$RUNNER_DIR/tick.sh" \
+grep -q 'gaffer_bootstrap_repo_dir' "$RUNNER_DIR/lib/tick-bootstrap.sh" \
   && ok "tick.sh derives the new repo dir" || fail "tick.sh does not derive the repo dir"
-grep -q 'gaffer_bootstrap_onboard' "$RUNNER_DIR/tick.sh" \
+grep -q 'gaffer_bootstrap_onboard' "$RUNNER_DIR/lib/tick-bootstrap.sh" \
   && ok "tick.sh registers + onboards the new repo" || fail "tick.sh does not onboard the new repo"
-grep -q 'GAFFER_BOOTSTRAP_INSTALL=1' "$RUNNER_DIR/tick.sh" \
+grep -q 'GAFFER_BOOTSTRAP_INSTALL=1' "$RUNNER_DIR/lib/tick-bootstrap.sh" \
   && ok "tick.sh exports the scoped install allowance for the bootstrap tick" \
   || fail "tick.sh does not export GAFFER_BOOTSTRAP_INSTALL"
-grep -q 'gaffer_inherit_repo' "$RUNNER_DIR/tick.sh" \
+grep -q 'gaffer_inherit_repo' "$RUNNER_DIR/lib/tick-bootstrap.sh" \
   && ok "tick.sh wires gaffer_inherit_repo after a successful onboard" \
   || fail "tick.sh does not call gaffer_inherit_repo"
 
@@ -256,16 +256,16 @@ echo "== AC8b: tick.sh delivers the bootstrap ON A BRANCH via the normal review 
 # (the reviewer refused that: "no delivery branch recorded → fail closed"). Instead it
 # branches gaffer/ticket-N-<slug> off the README baseline, records THAT branch as the
 # delivery branch_name, and submits via the ordinary claim-gated lane.
-grep -q 'B_WORK_BRANCH="gaffer/ticket-\$NUM-\$B_SLUG"' "$RUNNER_DIR/tick.sh" \
+grep -q 'B_WORK_BRANCH="gaffer/ticket-\$NUM-\$B_SLUG"' "$RUNNER_DIR/lib/tick-bootstrap.sh" \
   && ok "tick.sh mints the gaffer/ticket-N-<slug> delivery branch for the bootstrap" \
   || fail "tick.sh does not create a gaffer/ticket-N delivery branch for the bootstrap"
-grep -q 'git -C "\$B_DIR" checkout -B "\$B_WORK_BRANCH"' "$RUNNER_DIR/tick.sh" \
+grep -q 'git -C "\$B_DIR" checkout -B "\$B_WORK_BRANCH"' "$RUNNER_DIR/lib/tick-bootstrap.sh" \
   && ok "tick.sh checks out the delivery branch before the scaffold agent runs" \
   || fail "tick.sh does not check out the bootstrap delivery branch"
-grep -q 'wg delivery-artifact "\$NUM" --branch "\$B_WORK_BRANCH"' "$RUNNER_DIR/tick.sh" \
+grep -q 'wg delivery-artifact "\$NUM" --branch "\$B_WORK_BRANCH"' "$RUNNER_DIR/lib/tick-bootstrap.sh" \
   && ok "tick.sh records branch_name = the delivery branch (reviewer resolves it)" \
   || fail "tick.sh must record delivery-artifact --branch \$B_WORK_BRANCH (not main)"
-grep -q 'gaffer_submit_delivery "bootstrapped new repo' "$RUNNER_DIR/tick.sh" \
+grep -q 'gaffer_submit_delivery "bootstrapped new repo' "$RUNNER_DIR/lib/tick-bootstrap.sh" \
   && ok "tick.sh submits the bootstrap via the ordinary gaffer_submit_delivery lane" \
   || fail "tick.sh does not submit the bootstrap via the normal claim-gated lane"
 # The scaffold branches OFF the baseline; both slugs come from the shared helper.

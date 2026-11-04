@@ -30,12 +30,12 @@ gaffer_test_check_tmp "$WORK" || exit 70
 trap 'gaffer_test_rm_work "$WORK"' EXIT
 
 echo "== 1: the bootstrap selector receives the ticket text =="
-B_LINE="$(grep -n 'B_SKILLS="\$(node "\$HERE/bin/select-skills.mjs"' "$RUNNER_DIR/tick.sh" | head -1)"
+B_LINE="$(grep -n 'B_SKILLS="\$(node "\$HERE/bin/select-skills.mjs"' "$RUNNER_DIR/lib/tick-bootstrap.sh" | head -1)"
 [ -n "$B_LINE" ] && ok "bootstrap select-skills line found" || fail "bootstrap B_SKILLS line not found"
 grep -q -- '--text "\$_B_SKILL_TEXT"' <<<"$B_LINE" \
   && ok "bootstrap passes --text (title + description head) like the delivery path" \
   || fail "bootstrap select-skills should pass --text"
-grep -q '_B_SKILL_TEXT="\$(printf .%s\\n%s. "\${TITLE:-}"' "$RUNNER_DIR/tick.sh" \
+grep -q '_B_SKILL_TEXT="\$(printf .%s\\n%s. "\${TITLE:-}"' "$RUNNER_DIR/lib/tick-bootstrap.sh" \
   && ok "the bootstrap text is the ticket title + description head" \
   || fail "_B_SKILL_TEXT should be built from TITLE + description"
 D_LINE="$(grep -n 'SKILLS="\$(node "\$HERE/bin/select-skills.mjs"' "$RUNNER_DIR/lib/tick-claim.sh" | grep -v B_SKILLS | head -1)"
@@ -51,7 +51,7 @@ echo "== 1b: the bootstrap mounts the BOOTSTRAP role profile (scaffold packs) ==
 grep -q -- '--role bootstrap' <<<"$B_LINE" \
   && ok "bootstrap select-skills passes --role bootstrap" || fail "bootstrap select-skills should pass --role bootstrap"
 # Run tick.sh's own B_SKILLS line (not a copy) with its inputs stubbed.
-B_CMD="$(sed -n 's/^[[:space:]]*\(B_SKILLS="\$(node "\$HERE\/bin\/select-skills.mjs".*\)$/\1/p' "$RUNNER_DIR/tick.sh" | head -1)"
+B_CMD="$(sed -n 's/^[[:space:]]*\(B_SKILLS="\$(node "\$HERE\/bin\/select-skills.mjs".*\)$/\1/p' "$RUNNER_DIR/lib/tick-bootstrap.sh" | head -1)"
 B_OUT="$(HERE="$RUNNER_DIR" STACK=go B_AREA="" _B_SKILL_TEXT="Scaffold a Go CLI for gym sessions" SKILLS_DIR="$RUNNER_DIR/skills" \
   bash -c "$B_CMD"'; printf "%s" "$B_SKILLS"' 2>/dev/null)"
 for want in ci-cd-pipeline docker-development shell-scripting go-conventions run-tests; do

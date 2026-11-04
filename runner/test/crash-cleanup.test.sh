@@ -313,7 +313,7 @@ echo "== 8. (FIX-BRANCH) tick.sh raises GAFFER_KEEP_DELIVERY_BRANCH=1 BEFORE rec
 # Static ordering check against the REAL tick.sh: the retention flag must be raised
 # strictly BEFORE the first delivery-record call, so no review-visible branch can be
 # dropped by a later crash/signal.
-TICK="$HERE/../tick.sh"
+TICK="$HERE/../lib/tick-bootstrap.sh"
 if [ -f "$TICK" ]; then
   keep_line="$(grep -n '^[[:space:]]*GAFFER_KEEP_DELIVERY_BRANCH=1[[:space:]]*$' "$TICK" | head -1 | cut -d: -f1)"
   # The first ACTUAL delivery-record invocation (the `wg ... repo-delivery record`

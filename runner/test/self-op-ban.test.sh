@@ -158,11 +158,11 @@ if grep -q 'gaffer_is_self_target "\$PRIMARY_REPO"' <<<"$_SELF_BLOCK"; then
 else
   ok "delivery guard is not a first-write-root-only check"
 fi
-grep -q 'gaffer_is_self_target "\$B_DIR"' "$RUNNER_DIR_REAL/tick.sh" \
+grep -q 'gaffer_is_self_target "\$B_DIR"' "$RUNNER_DIR_REAL/lib/tick-bootstrap.sh" \
   && ok "bootstrap path guards B_DIR" \
   || fail "bootstrap path missing gaffer_is_self_target on B_DIR"
 # The override must be honoured on both paths.
-grep -cq 'GAFFER_ALLOW_SELF_DELIVERY' "$RUNNER_DIR_REAL/tick.sh" \
+grep -cq 'GAFFER_ALLOW_SELF_DELIVERY' "$RUNNER_DIR_REAL/lib/tick-bootstrap.sh" \
   && ok "tick.sh honours GAFFER_ALLOW_SELF_DELIVERY override" \
   || fail "tick.sh does not reference the override"
 

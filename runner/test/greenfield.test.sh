@@ -233,7 +233,7 @@ grep -Eq '^: "\$\{GAFFER_BOOTSTRAP_ROOT:=' "$RUNNER_DIR/config/16-sandbox.sh" \
 grep -q 'GAFFER_BOOTSTRAP_INSTALL' "$RUNNER_DIR/config/16-sandbox.sh" \
   && ok "GAFFER_BOOTSTRAP_INSTALL documented in factory.config.sh" \
   || fail "GAFFER_BOOTSTRAP_INSTALL not documented"
-grep -q 'lib/greenfield.sh' "$RUNNER_DIR/factory.config.sh" \
+grep -q 'lib/greenfield.sh' "$RUNNER_DIR/config/19-libs.sh" \
   && ok "lib/greenfield.sh sourced from factory.config.sh" \
   || fail "lib/greenfield.sh not sourced"
 

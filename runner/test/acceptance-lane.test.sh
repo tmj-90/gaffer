@@ -91,7 +91,7 @@ grep -q 'PRODUCT_CONTEXT_BLOCK="$(gaffer_acceptance_prompt_block)' "$RUNNER_DIR/
 source "$RUNNER_DIR/lib/acceptance.sh"
 B="$(gaffer_acceptance_prompt_block)"
 case "$B" in *"ACCEPTANCE TICKET"*"Never weaken"*"INDEPENDENT tester"*) ok "block: acceptance suite, never weaken a test, the tester decides" ;; *) fail "block content wrong" ;; esac
-grep -q 'lib/acceptance.sh' "$RUNNER_DIR/factory.config.sh" && ok "lib/acceptance.sh is sourced by factory.config.sh" || fail "lib not sourced"
+grep -q 'lib/acceptance.sh' "$RUNNER_DIR/config/19-libs.sh" && ok "lib/acceptance.sh is sourced by factory.config.sh" || fail "lib not sourced"
 grep -q 'tested commit' "$RUNNER_DIR/bin/tester-run.mjs" && ok "tester verdicts name the tested commit" || fail "tester-run.mjs lacks the tested-commit stamp"
 
 echo

@@ -164,9 +164,10 @@ gaffer_release_or_park_nocommit() {
 # own delivery_budget_usd (TRACK-3a) when set, else the factory-wide
 # GAFFER_REWORK_BUDGET_USD. No ceiling configured → return 1 (never gate). Sets
 # GAFFER_BUDGET_SPENT / GAFFER_BUDGET_CEIL for the caller's message. Mirrors the
-# post-attempt rework bound (tick.sh ~1722, kept inline there) but gates BEFORE the
-# spawn, closing the cross-run gap: a ticket that already burned its budget in a prior
-# run would otherwise spawn one more turn before the post-attempt bound caught it.
+# post-attempt rework bound (the cost side of _recover_or_park, in the attempt loop
+# below) but gates BEFORE the spawn, closing the cross-run gap: a ticket that already
+# burned its budget in a prior run would otherwise spawn one more turn before the
+# post-attempt bound caught it.
 gaffer_budget_exhausted() {
   local _num="$1" _tb _ceil _spent
   _tb="$(printf '%s' "${SHOW:-}" | jget 'd.ticket.delivery_budget_usd' 2>/dev/null || true)"

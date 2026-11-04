@@ -1,5 +1,8 @@
+import { readdirSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import type { AddressInfo } from "node:net";
+import { dirname, join, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -69,6 +72,35 @@ describe("API: SPA static surface", () => {
     expect(res.headers.get("content-type")).toMatch(/javascript/);
     const body = await res.text();
     expect(body.length).toBeGreaterThan(0);
+  });
+
+  it("serves every module the entry imports, and only those, as no-store JavaScript", async () => {
+    // Walk the page's module graph the way a browser does: every relative import of
+    // every module the server hands out must come back 200 text/javascript, no-store.
+    const seen = new Set<string>();
+    const queue = [`${h.baseUrl}/app.js`];
+    while (queue.length) {
+      const url = queue.shift() ?? "";
+      if (seen.has(url)) continue;
+      seen.add(url);
+      const res = await fetch(url);
+      const at = new URL(url).pathname;
+      expect(res.status, at).toBe(200);
+      expect(res.headers.get("content-type"), at).toBe("text/javascript; charset=utf-8");
+      expect(res.headers.get("cache-control"), at).toMatch(/no-store/);
+      const src = await res.text();
+      for (const m of src.matchAll(/^import [^;]*? from "(\.{1,2}\/[^"]+)";/gms))
+        queue.push(new URL(m[1] ?? "", url).href);
+    }
+    // Every module on disk is reachable from the entry (no orphan the page never loads).
+    const jsDir = join(dirname(fileURLToPath(import.meta.url)), "../src/api/web/js");
+    const onDisk = readdirSync(jsDir, { recursive: true })
+      .map(String)
+      .filter((f) => f.endsWith(".js"))
+      .map((f) => `/js/${f.split(sep).join("/")}`);
+    const served = [...seen].map((u) => new URL(u).pathname).filter((p) => p !== "/app.js");
+    expect(served.sort()).toEqual(onDisk.sort());
+    expect(served.length).toBeGreaterThan(50);
   });
 
   it("serves the layered stylesheets under /css/ and the pre-paint theme script", async () => {

@@ -19,7 +19,7 @@ the `gaffer_tick_*` wrappers declare no locals.
 |---|---|
 | `lib/tick-helpers.sh` | the deadline clock, the locked skip / marker appends, the dry-run preview list, `gaffer_abort_setup` |
 | `lib/tick-recovery.sh` | the orphaned-agent reap, `gaffer_crash_cleanup` (what the traps run), `gaffer_resume_abort`, resume-begin |
-| `lib/tick-claim.sh` | setup and spend admission, agent registration, the candidate scan and claim, scope and skills, the self-operation ban, the worktree plan |
+| `lib/tick-claim.sh` | setup and spend admission, agent registration, the candidate scan and claim, the bootstrap / acceptance classification, scope and skills, the self-operation ban, the worktree plan |
 | `lib/tick-bootstrap.sh` | the greenfield create-a-repo delivery |
 | `lib/tick-launch.sh` | workspace trust, the raw prompt inputs, model routing and the dry-run preview, worktree creation, the agent env and MCP runtime, one attempt's launch through the worker seam |
 | `lib/tick-gates.sh` | claim release and park, the no-commit counter, the budget gate, the submit, the GUARD B attempt loop and its gates |

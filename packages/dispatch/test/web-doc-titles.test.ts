@@ -13,7 +13,7 @@ import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const APP_JS = path.join(path.resolve(process.cwd(), "src/api/web"), "app.js");
-const SRC = readFileSync(APP_JS, "utf8");
+const SRC = readFileSync(path.join(path.dirname(APP_JS), "js/router.js"), "utf8");
 
 /** The keys of a top-level `const NAME = { … };` object literal in app.js. */
 function objectKeys(name: string): string[] {

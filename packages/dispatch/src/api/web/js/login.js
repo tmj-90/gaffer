@@ -4,8 +4,8 @@
 import { clearAuthToken, setAuthToken } from "./api.js";
 import { appbar, bottomnav, clear, el } from "./dom.js";
 import { crest, glyph } from "./icons.js";
+import { authLost, goQuietForLogin } from "./live.js";
 import { closeSheet } from "./sheet.js";
-import { authLost, goQuietForLogin } from "../app.js";
 
 // --- Login gate (restyled, behaviour preserved) -----------------------------
 

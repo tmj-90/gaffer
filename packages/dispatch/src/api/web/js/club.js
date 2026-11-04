@@ -5,7 +5,8 @@ import { learnWhoami, paintReadOnly, scoped } from "./access.js";
 import { api } from "./api.js";
 import { app } from "./dom.js";
 import { applyClub } from "./kit.js";
-import { refreshCurrentView, router } from "../app.js";
+import { refreshCurrentView } from "./live.js";
+import { router } from "./router.js";
 
 // Agents are people on the team sheet: a raw agent UUID is never printed. Every
 // read of /agents or /claims feeds this map; actorName() falls back to a short id.

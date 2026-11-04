@@ -10,9 +10,9 @@ import {
   scoped,
 } from "./access.js";
 import { learnDisplaysFrom, squad } from "./club.js";
+import { freshness } from "./freshness.js";
 import { learnKits } from "./icons.js";
 import { renderLogin } from "./login.js";
-import { freshness } from "../app.js";
 // --- API client ------------------------------------------------------------
 
 // Bearer token (set when the server enforces DISPATCH_API_TOKEN). Stored in

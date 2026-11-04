@@ -1,8 +1,8 @@
 // Kit colours: contrast maths, the house kit and the club's kit tokens.
 // Moved verbatim from app.js (the entry); the module map is in app.js.
 
+import { paintBrand } from "./chrome.js";
 import { squad } from "./club.js";
-import { paintBrand } from "../app.js";
 
 // The kit: the club's colours drive the claret/sky tokens. Contrast is guarded:
 // a kit too light for white text flips the text on it to ink, the shirt number

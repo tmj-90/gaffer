@@ -1,7 +1,7 @@
 // Formatting: durations, relative times, days, money, plurals.
 // Moved verbatim from app.js (the entry); the module map is in app.js.
 
-import { clockTime } from "../app.js";
+import { clockTime } from "./freshness.js";
 
 /** Compact, human-friendly duration from milliseconds (e.g. "2d 3h", "45m"). */
 function fmtDuration(ms) {

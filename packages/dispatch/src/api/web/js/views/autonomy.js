@@ -9,7 +9,7 @@ import { icon } from "../icons.js";
 import { router } from "../router.js";
 import { runAsyncAction, toast } from "../toast.js";
 import { autonomyGateLabel, isPolicyActive, submitAutonomyPolicy } from "./formation.js";
-import { resolveTargetRepos, targetPicker } from "../../app.js";
+import { resolveTargetRepos, targetPicker } from "./plan.js";
 
 function autonomyRecommendationsPanel(recs, policies, { inert = false } = {}) {
   if (!Array.isArray(recs) || recs.length === 0) return null;

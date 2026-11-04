@@ -18,10 +18,11 @@ import {
 import { jumpTo, routeSignal } from "../router.js";
 import { unblockSheet } from "../sheets.js";
 import { statusBadge, statusLabel } from "../status.js";
+import { openPlanBuild } from "./plan.js";
 import { progPage } from "./programme.js";
+import { SPEC_STATUS_LABEL, specCoverageRollup, specGapCount } from "./specs.js";
 import { ticketLede } from "./ticket.js";
 import { hashText } from "./work.js";
-import { SPEC_STATUS_LABEL, openPlanBuild, specCoverageRollup, specGapCount } from "../../app.js";
 
 // ===========================================================================
 //  Epics — epic scope nodes + their tickets as a phased, dependency-aware board

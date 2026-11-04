@@ -13,9 +13,9 @@ import { navigate, routeSignal, router } from "../router.js";
 import { hideRepoSheet } from "../sheets.js";
 import { riskBadge, statusLabel } from "../status.js";
 import { guard, toast } from "../toast.js";
+import { onboardButton } from "./onboarding.js";
 import { progPage } from "./programme.js";
 import { hashText } from "./work.js";
-import { onboardButton } from "../../app.js";
 
 // ===========================================================================
 //  Map (UI-000 / UI-001 / UI-002 / UI-003)

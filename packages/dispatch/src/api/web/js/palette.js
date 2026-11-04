@@ -8,7 +8,8 @@ import { icon } from "./icons.js";
 import { allTickets } from "./matchday.js";
 import { navigate } from "./router.js";
 import { statusLabel } from "./status.js";
-import { openPlanBuild, openSpecBuild } from "../app.js";
+import { openPlanBuild } from "./views/plan.js";
+import { openSpecBuild } from "./views/spec-build.js";
 
 // --- Command palette (⌘K) ---------------------------------------------------
 

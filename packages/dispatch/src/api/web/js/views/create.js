@@ -12,9 +12,9 @@ import { appState } from "../state.js";
 import { accessBadge } from "../status.js";
 import { guard, toast } from "../toast.js";
 import { typeLabel } from "./map.js";
+import { mountPlanBuildInline } from "./plan.js";
 import { TICKET_REPO_ACCESS } from "./repo-panel.js";
 import { RISK_LEVELS } from "./work.js";
-import { mountPlanBuildInline } from "../../app.js";
 
 const POLICY_PACKS = ["solo_loose", "team_light", "factory_strict", "regulated"];
 

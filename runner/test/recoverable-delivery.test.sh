@@ -197,7 +197,7 @@ if [ -f "$TICK" ]; then
   # ticket via dispatch, raise the worktree-retention flag, and NOT tear the worktree
   # down. It must NOT fall back to the old park+teardown (no bare cap-hit cleanup).
   if grep -q 'PAUSED (cap-hit)' "$RUNNER_DIR/lib/tick-launch.sh" && grep -q 'wg ticket pause' "$RUNNER_DIR/lib/tick-launch.sh" \
-     && grep -q 'GAFFER_PAUSE_KEEP_WORKTREE=1' "$RUNNER_DIR/lib/tick-recovery.sh"; then
+     && grep -q 'GAFFER_PAUSE_KEEP_WORKTREE=1' "$RUNNER_DIR/lib/tick-launch.sh"; then
     ok "tick.sh cap-hit path PAUSES in place + raises the worktree-keep flag"
   else
     fail "tick.sh cap-hit path missing the pause-in-place wiring"
@@ -217,7 +217,7 @@ if [ -f "$TICK" ]; then
   fi
   # No regression: the SUCCESS path's final teardown is still a bare
   # gaffer_cleanup_worktrees (branch kept for review) — present in the file.
-  if grep -qE '^[[:space:]]*gaffer_cleanup_worktrees[[:space:]]*$' "$RUNNER_DIR/lib/tick-recovery.sh"; then
+  if grep -qE '^[[:space:]]*gaffer_cleanup_worktrees[[:space:]]*$' "$RUNNER_DIR/lib/tick-close.sh"; then
     ok "tick.sh success path still tears down worktree only (branch kept for review)"
   else
     fail "tick.sh success teardown changed unexpectedly"

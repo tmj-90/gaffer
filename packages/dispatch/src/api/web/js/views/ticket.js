@@ -5,6 +5,7 @@ import { readOnly, roLock, roLockAll, scopeTitle } from "../access.js";
 import { api } from "../api.js";
 import { ensureAgents } from "../club.js";
 import { panelHead } from "../components.js";
+import { renderTicketDiff, safeHttpUrl } from "../diff.js";
 import { clear, el, svgEl } from "../dom.js";
 import { fmtTime, money, parseJsonSafe, plural } from "../format.js";
 import { badge, glyph, icon, repoTag, ycard } from "../icons.js";
@@ -24,6 +25,15 @@ import { guard, toast } from "../toast.js";
 import { renderAddAcForm } from "./acceptance.js";
 import { CLAIM_ONLY_BLOCKERS, loadClaimability, renderRepoPanel } from "./repo-panel.js";
 import {
+  REJECT_REASON_PRESETS,
+  deliveredBy,
+  parseDodEvidence,
+  pausedInfo,
+  reopenedForReview,
+  reviewRawWatch,
+  sinceStatus,
+} from "./review-comments.js";
+import {
   deliveryCount,
   fullTimeCard,
   fullTimePlaque,
@@ -36,20 +46,7 @@ import {
   ticketRunsPanel,
 } from "./ticket-cards.js";
 import { renderWork } from "./work.js";
-import {
-  REJECT_REASON_PRESETS,
-  backLink,
-  computePhases,
-  deliveredBy,
-  isAcceptanceTicket,
-  parseDodEvidence,
-  pausedInfo,
-  renderTicketDiff,
-  reopenedForReview,
-  reviewRawWatch,
-  safeHttpUrl,
-  sinceStatus,
-} from "../../app.js";
+import { backLink, computePhases, isAcceptanceTicket } from "../../app.js";
 
 // ===========================================================================
 //  View: Ticket detail

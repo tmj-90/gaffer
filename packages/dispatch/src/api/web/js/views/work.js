@@ -15,7 +15,8 @@ import { appState } from "../state.js";
 import { hasTicketAction, statusLabel } from "../status.js";
 import { runAsyncAction, runAsyncActionUntilDone, toast } from "../toast.js";
 import { renderBoard, renderClaimsPanel, renderWorkList } from "./board.js";
-import { isModalOpen, typeLabel } from "../../app.js";
+import { isModalOpen } from "./review-comments.js";
+import { typeLabel } from "../../app.js";
 
 // ===========================================================================
 //  View: Work — one ticket surface, board ⇄ list, filters persist in URL

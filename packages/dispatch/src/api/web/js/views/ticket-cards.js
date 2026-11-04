@@ -5,6 +5,7 @@ import { readOnly } from "../access.js";
 import { api } from "../api.js";
 import { actorName } from "../club.js";
 import { panelHead, statCell } from "../components.js";
+import { safeHttpUrl } from "../diff.js";
 import { clear, el } from "../dom.js";
 import {
   fmtDay,
@@ -35,9 +36,8 @@ import {
   evidenceKind,
   noteReviewOpen,
   reviewEvidenceList,
-  safeHttpUrl,
   sinceStatus,
-} from "../../app.js";
+} from "./review-comments.js";
 
 /**
  * ESCAPED DEFECTS (MF5): the accepted changes a person said this ticket regresses, the

@@ -22,8 +22,8 @@ import {
   routeGen,
 } from "./router.js";
 import { toast } from "./toast.js";
+import { isModalOpen } from "./views/review-comments.js";
 import { hashText } from "./views/work.js";
-import { isModalOpen } from "../app.js";
 
 /**
  * The gate is up, so the page stops asking. A token revoked or rotated server-side

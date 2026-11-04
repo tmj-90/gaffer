@@ -10,7 +10,7 @@ import { closeSheet, openSheet, sheetOpen } from "./sheet.js";
 import { appState } from "./state.js";
 import { statusLabel } from "./status.js";
 import { guard, toast } from "./toast.js";
-import { WONT_DO_PRESETS } from "../app.js";
+import { WONT_DO_PRESETS } from "./views/review-comments.js";
 
 /** A bottom sheet / side panel with a short intro, a form and its actions. */
 function actionSheet(title, { intro, body, actions, focus }) {

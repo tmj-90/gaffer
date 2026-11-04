@@ -14,7 +14,8 @@ import {
   readyApprovalSheet,
   unblockSheet,
 } from "../sheets.js";
-import { deliveredBy, integrityFlagOf } from "../../app.js";
+import { deliveredBy } from "./review-comments.js";
+import { integrityFlagOf } from "./review-packet.js";
 
 // --- The Team Sheet: what needs you, ranked, each with one real action -------
 

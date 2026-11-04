@@ -11,6 +11,7 @@ import { appState } from "./state.js";
 import { renderCreate } from "./views/create.js";
 import { renderHealth } from "./views/health.js";
 import { overviewError, renderOverview } from "./views/overview.js";
+import { renderReview } from "./views/review.js";
 import { renderSettings } from "./views/settings.js";
 import { refCard, renderTicket } from "./views/ticket.js";
 import { renderWork } from "./views/work.js";
@@ -22,7 +23,6 @@ import {
   renderMemory,
   renderNode,
   renderRepo,
-  renderReview,
   renderSpecs,
   renderSquad,
 } from "../app.js";

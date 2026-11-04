@@ -10,6 +10,7 @@ import { openPalette } from "./palette.js";
 import { appState } from "./state.js";
 import { renderCreate } from "./views/create.js";
 import { renderEpics } from "./views/epics.js";
+import { renderFloor } from "./views/floor.js";
 import { renderHealth } from "./views/health.js";
 import { renderFactory, renderHidden } from "./views/map.js";
 import { renderMemory } from "./views/memory.js";
@@ -19,9 +20,9 @@ import { renderReview } from "./views/review.js";
 import { renderNode } from "./views/scope-node.js";
 import { renderSettings } from "./views/settings.js";
 import { renderSpecs } from "./views/specs.js";
+import { renderSquad } from "./views/squad.js";
 import { refCard, renderTicket } from "./views/ticket.js";
 import { renderWork } from "./views/work.js";
-import { renderFloor, renderSquad } from "../app.js";
 
 // --- Routing & IA -----------------------------------------------------------
 //

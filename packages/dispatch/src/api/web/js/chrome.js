@@ -12,7 +12,7 @@ import { logout } from "./login.js";
 import { openPalette } from "./palette.js";
 import { activeArea, router } from "./router.js";
 import { closeSheet, openSheet } from "./sheet.js";
-import { openClubSheet } from "../app.js";
+import { openClubSheet } from "./views/squad.js";
 
 // --- Theme (per-viewer kit) ----------------------------------------------------
 

@@ -234,7 +234,7 @@ export const EXTRA_KNOBS = [
     name: "GAFFER_MEMORY_AUTO_PROMOTE",
     default: "MEMORY_AUTO_APPROVE",
     verify: false,
-    file: "runner/tick.sh",
+    file: "runner/lib/tick-close.sh",
     doc: "1 = a requirement distilled from a delivered ticket goes live at once; 0 = it lands as a draft for `memory review`. Unset, it follows MEMORY_AUTO_APPROVE.",
   },
   {

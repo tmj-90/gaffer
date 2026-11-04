@@ -44,10 +44,10 @@ LEDGER="$GAFFER_DATA/eval-ledger.jsonl"
 echo "== A. wiring =="
 grep -q 'lib/eval-judge.sh' "$RUNNER_DIR/factory.config.sh" \
   && ok "factory.config.sh sources lib/eval-judge.sh" || no "factory.config.sh missing the eval-judge source"
-grep -q 'gaffer_eval_judge_delivery "\$NUM"' "$RUNNER_DIR/tick.sh" \
+grep -q 'gaffer_eval_judge_delivery "\$NUM"' "$RUNNER_DIR/lib/tick-close.sh" \
   && ok "tick.sh invokes the judge for the submitted ticket" || no "tick.sh missing the judge call"
 # The call must live INSIDE the submit-success branch (after gaffer_submit_delivery).
-grep -q 'gaffer_eval_judge_delivery' <<<"$(awk '/if gaffer_submit_delivery "delivered on branch/,/^  else$/' "$RUNNER_DIR/tick.sh")" \
+grep -q 'gaffer_eval_judge_delivery' <<<"$(awk '/if gaffer_submit_delivery "delivered on branch/,/^  else$/' "$RUNNER_DIR/lib/tick-close.sh")" \
   && ok "judge call is inside the submit-success branch (post-submit telemetry)" \
   || no "judge call is not in the submit-success branch"
 bash -n "$RUNNER_DIR/lib/eval-judge.sh" && ok "eval-judge.sh parses (bash -n)" || no "eval-judge.sh syntax error"
@@ -297,8 +297,8 @@ import json, sys
 r = json.loads(open(sys.argv[1]).read().splitlines()[0])
 assert r["repo"] == "demo-repo", r
 PY
-grep -q 'GAFFER_EVAL_TEST_OUTPUT="${_DOD_JUDGE_TESTS:-}"' "$RUNNER_DIR/tick.sh" \
-  && grep -q '"${_DELIVERY_SPEND_USD:-}" "${_CARD_REPO_NAME:-}"' "$RUNNER_DIR/tick.sh" \
+grep -q 'GAFFER_EVAL_TEST_OUTPUT="${_DOD_JUDGE_TESTS:-}"' "$RUNNER_DIR/lib/tick-close.sh" \
+  && grep -q '"${_DELIVERY_SPEND_USD:-}" "${_CARD_REPO_NAME:-}"' "$RUNNER_DIR/lib/tick-close.sh" \
   && ok "tick.sh passes the DoD checklist and the primary repo's name to the judge" \
   || no "tick.sh does not pass the checklist / repo name to the judge"
 _dod_blk="$(awk '/_DOD_EV="\$\(gaffer_dod_evidence_summary "\$DOD_RESULTS" PASS\)"/{p=1} p&&/rm -f "\$DOD_RESULTS"/{print; exit} p' "$RUNNER_DIR/lib/tick-gates.sh")"

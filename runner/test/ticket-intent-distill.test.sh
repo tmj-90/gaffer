@@ -31,24 +31,24 @@ ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 
 echo "== A. WIRING — helper defined + called in the submit-success path =="
-if grep -q 'gaffer_distill_ticket_intent()' "$TICK"; then
+if grep -q 'gaffer_distill_ticket_intent()' "$RUNNER_DIR/lib/tick-close.sh"; then
   ok "gaffer_distill_ticket_intent helper defined"
 else
   fail "gaffer_distill_ticket_intent helper missing"
 fi
-if grep -q 'lg suggest --title' "$TICK" && grep -q -- '--kind requirement' "$TICK"; then
+if grep -q 'lg suggest --title' "$RUNNER_DIR/lib/tick-close.sh" && grep -q -- '--kind requirement' "$RUNNER_DIR/lib/tick-close.sh"; then
   ok "helper drafts a requirement via the memory suggest boundary"
 else
   fail "helper does not draft a requirement (lg suggest --kind requirement)"
 fi
 # Fail-soft: never fatal to a delivery that already submitted.
-if grep -q 'non-fatal' <<<"$(grep -A80 'gaffer_distill_ticket_intent()' "$TICK")"; then
+if grep -q 'non-fatal' <<<"$(grep -A80 'gaffer_distill_ticket_intent()' "$RUNNER_DIR/lib/tick-close.sh")"; then
   ok "helper is fail-soft (non-fatal on error)"
 else
   fail "helper is not documented/implemented as fail-soft"
 fi
 # Called at close, right after the clean/reworked recall-feedback fork.
-if grep -q 'gaffer_distill_ticket_intent' <<<"$(grep -A6 'gaffer_recall_feedback clean' "$TICK")"; then
+if grep -q 'gaffer_distill_ticket_intent' <<<"$(grep -A6 'gaffer_recall_feedback clean' "$RUNNER_DIR/lib/tick-close.sh")"; then
   ok "distiller is called in the submit-success path (after recall-feedback)"
 else
   fail "distiller is not wired into the submit-success path"
@@ -75,7 +75,7 @@ else
   # Extract the helper straight from tick.sh and source it — genuinely drives
   # the SHIPPING function, not a copy.
   FN="$TMP/distill.fn.sh"
-  awk '/^gaffer_distill_ticket_intent\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$TICK" > "$FN"
+  awk '/^gaffer_distill_ticket_intent\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$RUNNER_DIR/lib/tick-close.sh" > "$FN"
   # The distiller normalises its promote flag through factory.config.sh's _gaffer_flag_on
   # (1/true/yes/on). Extract that helper the same way so the shipping function runs whole.
   awk '/^_gaffer_flag_on\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$RUNNER_DIR/factory.config.sh" >> "$FN"

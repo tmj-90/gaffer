@@ -371,7 +371,10 @@ perl -0777 -ne 'if (/case "\$_pm" in(.*?)esac/ms) { my $b=$1; exit(($b =~ /\bexi
 grep -q 'Stabilisation gate 2.5: DEFINITION OF DONE' "$RUNNER_DIR/lib/tick-gates.sh" \
   && DOD_LINE="$(grep -n '^[[:space:]]*gaffer_tick_delivery_attempts ' "$RUNNER_DIR/tick.sh" | head -1 | cut -d: -f1)" \
   || DOD_LINE=""
-REC_LINE="$(grep -n 'Deterministically record the TOP-LEVEL delivery' "$RUNNER_DIR/tick.sh" | head -1 | cut -d: -f1)"
+# The delivery record is in the close path (gaffer_tick_close_delivery, lib/tick-close.sh).
+grep -q 'Deterministically record the TOP-LEVEL delivery' "$RUNNER_DIR/lib/tick-close.sh" \
+  && REC_LINE="$(grep -n '^[[:space:]]*gaffer_tick_close_delivery ' "$RUNNER_DIR/tick.sh" | head -1 | cut -d: -f1)" \
+  || REC_LINE=""
 if [ -n "$DOD_LINE" ] && [ -n "$REC_LINE" ] && [ "$DOD_LINE" -lt "$REC_LINE" ]; then
   ok "C the DoD gate runs BEFORE the delivery is recorded (line $DOD_LINE < $REC_LINE)"
 else

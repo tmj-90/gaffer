@@ -49,18 +49,18 @@ else
 fi
 
 echo "== B. tick.sh defines a fail-soft recall-feedback helper =="
-if grep -q 'gaffer_recall_feedback()' "$TICK"; then
+if grep -q 'gaffer_recall_feedback()' "$RUNNER_DIR/lib/tick-close.sh"; then
   ok "gaffer_recall_feedback helper defined"
 else
   fail "gaffer_recall_feedback helper missing"
 fi
-if grep -q 'lg recall-feedback --repo' "$TICK"; then
+if grep -q 'lg recall-feedback --repo' "$RUNNER_DIR/lib/tick-close.sh"; then
   ok "helper calls the memory CLI via lg recall-feedback"
 else
   fail "helper does not call lg recall-feedback"
 fi
 # Fail-soft: the helper must swallow errors (never fatal to delivery).
-if grep -q 'non-fatal' <<<"$(grep -A14 'gaffer_recall_feedback()' "$TICK")"; then
+if grep -q 'non-fatal' <<<"$(grep -A14 'gaffer_recall_feedback()' "$RUNNER_DIR/lib/tick-close.sh")"; then
   ok "helper is fail-soft (non-fatal on error)"
 else
   fail "helper is not documented/implemented as fail-soft"
@@ -80,7 +80,7 @@ else
   fail "delivery prime does not export GAFFER_RECALL_TICKET=\$NUM"
 fi
 # clean/reworked branch at the submit site.
-if grep -q 'gaffer_recall_feedback reworked' "$TICK" && grep -q 'gaffer_recall_feedback clean' "$TICK"; then
+if grep -q 'gaffer_recall_feedback reworked' "$RUNNER_DIR/lib/tick-close.sh" && grep -q 'gaffer_recall_feedback clean' "$RUNNER_DIR/lib/tick-close.sh"; then
   ok "submit site distinguishes clean vs reworked"
 else
   fail "submit site does not call clean/reworked feedback"

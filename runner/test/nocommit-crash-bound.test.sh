@@ -289,7 +289,7 @@ check "AC8: no-commit agent-crash path routes through the bounded wrapper (befor
 check "AC8: an unrecoverable branch switch (no commits) routes through the bounded wrapper" \
   'gaffer_release_or_park_nocommit "delivery failed: \$_BS_FAIL;[^\n]*had no commits[^\n]*\n[^\n]*gaffer_skip_ticket' "$RUNNER_DIR/lib/tick-gates.sh"
 check "AC8: the submit-success path clears the cross-run counter (flaky-then-fixed reset)" \
-  'submitted #\$NUM for review[^\n]*\n(?:[^\n]*\n)*?[^\n]*gaffer_nocommit_clear "\$NUM"' "$TICK"
+  'submitted #\$NUM for review[^\n]*\n(?:[^\n]*\n)*?[^\n]*gaffer_nocommit_clear "\$NUM"' "$RUNNER_DIR/lib/tick-close.sh"
 check "AC8: factory.config.sh defines GAFFER_MAX_NOCOMMIT_FAILURES (aligned with the delivery-attempt cap)" \
   'GAFFER_MAX_NOCOMMIT_FAILURES[^\n]*GAFFER_MAX_DELIVERY_ATTEMPTS' "$CFG"
 

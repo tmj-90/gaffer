@@ -48,7 +48,7 @@ describe("P1-C: security response headers", () => {
 
     const csp = res.headers.get("content-security-policy");
     expect(csp).toBeTruthy();
-    // Scripts are 'self' only — no inline-script allowance. The page loads the entry
+    // Scripts are 'self' only, with no inline-script allowance. The page loads the entry
     // module (/app.js) and its same-origin imports (/js/…), which 'self' covers, so the
     // directive names no other source.
     expect(csp).toContain("script-src 'self'");

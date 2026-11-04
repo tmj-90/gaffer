@@ -85,7 +85,7 @@ export function serveStatic(pathname: string, res: ServerResponse): boolean {
     }
     return true;
   }
-  // The SPA's modules under /js/ (app.js is the entry and imports them) — .js only,
+  // The SPA's modules under /js/ (app.js is the entry and imports them): .js only,
   // and the resolved path MUST stay inside WEB_DIR/js (blocks ../ traversal). Same
   // no-store policy as the entry: a stale module beside a fresh entry would mix builds.
   if (pathname.startsWith("/js/")) {

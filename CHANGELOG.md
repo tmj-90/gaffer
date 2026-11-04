@@ -106,6 +106,7 @@ to the same version.
 - **Execution preflight probes the package registry** from the agent's own environment.
 - **One-command container run.** A root `Dockerfile` and `compose.yaml` start the dashboard and runner (`docker compose up -d`); bootstrapped repos survive a container recreate.
 - **The runner no longer needs python3**, and its text processing runs through one typed renderer.
+- **The runner's config is split by area.** `runner/factory.config.sh` is now a short file that sources `runner/config/NN-area.sh` in a fixed order and stops when a part is missing or did not load whole; no knob, default or precedence changed.
 
 ### CLI and API
 

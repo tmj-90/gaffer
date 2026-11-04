@@ -42,3 +42,47 @@ assigns but never reads.
 New context/close-path features should be **additive and fail-soft**: an absent
 or erroring dependency (e.g. the memory CLI) must never block a delivery that has
 otherwise passed its gates.
+
+## The config: `factory.config.sh` and `runner/config/`
+
+`factory.config.sh` is what every script sources (the parent and again every child).
+It keeps, in place, the prologue (the operator's environment, the strict
+`settings.json` read, the re-source unset-and-rederive step, `RUNNER_DIR` /
+`GAFFER_HOME` / `GAFFER_DATA`) and the `_GAFFER_DV_` record block at the end. Between
+them it sources `runner/config/NN-area.sh` in a fixed order, and stops the process
+(fail closed) when a part is missing or did not load to its last line, its marker
+`_GAFFER_CONFIG_PART=NN-area`. A part is never sourced on its own: it reads what the
+parts before it set, so the order is the old top-to-bottom order of the one file.
+
+| Part | Holds |
+|---|---|
+| `01-settings.sh` | `settings.json` values applied as defaults (env wins); the environment-only keys |
+| `02-paths.sh` | product locations, databases, memory audit log, code index, ledger reader |
+| `03-wiring.sh` | the agent CLI wiring; the worker provider knobs |
+| `04-models.sh` | plan / implement models, `*_EXPLICIT`, `gaffer_model_flag`, the router registry |
+| `05-budget.sh` | USD ceiling, per-call cap, live headroom, low-budget threshold, cheap phases |
+| `06-routing.sh` | `gaffer_route_model` and its record; the planning debate |
+| `07-limits.sh` | timeouts and turn caps, DoD gate knobs, sandbox resources, daemon, attempts, claim TTL, outer bound, rework bounds |
+| `08-guards.sh` | per-ticket spend helpers, ask / pause on cap, usage pause, dashboard URL, reap grace |
+| `09-render.sh` | `gaffer_timeout`, sed escaping, MCP and prompt render helpers |
+| `10-locks.sh` | `gaffer_with_lock` and the lock helpers |
+| `11-agent-env.sh` | `gaffer_agent_env` and the provider env pass-through |
+| `12-identity.sh` | `DISPATCH_*_CMD`, the factory agent's name, id files and log |
+| `13-stop.sh` | self-operation ban, `DRY_RUN`, tick and day caps, concurrency |
+| `14-usage.sh` | usage ledger, killed-call estimate, `gaffer_usage_record` and friends |
+| `15-modes.sh` | `GAFFER_MODE` presets, autonomy requires containment, review / merge / push flags |
+| `16-sandbox.sh` | strict mode and the sandbox provider; hygiene, minimalism, greenfield, backpressure |
+| `17-cli.sh` | `wg` / `fg` / `lg`, the DB-var guard, the JSON helpers |
+| `18-review.sh` | resume report, ship plan, lite classifier, security second opinion, reviewer verdict |
+| `19-libs.sh` | the `runner/lib/*.sh` helper libs (sandbox, worker, budget, ...) |
+| `20-gates.sh` | idle-lane knobs, PR creation, CI gate, eval judge, experiments, review rules, their libs, git hardening |
+
+Order rules a change must keep: `01` runs before every default (env, then
+`settings.json`, then the mode, then the default); the `GAFFER_MODE` arms in `15` fill
+before the plain defaults after them; a knob defaulted from another (`: "${B:=$A}"`)
+stays after `A`; a function called while the config loads (`gaffer_model_flag`, the
+autonomy checks in `15`, `gaffer_git_harden`) is defined above its call; the libs load
+last. Add a knob to the part of its area, never a new part for one knob; a new part
+needs its line in the parts block, its header and marker
+(`runner/test/config-parts.test.sh` checks all of it).
+`scripts/config-reference.mjs` reads the parts in the block's order.

@@ -9,20 +9,20 @@ import { announce, syncNav, updateNavBadges } from "./live.js";
 import { openPalette } from "./palette.js";
 import { appState } from "./state.js";
 import { renderCreate } from "./views/create.js";
+import { renderHealth } from "./views/health.js";
 import { overviewError, renderOverview } from "./views/overview.js";
+import { renderSettings } from "./views/settings.js";
 import { refCard, renderTicket } from "./views/ticket.js";
 import { renderWork } from "./views/work.js";
 import {
   renderEpics,
   renderFactory,
   renderFloor,
-  renderHealth,
   renderHidden,
   renderMemory,
   renderNode,
   renderRepo,
   renderReview,
-  renderSettings,
   renderSpecs,
   renderSquad,
 } from "../app.js";

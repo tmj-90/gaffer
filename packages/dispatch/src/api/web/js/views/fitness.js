@@ -11,7 +11,7 @@ import { agentChip, glyph, ycard } from "../icons.js";
 import { allTickets } from "../matchday.js";
 import { devFlowPanel, needsPanel } from "../panels.js";
 import { runActivityPanel } from "../runs.js";
-import { healthBarRow } from "../../app.js";
+import { healthBarRow } from "./health.js";
 
 /**
  * The physio room's flow panels (moved off the Overview, which is the comp's

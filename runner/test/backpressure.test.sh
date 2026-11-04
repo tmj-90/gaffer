@@ -127,7 +127,7 @@ echo "== AC7: a cap of 0 disables that dimension =="
 echo "== AC8: cap config keys present + commented =="
 # The branch/PR caps default next to each other in the backpressure block.
 for k in MAX_OPEN_AGENT_BRANCHES_PER_REPO:=3 MAX_OPEN_AGENT_PRS_PER_REPO:=3; do
-  grep -Eq "^: \"\\\$\{$k\}\"" "$RUNNER_DIR/factory.config.sh" \
+  grep -Eq "^: \"\\\$\{$k\}\"" "$RUNNER_DIR/config/16-sandbox.sh" \
     && ok "$k default present in factory.config.sh" \
     || fail "$k default missing from factory.config.sh"
 done

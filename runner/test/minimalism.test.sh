@@ -111,7 +111,7 @@ echo "== AC6: by default (MINIMALISM_REQUIRE_NOTE unset/0) a missing note is a f
 
 echo "== AC7: config keys present + commented =="
 for k in 'MINIMALISM_REQUIRE_NOTE:=0' 'OVERSIZED_MAX_LINES:=400' 'OVERSIZED_MAX_FILES:=12'; do
-  grep -Eq "^: \"\\\$\{$k\}\"" "$RUNNER_DIR/factory.config.sh" \
+  grep -Eq "^: \"\\\$\{$k\}\"" "$RUNNER_DIR/config/16-sandbox.sh" \
     && ok "$k default present in factory.config.sh" \
     || fail "$k default missing from factory.config.sh"
 done

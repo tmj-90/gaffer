@@ -89,7 +89,7 @@ for (const k of ["DISPATCH_ALLOW_AGENT_APPROVE", "MEMORY_AUTO_APPROVE"]) {
   check(`settings help for ${k} says off by default`, /Off by default/.test(block));
 }
 // The fill the docs report is the one the config applies when GAFFER_MODE is unset.
-const cfg = read("runner/factory.config.sh");
+const cfg = read("runner/config/15-modes.sh");
 const arm = cfg.slice(
   cfg.indexOf("  *)   # supervised (default)"),
   cfg.indexOf("esac", cfg.indexOf("  *)   # supervised (default)")),

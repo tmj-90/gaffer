@@ -276,7 +276,7 @@ if [ -f "$CLI_JS" ] && node -e 'require("node:sqlite")' 2>/dev/null; then
   [ "$got" = "STRICT_MODE=0 STRICT_REQUIRE=" ] \
     && ok "an absent DB proves no rows (fail-soft: an unqueryable store cannot turn containment on)" \
     || fail "absent DB should read as no rows (got: $got)"
-  grep -qE 'wg autonomy list|autonomy list' "$RUNNER_DIR/factory.config.sh" \
+  grep -qE 'wg autonomy list|autonomy list' "$RUNNER_DIR/config/15-modes.sh" \
     && ok "factory.config.sh consults the dispatch CLI's autonomy policy listing" \
     || fail "factory.config.sh does not query the autonomy policy rows"
 else

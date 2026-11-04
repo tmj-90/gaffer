@@ -145,6 +145,10 @@ export default async function s15(t, L) {
   await L.waitStatus(jam.id, L.SETTLED, 240000);
   await L.putSettings({ GAFFER_MAX_DELIVERY_ATTEMPTS: "" });
   await t.visit("floor");
+  // From Work this is a hash-only navigation, so visit() returns once its settle ends,
+  // and the Floor's twelve reads (loadMatchDay) can take longer than that on a loaded
+  // machine. Wait for the lit beacon itself (bounded) before counting.
+  await p.waitForSelector("svg.fl-svg .fl-beacon.is-on", { timeout: 15000 }).catch(() => null);
   const lit = await p.locator("svg.fl-svg .fl-beacon.is-on").count();
   t.check(
     (await L.ticketOf(jam.id)).status === "blocked" && lit === 1,

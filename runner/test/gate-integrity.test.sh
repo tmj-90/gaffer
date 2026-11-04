@@ -256,11 +256,11 @@ grep -q "d.ticket.allow_test_changes === 1" "$TICK" && grep -q '_DOD_ALLOW_TESTS
   && ok "G3 tick.sh logs the integrity row on both the PASS and FAIL paths" \
   || fail "G3 tick.sh does not log integrity rows"
 
-_rec_line="$(grep -n '^  _gaffer_record_delivery_bases$' "$TICK" | head -n 1 | cut -d: -f1)"
-_env_line="$(grep -n 'log "created worktree for ' "$TICK" | head -n 1 | cut -d: -f1)"
+_rec_line="$(grep -n '^  _gaffer_record_delivery_bases$' "$RUNNER_DIR/lib/tick-launch.sh" | head -n 1 | cut -d: -f1)"
+_env_line="$(grep -n 'log "created worktree for ' "$RUNNER_DIR/lib/tick-launch.sh" | head -n 1 | cut -d: -f1)"
 # The spawn may carry a launch label (GAFFER_LAUNCH_KIND=delivery, the paid-launch admission).
-_spawn_line="$(grep -nE '^  (GAFFER_LAUNCH_KIND=[a-z]+ )?worker_deliver "\$PRIMARY_REPO"' "$TICK" | head -n 1 | cut -d: -f1)"
-grep -q 'wg ticket repo-delivery record "$NUM" "${rid:-$rname}" --base-sha "$_sha"' "$TICK" \
+_spawn_line="$(grep -nE '^  (GAFFER_LAUNCH_KIND=[a-z]+ )?worker_deliver "\$PRIMARY_REPO"' "$RUNNER_DIR/lib/tick-launch.sh" | head -n 1 | cut -d: -f1)"
+grep -q 'wg ticket repo-delivery record "$NUM" "${rid:-$rname}" --base-sha "$_sha"' "$RUNNER_DIR/lib/tick-launch.sh" \
   && [ -n "$_rec_line" ] && [ -n "$_env_line" ] && [ -n "$_spawn_line" ] \
   && [ "$_env_line" -lt "$_rec_line" ] && [ "$_rec_line" -lt "$_spawn_line" ] \
   && ok "G4 tick.sh records each delivery's base commit (--base-sha) after cutting the worktree, before the agent is spawned" \
@@ -340,9 +340,9 @@ git -C "$R" update-ref refs/heads/main "$(git -C "$R" rev-parse fresh)"   # main
   || fail "I6 got: $(gaffer_delivery_base_sha "$R" main fresh "" not-a-sha)"
 [ -z "$(gaffer_delivery_base_sha "$R" main no-such-branch "")" ] && ok "I7 nothing resolvable prints nothing" \
   || fail "I7 printed something for a missing branch"
-grep -q '_gaffer_note_branch_cut "$rpath"            # GATE INTEGRITY' "$TICK" \
-  && [ "$(grep -c '_gaffer_note_branch_cut "$rpath"' "$TICK")" -ge 2 ] \
-  && ! grep -q 'gaffer_delivery_base_sha "$rpath" "$rbase" "$WORK_BRANCH" "$_created"' "$TICK" \
+grep -q '_gaffer_note_branch_cut "$rpath"            # GATE INTEGRITY' "$RUNNER_DIR/lib/tick-launch.sh" \
+  && [ "$(cat "$TICK" "$RUNNER_DIR"/lib/tick-*.sh | grep -c '_gaffer_note_branch_cut "$rpath"')" -ge 2 ] \
+  && ! grep -q 'gaffer_delivery_base_sha "$rpath" "$rbase" "$WORK_BRANCH" "$_created"' "$TICK" "$RUNNER_DIR"/lib/tick-*.sh \
   && ok "I8 tick.sh captures the cut commit at every worktree add -B (first cut and retry re-cut), never a later tip" \
   || fail "I8 tick.sh does not capture the cut commit at each -B"
 git -C "$R" update-ref refs/heads/main "$MAIN0"

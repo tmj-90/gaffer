@@ -335,7 +335,7 @@ grep -q 'wg runner-rework "\$NUM"' "$RUNNER_DIR/tick.sh" \
 grep -q 'gaffer_dod_extract_failure "\$DOD_RESULTS"' "$RUNNER_DIR/tick.sh" \
   && ok "C a DoD failure extracts the REAL failure (assertion) to feed the next attempt" \
   || fail "C tick.sh does not extract the real DoD failure for the next attempt"
-grep -q 'PROMPT\$_REWORK_BLOCK' "$RUNNER_DIR/tick.sh" \
+grep -q 'PROMPT\$_REWORK_BLOCK' "$RUNNER_DIR/lib/tick-launch.sh" \
   && ok "C the re-invoked agent gets the real-failure REVIEW FEEDBACK block appended to its prompt" \
   || fail "C tick.sh does not append the rework feedback block to the re-invocation prompt"
 # Fail-CLOSED on an unresolvable config: an unparseable dispatch payload must NOT

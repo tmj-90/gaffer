@@ -97,7 +97,7 @@ _claimed=0; for d in "${DEPS[@]}"; do [ "$(st "$d")" = "ready" ] || _claimed=$((
 grep -q "candidate scan hit MAX_CANDIDATES" "$GAFFER_DATA/factory.log" && fail "the scan still hit its limit" || ok "the scan never hit MAX_CANDIDATES"
 
 echo "== 4: WIRING — the scan uses the claimable list and falls back to the full list =="
-grep -q 'ticket list -s ready --claimable' "$RUNNER_DIR/tick.sh" && ok "tick.sh lists claimable work for the walk" || fail "tick.sh does not use --claimable"
+grep -q 'ticket list -s ready --claimable' "$RUNNER_DIR/lib/tick-claim.sh" && ok "tick.sh lists claimable work for the walk" || fail "tick.sh does not use --claimable"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "scan-claimable-first: ALL $PASS checks passed"; exit 0; fi

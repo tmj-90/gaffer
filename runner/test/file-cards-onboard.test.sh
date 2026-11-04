@@ -155,11 +155,11 @@ grep -qF 'a card is a guide, never authoritative source' "$PRIMER_SH" \
   && ok "non-authoritative framing present in context-primer.sh" \
   || fail "framing sentence missing from context-primer.sh"
 # B5: FAIL-SOFT — FILE_CARDS_BLOCK defaults empty and is set by the helper call.
-grep -q 'FILE_CARDS_BLOCK=""' "$TICK" \
+grep -q 'FILE_CARDS_BLOCK=""' "$RUNNER_DIR/lib/tick-launch.sh" \
   && ok "FILE_CARDS_BLOCK initialised empty in tick.sh (fail-soft)" \
   || fail "FILE_CARDS_BLOCK is not initialised empty in tick.sh"
 # B6-tick: tick.sh calls gaffer_prime_context_block for delivery.
-grep -q 'gaffer_prime_context_block.*_CARD_REAL_REPO' "$TICK" \
+grep -q 'gaffer_prime_context_block.*_CARD_REAL_REPO' "$RUNNER_DIR/lib/tick-launch.sh" \
   && ok "tick.sh delivery calls gaffer_prime_context_block" \
   || fail "tick.sh delivery does not call gaffer_prime_context_block"
 # B7-tick: the clarify pass (extracted to lib/clarify.sh, B-H3) calls gaffer_prime_context_block.

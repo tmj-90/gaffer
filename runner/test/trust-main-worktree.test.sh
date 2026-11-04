@@ -40,8 +40,8 @@ gaffer_test_check_tmp "$FN" file || exit 70
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/trust-wt.XXXXXX")"
 gaffer_test_check_tmp "$WORK" || exit 70
 trap 'rm -f "$FN"; gaffer_test_rm_work "$WORK"' EXIT
-awk '/^gaffer_git_main_worktree\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$TICK" > "$FN"
-awk '/^gaffer_trust_workspace\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$TICK" >> "$FN"
+awk '/^gaffer_git_main_worktree\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$RUNNER_DIR/lib/tick-launch.sh" > "$FN"
+awk '/^gaffer_trust_workspace\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$RUNNER_DIR/lib/tick-launch.sh" >> "$FN"
 grep -q 'gaffer_git_main_worktree()' "$FN" \
   && ok "extracted the real gaffer_git_main_worktree from tick.sh" \
   || { echo "FAIL: could not extract gaffer_git_main_worktree"; exit 1; }

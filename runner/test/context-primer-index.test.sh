@@ -126,8 +126,8 @@ out="$(GAFFER_CODE_INDEX=0 GAFFER_PRIME_NAMED="$NAMED" GAFFER_PRIME_BASE_SHA="$H
 
 echo "== G. the live path: tick.sh gathers, the primer asks, the seam renders =="
 TICK="$RUNNER_DIR/tick.sh"
-grep -F 'gaffer_json ticket-named-code' "$TICK" > /dev/null && ok "tick.sh gathers the named code through json-tool" || no "tick.sh does not gather named code"
-grep -F 'GAFFER_PRIME_NAMED="$_CARD_NAMED"' "$TICK" > /dev/null && ok "tick.sh passes it to the delivery prime" || no "tick.sh does not pass the names"
+grep -F 'gaffer_json ticket-named-code' "$RUNNER_DIR/lib/tick-launch.sh" > /dev/null && ok "tick.sh gathers the named code through json-tool" || no "tick.sh does not gather named code"
+grep -F 'GAFFER_PRIME_NAMED="$_CARD_NAMED"' "$RUNNER_DIR/lib/tick-launch.sh" > /dev/null && ok "tick.sh passes it to the delivery prime" || no "tick.sh does not pass the names"
 grep -F 'Callers and tests of what the ticket names' "$TICK" > /dev/null && no "tick.sh carries prompt wording" || ok "no prompt wording in tick.sh"
 
 echo

@@ -238,7 +238,7 @@ grep -q 'lib/greenfield.sh' "$RUNNER_DIR/factory.config.sh" \
   || fail "lib/greenfield.sh not sourced"
 
 echo "== AC8: tick.sh wires the bootstrap create-a-repo branch =="
-grep -q "d.ticket.bootstrap" "$RUNNER_DIR/tick.sh" \
+grep -q "d.ticket.bootstrap" "$RUNNER_DIR/lib/tick-claim.sh" \
   && ok "tick.sh reads ticket.bootstrap" || fail "tick.sh does not read ticket.bootstrap"
 grep -q 'gaffer_bootstrap_repo_dir' "$RUNNER_DIR/tick.sh" \
   && ok "tick.sh derives the new repo dir" || fail "tick.sh does not derive the repo dir"
@@ -269,7 +269,7 @@ grep -q 'gaffer_submit_delivery "bootstrapped new repo' "$RUNNER_DIR/tick.sh" \
   && ok "tick.sh submits the bootstrap via the ordinary gaffer_submit_delivery lane" \
   || fail "tick.sh does not submit the bootstrap via the normal claim-gated lane"
 # The scaffold branches OFF the baseline; both slugs come from the shared helper.
-grep -q 'gaffer_ticket_slug()' "$RUNNER_DIR/tick.sh" \
+grep -q 'gaffer_ticket_slug()' "$RUNNER_DIR/lib/tick-claim.sh" \
   && ok "tick.sh defines the shared gaffer_ticket_slug branch-name helper" \
   || fail "tick.sh must define gaffer_ticket_slug (shared by normal + bootstrap paths)"
 

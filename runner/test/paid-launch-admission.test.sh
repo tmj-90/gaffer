@@ -146,7 +146,7 @@ for kind in delivery bootstrap review clarify eval-judge; do
   line="$(printf '%s\n' "$SH_OUT" | grep "^$kind rc=")"
   case "$line" in *"rc=77 calls=0"*"budget"*) ok "worker_deliver ($kind): rc 77, no spawn, the reason named" ;; *) fail "worker_deliver ($kind) was not refused: $line" ;; esac
 done
-grep -q 'GAFFER_LAUNCH_KIND=delivery worker_deliver' "$RUNNER_DIR/tick.sh" && grep -q 'GAFFER_LAUNCH_KIND=bootstrap worker_deliver' "$RUNNER_DIR/tick.sh" \
+grep -q 'GAFFER_LAUNCH_KIND=delivery worker_deliver' "$RUNNER_DIR/lib/tick-launch.sh" && grep -q 'GAFFER_LAUNCH_KIND=bootstrap worker_deliver' "$RUNNER_DIR/tick.sh" \
   && ok "tick.sh's delivery and bootstrap spawns go through the seam with their kind" || fail "tick.sh launch kinds missing"
 [ "$(grep -c 'GAFFER_LAUNCH_KIND=review worker_deliver' "$RUNNER_DIR/lib/review.sh")" = 2 ] && ok "review.sh's reviewer + security reviewer spawns name their kind" || fail "review.sh launch kinds missing"
 grep -q 'GAFFER_LAUNCH_KIND=clarify worker_deliver' "$RUNNER_DIR/lib/clarify.sh" && ok "clarify.sh names its kind" || fail "clarify.sh launch kind missing"

@@ -120,11 +120,11 @@ gaffer_assert_safety_hook() { return 0; }
 run_retry_block() { ( for _once in 1; do eval "$RETRY_SRC"; done ); }
 
 # tick.sh's real teardown + (post-fix) install helpers, extracted verbatim.
-CLEANUP_SRC="$(extract_fn "$TICK" "gaffer_cleanup_worktrees" "  }")"
+CLEANUP_SRC="$(extract_fn "$RUNNER_DIR/lib/tick-launch.sh" "gaffer_cleanup_worktrees" "  }")"
 [ -n "$CLEANUP_SRC" ] && ok "extracted gaffer_cleanup_worktrees from tick.sh (real source)" \
   || fail "could not extract gaffer_cleanup_worktrees from tick.sh"
 eval "$CLEANUP_SRC"
-INSTALL_SRC="$(extract_fn "$TICK" "gaffer_install_agent_env" "  }")"
+INSTALL_SRC="$(extract_fn "$RUNNER_DIR/lib/tick-launch.sh" "gaffer_install_agent_env" "  }")"
 [ -n "$INSTALL_SRC" ] && eval "$INSTALL_SRC"
 
 RETRY_SRC="$(extract_retry_block)"

@@ -121,12 +121,19 @@ RETOK="$(runner_claim 1 "$A2")"
 [ -n "$RETOK" ] && ok "#1 is claimable again on a later tick (retry works)" || fail "#1 not re-claimable after release"
 
 echo "== (d) WIRING: tick.sh claims at selection + releases on failure =="
-perl -0777 -ne 'exit 0 if /claim the chosen candidate NOW.*?wg claim-ticket "\$_cand" --agent "\$AGENT".*?candidate #\$_cand — claim FAILED.*?continuing the scan/ms; exit 1' "$TICK" \
+perl -0777 -ne 'exit 0 if /claim the chosen candidate NOW.*?wg claim-ticket "\$_cand" --agent "\$AGENT".*?candidate #\$_cand — claim FAILED.*?continuing the scan/ms; exit 1' "$RUNNER_DIR/lib/tick-claim.sh" \
   && ok "tick.sh claims in the candidate loop and skips-and-continues on a lost claim" \
   || fail "tick.sh candidate-loop claim/skip wiring not found"
-# The claim happens BEFORE the worktree setup + agent invocation.
-CLAIM_LN="$(grep -n 'wg claim-ticket "\$_cand"' "$TICK" | head -1 | cut -d: -f1)"
-WT_LN="$(grep -n 'Worktree delivery setup (replaces in-place branching)' "$TICK" | head -1 | cut -d: -f1)"
+# The claim happens BEFORE the worktree setup + agent invocation. The two live in
+# their phase libs (the claim in gaffer_tick_claim_candidate, lib/tick-claim.sh; the
+# worktree setup in gaffer_tick_create_worktrees, lib/tick-launch.sh), so the order
+# is the order tick.sh calls the two phases in.
+grep -q 'wg claim-ticket "\$_cand"' "$RUNNER_DIR/lib/tick-claim.sh" \
+  && grep -q 'Worktree delivery setup (replaces in-place branching)' "$RUNNER_DIR/lib/tick-launch.sh" \
+  && ok "the claim lives in the claim phase, the worktree setup in the launch phase" \
+  || fail "the claim or the worktree setup is not in its phase lib"
+CLAIM_LN="$(grep -n '^[[:space:]]*gaffer_tick_claim_candidate ' "$TICK" | head -1 | cut -d: -f1)"
+WT_LN="$(grep -n '^[[:space:]]*gaffer_tick_create_worktrees ' "$TICK" | head -1 | cut -d: -f1)"
 { [ -n "$CLAIM_LN" ] && [ -n "$WT_LN" ] && [ "$CLAIM_LN" -lt "$WT_LN" ]; } \
   && ok "the selection claim (L$CLAIM_LN) precedes worktree setup (L$WT_LN)" \
   || fail "the selection claim does not precede worktree setup (claim=$CLAIM_LN wt=$WT_LN)"

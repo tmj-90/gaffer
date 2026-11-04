@@ -162,7 +162,7 @@ OUT="$(env -i PATH="$PATH" HOME="$HOME" GAFFER_DATA="$WORK/data" GAFFER_BUDGET_R
 [ -z "$OUT" ] && ok "no budget configured → remaining is empty (unlimited), inherited value dropped" \
   || fail "unlimited should clear an inherited value (got '$OUT')"
 # tick.sh's pause guard subtracts THIS delivery's spend from the pre-call headroom.
-grep -q 'gaffer_delivery_spend "\$USAGE_JSON"' <(awk '/B28\(b\): GAFFER_BUDGET_REMAINING was summed/,/_BUDGET_HIT=1/' "$RUNNER_DIR/tick.sh") \
+grep -q 'gaffer_delivery_spend "\$USAGE_JSON"' <(awk '/B28\(b\): GAFFER_BUDGET_REMAINING was summed/,/_BUDGET_HIT=1/' "$RUNNER_DIR/lib/tick-launch.sh") \
   && ok "tick.sh budget_cap pause nets the in-flight delivery's spend off the headroom" \
   || fail "tick.sh pause guard should subtract the delivery's own spend"
 

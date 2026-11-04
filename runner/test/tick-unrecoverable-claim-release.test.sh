@@ -194,7 +194,7 @@ check "path-B wiring: bounded release-or-park before skip on an unrecoverable br
   'gaffer_release_or_park_nocommit "delivery failed: \$_BS_FAIL;[^\n]*had no commits[^\n]*\n[^\n]*gaffer_skip_ticket'
 check "path-C wiring: a branch switch WITH commits is recoverable (retry-or-park), never a no-commit release" \
   'if gaffer_any_branch_has_commits "\$WT_ROWS"; then\n[^\n]*\n[^\n]*\n[^\n]*_recover_or_park "branch"'
-if perl -0777 -ne 'exit 1 if /wg ticket move "\$NUM" refining --reason "delivery failed/ms; exit 0' "$TICK"; then
+if cat "$TICK" "$RUNNER_DIR"/lib/tick-*.sh | perl -0777 -ne 'exit 1 if /wg ticket move "\$NUM" refining --reason "delivery failed/ms; exit 0'; then
   ok "the retired submit-status move-or-block fallback is gone from the failure paths"
 else
   fail "a retired 'wg ticket move refining' failure fallback is still present"

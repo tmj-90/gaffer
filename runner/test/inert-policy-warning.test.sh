@@ -88,7 +88,7 @@ N="$(env -i PATH="$PATH" HOME="$HOME" GAFFER_DATA="$WORK/data" REVIEW_MODE=human
   && ok "junk CLI output → 0, rc 0, no warning" || fail "fail-soft broken: $N / $(cat "$LOG")"
 
 echo "== 7: tick.sh calls the check once, after the agent id is resolved =="
-grep -q 'gaffer_inert_policy_check' "$RUNNER_DIR/tick.sh" && ok "tick.sh wires gaffer_inert_policy_check" || fail "tick.sh does not call the check"
+grep -q 'gaffer_inert_policy_check' "$RUNNER_DIR/lib/tick-claim.sh" && ok "tick.sh wires gaffer_inert_policy_check" || fail "tick.sh does not call the check"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "PASS: $PASS checks"; exit 0; fi

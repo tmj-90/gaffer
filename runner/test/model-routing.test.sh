@@ -111,7 +111,7 @@ OUT_CUSTOM="$(GAFFER_MODEL_REGISTRY="$CUSTOM" route implement medium 3 typescrip
   || fail "custom registry mid tier should be used (got '$OUT_CUSTOM')"
 
 echo "== AC9: tick.sh wires the routed flag into the delivery call =="
-grep -q 'ROUTE_IMPL_FLAG="--model \$DELIVERY_MODEL"' "$RUNNER_DIR/tick.sh" \
+grep -q 'ROUTE_IMPL_FLAG="--model \$DELIVERY_MODEL"' "$RUNNER_DIR/lib/tick-launch.sh" \
   && ok "tick.sh builds ROUTE_IMPL_FLAG from the routed model" \
   || fail "tick.sh should build ROUTE_IMPL_FLAG from \$DELIVERY_MODEL"
 # The delivery routes through the worker seam (Spec 3 / Phase 1) with the PER-ATTEMPT
@@ -119,7 +119,7 @@ grep -q 'ROUTE_IMPL_FLAG="--model \$DELIVERY_MODEL"' "$RUNNER_DIR/tick.sh" \
 # initialises it to the routed $ROUTE_IMPL_FLAG on attempt 1 and escalates to the
 # stronger model on the final rework attempt. worker_deliver then splices that model
 # flag between $CLAUDE_FLAGS and the per-call turn flag on the invocation.
-grep -qE 'worker_deliver "\$PRIMARY_REPO" "\$PROMPT\$_REWORK_BLOCK" "\$_ATTEMPT_IMPL_FLAG"' "$RUNNER_DIR/tick.sh" \
+grep -qE 'worker_deliver "\$PRIMARY_REPO" "\$PROMPT\$_REWORK_BLOCK" "\$_ATTEMPT_IMPL_FLAG"' "$RUNNER_DIR/lib/tick-launch.sh" \
   && ok "the delivery call passes \$_ATTEMPT_IMPL_FLAG as the worker model flag (routed by default, escalates on the final attempt)" \
   || fail "the delivery worker_deliver call should pass \$_ATTEMPT_IMPL_FLAG as the model argument"
 grep -q 'CLAUDE_FLAGS \$model_flag \$_turns_flag' "$RUNNER_DIR/lib/worker.sh" \
@@ -128,7 +128,7 @@ grep -q 'CLAUDE_FLAGS \$model_flag \$_turns_flag' "$RUNNER_DIR/lib/worker.sh" \
 grep -q '_ATTEMPT_IMPL_FLAG="\$ROUTE_IMPL_FLAG"' "$RUNNER_DIR/tick.sh" \
   && ok "the per-attempt flag defaults to the routed \$ROUTE_IMPL_FLAG (attempt 1)" \
   || fail "the per-attempt flag should default to \$ROUTE_IMPL_FLAG"
-grep -q 'gaffer_route_model implement' "$RUNNER_DIR/tick.sh" \
+grep -q 'gaffer_route_model implement' "$RUNNER_DIR/lib/tick-launch.sh" \
   && ok "tick.sh calls gaffer_route_model for the implement phase" \
   || fail "tick.sh should call gaffer_route_model implement"
 
@@ -248,7 +248,7 @@ else
 fi
 
 echo "== AC13: tick.sh wires the repo/branch/base rework-diff args into the route call =="
-grep -q 'gaffer_route_model implement .*"\$ROUTE_REPO" "\$WORK_BRANCH" "\$ROUTE_BASE"' "$RUNNER_DIR/tick.sh" \
+grep -q 'gaffer_route_model implement .*"\$ROUTE_REPO" "\$WORK_BRANCH" "\$ROUTE_BASE"' "$RUNNER_DIR/lib/tick-launch.sh" \
   && ok "tick.sh passes the real repo + preserved branch + base to gaffer_route_model" \
   || fail "tick.sh should pass \$ROUTE_REPO \$WORK_BRANCH \$ROUTE_BASE to gaffer_route_model"
 

@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -8,6 +8,19 @@ import { Dispatch } from "../src/core.js";
 import type { Actor } from "../src/domain/types.js";
 
 import { errorCode, runCli } from "./helpers/cli.js";
+
+/** runner/tick.sh and the phase libs it sources (runner/lib/tick-*.sh): the tick's code. */
+function tickSources(runner: string): string {
+  return [
+    join(runner, "tick.sh"),
+    ...readdirSync(join(runner, "lib"))
+      .filter((f) => /^tick-[a-z-]+\.sh$/.test(f))
+      .sort()
+      .map((f) => join(runner, "lib", f)),
+  ]
+    .map((p) => readFileSync(p, "utf8"))
+    .join("\n");
+}
 
 /**
  * Exploratory finding cli-wg/F-05: the runner's bookkeeping writes through the CLI
@@ -85,7 +98,7 @@ describe("cli-wg F-05: runner-owned CLI writes are recorded as system", () => {
   });
 
   it("the runner passes --as system on each of its bookkeeping writes", () => {
-    const tick = readFileSync(join(RUNNER, "tick.sh"), "utf8").split("\n");
+    const tick = tickSources(RUNNER).split("\n");
     const writes = tick.filter(
       (l) =>
         !/^\s*#/.test(l) &&

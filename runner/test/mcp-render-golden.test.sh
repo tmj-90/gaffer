@@ -65,7 +65,7 @@ GAFFER_REPO_CANONICALS="$_CANON_MAP" gaffer_render_mcp_runtime "$TEMPLATE" "$WOR
   && [ "$(node -e 'const f=require("node:fs");const e=JSON.parse(f.readFileSync(process.argv[1],"utf8")).mcpServers.memory.env;process.stdout.write(String(JSON.stringify(JSON.parse(e.GAFFER_REPO_CANONICALS))===JSON.stringify(JSON.parse(process.argv[2]))&&e.MEMORY_AUTO_APPROVE==="0"))' "$WORK/canon.json" "$_CANON_MAP")" = "true" ] \
   && ok "repo-canonical map round-trips into the memory env; MEMORY_AUTO_APPROVE pinned 0" || no "repo-canonical map / auto-approve pin wrong in the memory env"
 # The delivery + bootstrap sites set the binding before their render.
-[ "$(grep -c 'GAFFER_REPO_CANONICALS="$(.*gaffer_repo_canonicals_json)"' "$RUNNER_DIR/tick.sh")" -eq 2 ] \
+[ "$(cat "$RUNNER_DIR/tick.sh" "$RUNNER_DIR"/lib/tick-*.sh | grep -c 'GAFFER_REPO_CANONICALS="$(.*gaffer_repo_canonicals_json)"')" -eq 2 ] \
   && ok "delivery + bootstrap bind the repo-canonical map" || no "tick.sh does not bind GAFFER_REPO_CANONICALS at both render sites"
 
 # Call sites: bootstrap + delivery (tick.sh) and clarify bind their ticket through the
@@ -73,7 +73,7 @@ GAFFER_REPO_CANONICALS="$_CANON_MAP" gaffer_render_mcp_runtime "$TEMPLATE" "$WOR
 # post-render edit re-serialises the file, drifting the bash render from the TS golden).
 grep -Eq 'gaffer_render_mcp_runtime "\$MCP_CONFIG" "\$MCP_RUNTIME" "" "\$NUM"' "$RUNNER_DIR/tick.sh" \
   && ok "bootstrap render binds scope ticket \$NUM" || no "bootstrap render does not pass the scope ticket"
-grep -Eq 'gaffer_render_mcp_runtime "\$MCP_CONFIG" "\$MCP_RUNTIME" "\$NUM" "\$NUM"' "$RUNNER_DIR/tick.sh" \
+grep -Eq 'gaffer_render_mcp_runtime "\$MCP_CONFIG" "\$MCP_RUNTIME" "\$NUM" "\$NUM"' "$RUNNER_DIR/lib/tick-launch.sh" \
   && ok "delivery render binds scope ticket \$NUM" || no "delivery render does not pass the scope ticket"
 grep -Eq 'gaffer_render_mcp_runtime "\$MCP_CONFIG" "\$MCP_RUNTIME" "" "\$CNUM"' "$RUNNER_DIR/lib/clarify.sh" \
   && ok "clarify render binds scope ticket \$CNUM" || no "clarify render does not pass the scope ticket"

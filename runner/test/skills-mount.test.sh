@@ -127,7 +127,7 @@ grep -q '"opened":\["add-api-endpoint"\]' <<<"$ROW" && ok "opened = the skill re
 grep -q '"refused":\["plan-change"\]' <<<"$ROW" && ok "refused = the read the hook blocked" || fail "refused wrong: $ROW"
 grep -q '"applied":\[\]' <<<"$ROW" && ok "applied is not inferred from an open" || fail "applied wrong: $ROW"
 # Every agent site records its run.
-for site in "tick.sh:delivery" "tick.sh:bootstrap" "lib/review.sh:review" "lib/review.sh:security-review" "lib/clarify.sh:clarify"; do
+for site in "lib/tick-launch.sh:delivery" "tick.sh:bootstrap" "lib/review.sh:review" "lib/review.sh:security-review" "lib/clarify.sh:clarify"; do
   f="${site%%:*}"; role="${site#*:}"
   grep -qE "gaffer_record_skill_usage \"\\\$[A-Z]*NUM\" $role " "$RUNNER_DIR/$f" \
     && ok "$f records $role skill telemetry" || fail "$f does not record $role skill telemetry"

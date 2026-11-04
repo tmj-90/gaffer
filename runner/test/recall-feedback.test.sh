@@ -73,8 +73,8 @@ echo "== C. tick.sh sets the recall ticket on delivery + calls feedback at both 
 # and _RECALL_FOR is $NUM unless DRY_RUN=1. Behaviourally, e2e-memory-routing.test.sh
 # check 6 (memory_primed evidence after a real live tick) proves the live value and
 # dry-run-preview.test.sh P3 the empty one.
-if grep -q 'GAFFER_RECALL_TICKET="\$_RECALL_FOR" gaffer_prime_context_block' "$TICK" \
-   && grep -Fq '_RECALL_FOR=""; [ "${DRY_RUN:-0}" = "1" ] || _RECALL_FOR="$NUM"' "$TICK"; then
+if grep -q 'GAFFER_RECALL_TICKET="\$_RECALL_FOR" gaffer_prime_context_block' "$RUNNER_DIR/lib/tick-launch.sh" \
+   && grep -Fq '_RECALL_FOR=""; [ "${DRY_RUN:-0}" = "1" ] || _RECALL_FOR="$NUM"' "$RUNNER_DIR/lib/tick-launch.sh"; then
   ok "delivery prime exports GAFFER_RECALL_TICKET=\$NUM (empty on a DRY_RUN preview)"
 else
   fail "delivery prime does not export GAFFER_RECALL_TICKET=\$NUM"
@@ -190,7 +190,7 @@ fi
 # THIRD positional arg is the recall ticket, so the delivery render binds it to
 # the ticket number ($NUM) and the bootstrap render passes it empty. Match the
 # seam call (whitespace-tolerant) rather than the retired inline sed.
-if grep -Eq 'gaffer_render_mcp_runtime[[:space:]]+"\$MCP_CONFIG"[[:space:]]+"\$MCP_RUNTIME"[[:space:]]+"\$NUM"' "$TICK"; then
+if grep -Eq 'gaffer_render_mcp_runtime[[:space:]]+"\$MCP_CONFIG"[[:space:]]+"\$MCP_RUNTIME"[[:space:]]+"\$NUM"' "$RUNNER_DIR/lib/tick-launch.sh"; then
   ok "delivery render sets GAFFER_RECALL_TICKET to \$NUM (seam recall arg)"
 else
   fail "delivery render does not set GAFFER_RECALL_TICKET to \$NUM"

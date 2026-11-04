@@ -38,7 +38,7 @@ grep -q -- '--text "\$_B_SKILL_TEXT"' <<<"$B_LINE" \
 grep -q '_B_SKILL_TEXT="\$(printf .%s\\n%s. "\${TITLE:-}"' "$RUNNER_DIR/tick.sh" \
   && ok "the bootstrap text is the ticket title + description head" \
   || fail "_B_SKILL_TEXT should be built from TITLE + description"
-D_LINE="$(grep -n 'SKILLS="\$(node "\$HERE/bin/select-skills.mjs"' "$RUNNER_DIR/tick.sh" | grep -v B_SKILLS | head -1)"
+D_LINE="$(grep -n 'SKILLS="\$(node "\$HERE/bin/select-skills.mjs"' "$RUNNER_DIR/lib/tick-claim.sh" | grep -v B_SKILLS | head -1)"
 grep -q -- '--text "\$_SKILL_TEXT"' <<<"$D_LINE" \
   && ok "delivery path still passes --text (the two paths agree)" || fail "delivery select-skills lost --text"
 # The selector itself: a brief that names an off-domain pack pulls it in via --text.
@@ -60,11 +60,11 @@ done
 grep -qw -- create-branch <<<"$B_OUT" && fail "bootstrap mounted create-branch (the runner branches)" || ok "bootstrap does not mount create-branch"
 
 echo "== 2: an empty selection falls back to the universal mechanics, never the crew registry =="
-TICK_CODE="$(grep -vE '^[[:space:]]*#' "$RUNNER_DIR/tick.sh")"
+TICK_CODE="$(cat "$RUNNER_DIR/tick.sh" "$RUNNER_DIR"/lib/tick-*.sh | grep -vE '^[[:space:]]*#')"
 grep -q 'fg skills' <<<"$TICK_CODE" \
   && fail "tick.sh still falls back to 'fg skills' (role-only + unknown names)" \
   || ok "tick.sh no longer calls 'fg skills'"
-F_CMD="$(grep -E '^[[:space:]]*\[ -n "\$SKILLS" \] \|\| SKILLS=.*GAFFER_UNIVERSAL_SKILLS' "$RUNNER_DIR/tick.sh" | head -1)"
+F_CMD="$(grep -E '^[[:space:]]*\[ -n "\$SKILLS" \] \|\| SKILLS=.*GAFFER_UNIVERSAL_SKILLS' "$RUNNER_DIR/lib/tick-claim.sh" | head -1)"
 [ -n "$F_CMD" ] && ok "the delivery fallback line names GAFFER_UNIVERSAL_SKILLS" || fail "delivery fallback line not found"
 # shellcheck source=../lib/skills-mount.sh
 F_OUT="$(SKILLS="" bash -c 'source "$1/lib/skills-mount.sh"; eval "$2"; printf "%s" "$SKILLS"' _ "$RUNNER_DIR" "$F_CMD" 2>/dev/null)"

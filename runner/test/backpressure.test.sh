@@ -144,10 +144,10 @@ grep -Eq '^: "\$\{MAX_CONCURRENT_TICKETS_PER_REPO:=1\}"' "$RUNNER_DIR/factory.co
   || fail "MAX_CONCURRENT_TICKETS_PER_REPO default is not 1"
 
 # PROOF: the tick wires this into the ready-selection skip.
-grep -q 'gaffer_repo_in_backpressure' "$RUNNER_DIR/tick.sh" \
+grep -q 'gaffer_repo_in_backpressure' "$RUNNER_DIR/lib/tick-claim.sh" \
   && ok "tick.sh consults gaffer_repo_in_backpressure before claiming" \
   || fail "tick.sh does not gate claims on backpressure"
-grep -q 'BACKPRESSURE: skipping ready' "$RUNNER_DIR/tick.sh" \
+grep -q 'BACKPRESSURE: skipping ready' "$RUNNER_DIR/lib/tick-claim.sh" \
   && ok "tick.sh skips a ready ticket whose repo is in backpressure" \
   || fail "tick.sh missing the backpressure skip path"
 
@@ -399,7 +399,7 @@ read -r PB PR PC <<< "$(GAFFER_WG_LIST_CMD="$WORK/wg_list_done.sh" gaffer_repo_p
 
 # PROOF: tick.sh passes the candidate ticket to the pressure probe (self-bypass)
 # and the stale "one extra tick" claim is gone from the sweep guard comment.
-grep -qF 'gaffer_repo_pressure "$_crepo" "${_cdef:-main}" "$_cname" "$_cand"' "$RUNNER_DIR/tick.sh" \
+grep -qF 'gaffer_repo_pressure "$_crepo" "${_cdef:-main}" "$_cname" "$_cand"' "$RUNNER_DIR/lib/tick-claim.sh" \
   && ok "tick.sh passes the candidate number into gaffer_repo_pressure" \
   || fail "tick.sh does not pass the candidate to the pressure probe (no self-bypass)"
 grep -q 'one extra tick' "$RUNNER_DIR/lib/backpressure.sh" \

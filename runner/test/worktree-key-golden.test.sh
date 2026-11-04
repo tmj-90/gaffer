@@ -46,7 +46,7 @@ key_case only-specials "only-specials → repo<index>" "@@@###"                 
 key_case name-slash    "name with slash"             ""                            "org/app"       9
 
 # tick.sh wires the CLI (no bash tr|sed twin remains).
-grep -q 'worktreeKeyCli.js' "$RUNNER_DIR/tick.sh" && ok "tick.sh derives the leaf through worktreeKeyCli.js" || no "tick.sh does not call worktreeKeyCli.js"
+grep -q 'worktreeKeyCli.js' "$RUNNER_DIR/lib/tick-claim.sh" && ok "tick.sh derives the leaf through worktreeKeyCli.js" || no "tick.sh does not call worktreeKeyCli.js"
 ! grep -q "tr -c 'A-Za-z0-9._-' '-'" "$RUNNER_DIR/tick.sh" && ok "tick.sh carries no bash twin of the derivation" || no "bash twin still present in tick.sh"
 
 echo ""; echo "worktree-key-golden: $pass passed, $fail failed"

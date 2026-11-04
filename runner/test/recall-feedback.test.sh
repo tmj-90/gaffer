@@ -86,13 +86,13 @@ else
   fail "submit site does not call clean/reworked feedback"
 fi
 # blocked branch at the rework-exhausted park.
-if grep -q 'gaffer_recall_feedback blocked' "$TICK"; then
+if grep -q 'gaffer_recall_feedback blocked' "$RUNNER_DIR/lib/tick-gates.sh"; then
   ok "blocked-park calls blocked feedback"
 else
   fail "blocked-park does not call blocked feedback"
 fi
 # The blocked feedback call must sit next to the rework_exhausted park.
-if grep -q 'gaffer_recall_feedback blocked' <<<"$(grep -A3 'gaffer_release_delivery blocked' "$TICK")"; then
+if grep -q 'gaffer_recall_feedback blocked' <<<"$(grep -A3 'gaffer_release_delivery blocked' "$RUNNER_DIR/lib/tick-gates.sh")"; then
   ok "blocked feedback is wired at the rework_exhausted park"
 else
   fail "blocked feedback is not adjacent to the rework_exhausted park"

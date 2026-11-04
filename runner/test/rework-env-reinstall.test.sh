@@ -53,7 +53,7 @@ extract_retry_block() {
     /# On a retry the prior worktree was torn down/ { grab=1 }
     grab { print }
     grab && $0 == "  fi" { exit }
-  ' "$TICK"
+  ' "$RUNNER_DIR/lib/tick-gates.sh"
 }
 
 # ── Real helper libs (the ones tick.sh sources) ──────────────────────────────

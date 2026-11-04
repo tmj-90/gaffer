@@ -245,14 +245,14 @@ CREW_DIR="$SAVED_CREW"
 
 echo "== G: tick.sh wiring =="
 TICK="$RUNNER_DIR/tick.sh"
-grep -q '"$_dtest" "$_dtc" "$_dlint" "${_dbase:--}" "$_DOD_ALLOW_TESTS"' "$TICK" \
-  && grep -q '_dbase="$(_gaffer_delivery_base_for "$rpath")"' "$TICK" \
+grep -q '"$_dtest" "$_dtc" "$_dlint" "${_dbase:--}" "$_DOD_ALLOW_TESTS"' "$RUNNER_DIR/lib/tick-gates.sh" \
+  && grep -q '_dbase="$(_gaffer_delivery_base_for "$rpath")"' "$RUNNER_DIR/lib/tick-gates.sh" \
   && ok "G1 tick.sh passes the recorded base commit and the allow flag into every gate row" \
   || fail "G1 tick.sh does not pass base/allow into DOD_ROWS"
-grep -q "d.ticket.allow_test_changes === 1" "$TICK" && grep -q '_DOD_ALLOW_TESTS="$(wg ticket show "$NUM"' "$TICK" \
+grep -q "d.ticket.allow_test_changes === 1" "$RUNNER_DIR/lib/tick-gates.sh" && grep -q '_DOD_ALLOW_TESTS="$(wg ticket show "$NUM"' "$RUNNER_DIR/lib/tick-gates.sh" \
   && ok "G2 the allow flag is read FRESH from dispatch at gate time (fails closed to 0)" \
   || fail "G2 tick.sh does not read allow_test_changes fresh"
-[ "$(grep -c 'gaffer_dod_log_integrity "$DOD_RESULTS"' "$TICK")" -ge 2 ] \
+[ "$(grep -c 'gaffer_dod_log_integrity "$DOD_RESULTS"' "$RUNNER_DIR/lib/tick-gates.sh")" -ge 2 ] \
   && ok "G3 tick.sh logs the integrity row on both the PASS and FAIL paths" \
   || fail "G3 tick.sh does not log integrity rows"
 
@@ -341,7 +341,7 @@ git -C "$R" update-ref refs/heads/main "$(git -C "$R" rev-parse fresh)"   # main
 [ -z "$(gaffer_delivery_base_sha "$R" main no-such-branch "")" ] && ok "I7 nothing resolvable prints nothing" \
   || fail "I7 printed something for a missing branch"
 grep -q '_gaffer_note_branch_cut "$rpath"            # GATE INTEGRITY' "$RUNNER_DIR/lib/tick-launch.sh" \
-  && [ "$(cat "$TICK" "$RUNNER_DIR"/lib/tick-*.sh | grep -c '_gaffer_note_branch_cut "$rpath"')" -ge 2 ] \
+  && [ "$(cat "$RUNNER_DIR/lib/tick-launch.sh" "$RUNNER_DIR"/lib/tick-*.sh | grep -c '_gaffer_note_branch_cut "$rpath"')" -ge 2 ] \
   && ! grep -q 'gaffer_delivery_base_sha "$rpath" "$rbase" "$WORK_BRANCH" "$_created"' "$TICK" "$RUNNER_DIR"/lib/tick-*.sh \
   && ok "I8 tick.sh captures the cut commit at every worktree add -B (first cut and retry re-cut), never a later tip" \
   || fail "I8 tick.sh does not capture the cut commit at each -B"

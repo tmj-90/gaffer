@@ -131,7 +131,7 @@ grep -qiE 'self-referential|forbidden path' <<<"$HY_OUT" \
 grep -qi 'copied source tree' <<<"$HY_OUT" \
   && ok "rejection cites the copied src tree (src.ticket9/)" || fail "expected copied-src leak in reasons ($HY_OUT)"
 # And tick.sh's enforcement path is present (parks, never submits).
-grep -q 'HYGIENE: delivery for #\$NUM is NOT hygienic' "$RUNNER_DIR/tick.sh" \
+grep -q 'HYGIENE: delivery for #\$NUM is NOT hygienic' "$RUNNER_DIR/lib/tick-gates.sh" \
   && ok "tick.sh parks (does not submit) a non-hygienic delivery" \
   || fail "tick.sh missing the hygiene park path"
 

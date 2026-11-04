@@ -112,8 +112,8 @@ CREW_DIR="$WORK/no-crew" gaffer_run_ac_checks "$N4" "$(wg ticket show "$N4")" "$
 grep -q 'second-fails' "$RES5" && ok "without the crew dist the failing check's output still lands in the results (tail fallback)" || no "AC output tail lost without the crew dist"
 
 echo "== 4: tick.sh wiring =="
-grep -q 'gaffer_run_ac_checks "$NUM" "$SHOW" "$PRIMARY_REPO" "$AC_RESULTS"' "$RUNNER_DIR/tick.sh" && ok "tick.sh runs the AC checks in the primary worktree" || no "tick.sh does not call gaffer_run_ac_checks"
-grep -q '_recover_or_park "acceptance-check"' "$RUNNER_DIR/tick.sh" && ok "a failing check feeds the recoverable retry-or-park path" || no "no recoverable handling for AC checks"
+grep -q 'gaffer_run_ac_checks "$NUM" "$SHOW" "$PRIMARY_REPO" "$AC_RESULTS"' "$RUNNER_DIR/lib/tick-gates.sh" && ok "tick.sh runs the AC checks in the primary worktree" || no "tick.sh does not call gaffer_run_ac_checks"
+grep -q '_recover_or_park "acceptance-check"' "$RUNNER_DIR/lib/tick-gates.sh" && ok "a failing check feeds the recoverable retry-or-park path" || no "no recoverable handling for AC checks"
 grep -q 'lib/ac-checks.sh' "$RUNNER_DIR/factory.config.sh" && ok "factory.config.sh sources lib/ac-checks.sh" || no "lib not sourced"
 
 echo

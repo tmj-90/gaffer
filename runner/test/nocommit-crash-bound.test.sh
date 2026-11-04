@@ -285,9 +285,9 @@ check() {  # $1 name, $2 perl-regex over $3 (file)
   if perl -0777 -ne "exit 0 if /$2/ms; exit 1" "$3"; then ok "$1"; else fail "$1 — pattern not found"; fi
 }
 check "AC8: no-commit agent-crash path routes through the bounded wrapper (before skip)" \
-  'gaffer_release_or_park_nocommit "delivery failed: agent exited non-zero \(rc=\$rc\) with no commits;[^\n]*\n[^\n]*gaffer_skip_ticket' "$TICK"
+  'gaffer_release_or_park_nocommit "delivery failed: agent exited non-zero \(rc=\$rc\) with no commits;[^\n]*\n[^\n]*gaffer_skip_ticket' "$RUNNER_DIR/lib/tick-gates.sh"
 check "AC8: an unrecoverable branch switch (no commits) routes through the bounded wrapper" \
-  'gaffer_release_or_park_nocommit "delivery failed: \$_BS_FAIL;[^\n]*had no commits[^\n]*\n[^\n]*gaffer_skip_ticket' "$TICK"
+  'gaffer_release_or_park_nocommit "delivery failed: \$_BS_FAIL;[^\n]*had no commits[^\n]*\n[^\n]*gaffer_skip_ticket' "$RUNNER_DIR/lib/tick-gates.sh"
 check "AC8: the submit-success path clears the cross-run counter (flaky-then-fixed reset)" \
   'submitted #\$NUM for review[^\n]*\n(?:[^\n]*\n)*?[^\n]*gaffer_nocommit_clear "\$NUM"' "$TICK"
 check "AC8: factory.config.sh defines GAFFER_MAX_NOCOMMIT_FAILURES (aligned with the delivery-attempt cap)" \

@@ -188,7 +188,7 @@ TICK="$RUNNER_DIR/tick.sh"
 if [ -f "$TICK" ]; then
   # The DoD-fail path must route through _recover_or_park (recoverable), not a
   # bare drop-branch teardown.
-  if grep -q '_recover_or_park "definition-of-done"' "$TICK"; then
+  if grep -q '_recover_or_park "definition-of-done"' "$RUNNER_DIR/lib/tick-gates.sh"; then
     ok "tick.sh DoD-fail path routes through _recover_or_park (branch-preserving)"
   else
     fail "tick.sh DoD-fail path does NOT route through _recover_or_park"
@@ -210,7 +210,7 @@ if [ -f "$TICK" ]; then
     fail "tick.sh crash-cleanup does not skip teardown for a paused worktree"
   fi
   # The recoverable loop is bounded by GAFFER_MAX_DELIVERY_ATTEMPTS.
-  if grep -q 'GAFFER_MAX_DELIVERY_ATTEMPTS' "$TICK"; then
+  if grep -q 'GAFFER_MAX_DELIVERY_ATTEMPTS' "$RUNNER_DIR/lib/tick-gates.sh"; then
     ok "tick.sh bounds the retry loop by GAFFER_MAX_DELIVERY_ATTEMPTS"
   else
     fail "tick.sh does not bound the retry loop"

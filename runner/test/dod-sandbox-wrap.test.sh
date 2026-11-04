@@ -102,7 +102,7 @@ v="$(PATH="$BIN:$PATH" GAFFER_STRICT_REQUIRE=1 gaffer_ensure_node_modules "$IW" 
 rm -rf "$IW/node_modules"; rm -f "$MARK"
 v="$(PATH="$BIN:$PATH" SECRET_TOKEN=s3cret gaffer_ensure_node_modules "$IW" 2>/dev/null)"
 grep -q 'token=none' "$MARK" 2>/dev/null && ok "the host primary prime runs with the stripped env" || fail "greenfield prime saw operator secrets: $(cat "$MARK" 2>/dev/null)"
-grep -q 'SKIPPED:sandbox_unavailable' "$RUNNER_DIR/tick.sh" && ok "tick.sh logs the refused install" || fail "tick.sh does not handle SKIPPED:sandbox_unavailable"
+grep -q 'SKIPPED:sandbox_unavailable' "$RUNNER_DIR/lib/tick-gates.sh" && ok "tick.sh logs the refused install" || fail "tick.sh does not handle SKIPPED:sandbox_unavailable"
 
 echo "== 7: under the docker provider the install container gets the CONTAINER's env, not the host's =="
 # The install runs `env -i <install env> bash -c <install>` inside the container, so the

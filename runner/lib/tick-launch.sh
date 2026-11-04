@@ -752,7 +752,7 @@ gaffer_tick_prepare_launch() {
   fi
 }
 
-# Pre-spawn budget gate, launch via the worker seam, post-call accounting. Moved verbatim from tick.sh; called from tick.sh.
+# Pre-spawn budget gate, launch via the worker seam, post-call accounting. Moved verbatim from tick.sh; called from gaffer_tick_delivery_attempts (lib/tick-gates.sh).
 gaffer_tick_launch_attempt() {
   # USAGE LEDGER: switch to --output-format json and CAPTURE stdout (the JSON
   # result object) to a temp file so we can ledger the real usage, WITHOUT

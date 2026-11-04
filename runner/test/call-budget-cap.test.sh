@@ -86,8 +86,8 @@ grep -q '_CALL_BUDGET="$(gaffer_call_budget_usd "$(gaffer_ticket_budget_remainin
 
 echo "== 4: gaffer_ticket_budget_remaining (real, extracted from tick.sh) =="
 FN="$WORK/fn.sh"
-awk '/^gaffer_ticket_budget_remaining\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$RUNNER_DIR/tick.sh" > "$FN"
-grep -E '^_num_(pos|ge|le)\(\)' "$RUNNER_DIR/tick.sh" >> "$FN"
+awk '/^gaffer_ticket_budget_remaining\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$RUNNER_DIR/lib/tick-gates.sh" > "$FN"
+grep -E '^_num_(pos|ge|le)\(\)' "$RUNNER_DIR/lib/tick-gates.sh" >> "$FN"
 # shellcheck disable=SC1090
 source "$FN"
 jget() { node "$RUNNER_DIR/lib/json-tool.mjs" expr "$1"; }

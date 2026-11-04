@@ -91,7 +91,7 @@ echo "== 4. tick.sh's empty-delivery path parks via the runner-release helper ==
 if [ -f "$TICK" ]; then
   # The empty-delivery block calls gaffer_release_delivery refining … and NO LONGER
   # probes status to review-reject/block (that fallback is deleted).
-  EMPTY_BLOCK="$(awk '/EMPTY delivery for #\$NUM — 0 commits/{f=1} f&&/delivery PARKED for #\$NUM — empty/{print; exit} f' "$TICK")"
+  EMPTY_BLOCK="$(awk '/EMPTY delivery for #\$NUM — 0 commits/{f=1} f&&/delivery PARKED for #\$NUM — empty/{print; exit} f' "$HERE/../lib/tick-gates.sh")"
   grep -q 'gaffer_release_delivery refining' <<<"$EMPTY_BLOCK" \
     && ok "empty-delivery path parks via gaffer_release_delivery refining" \
     || fail "empty-delivery path does not call gaffer_release_delivery refining"

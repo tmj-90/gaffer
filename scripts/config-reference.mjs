@@ -39,7 +39,9 @@ const DEFAULT_RE = /^\s*:\s*"\$\{([A-Za-z_][A-Za-z0-9_]*):?=(.*)\}"\s*(?:#\s*(.*
 // A section banner: `# ── Title ────` or `# --- Title ---` (top-level comments only)
 const SECTION_RE = /^#\s*(?:──|---)\s*(.+?)\s*[─-]*\s*$/;
 // Internal helpers that are set by the config for its own use, not operator knobs.
-const INTERNAL = new Set(["RUNNER_DIR"]);
+// GAFFER_MINIMALISM_REASON: the minimalism gate's own `set -u` belt in the attempt loop
+// (runner/lib/tick-gates.sh, moved there from tick.sh, which this scan does not read).
+const INTERNAL = new Set(["RUNNER_DIR", "GAFFER_MINIMALISM_REASON"]);
 // Env var reads in TS/JS: process.env.X, process.env["X"], env.X, env["X"].
 const ENV_READ_RE = /\b(?:process\.)?env(?:\.([A-Z][A-Z0-9_]+)|\[["']([A-Z][A-Z0-9_]+)["']\])/g;
 // Env var reads in bash: ${X:-…}, ${X}, ${X+x} … — only factory-prefixed names.
@@ -196,7 +198,7 @@ export const EXTRA_KNOBS = [
     group: "Definition of Done",
     name: "GAFFER_ALLOW_NO_DOD",
     default: "0",
-    file: "runner/tick.sh",
+    file: "runner/lib/tick-gates.sh",
     doc: "1 = let a delivery pass when no gate ran at all (a repo with no test or lint command). Otherwise that is a failure and the ticket parks.",
   },
   {

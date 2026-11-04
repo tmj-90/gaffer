@@ -182,8 +182,8 @@ gaffer_skip_ticket "$NUM"
   || fail "A7: negative control did not reproduce the stranded-claim state — the test would not bite"
 
 echo "== PART B: revert guard — tick.sh releases (bounded) BEFORE it skips (3 paths) =="
-check() {  # $1 name, $2 perl-regex over tick.sh
-  if perl -0777 -ne "exit 0 if /$2/ms; exit 1" "$TICK"; then ok "$1"; else fail "$1 — pattern not found"; fi
+check() {  # $1 name, $2 perl-regex over the attempt loop's gates (lib/tick-gates.sh)
+  if perl -0777 -ne "exit 0 if /$2/ms; exit 1" "$RUNNER_DIR/lib/tick-gates.sh"; then ok "$1"; else fail "$1 — pattern not found"; fi
 }
 check "path-A wiring: bounded release-or-park before skip on no-commit agent failure" \
   'gaffer_release_or_park_nocommit "delivery failed: agent exited non-zero \(rc=\$rc\) with no commits;[^\n]*\n[^\n]*gaffer_skip_ticket'

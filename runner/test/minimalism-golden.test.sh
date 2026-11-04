@@ -87,7 +87,7 @@ tok="$(CREW_DIR="$WORK/nope" gaffer_check_minimalism 3 120 "a fine note about f.
 [ "$tok" = "check_failed" ] && [ "$rc" -eq 1 ] && ok "missing crew dist → check_failed / rc 1 (fail closed)" || no "missing dist: tok='$tok' rc=$rc"
 CREW_DIR="$WORK/nope" gaffer_check_minimalism 3 120 "a fine note about f.txt" "f.txt" >/dev/null 2>&1
 [ -n "$GAFFER_MINIMALISM_REASON" ] && ok "fail-closed reason is set ($GAFFER_MINIMALISM_REASON)" || no "no reason on fail-closed"
-grep -q 'check_failed)' "$RUNNER_DIR/tick.sh" && ok "tick.sh parks on the check_failed verdict" || no "tick.sh does not handle check_failed"
+grep -q 'check_failed)' "$RUNNER_DIR/lib/tick-gates.sh" && ok "tick.sh parks on the check_failed verdict" || no "tick.sh does not handle check_failed"
 
 echo ""; echo "minimalism-golden: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

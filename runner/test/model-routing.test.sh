@@ -125,7 +125,7 @@ grep -qE 'worker_deliver "\$PRIMARY_REPO" "\$PROMPT\$_REWORK_BLOCK" "\$_ATTEMPT_
 grep -q 'CLAUDE_FLAGS \$model_flag \$_turns_flag' "$RUNNER_DIR/lib/worker.sh" \
   && ok "worker_deliver splices the model flag between \$CLAUDE_FLAGS and the turn flag" \
   || fail "worker_deliver should splice \$model_flag between \$CLAUDE_FLAGS and \$_turns_flag"
-grep -q '_ATTEMPT_IMPL_FLAG="\$ROUTE_IMPL_FLAG"' "$RUNNER_DIR/tick.sh" \
+grep -q '_ATTEMPT_IMPL_FLAG="\$ROUTE_IMPL_FLAG"' "$RUNNER_DIR/lib/tick-gates.sh" \
   && ok "the per-attempt flag defaults to the routed \$ROUTE_IMPL_FLAG (attempt 1)" \
   || fail "the per-attempt flag should default to \$ROUTE_IMPL_FLAG"
 grep -q 'gaffer_route_model implement' "$RUNNER_DIR/lib/tick-launch.sh" \

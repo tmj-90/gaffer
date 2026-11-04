@@ -361,7 +361,7 @@ Some are seams the runner also sets for itself; the notes say which.
 | `GAFFER_DOD` | `1` | `runner/lib/dod.sh` | 0 turns every Definition-of-Done gate off, the only way to land a delivery ungated (the merge gate is off too). |
 | `GAFFER_DOD_INSTALL` | `1` | `runner/lib/dod.sh` | 1 = install the delivery worktree's dependencies (from its lockfile) before the test gate; a no-op when node_modules exists. 0 to manage dependencies yourself. |
 | `GAFFER_GREENFIELD_INSTALL` | `1` | `runner/lib/greenfield.sh` | 0 = skip the dependency install in a new greenfield repo; also turns GAFFER_DOD_INSTALL off. |
-| `GAFFER_ALLOW_NO_DOD` | `0` | `runner/tick.sh` | 1 = let a delivery pass when no gate ran at all (a repo with no test or lint command). Otherwise that is a failure and the ticket parks. |
+| `GAFFER_ALLOW_NO_DOD` | `0` | `runner/lib/tick-gates.sh` | 1 = let a delivery pass when no gate ran at all (a repo with no test or lint command). Otherwise that is a failure and the ticket parks. |
 | `GAFFER_CI_TIMEOUT_POLICY` | `block` | `runner/lib/ci-gate.sh` | With GAFFER_REQUIRE_CI=1: what happens when the checks time out, there is no PR or no checks exist. block rejects the delivery; proceed lets it through with a note. |
 
 ### Delivery and landing

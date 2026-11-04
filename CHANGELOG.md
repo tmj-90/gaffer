@@ -106,6 +106,7 @@ to the same version.
 - **Execution preflight probes the package registry** from the agent's own environment.
 - **One-command container run.** A root `Dockerfile` and `compose.yaml` start the dashboard and runner (`docker compose up -d`); bootstrapped repos survive a container recreate.
 - **The runner no longer needs python3**, and its text processing runs through one typed renderer.
+- **`runner/tick.sh` is orchestration only.** Its phases (admission and claim, launch, the delivery gates and the submit / rework / park decision, the close path, idle work, crash recovery and resume, the greenfield bootstrap) moved verbatim into `runner/lib/tick-*.sh`, which `tick.sh` sources up front and will not run without; no behaviour changed.
 
 ### CLI and API
 

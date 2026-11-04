@@ -220,7 +220,7 @@ grep -F 'gaffer_scout_run "$_CARD_REAL_REPO" "$_CARD_BASE_SHA"' "$RUNNER_DIR/lib
 grep -F 'ROUTE_RISK="$SCOUT_RISK"' "$RUNNER_DIR/lib/tick-launch.sh" > /dev/null && ok "the router gets the effective risk" || no "routing ignores the scout"
 grep -F 'gaffer_scout_persist "$NUM"' "$RUNNER_DIR/lib/tick-launch.sh" > /dev/null && ok "tick.sh records the packet" || no "no persist"
 grep -F 'GF_SCOUT="${SCOUT_PROMPT:-}"' "$RUNNER_DIR/factory.config.sh" > /dev/null && ok "the prompt inputs carry it" || no "GF_SCOUT not wired"
-grep -F 'SCOUT — ' "$TICK" "$RUNNER_DIR/lib/scout.sh" > /dev/null && no "prompt wording in the runner" || ok "no prompt wording in tick.sh or scout.sh"
+grep -F 'SCOUT — ' "$TICK" "$RUNNER_DIR"/lib/tick-*.sh "$RUNNER_DIR/lib/scout.sh" > /dev/null && no "prompt wording in the runner" || ok "no prompt wording in tick.sh or scout.sh"
 
 echo
 echo "scout-gather: $pass passed, $fail failed"

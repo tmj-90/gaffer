@@ -173,7 +173,7 @@ else
 fi
 # tick.sh must not grow a second, unused copy of the prompt text again: an edit
 # there would change nothing for the live agent.
-if grep -qE 'gaffer_quarantine (ticket-title|review-feedback)|PRIOR REVIEW FEEDBACK' "$RUNNER_DIR/tick.sh"; then
+if grep -qE 'gaffer_quarantine (ticket-title|review-feedback)|PRIOR REVIEW FEEDBACK' "$RUNNER_DIR/tick.sh" "$RUNNER_DIR"/lib/tick-*.sh; then
   fail "tick.sh builds its own quarantined prompt fragments (dead — the renderer owns them)"
 else
   ok "tick.sh builds no prompt fragments of its own (crew's renderer owns the text)"

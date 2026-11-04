@@ -116,7 +116,7 @@ echo "== 3. tick.sh uses the per-PID path (no silent revert of the fix) =="
 grep -q 'MCP_RUNTIME="\$GAFFER_DATA/mcp-runtime\.\$\$\.json"' "$RUNNER_DIR/tick.sh" \
   && ok "tick.sh renders mcp-runtime.\$\$.json (per-tick)" \
   || fail "tick.sh no longer uses a per-PID mcp-runtime path"
-! grep -q 'MCP_RUNTIME="\$GAFFER_DATA/mcp-runtime\.json"' "$RUNNER_DIR/tick.sh" \
+! grep -q 'MCP_RUNTIME="\$GAFFER_DATA/mcp-runtime\.json"' "$RUNNER_DIR/tick.sh" "$RUNNER_DIR"/lib/tick-*.sh \
   && ok "no fixed shared mcp-runtime.json path remains in tick.sh" \
   || fail "a fixed shared mcp-runtime.json path is still present in tick.sh"
 

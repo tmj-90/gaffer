@@ -118,6 +118,11 @@ The maintenance lane runs only on idle ticks, never alongside delivery.
    its own work `done`: the runner runs the gates and submits the delivery for review.
 5. `loop.sh` repeats until the queue drains or the stop conditions hit.
 
+`tick.sh` itself only orchestrates: each step above is a phase in `lib/tick-*.sh`
+(admission and claim, launch, the delivery gates, the close path, idle work, crash
+recovery, the greenfield bootstrap), sourced up front; a missing one stops the tick
+before any work. [CLAUDE.md](CLAUDE.md#where-the-tick-lives-ticksh-and-libtick-sh) maps them.
+
 The candidate scan walks **claimable** work (`wg ticket list -s ready --claimable`: every
 dependency done), so `MAX_CANDIDATES` bounds tickets a claim can take: a low-priority
 prerequisite is never starved behind higher-priority dependants that cannot start.

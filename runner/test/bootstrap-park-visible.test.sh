@@ -146,7 +146,7 @@ N_BLOCKED_PARKS="$(grep -c 'gaffer_release_delivery blocked "bootstrap' "$RUNNER
 [ "$N_BLOCKED_PARKS" -eq 5 ] 2>/dev/null \
   && ok "all 5 bootstrap failure parks (rc≠0 / no-commit / hygiene / registration / delivery-record) target blocked" \
   || fail "expected 5 'gaffer_release_delivery blocked \"bootstrap' parks in tick.sh (found $N_BLOCKED_PARKS)"
-if grep -q 'gaffer_release_delivery refining "bootstrap' "$TICK"; then
+if grep -q 'gaffer_release_delivery refining "bootstrap' "$TICK" "$RUNNER_DIR"/lib/tick-*.sh; then
   fail "tick.sh still parks a bootstrap failure to refining (invisible)"
 else
   ok "no bootstrap failure park targets refining any more"

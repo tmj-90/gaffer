@@ -139,7 +139,7 @@ conc_defaults="$(cat "$RUNNER_DIR"/factory.config.sh "$RUNNER_DIR"/config/*.sh |
 [ "$conc_defaults" = "1" ] \
   && ok "MAX_CONCURRENT_TICKETS_PER_REPO defaulted exactly once (no dead duplicate)" \
   || fail "MAX_CONCURRENT_TICKETS_PER_REPO defaulted $conc_defaults time(s) — expected exactly 1"
-grep -Eq '^: "\$\{MAX_CONCURRENT_TICKETS_PER_REPO:=1\}"' "$RUNNER_DIR/factory.config.sh" \
+grep -Eq '^: "\$\{MAX_CONCURRENT_TICKETS_PER_REPO:=1\}"' "$RUNNER_DIR/config/13-stop.sh" \
   && ok "MAX_CONCURRENT_TICKETS_PER_REPO default is 1" \
   || fail "MAX_CONCURRENT_TICKETS_PER_REPO default is not 1"
 

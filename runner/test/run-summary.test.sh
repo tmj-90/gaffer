@@ -155,7 +155,7 @@ OUT4="$(trap - EXIT; env GAFFER_DATA="$WORK/.gaffer" DISPATCH_DB="$WORK/wg.sqlit
   bash "$RUNNER_DIR/run-summary.sh" 2>&1)"
 grep -qiE 'nothing measurable this run' <<<"$OUT4" && ok "all-unknown run → 'nothing measurable', no token/cost figure" || fail "all-unknown run still reported numbers"
 grep -Eq 'billed tokens' <<<"$OUT4" && fail "all-unknown run wrongly printed a token figure" || ok "all-unknown run prints NO token figure (honest)"
-grep -q 'GAFFER_USAGE_LEDGER' "$RUNNER_DIR/factory.config.sh" && ok "factory.config.sh defines GAFFER_USAGE_LEDGER knob (mirrors GAFFER_BLOCK_LEDGER)" || fail "GAFFER_USAGE_LEDGER knob missing"
+grep -q 'GAFFER_USAGE_LEDGER' "$RUNNER_DIR/config/14-usage.sh" && ok "factory.config.sh defines GAFFER_USAGE_LEDGER knob (mirrors GAFFER_BLOCK_LEDGER)" || fail "GAFFER_USAGE_LEDGER knob missing"
 
 echo "== AC9: retrieval section (reads before first write, cards served vs read) =="
 grep -qiE 'retrieval \(file cards' <<<"$OUT" && ok "retrieval section present" || fail "retrieval section missing"

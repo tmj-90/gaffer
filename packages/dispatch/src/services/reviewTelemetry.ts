@@ -20,7 +20,7 @@ import { DispatchError } from "../util/errors.js";
  *    hook also denies `wg ticket lane-verdict` to an agent shell).
  *
  * Opening a ticket never bumps its updated_at: the Review queue re-renders on
- * `id@updated_at` (reviewSignature in app.js), so a bump would redraw every viewer's page.
+ * `id@updated_at` (reviewSignature in web/js/live.js), so a bump would redraw every viewer's page.
  */
 export const REVIEW_OPENED_EVENT = "ticket.review_opened" as const;
 export const REVIEW_RAW_OPENED_EVENT = "ticket.review_raw_opened" as const;

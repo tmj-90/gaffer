@@ -13,7 +13,7 @@
 // same-user process (e.g. a token-scrubbed, prompt-injected delivery agent) could
 // `GET http://127.0.0.1:<port>/api/tickets` on the loopback bind and read the whole
 // backlog. The dashboard is unaffected: the SPA sends the bearer on every call
-// (web/app.js `api()`), adopting it from the `?token=` URL or the login gate.
+// (web/js/api.js `api()`), adopting it from the `?token=` URL or the login gate.
 //
 // Only when NO token is configured (embedders/tests that construct the server
 // directly) is auth disabled entirely — the historical dev behaviour, kept for

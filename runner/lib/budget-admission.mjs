@@ -22,7 +22,14 @@
 //   • daily: today's (UTC) spend from the usage ledger must be BELOW the cap;
 //   • lifetime: the whole ledger's spend must be BELOW the budget;
 //   • spend = measured total_cost_usd, else the labelled estimated_cost_usd (killed
-//     and timed-out calls count);
+//     and timed-out calls count, and so does a call whose envelope reported no total);
+//   • a row booked TODAY with neither (an unknown cost: no envelope total, no history
+//     and the kill floor set to 0) means today's spend cannot be established, so with a
+//     cap set the launch is refused until the operator books what those calls cost
+//     (`node runner/lib/usage-ledger.mjs --reconcile --usd <amount>`) or the UTC day
+//     turns over. A command worker the operator chose to trust
+//     (GAFFER_WORKER_COMMAND_COST_USD=0, cost_basis "unreported") is the one documented
+//     exception and still counts as $0;
 //   • the ledger is the file the writer appends to (lib/usage-ledger-path.mjs, shared);
 //   • FAIL CLOSED: with a cap set, a ledger that exists but cannot be read, or holds a
 //     line that is not a JSON object, is an UNKNOWN spend and refuses the launch; so
@@ -46,6 +53,26 @@ export const BUDGET_REFUSED_STATUS = 77;
 /** The one-line fix, word for word lib/budget.sh gaffer_spend_cap_hint. */
 export const SPEND_CAP_HINT =
   "no dollar cap is set: set GAFFER_DAILY_BUDGET_USD (try 5) or GAFFER_BUDGET_USD in your environment or the dashboard's Settings → Budget & caps; GAFFER_ALLOW_UNCAPPED=1 runs without one";
+
+const finiteNonNeg = (v) => typeof v === "number" && Number.isFinite(v) && v >= 0;
+const finitePos = (v) => typeof v === "number" && Number.isFinite(v) && v > 0;
+
+/**
+ * True for a ledger row whose cost is not known at all: no finite total_cost_usd and no
+ * labelled estimate. A command worker's `cost_basis: "unreported"` row is the operator's
+ * explicit choice (GAFFER_WORKER_COMMAND_COST_USD=0) and is not counted as unknown.
+ */
+export function isUnknownCostRow(r) {
+  if (!r || typeof r !== "object") return false;
+  if (finiteNonNeg(r.total_cost_usd)) return false;
+  if (r.estimated === true && finiteNonNeg(r.estimated_cost_usd)) return false;
+  if (r.cost_basis === "unreported" && r.worker_provider === "command") return false;
+  return true;
+}
+
+/** The operator's way out of an unknown-cost refusal, quoted in the reason. */
+export const RECONCILE_HINT =
+  "book what those calls cost with `node runner/lib/usage-ledger.mjs --reconcile --usd <amount>` (it counts toward the caps, so raise the cap if that exhausts it), or wait for the next UTC day";
 
 function capValue(raw) {
   const s = String(raw ?? "").trim();
@@ -108,6 +135,8 @@ export function ledgerSpend(env = process.env, now = new Date()) {
   const day = now.toISOString().slice(0, 10);
   let today = 0;
   let lifetime = 0;
+  // Unknown-cost rows booked today since the last operator reconcile row.
+  let unknownToday = 0;
   for (const raw of text.split("\n")) {
     const line = raw.trim();
     if (!line) continue;
@@ -133,9 +162,15 @@ export function ledgerSpend(env = process.env, now = new Date()) {
     )
       c = r.estimated_cost_usd;
     lifetime += c;
-    if (typeof r.ts === "string" && r.ts.slice(0, 10) === day) today += c;
+    const isToday = typeof r.ts === "string" && r.ts.slice(0, 10) === day;
+    if (isToday) today += c;
+    // Only a reconcile row that booked a positive figure clears the unknown rows before
+    // it: one at $0 (hand-written, or from an older writer) would count them as free.
+    if (r.kind === "reconcile" && r.estimated === true && finitePos(r.estimated_cost_usd))
+      unknownToday = 0;
+    else if (isToday && isUnknownCostRow(r)) unknownToday += 1;
   }
-  return { today, lifetime };
+  return { today, lifetime, unknownToday };
 }
 
 /**
@@ -174,6 +209,13 @@ export function paidLaunchAdmission({ kind = "worker", env = process.env, now = 
       ok: false,
       kind,
       reason: `a budget cap is set but the spend cannot be established: ${spend.unknown} — refusing the paid ${kind} launch (fail closed)`,
+    };
+  if (spend.unknownToday > 0)
+    return {
+      ok: false,
+      kind,
+      unknownCost: spend.unknownToday,
+      reason: `a budget cap is set but the spend cannot be established: the usage ledger holds ${spend.unknownToday} call(s) today with no reported cost and no estimate, so the paid ${kind} launch is refused (fail closed); ${RECONCILE_HINT}`,
     };
   const daily = caps.daily === null ? null : { cap: caps.daily, spent: spend.today };
   const lifetime = caps.lifetime === null ? null : { cap: caps.lifetime, spent: spend.lifetime };

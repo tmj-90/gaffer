@@ -209,7 +209,10 @@ describe("eval judge fixture run: known-quality deliveries through the judge's p
     });
     expect(v("weakened-assertion")).toMatchObject({ overall: "fail", blocking: true });
     expect(v("trivial-replacement")).toMatchObject({ overall: "fail", dims: { test_adequacy: 0 } });
-    // The reviewer sees the grade and its reasons in the review packet.
+    // The recorded rationale names the weakened assertion; the review packet hides the
+    // grade while the ticket is in review (the reviewer sees it only by opening the judge's
+    // view, which records the reveal), so the decisions below count as blind.
+    expect(v("weakened-assertion").rationale.test_adequacy).toMatch(/assert\.ok\(task\)/);
     const packet = wg.reviewPacket(ticketOf.get("weakened-assertion")!.id, () => ({
       cost_usd: 0,
       measured_usd: 0,
@@ -218,7 +221,8 @@ describe("eval judge fixture run: known-quality deliveries through the judge's p
       unknown_calls: 0,
       ledger_status: "ok",
     }));
-    expect(packet.judge?.rationale.test_adequacy).toMatch(/assert\.ok\(task\)/);
+    expect(packet.judge).toBeNull();
+    expect(packet.judge_hidden).toBe(true);
     // The ledger summary sees the same four verdicts.
     const s = summarize(parseLedger(ledger.join("\n")));
     expect(s.count).toBe(4);

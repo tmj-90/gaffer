@@ -110,8 +110,17 @@ describe("eval judge verdict on the ticket", () => {
 
     const shown = wg.view(id).evalJudgment;
     expect(shown).toMatchObject({ overall: "borderline", score: 3.4, recorded_by: "system" });
+    // BLINDING (review 14): while the ticket is in review the packet carries no grade until a
+    // person opens the judge's view; the reveal records first and returns the grade.
     const packet = wg.reviewPacket(id, NO_COST);
-    expect(packet.judge).toMatchObject({ overall: "borderline", summary: RECORD.summary });
+    expect(packet.judge).toBeNull();
+    expect(packet.judge_hidden).toBe(true);
+    const revealed = wg.revealJudge(id, human);
+    expect(revealed.recorded).toBe(true);
+    expect(revealed.judge).toMatchObject({ overall: "borderline", summary: RECORD.summary });
+    const afterReveal = wg.reviewPacket(id, NO_COST);
+    expect(afterReveal.judge).toMatchObject({ overall: "borderline", summary: RECORD.summary });
+    expect(afterReveal.judge_hidden).toBe(false);
     // Telemetry: recording it moved nothing.
     expect(wg.view(id).ticket.status).toBe("in_review");
   });

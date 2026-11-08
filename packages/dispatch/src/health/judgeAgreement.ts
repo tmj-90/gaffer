@@ -181,6 +181,12 @@ export interface JudgeAgreementReport {
   thresholds: typeof THRESHOLDS;
   reading: AgreementReading;
   pairs: PairedJudgment[];
+  /**
+   * BLINDING: pending deliveries of tickets in review whose judge's view was not opened
+   * this round. Counted in `pending`, but left out of `pairs` and the table's pending
+   * column, so the report never shows their grade (readJudgeAgreement).
+   */
+  pendingHidden?: number;
 }
 
 /**
@@ -657,9 +663,10 @@ export function readJudgeAgreement(
   db: Db,
   opts: { ledgerJsonl?: string } = {},
 ): JudgeAgreementReport {
-  const tickets = db.prepare(`SELECT id, number FROM tickets`).all() as Array<{
+  const tickets = db.prepare(`SELECT id, number, status FROM tickets`).all() as Array<{
     id: string;
     number: number | null;
+    status: string;
   }>;
   const numberById = new Map(tickets.map((t) => [t.id, t.number]));
   const idByNumber = new Map<number, string>();
@@ -706,10 +713,43 @@ export function readJudgeAgreement(
         source: "event",
       });
   const ledger = opts.ledgerJsonl ? parseLedgerJudgments(opts.ledgerJsonl, idByNumber) : [];
-  return judgeAgreement(mergeJudgments(events, ledger), transitions, {
+  const report = judgeAgreement(mergeJudgments(events, ledger), transitions, {
     reveals,
     blindSince: readJudgeBlindSince(db),
   });
+  // BLINDING: a ticket in review whose judge's view nobody opened this round keeps its
+  // grade out of this report too, as it is kept out of the ticket reads and the review
+  // packet: its pending pair and its row in the pending column would otherwise give the
+  // grade to a reviewer who runs `wg judge-agreement` and is still counted blind. It is
+  // still counted in `pending`; nothing decided is touched.
+  const enteredReview = new Map<string, string>();
+  for (const tr of transitions) if (tr.to === "in_review") enteredReview.set(tr.ticketId, tr.at);
+  const hidden = new Set<string>();
+  for (const t of tickets) {
+    if (t.status !== "in_review") continue;
+    const since = enteredReview.get(t.id) ?? null;
+    if (!reveals.some((r) => r.ticketId === t.id && (since === null || r.at >= since)))
+      hidden.add(t.id);
+  }
+  return withPendingHidden(report, hidden);
+}
+
+/** The report with the pending pairs of `hidden` tickets left out of `pairs` and `table`. */
+export function withPendingHidden(
+  r: JudgeAgreementReport,
+  hidden: ReadonlySet<string>,
+): JudgeAgreementReport {
+  const isHidden = (p: PairedJudgment): boolean =>
+    p.outcome === "pending" && hidden.has(p.ticketId);
+  const held = r.pairs.filter(isHidden).length;
+  if (held === 0) return { ...r, pendingHidden: 0 };
+  const table = {
+    pass: { ...r.table.pass },
+    borderline: { ...r.table.borderline },
+    fail: { ...r.table.fail },
+  };
+  for (const p of r.pairs) if (isHidden(p)) table[p.overall].pending--;
+  return { ...r, table, pairs: r.pairs.filter((p) => !isHidden(p)), pendingHidden: held };
 }
 
 /** The text report `wg judge-agreement` prints. */
@@ -721,6 +761,9 @@ export function renderJudgeAgreement(r: JudgeAgreementReport): string {
   );
   out.push(
     `  decided: ${r.decided}, still pending: ${r.pending}` +
+      (r.pendingHidden
+        ? ` (${r.pendingHidden} in review with the judge's view closed: their grades are not shown)`
+        : "") +
       (r.gated > 0 ? `, sent back by a runner gate before review (not counted): ${r.gated}` : ""),
   );
   out.push(

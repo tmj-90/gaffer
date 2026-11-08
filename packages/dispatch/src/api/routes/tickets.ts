@@ -822,17 +822,20 @@ export async function routeTickets(
   }
 
   // BLINDING: /tickets/:id/judge-revealed: a person opened the eval judge's collapsed view
-  // ("Show the judge's view") of a ticket in review. Once per round; the same rules as
-  // review-opened. Judge agreement counts a decision after it apart from blind ones.
+  // ("Show the judge's view") of a ticket in review. ONE request records the reveal (once
+  // per round; the same rules as review-opened) and only then returns the grade, which the
+  // review packet does not carry until then. A reveal that cannot be recorded answers 409
+  // with no grade. Judge agreement counts a decision after it apart from blind ones.
   if (segments.length === 3 && sub === TICKET_SUB.JUDGE_REVEALED && method === "POST") {
     const body = reviewOpenedBody.parse(await readJsonBody(req));
-    const r = wg.recordJudgeRevealed(id, apiActor(), body.round_entered_at ?? null);
+    const r = wg.revealJudge(id, apiActor(), body.round_entered_at ?? null);
     sendJson(res, 200, {
       ticket_id: r.ticketId,
       recorded: r.recorded,
       reason: r.reason,
       event_id: r.eventId,
       round_entered_at: r.roundEnteredAt,
+      judge: r.judge,
     });
     return;
   }

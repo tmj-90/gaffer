@@ -192,7 +192,7 @@ import type {
   TicketDetailBatchItem,
   TicketView,
 } from "./services/ticketReadService.js";
-import type { ReviewOpenResult } from "./services/ticketRecordsService.js";
+import type { JudgeRevealResult, ReviewOpenResult } from "./services/ticketRecordsService.js";
 
 // The services whose functions hold the method bodies this facade delegates to.
 import * as gate from "./services/gateNotifications.js";
@@ -319,7 +319,7 @@ export type { CreateEpicResult } from "./services/epicsService.js";
 export type { AddDependencyResult } from "./services/ticketService.js";
 
 /** What recording a review open did (see services/ticketRecordsService.ts). */
-export type { ReviewOpenResult } from "./services/ticketRecordsService.js";
+export type { JudgeRevealResult, ReviewOpenResult } from "./services/ticketRecordsService.js";
 
 /**
  * Dispatch core API. The single entry point used by the CLI and MCP server.
@@ -1362,6 +1362,14 @@ export class Dispatch {
   /** BLINDING: a person opened the eval judge's collapsed view of a ticket in review. */
   recordJudgeRevealed(ref: string, actor: Actor, seenRound?: string | null): ReviewOpenResult {
     return ticketRecords.recordJudgeRevealed(this, this.internals, ref, actor, seenRound);
+  }
+
+  /**
+   * BLINDING: record the reveal, then return the grade (one step; no grade when the
+   * reveal could not be recorded). See ticketRecordsService.revealJudge.
+   */
+  revealJudge(ref: string, actor: Actor, seenRound?: string | null): JudgeRevealResult {
+    return ticketRecords.revealJudge(this, this.internals, ref, actor, seenRound ?? null);
   }
 
   recordLaneVerdict(

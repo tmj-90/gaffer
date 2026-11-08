@@ -194,13 +194,15 @@ export function registerReview(program: Command): void {
     .option("--reviewer <id>", "reviewer id (default: $USER)")
     .action((ref, opts, cmd) => {
       const wg = open(cmd.optsWithGlobals());
-      const r = wg.recordJudgeRevealed(ref, reviewerActor(opts));
+      // One step, as the Review view: the reveal is recorded before the grade is read, and
+      // a reveal that cannot be recorded prints no grade (the error, exit non-zero).
+      const r = wg.revealJudge(ref, reviewerActor(opts));
       printJson({
         ok: true,
         recorded: r.recorded,
         reason: r.reason,
         round_entered_at: r.roundEnteredAt,
-        judge: wg.view(ref).evalJudgment,
+        judge: r.judge,
       });
       wg.db.close();
     });

@@ -1364,10 +1364,19 @@ try {
       : bad(`floor: svg=${fl.svg} parcels=${fl.parcels} open=${open} unlabelled=${fl.unlabelled}`);
     const first = page.locator("svg.fl-svg a.fl-parcel").first();
     if (await first.count()) {
-      await first.focus();
-      await sleep(150);
-      const tipTxt = ((await page.textContent(".fl-tip").catch(() => "")) || "").trim();
-      const n = await first.getAttribute("data-n");
+      // The floor repaints itself for a while after it loads (the stream of recent
+      // moves lands a few seconds in); a focus that lands on a parcel the repaint then
+      // replaces leaves the card empty. Under load (a 2-CPU CI runner) the first try
+      // can hit that window, so focus and read again for up to five seconds.
+      let tipTxt = "";
+      let n = await first.getAttribute("data-n");
+      for (let tries = 0; tries < 25; tries++) {
+        await first.focus();
+        await sleep(200);
+        n = (await first.getAttribute("data-n").catch(() => n)) || n;
+        tipTxt = ((await page.textContent(".fl-tip").catch(() => "")) || "").trim();
+        if (tipTxt.startsWith(`#${n}`)) break;
+      }
       tipTxt.startsWith(`#${n}`)
         ? ok(`floor: focusing parcel #${n} shows its card ("${tipTxt.slice(0, 60)}")`)
         : bad(`floor: focus card for #${n} reads '${tipTxt}'`);

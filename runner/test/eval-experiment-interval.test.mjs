@@ -169,6 +169,62 @@ console.log("== 3. the figures the routing rule's tests use ==");
   );
 }
 
+console.log("== 5. the non-inferiority margin is recorded with the result (review14/3) ==");
+{
+  const w = world([17, 3, 0, 0]);
+  assert(
+    "the default margin is 0.10 and results.json names it",
+    w.non_inferiority_margin === 0.1,
+    w.non_inferiority_margin,
+  );
+  const plan = {
+    mode: "stub",
+    seed: 1,
+    baseline: "baseline",
+    arms: [
+      { name: "baseline", overrides: {} },
+      { name: "cheap", overrides: { tier: "cheap" } },
+    ],
+    tickets: [],
+    order: [],
+  };
+  const r05 = report(plan, [], { margin: 0.05 });
+  assert("an explicit --margin 0.05 is stored", r05.non_inferiority_margin === 0.05, r05);
+  const md = markdown(w);
+  assert(
+    "the report says which margin and whether the bound is within it",
+    /non-inferiority margin 0\.1/.test(md) &&
+      /lower bound -0\.0384 is within the non-inferiority margin of -0\.1/.test(md),
+    md.split("\n").filter((l) => /margin/.test(l)),
+  );
+  const tight = report({ ...plan, tickets: w.tickets, order: [] }, w.runs, { margin: 0.03 });
+  assert(
+    "at 0.03 the same bound is outside, and the comparison says so",
+    tight.comparisons[0].non_inferiority &&
+      tight.comparisons[0].non_inferiority.holds === false &&
+      tight.comparisons[0].non_inferiority.margin === 0.03,
+    tight.comparisons[0].non_inferiority,
+  );
+  let threw = 0;
+  for (const m of [0, 0.5, 0.9, -0.1, Number.NaN, "x"]) {
+    try {
+      report(plan, [], { margin: m });
+    } catch {
+      threw += 1;
+    }
+  }
+  assert("a margin outside 0 < m < 0.5 is refused", threw === 6, threw);
+}
+
+{
+  const pilot = world([30, 1, 0, 0]).comparisons[0].acceptance;
+  assert(
+    "30/1/0/0 → 0.0323, -0.0811 to 0.1619 (within 0.10, outside 0.05: routing-recommend.test.ts)",
+    near(pilot.mean, 0.0323) && near(pilot.ci95[0], -0.0811) && near(pilot.ci95[1], 0.1619),
+    pilot,
+  );
+}
+
 console.log("== 4. memory_matched flips with the arms ==");
 {
   const res = world([5, 1, 3, 1], { armName: "nomem", armOverrides: { memory: "off" } });

@@ -16,7 +16,7 @@
 //   experiment.mjs prompt --plan <plan.json> --ticket <id> --arm <name> [--failure <file>]
 //   experiment.mjs model-flag --plan <plan.json> --ticket <id> --arm <name>
 //   experiment.mjs judge-score --plan <plan.json> --ticket <id> --diff <file>
-//   experiment.mjs report --plan <plan.json> --runs <runs.ndjson> --out <dir>
+//   experiment.mjs report --plan <plan.json> --runs <runs.ndjson> --out <dir> [--margin M]
 //
 // An arm spec is `name[:key=value,key=value]`; the first arm is the baseline. Keys:
 //   tier=<registry tier>   model=<model id>      provider=claude-code|command
@@ -425,11 +425,30 @@ export const EXPERIMENT_LIMITS = [
   "the acceptance difference's 95% interval is Newcombe's paired score interval (acceptance is a paired yes/no outcome); attempts, spend and judge score use a paired t interval",
 ];
 
+/**
+ * The NON-INFERIORITY MARGIN (review14/3): how far the acceptance rate of an arm may
+ * plausibly fall below the baseline's and the arm still count as no worse. It is the
+ * owner's operational policy for this kind of work, not a statistical default: 0.10 is a
+ * starting point for a supervised pilot, and `--margin` sets it (0 < m < 0.5). The result
+ * records it, and `wg routing recommend` honours a result's own margin when it is tighter
+ * than its own.
+ */
+export const DEFAULT_NON_INFERIORITY_MARGIN = 0.1;
+export function parseMargin(v) {
+  if (v === undefined || v === null || v === "") return DEFAULT_NON_INFERIORITY_MARGIN;
+  const s = String(v).trim();
+  const m = /^\d*\.?\d+$/.test(s) ? Number(s) : NaN;
+  if (!(Number.isFinite(m) && m > 0 && m < 0.5))
+    throw new Error(`--margin must be a number with 0 < m < 0.5 (got ${JSON.stringify(v)})`);
+  return m;
+}
+
 /** What an arm runs with when it names no value for a setting (the brief's defaults). */
 const ARM_DEFAULTS = { memory: "on", packet: "1", context: "full", stub: "apply" };
 const effective = (overrides, k) => overrides[k] ?? ARM_DEFAULTS[k];
 
-export function report(p, runs) {
+export function report(p, runs, { margin } = {}) {
+  const nim = parseMargin(margin);
   const byKey = new Map(runs.map((r) => [`${r.ticket}\u0000${r.arm}`, r]));
   const base = p.baseline;
   const comparisons = [];
@@ -463,6 +482,8 @@ export function report(p, runs) {
       });
     }
     const judge = pairedSummary(per.map((d) => d.judge_score));
+    const acceptance = pairedProportionSummary(per.map((d) => d.accepted));
+    const lowerBound = acceptance.ci95 ? acceptance.ci95[0] : null;
     comparisons.push({
       arm: a.name,
       vs: base,
@@ -471,7 +492,14 @@ export function report(p, runs) {
       differs_in: differs,
       overrides: a.overrides,
       vs_overrides: b.overrides,
-      acceptance: pairedProportionSummary(per.map((d) => d.accepted)),
+      acceptance,
+      // Whether the arm is no worse on acceptance at this result's margin: the interval's
+      // lower bound at or above minus the margin. A reading, not a recommendation.
+      non_inferiority: {
+        margin: nim,
+        lower_bound: lowerBound,
+        holds: lowerBound === null ? null : lowerBound >= -nim,
+      },
       attempts: pairedSummary(per.map((d) => d.attempts)),
       // Spend is continuous (USD), so the paired t interval stays right for it.
       spend_usd: {
@@ -533,6 +561,9 @@ export function report(p, runs) {
     runs,
     spent_usd: r4(spent),
     stopped: runs.find((r) => r.skipped_reason)?.skipped_reason ?? null,
+    // The margin that judges "no worse" for this result, so a reader sees which margin
+    // produced any advice drawn from it.
+    non_inferiority_margin: nim,
     comparisons,
     memory_matched: memoryMatched,
     limits: EXPERIMENT_LIMITS,
@@ -552,6 +583,8 @@ export function markdown(res) {
     "",
     `Seed ${res.seed}. Baseline arm \`${res.baseline}\`. ${res.tickets.length} ticket(s), ${res.runs.length} run(s), $${res.spent_usd} spent.${res.stopped ? ` Stopped early: ${res.stopped}.` : ""}`,
     "",
+    `Read at non-inferiority margin ${res.non_inferiority_margin ?? DEFAULT_NON_INFERIORITY_MARGIN} (\`--margin\`): the drop in acceptance rate the owner accepts for a cheaper arm on this kind of work.`,
+    "",
     "| ticket | arm | order | attempts | submitted | accepted | spend | judge |",
     "|---|---|---|---|---|---|---|---|",
   ];
@@ -569,6 +602,11 @@ export function markdown(res) {
       `Paired over ${c.n} ticket(s)${c.excluded ? `, ${c.excluded} left out (a run did not run)` : ""}. A ticket an arm never submitted counts as that arm's failure.`,
       "",
       `- acceptance difference: ${fmt(c.acceptance)}`,
+      ...(c.non_inferiority && c.non_inferiority.holds !== null
+        ? [
+            `- no worse on acceptance at this margin: ${c.non_inferiority.holds ? "yes" : "no"} (lower bound ${c.non_inferiority.lower_bound} is ${c.non_inferiority.holds ? "within" : "outside"} the non-inferiority margin of -${c.non_inferiority.margin})`,
+          ]
+        : []),
       `- attempts difference: ${fmt(c.attempts)}`,
       `- spend difference (USD): ${fmt(c.spend_usd)}${c.spend_usd.unknown ? `; ${c.spend_usd.unknown} pair(s) with an unknown spend left out` : ""}`,
       `- judge score difference: ${c.judge_score ? fmt(c.judge_score) : "no judge score on both arms"}`,
@@ -649,7 +687,7 @@ function main(argv) {
             .filter(Boolean)
             .map((l) => JSON.parse(l))
         : [];
-      const res = report(p, runs);
+      const res = report(p, runs, { margin: o.margin });
       writeFileSync(join(o.out, "results.json"), JSON.stringify(res, null, 2) + "\n");
       writeFileSync(join(o.out, "report.md"), markdown(res));
       for (const c of res.comparisons)

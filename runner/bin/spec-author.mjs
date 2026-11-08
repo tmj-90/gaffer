@@ -93,7 +93,7 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import {
   appendUsageRecord,
-  buildUsageRecord,
+  successfulCallRecord,
   extractResultText,
   parseClaudeJson,
   recordKilledCall,
@@ -568,7 +568,7 @@ function runClaudeTurn(prompt, opts) {
     // spec authoring — the existing block-extractor still gets the text.
     return { timedOut: false, stdout: rawStdout };
   }
-  appendUsageRecord(buildUsageRecord({ json, kind: "spec-author" }));
+  appendUsageRecord(successfulCallRecord({ json, kind: "spec-author" }));
   return { timedOut: false, stdout: extractResultText(json) };
 }
 

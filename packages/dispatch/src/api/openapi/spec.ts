@@ -999,7 +999,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.review,
     summary: "Delivery dossier",
     description:
-      "The tamper-evident evidence artifact. JSON by default; markdown with `?format=markdown` or `Accept: text/markdown`. `?include=packet` adds `review_packet` (outside the hashed subject): the runner-verified gates, tester verdict, cost and turns, attempts and rework, risk reasons, the reviewed-commit pin, each criterion's check result or `no machine evidence`, any test count the agent claimed that disagrees with the runner's, `intent` (the ticket's description), `candidate` (per write repository: the commit the runner gated, the head now, the tester's commit and the pin, with `same`, and `gated_earlier` when the commit on record is an earlier attempt's because this attempt's record is not in yet), `ci` (the latest CI result for the candidate commit, or null), `tester_lane` (the GAFFER_TESTING setting, whether the tester lane is on for this ticket's repositories, the write repositories with no registered test command, and `runner` `{ mode, at, on, gates }` when the runner last routed under a different setting), `scout` (the runner's pre-work scout record for the latest attempt: declared and effective risk, the signals that raised it, coverage counts; null when none), `run_links` (dashboard run logs that were running at the delivery or the tester verdict, found by time window), `runtime_acceptance` (`{ profile, executable, spec_registered, latest }`: the ticket's acceptance profile and the runner's latest CLI transcript or API probe record, with whether it passed and the commit it ran on) and `backing` (`{fact, holds, source, cell}` rows: what backs the delivery and what does not; no score).",
+      "The tamper-evident evidence artifact. JSON by default; markdown with `?format=markdown` or `Accept: text/markdown`. `?include=packet` adds `review_packet` (outside the hashed subject): the runner-verified gates, tester verdict, cost and turns, attempts and rework, risk reasons, the reviewed-commit pin, each criterion's check result or `no machine evidence`, any test count the agent claimed that disagrees with the runner's, `intent` (the ticket's description), `candidate` (per write repository: the commit the runner gated, the head now, the tester's commit and the pin, with `same`, and `gated_earlier` when the commit on record is an earlier attempt's because this attempt's record is not in yet), `ci` (the latest CI result for the candidate commit, or null), `tester_lane` (the GAFFER_TESTING setting, whether the tester lane is on for this ticket's repositories, the write repositories with no registered test command, and `runner` `{ mode, at, on, gates }` when the runner last routed under a different setting), `judge` (the eval judge's grade of this delivery; null while the ticket is in review and nobody opened the judge's view this round, when `judge_hidden` is true and POST /tickets/{id}/judge-revealed returns it after recording the reveal) and `judge_revealed_at`, `scout` (the runner's pre-work scout record for the latest attempt: declared and effective risk, the signals that raised it, coverage counts; null when none), `run_links` (dashboard run logs that were running at the delivery or the tester verdict, found by time window), `runtime_acceptance` (`{ profile, executable, spec_registered, latest }`: the ticket's acceptance profile and the runner's latest CLI transcript or API probe record, with whether it passed and the commit it ran on) and `backing` (`{fact, holds, source, cell}` rows: what backs the delivery and what does not; no score).",
     capability: "read",
     query: {
       format: {
@@ -1123,19 +1123,25 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     method: "POST",
     path: "/tickets/:id/judge-revealed",
     tag: T.review,
-    summary: "Record that a person opened the eval judge's view of a ticket in review",
+    summary:
+      "Open the eval judge's view of a ticket in review: record the reveal, then return the grade",
     description:
       "The Review view keeps the eval judge's grade collapsed behind \"Show the judge's " +
-      'view"; opening it while the ticket is in review posts this. Recorded as ' +
-      "`ticket.review_judge_revealed {what, round_entered_at}` once per round; same rules as " +
-      "review-opened. `wg judge-agreement` and Health count a decision made after a reveal " +
-      "apart from the blind decisions their headline figures come from. Nothing gates on " +
-      "it. Human or admin principals only.",
+      'view"; while the ticket is in review and the view was not opened this round, the ' +
+      "review packet carries no grade (`judge: null, judge_hidden: true`). This one request " +
+      "records `ticket.review_judge_revealed {what, round_entered_at}` (once per round; same " +
+      "rules as review-opened) and only then returns the grade in `judge`. A reveal that " +
+      "cannot be recorded (a stale `round_entered_at`, or a ticket with no recorded entry " +
+      "into review) writes nothing and answers 409 `STATE_CONFLICT` with no grade. " +
+      "`wg judge-agreement` and Health count a decision made after a reveal apart from the " +
+      "blind decisions their headline figures come from. Nothing gates on it. Human or " +
+      "admin principals only.",
     capability: "full",
     body: "reviewOpenedBody",
     responses: [
-      ok("`{ ticket_id, recorded, reason, event_id, round_entered_at }`.", "ReviewOpened"),
+      ok("`{ ticket_id, recorded, reason, event_id, round_entered_at, judge }`.", "JudgeRevealed"),
       notFound,
+      conflict,
       invalid,
       forbidden,
     ],

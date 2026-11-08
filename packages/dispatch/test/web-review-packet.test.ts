@@ -144,6 +144,9 @@ const DEFAULT_ANNS = [
 ];
 let diffAnns: unknown[] = DEFAULT_ANNS;
 let extraEvidence: unknown[] = [];
+// BLINDING (review14/2): what POST /tickets/:id/judge-revealed answers. The grade comes
+// back only from that request, after the server recorded the reveal.
+let revealReply: { status: number; body: unknown } = { status: 200, body: {} };
 function stubFetch(): void {
   calls = [];
   vi.stubGlobal(
@@ -152,6 +155,11 @@ function stubFetch(): void {
       const url = String(input);
       calls.push(url);
       let body: unknown;
+      if (url.includes("/judge-revealed"))
+        return new Response(JSON.stringify(revealReply.body), {
+          status: revealReply.status,
+          headers: { "content-type": "application/json" },
+        });
       if (url.includes("status=in_review")) body = { tickets: [T] };
       else if (url.includes("/dossier"))
         body = { schema: "dossier.v1", hash: "x", subject: {}, review_packet: packet };
@@ -243,6 +251,16 @@ async function boot(): Promise<void> {
 }
 const text = (sel: string) => document.querySelector(sel)?.textContent?.replace(/\s+/g, " ") ?? "";
 const label = (sel: string) => document.querySelector(sel)?.getAttribute("aria-label") ?? "";
+/** A recorded reveal, as the server answers it (the grade is added per test). */
+const REVEALED_OK = {
+  ticket_id: T.id,
+  recorded: true,
+  reason: null,
+  event_id: "ev-reveal",
+  round_entered_at: "2026-10-30T09:58:00Z",
+};
+/** The packet of a ticket in review whose judge's view nobody opened: no grade in it. */
+const HIDDEN = { judge: null, judge_hidden: true };
 /** Open the judge's collapsed view, as the reviewer would. */
 async function reveal(): Promise<void> {
   document.querySelector<HTMLButtonElement>("button.vd-judge-show")?.click();
@@ -254,6 +272,7 @@ describe("web: the review packet on The Gaffer's Sign-off", () => {
     packet = PACKET;
     diffAnns = DEFAULT_ANNS;
     extraEvidence = [];
+    revealReply = { status: 200, body: { ...REVEALED_OK, judge: JUDGE } };
     vi.resetModules();
     stubFetch();
     mount();
@@ -547,7 +566,7 @@ describe("web: the review packet on The Gaffer's Sign-off", () => {
   // decision made without opening it can be compared with it blind; opening it before the
   // decision is recorded on the ticket (POST /tickets/:id/judge-revealed).
   it("keeps the judge's view collapsed: no verdict, score or tone until it is opened", async () => {
-    packet = { ...PACKET, judge: JUDGE };
+    packet = { ...PACKET, ...HIDDEN };
     await boot();
     const cell = document.querySelector(".vd-cell.vd-judge")!;
     expect(cell).not.toBeNull();
@@ -563,7 +582,7 @@ describe("web: the review packet on The Gaffer's Sign-off", () => {
   });
 
   it("opening the judge's view shows the grade and records the reveal once", async () => {
-    packet = { ...PACKET, judge: JUDGE };
+    packet = { ...PACKET, ...HIDDEN };
     await boot();
     await reveal();
     expect(text(".vd-cell.vd-judge .vd-v")).toBe("Borderline 3.4/5");
@@ -571,6 +590,65 @@ describe("web: the review packet on The Gaffer's Sign-off", () => {
     expect(calls.filter((u) => u.includes("/judge-revealed"))).toEqual([
       `/tickets/${T.id}/judge-revealed`,
     ]);
+  });
+
+  // BLINDING (review14/2): the reveal is recorded before the grade is shown, by one
+  // request. The packet carries no grade; the grade the cell shows is the one the reveal
+  // request returned, and only after a 2xx.
+  it("a failed reveal request leaves the grade hidden, says so plainly and lets the person try again", async () => {
+    packet = { ...PACKET, ...HIDDEN };
+    revealReply = {
+      status: 500,
+      body: { error: { code: "INTERNAL_ERROR", message: "database is locked" } },
+    };
+    await boot();
+    await reveal();
+    const cell = document.querySelector(".vd-cell.vd-judge")!;
+    // No grade anywhere on the page: the decision that follows is a blind one.
+    expect(document.body.textContent).not.toMatch(/Borderline|3\.4\/5|duplicates an existing/);
+    expect(document.querySelector(".vd-judge-dim")).toBeNull();
+    expect(cell.classList.contains("vd-warn")).toBe(false);
+    expect(text(".vd-cell.vd-judge .vd-judge-err")).toContain(
+      "The judge's view could not be opened",
+    );
+    const again = cell.querySelector<HTMLButtonElement>("button.vd-judge-show")!;
+    expect(again).not.toBeNull();
+    expect(again.disabled).toBe(false);
+    expect(again.textContent).toBe("Try again");
+    // The server comes back: the retry is a new request, and its answer is shown.
+    revealReply = { status: 200, body: { ...REVEALED_OK, judge: JUDGE } };
+    await reveal();
+    expect(text(".vd-cell.vd-judge .vd-v")).toBe("Borderline 3.4/5");
+    expect(calls.filter((u) => u.includes("/judge-revealed"))).toHaveLength(2);
+  });
+
+  it("a refused reveal (the server recorded nothing) shows no grade", async () => {
+    packet = { ...PACKET, ...HIDDEN };
+    revealReply = {
+      status: 409,
+      body: {
+        error: {
+          code: "STATE_CONFLICT",
+          message: "The ticket went back into review since this page loaded: reload it.",
+        },
+      },
+    };
+    await boot();
+    await reveal();
+    expect(document.body.textContent).not.toMatch(/Borderline|3\.4\/5/);
+    expect(text(".vd-cell.vd-judge .vd-judge-err")).toContain("reload it");
+  });
+
+  it("the grade shown is the one the reveal returned, never one the page held", async () => {
+    packet = { ...PACKET, ...HIDDEN };
+    revealReply = {
+      status: 200,
+      body: { ...REVEALED_OK, judge: { ...JUDGE, overall: "fail", score: 1.5 } },
+    };
+    await boot();
+    await reveal();
+    expect(text(".vd-cell.vd-judge .vd-v")).toBe("Fail 1.5/5");
+    expect(document.querySelector(".vd-cell.vd-judge")!.classList.contains("vd-bad")).toBe(true);
   });
 
   it("a view already opened this round stays open on reload and is not recorded again", async () => {

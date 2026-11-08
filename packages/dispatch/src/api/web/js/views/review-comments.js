@@ -572,30 +572,32 @@ function reviewRawWatch(box, t, events) {
     );
   return box;
 }
+/**
+ * BLINDING (review14/2): open the eval judge's view. ONE request records the reveal and
+ * returns the grade (`judge`, or null when none was recorded); it rejects when the reveal
+ * could not be recorded, and the caller then shows no grade. Not deduplicated: a retry
+ * after a failure is a new request, and the server records once per round.
+ */
+async function revealJudge(ticketId, round) {
+  const r = await api(
+    "POST",
+    `/tickets/${ticketId}/judge-revealed`,
+    round ? { round_entered_at: round } : {},
+  );
+  return r && r.judge ? r.judge : null;
+}
 function noteReviewOpen(ticketId, round, what = "") {
-  // The judge's reveal goes even without the round in hand: the server finds the round
-  // itself, and a lost reveal would count a revealed decision as blind.
-  if (!ticketId || (!round && what !== "judge") || readOnly()) return;
+  if (!ticketId || !round || readOnly()) return;
   const key = `${ticketId}@${round}${what ? `#${what}` : ""}`;
   if (reviewOpensSent.has(key)) return;
   reviewOpensSent.add(key);
-  // BLINDING: "judge" is the eval judge's collapsed view, its own record (judge agreement
-  // splits blind decisions from revealed ones on it).
-  const path =
-    what === "judge"
-      ? `/tickets/${ticketId}/judge-revealed`
-      : what
-        ? `/tickets/${ticketId}/review-raw-opened`
-        : `/tickets/${ticketId}/review-opened`;
-  api(
-    "POST",
-    path,
-    what && what !== "judge"
-      ? { what, round_entered_at: round }
-      : round
-        ? { round_entered_at: round }
-        : {},
-  ).catch(() => {});
+  // The judge's view is not a fire-and-forget note: it goes through revealJudge.
+  const path = what
+    ? `/tickets/${ticketId}/review-raw-opened`
+    : `/tickets/${ticketId}/review-opened`;
+  api("POST", path, what ? { what, round_entered_at: round } : { round_entered_at: round }).catch(
+    () => {},
+  );
 }
 /** When the ticket last moved into its current status (the wait starts there). */
 function sinceStatus(events, status) {
@@ -726,6 +728,7 @@ export {
   reviewedBy,
   reviewRawWatch,
   noteReviewOpen,
+  revealJudge,
   sinceStatus,
   blockedWrites,
   outsideStatedChange,

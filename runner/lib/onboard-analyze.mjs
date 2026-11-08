@@ -64,7 +64,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   appendUsageRecord,
-  buildUsageRecord,
+  successfulCallRecord,
   extractResultText,
   parseClaudeJson,
   recordKilledCall,
@@ -1348,7 +1348,7 @@ export function runAnalysisTurn(
       elapsedMs: Date.now() - t0,
     });
   } else {
-    appendUsageRecord(buildUsageRecord({ json, kind }));
+    appendUsageRecord(successfulCallRecord({ json, kind }));
   }
   const isError = json !== null && json.is_error === true;
   if (status !== 0 || isError) {

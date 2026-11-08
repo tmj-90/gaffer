@@ -24,7 +24,7 @@ import { Dispatch } from "../src/core.js";
 import { JUDGE_BLIND_SINCE_KEY } from "../src/db/schema.js";
 import type { Actor } from "../src/domain/types.js";
 import { writeEvent } from "../src/events/eventWriter.js";
-import { readJudgeAgreement } from "../src/health/judgeAgreement.js";
+import { readJudgeAgreement, renderJudgeAgreement } from "../src/health/judgeAgreement.js";
 import { readJudgeBlindSince } from "../src/services/reviewTelemetry.js";
 import { TestClock } from "../src/util/clock.js";
 import { CLI_BUILT, runBin } from "./helpers/cliBin.js";
@@ -263,6 +263,123 @@ describe("the ticket reads hide the judge's grade while the ticket is in review"
   });
 });
 
+// BLINDING (review14/2): the reveal is recorded before the grade is shown, by ONE request.
+// The review payload carries no grade while the ticket is in review and nobody opened the
+// view; POST /tickets/:id/judge-revealed records the reveal and returns the grade; a
+// reveal that could not be recorded returns no grade, so the decision stays blind.
+describe("one request records the reveal and returns the grade", () => {
+  let h: Harness;
+  beforeEach(async () => {
+    h = await startHarness();
+  });
+  afterEach(async () => {
+    await h.close();
+  });
+
+  const packetOf = async (id: string): Promise<Record<string, unknown>> => {
+    const res = await fetch(`${h.baseUrl}/tickets/${id}/dossier?include=packet`);
+    expect(res.status).toBe(200);
+    return ((await res.json()) as { review_packet: Record<string, unknown> }).review_packet;
+  };
+  const judged = (title = "Judged") => {
+    const t = inReview(h.wg, title);
+    h.wg.recordEvalJudgment(t.id, verdict("fail", 1.5), system);
+    return t;
+  };
+  const decide = (id: string) => {
+    h.wg.db.prepare(`UPDATE tickets SET status='ready_for_merge' WHERE id=?`).run(id);
+    writeEvent(h.wg.db, {
+      entity_type: "ticket",
+      entity_id: id,
+      actor: human,
+      event_type: "ticket.transitioned",
+      payload: { from: "in_review", to: "ready_for_merge" },
+    });
+  };
+
+  it("the review payload never carries the grade while the ticket is in review", async () => {
+    const t = judged();
+    const p = await packetOf(t.id);
+    expect(p.judge).toBeNull();
+    expect(p.judge_hidden).toBe(true);
+    expect(p.judge_revealed_at).toBeNull();
+    expect(JSON.stringify(p)).not.toMatch(/"overall"|"score":1\.5|graded/);
+    // Out of review the grade is no secret: the payload carries it.
+    decide(t.id);
+    const after = await packetOf(t.id);
+    expect(after.judge).toMatchObject({ overall: "fail", score: 1.5 });
+    expect(after.judge_hidden).toBe(false);
+  });
+
+  it("a ticket with no judgment says so: nothing hidden", async () => {
+    const t = inReview(h.wg, "Not judged");
+    const p = await packetOf(t.id);
+    expect(p.judge).toBeNull();
+    expect(p.judge_hidden).toBe(false);
+  });
+
+  it("the reveal returns the grade, recorded first; the decision after it counts revealed", async () => {
+    const t = judged();
+    const r = await call(h, `/tickets/${t.id}/judge-revealed`);
+    expect(r.status).toBe(200);
+    expect(r.body).toMatchObject({ recorded: true, reason: null });
+    expect(r.body.judge).toMatchObject({ overall: "fail", score: 1.5 });
+    expect(reveals(h.wg, t.id)).toHaveLength(1);
+    // Asking again this round returns it again without a second record.
+    const again = await call(h, `/tickets/${t.id}/judge-revealed`);
+    expect(again.body).toMatchObject({ recorded: false, reason: "already_recorded" });
+    expect(again.body.judge).toMatchObject({ overall: "fail" });
+    expect(reveals(h.wg, t.id)).toHaveLength(1);
+    // The payload now carries it (opened this round).
+    expect((await packetOf(t.id)).judge).toMatchObject({ overall: "fail" });
+    decide(t.id);
+    const pair = readJudgeAgreement(h.wg.db).pairs.find((x) => x.ticketNumber === t.number);
+    expect(pair?.seen).toBe("revealed");
+  });
+
+  it("a reveal that cannot be recorded returns no grade, and the decision counts blind", async () => {
+    const t = judged();
+    // The page's round is stale: the ticket went back into review since it loaded.
+    const r = await call(h, `/tickets/${t.id}/judge-revealed`, {
+      round_entered_at: "2000-01-01T00:00:00.000Z",
+    });
+    expect(r.status).toBe(409);
+    expect(JSON.stringify(r.body)).not.toMatch(/"overall"|1\.5/);
+    expect(JSON.stringify(r.body)).toMatch(/reload/);
+    expect(reveals(h.wg, t.id)).toHaveLength(0);
+    expect((await packetOf(t.id)).judge).toBeNull();
+    decide(t.id);
+    const pair = readJudgeAgreement(h.wg.db).pairs.find((x) => x.ticketNumber === t.number);
+    expect(pair?.seen).toBe("blind");
+  });
+
+  it("an agent is refused and gets no grade", () => {
+    const t = judged();
+    expect(() => h.wg.revealJudge(t.id, agent)).toThrow(/Only a person/);
+    expect(reveals(h.wg, t.id)).toHaveLength(0);
+  });
+
+  it("wg judge-agreement shows no grade of a ticket in review with the view closed", async () => {
+    const t = judged("Pending, closed");
+    const before = readJudgeAgreement(h.wg.db);
+    expect(before.pairs.find((x) => x.ticketNumber === t.number)).toBeUndefined();
+    expect(before.pendingHidden).toBeGreaterThanOrEqual(1);
+    expect(before.table.fail.pending).toBe(
+      before.pairs.filter((p) => p.outcome === "pending" && p.overall === "fail").length,
+    );
+    expect(renderJudgeAgreement(before)).toMatch(/judge's view closed: their grades are not shown/);
+    // Once the view is opened (recorded), the pending pair is shown like any other.
+    const r = await call(h, `/tickets/${t.id}/judge-revealed`);
+    expect(r.status).toBe(200);
+    const after = readJudgeAgreement(h.wg.db);
+    expect(after.pairs.find((x) => x.ticketNumber === t.number)).toMatchObject({
+      outcome: "pending",
+      overall: "fail",
+    });
+    expect(after.pendingHidden).toBe((before.pendingHidden ?? 0) - 1);
+  });
+});
+
 describe("readJudgeAgreement splits blind from revealed decisions over a real database", () => {
   it("a decision after the reveal is revealed; one without it is blind", () => {
     const wg = Dispatch.open(":memory:", new TestClock());
@@ -374,6 +491,29 @@ describe.skipIf(!CLI_BUILT)("wg review judge-view (built CLI)", { timeout: 60_00
       expect(JSON.parse(r2.stdout)).toMatchObject({ recorded: false, reason: "already_recorded" });
       const check = Dispatch.open(db, new TestClock());
       expect(reveals(check, t.id).map((r) => r.actor_type)).toEqual(["human"]);
+      check.db.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // review14/2: the terminal goes through the same record-then-return path, so a reveal
+  // that cannot be recorded prints no grade.
+  it("prints no grade when the reveal cannot be recorded", () => {
+    const dir = mkdtempSync(join(tmpdir(), "judge-view-refused-"));
+    try {
+      const db = join(dir, "d.sqlite");
+      const wg = Dispatch.open(db, new TestClock());
+      // In review with no recorded entry into review: no round to record the reveal in.
+      const t = wg.createTicket({ title: "No round" }, human);
+      wg.db.prepare(`UPDATE tickets SET status='in_review' WHERE id=?`).run(t.id);
+      wg.recordEvalJudgment(t.id, verdict("borderline", 3.2), system);
+      wg.db.close();
+      const r = runBin(db, ["review", "judge-view", String(t.number)], { env: { USER: "tom" } });
+      expect(r.status).not.toBe(0);
+      expect(`${r.stdout}${r.stderr}`).not.toMatch(/borderline|3\.2/);
+      const check = Dispatch.open(db, new TestClock());
+      expect(reveals(check, t.id)).toHaveLength(0);
       check.db.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });

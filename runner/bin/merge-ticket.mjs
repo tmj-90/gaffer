@@ -162,6 +162,7 @@ import { mountedNames, recordSkillUsage } from "./record-skill-usage.mjs";
 import {
   appendUsageRecord,
   buildUsageRecord,
+  successfulCallRecord,
   extractResultText,
   parseClaudeJson,
   recordKilledCall,
@@ -3698,7 +3699,13 @@ function main() {
     // The failed resolver still did paid work: ledger it (measured when its envelope
     // parses, else the labelled kill estimate) — this branch used to write no row.
     const failedJson = parseClaudeJson(res.stdout || "");
-    if (failedJson === null) {
+    // An envelope with no finite total_cost_usd is not a reading either (rule 4 of
+    // lib/usage-ledger.mjs): it gets the kill estimate too, never a $0 measured row.
+    const failedTotal = failedJson === null ? null : failedJson.total_cost_usd;
+    if (
+      failedJson === null ||
+      !(typeof failedTotal === "number" && Number.isFinite(failedTotal) && failedTotal >= 0)
+    ) {
       recordKilledCall({
         ticket: resolved.number,
         kind: "merge-resolver",
@@ -3745,7 +3752,11 @@ function main() {
     // JOIN KEYS (MF4): the repo it resolved and the delivery attempt it resolved for.
     appendUsageRecord(
       withJoinKeys(
-        buildUsageRecord({ json: resolverJson, ticket: resolved.number, kind: "merge-resolver" }),
+        successfulCallRecord({
+          json: resolverJson,
+          ticket: resolved.number,
+          kind: "merge-resolver",
+        }),
         { repo: repo.name },
       ),
     );

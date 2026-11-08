@@ -523,8 +523,9 @@ has the arms, the report and the limits.
 any experiment results and, where another tier is cheaper per accepted change and no
 worse on first pass and escaped defects in every work class with enough evidence, or a
 live experiment against the default tier shows it cheaper with at least one discordant
-ticket and an acceptance interval whose lower bound is within a 0.10 non-inferiority
-margin, prints a proposed
+ticket and an acceptance interval whose lower bound is within the non-inferiority
+margin (your policy: 0.10 unless you pass `--margin`, and an experiment's own when it is
+tighter; printed with every recommendation), prints a proposed
 `runner/model-registry.json` change as a diff with the cells and deltas behind it. It
 never edits the registry and never proposes anything for the reviewer or the tester.
 Health carries one Routing line saying whether a proposal exists.
@@ -656,6 +657,19 @@ and the tester's passes.*
   prefilled at $5. Every other paid launch is refused the same way, checked right before
   it starts. Dry runs are never refused; `GAFFER_ALLOW_UNCAPPED=1` in the environment
   opts out.
+- **A call with no reported cost is never free.** The caps count what each call's
+  envelope says it cost. A call that was killed, or that finished but reported no dollar
+  total, is booked at a labelled conservative estimate (`estimated:true`, never
+  `measured`): the median spend rate of the same kind of call in the ledger times how
+  long it ran, capped at that kind's 90th percentile, else the cheapest tenth of that
+  kind, else `GAFFER_KILL_ESTIMATE_USD` (default $0.05). Tokens are kept as reported;
+  dollars are never worked out from them. If no estimate can be made (no history and
+  the floor set to 0), the row stays `unknown`, and with a cap set every paid launch is
+  refused for the rest of that UTC day, because today's spend cannot be established.
+  Book what those calls cost with `node runner/lib/usage-ledger.mjs --reconcile --usd
+  <amount>` (it counts toward the caps, so raise the cap if that uses it up) and launches
+  resume. The run summary's usage section counts measured, estimated and unknown calls
+  apart.
 - **One Poll at a time.** A Poll pressed while the previous one runs waits for it
   (`GAFFER_POLL_WAIT_TIMEOUT`), and each run keeps its own per-run lists.
 - **Usage limits pause the factory, they do not fail tickets.** When the model refuses

@@ -220,17 +220,31 @@ all of these hold, and otherwise prints which one failed:
 - at least one ticket is discordant (with none, both arms did the same on every ticket
   and the run carries no information about the difference);
 - the lower bound of the acceptance difference's 95% Newcombe interval is at or above
-  **minus the non-inferiority margin, 0.10** (`NON_INFERIORITY_MARGIN` in
-  `routingRecommend.ts`);
+  **minus the non-inferiority margin** (0.10 unless you pick another);
 - its mean spend difference is below zero.
 
-The margin says how much acceptance a cheaper tier may plausibly give up and still be
-proposed: ten percentage points, the usual starting margin for a non-inferiority
-comparison of two proportions and the same size as the scorecard's own threshold for a
-difference worth acting on (`BETTER_BY_POINTS`). A bound at or above zero would demand
-proof that the cheaper tier is better, which a cost saving does not need. Results
-written before this interval have no `method` and never propose; run their report
-again (`experiment.mjs report`).
+**The margin is your policy, not a statistical constant.** It is the drop in acceptance
+rate you are willing to trade for a cheaper tier on this kind of work: at 0.10 you are
+saying that a tier which might accept up to ten fewer changes in a hundred is still worth
+it for the money it saves. Nothing in the statistics picks that number for you. 0.10 is
+a starting point for a supervised pilot, where a person still reviews every change and
+a slightly weaker tier costs review time, not escaped defects. Pick a tighter one when a
+rejected change is expensive for you: high-risk repositories, work that lands without a
+person reading it, or a tier switch you could not easily undo; 0.05 or lower there. A
+tighter margin needs more tickets to pass (the interval has to fit inside it), so plan
+the experiment's size around the margin, not the other way round. A bound at or above
+zero would demand proof that the cheaper tier is better, which a cost saving does not
+need.
+
+Pass it to the experiment (`gaffer eval experiment --margin 0.05`, any number with
+0 < m < 0.5): `results.json` stores it as `non_inferiority_margin`, each comparison
+carries `non_inferiority` (the margin, the lower bound and whether it holds) and
+`report.md` says which margin it was read at. Pass it to the recommendation too
+(`gaffer wg routing recommend --margin 0.05`); every recommendation prints the margin it
+used, and an experiment read at a tighter margin than the one you pass keeps its own,
+so a result you judged at 0.05 is never proposed at 0.10. Results written before this
+interval have no `method` and never propose; run their report again
+(`experiment.mjs report`).
 
 ## Knobs
 
@@ -333,12 +347,18 @@ So the Review page keeps the grade collapsed behind **Show the judge's view**: n
 verdict, score or colour shows until you open it. Opening it while the ticket is in
 review records a reveal on the ticket (`ticket.review_judge_revealed`, once per review
 round, through `POST /tickets/:id/judge-revealed`; `wg review judge-view <ref>` is the
-terminal's way to open it and is recorded the same way). Until then the grade is kept
+terminal's way to open it and is recorded the same way). The record comes first: the
+page holds no grade until it opens the view (the review packet says `judge: null,
+judge_hidden: true`), and that one request records the reveal and then returns the
+grade. If the request fails, or the reveal cannot be recorded (the page is from an
+earlier review round), the page says so, shows no grade and lets you try again, so
+you can never see the grade and still be counted blind. Until then the grade is kept
 out of the other places a reviewer could read it too: the ticket page's match report
 says "Eval judge: hidden until you decide", the eval judge's events in
 `GET /tickets/:id`, `GET /tickets/:id/events` and the batched details carry
 `{ "hidden": true }` in place of the grade, and `wg ticket show` prints `evalJudgment:
-null` with `evalJudgmentHidden` saying how to see it. Once the view is opened, or the
+null` with `evalJudgmentHidden` saying how to see it; `wg judge-agreement` counts such a
+ticket as pending but leaves its pair and its verdict out of the report. Once the view is opened, or the
 ticket leaves review, they show it again. A decision is *revealed* when a
 reveal on the ticket falls between the judgment and the decision, or when a person
 decided before this factory started hiding the grade (the database upgrade that added

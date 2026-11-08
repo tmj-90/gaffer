@@ -208,6 +208,24 @@ LEFT="$(grep -rlwE 'GAFFER_(AGENT_ID_FILE|REVIEWER_ID_FILE|EVAL_LEDGER)' "$RUNNE
   | grep -vE '/test/|/config/01-settings\.sh$' || true)"
 [ -z "$LEFT" ] && ok "no code outside the removed-name list still reads the old names" || fail "old names still read: $LEFT"
 
+echo "== settings.json never sets an internal name or a command/module seam =="
+mkdir -p "$WORK/sj"
+cat > "$WORK/sj/settings.json" <<'SJ'
+{"_GAFFER_USAGE_PAUSE_MJS":"/tmp/evil.mjs","_GAFFER_USAGE_WORKER_MJS":"/tmp/evil.mjs","_GAFFER_DEPRECATED_SAID":" GAFFER_PO_MAX_TURNS ",
+ "GAFFER_WG_LIST_CMD":"touch /tmp/pwned","GAFFER_WG_SHOW_CMD":"x","GAFFER_WG_DELIVERIES_CMD":"x","GAFFER_REDACTION_MODULE":"/tmp/evil.mjs",
+ "DISPATCH_TESTER_VERDICT_CMD":"x","DISPATCH_LANE_VERDICT_CMD":"x","DISPATCH_ACCEPTANCE_EVIDENCE_CMD":"x","MAX_TICKS":"9"}
+SJ
+V="$(cfg GAFFER_DATA="$WORK/sj" GAFFER_PO_MAX_TURNS=30 -- 'printf "%s|" "$MAX_TICKS"; for n in _GAFFER_USAGE_WORKER_MJS GAFFER_WG_LIST_CMD GAFFER_WG_SHOW_CMD GAFFER_WG_DELIVERIES_CMD GAFFER_REDACTION_MODULE DISPATCH_TESTER_VERDICT_CMD DISPATCH_LANE_VERDICT_CMD DISPATCH_ACCEPTANCE_EVIDENCE_CMD; do printf "%s=%s|" "$n" "${!n:-}"; done; printf "%s" "$_GAFFER_USAGE_PAUSE_MJS"')"
+case "$V" in
+  "9|_GAFFER_USAGE_WORKER_MJS="*"/runner/lib/worker.mjs|GAFFER_WG_LIST_CMD=|GAFFER_WG_SHOW_CMD=|GAFFER_WG_DELIVERIES_CMD=|GAFFER_REDACTION_MODULE=|DISPATCH_TESTER_VERDICT_CMD=|DISPATCH_LANE_VERDICT_CMD=|DISPATCH_ACCEPTANCE_EVIDENCE_CMD=|"*"/runner/lib/usage-pause.mjs")
+    ok "settings.json: a plain key applies, but no _ name and no command/module seam does (the runner keeps its own modules)" ;;
+  *) fail "settings.json internal/seam keys applied: $V" ;;
+esac
+[ "$(grep -c 'from settings.json: an internal name, never a setting' "$WORK/err")" = "3" ] \
+  && [ "$(grep -c 'from settings.json: a command or module test seam' "$WORK/err")" = "7" ] \
+  && ok "each skipped key is named on stderr with the ignoring-from-settings.json line" || fail "settings.json skip lines: $(cat "$WORK/err")"
+warned GAFFER_PO_MAX_TURNS && ok "a settings.json warn-once mark cannot silence a deprecation warning" || fail "mark from settings.json silenced the warning: $(cat "$WORK/err")"
+
 echo "== the warning is said once per process tree =="
 cfg GAFFER_PO_MAX_TURNS=30 -- 'bash --norc --noprofile -c "source \"\$0\"" "$0" 2>>"$ERRF"' >/dev/null
 warned GAFFER_PO_MAX_TURNS && ok "a second source in a child stays quiet (one line for the tree)" || fail "repeat warning: $(cat "$WORK/err")"

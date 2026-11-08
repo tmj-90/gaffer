@@ -32,6 +32,19 @@ if [ -n "$_gs_out" ]; then
       GAFFER_ALLOW_UNCAPPED | GAFFER_WORKER_PROVIDER | GAFFER_WORKER_COMMAND | GAFFER_WORKER_COMMAND_ENV | \
         GAFFER_WORKER_COMMAND_COST_USD | GAFFER_SANDBOX_WORKER_COMMAND) continue ;;
     esac
+    # Internal names (a leading underscore: the re-source records, the warn-once marks,
+    # runner file paths such as _GAFFER_USAGE_PAUSE_MJS that node runs) and the test
+    # seams whose value is a command to run or a module to load are never settings: a
+    # file an agent's sandbox might reach must not pick code the runner executes.
+    case "$_sk" in
+      _*)
+        printf 'gaffer: ignoring %s from settings.json: an internal name, never a setting\n' "$_sk" >&2
+        continue ;;
+      GAFFER_WG_LIST_CMD | GAFFER_WG_SHOW_CMD | GAFFER_WG_DELIVERIES_CMD | GAFFER_REDACTION_MODULE | \
+        DISPATCH_TESTER_VERDICT_CMD | DISPATCH_LANE_VERDICT_CMD | DISPATCH_ACCEPTANCE_EVIDENCE_CMD)
+        printf 'gaffer: ignoring %s from settings.json: a command or module test seam; only the environment can set it\n' "$_sk" >&2
+        continue ;;
+    esac
     # A settings.json GAFFER_STRICT_REQUIRE=0 is NOT the operator's out-of-band
     # assertion (the opt-out from the OS sandbox every agent launch requires): only the
     # real environment can make it, under every worker provider. settings.json lives in

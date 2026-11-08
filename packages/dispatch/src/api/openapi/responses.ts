@@ -465,6 +465,27 @@ export const ReviewOpened = z
   })
   .strict();
 
+export const JudgeRevealed = z
+  .object({
+    ticket_id: str,
+    recorded: z.boolean(),
+    reason: z
+      .enum(["not_in_review", "already_recorded"])
+      .nullable()
+      .describe(
+        "Why nothing new was written (the reveal is already on record this round, or the ticket is not in review); null when recorded now.",
+      ),
+    event_id: str.nullable(),
+    round_entered_at: str.nullable().describe("When the ticket last entered in_review."),
+    judge: z
+      .record(z.string(), z.unknown())
+      .nullable()
+      .describe(
+        "The eval judge's grade of the current delivery (overall, score, dims, rationale, summary, judge_model, at, ...), returned only after the reveal is on record; null when the judge recorded none.",
+      ),
+  })
+  .strict();
+
 export const RiskKind = z
   .enum(RISK_KINDS)
   .describe(

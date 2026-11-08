@@ -426,31 +426,65 @@ const JUDGE_WORD = { pass: "Pass", borderline: "Borderline", fail: "Fail" };
 /**
  * BLINDING: the judge's cell starts collapsed behind "Show the judge's view", with no
  * verdict, score or tone, so a reviewer who decides without opening it decides blind and
- * judge agreement can compare the grade with that decision. Opening it draws the grade
- * and calls `onReveal` (the Review view records the reveal on the ticket, once per round).
+ * judge agreement can compare the grade with that decision. Opening it calls `onReveal`,
+ * which records the reveal on the ticket and resolves to the grade (or rejects): the cell
+ * draws the grade only from that answer, and says so plainly when it fails.
  * A view already opened this round (`revealedAt`) is drawn open.
  */
-function judgeCell(jd, { revealedAt = null, onReveal = null } = {}) {
-  if (revealedAt) return judgeCellOpen(jd);
+function judgeCell({ onReveal = null } = {}) {
   const btn = el(
     "button",
     { class: "btn small vd-judge-show", type: "button", "aria-expanded": "false" },
     "Show the judge's view",
   );
+  // A failed reveal says so here, in the cell, and leaves the button to try again.
+  const err = el("p", { class: "vd-sub vd-judge-err", role: "alert" });
+  err.hidden = true;
   const cell = verdictCell(
     "judge",
     "Judge",
     btn,
     "Quality judge, advisory: hidden until you open it",
-    el(
-      "p",
-      { class: "vd-sub" },
-      "Hidden until you open it, so your decision can be compared with the grade blind. Opening it before you decide is recorded.",
-    ),
+    [
+      el(
+        "p",
+        { class: "vd-sub" },
+        "Hidden until you open it, so your decision can be compared with the grade blind. Opening it before you decide is recorded.",
+      ),
+      err,
+    ],
   );
-  btn.addEventListener("click", () => {
-    cell.replaceWith(judgeCellOpen(jd));
-    if (typeof onReveal === "function") onReveal();
+  // review14/2: the packet holds no grade. The click asks the server to record the reveal
+  // and return the grade in one request; the grade is drawn only from a 2xx answer, so a
+  // reviewer never sees it while the reveal is unrecorded (and counted blind).
+  btn.addEventListener("click", async () => {
+    if (btn.disabled) return;
+    btn.disabled = true;
+    btn.textContent = "Opening…";
+    err.hidden = true;
+    let jd;
+    try {
+      if (typeof onReveal !== "function") throw new Error("this page cannot open it");
+      jd = await onReveal();
+    } catch (e) {
+      const why = String((e && e.message) || "the request failed").replace(/[.\s]+$/, "");
+      err.textContent = `The judge's view could not be opened, so the grade stays hidden: ${why}.`;
+      err.hidden = false;
+      btn.disabled = false;
+      btn.textContent = "Try again";
+      return;
+    }
+    cell.replaceWith(
+      jd
+        ? judgeCellOpen(jd)
+        : verdictCell(
+            "judge",
+            "Judge",
+            "No grade",
+            "Quality judge, advisory: no grade recorded",
+            el("p", { class: "vd-sub" }, "The judge recorded no grade for this delivery."),
+          ),
+    );
   });
   return cell;
 }
@@ -1242,11 +1276,12 @@ function verdictStrip(p, hooks = {}) {
   // EVAL JUDGE (the runner's opt-in judge): the quality judge's grade, when one was recorded for
   // this delivery. A model's opinion of the diff, not a runner fact: said as one, and no
   // gate reads it. Its weak dimensions carry the judge's own reasons.
+  // BLINDING (review14/2): while the ticket is in review and nobody opened the judge's
+  // view this round, the packet carries no grade (`judge_hidden`); the collapsed cell gets
+  // it from the reveal request, which records the reveal first.
   const jd = p.judge;
-  if (jd)
-    cells.push(
-      judgeCell(jd, { revealedAt: p.judge_revealed_at || null, onReveal: hooks.onJudgeReveal }),
-    );
+  if (jd) cells.push(judgeCellOpen(jd));
+  else if (p.judge_hidden) cells.push(judgeCell({ onReveal: hooks.onJudgeReveal }));
 
   const strip = el(
     "section",

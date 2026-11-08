@@ -338,7 +338,12 @@ So the Review page keeps the grade collapsed behind **Show the judge's view**: n
 verdict, score or colour shows until you open it. Opening it while the ticket is in
 review records a reveal on the ticket (`ticket.review_judge_revealed`, once per review
 round, through `POST /tickets/:id/judge-revealed`; `wg review judge-view <ref>` is the
-terminal's way to open it and is recorded the same way). Until then the grade is kept
+terminal's way to open it and is recorded the same way). The record comes first: the
+page holds no grade until it opens the view (the review packet says `judge: null,
+judge_hidden: true`), and that one request records the reveal and then returns the
+grade. If the request fails, or the reveal cannot be recorded (the page is from an
+earlier review round), the page says so, shows no grade and lets you try again, so
+you can never see the grade and still be counted blind. Until then the grade is kept
 out of the other places a reviewer could read it too: the ticket page's match report
 says "Eval judge: hidden until you decide", the eval judge's events in
 `GET /tickets/:id`, `GET /tickets/:id/events` and the batched details carry

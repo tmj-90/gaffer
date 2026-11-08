@@ -21,6 +21,27 @@ import { testerOffNotice, type TesterLaneDecision } from "../util/testingLane.js
 import { currentJudgment, type RecordedEvalJudgment } from "./evalJudgment.js";
 import { REVIEW_JUDGE_REVEALED_EVENT } from "./reviewTelemetry.js";
 
+/**
+ * BLINDING (review14/2): the packet's judge fields. While the ticket is in review and the
+ * judge's view was not opened this round, the grade stays out of the payload
+ * (`judge: null, judge_hidden: true`): the Review view shows it only from the answer to
+ * POST /tickets/:id/judge-revealed, which records the reveal before it returns the grade.
+ */
+function judgeFields(
+  ticket: Pick<Ticket, "status">,
+  events: readonly WorkEvent[],
+  sinceReview: string | null,
+): Pick<ReviewPacket, "judge" | "judge_hidden" | "judge_revealed_at"> {
+  const judgment = currentJudgment(events, sinceReview);
+  const revealedAt = judgeRevealedAt(events, sinceReview);
+  const hidden = judgment !== null && ticket.status === "in_review" && revealedAt === null;
+  return {
+    judge: hidden ? null : judgment,
+    judge_hidden: hidden,
+    judge_revealed_at: revealedAt,
+  };
+}
+
 /** BLINDING: the latest reveal of the judge's view since the ticket entered review, or null. */
 function judgeRevealedAt(events: readonly WorkEvent[], sinceReview: string | null): string | null {
   let at: string | null = null;
@@ -274,8 +295,13 @@ export interface ReviewPacket {
    * EVAL JUDGE (the runner's opt-in judge): the quality judge's grade of this delivery, or null
    * when none was recorded for it. NOT a runner fact like the rest of the packet: it is a
    * model's opinion of the diff, advisory, read by no gate. The Review view says so.
+   * BLINDING (review14/2): null while the ticket is in review and nobody opened the
+   * judge's view this round (`judge_hidden` is then true); the grade comes back only from
+   * POST /tickets/:id/judge-revealed, which records the reveal first.
    */
   judge: RecordedEvalJudgment | null;
+  /** True when a grade exists for this delivery but is held back (see `judge`). */
+  judge_hidden: boolean;
   /**
    * BLINDING: when a person opened the judge's collapsed view in this review round
    * (`ticket.review_judge_revealed`), or null: the Review view keeps the grade hidden
@@ -1254,8 +1280,7 @@ export class ReviewPacketService {
         .listForTicket(ticket.id)
         .map((ac) => readCriterion(ac, rows, sentBackAt)),
       disagreements,
-      judge: currentJudgment(events, sinceReview),
-      judge_revealed_at: judgeRevealedAt(events, sinceReview),
+      ...judgeFields(ticket, events, sinceReview),
       scout: latestScout(events),
       intent: readIntent(ticket),
       candidate,

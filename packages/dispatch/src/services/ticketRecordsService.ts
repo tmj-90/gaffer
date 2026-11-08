@@ -6,7 +6,9 @@
  */
 import { inTransaction } from "../db/connection.js";
 import { type Actor, type Ticket } from "../domain/types.js";
-import { writeEvent } from "../events/eventWriter.js";
+import { listEvents, writeEvent } from "../events/eventWriter.js";
+import { DispatchError } from "../util/errors.js";
+import { currentJudgment, type RecordedEvalJudgment } from "./evalJudgment.js";
 import { DOSSIER_EVENT_TYPE, type Dossier } from "./dossierService.js";
 import {
   assertMayRecordJudgment,
@@ -31,7 +33,7 @@ import {
   type LaneVerdict,
   type RawOpenKind,
 } from "./reviewTelemetry.js";
-import { type CostReader, type ReviewPacket } from "./reviewPacketService.js";
+import { type CostReader, enteredReviewAt, type ReviewPacket } from "./reviewPacketService.js";
 import type { DispatchInternals } from "./dispatchInternals.js";
 import type { Dispatch } from "../core.js";
 
@@ -152,6 +154,39 @@ export function recordJudgeRevealed(
     REVIEW_JUDGE_REVEALED_EVENT,
     "judge",
   );
+}
+
+/** What revealJudge answers: the reveal's record, and the grade it unlocked. */
+export type JudgeRevealResult = ReviewOpenResult & { judge: RecordedEvalJudgment | null };
+
+/**
+ * BLINDING (review14/2): open the eval judge's view in ONE step that records before it
+ * shows. Records the reveal (recordJudgeRevealed: a person, the ticket in review, once per
+ * round) and only then returns the grade of the current delivery. The grade is returned
+ * when the reveal is on record for this round (recorded now or already) or when the
+ * ticket is not in review (nothing is blinded then). Any other outcome (the caller's
+ * round is stale, or the ticket has no recorded entry into review) writes nothing and
+ * returns NO grade: a STATE_CONFLICT the caller shows, so a reviewer can never see the
+ * grade while being counted blind. The Review view and `wg review judge-view` both use it.
+ */
+export function revealJudge(
+  host: TicketRecordsHost,
+  internals: TicketRecordsInternals,
+  ref: string,
+  actor: Actor,
+  seenRound: string | null = null,
+): JudgeRevealResult {
+  const r = recordJudgeRevealed(host, internals, ref, actor, seenRound);
+  if (!(r.recorded || r.reason === "already_recorded" || r.reason === "not_in_review"))
+    throw new DispatchError(
+      "STATE_CONFLICT",
+      r.reason === "stale_round"
+        ? "The ticket went back into review since this page loaded, so the judge's view was not opened: reload it and try again."
+        : "The ticket has no recorded entry into review, so opening the judge's view cannot be recorded; it stays hidden until the ticket leaves review.",
+      { reason: r.reason, round_entered_at: r.roundEnteredAt },
+    );
+  const events = listEvents(host.db, "ticket", r.ticketId);
+  return { ...r, judge: currentJudgment(events, enteredReviewAt(r.ticketId, events)) };
 }
 
 export function recordReviewOpen(

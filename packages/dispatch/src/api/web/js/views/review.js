@@ -32,6 +32,7 @@ import {
   parseDodEvidence,
   reopenedForReview,
   repoPath,
+  revealJudge,
   reviewCommentComposer,
   reviewCommentItem,
   reviewEvidenceList,
@@ -1281,7 +1282,8 @@ async function renderReview(param) {
     ? verdictStrip(packet, {
         onRunLog: () => noteReviewOpen(t.id, since, "run_log"),
         // BLINDING: opening the judge's collapsed view before deciding is recorded.
-        onJudgeReveal: () => noteReviewOpen(t.id, since, "judge"),
+        // review14/2: one request records the reveal and returns the grade.
+        onJudgeReveal: () => revealJudge(t.id, since),
       })
     : null;
   // INSPECTABLE CONFIDENCE: the server's backing rows (an older server sends none).

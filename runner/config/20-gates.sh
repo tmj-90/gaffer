@@ -32,7 +32,7 @@
 # back to the local merge with the reason logged. Without a pr_url the merge is the
 # local one, exactly as before.
 : "${GAFFER_CREATE_PR:=0}"   # 1/true/yes/on to enable real PR creation; default OFF
-: "${GAFFER_GH_BIN:=gh}"     # injectable gh binary (for tests)
+GAFFER_GH_BIN="${GAFFER_GH_BIN:-gh}"     # injectable gh binary (for tests)
 : "${GAFFER_PR_MERGE_METHOD:=merge}"   # how an approved PR is landed: merge | squash | rebase
 export GAFFER_CREATE_PR GAFFER_GH_BIN GAFFER_PR_MERGE_METHOD
 

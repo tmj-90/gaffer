@@ -16,7 +16,10 @@ const {
   readSiteDefault,
   firstSentence,
   verifyExtraKnobs,
+  verifyInternalNames,
   EXTRA_KNOBS,
+  INTERNAL_NAMES,
+  TEST_SEAMS,
 } = await import(path.join(ROOT, "scripts", "config-reference.mjs"));
 
 let passed = 0;
@@ -157,7 +160,7 @@ ok(
   "GAFFER_DOD_TIMEOUT is a documented runner default now (not an undocumented read)",
 );
 ok(
-  /### lib\/skills-mount\.sh[\s\S]*\| `GAFFER_UNIVERSAL_SKILLS` \|/.test(text),
+  /### lib\/budget\.sh[\s\S]*\| `GAFFER_ALLOW_UNCAPPED` \|/.test(text),
   "a knob defaulted in runner/lib/*.sh is listed under its lib section",
 );
 ok(
@@ -206,13 +209,10 @@ for (const name of [
   "GAFFER_DOD_INSTALL",
   "GAFFER_GREENFIELD_INSTALL",
   "GAFFER_ALLOW_NO_DOD",
-  "GAFFER_KEEP_DELIVERY_BRANCH",
   "GAFFER_CI_TIMEOUT_POLICY",
   "GAFFER_MEMORY_AUTO_PROMOTE",
   "GAFFER_SANDBOX_IMAGE",
-  "GAFFER_SANDBOX_PROFILE",
   "GAFFER_DIGEST_DISABLE",
-  "GAFFER_PAUSE_KEEP_WORKTREE",
   "GAFFER_VERBOSE",
   "DEMO_DIR",
   "ANTHROPIC_API_KEY",
@@ -283,6 +283,52 @@ ok(
   EXTRA_KNOBS.every((k) => new RegExp(`^\\| \`${k.name}\` \\|`, "m").test(text)),
   "every EXTRA_KNOBS entry has a row in docs/CONFIG.md",
 );
+
+console.log("== internal names and test seams are named once, never as rows ==");
+ok(
+  verifyInternalNames(ROOT) === undefined,
+  "every INTERNAL_NAMES / TEST_SEAMS entry still occurs in the source",
+);
+const internalSection = text.slice(text.indexOf("## Internal names (not knobs)"));
+ok(
+  internalSection.length > 0 && text.includes("## Internal names (not knobs)"),
+  "CONFIG.md has the Internal names section",
+);
+for (const name of [...INTERNAL_NAMES.flatMap((g) => g.names), ...TEST_SEAMS]) {
+  ok(
+    !new RegExp(`^\\| \`${name}\` \\|`, "m").test(text) && internalSection.includes(`\`${name}\``),
+    `${name} is in the Internal names section and has no table row`,
+  );
+}
+for (const name of [
+  "GAFFER_KEEP_DELIVERY_BRANCH",
+  "GAFFER_SANDBOX_PROFILE",
+  "GAFFER_PAUSE_KEEP_WORKTREE",
+])
+  ok(internalSection.includes(`\`${name}\``), `${name} (set by the runner) is listed as plumbing`);
+// A `: "${X:=v}"` line is how the config marks a knob, so an internal name with one is an error.
+{
+  const cfg = path.join(ROOT, "runner", "config", "02-paths.sh");
+  const before = readFileSync(cfg, "utf8");
+  try {
+    writeFileSync(
+      cfg,
+      before.replace(/^DISPATCH_DIR="\$\{DISPATCH_DIR:-(.*)\}"$/m, ': "${DISPATCH_DIR:=$1}"'),
+    );
+    let msg = "";
+    try {
+      await generate();
+    } catch (err) {
+      msg = err.message;
+    }
+    ok(
+      /listed as internal but still defaulted[^\n]*DISPATCH_DIR/.test(msg),
+      "an internal name defaulted like a knob fails the generator",
+    );
+  } finally {
+    writeFileSync(cfg, before);
+  }
+}
 
 console.log("== rows describe the behaviour ==");
 const row = (k) => rows.find((l) => l.startsWith(`| \`${k}\` |`)) ?? "";

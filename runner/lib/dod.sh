@@ -38,7 +38,7 @@ _GAFFER_JSON_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/json-tool.mjs"
 # Max wall-clock seconds for the PRE-GATE dependency install (see
 # gaffer_dod_install_deps). Inherits the per-gate timeout, then the sane default,
 # so a pathological install can never burn unbounded wall-clock. Always positive.
-: "${GAFFER_DOD_INSTALL_TIMEOUT:=${GAFFER_DOD_TIMEOUT:-900}}"
+GAFFER_DOD_INSTALL_TIMEOUT="${GAFFER_DOD_INSTALL_TIMEOUT:-${GAFFER_DOD_TIMEOUT:-900}}"
 
 # True when DoD enforcement is ON for this run. GAFFER_DOD wins over config:
 #   GAFFER_DOD=0  → OFF (today's behaviour: the gate never runs).
@@ -795,7 +795,7 @@ gaffer_dod_evidence_summary() {
 
 # How many lines of distilled failure to keep per gate. Bounded so a chatty stack
 # can't bloat the evidence row / the feedback fed back to the next attempt.
-: "${GAFFER_DOD_FEEDBACK_LINES:=${GAFFER_DOD_OUTPUT_TAIL:-40}}"
+GAFFER_DOD_FEEDBACK_LINES="${GAFFER_DOD_FEEDBACK_LINES:-${GAFFER_DOD_OUTPUT_TAIL:-40}}"
 
 # gaffer_dod_distill_output <infile> [maxlines]
 # Distil the ACTUAL failure from a gate command's raw output: the failing test

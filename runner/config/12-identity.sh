@@ -19,7 +19,7 @@
 # suggest work for). It runs the product-owner skill headlessly and files draft
 # tickets into the backlog. `gaffer dashboard` exports this into the dashboard's env;
 # set it here for a fresh setup. Absolute path so the detached child resolves it.
-: "${DISPATCH_PRODUCT_OWNER_CMD:=node $RUNNER_DIR/bin/product-owner-run.mjs}"
+DISPATCH_PRODUCT_OWNER_CMD="${DISPATCH_PRODUCT_OWNER_CMD:-node $RUNNER_DIR/bin/product-owner-run.mjs}"
 
 # The dashboard Memory view's "Onboard a repo" button (POST /repos/onboard) spawns
 # this command (detached, with DISPATCH_ONBOARD_REPO in its env naming the repo —
@@ -29,7 +29,7 @@
 # feature inventory land in the memory store the Memory views read. `gaffer
 # dashboard` exports this into the dashboard's env; set it here for a fresh setup.
 # Absolute path so the detached child resolves it.
-: "${DISPATCH_ONBOARD_CMD:=node $RUNNER_DIR/bin/onboard-run.mjs}"
+DISPATCH_ONBOARD_CMD="${DISPATCH_ONBOARD_CMD:-node $RUNNER_DIR/bin/onboard-run.mjs}"
 
 # The BROWNFIELD epic → feature(`building`) hook. POST /epics spawns this (detached,
 # no shell, request values as discrete argv) when every ticket of a just-created
@@ -37,16 +37,16 @@
 # to the memory ledger with status `building` and the epic ref as provenance.
 # Best-effort and fire-and-forget — the epic is created either way. Unset/blank =
 # no feature write. Absolute path so the detached child resolves it.
-: "${DISPATCH_EPIC_FEATURE_CMD:=node $RUNNER_DIR/bin/epic-feature.mjs}"
+DISPATCH_EPIC_FEATURE_CMD="${DISPATCH_EPIC_FEATURE_CMD:-node $RUNNER_DIR/bin/epic-feature.mjs}"
 
 # Factory identity + bookkeeping
 : "${GAFFER_AGENT_NAME:=gaffer-factory}"
-: "${GAFFER_AGENT_ID_FILE:=$GAFFER_DATA/agent_id}"
+GAFFER_AGENT_ID_FILE="${GAFFER_AGENT_ID_FILE:-$GAFFER_DATA/agent_id}"
 # The runner's REVIEWER principal: a second, separately registered agent whose id the
 # review pass presents on `review approve|reject --as agent`. Registered once (like the
 # delivery agent) so the reviewer-not-author rule compares two REGISTERED actors, not a
 # free string; dispatch refuses an agent approver that is not a registered agent.
-: "${GAFFER_REVIEWER_ID_FILE:=$GAFFER_DATA/agent_reviewer_id}"
-: "${GAFFER_LOG:=$GAFFER_DATA/factory.log}"
+GAFFER_REVIEWER_ID_FILE="${GAFFER_REVIEWER_ID_FILE:-$GAFFER_DATA/agent_reviewer_id}"
+GAFFER_LOG="${GAFFER_LOG:-$GAFFER_DATA/factory.log}"
 
 _GAFFER_CONFIG_PART=12-identity

@@ -206,13 +206,6 @@ export const EXTRA_KNOBS = [
     doc: "The image the docker sandbox provider runs each delivery in (`docker compose --profile sandbox build` builds it).",
   },
   {
-    group: "Safety and containment",
-    name: "GAFFER_SANDBOX_PROFILE",
-    default: "",
-    file: "runner/lib/sandbox-docker.sh",
-    doc: "Set by the runner, not by you: `validation` runs the DoD gates and criterion checks in the docker sandbox with no data plane. Empty is the agent profile.",
-  },
-  {
     group: "Definition of Done",
     name: "GAFFER_DOD",
     default: "1",
@@ -246,20 +239,6 @@ export const EXTRA_KNOBS = [
     default: "block",
     file: "runner/lib/ci-gate.sh",
     doc: "With GAFFER_REQUIRE_CI=1: what happens when the checks time out, there is no PR or no checks exist. block rejects the delivery; proceed lets it through with a note.",
-  },
-  {
-    group: "Delivery and landing",
-    name: "GAFFER_KEEP_DELIVERY_BRANCH",
-    default: "0",
-    file: "runner/tick.sh",
-    doc: "Raised by the tick once a delivery's branch is review-visible, so cleanup removes the worktree but never the branch. Exporting 1 keeps every delivery branch (debugging only).",
-  },
-  {
-    group: "Delivery and landing",
-    name: "GAFFER_PAUSE_KEEP_WORKTREE",
-    default: "0",
-    file: "runner/tick.sh",
-    doc: "Raised by the tick when a delivery pauses on a cap, so its worktree and branch survive for Continue. Exporting 1 keeps every worktree (debugging only).",
   },
   {
     group: "Delivery and landing",
@@ -312,6 +291,153 @@ export const EXTRA_KNOBS = [
     doc: "Where the worker CLI keeps its login (`.credentials.json`); preflight looks there for a credential.",
   },
 ];
+
+/**
+ * Names the code reads that are NOT operator knobs, grouped by why. They keep working
+ * (a test or another component still sets them), but docs/CONFIG.md names them in one
+ * short "Internal names" section instead of a table row each, so the tables hold only
+ * what an operator would set. A name here must still occur in the source
+ * (verifyInternalNames); a group's title says why its names are not knobs.
+ */
+export const INTERNAL_NAMES = [
+  {
+    group: "paths",
+    title:
+      "Paths derived from GAFFER_HOME, GAFFER_DATA or the runner directory; set GAFFER_HOME / GAFFER_DATA instead (a test may point one elsewhere)",
+    names: [
+      "DISPATCH_DIR",
+      "CREW_DIR",
+      "MEMORY_DIR",
+      "DISPATCH_DB",
+      "MEMORY_DB",
+      "CREW_CONFIG",
+      "MEMORY_AUDIT_LOG",
+      "MCP_CONFIG",
+      "CLAUDE_SETTINGS",
+      "SKILLS_DIR",
+      "GAFFER_MODEL_REGISTRY",
+      "GAFFER_AGENT_ID_FILE",
+      "GAFFER_REVIEWER_ID_FILE",
+      "GAFFER_LOG",
+      "DAILY_COUNTER_FILE",
+      "GAFFER_USAGE_LEDGER",
+      "MEMORY_CLI_BIN",
+      "MEMORY_MCP_BIN",
+      "DISPATCH_MCP_BIN",
+      "GAFFER_GH_BIN",
+      "DISPATCH_CLI",
+      "DISPATCH_CLI_BIN",
+      "MEMORY_CLI",
+      "GAFFER_BLOCK_LEDGER",
+      "GAFFER_BP_FILE",
+      "GAFFER_EVAL_LEDGER",
+      "GAFFER_SKILL_TELEMETRY",
+      "GAFFER_USAGE_PAUSE_FILE",
+      "GAFFER_EGRESS_ALLOW_FILE",
+      "GAFFER_SAFETY_HOOK",
+    ],
+  },
+  {
+    group: "derived",
+    title: "Computed from other knobs each time the config loads; set the knob they come from",
+    names: [
+      "GAFFER_CLAIM_TTL",
+      "GAFFER_TICK_OUTER_TIMEOUT",
+      "GAFFER_POLL_WAIT_TIMEOUT",
+      "GAFFER_DOD_INSTALL_TIMEOUT",
+      "GAFFER_DOD_FEEDBACK_LINES",
+    ],
+  },
+  {
+    group: "plumbing",
+    title:
+      "Set by the runner for a child process, the dashboard, an MCP server or the safety hook, never by you",
+    names: [
+      "DISPATCH_PRODUCT_OWNER_CMD",
+      "DISPATCH_ONBOARD_CMD",
+      "DISPATCH_EPIC_FEATURE_CMD",
+      "DISPATCH_ONBOARD_NAME",
+      "DISPATCH_CORRELATION_ID",
+      "GAFFER_CLAIM_TOKEN",
+      "GAFFER_REVIEW_TICKET",
+      "GAFFER_DEFAULT_TICKET_REPO",
+      "GAFFER_TICKET",
+      "GAFFER_KEEP_DELIVERY_BRANCH",
+      "GAFFER_PAUSE_KEEP_WORKTREE",
+      "GAFFER_SANDBOX_PROFILE",
+      "GAFFER_UNIVERSAL_SKILLS",
+      "GAFFER_CLAUDE_VERSION",
+    ],
+  },
+  {
+    group: "packages",
+    title:
+      "Read inside the dispatch, memory and crew packages on their own (packages/*/README.md); the runner never needs them",
+    names: [
+      "DISPATCH_AGENT_ID",
+      "DISPATCH_AUDIT",
+      "DISPATCH_AUDIT_OFF",
+      "DISPATCH_PID_FILE",
+      "DISPATCH_SENSITIVE_PATH_RE",
+      "DISPATCH_LARGE_DELETION_LINES",
+      "DISPATCH_OBSERVED_RISK_CEILING",
+      "GAFFER_ACCEPTANCE_PROFILE_SEED",
+      "GAFFER_TEST_PATH_RE",
+      "MEMORY_AUDIT_OFF",
+      "MEMORY_NO_COLOR",
+      "MEMORY_REVIEW_NUDGE_EVERY_TIME",
+    ],
+  },
+  {
+    group: "sandbox",
+    title:
+      "Inside-the-image details of the docker sandbox provider (runner/lib/sandbox-docker.sh, docs/sandbox.md)",
+    names: [
+      "GAFFER_SANDBOX_CLAUDE_BIN",
+      "GAFFER_SANDBOX_CLAUDE_CREDENTIALS",
+      "GAFFER_SANDBOX_HOME",
+      "GAFFER_SANDBOX_PATH",
+      "GAFFER_SANDBOX_NET_INT",
+      "GAFFER_SANDBOX_NET_UP",
+      "GAFFER_SANDBOX_PROXY",
+      "GAFFER_SANDBOX_PROXY_IMAGE",
+    ],
+  },
+];
+
+/**
+ * Test seams: `GAFFER_TEST_*` names the code reads only so a test can shorten a wait,
+ * point a command at a stub or fix the clock. Listed by name in one line, never as
+ * rows. verifyTestSeams fails when one is no longer read, or when runner source (not a
+ * test) assigns one.
+ */
+export const TEST_SEAMS = [];
+
+/** Every internal or seam name, for the scans that decide what is a knob. */
+export function notKnobNames() {
+  return new Set([...INTERNAL_NAMES.flatMap((g) => g.names), ...TEST_SEAMS]);
+}
+
+/** Fail when an INTERNAL_NAMES / TEST_SEAMS entry no longer occurs in the source. */
+export function verifyInternalNames(root = ROOT) {
+  const dirs = ["runner", "packages/dispatch/src", "packages/memory/src", "packages/crew/src"];
+  const texts = dirs
+    .flatMap((d) => sourceFiles(path.join(root, d)))
+    .map((f) => readFileSync(f, "utf8"));
+  const problems = [];
+  const seen = new Set();
+  for (const name of [...INTERNAL_NAMES.flatMap((g) => g.names), ...TEST_SEAMS]) {
+    if (seen.has(name)) problems.push(`${name}: listed twice`);
+    seen.add(name);
+    if (!texts.some((t) => new RegExp(`\\b${name}\\b`).test(t)))
+      problems.push(`${name}: no longer occurs in the source (drop it from the list)`);
+  }
+  if (problems.length > 0) {
+    throw new Error(
+      `INTERNAL_NAMES / TEST_SEAMS in scripts/config-reference.mjs drifted from the code:\n  ${problems.join("\n  ")}`,
+    );
+  }
+}
 
 /** Fail when an EXTRA_KNOBS entry no longer matches the code it names. */
 export function verifyExtraKnobs(root = ROOT, extras = EXTRA_KNOBS) {
@@ -457,6 +583,8 @@ export function render({
   undocumented,
   defaults = new Map(),
   extras = [],
+  internal = [],
+  seams = [],
 }) {
   const defByKey = new Map(defs.map((d) => [d.key, d]));
   const knobByName = new Map(knobs.map((k) => [k.name, k]));
@@ -582,6 +710,25 @@ export function render({
     );
   }
   out.push("");
+
+  if (internal.length > 0 || seams.length > 0) {
+    out.push("## Internal names (not knobs)", "");
+    out.push(
+      "The code reads these too, but they are not settings: another component or a test",
+      "sets them, or they follow from a knob above. They are listed so a name you meet in",
+      "the code is not a mystery; you never need to set one.",
+      "",
+    );
+    for (const g of internal) {
+      out.push(`- **${g.group}**: ${g.title}. ${g.names.map((n) => `\`${n}\``).join(", ")}.`);
+    }
+    if (seams.length > 0) {
+      out.push(
+        `- **test seams**: read only so a test can shorten a wait, stub a command or fix the clock. ${seams.map((n) => `\`${n}\``).join(", ")}.`,
+      );
+    }
+    out.push("");
+  }
   return out.join("\n");
 }
 
@@ -599,6 +746,16 @@ export async function generate(root = ROOT) {
   }
   const defs = await loadSettingDefs();
   verifyExtraKnobs(root);
+  verifyInternalNames(root);
+  const notKnobs = notKnobNames();
+  const stillDefaulted = knobs.filter((k) => notKnobs.has(k.name)).map((k) => k.name);
+  if (stillDefaulted.length > 0) {
+    // A `: "${X:=v}"` line is how the config says "this is a knob"; an internal name
+    // assigns itself plainly (X="${X:-v}") so code and reference agree.
+    throw new Error(
+      `listed as internal but still defaulted with \`: "\${X:=...}"\`: ${stillDefaulted.join(", ")}`,
+    );
+  }
   const extras = EXTRA_KNOBS.filter(
     (k) => !seen.has(k.name) && !defs.some((d) => d.key === k.name),
   );
@@ -607,10 +764,20 @@ export async function generate(root = ROOT) {
       ...knobs.map((k) => k.name),
       ...defs.map((d) => d.key),
       ...extras.map((k) => k.name),
+      ...notKnobs,
     ]),
   ];
   const { consumers, undocumented, defaults } = scanConsumers(root, names);
-  return render({ knobs, defs, consumers, undocumented, defaults, extras });
+  return render({
+    knobs,
+    defs,
+    consumers,
+    undocumented,
+    defaults,
+    extras,
+    internal: INTERNAL_NAMES,
+    seams: TEST_SEAMS,
+  });
 }
 
 async function main(argv) {

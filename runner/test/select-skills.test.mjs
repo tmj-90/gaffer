@@ -1112,7 +1112,7 @@ check(
   "delivery core == skills-mount.sh GAFFER_UNIVERSAL_SKILLS (the select-skills fallback)",
   () => {
     const sh = readFileSync(join(DEFAULT_SKILLS_DIR, "..", "lib", "skills-mount.sh"), "utf8");
-    const m = /GAFFER_UNIVERSAL_SKILLS:=([^}"]+)\}/.exec(sh);
+    const m = /GAFFER_UNIVERSAL_SKILLS:-([^}"]+)\}/.exec(sh);
     assert(m, "GAFFER_UNIVERSAL_SKILLS default not found in skills-mount.sh");
     eq(m[1].trim().split(/\s+/).sort(), [...ROLE_PROFILES.delivery.core].sort(), "universal set");
   },

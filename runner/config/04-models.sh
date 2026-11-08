@@ -76,5 +76,5 @@ GAFFER_IMPL_MODEL_FLAG="$(gaffer_model_flag "${GAFFER_IMPL_MODEL:-}")"
 # pins the model (the override path in gaffer_route_model); the config's own
 # opus/sonnet DEFAULTS are the routing baseline, not an override, so they don't
 # suppress risk/attempt-aware routing (see GAFFER_*_MODEL_EXPLICIT above).
-: "${GAFFER_MODEL_REGISTRY:=$RUNNER_DIR/model-registry.json}"
+GAFFER_MODEL_REGISTRY="${GAFFER_MODEL_REGISTRY:-$RUNNER_DIR/model-registry.json}"
 _GAFFER_CONFIG_PART=04-models

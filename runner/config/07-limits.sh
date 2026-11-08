@@ -53,11 +53,9 @@
 : "${GAFFER_DOD_TYPECHECK:=1}"       # 1 = run the typecheck gate (auto-detected command)
 : "${GAFFER_DOD_TYPECHECK_CMD:=}"    # override the auto-detected typecheck command
 : "${GAFFER_DOD_TIMEOUT:=900}"       # wall-clock cap (seconds) per gate and per AC check command
-# GATE INTEGRITY: an extra regex of repo-relative paths that count as test files, on top
-# of the conventional ones (*.test.*, *_test.go, test_*.py, tests/, __tests__/, spec/ …).
-# It can only WIDEN what the integrity check flags (a malformed pattern is ignored).
-# Read by the runner's integrity row and by dispatch's test-modified risk annotation.
-: "${GAFFER_TEST_PATH_RE:=}"         # extra test-path regex for the gate-integrity check (additive)
+# (GAFFER_TEST_PATH_RE, an extra test-path regex that can only widen the gate-integrity
+# check, is read by crew's integrity CLI and dispatch's risk annotation from their own
+# environment; the empty, unexported default that stood here reached neither.)
 # Run the DoD gates + AC check commands under the SAME OS sandbox wrap as the agent
 # (they execute agent-modified code). 0 opts out (a gate that cannot run inside the
 # image) and is logged; the verdict is always recorded by the runner outside the gate.
@@ -124,7 +122,7 @@ gaffer_role_turns() {
 # GAFFER_MAX_DELIVERY_ATTEMPTS re-runs inside one tick after a gate failure — always
 # continues on the agent's own commits, because its feedback is about that diff.
 : "${GAFFER_RETRY_FRESH_BRANCH:=0}"
-: "${GAFFER_CLAIM_TTL:=$(( ${GAFFER_MAX_DELIVERY_ATTEMPTS:-3} * ${GAFFER_TICK_TIMEOUT:-1800} + 300 ))}"
+GAFFER_CLAIM_TTL="${GAFFER_CLAIM_TTL:-$(( ${GAFFER_MAX_DELIVERY_ATTEMPTS:-3} * ${GAFFER_TICK_TIMEOUT:-1800} + 300 ))}"
 export GAFFER_MAX_DELIVERY_ATTEMPTS GAFFER_CLAIM_TTL
 # DISPATCH_MAX_ATTEMPTS — Dispatch's OWN reject-loop cap (packages/dispatch/src/core.ts
 # resolveMaxAttempts): a delivery rejected back into the queue this many times is
@@ -149,7 +147,7 @@ export DISPATCH_MAX_ATTEMPTS
 # claim-release (given GAFFER_REAP_GRACE below) still lands on a live lease. The
 # inner per-call caps remain the fine-grained defense; this is only the backstop
 # for a tick wedged OUTSIDE an agent call.
-: "${GAFFER_TICK_OUTER_TIMEOUT:=$(( ${GAFFER_MAX_DELIVERY_ATTEMPTS:-3} * ${GAFFER_TICK_TIMEOUT:-1800} + 120 ))}"
+GAFFER_TICK_OUTER_TIMEOUT="${GAFFER_TICK_OUTER_TIMEOUT:-$(( ${GAFFER_MAX_DELIVERY_ATTEMPTS:-3} * ${GAFFER_TICK_TIMEOUT:-1800} + 120 ))}"
 export GAFFER_TICK_OUTER_TIMEOUT
 # TICK DEADLINE GUARD (tick.sh): the outer bound above counts only agent calls, but a
 # tick also spends merge-lane resolver time and every attempt's DoD install, gates and

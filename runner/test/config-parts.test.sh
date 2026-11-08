@@ -11,8 +11,8 @@
 #      sits in runner/config/, so its own path is not the runner dir), nothing bash 3.2
 #      lacks (associative arrays, mapfile/readarray, ${x,,} / ${x^^});
 #   3. it fails CLOSED: a missing part, one that stops early (a syntax error, a
-#      truncated copy) or one without its marker stops the sourcing process non-zero
-#      and names the part; an intact copy loads;
+#      truncated copy, a top-level `return`) or one without its own marker stops the
+#      sourcing process non-zero and names the part; an intact copy loads;
 #   4. a symlinked factory.config.sh still finds its parts (next to the real file);
 #   5. re-source hygiene survives: a second source in the same shell leaves exactly
 #      the env, variables and functions of the first, the parts block leaves nothing
@@ -94,6 +94,17 @@ for n in $FIRST $MID $LAST; do
   OUT="$(src_in "$WORK/copy")"; RC=$?
   [ "$RC" != 0 ] && [[ "$OUT" != *REACHED* ]] && ok "$n.sh without its marker line: stops non-zero" || fail "no marker in $n.sh: rc=$RC $OUT"
 done
+# A part that returns at its top level (a sourced file's early exit) never reaches its
+# marker; a part whose marker names another part did not load as itself.
+fresh_copy
+{ head -8 "$PDIR/$MID.sh"; printf 'return 0\n'; cat "$PDIR/$MID.sh"; } > "$WORK/copy/config/$MID.sh"
+OUT="$(src_in "$WORK/copy")"; RC=$?
+[ "$RC" != 0 ] && [[ "$OUT" != *REACHED* ]] && [[ "$OUT" == *"runner/config/$MID.sh"*"fail closed"* ]] \
+  && ok "$MID.sh that returns early: stops non-zero and names it" || fail "early return in $MID.sh: rc=$RC $OUT"
+fresh_copy; { sed '$d' "$PDIR/$MID.sh"; printf '_GAFFER_CONFIG_PART=%s\n' "$FIRST"; } > "$WORK/copy/config/$MID.sh"
+OUT="$(src_in "$WORK/copy")"; RC=$?
+[ "$RC" != 0 ] && [[ "$OUT" != *REACHED* ]] && [[ "$OUT" == *"runner/config/$MID.sh"*"fail closed"* ]] \
+  && ok "$MID.sh whose marker names another part: stops non-zero and names it" || fail "wrong marker in $MID.sh: rc=$RC $OUT"
 
 echo "== 4: a symlinked factory.config.sh finds its parts next to the real file =="
 mkdir -p "$WORK/fake/runner"; ln -s "$CFG" "$WORK/fake/runner/factory.config.sh"

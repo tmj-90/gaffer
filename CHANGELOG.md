@@ -143,6 +143,7 @@ to the same version.
 
 ### Changed
 
+- A matched experiment's acceptance difference uses Newcombe's paired score interval and reports the discordant tickets, since acceptance is a paired yes or no; ten tied tickets no longer read as an interval of [0, 0]. `wg routing recommend` proposes from an experiment only with at least one discordant ticket and an interval lower bound within a 0.10 non-inferiority margin, and says which condition failed otherwise.
 - The dashboard's single 30,000-line `app.js` is now a small entry that imports one ES module per view and a set of shared modules under `js/`, served from the same origin under the same CSP; nothing on screen changes.
 
 ### Fixed

@@ -156,10 +156,21 @@ lower total cost?* `gaffer eval experiment` (`runner/eval/experiment.sh` and
    head), and the judge score where the fixture records one for the change the run
    delivered.
 3. **Report paired differences.** Per ticket: Δ acceptance, Δ attempts, Δ spend, Δ
-   judge score against the baseline; then the mean, a 95% t interval and n over
+   judge score against the baseline; then the mean, a 95% interval and n over
    tickets, in `results.json` (`comparisons`) and `report.md`. A ticket an arm never
    submitted counts as a failure for that arm, not as missing data; a run a cap or a
    refusal stopped is left out of every pair, and the report says how many.
+
+   Acceptance is a paired yes or no, so its interval is **Newcombe's paired score
+   interval** (Newcombe 1998, method 10: a Wilson score interval for each arm's
+   acceptance rate, combined through the correlation of the 2x2 table of outcomes;
+   `method: "newcombe_paired_score"` in `results.json`). The report also gives the
+   **discordant pairs**, the tickets where one arm was accepted and the other was not,
+   and which arm each favours: only those tickets say anything about the difference.
+   A t interval on the -1/0/+1 differences used to give ten tied tickets the interval
+   [0, 0], as if ten tickets proved there was no difference at all; Newcombe's interval
+   for the same ten ties is about -0.28 to 0.28. Attempts, spend and judge score are
+   continuous, so they keep the paired t interval.
 
 **Stub mode** is the default: the agent is `runner/eval/experiment-stub-agent.sh`,
 which applies the ticket's recorded change (nothing for `stub=noop`), so the whole
@@ -196,8 +207,25 @@ Its limits, also in the report:
   fixture with no `memory`, the packet on one with no `scout` files).
 
 `gaffer wg routing recommend` reads these results beside the routing scorecard; a
-stub-mode experiment never proposes anything, and a live one proposes only a tier
-compared against a baseline that ran the default implement tier.
+stub-mode experiment never proposes anything, and a live one proposes a tier only when
+all of these hold, and otherwise prints which one failed:
+
+- the arm differs from a baseline that ran the default implement tier only in its tier;
+- it ran at least the scorecard's minimum number of tickets (10 by default);
+- at least one ticket is discordant (with none, both arms did the same on every ticket
+  and the run carries no information about the difference);
+- the lower bound of the acceptance difference's 95% Newcombe interval is at or above
+  **minus the non-inferiority margin, 0.10** (`NON_INFERIORITY_MARGIN` in
+  `routingRecommend.ts`);
+- its mean spend difference is below zero.
+
+The margin says how much acceptance a cheaper tier may plausibly give up and still be
+proposed: ten percentage points, the usual starting margin for a non-inferiority
+comparison of two proportions and the same size as the scorecard's own threshold for a
+difference worth acting on (`BETTER_BY_POINTS`). A bound at or above zero would demand
+proof that the cheaper tier is better, which a cost saving does not need. Results
+written before this interval have no `method` and never propose; run their report
+again (`experiment.mjs report`).
 
 ## Knobs
 

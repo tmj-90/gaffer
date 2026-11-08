@@ -18,9 +18,12 @@
  *     such class ("cheaper, no worse"), or when it is at least 10 points better on first-pass
  *     acceptance in every such class ("better, costs more": a trade-off a person weighs).
  *   - experiment: a live matched experiment whose arm differs from its baseline only in the
- *     implement tier, whose baseline ran the default implement tier, over at least the minimum number of tickets, whose paired difference in
- *     acceptance has a 95% interval at or above zero and whose mean spend difference is below
- *     zero. A stub-mode experiment proves the pipeline only and never proposes.
+ *     implement tier, whose baseline ran the default implement tier, over at least the
+ *     minimum number of tickets, with at least one discordant ticket (one arm accepted, the
+ *     other not), whose paired difference in acceptance has a 95% Newcombe paired score
+ *     interval with a lower bound at or above minus NON_INFERIORITY_MARGIN, and whose mean
+ *     spend difference is below zero. A stub-mode experiment proves the pipeline only and
+ *     never proposes.
  */
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -30,6 +33,18 @@ import type { RoutingScorecard, ScorecardCell } from "./routingScorecard.js";
 
 export const PROPOSABLE_ROLE = "implement";
 export const BETTER_BY_POINTS = 10;
+/**
+ * How much worse on acceptance a cheaper tier may be and still be proposed: the lower
+ * bound of the 95% interval on (arm acceptance rate minus baseline acceptance rate) must
+ * be at or above minus this. 0.10 (ten percentage points) is the usual starting margin
+ * for a non-inferiority comparison of proportions, and it matches BETTER_BY_POINTS, the
+ * scorecard's own threshold for a difference worth acting on. Requiring the bound at or
+ * above zero instead would demand proof that the cheaper tier is BETTER, which a
+ * cost-saving switch does not need; a wider margin would accept a real loss of quality.
+ */
+export const NON_INFERIORITY_MARGIN = 0.1;
+/** The acceptance interval method the experiment rule trusts (runner/eval/experiment.mjs). */
+export const ACCEPTANCE_INTERVAL_METHOD = "newcombe_paired_score";
 
 export interface Registry {
   readonly tiers: Readonly<Record<string, string>>;
@@ -47,6 +62,12 @@ export interface ExperimentComparison {
   readonly acceptance: {
     readonly mean: number | null;
     readonly ci95: readonly [number, number] | null;
+    /** The interval's method; absent in results written before the paired-proportion interval. */
+    readonly method?: string;
+    /** Tickets where one arm was accepted and the other not. */
+    readonly discordant?: number;
+    readonly favours_arm?: number;
+    readonly favours_baseline?: number;
   };
   readonly spend_usd: {
     readonly mean: number | null;
@@ -261,13 +282,34 @@ export function recommendRouting(input: {
       }
       const lo = c.acceptance.ci95?.[0];
       const spend = c.spend_usd.mean;
+      const why = `experiment ${ex.path} arm ${c.arm}`;
       if (c.n < min) {
+        notProposed.push(`${why}: ${c.n} tickets, under the minimum ${min}`);
+        continue;
+      }
+      if (c.acceptance.method !== ACCEPTANCE_INTERVAL_METHOD) {
         notProposed.push(
-          `experiment ${ex.path} arm ${c.arm}: ${c.n} tickets, under the minimum ${min}`,
+          `${why}: its acceptance interval is not the paired-proportion interval (results written before it); run its report again`,
         );
         continue;
       }
-      if (lo == null || lo < 0 || spend == null || spend >= 0) continue;
+      if (!c.acceptance.discordant) {
+        notProposed.push(
+          `${why}: no discordant pairs (both arms had the same outcome on all ${c.n} tickets), so the run says nothing about the difference in acceptance`,
+        );
+        continue;
+      }
+      if (lo == null || lo < -NON_INFERIORITY_MARGIN) {
+        notProposed.push(
+          `${why}: the acceptance difference's 95% interval reaches ${lo ?? "n/a"}, below the non-inferiority margin of -${NON_INFERIORITY_MARGIN}`,
+        );
+        continue;
+      }
+      // Spend is continuous (USD), so its mean and paired t interval stay as they are.
+      if (spend == null || spend >= 0) {
+        notProposed.push(`${why}: not cheaper (mean spend difference ${money(spend)})`);
+        continue;
+      }
       proposals.push({
         role: PROPOSABLE_ROLE,
         from_tier: defTier,
@@ -331,7 +373,7 @@ export function renderRecommendation(r: Recommendation): string {
       );
     if (p.experiment)
       lines.push(
-        `     experiment ${p.experiment.path}, arm ${p.experiment.arm}: n=${p.experiment.n} tickets, acceptance delta mean ${p.experiment.acceptance.mean} 95% CI ${ci(p.experiment.acceptance.ci95)}, spend delta mean ${money(p.experiment.spend_usd.mean)} 95% CI ${ci(p.experiment.spend_usd.ci95)}`,
+        `     experiment ${p.experiment.path}, arm ${p.experiment.arm}: n=${p.experiment.n} tickets, acceptance delta mean ${p.experiment.acceptance.mean} 95% Newcombe paired score interval ${ci(p.experiment.acceptance.ci95)} (${p.experiment.acceptance.discordant ?? 0} discordant pair(s): ${p.experiment.acceptance.favours_arm ?? 0} favour ${p.experiment.arm}, ${p.experiment.acceptance.favours_baseline ?? 0} the baseline; non-inferiority margin ${NON_INFERIORITY_MARGIN}), spend delta mean ${money(p.experiment.spend_usd.mean)} 95% t interval ${ci(p.experiment.spend_usd.ci95)}`,
       );
     lines.push("   Proposed change (apply it yourself by editing the registry):");
     for (const l of p.diff.split("\n")) lines.push(`   ${l}`);

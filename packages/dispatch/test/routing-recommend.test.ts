@@ -14,6 +14,7 @@ import { describe, expect, it } from "vitest";
 import { Dispatch } from "../src/core.js";
 import { writeEvent } from "../src/events/eventWriter.js";
 import {
+  NON_INFERIORITY_MARGIN,
   readRegistry,
   recommendRouting,
   renderRecommendation,
@@ -124,6 +125,36 @@ const recommend = (card: ReturnType<typeof world>, experiments: ExperimentResult
     experiments,
   });
 
+// Newcombe paired score intervals, as runner/eval/experiment.mjs computes them
+// (runner/test/eval-experiment-interval.test.mjs checks the same figures).
+// 20 tickets: 17 both accepted, 3 only the cheaper arm → within the margin.
+const NEWCOMBE_WITHIN = {
+  mean: 0.15,
+  ci95: [-0.0384, 0.3604] as [number, number],
+  method: "newcombe_paired_score",
+  discordant: 3,
+  favours_arm: 3,
+  favours_baseline: 0,
+};
+// 10 tickets, all ties: no information about the difference.
+const NEWCOMBE_TIES = {
+  mean: 0,
+  ci95: [-0.2775, 0.2775] as [number, number],
+  method: "newcombe_paired_score",
+  discordant: 0,
+  favours_arm: 0,
+  favours_baseline: 0,
+};
+// 24 tickets: 20 both, 1 only the arm, 3 only the baseline → outside the margin.
+const NEWCOMBE_OUTSIDE = {
+  mean: -0.0833,
+  ci95: [-0.2742, 0.1026] as [number, number],
+  method: "newcombe_paired_score",
+  discordant: 4,
+  favours_arm: 1,
+  favours_baseline: 3,
+};
+
 describe("routing recommend", () => {
   it("proposes a cheaper tier that is no worse, as a registry diff with its evidence", () => {
     const card = world([
@@ -201,7 +232,7 @@ describe("routing recommend", () => {
       differs_in: ["tier"],
       overrides: { tier: "cheap" },
       vs_overrides: {},
-      acceptance: { mean: 0.08, ci95: [0, 0.2] as [number, number] },
+      acceptance: NEWCOMBE_WITHIN,
       spend_usd: { mean: -0.4, ci95: [-0.6, -0.2] as [number, number] },
       attempts: { mean: 0 },
     };
@@ -228,7 +259,7 @@ describe("routing recommend", () => {
       n: 12,
       differs_in: ["tier"],
       overrides: { tier: "cheap" },
-      acceptance: { mean: 0.08, ci95: [0, 0.2] as [number, number] },
+      acceptance: NEWCOMBE_WITHIN,
       spend_usd: { mean: -0.4, ci95: [-0.6, -0.2] as [number, number] },
       attempts: { mean: 0 },
     };
@@ -258,6 +289,58 @@ describe("routing recommend", () => {
       },
     ]);
     expect(named.proposals).toHaveLength(1);
+  });
+
+  describe("acceptance is a paired proportion (review13/2)", () => {
+    const card = world([{ model: "model-b", usd: 0.9, from: 1, count: 12 }]);
+    const cmp = (acceptance: Record<string, unknown>, n: number) => ({
+      arm: "cheap",
+      vs: "baseline",
+      n,
+      differs_in: ["tier"],
+      overrides: { tier: "cheap" },
+      vs_overrides: {},
+      acceptance,
+      spend_usd: { mean: -0.4, ci95: [-0.6, -0.2] as [number, number] },
+      attempts: { mean: 0 },
+    });
+    const run = (acceptance: Record<string, unknown>, n: number) =>
+      recommend(card, [
+        {
+          path: "x/results.json",
+          mode: "live",
+          comparisons: [cmp(acceptance, n) as unknown as ExperimentResults["comparisons"][0]],
+        },
+      ]);
+
+    it("ten ties recommend nothing and say why", () => {
+      const r = run(NEWCOMBE_TIES, 10);
+      expect(r.proposals).toEqual([]);
+      expect(r.not_proposed.join("\n")).toMatch(
+        /no discordant pairs \(both arms had the same outcome on all 10 tickets\), so the run says nothing/,
+      );
+      // The old t interval would have read [0, 0] with a lower bound at zero.
+      expect(run({ mean: 0, ci95: [0, 0] }, 10).proposals).toEqual([]);
+    });
+
+    it("discordant pairs favouring the cheaper arm within the margin recommend", () => {
+      const r = run(NEWCOMBE_WITHIN, 20);
+      expect(r.proposals).toHaveLength(1);
+      expect(r.proposals[0]).toMatchObject({ basis: "experiment", to_tier: "cheap" });
+      expect(NON_INFERIORITY_MARGIN).toBe(0.1);
+      const text = renderRecommendation(r);
+      expect(text).toMatch(/95% Newcombe paired score interval \[-0\.0384, 0\.3604\]/);
+      expect(text).toMatch(/3 discordant pair\(s\): 3 favour cheap, 0 the baseline/);
+      expect(text).toMatch(/non-inferiority margin 0\.1/);
+    });
+
+    it("a lower bound outside the margin does not recommend, and says why", () => {
+      const r = run(NEWCOMBE_OUTSIDE, 24);
+      expect(r.proposals).toEqual([]);
+      expect(r.not_proposed.join("\n")).toMatch(
+        /reaches -0\.2742, below the non-inferiority margin of -0\.1/,
+      );
+    });
   });
 
   it("the Health line is report-only wording", () => {

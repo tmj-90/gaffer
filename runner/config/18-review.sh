@@ -206,10 +206,8 @@ gaffer_ticket_is_trivial() {
 # as the delivery gate, gaffer_dod_typecheck_cmd); a red combination is held for a human
 # (blocked, merge_gate_red) and the target is not touched. The gated merge commit lands
 # only while the target still is the gated head; a target that moved meanwhile is
-# re-gated up to this many times, then the ticket waits for the next run. Always on
+# re-gated up to twice, then the ticket waits for the next run. Always on
 # (GAFFER_DOD=0, which turns every gate off, is the only way to land ungated).
-: "${GAFFER_MERGE_GATE_RETRIES:=2}"
-export GAFFER_MERGE_GATE_RETRIES   # read by bin/merge-ticket.mjs (a child process)
 gaffer_needs_security_review() {
   local _num="$1" _repo="$2" _base="$3" _branch="$4" _risk _paths _re
   GAFFER_SECURITY_REVIEW_REASON=""

@@ -2284,8 +2284,9 @@ function signalReapproval(ticketNumber, resolution) {
   const reason = "auto-merge conflict resolved by the resolver agent — re-review the resolved diff";
   const { command, args } = buildReapprovalCommand({ ticketNumber, reason, resolution });
   // A failed reopen is usually transient (a locked DB): retry with a short backoff before
-  // the caller undoes the resolution. GAFFER_REAPPROVAL_ATTEMPTS / _BACKOFF_MS tune it.
-  const attempts = Math.max(1, parseInt(process.env.GAFFER_REAPPROVAL_ATTEMPTS ?? "", 10) || 3);
+  // the caller undoes the resolution (three tries; a test shortens the backoff with
+  // GAFFER_REAPPROVAL_BACKOFF_MS).
+  const attempts = 3;
   const backoff = Math.max(0, parseInt(process.env.GAFFER_REAPPROVAL_BACKOFF_MS ?? "", 10) || 500);
   let ok = false;
   let res = null;
@@ -2310,7 +2311,7 @@ function signalReapproval(ticketNumber, resolution) {
  * landing runs (the primary repo and each secondary repo of a multi-repo ticket): gate the
  * merge of `pin` onto the CURRENT target (gateProposedMerge), then land exactly the gated
  * merge commit while the target still is the gated head (landGatedMerge); a moved target
- * is re-gated (GAFFER_MERGE_GATE_RETRIES, default 2).
+ * is re-gated (up to twice).
  *   → { kind: "landed", gate } | { kind: "conflict" | "red" | "error", gate }
  *     | { kind: "refused", code, reason }  (never lands on anything but "landed")
  */
@@ -2328,7 +2329,7 @@ function landThroughMergeGate({
   trailers = [],
   beforeLand = null,
 }) {
-  const maxTries = Math.max(0, parseInt(process.env.GAFFER_MERGE_GATE_RETRIES ?? "", 10) || 2);
+  const maxTries = 2;
   const where = secondary && repoName ? ` in ${repoName}` : "";
   for (let attempt = 0; ; attempt++) {
     const gate = gateProposedMerge({
@@ -3367,7 +3368,7 @@ function main() {
   if (!landed && !conflict) {
     // LOCAL LANDING through the merge gate, compare-and-land: the gated merge commit
     // lands only while the target still is the gated target head; a moved target is
-    // re-gated (GAFFER_MERGE_GATE_RETRIES, default 2), then left for the next run.
+    // re-gated (up to twice), then left for the next run.
     const res = landThroughMergeGate({
       ticketNumber: resolved.number,
       repoPath: repo.localPath,

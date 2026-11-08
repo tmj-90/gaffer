@@ -73,8 +73,6 @@ export GAFFER_DOD_SANDBOX GAFFER_PR_LOCAL_FALLBACK   # read by lib/dod.sh, lib/l
 : "${GAFFER_MCP_BRIDGE:=auto}"
 export GAFFER_MCP_BRIDGE
 GAFFER_DOD_OUTPUT_TAIL="${GAFFER_DOD_OUTPUT_TAIL:-40}"    # lines of gate output kept as evidence / rework feedback
-: "${GAFFER_REWORK_HISTORY_BYTES:=8000}"   # prior-attempt feedback carried into a rework prompt
-: "${GAFFER_JUDGE_DIFF_BYTES:=120000}"     # diff bytes handed to the eval judge
 # Docker sandbox resource caps (lib/sandbox-docker.sh) and the daemon cadence (lib/daemon.sh).
 : "${GAFFER_SANDBOX_CPUS:=4}"
 : "${GAFFER_SANDBOX_MEMORY:=4g}"

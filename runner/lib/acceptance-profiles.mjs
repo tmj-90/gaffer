@@ -95,10 +95,9 @@ export function contractProfile(contract) {
   return { profile, spec };
 }
 
-/** The overall time cap for one profile run (GAFFER_ACCEPTANCE_TIMEOUT_MS, default 5 min). */
-export function acceptanceTimeoutMs(env = process.env) {
-  const v = Number(env.GAFFER_ACCEPTANCE_TIMEOUT_MS);
-  return Number.isFinite(v) && v > 0 ? v : 5 * 60 * 1000;
+/** The overall time cap for one profile run: 5 minutes. */
+export function acceptanceTimeoutMs() {
+  return 5 * 60 * 1000;
 }
 
 /**
@@ -976,7 +975,7 @@ export async function runProfile({ profile, checkout, spec, env = process.env })
       sandbox: "refused",
       cases: [],
     };
-  const deadline = Date.now() + acceptanceTimeoutMs(env);
+  const deadline = Date.now() + acceptanceTimeoutMs();
   const res =
     profile === "cli"
       ? runCliProfile({ checkout, spec, redact, sb, env, deadline })

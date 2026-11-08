@@ -636,7 +636,7 @@ or changes a profile you set; a profile with no commands holds the PASS until yo
 register them. The Independent testing card lists what ran under **Runtime acceptance**
 with the transcript, and Review's *What backs this* names it. Each command has a time
 cap (30 s by default, `timeout_ms` per command) and the whole profile one more
-(`GAFFER_ACCEPTANCE_TIMEOUT_MS`, 5 minutes). `GAFFER_ACCEPTANCE_PROFILE_SEED=1` (off by
+(5 minutes). `GAFFER_ACCEPTANCE_PROFILE_SEED=1` (off by
 default) seeds the profile, without commands, for a ticket whose title names a CLI or an
 API. What a profile does and does not prove is in
 [SECURITY.md](../SECURITY.md#the-independent-tester-and-what-its-verdict-proves).

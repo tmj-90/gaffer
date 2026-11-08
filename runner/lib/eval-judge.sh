@@ -75,7 +75,7 @@ gaffer_eval_judge_delivery() (
   #      marker so the judge grades a KNOWN-partial diff instead of silently
   #      treating a prefix as the whole delivery (which would let scope/risk
   #      past the cut score as "absent"). ──
-  diff_cap="${GAFFER_JUDGE_DIFF_BYTES:-120000}"
+  diff_cap=120000
   git -C "$repo_dir" diff "$base".."$work" 2>/dev/null > "$tmp/diff.full" || true
   [ -s "$tmp/diff.full" ] || return 0   # nothing to judge
   head -c "$diff_cap" "$tmp/diff.full" > "$tmp/diff" 2>/dev/null || true

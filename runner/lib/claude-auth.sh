@@ -103,7 +103,7 @@ gaffer_claude_auth_hint() {
 #   → 0 claude answered · 1 it failed (GAFFER_CLAUDE_LIVE_ERROR = its first error line)
 #   · 2 skipped (claude not on PATH).
 gaffer_claude_live_probe() {
-  local secs="${1:-$GAFFER_PREFLIGHT_LIVE_TIMEOUT}" bin="${CLAUDE_BIN:-claude}" out rc scratch
+  local secs="${1:-60}" bin="${CLAUDE_BIN:-claude}" out rc scratch
   GAFFER_CLAUDE_LIVE_ERROR=""
   command -v "$bin" >/dev/null 2>&1 || return 2
   # The probe only asks whether claude can answer at all. It gets NO tools, no MCP
@@ -141,5 +141,3 @@ gaffer_claude_live_probe() {
 # to prove the login works (catches an expired token the free credential check cannot);
 # 0 = only the free check (is a credential visible at all).
 : "${GAFFER_PREFLIGHT_LIVE:=0}"
-# Seconds the live probe may take before it counts as a failure.
-: "${GAFFER_PREFLIGHT_LIVE_TIMEOUT:=60}"

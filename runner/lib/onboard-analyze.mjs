@@ -1156,9 +1156,7 @@ export function agentChildEnv(base = process.env) {
 
 /**
  * Read the per-call caps from the env, matching decompose / the bash call sites:
- *   timeout — GAFFER_ONBOARD_TIMEOUT (overrides GAFFER_TICK_TIMEOUT for onboard
- *             card calls so a tight delivery tick cap doesn't kill card generation).
- *             Falls back to GAFFER_TICK_TIMEOUT, then the hardcoded default (1800 s).
+ *   timeout — GAFFER_TICK_TIMEOUT, else the hardcoded default (1800 s).
  *   maxTurns — GAFFER_ONBOARD_MAX_TURNS (default 60), clamped to the global
  *             GAFFER_MAX_TURNS ceiling (roleTurnCap: the global lowers, never replaces).
  *   model    — GAFFER_ONBOARD_SYNTH_MODEL → an OPERATOR-set GAFFER_PLAN_MODEL →
@@ -1205,14 +1203,8 @@ export function synthModel(env = process.env) {
 }
 
 export function analysisCaps(env = process.env) {
-  const onboardSec = parseInt(env.GAFFER_ONBOARD_TIMEOUT ?? "", 10);
   const tickSec = parseInt(env.GAFFER_TICK_TIMEOUT ?? "", 10);
-  const timeoutSec =
-    Number.isFinite(onboardSec) && onboardSec > 0
-      ? onboardSec
-      : Number.isFinite(tickSec) && tickSec > 0
-        ? tickSec
-        : 1800;
+  const timeoutSec = Number.isFinite(tickSec) && tickSec > 0 ? tickSec : 1800;
   const timeoutMs = timeoutSec * 1000;
   const maxTurns = roleTurnCap(parseInt(env.GAFFER_ONBOARD_MAX_TURNS ?? "", 10) || 60, env);
   // Synthesis model (digest / features / lore analysis + the card-review gate).
@@ -2838,7 +2830,7 @@ export function emitFileCards(
 
   // Every enumerated source file receives a card — no budget gate. We accumulate a
   // batch of prepared entries and flush each full chunk; per-call timeout is bounded
-  // by GAFFER_ONBOARD_TIMEOUT (see analysisCaps).
+  // by GAFFER_TICK_TIMEOUT (see analysisCaps).
   // Oversized files (> CARD_OVERSIZED_LOC lines, only relevant when batch > 1) are
   // isolated: the current pending batch is flushed first, then the large file gets its
   // own solo pass with a wider snippet budget so it can't poison its companions.

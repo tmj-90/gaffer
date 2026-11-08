@@ -80,7 +80,7 @@
 //   --timeout-ms   (GAFFER_SPEC_AUTHOR_TIMEOUT_MS,  default 180000) kill claude after this
 //
 // --dry-run skips spawning claude and instead reads the model "output" from stdin's
-// `mockOutput` field (or GAFFER_SPEC_AUTHOR_MOCK env) — used by tests to exercise
+// `mockOutput` field — used by tests to exercise
 // the parse/validate path without a live model call.
 //
 // SAFETY: the brief, the context, and the history are UNTRUSTED free text. They are
@@ -591,7 +591,7 @@ function main() {
   if (opts.dryRun) {
     // Test/inspection path: read the model "output" from the request instead of
     // spawning claude.
-    output = String(req.mockOutput ?? process.env.GAFFER_SPEC_AUTHOR_MOCK ?? "");
+    output = String(req.mockOutput ?? "");
   } else {
     let run;
     try {

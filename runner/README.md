@@ -138,7 +138,7 @@ package.json script is read from that target head and an `integrity` row, PASS/F
 FAIL, with the ticket's human `allow_test_changes`, compares it with the merged tree), and
 lands exactly the gated merge commit only while the default branch is still the commit it
 gated (`update-ref <ref> <merge> <gated-head>`, or a fast-forward of a clean checked-out
-target); a target that moved is re-gated (`GAFFER_MERGE_GATE_RETRIES`, default 2). A red
+target); a target that moved is re-gated up to twice. A red
 combination is held for a human: the gate output is attached as evidence and the ticket
 goes `ready_for_merge → blocked` (`wg ticket hold … --reason-code merge_gate_red`), the
 default branch untouched. In PR mode the gate runs on the merge onto the freshly fetched

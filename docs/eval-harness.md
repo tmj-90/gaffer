@@ -264,8 +264,7 @@ These are real conditioning biases, left visible rather than hidden:
   (ideally stronger) model for real independence. Every record carries
   `judgeModel` so a model swap is visible and doesn't silently break longitudinal
   comparability.
-- **Prefix grading on huge diffs.** Diffs over `GAFFER_JUDGE_DIFF_BYTES`
-  (120 KB default) are truncated; the judge is told so and instructed to treat
+- **Prefix grading on huge diffs.** Diffs over 120 KB are truncated; the judge is told so and instructed to treat
   unseen changes as ungraded, not absent, but `minimalism`/`security` on a very
   large delivery are still graded on a prefix.
 

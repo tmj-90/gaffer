@@ -898,10 +898,7 @@ export function replayTesterTests({
       };
     const baseEnv = replayEnv({ scratch });
     phase("env");
-    const timeout =
-      Number(process.env.GAFFER_TESTER_REPLAY_TIMEOUT_MS) > 0
-        ? Number(process.env.GAFFER_TESTER_REPLAY_TIMEOUT_MS)
-        : 10 * 60 * 1000;
+    const timeout = 10 * 60 * 1000;
     const files = testFiles.filter((f) => existsSync(resolve(replay, f)));
     const runInv = (select) => {
       const inv = replayInvocation({ worktree: replay, testCommand: cmd, files, select });
@@ -1087,7 +1084,7 @@ export function runAcceptanceProfile({ profile, spec }, checkout, env = process.
       ],
       {
         encoding: "utf8",
-        timeout: acceptanceTimeoutMs(env) + 60000,
+        timeout: acceptanceTimeoutMs() + 60000,
         // SIGTERM, so the profile process kills the service group it booted before it exits.
         killSignal: "SIGTERM",
         maxBuffer: 16 * 1024 * 1024,

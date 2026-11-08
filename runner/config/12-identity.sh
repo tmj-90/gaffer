@@ -40,7 +40,7 @@ DISPATCH_ONBOARD_CMD="${DISPATCH_ONBOARD_CMD:-node $RUNNER_DIR/bin/onboard-run.m
 DISPATCH_EPIC_FEATURE_CMD="${DISPATCH_EPIC_FEATURE_CMD:-node $RUNNER_DIR/bin/epic-feature.mjs}"
 
 # Factory identity + bookkeeping
-: "${GAFFER_AGENT_NAME:=gaffer-factory}"
+_GAFFER_AGENT_NAME=gaffer-factory   # the factory agent's registered name (fixed)
 GAFFER_AGENT_ID_FILE="${GAFFER_AGENT_ID_FILE:-$GAFFER_DATA/agent_id}"
 # The runner's REVIEWER principal: a second, separately registered agent whose id the
 # review pass presents on `review approve|reject --as agent`. Registered once (like the

@@ -119,7 +119,7 @@ if [ -z "${GAFFER_BUDGET_LOW_THRESHOLD:-}" ] && [ -n "${GAFFER_BUDGET_USD:-}" ] 
   # treated as inert data (`+0` coerces garbage to 0), never executed as awk code.
   GAFFER_BUDGET_LOW_THRESHOLD="$(awk \
     -v b="${GAFFER_BUDGET_USD}" \
-    -v frac="${GAFFER_BUDGET_LOW_FRACTION:-0.20}" \
+    -v frac=0.20 \
     'BEGIN{b+=0; frac+=0; if(b>0) printf "%.6f", b*frac; else print 0}' 2>/dev/null || echo 0)"
 fi
 : "${GAFFER_BUDGET_LOW_THRESHOLD:=0}"

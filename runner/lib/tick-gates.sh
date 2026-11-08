@@ -333,7 +333,7 @@ gaffer_tick_delivery_attempts() {
 ── attempt $_DELIV_ATTEMPT — $gate ──
 $real
 "
-    _REWORK_HISTORY="$(printf '%s' "$_REWORK_HISTORY" | tail -c "${GAFFER_REWORK_HISTORY_BYTES:-8000}")"
+    _REWORK_HISTORY="$(printf '%s' "$_REWORK_HISTORY" | tail -c 8000)"
     # NOTE (dedupe): the failure text used to ALSO be attached here as a manual_note
     # evidence record — persisting it twice per attempt. The durable persistence now
     # lives in exactly one place per outcome: the retry path's `wg runner-rework

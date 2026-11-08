@@ -101,7 +101,7 @@
 //   --timeout-ms   (GAFFER_DECOMPOSE_TIMEOUT_MS, default 180000) kill claude after this
 //
 // --dry-run skips spawning claude and instead reads the model "output" from stdin's
-// `mockOutput` field (or GAFFER_DECOMPOSE_MOCK env) — used by tests to exercise the
+// `mockOutput` field — used by tests to exercise the
 // parse/validate path without a live model call.
 // =====================================================================
 
@@ -1269,7 +1269,7 @@ function main() {
       output = debate.text;
     } else {
       // Byte-for-byte the original dry-run behaviour.
-      output = String(req.mockOutput ?? process.env.GAFFER_DECOMPOSE_MOCK ?? "");
+      output = String(req.mockOutput ?? "");
     }
   } else if (useDebate) {
     let debate;

@@ -819,7 +819,7 @@ export async function routeTickets(
     return;
   }
 
-  // BLINDING: /tickets/:id/judge-revealed — a person opened the eval judge's collapsed view
+  // BLINDING: /tickets/:id/judge-revealed: a person opened the eval judge's collapsed view
   // ("Show the judge's view") of a ticket in review. Once per round; the same rules as
   // review-opened. Judge agreement counts a decision after it apart from blind ones.
   if (segments.length === 3 && sub === TICKET_SUB.JUDGE_REVEALED && method === "POST") {

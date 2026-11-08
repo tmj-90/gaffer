@@ -51,6 +51,8 @@ import * as approval from "./reviewGate/approval.js";
 // Re-export so consumers don't need to reach into core directly.
 export { isTestingEnabled, testerProvenance };
 export { capRetry } from "./reviewGate/shared.js";
+export { approvalUnchanged } from "./reviewGate/staleness.js";
+export { unavailableRepoRemedy } from "./reviewGate/approval.js";
 
 // ---------------------------------------------------------------------------
 // GRADUATED-AUTONOMY (Spec 2, Phase 1): "approved unchanged vs edited" signal
@@ -66,7 +68,6 @@ export interface ApprovalShas {
 
 /** Resolves the delivery-vs-merge SHAs for a ticket at approve time (git + DB read). */
 export type ApprovalShaResolver = (ticket: Ticket) => ApprovalShas | null;
-export { approvalUnchanged } from "./reviewGate/staleness.js";
 
 /** The current head of one write repo's delivery branch (see reviewedHeadsResolver). */
 export interface ReviewedHead {
@@ -88,7 +89,6 @@ export interface UnavailableWriteRepo {
   /** Which read failed (drives the remedy the refusal names); absent → "unknown". */
   kind?: "no_checkout" | "unreadable_checkout" | "no_branch" | "branch_missing" | "unknown";
 }
-export { unavailableRepoRemedy } from "./reviewGate/approval.js";
 
 /** REVOCATION-SAFE LANDING: one landing started or committed on the current approval. */
 export interface LandingStarted {
@@ -479,10 +479,6 @@ export class ReviewGateService {
   reopenFromWontDo(ref: string, to: "refining" | "draft", actor: Actor): TransitionResult {
     return sendBack.reopenFromWontDo(this.internals, ref, to, actor);
   }
-
-  // ---------------------------------------------------------------------------
-  // Private helpers
-  // ---------------------------------------------------------------------------
 }
 
 /** TESTER FIRST: whether a tester PASS covers the candidate (see testerCoverage). */

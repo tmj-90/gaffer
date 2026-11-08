@@ -771,6 +771,12 @@ console.log("== provider=command: the cost floor ==");
   W.commandCostFloorUsd({ explicit: "junk", perCall: "", killFloor: "" }) === 0.05
     ? ok("commandCostFloorUsd precedence: explicit, per-call cap, kill floor, $0.05")
     : bad("commandCostFloorUsd precedence wrong");
+  // GAFFER_KILL_ESTIMATE_USD=0 opts out of the killed-call floor; it does not trust the
+  // program's own figure (independent review of review 14): only an explicit 0 does.
+  W.commandCostFloorUsd({ explicit: "", perCall: "", killFloor: "0" }) === 0.05 &&
+  W.commandCostFloorUsd({ explicit: "0", perCall: "", killFloor: "0" }) === 0
+    ? ok("a kill floor of 0 leaves the $0.05 floor; only GAFFER_WORKER_COMMAND_COST_USD=0 trusts")
+    : bad(`kill floor 0: ${W.commandCostFloorUsd({ explicit: "", perCall: "", killFloor: "0" })}`);
 }
 
 console.log("== provider=command: the timeout takes down the whole process group ==");

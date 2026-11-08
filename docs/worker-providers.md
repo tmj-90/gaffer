@@ -116,7 +116,7 @@ Other fields are ignored. Every row the command provider writes carries `worker_
 
 **The cost is your program's word, and the caps count it.** The daily and lifetime caps are the runner's only spend control over a program it can't see inside, so the runner books every call at no less than a per-call floor:
 
-- the floor is `GAFFER_WORKER_COMMAND_COST_USD` when you set it; else this call's dollar cap (`GAFFER_WORKER_MAX_BUDGET_USD`) when it has one; else `GAFFER_KILL_ESTIMATE_USD` (default `0.05`);
+- the floor is `GAFFER_WORKER_COMMAND_COST_USD` when you set it; else this call's dollar cap (`GAFFER_WORKER_MAX_BUDGET_USD`) when it has one; else `GAFFER_KILL_ESTIMATE_USD` when it is above 0; else `0.05` (setting `GAFFER_KILL_ESTIMATE_USD=0` does not make the program trusted);
 - a reported cost at or above the floor is booked as reported (`cost_basis: "reported"`);
 - a cost below the floor, or none at all, is booked at the floor (`cost_basis: "floor"`), with your figure kept beside it as `reported_cost_usd` (or `"unknown"`);
 - `GAFFER_WORKER_COMMAND_COST_USD=0` means you trust the program's own figure: an unreported cost is then `"unknown"` (`cost_basis: "unreported"`) and counts as $0, so only do that for a worker whose reports you'd bet the budget on.

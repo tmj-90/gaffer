@@ -240,4 +240,29 @@ for (const cmd of [
   });
 }
 
+// The usage ledger's operator verb: `--reconcile` books what unknown-cost calls cost and
+// clears budget admission's refusal on them, so an agent may never run it, however the
+// path is spelled (independent review of review 14). The ledger's tests stay allowed.
+for (const cmd of [
+  `node ${R}/lib/usage-ledger.mjs --reconcile --usd 5`,
+  `cd ${R}/lib && node usage-ledger.mjs --reconcile --usd 1`,
+  "node runner/lib/usage-ledger.mjs --reconcile --usd 0.01",
+  "node usage-ledger.mjs --reconcile --usd 1",
+  "node ./lib/usage-ledger.mjs --usd 1 --reconcile",
+  "GAFFER_DATA=/tmp/x node runner/lib/usage-ledger.mjs --reconcile --usd 1",
+  "env GAFFER_DATA=/tmp/x node /opt/copy/usage-ledger.mjs --reconcile --usd 1",
+  "bash -c 'node runner/lib/usage-ledger.mjs --reconcile --usd 1'",
+  "nohup node runner/lib/usage-ledger.mjs --note x --reconcile --usd 1 &",
+  'node runner/lib/usage-ledger.mjs "--reconcile" --usd 1',
+]) {
+  t.deny(`usage ledger reconcile: ${cmd}`, bash(cmd), opts);
+}
+for (const cmd of [
+  "node runner/test/usage-ledger.test.mjs",
+  "grep -n reconcile runner/lib/usage-ledger.mjs",
+  'git commit -m "usage-ledger.mjs: document --reconcile"',
+]) {
+  t.allow(`usage ledger without the reconcile verb: ${cmd}`, bash(cmd), opts);
+}
+
 t.done();

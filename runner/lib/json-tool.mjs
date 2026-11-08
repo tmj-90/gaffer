@@ -1398,6 +1398,8 @@ switch (cmd) {
     // envelope reported no total): counted and summed apart, never as a reading.
     let estimated = 0;
     let estUsd = 0;
+    let reconciled = 0;
+    let recUsd = 0;
     let tokIn = 0;
     let tokOut = 0;
     let tokCacheR = 0;
@@ -1415,6 +1417,16 @@ switch (cmd) {
         continue;
       }
       if (since && pyStr(e.ts ?? "") < since) continue;
+      // An operator's reconcile booking (`usage-ledger.mjs --reconcile`) is not a call:
+      // shown on its own line, apart from the calls and their estimates.
+      if (e.kind === "reconcile") {
+        const rv = asNum(e.estimated_cost_usd);
+        if (rv !== null && rv >= 0) {
+          reconciled += 1;
+          recUsd += rv;
+        }
+        continue;
+      }
       if (e.measured === true) measured += 1;
       else {
         const est = asNum(e.estimated_cost_usd);
@@ -1451,6 +1463,10 @@ switch (cmd) {
     }
     const scope = since ? "this run" : "(all-time)";
     const totalCalls = measured + estimated + unknown;
+    if (reconciled)
+      println(
+        `    reconciled by the operator: $${recUsd.toFixed(4)} in ${reconciled} booking(s) ${scope} (usage-ledger.mjs --reconcile; counts toward the caps; not a call)`,
+      );
     if (totalCalls === 0) println(`    \x1b[1;32m✓\x1b[0m no agent calls recorded ${scope}`);
     else {
       const estPart = estimated ? `${estimated} estimated, ` : "";

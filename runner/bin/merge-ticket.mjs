@@ -3701,7 +3701,13 @@ function main() {
     // The failed resolver still did paid work: ledger it (measured when its envelope
     // parses, else the labelled kill estimate) — this branch used to write no row.
     const failedJson = parseClaudeJson(res.stdout || "");
-    if (failedJson === null) {
+    // An envelope with no finite total_cost_usd is not a reading either (rule 4 of
+    // lib/usage-ledger.mjs): it gets the kill estimate too, never a $0 measured row.
+    const failedTotal = failedJson === null ? null : failedJson.total_cost_usd;
+    if (
+      failedJson === null ||
+      !(typeof failedTotal === "number" && Number.isFinite(failedTotal) && failedTotal >= 0)
+    ) {
       recordKilledCall({
         ticket: resolved.number,
         kind: "merge-resolver",

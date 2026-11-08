@@ -1347,8 +1347,61 @@ console.log("== review14/1: a successful call with no dollar total never counts 
       encoding: "utf8",
     });
     assert("--reconcile refuses a negative or missing amount", bad.status !== 0);
+    // Independent review of review 14: $0 is not a reconcile. Booking nothing against a
+    // call that ran would count it as free, the thing the refusal exists to stop.
+    const before = rowsOf(d).length;
+    for (const v of [["--usd", "0"], ["--usd", "0.0"], ["--usd", "abc"], ["--usd"], []]) {
+      const r0 = spawnSync(process.execPath, [MOD, "--reconcile", ...v], {
+        env: envFor(d),
+        encoding: "utf8",
+      });
+      assert(
+        `--reconcile ${v.join(" ") || "(no amount)"} is refused (rc=${r0.status})`,
+        r0.status === 2,
+      );
+    }
+    assert("a refused reconcile writes no row", rowsOf(d).length === before);
+    // The chain goes on: a figure that uses the cap up refuses the next launch.
+    spawnSync(process.execPath, [MOD, "--reconcile", "--usd", "0.80"], {
+      env: envFor(d),
+      encoding: "utf8",
+    });
+    const over = paidLaunchAdmission({ kind: "delivery", env: envFor(d) });
+    assert(
+      `a reconciled figure that exhausts the cap refuses the next launch (ok=${over.ok}: ${over.reason})`,
+      over.ok === false && /daily budget is exhausted/.test(String(over.reason)),
+    );
   } finally {
     rmSync(d, { recursive: true, force: true });
+  }
+  // A reconcile row at $0 (hand-written, or from an older writer) clears nothing.
+  const d0 = mk("reconcile-zero");
+  try {
+    const now = new Date().toISOString();
+    writeFileSync(
+      join(d0, LEDGER_FILENAME),
+      [
+        { ts: now, kind: "delivery", measured: true, total_cost_usd: "unknown" },
+        {
+          ts: now,
+          kind: "reconcile",
+          measured: false,
+          total_cost_usd: "unknown",
+          estimated: true,
+          estimated_cost_usd: 0,
+          estimate_basis: "operator",
+        },
+      ]
+        .map((x) => JSON.stringify(x))
+        .join("\n") + "\n",
+    );
+    const z = paidLaunchAdmission({ kind: "delivery", env: envFor(d0) });
+    assert(
+      `a $0 reconcile row does not clear an unknown-cost row (ok=${z.ok})`,
+      z.ok === false && /spend cannot be established/.test(String(z.reason)),
+    );
+  } finally {
+    rmSync(d0, { recursive: true, force: true });
   }
 
   // (e) A command worker the operator trusts (GAFFER_WORKER_COMMAND_COST_USD=0: cost_basis
@@ -1378,6 +1431,22 @@ console.log("== review14/1: a successful call with no dollar total never counts 
     );
   } finally {
     rmSync(e, { recursive: true, force: true });
+  }
+  // Only the command provider's stamp is trusted: "unreported" on any other envelope is
+  // an ordinary missing total and gets the estimate.
+  const e2 = mk("unreported-other");
+  try {
+    book(e2, { type: "result", result: "w", num_turns: 2, gaffer_cost_basis: "unreported" }, 0, [
+      "--kill-estimate",
+      "0.05",
+    ]);
+    const row = rowsOf(e2).pop();
+    assert(
+      `an "unreported" stamp without the command provider is estimated (estimated=${row.estimated})`,
+      row.estimated === true && row.estimated_cost_usd === 0.05,
+    );
+  } finally {
+    rmSync(e2, { recursive: true, force: true });
   }
 
   // (g) The .mjs call sites (decompose, product owner, spec author, onboarding, tester,
@@ -1423,6 +1492,15 @@ console.log("== review14/1: a successful call with no dollar total never counts 
           estimated_cost_usd: 0.25,
         },
         { ts: now, kind: "delivery", measured: false, total_cost_usd: "unknown" },
+        {
+          ts: now,
+          kind: "reconcile",
+          measured: false,
+          total_cost_usd: "unknown",
+          estimated: true,
+          estimated_cost_usd: 0.3,
+          estimate_basis: "operator",
+        },
       ]
         .map((x) => JSON.stringify(x))
         .join("\n") + "\n",
@@ -1440,6 +1518,10 @@ console.log("== review14/1: a successful call with no dollar total never counts 
     assert(
       "the report shows the estimated dollars as an estimate",
       /estimated: \$0\.2500/.test(out),
+    );
+    assert(
+      "the report shows the operator's reconcile booking on its own line, not as a call",
+      /reconciled by the operator: \$0\.3000 in 1 booking/.test(out),
     );
   } finally {
     rmSync(f, { recursive: true, force: true });

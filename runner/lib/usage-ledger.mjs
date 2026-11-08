@@ -711,6 +711,18 @@ export function agentRunEvidence({ json, role, attempt, maxAttempts, model, clau
   return { summary, payload };
 }
 
+// A command worker's envelope whose cost the operator chose to trust and which reported
+// none (GAFFER_WORKER_COMMAND_COST_USD=0, stamped by lib/worker.mjs's parser adapter):
+// the one documented row that keeps an unknown cost. Only that provider's stamp counts.
+function trustedUnreported(json) {
+  return (
+    !!json &&
+    typeof json === "object" &&
+    json.gaffer_cost_basis === "unreported" &&
+    json.gaffer_worker_provider === "command"
+  );
+}
+
 // The cost a (possibly failed) call's envelope reports, as a finite non-negative number,
 // else null. Relayed verbatim from total_cost_usd; never computed from a price table.
 function reportedCostUsd(json) {
@@ -769,7 +781,7 @@ export function noTotalRecord({ built, ticket, kind, killEstimate, killBasis, el
 export function successfulCallRecord({ json, ticket, kind, elapsedMs, env = process.env }) {
   const built = buildUsageRecord({ json, ticket, kind });
   if (reportedCostUsd(json) !== null) return built;
-  if (json && typeof json === "object" && json.gaffer_cost_basis === "unreported") return built;
+  if (trustedUnreported(json)) return built;
   try {
     const raw = env.GAFFER_KILL_ESTIMATE_USD;
     const killEstimate =
@@ -792,9 +804,12 @@ async function reconcileMain(argv, env = process.env) {
   const i = argv.indexOf("--usd");
   const raw = i >= 0 ? argv[i + 1] : undefined;
   const usd = raw != null && /^\d+(\.\d+)?$/.test(String(raw).trim()) ? Number(raw) : NaN;
-  if (!Number.isFinite(usd) || usd < 0) {
+  // Above zero: booking $0 against a call that ran would count it as free, which is the
+  // thing the refusal exists to stop. A provider you trust to report $0 is
+  // GAFFER_WORKER_COMMAND_COST_USD=0, not a reconcile.
+  if (!Number.isFinite(usd) || !(usd > 0)) {
     process.stderr.write(
-      "usage: usage-ledger.mjs --reconcile --usd <amount in USD, >= 0> [--note <text>]\n",
+      "usage: usage-ledger.mjs --reconcile --usd <amount in USD, above 0> [--note <text>]\n",
     );
     return 2;
   }
@@ -939,7 +954,7 @@ async function cliMain(argv) {
     // Rule 5: exit 0 with no finite total is never a $0 reading. A command worker the
     // operator chose to trust (GAFFER_WORKER_COMMAND_COST_USD=0, cost_basis
     // "unreported") keeps its documented row.
-    if (reportedCostUsd(json) === null && json.gaffer_cost_basis !== "unreported") {
+    if (reportedCostUsd(json) === null && !trustedUnreported(json)) {
       record = noTotalRecord({
         built: record,
         ticket,

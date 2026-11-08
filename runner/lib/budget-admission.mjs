@@ -55,6 +55,7 @@ export const SPEND_CAP_HINT =
   "no dollar cap is set: set GAFFER_DAILY_BUDGET_USD (try 5) or GAFFER_BUDGET_USD in your environment or the dashboard's Settings → Budget & caps; GAFFER_ALLOW_UNCAPPED=1 runs without one";
 
 const finiteNonNeg = (v) => typeof v === "number" && Number.isFinite(v) && v >= 0;
+const finitePos = (v) => typeof v === "number" && Number.isFinite(v) && v > 0;
 
 /**
  * True for a ledger row whose cost is not known at all: no finite total_cost_usd and no
@@ -65,7 +66,7 @@ export function isUnknownCostRow(r) {
   if (!r || typeof r !== "object") return false;
   if (finiteNonNeg(r.total_cost_usd)) return false;
   if (r.estimated === true && finiteNonNeg(r.estimated_cost_usd)) return false;
-  if (r.cost_basis === "unreported") return false;
+  if (r.cost_basis === "unreported" && r.worker_provider === "command") return false;
   return true;
 }
 
@@ -163,7 +164,10 @@ export function ledgerSpend(env = process.env, now = new Date()) {
     lifetime += c;
     const isToday = typeof r.ts === "string" && r.ts.slice(0, 10) === day;
     if (isToday) today += c;
-    if (r.kind === "reconcile") unknownToday = 0;
+    // Only a reconcile row that booked a positive figure clears the unknown rows before
+    // it: one at $0 (hand-written, or from an older writer) would count them as free.
+    if (r.kind === "reconcile" && r.estimated === true && finitePos(r.estimated_cost_usd))
+      unknownToday = 0;
     else if (isToday && isUnknownCostRow(r)) unknownToday += 1;
   }
   return { today, lifetime, unknownToday };

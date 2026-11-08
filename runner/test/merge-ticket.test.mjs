@@ -700,6 +700,36 @@ exit 3
     crashRow && typeof crashRow.repo === "string" && crashRow.repo.length > 0,
   );
 
+  // A resolver that fails WITH an envelope that reports tokens but no dollar total is
+  // not a reading either (independent review of review 14): it books the labelled kill
+  // estimate, never a measured row with an unknown total that counts $0.
+  const NOTOTAL = resolve(WORKDIR, "fake-claude-nototal.sh");
+  writeFileSync(
+    NOTOTAL,
+    `#!/usr/bin/env bash
+echo '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"x","usage":{"input_tokens":900,"output_tokens":300}}'
+exit 1
+`,
+  );
+  require("node:fs").chmodSync(NOTOTAL, 0o755);
+  const beforeNoTotal = ledgerRows().length;
+  runLive({
+    GAFFER_STRICT_REQUIRE: "0",
+    STRICT_MODE: "0",
+    SANDBOX_PROVIDER: "none",
+    CLAUDE_BIN: NOTOTAL,
+    GAFFER_KILL_ESTIMATE_USD: "",
+  });
+  const noTotalRow = ledgerRows().slice(beforeNoTotal).pop();
+  assert(
+    `failed resolver, envelope with no total: a labelled estimate, not a $0 reading (${JSON.stringify(noTotalRow)})`,
+    noTotalRow &&
+      noTotalRow.kind === "merge-resolver" &&
+      noTotalRow.measured === false &&
+      noTotalRow.estimated === true &&
+      noTotalRow.estimated_cost_usd > 0,
+  );
+
   // The resolver resolves, but the ticket cannot be reopened for review (a locked DB, a
   // missing CLI): that used to exit 0 as conflict_resolved_pending_reapproval, and the next
   // landing shipped the resolver's unreviewed merge. Now it fails, and the resolution is

@@ -469,6 +469,22 @@ export const DANGEROUS_COMMANDS = [
     crewFlags: false,
   },
   {
+    // The usage ledger's OPERATOR verb (`usage-ledger.mjs --reconcile --usd <amount>`): it
+    // books what unknown-cost calls cost and so clears budget admission's refusal on them.
+    // That is the operator's word against the provider's bill, never an agent's: an agent
+    // that could run it would clear its own refusal. Matched by the file name run by node
+    // or in command position, with `--reconcile` among its words, however the path is
+    // spelled (the hook's front door also refuses running the factory's own copy by path);
+    // the ledger's other uses and the tests (`node runner/test/usage-ledger.test.mjs`) stay
+    // allowed.
+    re: new RegExp(
+      String.raw`(?:\bnode\b[^\n;&|]*[\s/]|${CMD_POS})usage-ledger\.mjs${WORD_END}[^\n;&|]*[ \t]["']?--reconcile\b`,
+    ),
+    why: "the usage ledger's reconcile verb (usage-ledger.mjs --reconcile): booking what unknown-cost calls cost clears the budget refusal, so it is the operator's, never an agent's",
+    example: "node runner/lib/usage-ledger.mjs --reconcile --usd 0.01",
+    crewFlags: false,
+  },
+  {
     // The MATCHED EXPERIMENT runner (runner/eval/experiment.sh + experiment.mjs, routing gap
     // 4): an experiment is a person's to start. Its live mode runs the real agent on the
     // factory's budget outside the delivery gates, and its results feed the advisory routing

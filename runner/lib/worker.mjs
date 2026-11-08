@@ -323,7 +323,8 @@ const COMMAND_COST_FLOOR_DEFAULT_USD = 0.05;
  * operator's program talking, so a figure it leaves out or puts low must not let the
  * daily and lifetime caps under-count. Precedence: GAFFER_WORKER_COMMAND_COST_USD when
  * set (0 = trust the worker's own figure), else this call's dollar cap
- * (GAFFER_WORKER_MAX_BUDGET_USD, when positive), else GAFFER_KILL_ESTIMATE_USD, else $0.05.
+ * (GAFFER_WORKER_MAX_BUDGET_USD, when positive), else GAFFER_KILL_ESTIMATE_USD (when
+ * positive), else $0.05. Only an explicit 0 trusts the worker's own figure.
  */
 export function commandCostFloorUsd({ explicit, perCall, killFloor } = {}) {
   const num = (v) => {
@@ -336,8 +337,11 @@ export function commandCostFloorUsd({ explicit, perCall, killFloor } = {}) {
   if (e !== null) return e;
   const p = num(perCall);
   if (p !== null && p > 0) return p;
+  // The kill floor only when above 0: GAFFER_KILL_ESTIMATE_USD=0 opts the killed-call
+  // estimate out, it does not say this program's figure is to be trusted. Trusting it
+  // (an unreported cost counted as $0) is GAFFER_WORKER_COMMAND_COST_USD=0 alone.
   const k = num(killFloor);
-  if (k !== null) return k;
+  if (k !== null && k > 0) return k;
   return COMMAND_COST_FLOOR_DEFAULT_USD;
 }
 

@@ -162,6 +162,7 @@ import { mountedNames, recordSkillUsage } from "./record-skill-usage.mjs";
 import {
   appendUsageRecord,
   buildUsageRecord,
+  successfulCallRecord,
   extractResultText,
   parseClaudeJson,
   recordKilledCall,
@@ -3747,7 +3748,11 @@ function main() {
     // JOIN KEYS (MF4): the repo it resolved and the delivery attempt it resolved for.
     appendUsageRecord(
       withJoinKeys(
-        buildUsageRecord({ json: resolverJson, ticket: resolved.number, kind: "merge-resolver" }),
+        successfulCallRecord({
+          json: resolverJson,
+          ticket: resolved.number,
+          kind: "merge-resolver",
+        }),
         { repo: repo.name },
       ),
     );

@@ -56,7 +56,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   appendUsageRecord,
-  buildUsageRecord,
+  successfulCallRecord,
   extractResultText,
   parseClaudeJson,
   recordKilledCall,
@@ -808,7 +808,7 @@ function main() {
     });
     if (res.stdout) log(res.stdout.trim());
   } else {
-    appendUsageRecord(buildUsageRecord({ json, kind: "product-owner" }));
+    appendUsageRecord(successfulCallRecord({ json, kind: "product-owner" }));
     const text = extractResultText(json);
     if (text) log(text.trim());
     resultText = text || "";

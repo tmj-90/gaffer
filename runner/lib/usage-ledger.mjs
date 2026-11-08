@@ -28,6 +28,14 @@
  *      total_cost_usd is booked at that reported figure (measured:true, exit_rc,
  *      reason and reported_on_failure:true on the row), never below the kill
  *      estimate. Only a failed call with no reported cost becomes an estimate.
+ *   5. A call that EXITED ZERO but whose envelope reports no finite total_cost_usd
+ *      (tokens only, or no usage at all) is never booked as a measured row that
+ *      counts $0: it gets the same conservative estimate a killed call gets
+ *      (estimated:true, measured:false, a reason naming the missing total, the
+ *      tokens kept as reported). Dollars are still never inferred from tokens. With
+ *      no estimate available (no history and the kill floor set to 0) the row stays
+ *      unknown, and budget admission refuses the next paid launch under a cap until
+ *      the operator books the cost (`--reconcile --usd <amount>`).
  *
  * Two entrypoints:
  *   • Library  — import { parseClaudeJson, buildUsageRecord, extractResultText,
@@ -711,6 +719,118 @@ function reportedCostUsd(json) {
   return typeof c === "number" && Number.isFinite(c) && c >= 0 ? c : null;
 }
 
+/**
+ * Rule 5: the row for a call that exited zero but whose envelope reported no finite
+ * total_cost_usd. `built` is buildUsageRecord's row (measured with tokens, or unknown
+ * when the envelope carried no usage at all). The cost is the conservative kill estimate
+ * (deriveKillEstimate: the kind's own measured history, else the flat floor), scaled by
+ * how long the call ran when that is known; the tokens, turns and duration the envelope
+ * did report are kept verbatim. Never a figure from a price table. No estimate available:
+ * an unknown row (which budget admission refuses on under a cap).
+ */
+export function noTotalRecord({ built, ticket, kind, killEstimate, killBasis, elapsedMs, env }) {
+  const hadUsage = built && built.measured === true;
+  const reason = hadUsage
+    ? "the call succeeded but its envelope reported no total_cost_usd (tokens recorded, cost estimated)"
+    : "the call succeeded but its envelope reported no usage and no total_cost_usd";
+  const ran =
+    elapsedMs != null && elapsedMs !== ""
+      ? elapsedMs
+      : built && typeof built.duration_ms === "number"
+        ? built.duration_ms
+        : null;
+  const { estimateUsd, basis } = deriveKillEstimate({
+    kind,
+    killEstimate,
+    killBasis,
+    elapsedMs: ran,
+    env,
+  });
+  const rec = estimatedRecord({ ts: built && built.ts, ticket, kind, reason, estimateUsd, basis });
+  if (hadUsage) {
+    rec.models = built.models;
+    rec.num_turns = built.num_turns;
+    rec.duration_ms = built.duration_ms;
+  }
+  for (const k of ["usage_limit", "worker_provider", "cost_basis"])
+    if (built && built[k] !== undefined) rec[k] = built[k];
+  return rec;
+}
+
+/**
+ * The row for a call that EXITED ZERO, for the .mjs call sites (decompose, product owner,
+ * spec author, onboarding analysis, tester, merge resolver): buildUsageRecord, except
+ * that an envelope with no finite total_cost_usd gets rule 5's conservative estimate,
+ * exactly as the CLI books it. These helpers often run outside factory.config.sh, so the
+ * flat floor is read from env.GAFFER_KILL_ESTIMATE_USD (default 0.05; 0 opts out of
+ * the floor, leaving an unknown row when there is no history). A command worker the
+ * operator chose to trust (cost_basis "unreported") keeps its documented row.
+ */
+export function successfulCallRecord({ json, ticket, kind, elapsedMs, env = process.env }) {
+  const built = buildUsageRecord({ json, ticket, kind });
+  if (reportedCostUsd(json) !== null) return built;
+  if (json && typeof json === "object" && json.gaffer_cost_basis === "unreported") return built;
+  try {
+    const raw = env.GAFFER_KILL_ESTIMATE_USD;
+    const killEstimate =
+      raw == null || String(raw).trim() === "" ? KILL_ESTIMATE_DEFAULT_USD : String(raw);
+    return noTotalRecord({ built, ticket, kind, killEstimate, elapsedMs, env });
+  } catch {
+    return built.measured === true
+      ? unknownRecord({ ticket, kind, reason: "no total_cost_usd reported" })
+      : built;
+  }
+}
+
+/**
+ * `--reconcile --usd <amount> [--note <text>]`: the operator books what today's
+ * unknown-cost calls cost (from the provider's own billing). Appends one `reconcile`
+ * row, a labelled operator estimate that counts toward the caps, and budget admission
+ * stops refusing on the unknown rows before it. Returns the process exit code.
+ */
+async function reconcileMain(argv, env = process.env) {
+  const i = argv.indexOf("--usd");
+  const raw = i >= 0 ? argv[i + 1] : undefined;
+  const usd = raw != null && /^\d+(\.\d+)?$/.test(String(raw).trim()) ? Number(raw) : NaN;
+  if (!Number.isFinite(usd) || usd < 0) {
+    process.stderr.write(
+      "usage: usage-ledger.mjs --reconcile --usd <amount in USD, >= 0> [--note <text>]\n",
+    );
+    return 2;
+  }
+  const n = argv.indexOf("--note");
+  const note = n >= 0 ? provLabel(argv[n + 1]) : null;
+  const { ledgerSpend } = await import("./budget-admission.mjs");
+  const spend = ledgerSpend(env);
+  const count = spend && typeof spend.unknownToday === "number" ? spend.unknownToday : 0;
+  const rec = {
+    ts: new Date().toISOString(),
+    ticket: null,
+    kind: "reconcile",
+    measured: false,
+    unknown_reason: `operator reconciled ${count} unknown-cost call(s)`,
+    models: UNKNOWN,
+    total_cost_usd: UNKNOWN,
+    num_turns: UNKNOWN,
+    duration_ms: UNKNOWN,
+    estimated: true,
+    estimated_cost_usd: usd,
+    estimate_basis: "operator",
+    reconciled_unknown: count,
+  };
+  if (note) rec.note = note;
+  if (!appendUsageRecord(rec, env)) {
+    process.stderr.write(
+      "usage-ledger: the reconcile row could not be written (is GAFFER_DATA set?)\n",
+    );
+    return 1;
+  }
+  process.stdout.write(
+    `booked $${usd.toFixed(4)} against ${count} unknown-cost call(s) today; it counts toward the caps\n`,
+  );
+  return 0;
+}
+
 function readInput(jsonFile) {
   try {
     if (jsonFile) return readFileSync(jsonFile, "utf8");
@@ -720,7 +840,11 @@ function readInput(jsonFile) {
   }
 }
 
-function cliMain(argv) {
+async function cliMain(argv) {
+  if (argv.includes("--reconcile")) {
+    process.exitCode = await reconcileMain(argv);
+    return;
+  }
   // `--latest-delivery-attempt --ticket N`: print the attempt id of the ticket's latest
   // delivery row (the lane verdict's attempt_id); writes NO ledger record.
   if (argv.includes("--latest-delivery-attempt")) {
@@ -812,6 +936,19 @@ function cliMain(argv) {
     record = estimatedRecord({ ticket, kind, reason, estimateUsd, basis });
   } else {
     record = buildUsageRecord({ json, ticket, kind });
+    // Rule 5: exit 0 with no finite total is never a $0 reading. A command worker the
+    // operator chose to trust (GAFFER_WORKER_COMMAND_COST_USD=0, cost_basis
+    // "unreported") keeps its documented row.
+    if (reportedCostUsd(json) === null && json.gaffer_cost_basis !== "unreported") {
+      record = noTotalRecord({
+        built: record,
+        ticket,
+        kind,
+        killEstimate: args.killEstimate,
+        killBasis: args.killBasis,
+        elapsedMs: args.elapsedMs,
+      });
+    }
   }
   appendUsageRecord(withJoinKeys(withAttempt(withProvenance(record, args), args), args));
 }

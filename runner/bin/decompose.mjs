@@ -111,7 +111,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   appendUsageRecord,
-  buildUsageRecord,
+  successfulCallRecord,
   extractResultText,
   parseClaudeJson,
   recordKilledCall,
@@ -1201,7 +1201,7 @@ function runClaudeTurn(prompt, opts, model) {
     // break decomposition — the existing block-extractor still gets the text.
     return { timedOut: false, stdout: rawStdout };
   }
-  appendUsageRecord(buildUsageRecord({ json, kind: "decompose" }));
+  appendUsageRecord(successfulCallRecord({ json, kind: "decompose" }));
   return { timedOut: false, stdout: extractResultText(json) };
 }
 

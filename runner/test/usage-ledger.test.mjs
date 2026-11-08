@@ -425,12 +425,12 @@ console.log("== AC4: --output-format json is wired into the consolidated invocat
   const dec = readFileSync(resolve(RUNNER_DIR, "bin", "decompose.mjs"), "utf8");
   assert(
     "decompose.mjs uses --output-format json",
-    /--output-format/.test(dec) && /buildUsageRecord/.test(dec),
+    /--output-format/.test(dec) && /successfulCallRecord/.test(dec),
   );
   const po = readFileSync(resolve(RUNNER_DIR, "bin", "product-owner-run.mjs"), "utf8");
   assert(
     "product-owner-run.mjs uses --output-format json",
-    /--output-format/.test(po) && /buildUsageRecord/.test(po),
+    /--output-format/.test(po) && /successfulCallRecord/.test(po),
   );
 }
 
@@ -1157,6 +1157,292 @@ console.log(
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+console.log("== review14/1: a successful call with no dollar total never counts as zero spend ==");
+{
+  const { paidLaunchAdmission } = await import(resolve(RUNNER_DIR, "lib", "budget-admission.mjs"));
+  const yesterday = new Date(Date.now() - 86400000).toISOString();
+  const mk = (name) => gafferMkdtemp(join(tmpdir(), `nototal-${name}-`));
+  const envFor = (dir) => ({
+    ...process.env,
+    GAFFER_DATA: dir,
+    GAFFER_USAGE_LEDGER: "",
+    GAFFER_DAILY_BUDGET_USD: "1.00",
+    GAFFER_BUDGET_USD: "",
+    GAFFER_ALLOW_UNCAPPED: "",
+  });
+  const book = (dir, envelope, rc, extra = []) => {
+    const f = join(dir, `env-${Math.random().toString(36).slice(2)}.json`);
+    writeFileSync(f, JSON.stringify(envelope));
+    return spawnSync(
+      process.execPath,
+      [MOD, "--kind", "delivery", "--ticket", "8", "--rc", String(rc), ...extra, "--json-file", f],
+      { env: envFor(dir), encoding: "utf8" },
+    );
+  };
+  const rowsOf = (dir) =>
+    readFileSync(join(dir, LEDGER_FILENAME), "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+  // The reviewer's case: exit 0, token usage, no finite total_cost_usd.
+  const noTotal = {
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    result: "done",
+    num_turns: 12,
+    duration_ms: 600000,
+    usage: { input_tokens: 50000, output_tokens: 9000 },
+    modelUsage: { "model-a": { inputTokens: 50000, outputTokens: 9000 } },
+  };
+
+  // (a) With measured history: the conservative history estimate is booked, the chain
+  // ledger row -> admission -> refusal holds.
+  const a = mk("hist");
+  try {
+    const hist = [];
+    for (let i = 0; i < 5; i++)
+      hist.push(
+        JSON.stringify({
+          ts: yesterday,
+          kind: "delivery",
+          measured: true,
+          total_cost_usd: 1.2,
+          num_turns: 10,
+          duration_ms: 600000,
+          models: {},
+        }),
+      );
+    writeFileSync(join(a, LEDGER_FILENAME), hist.join("\n") + "\n");
+    const before = paidLaunchAdmission({ kind: "delivery", env: envFor(a) });
+    assert(
+      `before the call a launch is admitted under $1.00 (ok=${before.ok})`,
+      before.ok === true,
+    );
+    const r = book(a, noTotal, 0, ["--kill-estimate", "0.05"]);
+    assert("the CLI exits 0 and prints the agent's text", r.status === 0 && r.stdout === "done");
+    const row = rowsOf(a).pop();
+    assert(
+      `the row is a labelled estimate, not a reading (measured=${row.measured} estimated=${row.estimated} est=${row.estimated_cost_usd} total=${row.total_cost_usd})`,
+      row.measured === false &&
+        row.estimated === true &&
+        row.total_cost_usd === UNKNOWN &&
+        typeof row.estimated_cost_usd === "number" &&
+        row.estimated_cost_usd > 0,
+    );
+    assert(
+      `the estimate comes from the ledger's own history, never a price table (basis=${row.estimate_basis} est=${row.estimated_cost_usd})`,
+      /^history-/.test(String(row.estimate_basis)) && Math.abs(row.estimated_cost_usd - 1.2) < 1e-9,
+    );
+    assert(
+      `the reason names the missing total (${row.unknown_reason})`,
+      /total_cost_usd/.test(String(row.unknown_reason)),
+    );
+    assert(
+      "the tokens are kept verbatim on the row (rule 1)",
+      row.models &&
+        row.models["model-a"] &&
+        row.models["model-a"].input === 50000 &&
+        row.models["model-a"].output === 9000,
+    );
+    const after = paidLaunchAdmission({ kind: "delivery", env: envFor(a) });
+    assert(
+      `admission counts the estimate and refuses the next launch (ok=${after.ok}: ${after.reason})`,
+      after.ok === false && /daily budget is exhausted/.test(String(after.reason)),
+    );
+  } finally {
+    rmSync(a, { recursive: true, force: true });
+  }
+
+  // (b) No history: the flat floor is the estimate.
+  const b = mk("floor");
+  try {
+    book(b, noTotal, 0, ["--kill-estimate", "0.05"]);
+    const row = rowsOf(b).pop();
+    assert(
+      `no history: the flat floor is booked (basis=${row.estimate_basis} est=${row.estimated_cost_usd})`,
+      row.estimated === true &&
+        row.estimate_basis === "flat-floor" &&
+        Math.abs(row.estimated_cost_usd - 0.05) < 1e-9,
+    );
+  } finally {
+    rmSync(b, { recursive: true, force: true });
+  }
+
+  // (c) No usage at all: an estimate when one exists, else an unknown row that refuses
+  // the next paid launch under a cap (spend cannot be established), until reconciled.
+  const c = mk("nousage");
+  try {
+    book(c, { type: "result", result: "hi" }, 0, ["--kill-estimate", "0.05"]);
+    const est = rowsOf(c).pop();
+    assert(
+      `no usage, a floor set: the estimate is booked (estimated=${est.estimated} est=${est.estimated_cost_usd})`,
+      est.estimated === true && est.measured === false && est.estimated_cost_usd === 0.05,
+    );
+  } finally {
+    rmSync(c, { recursive: true, force: true });
+  }
+  const d = mk("unknown");
+  try {
+    // An unknown row from yesterday does not hold today's launches.
+    writeFileSync(
+      join(d, LEDGER_FILENAME),
+      JSON.stringify({
+        ts: yesterday,
+        kind: "delivery",
+        measured: false,
+        total_cost_usd: "unknown",
+      }) + "\n",
+    );
+    assert(
+      "an unknown row from an earlier day does not refuse today",
+      paidLaunchAdmission({ kind: "delivery", env: envFor(d) }).ok === true,
+    );
+    book(d, { type: "result", result: "hi" }, 0, ["--kill-estimate", "0"]);
+    const row = rowsOf(d).pop();
+    assert(
+      "no usage, no history, floor 0: the row stays unknown (nothing inferred)",
+      row.measured === false && row.total_cost_usd === UNKNOWN && row.estimated === undefined,
+    );
+    const adm = paidLaunchAdmission({ kind: "delivery", env: envFor(d) });
+    assert(
+      `an unknown-cost row today refuses the paid launch under a cap (ok=${adm.ok}: ${adm.reason})`,
+      adm.ok === false &&
+        /spend cannot be established/.test(String(adm.reason)) &&
+        /--reconcile/.test(String(adm.reason)) &&
+        /raise/.test(String(adm.reason)),
+    );
+    // Uncapped (opted out) the launch is not held: the refusal is about a cap.
+    const unc = paidLaunchAdmission({
+      kind: "delivery",
+      env: { ...envFor(d), GAFFER_DAILY_BUDGET_USD: "", GAFFER_ALLOW_UNCAPPED: "1" },
+    });
+    assert("with no cap (GAFFER_ALLOW_UNCAPPED=1) an unknown row holds nothing", unc.ok === true);
+    // The operator's way out: book what those calls cost.
+    const rec = spawnSync(process.execPath, [MOD, "--reconcile", "--usd", "0.30"], {
+      env: envFor(d),
+      encoding: "utf8",
+    });
+    assert(`--reconcile exits 0 (${rec.stderr.trim()})`, rec.status === 0);
+    const rr = rowsOf(d).pop();
+    assert(
+      "the reconcile row is an operator estimate that counts toward the caps",
+      rr.kind === "reconcile" &&
+        rr.measured === false &&
+        rr.estimated === true &&
+        rr.estimated_cost_usd === 0.3 &&
+        rr.estimate_basis === "operator" &&
+        rr.reconciled_unknown === 1,
+    );
+    const back = paidLaunchAdmission({ kind: "delivery", env: envFor(d) });
+    assert(
+      `after reconciling, launches resume and the booked figure counts (ok=${back.ok} spent=${back.daily && back.daily.spent})`,
+      back.ok === true && Math.abs(back.daily.spent - 0.3) < 1e-9,
+    );
+    const bad = spawnSync(process.execPath, [MOD, "--reconcile", "--usd", "-1"], {
+      env: envFor(d),
+      encoding: "utf8",
+    });
+    assert("--reconcile refuses a negative or missing amount", bad.status !== 0);
+  } finally {
+    rmSync(d, { recursive: true, force: true });
+  }
+
+  // (e) A command worker the operator trusts (GAFFER_WORKER_COMMAND_COST_USD=0: cost_basis
+  // unreported) keeps its documented behaviour: not estimated, not a refusal.
+  const e = mk("unreported");
+  try {
+    book(
+      e,
+      {
+        type: "result",
+        result: "w",
+        num_turns: 2,
+        gaffer_worker_provider: "command",
+        gaffer_cost_basis: "unreported",
+      },
+      0,
+      ["--kill-estimate", "0.05"],
+    );
+    const row = rowsOf(e).pop();
+    assert(
+      "an unreported command-worker row stays as it was (cost_basis unreported, no estimate)",
+      row.cost_basis === "unreported" && row.estimated === undefined,
+    );
+    assert(
+      "and it does not refuse the next launch",
+      paidLaunchAdmission({ kind: "delivery", env: envFor(e) }).ok === true,
+    );
+  } finally {
+    rmSync(e, { recursive: true, force: true });
+  }
+
+  // (g) The .mjs call sites (decompose, product owner, spec author, onboarding, tester,
+  // merge resolver) book a successful call through the same rule.
+  {
+    const { successfulCallRecord } = await import(MOD);
+    const g = mk("lib");
+    try {
+      const env = { ...envFor(g), GAFFER_KILL_ESTIMATE_USD: "" };
+      const r = successfulCallRecord({ json: noTotal, kind: "decompose", env });
+      assert(
+        `successfulCallRecord books the default floor for a no-total envelope (est=${r.estimated_cost_usd})`,
+        r.estimated === true && r.measured === false && r.estimated_cost_usd === 0.05,
+      );
+      const m = successfulCallRecord({
+        json: { ...noTotal, total_cost_usd: 0.4 },
+        kind: "decompose",
+        env,
+      });
+      assert(
+        "and a reported total stays a measured reading",
+        m.measured === true && m.total_cost_usd === 0.4 && m.estimated === undefined,
+      );
+    } finally {
+      rmSync(g, { recursive: true, force: true });
+    }
+  }
+
+  // (f) The usage report counts measured, estimated and unknown apart.
+  const f = mk("report");
+  try {
+    const now = new Date().toISOString();
+    writeFileSync(
+      join(f, LEDGER_FILENAME),
+      [
+        { ts: now, kind: "delivery", measured: true, total_cost_usd: 0.5, models: {} },
+        {
+          ts: now,
+          kind: "delivery",
+          measured: false,
+          total_cost_usd: "unknown",
+          estimated: true,
+          estimated_cost_usd: 0.25,
+        },
+        { ts: now, kind: "delivery", measured: false, total_cost_usd: "unknown" },
+      ]
+        .map((x) => JSON.stringify(x))
+        .join("\n") + "\n",
+    );
+    const rep = spawnSync(
+      process.execPath,
+      [resolve(RUNNER_DIR, "lib", "json-tool.mjs"), "summary-usage", join(f, LEDGER_FILENAME)],
+      { env: { ...process.env, SUMMARY_SINCE: "" }, encoding: "utf8" },
+    );
+    const out = rep.stdout.replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g"), "");
+    assert(
+      `the report shows 1 measured, 1 estimated, 1 unknown apart (${out.split("\n")[0].trim()})`,
+      /1 measured, 1 estimated, 1 unknown/.test(out),
+    );
+    assert(
+      "the report shows the estimated dollars as an estimate",
+      /estimated: \$0\.2500/.test(out),
+    );
+  } finally {
+    rmSync(f, { recursive: true, force: true });
   }
 }
 

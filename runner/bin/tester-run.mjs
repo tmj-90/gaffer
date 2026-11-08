@@ -108,7 +108,7 @@ import {
 } from "../lib/worker.mjs";
 import {
   appendUsageRecord,
-  buildUsageRecord,
+  successfulCallRecord,
   latestDeliveryAttemptId,
   recordKilledCall,
   resolveLedgerPath,
@@ -1556,7 +1556,7 @@ function runLiveTester(context) {
       });
     } else {
       appendUsageRecord(
-        withJoinKeys(buildUsageRecord({ json, ticket: n, kind: "tester" }), joinKeys),
+        withJoinKeys(successfulCallRecord({ json, ticket: n, kind: "tester" }), joinKeys),
       );
       text = extractResultText(json) ?? "";
       if (json && typeof json.session_id === "string") testerRunId = json.session_id;

@@ -174,6 +174,7 @@ to the same version.
 - The agent inside the docker sandbox can use git and reach its API on a Linux host, and the MCP bridge socket fits macOS's path limit.
 - Agent installs work behind a TLS-intercepting proxy, and a repo with no origin is "nothing to push".
 - A call that exits non-zero but reports what it spent is booked at that reported cost (never below the kill estimate) for every worker, so a failed $5 call can no longer pass a $1 daily cap as a $0.05 estimate.
+- A call that finishes but reports no dollar total no longer counts as $0 against the caps: it is booked at the same labelled conservative estimate as a killed call, with its tokens kept. A call whose cost cannot be estimated at all leaves a row of unknown cost, and with a cap set the next paid launch that day is refused until you book the cost with `node runner/lib/usage-ledger.mjs --reconcile --usd <amount>`. The run summary counts measured, estimated and unknown calls apart.
 - A pull request merged upstream on a default branch with a slash in its name (`release/v1`) is now recognised as landed while the local default branch is stale.
 - The docs follow the code, and the docs are indexed in [docs/README.md](docs/README.md).
 

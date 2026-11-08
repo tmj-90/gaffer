@@ -34,8 +34,12 @@ export GAFFER_USAGE_LEDGER
 # unknown; this value is the FLAT FLOOR under it and the fallback when there isn't
 # enough history (a floor, NOT precision). The .mjs helpers (planner, spec author,
 # product owner, tester, onboarding, merge resolver) read it too (default 0.05 when
-# run outside this config). 0 restores the $0/unknown behaviour when there is no
-# usable history (opt-out). Measured calls ignore it.
+# run outside this config). The same estimate is booked for a call that exited 0 but
+# whose envelope reported no dollar total (its tokens are kept; dollars are never
+# worked out from them). 0 with no usable history leaves such rows "unknown", and
+# with a dollar cap set an unknown row booked today refuses every paid launch until
+# the operator books the cost (`node lib/usage-ledger.mjs --reconcile --usd <amount>`)
+# or the UTC day turns over. Measured calls ignore it.
 : "${GAFFER_KILL_ESTIMATE_USD:=0.05}"
 export GAFFER_KILL_ESTIMATE_USD
 

@@ -1394,6 +1394,10 @@ switch (cmd) {
     };
     let measured = 0;
     let unknown = 0;
+    // Unmeasured rows that carry a labelled estimate (a killed call, or a call whose
+    // envelope reported no total): counted and summed apart, never as a reading.
+    let estimated = 0;
+    let estUsd = 0;
     let tokIn = 0;
     let tokOut = 0;
     let tokCacheR = 0;
@@ -1413,7 +1417,11 @@ switch (cmd) {
       if (since && pyStr(e.ts ?? "") < since) continue;
       if (e.measured === true) measured += 1;
       else {
-        unknown += 1;
+        const est = asNum(e.estimated_cost_usd);
+        if (e.estimated === true && est !== null && est >= 0) {
+          estimated += 1;
+          estUsd += est;
+        } else unknown += 1;
         continue;
       }
       const models = e.models;
@@ -1442,14 +1450,19 @@ switch (cmd) {
       }
     }
     const scope = since ? "this run" : "(all-time)";
-    const totalCalls = measured + unknown;
+    const totalCalls = measured + estimated + unknown;
     if (totalCalls === 0) println(`    \x1b[1;32m✓\x1b[0m no agent calls recorded ${scope}`);
     else {
-      if (unknown)
+      const estPart = estimated ? `${estimated} estimated, ` : "";
+      if (unknown || estimated)
         println(
-          `    \x1b[1;33m${measured} measured, ${unknown} unknown\x1b[0m ${scope} — 'unknown' = unmeasurable (timeout/crash/no-usage), NOT zero`,
+          `    \x1b[1;33m${measured} measured, ${estPart}${unknown} unknown\x1b[0m ${scope}: 'estimated' = no cost was reported (killed call, or no total in the envelope), booked at a labelled conservative estimate; 'unknown' = unmeasurable, NOT zero`,
         );
       else println(`    ${measured} call(s) measured, 0 unknown ${scope}`);
+      if (estimated)
+        println(
+          `    estimated: $${estUsd.toFixed(4)} across ${estimated} call(s) (counts toward the caps; an estimate, not a reading)`,
+        );
       if (measured === 0)
         println(
           `    nothing measurable ${scope} — every agent call was unmeasured; no token/cost figure can be honestly reported`,

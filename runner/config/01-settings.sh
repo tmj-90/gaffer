@@ -54,7 +54,7 @@ if [ -n "$_gs_out" ]; then
 fi
 unset _gs_out
 
-# _gaffer_deprecated <old-name> <what to set instead> — a deprecated variable that is
+# _gaffer_deprecated <old-name> <what to set instead>: a deprecated variable that is
 # set says so on stderr once per process tree (the parent's mark is exported, so a
 # child that sources this file again stays quiet). Deprecated names keep working for
 # one release; docs/CONFIG.md lists them with their replacement.

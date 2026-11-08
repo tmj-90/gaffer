@@ -434,7 +434,7 @@ export const INTERNAL_NAMES = [
   {
     group: "packages",
     title:
-      "Read inside the dispatch, memory and crew packages on their own (packages/*/README.md); the runner never needs them",
+      "Read inside the dispatch, memory and crew packages from their own environment; the runner never sets them. A few tune those packages, each read where it is named (an extra sensitive-path or test-path regex for the reviewer's risk flags and the gate-integrity check, the deletion size that is flagged, a hard observed-risk ceiling, the audit switches): set one in the environment that starts the package",
     names: [
       "DISPATCH_AGENT_ID",
       "DISPATCH_AUDIT",
@@ -911,7 +911,7 @@ export function render({
     out.push(
       "The code reads these too, but they are not settings: another component or a test",
       "sets them, or they follow from a knob above. They are listed so a name you meet in",
-      "the code is not a mystery; you never need to set one.",
+      "the code is not a mystery; a run needs none of them set.",
       "",
     );
     for (const g of internal) {

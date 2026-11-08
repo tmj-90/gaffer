@@ -354,7 +354,7 @@ if [ -f "$DISPATCH_CLI" ]; then
   # The operator's front door: `gaffer eval agreement` over this factory's database.
   OUT="$(DISPATCH_DB="$JDB" bash "$RUNNER_DIR/gaffer" eval agreement 2>&1)"; rc=$?
   [ "$rc" -eq 0 ] && grep -q 'judged deliveries: 1 (1 on the ticket, 0 from the ledger only)' <<<"$OUT" \
-    && grep -q 'reading: Not enough decided deliveries to tell' <<<"$OUT" \
+    && grep -q 'reading: Not enough blind decisions to tell' <<<"$OUT" \
     && ok "gaffer eval agreement prints the pairing and its reading" || no "gaffer eval agreement wrong (rc=$rc): $OUT"
   DISPATCH_DB="$JDB" bash "$RUNNER_DIR/gaffer" eval agreement --bogus >/dev/null 2>&1; rc=$?
   [ "$rc" -eq 2 ] && ok "an unknown eval agreement option exits 2" || no "expected rc 2, got $rc"

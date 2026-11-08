@@ -397,11 +397,7 @@ export const INTERNAL_NAMES = [
   {
     group: "derived",
     title: "Computed from other knobs each time the config loads; set the knob they come from",
-    names: [
-      "GAFFER_TICK_OUTER_TIMEOUT",
-      "GAFFER_POLL_WAIT_TIMEOUT",
-      "GAFFER_DOD_FEEDBACK_LINES",
-    ],
+    names: ["GAFFER_TICK_OUTER_TIMEOUT", "GAFFER_POLL_WAIT_TIMEOUT", "GAFFER_DOD_FEEDBACK_LINES"],
   },
   {
     group: "plumbing",
@@ -578,14 +574,23 @@ export const DEPRECATED = [
  * docs/CONFIG.md lists them under Removed in the Deprecated section.
  */
 export const REMOVED = [
-  ["GAFFER_REWORK_HISTORY_BYTES", "a rework prompt carries the last 8000 bytes of earlier attempts' feedback"],
+  [
+    "GAFFER_REWORK_HISTORY_BYTES",
+    "a rework prompt carries the last 8000 bytes of earlier attempts' feedback",
+  ],
   ["GAFFER_JUDGE_DIFF_BYTES", "the eval judge grades the first 120000 bytes of a diff"],
   ["GAFFER_MERGE_GATE_RETRIES", "a landing whose target moved is re-gated up to twice"],
   ["GAFFER_PREFLIGHT_LIVE_TIMEOUT", "the live preflight call gets 60 seconds"],
   ["GAFFER_ACCEPTANCE_TIMEOUT_MS", "one acceptance profile run gets 5 minutes"],
   ["GAFFER_AGENT_NAME", "the factory agent registers as gaffer-factory"],
-  ["GAFFER_AGENT_EMAIL", "a greenfield repo's first commit is by gaffer-factory@users.noreply.invalid"],
-  ["GAFFER_BUDGET_LOW_FRACTION", "the low-budget threshold is 20% of the ceiling (set GAFFER_BUDGET_LOW_THRESHOLD to change it)"],
+  [
+    "GAFFER_AGENT_EMAIL",
+    "a greenfield repo's first commit is by gaffer-factory@users.noreply.invalid",
+  ],
+  [
+    "GAFFER_BUDGET_LOW_FRACTION",
+    "the low-budget threshold is 20% of the ceiling (set GAFFER_BUDGET_LOW_THRESHOLD to change it)",
+  ],
   ["GAFFER_INHERIT_PLAN_TIMEOUT", "the inherit planner gets 60 seconds"],
   ["GAFFER_INHERIT_AMB_TIMEOUT", "the inherit ambiguity call gets 300 seconds"],
   ["GAFFER_ONBOARD_TIMEOUT", "onboarding calls follow GAFFER_TICK_TIMEOUT"],
@@ -595,7 +600,10 @@ export const REMOVED = [
   ["GAFFER_SPEC_AUTHOR_MOCK", "a dry-run spec author takes mockOutput from its request"],
   ["GAFFER_AGENT_ID_FILE", "the factory agent's id is kept in $GAFFER_DATA/agent_id"],
   ["GAFFER_REVIEWER_ID_FILE", "the reviewer's id is kept in $GAFFER_DATA/agent_reviewer_id"],
-  ["GAFFER_EVAL_LEDGER", "the eval judge writes $GAFFER_DATA/eval-ledger.jsonl, the file the dashboard reads"],
+  [
+    "GAFFER_EVAL_LEDGER",
+    "the eval judge writes $GAFFER_DATA/eval-ledger.jsonl, the file the dashboard reads",
+  ],
 ].map(([name, now]) => ({ name, now }));
 
 /** Every internal or seam name, for the scans that decide what is a knob. */

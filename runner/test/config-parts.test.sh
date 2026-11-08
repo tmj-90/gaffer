@@ -116,7 +116,8 @@ echo "== 5: re-source hygiene: a second source in one shell changes nothing =="
 cat > "$WORK/twice.sh" <<'SH'
 dump() {
   env | LC_ALL=C sort | grep -Ev '^(_|OLDPWD)=' > "$W/$1.env"
-  declare -p | grep -Ev '^declare (-[a-zA-Z-]+ )?(BASH_[A-Z_]*|BASHPID|BASHOPTS|SHELLOPTS|FUNCNAME|LINENO|RANDOM|SRANDOM|SECONDS|EPOCH[A-Z]*|_|PIPESTATUS|PPID|SHLVL|HISTCMD|COLUMNS|LINES|OPTIND|OPTERR|BASH_ARGV0|W|CFG|BEFORE)=' > "$W/$1.declare"
+  # bash 3.2 prints arrays from `declare -p` as NAME=(...) with no `declare -a` prefix.
+  declare -p | grep -Ev '^(declare (-[a-zA-Z-]+ )?)?(BASH_[A-Z_]*|BASHPID|BASHOPTS|SHELLOPTS|FUNCNAME|LINENO|RANDOM|SRANDOM|SECONDS|EPOCH[A-Z]*|_|PIPESTATUS|PPID|SHLVL|HISTCMD|COLUMNS|LINES|OPTIND|OPTERR|BASH_ARGV0|W|CFG|BEFORE)=' > "$W/$1.declare"
   declare -f > "$W/$1.functions"
 }
 BEFORE=" $(compgen -e | tr '\n' ' ') "

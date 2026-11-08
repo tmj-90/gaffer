@@ -13,7 +13,8 @@
 #   GAFFER_NOTIFY_SLACK_URL    Slack incoming-webhook (text)      (shared sink)
 #   GAFFER_NOTIFY_DESKTOP=1    native desktop banner              (shared sink)
 # Two legacy channels are still honoured ADDITIVELY for back-compat:
-#   GAFFER_SLACK_WEBHOOK   Slack incoming-webhook URL  (POSTed a {"text":…})
+#   GAFFER_SLACK_WEBHOOK   Slack incoming-webhook URL  (POSTed a {"text":…}); deprecated,
+#                          goes in the next release: GAFFER_NOTIFY_SLACK_URL replaces it
 #   GAFFER_NOTIFY_CMD      any shell command fed the message on stdin (e.g. email:
 #                           export GAFFER_NOTIFY_CMD='mail -s gaffer you@example.com')
 # With none set the alert still shows in the pane — it just isn't sent out.
@@ -24,6 +25,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=factory.config.sh
 source "$HERE/factory.config.sh"
+_gaffer_deprecated GAFFER_SLACK_WEBHOOK "set GAFFER_NOTIFY_SLACK_URL (the Slack field in Settings) instead"
 
 # No colour in a pipe / file, under NO_COLOR or TERM=dumb (lib/colour.sh).
 # shellcheck source=lib/colour.sh

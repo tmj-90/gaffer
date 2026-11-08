@@ -22,7 +22,7 @@ computed from other knobs at runtime.
 | Knobs with a runner default | 100 |
 | Knobs editable in the dashboard | 58 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
-| Env reads in code with no default and no UI entry | 11 |
+| Env reads in code with no default and no UI entry | 10 |
 
 ## Runner defaults (`runner/factory.config.sh` and `runner/lib/*.sh`)
 
@@ -322,7 +322,6 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `GAFFER_LITE_MAX_LINES` | `60` | `runner/config/18-review.sh` |
 | `GAFFER_LITE_SENSITIVE_RE` | `$_GAFFER_SENSITIVE_PATH_RE` | `runner/config/18-review.sh` |
 | `GAFFER_SECURITY_REVIEW_RE` | `${GAFFER_LITE_SENSITIVE_RE:-$_GAFFER_SENSITIVE_PATH_RE` | `runner/config/18-review.sh` |
-| `GAFFER_SLACK_WEBHOOK` | _(empty)_ | `runner/status.sh` |
 | `GAFFER_TESTER_REPLAY` | `1` | `runner/bin/tester-run.mjs`, `runner/lib/tester-replay.mjs`, `runner/status.sh` |
 
 ## Internal names (not knobs)

@@ -84,6 +84,13 @@ warned GAFFER_JUDGE_MODEL_FLAG && grep -q 'a model id, not a flag' "$WORK/err" &
 V="$(cd "$RUNNER_DIR" && env -i PATH="$PATH" GAFFER_CARD_MODEL=c1 node --input-type=module -e 'import { roleModel } from "./lib/worker.mjs"; process.stdout.write([roleModel("card"), roleModel("card", { GAFFER_CARD_MODEL: "c1", GAFFER_ROLE_MODELS: "card=c2" }), roleModel("synth", {}) || "-"].join(" "))')"
 [ "$V" = "c1 c2 -" ] && ok "the .mjs reader agrees: deprecated name, then the knob wins, then the caller's default" || fail "F3 mjs: $V"
 
+echo "== F4: GAFFER_SLACK_WEBHOOK -> GAFFER_NOTIFY_SLACK_URL =="
+grep -q '_gaffer_deprecated GAFFER_SLACK_WEBHOOK "set GAFFER_NOTIFY_SLACK_URL' "$RUNNER_DIR/status.sh" \
+  && grep -qF '"$GAFFER_SLACK_WEBHOOK" >/dev/null' "$RUNNER_DIR/status.sh" \
+  && ok "status.sh still posts to GAFFER_SLACK_WEBHOOK and says it is deprecated" || fail "F4: status.sh legacy channel"
+V="$(cfg GAFFER_SLACK_WEBHOOK=https://hooks.invalid/x -- '_gaffer_deprecated GAFFER_SLACK_WEBHOOK "set GAFFER_NOTIFY_SLACK_URL instead" 2>>"$ERRF"')"
+warned GAFFER_SLACK_WEBHOOK && ok "the warning names it once" || fail "F4 warning: $(cat "$WORK/err")"
+
 echo "== the warning is said once per process tree =="
 cfg GAFFER_PO_MAX_TURNS=30 -- 'bash --norc --noprofile -c "source \"\$0\"" "$0" 2>>"$ERRF"' >/dev/null
 warned GAFFER_PO_MAX_TURNS && ok "a second source in a child stays quiet (one line for the tree)" || fail "repeat warning: $(cat "$WORK/err")"

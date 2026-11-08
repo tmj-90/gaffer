@@ -470,6 +470,10 @@ export const DEPRECATED = [
     ["GAFFER_INHERIT_MODEL", "inherit"],
   ].map(([name, role]) => ({ name, use: `GAFFER_ROLE_MODELS="${role}=<model>"` })),
   {
+    name: "GAFFER_SLACK_WEBHOOK",
+    use: "`GAFFER_NOTIFY_SLACK_URL` (the Slack field in Settings); status.sh still posts to it",
+  },
+  {
     name: "GAFFER_CAP_DETECT_TURNS",
     use: "`GAFFER_MAX_TURNS` (a call is cap-hit when it uses every turn)",
   },

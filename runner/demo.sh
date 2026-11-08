@@ -76,4 +76,4 @@ line "▸ Live run: review $HERE/factory.config.sh, then  $HERE/gaffer run   (LI
 # This demo's ticket lives in the showcase db, not the factory's — name it, or
 # `gaffer wg ticket show 1` would show the operator's OWN ticket #1.
 echo "  Audit trail: DISPATCH_DB=$DISPATCH_DB $HERE/gaffer wg ticket show 1"
-echo "  Showcase factory: $DEMO   (yours to delete; DEMO_DIR=<dir> picks the place)"
+echo "  Showcase factory: $DEMO   (yours to delete; gaffer demo --dir <dir> picks the place)"

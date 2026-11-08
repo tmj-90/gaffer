@@ -14,7 +14,10 @@ _gaffer_deprecated GAFFER_PREFLIGHT_LIVE "pass runner/preflight.sh --live instea
 for _pf_arg in "$@"; do
   case "$_pf_arg" in
     --live) _pf_live=1 ;;
-    *) printf 'preflight: unknown argument %s (the only option is --live)\n' "$_pf_arg" >&2; exit 2 ;;
+    -h | --help)
+      printf 'usage: runner/preflight.sh [--live]\n  Checks everything a trial run needs and prints PASS / WARN / FAIL. Non-mutating.\n  --live  also make ONE tiny paid claude -p call to prove the login works.\n'
+      exit 0 ;;
+    *) printf 'preflight: unknown argument %s (the only option is --live; --help for usage)\n' "$_pf_arg" >&2; exit 2 ;;
   esac
 done
 unset _pf_arg

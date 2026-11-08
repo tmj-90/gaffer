@@ -185,7 +185,7 @@ child, test seams) and deprecated names are listed at the end, not in the tables
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
 | `GAFFER_LITE_MAX_DIFF` | _(empty)_ |  | runner | lite mode's trivial-diff bounds as "lines=60 files=4" (the defaults); a bound not named keeps its default. |
-| `GAFFER_SENSITIVE_PATH_RE` | _(empty)_ |  | dispatch, runner | the paths that count as sensitive (lite never auto-approves them; they get the security second opinion); empty = the built-in list. |
+| `GAFFER_SENSITIVE_PATH_RE` | _(empty)_ |  | dispatch, runner | the paths that count as sensitive (lite never auto-approves them; they get the security second opinion); empty = the built-in list. A value replaces the whole list for both, so keep the built-in paths in it to widen it; a malformed regex holds every lite ticket and runs every second opinion. |
 | `GAFFER_SECURITY_REVIEW` | `1` |  | runner | SECURITY SECOND OPINION — decides whether a ticket gets a SECOND, security-focused reviewer pass after the primary reviewer APPROVEs (lib/review.sh). |
 | `GAFFER_MERGE_LANE` | `1` |  | dispatch, runner | MERGE LANE (lib/merge-lane.sh): at the start of every tick, land every ready_for_merge ticket the merge policy permits (a human's approve, the tester's PASS, a merge gate held at review time and since earned) through the… |
 | `GAFFER_CONFLICT_RESOLVER` | `1` |  | runner | CONFLICT RESOLVER (lib/land.sh): when a landing hits a merge CONFLICT (the branch forked before a sibling landed on the same files), spawn bin/merge-ticket.mjs's resolver agent ONCE per ticket: it merges the default… |

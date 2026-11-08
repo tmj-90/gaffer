@@ -126,9 +126,9 @@ _gaffer_deprecated GAFFER_LITE_MAX_FILES 'set GAFFER_LITE_MAX_DIFF="files=N" ins
 # (the lite classifier and the security second opinion), an extended regex over
 # repo-relative paths. The old GAFFER_LITE_SENSITIVE_RE and GAFFER_SECURITY_REVIEW_RE are
 # deprecated: still read, the knob wins over them.
-: "${GAFFER_SENSITIVE_PATH_RE:=}"   # the paths that count as sensitive (lite never auto-approves them; they get the security second opinion); empty = the built-in list.
+: "${GAFFER_SENSITIVE_PATH_RE:=}"   # the paths that count as sensitive (lite never auto-approves them; they get the security second opinion); empty = the built-in list. A value replaces the whole list for both, so keep the built-in paths in it to widen it; a malformed regex holds every lite ticket and runs every second opinion.
 _gaffer_deprecated GAFFER_LITE_SENSITIVE_RE "set GAFFER_SENSITIVE_PATH_RE instead (it covers the security review too)"
-_gaffer_deprecated GAFFER_SECURITY_REVIEW_RE "set GAFFER_SENSITIVE_PATH_RE instead (it covers the lite classifier too)"
+_gaffer_deprecated GAFFER_SECURITY_REVIEW_RE "set GAFFER_SENSITIVE_PATH_RE instead (it replaces the lite classifier's list too, so keep the built-in paths in it)"
 
 # The default SECURITY-SENSITIVE PATH regex, shared by the lite trivial classifier and
 # the security second-review lane (one definition, so the two cannot drift). The
@@ -175,7 +175,16 @@ gaffer_lite_trivial_reason() {
   [ "$_files" -le "$_maxf" ] || { printf 'nontrivial:files=%s>%s\n' "$_files" "$_maxf"; return 0; }
   # Here-string, not `printf | grep -q`: under pipefail grep's early exit can SIGPIPE
   # the printf and turn this MATCH into a miss — a sensitive diff called "trivial".
-  if grep -qE -- "$_re" <<<"$_paths"; then printf 'nontrivial:sensitive-path\n'; return 0; fi
+  # A regex grep cannot use (exit 2: a malformed GAFFER_SENSITIVE_PATH_RE or deprecated
+  # GAFFER_LITE_SENSITIVE_RE) matches nothing; it must hold the ticket, never call every
+  # path non-sensitive.
+  local _grc=0
+  grep -qE -- "$_re" <<<"$_paths" 2>/dev/null || _grc=$?
+  case "$_grc" in
+    0) printf 'nontrivial:sensitive-path\n'; return 0 ;;
+    1) ;;
+    *) printf 'nontrivial:sensitive-path-regex-invalid\n'; return 0 ;;
+  esac
   printf 'trivial\n'
 }
 
@@ -234,11 +243,17 @@ gaffer_needs_security_review() {
   if [ "$_risk" = "high" ]; then GAFFER_SECURITY_REVIEW_REASON="risk=high"; return 0; fi
   _re="${GAFFER_SENSITIVE_PATH_RE:-${GAFFER_SECURITY_REVIEW_RE:-${GAFFER_LITE_SENSITIVE_RE:-$_GAFFER_SENSITIVE_PATH_RE}}}"
   _paths="$(git -C "$_repo" diff "$_base"..."$_branch" --name-only 2>/dev/null)"
-  if grep -qE -- "$_re" <<<"$_paths"; then   # here-string: no SIGPIPE false miss under pipefail
-    GAFFER_SECURITY_REVIEW_REASON="sensitive-path: $(printf '%s\n' "$_paths" | grep -E "$_re" | head -3 | paste -sd, -)"
-    return 0
-  fi
-  return 1
+  local _grc=0
+  grep -qE -- "$_re" <<<"$_paths" 2>/dev/null || _grc=$?   # here-string: no SIGPIPE false miss under pipefail
+  case "$_grc" in
+    0) GAFFER_SECURITY_REVIEW_REASON="sensitive-path: $(printf '%s\n' "$_paths" | grep -E "$_re" | head -3 | paste -sd, -)"
+       return 0 ;;
+    1) return 1 ;;
+    # A regex grep cannot use (exit 2) matches nothing: the second opinion runs rather
+    # than every path reading as non-sensitive.
+    *) GAFFER_SECURITY_REVIEW_REASON="sensitive-path regex unusable (GAFFER_SENSITIVE_PATH_RE): reviewing to be safe"
+       return 0 ;;
+  esac
 }
 
 # S-H2: reviewer VERDICT resolution from an OUT-OF-BAND STRUCTURED signal, NOT a

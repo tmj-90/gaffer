@@ -136,6 +136,21 @@ V="$(cfg GAFFER_SENSITIVE_PATH_RE=payments/ -- 'printf "%s" "$(gaffer_lite_trivi
 [ "$V" = "nontrivial:sensitive-path" ] && ok "the knob replaces the list for the lite classifier" || fail "F7 knob: $V"
 grep -qF '_re="${GAFFER_SENSITIVE_PATH_RE:-${GAFFER_SECURITY_REVIEW_RE:-' "$RUNNER_DIR/config/18-review.sh" \
   && ok "the security second opinion reads the same knob first" || fail "F7: security review does not read the knob"
+for knob in GAFFER_SENSITIVE_PATH_RE GAFFER_LITE_SENSITIVE_RE; do
+  V="$(cfg "$knob=(" -- 'printf "%s" "$(gaffer_lite_trivial_reason low 5 1 src/a.ts)"')"
+  [ "$V" = "nontrivial:sensitive-path-regex-invalid" ] && ok "a malformed $knob holds the ticket in lite (fails closed, never 'nothing is sensitive')" || fail "F7 malformed $knob: $V"
+done
+# The security second opinion: a low-risk ticket touching only src/a.ts.
+git init -q "$WORK/sr" && git -C "$WORK/sr" -c user.name=t -c user.email=t@t commit -q --allow-empty -m base \
+  && git -C "$WORK/sr" checkout -q -b work && echo x > "$WORK/sr/a.ts" && git -C "$WORK/sr" add a.ts \
+  && git -C "$WORK/sr" -c user.name=t -c user.email=t@t commit -q -m work
+SR='wg() { printf "%s" "{\"ok\":true,\"data\":{\"ticket\":{\"risk_level\":\"low\"}}}"; }; base="$(git -C "'"$WORK/sr"'" rev-parse work~1)"; gaffer_needs_security_review 1 "'"$WORK/sr"'" "$base" work && printf "review" || printf "skip"'
+V="$(cfg -- "$SR")"
+[ "$V" = "skip" ] && ok "security review: a low-risk diff on no sensitive path gets no second opinion (default list)" || fail "F7 security default: $V"
+V="$(cfg GAFFER_SENSITIVE_PATH_RE='(^|/)a\.ts$' -- "$SR")"
+[ "$V" = "review" ] && ok "security review: GAFFER_SENSITIVE_PATH_RE names the paths that get the second opinion" || fail "F7 security knob: $V"
+V="$(cfg GAFFER_SENSITIVE_PATH_RE='(' -- "$SR")"
+[ "$V" = "review" ] && ok "security review: a malformed GAFFER_SENSITIVE_PATH_RE runs the second opinion (fails closed)" || fail "F7 security malformed: $V"
 cfg GAFFER_SECURITY_REVIEW_RE=x -- ':' >/dev/null
 warned GAFFER_SECURITY_REVIEW_RE && ok "GAFFER_SECURITY_REVIEW_RE warns once" || fail "F7 warning: $(cat "$WORK/err")"
 

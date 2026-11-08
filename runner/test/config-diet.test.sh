@@ -137,6 +137,15 @@ V="$(cfg GAFFER_LITE_MAX_DIFF="lines=10" GAFFER_LITE_MAX_FILES=2 -- 'printf "%s|
 [ "$V" = "nontrivial:lines=11>10|nontrivial:files=3>2" ] && warned GAFFER_LITE_MAX_FILES \
   && ok "the knob sets lines; the deprecated files bound still applies and warns once" || fail "F11: $V / $(cat "$WORK/err")"
 
+echo "== F8: GAFFER_GREENFIELD_INSTALL -> GAFFER_DOD_INSTALL =="
+mkdir -p "$WORK/gf"; printf '{"name":"gf","version":"1.0.0"}\n' > "$WORK/gf/package.json"; printf '{"lockfileVersion":3}\n' > "$WORK/gf/package-lock.json"
+V="$(cfg GAFFER_DOD_INSTALL=0 -- 'gaffer_dod_install_enabled && printf on || printf off; gaffer_ensure_node_modules "'"$WORK/gf"'" >/dev/null 2>&1; [ -e "'"$WORK/gf"'/node_modules" ] && printf "|installed" || printf "|skipped"')"
+[ "$V" = "off|skipped" ] && ok "GAFFER_DOD_INSTALL=0 turns off the pre-gate install and the greenfield prime" || fail "F8: $V"
+V="$(cfg -- 'gaffer_dod_install_enabled && printf on || printf off')"
+[ "$V" = "on" ] && ok "default: the pre-gate install is on" || fail "F8 default: $V"
+cfg GAFFER_GREENFIELD_INSTALL=0 -- ':' >/dev/null
+warned GAFFER_GREENFIELD_INSTALL && ok "GAFFER_GREENFIELD_INSTALL warns once" || fail "F8 warning: $(cat "$WORK/err")"
+
 echo "== the warning is said once per process tree =="
 cfg GAFFER_PO_MAX_TURNS=30 -- 'bash --norc --noprofile -c "source \"\$0\"" "$0" 2>>"$ERRF"' >/dev/null
 warned GAFFER_PO_MAX_TURNS && ok "a second source in a child stays quiet (one line for the tree)" || fail "repeat warning: $(cat "$WORK/err")"

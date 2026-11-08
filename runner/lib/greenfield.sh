@@ -263,7 +263,10 @@ gaffer_ensure_node_modules() {
   if [ -e "$dir/node_modules" ] && [ -n "$(ls -A "$dir/node_modules" 2>/dev/null)" ]; then
     return 0 # already present — nothing to do
   fi
-  # Optional escape hatch for operators who manage deps themselves.
+  # Optional escape hatch for operators who manage deps themselves: GAFFER_DOD_INSTALL=0
+  # (one switch for this prime and the pre-gate install; the deprecated
+  # GAFFER_GREENFIELD_INSTALL=0 still works for one release).
+  case "${GAFFER_DOD_INSTALL:-1}" in 0 | false | off | no) return 0 ;; esac
   [ "${GAFFER_GREENFIELD_INSTALL:-1}" = "0" ] && return 0
 
   local pm=""

@@ -63,6 +63,9 @@ unset _gd _gr
 : "${GAFFER_DOD_LINT:=1}"            # 1 = run the lint gate
 : "${GAFFER_DOD_TYPECHECK:=1}"       # 1 = run the typecheck gate (auto-detected command)
 : "${GAFFER_DOD_TYPECHECK_CMD:=}"    # override the auto-detected typecheck command
+# GAFFER_DOD_INSTALL=0 (read in lib/dod.sh and lib/greenfield.sh) is the one switch for
+# managing dependencies yourself; GAFFER_GREENFIELD_INSTALL=0 used to be a second one.
+_gaffer_deprecated GAFFER_GREENFIELD_INSTALL "set GAFFER_DOD_INSTALL=0 instead (it also skips the greenfield install)"
 : "${GAFFER_DOD_TIMEOUT:=900}"       # wall-clock cap (seconds) per gate and per AC check command
 # (GAFFER_TEST_PATH_RE, an extra test-path regex that can only widen the gate-integrity
 # check, is read by crew's integrity CLI and dispatch's risk annotation from their own

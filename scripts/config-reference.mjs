@@ -217,14 +217,7 @@ export const EXTRA_KNOBS = [
     name: "GAFFER_DOD_INSTALL",
     default: "1",
     file: "runner/lib/dod.sh",
-    doc: "1 = install the delivery worktree's dependencies (from its lockfile) before the test gate; a no-op when node_modules exists. 0 to manage dependencies yourself.",
-  },
-  {
-    group: "Definition of Done",
-    name: "GAFFER_GREENFIELD_INSTALL",
-    default: "1",
-    file: "runner/lib/greenfield.sh",
-    doc: "0 = skip the dependency install in a new greenfield repo; also turns GAFFER_DOD_INSTALL off.",
+    doc: "1 = install the delivery worktree's dependencies (from its lockfile) before the test gate, and a new greenfield repo's; a no-op when node_modules exists. 0 to manage dependencies yourself.",
   },
   {
     group: "Definition of Done",
@@ -493,6 +486,7 @@ export const DEPRECATED = [
   },
   { name: "GAFFER_LITE_MAX_LINES", use: '`GAFFER_LITE_MAX_DIFF="lines=N"`' },
   { name: "GAFFER_LITE_MAX_FILES", use: '`GAFFER_LITE_MAX_DIFF="files=N"`' },
+  { name: "GAFFER_GREENFIELD_INSTALL", use: "`GAFFER_DOD_INSTALL=0` (it skips both installs)" },
   {
     name: "GAFFER_CAP_DETECT_TURNS",
     use: "`GAFFER_MAX_TURNS` (a call is cap-hit when it uses every turn)",

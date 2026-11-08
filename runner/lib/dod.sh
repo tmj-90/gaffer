@@ -59,15 +59,15 @@ gaffer_dod_enabled() {
 # Default ON is safe-soft: the install is a strict no-op whenever node_modules
 # already exists (the common case, since the worktree gets a node_modules symlink
 # at setup) and never crashes a tick nor passes the gate — a failed/timed-out
-# install leaves the DoD gate to run and fail loudly exactly as today. The
-# existing "I manage deps myself" switch (GAFFER_GREENFIELD_INSTALL=0) also
-# disables it, so operators keep ONE mental model rather than two competing knobs.
+# install leaves the DoD gate to run and fail loudly exactly as today.
+# GAFFER_DOD_INSTALL=0 is the one "I manage deps myself" switch: it also skips the
+# greenfield prime (lib/greenfield.sh). The deprecated GAFFER_GREENFIELD_INSTALL=0 still
+# disables both for one release.
 gaffer_dod_install_enabled() {
   case "${GAFFER_DOD_INSTALL:-1}" in
     0|false|off|no) return 1 ;;
     *)
-      # Honour the existing greenfield opt-out so a single switch governs both
-      # the greenfield prime and this pre-gate worktree install.
+      # The deprecated greenfield opt-out still governs both for one release.
       [ "${GAFFER_GREENFIELD_INSTALL:-1}" = "0" ] && return 1
       return 0 ;;
   esac

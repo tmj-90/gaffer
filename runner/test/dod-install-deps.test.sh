@@ -172,7 +172,7 @@ fi
 if GAFFER_GREENFIELD_INSTALL=0 gaffer_dod_install_enabled; then
   fail "GAFFER_GREENFIELD_INSTALL=0 also disables the pre-gate install"
 else
-  ok "GAFFER_GREENFIELD_INSTALL=0 also disables it (one mental model)"
+  ok "the deprecated GAFFER_GREENFIELD_INSTALL=0 still disables it"
 fi
 
 # --- Case 6: install ATTEMPTED but fails → FAILED sentinel, no crash ----------

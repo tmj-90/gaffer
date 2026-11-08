@@ -1018,7 +1018,7 @@ $_trail_q
     # fail-soft, BEFORE the gate runs — inside the SAME validation sandbox as the gates
     # (GAFFER_DOD_WRAP, stripped env; refused under strict-require with no wrap). This never crashes the tick and never passes
     # the gate — on a failed/timed-out install the gate still runs and fails loudly
-    # exactly as today. Disable with GAFFER_DOD_INSTALL=0 (or GAFFER_GREENFIELD_INSTALL=0)
+    # exactly as today. Disable with GAFFER_DOD_INSTALL=0
     # for byte-identical-to-today behaviour. Separate loop from the row-builder above
     # so the enabler stays visibly distinct from gate-command resolution.
     if gaffer_dod_install_enabled; then

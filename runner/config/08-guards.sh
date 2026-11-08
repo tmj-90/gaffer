@@ -125,7 +125,7 @@ if [ -z "${GAFFER_DASHBOARD_URL:-}" ] && [ -s "$GAFFER_DATA/dashboard-url" ]; th
   esac
   unset _gaffer_persisted_url
 fi
-: "${GAFFER_DASHBOARD_URL:=http://127.0.0.1:${DISPATCH_API_PORT:-8787}}"
+: "${GAFFER_DASHBOARD_URL:=http://127.0.0.1:${DISPATCH_API_PORT:-8787}}"   # the dashboard link in notifications; set it when the dashboard sits behind a proxy or another host name
 export GAFFER_DASHBOARD_URL
 
 # FINDING-6 (b): TERM->KILL grace (seconds) for gaffer_timeout's process-group

@@ -609,8 +609,9 @@ sed -e "s#__GAFFER_REPO__#$(pwd)#g" -e "s#__GAFFER_DATA__#$(pwd)/.gaffer#g" \
   runner/launchd/com.gaffer.factory.plist.template > "$OUT"
 launchctl load "$OUT"
 ```
-Config + stop conditions (cost guards) live in `factory.config.sh`; the full
-knob-by-knob reference is generated into [`docs/CONFIG.md`](../docs/CONFIG.md)
+Config + stop conditions (cost guards) live in `runner/config/*.sh`, sourced through
+`factory.config.sh`; the knob-by-knob reference, one table per area, is generated into
+[`docs/CONFIG.md`](../docs/CONFIG.md)
 (`node scripts/config-reference.mjs`). Logs land in
 `<repo-root>/.gaffer/factory.log`; the full audit trail is Dispatch's event log
 (`./gaffer wg ticket show <n>`) and its web UI.

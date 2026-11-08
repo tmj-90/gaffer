@@ -34,8 +34,8 @@ if [ -z "${GAFFER_IMPL_MODEL_EXPLICIT+x}" ]; then
   [ -n "${GAFFER_IMPL_MODEL+x}" ] && GAFFER_IMPL_MODEL_EXPLICIT=1 || GAFFER_IMPL_MODEL_EXPLICIT=0
 fi
 export GAFFER_PLAN_MODEL_EXPLICIT GAFFER_IMPL_MODEL_EXPLICIT
-: "${GAFFER_PLAN_MODEL=opus}"
-: "${GAFFER_IMPL_MODEL=sonnet}"
+: "${GAFFER_PLAN_MODEL=opus}"     # the strong tier: planning, the final rework attempt, the eval judge
+: "${GAFFER_IMPL_MODEL=sonnet}"   # the implement tier: delivery (when the router does not pick), review, the tester
 export GAFFER_PLAN_MODEL GAFFER_IMPL_MODEL
 # Per-role model overrides, one knob for all of them: GAFFER_ROLE_MODELS="card=haiku
 # judge=opus" (commas or spaces). A role not named keeps its own default: rework (the

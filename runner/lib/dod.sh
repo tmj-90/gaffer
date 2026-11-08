@@ -311,7 +311,7 @@ _GAFFER_DOD_EXTRA_ENV=()
 #     as the failure;
 #   * the rerun cannot get the lock in time → the first FAIL stands (fail closed).
 # GAFFER_DOD_FLAKY_RERUN=0 turns it off.
-: "${GAFFER_DOD_FLAKY_RERUN:=1}"
+: "${GAFFER_DOD_FLAKY_RERUN:=1}"   # with GAFFER_CONCURRENCY above 1, rerun a red test gate once alone before it counts; 0 = never
 GAFFER_DOD_RERUN_WAIT="${GAFFER_DOD_RERUN_WAIT:-120}"   # max seconds the rerun waits for the other workers' in-flight gate runs to finish
 
 # The pool size this gate runs under (GAFFER_CONCURRENCY; 1 when unset or garbage).

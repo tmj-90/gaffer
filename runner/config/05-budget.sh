@@ -34,7 +34,7 @@ export GAFFER_BUDGET_USD
 #   turn-cap. Claude Code checks it between turns, so a call can overshoot by one turn.
 #   OWNER DECISION PENDING: whether to ship a default (e.g. 5) and/or a default
 #   per-ticket ceiling (GAFFER_REWORK_BUDGET_USD, e.g. 10) — both are empty today.
-: "${GAFFER_MAX_CALL_USD:=}"
+: "${GAFFER_MAX_CALL_USD:=}"   # a hard dollar cap on each agent call (claude --max-budget-usd), so one runaway call stops while it runs; empty = none
 export GAFFER_MAX_CALL_USD
 
 # gaffer_call_budget_usd [ticket-remaining]

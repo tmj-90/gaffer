@@ -73,7 +73,7 @@ _gaffer_deprecated GAFFER_GREENFIELD_INSTALL "set GAFFER_DOD_INSTALL=0 instead (
 # Run the DoD gates + AC check commands under the SAME OS sandbox wrap as the agent
 # (they execute agent-modified code). 0 opts out (a gate that cannot run inside the
 # image) and is logged; the verdict is always recorded by the runner outside the gate.
-: "${GAFFER_DOD_SANDBOX:=1}"
+: "${GAFFER_DOD_SANDBOX:=1}"   # 1 = run the DoD gates and criterion checks inside the agent's OS sandbox (they run agent-written code); 0 opts out, and the opt-out is logged
 # PR mode: when `gh pr merge` fails or gh is absent, 1 lands the branch LOCALLY (the PR
 # stays open — the previous behaviour). Default 0: HOLD the ticket at ready_for_merge
 # for a human; "done" means the PR merged upstream.

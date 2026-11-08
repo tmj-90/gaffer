@@ -20,6 +20,8 @@ const {
   EXTRA_KNOBS,
   INTERNAL_NAMES,
   TEST_SEAMS,
+  DEPRECATED,
+  AREAS,
 } = await import(path.join(ROOT, "scripts", "config-reference.mjs"));
 
 let passed = 0;
@@ -160,16 +162,16 @@ ok(
   "GAFFER_DOD_TIMEOUT is a documented runner default now (not an undocumented read)",
 );
 ok(
-  /### lib\/budget\.sh[\s\S]*\| `GAFFER_ALLOW_UNCAPPED` \|/.test(text),
-  "a knob defaulted in runner/lib/*.sh is listed under its lib section",
+  /### Budget\n[^#]*\| `GAFFER_ALLOW_UNCAPPED` \|/.test(text),
+  "a knob defaulted in runner/lib/*.sh is listed under its area (lib/budget.sh -> Budget)",
 );
 ok(
   !/\| `GAFFER_DOD_INSTALL_TIMEOUT` \| [^|]*\| `runner\/lib\/dod\.sh`/.test(text),
   "a lib-defaulted knob is not reported as an undocumented read",
 );
 ok(
-  /\| `GAFFER_DASHBOARD_START_TIMEOUT` \| [^|]*\| `runner\/gaffer`/.test(text),
-  "a read with no default anywhere is still listed as undocumented",
+  /## Env reads without a default or UI entry\n\nNone: /.test(text),
+  "every env read is documented: a knob, a dashboard setting, a deprecated or an internal name",
 );
 ok(
   !/\| `GAFFER_STRICT_REQUIRE` \| `runner/.test(text),
@@ -319,6 +321,46 @@ for (const name of [
   } finally {
     writeFileSync(cfg, before);
   }
+}
+
+console.log(
+  "== the tables follow the areas of runner/config; deprecated names have their own table ==",
+);
+{
+  const headings = [...text.matchAll(/^### (.+)$/gm)].map((m) => m[1]);
+  const areas = [...new Set(Object.values(AREAS))];
+  ok(
+    headings.length > 0 && headings.every((h) => areas.includes(h)),
+    `every section heading is an area of runner/config (${headings.join(" / ")})`,
+  );
+  ok(
+    headings.join("|") === areas.filter((a) => headings.includes(a)).join("|"),
+    "the sections come in the parts' order",
+  );
+  ok(
+    /### Pausing on a cap, and the dashboard\n[^#]*\| `DISPATCH_API_PORT` \| `8787` \|/.test(text),
+    "a knob read where it is used sits in its area's table (DISPATCH_API_PORT under the dashboard)",
+  );
+  const dep = text.slice(text.indexOf("## Deprecated"), text.indexOf("## Internal names"));
+  ok(text.includes("## Deprecated"), "CONFIG.md has the Deprecated table");
+  for (const d of DEPRECATED) {
+    ok(
+      new RegExp(`^\\| \`${d.name}\` \\|`, "m").test(dep) &&
+        !new RegExp(`^\\| \`${d.name}\` \\|`, "m").test(
+          text.slice(0, text.indexOf("## Deprecated")),
+        ),
+      `${d.name} is in the Deprecated table only`,
+    );
+  }
+  const rowsInTables = text
+    .slice(0, text.indexOf("## Deprecated"))
+    .split("\n")
+    .filter((l) => l.startsWith("| `")).length;
+  ok(rowsInTables < 120, `the tables hold fewer than 120 rows (${rowsInTables})`);
+  ok(
+    new RegExp(`\\| Rows in the tables \\| ${rowsInTables} \\|`).test(text),
+    "the metrics say the same row count",
+  );
 }
 
 console.log("== rows describe the behaviour ==");

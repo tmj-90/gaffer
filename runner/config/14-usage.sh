@@ -36,7 +36,7 @@ export GAFFER_USAGE_LEDGER
 # product owner, tester, onboarding, merge resolver) read it too (default 0.05 when
 # run outside this config). 0 restores the $0/unknown behaviour when there is no
 # usable history (opt-out). Measured calls ignore it.
-: "${GAFFER_KILL_ESTIMATE_USD:=0.05}"
+: "${GAFFER_KILL_ESTIMATE_USD:=0.05}"   # USD booked for a call killed or timed out before it reported its cost (the budget gates count it)
 export GAFFER_KILL_ESTIMATE_USD
 
 # gaffer_usage_record <kind> <ticket-or-empty> <rc> <captured-json-file>

@@ -33,12 +33,15 @@ export function configSources(root = ROOT) {
   const configSh = path.join(root, "runner", "factory.config.sh");
   const lines = readFileSync(configSh, "utf8").split("\n");
   const start = lines.findIndex((l) => l.startsWith("# CONFIG PARTS."));
-  if (start < 0) return { text: lines.join("\n"), parts: [] };
+  if (start < 0) return { text: lines.join("\n"), parts: [], ranges: [] };
   const end = lines.indexOf("unset _GAFFER_CONFIG_DIR _GAFFER_CONFIG_PART", start);
   if (end < 0 || lines[end + 1] !== "")
     throw new Error("factory.config.sh: the parts block has no end");
   const parts = [];
   const bodies = [];
+  // Which part each line of the joined text came from (1-based line numbers): the
+  // prologue and epilogue belong to factory.config.sh itself.
+  const ranges = [{ part: "factory.config.sh", from: 1, to: start }];
   for (const l of lines.slice(start, end)) {
     const m = l.match(/; _gaffer_config_loaded ([0-9]{2}-[a-z-]+)$/);
     if (!m) continue;
@@ -48,10 +51,52 @@ export function configSources(root = ROOT) {
       throw new Error(`runner/config/${m[1]}.sh: the last line is not its marker`);
     }
     parts.push(file);
-    bodies.push(...own.slice(own.indexOf("") + 1, -1));
+    const body = own.slice(own.indexOf("") + 1, -1);
+    const from = start + bodies.length + 1;
+    ranges.push({ part: m[1], from, to: from + body.length - 1 });
+    bodies.push(...body);
   }
-  return { text: [...lines.slice(0, start), ...bodies, ...lines.slice(end + 2)].join("\n"), parts };
+  return {
+    text: [...lines.slice(0, start), ...bodies, ...lines.slice(end + 2)].join("\n"),
+    parts,
+    ranges,
+  };
 }
+/**
+ * docs/CONFIG.md's sections are the areas of runner/config: a knob is listed under
+ * the part that defaults it (factory.config.sh's own prologue holds the locations).
+ * A knob a runner lib defaults, or one read where it is used (EXTRA_KNOBS), is listed
+ * under the area it belongs to. A part or lib that defines a knob without an area here
+ * fails the generator, so a new knob always lands under a heading.
+ */
+export const AREAS = {
+  "factory.config.sh": "Locations",
+  "02-paths": "Locations",
+  "03-wiring": "The agent CLI and the worker provider",
+  "04-models": "Models",
+  "05-budget": "Budget",
+  "06-routing": "Model routing, the planning debate and the scout",
+  "07-limits": "Limits, the Definition of Done and rework",
+  "08-guards": "Pausing on a cap, and the dashboard",
+  "13-stop": "Stop conditions and concurrency",
+  "14-usage": "The usage ledger",
+  "15-modes": "Autonomy modes",
+  "16-sandbox": "The sandbox, hygiene and backpressure",
+  "18-review": "Review and landing",
+  "20-gates": "Idle lanes, pull requests, CI and the eval judge",
+};
+/** The area of each runner lib that defaults a knob. */
+export const LIB_AREAS = {
+  "automerge.sh": "18-review",
+  "budget.sh": "05-budget",
+  "ci-gate.sh": "20-gates",
+  "claude-auth.sh": "03-wiring",
+  "dod.sh": "07-limits",
+  "pr-create.sh": "20-gates",
+  "registry-probe.sh": "16-sandbox",
+  "scout.sh": "06-routing",
+};
+
 /** The runner libs (runner/lib/*.sh), sorted. */
 function libFiles(root = ROOT) {
   const libDir = path.join(root, "runner", "lib");
@@ -115,9 +160,11 @@ export function parseConfigDefaults(text, { fixedSection = null } = {}) {
       continue;
     }
     if (/^\s*(?:;;|esac\b)/.test(line)) defaultArm = false;
-    const sec = fixedSection ? null : line.match(SECTION_RE);
+    // A banner starts a new section (and never becomes part of a knob's notes); with a
+    // fixed section it only ends the comment block above it.
+    const sec = line.match(SECTION_RE);
     if (sec) {
-      section = sec[1].replace(/\s*\(.*?\)\s*$/, "").trim();
+      if (!fixedSection) section = sec[1].replace(/\s*\(.*?\)\s*$/, "").trim();
       commentBlock = [];
       continue;
     }
@@ -192,49 +239,92 @@ export function firstSentence(block) {
  */
 export const EXTRA_KNOBS = [
   {
-    group: "Safety and containment",
+    group: AREAS["08-guards"],
+    name: "DISPATCH_API_PORT",
+    default: "8787",
+    file: "runner/gaffer",
+    doc: "The dashboard's port: `gaffer dashboard` serves it there, and the default dashboard link (GAFFER_DASHBOARD_URL) points at it.",
+  },
+  {
+    group: AREAS["08-guards"],
+    name: "DISPATCH_ALLOWED_HOSTS",
+    default: "",
+    file: "packages/dispatch/src/api/security.ts",
+    doc: "Extra hostnames (comma-separated) the dashboard's Host / Origin check accepts, for a reverse proxy or a DNS name in front of it (SECURITY.md).",
+  },
+  {
+    group: AREAS["08-guards"],
+    name: "GAFFER_DASHBOARD_START_TIMEOUT",
+    default: "30",
+    file: "runner/gaffer",
+    doc: "Seconds a new dashboard server gets to come up before it is stopped and its log kept; raise it on a slow machine.",
+  },
+  {
+    group: AREAS["16-sandbox"],
+    name: "GAFFER_EGRESS_ALLOW",
+    default: "",
+    file: "runner/lib/egress-allowlist.mjs",
+    doc: "Extra hosts the docker sandbox's default-deny egress proxy lets through, on top of the model endpoint and the package registries ($GAFFER_DATA/egress-allow.txt adds more; docs/sandbox.md).",
+  },
+  {
+    group: AREAS["18-review"],
+    name: "GAFFER_TESTER_REPLAY",
+    default: "1",
+    file: "runner/bin/tester-run.mjs",
+    doc: "1 = the runner replays the tester's tests in a clean, contained checkout before a PASS counts; 0 turns the replay off and every PASS is held for a person.",
+  },
+  {
+    group: AREAS["20-gates"],
+    name: "GAFFER_JUDGE_DENIED_TOOLS",
+    default:
+      "Bash,Edit,Write,MultiEdit,NotebookEdit,Read,Grep,Glob,LS,WebFetch,WebSearch,Task,TodoWrite",
+    file: "runner/lib/eval-judge.sh",
+    doc: "The tools the eval judge is denied by name, on top of its empty tool set (it grades text and needs none).",
+  },
+  {
+    group: AREAS["16-sandbox"],
     name: "GAFFER_STRICT_REQUIRE",
     default: "1",
     file: "runner/lib/sandbox.sh",
     doc: "1 (the default, in every mode) = every agent launch runs inside the OS sandbox or is refused (fail closed): `gaffer run`, the loop, a tick and the dashboard's Poll for work refuse before claiming anything, with the fix. 0 (or false/no/off) in the ENVIRONMENT is the opt-out, for a runner you contain yourself (a VM or container): agents then run unwrapped, and it is said once per process. settings.json cannot set 0.",
   },
   {
-    group: "Safety and containment",
+    group: AREAS["16-sandbox"],
     name: "GAFFER_SANDBOX_IMAGE",
     default: "gaffer-sandbox:latest",
     file: "runner/lib/sandbox-docker.sh",
     doc: "The image the docker sandbox provider runs each delivery in (`docker compose --profile sandbox build` builds it).",
   },
   {
-    group: "Definition of Done",
+    group: AREAS["07-limits"],
     name: "GAFFER_DOD",
     default: "1",
     file: "runner/lib/dod.sh",
     doc: "0 turns every Definition-of-Done gate off, the only way to land a delivery ungated (the merge gate is off too).",
   },
   {
-    group: "Definition of Done",
+    group: AREAS["07-limits"],
     name: "GAFFER_DOD_INSTALL",
     default: "1",
     file: "runner/lib/dod.sh",
     doc: "1 = install the delivery worktree's dependencies (from its lockfile) before the test gate, and a new greenfield repo's; a no-op when node_modules exists. 0 to manage dependencies yourself.",
   },
   {
-    group: "Definition of Done",
+    group: AREAS["07-limits"],
     name: "GAFFER_ALLOW_NO_DOD",
     default: "0",
     file: "runner/lib/tick-gates.sh",
     doc: "1 = let a delivery pass when no gate ran at all (a repo with no test or lint command). Otherwise that is a failure and the ticket parks.",
   },
   {
-    group: "Definition of Done",
+    group: AREAS["07-limits"],
     name: "GAFFER_CI_TIMEOUT_POLICY",
     default: "block",
     file: "runner/lib/ci-gate.sh",
     doc: "With GAFFER_REQUIRE_CI=1: what happens when the checks time out, there is no PR or no checks exist. block rejects the delivery; proceed lets it through with a note.",
   },
   {
-    group: "Delivery and landing",
+    group: AREAS["15-modes"],
     name: "GAFFER_MEMORY_AUTO_PROMOTE",
     default: "MEMORY_AUTO_APPROVE",
     verify: false,
@@ -242,21 +332,21 @@ export const EXTRA_KNOBS = [
     doc: "1 = a requirement distilled from a delivered ticket goes live at once; 0 = it lands as a draft for `memory review`. Unset, it follows MEMORY_AUTO_APPROVE.",
   },
   {
-    group: "Credentials",
+    group: AREAS["03-wiring"],
     name: "ANTHROPIC_API_KEY",
     default: "",
     file: "runner/preflight.sh",
     doc: "An API key for the worker CLI (`claude`). One of this, CLAUDE_CODE_OAUTH_TOKEN or a logged-in CLAUDE_CONFIG_DIR is needed for a live run; the container reads only these two variables.",
   },
   {
-    group: "Credentials",
+    group: AREAS["03-wiring"],
     name: "CLAUDE_CODE_OAUTH_TOKEN",
     default: "",
     file: "runner/preflight.sh",
     doc: "The subscription token `claude setup-token` prints, used instead of an API key.",
   },
   {
-    group: "Credentials",
+    group: AREAS["03-wiring"],
     name: "CLAUDE_CONFIG_DIR",
     default: "$HOME/.claude",
     file: "runner/lib/claude-auth.sh",
@@ -438,7 +528,7 @@ export const DEPRECATED = [
     ["GAFFER_DECOMPOSE_AGENT_MAX_TURNS", "decompose"],
     ["GAFFER_SPEC_AUTHOR_AGENT_MAX_TURNS", "spec_author"],
     ["GAFFER_ONBOARD_MAX_TURNS", "onboard"],
-  ].map(([name, role]) => ({ name, use: `GAFFER_ROLE_MAX_TURNS="${role}=N"` })),
+  ].map(([name, role]) => ({ name, use: `\`GAFFER_ROLE_MAX_TURNS="${role}=N"\`` })),
   ...[
     ["GAFFER_REWORK_STRONG_MODEL", "rework"],
     ["GAFFER_SCOUT_MODEL_FLAG", "scout"],
@@ -447,7 +537,7 @@ export const DEPRECATED = [
     ["GAFFER_CARD_MODEL", "card"],
     ["GAFFER_ONBOARD_SYNTH_MODEL", "synth"],
     ["GAFFER_INHERIT_MODEL", "inherit"],
-  ].map(([name, role]) => ({ name, use: `GAFFER_ROLE_MODELS="${role}=<model>"` })),
+  ].map(([name, role]) => ({ name, use: `\`GAFFER_ROLE_MODELS="${role}=<model>"\`` })),
   {
     name: "GAFFER_SLACK_WEBHOOK",
     use: "`GAFFER_NOTIFY_SLACK_URL` (the Slack field in Settings); status.sh still posts to it",
@@ -456,7 +546,7 @@ export const DEPRECATED = [
     ["GAFFER_SANDBOX_CPUS", "cpus"],
     ["GAFFER_SANDBOX_MEMORY", "memory"],
     ["GAFFER_SANDBOX_PIDS", "pids"],
-  ].map(([name, cap]) => ({ name, use: `GAFFER_SANDBOX_LIMITS="${cap}=N"` })),
+  ].map(([name, cap]) => ({ name, use: `\`GAFFER_SANDBOX_LIMITS="${cap}=N"\`` })),
   ...[
     ["GAFFER_EXPERIMENT_MAX_USD", "--max-usd"],
     ["GAFFER_EXPERIMENT_MAX_TICKETS", "--max-tickets"],
@@ -684,12 +774,16 @@ export function render({
     "1. a real environment variable exported before the runner starts;",
     "2. an explicit key in `$GAFFER_DATA/settings.json` (the dashboard Settings panel);",
     "3. the default the selected `GAFFER_MODE` fills in for its autonomy cluster;",
-    "4. the built-in default from `runner/factory.config.sh`, listed below.",
+    '4. the built-in default, listed below: a `: "${NAME:=default}"` line in the',
+    "   `runner/config/NN-area.sh` part of its area (or a runner lib), or, for a knob",
+    "   with no default line, the fallback where it is read (its notes say where).",
     "",
-    "**UI** marks a knob the dashboard Settings panel can edit (it persists to",
-    "`settings.json`; an exported env var locks it read-only). **Read by** names the",
-    "components whose source mentions the identifier. A default shown as _derived_ is",
-    "computed from other knobs at runtime.",
+    "The tables follow the areas of `runner/config`. **UI** marks a knob the dashboard",
+    "Settings panel can edit (it persists to `settings.json`; an exported env var locks",
+    "it read-only). **Read by** names the components whose source mentions the",
+    "identifier. A default shown as _derived_ is computed from other knobs at runtime.",
+    "Names that are not settings (paths the runner derives, plumbing it sets for a",
+    "child, test seams) and deprecated names are listed at the end, not in the tables.",
     "",
   );
 
@@ -697,22 +791,40 @@ export function render({
   const uiKnobs = defs.length;
   const uiOnly = defs.filter((d) => !knobByName.has(d.key));
   out.push("| Metric | Count |", "|---|---|");
-  out.push(`| Knobs with a runner default | ${knobs.length} |`);
+  out.push(`| Knobs with a default line | ${knobs.length} |`);
+  out.push(
+    `| Knobs with no default line (the fallback is where they are read) | ${extras.length} |`,
+  );
   out.push(`| Knobs editable in the dashboard | ${uiKnobs} |`);
   out.push(
     `| Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | ${uiOnly.length} |`,
   );
   out.push(`| Env reads in code with no default and no UI entry | ${undocumented.size} |`);
+  out.push(
+    `| Rows in the tables | ${knobs.length + extras.length + uiOnly.length + undocumented.size} |`,
+  );
+  out.push(`| Deprecated names (still work for one release) | ${deprecated.length} |`);
+  out.push(
+    `| Internal names and test seams (not knobs) | ${internal.reduce((n, g) => n + g.names.length, 0) + seams.length} |`,
+  );
   out.push("");
 
-  // Group by section, in file order
+  // One table per area of runner/config, in the parts' order; a knob read where it is
+  // used sits in its area's table, its notes naming the file.
+  const order = [...new Set(Object.values(AREAS))];
   const sections = [];
-  for (const k of knobs) {
+  const rows = [
+    ...knobs.map((k) => ({ ...k, kind: "default" })),
+    ...extras.map((k) => ({ ...k, section: k.group, kind: "extra" })),
+  ];
+  for (const k of rows) {
     let s = sections.find((x) => x.title === k.section);
     if (!s) sections.push((s = { title: k.section, knobs: [] }));
     s.knobs.push(k);
   }
-  out.push("## Runner defaults (`runner/factory.config.sh` and `runner/lib/*.sh`)", "");
+  const rank = (title) => (order.includes(title) ? order.indexOf(title) : order.length);
+  sections.sort((a, b) => rank(a.title) - rank(b.title));
+  out.push("## Knobs, by area of `runner/config`", "");
   for (const s of sections) {
     out.push(`### ${s.title}`, "");
     out.push("| Variable | Default | UI | Read by | Notes |", "|---|---|---|---|---|");
@@ -720,6 +832,12 @@ export function render({
       const def = defByKey.get(k.name);
       const ui = def ? `yes (${def.type}${def.choices ? `: ${def.choices.join(" / ")}` : ""})` : "";
       const readBy = [...(consumers.get(k.name) ?? [])].sort().join(", ");
+      if (k.kind === "extra") {
+        const dflt = k.verify === false ? `_follows_ \`${k.default}\`` : code(k.default);
+        const note = `${k.doc} (No default line: read in \`${k.file}\`.)`;
+        out.push(`| \`${k.name}\` | ${cell(dflt)} | ${ui} | ${readBy} | ${cell(note)} |`);
+        continue;
+      }
       const note = def?.help ? def.help : k.doc;
       let dflt = k.derived ? `_derived_ (${code(k.default)})` : code(k.default);
       if (k.defaultArm) dflt += " _(the default; other modes/branches can set it)_";
@@ -727,31 +845,6 @@ export function render({
       out.push(`| \`${k.name}\` | ${cell(dflt)} | ${ui} | ${readBy} | ${cell(note)} |`);
     }
     out.push("");
-  }
-
-  if (extras.length > 0) {
-    out.push("## Read where they are used", "");
-    out.push(
-      "These have no `factory.config.sh` default line: the code that uses each one",
-      "applies the default below at its read site (the file named under **Read in**).",
-      "Some are seams the runner also sets for itself; the notes say which.",
-      "",
-    );
-    const groups = [];
-    for (const k of extras) {
-      let g = groups.find((x) => x.title === k.group);
-      if (!g) groups.push((g = { title: k.group, knobs: [] }));
-      g.knobs.push(k);
-    }
-    for (const g of groups) {
-      out.push(`### ${g.title}`, "");
-      out.push("| Variable | Default | Read in | Notes |", "|---|---|---|---|");
-      for (const k of g.knobs) {
-        const dflt = k.verify === false ? `_follows_ \`${k.default}\`` : code(k.default);
-        out.push(`| \`${k.name}\` | ${cell(dflt)} | \`${k.file}\` | ${cell(k.doc)} |`);
-      }
-      out.push("");
-    }
   }
 
   out.push("## Dashboard-only settings", "");
@@ -769,25 +862,35 @@ export function render({
   out.push("");
 
   out.push("## Env reads without a default or UI entry", "");
-  out.push(
-    "Factory-prefixed identifiers the code reads from the environment and never",
-    "assigns itself, with neither a `factory.config.sh` default nor a Settings-panel",
-    "entry — so only an operator (or a test) can set them. Each is either a",
-    "deliberate advanced/test-only override or a knob missing its default line or",
-    "`SETTING_DEFS` entry. **Default in code** is the fallback literal at the read",
-    "site (`${X:-…}` / `?? …`); two values means the read sites disagree.",
-    "",
-  );
-  out.push("| Variable | Default in code | Read in |", "|---|---|---|");
-  for (const [name, files] of [...undocumented.entries()].sort(([a], [b]) => a.localeCompare(b))) {
-    const d = [...(defaults.get(name) ?? [])].sort();
-    const dflt = d.length ? d.map((v) => code(v)).join(" / ") : "";
+  if (undocumented.size === 0) {
     out.push(
-      `| \`${name}\` | ${cell(dflt)} | ${[...files]
-        .sort()
-        .map((f) => `\`${f}\``)
-        .join(", ")} |`,
+      "None: every environment variable the code reads is a knob above, a dashboard",
+      "setting, a deprecated name or an internal name below. A new read with neither a",
+      "default line nor a Settings entry shows up here until it gets one or is listed.",
     );
+  } else {
+    out.push(
+      "Factory-prefixed identifiers the code reads from the environment and never",
+      "assigns itself, with neither a `factory.config.sh` default nor a Settings-panel",
+      "entry — so only an operator (or a test) can set them. Each is either a",
+      "deliberate advanced/test-only override or a knob missing its default line or",
+      "`SETTING_DEFS` entry. **Default in code** is the fallback literal at the read",
+      "site (`${X:-…}` / `?? …`); two values means the read sites disagree.",
+      "",
+    );
+    out.push("| Variable | Default in code | Read in |", "|---|---|---|");
+    for (const [name, files] of [...undocumented.entries()].sort(([a], [b]) =>
+      a.localeCompare(b),
+    )) {
+      const d = [...(defaults.get(name) ?? [])].sort();
+      const dflt = d.length ? d.map((v) => code(v)).join(" / ") : "";
+      out.push(
+        `| \`${name}\` | ${cell(dflt)} | ${[...files]
+          .sort()
+          .map((f) => `\`${f}\``)
+          .join(", ")} |`,
+      );
+    }
   }
   out.push("");
 
@@ -827,12 +930,25 @@ export function render({
 export async function generate(root = ROOT) {
   const seen = new Set();
   const knobs = [];
+  const src = configSources(root);
+  const areaOf = (part, where) => {
+    const title = AREAS[part];
+    if (!title) throw new Error(`${where} defines a knob but has no area in AREAS / LIB_AREAS`);
+    return title;
+  };
   for (const file of [CONFIG_SH, ...libFiles(root)]) {
-    const opts = file === CONFIG_SH ? {} : { fixedSection: `lib/${path.basename(file)}` };
-    const text = file === CONFIG_SH ? configSources(root).text : readFileSync(file, "utf8");
-    for (const k of parseConfigDefaults(text, opts)) {
+    const isConfig = file === CONFIG_SH;
+    const text = isConfig ? src.text : readFileSync(file, "utf8");
+    for (const k of parseConfigDefaults(text, isConfig ? {} : { fixedSection: "?" })) {
       if (seen.has(k.name)) continue; // factory.config.sh wins over a lib re-default
       seen.add(k.name);
+      if (isConfig) {
+        const r = src.ranges.find((x) => k.line >= x.from && k.line <= x.to);
+        k.section = areaOf(r?.part ?? "factory.config.sh", `runner/config/${r?.part}.sh`);
+      } else {
+        const lib = path.basename(file);
+        k.section = areaOf(LIB_AREAS[lib], `runner/lib/${lib}`);
+      }
       knobs.push(k);
     }
   }
@@ -869,6 +985,7 @@ export async function generate(root = ROOT) {
     extras,
     internal: INTERNAL_NAMES,
     seams: TEST_SEAMS,
+    deprecated: DEPRECATED,
   });
 }
 

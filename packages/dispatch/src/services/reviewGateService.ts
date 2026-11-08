@@ -73,28 +73,12 @@ import {
   type ReplayState,
   type VerdictBinding,
 } from "../util/contractHash.js";
+import type { ReviewGateInternals } from "./reviewGate/internals.js";
+import { capRetry, reviewerPatch } from "./reviewGate/shared.js";
 
 // Re-export so consumers don't need to reach into core directly.
-import type { ReviewGateInternals } from "./reviewGate/internals.js";
 export { isTestingEnabled, testerProvenance };
-
-// ---------------------------------------------------------------------------
-// Shared helper: P1 retry-cap logic
-// ---------------------------------------------------------------------------
-
-/**
- * Compute the retry-cap state for a reject or tester-fail:
- * - bumps `attempt_count` by 1 on every call.
- * - when `nextAttempt >= maxAttempts` sets `capReached:true` so the caller
- *   parks the ticket to `blocked` instead of re-queuing it.
- */
-export function capRetry(
-  currentAttemptCount: number,
-  maxAttempts: number,
-): { nextAttempt: number; capReached: boolean } {
-  const nextAttempt = currentAttemptCount + 1;
-  return { nextAttempt, capReached: nextAttempt >= maxAttempts };
-}
+export { capRetry } from "./reviewGate/shared.js";
 
 // ---------------------------------------------------------------------------
 // GRADUATED-AUTONOMY (Spec 2, Phase 1): "approved unchanged vs edited" signal
@@ -418,18 +402,6 @@ function validatedBinding(
  * recorded.
  */
 const UNVERIFIABLE_LANDING_VIAS: ReadonlySet<string> = new Set(["pr", "pr-stale"]);
-
-/**
- * cli-wg/F-04: the person who approves or rejects a review is its reviewer. A ticket
- * with no reviewer assigned (the loose packs never need one before ready) records the
- * human/admin who decided it, so `ticket.reviewer` names who looked; an assigned
- * reviewer is never overwritten, and an agent or runner decision sets nothing.
- */
-function reviewerPatch(ticket: Ticket, actor: Actor): { patch?: { reviewer: string } } {
-  if (ticket.reviewer !== null) return {};
-  if (actor.type !== "human" && actor.type !== "admin") return {};
-  return actor.id ? { patch: { reviewer: actor.id } } : {};
-}
 
 export class ReviewGateService {
   private readonly internals: ReviewGateInternals;

@@ -334,6 +334,15 @@ describe("routing recommend", () => {
       expect(text).toMatch(/non-inferiority margin 0\.1/);
     });
 
+    it("a results.json written before the paired interval never recommends, however good it looks", () => {
+      // The old t interval, no method, no discordant count: even a bound well above zero.
+      const r = run({ mean: 0.3, ci95: [0.1, 0.5] }, 20);
+      expect(r.proposals).toEqual([]);
+      expect(r.not_proposed.join("\n")).toMatch(
+        /not the paired-proportion interval \(results written before it\); run its report again/,
+      );
+    });
+
     it("a lower bound outside the margin does not recommend, and says why", () => {
       const r = run(NEWCOMBE_OUTSIDE, 24);
       expect(r.proposals).toEqual([]);

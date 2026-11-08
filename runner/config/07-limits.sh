@@ -90,7 +90,7 @@ GAFFER_DOD_OUTPUT_TAIL="${GAFFER_DOD_OUTPUT_TAIL:-40}"    # lines of gate output
 # Docker sandbox resource caps (lib/sandbox-docker.sh reads them, defaults cpus=4
 # memory=4g pids=512), one knob for the three; the old GAFFER_SANDBOX_CPUS / _MEMORY /
 # _PIDS are deprecated and still apply to a cap the knob does not name.
-: "${GAFFER_SANDBOX_LIMITS:=}"   # docker sandbox caps as "cpus=4 memory=4g pids=512"; a cap not named keeps that default.
+: "${GAFFER_SANDBOX_LIMITS:=}"   # docker sandbox caps as "cpus=4 memory=4g pids=512"; a cap not named keeps that default; a malformed, zero or negative cap refuses the run.
 export GAFFER_SANDBOX_LIMITS
 _gaffer_deprecated GAFFER_SANDBOX_CPUS 'set GAFFER_SANDBOX_LIMITS="cpus=N" instead'
 _gaffer_deprecated GAFFER_SANDBOX_MEMORY 'set GAFFER_SANDBOX_LIMITS="memory=N" instead'

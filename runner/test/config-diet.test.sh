@@ -104,6 +104,15 @@ V="$(caps GAFFER_SANDBOX_LIMITS="cpus=2, pids=99")"
 [ "$V" = "pids-limit=99 memory=4g cpus=2 " ] && ok "the knob sets the caps it names; memory keeps 4g" || fail "F5 knob: $V"
 V="$(caps GAFFER_SANDBOX_MEMORY=1g GAFFER_SANDBOX_CPUS=3 GAFFER_SANDBOX_LIMITS=cpus=2)"
 [ "$V" = "pids-limit=512 memory=1g cpus=2 " ] && ok "a deprecated cap variable still applies; the knob wins over it" || fail "F5 alias: $V"
+for bad in "pids=-1" "pids=0" "memory=0" "cpus=0" "cpus=0.0" "cpus=abc" "pids=" "cpu=8"; do
+  if env -i PATH="$PATH" HOME="$WORK/home" GAFFER_DATA="$WORK/data" GAFFER_SANDBOX_DRY_RUN=1 GAFFER_MCP_BRIDGE=0 GAFFER_SANDBOX_LIMITS="$bad" \
+    bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WORK/sbx/w" "$WORK/sbx/r" -- true >/dev/null 2>"$WORK/sbx-err"; then
+    fail "F5: GAFFER_SANDBOX_LIMITS=$bad was accepted (docker reads a zero or negative cap as none)"
+  else
+    grep -q "GAFFER_SANDBOX_LIMITS: '$bad'" "$WORK/sbx-err" && ok "F5: a malformed GAFFER_SANDBOX_LIMITS=$bad refuses the run (fails closed)" \
+      || fail "F5: $bad refused without naming it: $(cat "$WORK/sbx-err")"
+  fi
+done
 cfg GAFFER_SANDBOX_PIDS=100 -- ':' >/dev/null
 warned GAFFER_SANDBOX_PIDS && grep -q 'GAFFER_SANDBOX_LIMITS="pids=N"' "$WORK/err" && ok "GAFFER_SANDBOX_PIDS warns once, naming the replacement" || fail "F5 warning: $(cat "$WORK/err")"
 

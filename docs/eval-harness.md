@@ -362,7 +362,8 @@ out of the other places a reviewer could read it too: the ticket page's match re
 says "Eval judge: hidden until you decide", the eval judge's events in
 `GET /tickets/:id`, `GET /tickets/:id/events` and the batched details carry
 `{ "hidden": true }` in place of the grade, and `wg ticket show` prints `evalJudgment:
-null` with `evalJudgmentHidden` saying how to see it. Once the view is opened, or the
+null` with `evalJudgmentHidden` saying how to see it; `wg judge-agreement` counts such a
+ticket as pending but leaves its pair and its verdict out of the report. Once the view is opened, or the
 ticket leaves review, they show it again. A decision is *revealed* when a
 reveal on the ticket falls between the judgment and the decision, or when a person
 decided before this factory started hiding the grade (the database upgrade that added

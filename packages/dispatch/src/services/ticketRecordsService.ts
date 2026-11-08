@@ -176,6 +176,19 @@ export function revealJudge(
   actor: Actor,
   seenRound: string | null = null,
 ): JudgeRevealResult {
+  // One IMMEDIATE transaction around the record and the read (the record's own nests as a
+  // savepoint): the grade is read under the same write lock, after the reveal's row, so
+  // no other writer can move the ticket into a new round between the two.
+  return inTransaction(host.db, () => revealJudgeLocked(host, internals, ref, actor, seenRound));
+}
+
+function revealJudgeLocked(
+  host: TicketRecordsHost,
+  internals: TicketRecordsInternals,
+  ref: string,
+  actor: Actor,
+  seenRound: string | null,
+): JudgeRevealResult {
   const r = recordJudgeRevealed(host, internals, ref, actor, seenRound);
   if (!(r.recorded || r.reason === "already_recorded" || r.reason === "not_in_review"))
     throw new DispatchError(

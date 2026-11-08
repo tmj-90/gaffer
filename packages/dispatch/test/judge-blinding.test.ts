@@ -24,7 +24,7 @@ import { Dispatch } from "../src/core.js";
 import { JUDGE_BLIND_SINCE_KEY } from "../src/db/schema.js";
 import type { Actor } from "../src/domain/types.js";
 import { writeEvent } from "../src/events/eventWriter.js";
-import { readJudgeAgreement } from "../src/health/judgeAgreement.js";
+import { readJudgeAgreement, renderJudgeAgreement } from "../src/health/judgeAgreement.js";
 import { readJudgeBlindSince } from "../src/services/reviewTelemetry.js";
 import { TestClock } from "../src/util/clock.js";
 import { CLI_BUILT, runBin } from "./helpers/cliBin.js";
@@ -357,6 +357,26 @@ describe("one request records the reveal and returns the grade", () => {
     const t = judged();
     expect(() => h.wg.revealJudge(t.id, agent)).toThrow(/Only a person/);
     expect(reveals(h.wg, t.id)).toHaveLength(0);
+  });
+
+  it("wg judge-agreement shows no grade of a ticket in review with the view closed", async () => {
+    const t = judged("Pending, closed");
+    const before = readJudgeAgreement(h.wg.db);
+    expect(before.pairs.find((x) => x.ticketNumber === t.number)).toBeUndefined();
+    expect(before.pendingHidden).toBeGreaterThanOrEqual(1);
+    expect(before.table.fail.pending).toBe(
+      before.pairs.filter((p) => p.outcome === "pending" && p.overall === "fail").length,
+    );
+    expect(renderJudgeAgreement(before)).toMatch(/judge's view closed: their grades are not shown/);
+    // Once the view is opened (recorded), the pending pair is shown like any other.
+    const r = await call(h, `/tickets/${t.id}/judge-revealed`);
+    expect(r.status).toBe(200);
+    const after = readJudgeAgreement(h.wg.db);
+    expect(after.pairs.find((x) => x.ticketNumber === t.number)).toMatchObject({
+      outcome: "pending",
+      overall: "fail",
+    });
+    expect(after.pendingHidden).toBe((before.pendingHidden ?? 0) - 1);
   });
 });
 

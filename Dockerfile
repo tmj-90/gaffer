@@ -8,8 +8,10 @@
 #     -e ANTHROPIC_API_KEY -v "$PWD/repos:/repos" gaffer
 #
 # Inside the container the container IS the containment boundary, so the runner's
-# own OS sandbox is off (SANDBOX_PROVIDER=none); the red-team-gated docker provider
-# is for running the factory on a host with a Docker daemon.
+# own OS sandbox is off (SANDBOX_PROVIDER=none) and the image opts out of the sandbox
+# every agent launch otherwise requires (GAFFER_STRICT_REQUIRE=0, the documented
+# environment opt-out); the red-team-gated docker provider is for running the factory
+# on a host with a Docker daemon.
 FROM node:22-bookworm-slim AS build
 RUN apt-get update \
   && apt-get install -y --no-install-recommends git ca-certificates python3 \
@@ -50,9 +52,12 @@ RUN mkdir -p /data /repos && chown -R node:node /app /data /repos
 USER node
 # GAFFER_BOOTSTRAP_ROOT: a greenfield repo the factory creates lives on the /repos
 # mount, so recreating the container keeps it (its registration lives in /data).
+# GAFFER_STRICT_REQUIRE=0 beside SANDBOX_PROVIDER=none: the container is the
+# containment, so agents here run without an OS sandbox of their own (said once at start).
 ENV GAFFER_DATA=/data \
     GAFFER_BOOTSTRAP_ROOT=/repos \
     SANDBOX_PROVIDER=none \
+    GAFFER_STRICT_REQUIRE=0 \
     DISPATCH_API_PORT=8787 \
     HOME=/home/node
 EXPOSE 8787

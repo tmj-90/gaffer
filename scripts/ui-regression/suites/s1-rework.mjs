@@ -245,58 +245,28 @@ export default async function s1(t, L) {
     "where Review shows the reviewer agent's advisory verdict (its evidence rows) is HELD until the review-packet change lands",
   );
 
-  // ── agent approval needs containment: with DISPATCH_ALLOW_AGENT_APPROVE on and
-  //    no OS sandbox, the runner refuses to launch an agent and says so ──
-  // "No OS sandbox" is set, not assumed: SANDBOX_PROVIDER is auto-detected per host
-  // (sandbox-exec on macOS, docker wherever a docker daemon answers — every GitHub
-  // ubuntu runner), and with a provider the gate wraps the agent instead of refusing:
-  // the docker sandbox then failed to come up, the agent exited with no commits and
-  // the ticket went back to ready, never blocked (and the next Poll took it again,
-  // ahead of the reject-cap ticket). Choosing provider "none" in the same save makes
-  // this world provider-less on every host.
+  // ── the isolation posture: every agent launch needs an OS sandbox by default, and
+  //    this world opts out in its environment (scripts/ui-regression/setup.sh: every
+  //    agent here is a stub), so Settings must say so in the Sandbox group's read-only
+  //    line, fed by the real probe (runner/gaffer sandbox-status). ──
   await t.visit("settings");
-  await t.setSetting("DISPATCH_ALLOW_AGENT_APPROVE", "1");
-  await t.setSetting("SANDBOX_PROVIDER", "none");
-  const savedA = await t.saveSettings();
+  const isoSel = "#grp-sandbox .settings-isolation";
+  const isoText = (await p.textContent(isoSel).catch(() => "")) || "";
+  const isoState = (await p.getAttribute(isoSel, "data-state").catch(() => "")) || "";
   t.check(
-    savedA.status < 300 &&
-      savedA.sent.DISPATCH_ALLOW_AGENT_APPROVE === "1" &&
-      savedA.sent.SANDBOX_PROVIDER === "none",
-    "Settings: 'Agents may approve reviews' switched on and Sandbox provider 'none' saved (no OS sandbox on any host)",
-    `agent-approve save: ${savedA.status} ${JSON.stringify(savedA.sent)}`,
+    isoState === "opted-out" && /GAFFER_STRICT_REQUIRE=0 is set in the environment/.test(isoText),
+    "Settings → Sandbox shows the isolation posture read-only: opted out in the environment, agents run without an OS sandbox",
+    `isolation line: state=${isoState} '${isoText.slice(0, 200)}'`,
   );
-  const smA = await L.settingsMap();
-  t.check(
-    smA.get("SANDBOX_PROVIDER")?.effective === "none" &&
-      smA.get("DISPATCH_ALLOW_AGENT_APPROVE")?.effective === "1",
-    "GET /api/settings reports SANDBOX_PROVIDER=none and DISPATCH_ALLOW_AGENT_APPROVE=1 effective, so the next tick runs with no provider",
-    `after the containment save: SANDBOX_PROVIDER=${JSON.stringify(smA.get("SANDBOX_PROVIDER"))} DISPATCH_ALLOW_AGENT_APPROVE=${JSON.stringify(smA.get("DISPATCH_ALLOW_AGENT_APPROVE"))}`,
-  );
-  const contained = await L.seedTicket(t, {
-    title: `Containment check (${L.tag("s1")})`,
-    acs: ["covered by a test"],
-    ready: true,
-  });
-  await t.visit("work");
-  await t.poll();
-  const pollC = t.lastPoll;
-  const refused = await L.waitStatus(contained.id, L.SETTLED, 120000);
-  await t.visit("work");
-  const cardC =
-    (await p
-      .textContent(`.board-card:has(.num:text-is("#${contained.number}"))`)
-      .catch(() => "")) || "";
-  const callsC = L.stubCalls({ kind: "delivery", ticket: contained.number }).length;
-  if (refused?.status === "blocked" && /sandbox/i.test(cardC) && callsC === 0)
-    t.ok(
-      `with agent approval on and no OS sandbox the runner fails closed: #${contained.number} parked, no agent launched, and its Work card names the missing sandbox`,
-    );
-  else
-    t.bad(
-      `containment: status=${refused?.status} agent calls=${callsC} card='${cardC.slice(0, 160)}' · ${await L.whyStuck(contained, pollC)}`,
-    );
+  // The refusal itself (no OS sandbox and no opt-out: nothing claimed, no agent, the fix
+  // named) cannot be driven from this opted-out world: the opt-out is environment-only on
+  // purpose. runner/test/isolation-default.test.sh proves it through the real tick, poll
+  // and `gaffer run`.
   t.skip(
-    "CHANGES → rework with the reviewer's feedback (the AFK loop) needs a contained runner (sandbox or GAFFER_STRICT_REQUIRE=0 out of band); this shared server keeps the containment gate on — see suites/s4-autonomy.mjs",
+    "with no OS sandbox the runner refuses to launch an agent: this world opts out in its environment (stub agents), so the refusal is proven by runner/test/isolation-default.test.sh",
+  );
+  t.skip(
+    "CHANGES → rework with the reviewer's feedback (the AFK loop) is an agent-ships path: left to an own-server shard with an OS sandbox, like the ones suites/s4-autonomy.mjs skips",
   );
 
   // ── Dispatch's reject cap, lowered from Settings ──────────────────────────

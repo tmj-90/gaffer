@@ -28,6 +28,9 @@
 #     run. No test may make a real, billed model call on a contributor's machine.
 #   * NODE_COMPILE_CACHE points at a per-run dir, so the many short node processes a
 #     test starts (each `wg` call is one) reuse each other's compiled modules.
+#   * OS isolation opt-out: GAFFER_STRICT_REQUIRE=0 is exported, because every agent
+#     launch needs an OS sandbox by default and every agent here is a stub (the tests
+#     of that requirement set their own value; isolation-default.test.sh unsets it).
 #   * dollar-cap opt-out: GAFFER_ALLOW_UNCAPPED=1 is exported, because a live run with
 #     no GAFFER_DAILY_BUDGET_USD / GAFFER_BUDGET_USD refuses to start and every agent
 #     here is a stub (spend-cap-required.test.sh unsets it to prove the refusal).
@@ -108,6 +111,14 @@ if [ "${1:-}" = "--one" ]; then
     # the dollar-cap requirement (lib/budget.sh gaffer_spend_cap_ok). A test of that
     # refusal unsets it for its own runs (spend-cap-required.test.sh).
     export GAFFER_ALLOW_UNCAPPED=1
+    # OS isolation opt-out: every agent launch requires an OS sandbox by default
+    # (lib/sandbox.sh), and every agent here is a stub that a real sandbox would only get
+    # in the way of (a CI runner's docker has no sandbox image built; macOS runners would
+    # wrap the stubs in sandbox-exec). So the suite runs with the documented opt-out in
+    # the environment. SANDBOX_PROVIDER is left alone. The tests of the requirement set
+    # their own value (isolation-default, strict-mode, strict-require, sandbox-*,
+    # autonomy-containment, worker-command, ...).
+    export GAFFER_STRICT_REQUIRE=0
     exec perl -e 'alarm shift; exec @ARGV' "$cap" "$interp" "$file"
   ) >"$R/$idx.out" 2>&1 </dev/null
   rc=$?

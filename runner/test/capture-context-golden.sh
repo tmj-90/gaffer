@@ -110,6 +110,8 @@ capture_once() {
   # 3. One render-only tick. MEMORY_CLI_BIN is nonexistent so every `lg` call
   #    fails soft → empty file-cards/product-context blocks (their goldens are
   #    captured separately below). MCP bins are fixed literals (pure text).
+  #    A render-only tick launches no agent: it opts out of the OS sandbox the live
+  #    launch path requires (GAFFER_STRICT_REQUIRE=0), as runner/test/run.sh does.
   env -i PATH="$PATH" HOME="$HOME" ${TMPDIR:+TMPDIR="$TMPDIR"} \
     DISPATCH_DB="$db" MEMORY_DB="$data/memory.sqlite" GAFFER_DATA="$data" \
     MEMORY_CLI_BIN="$base/nonexistent-memory-cli.js" \
@@ -117,6 +119,7 @@ capture_once() {
     SKILLS_DIR="$SKILLS_FIXTURE" \
     GAFFER_PLAN_MODEL=none GAFFER_IMPL_MODEL=none CLAUDE_BIN=/bin/false \
     DRY_RUN=0 GAFFER_CONTEXT_DUMP_DIR="$dump" GAFFER_CONTEXT_DUMP_ONLY=1 \
+    GAFFER_STRICT_REQUIRE=0 \
     bash "$RUNNER_DIR/tick.sh" > "$base/tick.log" 2>&1
   [ -s "$dump/prompt.txt" ] || { tail -30 "$base/tick.log" >&2; die "no prompt dumped ($sub)"; }
   [ -s "$dump/mcp-runtime.json" ] || die "no mcp-runtime dumped ($sub)"

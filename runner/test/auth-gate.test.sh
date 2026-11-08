@@ -68,7 +68,10 @@ out="$(stub_loop ANTHROPIC_API_KEY=sk-test)"; rc=$?
 [ "$rc" = 0 ] && [ "$(ticks)" = 1 ] && ok "G2: a visible credential (ANTHROPIC_API_KEY) → the run starts" || fail "G2 key: rc=$rc ticks=$(ticks): $out"
 # A first live run on a fresh data dir (no factory.log yet) starts cleanly: loop.sh's
 # log mark once printed "factory.log: No such file or directory".
-! has "$out" "No such file or directory" && ! has "$out" "WARNING" \
+# (The OS-sandbox opt-out this suite runs under, runner/test/run.sh, is said once by the
+# loop's launch gate on purpose; any other warning is a failure.)
+_w="$(printf '%s\n' "$out" | grep -v 'GAFFER_STRICT_REQUIRE=0 in the environment' || true)"
+! has "$out" "No such file or directory" && ! has "$_w" "WARNING" \
   && ok "G2: a first run on a fresh data dir prints no missing-file error or warning" || fail "G2 clean start: $out"
 out="$(stub_loop CLAUDE_BIN="$WORK/bin/claude")"; rc=$?
 [ "$rc" = 0 ] && [ "$(ticks)" = 1 ] && ok "G2: a custom CLAUDE_BIN is not probed (it may bring its own login)" || fail "G2 custom: rc=$rc ticks=$(ticks): $out"

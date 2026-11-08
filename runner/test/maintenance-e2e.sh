@@ -87,6 +87,10 @@ export GAFFER_DATA_DIR="$WORK/crew-data"
 # CI runs this file directly, outside runner/test/run.sh's GAFFER_ALLOW_UNCAPPED=1, so
 # it sets a cap the way an operator would. The stub worker spends nothing against it.
 export GAFFER_DAILY_BUDGET_USD=5
+# Every agent launch needs an OS sandbox by default (lib/sandbox.sh); the worker here is a
+# stub a real sandbox would only get in the way of (a CI runner's docker has no sandbox
+# image), so it opts out the way runner/test/run.sh does: in the environment.
+export GAFFER_STRICT_REQUIRE=0
 export GAFFER_DATA="$WORK/data" CLAUDE_BIN="$WORK/bin/claude" CLAUDE_FLAGS="" \
        GAFFER_TICK_TIMEOUT=120 GAFFER_MAX_TURNS=50 GAFFER_CARD_MODEL=stub GAFFER_PLAN_MODEL=stub GAFFER_IMPL_MODEL=stub \
        REVIEW_MODE=human DRY_RUN=0

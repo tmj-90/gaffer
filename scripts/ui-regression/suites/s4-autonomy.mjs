@@ -1,6 +1,7 @@
 // S4 autonomy flags, asserted by ticket STATUS only (Review markup is held while it
-// is reworked). On this shared server the containment gate stays on, so the flags
-// that let an AGENT ship are exercised where no agent has to launch under them:
+// is reworked). This shared server opts out of the OS sandbox in its environment
+// (scripts/ui-regression/setup.sh: every agent is a stub), so the flags that let an
+// AGENT ship are exercised where no agent has to launch under them:
 //   • AUTO_MERGE ('Auto-merge on approval') saved in Settings: a human approval in
 //     Review lands the branch at once (done) — no Merge now;
 //   • REVIEW_MODE=both: the reviewer agent's APPROVE screens the delivery and leaves
@@ -8,9 +9,8 @@
 //   • the dial: choosing Autonomous shows the Go/No-Go with the containment check
 //     before anything is saved.
 // The agent-ships paths (DISPATCH_ALLOW_AGENT_APPROVE, MERGE_ON_AGENT_REVIEW, the
-// merge lane after an agent approval, graduated policies) need a server with an OS
-// sandbox (or GAFFER_STRICT_REQUIRE=0 out of band); they are SKIPPED here with that
-// reason rather than half-tested. PR mode with required CI is s4b-pr-mode, which runs
+// merge lane after an agent approval, graduated policies) belong on a server with an
+// OS sandbox; they are SKIPPED here with that reason rather than half-tested. PR mode with required CI is s4b-pr-mode, which runs
 // on its own server with a fake `gh` on PATH.
 export default async function s4(t, L) {
   const p = t.page;
@@ -150,6 +150,6 @@ export default async function s4(t, L) {
   } else t.bad("the Team instructions dial has no Autonomous stop");
 
   t.skip(
-    "agent approval / MERGE_ON_AGENT_REVIEW / the merge lane after an agent approval / graduated policies: need a contained runner (OS sandbox or GAFFER_STRICT_REQUIRE=0 out of band) — scaffold for an own-server shard",
+    "agent approval / MERGE_ON_AGENT_REVIEW / the merge lane after an agent approval / graduated policies: need a runner with an OS sandbox, not this opted-out shared server — scaffold for an own-server shard",
   );
 }

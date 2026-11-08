@@ -29,12 +29,22 @@
  * Judgments come from `ticket.eval_judged` events (recorded since the verdict reached the
  * ticket) and from eval-ledger.jsonl records (older judgments, paired by ticket number and
  * time); a ledger record with a matching event is the same judgment and counted once.
+ *
+ * BLINDING: the Review view keeps the judge's view collapsed until a person opens it, and
+ * opening it while the ticket is in review records `ticket.review_judge_revealed`. A
+ * decision is `revealed` when such a reveal on the ticket falls between the judgment and
+ * the decision, or when a person decided before the hidden view existed on this database
+ * (`judgeBlindSince`, stamped by the migration that added it: the grade was shown openly
+ * then); otherwise it is `blind`. A grade the reviewer saw can sway the decision it is
+ * compared with, so the headline figures and the reading come from BLIND decisions only,
+ * and the revealed ones are reported apart with their own counts.
  * Pure functions plus one read-only DB reader; no model call, no write.
  */
 import type { Db } from "../db/connection.js";
 import { EVAL_JUDGED_EVENT, JUDGE_DIMENSIONS, readJudgments } from "../services/evalJudgment.js";
 import type { JudgeDimension, JudgeOverall } from "../services/evalJudgment.js";
 import type { WorkEvent } from "../domain/types.js";
+import { readJudgeBlindSince, REVIEW_JUDGE_REVEALED_EVENT } from "../services/reviewTelemetry.js";
 import { isReviewSendBack } from "./sendBacks.js";
 
 export interface JudgmentPoint {
@@ -68,6 +78,36 @@ export interface PairedJudgment extends JudgmentPoint {
   reason: string | null;
   /** Every send-back of this ticket after the judgment (this delivery's and later ones'). */
   laterSendBacks: number;
+  /**
+   * Whether the decider could have seen the grade: `revealed` (the judge's view was opened
+   * on the ticket between the judgment and the decision, or a person decided before the
+   * view was hidden), `blind` otherwise; null while undecided or gated.
+   */
+  seen: "blind" | "revealed" | null;
+}
+
+/** A person opened the judge's view on a ticket in review (`ticket.review_judge_revealed`). */
+export interface RevealPoint {
+  ticketId: string;
+  at: string;
+}
+
+/** The agreement figures over one set of decided deliveries (blind, or revealed). */
+export interface AgreementFigures {
+  decided: number;
+  accepted: number;
+  rejected: number;
+  table: Record<JudgeOverall, { accepted: number; rejected: number }>;
+  warning: {
+    rejectedRate: number | null;
+    precision: number | null;
+    rejectedAfterPass: number | null;
+    recall: number | null;
+    lift: number | null;
+    relativeRisk: number | null;
+  };
+  meanScore: { accepted: number | null; rejected: number | null };
+  auc: number | null;
 }
 
 export interface AgreementReading {
@@ -86,7 +126,19 @@ export interface JudgeAgreementReport {
   gated: number;
   /** Runner deliveries into review since the first judged one, and how many were judged. */
   coverage: { reviewEntries: number; judged: number; rate: number | null };
-  /** Verdict x outcome. `rejected` is sent_back + cancelled. */
+  /**
+   * BLINDING: how many decided deliveries were decided blind (the headline figures below
+   * and the reading count only these) and how many after the grade was revealed, with
+   * the revealed ones' own figures (null when there are none). `blindSince` is when this
+   * database started hiding the grade (null: hidden from the start).
+   */
+  blinding: {
+    blind: number;
+    revealed: number;
+    blindSince: string | null;
+    revealedFigures: AgreementFigures | null;
+  };
+  /** Verdict x outcome over the BLIND decisions (pending: every undecided one). `rejected` is sent_back + cancelled. */
   table: Record<JudgeOverall, { accepted: number; rejected: number; pending: number }>;
   byDecider: Record<Decider, { accepted: number; rejected: number }>;
   /**
@@ -279,18 +331,26 @@ function readingOf(
         "No judged deliveries. Turn the eval judge on (docs/eval-harness.md, Knobs) for a run of real " +
         "tickets, review them as usual, then run this again.",
     };
-  const acc = r.pairs.filter((p) => p.outcome === "accepted").length;
-  const rej = r.pairs.filter((p) => p.outcome === "sent_back" || p.outcome === "cancelled").length;
+  // Blind decisions only: a decision made after the grade was revealed is not evidence of
+  // agreement (the grade may have made it).
+  const blind = r.pairs.filter((p) => p.seen === "blind");
+  const acc = blind.filter((p) => p.outcome === "accepted").length;
+  const rej = blind.filter((p) => p.outcome === "sent_back" || p.outcome === "cancelled").length;
+  const n = r.blinding.blind;
+  const revealedNote =
+    r.blinding.revealed > 0
+      ? ` (${r.blinding.revealed} more decided after the grade was revealed are not counted)`
+      : "";
   if (
-    r.decided < THRESHOLDS.minDecided ||
+    n < THRESHOLDS.minDecided ||
     acc < THRESHOLDS.minEachOutcome ||
     rej < THRESHOLDS.minEachOutcome
   )
     return {
       status: "insufficient_data",
       text:
-        `Not enough decided deliveries to tell: ${r.decided} decided (${acc} accepted, ${rej} ` +
-        `rejected); the reading needs at least ${THRESHOLDS.minDecided}, with ` +
+        `Not enough blind decisions to tell: ${n} decided blind (${acc} accepted, ${rej} ` +
+        `rejected)${revealedNote}; the reading needs at least ${THRESHOLDS.minDecided}, with ` +
         `${THRESHOLDS.minEachOutcome} of each.`,
     };
   const w = r.warning;
@@ -301,13 +361,13 @@ function readingOf(
     return {
       status: "separates",
       text:
-        `The judge separates accepted from rejected work here: AUC ${r.auc}, and ${rates}. ` +
+        `The judge separates accepted from rejected work here, over ${n} blind decisions: AUC ${r.auc}, and ${rates}. ` +
         "Its grade is worth showing to the reviewer.",
     };
   return {
     status: "does_not_separate",
     text:
-      `The judge does not separate accepted from rejected work here (AUC ${r.auc ?? "n/a"}; ` +
+      `The judge does not separate accepted from rejected work here, over ${n} blind decisions (AUC ${r.auc ?? "n/a"}; ` +
       `${rates}; it needs AUC >= ${THRESHOLDS.minAuc} and warned work rejected at least ` +
       `${THRESHOLDS.minRelativeRisk}x as often as passed work). Its model call is not paying ` +
       "for itself on this factory; read the misses before changing the judge model or turning it off.",
@@ -349,50 +409,48 @@ export function coverageOf(
   return { reviewEntries: counted.length, judged, rate: ratio(judged, counted.length) };
 }
 
-/** Pair every judgment with its outcome and summarise the agreement. Pure. */
-export function judgeAgreement(
-  judgments: readonly JudgmentPoint[],
-  transitions: readonly TransitionPoint[],
-): JudgeAgreementReport {
-  const pairs: PairedJudgment[] = judgments.map((j) => ({ ...j, ...outcomeAfter(j, transitions) }));
-  const isRej = (p: PairedJudgment): boolean =>
-    p.outcome === "sent_back" || p.outcome === "cancelled";
-  const decidedPairs = pairs.filter((p) => p.outcome !== "pending" && p.outcome !== "gated");
+/**
+ * Was the grade visible to whoever decided `p`? A reveal on the ticket between the
+ * judgment and the decision, or a person's decision before the view was hidden.
+ */
+export function seenOf(
+  p: Pick<PairedJudgment, "ticketId" | "at" | "outcome" | "decidedAt" | "decidedBy">,
+  reveals: readonly RevealPoint[],
+  blindSince: string | null = null,
+): PairedJudgment["seen"] {
+  if (p.outcome === "pending" || p.outcome === "gated" || p.decidedAt === null) return null;
+  const decidedAt = p.decidedAt;
+  if (blindSince !== null && p.decidedBy === "human" && decidedAt < blindSince) return "revealed";
+  const opened = reveals.some(
+    (r) => r.ticketId === p.ticketId && r.at >= p.at && r.at <= decidedAt,
+  );
+  return opened ? "revealed" : "blind";
+}
+
+const isRej = (p: PairedJudgment): boolean =>
+  p.outcome === "sent_back" || p.outcome === "cancelled";
+
+/** The agreement figures over one set of decided pairs, plus the unrounded inputs to the reading. */
+function figuresOf(decidedPairs: readonly PairedJudgment[]): {
+  figures: AgreementFigures;
+  raw: { auc: number | null; warns: boolean };
+} {
   const accepted = decidedPairs.filter((p) => p.outcome === "accepted");
   const rejected = decidedPairs.filter(isRej);
-
   const table = {
-    pass: { accepted: 0, rejected: 0, pending: 0 },
-    borderline: { accepted: 0, rejected: 0, pending: 0 },
-    fail: { accepted: 0, rejected: 0, pending: 0 },
+    pass: { accepted: 0, rejected: 0 },
+    borderline: { accepted: 0, rejected: 0 },
+    fail: { accepted: 0, rejected: 0 },
   };
-  const byDecider = {
-    human: { accepted: 0, rejected: 0 },
-    agent: { accepted: 0, rejected: 0 },
-    tester: { accepted: 0, rejected: 0 },
-    system: { accepted: 0, rejected: 0 },
-  };
-  for (const p of pairs) {
-    if (p.outcome === "gated") continue;
-    const row = table[p.overall];
-    if (p.outcome === "pending") row.pending++;
-    else if (p.outcome === "accepted") row.accepted++;
-    else row.rejected++;
-    if (p.decidedBy) {
-      if (p.outcome === "accepted") byDecider[p.decidedBy].accepted++;
-      else if (isRej(p)) byDecider[p.decidedBy].rejected++;
-    }
+  for (const p of decidedPairs) {
+    if (p.outcome === "accepted") table[p.overall].accepted++;
+    else if (isRej(p)) table[p.overall].rejected++;
   }
-
   // Every rate from the counts, never from an already-rounded rate.
   const warned = decidedPairs.filter((p) => p.overall !== "pass");
   const passed = decidedPairs.filter((p) => p.overall === "pass");
   const warnedRejected = warned.filter(isRej).length;
   const passedRejected = passed.filter(isRej).length;
-  const rejectedRate = ratio(rejected.length, decidedPairs.length);
-  const precision = ratio(warnedRejected, warned.length);
-  const rejectedAfterPass = ratio(passedRejected, passed.length);
-  const recall = ratio(warnedRejected, rejected.length);
   const lift =
     warned.length > 0 && rejected.length > 0
       ? round2((warnedRejected / warned.length) * (decidedPairs.length / rejected.length))
@@ -410,6 +468,70 @@ export function judgeAgreement(
       ? warnedRejected > 0
       : (warnedRejected / warned.length) * (passed.length / passedRejected) >=
         THRESHOLDS.minRelativeRisk);
+  const accScores = accepted.map((p) => p.score);
+  const rejScores = rejected.map((p) => p.score);
+  return {
+    figures: {
+      decided: decidedPairs.length,
+      accepted: accepted.length,
+      rejected: rejected.length,
+      table,
+      warning: {
+        rejectedRate: ratio(rejected.length, decidedPairs.length),
+        precision: ratio(warnedRejected, warned.length),
+        rejectedAfterPass: ratio(passedRejected, passed.length),
+        recall: ratio(warnedRejected, rejected.length),
+        lift,
+        relativeRisk,
+      },
+      meanScore: { accepted: meanOf(accScores), rejected: meanOf(rejScores) },
+      auc: aucOf(accScores, rejScores),
+    },
+    raw: { auc: aucRaw(accScores, rejScores), warns },
+  };
+}
+
+/**
+ * Pair every judgment with its outcome and summarise the agreement. Pure. `reveals` and
+ * `blindSince` say which decisions saw the grade (see BLINDING in the module comment);
+ * the headline figures and the reading count only the blind ones.
+ */
+export function judgeAgreement(
+  judgments: readonly JudgmentPoint[],
+  transitions: readonly TransitionPoint[],
+  opts: { reveals?: readonly RevealPoint[]; blindSince?: string | null } = {},
+): JudgeAgreementReport {
+  const reveals = opts.reveals ?? [];
+  const blindSince = opts.blindSince ?? null;
+  const pairs: PairedJudgment[] = judgments.map((j) => {
+    const o = outcomeAfter(j, transitions);
+    return { ...j, ...o, seen: seenOf({ ...j, ...o }, reveals, blindSince) };
+  });
+  const allDecided = pairs.filter((p) => p.outcome !== "pending" && p.outcome !== "gated");
+  // The headline: blind decisions only. A grade the decider saw is not independent of it.
+  const decidedPairs = allDecided.filter((p) => p.seen === "blind");
+  const revealedPairs = allDecided.filter((p) => p.seen === "revealed");
+  const accepted = decidedPairs.filter((p) => p.outcome === "accepted");
+  const rejected = decidedPairs.filter(isRej);
+  const blind = figuresOf(decidedPairs);
+
+  const table = {
+    pass: { ...blind.figures.table.pass, pending: 0 },
+    borderline: { ...blind.figures.table.borderline, pending: 0 },
+    fail: { ...blind.figures.table.fail, pending: 0 },
+  };
+  for (const p of pairs) if (p.outcome === "pending") table[p.overall].pending++;
+  const byDecider = {
+    human: { accepted: 0, rejected: 0 },
+    agent: { accepted: 0, rejected: 0 },
+    tester: { accepted: 0, rejected: 0 },
+    system: { accepted: 0, rejected: 0 },
+  };
+  for (const p of decidedPairs) {
+    if (!p.decidedBy) continue;
+    if (p.outcome === "accepted") byDecider[p.decidedBy].accepted++;
+    else if (isRej(p)) byDecider[p.decidedBy].rejected++;
+  }
 
   const dimensionMeans = {} as JudgeAgreementReport["dimensionMeans"];
   for (const d of JUDGE_DIMENSIONS) {
@@ -435,21 +557,21 @@ export function judgeAgreement(
     judgments: pairs.length,
     fromEvents: pairs.filter((p) => p.source === "event").length,
     fromLedger: pairs.filter((p) => p.source === "ledger").length,
-    decided: decidedPairs.length,
+    decided: allDecided.length,
     pending: pairs.filter((p) => p.outcome === "pending").length,
     gated: pairs.filter((p) => p.outcome === "gated").length,
     coverage,
+    blinding: {
+      blind: decidedPairs.length,
+      revealed: revealedPairs.length,
+      blindSince,
+      revealedFigures: revealedPairs.length ? figuresOf(revealedPairs).figures : null,
+    },
     table,
     byDecider,
-    warning: { rejectedRate, precision, rejectedAfterPass, recall, lift, relativeRisk },
-    meanScore: {
-      accepted: meanOf(accepted.map((p) => p.score)),
-      rejected: meanOf(rejected.map((p) => p.score)),
-    },
-    auc: aucOf(
-      accepted.map((p) => p.score),
-      rejected.map((p) => p.score),
-    ),
+    warning: blind.figures.warning,
+    meanScore: blind.figures.meanScore,
+    auc: blind.figures.auc,
     dimensionMeans,
     misses: rejected
       .filter((p) => p.overall === "pass")
@@ -471,14 +593,7 @@ export function judgeAgreement(
       })),
     pairs,
   };
-  const raw = {
-    auc: aucRaw(
-      accepted.map((p) => p.score),
-      rejected.map((p) => p.score),
-    ),
-    warns,
-  };
-  return { ...base, thresholds: THRESHOLDS, reading: readingOf(base, raw) };
+  return { ...base, thresholds: THRESHOLDS, reading: readingOf(base, blind.raw) };
 }
 
 /**
@@ -553,13 +668,16 @@ export function readJudgeAgreement(
   const rows = db
     .prepare(
       `SELECT * FROM work_events WHERE entity_type = 'ticket'
-         AND event_type IN ('ticket.transitioned', ?) ORDER BY rowid ASC`,
+         AND event_type IN ('ticket.transitioned', ?, ?) ORDER BY rowid ASC`,
     )
-    .all(EVAL_JUDGED_EVENT) as WorkEvent[];
+    .all(EVAL_JUDGED_EVENT, REVIEW_JUDGE_REVEALED_EVENT) as WorkEvent[];
   const transitions: TransitionPoint[] = [];
+  const reveals: RevealPoint[] = [];
   const byTicket = new Map<string, WorkEvent[]>();
   for (const e of rows) {
-    if (e.event_type === "ticket.transitioned") {
+    if (e.event_type === REVIEW_JUDGE_REVEALED_EVENT) {
+      reveals.push({ ticketId: e.entity_id, at: e.created_at });
+    } else if (e.event_type === "ticket.transitioned") {
       const p = payloadOf(e);
       transitions.push({
         ticketId: e.entity_id,
@@ -588,7 +706,10 @@ export function readJudgeAgreement(
         source: "event",
       });
   const ledger = opts.ledgerJsonl ? parseLedgerJudgments(opts.ledgerJsonl, idByNumber) : [];
-  return judgeAgreement(mergeJudgments(events, ledger), transitions);
+  return judgeAgreement(mergeJudgments(events, ledger), transitions, {
+    reveals,
+    blindSince: readJudgeBlindSince(db),
+  });
 }
 
 /** The text report `wg judge-agreement` prints. */
@@ -601,6 +722,9 @@ export function renderJudgeAgreement(r: JudgeAgreementReport): string {
   out.push(
     `  decided: ${r.decided}, still pending: ${r.pending}` +
       (r.gated > 0 ? `, sent back by a runner gate before review (not counted): ${r.gated}` : ""),
+  );
+  out.push(
+    `  blind: ${r.blinding.blind} decided without the judge's view opened (the figures below and the reading count only these); revealed: ${r.blinding.revealed} decided after it was opened${r.blinding.blindSince ? ` or before ${r.blinding.blindSince}, when this factory started hiding it` : ""}`,
   );
   if (r.coverage.reviewEntries > 0)
     out.push(
@@ -637,6 +761,11 @@ export function renderJudgeAgreement(r: JudgeAgreementReport): string {
         `  false alarm: #${f.ticketNumber ?? "?"} judged ${f.overall} ${f.score}${f.weakest ? ` (${f.weakest})` : ""}, then accepted`,
       );
   }
+  const rv = r.blinding.revealedFigures;
+  if (rv)
+    out.push(
+      `  revealed decisions, apart (the grade may have swayed them): ${rv.accepted} accepted, ${rv.rejected} rejected; after a non-pass verdict ${pct(rv.warning.precision)} rejected, after a pass ${pct(rv.warning.rejectedAfterPass)}; AUC ${num(rv.auc)}`,
+    );
   out.push(`  reading: ${r.reading.text}`);
   return out.join("\n");
 }

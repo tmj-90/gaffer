@@ -19,6 +19,19 @@ import { listEvents } from "../events/eventWriter.js";
 import { contractHash } from "../util/contractHash.js";
 import { testerOffNotice, type TesterLaneDecision } from "../util/testingLane.js";
 import { currentJudgment, type RecordedEvalJudgment } from "./evalJudgment.js";
+import { REVIEW_JUDGE_REVEALED_EVENT } from "./reviewTelemetry.js";
+
+/** BLINDING: the latest reveal of the judge's view since the ticket entered review, or null. */
+function judgeRevealedAt(events: readonly WorkEvent[], sinceReview: string | null): string | null {
+  let at: string | null = null;
+  for (const e of events)
+    if (
+      e.event_type === REVIEW_JUDGE_REVEALED_EVENT &&
+      (sinceReview === null || e.created_at >= sinceReview)
+    )
+      at = e.created_at;
+  return at;
+}
 import { AC_CHECK_VERIFIER } from "../policy/policy.js";
 import { parseTesterAgent } from "./testerReplay.js";
 import type { AcRepository } from "../repositories/acRepository.js";
@@ -263,6 +276,12 @@ export interface ReviewPacket {
    * model's opinion of the diff, advisory, read by no gate. The Review view says so.
    */
   judge: RecordedEvalJudgment | null;
+  /**
+   * BLINDING: when a person opened the judge's collapsed view in this review round
+   * (`ticket.review_judge_revealed`), or null: the Review view keeps the grade hidden
+   * until then, so a decision can be counted as blind.
+   */
+  judge_revealed_at: string | null;
   /**
    * PRE-WORK SCOUT: the runner's scout record for the latest delivery attempt
    * (`ticket.scout_recorded`): the risk it classified (it can only raise the declared
@@ -1236,6 +1255,7 @@ export class ReviewPacketService {
         .map((ac) => readCriterion(ac, rows, sentBackAt)),
       disagreements,
       judge: currentJudgment(events, sinceReview),
+      judge_revealed_at: judgeRevealedAt(events, sinceReview),
       scout: latestScout(events),
       intent: readIntent(ticket),
       candidate,

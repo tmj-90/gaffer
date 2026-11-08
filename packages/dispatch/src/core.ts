@@ -1359,6 +1359,11 @@ export class Dispatch {
     return ticketRecords.recordReviewRawOpened(this, this.internals, ref, what, actor, seenRound);
   }
 
+  /** BLINDING: a person opened the eval judge's collapsed view of a ticket in review. */
+  recordJudgeRevealed(ref: string, actor: Actor, seenRound?: string | null): ReviewOpenResult {
+    return ticketRecords.recordJudgeRevealed(this, this.internals, ref, actor, seenRound);
+  }
+
   recordLaneVerdict(
     ref: string,
     input: Record<string, unknown>,

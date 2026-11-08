@@ -424,10 +424,42 @@ const JUDGE_DIM_LABEL = {
 };
 const JUDGE_WORD = { pass: "Pass", borderline: "Borderline", fail: "Fail" };
 /**
- * The judge's cell of the verdict strip: its verdict and score, then every dimension it
- * scored 3 or lower with its reason (lowest first), its one-line summary and the model.
+ * BLINDING: the judge's cell starts collapsed behind "Show the judge's view", with no
+ * verdict, score or tone, so a reviewer who decides without opening it decides blind and
+ * judge agreement can compare the grade with that decision. Opening it draws the grade
+ * and calls `onReveal` (the Review view records the reveal on the ticket, once per round).
+ * A view already opened this round (`revealedAt`) is drawn open.
  */
-function judgeCell(jd) {
+function judgeCell(jd, { revealedAt = null, onReveal = null } = {}) {
+  if (revealedAt) return judgeCellOpen(jd);
+  const btn = el(
+    "button",
+    { class: "btn small vd-judge-show", type: "button", "aria-expanded": "false" },
+    "Show the judge's view",
+  );
+  const cell = verdictCell(
+    "judge",
+    "Judge",
+    btn,
+    "Quality judge, advisory: hidden until you open it",
+    el(
+      "p",
+      { class: "vd-sub" },
+      "Hidden until you open it, so your decision can be compared with the grade blind. Opening it before you decide is recorded.",
+    ),
+  );
+  btn.addEventListener("click", () => {
+    cell.replaceWith(judgeCellOpen(jd));
+    if (typeof onReveal === "function") onReveal();
+  });
+  return cell;
+}
+
+/**
+ * The judge's cell, open: its verdict and score, then every dimension it scored 3 or
+ * lower with its reason (lowest first), its one-line summary and the model.
+ */
+function judgeCellOpen(jd) {
   const score = Number(jd.score);
   const shown = Number.isFinite(score) ? score.toFixed(1) : "?";
   const weak = Object.entries(jd.dims || {})
@@ -1211,7 +1243,10 @@ function verdictStrip(p, hooks = {}) {
   // this delivery. A model's opinion of the diff, not a runner fact: said as one, and no
   // gate reads it. Its weak dimensions carry the judge's own reasons.
   const jd = p.judge;
-  if (jd) cells.push(judgeCell(jd));
+  if (jd)
+    cells.push(
+      judgeCell(jd, { revealedAt: p.judge_revealed_at || null, onReveal: hooks.onJudgeReveal }),
+    );
 
   const strip = el(
     "section",

@@ -291,9 +291,11 @@ wrote. How each of these is enforced, and its limits, is in
   was found and links to its file. It is advisory: nothing gates on it.
   `GET /tickets/:id/diff?include=impact` returns the same facts.
 - **The eval judge's grade, when you turn it on** (`GAFFER_EVAL_JUDGE=1`): a verdict
-  and score on five dimensions with the judge's reason for each low one. Nothing gates
-  on it, and only the runner records one. `gaffer eval agreement` says whether it is
-  worth its cost on your factory; see
+  and score on five dimensions with the judge's reason for each low one, collapsed
+  behind *Show the judge's view* so you can decide without it. Opening it before you
+  decide is recorded, and `gaffer eval agreement` then counts your decision apart from
+  the blind ones its figures come from. Nothing gates on it, and only the runner records
+  one. `gaffer eval agreement` says whether it is worth its cost on your factory; see
   [docs/eval-harness.md](eval-harness.md#is-the-judge-worth-having).
 - **A request for a human is never "Nothing flagged".** The runner's
   `needs_human_review` notes, a reviewer agent's CHANGES, a tester's FAIL or hold, a

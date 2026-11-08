@@ -6,7 +6,14 @@
  * partial unique index (one active claim per ticket) are preserved — SQLite
  * supports both. Enum validation is also enforced in the application layer.
  */
-export const SCHEMA_VERSION = 32;
+export const SCHEMA_VERSION = 33;
+
+/**
+ * The schema_meta key holding when this database started hiding the eval judge's grade
+ * behind "Show the judge's view" (stamped by the v33 migration on a database that existed
+ * before it; absent on one created since, where the grade was never shown openly).
+ */
+export const JUDGE_BLIND_SINCE_KEY = "judge_blind_since";
 
 // No PRAGMAs here: migrate() runs this inside a transaction, where SQLite ignores
 // them. migrate() and openDatabase() set journal_mode/foreign_keys themselves.

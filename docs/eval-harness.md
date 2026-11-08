@@ -305,7 +305,7 @@ reviews it: that is a gate's verdict, not a reviewer's, so it is counted apart a
 delivery's outcome. It reads the judgments on
 the tickets and, for judgments recorded before they reached the ticket, the eval
 ledger (paired by ticket number and time; a ledger line with a matching ticket event
-is counted once). It reports:
+is counted once). It reports (over the blind decisions; see *Blinding* below):
 
 - the verdict by outcome table (pass / borderline / fail against accepted / rejected
   / pending), and who decided each (people, the agent review, the tester: the agent
@@ -320,12 +320,31 @@ is counted once). It reports:
 - the *misses* (judged pass, then sent back, with the reviewer's reason) and the
   *false alarms* (judged short of pass, then accepted, with the weakest dimension):
   the cases to read before changing anything;
+- *blinding*: how many decisions were blind and how many came after the grade was
+  revealed, with the revealed ones' table, rates and AUC apart;
 - *coverage*: how many of the runner's deliveries into review since the first judged
   one were judged at all (a conflict reopen or a delivery you made by hand is never
   judged and is not counted), so a judge failing quietly (an unbuilt crew, a dead
   turn, a refusal) shows instead of shrinking the sample unseen.
 
-**The reading** applies a fixed rule: below 20 decided deliveries, or fewer than 5
+**Blinding.** If the reviewer reads the judge's grade before deciding, agreement partly
+measures the judge persuading the reviewer, not the judge seeing what the reviewer sees.
+So the Review page keeps the grade collapsed behind **Show the judge's view**: no
+verdict, score or colour shows until you open it. Opening it while the ticket is in
+review records a reveal on the ticket (`ticket.review_judge_revealed`, once per review
+round, through `POST /tickets/:id/judge-revealed`; `wg review judge-view <ref>` is the
+terminal's way to open it and is recorded the same way). A decision is *revealed* when a
+reveal on the ticket falls between the judgment and the decision, or when a person
+decided before this factory started hiding the grade (the database upgrade that added
+the hidden view stamps that moment; a factory created since has no such decisions);
+every other decision is *blind*. The agreement figures above and the reading count
+blind decisions only, and the report gives the count of each and the revealed decisions'
+own figures apart, labelled as possibly swayed by the grade. The Health view's *What
+each lane changed* card splits the eval judge's differed-from-the-person counts the same
+way. Opening the view is your call and nothing stops you; it only moves your decision
+out of the headline.
+
+**The reading** applies a fixed rule: below 20 blind decided deliveries, or fewer than 5
 accepted or 5 rejected, it says there is not enough data to tell. Above that, the
 judge *separates* when the AUC is at least 0.7 and the work it warned of was rejected
 at least 1.5 times as often as the work it passed (any rejection after a warning
@@ -341,7 +360,8 @@ thresholds are in the report (`thresholds`) so a reading can always be checked.
 delivery (booked in the usage ledger as kind `eval-judge`, so the budget caps and the
 cost tiles see it), and whether that is worth it depends on the factory. Turn it on for a run of at least
 20 reviewed deliveries, review as you normally would, then run `gaffer eval
-agreement`. If it separates, keep it on and read its reasons on the Review page. If it
+agreement`. If it separates, keep it on and open its view on the Review page when you want its
+reasons (that decision then counts as revealed). If it
 does not, read the misses, then try a different judge model
 (`GAFFER_JUDGE_MODEL_FLAG`) or turn it off. What a change costs once every attempt is
 counted, the judge's own spend included, is the *cost per accepted change* metric above (`gaffer wg stats`, the Health view's

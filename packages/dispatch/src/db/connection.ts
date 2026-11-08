@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import Database from "better-sqlite3";
 
 import { backfillEventChain } from "../events/eventChain.js";
-import { SCHEMA_SQL, SCHEMA_VERSION } from "./schema.js";
+import { JUDGE_BLIND_SINCE_KEY, SCHEMA_SQL, SCHEMA_VERSION } from "./schema.js";
 
 export type Db = Database.Database;
 
@@ -486,6 +486,15 @@ function migrateLocked(db: Db): void {
   // `unhashed` to `events verify` instead of being silently re-chained here (which
   // made "edit a row, blank the hashes after it, reopen" verify clean).
   if (found === null || found < EVENT_CHAIN_SCHEMA_VERSION) backfillEventChain(db);
+  // BLINDING (v32→v33): the Review view now hides the eval judge's grade until a person
+  // opens it. On a database that existed before (found < 33) a person's earlier decisions
+  // were made with the grade in view, so stamp when the hiding began; judge agreement
+  // counts a decision before it as revealed. A database created at v33 or later never
+  // showed the grade openly and gets no stamp. INSERT OR IGNORE: the first stamp stands.
+  if (found !== null && found < 33)
+    db.prepare(
+      "INSERT OR IGNORE INTO schema_meta(key, value) VALUES (?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+    ).run(JUDGE_BLIND_SINCE_KEY);
   const fkViolationsAfter = (db.pragma("foreign_key_check") as unknown[]).length;
   if (fkViolationsAfter > fkViolationsBefore) {
     throw new Error(

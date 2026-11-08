@@ -216,6 +216,26 @@ function mount(): void {
     </div>`;
   location.hash = "#/review";
 }
+// The eval judge's grade of the delivery, as the packet carries it.
+const JUDGE = {
+  overall: "borderline",
+  score: 3.4,
+  blocking: false,
+  dims: { ac_coverage: 5, correctness: 4, minimalism: 2, test_adequacy: 3, security: 5 },
+  rationale: {
+    minimalism: "re-implements addTask as appendTask",
+    test_adequacy: "one happy-path test",
+    security: "nothing risky",
+  },
+  summary: "Works, but duplicates an existing helper.",
+  judge_model: "judge-model-x",
+  memory_present: true,
+  cost_usd: 0.42,
+  attempt: 0,
+  at: "2026-10-30T09:58:40Z",
+  event_id: "e1",
+  recorded_by: "system",
+};
 const tick = () => new Promise((r) => setTimeout(r, 0));
 async function boot(): Promise<void> {
   await import(`${pathToFileURL(APP_JS).href}?t=${Date.now()}-${Math.random()}`);
@@ -223,6 +243,11 @@ async function boot(): Promise<void> {
 }
 const text = (sel: string) => document.querySelector(sel)?.textContent?.replace(/\s+/g, " ") ?? "";
 const label = (sel: string) => document.querySelector(sel)?.getAttribute("aria-label") ?? "";
+/** Open the judge's collapsed view, as the reviewer would. */
+async function reveal(): Promise<void> {
+  document.querySelector<HTMLButtonElement>("button.vd-judge-show")?.click();
+  for (let i = 0; i < 4; i++) await tick();
+}
 
 describe("web: the review packet on The Gaffer's Sign-off", () => {
   beforeEach(() => {
@@ -494,27 +519,10 @@ describe("web: the review packet on The Gaffer's Sign-off", () => {
   it("shows the eval judge's score and the reasons for its weak dimensions when recorded", async () => {
     packet = {
       ...PACKET,
-      judge: {
-        overall: "borderline",
-        score: 3.4,
-        blocking: false,
-        dims: { ac_coverage: 5, correctness: 4, minimalism: 2, test_adequacy: 3, security: 5 },
-        rationale: {
-          minimalism: "re-implements addTask as appendTask",
-          test_adequacy: "one happy-path test",
-          security: "nothing risky",
-        },
-        summary: "Works, but duplicates an existing helper.",
-        judge_model: "judge-model-x",
-        memory_present: true,
-        cost_usd: 0.42,
-        attempt: 0,
-        at: "2026-10-30T09:58:40Z",
-        event_id: "e1",
-        recorded_by: "system",
-      },
+      judge: JUDGE,
     };
     await boot();
+    await reveal();
     const cell = document.querySelector(".vd-cell.vd-judge");
     expect(cell).not.toBeNull();
     expect(cell!.classList.contains("vd-warn")).toBe(true);
@@ -533,6 +541,44 @@ describe("web: the review packet on The Gaffer's Sign-off", () => {
     expect(text(".vd-cell.vd-judge")).toContain("Works, but duplicates an existing helper.");
     expect(text(".vd-cell.vd-judge")).toContain("not a check: nothing gates on it");
     expect(text(".vd-cell.vd-judge")).toContain("judge-model-x");
+  });
+
+  // BLINDING (review13/4): the grade is collapsed until the reviewer asks for it, so a
+  // decision made without opening it can be compared with it blind; opening it before the
+  // decision is recorded on the ticket (POST /tickets/:id/judge-revealed).
+  it("keeps the judge's view collapsed: no verdict, score or tone until it is opened", async () => {
+    packet = { ...PACKET, judge: JUDGE };
+    await boot();
+    const cell = document.querySelector(".vd-cell.vd-judge")!;
+    expect(cell).not.toBeNull();
+    const btn = cell.querySelector<HTMLButtonElement>("button.vd-judge-show")!;
+    expect(btn.textContent).toBe("Show the judge's view");
+    expect(btn.getAttribute("aria-expanded")).toBe("false");
+    expect(cell.textContent).not.toMatch(/Borderline|3\.4|duplicates/);
+    expect(document.querySelector(".vd-judge-dim")).toBeNull();
+    expect(cell.classList.contains("vd-warn")).toBe(false);
+    expect(cell.classList.contains("vd-bad")).toBe(false);
+    expect(label(".vd-cell.vd-judge")).toBe("Quality judge, advisory: hidden until you open it");
+    expect(calls.filter((u) => u.includes("/judge-revealed"))).toEqual([]);
+  });
+
+  it("opening the judge's view shows the grade and records the reveal once", async () => {
+    packet = { ...PACKET, judge: JUDGE };
+    await boot();
+    await reveal();
+    expect(text(".vd-cell.vd-judge .vd-v")).toBe("Borderline 3.4/5");
+    expect(document.querySelector("button.vd-judge-show")).toBeNull();
+    expect(calls.filter((u) => u.includes("/judge-revealed"))).toEqual([
+      `/tickets/${T.id}/judge-revealed`,
+    ]);
+  });
+
+  it("a view already opened this round stays open on reload and is not recorded again", async () => {
+    packet = { ...PACKET, judge: JUDGE, judge_revealed_at: "2026-10-30T09:59:30Z" };
+    await boot();
+    expect(document.querySelector("button.vd-judge-show")).toBeNull();
+    expect(text(".vd-cell.vd-judge .vd-v")).toBe("Borderline 3.4/5");
+    expect(calls.filter((u) => u.includes("/judge-revealed"))).toEqual([]);
   });
 
   it("the judge's own words are text: HTML in its reasons, summary or model name never renders", async () => {
@@ -556,6 +602,7 @@ describe("web: the review packet on The Gaffer's Sign-off", () => {
       },
     };
     await boot();
+    await reveal();
     const cell = document.querySelector(".vd-cell.vd-judge")!;
     expect(cell).not.toBeNull();
     expect(cell.querySelector("img, script, .forged")).toBeNull();

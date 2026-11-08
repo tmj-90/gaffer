@@ -193,6 +193,12 @@ describe("OpenAPI response schemas match the live routes", () => {
       `/tickets/${t1.id}/review-raw-opened`,
       { what: "full_diff" },
     );
+    // BLINDING: a person opened the eval judge's collapsed view.
+    await expectContract(
+      "POST /tickets/:id/judge-revealed",
+      `/tickets/${t1.id}/judge-revealed`,
+      {},
+    );
     // CHANGE IMPACT: the opt-in impact facts validate against RepoImpact.
     const withImpact = await expectContract(
       "GET /tickets/:id/diff",

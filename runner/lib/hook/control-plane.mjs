@@ -86,8 +86,10 @@ const CP_PAIRS = [
   ["plan", /^--yes$/],
   ["merge", /^(?:T-)?[0-9]+$/],
   // Review comments (A1/A2): writing, listing, resolving, reopening or withdrawing a
-  // reviewer's comment, and Fix these, are the reviewer's acts, never a delivery agent's.
-  ["review", /^(?:comment|comments|resolve|reopen-comment|withdraw-comment|fix)$/],
+  // reviewer's comment, and Fix these, are the reviewer's acts, never a delivery agent's;
+  // so is opening the eval judge's view (judge-view), which marks the person's decision
+  // as revealed in judge agreement.
+  ["review", /^(?:comment|comments|resolve|reopen-comment|withdraw-comment|fix|judge-view)$/],
   // Escaped defects (MF5): linking a ticket to the accepted change it regresses, or taking
   // the link back, is a person's judgement; an agent would blame another change or hide
   // its own. Review-rule drafts (D6) are proposed from a person's feedback by the server

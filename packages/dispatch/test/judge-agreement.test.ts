@@ -307,7 +307,7 @@ describe("judgeAgreement: the figures and the reading", () => {
     expect(r).toMatchObject({ judgments: 21, decided: 19, pending: 1, gated: 1 });
     expect(r.table.fail).toEqual({ accepted: 0, rejected: 9, pending: 0 });
     expect(r.reading.status).toBe("insufficient_data");
-    expect(r.reading.text).toContain("19 decided (10 accepted, 9 rejected)");
+    expect(r.reading.text).toContain("19 decided blind (10 accepted, 9 rejected)");
     expect(renderJudgeAgreement(r)).toContain(
       "sent back by a runner gate before review (not counted): 1",
     );
@@ -381,6 +381,65 @@ describe("judgeAgreement: the figures and the reading", () => {
       ["event", T(10)],
       ["ledger", T(14)],
     ]);
+  });
+});
+
+describe("blinding: blind decisions are the headline, revealed ones are apart (review13/4)", () => {
+  it("a reveal between the judgment and the decision marks it revealed; one after does not", () => {
+    const js = [jp("t1", 1, "pass", 4.5), jp("t2", 1, "fail", 1.5), jp("t3", 1, "fail", 1.0)];
+    const ts = [
+      tr("t1", 5, "in_review", "ready_for_merge"),
+      tr("t2", 5, "in_review", "refining", "human", "broken"),
+      tr("t3", 5, "in_review", "ready_for_merge"),
+    ];
+    const r = judgeAgreement(js, ts, {
+      reveals: [
+        { ticketId: "t3", at: T(3) }, // opened, then accepted the "fail": revealed
+        { ticketId: "t2", at: T(9) }, // opened after the decision: still blind
+      ],
+    });
+    expect(r.pairs.map((p) => p.seen)).toEqual(["blind", "blind", "revealed"]);
+    expect(r.decided).toBe(3);
+    expect(r.blinding).toMatchObject({ blind: 2, revealed: 1, blindSince: null });
+    // The headline is blind only: one pass accepted, one fail rejected.
+    expect(r.table.pass).toEqual({ accepted: 1, rejected: 0, pending: 0 });
+    expect(r.table.fail).toEqual({ accepted: 0, rejected: 1, pending: 0 });
+    expect(r.auc).toBe(1);
+    expect(r.falseAlarms).toEqual([]);
+    // The revealed decision is reported apart, with its own counts.
+    expect(r.blinding.revealedFigures).toMatchObject({ decided: 1, accepted: 1, rejected: 0 });
+    expect(r.blinding.revealedFigures!.table.fail).toEqual({ accepted: 1, rejected: 0 });
+    const text = renderJudgeAgreement(r);
+    expect(text).toContain(
+      "blind: 2 decided without the judge's view opened (the figures below and the reading count only these); revealed: 1 decided after it was opened",
+    );
+    expect(text).toContain(
+      "revealed decisions, apart (the grade may have swayed them): 1 accepted, 0 rejected",
+    );
+    expect(r.reading.text).toContain("2 decided blind");
+    expect(r.reading.text).toContain("1 more decided after the grade was revealed are not counted");
+  });
+
+  it("a person's decision before the grade was hidden counts as revealed; an agent's does not", () => {
+    const js = [jp("t1", 1, "pass", 4.5), jp("t2", 1, "pass", 4.0)];
+    const ts = [
+      tr("t1", 5, "in_review", "ready_for_merge", "human"),
+      tr("t2", 5, "in_review", "ready_for_merge", "agent"),
+    ];
+    const r = judgeAgreement(js, ts, { blindSince: T(30) });
+    expect(r.pairs.map((p) => p.seen)).toEqual(["revealed", "blind"]);
+    expect(r.blinding.blindSince).toBe(T(30));
+    expect(renderJudgeAgreement(r)).toContain(
+      `or before ${T(30)}, when this factory started hiding it`,
+    );
+  });
+
+  it("pending and gated judgments are neither blind nor revealed", () => {
+    const js = [jp("t1", 1, "pass", 4.5), jp("t2", 1, "pass", 4.5)];
+    const ts = [tr("t2", 5, "in_review", "in_progress", "system", "ci_failed:required")];
+    const r = judgeAgreement(js, ts, { reveals: [{ ticketId: "t1", at: T(2) }] });
+    expect(r.pairs.map((p) => p.seen)).toEqual([null, null]);
+    expect(r.blinding).toMatchObject({ blind: 0, revealed: 0, revealedFigures: null });
   });
 });
 

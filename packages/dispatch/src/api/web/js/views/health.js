@@ -179,11 +179,19 @@ function laneValueCard(health) {
         el("strong", {}, l.label),
         el("span", { class: "dim" }, ` ${l.note}`),
       ]);
+    // BLINDING: the eval judge's comparisons, split by whether the person had opened its
+    // view before deciding. Only the blind ones are independent of the grade.
+    const b = l.blinding;
     const facts = [
       `${plural(l.verdicts_recorded, "verdict")}`,
       l.compared
         ? `differed from the person ${l.differed} of ${l.compared} (${l.differed_lane_blocked} it blocked and the person passed, ${l.differed_lane_passed} it passed and the person sent back)`
         : "no attempt a person also decided",
+      ...(b && l.compared
+        ? [
+            `blind decisions: differed ${b.blind.differed} of ${b.blind.compared}; after the judge's view was opened: ${b.revealed.differed} of ${b.revealed.compared} (the grade may have swayed those)`,
+          ]
+        : []),
       `only lane on ${plural(l.unique_catches, "send-back")}`,
       l.cost_per_attempt_usd == null
         ? "no ledger spend of its own"

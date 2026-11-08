@@ -1,3 +1,5 @@
+import type { Db } from "../db/connection.js";
+import { JUDGE_BLIND_SINCE_KEY } from "../db/schema.js";
 import type { Actor } from "../domain/types.js";
 import { DispatchError } from "../util/errors.js";
 
@@ -13,6 +15,10 @@ import { DispatchError } from "../util/errors.js";
  *  - `ticket.review_raw_opened` {what, round_entered_at}: a person opened a raw log, the
  *    evidence in full or the full diff while the ticket was in review. Once per round
  *    and kind. Feeds "% approved without opening raw logs".
+ *  - `ticket.review_judge_revealed` {what: "judge", round_entered_at}: a person opened the
+ *    eval judge's collapsed view while the ticket was in review. Once per round. Splits
+ *    `wg judge-agreement` into blind decisions and decisions made after the grade was seen
+ *    (health/judgeAgreement.ts).
  *  - `ticket.lane_verdict` {lane, verdict, commit, attempt_id, actor, ...}: what a
  *    judging lane (the reviewer agent, the security reviewer, the tester, the eval judge)
  *    concluded about one candidate, so "did this lane change the decision" is computable.
@@ -25,6 +31,22 @@ import { DispatchError } from "../util/errors.js";
 export const REVIEW_OPENED_EVENT = "ticket.review_opened" as const;
 export const REVIEW_RAW_OPENED_EVENT = "ticket.review_raw_opened" as const;
 export const LANE_VERDICT_EVENT = "ticket.lane_verdict" as const;
+export const REVIEW_JUDGE_REVEALED_EVENT = "ticket.review_judge_revealed" as const;
+
+/** BLINDING: the schema_meta key the v33 migration stamps (see db/schema.ts). */
+export { JUDGE_BLIND_SINCE_KEY };
+
+/** When this database started hiding the judge's grade, or null (hidden from the start). */
+export function readJudgeBlindSince(db: Db): string | null {
+  try {
+    const row = db
+      .prepare("SELECT value FROM schema_meta WHERE key = ?")
+      .get(JUDGE_BLIND_SINCE_KEY) as { value?: unknown } | undefined;
+    return typeof row?.value === "string" && row.value !== "" ? row.value : null;
+  } catch {
+    return null;
+  }
+}
 
 export const RAW_OPEN_KINDS = ["run_log", "evidence", "full_diff"] as const;
 export type RawOpenKind = (typeof RAW_OPEN_KINDS)[number];

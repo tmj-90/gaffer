@@ -49,7 +49,6 @@ import {
   recordedLandingRepos,
   LANDING_PREFIX,
   type LandingStatus,
-  REJECT_PIN_PREFIX,
   REVIEW_PIN_PREFIX,
 } from "./landingStatus.js";
 import { isTestingEnabled, testerProvenance } from "../util/testingLane.js";
@@ -76,6 +75,9 @@ import {
 import type { ReviewGateInternals } from "./reviewGate/internals.js";
 import { capRetry, reviewerPatch } from "./reviewGate/shared.js";
 
+// The method bodies, by concern (services/reviewGate/).
+import * as staleness from "./reviewGate/staleness.js";
+
 // Re-export so consumers don't need to reach into core directly.
 export { isTestingEnabled, testerProvenance };
 export { capRetry } from "./reviewGate/shared.js";
@@ -94,20 +96,7 @@ export interface ApprovalShas {
 
 /** Resolves the delivery-vs-merge SHAs for a ticket at approve time (git + DB read). */
 export type ApprovalShaResolver = (ticket: Ticket) => ApprovalShas | null;
-
-/**
- * Decide whether an approval was UNCHANGED (`true`), edited (`false`), or
- * indeterminate (`null`). When either SHA is missing we return `null` — the signal
- * is unknown, and the recommendation must NOT count an unknown as agreement (doing
- * so would overstate how often the operator approves an agent's work verbatim).
- */
-export function approvalUnchanged(
-  deliverySha: string | null | undefined,
-  mergeSha: string | null | undefined,
-): boolean | null {
-  if (!deliverySha || !mergeSha) return null;
-  return deliverySha === mergeSha;
-}
+export { approvalUnchanged } from "./reviewGate/staleness.js";
 
 /** The current head of one write repo's delivery branch (see reviewedHeadsResolver). */
 export interface ReviewedHead {
@@ -544,7 +533,7 @@ export class ReviewGateService {
     // GRADUATED-AUTONOMY (Spec 2, Phase 1): capture whether this delivery is being
     // approved UNCHANGED vs edited, emitted on the transition below. Best-effort — a
     // resolver throw or absence yields `null` (unknown) and never blocks the approve.
-    const approvedUnchanged = this.computeApprovedUnchanged(ticket);
+    const approvedUnchanged = staleness.computeApprovedUnchanged(this.internals, ticket);
     // REVIEW PIN + STALE REVISION (external review #2). The heads are resolved before the
     // transition (git runs outside the write lock). When the approver names the commits
     // they saw, every write repo's head must still BE that commit — a branch that moved
@@ -553,8 +542,8 @@ export class ReviewGateService {
     // the SAME transaction as the transition. Without named commits (library callers) a
     // HUMAN approval pins the current heads, as before; an agent approval without commits
     // is pinned by the runner (lib/review.sh) only.
-    const heads = this.resolveReviewedHeads(ticket);
-    const pins = this.checkShownCommits(ticket, heads, actor, opts, unavailable);
+    const heads = staleness.resolveReviewedHeads(this.internals, ticket);
+    const pins = staleness.checkShownCommits(ticket, heads, actor, opts, unavailable);
     // TESTER FIRST: when the independent tester gates this ticket (an epic's acceptance
     // ticket always; a testable one while its lane is on), it tests the candidate BEFORE
     // a person reviews it (the runner routes in_review -> in_testing, see routeToTester,
@@ -597,7 +586,7 @@ export class ReviewGateService {
           event_type: "ticket.routed_to_testing",
           payload: { from: "in_review", ...(ticket.acceptance === 1 ? { acceptance: true } : {}) },
         });
-        this.recordApprovalPins(ticket, actor, pins);
+        staleness.recordApprovalPins(this.internals, ticket, actor, pins);
         return result;
       });
     }
@@ -616,7 +605,7 @@ export class ReviewGateService {
         ...reviewerPatch(ticket, actor),
       });
       this.assertWriteReposAvailable(ticket, unavailable); // rolls the transition back
-      this.recordApprovalPins(ticket, actor, pins);
+      staleness.recordApprovalPins(this.internals, ticket, actor, pins);
       return result;
     });
   }
@@ -663,7 +652,7 @@ export class ReviewGateService {
     // The tester runs in one write repo (runner/bin/merge-ticket.mjs resolveTicket's pick,
     // the first write link); its tested commit must be that repo's head now, so it is
     // compared with every write repo's head (a commit id names one commit).
-    const allHeads = (heads ?? this.resolveReviewedHeads(ticket))
+    const allHeads = (heads ?? staleness.resolveReviewedHeads(this.internals, ticket))
       .map((h) => h.sha?.toLowerCase())
       .filter((h): h is string => Boolean(h));
     const head = allHeads[0] ?? null;
@@ -822,7 +811,10 @@ export class ReviewGateService {
         coverage: null,
       };
     }
-    const coverage = this.testerCoverage(ticket, this.resolveReviewedHeads(ticket));
+    const coverage = this.testerCoverage(
+      ticket,
+      staleness.resolveReviewedHeads(this.internals, ticket),
+    );
     if (coverage.covered) {
       return {
         route: false,
@@ -909,7 +901,7 @@ export class ReviewGateService {
    * null when it does not resolve.
    */
   private ciCandidateHead(ticket: Ticket): ReviewedHead | null {
-    return this.resolveReviewedHeads(ticket)[0] ?? null;
+    return staleness.resolveReviewedHeads(this.internals, ticket)[0] ?? null;
   }
 
   /**
@@ -957,182 +949,6 @@ export class ReviewGateService {
         })),
       },
     );
-  }
-
-  /** Best-effort head lookup (a throw resolves no head: nothing to compare or pin). */
-  private resolveReviewedHeads(ticket: Ticket): readonly ReviewedHead[] {
-    try {
-      return this.internals.reviewedHeadsResolver?.(ticket) ?? [];
-    } catch {
-      return [];
-    }
-  }
-
-  /**
-   * STALE REVISION: compare the commits the approver saw with the current heads, and
-   * return the pins to record. Refuses (STATE_CONFLICT, details.reason `stale_revision`)
-   * when any write repo's head differs from what was shown, a repo was not shown at all,
-   * or a shown repo no longer resolves; and (`revision_required`) when the entry point
-   * requires named commits and none were given while a head exists.
-   */
-  private checkShownCommits(
-    ticket: Ticket,
-    heads: readonly ReviewedHead[],
-    actor: Actor,
-    opts: ApproveReviewOptions,
-    unavailable: readonly UnavailableWriteRepo[] = [],
-  ): readonly ReviewedHead[] {
-    const commits = opts.commits;
-    if (commits === undefined || commits.length === 0) {
-      if (opts.requireCommits && heads.length > 0) {
-        throw new DispatchError(
-          "STATE_CONFLICT",
-          `Approve names the commit you reviewed. Current head${heads.length > 1 ? "s" : ""}: ` +
-            heads.map((h) => `${h.repo}=${h.sha}`).join(", ") +
-            ". Look at the diff, then approve with those commits (the dashboard sends them; " +
-            "on the CLI pass --commit <repo>=<sha> for each repo).",
-          {
-            reason: "revision_required",
-            ticket_number: ticket.number,
-            current: heads.map((h) => ({ repo: h.repo, repo_id: h.repoId, sha: h.sha })),
-          },
-        );
-      }
-      // Legacy library path: a human approval pins what is there now; an agent's is
-      // pinned by the runner.
-      return actor.type === "human" || actor.type === "admin" ? heads : [];
-    }
-    const matches = (c: ShownCommit, h: ReviewedHead): boolean =>
-      c.repo === null ? heads.length === 1 : c.repo === h.repoId || c.repo === h.repo;
-    // DUPLICATE PINS (exploratory finding api/F12): one commit per repository. With two
-    // entries for one repo the first decided the outcome, so [head, other] approved and
-    // [other, head] read as a stale revision: the order of the list chose the answer.
-    const named = (c: ShownCommit): string =>
-      c.repo === null
-        ? (heads[0]?.repoId ?? "(unnamed)")
-        : (heads.find((h) => matches(c, h))?.repoId ?? c.repo);
-    const seen = new Map<string, number>();
-    for (const c of commits) seen.set(named(c), (seen.get(named(c)) ?? 0) + 1);
-    const dupes = [...seen].filter(([, n]) => n > 1).map(([k]) => k);
-    if (dupes.length > 0) {
-      const label = (k: string): string => heads.find((h) => h.repoId === k)?.repo ?? k;
-      throw new DispatchError(
-        "VALIDATION_ERROR",
-        `Each repository can be approved at one commit only; ${dupes.map(label).join(", ")} ` +
-          "was named more than once. Nothing was approved.",
-        { reason: "duplicate_repo", repos: dupes.map(label) },
-      );
-    }
-    const moved: Array<{ repo: string; shown: string | null; current: string | null }> = [];
-    for (const h of heads) {
-      const shown = commits.find((c) => matches(c, h));
-      const sha = shown ? shown.sha.trim().toLowerCase() : null;
-      if (sha !== h.sha) moved.push({ repo: h.repo, shown: sha, current: h.sha });
-    }
-    // A shown repo that is UNAVAILABLE now is the coverage refusal's to name
-    // (repo_unavailable), not a stale revision.
-    const isUnavailable = (c: ShownCommit): boolean =>
-      c.repo !== null && unavailable.some((u) => u.repoId === c.repo || u.repo === c.repo);
-    for (const c of commits) {
-      if (!heads.some((h) => matches(c, h)) && !isUnavailable(c))
-        moved.push({
-          repo: c.repo ?? "(unnamed)",
-          shown: c.sha.trim().toLowerCase(),
-          current: null,
-        });
-    }
-    if (moved.length > 0) {
-      const what = moved
-        .map((m) =>
-          m.current === null
-            ? `${m.repo} no longer has a delivery head to approve`
-            : m.shown === null
-              ? `${m.repo} (${m.current.slice(0, 12)}) was not in what you approved`
-              : `${m.repo} is now ${m.current.slice(0, 12)} (you reviewed ${m.shown.slice(0, 12)})`,
-        )
-        .join("; ");
-      throw new DispatchError(
-        "STATE_CONFLICT",
-        moved.every((m) => m.shown === null)
-          ? `The approval does not cover every repository this ticket changes: ${what}. Nothing was approved — review every repository's diff and approve them together.`
-          : `The change moved since it was shown: ${what}. Nothing was approved — reload the diff and review it again.`,
-        { reason: "stale_revision", ticket_number: ticket.number, repos: moved },
-      );
-    }
-    return heads;
-  }
-
-  /**
-   * Record the commit(s) an approval covers as REVIEW PINS — one SYSTEM `commit` evidence
-   * row per write repo (agents record evidence as `agent` and cannot forge one) that the
-   * landing check reads on every path (the merge lane, the dashboard Merge, `gaffer
-   * merge`) and the done gate requires to have landed. Without them an approval bound
-   * nothing: commits pushed to a branch between the approve and the merge landed
-   * unreviewed, and a second repo's change could be left behind.
-   */
-  private recordApprovalPins(ticket: Ticket, actor: Actor, pins: readonly ReviewedHead[]): void {
-    const who = actor.type === "agent" ? "agent review" : "human review";
-    for (const pin of pins) {
-      this.internals.evidence.insert({
-        id: newId(),
-        ticket_id: ticket.id,
-        ac_id: null,
-        repo_id: pin.repoId,
-        decision_id: null,
-        evidence_type: "commit",
-        summary: `${who} (${actor.id ?? actor.type}) approved commit ${pin.sha} of ${pin.branch} in ${pin.repo}`,
-        uri: `${REVIEW_PIN_PREFIX}${pin.sha}`,
-        payload_json: JSON.stringify({
-          kind: "review_pin",
-          approver_type: actor.type,
-          repo: pin.repo,
-        }),
-        created_by: "dispatch",
-        recorded_by_actor_type: "system",
-        created_at: this.internals.clock.now(),
-      });
-    }
-  }
-
-  /**
-   * REJECT PINS (review comments A2/A3): one SYSTEM `commit` evidence row per write repo
-   * naming the commit a rejection sent back (uri `gaffer-rejected-commit:<sha>`). The
-   * "changes since your review" interdiff starts from it. A distinct prefix from the review
-   * pin, so the landing check and the tester binding never read it as an approval.
-   */
-  private recordRejectPins(
-    ticket: Ticket,
-    actor: Actor,
-    heads: readonly ReviewedHead[],
-    attempt: number,
-  ): void {
-    const who =
-      actor.type === "agent"
-        ? "agent review"
-        : actor.type === "system"
-          ? "the runner"
-          : "human review";
-    for (const pin of heads) {
-      this.internals.evidence.insert({
-        id: newId(),
-        ticket_id: ticket.id,
-        ac_id: null,
-        repo_id: pin.repoId,
-        decision_id: null,
-        evidence_type: "commit",
-        summary: `${who} (${actor.id ?? actor.type}) sent back commit ${pin.sha} of ${pin.branch} in ${pin.repo}`,
-        uri: `${REJECT_PIN_PREFIX}${pin.sha}`,
-        payload_json: JSON.stringify({
-          kind: "reject_pin",
-          rejecter_type: actor.type,
-          repo: pin.repo,
-          attempt,
-        }),
-        created_by: "dispatch",
-        recorded_by_actor_type: "system",
-        created_at: this.internals.clock.now(),
-      });
-    }
   }
 
   /** PER-REPOSITORY LANDING: which approved revisions have landed (see landingStatus.ts). */
@@ -1883,23 +1699,6 @@ export class ReviewGateService {
   }
 
   /**
-   * GRADUATED-AUTONOMY (Spec 2, Phase 1): resolve the delivery-vs-merge SHAs and
-   * decide whether the approval is UNCHANGED (`true`), edited (`false`) or unknown
-   * (`null`). Wrapped so a resolver failure degrades to `null` — an approval must
-   * never fail because the (advisory) telemetry probe threw.
-   */
-  private computeApprovedUnchanged(ticket: Ticket): boolean | null {
-    if (!this.internals.approvalShaResolver) return null;
-    try {
-      const shas = this.internals.approvalShaResolver(ticket);
-      if (!shas) return null;
-      return approvalUnchanged(shas.deliverySha, shas.mergeSha);
-    } catch {
-      return null;
-    }
-  }
-
-  /**
    * GRADUATED-AUTONOMY (Spec 2, Phase 3): does an explicit mode='auto' approve policy
    * cover this ticket (its risk × ALL its write repos)? Pure policy check — NO env
    * read (the P0 gate ORs this with the env flag). FAIL-CLOSED: an absent predicate,
@@ -2401,7 +2200,7 @@ export class ReviewGateService {
         },
       );
     }
-    const approvedUnchanged = this.computeApprovedUnchanged(ticket);
+    const approvedUnchanged = staleness.computeApprovedUnchanged(this.internals, ticket);
     return this.internals.transitions.transition({
       ticketId: ticket.id,
       actor,
@@ -2665,7 +2464,8 @@ export class ReviewGateService {
    */
   private ciCandidateCommits(ticket: Ticket): string[] {
     const out = new Set<string>();
-    for (const h of this.resolveReviewedHeads(ticket)) if (h.sha) out.add(h.sha.toLowerCase());
+    for (const h of staleness.resolveReviewedHeads(this.internals, ticket))
+      if (h.sha) out.add(h.sha.toLowerCase());
     const rows = this.internals.db
       .prepare(
         `SELECT commit_sha AS sha FROM ticket_repo_delivery
@@ -2760,7 +2560,10 @@ export class ReviewGateService {
     const pinHeads =
       to === "cancelled"
         ? []
-        : this.resolveReviewedHeads(this.internals.ticketSvc.resolveTicket(ticketRef));
+        : staleness.resolveReviewedHeads(
+            this.internals,
+            this.internals.ticketSvc.resolveTicket(ticketRef),
+          );
     const result = inTransaction(this.internals.db, () => {
       const ticket = this.internals.ticketSvc.resolveTicket(ticketRef);
       if (ticket.status !== "in_review" && ticket.status !== "ready_for_merge") {
@@ -2827,7 +2630,7 @@ export class ReviewGateService {
         });
         parked = { attempt: nextAttempt, requestedTarget: to, reason: resolvedReason };
       }
-      this.recordRejectPins(ticket, actor, pinHeads, nextAttempt);
+      staleness.recordRejectPins(this.internals, ticket, actor, pinHeads, nextAttempt);
       this.internals.ticketSvc.resetAcceptanceCriteria(ticket.id, actor);
       const feedback: ReviewFeedback = {
         reason: resolvedReason,

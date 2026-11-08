@@ -187,6 +187,82 @@ describe("POST /tickets/:id/judge-revealed", () => {
   });
 });
 
+describe("the ticket reads hide the judge's grade while the ticket is in review", () => {
+  let h: Harness;
+  beforeEach(async () => {
+    h = await startHarness();
+  });
+  afterEach(async () => {
+    await h.close();
+  });
+
+  const get = async (path: string): Promise<Record<string, unknown>> => {
+    const res = await fetch(`${h.baseUrl}${path}`);
+    expect(res.status).toBe(200);
+    return (await res.json()) as Record<string, unknown>;
+  };
+  type Ev = { event_type: string; payload_json: string | null };
+  const judgeEvents = (events: unknown) =>
+    (events as Ev[])
+      .filter(
+        (e) =>
+          e.event_type === "ticket.eval_judged" ||
+          (e.event_type === "ticket.lane_verdict" &&
+            /"lane":"eval-judge"/.test(e.payload_json ?? "")),
+      )
+      .map((e) => JSON.parse(e.payload_json ?? "{}") as Record<string, unknown>);
+  const judged = () => {
+    const t = inReview(h.wg);
+    h.wg.recordEvalJudgment(t.id, verdict("fail", 1.5), system);
+    h.wg.recordLaneVerdict(t.id, { lane: "eval-judge", verdict: "fail" }, system);
+    return t;
+  };
+
+  it("GET /tickets/:id, its events and the batched details carry no grade until the view is opened", async () => {
+    const t = judged();
+    const reads = async () => [
+      judgeEvents((await get(`/tickets/${t.id}`)).events),
+      judgeEvents((await get(`/tickets/${t.id}/events`)).events),
+      judgeEvents(
+        (
+          (await get(`/tickets/details?ids=${t.id}&include=events`)).details as Array<{
+            events: unknown;
+          }>
+        )[0]!.events,
+      ),
+    ];
+    for (const evs of await reads()) {
+      expect(evs).toEqual([{ hidden: true }, { lane: "eval-judge", hidden: true }]);
+      expect(JSON.stringify(evs)).not.toMatch(/fail|1\.5/);
+    }
+    // The internal view (the packet, judge agreement, judge-view) still has it.
+    expect(h.wg.view(t.id).evalJudgment).toMatchObject({ overall: "fail" });
+    expect(h.wg.readerView(t.id)).toMatchObject({ evalJudgment: null, judgeHidden: true });
+    await call(h, `/tickets/${t.id}/judge-revealed`);
+    for (const evs of await reads()) {
+      expect(evs[0]).toMatchObject({ overall: "fail" });
+      expect(evs[1]).toMatchObject({ lane: "eval-judge", verdict: "fail" });
+    }
+    expect(h.wg.readerView(t.id)).toMatchObject({
+      evalJudgment: { overall: "fail" },
+      judgeHidden: false,
+    });
+  });
+
+  it("a ticket out of review shows the grade; other lanes' verdicts are never hidden", async () => {
+    const t = judged();
+    h.wg.recordLaneVerdict(t.id, { lane: "tester", verdict: "pass" }, system);
+    const lanes = ((await get(`/tickets/${t.id}`)).events as Ev[])
+      .filter((e) => e.event_type === "ticket.lane_verdict")
+      .map((e) => JSON.parse(e.payload_json ?? "{}") as Record<string, unknown>);
+    expect(lanes.find((l) => l.lane === "tester")).toMatchObject({ verdict: "pass" });
+    h.wg.db.prepare(`UPDATE tickets SET status='ready_for_merge' WHERE id=?`).run(t.id);
+    const evs = judgeEvents((await get(`/tickets/${t.id}`)).events);
+    expect(evs[0]).toMatchObject({ overall: "fail" });
+    expect(evs[1]).toMatchObject({ verdict: "fail" });
+  });
+});
+
 describe("readJudgeAgreement splits blind from revealed decisions over a real database", () => {
   it("a decision after the reveal is revealed; one without it is blind", () => {
     const wg = Dispatch.open(":memory:", new TestClock());
@@ -246,6 +322,36 @@ describe("the v33 migration stamps when an existing database started hiding the 
 });
 
 describe.skipIf(!CLI_BUILT)("wg review judge-view (built CLI)", { timeout: 60_000 }, () => {
+  it("wg ticket show hides the grade in review and says how to see it", () => {
+    const dir = mkdtempSync(join(tmpdir(), "judge-show-"));
+    try {
+      const db = join(dir, "d.sqlite");
+      const wg = Dispatch.open(db, new TestClock());
+      const t = inReview(wg);
+      wg.recordEvalJudgment(t.id, verdict("borderline", 3.2), system);
+      wg.db.close();
+      const show = () =>
+        JSON.parse(runBin(db, ["ticket", "show", String(t.number)]).stdout) as {
+          evalJudgment: unknown;
+          evalJudgmentHidden?: string;
+          events: Array<{ event_type: string; payload_json: string }>;
+        };
+      const hidden = show();
+      expect(hidden.evalJudgment).toBeNull();
+      expect(hidden.evalJudgmentHidden).toBe(
+        `judge: hidden until you decide (wg review judge-view ${t.number} to see it)`,
+      );
+      const ev = hidden.events.find((e) => e.event_type === "ticket.eval_judged");
+      expect(JSON.parse(ev!.payload_json)).toEqual({ hidden: true });
+      runBin(db, ["review", "judge-view", String(t.number)], { env: { USER: "tom" } });
+      const open = show();
+      expect(open.evalJudgment).toMatchObject({ overall: "borderline" });
+      expect(open.evalJudgmentHidden).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("prints the grade and records the reveal, once per round", () => {
     const dir = mkdtempSync(join(tmpdir(), "judge-view-"));
     try {

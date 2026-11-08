@@ -43,7 +43,8 @@ predicts what a reviewer then decides.
    (`wg ticket eval-score --as system`, a `ticket.eval_judged` event), where the
    Review view's verdict strip shows it (the score, then every dimension scored 3 or
    lower with the judge's reason, labelled as a model's grade that nothing gates on)
-   and `wg ticket show` carries it as `evalJudgment`. Only the runner or an admin can
+   and `wg ticket show` carries it as `evalJudgment` (hidden while the ticket waits in
+   review; see *Blinding* below). Only the runner or an admin can
    record one: the safety hook denies `eval-score` to an agent shell, so a delivery
    cannot grade itself. Additive + fail-soft: any failure (unbuilt crew, dead model turn,
    empty reply) records nothing and never blocks the delivery. An empty reply is
@@ -333,7 +334,13 @@ So the Review page keeps the grade collapsed behind **Show the judge's view**: n
 verdict, score or colour shows until you open it. Opening it while the ticket is in
 review records a reveal on the ticket (`ticket.review_judge_revealed`, once per review
 round, through `POST /tickets/:id/judge-revealed`; `wg review judge-view <ref>` is the
-terminal's way to open it and is recorded the same way). A decision is *revealed* when a
+terminal's way to open it and is recorded the same way). Until then the grade is kept
+out of the other places a reviewer could read it too: the ticket page's match report
+says "Eval judge: hidden until you decide", the eval judge's events in
+`GET /tickets/:id`, `GET /tickets/:id/events` and the batched details carry
+`{ "hidden": true }` in place of the grade, and `wg ticket show` prints `evalJudgment:
+null` with `evalJudgmentHidden` saying how to see it. Once the view is opened, or the
+ticket leaves review, they show it again. A decision is *revealed* when a
 reveal on the ticket falls between the judgment and the decision, or when a person
 decided before this factory started hiding the grade (the database upgrade that added
 the hidden view stamps that moment; a factory created since has no such decisions);

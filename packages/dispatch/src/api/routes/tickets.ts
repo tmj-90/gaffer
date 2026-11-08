@@ -345,7 +345,9 @@ export async function routeTickets(
   // /tickets/:id
   if (segments.length === 2) {
     if (method === "GET") {
-      const view = wg.view(id);
+      // BLINDING: the eval judge's grade stays hidden here while the ticket is in review
+      // and its view has not been opened this round (Dispatch.readerView).
+      const view = wg.readerView(id);
       sendJson(res, 200, {
         ticket: { ...view.ticket, ...withLanding(wg, view.ticket) },
         acceptance_criteria: view.acceptanceCriteria,

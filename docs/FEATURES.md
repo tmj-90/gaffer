@@ -292,7 +292,8 @@ wrote. How each of these is enforced, and its limits, is in
   `GET /tickets/:id/diff?include=impact` returns the same facts.
 - **The eval judge's grade, when you turn it on** (`GAFFER_EVAL_JUDGE=1`): a verdict
   and score on five dimensions with the judge's reason for each low one, collapsed
-  behind *Show the judge's view* so you can decide without it. Opening it before you
+  behind *Show the judge's view* so you can decide without it (the ticket page and
+  `wg ticket show` keep it hidden too while the ticket is in review). Opening it before you
   decide is recorded, and `gaffer eval agreement` then counts your decision apart from
   the blind ones its figures come from. Nothing gates on it, and only the runner records
   one. `gaffer eval agreement` says whether it is worth its cost on your factory; see

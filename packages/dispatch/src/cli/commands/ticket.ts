@@ -223,10 +223,17 @@ export function registerTicket(program: Command): void {
     .action((ref, _opts, cmd) => {
       const wg = open(cmd.optsWithGlobals());
       // CLI IDENTITY: a scoped principal sees a dependency outside its scope by number only.
-      const view = wg.view(ref);
+      // BLINDING: while the ticket is in review and the judge's view has not been opened
+      // this round, the eval judge's grade is hidden (Dispatch.readerView).
+      const { judgeHidden, ...view } = wg.readerView(ref);
       printJson({
         ...view,
         dependencies: hideOutOfScopeDependencies(view.dependencies, cliTicketFilter(wg)),
+        ...(judgeHidden
+          ? {
+              evalJudgmentHidden: `judge: hidden until you decide (wg review judge-view ${view.ticket.number ?? ref} to see it)`,
+            }
+          : {}),
       });
       wg.db.close();
     });

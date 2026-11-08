@@ -1841,6 +1841,21 @@ export class Dispatch {
     return ticketReads.view(this, ref);
   }
 
+  /**
+   * BLINDING: the ticket view as a reader sees it before the decision. While the ticket is
+   * in review and nobody has opened the judge's view this round, the eval judge's grade is
+   * hidden: `evalJudgment` is null, `judgeHidden` true, and the judge's events carry
+   * `{ hidden: true }` in place of the grade (ticketReadService.hideJudgeInReview).
+   * GET /tickets/:id and `wg ticket show` read this; `view` keeps the grade.
+   */
+  readerView(ref: string): TicketView & { judgeHidden: boolean } {
+    const v = ticketReads.view(this, ref);
+    const h = ticketReads.hideJudgeInReview(v.ticket, v.events);
+    return h.hidden
+      ? { ...v, events: h.events, evalJudgment: null, judgeHidden: true }
+      : { ...v, judgeHidden: false };
+  }
+
   ticketDetailsBatch(
     select: { ids: readonly string[] } | { limit: number; offset: number },
     include: ReadonlySet<TicketDetailPart>,

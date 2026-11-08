@@ -25,8 +25,9 @@ import { type TicketScopeWithNode } from "../repositories/ticketScopeNodeReposit
 import { TICKET_SUMMARY_COLUMNS, type TicketSummary } from "../repositories/ticketRepository.js";
 import { computeLandingStatus, type LandingStatus } from "./landingStatus.js";
 import { type ReviewCommentView } from "./reviewCommentService.js";
-import { currentJudgment, type RecordedEvalJudgment } from "./evalJudgment.js";
+import { currentJudgment, EVAL_JUDGED_EVENT, type RecordedEvalJudgment } from "./evalJudgment.js";
 import { enteredReviewAt } from "./reviewPacketService.js";
+import { LANE_VERDICT_EVENT, REVIEW_JUDGE_REVEALED_EVENT } from "./reviewTelemetry.js";
 import { type BoardCard, type BoardView, type BoardWindow } from "./boardService.js";
 import { type HumanQueue } from "./humanQueueService.js";
 import { type LandingState } from "./landingState.js";
@@ -238,7 +239,8 @@ export function ticketDetailsBatch(
       item.dependencies = host.ticketDependencies.listForTicket(ticket.id);
     if (include.has("rework_trail"))
       item.rework_trail = host.reworkAttempts.listForTicket(ticket.id);
-    if (include.has("events")) item.events = listEvents(host.db, "ticket", ticket.id);
+    if (include.has("events"))
+      item.events = hideJudgeInReview(ticket, listEvents(host.db, "ticket", ticket.id)).events;
     if (include.has("evidence"))
       item.evidence = enrichEvidenceProvenance(host.evidence.listForTicket(ticket.id));
     return item;
@@ -264,10 +266,54 @@ export function enrichEvidenceProvenance(rows: Evidence[]): EvidenceView[] {
   }));
 }
 
-/** Events for a ticket (resolved by id or number). */
+/** Events for a ticket (resolved by id or number), the judge's grade hidden while in review. */
 export function listTicketEvents(host: TicketReadHost, ref: string): WorkEvent[] {
   const ticket = host.resolveTicket(ref);
-  return listEvents(host.db, "ticket", ticket.id);
+  return hideJudgeInReview(ticket, listEvents(host.db, "ticket", ticket.id)).events;
+}
+
+/**
+ * BLINDING: while a ticket is in review and nobody has opened the judge's view in this
+ * round (`ticket.review_judge_revealed`), the eval judge's grade stays out of the ticket
+ * reads a reviewer can see before deciding (GET /tickets/:id and its events, the batched
+ * details, `wg ticket show`): each `ticket.eval_judged` event and the eval judge's
+ * `ticket.lane_verdict` keep their row but carry `{ hidden: true }` in place of the grade.
+ * Otherwise a reviewer could read the grade on the ticket page and still be counted blind
+ * by judge agreement. The Review view's "Show the judge's view" (or `wg review judge-view`)
+ * records the reveal and then the reads show it again. The stored events are unchanged.
+ */
+export function hideJudgeInReview<E extends WorkEvent>(
+  ticket: Pick<Ticket, "id" | "status">,
+  events: readonly E[],
+): { events: E[]; hidden: boolean } {
+  if (ticket.status !== "in_review") return { events: [...events], hidden: false };
+  const since = enteredReviewAt(ticket.id, events);
+  const revealed = events.some(
+    (e) =>
+      e.event_type === REVIEW_JUDGE_REVEALED_EVENT && (since === null || e.created_at >= since),
+  );
+  if (revealed) return { events: [...events], hidden: false };
+  let hidden = false;
+  const out = events.map((e) => {
+    if (e.event_type === EVAL_JUDGED_EVENT) {
+      hidden = true;
+      return { ...e, payload_json: JSON.stringify({ hidden: true }) };
+    }
+    if (e.event_type === LANE_VERDICT_EVENT) {
+      let lane: unknown = null;
+      try {
+        lane = (JSON.parse(e.payload_json || "{}") as { lane?: unknown }).lane;
+      } catch {
+        /* a malformed payload is not the judge's */
+      }
+      if (lane === "eval-judge") {
+        hidden = true;
+        return { ...e, payload_json: JSON.stringify({ lane: "eval-judge", hidden: true }) };
+      }
+    }
+    return e;
+  });
+  return { events: out, hidden };
 }
 
 /**

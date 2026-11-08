@@ -49,6 +49,20 @@ _NET_UP="${GAFFER_SANDBOX_NET_UP:-gaffer-egress-uplink}"
 _PROXY_NAME="${GAFFER_SANDBOX_PROXY:-gaffer-egress-proxy-svc}"
 _PROXY_IMAGE="${GAFFER_SANDBOX_PROXY_IMAGE:-gaffer-egress-proxy}"
 _IMAGE="${GAFFER_SANDBOX_IMAGE:-gaffer-sandbox:latest}"
+# The container's resource caps: GAFFER_SANDBOX_LIMITS="cpus=4 memory=4g pids=512"
+# (commas or spaces; a cap it does not name keeps that default). The old
+# GAFFER_SANDBOX_CPUS / _MEMORY / _PIDS are deprecated and still apply to a cap the
+# knob does not name (the config says so once).
+_SBX_CPUS="${GAFFER_SANDBOX_CPUS:-4}"; _SBX_MEMORY="${GAFFER_SANDBOX_MEMORY:-4g}"; _SBX_PIDS="${GAFFER_SANDBOX_PIDS:-512}"
+IFS=$', \t\n' read -r -a _sbx_limits <<<"${GAFFER_SANDBOX_LIMITS:-}"
+for _sbx_kv in ${_sbx_limits[@]+"${_sbx_limits[@]}"}; do
+  case "$_sbx_kv" in
+    cpus=?*) _SBX_CPUS="${_sbx_kv#*=}" ;;
+    memory=?*) _SBX_MEMORY="${_sbx_kv#*=}" ;;
+    pids=?*) _SBX_PIDS="${_sbx_kv#*=}" ;;
+  esac
+done
+unset _sbx_limits _sbx_kv
 _RUNNER_DIR="${RUNNER_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 
 _die() { printf 'sandbox-docker: %s\n' "$1" >&2; exit 1; }
@@ -715,7 +729,7 @@ _envs+=( -e "NO_PROXY=localhost,127.0.0.1,egress-proxy" -e "no_proxy=localhost,1
 if [ "$_DRY_RUN" = "1" ]; then
   printf '%s\n' docker run --rm --network "$_NET_INT" \
     --cap-drop=ALL --cap-add=DAC_OVERRIDE --security-opt=no-new-privileges \
-    --pids-limit "${GAFFER_SANDBOX_PIDS:-512}" --memory "${GAFFER_SANDBOX_MEMORY:-4g}" --cpus "${GAFFER_SANDBOX_CPUS:-4}" \
+    --pids-limit "$_SBX_PIDS" --memory "$_SBX_MEMORY" --cpus "$_SBX_CPUS" \
     -w "$(pwd)" "${_mounts[@]}" "${_envs[@]}" "$_IMAGE" "$@"
   exit 0
 fi
@@ -751,9 +765,9 @@ docker run --rm --network "$_NET_INT" \
   --cap-drop=ALL \
   --cap-add=DAC_OVERRIDE \
   --security-opt=no-new-privileges \
-  --pids-limit "${GAFFER_SANDBOX_PIDS:-512}" \
-  --memory "${GAFFER_SANDBOX_MEMORY:-4g}" \
-  --cpus "${GAFFER_SANDBOX_CPUS:-4}" \
+  --pids-limit "$_SBX_PIDS" \
+  --memory "$_SBX_MEMORY" \
+  --cpus "$_SBX_CPUS" \
   -w "$(pwd)" \
   "${_mounts[@]}" \
   "${_envs[@]}" \

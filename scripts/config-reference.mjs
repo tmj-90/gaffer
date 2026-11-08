@@ -473,6 +473,11 @@ export const DEPRECATED = [
     name: "GAFFER_SLACK_WEBHOOK",
     use: "`GAFFER_NOTIFY_SLACK_URL` (the Slack field in Settings); status.sh still posts to it",
   },
+  ...[
+    ["GAFFER_SANDBOX_CPUS", "cpus"],
+    ["GAFFER_SANDBOX_MEMORY", "memory"],
+    ["GAFFER_SANDBOX_PIDS", "pids"],
+  ].map(([name, cap]) => ({ name, use: `GAFFER_SANDBOX_LIMITS="${cap}=N"` })),
   {
     name: "GAFFER_CAP_DETECT_TURNS",
     use: "`GAFFER_MAX_TURNS` (a call is cap-hit when it uses every turn)",

@@ -84,10 +84,15 @@ export GAFFER_DOD_SANDBOX GAFFER_PR_LOCAL_FALLBACK   # read by lib/dod.sh, lib/l
 : "${GAFFER_MCP_BRIDGE:=auto}"
 export GAFFER_MCP_BRIDGE
 GAFFER_DOD_OUTPUT_TAIL="${GAFFER_DOD_OUTPUT_TAIL:-40}"    # lines of gate output kept as evidence / rework feedback
-# Docker sandbox resource caps (lib/sandbox-docker.sh) and the daemon cadence (lib/daemon.sh).
-: "${GAFFER_SANDBOX_CPUS:=4}"
-: "${GAFFER_SANDBOX_MEMORY:=4g}"
-: "${GAFFER_SANDBOX_PIDS:=512}"
+# Docker sandbox resource caps (lib/sandbox-docker.sh reads them, defaults cpus=4
+# memory=4g pids=512), one knob for the three; the old GAFFER_SANDBOX_CPUS / _MEMORY /
+# _PIDS are deprecated and still apply to a cap the knob does not name.
+: "${GAFFER_SANDBOX_LIMITS:=}"   # docker sandbox caps as "cpus=4 memory=4g pids=512"; a cap not named keeps that default.
+export GAFFER_SANDBOX_LIMITS
+_gaffer_deprecated GAFFER_SANDBOX_CPUS 'set GAFFER_SANDBOX_LIMITS="cpus=N" instead'
+_gaffer_deprecated GAFFER_SANDBOX_MEMORY 'set GAFFER_SANDBOX_LIMITS="memory=N" instead'
+_gaffer_deprecated GAFFER_SANDBOX_PIDS 'set GAFFER_SANDBOX_LIMITS="pids=N" instead'
+# The daemon cadence (lib/daemon.sh).
 : "${GAFFER_DAEMON_INTERVAL:=30}"    # seconds between `gaffer run --daemon` cycles
 GAFFER_DAEMON_MAX_CYCLES="${GAFFER_DAEMON_MAX_CYCLES:-0}"   # 0 = unbounded
 GAFFER_DAEMON_SETUP_BACKOFF_MAX="${GAFFER_DAEMON_SETUP_BACKOFF_MAX:-1800}"   # ceiling (s) of the daemon's doubling wait after a setup-error pass (loop.sh exit 3)

@@ -19,7 +19,7 @@ computed from other knobs at runtime.
 
 | Metric | Count |
 |---|---|
-| Knobs with a runner default | 100 |
+| Knobs with a runner default | 98 |
 | Knobs editable in the dashboard | 58 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
 | Env reads in code with no default and no UI entry | 10 |
@@ -77,9 +77,7 @@ computed from other knobs at runtime.
 | `GAFFER_DOD_SANDBOX` | `1` |  | runner | (GAFFER_TEST_PATH_RE, an extra test-path regex that can only widen the gate-integrity check, is read by crew's integrity CLI and dispatch's risk annotation from their own environment; the empty, unexported default that… |
 | `GAFFER_PR_LOCAL_FALLBACK` | `0` |  | runner | PR mode: when `gh pr merge` fails or gh is absent, 1 lands the branch LOCALLY (the PR stays open — the previous behaviour). |
 | `GAFFER_MCP_BRIDGE` | `auto` |  | runner | docker provider: run the MCP data plane (dispatch + memory servers) on the HOST and bridge the container to it over one unix socket (lib/mcp-bridge.mjs), so no database, ledger, claim token or settings file is in the… |
-| `GAFFER_SANDBOX_CPUS` | `4` |  | runner | Docker sandbox resource caps (lib/sandbox-docker.sh) and the daemon cadence (lib/daemon.sh). |
-| `GAFFER_SANDBOX_MEMORY` | `4g` |  | runner |  |
-| `GAFFER_SANDBOX_PIDS` | `512` |  | runner |  |
+| `GAFFER_SANDBOX_LIMITS` | _(empty)_ |  | runner | docker sandbox caps as "cpus=4 memory=4g pids=512"; a cap not named keeps that default. |
 | `GAFFER_DAEMON_INTERVAL` | `30` |  | runner | seconds between `gaffer run --daemon` cycles |
 | `GAFFER_MAX_DELIVERY_ATTEMPTS` | `3` | yes (int) | dispatch, runner | How many agent runs one delivery gets inside a tick: a failed gate (tests, typecheck, lint or a criterion's check) is fed back and the agent reworks the same branch, up to this many runs, then the ticket parks to blocked with its branch kept. A run that fails exactly as the one before (two identical failures) parks it early instead of spending the rest. It is also the default for GAFFER_MAX_NOCOMMIT_FAILURES (runs that end with no commit, counted across runs) and DISPATCH_MAX_ATTEMPTS (review rejections). |
 | `GAFFER_RETRY_FRESH_BRANCH` | `0` |  | runner | WASTE CONTROL: a ticket re-entered by a LATER tick (review CHANGES rework, a resumed pause, a re-queued retry) keeps its branch's commits; 1 = reset it to base for that tick (in-tick rework is never reset). |

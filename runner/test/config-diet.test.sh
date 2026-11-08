@@ -91,6 +91,22 @@ grep -q '_gaffer_deprecated GAFFER_SLACK_WEBHOOK "set GAFFER_NOTIFY_SLACK_URL' "
 V="$(cfg GAFFER_SLACK_WEBHOOK=https://hooks.invalid/x -- '_gaffer_deprecated GAFFER_SLACK_WEBHOOK "set GAFFER_NOTIFY_SLACK_URL instead" 2>>"$ERRF"')"
 warned GAFFER_SLACK_WEBHOOK && ok "the warning names it once" || fail "F4 warning: $(cat "$WORK/err")"
 
+echo "== F5: docker sandbox caps -> GAFFER_SANDBOX_LIMITS =="
+mkdir -p "$WORK/sbx/wt"; printf '%s\n' "$WORK/sbx/wt" > "$WORK/sbx/w"; : > "$WORK/sbx/r"
+caps() {  # the --pids-limit / --memory / --cpus the real wrapper would pass (dry run)
+  env -i PATH="$PATH" HOME="$WORK/home" GAFFER_DATA="$WORK/data" GAFFER_SANDBOX_DRY_RUN=1 GAFFER_MCP_BRIDGE=0 "$@" \
+    bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WORK/sbx/w" "$WORK/sbx/r" -- true 2>/dev/null \
+    | awk 'p { printf "%s ", $0; p = 0 } /^--(pids-limit|memory|cpus)$/ { printf "%s=", substr($0, 3); p = 1 }'
+}
+V="$(caps)"
+[ "$V" = "pids-limit=512 memory=4g cpus=4 " ] && ok "defaults: pids 512, memory 4g, cpus 4" || fail "F5 defaults: $V"
+V="$(caps GAFFER_SANDBOX_LIMITS="cpus=2, pids=99")"
+[ "$V" = "pids-limit=99 memory=4g cpus=2 " ] && ok "the knob sets the caps it names; memory keeps 4g" || fail "F5 knob: $V"
+V="$(caps GAFFER_SANDBOX_MEMORY=1g GAFFER_SANDBOX_CPUS=3 GAFFER_SANDBOX_LIMITS=cpus=2)"
+[ "$V" = "pids-limit=512 memory=1g cpus=2 " ] && ok "a deprecated cap variable still applies; the knob wins over it" || fail "F5 alias: $V"
+cfg GAFFER_SANDBOX_PIDS=100 -- ':' >/dev/null
+warned GAFFER_SANDBOX_PIDS && grep -q 'GAFFER_SANDBOX_LIMITS="pids=N"' "$WORK/err" && ok "GAFFER_SANDBOX_PIDS warns once, naming the replacement" || fail "F5 warning: $(cat "$WORK/err")"
+
 echo "== the warning is said once per process tree =="
 cfg GAFFER_PO_MAX_TURNS=30 -- 'bash --norc --noprofile -c "source \"\$0\"" "$0" 2>>"$ERRF"' >/dev/null
 warned GAFFER_PO_MAX_TURNS && ok "a second source in a child stays quiet (one line for the tree)" || fail "repeat warning: $(cat "$WORK/err")"

@@ -439,9 +439,36 @@ export const TEST_SEAMS = [
   "DISPATCH_ACCEPTANCE_EVIDENCE_CMD",
 ];
 
+/**
+ * Deprecated names: old knobs a family collapse replaced. Each still works for one
+ * release (the config or the reader maps it onto its replacement and says so once on
+ * stderr), so docs/CONFIG.md lists it in a short Deprecated table, never in the main
+ * tables. verifyInternalNames fails when one no longer occurs in the source.
+ */
+export const DEPRECATED = [
+  ...[
+    ["GAFFER_REVIEW_MAX_TURNS", "review"],
+    ["GAFFER_SECURITY_REVIEW_MAX_TURNS", "security_review"],
+    ["GAFFER_CLARIFY_MAX_TURNS", "clarify"],
+    ["GAFFER_JUDGE_MAX_TURNS", "judge"],
+    ["GAFFER_TESTER_MAX_TURNS", "tester"],
+    ["GAFFER_MERGE_MAX_TURNS", "merge"],
+    ["GAFFER_RESOLVER_MAX_TURNS", "merge"],
+    ["GAFFER_PO_MAX_TURNS", "po"],
+    ["GAFFER_SCOUT_MAX_TURNS", "scout"],
+    ["GAFFER_DECOMPOSE_AGENT_MAX_TURNS", "decompose"],
+    ["GAFFER_SPEC_AUTHOR_AGENT_MAX_TURNS", "spec_author"],
+    ["GAFFER_ONBOARD_MAX_TURNS", "onboard"],
+  ].map(([name, role]) => ({ name, use: `GAFFER_ROLE_MAX_TURNS="${role}=N"` })),
+];
+
 /** Every internal or seam name, for the scans that decide what is a knob. */
 export function notKnobNames() {
-  return new Set([...INTERNAL_NAMES.flatMap((g) => g.names), ...TEST_SEAMS]);
+  return new Set([
+    ...INTERNAL_NAMES.flatMap((g) => g.names),
+    ...TEST_SEAMS,
+    ...DEPRECATED.map((d) => d.name),
+  ]);
 }
 
 /** Fail when an INTERNAL_NAMES / TEST_SEAMS entry no longer occurs in the source. */
@@ -452,7 +479,11 @@ export function verifyInternalNames(root = ROOT) {
     .map((f) => readFileSync(f, "utf8"));
   const problems = [];
   const seen = new Set();
-  for (const name of [...INTERNAL_NAMES.flatMap((g) => g.names), ...TEST_SEAMS]) {
+  for (const name of [
+    ...INTERNAL_NAMES.flatMap((g) => g.names),
+    ...TEST_SEAMS,
+    ...DEPRECATED.map((d) => d.name),
+  ]) {
     if (seen.has(name)) problems.push(`${name}: listed twice`);
     seen.add(name);
     if (!texts.some((t) => new RegExp(`\\b${name}\\b`).test(t)))
@@ -460,7 +491,7 @@ export function verifyInternalNames(root = ROOT) {
   }
   if (problems.length > 0) {
     throw new Error(
-      `INTERNAL_NAMES / TEST_SEAMS in scripts/config-reference.mjs drifted from the code:\n  ${problems.join("\n  ")}`,
+      `INTERNAL_NAMES / TEST_SEAMS / DEPRECATED in scripts/config-reference.mjs drifted from the code:\n  ${problems.join("\n  ")}`,
     );
   }
 }
@@ -611,6 +642,7 @@ export function render({
   extras = [],
   internal = [],
   seams = [],
+  deprecated = [],
 }) {
   const defByKey = new Map(defs.map((d) => [d.key, d]));
   const knobByName = new Map(knobs.map((k) => [k.name, k]));
@@ -736,6 +768,18 @@ export function render({
     );
   }
   out.push("");
+
+  if (deprecated.length > 0) {
+    out.push("## Deprecated", "");
+    out.push(
+      "These still work for one release: each is mapped onto its replacement and says so",
+      "once on stderr. Set the replacement instead.",
+      "",
+    );
+    out.push("| Old name | Use instead |", "|---|---|");
+    for (const d of deprecated) out.push(`| \`${d.name}\` | ${cell(d.use)} |`);
+    out.push("");
+  }
 
   if (internal.length > 0 || seams.length > 0) {
     out.push("## Internal names (not knobs)", "");

@@ -148,6 +148,12 @@ to the same version.
 - A matched experiment's acceptance difference uses Newcombe's paired score interval and reports the discordant tickets, since acceptance is a paired yes or no; ten tied tickets no longer read as an interval of [0, 0]. `wg routing recommend` proposes from an experiment only with at least one discordant ticket and an interval lower bound within a 0.10 non-inferiority margin, and says which condition failed otherwise.
 - The dashboard's single 30,000-line `app.js` is now a small entry that imports one ES module per view and a set of shared modules under `js/`, served from the same origin under the same CSP; nothing on screen changes.
 
+### Deprecated
+
+Each still works for one release, mapped onto its replacement with a one-line warning on stderr (once per run); docs/CONFIG.md lists them under Deprecated.
+
+- The twelve per-role turn caps become one knob, `GAFFER_ROLE_MAX_TURNS="review=30 tester=120"`: `GAFFER_REVIEW_MAX_TURNS`, `GAFFER_SECURITY_REVIEW_MAX_TURNS`, `GAFFER_CLARIFY_MAX_TURNS`, `GAFFER_JUDGE_MAX_TURNS`, `GAFFER_TESTER_MAX_TURNS`, `GAFFER_MERGE_MAX_TURNS` and `GAFFER_RESOLVER_MAX_TURNS` (`merge=`), `GAFFER_PO_MAX_TURNS`, `GAFFER_SCOUT_MAX_TURNS`, `GAFFER_DECOMPOSE_AGENT_MAX_TURNS` (`decompose=`), `GAFFER_SPEC_AUTHOR_AGENT_MAX_TURNS` (`spec_author=`) and `GAFFER_ONBOARD_MAX_TURNS`. A role the knob does not name keeps its built-in cap, and every cap is still clamped to `GAFFER_MAX_TURNS`.
+
 ### Removed
 
 - Fifteen environment variables nothing in Gaffer set, no test set and no doc told you to set, so each only ever held its built-in value; that value is now fixed in the code: `GAFFER_REWORK_HISTORY_BYTES` (8000), `GAFFER_JUDGE_DIFF_BYTES` (120000), `GAFFER_MERGE_GATE_RETRIES` (2), `GAFFER_PREFLIGHT_LIVE_TIMEOUT` (60 s), `GAFFER_ACCEPTANCE_TIMEOUT_MS` (5 minutes), `GAFFER_BUDGET_LOW_FRACTION` (0.20; set `GAFFER_BUDGET_LOW_THRESHOLD` instead), `GAFFER_INHERIT_PLAN_TIMEOUT` (60 s), `GAFFER_INHERIT_AMB_TIMEOUT` (300 s), `GAFFER_ONBOARD_TIMEOUT` (onboarding follows `GAFFER_TICK_TIMEOUT`), `GAFFER_REAPPROVAL_ATTEMPTS` (3), `GAFFER_TESTER_REPLAY_TIMEOUT_MS` (10 minutes), `GAFFER_AGENT_NAME` and `GAFFER_AGENT_EMAIL` (the factory agent is `gaffer-factory`), and the `GAFFER_DECOMPOSE_MOCK` / `GAFFER_SPEC_AUTHOR_MOCK` dry-run fallbacks (the tests pass `mockOutput` in the request).

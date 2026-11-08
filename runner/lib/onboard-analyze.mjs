@@ -70,7 +70,7 @@ import {
   recordKilledCall,
 } from "./usage-ledger.mjs";
 import { secretReadDenyRules, writeAgentSettings } from "./agent-home.mjs";
-import { Worker, roleTurnCap } from "./worker.mjs";
+import { Worker, roleTurnCap, roleTurns } from "./worker.mjs";
 import { outsideRepoReason, readRepoText, redactRemoteUrl, statRepo } from "./repo-boundary.mjs";
 import { loadRegistry, routeModel } from "../bin/route-model.mjs";
 import {
@@ -1157,7 +1157,7 @@ export function agentChildEnv(base = process.env) {
 /**
  * Read the per-call caps from the env, matching decompose / the bash call sites:
  *   timeout — GAFFER_TICK_TIMEOUT, else the hardcoded default (1800 s).
- *   maxTurns — GAFFER_ONBOARD_MAX_TURNS (default 60), clamped to the global
+ *   maxTurns — GAFFER_ROLE_MAX_TURNS onboard= (default 60), clamped to the global
  *             GAFFER_MAX_TURNS ceiling (roleTurnCap: the global lowers, never replaces).
  *   model    — GAFFER_ONBOARD_SYNTH_MODEL → an OPERATOR-set GAFFER_PLAN_MODEL →
  *             the registry's mid tier ('sonnet') (digest/feature/lore synthesis +
@@ -1206,7 +1206,7 @@ export function analysisCaps(env = process.env) {
   const tickSec = parseInt(env.GAFFER_TICK_TIMEOUT ?? "", 10);
   const timeoutSec = Number.isFinite(tickSec) && tickSec > 0 ? tickSec : 1800;
   const timeoutMs = timeoutSec * 1000;
-  const maxTurns = roleTurnCap(parseInt(env.GAFFER_ONBOARD_MAX_TURNS ?? "", 10) || 60, env);
+  const maxTurns = roleTurns("onboard", 60, env);
   // Synthesis model (digest / features / lore analysis + the card-review gate).
   // A FEW deep-reasoning calls — the mid tier, not the planner's strong tier unless
   // an operator pins it (synthModel). The per-file card pass overrides this with

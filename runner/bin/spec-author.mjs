@@ -74,7 +74,7 @@
 //                  --force-plan) instead of rejecting and stranding the user.
 //                  (`--max-turns N` is the old spelling, still accepted.) It is a
 //                  HISTORY bound; the claude agent-turn cap is
-//                  GAFFER_SPEC_AUTHOR_AGENT_MAX_TURNS, else this value — either clamped
+//                  GAFFER_ROLE_MAX_TURNS spec_author=, else this value — either clamped
 //                  to the GAFFER_MAX_TURNS ceiling (it can lower, never raise, the cap).
 //   --max-clauses  (GAFFER_SPEC_AUTHOR_MAX_CLAUSES, default 40) reject specs over this
 //   --timeout-ms   (GAFFER_SPEC_AUTHOR_TIMEOUT_MS,  default 180000) kill claude after this
@@ -104,7 +104,7 @@ import { recordSkillUsage } from "./record-skill-usage.mjs";
 import {
   DEFAULT_WORKER_PROVIDER,
   Worker,
-  roleTurnCap,
+  roleTurns,
   sandboxWanted,
   withCallBudget,
   workerProvider,
@@ -475,12 +475,10 @@ function runClaudeTurn(prompt, opts) {
   let args = ["-p", prompt, "--output-format", "json", ...flags];
   // Per-call turn cap (denial-of-wallet): bound the agent's model round-trips in
   // addition to the wall-clock timeout on spawnSync.
-  // GAFFER_SPEC_AUTHOR_AGENT_MAX_TURNS caps THIS lane's agent on its own; else this
+  // GAFFER_ROLE_MAX_TURNS spec_author= caps THIS lane's agent on its own; else this
   // helper's own cap (--max-rounds/--max-turns > GAFFER_SPEC_AUTHOR_MAX_TURNS > 20).
   // The global GAFFER_MAX_TURNS is only a CEILING that can lower it (roleTurnCap).
-  const maxTurns = roleTurnCap(
-    parseInt(process.env.GAFFER_SPEC_AUTHOR_AGENT_MAX_TURNS || "", 10) || opts.maxTurns,
-  );
+  const maxTurns = roleTurns("spec_author", opts.maxTurns);
   if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
   // The opt-in per-call dollar cap (GAFFER_MAX_CALL_USD → --max-budget-usd). This
   // spawn is outside Worker.deliver, so it applies the seam's cap itself.

@@ -23,7 +23,6 @@ _GAFFER_SCOUT_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 : "${GAFFER_SCOUT_PACKET:=1}"   # 1 = build the deterministic scout packet before each delivery (named files, stack frames, the code index's importers and tests); 0 = off
 : "${GAFFER_SCOUT:=off}"        # The bounded MODEL scout: off (default), auto (only when the effective risk is medium or higher), on (every delivery). One read-only paid call (kind scout)
-: "${GAFFER_SCOUT_MAX_TURNS:=6}" # Turn cap of the model scout's read-only call
 : "${GAFFER_SCOUT_MODEL_FLAG:=}" # The model scout's model flag (e.g. "--model <id>"); empty = the router's scout phase (cheap tier)
 
 SCOUT_PACKET_FILE=""; SCOUT_PROMPT=""; SCOUT_RISK=""; SCOUT_RAISED=""; SCOUT_INDEX_FILE=""
@@ -164,7 +163,8 @@ _gaffer_scout_rank() {
 # DRY_RUN, never during a usage pause. ONE call through worker_deliver (budget admission:
 # GAFFER_LAUNCH_KIND=scout) from an empty scratch cwd that carries the verified safety-hook
 # settings, the real repo as its only READ root, built-in tools limited to Read, Grep and
-# Glob (everything else denied by name too), an empty MCP config, GAFFER_SCOUT_MAX_TURNS.
+# Glob (everything else denied by name too), an empty MCP config, its turn cap
+# (GAFFER_ROLE_MAX_TURNS scout=, built in 6).
 # Booked in the usage ledger as kind `scout`. Its reply is validated against the base tree
 # (lib/scout.mjs merge-model) and merged into the packet as "scout suggested".
 gaffer_model_scout() {
@@ -213,7 +213,8 @@ gaffer_model_scout() {
     model="$(gaffer_route_model scout "$SCOUT_RISK" 0 "${STACK:-}" 1 "$num" 2>/dev/null || true)"
     [ -n "$model" ] && flag="--model $model"
   fi
-  local turns="${GAFFER_SCOUT_MAX_TURNS:-6}" rc=0 _wrc=""
+  local turns=6 rc=0 _wrc=""
+  declare -F gaffer_role_cap >/dev/null 2>&1 && turns="$(gaffer_role_cap scout 6)"
   declare -F gaffer_role_turns >/dev/null 2>&1 && turns="$(gaffer_role_turns "$turns")"
   # The overrides stay local to this subshell: CLAUDE_FLAGS is REPLACED (no acceptEdits;
   # the write and shell tools denied by name on top of --tools), the boundary is the

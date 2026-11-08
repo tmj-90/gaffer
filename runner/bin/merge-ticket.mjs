@@ -156,7 +156,7 @@ import {
   refreshFileCards,
   repoCanonical,
 } from "../lib/onboard-analyze.mjs";
-import { maxTurnsArgv, roleTurnCap, Worker } from "../lib/worker.mjs";
+import { maxTurnsArgv, roleTurns, Worker } from "../lib/worker.mjs";
 import { mountRoleSkills, writeAgentSettings } from "../lib/agent-home.mjs";
 import { mountedNames, recordSkillUsage } from "./record-skill-usage.mjs";
 import {
@@ -716,7 +716,7 @@ export function buildResolverPrompt({ ticketNumber, repoName, worktree, branch, 
  * Build the full resolver `claude -p` argv (the same shape decompose.mjs /
  * product-owner-run.mjs produce): [-p, prompt, --mcp-config, <runtime>, ...flags,
  * --max-turns N]. Pulled out so the dry-run path and tests can assert it without
- * spawning anything. The turn cap is GAFFER_MERGE_MAX_TURNS (default 60) clamped to
+ * spawning anything. The turn cap is GAFFER_ROLE_MAX_TURNS merge= (default 60) clamped to
  * GAFFER_MAX_TURNS — without it the resolver was bounded only by its wall clock.
  */
 export function buildClaudeArgv({ prompt, mcpConfig, flags, maxTurns = mergeMaxTurns() }) {
@@ -726,15 +726,12 @@ export function buildClaudeArgv({ prompt, mcpConfig, flags, maxTurns = mergeMaxT
 }
 
 /**
- * The resolver's turn cap: GAFFER_RESOLVER_MAX_TURNS (the lane-knob spelling), else
- * GAFFER_MERGE_MAX_TURNS, else 60 — clamped to the GAFFER_MAX_TURNS ceiling.
+ * The resolver's turn cap: GAFFER_ROLE_MAX_TURNS merge= (or a deprecated
+ * GAFFER_RESOLVER_MAX_TURNS / GAFFER_MERGE_MAX_TURNS), else 60, clamped to the
+ * GAFFER_MAX_TURNS ceiling.
  */
 export function mergeMaxTurns(env = process.env) {
-  const pick = (v) => parseInt(v ?? "", 10) || 0;
-  return roleTurnCap(
-    pick(env.GAFFER_RESOLVER_MAX_TURNS) || pick(env.GAFFER_MERGE_MAX_TURNS) || 60,
-    env,
-  );
+  return roleTurns("merge", 60, env);
 }
 
 /**

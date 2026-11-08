@@ -103,7 +103,7 @@ import {
   detectUsageLimit,
   extractResultText,
   parseClaudeJson,
-  roleTurnCap,
+  roleTurns,
   Worker,
 } from "../lib/worker.mjs";
 import {
@@ -181,9 +181,9 @@ const CONFIG = {
   })(),
 };
 
-/** The tester's turn cap: GAFFER_TESTER_MAX_TURNS (default 80) clamped to GAFFER_MAX_TURNS. */
+/** The tester's turn cap: GAFFER_ROLE_MAX_TURNS tester= (default 80) clamped to GAFFER_MAX_TURNS. */
 export function testerMaxTurns(env = process.env) {
-  return roleTurnCap(parseInt(env.GAFFER_TESTER_MAX_TURNS ?? "", 10) || 80, env);
+  return roleTurns("tester", 80, env);
 }
 
 function log(msg) {

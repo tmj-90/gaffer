@@ -164,7 +164,7 @@ case "$_jcwd" in */eval-judge.*/cwd) ok "judge cwd is its own scratch dir" ;; *)
 grep -qx 'settings=verified' "$WORK/last-spawn.txt" \
   && ok "judge scratch cwd carries the verified safety-hook settings" \
   || no "judge spawned without the rendered safety-hook settings"
-grep -qx 'turns=2' "$WORK/last-spawn.txt" && ok "judge runs under GAFFER_JUDGE_MAX_TURNS (default 2), not the 200 delivery cap" \
+grep -qx 'turns=2' "$WORK/last-spawn.txt" && ok "judge runs under its role cap (judge, default 2), not the 200 delivery cap" \
   || no "judge turn cap wrong ($(grep turns= "$WORK/last-spawn.txt"))"
 [ "$(sed -n '/^x</p' "$WORK/last-spawn.txt" | tr '\n' ' ')" = "x<--tools> x<> x<--strict-mcp-config> x<--disable-slash-commands> " ] \
   && ok "judge is text-only: --tools \"\" --strict-mcp-config --disable-slash-commands" \

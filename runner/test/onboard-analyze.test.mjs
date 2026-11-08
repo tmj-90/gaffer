@@ -1162,7 +1162,7 @@ console.log("== text-only card + review turns: no tools, no MCP, empty cwd, tiny
     after(a, "--mcp-config") === env.MCP_CONFIG,
   );
   assert("synthesis turn is not tool-less", !a.includes("--tools"));
-  assert("synthesis turn: GAFFER_ONBOARD_MAX_TURNS default 60", after(a, "--max-turns") === "60");
+  assert("synthesis turn: the onboard role cap, default 60", after(a, "--max-turns") === "60");
   // A settings template without the safety-hook wiring refuses the text-only turn
   // (a failed call, never a hook-less spawn) and leaves no scratch dir behind.
   const unwired = join(dir, "unwired.json");

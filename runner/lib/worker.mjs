@@ -1220,6 +1220,55 @@ export function roleTurnCap(roleCap, env = process.env) {
   return role || ceiling;
 }
 
+/**
+ * The old per-role turn-cap variables, deprecated for one release: each still sets its
+ * role's cap when GAFFER_ROLE_MAX_TURNS does not name the role (the first one set
+ * wins: the resolver spelling before the merge one). Parity with gaffer_role_cap in
+ * runner/config/07-limits.sh.
+ */
+export const ROLE_TURNS_ALIASES = {
+  review: ["GAFFER_REVIEW_MAX_TURNS"],
+  security_review: ["GAFFER_SECURITY_REVIEW_MAX_TURNS"],
+  clarify: ["GAFFER_CLARIFY_MAX_TURNS"],
+  judge: ["GAFFER_JUDGE_MAX_TURNS"],
+  tester: ["GAFFER_TESTER_MAX_TURNS"],
+  merge: ["GAFFER_RESOLVER_MAX_TURNS", "GAFFER_MERGE_MAX_TURNS"],
+  po: ["GAFFER_PO_MAX_TURNS"],
+  scout: ["GAFFER_SCOUT_MAX_TURNS"],
+  decompose: ["GAFFER_DECOMPOSE_AGENT_MAX_TURNS"],
+  spec_author: ["GAFFER_SPEC_AUTHOR_AGENT_MAX_TURNS"],
+  onboard: ["GAFFER_ONBOARD_MAX_TURNS"],
+};
+
+/**
+ * One role's own turn cap, before the GAFFER_MAX_TURNS ceiling: its entry in
+ * GAFFER_ROLE_MAX_TURNS ("review=30 tester=120", commas or spaces), else its deprecated
+ * variable, else `fallback`. A missing, zero or non-numeric value is skipped.
+ */
+export function roleTurnsSetting(role, fallback, env = process.env) {
+  const pos = (v) => {
+    const s = String(v ?? "").trim();
+    return /^[0-9]+$/.test(s) && Number(s) > 0 ? Number(s) : 0;
+  };
+  for (const pair of String(env.GAFFER_ROLE_MAX_TURNS ?? "").split(/[\s,]+/)) {
+    const eq = pair.indexOf("=");
+    if (eq > 0 && pair.slice(0, eq) === role) {
+      const n = pos(pair.slice(eq + 1));
+      if (n) return n;
+    }
+  }
+  for (const name of ROLE_TURNS_ALIASES[role] ?? []) {
+    const n = pos(env[name]);
+    if (n) return n;
+  }
+  return fallback;
+}
+
+/** roleTurnsSetting clamped to the GAFFER_MAX_TURNS ceiling (roleTurnCap). */
+export function roleTurns(role, fallback, env = process.env) {
+  return roleTurnCap(roleTurnsSetting(role, fallback, env), env);
+}
+
 // Turn-cap markers Claude Code may surface across shapes (matches the legacy
 // delivery-recovery.sh scan exactly): "max_turns", "max-turns", "turn limit", …
 const MAX_TURNS_RE = /max[_-]?turns|turn[_ -]?limit/i;

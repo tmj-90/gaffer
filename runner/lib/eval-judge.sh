@@ -29,7 +29,7 @@
 # --strict-mcp-config (no MCP tools), --disable-slash-commands (no skill listing), no
 # acceptEdits, from an EMPTY scratch cwd that is also its only write root (never the
 # delivery worktree: the target repo's CLAUDE.md / skills / settings never load, and
-# none of the delivery's DB/ticket env reaches it), under GAFFER_JUDGE_MAX_TURNS (2).
+# none of the delivery's DB/ticket env reaches it), under its turn cap (GAFFER_ROLE_MAX_TURNS judge=, built in 2).
 # The scratch cwd carries only the factory's verified safety-hook settings
 # (gaffer_write_agent_settings); a judge whose settings cannot be verified is skipped.
 # It used to inherit the delivery's acceptEdits, the 200-turn delivery cap and the
@@ -133,7 +133,8 @@ gaffer_eval_judge_delivery() (
   # rather than adding a second --max-turns.
   # shellcheck disable=SC2034  # read by worker_deliver
   CLAUDE_FLAGS="--disallowedTools ${GAFFER_JUDGE_DENIED_TOOLS:-Bash,Edit,Write,MultiEdit,NotebookEdit,Read,Grep,Glob,LS,WebFetch,WebSearch,Task,TodoWrite}"
-  judge_turns="${GAFFER_JUDGE_MAX_TURNS:-2}"
+  judge_turns=2
+  declare -F gaffer_role_cap >/dev/null 2>&1 && judge_turns="$(gaffer_role_cap judge 2)"
   type gaffer_role_turns >/dev/null 2>&1 && judge_turns="$(gaffer_role_turns "$judge_turns")"
   GAFFER_LAUNCH_KIND=eval-judge worker_deliver "$tmp/cwd" "$prompt" "$judge_flag" "$tmp/mcp.json" "$tmp/envelope.json" "" \
     "$judge_turns" --tools "" --strict-mcp-config --disable-slash-commands \

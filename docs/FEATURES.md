@@ -481,7 +481,7 @@ shows it. Each launch also logs what context it was given to
 **A bounded model scout, when you turn it on.** `GAFFER_SCOUT=auto` adds one read-only
 model call for a ticket whose effective risk is medium or higher (`on`: every delivery;
 `off`, the default: never). It reads the repo with Read, Grep and Glob only, for
-`GAFFER_SCOUT_MAX_TURNS` turns (6), on the cheap tier, and answers with at most 8 files,
+six turns (`GAFFER_ROLE_MAX_TURNS` `scout=`), on the cheap tier, and answers with at most 8 files,
 8 symbols, 10 notes and 3 questions; the runner keeps a path only when it exists and
 shows the rest as a model's reading. It is booked as kind `scout` under the usage
 ledger and the budget, and it does not run under the command worker.

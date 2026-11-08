@@ -168,7 +168,7 @@ ok(
   "a lib-defaulted knob is not reported as an undocumented read",
 );
 ok(
-  /\| `GAFFER_ONBOARD_MAX_TURNS` \| [^|]*\| `runner\/lib\/onboard-analyze\.mjs`/.test(text),
+  /\| `GAFFER_DASHBOARD_START_TIMEOUT` \| [^|]*\| `runner\/gaffer`/.test(text),
   "a read with no default anywhere is still listed as undocumented",
 );
 ok(

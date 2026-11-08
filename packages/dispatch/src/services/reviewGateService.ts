@@ -20,16 +20,14 @@
  *     `blocked` (not re-queued forever). `capRetry` is the shared helper.
  */
 
-import { type Db, inTransaction } from "../db/connection.js";
+import { type Db } from "../db/connection.js";
 import {
   type AcStatus,
   type Actor,
   type ReopenForReviewCause,
   type Ticket,
 } from "../domain/types.js";
-import { type ObservedRisk, shouldEscalate } from "./observedRisk.js";
-import { envFlagOn } from "./autonomyPolicyService.js";
-import { writeEvent } from "../events/eventWriter.js";
+import { type ObservedRisk } from "./observedRisk.js";
 import { AcRepository } from "../repositories/acRepository.js";
 import { EvidenceRepository } from "../repositories/evidenceRepository.js";
 import { TicketRepository } from "../repositories/ticketRepository.js";
@@ -37,21 +35,18 @@ import type { AgentRepository } from "../repositories/agentRepository.js";
 import type { TransitionResult, TransitionService } from "./transitionService.js";
 import type { TicketService } from "./ticketService.js";
 import type { Clock } from "../util/clock.js";
-import { DispatchError } from "../util/errors.js";
 import { type LandingStatus } from "./landingStatus.js";
 import { isTestingEnabled, testerProvenance } from "../util/testingLane.js";
 import { type TesterTestIdentity } from "./testerReplay.js";
 import type { ReviewGateInternals } from "./reviewGate/internals.js";
-import { reviewerPatch } from "./reviewGate/shared.js";
-import { notTestedMessage } from "./reviewGate/tester.js";
 
 // The method bodies, by concern (services/reviewGate/).
-import * as staleness from "./reviewGate/staleness.js";
 import * as ci from "./reviewGate/ci.js";
 import * as landing from "./reviewGate/landing.js";
 import * as sendBack from "./reviewGate/sendBack.js";
 import * as tester from "./reviewGate/tester.js";
 import * as testerVerdict from "./reviewGate/testerVerdict.js";
+import * as approval from "./reviewGate/approval.js";
 
 // Re-export so consumers don't need to reach into core directly.
 export { isTestingEnabled, testerProvenance };
@@ -93,30 +88,7 @@ export interface UnavailableWriteRepo {
   /** Which read failed (drives the remedy the refusal names); absent → "unknown". */
   kind?: "no_checkout" | "unreadable_checkout" | "no_branch" | "branch_missing" | "unknown";
 }
-
-/**
- * What the human can do about an unavailable write repo (the refusal and the Review
- * button say it): attach the checkout / restore the branch, or — when this ticket should
- * not change that repository — take its write access away (a read-only repo never blocks).
- */
-export function unavailableRepoRemedy(
-  m: UnavailableWriteRepo,
-  ticketNumber: number | null,
-): string {
-  const n = ticketNumber ?? "<ticket>";
-  const readOnly = `or, if this ticket should not change ${m.repo}, make it read-only on the ticket (\`runner/gaffer wg ticket repo-access set ${n} ${m.repo} --access read\`)`;
-  switch (m.kind) {
-    case "no_checkout":
-      return `attach ${m.repo}'s checkout on this machine (register the repository with its local path, \`runner/gaffer wg repo add -n ${m.repo} --path <dir>\`), ${readOnly}`;
-    case "unreadable_checkout":
-      return `restore ${m.repo}'s checkout at its registered path (or register the path it lives at now), ${readOnly}`;
-    case "no_branch":
-    case "branch_missing":
-      return `restore ${m.repo}'s delivery branch (or deliver to it again), ${readOnly}`;
-    default:
-      return `make ${m.repo}'s delivery head readable again, ${readOnly}`;
-  }
-}
+export { unavailableRepoRemedy } from "./reviewGate/approval.js";
 
 /** REVOCATION-SAFE LANDING: one landing started or committed on the current approval. */
 export interface LandingStarted {
@@ -297,185 +269,8 @@ export class ReviewGateService {
   // Public methods
   // ---------------------------------------------------------------------------
 
-  /**
-   * Human review approval: `in_review -> ready_for_merge` (NOT `done`). The human
-   * has approved the diff; the merge runner now does the git merge.
-   *
-   * SECURITY: By DEFAULT only a human/admin may approve — an `agent`-type actor
-   * can never approve its own work. Operator opt-in via `DISPATCH_ALLOW_AGENT_APPROVE=1`
-   * removes this gate (their machine, their call).
-   */
-  approveReview(
-    ticketRef: string,
-    actor: Actor,
-    opts: ApproveReviewOptions = {},
-  ): TransitionResult {
-    // P0 authz — do NOT weaken or remove this check. An agent may approve ONLY when
-    // the operator opted in via DISPATCH_ALLOW_AGENT_APPROVE=1 (the pre-Phase-3 flag,
-    // FIRST and unchanged) OR — Graduated Autonomy (Spec 2, Phase 3) — an EXPLICIT
-    // mode='auto' approve policy covers this ticket's risk × every write repo. The
-    // policy is only ever an ADDITIONAL allow-path: with no policy row this reduces to
-    // exactly the pure env-flag gate (byte-identical to today). system is never permitted.
-    const agentApproveAllowed =
-      actor.type === "agent" &&
-      (envFlagOn(process.env.DISPATCH_ALLOW_AGENT_APPROVE) ||
-        this.policyGrantsAgentApprove(ticketRef));
-    if (actor.type !== "human" && actor.type !== "admin" && !agentApproveAllowed) {
-      throw new DispatchError(
-        "ACTOR_NOT_PERMITTED",
-        "Only a human or admin may approve a review (set DISPATCH_ALLOW_AGENT_APPROVE=1 to allow autonomous agent approval).",
-        { actor_type: actor.type },
-      );
-    }
-    // OBSERVED-RISK ESCALATION (Trust & Autonomy, security-critical): this runs ONLY on
-    // the AUTO-SHIP path — an agent whose approve+merge was permitted WITHOUT a human
-    // because an autonomy flag (DISPATCH_ALLOW_AGENT_APPROVE) or a mode='auto' approve
-    // policy is on (`agentApproveAllowed === true`). Human/admin never reach here (their
-    // approve is byte-identical to today), and an agent already denied by the P0 throw
-    // above never reaches here either. When the ticket's OBSERVED risk (from the real
-    // diff) exceeds its DECLARED `risk_level` (or a configured ceiling), we HOLD for a
-    // human: throw before any transition runs, so the ticket stays `in_review` — the
-    // identical mechanism as the P0 deny above. This can ONLY convert an auto-ship into a
-    // human-hold; it never grants an approval and never weakens the manual gate.
-    // APPROVAL COVERS EVERY WRITE REPO (external review #7), for every actor: an approval
-    // pins one head per write repo, so while a write repo's head cannot be read the
-    // approval is refused (repo_unavailable, naming it) — never approved as a subset. The
-    // read runs git, so it is taken here, outside the write lock. An agent's auto-ship
-    // gate reads the diff, which an unavailable repo cannot show, so for an agent the
-    // refusal comes first; a human's approval keeps its policy refusals (unresolved ACs,
-    // no delivery diff) and the coverage refusal is the last gate before the pins.
-    const covered = this.internals.ticketSvc.resolveTicket(ticketRef);
-    const unavailable = this.unavailableWriteRepos(covered);
-    if (agentApproveAllowed) {
-      this.assertWriteReposAvailable(covered, unavailable);
-      this.enforceObservedRiskCeiling(ticketRef, actor);
-    }
-    const ticket = this.internals.ticketSvc.resolveTicket(ticketRef);
-    // REQUIRED CI (server-side, like the other holds): when the runner has recorded CI
-    // results for this ticket (GAFFER_REQUIRE_CI), approval needs a PASS for the
-    // CANDIDATE commit — the head being approved. A CLI approve used to go through while
-    // the CI poll was still open, and the late red result could no longer stop it.
-    ci.assertCiPassed(this, ticket, ci.approveCiCandidate(this, this.internals, ticket));
-    // REVIEWER ≠ AUTHOR (server-side, not by convention). Even on an autonomy-permitted
-    // agent approve, the approving principal must not be the agent that DELIVERED the
-    // ticket: the id on the ticket's most recent claim. Before this the "agent cannot
-    // approve its own work" guarantee rested on the runner's bash hook denying the CLI;
-    // any process that could open the DB (or a runner passing its own agent id as the
-    // reviewer) could self-approve. The runner's reviewer pass now presents a distinct
-    // reviewer principal (`<agent>/reviewer`), so the autonomous path is unaffected.
-    if (actor.type === "agent") {
-      // The approving agent must be a REGISTERED principal (production entry points): a
-      // bare string like "<agent>/reviewer" trivially differs from the author id and
-      // would otherwise pass the not-author rule below on string inequality alone.
-      if (
-        this.internals.requireRegisteredAgentApprover &&
-        (actor.id === undefined ||
-          !this.internals.agents ||
-          !this.internals.agents.findById(actor.id))
-      ) {
-        throw new DispatchError(
-          "ACTOR_NOT_PERMITTED",
-          "An agent may approve only as a REGISTERED agent principal: the approving actor id is not a registered agent (register a distinct reviewer agent and approve as its id, or approve as a human).",
-          { actor_type: actor.type, actor_id: actor.id ?? null },
-        );
-      }
-    }
-    // REVIEWER ≠ AUTHOR by id, whatever the actor type (exploratory finding api/F8): a
-    // human or admin principal whose actor_id is the delivering agent's id is that agent
-    // speaking under another type, and its approval would read as the agent approving
-    // its own work.
-    const author = this.deliveringAgentId(ticket.id);
-    if (
-      author !== null &&
-      actor.id !== undefined &&
-      actor.id.trim().toLowerCase() === author.toLowerCase()
-    ) {
-      throw new DispatchError(
-        "ACTOR_NOT_PERMITTED",
-        actor.type === "agent"
-          ? "An agent may not approve its own delivery: the approving actor id matches the agent that claimed and delivered this ticket. Approve as a distinct reviewer principal (or a human)."
-          : `The approving ${actor.type} id '${actor.id}' is the id of the agent that claimed and delivered this ticket; nobody may approve a delivery under its author's id. Approve under your own identity.`,
-        { actor_type: actor.type, actor_id: actor.id, delivering_agent_id: author },
-      );
-    }
-    // GRADUATED-AUTONOMY (Spec 2, Phase 1): capture whether this delivery is being
-    // approved UNCHANGED vs edited, emitted on the transition below. Best-effort — a
-    // resolver throw or absence yields `null` (unknown) and never blocks the approve.
-    const approvedUnchanged = staleness.computeApprovedUnchanged(this.internals, ticket);
-    // REVIEW PIN + STALE REVISION (external review #2). The heads are resolved before the
-    // transition (git runs outside the write lock). When the approver names the commits
-    // they saw, every write repo's head must still BE that commit — a branch that moved
-    // between the render and the click is refused (409 stale_revision), never approved.
-    // The pins recorded below are the commits the approver saw, one per repo, written in
-    // the SAME transaction as the transition. Without named commits (library callers) a
-    // HUMAN approval pins the current heads, as before; an agent approval without commits
-    // is pinned by the runner (lib/review.sh) only.
-    const heads = staleness.resolveReviewedHeads(this.internals, ticket);
-    const pins = staleness.checkShownCommits(ticket, heads, actor, opts, unavailable);
-    // TESTER FIRST: when the independent tester gates this ticket (an epic's acceptance
-    // ticket always; a testable one while its lane is on), it tests the candidate BEFORE
-    // a person reviews it (the runner routes in_review -> in_testing, see routeToTester,
-    // and a PASS returns it to in_review). A person approves only the commit the tester
-    // passed: an approval of any other commit (none tested yet, a push after the PASS, a
-    // contract edited since) is REFUSED here (STATE_CONFLICT, reason not_tested), and the
-    // runner sends that commit to the tester. An agent's approval (the runner's earned
-    // autonomy; no person in the loop) of an untested commit routes it to the tester, as
-    // the lane always has: its PASS then goes straight to ready_for_merge. A covered
-    // commit goes to ready_for_merge below: there is no second testing pass.
-    const coverage = this.laneApplies(ticket) ? this.testerCoverage(ticket, heads) : null;
-    if (coverage && !coverage.covered && (actor.type === "human" || actor.type === "admin")) {
-      const runner = tester.runnerLaneSafe(this.internals, ticket);
-      const split = runner && !runner.gates ? runner : null;
-      throw new DispatchError("STATE_CONFLICT", notTestedMessage(ticket, coverage, split), {
-        reason: "not_tested",
-        why: coverage.why,
-        tested: coverage.tested,
-        head: coverage.head,
-        ...(split ? { runner_tester_lane: split.mode, runner_lane_at: split.at } : {}),
-      });
-    }
-    if (coverage && !coverage.covered) {
-      return inTransaction(this.internals.db, () => {
-        const result = this.internals.transitions.transition({
-          ticketId: ticket.id,
-          actor,
-          toStatus: "in_testing",
-          reason: "review_approved_to_testing",
-          expectedFromStatus: "in_review",
-          testerVerdict: true,
-          approvedUnchanged,
-          ...reviewerPatch(ticket, actor),
-        });
-        this.assertWriteReposAvailable(ticket, unavailable); // rolls the transition back
-        writeEvent(this.internals.db, {
-          entity_type: "ticket",
-          entity_id: ticket.id,
-          actor,
-          event_type: "ticket.routed_to_testing",
-          payload: { from: "in_review", ...(ticket.acceptance === 1 ? { acceptance: true } : {}) },
-        });
-        staleness.recordApprovalPins(this.internals, ticket, actor, pins);
-        return result;
-      });
-    }
-    // The done gate's git runs HERE, before transition() takes the write lock.
-    const deliveryDiff = this.internals.transitions.deliveryDiffProof(ticket.id);
-    return inTransaction(this.internals.db, () => {
-      const result = this.internals.transitions.transition({
-        ticketId: ticket.id,
-        actor,
-        toStatus: "ready_for_merge",
-        reason: "review_approved",
-        expectedFromStatus: "in_review",
-        approvedUnchanged,
-        reviewApprove: true, // reached the merge-ready state through the guarded approve path
-        deliveryDiff,
-        ...reviewerPatch(ticket, actor),
-      });
-      this.assertWriteReposAvailable(ticket, unavailable); // rolls the transition back
-      staleness.recordApprovalPins(this.internals, ticket, actor, pins);
-      return result;
-    });
+  approveReview(ticketRef: string, actor: Actor, opts?: ApproveReviewOptions): TransitionResult {
+    return approval.approveReview(this, this.internals, ticketRef, actor, opts);
   }
 
   approveRoutesToTesting(ticket: Ticket): boolean {
@@ -510,51 +305,8 @@ export class ReviewGateService {
     return ci.approveCiHold(this, this.internals, ticket);
   }
 
-  /**
-   * APPROVAL COVERS EVERY WRITE REPO: the write repos whose delivery head cannot be read
-   * now (the same read the Review button's outcome names). A resolver throw is read as
-   * "unknown", and an unknown cannot be approved either: it fails toward the human.
-   */
   unavailableWriteRepos(ticket: Ticket): readonly UnavailableWriteRepo[] {
-    if (!this.internals.unavailableWriteReposResolver) return [];
-    try {
-      return this.internals.unavailableWriteReposResolver(ticket);
-    } catch (e) {
-      return [
-        {
-          repoId: "",
-          repo: "(unknown)",
-          why: `the ticket's write repositories could not be read (${e instanceof Error ? e.message : String(e)})`,
-        },
-      ];
-    }
-  }
-
-  /** Refuse an approval that would leave a write repo without a pin (repo_unavailable). */
-  private assertWriteReposAvailable(
-    ticket: Ticket,
-    missing: readonly UnavailableWriteRepo[],
-  ): void {
-    if (missing.length === 0) return;
-    const names = missing.map((m) => m.repo);
-    throw new DispatchError(
-      "STATE_CONFLICT",
-      `Approve held: ${names.join(", ")} ${names.length === 1 ? "is" : "are"} unavailable — ` +
-        missing.map((m) => `${m.repo}: ${m.why}`).join("; ") +
-        ". An approval covers every repository this ticket writes to, and nothing was approved. To approve: " +
-        missing.map((m) => unavailableRepoRemedy(m, ticket.number)).join("; ") +
-        "; then review again.",
-      {
-        reason: "repo_unavailable",
-        ticket_number: ticket.number,
-        repos: missing.map((m) => ({
-          repo: m.repo,
-          repo_id: m.repoId,
-          why: m.why,
-          remedy: unavailableRepoRemedy(m, ticket.number),
-        })),
-      },
-    );
+    return approval.unavailableWriteRepos(this.internals, ticket);
   }
 
   landingStatus(ref: string): LandingStatus {
@@ -629,97 +381,6 @@ export class ReviewGateService {
     actor: Actor,
   ): { status: AcStatus; evidenceId: string; eventId: string } {
     return testerVerdict.recordAcCheck(this.internals, raw, actor);
-  }
-
-  /**
-   * The agent id on the ticket's MOST RECENT claim (active or released) — the principal
-   * that delivered the work now under review. `null` when the ticket was never claimed
-   * (e.g. a human-driven delivery), in which case the reviewer≠author rule is inert.
-   */
-  private deliveringAgentId(ticketId: string): string | null {
-    const row = this.internals.db
-      .prepare(
-        "SELECT agent_id FROM ticket_claims WHERE ticket_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1",
-      )
-      .get(ticketId) as { agent_id: string } | undefined;
-    return row?.agent_id ?? null;
-  }
-
-  /**
-   * GRADUATED-AUTONOMY (Spec 2, Phase 3): does an explicit mode='auto' approve policy
-   * cover this ticket (its risk × ALL its write repos)? Pure policy check — NO env
-   * read (the P0 gate ORs this with the env flag). FAIL-CLOSED: an absent predicate,
-   * an unresolvable ticket, or ANY throw yields false, so a policy-probe failure can
-   * never grant an approval it shouldn't.
-   */
-  private policyGrantsAgentApprove(ticketRef: string): boolean {
-    if (!this.internals.policyAllowsAgentApprove) return false;
-    try {
-      const ticket = this.internals.ticketSvc.resolveTicket(ticketRef);
-      return this.internals.policyAllowsAgentApprove(ticket);
-    } catch {
-      return false;
-    }
-  }
-
-  /**
-   * OBSERVED-RISK ESCALATION (Trust & Autonomy, security-critical). Called ONLY on the
-   * AUTO-SHIP path (see approveReview). Compares the OBSERVED risk derived from the real
-   * server-computed diff against the ticket's DECLARED `risk_level`. When observed exceeds
-   * declared (or crosses a configured ceiling), or the diff cannot be observed
-   * (indeterminate ⇒ fail toward human), it records an `autoship_escalated` event and
-   * throws `OBSERVED_RISK_ESCALATED` — held BEFORE any transition, so the ticket stays
-   * `in_review` for a human, exactly like the P0 deny above.
-   *
-   * FAIL-SAFE by construction:
-   *  - No resolver wired ⇒ returns immediately (inert; autonomy-off parity unaffected).
-   *  - Resolver throws ⇒ treated as indeterminate ⇒ HOLD (never silently auto-ships).
-   *  - Observed ≤ declared and no ceiling ⇒ returns; the ticket auto-ships exactly as
-   *    before (no false-escalation of a genuinely-low-risk change).
-   * It can only ever THROW (deny) — it never calls `transition`, so it can never turn a
-   * hold into a ship, never newly-allow, and never weakens the manual human gate.
-   */
-  private enforceObservedRiskCeiling(ticketRef: string, actor: Actor): void {
-    if (!this.internals.observedRiskResolver) return;
-    const ticket = this.internals.ticketSvc.resolveTicket(ticketRef);
-    let observed: ObservedRisk | null;
-    try {
-      observed = this.internals.observedRiskResolver(ticket);
-    } catch {
-      observed = null; // a probe failure must fail toward a human, never silently ship.
-    }
-    // A missing observation is indeterminate ⇒ escalate (hold for a human).
-    const escalate = !observed || shouldEscalate(observed, ticket.risk_level);
-    if (!escalate) return;
-    const observedLevel = observed?.level ?? "unknown";
-    const reasons = observed?.reasons.length ? observed.reasons : ["diff unavailable to observe"];
-    // Record the reason on the EXISTING append-only event log (no new mutation surface).
-    writeEvent(this.internals.db, {
-      entity_type: "ticket",
-      entity_id: ticket.id,
-      actor,
-      event_type: "ticket.autoship_escalated",
-      payload: {
-        declared: ticket.risk_level,
-        observed: observedLevel,
-        determinate: observed?.determinate ?? false,
-        reasons,
-        files: observed?.files ?? null,
-        lines: observed?.lines ?? null,
-        ...(observed?.holds?.length ? { holds: observed.holds } : {}),
-      },
-    });
-    // GATE INTEGRITY: a hard hold (the delivery weakened its own tests) is named as such —
-    // the declared level does not matter for it, so "exceeds declared" would mislead.
-    const message = observed?.holds?.length
-      ? `Auto-approve held for human review: the delivery modified the tests that gate it (${observed.holds.join("; ")}). A human can approve, or allow test changes on the ticket.`
-      : `Auto-approve held for human review: observed risk '${observedLevel}' exceeds declared '${ticket.risk_level}'.`;
-    throw new DispatchError("OBSERVED_RISK_ESCALATED", message, {
-      declared: ticket.risk_level,
-      observed: observedLevel,
-      reasons,
-      ...(observed?.holds?.length ? { holds: observed.holds } : {}),
-    });
   }
 
   testerPass(

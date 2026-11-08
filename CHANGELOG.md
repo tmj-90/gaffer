@@ -169,6 +169,7 @@ to the same version.
 - Poll for work says when the runner refused it, run details show "unknown" cost as unknown, and "Delivered today" counts landings.
 - The agent inside the docker sandbox can use git and reach its API on a Linux host, and the MCP bridge socket fits macOS's path limit.
 - Agent installs work behind a TLS-intercepting proxy, and a repo with no origin is "nothing to push".
+- A call that exits non-zero but reports what it spent is booked at that reported cost (never below the kill estimate) for every worker, so a failed $5 call can no longer pass a $1 daily cap as a $0.05 estimate.
 - The docs follow the code, and the docs are indexed in [docs/README.md](docs/README.md).
 
 ## [0.1.0] - 2026-06-17

@@ -24,6 +24,10 @@
  *      no usage field), every numeric field is recorded as the STRING "unknown"
  *      — never 0, never inferred — and `measured:false` so the report can show
  *      measured-vs-unknown counts. A partial run can never read as "cheap".
+ *   4. A call that EXITED NON-ZERO but whose envelope still reports a finite
+ *      total_cost_usd is booked at that reported figure (measured:true, exit_rc,
+ *      reason and reported_on_failure:true on the row), never below the kill
+ *      estimate. Only a failed call with no reported cost becomes an estimate.
  *
  * Two entrypoints:
  *   • Library  — import { parseClaudeJson, buildUsageRecord, extractResultText,
@@ -699,6 +703,14 @@ export function agentRunEvidence({ json, role, attempt, maxAttempts, model, clau
   return { summary, payload };
 }
 
+// The cost a (possibly failed) call's envelope reports, as a finite non-negative number,
+// else null. Relayed verbatim from total_cost_usd; never computed from a price table.
+function reportedCostUsd(json) {
+  if (!json || typeof json !== "object") return null;
+  const c = json.total_cost_usd;
+  return typeof c === "number" && Number.isFinite(c) && c >= 0 ? c : null;
+}
+
 function readInput(jsonFile) {
   try {
     if (jsonFile) return readFileSync(jsonFile, "utf8");
@@ -768,18 +780,27 @@ function cliMain(argv) {
     // keeps the conservative estimate (the spend caps never under-count) and is
     // labelled usage_limit so the ledger says why the call ended.
     record = withUsageLimit(estimatedRecord({ ticket, kind, reason, estimateUsd, basis }), json);
-    // A command worker that exits non-zero can still hand back an envelope with its cost
-    // (already floored by the parser adapter). Book whichever is MORE, so a failed call
-    // that reported real spend never reads as the cheaper kill estimate.
-    if (
-      json &&
-      typeof json === "object" &&
-      typeof json.gaffer_worker_provider === "string" &&
-      typeof json.total_cost_usd === "number" &&
-      Number.isFinite(json.total_cost_usd) &&
-      json.total_cost_usd > (estimateUsd || 0)
-    )
-      record = { ...buildUsageRecord({ json, ticket, kind }), exit_rc: rcNum, reason };
+    // A failed call can still hand back an envelope that reports what it spent: a
+    // `claude -p` that exits non-zero after an error turn, or a command worker (whose
+    // figure the parser adapter already floored). For EVERY provider, a finite reported
+    // total_cost_usd is a reading, not a guess: book it (tokens and the per-model
+    // breakdown included, `measured:true`, exit_rc and reason kept, and
+    // `reported_on_failure:true` so the row says the call failed), but never below the
+    // kill estimate, so the caps never under-count. A reported figure not above the estimate
+    // books the estimate and keeps the worker's own number as reported_cost_usd.
+    const reported = reportedCostUsd(json);
+    if (reported !== null) {
+      if (reported > (estimateUsd || 0)) {
+        record = {
+          ...buildUsageRecord({ json, ticket, kind }),
+          exit_rc: rcNum,
+          reason,
+          reported_on_failure: true,
+        };
+      } else {
+        record = { ...record, exit_rc: rcNum, reported_cost_usd: reported };
+      }
+    }
   } else if (json === null) {
     const reason = "no parseable --output-format json on stdout";
     const { estimateUsd, basis } = deriveKillEstimate({

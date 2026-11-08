@@ -460,6 +460,10 @@ export const DEPRECATED = [
     ["GAFFER_SPEC_AUTHOR_AGENT_MAX_TURNS", "spec_author"],
     ["GAFFER_ONBOARD_MAX_TURNS", "onboard"],
   ].map(([name, role]) => ({ name, use: `GAFFER_ROLE_MAX_TURNS="${role}=N"` })),
+  {
+    name: "GAFFER_CAP_DETECT_TURNS",
+    use: "`GAFFER_MAX_TURNS` (a call is cap-hit when it uses every turn)",
+  },
 ];
 
 /** Every internal or seam name, for the scans that decide what is a knob. */

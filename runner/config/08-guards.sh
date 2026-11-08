@@ -84,11 +84,12 @@ export -f _gaffer_ticket_spend gaffer_ticket_total_spend gaffer_ticket_delivery_
 # max-turns stop reason — the work is incomplete-but-not-broken. Instead of
 # silently discarding it, the tick PRESERVES the branch, emits a `ticket_parked`
 # notify event (ticket#, spend, dashboard URL; redaction honours
-# GAFFER_NOTIFY_REDACT), and parks the ticket as needs-human-review. This cap is
-# the turn count at/above which a call is treated as cap-hit; it defaults to the
-# turn cap itself so a call that consumed every turn is caught.
-: "${GAFFER_CAP_DETECT_TURNS:=${GAFFER_MAX_TURNS:-60}}"   # num_turns ≥ this ⇒ cap-hit
-export GAFFER_CAP_DETECT_TURNS
+# GAFFER_NOTIFY_REDACT), and parks the ticket as needs-human-review. A call is
+# treated as cap-hit when its num_turns reaches GAFFER_MAX_TURNS, the turn cap itself,
+# so a call that consumed every turn is caught (lib/delivery-recovery.sh).
+# GAFFER_CAP_DETECT_TURNS, which only ever made sense as that cap, is deprecated: a set
+# value is still honoured there for one release.
+_gaffer_deprecated GAFFER_CAP_DETECT_TURNS "a call is cap-hit at GAFFER_MAX_TURNS, so set that instead"
 
 # --- Pause-on-cap (PAUSE-ON-CAP) ---------------------------------------------
 # On a mid-delivery cap-hit (turn cap) or budget-cap with committed work, PAUSE the

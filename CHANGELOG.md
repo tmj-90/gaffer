@@ -153,6 +153,7 @@ to the same version.
 Each still works for one release, mapped onto its replacement with a one-line warning on stderr (once per run); docs/CONFIG.md lists them under Deprecated.
 
 - The twelve per-role turn caps become one knob, `GAFFER_ROLE_MAX_TURNS="review=30 tester=120"`: `GAFFER_REVIEW_MAX_TURNS`, `GAFFER_SECURITY_REVIEW_MAX_TURNS`, `GAFFER_CLARIFY_MAX_TURNS`, `GAFFER_JUDGE_MAX_TURNS`, `GAFFER_TESTER_MAX_TURNS`, `GAFFER_MERGE_MAX_TURNS` and `GAFFER_RESOLVER_MAX_TURNS` (`merge=`), `GAFFER_PO_MAX_TURNS`, `GAFFER_SCOUT_MAX_TURNS`, `GAFFER_DECOMPOSE_AGENT_MAX_TURNS` (`decompose=`), `GAFFER_SPEC_AUTHOR_AGENT_MAX_TURNS` (`spec_author=`) and `GAFFER_ONBOARD_MAX_TURNS`. A role the knob does not name keeps its built-in cap, and every cap is still clamped to `GAFFER_MAX_TURNS`.
+- `GAFFER_CAP_DETECT_TURNS` (the ask-on-cap threshold) only ever made sense as the turn cap it defaulted to: a call is cap-hit when it reaches `GAFFER_MAX_TURNS`.
 
 ### Removed
 

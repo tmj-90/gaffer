@@ -163,7 +163,8 @@ gaffer_cap_stop_reason_is_maxturns() {
 
 # gaffer_is_cap_hit <json-file> <rc>
 # RECOVERABLE-vs-CAP classification (GUARD C). True (exit 0) iff the call hit a
-# turn cap: either num_turns ≥ GAFFER_CAP_DETECT_TURNS, OR a max-turns stop
+# turn cap: either num_turns ≥ GAFFER_MAX_TURNS (or the deprecated
+# GAFFER_CAP_DETECT_TURNS, honoured for one release), OR a max-turns stop
 # reason was reported. A non-zero rc that is the timeout sentinel (124) is NOT a
 # turn cap — that is the wall-clock guard, handled as a normal failure — so we
 # only treat rc==0 OR an explicit max-turns reason as a cap-hit. Empty/absent

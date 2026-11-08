@@ -19,7 +19,7 @@ computed from other knobs at runtime.
 
 | Metric | Count |
 |---|---|
-| Knobs with a runner default | 102 |
+| Knobs with a runner default | 101 |
 | Knobs editable in the dashboard | 58 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
 | Env reads in code with no default and no UI entry | 16 |
@@ -87,12 +87,6 @@ computed from other knobs at runtime.
 | `GAFFER_REWORK_STRONG_MODEL` | _derived_ (`${GAFFER_PLAN_MODEL:-opus}`) |  | runner | ESCALATION: the model the FINAL rework attempt escalates to (stronger reasoning for the hardest cases before a human is pulled in). |
 | `GAFFER_REWORK_BUDGET_USD` | _derived_ (`${GAFFER_BUDGET_USD:-}`) | yes (number) | dispatch, runner | Cumulative spend ceiling for one ticket's rework loop, counting every agent call booked to the ticket (delivery, review, security review, clarify, eval judge). Delivery stops at whichever hits first — this or Max delivery attempts — then parks to blocked. Defaults to the factory Budget ceiling; empty = no per-ticket cap (attempts alone bound it). |
 | `GAFFER_MAX_NOCOMMIT_FAILURES` | _derived_ (`${GAFFER_MAX_DELIVERY_ATTEMPTS:-3}`) | yes (int) | dispatch, runner | Cross-run bound on deliveries that crash before committing. After this many no-commit/wrong-branch failures the ticket parks visibly to blocked instead of being re-picked (and re-billed) every run. Defaults to Max delivery attempts. |
-
-### Ask-on-cap guard
-
-| Variable | Default | UI | Read by | Notes |
-|---|---|---|---|---|
-| `GAFFER_CAP_DETECT_TURNS` | _derived_ (`${GAFFER_MAX_TURNS:-60}`) |  | runner | num_turns ≥ this ⇒ cap-hit |
 
 ### Pause-on-cap
 

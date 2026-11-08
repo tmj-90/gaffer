@@ -31,10 +31,10 @@
 # USAGE
 #   bash runner/eval/experiment.sh [--fixtures <dir> [--only a,b] | --manifests <dir>
 #        [--tickets 3,4]] --arm <name[:k=v,...]> --arm <name[:k=v,...]> [...]
-#        [--seed N] [--out <dir>] [--max-attempts N] [--max-tickets N]
+#        [--seed N] [--out <dir>] [--max-attempts N] [--max-tickets N] [--margin M]
 #        [--live --max-usd X] [-v]
 #   Arm settings: tier= model= provider= memory=on|off packet=0|1 context=full|minimal
-#   scout=off|auto|on stub=apply|noop|patch:<file>. The first arm is the baseline.
+#   scout=off|auto|on stub=apply|noop|patch:<file>. The first arm is the baseline. --margin is the non-inferiority margin (0 < M < 0.5, default 0.10), stored in results.json.
 # Exit 0 when the experiment ran (whatever it found), 2 on a usage or harness error.
 # =====================================================================
 set -uo pipefail
@@ -42,7 +42,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
 XP="$HERE/experiment.mjs"
 FX="$HERE/fixture.mjs"
-FIXTURES="" MANIFESTS="" ONLY="" SEED="" OUT="" LIVE=0 VERBOSE=0
+FIXTURES="" MANIFESTS="" ONLY="" SEED="" OUT="" LIVE=0 VERBOSE=0 MARGIN=0.10
 MAX_USD="${GAFFER_EXPERIMENT_MAX_USD:-}"
 MAX_TICKETS="${GAFFER_EXPERIMENT_MAX_TICKETS:-5}"
 MAX_ATTEMPTS="${GAFFER_EXPERIMENT_MAX_ATTEMPTS:-2}"
@@ -59,6 +59,7 @@ while [ $# -gt 0 ]; do
     --max-usd) MAX_USD="${2:-}"; shift 2 ;;
     --max-tickets) MAX_TICKETS="${2:-}"; shift 2 ;;
     --max-attempts) MAX_ATTEMPTS="${2:-}"; shift 2 ;;
+    --margin) MARGIN="${2:-}"; shift 2 ;;
     --live) LIVE=1; shift ;;
     -v | --verbose) VERBOSE=1; shift ;;
     -h | --help) usage; exit 0 ;;
@@ -71,6 +72,11 @@ done
 [ "${#ARMS[@]}" -ge 2 ] || { echo "experiment: give at least two arms (--arm baseline --arm cheap:tier=cheap)" >&2; exit 2; }
 case "$MAX_ATTEMPTS" in '' | *[!0-9]* | 0) echo "experiment: --max-attempts must be a positive integer" >&2; exit 2 ;; esac
 case "$MAX_TICKETS" in '' | *[!0-9]* | 0) echo "experiment: --max-tickets must be a positive integer" >&2; exit 2 ;; esac
+# The non-inferiority margin: the owner's policy for how much acceptance a cheaper arm may
+# give up on this kind of work (experiment.mjs parseMargin checks the same bounds).
+case "$MARGIN" in '' | *[!0-9.]* | *.*.*) MARGIN_OK=0 ;; *) MARGIN_OK=1 ;; esac
+[ "$MARGIN_OK" = 1 ] && awk -v v="$MARGIN" 'BEGIN { exit !(v + 0 > 0 && v + 0 < 0.5) }' \
+  || { echo "experiment: --margin must be a number with 0 < m < 0.5 (got $MARGIN)" >&2; exit 2; }
 [ -n "$FIXTURES$MANIFESTS" ] || FIXTURES="$HERE/fixtures"
 
 if [ "$LIVE" = 1 ]; then
@@ -308,4 +314,4 @@ while IFS=$'\t' read -r order t a; do
   fi
   run_one "$order" "$t" "$a"
 done < <(node "$XP" pairs --plan "$PLAN")
-node "$XP" report --plan "$PLAN" --runs "$RUNS" --out "$OUT"
+node "$XP" report --plan "$PLAN" --runs "$RUNS" --out "$OUT" --margin "$MARGIN"

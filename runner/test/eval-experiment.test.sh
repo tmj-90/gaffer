@@ -58,6 +58,8 @@ R="$OUT/results.json"
 [ "$(jt "$R" 'd.schema+"/"+d.mode+"/"+d.seed+"/"+d.baseline')" = "gaffer.experiment/1/stub/42/baseline" ] && ok "A: schema, mode, seed and baseline" || fail "A: header $(jt "$R" '[d.schema,d.mode,d.seed,d.baseline]')"
 [ "$(jt "$R" 'd.runs.length+"/"+d.tickets.length+"/"+d.arms.length')" = "4/2/2" ] && ok "A: four runs over two tickets and two arms" || fail "A: shape $(jt "$R" '[d.runs.length,d.tickets.length,d.arms.length]')"
 run() { jt "$R" "(d.runs.find(r=>r.ticket===\"$1\"&&r.arm===\"$2\")||{})$3"; }
+# review14/3: the margin that would judge the result is stored with it.
+[ "$(jt "$R" 'd.non_inferiority_margin')" = 0.1 ] && ok "A: results.json names the non-inferiority margin (default 0.1)" || fail "A: margin $(jt "$R" 'd.non_inferiority_margin')"
 [ "$(run clean-feature baseline '.submitted')" = true ] && [ "$(run clean-feature baseline '.accepted')" = true ] && [ "$(run clean-feature baseline '.attempts')" = 1 ] \
   && ok "A: clean-feature baseline submits on attempt 1 and is accepted" || fail "A: clean-feature baseline $(run clean-feature baseline '')"
 [ "$(run breaks-tests baseline '.outcome')" = "rework:definition-of-done" ] && [ "$(run breaks-tests baseline '.attempts')" = 2 ] \
@@ -108,8 +110,15 @@ REPO="$WORK/d-repo"; mkdir -p "$REPO/test"
 BASE="$(git -C "$REPO" rev-parse main)"; HEADC="$(git -C "$REPO" rev-parse gaffer/ticket-9-x)"
 mkdir -p "$WORK/manifests"
 printf '{"schema":"gaffer.replay-manifest/1","ticket":{"number":9},"attempt":{"n":1},"repos":[{"name":"d","path":"%s","base_commit":"%s","head_commit":"%s","test_command":"node --test"}],"routing":{"effective_risk":"low"}}' "$REPO" "$BASE" "$HEADC" > "$WORK/manifests/9-1.json"
-bash "$XS" --manifests "$WORK/manifests" --arm baseline --arm never:stub=noop --seed 3 --out "$WORK/d" > "$WORK/d.txt" 2>&1
+bash "$XS" --manifests "$WORK/manifests" --arm baseline --arm never:stub=noop --seed 3 --margin 0.05 --out "$WORK/d" > "$WORK/d.txt" 2>&1
 RD="$WORK/d/results.json"
+[ "$(jt "$RD" 'd.non_inferiority_margin')" = 0.05 ] && grep -q 'non-inferiority margin 0.05' "$WORK/d/report.md" \
+  && ok "D: --margin 0.05 is stored in results.json and printed in the report" || fail "D: margin $(jt "$RD" 'd.non_inferiority_margin')"
+for m in 0 0.5 0.7 -0.1 abc; do
+  O="$(bash "$XS" --margin "$m" --arm baseline --arm never:stub=noop --out "$WORK/m-bad" 2>&1)"; mrc=$?
+  case "$O" in *"--margin must be"*) mok=1 ;; *) mok=0 ;; esac
+  [ "$mrc" -eq 2 ] && [ "$mok" = 1 ] && ok "D: --margin $m is refused (0 < m < 0.5)" || fail "D: --margin $m: rc=$mrc $O"
+done
 [ "$(jt "$RD" '(d.runs.find(r=>r.arm==="baseline")||{}).outcome')" = submit ] && [ "$(jt "$RD" 'd.tickets[0].source')" = manifest ] \
   && ok "D: the recorded change replays from its base commit and submits" || fail "D: $(jt "$RD" 'd.runs') $(tail -3 "$WORK/d.txt")"
 [ "$(git -C "$REPO" branch --list | wc -l | tr -d ' ')" = 2 ] && [ "$(git -C "$REPO" rev-parse main)" = "$BASE" ] \

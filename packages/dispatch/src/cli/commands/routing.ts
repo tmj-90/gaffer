@@ -69,8 +69,22 @@ export function registerRouting(program: Command): void {
       "--experiment <path...>",
       "experiment results.json file(s) (default: the latest under $GAFFER_DATA/experiments)",
     )
+    .option(
+      "--margin <m>",
+      "the non-inferiority margin: the drop in acceptance rate you accept for a cheaper tier on this work (0 < m < 0.5, default 0.10)",
+    )
     .option("--json", "emit machine-readable JSON", false)
     .action((opts, cmd) => {
+      let margin: number | undefined;
+      if (opts.margin !== undefined) {
+        const s = String(opts.margin).trim();
+        margin = /^\d*\.?\d+$/.test(s) ? Number(s) : Number.NaN;
+        if (!(margin > 0 && margin < 0.5))
+          throw new DispatchError(
+            "VALIDATION_ERROR",
+            `--margin must be a number with 0 < m < 0.5 (got ${String(opts.margin)})`,
+          );
+      }
       const wg = open(cmd.optsWithGlobals());
       const h = heavy();
       try {
@@ -99,6 +113,7 @@ export function registerRouting(program: Command): void {
           registryText: reg.text,
           registryPath: path,
           experiments,
+          ...(margin !== undefined ? { margin } : {}),
         });
         if (opts.json) printJson(rec);
         else process.stdout.write(`${h.renderRecommendation(rec)}\n`);

@@ -21,9 +21,11 @@
  *     implement tier, whose baseline ran the default implement tier, over at least the
  *     minimum number of tickets, with at least one discordant ticket (one arm accepted, the
  *     other not), whose paired difference in acceptance has a 95% Newcombe paired score
- *     interval with a lower bound at or above minus NON_INFERIORITY_MARGIN, and whose mean
- *     spend difference is below zero. A stub-mode experiment proves the pipeline only and
- *     never proposes.
+ *     interval with a lower bound at or above minus the non-inferiority margin, and whose
+ *     mean spend difference is below zero. A stub-mode experiment proves the pipeline only
+ *     and never proposes. The margin is an input (default NON_INFERIORITY_MARGIN); an
+ *     experiment's own stored margin applies when it is tighter, and every recommendation
+ *     names the margin it used.
  */
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -34,15 +36,24 @@ import type { RoutingScorecard, ScorecardCell } from "./routingScorecard.js";
 export const PROPOSABLE_ROLE = "implement";
 export const BETTER_BY_POINTS = 10;
 /**
- * How much worse on acceptance a cheaper tier may be and still be proposed: the lower
- * bound of the 95% interval on (arm acceptance rate minus baseline acceptance rate) must
- * be at or above minus this. 0.10 (ten percentage points) is the usual starting margin
- * for a non-inferiority comparison of proportions, and it matches BETTER_BY_POINTS, the
- * scorecard's own threshold for a difference worth acting on. Requiring the bound at or
- * above zero instead would demand proof that the cheaper tier is BETTER, which a
- * cost-saving switch does not need; a wider margin would accept a real loss of quality.
+ * The DEFAULT non-inferiority margin: how much worse on acceptance a cheaper tier may be
+ * and still be proposed (the lower bound of the 95% interval on arm acceptance rate minus
+ * baseline acceptance rate must be at or above minus the margin). The margin is the
+ * owner's operational policy for a kind of work, not a statistical constant (review14/3):
+ * 0.10 is a starting point for a supervised pilot, `wg routing recommend --margin` and the
+ * `margin` input set another, and an experiment's own stored margin applies when tighter.
+ * Requiring the bound at or above zero would demand proof the cheaper tier is BETTER.
  */
 export const NON_INFERIORITY_MARGIN = 0.1;
+
+/** A margin as the rule accepts it: a number with 0 < m < 0.5, else a refusal. */
+export function validMargin(m: unknown): number {
+  if (typeof m !== "number" || !Number.isFinite(m) || !(m > 0 && m < 0.5))
+    throw new RangeError(
+      `the non-inferiority margin must be a number with 0 < m < 0.5 (got ${String(m)})`,
+    );
+  return m;
+}
 /** The acceptance interval method the experiment rule trusts (runner/eval/experiment.mjs). */
 export const ACCEPTANCE_INTERVAL_METHOD = "newcombe_paired_score";
 
@@ -79,6 +90,8 @@ export interface ExperimentComparison {
 export interface ExperimentResults {
   readonly path: string;
   readonly mode: string;
+  /** The margin the experiment was read at (`non_inferiority_margin`), when it says. */
+  readonly margin?: number | null;
   readonly comparisons: readonly ExperimentComparison[];
 }
 
@@ -115,6 +128,8 @@ export interface Proposal {
     readonly n: number;
     readonly acceptance: ExperimentComparison["acceptance"];
     readonly spend_usd: ExperimentComparison["spend_usd"];
+    /** The margin this proposal was judged at (the tighter of the input's and the result's). */
+    readonly margin: number;
   } | null;
   readonly diff: string;
 }
@@ -123,6 +138,8 @@ export interface Recommendation {
   readonly measure: "routing_recommendation";
   readonly advisory: true;
   readonly min_n: number;
+  /** The non-inferiority margin the recommendation was asked to use (input, default 0.10). */
+  readonly margin: number;
   readonly registry_path: string | null;
   readonly proposals: readonly Proposal[];
   readonly not_proposed: readonly string[];
@@ -187,8 +204,11 @@ export function recommendRouting(input: {
   registryPath: string | null;
   displayPath?: string;
   experiments?: readonly ExperimentResults[];
+  /** The non-inferiority margin (0 < m < 0.5); default NON_INFERIORITY_MARGIN. */
+  margin?: number;
 }): Recommendation {
   const { scorecard, registry } = input;
+  const margin = input.margin === undefined ? NON_INFERIORITY_MARGIN : validMargin(input.margin);
   const min = scorecard.min_n;
   const display = input.displayPath ?? "runner/model-registry.json";
   const proposals: Proposal[] = [];
@@ -204,6 +224,7 @@ export function recommendRouting(input: {
       measure: "routing_recommendation",
       advisory: true,
       min_n: min,
+      margin,
       registry_path: input.registryPath,
       proposals,
       not_proposed: notProposed,
@@ -283,6 +304,14 @@ export function recommendRouting(input: {
       const lo = c.acceptance.ci95?.[0];
       const spend = c.spend_usd.mean;
       const why = `experiment ${ex.path} arm ${c.arm}`;
+      // The owner's margin for this result: the recommendation's, or the experiment's own
+      // when that is tighter (a result read at 0.05 is never proposed at 0.10).
+      const own =
+        typeof ex.margin === "number" && Number.isFinite(ex.margin) && ex.margin > 0
+          ? ex.margin
+          : null;
+      const m = own !== null && own < margin ? own : margin;
+      const mWhy = own !== null && own < margin ? " (the experiment's own)" : "";
       if (c.n < min) {
         notProposed.push(`${why}: ${c.n} tickets, under the minimum ${min}`);
         continue;
@@ -299,9 +328,9 @@ export function recommendRouting(input: {
         );
         continue;
       }
-      if (lo == null || lo < -NON_INFERIORITY_MARGIN) {
+      if (lo == null || lo < -m) {
         notProposed.push(
-          `${why}: the acceptance difference's 95% interval reaches ${lo ?? "n/a"}, below the non-inferiority margin of -${NON_INFERIORITY_MARGIN}`,
+          `${why}: the acceptance difference's 95% interval reaches ${lo ?? "n/a"}, below the non-inferiority margin of -${m}${mWhy}`,
         );
         continue;
       }
@@ -323,6 +352,7 @@ export function recommendRouting(input: {
           n: c.n,
           acceptance: c.acceptance,
           spend_usd: c.spend_usd,
+          margin: m,
         },
         diff: proposalDiff(input.registryText, display, PROPOSABLE_ROLE, tier),
       });
@@ -340,6 +370,7 @@ export function recommendRouting(input: {
     measure: "routing_recommendation",
     advisory: true,
     min_n: min,
+    margin,
     registry_path: input.registryPath,
     proposals,
     not_proposed: notProposed,
@@ -354,7 +385,7 @@ const ci = (c: readonly [number, number] | null): string => (c ? `[${c[0]}, ${c[
 export function renderRecommendation(r: Recommendation): string {
   const lines = [
     "Routing recommendations (advisory: nothing was changed; route-model.mjs keeps routing from the registry as it is)",
-    `minimum n ${r.min_n} · registry ${r.registry_path ?? "not found"} · ${r.experiments_read} experiment result(s) read`,
+    `minimum n ${r.min_n} · non-inferiority margin ${r.margin ?? NON_INFERIORITY_MARGIN} · registry ${r.registry_path ?? "not found"} · ${r.experiments_read} experiment result(s) read`,
     "",
   ];
   if (r.proposals.length === 0) lines.push("No change proposed.");
@@ -373,7 +404,7 @@ export function renderRecommendation(r: Recommendation): string {
       );
     if (p.experiment)
       lines.push(
-        `     experiment ${p.experiment.path}, arm ${p.experiment.arm}: n=${p.experiment.n} tickets, acceptance delta mean ${p.experiment.acceptance.mean} 95% Newcombe paired score interval ${ci(p.experiment.acceptance.ci95)} (${p.experiment.acceptance.discordant ?? 0} discordant pair(s): ${p.experiment.acceptance.favours_arm ?? 0} favour ${p.experiment.arm}, ${p.experiment.acceptance.favours_baseline ?? 0} the baseline; non-inferiority margin ${NON_INFERIORITY_MARGIN}), spend delta mean ${money(p.experiment.spend_usd.mean)} 95% t interval ${ci(p.experiment.spend_usd.ci95)}`,
+        `     experiment ${p.experiment.path}, arm ${p.experiment.arm}: n=${p.experiment.n} tickets, acceptance delta mean ${p.experiment.acceptance.mean} 95% Newcombe paired score interval ${ci(p.experiment.acceptance.ci95)} (${p.experiment.acceptance.discordant ?? 0} discordant pair(s): ${p.experiment.acceptance.favours_arm ?? 0} favour ${p.experiment.arm}, ${p.experiment.acceptance.favours_baseline ?? 0} the baseline; non-inferiority margin ${p.experiment.margin ?? r.margin ?? NON_INFERIORITY_MARGIN}), spend delta mean ${money(p.experiment.spend_usd.mean)} 95% t interval ${ci(p.experiment.spend_usd.ci95)}`,
       );
     lines.push("   Proposed change (apply it yourself by editing the registry):");
     for (const l of p.diff.split("\n")) lines.push(`   ${l}`);
@@ -431,9 +462,11 @@ export function readExperimentResults(path: string): ExperimentResults | null {
   try {
     const raw = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
     if (raw.schema !== "gaffer.experiment/1") return null;
+    const nim = raw.non_inferiority_margin;
     return {
       path,
       mode: typeof raw.mode === "string" ? raw.mode : "stub",
+      margin: typeof nim === "number" && Number.isFinite(nim) ? nim : null,
       comparisons: Array.isArray(raw.comparisons)
         ? (raw.comparisons as ExperimentComparison[])
         : [],

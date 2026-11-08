@@ -524,8 +524,9 @@ has the arms, the report and the limits.
 any experiment results and, where another tier is cheaper per accepted change and no
 worse on first pass and escaped defects in every work class with enough evidence, or a
 live experiment against the default tier shows it cheaper with at least one discordant
-ticket and an acceptance interval whose lower bound is within a 0.10 non-inferiority
-margin, prints a proposed
+ticket and an acceptance interval whose lower bound is within the non-inferiority
+margin (your policy: 0.10 unless you pass `--margin`, and an experiment's own when it is
+tighter; printed with every recommendation), prints a proposed
 `runner/model-registry.json` change as a diff with the cells and deltas behind it. It
 never edits the registry and never proposes anything for the reviewer or the tester.
 Health carries one Routing line saying whether a proposal exists.

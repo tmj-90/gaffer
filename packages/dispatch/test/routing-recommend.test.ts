@@ -136,6 +136,16 @@ const NEWCOMBE_WITHIN = {
   favours_arm: 3,
   favours_baseline: 0,
 };
+// 31 tickets: 30 both accepted, 1 only the cheaper arm → within 0.10, outside 0.05
+// (review14/3).
+const NEWCOMBE_PILOT = {
+  mean: 0.0323,
+  ci95: [-0.0811, 0.1619] as [number, number],
+  method: "newcombe_paired_score",
+  discordant: 1,
+  favours_arm: 1,
+  favours_baseline: 0,
+};
 // 10 tickets, all ties: no information about the difference.
 const NEWCOMBE_TIES = {
   mean: 0,
@@ -352,6 +362,78 @@ describe("routing recommend", () => {
     });
   });
 
+  // review14/3: the margin is the owner's policy, not a statistical default: an explicit
+  // input (default 0.10), printed in every recommendation, and an experiment's own stored
+  // margin is honoured (the tighter of the two applies).
+  describe("the non-inferiority margin is an explicit input (review14/3)", () => {
+    const card = world([{ model: "model-b", usd: 0.9, from: 1, count: 12 }]);
+    const ex = (margin?: number): ExperimentResults =>
+      ({
+        path: "x/results.json",
+        mode: "live",
+        ...(margin !== undefined ? { margin } : {}),
+        comparisons: [
+          {
+            arm: "cheap",
+            vs: "baseline",
+            n: 31,
+            differs_in: ["tier"],
+            overrides: { tier: "cheap" },
+            vs_overrides: {},
+            acceptance: NEWCOMBE_PILOT,
+            spend_usd: { mean: -0.4, ci95: [-0.6, -0.2] as [number, number] },
+            attempts: { mean: 0 },
+          },
+        ],
+      }) as unknown as ExperimentResults;
+    const withMargin = (margin: number | undefined, e: ExperimentResults) =>
+      recommendRouting({
+        scorecard: card,
+        registry: reg!.registry,
+        registryText,
+        registryPath: "/r.json",
+        experiments: [e],
+        ...(margin !== undefined ? { margin } : {}),
+      });
+
+    it("a margin of 0.05 withholds what 0.10 proposes, and says which margin", () => {
+      const at10 = withMargin(0.1, ex());
+      expect(at10.proposals).toHaveLength(1);
+      expect(at10.margin).toBe(0.1);
+      const at05 = withMargin(0.05, ex());
+      expect(at05.proposals).toEqual([]);
+      expect(at05.margin).toBe(0.05);
+      expect(at05.not_proposed.join("\n")).toMatch(
+        /reaches -0\.0811, below the non-inferiority margin of -0\.05/,
+      );
+      expect(renderRecommendation(at05)).toMatch(/non-inferiority margin 0\.05/);
+    });
+
+    it("the default is 0.10 and every recommendation prints it", () => {
+      const r = withMargin(undefined, ex());
+      expect(r.margin).toBe(0.1);
+      expect(renderRecommendation(r)).toMatch(/^minimum n .*non-inferiority margin 0\.1/m);
+      const none = recommend(world([{ model: "model-b", usd: 0.9, from: 1, count: 3 }]));
+      expect(renderRecommendation(none)).toMatch(/non-inferiority margin 0\.1/);
+    });
+
+    it("an experiment's own stored margin is honoured: the tighter one applies", () => {
+      const r = withMargin(0.1, ex(0.05));
+      expect(r.proposals).toEqual([]);
+      expect(r.not_proposed.join("\n")).toMatch(
+        /below the non-inferiority margin of -0\.05 \(the experiment's own\)/,
+      );
+      const p = withMargin(0.1, ex(0.2));
+      expect(p.proposals).toHaveLength(1);
+      expect(p.proposals[0]!.experiment).toMatchObject({ margin: 0.1 });
+    });
+
+    it("a margin outside 0 < m < 0.5 is refused", () => {
+      for (const m of [0, -0.1, 0.5, 0.7, Number.NaN])
+        expect(() => withMargin(m, ex())).toThrow(/margin/);
+    });
+  });
+
   it("the Health line is report-only wording", () => {
     expect(routingHealthLine(null).available).toBe(false);
     const r = recommend(world([{ model: "model-b", usd: 0.9, from: 1, count: 3 }]));
@@ -424,7 +506,29 @@ describe.skipIf(!CLI_BUILT)(
         expect(JSON.parse(json.stdout)).toMatchObject({
           measure: "routing_recommendation",
           advisory: true,
+          margin: 0.1,
         });
+        // review14/3: --margin is the owner's choice, printed with the advice and checked.
+        const tight = runBin(
+          db,
+          ["routing", "recommend", "--registry", regPath, "--margin", "0.05"],
+          {
+            env,
+          },
+        );
+        expect(tight.status).toBe(0);
+        expect(tight.stdout).toMatch(/non-inferiority margin 0\.05/);
+        const badMargin = runBin(
+          db,
+          ["routing", "recommend", "--registry", regPath, "--margin", "0.6"],
+          {
+            env,
+          },
+        );
+        expect(badMargin.status).not.toBe(0);
+        expect(`${badMargin.stdout}${badMargin.stderr}`).toMatch(
+          /--margin must be a number with 0 < m < 0\.5/,
+        );
         const stats = runBin(db, ["stats", "routing", "--min", "13"], { env });
         expect(stats.status).toBe(0);
         expect(stats.stdout).toMatch(

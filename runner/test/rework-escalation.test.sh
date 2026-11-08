@@ -101,7 +101,7 @@ eval "$WRAP_SRC"
 # The runtime exports this before the function can exist (factory.config.sh sets
 # it at source time); the extracted-function harness must mirror that contract.
 # The function parses the ledger via the ONE shared reader (lib/estimate.mjs).
-export GAFFER_ESTIMATE_LIB="$RUNNER_DIR/lib/estimate.mjs"
+export _GAFFER_ESTIMATE_LIB="$RUNNER_DIR/lib/estimate.mjs"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/rework-test.XXXXXX")"
 gaffer_test_check_tmp "$WORK" || exit 70

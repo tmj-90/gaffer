@@ -35,11 +35,11 @@ _gaffer_ticket_spend() {
   # the cost summation stays here — estimate.mjs's honesty contract forbids it
   # from reading total_cost_usd. Degrade path unchanged: any node/module failure
   # prints 0 (we never invent a cost).
-  [ -f "${GAFFER_ESTIMATE_LIB:-}" ] || { printf '0'; return 0; }
+  [ -f "${_GAFFER_ESTIMATE_LIB:-}" ] || { printf '0'; return 0; }
   GAFFER_RW_TICKET="$ticket" GAFFER_RW_LEDGER="$ledger" GAFFER_RW_SCOPE="$scope" node --input-type=module -e '
     import { readFileSync } from "node:fs";
     import { pathToFileURL } from "node:url";
-    const { parseLedger } = await import(pathToFileURL(process.env.GAFFER_ESTIMATE_LIB).href);
+    const { parseLedger } = await import(pathToFileURL(process.env._GAFFER_ESTIMATE_LIB).href);
     const want=String(process.env.GAFFER_RW_TICKET);
     const deliveryOnly=process.env.GAFFER_RW_SCOPE==="delivery";
     let text="";

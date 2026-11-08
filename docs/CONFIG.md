@@ -19,7 +19,7 @@ computed from other knobs at runtime.
 
 | Metric | Count |
 |---|---|
-| Knobs with a runner default | 128 |
+| Knobs with a runner default | 124 |
 | Knobs editable in the dashboard | 58 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
 | Env reads in code with no default and no UI entry | 50 |
@@ -33,7 +33,6 @@ computed from other knobs at runtime.
 | `GAFFER_HOME` | _derived_ (`$(cd "$RUNNER_DIR/.." && pwd)`) |  | runner |  |
 | `GAFFER_DATA` | _derived_ (`$GAFFER_HOME/.gaffer`) |  | crew, dispatch, runner | factory state (dbs, logs, agent id) |
 | `GAFFER_CODE_INDEX` | `1` |  | runner | 1 builds the code index at onboard / merge and primes callers into file cards; 0 off |
-| `GAFFER_ESTIMATE_LIB` | _derived_ (`$RUNNER_DIR/lib/estimate.mjs`) |  | runner | Shared usage-ledger READER (lib/estimate.mjs parseLedger). |
 | `CLAUDE_BIN` | `claude` |  | runner | headless `claude -p` |
 | `CLAUDE_FLAGS` | `--permission-mode acceptEdits` |  | runner | tune to your Claude Code version |
 
@@ -252,12 +251,6 @@ computed from other knobs at runtime.
 | `GAFFER_PREFLIGHT_LIVE` | `0` |  | runner | LIVE CLAUDE PROBE: 1 = runner/preflight.sh also makes ONE tiny paid `claude -p` call to prove the login works (catches an expired token the free credential check cannot); 0 = only the free check (is a credential visible… |
 | `GAFFER_PREFLIGHT_LIVE_TIMEOUT` | `60` |  | runner | Seconds the live probe may take before it counts as a failure. |
 
-### lib/delivery-recovery.sh
-
-| Variable | Default | UI | Read by | Notes |
-|---|---|---|---|---|
-| `GAFFER_WORKER_MJS` | _derived_ (`$_GAFFER_DR_LIB/worker.mjs`) |  | runner |  |
-
 ### lib/dod.sh
 
 | Variable | Default | UI | Read by | Notes |
@@ -286,13 +279,6 @@ computed from other knobs at runtime.
 | `GAFFER_SCOUT` | `off` |  | runner | The bounded MODEL scout: off (default), auto (only when the effective risk is medium or higher), on (every delivery). One read-only paid call (kind scout) |
 | `GAFFER_SCOUT_MAX_TURNS` | `6` |  | runner | Turn cap of the model scout's read-only call |
 | `GAFFER_SCOUT_MODEL_FLAG` | _(empty)_ |  | runner | The model scout's model flag (e.g. "--model <id>"); empty = the router's scout phase (cheap tier) |
-
-### lib/usage-pause.sh
-
-| Variable | Default | UI | Read by | Notes |
-|---|---|---|---|---|
-| `GAFFER_USAGE_PAUSE_MJS` | _derived_ (`$_GAFFER_UP_LIB/usage-pause.mjs`) |  | runner |  |
-| `GAFFER_USAGE_WORKER_MJS` | _derived_ (`$_GAFFER_UP_LIB/worker.mjs`) |  | runner | The classifier (parse-result usage-limit). |
 
 ## Read where they are used
 

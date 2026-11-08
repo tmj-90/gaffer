@@ -62,7 +62,7 @@ gaffer_eval_judge_delivery() (
   crew_dir="${CREW_DIR:-$RUNNER_DIR/../packages/crew}"
   judge_cli="$crew_dir/dist/eval/deliveryJudgeCli.js"
   ledger_cli="$crew_dir/dist/eval/evalLedgerCli.js"
-  worker_mjs="${GAFFER_WORKER_MJS:-$RUNNER_DIR/lib/worker.mjs}"
+  worker_mjs="${_GAFFER_WORKER_MJS:-$RUNNER_DIR/lib/worker.mjs}"
   [ -f "$judge_cli" ] && [ -f "$ledger_cli" ] && [ -f "$worker_mjs" ] || return 0
 
   ledger="${GAFFER_EVAL_LEDGER:-$GAFFER_DATA/eval-ledger.jsonl}"

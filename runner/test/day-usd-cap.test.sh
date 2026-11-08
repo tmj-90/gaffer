@@ -38,7 +38,7 @@ gaffer_test_check_tmp "$WORK" || exit 70
 trap 'gaffer_test_rm_work "$WORK"' EXIT
 LEDGER="$WORK/usage-ledger.jsonl"
 export GAFFER_USAGE_LEDGER="$LEDGER"
-export GAFFER_ESTIMATE_LIB="$RUNNER_DIR/lib/estimate.mjs"
+export _GAFFER_ESTIMATE_LIB="$RUNNER_DIR/lib/estimate.mjs"
 
 # shellcheck source=../lib/budget.sh
 source "$RUNNER_DIR/lib/budget.sh"

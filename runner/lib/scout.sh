@@ -244,7 +244,7 @@ gaffer_model_scout() {
     type log >/dev/null 2>&1 && log "SCOUT: model scout for #$num did not run (rc=$rc) — the deterministic packet stands" || true
     return 0
   }
-  local wm="${GAFFER_WORKER_MJS:-$_GAFFER_SCOUT_LIB/worker.mjs}" spend
+  local wm="${_GAFFER_WORKER_MJS:-$_GAFFER_SCOUT_LIB/worker.mjs}" spend
   node "$wm" parse-result result-text --json-file "$t/envelope.json" > "$t/reply" 2>/dev/null || : > "$t/reply"
   spend="$(node "$wm" parse-result spend --json-file "$t/envelope.json" 2>/dev/null || echo unknown)"
   SC_SPEND="${spend#\$}" SC_MODEL="${model:-${flag#--model }}" node -e '

@@ -35,7 +35,7 @@ export GAFFER_CODE_INDEX
 # per-call-site parse loop. Exported because gaffer_ticket_rework_spend is
 # `export -f`'d and must resolve the module in child shells where RUNNER_DIR
 # (deliberately unexported) is absent.
-: "${GAFFER_ESTIMATE_LIB:=$RUNNER_DIR/lib/estimate.mjs}"
-export GAFFER_ESTIMATE_LIB
+_GAFFER_ESTIMATE_LIB="$RUNNER_DIR/lib/estimate.mjs"   # internal: a runner file, not a knob
+export _GAFFER_ESTIMATE_LIB
 
 _GAFFER_CONFIG_PART=02-paths

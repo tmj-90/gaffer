@@ -77,7 +77,7 @@ if [ -n "${GAFFER_BUDGET_USD:-}" ] && command -v node >/dev/null 2>&1 \
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-const { parseLedger } = await import(pathToFileURL(process.env.GAFFER_ESTIMATE_LIB).href);
+const { parseLedger } = await import(pathToFileURL(process.env._GAFFER_ESTIMATE_LIB).href);
 const ledger = process.env.GAFFER_USAGE_LEDGER ||
   (process.env.GAFFER_DATA ? join(process.env.GAFFER_DATA, 'usage-ledger.jsonl') : '');
 if (!ledger) { process.stdout.write(''); process.exit(0); }

@@ -646,7 +646,7 @@ _gaffer_inherit_amb_spawn() {  # stdin: plan JSON; args: <idx> [ticket] → answ
   if type gaffer_usage_record >/dev/null 2>&1; then
     text="$(gaffer_usage_record inherit "$tnum" "$rc" "$scratch/out.json" "$(( (SECONDS - t0) * 1000 ))" 2>/dev/null)"
   fi
-  [ -n "$text" ] || text="$(node "${GAFFER_WORKER_MJS:-${RUNNER_DIR:-.}/lib/worker.mjs}" parse-result result-text --json-file "$scratch/out.json" 2>/dev/null)"
+  [ -n "$text" ] || text="$(node "${_GAFFER_WORKER_MJS:-${RUNNER_DIR:-.}/lib/worker.mjs}" parse-result result-text --json-file "$scratch/out.json" 2>/dev/null)"
   [ -n "$text" ] || text="$(cat "$scratch/out.json" 2>/dev/null)"
   rm -rf "$scratch"
   printf '%s' "$text"

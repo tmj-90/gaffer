@@ -499,7 +499,6 @@ let formationLaneRepos = null;
  * get a toggle (boolean), number input (int) or text input (csv/string), and
  * register a reader into `editors` so Save can collect the value.
  */
-/** A setting's help: the first sentence, the rest folded behind "More" (pages ran 12,000px). */
 /**
  * The agent isolation posture as one read-only line in the Sandbox group (GET
  * /api/settings `isolation`, from runner/gaffer sandbox-status): the provider, whether
@@ -531,6 +530,7 @@ function isolationLine(iso) {
   );
 }
 
+/** A setting's help: the first sentence, the rest folded behind "More" (pages ran 12,000px). */
 function settingHelp(text) {
   const t = String(text);
   const m = t.match(/^(.{40,180}?[.!?])\s+(.+)$/s);

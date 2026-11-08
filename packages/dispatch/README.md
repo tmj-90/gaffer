@@ -393,3 +393,19 @@ Dispatch is the single source of truth for *what to do* and *whether it shipped*
   instance's private state when it needs it (`dispatchInternals.ts`). Calls
   between public methods still go through the instance. Types the services own
   stay importable from `core.ts`.
+- **Review gate** (`src/services/reviewGateService.ts`): approve, the tester lane,
+  required CI, landing and send-backs. `ReviewGateService` keeps its constructor,
+  its deps and result types and every public method; each method is one call into
+  a module under `src/services/reviewGate/`, which takes the instance (a `Pick` of
+  the public methods it calls) and its private state (`internals.ts`) the same way:
+
+  | Module | Holds |
+  |---|---|
+  | `approval.ts` | `approveReview` (human-only by default, agent-approve policy, observed-risk ceiling, reviewer is not the author), `unavailableWriteRepos` |
+  | `staleness.ts` | reviewed heads, the shown-commit check (`stale_revision`), review and reject pins, approved-unchanged |
+  | `ci.ts` | `ciStatus`, `recordCiResult`, `recordCiRequired`, the CI hold on approve and tester PASS |
+  | `landing.ts` | `landingStatus`, `recordLanding`, `beginLanding`, `landingsStarted`, `markMerged`, the landed guards |
+  | `sendBack.ts` | `rejectReview` (retry cap), `wontDo`, `reopenFromWontDo`, `reopenForReview`, `holdForHuman` |
+  | `tester.ts` | `laneApplies`, `testerCoverage`, `routeToTester`, `testerRoutePlan`, `recordTesterReplay` |
+  | `testerVerdict.ts` | `testerPass`, `testerFail`, the verdict binding, `recordAcCheck` |
+  | `shared.ts` | `capRetry`, the reviewer patch |

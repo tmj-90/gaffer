@@ -71,7 +71,11 @@ const SETTINGS_GROUPS = [
     label: "Quality gates",
     note: "The runner's definition-of-done guards on every delivery.",
   },
-  { id: "sandbox", label: "Sandbox", note: "Optional OS-level execution confinement." },
+  {
+    id: "sandbox",
+    label: "Sandbox",
+    note: "OS-level execution confinement: every agent runs inside it unless GAFFER_STRICT_REQUIRE=0 is set in the environment.",
+  },
   {
     id: "notifications",
     label: "Notifications",
@@ -86,7 +90,7 @@ async function renderSettings() {
   const signal = routeSignal();
   const get = (p) => api("GET", p, undefined, { signal });
   const [
-    { settings },
+    { settings, isolation },
     idleLoopsRes,
     reposRes,
     nodesRes,
@@ -196,6 +200,7 @@ async function renderSettings() {
       ]),
     );
     card.appendChild(el("p", { class: "section-note" }, grp.note));
+    if (grp.id === "sandbox") card.appendChild(isolationLine(isolation));
     const rows = el("div", { class: "settings-rows" });
     for (const s of inGroup) rows.appendChild(renderSettingRow(s, editors));
     card.appendChild(rows);
@@ -495,6 +500,37 @@ let formationLaneRepos = null;
  * register a reader into `editors` so Save can collect the value.
  */
 /** A setting's help: the first sentence, the rest folded behind "More" (pages ran 12,000px). */
+/**
+ * The agent isolation posture as one read-only line in the Sandbox group (GET
+ * /api/settings `isolation`, from runner/gaffer sandbox-status): the provider, whether
+ * this host can supply it, whether it is required or opted out, and the fix when it is
+ * missing. data-state is available, missing, opted-out or unknown.
+ */
+function isolationLine(iso) {
+  if (!iso || typeof iso !== "object" || !iso.provider || iso.provider === "unknown") {
+    const why = iso && iso.error ? ` (${iso.error})` : "";
+    return el(
+      "p",
+      { class: "section-note settings-isolation", "data-state": "unknown", role: "status" },
+      `Isolation: not known${why}. Run gaffer sandbox-status in a terminal to see it.`,
+    );
+  }
+  const avail = iso.available ? "available" : `missing${iso.missing ? ` (${iso.missing})` : ""}`;
+  const state = iso.optedOut ? "opted-out" : iso.available ? "available" : "missing";
+  let text = `Isolation: ${iso.provider}, ${avail}. `;
+  if (iso.optedOut)
+    text +=
+      "Opted out: GAFFER_STRICT_REQUIRE=0 is set in the environment, so agents run without an OS sandbox.";
+  else if (iso.available) text += "Required: every agent runs inside it.";
+  else text += "Required: live runs refuse to launch agents until it is fixed.";
+  if (!iso.available && iso.fix) text += ` Fix: ${iso.fix}.`;
+  return el(
+    "p",
+    { class: "section-note settings-isolation", "data-state": state, role: "status" },
+    text,
+  );
+}
+
 function settingHelp(text) {
   const t = String(text);
   const m = t.match(/^(.{40,180}?[.!?])\s+(.+)$/s);

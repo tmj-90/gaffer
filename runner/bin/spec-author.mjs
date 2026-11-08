@@ -105,6 +105,7 @@ import {
   DEFAULT_WORKER_PROVIDER,
   Worker,
   roleTurnCap,
+  sandboxWanted,
   withCallBudget,
   workerProvider,
 } from "../lib/worker.mjs";
@@ -519,9 +520,12 @@ function runClaudeTurn(prompt, opts) {
     // Another worker provider goes through the ONE worker seam, so the spec author
     // honours GAFFER_WORKER_PROVIDER like every other launcher: `command` runs the
     // operator's program under its contract and containment rule, an unknown value
-    // refuses (status 70, no spawn). claude-code keeps this direct spawn unchanged.
+    // refuses (status 70, no spawn). So does claude-code whenever the OS sandbox is
+    // wanted, which is the default (GAFFER_STRICT_REQUIRE): the seam wraps the agent or
+    // refuses with the fix, as for every other agent launch. Only under the
+    // environment opt-out with STRICT_MODE off does it keep this direct spawn.
     res =
-      workerProvider() === DEFAULT_WORKER_PROVIDER
+      workerProvider() === DEFAULT_WORKER_PROVIDER && !sandboxWanted()
         ? spawnSync(claudeBin, args, spawnOpts)
         : Worker.deliver({
             kind: "spec-author",

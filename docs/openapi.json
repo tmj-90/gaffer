@@ -466,10 +466,10 @@
           "Configuration"
         ],
         "summary": "List factory settings",
-        "description": "Every known setting with its file value, whether the environment locks it, and its group (`SettingView[]`). A secret-bearing key (`secret: true`, e.g. a webhook URL) never carries its value to any principal: `value` and `effective` are empty, `configured` says whether one is set and `host` names the URL's host.",
+        "description": "Every known setting with its file value, whether the environment locks it, and its group (`SettingView[]`). A secret-bearing key (`secret: true`, e.g. a webhook URL) never carries its value to any principal: `value` and `effective` are empty, `configured` says whether one is set and `host` names the URL's host. `isolation` is the agent isolation posture (`runner/gaffer sandbox-status`, probed on each load): `{ provider, available, required, optedOut, missing, fix }`, plus `error` when the probe could not answer.",
         "responses": {
           "200": {
-            "description": "`{ settings: SettingView[] }`.",
+            "description": "`{ settings: SettingView[], isolation }`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -525,7 +525,7 @@
         },
         "responses": {
           "200": {
-            "description": "`{ settings, written, rejected, ignored, invalid }`.",
+            "description": "`{ settings, isolation, written, rejected, ignored, invalid }`.",
             "content": {
               "application/json": {
                 "schema": {

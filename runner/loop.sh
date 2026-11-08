@@ -129,6 +129,13 @@ if declare -F gaffer_claude_auth_gate >/dev/null 2>&1 && ! gaffer_claude_auth_ga
   echo "gaffer factory: refusing a live run — $(gaffer_claude_auth_hint)." >&2
   exit 3
 fi
+# OS ISOLATION (lib/sandbox.sh gaffer_isolation_gate): a live run on a host with no OS
+# sandbox (and no GAFFER_STRICT_REQUIRE=0 opt-out in the environment) refuses before it
+# claims anything. Exit 3 like the cap, so the daemon backs off. A dry run passes.
+if declare -F gaffer_isolation_gate >/dev/null 2>&1 && ! gaffer_isolation_gate; then
+  echo "gaffer factory: refusing a live run — $(gaffer_sandbox_unavailable_hint)" >&2
+  exit 3
+fi
 
 # R-1 (cleanup): start a fresh run with no stale skip/backpressure markers. Every
 # per-run list (failed / reviewed / clarified / merge-held / tested tickets, the

@@ -53,7 +53,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { sandboxWanted, sandboxWrapArgv } from "./worker.mjs";
+import { sandboxProvider, sandboxWanted, sandboxWrapArgv } from "./worker.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const RUNNER_DIR = resolve(HERE, "..");
@@ -179,7 +179,7 @@ export function profileSandbox({
     ok: true,
     wrap: wrapped.wrap,
     label: wrapped.wrap.length
-      ? `${env.SANDBOX_PROVIDER || "sandbox-exec"} (${profile} profile)`
+      ? `${sandboxProvider(env)} (${profile} profile)`
       : "none (the provider added no wrap)",
     docker,
     profile,
@@ -202,7 +202,7 @@ export function profileSandbox({
  * → as profileSandbox.
  */
 export function replaySandbox({ writeRoots, readRoots = [], env = process.env }) {
-  const docker = String(env.SANDBOX_PROVIDER || "sandbox-exec") === "docker";
+  const docker = sandboxProvider(env) === "docker";
   const sb = profileSandbox({
     writeRoots,
     readRoots: docker ? [] : readRoots,
@@ -215,7 +215,7 @@ export function replaySandbox({ writeRoots, readRoots = [], env = process.env })
       ...sb,
       ok: false,
       label: "unavailable",
-      message: `STRICT_MODE asks for an OS sandbox and SANDBOX_PROVIDER=${env.SANDBOX_PROVIDER || "sandbox-exec"} supplied none on this host${sb.diag ? ` (${sb.diag.split("\n")[0].replace(/\s+\u2014\s.*$/, "")})` : ""}`,
+      message: `STRICT_MODE asks for an OS sandbox and SANDBOX_PROVIDER=${sandboxProvider(env)} supplied none on this host${sb.diag ? ` (${sb.diag.split("\n")[0].replace(/\s+\u2014\s.*$/, "")})` : ""}`,
     };
   return sb;
 }

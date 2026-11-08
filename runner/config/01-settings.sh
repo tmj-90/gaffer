@@ -32,13 +32,15 @@ if [ -n "$_gs_out" ]; then
       GAFFER_ALLOW_UNCAPPED | GAFFER_WORKER_PROVIDER | GAFFER_WORKER_COMMAND | GAFFER_WORKER_COMMAND_ENV | \
         GAFFER_WORKER_COMMAND_COST_USD | GAFFER_SANDBOX_WORKER_COMMAND) continue ;;
     esac
-    # Under the command provider, a settings.json GAFFER_STRICT_REQUIRE=0 is NOT the
-    # operator's out-of-band assertion (the opt-out from the sandbox requirement): only
-    # the real environment can make it. Skipped, so the requirement stays on.
-    if [ "$_sk" = GAFFER_STRICT_REQUIRE ] && [ "${GAFFER_WORKER_PROVIDER:-}" = command ]; then
+    # A settings.json GAFFER_STRICT_REQUIRE=0 is NOT the operator's out-of-band
+    # assertion (the opt-out from the OS sandbox every agent launch requires): only the
+    # real environment can make it, under every worker provider. settings.json lives in
+    # $GAFFER_DATA, a file an agent's sandbox might reach. Skipped, so the requirement
+    # stays on.
+    if [ "$_sk" = GAFFER_STRICT_REQUIRE ]; then
       case "$(printf '%s' "$_sv" | tr '[:upper:]' '[:lower:]')" in
         0 | false | no | off)
-          printf 'worker: ignoring GAFFER_STRICT_REQUIRE=%s from settings.json: under GAFFER_WORKER_PROVIDER=command only the environment can opt out of the OS sandbox\n' "$_sv" >&2
+          printf 'gaffer: ignoring GAFFER_STRICT_REQUIRE=%s from settings.json: only the environment can opt out of the OS sandbox\n' "$_sv" >&2
           continue ;;
       esac
     fi

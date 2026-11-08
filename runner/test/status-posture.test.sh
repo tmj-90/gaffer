@@ -49,7 +49,9 @@ st GAFFER_MODE=autonomus
 has "$OUT" "mode:        supervised  (GAFFER_MODE='autonomus' is not a mode" && ok "posture shows the effective mode and the fallback" || fail "mode line: $(printf '%s' "$OUT" | grep 'mode:')"
 has "$OUT" "review:      human" && has "$OUT" "auto-merge:  off" && ok "supervised: human review, auto-merge off" || fail "review/auto-merge: $OUT"
 has "$OUT" "day cap:     none — a live run refuses to start" && ok "no dollar cap is said plainly" || fail "cap line: $(printf '%s' "$OUT" | grep 'cap:')"
-has "$OUT" "sandbox:     not required" && ok "sandbox not required (supervised)" || fail "sandbox line: $(printf '%s' "$OUT" | grep 'sandbox:')"
+has "$OUT" "sandbox:     required (GAFFER_STRICT_REQUIRE=1" && ok "the sandbox is required by default, supervised too" || fail "sandbox line: $(printf '%s' "$OUT" | grep 'sandbox:')"
+st GAFFER_MODE=supervised GAFFER_STRICT_REQUIRE=0
+has "$OUT" "sandbox:     opted out (GAFFER_STRICT_REQUIRE=0 in the environment)" && ok "the environment opt-out is said plainly" || fail "opt-out sandbox line: $(printf '%s' "$OUT" | grep 'sandbox:')"
 st GAFFER_MODE=autonomous GAFFER_DAILY_BUDGET_USD=5 GAFFER_BUDGET_USD=40
 has "$OUT" "mode:        autonomous" && has "$OUT" "review:      agent" && has "$OUT" "auto-merge:  on" \
   && ok "autonomous: agent review, auto-merge on" || fail "autonomous posture: $OUT"

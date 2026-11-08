@@ -67,7 +67,7 @@ expect "$OUT" MERGE_ON_AGENT_REVIEW        0    "supervised: no merge-on-agent-r
 expect "$OUT" AUTO_MERGE                   0    "supervised: no auto-merge"
 expect "$OUT" GAFFER_AUTO_PUSH             0    "supervised: no auto-push"
 expect "$OUT" MEMORY_AUTO_APPROVE          0    "supervised: no memory auto-approve"
-expect "$OUT" STRICT_MODE                  0    "supervised: no strict sandbox"
+expect "$OUT" STRICT_MODE                  1    "supervised: the OS sandbox is on by default (isolation in every mode)"
 
 echo "== 2: GAFFER_MODE=autonomous → the autonomous cluster =="
 OUT="$(probe GAFFER_MODE=autonomous)"
@@ -92,7 +92,7 @@ expect "$OUT" MERGE_ON_AGENT_REVIEW        0    "graduated: merge floor held"
 expect "$OUT" AUTO_MERGE                   0    "graduated: auto-merge floor held"
 expect "$OUT" GAFFER_AUTO_PUSH             0    "graduated: no auto-push (earned merges land locally)"
 expect "$OUT" MEMORY_AUTO_APPROVE          0    "graduated: memory auto-approve off"
-expect "$OUT" STRICT_MODE                  0    "graduated: no strict sandbox"
+expect "$OUT" STRICT_MODE                  1    "graduated: the OS sandbox is on by default (isolation in every mode)"
 
 echo "== 3: GAFFER_MODE=strict → autonomous cluster + STRICT_MODE=1 =="
 OUT="$(probe GAFFER_MODE=strict)"

@@ -133,7 +133,8 @@ _gaffer_strict_require_opted_out() {
   return 1
 }
 
-# True when the OS sandbox is ON (STRICT_MODE=1) or REQUIRED (GAFFER_STRICT_REQUIRE).
+# True when the OS sandbox is ON (STRICT_MODE=1) or REQUIRED (GAFFER_STRICT_REQUIRE:
+# the default, so anything but an explicit 0/false/no/off is required).
 # `_sandbox_strict_required` lives in lib/sandbox.sh (sourced by factory.config.sh);
 # guard the call so a bare `source lib/worker.sh` in a test still works.
 _worker_sandbox_wanted() {
@@ -141,7 +142,7 @@ _worker_sandbox_wanted() {
   if command -v _sandbox_strict_required >/dev/null 2>&1; then
     _sandbox_strict_required && return 0
   else
-    case "${GAFFER_STRICT_REQUIRE:-0}" in 1 | true | yes | on) return 0 ;; esac
+    _gaffer_strict_require_opted_out || return 0
   fi
   return 1
 }
@@ -330,7 +331,11 @@ worker_deliver() {
     fi
     if [ "$_wrap_ok" = 0 ] && [ "$_cmd_needs_wrap" = 0 ]; then
       : > "$out_json"
-      printf 'worker: GAFFER_STRICT_REQUIRE demands an OS sandbox and none is available on this host — refusing to spawn the agent (fail closed)\n' >&2
+      if declare -F gaffer_sandbox_unavailable_hint >/dev/null 2>&1; then
+        printf 'worker: refusing to spawn the agent (fail closed): %s\n' "$(gaffer_sandbox_unavailable_hint)" >&2
+      else
+        printf 'worker: GAFFER_STRICT_REQUIRE demands an OS sandbox and none is available on this host — refusing to spawn the agent (fail closed)\n' >&2
+      fi
       return 75
     fi
     [ "$_wrap_ok" = 1 ] || wrap=""

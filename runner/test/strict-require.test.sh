@@ -25,11 +25,22 @@ fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 
 rc_for() { SANDBOX_PROVIDER="$1" sandbox_wrap_cmd "/tmp/gaffer-wt" "" >/dev/null 2>&1; echo $?; }
 
-# ── DEFAULT (no strict-require): every unavailable provider path DEGRADES (rc 0) ──
+# ── DEFAULT (GAFFER_STRICT_REQUIRE unset): the sandbox is REQUIRED, so every
+#    unavailable provider path FAILS CLOSED (rc 1): OS isolation is the default ──
 unset GAFFER_STRICT_REQUIRE 2>/dev/null || true
-[ "$(rc_for none)" = "0" ]    && ok "default: provider 'none' degrades (rc 0)"            || fail "none should degrade by default"
-[ "$(rc_for lima)" = "0" ]    && ok "default: removed provider 'lima' is unknown → degrades"  || fail "lima should degrade by default (unknown provider)"
-[ "$(rc_for made-up)" = "0" ] && ok "default: unknown provider degrades (rc 0)"          || fail "unknown should degrade by default"
+[ "$(rc_for none)" = "1" ]    && ok "default: provider 'none' FAILS CLOSED (rc 1)"            || fail "none must fail closed by default"
+[ "$(rc_for made-up)" = "1" ] && ok "default: unknown provider FAILS CLOSED (rc 1)"          || fail "unknown must fail closed by default"
+GAFFER_STRICT_REQUIRE="" ; export GAFFER_STRICT_REQUIRE
+[ "$(rc_for none)" = "1" ]    && ok "an empty GAFFER_STRICT_REQUIRE is not an opt-out (rc 1)" || fail "empty must not opt out"
+GAFFER_STRICT_REQUIRE=maybe
+[ "$(rc_for none)" = "1" ]    && ok "a junk GAFFER_STRICT_REQUIRE is not an opt-out (rc 1)" || fail "junk must not opt out"
+
+# ── the OPT-OUT (GAFFER_STRICT_REQUIRE=0/false/no/off): every unavailable path DEGRADES (rc 0) ──
+for v in 0 false no off; do
+  GAFFER_STRICT_REQUIRE="$v"
+  [ "$(rc_for none)" = "0" ] && [ "$(rc_for lima)" = "0" ] && [ "$(rc_for made-up)" = "0" ] \
+    && ok "opt-out GAFFER_STRICT_REQUIRE=$v: none / lima / unknown degrade (rc 0)" || fail "opt-out $v should degrade"
+done
 
 # ── GAFFER_STRICT_REQUIRE=1: every unavailable path FAILS CLOSED (rc 1) ──
 # (docker is a REAL provider now — when its daemon is up it SUCCEEDS here rather than

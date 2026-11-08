@@ -745,7 +745,7 @@ gaffer_tick_prepare_launch() {
       log "STRICT_REQUIRE: no OS sandbox provider available on this host — refusing to launch the agent (fail closed)$_SR_WHY"
       wg attach-evidence "$NUM" --type manual_note \
         --summary "PARKED (strict_require_unavailable): GAFFER_STRICT_REQUIRE=1 but no OS sandbox provider is available on this host — the agent was NOT launched (fail closed)$_SR_WHY" >/dev/null 2>&1 || true
-      gaffer_release_delivery blocked "GAFFER_STRICT_REQUIRE=1 but no OS sandbox provider available, agent not launched: $(gaffer_sandbox_unavailable_hint)$_SR_WHY" strict_require_unavailable
+      gaffer_release_delivery blocked "GAFFER_STRICT_REQUIRE=1 but no OS sandbox provider available, agent not launched: $(gaffer_sandbox_unavailable_hint ticket)$_SR_WHY" strict_require_unavailable
       gaffer_skip_ticket "$NUM"
       result error; exit 0
     fi

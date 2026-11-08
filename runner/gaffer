@@ -9,6 +9,8 @@
 #                                     token, start fresh; --stop = stop it; --lan = token-protected,
 #                                     on your LAN; --foreground = run in THIS process for supervisors)
 #   gaffer status                     what's registered + what's running
+#   gaffer sandbox-status             the agent isolation posture as JSON: the OS sandbox provider,
+#                                     whether it is available, required or opted out, and the fix
 #   gaffer demo                       one dry tick over a showcase repo (a fresh temp dir; DRY_RUN)
 #   gaffer skills [list]              list the skill library
 #   gaffer skills install [--user|--project] [--force]
@@ -21,7 +23,7 @@
 #                                     go live: one supervisor pass (drains the ready queue), or
 #                                     --daemon = re-run it every N seconds until SIGINT/SIGTERM;
 #                                     --dry-run (-n) = preview only, nothing spent
-#                                     exit 0 done · 3 refused (no dollar cap, setup error) ·
+#                                     exit 0 done · 3 refused (no dollar cap, no OS sandbox, setup error) ·
 #                                     75 paused on the usage window (one-shot; --daemon waits it out)
 #   gaffer wg <dispatch args…>        the dispatch CLI against THIS factory's database
 #                                     (e.g. gaffer wg ticket create -t "…" -d "…"; gaffer wg ticket show 1)
@@ -103,6 +105,7 @@ usage() {
     onboard)   echo "usage: gaffer onboard <path> [--standalone] [--name <alias>]   (standalone scope is the default; map it to a wider scope in the Factory Map UI; --name registers it under an alias when another repository already has its directory name)" ;;
     dashboard) echo "usage: gaffer dashboard [--restart] [--stop] [--lan] [--foreground]   (--restart rotates the login token)" ;;
     status)    echo "usage: gaffer status   (doctors + work counts + what needs a human)" ;;
+    sandbox-status) echo "usage: gaffer sandbox-status   (the agent isolation posture as one JSON object: provider, available, required, optedOut, missing, fix)" ;;
     setup)     echo "usage: gaffer setup   (install + build + init state + open the dashboard)" ;;
     demo)      echo "usage: gaffer demo   (one dry tick over a showcase repo in a fresh temp dir, or DEMO_DIR; always DRY_RUN, nothing spent)" ;;
     eval)      echo "usage: gaffer eval [--json] | gaffer eval replay [--out <dir>] | gaffer eval experiment --arm A --arm B [--live --max-usd X] | gaffer eval agreement [--json]" ;;
@@ -160,7 +163,7 @@ cmd="${1:-help}"; shift || true
 # the system's, never a principal's, so the token is dropped for them.
 case "$cmd" in wg|approve|merge) ;; *) unset GAFFER_PRINCIPAL_TOKEN ;; esac
 case "$cmd" in
-  onboard|dashboard|status|setup|demo|eval|approve|merge|run|skills|plan|lore)
+  onboard|dashboard|status|sandbox-status|setup|demo|eval|approve|merge|run|skills|plan|lore)
     if wants_help "$@"; then usage "$cmd"; exit 0; fi ;;
 esac
 case "$cmd" in
@@ -483,6 +486,13 @@ status)
   bash "$HERE/status.sh"
   ;;
 
+sandbox-status)
+  # The isolation posture the dashboard's Settings page shows (packages/dispatch reads
+  # this at startup and on each settings load): lib/sandbox.sh's probe, no side effects.
+  [ $# -eq 0 ] || bad_arg sandbox-status "sandbox-status takes no arguments (got '$1')"
+  gaffer_sandbox_status_json
+  ;;
+
 setup)
   # nothing → running: build everything, init state (with the right config), open the UI.
   [ $# -eq 0 ] || bad_arg setup "setup takes no arguments (got '$1')"
@@ -681,6 +691,13 @@ run)
   fi
   if [ "$_live_dry" != 1 ] && declare -F gaffer_claude_auth_gate >/dev/null 2>&1 && ! DRY_RUN=0 gaffer_claude_auth_gate; then
     err "gaffer run: refusing a live run — $(gaffer_claude_auth_hint) (or preview with --dry-run)"
+    exit 3
+  fi
+  # OS isolation is the default for every agent (lib/sandbox.sh gaffer_isolation_gate):
+  # with no OS sandbox on this host and no GAFFER_STRICT_REQUIRE=0 in the environment,
+  # refuse before the loop or the daemon starts, never launch unwrapped.
+  if [ "$_live_dry" != 1 ] && declare -F gaffer_isolation_gate >/dev/null 2>&1 && ! DRY_RUN=0 gaffer_isolation_gate; then
+    err "gaffer run: refusing a live run — $(gaffer_sandbox_unavailable_hint) (or preview with --dry-run)"
     exit 3
   fi
   # GAFFER_LOOP_SH: the supervisor pass to run (test seam; the real loop by default).

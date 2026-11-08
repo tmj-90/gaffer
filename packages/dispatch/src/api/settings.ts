@@ -832,14 +832,12 @@ export function readSettingsFile(path: string): Record<string, string> {
  * tick will actually use, and so its own gates (agent approve, testing lane)
  * agree with the runner. Unknown mode ⇒ supervised (the safe posture).
  *
- * STRICT_MODE mirrors the runner's "autonomy REQUIRES containment" block: every
- * mode that lets an agent approve or ship without a human (autonomous, strict,
- * lite) defaults GAFFER_STRICT_REQUIRE=1 there, which defaults STRICT_MODE=1, so
- * the OS sandbox is on (and mandatory) in those modes. Omitting it here made the
- * panel report the sandbox OFF when the runner forces it on. The runner skips that
- * default for autonomous/lite when the operator sets GAFFER_STRICT_REQUIRE=0 (see
- * {@link presetsFor}); graduated turns it on only once an `auto` policy row exists,
- * which this static table cannot see.
+ * STRICT_MODE mirrors the runner's isolation default (runner/config/15-modes.sh):
+ * GAFFER_STRICT_REQUIRE defaults to 1 in EVERY mode, which defaults STRICT_MODE=1,
+ * so the OS sandbox is on (and mandatory) whatever the mode. Omitting it here made
+ * the panel report the sandbox OFF when the runner forces it on. The runner skips
+ * that default when the operator sets GAFFER_STRICT_REQUIRE=0 in the environment,
+ * except under strict (see {@link presetsFor}).
  */
 export const MODE_PRESETS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
   autonomous: {
@@ -876,6 +874,7 @@ export const MODE_PRESETS: Readonly<Record<string, Readonly<Record<string, strin
     AUTO_MERGE: "0",
     GAFFER_AUTO_PUSH: "0",
     MEMORY_AUTO_APPROVE: "0",
+    STRICT_MODE: "1",
   },
   supervised: {
     REVIEW_MODE: "human",
@@ -884,6 +883,7 @@ export const MODE_PRESETS: Readonly<Record<string, Readonly<Record<string, strin
     AUTO_MERGE: "0",
     GAFFER_AUTO_PUSH: "0",
     MEMORY_AUTO_APPROVE: "0",
+    STRICT_MODE: "1",
   },
 };
 
@@ -895,7 +895,8 @@ function flagOn(v: string | undefined): boolean {
 /**
  * The preset for `mode` as the runner will apply it in `env`: unknown ⇒ supervised,
  * and the STRICT_MODE default dropped where the runner would not apply it — outside
- * `strict`, an operator's explicit GAFFER_STRICT_REQUIRE=0 opts out of it.
+ * `strict`, an operator's explicit GAFFER_STRICT_REQUIRE=0 (in the environment: it is
+ * not a setting, so settings.json never carries it here) opts out of it.
  */
 export function presetsFor(
   mode: string,

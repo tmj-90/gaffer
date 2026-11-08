@@ -341,3 +341,4 @@
 15	tester-replay-containment.test.mjs
 115	land-tester-replay-contract.test.sh
 108	eval-experiment.test.sh
+60	isolation-default.test.sh

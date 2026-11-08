@@ -191,7 +191,7 @@ computed from other knobs at runtime.
 | `DISPATCH_ALLOW_AGENT_APPROVE` | `0` _(the default; other modes/branches can set it)_ | yes (boolean) | dispatch, runner | Let an agent actor approve a ticket's review (otherwise human-only). Off by default; the autonomous, strict and lite modes turn it on. An agent approve is still held for a person whenever the real diff's observed risk exceeds the declared risk, and ALWAYS when the delivery changed the tests that gate it (deleted or renamed a test file, added a skip/only marker, changed a gate script, one of its pre/post hooks or a script it runs, touched test config, or added or changed a package-manager rc file such as .npmrc) — unless a person allowed test changes on that ticket (`wg ticket allow-test-changes <n>`, or Allow test changes on the Review page). The allowance clears the hold only; the gate still runs the base commit's scripts. |
 | `MEMORY_AUTO_APPROVE` | `0` _(the default; other modes/branches can set it)_ | yes (boolean) | crew, dispatch, memory, runner | Let the memory the runner itself files go live without a human review step: the requirement distilled from each delivered ticket, onboarding's induction lore and `memory suggest` from the CLI. Lore a delivery agent suggests over MCP always stays a draft for you to approve, whatever this says. Off by default; the autonomous and strict modes turn it on. |
 
-### Autonomy REQUIRES containment
+### OS isolation is the DEFAULT for every agent launch, in every mode
 
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
@@ -350,7 +350,7 @@ Some are seams the runner also sets for itself; the notes say which.
 
 | Variable | Default | Read in | Notes |
 |---|---|---|---|
-| `GAFFER_STRICT_REQUIRE` | `0` | `runner/lib/sandbox.sh` | 1 = refuse to launch an agent without an OS sandbox (fail closed). Unset, factory.config.sh turns it on whenever an autonomy flag, an autonomous/strict/lite mode or an `auto` policy row is on; set 0 explicitly only if you contain the whole runner yourself (a VM or container). |
+| `GAFFER_STRICT_REQUIRE` | `1` | `runner/lib/sandbox.sh` | 1 (the default, in every mode) = every agent launch runs inside the OS sandbox or is refused (fail closed): `gaffer run`, the loop, a tick and the dashboard's Poll for work refuse before claiming anything, with the fix. 0 (or false/no/off) in the ENVIRONMENT is the opt-out, for a runner you contain yourself (a VM or container): agents then run unwrapped, and it is said once per process. settings.json cannot set 0. |
 | `GAFFER_SANDBOX_IMAGE` | `gaffer-sandbox:latest` | `runner/lib/sandbox-docker.sh` | The image the docker sandbox provider runs each delivery in (`docker compose --profile sandbox build` builds it). |
 | `GAFFER_SANDBOX_PROFILE` | _(empty)_ | `runner/lib/sandbox-docker.sh` | Set by the runner, not by you: `validation` runs the DoD gates and criterion checks in the docker sandbox with no data plane. Empty is the agent profile. |
 

@@ -45,6 +45,18 @@ case "${GAFFER_WORKER_PROVIDER:-claude-code}" in
     fi ;;
   *) no "GAFFER_WORKER_PROVIDER=${GAFFER_WORKER_PROVIDER} is not a known worker provider (claude-code or command) — every agent launch refuses" ;;
 esac
+# OS isolation: every agent launch needs an OS sandbox unless GAFFER_STRICT_REQUIRE=0 is
+# in the environment (lib/sandbox.sh). Missing is a FAIL: a live run would refuse.
+if declare -F gaffer_sandbox_probe >/dev/null 2>&1; then
+  gaffer_sandbox_probe
+  if ! _sandbox_strict_required; then
+    wn "OS sandbox opted out (GAFFER_STRICT_REQUIRE=${GAFFER_STRICT_REQUIRE:-} in the environment): agents run without one — only safe inside a VM or container you trust"
+  elif [ "$GAFFER_SBX_AVAILABLE" = 1 ]; then
+    ok "OS sandbox: $GAFFER_SBX_PROVIDER, available (every agent runs inside it)"
+  else
+    no "OS sandbox: $GAFFER_SBX_PROVIDER, missing — $GAFFER_SBX_MISSING; live runs refuse to launch agents. Fix: $GAFFER_SBX_FIX (or GAFFER_STRICT_REQUIRE=0 in the environment, only inside a VM or container you trust)"
+  fi
+fi
 if command -v "$CLAUDE_BIN" >/dev/null; then ok "claude CLI: $($CLAUDE_BIN --version 2>/dev/null | head -1)"
 else wn "claude CLI not on PATH — required for LIVE runs (dry-run works without it)"; fi
 # `--version` works logged out, so it says nothing about auth: an unauthenticated claude

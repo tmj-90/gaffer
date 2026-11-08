@@ -242,9 +242,9 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.config,
     summary: "List factory settings",
     description:
-      "Every known setting with its file value, whether the environment locks it, and its group (`SettingView[]`). A secret-bearing key (`secret: true`, e.g. a webhook URL) never carries its value to any principal: `value` and `effective` are empty, `configured` says whether one is set and `host` names the URL's host.",
+      "Every known setting with its file value, whether the environment locks it, and its group (`SettingView[]`). A secret-bearing key (`secret: true`, e.g. a webhook URL) never carries its value to any principal: `value` and `effective` are empty, `configured` says whether one is set and `host` names the URL's host. `isolation` is the agent isolation posture (`runner/gaffer sandbox-status`, probed on each load): `{ provider, available, required, optedOut, missing, fix }`, plus `error` when the probe could not answer.",
     capability: "read",
-    responses: [ok("`{ settings: SettingView[] }`.")],
+    responses: [ok("`{ settings: SettingView[], isolation }`.")],
   },
   {
     method: "GET",
@@ -265,7 +265,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
       "Merges the given keys into settings.json atomically. Env-locked keys are rejected (the environment always wins); unknown keys are ignored. A value that does not fit its setting (a non-numeric dollar figure, an int below its minimum, an unlisted choice, a refused webhook URL) refuses the whole write with a 422 whose `details.invalid` names each field and why; nothing is written.",
     capability: "full",
     body: "settingsBody",
-    responses: [ok("`{ settings, written, rejected, ignored, invalid }`."), invalid],
+    responses: [ok("`{ settings, isolation, written, rejected, ignored, invalid }`."), invalid],
   },
   {
     method: "GET",

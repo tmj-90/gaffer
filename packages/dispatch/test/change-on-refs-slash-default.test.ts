@@ -14,6 +14,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { changeOnRefs } from "../src/services/ticketGitService.js";
 
 let root: string;
+// No injected runner: changeOnRefs runs the real git.
+const NO_RUNNER = { gitRunner: undefined } as Parameters<typeof changeOnRefs>[1];
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", ["-C", cwd, ...args], {
@@ -70,11 +72,13 @@ describe("changeOnRefs with a default branch that has a slash (review13/3)", () 
   it("recognises the change on refs/remotes/origin/release/v1 while the local default is stale", () => {
     const { local, sha } = fixture();
     // The stale local default does not carry it…
-    expect(changeOnRefs(hostFor(local, "release/v1"), {}, "r1", sha, ["default"])).toBe(false);
-    // …the remote-tracking default does.
-    expect(changeOnRefs(hostFor(local, "release/v1"), {}, "r1", sha, ["remote-default"])).toBe(
-      true,
+    expect(changeOnRefs(hostFor(local, "release/v1"), NO_RUNNER, "r1", sha, ["default"])).toBe(
+      false,
     );
+    // …the remote-tracking default does.
+    expect(
+      changeOnRefs(hostFor(local, "release/v1"), NO_RUNNER, "r1", sha, ["remote-default"]),
+    ).toBe(true);
   });
 
   it("does not take a remote branch that only ends with the default's name", () => {
@@ -84,8 +88,8 @@ describe("changeOnRefs with a default branch that has a slash (review13/3)", () 
     const carrying = git(local, "rev-parse", "refs/remotes/origin/release/v1");
     git(local, "update-ref", "refs/remotes/origin/hotfix/release/v1", carrying);
     git(local, "update-ref", "refs/remotes/origin/release/v1", "refs/heads/release/v1");
-    expect(changeOnRefs(hostFor(local, "release/v1"), {}, "r1", sha, ["remote-default"])).toBe(
-      false,
-    );
+    expect(
+      changeOnRefs(hostFor(local, "release/v1"), NO_RUNNER, "r1", sha, ["remote-default"]),
+    ).toBe(false);
   });
 });

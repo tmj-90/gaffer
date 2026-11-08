@@ -399,13 +399,14 @@ Dispatch is the single source of truth for *what to do* and *whether it shipped*
   a module under `src/services/reviewGate/`, which takes the instance (a `Pick` of
   the public methods it calls) and its private state (`internals.ts`) the same way:
 
-  | Module | Holds |
-  |---|---|
-  | `approval.ts` | `approveReview` (human-only by default, agent-approve policy, observed-risk ceiling, reviewer is not the author), `unavailableWriteRepos` |
-  | `staleness.ts` | reviewed heads, the shown-commit check (`stale_revision`), review and reject pins, approved-unchanged |
-  | `ci.ts` | `ciStatus`, `recordCiResult`, `recordCiRequired`, the CI hold on approve and tester PASS |
-  | `landing.ts` | `landingStatus`, `recordLanding`, `beginLanding`, `landingsStarted`, `markMerged`, the landed guards |
-  | `sendBack.ts` | `rejectReview` (retry cap), `wontDo`, `reopenFromWontDo`, `reopenForReview`, `holdForHuman` |
-  | `tester.ts` | `laneApplies`, `testerCoverage`, `routeToTester`, `testerRoutePlan`, `recordTesterReplay` |
-  | `testerVerdict.ts` | `testerPass`, `testerFail`, the verdict binding, `recordAcCheck` |
-  | `shared.ts` | `capRetry`, the reviewer patch |
+  | Module | Lines | Holds |
+  |---|---|---|
+  | `approval.ts` | 407 | `approveReview` (human-only by default, agent-approve policy, observed-risk ceiling, reviewer is not the author), `unavailableWriteRepos`, `unavailableRepoRemedy` |
+  | `staleness.ts` | 241 | reviewed heads, the shown-commit check (`stale_revision`), review and reject pins, `approvalUnchanged` |
+  | `ci.ts` | 264 | `ciStatus`, `recordCiResult`, `recordCiRequired`, `approveCiHold`, the CI hold on approve and tester PASS |
+  | `landing.ts` | 683 | `landingStatus`, `recordLanding`, `approvalRef`, `beginLanding`, `landingsStarted`, `markMerged`, the landed guards |
+  | `sendBack.ts` | 327 | `rejectReview` (retry cap), `wontDo`, `reopenFromWontDo`, `reopenForReview`, `holdForHuman` |
+  | `tester.ts` | 620 | `laneApplies`, `approveRoutesToTesting`, `testerCoverage`, `routeToTester`, `testerRoutePlan`, `routeAllToTester`, `recordTesterReplay` |
+  | `testerVerdict.ts` | 599 | `testerPass`, `testerFail`, the verdict binding, `recordAcCheck` |
+  | `shared.ts` | 35 | `capRetry`, the reviewer patch |
+  | `internals.ts` | 41 | the facade's private state (deps and the live retry cap) |

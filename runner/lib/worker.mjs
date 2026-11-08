@@ -230,7 +230,9 @@ export function commandWorkerConfig(env = process.env, { writeRoots = "", cwd = 
 /** True only for an EXPLICIT GAFFER_STRICT_REQUIRE=0|false|no|off: the operator's out-of-band assertion. */
 export function strictRequireOptedOut(env = process.env) {
   if (env.GAFFER_STRICT_REQUIRE === undefined) return false;
-  const v = String(env.GAFFER_STRICT_REQUIRE).trim().toLowerCase();
+  // Not trimmed: the bash readers (lib/worker.sh, lib/sandbox.sh, the config) take the
+  // value as it is, so " 0" is no opt-out there and must not be one here either.
+  const v = String(env.GAFFER_STRICT_REQUIRE).toLowerCase();
   return v === "0" || v === "false" || v === "no" || v === "off";
 }
 
@@ -552,9 +554,10 @@ function isCommandEnvelope(json) {
  * dashboard never takes GAFFER_STRICT_REQUIRE from settings.json, nor does the runner).
  */
 export function sandboxRequired(env = process.env) {
-  const v = String(env.GAFFER_STRICT_REQUIRE ?? "")
-    .trim()
-    .toLowerCase();
+  // Not trimmed, exactly like sandbox.sh's _sandbox_strict_required and the config
+  // (runner/config/15-modes.sh): " 0" or "0 " is not an opt-out in bash, so it must not
+  // be one here (a launcher started without the config would otherwise run unwrapped).
+  const v = String(env.GAFFER_STRICT_REQUIRE ?? "").toLowerCase();
   return !(v === "0" || v === "false" || v === "no" || v === "off");
 }
 

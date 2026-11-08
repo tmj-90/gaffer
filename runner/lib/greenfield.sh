@@ -596,16 +596,29 @@ _gaffer_inherit_amb_spawn() {  # stdin: plan JSON; args: <idx> [ticket] → answ
     rm -rf "$scratch"
     return 0
   fi
-  if [ "${GAFFER_WORKER_PROVIDER:-claude-code}" = claude-code ]; then
+  # The direct spawn is kept ONLY for claude-code with the OS sandbox neither on nor
+  # required (the operator's GAFFER_STRICT_REQUIRE=0 in the environment, STRICT_MODE
+  # off). Required is the default (runner/config/15-modes.sh), and then the classifier
+  # goes through the worker seam below like every other agent launch: wrapped in the
+  # OS sandbox, or refused (rc 75, no spawn) when the host cannot supply one. A missing
+  # seam check counts as "wanted" (fail closed).
+  local _direct=0
+  if [ "${GAFFER_WORKER_PROVIDER:-claude-code}" = claude-code ] \
+    && declare -F _worker_sandbox_wanted >/dev/null 2>&1 && ! _worker_sandbox_wanted; then
+    _direct=1
+  fi
+  if [ "$_direct" = 1 ]; then
     ( cd "$scratch" && gaffer_timeout "${GAFFER_INHERIT_AMB_TIMEOUT:-300}" "$bin" "${argv[@]}" ) \
       >"$scratch/out.json" 2>/dev/null || rc=$?
   else
-    # Another worker provider: the classifier goes through the ONE worker seam like every
-    # other agent turn (the command worker's contract and containment rule; an unknown
-    # provider refuses rc 70), never a direct paid `claude` call behind the operator's
-    # back. The planned claude-shaped argv supplies the prompt, model and turn cap; the
-    # call stays text-only (`--tools ""`) with an empty MCP config and the scratch dir
-    # as its only write root.
+    # The OS sandbox is wanted (the default), or another worker provider: the classifier
+    # goes through the ONE worker seam like every other agent turn (the sandbox wrap or
+    # the fail-closed refusal; the command worker's contract and containment rule; an
+    # unknown provider refuses rc 70), never a direct paid `claude` call behind the
+    # operator's back. The planned claude-shaped argv supplies the prompt, model and turn
+    # cap; the call stays text-only (`--tools ""`, and for claude-code no MCP server and
+    # no slash commands, as in the direct argv) with an empty MCP config and the scratch
+    # dir as its only write root.
     if ! declare -F worker_deliver >/dev/null 2>&1; then
       rm -rf "$scratch"
       return 0
@@ -621,10 +634,12 @@ _gaffer_inherit_amb_spawn() {  # stdin: plan JSON; args: <idx> [ticket] → answ
     done
     printf '{"mcpServers":{}}' > "$scratch/mcp.json"
     mkdir -p "$scratch/cwd"
+    local -a _itext=(--tools "")
+    [ "${GAFFER_WORKER_PROVIDER:-claude-code}" = claude-code ] && _itext+=(--strict-mcp-config --disable-slash-commands)
     local _wenv_saved=( ${WORKER_CALL_ENV[@]+"${WORKER_CALL_ENV[@]}"} )
     WORKER_CALL_ENV=( "GAFFER_WRITE_ROOTS=$scratch/cwd" "GAFFER_READ_ROOTS=" )
     GAFFER_LAUNCH_KIND=inherit GAFFER_TICK_TIMEOUT="${GAFFER_INHERIT_AMB_TIMEOUT:-300}" \
-      worker_deliver "$scratch/cwd" "$_ip" "$_im" "$scratch/mcp.json" "$scratch/out.json" "" "$_it" --tools "" \
+      worker_deliver "$scratch/cwd" "$_ip" "$_im" "$scratch/mcp.json" "$scratch/out.json" "" "$_it" "${_itext[@]}" \
       2>/dev/null || rc=$?
     WORKER_CALL_ENV=( ${_wenv_saved[@]+"${_wenv_saved[@]}"} )
   fi

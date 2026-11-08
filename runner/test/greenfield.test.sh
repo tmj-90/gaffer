@@ -32,6 +32,14 @@ source "$RUNNER_DIR/lib/greenfield.sh"
 # isolation, so provide a passthrough stub matching gaffer_timeout's semantics for a
 # positive timeout: drop the seconds arg and run the command directly.
 gaffer_timeout() { shift; "$@"; }
+# The inherit classifier spawns claude directly only when the OS sandbox is neither on
+# nor required (lib/worker.sh _worker_sandbox_wanted); otherwise it goes through the
+# worker seam (isolation-default.test.sh proves that path). This test is about the
+# classifier's own behaviour, so it runs under the environment opt-out, said here
+# rather than inherited from runner/test/run.sh, with the real decision loaded.
+export GAFFER_STRICT_REQUIRE=0; unset STRICT_MODE
+# shellcheck source=../lib/worker.sh
+source "$RUNNER_DIR/lib/worker.sh"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/greenfield-test.XXXXXX")"
 gaffer_test_check_tmp "$WORK" || exit 70

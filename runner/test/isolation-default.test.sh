@@ -13,13 +13,15 @@
 #      message names the host's situation, the fix and the opt-out, the ticket stays
 #      ready, no branch, no agent call; `gaffer run` refuses the same way (exit 3) and
 #      the dashboard's poll says "not polling"; the Node seam (the dashboard's
-#      launchers: Plan a build, the spec author) refuses too, with the same message
+#      launchers: Plan a build, the spec author) refuses too, with the same message, also
+#      for a padded " 0" that the bash readers do not take as the opt-out; the greenfield
+#      inherit classifier (which used to spawn claude itself) refuses on its own
 #   2. GAFFER_STRICT_REQUIRE=0 in the environment: the same tick delivers, and the
 #      opt-out is said exactly once
 #   3. GAFFER_STRICT_REQUIRE=0 in settings.json alone does NOT opt out
 #   4. a stub `docker` on PATH that answers the probes, no SANDBOX_PROVIDER, no
 #      STRICT_MODE, no opt-out: the config picks docker, the gate passes, and both
-#      worker seams wrap the launch in the docker wrapper
+#      worker seams wrap the launch in the docker wrapper, the inherit classifier too
 #   5. `gaffer sandbox-status` prints the posture as JSON (missing / available / opted out)
 #   6. setup.sh on the no-provider PATH exits 0 and prints the posture and the fix; with
 #      a docker CLI and a reachable daemon it builds the sandbox images (compose), and
@@ -109,6 +111,30 @@ rm -f "$MARK"; NOUT="$(node_deliver PATH="$NOP")"
 [ "${NOUT%%|*}" = 75 ] && [ ! -e "$MARK" ] && ok "the Node seam (dashboard launchers) refuses: status 75, nothing spawned" \
   || fail "Node seam: ${NOUT%%|*} spawned=$([ -e "$MARK" ] && echo yes || echo no)"
 case "$NOUT" in *"install Docker"*"GAFFER_STRICT_REQUIRE=0"*) ok "the Node refusal carries the same message" ;; *) fail "Node message: $NOUT" ;; esac
+# Only the documented spellings opt out, and every reader agrees: the config and
+# sandbox.sh take " 0" / "0 " as required, so the Node seam (a launcher started without
+# the config) must too. It used to trim the value and spawn the agent unwrapped.
+for pad in " 0" "0 "; do
+  rm -f "$MARK"; NOUT="$(node_deliver PATH="$NOP" GAFFER_STRICT_REQUIRE="$pad")"
+  [ "${NOUT%%|*}" = 75 ] && [ ! -e "$MARK" ] && ok "the Node seam refuses GAFFER_STRICT_REQUIRE='$pad' (not an opt-out)" \
+    || fail "Node seam took '$pad' as the opt-out: ${NOUT%%|*} spawned=$([ -e "$MARK" ] && echo yes || echo no)"
+done
+
+# The greenfield inherit classifier (lib/greenfield.sh _gaffer_inherit_amb_spawn) used to
+# spawn claude itself under claude-code, outside the worker seam: it must refuse on its
+# own when the host has no sandbox (per-spawn, not only behind the tick's gate).
+INH_MARK="$WORK/inherit-agent-ran"
+printf '#!/usr/bin/env bash\necho "$*" >> "%s"\necho "{\\"type\\":\\"result\\",\\"result\\":\\"repo-a\\"}"\n' "$INH_MARK" > "$WORK/inherit-claude"
+chmod +x "$WORK/inherit-claude"
+INH_PLAN="{\"ambiguous\":[{\"claudeBin\":\"$WORK/inherit-claude\",\"argv\":[\"-p\",\"pick one\",\"--output-format\",\"json\",\"--max-turns\",\"2\",\"--tools\",\"\"]}]}"
+inherit_in() {  # $@ = NAME=value env → the classifier's answer
+  ( cd "$WORK" && fresh CLAUDE_BIN="$WORK/inherit-claude" "$@" bash -c '
+    source "$1/factory.config.sh" >/dev/null 2>&1
+    printf "%s" "$2" | _gaffer_inherit_amb_spawn 0 7 2>/dev/null' x "$RUNNER_DIR" "$INH_PLAN" )
+}
+rm -f "$INH_MARK"; IOUT="$(inherit_in PATH="$NOP")"
+[ ! -e "$INH_MARK" ] && [ -z "$IOUT" ] && ok "the inherit classifier launches no agent with no sandbox" \
+  || fail "the inherit classifier ran the agent unwrapped: answer='$IOUT'"
 
 # The dashboard's launchers on top of that seam: Plan a build (decompose) and the spec
 # author (which used to spawn claude itself, outside the seam, under claude-code).
@@ -131,6 +157,8 @@ n="$(printf '%s\n' "$TOUT" | grep -c 'WARNING: GAFFER_STRICT_REQUIRE=0 in the en
 retire "$T1"
 rm -f "$MARK"; NOUT="$(node_deliver PATH="$NOP" GAFFER_STRICT_REQUIRE=0)"
 [ "${NOUT%%|*}" = 0 ] && [ -e "$MARK" ] && ok "the Node seam launches under the environment opt-out" || fail "Node opt-out: $NOUT"
+rm -f "$INH_MARK"; IOUT="$(inherit_in PATH="$NOP" GAFFER_STRICT_REQUIRE=0)"
+[ -e "$INH_MARK" ] && [ "$IOUT" = repo-a ] && ok "the inherit classifier runs under the environment opt-out" || fail "inherit opt-out: answer='$IOUT'"
 
 echo "== 3: GAFFER_STRICT_REQUIRE=0 in settings.json alone does not opt out =="
 T3="$(new_ready "isolation three" "deliver a helper")"
@@ -174,6 +202,9 @@ grep -qx -- "$WORK:$WORK:rw" "$WORK/out.json" && grep -qx claude "$WORK/out.json
 rm -f "$MARK"; NOUT="$(node_deliver PATH="$DBIN:$NOP" GAFFER_SANDBOX_DRY_RUN=1)"
 [ "${NOUT%%|*}" = 0 ] && [ ! -e "$MARK" ] && ok "the Node seam's launch is wrapped (the host agent did not run directly)" || fail "Node docker: $NOUT"
 case "$NOUT" in *"$WORK:$WORK:rw"*) ok "…in the docker wrapper (the write root mounted rw)" ;; *) fail "Node docker argv: $NOUT" ;; esac
+rm -f "$INH_MARK"; IOUT="$(inherit_in PATH="$DBIN:$NOP" GAFFER_SANDBOX_DRY_RUN=1)"
+[ ! -e "$INH_MARK" ] && ok "the inherit classifier did not run the agent on the host" || fail "the inherit classifier ran bare beside a working docker: $(cat "$INH_MARK")"
+case "$IOUT" in *"--cap-drop=ALL"*) ok "…it went through the docker wrapper" ;; *) fail "inherit docker argv: $(printf '%s' "$IOUT" | head -c 200)" ;; esac
 
 echo "== 5: gaffer sandbox-status =="
 J="$(fresh PATH="$NOP" bash "$RUNNER_DIR/gaffer" sandbox-status 2>/dev/null)"

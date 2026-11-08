@@ -24,7 +24,7 @@ import {
   updateClubBody,
   updateSquadAgentBody,
 } from "../schemas.js";
-import { refreshIsolationStatus } from "../isolation.js";
+import { isolationStatusForRequest } from "../isolation.js";
 import { listSettings, readSecretSetting, settingProblems, writeSettings } from "../settings.js";
 import { apiActor, apiPrincipal } from "./context.js";
 import { forgetLoreDrafts, forgetLoreStatus, routeReadModels } from "./readModels.js";
@@ -53,8 +53,10 @@ export async function routeApi(
   if (segments.length === 2 && segments[1] === "settings") {
     if (method === "GET") {
       // The isolation posture rides along (runner/gaffer sandbox-status, probed on each
-      // load): the Sandbox group shows it as a read-only line.
-      const isolation = await refreshIsolationStatus();
+      // load): the Sandbox group shows it as a read-only line. The load never waits
+      // long for the probe: it answers with the posture it has and the fresh probe
+      // shows on the next load (isolation.ts).
+      const isolation = await isolationStatusForRequest();
       sendJson(res, 200, { settings: listSettings(), isolation });
       return;
     }
@@ -71,8 +73,12 @@ export async function routeApi(
         );
       }
       const result = writeSettings(body.settings);
-      // A saved SANDBOX_PROVIDER changes the posture: probe again with the new env.
-      const isolation = await refreshIsolationStatus();
+      // A saved SANDBOX_PROVIDER changes the posture: probe again with the new env and
+      // wait a little longer for that answer, since the person just changed it.
+      const isolation = await isolationStatusForRequest(process.env, {
+        fresh: true,
+        waitMs: 4_000,
+      });
       sendJson(res, 200, {
         settings: listSettings(),
         isolation,

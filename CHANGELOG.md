@@ -174,6 +174,8 @@ Each still works for one release, mapped onto its replacement with a one-line wa
 
 ### Fixed
 
+- The Settings page's load no longer waits for the agent isolation probe in full (up to 15 s on a host whose docker CLI is slow to answer): it waits at most 1.5 s, answers with the posture it has or "still probing", and the finished probe shows on the next load. Concurrent loads share one probe.
+- Two workers of a pool reaching their first tick together on a fresh data dir both register the factory agent and the reviewer principal; the one that lost the database lock no longer ends the pool as a setup error. Registration retries up to three times a second apart and names the attempt that succeeded; a refusal that persists still stops the tick and the abort quotes what `wg` said.
 - The independent tester's lane, timing and per-criterion evidence read the same in the dashboard and the runner, and its verdict cell says *Not this commit* after a push.
 - An epic's acceptance ticket tracks the epic's current scope, counts each member once, and no longer rejects itself.
 - A merge interrupted before its tester replay record was written recovers on retry.

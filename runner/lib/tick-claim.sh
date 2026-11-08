@@ -112,23 +112,47 @@ if [ "${DRY_RUN:-0}" != "1" ] && declare -F gaffer_usage_pause_active >/dev/null
 fi
 }
 
+# Register one principal: `wg agent register` into <id file>, up to three attempts a
+# second apart. Two workers of a pool reach their first tick together on a fresh data
+# dir and both register at once; the one that loses the database lock used to end the
+# whole pool as a setup error (macOS CI, parallel-stop P2). A refusal that persists is
+# still fail closed: the tick stops, and the abort names what wg said.
+#   _gaffer_register_principal <name> <id file> <what>
+_gaffer_register_principal() {
+  local name="$1" file="$2" what="$3" attempt=1 err
+  err="$(mktemp "${TMPDIR:-/tmp}/gaffer-register.XXXXXX")" || err=/dev/null
+  while :; do
+    if wg agent register -n "$name" --max-risk high --as system 2>"$err" | jget 'd.agent.id' > "$file" 2>/dev/null \
+       && [ -s "$file" ]; then
+      [ "$attempt" -gt 1 ] && log "SETUP: registered $what on attempt $attempt"
+      [ "$err" != /dev/null ] && rm -f "$err"
+      return 0
+    fi
+    rm -f "$file"
+    if [ "$attempt" -ge 3 ]; then
+      local said
+      said="$(tail -c 300 "$err" 2>/dev/null | tr '\n' ' ')"
+      [ "$err" != /dev/null ] && rm -f "$err"
+      gaffer_abort_setup SETUP "could not register $what after $attempt attempts${said:+: $said}"
+      return 1
+    fi
+    attempt=$((attempt + 1))
+    sleep 1
+  done
+}
+
 # The factory agent + reviewer principal (AGENT, REVIEWER_AGENT). Moved verbatim from tick.sh; called from tick.sh.
 gaffer_tick_register_agents() {
 # Ensure a stable factory agent (register once).
 if [ ! -s "$_GAFFER_AGENT_ID_FILE" ]; then
   wg init >/dev/null 2>&1 || true
-  if ! wg agent register -n "$_GAFFER_AGENT_NAME" --max-risk high --as system 2>/dev/null | jget 'd.agent.id' > "$_GAFFER_AGENT_ID_FILE" 2>/dev/null; then
-    gaffer_abort_setup SETUP "could not register factory agent"
-  fi
+  _gaffer_register_principal "$_GAFFER_AGENT_NAME" "$_GAFFER_AGENT_ID_FILE" "the factory agent"
 fi
 AGENT="$(cat "$_GAFFER_AGENT_ID_FILE")"
 # The REVIEWER principal (a distinct registered agent) — the review pass approves and
 # rejects as this id, never as the delivering agent and never as a bare string.
 if [ ! -s "$_GAFFER_REVIEWER_ID_FILE" ]; then
-  if ! wg agent register -n "${_GAFFER_AGENT_NAME}-reviewer" --max-risk high --as system 2>/dev/null | jget 'd.agent.id' > "$_GAFFER_REVIEWER_ID_FILE" 2>/dev/null \
-     || [ ! -s "$_GAFFER_REVIEWER_ID_FILE" ]; then
-    rm -f "$_GAFFER_REVIEWER_ID_FILE"; gaffer_abort_setup SETUP "could not register the reviewer principal"
-  fi
+  _gaffer_register_principal "${_GAFFER_AGENT_NAME}-reviewer" "$_GAFFER_REVIEWER_ID_FILE" "the reviewer principal"
 fi
 REVIEWER_AGENT="$(cat "$_GAFFER_REVIEWER_ID_FILE")"
 export REVIEWER_AGENT

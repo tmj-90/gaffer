@@ -101,18 +101,36 @@ function unknownStatus(error: string): IsolationStatus {
 }
 
 let last: IsolationStatus | null = null;
+let inflight: Promise<IsolationStatus> | null = null;
+
+/**
+ * How long a settings load waits for a probe that has not answered yet. The probe can
+ * take seconds on a host whose docker CLI is slow to answer `docker info`; a request
+ * that waited the probe's full 15 s timed out the API's own clients (a 5 s test
+ * timeout on a loaded CI runner). Past this the load answers with the posture it has,
+ * or "still probing", and the finished probe shows on the next load.
+ */
+const SETTINGS_PROBE_WAIT_MS = 1_500;
+
+/** What the Settings line shows while the first probe is still running. */
+const PROBING = "the isolation probe is still running; reload in a moment";
 
 /** The last probe answer (null before the first one finished). */
 export function lastIsolationStatus(): IsolationStatus | null {
   return last;
 }
 
-/** Run the probe once (never rejects) and remember its answer. */
+/**
+ * Run the probe once (never rejects) and remember its answer. Concurrent callers share
+ * one run: a settings load during the startup probe does not start a second docker
+ * probe beside it.
+ */
 export function refreshIsolationStatus(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<IsolationStatus> {
+  if (inflight) return inflight;
   const [bin, ...args] = sandboxStatusArgv(env);
-  return new Promise((resolve) => {
+  inflight = new Promise((resolve) => {
     execFile(
       bin!,
       args,
@@ -126,13 +144,48 @@ export function refreshIsolationStatus(
               ? `the isolation probe failed: ${err.message.split("\n")[0]}`
               : "the isolation probe printed no status",
           );
+        inflight = null;
         resolve(last);
       },
     );
+  });
+  return inflight;
+}
+
+/**
+ * The posture a settings load reports, never waiting longer than `waitMs` for the
+ * probe. A probe is always started (or joined) so the answer is fresh on the next load;
+ * when it does not finish in time the load answers with the last answer, or, before
+ * any probe has finished, with "still probing" (`error` set, provider "unknown").
+ * `fresh` (after a settings write that can change the posture) ignores the last answer
+ * and waits for the new probe up to `waitMs`.
+ */
+export function isolationStatusForRequest(
+  env: NodeJS.ProcessEnv = process.env,
+  opts: { waitMs?: number; fresh?: boolean } = {},
+): Promise<IsolationStatus> {
+  const waitMs = opts.waitMs ?? SETTINGS_PROBE_WAIT_MS;
+  const probe = refreshIsolationStatus(env);
+  const fallback = (): IsolationStatus =>
+    (opts.fresh ? null : last) ?? last ?? unknownStatus(PROBING);
+  return new Promise((resolve) => {
+    let done = false;
+    const timer = setTimeout(() => {
+      if (done) return;
+      done = true;
+      resolve(fallback());
+    }, waitMs);
+    void probe.then((status) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve(status);
+    });
   });
 }
 
 /** Test seam: forget the remembered answer. */
 export function resetIsolationStatus(): void {
   last = null;
+  inflight = null;
 }

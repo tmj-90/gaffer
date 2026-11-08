@@ -90,6 +90,36 @@ describe("isolation probe", () => {
     expect(st.error).toMatch(/isolation probe failed/);
   });
 
+  it("GET /api/settings never waits long for a slow probe: it answers with what it has, and the probe's answer shows on a later load", async () => {
+    process.env.GAFFER_DATA = dir;
+    // A probe that takes three seconds (a docker CLI slow to answer `docker info`).
+    process.env[GAFFER_SANDBOX_STATUS_CMD_ENV] = stubProbe(
+      `sleep 3\necho '${JSON.stringify(MISSING)}'`,
+    );
+    const wg = Dispatch.open(":memory:");
+    const server = createApiServer(wg);
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    try {
+      const { port } = server.address() as AddressInfo;
+      const t0 = Date.now();
+      const res = await fetch(`http://127.0.0.1:${port}/api/settings`);
+      const elapsed = Date.now() - t0;
+      expect(res.status).toBe(200);
+      expect(elapsed).toBeLessThan(2_500);
+      const body = (await res.json()) as { isolation: { provider: string; error?: string } };
+      expect(body.isolation.provider).toBe("unknown");
+      expect(body.isolation.error).toMatch(/still running/);
+      // The one probe finishes on its own; the next load carries its answer.
+      await new Promise((r) => setTimeout(r, 3_200));
+      const again = await fetch(`http://127.0.0.1:${port}/api/settings`);
+      const after = (await again.json()) as { isolation: unknown };
+      expect(after.isolation).toEqual(MISSING);
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+      wg.db.close();
+    }
+  }, 15_000);
+
   it("GET /api/settings carries the isolation posture", async () => {
     process.env.GAFFER_DATA = dir;
     process.env[GAFFER_SANDBOX_STATUS_CMD_ENV] = stubProbe(`echo '${JSON.stringify(MISSING)}'`);

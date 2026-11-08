@@ -22,7 +22,7 @@ fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 
 RE='grep[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*-[a-zA-Z]*c[a-zA-Z]*[[:space:]][^|]*\|\|[[:space:]]*echo[[:space:]]+0'
 echo "== C1: no grep -c … || echo 0 =="
-FILES=("$RUNNER_DIR"/*.sh "$RUNNER_DIR"/gaffer "$RUNNER_DIR"/lib/*.sh "$RUNNER_DIR"/bin/*.sh)
+FILES=("$RUNNER_DIR"/*.sh "$RUNNER_DIR"/config/*.sh "$RUNNER_DIR"/gaffer "$RUNNER_DIR"/lib/*.sh "$RUNNER_DIR"/bin/*.sh)
 HITS="$(grep -nE "$RE" "${FILES[@]}" 2>/dev/null | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#')"
 if [ -z "$HITS" ]; then ok "C1 no \`grep -c … || echo 0\` in the runner's bash (${#FILES[@]} files)"
 else fail "C1 grep -c … || echo 0 captures '0⏎0' on a zero count — use '|| true' and \${n:-0}:"; printf '%s\n' "$HITS" | sed "s#^$RUNNER_DIR/#      #"; fi

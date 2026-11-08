@@ -256,7 +256,7 @@ console.log("== R-4b: the tick.sh ledger call site routes the module's stderr to
 {
   // The WARNING reaches the operator only if the call site stops discarding node's
   // stderr. gaffer_usage_record (factory.config.sh) must route it to $GAFFER_LOG.
-  const cfg = readFileSync(resolve(RUNNER_DIR, "factory.config.sh"), "utf8");
+  const cfg = readFileSync(resolve(RUNNER_DIR, "config/14-usage.sh"), "utf8");
   const fn = cfg.slice(cfg.indexOf("gaffer_usage_record() {"));
   const body = fn.slice(0, fn.indexOf("\n}\n") + 1);
   assert(
@@ -370,7 +370,7 @@ console.log("== REWORK COST: a delivery row carries its attempt id and spawn tim
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
-  const cfg = readFileSync(resolve(RUNNER_DIR, "factory.config.sh"), "utf8");
+  const cfg = readFileSync(resolve(RUNNER_DIR, "config/14-usage.sh"), "utf8");
   const tick = tickSources();
   assert(
     "gaffer_usage_record passes the attempt flags for delivery rows only",

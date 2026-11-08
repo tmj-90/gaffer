@@ -14,6 +14,16 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..", "..");
 const SETTINGS_TS = join(ROOT, "packages/dispatch/src/api/settings.ts");
 const CONFIG_SH = join(ROOT, "runner/factory.config.sh");
+// factory.config.sh sources its parts (runner/config/*.sh): together they are the config.
+const CONFIG_DIR = join(ROOT, "runner/config");
+const CONFIG_FILES = [
+  CONFIG_SH,
+  ...readdirSync(CONFIG_DIR)
+    .filter((f) => f.endsWith(".sh"))
+    .sort()
+    .map((f) => join(CONFIG_DIR, f)),
+];
+const CONFIG_TEXT = CONFIG_FILES.map((f) => readFileSync(f, "utf8")).join("\n");
 
 const keys = [...readFileSync(SETTINGS_TS, "utf8").matchAll(/^\s*key: "([A-Z0-9_]+)",$/gm)].map(
   (m) => m[1],
@@ -29,7 +39,11 @@ const walk = (d) => {
     const st = statSync(p);
     if (st.isDirectory()) {
       if (!SKIP_DIRS.has(name)) walk(p);
-    } else if ((EXT.test(name) || name === "gaffer") && p !== SETTINGS_TS && p !== CONFIG_SH) {
+    } else if (
+      (EXT.test(name) || name === "gaffer") &&
+      p !== SETTINGS_TS &&
+      !CONFIG_FILES.includes(p)
+    ) {
       files.push(p);
     }
   }
@@ -46,7 +60,7 @@ for (const k of keys) {
   // factory.config.sh may itself be the consumer (GAFFER_MODE, the autonomy cluster):
   // count it only where the key is READ, i.e. expanded, not just assigned/exported.
   const configReads = new RegExp(`\\$\\{?${k}\\b(?![:=]?=)`).test(
-    readFileSync(CONFIG_SH, "utf8").replace(new RegExp(`: "\\$\\{${k}:=[^}]*\\}"`, "g"), ""),
+    CONFIG_TEXT.replace(new RegExp(`: "\\$\\{${k}:=[^}]*\\}"`, "g"), ""),
   );
   const users = files.filter((_, i) => re.test(corpus[i]));
   if (users.length > 0 || configReads) passed += 1;

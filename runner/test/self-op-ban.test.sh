@@ -128,10 +128,10 @@ OTHER="$WORK/other-git"; git init -q -b main "$OTHER"
   || fail "linked worktree of the runner's own repo should be a self-target (rc=$?)"
 
 echo "== AC8: knob + helper present in factory.config.sh =="
-grep -q 'GAFFER_ALLOW_SELF_DELIVERY:=0' "$RUNNER_DIR_REAL/factory.config.sh" \
+grep -q 'GAFFER_ALLOW_SELF_DELIVERY:=0' "$RUNNER_DIR_REAL/config/13-stop.sh" \
   && ok "GAFFER_ALLOW_SELF_DELIVERY knob defaults to 0" \
   || fail "missing GAFFER_ALLOW_SELF_DELIVERY:=0 knob"
-grep -q 'gaffer_is_self_target()' "$RUNNER_DIR_REAL/factory.config.sh" \
+grep -q 'gaffer_is_self_target()' "$RUNNER_DIR_REAL/config/13-stop.sh" \
   && ok "gaffer_is_self_target helper defined in config" \
   || fail "missing gaffer_is_self_target helper"
 

@@ -84,7 +84,7 @@ gaffer_test_check_tmp "$SPENDFN" file || exit 70
 LEDGER7="$(mktemp "${TMPDIR:-/tmp}/ledger7.XXXXXX")"
 gaffer_test_check_tmp "$LEDGER7" file || exit 70
 trap 'rm -f "$FN" "$SPENDFN" "$LEDGER7"' EXIT
-CFG="$RUNNER_DIR/factory.config.sh"
+CFG="$RUNNER_DIR/config/08-guards.sh"
 awk '/^_gaffer_ticket_spend\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$CFG" > "$SPENDFN"
 grep -E '^gaffer_ticket_(total|delivery|rework)_spend\(\) \{.*\}$' "$CFG" >> "$SPENDFN"
 # shellcheck disable=SC1090

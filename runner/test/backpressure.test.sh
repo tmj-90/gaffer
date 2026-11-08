@@ -127,7 +127,7 @@ echo "== AC7: a cap of 0 disables that dimension =="
 echo "== AC8: cap config keys present + commented =="
 # The branch/PR caps default next to each other in the backpressure block.
 for k in MAX_OPEN_AGENT_BRANCHES_PER_REPO:=3 MAX_OPEN_AGENT_PRS_PER_REPO:=3; do
-  grep -Eq "^: \"\\\$\{$k\}\"" "$RUNNER_DIR/factory.config.sh" \
+  grep -Eq "^: \"\\\$\{$k\}\"" "$RUNNER_DIR/config/16-sandbox.sh" \
     && ok "$k default present in factory.config.sh" \
     || fail "$k default missing from factory.config.sh"
 done
@@ -135,11 +135,11 @@ done
 # GAFFER_CONCURRENCY block, default 1) — NOT re-defaulted in the backpressure block,
 # where a second `:=` would be a dead no-op (FIX-4). Assert exactly one default and
 # that it is :=1.
-conc_defaults="$(grep -Ec '^: "\$\{MAX_CONCURRENT_TICKETS_PER_REPO:=' "$RUNNER_DIR/factory.config.sh")"
+conc_defaults="$(cat "$RUNNER_DIR"/factory.config.sh "$RUNNER_DIR"/config/*.sh | grep -Ec '^: "\$\{MAX_CONCURRENT_TICKETS_PER_REPO:=')"
 [ "$conc_defaults" = "1" ] \
   && ok "MAX_CONCURRENT_TICKETS_PER_REPO defaulted exactly once (no dead duplicate)" \
   || fail "MAX_CONCURRENT_TICKETS_PER_REPO defaulted $conc_defaults time(s) — expected exactly 1"
-grep -Eq '^: "\$\{MAX_CONCURRENT_TICKETS_PER_REPO:=1\}"' "$RUNNER_DIR/factory.config.sh" \
+grep -Eq '^: "\$\{MAX_CONCURRENT_TICKETS_PER_REPO:=1\}"' "$RUNNER_DIR/config/13-stop.sh" \
   && ok "MAX_CONCURRENT_TICKETS_PER_REPO default is 1" \
   || fail "MAX_CONCURRENT_TICKETS_PER_REPO default is not 1"
 

@@ -29,15 +29,15 @@ ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 
 echo "== AC1: GAFFER_CONCURRENCY defaults to 1 in config =="
-grep -Eq '^\s*:\s*"\$\{GAFFER_CONCURRENCY:=1\}"' "$RUNNER_DIR/factory.config.sh" \
+grep -Eq '^\s*:\s*"\$\{GAFFER_CONCURRENCY:=1\}"' "$RUNNER_DIR/config/13-stop.sh" \
   && ok "factory.config.sh defaults GAFFER_CONCURRENCY=1" || fail "GAFFER_CONCURRENCY default-1 not found"
 
 echo "== AC5: config knobs present + exported =="
-grep -Eq '^\s*:\s*"\$\{MAX_CONCURRENT_TICKETS_PER_REPO:=1\}"' "$RUNNER_DIR/factory.config.sh" \
+grep -Eq '^\s*:\s*"\$\{MAX_CONCURRENT_TICKETS_PER_REPO:=1\}"' "$RUNNER_DIR/config/13-stop.sh" \
   && ok "MAX_CONCURRENT_TICKETS_PER_REPO default present" || fail "MAX_CONCURRENT_TICKETS_PER_REPO default missing"
-grep -Eq '^\s*:\s*"\$\{MAX_CANDIDATES:=' "$RUNNER_DIR/factory.config.sh" \
+grep -Eq '^\s*:\s*"\$\{MAX_CANDIDATES:=' "$RUNNER_DIR/config/13-stop.sh" \
   && ok "MAX_CANDIDATES default present" || fail "MAX_CANDIDATES default missing"
-grep -Eq 'export GAFFER_CONCURRENCY MAX_CONCURRENT_TICKETS_PER_REPO MAX_CANDIDATES' "$RUNNER_DIR/factory.config.sh" \
+grep -Eq 'export GAFFER_CONCURRENCY MAX_CONCURRENT_TICKETS_PER_REPO MAX_CANDIDATES' "$RUNNER_DIR/config/13-stop.sh" \
   && ok "all three knobs exported" || fail "knobs not all exported"
 
 echo "== AC3: the serial loop body is the canonical pre-A-1 shape =="

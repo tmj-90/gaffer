@@ -59,7 +59,7 @@ echo "== 3: SOURCE PIN — no runner shell site compares an autonomy flag to a b
 FLAGS='AUTO_MERGE|MERGE_ON_AGENT_REVIEW|DISPATCH_ALLOW_AGENT_APPROVE|GAFFER_CREATE_PR|GAFFER_REQUIRE_CI|GAFFER_AUTO_PUSH|MEMORY_AUTO_APPROVE'
 HITS="$(grep -nE "\\\$\\{?(${FLAGS})(:-[^}]*)?\\}?\"? *!?= *\"?1\"?" \
   "$RUNNER_DIR"/tick.sh "$RUNNER_DIR"/loop.sh "$RUNNER_DIR"/gaffer "$RUNNER_DIR"/status.sh \
-  "$RUNNER_DIR"/factory.config.sh "$RUNNER_DIR"/lib/*.sh "$RUNNER_DIR"/bin/*.sh 2>/dev/null || true)"
+  "$RUNNER_DIR"/factory.config.sh "$RUNNER_DIR"/config/*.sh "$RUNNER_DIR"/lib/*.sh "$RUNNER_DIR"/bin/*.sh 2>/dev/null || true)"
 [ -z "$HITS" ] && ok "no bare-\"1\" comparison of an autonomy flag in the runner" || fail "bare-\"1\" comparisons remain:"$'\n'"$HITS"
 # The AFK push gate moved with the landing block into lib/land.sh (shared by the review
 # pass and the merge lane) — pin it there.

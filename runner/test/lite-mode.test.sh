@@ -90,8 +90,8 @@ for p in $SENSITIVE_PATHS; do
   grep -qxF "$p sensitive" <<<"$CLASSIFIED" && ok "sensitive: $p" || fail "false NEGATIVE (security gate): $p"
 done
 # The security second-review lane falls back to the SAME default (one definition).
-grep -q 'GAFFER_LITE_SENSITIVE_RE:-$_GAFFER_SENSITIVE_PATH_RE}"' "$RUNNER_DIR/factory.config.sh" \
-  && grep -q 'GAFFER_SECURITY_REVIEW_RE:-${GAFFER_LITE_SENSITIVE_RE:-$_GAFFER_SENSITIVE_PATH_RE}}"' "$RUNNER_DIR/factory.config.sh" \
+grep -q 'GAFFER_LITE_SENSITIVE_RE:-$_GAFFER_SENSITIVE_PATH_RE}"' "$RUNNER_DIR/config/18-review.sh" \
+  && grep -q 'GAFFER_SECURITY_REVIEW_RE:-${GAFFER_LITE_SENSITIVE_RE:-$_GAFFER_SENSITIVE_PATH_RE}}"' "$RUNNER_DIR/config/18-review.sh" \
   && ok "lite classifier and security review lane share _GAFFER_SENSITIVE_PATH_RE" \
   || fail "the two sensitive-path defaults are not the shared one"
 

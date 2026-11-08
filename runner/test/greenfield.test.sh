@@ -227,13 +227,13 @@ git -C "$RT" checkout -q -B gaffer/ticket-8-x >/dev/null 2>&1
   || fail "should fall back to the branch carrying the root commit (got '$(gaffer_bootstrap_base_branch "$RT")')"
 
 echo "== AC7: bootstrap config keys present + commented =="
-grep -Eq '^: "\$\{GAFFER_BOOTSTRAP_ROOT:=' "$RUNNER_DIR/factory.config.sh" \
+grep -Eq '^: "\$\{GAFFER_BOOTSTRAP_ROOT:=' "$RUNNER_DIR/config/16-sandbox.sh" \
   && ok "GAFFER_BOOTSTRAP_ROOT default present in factory.config.sh" \
   || fail "GAFFER_BOOTSTRAP_ROOT default missing"
-grep -q 'GAFFER_BOOTSTRAP_INSTALL' "$RUNNER_DIR/factory.config.sh" \
+grep -q 'GAFFER_BOOTSTRAP_INSTALL' "$RUNNER_DIR/config/16-sandbox.sh" \
   && ok "GAFFER_BOOTSTRAP_INSTALL documented in factory.config.sh" \
   || fail "GAFFER_BOOTSTRAP_INSTALL not documented"
-grep -q 'lib/greenfield.sh' "$RUNNER_DIR/factory.config.sh" \
+grep -q 'lib/greenfield.sh' "$RUNNER_DIR/config/19-libs.sh" \
   && ok "lib/greenfield.sh sourced from factory.config.sh" \
   || fail "lib/greenfield.sh not sourced"
 

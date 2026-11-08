@@ -42,7 +42,7 @@ export RUNNER_DIR CREW_DIR
 LEDGER="$GAFFER_DATA/eval-ledger.jsonl"
 
 echo "== A. wiring =="
-grep -q 'lib/eval-judge.sh' "$RUNNER_DIR/factory.config.sh" \
+grep -q 'lib/eval-judge.sh' "$RUNNER_DIR/config/20-gates.sh" \
   && ok "factory.config.sh sources lib/eval-judge.sh" || no "factory.config.sh missing the eval-judge source"
 grep -q 'gaffer_eval_judge_delivery "\$NUM"' "$RUNNER_DIR/lib/tick-close.sh" \
   && ok "tick.sh invokes the judge for the submitted ticket" || no "tick.sh missing the judge call"
@@ -316,7 +316,7 @@ if [ -f "$DISPATCH_CLI" ]; then
   wg ticket create -t "Rotate the constant" -p solo_loose >/dev/null 2>&1
   rm -f "$LEDGER"
   # MF2: the runner's lane-verdict helper, as factory.config.sh defines it.
-  eval "$(sed -n '/^gaffer_lane_verdict() {/,/^}/p' "$RUNNER_DIR/factory.config.sh")"
+  eval "$(sed -n '/^gaffer_lane_verdict() {/,/^}/p' "$RUNNER_DIR/config/14-usage.sh")"
   gaffer_eval_judge_delivery 1 "$REPO" main gaffer/ticket-9 1 '$0.1234' demo-repo; rc=$?
   [ "$rc" -eq 0 ] && ok "judge run against a real dispatch exits 0" || no "judge run failed (rc=$rc)"
   SHOWN="$(wg ticket show 1 2>/dev/null)"

@@ -413,7 +413,7 @@ grep -q 'GAFFER_ALLOW_NO_DOD=1 waiver' "$RUNNER_DIR/lib/tick-gates.sh" \
   || fail "D2 tick.sh opt-out path must log a visible waiver warning"
 
 # D3: GAFFER_ALLOW_NO_DOD is documented in factory.config.sh (one-liner for operators).
-grep -q 'GAFFER_ALLOW_NO_DOD' "$RUNNER_DIR/factory.config.sh" \
+grep -q 'GAFFER_ALLOW_NO_DOD' "$RUNNER_DIR/config/19-libs.sh" \
   && ok "D3 GAFFER_ALLOW_NO_DOD is documented in factory.config.sh" \
   || fail "D3 GAFFER_ALLOW_NO_DOD must be documented in factory.config.sh"
 

@@ -20,16 +20,55 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG_SH = path.join(ROOT, "runner", "factory.config.sh");
-/** Every file whose `: "${NAME:=default}"` lines define a knob: the config plus the runner libs. */
-function defaultFiles() {
-  const libDir = path.join(ROOT, "runner", "lib");
-  const libs = existsSync(libDir)
+/**
+ * factory.config.sh sources its parts (runner/config/NN-area.sh) from one "parts block"
+ * in a fixed order. The config's text is that file with the block replaced by the
+ * parts' bodies (each part's header comment and its last, marker line dropped), in the
+ * block's order: the text the file had before it was split, so sections, comment
+ * blocks and knob order read exactly as they did. A part the block names but cannot be
+ * read, or one without its marker line, is an error (the runner would refuse it too).
+ * Returns the text and the part files, in order.
+ */
+export function configSources(root = ROOT) {
+  const configSh = path.join(root, "runner", "factory.config.sh");
+  const lines = readFileSync(configSh, "utf8").split("\n");
+  const start = lines.findIndex((l) => l.startsWith("# CONFIG PARTS."));
+  if (start < 0) return { text: lines.join("\n"), parts: [] };
+  const end = lines.indexOf("unset _GAFFER_CONFIG_DIR _GAFFER_CONFIG_PART", start);
+  if (end < 0 || lines[end + 1] !== "")
+    throw new Error("factory.config.sh: the parts block has no end");
+  const parts = [];
+  const bodies = [];
+  for (const l of lines.slice(start, end)) {
+    const m = l.match(/; _gaffer_config_loaded ([0-9]{2}-[a-z-]+)$/);
+    if (!m) continue;
+    const file = path.join(root, "runner", "config", `${m[1]}.sh`);
+    const own = readFileSync(file, "utf8").replace(/\n$/, "").split("\n");
+    if (own.at(-1) !== `_GAFFER_CONFIG_PART=${m[1]}`) {
+      throw new Error(`runner/config/${m[1]}.sh: the last line is not its marker`);
+    }
+    parts.push(file);
+    bodies.push(...own.slice(own.indexOf("") + 1, -1));
+  }
+  return { text: [...lines.slice(0, start), ...bodies, ...lines.slice(end + 2)].join("\n"), parts };
+}
+/** The runner libs (runner/lib/*.sh), sorted. */
+function libFiles(root = ROOT) {
+  const libDir = path.join(root, "runner", "lib");
+  return existsSync(libDir)
     ? readdirSync(libDir)
         .filter((f) => f.endsWith(".sh"))
         .sort()
         .map((f) => path.join(libDir, f))
     : [];
-  return [CONFIG_SH, ...libs];
+}
+/** Every file whose `: "${NAME:=default}"` lines define a knob: the config (and its parts) plus the runner libs. */
+function defaultFiles(root = ROOT) {
+  return [
+    path.join(root, "runner", "factory.config.sh"),
+    ...configSources(root).parts,
+    ...libFiles(root),
+  ];
 }
 const SETTINGS_JS = path.join(ROOT, "packages", "dispatch", "dist", "api", "settings.js");
 const OUT = path.join(ROOT, "docs", "CONFIG.md");
@@ -327,7 +366,7 @@ function sourceFiles(dir, out = []) {
 
 /** Which consumers mention each identifier, plus env reads not defined anywhere. */
 export function scanConsumers(root, knobNames) {
-  const defaultFileSet = new Set(defaultFiles());
+  const defaultFileSet = new Set(defaultFiles(root));
   const areas = {
     runner: [path.join(root, "runner")],
     dispatch: [path.join(root, "packages", "dispatch", "src")],
@@ -549,9 +588,10 @@ export function render({
 export async function generate(root = ROOT) {
   const seen = new Set();
   const knobs = [];
-  for (const file of defaultFiles()) {
+  for (const file of [CONFIG_SH, ...libFiles(root)]) {
     const opts = file === CONFIG_SH ? {} : { fixedSection: `lib/${path.basename(file)}` };
-    for (const k of parseConfigDefaults(readFileSync(file, "utf8"), opts)) {
+    const text = file === CONFIG_SH ? configSources(root).text : readFileSync(file, "utf8");
+    for (const k of parseConfigDefaults(text, opts)) {
       if (seen.has(k.name)) continue; // factory.config.sh wins over a lib re-default
       seen.add(k.name);
       knobs.push(k);

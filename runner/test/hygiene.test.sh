@@ -152,10 +152,10 @@ echo "== AC8: forbidden-paths config is honoured + commented =="
   gaffer_assert_clean_delivery "$REPO" main >/dev/null 2>&1 ) \
   && fail "unset HYGIENE_FORBIDDEN_PATHS should still reject node_modules (defaults)" \
   || ok "empty HYGIENE_FORBIDDEN_PATHS falls back to built-in defaults"
-grep -Eq '^: "\$\{HYGIENE_FORBIDDEN_PATHS' "$RUNNER_DIR/factory.config.sh" \
+grep -Eq '^: "\$\{HYGIENE_FORBIDDEN_PATHS' "$RUNNER_DIR/config/16-sandbox.sh" \
   && ok "HYGIENE_FORBIDDEN_PATHS default present in factory.config.sh" \
   || fail "HYGIENE_FORBIDDEN_PATHS default missing from factory.config.sh"
-grep -Eq '^: "\$\{HYGIENE_ENFORCE:=1\}"' "$RUNNER_DIR/factory.config.sh" \
+grep -Eq '^: "\$\{HYGIENE_ENFORCE:=1\}"' "$RUNNER_DIR/config/16-sandbox.sh" \
   && ok "HYGIENE_ENFORCE default present" || fail "HYGIENE_ENFORCE default missing"
 
 echo "== AC9: with factory.config.sh sourced (release config), .claude/ + CLAUDE.factory.md are rejected =="

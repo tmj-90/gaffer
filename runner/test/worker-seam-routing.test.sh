@@ -30,7 +30,7 @@ fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 TICK="$RUNNER_DIR/tick.sh"
 WORKER_SH="$RUNNER_DIR/lib/worker.sh"
 WORKER_MJS="$RUNNER_DIR/lib/worker.mjs"
-CONFIG="$RUNNER_DIR/factory.config.sh"
+CONFIG="$RUNNER_DIR/config/19-libs.sh"
 DECOMPOSE="$RUNNER_DIR/bin/decompose.mjs"
 PO="$RUNNER_DIR/bin/product-owner-run.mjs"
 

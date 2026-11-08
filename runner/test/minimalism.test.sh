@@ -105,13 +105,13 @@ echo "== AC6: by default (MINIMALISM_REQUIRE_NOTE unset/0) a missing note is a f
   [ "$RC" -eq 2 ] ) \
   && ok "MINIMALISM_REQUIRE_NOTE=0 → missing note returns 2 (flag, not fail)" \
   || fail "MINIMALISM_REQUIRE_NOTE=0 should not hard-fail a missing note"
-! grep -q 'MINIMALISM_ENFORCE' "$RUNNER_DIR/factory.config.sh" "$RUNNER_DIR/tick.sh" "$RUNNER_DIR"/lib/tick-*.sh "$RUNNER_DIR/lib/minimalism.sh" \
+! grep -q 'MINIMALISM_ENFORCE' "$RUNNER_DIR/factory.config.sh" "$RUNNER_DIR"/config/*.sh "$RUNNER_DIR/tick.sh" "$RUNNER_DIR"/lib/tick-*.sh "$RUNNER_DIR/lib/minimalism.sh" \
   && ok "the retired MINIMALISM_ENFORCE knob is gone from the live path (it never changed an outcome)" \
   || fail "MINIMALISM_ENFORCE is still referenced on the live path"
 
 echo "== AC7: config keys present + commented =="
 for k in 'MINIMALISM_REQUIRE_NOTE:=0' 'OVERSIZED_MAX_LINES:=400' 'OVERSIZED_MAX_FILES:=12'; do
-  grep -Eq "^: \"\\\$\{$k\}\"" "$RUNNER_DIR/factory.config.sh" \
+  grep -Eq "^: \"\\\$\{$k\}\"" "$RUNNER_DIR/config/16-sandbox.sh" \
     && ok "$k default present in factory.config.sh" \
     || fail "$k default missing from factory.config.sh"
 done

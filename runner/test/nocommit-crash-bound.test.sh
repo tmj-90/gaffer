@@ -50,7 +50,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
 ROOT="$(cd "$RUNNER_DIR/.." && pwd)"
 TICK="$RUNNER_DIR/tick.sh"
-CFG="$RUNNER_DIR/factory.config.sh"
+CFG="$RUNNER_DIR/config/07-limits.sh"
 CLI_JS="$ROOT/packages/dispatch/dist/cli/index.js"
 
 command -v node    >/dev/null 2>&1 || { echo "SKIP: node required";    exit 0; }

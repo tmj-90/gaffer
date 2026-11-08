@@ -18,7 +18,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
 TICK="$RUNNER_DIR/tick.sh"
-CFG="$RUNNER_DIR/factory.config.sh"
+CFG="$RUNNER_DIR/config/08-guards.sh"
 
 PASS=0
 FAILURES=()
@@ -131,7 +131,7 @@ SPENT="$(GAFFER_USAGE_LEDGER="$LEDGER" gaffer_ticket_delivery_spend 88)"
 awk "BEGIN{exit !(($SPENT+0) > 0.349 && ($SPENT+0) < 0.351)}" \
   && ok "B1 gaffer_ticket_delivery_spend sums ONLY ticket 88's DELIVERY spend (0.35)" \
   || fail "B1 expected ~0.35 delivery spend for ticket 88, got $SPENT"
-grep -q '_hist="$(gaffer_ticket_delivery_spend "$ticket"' "$CFG" \
+grep -q '_hist="$(gaffer_ticket_delivery_spend "$ticket"' "$RUNNER_DIR/config/06-routing.sh" \
   && ok "B1 the router's --historical-cost reads the delivery-only figure" \
   || fail "B1 gaffer_route_model should feed --historical-cost from gaffer_ticket_delivery_spend"
 
@@ -195,7 +195,7 @@ grep -q 'not converging' <<<"$RP_SRC" \
 grep -q 'GAFFER_MAX_DELIVERY_ATTEMPTS:-3' "$RUNNER_DIR/lib/tick-gates.sh" \
   && ok "C the attempt cap default is raised to 3 (room for the ladder)" \
   || fail "C tick.sh default GAFFER_MAX_DELIVERY_ATTEMPTS should be 3"
-grep -qE 'GAFFER_MAX_DELIVERY_ATTEMPTS:=3' "$CFG" \
+grep -qE 'GAFFER_MAX_DELIVERY_ATTEMPTS:=3' "$RUNNER_DIR/config/07-limits.sh" \
   && ok "C factory.config.sh documents/defaults the attempt cap to 3" \
   || fail "C factory.config.sh default GAFFER_MAX_DELIVERY_ATTEMPTS should be 3"
 

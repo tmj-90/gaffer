@@ -156,6 +156,7 @@ Each still works for one release, mapped onto its replacement with a one-line wa
 - The seven per-role model overrides become one knob, `GAFFER_ROLE_MODELS="card=haiku judge=opus"`: `GAFFER_REWORK_STRONG_MODEL` (`rework=`; `rework=off` keeps the routed model), `GAFFER_SCOUT_MODEL_FLAG` and `GAFFER_JUDGE_MODEL_FLAG` (`scout=` / `judge=`, a model id rather than a flag), `GAFFER_TEST_MODEL` (`tester=`), `GAFFER_CARD_MODEL` (`card=`), `GAFFER_ONBOARD_SYNTH_MODEL` (`synth=`) and `GAFFER_INHERIT_MODEL` (`inherit=`). A role the knob does not name keeps its default.
 - `GAFFER_SLACK_WEBHOOK`, the status pane's legacy Slack channel: `GAFFER_NOTIFY_SLACK_URL` (the Slack field in Settings) reaches the same channel through the shared notifier.
 - The docker sandbox's resource caps become one knob, `GAFFER_SANDBOX_LIMITS="cpus=4 memory=4g pids=512"` (those are the defaults): `GAFFER_SANDBOX_CPUS`, `GAFFER_SANDBOX_MEMORY`, `GAFFER_SANDBOX_PIDS`.
+- `GAFFER_EXPERIMENT_MAX_USD`, `GAFFER_EXPERIMENT_MAX_TICKETS` and `GAFFER_EXPERIMENT_MAX_ATTEMPTS`: their command's flags are the knob (`gaffer eval experiment --max-usd X --max-tickets N --max-attempts N`); `--live` still refuses without a dollar cap.
 - `GAFFER_CAP_DETECT_TURNS` (the ask-on-cap threshold) only ever made sense as the turn cap it defaulted to: a call is cap-hit when it reaches `GAFFER_MAX_TURNS`.
 
 ### Removed

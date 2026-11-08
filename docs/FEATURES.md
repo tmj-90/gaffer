@@ -515,8 +515,7 @@ gates a tick uses, and writes `results.json` and `report.md` with the paired dif
 per ticket in acceptance, attempts, spend and judge score, with mean, 95% interval and
 n (acceptance, a paired yes or no, uses Newcombe's paired score interval and reports
 the discordant tickets; the rest use a paired t interval). By default a stub agent replays the recorded change, so it is free and runs in CI;
-`--live` runs the real agent under a hard USD cap (`--max-usd` or
-`GAFFER_EXPERIMENT_MAX_USD`), a ticket cap and the factory's budget admission and usage
+`--live` runs the real agent under a hard USD cap (`--max-usd`), a ticket cap and the factory's budget admission and usage
 pause, and records nothing to dispatch. [docs/eval-harness.md](eval-harness.md#matched-ticket-comparison)
 has the arms, the report and the limits.
 

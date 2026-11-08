@@ -19,7 +19,7 @@ computed from other knobs at runtime.
 
 | Metric | Count |
 |---|---|
-| Knobs with a runner default | 98 |
+| Knobs with a runner default | 95 |
 | Knobs editable in the dashboard | 58 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
 | Env reads in code with no default and no UI entry | 10 |
@@ -190,9 +190,6 @@ computed from other knobs at runtime.
 | `GAFFER_CI_POLL_ATTEMPTS` | `20` | yes (int) | dispatch, runner | How many times to poll CI checks (when Require-CI is on) before giving up. |
 | `GAFFER_CI_POLL_INTERVAL_SECS` | `30` | yes (int) | dispatch, runner | Seconds between CI check polls. |
 | `GAFFER_EVAL_JUDGE` | `0` |  | runner | EVAL JUDGE (lib/eval-judge.sh): 1 = after every submitted delivery an independent judge scores the diff against the ticket on the crew rubric (AC coverage, correctness, minimalism, test adequacy, security) with a reason… |
-| `GAFFER_EXPERIMENT_MAX_USD` | _(empty)_ |  | runner | Hard USD cap of one LIVE experiment run (every call is capped at what is left); required for --live, empty = live mode refuses |
-| `GAFFER_EXPERIMENT_MAX_TICKETS` | `5` |  | runner | At most this many tickets in one experiment (each runs once per arm) |
-| `GAFFER_EXPERIMENT_MAX_ATTEMPTS` | `2` |  | runner | Attempts per ticket and arm: the first plus reworks after a failed gate, every one counted |
 | `GAFFER_REVIEW_RULE_REPEAT` | `3` | yes (int) | dispatch, runner | The same send-back reason or must-fix comment from a person on this many tickets in one repo is proposed as a review-rule lore draft for a person to approve (never auto-approved). 2 to 20; default 3. |
 
 ### lib/automerge.sh

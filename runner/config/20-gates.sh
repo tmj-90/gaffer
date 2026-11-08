@@ -79,11 +79,11 @@ export GAFFER_REQUIRE_CI GAFFER_CI_POLL_ATTEMPTS GAFFER_CI_POLL_INTERVAL_SECS
 # MATCHED EXPERIMENTS (runner/eval/experiment.sh, `gaffer eval experiment`): the same
 # tickets under two or more arms of settings, paired differences per ticket. Stub mode (the
 # default) is free and ignores the dollar cap; a LIVE run (--live) needs a hard USD cap for
-# the whole run, which also caps every call, and still passes the factory's own budget
-# admission and usage pause. A person starts one: the safety hook denies it to an agent.
-: "${GAFFER_EXPERIMENT_MAX_USD:=}"       # Hard USD cap of one LIVE experiment run (every call is capped at what is left); required for --live, empty = live mode refuses
-: "${GAFFER_EXPERIMENT_MAX_TICKETS:=5}"  # At most this many tickets in one experiment (each runs once per arm)
-: "${GAFFER_EXPERIMENT_MAX_ATTEMPTS:=2}" # Attempts per ticket and arm: the first plus reworks after a failed gate, every one counted
+# the whole run (--max-usd), which also caps every call, and still passes the factory's own
+# budget admission and usage pause. A person starts one: the safety hook denies it to an
+# agent. Its caps are the command's flags (--max-usd, --max-tickets 5, --max-attempts 2):
+# runner/eval/experiment.sh reads them before it sources this file, so the default lines
+# that stood here never applied.
 
 # REVIEW RULES (dispatch): the same send-back reason or must-fix comment from a person
 # (after dropping ids, paths and numbers) on this many tickets in one repo is proposed as a

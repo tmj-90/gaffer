@@ -478,6 +478,11 @@ export const DEPRECATED = [
     ["GAFFER_SANDBOX_MEMORY", "memory"],
     ["GAFFER_SANDBOX_PIDS", "pids"],
   ].map(([name, cap]) => ({ name, use: `GAFFER_SANDBOX_LIMITS="${cap}=N"` })),
+  ...[
+    ["GAFFER_EXPERIMENT_MAX_USD", "--max-usd"],
+    ["GAFFER_EXPERIMENT_MAX_TICKETS", "--max-tickets"],
+    ["GAFFER_EXPERIMENT_MAX_ATTEMPTS", "--max-attempts"],
+  ].map(([name, flag]) => ({ name, use: `\`gaffer eval experiment ${flag}\`` })),
   {
     name: "GAFFER_CAP_DETECT_TURNS",
     use: "`GAFFER_MAX_TURNS` (a call is cap-hit when it uses every turn)",

@@ -107,6 +107,19 @@ V="$(caps GAFFER_SANDBOX_MEMORY=1g GAFFER_SANDBOX_CPUS=3 GAFFER_SANDBOX_LIMITS=c
 cfg GAFFER_SANDBOX_PIDS=100 -- ':' >/dev/null
 warned GAFFER_SANDBOX_PIDS && grep -q 'GAFFER_SANDBOX_LIMITS="pids=N"' "$WORK/err" && ok "GAFFER_SANDBOX_PIDS warns once, naming the replacement" || fail "F5 warning: $(cat "$WORK/err")"
 
+echo "== F6: the experiment caps are the command's flags =="
+for n in GAFFER_EXPERIMENT_MAX_USD GAFFER_EXPERIMENT_MAX_TICKETS GAFFER_EXPERIMENT_MAX_ATTEMPTS; do
+  case " $EXP " in *" $n "*) fail "$n is still exported by the config" ;; *) ok "$n is not defaulted by the config" ;; esac
+done
+V="$(env -i PATH="$PATH" HOME="$WORK/home" GAFFER_DATA="$WORK/data" GAFFER_EXPERIMENT_MAX_TICKETS=x \
+  bash "$RUNNER_DIR/eval/experiment.sh" --arm a --arm b --out "$WORK/xp" 2>&1)"
+grep -q 'GAFFER_EXPERIMENT_MAX_TICKETS is deprecated.*pass --max-tickets instead' <<<"$V" \
+  && grep -q -- '--max-tickets must be a positive integer' <<<"$V" \
+  && ok "a deprecated GAFFER_EXPERIMENT_MAX_TICKETS still sets the flag's default, and says to pass --max-tickets" || fail "F6 alias: $V"
+V="$(env -i PATH="$PATH" HOME="$WORK/home" GAFFER_DATA="$WORK/data" bash "$RUNNER_DIR/eval/experiment.sh" --arm a --arm b --live --out "$WORK/xp2" 2>&1)"
+grep -q -- '--live needs a hard USD cap for the whole run: --max-usd X' <<<"$V" \
+  && ok "--live still refuses without a dollar cap" || fail "F6 live cap: $V"
+
 echo "== the warning is said once per process tree =="
 cfg GAFFER_PO_MAX_TURNS=30 -- 'bash --norc --noprofile -c "source \"\$0\"" "$0" 2>>"$ERRF"' >/dev/null
 warned GAFFER_PO_MAX_TURNS && ok "a second source in a child stays quiet (one line for the tree)" || fail "repeat warning: $(cat "$WORK/err")"

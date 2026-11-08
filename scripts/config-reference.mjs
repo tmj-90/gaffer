@@ -477,6 +477,7 @@ export const DEPRECATED = [
   { name: "GAFFER_PREFLIGHT_LIVE", use: "`runner/preflight.sh --live`" },
   { name: "DEMO_DIR", use: "`gaffer demo --dir <path>`" },
   { name: "GAFFER_DAEMON_INTERVAL", use: "`gaffer run --daemon --interval N`" },
+  { name: "GAFFER_SCOUT_PACKET", use: "`GAFFER_SCOUT=none` (no packet, no model scout)" },
   {
     name: "GAFFER_CAP_DETECT_TURNS",
     use: "`GAFFER_MAX_TURNS` (a call is cap-hit when it uses every turn)",

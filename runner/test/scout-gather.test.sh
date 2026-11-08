@@ -4,7 +4,7 @@
 # ticket, the base tree (git) and the code index's neighbours (the real memory CLI) and
 # builds the packet through lib/scout.mjs + lib/risk-classify.mjs; the delivery prompt
 # renders it through the crew seam inside <untrusted-scout>. FAIL-SOFT: no index means
-# the named files and stack frames only, said as such; GAFFER_SCOUT_PACKET=0 is off.
+# the named files and stack frames only, said as such; GAFFER_SCOUT=none is off.
 # The bounded model scout (GAFFER_SCOUT) runs only when asked, through worker_deliver
 # (stubbed here: no model is ever spawned), read-only, booked as kind scout, and its
 # reply is checked against the base tree.
@@ -134,9 +134,11 @@ has "$SCOUT_RAISED" "risk raised to high (declared low): " && has "$SCOUT_RAISED
 has "$SCOUT_PROMPT" '"risk":{"declared":"low","effective":"high"' && ok "the prompt input carries the raise" || no "prompt risk: $SCOUT_PROMPT"
 gaffer_scout_cleanup
 
-echo "== F. off: GAFFER_SCOUT_PACKET=0 builds nothing =="
-GAFFER_SCOUT_PACKET=0 gaffer_scout_run "$REPO" "$SHA" 1
+echo "== F. off: GAFFER_SCOUT=none builds nothing =="
+GAFFER_SCOUT=none gaffer_scout_run "$REPO" "$SHA" 1
 [ -z "$SCOUT_PACKET_FILE" ] && [ -z "$SCOUT_PROMPT" ] && [ -z "$SCOUT_RISK" ] && ok "off: no packet, no prompt input, no risk" || no "off still built"
+GAFFER_SCOUT_PACKET=0 gaffer_scout_run "$REPO" "$SHA" 1
+[ -z "$SCOUT_PACKET_FILE" ] && [ -z "$SCOUT_PROMPT" ] && ok "the deprecated GAFFER_SCOUT_PACKET=0 still builds nothing" || no "GAFFER_SCOUT_PACKET=0 still built"
 gaffer_scout_run "$WORK/nowhere" "" 1
 has "$SCOUT_PROMPT" "src/report.ts" && ok "no repo and no base: the named path is kept (unchecked), nothing fails" || no "no-repo: $SCOUT_PROMPT"
 gaffer_scout_cleanup

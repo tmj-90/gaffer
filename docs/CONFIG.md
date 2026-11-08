@@ -19,7 +19,7 @@ computed from other knobs at runtime.
 
 | Metric | Count |
 |---|---|
-| Knobs with a runner default | 95 |
+| Knobs with a runner default | 94 |
 | Knobs editable in the dashboard | 58 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
 | Env reads in code with no default and no UI entry | 6 |
@@ -233,8 +233,7 @@ computed from other knobs at runtime.
 
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
-| `GAFFER_SCOUT_PACKET` | `1` |  | runner | 1 = build the deterministic scout packet before each delivery (named files, stack frames, the code index's importers and tests); 0 = off |
-| `GAFFER_SCOUT` | `off` |  | runner | The bounded MODEL scout: off (default), auto (only when the effective risk is medium or higher), on (every delivery). One read-only paid call (kind scout) |
+| `GAFFER_SCOUT` | `off` |  | runner | The pre-work scout: off (default: the free deterministic packet only), auto (plus one read-only paid model call when the effective risk is medium or higher), on (plus that call on every delivery), none (no packet either). |
 
 ## Read where they are used
 

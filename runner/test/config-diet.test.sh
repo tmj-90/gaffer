@@ -155,6 +155,14 @@ grep -qF '_gaffer_deprecated GAFFER_PREFLIGHT_LIVE "pass runner/preflight.sh --l
   && ok "GAFFER_PREFLIGHT_LIVE is deprecated for \`runner/preflight.sh --live\`" || fail "F9: no deprecation for GAFFER_PREFLIGHT_LIVE"
 case " $EXP " in *" GAFFER_PREFLIGHT_LIVE "* | *" GAFFER_DAEMON_INTERVAL "*) fail "F9: an old switch is still exported" ;; *) ok "neither old switch is defaulted by the config" ;; esac
 
+echo "== F10: GAFFER_SCOUT_PACKET -> GAFFER_SCOUT=none =="
+V="$(cfg -- 'printf "%s|%s|%s" "$GAFFER_SCOUT" "${GAFFER_SCOUT_PACKET:-unset}" "$(_gaffer_manifest_packet_on)"')"
+[ "$V" = "off|unset|1" ] && ok "default: GAFFER_SCOUT=off and the packet is built (the manifest still records packet 1)" || fail "F10 default: $V"
+V="$(cfg GAFFER_SCOUT=none -- 'printf "%s" "$(_gaffer_manifest_packet_on)"')"
+[ "$V" = "0" ] && ok "GAFFER_SCOUT=none turns the packet off" || fail "F10 none: $V"
+V="$(cfg GAFFER_SCOUT_PACKET=0 -- 'printf "%s" "$(_gaffer_manifest_packet_on)"')"
+[ "$V" = "0" ] && warned GAFFER_SCOUT_PACKET && ok "the deprecated GAFFER_SCOUT_PACKET=0 still turns it off and warns once" || fail "F10 alias: $V / $(cat "$WORK/err")"
+
 echo "== the warning is said once per process tree =="
 cfg GAFFER_PO_MAX_TURNS=30 -- 'bash --norc --noprofile -c "source \"\$0\"" "$0" 2>>"$ERRF"' >/dev/null
 warned GAFFER_PO_MAX_TURNS && ok "a second source in a child stays quiet (one line for the tree)" || fail "repeat warning: $(cat "$WORK/err")"

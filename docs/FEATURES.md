@@ -476,7 +476,7 @@ words, more than one write repo, a previous send-back, a symbol with 10 or more
 callers, a module no test imports): it can only raise the declared level, never lower
 it and never to critical. The router routes on the raised level, and the Review packet
 shows it. Each launch also logs what context it was given to
-`context-selection.jsonl`. `GAFFER_SCOUT_PACKET=0` turns the packet off.
+`context-selection.jsonl`. `GAFFER_SCOUT=none` turns the packet off (and the model scout).
 
 **A bounded model scout, when you turn it on.** `GAFFER_SCOUT=auto` adds one read-only
 model call for a ticket whose effective risk is medium or higher (`on`: every delivery;

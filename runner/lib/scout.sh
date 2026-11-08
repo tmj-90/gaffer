@@ -21,8 +21,10 @@
 #   SCOUT_INDEX_FILE   the index's answer for the seeds (delivery-metrics' index fields)
 _GAFFER_SCOUT_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-: "${GAFFER_SCOUT_PACKET:=1}"   # 1 = build the deterministic scout packet before each delivery (named files, stack frames, the code index's importers and tests); 0 = off
-: "${GAFFER_SCOUT:=off}"        # The bounded MODEL scout: off (default), auto (only when the effective risk is medium or higher), on (every delivery). One read-only paid call (kind scout)
+# One knob for both scouts (the model scout needs the packet, so a packet switch of its
+# own only ever meant "none"). GAFFER_SCOUT_PACKET=0 is that switch's deprecated spelling.
+: "${GAFFER_SCOUT:=off}"        # The pre-work scout: off (default: the free deterministic packet only), auto (plus one read-only paid model call when the effective risk is medium or higher), on (plus that call on every delivery), none (no packet either).
+declare -F _gaffer_deprecated >/dev/null 2>&1 && _gaffer_deprecated GAFFER_SCOUT_PACKET "set GAFFER_SCOUT=none instead (no packet, no model scout)"
 
 SCOUT_PACKET_FILE=""; SCOUT_PROMPT=""; SCOUT_RISK=""; SCOUT_RAISED=""; SCOUT_INDEX_FILE=""
 _SCOUT_TMP=""
@@ -68,7 +70,7 @@ _gaffer_scout_neighbours() {
 gaffer_scout_run() {
   local repo="${1:-}" sha="${2:-}" attempt="${3:-}"
   SCOUT_PACKET_FILE=""; SCOUT_PROMPT=""; SCOUT_RISK=""; SCOUT_RAISED=""; SCOUT_INDEX_FILE=""
-  [ "${GAFFER_SCOUT_PACKET:-1}" != "0" ] || return 0
+  [ "${GAFFER_SCOUT:-off}" != none ] && [ "${GAFFER_SCOUT_PACKET:-1}" != "0" ] || return 0
   command -v node >/dev/null 2>&1 || return 0
   [ -f "$_GAFFER_SCOUT_LIB/scout.mjs" ] && [ -f "$_GAFFER_SCOUT_LIB/risk-classify.mjs" ] || return 0
   _SCOUT_TMP="$(mktemp -d "${TMPDIR:-/tmp}/gaffer-scout.XXXXXX" 2>/dev/null)" || { _SCOUT_TMP=""; return 0; }

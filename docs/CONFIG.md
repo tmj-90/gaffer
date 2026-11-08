@@ -19,10 +19,10 @@ computed from other knobs at runtime.
 
 | Metric | Count |
 |---|---|
-| Knobs with a runner default | 96 |
+| Knobs with a runner default | 97 |
 | Knobs editable in the dashboard | 58 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
-| Env reads in code with no default and no UI entry | 8 |
+| Env reads in code with no default and no UI entry | 6 |
 
 ## Runner defaults (`runner/factory.config.sh` and `runner/lib/*.sh`)
 
@@ -168,6 +168,7 @@ computed from other knobs at runtime.
 
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
+| `GAFFER_LITE_MAX_DIFF` | _(empty)_ |  | runner | lite mode's trivial-diff bounds as "lines=60 files=4" (the defaults); a bound not named keeps its default. |
 | `GAFFER_SENSITIVE_PATH_RE` | _(empty)_ |  | dispatch, runner | the paths that count as sensitive (lite never auto-approves them; they get the security second opinion); empty = the built-in list. |
 | `GAFFER_SECURITY_REVIEW` | `1` |  | runner | SECURITY SECOND OPINION — decides whether a ticket gets a SECOND, security-focused reviewer pass after the primary reviewer APPROVEs (lib/review.sh). |
 | `GAFFER_MERGE_LANE` | `1` |  | dispatch, runner | MERGE LANE (lib/merge-lane.sh): at the start of every tick, land every ready_for_merge ticket the merge policy permits (a human's approve, the tester's PASS, a merge gate held at review time and since earned) through the… |
@@ -314,8 +315,6 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `GAFFER_DASHBOARD_START_TIMEOUT` | `30` | `runner/gaffer` |
 | `GAFFER_EGRESS_ALLOW` | _(empty)_ | `runner/lib/egress-allowlist.mjs` |
 | `GAFFER_JUDGE_DENIED_TOOLS` | `Bash,Edit,Write,MultiEdit,NotebookEdit,Read,Grep,Glob,LS,WebFetch,WebSearch,Task,TodoWrite` | `runner/lib/eval-judge.sh` |
-| `GAFFER_LITE_MAX_FILES` | `4` | `runner/config/18-review.sh` |
-| `GAFFER_LITE_MAX_LINES` | `60` | `runner/config/18-review.sh` |
 | `GAFFER_TESTER_REPLAY` | `1` | `runner/bin/tester-run.mjs`, `runner/lib/tester-replay.mjs`, `runner/status.sh` |
 
 ## Internal names (not knobs)

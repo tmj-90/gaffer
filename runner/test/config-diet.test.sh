@@ -130,6 +130,13 @@ grep -qF '_re="${GAFFER_SENSITIVE_PATH_RE:-${GAFFER_SECURITY_REVIEW_RE:-' "$RUNN
 cfg GAFFER_SECURITY_REVIEW_RE=x -- ':' >/dev/null
 warned GAFFER_SECURITY_REVIEW_RE && ok "GAFFER_SECURITY_REVIEW_RE warns once" || fail "F7 warning: $(cat "$WORK/err")"
 
+echo "== F11: the lite bounds -> GAFFER_LITE_MAX_DIFF =="
+V="$(cfg -- 'printf "%s|%s|%s" "$(gaffer_lite_trivial_reason low 60 4 a)" "$(gaffer_lite_trivial_reason low 61 1 a)" "$(gaffer_lite_trivial_reason low 1 5 a)"')"
+[ "$V" = "trivial|nontrivial:lines=61>60|nontrivial:files=5>4" ] && ok "defaults: 60 lines, 4 files" || fail "F11 defaults: $V"
+V="$(cfg GAFFER_LITE_MAX_DIFF="lines=10" GAFFER_LITE_MAX_FILES=2 -- 'printf "%s|%s" "$(gaffer_lite_trivial_reason low 11 1 a)" "$(gaffer_lite_trivial_reason low 1 3 a)"')"
+[ "$V" = "nontrivial:lines=11>10|nontrivial:files=3>2" ] && warned GAFFER_LITE_MAX_FILES \
+  && ok "the knob sets lines; the deprecated files bound still applies and warns once" || fail "F11: $V / $(cat "$WORK/err")"
+
 echo "== the warning is said once per process tree =="
 cfg GAFFER_PO_MAX_TURNS=30 -- 'bash --norc --noprofile -c "source \"\$0\"" "$0" 2>>"$ERRF"' >/dev/null
 warned GAFFER_PO_MAX_TURNS && ok "a second source in a child stays quiet (one line for the tree)" || fail "repeat warning: $(cat "$WORK/err")"

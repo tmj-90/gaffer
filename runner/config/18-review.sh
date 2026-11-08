@@ -118,6 +118,18 @@ gaffer_afk_ship_plan() {
   fi
 }
 
+# The lite bounds: how small a diff must be to count as trivial.
+: "${GAFFER_LITE_MAX_DIFF:=}"   # lite mode's trivial-diff bounds as "lines=60 files=4" (the defaults); a bound not named keeps its default.
+_gaffer_deprecated GAFFER_LITE_MAX_LINES 'set GAFFER_LITE_MAX_DIFF="lines=N" instead'
+_gaffer_deprecated GAFFER_LITE_MAX_FILES 'set GAFFER_LITE_MAX_DIFF="files=N" instead'
+# The sensitive paths: one knob replaces the built-in list below for both of its readers
+# (the lite classifier and the security second opinion), an extended regex over
+# repo-relative paths. The old GAFFER_LITE_SENSITIVE_RE and GAFFER_SECURITY_REVIEW_RE are
+# deprecated: still read, the knob wins over them.
+: "${GAFFER_SENSITIVE_PATH_RE:=}"   # the paths that count as sensitive (lite never auto-approves them; they get the security second opinion); empty = the built-in list.
+_gaffer_deprecated GAFFER_LITE_SENSITIVE_RE "set GAFFER_SENSITIVE_PATH_RE instead (it covers the security review too)"
+_gaffer_deprecated GAFFER_SECURITY_REVIEW_RE "set GAFFER_SENSITIVE_PATH_RE instead (it covers the lite classifier too)"
+
 # The default SECURITY-SENSITIVE PATH regex, shared by the lite trivial classifier and
 # the security second-review lane (one definition, so the two cannot drift). The
 # `auth` stem carves out only `author`: author/authors/authoring used to trip it (an
@@ -128,13 +140,6 @@ gaffer_afk_ship_plan() {
 # authhandler, authconfig, authprovider) that a required word boundary would lose. The
 # other stems are PREFIX matches on purpose too — this is a security gate, so .env*
 # (incl. .envrc), secrets*, security*, migrations* keep matching.
-# One knob replaces it for both readers (the lite classifier and the security second
-# opinion): GAFFER_SENSITIVE_PATH_RE, an extended regex over repo-relative paths. The old
-# GAFFER_LITE_SENSITIVE_RE and GAFFER_SECURITY_REVIEW_RE are deprecated: still read, the
-# knob wins over them.
-: "${GAFFER_SENSITIVE_PATH_RE:=}"   # the paths that count as sensitive (lite never auto-approves them; they get the security second opinion); empty = the built-in list.
-_gaffer_deprecated GAFFER_LITE_SENSITIVE_RE "set GAFFER_SENSITIVE_PATH_RE instead (it covers the security review too)"
-_gaffer_deprecated GAFFER_SECURITY_REVIEW_RE "set GAFFER_SENSITIVE_PATH_RE instead (it covers the lite classifier too)"
 _GAFFER_SENSITIVE_PATH_RE='(^|/)([Mm]igrations?|\.github/|[Dd]ockerfile|[Oo]?[Aa]uth([^o]|o[^r]|ori[sz]|$)|[Ss]ecurity|[Ss]ecrets?|\.env|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|\.gaffer|safety-hook|runner/lib/hook/|runner/lib/dangerous-commands\.mjs)'
 
 # LITE MODE trivial classifier — PURE core. Decides whether a ticket is trivial enough
@@ -143,7 +148,9 @@ _GAFFER_SENSITIVE_PATH_RE='(^|/)([Mm]igrations?|\.github/|[Dd]ockerfile|[Oo]?[Aa
 # typecheck) + hygiene gates to reach in_review, and the reviewer AGENT must still return
 # APPROVE; on top of that, ALL of these must hold or it holds for a human:
 #   • risk_level = low
-#   • diff within the TIGHT lite caps (GAFFER_LITE_MAX_LINES / GAFFER_LITE_MAX_FILES)
+#   • diff within the TIGHT lite caps (GAFFER_LITE_MAX_DIFF="lines=60 files=4", the
+#     defaults; the old GAFFER_LITE_MAX_LINES / _FILES are deprecated, still read for a
+#     bound the knob does not name)
 #   • touches NO sensitive path (migrations, CI, Dockerfile, auth/security/secrets, lockfiles,
 #     the factory's own .gaffer / safety-hook, its runner/lib/hook/ rule modules and its
 #     deny list runner/lib/dangerous-commands.mjs):
@@ -154,7 +161,12 @@ _GAFFER_SENSITIVE_PATH_RE='(^|/)([Mm]igrations?|\.github/|[Dd]ockerfile|[Oo]?[Aa
 #   $1 risk   $2 lines(int)   $3 files(int)   $4 changed-paths(newline-separated)
 gaffer_lite_trivial_reason() {
   local _risk="$1" _lines="$2" _files="$3" _paths="$4"
-  local _maxl="${GAFFER_LITE_MAX_LINES:-60}" _maxf="${GAFFER_LITE_MAX_FILES:-4}"
+  local _maxl="${GAFFER_LITE_MAX_LINES:-60}" _maxf="${GAFFER_LITE_MAX_FILES:-4}" _kv
+  local -a _lim=()
+  IFS=$', \t\n' read -r -a _lim <<<"${GAFFER_LITE_MAX_DIFF:-}"
+  for _kv in ${_lim[@]+"${_lim[@]}"}; do
+    case "$_kv" in lines=?*) _maxl="${_kv#*=}" ;; files=?*) _maxf="${_kv#*=}" ;; esac
+  done
   local _re="${GAFFER_SENSITIVE_PATH_RE:-${GAFFER_LITE_SENSITIVE_RE:-$_GAFFER_SENSITIVE_PATH_RE}}"
   [ "$_risk" = "low" ] || { printf 'nontrivial:risk=%s\n' "$_risk"; return 0; }
   case "$_lines" in '' | *[!0-9]*) _lines=999999 ;; esac

@@ -75,6 +75,7 @@ import {
 } from "../util/contractHash.js";
 
 // Re-export so consumers don't need to reach into core directly.
+import type { ReviewGateInternals } from "./reviewGate/internals.js";
 export { isTestingEnabled, testerProvenance };
 
 // ---------------------------------------------------------------------------
@@ -169,11 +170,6 @@ export function unavailableRepoRemedy(
   }
 }
 
-/**
- * A commit the approver SAW (the Review view sends the `headSha` the diff endpoint
- * returned; the CLI takes `--commit <repo>=<sha>`). `repo` is the repo id or name; null
- * means "the ticket's only repo" and is refused for a multi-repo ticket.
- */
 /** REVOCATION-SAFE LANDING: one landing started or committed on the current approval. */
 export interface LandingStarted {
   repo: string;
@@ -185,6 +181,11 @@ export interface LandingStarted {
   at: string;
 }
 
+/**
+ * A commit the approver SAW (the Review view sends the `headSha` the diff endpoint
+ * returned; the CLI takes `--commit <repo>=<sha>`). `repo` is the repo id or name; null
+ * means "the ticket's only repo" and is refused for a multi-repo ticket.
+ */
 export interface ShownCommit {
   repo: string | null;
   sha: string;
@@ -431,53 +432,36 @@ function reviewerPatch(ticket: Ticket, actor: Actor): { patch?: { reviewer: stri
 }
 
 export class ReviewGateService {
-  private readonly db: Db;
-  private readonly clock: Clock;
-  private readonly tickets: TicketRepository;
-  private readonly acs: AcRepository;
-  private readonly evidence: EvidenceRepository;
-  private readonly transitions: TransitionService;
-  private readonly ticketSvc: TicketService;
-  private readonly maxAttemptsOf: () => number;
-  private get maxAttempts(): number {
-    return this.maxAttemptsOf();
-  }
-  private readonly testerLaneAppliesFn: ((ticket: Ticket) => boolean) | undefined;
-  private readonly runnerTesterLaneFn: ReviewGateServiceDeps["runnerTesterLane"];
-  private readonly agents: AgentRepository | undefined;
-  private readonly requireRegisteredAgentApprover: boolean;
-  private readonly onTicketParked:
-    ((ticket: import("../domain/types.js").Ticket, detail: string) => void) | undefined;
-  private readonly approvalShaResolver: ApprovalShaResolver | undefined;
-  private readonly reviewedHeadsResolver: ReviewGateServiceDeps["reviewedHeadsResolver"];
-  private readonly unavailableWriteReposResolver: ReviewGateServiceDeps["unavailableWriteReposResolver"];
-  private readonly landedOnDefaultResolver: ReviewGateServiceDeps["landedOnDefaultResolver"];
-  private readonly changeOnRefsResolver: ReviewGateServiceDeps["changeOnRefsResolver"];
-  private readonly policyAllowsAgentApprove: ((ticket: Ticket) => boolean) | undefined;
-  private readonly observedRiskResolver: ((ticket: Ticket) => ObservedRisk | null) | undefined;
+  private readonly internals: ReviewGateInternals;
 
   constructor(deps: ReviewGateServiceDeps) {
-    this.db = deps.db;
-    this.clock = deps.clock;
-    this.tickets = deps.tickets;
-    this.acs = deps.acs;
-    this.evidence = deps.evidence;
-    this.transitions = deps.transitions;
-    this.ticketSvc = deps.ticketSvc;
     const cap = deps.maxAttempts;
-    this.maxAttemptsOf = typeof cap === "function" ? cap : () => cap;
-    this.testerLaneAppliesFn = deps.testerLaneApplies;
-    this.runnerTesterLaneFn = deps.runnerTesterLane;
-    this.agents = deps.agents;
-    this.requireRegisteredAgentApprover = deps.requireRegisteredAgentApprover ?? false;
-    this.onTicketParked = deps.onTicketParked;
-    this.approvalShaResolver = deps.approvalShaResolver;
-    this.reviewedHeadsResolver = deps.reviewedHeadsResolver;
-    this.unavailableWriteReposResolver = deps.unavailableWriteReposResolver;
-    this.landedOnDefaultResolver = deps.landedOnDefaultResolver;
-    this.changeOnRefsResolver = deps.changeOnRefsResolver;
-    this.policyAllowsAgentApprove = deps.policyAllowsAgentApprove;
-    this.observedRiskResolver = deps.observedRiskResolver;
+    const maxAttemptsOf = typeof cap === "function" ? cap : () => cap;
+    this.internals = {
+      db: deps.db,
+      clock: deps.clock,
+      tickets: deps.tickets,
+      acs: deps.acs,
+      evidence: deps.evidence,
+      transitions: deps.transitions,
+      ticketSvc: deps.ticketSvc,
+      maxAttemptsOf,
+      get maxAttempts(): number {
+        return this.maxAttemptsOf();
+      },
+      testerLaneAppliesFn: deps.testerLaneApplies,
+      runnerTesterLaneFn: deps.runnerTesterLane,
+      agents: deps.agents,
+      requireRegisteredAgentApprover: deps.requireRegisteredAgentApprover ?? false,
+      onTicketParked: deps.onTicketParked,
+      approvalShaResolver: deps.approvalShaResolver,
+      reviewedHeadsResolver: deps.reviewedHeadsResolver,
+      unavailableWriteReposResolver: deps.unavailableWriteReposResolver,
+      landedOnDefaultResolver: deps.landedOnDefaultResolver,
+      changeOnRefsResolver: deps.changeOnRefsResolver,
+      policyAllowsAgentApprove: deps.policyAllowsAgentApprove,
+      observedRiskResolver: deps.observedRiskResolver,
+    };
   }
 
   // ---------------------------------------------------------------------------
@@ -531,13 +515,13 @@ export class ReviewGateService {
     // gate reads the diff, which an unavailable repo cannot show, so for an agent the
     // refusal comes first; a human's approval keeps its policy refusals (unresolved ACs,
     // no delivery diff) and the coverage refusal is the last gate before the pins.
-    const covered = this.ticketSvc.resolveTicket(ticketRef);
+    const covered = this.internals.ticketSvc.resolveTicket(ticketRef);
     const unavailable = this.unavailableWriteRepos(covered);
     if (agentApproveAllowed) {
       this.assertWriteReposAvailable(covered, unavailable);
       this.enforceObservedRiskCeiling(ticketRef, actor);
     }
-    const ticket = this.ticketSvc.resolveTicket(ticketRef);
+    const ticket = this.internals.ticketSvc.resolveTicket(ticketRef);
     // REQUIRED CI (server-side, like the other holds): when the runner has recorded CI
     // results for this ticket (GAFFER_REQUIRE_CI), approval needs a PASS for the
     // CANDIDATE commit — the head being approved. A CLI approve used to go through while
@@ -555,8 +539,10 @@ export class ReviewGateService {
       // bare string like "<agent>/reviewer" trivially differs from the author id and
       // would otherwise pass the not-author rule below on string inequality alone.
       if (
-        this.requireRegisteredAgentApprover &&
-        (actor.id === undefined || !this.agents || !this.agents.findById(actor.id))
+        this.internals.requireRegisteredAgentApprover &&
+        (actor.id === undefined ||
+          !this.internals.agents ||
+          !this.internals.agents.findById(actor.id))
       ) {
         throw new DispatchError(
           "ACTOR_NOT_PERMITTED",
@@ -620,8 +606,8 @@ export class ReviewGateService {
       });
     }
     if (coverage && !coverage.covered) {
-      return inTransaction(this.db, () => {
-        const result = this.transitions.transition({
+      return inTransaction(this.internals.db, () => {
+        const result = this.internals.transitions.transition({
           ticketId: ticket.id,
           actor,
           toStatus: "in_testing",
@@ -632,7 +618,7 @@ export class ReviewGateService {
           ...reviewerPatch(ticket, actor),
         });
         this.assertWriteReposAvailable(ticket, unavailable); // rolls the transition back
-        writeEvent(this.db, {
+        writeEvent(this.internals.db, {
           entity_type: "ticket",
           entity_id: ticket.id,
           actor,
@@ -644,9 +630,9 @@ export class ReviewGateService {
       });
     }
     // The done gate's git runs HERE, before transition() takes the write lock.
-    const deliveryDiff = this.transitions.deliveryDiffProof(ticket.id);
-    return inTransaction(this.db, () => {
-      const result = this.transitions.transition({
+    const deliveryDiff = this.internals.transitions.deliveryDiffProof(ticket.id);
+    return inTransaction(this.internals.db, () => {
+      const result = this.internals.transitions.transition({
         ticketId: ticket.id,
         actor,
         toStatus: "ready_for_merge",
@@ -675,7 +661,7 @@ export class ReviewGateService {
   /** The runner's differing lane for a ticket (see the dep), or null; never throws. */
   private runnerLaneSafe(ticket: Ticket): { mode: string; at: string; gates: boolean } | null {
     try {
-      return this.runnerTesterLaneFn?.(ticket) ?? null;
+      return this.internals.runnerTesterLaneFn?.(ticket) ?? null;
     } catch {
       return null;
     }
@@ -688,7 +674,9 @@ export class ReviewGateService {
   laneApplies(ticket: Ticket): boolean {
     if (ticket.acceptance === 1) return true;
     if (ticket.can_be_tested !== 1) return false;
-    return this.testerLaneAppliesFn ? this.testerLaneAppliesFn(ticket) : isTestingEnabled();
+    return this.internals.testerLaneAppliesFn
+      ? this.internals.testerLaneAppliesFn(ticket)
+      : isTestingEnabled();
   }
 
   /**
@@ -707,7 +695,7 @@ export class ReviewGateService {
       .map((h) => h.sha?.toLowerCase())
       .filter((h): h is string => Boolean(h));
     const head = allHeads[0] ?? null;
-    const round = this.db
+    const round = this.internals.db
       .prepare(
         `SELECT rowid AS rid FROM work_events
           WHERE entity_type = 'ticket' AND entity_id = ? AND event_type = 'ticket.transitioned'
@@ -716,7 +704,7 @@ export class ReviewGateService {
           ORDER BY rowid DESC LIMIT 1`,
       )
       .get(ticket.id) as { rid: number } | undefined;
-    const verdict = this.db
+    const verdict = this.internals.db
       .prepare(
         `SELECT rowid AS rid, event_type, payload_json FROM work_events
           WHERE entity_type = 'ticket' AND entity_id = ?
@@ -739,7 +727,7 @@ export class ReviewGateService {
     const p = parse(verdict.payload_json);
     const row =
       typeof p.evidence_id === "string"
-        ? (this.db
+        ? (this.internals.db
             .prepare("SELECT payload_json FROM evidence WHERE id = ? AND ticket_id = ?")
             .get(p.evidence_id, ticket.id) as { payload_json: string | null } | undefined)
         : undefined;
@@ -762,7 +750,7 @@ export class ReviewGateService {
         : typeof p.contract_hash === "string"
           ? p.contract_hash
           : null;
-    if (recorded && recorded !== contractHash(this.db, ticket.id)) {
+    if (recorded && recorded !== contractHash(this.internals.db, ticket.id)) {
       return { covered: false, why: "contract_changed", tested, head };
     }
     return {
@@ -789,7 +777,7 @@ export class ReviewGateService {
         { actor_type: actor.type },
       );
     }
-    const pre = this.ticketSvc.resolveTicket(ref);
+    const pre = this.internals.ticketSvc.resolveTicket(ref);
     const out = (routed: boolean, why: string | null, head: string | null = null): TesterRoute => ({
       ticketId: pre.id,
       number: pre.number,
@@ -801,10 +789,10 @@ export class ReviewGateService {
     const plan = this.testerRoutePlan(pre);
     if (!plan.route) return out(false, plan.why, plan.coverage?.head ?? null);
     const coverage = plan.coverage;
-    return inTransaction(this.db, () => {
-      const ticket = this.ticketSvc.resolveTicket(ref);
+    return inTransaction(this.internals.db, () => {
+      const ticket = this.internals.ticketSvc.resolveTicket(ref);
       if (ticket.status !== "in_review") return out(false, `not in review (${ticket.status})`);
-      this.transitions.transition({
+      this.internals.transitions.transition({
         ticketId: ticket.id,
         actor,
         toStatus: "in_testing",
@@ -812,7 +800,7 @@ export class ReviewGateService {
         expectedFromStatus: "in_review",
         testerVerdict: true,
       });
-      writeEvent(this.db, {
+      writeEvent(this.internals.db, {
         entity_type: "ticket",
         entity_id: ticket.id,
         actor,
@@ -891,7 +879,7 @@ export class ReviewGateService {
       );
     }
     const ids = (
-      this.db
+      this.internals.db
         .prepare("SELECT id FROM tickets WHERE status = 'in_review' ORDER BY number ASC")
         .all() as Array<{ id: string }>
     ).map((r) => r.id);
@@ -915,7 +903,7 @@ export class ReviewGateService {
 
   /** The latest entry into in_testing was the runner's tester-first route (not an approval). */
   private enteredTestingBeforeReview(ticketId: string): boolean {
-    const row = this.db
+    const row = this.internals.db
       .prepare(
         `SELECT json_extract(payload_json, '$.before_review') AS before_review FROM work_events
           WHERE entity_type = 'ticket' AND entity_id = ? AND event_type = 'ticket.routed_to_testing'
@@ -958,9 +946,9 @@ export class ReviewGateService {
    * "unknown", and an unknown cannot be approved either: it fails toward the human.
    */
   unavailableWriteRepos(ticket: Ticket): readonly UnavailableWriteRepo[] {
-    if (!this.unavailableWriteReposResolver) return [];
+    if (!this.internals.unavailableWriteReposResolver) return [];
     try {
-      return this.unavailableWriteReposResolver(ticket);
+      return this.internals.unavailableWriteReposResolver(ticket);
     } catch (e) {
       return [
         {
@@ -1002,7 +990,7 @@ export class ReviewGateService {
   /** Best-effort head lookup (a throw resolves no head: nothing to compare or pin). */
   private resolveReviewedHeads(ticket: Ticket): readonly ReviewedHead[] {
     try {
-      return this.reviewedHeadsResolver?.(ticket) ?? [];
+      return this.internals.reviewedHeadsResolver?.(ticket) ?? [];
     } catch {
       return [];
     }
@@ -1113,7 +1101,7 @@ export class ReviewGateService {
   private recordApprovalPins(ticket: Ticket, actor: Actor, pins: readonly ReviewedHead[]): void {
     const who = actor.type === "agent" ? "agent review" : "human review";
     for (const pin of pins) {
-      this.evidence.insert({
+      this.internals.evidence.insert({
         id: newId(),
         ticket_id: ticket.id,
         ac_id: null,
@@ -1129,7 +1117,7 @@ export class ReviewGateService {
         }),
         created_by: "dispatch",
         recorded_by_actor_type: "system",
-        created_at: this.clock.now(),
+        created_at: this.internals.clock.now(),
       });
     }
   }
@@ -1153,7 +1141,7 @@ export class ReviewGateService {
           ? "the runner"
           : "human review";
     for (const pin of heads) {
-      this.evidence.insert({
+      this.internals.evidence.insert({
         id: newId(),
         ticket_id: ticket.id,
         ac_id: null,
@@ -1170,15 +1158,15 @@ export class ReviewGateService {
         }),
         created_by: "dispatch",
         recorded_by_actor_type: "system",
-        created_at: this.clock.now(),
+        created_at: this.internals.clock.now(),
       });
     }
   }
 
   /** PER-REPOSITORY LANDING: which approved revisions have landed (see landingStatus.ts). */
   landingStatus(ref: string): LandingStatus {
-    const ticket = this.ticketSvc.resolveTicket(ref);
-    return computeLandingStatus(this.db, ticket.id);
+    const ticket = this.internals.ticketSvc.resolveTicket(ref);
+    return computeLandingStatus(this.internals.db, ticket.id);
   }
 
   /**
@@ -1206,8 +1194,8 @@ export class ReviewGateService {
         "commit must be a full git commit id (40 or 64 hex characters).",
       );
     }
-    return inTransaction(this.db, () => {
-      const ticket = this.ticketSvc.resolveTicket(ref);
+    return inTransaction(this.internals.db, () => {
+      const ticket = this.internals.ticketSvc.resolveTicket(ref);
       // REVOCATION-SAFE LANDING: a landing that STARTED (landing-begin) on the approval the
       // ticket had, before a revocation moved it off ready_for_merge, cannot be stopped by
       // it; once git shows it, it is recorded all the same, so the ticket's record says
@@ -1223,9 +1211,9 @@ export class ReviewGateService {
           { status: ticket.status },
         );
       }
-      const before = computeLandingStatus(this.db, ticket.id);
+      const before = computeLandingStatus(this.internals.db, ticket.id);
       if (startedBefore) {
-        const already = this.db
+        const already = this.internals.db
           .prepare(
             `SELECT 1 AS hit FROM evidence WHERE ticket_id = ? AND repo_id = ? AND uri = ?
                AND evidence_type = 'commit' AND recorded_by_actor_type = 'system' LIMIT 1`,
@@ -1271,10 +1259,13 @@ export class ReviewGateService {
       // mistaken row can never let markMerged close a ticket whose repo never landed.
       // A PR landing (`pr`, `pr-stale`) happens upstream and may be squashed, so the
       // local branch is no evidence either way; only the merge lane records one.
-      if (this.landedOnDefaultResolver && !UNVERIFIABLE_LANDING_VIAS.has(input.via ?? "")) {
+      if (
+        this.internals.landedOnDefaultResolver &&
+        !UNVERIFIABLE_LANDING_VIAS.has(input.via ?? "")
+      ) {
         let onDefault: boolean;
         try {
-          onDefault = this.landedOnDefaultResolver(target.repoId, sha);
+          onDefault = this.internals.landedOnDefaultResolver(target.repoId, sha);
         } catch {
           onDefault = false;
         }
@@ -1286,7 +1277,7 @@ export class ReviewGateService {
           );
         }
       }
-      this.evidence.insert({
+      this.internals.evidence.insert({
         id: newId(),
         ticket_id: ticket.id,
         ac_id: null,
@@ -1302,9 +1293,9 @@ export class ReviewGateService {
         }),
         created_by: "dispatch",
         recorded_by_actor_type: "system",
-        created_at: this.clock.now(),
+        created_at: this.internals.clock.now(),
       });
-      writeEvent(this.db, {
+      writeEvent(this.internals.db, {
         entity_type: "ticket",
         entity_id: ticket.id,
         actor,
@@ -1316,7 +1307,7 @@ export class ReviewGateService {
         repo: target.repo,
         commit: sha,
         recorded: true,
-        status: computeLandingStatus(this.db, ticket.id),
+        status: computeLandingStatus(this.internals.db, ticket.id),
       };
     });
   }
@@ -1329,7 +1320,7 @@ export class ReviewGateService {
    * (even of the same commit) is a different approval and nothing lands on the old one.
    */
   approvalRef(ticketId: string): string | null {
-    const row = this.db
+    const row = this.internals.db
       .prepare(
         `SELECT id FROM work_events
           WHERE entity_type = 'ticket' AND entity_id = ? AND event_type = 'ticket.transitioned'
@@ -1386,8 +1377,8 @@ export class ReviewGateService {
         "commit must be a full git commit id (40 or 64 hex characters).",
       );
     }
-    return inTransaction(this.db, () => {
-      const ticket = this.ticketSvc.resolveTicket(ref);
+    return inTransaction(this.internals.db, () => {
+      const ticket = this.internals.ticketSvc.resolveTicket(ref);
       if (ticket.status !== "ready_for_merge") {
         throw new DispatchError(
           "STATE_CONFLICT",
@@ -1403,7 +1394,7 @@ export class ReviewGateService {
           { reason: "approval_changed", started_on: input.approval, current: approval },
         );
       }
-      const landing = computeLandingStatus(this.db, ticket.id);
+      const landing = computeLandingStatus(this.internals.db, ticket.id);
       const target = landing.repos.find((r) => r.repoId === input.repo || r.repo === input.repo);
       // A legacy approval (no per-repo pins) has no plan: the status/approval/CI checks
       // still apply; with a plan, the commit must be the repo's current approved revision.
@@ -1436,7 +1427,7 @@ export class ReviewGateService {
         }
       }
       const repoId = target?.repoId ?? input.repo;
-      const eventId = writeEvent(this.db, {
+      const eventId = writeEvent(this.internals.db, {
         entity_type: "ticket",
         entity_id: ticket.id,
         actor,
@@ -1471,7 +1462,7 @@ export class ReviewGateService {
   ): { repoId: string; repo: string } | null {
     const approval = this.approvalRef(ticketId);
     if (!approval) return null;
-    const row = this.db
+    const row = this.internals.db
       .prepare(
         `SELECT json_extract(payload_json, '$.repo_id') AS repo_id,
                 json_extract(payload_json, '$.repo') AS repo
@@ -1485,7 +1476,7 @@ export class ReviewGateService {
       .get(ticketId, approval, sha, repo, repo) as
       { repo_id: string | null; repo: string | null } | undefined;
     if (!row?.repo_id) return null;
-    const known = this.db
+    const known = this.internals.db
       .prepare(`SELECT id, name FROM repositories WHERE id = ?`)
       .get(row.repo_id) as { id: string; name: string } | undefined;
     return known ? { repoId: known.id, repo: known.name } : null;
@@ -1500,7 +1491,7 @@ export class ReviewGateService {
    * A revocation (rejectReview, a failed CI result) reports these: it cannot undo them.
    */
   landingsStarted(ticketId: string): LandingStarted[] {
-    const entered = this.db
+    const entered = this.internals.db
       .prepare(
         `SELECT created_at AS at FROM work_events
           WHERE entity_type = 'ticket' AND entity_id = ? AND event_type = 'ticket.transitioned'
@@ -1509,7 +1500,7 @@ export class ReviewGateService {
       )
       .get(ticketId) as { at: string } | undefined;
     const since = entered?.at ?? "";
-    const started = this.db
+    const started = this.internals.db
       .prepare(
         `SELECT payload_json, created_at FROM work_events
           WHERE entity_type = 'ticket' AND entity_id = ? AND created_at >= ?
@@ -1517,7 +1508,7 @@ export class ReviewGateService {
           ORDER BY rowid ASC`,
       )
       .all(ticketId, since) as Array<{ payload_json: string | null; created_at: string }>;
-    const status = computeLandingStatus(this.db, ticketId);
+    const status = computeLandingStatus(this.internals.db, ticketId);
     const out = new Map<string, LandingStarted>();
     for (const row of started) {
       let p: Record<string, unknown> = {};
@@ -1545,9 +1536,13 @@ export class ReviewGateService {
       let landed = status.repos.some(
         (r) => r.repoId === v.repoId && r.sha === v.commit && r.landed,
       );
-      if (!landed && this.landedOnDefaultResolver && !UNVERIFIABLE_LANDING_VIAS.has(v.via ?? "")) {
+      if (
+        !landed &&
+        this.internals.landedOnDefaultResolver &&
+        !UNVERIFIABLE_LANDING_VIAS.has(v.via ?? "")
+      ) {
         try {
-          landed = this.landedOnDefaultResolver(v.repoId, v.commit);
+          landed = this.internals.landedOnDefaultResolver(v.repoId, v.commit);
         } catch {
           landed = false;
         }
@@ -1648,8 +1643,8 @@ export class ReviewGateService {
         { reason: "unverifiable_landing" },
       );
     }
-    return inTransaction(this.db, () => {
-      const ticket = this.ticketSvc.resolveTicket(ref);
+    return inTransaction(this.internals.db, () => {
+      const ticket = this.internals.ticketSvc.resolveTicket(ref);
       if (ticket.status !== "ready_for_merge") {
         throw new DispatchError(
           "ILLEGAL_TRANSITION",
@@ -1657,7 +1652,7 @@ export class ReviewGateService {
           { status: ticket.status },
         );
       }
-      const bound = readBoundTesterPass(this.db, ticket.id);
+      const bound = readBoundTesterPass(this.internals.db, ticket.id);
       if (!bound || bound.provenance === "human" || bound.testedCommit !== pin) {
         throw new DispatchError(
           "STATE_CONFLICT",
@@ -1692,16 +1687,16 @@ export class ReviewGateService {
         }
       }
       // The repo: the one named, else the ticket's primary repo.
-      const landing = computeLandingStatus(this.db, ticket.id);
+      const landing = computeLandingStatus(this.internals.db, ticket.id);
       let repoId: string | null = null;
       if (input.repo) {
-        const named = this.db
+        const named = this.internals.db
           .prepare("SELECT id FROM repositories WHERE id = ? OR name = ? LIMIT 1")
           .get(input.repo, input.repo) as { id: string } | undefined;
         if (!named) throw notFound("repository", input.repo);
         repoId = named.id;
       } else {
-        const primary = this.db
+        const primary = this.internals.db
           .prepare(
             "SELECT repo_id FROM ticket_repos WHERE ticket_id = ? ORDER BY role = 'primary' DESC LIMIT 1",
           )
@@ -1717,7 +1712,7 @@ export class ReviewGateService {
         );
       }
       const uri = `${TESTER_REPLAY_PREFIX}${commit}`;
-      const existing = this.db
+      const existing = this.internals.db
         .prepare(
           "SELECT 1 FROM evidence WHERE ticket_id = ? AND evidence_type = 'commit' AND recorded_by_actor_type = 'system' AND uri = ? LIMIT 1",
         )
@@ -1735,10 +1730,10 @@ export class ReviewGateService {
       // The landed revision must be on the default branch for EVERY landing path: a PR
       // landing records the local default's head after the fast-forward (whose tree the
       // runner checked equals the candidate it replayed on), never the scratch candidate.
-      if (repoId && this.landedOnDefaultResolver) {
+      if (repoId && this.internals.landedOnDefaultResolver) {
         let onDefault: boolean;
         try {
-          onDefault = this.landedOnDefaultResolver(repoId, commit);
+          onDefault = this.internals.landedOnDefaultResolver(repoId, commit);
         } catch {
           onDefault = false;
         }
@@ -1754,12 +1749,12 @@ export class ReviewGateService {
       // other write repos of the ticket its assertions did not cover.
       const repoName = repoId
         ? ((
-            this.db.prepare("SELECT name FROM repositories WHERE id = ?").get(repoId) as
+            this.internals.db.prepare("SELECT name FROM repositories WHERE id = ?").get(repoId) as
               { name: string } | undefined
           )?.name ?? null)
         : null;
       const notReplayed = (
-        this.db
+        this.internals.db
           .prepare(
             `SELECT r.name AS name FROM ticket_repos tr JOIN repositories r ON r.id = tr.repo_id
               WHERE tr.ticket_id = ? AND tr.access = 'write' AND tr.repo_id IS NOT ?
@@ -1767,7 +1762,7 @@ export class ReviewGateService {
           )
           .all(ticket.id, repoId) as Array<{ name: string }>
       ).map((r) => r.name);
-      this.evidence.insert({
+      this.internals.evidence.insert({
         id: newId(),
         ticket_id: ticket.id,
         ac_id: null,
@@ -1800,9 +1795,9 @@ export class ReviewGateService {
         }),
         created_by: "dispatch",
         recorded_by_actor_type: "system",
-        created_at: this.clock.now(),
+        created_at: this.internals.clock.now(),
       });
-      writeEvent(this.db, {
+      writeEvent(this.internals.db, {
         entity_type: "ticket",
         entity_id: ticket.id,
         actor,
@@ -1843,10 +1838,10 @@ export class ReviewGateService {
         { actor_type: actor.type },
       );
     }
-    const now = this.clock.now();
-    return inTransaction(this.db, () => {
-      const ticket = this.tickets.resolveRef(input.ticket_id);
-      const ac = this.acs.findById(input.ac_id);
+    const now = this.internals.clock.now();
+    return inTransaction(this.internals.db, () => {
+      const ticket = this.internals.tickets.resolveRef(input.ticket_id);
+      const ac = this.internals.acs.findById(input.ac_id);
       if (!ac || ac.ticket_id !== ticket.id) throw notFound("acceptance_criterion", input.ac_id);
       if (!ac.check_command) {
         throw new DispatchError(
@@ -1867,9 +1862,9 @@ export class ReviewGateService {
       }
       const passed = input.exit_code === 0;
       const status: AcStatus = passed ? "satisfied" : "failed";
-      this.acs.setStatus(ac.id, status, AC_CHECK_VERIFIER, now);
+      this.internals.acs.setStatus(ac.id, status, AC_CHECK_VERIFIER, now);
       const evidenceId = newId();
-      this.evidence.insert({
+      this.internals.evidence.insert({
         id: evidenceId,
         ticket_id: ticket.id,
         ac_id: ac.id,
@@ -1890,7 +1885,7 @@ export class ReviewGateService {
         recorded_by_actor_type: actor.type,
         created_at: now,
       });
-      const eventId = writeEvent(this.db, {
+      const eventId = writeEvent(this.internals.db, {
         entity_type: "ticket",
         entity_id: ticket.id,
         actor,
@@ -1907,7 +1902,7 @@ export class ReviewGateService {
    * (e.g. a human-driven delivery), in which case the reviewer≠author rule is inert.
    */
   private deliveringAgentId(ticketId: string): string | null {
-    const row = this.db
+    const row = this.internals.db
       .prepare(
         "SELECT agent_id FROM ticket_claims WHERE ticket_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1",
       )
@@ -1922,9 +1917,9 @@ export class ReviewGateService {
    * never fail because the (advisory) telemetry probe threw.
    */
   private computeApprovedUnchanged(ticket: Ticket): boolean | null {
-    if (!this.approvalShaResolver) return null;
+    if (!this.internals.approvalShaResolver) return null;
     try {
-      const shas = this.approvalShaResolver(ticket);
+      const shas = this.internals.approvalShaResolver(ticket);
       if (!shas) return null;
       return approvalUnchanged(shas.deliverySha, shas.mergeSha);
     } catch {
@@ -1940,10 +1935,10 @@ export class ReviewGateService {
    * never grant an approval it shouldn't.
    */
   private policyGrantsAgentApprove(ticketRef: string): boolean {
-    if (!this.policyAllowsAgentApprove) return false;
+    if (!this.internals.policyAllowsAgentApprove) return false;
     try {
-      const ticket = this.ticketSvc.resolveTicket(ticketRef);
-      return this.policyAllowsAgentApprove(ticket);
+      const ticket = this.internals.ticketSvc.resolveTicket(ticketRef);
+      return this.internals.policyAllowsAgentApprove(ticket);
     } catch {
       return false;
     }
@@ -1967,11 +1962,11 @@ export class ReviewGateService {
    * hold into a ship, never newly-allow, and never weakens the manual human gate.
    */
   private enforceObservedRiskCeiling(ticketRef: string, actor: Actor): void {
-    if (!this.observedRiskResolver) return;
-    const ticket = this.ticketSvc.resolveTicket(ticketRef);
+    if (!this.internals.observedRiskResolver) return;
+    const ticket = this.internals.ticketSvc.resolveTicket(ticketRef);
     let observed: ObservedRisk | null;
     try {
-      observed = this.observedRiskResolver(ticket);
+      observed = this.internals.observedRiskResolver(ticket);
     } catch {
       observed = null; // a probe failure must fail toward a human, never silently ship.
     }
@@ -1981,7 +1976,7 @@ export class ReviewGateService {
     const observedLevel = observed?.level ?? "unknown";
     const reasons = observed?.reasons.length ? observed.reasons : ["diff unavailable to observe"];
     // Record the reason on the EXISTING append-only event log (no new mutation surface).
-    writeEvent(this.db, {
+    writeEvent(this.internals.db, {
       entity_type: "ticket",
       entity_id: ticket.id,
       actor,
@@ -2035,7 +2030,7 @@ export class ReviewGateService {
     if (!EXECUTABLE_PROFILES.includes(profile))
       refuse(`the runner cannot run the ${profile} profile yet`);
     if (!evidenceId) refuse("no acceptance evidence was named");
-    const row = this.evidence.listForTicket(ticket.id).find((e) => e.id === evidenceId);
+    const row = this.internals.evidence.listForTicket(ticket.id).find((e) => e.id === evidenceId);
     if (!row) refuse(`evidence ${evidenceId} is not on this ticket`);
     const r = row as NonNullable<typeof row>;
     if (
@@ -2144,12 +2139,12 @@ export class ReviewGateService {
     // The done gate needs real git; run it BEFORE the outer write transaction (a
     // nested transition() is only a savepoint inside it, so "before transition()" is
     // not enough). The gate re-checks the proof's fingerprint inside the transaction.
-    const pre = this.ticketSvc.resolveTicket(ticketRef);
+    const pre = this.internals.ticketSvc.resolveTicket(ticketRef);
     const toReview = pre.status === "in_testing" && this.enteredTestingBeforeReview(pre.id);
     const target: TicketStatus = toReview ? "in_review" : "ready_for_merge";
     const deliveryDiff =
       pre.status === "in_testing" && !toReview
-        ? this.transitions.deliveryDiffProof(pre.id)
+        ? this.internals.transitions.deliveryDiffProof(pre.id)
         : undefined;
     // REQUIRED CI's candidate: the tested commit, else the branch head — resolved (git)
     // here, outside the write transaction, and only when CI results exist at all. A PASS
@@ -2161,8 +2156,8 @@ export class ReviewGateService {
     // The commit this PASS is about, for the approval's same-commit check: the tested
     // commit the runner's tester names, else (a person's waiver) the head now.
     const headNow = toReview ? (this.ciCandidateHead(pre)?.sha ?? null) : null;
-    return inTransaction(this.db, () => {
-      const ticket = this.ticketSvc.resolveTicket(ticketRef);
+    return inTransaction(this.internals.db, () => {
+      const ticket = this.internals.ticketSvc.resolveTicket(ticketRef);
       if (ticket.status !== "in_testing") {
         throw new DispatchError(
           "ILLEGAL_TRANSITION",
@@ -2170,7 +2165,7 @@ export class ReviewGateService {
           { from: ticket.status, to: target },
         );
       }
-      const contractNow = contractHash(this.db, ticket.id);
+      const contractNow = contractHash(this.internals.db, ticket.id);
       const binding = validatedBinding(input, {
         strict: ticket.acceptance === 1 && testerProvenance(actor) !== "human",
         currentHash: contractNow,
@@ -2188,8 +2183,8 @@ export class ReviewGateService {
       if (!toReview) this.assertCiPassed(ticket, ciCandidate);
       // Record the passing test result as evidence so it is visible in review.
       const evidenceId = newId();
-      const now = this.clock.now();
-      this.evidence.insert({
+      const now = this.internals.clock.now();
+      this.internals.evidence.insert({
         id: evidenceId,
         ticket_id: ticket.id,
         ac_id: null,
@@ -2213,7 +2208,7 @@ export class ReviewGateService {
         recorded_by_actor_type: actor.type,
         created_at: now,
       });
-      const result = this.transitions.transition({
+      const result = this.internals.transitions.transition({
         ticketId: ticket.id,
         actor,
         toStatus: target,
@@ -2223,7 +2218,7 @@ export class ReviewGateService {
         ...(deliveryDiff ? { deliveryDiff } : {}),
       });
       const testedHead = binding.tested_commit ?? headNow?.toLowerCase() ?? null;
-      writeEvent(this.db, {
+      writeEvent(this.internals.db, {
         entity_type: "ticket",
         entity_id: ticket.id,
         actor,
@@ -2269,8 +2264,8 @@ export class ReviewGateService {
     // observation as feedback — the autonomous runner's choice, mirroring
     // `review reject --to ready`, so a tester FAIL is a bounded retry, not a stall.
     const failTo: TicketStatus = input.to === "ready" ? "ready" : "refining";
-    return inTransaction(this.db, () => {
-      const ticket = this.ticketSvc.resolveTicket(ticketRef);
+    return inTransaction(this.internals.db, () => {
+      const ticket = this.internals.ticketSvc.resolveTicket(ticketRef);
       if (ticket.status !== "in_testing") {
         throw new DispatchError(
           "ILLEGAL_TRANSITION",
@@ -2280,13 +2275,13 @@ export class ReviewGateService {
       }
       const binding = validatedBinding(input, {
         strict: false, // a FAIL never certifies anything; a present binding is still validated
-        currentHash: contractHash(this.db, ticket.id),
+        currentHash: contractHash(this.internals.db, ticket.id),
         verdict: "fail",
       });
       // Record the failing test as evidence BEFORE the AC reset / transition.
       const evidenceId = newId();
-      const now = this.clock.now();
-      this.evidence.insert({
+      const now = this.internals.clock.now();
+      this.internals.evidence.insert({
         id: evidenceId,
         ticket_id: ticket.id,
         ac_id: null,
@@ -2307,14 +2302,14 @@ export class ReviewGateService {
 
       // PARTLY LANDED: a tester FAIL of a ticket whose change already reached a default
       // branch holds it for a person instead of re-queueing it (as rejectReview does).
-      const landedRepos = recordedLandingRepos(this.db, ticket.id);
+      const landedRepos = recordedLandingRepos(this.internals.db, ticket.id);
       const holdLanded = landedRepos.length > 0;
       const { nextAttempt, capReached } = holdLanded
         ? { nextAttempt: ticket.attempt_count, capReached: false }
-        : capRetry(ticket.attempt_count, this.maxAttempts);
+        : capRetry(ticket.attempt_count, this.internals.maxAttempts);
       const target: TicketStatus = capReached || holdLanded ? "blocked" : failTo;
       const reason = `tester_failed:${summary}`;
-      const result = this.transitions.transition({
+      const result = this.internals.transitions.transition({
         ticketId: ticket.id,
         actor,
         toStatus: target,
@@ -2329,22 +2324,22 @@ export class ReviewGateService {
       });
       if (holdLanded) this.partlyLandedHold(ticket, landedRepos, failTo, reason, actor);
       if (capReached) {
-        writeEvent(this.db, {
+        writeEvent(this.internals.db, {
           entity_type: "ticket",
           entity_id: ticket.id,
           actor,
           event_type: "ticket.parked_retry_cap",
-          payload: { attempt_count: nextAttempt, max_attempts: this.maxAttempts, reason },
+          payload: { attempt_count: nextAttempt, max_attempts: this.internals.maxAttempts, reason },
         });
       }
-      this.ticketSvc.resetAcceptanceCriteria(ticket.id, actor);
+      this.internals.ticketSvc.resetAcceptanceCriteria(ticket.id, actor);
       const feedback: ReviewFeedback = {
         reason,
         reviewer: actor.id ?? null,
         at: now,
       };
-      this.tickets.setReviewFeedback(ticket.id, JSON.stringify(feedback));
-      writeEvent(this.db, {
+      this.internals.tickets.setReviewFeedback(ticket.id, JSON.stringify(feedback));
+      writeEvent(this.internals.db, {
         entity_type: "ticket",
         entity_id: ticket.id,
         actor,
@@ -2381,13 +2376,13 @@ export class ReviewGateService {
         { actor_type: actor.type },
       );
     }
-    const ticket = this.ticketSvc.resolveTicket(ref);
+    const ticket = this.internals.ticketSvc.resolveTicket(ref);
     // PER-REPOSITORY LANDING: `done` means EVERY approved revision landed. A two-repo
     // ticket whose second repo's change is still on its delivery branch stays
     // ready_for_merge (a visible "partly merged" item in the human queue); the merge
     // paths land the rest and call this again.
-    let landing = computeLandingStatus(this.db, ticket.id);
-    if (landing.pending > 0 && this.landedOnDefaultResolver) {
+    let landing = computeLandingStatus(this.internals.db, ticket.id);
+    if (landing.pending > 0 && this.internals.landedOnDefaultResolver) {
       // Git is the truth for a local landing: record what is verifiably on the default
       // branch already (as SYSTEM evidence, via "git-verified"), then re-read.
       // (Not for a repo with a recorded PR: its checkout holding the commit is no evidence
@@ -2395,7 +2390,7 @@ export class ReviewGateService {
       for (const r of landing.repos.filter((x) => !x.landed && x.pinned && !x.prUrl)) {
         let onDefault: boolean;
         try {
-          onDefault = this.landedOnDefaultResolver(r.repoId, r.sha);
+          onDefault = this.internals.landedOnDefaultResolver(r.repoId, r.sha);
         } catch {
           onDefault = false;
         }
@@ -2406,7 +2401,7 @@ export class ReviewGateService {
             { type: "system" },
           );
       }
-      landing = computeLandingStatus(this.db, ticket.id);
+      landing = computeLandingStatus(this.internals.db, ticket.id);
     }
     if (landing.pending > 0) {
       const pending = landing.repos.filter((r) => !r.landed);
@@ -2435,7 +2430,7 @@ export class ReviewGateService {
       );
     }
     const approvedUnchanged = this.computeApprovedUnchanged(ticket);
-    return this.transitions.transition({
+    return this.internals.transitions.transition({
       ticketId: ticket.id,
       actor,
       toStatus: "done",
@@ -2469,8 +2464,8 @@ export class ReviewGateService {
     if (resolution.length === 0) {
       throw new DispatchError("VALIDATION_ERROR", "A resolution summary is required.");
     }
-    return inTransaction(this.db, () => {
-      const ticket = this.ticketSvc.resolveTicket(ref);
+    return inTransaction(this.internals.db, () => {
+      const ticket = this.internals.ticketSvc.resolveTicket(ref);
       if (ticket.status !== "done" && ticket.status !== "ready_for_merge") {
         throw new DispatchError(
           "ILLEGAL_TRANSITION",
@@ -2478,7 +2473,7 @@ export class ReviewGateService {
           { from: ticket.status, to: "in_review" },
         );
       }
-      const result = this.transitions.transition({
+      const result = this.internals.transitions.transition({
         ticketId: ticket.id,
         actor,
         toStatus: "in_review",
@@ -2486,9 +2481,9 @@ export class ReviewGateService {
         expectedFromStatus: ticket.status,
         reopenForReview: true,
       });
-      const now = this.clock.now();
+      const now = this.internals.clock.now();
       const evidenceId = newId();
-      this.evidence.insert({
+      this.internals.evidence.insert({
         id: evidenceId,
         ticket_id: ticket.id,
         ac_id: null,
@@ -2502,7 +2497,7 @@ export class ReviewGateService {
         recorded_by_actor_type: actor.type,
         created_at: now,
       });
-      const eventId = writeEvent(this.db, {
+      const eventId = writeEvent(this.internals.db, {
         entity_type: "ticket",
         entity_id: ticket.id,
         actor,
@@ -2548,8 +2543,8 @@ export class ReviewGateService {
       });
     }
     const reason = input.reason.trim().slice(0, 4_000) || code;
-    return inTransaction(this.db, () => {
-      const ticket = this.ticketSvc.resolveTicket(ticketRef);
+    return inTransaction(this.internals.db, () => {
+      const ticket = this.internals.ticketSvc.resolveTicket(ticketRef);
       if (ticket.status !== "ready_for_merge" && ticket.status !== "in_testing") {
         throw new DispatchError(
           "ILLEGAL_TRANSITION",
@@ -2557,7 +2552,7 @@ export class ReviewGateService {
           { from: ticket.status, to: "blocked" },
         );
       }
-      const result = this.transitions.transition({
+      const result = this.internals.transitions.transition({
         ticketId: ticket.id,
         actor,
         toStatus: "blocked",
@@ -2565,7 +2560,7 @@ export class ReviewGateService {
         expectedFromStatus: ticket.status,
         park: true,
       });
-      writeEvent(this.db, {
+      writeEvent(this.internals.db, {
         entity_type: "ticket",
         entity_id: ticket.id,
         actor,
@@ -2607,7 +2602,7 @@ export class ReviewGateService {
       });
     }
     const detail = (input.detail ?? "").trim().slice(0, 2_000);
-    const ticket = this.ticketSvc.resolveTicket(ticketRef);
+    const ticket = this.internals.ticketSvc.resolveTicket(ticketRef);
     // THE TICKET'S COMMITS ONLY (exploratory finding cli-wg/F-11): a result for a commit
     // that is not one of the ticket's candidates was recorded anyway, and `ci-status` then
     // reported that unrelated PASS while the real head was red.
@@ -2624,7 +2619,7 @@ export class ReviewGateService {
         },
       );
     }
-    const eventId = writeEvent(this.db, {
+    const eventId = writeEvent(this.internals.db, {
       entity_type: "ticket",
       entity_id: ticket.id,
       actor,
@@ -2672,8 +2667,8 @@ export class ReviewGateService {
         { actor_type: actor.type },
       );
     }
-    const ticket = this.ticketSvc.resolveTicket(ticketRef);
-    const already = this.db
+    const ticket = this.internals.ticketSvc.resolveTicket(ticketRef);
+    const already = this.internals.db
       .prepare(
         `SELECT 1 FROM work_events
           WHERE entity_type = 'ticket' AND entity_id = ? AND event_type = 'ticket.ci_required' LIMIT 1`,
@@ -2681,7 +2676,7 @@ export class ReviewGateService {
       .get(ticket.id);
     if (already) return { required: true, eventId: null };
     const detail = (input.detail ?? "").trim().slice(0, 2_000);
-    const eventId = writeEvent(this.db, {
+    const eventId = writeEvent(this.internals.db, {
       entity_type: "ticket",
       entity_id: ticket.id,
       actor,
@@ -2699,7 +2694,7 @@ export class ReviewGateService {
   private ciCandidateCommits(ticket: Ticket): string[] {
     const out = new Set<string>();
     for (const h of this.resolveReviewedHeads(ticket)) if (h.sha) out.add(h.sha.toLowerCase());
-    const rows = this.db
+    const rows = this.internals.db
       .prepare(
         `SELECT commit_sha AS sha FROM ticket_repo_delivery
           WHERE ticket_id = ? AND commit_sha IS NOT NULL AND commit_sha <> ''
@@ -2724,7 +2719,7 @@ export class ReviewGateService {
     ticketId: string,
     commit: string | null,
   ): { required: boolean; state: string | null; commit: string | null } {
-    const rows = this.db
+    const rows = this.internals.db
       .prepare(
         `SELECT json_extract(payload_json, '$.commit') AS commit_sha,
                 json_extract(payload_json, '$.state')  AS state
@@ -2736,7 +2731,7 @@ export class ReviewGateService {
     // A recorded requirement (recordCiRequired) makes CI required before any result.
     const requiredMark =
       rows.length > 0 ||
-      this.db
+      this.internals.db
         .prepare(
           `SELECT 1 FROM work_events
             WHERE entity_type = 'ticket' AND entity_id = ? AND event_type = 'ticket.ci_required' LIMIT 1`,
@@ -2791,9 +2786,11 @@ export class ReviewGateService {
     // REJECT PINS: the heads the reviewer sent back, read before the write lock is taken
     // (git never runs under it). Only a re-queue records them; abandoning has no next round.
     const pinHeads =
-      to === "cancelled" ? [] : this.resolveReviewedHeads(this.ticketSvc.resolveTicket(ticketRef));
-    const result = inTransaction(this.db, () => {
-      const ticket = this.ticketSvc.resolveTicket(ticketRef);
+      to === "cancelled"
+        ? []
+        : this.resolveReviewedHeads(this.internals.ticketSvc.resolveTicket(ticketRef));
+    const result = inTransaction(this.internals.db, () => {
+      const ticket = this.internals.ticketSvc.resolveTicket(ticketRef);
       if (ticket.status !== "in_review" && ticket.status !== "ready_for_merge") {
         throw new DispatchError(
           "ILLEGAL_TRANSITION",
@@ -2809,16 +2806,18 @@ export class ReviewGateService {
       // partly_landed) instead of re-queued: re-queued, it read as ordinary rework while
       // half the change sat on main, and nothing then stopped it being cancelled.
       const landedRepos =
-        to === "ready" || to === "refining" ? recordedLandingRepos(this.db, ticket.id) : [];
+        to === "ready" || to === "refining"
+          ? recordedLandingRepos(this.internals.db, ticket.id)
+          : [];
       const holdLanded = landedRepos.length > 0;
       const isRequeue = (to === "ready" || to === "refining") && !holdLanded;
       // Abandoning (cancelled) never increments the counter; re-queue does.
       const { nextAttempt, capReached } = isRequeue
-        ? capRetry(ticket.attempt_count, this.maxAttempts)
+        ? capRetry(ticket.attempt_count, this.internals.maxAttempts)
         : { nextAttempt: ticket.attempt_count, capReached: false };
       const target: TicketStatus = capReached || holdLanded ? "blocked" : to;
 
-      const result = this.transitions.transition({
+      const result = this.internals.transitions.transition({
         ticketId: ticket.id,
         actor,
         toStatus: target,
@@ -2842,14 +2841,14 @@ export class ReviewGateService {
         parked = { attempt: ticket.attempt_count, requestedTarget: to, reason: why };
       }
       if (capReached) {
-        writeEvent(this.db, {
+        writeEvent(this.internals.db, {
           entity_type: "ticket",
           entity_id: ticket.id,
           actor,
           event_type: "ticket.parked_retry_cap",
           payload: {
             attempt_count: nextAttempt,
-            max_attempts: this.maxAttempts,
+            max_attempts: this.internals.maxAttempts,
             requested_target: to,
             reason: resolvedReason,
           },
@@ -2857,24 +2856,24 @@ export class ReviewGateService {
         parked = { attempt: nextAttempt, requestedTarget: to, reason: resolvedReason };
       }
       this.recordRejectPins(ticket, actor, pinHeads, nextAttempt);
-      this.ticketSvc.resetAcceptanceCriteria(ticket.id, actor);
+      this.internals.ticketSvc.resetAcceptanceCriteria(ticket.id, actor);
       const feedback: ReviewFeedback = {
         reason: resolvedReason,
         reviewer: actor.id ?? null,
-        at: this.clock.now(),
+        at: this.internals.clock.now(),
       };
-      this.tickets.setReviewFeedback(ticket.id, JSON.stringify(feedback));
+      this.internals.tickets.setReviewFeedback(ticket.id, JSON.stringify(feedback));
       return result;
     });
     // H2: notify AFTER the transaction commits, best-effort.
     if (parked !== null) {
       const p: { attempt: number; requestedTarget: string; reason: string } = parked;
       try {
-        this.onTicketParked?.(
+        this.internals.onTicketParked?.(
           result.ticket,
           p.reason.startsWith("partly landed")
             ? p.reason
-            : `retry cap reached (attempt ${p.attempt}/${this.maxAttempts}): ${p.reason}`,
+            : `retry cap reached (attempt ${p.attempt}/${this.internals.maxAttempts}): ${p.reason}`,
         );
       } catch {
         // Notifications are never allowed to break the caller.
@@ -2888,10 +2887,10 @@ export class ReviewGateService {
    * wontDo:true guard flag so TransitionService validates the path.
    */
   wontDo(ref: string, actor: Actor, reason?: string): TransitionResult {
-    return inTransaction(this.db, () => {
-      const ticket = this.ticketSvc.resolveTicket(ref);
+    return inTransaction(this.internals.db, () => {
+      const ticket = this.internals.ticketSvc.resolveTicket(ref);
       this.refuseCancelOfLanded(ticket);
-      const result = this.transitions.transition({
+      const result = this.internals.transitions.transition({
         ticketId: ticket.id,
         actor,
         toStatus: "cancelled",
@@ -2899,7 +2898,7 @@ export class ReviewGateService {
         expectedFromStatus: ticket.status,
         wontDo: true,
       });
-      this.ticketSvc.resetAcceptanceCriteria(ticket.id, actor);
+      this.internals.ticketSvc.resetAcceptanceCriteria(ticket.id, actor);
       return result;
     });
   }
@@ -2908,8 +2907,8 @@ export class ReviewGateService {
    * Reopen a won't-do (`cancelled`) ticket back into the pipeline.
    */
   reopenFromWontDo(ref: string, to: "refining" | "draft", actor: Actor): TransitionResult {
-    const ticket = this.ticketSvc.resolveTicket(ref);
-    return this.transitions.transition({
+    const ticket = this.internals.ticketSvc.resolveTicket(ref);
+    return this.internals.transitions.transition({
       ticketId: ticket.id,
       actor,
       toStatus: to,
@@ -2942,7 +2941,7 @@ export class ReviewGateService {
     sha: string,
     via: "pr" | "pr-stale",
   ): void {
-    const repoPr = this.db
+    const repoPr = this.internals.db
       .prepare(
         `SELECT COALESCE(NULLIF(tr.pr_url, ''), NULLIF(d.pr_url, '')) AS pr
            FROM ticket_repos tr
@@ -2950,7 +2949,7 @@ export class ReviewGateService {
           WHERE tr.ticket_id = ? AND tr.repo_id = ?`,
       )
       .get(ticket.id, target.repoId) as { pr: string | null } | undefined;
-    const primary = this.db
+    const primary = this.internals.db
       .prepare(
         `SELECT repo_id FROM ticket_repos WHERE ticket_id = ?
           ORDER BY (access = 'write') DESC, (role = 'primary') DESC LIMIT 1`,
@@ -2966,10 +2965,10 @@ export class ReviewGateService {
         { reason: "no_pr_recorded", repo: target.repo, via },
       );
     }
-    if (!this.changeOnRefsResolver) return;
+    if (!this.internals.changeOnRefsResolver) return;
     let carried: boolean | null;
     try {
-      carried = this.changeOnRefsResolver(
+      carried = this.internals.changeOnRefsResolver(
         target.repoId,
         sha,
         via === "pr" ? ["default"] : ["remote-default", "default"],
@@ -3006,14 +3005,14 @@ export class ReviewGateService {
     // refused (the ticket was cancelled) and the merge read as a clean success.
     const landed = [
       ...new Set([
-        ...recordedLandingRepos(this.db, ticket.id),
+        ...recordedLandingRepos(this.internals.db, ticket.id),
         ...this.landingsStarted(ticket.id)
           .filter((l) => l.landed)
           .map((l) => l.repo),
       ]),
     ].sort();
     if (landed.length === 0) return;
-    const current = computeLandingStatus(this.db, ticket.id);
+    const current = computeLandingStatus(this.internals.db, ticket.id);
     const pending = current.repos
       .filter((r) => !r.landed && !landed.includes(r.repo))
       .map((r) => r.repo);
@@ -3046,7 +3045,7 @@ export class ReviewGateService {
       `partly landed: ${landed.join(", ")} already merged on the default branch, so this ` +
       `send-back to ${requested} is held for a person instead of re-queued (${reason}). ` +
       `Rework and re-approve it from here (unblock), then land the rest; it cannot be cancelled.`;
-    writeEvent(this.db, {
+    writeEvent(this.internals.db, {
       entity_type: "ticket",
       entity_id: ticket.id,
       actor,

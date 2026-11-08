@@ -95,9 +95,10 @@ On a greenfield run the factory sets the new repo up itself:
   a replayed PASS bound to the tested commit, **waived** for a person's
   `tester-pass --as human`, **unverified** for neither, and **stale** when the acceptance
   ticket was edited afterwards.
-- **Sandbox and budget.** Under `GAFFER_STRICT_REQUIRE`, a host with no OS sandbox parks
-  the bootstrap (`strict_require_unavailable`) before the repo is created, and a dollar
-  cap that would refuse the launch releases it back to ready.
+- **Sandbox and budget.** Every agent needs an OS sandbox by default, so on a host with
+  none the tick refuses before it claims the bootstrap; a sandbox that fails between that
+  check and the spawn parks it (`strict_require_unavailable`) before the repo is
+  created, and a dollar cap that would refuse the launch releases it back to ready.
 - **No remote, in PR mode.** A new repo with no remote gets one decision asking where it
   lives, which holds its tickets until you answer.
 
@@ -549,9 +550,13 @@ hand over, and every autonomy flag is off until you turn it on:
 | `MEMORY_AUTO_APPROVE` | Let the memory the runner itself files (the requirement distilled from each delivered ticket, onboarding induction lore, CLI `memory suggest`) go live without a human review step. Lore a delivery agent suggests over MCP always stays a draft, and a draft is invisible to other agents (search, duplicate hints, fetch by id) until you approve it. |
 
 `GAFFER_MODE` sets the whole cluster at once (supervised, lite, graduated, autonomous,
-strict); [CONFIG.md](CONFIG.md) lists what each sets. Enabling autonomy requires
-containment: any ship or mutate flag turns on the OS sandbox requirement, and a
-required sandbox that is not available refuses to launch the agent
+strict); [CONFIG.md](CONFIG.md) lists what each sets. Whatever the mode, every agent runs
+inside an OS sandbox (`sandbox-exec` on macOS, `docker` where Docker is installed): a
+host without one refuses to launch agents, before anything is claimed, and says what to
+install. Settings shows that posture as a read-only line in its Sandbox group: the
+provider, available or missing, required or opted out, and the fix. The opt-out is
+`GAFFER_STRICT_REQUIRE=0` in the environment, for a runner you contain yourself; with a
+ship or mutate flag on as well, the runner warns about it twice
 ([docs/sandbox.md](sandbox.md)).
 
 ![The boot room: the Team instructions dial on Supervised, who plays each position, and autonomy suggestions drawn from the review record](img/settings.png)

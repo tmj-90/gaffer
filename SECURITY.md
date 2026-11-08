@@ -22,6 +22,16 @@ Gaffer's job is to contain what the agent can do and to keep a human in the loop
 anything that ships. In the default supervised mode the human review gate is the
 last line; for unattended runs the OS sandbox is.
 
+**Default host isolation.** The host is protected by default, not only when you turn
+autonomy on: every agent launch, in every mode, runs inside an OS sandbox
+(`GAFFER_STRICT_REQUIRE` defaults to 1, `STRICT_MODE` with it). The provider is
+auto-detected (`sandbox-exec` on macOS, `docker` where the docker CLI is installed). On a
+host that cannot supply one, `gaffer run`, the loop, every live tick and the dashboard's
+Poll for work refuse before they claim anything, and the worker seams (bash and Node)
+refuse each spawn, so no path launches an agent unwrapped by accident. The only way to
+run without it is `GAFFER_STRICT_REQUIRE=0` in the environment, which settings.json
+cannot set, and which the runner states loudly once per process.
+
 ## What is enforced and how it is tested
 
 Test files are under `runner/test/` (`.sh`, `.mjs`) or `packages/*/test/` (`.ts`).
@@ -44,7 +54,7 @@ Test files are under `runner/test/` (`.sh`, `.mjs`) or `packages/*/test/` (`.ts`
 | Landing | Never overwrites an ignored local file; a revocation stops every landing not yet started | `land-ignored-file.test.sh`, `revocation-safe-landing.test.ts` | A landing already started is reported, not undone |
 | OS sandbox (`docker`) | Read and egress isolation; data plane on the host; private git dir | `sandbox-docker-containment.test.sh`, `sandbox-docker-mounts.test.sh`, `sandbox-docker-git-isolation.test.sh`, `sandbox-docker-delivery.test.sh` | A live agent inside it is proven only where you run it |
 | OS sandbox (`sandbox-exec`) | Writes only in the allowed roots | `strict-mode.test.sh` | Reads, egress, writes under `$GAFFER_DATA` |
-| Autonomy needs a sandbox | Any ship flag defaults `GAFFER_STRICT_REQUIRE=1`; no sandbox means no launch | `autonomy-containment.test.sh`, `strict-require.test.sh` | An explicit `GAFFER_STRICT_REQUIRE=0` |
+| Default host isolation | `GAFFER_STRICT_REQUIRE=1` in every mode; no working sandbox means no launch, refused before any claim with the fix | `isolation-default.test.sh`, `strict-require.test.sh`, `autonomy-containment.test.sh` | `GAFFER_STRICT_REQUIRE=0` in the environment (never settings.json) |
 | Planning agents and scout | Read-only tool sets, safety-hook settings verified before spawn | `security-md-planning-agents.test.mjs`, `scout-gather.test.sh` | |
 | Replay manifests and experiments | Manifests hold ids, commits, settings and hashes, never prompt text or credentials (mode 600, 16 KiB cap); the experiment runner is denied to agents in every launch form and its live mode needs a hard USD cap | `replay-manifest.test.sh`, `eval-experiment.test.sh`, `safety-hook-spelling.test.mjs` | |
 | Command worker | Runs only inside the `docker` sandbox with the bridge | `worker-command.test.sh` | Turn and tool caps are hints |
@@ -361,13 +371,13 @@ and a stripped environment (a package manager can still run repository code such
 `.pnpmfile.cjs`, which is why the install is inside the wrap).
 
 The wrap is applied inside the single worker seam, so every agent spawn (delivery,
-bootstrap, reviewer, clarify, eval judge) is contained the same way.
-`GAFFER_STRICT_REQUIRE=1` makes the runner refuse to launch when no provider is
-available. Enabling any ship flag (`DISPATCH_ALLOW_AGENT_APPROVE`,
-`MERGE_ON_AGENT_REVIEW`, `AUTO_MERGE`, `MEMORY_AUTO_APPROVE`, `GAFFER_AUTO_PUSH`) or the
-`autonomous`, `strict` or `lite` mode defaults `STRICT_MODE=1` and
-`GAFFER_STRICT_REQUIRE=1`; only an explicit `GAFFER_STRICT_REQUIRE=0`, logged as a
-warning, opts out. Under strict-require, the idle loops' repo commands
+bootstrap, reviewer, clarify, eval judge, and through the Node seam the planner, Suggest
+work, onboarding, the spec author, the merge resolver and the tester) is contained the
+same way. `GAFFER_STRICT_REQUIRE` defaults to 1 in every mode, and the runner refuses to
+launch when no provider is available: once before anything is claimed (`gaffer run`,
+the loop, a tick, Poll for work) and again at each spawn. Only an explicit
+`GAFFER_STRICT_REQUIRE=0` in the environment opts out; settings.json cannot, and the
+opt-out is logged as a warning (with a second, louder one when a ship flag is on too). Under strict-require, the idle loops' repo commands
 (`coverage_command`, `audit_command`, the tsc and semgrep oracles) are refused on the
 host unless `GAFFER_IDLE_HOST_EXEC=1`.
 
@@ -460,8 +470,13 @@ a presence boolean, and an argument not on the allowlist is never copied.
 - **`sandbox-exec` still permits writes under `$GAFFER_DATA`**, where `settings.json`,
   `usage-pause.json` and the ledgers live. The hook refuses every write vector to those
   paths that `safety-hook.test.mjs` pins, but a child's syscalls are invisible to it.
-  `sandbox-exec` also isolates neither reads nor egress; on a non-macOS host without
-  Docker the hook is the only boundary and `strict` reduces to `autonomous`.
+  `sandbox-exec` also isolates neither reads nor egress. The default host isolation on
+  macOS is therefore write-only isolation.
+- **The isolation opt-out exists.** `GAFFER_STRICT_REQUIRE=0` in the environment runs
+  agents without an OS sandbox, with only the worktree and the hook around them, and
+  nothing verifies the VM or container it vouches for. On a non-macOS host without Docker
+  that is the only way to run, and there `strict` reduces to `autonomous`. The Docker
+  image sets it because the container is the boundary.
 - **The docker sandbox is proven with a stub agent.** CI runs one delivery through it on
   a Linux runner with a deterministic stub; a live agent inside it is proven only where
   someone runs the opt-in `sandbox-live.yml` workflow with their own credential
@@ -521,6 +536,8 @@ a presence boolean, and an argument not on the allowlist is never copied.
 - Don't point Gaffer at untrusted issues or repos, or enable the autonomy flags,
   without `SANDBOX_PROVIDER=docker` (or explicit out-of-band containment) on a machine
   whose blast radius you accept.
+- Leave `GAFFER_STRICT_REQUIRE` alone unless the runner already runs inside a VM or a
+  container you trust; `runner/gaffer sandbox-status` shows what the host provides.
 - Run it as an isolated user with no ambient cloud credentials and scoped repo access.
   The environment scrub is defence in depth, not a substitute.
 - Prefer repos you own, on a machine you control.

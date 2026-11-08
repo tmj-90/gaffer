@@ -2,15 +2,30 @@
 
 Every delivery already runs in a throwaway git worktree, behind the deterministic
 PreToolUse safety hook (`runner/safety-hook.mjs`), which blocks writes, branch moves
-and reads outside the resolved roots at the tool layer. The OS sandbox is an optional
-third layer under those two. It catches what an in-process hook cannot see: a path
+and reads outside the resolved roots at the tool layer. The OS sandbox is the third
+layer under those two. It catches what an in-process hook cannot see: a path
 built at runtime inside `python3 -c "..."`, a write from an exec'd child, a library
 writing through a syscall the hook never inspected.
 
-It is off by default (`STRICT_MODE=0`). Turning on any autonomy flag, or the
-`autonomous`, `strict` or `lite` mode, defaults `GAFFER_STRICT_REQUIRE=1`, and then the
-runner refuses to launch an agent without a working sandbox instead of running it
-unwrapped.
+It is on by default, in every mode. `GAFFER_STRICT_REQUIRE` defaults to 1 and
+`STRICT_MODE` to 1 with it, so every agent launch (a delivery, a review, clarify, a
+bootstrap, the idle lanes, onboarding, Plan a build, Suggest work, the spec author, the
+merge resolver, the tester and the judge) runs inside the sandbox or does not run. On a
+host with no working provider, `gaffer run`, the loop, a tick and the dashboard's Poll
+for work refuse before they claim anything, and the Node launchers the dashboard starts
+refuse at the spawn. They all say the same thing: what the host is missing, the fix,
+and the opt-out. `gaffer setup` never fails for lack of a sandbox: it prints what it
+found and the fix, and on Linux with a reachable Docker daemon it builds the images.
+The Settings page shows the posture as a read-only line in its Sandbox group, and
+`runner/gaffer sandbox-status` prints it as JSON. Dry runs need no sandbox.
+
+The opt-out is `GAFFER_STRICT_REQUIRE=0` (or `false`, `no`, `off`) in the environment.
+settings.json cannot set it: the file lives in `GAFFER_DATA`, which an agent's sandbox
+may reach. It means you contain the whole runner yourself, in a VM or a container: agents
+then run with only the worktree and the safety hook around them (unless you also set
+`STRICT_MODE=1` or `GAFFER_MODE=strict`, which still wrap where a provider exists), and
+the runner says so once each time it starts. The Docker image sets it, because there
+the container is the boundary.
 
 It is defence in depth, not a security guarantee. It raises the cost of an escape; it
 does not make one impossible, and it does not replace the worktree or the hook. The
@@ -30,8 +45,9 @@ resolved write and read roots and echoes a command prefix for the agent run.
 | `none` | nothing | Keeps the toggle, adds no OS wrapping. |
 
 Unset, the runner picks `sandbox-exec` where the binary exists and `docker` where only
-the Docker CLI does. An explicit value always wins. An unknown provider fails closed
-under `GAFFER_STRICT_REQUIRE=1` and otherwise warns and runs unwrapped. Adding a
+the Docker CLI does. An explicit value always wins. A provider the host cannot supply
+(`none`, an unknown name, docker without a daemon or its image) fails closed, and only
+under the `GAFFER_STRICT_REQUIRE=0` opt-out warns and runs unwrapped. Adding a
 provider is one `case` branch in `lib/sandbox.sh`; nothing in `tick.sh` or the config
 changes.
 
@@ -44,9 +60,9 @@ stays open. The `docker` provider closes both.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `STRICT_MODE` | `0` | `1` wraps the live agent in the sandbox provider. |
+| `STRICT_MODE` | `1` while the sandbox is required (`0` under the opt-out) | `1` wraps the live agent in the sandbox provider. |
 | `SANDBOX_PROVIDER` | auto (see above) | `docker`, `sandbox-exec` or `none`. |
-| `GAFFER_STRICT_REQUIRE` | `0`, or `1` when autonomy is on | `1` refuses to launch an agent without a sandbox. |
+| `GAFFER_STRICT_REQUIRE` | `1` | `1` refuses to launch an agent without a sandbox. `0` in the environment (only there) is the opt-out. |
 | `STRICT_ALLOW_NETWORK` | `1` | Allow network inside the sandbox. `0` breaks a `sandbox-exec` run, because the agent's own model call is denied too. |
 | `STRICT_ALLOW_HOME` | `$HOME/.claude $HOME/.cache` | HOME paths the sandbox may write (the agent CLI's own state and cache). |
 | `GAFFER_DOD_SANDBOX` | `1` | Run the DoD gates and criterion checks under the same wrap; they execute agent-written code. |
@@ -55,7 +71,7 @@ These are plain environment variables (all of them are in
 [CONFIG.md](CONFIG.md)), so scope them however you scope config:
 
 ```bash
-STRICT_MODE=1 SANDBOX_PROVIDER=docker runner/gaffer run
+SANDBOX_PROVIDER=docker runner/gaffer run   # pick docker on a Mac that has both
 # a repo whose tooling needs more writable HOME state:
 export STRICT_ALLOW_HOME="$HOME/.claude $HOME/.cache $HOME/.cargo"
 ```
@@ -261,6 +277,9 @@ it runs. Without a credential it fails at once and names the two secrets.
 
 ## Limits
 
+- The opt-out exists. `GAFFER_STRICT_REQUIRE=0` in the environment runs agents without
+  an OS sandbox, and nothing checks that the VM or container you vouched for is there.
+- `sandbox-exec`, the macOS default, restricts writes only (see above).
 - The containment and delivery tests need a Docker daemon, so they run in CI, not on
   every developer machine; the seam test runs everywhere.
 - The container runs as root with only `DAC_OVERRIDE`, so on a Linux host the files it

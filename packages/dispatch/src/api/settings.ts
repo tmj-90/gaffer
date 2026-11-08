@@ -135,14 +135,14 @@ export const SETTING_DEFS: readonly SettingDef[] = [
       "merge; lite auto-approves only GENUINELY TRIVIAL tickets (low risk, tiny diff, " +
       "no sensitive path) that passed every gate + earned an APPROVE from the reviewer " +
       "agent — and still leaves a human to MERGE (never auto-merges); non-trivial " +
-      "tickets hold for you. (Because auto-approve drops the human quality gate, lite " +
-      "requires the OS sandbox — GAFFER_STRICT_REQUIRE defaults on.) " +
+      "tickets hold for you. " +
       "graduated ships what each repo has EARNED at its risk level and holds " +
       "everything else for you (the reviewer agent runs, but the per-repo/risk autonomy " +
       "policy is the sole allow-path — set grants in the per-repo policy editor); " +
-      "autonomous lets agents approve and auto-merges + pushes approved work, and " +
-      "because that removes the human gate it also requires the OS sandbox " +
-      "(GAFFER_STRICT_REQUIRE and STRICT_MODE default on: no sandbox, no agent). " +
+      "autonomous lets agents approve and auto-merges + pushes approved work. " +
+      "Every mode runs agents inside the OS sandbox (GAFFER_STRICT_REQUIRE and " +
+      "STRICT_MODE default on: no sandbox, no agent); with the human gate gone, opting " +
+      "out with GAFFER_STRICT_REQUIRE=0 in the environment is warned about loudly. " +
       "strict sets the same flags as autonomous; the one difference is that strict " +
       "keeps STRICT_MODE on even when you set GAFFER_STRICT_REQUIRE=0 (the sandbox is " +
       "still used where available, just not required). SANDBOX_PROVIDER picks the " +
@@ -726,7 +726,7 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     min: 2,
   },
 
-  // --- Sandbox: optional OS-level execution confinement ---
+  // --- Sandbox: OS-level execution confinement, required for every agent by default ---
   {
     key: "STRICT_MODE",
     type: "boolean",
@@ -734,9 +734,10 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     label: "Strict execution sandbox",
     help:
       "Wrap agent commands in the OS sandbox (SANDBOX_PROVIDER: docker, or sandbox-exec " +
-      "on macOS) for defence-in-depth. Off → the permission-hook guard only. On by " +
-      "default (and required) in the autonomous, strict and lite modes, where no " +
-      "human reviews the work before it ships.",
+      "on macOS) for defence-in-depth. On by default in every mode, and required: " +
+      "with no sandbox on the host no agent launches. Only GAFFER_STRICT_REQUIRE=0 in " +
+      "the environment (a runner you contain yourself) makes it optional; then off " +
+      "means the permission-hook guard only.",
   },
   {
     key: "STRICT_ALLOW_NETWORK",
@@ -752,10 +753,12 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     group: "sandbox",
     label: "Sandbox provider",
     help:
-      "Which OS-level containment backend the strict sandbox uses: docker " +
+      "Which OS-level containment backend the sandbox uses: docker " +
       "(experimental — real read + write + egress isolation, any host with a Docker " +
-      "daemon) · sandbox-exec (macOS — write-only containment) · none (disable OS " +
-      "wrapping, keep the toggle). Only consulted when the strict sandbox is on.",
+      "daemon) · sandbox-exec (macOS — write-only containment) · none (no OS " +
+      "wrapping: agents then refuse to launch unless GAFFER_STRICT_REQUIRE=0 is set in " +
+      "the environment). Empty = auto-detect (sandbox-exec on macOS, docker where the " +
+      "docker CLI is installed).",
   },
   {
     key: "STRICT_ALLOW_HOME",

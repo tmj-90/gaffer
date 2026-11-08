@@ -142,8 +142,8 @@ if [ -z "${GAFFER_DAILY_BUDGET_USD:-}${GAFFER_BUDGET_USD:-}" ]; then
   else _cap="none — a live run refuses to start until GAFFER_DAILY_BUDGET_USD or GAFFER_BUDGET_USD is set"; fi
 fi
 if _gaffer_flag_on "${GAFFER_STRICT_REQUIRE:-0}"; then _sbx="required (GAFFER_STRICT_REQUIRE=1: no OS sandbox, no agent run)"
-elif _gaffer_flag_on "${STRICT_MODE:-0}"; then _sbx="used when available (STRICT_MODE=1), not required"
-else _sbx="not required"; fi
+elif _gaffer_flag_on "${STRICT_MODE:-0}"; then _sbx="used when available (STRICT_MODE=1), not required (GAFFER_STRICT_REQUIRE=${GAFFER_STRICT_REQUIRE:-} in the environment)"
+else _sbx="opted out (GAFFER_STRICT_REQUIRE=${GAFFER_STRICT_REQUIRE:-} in the environment): agents run without an OS sandbox"; fi
 printf "\n  ${c_dim}posture${c_off}\n"
 printf "    %-12s %s\n" "mode:" "$_mode" "review:" "${REVIEW_MODE:-human}" "auto-merge:" "$(_on_off "${AUTO_MERGE:-0}")" \
   "day cap:" "$_cap" "ticks/day:" "${MAX_TICKS_PER_DAY:-0}" "sandbox:" "$_sbx"

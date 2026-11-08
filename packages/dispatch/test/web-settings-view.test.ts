@@ -56,6 +56,43 @@ const SETTINGS = [
   },
 ];
 
+// The isolation posture GET /api/settings carries (runner/gaffer sandbox-status, stubbed).
+const SANDBOX_ROW = {
+  key: "STRICT_MODE",
+  value: "",
+  envLocked: false,
+  type: "boolean",
+  group: "sandbox",
+  label: "Strict execution sandbox",
+};
+const ISOLATION = {
+  available: {
+    provider: "docker",
+    available: true,
+    required: true,
+    optedOut: false,
+    missing: "",
+    fix: "",
+  },
+  missing: {
+    provider: "docker",
+    available: false,
+    required: true,
+    optedOut: false,
+    missing: "Docker is installed but its daemon is not reachable",
+    fix: "start the docker daemon (or give this user access to it)",
+  },
+  optedOut: {
+    provider: "sandbox-exec",
+    available: false,
+    required: false,
+    optedOut: true,
+    missing: "this is Linux, where sandbox-exec does not exist, and Docker is not installed",
+    fix: "install Docker, then run `gaffer setup` again",
+  },
+} as const;
+let isolation: unknown = undefined;
+
 let lastPost: { url: string; body: unknown } | null = null;
 
 function stubFetch(): void {
@@ -76,7 +113,11 @@ function stubFetch(): void {
         );
       }
       if (url.includes("/api/settings")) {
-        return new Response(JSON.stringify({ settings: SETTINGS }), {
+        const body =
+          isolation === undefined
+            ? { settings: SETTINGS }
+            : { settings: [...SETTINGS, SANDBOX_ROW], isolation };
+        return new Response(JSON.stringify(body), {
           status: 200,
           headers: { "content-type": "application/json" },
         });
@@ -108,6 +149,49 @@ describe("web: Settings view", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     document.body.innerHTML = "";
+    isolation = undefined;
+  });
+
+  // The Sandbox group's read-only isolation line, for the three postures the probe reports.
+  const isolationLine = async (posture: unknown): Promise<HTMLElement> => {
+    isolation = posture;
+    await import(`${pathToFileURL(APP_JS).href}?t=${Date.now()}`);
+    await tick();
+    const group = document.querySelector("#grp-sandbox") as HTMLElement;
+    expect(group, "the Sandbox group renders").not.toBeNull();
+    const line = group.querySelector(".settings-isolation") as HTMLElement;
+    expect(line, "the Sandbox group shows the isolation line").not.toBeNull();
+    // Read-only: a status line, never an input.
+    expect(line.querySelector("input, select, button")).toBeNull();
+    return line;
+  };
+
+  it("shows the isolation line: provider available and required", async () => {
+    const line = await isolationLine(ISOLATION.available);
+    expect(line.dataset.state).toBe("available");
+    expect(line.textContent).toMatch(/Isolation: docker, available/);
+    expect(line.textContent).toMatch(/Required: every agent runs inside it/);
+    expect(line.textContent).not.toMatch(/Fix:/);
+  });
+
+  it("shows the isolation line: provider missing, with what is missing and the fix", async () => {
+    const line = await isolationLine(ISOLATION.missing);
+    expect(line.dataset.state).toBe("missing");
+    expect(line.textContent).toMatch(
+      /docker, missing \(Docker is installed but its daemon is not reachable\)/,
+    );
+    expect(line.textContent).toMatch(/live runs refuse to launch agents/);
+    expect(line.textContent).toMatch(/Fix: start the docker daemon/);
+  });
+
+  it("shows the isolation line: opted out in the environment", async () => {
+    const line = await isolationLine(ISOLATION.optedOut);
+    expect(line.dataset.state).toBe("opted-out");
+    expect(line.textContent).toMatch(
+      /Opted out: GAFFER_STRICT_REQUIRE=0 is set in the environment/,
+    );
+    expect(line.textContent).toMatch(/agents run without an OS sandbox/);
+    expect(line.textContent).toMatch(/Fix: install Docker/);
   });
 
   it("renders grouped settings, env-locked read-only, and saves editable values", async () => {

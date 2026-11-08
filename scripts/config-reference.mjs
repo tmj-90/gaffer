@@ -194,9 +194,9 @@ export const EXTRA_KNOBS = [
   {
     group: "Safety and containment",
     name: "GAFFER_STRICT_REQUIRE",
-    default: "0",
+    default: "1",
     file: "runner/lib/sandbox.sh",
-    doc: "1 = refuse to launch an agent without an OS sandbox (fail closed). Unset, factory.config.sh turns it on whenever an autonomy flag, an autonomous/strict/lite mode or an `auto` policy row is on; set 0 explicitly only if you contain the whole runner yourself (a VM or container).",
+    doc: "1 (the default, in every mode) = every agent launch runs inside the OS sandbox or is refused (fail closed): `gaffer run`, the loop, a tick and the dashboard's Poll for work refuse before claiming anything, with the fix. 0 (or false/no/off) in the ENVIRONMENT is the opt-out, for a runner you contain yourself (a VM or container): agents then run unwrapped, and it is said once per process. settings.json cannot set 0.",
   },
   {
     group: "Safety and containment",

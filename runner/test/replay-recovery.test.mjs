@@ -106,6 +106,11 @@ printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"result":"
     // from scratch, so runner/test/run.sh's GAFFER_ALLOW_UNCAPPED=1 never reaches the
     // tester: set a cap the way an operator would. The stub tester reports $0.
     GAFFER_DAILY_BUDGET_USD: "5",
+    // Every agent launch needs an OS sandbox by default (lib/sandbox.sh, lib/worker.mjs),
+    // the merge lane's re-gate and the tester replay included. The tester here is a stub,
+    // so this from-scratch env states the documented opt-out, as run.sh does for the
+    // runner's stub worlds; the tests of the requirement set their own value.
+    GAFFER_STRICT_REQUIRE: "0",
   };
   const exec = (cmd, args, extra = {}) =>
     spawnSync(cmd, args.map(String), {

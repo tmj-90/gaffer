@@ -400,7 +400,7 @@ describe("settings bootstrap: settings.json + GAFFER_MODE presets become env DEF
     expect(byKey.get("AUTO_MERGE")?.value).toBe(""); // nothing stored
     expect(byKey.get("AUTO_MERGE")?.envLocked).toBe(false);
     // The mirror stays in step with the runner's presets for every mode: the autonomy
-    // cluster everywhere, plus the sandbox default where autonomy is on.
+    // cluster plus the sandbox default, which is on in every mode (isolation by default).
     const cluster = [
       "AUTO_MERGE",
       "DISPATCH_ALLOW_AGENT_APPROVE",
@@ -409,16 +409,13 @@ describe("settings bootstrap: settings.json + GAFFER_MODE presets become env DEF
       "MERGE_ON_AGENT_REVIEW",
       "REVIEW_MODE",
     ];
-    for (const mode of ["graduated", "supervised"]) {
-      expect(Object.keys(MODE_PRESETS[mode]!).sort()).toEqual(cluster.sort());
-    }
-    for (const mode of ["autonomous", "strict", "lite"]) {
+    for (const mode of ["autonomous", "strict", "lite", "graduated", "supervised"]) {
       expect(Object.keys(MODE_PRESETS[mode]!).sort()).toEqual([...cluster, "STRICT_MODE"].sort());
     }
   });
 
-  it("the sandbox reads as ON (from the mode) under autonomous, strict and lite — as the runner forces it", () => {
-    for (const mode of ["autonomous", "strict", "lite"]) {
+  it("the sandbox reads as ON (from the mode) in every mode — as the runner forces it", () => {
+    for (const mode of ["autonomous", "strict", "lite", "supervised", "graduated"]) {
       resetDerivedSettings();
       writeFileSync(settingsPath, JSON.stringify({ GAFFER_MODE: mode }), "utf8");
       const env: NodeJS.ProcessEnv = {};
@@ -426,8 +423,9 @@ describe("settings bootstrap: settings.json + GAFFER_MODE presets become env DEF
       const v = listSettings(env, settingsPath).find((x) => x.key === "STRICT_MODE");
       expect([mode, v?.effective, v?.source]).toEqual([mode, "1", "mode"]);
     }
+    // The environment opt-out (GAFFER_STRICT_REQUIRE=0) drops the default outside strict.
     for (const mode of ["supervised", "graduated"]) {
-      const v = listSettings({ GAFFER_MODE: mode }, settingsPath).find(
+      const v = listSettings({ GAFFER_MODE: mode, GAFFER_STRICT_REQUIRE: "0" }, settingsPath).find(
         (x) => x.key === "STRICT_MODE",
       );
       expect([mode, v?.effective, v?.source]).toEqual([mode, "", "default"]);

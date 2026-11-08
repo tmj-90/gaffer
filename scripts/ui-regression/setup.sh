@@ -79,8 +79,14 @@ cp "$HERE/stub-worker.mjs" "$OUT/bin/stub-worker.mjs"
 # The caller's hook runs BEFORE factory.config.sh is sourced, so what it exports is
 # recorded as operator env (an override the dashboard keeps and shows env-locked).
 if declare -F ui_setup_before_dashboard >/dev/null; then ui_setup_before_dashboard || { echo "setup hook failed"; exit 2; }; fi
+# GAFFER_STRICT_REQUIRE=0: every agent launch needs an OS sandbox by default, and every
+# agent in these worlds is the stub above, which a real sandbox would only get in the way
+# of (a CI runner's docker has no sandbox image built). So the stub worlds opt out the
+# documented way, in the environment (recorded as operator env, so the dashboard and
+# every tick it starts keep it). The Settings page's Sandbox line shows "opted out".
 export GAFFER_DATA="$OUT/data" DISPATCH_API_PORT="$PORT" CLAUDE_BIN="$OUT/bin/claude" CLAUDE_FLAGS="" \
-       GAFFER_TICK_TIMEOUT=120 GAFFER_MAX_TURNS=50 GAFFER_CARD_MODEL=stub GAFFER_PLAN_MODEL=stub GAFFER_IMPL_MODEL=stub
+       GAFFER_TICK_TIMEOUT=120 GAFFER_MAX_TURNS=50 GAFFER_CARD_MODEL=stub GAFFER_PLAN_MODEL=stub GAFFER_IMPL_MODEL=stub \
+       GAFFER_STRICT_REQUIRE=0
 # shellcheck source=../../runner/factory.config.sh
 source "$ROOT/runner/factory.config.sh" >/dev/null 2>&1
 node "$DISPATCH_DIR/dist/cli/index.js" --db "$DISPATCH_DB" init >/dev/null || { echo "dispatch init failed (run pnpm -r build)"; exit 2; }

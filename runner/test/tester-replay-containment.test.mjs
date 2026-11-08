@@ -90,6 +90,10 @@ Object.assign(process.env, {
 });
 for (const k of ["STRICT_MODE", "GAFFER_STRICT_REQUIRE", "SANDBOX_PROVIDER", "GAFFER_DOD_SANDBOX"])
   delete process.env[k];
+// "No sandbox configured" is the environment opt-out now: the OS sandbox is required by
+// default for the replay as for every agent launch (isolation-default.test.sh), and
+// the case below that unsets it proves the replay then holds with the fix.
+process.env.GAFFER_STRICT_REQUIRE = "0";
 writeFileSync(join(DATA, "dispatch.sqlite"), "");
 
 const { replayTesterTests, unverifiedPassReason } = await import("../bin/tester-run.mjs");
@@ -288,6 +292,23 @@ if (hasSandboxExec) {
     "(d) the PASS is held unverified with the sandbox named, never recorded",
     /^unverified: /.test(why) && /sandbox/i.test(why) && /not recorded/.test(why),
     why,
+  );
+}
+{
+  // The default (no GAFFER_STRICT_REQUIRE at all) requires the sandbox: on a host that
+  // cannot supply one the replay HOLDS with the one actionable message, never runs bare.
+  const { res, probe, marker } = replay({
+    GAFFER_STRICT_REQUIRE: undefined,
+    SANDBOX_PROVIDER: "no-such-provider",
+  });
+  assert(
+    "(d) the default requires the sandbox: with none, the replay HOLDS and names the fix and the opt-out",
+    res.state === "held" &&
+      /Fix:/.test(res.reason || "") &&
+      /GAFFER_STRICT_REQUIRE=0 in the environment/.test(res.reason || "") &&
+      probe === null &&
+      !marker,
+    JSON.stringify(res).slice(0, 600),
   );
 }
 {

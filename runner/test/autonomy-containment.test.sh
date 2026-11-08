@@ -11,7 +11,8 @@
 # under STRICT_MODE=1.
 #
 #   1. config: every autonomy entry point (autonomous mode, lite mode, each raw flag)
-#      defaults STRICT_MODE=1 alongside GAFFER_STRICT_REQUIRE=1; supervised stays 0.
+#      defaults STRICT_MODE=1 alongside GAFFER_STRICT_REQUIRE=1 (since isolation became
+#      the default, supervised requires the sandbox too; the autonomy rule stays off there).
 #   2. worker seam: with the sandbox REQUIRED and no provider available,
 #      worker_deliver FAILS CLOSED (rc 75, no spawn, empty envelope) even when the
 #      caller passes NO wrap — i.e. the reviewer/clarify/bootstrap/judge sites are
@@ -56,27 +57,29 @@ probe() {
   env -i PATH="$PATH" HOME="$HOME" GAFFER_DATA="$WORK/data" "$@" \
     bash -c '
       source "'"$RUNNER_DIR"'/factory.config.sh" >/dev/null 2>&1
-      printf "STRICT_MODE=%s STRICT_REQUIRE=%s\n" "${STRICT_MODE:-}" "${GAFFER_STRICT_REQUIRE:-}"
+      printf "STRICT_MODE=%s STRICT_REQUIRE=%s AUTONOMY=%s\n" "${STRICT_MODE:-}" "${GAFFER_STRICT_REQUIRE:-}" "$(_gaffer_autonomy_on && echo on || echo off)"
     '
 }
 echo "== 1: autonomy → STRICT_MODE defaults on (the requirement is actually evaluated) =="
-[ "$(probe)" = "STRICT_MODE=0 STRICT_REQUIRE=" ] \
-  && ok "supervised (default): STRICT_MODE=0, strict-require unset" \
-  || fail "supervised should stay STRICT_MODE=0 / no strict-require (got: $(probe))"
+# OS isolation is the default in every mode (isolation-default.test.sh), so supervised
+# requires the sandbox too; AUTONOMY says whether the autonomy rule itself fired.
+[ "$(probe)" = "STRICT_MODE=1 STRICT_REQUIRE=1 AUTONOMY=off" ] \
+  && ok "supervised (default): the sandbox is required by default (STRICT_MODE=1), autonomy off" \
+  || fail "supervised should require the sandbox by default with autonomy off (got: $(probe))"
 for entry in "GAFFER_MODE=autonomous" "GAFFER_MODE=strict" "GAFFER_MODE=lite" \
              "DISPATCH_ALLOW_AGENT_APPROVE=1" "MERGE_ON_AGENT_REVIEW=1" "AUTO_MERGE=1" "MEMORY_AUTO_APPROVE=1" \
              "GAFFER_AUTO_PUSH=1"; do
   got="$(probe "$entry")"
-  [ "$got" = "STRICT_MODE=1 STRICT_REQUIRE=1" ] \
-    && ok "$entry → STRICT_MODE=1 + GAFFER_STRICT_REQUIRE=1" \
+  [ "$got" = "STRICT_MODE=1 STRICT_REQUIRE=1 AUTONOMY=on" ] \
+    && ok "$entry → STRICT_MODE=1 + GAFFER_STRICT_REQUIRE=1 (autonomy on)" \
     || fail "$entry should default STRICT_MODE=1 + strict-require (got: $got)"
 done
 got="$(probe GAFFER_MODE=autonomous GAFFER_STRICT_REQUIRE=0)"
-[ "$got" = "STRICT_MODE=0 STRICT_REQUIRE=0" ] \
+[ "$got" = "STRICT_MODE=0 STRICT_REQUIRE=0 AUTONOMY=on" ] \
   && ok "explicit GAFFER_STRICT_REQUIRE=0 opt-out leaves STRICT_MODE at its default (0)" \
   || fail "strict-require opt-out should not force STRICT_MODE (got: $got)"
 got="$(probe GAFFER_MODE=autonomous STRICT_MODE=0)"
-[ "$got" = "STRICT_MODE=0 STRICT_REQUIRE=1" ] \
+[ "$got" = "STRICT_MODE=0 STRICT_REQUIRE=1 AUTONOMY=on" ] \
   && ok "explicit STRICT_MODE=0 is honoured (worker seam still fails closed — see 2)" \
   || fail "explicit STRICT_MODE=0 should be honoured (got: $got)"
 
@@ -252,28 +255,28 @@ if [ -f "$CLI_JS" ] && node -e 'require("node:sqlite")' 2>/dev/null; then
     ' "$POL_DB" "$1" 2>/dev/null
   }
   probe_db() { probe DISPATCH_DB="$POL_DB" "$@"; }
-  [ "$(probe_db GAFFER_MODE=graduated)" = "STRICT_MODE=0 STRICT_REQUIRE=" ] \
-    && ok "graduated + NO policy rows: STRICT stays off (inert until rows are earned)" \
+  [ "$(probe_db GAFFER_MODE=graduated)" = "STRICT_MODE=1 STRICT_REQUIRE=1 AUTONOMY=off" ] \
+    && ok "graduated + NO policy rows: the autonomy rule stays off (inert until rows are earned)" \
     || fail "graduated with no rows should stay STRICT_MODE=0 (got: $(probe_db GAFFER_MODE=graduated))"
   set_policy_row recommend
-  [ "$(probe_db GAFFER_MODE=graduated)" = "STRICT_MODE=0 STRICT_REQUIRE=" ] \
-    && ok "graduated + a 'recommend' row: STRICT stays off (recommend grants no allow-path)" \
+  [ "$(probe_db GAFFER_MODE=graduated)" = "STRICT_MODE=1 STRICT_REQUIRE=1 AUTONOMY=off" ] \
+    && ok "graduated + a 'recommend' row: the autonomy rule stays off (recommend grants no allow-path)" \
     || fail "a recommend row must not turn containment on (got: $(probe_db GAFFER_MODE=graduated))"
   set_policy_row auto
   got="$(probe_db GAFFER_MODE=graduated)"
-  [ "$got" = "STRICT_MODE=1 STRICT_REQUIRE=1" ] \
+  [ "$got" = "STRICT_MODE=1 STRICT_REQUIRE=1 AUTONOMY=on" ] \
     && ok "graduated + an 'auto' row → STRICT_MODE=1 + GAFFER_STRICT_REQUIRE=1 (earned autonomy requires containment)" \
     || fail "graduated with an auto row should default STRICT_MODE=1 + strict-require (got: $got)"
   got="$(probe_db)"
-  [ "$got" = "STRICT_MODE=1 STRICT_REQUIRE=1" ] \
+  [ "$got" = "STRICT_MODE=1 STRICT_REQUIRE=1 AUTONOMY=on" ] \
     && ok "supervised + an 'auto' row → containment on too (the policy is an allow-path in every mode)" \
     || fail "an auto row under supervised should default STRICT (got: $got)"
   got="$(probe_db GAFFER_MODE=graduated GAFFER_STRICT_REQUIRE=0)"
-  [ "$got" = "STRICT_MODE=0 STRICT_REQUIRE=0" ] \
+  [ "$got" = "STRICT_MODE=0 STRICT_REQUIRE=0 AUTONOMY=on" ] \
     && ok "explicit GAFFER_STRICT_REQUIRE=0 opt-out still wins over an auto row" \
     || fail "strict-require opt-out should be honoured with an auto row (got: $got)"
   got="$(probe DISPATCH_DB="$WORK/absent.sqlite" GAFFER_MODE=graduated)"
-  [ "$got" = "STRICT_MODE=0 STRICT_REQUIRE=" ] \
+  [ "$got" = "STRICT_MODE=1 STRICT_REQUIRE=1 AUTONOMY=off" ] \
     && ok "an absent DB proves no rows (fail-soft: an unqueryable store cannot turn containment on)" \
     || fail "absent DB should read as no rows (got: $got)"
   grep -qE 'wg autonomy list|autonomy list' "$RUNNER_DIR/config/15-modes.sh" \

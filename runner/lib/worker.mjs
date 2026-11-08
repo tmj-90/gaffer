@@ -230,7 +230,9 @@ export function commandWorkerConfig(env = process.env, { writeRoots = "", cwd = 
 /** True only for an EXPLICIT GAFFER_STRICT_REQUIRE=0|false|no|off: the operator's out-of-band assertion. */
 export function strictRequireOptedOut(env = process.env) {
   if (env.GAFFER_STRICT_REQUIRE === undefined) return false;
-  const v = String(env.GAFFER_STRICT_REQUIRE).trim().toLowerCase();
+  // Not trimmed: the bash readers (lib/worker.sh, lib/sandbox.sh, the config) take the
+  // value as it is, so " 0" is no opt-out there and must not be one here either.
+  const v = String(env.GAFFER_STRICT_REQUIRE).toLowerCase();
   return v === "0" || v === "false" || v === "no" || v === "off";
 }
 
@@ -271,7 +273,7 @@ export function commandSandboxRefusalMessage(why = "none") {
  * GAFFER_STRICT_REQUIRE=1). Not consulted under the explicit opt-out.
  */
 export function commandContainmentProblem(env = process.env, { hasMcpServers = true } = {}) {
-  const sp = String(env.SANDBOX_PROVIDER || "sandbox-exec").trim();
+  const sp = sandboxProvider(env);
   if (sp === "sandbox-exec") return "write-only";
   if (sp !== "docker") return "none";
   if (hasMcpServers && !mcpBridgeOn(env)) return "legacy";
@@ -545,12 +547,57 @@ function isCommandEnvelope(json) {
 // dispatch → sandbox-exec profile / sandbox-docker.sh), so the two runtimes cannot
 // disagree about what "contained" means.
 
-/** True when the OS sandbox is REQUIRED (GAFFER_STRICT_REQUIRE on) — sandbox.sh's `_sandbox_strict_required`. */
+/**
+ * True when the OS sandbox is REQUIRED — sandbox.sh's `_sandbox_strict_required`. It is
+ * the DEFAULT for every launch: unset, empty or any value but an explicit
+ * 0/false/no/off is required. Only the operator's environment carries the opt-out (the
+ * dashboard never takes GAFFER_STRICT_REQUIRE from settings.json, nor does the runner).
+ */
 export function sandboxRequired(env = process.env) {
-  const v = String(env.GAFFER_STRICT_REQUIRE ?? "0")
-    .trim()
-    .toLowerCase();
-  return v === "1" || v === "true" || v === "yes" || v === "on";
+  // Not trimmed, exactly like sandbox.sh's _sandbox_strict_required and the config
+  // (runner/config/15-modes.sh): " 0" or "0 " is not an opt-out in bash, so it must not
+  // be one here (a launcher started without the config would otherwise run unwrapped).
+  const v = String(env.GAFFER_STRICT_REQUIRE ?? "").toLowerCase();
+  return !(v === "0" || v === "false" || v === "no" || v === "off");
+}
+
+/** True when `name` is an executable file in one of env.PATH's directories. */
+function onPath(name, env = process.env) {
+  for (const dir of String(env.PATH || "").split(":")) {
+    if (!dir) continue;
+    try {
+      accessSync(resolve(dir, name), fsConstants.X_OK);
+      return true;
+    } catch {
+      /* not here */
+    }
+  }
+  return false;
+}
+
+/**
+ * The sandbox provider in force: SANDBOX_PROVIDER, else the same auto-detection as
+ * runner/config/16-sandbox.sh and sandbox.sh's gaffer_sandbox_default_provider
+ * (sandbox-exec where the binary exists, else docker where the docker CLI exists, else
+ * sandbox-exec). The dashboard's launchers often run with SANDBOX_PROVIDER unset.
+ */
+export function sandboxProvider(env = process.env) {
+  const sp = String(env.SANDBOX_PROVIDER ?? "").trim();
+  if (sp) return sp;
+  if (onPath("sandbox-exec", env)) return "sandbox-exec";
+  if (onPath("docker", env)) return "docker";
+  return "sandbox-exec";
+}
+
+// The opt-out (GAFFER_STRICT_REQUIRE=0 in the environment) is said once per process.
+let optOutNoticed = false;
+function isolationOptOutNotice(env = process.env) {
+  if (optOutNoticed || env._GAFFER_STRICT_OPTOUT_WARNED === "1") return;
+  optOutNoticed = true;
+  process.stderr.write(
+    `WARNING: GAFFER_STRICT_REQUIRE=${env.GAFFER_STRICT_REQUIRE} in the environment: agents run without the required OS sandbox. ` +
+      "Only the worktree and the safety hook contain them, so this is safe only when the runner already runs inside a VM or container you trust.\n",
+  );
 }
 
 /** True when the sandbox is ON (STRICT_MODE=1) or REQUIRED — worker.sh's `_worker_sandbox_wanted`. */
@@ -570,7 +617,9 @@ export function sandboxWrapArgv({ writeRoots, readRoots, env = process.env }) {
     "bash",
     [
       "-c",
-      'source "$0/lib/sandbox.sh" && sandbox_wrap_cmd "$1" "$2"',
+      // On a refusal the ONE actionable message (the host's situation, the fix, the
+      // opt-out) follows the provider's own line, so a launcher shows the person what to do.
+      'source "$0/lib/sandbox.sh" && { sandbox_wrap_cmd "$1" "$2" || { _rc=$?; printf "%s\\n" "$(gaffer_sandbox_unavailable_hint)" >&2; exit "$_rc"; }; }',
       RUNNER_DIR,
       writeRoots,
       readRoots ?? "",
@@ -590,7 +639,7 @@ export function sandboxWrapArgv({ writeRoots, readRoots, env = process.env }) {
       ok: false,
       diag,
       message:
-        "worker: GAFFER_STRICT_REQUIRE demands an OS sandbox and none is available on this host — refusing to spawn the agent (fail closed)" +
+        "worker: refusing to spawn the agent (fail closed): no OS sandbox for it on this host" +
         (diag ? `: ${diag}` : ""),
     };
   }
@@ -811,6 +860,7 @@ export function deliver({ bin, argv, cwd, timeoutMs, maxBuffer, env, kind = "wor
   // STRICT_MODE=1 asks for it (degrading like claude-code does). The only boundary that
   // counts for it is the docker sandbox with the host-side MCP bridge
   // (commandContainmentProblem); anything else refuses before a file is written.
+  if (!isCommand && !sandboxRequired(process.env)) isolationOptOutNotice(process.env);
   const optedOut = isCommand && strictRequireOptedOut(process.env);
   const commandNeedsWrap = isCommand && !optedOut;
   if (optedOut) process.stderr.write(`${commandOptOutWarning()}\n`);
@@ -908,7 +958,7 @@ export function deliver({ bin, argv, cwd, timeoutMs, maxBuffer, env, kind = "wor
       // bash seam's `env -i … HOME= PATH= claude` takes) — the wrapper script itself
       // still runs with the host PATH so it can find `docker`.
       let inner = [spawnBin, ...spawnArgv];
-      if ((process.env.SANDBOX_PROVIDER || "sandbox-exec") === "docker") {
+      if (wrapped.wrap.some((w) => /(^|\/)sandbox-docker\.sh$/.test(w))) {
         // ── MCP DATA PLANE ON THE HOST (same lifecycle as lib/worker.sh) ──────────
         // The wrapper never infers a layout from an absent socket: with the bridge on
         // and an MCP config in the argv it REFUSES unless the socket is set, so the
@@ -1646,6 +1696,7 @@ export const Worker = {
   commandCostFloorUsd,
   sandboxWanted,
   sandboxRequired,
+  sandboxProvider,
   sandboxWrapArgv,
   mcpBridgeOn,
   startMcpBridge,

@@ -67,7 +67,12 @@ export GAFFER_DOD_WRAP=""
 if [ "${STRICT_MODE:-0}" = "1" ] || { declare -F _sandbox_strict_required >/dev/null 2>&1 && _sandbox_strict_required; }; then
   _WRAP=""
   if ! _WRAP="$(sandbox_wrap_cmd "$WT" "" 2>/dev/null)"; then
-    fail_line "an OS sandbox is required (GAFFER_STRICT_REQUIRE) and none is available on this host — the gates were not run (fail closed)"
+    # The one actionable message (lib/sandbox.sh: the host's situation, the fix, the
+    # environment opt-out), made safe for the JSON note fail_line prints.
+    _SBX_HINT=""
+    declare -F gaffer_sandbox_unavailable_hint >/dev/null 2>&1 && _SBX_HINT="$(gaffer_sandbox_unavailable_hint)"
+    _SBX_HINT="${_SBX_HINT//\\/\/}"; _SBX_HINT="${_SBX_HINT//\"/\'}"
+    fail_line "the gates were not run (fail closed): ${_SBX_HINT:-an OS sandbox is required (GAFFER_STRICT_REQUIRE) and none is available on this host}"
   fi
   case "${GAFFER_DOD_SANDBOX:-1}" in
     0|false|no|off) : ;;

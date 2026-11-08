@@ -17,7 +17,8 @@
 #      no repo dir, no agent spawned, the fix named (a provider to set)
 #   2. SANDBOX_PROVIDER=docker with no daemon → the fix names the daemon and the
 #      one-time image build
-#   3. the fix always offers the supervised alternative and the trusted-VM opt-out
+#   3. the fix always offers the trusted-VM opt-out (GAFFER_STRICT_REQUIRE=0 in the
+#      environment; supervised is no alternative any more: it needs the sandbox too)
 #   4. control: strict-require off → the bootstrap goes ahead (agent spawned)
 #   5. the same shape for the budget: a bootstrap whose paid launch the budget
 #      admission refuses is released to ready (budget_refused, uncounted) before it
@@ -88,29 +89,55 @@ run_tick() {  # $1 = label (fresh data + root), rest = extra env → OUT, BOOT_R
 }
 release_line() { grep '"runner-release"' "$WG_CALLS" | tail -1; }
 
-echo "== 1: no provider + strict-require → parked before anything is created =="
+# Since OS isolation became the default for every launch, the tick's admission asks the
+# provider before anything is claimed (lib/tick-claim.sh): a host with no sandbox stops
+# there, so cases 1-2 now prove that refusal reaches a bootstrap ticket too. The park
+# below the claim stays as the second line of defence; case 2b reaches it with a daemon
+# that answers the admission's probe and then goes away.
+claimed() { grep -q '"claim-ticket"' "$WG_CALLS"; }
+
+echo "== 1: no provider + strict-require → refused before the claim, nothing created =="
 run_tick none GAFFER_STRICT_REQUIRE=1 SANDBOX_PROVIDER=none
-REL="$(release_line)"
-case "$REL" in *'"blocked"'*strict_require_unavailable*) ok "released to blocked with reason code strict_require_unavailable" ;;
-  *) fail "release: '${REL:-<none>}' (log: $(printf '%s' "$OUT" | grep -E 'BOOTSTRAP|STRICT|released' | tail -3 | tr '\n' ' ' | cut -c1-500))" ;; esac
+case "$OUT" in *"TICK_RESULT=setup_error"*) ok "the tick refuses as a setup error" ;; *) fail "no setup_error: $(printf '%s' "$OUT" | grep TICK_RESULT)" ;; esac
+claimed && fail "the bootstrap ticket was claimed with no sandbox" || ok "the bootstrap ticket was never claimed"
 [ ! -e "$BOOT_ROOT/newapp" ] && ok "no repo dir created under GAFFER_BOOTSTRAP_ROOT" || fail "the new repo was git-init'd before the sandbox check"
 [ ! -e "$BOOT_ROOT" ] && ok "GAFFER_BOOTSTRAP_ROOT itself untouched" || fail "the bootstrap root was created: $(ls -la "$BOOT_ROOT" 2>&1 | head -3 | tr '\n' ' ')"
 [ ! -e "$MARKER" ] && ok "no agent spawned" || fail "the agent ran with no sandbox"
-case "$REL" in *SANDBOX_PROVIDER=docker*) ok "the reason names a provider to set (SANDBOX_PROVIDER=docker)" ;;
-  *) fail "the reason names no fix: $REL" ;; esac
-case "$REL" in *"rc=75"*) fail "still the generic rc=75 park" ;; *) ok "not the generic 'bootstrap failed (rc=75)' park" ;; esac
+case "$OUT" in *"SANDBOX_PROVIDER=none turns the OS sandbox off"*"unset SANDBOX_PROVIDER"*) ok "the reason names the fix (unset SANDBOX_PROVIDER to auto-detect one)" ;;
+  *) fail "the reason names no fix: $(printf '%s' "$OUT" | grep SANDBOX: | tail -1)" ;; esac
 
 echo "== 2: docker provider with no daemon → the daemon and the one-time image build =="
 run_tick docker GAFFER_STRICT_REQUIRE=1 SANDBOX_PROVIDER=docker
-REL="$(release_line)"
-case "$REL" in *strict_require_unavailable*) ok "docker without a daemon parks strict_require_unavailable" ;; *) fail "docker release: '${REL:-<none>}'" ;; esac
-case "$REL" in *"docker daemon"*"docker compose --profile sandbox build sandbox-image egress-proxy"*) ok "the reason says start the daemon and build the images once" ;;
-  *) fail "docker fix missing: $REL" ;; esac
+claimed && fail "claimed with no docker daemon" || ok "docker without a daemon: refused before the claim"
+case "$OUT" in *"docker daemon"*"docker compose --profile sandbox build sandbox-image egress-proxy"*) ok "the reason says start the daemon and build the images once" ;;
+  *) fail "docker fix missing: $(printf '%s' "$OUT" | grep SANDBOX: | tail -1)" ;; esac
 [ ! -e "$BOOT_ROOT/newapp" ] && ok "no repo dir created" || fail "repo dir created"
 
-echo "== 3: the choice stays the person's =="
-case "$REL" in *"run supervised"*GAFFER_STRICT_REQUIRE=0*) ok "the reason offers running supervised, or GAFFER_STRICT_REQUIRE=0 inside a trusted VM" ;;
-  *) fail "alternatives missing: $REL" ;; esac
+echo "== 2b: the daemon goes away after the admission → the bootstrap parks before creating anything =="
+FLAKY="$WORK/flaky-bin"; mkdir -p "$FLAKY"
+cat > "$FLAKY/docker" <<STUB
+#!/usr/bin/env bash
+case "\${1:-}" in
+  info) [ -e "$WORK/docker-answered" ] && { echo "Cannot connect to the Docker daemon" >&2; exit 1; }
+        : > "$WORK/docker-answered"; exit 0 ;;
+  image) exit 0 ;;
+esac
+exit 1
+STUB
+chmod +x "$FLAKY/docker"; rm -f "$WORK/docker-answered"
+run_tick flaky GAFFER_STRICT_REQUIRE=1 SANDBOX_PROVIDER=docker PATH="$FLAKY:$WORK/bin:$PATH"
+REL="$(release_line)"
+case "$REL" in *'"blocked"'*strict_require_unavailable*) ok "released to blocked with reason code strict_require_unavailable" ;;
+  *) fail "release: '${REL:-<none>}' (log: $(printf '%s' "$OUT" | grep -E 'BOOTSTRAP|STRICT|SANDBOX|released' | tail -3 | tr '\n' ' ' | cut -c1-500))" ;; esac
+case "$REL" in *"docker daemon"*"docker compose --profile sandbox build sandbox-image egress-proxy"*) ok "the parked reason carries the fix" ;; *) fail "parked reason: $REL" ;; esac
+case "$REL" in *"move the ticket back to ready"*) ok "and the last step for the ticket" ;; *) fail "no ticket step: $REL" ;; esac
+case "$REL" in *"rc=75"*) fail "still the generic rc=75 park" ;; *) ok "not the generic 'bootstrap failed (rc=75)' park" ;; esac
+[ ! -e "$BOOT_ROOT/newapp" ] && ok "no repo dir created" || fail "repo dir created"
+[ ! -e "$MARKER" ] && ok "no agent spawned" || fail "the agent ran with no sandbox"
+
+echo "== 3: the opt-out stays the person's =="
+case "$REL" in *GAFFER_STRICT_REQUIRE=0*"VM or container you trust"*) ok "the reason offers GAFFER_STRICT_REQUIRE=0 inside a trusted VM or container" ;;
+  *) fail "opt-out missing: $REL" ;; esac
 
 echo "== 4: control — strict-require off, the bootstrap goes ahead =="
 run_tick off GAFFER_STRICT_REQUIRE=0 SANDBOX_PROVIDER=none

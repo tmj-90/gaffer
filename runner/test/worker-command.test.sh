@@ -123,8 +123,10 @@ probe() {
     '
 }
 got="$(probe)"
-[ "$got" = "STRICT_MODE=0 STRICT_REQUIRE=" ] && ok "claude-code (default): no sandbox requirement added" \
-  || fail "default provider should not require a sandbox (got: $got)"
+# OS isolation is the default for every launch (isolation-default.test.sh): claude-code
+# requires the sandbox too; the command provider adds its own, stronger rule (docker).
+[ "$got" = "STRICT_MODE=1 STRICT_REQUIRE=1" ] && ok "claude-code (default): the sandbox is required by default" \
+  || fail "default provider should require the sandbox by default (got: $got)"
 got="$(probe GAFFER_WORKER_PROVIDER=command GAFFER_WORKER_COMMAND="$FIXTURE")"
 [ "$got" = "STRICT_MODE=1 STRICT_REQUIRE=1" ] && ok "provider=command → STRICT_MODE=1 + GAFFER_STRICT_REQUIRE=1" \
   || fail "provider=command should default the sandbox on and required (got: $got)"
@@ -148,8 +150,8 @@ got="$(probe GAFFER_WORKER_PROVIDER=command GAFFER_WORKER_COMMAND="$FIXTURE")"
 [ "$got" = "STRICT_MODE=1 STRICT_REQUIRE=1" ] && ok "settings.json GAFFER_STRICT_REQUIRE=0 does not opt the command worker out" \
   || fail "a settings.json opt-out was honoured for the command worker (got: $got)"
 got="$(probe)"
-[ "$got" = "STRICT_MODE=0 STRICT_REQUIRE=0" ] && ok "…while claude-code still reads GAFFER_STRICT_REQUIRE from settings.json as before" \
-  || fail "claude-code lost the settings.json GAFFER_STRICT_REQUIRE (got: $got)"
+[ "$got" = "STRICT_MODE=1 STRICT_REQUIRE=1" ] && ok "…and does not opt claude-code out either (the opt-out is environment-only for every provider)" \
+  || fail "a settings.json opt-out was honoured for claude-code (got: $got)"
 rm -f "$WORK/probe-data/settings.json"
 
 # ── 2. seam containment ─────────────────────────────────────────────────────
@@ -441,8 +443,10 @@ setup_world refuse
 : > "$SBX_LOG"
 run_tick "$WORK/tick-refuse.log" SANDBOX_PROVIDER=none
 [ ! -s "$GAFFER_DATA/command-worker.jsonl" ] && ok "the command worker was NOT spawned" || fail "the command worker ran with no sandbox"
-[ "$(ticket_status)" = "blocked" ] && ok "the ticket is parked blocked" || fail "ticket should be blocked (got '$(ticket_status)')"
-grep -q "strict_require_unavailable\|refusing to launch the agent" "$WORK/tick-refuse.log" \
+# No OS sandbox at all: the tick's admission refuses before the claim (OS isolation is the
+# default for every launch), so the ticket is not even claimed. 4b covers the park below it.
+[ "$(ticket_status)" = "ready" ] && ok "the ticket was not claimed (refused before the claim)" || fail "ticket should stay ready (got '$(ticket_status)')"
+grep -q "strict_require_unavailable\|refusing to launch an\? agent" "$WORK/tick-refuse.log" \
   && ok "tick.log says the agent was refused for want of an OS sandbox" || fail "no refusal in the tick log: $(tail -5 "$WORK/tick-refuse.log")"
 grep -q "GAFFER_WORKER_PROVIDER=command" "$WORK/tick-refuse.log" \
   && ok "…and names the command provider as the reason the sandbox is required" || fail "the refusal does not name the provider"

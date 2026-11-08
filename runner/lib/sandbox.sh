@@ -3,7 +3,8 @@
 #
 # WHAT THIS IS — and IS NOT
 # -------------------------
-# This is OPTIONAL, best-effort OS-level containment layered ON TOP OF the
+# This is best-effort OS-level containment, REQUIRED by default for every agent
+# launch (GAFFER_STRICT_REQUIRE=0 in the environment opts out), layered ON TOP OF the
 # existing two safety pillars (throwaway git worktree isolation + the
 # deterministic PreToolUse safety hook). It is NOT a security sandbox and NOT a
 # guarantee. Its single job: catch writes the agent makes OUTSIDE the worktree
@@ -33,8 +34,10 @@
 #     • ECHOES a command PREFIX to stdout (possibly empty) that the caller
 #       prepends to the `claude -p …` invocation. Empty prefix == no wrapping.
 #     • Diagnostics go to STDERR so they never pollute the echoed prefix.
-#     • Returns 0 even when a provider is unsupported: strict mode is best-effort
-#       and must NEVER break a run — it degrades to "no extra containment, the
+#     • Returns NON-ZERO when the host cannot supply the provider and the sandbox is
+#       required, which is the default: the caller then does not launch (fail
+#       closed). Only under the operator's GAFFER_STRICT_REQUIRE=0 opt-out does an
+#       unsupported provider return 0 and degrade to "no extra containment, the
 #       worktree isolation + safety hook still apply".
 
 # Resolve a path to its canonical (symlink-free) form. macOS aliases /tmp and
@@ -196,44 +199,146 @@ EOF
 # ── The provider seam ────────────────────────────────────────────────────────
 # Dispatch on $SANDBOX_PROVIDER. A new provider == a new case; nothing else
 # changes. Echoes the wrapping command prefix to stdout; diagnostics to stderr.
-# STRICT-REQUIRE (C4). The provider paths below that cannot supply an OS sandbox
-# normally warn + DEGRADE (return 0 → run with worktree isolation + the safety hook,
-# no OS sandbox). When the operator sets GAFFER_STRICT_REQUIRE=1 they are asserting
-# "do NOT run without an OS sandbox" — so those paths FAIL CLOSED instead. This makes
-# the macOS-only OS sandbox HONEST on Linux: strict-require refuses to launch rather
-# than silently no-op-ing. Helper: true when strict containment is required.
+# STRICT-REQUIRE (C4), THE DEFAULT. The provider paths below that cannot supply an OS
+# sandbox FAIL CLOSED unless the operator opted out with an explicit
+# GAFFER_STRICT_REQUIRE=0 (or false/no/off) in the environment: OS isolation is the
+# normal path for every agent launch, so unset, empty or any other value means
+# "required". Only under the opt-out do those paths warn and DEGRADE (return 0 → run
+# with worktree isolation + the safety hook, no OS sandbox). Helper: true when strict
+# containment is required.
 _sandbox_strict_required() {
-  case "${GAFFER_STRICT_REQUIRE:-0}" in 1 | true | yes | on) return 0 ;; *) return 1 ;; esac
+  case "$(printf '%s' "${GAFFER_STRICT_REQUIRE:-1}" | tr '[:upper:]' '[:lower:]')" in
+    0 | false | no | off) return 1 ;;
+  esac
+  return 0
 }
 
-# One line a person can act on when GAFFER_STRICT_REQUIRE refused to launch an agent
-# because this host has no OS sandbox: the fix for the configured provider, then the
-# two alternatives that stay the person's call (run supervised, or vouch for the VM
-# the runner already runs in). Shown as the parked ticket's reason on the Team sheet.
-#   gaffer_sandbox_unavailable_hint → the line (never empty)
-gaffer_sandbox_unavailable_hint() {
-  local fix
-  case "${SANDBOX_PROVIDER:-sandbox-exec}" in
-    docker)
-      fix="the docker sandbox needs a running docker daemon and its images, built once with \`docker compose --profile sandbox build sandbox-image egress-proxy\`" ;;
+# The provider when SANDBOX_PROVIDER is unset: the same auto-detection as
+# runner/config/16-sandbox.sh (sandbox-exec where the binary exists, else docker where
+# the docker CLI exists, else sandbox-exec so the refusal names the macOS-only tool).
+# Repeated here because the Node launchers the dashboard starts reach this file without
+# the config (lib/worker.mjs sandboxWrapArgv), so nothing else has set it for them.
+gaffer_sandbox_default_provider() {
+  if command -v sandbox-exec >/dev/null 2>&1; then printf 'sandbox-exec'
+  elif command -v docker >/dev/null 2>&1; then printf 'docker'
+  else printf 'sandbox-exec'; fi
+}
+_sandbox_provider() { printf '%s' "${SANDBOX_PROVIDER:-$(gaffer_sandbox_default_provider)}"; }
+
+# THE ISOLATION PROBE: can this host supply the configured OS sandbox right now? No
+# write roots and no side effects: it asks what sandbox_wrap_cmd asks (the binary, the
+# docker CLI and daemon) and, for docker, whether the sandbox image is built (a launch
+# without it fails inside the wrapper). Sets, for the caller:
+#   GAFFER_SBX_PROVIDER   the provider in force (SANDBOX_PROVIDER or the detected one)
+#   GAFFER_SBX_AVAILABLE  1 when it can wrap an agent, 0 when not
+#   GAFFER_SBX_MISSING    what this host lacks, in words ("" when available)
+#   GAFFER_SBX_FIX        the fix for it ("" when available)
+# Always returns 0. The image name is GAFFER_SANDBOX_IMAGE, as in sandbox-docker.sh.
+_SBX_BUILD_CMD='docker compose --profile sandbox build sandbox-image egress-proxy'
+gaffer_sandbox_probe() {
+  GAFFER_SBX_PROVIDER="$(_sandbox_provider)"
+  GAFFER_SBX_AVAILABLE=0; GAFFER_SBX_MISSING=""; GAFFER_SBX_FIX=""
+  local os; os="$(uname -s 2>/dev/null || echo unknown)"
+  case "$GAFFER_SBX_PROVIDER" in
     sandbox-exec)
-      fix="sandbox-exec is macOS-only; on Linux set SANDBOX_PROVIDER=docker and build its images once with \`docker compose --profile sandbox build sandbox-image egress-proxy\`" ;;
+      if command -v sandbox-exec >/dev/null 2>&1; then GAFFER_SBX_AVAILABLE=1; return 0; fi
+      if [ "$os" = Darwin ]; then
+        GAFFER_SBX_MISSING="sandbox-exec is not on PATH"
+        GAFFER_SBX_FIX="put /usr/bin (where macOS keeps sandbox-exec) back on PATH"
+      elif command -v docker >/dev/null 2>&1; then
+        GAFFER_SBX_MISSING="SANDBOX_PROVIDER=sandbox-exec, which exists only on macOS, and this is $os"
+        GAFFER_SBX_FIX="unset SANDBOX_PROVIDER (or set it to docker) to use the Docker you have, and build its images once with \`$_SBX_BUILD_CMD\` (gaffer setup does this)"
+      else
+        GAFFER_SBX_MISSING="this is $os, where sandbox-exec does not exist, and Docker is not installed"
+        GAFFER_SBX_FIX="install Docker, then run \`gaffer setup\` again (it builds the sandbox images with \`$_SBX_BUILD_CMD\`)"
+      fi ;;
+    docker)
+      if ! command -v docker >/dev/null 2>&1; then
+        GAFFER_SBX_MISSING="SANDBOX_PROVIDER=docker but the docker CLI is not installed"
+        GAFFER_SBX_FIX="install Docker, then run \`gaffer setup\` again (it builds the sandbox images with \`$_SBX_BUILD_CMD\`)"
+      elif ! docker info >/dev/null 2>&1; then
+        GAFFER_SBX_MISSING="Docker is installed but its daemon is not reachable"
+        GAFFER_SBX_FIX="start the docker daemon (or give this user access to it), then build the images once with \`$_SBX_BUILD_CMD\` (gaffer setup does this)"
+      elif ! docker image inspect "${GAFFER_SANDBOX_IMAGE:-gaffer-sandbox:latest}" >/dev/null 2>&1; then
+        GAFFER_SBX_MISSING="the docker sandbox image ${GAFFER_SANDBOX_IMAGE:-gaffer-sandbox:latest} is not built"
+        GAFFER_SBX_FIX="build it once with \`$_SBX_BUILD_CMD\` in ${GAFFER_HOME:-the gaffer checkout} (gaffer setup does this)"
+      else
+        GAFFER_SBX_AVAILABLE=1
+      fi ;;
+    none)
+      GAFFER_SBX_MISSING="SANDBOX_PROVIDER=none turns the OS sandbox off"
+      GAFFER_SBX_FIX="unset SANDBOX_PROVIDER to auto-detect one (sandbox-exec on macOS, docker on Linux)" ;;
     *)
-      fix="set SANDBOX_PROVIDER=docker (any host with Docker; build its images once with \`docker compose --profile sandbox build sandbox-image egress-proxy\`) or sandbox-exec (macOS)" ;;
+      GAFFER_SBX_MISSING="SANDBOX_PROVIDER=$GAFFER_SBX_PROVIDER is not a provider"
+      GAFFER_SBX_FIX="set SANDBOX_PROVIDER to docker (any host with Docker) or sandbox-exec (macOS), or unset it to auto-detect" ;;
   esac
-  printf '%s' "hands-off delivery needs an OS sandbox and this host has none: $fix. Or run supervised (unset GAFFER_MODE and the autonomy flags), or set GAFFER_STRICT_REQUIRE=0 only when the runner already runs inside a VM or container you trust. Then move the ticket back to ready."
+  return 0
+}
+
+# THE ONE MESSAGE a person can act on when an agent launch is refused because this host
+# has no OS sandbox: the host's situation, the fix for it, then the opt-out (the
+# environment only: settings.json cannot loosen it). Shown by `gaffer run`, the loop,
+# a refused tick (the setup error the dashboard shows), the parked ticket's reason on
+# the Team sheet (with "ticket", which adds the last step) and the Node launchers.
+#   gaffer_sandbox_unavailable_hint [ticket] → the line (never empty)
+gaffer_sandbox_unavailable_hint() {
+  gaffer_sandbox_probe
+  local why="$GAFFER_SBX_MISSING" fix="$GAFFER_SBX_FIX"
+  if [ -z "$why" ]; then
+    # Available to the probe but a wrap still failed (the daemon went away, a profile
+    # file could not be written): name the provider and send the person to the log.
+    why="the $GAFFER_SBX_PROVIDER sandbox could not be set up for this launch"
+    fix="see \$GAFFER_DATA/factory.log for the provider's message"
+  fi
+  printf '%s' "agents run inside an OS sandbox and this host cannot supply one: $why. Fix: $fix. Or set GAFFER_STRICT_REQUIRE=0 in the environment (settings.json cannot) to run agents without one, only when the runner already runs inside a VM or container you trust."
+  [ "${1:-}" = ticket ] && printf '%s' " Then move the ticket back to ready."
+  return 0
+}
+
+# THE LAUNCH GATE, asked once before anything is claimed or spawned (`gaffer run`, the
+# loop, the dashboard's Poll for work, every live tick). Returns 0 when an agent may
+# launch: a dry run (DRY_RUN=1 never launches one), the sandbox is available, or the
+# operator opted out in the environment (said loudly, once per process tree). Returns 1
+# when it may not; the caller prints gaffer_sandbox_unavailable_hint in its own voice.
+# The worker seams (lib/worker.sh, lib/worker.mjs) refuse each spawn on their own too.
+gaffer_isolation_gate() {
+  [ "${DRY_RUN:-0}" = 1 ] && return 0
+  if ! _sandbox_strict_required; then
+    gaffer_isolation_optout_notice
+    return 0
+  fi
+  gaffer_sandbox_probe
+  [ "$GAFFER_SBX_AVAILABLE" = 1 ]
+}
+
+# The opt-out, said once per process tree (the config is re-sourced by every child).
+gaffer_isolation_optout_notice() {
+  [ "${_GAFFER_STRICT_OPTOUT_WARNED:-}" = 1 ] && return 0
+  printf 'WARNING: GAFFER_STRICT_REQUIRE=%s in the environment: agents run without the required OS sandbox. Only the worktree and the safety hook contain them, so this is safe only when the runner already runs inside a VM or container you trust.\n' "${GAFFER_STRICT_REQUIRE-}" >&2
+  _GAFFER_STRICT_OPTOUT_WARNED=1; export _GAFFER_STRICT_OPTOUT_WARNED
+  return 0
+}
+
+# The isolation posture as one JSON object, for `gaffer sandbox-status` and the
+# dashboard's Settings line: {provider, available, required, optedOut, missing, fix}.
+gaffer_sandbox_status_json() {
+  gaffer_sandbox_probe
+  local req=true opt=false
+  if ! _sandbox_strict_required; then req=false; opt=true; fi
+  node -e 'const [p,a,r,o,m,f]=process.argv.slice(1);process.stdout.write(JSON.stringify({provider:p,available:a==="1",required:r==="true",optedOut:o==="true",missing:m,fix:f})+"\n")' \
+    "$GAFFER_SBX_PROVIDER" "$GAFFER_SBX_AVAILABLE" "$req" "$opt" "$GAFFER_SBX_MISSING" "$GAFFER_SBX_FIX"
 }
 
 sandbox_wrap_cmd() {
   local write_roots="${1:-}"
   local read_roots="${2:-}"   # used only by sandbox-exec's replay variant (reads are broad otherwise)
 
-  case "${SANDBOX_PROVIDER:-sandbox-exec}" in
+  case "$(_sandbox_provider)" in
     none)
       # No OS-level wrapping. Worktree isolation + safety hook still apply — UNLESS
       # the operator required an OS sandbox, in which case "none" is a contradiction.
       if _sandbox_strict_required; then
-        printf 'strict-mode: SANDBOX_PROVIDER=none but GAFFER_STRICT_REQUIRE=1 demands an OS sandbox — refusing to run (fail closed)\n' >&2
+        printf 'strict-mode: SANDBOX_PROVIDER=none but the OS sandbox is required (GAFFER_STRICT_REQUIRE) — refusing to run (fail closed)\n' >&2
         return 1
       fi
       return 0
@@ -242,7 +347,7 @@ sandbox_wrap_cmd() {
     sandbox-exec)
       if ! command -v sandbox-exec >/dev/null 2>&1; then
         if _sandbox_strict_required; then
-          printf 'strict-mode: sandbox-exec not found (macOS-only) and GAFFER_STRICT_REQUIRE=1 — refusing to run without an OS sandbox (fail closed)\n' >&2
+          printf 'strict-mode: sandbox-exec not found (macOS-only) and the OS sandbox is required (GAFFER_STRICT_REQUIRE) — refusing to run without an OS sandbox (fail closed)\n' >&2
           return 1
         fi
         printf 'strict-mode: sandbox-exec not found on this host — falling back to no OS sandbox (worktree isolation + safety hook still apply)\n' >&2
@@ -272,7 +377,7 @@ sandbox_wrap_cmd() {
       # prefix that runs the command in the container. Needs a live docker daemon.
       if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
         if _sandbox_strict_required; then
-          printf 'strict-mode: docker provider selected but the docker daemon is unavailable and GAFFER_STRICT_REQUIRE=1 — refusing to run (fail closed)\n' >&2
+          printf 'strict-mode: docker provider selected but the docker daemon is unavailable and the OS sandbox is required (GAFFER_STRICT_REQUIRE) — refusing to run (fail closed)\n' >&2
           return 1
         fi
         printf 'strict-mode: docker daemon unavailable — falling back to no OS sandbox (worktree isolation + safety hook still apply)\n' >&2
@@ -306,7 +411,7 @@ sandbox_wrap_cmd() {
     # unknown one — same fail-closed / degrade behaviour below, no misleading choice.)
     *)
       if _sandbox_strict_required; then
-        printf "strict-mode: unknown provider '%s' and GAFFER_STRICT_REQUIRE=1 — refusing to run without an OS sandbox (fail closed)\n" "${SANDBOX_PROVIDER}" >&2
+        printf "strict-mode: unknown provider '%s' and the OS sandbox is required (GAFFER_STRICT_REQUIRE) — refusing to run without an OS sandbox (fail closed)\n" "${SANDBOX_PROVIDER}" >&2
         return 1
       fi
       printf "strict-mode: unknown provider '%s' — falling back to no OS sandbox (worktree isolation still applies)\n" "${SANDBOX_PROVIDER}" >&2

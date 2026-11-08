@@ -82,7 +82,7 @@ gaffer_tick_bootstrap() {
     # delivery does, with the fix on the card. The wrap files a docker/sandbox-exec probe
     # writes carry this tick's PID, so the exit cleanup sweeps them.
     if _sandbox_strict_required && ! sandbox_wrap_cmd "$B_DIR" "" >/dev/null 2>>"$GAFFER_LOG"; then
-      _B_SBX_WHY="$(gaffer_sandbox_unavailable_hint)"
+      _B_SBX_WHY="$(gaffer_sandbox_unavailable_hint ticket)"
       log "STRICT_REQUIRE: bootstrap #$NUM parked before creating $B_DIR — $_B_SBX_WHY"
       wg attach-evidence "$NUM" --type manual_note \
         --summary "PARKED (strict_require_unavailable): $_B_SBX_WHY" >/dev/null 2>&1 || true

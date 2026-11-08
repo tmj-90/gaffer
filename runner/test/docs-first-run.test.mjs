@@ -68,9 +68,11 @@ console.log("== F-01: the unattended greenfield recipe ==");
 const gotchas = section(quick, "### What Gaffer does on a greenfield run");
 check("quickstart has the greenfield run section", gotchas.length > 0);
 check("the hands-off recipe sets GAFFER_MODE=autonomous", /GAFFER_MODE=autonomous/.test(gotchas));
+// The OS sandbox is required in every mode and the provider is auto-detected, so the recipe
+// names the requirement, its opt-out and both providers rather than a SANDBOX_PROVIDER export.
 check(
-  "the hands-off recipe names the sandbox requirement it brings",
-  /GAFFER_STRICT_REQUIRE/.test(gotchas) && /SANDBOX_PROVIDER=docker/.test(gotchas),
+  "the hands-off recipe names the sandbox requirement and the providers",
+  /GAFFER_STRICT_REQUIRE/.test(gotchas) && /sandbox-exec/.test(gotchas) && /`docker`/.test(gotchas),
 );
 check(
   "no recipe sets DISPATCH_ALLOW_AGENT_APPROVE=1 on its own",

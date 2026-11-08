@@ -47,11 +47,13 @@ done
 
 echo "== 2: every spelling of a ship flag trips the autonomy→containment rule =="
 for v in true yes on; do
-  OUT="$(PROBE_EXPR='printf "%s %s" "${GAFFER_STRICT_REQUIRE:-unset}" "${STRICT_MODE:-unset}"' probe AUTO_MERGE="$v")"
-  [ "$OUT" = "1 1" ] && ok "AUTO_MERGE=$v → GAFFER_STRICT_REQUIRE=1 STRICT_MODE=1" || fail "AUTO_MERGE=$v → '$OUT'"
+  OUT="$(PROBE_EXPR='printf "%s %s %s" "${GAFFER_STRICT_REQUIRE:-unset}" "${STRICT_MODE:-unset}" "$(_gaffer_autonomy_on && echo on || echo off)"' probe AUTO_MERGE="$v")"
+  [ "$OUT" = "1 1 on" ] && ok "AUTO_MERGE=$v → autonomy on, GAFFER_STRICT_REQUIRE=1 STRICT_MODE=1" || fail "AUTO_MERGE=$v → '$OUT'"
 done
-OUT="$(PROBE_EXPR='printf "%s" "${GAFFER_STRICT_REQUIRE:-unset}"' probe AUTO_MERGE=false)"
-[ "$OUT" = unset ] && ok "AUTO_MERGE=false → containment not required" || fail "AUTO_MERGE=false → '$OUT'"
+# The sandbox is required by default in every mode now (isolation-default.test.sh), so
+# what a "false" spelling must not do is turn the autonomy rule on.
+OUT="$(PROBE_EXPR='_gaffer_autonomy_on && echo on || echo off' probe AUTO_MERGE=false)"
+[ "$OUT" = off ] && ok "AUTO_MERGE=false → the autonomy rule stays off" || fail "AUTO_MERGE=false → '$OUT'"
 
 echo "== 3: SOURCE PIN — no runner shell site compares an autonomy flag to a bare \"1\" =="
 # The flags Settings exposes as booleans and the runner reads: any `= "1"` / `!= "1"` on

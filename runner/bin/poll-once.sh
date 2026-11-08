@@ -104,6 +104,12 @@ if declare -F gaffer_claude_auth_gate >/dev/null 2>&1 && ! gaffer_claude_auth_ga
   echo "gaffer poll: $(gaffer_claude_auth_hint) — not polling." >&2
   echo "TICK_RESULT=no_work"; exit 0
 fi
+# OS ISOLATION (lib/sandbox.sh): no OS sandbox and no opt-out in the environment →
+# refuse before any claim, with the one message (the dashboard toasts the line).
+if declare -F gaffer_isolation_gate >/dev/null 2>&1 && ! gaffer_isolation_gate; then
+  echo "gaffer poll: $(gaffer_sandbox_unavailable_hint) — not polling." >&2
+  echo "TICK_RESULT=no_work"; exit 0
+fi
 if [ "$DRY_RUN" != "1" ]; then
   # USAGE WINDOW (lib/usage-pause.sh): refuse at once, like a one-shot `gaffer run`
   # (exploratory finding fresh-user/F-13). The tick's own gate would also refuse, but

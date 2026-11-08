@@ -580,11 +580,15 @@ describe("the real runner planner (bin/decompose.mjs) files an epic on an idle t
     try {
       const stub = obeyingStub(dir);
       // A paid launch needs a dollar cap (runner/lib/budget-admission.mjs); the stub costs nothing.
+      // Every agent launch needs an OS sandbox by default (runner/lib/worker.mjs); the agent
+      // here is a stub, so this world states the documented environment opt-out, as
+      // runner/test/run.sh does for the runner's stub worlds.
       const env: NodeJS.ProcessEnv = {
         ...process.env,
         CLAUDE_BIN: stub.bin,
         GAFFER_DATA: dir,
         GAFFER_ALLOW_UNCAPPED: "1",
+        GAFFER_STRICT_REQUIRE: "0",
       };
       for (const k of [
         "CLAUDE_FLAGS",

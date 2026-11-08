@@ -59,6 +59,37 @@ fi
 sed -i.bak "s#sqlite_path:.*#sqlite_path: $DISPATCH_DB#" "$CREW_CONFIG" && rm -f "$CREW_CONFIG.bak"
 echo "  ✓ databases + crew.yaml ready (dispatch db: $DISPATCH_DB)"
 
+# OS ISOLATION: every agent runs inside an OS sandbox unless GAFFER_STRICT_REQUIRE=0 is in
+# the environment (lib/sandbox.sh). Setup never fails for lack of one: it says what it
+# found and the exact fix, and on a host with the docker CLI and a reachable daemon it
+# builds the sandbox images once (a failed build is skipped with the command to retry).
+echo "── agent isolation"
+_sbx_build_cmd="docker compose --profile sandbox build sandbox-image egress-proxy"
+gaffer_sandbox_probe
+if [ "$GAFFER_SBX_PROVIDER" = docker ] && command -v docker >/dev/null 2>&1; then
+  if ! docker info >/dev/null 2>&1; then
+    echo "  ⚠ docker daemon not reachable — skipped building the sandbox images; once it runs: (cd $GAFFER_HOME && $_sbx_build_cmd)"
+  else
+    echo "  building the docker sandbox images ($_sbx_build_cmd) — a few minutes the first time; output in $SETUP_LOG"
+    if ( cd "$GAFFER_HOME" && $_sbx_build_cmd ) >>"$SETUP_LOG" 2>&1; then
+      echo "  ✓ sandbox images built"
+    else
+      echo "  ⚠ the sandbox image build failed (see $SETUP_LOG) — skipped; retry with: (cd $GAFFER_HOME && $_sbx_build_cmd)"
+    fi
+    gaffer_sandbox_probe
+  fi
+fi
+if ! _sandbox_strict_required; then
+  echo "  ⚠ GAFFER_STRICT_REQUIRE=$GAFFER_STRICT_REQUIRE in the environment: agents run without an OS sandbox (provider $GAFFER_SBX_PROVIDER: $([ "$GAFFER_SBX_AVAILABLE" = 1 ] && echo available || echo "missing, $GAFFER_SBX_MISSING"))"
+elif [ "$GAFFER_SBX_AVAILABLE" = 1 ]; then
+  echo "  ✓ OS sandbox: $GAFFER_SBX_PROVIDER, available — every agent runs inside it"
+else
+  echo "  ⚠ OS sandbox: $GAFFER_SBX_PROVIDER, missing: $GAFFER_SBX_MISSING"
+  echo "    Live runs refuse to launch agents until it is fixed. Fix: $GAFFER_SBX_FIX"
+  echo "    Or set GAFFER_STRICT_REQUIRE=0 in the environment to run agents without one, only inside a VM or container you trust."
+  echo "    Dry runs and the dashboard work meanwhile."
+fi
+
 echo
 echo "Setup complete. From here:"
 echo "  $HERE/gaffer onboard /path/to/your/repo   # add an EXISTING repo (registers + scans)"

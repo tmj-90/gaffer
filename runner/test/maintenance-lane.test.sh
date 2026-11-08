@@ -301,13 +301,18 @@ else
 fi
 
 # ── 10. strict containment: the tick says idle repo commands won't run on the host ─
+# A required sandbox needs one to be there, or the tick refuses at its admission before
+# any lane runs (OS isolation is the default for every launch): a docker CLI that
+# answers the probes stands in for it. No agent is spawned in these idle ticks.
+SBXBIN="$WORK/sbx-bin"; mkdir -p "$SBXBIN"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$SBXBIN/docker"; chmod +x "$SBXBIN/docker"
 reset_log
-OUT11="$(GAFFER_STRICT_REQUIRE=1 MAINT_ENABLED=1 run_tick)"
+OUT11="$(PATH="$SBXBIN:$PATH" SANDBOX_PROVIDER=docker GAFFER_STRICT_REQUIRE=1 MAINT_ENABLED=1 run_tick)"
 grep -q 'GAFFER_STRICT_REQUIRE is on — idle loops will NOT run repo commands' "$GAFFER_DATA/factory.log" 2>/dev/null \
   && ok "GAFFER_STRICT_REQUIRE=1 → the tick logs that idle repo commands are refused on the host" \
   || fail "missing the strict-mode idle host-exec log line (result: $(echo "$OUT11" | grep '^TICK_RESULT='))"
 reset_log
-GAFFER_STRICT_REQUIRE=1 GAFFER_IDLE_HOST_EXEC=1 MAINT_ENABLED=1 run_tick >/dev/null
+PATH="$SBXBIN:$PATH" SANDBOX_PROVIDER=docker GAFFER_STRICT_REQUIRE=1 GAFFER_IDLE_HOST_EXEC=1 MAINT_ENABLED=1 run_tick >/dev/null
 if grep -q 'idle loops will NOT run repo commands' "$GAFFER_DATA/factory.log" 2>/dev/null; then
   fail "GAFFER_IDLE_HOST_EXEC=1 should silence the strict-mode refusal line"
 else

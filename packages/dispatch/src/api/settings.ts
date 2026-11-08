@@ -135,14 +135,14 @@ export const SETTING_DEFS: readonly SettingDef[] = [
       "merge; lite auto-approves only GENUINELY TRIVIAL tickets (low risk, tiny diff, " +
       "no sensitive path) that passed every gate + earned an APPROVE from the reviewer " +
       "agent — and still leaves a human to MERGE (never auto-merges); non-trivial " +
-      "tickets hold for you. (Because auto-approve drops the human quality gate, lite " +
-      "requires the OS sandbox — GAFFER_STRICT_REQUIRE defaults on.) " +
+      "tickets hold for you. " +
       "graduated ships what each repo has EARNED at its risk level and holds " +
       "everything else for you (the reviewer agent runs, but the per-repo/risk autonomy " +
       "policy is the sole allow-path — set grants in the per-repo policy editor); " +
-      "autonomous lets agents approve and auto-merges + pushes approved work, and " +
-      "because that removes the human gate it also requires the OS sandbox " +
-      "(GAFFER_STRICT_REQUIRE and STRICT_MODE default on: no sandbox, no agent). " +
+      "autonomous lets agents approve and auto-merges + pushes approved work. " +
+      "Every mode runs agents inside the OS sandbox (GAFFER_STRICT_REQUIRE and " +
+      "STRICT_MODE default on: no sandbox, no agent); with the human gate gone, opting " +
+      "out with GAFFER_STRICT_REQUIRE=0 in the environment is warned about loudly. " +
       "strict sets the same flags as autonomous; the one difference is that strict " +
       "keeps STRICT_MODE on even when you set GAFFER_STRICT_REQUIRE=0 (the sandbox is " +
       "still used where available, just not required). SANDBOX_PROVIDER picks the " +
@@ -726,7 +726,7 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     min: 2,
   },
 
-  // --- Sandbox: optional OS-level execution confinement ---
+  // --- Sandbox: OS-level execution confinement, required for every agent by default ---
   {
     key: "STRICT_MODE",
     type: "boolean",
@@ -734,9 +734,10 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     label: "Strict execution sandbox",
     help:
       "Wrap agent commands in the OS sandbox (SANDBOX_PROVIDER: docker, or sandbox-exec " +
-      "on macOS) for defence-in-depth. Off → the permission-hook guard only. On by " +
-      "default (and required) in the autonomous, strict and lite modes, where no " +
-      "human reviews the work before it ships.",
+      "on macOS) for defence-in-depth. On by default in every mode, and required: " +
+      "with no sandbox on the host no agent launches. Only GAFFER_STRICT_REQUIRE=0 in " +
+      "the environment (a runner you contain yourself) makes it optional; then off " +
+      "means the permission-hook guard only.",
   },
   {
     key: "STRICT_ALLOW_NETWORK",
@@ -752,10 +753,12 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     group: "sandbox",
     label: "Sandbox provider",
     help:
-      "Which OS-level containment backend the strict sandbox uses: docker " +
+      "Which OS-level containment backend the sandbox uses: docker " +
       "(experimental — real read + write + egress isolation, any host with a Docker " +
-      "daemon) · sandbox-exec (macOS — write-only containment) · none (disable OS " +
-      "wrapping, keep the toggle). Only consulted when the strict sandbox is on.",
+      "daemon) · sandbox-exec (macOS — write-only containment) · none (no OS " +
+      "wrapping: agents then refuse to launch unless GAFFER_STRICT_REQUIRE=0 is set in " +
+      "the environment). Empty = auto-detect (sandbox-exec on macOS, docker where the " +
+      "docker CLI is installed).",
   },
   {
     key: "STRICT_ALLOW_HOME",
@@ -832,14 +835,12 @@ export function readSettingsFile(path: string): Record<string, string> {
  * tick will actually use, and so its own gates (agent approve, testing lane)
  * agree with the runner. Unknown mode ⇒ supervised (the safe posture).
  *
- * STRICT_MODE mirrors the runner's "autonomy REQUIRES containment" block: every
- * mode that lets an agent approve or ship without a human (autonomous, strict,
- * lite) defaults GAFFER_STRICT_REQUIRE=1 there, which defaults STRICT_MODE=1, so
- * the OS sandbox is on (and mandatory) in those modes. Omitting it here made the
- * panel report the sandbox OFF when the runner forces it on. The runner skips that
- * default for autonomous/lite when the operator sets GAFFER_STRICT_REQUIRE=0 (see
- * {@link presetsFor}); graduated turns it on only once an `auto` policy row exists,
- * which this static table cannot see.
+ * STRICT_MODE mirrors the runner's isolation default (runner/config/15-modes.sh):
+ * GAFFER_STRICT_REQUIRE defaults to 1 in EVERY mode, which defaults STRICT_MODE=1,
+ * so the OS sandbox is on (and mandatory) whatever the mode. Omitting it here made
+ * the panel report the sandbox OFF when the runner forces it on. The runner skips
+ * that default when the operator sets GAFFER_STRICT_REQUIRE=0 in the environment,
+ * except under strict (see {@link presetsFor}).
  */
 export const MODE_PRESETS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
   autonomous: {
@@ -876,6 +877,7 @@ export const MODE_PRESETS: Readonly<Record<string, Readonly<Record<string, strin
     AUTO_MERGE: "0",
     GAFFER_AUTO_PUSH: "0",
     MEMORY_AUTO_APPROVE: "0",
+    STRICT_MODE: "1",
   },
   supervised: {
     REVIEW_MODE: "human",
@@ -884,6 +886,7 @@ export const MODE_PRESETS: Readonly<Record<string, Readonly<Record<string, strin
     AUTO_MERGE: "0",
     GAFFER_AUTO_PUSH: "0",
     MEMORY_AUTO_APPROVE: "0",
+    STRICT_MODE: "1",
   },
 };
 
@@ -895,7 +898,8 @@ function flagOn(v: string | undefined): boolean {
 /**
  * The preset for `mode` as the runner will apply it in `env`: unknown ⇒ supervised,
  * and the STRICT_MODE default dropped where the runner would not apply it — outside
- * `strict`, an operator's explicit GAFFER_STRICT_REQUIRE=0 opts out of it.
+ * `strict`, an operator's explicit GAFFER_STRICT_REQUIRE=0 (in the environment: it is
+ * not a setting, so settings.json never carries it here) opts out of it.
  */
 export function presetsFor(
   mode: string,

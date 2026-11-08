@@ -66,6 +66,20 @@ if declare -F gaffer_settings_readable >/dev/null 2>&1 && ! gaffer_settings_read
   gaffer_abort_setup SETUP "settings.json ($GAFFER_DATA/settings.json) exists but cannot be parsed (or node is missing) — not starting work until it is fixed"
 fi
 
+# OS ISOLATION (lib/sandbox.sh gaffer_isolation_gate): every agent launch needs the OS
+# sandbox unless the operator opted out with GAFFER_STRICT_REQUIRE=0 in the environment.
+# A host that cannot supply one refuses here, before any claim or spawn, as a setup
+# error with the one message a person can act on (the loop stops, the daemon backs
+# off, the dashboard shows it). A dry run launches nothing and is never refused. If
+# the gate itself is missing (sandbox.sh did not load) the tick refuses too.
+if [ "${DRY_RUN:-0}" != "1" ]; then
+  if ! declare -F gaffer_isolation_gate >/dev/null 2>&1; then
+    gaffer_abort_setup SANDBOX "the OS sandbox check (lib/sandbox.sh) did not load — refusing to launch an agent (fail closed)"
+  elif ! gaffer_isolation_gate; then
+    gaffer_abort_setup SANDBOX "refusing to launch an agent (fail closed): $(gaffer_sandbox_unavailable_hint)"
+  fi
+fi
+
 # Part B (defense-in-depth): before this tick can claim work and spawn ANY paid
 # `claude -p`, consult the per-UTC-day USD cap. If the day's ledger spend is already
 # at/over GAFFER_DAILY_BUDGET_USD, do NOT start new paid work — halt cleanly like the

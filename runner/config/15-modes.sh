@@ -202,6 +202,32 @@ if _gaffer_autonomy_on; then
   fi
 fi
 
+# ── OS isolation is the DEFAULT for every agent launch, in every mode ──────────
+# The two blocks above are the stronger rules (the command worker needs docker
+# specifically; autonomy warns when the operator opts out). Below them, whatever the
+# mode: GAFFER_STRICT_REQUIRE defaults to 1, so every launch (delivery, review,
+# clarify, bootstrap, the idle lanes, onboarding, Plan a build, Suggest work, the spec
+# author, the merge resolver, the tester, the judge) goes through the OS sandbox or
+# refuses (fail closed, lib/sandbox.sh gaffer_isolation_gate and the worker seams).
+# Required ⇒ STRICT_MODE defaults to 1 too, so the launch path asks the provider.
+# The opt-out is an explicit GAFFER_STRICT_REQUIRE=0 (false/no/off) in the ENVIRONMENT
+# (01-settings.sh skips it from settings.json): the operator asserting the whole runner
+# is contained out-of-band. It is honoured, agents then run unwrapped unless STRICT_MODE
+# or GAFFER_MODE=strict asks for the sandbox, and it is said loudly once per process
+# tree by the launch gate (lib/sandbox.sh gaffer_isolation_gate: `gaffer run`, the loop,
+# a tick, Poll for work) and by the Node seam, not by every command that sources this
+# file. Any other value (empty, a typo) is not an opt-out: required.
+if [ -z "${GAFFER_STRICT_REQUIRE:-}" ]; then
+  export GAFFER_STRICT_REQUIRE=1
+fi
+case "$(printf '%s' "$GAFFER_STRICT_REQUIRE" | tr '[:upper:]' '[:lower:]')" in
+  0 | false | no | off) ;;   # the opt-out: said by the launch gate, where an agent would start
+  *)
+    _gaffer_flag_on "$GAFFER_STRICT_REQUIRE" || export GAFFER_STRICT_REQUIRE=1
+    : "${STRICT_MODE:=1}" ;;
+esac
+export GAFFER_STRICT_REQUIRE
+
 # Idle-loop host exec under strict containment. The idle loops run repo commands
 # directly on the host, in the real checkout, outside any sandbox: the COVERAGE
 # loop's coverage_command (the repo's own test suite, i.e. code agents wrote), the

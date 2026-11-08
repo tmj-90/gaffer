@@ -5,11 +5,13 @@
 # its own: it reads what the parts before it set. Lines moved verbatim from
 # factory.config.sh. The last line tells factory.config.sh this part loaded whole.
 
-# --- Strict execution mode (OPTIONAL OS-level containment) -------------------
+# --- Strict execution mode (OS-level containment, ON by default) -------------
 # Best-effort OS-level containment layered ON TOP OF the worktree isolation +
 # the deterministic safety hook. NOT a security guarantee — see docs/sandbox.md.
-# Default OFF: behaviour is byte-for-byte as before unless explicitly enabled.
-: "${STRICT_MODE:=0}"          # 1 = wrap the live `claude -p` in the OS sandbox provider
+# 15-modes.sh defaults GAFFER_STRICT_REQUIRE=1 in every mode and STRICT_MODE=1 with
+# it, so this 0 is reached only under the operator's GAFFER_STRICT_REQUIRE=0 opt-out
+# in the environment (agents then run unwrapped unless you set STRICT_MODE=1).
+: "${STRICT_MODE:=0}"          # 1 = wrap the live `claude -p` in the OS sandbox provider (defaults to 1 while the sandbox is required, which is the default)
 # Which provider supplies the OS-level containment. This is a PROVIDER SEAM, not
 # a hard dependency on any one tool. Two providers are real: `sandbox-exec` (macOS,
 # write-only) and `docker` (any host with a daemon: read + egress isolation);

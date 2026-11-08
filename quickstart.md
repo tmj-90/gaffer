@@ -8,6 +8,7 @@ way to your default branch. Run the commands in order.
 - **Node 22.22.1+ or 24** and **[pnpm](https://pnpm.io)** (`pnpm@10.33.0`, pinned via `packageManager`). The Node floor is a hard prerequisite; see the note under step 1.
 - **Git**: the factory branches per ticket, so your target repos should be git repos.
 - The agent CLI (`claude`), installed and logged in, for any live run. Setup, the demo and dry runs work without it.
+- **An OS sandbox** for any live run: every agent runs inside one. macOS has `sandbox-exec`. Linux needs Docker with a running daemon; `runner/gaffer setup` builds the sandbox images when it finds one, and prints what it found either way. With neither, live runs refuse to launch agents and say what to install. `GAFFER_STRICT_REQUIRE=0` in your environment runs agents unwrapped instead, for a host you contain yourself (a VM or a container).
 - `sqlite3` is handy for poking the stores, but not required.
 
 Gaffer is local-first: the control plane, databases, worktrees and evidence live on
@@ -262,13 +263,13 @@ It stops to ask you when:
   `runner/gaffer wg unblock <n>`.
 
 **Hands-off runs and the sandbox.** By default every ticket stops at `in_review` for
-you. Running unattended is your choice; if you make it, `GAFFER_MODE=autonomous` sets
-the whole group:
+you, and every agent runs inside the OS sandbox whatever the mode (`sandbox-exec` on
+macOS, `docker` where the docker CLI is installed). Running unattended is your choice; if
+you make it, `GAFFER_MODE=autonomous` sets the whole group:
 
 ```bash
 export GAFFER_MODE=autonomous            # agents review, approve, merge and push
-export SANDBOX_PROVIDER=docker           # Linux: the docker provider (macOS can keep sandbox-exec)
-docker compose --profile sandbox build sandbox-image egress-proxy   # once: the images it runs
+docker compose --profile sandbox build sandbox-image egress-proxy   # Linux, once (setup does it): the images
 export GAFFER_DAILY_BUDGET_USD=5
 runner/gaffer run --daemon
 ```
@@ -276,10 +277,10 @@ runner/gaffer run --daemon
 `GAFFER_MODE=autonomous` sets `REVIEW_MODE=agent` (a reviewer agent reviews each
 delivery), `DISPATCH_ALLOW_AGENT_APPROVE=1` (the control plane accepts that reviewer's
 approval, never the implementer's own), `MERGE_ON_AGENT_REVIEW=1` and `AUTO_MERGE=1`,
-`GAFFER_AUTO_PUSH=1` and `MEMORY_AUTO_APPROVE=1`. With no human left in the loop it also
-defaults `GAFFER_STRICT_REQUIRE=1` and `STRICT_MODE=1`, so no agent runs without an OS
-sandbox: on a host with none, the ticket parks (`strict_require_unavailable`) before
-anything is created, and the Team sheet says what to do. Setting
+`GAFFER_AUTO_PUSH=1` and `MEMORY_AUTO_APPROVE=1`. The OS sandbox is required in this
+mode as in every other: on a host with none, `gaffer run` refuses before it claims
+anything and says what to do, and with no human left in the loop the runner also warns
+loudly if you opt out with `GAFFER_STRICT_REQUIRE=0`. Setting
 `DISPATCH_ALLOW_AGENT_APPROVE=1` on its own does not make a run hands-off: `REVIEW_MODE`
 stays `human`, so every ticket waits in `in_review`. Any single flag you export overrides
 the mode. The docker provider is experimental; a live delivery inside it is a workflow
@@ -302,7 +303,7 @@ the container, so onboard them by that path. A greenfield repo is created under 
 too, so it survives `docker compose down` and a rebuilt image. The build context is an
 allow-list (`.dockerignore`): never `./repos`, a `.env`, a database or `.gaffer/`. The
 container itself is the containment boundary there, so the runner's own OS sandbox is
-off. A `.devcontainer/` is included for VS Code and Codespaces.
+off (the image sets `SANDBOX_PROVIDER=none` and the opt-out `GAFFER_STRICT_REQUIRE=0`). A `.devcontainer/` is included for VS Code and Codespaces.
 
 ## Safety
 

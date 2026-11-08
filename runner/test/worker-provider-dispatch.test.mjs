@@ -247,14 +247,26 @@ console.log("== sandbox helpers mirror the bash seam's decision ==");
 sandboxRequired({ GAFFER_STRICT_REQUIRE: "1" }) &&
 sandboxRequired({ GAFFER_STRICT_REQUIRE: "yes" }) &&
 !sandboxRequired({ GAFFER_STRICT_REQUIRE: "0" }) &&
-!sandboxRequired({})
-  ? ok("sandboxRequired: 1|true|yes|on ⇒ required (sandbox.sh _sandbox_strict_required)")
+!sandboxRequired({ GAFFER_STRICT_REQUIRE: "Off" }) &&
+// OS isolation is the default (isolation-default.test.sh): unset, empty, junk and a
+// padded " 0" (not an opt-out in bash either) are all required.
+sandboxRequired({}) &&
+sandboxRequired({ GAFFER_STRICT_REQUIRE: "" }) &&
+sandboxRequired({ GAFFER_STRICT_REQUIRE: "maybe" }) &&
+sandboxRequired({ GAFFER_STRICT_REQUIRE: " 0" })
+  ? ok(
+      "sandboxRequired: required unless an explicit 0|false|no|off (sandbox.sh _sandbox_strict_required)",
+    )
   : bad("sandboxRequired drifted from _sandbox_strict_required");
 sandboxWanted({ STRICT_MODE: "1" }) &&
 sandboxWanted({ GAFFER_STRICT_REQUIRE: "1" }) &&
 !sandboxWanted({ STRICT_MODE: "0", GAFFER_STRICT_REQUIRE: "0" }) &&
-!sandboxWanted({})
-  ? ok("sandboxWanted: STRICT_MODE=1 OR required (worker.sh _worker_sandbox_wanted)")
+sandboxWanted({ STRICT_MODE: "1", GAFFER_STRICT_REQUIRE: "0" }) &&
+sandboxWanted({ STRICT_MODE: "0" }) &&
+sandboxWanted({})
+  ? ok(
+      "sandboxWanted: STRICT_MODE=1 OR required, required by default (worker.sh _worker_sandbox_wanted)",
+    )
   : bad("sandboxWanted drifted from _worker_sandbox_wanted");
 
 console.log("== sandbox REQUIRED + no provider → FAIL CLOSED (rc 75, no spawn, no envelope) ==");

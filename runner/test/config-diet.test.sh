@@ -120,6 +120,16 @@ V="$(env -i PATH="$PATH" HOME="$WORK/home" GAFFER_DATA="$WORK/data" bash "$RUNNE
 grep -q -- '--live needs a hard USD cap for the whole run: --max-usd X' <<<"$V" \
   && ok "--live still refuses without a dollar cap" || fail "F6 live cap: $V"
 
+echo "== F7: the sensitive-path regexes -> GAFFER_SENSITIVE_PATH_RE =="
+V="$(cfg -- 'printf "%s|%s" "$(gaffer_lite_trivial_reason low 5 1 db/migrations/1.sql)" "$(gaffer_lite_trivial_reason low 5 1 src/payments/a.ts)"')"
+[ "$V" = "nontrivial:sensitive-path|trivial" ] && ok "default: the built-in list (a migration is sensitive, payments/ is not)" || fail "F7 default: $V"
+V="$(cfg GAFFER_SENSITIVE_PATH_RE=payments/ -- 'printf "%s" "$(gaffer_lite_trivial_reason low 5 1 src/payments/a.ts)"')"
+[ "$V" = "nontrivial:sensitive-path" ] && ok "the knob replaces the list for the lite classifier" || fail "F7 knob: $V"
+grep -qF '_re="${GAFFER_SENSITIVE_PATH_RE:-${GAFFER_SECURITY_REVIEW_RE:-' "$RUNNER_DIR/config/18-review.sh" \
+  && ok "the security second opinion reads the same knob first" || fail "F7: security review does not read the knob"
+cfg GAFFER_SECURITY_REVIEW_RE=x -- ':' >/dev/null
+warned GAFFER_SECURITY_REVIEW_RE && ok "GAFFER_SECURITY_REVIEW_RE warns once" || fail "F7 warning: $(cat "$WORK/err")"
+
 echo "== the warning is said once per process tree =="
 cfg GAFFER_PO_MAX_TURNS=30 -- 'bash --norc --noprofile -c "source \"\$0\"" "$0" 2>>"$ERRF"' >/dev/null
 warned GAFFER_PO_MAX_TURNS && ok "a second source in a child stays quiet (one line for the tree)" || fail "repeat warning: $(cat "$WORK/err")"

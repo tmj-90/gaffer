@@ -7,7 +7,7 @@
 #   1. gaffer_lite_trivial_reason (PURE) classifies trivial vs non-trivial from
 #      (risk, lines, files, paths): low-risk + tiny + no sensitive path = trivial;
 #      any of risk≠low / oversized / sensitive-path = nontrivial:<reason>. Caps are
-#      operator-tunable (GAFFER_LITE_MAX_LINES/FILES, GAFFER_LITE_SENSITIVE_RE).
+#      operator-tunable (GAFFER_LITE_MAX_LINES/FILES, GAFFER_SENSITIVE_PATH_RE).
 #   2. The `GAFFER_MODE=lite` preset sets REVIEW_MODE=agent + the approve FLOOR on,
 #      keeps AUTO_MERGE / MERGE_ON_AGENT_REVIEW off (human merges), and — because
 #      auto-approve removes the human quality gate — trips GAFFER_STRICT_REQUIRE=1
@@ -90,8 +90,8 @@ for p in $SENSITIVE_PATHS; do
   grep -qxF "$p sensitive" <<<"$CLASSIFIED" && ok "sensitive: $p" || fail "false NEGATIVE (security gate): $p"
 done
 # The security second-review lane falls back to the SAME default (one definition).
-grep -q 'GAFFER_LITE_SENSITIVE_RE:-$_GAFFER_SENSITIVE_PATH_RE}"' "$RUNNER_DIR/config/18-review.sh" \
-  && grep -q 'GAFFER_SECURITY_REVIEW_RE:-${GAFFER_LITE_SENSITIVE_RE:-$_GAFFER_SENSITIVE_PATH_RE}}"' "$RUNNER_DIR/config/18-review.sh" \
+grep -qF '_re="${GAFFER_SENSITIVE_PATH_RE:-${GAFFER_LITE_SENSITIVE_RE:-$_GAFFER_SENSITIVE_PATH_RE}}"' "$RUNNER_DIR/config/18-review.sh" \
+  && grep -qF '_re="${GAFFER_SENSITIVE_PATH_RE:-${GAFFER_SECURITY_REVIEW_RE:-${GAFFER_LITE_SENSITIVE_RE:-$_GAFFER_SENSITIVE_PATH_RE}}}"' "$RUNNER_DIR/config/18-review.sh" \
   && ok "lite classifier and security review lane share _GAFFER_SENSITIVE_PATH_RE" \
   || fail "the two sensitive-path defaults are not the shared one"
 
@@ -101,7 +101,11 @@ eq "tighter line cap flips a former-trivial" \
 eq "tighter file cap flips a former-trivial" \
   "$(LITE_ENV='GAFFER_LITE_MAX_FILES=1' lite_reason low 5 2 'a b')" nontrivial:files=2\>1
 eq "custom sensitive RE catches a new path" \
+  "$(LITE_ENV='GAFFER_SENSITIVE_PATH_RE=payments/' lite_reason low 5 1 'src/payments/charge.ts')" nontrivial:sensitive-path
+eq "the deprecated GAFFER_LITE_SENSITIVE_RE still works" \
   "$(LITE_ENV='GAFFER_LITE_SENSITIVE_RE=payments/' lite_reason low 5 1 'src/payments/charge.ts')" nontrivial:sensitive-path
+eq "GAFFER_SENSITIVE_PATH_RE wins over the deprecated name" \
+  "$(LITE_ENV='GAFFER_LITE_SENSITIVE_RE=payments/ GAFFER_SENSITIVE_PATH_RE=billing/' lite_reason low 5 1 'src/payments/charge.ts')" trivial
 
 echo "== 3: the GAFFER_MODE=lite preset =="
 preset() {

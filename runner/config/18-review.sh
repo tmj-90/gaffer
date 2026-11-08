@@ -128,6 +128,13 @@ gaffer_afk_ship_plan() {
 # authhandler, authconfig, authprovider) that a required word boundary would lose. The
 # other stems are PREFIX matches on purpose too — this is a security gate, so .env*
 # (incl. .envrc), secrets*, security*, migrations* keep matching.
+# One knob replaces it for both readers (the lite classifier and the security second
+# opinion): GAFFER_SENSITIVE_PATH_RE, an extended regex over repo-relative paths. The old
+# GAFFER_LITE_SENSITIVE_RE and GAFFER_SECURITY_REVIEW_RE are deprecated: still read, the
+# knob wins over them.
+: "${GAFFER_SENSITIVE_PATH_RE:=}"   # the paths that count as sensitive (lite never auto-approves them; they get the security second opinion); empty = the built-in list.
+_gaffer_deprecated GAFFER_LITE_SENSITIVE_RE "set GAFFER_SENSITIVE_PATH_RE instead (it covers the security review too)"
+_gaffer_deprecated GAFFER_SECURITY_REVIEW_RE "set GAFFER_SENSITIVE_PATH_RE instead (it covers the lite classifier too)"
 _GAFFER_SENSITIVE_PATH_RE='(^|/)([Mm]igrations?|\.github/|[Dd]ockerfile|[Oo]?[Aa]uth([^o]|o[^r]|ori[sz]|$)|[Ss]ecurity|[Ss]ecrets?|\.env|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|\.gaffer|safety-hook|runner/lib/hook/|runner/lib/dangerous-commands\.mjs)'
 
 # LITE MODE trivial classifier — PURE core. Decides whether a ticket is trivial enough
@@ -140,7 +147,7 @@ _GAFFER_SENSITIVE_PATH_RE='(^|/)([Mm]igrations?|\.github/|[Dd]ockerfile|[Oo]?[Aa
 #   • touches NO sensitive path (migrations, CI, Dockerfile, auth/security/secrets, lockfiles,
 #     the factory's own .gaffer / safety-hook, its runner/lib/hook/ rule modules and its
 #     deny list runner/lib/dangerous-commands.mjs):
-#     GAFFER_LITE_SENSITIVE_RE, operator-tunable.
+#     GAFFER_SENSITIVE_PATH_RE, operator-tunable (the built-in list above when empty).
 # NB: intentionally tiny caps (60 lines / 4 files) — "trivial" means a typo/doc/small-config
 # change, NOT the 400-line minimalism cap. No I/O, no side effects; echoes `trivial` or
 # `nontrivial:<reason>` so the caller can log WHY a ticket was held.
@@ -148,7 +155,7 @@ _GAFFER_SENSITIVE_PATH_RE='(^|/)([Mm]igrations?|\.github/|[Dd]ockerfile|[Oo]?[Aa
 gaffer_lite_trivial_reason() {
   local _risk="$1" _lines="$2" _files="$3" _paths="$4"
   local _maxl="${GAFFER_LITE_MAX_LINES:-60}" _maxf="${GAFFER_LITE_MAX_FILES:-4}"
-  local _re="${GAFFER_LITE_SENSITIVE_RE:-$_GAFFER_SENSITIVE_PATH_RE}"
+  local _re="${GAFFER_SENSITIVE_PATH_RE:-${GAFFER_LITE_SENSITIVE_RE:-$_GAFFER_SENSITIVE_PATH_RE}}"
   [ "$_risk" = "low" ] || { printf 'nontrivial:risk=%s\n' "$_risk"; return 0; }
   case "$_lines" in '' | *[!0-9]*) _lines=999999 ;; esac
   case "$_files" in '' | *[!0-9]*) _files=999999 ;; esac
@@ -182,8 +189,7 @@ gaffer_ticket_is_trivial() {
 # reviewer pass after the primary reviewer APPROVEs (lib/review.sh). A ticket qualifies
 # when its risk_level is high, or when the delivered diff touches a security-sensitive
 # path (auth, secrets, migrations, CI, Dockerfiles, lockfiles, the factory's own guards —
-# GAFFER_SECURITY_REVIEW_RE, operator-tunable; defaults to the lite sensitive-path
-# regex). GAFFER_SECURITY_REVIEW=0 disables the lane; empty/1 = on. Sets
+# GAFFER_SENSITIVE_PATH_RE, operator-tunable; the same paths the lite classifier holds). GAFFER_SECURITY_REVIEW=0 disables the lane; empty/1 = on. Sets
 # GAFFER_SECURITY_REVIEW_REASON for the log. Returns 0 (needs it) / 1 (does not).
 #   $1 ticket number  $2 repo path  $3 base branch  $4 delivery branch
 : "${GAFFER_SECURITY_REVIEW:=1}"
@@ -214,7 +220,7 @@ gaffer_needs_security_review() {
   case "${GAFFER_SECURITY_REVIEW:-1}" in 0|false|no|off) return 1 ;; esac
   _risk="$(wg ticket show "$_num" 2>/dev/null | jget 'd.ticket.risk_level || "medium"' 2>/dev/null || echo medium)"
   if [ "$_risk" = "high" ]; then GAFFER_SECURITY_REVIEW_REASON="risk=high"; return 0; fi
-  _re="${GAFFER_SECURITY_REVIEW_RE:-${GAFFER_LITE_SENSITIVE_RE:-$_GAFFER_SENSITIVE_PATH_RE}}"
+  _re="${GAFFER_SENSITIVE_PATH_RE:-${GAFFER_SECURITY_REVIEW_RE:-${GAFFER_LITE_SENSITIVE_RE:-$_GAFFER_SENSITIVE_PATH_RE}}}"
   _paths="$(git -C "$_repo" diff "$_base"..."$_branch" --name-only 2>/dev/null)"
   if grep -qE -- "$_re" <<<"$_paths"; then   # here-string: no SIGPIPE false miss under pipefail
     GAFFER_SECURITY_REVIEW_REASON="sensitive-path: $(printf '%s\n' "$_paths" | grep -E "$_re" | head -3 | paste -sd, -)"

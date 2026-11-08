@@ -157,6 +157,7 @@ Each still works for one release, mapped onto its replacement with a one-line wa
 - `GAFFER_SLACK_WEBHOOK`, the status pane's legacy Slack channel: `GAFFER_NOTIFY_SLACK_URL` (the Slack field in Settings) reaches the same channel through the shared notifier.
 - The docker sandbox's resource caps become one knob, `GAFFER_SANDBOX_LIMITS="cpus=4 memory=4g pids=512"` (those are the defaults): `GAFFER_SANDBOX_CPUS`, `GAFFER_SANDBOX_MEMORY`, `GAFFER_SANDBOX_PIDS`.
 - `GAFFER_EXPERIMENT_MAX_USD`, `GAFFER_EXPERIMENT_MAX_TICKETS` and `GAFFER_EXPERIMENT_MAX_ATTEMPTS`: their command's flags are the knob (`gaffer eval experiment --max-usd X --max-tickets N --max-attempts N`); `--live` still refuses without a dollar cap.
+- `GAFFER_LITE_SENSITIVE_RE` and `GAFFER_SECURITY_REVIEW_RE` (which defaulted to it) become one knob, `GAFFER_SENSITIVE_PATH_RE`: the paths lite never auto-approves are the paths that get the security second opinion. Empty is the built-in list, as before.
 - `GAFFER_CAP_DETECT_TURNS` (the ask-on-cap threshold) only ever made sense as the turn cap it defaulted to: a call is cap-hit when it reaches `GAFFER_MAX_TURNS`.
 
 ### Removed

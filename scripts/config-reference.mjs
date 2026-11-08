@@ -484,6 +484,14 @@ export const DEPRECATED = [
     ["GAFFER_EXPERIMENT_MAX_ATTEMPTS", "--max-attempts"],
   ].map(([name, flag]) => ({ name, use: `\`gaffer eval experiment ${flag}\`` })),
   {
+    name: "GAFFER_LITE_SENSITIVE_RE",
+    use: "`GAFFER_SENSITIVE_PATH_RE` (lite and the security review)",
+  },
+  {
+    name: "GAFFER_SECURITY_REVIEW_RE",
+    use: "`GAFFER_SENSITIVE_PATH_RE` (lite and the security review)",
+  },
+  {
     name: "GAFFER_CAP_DETECT_TURNS",
     use: "`GAFFER_MAX_TURNS` (a call is cap-hit when it uses every turn)",
   },

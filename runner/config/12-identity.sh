@@ -41,12 +41,12 @@ DISPATCH_EPIC_FEATURE_CMD="${DISPATCH_EPIC_FEATURE_CMD:-node $RUNNER_DIR/bin/epi
 
 # Factory identity + bookkeeping
 _GAFFER_AGENT_NAME=gaffer-factory   # the factory agent's registered name (fixed)
-GAFFER_AGENT_ID_FILE="${GAFFER_AGENT_ID_FILE:-$GAFFER_DATA/agent_id}"
+_GAFFER_AGENT_ID_FILE="$GAFFER_DATA/agent_id"   # internal: where the factory agent's registered id is kept
 # The runner's REVIEWER principal: a second, separately registered agent whose id the
 # review pass presents on `review approve|reject --as agent`. Registered once (like the
 # delivery agent) so the reviewer-not-author rule compares two REGISTERED actors, not a
 # free string; dispatch refuses an agent approver that is not a registered agent.
-GAFFER_REVIEWER_ID_FILE="${GAFFER_REVIEWER_ID_FILE:-$GAFFER_DATA/agent_reviewer_id}"
+_GAFFER_REVIEWER_ID_FILE="$GAFFER_DATA/agent_reviewer_id"   # internal
 GAFFER_LOG="${GAFFER_LOG:-$GAFFER_DATA/factory.log}"
 
 _GAFFER_CONFIG_PART=12-identity

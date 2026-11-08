@@ -378,10 +378,7 @@ export const INTERNAL_NAMES = [
       "CLAUDE_SETTINGS",
       "SKILLS_DIR",
       "GAFFER_MODEL_REGISTRY",
-      "GAFFER_AGENT_ID_FILE",
-      "GAFFER_REVIEWER_ID_FILE",
       "GAFFER_LOG",
-      "DAILY_COUNTER_FILE",
       "GAFFER_USAGE_LEDGER",
       "MEMORY_CLI_BIN",
       "MEMORY_MCP_BIN",
@@ -391,8 +388,6 @@ export const INTERNAL_NAMES = [
       "DISPATCH_CLI_BIN",
       "MEMORY_CLI",
       "GAFFER_BLOCK_LEDGER",
-      "GAFFER_BP_FILE",
-      "GAFFER_EVAL_LEDGER",
       "GAFFER_SKILL_TELEMETRY",
       "GAFFER_USAGE_PAUSE_FILE",
       "GAFFER_EGRESS_ALLOW_FILE",
@@ -403,10 +398,8 @@ export const INTERNAL_NAMES = [
     group: "derived",
     title: "Computed from other knobs each time the config loads; set the knob they come from",
     names: [
-      "GAFFER_CLAIM_TTL",
       "GAFFER_TICK_OUTER_TIMEOUT",
       "GAFFER_POLL_WAIT_TIMEOUT",
-      "GAFFER_DOD_INSTALL_TIMEOUT",
       "GAFFER_DOD_FEEDBACK_LINES",
     ],
   },
@@ -424,11 +417,7 @@ export const INTERNAL_NAMES = [
       "GAFFER_REVIEW_TICKET",
       "GAFFER_DEFAULT_TICKET_REPO",
       "GAFFER_TICKET",
-      "GAFFER_KEEP_DELIVERY_BRANCH",
-      "GAFFER_PAUSE_KEEP_WORKTREE",
       "GAFFER_SANDBOX_PROFILE",
-      "GAFFER_UNIVERSAL_SKILLS",
-      "GAFFER_CLAUDE_VERSION",
     ],
   },
   {
@@ -506,6 +495,14 @@ export const TEST_SEAMS = [
   "DISPATCH_TESTER_VERDICT_CMD",
   "DISPATCH_LANE_VERDICT_CMD",
   "DISPATCH_ACCEPTANCE_EVIDENCE_CMD",
+  "GAFFER_KEEP_DELIVERY_BRANCH",
+  "GAFFER_PAUSE_KEEP_WORKTREE",
+  "GAFFER_UNIVERSAL_SKILLS",
+  "GAFFER_CLAUDE_VERSION",
+  "GAFFER_BP_FILE",
+  "DAILY_COUNTER_FILE",
+  "GAFFER_CLAIM_TTL",
+  "GAFFER_DOD_INSTALL_TIMEOUT",
 ];
 
 /**
@@ -596,6 +593,9 @@ export const REMOVED = [
   ["GAFFER_TESTER_REPLAY_TIMEOUT_MS", "the tester's replay gets 10 minutes"],
   ["GAFFER_DECOMPOSE_MOCK", "a dry-run planner takes mockOutput from its request"],
   ["GAFFER_SPEC_AUTHOR_MOCK", "a dry-run spec author takes mockOutput from its request"],
+  ["GAFFER_AGENT_ID_FILE", "the factory agent's id is kept in $GAFFER_DATA/agent_id"],
+  ["GAFFER_REVIEWER_ID_FILE", "the reviewer's id is kept in $GAFFER_DATA/agent_reviewer_id"],
+  ["GAFFER_EVAL_LEDGER", "the eval judge writes $GAFFER_DATA/eval-ledger.jsonl, the file the dashboard reads"],
 ].map(([name, now]) => ({ name, now }));
 
 /** Every internal or seam name, for the scans that decide what is a knob. */

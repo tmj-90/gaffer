@@ -535,14 +535,14 @@ eval)
     shift
     case "$#:${1:-}" in 0:|1:--json) ;; *) bad_arg eval "unknown eval agreement argument '$1'" ;; esac
     exec node "$DISPATCH_DIR/dist/cli/index.js" --db "$DISPATCH_DB" judge-agreement \
-      --ledger "${GAFFER_EVAL_LEDGER:-$GAFFER_DATA/eval-ledger.jsonl}" "$@"
+      --ledger "${_GAFFER_EVAL_LEDGER:-$GAFFER_DATA/eval-ledger.jsonl}" "$@"
   fi
   case "$#:${1:-}" in 0:|1:--json) ;; *) bad_arg eval "unknown eval argument '$1'" ;; esac
   # Delivery-quality metrics from the eval ledger (docs/eval-harness.md):
   # pass rate, per-dimension means, the memory score gap (judge score on
   # submitted work, primed vs not; not an uplift — see docs/eval-harness.md),
   # and cost-per-passing-delivery.
-  _ledger="${GAFFER_EVAL_LEDGER:-$GAFFER_DATA/eval-ledger.jsonl}"
+  _ledger="${_GAFFER_EVAL_LEDGER:-$GAFFER_DATA/eval-ledger.jsonl}"
   _cli="$CREW_DIR/dist/eval/evalLedgerCli.js"
   if [ ! -f "$_cli" ]; then echo "eval: crew not built — run: pnpm -C packages/crew build"; exit 1; fi
   # COST PER ACCEPTED CHANGE (external review #9): the judge only sees submitted work, so

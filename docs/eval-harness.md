@@ -238,7 +238,6 @@ again (`experiment.mjs report`).
 |---|---|---|
 | `GAFFER_EVAL_JUDGE` | `0` | `1` enables post-submit judging (one extra paid model call per delivery) |
 | `GAFFER_ROLE_MODELS` `judge=` | plan model flag, else impl model flag | model for the judge turn |
-| `GAFFER_EVAL_LEDGER` | `$GAFFER_DATA/eval-ledger.jsonl` | ledger path |
 
 ## Honest limits of the current metrics (read before trusting a number)
 

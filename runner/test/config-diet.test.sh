@@ -189,7 +189,7 @@ V="$(cfg GAFFER_SCOUT_PACKET=0 -- 'printf "%s" "$(_gaffer_manifest_packet_on)"')
 
 echo "== removed knobs: a set one is ignored and said once =="
 REMOVED_LIST="$(cd "$RUNNER_DIR/.." && node --input-type=module -e 'const { REMOVED } = await import("./scripts/config-reference.mjs"); for (const r of REMOVED) console.log(r.name)')"
-[ "$(printf '%s\n' "$REMOVED_LIST" | grep -c .)" = "15" ] && ok "config-reference lists the fifteen removed names" || fail "removed list: $REMOVED_LIST"
+[ "$(printf '%s\n' "$REMOVED_LIST" | grep -c .)" = "18" ] && ok "config-reference lists the fifteen removed names and the three renamed paths" || fail "removed list: $REMOVED_LIST"
 for n in $REMOVED_LIST; do
   cfg "$n=7" -- 'bash --norc --noprofile -c "source \"\$0\"" "$0" 2>>"$ERRF"' >/dev/null
   [ "$(grep -c "gaffer: $n was removed and its value is ignored; " "$WORK/err")" = "1" ] \
@@ -197,6 +197,16 @@ for n in $REMOVED_LIST; do
 done
 V="$(cfg GAFFER_MERGE_GATE_RETRIES=9 GAFFER_AGENT_NAME=x -- 'printf "%s" "$_GAFFER_AGENT_NAME"')"
 [ "$V" = "gaffer-factory" ] && ok "a removed knob's value is ignored (the agent still registers as gaffer-factory)" || fail "removed value applied: $V"
+
+echo "== runner-only paths are _GAFFER_ internals =="
+V="$(cfg GAFFER_AGENT_ID_FILE=/x GAFFER_REVIEWER_ID_FILE=/y GAFFER_EVAL_LEDGER=/z -- 'printf "%s|%s|%s" "$_GAFFER_AGENT_ID_FILE" "$_GAFFER_REVIEWER_ID_FILE" "$_GAFFER_EVAL_LEDGER"')"
+[ "$V" = "$WORK/data/agent_id|$WORK/data/agent_reviewer_id|$WORK/data/eval-ledger.jsonl" ] \
+  && ok "the agent id files and the eval ledger are _GAFFER_ internals under GAFFER_DATA (an old name is ignored)" || fail "renamed internals: $V"
+EXP2="$(cfg -- 'env | cut -d= -f1 | tr "\n" " "')"
+case " $EXP2 " in *" GAFFER_AGENT_ID_FILE "* | *" GAFFER_REVIEWER_ID_FILE "* | *" GAFFER_EVAL_LEDGER "* | *" _GAFFER_EVAL_LEDGER "*) fail "a renamed path is exported" ;; *) ok "none of them is exported (so none reaches a child or the agent)" ;; esac
+LEFT="$(grep -rlwE 'GAFFER_(AGENT_ID_FILE|REVIEWER_ID_FILE|EVAL_LEDGER)' "$RUNNER_DIR" "$RUNNER_DIR/../packages"/*/src 2>/dev/null \
+  | grep -vE '/test/|/config/01-settings\.sh$' || true)"
+[ -z "$LEFT" ] && ok "no code outside the removed-name list still reads the old names" || fail "old names still read: $LEFT"
 
 echo "== the warning is said once per process tree =="
 cfg GAFFER_PO_MAX_TURNS=30 -- 'bash --norc --noprofile -c "source \"\$0\"" "$0" 2>>"$ERRF"' >/dev/null

@@ -96,6 +96,9 @@ GAFFER_REAPPROVAL_ATTEMPTS|a re-approval is tried 3 times
 GAFFER_TESTER_REPLAY_TIMEOUT_MS|the tester's replay gets 10 minutes
 GAFFER_DECOMPOSE_MOCK|a dry-run planner takes mockOutput from its request
 GAFFER_SPEC_AUTHOR_MOCK|a dry-run spec author takes mockOutput from its request
+GAFFER_AGENT_ID_FILE|the factory agent's id is kept in $GAFFER_DATA/agent_id
+GAFFER_REVIEWER_ID_FILE|the reviewer's id is kept in $GAFFER_DATA/agent_reviewer_id
+GAFFER_EVAL_LEDGER|the eval judge writes $GAFFER_DATA/eval-ledger.jsonl, the file the dashboard reads
 _GAFFER_REMOVED_
 unset _gr_name _gr_now
 

@@ -65,7 +65,7 @@ gaffer_eval_judge_delivery() (
   worker_mjs="${_GAFFER_WORKER_MJS:-$RUNNER_DIR/lib/worker.mjs}"
   [ -f "$judge_cli" ] && [ -f "$ledger_cli" ] && [ -f "$worker_mjs" ] || return 0
 
-  ledger="${GAFFER_EVAL_LEDGER:-$GAFFER_DATA/eval-ledger.jsonl}"
+  ledger="${_GAFFER_EVAL_LEDGER:-$GAFFER_DATA/eval-ledger.jsonl}"
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/eval-judge.XXXXXX")" || return 0
   trap 'rm -rf "$tmp"' EXIT
 

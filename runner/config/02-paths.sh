@@ -37,5 +37,6 @@ export GAFFER_CODE_INDEX
 # (deliberately unexported) is absent.
 _GAFFER_ESTIMATE_LIB="$RUNNER_DIR/lib/estimate.mjs"   # internal: a runner file, not a knob
 export _GAFFER_ESTIMATE_LIB
+_GAFFER_EVAL_LEDGER="$GAFFER_DATA/eval-ledger.jsonl"   # internal: the eval judge's ledger, the file the dashboard reads
 
 _GAFFER_CONFIG_PART=02-paths

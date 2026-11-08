@@ -168,7 +168,7 @@ if [ -f "$GOLDEN" ]; then
     = "src/auth/reset.ts,src/auth/email.ts,src/routes/account.ts 7 true 3" ] \
     && ok "delivery-metric extracts the served card paths from the block" || fail "delivery-metric line wrong: $DM"
 fi
-grep -q 'json-tool.mjs" delivery-metric' "$RUNNER_DIR/tick.sh" && ok "tick.sh writes delivery-metrics through delivery-metric" || fail "tick.sh does not use delivery-metric"
+grep -q 'json-tool.mjs" delivery-metric' "$RUNNER_DIR/lib/tick-launch.sh" && ok "tick.sh writes delivery-metrics through delivery-metric" || fail "tick.sh does not use delivery-metric"
 # Three deliveries this run + one pre-run (excluded). #7: 2 reads (one file, twice)
 # then a write, and it Read 1 of its 2 served cards. #8: 4 reads then a write, read
 # 0 of 1 card. #9: primed, no cards, never wrote.

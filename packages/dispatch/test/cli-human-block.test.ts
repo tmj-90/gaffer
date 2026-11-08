@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -9,6 +9,19 @@ import type { Actor } from "../src/domain/types.js";
 import { listEvents } from "../src/events/eventWriter.js";
 
 import { errorCode, runCli } from "./helpers/cli.js";
+
+/** runner/tick.sh and the phase libs it sources (runner/lib/tick-*.sh): the tick's code. */
+function tickSources(runner: string): string {
+  return [
+    join(runner, "tick.sh"),
+    ...readdirSync(join(runner, "lib"))
+      .filter((f) => /^tick-[a-z-]+\.sh$/.test(f))
+      .sort()
+      .map((f) => join(runner, "lib", f)),
+  ]
+    .map((p) => readFileSync(p, "utf8"))
+    .join("\n");
+}
 
 /**
  * Exploratory finding cli-wg/F-03: `wg block <n> --reason …` always acted as an
@@ -149,7 +162,7 @@ describe("cli-wg F-03: a human blocks and unblocks from the CLI", () => {
   });
 
   it("the runner's park messages name the unblock command", () => {
-    const tick = readFileSync(join(__dirname, "../../../runner/tick.sh"), "utf8");
+    const tick = tickSources(join(__dirname, "../../../runner"));
     const parks = tick.split("\n").filter((l) => /then unblock/.test(l));
     expect(parks.length).toBeGreaterThan(0);
     // Single quotes inside the bash double-quoted message: literal, and $NUM expands.

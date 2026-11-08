@@ -65,7 +65,7 @@ grep -q 'export const LORE_REFLECTION_NUDGE' "$SEAM" \
   || fail "deliveryPrompt.ts missing the suggest_lore reflection nudge"
 # The nudge lives ONLY in the renderer: a copy in tick.sh is never read, so an
 # edit there would silently change nothing for the live agent.
-if grep -q 'suggest_lore\|LORE_REFLECTION_NUDGE' "$TICK"; then
+if grep -q 'suggest_lore\|LORE_REFLECTION_NUDGE' "$TICK" "$RUNNER_DIR"/lib/tick-*.sh; then
   fail "tick.sh carries a dead copy of the lore-reflection nudge"
 else
   ok "tick.sh carries no copy of the nudge (the renderer owns it)"

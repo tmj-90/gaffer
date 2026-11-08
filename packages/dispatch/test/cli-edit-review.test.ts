@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,6 +13,19 @@ import { makeHandlers } from "../src/mcp/tools.js";
 import { contractHash } from "../src/util/contractHash.js";
 
 import { errorCode, runCli } from "./helpers/cli.js";
+
+/** runner/tick.sh and the phase libs it sources (runner/lib/tick-*.sh): the tick's code. */
+function tickSources(runner: string): string {
+  return [
+    join(runner, "tick.sh"),
+    ...readdirSync(join(runner, "lib"))
+      .filter((f) => /^tick-[a-z-]+\.sh$/.test(f))
+      .sort()
+      .map((f) => join(runner, "lib", f)),
+  ]
+    .map((p) => readFileSync(p, "utf8"))
+    .join("\n");
+}
 
 /**
  * Adversarial review of Package B1 (cli-editing-and-actors): the edges the package's own
@@ -475,7 +488,7 @@ describe("B1 review: the greenfield inherit is recorded as system, and only for 
 
 describe("B1 review: the runner's park messages name commands that exist", () => {
   it("the no-local-checkout park names onboard + repo-access set, never a `repo update`", () => {
-    const tick = readFileSync(join(__dirname, "../../../runner/tick.sh"), "utf8");
+    const tick = tickSources(join(__dirname, "../../../runner"));
     expect(tick).not.toMatch(/repo update/);
     const parks = tick
       .split("\n")
@@ -491,7 +504,7 @@ describe("B1 review: the runner's park messages name commands that exist", () =>
 
 describe("B1 review: the runner delivers against the frozen contract", () => {
   it("tick.sh re-reads the ticket after its claim, before the prompt uses it", () => {
-    const tick = readFileSync(join(__dirname, "../../../runner/tick.sh"), "utf8");
+    const tick = tickSources(join(__dirname, "../../../runner"));
     const claimAt = tick.indexOf('wg claim-ticket "$_cand"');
     const rereadAt = tick.indexOf('wg ticket show "$_cand"', claimAt);
     const useAt = tick.indexOf('SHOW="$_cshow"', claimAt);

@@ -361,7 +361,7 @@ Some are seams the runner also sets for itself; the notes say which.
 | `GAFFER_DOD` | `1` | `runner/lib/dod.sh` | 0 turns every Definition-of-Done gate off, the only way to land a delivery ungated (the merge gate is off too). |
 | `GAFFER_DOD_INSTALL` | `1` | `runner/lib/dod.sh` | 1 = install the delivery worktree's dependencies (from its lockfile) before the test gate; a no-op when node_modules exists. 0 to manage dependencies yourself. |
 | `GAFFER_GREENFIELD_INSTALL` | `1` | `runner/lib/greenfield.sh` | 0 = skip the dependency install in a new greenfield repo; also turns GAFFER_DOD_INSTALL off. |
-| `GAFFER_ALLOW_NO_DOD` | `0` | `runner/tick.sh` | 1 = let a delivery pass when no gate ran at all (a repo with no test or lint command). Otherwise that is a failure and the ticket parks. |
+| `GAFFER_ALLOW_NO_DOD` | `0` | `runner/lib/tick-gates.sh` | 1 = let a delivery pass when no gate ran at all (a repo with no test or lint command). Otherwise that is a failure and the ticket parks. |
 | `GAFFER_CI_TIMEOUT_POLICY` | `block` | `runner/lib/ci-gate.sh` | With GAFFER_REQUIRE_CI=1: what happens when the checks time out, there is no PR or no checks exist. block rejects the delivery; proceed lets it through with a note. |
 
 ### Delivery and landing
@@ -371,7 +371,7 @@ Some are seams the runner also sets for itself; the notes say which.
 | `GAFFER_KEEP_DELIVERY_BRANCH` | `0` | `runner/tick.sh` | Raised by the tick once a delivery's branch is review-visible, so cleanup removes the worktree but never the branch. Exporting 1 keeps every delivery branch (debugging only). |
 | `GAFFER_PAUSE_KEEP_WORKTREE` | `0` | `runner/tick.sh` | Raised by the tick when a delivery pauses on a cap, so its worktree and branch survive for Continue. Exporting 1 keeps every worktree (debugging only). |
 | `GAFFER_DIGEST_DISABLE` | `0` | `runner/lib/land.sh` | 1 = skip the repo digest and feature-ledger refresh after a merge lands. |
-| `GAFFER_MEMORY_AUTO_PROMOTE` | _follows_ `MEMORY_AUTO_APPROVE` | `runner/tick.sh` | 1 = a requirement distilled from a delivered ticket goes live at once; 0 = it lands as a draft for `memory review`. Unset, it follows MEMORY_AUTO_APPROVE. |
+| `GAFFER_MEMORY_AUTO_PROMOTE` | _follows_ `MEMORY_AUTO_APPROVE` | `runner/lib/tick-close.sh` | 1 = a requirement distilled from a delivered ticket goes live at once; 0 = it lands as a draft for `memory review`. Unset, it follows MEMORY_AUTO_APPROVE. |
 
 ### Onboarding and demo
 
@@ -443,7 +443,7 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `GAFFER_CARD_MODEL` | _(empty)_ | `runner/lib/onboard-analyze.mjs` |
 | `GAFFER_CARD_SNIPPET_CHARS` | _(empty)_ | `runner/lib/onboard-analyze.mjs` |
 | `GAFFER_CLAIM_TOKEN` | _(empty)_ | `packages/dispatch/src/mcp/tools.ts`, `runner/lib/clarify.sh`, `runner/lib/review.sh` |
-| `GAFFER_CONTEXT_DUMP_DIR` | _(empty)_ | `runner/tick.sh` |
+| `GAFFER_CONTEXT_DUMP_DIR` | _(empty)_ | `runner/lib/tick-launch.sh` |
 | `GAFFER_DASHBOARD_START_TIMEOUT` | `30` | `runner/gaffer` |
 | `GAFFER_DECOMPOSE_AGENT_MAX_TURNS` | _(empty)_ | `runner/bin/decompose.mjs` |
 | `GAFFER_DECOMPOSE_MOCK` | _(empty)_ | `runner/bin/decompose.mjs` |

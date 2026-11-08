@@ -47,13 +47,13 @@ WORKER_INVOKES="$(grep -cE '"\$CLAUDE_BIN" -p' "$WORKER_SH" || true)"
 CMD_INVOKES="$(grep -cE '"\$_cmd_run" </dev/null' "$WORKER_SH" || true)"
 [ "$CMD_INVOKES" = "1" ] && ok "exactly 1 command-worker invocation in lib/worker.sh" \
   || fail "expected exactly 1 command-worker invocation in lib/worker.sh (got $CMD_INVOKES)"
-for _f in "$TICK" "$RUNNER_DIR/lib/review.sh" "$RUNNER_DIR/lib/clarify.sh" "$RUNNER_DIR/lib/eval-judge.sh"; do
+for _f in "$TICK" "$RUNNER_DIR"/lib/tick-*.sh "$RUNNER_DIR/lib/review.sh" "$RUNNER_DIR/lib/clarify.sh" "$RUNNER_DIR/lib/eval-judge.sh"; do
   grep -qE 'GAFFER_WORKER_COMMAND"? ' "$_f" \
     && fail "$(basename "$_f") open-codes a command-worker spawn outside the seam" \
     || ok "$(basename "$_f") never spawns GAFFER_WORKER_COMMAND itself"
 done
 
-TICK_INLINE="$(grep -cE '"\$CLAUDE_BIN" -p' "$TICK" || true)"
+TICK_INLINE="$(cat "$TICK" "$RUNNER_DIR"/lib/tick-*.sh | grep -cE '"\$CLAUDE_BIN" -p' || true)"
 [ "$TICK_INLINE" = "0" ] && ok "tick.sh open-codes NO claude -p invocation" \
   || fail "tick.sh still open-codes $TICK_INLINE claude -p invocation(s)"
 
@@ -61,7 +61,7 @@ TICK_INLINE="$(grep -cE '"\$CLAUDE_BIN" -p' "$TICK" || true)"
 # lib/review.sh + lib/clarify.sh (sourced by tick.sh). Count the routes across
 # tick.sh AND the two extracted passes — the four agent turns are unchanged.
 TICK_ROUTES=0
-for _rf in "$TICK" "$RUNNER_DIR/lib/review.sh" "$RUNNER_DIR/lib/clarify.sh"; do
+for _rf in "$TICK" "$RUNNER_DIR"/lib/tick-*.sh "$RUNNER_DIR/lib/review.sh" "$RUNNER_DIR/lib/clarify.sh"; do
   TICK_ROUTES=$(( TICK_ROUTES + $(grep -cE '^[[:space:]]*(GAFFER_LAUNCH_KIND=[a-z-]+ )?worker_deliver ' "$_rf" 2>/dev/null || true) ))
 done
 [ "$TICK_ROUTES" = "5" ] && ok "tick.sh + review/clarify libs route all 5 agent turns through worker_deliver" \

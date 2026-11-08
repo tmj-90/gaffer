@@ -84,7 +84,7 @@ extract_fn() {
   awk -v fn="$1" '
     $0 ~ "^" fn "\\(\\) \\{" {print; if ($0 ~ /\}[[:space:]]*$/) exit; p=1; next}
     p {print; if ($0 ~ /^\}/) exit}
-  ' "$TICK"
+  ' "$TICK" "$RUNNER_DIR"/lib/tick-*.sh
 }
 SRC="$WORK/real-fns.sh"
 extract_fn "gaffer_release_delivery" > "$SRC"
@@ -135,7 +135,7 @@ CTRL_BLOCKED="$(blocked_count)"
   || fail "AC5: refining park unexpectedly changed the blocked count ($BASE_BLOCKED → $CTRL_BLOCKED)"
 
 echo "== AC6: WIRING — every tick.sh bootstrap failure park targets blocked =="
-N_BLOCKED_PARKS="$(grep -c 'gaffer_release_delivery blocked "bootstrap' "$TICK" 2>/dev/null || echo 0)"
+N_BLOCKED_PARKS="$(grep -c 'gaffer_release_delivery blocked "bootstrap' "$RUNNER_DIR/lib/tick-bootstrap.sh" 2>/dev/null || echo 0)"
 # FIVE real bootstrap FAILURES park VISIBLY to blocked: rc≠0, no-commit, hygiene, the
 # repo registration (no repo / branch / delivery row to review) and the load-bearing
 # per-repo delivery-record write (either failure would strand the ticket in in_review
@@ -146,17 +146,17 @@ N_BLOCKED_PARKS="$(grep -c 'gaffer_release_delivery blocked "bootstrap' "$TICK" 
 [ "$N_BLOCKED_PARKS" -eq 5 ] 2>/dev/null \
   && ok "all 5 bootstrap failure parks (rc≠0 / no-commit / hygiene / registration / delivery-record) target blocked" \
   || fail "expected 5 'gaffer_release_delivery blocked \"bootstrap' parks in tick.sh (found $N_BLOCKED_PARKS)"
-if grep -q 'gaffer_release_delivery refining "bootstrap' "$TICK"; then
+if grep -q 'gaffer_release_delivery refining "bootstrap' "$TICK" "$RUNNER_DIR"/lib/tick-*.sh; then
   fail "tick.sh still parks a bootstrap failure to refining (invisible)"
 else
   ok "no bootstrap failure park targets refining any more"
 fi
-[ "$(grep -c 'bootstrap_failed' "$TICK")" = 5 ] \
+[ "$(grep -c 'bootstrap_failed' "$RUNNER_DIR/lib/tick-bootstrap.sh")" = 5 ] \
   && ok "each bootstrap park carries the structured bootstrap_failed reason code" \
-  || fail "expected the bootstrap_failed reason code on all 5 parks (found $(grep -c 'bootstrap_failed' "$TICK"))"
+  || fail "expected the bootstrap_failed reason code on all 5 parks (found $(grep -c 'bootstrap_failed' "$RUNNER_DIR/lib/tick-bootstrap.sh"))"
 # The minimalism lens must stay a FLAG (needs_human_review), not a park — lock that in so a
 # future edit can't silently turn a valid greenfield scaffold back into a blocked ticket.
-grep -q 'EXEMPT (fresh scaffold); flagging not failing' "$TICK" \
+grep -q 'EXEMPT (fresh scaffold); flagging not failing' "$RUNNER_DIR/lib/tick-bootstrap.sh" \
   && ok "bootstrap minimalism is FLAGGED (needs_human_review), never parked" \
   || fail "bootstrap minimalism no longer flags-not-fails — a valid scaffold could be blocked again"
 

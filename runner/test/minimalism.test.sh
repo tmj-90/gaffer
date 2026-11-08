@@ -105,7 +105,7 @@ echo "== AC6: by default (MINIMALISM_REQUIRE_NOTE unset/0) a missing note is a f
   [ "$RC" -eq 2 ] ) \
   && ok "MINIMALISM_REQUIRE_NOTE=0 → missing note returns 2 (flag, not fail)" \
   || fail "MINIMALISM_REQUIRE_NOTE=0 should not hard-fail a missing note"
-! grep -q 'MINIMALISM_ENFORCE' "$RUNNER_DIR/factory.config.sh" "$RUNNER_DIR/tick.sh" "$RUNNER_DIR/lib/minimalism.sh" \
+! grep -q 'MINIMALISM_ENFORCE' "$RUNNER_DIR/factory.config.sh" "$RUNNER_DIR/tick.sh" "$RUNNER_DIR"/lib/tick-*.sh "$RUNNER_DIR/lib/minimalism.sh" \
   && ok "the retired MINIMALISM_ENFORCE knob is gone from the live path (it never changed an outcome)" \
   || fail "MINIMALISM_ENFORCE is still referenced on the live path"
 
@@ -128,7 +128,7 @@ gaffer_check_minimalism 1 5 "" "file.txt " >/dev/null 2>&1
 # With the old fixed `$GAFFER_DATA/.mz-verdict` file the two raced: wrong and empty
 # verdicts in both directions (a note-less delivery could read `ok`).
 SNIP="$WORK/mz-snippet.sh"
-awk '/gaffer_check_minimalism "\$\{_MZ_FILES:-0\}"/{p=1} p{print} p && /_MZ_VERDICT=/{exit}' "$RUNNER_DIR/tick.sh" > "$SNIP"
+awk '/gaffer_check_minimalism "\$\{_MZ_FILES:-0\}"/{p=1} p{print} p && /_MZ_VERDICT=/{exit}' "$RUNNER_DIR/lib/tick-gates.sh" > "$SNIP"
 grep -q '_MZ_VERDICT=' "$SNIP" && ok "AC8 extracted the minimalism gate lines from tick.sh" || fail "AC8 could not extract the gate lines from tick.sh"
 mzloop() { # <note> <expect> <out>
   local _MZ_FILES=1 _MZ_LINES=5 _MZ_NOTE="$1" _MZ_CHANGED="file.txt " _MZ_VERDICT wrong=0 i
@@ -146,7 +146,7 @@ wait
 [ "$(cat "$WORK/mz-a")" = 0 ] && [ "$(cat "$WORK/mz-b")" = 0 ] \
   && ok "AC8 two concurrent gate runs on one GAFFER_DATA each saw their OWN verdict (0 wrong/empty of 40+40)" \
   || fail "AC8 concurrent gate runs read each other's verdict (wrong: with-note=$(cat "$WORK/mz-a"), no-note=$(cat "$WORK/mz-b"))"
-! grep -q '\$GAFFER_DATA/\.mz-verdict' "$RUNNER_DIR/tick.sh" && ok "AC8 tick.sh no longer uses the fixed \$GAFFER_DATA/.mz-verdict path" || fail "AC8 tick.sh still writes \$GAFFER_DATA/.mz-verdict"
+! grep -q '\$GAFFER_DATA/\.mz-verdict' "$RUNNER_DIR/tick.sh" "$RUNNER_DIR"/lib/tick-*.sh && ok "AC8 tick.sh no longer uses the fixed \$GAFFER_DATA/.mz-verdict path" || fail "AC8 tick.sh still writes \$GAFFER_DATA/.mz-verdict"
 
 echo "== AC9: oversized is flagged even when the note is missing or boilerplate =="
 ( unset MINIMALISM_REQUIRE_NOTE
@@ -162,7 +162,7 @@ echo "== AC9: oversized is flagged even when the note is missing or boilerplate 
   && ok "AC9 a small diff leaves GAFFER_MINIMALISM_OVERSIZED empty" || fail "AC9 small diff reported oversized"
 # tick.sh's own gate lines, from the verdict reset to the end of the size-flag block.
 GATE="$WORK/mz-gate.sh"
-awk '/^    GAFFER_MINIMALISM_VERDICT=""$/{p=1} p{print} p && /# OVERSIZED alongside a note flag/{q=1} q && /^    esac$/{exit}' "$RUNNER_DIR/tick.sh" > "$GATE"
+awk '/^    GAFFER_MINIMALISM_VERDICT=""$/{p=1} p{print} p && /# OVERSIZED alongside a note flag/{q=1} q && /^    esac$/{exit}' "$RUNNER_DIR/lib/tick-gates.sh" > "$GATE"
 grep -q 'GAFFER_MINIMALISM_OVERSIZED' "$GATE" && ok "AC9 extracted tick.sh's minimalism gate + size-flag block" || fail "AC9 could not extract the size-flag block from tick.sh"
 mzgate() { # <lines> <note> → the evidence summaries tick.sh attached, one per line
   local NUM=7 _MZ_FILES=1 _MZ_LINES="$1" _MZ_NOTE="$2" _MZ_CHANGED="src/a.js " _MZ_VERDICT _DELIV_OUTCOME=""

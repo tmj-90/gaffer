@@ -46,7 +46,7 @@ _REWORK_HISTORY=$'── attempt 1 — definition-of-done ──\nAssertionError
 _REWORK_BLOCK=""
 _ATTEMPT_IMPL_FLAG=""
 
-FN_SRC="$(extract_fn "$TICK" "gaffer_build_escalation" "  }")"
+FN_SRC="$(extract_fn "$RUNNER_DIR/lib/tick-gates.sh" "gaffer_build_escalation" "  }")"
 [ -n "$FN_SRC" ] && ok "A extracted gaffer_build_escalation from tick.sh (real source)" \
   || fail "A could not extract gaffer_build_escalation from tick.sh"
 eval "$FN_SRC"
@@ -151,19 +151,19 @@ else
 fi
 
 echo "== PART C: the double-bound is wired into _recover_or_park =="
-grep -q 'GAFFER_REWORK_BUDGET_USD' "$TICK" \
+grep -q 'GAFFER_REWORK_BUDGET_USD' "$RUNNER_DIR/lib/tick-gates.sh" \
   && ok "C tick.sh reads the per-ticket rework budget (GAFFER_REWORK_BUDGET_USD)" \
   || fail "C tick.sh does not read GAFFER_REWORK_BUDGET_USD"
-grep -q 'gaffer_ticket_rework_spend "\$NUM"' "$TICK" \
+grep -q 'gaffer_ticket_rework_spend "\$NUM"' "$RUNNER_DIR/lib/tick-gates.sh" \
   && ok "C _recover_or_park checks the per-ticket cumulative spend" \
   || fail "C _recover_or_park does not check per-ticket spend"
-grep -q '_cost_exhausted' "$TICK" \
+grep -q '_cost_exhausted' "$RUNNER_DIR/lib/tick-gates.sh" \
   && ok "C a hit cost ceiling parks (even with attempts remaining)" \
   || fail "C tick.sh missing the cost-ceiling park branch"
 # FIX-BRANCH (park path): _recover_or_park raises branch retention BEFORE anything
 # else, so the EXIT trap after `result error; exit 0` on the park path tears down the
 # worktree only. Without it the trap `drop-branch`ed the branch the log called PRESERVED.
-RP_SRC="$(extract_fn "$TICK" "_recover_or_park" "  }")"
+RP_SRC="$(extract_fn "$RUNNER_DIR/lib/tick-gates.sh" "_recover_or_park" "  }")"
 [ -n "$RP_SRC" ] && ok "C extracted _recover_or_park from tick.sh (real source)" \
   || fail "C could not extract _recover_or_park"
 grep -q '^ *GAFFER_KEEP_DELIVERY_BRANCH=1' <<<"$RP_SRC" \
@@ -192,7 +192,7 @@ grep -q 'not converging' <<<"$RP_SRC" \
   && ok "C the park reason says the loop was not converging" \
   || fail "C park reason should name non-convergence"
 # GAFFER_MAX_DELIVERY_ATTEMPTS default is raised 2 → 3.
-grep -q 'GAFFER_MAX_DELIVERY_ATTEMPTS:-3' "$TICK" \
+grep -q 'GAFFER_MAX_DELIVERY_ATTEMPTS:-3' "$RUNNER_DIR/lib/tick-gates.sh" \
   && ok "C the attempt cap default is raised to 3 (room for the ladder)" \
   || fail "C tick.sh default GAFFER_MAX_DELIVERY_ATTEMPTS should be 3"
 grep -qE 'GAFFER_MAX_DELIVERY_ATTEMPTS:=3' "$CFG" \

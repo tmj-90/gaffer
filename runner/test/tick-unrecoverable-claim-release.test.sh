@@ -92,7 +92,7 @@ extract_fn() {  # $1 = function name → prints its verbatim definition from tic
   awk -v fn="$1" '
     $0 ~ "^" fn "\\(\\) \\{" {print; if ($0 ~ /\}[[:space:]]*$/) exit; p=1; next}
     p {print; if ($0 ~ /^\}/) exit}
-  ' "$TICK"
+  ' "$TICK" "$RUNNER_DIR"/lib/tick-*.sh
 }
 SRC="$WORK/real-fns.sh"
 {
@@ -182,8 +182,8 @@ gaffer_skip_ticket "$NUM"
   || fail "A7: negative control did not reproduce the stranded-claim state — the test would not bite"
 
 echo "== PART B: revert guard — tick.sh releases (bounded) BEFORE it skips (3 paths) =="
-check() {  # $1 name, $2 perl-regex over tick.sh
-  if perl -0777 -ne "exit 0 if /$2/ms; exit 1" "$TICK"; then ok "$1"; else fail "$1 — pattern not found"; fi
+check() {  # $1 name, $2 perl-regex over the attempt loop's gates (lib/tick-gates.sh)
+  if perl -0777 -ne "exit 0 if /$2/ms; exit 1" "$RUNNER_DIR/lib/tick-gates.sh"; then ok "$1"; else fail "$1 — pattern not found"; fi
 }
 check "path-A wiring: bounded release-or-park before skip on no-commit agent failure" \
   'gaffer_release_or_park_nocommit "delivery failed: agent exited non-zero \(rc=\$rc\) with no commits;[^\n]*\n[^\n]*gaffer_skip_ticket'
@@ -194,7 +194,7 @@ check "path-B wiring: bounded release-or-park before skip on an unrecoverable br
   'gaffer_release_or_park_nocommit "delivery failed: \$_BS_FAIL;[^\n]*had no commits[^\n]*\n[^\n]*gaffer_skip_ticket'
 check "path-C wiring: a branch switch WITH commits is recoverable (retry-or-park), never a no-commit release" \
   'if gaffer_any_branch_has_commits "\$WT_ROWS"; then\n[^\n]*\n[^\n]*\n[^\n]*_recover_or_park "branch"'
-if perl -0777 -ne 'exit 1 if /wg ticket move "\$NUM" refining --reason "delivery failed/ms; exit 0' "$TICK"; then
+if cat "$TICK" "$RUNNER_DIR"/lib/tick-*.sh | perl -0777 -ne 'exit 1 if /wg ticket move "\$NUM" refining --reason "delivery failed/ms; exit 0'; then
   ok "the retired submit-status move-or-block fallback is gone from the failure paths"
 else
   fail "a retired 'wg ticket move refining' failure fallback is still present"

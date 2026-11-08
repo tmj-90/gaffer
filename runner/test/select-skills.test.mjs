@@ -1274,7 +1274,7 @@ check(
   "every spawn site selects from the ticket's stack union (tick / review / clarify / tester)",
   () => {
     const runner = join(DEFAULT_SKILLS_DIR, "..");
-    for (const f of ["tick.sh", "lib/review.sh", "lib/clarify.sh"])
+    for (const f of ["lib/tick-claim.sh", "lib/review.sh", "lib/clarify.sh"])
       assert(
         readFileSync(join(runner, f), "utf8").includes("--ticket-stacks -"),
         `${f} does not use --ticket-stacks`,

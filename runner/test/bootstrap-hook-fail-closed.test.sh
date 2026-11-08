@@ -153,11 +153,11 @@ OUT="$(run_tick CLAUDE_SETTINGS="$RUNNER_DIR/claude/settings.json")"
   || fail "the wired template was refused"
 
 echo "== PIN: tick.sh renders no settings.json with a bare sed; the bootstrap uses the installer =="
-BARE="$(grep -cE 'sed .*"\$CLAUDE_SETTINGS" *>' "$TICK" || true)"
+BARE="$(cat "$TICK" "$RUNNER_DIR"/lib/tick-*.sh | grep -cE 'sed .*"\$CLAUDE_SETTINGS" *>' || true)"
 [ "$BARE" = "0" ] \
   && ok "tick.sh has no bare \`sed … \"\$CLAUDE_SETTINGS\" >\` render left" \
   || fail "tick.sh still renders settings.json with a bare sed ($BARE site(s))"
-grep -qE 'gaffer_install_agent_dir "\$B_DIR" "\$B_SKILLS" "bootstrap-\$NUM"' "$TICK" \
+grep -qE 'gaffer_install_agent_dir "\$B_DIR" "\$B_SKILLS" "bootstrap-\$NUM"' "$RUNNER_DIR/lib/tick-bootstrap.sh" \
   && ok "the bootstrap block installs through gaffer_install_agent_dir (verified, fail closed)" \
   || fail "the bootstrap block does not call gaffer_install_agent_dir on \$B_DIR"
 

@@ -304,10 +304,10 @@ grep -q 'random line two' <<<"$N_DISTILLED" \
 
 # ---------------------------------------------------------------------
 echo "== PART C: tick.sh enforcement wiring is present =="
-grep -q 'Stabilisation gate 2.5: DEFINITION OF DONE' "$RUNNER_DIR/tick.sh" \
+grep -q 'Stabilisation gate 2.5: DEFINITION OF DONE' "$RUNNER_DIR/lib/tick-gates.sh" \
   && ok "C tick.sh has the DoD stabilisation gate" \
   || fail "C tick.sh missing the DoD gate block"
-grep -q 'gaffer_run_dod_gates' "$RUNNER_DIR/tick.sh" \
+grep -q 'gaffer_run_dod_gates' "$RUNNER_DIR/lib/tick-gates.sh" \
   && ok "C tick.sh invokes gaffer_run_dod_gates (runner-run, not the agent)" \
   || fail "C tick.sh does not call gaffer_run_dod_gates"
 # RUNNER-OWNED-BOOKKEEPING + REWORK LOOP: a DoD failure no longer review-rejects an
@@ -315,45 +315,45 @@ grep -q 'gaffer_run_dod_gates' "$RUNNER_DIR/tick.sh" \
 # through _recover_or_park, which retries (staying VISIBLY in_progress) then parks the
 # held claim to the VISIBLE `blocked` column (rework_exhausted) via the runner-release
 # path — the branch is preserved, and a human always sees the parked ticket.
-grep -q '_recover_or_park "definition-of-done"' "$RUNNER_DIR/tick.sh" \
+grep -q '_recover_or_park "definition-of-done"' "$RUNNER_DIR/lib/tick-gates.sh" \
   && ok "C a DoD failure reworks via _recover_or_park (auto-reject, not the human)" \
   || fail "C tick.sh missing the DoD _recover_or_park path"
-perl -0777 -ne 'exit 0 if /Cap OR per-ticket cost ceiling hit.*?gaffer_release_delivery blocked "\$_reason" rework_exhausted/ms; exit 1' "$RUNNER_DIR/tick.sh" \
+perl -0777 -ne 'exit 0 if /Cap OR per-ticket cost ceiling hit.*?gaffer_release_delivery blocked "\$_reason" rework_exhausted/ms; exit 1' "$RUNNER_DIR/lib/tick-gates.sh" \
   && ok "C an exhausted-rework park releases the held claim to the VISIBLE blocked column (rework_exhausted)" \
   || fail "C _recover_or_park does not park the runner-held claim to blocked/rework_exhausted"
 # The rework path must NOT route to refining (invisible draft column) — it stays
 # in_progress while reworking (runner-rework) and lands in blocked when exhausted.
 # Scope the check to the _recover_or_park function BODY (other tick.sh park paths —
 # submit-failed, bootstrap — legitimately still use refining and are out of scope).
-perl -0777 -ne 'if (/_recover_or_park\(\) \{(.*?)\n  \}/ms) { exit(($1 =~ /gaffer_release_delivery refining/) ? 0 : 1) } exit 1' "$RUNNER_DIR/tick.sh" \
+perl -0777 -ne 'if (/_recover_or_park\(\) \{(.*?)\n  \}/ms) { exit(($1 =~ /gaffer_release_delivery refining/) ? 0 : 1) } exit 1' "$RUNNER_DIR/lib/tick-gates.sh" \
   && fail "C the rework park path still routes to refining (should be blocked — invisible to a human)" \
   || ok "C the rework park path does NOT route to refining (retired for visibility)"
-grep -q 'wg runner-rework "\$NUM"' "$RUNNER_DIR/tick.sh" \
+grep -q 'wg runner-rework "\$NUM"' "$RUNNER_DIR/lib/tick-gates.sh" \
   && ok "C a retry surfaces the rework attempt on the card (runner-rework, stays in_progress)" \
   || fail "C tick.sh does not surface the rework attempt via runner-rework"
 # The re-invocation must feed the DISTILLED real failure (not just the gate summary).
-grep -q 'gaffer_dod_extract_failure "\$DOD_RESULTS"' "$RUNNER_DIR/tick.sh" \
+grep -q 'gaffer_dod_extract_failure "\$DOD_RESULTS"' "$RUNNER_DIR/lib/tick-gates.sh" \
   && ok "C a DoD failure extracts the REAL failure (assertion) to feed the next attempt" \
   || fail "C tick.sh does not extract the real DoD failure for the next attempt"
-grep -q 'PROMPT\$_REWORK_BLOCK' "$RUNNER_DIR/tick.sh" \
+grep -q 'PROMPT\$_REWORK_BLOCK' "$RUNNER_DIR/lib/tick-launch.sh" \
   && ok "C the re-invoked agent gets the real-failure REVIEW FEEDBACK block appended to its prompt" \
   || fail "C tick.sh does not append the rework feedback block to the re-invocation prompt"
 # Fail-CLOSED on an unresolvable config: an unparseable dispatch payload must NOT
 # pretend "no commands" and ship unverified work — it parks instead.
-grep -q '@@DOD_PARSE_OK@@' "$RUNNER_DIR/tick.sh" \
+grep -q '@@DOD_PARSE_OK@@' "$RUNNER_DIR/lib/tick-gates.sh" \
   && ok "C tick.sh fails CLOSED when gate commands can't be resolved (no fail-open)" \
   || fail "C tick.sh missing the parse-sentinel fail-closed guard"
 # PRE-GATE INSTALL ENABLER: the worktree dep install must run BEFORE the gate, be
 # guarded by the opt-out knob, and be fail-soft (no exit/continue-out on failure).
-grep -q 'gaffer_dod_install_deps' "$RUNNER_DIR/tick.sh" \
+grep -q 'gaffer_dod_install_deps' "$RUNNER_DIR/lib/tick-gates.sh" \
   && ok "C tick.sh invokes gaffer_dod_install_deps (pre-gate worktree dep install)" \
   || fail "C tick.sh does not call gaffer_dod_install_deps"
-grep -q 'gaffer_dod_install_enabled' "$RUNNER_DIR/tick.sh" \
+grep -q 'gaffer_dod_install_enabled' "$RUNNER_DIR/lib/tick-gates.sh" \
   && ok "C the pre-gate install is guarded by gaffer_dod_install_enabled (opt-out knob)" \
   || fail "C tick.sh does not guard the pre-gate install with gaffer_dod_install_enabled"
 # The install must run BEFORE gaffer_run_dod_gates so the gate can actually run.
-INST_LINE="$(grep -n 'gaffer_dod_install_deps' "$RUNNER_DIR/tick.sh" | head -1 | cut -d: -f1)"
-GATES_LINE="$(grep -n 'gaffer_run_dod_gates' "$RUNNER_DIR/tick.sh" | head -1 | cut -d: -f1)"
+INST_LINE="$(grep -n 'gaffer_dod_install_deps' "$RUNNER_DIR/lib/tick-gates.sh" | head -1 | cut -d: -f1)"
+GATES_LINE="$(grep -n 'gaffer_run_dod_gates' "$RUNNER_DIR/lib/tick-gates.sh" | head -1 | cut -d: -f1)"
 if [ -n "$INST_LINE" ] && [ -n "$GATES_LINE" ] && [ "$INST_LINE" -lt "$GATES_LINE" ]; then
   ok "C the pre-gate install runs BEFORE gaffer_run_dod_gates (line $INST_LINE < $GATES_LINE)"
 else
@@ -362,12 +362,19 @@ fi
 # Fail-soft: on an install FAILURE the tick must NOT bail — the FAILED arms of the
 # verdict `case` only log a WARN and let the gate run. Extract the `case "$_pm"`
 # block and assert its FAILED arms carry no `exit`/`result error`/`continue`.
-perl -0777 -ne 'if (/case "\$_pm" in(.*?)esac/ms) { my $b=$1; exit(($b =~ /\bexit\b|result error|\bcontinue\b/) ? 1 : 0) } exit 1' "$RUNNER_DIR/tick.sh" \
+perl -0777 -ne 'if (/case "\$_pm" in(.*?)esac/ms) { my $b=$1; exit(($b =~ /\bexit\b|result error|\bcontinue\b/) ? 1 : 0) } exit 1' "$RUNNER_DIR/lib/tick-gates.sh" \
   && ok "C a failed pre-gate install is fail-soft (WARN only, no exit/continue — the gate still runs)" \
   || fail "C the pre-gate install FAILED arms must be fail-soft (no exit/continue on a failed install)"
 # The gate must sit BEFORE the delivery is recorded/submitted.
-DOD_LINE="$(grep -n 'Stabilisation gate 2.5: DEFINITION OF DONE' "$RUNNER_DIR/tick.sh" | head -1 | cut -d: -f1)"
-REC_LINE="$(grep -n 'Deterministically record the TOP-LEVEL delivery' "$RUNNER_DIR/tick.sh" | head -1 | cut -d: -f1)"
+# The DoD gate runs inside the attempt loop (gaffer_tick_delivery_attempts, lib/tick-gates.sh),
+# so its place in the tick is the line tick.sh calls that phase on.
+grep -q 'Stabilisation gate 2.5: DEFINITION OF DONE' "$RUNNER_DIR/lib/tick-gates.sh" \
+  && DOD_LINE="$(grep -n '^[[:space:]]*gaffer_tick_delivery_attempts ' "$RUNNER_DIR/tick.sh" | head -1 | cut -d: -f1)" \
+  || DOD_LINE=""
+# The delivery record is in the close path (gaffer_tick_close_delivery, lib/tick-close.sh).
+grep -q 'Deterministically record the TOP-LEVEL delivery' "$RUNNER_DIR/lib/tick-close.sh" \
+  && REC_LINE="$(grep -n '^[[:space:]]*gaffer_tick_close_delivery ' "$RUNNER_DIR/tick.sh" | head -1 | cut -d: -f1)" \
+  || REC_LINE=""
 if [ -n "$DOD_LINE" ] && [ -n "$REC_LINE" ] && [ "$DOD_LINE" -lt "$REC_LINE" ]; then
   ok "C the DoD gate runs BEFORE the delivery is recorded (line $DOD_LINE < $REC_LINE)"
 else
@@ -389,19 +396,19 @@ D1_COUNT="$(gaffer_dod_executed_count "$RES")"
   && ok "D1 gaffer_dod_executed_count=0 confirmed — triggers tick.sh zero-gate fail path" \
   || fail "D1 expected 0 executed gates, got $D1_COUNT"
 # tick.sh must FAIL (not just warn) when count=0 and GAFFER_ALLOW_NO_DOD is unset:
-grep -q 'GAFFER_ALLOW_NO_DOD' "$RUNNER_DIR/tick.sh" \
+grep -q 'GAFFER_ALLOW_NO_DOD' "$RUNNER_DIR/lib/tick-gates.sh" \
   && ok "D1 tick.sh has the GAFFER_ALLOW_NO_DOD guard (not just a warning)" \
   || fail "D1 tick.sh is missing the GAFFER_ALLOW_NO_DOD gate"
-grep -qF 'zero DoD gates executed' "$RUNNER_DIR/tick.sh" \
+grep -qF 'zero DoD gates executed' "$RUNNER_DIR/lib/tick-gates.sh" \
   && ok "D1 tick.sh fails with a zero-gates-executed message (not a silent pass)" \
   || fail "D1 tick.sh does not have the zero-gates-executed FAIL message"
 
 # D2: GAFFER_ALLOW_NO_DOD=1 is the explicit opt-out that allows zero-gate deliveries.
-grep -qE "GAFFER_ALLOW_NO_DOD.*=.*['\"]?1['\"]?" "$RUNNER_DIR/tick.sh" \
+grep -qE "GAFFER_ALLOW_NO_DOD.*=.*['\"]?1['\"]?" "$RUNNER_DIR/lib/tick-gates.sh" \
   && ok "D2 GAFFER_ALLOW_NO_DOD=1 is the explicit opt-out in tick.sh" \
   || fail "D2 tick.sh missing the GAFFER_ALLOW_NO_DOD=1 opt-out guard"
 # The opt-out must emit a visible warning (not a silent bypass):
-grep -q 'GAFFER_ALLOW_NO_DOD=1 waiver' "$RUNNER_DIR/tick.sh" \
+grep -q 'GAFFER_ALLOW_NO_DOD=1 waiver' "$RUNNER_DIR/lib/tick-gates.sh" \
   && ok "D2 the opt-out path logs a visible WARNING (not a silent bypass)" \
   || fail "D2 tick.sh opt-out path must log a visible waiver warning"
 
@@ -494,7 +501,7 @@ printf 'repo\t%s\t1\t1\t1\t-\t%s\t-\n' "$TCR2" "$G8_CMD" | gaffer_run_dod_gates 
 [ "$G8_RC" -eq 1 ] && grep -qE $'^GATE\ttypecheck\trepo\tFAIL' "$RESG" \
   && ok "G8 the detected typecheck command runs as the gate and a type error FAILS the DoD" \
   || fail "G8 detected gate did not fail (rc=$G8_RC, cmd='$G8_CMD'): $(tr '\n' '|' < "$RESG")"
-grep -q '_dtc="$(gaffer_dod_typecheck_cmd "$rwt" "$_dbase")"' "$RUNNER_DIR/tick.sh" \
+grep -q '_dtc="$(gaffer_dod_typecheck_cmd "$rwt" "$_dbase")"' "$RUNNER_DIR/lib/tick-gates.sh" \
   && ok "G9 tick.sh resolves each write repo's typecheck command through gaffer_dod_typecheck_cmd, read from the recorded base commit" \
   || fail "G9 tick.sh does not use gaffer_dod_typecheck_cmd for the typecheck gate"
 

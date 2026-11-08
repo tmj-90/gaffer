@@ -140,7 +140,7 @@ echo "== AC9: tick.sh wires the guard on BOTH paths =="
 # candidate list feeds each WRITE_ROOTS line, each WRITE_ROWS path and REPO_PATH
 # through gaffer_is_self_target (PROOF E in self-op-ban-integration proves the
 # behaviour; this pins the wiring).
-_SELF_BLOCK="$(sed -n '/SELF-OPERATION BAN (refuse to deliver/,/Worktree isolation (delivery happens/p' "$RUNNER_DIR_REAL/tick.sh")"
+_SELF_BLOCK="$(sed -n '/SELF-OPERATION BAN (refuse to deliver/,/Worktree isolation (delivery happens/p' "$RUNNER_DIR_REAL/lib/tick-claim.sh")"
 grep -q 'gaffer_is_self_target "\$__self_c"' <<<"$_SELF_BLOCK" \
   && ok "delivery path runs gaffer_is_self_target over a candidate loop" \
   || fail "delivery path missing the gaffer_is_self_target candidate loop"
@@ -158,11 +158,11 @@ if grep -q 'gaffer_is_self_target "\$PRIMARY_REPO"' <<<"$_SELF_BLOCK"; then
 else
   ok "delivery guard is not a first-write-root-only check"
 fi
-grep -q 'gaffer_is_self_target "\$B_DIR"' "$RUNNER_DIR_REAL/tick.sh" \
+grep -q 'gaffer_is_self_target "\$B_DIR"' "$RUNNER_DIR_REAL/lib/tick-bootstrap.sh" \
   && ok "bootstrap path guards B_DIR" \
   || fail "bootstrap path missing gaffer_is_self_target on B_DIR"
 # The override must be honoured on both paths.
-grep -cq 'GAFFER_ALLOW_SELF_DELIVERY' "$RUNNER_DIR_REAL/tick.sh" \
+grep -cq 'GAFFER_ALLOW_SELF_DELIVERY' "$RUNNER_DIR_REAL/lib/tick-bootstrap.sh" \
   && ok "tick.sh honours GAFFER_ALLOW_SELF_DELIVERY override" \
   || fail "tick.sh does not reference the override"
 

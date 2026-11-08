@@ -136,7 +136,7 @@ R1="$(printf '%s' "$W1" | awk '{print $4}')"; R2="$(printf '%s' "$W2" | awk '{pr
   && ok "each call's file still holds ITS OWN write root (no clobber)" || fail "roots content clobbered: '$(cat "$F1")' / '$(cat "$F2")'"
 case "$F1" in "$GAFFER_DATA/sandbox-write-roots.$$."*) ok "per-call file is PID-prefixed (tick.sh can sweep its own on exit)" ;; *) fail "expected \$GAFFER_DATA/sandbox-write-roots.<pid>.XXXXXX (got $F1)" ;; esac
 [ ! -e "$GAFFER_DATA/sandbox-write-roots" ] && ok "the old FIXED shared path is no longer written" || fail "fixed shared roots file still written"
-grep -q 'sandbox-write-roots.\$\$\.\*' "$RUNNER_DIR/tick.sh" && ok "tick.sh's exit cleanup sweeps this tick's roots files" || fail "tick.sh should sweep sandbox-*-roots.\$\$.* on exit"
+grep -q 'sandbox-write-roots.\$\$\.\*' "$RUNNER_DIR/lib/tick-recovery.sh" && ok "tick.sh's exit cleanup sweeps this tick's roots files" || fail "tick.sh should sweep sandbox-*-roots.\$\$.* on exit"
 
 echo "== (d) BRIDGE MODE: the MCP data plane is on the host — nothing of \$GAFFER_DATA is mounted =="
 printf '%s\n' "$WT" > "$WRF"                            # back to the linked worktree (section (c) above swapped in the full repo)

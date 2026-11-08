@@ -281,13 +281,13 @@ echo "== 6. (R-5) tick.sh sets GAFFER_DELIVERY_COMPLETE=1 AFTER the success-path
 # Static ordering check against the REAL tick.sh: on the success path the flag must be
 # set strictly AFTER `gaffer_cleanup_worktrees` (the teardown), so a signal arriving
 # in the gap can't leave the flag set while the worktree is still on disk (a leak).
-TICK="$HERE/../tick.sh"
+TICK="$HERE/../lib/tick-close.sh"
 if [ -f "$TICK" ]; then
   # The success-path flag set is the LAST `GAFFER_DELIVERY_COMPLETE=1` line; the
   # success teardown is the last BARE `gaffer_cleanup_worktrees` (no drop-branch) call
   # that precedes it. Find both line numbers and assert teardown comes first.
-  set_line="$(grep -n '^[[:space:]]*GAFFER_DELIVERY_COMPLETE=1[[:space:]]*$' "$TICK" | tail -1 | cut -d: -f1)"
-  teardown_line="$(grep -n '^[[:space:]]*gaffer_cleanup_worktrees[[:space:]]*$' "$TICK" | awk -F: -v s="${set_line:-0}" '$1 < s {l=$1} END {print l}')"
+  set_line="$(grep -n '^[[:space:]]*GAFFER_DELIVERY_COMPLETE=1[[:space:]]*$' "$HERE/../lib/tick-close.sh" | tail -1 | cut -d: -f1)"
+  teardown_line="$(grep -n '^[[:space:]]*gaffer_cleanup_worktrees[[:space:]]*$' "$HERE/../lib/tick-close.sh" | awk -F: -v s="${set_line:-0}" '$1 < s {l=$1} END {print l}')"
   if [ -n "$set_line" ] && [ -n "$teardown_line" ] && [ "$teardown_line" -lt "$set_line" ]; then
     ok "GAFFER_DELIVERY_COMPLETE=1 (line $set_line) is AFTER the success teardown (line $teardown_line)"
   else
@@ -313,12 +313,12 @@ echo "== 8. (FIX-BRANCH) tick.sh raises GAFFER_KEEP_DELIVERY_BRANCH=1 BEFORE rec
 # Static ordering check against the REAL tick.sh: the retention flag must be raised
 # strictly BEFORE the first delivery-record call, so no review-visible branch can be
 # dropped by a later crash/signal.
-TICK="$HERE/../tick.sh"
+TICK="$HERE/../lib/tick-bootstrap.sh"
 if [ -f "$TICK" ]; then
-  keep_line="$(grep -n '^[[:space:]]*GAFFER_KEEP_DELIVERY_BRANCH=1[[:space:]]*$' "$TICK" | head -1 | cut -d: -f1)"
+  keep_line="$(grep -n '^[[:space:]]*GAFFER_KEEP_DELIVERY_BRANCH=1[[:space:]]*$' "$HERE/../lib/tick-bootstrap.sh" | head -1 | cut -d: -f1)"
   # The first ACTUAL delivery-record invocation (the `wg ... repo-delivery record`
   # call), not a comment mentioning it.
-  rec_line="$(grep -n 'wg ticket repo-delivery record' "$TICK" | head -1 | cut -d: -f1)"
+  rec_line="$(grep -n 'wg ticket repo-delivery record' "$HERE/../lib/tick-bootstrap.sh" | head -1 | cut -d: -f1)"
   if [ -n "$keep_line" ] && [ -n "$rec_line" ] && [ "$keep_line" -lt "$rec_line" ]; then
     ok "GAFFER_KEEP_DELIVERY_BRANCH=1 (line $keep_line) is BEFORE the first delivery record (line $rec_line)"
   else

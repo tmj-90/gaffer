@@ -6,6 +6,30 @@ the context the agent receives and runs the delivery gates. The safety layer is
 `safety-hook.mjs` with its rules in `safety-hook-core.mjs`, `lib/hook/` and
 `lib/dangerous-commands.mjs`: never weaken any of them.
 
+## Where the tick lives: `tick.sh` and `lib/tick-*.sh`
+
+`tick.sh` is orchestration only. It sources the config and every phase lib (a missing
+or unloadable one stops the tick before any work, `TICK_RESULT=setup_error`), keeps the
+up-front safety check (`gaffer_assert_safety_hook`), the exit and signal traps, `log`
+and `result`, and calls the phases in order. The phase bodies were moved out verbatim
+and read and write the tick's globals (`NUM`, `SHOW`, `WT_ROWS`, `CLAIM_TOKEN`, ...);
+the `gaffer_tick_*` wrappers declare no locals.
+
+| File | Phase |
+|---|---|
+| `lib/tick-helpers.sh` | the deadline clock, the locked skip / marker appends, the dry-run preview list, `gaffer_abort_setup` |
+| `lib/tick-recovery.sh` | the orphaned-agent reap, `gaffer_crash_cleanup` (what the traps run), `gaffer_resume_abort`, resume-begin |
+| `lib/tick-claim.sh` | setup and spend admission, agent registration, the candidate scan and claim, the bootstrap / acceptance classification, scope and skills, the self-operation ban, the worktree plan |
+| `lib/tick-bootstrap.sh` | the greenfield create-a-repo delivery |
+| `lib/tick-launch.sh` | workspace trust, the raw prompt inputs, model routing and the dry-run preview, worktree creation, the agent env and MCP runtime, one attempt's launch through the worker seam |
+| `lib/tick-gates.sh` | claim release and park, the no-commit counter, the budget gate, the submit, the GUARD B attempt loop and its gates |
+| `lib/tick-close.sh` | the submit and delivery records, the PR / CI gate, the replay manifest, recall feedback, the intent distillation, the tester route |
+| `lib/tick-idle.sh` | the feature-backlog planner, the maintenance lane, the idle draft scan |
+
+A tick feature goes in the lib of its phase. A new phase lib is sourced in `tick.sh` with
+the same fail-closed guard and a `# shellcheck source=` line
+(`runner/test/tick-phase-libs.test.sh` and `tick-dead-assignments.test.sh` check both).
+
 ## RULE: production delivery features must land on the live path (not only in crew's mock loop)
 
 Gaffer has **two** agent runtimes, and only one of them is live. Separately,

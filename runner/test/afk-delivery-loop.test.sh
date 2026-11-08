@@ -152,10 +152,10 @@ DEFS="$(grep -c '^_gaffer_agent_review_pass() {' "$REVIEW_LIB" || true)"
 # The no_work juncture must invoke the reviewer BEFORE the exit, guarded by REVIEW_MODE.
 grep -q WIRED <<<"$(awk '/all ready tickets failed delivery this run/{f=1}
      f && /_gaffer_agent_review_pass/{g=1}
-     f && /result no_work; exit 0/{print (g?"WIRED":"MISSING"); exit}' "$TICK")" \
+     f && /result no_work; exit 0/{print (g?"WIRED":"MISSING"); exit}' "$RUNNER_DIR/lib/tick-claim.sh")" \
   && ok "reviewer pass invoked between the 'nothing deliverable' log and 'result no_work; exit 0'" \
   || fail "reviewer pass NOT wired at the no_work juncture"
-CALLS="$(grep -c '^[[:space:]]*_gaffer_agent_review_pass$' "$TICK" || true)"
+CALLS="$(cat "$TICK" "$RUNNER_DIR"/lib/tick-*.sh | grep -c '^[[:space:]]*_gaffer_agent_review_pass$' || true)"
 [ "$CALLS" = "2" ] \
   && ok "_gaffer_agent_review_pass invoked at exactly 2 sites (no_work juncture + end-of-tick)" \
   || fail "_gaffer_agent_review_pass invoked $CALLS time(s) — expected 2"
@@ -230,7 +230,7 @@ echo "== BUG 2: gaffer_cleanup_worktrees purges the worktree dir (grep-proof) ==
 grep -q PURGE <<<"$(awk '/gaffer_cleanup_worktrees\(\) \{/{f=1}
      f && /worktree remove --force/{r=1}
      f && r && /rm -rf "\$_rwt"/{print "PURGE"; exit}
-     f && /^  \}/{exit}' "$TICK")" \
+     f && /^  \}/{exit}' "$RUNNER_DIR/lib/tick-launch.sh")" \
   && ok "gaffer_cleanup_worktrees rm -rf's the worktree path after 'git worktree remove'" \
   || fail "gaffer_cleanup_worktrees missing the post-remove 'rm -rf \$_rwt' purge"
 

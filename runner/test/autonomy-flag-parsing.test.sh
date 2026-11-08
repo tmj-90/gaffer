@@ -65,14 +65,14 @@ HITS="$(grep -nE "\\\$\\{?(${FLAGS})(:-[^}]*)?\\}?\"? *!?= *\"?1\"?" \
 # pass and the merge lane) — pin it there.
 grep -q '_gaffer_flag_on "${GAFFER_AUTO_PUSH:-0}"' "$RUNNER_DIR/lib/land.sh" \
   && ok "land.sh: the landing's push gate goes through _gaffer_flag_on" || fail "land.sh push gate not normalised"
-grep -q '_gaffer_flag_on "${GAFFER_MEMORY_AUTO_PROMOTE:-${MEMORY_AUTO_APPROVE:-0}}"' "$RUNNER_DIR/tick.sh" \
+grep -q '_gaffer_flag_on "${GAFFER_MEMORY_AUTO_PROMOTE:-${MEMORY_AUTO_APPROVE:-0}}"' "$RUNNER_DIR/lib/tick-close.sh" \
   && ok "tick.sh: memory auto-promote flag normalised before it reaches the memory CLI" || fail "tick.sh promote flag not normalised"
 
 echo "== 4 (B20d): runner rejections carry --as, so they are not recorded as HUMAN decisions =="
 grep -q 'wg review reject "$RNUM" --reason "$_rreason" --to ready --as agent --reviewer "$REVIEWER_AGENT"' "$RUNNER_DIR/lib/review.sh" \
   && ok "review.sh: the reviewer agent's CHANGES rework rejects --as agent (reviewer principal)" \
   || fail "review.sh rework reject lacks --as agent"
-grep -q 'wg review reject "$NUM" --to refining --reviewer factory-ci --as system' "$RUNNER_DIR/tick.sh" \
+grep -q 'wg review reject "$NUM" --to refining --reviewer factory-ci --as system' "$RUNNER_DIR/lib/tick-close.sh" \
   && ok "tick.sh: the CI gate rejects --as system" || fail "tick.sh CI reject lacks --as system"
 HUMAN_REJECTS="$(grep -n 'wg review reject' "$RUNNER_DIR"/tick.sh "$RUNNER_DIR"/lib/*.sh | grep -v -- '--as ' || true)"
 [ -z "$HUMAN_REJECTS" ] && ok "no runner reject site is left to default to a human actor" || fail "reject sites without --as:"$'\n'"$HUMAN_REJECTS"

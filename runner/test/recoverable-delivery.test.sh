@@ -188,7 +188,7 @@ TICK="$RUNNER_DIR/tick.sh"
 if [ -f "$TICK" ]; then
   # The DoD-fail path must route through _recover_or_park (recoverable), not a
   # bare drop-branch teardown.
-  if grep -q '_recover_or_park "definition-of-done"' "$TICK"; then
+  if grep -q '_recover_or_park "definition-of-done"' "$RUNNER_DIR/lib/tick-gates.sh"; then
     ok "tick.sh DoD-fail path routes through _recover_or_park (branch-preserving)"
   else
     fail "tick.sh DoD-fail path does NOT route through _recover_or_park"
@@ -196,28 +196,28 @@ if [ -f "$TICK" ]; then
   # PAUSE-ON-CAP: the cap-hit (GUARD C) path must now PAUSE IN PLACE — pause the
   # ticket via dispatch, raise the worktree-retention flag, and NOT tear the worktree
   # down. It must NOT fall back to the old park+teardown (no bare cap-hit cleanup).
-  if grep -q 'PAUSED (cap-hit)' "$TICK" && grep -q 'wg ticket pause' "$TICK" \
-     && grep -q 'GAFFER_PAUSE_KEEP_WORKTREE=1' "$TICK"; then
+  if grep -q 'PAUSED (cap-hit)' "$RUNNER_DIR/lib/tick-launch.sh" && grep -q 'wg ticket pause' "$RUNNER_DIR/lib/tick-launch.sh" \
+     && grep -q 'GAFFER_PAUSE_KEEP_WORKTREE=1' "$RUNNER_DIR/lib/tick-launch.sh"; then
     ok "tick.sh cap-hit path PAUSES in place + raises the worktree-keep flag"
   else
     fail "tick.sh cap-hit path missing the pause-in-place wiring"
   fi
   # The crash-cleanup trap must skip teardown for a paused worktree (the survival
   # invariant), and orphan-recovery must protect a paused ticket's worktree.
-  if grep -q 'GAFFER_PAUSE_KEEP_WORKTREE.*= "1"' "$TICK" || grep -q 'GAFFER_PAUSE_KEEP_WORKTREE:-0.*= "1"' "$TICK"; then
+  if grep -q 'GAFFER_PAUSE_KEEP_WORKTREE.*= "1"' "$RUNNER_DIR/lib/tick-recovery.sh" || grep -q 'GAFFER_PAUSE_KEEP_WORKTREE:-0.*= "1"' "$TICK"; then
     ok "tick.sh crash-cleanup honours the paused worktree-keep flag"
   else
     fail "tick.sh crash-cleanup does not skip teardown for a paused worktree"
   fi
   # The recoverable loop is bounded by GAFFER_MAX_DELIVERY_ATTEMPTS.
-  if grep -q 'GAFFER_MAX_DELIVERY_ATTEMPTS' "$TICK"; then
+  if grep -q 'GAFFER_MAX_DELIVERY_ATTEMPTS' "$RUNNER_DIR/lib/tick-gates.sh"; then
     ok "tick.sh bounds the retry loop by GAFFER_MAX_DELIVERY_ATTEMPTS"
   else
     fail "tick.sh does not bound the retry loop"
   fi
   # No regression: the SUCCESS path's final teardown is still a bare
   # gaffer_cleanup_worktrees (branch kept for review) — present in the file.
-  if grep -qE '^[[:space:]]*gaffer_cleanup_worktrees[[:space:]]*$' "$TICK"; then
+  if grep -qE '^[[:space:]]*gaffer_cleanup_worktrees[[:space:]]*$' "$RUNNER_DIR/lib/tick-close.sh"; then
     ok "tick.sh success path still tears down worktree only (branch kept for review)"
   else
     fail "tick.sh success teardown changed unexpectedly"

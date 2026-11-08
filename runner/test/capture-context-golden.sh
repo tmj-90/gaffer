@@ -181,7 +181,8 @@ echo "  ok   primer block goldens captured"
 
 # ── inputs.json: the EXACT renderer inputs this harness fed the bash path,
 # post-normalization — what the TS golden tests replay. The skills/lenses
-# strings are computed with the SAME commands tick.sh uses (tick.sh:1248–1257;
+# strings are computed with the SAME commands the tick uses (gaffer_tick_resolve_scope
+# in runner/lib/tick-claim.sh;
 # stack typescript-react → area frontend per gaffer_area_for_stack). workBranch
 # is deliberately ABSENT: the TS test derives it via workBranchName(number,
 # title), so slug parity is proven through the prompt golden.

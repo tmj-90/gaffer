@@ -141,7 +141,7 @@ grep -qx "claude" "$out" && ok "inside docker the image's own \`claude\` is invo
 grep -q "^HOME=/root$" "$out" && ok "HOME is rebased to the container's /root" || fail "HOME not rebased for the container"
 
 echo "== 5: tick.sh consults the provider when strict is REQUIRED, not only STRICT_MODE=1 =="
-grep -qE 'if \[ "\$\{STRICT_MODE:-0\}" = "1" \] \|\| _sandbox_strict_required; then' "$RUNNER_DIR/tick.sh" \
+grep -qE 'if \[ "\$\{STRICT_MODE:-0\}" = "1" \] \|\| _sandbox_strict_required; then' "$RUNNER_DIR/lib/tick-launch.sh" \
   && ok "tick.sh guard: STRICT_MODE=1 OR _sandbox_strict_required" \
   || fail "tick.sh still gates the sandbox on STRICT_MODE alone"
 

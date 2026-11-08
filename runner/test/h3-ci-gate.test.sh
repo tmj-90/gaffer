@@ -163,8 +163,8 @@ grep -q "ticket ci-required 17" "$WG_CALLS" && ok "T17 the CI requirement is rec
 grep -q "CI BLOCKED (strict)" "$WG_CALLS" && ok "T17 the block is attached as evidence" || fail "T17 no evidence"
 
 # T18: tick.sh records the requirement BEFORE the submit that exposes the ticket.
-_mark_line="$(grep -n 'gaffer_ci_require_mark "$NUM"' "$RUNNER_DIR/tick.sh" | head -1 | cut -d: -f1)"
-_submit_line="$(grep -n 'if gaffer_submit_delivery "delivered on branch' "$RUNNER_DIR/tick.sh" | head -1 | cut -d: -f1)"
+_mark_line="$(grep -n 'gaffer_ci_require_mark "$NUM"' "$RUNNER_DIR/lib/tick-close.sh" | head -1 | cut -d: -f1)"
+_submit_line="$(grep -n 'if gaffer_submit_delivery "delivered on branch' "$RUNNER_DIR/lib/tick-close.sh" | head -1 | cut -d: -f1)"
 [ -n "$_mark_line" ] && [ -n "$_submit_line" ] && [ "$_mark_line" -lt "$_submit_line" ] \
   && ok "T18 tick.sh marks CI required before submitting for review" || fail "T18 mark ($_mark_line) not before submit ($_submit_line)"
 : > "$WG_CALLS"

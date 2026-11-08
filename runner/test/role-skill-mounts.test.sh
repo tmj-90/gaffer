@@ -138,7 +138,7 @@ case "$NOTE" in *"take precedence over Gaffer's pack: record-evidence"*) ok "4: 
 gaffer_skills_mount "$OWT" "python-conventions" "delivery-9"
 [ -f "$SK/python-conventions/SKILL.md" ] && [ ! -e "$SK/java-conventions" ] && grep -qx HOUSE "$SK/house-style/SKILL.md" \
   && ok "4: a re-mount swaps Gaffer's copies only" || fail "4: re-mount: $(ls -A "$SK" | paste -sd, -)"
-for t in tick.sh lib/review.sh; do
+for t in lib/tick-launch.sh lib/review.sh; do
   grep -q 'gaffer_skills_note' "$RUNNER_DIR/$t" && ok "4: $t puts the shadow note in its prompt" || fail "4: $t does not use gaffer_skills_note"
 done
 grep -q 'shadowNote(shadowedSkills' "$RUNNER_DIR/bin/tester-run.mjs" && ok "4: the tester prompt carries the shadow note" || fail "4: tester-run lacks the shadow note"

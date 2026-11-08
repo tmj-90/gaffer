@@ -116,10 +116,10 @@ GAFFER_TESTING=No REVIEW_MODE=agent run_lane
 [ ! -s "$TESTED" ] && ok "explicit off (any other word): left alone" || fail "GAFFER_TESTING=No tested #4"
 
 echo "== 4: WIRING =="
-_T="$(awk '/TESTER FIRST \(lib\/tester.sh\): the gates passed/{f=1} f&&/gaffer_tester_route "\$NUM"/{print "found"; exit}' "$RUNNER_DIR/tick.sh")"
+_T="$(awk '/TESTER FIRST \(lib\/tester.sh\): the gates passed/{f=1} f&&/gaffer_tester_route "\$NUM"/{print "found"; exit}' "$RUNNER_DIR/lib/tick-close.sh")"
 [ "$_T" = found ] && ok "tick.sh routes the delivery to the tester after its gates (REVIEW_MODE=human)" || fail "tick.sh does not route after delivery"
-_ci="$(grep -n 'H3: ci-gate.sh not loaded' "$RUNNER_DIR/tick.sh" | head -1 | cut -d: -f1)"
-_rt="$(grep -n 'gaffer_tester_route "\$NUM"' "$RUNNER_DIR/tick.sh" | head -1 | cut -d: -f1)"
+_ci="$(grep -n 'H3: ci-gate.sh not loaded' "$RUNNER_DIR/lib/tick-close.sh" | head -1 | cut -d: -f1)"
+_rt="$(grep -n 'gaffer_tester_route "\$NUM"' "$RUNNER_DIR/lib/tick-close.sh" | head -1 | cut -d: -f1)"
 [ -n "$_ci" ] && [ -n "$_rt" ] && [ "$_rt" -gt "$_ci" ] && ok "the route comes after the CI gate (a red CI rejects from review first)" || fail "route line $_rt vs CI gate $_ci"
 grep -q 'gaffer_tester_route "\$RNUM"' "$RUNNER_DIR/lib/review.sh" && ok "the agent review pass routes a ticket it left in review" || fail "review.sh does not route"
 _H="$(awk '/_review_hold_ticket\(\) \{/{f=1} f&&/gaffer_tester_route "\$RNUM"/{print "found"; exit} f&&/^      \}/{exit}' "$RUNNER_DIR/lib/review.sh")"

@@ -73,10 +73,10 @@ else
 fi
 
 echo "== C: the wiring exists in tick.sh + the field is surfaced by dispatch =="
-grep -q 'delivery_budget_usd' "$TICK" \
+grep -q 'delivery_budget_usd' "$RUNNER_DIR/lib/tick-gates.sh" \
   && ok "tick.sh reads the per-ticket delivery_budget_usd" \
   || fail "tick.sh does not read delivery_budget_usd"
-grep -q '_eff_ceiling' "$TICK" \
+grep -q '_eff_ceiling' "$RUNNER_DIR/lib/tick-gates.sh" \
   && ok "tick.sh resolves an effective per-ticket ceiling" \
   || fail "tick.sh missing the effective-ceiling resolution"
 

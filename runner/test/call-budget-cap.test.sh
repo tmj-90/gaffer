@@ -79,15 +79,15 @@ gaffer_is_budget_stop "$WORK/stop.json" && ok "gaffer_is_budget_stop recognises 
 gaffer_is_cap_hit "$WORK/stop.json" 0 && fail "a budget stop was classified as a turn cap-hit" || ok "a budget stop is NOT a turn cap-hit"
 printf '%s' '{"type":"result","subtype":"error_max_turns","num_turns":200}' > "$WORK/turns.json"
 gaffer_is_budget_stop "$WORK/turns.json" && fail "a turn cap read as a budget stop" || ok "a turn-cap stop is not a budget stop"
-grep -q 'if gaffer_is_budget_stop "$USAGE_JSON"; then _BUDGET_HIT=1; fi' "$RUNNER_DIR/tick.sh" \
+grep -q 'if gaffer_is_budget_stop "$USAGE_JSON"; then _BUDGET_HIT=1; fi' "$RUNNER_DIR/lib/tick-launch.sh" \
   && ok "tick.sh turns a budget stop into _BUDGET_HIT (pause reason budget_cap)" || fail "tick.sh does not wire the budget stop"
-grep -q '_CALL_BUDGET="$(gaffer_call_budget_usd "$(gaffer_ticket_budget_remaining "$NUM")")"' "$RUNNER_DIR/tick.sh" \
+grep -q '_CALL_BUDGET="$(gaffer_call_budget_usd "$(gaffer_ticket_budget_remaining "$NUM")")"' "$RUNNER_DIR/lib/tick-launch.sh" \
   && ok "the delivery's cap carries the ticket's remaining ceiling" || fail "delivery does not pass the ticket's remaining"
 
 echo "== 4: gaffer_ticket_budget_remaining (real, extracted from tick.sh) =="
 FN="$WORK/fn.sh"
-awk '/^gaffer_ticket_budget_remaining\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$RUNNER_DIR/tick.sh" > "$FN"
-grep -E '^_num_(pos|ge|le)\(\)' "$RUNNER_DIR/tick.sh" >> "$FN"
+awk '/^gaffer_ticket_budget_remaining\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$RUNNER_DIR/lib/tick-gates.sh" > "$FN"
+grep -E '^_num_(pos|ge|le)\(\)' "$RUNNER_DIR/lib/tick-gates.sh" >> "$FN"
 # shellcheck disable=SC1090
 source "$FN"
 jget() { node "$RUNNER_DIR/lib/json-tool.mjs" expr "$1"; }

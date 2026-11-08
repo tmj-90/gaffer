@@ -53,6 +53,22 @@ function allowed(label, command) {
   if (code === 0) passed += 1;
   else failures.push(`ALLOW expected but got exit ${code}: ${label} — ${command}`);
 }
+// `git commit` is decided against the index of the repo at cwd (a staged secret
+// path denies it). The default cwd is this checkout, whose index is whatever a
+// developer or a merge in progress has staged, so a commit that must stay ALLOWED is
+// decided inside a fresh, empty git repo instead.
+let cleanRepoDir = null;
+function cleanRepo() {
+  if (cleanRepoDir) return cleanRepoDir;
+  cleanRepoDir = realpathSync(gafferMkdtemp(resolve(tmpdir(), "gaffer-cleanrepo-")));
+  spawnSync("git", ["-C", cleanRepoDir, "init", "-q"], { encoding: "utf8" });
+  return cleanRepoDir;
+}
+function committable(label, command) {
+  const code = hookExit({ tool_name: "Bash", tool_input: { command } }, { cwd: cleanRepo() });
+  if (code === 0) passed += 1;
+  else failures.push(`ALLOW expected but got exit ${code}: ${label} — ${command}`);
+}
 
 // --- The bypasses from the review: every one of these must now be DENIED -----
 const BYPASSES = [
@@ -315,7 +331,7 @@ allowed("git branch --show-current", "git branch --show-current");
 allowed("git checkout -b a new branch", "git checkout -b gaffer/x");
 allowed("git checkout -B the runner-owned ticket branch", "git checkout -B gaffer/ticket-5-x");
 allowed("git branch -f a gaffer/ branch", "git branch -f gaffer/ticket-5-x HEAD");
-allowed("git log mentions update-ref in a message", "git commit -m 'docs: explain refs'");
+committable("git log mentions update-ref in a message", "git commit -m 'docs: explain refs'");
 allowed("git fetch origin", "git fetch origin");
 // The spellings git also accepts (round-2 review): flags combined, after the args,
 // global options first, `--`, abbreviated long options, aliases, redirects, xargs.
@@ -416,7 +432,7 @@ denied("npm unlink (uninstall alias)", "npm unlink left-pad");
 denied("npm ic (clean-install alias)", "npm ic");
 denied("npx npm ci", "npx npm ci");
 // Mentioning the command is not running it.
-allowed(
+committable(
   "commit message naming npm ci",
   'git commit -m "deliver #4: use npm ci in the CI workflow"',
 );
@@ -442,7 +458,7 @@ else failures.push("DENY expected: Read id_rsa");
 allowed("cat package.json", "cat package.json");
 allowed("grep a source file", "grep foo src/app.ts");
 allowed("sed a README range", "sed -n 1,5p README.md");
-allowed("git commit", "git commit -m x");
+committable("git commit", "git commit -m x");
 allowed("pnpm test", "pnpm test");
 allowed("node build.mjs", "node build.mjs");
 allowed("ls -la", "ls -la");
@@ -2031,7 +2047,7 @@ allowed("literal in-root cp still allowed", "cp src/a.ts sub/b.ts");
   denied("ps in command substitution", 'X=$(ps ewww); echo "$X"');
   // Negative controls — the literal token "ps" in a non-command position stays ALLOWED
   // (blocking these would break real delivery, e.g. a commit that mentions "ps").
-  allowed("commit message mentioning ps", `git commit -m "fix the ps output formatting"`);
+  committable("commit message mentioning ps", `git commit -m "fix the ps output formatting"`);
   allowed("path segment apps/ (not ps)", "ls apps/web");
   allowed("https url (not ps)", "curl https://example.com/data.json");
   allowed("grep pattern 'ps'", "grep -r 'ps' src");
@@ -2914,6 +2930,7 @@ else failures.push("ALLOW expected: whitespace-only stdin parses as {} and stays
   rmSync(G, { recursive: true, force: true });
 }
 
+if (cleanRepoDir) rmSync(cleanRepoDir, { recursive: true, force: true });
 if (failures.length) {
   console.error(`FAIL — ${failures.length} failed, ${passed} passed`);
   for (const f of failures) console.error("  ✗ " + f);

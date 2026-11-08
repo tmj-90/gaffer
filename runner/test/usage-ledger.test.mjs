@@ -23,6 +23,17 @@ import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const RUNNER_DIR = resolve(HERE, "..");
+// tick.sh and the phase libs it sources (runner/lib/tick-*.sh): the tick's code.
+const tickSources = () =>
+  [
+    resolve(RUNNER_DIR, "tick.sh"),
+    ...readdirSync(resolve(RUNNER_DIR, "lib"))
+      .filter((f) => /^tick-[a-z-]+\.sh$/.test(f))
+      .sort()
+      .map((f) => resolve(RUNNER_DIR, "lib", f)),
+  ]
+    .map((p) => readFileSync(p, "utf8"))
+    .join("\n");
 const MOD = resolve(RUNNER_DIR, "lib", "usage-ledger.mjs");
 
 const {
@@ -360,7 +371,7 @@ console.log("== REWORK COST: a delivery row carries its attempt id and spawn tim
     rmSync(dir, { recursive: true, force: true });
   }
   const cfg = readFileSync(resolve(RUNNER_DIR, "factory.config.sh"), "utf8");
-  const tick = readFileSync(resolve(RUNNER_DIR, "tick.sh"), "utf8");
+  const tick = tickSources();
   assert(
     "gaffer_usage_record passes the attempt flags for delivery rows only",
     /if \[ "\$kind" = delivery \]; then attempt=/.test(cfg) &&
@@ -381,7 +392,7 @@ console.log("== AC4: --output-format json is wired into the consolidated invocat
   // the single invocation carries --output-format json, tick.sh routes all four
   // agent turns (delivery, bootstrap, review, clarify) through worker_deliver, and
   // each routed turn still ledgers via gaffer_usage_record.
-  const tick = readFileSync(resolve(RUNNER_DIR, "tick.sh"), "utf8");
+  const tick = tickSources();
   const worker = readFileSync(resolve(RUNNER_DIR, "lib", "worker.sh"), "utf8");
   // B-H3 (monolith paydown): the review + clarify agent turns were extracted from
   // tick.sh into lib/review.sh + lib/clarify.sh (sourced by tick.sh). Count the

@@ -148,8 +148,8 @@ GAFFER_CREATE_PR=1 gaffer_bootstrap_remote_decision "$BOOT" app-three "$DIR"
 
 echo "== 7: WIRING — tick.sh asks right after the inherit step =="
 TICK="$RUNNER_DIR/tick.sh"
-INH="$(grep -n 'gaffer_inherit_repo "\$NUM" || true' "$TICK" | head -1 | cut -d: -f1)"
-ASK="$(grep -n 'gaffer_bootstrap_remote_decision "\$NUM" "\$B_NAME" "\$B_DIR"' "$TICK" | head -1 | cut -d: -f1)"
+INH="$(grep -n 'gaffer_inherit_repo "\$NUM" || true' "$RUNNER_DIR/lib/tick-bootstrap.sh" | head -1 | cut -d: -f1)"
+ASK="$(grep -n 'gaffer_bootstrap_remote_decision "\$NUM" "\$B_NAME" "\$B_DIR"' "$RUNNER_DIR/lib/tick-bootstrap.sh" | head -1 | cut -d: -f1)"
 [ -n "$INH" ] && [ -n "$ASK" ] && [ "$ASK" -gt "$INH" ] && [ "$((ASK - INH))" -le 4 ] \
   && ok "the bootstrap onboard path files it right after linking the dependents" || fail "wiring: inherit line $INH, ask line $ASK"
 

@@ -133,12 +133,12 @@ grep -q 'npm registry probe skipped (skipped)' <<<"$OUT" && ok "preflight ! line
 
 echo "== 8: WIRING — tick.sh gates the bootstrap before spawning =="
 TICK="$RUNNER_DIR/tick.sh"
-PROBE_LINE="$(grep -n 'gaffer_registry_probe || _PROBE_RC' "$TICK" | head -1 | cut -d: -f1)"
-INIT_LINE="$(grep -n 'if ! gaffer_bootstrap_init "\$B_DIR"' "$TICK" | head -1 | cut -d: -f1)"
+PROBE_LINE="$(grep -n 'gaffer_registry_probe || _PROBE_RC' "$RUNNER_DIR/lib/tick-bootstrap.sh" | head -1 | cut -d: -f1)"
+INIT_LINE="$(grep -n 'if ! gaffer_bootstrap_init "\$B_DIR"' "$RUNNER_DIR/lib/tick-bootstrap.sh" | head -1 | cut -d: -f1)"
 [ -n "$PROBE_LINE" ] && ok "tick.sh calls gaffer_registry_probe on the bootstrap path" || fail "no probe call in tick.sh"
 [ -n "$PROBE_LINE" ] && [ -n "$INIT_LINE" ] && [ "$PROBE_LINE" -lt "$INIT_LINE" ] && ok "probe runs BEFORE gaffer_bootstrap_init (nothing created, nothing spent)" || fail "probe not before init ($PROBE_LINE vs $INIT_LINE)"
-grep -q 'gaffer_release_delivery blocked "\$_PROBE_WHY" env_registry_unreachable' "$TICK" && ok "unreachable → blocked with reason code env_registry_unreachable" || fail "park shape missing"
-grep -q 'python\*|go|golang|rust' "$TICK" && ok "clearly non-node stacks skip the probe" || fail "stack filter missing"
+grep -q 'gaffer_release_delivery blocked "\$_PROBE_WHY" env_registry_unreachable' "$RUNNER_DIR/lib/tick-bootstrap.sh" && ok "unreachable → blocked with reason code env_registry_unreachable" || fail "park shape missing"
+grep -q 'python\*|go|golang|rust' "$RUNNER_DIR/lib/tick-bootstrap.sh" && ok "clearly non-node stacks skip the probe" || fail "stack filter missing"
 
 echo "== 9: BEHAVIOUR — the real tick, a failing registry, a bootstrap ticket: parked, released, no agent call =="
 # Stub dispatch CLI (one ready bootstrap ticket #7, records every call) + stub claude

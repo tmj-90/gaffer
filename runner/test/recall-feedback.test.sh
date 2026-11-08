@@ -49,18 +49,18 @@ else
 fi
 
 echo "== B. tick.sh defines a fail-soft recall-feedback helper =="
-if grep -q 'gaffer_recall_feedback()' "$TICK"; then
+if grep -q 'gaffer_recall_feedback()' "$RUNNER_DIR/lib/tick-close.sh"; then
   ok "gaffer_recall_feedback helper defined"
 else
   fail "gaffer_recall_feedback helper missing"
 fi
-if grep -q 'lg recall-feedback --repo' "$TICK"; then
+if grep -q 'lg recall-feedback --repo' "$RUNNER_DIR/lib/tick-close.sh"; then
   ok "helper calls the memory CLI via lg recall-feedback"
 else
   fail "helper does not call lg recall-feedback"
 fi
 # Fail-soft: the helper must swallow errors (never fatal to delivery).
-if grep -q 'non-fatal' <<<"$(grep -A14 'gaffer_recall_feedback()' "$TICK")"; then
+if grep -q 'non-fatal' <<<"$(grep -A14 'gaffer_recall_feedback()' "$RUNNER_DIR/lib/tick-close.sh")"; then
   ok "helper is fail-soft (non-fatal on error)"
 else
   fail "helper is not documented/implemented as fail-soft"
@@ -73,26 +73,26 @@ echo "== C. tick.sh sets the recall ticket on delivery + calls feedback at both 
 # and _RECALL_FOR is $NUM unless DRY_RUN=1. Behaviourally, e2e-memory-routing.test.sh
 # check 6 (memory_primed evidence after a real live tick) proves the live value and
 # dry-run-preview.test.sh P3 the empty one.
-if grep -q 'GAFFER_RECALL_TICKET="\$_RECALL_FOR" gaffer_prime_context_block' "$TICK" \
-   && grep -Fq '_RECALL_FOR=""; [ "${DRY_RUN:-0}" = "1" ] || _RECALL_FOR="$NUM"' "$TICK"; then
+if grep -q 'GAFFER_RECALL_TICKET="\$_RECALL_FOR" gaffer_prime_context_block' "$RUNNER_DIR/lib/tick-launch.sh" \
+   && grep -Fq '_RECALL_FOR=""; [ "${DRY_RUN:-0}" = "1" ] || _RECALL_FOR="$NUM"' "$RUNNER_DIR/lib/tick-launch.sh"; then
   ok "delivery prime exports GAFFER_RECALL_TICKET=\$NUM (empty on a DRY_RUN preview)"
 else
   fail "delivery prime does not export GAFFER_RECALL_TICKET=\$NUM"
 fi
 # clean/reworked branch at the submit site.
-if grep -q 'gaffer_recall_feedback reworked' "$TICK" && grep -q 'gaffer_recall_feedback clean' "$TICK"; then
+if grep -q 'gaffer_recall_feedback reworked' "$RUNNER_DIR/lib/tick-close.sh" && grep -q 'gaffer_recall_feedback clean' "$RUNNER_DIR/lib/tick-close.sh"; then
   ok "submit site distinguishes clean vs reworked"
 else
   fail "submit site does not call clean/reworked feedback"
 fi
 # blocked branch at the rework-exhausted park.
-if grep -q 'gaffer_recall_feedback blocked' "$TICK"; then
+if grep -q 'gaffer_recall_feedback blocked' "$RUNNER_DIR/lib/tick-gates.sh"; then
   ok "blocked-park calls blocked feedback"
 else
   fail "blocked-park does not call blocked feedback"
 fi
 # The blocked feedback call must sit next to the rework_exhausted park.
-if grep -q 'gaffer_recall_feedback blocked' <<<"$(grep -A3 'gaffer_release_delivery blocked' "$TICK")"; then
+if grep -q 'gaffer_recall_feedback blocked' <<<"$(grep -A3 'gaffer_release_delivery blocked' "$RUNNER_DIR/lib/tick-gates.sh")"; then
   ok "blocked feedback is wired at the rework_exhausted park"
 else
   fail "blocked feedback is not adjacent to the rework_exhausted park"
@@ -190,13 +190,13 @@ fi
 # THIRD positional arg is the recall ticket, so the delivery render binds it to
 # the ticket number ($NUM) and the bootstrap render passes it empty. Match the
 # seam call (whitespace-tolerant) rather than the retired inline sed.
-if grep -Eq 'gaffer_render_mcp_runtime[[:space:]]+"\$MCP_CONFIG"[[:space:]]+"\$MCP_RUNTIME"[[:space:]]+"\$NUM"' "$TICK"; then
+if grep -Eq 'gaffer_render_mcp_runtime[[:space:]]+"\$MCP_CONFIG"[[:space:]]+"\$MCP_RUNTIME"[[:space:]]+"\$NUM"' "$RUNNER_DIR/lib/tick-launch.sh"; then
   ok "delivery render sets GAFFER_RECALL_TICKET to \$NUM (seam recall arg)"
 else
   fail "delivery render does not set GAFFER_RECALL_TICKET to \$NUM"
 fi
 # The BOOTSTRAP render leaves it empty (no delivery-recall context → inert).
-if grep -Eq 'gaffer_render_mcp_runtime[[:space:]]+"\$MCP_CONFIG"[[:space:]]+"\$MCP_RUNTIME"[[:space:]]+""' "$TICK"; then
+if grep -Eq 'gaffer_render_mcp_runtime[[:space:]]+"\$MCP_CONFIG"[[:space:]]+"\$MCP_RUNTIME"[[:space:]]+""' "$RUNNER_DIR/lib/tick-bootstrap.sh"; then
   ok "bootstrap render leaves GAFFER_RECALL_TICKET empty (inert, seam recall arg)"
 else
   fail "bootstrap render does not leave GAFFER_RECALL_TICKET empty"

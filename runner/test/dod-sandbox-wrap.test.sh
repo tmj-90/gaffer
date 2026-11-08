@@ -102,7 +102,7 @@ v="$(PATH="$BIN:$PATH" GAFFER_STRICT_REQUIRE=1 gaffer_ensure_node_modules "$IW" 
 rm -rf "$IW/node_modules"; rm -f "$MARK"
 v="$(PATH="$BIN:$PATH" SECRET_TOKEN=s3cret gaffer_ensure_node_modules "$IW" 2>/dev/null)"
 grep -q 'token=none' "$MARK" 2>/dev/null && ok "the host primary prime runs with the stripped env" || fail "greenfield prime saw operator secrets: $(cat "$MARK" 2>/dev/null)"
-grep -q 'SKIPPED:sandbox_unavailable' "$RUNNER_DIR/tick.sh" && ok "tick.sh logs the refused install" || fail "tick.sh does not handle SKIPPED:sandbox_unavailable"
+grep -q 'SKIPPED:sandbox_unavailable' "$RUNNER_DIR/lib/tick-gates.sh" && ok "tick.sh logs the refused install" || fail "tick.sh does not handle SKIPPED:sandbox_unavailable"
 
 echo "== 7: under the docker provider the install container gets the CONTAINER's env, not the host's =="
 # The install runs `env -i <install env> bash -c <install>` inside the container, so the
@@ -149,12 +149,12 @@ grep -qx "TMPDIR=${TMPDIR:-/tmp}" <<<"$_hostenv_s" && ok "host install env: the 
 grep -qE 'egress-proxy|GIT_CONFIG' <<<"$_hostenv_s" && fail "host install env carries the container's settings" || ok "host install env: no container-only settings"
 
 echo "== 5: source pins — tick.sh hands the agent's wrap to the gates =="
-grep -q 'export GAFFER_DOD_WRAP="$WRAP"' "$RUNNER_DIR/tick.sh" && ok "tick.sh exports GAFFER_DOD_WRAP=\$WRAP under an active provider" || fail "tick.sh should export GAFFER_DOD_WRAP from the agent's WRAP"
-grep -q 'export GAFFER_DOD_WRAP=""' "$RUNNER_DIR/tick.sh" && ok "tick.sh resets GAFFER_DOD_WRAP per tick (no stale wrap leaks across ticks)" || fail "tick.sh should reset GAFFER_DOD_WRAP"
-grep -q 'GAFFER_DOD_SANDBOX' "$RUNNER_DIR/tick.sh" && ok "GAFFER_DOD_SANDBOX=0 is the documented opt-out" || fail "opt-out knob missing"
+grep -q 'export GAFFER_DOD_WRAP="$WRAP"' "$RUNNER_DIR/lib/tick-launch.sh" && ok "tick.sh exports GAFFER_DOD_WRAP=\$WRAP under an active provider" || fail "tick.sh should export GAFFER_DOD_WRAP from the agent's WRAP"
+grep -q 'export GAFFER_DOD_WRAP=""' "$RUNNER_DIR/lib/tick-launch.sh" && ok "tick.sh resets GAFFER_DOD_WRAP per tick (no stale wrap leaks across ticks)" || fail "tick.sh should reset GAFFER_DOD_WRAP"
+grep -q 'GAFFER_DOD_SANDBOX' "$RUNNER_DIR/lib/tick-launch.sh" && ok "GAFFER_DOD_SANDBOX=0 is the documented opt-out" || fail "opt-out knob missing"
 grep -q 'gaffer_dod_run_one "$wt" "$tmpout" "$cmd"' "$RUNNER_DIR/lib/ac-checks.sh" && ok "AC check commands use the same (wrapped) runner" || fail "ac-checks.sh no longer routes through gaffer_dod_run_one"
 grep -q 'strict-profile.\$\$.XXXXXX' "$RUNNER_DIR/lib/sandbox.sh" && ok "sandbox-exec profile is a per-call mktemp file (no shared-filename race)" || fail "sandbox-exec still writes a fixed strict-profile.sb"
-grep -q 'strict-profile.\$\$.\*' "$RUNNER_DIR/tick.sh" && ok "tick.sh sweeps its own per-call profile on exit" || fail "tick.sh cleanup does not sweep strict-profile.\$\$.*"
+grep -q 'strict-profile.\$\$.\*' "$RUNNER_DIR/lib/tick-recovery.sh" && ok "tick.sh sweeps its own per-call profile on exit" || fail "tick.sh cleanup does not sweep strict-profile.\$\$.*"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "dod-sandbox-wrap: ALL $PASS checks passed"; exit 0

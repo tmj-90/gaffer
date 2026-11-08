@@ -30,13 +30,13 @@ fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 FN="$(mktemp "${TMPDIR:-/tmp}/budget-fn.XXXXXX")"
 gaffer_test_check_tmp "$FN" file || exit 70
 trap 'rm -f "$FN"' EXIT
-awk '/^gaffer_budget_exhausted\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$TICK" > "$FN"
+awk '/^gaffer_budget_exhausted\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$RUNNER_DIR/lib/tick-gates.sh" > "$FN"
 grep -q 'gaffer_budget_exhausted()' "$FN" \
   && ok "extracted the real gaffer_budget_exhausted from tick.sh" \
   || { echo "FAIL: could not extract gaffer_budget_exhausted from tick.sh"; exit 1; }
 # The function closes over the numeric-safe awk comparison helpers (_num_pos/_num_ge);
 # extract the REAL ones from tick.sh too so this still exercises production code.
-grep -E '^_num_(pos|ge|le)\(\)' "$TICK" >> "$FN"
+grep -E '^_num_(pos|ge|le)\(\)' "$RUNNER_DIR/lib/tick-gates.sh" >> "$FN"
 grep -q '^_num_pos()' "$FN" \
   && ok "extracted the real _num_ helpers from tick.sh" \
   || { echo "FAIL: could not extract the _num_ helpers from tick.sh"; exit 1; }

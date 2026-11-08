@@ -143,6 +143,8 @@ to the same version.
 
 ### Changed
 
+- The eval judge's grade on the Review page is collapsed behind *Show the judge's view*, and opening it before you decide is recorded on the ticket (`POST /tickets/:id/judge-revealed`, `wg review judge-view`). Until it is opened the grade is hidden from the ticket page, the ticket's API reads and `wg ticket show` too, so a reviewer cannot read it there and still count as blind. `wg judge-agreement` takes its figures and reading from blind decisions only and reports the revealed ones apart with the count of each; Health's eval judge line says which is which. Decisions made before the upgrade, when the grade was shown openly, count as revealed.
+- A matched experiment's acceptance difference uses Newcombe's paired score interval and reports the discordant tickets, since acceptance is a paired yes or no; ten tied tickets no longer read as an interval of [0, 0]. `wg routing recommend` proposes from an experiment only with at least one discordant ticket and an interval lower bound within a 0.10 non-inferiority margin, and says which condition failed otherwise.
 - The dashboard's single 30,000-line `app.js` is now a small entry that imports one ES module per view and a set of shared modules under `js/`, served from the same origin under the same CSP; nothing on screen changes.
 
 ### Fixed
@@ -169,6 +171,8 @@ to the same version.
 - Poll for work says when the runner refused it, run details show "unknown" cost as unknown, and "Delivered today" counts landings.
 - The agent inside the docker sandbox can use git and reach its API on a Linux host, and the MCP bridge socket fits macOS's path limit.
 - Agent installs work behind a TLS-intercepting proxy, and a repo with no origin is "nothing to push".
+- A call that exits non-zero but reports what it spent is booked at that reported cost (never below the kill estimate) for every worker, so a failed $5 call can no longer pass a $1 daily cap as a $0.05 estimate.
+- A pull request merged upstream on a default branch with a slash in its name (`release/v1`) is now recognised as landed while the local default branch is stale.
 - The docs follow the code, and the docs are indexed in [docs/README.md](docs/README.md).
 
 ## [0.1.0] - 2026-06-17

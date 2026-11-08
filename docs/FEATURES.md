@@ -291,9 +291,12 @@ wrote. How each of these is enforced, and its limits, is in
   was found and links to its file. It is advisory: nothing gates on it.
   `GET /tickets/:id/diff?include=impact` returns the same facts.
 - **The eval judge's grade, when you turn it on** (`GAFFER_EVAL_JUDGE=1`): a verdict
-  and score on five dimensions with the judge's reason for each low one. Nothing gates
-  on it, and only the runner records one. `gaffer eval agreement` says whether it is
-  worth its cost on your factory; see
+  and score on five dimensions with the judge's reason for each low one, collapsed
+  behind *Show the judge's view* so you can decide without it (the ticket page and
+  `wg ticket show` keep it hidden too while the ticket is in review). Opening it before you
+  decide is recorded, and `gaffer eval agreement` then counts your decision apart from
+  the blind ones its figures come from. Nothing gates on it, and only the runner records
+  one. `gaffer eval agreement` says whether it is worth its cost on your factory; see
   [docs/eval-harness.md](eval-harness.md#is-the-judge-worth-having).
 - **A request for a human is never "Nothing flagged".** The runner's
   `needs_human_review` notes, a reviewer agent's CHANGES, a tester's FAIL or hold, a
@@ -509,7 +512,8 @@ runs the same tickets (the gate-replay fixtures, or recorded tickets from their
 manifests) once under each arm, in a seeded order, through the same worker seam and
 gates a tick uses, and writes `results.json` and `report.md` with the paired difference
 per ticket in acceptance, attempts, spend and judge score, with mean, 95% interval and
-n. By default a stub agent replays the recorded change, so it is free and runs in CI;
+n (acceptance, a paired yes or no, uses Newcombe's paired score interval and reports
+the discordant tickets; the rest use a paired t interval). By default a stub agent replays the recorded change, so it is free and runs in CI;
 `--live` runs the real agent under a hard USD cap (`--max-usd` or
 `GAFFER_EXPERIMENT_MAX_USD`), a ticket cap and the factory's budget admission and usage
 pause, and records nothing to dispatch. [docs/eval-harness.md](eval-harness.md#matched-ticket-comparison)
@@ -518,7 +522,9 @@ has the arms, the report and the limits.
 **Recommendations you apply.** `gaffer wg routing recommend` reads the scorecard and
 any experiment results and, where another tier is cheaper per accepted change and no
 worse on first pass and escaped defects in every work class with enough evidence, or a
-live experiment against the default tier says so, prints a proposed
+live experiment against the default tier shows it cheaper with at least one discordant
+ticket and an acceptance interval whose lower bound is within a 0.10 non-inferiority
+margin, prints a proposed
 `runner/model-registry.json` change as a diff with the cells and deltas behind it. It
 never edits the registry and never proposes anything for the reviewer or the tester.
 Health carries one Routing line saying whether a proposal exists.

@@ -182,6 +182,29 @@ export function registerReview(program: Command): void {
       wg.db.close();
     });
 
+  // BLINDING: the eval judge's grade, opened on purpose. The Review view keeps it collapsed
+  // until a person asks; this is the terminal's "Show the judge's view": it records the
+  // reveal (once per review round, only while the ticket is in review) and prints the grade.
+  review
+    .command("judge-view <ref>")
+    .description(
+      "Show the eval judge's grade of a ticket in review and record that you opened it " +
+        "before deciding (judge agreement counts your decision apart from blind ones).",
+    )
+    .option("--reviewer <id>", "reviewer id (default: $USER)")
+    .action((ref, opts, cmd) => {
+      const wg = open(cmd.optsWithGlobals());
+      const r = wg.recordJudgeRevealed(ref, reviewerActor(opts));
+      printJson({
+        ok: true,
+        recorded: r.recorded,
+        reason: r.reason,
+        round_entered_at: r.roundEnteredAt,
+        judge: wg.view(ref).evalJudgment,
+      });
+      wg.db.close();
+    });
+
   for (const [name, action, what] of [
     ["resolve", "resolve", "Mark a review comment resolved (a reviewer's act)"],
     ["reopen-comment", "reopen", "Open a resolved or withdrawn review comment again"],

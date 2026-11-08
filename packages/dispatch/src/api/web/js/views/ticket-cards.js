@@ -378,6 +378,13 @@ function eventSentence(ev, repos) {
     case "ticket.defect_escaped_withdrawn":
       return { text: `${who} withdrew the regression link to #${p.regression_of_number ?? "?"}` };
     case "ticket.lane_verdict":
+      // BLINDING: the server hides the eval judge's grade while the ticket is in review and
+      // its view has not been opened (Review: "Show the judge's view").
+      if (p.hidden)
+        return {
+          text: "Eval judge (a model's opinion): hidden until you decide",
+          note: "Open it with Show the judge's view on the Review page; that is recorded.",
+        };
       return {
         text: `${{ "agent-review": "Reviewer agent", "security-review": "Security reviewer", tester: "Tester", "eval-judge": "Eval judge (a model's opinion)" }[p.lane] || "A lane"}: ${p.verdict || "?"}${p.commit ? ` on ${String(p.commit).slice(0, 12)}` : ""}`,
         note: p.held_reason || null,

@@ -1032,6 +1032,134 @@ console.log("== ROUTING (MF3): the router's tier and reasons are stamped on the 
   }
 }
 
+console.log(
+  "== review13/1: a failed call that reported its cost books that cost, never the cheaper kill estimate ==",
+);
+{
+  const { paidLaunchAdmission, ledgerSpend } = await import(
+    resolve(RUNNER_DIR, "lib", "budget-admission.mjs")
+  );
+  const dir = gafferMkdtemp(join(tmpdir(), "failed-cost-"));
+  try {
+    const env = {
+      ...process.env,
+      GAFFER_DATA: dir,
+      GAFFER_USAGE_LEDGER: "",
+      GAFFER_DAILY_BUDGET_USD: "1.00",
+      GAFFER_BUDGET_USD: "",
+    };
+    const book = (envelope, rc) => {
+      const f = join(dir, `env-${Math.random().toString(36).slice(2)}.json`);
+      writeFileSync(f, JSON.stringify(envelope));
+      return spawnSync(
+        process.execPath,
+        [
+          MOD,
+          "--kind",
+          "delivery",
+          "--ticket",
+          "5",
+          "--rc",
+          String(rc),
+          "--kill-estimate",
+          "0.05",
+          "--json-file",
+          f,
+        ],
+        { env, encoding: "utf8" },
+      );
+    };
+    // A claude-code envelope (no gaffer_worker_provider) from a call that exited rc=1
+    // after reporting $5.01 of real spend.
+    const failed = {
+      type: "result",
+      subtype: "error_during_execution",
+      is_error: true,
+      total_cost_usd: 5.01,
+      num_turns: 40,
+      duration_ms: 600000,
+      usage: { input_tokens: 9000, output_tokens: 4000 },
+      modelUsage: {
+        "model-a": { inputTokens: 9000, outputTokens: 4000, costUSD: 5.01 },
+      },
+    };
+    const r = book(failed, 1);
+    assert("failed-call CLI exits 0", r.status === 0);
+    const rows = readFileSync(join(dir, LEDGER_FILENAME), "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+    const row = rows[rows.length - 1];
+    assert(
+      `the row books the reported $5.01, not the $0.05 estimate (got total=${row.total_cost_usd} est=${row.estimated_cost_usd})`,
+      row.total_cost_usd === 5.01 && row.estimated_cost_usd === undefined,
+    );
+    assert(
+      "the row keeps exit_rc and the reason, and says the cost was reported by a failed call",
+      row.exit_rc === 1 && /rc=1/.test(String(row.reason)) && row.reported_on_failure === true,
+    );
+    assert(
+      "the per-model breakdown is kept",
+      row.models && row.models["model-a"] && row.models["model-a"].cost_usd === 5.01,
+    );
+    const spend = ledgerSpend(env);
+    assert(
+      `the ledger reader sees $5.01 today (got ${spend.today})`,
+      Math.abs(spend.today - 5.01) < 1e-9,
+    );
+    const adm = paidLaunchAdmission({ kind: "delivery", env });
+    assert(`budget admission refuses under a $1.00 daily cap (ok=${adm.ok})`, adm.ok === false);
+
+    // A failed call that reported LESS than the kill estimate books the estimate (the caps
+    // never under-count) and keeps the worker's own figure beside it.
+    const dir2 = gafferMkdtemp(join(tmpdir(), "failed-cheap-"));
+    try {
+      const f = join(dir2, "cheap.json");
+      writeFileSync(f, JSON.stringify({ ...failed, total_cost_usd: 0.01, modelUsage: undefined }));
+      spawnSync(
+        process.execPath,
+        [MOD, "--kind", "delivery", "--rc", "1", "--kill-estimate", "0.05", "--json-file", f],
+        { env: { ...env, GAFFER_DATA: dir2 }, encoding: "utf8" },
+      );
+      const low = JSON.parse(
+        readFileSync(join(dir2, LEDGER_FILENAME), "utf8").trim().split("\n").pop(),
+      );
+      assert(
+        "a reported cost below the kill estimate books the estimate, keeping reported_cost_usd",
+        low.estimated === true &&
+          Math.abs(low.estimated_cost_usd - 0.05) < 1e-9 &&
+          low.reported_cost_usd === 0.01 &&
+          low.exit_rc === 1,
+      );
+    } finally {
+      rmSync(dir2, { recursive: true, force: true });
+    }
+
+    // An envelope with no cost still takes the estimate path.
+    const dir3 = gafferMkdtemp(join(tmpdir(), "failed-nocost-"));
+    try {
+      const f = join(dir3, "nocost.json");
+      writeFileSync(f, JSON.stringify({ type: "result", is_error: true, num_turns: 3 }));
+      spawnSync(
+        process.execPath,
+        [MOD, "--kind", "delivery", "--rc", "1", "--kill-estimate", "0.05", "--json-file", f],
+        { env: { ...env, GAFFER_DATA: dir3 }, encoding: "utf8" },
+      );
+      const nc = JSON.parse(
+        readFileSync(join(dir3, LEDGER_FILENAME), "utf8").trim().split("\n").pop(),
+      );
+      assert(
+        "a failed envelope with no cost keeps the estimate path",
+        nc.estimated === true && nc.measured === false && nc.total_cost_usd === UNKNOWN,
+      );
+    } finally {
+      rmSync(dir3, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 console.log();
 if (failures.length === 0) {
   console.log(`PASS: ${passed} checks`);

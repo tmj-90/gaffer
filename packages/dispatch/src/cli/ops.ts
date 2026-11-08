@@ -694,7 +694,7 @@ export function renderStats(stats: StatsReport): string {
       lines.push(
         l.note
           ? `  ${l.label}: ${l.note}`
-          : `  ${l.label}: ${l.verdicts_recorded} verdicts · differed from the person ${l.differed} of ${l.compared} (${l.differed_lane_blocked} it blocked and the person passed, ${l.differed_lane_passed} it passed and the person sent back) · only lane on ${l.unique_catches} send-back(s) · ${l.cost_per_attempt_usd === null ? "no ledger spend" : `${usd(l.cost_per_attempt_usd)} per attempt over ${l.ledger_attempts}`}`,
+          : `  ${l.label}: ${l.verdicts_recorded} verdicts · differed from the person ${l.differed} of ${l.compared} (${l.differed_lane_blocked} it blocked and the person passed, ${l.differed_lane_passed} it passed and the person sent back)${l.blinding ? ` · blind decisions: differed ${l.blinding.blind.differed} of ${l.blinding.blind.compared}; after the judge's view was opened: ${l.blinding.revealed.differed} of ${l.blinding.revealed.compared}` : ""} · only lane on ${l.unique_catches} send-back(s) · ${l.cost_per_attempt_usd === null ? "no ledger spend" : `${usd(l.cost_per_attempt_usd)} per attempt over ${l.ledger_attempts}`}`,
       );
     }
     lines.push(`  ${lv.footnote}`);

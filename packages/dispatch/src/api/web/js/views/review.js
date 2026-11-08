@@ -1278,7 +1278,11 @@ async function renderReview(param) {
   // The verdict strip: the runner's facts, under the title and above everything
   // the agent wrote. Built before the diff so the diff's risk flags can join it.
   const strip = packet
-    ? verdictStrip(packet, { onRunLog: () => noteReviewOpen(t.id, since, "run_log") })
+    ? verdictStrip(packet, {
+        onRunLog: () => noteReviewOpen(t.id, since, "run_log"),
+        // BLINDING: opening the judge's collapsed view before deciding is recorded.
+        onJudgeReveal: () => noteReviewOpen(t.id, since, "judge"),
+      })
     : null;
   // INSPECTABLE CONFIDENCE: the server's backing rows (an older server sends none).
   const backing = packet && Array.isArray(packet.backing) ? backingPanel(packet.backing) : null;

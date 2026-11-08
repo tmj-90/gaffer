@@ -205,6 +205,31 @@ describe("web: Health shows what each lane changed", () => {
     expect(card()!.textContent).not.toMatch(/disable|turn off/i);
   });
 
+  // BLINDING (review13/4): the eval judge's line says which decisions were made blind and
+  // which after the person opened the judge's view.
+  it("the eval judge's line splits blind decisions from those made after a reveal", async () => {
+    const judge = {
+      ...LANE_VALUE.lanes[0],
+      lane: "eval-judge",
+      label: "Eval judge",
+      verdicts_recorded: 6,
+      compared: 5,
+      differed: 2,
+      blinding: { blind: { compared: 3, differed: 2 }, revealed: { compared: 2, differed: 0 } },
+    };
+    healthPayload = {
+      ...(FULL_HEALTH as object),
+      lane_value: { ...LANE_VALUE, lanes: [...LANE_VALUE.lanes, judge] },
+    };
+    await loadApp();
+    expect(laneLine("eval-judge")).toMatch(/blind decisions: differed 2 of 3/);
+    expect(laneLine("eval-judge")).toMatch(
+      /after the judge's view was opened: 0 of 2 \(the grade may have swayed those\)/,
+    );
+    // Other lanes carry no blinding line.
+    expect(laneLine("agent-review")).not.toMatch(/blind decisions/);
+  });
+
   it("an older server without the report shows no card", async () => {
     healthPayload = FULL_HEALTH;
     await loadApp();

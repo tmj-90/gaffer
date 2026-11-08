@@ -25,6 +25,7 @@ import {
   assertMayRecordReviewOpen,
   LANE_VERDICT_EVENT,
   normalizeLaneVerdict,
+  REVIEW_JUDGE_REVEALED_EVENT,
   REVIEW_OPENED_EVENT,
   REVIEW_RAW_OPENED_EVENT,
   type LaneVerdict,
@@ -127,14 +128,43 @@ export function recordReviewRawOpened(
   return recordReviewOpen(host, internals, ticket, actor, seenRound, REVIEW_RAW_OPENED_EVENT, what);
 }
 
+/**
+ * BLINDING: a person opened the eval judge's collapsed view ("Show the judge's view") of a
+ * ticket in review, before deciding. Once per round; the same rules as recordReviewOpened.
+ * `wg judge-agreement` counts a decision made after this as revealed, apart from the blind
+ * ones its headline comes from. A measurement only; nothing gates on it.
+ */
+export function recordJudgeRevealed(
+  host: TicketRecordsHost,
+  internals: TicketRecordsInternals,
+  ref: string,
+  actor: Actor,
+  seenRound: string | null = null,
+): ReviewOpenResult {
+  assertMayRecordReviewOpen(actor);
+  const ticket = host.resolveTicket(ref);
+  return recordReviewOpen(
+    host,
+    internals,
+    ticket,
+    actor,
+    seenRound,
+    REVIEW_JUDGE_REVEALED_EVENT,
+    "judge",
+  );
+}
+
 export function recordReviewOpen(
   host: Pick<TicketRecordsHost, "db" | "events" | "repoDeliveries" | "resolveTicket">,
   internals: TicketRecordsInternals,
   ticket: Ticket,
   actor: Actor,
   seenRound: string | null,
-  eventType: typeof REVIEW_OPENED_EVENT | typeof REVIEW_RAW_OPENED_EVENT,
-  what: RawOpenKind | null,
+  eventType:
+    | typeof REVIEW_OPENED_EVENT
+    | typeof REVIEW_RAW_OPENED_EVENT
+    | typeof REVIEW_JUDGE_REVEALED_EVENT,
+  what: RawOpenKind | "judge" | null,
 ): ReviewOpenResult {
   return inTransaction(host.db, () => {
     const current = host.resolveTicket(ticket.id);

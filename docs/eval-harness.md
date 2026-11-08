@@ -43,7 +43,8 @@ predicts what a reviewer then decides.
    (`wg ticket eval-score --as system`, a `ticket.eval_judged` event), where the
    Review view's verdict strip shows it (the score, then every dimension scored 3 or
    lower with the judge's reason, labelled as a model's grade that nothing gates on)
-   and `wg ticket show` carries it as `evalJudgment`. Only the runner or an admin can
+   and `wg ticket show` carries it as `evalJudgment` (hidden while the ticket waits in
+   review; see *Blinding* below). Only the runner or an admin can
    record one: the safety hook denies `eval-score` to an agent shell, so a delivery
    cannot grade itself. Additive + fail-soft: any failure (unbuilt crew, dead model turn,
    empty reply) records nothing and never blocks the delivery. An empty reply is
@@ -156,10 +157,25 @@ lower total cost?* `gaffer eval experiment` (`runner/eval/experiment.sh` and
    head), and the judge score where the fixture records one for the change the run
    delivered.
 3. **Report paired differences.** Per ticket: Δ acceptance, Δ attempts, Δ spend, Δ
-   judge score against the baseline; then the mean, a 95% t interval and n over
+   judge score against the baseline; then the mean, a 95% interval and n over
    tickets, in `results.json` (`comparisons`) and `report.md`. A ticket an arm never
    submitted counts as a failure for that arm, not as missing data; a run a cap or a
    refusal stopped is left out of every pair, and the report says how many.
+
+   Acceptance is a paired yes or no, so its interval is **Newcombe's paired score
+   interval** (Newcombe 1998, method 10: a Wilson score interval for each arm's
+   acceptance rate, combined through the correlation of the 2x2 table of outcomes;
+   `method: "newcombe_paired_score"` in `results.json`). The report also gives the
+   **discordant pairs**, the tickets where one arm was accepted and the other was not,
+   and which arm each favours: only those tickets say anything about the difference.
+   A t interval on the -1/0/+1 differences used to give ten tied tickets the interval
+   [0, 0], as if ten tickets proved there was no difference at all; Newcombe's interval
+   for the same ten ties is about -0.28 to 0.28. With no discordant ticket at all the
+   method's own formula collapses to [0, 0] when some tickets passed on both arms and the
+   rest failed on both, so for any run with no discordant ticket the report gives the
+   bound on the discordant rate instead (plus or minus z²/(n + z²), the same -0.28 to 0.28
+   for ten tickets). Attempts, spend and judge score are
+   continuous, so they keep the paired t interval.
 
 **Stub mode** is the default: the agent is `runner/eval/experiment-stub-agent.sh`,
 which applies the ticket's recorded change (nothing for `stub=noop`), so the whole
@@ -196,8 +212,25 @@ Its limits, also in the report:
   fixture with no `memory`, the packet on one with no `scout` files).
 
 `gaffer wg routing recommend` reads these results beside the routing scorecard; a
-stub-mode experiment never proposes anything, and a live one proposes only a tier
-compared against a baseline that ran the default implement tier.
+stub-mode experiment never proposes anything, and a live one proposes a tier only when
+all of these hold, and otherwise prints which one failed:
+
+- the arm differs from a baseline that ran the default implement tier only in its tier;
+- it ran at least the scorecard's minimum number of tickets (10 by default);
+- at least one ticket is discordant (with none, both arms did the same on every ticket
+  and the run carries no information about the difference);
+- the lower bound of the acceptance difference's 95% Newcombe interval is at or above
+  **minus the non-inferiority margin, 0.10** (`NON_INFERIORITY_MARGIN` in
+  `routingRecommend.ts`);
+- its mean spend difference is below zero.
+
+The margin says how much acceptance a cheaper tier may plausibly give up and still be
+proposed: ten percentage points, the usual starting margin for a non-inferiority
+comparison of two proportions and the same size as the scorecard's own threshold for a
+difference worth acting on (`BETTER_BY_POINTS`). A bound at or above zero would demand
+proof that the cheaper tier is better, which a cost saving does not need. Results
+written before this interval have no `method` and never propose; run their report
+again (`experiment.mjs report`).
 
 ## Knobs
 
@@ -277,7 +310,7 @@ reviews it: that is a gate's verdict, not a reviewer's, so it is counted apart a
 delivery's outcome. It reads the judgments on
 the tickets and, for judgments recorded before they reached the ticket, the eval
 ledger (paired by ticket number and time; a ledger line with a matching ticket event
-is counted once). It reports:
+is counted once). It reports (over the blind decisions; see *Blinding* below):
 
 - the verdict by outcome table (pass / borderline / fail against accepted / rejected
   / pending), and who decided each (people, the agent review, the tester: the agent
@@ -292,12 +325,37 @@ is counted once). It reports:
 - the *misses* (judged pass, then sent back, with the reviewer's reason) and the
   *false alarms* (judged short of pass, then accepted, with the weakest dimension):
   the cases to read before changing anything;
+- *blinding*: how many decisions were blind and how many came after the grade was
+  revealed, with the revealed ones' table, rates and AUC apart;
 - *coverage*: how many of the runner's deliveries into review since the first judged
   one were judged at all (a conflict reopen or a delivery you made by hand is never
   judged and is not counted), so a judge failing quietly (an unbuilt crew, a dead
   turn, a refusal) shows instead of shrinking the sample unseen.
 
-**The reading** applies a fixed rule: below 20 decided deliveries, or fewer than 5
+**Blinding.** If the reviewer reads the judge's grade before deciding, agreement partly
+measures the judge persuading the reviewer, not the judge seeing what the reviewer sees.
+So the Review page keeps the grade collapsed behind **Show the judge's view**: no
+verdict, score or colour shows until you open it. Opening it while the ticket is in
+review records a reveal on the ticket (`ticket.review_judge_revealed`, once per review
+round, through `POST /tickets/:id/judge-revealed`; `wg review judge-view <ref>` is the
+terminal's way to open it and is recorded the same way). Until then the grade is kept
+out of the other places a reviewer could read it too: the ticket page's match report
+says "Eval judge: hidden until you decide", the eval judge's events in
+`GET /tickets/:id`, `GET /tickets/:id/events` and the batched details carry
+`{ "hidden": true }` in place of the grade, and `wg ticket show` prints `evalJudgment:
+null` with `evalJudgmentHidden` saying how to see it. Once the view is opened, or the
+ticket leaves review, they show it again. A decision is *revealed* when a
+reveal on the ticket falls between the judgment and the decision, or when a person
+decided before this factory started hiding the grade (the database upgrade that added
+the hidden view stamps that moment; a factory created since has no such decisions);
+every other decision is *blind*. The agreement figures above and the reading count
+blind decisions only, and the report gives the count of each and the revealed decisions'
+own figures apart, labelled as possibly swayed by the grade. The Health view's *What
+each lane changed* card splits the eval judge's differed-from-the-person counts the same
+way. Opening the view is your call and nothing stops you; it only moves your decision
+out of the headline.
+
+**The reading** applies a fixed rule: below 20 blind decided deliveries, or fewer than 5
 accepted or 5 rejected, it says there is not enough data to tell. Above that, the
 judge *separates* when the AUC is at least 0.7 and the work it warned of was rejected
 at least 1.5 times as often as the work it passed (any rejection after a warning
@@ -313,7 +371,8 @@ thresholds are in the report (`thresholds`) so a reading can always be checked.
 delivery (booked in the usage ledger as kind `eval-judge`, so the budget caps and the
 cost tiles see it), and whether that is worth it depends on the factory. Turn it on for a run of at least
 20 reviewed deliveries, review as you normally would, then run `gaffer eval
-agreement`. If it separates, keep it on and read its reasons on the Review page. If it
+agreement`. If it separates, keep it on and open its view on the Review page when you want its
+reasons (that decision then counts as revealed). If it
 does not, read the misses, then try a different judge model
 (`GAFFER_JUDGE_MODEL_FLAG`) or turn it off. What a change costs once every attempt is
 counted, the judge's own spend included, is the *cost per accepted change* metric above (`gaffer wg stats`, the Health view's

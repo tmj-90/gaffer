@@ -27,6 +27,13 @@
  *                     no attempt id counts as its own attempt. The plan debate books its turns as `decompose` with
  *                     the rest of planning, so it has no spend of its own here.
  *
+ *   blinding          the eval judge only: its compared and differed counts split by
+ *                     whether the person decided blind or after opening the judge's view
+ *                     (`ticket.review_judge_revealed` in the attempt before the decision, or
+ *                     a decision before the database started hiding the grade). A person who
+ *                     saw the grade can follow it, so only the blind split says how often the
+ *                     judge and the person independently agreed.
+ *
  * Counts only. Nothing here recommends switching a lane off: that is a person's call, and
  * the security review and the tester are safety lanes that telemetry never switches off.
  * Pure: the caller supplies the transitions, the verdicts and the ledger rows.
@@ -48,6 +55,18 @@ export interface LaneValueVerdict {
   readonly lane: string;
   readonly verdict: string;
   readonly atMs: number;
+}
+
+/** A person opened the eval judge's view of a ticket in review. */
+export interface LaneValueReveal {
+  readonly ticketId: string;
+  readonly atMs: number;
+}
+
+/** The eval judge's comparisons with the person, split by whether the person saw the grade. */
+export interface LaneBlinding {
+  readonly blind: { readonly compared: number; readonly differed: number };
+  readonly revealed: { readonly compared: number; readonly differed: number };
 }
 
 export interface LaneValue {
@@ -72,6 +91,8 @@ export interface LaneValue {
   readonly cost_per_attempt_usd: number | null;
   /** "no verdicts recorded" when the lane has none; null otherwise. */
   readonly note: string | null;
+  /** The eval judge only (null for every other lane): compared/differed, blind and revealed. */
+  readonly blinding: LaneBlinding | null;
 }
 
 export interface LaneValueReport {
@@ -112,6 +133,7 @@ export const LANE_VALUE_LIMITS: readonly string[] = [
   "attempts are segmented on each ticket's timeline from each start of work; a verdict is joined to the attempt it falls in by time, not by commit",
   "a unique catch is a send-back only this lane asked for; it is not confirmed as a real defect",
   "compared counts only attempts a person decided; an agent's own approval or send-back is not a person's decision",
+  "the eval judge's comparisons are split into blind decisions and decisions made after the person opened the judge's view (or before the grade was hidden); only the blind ones are independent of the grade",
   "spend is the lane's ledger kind, estimates included; the plan debate books with the rest of planning and has no spend of its own here",
   "cost per attempt divides by the attempt ids on the lane's ledger rows: the ticket's latest delivery row when the call ran (a join by time order, not a commit match); a row without one counts as its own attempt",
 ];
@@ -134,6 +156,8 @@ interface Attempt {
   readonly ticketId: string;
   outcome: "sent_back" | "accepted" | null;
   person: Position | null;
+  /** The judge's view was opened before the person decided (or the decision predates hiding it). */
+  revealed: boolean;
   /** Per lane: last position taken (null: only held/borderline). */
   readonly lanes: Map<string, Position | null>;
 }
@@ -145,10 +169,16 @@ export function laneValueReport(input: {
   transitions: readonly LaneValueTransition[];
   verdicts: readonly LaneValueVerdict[];
   ledger: readonly HealthRow[];
+  /** Reveals of the judge's view (none: every decision counts as blind). */
+  reveals?: readonly LaneValueReveal[];
+  /** When the database started hiding the grade (null: from the start). */
+  blindSinceMs?: number | null;
 }): LaneValueReport {
   type Item =
     | { kind: "t"; atMs: number; seq: number; t: LaneValueTransition }
-    | { kind: "v"; atMs: number; seq: number; v: LaneValueVerdict };
+    | { kind: "v"; atMs: number; seq: number; v: LaneValueVerdict }
+    | { kind: "r"; atMs: number; seq: number };
+  const blindSinceMs = input.blindSinceMs ?? null;
   const byTicket = new Map<string, Item[]>();
   let seq = 0;
   const push = (id: string, item: Item): void => {
@@ -158,6 +188,7 @@ export function laneValueReport(input: {
   };
   for (const t of input.transitions) push(t.ticketId, { kind: "t", atMs: t.atMs, seq: seq++, t });
   for (const v of input.verdicts) push(v.ticketId, { kind: "v", atMs: v.atMs, seq: seq++, v });
+  for (const r of input.reveals ?? []) push(r.ticketId, { kind: "r", atMs: r.atMs, seq: seq++ });
 
   const byVerdict = new Map<string, Map<string, number>>();
   for (const v of input.verdicts) {
@@ -172,7 +203,13 @@ export function laneValueReport(input: {
     items.sort((a, b) => a.atMs - b.atMs || a.seq - b.seq);
     let cur: Attempt | null = null;
     const open = (): Attempt => {
-      const a: Attempt = { ticketId, outcome: null, person: null, lanes: new Map() };
+      const a: Attempt = {
+        ticketId,
+        outcome: null,
+        person: null,
+        revealed: false,
+        lanes: new Map(),
+      };
       attempts.push(a);
       return a;
     };
@@ -185,11 +222,17 @@ export function laneValueReport(input: {
         if (t.fromStatus === "in_review" && isPerson(t.actorType)) {
           if (APPROVED_TO.has(t.toStatus ?? "")) cur.person = "pass";
           else if (isReviewSendBack({ ...t, at: "" })) cur.person = "block";
+          // A decision before the grade was hidden was made with it in view.
+          if (cur.person !== null && blindSinceMs !== null && t.atMs < blindSinceMs)
+            cur.revealed = true;
         }
         if (cur.outcome === null) {
           if (isReviewSendBack({ ...t, at: "" })) cur.outcome = "sent_back";
           else if (t.toStatus === "done") cur.outcome = "accepted";
         }
+      } else if (it.kind === "r") {
+        // Opened before the person decided this attempt: the decision saw the grade.
+        if (cur !== null && cur.person === null) cur.revealed = true;
       } else {
         if (cur === null) cur = open();
         const pos = positionOf(it.v.verdict);
@@ -206,6 +249,7 @@ export function laneValueReport(input: {
     let lb = 0;
     let lp = 0;
     let unique = 0;
+    const split = { blind: { compared: 0, differed: 0 }, revealed: { compared: 0, differed: 0 } };
     for (const a of attempts) {
       if (!a.lanes.has(def.lane)) continue;
       judged += 1;
@@ -214,6 +258,9 @@ export function laneValueReport(input: {
         compared += 1;
         if (pos === "block" && a.person === "pass") lb += 1;
         if (pos === "pass" && a.person === "block") lp += 1;
+        const side = a.revealed ? split.revealed : split.blind;
+        side.compared += 1;
+        if (pos !== a.person) side.differed += 1;
       }
       if (a.outcome === "sent_back" && pos === "block") {
         const others = [...a.lanes].some(([l, p]) => l !== def.lane && p === "block");
@@ -251,6 +298,7 @@ export function laneValueReport(input: {
       ledger_attempts: ids.size,
       cost_per_attempt_usd: spend !== null && ids.size > 0 ? usd(spend / ids.size) : null,
       note: recorded === 0 ? "no verdicts recorded" : null,
+      blinding: def.lane === "eval-judge" ? split : null,
     };
   });
 

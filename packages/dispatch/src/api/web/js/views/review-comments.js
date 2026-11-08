@@ -573,16 +573,29 @@ function reviewRawWatch(box, t, events) {
   return box;
 }
 function noteReviewOpen(ticketId, round, what = "") {
-  if (!ticketId || !round || readOnly()) return;
+  // The judge's reveal goes even without the round in hand: the server finds the round
+  // itself, and a lost reveal would count a revealed decision as blind.
+  if (!ticketId || (!round && what !== "judge") || readOnly()) return;
   const key = `${ticketId}@${round}${what ? `#${what}` : ""}`;
   if (reviewOpensSent.has(key)) return;
   reviewOpensSent.add(key);
-  const path = what
-    ? `/tickets/${ticketId}/review-raw-opened`
-    : `/tickets/${ticketId}/review-opened`;
-  api("POST", path, what ? { what, round_entered_at: round } : { round_entered_at: round }).catch(
-    () => {},
-  );
+  // BLINDING: "judge" is the eval judge's collapsed view, its own record (judge agreement
+  // splits blind decisions from revealed ones on it).
+  const path =
+    what === "judge"
+      ? `/tickets/${ticketId}/judge-revealed`
+      : what
+        ? `/tickets/${ticketId}/review-raw-opened`
+        : `/tickets/${ticketId}/review-opened`;
+  api(
+    "POST",
+    path,
+    what && what !== "judge"
+      ? { what, round_entered_at: round }
+      : round
+        ? { round_entered_at: round }
+        : {},
+  ).catch(() => {});
 }
 /** When the ticket last moved into its current status (the wait starts there). */
 function sinceStatus(events, status) {

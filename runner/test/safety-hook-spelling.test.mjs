@@ -118,6 +118,8 @@ for (const cmd of [
   "wg review reopen-comment 1a2b3c4d",
   "wg review withdraw-comment 1a2b3c4d",
   "wg review fix 3",
+  // Opening the eval judge's view marks the person's decision as revealed (review13/4).
+  "wg review judge-view 3",
   "dispatch review resolve 1a2b3c4d",
   "node packages/dispatch/dist/cli/index.js review resolve 1a2b3c4d",
   "wg 'review' res''olve 1a2b3c4d",

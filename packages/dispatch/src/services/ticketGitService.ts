@@ -412,8 +412,10 @@ export function changeOnRefs(
       const listed = runGit(cwd, ["for-each-ref", "--format=%(refname)", "refs/remotes/"]);
       if (listed.status === 0)
         for (const line of listed.stdout.split("\n")) {
-          const name = line.trim();
-          if (name.endsWith(`/${def}`) && name.split("/").length === 4) names.push(name);
+          // refs/remotes/<remote>/<branch>: the branch is everything after the remote,
+          // slashes included (`release/v1`), and must BE the default branch exactly.
+          const m = /^refs\/remotes\/[^/]+\/(.+)$/.exec(line.trim());
+          if (m && m[1] === def) names.push(m[0]);
         }
     }
   }

@@ -211,6 +211,58 @@ describe("lane value read model (hand-worked fixture)", () => {
   });
 });
 
+describe("eval judge blinding (review13/4)", () => {
+  // Two attempts the eval judge graded and a person decided: on X the person opened the
+  // judge's view (reveal at 12) before deciding (20); on Y they decided without opening it.
+  const ts = [
+    tr("X", "ready", "in_progress", 0),
+    tr("X", "in_progress", "in_review", 10),
+    tr("X", "in_review", "refining", 20, "human"),
+    tr("Y", "ready", "in_progress", 0),
+    tr("Y", "in_progress", "in_review", 10),
+    tr("Y", "in_review", "ready_for_merge", 20, "human"),
+  ];
+  const vs = [v("X", "eval-judge", "fail", 11), v("Y", "eval-judge", "fail", 11)];
+  const judge = (r: ReturnType<typeof laneValueReport>) =>
+    r.lanes.find((l) => l.lane === "eval-judge")!;
+
+  it("splits the judge's comparisons into blind decisions and decisions after a reveal", () => {
+    const r = laneValueReport({
+      transitions: ts,
+      verdicts: vs,
+      ledger: [],
+      reveals: [{ ticketId: "X", atMs: at(12) }],
+    });
+    expect(judge(r).compared).toBe(2);
+    expect(judge(r).blinding).toEqual({
+      blind: { compared: 1, differed: 1 },
+      revealed: { compared: 1, differed: 0 },
+    });
+    // Only the eval judge carries the split.
+    expect(r.lanes.find((l) => l.lane === "agent-review")!.blinding).toBeNull();
+  });
+
+  it("a reveal after the decision does not count; a decision before the grade was hidden does", () => {
+    const late = laneValueReport({
+      transitions: ts,
+      verdicts: vs,
+      ledger: [],
+      reveals: [{ ticketId: "X", atMs: at(25) }],
+    });
+    expect(judge(late).blinding!.revealed.compared).toBe(0);
+    const before = laneValueReport({
+      transitions: ts,
+      verdicts: vs,
+      ledger: [],
+      blindSinceMs: at(30),
+    });
+    expect(judge(before).blinding).toEqual({
+      blind: { compared: 0, differed: 0 },
+      revealed: { compared: 2, differed: 1 },
+    });
+  });
+});
+
 describe("wg stats: what each lane changed", () => {
   it("prints a line per lane, no verdicts recorded where there are none, and the footnote", () => {
     const wg = Dispatch.open(":memory:", new TestClock());

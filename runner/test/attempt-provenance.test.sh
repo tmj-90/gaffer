@@ -75,9 +75,14 @@ GAFFER_USAGE_LEDGER="$WORK/l1.jsonl" node "$UL" --kind delivery --ticket 4 --rc 
 row="$(cat "$WORK/l1.jsonl")"
 node -e 'const r=JSON.parse(process.argv[1]);process.exit(r.attempt===2&&r.model_requested==="stub-req"&&r.claude_version==="1.2.3 (Claude Code)"&&r.measured===true?0:1)' "$row" \
   && ok "attempt, model_requested and claude_version are on the row" || fail "row: $row"
+# A failed call whose envelope still reports its cost is booked at that figure (measured,
+# exit_rc and reported_on_failure on the row); one with no envelope stays an estimate.
 GAFFER_USAGE_LEDGER="$WORK/l2.jsonl" node "$UL" --kind delivery --ticket 4 --rc 124 --attempt 1 --model stub-req --claude-version 9 --kill-estimate 0 --json-file "$WORK/u.json" >/dev/null
-node -e 'const r=JSON.parse(process.argv[1]);process.exit(r.attempt===1&&r.model_requested==="stub-req"&&r.measured===false?0:1)' "$(cat "$WORK/l2.jsonl")" \
-  && ok "a killed call carries them too" || fail "killed row: $(cat "$WORK/l2.jsonl")"
+node -e 'const r=JSON.parse(process.argv[1]);process.exit(r.attempt===1&&r.model_requested==="stub-req"&&r.claude_version==="9"&&r.measured===true&&r.exit_rc===124&&r.reported_on_failure===true&&r.total_cost_usd===0.01?0:1)' "$(cat "$WORK/l2.jsonl")" \
+  && ok "a failed call that reported its cost carries them too, booked at the reported figure" || fail "killed row: $(cat "$WORK/l2.jsonl")"
+GAFFER_USAGE_LEDGER="$WORK/l2b.jsonl" node "$UL" --kind delivery --ticket 4 --rc 124 --attempt 1 --model stub-req --claude-version 9 --kill-estimate 0 --json-file "$WORK/no-such-envelope.json" >/dev/null
+node -e 'const r=JSON.parse(process.argv[1]);process.exit(r.attempt===1&&r.model_requested==="stub-req"&&r.claude_version==="9"&&r.measured===false?0:1)' "$(cat "$WORK/l2b.jsonl")" \
+  && ok "a killed call with no envelope carries them too, and stays unmeasured" || fail "killed row (no envelope): $(cat "$WORK/l2b.jsonl")"
 GAFFER_USAGE_LEDGER="$WORK/l3.jsonl" node "$UL" --kind review --rc 0 --json-file "$WORK/u.json" >/dev/null
 node -e 'const r=JSON.parse(process.argv[1]);process.exit(!("attempt" in r)&&!("model_requested" in r)&&!("claude_version" in r)?0:1)' "$(cat "$WORK/l3.jsonl")" \
   && ok "without them the record is unchanged" || fail "bare row: $(cat "$WORK/l3.jsonl")"

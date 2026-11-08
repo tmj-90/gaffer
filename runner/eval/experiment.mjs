@@ -323,7 +323,12 @@ const T95 = [
 ];
 const r4 = (v) => Math.round(v * 10000) / 10000;
 
-/** Mean and a 95% t interval of paired differences; null interval below n = 2. */
+/**
+ * Mean and a 95% t interval of paired differences; null interval below n = 2. Used for
+ * the CONTINUOUS measures only (spend in USD, attempts, judge score), where a t interval
+ * on paired differences is the textbook method. Acceptance is a paired BINARY outcome
+ * and goes through pairedProportionSummary instead.
+ */
 export function pairedSummary(diffs) {
   const xs = diffs.filter((d) => typeof d === "number" && Number.isFinite(d));
   const n = xs.length;
@@ -336,12 +341,88 @@ export function pairedSummary(diffs) {
   return { n, mean: r4(mean), ci95: [r4(mean - half), r4(mean + half)] };
 }
 
+/** The acceptance interval's method, named in results.json and the report. */
+export const ACCEPTANCE_INTERVAL_METHOD = "newcombe_paired_score";
+export const ACCEPTANCE_INTERVAL_LABEL = "Newcombe paired score interval";
+const Z95 = 1.959963984540054;
+
+/** Wilson score interval for x successes in n trials (95%). */
+function wilson(x, n) {
+  const p = x / n;
+  const z2 = Z95 * Z95;
+  const d = 1 + z2 / n;
+  const c = (p + z2 / (2 * n)) / d;
+  const h = (Z95 * Math.sqrt((p * (1 - p)) / n + z2 / (4 * n * n))) / d;
+  return [Math.max(0, c - h), Math.min(1, c + h)];
+}
+
+/**
+ * Acceptance is a PAIRED BINARY outcome: on each ticket both arms either were accepted
+ * or not. A t interval on the -1/0/+1 differences claims certainty it does not have (ten
+ * ties give [0, 0]: "exactly no difference" from ten tickets). This uses Newcombe's
+ * hybrid score interval for a difference of paired proportions (Newcombe 1998, method
+ * 10: Wilson score limits for each arm's acceptance rate, combined with the phi
+ * correlation of the 2x2 table), which keeps a sensible width at small n and at 0 or 1.
+ * `pairs` is [{ arm, vs }] of booleans (the arm accepted, the baseline accepted). The
+ * descriptive mean is kept; `discordant` counts the tickets where the arms disagreed,
+ * the only tickets that carry information about the difference.
+ */
+export function pairedProportionSummary(pairs) {
+  const xs = pairs.filter((q) => q && typeof q.arm === "boolean" && typeof q.vs === "boolean");
+  const n = xs.length;
+  let a = 0; // both accepted
+  let b = 0; // only the arm accepted
+  let c = 0; // only the baseline accepted
+  let d = 0; // neither
+  for (const q of xs) {
+    if (q.arm && q.vs) a += 1;
+    else if (q.arm) b += 1;
+    else if (q.vs) c += 1;
+    else d += 1;
+  }
+  const base = {
+    n,
+    method: ACCEPTANCE_INTERVAL_METHOD,
+    discordant: b + c,
+    favours_arm: b,
+    favours_baseline: c,
+    both_accepted: a,
+    neither_accepted: d,
+  };
+  if (n === 0) return { ...base, mean: null, ci95: null };
+  // No discordant pair: method 10 is degenerate when both arms passed some tickets and
+  // failed the rest (phi is 1 and the interval collapses to [0, 0], the false certainty
+  // this replaced). The difference is at most the discordant rate, and 0 of n discordant
+  // bounds that rate by the Wilson upper limit z^2/(n + z^2); that is also exactly what
+  // method 10 gives when every ticket passed (or failed) on both arms, so ties of every
+  // kind read the same.
+  if (b + c === 0) {
+    const w = r4((Z95 * Z95) / (n + Z95 * Z95));
+    return { ...base, mean: 0, ci95: [-w, w] };
+  }
+  const p1 = (a + b) / n;
+  const p2 = (a + c) / n;
+  const mean = p1 - p2;
+  const [l1, u1] = wilson(a + b, n);
+  const [l2, u2] = wilson(a + c, n);
+  const den = Math.sqrt((a + b) * (c + d) * (a + c) * (b + d));
+  const phi = den > 0 ? (a * d - b * c) / den : 0;
+  const lo =
+    mean -
+    Math.sqrt(Math.max(0, (p1 - l1) ** 2 - 2 * phi * (p1 - l1) * (u2 - p2) + (u2 - p2) ** 2));
+  const hi =
+    mean +
+    Math.sqrt(Math.max(0, (p2 - l2) ** 2 - 2 * phi * (p2 - l2) * (u1 - p1) + (u1 - p1) ** 2));
+  return { ...base, mean: r4(mean), ci95: [r4(Math.max(-1, lo)), r4(Math.min(1, hi))] };
+}
+
 export const EXPERIMENT_LIMITS = [
   "the delivery brief is the experiment's own (task, acceptance criteria, the arm's memory and scout blocks), not the factory's rendered delivery prompt",
   "accepted means every gate passed and, where the ticket names one, its hidden acceptance test passed on the submitted head; no person reviewed it",
   "a judge score is shown only where a fixture records the rubric for its own delivery and the run delivered exactly that change",
   "stub mode proves the pipeline (worker seam, gates, pairing, report) for free; it says nothing about a model",
   "a run the caps stopped is left out of every pair, and the report says how many",
+  "the acceptance difference's 95% interval is Newcombe's paired score interval (acceptance is a paired yes/no outcome); attempts, spend and judge score use a paired t interval",
 ];
 
 /** What an arm runs with when it names no value for a setting (the brief's defaults). */
@@ -371,6 +452,7 @@ export function report(p, runs) {
       per.push({
         ticket: t.id,
         acceptance: (ra.accepted ? 1 : 0) - (rb.accepted ? 1 : 0),
+        accepted: { arm: Boolean(ra.accepted), vs: Boolean(rb.accepted) },
         attempts: ra.attempts - rb.attempts,
         spend_usd:
           ra.spend_usd === null || rb.spend_usd === null ? null : r4(ra.spend_usd - rb.spend_usd),
@@ -389,8 +471,9 @@ export function report(p, runs) {
       differs_in: differs,
       overrides: a.overrides,
       vs_overrides: b.overrides,
-      acceptance: pairedSummary(per.map((d) => d.acceptance)),
+      acceptance: pairedProportionSummary(per.map((d) => d.accepted)),
       attempts: pairedSummary(per.map((d) => d.attempts)),
+      // Spend is continuous (USD), so the paired t interval stays right for it.
       spend_usd: {
         ...pairedSummary(per.map((d) => d.spend_usd)),
         unknown: per.filter((d) => d.spend_usd === null).length,
@@ -411,10 +494,19 @@ export function report(p, runs) {
     const per = mem.per_ticket.filter((d) => applied(d.ticket));
     if (per.length > 0) {
       const on = effective(mem.overrides, "memory") === "on";
+      // The paired-proportion interval is antisymmetric in the two arms, so flipping it
+      // negates and swaps the limits and swaps which arm the discordant tickets favour.
       const flip = (s) =>
         on || !s || s.mean === null
           ? s
-          : { ...s, mean: -s.mean, ci95: s.ci95 ? [-s.ci95[1], -s.ci95[0]] : null };
+          : {
+              ...s,
+              mean: -s.mean,
+              ci95: s.ci95 ? [-s.ci95[1], -s.ci95[0]] : null,
+              ...(s.method === ACCEPTANCE_INTERVAL_METHOD
+                ? { favours_arm: s.favours_baseline, favours_baseline: s.favours_arm }
+                : {}),
+            };
       const judge = pairedSummary(per.map((d) => d.judge_score));
       memoryMatched = {
         measure: "matched_memory_priming",
@@ -422,7 +514,7 @@ export function report(p, runs) {
         tickets: per.length,
         with_memory: on ? mem.arm : base,
         without_memory: on ? base : mem.arm,
-        acceptance: flip(pairedSummary(per.map((d) => d.acceptance))),
+        acceptance: flip(pairedProportionSummary(per.map((d) => d.accepted))),
         attempts: flip(pairedSummary(per.map((d) => d.attempts))),
         spend_usd: flip(pairedSummary(per.map((d) => d.spend_usd))),
         judge_score: judge.n ? flip(judge) : null,
@@ -450,7 +542,9 @@ export function report(p, runs) {
 const fmt = (s) =>
   !s || s.mean === null
     ? "n/a"
-    : `${s.mean}${s.ci95 ? ` (95% CI ${s.ci95[0]} to ${s.ci95[1]})` : " (no interval below n=2)"}`;
+    : s.method === ACCEPTANCE_INTERVAL_METHOD
+      ? `${s.mean} (95% ${ACCEPTANCE_INTERVAL_LABEL} ${s.ci95[0]} to ${s.ci95[1]}; ${s.discordant} discordant pair(s): ${s.favours_arm} favour the arm, ${s.favours_baseline} the baseline)`
+      : `${s.mean}${s.ci95 ? ` (95% CI ${s.ci95[0]} to ${s.ci95[1]})` : " (no interval below n=2)"}`;
 
 export function markdown(res) {
   const out = [

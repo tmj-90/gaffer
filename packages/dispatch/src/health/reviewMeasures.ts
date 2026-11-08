@@ -17,6 +17,8 @@
 import type { Db } from "../db/connection.js";
 import {
   LANE_VERDICT_EVENT,
+  readJudgeBlindSince,
+  REVIEW_JUDGE_REVEALED_EVENT,
   REVIEW_OPENED_EVENT,
   REVIEW_RAW_OPENED_EVENT,
 } from "../services/reviewTelemetry.js";
@@ -181,6 +183,7 @@ export function readReviewMeasures(db: Db, opts: ReviewMeasureOptions = {}): Rev
         GROUP BY status`,
     )
     .all(REVIEW_OPENED_EVENT) as Array<{ status: string | null; n: number }>;
+  const blindSince = readJudgeBlindSince(db);
   const callerCount = (s: string) => callerRows.find((r) => r.status === s)?.n ?? 0;
   const opens = callerRows.reduce((k, r) => k + r.n, 0);
   const listed = callerCount("listed");
@@ -249,6 +252,15 @@ export function readReviewMeasures(db: Db, opts: ReviewMeasureOptions = {}): Rev
         atMs: ms(r.at),
       })),
       ledger: opts.ledger ?? [],
+      reveals: (
+        db
+          .prepare(
+            `SELECT entity_id AS ticketId, created_at AS at FROM work_events
+              WHERE entity_type = 'ticket' AND event_type = ? ORDER BY rowid`,
+          )
+          .all(REVIEW_JUDGE_REVEALED_EVENT) as Array<{ ticketId: string; at: string }>
+      ).map((r) => ({ ticketId: r.ticketId, atMs: ms(r.at) })),
+      blindSinceMs: blindSince === null ? null : ms(blindSince),
     }),
   };
 }

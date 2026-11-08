@@ -109,6 +109,8 @@ const TICKET_SUB = {
   // REVIEW TELEMETRY (Release A metrics): a person opened the ticket / a raw view in Review.
   REVIEW_OPENED: "review-opened",
   REVIEW_RAW_OPENED: "review-raw-opened",
+  // BLINDING: a person opened the eval judge's collapsed view in Review.
+  JUDGE_REVEALED: "judge-revealed",
   // ESCAPED DEFECTS (MF5): a person links this ticket to the accepted change it regresses.
   REGRESSION_OF: "regression-of",
 } as const;
@@ -343,7 +345,9 @@ export async function routeTickets(
   // /tickets/:id
   if (segments.length === 2) {
     if (method === "GET") {
-      const view = wg.view(id);
+      // BLINDING: the eval judge's grade stays hidden here while the ticket is in review
+      // and its view has not been opened this round (Dispatch.readerView).
+      const view = wg.readerView(id);
       sendJson(res, 200, {
         ticket: { ...view.ticket, ...withLanding(wg, view.ticket) },
         acceptance_criteria: view.acceptanceCriteria,
@@ -807,6 +811,22 @@ export async function routeTickets(
   if (segments.length === 3 && sub === TICKET_SUB.REVIEW_RAW_OPENED && method === "POST") {
     const body = reviewRawOpenedBody.parse(await readJsonBody(req));
     const r = wg.recordReviewRawOpened(id, body.what, apiActor(), body.round_entered_at ?? null);
+    sendJson(res, 200, {
+      ticket_id: r.ticketId,
+      recorded: r.recorded,
+      reason: r.reason,
+      event_id: r.eventId,
+      round_entered_at: r.roundEnteredAt,
+    });
+    return;
+  }
+
+  // BLINDING: /tickets/:id/judge-revealed: a person opened the eval judge's collapsed view
+  // ("Show the judge's view") of a ticket in review. Once per round; the same rules as
+  // review-opened. Judge agreement counts a decision after it apart from blind ones.
+  if (segments.length === 3 && sub === TICKET_SUB.JUDGE_REVEALED && method === "POST") {
+    const body = reviewOpenedBody.parse(await readJsonBody(req));
+    const r = wg.recordJudgeRevealed(id, apiActor(), body.round_entered_at ?? null);
     sendJson(res, 200, {
       ticket_id: r.ticketId,
       recorded: r.recorded,

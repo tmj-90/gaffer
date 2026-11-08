@@ -13,7 +13,7 @@
 #   • gaffer_claude_auth_probe  — FREE: is a credential VISIBLE? (the env vars the CLI
 #     reads, or its credentials file). macOS keeps the login in the Keychain, which a
 #     shell cannot inspect, so there it reports "unknown" rather than a false alarm.
-#   • gaffer_claude_live_probe  — opt-in (GAFFER_PREFLIGHT_LIVE=1), ONE tiny paid call:
+#   • gaffer_claude_live_probe  — opt-in (runner/preflight.sh --live), ONE tiny paid call:
 #     `claude -p ok --max-turns 1 --output-format json`; fails on a non-zero exit or
 #     claude's JSON reporting is_error (auth / limit errors often exit 0).
 # Discipline (runner/CLAUDE.md): report-only, never mutates, never reads a credential's
@@ -137,7 +137,5 @@ gaffer_claude_live_probe() {
 # LIVE-RUN AUTH GATE: 0 = skip the free credential check before a live run
 # (gaffer_claude_auth_gate); 1 (default) = refuse a live run when no credential is visible.
 : "${GAFFER_CLAUDE_AUTH_PROBE:=1}"
-# LIVE CLAUDE PROBE: 1 = runner/preflight.sh also makes ONE tiny paid `claude -p` call
-# to prove the login works (catches an expired token the free credential check cannot);
-# 0 = only the free check (is a credential visible at all).
-: "${GAFFER_PREFLIGHT_LIVE:=0}"
+# (The LIVE CLAUDE PROBE, one tiny paid `claude -p` call that proves the login works,
+# is `runner/preflight.sh --live`; its old switch GAFFER_PREFLIGHT_LIVE=1 is deprecated.)

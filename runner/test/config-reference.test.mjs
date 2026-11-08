@@ -211,8 +211,6 @@ for (const name of [
   "GAFFER_CI_TIMEOUT_POLICY",
   "GAFFER_MEMORY_AUTO_PROMOTE",
   "GAFFER_SANDBOX_IMAGE",
-  "GAFFER_VERBOSE",
-  "DEMO_DIR",
   "ANTHROPIC_API_KEY",
   "CLAUDE_CODE_OAUTH_TOKEN",
   "CLAUDE_CONFIG_DIR",
@@ -223,11 +221,6 @@ ok(/\| `GAFFER_DOD_INSTALL` \| `1` \|/.test(text), "GAFFER_DOD_INSTALL shows its
 ok(
   /\| `GAFFER_CI_TIMEOUT_POLICY` \| `block` \|/.test(text),
   "GAFFER_CI_TIMEOUT_POLICY defaults to block",
-);
-// demo.sh makes a fresh temp dir per run when DEMO_DIR is empty (no fixed shared path).
-ok(
-  /\| `DEMO_DIR` \| _\(empty\)_ \| .*fresh temp dir/.test(text),
-  "DEMO_DIR shows the demo's default (a fresh temp dir)",
 );
 
 console.log("== the read-site table fails when it drifts from the code ==");

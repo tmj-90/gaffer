@@ -102,12 +102,12 @@ err() { printf "  ${_e_red}✗${_e_off} %s\n" "$*" >&2; }
 # argument is pointed at. Kept next to the header block above, which is `gaffer help`.
 usage() {
   case "$1" in
-    onboard)   echo "usage: gaffer onboard <path> [--standalone] [--name <alias>]   (standalone scope is the default; map it to a wider scope in the Factory Map UI; --name registers it under an alias when another repository already has its directory name)" ;;
+    onboard)   echo "usage: gaffer onboard <path> [--standalone] [--name <alias>] [--verbose]   (standalone scope is the default; map it to a wider scope in the Factory Map UI; --name registers it under an alias when another repository already has its directory name; --verbose prints the full log)" ;;
     dashboard) echo "usage: gaffer dashboard [--restart] [--stop] [--lan] [--foreground]   (--restart rotates the login token)" ;;
     status)    echo "usage: gaffer status   (doctors + work counts + what needs a human)" ;;
     sandbox-status) echo "usage: gaffer sandbox-status   (the agent isolation posture as one JSON object: provider, available, required, optedOut, missing, fix)" ;;
     setup)     echo "usage: gaffer setup   (install + build + init state + open the dashboard)" ;;
-    demo)      echo "usage: gaffer demo   (one dry tick over a showcase repo in a fresh temp dir, or DEMO_DIR; always DRY_RUN, nothing spent)" ;;
+    demo)      echo "usage: gaffer demo [--dir <empty dir>]   (one dry tick over a showcase repo in a fresh temp dir, or --dir; always DRY_RUN, nothing spent)" ;;
     eval)      echo "usage: gaffer eval [--json] | gaffer eval replay [--out <dir>] | gaffer eval experiment --arm A --arm B [--live --max-usd X] | gaffer eval agreement [--json]" ;;
     approve)   echo "usage: gaffer approve <ticket> [--reviewer <you>] [--commit <repo>=<sha>]…" ;;
     merge)     echo "usage: gaffer merge <ticket>   (the ticket must be approved: gaffer approve <ticket>; exit 0 landed, 4 held or not landed with the reason, 1 a hard failure)" ;;
@@ -172,11 +172,13 @@ onboard)
   # --standalone is the default scope (accepted, a no-op); --name <alias> registers the
   # repo under an alias (needed when a DIFFERENT repository already has its directory
   # name); any other option is refused.
-  path=""; alias=""
+  path=""; alias=""; verbose=""
+  _gaffer_deprecated GAFFER_VERBOSE "pass gaffer onboard --verbose instead"
   while [ "$#" -gt 0 ]; do
     a="$1"; shift
     case "$a" in
       --standalone) ;;
+      --verbose) verbose=1 ;;
       --name) [ "$#" -gt 0 ] || bad_arg onboard "--name needs an alias"; alias="$1"; shift ;;
       --name=*) alias="${a#--name=}" ;;
       -*) bad_arg onboard "unknown option '$a'" ;;
@@ -205,11 +207,11 @@ onboard)
   GAFFER_DATA="$GAFFER_DATA" DISPATCH_DB="$DISPATCH_DB" CREW_DIR="$CREW_DIR" CREW_CONFIG="$CREW_CONFIG" \
     MEMORY_DB="$MEMORY_DB" MEMORY_CLI_BIN="$MEMORY_CLI_BIN" \
     GAFFER_PLAN_MODEL="${GAFFER_PLAN_MODEL:-}" GAFFER_TICK_TIMEOUT="${GAFFER_TICK_TIMEOUT:-}" GAFFER_MAX_TURNS="${GAFFER_MAX_TURNS:-}" \
-    DISPATCH_ONBOARD_REPO="$abs" node "$RUNNER_DIR/bin/onboard-run.mjs" --repo "$abs" ${alias:+--name "$alias"} --summary 2>&1 >/dev/null \
+    DISPATCH_ONBOARD_REPO="$abs" node "$RUNNER_DIR/bin/onboard-run.mjs" --repo "$abs" ${alias:+--name "$alias"} --summary ${verbose:+--verbose} 2>&1 >/dev/null \
     | sed 's/^/  /'
   # --summary: a few lines here (registered name, stack/test, model analysis yes/no and
   # why not, the intake decision, the next step); the full log (crew's scan JSON, every
-  # analysis line) goes to $GAFFER_DATA/onboard.log. GAFFER_VERBOSE=1 shows it all.
+  # analysis line) goes to $GAFFER_DATA/onboard.log. --verbose shows it all.
   # stdout (the single-line JSON result, for the dashboard) is discarded here.
   # Surface a real onboard failure loudly — ${PIPESTATUS[0]} is the node exit, not sed's.
   orc=${PIPESTATUS[0]}
@@ -505,8 +507,18 @@ setup)
   ;;
 
 demo)
-  [ $# -eq 0 ] || bad_arg demo "demo takes no arguments (got '$1')"
-  DRY_RUN="${DRY_RUN:-1}" bash "$HERE/demo.sh" ;;
+  # --dir names where the showcase factory goes (empty, or a previous demo's); a DEMO_DIR
+  # in the environment still does for one release (deprecated).
+  _gaffer_deprecated DEMO_DIR "pass gaffer demo --dir <path> instead"
+  _demo_dir="${DEMO_DIR:-}"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dir) [ $# -ge 2 ] || bad_arg demo "--dir needs a directory"; _demo_dir="$2"; shift 2 ;;
+      --dir=*) _demo_dir="${1#--dir=}"; shift ;;
+      *) bad_arg demo "unknown argument '$1' (demo takes only --dir <path>)" ;;
+    esac
+  done
+  DRY_RUN="${DRY_RUN:-1}" DEMO_DIR="$_demo_dir" bash "$HERE/demo.sh" ;;
 
 eval)
   # `gaffer eval replay` — the offline half of the harness: recorded deliveries
@@ -661,6 +673,9 @@ run)
   # Every argument is parsed (and a bad one refused, exit 2) BEFORE anything runs: an
   # unknown flag used to be dropped silently, so `gaffer run --dry-run` (or a typo like
   # --deamon) started a LIVE, paid pass. --help is handled above, wherever it sits.
+  # The cadence is --interval (30 s by default); a GAFFER_DAEMON_INTERVAL in the
+  # environment still sets that default for one release (deprecated).
+  _gaffer_deprecated GAFFER_DAEMON_INTERVAL "pass gaffer run --daemon --interval N instead"
   _daemon=0; _interval="${GAFFER_DAEMON_INTERVAL:-30}"; _flag_dry=0
   while [ $# -gt 0 ]; do
     case "$1" in

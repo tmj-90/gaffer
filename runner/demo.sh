@@ -4,11 +4,11 @@
 # a showcase repo (the tick previews the delivery; it is not the whole loop).
 # Safe: DRY_RUN stays on — no Claude is invoked and no repo is mutated.
 #
-# Where: DEMO_DIR, else a FRESH temp dir (mktemp, checked) each run, printed at the
+# Where: `gaffer demo --dir <path>` (it hands demo.sh DEMO_DIR), else a FRESH temp dir (mktemp, checked) each run, printed at the
 # end. It used to default to one fixed, shared /tmp path that it `rm -rf`d
 # first, and it wrote its MCP ping script into packages/memory inside the checkout.
 # Nothing is written inside the checkout now (the ping is runner/lib/mcp-ping.mjs). A
-# DEMO_DIR you name is only ever cleared when it is empty or a previous demo's (it
+# directory you name is only ever cleared when it is empty or a previous demo's (it
 # holds the .gaffer-demo marker); anything else is refused.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -17,10 +17,10 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -n "${DEMO_DIR:-}" ]; then
   DEMO="$DEMO_DIR"
   if [ -d "$DEMO" ] && [ -n "$(ls -A "$DEMO" 2>/dev/null)" ]; then
-    [ -f "$DEMO/.gaffer-demo" ] || { echo "DEMO_DIR=$DEMO is not empty and is not a previous demo (no .gaffer-demo marker) — refusing to clear it; name a new or empty directory" >&2; exit 2; }
+    [ -f "$DEMO/.gaffer-demo" ] || { echo "demo dir $DEMO is not empty and is not a previous demo (no .gaffer-demo marker) — refusing to clear it; name a new or empty directory" >&2; exit 2; }
     _demo_real="$(cd "$DEMO" && pwd -P)"; _home_real="$(cd "$HOME" 2>/dev/null && pwd -P)"; _root_real="$(cd "$HERE/.." && pwd -P)"
     case "$_demo_real" in
-      /|"$_home_real"|"$_root_real"|"$_root_real"/*) echo "DEMO_DIR=$DEMO is /, your home or inside the checkout — refusing" >&2; exit 2 ;;
+      /|"$_home_real"|"$_root_real"|"$_root_real"/*) echo "demo dir $DEMO is /, your home or inside the checkout — refusing" >&2; exit 2 ;;
     esac
     rm -rf "${_demo_real:?}"/* "${_demo_real:?}"/.[!.]* 2>/dev/null || true
   fi

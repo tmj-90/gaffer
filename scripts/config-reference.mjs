@@ -242,20 +242,6 @@ export const EXTRA_KNOBS = [
     doc: "1 = a requirement distilled from a delivered ticket goes live at once; 0 = it lands as a draft for `memory review`. Unset, it follows MEMORY_AUTO_APPROVE.",
   },
   {
-    group: "Onboarding and demo",
-    name: "GAFFER_VERBOSE",
-    default: "",
-    file: "runner/bin/onboard-run.mjs",
-    doc: "1 = `gaffer onboard` prints its full log instead of the summary (the log is always in $GAFFER_DATA/onboard.log).",
-  },
-  {
-    group: "Onboarding and demo",
-    name: "DEMO_DIR",
-    default: "",
-    file: "runner/demo.sh",
-    doc: "Where `gaffer demo` builds its throwaway showcase factory. Empty = a fresh temp dir per run. A named dir must be empty or a previous demo's (it is cleared); anything else is refused.",
-  },
-  {
     group: "Credentials",
     name: "ANTHROPIC_API_KEY",
     default: "",
@@ -487,6 +473,10 @@ export const DEPRECATED = [
   { name: "GAFFER_LITE_MAX_LINES", use: '`GAFFER_LITE_MAX_DIFF="lines=N"`' },
   { name: "GAFFER_LITE_MAX_FILES", use: '`GAFFER_LITE_MAX_DIFF="files=N"`' },
   { name: "GAFFER_GREENFIELD_INSTALL", use: "`GAFFER_DOD_INSTALL=0` (it skips both installs)" },
+  { name: "GAFFER_VERBOSE", use: "`gaffer onboard --verbose`" },
+  { name: "GAFFER_PREFLIGHT_LIVE", use: "`runner/preflight.sh --live`" },
+  { name: "DEMO_DIR", use: "`gaffer demo --dir <path>`" },
+  { name: "GAFFER_DAEMON_INTERVAL", use: "`gaffer run --daemon --interval N`" },
   {
     name: "GAFFER_CAP_DETECT_TURNS",
     use: "`GAFFER_MAX_TURNS` (a call is cap-hit when it uses every turn)",

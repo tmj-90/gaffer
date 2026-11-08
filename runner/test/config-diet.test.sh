@@ -146,6 +146,15 @@ V="$(cfg -- 'gaffer_dod_install_enabled && printf on || printf off')"
 cfg GAFFER_GREENFIELD_INSTALL=0 -- ':' >/dev/null
 warned GAFFER_GREENFIELD_INSTALL && ok "GAFFER_GREENFIELD_INSTALL warns once" || fail "F8 warning: $(cat "$WORK/err")"
 
+echo "== F9: one command's switch is its flag =="
+for pair in "GAFFER_VERBOSE:gaffer onboard --verbose" "DEMO_DIR:gaffer demo --dir" "GAFFER_DAEMON_INTERVAL:gaffer run --daemon --interval"; do
+  grep -qF "_gaffer_deprecated ${pair%%:*} \"pass ${pair#*:}" "$RUNNER_DIR/gaffer" \
+    && ok "${pair%%:*} is deprecated for \`${pair#*:}\`" || fail "F9: no deprecation for ${pair%%:*}"
+done
+grep -qF '_gaffer_deprecated GAFFER_PREFLIGHT_LIVE "pass runner/preflight.sh --live' "$RUNNER_DIR/preflight.sh" \
+  && ok "GAFFER_PREFLIGHT_LIVE is deprecated for \`runner/preflight.sh --live\`" || fail "F9: no deprecation for GAFFER_PREFLIGHT_LIVE"
+case " $EXP " in *" GAFFER_PREFLIGHT_LIVE "* | *" GAFFER_DAEMON_INTERVAL "*) fail "F9: an old switch is still exported" ;; *) ok "neither old switch is defaulted by the config" ;; esac
+
 echo "== the warning is said once per process tree =="
 cfg GAFFER_PO_MAX_TURNS=30 -- 'bash --norc --noprofile -c "source \"\$0\"" "$0" 2>>"$ERRF"' >/dev/null
 warned GAFFER_PO_MAX_TURNS && ok "a second source in a child stays quiet (one line for the tree)" || fail "repeat warning: $(cat "$WORK/err")"

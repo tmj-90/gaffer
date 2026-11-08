@@ -160,6 +160,7 @@ Each still works for one release, mapped onto its replacement with a one-line wa
 - `GAFFER_LITE_SENSITIVE_RE` and `GAFFER_SECURITY_REVIEW_RE` (which defaulted to it) become one knob, `GAFFER_SENSITIVE_PATH_RE`: the paths lite never auto-approves are the paths that get the security second opinion. Empty is the built-in list, as before.
 - `GAFFER_LITE_MAX_LINES` and `GAFFER_LITE_MAX_FILES` become one knob, `GAFFER_LITE_MAX_DIFF="lines=60 files=4"` (the defaults): how small a diff must be for lite mode to call it trivial.
 - `GAFFER_GREENFIELD_INSTALL`: `GAFFER_DOD_INSTALL=0` is the one switch for managing dependencies yourself and now also skips a new greenfield repo's install (the old switch already turned both off).
+- Four environment switches of one command become its flags: `GAFFER_VERBOSE` (`gaffer onboard --verbose`), `GAFFER_PREFLIGHT_LIVE` (`runner/preflight.sh --live`), `DEMO_DIR` (`gaffer demo --dir <path>`) and `GAFFER_DAEMON_INTERVAL` (`gaffer run --daemon --interval N`, which already existed).
 - `GAFFER_CAP_DETECT_TURNS` (the ask-on-cap threshold) only ever made sense as the turn cap it defaulted to: a call is cap-hit when it reaches `GAFFER_MAX_TURNS`.
 
 ### Removed

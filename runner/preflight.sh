@@ -5,6 +5,19 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=factory.config.sh
 source "$HERE/factory.config.sh"
+# --live: also make ONE tiny paid `claude -p` call to prove the login works (catches an
+# expired token the free credential check cannot). GAFFER_PREFLIGHT_LIVE=1 is its
+# deprecated spelling, honoured for one release.
+_pf_live=0
+_gaffer_deprecated GAFFER_PREFLIGHT_LIVE "pass runner/preflight.sh --live instead"
+[ "${GAFFER_PREFLIGHT_LIVE:-0}" = "1" ] && _pf_live=1
+for _pf_arg in "$@"; do
+  case "$_pf_arg" in
+    --live) _pf_live=1 ;;
+    *) printf 'preflight: unknown argument %s (the only option is --live)\n' "$_pf_arg" >&2; exit 2 ;;
+  esac
+done
+unset _pf_arg
 
 pass=0; warn=0; fail=0
 # No colour in a pipe / file, under NO_COLOR or TERM=dumb (lib/colour.sh).
@@ -65,13 +78,13 @@ if command -v "$CLAUDE_BIN" >/dev/null && declare -F gaffer_claude_auth_probe >/
   _arc=0; gaffer_claude_auth_probe || _arc=$?
   case "$_arc" in
     0) ok "claude credential visible ($GAFFER_CLAUDE_AUTH_SOURCE)" ;;
-    2) ok "claude credential: not inspectable here (the macOS Keychain, an ANTHROPIC_BASE_URL gateway, or no HOME — GAFFER_PREFLIGHT_LIVE=1 verifies it with one tiny call)" ;;
-    *) wn "no claude credential visible (no ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN, no ${CLAUDE_CONFIG_DIR:-~/.claude}/.credentials.json) — run \`claude\` and /login before a live run; GAFFER_PREFLIGHT_LIVE=1 verifies with one tiny call" ;;
+    2) ok "claude credential: not inspectable here (the macOS Keychain, an ANTHROPIC_BASE_URL gateway, or no HOME — runner/preflight.sh --live verifies it with one tiny call)" ;;
+    *) wn "no claude credential visible (no ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN, no ${CLAUDE_CONFIG_DIR:-~/.claude}/.credentials.json) — run \`claude\` and /login before a live run; runner/preflight.sh --live verifies with one tiny call" ;;
   esac
-  if [ "${GAFFER_PREFLIGHT_LIVE:-0}" = "1" ]; then
+  if [ "$_pf_live" = "1" ]; then
     _lrc=0; gaffer_claude_live_probe || _lrc=$?
     case "$_lrc" in
-      0) ok "claude answers a live call (GAFFER_PREFLIGHT_LIVE=1)" ;;
+      0) ok "claude answers a live call (--live)" ;;
       2) ;;
       *) no "claude live call FAILED: $GAFFER_CLAUDE_LIVE_ERROR — fix auth (\`claude\` then /login, or ANTHROPIC_API_KEY) before a live run" ;;
     esac

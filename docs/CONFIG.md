@@ -19,7 +19,7 @@ computed from other knobs at runtime.
 
 | Metric | Count |
 |---|---|
-| Knobs with a runner default | 97 |
+| Knobs with a runner default | 95 |
 | Knobs editable in the dashboard | 58 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
 | Env reads in code with no default and no UI entry | 6 |
@@ -78,7 +78,6 @@ computed from other knobs at runtime.
 | `GAFFER_PR_LOCAL_FALLBACK` | `0` |  | runner | PR mode: when `gh pr merge` fails or gh is absent, 1 lands the branch LOCALLY (the PR stays open — the previous behaviour). |
 | `GAFFER_MCP_BRIDGE` | `auto` |  | runner | docker provider: run the MCP data plane (dispatch + memory servers) on the HOST and bridge the container to it over one unix socket (lib/mcp-bridge.mjs), so no database, ledger, claim token or settings file is in the… |
 | `GAFFER_SANDBOX_LIMITS` | _(empty)_ |  | runner | docker sandbox caps as "cpus=4 memory=4g pids=512"; a cap not named keeps that default. |
-| `GAFFER_DAEMON_INTERVAL` | `30` |  | runner | seconds between `gaffer run --daemon` cycles |
 | `GAFFER_MAX_DELIVERY_ATTEMPTS` | `3` | yes (int) | dispatch, runner | How many agent runs one delivery gets inside a tick: a failed gate (tests, typecheck, lint or a criterion's check) is fed back and the agent reworks the same branch, up to this many runs, then the ticket parks to blocked with its branch kept. A run that fails exactly as the one before (two identical failures) parks it early instead of spending the rest. It is also the default for GAFFER_MAX_NOCOMMIT_FAILURES (runs that end with no commit, counted across runs) and DISPATCH_MAX_ATTEMPTS (review rejections). |
 | `GAFFER_RETRY_FRESH_BRANCH` | `0` |  | runner | WASTE CONTROL: a ticket re-entered by a LATER tick (review CHANGES rework, a resumed pause, a re-queued retry) keeps its branch's commits; 1 = reset it to base for that tick (in-tick rework is never reset). |
 | `DISPATCH_MAX_ATTEMPTS` | _derived_ (`$GAFFER_MAX_DELIVERY_ATTEMPTS`) | yes (int) | dispatch, runner | Dispatch's own cap on how many times a delivery may be rejected back into the queue before the ticket is parked (blocked) for a human — the server-side wallet guard against an unbounded reject loop, enforced on every reject transition regardless of which runner drove it. Defaults to Max delivery attempts so the two caps agree; set it only to make the server stricter or looser than the runner's rework ladder. |
@@ -211,7 +210,6 @@ computed from other knobs at runtime.
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
 | `GAFFER_CLAUDE_AUTH_PROBE` | `1` |  | runner | LIVE-RUN AUTH GATE: 0 = skip the free credential check before a live run (gaffer_claude_auth_gate); 1 (default) = refuse a live run when no credential is visible. |
-| `GAFFER_PREFLIGHT_LIVE` | `0` |  | runner | LIVE CLAUDE PROBE: 1 = runner/preflight.sh also makes ONE tiny paid `claude -p` call to prove the login works (catches an expired token the free credential check cannot); 0 = only the free check (is a credential visible… |
 
 ### lib/dod.sh
 
@@ -265,13 +263,6 @@ Some are seams the runner also sets for itself; the notes say which.
 | Variable | Default | Read in | Notes |
 |---|---|---|---|
 | `GAFFER_MEMORY_AUTO_PROMOTE` | _follows_ `MEMORY_AUTO_APPROVE` | `runner/lib/tick-close.sh` | 1 = a requirement distilled from a delivered ticket goes live at once; 0 = it lands as a draft for `memory review`. Unset, it follows MEMORY_AUTO_APPROVE. |
-
-### Onboarding and demo
-
-| Variable | Default | Read in | Notes |
-|---|---|---|---|
-| `GAFFER_VERBOSE` | _(empty)_ | `runner/bin/onboard-run.mjs` | 1 = `gaffer onboard` prints its full log instead of the summary (the log is always in $GAFFER_DATA/onboard.log). |
-| `DEMO_DIR` | _(empty)_ | `runner/demo.sh` | Where `gaffer demo` builds its throwaway showcase factory. Empty = a fresh temp dir per run. A named dir must be empty or a previous demo's (it is cleared); anything else is refused. |
 
 ### Credentials
 

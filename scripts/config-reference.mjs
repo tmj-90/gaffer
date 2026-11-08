@@ -898,7 +898,8 @@ export function render({
     out.push("## Deprecated", "");
     out.push(
       "These still work for one release: each is mapped onto its replacement and says so",
-      "once on stderr. Set the replacement instead.",
+      "once on stderr. Set the replacement instead. With both set, the replacement wins; an",
+      "old per-role or per-cap name still applies to a role or cap the new knob does not name.",
       "",
     );
     out.push("| Old name | Use instead |", "|---|---|");

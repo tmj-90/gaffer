@@ -476,12 +476,12 @@ words, more than one write repo, a previous send-back, a symbol with 10 or more
 callers, a module no test imports): it can only raise the declared level, never lower
 it and never to critical. The router routes on the raised level, and the Review packet
 shows it. Each launch also logs what context it was given to
-`context-selection.jsonl`. `GAFFER_SCOUT_PACKET=0` turns the packet off.
+`context-selection.jsonl`. `GAFFER_SCOUT=none` turns the packet off (and the model scout).
 
 **A bounded model scout, when you turn it on.** `GAFFER_SCOUT=auto` adds one read-only
 model call for a ticket whose effective risk is medium or higher (`on`: every delivery;
 `off`, the default: never). It reads the repo with Read, Grep and Glob only, for
-`GAFFER_SCOUT_MAX_TURNS` turns (6), on the cheap tier, and answers with at most 8 files,
+six turns (`GAFFER_ROLE_MAX_TURNS` `scout=`), on the cheap tier, and answers with at most 8 files,
 8 symbols, 10 notes and 3 questions; the runner keeps a path only when it exists and
 shows the rest as a model's reading. It is booked as kind `scout` under the usage
 ledger and the budget, and it does not run under the command worker.
@@ -515,8 +515,7 @@ gates a tick uses, and writes `results.json` and `report.md` with the paired dif
 per ticket in acceptance, attempts, spend and judge score, with mean, 95% interval and
 n (acceptance, a paired yes or no, uses Newcombe's paired score interval and reports
 the discordant tickets; the rest use a paired t interval). By default a stub agent replays the recorded change, so it is free and runs in CI;
-`--live` runs the real agent under a hard USD cap (`--max-usd` or
-`GAFFER_EXPERIMENT_MAX_USD`), a ticket cap and the factory's budget admission and usage
+`--live` runs the real agent under a hard USD cap (`--max-usd`), a ticket cap and the factory's budget admission and usage
 pause, and records nothing to dispatch. [docs/eval-harness.md](eval-harness.md#matched-ticket-comparison)
 has the arms, the report and the limits.
 
@@ -637,7 +636,7 @@ or changes a profile you set; a profile with no commands holds the PASS until yo
 register them. The Independent testing card lists what ran under **Runtime acceptance**
 with the transcript, and Review's *What backs this* names it. Each command has a time
 cap (30 s by default, `timeout_ms` per command) and the whole profile one more
-(`GAFFER_ACCEPTANCE_TIMEOUT_MS`, 5 minutes). `GAFFER_ACCEPTANCE_PROFILE_SEED=1` (off by
+(5 minutes). `GAFFER_ACCEPTANCE_PROFILE_SEED=1` (off by
 default) seeds the profile, without commands, for a ticket whose title names a CLI or an
 API. What a profile does and does not prove is in
 [SECURITY.md](../SECURITY.md#the-independent-tester-and-what-its-verdict-proves).

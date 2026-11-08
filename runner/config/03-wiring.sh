@@ -6,9 +6,9 @@
 # factory.config.sh. The last line tells factory.config.sh this part loaded whole.
 
 # Claude Code wiring
-: "${MCP_CONFIG:=$RUNNER_DIR/.mcp.json}"
-: "${CLAUDE_SETTINGS:=$RUNNER_DIR/claude/settings.json}"
-: "${SKILLS_DIR:=$RUNNER_DIR/skills}"
+MCP_CONFIG="${MCP_CONFIG:-$RUNNER_DIR/.mcp.json}"
+CLAUDE_SETTINGS="${CLAUDE_SETTINGS:-$RUNNER_DIR/claude/settings.json}"
+SKILLS_DIR="${SKILLS_DIR:-$RUNNER_DIR/skills}"
 # Exported so the crew CLI the runner spawns (`fg skills`, `fg idle`, `fg maintain`)
 # reads the SAME SKILL.md library the agents are mounted (crew's loadSkillRegistry).
 export SKILLS_DIR

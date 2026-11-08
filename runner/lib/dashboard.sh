@@ -234,6 +234,8 @@ gaffer_dashboard_env_unset_flags() {
   # The re-source bookkeeping (factory.config.sh) is the launcher's, not the
   # server's: the dashboard is a fresh root for the processes it spawns.
   _flags="$_flags -u _GAFFER_OPERATOR_ENV -u _GAFFER_MODE_WARNED -u _GAFFER_STRICT_OPTOUT_WARNED"
+  # The config's own exported internals (a child that sources it sets them again).
+  _flags="$_flags -u _GAFFER_ESTIMATE_LIB -u _GAFFER_DEPRECATED_SAID"
   while IFS= read -r _k; do
     [ -n "$_k" ] && _flags="$_flags -u $_k"
   done < <(compgen -v _GAFFER_DV_ 2>/dev/null)

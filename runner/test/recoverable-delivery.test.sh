@@ -94,9 +94,12 @@ printf '{"num_turns":60,"total_cost_usd":2.56,"result":"hi","stop_reason":"end_t
 printf '{"num_turns":12,"total_cost_usd":0.40}' > "$WORK/cap-under.json"
 # explicit max-turns stop reason → cap-hit regardless of count.
 printf '{"subtype":"error_max_turns","num_turns":3}' > "$WORK/cap-reason.json"
-export GAFFER_CAP_DETECT_TURNS=60
+unset GAFFER_CAP_DETECT_TURNS
+export GAFFER_MAX_TURNS=60
 [ "$(gaffer_cap_num_turns "$WORK/cap-over.json")" = "60" ] && ok "gaffer_cap_num_turns reads num_turns=60" || fail "num_turns not read"
-gaffer_is_cap_hit "$WORK/cap-over.json" 0 && ok "cap-hit when num_turns ≥ cap (60≥60)" || fail "missed a cap-hit at the cap"
+gaffer_is_cap_hit "$WORK/cap-over.json" 0 && ok "cap-hit when num_turns ≥ the turn cap (60≥60)" || fail "missed a cap-hit at the cap"
+GAFFER_MAX_TURNS=200 GAFFER_CAP_DETECT_TURNS=60 gaffer_is_cap_hit "$WORK/cap-over.json" 0 \
+  && ok "the deprecated GAFFER_CAP_DETECT_TURNS is still honoured (60 under a 200 cap)" || fail "deprecated cap-detect threshold ignored"
 gaffer_is_cap_hit "$WORK/cap-under.json" 0 && fail "false cap-hit below the cap (12<60)" || ok "no cap-hit below the cap (12<60)"
 gaffer_is_cap_hit "$WORK/cap-reason.json" 0 && ok "cap-hit on a max-turns stop reason (any count)" || fail "missed a max-turns stop-reason cap-hit"
 # rc=124 is the WALL-CLOCK timeout guard, NOT a turn cap — not a cap-hit by count.

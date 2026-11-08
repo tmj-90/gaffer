@@ -85,7 +85,7 @@ if declare -F ui_setup_before_dashboard >/dev/null; then ui_setup_before_dashboa
 # documented way, in the environment (recorded as operator env, so the dashboard and
 # every tick it starts keep it). The Settings page's Sandbox line shows "opted out".
 export GAFFER_DATA="$OUT/data" DISPATCH_API_PORT="$PORT" CLAUDE_BIN="$OUT/bin/claude" CLAUDE_FLAGS="" \
-       GAFFER_TICK_TIMEOUT=120 GAFFER_MAX_TURNS=50 GAFFER_CARD_MODEL=stub GAFFER_PLAN_MODEL=stub GAFFER_IMPL_MODEL=stub \
+       GAFFER_TICK_TIMEOUT=120 GAFFER_MAX_TURNS=50 GAFFER_ROLE_MODELS=card=stub GAFFER_PLAN_MODEL=stub GAFFER_IMPL_MODEL=stub \
        GAFFER_STRICT_REQUIRE=0
 # shellcheck source=../../runner/factory.config.sh
 source "$ROOT/runner/factory.config.sh" >/dev/null 2>&1

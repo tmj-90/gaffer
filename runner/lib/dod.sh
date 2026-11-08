@@ -33,12 +33,12 @@ _GAFFER_JSON_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/json-tool.mjs"
 : "${GAFFER_DOD_TIMEOUT:=${GAFFER_TICK_TIMEOUT:-900}}"
 # How many trailing lines of a failing gate's output to keep as evidence. Bounded
 # so a chatty failure can't bloat the evidence row / the dashboard.
-: "${GAFFER_DOD_OUTPUT_TAIL:=40}"
+GAFFER_DOD_OUTPUT_TAIL="${GAFFER_DOD_OUTPUT_TAIL:-40}"
 
 # Max wall-clock seconds for the PRE-GATE dependency install (see
 # gaffer_dod_install_deps). Inherits the per-gate timeout, then the sane default,
 # so a pathological install can never burn unbounded wall-clock. Always positive.
-: "${GAFFER_DOD_INSTALL_TIMEOUT:=${GAFFER_DOD_TIMEOUT:-900}}"
+GAFFER_DOD_INSTALL_TIMEOUT="${GAFFER_DOD_INSTALL_TIMEOUT:-${GAFFER_DOD_TIMEOUT:-900}}"
 
 # True when DoD enforcement is ON for this run. GAFFER_DOD wins over config:
 #   GAFFER_DOD=0  → OFF (today's behaviour: the gate never runs).
@@ -59,15 +59,15 @@ gaffer_dod_enabled() {
 # Default ON is safe-soft: the install is a strict no-op whenever node_modules
 # already exists (the common case, since the worktree gets a node_modules symlink
 # at setup) and never crashes a tick nor passes the gate — a failed/timed-out
-# install leaves the DoD gate to run and fail loudly exactly as today. The
-# existing "I manage deps myself" switch (GAFFER_GREENFIELD_INSTALL=0) also
-# disables it, so operators keep ONE mental model rather than two competing knobs.
+# install leaves the DoD gate to run and fail loudly exactly as today.
+# GAFFER_DOD_INSTALL=0 is the one "I manage deps myself" switch: it also skips the
+# greenfield prime (lib/greenfield.sh). The deprecated GAFFER_GREENFIELD_INSTALL=0 still
+# disables both for one release.
 gaffer_dod_install_enabled() {
   case "${GAFFER_DOD_INSTALL:-1}" in
     0|false|off|no) return 1 ;;
     *)
-      # Honour the existing greenfield opt-out so a single switch governs both
-      # the greenfield prime and this pre-gate worktree install.
+      # The deprecated greenfield opt-out still governs both for one release.
       [ "${GAFFER_GREENFIELD_INSTALL:-1}" = "0" ] && return 1
       return 0 ;;
   esac
@@ -311,8 +311,8 @@ _GAFFER_DOD_EXTRA_ENV=()
 #     as the failure;
 #   * the rerun cannot get the lock in time → the first FAIL stands (fail closed).
 # GAFFER_DOD_FLAKY_RERUN=0 turns it off.
-: "${GAFFER_DOD_FLAKY_RERUN:=1}"
-: "${GAFFER_DOD_RERUN_WAIT:=120}"   # max seconds the rerun waits for the other workers' in-flight gate runs to finish
+: "${GAFFER_DOD_FLAKY_RERUN:=1}"   # with GAFFER_CONCURRENCY above 1, rerun a red test gate once alone before it counts; 0 = never
+GAFFER_DOD_RERUN_WAIT="${GAFFER_DOD_RERUN_WAIT:-120}"   # max seconds the rerun waits for the other workers' in-flight gate runs to finish
 
 # The pool size this gate runs under (GAFFER_CONCURRENCY; 1 when unset or garbage).
 _gaffer_dod_pool_size() {
@@ -795,7 +795,7 @@ gaffer_dod_evidence_summary() {
 
 # How many lines of distilled failure to keep per gate. Bounded so a chatty stack
 # can't bloat the evidence row / the feedback fed back to the next attempt.
-: "${GAFFER_DOD_FEEDBACK_LINES:=${GAFFER_DOD_OUTPUT_TAIL:-40}}"
+GAFFER_DOD_FEEDBACK_LINES="${GAFFER_DOD_FEEDBACK_LINES:-${GAFFER_DOD_OUTPUT_TAIL:-40}}"
 
 # gaffer_dod_distill_output <infile> [maxlines]
 # Distil the ACTUAL failure from a gate command's raw output: the failing test

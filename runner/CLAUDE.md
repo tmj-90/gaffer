@@ -110,3 +110,23 @@ last. Add a knob to the part of its area, never a new part for one knob; a new p
 needs its line in the parts block, its header and marker
 (`runner/test/config-parts.test.sh` checks all of it).
 `scripts/config-reference.mjs` reads the parts in the block's order.
+
+What `docs/CONFIG.md` lists follows from the code, so keep these when you add a name:
+
+- A `: "${NAME:=default}"` line marks an operator knob; `docs/CONFIG.md` lists it
+  under its part's area (`AREAS` in `scripts/config-reference.mjs`; a new part or lib
+  that defaults a knob needs an entry there, or the generator fails). Give it a
+  trailing comment: that is its note.
+- A name the runner derives or sets for a child, a test seam, or a package's own
+  variable is not a knob: assign it plainly (`NAME="${NAME:-default}"`) and add it to
+  `INTERNAL_NAMES` or `TEST_SEAMS`. The generator fails if a listed name still has a
+  `:=` line or no longer occurs in the source. A runner-only file path is better as a
+  `_GAFFER_` name, which also keeps it out of the agent env and the re-source record
+  (never for a value derived from a `settings.json` knob: a `_GAFFER_` export is not
+  re-derived by a child).
+- A family of knobs that only make sense together is one knob (`GAFFER_ROLE_MAX_TURNS`,
+  `GAFFER_ROLE_MODELS`, `GAFFER_SANDBOX_LIMITS`, `GAFFER_LITE_MAX_DIFF`). An old name
+  replaced by one stays honoured for a release: its reader still reads it after the new
+  knob, the config warns with `_gaffer_deprecated` (defined in `01-settings.sh`, so
+  every later part can call it; once per process tree), and `DEPRECATED` in the
+  generator lists it. `runner/test/config-diet.test.sh` pins each family's default.

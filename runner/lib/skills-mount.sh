@@ -23,7 +23,7 @@
 # This list IS select-skills.mjs ROLE_PROFILES.delivery.core
 # (test/select-skills.test.mjs pins the two equal). create-branch is NOT here: the
 # runner creates the branch (it is a user-only skill, never mounted on a factory agent).
-: "${GAFFER_UNIVERSAL_SKILLS:=run-tests run-lint run-coverage minimalism self-review record-evidence prepare-digest-delta plan-change}"  # skills mounted on every delivery (= select-skills ROLE_PROFILES.delivery.core)
+GAFFER_UNIVERSAL_SKILLS="${GAFFER_UNIVERSAL_SKILLS:-run-tests run-lint run-coverage minimalism self-review record-evidence prepare-digest-delta plan-change}"  # skills mounted on every delivery (= select-skills ROLE_PROFILES.delivery.core)
 
 # Root under which per-agent mount MANIFESTS live (one link per installed skill name,
 # read by the telemetry; the agent reads its copies in its own worktree, never these).

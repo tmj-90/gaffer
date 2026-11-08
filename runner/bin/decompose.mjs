@@ -95,13 +95,13 @@
 //                  --force-plan) instead of rejecting and stranding the user.
 //                  (`--max-turns N` is the old spelling, still accepted.) It is a
 //                  HISTORY bound; the claude agent-turn cap is
-//                  GAFFER_DECOMPOSE_AGENT_MAX_TURNS, else this value — either clamped
+//                  GAFFER_ROLE_MAX_TURNS decompose=, else this value — either clamped
 //                  to the GAFFER_MAX_TURNS ceiling (it can lower, never raise, the cap).
 //   --max-tickets  (GAFFER_DECOMPOSE_MAX_TICKETS,  default 20) reject/refuse plans over this
 //   --timeout-ms   (GAFFER_DECOMPOSE_TIMEOUT_MS, default 180000) kill claude after this
 //
 // --dry-run skips spawning claude and instead reads the model "output" from stdin's
-// `mockOutput` field (or GAFFER_DECOMPOSE_MOCK env) — used by tests to exercise the
+// `mockOutput` field — used by tests to exercise the
 // parse/validate path without a live model call.
 // =====================================================================
 
@@ -120,7 +120,7 @@ import { filterMeasured, parseLedger, summarise } from "../lib/estimate.mjs";
 import { primeContextBlock } from "../lib/context-primer.mjs";
 import { makeAgentHome } from "../lib/agent-home.mjs";
 import { recordSkillUsage } from "./record-skill-usage.mjs";
-import { Worker, roleTurnCap } from "../lib/worker.mjs";
+import { Worker, roleTurns } from "../lib/worker.mjs";
 import { extractLastJsonBlock as extractJson, quarantine } from "../lib/agent-io.mjs";
 
 // node:sqlite is only reachable via createRequire in an ESM module.
@@ -1122,12 +1122,10 @@ function runClaudeTurn(prompt, opts, model) {
   const args = ["-p", prompt, "--output-format", "json", ...flags];
   // Per-call turn cap (P1 denial-of-wallet): bound the agent's model round-trips
   // in addition to the wall-clock timeout already passed to Worker.deliver below.
-  // GAFFER_DECOMPOSE_AGENT_MAX_TURNS caps THIS lane's agent on its own; else this
+  // GAFFER_ROLE_MAX_TURNS decompose= caps THIS lane's agent on its own; else this
   // helper's own cap (--max-rounds/--max-turns > GAFFER_DECOMPOSE_MAX_TURNS > 20).
   // The global GAFFER_MAX_TURNS is only a CEILING that can lower it (roleTurnCap).
-  const maxTurns = roleTurnCap(
-    parseInt(process.env.GAFFER_DECOMPOSE_AGENT_MAX_TURNS || "", 10) || opts.maxTurns,
-  );
+  const maxTurns = roleTurns("decompose", opts.maxTurns);
   if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
   const mcp = process.env.MCP_CONFIG;
   if (mcp) args.unshift("--mcp-config", mcp);
@@ -1269,7 +1267,7 @@ function main() {
       output = debate.text;
     } else {
       // Byte-for-byte the original dry-run behaviour.
-      output = String(req.mockOutput ?? process.env.GAFFER_DECOMPOSE_MOCK ?? "");
+      output = String(req.mockOutput ?? "");
     }
   } else if (useDebate) {
     let debate;

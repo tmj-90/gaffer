@@ -57,7 +57,7 @@
 # shellcheck source=lib/registry-probe.sh
 [ -f "$RUNNER_DIR/lib/registry-probe.sh" ] && source "$RUNNER_DIR/lib/registry-probe.sh"
 # Claude auth preflight: is a credential visible (free), or does one tiny call work
-# (GAFFER_PREFLIGHT_LIVE=1)? Report-only, used by preflight.sh.
+# (runner/preflight.sh --live)? Report-only, used by preflight.sh.
 # shellcheck source=lib/claude-auth.sh
 [ -f "$RUNNER_DIR/lib/claude-auth.sh" ] && source "$RUNNER_DIR/lib/claude-auth.sh"
 # Acceptance gate (runner half): the prompt block for an epic's acceptance ticket.
@@ -100,8 +100,8 @@
 # strict no-op when node_modules already exists or the repo is not a recognised
 # node project, bounded by GAFFER_DOD_INSTALL_TIMEOUT (defaults to GAFFER_DOD_TIMEOUT,
 # 900s), and fail-soft — a failed/timed-out install never crashes the tick and never
-# passes the gate (the gate still runs and fails loudly). Set GAFFER_DOD_INSTALL=0
-# (or the existing GAFFER_GREENFIELD_INSTALL=0) for byte-identical-to-today behaviour.
+# passes the gate (the gate still runs and fails loudly). Set GAFFER_DOD_INSTALL=0 to
+# manage dependencies yourself (it also skips the greenfield prime).
 # shellcheck source=lib/dod.sh
 [ -f "$RUNNER_DIR/lib/dod.sh" ] && source "$RUNNER_DIR/lib/dod.sh"
 # MACHINE-CHECKABLE acceptance criteria: the runner executes each AC's check_command

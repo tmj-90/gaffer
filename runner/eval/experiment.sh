@@ -18,9 +18,10 @@
 # an isolated $GAFFER_DATA under --out: the pipeline is proven in CI for free.
 # LIVE MODE (--live, opt-in): the real agent, the factory's own $GAFFER_DATA (its budget
 # caps admit every launch, the usage pause stops the run, each call is booked in the usage
-# ledger as kind `experiment` with no ticket), a hard per-run USD cap (--max-usd or
-# GAFFER_EXPERIMENT_MAX_USD; required) that also caps every call, and a ticket cap
-# (--max-tickets or GAFFER_EXPERIMENT_MAX_TICKETS). Live mode re-delivers fixtures only, and
+# ledger as kind `experiment` with no ticket), a hard per-run USD cap (--max-usd;
+# required) that also caps every call, and a ticket cap (--max-tickets, 5). The old
+# GAFFER_EXPERIMENT_MAX_USD / _MAX_TICKETS / _MAX_ATTEMPTS still set the default of their
+# flag for one release (deprecated; said on stderr). Live mode re-delivers fixtures only, and
 # cannot start from an agent shell (the safety hook denies the entry points, and this
 # script refuses when it sees an agent's write roots).
 #
@@ -46,6 +47,11 @@ FIXTURES="" MANIFESTS="" ONLY="" SEED="" OUT="" LIVE=0 VERBOSE=0 MARGIN=0.10
 MAX_USD="${GAFFER_EXPERIMENT_MAX_USD:-}"
 MAX_TICKETS="${GAFFER_EXPERIMENT_MAX_TICKETS:-5}"
 MAX_ATTEMPTS="${GAFFER_EXPERIMENT_MAX_ATTEMPTS:-2}"
+for _xd in MAX_USD:--max-usd MAX_TICKETS:--max-tickets MAX_ATTEMPTS:--max-attempts; do
+  _xv="GAFFER_EXPERIMENT_${_xd%%:*}"
+  [ -z "${!_xv:-}" ] || printf 'gaffer: %s is deprecated and goes in the next release; pass %s instead\n' "$_xv" "${_xd#*:}" >&2
+done
+unset _xd _xv
 ARMS=()
 usage() { sed -n '2,38p' "$0"; }
 while [ $# -gt 0 ]; do
@@ -88,7 +94,7 @@ if [ "$LIVE" = 1 ]; then
     exit 2
   fi
   if ! awk -v v="$MAX_USD" 'BEGIN { exit !(v + 0 > 0) }'; then
-    echo "experiment: --live needs a hard USD cap for the whole run: --max-usd X or GAFFER_EXPERIMENT_MAX_USD" >&2
+    echo "experiment: --live needs a hard USD cap for the whole run: --max-usd X" >&2
     exit 2
   fi
   [ -n "${GAFFER_DATA:-}" ] || { echo "experiment: --live needs GAFFER_DATA (the factory's ledger, caps and usage pause)" >&2; exit 2; }

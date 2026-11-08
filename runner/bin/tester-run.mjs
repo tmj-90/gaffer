@@ -103,7 +103,8 @@ import {
   detectUsageLimit,
   extractResultText,
   parseClaudeJson,
-  roleTurnCap,
+  roleModel,
+  roleTurns,
   Worker,
 } from "../lib/worker.mjs";
 import {
@@ -171,8 +172,8 @@ const CONFIG = {
     const f = (process.env.CLAUDE_FLAGS || "--permission-mode acceptEdits")
       .split(/\s+/)
       .filter(Boolean);
-    // The tester is a TEST-phase agent: GAFFER_TEST_MODEL, else the implement tier.
-    const m = (process.env.GAFFER_TEST_MODEL || process.env.GAFFER_IMPL_MODEL || "").trim();
+    // The tester is a TEST-phase agent: GAFFER_ROLE_MODELS tester=, else the implement tier.
+    const m = (roleModel("tester") || process.env.GAFFER_IMPL_MODEL || "").trim();
     return m ? ["--model", m, ...f] : f;
   })(),
   timeoutMs: (() => {
@@ -181,9 +182,9 @@ const CONFIG = {
   })(),
 };
 
-/** The tester's turn cap: GAFFER_TESTER_MAX_TURNS (default 80) clamped to GAFFER_MAX_TURNS. */
+/** The tester's turn cap: GAFFER_ROLE_MAX_TURNS tester= (default 80) clamped to GAFFER_MAX_TURNS. */
 export function testerMaxTurns(env = process.env) {
-  return roleTurnCap(parseInt(env.GAFFER_TESTER_MAX_TURNS ?? "", 10) || 80, env);
+  return roleTurns("tester", 80, env);
 }
 
 function log(msg) {
@@ -898,10 +899,7 @@ export function replayTesterTests({
       };
     const baseEnv = replayEnv({ scratch });
     phase("env");
-    const timeout =
-      Number(process.env.GAFFER_TESTER_REPLAY_TIMEOUT_MS) > 0
-        ? Number(process.env.GAFFER_TESTER_REPLAY_TIMEOUT_MS)
-        : 10 * 60 * 1000;
+    const timeout = 10 * 60 * 1000;
     const files = testFiles.filter((f) => existsSync(resolve(replay, f)));
     const runInv = (select) => {
       const inv = replayInvocation({ worktree: replay, testCommand: cmd, files, select });
@@ -1087,7 +1085,7 @@ export function runAcceptanceProfile({ profile, spec }, checkout, env = process.
       ],
       {
         encoding: "utf8",
-        timeout: acceptanceTimeoutMs(env) + 60000,
+        timeout: acceptanceTimeoutMs() + 60000,
         // SIGTERM, so the profile process kills the service group it booted before it exits.
         killSignal: "SIGTERM",
         maxBuffer: 16 * 1024 * 1024,

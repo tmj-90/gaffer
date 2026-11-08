@@ -35,11 +35,11 @@ _gaffer_ticket_spend() {
   # the cost summation stays here — estimate.mjs's honesty contract forbids it
   # from reading total_cost_usd. Degrade path unchanged: any node/module failure
   # prints 0 (we never invent a cost).
-  [ -f "${GAFFER_ESTIMATE_LIB:-}" ] || { printf '0'; return 0; }
+  [ -f "${_GAFFER_ESTIMATE_LIB:-}" ] || { printf '0'; return 0; }
   GAFFER_RW_TICKET="$ticket" GAFFER_RW_LEDGER="$ledger" GAFFER_RW_SCOPE="$scope" node --input-type=module -e '
     import { readFileSync } from "node:fs";
     import { pathToFileURL } from "node:url";
-    const { parseLedger } = await import(pathToFileURL(process.env.GAFFER_ESTIMATE_LIB).href);
+    const { parseLedger } = await import(pathToFileURL(process.env._GAFFER_ESTIMATE_LIB).href);
     const want=String(process.env.GAFFER_RW_TICKET);
     const deliveryOnly=process.env.GAFFER_RW_SCOPE==="delivery";
     let text="";
@@ -84,11 +84,12 @@ export -f _gaffer_ticket_spend gaffer_ticket_total_spend gaffer_ticket_delivery_
 # max-turns stop reason — the work is incomplete-but-not-broken. Instead of
 # silently discarding it, the tick PRESERVES the branch, emits a `ticket_parked`
 # notify event (ticket#, spend, dashboard URL; redaction honours
-# GAFFER_NOTIFY_REDACT), and parks the ticket as needs-human-review. This cap is
-# the turn count at/above which a call is treated as cap-hit; it defaults to the
-# turn cap itself so a call that consumed every turn is caught.
-: "${GAFFER_CAP_DETECT_TURNS:=${GAFFER_MAX_TURNS:-60}}"   # num_turns ≥ this ⇒ cap-hit
-export GAFFER_CAP_DETECT_TURNS
+# GAFFER_NOTIFY_REDACT), and parks the ticket as needs-human-review. A call is
+# treated as cap-hit when its num_turns reaches GAFFER_MAX_TURNS, the turn cap itself,
+# so a call that consumed every turn is caught (lib/delivery-recovery.sh).
+# GAFFER_CAP_DETECT_TURNS, which only ever made sense as that cap, is deprecated: a set
+# value is still honoured there for one release.
+_gaffer_deprecated GAFFER_CAP_DETECT_TURNS "a call is cap-hit at GAFFER_MAX_TURNS, so set that instead"
 
 # --- Pause-on-cap (PAUSE-ON-CAP) ---------------------------------------------
 # On a mid-delivery cap-hit (turn cap) or budget-cap with committed work, PAUSE the
@@ -124,7 +125,7 @@ if [ -z "${GAFFER_DASHBOARD_URL:-}" ] && [ -s "$GAFFER_DATA/dashboard-url" ]; th
   esac
   unset _gaffer_persisted_url
 fi
-: "${GAFFER_DASHBOARD_URL:=http://127.0.0.1:${DISPATCH_API_PORT:-8787}}"
+: "${GAFFER_DASHBOARD_URL:=http://127.0.0.1:${DISPATCH_API_PORT:-8787}}"   # the dashboard link in notifications; set it when the dashboard sits behind a proxy or another host name
 export GAFFER_DASHBOARD_URL
 
 # FINDING-6 (b): TERM->KILL grace (seconds) for gaffer_timeout's process-group
@@ -136,7 +137,7 @@ export GAFFER_DASHBOARD_URL
 # of its lease. 30s comfortably covers release + teardown while still bounding a
 # TERM-ignoring runaway; keep it well under the claim-TTL headroom
 # (GAFFER_CLAIM_TTL − GAFFER_TICK_OUTER_TIMEOUT, 180s at defaults).
-: "${GAFFER_REAP_GRACE:=30}"
+GAFFER_REAP_GRACE="${GAFFER_REAP_GRACE:-30}"
 export GAFFER_REAP_GRACE
 
 _GAFFER_CONFIG_PART=08-guards

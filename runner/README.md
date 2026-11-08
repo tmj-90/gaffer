@@ -138,7 +138,7 @@ package.json script is read from that target head and an `integrity` row, PASS/F
 FAIL, with the ticket's human `allow_test_changes`, compares it with the merged tree), and
 lands exactly the gated merge commit only while the default branch is still the commit it
 gated (`update-ref <ref> <merge> <gated-head>`, or a fast-forward of a clean checked-out
-target); a target that moved is re-gated (`GAFFER_MERGE_GATE_RETRIES`, default 2). A red
+target); a target that moved is re-gated up to twice. A red
 combination is held for a human: the gate output is attached as evidence and the ticket
 goes `ready_for_merge → blocked` (`wg ticket hold … --reason-code merge_gate_red`), the
 default branch untouched. In PR mode the gate runs on the merge onto the freshly fetched
@@ -286,7 +286,7 @@ the agent CLI; that's only for live runs.
 | `gaffer onboard <path> [--standalone] [--name <alias>]` | Register + scan a repo (a name match is a refresh only for the same canonical local path; any other record of that name, another checkout, a record whose checkout is gone (a moved clone, even with the same remote), or a record with no local path, is refused and left unchanged; `--name` gives it its own record), run the `claude -p` onboarding pass (real digest + feature inventory + cited lore drafts; the card-generation / card-review skills are inlined into its prompt, and its lore rules are a distillation of the memory-onboard skill's hard rules, pinned by `test/onboard-memory-rules-sync.test.mjs`), seed tags. Advanced scope mapping is done in the Factory Map dashboard tab. |
 | `gaffer dashboard [--restart\|--stop\|--lan]` | Start the Dispatch control-room UI (`http://127.0.0.1:8787`). `--restart` stops the running server (found by its pid file, or by the port when that file is lost), rotates the login token and starts a new one; `--stop` stops it. "dashboard up" is printed only when the server this call started answers with its token (within `GAFFER_DASHBOARD_START_TIMEOUT` seconds, 30 by default); a port held by anything else is refused with its pid, and a server is only ever stopped when its environment names this factory's `GAFFER_DATA` (or its pid file does). |
 | `gaffer status` | One-pane roll-up: the posture (effective `GAFFER_MODE`, review mode, auto-merge, dollar caps, sandbox requirement), registrations, work counts, running ticks, what needs a human (reviews, blocked, unmerged approvals, decisions, paused deliveries awaiting Continue/Stop). Finds a `--foreground` dashboard (no pid file) by probing its `/healthz`. |
-| `gaffer demo` | One dry tick over a showcase repo, in a throwaway factory under a fresh temp dir (or `DEMO_DIR`, which must be empty or a previous demo's); proves both MCP servers answer. Writes nothing inside the checkout. |
+| `gaffer demo` | One dry tick over a showcase repo, in a throwaway factory under a fresh temp dir (or `--dir <path>`, which must be empty or a previous demo's); proves both MCP servers answer. Writes nothing inside the checkout. |
 
 See the root [`quickstart.md`](../quickstart.md) (the canonical first run), [`ONBOARDING.md`](ONBOARDING.md),
 and [`RUNBOOK.md`](RUNBOOK.md) for the full walkthroughs.
@@ -332,7 +332,7 @@ Every agent call is routed to a tier by `bin/route-model.mjs`, reading
   scans and the pre-work scout on `cheap`.
 - **Routing rules** move a call off its default: a high-risk or many-criteria ticket
   climbs, a trivial one can drop, and a rework attempt escalates (the final one to
-  `GAFFER_REWORK_STRONG_MODEL`). Each ledger row records the tier and the reasons
+  `GAFFER_ROLE_MODELS` `rework=`, the plan tier by default). Each ledger row records the tier and the reasons
   (`route_tier`, `route_reasons`).
 - **Overrides**: `GAFFER_PLAN_MODEL` and `GAFFER_IMPL_MODEL` pin the planning and
   delivery models outright and always win.
@@ -609,8 +609,9 @@ sed -e "s#__GAFFER_REPO__#$(pwd)#g" -e "s#__GAFFER_DATA__#$(pwd)/.gaffer#g" \
   runner/launchd/com.gaffer.factory.plist.template > "$OUT"
 launchctl load "$OUT"
 ```
-Config + stop conditions (cost guards) live in `factory.config.sh`; the full
-knob-by-knob reference is generated into [`docs/CONFIG.md`](../docs/CONFIG.md)
+Config + stop conditions (cost guards) live in `runner/config/*.sh`, sourced through
+`factory.config.sh`; the knob-by-knob reference, one table per area, is generated into
+[`docs/CONFIG.md`](../docs/CONFIG.md)
 (`node scripts/config-reference.mjs`). Logs land in
 `<repo-root>/.gaffer/factory.log`; the full audit trail is Dispatch's event log
 (`./gaffer wg ticket show <n>`) and its web UI.

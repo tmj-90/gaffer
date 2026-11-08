@@ -174,7 +174,7 @@ gaffer_model_from_flag() {
 # gaffer_claude_version <bin> → the CLI version (lib/claude-version.mjs), read once per
 # process per binary. GAFFER_CLAUDE_VERSION pins it (an image whose CLI the host cannot
 # inspect). Never fails: an unreadable version is `unknown`.
-: "${GAFFER_CLAUDE_VERSION:=}"   # pin the Claude Code CLI version recorded per call (e.g. a docker image's CLI); empty = read it from the binary
+GAFFER_CLAUDE_VERSION="${GAFFER_CLAUDE_VERSION:-}"   # pin the Claude Code CLI version recorded per call (e.g. a docker image's CLI); empty = read it from the binary
 _GAFFER_CLAUDE_VERSION_BIN=""; _GAFFER_CLAUDE_VERSION_VAL=""
 gaffer_claude_version() {
   local bin="${1:-${CLAUDE_BIN:-claude}}"

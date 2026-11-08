@@ -995,8 +995,13 @@ console.log("== cardModel: GAFFER_CARD_MODEL / registry onboarding tier (cheap p
     cardModel({ GAFFER_PLAN_MODEL: "opus", GAFFER_PLAN_MODEL_EXPLICIT: "1" }) === "haiku",
   );
   assert(
-    "cardModel respects GAFFER_CARD_MODEL override",
-    cardModel({ GAFFER_CARD_MODEL: "claude-opus-4" }) === "claude-opus-4",
+    "cardModel respects GAFFER_ROLE_MODELS card=",
+    cardModel({ GAFFER_ROLE_MODELS: "synth=x, card=claude-opus-4" }) === "claude-opus-4",
+  );
+  assert(
+    "cardModel still honours the deprecated GAFFER_CARD_MODEL; the new knob wins over it",
+    cardModel({ GAFFER_CARD_MODEL: "claude-opus-4" }) === "claude-opus-4" &&
+      cardModel({ GAFFER_CARD_MODEL: "a", GAFFER_ROLE_MODELS: "card=b" }) === "b",
   );
   assert(
     "cardModel ignores blank GAFFER_CARD_MODEL",
@@ -1051,8 +1056,9 @@ console.log("== analysisCaps: synthesis model is the mid tier unless an operator
     analysisCaps({ GAFFER_PLAN_MODEL: "claude-opus-4" }).model === "claude-opus-4",
   );
   assert(
-    "GAFFER_ONBOARD_SYNTH_MODEL wins over GAFFER_PLAN_MODEL",
-    analysisCaps({ GAFFER_ONBOARD_SYNTH_MODEL: "m1", GAFFER_PLAN_MODEL: "m2" }).model === "m1",
+    "GAFFER_ROLE_MODELS synth= (and the deprecated GAFFER_ONBOARD_SYNTH_MODEL) win over GAFFER_PLAN_MODEL",
+    analysisCaps({ GAFFER_ROLE_MODELS: "synth=m1", GAFFER_PLAN_MODEL: "m2" }).model === "m1" &&
+      analysisCaps({ GAFFER_ONBOARD_SYNTH_MODEL: "m1", GAFFER_PLAN_MODEL: "m2" }).model === "m1",
   );
 }
 
@@ -1162,7 +1168,7 @@ console.log("== text-only card + review turns: no tools, no MCP, empty cwd, tiny
     after(a, "--mcp-config") === env.MCP_CONFIG,
   );
   assert("synthesis turn is not tool-less", !a.includes("--tools"));
-  assert("synthesis turn: GAFFER_ONBOARD_MAX_TURNS default 60", after(a, "--max-turns") === "60");
+  assert("synthesis turn: the onboard role cap, default 60", after(a, "--max-turns") === "60");
   // A settings template without the safety-hook wiring refuses the text-only turn
   // (a failed call, never a hook-less spawn) and leaves no scratch dir behind.
   const unwired = join(dir, "unwired.json");

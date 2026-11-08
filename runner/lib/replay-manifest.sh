@@ -18,6 +18,11 @@ _GAFFER_MANIFEST_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GAFFER_MANIFEST_FILE=""
 
 _gaffer_manifest_log() { type log >/dev/null 2>&1 && log "MANIFEST: $*"; return 0; }
+# The manifest's GAFFER_SCOUT_PACKET setting: 1 when the deterministic packet is built,
+# 0 when GAFFER_SCOUT=none (or the deprecated GAFFER_SCOUT_PACKET=0) turned it off.
+_gaffer_manifest_packet_on() {
+  if [ "${GAFFER_SCOUT:-off}" = none ] || [ "${GAFFER_SCOUT_PACKET:-1}" = 0 ]; then printf 0; else printf 1; fi
+}
 
 # _gaffer_manifest_heads <file>: one `name<TAB>head` row per write repo ($WT_ROWS): the
 # commit the ticket branch holds in the real repo now.
@@ -50,7 +55,7 @@ gaffer_manifest_start() {
   printf '%s\n' "${WT_ROWS:-}" > "$tmp/repos.tsv" 2>/dev/null
   printf '%s' "${_DELIV_BASE_SHAS:-}" > "$tmp/bases.tsv" 2>/dev/null
   local model="${_ATTEMPT_IMPL_FLAG:-}"; model="${model#--model }"; model="${model#--model=}"
-  out="$(printf '%s' "${1:-}" | GAFFER_SCOUT="${GAFFER_SCOUT:-}" GAFFER_SCOUT_PACKET="${GAFFER_SCOUT_PACKET:-}" \
+  out="$(printf '%s' "${1:-}" | GAFFER_SCOUT="${GAFFER_SCOUT:-}" GAFFER_SCOUT_PACKET="$(_gaffer_manifest_packet_on)" \
       GAFFER_TESTING="${GAFFER_TESTING:-}" GAFFER_WORKER_PROVIDER="${GAFFER_WORKER_PROVIDER:-claude-code}" \
       STRICT_MODE="${STRICT_MODE:-}" SANDBOX_PROVIDER="${SANDBOX_PROVIDER:-}" \
       GAFFER_MAX_DELIVERY_ATTEMPTS="${_MAX_DELIVERY_ATTEMPTS:-}" REVIEW_MODE="${REVIEW_MODE:-}" GAFFER_MODE="${GAFFER_MODE:-}" \

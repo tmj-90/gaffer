@@ -62,7 +62,7 @@ GH
 sed -i.bak "s|__GH_CALLS__|$WORK/data/gh-calls.log|" "$WORK/bin/gh" && rm -f "$WORK/bin/gh.bak"; chmod +x "$WORK/bin/gh"
 
 export GAFFER_DATA="$WORK/data" CLAUDE_BIN="$WORK/bin/claude" CLAUDE_FLAGS="" \
-       GAFFER_TICK_TIMEOUT=60 GAFFER_MAX_TURNS=10 GAFFER_CARD_MODEL=stub GAFFER_PLAN_MODEL=stub GAFFER_IMPL_MODEL=stub \
+       GAFFER_TICK_TIMEOUT=60 GAFFER_MAX_TURNS=10 GAFFER_ROLE_MODELS=card=stub GAFFER_PLAN_MODEL=stub GAFFER_IMPL_MODEL=stub \
        REVIEW_MODE=human DRY_RUN=0 GAFFER_MAINTENANCE=0 GAFFER_CREATE_PR=1 GAFFER_GH_BIN="$WORK/bin/gh"
 # shellcheck source=../factory.config.sh
 source "$RUNNER_DIR/factory.config.sh" >/dev/null 2>&1

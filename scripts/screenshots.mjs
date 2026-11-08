@@ -106,7 +106,7 @@ function boot() {
      export UI_REGRESS_OUT="${OUT}" UI_REGRESS_PORT="${PORT}" UI_PW_CACHE="${PW_CACHE}"
      export PATH="${OUT}/bin:$PATH"
      source "${ROOT}/scripts/ui-regression/setup.sh" >/dev/null
-     export GAFFER_IMPL_MODEL=mid GAFFER_PLAN_MODEL=strong GAFFER_CARD_MODEL=cheap
+     export GAFFER_IMPL_MODEL=mid GAFFER_PLAN_MODEL=strong GAFFER_ROLE_MODELS=card=cheap
      ${STUB_GUARD}
      export -p | grep -v -E ' (ANTHROPIC_[A-Z_]*|CLAUDE_CODE_OAUTH_TOKEN|BASH_[A-Z_]*|SHLVL|PWD|OLDPWD|_)=' > "${ENV_FILE}"
      bash "${ROOT}/runner/gaffer" dashboard --restart >/dev/null 2>&1`,

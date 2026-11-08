@@ -21,10 +21,10 @@
 #   SCOUT_INDEX_FILE   the index's answer for the seeds (delivery-metrics' index fields)
 _GAFFER_SCOUT_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-: "${GAFFER_SCOUT_PACKET:=1}"   # 1 = build the deterministic scout packet before each delivery (named files, stack frames, the code index's importers and tests); 0 = off
-: "${GAFFER_SCOUT:=off}"        # The bounded MODEL scout: off (default), auto (only when the effective risk is medium or higher), on (every delivery). One read-only paid call (kind scout)
-: "${GAFFER_SCOUT_MAX_TURNS:=6}" # Turn cap of the model scout's read-only call
-: "${GAFFER_SCOUT_MODEL_FLAG:=}" # The model scout's model flag (e.g. "--model <id>"); empty = the router's scout phase (cheap tier)
+# One knob for both scouts (the model scout needs the packet, so a packet switch of its
+# own only ever meant "none"). GAFFER_SCOUT_PACKET=0 is that switch's deprecated spelling.
+: "${GAFFER_SCOUT:=off}"        # The pre-work scout: off (default: the free deterministic packet only), auto (plus one read-only paid model call when the effective risk is medium or higher), on (plus that call on every delivery), none (no packet either).
+declare -F _gaffer_deprecated >/dev/null 2>&1 && _gaffer_deprecated GAFFER_SCOUT_PACKET "set GAFFER_SCOUT=none instead (no packet, no model scout)"
 
 SCOUT_PACKET_FILE=""; SCOUT_PROMPT=""; SCOUT_RISK=""; SCOUT_RAISED=""; SCOUT_INDEX_FILE=""
 _SCOUT_TMP=""
@@ -70,7 +70,7 @@ _gaffer_scout_neighbours() {
 gaffer_scout_run() {
   local repo="${1:-}" sha="${2:-}" attempt="${3:-}"
   SCOUT_PACKET_FILE=""; SCOUT_PROMPT=""; SCOUT_RISK=""; SCOUT_RAISED=""; SCOUT_INDEX_FILE=""
-  [ "${GAFFER_SCOUT_PACKET:-1}" != "0" ] || return 0
+  [ "${GAFFER_SCOUT:-off}" != none ] && [ "${GAFFER_SCOUT_PACKET:-1}" != "0" ] || return 0
   command -v node >/dev/null 2>&1 || return 0
   [ -f "$_GAFFER_SCOUT_LIB/scout.mjs" ] && [ -f "$_GAFFER_SCOUT_LIB/risk-classify.mjs" ] || return 0
   _SCOUT_TMP="$(mktemp -d "${TMPDIR:-/tmp}/gaffer-scout.XXXXXX" 2>/dev/null)" || { _SCOUT_TMP=""; return 0; }
@@ -164,7 +164,8 @@ _gaffer_scout_rank() {
 # DRY_RUN, never during a usage pause. ONE call through worker_deliver (budget admission:
 # GAFFER_LAUNCH_KIND=scout) from an empty scratch cwd that carries the verified safety-hook
 # settings, the real repo as its only READ root, built-in tools limited to Read, Grep and
-# Glob (everything else denied by name too), an empty MCP config, GAFFER_SCOUT_MAX_TURNS.
+# Glob (everything else denied by name too), an empty MCP config, its turn cap
+# (GAFFER_ROLE_MAX_TURNS scout=, built in 6).
 # Booked in the usage ledger as kind `scout`. Its reply is validated against the base tree
 # (lib/scout.mjs merge-model) and merged into the packet as "scout suggested".
 gaffer_model_scout() {
@@ -208,12 +209,18 @@ gaffer_model_scout() {
       description: String(t.description || ""), repoPath: e.SC_REPO, risk: e.SC_RISK || "medium", scout }));
   ' 2>/dev/null | node "$cli" 2>/dev/null)" || return 0
   [ -n "$prompt" ] || return 0
-  local flag="${GAFFER_SCOUT_MODEL_FLAG:-}" model=""
+  # The model: GAFFER_ROLE_MODELS scout=, else the deprecated GAFFER_SCOUT_MODEL_FLAG
+  # (a whole flag), else the router's scout phase (cheap tier).
+  local flag="" model=""
+  declare -F gaffer_role_model >/dev/null 2>&1 && model="$(gaffer_role_model scout)"
+  if [ -n "$model" ]; then flag="--model $model"; else flag="${GAFFER_SCOUT_MODEL_FLAG:-}"; fi
+  model=""
   if [ -z "$flag" ] && declare -F gaffer_route_model >/dev/null 2>&1; then
     model="$(gaffer_route_model scout "$SCOUT_RISK" 0 "${STACK:-}" 1 "$num" 2>/dev/null || true)"
     [ -n "$model" ] && flag="--model $model"
   fi
-  local turns="${GAFFER_SCOUT_MAX_TURNS:-6}" rc=0 _wrc=""
+  local turns=6 rc=0 _wrc=""
+  declare -F gaffer_role_cap >/dev/null 2>&1 && turns="$(gaffer_role_cap scout 6)"
   declare -F gaffer_role_turns >/dev/null 2>&1 && turns="$(gaffer_role_turns "$turns")"
   # The overrides stay local to this subshell: CLAUDE_FLAGS is REPLACED (no acceptEdits;
   # the write and shell tools denied by name on top of --tools), the boundary is the
@@ -244,7 +251,7 @@ gaffer_model_scout() {
     type log >/dev/null 2>&1 && log "SCOUT: model scout for #$num did not run (rc=$rc) — the deterministic packet stands" || true
     return 0
   }
-  local wm="${GAFFER_WORKER_MJS:-$_GAFFER_SCOUT_LIB/worker.mjs}" spend
+  local wm="${_GAFFER_WORKER_MJS:-$_GAFFER_SCOUT_LIB/worker.mjs}" spend
   node "$wm" parse-result result-text --json-file "$t/envelope.json" > "$t/reply" 2>/dev/null || : > "$t/reply"
   spend="$(node "$wm" parse-result spend --json-file "$t/envelope.json" 2>/dev/null || echo unknown)"
   SC_SPEND="${spend#\$}" SC_MODEL="${model:-${flag#--model }}" node -e '

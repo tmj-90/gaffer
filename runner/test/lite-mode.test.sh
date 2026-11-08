@@ -7,7 +7,7 @@
 #   1. gaffer_lite_trivial_reason (PURE) classifies trivial vs non-trivial from
 #      (risk, lines, files, paths): low-risk + tiny + no sensitive path = trivial;
 #      any of risk≠low / oversized / sensitive-path = nontrivial:<reason>. Caps are
-#      operator-tunable (GAFFER_LITE_MAX_LINES/FILES, GAFFER_LITE_SENSITIVE_RE).
+#      operator-tunable (GAFFER_LITE_MAX_DIFF, GAFFER_SENSITIVE_PATH_RE).
 #   2. The `GAFFER_MODE=lite` preset sets REVIEW_MODE=agent + the approve FLOOR on,
 #      keeps AUTO_MERGE / MERGE_ON_AGENT_REVIEW off (human merges), and — because
 #      auto-approve removes the human quality gate — trips GAFFER_STRICT_REQUIRE=1
@@ -38,7 +38,7 @@ trap 'gaffer_test_rm_work "$WORK"' EXIT
 mkdir -p "$WORK/data"   # empty → the settings.json loader is inert
 
 # Source factory.config.sh in a clean env and call the PURE classifier directly.
-# LITE_ENV carries optional cap overrides (e.g. GAFFER_LITE_MAX_LINES=5) into env -i.
+# LITE_ENV carries optional cap overrides (e.g. GAFFER_LITE_MAX_DIFF=lines=5) into env -i.
 lite_reason() {
   env -i PATH="$PATH" HOME="$HOME" GAFFER_DATA="$WORK/data" \
     ${LITE_ENV:-} bash -c '
@@ -90,18 +90,28 @@ for p in $SENSITIVE_PATHS; do
   grep -qxF "$p sensitive" <<<"$CLASSIFIED" && ok "sensitive: $p" || fail "false NEGATIVE (security gate): $p"
 done
 # The security second-review lane falls back to the SAME default (one definition).
-grep -q 'GAFFER_LITE_SENSITIVE_RE:-$_GAFFER_SENSITIVE_PATH_RE}"' "$RUNNER_DIR/config/18-review.sh" \
-  && grep -q 'GAFFER_SECURITY_REVIEW_RE:-${GAFFER_LITE_SENSITIVE_RE:-$_GAFFER_SENSITIVE_PATH_RE}}"' "$RUNNER_DIR/config/18-review.sh" \
+grep -qF '_re="${GAFFER_SENSITIVE_PATH_RE:-${GAFFER_LITE_SENSITIVE_RE:-$_GAFFER_SENSITIVE_PATH_RE}}"' "$RUNNER_DIR/config/18-review.sh" \
+  && grep -qF '_re="${GAFFER_SENSITIVE_PATH_RE:-${GAFFER_SECURITY_REVIEW_RE:-${GAFFER_LITE_SENSITIVE_RE:-$_GAFFER_SENSITIVE_PATH_RE}}}"' "$RUNNER_DIR/config/18-review.sh" \
   && ok "lite classifier and security review lane share _GAFFER_SENSITIVE_PATH_RE" \
   || fail "the two sensitive-path defaults are not the shared one"
 
-echo "== 2: tunable caps (GAFFER_LITE_MAX_LINES / _FILES / _SENSITIVE_RE) =="
+echo "== 2: tunable caps (GAFFER_LITE_MAX_DIFF / GAFFER_SENSITIVE_PATH_RE) =="
 eq "tighter line cap flips a former-trivial" \
-  "$(LITE_ENV='GAFFER_LITE_MAX_LINES=5' lite_reason low 10 1 'src/a.ts')" nontrivial:lines=10\>5
+  "$(LITE_ENV='GAFFER_LITE_MAX_DIFF=lines=5' lite_reason low 10 1 'src/a.ts')" nontrivial:lines=10\>5
 eq "tighter file cap flips a former-trivial" \
-  "$(LITE_ENV='GAFFER_LITE_MAX_FILES=1' lite_reason low 5 2 'a b')" nontrivial:files=2\>1
+  "$(LITE_ENV='GAFFER_LITE_MAX_DIFF=files=1' lite_reason low 5 2 'a b')" nontrivial:files=2\>1
+eq "a bound the knob does not name keeps its default (files 4)" \
+  "$(LITE_ENV='GAFFER_LITE_MAX_DIFF=lines=5' lite_reason low 5 9 'a b c d e f g h i')" nontrivial:files=9\>4
+eq "the deprecated GAFFER_LITE_MAX_LINES still works" \
+  "$(LITE_ENV='GAFFER_LITE_MAX_LINES=5' lite_reason low 10 1 'src/a.ts')" nontrivial:lines=10\>5
+eq "GAFFER_LITE_MAX_DIFF wins over the deprecated GAFFER_LITE_MAX_FILES" \
+  "$(LITE_ENV='GAFFER_LITE_MAX_FILES=1 GAFFER_LITE_MAX_DIFF=files=3' lite_reason low 5 2 'a b')" trivial
 eq "custom sensitive RE catches a new path" \
+  "$(LITE_ENV='GAFFER_SENSITIVE_PATH_RE=payments/' lite_reason low 5 1 'src/payments/charge.ts')" nontrivial:sensitive-path
+eq "the deprecated GAFFER_LITE_SENSITIVE_RE still works" \
   "$(LITE_ENV='GAFFER_LITE_SENSITIVE_RE=payments/' lite_reason low 5 1 'src/payments/charge.ts')" nontrivial:sensitive-path
+eq "GAFFER_SENSITIVE_PATH_RE wins over the deprecated name" \
+  "$(LITE_ENV='GAFFER_LITE_SENSITIVE_RE=payments/ GAFFER_SENSITIVE_PATH_RE=billing/' lite_reason low 5 1 'src/payments/charge.ts')" trivial
 
 echo "== 3: the GAFFER_MODE=lite preset =="
 preset() {

@@ -111,7 +111,7 @@ if [ "$(uname -s)" != "Darwin" ]; then
   [ "${r%%|*}" = "2" ] && ok "ANTHROPIC_BASE_URL alone → unknown (a gateway may authenticate), not a refusal" || fail "base url: $r"
 fi
 
-echo "== gaffer_claude_live_probe (GAFFER_PREFLIGHT_LIVE=1) =="
+echo "== gaffer_claude_live_probe (preflight --live) =="
 for b in claude-401 claude-iserr; do
   GAFFER_CLAUDE_LIVE_ERROR=""; CLAUDE_BIN="$WORK/$b" gaffer_claude_live_probe 10; rc=$?
   want="Invalid API key"; [ "$b" = claude-iserr ] && want="OAuth token has expired"
@@ -138,19 +138,23 @@ CLAUDE_BIN="$WORK/absent" gaffer_claude_live_probe 10; rc=$?
 
 echo "== preflight.sh end to end =="
 pf() { "${NOCRED[@]}" HOME="$H" GAFFER_DATA="$WORK/data" GAFFER_REGISTRY_PROBE=0 "$@" bash "$RUNNER_DIR/preflight.sh" 2>&1; }
+pfl() { "${NOCRED[@]}" HOME="$H" GAFFER_DATA="$WORK/data" GAFFER_REGISTRY_PROBE=0 "$@" bash "$RUNNER_DIR/preflight.sh" --live 2>&1; }
 : > "$CALLS"
 OUT="$(pf CLAUDE_BIN="$WORK/claude-401")"
 if [ "$(uname -s)" != "Darwin" ]; then
   [[ "$OUT" == *"no claude credential visible"* ]] && ok "preflight warns when no credential is visible" || fail "no warning: $OUT"
 fi
-[ ! -s "$CALLS" ] && ok "without GAFFER_PREFLIGHT_LIVE no paid call is made" || fail "preflight called claude -p: $(cat "$CALLS")"
-OUT="$(pf CLAUDE_BIN="$WORK/claude-401" GAFFER_PREFLIGHT_LIVE=1)"; rc=$?
+[ ! -s "$CALLS" ] && ok "without --live no paid call is made" || fail "preflight called claude -p: $(cat "$CALLS")"
+OUT="$(pfl CLAUDE_BIN="$WORK/claude-401")"; rc=$?
 [[ "$OUT" == *"claude live call FAILED: Invalid API key"* ]] && [ "$rc" -ne 0 ] \
-  && ok "GAFFER_PREFLIGHT_LIVE=1 + broken claude → a failure, exit non-zero" || fail "live broken: rc=$rc out=$OUT"
+  && ok "--live + broken claude → a failure, exit non-zero" || fail "live broken: rc=$rc out=$OUT"
 [[ "$OUT" != *"→ ready"* ]] && ok "…and preflight no longer says ready" || fail "still says ready"
-OUT="$(pf CLAUDE_BIN="$WORK/claude-good" GAFFER_PREFLIGHT_LIVE=1 ANTHROPIC_API_KEY=sk-x)"
+OUT="$(pfl CLAUDE_BIN="$WORK/claude-good" ANTHROPIC_API_KEY=sk-x)"
 [[ "$OUT" == *"claude answers a live call"* ]] && [[ "$OUT" == *"claude credential visible (\$ANTHROPIC_API_KEY)"* ]] && [[ "$OUT" != *"sk-x"* ]] \
   && ok "working claude + key → both ok, key value never printed" || fail "live good: $OUT"
+OUT="$(pf CLAUDE_BIN="$WORK/claude-good" GAFFER_PREFLIGHT_LIVE=1 ANTHROPIC_API_KEY=sk-x)"
+[[ "$OUT" == *"claude answers a live call"* ]] && [[ "$OUT" == *"GAFFER_PREFLIGHT_LIVE is deprecated"* ]] \
+  && ok "the deprecated GAFFER_PREFLIGHT_LIVE=1 still makes the live call, and says to pass --live" || fail "deprecated live: $OUT"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

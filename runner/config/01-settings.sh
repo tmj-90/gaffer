@@ -32,6 +32,19 @@ if [ -n "$_gs_out" ]; then
       GAFFER_ALLOW_UNCAPPED | GAFFER_WORKER_PROVIDER | GAFFER_WORKER_COMMAND | GAFFER_WORKER_COMMAND_ENV | \
         GAFFER_WORKER_COMMAND_COST_USD | GAFFER_SANDBOX_WORKER_COMMAND) continue ;;
     esac
+    # Internal names (a leading underscore: the re-source records, the warn-once marks,
+    # runner file paths such as _GAFFER_USAGE_PAUSE_MJS that node runs) and the test
+    # seams whose value is a command to run or a module to load are never settings: a
+    # file an agent's sandbox might reach must not pick code the runner executes.
+    case "$_sk" in
+      _*)
+        printf 'gaffer: ignoring %s from settings.json: an internal name, never a setting\n' "$_sk" >&2
+        continue ;;
+      GAFFER_WG_LIST_CMD | GAFFER_WG_SHOW_CMD | GAFFER_WG_DELIVERIES_CMD | GAFFER_REDACTION_MODULE | \
+        DISPATCH_TESTER_VERDICT_CMD | DISPATCH_LANE_VERDICT_CMD | DISPATCH_ACCEPTANCE_EVIDENCE_CMD)
+        printf 'gaffer: ignoring %s from settings.json: a command or module test seam; only the environment can set it\n' "$_sk" >&2
+        continue ;;
+    esac
     # A settings.json GAFFER_STRICT_REQUIRE=0 is NOT the operator's out-of-band
     # assertion (the opt-out from the OS sandbox every agent launch requires): only the
     # real environment can make it, under every worker provider. settings.json lives in
@@ -53,5 +66,53 @@ if [ -n "$_gs_out" ]; then
   unset _sk _sv
 fi
 unset _gs_out
+
+# _gaffer_deprecated <old-name> <what to set instead>: a deprecated variable that is
+# set says so on stderr once per process tree (the parent's mark is exported, so a
+# child that sources this file again stays quiet). Deprecated names keep working for
+# one release; docs/CONFIG.md lists them with their replacement.
+_gaffer_deprecated() {
+  [ -n "${!1:-}" ] || return 0
+  case "${_GAFFER_DEPRECATED_SAID:-}" in *" $1 "*) return 0 ;; esac
+  printf 'gaffer: %s is deprecated and goes in the next release; %s\n' "$1" "$2" >&2
+  _GAFFER_DEPRECATED_SAID="${_GAFFER_DEPRECATED_SAID:- } $1 "
+  export _GAFFER_DEPRECATED_SAID
+}
+
+# _gaffer_removed <old-name> <what happens now>: a removed variable that is set says so
+# on stderr once per process tree (the same mark as _gaffer_deprecated): its value is
+# ignored and the built-in behaviour is fixed. docs/CONFIG.md lists them under Removed.
+_gaffer_removed() {
+  [ -n "${!1:-}" ] || return 0
+  case "${_GAFFER_DEPRECATED_SAID:-}" in *" $1 "*) return 0 ;; esac
+  printf 'gaffer: %s was removed and its value is ignored; %s\n' "$1" "$2" >&2
+  _GAFFER_DEPRECATED_SAID="${_GAFFER_DEPRECATED_SAID:- } $1 "
+  export _GAFFER_DEPRECATED_SAID
+}
+# The knobs the config diet removed (nothing set them; each held its built-in value,
+# which is now fixed in the code). Said once if one is still set.
+while IFS='|' read -r _gr_name _gr_now; do
+  [ -n "$_gr_name" ] && _gaffer_removed "$_gr_name" "$_gr_now"
+done <<'_GAFFER_REMOVED_'
+GAFFER_REWORK_HISTORY_BYTES|a rework prompt carries the last 8000 bytes of earlier attempts' feedback
+GAFFER_JUDGE_DIFF_BYTES|the eval judge grades the first 120000 bytes of a diff
+GAFFER_MERGE_GATE_RETRIES|a landing whose target moved is re-gated up to twice
+GAFFER_PREFLIGHT_LIVE_TIMEOUT|the live preflight call gets 60 seconds
+GAFFER_ACCEPTANCE_TIMEOUT_MS|one acceptance profile run gets 5 minutes
+GAFFER_AGENT_NAME|the factory agent registers as gaffer-factory
+GAFFER_AGENT_EMAIL|a greenfield repo's first commit is by gaffer-factory@users.noreply.invalid
+GAFFER_BUDGET_LOW_FRACTION|the low-budget threshold is 20% of the ceiling (set GAFFER_BUDGET_LOW_THRESHOLD to change it)
+GAFFER_INHERIT_PLAN_TIMEOUT|the inherit planner gets 60 seconds
+GAFFER_INHERIT_AMB_TIMEOUT|the inherit ambiguity call gets 300 seconds
+GAFFER_ONBOARD_TIMEOUT|onboarding calls follow GAFFER_TICK_TIMEOUT
+GAFFER_REAPPROVAL_ATTEMPTS|a re-approval is tried 3 times
+GAFFER_TESTER_REPLAY_TIMEOUT_MS|the tester's replay gets 10 minutes
+GAFFER_DECOMPOSE_MOCK|a dry-run planner takes mockOutput from its request
+GAFFER_SPEC_AUTHOR_MOCK|a dry-run spec author takes mockOutput from its request
+GAFFER_AGENT_ID_FILE|the factory agent's id is kept in $GAFFER_DATA/agent_id
+GAFFER_REVIEWER_ID_FILE|the reviewer's id is kept in $GAFFER_DATA/agent_reviewer_id
+GAFFER_EVAL_LEDGER|the eval judge writes $GAFFER_DATA/eval-ledger.jsonl, the file the dashboard reads
+_GAFFER_REMOVED_
+unset _gr_name _gr_now
 
 _GAFFER_CONFIG_PART=01-settings

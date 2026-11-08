@@ -324,12 +324,12 @@ EOF
       REVIEW_MODEL="$(gaffer_route_model review "$RRISK" "${RAC:-0}" "" 1 "$RNUM" 2>/dev/null || true)"
       REVIEW_MODEL_FLAG="${GAFFER_IMPL_MODEL_FLAG:-}"
       [ -n "$REVIEW_MODEL" ] && REVIEW_MODEL_FLAG="--model $REVIEW_MODEL"
-      # Role turn cap (GAFFER_REVIEW_MAX_TURNS, clamped to GAFFER_MAX_TURNS) — not the
+      # Role turn cap (GAFFER_ROLE_MAX_TURNS review=, clamped to GAFFER_MAX_TURNS) — not the
       # 200-turn delivery cap: a read-and-judge pass that loops is stopped early. A cap
       # hit is named in the hold reason below.
       _R_SKILL_SINCE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
       GAFFER_LAUNCH_KIND=review worker_deliver "$WT" "$RPROMPT" "$REVIEW_MODEL_FLAG" "$MCP_RUNTIME" "$R_USAGE_JSON" "" \
-        "$(gaffer_role_turns "${GAFFER_REVIEW_MAX_TURNS:-60}")"
+        "$(gaffer_role_turns "$(gaffer_role_cap review 60)")"
       rrc=$?
       # JOIN KEYS (MF4): the review row names the repo and the risk at call time.
       R_REPO_NAME="$(echo "$RSHOW" | jget '((((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || {}).name) || "")' 2>/dev/null || echo '')"
@@ -371,7 +371,7 @@ EOF
         R_HELD_REASON="reviewer refused by the usage window (rc=$rrc; $(gaffer_usage_pause_active 2>/dev/null || echo 'the pause could not be written')) — not a verdict"
         R_VERDICT=held
       elif [ -n "$R_CAPHIT" ]; then
-        R_HELD_REASON="reviewer hit its turn cap ($R_CAPHIT turns; GAFFER_REVIEW_MAX_TURNS / GAFFER_MAX_TURNS) before a verdict — not a verdict"
+        R_HELD_REASON="reviewer hit its turn cap ($R_CAPHIT turns; GAFFER_ROLE_MAX_TURNS review= / GAFFER_MAX_TURNS) before a verdict — not a verdict"
         R_VERDICT=held
       elif [ "$rrc" -ne 0 ] || [ -z "${R_RESULT// /}" ]; then
         R_HELD_REASON="reviewer did not run (rc=$rrc${R_RESULT:+, non-empty result}) — not a verdict"
@@ -432,11 +432,11 @@ EOF
         SEC_MODEL="$(gaffer_route_model review "$RRISK" "${RAC:-0}" "" 1 "$RNUM" 2>/dev/null || true)"
         SEC_MODEL_FLAG="${GAFFER_IMPL_MODEL_FLAG:-}"
         [ -n "$SEC_MODEL" ] && SEC_MODEL_FLAG="--model $SEC_MODEL"
-        # Role turn cap: GAFFER_SECURITY_REVIEW_MAX_TURNS, else the reviewer's cap,
-        # clamped to GAFFER_MAX_TURNS.
+        # Role turn cap: GAFFER_ROLE_MAX_TURNS security_review= (built in 40), clamped
+        # to GAFFER_MAX_TURNS.
         _S_SKILL_SINCE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
         GAFFER_LAUNCH_KIND=review worker_deliver "$WT" "$SPROMPT" "$SEC_MODEL_FLAG" "$MCP_RUNTIME" "$S_USAGE_JSON" "" \
-          "$(gaffer_role_turns "${GAFFER_SECURITY_REVIEW_MAX_TURNS:-${GAFFER_REVIEW_MAX_TURNS:-40}}")"
+          "$(gaffer_role_turns "$(gaffer_role_cap security_review 40)")"
         src=$?
         GAFFER_USAGE_REPO="$R_REPO_NAME" GAFFER_USAGE_RISK="$RRISK" \
           gaffer_usage_record security-review "$RNUM" "$src" "$S_USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true

@@ -18,32 +18,43 @@
 #                        It is the DELIVERY/BOOTSTRAP cap and a CEILING for every
 #                        other role: a role runs under min(its own cap, this), so
 #                        the global can lower a role cap but never raise or replace it.
-# Per-role caps (each clamped to GAFFER_MAX_TURNS). Sized well above what each
-# role's prompt asks for (the reviewer is told "well under 20 tool calls", the
+# Per-role caps (each clamped to GAFFER_MAX_TURNS), one knob for all of them:
+# GAFFER_ROLE_MAX_TURNS="review=30 tester=120" (commas or spaces) sets the roles it
+# names; every other role keeps its built-in cap, listed with gaffer_role_cap below:
+# review 60, security_review 40, clarify 40, judge 2, tester 80, merge 60 (the
+# conflict resolver), po 60, scout 6, onboard 60, decompose and spec_author (their
+# helper's own cap, 20). Sized well above what each role's prompt asks for (the reviewer is told "well under 20 tool calls", the
 # security reviewer "under 12") so a normal run never trips them — they only stop
 # an agent that has gone off-track. The judge has no tools, so one turn ends it.
 # A capped run that stops before its verdict line is HELD for a human (no verdict is
 # never an approve; a reviewer cap hit is named in the hold reason), so when tuning a
 # cap start near the role's 90th-percentile turn count in usage-ledger.jsonl
 # (num_turns), not its mean, or the tail of ordinary runs is held.
-# The .mjs helpers carry their own: GAFFER_DECOMPOSE_MAX_TURNS (20),
-# GAFFER_SPEC_AUTHOR_MAX_TURNS (20), GAFFER_ONBOARD_MAX_TURNS (60). The first two are
-# also the planner's / spec author's HISTORY ceiling (--max-rounds);
-# GAFFER_DECOMPOSE_AGENT_MAX_TURNS / GAFFER_SPEC_AUTHOR_AGENT_MAX_TURNS, when set, cap
-# their claude agent on their own (still clamped to GAFFER_MAX_TURNS).
+# The .mjs helpers read the same knob (lib/worker.mjs roleTurns). The planner's and
+# spec author's own GAFFER_DECOMPOSE_MAX_TURNS / GAFFER_SPEC_AUTHOR_MAX_TURNS (20)
+# are also their HISTORY ceiling (--max-rounds); decompose= / spec_author= cap their
+# agent on its own (still clamped to GAFFER_MAX_TURNS).
+# The old per-role variables (GAFFER_REVIEW_MAX_TURNS, GAFFER_TESTER_MAX_TURNS, ...)
+# are deprecated: still honoured for a role the knob does not name, with a warning.
 # macOS ships NO GNU `timeout`, so gaffer_timeout is a portable shim built on perl's
 # alarm(): `gaffer_timeout <secs> <cmd> [args…]` runs <cmd> and kills it after <secs>.
 # If perl is somehow absent it falls back to GNU `timeout`/`gtimeout` when present,
 # else runs the command unbounded (best-effort — never breaks the call).
 : "${GAFFER_TICK_TIMEOUT:=1800}"   # 30 min hard wall-clock cap per claude -p call
 : "${GAFFER_MAX_TURNS:=200}"        # max agent turns per delivery call; ceiling for every role
-: "${GAFFER_REVIEW_MAX_TURNS:=60}"           # primary reviewer
-: "${GAFFER_SECURITY_REVIEW_MAX_TURNS:=40}"  # security second-opinion reviewer
-: "${GAFFER_CLARIFY_MAX_TURNS:=40}"          # intake / clarify pass
-: "${GAFFER_JUDGE_MAX_TURNS:=2}"             # eval judge (text-only, no tools)
-: "${GAFFER_TESTER_MAX_TURNS:=80}"           # bin/tester-run.mjs
-: "${GAFFER_MERGE_MAX_TURNS:=60}"            # bin/merge-ticket.mjs conflict resolver
-: "${GAFFER_PO_MAX_TURNS:=60}"               # bin/product-owner-run.mjs
+: "${GAFFER_ROLE_MAX_TURNS:=}"   # per-role turn caps as "role=N" pairs (review, security_review, clarify, judge, tester, merge, po, scout, onboard, decompose, spec_author); an unnamed role keeps its built-in cap; all are clamped to GAFFER_MAX_TURNS.
+export GAFFER_ROLE_MAX_TURNS
+
+for _gd in REVIEW SECURITY_REVIEW CLARIFY JUDGE TESTER MERGE RESOLVER PO SCOUT DECOMPOSE_AGENT SPEC_AUTHOR_AGENT ONBOARD; do
+  case "$_gd" in
+    RESOLVER) _gr=merge ;;
+    DECOMPOSE_AGENT) _gr=decompose ;;
+    SPEC_AUTHOR_AGENT) _gr=spec_author ;;
+    *) _gr="$(printf '%s' "$_gd" | tr '[:upper:]' '[:lower:]')" ;;
+  esac
+  _gaffer_deprecated "GAFFER_${_gd}_MAX_TURNS" "set GAFFER_ROLE_MAX_TURNS=\"$_gr=N\" instead"
+done
+unset _gd _gr
 # Definition-of-Done gate switches + bounds. The consumers (tick.sh, lib/dod.sh,
 # lib/ac-checks.sh) carry the SAME fallbacks, so these lines change nothing at
 # runtime — they exist so the knobs are documented here (docs/CONFIG.md) and
@@ -52,16 +63,17 @@
 : "${GAFFER_DOD_LINT:=1}"            # 1 = run the lint gate
 : "${GAFFER_DOD_TYPECHECK:=1}"       # 1 = run the typecheck gate (auto-detected command)
 : "${GAFFER_DOD_TYPECHECK_CMD:=}"    # override the auto-detected typecheck command
+# GAFFER_DOD_INSTALL=0 (read in lib/dod.sh and lib/greenfield.sh) is the one switch for
+# managing dependencies yourself; GAFFER_GREENFIELD_INSTALL=0 used to be a second one.
+_gaffer_deprecated GAFFER_GREENFIELD_INSTALL "set GAFFER_DOD_INSTALL=0 instead (it also skips the greenfield install)"
 : "${GAFFER_DOD_TIMEOUT:=900}"       # wall-clock cap (seconds) per gate and per AC check command
-# GATE INTEGRITY: an extra regex of repo-relative paths that count as test files, on top
-# of the conventional ones (*.test.*, *_test.go, test_*.py, tests/, __tests__/, spec/ …).
-# It can only WIDEN what the integrity check flags (a malformed pattern is ignored).
-# Read by the runner's integrity row and by dispatch's test-modified risk annotation.
-: "${GAFFER_TEST_PATH_RE:=}"         # extra test-path regex for the gate-integrity check (additive)
+# (GAFFER_TEST_PATH_RE, an extra test-path regex that can only widen the gate-integrity
+# check, is read by crew's integrity CLI and dispatch's risk annotation from their own
+# environment; the empty, unexported default that stood here reached neither.)
 # Run the DoD gates + AC check commands under the SAME OS sandbox wrap as the agent
 # (they execute agent-modified code). 0 opts out (a gate that cannot run inside the
 # image) and is logged; the verdict is always recorded by the runner outside the gate.
-: "${GAFFER_DOD_SANDBOX:=1}"
+: "${GAFFER_DOD_SANDBOX:=1}"   # 1 = run the DoD gates and criterion checks inside the agent's OS sandbox (they run agent-written code); 0 opts out, and the opt-out is logged
 # PR mode: when `gh pr merge` fails or gh is absent, 1 lands the branch LOCALLY (the PR
 # stays open — the previous behaviour). Default 0: HOLD the ticket at ready_for_merge
 # for a human; "done" means the PR merged upstream.
@@ -74,22 +86,54 @@ export GAFFER_DOD_SANDBOX GAFFER_PR_LOCAL_FALLBACK   # read by lib/dod.sh, lib/l
 # wrapper logs that the data plane runs inside. 1 forces on, 0 forces off.
 : "${GAFFER_MCP_BRIDGE:=auto}"
 export GAFFER_MCP_BRIDGE
-: "${GAFFER_DOD_OUTPUT_TAIL:=40}"    # lines of gate output kept as evidence / rework feedback
-: "${GAFFER_REWORK_HISTORY_BYTES:=8000}"   # prior-attempt feedback carried into a rework prompt
-: "${GAFFER_JUDGE_DIFF_BYTES:=120000}"     # diff bytes handed to the eval judge
-# Docker sandbox resource caps (lib/sandbox-docker.sh) and the daemon cadence (lib/daemon.sh).
-: "${GAFFER_SANDBOX_CPUS:=4}"
-: "${GAFFER_SANDBOX_MEMORY:=4g}"
-: "${GAFFER_SANDBOX_PIDS:=512}"
-: "${GAFFER_DAEMON_INTERVAL:=30}"    # seconds between `gaffer run --daemon` cycles
-: "${GAFFER_DAEMON_MAX_CYCLES:=0}"   # 0 = unbounded
-: "${GAFFER_DAEMON_SETUP_BACKOFF_MAX:=1800}"   # ceiling (s) of the daemon's doubling wait after a setup-error pass (loop.sh exit 3)
+GAFFER_DOD_OUTPUT_TAIL="${GAFFER_DOD_OUTPUT_TAIL:-40}"    # lines of gate output kept as evidence / rework feedback
+# Docker sandbox resource caps (lib/sandbox-docker.sh reads them, defaults cpus=4
+# memory=4g pids=512), one knob for the three; the old GAFFER_SANDBOX_CPUS / _MEMORY /
+# _PIDS are deprecated and still apply to a cap the knob does not name.
+: "${GAFFER_SANDBOX_LIMITS:=}"   # docker sandbox caps as "cpus=4 memory=4g pids=512"; a cap not named keeps that default; a malformed, zero or negative cap refuses the run.
+export GAFFER_SANDBOX_LIMITS
+_gaffer_deprecated GAFFER_SANDBOX_CPUS 'set GAFFER_SANDBOX_LIMITS="cpus=N" instead'
+_gaffer_deprecated GAFFER_SANDBOX_MEMORY 'set GAFFER_SANDBOX_LIMITS="memory=N" instead'
+_gaffer_deprecated GAFFER_SANDBOX_PIDS 'set GAFFER_SANDBOX_LIMITS="pids=N" instead'
+# The daemon's cadence is `gaffer run --daemon --interval N` (30 s by default).
+GAFFER_DAEMON_MAX_CYCLES="${GAFFER_DAEMON_MAX_CYCLES:-0}"   # 0 = unbounded
+GAFFER_DAEMON_SETUP_BACKOFF_MAX="${GAFFER_DAEMON_SETUP_BACKOFF_MAX:-1800}"   # ceiling (s) of the daemon's doubling wait after a setup-error pass (loop.sh exit 3)
 GAFFER_MAX_TURNS_FLAG=""; [ -n "${GAFFER_MAX_TURNS:-}" ] && GAFFER_MAX_TURNS_FLAG="--max-turns $GAFFER_MAX_TURNS"
 export GAFFER_TICK_TIMEOUT GAFFER_MAX_TURNS
-# The resolver's cap also answers to the lane-knob spelling GAFFER_RESOLVER_MAX_TURNS,
-# which wins over GAFFER_MERGE_MAX_TURNS when set (bin/merge-ticket.mjs mergeMaxTurns).
-: "${GAFFER_RESOLVER_MAX_TURNS:=}"           # alias of GAFFER_MERGE_MAX_TURNS (empty → that knob)
-export GAFFER_TESTER_MAX_TURNS GAFFER_MERGE_MAX_TURNS GAFFER_RESOLVER_MAX_TURNS GAFFER_PO_MAX_TURNS   # read by the .mjs helpers
+
+# gaffer_role_cap <role> <built-in cap>
+# Echo one role's own turn cap, before the GAFFER_MAX_TURNS ceiling: its entry in
+# GAFFER_ROLE_MAX_TURNS, else its deprecated variable (the resolver spelling before the
+# merge one), else the built-in cap. A zero or non-numeric value is skipped. Parity
+# with roleTurnsSetting in lib/worker.mjs. Callers clamp it with gaffer_role_turns.
+gaffer_role_cap() {
+  local role="${1:-}" v="" pair alias
+  local -a pairs=()
+  IFS=$', \t\n' read -r -a pairs <<<"${GAFFER_ROLE_MAX_TURNS:-}"
+  for pair in ${pairs[@]+"${pairs[@]}"}; do
+    case "$pair" in "$role="*) v="${pair#*=}"; case "$v" in '' | *[!0-9]* | 0) v="" ;; *) break ;; esac ;; esac
+  done
+  if [ -z "$v" ]; then
+    case "$role" in
+      review) alias="GAFFER_REVIEW_MAX_TURNS" ;;
+      security_review) alias="GAFFER_SECURITY_REVIEW_MAX_TURNS" ;;
+      clarify) alias="GAFFER_CLARIFY_MAX_TURNS" ;;
+      judge) alias="GAFFER_JUDGE_MAX_TURNS" ;;
+      tester) alias="GAFFER_TESTER_MAX_TURNS" ;;
+      merge) alias="GAFFER_RESOLVER_MAX_TURNS GAFFER_MERGE_MAX_TURNS" ;;
+      po) alias="GAFFER_PO_MAX_TURNS" ;;
+      scout) alias="GAFFER_SCOUT_MAX_TURNS" ;;
+      decompose) alias="GAFFER_DECOMPOSE_AGENT_MAX_TURNS" ;;
+      spec_author) alias="GAFFER_SPEC_AUTHOR_AGENT_MAX_TURNS" ;;
+      onboard) alias="GAFFER_ONBOARD_MAX_TURNS" ;;
+      *) alias="" ;;
+    esac
+    for pair in $alias; do
+      v="${!pair:-}"; case "$v" in '' | *[!0-9]* | 0) v="" ;; *) break ;; esac
+    done
+  fi
+  printf '%s' "${v:-${2:-}}"
+}
 
 # gaffer_role_turns <role-cap>
 # Echo the effective turn cap for one role: min(role cap, GAFFER_MAX_TURNS). A
@@ -115,7 +159,7 @@ gaffer_role_turns() {
 # Default is 3 (was 2) to give the ESCALATION LADDER room to work: attempt 1 delivers
 # with the routed model + the real failure fed back; attempt 2 RETHINKS the approach
 # (re-plan, optionally narrower scope); attempt 3 escalates to a STRONGER model
-# (GAFFER_REWORK_STRONG_MODEL) with the full feedback history. Set to 1 to disable
+# (GAFFER_ROLE_MODELS rework=, the plan tier by default) with the full feedback history. Set to 1 to disable
 # rework entirely (one attempt, then park to `blocked`).
 : "${GAFFER_MAX_DELIVERY_ATTEMPTS:=3}"
 # WASTE CONTROL: a ticket re-entered by a LATER tick (review CHANGES rework, a resumed
@@ -124,7 +168,7 @@ gaffer_role_turns() {
 # GAFFER_MAX_DELIVERY_ATTEMPTS re-runs inside one tick after a gate failure — always
 # continues on the agent's own commits, because its feedback is about that diff.
 : "${GAFFER_RETRY_FRESH_BRANCH:=0}"
-: "${GAFFER_CLAIM_TTL:=$(( ${GAFFER_MAX_DELIVERY_ATTEMPTS:-3} * ${GAFFER_TICK_TIMEOUT:-1800} + 300 ))}"
+GAFFER_CLAIM_TTL="${GAFFER_CLAIM_TTL:-$(( ${GAFFER_MAX_DELIVERY_ATTEMPTS:-3} * ${GAFFER_TICK_TIMEOUT:-1800} + 300 ))}"
 export GAFFER_MAX_DELIVERY_ATTEMPTS GAFFER_CLAIM_TTL
 # DISPATCH_MAX_ATTEMPTS — Dispatch's OWN reject-loop cap (packages/dispatch/src/core.ts
 # resolveMaxAttempts): a delivery rejected back into the queue this many times is
@@ -149,7 +193,7 @@ export DISPATCH_MAX_ATTEMPTS
 # claim-release (given GAFFER_REAP_GRACE below) still lands on a live lease. The
 # inner per-call caps remain the fine-grained defense; this is only the backstop
 # for a tick wedged OUTSIDE an agent call.
-: "${GAFFER_TICK_OUTER_TIMEOUT:=$(( ${GAFFER_MAX_DELIVERY_ATTEMPTS:-3} * ${GAFFER_TICK_TIMEOUT:-1800} + 120 ))}"
+GAFFER_TICK_OUTER_TIMEOUT="${GAFFER_TICK_OUTER_TIMEOUT:-$(( ${GAFFER_MAX_DELIVERY_ATTEMPTS:-3} * ${GAFFER_TICK_TIMEOUT:-1800} + 120 ))}"
 export GAFFER_TICK_OUTER_TIMEOUT
 # TICK DEADLINE GUARD (tick.sh): the outer bound above counts only agent calls, but a
 # tick also spends merge-lane resolver time and every attempt's DoD install, gates and
@@ -162,14 +206,18 @@ export GAFFER_TICK_OUTER_TIMEOUT
 # left instead. Gate and AC timeouts are also clamped to the time left. 0 = off (start
 # every attempt, as before).
 : "${GAFFER_TICK_DEADLINE_GUARD:=1}"
-: "${GAFFER_TICK_DEADLINE_MARGIN:=60}"   # seconds kept back for record / release / teardown
+GAFFER_TICK_DEADLINE_MARGIN="${GAFFER_TICK_DEADLINE_MARGIN:-60}"   # seconds kept back for record / release / teardown
 
 # ESCALATION: the model the FINAL rework attempt escalates to (stronger reasoning
-# for the hardest cases before a human is pulled in). Empty → keep the routed model
-# (no escalation). Defaults to the plan tier (opus) so the last attempt reasons as
-# hard as the planner does.
-: "${GAFFER_REWORK_STRONG_MODEL:=${GAFFER_PLAN_MODEL:-opus}}"
-export GAFFER_REWORK_STRONG_MODEL
+# for the hardest cases before a human is pulled in): GAFFER_ROLE_MODELS rework=,
+# defaulting to the plan tier (opus) so the last attempt reasons as hard as the planner
+# does; `rework=off` keeps the routed model (no escalation). Internal, worked out on
+# every source and read by gaffer_build_escalation (lib/tick-gates.sh).
+_GAFFER_REWORK_MODEL="$(gaffer_role_model rework)"
+case "$_GAFFER_REWORK_MODEL" in
+  off | none) _GAFFER_REWORK_MODEL="" ;;
+  '') _GAFFER_REWORK_MODEL="${GAFFER_PLAN_MODEL:-opus}" ;;
+esac
 
 # DOUBLE-BOUND: a per-ticket rework COST ceiling (USD). The rework loop stops at
 # whichever hits FIRST — the attempt cap (above) OR this cumulative per-ticket spend

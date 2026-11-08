@@ -17,8 +17,8 @@
 #   The command runs while the caller holds an EXCLUSIVE lock keyed on <lockfile>.
 #   Returns the command's own exit status (so callers see real failures), or 1 if
 #   the lock could not be acquired within the bound.
-: "${GAFFER_LOCK_TIMEOUT:=30}"     # max seconds to wait for a contended lock
-: "${GAFFER_LOCK_STALE:=120}"      # mkdir-lock older than this is treated as stale
+GAFFER_LOCK_TIMEOUT="${GAFFER_LOCK_TIMEOUT:-30}"     # max seconds to wait for a contended lock
+GAFFER_LOCK_STALE="${GAFFER_LOCK_STALE:-120}"      # mkdir-lock older than this is treated as stale
 
 # True iff flock(1) is present. FINDING B-L2: the flock branch below holds the lock
 # on a STATIC fd 9 (`( flock 9 …; ) 9>>lock`), which every bash supports — including

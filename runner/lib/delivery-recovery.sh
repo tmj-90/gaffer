@@ -137,7 +137,7 @@ gaffer_commits_all_new() {
 # relative to THIS file so the helpers work whether sourced by factory.config.sh or
 # directly by a unit test; an operator/test override wins.
 _GAFFER_DR_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-: "${GAFFER_WORKER_MJS:=$_GAFFER_DR_LIB/worker.mjs}"
+_GAFFER_WORKER_MJS="$_GAFFER_DR_LIB/worker.mjs"   # internal: a runner file, not a knob
 
 # gaffer_cap_num_turns <json-file>
 # Echo the integer num_turns from the captured claude JSON, or empty if absent /
@@ -147,7 +147,7 @@ gaffer_cap_num_turns() {
   local jsonfile="$1"
   [ -f "$jsonfile" ] || return 0
   command -v node >/dev/null 2>&1 || return 0
-  node "$GAFFER_WORKER_MJS" parse-result num-turns --json-file "$jsonfile" 2>/dev/null || true
+  node "$_GAFFER_WORKER_MJS" parse-result num-turns --json-file "$jsonfile" 2>/dev/null || true
 }
 
 # gaffer_cap_stop_reason_is_maxturns <json-file>
@@ -158,12 +158,13 @@ gaffer_cap_stop_reason_is_maxturns() {
   local jsonfile="$1"
   [ -f "$jsonfile" ] || return 1
   command -v node >/dev/null 2>&1 || return 1
-  node "$GAFFER_WORKER_MJS" parse-result stopreason-maxturns --json-file "$jsonfile" 2>/dev/null
+  node "$_GAFFER_WORKER_MJS" parse-result stopreason-maxturns --json-file "$jsonfile" 2>/dev/null
 }
 
 # gaffer_is_cap_hit <json-file> <rc>
 # RECOVERABLE-vs-CAP classification (GUARD C). True (exit 0) iff the call hit a
-# turn cap: either num_turns ≥ GAFFER_CAP_DETECT_TURNS, OR a max-turns stop
+# turn cap: either num_turns ≥ GAFFER_MAX_TURNS (or the deprecated
+# GAFFER_CAP_DETECT_TURNS, honoured for one release), OR a max-turns stop
 # reason was reported. A non-zero rc that is the timeout sentinel (124) is NOT a
 # turn cap — that is the wall-clock guard, handled as a normal failure — so we
 # only treat rc==0 OR an explicit max-turns reason as a cap-hit. Empty/absent
@@ -189,7 +190,7 @@ gaffer_is_budget_stop() {
   local jsonfile="$1"
   [ -f "$jsonfile" ] || return 1
   command -v node >/dev/null 2>&1 || return 1
-  node "$GAFFER_WORKER_MJS" parse-result stopreason-budget --json-file "$jsonfile" 2>/dev/null
+  node "$_GAFFER_WORKER_MJS" parse-result stopreason-budget --json-file "$jsonfile" 2>/dev/null
 }
 
 # gaffer_delivery_spend <json-file>
@@ -200,5 +201,5 @@ gaffer_delivery_spend() {
   local jsonfile="$1"
   [ -f "$jsonfile" ] || { printf 'unknown'; return 0; }
   command -v node >/dev/null 2>&1 || { printf 'unknown'; return 0; }
-  node "$GAFFER_WORKER_MJS" parse-result spend --json-file "$jsonfile" 2>/dev/null || printf 'unknown'
+  node "$_GAFFER_WORKER_MJS" parse-result spend --json-file "$jsonfile" 2>/dev/null || printf 'unknown'
 }

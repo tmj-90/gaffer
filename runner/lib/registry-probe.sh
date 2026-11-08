@@ -156,4 +156,4 @@ gaffer_registry_probe_hint() {
 # 0 = skip (a registry that rejects ping).
 : "${GAFFER_REGISTRY_PROBE:=1}"
 # Seconds the registry probe may take before it counts as unreachable ("timeout").
-: "${GAFFER_REGISTRY_PROBE_TIMEOUT:=45}"
+GAFFER_REGISTRY_PROBE_TIMEOUT="${GAFFER_REGISTRY_PROBE_TIMEOUT:-45}"

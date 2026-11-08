@@ -170,8 +170,8 @@ gaffer_bootstrap_init() {
     printf '# %s\n\n%s\n' "$name" "$intent" > "$dir/README.md" || return 1
     git -C "$dir" add README.md >/dev/null 2>&1 || return 1
     git -C "$dir" \
-      -c user.name="${GAFFER_AGENT_NAME:-gaffer-factory}" \
-      -c user.email="${GAFFER_AGENT_EMAIL:-gaffer-factory@users.noreply.invalid}" \
+      -c user.name=gaffer-factory \
+      -c user.email=gaffer-factory@users.noreply.invalid \
       -c commit.gpgsign=false \
       commit -q -m "chore: initialise ${name}" >/dev/null 2>&1 || return 1
   fi
@@ -263,7 +263,10 @@ gaffer_ensure_node_modules() {
   if [ -e "$dir/node_modules" ] && [ -n "$(ls -A "$dir/node_modules" 2>/dev/null)" ]; then
     return 0 # already present — nothing to do
   fi
-  # Optional escape hatch for operators who manage deps themselves.
+  # Optional escape hatch for operators who manage deps themselves: GAFFER_DOD_INSTALL=0
+  # (one switch for this prime and the pre-gate install; the deprecated
+  # GAFFER_GREENFIELD_INSTALL=0 still works for one release).
+  case "${GAFFER_DOD_INSTALL:-1}" in 0 | false | off | no) return 0 ;; esac
   [ "${GAFFER_GREENFIELD_INSTALL:-1}" = "0" ] && return 0
 
   local pm=""
@@ -446,7 +449,7 @@ gaffer_inherit_repo() {
   # Bound the planner query: a locked SQLite file or stalled I/O would otherwise hang
   # here indefinitely (the outer tick timer may have hours of headroom left). The
   # planner is a fast read-only query in normal operation, so 60s is ample.
-  if ! plan="$(gaffer_timeout "${GAFFER_INHERIT_PLAN_TIMEOUT:-60}" node "$planner" --bootstrap "$boot_num" --db "$DISPATCH_DB" 2>/dev/null)"; then
+  if ! plan="$(gaffer_timeout 60 node "$planner" --bootstrap "$boot_num" --db "$DISPATCH_DB" 2>/dev/null)"; then
     log "inherit: planner failed or timed out for bootstrap #$boot_num, skipping"
     return 0
   fi
@@ -608,7 +611,7 @@ _gaffer_inherit_amb_spawn() {  # stdin: plan JSON; args: <idx> [ticket] → answ
     _direct=1
   fi
   if [ "$_direct" = 1 ]; then
-    ( cd "$scratch" && gaffer_timeout "${GAFFER_INHERIT_AMB_TIMEOUT:-300}" "$bin" "${argv[@]}" ) \
+    ( cd "$scratch" && gaffer_timeout 300 "$bin" "${argv[@]}" ) \
       >"$scratch/out.json" 2>/dev/null || rc=$?
   else
     # The OS sandbox is wanted (the default), or another worker provider: the classifier
@@ -638,7 +641,7 @@ _gaffer_inherit_amb_spawn() {  # stdin: plan JSON; args: <idx> [ticket] → answ
     [ "${GAFFER_WORKER_PROVIDER:-claude-code}" = claude-code ] && _itext+=(--strict-mcp-config --disable-slash-commands)
     local _wenv_saved=( ${WORKER_CALL_ENV[@]+"${WORKER_CALL_ENV[@]}"} )
     WORKER_CALL_ENV=( "GAFFER_WRITE_ROOTS=$scratch/cwd" "GAFFER_READ_ROOTS=" )
-    GAFFER_LAUNCH_KIND=inherit GAFFER_TICK_TIMEOUT="${GAFFER_INHERIT_AMB_TIMEOUT:-300}" \
+    GAFFER_LAUNCH_KIND=inherit GAFFER_TICK_TIMEOUT=300 \
       worker_deliver "$scratch/cwd" "$_ip" "$_im" "$scratch/mcp.json" "$scratch/out.json" "" "$_it" "${_itext[@]}" \
       2>/dev/null || rc=$?
     WORKER_CALL_ENV=( ${_wenv_saved[@]+"${_wenv_saved[@]}"} )
@@ -646,7 +649,7 @@ _gaffer_inherit_amb_spawn() {  # stdin: plan JSON; args: <idx> [ticket] → answ
   if type gaffer_usage_record >/dev/null 2>&1; then
     text="$(gaffer_usage_record inherit "$tnum" "$rc" "$scratch/out.json" "$(( (SECONDS - t0) * 1000 ))" 2>/dev/null)"
   fi
-  [ -n "$text" ] || text="$(node "${GAFFER_WORKER_MJS:-${RUNNER_DIR:-.}/lib/worker.mjs}" parse-result result-text --json-file "$scratch/out.json" 2>/dev/null)"
+  [ -n "$text" ] || text="$(node "${_GAFFER_WORKER_MJS:-${RUNNER_DIR:-.}/lib/worker.mjs}" parse-result result-text --json-file "$scratch/out.json" 2>/dev/null)"
   [ -n "$text" ] || text="$(cat "$scratch/out.json" 2>/dev/null)"
   rm -rf "$scratch"
   printf '%s' "$text"

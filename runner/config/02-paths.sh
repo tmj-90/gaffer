@@ -6,21 +6,21 @@
 # factory.config.sh. The last line tells factory.config.sh this part loaded whole.
 
 # Product locations (mono layout: packages/* under the repo root)
-: "${DISPATCH_DIR:=$GAFFER_HOME/packages/dispatch}"
-: "${CREW_DIR:=$GAFFER_HOME/packages/crew}"
-: "${MEMORY_DIR:=$GAFFER_HOME/packages/memory}"   # memory-mcp, vendored into the mono
+DISPATCH_DIR="${DISPATCH_DIR:-$GAFFER_HOME/packages/dispatch}"
+CREW_DIR="${CREW_DIR:-$GAFFER_HOME/packages/crew}"
+MEMORY_DIR="${MEMORY_DIR:-$GAFFER_HOME/packages/memory}"   # memory-mcp, vendored into the mono
 
 # Shared databases (the two MCP servers read these)
-: "${DISPATCH_DB:=$GAFFER_DATA/dispatch.sqlite}"
-: "${MEMORY_DB:=$GAFFER_DATA/memory.sqlite}"
-: "${CREW_CONFIG:=$GAFFER_DATA/crew.yaml}"
+DISPATCH_DB="${DISPATCH_DB:-$GAFFER_DATA/dispatch.sqlite}"
+MEMORY_DB="${MEMORY_DB:-$GAFFER_DATA/memory.sqlite}"
+CREW_CONFIG="${CREW_CONFIG:-$GAFFER_DATA/crew.yaml}"
 # memory's MCP/CLI audit trail. memory-mcp's own default is per-user
 # ($HOME/.memory/audit.jsonl), which every factory on a machine would share, which
 # survives deleting .gaffer, and which in the container sits outside the /data
 # volume. Pin it into this factory's data dir. Not `audit.jsonl`: dispatch already
 # writes that name beside dispatch.sqlite here. Exported (and kept by
 # gaffer_agent_env) so lg, doctor and the agent's memory-mcp all write the same file.
-: "${MEMORY_AUDIT_LOG:=$GAFFER_DATA/memory-audit.jsonl}"
+MEMORY_AUDIT_LOG="${MEMORY_AUDIT_LOG:-$GAFFER_DATA/memory-audit.jsonl}"
 export MEMORY_AUDIT_LOG
 # CODE INDEX: memory's files -> symbols -> imports -> tests map of each repo (TS, JS,
 # Python; by import text, no model). Built at onboard and refreshed after each merge; the
@@ -35,7 +35,8 @@ export GAFFER_CODE_INDEX
 # per-call-site parse loop. Exported because gaffer_ticket_rework_spend is
 # `export -f`'d and must resolve the module in child shells where RUNNER_DIR
 # (deliberately unexported) is absent.
-: "${GAFFER_ESTIMATE_LIB:=$RUNNER_DIR/lib/estimate.mjs}"
-export GAFFER_ESTIMATE_LIB
+_GAFFER_ESTIMATE_LIB="$RUNNER_DIR/lib/estimate.mjs"   # internal: a runner file, not a knob
+export _GAFFER_ESTIMATE_LIB
+_GAFFER_EVAL_LEDGER="$GAFFER_DATA/eval-ledger.jsonl"   # internal: the eval judge's ledger, the file the dashboard reads
 
 _GAFFER_CONFIG_PART=02-paths

@@ -64,7 +64,7 @@ import {
 import { primeContextBlock } from "../lib/context-primer.mjs";
 import { mountedNames, recordSkillUsage } from "./record-skill-usage.mjs";
 import { mountRoleSkills, writeAgentSettings } from "../lib/agent-home.mjs";
-import { maxTurnsArgv, roleTurnCap, Worker } from "../lib/worker.mjs";
+import { maxTurnsArgv, roleTurns, Worker } from "../lib/worker.mjs";
 import { quarantine } from "../lib/agent-io.mjs";
 
 // node:sqlite is only reachable via createRequire in an ESM module.
@@ -551,8 +551,8 @@ export function renderPoMcpRuntime(
  * Build the full `claude -p` argv (the same shape decompose.mjs / tick.sh produce):
  * [-p, prompt, --mcp-config, <runtime>, ...CLAUDE_FLAGS, --max-turns N]. Pulled out
  * so the dry-run path and tests can assert it without spawning anything. `maxTurns`
- * is the caller's role cap (PO: GAFFER_PO_MAX_TURNS; tester-run.mjs reuses this with
- * GAFFER_TESTER_MAX_TURNS), already clamped to GAFFER_MAX_TURNS by roleTurnCap —
+ * is the caller's role cap (GAFFER_ROLE_MAX_TURNS po=, or tester= when tester-run.mjs
+ * reuses this), already clamped to GAFFER_MAX_TURNS by roleTurnCap —
  * without it these agents were bounded only by their wall clock.
  */
 export function buildClaudeArgv({ prompt, mcpConfig, flags, maxTurns = poMaxTurns() }) {
@@ -579,9 +579,9 @@ export function buildClaudeArgv({ prompt, mcpConfig, flags, maxTurns = poMaxTurn
   ]);
 }
 
-/** The PO run's turn cap: GAFFER_PO_MAX_TURNS (default 60) clamped to GAFFER_MAX_TURNS. */
+/** The PO run's turn cap: GAFFER_ROLE_MAX_TURNS po= (default 60) clamped to GAFFER_MAX_TURNS. */
 export function poMaxTurns(env = process.env) {
-  return roleTurnCap(parseInt(env.GAFFER_PO_MAX_TURNS ?? "", 10) || 60, env);
+  return roleTurns("po", 60, env);
 }
 
 /**

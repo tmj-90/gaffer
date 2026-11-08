@@ -181,9 +181,9 @@ lower total cost?* `gaffer eval experiment` (`runner/eval/experiment.sh` and
 which applies the ticket's recorded change (nothing for `stub=noop`), so the whole
 pipeline runs in CI for free with its own data dir under `--out`. It proves the
 pipeline, not a model. **Live mode** (`--live`) runs the real agent and needs a hard
-USD cap for the run (`--max-usd` or `GAFFER_EXPERIMENT_MAX_USD`), which also caps every
+USD cap for the run (`--max-usd`), which also caps every
 call at what is left; a call whose spend cannot be read (killed, timed out, no
-envelope) counts its whole cap, so the run stops after it. It stops at the ticket cap (`GAFFER_EXPERIMENT_MAX_TICKETS`, 5),
+envelope) counts its whole cap, so the run stops after it. It stops at the ticket cap (`--max-tickets`, 5),
 at the factory's own budget admission and at the usage pause, and books every call in
 the factory's ledger as kind `experiment` with no ticket, so the daily caps see it and
 no ticket's figures move. Nothing is recorded to dispatch (`wg` is a recorder, as in the
@@ -251,11 +251,7 @@ interval have no `method` and never propose; run their report again
 | Env | Default | Meaning |
 |---|---|---|
 | `GAFFER_EVAL_JUDGE` | `0` | `1` enables post-submit judging (one extra paid model call per delivery) |
-| `GAFFER_JUDGE_MODEL_FLAG` | plan model flag, else impl model flag | model for the judge turn |
-| `GAFFER_EVAL_LEDGER` | `$GAFFER_DATA/eval-ledger.jsonl` | ledger path |
-| `GAFFER_EXPERIMENT_MAX_USD` | _(empty)_ | hard USD cap of one live experiment run; required for `--live` |
-| `GAFFER_EXPERIMENT_MAX_TICKETS` | `5` | tickets per experiment |
-| `GAFFER_EXPERIMENT_MAX_ATTEMPTS` | `2` | attempts per ticket and arm |
+| `GAFFER_ROLE_MODELS` `judge=` | plan model flag, else impl model flag | model for the judge turn |
 
 ## Honest limits of the current metrics (read before trusting a number)
 
@@ -272,14 +268,13 @@ These are real conditioning biases, left visible rather than hidden:
   conditioned away. The spend on failed attempts is counted in *cost per accepted
   change* above.
 - **Self-grading when no plan model is set.** The judge turn uses
-  `GAFFER_JUDGE_MODEL_FLAG`, else the plan model flag (`GAFFER_PLAN_MODEL_FLAG`),
+  `GAFFER_ROLE_MODELS` `judge=`, else the plan model flag (`GAFFER_PLAN_MODEL_FLAG`),
   and only when neither is set the implementation model flag, when it shares the
-  implementer's blind spots. Set `GAFFER_JUDGE_MODEL_FLAG` to a *different*
+  implementer's blind spots. Set `judge=` to a *different*
   (ideally stronger) model for real independence. Every record carries
   `judgeModel` so a model swap is visible and doesn't silently break longitudinal
   comparability.
-- **Prefix grading on huge diffs.** Diffs over `GAFFER_JUDGE_DIFF_BYTES`
-  (120 KB default) are truncated; the judge is told so and instructed to treat
+- **Prefix grading on huge diffs.** Diffs over 120 KB are truncated; the judge is told so and instructed to treat
   unseen changes as ungraded, not absent, but `minimalism`/`security` on a very
   large delivery are still graded on a prefix.
 
@@ -394,7 +389,7 @@ cost tiles see it), and whether that is worth it depends on the factory. Turn it
 agreement`. If it separates, keep it on and open its view on the Review page when you want its
 reasons (that decision then counts as revealed). If it
 does not, read the misses, then try a different judge model
-(`GAFFER_JUDGE_MODEL_FLAG`) or turn it off. What a change costs once every attempt is
+(`GAFFER_ROLE_MODELS` `judge=`) or turn it off. What a change costs once every attempt is
 counted, the judge's own spend included, is the *cost per accepted change* metric above (`gaffer wg stats`, the Health view's
 wage bill); the judge does not duplicate it.
 

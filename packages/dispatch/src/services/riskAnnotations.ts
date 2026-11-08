@@ -9,7 +9,7 @@
  * reviewer looks.
  *
  * Pure + deterministic (no I/O). Mirrors the runner-side lite-mode sensitive-path
- * classifier (`gaffer_lite_trivial_reason` / GAFFER_LITE_SENSITIVE_RE) so "what lite mode
+ * classifier (`gaffer_lite_trivial_reason` / GAFFER_SENSITIVE_PATH_RE) so "what lite mode
  * refuses to auto-approve" and "what the reviewer is told to look at" stay consistent.
  * Over-flagging is safe here (advisory), so the patterns lean inclusive.
  */

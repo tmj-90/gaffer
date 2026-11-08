@@ -147,7 +147,7 @@ image `runner/sandbox/Dockerfile`, built by `docker compose --profile sandbox bu
   `$GAFFER_DATA/egress-allow.txt` add hosts without an image rebuild. A request to any
   other host fails at the network layer, by DNS or by raw IP.
 - **Privileges**: capabilities dropped, `no-new-privileges`, and CPU, memory and pid
-  limits (`GAFFER_SANDBOX_CPUS`, `GAFFER_SANDBOX_MEMORY`, `GAFFER_SANDBOX_PIDS`).
+  limits (`GAFFER_SANDBOX_LIMITS="cpus=4 memory=4g pids=512"`, the defaults).
 - **Credentials**: only the model credential is forwarded; the rest of the environment
   is scrubbed. If the daemon is down, the run fails closed under strict-require.
 

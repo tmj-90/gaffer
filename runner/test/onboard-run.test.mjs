@@ -276,9 +276,12 @@ console.log("== --summary: a short summary on stderr, the full log in $GAFFER_DA
   if (full.stderr.includes('"clarifications"') && !/registered: notes/.test(full.stderr))
     ok("without --summary the full JSON is still logged (dashboard run log unchanged)");
   else fail(`no-flag output changed:\n${full.stderr.slice(0, 300)}`);
-  const verbose = run(["--summary"], { GAFFER_VERBOSE: "1" });
-  if (verbose.stderr.includes('"clarifications"'))
-    ok("GAFFER_VERBOSE=1 keeps the full log on stderr");
+  const verbose = run(["--summary", "--verbose"], { GAFFER_VERBOSE: "" });
+  if (verbose.stderr.includes('"clarifications"')) ok("--verbose keeps the full log on stderr");
+  else fail("--verbose hid the full log");
+  const legacy = run(["--summary"], { GAFFER_VERBOSE: "1" });
+  if (legacy.stderr.includes('"clarifications"'))
+    ok("the deprecated GAFFER_VERBOSE=1 still keeps the full log on stderr");
   else fail("GAFFER_VERBOSE=1 hid the full log");
 }
 

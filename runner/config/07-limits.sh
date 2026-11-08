@@ -72,7 +72,7 @@ export GAFFER_DOD_SANDBOX GAFFER_PR_LOCAL_FALLBACK   # read by lib/dod.sh, lib/l
 # wrapper logs that the data plane runs inside. 1 forces on, 0 forces off.
 : "${GAFFER_MCP_BRIDGE:=auto}"
 export GAFFER_MCP_BRIDGE
-: "${GAFFER_DOD_OUTPUT_TAIL:=40}"    # lines of gate output kept as evidence / rework feedback
+GAFFER_DOD_OUTPUT_TAIL="${GAFFER_DOD_OUTPUT_TAIL:-40}"    # lines of gate output kept as evidence / rework feedback
 : "${GAFFER_REWORK_HISTORY_BYTES:=8000}"   # prior-attempt feedback carried into a rework prompt
 : "${GAFFER_JUDGE_DIFF_BYTES:=120000}"     # diff bytes handed to the eval judge
 # Docker sandbox resource caps (lib/sandbox-docker.sh) and the daemon cadence (lib/daemon.sh).
@@ -80,8 +80,8 @@ export GAFFER_MCP_BRIDGE
 : "${GAFFER_SANDBOX_MEMORY:=4g}"
 : "${GAFFER_SANDBOX_PIDS:=512}"
 : "${GAFFER_DAEMON_INTERVAL:=30}"    # seconds between `gaffer run --daemon` cycles
-: "${GAFFER_DAEMON_MAX_CYCLES:=0}"   # 0 = unbounded
-: "${GAFFER_DAEMON_SETUP_BACKOFF_MAX:=1800}"   # ceiling (s) of the daemon's doubling wait after a setup-error pass (loop.sh exit 3)
+GAFFER_DAEMON_MAX_CYCLES="${GAFFER_DAEMON_MAX_CYCLES:-0}"   # 0 = unbounded
+GAFFER_DAEMON_SETUP_BACKOFF_MAX="${GAFFER_DAEMON_SETUP_BACKOFF_MAX:-1800}"   # ceiling (s) of the daemon's doubling wait after a setup-error pass (loop.sh exit 3)
 GAFFER_MAX_TURNS_FLAG=""; [ -n "${GAFFER_MAX_TURNS:-}" ] && GAFFER_MAX_TURNS_FLAG="--max-turns $GAFFER_MAX_TURNS"
 export GAFFER_TICK_TIMEOUT GAFFER_MAX_TURNS
 # The resolver's cap also answers to the lane-knob spelling GAFFER_RESOLVER_MAX_TURNS,
@@ -160,7 +160,7 @@ export GAFFER_TICK_OUTER_TIMEOUT
 # left instead. Gate and AC timeouts are also clamped to the time left. 0 = off (start
 # every attempt, as before).
 : "${GAFFER_TICK_DEADLINE_GUARD:=1}"
-: "${GAFFER_TICK_DEADLINE_MARGIN:=60}"   # seconds kept back for record / release / teardown
+GAFFER_TICK_DEADLINE_MARGIN="${GAFFER_TICK_DEADLINE_MARGIN:-60}"   # seconds kept back for record / release / teardown
 
 # ESCALATION: the model the FINAL rework attempt escalates to (stronger reasoning
 # for the hardest cases before a human is pulled in). Empty → keep the routed model

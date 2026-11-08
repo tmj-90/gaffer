@@ -136,7 +136,7 @@ export GAFFER_DASHBOARD_URL
 # of its lease. 30s comfortably covers release + teardown while still bounding a
 # TERM-ignoring runaway; keep it well under the claim-TTL headroom
 # (GAFFER_CLAIM_TTL − GAFFER_TICK_OUTER_TIMEOUT, 180s at defaults).
-: "${GAFFER_REAP_GRACE:=30}"
+GAFFER_REAP_GRACE="${GAFFER_REAP_GRACE:-30}"
 export GAFFER_REAP_GRACE
 
 _GAFFER_CONFIG_PART=08-guards

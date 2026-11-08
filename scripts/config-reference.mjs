@@ -242,13 +242,6 @@ export const EXTRA_KNOBS = [
   },
   {
     group: "Delivery and landing",
-    name: "GAFFER_DIGEST_DISABLE",
-    default: "0",
-    file: "runner/lib/land.sh",
-    doc: "1 = skip the repo digest and feature-ledger refresh after a merge lands.",
-  },
-  {
-    group: "Delivery and landing",
     name: "GAFFER_MEMORY_AUTO_PROMOTE",
     default: "MEMORY_AUTO_APPROVE",
     verify: false,
@@ -406,12 +399,45 @@ export const INTERNAL_NAMES = [
 ];
 
 /**
- * Test seams: `GAFFER_TEST_*` names the code reads only so a test can shorten a wait,
- * point a command at a stub or fix the clock. Listed by name in one line, never as
- * rows. verifyTestSeams fails when one is no longer read, or when runner source (not a
- * test) assigns one.
+ * Test seams: names the code reads only so a test can shorten a wait, point a command
+ * at a stub, skip slow bookkeeping or fix the clock. Nothing in the runner sets one and
+ * no operator needs to: the built-in value is the one to run with. Listed by name in
+ * one line, never as rows (verifyInternalNames fails when one is no longer read). The
+ * ones the config used to default assign themselves plainly, like the internal names.
  */
-export const TEST_SEAMS = [];
+export const TEST_SEAMS = [
+  "GAFFER_DOD_OUTPUT_TAIL",
+  "GAFFER_DOD_RERUN_WAIT",
+  "GAFFER_DAEMON_MAX_CYCLES",
+  "GAFFER_DAEMON_SETUP_BACKOFF_MAX",
+  "GAFFER_TICK_DEADLINE_MARGIN",
+  "GAFFER_REAP_GRACE",
+  "GAFFER_LOCK_TIMEOUT",
+  "GAFFER_LOCK_STALE",
+  "GAFFER_REGISTRY_PROBE_TIMEOUT",
+  "GAFFER_DIGEST_DISABLE",
+  "GAFFER_USAGE_PAUSE_POLL_SECS",
+  "GAFFER_TODAY_OVERRIDE",
+  "GAFFER_CONTEXT_DUMP_DIR",
+  "GAFFER_WG_LIST_CMD",
+  "GAFFER_WG_SHOW_CMD",
+  "GAFFER_WG_DELIVERIES_CMD",
+  "GAFFER_TRUST_LOCK_TRIES",
+  "GAFFER_TRUST_LOCK_SLEEP_MS",
+  "GAFFER_TRUST_WORKTREE_ROOT",
+  "GAFFER_CARD_BATCH",
+  "GAFFER_CARD_SNIPPET_CHARS",
+  "GAFFER_MERGE_TIMEOUT_MS",
+  "GAFFER_REAPPROVAL_BACKOFF_MS",
+  "GAFFER_DECOMPOSE_TIMEOUT_MS",
+  "GAFFER_PLAN_BUILD_TIMEOUT_MS",
+  "GAFFER_TESTER_TIMEOUT_MS",
+  "GAFFER_ACCEPTANCE_PORT_BASE",
+  "GAFFER_REDACTION_MODULE",
+  "DISPATCH_TESTER_VERDICT_CMD",
+  "DISPATCH_LANE_VERDICT_CMD",
+  "DISPATCH_ACCEPTANCE_EVIDENCE_CMD",
+];
 
 /** Every internal or seam name, for the scans that decide what is a knob. */
 export function notKnobNames() {
@@ -724,7 +750,7 @@ export function render({
     }
     if (seams.length > 0) {
       out.push(
-        `- **test seams**: read only so a test can shorten a wait, stub a command or fix the clock. ${seams.map((n) => `\`${n}\``).join(", ")}.`,
+        `- **test seams**: read only so a test can shorten a wait, stub a command, skip slow bookkeeping or fix the clock; keep the built-in value. ${seams.map((n) => `\`${n}\``).join(", ")}.`,
       );
     }
     out.push("");

@@ -19,10 +19,10 @@ computed from other knobs at runtime.
 
 | Metric | Count |
 |---|---|
-| Knobs with a runner default | 124 |
+| Knobs with a runner default | 115 |
 | Knobs editable in the dashboard | 58 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
-| Env reads in code with no default and no UI entry | 50 |
+| Env reads in code with no default and no UI entry | 29 |
 
 ## Runner defaults (`runner/factory.config.sh` and `runner/lib/*.sh`)
 
@@ -82,21 +82,17 @@ computed from other knobs at runtime.
 | `GAFFER_DOD_SANDBOX` | `1` |  | runner | (GAFFER_TEST_PATH_RE, an extra test-path regex that can only widen the gate-integrity check, is read by crew's integrity CLI and dispatch's risk annotation from their own environment; the empty, unexported default that… |
 | `GAFFER_PR_LOCAL_FALLBACK` | `0` |  | runner | PR mode: when `gh pr merge` fails or gh is absent, 1 lands the branch LOCALLY (the PR stays open — the previous behaviour). |
 | `GAFFER_MCP_BRIDGE` | `auto` |  | runner | docker provider: run the MCP data plane (dispatch + memory servers) on the HOST and bridge the container to it over one unix socket (lib/mcp-bridge.mjs), so no database, ledger, claim token or settings file is in the… |
-| `GAFFER_DOD_OUTPUT_TAIL` | `40` |  | crew, runner | lines of gate output kept as evidence / rework feedback |
 | `GAFFER_REWORK_HISTORY_BYTES` | `8000` |  | runner | prior-attempt feedback carried into a rework prompt |
 | `GAFFER_JUDGE_DIFF_BYTES` | `120000` |  | runner | diff bytes handed to the eval judge |
 | `GAFFER_SANDBOX_CPUS` | `4` |  | runner | Docker sandbox resource caps (lib/sandbox-docker.sh) and the daemon cadence (lib/daemon.sh). |
 | `GAFFER_SANDBOX_MEMORY` | `4g` |  | runner |  |
 | `GAFFER_SANDBOX_PIDS` | `512` |  | runner |  |
 | `GAFFER_DAEMON_INTERVAL` | `30` |  | runner | seconds between `gaffer run --daemon` cycles |
-| `GAFFER_DAEMON_MAX_CYCLES` | `0` |  | runner | 0 = unbounded |
-| `GAFFER_DAEMON_SETUP_BACKOFF_MAX` | `1800` |  | runner | ceiling (s) of the daemon's doubling wait after a setup-error pass (loop.sh exit 3) |
 | `GAFFER_RESOLVER_MAX_TURNS` | _(empty)_ |  | runner | alias of GAFFER_MERGE_MAX_TURNS (empty → that knob) |
 | `GAFFER_MAX_DELIVERY_ATTEMPTS` | `3` | yes (int) | dispatch, runner | How many agent runs one delivery gets inside a tick: a failed gate (tests, typecheck, lint or a criterion's check) is fed back and the agent reworks the same branch, up to this many runs, then the ticket parks to blocked with its branch kept. A run that fails exactly as the one before (two identical failures) parks it early instead of spending the rest. It is also the default for GAFFER_MAX_NOCOMMIT_FAILURES (runs that end with no commit, counted across runs) and DISPATCH_MAX_ATTEMPTS (review rejections). |
 | `GAFFER_RETRY_FRESH_BRANCH` | `0` |  | runner | WASTE CONTROL: a ticket re-entered by a LATER tick (review CHANGES rework, a resumed pause, a re-queued retry) keeps its branch's commits; 1 = reset it to base for that tick (in-tick rework is never reset). |
 | `DISPATCH_MAX_ATTEMPTS` | _derived_ (`$GAFFER_MAX_DELIVERY_ATTEMPTS`) | yes (int) | dispatch, runner | Dispatch's own cap on how many times a delivery may be rejected back into the queue before the ticket is parked (blocked) for a human — the server-side wallet guard against an unbounded reject loop, enforced on every reject transition regardless of which runner drove it. Defaults to Max delivery attempts so the two caps agree; set it only to make the server stricter or looser than the runner's rework ladder. |
 | `GAFFER_TICK_DEADLINE_GUARD` | `1` |  | runner | TICK DEADLINE GUARD (tick.sh): the outer bound above counts only agent calls, but a tick also spends merge-lane resolver time and every attempt's DoD install, gates and AC checks. |
-| `GAFFER_TICK_DEADLINE_MARGIN` | `60` |  | runner | seconds kept back for record / release / teardown |
 | `GAFFER_REWORK_STRONG_MODEL` | _derived_ (`${GAFFER_PLAN_MODEL:-opus}`) |  | runner | ESCALATION: the model the FINAL rework attempt escalates to (stronger reasoning for the hardest cases before a human is pulled in). |
 | `GAFFER_REWORK_BUDGET_USD` | _derived_ (`${GAFFER_BUDGET_USD:-}`) | yes (number) | dispatch, runner | Cumulative spend ceiling for one ticket's rework loop, counting every agent call booked to the ticket (delivery, review, security review, clarify, eval judge). Delivery stops at whichever hits first — this or Max delivery attempts — then parks to blocked. Defaults to the factory Budget ceiling; empty = no per-ticket cap (attempts alone bound it). |
 | `GAFFER_MAX_NOCOMMIT_FAILURES` | _derived_ (`${GAFFER_MAX_DELIVERY_ATTEMPTS:-3}`) | yes (int) | dispatch, runner | Cross-run bound on deliveries that crash before committing. After this many no-commit/wrong-branch failures the ticket parks visibly to blocked instead of being re-picked (and re-billed) every run. Defaults to Max delivery attempts. |
@@ -114,14 +110,6 @@ computed from other knobs at runtime.
 | `GAFFER_PAUSE_ON_CAP` | `1` | yes (boolean) | dispatch, runner | When the spend ceiling is hit, pause in-flight work instead of hard-stopping. |
 | `GAFFER_USAGE_PAUSE_DEFAULT_MIN` | `60` | yes (int) | dispatch, runner | When the model refuses a call on its usage window or a rate limit, the ticket goes back to ready without counting an attempt and the factory pauses: no tick claims work, and gaffer run --daemon sleeps until the pause ends (a one-shot gaffer run stops with exit 75 and the dashboard's Poll refuses). The pause lasts until the reset time the model reported, plus a minute; this setting is the wait when no reset time was reported. Default 60. Never less than 10 minutes (a lower value is raised to 10; a reported reset is also held to at least 10 minutes and at most 8 days). gaffer status and the Health view show the pause; it lifts on its own (or early: node runner/lib/usage-pause.mjs clear). |
 | `GAFFER_DASHBOARD_URL` | _derived_ (`http://127.0.0.1:${DISPATCH_API_PORT:-8787}`) |  | dispatch, runner |  |
-| `GAFFER_REAP_GRACE` | `30` |  | runner | FINDING-6 (b): TERM->KILL grace (seconds) for gaffer_timeout's process-group reaper. |
-
-### Portable file lock
-
-| Variable | Default | UI | Read by | Notes |
-|---|---|---|---|---|
-| `GAFFER_LOCK_TIMEOUT` | `30` |  | runner | max seconds to wait for a contended lock |
-| `GAFFER_LOCK_STALE` | `120` |  | runner | mkdir-lock older than this is treated as stale |
 
 ### Worker-provider-indirected agent-env allowlist
 
@@ -256,7 +244,6 @@ computed from other knobs at runtime.
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
 | `GAFFER_DOD_FLAKY_RERUN` | `1` |  | dispatch, runner | ── FLAKY-TEST RERUN (a red TEST gate under a parallel pool) ────────────────── With GAFFER_CONCURRENCY>1 several deliveries' suites share the machine, and a test that races for a port, a temp dir or CPU can go red on… |
-| `GAFFER_DOD_RERUN_WAIT` | `120` |  | runner | max seconds the rerun waits for the other workers' in-flight gate runs to finish |
 
 ### lib/pr-create.sh
 
@@ -269,7 +256,6 @@ computed from other knobs at runtime.
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
 | `GAFFER_REGISTRY_PROBE` | `1` |  | runner | REGISTRY PROBE: 1 = before a greenfield bootstrap spawns its agent (and in runner/preflight.sh) run `npm ping` inside the agent's allowlisted env, bounded by GAFFER_REGISTRY_PROBE_TIMEOUT seconds; an unreachable registry… |
-| `GAFFER_REGISTRY_PROBE_TIMEOUT` | `45` |  | runner | Seconds the registry probe may take before it counts as unreachable ("timeout"). |
 
 ### lib/scout.sh
 
@@ -307,7 +293,6 @@ Some are seams the runner also sets for itself; the notes say which.
 
 | Variable | Default | Read in | Notes |
 |---|---|---|---|
-| `GAFFER_DIGEST_DISABLE` | `0` | `runner/lib/land.sh` | 1 = skip the repo digest and feature-ledger refresh after a merge lands. |
 | `GAFFER_MEMORY_AUTO_PROMOTE` | _follows_ `MEMORY_AUTO_APPROVE` | `runner/lib/tick-close.sh` | 1 = a requirement distilled from a delivered ticket goes live at once; 0 = it lands as a draft for `memory review`. Unset, it follows MEMORY_AUTO_APPROVE. |
 
 ### Onboarding and demo
@@ -353,23 +338,15 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 
 | Variable | Default in code | Read in |
 |---|---|---|
-| `DISPATCH_ACCEPTANCE_EVIDENCE_CMD` | _(empty)_ | `runner/bin/tester-run.mjs` |
 | `DISPATCH_ALLOWED_HOSTS` | _(empty)_ | `packages/dispatch/src/api/security.ts` |
 | `DISPATCH_API_PORT` | `8787` | `packages/dispatch/src/api/main.ts`, `runner/gaffer`, `runner/setup.sh`, `runner/status.sh` |
-| `DISPATCH_LANE_VERDICT_CMD` | _(empty)_ | `runner/bin/tester-run.mjs` |
-| `DISPATCH_TESTER_VERDICT_CMD` | _(empty)_ | `runner/bin/tester-run.mjs` |
-| `GAFFER_ACCEPTANCE_PORT_BASE` |  | `runner/lib/acceptance-profiles.mjs` |
 | `GAFFER_ACCEPTANCE_TIMEOUT_MS` |  | `runner/lib/acceptance-profiles.mjs` |
 | `GAFFER_AGENT_EMAIL` | `gaffer-factory@users.noreply.invalid` | `runner/lib/greenfield.sh` |
 | `GAFFER_BUDGET_LOW_FRACTION` | `0.20` | `runner/config/05-budget.sh` |
-| `GAFFER_CARD_BATCH` | _(empty)_ | `runner/lib/onboard-analyze.mjs` |
 | `GAFFER_CARD_MODEL` | _(empty)_ | `runner/lib/onboard-analyze.mjs` |
-| `GAFFER_CARD_SNIPPET_CHARS` | _(empty)_ | `runner/lib/onboard-analyze.mjs` |
-| `GAFFER_CONTEXT_DUMP_DIR` | _(empty)_ | `runner/lib/tick-launch.sh` |
 | `GAFFER_DASHBOARD_START_TIMEOUT` | `30` | `runner/gaffer` |
 | `GAFFER_DECOMPOSE_AGENT_MAX_TURNS` | _(empty)_ | `runner/bin/decompose.mjs` |
 | `GAFFER_DECOMPOSE_MOCK` | _(empty)_ | `runner/bin/decompose.mjs` |
-| `GAFFER_DECOMPOSE_TIMEOUT_MS` |  | `packages/dispatch/src/api/planBuild.ts` |
 | `GAFFER_EGRESS_ALLOW` | _(empty)_ | `runner/lib/egress-allowlist.mjs` |
 | `GAFFER_INHERIT_AMB_TIMEOUT` | `300` | `runner/lib/greenfield.sh` |
 | `GAFFER_INHERIT_MODEL` | _(empty)_ | `runner/bin/inherit-repo.mjs` |
@@ -379,14 +356,10 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `GAFFER_LITE_MAX_FILES` | `4` | `runner/config/18-review.sh` |
 | `GAFFER_LITE_MAX_LINES` | `60` | `runner/config/18-review.sh` |
 | `GAFFER_LITE_SENSITIVE_RE` | `$_GAFFER_SENSITIVE_PATH_RE` | `runner/config/18-review.sh` |
-| `GAFFER_MERGE_TIMEOUT_MS` | `600000` | `runner/lib/land.sh` |
 | `GAFFER_ONBOARD_MAX_TURNS` | _(empty)_ | `runner/lib/onboard-analyze.mjs` |
 | `GAFFER_ONBOARD_SYNTH_MODEL` | _(empty)_ | `runner/lib/onboard-analyze.mjs` |
 | `GAFFER_ONBOARD_TIMEOUT` | _(empty)_ | `runner/lib/onboard-analyze.mjs` |
-| `GAFFER_PLAN_BUILD_TIMEOUT_MS` |  | `packages/dispatch/src/api/planBuild.ts` |
 | `GAFFER_REAPPROVAL_ATTEMPTS` | _(empty)_ | `runner/bin/merge-ticket.mjs` |
-| `GAFFER_REAPPROVAL_BACKOFF_MS` | _(empty)_ | `runner/bin/merge-ticket.mjs` |
-| `GAFFER_REDACTION_MODULE` |  | `runner/lib/acceptance-profiles.mjs` |
 | `GAFFER_SECURITY_REVIEW_RE` | `${GAFFER_LITE_SENSITIVE_RE:-$_GAFFER_SENSITIVE_PATH_RE` | `runner/config/18-review.sh` |
 | `GAFFER_SLACK_WEBHOOK` | _(empty)_ | `runner/status.sh` |
 | `GAFFER_SPEC_AUTHOR_AGENT_MAX_TURNS` | _(empty)_ | `runner/bin/spec-author.mjs` |
@@ -394,15 +367,6 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `GAFFER_TEST_MODEL` |  | `runner/bin/tester-run.mjs` |
 | `GAFFER_TESTER_REPLAY` | `1` | `runner/bin/tester-run.mjs`, `runner/lib/tester-replay.mjs`, `runner/status.sh` |
 | `GAFFER_TESTER_REPLAY_TIMEOUT_MS` |  | `runner/bin/tester-run.mjs` |
-| `GAFFER_TESTER_TIMEOUT_MS` | _(empty)_ | `runner/bin/tester-run.mjs` |
-| `GAFFER_TODAY_OVERRIDE` | _(empty)_ | `runner/lib/budget.sh` |
-| `GAFFER_TRUST_LOCK_SLEEP_MS` |  | `runner/lib/trust-workspace.mjs` |
-| `GAFFER_TRUST_LOCK_TRIES` |  | `runner/lib/trust-workspace.mjs` |
-| `GAFFER_TRUST_WORKTREE_ROOT` |  | `runner/lib/trust-workspace.mjs` |
-| `GAFFER_USAGE_PAUSE_POLL_SECS` | `60` | `runner/lib/usage-pause.sh` |
-| `GAFFER_WG_DELIVERIES_CMD` | _(empty)_ | `runner/lib/backpressure.sh` |
-| `GAFFER_WG_LIST_CMD` | _(empty)_ | `runner/lib/backpressure.sh` |
-| `GAFFER_WG_SHOW_CMD` | _(empty)_ | `runner/lib/backpressure.sh`, `runner/lib/cleanup-ownership.sh`, `runner/lib/orphan-recovery.sh` |
 
 ## Internal names (not knobs)
 
@@ -415,3 +379,4 @@ the code is not a mystery; you never need to set one.
 - **plumbing**: Set by the runner for a child process, the dashboard, an MCP server or the safety hook, never by you. `DISPATCH_PRODUCT_OWNER_CMD`, `DISPATCH_ONBOARD_CMD`, `DISPATCH_EPIC_FEATURE_CMD`, `DISPATCH_ONBOARD_NAME`, `DISPATCH_CORRELATION_ID`, `GAFFER_CLAIM_TOKEN`, `GAFFER_REVIEW_TICKET`, `GAFFER_DEFAULT_TICKET_REPO`, `GAFFER_TICKET`, `GAFFER_KEEP_DELIVERY_BRANCH`, `GAFFER_PAUSE_KEEP_WORKTREE`, `GAFFER_SANDBOX_PROFILE`, `GAFFER_UNIVERSAL_SKILLS`, `GAFFER_CLAUDE_VERSION`.
 - **packages**: Read inside the dispatch, memory and crew packages on their own (packages/*/README.md); the runner never needs them. `DISPATCH_AGENT_ID`, `DISPATCH_AUDIT`, `DISPATCH_AUDIT_OFF`, `DISPATCH_PID_FILE`, `DISPATCH_SENSITIVE_PATH_RE`, `DISPATCH_LARGE_DELETION_LINES`, `DISPATCH_OBSERVED_RISK_CEILING`, `GAFFER_ACCEPTANCE_PROFILE_SEED`, `GAFFER_TEST_PATH_RE`, `MEMORY_AUDIT_OFF`, `MEMORY_NO_COLOR`, `MEMORY_REVIEW_NUDGE_EVERY_TIME`.
 - **sandbox**: Inside-the-image details of the docker sandbox provider (runner/lib/sandbox-docker.sh, docs/sandbox.md). `GAFFER_SANDBOX_CLAUDE_BIN`, `GAFFER_SANDBOX_CLAUDE_CREDENTIALS`, `GAFFER_SANDBOX_HOME`, `GAFFER_SANDBOX_PATH`, `GAFFER_SANDBOX_NET_INT`, `GAFFER_SANDBOX_NET_UP`, `GAFFER_SANDBOX_PROXY`, `GAFFER_SANDBOX_PROXY_IMAGE`.
+- **test seams**: read only so a test can shorten a wait, stub a command, skip slow bookkeeping or fix the clock; keep the built-in value. `GAFFER_DOD_OUTPUT_TAIL`, `GAFFER_DOD_RERUN_WAIT`, `GAFFER_DAEMON_MAX_CYCLES`, `GAFFER_DAEMON_SETUP_BACKOFF_MAX`, `GAFFER_TICK_DEADLINE_MARGIN`, `GAFFER_REAP_GRACE`, `GAFFER_LOCK_TIMEOUT`, `GAFFER_LOCK_STALE`, `GAFFER_REGISTRY_PROBE_TIMEOUT`, `GAFFER_DIGEST_DISABLE`, `GAFFER_USAGE_PAUSE_POLL_SECS`, `GAFFER_TODAY_OVERRIDE`, `GAFFER_CONTEXT_DUMP_DIR`, `GAFFER_WG_LIST_CMD`, `GAFFER_WG_SHOW_CMD`, `GAFFER_WG_DELIVERIES_CMD`, `GAFFER_TRUST_LOCK_TRIES`, `GAFFER_TRUST_LOCK_SLEEP_MS`, `GAFFER_TRUST_WORKTREE_ROOT`, `GAFFER_CARD_BATCH`, `GAFFER_CARD_SNIPPET_CHARS`, `GAFFER_MERGE_TIMEOUT_MS`, `GAFFER_REAPPROVAL_BACKOFF_MS`, `GAFFER_DECOMPOSE_TIMEOUT_MS`, `GAFFER_PLAN_BUILD_TIMEOUT_MS`, `GAFFER_TESTER_TIMEOUT_MS`, `GAFFER_ACCEPTANCE_PORT_BASE`, `GAFFER_REDACTION_MODULE`, `DISPATCH_TESTER_VERDICT_CMD`, `DISPATCH_LANE_VERDICT_CMD`, `DISPATCH_ACCEPTANCE_EVIDENCE_CMD`.

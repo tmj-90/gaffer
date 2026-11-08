@@ -33,7 +33,7 @@ _GAFFER_JSON_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/json-tool.mjs"
 : "${GAFFER_DOD_TIMEOUT:=${GAFFER_TICK_TIMEOUT:-900}}"
 # How many trailing lines of a failing gate's output to keep as evidence. Bounded
 # so a chatty failure can't bloat the evidence row / the dashboard.
-: "${GAFFER_DOD_OUTPUT_TAIL:=40}"
+GAFFER_DOD_OUTPUT_TAIL="${GAFFER_DOD_OUTPUT_TAIL:-40}"
 
 # Max wall-clock seconds for the PRE-GATE dependency install (see
 # gaffer_dod_install_deps). Inherits the per-gate timeout, then the sane default,
@@ -312,7 +312,7 @@ _GAFFER_DOD_EXTRA_ENV=()
 #   * the rerun cannot get the lock in time → the first FAIL stands (fail closed).
 # GAFFER_DOD_FLAKY_RERUN=0 turns it off.
 : "${GAFFER_DOD_FLAKY_RERUN:=1}"
-: "${GAFFER_DOD_RERUN_WAIT:=120}"   # max seconds the rerun waits for the other workers' in-flight gate runs to finish
+GAFFER_DOD_RERUN_WAIT="${GAFFER_DOD_RERUN_WAIT:-120}"   # max seconds the rerun waits for the other workers' in-flight gate runs to finish
 
 # The pool size this gate runs under (GAFFER_CONCURRENCY; 1 when unset or garbage).
 _gaffer_dod_pool_size() {

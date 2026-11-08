@@ -25,9 +25,15 @@ export default async function s3(t, L) {
   );
   await L.putSettings({ GAFFER_MAX_DELIVERY_ATTEMPTS: "" });
   await t.visit("work");
-  const card =
-    (await p.textContent(`.board-card:has(.num:text-is("#${stuck.number}"))`).catch(() => "")) ||
-    "";
+  // The board paints from a fresh fetch after the navigation, so wait for the card
+  // to show the parked state before reading it (a slow runner read 'Claimed' here).
+  const stuckSel = `.board-card:has(.num:text-is("#${stuck.number}"))`;
+  await p
+    .locator(stuckSel, { hasText: /Rework exhausted/ })
+    .first()
+    .waitFor({ timeout: 15000 })
+    .catch(() => {});
+  const card = (await p.textContent(stuckSel).catch(() => "")) || "";
   t.check(
     /Rework exhausted/.test(card),
     `its Work card in the Blocked lane reads 'Rework exhausted' (${card.match(/Rework exhausted[^:]*/)?.[0] || "?"})`,

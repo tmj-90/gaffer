@@ -170,7 +170,11 @@ lower total cost?* `gaffer eval experiment` (`runner/eval/experiment.sh` and
    and which arm each favours: only those tickets say anything about the difference.
    A t interval on the -1/0/+1 differences used to give ten tied tickets the interval
    [0, 0], as if ten tickets proved there was no difference at all; Newcombe's interval
-   for the same ten ties is about -0.28 to 0.28. Attempts, spend and judge score are
+   for the same ten ties is about -0.28 to 0.28. With no discordant ticket at all the
+   method's own formula collapses to [0, 0] when some tickets passed on both arms and the
+   rest failed on both, so for any run with no discordant ticket the report gives the
+   bound on the discordant rate instead (plus or minus z²/(n + z²), the same -0.28 to 0.28
+   for ten tickets). Attempts, spend and judge score are
    continuous, so they keep the paired t interval.
 
 **Stub mode** is the default: the agent is `runner/eval/experiment-stub-agent.sh`,

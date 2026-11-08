@@ -7,7 +7,8 @@
 // Newcombe's paired score interval (1998, method 10), named in results.json and the
 // report with the discordant-pair count; spend keeps its paired t interval.
 //   1. Newcombe's published example (a=36, b=12, c=2, d=0) → 0.0569 to 0.3404
-//   2. ten ties → an interval that is not [0, 0], zero discordant pairs, in the report
+//   2. ten ties (one-sided or mixed) → an interval that is not [0, 0], zero discordant
+//      pairs, in the report
 //   3. the figures routing-recommend.test.ts uses (within / outside the margin)
 //   4. memory_matched flips the interval and the discordant split with the arms
 // Zero deps beyond node. Run: node test/eval-experiment-interval.test.mjs
@@ -114,6 +115,22 @@ console.log("== 2. ten ties ==");
   );
   const none = world([0, 0, 0, 10]).comparisons[0].acceptance;
   assert("ten shared failures read the same", none.ci95 && near(none.ci95[0], -0.2775), none.ci95);
+  // Mixed ties (some tickets both accepted, the rest both rejected): method 10's phi is 1
+  // here and its interval collapses to [0, 0], the very claim this replaced. With no
+  // discordant pair the interval is the bound on the discordant rate instead, the same
+  // +/- z^2/(n + z^2) the one-sided ties above get.
+  const mixed = world([5, 0, 0, 5]).comparisons[0].acceptance;
+  assert(
+    "five shared passes and five shared failures are not [0, 0] either: -0.2775 to 0.2775",
+    mixed.ci95 && near(mixed.ci95[0], -0.2775) && near(mixed.ci95[1], 0.2775),
+    mixed.ci95,
+  );
+  const one = world([1, 0, 0, 1]).comparisons[0].acceptance;
+  assert(
+    "two mixed ties: -0.6576 to 0.6576",
+    one.ci95 && near(one.ci95[0], -0.6576) && near(one.ci95[1], 0.6576),
+    one.ci95,
+  );
   const md = markdown(res);
   assert(
     "the report names the method and the discordant count",

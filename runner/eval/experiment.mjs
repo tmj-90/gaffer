@@ -390,6 +390,16 @@ export function pairedProportionSummary(pairs) {
     neither_accepted: d,
   };
   if (n === 0) return { ...base, mean: null, ci95: null };
+  // No discordant pair: method 10 is degenerate when both arms passed some tickets and
+  // failed the rest (phi is 1 and the interval collapses to [0, 0], the false certainty
+  // this replaced). The difference is at most the discordant rate, and 0 of n discordant
+  // bounds that rate by the Wilson upper limit z^2/(n + z^2); that is also exactly what
+  // method 10 gives when every ticket passed (or failed) on both arms, so ties of every
+  // kind read the same.
+  if (b + c === 0) {
+    const w = r4((Z95 * Z95) / (n + Z95 * Z95));
+    return { ...base, mean: 0, ci95: [-w, w] };
+  }
   const p1 = (a + b) / n;
   const p2 = (a + c) / n;
   const mean = p1 - p2;

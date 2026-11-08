@@ -15,7 +15,8 @@
 #   3. review/security/clarify/judge pass their role cap to worker_deliver.
 #   4. decompose.mjs + spec-author.mjs: `--max-turns 5` survives GAFFER_MAX_TURNS=200,
 #      and GAFFER_MAX_TURNS=3 lowers their default of 20 to 3.
-#   5. onboard analysisCaps uses GAFFER_ONBOARD_MAX_TURNS (60) under the 200 ceiling.
+#   5. onboard analysisCaps uses its role cap (60, GAFFER_ROLE_MAX_TURNS onboard=) under
+#      the 200 ceiling.
 #   6. PO / tester / merge resolver argv carry --max-turns (their role cap).
 # Run: bash test/turn-caps.test.sh
 # =====================================================================
@@ -46,7 +47,7 @@ chmod +x "$FAKE"
 turns_arg() { awk 'p { print; exit } $0 == "--max-turns" { p = 1 }' "$WORK/claude.argv" 2>/dev/null; }
 
 export CLAUDE_BIN="$FAKE"
-unset GAFFER_MAX_TURNS GAFFER_REVIEW_MAX_TURNS GAFFER_SECURITY_REVIEW_MAX_TURNS GAFFER_CLARIFY_MAX_TURNS \
+unset GAFFER_MAX_TURNS GAFFER_ROLE_MAX_TURNS GAFFER_REVIEW_MAX_TURNS GAFFER_SECURITY_REVIEW_MAX_TURNS GAFFER_CLARIFY_MAX_TURNS \
   GAFFER_JUDGE_MAX_TURNS GAFFER_TESTER_MAX_TURNS GAFFER_MERGE_MAX_TURNS GAFFER_RESOLVER_MAX_TURNS \
   GAFFER_PO_MAX_TURNS GAFFER_DECOMPOSE_MAX_TURNS GAFFER_SPEC_AUTHOR_MAX_TURNS GAFFER_ONBOARD_MAX_TURNS \
   GAFFER_DECOMPOSE_AGENT_MAX_TURNS GAFFER_SPEC_AUTHOR_AGENT_MAX_TURNS
@@ -64,16 +65,21 @@ import { roleTurnCap } from '$RUNNER_DIR/lib/worker.mjs';
 console.log([roleTurnCap(60,{GAFFER_MAX_TURNS:'200'}), roleTurnCap(60,{GAFFER_MAX_TURNS:'3'}),
   roleTurnCap(0,{GAFFER_MAX_TURNS:'200'}), roleTurnCap(40,{}), roleTurnCap('',{})].join(','));")"
 [ "$MJS" = "60,3,200,40,0" ] && ok "roleTurnCap (mjs) matches the bash helper ($MJS)" || fail "roleTurnCap gave $MJS"
-[ "${GAFFER_REVIEW_MAX_TURNS:-}" = "60" ] && [ "${GAFFER_SECURITY_REVIEW_MAX_TURNS:-}" = "40" ] \
-  && [ "${GAFFER_CLARIFY_MAX_TURNS:-}" = "40" ] && [ "${GAFFER_JUDGE_MAX_TURNS:-}" = "2" ] \
+[ "$(gaffer_role_cap review 60)|$(gaffer_role_cap security_review 40)|$(gaffer_role_cap clarify 40)|$(gaffer_role_cap judge 2)" = "60|40|40|2" ] \
   && ok "per-role defaults: review 60, security 40, clarify 40, judge 2" || fail "per-role defaults wrong"
+[ "$(GAFFER_ROLE_MAX_TURNS="review=30, judge=1" gaffer_role_cap review 60)|$(GAFFER_ROLE_MAX_TURNS="review=30, judge=1" gaffer_role_cap judge 2)|$(GAFFER_ROLE_MAX_TURNS="review=30" gaffer_role_cap clarify 40)" = "30|1|40" ] \
+  && ok "GAFFER_ROLE_MAX_TURNS sets the roles it names; the others keep their cap" || fail "GAFFER_ROLE_MAX_TURNS not applied"
+[ "$(GAFFER_REVIEW_MAX_TURNS=25 gaffer_role_cap review 60)|$(GAFFER_ROLE_MAX_TURNS=review=30 GAFFER_REVIEW_MAX_TURNS=25 gaffer_role_cap review 60)" = "25|30" ] \
+  && ok "a deprecated GAFFER_REVIEW_MAX_TURNS still sets the cap; the new knob wins over it" || fail "deprecated alias not honoured"
+[ "$(GAFFER_ROLE_MAX_TURNS="review=x review=0" gaffer_role_cap review 60)" = "60" ] \
+  && ok "a junk or zero entry keeps the built-in cap" || fail "junk entry not skipped"
 
 echo "== 2: the REAL worker_deliver honours a per-call cap =="
 CWD="$WORK/cwd"; mkdir -p "$CWD"; MCP="$WORK/mcp.json"; printf '{"mcpServers":{}}' > "$MCP"
 WORKER_CALL_ENV=( GAFFER_TURNS_TEST=1 )
 worker_deliver "$CWD" "p" "" "$MCP" "$WORK/o1.json" "" >/dev/null 2>&1
 [ "$(turns_arg)" = "200" ] && ok "no cap passed → the global delivery flag (--max-turns 200)" || fail "default → '$(turns_arg)'"
-worker_deliver "$CWD" "p" "" "$MCP" "$WORK/o2.json" "" "$(gaffer_role_turns "${GAFFER_REVIEW_MAX_TURNS:-60}")" >/dev/null 2>&1
+worker_deliver "$CWD" "p" "" "$MCP" "$WORK/o2.json" "" "$(gaffer_role_turns "$(gaffer_role_cap review 60)")" >/dev/null 2>&1
 [ "$(turns_arg)" = "60" ] && ok "a role cap (60) replaces the 200 on the invocation" || fail "role cap → '$(turns_arg)'"
 [ "$(grep -c '^--max-turns$' "$WORK/claude.argv")" = "1" ] && ok "exactly one --max-turns on the argv" || fail "duplicate --max-turns"
 CLAUDE_FLAGS="--permission-mode acceptEdits" \
@@ -83,14 +89,14 @@ TAIL="$(tail -n 4 "$WORK/claude.argv" | tr '\n' '|')"
   || fail "extra flags tail wrong: $TAIL"
 
 echo "== 3: every worker_deliver role passes its own cap =="
-grep -q 'gaffer_role_turns "${GAFFER_REVIEW_MAX_TURNS:-60}"' "$RUNNER_DIR/lib/review.sh" \
-  && ok "reviewer passes GAFFER_REVIEW_MAX_TURNS" || fail "reviewer does not pass its cap"
-grep -qF 'gaffer_role_turns "${GAFFER_SECURITY_REVIEW_MAX_TURNS:-${GAFFER_REVIEW_MAX_TURNS:-40}}"' "$RUNNER_DIR/lib/review.sh" \
-  && ok "security reviewer passes GAFFER_SECURITY_REVIEW_MAX_TURNS" || fail "security reviewer does not pass its cap"
-grep -q 'gaffer_role_turns "${GAFFER_CLARIFY_MAX_TURNS:-40}"' "$RUNNER_DIR/lib/clarify.sh" \
-  && ok "clarify passes GAFFER_CLARIFY_MAX_TURNS" || fail "clarify does not pass its cap"
-grep -q 'GAFFER_JUDGE_MAX_TURNS' "$RUNNER_DIR/lib/eval-judge.sh" \
-  && ok "eval judge passes GAFFER_JUDGE_MAX_TURNS" || fail "eval judge does not pass its cap"
+grep -qF 'gaffer_role_turns "$(gaffer_role_cap review 60)"' "$RUNNER_DIR/lib/review.sh" \
+  && ok "reviewer passes its role cap (review, 60)" || fail "reviewer does not pass its cap"
+grep -qF 'gaffer_role_turns "$(gaffer_role_cap security_review 40)"' "$RUNNER_DIR/lib/review.sh" \
+  && ok "security reviewer passes its role cap (security_review, 40)" || fail "security reviewer does not pass its cap"
+grep -qF 'gaffer_role_turns "$(gaffer_role_cap clarify 40)"' "$RUNNER_DIR/lib/clarify.sh" \
+  && ok "clarify passes its role cap (clarify, 40)" || fail "clarify does not pass its cap"
+grep -qF 'gaffer_role_cap judge 2' "$RUNNER_DIR/lib/eval-judge.sh" \
+  && ok "eval judge passes its role cap (judge, 2)" || fail "eval judge does not pass its cap"
 
 echo "== 4: decompose / spec-author — the flag survives the global, the global only lowers =="
 for helper in decompose spec-author; do
@@ -108,9 +114,9 @@ done
 echo "== 5: onboard analysis uses its own role cap =="
 OB="$(GAFFER_MAX_TURNS=200 node --input-type=module -e "
 import { analysisCaps } from '$RUNNER_DIR/lib/onboard-analyze.mjs';
-console.log([analysisCaps(process.env).maxTurns, analysisCaps({...process.env, GAFFER_ONBOARD_MAX_TURNS:'7'}).maxTurns,
-  analysisCaps({GAFFER_MAX_TURNS:'5'}).maxTurns].join(','));")"
-[ "$OB" = "60,7,5" ] && ok "onboard: 60 under the 200 ceiling; GAFFER_ONBOARD_MAX_TURNS wins; global 5 lowers" || fail "onboard caps: $OB"
+console.log([analysisCaps(process.env).maxTurns, analysisCaps({...process.env, GAFFER_ROLE_MAX_TURNS:'onboard=7'}).maxTurns,
+  analysisCaps({GAFFER_MAX_TURNS:'5'}).maxTurns, analysisCaps({...process.env, GAFFER_ONBOARD_MAX_TURNS:'8'}).maxTurns].join(','));")"
+[ "$OB" = "60,7,5,8" ] && ok "onboard: 60 under the 200 ceiling; onboard=7 wins; global 5 lowers; the deprecated GAFFER_ONBOARD_MAX_TURNS still works" || fail "onboard caps: $OB"
 
 echo "== 6: PO / tester / merge resolver carry --max-turns =="
 ARGVS="$(GAFFER_MAX_TURNS=200 node --input-type=module -e "

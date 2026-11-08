@@ -34,9 +34,43 @@ if [ -z "${GAFFER_IMPL_MODEL_EXPLICIT+x}" ]; then
   [ -n "${GAFFER_IMPL_MODEL+x}" ] && GAFFER_IMPL_MODEL_EXPLICIT=1 || GAFFER_IMPL_MODEL_EXPLICIT=0
 fi
 export GAFFER_PLAN_MODEL_EXPLICIT GAFFER_IMPL_MODEL_EXPLICIT
-: "${GAFFER_PLAN_MODEL=opus}"
-: "${GAFFER_IMPL_MODEL=sonnet}"
+: "${GAFFER_PLAN_MODEL=opus}"     # the strong tier: planning, the final rework attempt, the eval judge
+: "${GAFFER_IMPL_MODEL=sonnet}"   # the implement tier: delivery (when the router does not pick), review, the tester
 export GAFFER_PLAN_MODEL GAFFER_IMPL_MODEL
+# Per-role model overrides, one knob for all of them: GAFFER_ROLE_MODELS="card=haiku
+# judge=opus" (commas or spaces). A role not named keeps its own default: rework (the
+# final rework attempt; the plan tier, `rework=off` keeps the routed model), scout (the
+# router's scout phase), judge (the plan tier, else the implement tier), tester (the
+# implement tier), card (the registry's onboarding tier), synth (onboarding synthesis:
+# the registry's mid tier) and inherit (the inherit classifier: the cheap tier). The
+# .mjs helpers read it through lib/worker.mjs roleModel. The old per-role variables
+# (GAFFER_REWORK_STRONG_MODEL, GAFFER_CARD_MODEL, ...) are deprecated: still honoured
+# for a role the knob does not name, with a warning.
+: "${GAFFER_ROLE_MODELS:=}"   # per-role models as "role=model" pairs (rework, scout, judge, tester, card, synth, inherit); an unnamed role keeps its default.
+export GAFFER_ROLE_MODELS
+for _gd in REWORK_STRONG_MODEL:rework CARD_MODEL:card INHERIT_MODEL:inherit ONBOARD_SYNTH_MODEL:synth TEST_MODEL:tester; do
+  _gaffer_deprecated "GAFFER_${_gd%%:*}" "set GAFFER_ROLE_MODELS=\"${_gd#*:}=<model>\" instead"
+done
+for _gd in SCOUT_MODEL_FLAG:scout JUDGE_MODEL_FLAG:judge; do
+  _gaffer_deprecated "GAFFER_${_gd%%:*}" "set GAFFER_ROLE_MODELS=\"${_gd#*:}=<model>\" instead (a model id, not a flag)"
+done
+unset _gd
+
+# gaffer_role_model <role>
+# Echo one role's model from GAFFER_ROLE_MODELS, else from its deprecated variable
+# (rework: GAFFER_REWORK_STRONG_MODEL), else nothing (the caller applies the role's
+# default). The two deprecated FLAG variables (scout, judge) hold a whole flag and are
+# read at their call sites. Parity with roleModel in lib/worker.mjs.
+gaffer_role_model() {
+  local role="${1:-}" pair v=""
+  local -a pairs=()
+  IFS=$', \t\n' read -r -a pairs <<<"${GAFFER_ROLE_MODELS:-}"
+  for pair in ${pairs[@]+"${pairs[@]}"}; do
+    case "$pair" in "$role="?*) v="${pair#*=}"; break ;; esac
+  done
+  [ -n "$v" ] || case "$role" in rework) v="${GAFFER_REWORK_STRONG_MODEL:-}" ;; esac
+  printf '%s' "$v"
+}
 # Worker-provider-indirected model-FLAG emission (Spec 3 / Phase 3). The model
 # NAME is chosen by the registry-driven router (model-registry.json →
 # gaffer_route_model, below); this helper is the ONE place that turns a chosen name
@@ -76,5 +110,5 @@ GAFFER_IMPL_MODEL_FLAG="$(gaffer_model_flag "${GAFFER_IMPL_MODEL:-}")"
 # pins the model (the override path in gaffer_route_model); the config's own
 # opus/sonnet DEFAULTS are the routing baseline, not an override, so they don't
 # suppress risk/attempt-aware routing (see GAFFER_*_MODEL_EXPLICIT above).
-: "${GAFFER_MODEL_REGISTRY:=$RUNNER_DIR/model-registry.json}"
+GAFFER_MODEL_REGISTRY="${GAFFER_MODEL_REGISTRY:-$RUNNER_DIR/model-registry.json}"
 _GAFFER_CONFIG_PART=04-models

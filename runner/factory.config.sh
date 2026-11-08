@@ -87,7 +87,7 @@ _GAFFER_EXPORTED_AT_START=" $(compgen -e 2>/dev/null | tr '\n' ' ') "
 # so the suite works under any checkout root — no hardcoded /Users/<name> path.
 # Still env-overridable: a side-by-side (non-mono) checkout can point these elsewhere.
 : "${RUNNER_DIR:=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
-: "${GAFFER_HOME:=$(cd "$RUNNER_DIR/.." && pwd)}"
+: "${GAFFER_HOME:=$(cd "$RUNNER_DIR/.." && pwd)}"   # the Gaffer checkout (the directory above runner/)
 : "${GAFFER_DATA:=$GAFFER_HOME/.gaffer}"                       # factory state (dbs, logs, agent id)
 # ONE canonical crew events log for everything that sources this file (tick.sh,
 # the gaffer CLI, fg, the dashboard it launches, onboard-run): $GAFFER_DATA, never a

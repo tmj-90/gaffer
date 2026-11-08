@@ -24,8 +24,8 @@ _GAFFER_JSON_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/json-tool.mjs"
 #   GAFFER_PR_REMOTE=origin which remote to push the delivery branch to before
 #                           creating the PR (default: origin).
 
-: "${GAFFER_GH_BIN:=gh}"
-: "${GAFFER_PR_REMOTE:=origin}"
+GAFFER_GH_BIN="${GAFFER_GH_BIN:-gh}"
+: "${GAFFER_PR_REMOTE:=origin}"   # the git remote delivery branches and pull requests are pushed to
 
 # True when PR creation is opted in.
 gaffer_pr_create_enabled() {

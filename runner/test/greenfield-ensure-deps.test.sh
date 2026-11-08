@@ -14,7 +14,7 @@
 #   2. No package.json            → clean no-op (no output, no install).
 #   3. package.json, NO lockfile  → clean no-op (we don't guess an install).
 #   4. Already has node_modules    → clean no-op (idempotent, no output).
-#   5. GAFFER_GREENFIELD_INSTALL=0 → disabled, clean no-op.
+#   5. GAFFER_DOD_INSTALL=0 (or the deprecated GAFFER_GREENFIELD_INSTALL=0) → disabled, clean no-op.
 #
 # Hermetic: the install case uses a LOCAL file: dependency, so npm needs
 # no registry/network. Skips cleanly if node/npm are unavailable.
@@ -127,16 +127,19 @@ OUT="$(gaffer_ensure_node_modules "$EMPTY")"
 [ -e "$EMPTY/node_modules/localdep" ] && ok "empty node_modules re-primed (localdep installed)" ||
   fail "empty node_modules re-primed"
 
-# --- Case 5: opt-out via GAFFER_GREENFIELD_INSTALL=0 -------------------------
-echo "== case 5: GAFFER_GREENFIELD_INSTALL=0 disables priming =="
+# --- Case 5: opt-out via GAFFER_DOD_INSTALL=0 ---------------------------------
+echo "== case 5: GAFFER_DOD_INSTALL=0 disables priming =="
 OFF="$WORK/off"
 mkdir -p "$OFF"
 printf '{"name":"off","version":"1.0.0","dependencies":{"localdep":"file:../localdep"}}\n' \
   >"$OFF/package.json"
 printf '{"lockfileVersion":3}\n' >"$OFF/package-lock.json"
-OUT="$(GAFFER_GREENFIELD_INSTALL=0 gaffer_ensure_node_modules "$OFF")"
+OUT="$(GAFFER_DOD_INSTALL=0 gaffer_ensure_node_modules "$OFF")"
 [ -z "$OUT" ] && ok "no output when disabled" || fail "no output when disabled (got '$OUT')"
 [ ! -e "$OFF/node_modules" ] && ok "no install when disabled" || fail "no install when disabled"
+OUT="$(GAFFER_GREENFIELD_INSTALL=0 gaffer_ensure_node_modules "$OFF")"
+[ -z "$OUT" ] && [ ! -e "$OFF/node_modules" ] && ok "the deprecated GAFFER_GREENFIELD_INSTALL=0 still disables it" \
+  || fail "deprecated GAFFER_GREENFIELD_INSTALL=0 ignored (got '$OUT')"
 
 # --- Case 6: install ATTEMPTED but fails → FAILED sentinel + diagnostic preserved --
 echo "== case 6: failed install → FAILED:<pm> sentinel + diagnostic on stderr =="

@@ -53,7 +53,7 @@ case "$GAFFER_MODE" in
   lite)
     # LITE — auto-approve genuinely TRIVIAL work; hold everything else for a human; a
     # human still MERGES. Lite relaxes ONLY the human-REVIEW requirement, and only for
-    # tickets that are low-risk, tiny (≤ GAFFER_LITE_MAX_LINES/FILES), touch no sensitive
+    # tickets that are low-risk, tiny (within GAFFER_LITE_MAX_DIFF), touch no sensitive
     # path, AND already passed EVERY deterministic gate (DoD tests/lint/typecheck +
     # hygiene) AND earned an APPROVE from the reviewer agent. It does NOT auto-merge or
     # auto-push (approve → hold at ready_for_merge for a human to land). The env approve

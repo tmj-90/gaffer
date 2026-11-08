@@ -4,7 +4,7 @@
 # ticket, the base tree (git) and the code index's neighbours (the real memory CLI) and
 # builds the packet through lib/scout.mjs + lib/risk-classify.mjs; the delivery prompt
 # renders it through the crew seam inside <untrusted-scout>. FAIL-SOFT: no index means
-# the named files and stack frames only, said as such; GAFFER_SCOUT_PACKET=0 is off.
+# the named files and stack frames only, said as such; GAFFER_SCOUT=none is off.
 # The bounded model scout (GAFFER_SCOUT) runs only when asked, through worker_deliver
 # (stubbed here: no model is ever spawned), read-only, booked as kind scout, and its
 # reply is checked against the base tree.
@@ -45,6 +45,9 @@ WG_CALLS="$WORK/wg-calls"
 wg() { printf '%s\n' "$*" >> "$WG_CALLS"; }
 # shellcheck source=../lib/scout.sh
 . "$RUNNER_DIR/lib/scout.sh"
+# The per-role model reader the config defines (runner/config/04-models.sh), taken from
+# the real source: the model scout asks it for GAFFER_ROLE_MODELS scout=.
+eval "$(awk '/^gaffer_role_model\(\) \{/,/^\}/' "$RUNNER_DIR/config/04-models.sh")"
 
 REPO="$WORK/app"
 mkdir -p "$REPO/src" "$REPO/test" "$REPO/db/migrations"
@@ -131,9 +134,11 @@ has "$SCOUT_RAISED" "risk raised to high (declared low): " && has "$SCOUT_RAISED
 has "$SCOUT_PROMPT" '"risk":{"declared":"low","effective":"high"' && ok "the prompt input carries the raise" || no "prompt risk: $SCOUT_PROMPT"
 gaffer_scout_cleanup
 
-echo "== F. off: GAFFER_SCOUT_PACKET=0 builds nothing =="
-GAFFER_SCOUT_PACKET=0 gaffer_scout_run "$REPO" "$SHA" 1
+echo "== F. off: GAFFER_SCOUT=none builds nothing =="
+GAFFER_SCOUT=none gaffer_scout_run "$REPO" "$SHA" 1
 [ -z "$SCOUT_PACKET_FILE" ] && [ -z "$SCOUT_PROMPT" ] && [ -z "$SCOUT_RISK" ] && ok "off: no packet, no prompt input, no risk" || no "off still built"
+GAFFER_SCOUT_PACKET=0 gaffer_scout_run "$REPO" "$SHA" 1
+[ -z "$SCOUT_PACKET_FILE" ] && [ -z "$SCOUT_PROMPT" ] && ok "the deprecated GAFFER_SCOUT_PACKET=0 still builds nothing" || no "GAFFER_SCOUT_PACKET=0 still built"
 gaffer_scout_run "$WORK/nowhere" "" 1
 has "$SCOUT_PROMPT" "src/report.ts" && ok "no repo and no base: the named path is kept (unchecked), nothing fails" || no "no-repo: $SCOUT_PROMPT"
 gaffer_scout_cleanup
@@ -154,6 +159,7 @@ worker_deliver() {
     printf 'flags=%s\n' "$CLAUDE_FLAGS"
     printf 'env=%s\n' "${WORKER_CALL_ENV[*]}"
     printf 'args=%s\n' "${*:7}"
+    printf 'model=%s\n' "$3"
   } >> "$SPAWNS"
   R="$REPLY" node -e 'process.stdout.write(JSON.stringify({type:"result",result:process.env.R,total_cost_usd:0.0123}))' > "$5"
   return 0
@@ -171,9 +177,10 @@ PAUSED=1 GAFFER_SCOUT=auto gaffer_model_scout 7 "$REPO" "$SHA"
 [ ! -s "$SPAWNS" ] && ok "a usage pause: no model call" || no "pause spawned"
 DRY_RUN=1 GAFFER_SCOUT=on gaffer_model_scout 7 "$REPO" "$SHA"
 [ ! -s "$SPAWNS" ] && ok "DRY_RUN: no model call" || no "dry run spawned"
-GAFFER_SCOUT=auto GAFFER_SCOUT_MODEL_FLAG="--model cheap-x" gaffer_model_scout 7 "$REPO" "$SHA"
+GAFFER_SCOUT=auto GAFFER_ROLE_MODELS="scout=cheap-x" gaffer_model_scout 7 "$REPO" "$SHA"
 sp="$(cat "$SPAWNS")"
 has "$sp" "kind=scout" && ok "one call through worker_deliver, launch kind scout (budget admission)" || no "spawn: $sp"
+has "$sp" "model=--model cheap-x" && ok "the model is GAFFER_ROLE_MODELS scout=" || no "model: $sp"
 has "$sp" "--tools Read,Grep,Glob --strict-mcp-config --disable-slash-commands" && ok "read-only tools, no MCP, no slash commands" || no "args: $sp"
 has "$sp" "--disallowedTools Bash,Edit,Write" && ok "write and shell tools denied by name" || no "flags: $sp"
 has "$sp" "GAFFER_READ_ROOTS=$REPO" && ok "the real repo is a READ root only" || no "env: $sp"

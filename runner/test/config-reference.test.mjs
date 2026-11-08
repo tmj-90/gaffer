@@ -16,7 +16,13 @@ const {
   readSiteDefault,
   firstSentence,
   verifyExtraKnobs,
+  verifyInternalNames,
   EXTRA_KNOBS,
+  INTERNAL_NAMES,
+  TEST_SEAMS,
+  DEPRECATED,
+  REMOVED,
+  AREAS,
 } = await import(path.join(ROOT, "scripts", "config-reference.mjs"));
 
 let passed = 0;
@@ -157,16 +163,16 @@ ok(
   "GAFFER_DOD_TIMEOUT is a documented runner default now (not an undocumented read)",
 );
 ok(
-  /### lib\/skills-mount\.sh[\s\S]*\| `GAFFER_UNIVERSAL_SKILLS` \|/.test(text),
-  "a knob defaulted in runner/lib/*.sh is listed under its lib section",
+  /### Budget\n[^#]*\| `GAFFER_ALLOW_UNCAPPED` \|/.test(text),
+  "a knob defaulted in runner/lib/*.sh is listed under its area (lib/budget.sh -> Budget)",
 );
 ok(
   !/\| `GAFFER_DOD_INSTALL_TIMEOUT` \| [^|]*\| `runner\/lib\/dod\.sh`/.test(text),
   "a lib-defaulted knob is not reported as an undocumented read",
 );
 ok(
-  /\| `GAFFER_ONBOARD_TIMEOUT` \| [^|]*\| `runner\/lib\/onboard-analyze\.mjs`/.test(text),
-  "a read with no default anywhere is still listed as undocumented",
+  /## Env reads without a default or UI entry\n\nNone: /.test(text),
+  "every env read is documented: a knob, a dashboard setting, a deprecated or an internal name",
 );
 ok(
   !/\| `GAFFER_STRICT_REQUIRE` \| `runner/.test(text),
@@ -204,17 +210,10 @@ for (const name of [
   "GAFFER_STRICT_REQUIRE",
   "GAFFER_DOD",
   "GAFFER_DOD_INSTALL",
-  "GAFFER_GREENFIELD_INSTALL",
   "GAFFER_ALLOW_NO_DOD",
-  "GAFFER_KEEP_DELIVERY_BRANCH",
   "GAFFER_CI_TIMEOUT_POLICY",
   "GAFFER_MEMORY_AUTO_PROMOTE",
   "GAFFER_SANDBOX_IMAGE",
-  "GAFFER_SANDBOX_PROFILE",
-  "GAFFER_DIGEST_DISABLE",
-  "GAFFER_PAUSE_KEEP_WORKTREE",
-  "GAFFER_VERBOSE",
-  "DEMO_DIR",
   "ANTHROPIC_API_KEY",
   "CLAUDE_CODE_OAUTH_TOKEN",
   "CLAUDE_CONFIG_DIR",
@@ -225,11 +224,6 @@ ok(/\| `GAFFER_DOD_INSTALL` \| `1` \|/.test(text), "GAFFER_DOD_INSTALL shows its
 ok(
   /\| `GAFFER_CI_TIMEOUT_POLICY` \| `block` \|/.test(text),
   "GAFFER_CI_TIMEOUT_POLICY defaults to block",
-);
-// demo.sh makes a fresh temp dir per run when DEMO_DIR is empty (no fixed shared path).
-ok(
-  /\| `DEMO_DIR` \| _\(empty\)_ \| .*fresh temp dir/.test(text),
-  "DEMO_DIR shows the demo's default (a fresh temp dir)",
 );
 
 console.log("== the read-site table fails when it drifts from the code ==");
@@ -283,6 +277,104 @@ ok(
   EXTRA_KNOBS.every((k) => new RegExp(`^\\| \`${k.name}\` \\|`, "m").test(text)),
   "every EXTRA_KNOBS entry has a row in docs/CONFIG.md",
 );
+
+console.log("== internal names and test seams are named once, never as rows ==");
+ok(
+  verifyInternalNames(ROOT) === undefined,
+  "every INTERNAL_NAMES / TEST_SEAMS entry still occurs in the source",
+);
+const internalSection = text.slice(text.indexOf("## Internal names (not knobs)"));
+ok(
+  internalSection.length > 0 && text.includes("## Internal names (not knobs)"),
+  "CONFIG.md has the Internal names section",
+);
+for (const name of [...INTERNAL_NAMES.flatMap((g) => g.names), ...TEST_SEAMS]) {
+  ok(
+    !new RegExp(`^\\| \`${name}\` \\|`, "m").test(text) && internalSection.includes(`\`${name}\``),
+    `${name} is in the Internal names section and has no table row`,
+  );
+}
+for (const name of [
+  "GAFFER_KEEP_DELIVERY_BRANCH",
+  "GAFFER_SANDBOX_PROFILE",
+  "GAFFER_PAUSE_KEEP_WORKTREE",
+])
+  ok(internalSection.includes(`\`${name}\``), `${name} (set by the runner) is listed as plumbing`);
+// A `: "${X:=v}"` line is how the config marks a knob, so an internal name with one is an error.
+{
+  const cfg = path.join(ROOT, "runner", "config", "02-paths.sh");
+  const before = readFileSync(cfg, "utf8");
+  try {
+    writeFileSync(
+      cfg,
+      before.replace(/^DISPATCH_DIR="\$\{DISPATCH_DIR:-(.*)\}"$/m, ': "${DISPATCH_DIR:=$1}"'),
+    );
+    let msg = "";
+    try {
+      await generate();
+    } catch (err) {
+      msg = err.message;
+    }
+    ok(
+      /listed as internal but still defaulted[^\n]*DISPATCH_DIR/.test(msg),
+      "an internal name defaulted like a knob fails the generator",
+    );
+  } finally {
+    writeFileSync(cfg, before);
+  }
+}
+
+console.log(
+  "== the tables follow the areas of runner/config; deprecated names have their own table ==",
+);
+{
+  const headings = [
+    ...text.slice(0, text.indexOf("## Dashboard-only")).matchAll(/^### (.+)$/gm),
+  ].map((m) => m[1]);
+  const areas = [...new Set(Object.values(AREAS))];
+  ok(
+    headings.length > 0 && headings.every((h) => areas.includes(h)),
+    `every section heading is an area of runner/config (${headings.join(" / ")})`,
+  );
+  ok(
+    headings.join("|") === areas.filter((a) => headings.includes(a)).join("|"),
+    "the sections come in the parts' order",
+  );
+  ok(
+    /### Pausing on a cap, and the dashboard\n[^#]*\| `DISPATCH_API_PORT` \| `8787` \|/.test(text),
+    "a knob read where it is used sits in its area's table (DISPATCH_API_PORT under the dashboard)",
+  );
+  const dep = text.slice(text.indexOf("## Deprecated"), text.indexOf("## Internal names"));
+  ok(text.includes("## Deprecated"), "CONFIG.md has the Deprecated table");
+  for (const d of DEPRECATED) {
+    ok(
+      new RegExp(`^\\| \`${d.name}\` \\|`, "m").test(dep) &&
+        !new RegExp(`^\\| \`${d.name}\` \\|`, "m").test(
+          text.slice(0, text.indexOf("## Deprecated")),
+        ),
+      `${d.name} is in the Deprecated table only`,
+    );
+  }
+  const removedAt = text.indexOf("### Removed");
+  ok(removedAt > text.indexOf("## Deprecated"), "CONFIG.md lists the removed names under Removed");
+  const rem = text.slice(removedAt, text.indexOf("## Internal names"));
+  for (const d of REMOVED) {
+    ok(
+      new RegExp(`^\\| \`${d.name}\` \\|`, "m").test(rem) &&
+        !new RegExp(`^\\| \`${d.name}\` \\|`, "m").test(text.slice(0, removedAt)),
+      `${d.name} is in the Removed table only`,
+    );
+  }
+  const rowsInTables = text
+    .slice(0, text.indexOf("## Deprecated"))
+    .split("\n")
+    .filter((l) => l.startsWith("| `")).length;
+  ok(rowsInTables < 120, `the tables hold fewer than 120 rows (${rowsInTables})`);
+  ok(
+    new RegExp(`\\| Rows in the tables \\| ${rowsInTables} \\|`).test(text),
+    "the metrics say the same row count",
+  );
+}
 
 console.log("== rows describe the behaviour ==");
 const row = (k) => rows.find((l) => l.startsWith(`| \`${k}\` |`)) ?? "";

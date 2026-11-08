@@ -34,7 +34,7 @@ export GAFFER_BUDGET_USD
 #   turn-cap. Claude Code checks it between turns, so a call can overshoot by one turn.
 #   OWNER DECISION PENDING: whether to ship a default (e.g. 5) and/or a default
 #   per-ticket ceiling (GAFFER_REWORK_BUDGET_USD, e.g. 10) — both are empty today.
-: "${GAFFER_MAX_CALL_USD:=}"
+: "${GAFFER_MAX_CALL_USD:=}"   # a hard dollar cap on each agent call (claude --max-budget-usd), so one runaway call stops while it runs; empty = none
 export GAFFER_MAX_CALL_USD
 
 # gaffer_call_budget_usd [ticket-remaining]
@@ -77,7 +77,7 @@ if [ -n "${GAFFER_BUDGET_USD:-}" ] && command -v node >/dev/null 2>&1 \
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-const { parseLedger } = await import(pathToFileURL(process.env.GAFFER_ESTIMATE_LIB).href);
+const { parseLedger } = await import(pathToFileURL(process.env._GAFFER_ESTIMATE_LIB).href);
 const ledger = process.env.GAFFER_USAGE_LEDGER ||
   (process.env.GAFFER_DATA ? join(process.env.GAFFER_DATA, 'usage-ledger.jsonl') : '');
 if (!ledger) { process.stdout.write(''); process.exit(0); }
@@ -119,7 +119,7 @@ if [ -z "${GAFFER_BUDGET_LOW_THRESHOLD:-}" ] && [ -n "${GAFFER_BUDGET_USD:-}" ] 
   # treated as inert data (`+0` coerces garbage to 0), never executed as awk code.
   GAFFER_BUDGET_LOW_THRESHOLD="$(awk \
     -v b="${GAFFER_BUDGET_USD}" \
-    -v frac="${GAFFER_BUDGET_LOW_FRACTION:-0.20}" \
+    -v frac=0.20 \
     'BEGIN{b+=0; frac+=0; if(b>0) printf "%.6f", b*frac; else print 0}' 2>/dev/null || echo 0)"
 fi
 : "${GAFFER_BUDGET_LOW_THRESHOLD:=0}"

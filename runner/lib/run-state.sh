@@ -44,7 +44,7 @@
 # How long a Poll waits for the Poll already running (seconds). The default is the
 # longest a Poll can run (its outer tick bound) plus a minute, so a Poll pressed during
 # another Poll's delivery runs after it rather than being refused.
-: "${GAFFER_POLL_WAIT_TIMEOUT:=$(( ${GAFFER_TICK_OUTER_TIMEOUT:-5520} + 60 ))}"   # Seconds a live Poll waits for the Poll already running before it refuses.
+GAFFER_POLL_WAIT_TIMEOUT="${GAFFER_POLL_WAIT_TIMEOUT:-$(( ${GAFFER_TICK_OUTER_TIMEOUT:-5520} + 60 ))}"   # Seconds a live Poll waits for the Poll already running before it refuses.
 
 # The per-run state root.
 _gaffer_run_state_root() { printf '%s/run-state' "${GAFFER_DATA:?}"; }

@@ -32,7 +32,7 @@ unset DEMO_DIR
 snap() { git -C "$ROOT" status --porcelain --ignored --untracked-files=all -- packages runner 2>/dev/null | grep -v '/node_modules/' | grep -v '/dist/' | sort; }
 BEFORE="$(snap)"
 
-echo "== 1: no DEMO_DIR → a fresh temp dir =="
+echo "== 1: no --dir → a fresh temp dir =="
 RC=0; OUT="$(cd "$WORK" && TMPDIR="$WORK/tmp" bash "$RUNNER_DIR/gaffer" demo 2>&1)" || RC=$?
 [ "$RC" -eq 0 ] && ok "demo exits 0" || fail "demo rc=$RC: $(printf '%s' "$OUT" | tail -5)"
 D="$(ls -d "$WORK/tmp"/gaffer-demo.* 2>/dev/null | head -1)"
@@ -45,13 +45,16 @@ AFTER="$(snap)"
 [ "$BEFORE" = "$AFTER" ] && ok "packages/ and runner/ unchanged (ignored files included)" || fail "checkout changed: $(diff <(printf '%s\n' "$BEFORE") <(printf '%s\n' "$AFTER") | head -5)"
 [ ! -e "$ROOT/packages/memory/.demo-ping.mjs" ] && ok "no ping script in packages/memory" || fail "packages/memory/.demo-ping.mjs exists"
 
-echo "== 3: DEMO_DIR safety =="
+echo "== 3: --dir safety =="
 mkdir -p "$WORK/mine"; echo "precious" > "$WORK/mine/notes.txt"
-RC=0; OUT="$(DEMO_DIR="$WORK/mine" bash "$RUNNER_DIR/gaffer" demo 2>&1)" || RC=$?
-[ "$RC" -eq 2 ] && has "$OUT" "not a previous demo" && ok "a non-empty, non-demo DEMO_DIR is refused (exit 2)" || fail "rc=$RC: $(printf '%s' "$OUT" | tail -3)"
+RC=0; OUT="$(bash "$RUNNER_DIR/gaffer" demo --dir "$WORK/mine" 2>&1)" || RC=$?
+[ "$RC" -eq 2 ] && has "$OUT" "not a previous demo" && ok "a non-empty, non-demo --dir is refused (exit 2)" || fail "rc=$RC: $(printf '%s' "$OUT" | tail -3)"
 [ "$(cat "$WORK/mine/notes.txt" 2>/dev/null)" = precious ] && [ "$(ls -A "$WORK/mine")" = notes.txt ] && ok "…and left exactly as it was" || fail "DEMO_DIR contents changed: $(ls -A "$WORK/mine")"
-RC=0; OUT="$(DEMO_DIR="$D" bash "$RUNNER_DIR/gaffer" demo 2>&1)" || RC=$?
+RC=0; OUT="$(bash "$RUNNER_DIR/gaffer" demo --dir "$D" 2>&1)" || RC=$?
 [ "$RC" -eq 0 ] && [ -f "$D/.gaffer-demo" ] && ok "a previous demo's dir is reused" || fail "reuse rc=$RC: $(printf '%s' "$OUT" | tail -3)"
+RC=0; OUT="$(DEMO_DIR="$WORK/mine" bash "$RUNNER_DIR/gaffer" demo 2>&1)" || RC=$?
+[ "$RC" -eq 2 ] && has "$OUT" "not a previous demo" && has "$OUT" "DEMO_DIR is deprecated" \
+  && ok "the deprecated DEMO_DIR still names the dir (and is refused the same way), saying to pass --dir" || fail "deprecated DEMO_DIR: rc=$RC $(printf '%s' "$OUT" | tail -3)"
 
 echo "== 4: no fixed shared path =="
 grep -q 'gaffer-showcase' "$RUNNER_DIR/demo.sh" && fail "demo.sh still names /tmp/gaffer-showcase" || ok "no fixed /tmp/gaffer-showcase in demo.sh"

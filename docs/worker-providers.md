@@ -106,7 +106,7 @@ One JSON object on stdout. Log lines before it are fine (the last top-level JSON
 | `result` | string | `""` | the agent's text: logged, and read by the reviewer verdict, the tester verdict, the judge and the resume report |
 | `stop_reason` | string (200 chars kept) | none | a value naming the turn cap (`max_turns`, `turn limit`) counts as a cap hit; one naming the budget cap (`max_budget`) as a budget stop |
 | `cap_hit` | boolean | `false` | `true` is a turn-cap stop: a delivery that has commits pauses for your Continue, exactly like a `claude-code` turn-cap stop, whatever the exit code |
-| `num_turns` | number, 0 or more | unknown | recorded on the ledger row; counts toward the turn-cap detection (`GAFFER_CAP_DETECT_TURNS`) |
+| `num_turns` | number, 0 or more | unknown | recorded on the ledger row; counts toward the turn-cap detection (`GAFFER_MAX_TURNS`) |
 | `duration_ms` | number, 0 or more | unknown | recorded on the ledger row |
 | `cost_usd` | number, 0 or more | unknown | the cost you report, booked as described below |
 | `model` | string (80 chars, safe characters) | none | names the serving model on the ledger row and the attempt's evidence |

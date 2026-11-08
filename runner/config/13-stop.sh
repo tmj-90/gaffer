@@ -84,7 +84,7 @@ gaffer_is_self_target() {
 # bounds one run, but launchd re-runs loop.sh, so this bounds the whole day's
 # spend. The count persists in DAILY_COUNTER_FILE and resets each day. 0 = off.
 : "${MAX_TICKS_PER_DAY:=50}"
-: "${DAILY_COUNTER_FILE:=$GAFFER_DATA/.daily-ticks}"
+DAILY_COUNTER_FILE="${DAILY_COUNTER_FILE:-$GAFFER_DATA/.daily-ticks}"
 # Per-CALENDAR-DAY (UTC) USD spend ceiling (Part B). MAX_TICKS_PER_DAY bounds the
 # NUMBER of ticks; this bounds the DOLLARS spent in a UTC day, summed from the usage
 # ledger (measured total_cost_usd PLUS killed/timeout estimated_cost_usd, so a run

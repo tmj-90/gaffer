@@ -442,7 +442,7 @@ _gaffer_land_one() {
   # gated (compare-and-land); a target that moved is re-gated. A red combination is held
   # for a human with the gate output as evidence; the target is never touched.
   if [ -z "$_mrc" ]; then
-    local _mg_try=0 _mg_max="${GAFFER_MERGE_GATE_RETRIES:-2}" _lrc
+    local _mg_try=0 _mg_max=2 _lrc
     while :; do
       _gaffer_merge_gate "$RNUM" "$RREPO" "$RBRANCH" "$RDEFAULT" "$_TB_PIN" "$RSHOW" "refs/heads/$RDEFAULT" "$_WHO" "$_TRAILERS" "$_RSEC"; _mgrc=$?
       case "$_mgrc" in

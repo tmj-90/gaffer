@@ -44,7 +44,7 @@
 //                        $GAFFER_DATA/onboard.log, and stderr gets a summary of at most
 //                        ~8 lines (registered name, stack/test/branch, model analysis
 //                        yes/no + why not, counts, the intake decision, the next step).
-//                        GAFFER_VERBOSE=1 keeps the full log on stderr. Without the flag
+//                        --verbose keeps the full log on stderr. Without the flag
 //                        (the dashboard's run log, tests) the output is unchanged.
 //
 // EXIT: 0 on a clean run (crew spawned + exited 0), non-zero on a hard failure
@@ -118,6 +118,7 @@ function parseArgs(argv) {
     name: process.env.DISPATCH_ONBOARD_NAME || "",
     dryRun: false,
     summary: false,
+    verbose: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -136,6 +137,9 @@ function parseArgs(argv) {
         break;
       case "--summary":
         opts.summary = true;
+        break;
+      case "--verbose":
+        opts.verbose = true;
         break;
       default:
         break;
@@ -467,8 +471,12 @@ function ensureCrewConfig() {
 
 function main() {
   const opts = parseArgs(process.argv.slice(2));
+  // --verbose keeps the full log on stderr; GAFFER_VERBOSE=1 is its deprecated spelling.
   const summary =
-    opts.summary && !opts.dryRun && !/^(1|true|yes|on)$/i.test(process.env.GAFFER_VERBOSE ?? "");
+    opts.summary &&
+    !opts.dryRun &&
+    !opts.verbose &&
+    !/^(1|true|yes|on)$/i.test(process.env.GAFFER_VERBOSE ?? "");
   if (summary) {
     LOG_FILE = resolve(GAFFER_DATA, "onboard.log");
     try {

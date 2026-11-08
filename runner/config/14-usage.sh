@@ -19,7 +19,7 @@
 # every delivery attempt gets matching agent-run evidence on its ticket.
 # run-summary.sh renders the run-scoped Usage section. Override the ledger PATH here (mirrors GAFFER_BLOCK_LEDGER's
 # run-summary default); empty/unset → $GAFFER_DATA/usage-ledger.jsonl.
-: "${GAFFER_USAGE_LEDGER:=$GAFFER_DATA/usage-ledger.jsonl}"
+GAFFER_USAGE_LEDGER="${GAFFER_USAGE_LEDGER:-$GAFFER_DATA/usage-ledger.jsonl}"
 export GAFFER_USAGE_LEDGER
 
 # GAFFER_KILL_ESTIMATE_USD — budget honesty for a KILLED / TIMED-OUT `claude -p`
@@ -36,7 +36,7 @@ export GAFFER_USAGE_LEDGER
 # product owner, tester, onboarding, merge resolver) read it too (default 0.05 when
 # run outside this config). 0 restores the $0/unknown behaviour when there is no
 # usable history (opt-out). Measured calls ignore it.
-: "${GAFFER_KILL_ESTIMATE_USD:=0.05}"
+: "${GAFFER_KILL_ESTIMATE_USD:=0.05}"   # USD booked for a call killed or timed out before it reported its cost (the budget gates count it)
 export GAFFER_KILL_ESTIMATE_USD
 
 # gaffer_usage_record <kind> <ticket-or-empty> <rc> <captured-json-file>

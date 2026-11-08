@@ -29,7 +29,7 @@
 # --strict-mcp-config (no MCP tools), --disable-slash-commands (no skill listing), no
 # acceptEdits, from an EMPTY scratch cwd that is also its only write root (never the
 # delivery worktree: the target repo's CLAUDE.md / skills / settings never load, and
-# none of the delivery's DB/ticket env reaches it), under GAFFER_JUDGE_MAX_TURNS (2).
+# none of the delivery's DB/ticket env reaches it), under its turn cap (GAFFER_ROLE_MAX_TURNS judge=, built in 2).
 # The scratch cwd carries only the factory's verified safety-hook settings
 # (gaffer_write_agent_settings); a judge whose settings cannot be verified is skipped.
 # It used to inherit the delivery's acceptEdits, the 200-turn delivery cap and the
@@ -62,10 +62,10 @@ gaffer_eval_judge_delivery() (
   crew_dir="${CREW_DIR:-$RUNNER_DIR/../packages/crew}"
   judge_cli="$crew_dir/dist/eval/deliveryJudgeCli.js"
   ledger_cli="$crew_dir/dist/eval/evalLedgerCli.js"
-  worker_mjs="${GAFFER_WORKER_MJS:-$RUNNER_DIR/lib/worker.mjs}"
+  worker_mjs="${_GAFFER_WORKER_MJS:-$RUNNER_DIR/lib/worker.mjs}"
   [ -f "$judge_cli" ] && [ -f "$ledger_cli" ] && [ -f "$worker_mjs" ] || return 0
 
-  ledger="${GAFFER_EVAL_LEDGER:-$GAFFER_DATA/eval-ledger.jsonl}"
+  ledger="${_GAFFER_EVAL_LEDGER:-$GAFFER_DATA/eval-ledger.jsonl}"
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/eval-judge.XXXXXX")" || return 0
   trap 'rm -rf "$tmp"' EXIT
 
@@ -75,7 +75,7 @@ gaffer_eval_judge_delivery() (
   #      marker so the judge grades a KNOWN-partial diff instead of silently
   #      treating a prefix as the whole delivery (which would let scope/risk
   #      past the cut score as "absent"). ──
-  diff_cap="${GAFFER_JUDGE_DIFF_BYTES:-120000}"
+  diff_cap=120000
   git -C "$repo_dir" diff "$base".."$work" 2>/dev/null > "$tmp/diff.full" || true
   [ -s "$tmp/diff.full" ] || return 0   # nothing to judge
   head -c "$diff_cap" "$tmp/diff.full" > "$tmp/diff" 2>/dev/null || true
@@ -124,16 +124,21 @@ gaffer_eval_judge_delivery() (
   WORKER_CALL_ENV=("GAFFER_WRITE_ROOTS=$tmp/cwd" "GAFFER_READ_ROOTS=")
   # JUDGE INDEPENDENCE: default the judge to the PLAN-tier (strong) model, not the
   # implementer's — a model grading its own tier's output is the weakest reading the
-  # eval can take. GAFFER_JUDGE_MODEL_FLAG still overrides; the implementer flag is the
-  # last resort only when no plan flag is configured.
-  judge_flag="${GAFFER_JUDGE_MODEL_FLAG:-${GAFFER_PLAN_MODEL_FLAG:-${GAFFER_IMPL_MODEL_FLAG:-}}}"
+  # eval can take. GAFFER_ROLE_MODELS judge= (or the deprecated GAFFER_JUDGE_MODEL_FLAG,
+  # a whole flag) still overrides; the implementer flag is the last resort only when no
+  # plan flag is configured.
+  local judge_model=""
+  declare -F gaffer_role_model >/dev/null 2>&1 && judge_model="$(gaffer_role_model judge)"
+  if [ -n "$judge_model" ]; then judge_flag="--model $judge_model"
+  else judge_flag="${GAFFER_JUDGE_MODEL_FLAG:-${GAFFER_PLAN_MODEL_FLAG:-${GAFFER_IMPL_MODEL_FLAG:-}}}"; fi
   # The overrides are local: this function body is a subshell. CLAUDE_FLAGS is REPLACED
   # (no acceptEdits; built-in tools denied by name as defence in depth on top of
   # `--tools ""`); the turn cap is passed per call, so it replaces the 200-turn flag
   # rather than adding a second --max-turns.
   # shellcheck disable=SC2034  # read by worker_deliver
   CLAUDE_FLAGS="--disallowedTools ${GAFFER_JUDGE_DENIED_TOOLS:-Bash,Edit,Write,MultiEdit,NotebookEdit,Read,Grep,Glob,LS,WebFetch,WebSearch,Task,TodoWrite}"
-  judge_turns="${GAFFER_JUDGE_MAX_TURNS:-2}"
+  judge_turns=2
+  declare -F gaffer_role_cap >/dev/null 2>&1 && judge_turns="$(gaffer_role_cap judge 2)"
   type gaffer_role_turns >/dev/null 2>&1 && judge_turns="$(gaffer_role_turns "$judge_turns")"
   GAFFER_LAUNCH_KIND=eval-judge worker_deliver "$tmp/cwd" "$prompt" "$judge_flag" "$tmp/mcp.json" "$tmp/envelope.json" "" \
     "$judge_turns" --tools "" --strict-mcp-config --disable-slash-commands \

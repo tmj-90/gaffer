@@ -51,7 +51,7 @@ start_daemon() {
   : > "$WORK/events"; rm -f "$WORK/pgid"
   ( perl -e '$SIG{INT} = "DEFAULT"; setpgrp(0, 0); open(my $f, ">", shift) or die; print $f getpgrp(); close $f; exec @ARGV' \
       "$WORK/pgid" env GAFFER_DATA="$WORK/data" GAFFER_ALLOW_UNCAPPED=1 GAFFER_CLAUDE_AUTH_PROBE=0 GAFFER_LOOP_SH="$STUB" \
-      GAFFER_DAEMON_INTERVAL=1 MAX_TICKS_PER_DAY=0 bash "$RUNNER_DIR/gaffer" run --daemon > "$WORK/daemon.out" 2>&1 ) &
+      MAX_TICKS_PER_DAY=0 bash "$RUNNER_DIR/gaffer" run --daemon --interval 1 > "$WORK/daemon.out" 2>&1 ) &
   DPID=$!
   local i=0
   while [ "$i" -lt 100 ]; do
@@ -104,7 +104,7 @@ TTYSH
 #!/usr/bin/env bash
 stty tostop
 exec perl -e '\$SIG{TTOU} = \$SIG{TTIN} = \$SIG{TSTP} = "DEFAULT"; exec @ARGV' env GAFFER_DATA="$WORK/data" GAFFER_ALLOW_UNCAPPED=1 \\
-  GAFFER_CLAUDE_AUTH_PROBE=0 GAFFER_LOOP_SH="$TTYPASS" GAFFER_DAEMON_INTERVAL=1 MAX_TICKS_PER_DAY=0 bash "$RUNNER_DIR/gaffer" run --daemon
+  GAFFER_CLAUDE_AUTH_PROBE=0 GAFFER_LOOP_SH="$TTYPASS" MAX_TICKS_PER_DAY=0 bash "$RUNNER_DIR/gaffer" run --daemon --interval 1
 FGSH
   chmod +x "$WORK/fg.sh"
   cat > "$WORK/pty.py" <<'PYEOF'

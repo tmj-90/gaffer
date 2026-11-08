@@ -333,7 +333,7 @@ gaffer_tick_delivery_attempts() {
 ── attempt $_DELIV_ATTEMPT — $gate ──
 $real
 "
-    _REWORK_HISTORY="$(printf '%s' "$_REWORK_HISTORY" | tail -c "${GAFFER_REWORK_HISTORY_BYTES:-8000}")"
+    _REWORK_HISTORY="$(printf '%s' "$_REWORK_HISTORY" | tail -c 8000)"
     # NOTE (dedupe): the failure text used to ALSO be attached here as a manual_note
     # evidence record — persisting it twice per attempt. The durable persistence now
     # lives in exactly one place per outcome: the retry path's `wg runner-rework
@@ -427,7 +427,8 @@ $real
   #   _REWORK_BLOCK       — appended to the base PROMPT so the re-invoked agent sees
   #                         the REAL prior failure(s) + its escalation posture.
   #   _ATTEMPT_IMPL_FLAG  — the model flag for THIS attempt (routed model by default;
-  #                         the FINAL attempt escalates to GAFFER_REWORK_STRONG_MODEL).
+  #                         the FINAL attempt escalates to the rework model,
+  #                         _GAFFER_REWORK_MODEL from GAFFER_ROLE_MODELS rework=).
   # Attempt 1: routed model, no rework suffix (base prompt).
   # Attempt 2..(max-1): RETHINK — same model, but re-plan the approach (the prior
   #                     approach failed the SAME gate; a tweak won't do) with the trail.
@@ -443,8 +444,8 @@ $real
     # Model escalation only on the FINAL attempt (and only if a strong model is set
     # and the loop actually has >1 attempt to climb).
     local posture
-    if [ "$is_final" = "1" ] && [ "$_MAX_DELIVERY_ATTEMPTS" -gt 1 ] && [ -n "${GAFFER_REWORK_STRONG_MODEL:-}" ]; then
-      _ATTEMPT_IMPL_FLAG="--model $GAFFER_REWORK_STRONG_MODEL"
+    if [ "$is_final" = "1" ] && [ "$_MAX_DELIVERY_ATTEMPTS" -gt 1 ] && [ -n "${_GAFFER_REWORK_MODEL:-}" ]; then
+      _ATTEMPT_IMPL_FLAG="--model $_GAFFER_REWORK_MODEL"
       posture="FINAL REWORK ATTEMPT (attempt $attempt/$_MAX_DELIVERY_ATTEMPTS) — you are the STRONGEST model on this ticket and this is the LAST attempt before it is parked to \`blocked\` for a human. The previous attempts failed the gate below. Do NOT repeat them: read the FULL failure trail, form a correct fix, and make every gate pass."
     else
       posture="RETHINK (attempt $attempt/$_MAX_DELIVERY_ATTEMPTS) — your previous approach FAILED the same gate. Do NOT just tweak it: step back, RE-PLAN the approach from the failure below (optionally narrow the scope to the smallest correct change), then implement and make the gate pass."
@@ -1017,7 +1018,7 @@ $_trail_q
     # fail-soft, BEFORE the gate runs — inside the SAME validation sandbox as the gates
     # (GAFFER_DOD_WRAP, stripped env; refused under strict-require with no wrap). This never crashes the tick and never passes
     # the gate — on a failed/timed-out install the gate still runs and fails loudly
-    # exactly as today. Disable with GAFFER_DOD_INSTALL=0 (or GAFFER_GREENFIELD_INSTALL=0)
+    # exactly as today. Disable with GAFFER_DOD_INSTALL=0
     # for byte-identical-to-today behaviour. Separate loop from the row-builder above
     # so the enabler stays visibly distinct from gate-command resolution.
     if gaffer_dod_install_enabled; then

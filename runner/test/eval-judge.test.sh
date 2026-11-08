@@ -98,6 +98,9 @@ _gaffer_sed_repl() { printf '%s' "$1" | sed -e 's/[\\&#]/\\&/g'; }
 export CLAUDE_SETTINGS="$RUNNER_DIR/claude/settings.json"
 # shellcheck source=../lib/agent-env.sh
 source "$RUNNER_DIR/lib/agent-env.sh"
+# The per-role model reader the config defines (runner/config/04-models.sh), from the
+# real source: the judge asks it for GAFFER_ROLE_MODELS judge=.
+eval "$(awk '/^gaffer_role_model\(\) \{/,/^\}/' "$RUNNER_DIR/config/04-models.sh")"
 
 echo "== B. default OFF → no-op =="
 unset GAFFER_EVAL_JUDGE
@@ -164,7 +167,7 @@ case "$_jcwd" in */eval-judge.*/cwd) ok "judge cwd is its own scratch dir" ;; *)
 grep -qx 'settings=verified' "$WORK/last-spawn.txt" \
   && ok "judge scratch cwd carries the verified safety-hook settings" \
   || no "judge spawned without the rendered safety-hook settings"
-grep -qx 'turns=2' "$WORK/last-spawn.txt" && ok "judge runs under GAFFER_JUDGE_MAX_TURNS (default 2), not the 200 delivery cap" \
+grep -qx 'turns=2' "$WORK/last-spawn.txt" && ok "judge runs under its role cap (judge, default 2), not the 200 delivery cap" \
   || no "judge turn cap wrong ($(grep turns= "$WORK/last-spawn.txt"))"
 [ "$(sed -n '/^x</p' "$WORK/last-spawn.txt" | tr '\n' ' ')" = "x<--tools> x<> x<--strict-mcp-config> x<--disable-slash-commands> " ] \
   && ok "judge is text-only: --tools \"\" --strict-mcp-config --disable-slash-commands" \
@@ -221,7 +224,7 @@ open(os.environ["REPLY_OUT"], "w").write(json.dumps({"result": reply, "num_turns
 PY
 }
 printf 'PASS 12 tests, 0 failed\ncoverage 91%%\n' > "$GAFFER_DATA/.dod-9.results"
-GAFFER_JUDGE_MODEL_FLAG="--model opus" \
+GAFFER_ROLE_MODELS="judge=opus" \
   gaffer_eval_judge_delivery 9 "$REPO" main gaffer/ticket-9 1 '$0.20'
 grep -q '<untrusted-test-output>' "$WORK/last-prompt.txt" && grep -q 'PASS 12 tests' "$WORK/last-prompt.txt" \
   && ok "DoD test output is fed to the judge (test_adequacy graded on real evidence)" \

@@ -89,7 +89,7 @@ awk '/^_gaffer_ticket_spend\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$CFG" > "$SPE
 grep -E '^gaffer_ticket_(total|delivery|rework)_spend\(\) \{.*\}$' "$CFG" >> "$SPENDFN"
 # shellcheck disable=SC1090
 source "$SPENDFN"
-export GAFFER_ESTIMATE_LIB="$RUNNER_DIR/lib/estimate.mjs" GAFFER_USAGE_LEDGER="$LEDGER7"
+export _GAFFER_ESTIMATE_LIB="$RUNNER_DIR/lib/estimate.mjs" GAFFER_USAGE_LEDGER="$LEDGER7"
 {
   printf '%s\n' '{"kind":"delivery","ticket":7,"measured":true,"total_cost_usd":1.00}'
   printf '%s\n' '{"kind":"delivery","ticket":7,"measured":true,"total_cost_usd":1.10}'

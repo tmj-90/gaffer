@@ -26,7 +26,7 @@ leaves a mechanical-only card and never reaches the repo digest. The digest keep
 analysis model's own overview, with the extracted features appended.
 
 Secret files are always excluded from the scan and the context. The full log (crew's
-scan JSON, every analysis step) is in `.gaffer/onboard.log`; `GAFFER_VERBOSE=1` prints
+scan JSON, every analysis step) is in `.gaffer/onboard.log`; `gaffer onboard --verbose` prints
 it as it runs. If `claude` is not logged in, the model line says so
 (`! model analysis unavailable (claude: …)`) and the digest and cards are mechanical-only.
 

@@ -7,9 +7,9 @@
 
 # CLI helpers (use the built dist bins)
 # memory-mcp uses its own bin layout + the MEMORY_DB env var (no --db flag).
-: "${MEMORY_CLI_BIN:=$MEMORY_DIR/dist/bin/memory.js}"
-: "${MEMORY_MCP_BIN:=$MEMORY_DIR/dist/bin/memory-mcp.js}"
-: "${DISPATCH_MCP_BIN:=$DISPATCH_DIR/dist/mcp/bin.js}"   # substituted into .mcp.json by tick.sh
+MEMORY_CLI_BIN="${MEMORY_CLI_BIN:-$MEMORY_DIR/dist/bin/memory.js}"
+MEMORY_MCP_BIN="${MEMORY_MCP_BIN:-$MEMORY_DIR/dist/bin/memory-mcp.js}"
+DISPATCH_MCP_BIN="${DISPATCH_MCP_BIN:-$DISPATCH_DIR/dist/mcp/bin.js}"   # substituted into .mcp.json by tick.sh
 
 # --- DB-var fail-CLOSED guard (P1-B) -----------------------------------------
 # The .mcp.json ships "${DISPATCH_DB}" / "${MEMORY_DB}" placeholders that

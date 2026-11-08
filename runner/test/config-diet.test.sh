@@ -113,6 +113,15 @@ for bad in "pids=-1" "pids=0" "memory=0" "cpus=0" "cpus=0.0" "cpus=abc" "pids=" 
       || fail "F5: $bad refused without naming it: $(cat "$WORK/sbx-err")"
   fi
 done
+for bad in GAFFER_SANDBOX_PIDS=-1 GAFFER_SANDBOX_PIDS=0 GAFFER_SANDBOX_MEMORY=0 GAFFER_SANDBOX_CPUS=0 GAFFER_SANDBOX_CPUS=lots; do
+  if env -i PATH="$PATH" HOME="$WORK/home" GAFFER_DATA="$WORK/data" GAFFER_SANDBOX_DRY_RUN=1 GAFFER_MCP_BRIDGE=0 "$bad" \
+    bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WORK/sbx/w" "$WORK/sbx/r" -- true >/dev/null 2>"$WORK/sbx-err"; then
+    fail "F5: the deprecated $bad was passed to docker (a zero or negative cap is none)"
+  else
+    grep -q "${bad%%=*}: '" "$WORK/sbx-err" && ok "F5: the deprecated $bad is refused the same way (mapped onto the knob before validation)" \
+      || fail "F5: $bad refused without naming it: $(cat "$WORK/sbx-err")"
+  fi
+done
 cfg GAFFER_SANDBOX_PIDS=100 -- ':' >/dev/null
 warned GAFFER_SANDBOX_PIDS && grep -q 'GAFFER_SANDBOX_LIMITS="pids=N"' "$WORK/err" && ok "GAFFER_SANDBOX_PIDS warns once, naming the replacement" || fail "F5 warning: $(cat "$WORK/err")"
 

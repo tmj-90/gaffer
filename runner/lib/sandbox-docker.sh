@@ -53,7 +53,7 @@ _IMAGE="${GAFFER_SANDBOX_IMAGE:-gaffer-sandbox:latest}"
 # (commas or spaces; a cap it does not name keeps that default). The old
 # GAFFER_SANDBOX_CPUS / _MEMORY / _PIDS are deprecated and still apply to a cap the
 # knob does not name (the config says so once). The knob is parsed below, after _die.
-_SBX_CPUS="${GAFFER_SANDBOX_CPUS:-4}"; _SBX_MEMORY="${GAFFER_SANDBOX_MEMORY:-4g}"; _SBX_PIDS="${GAFFER_SANDBOX_PIDS:-512}"
+_SBX_CPUS=4; _SBX_MEMORY=4g; _SBX_PIDS=512
 _RUNNER_DIR="${RUNNER_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 
 _die() { printf 'sandbox-docker: %s\n' "$1" >&2; exit 1; }
@@ -62,18 +62,26 @@ _die() { printf 'sandbox-docker: %s\n' "$1" >&2; exit 1; }
 # or pids= with a positive value refuses the run instead of being dropped, because
 # docker reads a zero or negative cap as no cap at all (--pids-limit -1, --memory 0,
 # --cpus 0), and a misspelt cap would silently leave a limit the operator meant to set.
-IFS=$', \t\n' read -r -a _sbx_limits <<<"${GAFFER_SANDBOX_LIMITS:-}"
-for _sbx_kv in ${_sbx_limits[@]+"${_sbx_limits[@]}"}; do
-  [ -n "$_sbx_kv" ] || continue   # a stray comma
-  _sbx_v="${_sbx_kv#*=}"
+# The deprecated GAFFER_SANDBOX_CPUS / _MEMORY / _PIDS map onto the same entries first
+# (the knob's own entries come after, so they win) and are checked the same way.
+_sbx_limits=()
+[ -n "${GAFFER_SANDBOX_CPUS:-}" ] && _sbx_limits+=("GAFFER_SANDBOX_CPUS|cpus=$GAFFER_SANDBOX_CPUS")
+[ -n "${GAFFER_SANDBOX_MEMORY:-}" ] && _sbx_limits+=("GAFFER_SANDBOX_MEMORY|memory=$GAFFER_SANDBOX_MEMORY")
+[ -n "${GAFFER_SANDBOX_PIDS:-}" ] && _sbx_limits+=("GAFFER_SANDBOX_PIDS|pids=$GAFFER_SANDBOX_PIDS")
+IFS=$', \t\n' read -r -a _sbx_knob <<<"${GAFFER_SANDBOX_LIMITS:-}"
+for _sbx_kv in ${_sbx_knob[@]+"${_sbx_knob[@]}"}; do
+  [ -n "$_sbx_kv" ] && _sbx_limits+=("GAFFER_SANDBOX_LIMITS|$_sbx_kv")   # skip a stray comma
+done
+for _sbx_e in ${_sbx_limits[@]+"${_sbx_limits[@]}"}; do
+  _sbx_src="${_sbx_e%%|*}"; _sbx_kv="${_sbx_e#*|}"; _sbx_v="${_sbx_kv#*=}"
   case "$_sbx_kv" in
     cpus=*) [[ "$_sbx_v" =~ ^([0-9]+(\.[0-9]*)?|\.[0-9]+)$ && "$_sbx_v" == *[1-9]* ]] && _SBX_CPUS="$_sbx_v" ;;
     memory=*) [[ "$_sbx_v" =~ ^[0-9]+(\.[0-9]+)?[kKmMgGtT]?[iI]?[bB]?$ && "${_sbx_v%%[!0-9.]*}" == *[1-9]* ]] && _SBX_MEMORY="$_sbx_v" ;;
     pids=*) [[ "$_sbx_v" =~ ^[0-9]+$ && "$_sbx_v" == *[1-9]* ]] && _SBX_PIDS="$_sbx_v" ;;
     *) false ;;
-  esac || _die "GAFFER_SANDBOX_LIMITS: '$_sbx_kv' is not cpus=N, memory=N[k|m|g] or pids=N with a positive N; refusing to run with a cap docker would read as none (the defaults are cpus=4 memory=4g pids=512)"
+  esac || _die "$_sbx_src: '$_sbx_kv' is not cpus=N, memory=N[k|m|g] or pids=N with a positive N; refusing to run with a cap docker would read as none (the defaults are cpus=4 memory=4g pids=512)"
 done
-unset _sbx_limits _sbx_kv _sbx_v
+unset _sbx_limits _sbx_knob _sbx_kv _sbx_v _sbx_e _sbx_src
 
 # --- parse args: <write-roots-file> <read-roots-file> -- <cmd...> ---
 [ "$#" -ge 3 ] || _die "usage: sandbox-docker.sh <write-roots-file> <read-roots-file> -- <cmd...>"

@@ -66,4 +66,37 @@ _gaffer_deprecated() {
   export _GAFFER_DEPRECATED_SAID
 }
 
+# _gaffer_removed <old-name> <what happens now>: a removed variable that is set says so
+# on stderr once per process tree (the same mark as _gaffer_deprecated): its value is
+# ignored and the built-in behaviour is fixed. docs/CONFIG.md lists them under Removed.
+_gaffer_removed() {
+  [ -n "${!1:-}" ] || return 0
+  case "${_GAFFER_DEPRECATED_SAID:-}" in *" $1 "*) return 0 ;; esac
+  printf 'gaffer: %s was removed and its value is ignored; %s\n' "$1" "$2" >&2
+  _GAFFER_DEPRECATED_SAID="${_GAFFER_DEPRECATED_SAID:- } $1 "
+  export _GAFFER_DEPRECATED_SAID
+}
+# The knobs the config diet removed (nothing set them; each held its built-in value,
+# which is now fixed in the code). Said once if one is still set.
+while IFS='|' read -r _gr_name _gr_now; do
+  [ -n "$_gr_name" ] && _gaffer_removed "$_gr_name" "$_gr_now"
+done <<'_GAFFER_REMOVED_'
+GAFFER_REWORK_HISTORY_BYTES|a rework prompt carries the last 8000 bytes of earlier attempts' feedback
+GAFFER_JUDGE_DIFF_BYTES|the eval judge grades the first 120000 bytes of a diff
+GAFFER_MERGE_GATE_RETRIES|a landing whose target moved is re-gated up to twice
+GAFFER_PREFLIGHT_LIVE_TIMEOUT|the live preflight call gets 60 seconds
+GAFFER_ACCEPTANCE_TIMEOUT_MS|one acceptance profile run gets 5 minutes
+GAFFER_AGENT_NAME|the factory agent registers as gaffer-factory
+GAFFER_AGENT_EMAIL|a greenfield repo's first commit is by gaffer-factory@users.noreply.invalid
+GAFFER_BUDGET_LOW_FRACTION|the low-budget threshold is 20% of the ceiling (set GAFFER_BUDGET_LOW_THRESHOLD to change it)
+GAFFER_INHERIT_PLAN_TIMEOUT|the inherit planner gets 60 seconds
+GAFFER_INHERIT_AMB_TIMEOUT|the inherit ambiguity call gets 300 seconds
+GAFFER_ONBOARD_TIMEOUT|onboarding calls follow GAFFER_TICK_TIMEOUT
+GAFFER_REAPPROVAL_ATTEMPTS|a re-approval is tried 3 times
+GAFFER_TESTER_REPLAY_TIMEOUT_MS|the tester's replay gets 10 minutes
+GAFFER_DECOMPOSE_MOCK|a dry-run planner takes mockOutput from its request
+GAFFER_SPEC_AUTHOR_MOCK|a dry-run spec author takes mockOutput from its request
+_GAFFER_REMOVED_
+unset _gr_name _gr_now
+
 _GAFFER_CONFIG_PART=01-settings

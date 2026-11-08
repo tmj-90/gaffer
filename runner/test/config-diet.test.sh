@@ -187,6 +187,17 @@ V="$(cfg GAFFER_SCOUT=none -- 'printf "%s" "$(_gaffer_manifest_packet_on)"')"
 V="$(cfg GAFFER_SCOUT_PACKET=0 -- 'printf "%s" "$(_gaffer_manifest_packet_on)"')"
 [ "$V" = "0" ] && warned GAFFER_SCOUT_PACKET && ok "the deprecated GAFFER_SCOUT_PACKET=0 still turns it off and warns once" || fail "F10 alias: $V / $(cat "$WORK/err")"
 
+echo "== removed knobs: a set one is ignored and said once =="
+REMOVED_LIST="$(cd "$RUNNER_DIR/.." && node --input-type=module -e 'const { REMOVED } = await import("./scripts/config-reference.mjs"); for (const r of REMOVED) console.log(r.name)')"
+[ "$(printf '%s\n' "$REMOVED_LIST" | grep -c .)" = "15" ] && ok "config-reference lists the fifteen removed names" || fail "removed list: $REMOVED_LIST"
+for n in $REMOVED_LIST; do
+  cfg "$n=7" -- 'bash --norc --noprofile -c "source \"\$0\"" "$0" 2>>"$ERRF"' >/dev/null
+  [ "$(grep -c "gaffer: $n was removed and its value is ignored; " "$WORK/err")" = "1" ] \
+    && ok "$n: one line says it was removed, that the value is ignored, and what happens now" || fail "$n removed warning: $(cat "$WORK/err")"
+done
+V="$(cfg GAFFER_MERGE_GATE_RETRIES=9 GAFFER_AGENT_NAME=x -- 'printf "%s" "$_GAFFER_AGENT_NAME"')"
+[ "$V" = "gaffer-factory" ] && ok "a removed knob's value is ignored (the agent still registers as gaffer-factory)" || fail "removed value applied: $V"
+
 echo "== the warning is said once per process tree =="
 cfg GAFFER_PO_MAX_TURNS=30 -- 'bash --norc --noprofile -c "source \"\$0\"" "$0" 2>>"$ERRF"' >/dev/null
 warned GAFFER_PO_MAX_TURNS && ok "a second source in a child stays quiet (one line for the tree)" || fail "repeat warning: $(cat "$WORK/err")"

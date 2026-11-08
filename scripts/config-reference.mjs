@@ -574,12 +574,37 @@ export const DEPRECATED = [
   },
 ];
 
+/**
+ * Removed names: knobs the config diet dropped because nothing set them. Each held its
+ * built-in value, which is now fixed in the code; a set one is ignored and the config
+ * says so once on stderr (runner/config/01-settings.sh, the _GAFFER_REMOVED_ list).
+ * docs/CONFIG.md lists them under Removed in the Deprecated section.
+ */
+export const REMOVED = [
+  ["GAFFER_REWORK_HISTORY_BYTES", "a rework prompt carries the last 8000 bytes of earlier attempts' feedback"],
+  ["GAFFER_JUDGE_DIFF_BYTES", "the eval judge grades the first 120000 bytes of a diff"],
+  ["GAFFER_MERGE_GATE_RETRIES", "a landing whose target moved is re-gated up to twice"],
+  ["GAFFER_PREFLIGHT_LIVE_TIMEOUT", "the live preflight call gets 60 seconds"],
+  ["GAFFER_ACCEPTANCE_TIMEOUT_MS", "one acceptance profile run gets 5 minutes"],
+  ["GAFFER_AGENT_NAME", "the factory agent registers as gaffer-factory"],
+  ["GAFFER_AGENT_EMAIL", "a greenfield repo's first commit is by gaffer-factory@users.noreply.invalid"],
+  ["GAFFER_BUDGET_LOW_FRACTION", "the low-budget threshold is 20% of the ceiling (set GAFFER_BUDGET_LOW_THRESHOLD to change it)"],
+  ["GAFFER_INHERIT_PLAN_TIMEOUT", "the inherit planner gets 60 seconds"],
+  ["GAFFER_INHERIT_AMB_TIMEOUT", "the inherit ambiguity call gets 300 seconds"],
+  ["GAFFER_ONBOARD_TIMEOUT", "onboarding calls follow GAFFER_TICK_TIMEOUT"],
+  ["GAFFER_REAPPROVAL_ATTEMPTS", "a re-approval is tried 3 times"],
+  ["GAFFER_TESTER_REPLAY_TIMEOUT_MS", "the tester's replay gets 10 minutes"],
+  ["GAFFER_DECOMPOSE_MOCK", "a dry-run planner takes mockOutput from its request"],
+  ["GAFFER_SPEC_AUTHOR_MOCK", "a dry-run spec author takes mockOutput from its request"],
+].map(([name, now]) => ({ name, now }));
+
 /** Every internal or seam name, for the scans that decide what is a knob. */
 export function notKnobNames() {
   return new Set([
     ...INTERNAL_NAMES.flatMap((g) => g.names),
     ...TEST_SEAMS,
     ...DEPRECATED.map((d) => d.name),
+    ...REMOVED.map((d) => d.name),
   ]);
 }
 
@@ -595,6 +620,7 @@ export function verifyInternalNames(root = ROOT) {
     ...INTERNAL_NAMES.flatMap((g) => g.names),
     ...TEST_SEAMS,
     ...DEPRECATED.map((d) => d.name),
+    ...REMOVED.map((d) => d.name),
   ]) {
     if (seen.has(name)) problems.push(`${name}: listed twice`);
     seen.add(name);
@@ -755,6 +781,7 @@ export function render({
   internal = [],
   seams = [],
   deprecated = [],
+  removed = [],
 }) {
   const defByKey = new Map(defs.map((d) => [d.key, d]));
   const knobByName = new Map(knobs.map((k) => [k.name, k]));
@@ -804,6 +831,7 @@ export function render({
     `| Rows in the tables | ${knobs.length + extras.length + uiOnly.length + undocumented.size} |`,
   );
   out.push(`| Deprecated names (still work for one release) | ${deprecated.length} |`);
+  out.push(`| Removed names (ignored, with a warning) | ${removed.length} |`);
   out.push(
     `| Internal names and test seams (not knobs) | ${internal.reduce((n, g) => n + g.names.length, 0) + seams.length} |`,
   );
@@ -906,6 +934,17 @@ export function render({
     for (const d of deprecated) out.push(`| \`${d.name}\` | ${cell(d.use)} |`);
     out.push("");
   }
+  if (removed.length > 0) {
+    out.push("### Removed", "");
+    out.push(
+      "Nothing in Gaffer set these, so each held its built-in value, which is now fixed in",
+      "the code. A set one is ignored, and the config says so once on stderr.",
+      "",
+    );
+    out.push("| Removed name | What happens now |", "|---|---|");
+    for (const d of removed) out.push(`| \`${d.name}\` | ${cell(d.now)} |`);
+    out.push("");
+  }
 
   if (internal.length > 0 || seams.length > 0) {
     out.push("## Internal names (not knobs)", "");
@@ -987,6 +1026,7 @@ export async function generate(root = ROOT) {
     internal: INTERNAL_NAMES,
     seams: TEST_SEAMS,
     deprecated: DEPRECATED,
+    removed: REMOVED,
   });
 }
 

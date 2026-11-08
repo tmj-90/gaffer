@@ -21,6 +21,7 @@ const {
   INTERNAL_NAMES,
   TEST_SEAMS,
   DEPRECATED,
+  REMOVED,
   AREAS,
 } = await import(path.join(ROOT, "scripts", "config-reference.mjs"));
 
@@ -327,7 +328,9 @@ console.log(
   "== the tables follow the areas of runner/config; deprecated names have their own table ==",
 );
 {
-  const headings = [...text.matchAll(/^### (.+)$/gm)].map((m) => m[1]);
+  const headings = [
+    ...text.slice(0, text.indexOf("## Dashboard-only")).matchAll(/^### (.+)$/gm),
+  ].map((m) => m[1]);
   const areas = [...new Set(Object.values(AREAS))];
   ok(
     headings.length > 0 && headings.every((h) => areas.includes(h)),
@@ -350,6 +353,16 @@ console.log(
           text.slice(0, text.indexOf("## Deprecated")),
         ),
       `${d.name} is in the Deprecated table only`,
+    );
+  }
+  const removedAt = text.indexOf("### Removed");
+  ok(removedAt > text.indexOf("## Deprecated"), "CONFIG.md lists the removed names under Removed");
+  const rem = text.slice(removedAt, text.indexOf("## Internal names"));
+  for (const d of REMOVED) {
+    ok(
+      new RegExp(`^\\| \`${d.name}\` \\|`, "m").test(rem) &&
+        !new RegExp(`^\\| \`${d.name}\` \\|`, "m").test(text.slice(0, removedAt)),
+      `${d.name} is in the Removed table only`,
     );
   }
   const rowsInTables = text

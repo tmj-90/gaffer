@@ -30,6 +30,7 @@ child, test seams) and deprecated names are listed at the end, not in the tables
 | Env reads in code with no default and no UI entry | 0 |
 | Rows in the tables | 119 |
 | Deprecated names (still work for one release) | 37 |
+| Removed names (ignored, with a warning) | 15 |
 | Internal names and test seams (not knobs) | 100 |
 
 ## Knobs, by area of `runner/config`
@@ -277,6 +278,29 @@ old per-role or per-cap name still applies to a role or cap the new knob does no
 | `GAFFER_DAEMON_INTERVAL` | `gaffer run --daemon --interval N` |
 | `GAFFER_SCOUT_PACKET` | `GAFFER_SCOUT=none` (no packet, no model scout) |
 | `GAFFER_CAP_DETECT_TURNS` | `GAFFER_MAX_TURNS` (a call is cap-hit when it uses every turn) |
+
+### Removed
+
+Nothing in Gaffer set these, so each held its built-in value, which is now fixed in
+the code. A set one is ignored, and the config says so once on stderr.
+
+| Removed name | What happens now |
+|---|---|
+| `GAFFER_REWORK_HISTORY_BYTES` | a rework prompt carries the last 8000 bytes of earlier attempts' feedback |
+| `GAFFER_JUDGE_DIFF_BYTES` | the eval judge grades the first 120000 bytes of a diff |
+| `GAFFER_MERGE_GATE_RETRIES` | a landing whose target moved is re-gated up to twice |
+| `GAFFER_PREFLIGHT_LIVE_TIMEOUT` | the live preflight call gets 60 seconds |
+| `GAFFER_ACCEPTANCE_TIMEOUT_MS` | one acceptance profile run gets 5 minutes |
+| `GAFFER_AGENT_NAME` | the factory agent registers as gaffer-factory |
+| `GAFFER_AGENT_EMAIL` | a greenfield repo's first commit is by gaffer-factory@users.noreply.invalid |
+| `GAFFER_BUDGET_LOW_FRACTION` | the low-budget threshold is 20% of the ceiling (set GAFFER_BUDGET_LOW_THRESHOLD to change it) |
+| `GAFFER_INHERIT_PLAN_TIMEOUT` | the inherit planner gets 60 seconds |
+| `GAFFER_INHERIT_AMB_TIMEOUT` | the inherit ambiguity call gets 300 seconds |
+| `GAFFER_ONBOARD_TIMEOUT` | onboarding calls follow GAFFER_TICK_TIMEOUT |
+| `GAFFER_REAPPROVAL_ATTEMPTS` | a re-approval is tried 3 times |
+| `GAFFER_TESTER_REPLAY_TIMEOUT_MS` | the tester's replay gets 10 minutes |
+| `GAFFER_DECOMPOSE_MOCK` | a dry-run planner takes mockOutput from its request |
+| `GAFFER_SPEC_AUTHOR_MOCK` | a dry-run spec author takes mockOutput from its request |
 
 ## Internal names (not knobs)
 

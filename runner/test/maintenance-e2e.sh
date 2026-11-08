@@ -92,7 +92,7 @@ export GAFFER_DAILY_BUDGET_USD=5
 # image), so it opts out the way runner/test/run.sh does: in the environment.
 export GAFFER_STRICT_REQUIRE=0
 export GAFFER_DATA="$WORK/data" CLAUDE_BIN="$WORK/bin/claude" CLAUDE_FLAGS="" \
-       GAFFER_TICK_TIMEOUT=120 GAFFER_MAX_TURNS=50 GAFFER_CARD_MODEL=stub GAFFER_PLAN_MODEL=stub GAFFER_IMPL_MODEL=stub \
+       GAFFER_TICK_TIMEOUT=120 GAFFER_MAX_TURNS=50 GAFFER_ROLE_MODELS=card=stub GAFFER_PLAN_MODEL=stub GAFFER_IMPL_MODEL=stub \
        REVIEW_MODE=human DRY_RUN=0
 # shellcheck source=../factory.config.sh
 source "$RUNNER_DIR/factory.config.sh" >/dev/null 2>&1

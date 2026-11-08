@@ -5,7 +5,7 @@
 # The runner's delivery rework loop is VISIBLE, ESCALATING, WELL-FED and BOUNDED:
 #   • ESCALATION (gaffer_build_escalation): attempt 1 = routed model + base prompt;
 #     attempt 2..(max-1) = RETHINK (re-plan, same model); attempt max = STRONGER
-#     model (GAFFER_REWORK_STRONG_MODEL) + the FULL failure history.
+#     model (_GAFFER_REWORK_MODEL) + the FULL failure history.
 #   • DOUBLE-BOUND (gaffer_ticket_rework_spend + the per-ticket budget): the loop
 #     stops at whichever hits FIRST — the attempt cap OR the per-ticket cost ceiling.
 #
@@ -40,7 +40,7 @@ echo "== PART A: gaffer_build_escalation — the escalation ladder =="
 log() { :; }
 gaffer_quarantine() { printf '%s' "$2"; }   # real sig: <tag> <value> [mode] → echo value
 ROUTE_IMPL_FLAG="--model sonnet"
-GAFFER_REWORK_STRONG_MODEL="opus"
+_GAFFER_REWORK_MODEL="opus"
 _MAX_DELIVERY_ATTEMPTS=3
 _REWORK_HISTORY=$'── attempt 1 — definition-of-done ──\nAssertionError: expected 3 to be 4\n'
 _REWORK_BLOCK=""
@@ -80,13 +80,13 @@ grep -q 'FINAL' <<<"$_REWORK_BLOCK" \
   || fail "A3 attempt 3 should escalate to opus (got: $_ATTEMPT_IMPL_FLAG)"
 
 # With the escalation model unset, the final attempt keeps the routed model (no crash).
-GAFFER_REWORK_STRONG_MODEL="" gaffer_build_escalation 3 2>/dev/null || true
-GAFFER_REWORK_STRONG_MODEL=""
+_GAFFER_REWORK_MODEL="" gaffer_build_escalation 3 2>/dev/null || true
+_GAFFER_REWORK_MODEL=""
 gaffer_build_escalation 3
 [ "$_ATTEMPT_IMPL_FLAG" = "$ROUTE_IMPL_FLAG" ] \
   && ok "A4 no strong model set → final attempt keeps the routed model (no escalation, no crash)" \
   || fail "A4 with no strong model the final attempt should keep the routed model (got: $_ATTEMPT_IMPL_FLAG)"
-GAFFER_REWORK_STRONG_MODEL="opus"
+_GAFFER_REWORK_MODEL="opus"
 
 echo "== PART B: gaffer_ticket_rework_spend — the cost side of the double-bound =="
 # The summation lives in _gaffer_ticket_spend; the three public names are one-line

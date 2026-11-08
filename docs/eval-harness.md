@@ -237,7 +237,7 @@ again (`experiment.mjs report`).
 | Env | Default | Meaning |
 |---|---|---|
 | `GAFFER_EVAL_JUDGE` | `0` | `1` enables post-submit judging (one extra paid model call per delivery) |
-| `GAFFER_JUDGE_MODEL_FLAG` | plan model flag, else impl model flag | model for the judge turn |
+| `GAFFER_ROLE_MODELS` `judge=` | plan model flag, else impl model flag | model for the judge turn |
 | `GAFFER_EVAL_LEDGER` | `$GAFFER_DATA/eval-ledger.jsonl` | ledger path |
 | `GAFFER_EXPERIMENT_MAX_USD` | _(empty)_ | hard USD cap of one live experiment run; required for `--live` |
 | `GAFFER_EXPERIMENT_MAX_TICKETS` | `5` | tickets per experiment |
@@ -258,9 +258,9 @@ These are real conditioning biases, left visible rather than hidden:
   conditioned away. The spend on failed attempts is counted in *cost per accepted
   change* above.
 - **Self-grading when no plan model is set.** The judge turn uses
-  `GAFFER_JUDGE_MODEL_FLAG`, else the plan model flag (`GAFFER_PLAN_MODEL_FLAG`),
+  `GAFFER_ROLE_MODELS` `judge=`, else the plan model flag (`GAFFER_PLAN_MODEL_FLAG`),
   and only when neither is set the implementation model flag, when it shares the
-  implementer's blind spots. Set `GAFFER_JUDGE_MODEL_FLAG` to a *different*
+  implementer's blind spots. Set `judge=` to a *different*
   (ideally stronger) model for real independence. Every record carries
   `judgeModel` so a model swap is visible and doesn't silently break longitudinal
   comparability.
@@ -373,7 +373,7 @@ cost tiles see it), and whether that is worth it depends on the factory. Turn it
 agreement`. If it separates, keep it on and open its view on the Review page when you want its
 reasons (that decision then counts as revealed). If it
 does not, read the misses, then try a different judge model
-(`GAFFER_JUDGE_MODEL_FLAG`) or turn it off. What a change costs once every attempt is
+(`GAFFER_ROLE_MODELS` `judge=`) or turn it off. What a change costs once every attempt is
 counted, the judge's own spend included, is the *cost per accepted change* metric above (`gaffer wg stats`, the Health view's
 wage bill); the judge does not duplicate it.
 

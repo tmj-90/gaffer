@@ -107,7 +107,7 @@ DDW_NAME=docker-delivery DDW_LIVE="$LIVE"
 source "$HERE/lib/docker-delivery-world.sh"
 if [ "$LIVE" = 1 ]; then
   # The real CLI picks its own model and turns; a per-call dollar cap keeps it bounded.
-  unset GAFFER_CARD_MODEL GAFFER_PLAN_MODEL GAFFER_IMPL_MODEL GAFFER_CLAUDE_VERSION
+  unset GAFFER_ROLE_MODELS GAFFER_PLAN_MODEL GAFFER_IMPL_MODEL GAFFER_CLAUDE_VERSION
   export GAFFER_MAX_CALL_USD="$LIVE_CAP"
   # ...and prove the runner resolves it to a flag (gaffer_call_budget_usd is what tick.sh
   # and lib/worker.sh pass as --max-budget-usd) before any credit is spent.

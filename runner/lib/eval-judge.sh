@@ -124,9 +124,13 @@ gaffer_eval_judge_delivery() (
   WORKER_CALL_ENV=("GAFFER_WRITE_ROOTS=$tmp/cwd" "GAFFER_READ_ROOTS=")
   # JUDGE INDEPENDENCE: default the judge to the PLAN-tier (strong) model, not the
   # implementer's — a model grading its own tier's output is the weakest reading the
-  # eval can take. GAFFER_JUDGE_MODEL_FLAG still overrides; the implementer flag is the
-  # last resort only when no plan flag is configured.
-  judge_flag="${GAFFER_JUDGE_MODEL_FLAG:-${GAFFER_PLAN_MODEL_FLAG:-${GAFFER_IMPL_MODEL_FLAG:-}}}"
+  # eval can take. GAFFER_ROLE_MODELS judge= (or the deprecated GAFFER_JUDGE_MODEL_FLAG,
+  # a whole flag) still overrides; the implementer flag is the last resort only when no
+  # plan flag is configured.
+  local judge_model=""
+  declare -F gaffer_role_model >/dev/null 2>&1 && judge_model="$(gaffer_role_model judge)"
+  if [ -n "$judge_model" ]; then judge_flag="--model $judge_model"
+  else judge_flag="${GAFFER_JUDGE_MODEL_FLAG:-${GAFFER_PLAN_MODEL_FLAG:-${GAFFER_IMPL_MODEL_FLAG:-}}}"; fi
   # The overrides are local: this function body is a subshell. CLAUDE_FLAGS is REPLACED
   # (no acceptEdits; built-in tools denied by name as defence in depth on top of
   # `--tools ""`); the turn cap is passed per call, so it replaces the 200-turn flag

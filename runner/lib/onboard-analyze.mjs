@@ -70,7 +70,7 @@ import {
   recordKilledCall,
 } from "./usage-ledger.mjs";
 import { secretReadDenyRules, writeAgentSettings } from "./agent-home.mjs";
-import { Worker, roleTurnCap, roleTurns } from "./worker.mjs";
+import { Worker, roleModel, roleTurnCap, roleTurns } from "./worker.mjs";
 import { outsideRepoReason, readRepoText, redactRemoteUrl, statRepo } from "./repo-boundary.mjs";
 import { loadRegistry, routeModel } from "../bin/route-model.mjs";
 import {
@@ -1159,7 +1159,7 @@ export function agentChildEnv(base = process.env) {
  *   timeout — GAFFER_TICK_TIMEOUT, else the hardcoded default (1800 s).
  *   maxTurns — GAFFER_ROLE_MAX_TURNS onboard= (default 60), clamped to the global
  *             GAFFER_MAX_TURNS ceiling (roleTurnCap: the global lowers, never replaces).
- *   model    — GAFFER_ONBOARD_SYNTH_MODEL → an OPERATOR-set GAFFER_PLAN_MODEL →
+ *   model    — GAFFER_ROLE_MODELS synth= → an OPERATOR-set GAFFER_PLAN_MODEL →
  *             the registry's mid tier ('sonnet') (digest/feature/lore synthesis +
  *             the card-review gate). See synthModel.
  */
@@ -1194,7 +1194,7 @@ function registryFor(env) {
  * caller's own choice and still wins.
  */
 export function synthModel(env = process.env) {
-  const own = String(env.GAFFER_ONBOARD_SYNTH_MODEL ?? "").trim();
+  const own = roleModel("synth", env);
   if (own) return own;
   const plan = String(env.GAFFER_PLAN_MODEL ?? "").trim();
   if (plan && env.GAFFER_PLAN_MODEL_EXPLICIT !== "0") return plan;
@@ -1721,7 +1721,7 @@ export const CARD_SOLO_SNIPPET_CHARS = 1200;
 // resolves through the model registry's `onboarding` phase (cheap tier, the CLI
 // alias 'haiku' — which tracks the current Haiku, where a pinned id such as
 // claude-haiku-4-5 stayed on a previous, ~10x pricier generation). The synthesis
-// pass uses the mid tier (see synthModel). Override per-repo via GAFFER_CARD_MODEL.
+// pass uses the mid tier (see synthModel). Override with GAFFER_ROLE_MODELS card=.
 const CARD_MODEL_DEFAULT = "haiku";
 // Files carded per `claude` call. Sending B files per call amortises the (static)
 // skill prefix across B cards instead of paying it per file — the dominant cost.
@@ -1910,7 +1910,7 @@ export function cardCaps(env = process.env) {
 }
 
 /**
- * Resolve the model to use for per-file card generation: GAFFER_CARD_MODEL, else
+ * Resolve the model to use for per-file card generation: GAFFER_ROLE_MODELS card=, else
  * the registry's routing for phase `onboarding` (model-registry.json, cheap tier).
  * Card generation is a simple structure-first file-TLDR task and does NOT need a
  * deep-reasoning model. When the localSeam routes onboarding to a provider-prefixed
@@ -1918,7 +1918,7 @@ export function cardCaps(env = process.env) {
  * tier, then CARD_MODEL_DEFAULT — never emit an id that would break the pass.
  */
 export function cardModel(env = process.env) {
-  const own = String(env.GAFFER_CARD_MODEL ?? "").trim();
+  const own = roleModel("card", env);
   if (own) return own;
   const reg = registryFor(env);
   if (!reg) return CARD_MODEL_DEFAULT;
@@ -2330,7 +2330,7 @@ export function validateCardReviewResult(obj) {
  * in tests. Returns { tldr, rolePrimary, roleTags } or null (so the file still
  * gets a mechanical-only card).
  *
- * Uses GAFFER_CARD_MODEL (default: Haiku) — NOT the synthesis model — so per-file
+ * Uses the card model (GAFFER_ROLE_MODELS card=, default: Haiku), NOT the synthesis model, so per-file
  * TLDR generation doesn't consume expensive reasoning-model budget.
  */
 function runCardTurn(prompt, env = process.env) {
@@ -2343,10 +2343,10 @@ function runCardTurn(prompt, env = process.env) {
   return validateCardFields(extractLastJsonBlock(turn.stdout, hasKey("tldr")));
 }
 
-/** Scope the card model onto a child env, overriding both synth-model knobs. */
+/** Scope the card model onto a child env as its synthesis model (and plan model). */
 function cardTurnEnv(env) {
   const model = cardModel(env);
-  return { ...env, GAFFER_PLAN_MODEL: model, GAFFER_ONBOARD_SYNTH_MODEL: model };
+  return { ...env, GAFFER_PLAN_MODEL: model, GAFFER_ROLE_MODELS: `synth=${model}` };
 }
 
 /**

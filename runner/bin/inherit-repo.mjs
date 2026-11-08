@@ -45,7 +45,7 @@ import { dirname, resolve } from "node:path";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { loadRegistry } from "./route-model.mjs";
-import { roleTurnCap, withCallBudget } from "../lib/worker.mjs";
+import { roleModel, roleTurnCap, withCallBudget } from "../lib/worker.mjs";
 
 const require = createRequire(import.meta.url);
 
@@ -67,11 +67,11 @@ const CONFIG = {
  * The classifier's model. Picking ONE name from a short candidate list (validated by
  * the caller against the set, NONE → left for a human) is a cheap-tier task, so the
  * default is the registry's cheap tier — it used to inherit the planner's opus.
- * GAFFER_INHERIT_MODEL pins it; an OPERATOR-set GAFFER_PLAN_MODEL (not the config's
+ * GAFFER_ROLE_MODELS inherit= pins it; an OPERATOR-set GAFFER_PLAN_MODEL (not the config's
  * own default, GAFFER_PLAN_MODEL_EXPLICIT=0) still applies, as before.
  */
 export function inheritModel(env = process.env) {
-  const own = String(env.GAFFER_INHERIT_MODEL ?? "").trim();
+  const own = roleModel("inherit", env);
   if (own) return own;
   const plan = String(env.GAFFER_PLAN_MODEL ?? "").trim();
   if (plan && env.GAFFER_PLAN_MODEL_EXPLICIT !== "0") return plan;

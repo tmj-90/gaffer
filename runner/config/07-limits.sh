@@ -45,17 +45,6 @@
 : "${GAFFER_ROLE_MAX_TURNS:=}"   # per-role turn caps as "role=N" pairs (review, security_review, clarify, judge, tester, merge, po, scout, onboard, decompose, spec_author); an unnamed role keeps its built-in cap; all are clamped to GAFFER_MAX_TURNS.
 export GAFFER_ROLE_MAX_TURNS
 
-# _gaffer_deprecated <old-name> <what to set instead> — a deprecated variable that is
-# set says so on stderr once per process tree (the parent's mark is exported, so a
-# child that sources this file again stays quiet). Deprecated names keep working for
-# one release; docs/CONFIG.md lists them with their replacement.
-_gaffer_deprecated() {
-  [ -n "${!1:-}" ] || return 0
-  case "${_GAFFER_DEPRECATED_SAID:-}" in *" $1 "*) return 0 ;; esac
-  printf 'gaffer: %s is deprecated and goes in the next release; %s\n' "$1" "$2" >&2
-  _GAFFER_DEPRECATED_SAID="${_GAFFER_DEPRECATED_SAID:- } $1 "
-  export _GAFFER_DEPRECATED_SAID
-}
 for _gd in REVIEW SECURITY_REVIEW CLARIFY JUDGE TESTER MERGE RESOLVER PO SCOUT DECOMPOSE_AGENT SPEC_AUTHOR_AGENT ONBOARD; do
   case "$_gd" in
     RESOLVER) _gr=merge ;;
@@ -163,7 +152,7 @@ gaffer_role_turns() {
 # Default is 3 (was 2) to give the ESCALATION LADDER room to work: attempt 1 delivers
 # with the routed model + the real failure fed back; attempt 2 RETHINKS the approach
 # (re-plan, optionally narrower scope); attempt 3 escalates to a STRONGER model
-# (GAFFER_REWORK_STRONG_MODEL) with the full feedback history. Set to 1 to disable
+# (GAFFER_ROLE_MODELS rework=, the plan tier by default) with the full feedback history. Set to 1 to disable
 # rework entirely (one attempt, then park to `blocked`).
 : "${GAFFER_MAX_DELIVERY_ATTEMPTS:=3}"
 # WASTE CONTROL: a ticket re-entered by a LATER tick (review CHANGES rework, a resumed
@@ -213,11 +202,15 @@ export GAFFER_TICK_OUTER_TIMEOUT
 GAFFER_TICK_DEADLINE_MARGIN="${GAFFER_TICK_DEADLINE_MARGIN:-60}"   # seconds kept back for record / release / teardown
 
 # ESCALATION: the model the FINAL rework attempt escalates to (stronger reasoning
-# for the hardest cases before a human is pulled in). Empty → keep the routed model
-# (no escalation). Defaults to the plan tier (opus) so the last attempt reasons as
-# hard as the planner does.
-: "${GAFFER_REWORK_STRONG_MODEL:=${GAFFER_PLAN_MODEL:-opus}}"
-export GAFFER_REWORK_STRONG_MODEL
+# for the hardest cases before a human is pulled in): GAFFER_ROLE_MODELS rework=,
+# defaulting to the plan tier (opus) so the last attempt reasons as hard as the planner
+# does; `rework=off` keeps the routed model (no escalation). Internal, worked out on
+# every source and read by gaffer_build_escalation (lib/tick-gates.sh).
+_GAFFER_REWORK_MODEL="$(gaffer_role_model rework)"
+case "$_GAFFER_REWORK_MODEL" in
+  off | none) _GAFFER_REWORK_MODEL="" ;;
+  '') _GAFFER_REWORK_MODEL="${GAFFER_PLAN_MODEL:-opus}" ;;
+esac
 
 # DOUBLE-BOUND: a per-ticket rework COST ceiling (USD). The rework loop stops at
 # whichever hits FIRST — the attempt cap (above) OR this cumulative per-ticket spend

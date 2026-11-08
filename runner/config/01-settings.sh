@@ -54,4 +54,16 @@ if [ -n "$_gs_out" ]; then
 fi
 unset _gs_out
 
+# _gaffer_deprecated <old-name> <what to set instead> — a deprecated variable that is
+# set says so on stderr once per process tree (the parent's mark is exported, so a
+# child that sources this file again stays quiet). Deprecated names keep working for
+# one release; docs/CONFIG.md lists them with their replacement.
+_gaffer_deprecated() {
+  [ -n "${!1:-}" ] || return 0
+  case "${_GAFFER_DEPRECATED_SAID:-}" in *" $1 "*) return 0 ;; esac
+  printf 'gaffer: %s is deprecated and goes in the next release; %s\n' "$1" "$2" >&2
+  _GAFFER_DEPRECATED_SAID="${_GAFFER_DEPRECATED_SAID:- } $1 "
+  export _GAFFER_DEPRECATED_SAID
+}
+
 _GAFFER_CONFIG_PART=01-settings

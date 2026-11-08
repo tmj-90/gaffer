@@ -23,7 +23,6 @@ _GAFFER_SCOUT_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 : "${GAFFER_SCOUT_PACKET:=1}"   # 1 = build the deterministic scout packet before each delivery (named files, stack frames, the code index's importers and tests); 0 = off
 : "${GAFFER_SCOUT:=off}"        # The bounded MODEL scout: off (default), auto (only when the effective risk is medium or higher), on (every delivery). One read-only paid call (kind scout)
-: "${GAFFER_SCOUT_MODEL_FLAG:=}" # The model scout's model flag (e.g. "--model <id>"); empty = the router's scout phase (cheap tier)
 
 SCOUT_PACKET_FILE=""; SCOUT_PROMPT=""; SCOUT_RISK=""; SCOUT_RAISED=""; SCOUT_INDEX_FILE=""
 _SCOUT_TMP=""
@@ -208,7 +207,12 @@ gaffer_model_scout() {
       description: String(t.description || ""), repoPath: e.SC_REPO, risk: e.SC_RISK || "medium", scout }));
   ' 2>/dev/null | node "$cli" 2>/dev/null)" || return 0
   [ -n "$prompt" ] || return 0
-  local flag="${GAFFER_SCOUT_MODEL_FLAG:-}" model=""
+  # The model: GAFFER_ROLE_MODELS scout=, else the deprecated GAFFER_SCOUT_MODEL_FLAG
+  # (a whole flag), else the router's scout phase (cheap tier).
+  local flag="" model=""
+  declare -F gaffer_role_model >/dev/null 2>&1 && model="$(gaffer_role_model scout)"
+  if [ -n "$model" ]; then flag="--model $model"; else flag="${GAFFER_SCOUT_MODEL_FLAG:-}"; fi
+  model=""
   if [ -z "$flag" ] && declare -F gaffer_route_model >/dev/null 2>&1; then
     model="$(gaffer_route_model scout "$SCOUT_RISK" 0 "${STACK:-}" 1 "$num" 2>/dev/null || true)"
     [ -n "$model" ] && flag="--model $model"

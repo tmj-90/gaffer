@@ -460,6 +460,15 @@ export const DEPRECATED = [
     ["GAFFER_SPEC_AUTHOR_AGENT_MAX_TURNS", "spec_author"],
     ["GAFFER_ONBOARD_MAX_TURNS", "onboard"],
   ].map(([name, role]) => ({ name, use: `GAFFER_ROLE_MAX_TURNS="${role}=N"` })),
+  ...[
+    ["GAFFER_REWORK_STRONG_MODEL", "rework"],
+    ["GAFFER_SCOUT_MODEL_FLAG", "scout"],
+    ["GAFFER_JUDGE_MODEL_FLAG", "judge"],
+    ["GAFFER_TEST_MODEL", "tester"],
+    ["GAFFER_CARD_MODEL", "card"],
+    ["GAFFER_ONBOARD_SYNTH_MODEL", "synth"],
+    ["GAFFER_INHERIT_MODEL", "inherit"],
+  ].map(([name, role]) => ({ name, use: `GAFFER_ROLE_MODELS="${role}=<model>"` })),
   {
     name: "GAFFER_CAP_DETECT_TURNS",
     use: "`GAFFER_MAX_TURNS` (a call is cap-hit when it uses every turn)",

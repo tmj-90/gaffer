@@ -1264,6 +1264,34 @@ export function roleTurnsSetting(role, fallback, env = process.env) {
   return fallback;
 }
 
+/**
+ * The old per-role model variables, deprecated for one release: each still names its
+ * role's model when GAFFER_ROLE_MODELS does not. (scout and judge had FLAG variables,
+ * read at their shell call sites.) Parity with gaffer_role_model in
+ * runner/config/04-models.sh.
+ */
+export const ROLE_MODEL_ALIASES = {
+  rework: "GAFFER_REWORK_STRONG_MODEL",
+  card: "GAFFER_CARD_MODEL",
+  inherit: "GAFFER_INHERIT_MODEL",
+  synth: "GAFFER_ONBOARD_SYNTH_MODEL",
+  tester: "GAFFER_TEST_MODEL",
+};
+
+/**
+ * One role's model: its entry in GAFFER_ROLE_MODELS ("card=haiku judge=opus", commas or
+ * spaces), else its deprecated variable, else "" (the caller applies the role's own
+ * default). A blank value is skipped.
+ */
+export function roleModel(role, env = process.env) {
+  for (const pair of String(env.GAFFER_ROLE_MODELS ?? "").split(/[\s,]+/)) {
+    const eq = pair.indexOf("=");
+    if (eq > 0 && pair.slice(0, eq) === role && pair.slice(eq + 1)) return pair.slice(eq + 1);
+  }
+  const alias = ROLE_MODEL_ALIASES[role];
+  return alias ? String(env[alias] ?? "").trim() : "";
+}
+
 /** roleTurnsSetting clamped to the GAFFER_MAX_TURNS ceiling (roleTurnCap). */
 export function roleTurns(role, fallback, env = process.env) {
   return roleTurnCap(roleTurnsSetting(role, fallback, env), env);

@@ -441,7 +441,12 @@ console.log("== AC6: buildClaudeArgv shape + tick.sh wiring ==");
     "opus",
   );
   eq(
-    "GAFFER_INHERIT_MODEL wins",
+    "GAFFER_ROLE_MODELS inherit= wins",
+    inheritModel({ GAFFER_ROLE_MODELS: "inherit=sonnet", GAFFER_PLAN_MODEL: "opus" }),
+    "sonnet",
+  );
+  eq(
+    "the deprecated GAFFER_INHERIT_MODEL still wins over GAFFER_PLAN_MODEL",
     inheritModel({ GAFFER_INHERIT_MODEL: "sonnet", GAFFER_PLAN_MODEL: "opus" }),
     "sonnet",
   );

@@ -19,10 +19,10 @@ computed from other knobs at runtime.
 
 | Metric | Count |
 |---|---|
-| Knobs with a runner default | 101 |
+| Knobs with a runner default | 100 |
 | Knobs editable in the dashboard | 58 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
-| Env reads in code with no default and no UI entry | 16 |
+| Env reads in code with no default and no UI entry | 11 |
 
 ## Runner defaults (`runner/factory.config.sh` and `runner/lib/*.sh`)
 
@@ -47,6 +47,7 @@ computed from other knobs at runtime.
 | `GAFFER_SANDBOX_WORKER_COMMAND` | _(empty)_ |  | runner | where the command worker's program lives INSIDE the docker sandbox image; empty = the same path as GAFFER_WORKER_COMMAND (the runner dir is mounted read-only at its host path, so a program kept under it works as is). Environment only. |
 | `GAFFER_PLAN_MODEL` | `opus` |  | runner |  |
 | `GAFFER_IMPL_MODEL` | `sonnet` |  | runner |  |
+| `GAFFER_ROLE_MODELS` | _(empty)_ |  | runner | per-role models as "role=model" pairs (rework, scout, judge, tester, card, synth, inherit); an unnamed role keeps its default. |
 
 ### Intelligent, data-driven MODEL ROUTING
 
@@ -84,7 +85,6 @@ computed from other knobs at runtime.
 | `GAFFER_RETRY_FRESH_BRANCH` | `0` |  | runner | WASTE CONTROL: a ticket re-entered by a LATER tick (review CHANGES rework, a resumed pause, a re-queued retry) keeps its branch's commits; 1 = reset it to base for that tick (in-tick rework is never reset). |
 | `DISPATCH_MAX_ATTEMPTS` | _derived_ (`$GAFFER_MAX_DELIVERY_ATTEMPTS`) | yes (int) | dispatch, runner | Dispatch's own cap on how many times a delivery may be rejected back into the queue before the ticket is parked (blocked) for a human — the server-side wallet guard against an unbounded reject loop, enforced on every reject transition regardless of which runner drove it. Defaults to Max delivery attempts so the two caps agree; set it only to make the server stricter or looser than the runner's rework ladder. |
 | `GAFFER_TICK_DEADLINE_GUARD` | `1` |  | runner | TICK DEADLINE GUARD (tick.sh): the outer bound above counts only agent calls, but a tick also spends merge-lane resolver time and every attempt's DoD install, gates and AC checks. |
-| `GAFFER_REWORK_STRONG_MODEL` | _derived_ (`${GAFFER_PLAN_MODEL:-opus}`) |  | runner | ESCALATION: the model the FINAL rework attempt escalates to (stronger reasoning for the hardest cases before a human is pulled in). |
 | `GAFFER_REWORK_BUDGET_USD` | _derived_ (`${GAFFER_BUDGET_USD:-}`) | yes (number) | dispatch, runner | Cumulative spend ceiling for one ticket's rework loop, counting every agent call booked to the ticket (delivery, review, security review, clarify, eval judge). Delivery stops at whichever hits first — this or Max delivery attempts — then parks to blocked. Defaults to the factory Budget ceiling; empty = no per-ticket cap (attempts alone bound it). |
 | `GAFFER_MAX_NOCOMMIT_FAILURES` | _derived_ (`${GAFFER_MAX_DELIVERY_ATTEMPTS:-3}`) | yes (int) | dispatch, runner | Cross-run bound on deliveries that crash before committing. After this many no-commit/wrong-branch failures the ticket parks visibly to blocked instead of being re-picked (and re-billed) every run. Defaults to Max delivery attempts. |
 
@@ -240,7 +240,6 @@ computed from other knobs at runtime.
 |---|---|---|---|---|
 | `GAFFER_SCOUT_PACKET` | `1` |  | runner | 1 = build the deterministic scout packet before each delivery (named files, stack frames, the code index's importers and tests); 0 = off |
 | `GAFFER_SCOUT` | `off` |  | runner | The bounded MODEL scout: off (default), auto (only when the effective risk is medium or higher), on (every delivery). One read-only paid call (kind scout) |
-| `GAFFER_SCOUT_MODEL_FLAG` | _(empty)_ |  | runner | The model scout's model flag (e.g. "--model <id>"); empty = the router's scout phase (cheap tier) |
 
 ## Read where they are used
 
@@ -316,19 +315,14 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 |---|---|---|
 | `DISPATCH_ALLOWED_HOSTS` | _(empty)_ | `packages/dispatch/src/api/security.ts` |
 | `DISPATCH_API_PORT` | `8787` | `packages/dispatch/src/api/main.ts`, `runner/gaffer`, `runner/setup.sh`, `runner/status.sh` |
-| `GAFFER_CARD_MODEL` | _(empty)_ | `runner/lib/onboard-analyze.mjs` |
 | `GAFFER_DASHBOARD_START_TIMEOUT` | `30` | `runner/gaffer` |
 | `GAFFER_EGRESS_ALLOW` | _(empty)_ | `runner/lib/egress-allowlist.mjs` |
-| `GAFFER_INHERIT_MODEL` | _(empty)_ | `runner/bin/inherit-repo.mjs` |
 | `GAFFER_JUDGE_DENIED_TOOLS` | `Bash,Edit,Write,MultiEdit,NotebookEdit,Read,Grep,Glob,LS,WebFetch,WebSearch,Task,TodoWrite` | `runner/lib/eval-judge.sh` |
-| `GAFFER_JUDGE_MODEL_FLAG` | `${GAFFER_PLAN_MODEL_FLAG:-${GAFFER_IMPL_MODEL_FLAG:-` | `runner/lib/eval-judge.sh` |
 | `GAFFER_LITE_MAX_FILES` | `4` | `runner/config/18-review.sh` |
 | `GAFFER_LITE_MAX_LINES` | `60` | `runner/config/18-review.sh` |
 | `GAFFER_LITE_SENSITIVE_RE` | `$_GAFFER_SENSITIVE_PATH_RE` | `runner/config/18-review.sh` |
-| `GAFFER_ONBOARD_SYNTH_MODEL` | _(empty)_ | `runner/lib/onboard-analyze.mjs` |
 | `GAFFER_SECURITY_REVIEW_RE` | `${GAFFER_LITE_SENSITIVE_RE:-$_GAFFER_SENSITIVE_PATH_RE` | `runner/config/18-review.sh` |
 | `GAFFER_SLACK_WEBHOOK` | _(empty)_ | `runner/status.sh` |
-| `GAFFER_TEST_MODEL` |  | `runner/bin/tester-run.mjs` |
 | `GAFFER_TESTER_REPLAY` | `1` | `runner/bin/tester-run.mjs`, `runner/lib/tester-replay.mjs`, `runner/status.sh` |
 
 ## Internal names (not knobs)

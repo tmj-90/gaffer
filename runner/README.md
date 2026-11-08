@@ -332,7 +332,7 @@ Every agent call is routed to a tier by `bin/route-model.mjs`, reading
   scans and the pre-work scout on `cheap`.
 - **Routing rules** move a call off its default: a high-risk or many-criteria ticket
   climbs, a trivial one can drop, and a rework attempt escalates (the final one to
-  `GAFFER_REWORK_STRONG_MODEL`). Each ledger row records the tier and the reasons
+  `GAFFER_ROLE_MODELS` `rework=`, the plan tier by default). Each ledger row records the tier and the reasons
   (`route_tier`, `route_reasons`).
 - **Overrides**: `GAFFER_PLAN_MODEL` and `GAFFER_IMPL_MODEL` pin the planning and
   delivery models outright and always win.

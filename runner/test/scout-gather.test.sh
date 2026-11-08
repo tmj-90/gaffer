@@ -45,6 +45,9 @@ WG_CALLS="$WORK/wg-calls"
 wg() { printf '%s\n' "$*" >> "$WG_CALLS"; }
 # shellcheck source=../lib/scout.sh
 . "$RUNNER_DIR/lib/scout.sh"
+# The per-role model reader the config defines (runner/config/04-models.sh), taken from
+# the real source: the model scout asks it for GAFFER_ROLE_MODELS scout=.
+eval "$(awk '/^gaffer_role_model\(\) \{/,/^\}/' "$RUNNER_DIR/config/04-models.sh")"
 
 REPO="$WORK/app"
 mkdir -p "$REPO/src" "$REPO/test" "$REPO/db/migrations"
@@ -154,6 +157,7 @@ worker_deliver() {
     printf 'flags=%s\n' "$CLAUDE_FLAGS"
     printf 'env=%s\n' "${WORKER_CALL_ENV[*]}"
     printf 'args=%s\n' "${*:7}"
+    printf 'model=%s\n' "$3"
   } >> "$SPAWNS"
   R="$REPLY" node -e 'process.stdout.write(JSON.stringify({type:"result",result:process.env.R,total_cost_usd:0.0123}))' > "$5"
   return 0
@@ -171,9 +175,10 @@ PAUSED=1 GAFFER_SCOUT=auto gaffer_model_scout 7 "$REPO" "$SHA"
 [ ! -s "$SPAWNS" ] && ok "a usage pause: no model call" || no "pause spawned"
 DRY_RUN=1 GAFFER_SCOUT=on gaffer_model_scout 7 "$REPO" "$SHA"
 [ ! -s "$SPAWNS" ] && ok "DRY_RUN: no model call" || no "dry run spawned"
-GAFFER_SCOUT=auto GAFFER_SCOUT_MODEL_FLAG="--model cheap-x" gaffer_model_scout 7 "$REPO" "$SHA"
+GAFFER_SCOUT=auto GAFFER_ROLE_MODELS="scout=cheap-x" gaffer_model_scout 7 "$REPO" "$SHA"
 sp="$(cat "$SPAWNS")"
 has "$sp" "kind=scout" && ok "one call through worker_deliver, launch kind scout (budget admission)" || no "spawn: $sp"
+has "$sp" "model=--model cheap-x" && ok "the model is GAFFER_ROLE_MODELS scout=" || no "model: $sp"
 has "$sp" "--tools Read,Grep,Glob --strict-mcp-config --disable-slash-commands" && ok "read-only tools, no MCP, no slash commands" || no "args: $sp"
 has "$sp" "--disallowedTools Bash,Edit,Write" && ok "write and shell tools denied by name" || no "flags: $sp"
 has "$sp" "GAFFER_READ_ROOTS=$REPO" && ok "the real repo is a READ root only" || no "env: $sp"

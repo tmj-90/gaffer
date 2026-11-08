@@ -103,6 +103,7 @@ import {
   detectUsageLimit,
   extractResultText,
   parseClaudeJson,
+  roleModel,
   roleTurns,
   Worker,
 } from "../lib/worker.mjs";
@@ -171,8 +172,8 @@ const CONFIG = {
     const f = (process.env.CLAUDE_FLAGS || "--permission-mode acceptEdits")
       .split(/\s+/)
       .filter(Boolean);
-    // The tester is a TEST-phase agent: GAFFER_TEST_MODEL, else the implement tier.
-    const m = (process.env.GAFFER_TEST_MODEL || process.env.GAFFER_IMPL_MODEL || "").trim();
+    // The tester is a TEST-phase agent: GAFFER_ROLE_MODELS tester=, else the implement tier.
+    const m = (roleModel("tester") || process.env.GAFFER_IMPL_MODEL || "").trim();
     return m ? ["--model", m, ...f] : f;
   })(),
   timeoutMs: (() => {

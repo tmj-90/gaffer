@@ -48,8 +48,9 @@
  *                stdout (so the bash caller can keep the human-readable log), and
  *                appends one ledger record. Used by tick.sh's bash call sites.
  */
+import { randomUUID } from "node:crypto";
 import { appendFileSync, existsSync, readFileSync, renameSync, rmSync } from "node:fs";
-import { resolveHoldPath, resolveLedgerPath } from "./usage-ledger-path.mjs";
+import { resolveHoldClaims, resolveHoldPath, resolveLedgerPath } from "./usage-ledger-path.mjs";
 
 // Spec 3 / Phase 2: the claude-JSON envelope schema is owned by the worker seam.
 // This module keeps the LEDGER-RECORD shaping + honesty rules, but the raw parse +
@@ -386,6 +387,8 @@ export function appendUsageRecord(record, env = process.env) {
         JSON.stringify({
           ...record,
           held: true,
+          // The reconcile books a held row once: it skips an id the ledger already has.
+          held_id: randomUUID(),
           held_reason: `the usage-ledger append failed (${reason})`,
         }) + "\n",
       );
@@ -417,11 +420,10 @@ function sleepMs(ms) {
 }
 
 /**
- * The rows held by failed appends (resolveHoldPath), or [] when there are none.
- * → { rows, path } | { error } when the hold file exists but cannot be read.
+ * The rows held by failed appends in `hold` (default: resolveHoldPath), or [] when there
+ * are none. → { rows, path } | { error } when the file exists but cannot be read.
  */
-export function readHeldRows(env = process.env) {
-  const hold = resolveHoldPath(env);
+export function readHeldRows(env = process.env, hold = resolveHoldPath(env)) {
   if (!hold || !existsSync(hold)) return { rows: [], path: hold };
   try {
     const rows = readFileSync(hold, "utf8")
@@ -883,30 +885,59 @@ async function reconcileMain(argv, env = process.env) {
   const n = argv.indexOf("--note");
   const note = n >= 0 ? provLabel(argv[n + 1]) : null;
   // UNBOOKED CALLS (external review 16): rows a failed append HELD go into the ledger
-  // first, so the reconcile row below books them with the rest; the hold file is removed
-  // only once they and the reconcile row are written (a ledger that still cannot be
-  // written keeps the hold, and admission keeps refusing).
-  const held = readHeldRows(env);
-  if (held.error) {
-    process.stderr.write(`usage-ledger: ${held.error}; nothing reconciled\n`);
-    return 1;
-  }
-  for (const row of held.rows) {
-    if (!appendLedgerLine(row, env)) {
-      process.stderr.write(
-        "usage-ledger: the held rows could not be moved into the ledger (is it writable?); nothing reconciled\n",
-      );
-      return 1;
+  // first, so the reconcile row below books them with the rest. The hold file is CLAIMED
+  // first (renamed to <hold>.claim-<pid>-<ms>, atomic): an append that fails while this
+  // runs starts a fresh hold file instead of being retired with these rows. Budget
+  // admission counts claimed rows until the claim is retired, so a reconcile that fails
+  // or dies part way keeps them unknown cost, and the next one finishes the claim. A row
+  // whose held_id the ledger already has is not appended again (a crash between the
+  // move and the retire cannot book it twice).
+  const hold = resolveHoldPath(env);
+  if (hold && existsSync(hold)) {
+    try {
+      renameSync(hold, `${hold}.claim-${process.pid}-${Date.now()}`);
+    } catch (e) {
+      if (e?.code !== "ENOENT") {
+        process.stderr.write(
+          `usage-ledger: the held rows ${hold} could not be claimed (${e?.code ?? e}); nothing reconciled\n`,
+        );
+        return 1;
+      }
     }
   }
-  // The held rows are in the ledger now: retire the hold file before counting, so a crash
-  // from here on cannot book them twice (the ledger rows still hold admission until the
-  // reconcile row lands).
-  if (held.path && held.rows.length > 0) {
+  const claims = resolveHoldClaims(env);
+  const booked = bookedHeldIds(env);
+  if (booked === null) {
+    process.stderr.write("usage-ledger: the usage ledger cannot be read; nothing reconciled\n");
+    return 1;
+  }
+  let moved = 0;
+  for (const claim of claims) {
+    const held = readHeldRows(env, claim);
+    if (held.error) {
+      process.stderr.write(`usage-ledger: ${held.error}; nothing reconciled\n`);
+      return 1;
+    }
+    for (const row of held.rows) {
+      if (typeof row.held_id === "string" && booked.has(row.held_id)) continue;
+      if (!appendLedgerLine(row, env)) {
+        process.stderr.write(
+          "usage-ledger: the held rows could not be moved into the ledger (is it writable?); nothing reconciled\n",
+        );
+        return 1;
+      }
+      if (typeof row.held_id === "string") booked.add(row.held_id);
+      moved += 1;
+    }
+  }
+  // Every claimed row is in the ledger now: retire the claims before counting (the
+  // ledger rows hold admission until the reconcile row lands).
+  for (const claim of claims) {
     try {
-      renameSync(held.path, `${held.path}.reconciled-${Date.now()}`);
+      const at = claim.lastIndexOf(".claim-");
+      renameSync(claim, `${claim.slice(0, at)}.reconciled-${claim.slice(at + ".claim-".length)}`);
     } catch {
-      rmSync(held.path, { force: true });
+      rmSync(claim, { force: true });
     }
   }
   const { ledgerSpend } = await import("./budget-admission.mjs");
@@ -926,7 +957,7 @@ async function reconcileMain(argv, env = process.env) {
     estimated_cost_usd: usd,
     estimate_basis: "operator",
     reconciled_unknown: count,
-    ...(held.rows.length > 0 ? { reconciled_held: held.rows.length } : {}),
+    ...(moved > 0 ? { reconciled_held: moved } : {}),
   };
   if (note) rec.note = note;
   if (!appendUsageRecord(rec, env)) {
@@ -937,12 +968,35 @@ async function reconcileMain(argv, env = process.env) {
   }
   process.stdout.write(
     `booked $${usd.toFixed(4)} against ${count} unknown-cost call(s) today` +
-      (held.rows.length > 0
-        ? ` and ${held.rows.length} held call(s) whose ledger append had failed (now in the ledger)`
+      (moved > 0
+        ? ` and ${moved} held call(s) whose ledger append had failed (now in the ledger)`
         : "") +
       `; it counts toward the caps\n`,
   );
   return 0;
+}
+
+/** The held_id of every held row already in the ledger (a Set), or null when it cannot be read. */
+function bookedHeldIds(env) {
+  const path = resolveLedgerPath(env);
+  const ids = new Set();
+  if (!path || !existsSync(path)) return ids;
+  let text;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
+  for (const line of text.split("\n")) {
+    if (!line.includes('"held_id"')) continue;
+    try {
+      const r = JSON.parse(line);
+      if (r && typeof r.held_id === "string") ids.add(r.held_id);
+    } catch {
+      /* not a row the reconcile wrote */
+    }
+  }
+  return ids;
 }
 
 /** Append one row to the ledger itself (no retry, no hold): the reconcile's move. */

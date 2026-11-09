@@ -324,9 +324,16 @@ console.log("== R-4c: a failed append HOLDS the row; admission refuses until --r
     env: { ...process.env, ...env },
     encoding: "utf8",
   });
+  const claimed = () =>
+    readdirSync(dir).filter((n) => n.startsWith("usage-ledger.held.jsonl.claim-"));
   assert(
-    "R-4c: a reconcile while the ledger is unwritable fails and keeps the hold",
-    bad.status === 1 && existsSync(holdPath),
+    "R-4c: a reconcile while the ledger is unwritable fails and keeps the row held (claimed)",
+    bad.status === 1 && claimed().length === 1 && !existsSync(ledger),
+  );
+  const stillRefused = paidLaunchAdmission({ kind: "delivery", env });
+  assert(
+    "R-4c: a claimed row still holds admission",
+    stillRefused.ok === false && stillRefused.unknownCost === 1,
   );
   spawnSync("mkdir", ["-p", join(dir, "no-such-dir")]);
   const rec = spawnSync(process.execPath, [MOD, "--reconcile", "--usd", "0.25"], {
@@ -337,7 +344,7 @@ console.log("== R-4c: a failed append HOLDS the row; admission refuses until --r
     "R-4c: the reconcile succeeds once the ledger is writable",
     rec.status === 0 && /1 held call/.test(rec.stdout),
   );
-  assert("R-4c: the hold file is retired", !existsSync(holdPath));
+  assert("R-4c: the hold file is retired", !existsSync(holdPath) && claimed().length === 0);
   const rows = readFileSync(ledger, "utf8")
     .trim()
     .split("\n")
@@ -352,6 +359,44 @@ console.log("== R-4c: a failed append HOLDS the row; admission refuses until --r
   );
   assert(
     "R-4c: admission admits after the reconcile",
+    paidLaunchAdmission({ kind: "delivery", env }).ok === true,
+  );
+  // EXACTLY ONCE: a reconcile that died after moving a claimed row and before retiring the
+  // claim (the row is in the ledger and in the claim) books it once on the next run; a row
+  // held while a reconcile runs (a fresh hold file) is booked, not retired unread.
+  const again = readFileSync(ledger, "utf8")
+    .trim()
+    .split("\n")
+    .map((l) => JSON.parse(l))[0];
+  writeFileSync(join(dir, "usage-ledger.held.jsonl.claim-1-1"), JSON.stringify(again) + "\n");
+  writeFileSync(
+    holdPath,
+    JSON.stringify({ ts: new Date().toISOString(), ticket: 10, held: true, held_id: "h-10" }) +
+      "\n",
+  );
+  assert(
+    "R-4d: an unretired claim and a fresh hold both hold admission",
+    paidLaunchAdmission({ kind: "delivery", env }).unknownCost === 2,
+  );
+  const rec2 = spawnSync(process.execPath, [MOD, "--reconcile", "--usd", "0.25"], {
+    env: { ...process.env, ...env },
+    encoding: "utf8",
+  });
+  const rows2 = readFileSync(ledger, "utf8")
+    .trim()
+    .split("\n")
+    .map((l) => JSON.parse(l));
+  assert(
+    "R-4d: the row already moved is not booked twice; the fresh one is booked",
+    rec2.status === 0 &&
+      rows2.filter((r) => r.ticket === 9).length === 1 &&
+      rows2.filter((r) => r.ticket === 10).length === 1 &&
+      rows2[rows2.length - 1].reconciled_held === 1 &&
+      claimed().length === 0 &&
+      !existsSync(holdPath),
+  );
+  assert(
+    "R-4d: admission admits after it",
     paidLaunchAdmission({ kind: "delivery", env }).ok === true,
   );
   // A hold file that cannot be read is an unknown spend (fail closed).

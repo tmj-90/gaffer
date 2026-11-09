@@ -34,7 +34,8 @@
 //   • a call whose ledger append FAILED is not free (external review 16): the writer holds
 //     its row in $GAFFER_DATA/usage-ledger.held.jsonl, and every held row is an unknown
 //     cost (daily and lifetime) until `usage-ledger.mjs --reconcile` moves it into the
-//     ledger; a hold file that cannot be read is an unknown spend;
+//     ledger (a hold file the reconcile claimed and has not retired counts too); a hold
+//     file that cannot be read is an unknown spend;
 //   • FAIL CLOSED: with a cap set, a ledger that exists but cannot be read, or holds a
 //     line that is not a JSON object, is an UNKNOWN spend and refuses the launch; so
 //     is a ledger that is turned off or has no location (nothing would be booked).
@@ -50,7 +51,12 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ledgerDisabled, resolveHoldPath, resolveLedgerPath } from "./usage-ledger-path.mjs";
+import {
+  ledgerDisabled,
+  resolveHoldClaims,
+  resolveHoldPath,
+  resolveLedgerPath,
+} from "./usage-ledger-path.mjs";
 
 export const BUDGET_REFUSED_STATUS = 77;
 
@@ -130,15 +136,17 @@ export function ledgerSpend(env = process.env, now = new Date()) {
       unknown: "the usage ledger has no location (GAFFER_DATA and GAFFER_USAGE_LEDGER are unset)",
     };
   // UNBOOKED CALLS: rows held by a failed append count as unknown cost, whatever the day.
+  // A reconcile's claimed hold files (resolveHoldClaims) count until it retires them.
   let held = 0;
   const hold = resolveHoldPath(env);
-  if (hold && existsSync(hold)) {
+  for (const f of [hold, ...resolveHoldClaims(env)]) {
+    if (!f || !existsSync(f)) continue;
     try {
-      held = readFileSync(hold, "utf8")
+      held += readFileSync(f, "utf8")
         .split("\n")
         .filter((l) => l.trim() !== "").length;
     } catch (e) {
-      return { unknown: `the held usage rows ${hold} cannot be read (${e?.code ?? e})` };
+      return { unknown: `the held usage rows ${f} cannot be read (${e?.code ?? e})` };
     }
   }
   // Nothing booked yet (held rows aside).

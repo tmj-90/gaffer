@@ -675,7 +675,10 @@ and the tester's passes.*
   Book what those calls cost with `node runner/lib/usage-ledger.mjs --reconcile --usd
   <amount>` (it counts toward the caps, so raise the cap if that uses it up) and launches
   resume. The run summary's usage section counts measured, estimated and unknown calls
-  apart.
+  apart. A call whose ledger append fails is not free either: after two retries its row
+  is held in `$GAFFER_DATA/usage-ledger.held.jsonl` and counts as an unknown cost (paid
+  launches under a cap are refused, across restarts) until the reconcile moves it into
+  the ledger.
 - **One Poll at a time.** A Poll pressed while the previous one runs waits for it
   (`GAFFER_POLL_WAIT_TIMEOUT`), and each run keeps its own per-run lists.
 - **Usage limits pause the factory, they do not fail tickets.** When the model refuses

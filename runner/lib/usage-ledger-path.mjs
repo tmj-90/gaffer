@@ -30,3 +30,18 @@ export function resolveLedgerPath(env = process.env) {
   }
   return env.GAFFER_DATA ? join(env.GAFFER_DATA, LEDGER_FILENAME) : null;
 }
+
+export const HOLD_FILENAME = "usage-ledger.held.jsonl";
+
+/**
+ * UNBOOKED CALLS (external review 16): where a call's ledger row is kept when the append to
+ * the ledger failed, so its cost does not vanish: $GAFFER_DATA/usage-ledger.held.jsonl, or
+ * null without GAFFER_DATA (or when that is the ledger itself). Budget admission counts each
+ * row in it as an unknown cost; `usage-ledger.mjs --reconcile` moves them into the ledger.
+ */
+export function resolveHoldPath(env = process.env) {
+  const data = String(env.GAFFER_DATA ?? "").trim();
+  if (!data) return null;
+  const hold = join(data, HOLD_FILENAME);
+  return hold === resolveLedgerPath(env) ? null : hold;
+}

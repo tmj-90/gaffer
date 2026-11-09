@@ -265,6 +265,105 @@ console.log("== R-4b: the tick.sh ledger call site routes the module's stderr to
   );
 }
 
+console.log("== R-4c: a failed append HOLDS the row; admission refuses until --reconcile ==");
+{
+  // External review 16: the call's cost must not vanish. With GAFFER_DATA set, a row the
+  // ledger would not take (after the retries) is held in $GAFFER_DATA/usage-ledger.held.jsonl,
+  // budget admission counts it as an unknown cost under a cap, and --reconcile moves it into
+  // the ledger and clears the refusal.
+  const dir = gafferMkdtemp(join(tmpdir(), "usage-hold-"));
+  const ledger = join(dir, "no-such-dir", "usage-ledger.jsonl");
+  const env = { GAFFER_DATA: dir, GAFFER_USAGE_LEDGER: ledger, GAFFER_DAILY_BUDGET_USD: "5" };
+  const { paidLaunchAdmission } = await import(resolve(RUNNER_DIR, "lib", "budget-admission.mjs"));
+  const origWrite = process.stderr.write;
+  const errs = [];
+  process.stderr.write = (chunk) => {
+    errs.push(String(chunk));
+    return true;
+  };
+  let wrote;
+  try {
+    wrote = appendUsageRecord(
+      { ts: new Date().toISOString(), ticket: 9, measured: true, total_cost_usd: 0.25 },
+      env,
+    );
+  } finally {
+    process.stderr.write = origWrite;
+  }
+  const holdPath = join(dir, "usage-ledger.held.jsonl");
+  assert("R-4c: the append still returns false (not in the ledger)", wrote === false);
+  const heldRows = existsSync(holdPath)
+    ? readFileSync(holdPath, "utf8")
+        .trim()
+        .split("\n")
+        .map((l) => JSON.parse(l))
+    : [];
+  assert(
+    "R-4c: the row is held, marked held, ticket kept",
+    heldRows.length === 1 && heldRows[0].held === true && heldRows[0].ticket === 9,
+  );
+  assert(
+    "R-4c: the warning names the hold and the reconcile",
+    /HELD/.test(errs.join("")) && /--reconcile/.test(errs.join("")),
+  );
+  const refused = paidLaunchAdmission({ kind: "delivery", env });
+  assert(
+    "R-4c: admission under a cap refuses on the held row (unknown cost)",
+    refused.ok === false && refused.unknownCost === 1,
+  );
+  const uncapped = paidLaunchAdmission({
+    kind: "delivery",
+    env: { GAFFER_DATA: dir, GAFFER_USAGE_LEDGER: ledger, GAFFER_BUDGET_USD: "50" },
+  });
+  assert(
+    "R-4c: the lifetime cap is held by it too",
+    uncapped.ok === false && uncapped.unknownCost === 1,
+  );
+  // The ledger is still broken: the reconcile cannot move the row, keeps the hold, refuses.
+  const bad = spawnSync(process.execPath, [MOD, "--reconcile", "--usd", "0.25"], {
+    env: { ...process.env, ...env },
+    encoding: "utf8",
+  });
+  assert(
+    "R-4c: a reconcile while the ledger is unwritable fails and keeps the hold",
+    bad.status === 1 && existsSync(holdPath),
+  );
+  spawnSync("mkdir", ["-p", join(dir, "no-such-dir")]);
+  const rec = spawnSync(process.execPath, [MOD, "--reconcile", "--usd", "0.25"], {
+    env: { ...process.env, ...env },
+    encoding: "utf8",
+  });
+  assert(
+    "R-4c: the reconcile succeeds once the ledger is writable",
+    rec.status === 0 && /1 held call/.test(rec.stdout),
+  );
+  assert("R-4c: the hold file is retired", !existsSync(holdPath));
+  const rows = readFileSync(ledger, "utf8")
+    .trim()
+    .split("\n")
+    .map((l) => JSON.parse(l));
+  assert(
+    "R-4c: the held row is in the ledger, before the reconcile row",
+    rows.length === 2 &&
+      rows[0].ticket === 9 &&
+      rows[0].held === true &&
+      rows[1].kind === "reconcile" &&
+      rows[1].reconciled_held === 1,
+  );
+  assert(
+    "R-4c: admission admits after the reconcile",
+    paidLaunchAdmission({ kind: "delivery", env }).ok === true,
+  );
+  // A hold file that cannot be read is an unknown spend (fail closed).
+  spawnSync("mkdir", ["-p", holdPath]);
+  const unreadable = paidLaunchAdmission({ kind: "delivery", env });
+  assert(
+    "R-4c: an unreadable hold file refuses (fail closed)",
+    unreadable.ok === false && /held usage rows/.test(unreadable.reason),
+  );
+  rmSync(dir, { recursive: true, force: true });
+}
+
 console.log("== AC3b: CLI prints .result text AND writes the ledger (gated on GAFFER_DATA) ==");
 {
   const dir = gafferMkdtemp(join(tmpdir(), "usage-cli-"));

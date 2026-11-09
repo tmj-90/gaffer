@@ -48,9 +48,8 @@
  *                stdout (so the bash caller can keep the human-readable log), and
  *                appends one ledger record. Used by tick.sh's bash call sites.
  */
-import { appendFileSync } from "node:fs";
-import { readFileSync } from "node:fs";
-import { resolveLedgerPath } from "./usage-ledger-path.mjs";
+import { appendFileSync, existsSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { resolveHoldPath, resolveLedgerPath } from "./usage-ledger-path.mjs";
 
 // Spec 3 / Phase 2: the claude-JSON envelope schema is owned by the worker seam.
 // This module keeps the LEDGER-RECORD shaping + honesty rules, but the raw parse +
@@ -360,18 +359,86 @@ function withUsageLimit(rec, json) {
 export function appendUsageRecord(record, env = process.env) {
   const path = resolveLedgerPath(env);
   if (!path) return false; // gated: disabled, or no GAFFER_DATA (silent, intentional)
+  const line = JSON.stringify(record) + "\n";
+  let err = null;
+  // A transient failure (a full disk freed, a racing rotation) gets two more tries.
+  for (let attempt = 0; attempt < APPEND_TRIES; attempt += 1) {
+    try {
+      appendFileSync(path, line);
+      return true;
+    } catch (e) {
+      err = e;
+      if (attempt + 1 < APPEND_TRIES) sleepMs(APPEND_RETRY_MS);
+    }
+  }
+  // Non-fatal, but NOT silent: a measurement gap must be visible to the operator. And the
+  // call's cost must not vanish (external review 16): its row is HELD in a durable file
+  // under GAFFER_DATA, which budget admission counts as an unknown cost (paid launches
+  // under a cap are refused) until `--reconcile` moves it into the ledger.
+  const ticket = record && record.ticket != null ? ` (ticket #${record.ticket})` : "";
+  const reason = (err && err.message) || String(err);
+  const hold = resolveHoldPath(env);
+  let held = false;
+  if (hold) {
+    try {
+      appendFileSync(
+        hold,
+        JSON.stringify({
+          ...record,
+          held: true,
+          held_reason: `the usage-ledger append failed (${reason})`,
+        }) + "\n",
+      );
+      held = true;
+    } catch {
+      held = false;
+    }
+  }
+  process.stderr.write(
+    held
+      ? `WARNING: usage-ledger append FAILED${ticket} — the call's cost is not in the ledger ` +
+          `(UNMEASURED there, path: ${path}): ${reason}; its row is HELD in ${hold}, and budget ` +
+          `admission refuses paid launches under a cap until it is booked: fix the ledger, then run ` +
+          `\`node runner/lib/usage-ledger.mjs --reconcile --usd <amount>\`\n`
+      : `WARNING: usage-ledger append FAILED${ticket} — cost for this call goes ` +
+          `UNMEASURED (path: ${path}): ${reason}${hold ? `; the hold file ${hold} could not be written either` : ""}\n`,
+  );
+  return false;
+}
+
+const APPEND_TRIES = 3;
+const APPEND_RETRY_MS = 50;
+function sleepMs(ms) {
   try {
-    appendFileSync(path, JSON.stringify(record) + "\n");
-    return true;
-  } catch (err) {
-    // Non-fatal, but NOT silent: a measurement gap must be visible to the operator.
-    const ticket = record && record.ticket != null ? ` (ticket #${record.ticket})` : "";
-    const reason = (err && err.message) || String(err);
-    process.stderr.write(
-      `WARNING: usage-ledger append FAILED${ticket} — cost for this call goes ` +
-        `UNMEASURED (path: ${path}): ${reason}\n`,
-    );
-    return false;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    /* no Atomics.wait here: retry at once */
+  }
+}
+
+/**
+ * The rows held by failed appends (resolveHoldPath), or [] when there are none.
+ * → { rows, path } | { error } when the hold file exists but cannot be read.
+ */
+export function readHeldRows(env = process.env) {
+  const hold = resolveHoldPath(env);
+  if (!hold || !existsSync(hold)) return { rows: [], path: hold };
+  try {
+    const rows = readFileSync(hold, "utf8")
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .map((l) => {
+        try {
+          const r = JSON.parse(l);
+          return r && typeof r === "object" && !Array.isArray(r) ? r : { held: true };
+        } catch {
+          return { held: true, held_reason: "an unreadable held row" };
+        }
+      });
+    return { rows, path: hold };
+  } catch (e) {
+    return { error: `the held usage rows ${hold} cannot be read (${e?.code ?? e})` };
   }
 }
 
@@ -815,6 +882,33 @@ async function reconcileMain(argv, env = process.env) {
   }
   const n = argv.indexOf("--note");
   const note = n >= 0 ? provLabel(argv[n + 1]) : null;
+  // UNBOOKED CALLS (external review 16): rows a failed append HELD go into the ledger
+  // first, so the reconcile row below books them with the rest; the hold file is removed
+  // only once they and the reconcile row are written (a ledger that still cannot be
+  // written keeps the hold, and admission keeps refusing).
+  const held = readHeldRows(env);
+  if (held.error) {
+    process.stderr.write(`usage-ledger: ${held.error}; nothing reconciled\n`);
+    return 1;
+  }
+  for (const row of held.rows) {
+    if (!appendLedgerLine(row, env)) {
+      process.stderr.write(
+        "usage-ledger: the held rows could not be moved into the ledger (is it writable?); nothing reconciled\n",
+      );
+      return 1;
+    }
+  }
+  // The held rows are in the ledger now: retire the hold file before counting, so a crash
+  // from here on cannot book them twice (the ledger rows still hold admission until the
+  // reconcile row lands).
+  if (held.path && held.rows.length > 0) {
+    try {
+      renameSync(held.path, `${held.path}.reconciled-${Date.now()}`);
+    } catch {
+      rmSync(held.path, { force: true });
+    }
+  }
   const { ledgerSpend } = await import("./budget-admission.mjs");
   const spend = ledgerSpend(env);
   const count = spend && typeof spend.unknownToday === "number" ? spend.unknownToday : 0;
@@ -832,6 +926,7 @@ async function reconcileMain(argv, env = process.env) {
     estimated_cost_usd: usd,
     estimate_basis: "operator",
     reconciled_unknown: count,
+    ...(held.rows.length > 0 ? { reconciled_held: held.rows.length } : {}),
   };
   if (note) rec.note = note;
   if (!appendUsageRecord(rec, env)) {
@@ -841,9 +936,25 @@ async function reconcileMain(argv, env = process.env) {
     return 1;
   }
   process.stdout.write(
-    `booked $${usd.toFixed(4)} against ${count} unknown-cost call(s) today; it counts toward the caps\n`,
+    `booked $${usd.toFixed(4)} against ${count} unknown-cost call(s) today` +
+      (held.rows.length > 0
+        ? ` and ${held.rows.length} held call(s) whose ledger append had failed (now in the ledger)`
+        : "") +
+      `; it counts toward the caps\n`,
   );
   return 0;
+}
+
+/** Append one row to the ledger itself (no retry, no hold): the reconcile's move. */
+function appendLedgerLine(row, env) {
+  const path = resolveLedgerPath(env);
+  if (!path) return false;
+  try {
+    appendFileSync(path, JSON.stringify(row) + "\n");
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function readInput(jsonFile) {

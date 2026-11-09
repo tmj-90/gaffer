@@ -2646,8 +2646,22 @@ function landSecondaryPr({
  * { ok: true, release, path } or { ok: false, pid, path }. `afterStaleRead` (tests only)
  * runs between seeing a stale owner and taking the lock over: the window a racing run uses.
  */
-export function acquireMergeLock(ticketNumber, dataDir = GAFFER_DATA, { afterStaleRead } = {}) {
-  const dir = resolve(dataDir, "locks", `merge-ticket-${ticketNumber}.lock`);
+export function acquireMergeLock(ticketNumber, dataDir = GAFFER_DATA, opts = {}) {
+  return acquireTicketLock("merge-ticket", ticketNumber, dataDir, opts);
+}
+
+/**
+ * The per-ticket lock behind acquireMergeLock, for any runner job that must not run twice
+ * at once for one ticket: `$dataDir/locks/<kind>-<n>.lock`. bin/tester-run.mjs takes
+ * kind "tester" (two tester runs for one ticket shared one workspace; external review 16).
+ */
+export function acquireTicketLock(
+  kind,
+  ticketNumber,
+  dataDir = GAFFER_DATA,
+  { afterStaleRead } = {},
+) {
+  const dir = resolve(dataDir, "locks", `${kind}-${ticketNumber}.lock`);
   const takeover = `${dir}.takeover`;
   mkdirSync(dirname(dir), { recursive: true });
   const release = () => {

@@ -174,6 +174,7 @@ Each still works for one release, mapped onto its replacement with a one-line wa
 
 ### Fixed
 
+- Two tester runs for one ticket no longer share, and destroy, one workspace: a second run finds the first one's per-ticket lock and starts nothing (`phase: busy`), and a lock left by a run that is gone is taken over. A tester verdict now names the testing round its run started in (`wg ticket tester-pass|tester-fail --round`, `round` on `POST /tickets/:id/tester`), and dispatch refuses one from an earlier round (a rework started a new one) with `STALE_VERDICT`, keeping it as stale evidence: an old FAIL no longer sends a reworked ticket back, and an old PASS no longer sends it on.
 - A call whose cost was never established (no reported total, no estimate) now holds a lifetime budget (`GAFFER_BUDGET_USD`) until the operator books it with `usage-ledger.mjs --reconcile`, not only until the UTC day turns; a daily cap alone still clears with the day.
 - The judge agreement reading no longer says a judge that does not separate accepted from rejected work "is not paying for itself": it reports what it measured (the grade adds nothing the decisions do not show) and says the cost question needs reviewer time and escaped defects measured with and without it.
 - The Settings page's load no longer waits for the agent isolation probe in full (up to 15 s on a host whose docker CLI is slow to answer): it waits at most 1.5 s, answers with the posture it has or "still probing", and the finished probe shows on the next load. Concurrent loads share one probe.

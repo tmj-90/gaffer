@@ -893,6 +893,7 @@ export async function routeTickets(
       ...(body.contract_hash ? { contract_hash: body.contract_hash } : {}),
       ...(body.replay ? { replay: body.replay } : {}),
       ...(body.acceptance_evidence ? { acceptance_evidence: body.acceptance_evidence } : {}),
+      ...(body.round ? { round: body.round } : {}),
     };
     const result =
       body.verdict === "pass"

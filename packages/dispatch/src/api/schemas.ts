@@ -367,6 +367,16 @@ export const testerVerdictBody = z.object({
   replay: z.enum(REPLAY_STATES).optional(),
   /** The runner's acceptance evidence row, for a ticket with an acceptance profile. */
   acceptance_evidence: z.string().trim().min(1).max(200).optional(),
+  /**
+   * The testing round the verdict was made in (the id of the ticket's entry into
+   * in_testing that the tester started in). A verdict for a round that is no longer the
+   * current one is a 409 STALE_VERDICT and is kept as stale evidence.
+   */
+  round: z
+    .string()
+    .trim()
+    .regex(/^[A-Za-z0-9_-]{1,64}$/)
+    .optional(),
 });
 export type TesterVerdictBody = z.infer<typeof testerVerdictBody>;
 

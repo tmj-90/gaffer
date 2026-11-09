@@ -58,6 +58,10 @@
 //                        and run only the post-merge memory step (digest + feature).
 //   --dry-run            do NOT spawn claude or mutate git; print the planned merge
 //                        target + resolver claude argv as JSON (the test seam).
+//   --lock-hold / --lock-release --owner-pid <pid>
+//                        take / release only this ticket's merge lock for a live shell
+//                        owner (lib/land.sh holds it for a whole lane landing); exit 0
+//                        held · 4 another merge of the ticket is running.
 //
 // OUTPUT (stdout, exactly ONE JSON object; the phase is the outcome):
 //   merged:    { "phase":"merged", ticket, repo, branch, defaultBranch, via, digest }
@@ -169,7 +173,7 @@ import {
   withJoinKeys,
 } from "../lib/usage-ledger.mjs";
 import { agentChildEnv, renderPoMcpRuntime } from "./product-owner-run.mjs";
-import { branchHead, landingDecision, reReviewCommand } from "../lib/tester-binding.mjs";
+import { branchHead, landedIn, landingDecision, reReviewCommand } from "../lib/tester-binding.mjs";
 import {
   applyTesterTests,
   discardReplayKey,
@@ -187,6 +191,14 @@ import { hardenGitEnv } from "../lib/git-safe.mjs";
 // spawns) carries core.hooksPath=/dev/null and core.fsmonitor=false; main() adds the
 // ticket's repositories once they are known (lib/git-safe.mjs).
 hardenGitEnv(process.env);
+
+// ONE MERGE PER TICKET (external review 16): lib/land.sh holds a ticket's merge lock for a
+// whole landing and runs this script under it (--recover-replay, the conflict resolver),
+// naming itself in GAFFER_MERGE_LOCK_OWNER. A lock held by exactly that live owner is this
+// run's own. Read once and removed from the environment, so nothing this run spawns (the
+// resolver agent included) inherits it.
+const INHERITED_LOCK_OWNER = String(process.env.GAFFER_MERGE_LOCK_OWNER || "").trim();
+delete process.env.GAFFER_MERGE_LOCK_OWNER;
 
 // node:sqlite is only reachable via createRequire in an ESM module.
 const require = createRequire(import.meta.url);
@@ -255,6 +267,19 @@ function parseArgs(argv) {
         // landing record and the replay record). Regenerate it on the landed revision, or
         // exit 4 with a targeted "replay missing" hold. lib/land.sh calls this on a retry.
         opts.recoverReplay = true;
+        break;
+      case "--lock-hold":
+        // ONE MERGE PER TICKET for lib/land.sh (external review 16): take this ticket's
+        // merge lock for the shell process --owner-pid names (it holds it until it runs
+        // --lock-release, or until it dies: a dead owner is taken over), print one JSON
+        // line and exit 0 (held) or 4 (another merge of the ticket is running).
+        opts.lockHold = true;
+        break;
+      case "--lock-release":
+        opts.lockRelease = true;
+        break;
+      case "--owner-pid":
+        opts.ownerPid = parseInt(next() ?? "", 10) || 0;
         break;
       case "--apply-digest-only":
         // The merge ALREADY landed elsewhere (the runner's unattended AFK merge in
@@ -654,6 +679,21 @@ export function mergeViaPr({
     return { ok: false, reason: `${ghBin} ${argv.join(" ")} failed (${detail})`, argv };
   }
   // Fast-forward the local default branch from the remote the PR merged into.
+  const ff = fastForwardDefault(repoPath, defaultBranch, remote);
+  return {
+    ok: true,
+    argv,
+    fastForwarded: ff.ok,
+    ...(ff.ok ? {} : { ffReason: ff.reason }),
+  };
+}
+
+/**
+ * Fast-forward the local default branch from `remote` (`git fetch <remote> <def>`, then
+ * `merge --ff-only` when <def> is checked out, else a plain ff ref update): never a local
+ * merge, never over an ignored or uncommitted file. → { ok, reason }.
+ */
+export function fastForwardDefault(repoPath, defaultBranch, remote) {
   const rem = String(remote || "origin");
   const g = (...args) => spawnSync("git", ["-C", repoPath, ...args], { encoding: "utf8" });
   const head = g("symbolic-ref", "--quiet", "--short", "HEAD").stdout.trim();
@@ -666,15 +706,9 @@ export function mergeViaPr({
     // Not checked out here: a plain (non-forced) refspec is fast-forward-only by construction.
     ff = g("fetch", rem, `${defaultBranch}:${defaultBranch}`);
   }
-  const fastForwarded = ff.status === 0;
-  return {
-    ok: true,
-    argv,
-    fastForwarded,
-    ...(fastForwarded
-      ? {}
-      : { ffReason: (ff.stderr || ff.stdout || "fast-forward failed").trim().slice(0, 300) }),
-  };
+  return ff.status === 0
+    ? { ok: true, reason: "" }
+    : { ok: false, reason: (ff.stderr || ff.stdout || "fast-forward failed").trim().slice(0, 300) };
 }
 
 /**
@@ -2455,9 +2489,12 @@ function crashAfterLandSeam(repoName) {
   if (want !== "" && want === String(repoName)) process.kill(process.pid, "SIGKILL");
 }
 
-/** Record one repo's landing as the system actor (idempotent; logged, never fatal). */
+/**
+ * Record one repo's landing as the system actor (idempotent; logged, never fatal).
+ * → true when Dispatch has it on record.
+ */
 function recordLandingCli(ticketNumber, repoId, sha, via) {
-  if (!repoId || !sha) return;
+  if (!repoId || !sha) return false;
   const r = runDispatch([
     "ticket",
     "record-landing",
@@ -2471,11 +2508,62 @@ function recordLandingCli(ticketNumber, repoId, sha, via) {
     "--as",
     "system",
   ]);
-  if (r.error || r.status !== 0)
+  if (r.error || r.status !== 0) {
     log(
       `WARNING: #${ticketNumber} could not record the landing of ${String(sha).slice(0, 12)} ` +
         `(${(r.stderr || "").trim().slice(0, 160)}) — the done gate re-checks git`,
     );
+    return false;
+  }
+  return true;
+}
+
+/** GAFFER_PR_LOCAL_FALLBACK=1: the operator lands a PR-mode repo locally when its PR cannot merge. */
+function prLocalFallbackOn() {
+  return /^(1|true|yes|on)$/i.test(process.env.GAFFER_PR_LOCAL_FALLBACK || "");
+}
+
+/**
+ * LANDED UPSTREAM, NOT RECORDED (external review 16): the refs that show what a repo's
+ * landing target already carries, for landingDecision's `landedRefs`. A repo with a PR
+ * lands where the provider merges it: its default branch is fetched from
+ * GAFFER_PR_REMOTE and the remote-tracking ref is what counts (the local default only
+ * when GAFFER_PR_LOCAL_FALLBACK=1 lands it locally). Without a PR: the local default.
+ * A failed fetch leaves the remote-tracking ref as it was (no shortcut is taken on a
+ * stale one: the normal landing runs, and the provider refuses a merged PR).
+ */
+export function landedRefsFor({ repoPath, defaultBranch, prUrl }) {
+  const def = defaultBranch || "main";
+  if (!prUrl) return [`refs/heads/${def}`];
+  const rem = String(process.env.GAFFER_PR_REMOTE || "origin");
+  git(repoPath, "fetch", "--quiet", rem, def);
+  return [`refs/remotes/${rem}/${def}`, ...(prLocalFallbackOn() ? [`refs/heads/${def}`] : [])];
+}
+
+/**
+ * Record a landing the decision found in git but not on record (kind `landed-upstream`):
+ * the merger died after git or the provider moved and before Dispatch recorded it. Nothing
+ * is merged and no PR merge is requested again. A repo with a PR that landed upstream is
+ * recorded `pr` once the local default carries it (fast-forwarded here if the crash came
+ * before that), else `pr-stale`; one landed locally under GAFFER_PR_LOCAL_FALLBACK=1 is
+ * `local-fallback`; a local landing is `git-verified`. Dispatch re-checks each against git
+ * before it records. → true when the landing is on record.
+ */
+function reconcileLanding({ ticketNumber, repoId, repoName, repoPath, defaultBranch, prUrl, d }) {
+  const def = defaultBranch || "main";
+  const local = `refs/heads/${def}`;
+  let via = "git-verified";
+  if (prUrl && String(d.landedRef).startsWith("refs/remotes/")) {
+    if (!landedIn(repoPath, d.pin, [local]))
+      fastForwardDefault(repoPath, def, process.env.GAFFER_PR_REMOTE);
+    via = landedIn(repoPath, d.pin, [local]) ? "pr" : "pr-stale";
+  } else if (prUrl) via = "local-fallback";
+  log(
+    `#${ticketNumber}: ${repoName}'s approved commit ${String(d.pin).slice(0, 12)} is already in ` +
+      `${d.landedRef} but no landing was on record (an interrupted merge) — not merged again` +
+      `${prUrl ? ", its PR not asked to merge again" : ""}; recording the landing (via ${via})`,
+  );
+  return recordLandingCli(ticketNumber, repoId, d.pin, via);
 }
 
 /**
@@ -2657,14 +2745,22 @@ function landSecondaryPr({
  * each remove the lock the other had just taken and both hold it. Returns
  * { ok: true, release, path } or { ok: false, pid, path }. `afterStaleRead` (tests only)
  * runs between seeing a stale owner and taking the lock over: the window a racing run uses.
+ * `ownerPid` (default this process) is the pid recorded as the owner: lib/land.sh takes
+ * the lock for its own shell (--lock-hold --owner-pid) and releases it (--lock-release).
+ * `inheritedOwner`: a lock whose live owner is exactly that pid is held for this run by
+ * its caller (lib/land.sh running this script under its lock): ok, and release is a no-op.
  */
-export function acquireMergeLock(ticketNumber, dataDir = GAFFER_DATA, { afterStaleRead } = {}) {
+export function acquireMergeLock(
+  ticketNumber,
+  dataDir = GAFFER_DATA,
+  { afterStaleRead, ownerPid = process.pid, inheritedOwner = INHERITED_LOCK_OWNER } = {},
+) {
   const dir = resolve(dataDir, "locks", `merge-ticket-${ticketNumber}.lock`);
   const takeover = `${dir}.takeover`;
   mkdirSync(dirname(dir), { recursive: true });
   const release = () => {
     try {
-      if (readFileSync(resolve(dir, "pid"), "utf8").trim() === String(process.pid))
+      if (readFileSync(resolve(dir, "pid"), "utf8").trim() === String(ownerPid))
         rmSync(dir, { recursive: true, force: true });
     } catch {
       /* already gone */
@@ -2676,8 +2772,8 @@ export function acquireMergeLock(ticketNumber, dataDir = GAFFER_DATA, { afterSta
     } catch {
       return false;
     }
-    writeFileSync(resolve(dir, "pid"), String(process.pid));
-    process.on("exit", release);
+    writeFileSync(resolve(dir, "pid"), String(ownerPid));
+    if (ownerPid === process.pid) process.on("exit", release);
     return true;
   };
   // The owner recorded in the lock, and whether it still holds it.
@@ -2701,6 +2797,8 @@ export function acquireMergeLock(ticketNumber, dataDir = GAFFER_DATA, { afterSta
   };
   if (take()) return { ok: true, release, path: dir };
   const seen = holder();
+  if (seen.held && inheritedOwner !== "" && String(seen.pid) === String(inheritedOwner))
+    return { ok: true, release: () => {}, path: dir, inherited: true };
   if (seen.held) return { ok: false, pid: seen.pid, path: dir };
   if (afterStaleRead) afterStaleRead();
   // STALE: take it over under the takeover lock (a takeover left by a crash mid-takeover
@@ -2777,6 +2875,11 @@ export function preflightSecondaryRepos(
       branch: r.branch,
       repoId: r.repoId,
       secondary: true,
+      landedRefs: landedRefsFor({
+        repoPath: r.localPath,
+        defaultBranch: r.defaultBranch,
+        prUrl: r.prUrl,
+      }),
     });
     if (!d.ok)
       return {
@@ -2865,12 +2968,37 @@ function landSecondaryRepos(ticketNumber, primaryRepoId, approval = null) {
       branch: r.branch,
       repoId: r.repoId,
       secondary: true,
+      landedRefs: landedRefsFor({
+        repoPath: r.localPath,
+        defaultBranch: r.defaultBranch,
+        prUrl: r.prUrl,
+      }),
     });
     if (!d.ok) {
       why(`landing check ${d.kind}: ${d.reason}`);
       continue;
     }
     if (d.kind === "already-landed") {
+      out.landed.push(r.repo);
+      continue;
+    }
+    // LANDED UPSTREAM, NOT RECORDED: an interrupted merge landed it; record, never re-merge.
+    if (d.kind === "landed-upstream") {
+      const rec = reconcileLanding({
+        ticketNumber,
+        repoId: r.repoId,
+        repoName: r.repo,
+        repoPath: r.localPath,
+        defaultBranch: r.defaultBranch,
+        prUrl: r.prUrl,
+        d,
+      });
+      if (!rec) {
+        why(
+          `its approved commit is already in ${d.landedRef} but the landing could not be recorded; nothing merged again`,
+        );
+        continue;
+      }
       out.landed.push(r.repo);
       continue;
     }
@@ -2988,6 +3116,33 @@ function main() {
 
   if (!String(opts.ticket).trim()) {
     fail("--ticket <number> is required (the approved ticket whose branch is being merged)");
+    return;
+  }
+  if (opts.lockHold || opts.lockRelease) {
+    // ONE MERGE PER TICKET for lib/land.sh: the lock alone, for a live shell owner.
+    const num = parseInt(String(opts.ticket).replace(/^#/, ""), 10);
+    const owner = opts.ownerPid || 0;
+    if (!Number.isInteger(num) || num <= 0 || owner <= 0) {
+      fail("--lock-hold / --lock-release need --ticket <number> and --owner-pid <live pid>", 2);
+      return;
+    }
+    const dir = resolve(GAFFER_DATA, "locks", `merge-ticket-${num}.lock`);
+    if (opts.lockRelease) {
+      try {
+        if (readFileSync(resolve(dir, "pid"), "utf8").trim() === String(owner))
+          rmSync(dir, { recursive: true, force: true });
+      } catch {
+        /* not held by that owner: nothing to release */
+      }
+      emit({ phase: "lock-released", ticket: num }, 0);
+      return;
+    }
+    const l = acquireMergeLock(num, GAFFER_DATA, { ownerPid: owner, inheritedOwner: "" });
+    if (!l.ok) {
+      emit({ phase: "lock-busy", ticket: num, pid: l.pid || 0, path: l.path }, 4);
+      return;
+    }
+    emit({ phase: "lock-held", ticket: num, path: l.path }, 0);
     return;
   }
 
@@ -3205,6 +3360,12 @@ function main() {
     repoPath: repo.localPath,
     branch,
     repoId: repo.id || null,
+    // LANDED UPSTREAM, NOT RECORDED: what the landing target already carries.
+    landedRefs: landedRefsFor({
+      repoPath: repo.localPath,
+      defaultBranch: repo.defaultBranch,
+      prUrl: resolved.prUrl,
+    }),
   });
   if (!decision.ok) {
     fail(
@@ -3242,10 +3403,33 @@ function main() {
   const revoked = (b) => fail(notLanded(resolved.number, b.reason), 4);
   // PROVENANCE TRAILERS for the merge commit — the same block lib/land.sh writes.
   const trailers = provenanceTrailers({ dbPath: CONFIG.dispatchDb, ticketNumber: resolved.number });
+  // LANDED UPSTREAM, NOT RECORDED (external review 16): an interrupted merge moved the
+  // default branch or merged the PR and died before the record. Record it now (Dispatch
+  // checks git), never merge it or ask for the PR again; then it is a landed repo below.
+  if (decision.kind === "landed-upstream") {
+    const rec = reconcileLanding({
+      ticketNumber: resolved.number,
+      repoId: repo.id || null,
+      repoName: repo.name,
+      repoPath: repo.localPath,
+      defaultBranch: repo.defaultBranch,
+      prUrl: resolved.prUrl,
+      d: decision,
+    });
+    if (!rec) {
+      fail(
+        `refusing to merge #${resolved.number}: ${repo.name}'s approved commit is already in ` +
+          `${decision.landedRef} but its landing could not be recorded; nothing merged again, ` +
+          `ticket left ready_for_merge — run gaffer merge ${resolved.number} again`,
+        4,
+      );
+      return;
+    }
+  }
   // PER-REPOSITORY LANDING: the primary repo's approved commit already landed (a retry
   // after a partial landing) — never merge it again; land the repos still pending.
   let landed =
-    decision.kind === "already-landed"
+    decision.kind === "already-landed" || decision.kind === "landed-upstream"
       ? (log(
           `#${resolved.number}: ${repo.name} already landed ${String(pin).slice(0, 12)} — not merged again`,
         ),

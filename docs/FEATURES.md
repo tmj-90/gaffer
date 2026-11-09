@@ -383,6 +383,12 @@ verdict strip above, Approve beside the flags, and the server-computed diff.*
   every write repository, each lands through the merge gate on its own, and a ticket
   where one landed and another could not reads **Partly merged** and can only be
   finished, never cancelled. A recorded pull request lands only through that PR.
+- **An interrupted merge is finished, never repeated.** If a merge dies after a
+  repository's PR merged (or its default branch moved) and before the landing was
+  recorded, the retry sees the approved commit already upstream, records the landing,
+  and lands only what is left: no second merge, no second PR merge request, the tester
+  replay record regenerated on what landed. The merge lane, the review pass and
+  `gaffer merge` share one lock per ticket, so two of them never land it at once.
 - **A cancellation or a red check during the merge gate stops the landing.** Every
   landing path re-checks ticket, approval and CI right before a default branch moves;
   a landing that had already started is reported, never read as a clean merge.

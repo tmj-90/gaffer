@@ -203,7 +203,8 @@ MT; rc=$?
 [ "$(landed_repos)" = "repoA,repoB" ] && ok "L1: both landings on record" || fail "L1: landed: $(landed_repos)"
 [ "$(replay_records)" = 1 ] && ok "L1: the tester replay record is on file (regenerated on what landed)" || fail "L1: replay records: $(replay_records)"
 [ "$(ci_state_a)" = pass ] && ok "L1: the CI record for A's approved commit is kept" || fail "L1: CI record: $(ci_state_a)"
-[ "$(wgd ticket landing 1 | jf '(d.repos || []).map(r => r.sha).join(",")')" = "$HEAD_repoA,$HEAD_repoB" ] && ok "L1: the approval's pins are unchanged" || fail "L1: pins: $(wgd ticket landing 1)"
+[ "$(wgd ticket landing 1 | jf '(d.repos || []).map(r => r.sha).join(",")')" = "$HEAD_repoA,$HEAD_repoB" ] && [ -n "$APPROVAL" ] && [ "$(wgd ticket landing 1 | jf 'd.approval || ""')" = "$APPROVAL" ] \
+  && ok "L1: the approval and its pins are unchanged (no re-approval was needed)" || fail "L1: pins/approval: $(wgd ticket landing 1) (approved as $APPROVAL)"
 [ ! -d "$GAFFER_DATA/locks/merge-ticket-1.lock" ] && ok "L1: the dead merger's lock was taken over and released" || fail "L1: a merge lock was left behind"
 
 echo "== L1b: the same crash on a LOCAL landing (no PRs) =="
@@ -252,10 +253,14 @@ r1="$(cat "$D/rc1")"; r2="$(cat "$D/rc2")"
 world l3lane pr
 MOCK_BLOCKED=repoB MT >/dev/null 2>&1
 : > "$D/requests"
-( MOCK_GH_SLEEP=2 LANE; echo "$?" > "$D/rc1" ) &
+# The provider takes 6 s; the merge starts once the lane's PR merge of B is in flight.
+( MOCK_GH_SLEEP=6 LANE; echo "$?" > "$D/rc1" ) &
 p1=$!
-sleep 1
-( MOCK_GH_SLEEP=2 MT; echo "$?" > "$D/rc2" ) &
+i=0
+while [ "$i" -lt 120 ] && ! grep -qx repoB "$D/requests" 2>/dev/null && ! grep -q HELD "$D/lane.log" 2>/dev/null; do
+  sleep 0.5; i=$((i + 1))
+done
+( MOCK_GH_SLEEP=6 MT; echo "$?" > "$D/rc2" ) &
 p2=$!
 wait "$p1" "$p2"
 r1="$(cat "$D/rc1")"; r2="$(cat "$D/rc2")"

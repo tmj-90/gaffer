@@ -37,11 +37,19 @@
 // `already-landed` when its approved commit has a landing on record (a retry never
 // re-merges it); --secondary marks a non-primary write repo, which lands only its pinned
 // commit (the tester verdict describes the primary repo).
+// LANDED UPSTREAM, NOT RECORDED (external review 16): `landedRefs` (CLI --landed-ref, one
+// per ref) are the refs that show what the repo's landing target already carries: the
+// local default branch for a local landing, the default branch's remote-tracking ref (just
+// fetched) for a repo that lands through its PR. When the approved commit is already in one
+// of them but no landing is on record (the merger died after git or the provider moved and
+// before Dispatch recorded it), the decision is `landed-upstream` (with `landedRef`): the
+// caller records the landing and never merges or asks for that PR again.
 // REQUIRED CI (readCiState): once the runner records CI results for a ticket, the pin about
 // to land must have a recorded PASS; the CI gate polls the primary repo's PR, so a
 // secondary repo's pin is held only by a non-PASS result recorded for that exact commit.
 // CLI: node lib/tester-binding.mjs landing --db <dispatch.sqlite> --ticket <n>
 //        --repo <path> --branch <name> [--repo-id <id>] [--secondary]
+//        [--landed-ref <ref>]...
 //      → one JSON line { ok, pin, kind, reason, tested, reviewed, head }; exit 0 land · 4 hold.
 // =====================================================================
 import { spawnSync } from "node:child_process";
@@ -66,6 +74,22 @@ export function branchHead(repoPath, branch) {
   );
   const sha = (r.stdout || "").trim();
   return r.status === 0 && /^[0-9a-f]{40,64}$/.test(sha) ? sha : null;
+}
+
+/**
+ * The first of `refs` whose history contains `sha` in `repoPath`, or null. A ref that does
+ * not resolve, or a check that errors, contains nothing (fail closed: no shortcut).
+ */
+export function landedIn(repoPath, sha, refs) {
+  if (!repoPath || !sha || !Array.isArray(refs)) return null;
+  for (const ref of refs) {
+    if (!ref) continue;
+    const r = spawnSync("git", ["-C", repoPath, "merge-base", "--is-ancestor", sha, ref], {
+      encoding: "utf8",
+    });
+    if (r.status === 0) return ref;
+  }
+  return null;
 }
 
 /** Read the ticket's acceptance flag and its latest tester PASS evidence payload. */
@@ -301,8 +325,9 @@ export function reReviewCommand(ticketNumber, repo) {
 export function landingDecision(args) {
   const d = testerLandingDecision(args);
   if (!d.ok) return d;
-  // This repo's approved commit landed in an earlier, partial run: nothing lands now.
-  if (d.kind === "already-landed") return d;
+  // This repo's approved commit landed in an earlier, partial run (on record, or in git
+  // with the record missing): nothing lands now.
+  if (d.kind === "already-landed" || d.kind === "landed-upstream") return d;
   // REQUIRED CI: the commit about to land must have a recorded CI PASS when the runner
   // has been recording CI for this ticket — every landing path asks this, not only the
   // approve that preceded it.
@@ -333,6 +358,7 @@ function testerLandingDecision({
   branch,
   repoId = null,
   secondary = false,
+  landedRefs = [],
 }) {
   const ev = readTesterEvidence(dbPath, ticketNumber, repoId);
   if (ev.error) return hold("unreadable", ev.error);
@@ -347,6 +373,19 @@ function testerLandingDecision({
       reason: "this repo's approved commit already landed",
       reviewed,
       landed: true,
+    };
+  // LANDED UPSTREAM, NOT RECORDED: the approved commit is already in the landing target
+  // (an interrupted merge moved git or the provider, then died before the record). Read
+  // before the branch head: the provider's --delete-branch may have removed the branch.
+  const upstream = reviewed ? landedIn(repoPath, reviewed, landedRefs) : null;
+  if (upstream)
+    return {
+      ok: true,
+      pin: reviewed,
+      kind: "landed-upstream",
+      reason: `this repo's approved commit is already in ${upstream} but no landing is on record`,
+      reviewed,
+      landedRef: upstream,
     };
   const head = branchHead(repoPath, branch);
   if (!head) return hold("no-head", `cannot resolve the head of ${branch} in ${repoPath}`);
@@ -442,6 +481,7 @@ function main(argv) {
     branch: opt("branch"),
     repoId: opt("repo-id") || null,
     secondary: rest.includes("--secondary"),
+    landedRefs: rest.flatMap((a, i) => (rest[i - 1] === "--landed-ref" ? [a] : [])),
   });
   process.stdout.write(JSON.stringify(d) + "\n");
   process.exit(d.ok ? 0 : 4);

@@ -450,7 +450,16 @@ The factory keeps the memory product's **Repo Digest** current and drives the
   like `mark-merged`). `mark-merged` is refused until every approved
   revision has landed, so a partial landing is held in `ready_for_merge` ("Partly merged"
   in the human queue) with its branches kept, and a retry skips the repos that already
-  landed (`already-landed`) instead of merging them again. **Every write repo** (external
+  landed (`already-landed`) instead of merging them again. **Landed but not recorded**
+  (external review 16): a merge that died after git or the provider moved and before the
+  record leaves the approved commit in the landing target with no landing on file; the
+  retry checks the review pin's ancestry against that target (the default branch's
+  remote-tracking ref, fetched first, for a repo with a PR; the local default otherwise),
+  records it (`landed-upstream`, recorded `pr` / `pr-stale` / `git-verified`, each checked
+  by Dispatch against git) and never merges it or asks for its PR again. Both landing paths
+  hold the same per-ticket merge lock (`$GAFFER_DATA/locks/merge-ticket-<n>.lock`): the
+  lane takes it with `bin/merge-ticket.mjs --lock-hold`, so a lane run and a `gaffer merge`
+  of one ticket never land it side by side. **Every write repo** (external
   review #7): the approval is refused (`repo_unavailable`) while any write repo's head
   cannot be resolved, the plan also lists a write repo an older approval left unpinned
   (`pinned: false`, the landing holds on it, and `lib/tester-binding.mjs` never lands its

@@ -626,8 +626,10 @@ export function registerTicket(program: Command): void {
     .description(
       "Record what a judging lane concluded about the ticket's candidate " +
         "(the runner does this after the reviewer agent, the security reviewer, the tester " +
-        "and the eval judge). A measurement: no gate reads it; Health counts it so whether " +
-        "a lane changed the decision can be computed. System/admin only.",
+        "and the eval judge). Health counts it so whether a lane changed the decision can be " +
+        "computed, and the runner's agent review pass reads the agent-review approve/changes " +
+        "verdict on a commit so it reviews each delivered commit once; no approval or landing " +
+        "gate reads it. System/admin only.",
     )
     .requiredOption("--lane <lane>", "agent-review | security-review | tester | eval-judge")
     .requiredOption(

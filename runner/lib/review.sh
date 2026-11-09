@@ -459,6 +459,16 @@ $(gaffer_quarantine tester-outcome "$_RTESTER_NOTE" single)
         rm -f "$MCP_RUNTIME" "$R_USAGE_JSON"
         _review_cleanup; _review_restore_traps; return 0
       fi
+      # ONE REVIEW PER HEAD under GAFFER_CONCURRENCY>1: another lane may have finished a
+      # review of this head between this lane's pick and its claim; its verdict is on the
+      # ticket now.
+      _rv_now="$(printf '%s' "$_RSHOW_NOW" | node "$RUNNER_DIR/lib/review-head.mjs" reviewed "$RSHA" 2>/dev/null || true)"
+      if [ -n "$_rv_now" ]; then
+        log "REVIEW: #$RNUM head ${RSHA:0:12} was reviewed by another lane since the pick ($_rv_now): not reviewing it again"
+        _gaffer_locked .skip.lock _gaffer_append_line "$_RHEADS_FILE" "$RNUM"$'\t'"$RSHA"
+        rm -f "$MCP_RUNTIME" "$R_USAGE_JSON"
+        _review_cleanup; _review_restore_traps; return 0
+      fi
       # The ticket's transitions so far: one more after the review means it left review
       # during it (a merge, a send-back), which is never the reviewer's act.
       _RTRANS0="$(printf '%s' "$_RSHOW_NOW" | jget '(d.events||[]).filter(e => e && e.event_type === "ticket.transitioned").length' 2>/dev/null || echo '')"
@@ -666,8 +676,10 @@ EOF
         R_PRIMARY_HELD="$_R_LEFT (the reviewer said: $R_PRIMARY_VERDICT)"; R_PRIMARY_VERDICT=held
       fi
       # LANE VERDICTS (MF2): what each judging lane concluded about RSHA, as system events,
-      # so whether a lane changed the decision is computable. A measurement, fail-soft;
-      # the ship plan below never reads it.
+      # so whether a lane changed the decision is computable. Fail-soft; the ship plan below
+      # never reads it. The agent-review approve/changes verdict is also what a later pass's
+      # pick reads to review this commit once (_gaffer_review_wanted): a write that fails
+      # costs at most one more review of the same commit, never a skipped one.
       gaffer_lane_verdict "$RNUM" agent-review "$R_PRIMARY_VERDICT" "$RSHA" \
         "$([ "$R_PRIMARY_VERDICT" = held ] && printf '%s' "$R_PRIMARY_HELD")" "$REVIEW_MODEL"
       if [ -n "$R_SECURITY" ]; then

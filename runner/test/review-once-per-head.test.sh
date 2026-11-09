@@ -18,6 +18,8 @@
 #   5. a ticket that leaves review between the review pick and the launch (a person
 #      approves and merges it) is not reviewed, and no "reviewer modified the
 #      candidate" note is written
+#   5b. a head another lane reviewed between this lane's pick and its launch
+#      (GAFFER_CONCURRENCY>1) is not reviewed again
 #   6. a ticket merged by a person WHILE the reviewer runs is reported as having left
 #      review, never as the reviewer's act (the branch it judged is not restored)
 #   7. a rework that resubmits the commit the reviewer asked changes on is not reviewed
@@ -131,6 +133,11 @@ if [ -e "$CTL/race-armed" ]; then
       n="$(cat "$CTL/race-ticket")"
       b="$("$NODE" "$DCLI" --db "$DB" ticket show "$n" 2>/dev/null | "$NODE" -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write(JSON.parse(s).ticket.branch_name||"")}catch{}})')"
       h="$("$REALGIT" -C "$R" rev-parse "refs/heads/$b")"
+      if [ "$(cat "$CTL/race-mode" 2>/dev/null)" = verdict ]; then
+        # Another lane finished a review of this head after this lane's pick.
+        "$NODE" "$DCLI" --db "$DB" ticket lane-verdict "$n" --lane agent-review --verdict changes --commit "$h" --as system >"$CTL/race-approve.out" 2>&1
+        : > "$CTL/race-fired"; exec "$REALGIT" "$@"
+      fi
       "$NODE" "$DCLI" --db "$DB" review approve "$n" --as human --reviewer person --commit "$h" >"$CTL/race-approve.out" 2>&1
       "$REALGIT" -C "$R" -c user.email=p@p -c user.name=p merge -q --no-ff -m "merge #$n" "$b" >/dev/null 2>&1
       : > "$CTL/race-fired" ;;
@@ -247,7 +254,29 @@ if [ "$(st "$K")" = in_review ] && [ "$(count review "$HK")" = 0 ]; then
 else
   fail "5: setup: #$K is $(st "$K") with $(count review "$HK") reviews (calls: $(tr '\n' '|' < "$CALLS"))"
 fi
-rm -f "$CTL/race-armed"
+rm -f "$CTL/race-armed" "$CTL/race-fired"
+
+echo "== 5b. a head another lane reviewed between this lane's pick and its launch is not reviewed again =="
+Q="$(new_ticket "Reviewed by another lane" "v stays 1")"
+mkdir -p "$WORK/run-q" "$WORK/run-q2"
+for i in 1 2 3; do
+  ( cd "$RUNNER_DIR" && GAFFER_RUN_STATE_DIR="$WORK/run-q" PATH="$WORK/shim:$PATH" bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" ) >/dev/null
+  [ "$(st "$Q")" = in_review ] && [ -n "$(branch_head "$Q")" ] && [ "$(count tester "$(branch_head "$Q")")" -ge 1 ] && break
+done
+HQ="$(branch_head "$Q")"
+if [ "$(st "$Q")" = in_review ] && [ "$(count review "$HQ")" = 0 ]; then
+  printf '%s' "$Q" > "$CTL/race-ticket"; echo verdict > "$CTL/race-mode"; : > "$CTL/race-armed"
+  ( cd "$RUNNER_DIR" && GAFFER_RUN_STATE_DIR="$WORK/run-q2" PATH="$WORK/shim:$PATH" bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" ) >/dev/null
+  [ -e "$CTL/race-fired" ] && ok "5b: another lane's verdict landed after the pick" || fail "5b: the race never fired"
+  [ "$(count review "$HQ")" = 0 ] && ok "5b: this lane did not review the same head again" || fail "5b: ${HQ:0:12} reviewed $(count review "$HQ") times"
+  grep -q "REVIEW: #$Q head ${HQ:0:12} was reviewed by another lane since the pick" "$GAFFER_DATA/factory.log" \
+    && ok "5b: logged as reviewed by another lane" || fail "5b: no 'another lane' line"
+  [ ! -e "$GAFFER_DATA/worktrees/review-wt-$Q" ] && [ ! -e "$GAFFER_DATA/.review-$Q.lock.d" ] && ok "5b: no worktree or claim left" || fail "5b: worktree or claim left"
+else
+  fail "5b: setup: #$Q is $(st "$Q") with $(count review "$HQ") reviews"
+fi
+rm -f "$CTL/race-armed" "$CTL/race-mode" "$CTL/race-fired"
+wg ticket cancel "$Q" >/dev/null 2>&1 || wg wont-do "$Q" --reason done >/dev/null 2>&1 || true
 
 echo "== 6. a ticket merged WHILE the reviewer runs left review; it is not the reviewer's act =="
 J="$(new_ticket "Merged during its review" "v stays 1")"

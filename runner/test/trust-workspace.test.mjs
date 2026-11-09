@@ -10,10 +10,12 @@
 //      unrelated existing keys are preserved.
 //   2. INVALID target (not a git worktree / not under an expected root) → REFUSED,
 //      the config is left byte-identical.
-//   3. LOCK CONTENTION → FAIL SAFE: no write (does not race last-writer-wins).
+//   3. LOCK HELD BY A LIVE PROCESS → FAIL SAFE: no write (does not race
+//      last-writer-wins), and exit 3 so the runner launches no untrusted agent
+//      (stale-lock recovery is trust-workspace-lock.test.mjs).
 //   4. A committed `.claude/settings.local.json` in the target is NEUTRALIZED
 //      (regular file → {} with a .gaffer-orig backup; symlink → unlinked).
-//   5. UNPARSEABLE ~/.claude.json → refused, left untouched.
+//   5. UNPARSEABLE ~/.claude.json → refused, left untouched, exit 3 (not written).
 //   6. NON-DEFAULT GAFFER_DATA: dead worktree entries under $GAFFER_DATA/worktrees
 //      (no `/.gaffer/` in the path) are pruned too, live ones and unrelated dead
 //      paths are kept, and factory worktree entries are capped.
@@ -173,12 +175,13 @@ console.log("== 3) lock contention → FAIL SAFE (no write) ==");
   const home = freshHome();
   const seed = JSON.stringify({ projects: {} }, null, 2);
   writeFileSync(confPath(home), seed);
-  // Hold the lock so acquireLock can never win within the bounded spin.
-  writeFileSync(confPath(home) + ".gaffer-trust.lock", "");
+  // Hold the lock for a LIVE process (this test) so it is never stale: the run can
+  // never win within the bounded spin. (An empty lock is a dead run's and is taken over.)
+  writeFileSync(confPath(home) + ".gaffer-trust.lock", JSON.stringify({ pid: process.pid }) + "\n");
   const wtBase = join(ROOT, "wt3", "worktrees");
   const target = makeWorktree(join(wtBase, "ticket-1"), "repo");
   const r = runTrust(target, { home, root: wtBase });
-  assert("lock-contended run exits 0 (best-effort, no crash)", r.status === 0);
+  assert(`lock-contended run exits 3, trust not written (got ${r.status})`, r.status === 3);
   assert(
     "lock-contended run did NOT write (config unchanged)",
     readFileSync(confPath(home), "utf8") === seed,
@@ -246,7 +249,7 @@ console.log("== 5) unparseable ~/.claude.json → refused, left untouched ==");
   const wtBase = join(ROOT, "wt5", "worktrees");
   const target = makeWorktree(join(wtBase, "ticket-1"), "repo");
   const r = runTrust(target, { home, root: wtBase });
-  assert("unparseable config → soft-fail exit 0", r.status === 0);
+  assert(`unparseable config → exit 3, trust not written (got ${r.status})`, r.status === 3);
   assert("unparseable config left byte-identical", readFileSync(confPath(home), "utf8") === junk);
 }
 

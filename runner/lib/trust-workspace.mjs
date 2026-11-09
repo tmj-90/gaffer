@@ -26,15 +26,23 @@
 //     worktree entries whose directory no longer exists;
 //   • write to a temp file + atomic rename (the real file is never half-written);
 //   • a one-time backup (~/.claude.json.gaffer-bak) guards against a logic slip;
-//   • an O_EXCL lock SERIALISES concurrent factory deliveries — on lock contention
-//     we FAIL SAFE (skip the write) rather than race last-writer-wins.
+//   • an exclusive lock (lib/trust-lock.mjs) SERIALISES concurrent factory
+//     deliveries. It records its holder's pid and start identity; a lock whose holder
+//     is gone, that records no holder, or that is older than GAFFER_TRUST_LOCK_STALE_MS
+//     (default 60 s) is stale and taken over atomically (one line is logged). A LIVE
+//     holder is waited on for the bounded spin, then we skip the write rather than
+//     race last-writer-wins.
+//
+// EXIT CODES: 0 trust written; 2 usage or a refused target; 3 trust NOT written (the
+// lock stayed held, or ~/.claude.json could not be parsed). The runner treats any
+// non-zero exit as "this workspace is untrusted" and launches no agent there
+// (lib/tick-launch.sh gaffer_trust_workspace): an agent whose project permissions are
+// ignored cannot read its ticket, run the tests or commit, so it must not run at all.
 
 import {
   readFileSync,
   writeFileSync,
   renameSync,
-  openSync,
-  closeSync,
   unlinkSync,
   existsSync,
   copyFileSync,
@@ -42,6 +50,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
+import { acquireTrustLock } from "./trust-lock.mjs";
 
 const target = process.argv[2];
 if (!target || !target.startsWith("/")) {
@@ -54,8 +63,12 @@ const LOCK = CONF + ".gaffer-trust.lock";
 const TMP = CONF + ".gaffer-trust.tmp";
 const BAK = CONF + ".gaffer-bak";
 
+/** Exit code for "trust was NOT written": the caller must not launch an agent here. */
+const EXIT_NOT_WRITTEN = 3;
+
 // Lock spin bounds — env-tunable so tests can force fast contention. Defaults keep
-// the historical ~3s ceiling (60 × 50ms).
+// the historical ~3s ceiling (60 × 50ms). The stale bound: a lock older than this is
+// a hung or dead holder's and is taken over.
 const LOCK_TRIES =
   Number(process.env.GAFFER_TRUST_LOCK_TRIES) > 0
     ? Number(process.env.GAFFER_TRUST_LOCK_TRIES)
@@ -64,6 +77,10 @@ const LOCK_SLEEP_MS =
   Number(process.env.GAFFER_TRUST_LOCK_SLEEP_MS) > 0
     ? Number(process.env.GAFFER_TRUST_LOCK_SLEEP_MS)
     : 50;
+const LOCK_STALE_MS =
+  Number(process.env.GAFFER_TRUST_LOCK_STALE_MS) > 0
+    ? Number(process.env.GAFFER_TRUST_LOCK_STALE_MS)
+    : 60_000;
 
 /**
  * The roots under which a path is allowed to be trusted. An explicit
@@ -234,38 +251,6 @@ function neutralizeCommittedLocalSettings(dir) {
   }
 }
 
-/** Sleep synchronously (no deps) so the lock can spin without a busy loop. */
-function sleepMs(ms) {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-
-/**
- * Exclusive O_EXCL lock. Returns the fd on success, or undefined if it could not be
- * acquired (contended for the whole window, or an open error). Callers FAIL SAFE on
- * undefined — they must NOT proceed to write (no last-writer-wins race on the
- * operator's real config).
- */
-function acquireLock() {
-  for (let i = 0; i < LOCK_TRIES; i++) {
-    try {
-      return openSync(LOCK, "wx");
-    } catch (e) {
-      if (e.code !== "EEXIST") return undefined;
-      sleepMs(LOCK_SLEEP_MS);
-    }
-  }
-  return undefined; // contended → caller fails safe (does NOT write)
-}
-
-function releaseLock(fd) {
-  if (fd !== undefined) closeSync(fd);
-  try {
-    unlinkSync(LOCK);
-  } catch {
-    /* already gone */
-  }
-}
-
 // 1) VALIDATE before touching anything — refuse a path that isn't a factory worktree.
 if (!validateTarget(target)) process.exit(2);
 
@@ -280,14 +265,22 @@ if (process.env.GAFFER_TRUST_KEY_ONLY !== "1") {
   neutralizeCommittedLocalSettings(target);
 }
 
-// 3) Acquire the lock; FAIL SAFE (skip the write) on contention rather than racing.
-const fd = acquireLock();
-if (fd === undefined) {
+// 3) Acquire the lock (taking a stale one over); a LIVE holder for the whole spin means
+// we skip the write rather than race, and say so with EXIT_NOT_WRITTEN.
+const lock = acquireTrustLock(LOCK, {
+  tries: LOCK_TRIES,
+  sleepMs: LOCK_SLEEP_MS,
+  staleMs: LOCK_STALE_MS,
+});
+if (!lock.ok) {
+  const who = lock.holder?.pid ? `held by live pid ${lock.holder.pid}` : "held";
   console.error(
-    "trust-workspace: could not acquire lock (contended) — skipping the write to avoid a racy last-writer-wins update of ~/.claude.json",
+    `trust-workspace: could not acquire lock ${LOCK} (${who}); trust NOT written for ${target}. If no factory run is writing trust right now, remove the stale lock.`,
   );
-  process.exit(0); // best-effort: a possible prompt-hang beats a corrupted config
+  process.exit(EXIT_NOT_WRITTEN);
 }
+
+class NotWritten extends Error {}
 
 try {
   // Missing file → we may create it. Present-but-unparseable → REFUSE (never
@@ -305,8 +298,11 @@ try {
     try {
       conf = JSON.parse(raw);
     } catch {
-      console.error("trust-workspace: ~/.claude.json is not valid JSON — refusing to modify it");
-      process.exit(0); // soft-fail: the delivery may prompt, but the config is safe
+      console.error(
+        `trust-workspace: ${CONF} is not valid JSON; refusing to modify it, trust NOT written for ${target}`,
+      );
+      process.exitCode = EXIT_NOT_WRITTEN; // the finally below releases the lock first
+      throw new NotWritten();
     }
     if (!existsSync(BAK)) {
       try {
@@ -338,6 +334,8 @@ try {
 
   writeFileSync(TMP, JSON.stringify(conf, null, 2));
   renameSync(TMP, CONF); // atomic on the same filesystem
+} catch (e) {
+  if (!(e instanceof NotWritten)) throw e;
 } finally {
-  releaseLock(fd);
+  lock.release();
 }

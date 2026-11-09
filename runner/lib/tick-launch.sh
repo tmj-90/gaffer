@@ -15,10 +15,15 @@
 # `claude -p` agent HONOURS the installed .claude/settings.json permission
 # allowlist instead of hanging on a tool-permission prompt no one can answer
 # (Claude Code ignores project settings in an untrusted directory, and every
-# delivery runs in a fresh, never-trusted worktree). Best-effort: the PreToolUse
-# safety-hook is the real boundary, so a failure here only risks the OLD
-# prompt-hang behaviour — never a safety regression. Operator-endorsed fix
-# (configure ~/.claude.json) rather than --dangerously-skip-permissions.
+# delivery runs in a fresh, never-trusted worktree). The PreToolUse safety-hook is
+# the real boundary, but an agent whose project permissions are ignored cannot read
+# its ticket, run the tests, commit or record evidence (the live run that pinned this
+# auto-committed an untested scaffold and had it reviewed by an equally blind
+# reviewer). So it FAILS CLOSED: a non-zero trust-workspace.mjs exit for the worktree
+# or its main root returns 1 with _GAFFER_TRUST_ERROR set (trust_unwritable, the
+# stderr tail and the fix), and gaffer_install_agent_dir refuses the launch.
+# Operator-endorsed fix (configure ~/.claude.json) rather than
+# --dangerously-skip-permissions.
 # Echo the MAIN repo working tree for a git dir: for a LINKED worktree this is the
 # directory that holds the shared `.git` (the git-common-dir's parent); for a normal
 # repo root it is the dir itself. Empty on a non-git dir / failure. Pure — reads git
@@ -36,6 +41,7 @@ gaffer_git_main_worktree() {
 
 gaffer_trust_workspace() {
   local dir="$1"
+  _GAFFER_TRUST_ERROR=""
   [ -n "$dir" ] && [ -d "$dir" ] || return 0
   # The factory only ever names paths IT controls (a linked delivery worktree, or a
   # full repo it onboarded/created — PRIMARY_REPO, the clarify clone, the greenfield
@@ -43,23 +49,46 @@ gaffer_trust_workspace() {
   # worktrees are still validated strictly (under the worktree root) regardless.
   # GAFFER_DATA is passed so the prune of dead worktree entries knows this factory's
   # real worktree root ($GAFFER_DATA/worktrees) under a non-default data dir.
-  GAFFER_DATA="${GAFFER_DATA:-}" GAFFER_TRUST_ALLOW_REPO=1 node "$RUNNER_DIR/lib/trust-workspace.mjs" "$dir" 2>>"$GAFFER_LOG" \
-    || log "TRUST: could not pre-trust $dir (headless agent may hang on an MCP tool prompt)"
   # Claude Code keys a git WORKTREE's trust on its MAIN repo working tree (the
   # git-common-dir's parent), NOT the worktree path — so trusting only a linked
   # delivery worktree is IGNORED: the agent runs untrusted, the settings allowlist is
   # dropped, and its dispatch/memory MCP tools are never permitted (no evidence /
   # digest / lore writes during delivery). Also trust the main repo root when it
   # differs from the worktree. KEY_ONLY: the agent runs in the worktree (whose own
-  # settings.local.json the call above neutralized), so we only write the trust key
+  # settings.local.json the first call neutralized), so we only write the trust key
   # for the main root — never mutate the onboarded repo's working tree.
-  local main
+  local main path key_only errf rc tail fix
   main="$(gaffer_git_main_worktree "$dir")"
-  if [ -n "$main" ] && [ "$main" != "$dir" ] && [ -d "$main" ]; then
-    GAFFER_DATA="${GAFFER_DATA:-}" GAFFER_TRUST_ALLOW_REPO=1 GAFFER_TRUST_KEY_ONLY=1 \
-      node "$RUNNER_DIR/lib/trust-workspace.mjs" "$main" 2>>"$GAFFER_LOG" \
-      || log "TRUST: could not pre-trust main repo root $main (worktree $dir)"
-  fi
+  [ -n "$main" ] && [ "$main" != "$dir" ] && [ -d "$main" ] || main=""
+  for path in "$dir" ${main:+"$main"}; do
+    key_only=""
+    [ "$path" = "$dir" ] || key_only=1
+    errf="$(mktemp "${TMPDIR:-/tmp}/gaffer-trust.XXXXXX" 2>/dev/null)" || errf=""
+    if [ -n "$errf" ]; then
+      GAFFER_DATA="${GAFFER_DATA:-}" GAFFER_TRUST_ALLOW_REPO=1 GAFFER_TRUST_KEY_ONLY="$key_only" \
+        node "$RUNNER_DIR/lib/trust-workspace.mjs" "$path" 2>"$errf"
+      rc=$?
+      cat "$errf" >>"$GAFFER_LOG" 2>/dev/null || true
+      tail="$(tail -n 2 "$errf" 2>/dev/null | tr '\n' ' ' | cut -c1-300)"
+      rm -f "$errf"
+    else
+      GAFFER_DATA="${GAFFER_DATA:-}" GAFFER_TRUST_ALLOW_REPO=1 GAFFER_TRUST_KEY_ONLY="$key_only" \
+        node "$RUNNER_DIR/lib/trust-workspace.mjs" "$path" 2>>"$GAFFER_LOG"
+      rc=$?
+      tail="see $GAFFER_LOG"
+    fi
+    [ "$rc" -eq 0 ] && continue
+    case "$tail" in
+      *"not valid JSON"*) fix="fix ~/.claude.json (it is not valid JSON), then run again" ;;
+      *lock*) fix="remove the stale lock ~/.claude.json.gaffer-trust.lock if no factory run is writing trust right now, then run again" ;;
+      *refusing*) fix="the path is not a factory worktree or a repo the factory vouches for" ;;
+      *) fix="fix ~/.claude.json or remove its stale lock ~/.claude.json.gaffer-trust.lock, then run again" ;;
+    esac
+    _GAFFER_TRUST_ERROR="trust_unwritable: $path (exit $rc): ${tail% }; $fix"
+    log "TRUST: could not pre-trust $path${key_only:+ (main repo root of $dir)}: $_GAFFER_TRUST_ERROR"
+    return 1
+  done
+  return 0
 }
 
 # Raw prompt inputs + PROMPT (crew renders the text). Moved verbatim from tick.sh; called from tick.sh.
@@ -611,7 +640,11 @@ gaffer_tick_prepare_launch() {
     return 0
   }
   # Attempt 1's install (the retry loop re-runs it for every later attempt).
-  gaffer_install_agent_env || gaffer_abort_setup SAFETY "agent-env install failed for #$NUM — refusing live run (fail closed)"
+  if ! gaffer_install_agent_env; then
+    [ -n "${_GAFFER_TRUST_ERROR:-}" ] \
+      && gaffer_abort_setup TRUST "$_GAFFER_TRUST_ERROR; refusing live run for #$NUM, no agent launched (fail closed)"
+    gaffer_abort_setup SAFETY "agent-env install failed for #$NUM — refusing live run (fail closed)"
+  fi
   # Substitute the real DB paths into a RUNTIME copy OUTSIDE the repo. Writing into
   # $PRIMARY_REPO/.mcp.json breaks when the target repo IS the runner itself (source
   # == destination → the redirect truncates the file → "Invalid MCP configuration").

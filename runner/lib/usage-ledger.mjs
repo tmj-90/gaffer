@@ -396,7 +396,7 @@ export function appendUsageRecord(record, env = process.env) {
   }
   process.stderr.write(
     held
-      ? `WARNING: usage-ledger append FAILED${ticket} — the call's cost is not in the ledger ` +
+      ? `WARNING: usage-ledger append FAILED${ticket}: the call's cost is not in the ledger ` +
           `(UNMEASURED there, path: ${path}): ${reason}; its row is HELD in ${hold}, and budget ` +
           `admission refuses paid launches under a cap until it is booked: fix the ledger, then run ` +
           `\`node runner/lib/usage-ledger.mjs --reconcile --usd <amount>\`\n`

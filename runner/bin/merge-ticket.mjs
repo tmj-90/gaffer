@@ -2560,7 +2560,7 @@ function reconcileLanding({ ticketNumber, repoId, repoName, repoPath, defaultBra
   } else if (prUrl) via = "local-fallback";
   log(
     `#${ticketNumber}: ${repoName}'s approved commit ${String(d.pin).slice(0, 12)} is already in ` +
-      `${d.landedRef} but no landing was on record (an interrupted merge) — not merged again` +
+      `${d.landedRef} but no landing was on record (an interrupted merge); not merged again` +
       `${prUrl ? ", its PR not asked to merge again" : ""}; recording the landing (via ${via})`,
   );
   return recordLandingCli(ticketNumber, repoId, d.pin, via);
@@ -3420,7 +3420,7 @@ function main() {
       fail(
         `refusing to merge #${resolved.number}: ${repo.name}'s approved commit is already in ` +
           `${decision.landedRef} but its landing could not be recorded; nothing merged again, ` +
-          `ticket left ready_for_merge — run gaffer merge ${resolved.number} again`,
+          `ticket left ready_for_merge; run gaffer merge ${resolved.number} again`,
         4,
       );
       return;

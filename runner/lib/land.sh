@@ -25,7 +25,7 @@
 # merge) · 1 hold. Fail CLOSED: node or the helper missing, an unreadable DB, an unknown
 # ticket or an unresolvable branch head all HOLD. Sets _TB_KIND / _TB_REASON /
 # _TB_TESTED / _TB_REVIEWED / _TB_HEAD for the caller's log line.
-# [landed-ref]... — refs that show what the landing target already carries (LANDED
+# [landed-ref]...: refs that show what the landing target already carries (LANDED
 # UPSTREAM, NOT RECORDED: an approved commit already in one is _TB_KIND=landed-upstream,
 # _TB_LANDED_REF names the ref).
 _gaffer_land_tester_binding() {
@@ -93,7 +93,7 @@ _gaffer_land_record() {
 }
 
 # LANDED UPSTREAM, NOT RECORDED (external review 16): the refs that show what a repo's
-# landing target already carries, for the landing check — the default branch's
+# landing target already carries, for the landing check: the default branch's
 # remote-tracking ref, just fetched, for a repo with a PR (the provider merges it there;
 # the local default too only under GAFFER_PR_LOCAL_FALLBACK=1); the local default
 # otherwise. A failed fetch leaves the remote-tracking ref as it was: no shortcut is taken
@@ -136,12 +136,12 @@ _gaffer_land_reconcile() {
       *) via="local-fallback" ;;
     esac
   fi
-  log "$who: #$num $(basename "$repo"): approved commit ${_TB_PIN:0:12} is already in $_TB_LANDED_REF but no landing was on record (an interrupted merge) — not merged again${pr:+, its PR not asked to merge again}; recording the landing (via $via)"
+  log "$who: #$num $(basename "$repo"): approved commit ${_TB_PIN:0:12} is already in $_TB_LANDED_REF but no landing was on record (an interrupted merge); not merged again${pr:+, its PR not asked to merge again}; recording the landing (via $via)"
   if [ -n "$repo_id" ] && wg ticket record-landing "$num" --repo "$repo_id" --commit "$_TB_PIN" --via "$via" --as system >/dev/null 2>&1; then
     declare -F gaffer_manifest_annotate >/dev/null 2>&1 && gaffer_manifest_annotate "$num" --landed "$_TB_PIN"
     return 0
   fi
-  log "$who: #$num HELD — $(basename "$repo")'s approved commit is already in $_TB_LANDED_REF but its landing could not be recorded; nothing merged again — run gaffer merge $num"
+  log "$who: #$num HELD: $(basename "$repo")'s approved commit is already in $_TB_LANDED_REF but its landing could not be recorded; nothing merged again; run gaffer merge $num"
   return 1
 }
 
@@ -295,7 +295,7 @@ gaffer_land_delivery() {
   _lout="$(node "$RUNNER_DIR/bin/merge-ticket.mjs" --lock-hold --ticket "$_ln" --owner-pid "$_lown" 2>/dev/null </dev/null)" || _lrc=$?
   if [ "$_lrc" -ne 0 ]; then
     if [ "$_lrc" -eq 4 ]; then
-      log "$_lwho: #$_ln not landed: another merge of it is running (pid $(printf '%s' "$_lout" | jget 'd.pid || "?"' 2>/dev/null || echo '?')); nothing done here — that run lands it, or the next pass retries"
+      log "$_lwho: #$_ln not landed: another merge of it is running (pid $(printf '%s' "$_lout" | jget 'd.pid || "?"' 2>/dev/null || echo '?')); nothing done here; that run lands it, or the next pass retries"
     else
       log "$_lwho: #$_ln not landed: the per-ticket merge lock could not be taken (rc=$_lrc); nothing merged (fail closed)"
     fi

@@ -245,10 +245,10 @@ if [ "$(st "$K")" = in_review ] && [ "$(count review "$HK")" = 0 ]; then
   [ -e "$CTL/race-fired" ] && ok "5: the person approved and merged #$K after the pick ($(st "$K"))" || fail "5: the race never fired (no review worktree was created)"
   [ "$(count review "$HK")" = 0 ] && ok "5: the reviewer was not launched for a ticket no longer in review" || fail "5: ${HK:0:12} was reviewed $(count review "$HK") times"
   [ "$(tamper_notes)" = "$KN0" ] && ok "5: no 'reviewer modified the candidate' line" || fail "5: a tamper line was written: $(grep 'reviewer modified' "$GAFFER_DATA/factory.log" | tail -1)"
-  wg ticket show "$K" 2>/dev/null | grep -q "reviewer modified the candidate" \
+  grep -q "reviewer modified the candidate" <<<"$(wg ticket show "$K" 2>/dev/null)" \
     && fail "5: a 'reviewer modified the candidate' note is on #$K" || ok "5: no 'reviewer modified the candidate' note on #$K"
   [ "$(ledger_rows review "$K")" = 0 ] && ok "5: no review call is booked in the usage ledger for #$K" || fail "5: $(ledger_rows review "$K") review row(s) booked for #$K"
-  [ ! -e "$GAFFER_DATA/worktrees/review-wt-$K" ] && ! git -C "$R" worktree list | grep -q "review-wt-$K" \
+  [ ! -e "$GAFFER_DATA/worktrees/review-wt-$K" ] && ! grep -q "review-wt-$K" <<<"$(git -C "$R" worktree list)" \
     && ok "5: no review worktree left behind" || fail "5: review-wt-$K left behind"
   [ ! -e "$GAFFER_DATA/.review-$K.lock.d" ] && ok "5: the review claim is released" || fail "5: the review claim of #$K is left"
 else
@@ -288,7 +288,7 @@ HJ="$(git -C "$R" log --format=%H -1 --grep "merge #$J" main 2>/dev/null)"
 [ "$(tamper_notes)" = "$JN0" ] && ok "6: no 'reviewer modified the candidate' line" || fail "6: $(grep 'reviewer modified' "$GAFFER_DATA/factory.log" | tail -1)"
 grep -q "#$J.*left review during the review" "$GAFFER_DATA/factory.log" \
   && ok "6: the log says the ticket left review during the review" || fail "6: no 'left review' line: $(grep "agent review of #$J" "$GAFFER_DATA/factory.log" | tail -1)"
-wg ticket show "$J" 2>/dev/null | grep -q "reviewer modified the candidate" \
+grep -q "reviewer modified the candidate" <<<"$(wg ticket show "$J" 2>/dev/null)" \
   && fail "6: a 'reviewer modified the candidate' note is on #$J" || ok "6: no 'reviewer modified the candidate' note on #$J"
 git -C "$R" rev-parse --verify -q "refs/gaffer/review-tamper/$J" >/dev/null \
   && fail "6: the merge was kept as a reviewer tamper ref" || ok "6: nothing kept as a reviewer tamper ref"

@@ -413,6 +413,42 @@ function pidAlive(pid) {
     return e?.code === "EPERM"; // alive, owned by someone else
   }
 }
+/**
+ * The start time of process `pid` as the kernel counts it (/proc/<pid>/stat field 22,
+ * clock ticks since boot), or null where there is no /proc (macOS) or no such process.
+ * With the pid it names one process for good: a pid the kernel has handed to a new
+ * process since reads a different start time.
+ */
+export function pidStartTime(pid) {
+  const n = Number(pid);
+  if (!Number.isInteger(n) || n <= 0) return null;
+  try {
+    const stat = readFileSync(`/proc/${n}/stat`, "utf8");
+    // comm (field 2) may hold spaces or parentheses: the fields after it follow the LAST ")".
+    const rest = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+    const v = rest[19]; // field 22 = index 19 after state (field 3)
+    return v && /^\d+$/.test(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Is a reservation's launcher still running on this host (its call may be in flight)?
+ * A pid that is alive but whose start time differs from the one the reservation
+ * recorded is a reused pid: the launcher is gone. Without a recorded start time, or
+ * where /proc is absent, a live pid reads as the launcher (fail closed: the hold stays).
+ */
+export function launcherAlive(r, host = hostname()) {
+  if (!r || r.host !== host) return false;
+  if (!pidAlive(r.pid)) return false;
+  if (typeof r.pid_start === "string" && r.pid_start) {
+    const now = pidStartTime(r.pid);
+    if (now !== null && now !== r.pid_start) return false;
+  }
+  return true;
+}
+
 function ageMs(p) {
   try {
     return Date.now() - statSync(p).mtimeMs;
@@ -437,7 +473,14 @@ function reapLock(dir, seenPid) {
   }
   let reaped = false;
   try {
-    if (existsSync(dir) && readPid(dir) === seenPid) {
+    // Re-checked under the guard: the lock may have been reaped and taken again since
+    // it was seen. A pid-less lock must ALSO still be stale, or a fresh holder that has
+    // not written its pid yet would be reaped and two launches would both hold it.
+    if (
+      existsSync(dir) &&
+      readPid(dir) === seenPid &&
+      (seenPid !== "" || ageMs(dir) > LOCK_STALE_NOPID_MS)
+    ) {
       rmSync(dir, { recursive: true, force: true });
       reaped = true;
     }
@@ -556,6 +599,10 @@ export function reservePaidLaunch({
         pid: Number(pid) || process.pid,
         host: hostname(),
       };
+      // The launcher's start time where the OS exposes it, so a reconcile never takes a
+      // pid reused by another process for the launcher (lib/usage-ledger.mjs).
+      const st = pidStartTime(row.pid);
+      if (st !== null) row.pid_start = st;
       if (!appendRow(ledgerPath, row))
         return {
           ok: false,

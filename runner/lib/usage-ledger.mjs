@@ -61,7 +61,7 @@ import { appendFileSync } from "node:fs";
 import { readFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { resolveLedgerPath } from "./usage-ledger-path.mjs";
-import { RESERVATION_KIND, takePendingReservation } from "./budget-admission.mjs";
+import { RESERVATION_KIND, launcherAlive, takePendingReservation } from "./budget-admission.mjs";
 
 // Spec 3 / Phase 2: the claude-JSON envelope schema is owned by the worker seam.
 // This module keeps the LEDGER-RECORD shaping + honesty rules, but the raw parse +
@@ -461,19 +461,6 @@ const RESERVATION_ID_RE = /^r-[A-Za-z0-9-]{4,64}$/;
 export function withSettles(record, id) {
   if (typeof id !== "string" || !RESERVATION_ID_RE.test(id.trim())) return record;
   return { ...record, settles: id.trim() };
-}
-
-/** True when a reservation's launcher is still running on this host (its call may be in flight). */
-function launcherAlive(r) {
-  if (!r || r.host !== hostname()) return false;
-  const n = Number(r.pid);
-  if (!Number.isInteger(n) || n <= 0) return false;
-  try {
-    process.kill(n, 0);
-    return true;
-  } catch (e) {
-    return e?.code === "EPERM";
-  }
 }
 
 /**

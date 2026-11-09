@@ -31,6 +31,7 @@
 //   P9  the usage report shows reservations apart, never as calls
 //   P10 a reservation is never a reading: no cost fields, ignored by the estimators
 //   P11 a call that ran keeps its reservation; only one that never started releases it
+//   P12 the admission lock: a live holder is never reaped, a dead or stale one is
 //
 // Run: node test/budget-concurrency.test.mjs
 // =====================================================================
@@ -374,6 +375,54 @@ console.log("== P4: a reservation from a dead call keeps holding until reconcile
     "a reconcile leaves a live launcher's reservation open",
     JSON.stringify(last2),
   );
+  // PID REUSE (independent review of review 16): a reservation records its launcher's
+  // start time where the OS exposes it (/proc), so a dead launcher's pid that the kernel
+  // has handed to another live process is not taken for the launcher.
+  const { pidStartTime } = await import(ADMISSION);
+  const myStart = pidStartTime(process.pid);
+  if (myStart === null) {
+    ok("pid reuse: no /proc on this host, the live-pid rule alone applies (skipped)");
+  } else {
+    const host = (await import("node:os")).hostname();
+    const row = (id, pidStart) => ({
+      ts: new Date().toISOString(),
+      kind: "reservation",
+      launch_kind: "delivery",
+      reservation_id: id,
+      reserved_usd: 0.1,
+      pid: process.pid,
+      pid_start: pidStart,
+      host,
+      measured: false,
+    });
+    w.write([...w.rows(), row("r-same-start", myStart), row("r-reused-pid", `${myStart}1`)]);
+    spawnSync(process.execPath, [LEDGER_MOD, "--reconcile", "--usd", "0.01"], {
+      env,
+      encoding: "utf8",
+    });
+    const swept = w.rows().at(-1).settles_reservations || [];
+    check(
+      swept.includes("r-reused-pid") && !swept.includes("r-same-start"),
+      "pid reuse: a live pid with another start time is not the launcher (swept); the same start time is (kept)",
+      JSON.stringify(swept),
+    );
+  }
+  // A reservation booked through the seam records the start time where /proc has it.
+  const w3 = world();
+  spawnSync(
+    process.execPath,
+    [ADMISSION, "reserve", "--kind", "decompose", "--pid", String(process.pid)],
+    {
+      env: { ...w3.env, GAFFER_DAILY_BUDGET_USD: "1" },
+      encoding: "utf8",
+    },
+  );
+  const booked = w3.rows().find((r) => r.reservation_id);
+  check(
+    booked && (myStart === null ? booked.pid_start === undefined : booked.pid_start === myStart),
+    "the reservation row names its launcher's start time where the OS exposes it",
+    JSON.stringify(booked),
+  );
 }
 
 console.log("== P5: both launch paths at once (worker.sh delivery + worker.mjs planner) ==");
@@ -666,6 +715,61 @@ console.log(
       `rc=${r.status} calls=${w.calls()} rows=${JSON.stringify(rows)}`,
     );
   }
+}
+
+console.log("== P12: the admission lock's holder rules (independent review of review 16) ==");
+{
+  // A live holder is never reaped (the launch is refused at the timeout, never admitted);
+  // a dead holder is reaped; a pid-less lock is reaped only once it is stale.
+  const { utimesSync } = await import("node:fs");
+  const w = world();
+  const env = { ...w.env, GAFFER_DAILY_BUDGET_USD: "1", GAFFER_LOCK_TIMEOUT: "1" };
+  const lock = `${w.ledger}.admit.lock.d`;
+  const reserve = () =>
+    spawnSync(process.execPath, [ADMISSION, "reserve", "--kind", "decompose"], {
+      env,
+      encoding: "utf8",
+    });
+  const hold = (pid, ageS = 0) => {
+    rmSync(lock, { recursive: true, force: true });
+    mkdirSync(lock);
+    if (pid !== null) writeFileSync(join(lock, "pid"), String(pid));
+    if (ageS) {
+      const t = new Date(Date.now() - ageS * 1000);
+      utimesSync(lock, t, t);
+    }
+  };
+  hold(process.pid);
+  let r = reserve();
+  check(
+    r.status === 3 && /lock/.test(r.stdout) && w.rows().length === 0,
+    "a lock held by a live process: refused at the timeout, nothing reserved",
+    `rc=${r.status} ${r.stdout}`,
+  );
+  const dead = spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], {
+    encoding: "utf8",
+  }).stdout;
+  hold(dead);
+  r = reserve();
+  check(
+    r.status === 0 && w.rows().length === 1 && !existsSync(lock),
+    "a lock whose holder is dead is reaped: admitted and reserved",
+    `rc=${r.status} ${r.stdout}`,
+  );
+  hold(null);
+  r = reserve();
+  check(
+    r.status === 3,
+    "a fresh pid-less lock is not reaped (its holder may be writing its pid)",
+    `rc=${r.status}`,
+  );
+  hold(null, 60);
+  r = reserve();
+  check(
+    r.status === 0 && !existsSync(lock),
+    "a stale pid-less lock is reaped",
+    `rc=${r.status} ${r.stdout}`,
+  );
 }
 
 console.log("");

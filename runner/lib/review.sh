@@ -609,8 +609,10 @@ EOF
       _RSHOW_AFTER="$(wg ticket show "$RNUM" 2>/dev/null || echo '{}')"
       _rstat_after="$(printf '%s' "$_RSHOW_AFTER" | jget 'd.ticket.status || ""' 2>/dev/null || echo '')"
       _rtrans_after="$(printf '%s' "$_RSHOW_AFTER" | jget '(d.events||[]).filter(e => e && e.event_type === "ticket.transitioned").length' 2>/dev/null || echo '')"
-      if [ "$_rstat_after" != "in_review" ] || { [ -n "$_RTRANS0" ] && [ "$_rtrans_after" != "$_RTRANS0" ]; }; then
-        _R_LEFT="the ticket left review during the review: ${_rstat_after:-unknown}"
+      # Only a ticket view that was READ can say the ticket left: an unreadable one (a
+      # dispatch hiccup) proves nothing, so the reviewer checks below then apply in full.
+      if [ -n "$_rstat_after" ] && { [ "$_rstat_after" != "in_review" ] || { [ -n "$_RTRANS0" ] && [ "$_rtrans_after" != "$_RTRANS0" ]; }; }; then
+        _R_LEFT="the ticket left review during the review: $_rstat_after"
       fi
       _rnow="$(git -C "$RREPO" rev-parse --verify --quiet "refs/heads/$RBRANCH^{commit}" 2>/dev/null || true)"
       if [ -z "$_R_LEFT" ] && [ "$_rnow" != "$RSHA" ]; then
@@ -646,11 +648,13 @@ EOF
         R_PRIMARY_VERDICT=held; R_PRIMARY_HELD="$R_HELD_REASON"
         [ -n "$R_SECURITY" ] && R_SECURITY=held
       elif [ -n "$_R_LEFT" ]; then
-        # The reviewer's verdict about RSHA stands as its lane verdict (a measurement), but
-        # nothing acts on it: the ticket is no longer the one it judged.
+        # Nothing acts on the reviewer's verdict: the ticket is no longer the one it judged.
+        # Its lane verdict is recorded as held, so a verdict nothing acted on never marks the
+        # commit reviewed (should the ticket come back on it, it is reviewed then).
         log "REVIEW: #$RNUM $_R_LEFT; the reviewer's verdict ($R_VERDICT) is not acted on"
         R_HELD_REASON="$_R_LEFT"
         R_VERDICT=held
+        R_PRIMARY_HELD="$_R_LEFT (the reviewer said: $R_PRIMARY_VERDICT)"; R_PRIMARY_VERDICT=held
       fi
       # LANE VERDICTS (MF2): what each judging lane concluded about RSHA, as system events,
       # so whether a lane changed the decision is computable. A measurement, fail-soft;

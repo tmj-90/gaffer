@@ -170,6 +170,7 @@ new_ticket() { local n; n="$(wg ticket create -t "$1" -d "$2" --risk low 2>/dev/
 branch_head() { local b; b="$(wg ticket show "$1" 2>/dev/null | jget 'd.ticket.branch_name || ""')"; [ -n "$b" ] && git -C "$R" rev-parse --verify -q "refs/heads/$b"; }
 count() { grep -c "^$1 $2\$" "$CALLS" 2>/dev/null; }
 line_of() { grep -n "^$1 $2\$" "$CALLS" 2>/dev/null | head -1 | cut -d: -f1; }
+ledger_rows() { node -e 'const fs=require("fs");let n=0;try{for(const l of fs.readFileSync(process.argv[1],"utf8").split("\n")){if(!l.trim())continue;try{const r=JSON.parse(l);if(r.kind===process.argv[2]&&Number(r.ticket)===Number(process.argv[3]))n++}catch{}}}catch{}process.stdout.write(String(n))' "$GAFFER_DATA/usage-ledger.jsonl" "$1" "$2"; }
 tamper_notes() { { grep -c "reviewer modified the candidate" "$GAFFER_DATA/factory.log" 2>/dev/null || true; } | head -1; }
 
 echo "== 1-2. one delivery, two daemon passes =="
@@ -239,6 +240,10 @@ if [ "$(st "$K")" = in_review ] && [ "$(count review "$HK")" = 0 ]; then
   [ "$(tamper_notes)" = "$KN0" ] && ok "5: no 'reviewer modified the candidate' line" || fail "5: a tamper line was written: $(grep 'reviewer modified' "$GAFFER_DATA/factory.log" | tail -1)"
   wg ticket show "$K" 2>/dev/null | grep -q "reviewer modified the candidate" \
     && fail "5: a 'reviewer modified the candidate' note is on #$K" || ok "5: no 'reviewer modified the candidate' note on #$K"
+  [ "$(ledger_rows review "$K")" = 0 ] && ok "5: no review call is booked in the usage ledger for #$K" || fail "5: $(ledger_rows review "$K") review row(s) booked for #$K"
+  [ ! -e "$GAFFER_DATA/worktrees/review-wt-$K" ] && ! git -C "$R" worktree list | grep -q "review-wt-$K" \
+    && ok "5: no review worktree left behind" || fail "5: review-wt-$K left behind"
+  [ ! -e "$GAFFER_DATA/.review-$K.lock.d" ] && ok "5: the review claim is released" || fail "5: the review claim of #$K is left"
 else
   fail "5: setup: #$K is $(st "$K") with $(count review "$HK") reviews (calls: $(tr '\n' '|' < "$CALLS"))"
 fi
@@ -258,6 +263,13 @@ wg ticket show "$J" 2>/dev/null | grep -q "reviewer modified the candidate" \
   && fail "6: a 'reviewer modified the candidate' note is on #$J" || ok "6: no 'reviewer modified the candidate' note on #$J"
 git -C "$R" rev-parse --verify -q "refs/gaffer/review-tamper/$J" >/dev/null \
   && fail "6: the merge was kept as a reviewer tamper ref" || ok "6: nothing kept as a reviewer tamper ref"
+[ "$(ledger_rows review "$J")" = 1 ] && ok "6: the review that ran is booked once in the usage ledger" || fail "6: $(ledger_rows review "$J") review rows for #$J"
+[ ! -e "$GAFFER_DATA/worktrees/review-wt-$J" ] && ok "6: no review worktree left behind" || fail "6: review-wt-$J left behind"
+# Nothing acted on the reviewer's verdict, so its lane verdict is held: the commit is not
+# marked reviewed by a verdict nobody used.
+_LVJ="$(wg ticket show "$J" 2>/dev/null | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const v=JSON.parse(s);const r=(v.events||[]).filter(e=>e.event_type==="ticket.lane_verdict").map(e=>JSON.parse(e.payload_json||"{}")).filter(p=>p.lane==="agent-review").pop()||{};process.stdout.write(String(r.verdict||""))})')"
+[ "$_LVJ" = held ] && ok "6: the unused verdict is recorded as held" || fail "6: agent-review lane verdict on #$J is '$_LVJ'"
+
 echo "== 7. a rework that resubmits the same commit after CHANGES is not reviewed again, nor stranded =="
 echo CHANGES > "$CTL/review-verdict"
 # 7a. AFK: the approve gate is earned (the env floor), so a CHANGES verdict reworks.

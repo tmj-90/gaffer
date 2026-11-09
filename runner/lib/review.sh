@@ -66,6 +66,15 @@ _gaffer_review_wanted() {
       if ! grep -qxF "$n"$'\t'"$why" "$_RWAITS_FILE" 2>/dev/null; then
         log "REVIEW: #$n not agent-reviewed yet: the tester has not had its say on ${head:0:12} ($why)"
         _gaffer_locked .skip.lock _gaffer_append_line "$_RWAITS_FILE" "$n"$'\t'"$why"
+        # A head dispatch cannot read does not clear by waiting (a write repo's checkout is
+        # missing): say so on the ticket, once per head, so the wait is not silent.
+        case "$why" in
+          *"[head_unreadable]")
+            if [ "$(printf '%s' "$RSHOW" | R="agent review waits: the tester cannot read $head" jget '(d.evidence||[]).some(e => (e.summary||"").startsWith(process.env.R)) ? "1" : ""' 2>/dev/null)" != "1" ]; then
+              wg attach-evidence "$n" --type manual_note \
+                --summary "agent review waits: the tester cannot read $head (${why% \[head_unreadable\]}); no review until it can, needs a human" >/dev/null 2>&1 || true
+            fi ;;
+        esac
       fi
       return 1 ;;
     *) return 1 ;;

@@ -340,7 +340,7 @@ _FB="$(wg ticket show "$N_AUTO" 2>/dev/null | jget 'd.ticket.last_review_feedbac
 case "$_FB" in *tester_failed:*"habit add is a no-op"*) ok "3b: the tester's observation is the rework feedback" ;; *) fail "3b: feedback lacks the tester's observation: '$(printf '%s' "$_FB" | cut -c1-200)'" ;; esac
 grep -q "TESTER: #$N_AUTO FAIL re-queued for REWORK" "$GAFFER_DATA/factory.log" && ok "3b: the lane logged the rework route" || fail "3b: no rework log line for #$N_AUTO"
 # The rework comes back into in_testing IN THE SAME RUN (tester first, straight from its
-# gates): the tester must test it again (a recorded verdict is not a per-run skip — that
+# gates): the tester must test it again (a recorded verdict is not a per-run skip: that
 # deadlocked a live run), and the reviewer then approves the tested head.
 echo PASS > "$WORK/tester-verdict"
 REVIEW_MODE=agent run_tick >/dev/null

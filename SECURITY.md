@@ -156,7 +156,7 @@ the agent CLI honours the project's `.claude/settings.json` permissions
 held by a live process, `~/.claude.json` is not valid JSON, or the path is refused), no
 agent is launched there: a delivery or bootstrap ends the tick as a setup error with
 `trust_unwritable` and the fix, the review pass holds the ticket for a human, and the
-clarify pass and the independent tester refuse to start. A lock
+clarify pass, the independent tester and the merge-conflict resolver refuse to start. A lock
 left by a run that is gone, one that records no holder, or one older than
 `GAFFER_TRUST_LOCK_STALE_MS` (60 s) is taken over.
 

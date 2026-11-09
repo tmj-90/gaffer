@@ -106,6 +106,7 @@ import { acquireTicketLock, resolveTicket } from "./merge-ticket.mjs";
 import { agentChildEnv, buildClaudeArgv, renderPoMcpRuntime } from "./product-owner-run.mjs";
 import { selectForRole, stackPackNote, ticketStacks } from "./select-skills.mjs";
 import { recordSkillUsage } from "./record-skill-usage.mjs";
+import { trustAgentWorkspace } from "../lib/trust-agent-workspace.mjs";
 import {
   detectUsageLimit,
   extractResultText,
@@ -1402,43 +1403,6 @@ export function installTesterAgentDir(worktree, ticketNumber, stack) {
   return names;
 }
 
-/**
- * Mark the tester's worktree trusted in ~/.claude.json (lib/trust-workspace.mjs), and
- * the repo root its trust is keyed on, so the agent CLI honours the settings.json
- * permissions installTesterAgentDir wrote; untrusted, the tester could not run the
- * repo's scripts. Throws `trust_unwritable: …` when a write was skipped (exit 3: the
- * lock held by a live process, or an unparseable config; 2: a refused path): no agent
- * runs with its project permissions ignored, so the caller refuses the spawn.
- */
-export function trustTesterWorkspace(worktree, mainRoot) {
-  const script = resolve(RUNNER_DIR, "lib", "trust-workspace.mjs");
-  const targets = [[worktree, ""]];
-  if (mainRoot && resolve(mainRoot) !== resolve(worktree)) targets.push([mainRoot, "1"]);
-  for (const [path, keyOnly] of targets) {
-    const r = spawnSync(process.execPath, [script, path], {
-      encoding: "utf8",
-      timeout: 30_000,
-      env: {
-        ...process.env,
-        GAFFER_DATA,
-        GAFFER_TRUST_ALLOW_REPO: "1",
-        GAFFER_TRUST_KEY_ONLY: keyOnly,
-      },
-    });
-    const err = String(r.stderr ?? "").trim();
-    if (err) log(err);
-    if (r.status !== 0) {
-      const tail = err.split("\n").slice(-2).join(" ").slice(0, 300);
-      const fix = /not valid JSON/.test(tail)
-        ? "fix ~/.claude.json (it is not valid JSON)"
-        : "remove the stale lock ~/.claude.json.gaffer-trust.lock if no factory run is writing trust right now, or fix ~/.claude.json";
-      throw new Error(
-        `trust_unwritable: ${path} (exit ${r.status ?? r.signal}): ${tail || "no output"}; ${fix}`,
-      );
-    }
-  }
-}
-
 function git(cwd, ...args) {
   return spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
 }
@@ -1527,7 +1491,9 @@ function runLiveTester(context) {
   let mcpRuntime;
   try {
     skills = installTesterAgentDir(worktree, n, testerStacks(resolved));
-    trustTesterWorkspace(worktree, repo.localPath);
+    // No agent runs with its project permissions ignored: a trust write that was skipped
+    // throws trust_unwritable and the catch below refuses the spawn.
+    trustAgentWorkspace(worktree, { gafferData: GAFFER_DATA, log });
     const rendered = renderPoMcpRuntime(readFileSync(CONFIG.mcpConfig, "utf8"), {
       dispatchDb: CONFIG.dispatchDb,
       memoryDb: CONFIG.memoryDb,

@@ -135,7 +135,7 @@ grep -q "trust_unwritable.*not valid JSON" "$GAFFER_DATA/factory.log" \
   && ok "C: the log quotes trust-workspace's stderr" || fail "C: no trust_unwritable line quoting the cause: $(grep -E 'TRUST' "$GAFFER_DATA/factory.log" | tail -3 | tr '\n' '|')"
 grep -q "trust_unwritable.*fix ~/.claude.json" "$GAFFER_DATA/factory.log" \
   && ok "C: the log names the fix" || fail "C: the trust_unwritable line names no fix"
-wg ticket show "$NB" 2>/dev/null | grep -q "trust_unwritable" \
+grep -q "trust_unwritable" <<<"$(wg ticket show "$NB" 2>/dev/null)" \
   && ok "C: the release reason on the ticket says trust_unwritable" || fail "C: no trust_unwritable in #$NB's trail"
 
 echo "== D. a lock held by a LIVE process → the same refusal, the fix names the lock =="

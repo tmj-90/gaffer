@@ -7,7 +7,7 @@
 # A live run had its final strong-model attempt killed by the outer bound mid-flight:
 # spend wasted, no TICK_RESULT, and the branch this tick created deleted by the trap.
 # Real tick.sh + stub agent (lib/stub-tick.sh), GAFFER_TICK_TIMEOUT=10, a DoD test
-# that takes 10s and fails differently every run, under a 35s outer bound exactly as
+# that takes 10s and fails differently every run, under a 42s outer bound exactly as
 # loop.sh wraps a tick:
 #   D1. the tick ends on its own with a TICK_RESULT (not killed: rc 124/143)
 #   D2. the next attempt is handed off: branch kept, ticket released to ready and
@@ -38,11 +38,18 @@ source "$HERE/lib/stub-tick.sh"
 RS="$WORK/slow"; mkrepo "$RS"
 wg repo add -n slow --path "$RS" --branch main --stack node --test 'sleep 10; echo "fail-$RANDOM"; exit 1' --lint "node -e 0" >/dev/null 2>&1
 slow_ticket() { local n; n="$(wg ticket create -t "$1" -d "deliver a helper" --risk low 2>/dev/null | jget 'd.ticket.number')"; wg ac add "$n" -t "helper added" >/dev/null 2>&1; wg ticket repo-access set "$n" slow --access write --relation confirmed >/dev/null 2>&1; wg ticket ready "$n" >/dev/null 2>&1; printf '%s' "$n"; }
-bounded_tick() {  # [NAME=value] — one tick under the 35s outer bound, like loop.sh; prints rc + result
+# One tick under a 42s outer bound, like loop.sh; prints rc + result. The margin is
+# 10s, not the production 60s, so the handoff is reached inside the bound: attempt 1's
+# gates take 10s, attempt 2 would need another ~20s, and the guard hands off when less
+# than that plus the margin is left. The margin is what the handoff's own record,
+# release and teardown get before the bound reaps the tick; 5s was not enough on a
+# loaded macOS runner running three tests at once (nightly, 7ad41e2), where the tick
+# handed off and was then killed mid-teardown (D1 rc=124 with every D2 check passing).
+bounded_tick() {  # [NAME=value]
   local out rc
-  out="$( cd "$RUNNER_DIR" && export GAFFER_TICK_TIMEOUT=10 GAFFER_TICK_OUTER_TIMEOUT=35 GAFFER_TICK_DEADLINE_MARGIN=5 \
+  out="$( cd "$RUNNER_DIR" && export GAFFER_TICK_TIMEOUT=10 GAFFER_TICK_OUTER_TIMEOUT=42 GAFFER_TICK_DEADLINE_MARGIN=10 \
           GAFFER_REAP_GRACE=3 GAFFER_DOD_INSTALL=0 && { [ -z "${1:-}" ] || export "$1"; } \
-          && gaffer_timeout 35 bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" )"; rc=$?
+          && gaffer_timeout 42 bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" )"; rc=$?
   printf 'rc=%s %s\n' "$rc" "$(printf '%s\n' "$out" | grep '^TICK_RESULT=' | tail -1)"
 }
 echo deliver > "$MODE"

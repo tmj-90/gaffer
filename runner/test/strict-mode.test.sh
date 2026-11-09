@@ -43,12 +43,28 @@ mkdir -p "$GAFFER_DATA" "$WORKTREE"
 # The "escape" target must be a path the profile does NOT make writable. Temp
 # dirs ARE intentionally writable (build/test tools need them), so a meaningful
 # escape target lives OUTSIDE the worktree, GAFFER_DATA, temp, and (empty here)
-# STRICT_ALLOW_HOME — we use a unique dir under $HOME. This mirrors the real
-# threat: the agent writing into the human's home / another repo.
-OUTSIDE="$HOME/.gaffer-strict-escape-test.$$"
-mkdir -p "$OUTSIDE"
+# STRICT_ALLOW_HOME: a unique dir under the operator's HOME. This mirrors the real
+# threat: the agent writing into the human's home / another repo. Under run.sh the
+# test's own HOME is a private dir inside the temp root (GAFFER_RUN_OPERATOR_HOME
+# names the real one), so a target under $HOME would be writable by design and the
+# two escape checks below would pass for the wrong reason.
+OUTSIDE_HOME="${GAFFER_RUN_OPERATOR_HOME:-$HOME}"
+OUTSIDE="$OUTSIDE_HOME/.gaffer-strict-escape-test.$$"
+mkdir -p "$OUTSIDE" || exit 70
+OUTSIDE="$(cd "$OUTSIDE" && pwd -P)" || exit 70
+[ -n "$OUTSIDE" ] || exit 70
+# Self-check: the target must not sit under any root the profile grants writes to.
+_under() { case "$1" in "$2"|"$2"/*) return 0 ;; esac; return 1; }
+for _root in "$(cd "${TMPDIR:-/tmp}" 2>/dev/null && pwd -P)" /private/var/folders /tmp /private/tmp "$WORK"; do
+  [ -n "$_root" ] && _under "$OUTSIDE" "${_root%/}" && {
+    echo "FAIL: the escape target $OUTSIDE lies under the writable root $_root (the test would prove nothing)"
+    rmdir "$OUTSIDE" 2>/dev/null; exit 1
+  }
+done
 
-cleanup() { gaffer_test_rm_work "$WORK" "$OUTSIDE"; }
+# The escape dir is not under a temp root, so its removal is the --anywhere form
+# (which still refuses HOME itself, the start dir, the repo root and their ancestors).
+cleanup() { gaffer_test_rm_work "$WORK"; gaffer_test_rm_work --anywhere "$OUTSIDE"; }
 trap cleanup EXIT
 
 # Minimal config the seam reads, then source ONLY the provider lib (no full

@@ -497,7 +497,10 @@ console.log("== P7: a launch refused after admission releases its reservation ==
   const w = world();
   // The command provider with no sandbox the runner can use: refused (75) after the
   // budget admission, before any program runs. Its program lives outside the call's
-  // write root (the launcher's cwd), as the provider requires.
+  // write root (the launcher's cwd), as the provider requires. SANDBOX_PROVIDER=none
+  // pins the host: on one with a docker daemon (CI's ubuntu runners) the provider would
+  // be detected, the launch wrapped, and the container's own failure would not be the
+  // refusal this case is about.
   const cwd = join(w.dir, "cwd");
   mkdirSync(cwd, { recursive: true });
   const env = {
@@ -505,6 +508,7 @@ console.log("== P7: a launch refused after admission releases its reservation ==
     GAFFER_DAILY_BUDGET_USD: "1",
     GAFFER_WORKER_PROVIDER: "command",
     GAFFER_WORKER_COMMAND: w.stub,
+    SANDBOX_PROVIDER: "none",
   };
   delete env.GAFFER_STRICT_REQUIRE;
   const r = spawnSync(

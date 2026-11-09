@@ -375,8 +375,11 @@ function readingOf(
     text:
       `The judge does not separate accepted from rejected work here, over ${n} blind decisions (AUC ${r.auc ?? "n/a"}; ` +
       `${rates}; it needs AUC >= ${THRESHOLDS.minAuc} and warned work rejected at least ` +
-      `${THRESHOLDS.minRelativeRisk}x as often as passed work). Its model call is not paying ` +
-      "for itself on this factory; read the misses before changing the judge model or turning it off.",
+      `${THRESHOLDS.minRelativeRisk}x as often as passed work). Its grade is not telling the ` +
+      "reviewer anything the decisions do not already show; read the misses before changing the " +
+      "judge model or turning it off. Whether the call is worth its cost is a separate question " +
+      "this report does not answer: that needs reviewer time and escaped defects measured with " +
+      "and without it.",
   };
 }
 

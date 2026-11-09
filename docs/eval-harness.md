@@ -374,8 +374,11 @@ out of the headline.
 accepted or 5 rejected, it says there is not enough data to tell. Above that, the
 judge *separates* when the AUC is at least 0.7 and the work it warned of was rejected
 at least 1.5 times as often as the work it passed (any rejection after a warning
-counts when nothing it passed was rejected); otherwise it *does not separate*, and its
-call is not paying for itself on that factory. The comparison is with the pass
+counts when nothing it passed was rejected); otherwise it *does not separate*: its grade
+is not telling the reviewer anything the decisions do not already show. That is a
+reading of its predictive use, not of its worth: whether the judge's call pays for
+itself needs reviewer time and escaped defects measured with and without it, which
+this report does not do. The comparison is with the pass
 verdicts, not the base rate, because a lift over the base rate can be at most one over
 that rate: on a factory that sends back two thirds of its deliveries, even a judge
 that warned of every rejection and nothing else would read a lift of 1.5 at best. The

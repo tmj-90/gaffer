@@ -135,8 +135,12 @@ export function ledgerSpend(env = process.env, now = new Date()) {
   const day = now.toISOString().slice(0, 10);
   let today = 0;
   let lifetime = 0;
-  // Unknown-cost rows booked today since the last operator reconcile row.
+  // Unknown-cost rows since the last operator reconcile row: those booked today (they
+  // hold the DAILY cap) and all of them, whatever the day (they hold the LIFETIME cap: a
+  // call whose cost was never established does not become free when the UTC day turns;
+  // external review 15).
   let unknownToday = 0;
+  let unknownAll = 0;
   for (const raw of text.split("\n")) {
     const line = raw.trim();
     if (!line) continue;
@@ -166,11 +170,15 @@ export function ledgerSpend(env = process.env, now = new Date()) {
     if (isToday) today += c;
     // Only a reconcile row that booked a positive figure clears the unknown rows before
     // it: one at $0 (hand-written, or from an older writer) would count them as free.
-    if (r.kind === "reconcile" && r.estimated === true && finitePos(r.estimated_cost_usd))
+    if (r.kind === "reconcile" && r.estimated === true && finitePos(r.estimated_cost_usd)) {
       unknownToday = 0;
-    else if (isToday && isUnknownCostRow(r)) unknownToday += 1;
+      unknownAll = 0;
+    } else if (isUnknownCostRow(r)) {
+      unknownAll += 1;
+      if (isToday) unknownToday += 1;
+    }
   }
-  return { today, lifetime, unknownToday };
+  return { today, lifetime, unknownToday, unknownAll };
 }
 
 /**
@@ -216,6 +224,16 @@ export function paidLaunchAdmission({ kind = "worker", env = process.env, now = 
       kind,
       unknownCost: spend.unknownToday,
       reason: `a budget cap is set but the spend cannot be established: the usage ledger holds ${spend.unknownToday} call(s) today with no reported cost and no estimate, so the paid ${kind} launch is refused (fail closed); ${RECONCILE_HINT}`,
+    };
+  // The lifetime cap counts every day, so an unknown-cost row from an earlier day holds
+  // it until the operator books the cost: the day turning over clears the daily hold
+  // only (external review 15).
+  if (caps.lifetime !== null && spend.unknownAll > 0)
+    return {
+      ok: false,
+      kind,
+      unknownCost: spend.unknownAll,
+      reason: `the lifetime budget (GAFFER_BUDGET_USD=${caps.lifetime}) cannot be checked: the usage ledger holds ${spend.unknownAll} call(s) from an earlier day with no reported cost and no estimate, so the paid ${kind} launch is refused (fail closed); book what those calls cost with \`node runner/lib/usage-ledger.mjs --reconcile --usd <amount>\` (it counts toward the caps)`,
     };
   const daily = caps.daily === null ? null : { cap: caps.daily, spent: spend.today };
   const lifetime = caps.lifetime === null ? null : { cap: caps.lifetime, spent: spend.lifetime };

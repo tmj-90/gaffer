@@ -1298,9 +1298,46 @@ console.log("== review14/1: a successful call with no dollar total never counts 
       }) + "\n",
     );
     assert(
-      "an unknown row from an earlier day does not refuse today",
+      "an unknown row from an earlier day does not refuse today under a daily cap alone",
       paidLaunchAdmission({ kind: "delivery", env: envFor(d) }).ok === true,
     );
+    // External review 15: the LIFETIME cap counts every day, so yesterday's unknown row
+    // holds it (the day turning over clears the daily hold only) until a reconcile books
+    // the cost; the spend before that is still $0, so this is the hold, not the cap.
+    // Its own ledger, so the reconcile here does not count in the daily cases below.
+    const l = mk("lifetime-hold");
+    try {
+      writeFileSync(
+        join(l, LEDGER_FILENAME),
+        JSON.stringify({
+          ts: yesterday,
+          kind: "delivery",
+          measured: false,
+          total_cost_usd: "unknown",
+        }) + "\n",
+      );
+      const life = { ...envFor(l), GAFFER_DAILY_BUDGET_USD: "", GAFFER_BUDGET_USD: "1.00" };
+      const held = paidLaunchAdmission({ kind: "delivery", env: life });
+      assert(
+        `an unknown row from an earlier day holds a lifetime cap (ok=${held.ok}: ${held.reason})`,
+        held.ok === false &&
+          /lifetime budget/.test(String(held.reason)) &&
+          /earlier day/.test(String(held.reason)) &&
+          /--reconcile/.test(String(held.reason)),
+      );
+      const lifeRec = spawnSync(process.execPath, [MOD, "--reconcile", "--usd", "0.10"], {
+        env: life,
+        encoding: "utf8",
+      });
+      assert(`the lifetime hold is reconciled (${lifeRec.stderr.trim()})`, lifeRec.status === 0);
+      const freed = paidLaunchAdmission({ kind: "delivery", env: life });
+      assert(
+        `after the reconcile the lifetime cap admits again (ok=${freed.ok}: ${freed.reason})`,
+        freed.ok === true && freed.lifetime && Math.abs(freed.lifetime.spent - 0.1) < 1e-9,
+      );
+    } finally {
+      rmSync(l, { recursive: true, force: true });
+    }
     book(d, { type: "result", result: "hi" }, 0, ["--kill-estimate", "0"]);
     const row = rowsOf(d).pop();
     assert(

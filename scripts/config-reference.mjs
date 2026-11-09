@@ -104,7 +104,10 @@ export const AREA_NOTES = {
     "reservation whose call died without booking keeps holding both caps until a crash",
     "path books its kill estimate or you run `node runner/lib/usage-ledger.mjs --reconcile",
     "--usd <amount>` (`--open-reservations` lists them). A reservation is never a reading:",
-    "it carries no cost and no view counts it as spend or as a call.",
+    "it carries no cost and no view counts it as spend or as a call. Only the per-call",
+    "cap bounds a call: without `GAFFER_MAX_CALL_USD` the reservation (its row's",
+    "`reserve_basis` reads `kill-estimate`, or `floor` for the $0.05 used when the kill",
+    "estimate is 0) is a floor, not a bound, and a call can cost more than it held.",
   ],
 };
 /** The area of each runner lib that defaults a knob. */

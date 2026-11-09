@@ -3,10 +3,13 @@
 # TESTER FIRST: when the lane applies to a ticket (an epic's acceptance ticket, or a
 # testable one whose lane is on: GAFFER_TESTING on, or the default `auto` with a
 # registered test command in every write repo; dispatch decides), the tester tests a
-# delivery BEFORE a person reviews it. gaffer_tester_route sends an in_review ticket to
-# in_testing (the delivery tick right after its gates in REVIEW_MODE=human, the agent
-# review pass after the reviewer when that runs, and the sweep at the top of this pass
-# for anything left: a crash in between, a conflict reopen, a push after a PASS). The
+# delivery BEFORE anyone reviews it, in every review mode: before a person, and before
+# the reviewer agent under REVIEW_MODE=agent|both (one paid review per delivered commit,
+# informed by the tester's outcome; see lib/review.sh). gaffer_tester_route sends an
+# in_review ticket to in_testing (the delivery tick right after its gates, the agent
+# review pick through gaffer_tester_gate before it spends a reviewer call, and the sweep
+# at the top of this pass for anything left: a crash in between, a conflict reopen, a
+# push after a PASS). The
 # in_testing ticket is handed to the independent black-box tester agent
 # (bin/tester-run.mjs --live), which tests it from the contract + acceptance criteria
 # only and records PASS (→ back to in_review for the person, who approves the tested
@@ -53,6 +56,34 @@ gaffer_tester_route() {
   return 0
 }
 
+# TESTER FIRST for the agent review pick (lib/review.sh): may the reviewer agent review
+# in_review ticket $1 now? Asks dispatch to route it (the same tester-route as above) and
+# prints one word from the route's code:
+#   review  the tester has nothing left to say about the head: its lane does not gate the
+#           ticket (not_gated), or a PASS covers the head (covered)
+#   routed  sent to the tester now (logged); the reviewer waits for its PASS
+#   gone    no longer in review
+#   wait:<why>  anything else (CI not passed on the head, a head that cannot be read, a
+#           refused or failed call, a dispatch with no code): no review yet (fail closed)
+gaffer_tester_gate() {
+  [ "${DRY_RUN:-0}" = "1" ] && { echo review; return 0; }
+  [ -n "${1:-}" ] || { echo "wait:no ticket named"; return 0; }
+  local _tg_out _tg_code _tg_why
+  _tg_out="$(wg ticket tester-route "$1" --as system 2>/dev/null)" \
+    || { echo "wait:dispatch could not be asked to route it to the tester"; return 0; }
+  _tg_code="$(printf '%s' "$_tg_out" | jget '(((Array.isArray(d.routes) ? d.routes : [])[0]) || {}).code || ""' 2>/dev/null || echo '')"
+  _tg_why="$(printf '%s' "$_tg_out" | jget 'String((((Array.isArray(d.routes) ? d.routes : [])[0]) || {}).why || "").replace(/\s+/g, " ").slice(0, 300)' 2>/dev/null || echo '')"
+  case "$_tg_code" in
+    routed)
+      log "TESTER: sent #$1 to the independent tester before review (tester first)"
+      echo routed ;;
+    not_gated|covered) echo review ;;
+    not_in_review) echo gone ;;
+    *) echo "wait:${_tg_why:-dispatch gave no reason}${_tg_code:+ [$_tg_code]}" ;;
+  esac
+  return 0
+}
+
 _gaffer_tester_pass() {
   # The lane as the operator set it: on, off, or the `auto` default (unset): dispatch
   # sends a ticket to in_testing only where its lane applies, so under `auto` every
@@ -66,9 +97,9 @@ _gaffer_tester_pass() {
   local _lane_on=1
   [ "$_lane" = off ] && _lane_on=0
   [ "${DRY_RUN:-0}" = "1" ] && return 0
-  # TESTER FIRST sweep: with no agent reviewer to wait for (REVIEW_MODE=human), every
-  # in_review ticket the tester gates and has not passed on its head goes to it now.
-  if [ "${REVIEW_MODE:-human}" = "human" ]; then gaffer_tester_route --all; fi
+  # TESTER FIRST sweep, in every review mode: every in_review ticket the tester gates and
+  # has not passed on its head goes to it now (the reviewer agent waits for its PASS).
+  gaffer_tester_route --all
   TESTED_FILE="${GAFFER_RUN_STATE_DIR:-$GAFFER_DATA}/.tested-tickets"; touch "$TESTED_FILE"
   local _held_file="$GAFFER_DATA/.tester-held" _list_ok=1
   TJSON="$(wg ticket list -s in_testing 2>/dev/null)" || { TJSON='[]'; _list_ok=0; }

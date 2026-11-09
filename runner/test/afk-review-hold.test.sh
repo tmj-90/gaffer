@@ -8,7 +8,11 @@
 # mode, REJECT a possibly-fine delivery back to rework. Now it HOLDS: the ticket
 # stays in_review for a human, the reason is logged, and the pass never approves
 # or reworks on a non-verdict. A real APPROVE with the approve gate denied still
-# holds (advisory), so both hold paths are pinned here. Case C then grants every
+# holds (advisory), so both hold paths are pinned here. ONE AGENT REVIEW PER DELIVERED
+# COMMIT: once a case leaves a real verdict (approve, changes) on the head, the next case
+# that needs a reviewer runs on a rework (a new head; rework_head below), because the
+# review pass never pays for a second review of a commit dispatch holds a verdict for
+# (pinned in review-once-per-head.test.sh). Case C then grants every
 # gate and proves the SHIP path end to end: merge → done, the post-merge memory
 # work (digest freshness stamped, the ticket's Feature-Id advanced to shipped, no
 # duplicate ledger row), the merged branch deleted, and the reviewer's MCP runtime
@@ -79,7 +83,12 @@ case "$mode" in
 esac
 if [ -e .git ] && [ -f package.json ]; then
   fn="helper${GAFFER_TICKET:-0}"
-  grep -q "$fn" src/tasks.js || { printf 'export function %s(l){return l;}\n' "$fn" >> src/tasks.js; git -c user.email=s@s -c user.name=s add -A >/dev/null; git -c user.email=s@s -c user.name=s commit -qm "feat: $fn" >/dev/null; }
+  if grep -q "$fn" src/tasks.js; then
+    # A rework of the same ticket is a new head: one more line, committed.
+    printf '// rework %s\n' "$$" >> src/tasks.js; git -c user.email=s@s -c user.name=s add -A >/dev/null; git -c user.email=s@s -c user.name=s commit -qm "fix: $fn rework" >/dev/null
+  else
+    printf 'export function %s(l){return l;}\n' "$fn" >> src/tasks.js; git -c user.email=s@s -c user.name=s add -A >/dev/null; git -c user.email=s@s -c user.name=s commit -qm "feat: $fn" >/dev/null
+  fi
   printf '{"type":"result","subtype":"success","is_error":false,"result":"done.\\n\\nSmallest-change note: modified src/tasks.js only.","total_cost_usd":0.02,"num_turns":3}\n'; exit 0
 fi
 printf '{"type":"result","subtype":"success","is_error":false,"result":"ok"}\n'
@@ -97,6 +106,14 @@ wg repo add -n repo --path "$R" --branch main --test "npm test" --lint "npm run 
 
 run_tick() { ( cd "$RUNNER_DIR" && bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" ) | grep '^TICK_RESULT=' ; }
 st() { wg ticket show "$1" 2>/dev/null | jget 'd.ticket.status'; }
+# A person sends #$1 back and the factory reworks it: a new delivery head, in review again.
+rework_head() {
+  local m; m="$(cat "$MODE_FILE")"; echo deliver > "$MODE_FILE"
+  wg review reject "$1" --reason "another pass" --to ready >/dev/null 2>&1
+  run_tick >/dev/null
+  echo "$m" > "$MODE_FILE"
+  [ "$(st "$1")" = "in_review" ] && ok "rework: #$1 delivered again → in_review (a new head)" || fail "rework: #$1 is '$(st "$1")'"
+}
 
 # Seed memory: a digest (so `digest touch` has something to stamp) and a BUILDING feature
 # whose id rides on the ticket description (`Feature-Id:`), exactly as the feature-backlog
@@ -144,6 +161,13 @@ grep -q '^TICK_RESULT=reviewed$' <<<"$OUTB" && ok "B: the review pass ran" || fa
 grep -q 'verdict=approve, approve_gate=deny' "$GAFFER_DATA/factory.log" && ok "B: verdict parsed as approve, gate deny → advisory hold" || fail "B: expected verdict=approve/approve_gate=deny: $(tail -2 "$GAFFER_DATA/factory.log" | tr '\n' '|')"
 [ "$(st "$N")" = "in_review" ] && ok "B: #$N still in_review for a human" || fail "B: #$N became '$(st "$N")'"
 
+echo "== B1. the same head is not reviewed again on a later run =="
+rm -f "$GAFFER_DATA/.reviewed-tickets"
+OUTB1="$(REVIEW_MODE=agent run_tick)"
+grep -q "REVIEW: #$N head .* already has an agent review verdict (approve)" "$GAFFER_DATA/factory.log" \
+  && ok "B1: the approved head is not reviewed a second time" || fail "B1: ($OUTB1) $(tail -2 "$GAFFER_DATA/factory.log" | tr '\n' '|')"
+rework_head "$N"
+
 echo "== B2. a CHANGES token followed by prose quoting an APPROVE token is NO verdict → HELD =="
 echo trailing > "$MODE_FILE"; rm -f "$GAFFER_DATA/.reviewed-tickets"
 OUTB2="$(REVIEW_MODE=agent DISPATCH_ALLOW_AGENT_APPROVE=1 AUTO_MERGE=1 MERGE_ON_AGENT_REVIEW=1 GAFFER_STRICT_REQUIRE=0 run_tick)"
@@ -162,6 +186,7 @@ case "$ADV" in
 esac
 
 echo "== D. a reviewer that COMMITS in its worktree, then APPROVEs, with every grant on → HELD =="
+rework_head "$N"
 RBR="$(git -C "$R" branch --list "gaffer/ticket-$N-*" | tr -d ' *' | head -1)"
 RSHA0="$(git -C "$R" rev-parse "refs/heads/$RBR")"; MAIN0="$(git -C "$R" rev-parse main)"
 for mode in sneak sneak-branch; do

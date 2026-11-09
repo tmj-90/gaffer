@@ -711,8 +711,10 @@ export function registerTicket(program: Command): void {
       "Send an in_review ticket to the independent tester before a person reviews it " +
         "(tester first: in_review -> in_testing; a PASS brings it back to review). A no-op " +
         "with the reason when the tester does not gate the ticket, it is not in review, or a " +
-        "PASS already covers its head. --all sends every such in_review ticket. The runner " +
-        "calls this after its gates (and the agent review, when that runs), and as system it " +
+        "PASS already covers its head (each route names a code: routed, not_in_review, " +
+        "not_gated, head_unreadable, covered, ci_pending, error). --all sends every such " +
+        "in_review ticket. The runner calls this after its gates, in every review mode, and " +
+        "before an agent review (which runs only on not_gated or covered); as system it " +
         "records the tester lane it ran under (runner.tester_lane) for the dashboard. System/admin only.",
     )
     .option("--all", "every in_review ticket the tester gates and has not passed")

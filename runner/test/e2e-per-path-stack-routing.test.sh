@@ -193,11 +193,14 @@ if [ -n "$RD" ] && [ "$RD" != "$RB" ]; then
 else fail "D: no new reviewer spawn"; fi
 # A two-repo ticket is never agent-approved: the reviewer's approval names only the
 # primary repo's commit, so dispatch refuses it and the ticket is held for a HUMAN
-# approval of every repo (lib/review.sh, STALE REVISION). TESTER FIRST: the review pass
-# then sends it to the independent tester, so the human reviews it with the tester's
+# approval of every repo (lib/review.sh, STALE REVISION). TESTER FIRST, in every review
+# mode: the review pick sent it to the independent tester BEFORE the reviewer ran (one
+# review, of the tested commit), so it waits in review for the human with the tester's
 # verdict in hand.
-[ "$(st "$TD")" = "in_testing" ] && ok "D: the agent approval of a two-repo ticket is refused, and it goes to the tester before the human review" \
-  || fail "D: #$TD is '$(st "$TD")' after the agent review (expected in_testing: refused approval, then tester first)"
+TD_TEST="$(grep -l "#$TD" "$CALLS"/*/prompt 2>/dev/null | xargs -n1 dirname 2>/dev/null | while read -r d; do [ "$(cat "$d/kind")" = tester ] && echo "$d"; done | head -1)"
+[ "$(st "$TD")" = "in_review" ] && [ -n "$TD_TEST" ] && [ -n "$RD" ] && [ "$(basename "$TD_TEST")" \< "$(basename "$RD")" ] \
+  && ok "D: the tester ran before the reviewer, the agent approval of a two-repo ticket is refused, and it waits in review for a human" \
+  || fail "D: #$TD is '$(st "$TD")' after the agent review (tester call ${TD_TEST:-none}, review call ${RD:-none}; expected tester first, then a refused approval)"
 # External review #7: the refusal is on the ticket (a note), not only in the log.
 grep -q "agent review approval refused for [0-9a-f]\{40\}: .*needs a human" <<<"$(wg ticket show "$TD" 2>/dev/null)" \
   && ok "D: the refused agent approval is noted on the ticket (why, and that it needs a human)" || fail "D: no refusal note on #$TD"
@@ -206,7 +209,7 @@ NREV="$(review_spawns)"
 rm -f "$GAFFER_DATA/.reviewed-tickets"
 ( cd "$RUNNER_DIR" && REVIEW_MODE=agent DISPATCH_ALLOW_AGENT_APPROVE=1 GAFFER_TESTING=1 bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" ) >/dev/null || true
 [ "$(review_spawns)" = "$NREV" ] && [ "$NREV" -ge 1 ] \
-  && ok "D: a later run spends no other review call on it ($NREV review call(s) in all); the tester runs instead" \
+  && ok "D: a later run spends no other review call on it ($NREV review call(s) in all)" \
   || fail "D: review calls for #$TD went $NREV → $(review_spawns) (status $(st "$TD"))"
 TT="$(last_call tester)"
 if [ -n "$TT" ]; then

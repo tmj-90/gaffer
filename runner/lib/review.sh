@@ -16,6 +16,57 @@
 # dependency chain (B blocked on an in_review A) deadlocks because the no_work
 # early-exit sits ~1900 lines before this block. In REVIEW_MODE=human the guard
 # below is false and the function returns immediately (supervised = no-op).
+#
+# TESTER FIRST, ONE REVIEW PER DELIVERED COMMIT (_gaffer_review_wanted below): the pick
+# asks dispatch before it spends a reviewer call. A head dispatch already holds an agent
+# review verdict for is never reviewed again (a daemon pass is a new run, so the per-run
+# .reviewed-tickets file alone let every pass re-review the same commit); a delivery the
+# independent tester gates is sent to it first, and the reviewer runs only once the tester
+# has nothing left to say about the head (dispatch: not_gated, or a PASS covers it). A
+# tester FAIL sends the ticket to rework, so no review is paid for it. The reviewer's
+# packet carries the tester's outcome for the head (lib/review-head.mjs tester-note).
+
+# The review pick's gate. Returns 0 when in_review ticket $1 gets an agent review now (RSHOW
+# then holds its fresh view), 1 when not. A ticket with no resolvable delivery head returns
+# 0 so the pass holds it for a human as before (it never launches a reviewer on it).
+_gaffer_review_wanted() {
+  local n="$1" st repo branch head v gate why
+  RSHOW="$(wg ticket show "$n" 2>/dev/null)" || return 1
+  st="$(printf '%s' "$RSHOW" | jget 'd.ticket.status || ""' 2>/dev/null || echo '')"
+  [ "$st" = "in_review" ] || return 1
+  repo="$(printf '%s' "$RSHOW" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || {}).local_path) || ""' 2>/dev/null || echo '')"
+  branch="$(printf '%s' "$RSHOW" | jget 'd.ticket.branch_name || ""' 2>/dev/null || echo '')"
+  head=""
+  [ -n "$repo" ] && [ -d "$repo" ] && [ -n "$branch" ] \
+    && head="$(git -C "$repo" rev-parse --verify --quiet "refs/heads/$branch^{commit}" 2>/dev/null || true)"
+  [ -n "$head" ] || return 0
+  # ONE REVIEW PER HEAD. The within-run cache first (no dispatch call), then dispatch's own
+  # record: the reviewer's lane verdict names the commit it judged.
+  grep -qxF "$n"$'\t'"$head" "$_RHEADS_FILE" 2>/dev/null && return 1
+  v="$(printf '%s' "$RSHOW" | node "$RUNNER_DIR/lib/review-head.mjs" reviewed "$head" 2>/dev/null || true)"
+  if [ -n "$v" ]; then
+    log "REVIEW: #$n head ${head:0:12} already has an agent review verdict ($v): not reviewing the same commit again; a new head is reviewed afresh"
+    _gaffer_locked .skip.lock _gaffer_append_line "$_RHEADS_FILE" "$n"$'\t'"$head"
+    return 1
+  fi
+  # TESTER FIRST (lib/tester.sh gaffer_tester_gate): dispatch routes the delivery to the
+  # tester when its lane gates it and no PASS covers this head.
+  declare -F gaffer_tester_gate >/dev/null 2>&1 || return 0
+  gate="$(gaffer_tester_gate "$n")"
+  case "$gate" in
+    review) return 0 ;;
+    wait:*)
+      why="${gate#wait:}"
+      # Said once per reason per run, not every tick.
+      if ! grep -qxF "$n"$'\t'"$why" "$_RWAITS_FILE" 2>/dev/null; then
+        log "REVIEW: #$n not agent-reviewed yet: the tester has not had its say on ${head:0:12} ($why)"
+        _gaffer_locked .skip.lock _gaffer_append_line "$_RWAITS_FILE" "$n"$'\t'"$why"
+      fi
+      return 1 ;;
+    *) return 1 ;;
+  esac
+}
+
 _gaffer_agent_review_pass() {
 if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
   REVIEWED_FILE="${GAFFER_RUN_STATE_DIR:-$GAFFER_DATA}/.reviewed-tickets"; touch "$REVIEWED_FILE"
@@ -23,9 +74,24 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
   # FINDING B-M2: pass the skip-file path via the environment, not interpolated into
   # the single-quoted Python literal — a path containing a `'` would break the string
   # (silent parse failure → the reviewed-skip set is lost and the ticket re-reviews).
-  RNUM="$(echo "$RJSON" | gaffer_json pick-unskipped "$REVIEWED_FILE" 2>/dev/null)"
+  # The pick walks the in_review tickets until one passes _gaffer_review_wanted; the ones it
+  # passes over are left out for this pass only (a ticket the tester passes later in this
+  # run is picked again then), held in a throwaway copy of the skip list.
+  _RHEADS_FILE="${GAFFER_RUN_STATE_DIR:-$GAFFER_DATA}/.reviewed-heads"
+  _RWAITS_FILE="${GAFFER_RUN_STATE_DIR:-$GAFFER_DATA}/.review-waits"
+  _RPICK_SKIP="$(mktemp "${TMPDIR:-/tmp}/review-pick.XXXXXX" 2>/dev/null || echo "$GAFFER_DATA/.review-pick.$$")"
+  cat "$REVIEWED_FILE" > "$_RPICK_SKIP" 2>/dev/null || : > "$_RPICK_SKIP"
+  RNUM=""; _rpicks=0
+  while [ "$_rpicks" -lt 50 ]; do
+    _rpicks=$((_rpicks + 1))
+    RNUM="$(echo "$RJSON" | gaffer_json pick-unskipped "$_RPICK_SKIP" 2>/dev/null)"
+    [ -n "$RNUM" ] || break
+    _gaffer_review_wanted "$RNUM" && break
+    printf '%s\n' "$RNUM" >> "$_RPICK_SKIP"; RNUM=""
+  done
+  rm -f "$_RPICK_SKIP"
   if [ -n "$RNUM" ]; then
-    RSHOW="$(wg ticket show "$RNUM" 2>/dev/null)"
+    # RSHOW: the view _gaffer_review_wanted just read.
     # The PRIMARY WRITE repo, not repositories[0]: links sort by role then name and
     # every access row is role "primary", so [0] was simply the alphabetically first
     # repo — a read-only context repo on a multi-repo ticket, whose branch does not
@@ -106,10 +172,10 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
         _gaffer_locked .skip.lock _gaffer_append_line "$REVIEWED_FILE" "$RNUM"
         wg attach-evidence "$RNUM" --type manual_note \
           --summary "agent review could not run: $1 — needs a human" >/dev/null 2>&1 || true
-        # TESTER FIRST: no reviewer agent will have its say on this ticket this run, and the
-        # tester pass sweeps only under REVIEW_MODE=human, so a delivery the tester gates
-        # goes to it now (dispatch decides; a no-op otherwise). Left in review untested, a
-        # person's approval would be refused (not_tested) with nothing sending it on.
+        # TESTER FIRST: no reviewer agent will have its say on this ticket this run, so a
+        # delivery the tester gates and has not passed goes to it now (dispatch decides; a
+        # no-op otherwise, and the tester pass's sweep would send it too). Left in review
+        # untested, a person's approval would be refused (not_tested).
         if declare -F gaffer_tester_route >/dev/null 2>&1; then gaffer_tester_route "$RNUM"; fi
         _review_cleanup
         _review_restore_traps
@@ -304,7 +370,20 @@ gate and MUST NOT appear as your final line. Emit CHANGES unless every AC is gen
 Leave the ticket in in_review — the operator (or, in autonomy mode, the runner acting
 deterministically on your verdict) crosses the final gate. Work only in: $WT
 EOF
-      RPROMPT="${RPROMPT}${_REVIEW_CARDS}"
+      # TESTER FIRST: the tester's outcome for THIS head, when it has one (its PASS, where its
+      # tests are kept, or why its last run could not decide), so the one review is informed
+      # by it. The tester's own words are quarantined. The eval judge stays out of it.
+      _RTESTER_BLOCK=""
+      _RTESTER_NOTE="$(printf '%s' "$RSHOW" | node "$RUNNER_DIR/lib/review-head.mjs" tester-note "$RSHA" 2>/dev/null || true)"
+      if [ -n "$_RTESTER_NOTE" ]; then
+        _RTESTER_BLOCK="
+TESTER OUTCOME for the commit you review (the independent black-box tester ran BEFORE you,
+from the contract and the acceptance criteria only; a PASS means its tests pass on this commit,
+so do not re-run them; you still judge the diff against every AC):
+$(gaffer_quarantine tester-outcome "$_RTESTER_NOTE" single)
+"
+      fi
+      RPROMPT="${RPROMPT}${_RTESTER_BLOCK}${_REVIEW_CARDS}"
       # Repo-access boundary (FG-007): the reviewer works only in the throwaway
       # worktree ($WT). The registered repo's working tree is never a write root.
       R_USAGE_JSON="$GAFFER_DATA/.usage-$RNUM.json"; : > "$R_USAGE_JSON"
@@ -324,6 +403,21 @@ EOF
       REVIEW_MODEL="$(gaffer_route_model review "$RRISK" "${RAC:-0}" "" 1 "$RNUM" 2>/dev/null || true)"
       REVIEW_MODEL_FLAG="${GAFFER_IMPL_MODEL_FLAG:-}"
       [ -n "$REVIEW_MODEL" ] && REVIEW_MODEL_FLAG="--model $REVIEW_MODEL"
+      # LAUNCH-TIME CHECK: the ticket must still be in review, on the commit picked, at the
+      # moment the reviewer starts. A person may merge (or send back) a ticket between the
+      # pick and here (seen live): nothing is reviewed and nothing is held then.
+      _RSHOW_NOW="$(wg ticket show "$RNUM" 2>/dev/null || echo '{}')"
+      _rstat_now="$(printf '%s' "$_RSHOW_NOW" | jget 'd.ticket.status || ""' 2>/dev/null || echo '')"
+      _rhead_now="$(git -C "$RREPO" rev-parse --verify --quiet "refs/heads/$RBRANCH^{commit}" 2>/dev/null || true)"
+      if [ "$_rstat_now" != "in_review" ] || [ "$_rhead_now" != "$RSHA" ]; then
+        _rhead_word="gone"; [ -n "$_rhead_now" ] && _rhead_word="at ${_rhead_now:0:12}"
+        log "REVIEW: #$RNUM left review before its reviewer started (status ${_rstat_now:-unknown}, branch $_rhead_word; picked ${RSHA:0:12}): not reviewing it"
+        rm -f "$MCP_RUNTIME" "$R_USAGE_JSON"
+        _review_cleanup; _review_restore_traps; return 0
+      fi
+      # The ticket's transitions so far: one more after the review means it left review
+      # during it (a merge, a send-back), which is never the reviewer's act.
+      _RTRANS0="$(printf '%s' "$_RSHOW_NOW" | jget '(d.events||[]).filter(e => e && e.event_type === "ticket.transitioned").length' 2>/dev/null || echo '')"
       # Role turn cap (GAFFER_ROLE_MAX_TURNS review=, clamped to GAFFER_MAX_TURNS) — not the
       # 200-turn delivery cap: a read-and-judge pass that loops is stopped early. A cap
       # hit is named in the hold reason below.
@@ -471,9 +565,20 @@ EOF
       # the default branch has judged something else, or tried to ship its own code: never
       # a verdict, whatever its last line says. A moved delivery branch is put back
       # (compare-and-swap) with the moved head kept under refs/gaffer/review-tamper/<n>.
-      _R_TAMPER=""
+      # LEFT REVIEW: when the ticket moved in dispatch during the review (merged, sent back,
+      # reworked by someone else), a moved or deleted delivery branch and a moved default
+      # branch are that move, not the reviewer's: they are reported as such and left alone
+      # (restoring the branch would undo the person's work). The reviewer's own worktree is
+      # still checked below; a change there is the reviewer's whatever else happened.
+      _R_TAMPER=""; _R_LEFT=""
+      _RSHOW_AFTER="$(wg ticket show "$RNUM" 2>/dev/null || echo '{}')"
+      _rstat_after="$(printf '%s' "$_RSHOW_AFTER" | jget 'd.ticket.status || ""' 2>/dev/null || echo '')"
+      _rtrans_after="$(printf '%s' "$_RSHOW_AFTER" | jget '(d.events||[]).filter(e => e && e.event_type === "ticket.transitioned").length' 2>/dev/null || echo '')"
+      if [ "$_rstat_after" != "in_review" ] || { [ -n "$_RTRANS0" ] && [ "$_rtrans_after" != "$_RTRANS0" ]; }; then
+        _R_LEFT="the ticket left review during the review: ${_rstat_after:-unknown}"
+      fi
       _rnow="$(git -C "$RREPO" rev-parse --verify --quiet "refs/heads/$RBRANCH^{commit}" 2>/dev/null || true)"
-      if [ "$_rnow" != "$RSHA" ]; then
+      if [ -z "$_R_LEFT" ] && [ "$_rnow" != "$RSHA" ]; then
         _R_TAMPER="delivery branch $RBRANCH moved during review (${RSHA:0:12} → ${_rnow:0:12})"
         if [ -n "$_rnow" ]; then
           git -C "$RREPO" update-ref "refs/gaffer/review-tamper/$RNUM" "$_rnow" >/dev/null 2>&1 || true
@@ -492,7 +597,7 @@ EOF
       # The default branch: under GAFFER_CONCURRENCY>1 another lane may legitimately land a
       # sibling mid-review, so a move there is logged, not held.
       _rdef_now="$(git -C "$RREPO" rev-parse --verify --quiet "refs/heads/$RDEFAULT^{commit}" 2>/dev/null || true)"
-      if [ -z "$_R_TAMPER" ] && [ "$_rdef_now" != "$RDEF_SHA" ]; then
+      if [ -z "$_R_TAMPER" ] && [ -z "$_R_LEFT" ] && [ "$_rdef_now" != "$RDEF_SHA" ]; then
         if [ "${GAFFER_CONCURRENCY:-1}" -le 1 ] 2>/dev/null; then
           _R_TAMPER="default branch $RDEFAULT moved during review (${RDEF_SHA:0:12} → ${_rdef_now:0:12}) with no other lane running"
         else
@@ -505,6 +610,12 @@ EOF
         R_VERDICT=held
         R_PRIMARY_VERDICT=held; R_PRIMARY_HELD="$R_HELD_REASON"
         [ -n "$R_SECURITY" ] && R_SECURITY=held
+      elif [ -n "$_R_LEFT" ]; then
+        # The reviewer's verdict about RSHA stands as its lane verdict (a measurement), but
+        # nothing acts on it: the ticket is no longer the one it judged.
+        log "REVIEW: #$RNUM $_R_LEFT; the reviewer's verdict ($R_VERDICT) is not acted on"
+        R_HELD_REASON="$_R_LEFT"
+        R_VERDICT=held
       fi
       # LANE VERDICTS (MF2): what each judging lane concluded about RSHA, as system events,
       # so whether a lane changed the decision is computable. A measurement, fail-soft;
@@ -678,14 +789,8 @@ EOF
           log "agent review of #$RNUM finished (rc=$rrc, status=$NEWSTATUS, verdict=$R_VERDICT${R_SECURITY:+, security=$R_SECURITY}, approve_gate=$_SHIP_APPROVE) — ADVISORY/HELD; awaiting HUMAN approval${R_HELD_REASON:+ [$R_HELD_REASON]}"
           ;;
       esac
-      # TESTER FIRST (lib/tester.sh): the reviewer agent has had its say and the ticket is
-      # still in review for a person (an advisory or held verdict, a refused approval), so a
-      # delivery the independent tester gates goes to it now: the person then reads the
-      # tester's evidence, and a FAIL costs them nothing. Dispatch decides; fail-soft.
-      if declare -F gaffer_tester_route >/dev/null 2>&1 \
-         && [ "$(wg ticket show "$RNUM" 2>/dev/null | jget 'd.ticket.status' 2>/dev/null || echo '')" = "in_review" ]; then
-        gaffer_tester_route "$RNUM"
-      fi
+      # No tester route here: the pick sent the delivery to the tester BEFORE this review
+      # (_gaffer_review_wanted), and the reviewer ran only once the tester had its say.
       # Restore the global traps now that the review block is complete. Run cleanup
       # once explicitly here so the worktree is gone before the result line fires;
       # trap - EXIT clears our review-scoped EXIT handler so gaffer_on_exit (the

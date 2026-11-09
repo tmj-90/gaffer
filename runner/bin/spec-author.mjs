@@ -572,10 +572,13 @@ function runClaudeTurn(prompt, opts) {
       });
       return { timedOut: true, stdout: "" };
     }
-    // Nothing ran (the binary could not be started): give the reservation back.
-    releasePendingReservation(
-      `the spec-author call could not start (${res.error.code ?? "error"})`,
-    );
+    // Nothing ran (the binary could not be started): give the reservation back. Any
+    // other error (ENOBUFS: the output overflowed maxBuffer, a signal) means the call
+    // RAN and may have spent: its reservation keeps holding (fail closed) until the
+    // operator reconciles, never released at $0. Worker.deliver already gave back the
+    // seam path's reservation for a spawn that could not exec.
+    if (!res.pid && ["ENOENT", "EACCES"].includes(res.error.code))
+      releasePendingReservation(`the spec-author call could not start (${res.error.code})`);
     throw res.error;
   }
   const rawStdout = res.stdout || "";

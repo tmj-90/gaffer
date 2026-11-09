@@ -30,6 +30,7 @@
 //   P8  the shell crash path settles an open reservation at the kill estimate
 //   P9  the usage report shows reservations apart, never as calls
 //   P10 a reservation is never a reading: no cost fields, ignored by the estimators
+//   P11 a call that ran keeps its reservation; only one that never started releases it
 //
 // Run: node test/budget-concurrency.test.mjs
 // =====================================================================
@@ -620,6 +621,51 @@ console.log("== P10: a reservation is never a reading ==");
     "uncapped (GAFFER_ALLOW_UNCAPPED=1): admitted, nothing reserved",
     r2.stdout,
   );
+}
+
+console.log(
+  "== P11: a call that ran keeps its reservation; only one that never started gives it back ==",
+);
+{
+  // The spec author's direct spawn (independent review of review 16): a call whose output
+  // overflowed maxBuffer (ENOBUFS) RAN and may have spent, so its reservation must keep
+  // holding (fail closed); a binary that does not exist (ENOENT) ran nothing and gives
+  // its reservation back.
+  const SPEC = resolve(RUNNER_DIR, "bin", "spec-author.mjs");
+  for (const [label, big, wantOpen] of [
+    ["a call that ran and overflowed its output buffer keeps holding", true, 1],
+    ["a binary that could not be started releases its reservation", false, 0],
+  ]) {
+    const w = world();
+    if (big)
+      writeFileSync(
+        w.stub,
+        `#!/usr/bin/env bash\necho ran >> "${join(w.dir, "invocations")}"\nhead -c 17000000 /dev/zero | tr "\\0" a\n`,
+      );
+    const req = join(w.dir, "req.json");
+    writeFileSync(req, JSON.stringify({ brief: "a per-user gym tracker, web only" }));
+    const r = spawnSync(process.execPath, [SPEC, "--input", req], {
+      env: {
+        ...w.env,
+        CLAUDE_BIN: big ? w.stub : join(w.dir, "no-such-binary"),
+        GAFFER_DAILY_BUDGET_USD: "1",
+        GAFFER_MAX_CALL_USD: "0.5",
+      },
+      encoding: "utf8",
+      maxBuffer: 1 << 20,
+    });
+    const rows = w.rows();
+    const opened = rows.filter((x) => x.kind === "reservation" && x.reservation_id);
+    const settled = new Set(
+      rows.filter((x) => typeof x.settles === "string").map((x) => x.settles),
+    );
+    const open = opened.filter((x) => !settled.has(x.reservation_id)).length;
+    check(
+      opened.length === 1 && open === wantOpen && w.calls() === (big ? 1 : 0),
+      label,
+      `rc=${r.status} calls=${w.calls()} rows=${JSON.stringify(rows)}`,
+    );
+  }
 }
 
 console.log("");

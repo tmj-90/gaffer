@@ -344,7 +344,9 @@ describe("one request records the reveal and returns the grade", () => {
       round_entered_at: "2000-01-01T00:00:00.000Z",
     });
     expect(r.status).toBe(409);
-    expect(JSON.stringify(r.body)).not.toMatch(/"overall"|1\.5/);
+    // The score field, not a bare 1.5: the 409 body carries round_entered_at, whose
+    // milliseconds can read "...11.540Z" (the macOS CI shard on 96d9acd hit that).
+    expect(JSON.stringify(r.body)).not.toMatch(/"overall"|"score":\s*1\.5/);
     expect(JSON.stringify(r.body)).toMatch(/reload/);
     expect(reveals(h.wg, t.id)).toHaveLength(0);
     expect((await packetOf(t.id)).judge).toBeNull();

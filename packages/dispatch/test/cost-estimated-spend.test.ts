@@ -127,6 +127,38 @@ describe("cost aggregator — killed/timeout estimates count, marked", () => {
   });
 });
 
+describe("budget reservations are holds, never calls (external review 16)", () => {
+  const reservation = JSON.stringify({
+    ts: `${today}T10:00:00Z`,
+    kind: "reservation",
+    launch_kind: "delivery",
+    reservation_id: "r-abc-123",
+    reserved_usd: 0.7,
+    reserve_basis: "per-call-cap",
+    measured: false,
+  });
+  const release = JSON.stringify({
+    ts: `${today}T10:00:01Z`,
+    kind: "reservation",
+    settles: "r-abc-123",
+    released: true,
+    measured: false,
+  });
+  it("parseLedgerLine and parseHealthLine skip a reservation and its release", () => {
+    expect(parseLedgerLine(reservation)).toBeNull();
+    expect(parseLedgerLine(release)).toBeNull();
+    expect(parseHealthLine(reservation)).toBeNull();
+    expect(parseHealthLine(release)).toBeNull();
+  });
+  it("a settling call row is an ordinary row (the settles field changes nothing)", () => {
+    const row = parseLedgerLine(
+      JSON.stringify({ ...JSON.parse(measured(4, 0.25)), settles: "r-abc-123" }),
+    );
+    expect(row).not.toBeNull();
+    expect(row!.total_cost_usd).toBe(0.25);
+  });
+});
+
 describe("GET /api/cost — estimated spend is in the envelope", () => {
   let tmpDir: string;
   let baseUrl = "";

@@ -398,8 +398,16 @@ gaffer_spend_cap_hint() {
 # ledger at the moment of the launch, fail closed on an unknowable spend, and NO cap at
 # all refuses like a live run (GAFFER_ALLOW_UNCAPPED=1 opts out). Without node the spend
 # cannot be measured: refused when a cap is set; with no cap, the same no-cap rule.
+#
+# RESERVATION (external review 16): with a [reservation-file] the check is the module's
+# `reserve` verb: admitted under a cap, it books the launch's worst case ([worst-usd], the
+# call's --max-budget-usd, else the kill estimate) as a reservation row under the
+# admission lock and writes its id to the file. lib/worker.sh passes "$out_json.reservation"
+# so gaffer_usage_record (config/14-usage.sh) can settle it when it books the call, even
+# from another subshell. Without the file it is the read-only check (a pre-check before a
+# launch that reserves at the seam).
 gaffer_paid_launch_admitted() {
-  local kind="${1:-worker}" mod
+  local kind="${1:-worker}" resv="${2:-}" worst="${3:-}" mod
   mod="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/budget-admission.mjs"
   if ! command -v node >/dev/null 2>&1 || [ ! -f "$mod" ]; then
     if [ -n "${GAFFER_DAILY_BUDGET_USD:-}${GAFFER_BUDGET_USD:-}" ]; then
@@ -413,5 +421,23 @@ gaffer_paid_launch_admitted() {
     fi
     return 0
   fi
-  node "$mod" check --kind "$kind" >/dev/null
+  if [ -n "$resv" ]; then
+    rm -f "$resv" 2>/dev/null || true
+    node "$mod" reserve --kind "$kind" --out "$resv" --pid "$$" ${worst:+--worst-usd "$worst"} \
+      ${GAFFER_TICKET:+--ticket "$GAFFER_TICKET"} >/dev/null
+    return
+  fi
+  node "$mod" check --kind "$kind" ${worst:+--worst-usd "$worst"} >/dev/null
+}
+
+# gaffer_release_reservation <reservation-file> [reason] — a launch that was admitted (and
+# reserved) but never started gives its reservation back: a release row in the ledger and
+# the file removed. Best-effort: a release that cannot be written leaves the reservation
+# holding against the caps (fail closed) until the operator reconciles.
+gaffer_release_reservation() {
+  local file="${1:-}" why="${2:-the launch was refused before it started}" mod
+  [ -n "$file" ] && [ -s "$file" ] || return 0
+  mod="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/budget-admission.mjs"
+  command -v node >/dev/null 2>&1 && [ -f "$mod" ] || return 0
+  node "$mod" release --file "$file" --reason "$why" >/dev/null 2>&1 || true
 }

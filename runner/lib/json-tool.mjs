@@ -1400,6 +1400,11 @@ switch (cmd) {
     let estUsd = 0;
     let reconciled = 0;
     let recUsd = 0;
+    // Reservations (lib/budget-admission.mjs): holds against the caps for calls in
+    // flight or that never booked. Never a call and never a cost: the open ones are
+    // shown on their own line, apart from everything else.
+    const openResv = new Map();
+    const settledResv = new Set();
     let tokIn = 0;
     let tokOut = 0;
     let tokCacheR = 0;
@@ -1414,6 +1419,26 @@ switch (cmd) {
       try {
         e = JSON.parse(ln);
       } catch {
+        continue;
+      }
+      if (!isObj(e)) continue;
+      if (typeof e.settles === "string") {
+        settledResv.add(e.settles);
+        openResv.delete(e.settles);
+      }
+      if (e.kind === "reconcile" && Array.isArray(e.settles_reservations))
+        for (const id of e.settles_reservations) {
+          settledResv.add(id);
+          openResv.delete(id);
+        }
+      if (e.kind === "reservation") {
+        const rv = asNum(e.reserved_usd);
+        if (
+          typeof e.reservation_id === "string" &&
+          !e.settles &&
+          !settledResv.has(e.reservation_id)
+        )
+          openResv.set(e.reservation_id, rv !== null && rv >= 0 ? rv : 0);
         continue;
       }
       if (since && pyStr(e.ts ?? "") < since) continue;
@@ -1467,6 +1492,12 @@ switch (cmd) {
       println(
         `    reconciled by the operator: $${recUsd.toFixed(4)} in ${reconciled} booking(s) ${scope} (usage-ledger.mjs --reconcile; counts toward the caps; not a call)`,
       );
+    if (openResv.size) {
+      const held = [...openResv.values()].reduce((a, b) => a + b, 0);
+      println(
+        `    reserved: $${held.toFixed(4)} held by ${openResv.size} open reservation(s) (calls in flight, or that never booked; held against the caps, not a cost; usage-ledger.mjs --open-reservations lists them)`,
+      );
+    }
     if (totalCalls === 0) println(`    \x1b[1;32m✓\x1b[0m no agent calls recorded ${scope}`);
     else {
       const estPart = estimated ? `${estimated} estimated, ` : "";

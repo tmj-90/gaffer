@@ -98,7 +98,11 @@ import {
   parseClaudeJson,
   recordKilledCall,
 } from "../lib/usage-ledger.mjs";
-import { paidLaunchAdmission } from "../lib/budget-admission.mjs";
+import {
+  paidLaunchAdmission,
+  releasePendingReservation,
+  reservePaidLaunch,
+} from "../lib/budget-admission.mjs";
 import { makeAgentHome } from "../lib/agent-home.mjs";
 import { recordSkillUsage } from "./record-skill-usage.mjs";
 import {
@@ -522,18 +526,32 @@ function runClaudeTurn(prompt, opts) {
     // wanted, which is the default (GAFFER_STRICT_REQUIRE): the seam wraps the agent or
     // refuses with the fix, as for every other agent launch. Only under the
     // environment opt-out with STRICT_MODE off does it keep this direct spawn.
-    res =
-      workerProvider() === DEFAULT_WORKER_PROVIDER && !sandboxWanted()
-        ? spawnSync(claudeBin, args, spawnOpts)
-        : Worker.deliver({
-            kind: "spec-author",
-            bin: claudeBin,
-            argv: args,
-            cwd: spawnOpts.cwd,
-            timeoutMs: spawnOpts.timeout,
-            maxBuffer: spawnOpts.maxBuffer,
-            env: spawnOpts.env,
-          });
+    // The direct spawn books its own reservation (Worker.deliver books one for the seam
+    // path): under a cap the worst case is held against it while the call runs, and the
+    // row booked below settles it (lib/budget-admission.mjs, external review 16).
+    const direct = workerProvider() === DEFAULT_WORKER_PROVIDER && !sandboxWanted();
+    if (direct) {
+      const bi = args.indexOf("--max-budget-usd");
+      const held = reservePaidLaunch({
+        kind: "spec-author",
+        worstUsd: bi >= 0 ? Number(args[bi + 1]) : undefined,
+      });
+      if (!held.ok) {
+        home.remove();
+        return fail(held.reason);
+      }
+    }
+    res = direct
+      ? spawnSync(claudeBin, args, spawnOpts)
+      : Worker.deliver({
+          kind: "spec-author",
+          bin: claudeBin,
+          argv: args,
+          cwd: spawnOpts.cwd,
+          timeoutMs: spawnOpts.timeout,
+          maxBuffer: spawnOpts.maxBuffer,
+          env: spawnOpts.env,
+        });
   } finally {
     home.remove();
   }
@@ -554,6 +572,13 @@ function runClaudeTurn(prompt, opts) {
       });
       return { timedOut: true, stdout: "" };
     }
+    // Nothing ran (the binary could not be started): give the reservation back. Any
+    // other error (ENOBUFS: the output overflowed maxBuffer, a signal) means the call
+    // RAN and may have spent: its reservation keeps holding (fail closed) until the
+    // operator reconciles, never released at $0. Worker.deliver already gave back the
+    // seam path's reservation for a spawn that could not exec.
+    if (!res.pid && ["ENOENT", "EACCES"].includes(res.error.code))
+      releasePendingReservation(`the spec-author call could not start (${res.error.code})`);
     throw res.error;
   }
   const rawStdout = res.stdout || "";

@@ -175,8 +175,8 @@ O="$(GAFFER_DATA="$LD" CLAUDE_BIN="$WORK/bin/paid-agent" GAFFER_DAILY_BUDGET_USD
      --arm baseline --arm cheap:tier=cheap --seed 9 --out "$WORK/g2" 2>&1)"
 RG="$WORK/g2/results.json"
 [ "$(grep -c '"kind":"experiment"' "$LD/usage-ledger.jsonl" 2>/dev/null)" = 2 ] \
-  && [ "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim().split("\n").map(JSON.parse);process.stdout.write(String(l.every(r=>r.ticket===null&&r.total_cost_usd===0.4)))' "$LD/usage-ledger.jsonl")" = true ] \
-  && ok "G: two paid calls booked in the factory's ledger, kind experiment, no ticket" || fail "G: ledger $(cat "$LD/usage-ledger.jsonl" 2>/dev/null) $O"
+  && [ "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim().split("\n").map(JSON.parse);const calls=l.filter(r=>r.kind==="experiment"),res=l.filter(r=>r.kind==="reservation");process.stdout.write(String(calls.every(r=>r.ticket===null&&r.total_cost_usd===0.4)&&res.length===2&&res.every(r=>calls.some(c=>c.settles===r.reservation_id))))' "$LD/usage-ledger.jsonl")" = true ] \
+  && ok "G: two paid calls booked in the factory's ledger, kind experiment, no ticket; each settles its reservation" || fail "G: ledger $(cat "$LD/usage-ledger.jsonl" 2>/dev/null) $O"
 [ "$(sed -n 1p "$WORK/paid-args")" = "0.5000" ] && [ "$(sed -n 2p "$WORK/paid-args")" = "0.1000" ] \
   && ok "G: each call is capped at the run's remaining budget" || fail "G: per-call caps $(cat "$WORK/paid-args")"
 [ "$(jt "$RG" 'd.runs.filter(r=>r.ran===false).length+"/"+d.spent_usd+"/"+/USD cap/.test(d.stopped)')" = "2/0.8/true" ] \

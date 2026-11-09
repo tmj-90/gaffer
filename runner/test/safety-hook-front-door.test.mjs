@@ -265,4 +265,28 @@ for (const cmd of [
   t.allow(`usage ledger without the reconcile verb: ${cmd}`, bash(cmd), opts);
 }
 
+// A budget reservation's settling verbs (independent review of review 16): releasing a
+// reservation or booking a row that settles one frees headroom the dollar cap holds for
+// a running call, so an agent may never run them. Booking, listing and the tests stay
+// allowed.
+for (const cmd of [
+  `node ${R}/lib/budget-admission.mjs release --id r-abc123`,
+  "node runner/lib/budget-admission.mjs release --file /tmp/x.reservation",
+  "cd runner/lib && node budget-admission.mjs release --id r-abc123",
+  "GAFFER_DATA=/tmp/x node /opt/copy/budget-admission.mjs 'release' --id r-abc123",
+  "node runner/lib/usage-ledger.mjs --kind delivery --rc 0 --settles r-abc123 --json-file x",
+  `node ${R}/lib/usage-ledger.mjs --settles r-abc123`,
+  "bash -c 'node usage-ledger.mjs --json-file x --settles r-abc123'",
+]) {
+  t.deny(`budget reservation settle: ${cmd}`, bash(cmd), opts);
+}
+for (const cmd of [
+  "node runner/lib/usage-ledger.mjs --open-reservations",
+  "node runner/test/budget-concurrency.test.mjs",
+  "grep -n release runner/lib/budget-admission.mjs",
+  'git commit -m "budget-admission.mjs: document release"',
+]) {
+  t.allow(`budget reservation without a settling verb: ${cmd}`, bash(cmd), opts);
+}
+
 t.done();

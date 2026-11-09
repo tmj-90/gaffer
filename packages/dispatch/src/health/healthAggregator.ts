@@ -270,6 +270,8 @@ export function parseHealthLine(line: string): HealthRow | null {
   }
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const r = raw as RawHealthRow;
+  // A budget reservation is a hold, not a call (see costAggregator.parseLedgerLine).
+  if (r.kind === "reservation") return null;
 
   const ts = typeof r.ts === "string" ? r.ts : new Date().toISOString();
   const measured = r.measured === true;

@@ -11,6 +11,12 @@
 //                      verdict (the reviewer did not run, or its run was discarded), and
 //                      a security second opinion that was held on that head makes the
 //                      review incomplete, so both leave the head reviewable again.
+//   back <sha>         prints the agent reviewer's verdict (approve | changes) for that exact
+//                      commit when the ticket came BACK into review on it after that verdict
+//                      from anywhere but the tester (a rework that submitted no new commit,
+//                      a reopen), or nothing. The commit is not reviewed again, so the pass
+//                      acts on the recorded verdict or says on the ticket that it waits for
+//                      a person, instead of leaving the ticket in review with nobody told.
 //   tester-note <sha>  prints one line for the reviewer's packet: the independent
 //                      tester's outcome for that exact commit (PASS or FAIL, where its
 //                      tests are kept, its own summary), or the latest hold reason when
@@ -18,7 +24,7 @@
 //                      nothing about the commit. The summary is the tester agent's own
 //                      text: the caller quarantines the line before it reaches a prompt.
 //
-// Usage: wg ticket show <n> | node review-head.mjs reviewed|tester-note <sha>
+// Usage: wg ticket show <n> | node review-head.mjs reviewed|back|tester-note <sha>
 
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -54,6 +60,34 @@ export function reviewedVerdict(view, sha) {
     }
   }
   return verdict;
+}
+
+/**
+ * The recorded verdict for `sha` when the ticket re-entered review after it (a submit or a
+ * reopen; the tester's PASS bringing it back is not a re-entry), or "" (see the header).
+ */
+export function backInReview(view, sha) {
+  const want = asSha(sha);
+  if (!want) return "";
+  let verdict = "";
+  let back = false;
+  for (const e of events(view)) {
+    if (!e) continue;
+    if (e.event_type === "ticket.lane_verdict") {
+      const p = parse(e.payload_json);
+      if (!sameSha(asSha(p.commit), want)) continue;
+      if (p.lane === "agent-review") {
+        verdict = p.verdict === "approve" || p.verdict === "changes" ? p.verdict : "";
+        back = false;
+      } else if (p.lane === "security-review" && p.verdict === "held") {
+        verdict = "";
+      }
+    } else if (e.event_type === "ticket.transitioned" && verdict) {
+      const p = parse(e.payload_json);
+      if (p.to === "in_review" && p.from !== "in_testing") back = true;
+    }
+  }
+  return back ? verdict : "";
 }
 
 /** One line on the tester's outcome for `sha`, or "" (see the header). */
@@ -118,9 +152,12 @@ function main(argv) {
   }
   const view = parse(raw);
   if (cmd === "reviewed") process.stdout.write(reviewedVerdict(view, sha));
+  else if (cmd === "back") process.stdout.write(backInReview(view, sha));
   else if (cmd === "tester-note") process.stdout.write(testerNote(view, sha));
   else {
-    process.stderr.write("usage: review-head.mjs reviewed|tester-note <sha> < ticket-view.json\n");
+    process.stderr.write(
+      "usage: review-head.mjs reviewed|back|tester-note <sha> < ticket-view.json\n",
+    );
     process.exitCode = 2;
   }
 }

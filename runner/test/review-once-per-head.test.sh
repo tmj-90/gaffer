@@ -20,6 +20,10 @@
 #      candidate" note is written
 #   6. a ticket merged by a person WHILE the reviewer runs is reported as having left
 #      review, never as the reviewer's act (the branch it judged is not restored)
+#   7. a rework that resubmits the commit the reviewer asked changes on is not reviewed
+#      again and not stranded: with the approve gate earned (AFK) the runner sends it back
+#      to rework on the recorded verdict; supervised, a note on the ticket says it waits
+#      for a person
 # Run: bash runner/test/review-once-per-head.test.sh
 # =====================================================================
 . "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
@@ -80,6 +84,10 @@ case "$prompt" in
       git -C "$R" -c user.email=p@p -c user.name=p merge -q --no-ff -m "merge #$n" "$b" >/dev/null 2>&1
       git -C "$R" branch -D "$b" >/dev/null 2>&1
     fi
+    if [ "$(cat "$CTL/review-verdict" 2>/dev/null)" = CHANGES ]; then
+      printf '{"type":"result","subtype":"success","is_error":false,"result":"AC1 not met.\\nRECOMMEND CHANGES: v must be documented\\n{\\"verdict\\":\\"CHANGES\\"}","total_cost_usd":0.01,"num_turns":2}\n'
+      exit 0
+    fi
     printf '{"type":"result","subtype":"success","is_error":false,"result":"AC1 PASS.\\nRECOMMEND APPROVE\\n{\\"verdict\\":\\"APPROVE\\"}","total_cost_usd":0.01,"num_turns":2}\n'
     exit 0 ;;
   *"INDEPENDENT TESTER"*)
@@ -92,6 +100,11 @@ case "$prompt" in
     esac
     exit 0 ;;
 esac
+if [ -e .git ] && [ -e "$CTL/no-commit" ] && [ "$(git rev-list --count main..HEAD 2>/dev/null || echo 0)" -gt 0 ]; then
+  # A rework that commits nothing new: the branch keeps the head it was sent back on.
+  echo "deliver-nocommit $(git rev-parse HEAD)" >> "$CALLS"
+  printf '{"type":"result","subtype":"success","is_error":false,"result":"done: nothing to change.\\n\\nSmallest-change note: none.","total_cost_usd":0.01,"num_turns":1}\n'; exit 0
+fi
 if [ -e .git ]; then
   mkdir -p docs; printf 'change %s %s\n' "$$" "$RANDOM" >> docs/change.md
   git -c user.email=s@s -c user.name=s add -A >/dev/null; git -c user.email=s@s -c user.name=s commit -qm "feat: delivery" >/dev/null 2>&1 || true
@@ -245,6 +258,50 @@ wg ticket show "$J" 2>/dev/null | grep -q "reviewer modified the candidate" \
   && fail "6: a 'reviewer modified the candidate' note is on #$J" || ok "6: no 'reviewer modified the candidate' note on #$J"
 git -C "$R" rev-parse --verify -q "refs/gaffer/review-tamper/$J" >/dev/null \
   && fail "6: the merge was kept as a reviewer tamper ref" || ok "6: nothing kept as a reviewer tamper ref"
+echo "== 7. a rework that resubmits the same commit after CHANGES is not reviewed again, nor stranded =="
+echo CHANGES > "$CTL/review-verdict"
+# 7a. AFK: the approve gate is earned (the env floor), so a CHANGES verdict reworks.
+# The stub's first delivery commits; with $CTL/no-commit every rework after it commits nothing.
+export DISPATCH_ALLOW_AGENT_APPROVE=1
+: > "$CTL/no-commit"
+A="$(new_ticket "Changes then the same commit (AFK)" "v stays 1")"
+daemon_pass
+HA="$(branch_head "$A")"
+[ -n "$HA" ] && [ "$(count review "$HA")" = 1 ] && ok "7a: #$A delivered, tested and reviewed once (CHANGES) at ${HA:0:12}" \
+  || fail "7a: setup: #$A head ${HA:-none}, $(count review "$HA") reviews, status $(st "$A")"
+grep -q "AFK: #$A → CHANGES; re-queued to ready" "$GAFFER_DATA/factory.log" && ok "7a: the CHANGES verdict sent #$A to rework" || fail "7a: no AFK rework line for #$A"
+grep -q "^deliver $HA\$" "$CALLS" && ok "7a: the head is the first delivery's commit (${HA:0:12}); the rework added none" || fail "7a: ${HA:0:12} is not the first delivery's commit"
+grep -q "^deliver-nocommit $HA\$" "$CALLS" && ok "7a: the rework ran and committed nothing" || fail "7a: no no-commit rework recorded: $(tail -4 "$CALLS" | tr '\n' '|')"
+[ "$(count review "$HA")" = 1 ] && ok "7a: the same commit is not reviewed a second time" || fail "7a: ${HA:0:12} reviewed $(count review "$HA") times"
+grep -q "AFK: #$A came back into review on ${HA:0:12} with no new commit after the reviewer's CHANGES" "$GAFFER_DATA/factory.log" \
+  && ok "7a: the runner sent it back to rework on the recorded verdict" || fail "7a: no re-queue on the recorded verdict: $(grep "#$A" "$GAFFER_DATA/factory.log" | tail -3 | tr '\n' '|')"
+case "$(st "$A")" in in_review) fail "7a: #$A sits in_review with nobody told" ;; *) ok "7a: #$A is not left in review ($(st "$A"))" ;; esac
+# A rework that keeps resubmitting the same commit is parked by the retry cap (dispatch's
+# reject cap, 3 by default), still with that one review.
+daemon_pass
+case "$(st "$A")" in blocked|refining) ok "7a: the retry cap parked #$A ($(st "$A")) after the same commit came back again" ;; *) fail "7a: #$A is $(st "$A") after another resubmit of the same commit" ;; esac
+[ "$(count review "$HA")" = 1 ] && ok "7a: still one review of ${HA:0:12}" || fail "7a: ${HA:0:12} reviewed $(count review "$HA") times"
+unset DISPATCH_ALLOW_AGENT_APPROVE
+rm -f "$CTL/no-commit"
+wg ticket cancel "$A" >/dev/null 2>&1 || wg wont-do "$A" --reason done >/dev/null 2>&1 || true
+# 7b. Supervised: the CHANGES verdict is advisory; a person sends it back; the rework
+# resubmits the same commit; a note says the commit waits for a person.
+: > "$CTL/no-commit"
+B="$(new_ticket "Changes then the same commit (supervised)" "v stays 1")"
+daemon_pass
+HB="$(branch_head "$B")"
+[ -n "$HB" ] && [ "$(count review "$HB")" = 1 ] && [ "$(st "$B")" = in_review ] && ok "7b: #$B reviewed once (advisory CHANGES), in review for a person" \
+  || fail "7b: setup: #$B head ${HB:-none}, $(count review "$HB") reviews, status $(st "$B")"
+wg review reject "$B" --reason "do what the reviewer said" --to ready >/dev/null 2>&1
+daemon_pass
+daemon_pass
+[ "$(branch_head "$B")" = "$HB" ] && [ "$(st "$B")" = in_review ] && ok "7b: the rework resubmitted the same commit; #$B in review" || fail "7b: head $(branch_head "$B") status $(st "$B")"
+[ "$(count review "$HB")" = 1 ] && ok "7b: the same commit is not reviewed a second time" || fail "7b: ${HB:0:12} reviewed $(count review "$HB") times"
+_NB="$(wg ticket show "$B" 2>/dev/null | grep -o "agent review: back in review on $HB" | wc -l | tr -d ' ')"
+[ "$_NB" -ge 1 ] && ok "7b: the ticket says the commit waits for a person" || fail "7b: no back-in-review note on #$B"
+wg ticket show "$B" 2>/dev/null | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const v=JSON.parse(s);const n=(v.evidence||[]).filter(e=>/^agent review: back in review on /.test(e.summary||"")).length;process.exit(n===1?0:1)})' \
+  && ok "7b: said once over two passes" || fail "7b: the note was written more than once"
+rm -f "$CTL/no-commit" "$CTL/review-verdict"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "review-once-per-head: ALL $PASS checks passed"; exit 0; fi

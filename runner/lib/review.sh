@@ -25,6 +25,8 @@
 # has nothing left to say about the head (dispatch: not_gated, or a PASS covers it). A
 # tester FAIL sends the ticket to rework, so no review is paid for it. The reviewer's
 # packet carries the tester's outcome for the head (lib/review-head.mjs tester-note).
+# A ticket back in review on a commit the reviewer already judged (a rework with no new
+# commit) is not reviewed again and not stranded either (_gaffer_review_back).
 
 # The review pick's gate. Returns 0 when in_review ticket $1 gets an agent review now (RSHOW
 # then holds its fresh view), 1 when not. A ticket with no resolvable delivery head returns
@@ -42,11 +44,14 @@ _gaffer_review_wanted() {
   [ -n "$head" ] || return 0
   # ONE REVIEW PER HEAD. The within-run cache first (no dispatch call), then dispatch's own
   # record: the reviewer's lane verdict names the commit it judged.
-  grep -qxF "$n"$'\t'"$head" "$_RHEADS_FILE" 2>/dev/null && return 1
+  # A cached head still gets the back-in-review check: the ticket may have been sent back
+  # and resubmitted on it within this run.
+  if grep -qxF "$n"$'\t'"$head" "$_RHEADS_FILE" 2>/dev/null; then _gaffer_review_back "$n" "$head"; return 1; fi
   v="$(printf '%s' "$RSHOW" | node "$RUNNER_DIR/lib/review-head.mjs" reviewed "$head" 2>/dev/null || true)"
   if [ -n "$v" ]; then
     log "REVIEW: #$n head ${head:0:12} already has an agent review verdict ($v): not reviewing the same commit again; a new head is reviewed afresh"
     _gaffer_locked .skip.lock _gaffer_append_line "$_RHEADS_FILE" "$n"$'\t'"$head"
+    _gaffer_review_back "$n" "$head"
     return 1
   fi
   # TESTER FIRST (lib/tester.sh gaffer_tester_gate): dispatch routes the delivery to the
@@ -65,6 +70,36 @@ _gaffer_review_wanted() {
       return 1 ;;
     *) return 1 ;;
   esac
+}
+
+# NOT STRANDED: in_review ticket $1 is back in review on head $2, a commit the reviewer agent
+# already judged, after that verdict (a rework that submitted no new commit, a reopen; the
+# tester's PASS is not a re-entry). It is not reviewed again, so: where the runner may act
+# on a CHANGES verdict (the same ship plan as after a review), it sends the ticket back to
+# rework on the recorded verdict, and the retry cap parks a ticket that keeps resubmitting
+# the same commit; otherwise it says once on the ticket that the commit waits for a person.
+# Without this an autonomous factory left such a ticket in review with nobody told.
+_gaffer_review_back() {
+  local n="$1" head="$2" back plan=hold
+  back="$(printf '%s' "$RSHOW" | node "$RUNNER_DIR/lib/review-head.mjs" back "$head" 2>/dev/null || true)"
+  case "$back" in approve|changes) ;; *) return 0 ;; esac
+  if [ "$back" = changes ] && [ "${GAFFER_MODE:-}" != lite ] && [ -n "${REVIEWER_AGENT:-}" ] \
+     && declare -F gaffer_auto_decision >/dev/null 2>&1 && declare -F gaffer_afk_ship_plan >/dev/null 2>&1; then
+    plan="$(gaffer_afk_ship_plan changes "$(gaffer_auto_decision "$n" approve)" deny "$REVIEW_MODE")"
+  fi
+  if [ "$plan" = rework ]; then
+    if wg review reject "$n" --to ready --as agent --reviewer "$REVIEWER_AGENT" \
+         --reason "The rework resubmitted commit ${head:0:12} unchanged, the commit the reviewer agent already asked changes on: make the change its earlier review asked for (see the review history)." >/dev/null 2>&1; then
+      log "AFK: #$n came back into review on ${head:0:12} with no new commit after the reviewer's CHANGES on it: re-queued to ready for rework on that verdict (no second review; the retry cap parks it)"
+      return 0
+    fi
+    log "AFK: #$n came back into review on ${head:0:12} after the reviewer's CHANGES on it, and the reject failed: left in_review"
+  fi
+  if [ "$(printf '%s' "$RSHOW" | R="agent review: back in review on $head" jget '(d.evidence||[]).some(e => (e.summary||"").startsWith(process.env.R)) ? "1" : ""' 2>/dev/null)" != "1" ]; then
+    wg attach-evidence "$n" --type manual_note \
+      --summary "agent review: back in review on $head, the commit the reviewer agent already judged ($back); it is not reviewed again (a new commit is reviewed afresh), so this one needs a human" >/dev/null 2>&1 || true
+    log "REVIEW: #$n is back in review on ${head:0:12}, already judged ($back): not reviewed again; noted on the ticket for a human"
+  fi
 }
 
 _gaffer_agent_review_pass() {

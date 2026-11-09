@@ -594,7 +594,9 @@ before you look, and before the reviewer agent when you run one (`REVIEW_MODE=ag
 commit it tested, and a FAIL sends it back to rework with the tester's observation in
 the next prompt, with no agent review paid for it. The reviewer agent then reviews the
 tested commit once, with the tester's outcome in its packet; it does not review the same
-commit again on a later run, and a rework (a new commit) is reviewed afresh. You approve the commit the tester passed; if
+commit again on a later run, and a rework (a new commit) is reviewed afresh. A rework that
+resubmits the commit it asked changes on is sent back to rework on that verdict when the
+runner may act on it, or noted on the ticket for you when it may not. You approve the commit the tester passed; if
 the branch moves or the contract changes, the approval is refused (*Approve held: not
 tested on this commit*) and the runner sends the new head to the tester first. With CI
 required, a delivery goes to the tester only once CI has passed on its head.

@@ -186,6 +186,9 @@ export function indexUsageByTicket(ledgerText) {
 
   for (const rec of parseLedger(ledgerText)) {
     if (rec.ticket == null) continue;
+    // A budget reservation (lib/budget-admission.mjs) is a hold for a call in flight,
+    // never a call: it must not show as a kind or as an unmeasured call of the ticket.
+    if (rec.kind === "reservation") continue;
     const key = String(rec.ticket);
 
     let agg = byTicket.get(key);

@@ -679,7 +679,21 @@ and the tester's passes.*
   apart. A call whose ledger append fails is not free either: after two retries its row
   is held in `$GAFFER_DATA/usage-ledger.held.jsonl` and counts as an unknown cost (paid
   launches under a cap are refused, across restarts) until the reconcile moves it into
-  the ledger, once (a reconcile that dies part way leaves it held, never booked twice).
+  the ledger, once (a reconcile that dies part way leaves it held, never booked twice;
+  the reconcile holds the admission lock while it moves and books, so two at once
+  cannot book a row twice either).
+- **Calls in flight hold their worst case against the cap.** Two launches that started
+  at the same moment used to both see $0 spent against a $1 cap and run, and the ledger
+  then held $1.40. Now an admitted launch reserves its worst case (the per-call cap
+  `GAFFER_MAX_CALL_USD` where set, else the kill estimate) in the usage ledger before it
+  starts, under one lock, and the next launch counts that reservation as spent: it starts
+  only if its own worst case still fits. The call's real cost replaces the reservation
+  when it is booked. A reservation whose call died without booking keeps holding until
+  the crash path books the kill estimate or you reconcile;
+  `node runner/lib/usage-ledger.mjs --open-reservations` lists them (and the held rows
+  above, under their own heading), and the run summary
+  shows them on their own line. Set `GAFFER_MAX_CALL_USD` for the reservation to be a
+  real bound: without it the kill estimate is only a floor.
 - **One Poll at a time.** A Poll pressed while the previous one runs waits for it
   (`GAFFER_POLL_WAIT_TIMEOUT`), and each run keeps its own per-run lists.
 - **Usage limits pause the factory, they do not fail tickets.** When the model refuses

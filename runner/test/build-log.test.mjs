@@ -291,6 +291,37 @@ assert(
 );
 
 // =====================================================================
+// A budget reservation is never a call (independent review of review 16): a ticket with
+// only an open reservation has no usage entry, and a settled one adds no kind.
+// =====================================================================
+console.log("== reservations are not calls ==");
+{
+  const resv = JSON.stringify({
+    ts: "2026-01-01T00:00:00Z",
+    ticket: 7,
+    kind: "reservation",
+    reservation_id: "r-abcd1234",
+    reserved_usd: 0.5,
+    measured: false,
+  });
+  const call = JSON.stringify({
+    ts: "2026-01-01T00:01:00Z",
+    ticket: 7,
+    kind: "delivery",
+    measured: true,
+    total_cost_usd: 0.3,
+    settles: "r-abcd1234",
+    models: {},
+  });
+  assert("an open reservation alone is no usage entry", !indexUsageByTicket(resv).has("7"));
+  const both = indexUsageByTicket(`${resv}\n${call}`).get("7");
+  assert(
+    "a settled reservation adds no kind and no cost",
+    both && both.kinds.join(",") === "delivery" && both.cost_usd === 0.3,
+  );
+}
+
+// =====================================================================
 // AC10: node --check syntax gate on both new files.
 // =====================================================================
 console.log("== syntax: node --check ==");

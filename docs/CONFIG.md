@@ -69,6 +69,24 @@ child, test seams) and deprecated names are listed at the end, not in the tables
 
 ### Budget
 
+**Budget admission and reservations.** Every paid agent launch asks one admission
+check right before it starts (`runner/lib/budget-admission.mjs`). A dollar cap is a
+ceiling, so the calls already running hold their worst case against it: under any cap
+an admitted launch books a `reservation` row in the usage ledger before the call
+starts, for its `GAFFER_MAX_CALL_USD` per-call cap where set, else
+`GAFFER_KILL_ESTIMATE_USD`, else $0.05. Reading the spend and booking the reservation
+happen under one lock beside the ledger, so two launches never see the same headroom.
+Spend plus open reservations must stay below the cap, and while other calls are in
+flight a new call starts only if its own worst case fits beside them. When the call
+books its real cost (measured or estimated) that row settles the reservation. A
+reservation whose call died without booking keeps holding both caps until a crash
+path books its kill estimate or you run `node runner/lib/usage-ledger.mjs --reconcile
+--usd <amount>` (`--open-reservations` lists them). A reservation is never a reading:
+it carries no cost and no view counts it as spend or as a call. Only the per-call
+cap bounds a call: without `GAFFER_MAX_CALL_USD` the reservation (its row's
+`reserve_basis` reads `kill-estimate`, or `floor` for the $0.05 used when the kill
+estimate is 0) is a floor, not a bound, and a call can cost more than it held.
+
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
 | `GAFFER_BUDGET_USD` | _(empty)_ | yes (number) | dispatch, runner | Total factory spend ceiling in USD (summed from the usage-ledger). As headroom runs low the router biases cheaper; at $0 headroom no new paid work starts (ticks, Poll and the daemon refuse, and every paid agent launch — including Plan a build and Suggest work — is refused right before it would start) and in-flight work pauses. Empty = unlimited, though a live run needs this or the daily budget set. |

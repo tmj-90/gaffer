@@ -116,6 +116,10 @@ export function parseLedgerLine(line: string): LedgerRow | null {
   }
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const r = raw as RawLedgerRow;
+  // A budget reservation (runner/lib/budget-admission.mjs) holds a call's worst case
+  // against the dollar caps while it runs. It is not a call and carries no cost, so it
+  // is never a row here: counting it would show an unmeasured call that never was.
+  if (r.kind === "reservation") return null;
 
   const ts = typeof r.ts === "string" ? r.ts : new Date().toISOString();
   const measured = r.measured === true;

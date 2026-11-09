@@ -47,7 +47,11 @@
 //     env       interface: env — the credential-stripped child env
 //   Returns the Node `SpawnSyncReturns` verbatim ({ status, stdout, stderr, error, … }).
 
-import { BUDGET_REFUSED_STATUS, paidLaunchAdmission } from "./budget-admission.mjs";
+import {
+  BUDGET_REFUSED_STATUS,
+  releasePendingReservation,
+  reservePaidLaunch,
+} from "./budget-admission.mjs";
 import { pauseLine, readPause } from "./usage-pause.mjs";
 import {
   accessSync,
@@ -834,11 +838,26 @@ export function deliver({ bin, argv, cwd, timeoutMs, maxBuffer, env, kind = "wor
       return failClosedResult(command.message);
     }
   }
+  // claude-code — the current path. With the sandbox off and no dollar cap configured
+  // this is byte-identical. An opted-in per-call cap (GAFFER_MAX_CALL_USD, clamped to
+  // GAFFER_BUDGET_REMAINING) bounds THIS call while it runs, not only between calls.
+  argv = withCallBudget(argv, process.env);
   // BUDGET ADMISSION (external review #6): the ONE check every paid launch passes
   // immediately before it spawns (lib/budget-admission.mjs; the bash seam asks the same
   // module). Daily or lifetime budget exhausted, or the spend unknowable with a cap set
   // ⇒ NO spawn: status 77, empty stdout, nothing booked to the ledger. Both providers.
-  const admission = paidLaunchAdmission({ kind, env: process.env });
+  // RESERVATION (external review 16): admitted under a cap, the launch books its worst
+  // case (this call's --max-budget-usd, else the kill estimate) as a reservation row,
+  // under the admission lock, so a concurrent launch sees it; the call's own ledger row
+  // settles it (usage-ledger.mjs appendUsageRecord). Every refusal below this point
+  // starts nothing and gives the reservation back (`unreserve`).
+  const bi = argv.indexOf("--max-budget-usd");
+  const admission = reservePaidLaunch({
+    kind,
+    env: process.env,
+    worstUsd: bi >= 0 ? Number(argv[bi + 1]) : undefined,
+    ticket: env && env.GAFFER_TICKET,
+  });
   if (!admission.ok) {
     const r = failClosedResult(admission.reason);
     r.status = BUDGET_REFUSED_STATUS;
@@ -846,10 +865,11 @@ export function deliver({ bin, argv, cwd, timeoutMs, maxBuffer, env, kind = "wor
     process.stderr.write(`worker: ${admission.reason}\n`);
     return r;
   }
-  // claude-code — the current path. With the sandbox off and no dollar cap configured
-  // this is byte-identical. An opted-in per-call cap (GAFFER_MAX_CALL_USD, clamped to
-  // GAFFER_BUDGET_REMAINING) bounds THIS call while it runs, not only between calls.
-  argv = withCallBudget(argv, process.env);
+  const reservationId = admission.reservation ? admission.reservation.id : null;
+  const unreserve = (r, why) => {
+    if (reservationId) releasePendingReservation(why || "the launch was refused before it started");
+    return r;
+  };
   let spawnBin = bin;
   let spawnArgv = argv;
   let spawnEnv = env;
@@ -879,7 +899,7 @@ export function deliver({ bin, argv, cwd, timeoutMs, maxBuffer, env, kind = "wor
         process.stderr.write(`${message}\n`);
         const r = failClosedResult(message);
         r.status = SANDBOX_REFUSED_STATUS;
-        return r;
+        return unreserve(r, "the sandbox refused the launch");
       }
     }
   }
@@ -902,7 +922,7 @@ export function deliver({ bin, argv, cwd, timeoutMs, maxBuffer, env, kind = "wor
       const r = failClosedResult(
         `worker: could not write the command worker's prompt file (${e?.code ?? e}) — no agent spawned`,
       );
-      return r;
+      return unreserve(r, "the command worker's prompt file could not be written");
     }
     contract = commandContractEnv({
       ...hints,
@@ -917,7 +937,7 @@ export function deliver({ bin, argv, cwd, timeoutMs, maxBuffer, env, kind = "wor
   // From here on every early return must remove the prompt file.
   const refuse = (r) => {
     dropPromptFile();
-    return r;
+    return unreserve(r);
   };
   if (commandNeedsWrap || sandboxWanted(process.env)) {
     // Derive the wrap from the per-call boundary vars (the cwd is the write root
@@ -1047,6 +1067,18 @@ export function deliver({ bin, argv, cwd, timeoutMs, maxBuffer, env, kind = "wor
     bridgeStop(); // the host-side servers, the socket and the bridged config go with the agent
     dropPromptFile();
   }
+  // A program that could not be executed at all (ENOENT / EACCES at spawn) ran nothing,
+  // so its reservation is given back; a call that ran (or timed out) keeps it until the
+  // launcher books the call's row.
+  if (
+    reservationId &&
+    res &&
+    res.error &&
+    !res.pid &&
+    ["ENOENT", "EACCES"].includes(res.error.code)
+  )
+    unreserve(null, `the worker could not be started (${res.error.code})`);
+  if (res && reservationId) res.reservationId = reservationId;
   if (isCommand && res && res.pid && (res.signal || res.error)) {
     try {
       process.kill(-res.pid, "SIGKILL");

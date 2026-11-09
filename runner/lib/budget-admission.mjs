@@ -39,16 +39,65 @@
 // such env, so settings.json ($GAFFER_DATA/settings.json) is read as the fallback. A
 // settings.json that exists but does not parse refuses (the caps are unknowable).
 //
-// CLI: node lib/budget-admission.mjs check [--kind <launcher>]
+// RESERVATIONS (external review 16): a dollar cap is a CEILING, so the calls already
+// running hold their worst case against it. Two launches that both read "$0 spent" used
+// to both start against a $1 cap and record $1.40. Now:
+//   • under any cap, an admitted launch books a `reservation` row in the usage ledger
+//     BEFORE the call starts (reservePaidLaunch; the seams lib/worker.mjs deliver and
+//     lib/worker.sh worker_deliver call it), for the call's worst case: its per-call cap
+//     (--max-budget-usd / GAFFER_MAX_CALL_USD) where set, else the kill estimate
+//     (GAFFER_KILL_ESTIMATE_USD, default 0.05), else RESERVATION_FLOOR_USD;
+//   • "read spend + write reservation" runs under ONE per-ledger lock
+//     (<ledger>.admit.lock.d, withAdmissionLock), so two launches can never both read
+//     the same headroom;
+//   • admission counts OPEN reservations as spend, today and lifetime: spend plus open
+//     reservations must be below the cap, and when other calls are in flight the new
+//     call's own worst case must fit beside them (spend + reserved + worst <= cap). With
+//     nothing in flight the rule is the one above, unchanged (below the cap admits);
+//   • the call's own row (measured or estimated) names the reservation it settles
+//     (`settles`), and the reader stops counting it; a launch refused after admission
+//     (no agent spawned) releases it with a `settles` row of its own;
+//   • a reservation whose call died without booking stays OPEN and keeps holding both
+//     caps (fail closed) until the shell crash path books its kill estimate
+//     (config/14-usage.sh gaffer_usage_settle_crashed) or the operator reconciles
+//     (`usage-ledger.mjs --reconcile`, which settles the reservations whose launcher is
+//     no longer running).
+// A reservation is never a reading: it carries `reserved_usd` and its basis, never a
+// total_cost_usd or an estimated_cost_usd, so no cost view or estimator reads it as one.
+//
+// CLI: node lib/budget-admission.mjs check [--kind <launcher>] [--worst-usd <n>]
 //      → one JSON line { ok, kind, reason, daily, lifetime }; exit 0 admitted · 3 refused
+//      node lib/budget-admission.mjs reserve --kind <launcher> [--worst-usd <n>]
+//           [--ticket <n>] [--pid <launcher pid>] [--out <file>]
+//      → the check and, when admitted under a cap, one reservation row, under the lock;
+//        the reservation id is written to <file>; exit 0 admitted · 3 refused
+//      node lib/budget-admission.mjs release (--id <id> | --file <file>) [--reason <text>]
+//      → a launch that was admitted but never started gives its reservation back
 // =====================================================================
-import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { randomBytes } from "node:crypto";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { homedir, hostname } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ledgerDisabled, resolveLedgerPath } from "./usage-ledger-path.mjs";
 
 export const BUDGET_REFUSED_STATUS = 77;
+
+/** The ledger row kind of a reservation (and of the row that releases one). */
+export const RESERVATION_KIND = "reservation";
+/** The worst case booked when no per-call cap is set and the kill estimate is 0. */
+export const RESERVATION_FLOOR_USD = 0.05;
+/** The kill estimate's default outside factory.config.sh (usage-ledger.mjs parity). */
+const KILL_ESTIMATE_DEFAULT = 0.05;
+const RESERVATION_ID_RE = /^r-[A-Za-z0-9-]{4,64}$/;
 
 /** The one-line fix, word for word lib/budget.sh gaffer_spend_cap_hint. */
 export const SPEND_CAP_HINT =
@@ -64,6 +113,9 @@ const finitePos = (v) => typeof v === "number" && Number.isFinite(v) && v > 0;
  */
 export function isUnknownCostRow(r) {
   if (!r || typeof r !== "object") return false;
+  // A reservation row is a HOLD for a call in flight, never a call: it carries no cost
+  // by design and is counted through reservedUsd, not as an unknown cost.
+  if (r.kind === RESERVATION_KIND) return false;
   if (finiteNonNeg(r.total_cost_usd)) return false;
   if (r.estimated === true && finiteNonNeg(r.estimated_cost_usd)) return false;
   if (r.cost_basis === "unreported" && r.worker_provider === "command") return false;
@@ -141,6 +193,10 @@ export function ledgerSpend(env = process.env, now = new Date()) {
   // external review 15).
   let unknownToday = 0;
   let unknownAll = 0;
+  // Open reservations (id → row) and the ids some row has settled; a settle may in
+  // principle be read before its reservation, so both are kept until the end.
+  const open = new Map();
+  const settled = new Set();
   for (const raw of text.split("\n")) {
     const line = raw.trim();
     if (!line) continue;
@@ -152,6 +208,28 @@ export function ledgerSpend(env = process.env, now = new Date()) {
     }
     if (!r || typeof r !== "object" || Array.isArray(r))
       return { unknown: `the usage ledger ${p} holds a record that is not an object` };
+    if (typeof r.settles === "string" && r.settles) {
+      settled.add(r.settles);
+      open.delete(r.settles);
+    }
+    if (r.kind === "reconcile" && Array.isArray(r.settles_reservations))
+      for (const id of r.settles_reservations)
+        if (typeof id === "string") {
+          settled.add(id);
+          open.delete(id);
+        }
+    if (r.kind === RESERVATION_KIND) {
+      // A release row (it carries `settles`) was handled above. An open reservation
+      // must state a finite worst case: one that does not is a hold of unknown size.
+      if (typeof r.reservation_id === "string" && r.reservation_id && !r.settles) {
+        if (!finiteNonNeg(r.reserved_usd))
+          return {
+            unknown: `the usage ledger ${p} holds a reservation (${r.reservation_id}) with no readable reserved_usd`,
+          };
+        if (!settled.has(r.reservation_id)) open.set(r.reservation_id, r);
+      }
+      continue; // never a call, never a cost
+    }
     let c = 0;
     if (
       typeof r.total_cost_usd === "number" &&
@@ -178,14 +256,52 @@ export function ledgerSpend(env = process.env, now = new Date()) {
       if (isToday) unknownToday += 1;
     }
   }
-  return { today, lifetime, unknownToday, unknownAll };
+  const reservations = [...open.values()];
+  const reservedUsd = reservations.reduce((a, r) => a + r.reserved_usd, 0);
+  return {
+    today,
+    lifetime,
+    unknownToday,
+    unknownAll,
+    reservedUsd,
+    openReservations: reservations.length,
+    reservations,
+  };
+}
+
+/**
+ * The worst case a launch reserves: `{ usd, basis }`. The call's own per-call cap
+ * (`worstUsd`, the --max-budget-usd it is launched with) where given, else
+ * GAFFER_MAX_CALL_USD (clamped to GAFFER_BUDGET_REMAINING, lib/worker.mjs callBudgetUsd
+ * parity), else the kill estimate (GAFFER_KILL_ESTIMATE_USD, default 0.05), else the
+ * floor. Never derived from tokens or a price table.
+ */
+export function reservationWorst({ env = process.env, worstUsd } = {}) {
+  const w = typeof worstUsd === "string" ? Number(worstUsd) : worstUsd;
+  if (finitePos(w)) return { usd: w, basis: "per-call-cap" };
+  const callCap = capValue(env.GAFFER_MAX_CALL_USD);
+  if (callCap !== null) {
+    const rem = String(env.GAFFER_BUDGET_REMAINING ?? "").trim();
+    const r = rem === "" ? NaN : Number(rem);
+    const v = Number.isFinite(r) && r < callCap ? r : callCap;
+    if (v > 0) return { usd: v, basis: "per-call-cap" };
+  }
+  const rawKill = String(env.GAFFER_KILL_ESTIMATE_USD ?? "").trim();
+  const kill = rawKill === "" ? KILL_ESTIMATE_DEFAULT : Number(rawKill);
+  if (finitePos(kill)) return { usd: kill, basis: "kill-estimate" };
+  return { usd: RESERVATION_FLOOR_USD, basis: "floor" };
 }
 
 /**
  * May a paid worker launch start now? `{ ok, kind, reason, daily, lifetime }`. DRY runs
  * never reach a launch, so no DRY_RUN exemption lives here.
  */
-export function paidLaunchAdmission({ kind = "worker", env = process.env, now = new Date() } = {}) {
+export function paidLaunchAdmission({
+  kind = "worker",
+  env = process.env,
+  now = new Date(),
+  worstUsd,
+} = {}) {
   const caps = readBudgetCaps(env);
   if (caps.error)
     return {
@@ -235,36 +351,362 @@ export function paidLaunchAdmission({ kind = "worker", env = process.env, now = 
       unknownCost: spend.unknownAll,
       reason: `the lifetime budget (GAFFER_BUDGET_USD=${caps.lifetime}) cannot be checked: the usage ledger holds ${spend.unknownAll} call(s) from an earlier day with no reported cost and no estimate, so the paid ${kind} launch is refused (fail closed); book what those calls cost with \`node runner/lib/usage-ledger.mjs --reconcile --usd <amount>\` (it counts toward the caps)`,
     };
-  const daily = caps.daily === null ? null : { cap: caps.daily, spent: spend.today };
-  const lifetime = caps.lifetime === null ? null : { cap: caps.lifetime, spent: spend.lifetime };
-  if (daily && !(daily.spent < daily.cap))
+  // Open reservations (calls in flight, or that died without booking) count as spend
+  // against BOTH caps, whatever day they were booked on: a call still running books its
+  // real row today, and one that never booked holds until it is settled (fail closed).
+  const reserved = spend.reservedUsd || 0;
+  const nOpen = spend.openReservations || 0;
+  const worst = reservationWorst({ env, worstUsd });
+  const daily = caps.daily === null ? null : { cap: caps.daily, spent: spend.today, reserved };
+  const lifetime =
+    caps.lifetime === null ? null : { cap: caps.lifetime, spent: spend.lifetime, reserved };
+  const held =
+    reserved > 0 ? ` and $${reserved.toFixed(4)} held by ${nOpen} open reservation(s)` : "";
+  // EPS: a sum of decimal dollars (0.1 + 0.2) is not exact in binary; the fit test
+  // allows for it so a cap that holds exactly N worst cases admits N.
+  const EPS = 1e-9;
+  for (const [b, label, knob, when] of [
+    [daily, "daily", "GAFFER_DAILY_BUDGET_USD", " today"],
+    [lifetime, "lifetime", "GAFFER_BUDGET_USD", ""],
+  ]) {
+    if (!b) continue;
+    if (!(b.spent + reserved < b.cap))
+      return {
+        ok: false,
+        kind,
+        reason: `the ${label} budget is exhausted (${knob}=${b.cap}, spent $${b.spent.toFixed(4)}${when}${held}) — the paid ${kind} launch was not started`,
+        daily,
+        lifetime,
+        worst,
+      };
+    // Other calls are in flight: this one starts only if its own worst case fits beside
+    // them, so the ceiling holds for the calls already running.
+    if (reserved > 0 && b.spent + reserved + worst.usd > b.cap + EPS)
+      return {
+        ok: false,
+        kind,
+        reason: `the ${label} budget cannot hold another call (${knob}=${b.cap}, spent $${b.spent.toFixed(4)}${when}${held} for calls in flight; this launch reserves $${worst.usd.toFixed(4)}, ${worst.basis}) — the paid ${kind} launch was not started; it fits once those calls book their cost`,
+        daily,
+        lifetime,
+        worst,
+      };
+  }
+  return { ok: true, kind, reason: "within budget", daily, lifetime, worst };
+}
+
+// ── THE ADMISSION LOCK ──────────────────────────────────────────────────────────
+// "read spend + write reservation" must be one step, or two launches read the same
+// headroom. A mkdir lock beside the ledger (<ledger>.admit.lock.d, with the holder's pid
+// inside), the same discipline as config/10-locks.sh gaffer_with_lock's portable path:
+// a holder that is alive is never reaped however long it holds; a dead holder's lock is
+// reaped under a guard; a lock with no pid older than LOCK_STALE_NOPID_MS is reaped. The
+// shell launchers reach it through this module's CLI, so there is ONE lock for both.
+const LOCK_STALE_NOPID_MS = 10000;
+const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+function pidAlive(pid) {
+  const n = Number(pid);
+  if (!Number.isInteger(n) || n <= 0) return false;
+  try {
+    process.kill(n, 0);
+    return true;
+  } catch (e) {
+    return e?.code === "EPERM"; // alive, owned by someone else
+  }
+}
+/**
+ * The start time of process `pid` as the kernel counts it (/proc/<pid>/stat field 22,
+ * clock ticks since boot), or null where there is no /proc (macOS) or no such process.
+ * With the pid it names one process for good: a pid the kernel has handed to a new
+ * process since reads a different start time.
+ */
+export function pidStartTime(pid) {
+  const n = Number(pid);
+  if (!Number.isInteger(n) || n <= 0) return null;
+  try {
+    const stat = readFileSync(`/proc/${n}/stat`, "utf8");
+    // comm (field 2) may hold spaces or parentheses: the fields after it follow the LAST ")".
+    const rest = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+    const v = rest[19]; // field 22 = index 19 after state (field 3)
+    return v && /^\d+$/.test(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Is a reservation's launcher still running on this host (its call may be in flight)?
+ * A pid that is alive but whose start time differs from the one the reservation
+ * recorded is a reused pid: the launcher is gone. Without a recorded start time, or
+ * where /proc is absent, a live pid reads as the launcher (fail closed: the hold stays).
+ */
+export function launcherAlive(r, host = hostname()) {
+  if (!r || r.host !== host) return false;
+  if (!pidAlive(r.pid)) return false;
+  if (typeof r.pid_start === "string" && r.pid_start) {
+    const now = pidStartTime(r.pid);
+    if (now !== null && now !== r.pid_start) return false;
+  }
+  return true;
+}
+
+function ageMs(p) {
+  try {
+    return Date.now() - statSync(p).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+function readPid(dir) {
+  try {
+    return readFileSync(join(dir, "pid"), "utf8").trim();
+  } catch {
+    return "";
+  }
+}
+function reapLock(dir, seenPid) {
+  const guard = `${dir}.reap`;
+  try {
+    mkdirSync(guard);
+  } catch {
+    if (ageMs(guard) > LOCK_STALE_NOPID_MS) rmSync(guard, { recursive: true, force: true });
+    return false;
+  }
+  let reaped = false;
+  try {
+    // Re-checked under the guard: the lock may have been reaped and taken again since
+    // it was seen. A pid-less lock must ALSO still be stale, or a fresh holder that has
+    // not written its pid yet would be reaped and two launches would both hold it.
+    if (
+      existsSync(dir) &&
+      readPid(dir) === seenPid &&
+      (seenPid !== "" || ageMs(dir) > LOCK_STALE_NOPID_MS)
+    ) {
+      rmSync(dir, { recursive: true, force: true });
+      reaped = true;
+    }
+  } finally {
+    rmSync(guard, { recursive: true, force: true });
+  }
+  return reaped;
+}
+
+/**
+ * Run `fn()` holding the admission lock of `ledgerPath`. `{ locked: true, value }`, or
+ * `{ locked: false, reason }` when it could not be taken within GAFFER_LOCK_TIMEOUT
+ * seconds (default 30): the caller then refuses the launch (fail closed).
+ */
+export function withAdmissionLock(ledgerPath, fn, env = process.env) {
+  const dir = `${ledgerPath}.admit.lock.d`;
+  const t = Number(String(env.GAFFER_LOCK_TIMEOUT ?? "").trim() || "30");
+  const deadline = Date.now() + (Number.isFinite(t) && t > 0 ? t : 30) * 1000;
+  try {
+    mkdirSync(dirname(ledgerPath), { recursive: true });
+  } catch {
+    /* the mkdir below reports it */
+  }
+  for (;;) {
+    try {
+      mkdirSync(dir);
+      break;
+    } catch (e) {
+      if (e?.code !== "EEXIST")
+        return {
+          locked: false,
+          reason: `the admission lock ${dir} cannot be created (${e?.code ?? e})`,
+        };
+    }
+    const pid = readPid(dir);
+    if (pid ? !pidAlive(pid) : ageMs(dir) > LOCK_STALE_NOPID_MS) {
+      if (reapLock(dir, pid)) continue;
+    }
+    if (Date.now() > deadline)
+      return { locked: false, reason: `the admission lock ${dir} was not free within ${t}s` };
+    sleepSync(10 + Math.floor(Math.random() * 15));
+  }
+  try {
+    writeFileSync(join(dir, "pid"), String(process.pid));
+  } catch {
+    /* a lock with no pid is reaped by age only; the section below is milliseconds */
+  }
+  try {
+    return { locked: true, value: fn() };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// The reservation this process booked and its call has not settled yet (the Node seam
+// is synchronous, so one at a time): usage-ledger.mjs appendUsageRecord stamps the next
+// call row it appends to the same ledger with `settles`.
+let pending = null;
+/** Take (and clear) the pending reservation id for `ledgerPath`, or null. */
+export function takePendingReservation(ledgerPath) {
+  if (!pending || pending.ledger !== ledgerPath) return null;
+  const id = pending.id;
+  pending = null;
+  return id;
+}
+
+function appendRow(ledgerPath, row) {
+  try {
+    appendFileSync(ledgerPath, JSON.stringify(row) + "\n");
+    return true;
+  } catch (e) {
+    process.stderr.write(
+      `gaffer: budget: could not write to the usage ledger ${ledgerPath} (${e?.code ?? e})\n`,
+    );
+    return false;
+  }
+}
+
+/**
+ * The admission check AND, when it admits under a cap, the reservation row, as one
+ * locked step. Returns the admission (`ok`, `reason`, ...) plus `reservation:
+ * { id, usd, basis }` when one was booked. No cap (the GAFFER_ALLOW_UNCAPPED opt-out)
+ * books nothing: there is no ceiling to hold. A lock that cannot be taken, or a
+ * reservation that cannot be written, refuses (fail closed).
+ */
+export function reservePaidLaunch({
+  kind = "worker",
+  env = process.env,
+  now = new Date(),
+  worstUsd,
+  ticket = null,
+  pid = process.pid,
+  remember = true,
+} = {}) {
+  const caps = readBudgetCaps(env);
+  if (caps.error || (caps.daily === null && caps.lifetime === null))
+    return paidLaunchAdmission({ kind, env, now, worstUsd });
+  const ledgerPath = resolveLedgerPath(env);
+  if (!ledgerPath) return paidLaunchAdmission({ kind, env, now, worstUsd }); // refuses: no location
+  const held = withAdmissionLock(
+    ledgerPath,
+    () => {
+      const d = paidLaunchAdmission({ kind, env, now: new Date(), worstUsd });
+      if (!d.ok) return d;
+      const id = `r-${Date.now().toString(36)}-${randomBytes(5).toString("hex")}`;
+      const n = ticket != null && /^\d+$/.test(String(ticket)) ? Number(ticket) : null;
+      const row = {
+        ts: new Date().toISOString(),
+        ticket: n,
+        kind: RESERVATION_KIND,
+        launch_kind: String(kind).slice(0, 40),
+        reservation_id: id,
+        reserved_usd: d.worst.usd,
+        reserve_basis: d.worst.basis,
+        measured: false,
+        pid: Number(pid) || process.pid,
+        host: hostname(),
+      };
+      // The launcher's start time where the OS exposes it, so a reconcile never takes a
+      // pid reused by another process for the launcher (lib/usage-ledger.mjs).
+      const st = pidStartTime(row.pid);
+      if (st !== null) row.pid_start = st;
+      if (!appendRow(ledgerPath, row))
+        return {
+          ok: false,
+          kind,
+          reason: `the reservation for the paid ${kind} launch could not be booked in the usage ledger — refusing the launch (fail closed)`,
+        };
+      return { ...d, reservation: { id, usd: d.worst.usd, basis: d.worst.basis } };
+    },
+    env,
+  );
+  if (!held.locked)
     return {
       ok: false,
       kind,
-      reason: `the daily budget is exhausted (GAFFER_DAILY_BUDGET_USD=${daily.cap}, spent $${daily.spent.toFixed(4)} today) — the paid ${kind} launch was not started`,
-      daily,
-      lifetime,
+      reason: `the budget admission could not take its lock: ${held.reason} — refusing the paid ${kind} launch (fail closed)`,
     };
-  if (lifetime && !(lifetime.spent < lifetime.cap))
-    return {
-      ok: false,
-      kind,
-      reason: `the lifetime budget is exhausted (GAFFER_BUDGET_USD=${lifetime.cap}, spent $${lifetime.spent.toFixed(4)}) — the paid ${kind} launch was not started`,
-      daily,
-      lifetime,
-    };
-  return { ok: true, kind, reason: "within budget", daily, lifetime };
+  const d = held.value;
+  if (d.ok && d.reservation && remember) pending = { id: d.reservation.id, ledger: ledgerPath };
+  return d;
+}
+
+/**
+ * Give back a reservation whose launch was admitted but never started (a sandbox or
+ * bridge refusal after the admission, a spawn that could not exec): one release row
+ * naming it (`settles`), $0 and no cost fields, since nothing ran. Best-effort; a
+ * release that cannot be written leaves the reservation holding (fail closed).
+ */
+export function releaseReservation({ id, reason, env = process.env } = {}) {
+  if (typeof id !== "string" || !RESERVATION_ID_RE.test(id)) return false;
+  const ledgerPath = resolveLedgerPath(env);
+  if (!ledgerPath) return false;
+  if (pending && pending.id === id) pending = null;
+  return appendRow(ledgerPath, {
+    ts: new Date().toISOString(),
+    ticket: null,
+    kind: RESERVATION_KIND,
+    settles: id,
+    released: true,
+    measured: false,
+    reason: String(reason || "the launch did not start").slice(0, 200),
+  });
+}
+
+/** The pending reservation, released (see releaseReservation). */
+export function releasePendingReservation(reason, env = process.env) {
+  if (!pending) return false;
+  return releaseReservation({ id: pending.id, reason, env });
 }
 
 function main(argv) {
   const [cmd, ...rest] = argv;
-  if (cmd !== "check") {
-    process.stderr.write("usage: budget-admission.mjs check [--kind <launcher>]\n");
+  const opt = (name) => {
+    const i = rest.indexOf(name);
+    return i >= 0 && rest[i + 1] !== undefined ? rest[i + 1] : undefined;
+  };
+  const kind = opt("--kind") || "worker";
+  const worstUsd = opt("--worst-usd");
+  if (cmd === "release") {
+    const file = opt("--file");
+    let id = opt("--id");
+    if (!id && file) {
+      try {
+        id = readFileSync(file, "utf8").trim();
+      } catch {
+        id = "";
+      }
+    }
+    const done = releaseReservation({ id, reason: opt("--reason") });
+    if (done && file) rmSync(file, { force: true });
+    process.exit(done ? 0 : 1);
+  }
+  if (cmd !== "check" && cmd !== "reserve") {
+    process.stderr.write(
+      "usage: budget-admission.mjs check|reserve [--kind <launcher>] [--worst-usd <n>] [--ticket <n>] [--pid <n>] [--out <file>]\n" +
+        "       budget-admission.mjs release (--id <id> | --file <file>) [--reason <text>]\n",
+    );
     process.exit(2);
   }
-  const i = rest.indexOf("--kind");
-  const kind = i >= 0 && rest[i + 1] ? rest[i + 1] : "worker";
-  const d = paidLaunchAdmission({ kind });
+  const d =
+    cmd === "reserve"
+      ? reservePaidLaunch({
+          kind,
+          worstUsd,
+          ticket: opt("--ticket"),
+          pid: opt("--pid"),
+          remember: false,
+        })
+      : paidLaunchAdmission({ kind, worstUsd });
+  const out = opt("--out");
+  if (d.ok && d.reservation && out) {
+    try {
+      writeFileSync(out, d.reservation.id + "\n");
+    } catch (e) {
+      // The caller could never settle it: give it back and refuse (fail closed).
+      releaseReservation({
+        id: d.reservation.id,
+        reason: "the reservation id could not be handed to the launcher",
+      });
+      process.stderr.write(
+        `gaffer: budget: could not write ${out} (${e?.code ?? e}) — refusing the paid ${kind} launch\n`,
+      );
+      process.exit(3);
+    }
+  }
   process.stdout.write(JSON.stringify(d) + "\n");
   if (!d.ok) process.stderr.write(`gaffer: budget: ${d.reason}\n`);
   process.exit(d.ok ? 0 : 3);

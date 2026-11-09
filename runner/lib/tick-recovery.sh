@@ -32,6 +32,14 @@ gaffer_crash_cleanup() {
   # (complete, paused, or crashed); on a clean finish this is a no-op because
   # gaffer_timeout already removed the PGID record.
   gaffer_reap_orphan_agent
+  # RESERVATION (external review 16): a delivery or bootstrap call admitted this tick but
+  # never booked (the tick died mid-agent) still holds its reservation against the
+  # dollar caps. Book it now as a killed call, which settles the reservation at the
+  # envelope's reported cost or the kill estimate. After the reap, so the agent is gone.
+  if declare -F gaffer_usage_settle_crashed >/dev/null 2>&1; then
+    gaffer_usage_settle_crashed delivery "${NUM:-}" "${USAGE_JSON:-}"
+    gaffer_usage_settle_crashed bootstrap "${NUM:-}" "${B_USAGE_JSON:-}"
+  fi
   # REPLAY MANIFEST (lib/replay-manifest.sh): an attempt no outcome completed ends here:
   # `killed` on a signal, `ended` on any other exit. After the reap (a measurement never
   # delays tearing down a runaway agent), before the claim release below (which would

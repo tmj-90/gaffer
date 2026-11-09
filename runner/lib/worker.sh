@@ -187,6 +187,13 @@ gaffer_claude_version() {
   printf '%s' "$_GAFFER_CLAUDE_VERSION_VAL"
 }
 
+# A launch admitted (and reserved, lib/budget.sh) that is refused before anything runs
+# gives its reservation back. A no-op when budget.sh's helper is not loaded.
+_worker_unreserve() {
+  declare -F gaffer_release_reservation >/dev/null 2>&1 && gaffer_release_reservation "$@"
+  return 0
+}
+
 worker_deliver() {
   local cwd="$1" prompt="$2" model_flag="$3" mcp_config="$4" out_json="$5" wrap="${6:-}"
   # 1 after a call the budget admission refused (rc 77, nothing spawned): tick.sh
@@ -266,8 +273,19 @@ worker_deliver() {
     # shellcheck source=budget.sh
     . "$_GAFFER_WORKER_LIB/budget.sh"
   fi
+  # RESERVATION (external review 16): under a cap the admission books this call's worst
+  # case (its --max-budget-usd, else the kill estimate) as a reservation row under the
+  # admission lock, and leaves the id beside the envelope ($out_json.reservation):
+  # gaffer_usage_record settles it when the call is booked, and every refusal below gives
+  # it back (no agent ran). A call whose booking never happens keeps it holding.
+  local _resv="$out_json.reservation" _worst="" _wi=0
+  while [ "$_wi" -lt "${#_extra[@]}" ]; do
+    [ "${_extra[$_wi]}" = "--max-budget-usd" ] && _worst="${_extra[$((_wi + 1))]:-}"
+    _wi=$((_wi + 1))
+  done
   if ! declare -F gaffer_paid_launch_admitted >/dev/null 2>&1 \
-     || ! gaffer_paid_launch_admitted "${GAFFER_LAUNCH_KIND:-worker}"; then
+     || ! gaffer_paid_launch_admitted "${GAFFER_LAUNCH_KIND:-worker}" "$_resv" "$_worst"; then
+    rm -f "$_resv" 2>/dev/null || true
     : > "$out_json"
     printf 'worker: budget admission refused the paid %s launch — no agent spawned\n' "${GAFFER_LAUNCH_KIND:-worker}" >&2
     WORKER_LAST_BUDGET_REFUSED=1
@@ -311,13 +329,15 @@ worker_deliver() {
         : > "$out_json"
         [ -n "$_why_msg" ] || _why_msg="$(_gaffer_worker_command_refusal_msg none)"
         printf '%s\n' "$_why_msg" >&2
+        _worker_unreserve "$_resv" "the sandbox refused the launch"
         return 75
       fi
       # A wrap the CALLER composed (tick.sh's delivery) must be the docker wrapper too.
       if [ -n "$wrap" ]; then
         case "$wrap" in
           *sandbox-docker.sh*) ;;
-          *) : > "$out_json"; _gaffer_worker_command_refusal_msg not-docker >&2; return 75 ;;
+          *) : > "$out_json"; _gaffer_worker_command_refusal_msg not-docker >&2
+             _worker_unreserve "$_resv" "the sandbox refused the launch"; return 75 ;;
         esac
       fi
     fi
@@ -336,15 +356,18 @@ worker_deliver() {
       else
         printf 'worker: GAFFER_STRICT_REQUIRE demands an OS sandbox and none is available on this host — refusing to spawn the agent (fail closed)\n' >&2
       fi
+      _worker_unreserve "$_resv" "no OS sandbox for a launch that requires one"
       return 75
     fi
     [ "$_wrap_ok" = 1 ] || wrap=""
   fi
   if [ "$_cmd_needs_wrap" = 1 ]; then
     case "$wrap" in
-      "") : > "$out_json"; _gaffer_worker_command_refusal_msg none >&2; return 75 ;;
+      "") : > "$out_json"; _gaffer_worker_command_refusal_msg none >&2
+          _worker_unreserve "$_resv" "the sandbox refused the launch"; return 75 ;;
       *sandbox-docker.sh*) ;;
-      *) : > "$out_json"; _gaffer_worker_command_refusal_msg not-docker >&2; return 75 ;;
+      *) : > "$out_json"; _gaffer_worker_command_refusal_msg not-docker >&2
+         _worker_unreserve "$_resv" "the sandbox refused the launch"; return 75 ;;
     esac
   fi
   # Inside the `docker` provider the HOST's claude binary path / HOME / PATH do not
@@ -395,6 +418,7 @@ worker_deliver() {
       _bridge_dir="$(mktemp -d /tmp/gaffer-mcp.XXXXXX 2>/dev/null)" || {
         : > "$out_json"
         printf 'worker: mcp bridge: could not create a private socket dir under /tmp — refusing to spawn the agent (fail closed)\n' >&2
+        _worker_unreserve "$_resv" "the MCP bridge could not start"
         return 76
       }
       _bridge_sock="$_bridge_dir/b.sock"
@@ -404,6 +428,7 @@ worker_deliver() {
         rm -rf "$_bridge_dir"
         : > "$out_json"
         printf 'worker: mcp bridge: could not render the bridged MCP config from %s — refusing to spawn the agent (fail closed)\n' "$mcp_config" >&2
+        _worker_unreserve "$_resv" "the MCP bridge could not start"
         return 76
       fi
       # An EMPTY data plane (a config with no servers, e.g. `{}`) needs no bridge:
@@ -426,6 +451,7 @@ worker_deliver() {
           rm -f "$_mcp_for_agent"; rm -rf "$_bridge_dir"
           : > "$out_json"
           printf 'worker: mcp bridge did not start on %s — refusing to spawn the agent (fail closed)\n' "$_bridge_sock" >&2
+          _worker_unreserve "$_resv" "the MCP bridge could not start"
           return 76
         fi
         unset GAFFER_SANDBOX_DATA_PLANE
@@ -511,6 +537,7 @@ worker_deliver() {
       esac
     else
       _rc=70   # no prompt file, no spawn: the runner's own refusal
+      _worker_unreserve "$_resv" "the command worker's prompt file could not be written"
     fi
   fi
   WORKER_LAST_ELAPSED_MS=$(( (SECONDS - _t0) * 1000 ))

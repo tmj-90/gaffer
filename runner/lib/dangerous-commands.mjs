@@ -485,6 +485,20 @@ export const DANGEROUS_COMMANDS = [
     crewFlags: false,
   },
   {
+    // A budget RESERVATION's settling verbs (review 16): `budget-admission.mjs release`
+    // gives a reservation back and a usage-ledger row booked with `--settles <id>` stops
+    // it counting. A reservation holds a running call's worst case against the dollar
+    // caps, so an agent that could settle its own (or another call's) would free headroom
+    // for launches the cap does not hold. The runner settles them; an agent never does.
+    // Matched like the reconcile verb above; reading the files and the tests stay allowed.
+    re: new RegExp(
+      String.raw`(?:\bnode\b[^\n;&|]*[\s/]|${CMD_POS})(?:budget-admission\.mjs${WORD_END}[^\n;&|]*[ \t]["']?release\b|usage-ledger\.mjs${WORD_END}[^\n;&|]*[ \t]["']?--settles\b)`,
+    ),
+    why: "settling a budget reservation (budget-admission.mjs release, usage-ledger.mjs --settles): a reservation holds a running call's worst case against the dollar caps, so only the runner settles one, never an agent",
+    example: "node runner/lib/budget-admission.mjs release --id r-abc123",
+    crewFlags: false,
+  },
+  {
     // The MATCHED EXPERIMENT runner (runner/eval/experiment.sh + experiment.mjs, routing gap
     // 4): an experiment is a person's to start. Its live mode runs the real agent on the
     // factory's budget outside the delivery gates, and its results feed the advisory routing

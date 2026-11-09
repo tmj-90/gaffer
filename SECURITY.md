@@ -150,6 +150,16 @@ instead: the CLI credential stores (`~/.config/gh/`, `~/.docker/config.json`,
 `.aws/`, `.netrc`, `.npmrc`, `.git-credentials` and the agent CLI's own config) are
 secret paths, and the commands that use them are refused as above.
 
+The runner marks each agent's workspace trusted in `~/.claude.json` before the launch, so
+the agent CLI honours the project's `.claude/settings.json` permissions
+(`runner/lib/trust-workspace.mjs`). When that write does not happen (the trust lock is
+held by a live process, `~/.claude.json` is not valid JSON, or the path is refused), no
+agent is launched there: a delivery or bootstrap ends the tick as a setup error with
+`trust_unwritable` and the fix, the review pass holds the ticket for a human, and the
+clarify pass, the independent tester and the merge-conflict resolver refuse to start. A lock
+left by a run that is gone, one that records no holder, or one older than
+`GAFFER_TRUST_LOCK_STALE_MS` (60 s) is taken over.
+
 Untrusted ticket fields the agent reads through `get_ticket` (title, description,
 criterion text, review feedback, and the title, question and answer of each resolved
 ticket-linked decision) are wrapped server-side in `<untrusted-*>` envelopes with a

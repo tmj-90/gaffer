@@ -18,6 +18,9 @@
 #   AC6  GAFFER_DATA is forwarded to both trust calls when set (so the prune knows a
 #        non-default worktree root), and an UNSET GAFFER_DATA under `set -u` does not
 #        abort the function (it is passed as empty, which trust-workspace.mjs ignores)
+#   AC7  a NON-ZERO trust exit (for the worktree or its main root) returns 1 with
+#        _GAFFER_TRUST_ERROR naming trust_unwritable, the stderr tail and the fix, so the
+#        caller launches no agent with its project permissions ignored
 # Hermetic: real git repo + worktree; `node` is stubbed to record its argv+env, so
 # no ~/.claude.json is touched. Run: bash test/trust-main-worktree.test.sh
 # =====================================================================
@@ -66,6 +69,11 @@ cat >"$BIN/node" <<EOF
 case "\$*" in *trust-workspace.mjs*) ;; *) exec "$REAL_NODE" "\$@" ;; esac
 # Record: last path arg + whether KEY_ONLY was set in the env, one line per call.
 printf '%s KEY_ONLY=%s DATA=%s\n' "\${!#}" "\${GAFFER_TRUST_KEY_ONLY:-}" "\${GAFFER_DATA:-}" >> "$CALLS"
+# AC7: fail the call whose KEY_ONLY matches STUB_FAIL ("w" = the worktree, "1" = main).
+case "\${STUB_FAIL:-}" in
+  w) [ -z "\${GAFFER_TRUST_KEY_ONLY:-}" ] && { echo "trust-workspace: could not acquire lock (held by live pid 1); trust NOT written" >&2; exit 3; } ;;
+  1) [ "\${GAFFER_TRUST_KEY_ONLY:-}" = 1 ] && { echo "trust-workspace: ~/.claude.json is not valid JSON; refusing to modify it, trust NOT written" >&2; exit 3; } ;;
+esac
 exit 0
 EOF
 chmod +x "$BIN/node"
@@ -142,6 +150,25 @@ N="$(grep -c " DATA=$WORK/my data$" "$CALLS" | tr -d ' ')"
 [ "$rc" = 0 ] && [ "$N" = "2" ] \
   && ok "a set GAFFER_DATA reaches both trust calls (worktree + KEY_ONLY main root)" \
   || fail "set GAFFER_DATA: rc=$rc, $N of 2 calls carried it: $(cat "$CALLS")"
+
+echo "== AC7: a skipped trust write fails the function (fail closed) =="
+GAFFER_LOG="$WORK/gaffer.log"; : >"$GAFFER_LOG"
+: >"$CALLS"
+STUB_FAIL=w gaffer_trust_workspace "$WT"; rc=$?
+[ "$rc" = 1 ] && ok "worktree trust exit 3 → the function returns 1" || fail "worktree trust failure returned $rc"
+case "$_GAFFER_TRUST_ERROR" in
+  "trust_unwritable: $WT (exit 3): "*"could not acquire lock"*"remove the stale lock"*) ok "the reason names trust_unwritable, the stderr tail and the lock fix" ;;
+  *) fail "worktree failure reason: '$_GAFFER_TRUST_ERROR'" ;;
+esac
+grep -q "trust NOT written" "$GAFFER_LOG" && ok "trust-workspace's stderr still reaches the factory log" || fail "stderr not in the log"
+STUB_FAIL=1 gaffer_trust_workspace "$WT"; rc=$?
+[ "$rc" = 1 ] && ok "main-root trust exit 3 → the function returns 1" || fail "main-root trust failure returned $rc"
+case "$_GAFFER_TRUST_ERROR" in
+  "trust_unwritable: "*"not valid JSON"*"fix ~/.claude.json"*) ok "the main-root reason names the config fix" ;;
+  *) fail "main-root failure reason: '$_GAFFER_TRUST_ERROR'" ;;
+esac
+gaffer_trust_workspace "$WT"; rc=$?
+[ "$rc" = 0 ] && [ -z "$_GAFFER_TRUST_ERROR" ] && ok "a clean pass returns 0 and clears the reason" || fail "clean pass: rc=$rc reason='$_GAFFER_TRUST_ERROR'"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

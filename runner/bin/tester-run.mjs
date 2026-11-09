@@ -106,6 +106,7 @@ import { acquireTicketLock, resolveTicket } from "./merge-ticket.mjs";
 import { agentChildEnv, buildClaudeArgv, renderPoMcpRuntime } from "./product-owner-run.mjs";
 import { selectForRole, stackPackNote, ticketStacks } from "./select-skills.mjs";
 import { recordSkillUsage } from "./record-skill-usage.mjs";
+import { trustAgentWorkspace } from "../lib/trust-agent-workspace.mjs";
 import {
   detectUsageLimit,
   extractResultText,
@@ -1490,6 +1491,9 @@ function runLiveTester(context) {
   let mcpRuntime;
   try {
     skills = installTesterAgentDir(worktree, n, testerStacks(resolved));
+    // No agent runs with its project permissions ignored: a trust write that was skipped
+    // throws trust_unwritable and the catch below refuses the spawn.
+    trustAgentWorkspace(worktree, { gafferData: GAFFER_DATA, log });
     const rendered = renderPoMcpRuntime(readFileSync(CONFIG.mcpConfig, "utf8"), {
       dispatchDb: CONFIG.dispatchDb,
       memoryDb: CONFIG.memoryDb,

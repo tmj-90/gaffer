@@ -29,6 +29,11 @@
 #       1-minute load / CPU count at the start, clamped to 1..2 (a quiet machine
 #       keeps them, 1.5x the CPUs gives 1.5x, 3x gives 2x, an unreadable load 1x);
 #       GAFFER_RUN_CAP_SCALE fixes the factor (clamped) and a bad one is a usage error
+#   H12 HOME isolation: a test runs with a private HOME (not the one the run started
+#       with) that holds a copy of its .gitconfig, so trust-workspace.mjs can never write
+#       the operator's ~/.claude.json or leave its trust lock there; a trust lock left in
+#       the run's HOME fails a strict run, and a temp-dir project entry added to its
+#       ~/.claude.json is listed (machine-wide: another checkout's run may add one)
 #   H10 caps vs observed times: lib/shard-weights.tsv holds each test's OBSERVED CI
 #       time (the slowest cell of the run its header names), and every real test whose
 #       time there is at least two thirds of the .sh/.mjs cap matches LONG_RE (so it
@@ -120,6 +125,28 @@ case "$GAFFER_DATA" in "'"$ROOT"'"/*) echo "FAIL: GAFFER_DATA in the checkout"; 
 [ -d "$GAFFER_DATA" ] || { echo "FAIL: private GAFFER_DATA missing"; exit 1; }'
 DISPATCH_DB="$ROOT/.gaffer/dispatch.sqlite" GAFFER_DATA="$ROOT/.gaffer" harness "$T/iso.test.sh"; rc=$?
 [ "$rc" -eq 0 ] && ok "H6 a test sees a private GAFFER_DATA and no inherited DISPATCH_DB" || fail "H6 isolation broken: $(grep FAIL "$WORK/out" | head -2)"
+
+echo "== H12: HOME isolation =="
+OPH="$WORK/ophome"; mkdir -p "$OPH"; printf '[user]\n\tname = h12\n' > "$OPH/.gitconfig"
+printf '{ "projects": { "/kept": {} } }\n' > "$OPH/.claude.json"; cp "$OPH/.claude.json" "$WORK/ophome.conf"
+mk home.test.sh '[ "$HOME" != "'"$OPH"'" ] || { echo "FAIL: HOME is the operator HOME"; exit 1; }
+[ "$(git config --global user.name)" = h12 ] || { echo "FAIL: the operator gitconfig was not copied"; exit 1; }
+printf "{}\n" > "$HOME/.claude.json"; : > "$HOME/.claude.json.gaffer-trust.lock"
+git config --global user.name changed'
+GAFFER_RUN_OPERATOR_HOME="$OPH" harness --strict "$T/home.test.sh"; rc=$?
+[ "$rc" -eq 0 ] && ok "H12 a test sees a private HOME with a copy of the operator gitconfig" || fail "H12 (rc $rc): $(grep -E 'FAIL|written' "$WORK/out" | head -3)"
+cmp -s "$OPH/.claude.json" "$WORK/ophome.conf" && [ ! -e "$OPH/.claude.json.gaffer-trust.lock" ] \
+  && ok "H12 its ~/.claude.json and trust lock writes never reach the operator HOME" || fail "H12 the operator HOME was written"
+grep -q 'name = h12' "$OPH/.gitconfig" && ok "H12 a test's git config --global does not reach the operator gitconfig" || fail "H12 operator gitconfig changed"
+mk lockleak.test.sh ': > "'"$OPH"'/.claude.json.gaffer-trust.lock"; exit 0'
+GAFFER_RUN_OPERATOR_HOME="$OPH" harness --strict "$T/lockleak.test.sh"; rc=$?
+[ "$rc" -ne 0 ] && grep -q 'operator state written during the run: ~/.claude.json.gaffer-trust.lock' "$WORK/out" \
+  && ok "H12 strict: a trust lock left in the operator HOME fails the run" || fail "H12 lock leak not caught (rc $rc): $(tail -4 "$WORK/out")"
+rm -f "$OPH/.claude.json.gaffer-trust.lock"
+mk projleak.test.sh 'node -e "const f=process.argv[1];const c=JSON.parse(require(\"fs\").readFileSync(f,\"utf8\"));c.projects[\"${TMPDIR:-/tmp}/leak/wt\"]={hasTrustDialogAccepted:true};require(\"fs\").writeFileSync(f,JSON.stringify(c))" "'"$OPH"'/.claude.json"; exit 0'
+GAFFER_RUN_OPERATOR_HOME="$OPH" harness "$T/projleak.test.sh"; rc=$?
+[ "$rc" -eq 0 ] && grep -q '^- ~/.claude.json projects\[.*/leak/wt\]' "$WORK/out" \
+  && ok "H12 a temp-dir trust entry added to the operator config is listed" || fail "H12 project leak not reported (rc $rc): $(tail -6 "$WORK/out")"
 
 echo "== H7: the per-test cap =="
 mk hang.test.sh 'sleep 30'

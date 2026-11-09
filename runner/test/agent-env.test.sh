@@ -93,5 +93,11 @@ HERE="$RUNNER_DIR"; CLAUDE_SETTINGS="$WORK/unwired.json"
 IDIR3="$WORK/idir3"; mkdir -p "$IDIR3"
 if gaffer_install_agent_dir "$IDIR3" "clarify" "clarify-2" 2>/dev/null; then fail "unwired settings accepted by the installer"; else ok "unwired settings → rc 1 through the installer"; fi
 [ ! -e "$IDIR3/CLAUDE.factory.md" ] && ok "brief not installed after a settings refusal (stops at the first failure)" || fail "brief installed despite refusal"
+CLAUDE_SETTINGS="$RUNNER_DIR/claude/settings.json"
+gaffer_trust_workspace() { _GAFFER_TRUST_ERROR="trust_unwritable: $1 (exit 3): lock held; remove the stale lock"; return 1; }
+IDIR4="$WORK/idir4"; mkdir -p "$IDIR4"
+if gaffer_install_agent_dir "$IDIR4" "clarify" "clarify-3" 2>/dev/null; then fail "trust not written, yet the installer succeeded"; else ok "trust not written → rc 1 through the installer (no agent runs untrusted)"; fi
+case "${_GAFFER_TRUST_ERROR:-}" in trust_unwritable:*) ok "the trust failure's reason reaches the caller" ;; *) fail "no _GAFFER_TRUST_ERROR after a trust failure" ;; esac
+[ ! -e "$IDIR4/CLAUDE.factory.md" ] && ok "brief not installed after a trust refusal" || fail "brief installed despite the trust refusal"
 
 echo; [ "$FAIL" -eq 0 ] && echo "agent-env: ALL $PASS checks passed" || { echo "agent-env: $FAIL FAILED"; exit 1; }

@@ -162,6 +162,7 @@ import {
 } from "../lib/onboard-analyze.mjs";
 import { maxTurnsArgv, roleTurns, Worker } from "../lib/worker.mjs";
 import { mountRoleSkills, writeAgentSettings } from "../lib/agent-home.mjs";
+import { trustAgentWorkspace } from "../lib/trust-agent-workspace.mjs";
 import { mountedNames, recordSkillUsage } from "./record-skill-usage.mjs";
 import {
   appendUsageRecord,
@@ -3892,6 +3893,10 @@ function main() {
     mcpRuntime = installProjectLocalWiring(worktree, resolved.number, repo.name, {
       stack: repo.stack,
     });
+    // The resolver merges, runs the tests and commits through the settings.json
+    // allowlist just installed, which the agent CLI ignores in an untrusted workspace:
+    // trust it (and its main repo root) first; a skipped write refuses the spawn.
+    trustAgentWorkspace(worktree, { gafferData: GAFFER_DATA, log });
   } catch (e) {
     rmSync(mergeTicketMcpRuntimePath(resolved.number), { force: true });
     removeWorktree(repo.localPath, worktree);

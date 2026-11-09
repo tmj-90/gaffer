@@ -22,7 +22,11 @@
 # per-run .tested-tickets) keyed on when the ticket entered in_testing, so the same
 # stay is never re-tested at another paid tester call. It is tested again once it
 # leaves in_testing and comes back (a rework, a human re-route). A tester-run that
-# errors before deciding is skipped for the rest of this run only.
+# errors before deciding is skipped for the rest of this run only. One tester run per
+# ticket at a time (a per-ticket lock in bin/tester-run.mjs: a second is "busy" and
+# starts nothing), and each verdict names the testing round its run started in: one
+# that dispatch refuses because a rework began a new round is "stale", kept as
+# evidence and never this round's verdict.
 # It relies on tick.sh runtime globals (log, wg, jget, result, GAFFER_DATA, …).
 # shellcheck shell=bash
 # shellcheck disable=SC2154  # globals provided by tick.sh at call time
@@ -165,6 +169,16 @@ _gaffer_tester_pass() {
         || log "TESTER: WARNING — could not attach the held reason to #$TNUM"
       _gaffer_locked .skip.lock _gaffer_append_line "$_held_file" "$TNUM"$'\t'"${_t_entered:--}"
       ;;
+    busy)
+      # Another tester run for this ticket holds its lock (bin/tester-run.mjs): this one
+      # started nothing. Not a verdict and not a hold; skipped for the rest of this run.
+      log "TESTER: #$TNUM not tested: ${_t_reason:-another tester run for it is in progress} (not a verdict, not a hold)" ;;
+    stale)
+      # The ticket moved to a new testing round while it was tested (a rework): dispatch
+      # refused the verdict as STALE_VERDICT and kept it as stale evidence. Not a hold:
+      # the new round is tested by a run of its own, so it is not marked tried below.
+      log "TESTER: #$TNUM ${_T_VERDICT:+$_T_VERDICT }verdict refused as stale: ${_t_reason:-it was made in an earlier testing round}: kept as evidence; the current round is tested on its own"
+      ;;
     *)       log "TESTER: #$TNUM tester did not run cleanly (rc=$_trc, phase=${_T_PHASE:-none}${_t_reason:+: $_t_reason}) — left in_testing for a human; see tester.log" ;;
   esac
   # One attempt per ticket per run for a ticket the tester could NOT decide (held /
@@ -174,7 +188,12 @@ _gaffer_tester_pass() {
   # deadlocked the run: the ticket sat in_testing, its dependents stayed blocked, and
   # the loop gave up on empty polls (seen live). Mirrors review.sh, which marks only
   # the held outcomes.
-  [ "$_T_PHASE" = "verdict" ] || _gaffer_locked .skip.lock _gaffer_append_line "$TESTED_FILE" "$TNUM"
+  # A STALE verdict (the ticket entered a new testing round during the run) is the same:
+  # the new round has not been tested, so the ticket stays pickable.
+  case "$_T_PHASE" in
+    verdict|stale) ;;
+    *) _gaffer_locked .skip.lock _gaffer_append_line "$TESTED_FILE" "$TNUM" ;;
+  esac
   result tested; exit 0
 }
 

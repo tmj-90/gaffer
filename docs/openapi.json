@@ -6250,7 +6250,7 @@
           "Review & delivery"
         ],
         "summary": "Record the independent tester's verdict",
-        "description": "pass → ready_for_merge, fail → refining, recorded as the calling principal. On an acceptance ticket a human PASS is a waiver; an automated PASS must carry `tested_commit`, `contract_hash` and `replay: passed` (422 `BINDING_REQUIRED`). On any ticket an automated PASS whose `replay` is not `passed` (skipped, failed, or absent) is refused the same way (the runner did not show the candidate passes the tester's tests). A `contract_hash` that no longer matches the contract on record is a 409 `CONTRACT_MISMATCH`.",
+        "description": "pass → ready_for_merge, fail → refining, recorded as the calling principal. On an acceptance ticket a human PASS is a waiver; an automated PASS must carry `tested_commit`, `contract_hash` and `replay: passed` (422 `BINDING_REQUIRED`). On any ticket an automated PASS whose `replay` is not `passed` (skipped, failed, or absent) is refused the same way (the runner did not show the candidate passes the tester's tests). A `contract_hash` that no longer matches the contract on record is a 409 `CONTRACT_MISMATCH`. A verdict that names its testing `round` is accepted only while that round is the ticket's current one: one made before a rework (or after the round already ended) is a 409 `STALE_VERDICT` naming both rounds, kept on the ticket as stale evidence and never recorded as the current round's verdict.",
         "parameters": [
           {
             "name": "id",
@@ -16398,6 +16398,10 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 200
+          },
+          "round": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,64}$"
           }
         },
         "required": [

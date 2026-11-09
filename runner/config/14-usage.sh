@@ -101,12 +101,36 @@ gaffer_usage_record() {
   if [ -n "$ticket" ] && [ -n "$_rphase" ] && [ -f "${GAFFER_DATA:-}/.route/$ticket.$_rphase.json" ]; then
     prov+=(--route-file "$GAFFER_DATA/.route/$ticket.$_rphase.json")
   fi
+  # RESERVATION (external review 16): the call's admission left its reservation id beside
+  # the envelope (lib/worker.sh); this row settles it, and the file is consumed so the
+  # crash path below never books the call twice.
+  local _resv_id=""
+  if [ -n "$jsonfile" ] && [ -s "$jsonfile.reservation" ]; then
+    IFS= read -r _resv_id < "$jsonfile.reservation" || true
+    [ -n "$_resv_id" ] && prov+=(--settles "$_resv_id")
+  fi
   if declare -F gaffer_with_lock >/dev/null 2>&1; then
     gaffer_with_lock "$GAFFER_DATA/.ledger.lock" \
       node "$mod" --kind "$kind" ${ticket:+--ticket "$ticket"} --rc "$rc" --kill-estimate "${GAFFER_KILL_ESTIMATE_USD:-0}" ${elapsed:+--elapsed-ms "$elapsed"} ${prov[@]+"${prov[@]}"} ${attempt:+--attempt-id "$attempt"} ${started:+--started-at "$started"} --json-file "$jsonfile" 2>>"$GAFFER_LOG" || true
   else
     node "$mod" --kind "$kind" ${ticket:+--ticket "$ticket"} --rc "$rc" --kill-estimate "${GAFFER_KILL_ESTIMATE_USD:-0}" ${elapsed:+--elapsed-ms "$elapsed"} ${prov[@]+"${prov[@]}"} ${attempt:+--attempt-id "$attempt"} ${started:+--started-at "$started"} --json-file "$jsonfile" 2>>"$GAFFER_LOG" || true
   fi
+  [ -n "$_resv_id" ] && rm -f "$jsonfile.reservation"
+  return 0
+}
+
+# gaffer_usage_settle_crashed <kind> <ticket-or-empty> <captured-json-file>
+# THE CRASH PATH for a reservation: a call that was admitted (its reservation id is still
+# beside the envelope) but whose tick died before it was booked. It is booked now as a
+# killed call (rc 143): the envelope's own reported cost if it holds one, else the
+# labelled kill estimate, never $0, and that row settles the reservation. A no-op when no
+# reservation is open for that envelope (the call was booked, or never admitted).
+gaffer_usage_settle_crashed() {
+  local kind="${1:-}" ticket="${2:-}" jsonfile="${3:-}"
+  [ -n "$kind" ] && [ -n "$jsonfile" ] && [ -s "$jsonfile.reservation" ] || return 0
+  [ -e "$jsonfile" ] || : > "$jsonfile" 2>/dev/null || return 0
+  gaffer_usage_record "$kind" "$ticket" 143 "$jsonfile" >/dev/null 2>&1 || true
+  return 0
 }
 
 # gaffer_record_agent_run <ticket> <usage-json> <rc> <attempt> <max-attempts> [role]

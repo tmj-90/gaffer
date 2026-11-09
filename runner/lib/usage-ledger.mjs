@@ -36,6 +36,15 @@
  *      no estimate available (no history and the kill floor set to 0) the row stays
  *      unknown, and budget admission refuses the next paid launch under a cap until
  *      the operator books the cost (`--reconcile --usd <amount>`).
+ *   6. A RESERVATION is never a reading. Budget admission (lib/budget-admission.mjs)
+ *      books a `kind: "reservation"` row before a paid call starts, holding the call's
+ *      worst case (`reserved_usd`, `reserve_basis`) against the dollar caps while it
+ *      runs. It carries no total_cost_usd and no estimated_cost_usd, so no cost view,
+ *      estimator or kill-estimate history ever reads it as spend or as a call. The
+ *      call's own row (measured or estimated, by the rules above) names the reservation
+ *      it settles (`settles: <reservation id>`), and from then on only that row counts.
+ *      Dollars are still never derived from tokens: the worst case is the call's own
+ *      per-call cap, else the kill estimate, else a flat floor.
  *
  * Two entrypoints:
  *   • Library  — import { parseClaudeJson, buildUsageRecord, extractResultText,
@@ -50,7 +59,9 @@
  */
 import { appendFileSync } from "node:fs";
 import { readFileSync } from "node:fs";
+import { hostname } from "node:os";
 import { resolveLedgerPath } from "./usage-ledger-path.mjs";
+import { RESERVATION_KIND, takePendingReservation } from "./budget-admission.mjs";
 
 // Spec 3 / Phase 2: the claude-JSON envelope schema is owned by the worker seam.
 // This module keeps the LEDGER-RECORD shaping + honesty rules, but the raw parse +
@@ -360,6 +371,18 @@ function withUsageLimit(rec, json) {
 export function appendUsageRecord(record, env = process.env) {
   const path = resolveLedgerPath(env);
   if (!path) return false; // gated: disabled, or no GAFFER_DATA (silent, intentional)
+  // RESERVATIONS: the call row a Node launcher books after Worker.deliver settles the
+  // reservation that launch booked in this ledger (lib/budget-admission.mjs).
+  if (
+    record &&
+    typeof record === "object" &&
+    !record.settles &&
+    record.kind !== RESERVATION_KIND &&
+    record.kind !== "reconcile"
+  ) {
+    const id = takePendingReservation(path);
+    if (id) record = { ...record, settles: id };
+  }
   try {
     appendFileSync(path, JSON.stringify(record) + "\n");
     return true;
@@ -425,8 +448,32 @@ function parseCliArgs(argv) {
     else if (a === "--repo") out.repo = argv[++i];
     else if (a === "--risk") out.risk = argv[++i];
     else if (a === "--route-file") out.routeFile = argv[++i];
+    // The reservation this call's admission booked (lib/worker.sh leaves its id beside
+    // the envelope; config/14-usage.sh gaffer_usage_record passes it): the row settles it.
+    else if (a === "--settles") out.settles = argv[++i];
   }
   return out;
+}
+
+const RESERVATION_ID_RE = /^r-[A-Za-z0-9-]{4,64}$/;
+
+/** Stamp the reservation a call row settles; a malformed id is dropped, never guessed. */
+export function withSettles(record, id) {
+  if (typeof id !== "string" || !RESERVATION_ID_RE.test(id.trim())) return record;
+  return { ...record, settles: id.trim() };
+}
+
+/** True when a reservation's launcher is still running on this host (its call may be in flight). */
+function launcherAlive(r) {
+  if (!r || r.host !== hostname()) return false;
+  const n = Number(r.pid);
+  if (!Number.isInteger(n) || n <= 0) return false;
+  try {
+    process.kill(n, 0);
+    return true;
+  } catch (e) {
+    return e?.code === "EPERM";
+  }
 }
 
 /**
@@ -818,6 +865,14 @@ async function reconcileMain(argv, env = process.env) {
   const { ledgerSpend } = await import("./budget-admission.mjs");
   const spend = ledgerSpend(env);
   const count = spend && typeof spend.unknownToday === "number" ? spend.unknownToday : 0;
+  // RESERVATIONS: the open reservations whose launcher is no longer running (their call
+  // died without booking) are settled by this booking. A reservation whose launcher is
+  // alive on this host is a call in flight and stays open; one from another host is
+  // left open unless --all-reservations says the operator knows it is gone.
+  const all = argv.includes("--all-reservations");
+  const sweep = (Array.isArray(spend?.reservations) ? spend.reservations : [])
+    .filter((r) => all || (r.host === hostname() && !launcherAlive(r)))
+    .map((r) => r.reservation_id);
   const rec = {
     ts: new Date().toISOString(),
     ticket: null,
@@ -833,6 +888,7 @@ async function reconcileMain(argv, env = process.env) {
     estimate_basis: "operator",
     reconciled_unknown: count,
   };
+  if (sweep.length) rec.settles_reservations = sweep;
   if (note) rec.note = note;
   if (!appendUsageRecord(rec, env)) {
     process.stderr.write(
@@ -841,8 +897,39 @@ async function reconcileMain(argv, env = process.env) {
     return 1;
   }
   process.stdout.write(
-    `booked $${usd.toFixed(4)} against ${count} unknown-cost call(s) today; it counts toward the caps\n`,
+    `booked $${usd.toFixed(4)} against ${count} unknown-cost call(s) today` +
+      (sweep.length ? ` and ${sweep.length} open reservation(s) whose call never booked` : "") +
+      "; it counts toward the caps\n",
   );
+  return 0;
+}
+
+/**
+ * `--open-reservations`: one JSON line per open reservation (a hold against the caps for
+ * a call in flight, or one that died without booking), with `launcher_alive`. Writes no
+ * ledger record. Exit 1 when the ledger cannot be read.
+ */
+async function openReservationsMain(env = process.env) {
+  const { ledgerSpend } = await import("./budget-admission.mjs");
+  const spend = ledgerSpend(env);
+  if (spend.unknown) {
+    process.stderr.write(`usage-ledger: ${spend.unknown}\n`);
+    return 1;
+  }
+  for (const r of spend.reservations || [])
+    process.stdout.write(
+      JSON.stringify({
+        reservation_id: r.reservation_id,
+        ts: r.ts,
+        launch_kind: r.launch_kind ?? null,
+        ticket: r.ticket ?? null,
+        reserved_usd: r.reserved_usd,
+        reserve_basis: r.reserve_basis ?? null,
+        host: r.host ?? null,
+        pid: r.pid ?? null,
+        launcher_alive: launcherAlive(r),
+      }) + "\n",
+    );
   return 0;
 }
 
@@ -858,6 +945,10 @@ function readInput(jsonFile) {
 async function cliMain(argv) {
   if (argv.includes("--reconcile")) {
     process.exitCode = await reconcileMain(argv);
+    return;
+  }
+  if (argv.includes("--open-reservations")) {
+    process.exitCode = await openReservationsMain();
     return;
   }
   // `--latest-delivery-attempt --ticket N`: print the attempt id of the ticket's latest
@@ -965,7 +1056,9 @@ async function cliMain(argv) {
       });
     }
   }
-  appendUsageRecord(withJoinKeys(withAttempt(withProvenance(record, args), args), args));
+  appendUsageRecord(
+    withSettles(withJoinKeys(withAttempt(withProvenance(record, args), args), args), args.settles),
+  );
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

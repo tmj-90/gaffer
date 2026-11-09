@@ -398,6 +398,8 @@ export class ReviewGateService {
       tests?: unknown;
       /** The tester agent (and run) whose verdict the runner records (system only). */
       tester_agent?: unknown;
+      /** The testing round the verdict was made in (a stale one is refused). */
+      round?: string;
     },
     actor: Actor,
   ): TransitionResult {
@@ -414,6 +416,8 @@ export class ReviewGateService {
       contract_hash?: string;
       replay?: string;
       tests_commit?: string;
+      /** The testing round the verdict was made in (a stale one is refused). */
+      round?: string;
     },
     actor: Actor,
   ): TransitionResult {

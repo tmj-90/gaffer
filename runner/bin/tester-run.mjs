@@ -64,10 +64,17 @@
 //   usage_paused: { "phase":"usage_paused", ticket, reason, testedCommit } (exit 3):
 //             the factory was already paused, so lib/worker.mjs deliver() started no
 //             tester (nothing booked); the runner skips the ticket for this run.
+//   busy:     { "phase":"busy", ticket, reason, holder } (exit 4): another tester run for
+//             this ticket holds its tester lock ($GAFFER_DATA/locks/tester-<n>.lock), so
+//             this one started nothing (one tester run per ticket at a time: they share
+//             the ticket's workspace). A lock whose run is gone is taken over.
+//   stale:    { "phase":"stale", ticket, verdict, reason, round, … } (exit 4): dispatch
+//             refused the verdict because the ticket left the testing round this run
+//             started in (a rework began a new one); it was kept as stale evidence.
 //   error:    { "phase":"error", error }   (exit 1)
 //
 // EXIT: 0 on dry-run / verdict; 1 on a hard failure (no ticket, unresolvable,
-//   record failure); 2 held; 3 usage_limited or usage_paused.
+//   record failure); 2 held; 3 usage_limited or usage_paused; 4 busy or stale.
 // GAFFER_TESTER_ENVELOPE_OUT (optional): a --live run writes the raw `claude -p`
 //   envelope there, so lib/tester.sh classifies a usage-limit refusal with the same
 //   locked recorder the delivery path uses (gaffer_usage_pause_record).
@@ -95,7 +102,7 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { resolveTicket } from "./merge-ticket.mjs";
+import { acquireTicketLock, resolveTicket } from "./merge-ticket.mjs";
 import { agentChildEnv, buildClaudeArgv, renderPoMcpRuntime } from "./product-owner-run.mjs";
 import { selectForRole, stackPackNote, ticketStacks } from "./select-skills.mjs";
 import { recordSkillUsage } from "./record-skill-usage.mjs";
@@ -494,6 +501,9 @@ export function recordVerdict(ticketNumber, verdict, summary, env = process.env,
       ? ["--acceptance-evidence", String(binding.acceptanceEvidence)]
       : []),
     ...(binding.tests ? ["--tests-json", JSON.stringify(binding.tests)] : []),
+    // TESTING ROUND (external review 16): the round this run started in; dispatch refuses
+    // the verdict (STALE_VERDICT) once the ticket is in another one.
+    ...(binding.round ? ["--round", String(binding.round)] : []),
     // WHO TESTED: a PASS recorded as the system (it carries identities) names the tester
     // agent whose run produced the verdict, and the run when known (dispatch: system only).
     ...(binding.tests && binding.testerAgent?.id
@@ -557,7 +567,56 @@ export function recordVerdict(ticketNumber, verdict, summary, env = process.env,
   }
   const res = spawnSync(argv[0], argv[1], { encoding: "utf8" });
   if (res.error) return { ok: false, code: null, error: String(res.error.message ?? res.error) };
-  return { ok: (res.status ?? 1) === 0, code: res.status ?? null };
+  const ok = (res.status ?? 1) === 0;
+  if (ok) return { ok, code: res.status ?? null };
+  // The dispatch CLI's one-line refusal ({ ok:false, code, message } on stderr), so a
+  // STALE_VERDICT is told apart from a failure to record.
+  let refusal = null;
+  for (const line of String(res.stderr ?? "")
+    .split("\n")
+    .reverse()) {
+    try {
+      const j = JSON.parse(line);
+      if (j && j.ok === false && typeof j.code === "string") {
+        refusal = { errorCode: j.code, message: String(j.message ?? "") };
+        break;
+      }
+    } catch {
+      /* not the refusal line */
+    }
+  }
+  return { ok, code: res.status ?? null, ...(refusal ?? {}) };
+}
+
+/**
+ * TESTING ROUND (external review 16): the round the ticket is in now, the id (and time)
+ * of its latest entry into in_testing, read from the dispatch DB (read-only) when the
+ * run starts and sent with the verdict, so dispatch refuses it once a rework started a
+ * new round. The same row as dispatch's currentTestingRound. Null when unreadable (a
+ * reduced fixture with no event table): the verdict is then sent without a round.
+ */
+export function testingRound(dbPath, ticketNumber) {
+  let db;
+  try {
+    const { DatabaseSync } = require("node:sqlite");
+    db = new DatabaseSync(dbPath, { readOnly: true });
+    const row = db
+      .prepare(
+        "SELECT w.id AS id, w.created_at AS at FROM work_events w JOIN tickets t ON t.id = w.entity_id " +
+          "WHERE t.number = ? AND w.entity_type = 'ticket' AND w.event_type = 'ticket.transitioned' " +
+          "AND json_extract(w.payload_json, '$.to') = 'in_testing' ORDER BY w.rowid DESC LIMIT 1",
+      )
+      .get(Number(ticketNumber));
+    return row && typeof row.id === "string" ? { id: row.id, at: String(row.at ?? "") } : null;
+  } catch {
+    return null;
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      /* best-effort */
+    }
+  }
 }
 
 /** The ticket's declared risk (the ledger's join key), or null when unreadable. */
@@ -1380,6 +1439,26 @@ function runLiveTester(context) {
     fail(`repo "${repo.name}" resolves to ${repo.localPath}, which is not on disk`);
     return;
   }
+  // ONE TESTER RUN PER TICKET (external review 16): every run for #n works in the same
+  // tester-<n> workspace (and replay checkouts, skills mount, MCP file), removed before
+  // it starts and after it ends, so a second run used to destroy the first's workspace
+  // and the first's teardown the second's. A per-ticket lock: a run that finds it held
+  // starts nothing (phase busy); one whose holder is gone is taken over. Released on exit.
+  const lock = acquireTicketLock("tester", n, GAFFER_DATA);
+  if (!lock.ok) {
+    let since = "";
+    try {
+      since = statSync(lock.path).mtime.toISOString();
+    } catch {
+      /* the holder just released it */
+    }
+    const reason = `another tester run for #${n} is in progress (pid ${lock.pid || "unknown"}${since ? `, since ${since}` : ""}; lock ${lock.path}): this run started nothing`;
+    log(reason);
+    emit({ phase: "busy", ticket: n, reason, holder: { pid: lock.pid || null, since } }, 4);
+    return;
+  }
+  // The round this run tests, read before anything runs: its verdict names it.
+  const round = testingRound(CONFIG.dispatchDb, n);
   const worktree = resolve(GAFFER_DATA, "worktrees", `tester-${n}`);
   git(repo.localPath, "worktree", "remove", "--force", worktree);
   rmSync(worktree, { recursive: true, force: true });
@@ -1817,6 +1896,7 @@ function runLiveTester(context) {
   const recorded = recordVerdict(n, verdict, summary, process.env, {
     testedCommit,
     contractHash: testedContractHash,
+    ...(round ? { round: round.id } : {}),
     ...(verdict === "pass" && replay ? { replay: replay.state } : {}),
     ...(verdict === "pass" ? { testsCommit } : {}),
     ...(verdict === "pass" && acceptanceEvidence ? { acceptanceEvidence } : {}),
@@ -1832,9 +1912,28 @@ function runLiveTester(context) {
         }
       : {}),
   });
+  if (!recorded.ok && recorded.errorCode === "STALE_VERDICT") {
+    // The ticket left the round this run started in (a rework began a new one, or the
+    // round was already decided): dispatch kept the verdict as stale evidence. Not this
+    // round's verdict, not a hold; the current round is tested by a run of its own.
+    log(`#${n}: ${recorded.message || "the verdict is for an earlier testing round"}`);
+    emit(
+      {
+        phase: "stale",
+        ticket: n,
+        verdict,
+        reason: recorded.message || "the verdict is for an earlier testing round",
+        round: round ? round.id : null,
+        testsBranch,
+        testedCommit,
+      },
+      4,
+    );
+    return;
+  }
   if (!recorded.ok) {
     fail(
-      `tester verdict '${verdict}' for #${n} could not be recorded (exit ${recorded.code ?? "?"})`,
+      `tester verdict '${verdict}' for #${n} could not be recorded (exit ${recorded.code ?? "?"}${recorded.errorCode ? `, ${recorded.errorCode}: ${String(recorded.message || "").slice(0, 300)}` : ""})`,
     );
     return;
   }

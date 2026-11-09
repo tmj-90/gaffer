@@ -937,6 +937,10 @@ export function registerTicket(program: Command): void {
       "the tester agent whose run this PASS records (system only: the runner names who tested when it records the PASS)",
     )
     .option("--tester-run <id>", "that tester agent's run id (system only; with --tester-agent)")
+    .option(
+      "--round <id>",
+      "the testing round the verdict was made in (the runner's tester sends the round it started in; a verdict for an earlier round is refused as STALE_VERDICT and kept as stale evidence)",
+    )
     .option("--as <actor>", "actor type: agent|human|admin|system", "agent")
     .action((ref, opts, cmd) => {
       const actor = testerActor(opts.as);
@@ -987,6 +991,7 @@ export function registerTicket(program: Command): void {
             : {}),
           ...(tests !== undefined ? { tests } : {}),
           ...(testerAgent !== undefined ? { tester_agent: testerAgent } : {}),
+          ...(opts.round !== undefined ? { round: String(opts.round) } : {}),
         },
         actor,
       );
@@ -1019,6 +1024,10 @@ export function registerTicket(program: Command): void {
       "--replay <state>",
       "the runner's clean replay of the tester's tests on the tested commit: passed | failed | skipped",
     )
+    .option(
+      "--round <id>",
+      "the testing round the verdict was made in (the runner's tester sends the round it started in; a verdict for an earlier round is refused as STALE_VERDICT and kept as stale evidence)",
+    )
     .option("--as <actor>", "actor type: agent|human|admin|system", "agent")
     .action((ref, opts, cmd) => {
       if (opts.to !== "refining" && opts.to !== "ready") {
@@ -1035,6 +1044,7 @@ export function registerTicket(program: Command): void {
           ...(opts.testedCommit ? { tested_commit: String(opts.testedCommit) } : {}),
           ...(opts.contractHash ? { contract_hash: String(opts.contractHash) } : {}),
           ...(opts.replay ? { replay: String(opts.replay) } : {}),
+          ...(opts.round !== undefined ? { round: String(opts.round) } : {}),
         },
         actor,
       );

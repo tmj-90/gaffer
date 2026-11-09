@@ -1192,7 +1192,10 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
       "is refused the same way (the runner did not show the candidate passes the tester's " +
       "tests). A " +
       "`contract_hash` that no longer matches the contract on record is a 409 " +
-      "`CONTRACT_MISMATCH`.",
+      "`CONTRACT_MISMATCH`. A verdict that names its testing `round` is accepted only while " +
+      "that round is the ticket's current one: one made before a rework (or after the round " +
+      "already ended) is a 409 `STALE_VERDICT` naming both rounds, kept on the ticket as " +
+      "stale evidence and never recorded as the current round's verdict.",
     capability: "full",
     body: "testerVerdictBody",
     responses: [ok("`{ ticket, event_id }`.", "TicketTransition"), notFound, conflict, invalid],

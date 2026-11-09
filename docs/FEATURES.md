@@ -606,6 +606,16 @@ register one (`wg repo set-commands <repo> --test "<cmd>"`). You can record the 
 yourself: **Record tester PASS** (reported as a waiver) or **Record tester FAIL** on
 the ticket page, or `wg ticket tester-pass <n> --as human`.
 
+One tester run works on a ticket at a time. A second run for the same ticket (a second
+runner, a run started by hand) finds the first one's lock
+(`$GAFFER_DATA/locks/tester-<n>.lock`) and starts nothing; a lock whose run is gone is
+taken over (its pid no longer runs, or now names another process: the lock records its
+run's start time beside the pid). Each verdict names the testing round its run started in (the ticket's
+latest entry into Testing). If the ticket was sent back and delivered again while the
+tester ran, its verdict is for the old round: dispatch refuses it (`STALE_VERDICT`,
+naming both rounds), keeps it on the ticket as a stale-verdict note, and the new round
+gets a tester run of its own. A stale PASS never moves a reworked ticket on.
+
 ### Acceptance profiles
 
 A ticket's test contract can name how the tester's PASS is proven. `unit` (the default)

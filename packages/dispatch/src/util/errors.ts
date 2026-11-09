@@ -44,6 +44,8 @@ export const DISPATCH_ERROR_CODES = [
   // carries no passed runner-recorded acceptance evidence for the tested commit.
   "ACCEPTANCE_EVIDENCE_REQUIRED",
   "CONTRACT_MISMATCH",
+  // A tester verdict made in a testing round that is no longer the ticket's current one.
+  "STALE_VERDICT",
   "CONTRACT_FROZEN",
   "OBSERVED_RISK_ESCALATED",
   "DB_NOT_EMPTY",

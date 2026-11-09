@@ -2639,15 +2639,30 @@ function landSecondaryPr({
  * beside the dashboard's) used to share the ticket's merge-gate scratch checkout: the
  * second removed the first's while it was merging, the first read the failure as a
  * conflict, and the resolver path sent an approved ticket back to review. The lock is a
- * directory (mkdir is atomic) holding the owner's pid. A lock whose pid is gone is stale
- * and taken over, but only under a second, short-lived takeover lock and only after
+ * directory (mkdir is atomic) holding the owner's pid and start identity. A lock whose pid
+ * is gone, or now runs a process with another start identity (pid reuse), is stale and
+ * taken over, but only under a second, short-lived takeover lock and only after
  * re-reading the pid inside it: without that, two runs that both saw the dead pid could
  * each remove the lock the other had just taken and both hold it. Returns
  * { ok: true, release, path } or { ok: false, pid, path }. `afterStaleRead` (tests only)
  * runs between seeing a stale owner and taking the lock over: the window a racing run uses.
  */
-export function acquireMergeLock(ticketNumber, dataDir = GAFFER_DATA, { afterStaleRead } = {}) {
-  const dir = resolve(dataDir, "locks", `merge-ticket-${ticketNumber}.lock`);
+export function acquireMergeLock(ticketNumber, dataDir = GAFFER_DATA, opts = {}) {
+  return acquireTicketLock("merge-ticket", ticketNumber, dataDir, opts);
+}
+
+/**
+ * The per-ticket lock behind acquireMergeLock, for any runner job that must not run twice
+ * at once for one ticket: `$dataDir/locks/<kind>-<n>.lock`. bin/tester-run.mjs takes
+ * kind "tester" (two tester runs for one ticket shared one workspace; external review 16).
+ */
+export function acquireTicketLock(
+  kind,
+  ticketNumber,
+  dataDir = GAFFER_DATA,
+  { afterStaleRead } = {},
+) {
+  const dir = resolve(dataDir, "locks", `${kind}-${ticketNumber}.lock`);
   const takeover = `${dir}.takeover`;
   mkdirSync(dirname(dir), { recursive: true });
   const release = () => {
@@ -2665,6 +2680,10 @@ export function acquireMergeLock(ticketNumber, dataDir = GAFFER_DATA, { afterSta
       return false;
     }
     writeFileSync(resolve(dir, "pid"), String(process.pid));
+    // The owner's start identity beside its pid, so a pid the kernel has since given to
+    // another process (after a reboot, or a pid wrap) is not read as the owner.
+    const started = processStartId(process.pid);
+    if (started) writeFileSync(resolve(dir, "started"), started);
     process.on("exit", release);
     return true;
   };
@@ -2677,12 +2696,24 @@ export function acquireMergeLock(ticketNumber, dataDir = GAFFER_DATA, { afterSta
       if (!existsSync(dir)) return { pid: 0, held: false };
     }
     if (pid > 0) {
+      let alive;
       try {
         process.kill(pid, 0);
-        return { pid, held: true };
+        alive = true;
       } catch (e) {
-        return { pid, held: e?.code === "EPERM" }; // EPERM: alive, someone else's
+        alive = e?.code === "EPERM"; // EPERM: alive, someone else's
       }
+      if (!alive) return { pid, held: false };
+      // PID REUSE: the pid runs, but is it the owner? Only a recorded start identity that
+      // differs from the live process's proves it is not; anything unreadable is held.
+      let recorded = "";
+      try {
+        recorded = readFileSync(resolve(dir, "started"), "utf8").trim();
+      } catch {
+        /* an older lock, or one being written: judged on the pid alone */
+      }
+      const now = recorded ? processStartId(pid) : null;
+      return { pid, held: !(recorded && now && now !== recorded) };
     }
     // No pid yet: a lock being created right now (mkdir, then the pid file).
     return { pid: 0, held: Date.now() - statMtime(dir) < 10_000 };
@@ -2716,6 +2747,39 @@ export function acquireMergeLock(ticketNumber, dataDir = GAFFER_DATA, { afterSta
     } catch {
       /* best-effort */
     }
+  }
+}
+
+/**
+ * A process's start identity (which process holds a pid, not only that one does): on
+ * Linux the boot id and the start time in clock ticks since boot from /proc; elsewhere
+ * the start time `ps` reports. Null when it cannot be read.
+ */
+export function processStartId(pid) {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+    const ticks = fields[19]; // field 22 of /proc/<pid>/stat: starttime
+    let boot = "";
+    try {
+      boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+    } catch {
+      /* no boot id: the start time alone */
+    }
+    if (ticks && /^[0-9]+$/.test(ticks)) return `linux:${boot}:${ticks}`;
+  } catch {
+    /* not Linux, or the process is gone */
+  }
+  if (process.platform === "linux") return null;
+  try {
+    const r = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+      encoding: "utf8",
+      timeout: 5000,
+    });
+    const out = String(r.stdout ?? "").trim();
+    return r.status === 0 && out ? `ps:${out}` : null;
+  } catch {
+    return null;
   }
 }
 

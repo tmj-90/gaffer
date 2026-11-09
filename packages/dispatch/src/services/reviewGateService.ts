@@ -289,11 +289,14 @@ export class ReviewGateService {
     return tester.routeToTester(this, this.internals, ref, actor);
   }
 
-  testerRoutePlan(
-    ticket: Ticket,
-  ):
-    | { route: true; why: null; coverage: TesterCoverage }
-    | { route: false; why: string; coverage: TesterCoverage | null } {
+  testerRoutePlan(ticket: Ticket):
+    | { route: true; why: null; code: "routed"; coverage: TesterCoverage }
+    | {
+        route: false;
+        why: string;
+        code: Exclude<TesterRouteCode, "routed" | "error">;
+        coverage: TesterCoverage | null;
+      } {
     return tester.testerRoutePlan(this, this.internals, ticket);
   }
 
@@ -496,6 +499,14 @@ export interface TesterCoverage {
   head: string | null;
 }
 
+/**
+ * Why routeToTester did or did not send a ticket to the tester, as a word a caller can
+ * branch on (`why` is the sentence for a person). The runner's agent review runs only
+ * when the tester has nothing left to say about the head: `not_gated` or `covered`.
+ */
+export type TesterRouteCode =
+  "routed" | "not_in_review" | "not_gated" | "head_unreadable" | "covered" | "ci_pending" | "error";
+
 /** What routeToTester did for one ticket. */
 export interface TesterRoute {
   ticketId: string;
@@ -503,4 +514,5 @@ export interface TesterRoute {
   routed: boolean;
   why: string | null;
   head: string | null;
+  code: TesterRouteCode;
 }

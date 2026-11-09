@@ -33,6 +33,9 @@
 #   Linux alone at -j 1: 91s, so 180 until CI measures it.
 #   tester-overlap: new (external review 16), five real ticks and six tester runs; Linux alone
 #   at -j 1: 114s, so 230 until CI measures it.
+#   review-once-per-head: new (one agent review per delivered commit), about 40 real ticks,
+#   a dozen tester runs and six reviews; Linux at -j 1 on a loaded machine: 319s, so 400
+#   until CI measures it.
 321	land-tester-replay.test.sh
 297	merge-lane.test.sh
 242	land-tester-replay-proof.test.sh
@@ -349,4 +352,5 @@
 60	isolation-default.test.sh
 180	landing-recovery.test.sh
 230	tester-overlap.test.sh
+400	review-once-per-head.test.sh
 150	trust-fail-closed.test.sh

@@ -158,10 +158,8 @@ wg repo add -n beta  --path "$B" --branch main --stack python --test "true" --li
 run_tick() { ( cd "$RUNNER_DIR" && bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" ) | grep '^TICK_RESULT=' ; }
 review_tick() {
   rm -f "$GAFFER_DATA/.reviewed-tickets"
-  # The full AUTONOMOUS ship posture (approve + merge env floors ON): the approve must
-  # still route to in_testing and the review pass must NOT land the branch under the
-  # tester's feet — a live run merged and deleted the branch here, leaving the ticket
-  # in_testing with nothing to test.
+  # The full AUTONOMOUS ship posture (approve + merge env floors ON). Tester first: the
+  # reviewer runs only after the tester's PASS on the head, so its approval goes to merge.
   ( cd "$RUNNER_DIR" && REVIEW_MODE=agent DISPATCH_ALLOW_AGENT_APPROVE=1 GAFFER_TESTING=1 \
       GAFFER_MODE=autonomous AUTO_MERGE=1 MERGE_ON_AGENT_REVIEW=1 \
       bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" ) | grep '^TICK_RESULT='
@@ -217,11 +215,12 @@ echo "== 1. DELIVERY on alpha (Node): the TS pack + what the ticket calls for, a
 A1="$(new_ticket alpha "Add a REST API endpoint for paginated tasks" "GET /tasks returns a page of tasks with a cursor; add pagination and filtering by status." high)"
 wg ticket set-testable "$A1" >/dev/null 2>&1
 wg ticket ready "$A1" >/dev/null 2>&1
-# The factory runs with a reviewer agent (REVIEW_MODE=agent), so the delivery waits in
-# review for it (tester first routes a ticket to the tester after the agent review, or on
-# the agent's approval, never before it).
+# The factory runs with a reviewer agent (REVIEW_MODE=agent). TESTER FIRST, in every review
+# mode: the delivery goes to the independent tester right after its gates (the alpha repo
+# registers a test command and the ticket is testable), and the reviewer agent reviews the
+# tested commit after the tester's PASS (one paid review per delivered commit).
 REVIEW_MODE=agent run_tick >/dev/null
-[ "$(st "$A1")" = "in_review" ] && ok "1: #$A1 delivered → in_review" || fail "1: delivery did not land (status=$(st "$A1"))"
+[ "$(st "$A1")" = "in_testing" ] && ok "1: #$A1 delivered → in_testing (tester first, before the reviewer agent)" || fail "1: delivery did not land (status=$(st "$A1"))"
 D1="$(last_call delivery)"
 if [ -z "$D1" ]; then fail "1: no delivery agent spawn recorded"; else
   ok "1: the delivery agent ran (cwd $(cat "$D1/cwd" | sed "s|$WORK/||"))"
@@ -246,37 +245,7 @@ fi
 
 [ -n "$D1" ] && assert_skill_read "1: delivery/alpha" "$D1" delivery "$A1" typescript-conventions
 
-echo "== 2. REVIEW: the reviewer role (lenses + TS pack), then the SECURITY second opinion =="
-review_tick >/dev/null
-R1="$(last_call review)"; S1="$(last_call security)"
-if [ -z "$R1" ]; then fail "2: no primary reviewer spawn"; else
-  ok "2: the primary reviewer ran"
-  assert_skills "2: reviewer/alpha" "$R1" \
-    "review-ticket,adversarial-reviewer,record-evidence,security-review,performance-review,test-quality-review,typescript-conventions,minimalism,engineering-craft" \
-    "create-branch,submit-review,self-review,run-coverage,prepare-digest-delta,add-api-endpoint,pagination-and-filtering,csharp-conventions,accessibility-review,black-box-test,clarify"
-  n2="$(wc -l < "$R1/skills" | tr -d ' ')"
-  [ "$n2" -lt "${n1:-999}" ] && ok "2: the reviewer's mount is smaller than the builder's ($n2 < ${n1:-?})" || fail "2: reviewer mount $n2 vs delivery ${n1:-?}"
-  if [ -f "$R1/mcp.json" ]; then
-    grep -q "\"GAFFER_REVIEW_TICKET\": *\"$A1\"" "$R1/mcp.json" && ok "2: GAFFER_REVIEW_TICKET=$A1 bound into the reviewer's MCP runtime" || fail "2: reviewer MCP runtime lacks GAFFER_REVIEW_TICKET=$A1"
-  else fail "2: reviewer had no --mcp-config"; fi
-  prompt_has "$R1" "REVIEWER agent" && ok "2: reviewer prompt is the review brief" || fail "2: reviewer prompt mismatch"
-  prompt_has "$R1" "security-review" && ok "2: reviewer prompt names its mounted lenses" || fail "2: reviewer prompt does not name the lenses"
-  assert_skill_read "2: reviewer/alpha" "$R1" review "$A1" review-ticket
-fi
-if [ -z "$S1" ]; then fail "2: the security reviewer did not run for a risk=high ticket"; else
-  ok "2: the security second-opinion reviewer ran (risk=high)"
-  has_skill "$S1" security-review && ok "2: security reviewer has the security-review lens" || fail "2: security reviewer lacks security-review"
-  has_skill "$S1" create-branch && fail "2: security reviewer got delivery mechanics" || ok "2: security reviewer has no delivery mechanics"
-fi
-[ "$(count_kind review)" = 1 ] && ok "2: exactly one primary review turn" || fail "2: primary review turns = $(count_kind review)"
-[ "$(st "$A1")" = "in_testing" ] && ok "2: approved → in_testing (GAFFER_TESTING lane, ticket testable)" || fail "2: #$A1 is '$(st "$A1")' after approval (expected in_testing)"
-# The approve must NOT start the merge while the tester's verdict is pending.
-if [[ "$(git -C "$A" log --oneline main 2>/dev/null)" == *"helper$A1"* ]]; then fail "2: the delivery was merged to main before the tester's verdict"; else ok "2: nothing merged before the tester's verdict (main carries no helper$A1 commit)"; fi
-_A1B="$(wg ticket show "$A1" 2>/dev/null | jget 'd.ticket.branch_name || ""')"
-[ -n "$_A1B" ] && git -C "$A" rev-parse --verify -q "refs/heads/$_A1B" >/dev/null 2>&1 && ok "2: the delivery branch $_A1B still exists for the tester (not deleted by a premature landing)" || fail "2: delivery branch '$_A1B' is gone before the tester ran"
-grep -q "AFK: #$A1 approved → in_testing (tester lane) — NOT landing" "$GAFFER_DATA/factory.log" && ok "2: the review pass logged that it left the landing to the tester lane" || fail "2: no 'NOT landing' log line for #$A1"
-
-echo "== 3. TESTER: the test role with a CONTRACT-ONLY prompt =="
+echo "== 2. TESTER (first): the test role with a CONTRACT-ONLY prompt =="
 # A READY ticket that depends on the in_testing one: the candidate scan finds it, cannot
 # claim it ("nothing deliverable"), and that branch used to exit the tick WITHOUT the
 # tester pass — so a queue blocked behind an in_testing ticket stalled until the loop
@@ -284,21 +253,55 @@ echo "== 3. TESTER: the test role with a CONTRACT-ONLY prompt =="
 A1DEP="$(new_ticket alpha "Follow-up on the endpoint" "depends on the endpoint ticket" low)"
 wg ticket dep add "$A1DEP" "$A1" >/dev/null 2>&1; wg ticket ready "$A1DEP" >/dev/null 2>&1
 ( cd "$RUNNER_DIR" && GAFFER_TESTING=1 bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" ) >/dev/null || true
-grep -qE "all ready tickets failed delivery this run — nothing deliverable|every ready ticket waits on an unfinished dependency( or an open blocking decision)? — nothing claimable this tick" "$GAFFER_DATA/factory.log" && ok "3: the tick hit the nothing-deliverable path (dependent blocked behind in_testing #$A1)" || fail "3: fixture did not exercise the nothing-deliverable path"
-[ "$(st "$A1DEP")" = "ready" ] && ok "3: the dependent stayed ready (blocked, not delivered)" || fail "3: dependent status=$(st "$A1DEP")"
+grep -qE "all ready tickets failed delivery this run — nothing deliverable|every ready ticket waits on an unfinished dependency( or an open blocking decision)? — nothing claimable this tick" "$GAFFER_DATA/factory.log" && ok "2: the tick hit the nothing-deliverable path (dependent blocked behind in_testing #$A1)" || fail "2: fixture did not exercise the nothing-deliverable path"
+[ "$(st "$A1DEP")" = "ready" ] && ok "2: the dependent stayed ready (blocked, not delivered)" || fail "2: dependent status=$(st "$A1DEP")"
 T1="$(last_call tester)"
-if [ -z "$T1" ]; then fail "3: the independent tester did not run"; else
-  ok "3: the independent tester ran"
-  assert_skills "3: tester/alpha" "$T1" \
+if [ -z "$T1" ]; then fail "2: the independent tester did not run"; else
+  ok "2: the independent tester ran"
+  assert_skills "2: tester/alpha" "$T1" \
     "black-box-test,run-tests,contract-test,add-integration-test,test-fixtures-and-factories,record-evidence,typescript-conventions" \
     "create-branch,review-ticket,adversarial-reviewer,add-api-endpoint,python-conventions,prepare-digest-delta,submit-review"
-  prompt_has "$T1" "gaffer/ticket-" && fail "3: tester prompt leaks the delivery branch name" || ok "3: tester prompt carries no delivery-branch pointer"
-  prompt_has "$T1" "PRODUCT CONTEXT" && fail "3: tester prompt carries product-context lore" || ok "3: tester prompt is contract-only (no lore primer)"
-  prompt_has "$T1" "the change is covered by a test" && ok "3: tester prompt carries the acceptance criteria" || fail "3: tester prompt lacks the ACs"
-  grep -q "\"GAFFER_REVIEW_TICKET\": *\"$A1\"" "$T1/mcp.json" 2>/dev/null && ok "3: tester's MCP runtime scoped to #$A1" || fail "3: tester MCP runtime not scoped"
-  [ "$(st "$A1")" = "ready_for_merge" ] && ok "3: PASS recorded → ready_for_merge" || fail "3: #$A1 is '$(st "$A1")' after the tester"
-  assert_skill_read "3: tester/alpha" "$T1" test "$A1" black-box-test
+  prompt_has "$T1" "gaffer/ticket-" && fail "2: tester prompt leaks the delivery branch name" || ok "2: tester prompt carries no delivery-branch pointer"
+  prompt_has "$T1" "PRODUCT CONTEXT" && fail "2: tester prompt carries product-context lore" || ok "2: tester prompt is contract-only (no lore primer)"
+  prompt_has "$T1" "the change is covered by a test" && ok "2: tester prompt carries the acceptance criteria" || fail "2: tester prompt lacks the ACs"
+  grep -q "\"GAFFER_REVIEW_TICKET\": *\"$A1\"" "$T1/mcp.json" 2>/dev/null && ok "2: tester's MCP runtime scoped to #$A1" || fail "2: tester MCP runtime not scoped"
+  [ "$(st "$A1")" = "in_review" ] && ok "2: PASS recorded → back in review for the reviewer agent (tester first)" || fail "2: #$A1 is '$(st "$A1")' after the tester"
+  assert_skill_read "2: tester/alpha" "$T1" test "$A1" black-box-test
 fi
+# The blocked fixture has served its purpose: retire it so the later steps' ticks (which
+# expect an EMPTY ready queue for the clarify pass) are not steered by it.
+wg wont-do "$A1DEP" --reason "fixture for the blocked-queue tester path" >/dev/null 2>&1 || true
+
+echo "== 3. REVIEW (after the tester's PASS): the reviewer role (lenses + TS pack), then the SECURITY second opinion =="
+review_tick >/dev/null
+R1="$(last_call review)"; S1="$(last_call security)"
+if [ -z "$R1" ]; then fail "3: no primary reviewer spawn"; else
+  ok "3: the primary reviewer ran"
+  assert_skills "3: reviewer/alpha" "$R1" \
+    "review-ticket,adversarial-reviewer,record-evidence,security-review,performance-review,test-quality-review,typescript-conventions,minimalism,engineering-craft" \
+    "create-branch,submit-review,self-review,run-coverage,prepare-digest-delta,add-api-endpoint,pagination-and-filtering,csharp-conventions,accessibility-review,black-box-test,clarify"
+  n2="$(wc -l < "$R1/skills" | tr -d ' ')"
+  [ "$n2" -lt "${n1:-999}" ] && ok "3: the reviewer's mount is smaller than the builder's ($n2 < ${n1:-?})" || fail "3: reviewer mount $n2 vs delivery ${n1:-?}"
+  if [ -f "$R1/mcp.json" ]; then
+    grep -q "\"GAFFER_REVIEW_TICKET\": *\"$A1\"" "$R1/mcp.json" && ok "3: GAFFER_REVIEW_TICKET=$A1 bound into the reviewer's MCP runtime" || fail "3: reviewer MCP runtime lacks GAFFER_REVIEW_TICKET=$A1"
+  else fail "3: reviewer had no --mcp-config"; fi
+  prompt_has "$R1" "REVIEWER agent" && ok "3: reviewer prompt is the review brief" || fail "3: reviewer prompt mismatch"
+  prompt_has "$R1" "security-review" && ok "3: reviewer prompt names its mounted lenses" || fail "3: reviewer prompt does not name the lenses"
+  assert_skill_read "3: reviewer/alpha" "$R1" review "$A1" review-ticket
+fi
+if [ -z "$S1" ]; then fail "3: the security reviewer did not run for a risk=high ticket"; else
+  ok "3: the security second-opinion reviewer ran (risk=high)"
+  has_skill "$S1" security-review && ok "3: security reviewer has the security-review lens" || fail "3: security reviewer lacks security-review"
+  has_skill "$S1" create-branch && fail "3: security reviewer got delivery mechanics" || ok "3: security reviewer has no delivery mechanics"
+fi
+[ "$(count_kind review)" = 1 ] && ok "3: exactly one primary review turn" || fail "3: primary review turns = $(count_kind review)"
+# TESTER FIRST: the reviewer ran after the tester, on the commit the tester passed, with
+# the tester's outcome in its packet; its approval (the tester's PASS already covers the
+# head) goes straight to merge under the autonomous posture.
+[ -n "$R1" ] && [ -n "$T1" ] && [ "$(basename "$T1")" \< "$(basename "$R1")" ] && ok "3: the reviewer ran after the tester" || fail "3: tester call ${T1:-none}, reviewer call ${R1:-none}"
+[ -n "$R1" ] && prompt_has "$R1" "TESTER OUTCOME" && prompt_has "$R1" "PASS on this exact commit" && ok "3: the reviewer's packet carries the tester's PASS for the head" || fail "3: the reviewer's packet lacks the tester's outcome"
+case "$(st "$A1")" in ready_for_merge|done) ok "3: approved after the tester's PASS → $(st "$A1") (no second trip to the tester)" ;; *) fail "3: #$A1 is '$(st "$A1")' after approval (expected ready_for_merge or done)" ;; esac
+
 # The dashboard's Skills / Health read model (the aggregator GET /api/health serves) sees
 # the same truth: each skill read above is an OPEN, none is refused, and an open does not
 # move the applied hit-rate.
@@ -314,9 +317,6 @@ read -r H_REFUSED H_TS H_RT H_BB <<<"$HEALTH_SKILLS"
 case "$H_TS" in [1-9]*/0/*) ok "3: Health read model: typescript-conventions opened, never refused ($H_TS opened/refused/applied)" ;; *) fail "3: Health read model: typescript-conventions $H_TS ($HEALTH_SKILLS)" ;; esac
 case "$H_RT" in [1-9]*/0/0) ok "3: Health read model: review-ticket opened, not applied ($H_RT)" ;; *) fail "3: Health read model: review-ticket $H_RT" ;; esac
 case "$H_BB" in [1-9]*/0/0) ok "3: Health read model: black-box-test opened, not applied ($H_BB)" ;; *) fail "3: Health read model: black-box-test $H_BB" ;; esac
-# The blocked fixture has served its purpose: retire it so the later steps' ticks (which
-# expect an EMPTY ready queue for the clarify pass) are not steered by it.
-wg wont-do "$A1DEP" --reason "fixture for the blocked-queue tester path" >/dev/null 2>&1 || true
 
 echo "== 3b. TESTER FAIL: autonomous → REWORK (ready, feedback carried); supervised → refining (human) =="
 grep -qF '${GAFFER_RUN_STATE_DIR:-$GAFFER_DATA}/.tested-tickets' "$RUNNER_DIR/lib/tester.sh" && grep -q 'gaffer_run_state_begin loop' "$RUNNER_DIR/loop.sh" && grep -q 'gaffer_run_state_begin poll' "$RUNNER_DIR/bin/poll-once.sh" \
@@ -325,7 +325,7 @@ echo FAIL > "$WORK/tester-verdict"
 tester_fail_case() { # $1 label, $2 autonomous(1|0) → prints the final status
   local n; n="$(new_ticket alpha "Add a CSV export endpoint ($1)" "GET /export returns CSV" medium)"
   wg ticket set-testable "$n" >/dev/null 2>&1; wg ticket ready "$n" >/dev/null 2>&1
-  REVIEW_MODE=agent run_tick >/dev/null; review_tick >/dev/null
+  REVIEW_MODE=agent run_tick >/dev/null   # tester first: the delivery goes straight to in_testing
   [ "$(st "$n")" = "in_testing" ] || { echo "$n setup:$(st "$n")"; return; }
   if [ "$2" = 1 ]; then
     ( cd "$RUNNER_DIR" && GAFFER_TESTING=1 GAFFER_MODE=autonomous AUTO_MERGE=1 DISPATCH_ALLOW_AGENT_APPROVE=1 MERGE_ON_AGENT_REVIEW=1 bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" ) >/dev/null || true
@@ -339,13 +339,16 @@ read -r N_AUTO S_AUTO <<< "$(tester_fail_case auto 1)"
 _FB="$(wg ticket show "$N_AUTO" 2>/dev/null | jget 'd.ticket.last_review_feedback || ""')"
 case "$_FB" in *tester_failed:*"habit add is a no-op"*) ok "3b: the tester's observation is the rework feedback" ;; *) fail "3b: feedback lacks the tester's observation: '$(printf '%s' "$_FB" | cut -c1-200)'" ;; esac
 grep -q "TESTER: #$N_AUTO FAIL re-queued for REWORK" "$GAFFER_DATA/factory.log" && ok "3b: the lane logged the rework route" || fail "3b: no rework log line for #$N_AUTO"
-# The rework comes back through review into in_testing IN THE SAME RUN: the tester must
-# test it again (a recorded verdict is not a per-run skip — that deadlocked a live run).
+# The rework comes back into in_testing IN THE SAME RUN (tester first, straight from its
+# gates): the tester must test it again (a recorded verdict is not a per-run skip: that
+# deadlocked a live run), and the reviewer then approves the tested head.
 echo PASS > "$WORK/tester-verdict"
-REVIEW_MODE=agent run_tick >/dev/null; review_tick >/dev/null
+REVIEW_MODE=agent run_tick >/dev/null
 [ "$(st "$N_AUTO")" = "in_testing" ] && ok "3b: the reworked #$N_AUTO is back in_testing" || fail "3b: reworked #$N_AUTO is '$(st "$N_AUTO")' (expected in_testing)"
 ( cd "$RUNNER_DIR" && GAFFER_TESTING=1 GAFFER_MODE=autonomous AUTO_MERGE=1 DISPATCH_ALLOW_AGENT_APPROVE=1 MERGE_ON_AGENT_REVIEW=1 bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" ) >/dev/null || true
-case "$(st "$N_AUTO")" in ready_for_merge|done) ok "3b: the tester RE-TESTED the reworked ticket in the same run (now $(st "$N_AUTO"))" ;; *) fail "3b: reworked #$N_AUTO was not re-tested (status '$(st "$N_AUTO")')" ;; esac
+[ "$(st "$N_AUTO")" = "in_review" ] && ok "3b: the tester RE-TESTED the reworked ticket in the same run (PASS → in_review)" || fail "3b: reworked #$N_AUTO was not re-tested (status '$(st "$N_AUTO")')"
+review_tick >/dev/null
+case "$(st "$N_AUTO")" in ready_for_merge|done) ok "3b: the reviewer approved the re-tested head (now $(st "$N_AUTO"))" ;; *) fail "3b: reworked #$N_AUTO is '$(st "$N_AUTO")' after its review" ;; esac
 echo FAIL > "$WORK/tester-verdict"
 read -r N_SUP S_SUP <<< "$(tester_fail_case supervised 0)"
 [ "$S_SUP" = "refining" ] && ok "3b: supervised — tester FAIL holds #$N_SUP in refining for a human (unchanged)" || fail "3b: supervised tester FAIL left #$N_SUP '$S_SUP' (expected refining)"

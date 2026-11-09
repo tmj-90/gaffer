@@ -24,6 +24,7 @@ import type {
   ReviewedHead,
   TesterCoverage,
   TesterRoute,
+  TesterRouteCode,
 } from "../reviewGateService.js";
 import { resolveReviewedHeads } from "./staleness.js";
 
@@ -213,20 +214,28 @@ export function routeToTester(
     );
   }
   const pre = internals.ticketSvc.resolveTicket(ref);
-  const out = (routed: boolean, why: string | null, head: string | null = null): TesterRoute => ({
+  const out = (
+    routed: boolean,
+    why: string | null,
+    code: TesterRouteCode,
+    head: string | null = null,
+  ): TesterRoute => ({
     ticketId: pre.id,
     number: pre.number,
     routed,
     why,
     head,
+    code,
   });
   // git runs here, before the write transaction.
   const plan = host.testerRoutePlan(pre);
-  if (!plan.route) return out(false, plan.why, plan.coverage?.head ?? null);
+  if (!plan.route) return out(false, plan.why, plan.code, plan.coverage?.head ?? null);
   const coverage = plan.coverage;
   return inTransaction(internals.db, () => {
     const ticket = internals.ticketSvc.resolveTicket(ref);
-    if (ticket.status !== "in_review") return out(false, `not in review (${ticket.status})`);
+    if (ticket.status !== "in_review") {
+      return out(false, `not in review (${ticket.status})`, "not_in_review");
+    }
     internals.transitions.transition({
       ticketId: ticket.id,
       actor,
@@ -248,7 +257,7 @@ export function routeToTester(
         ...(ticket.acceptance === 1 ? { acceptance: true } : {}),
       },
     });
-    return out(true, null, coverage.head);
+    return out(true, null, "routed", coverage.head);
   });
 }
 
@@ -265,15 +274,26 @@ export function testerRoutePlan(
   internals: TesterInternals,
   ticket: Ticket,
 ):
-  | { route: true; why: null; coverage: TesterCoverage }
-  | { route: false; why: string; coverage: TesterCoverage | null } {
+  | { route: true; why: null; code: "routed"; coverage: TesterCoverage }
+  | {
+      route: false;
+      why: string;
+      code: Exclude<TesterRouteCode, "routed" | "error">;
+      coverage: TesterCoverage | null;
+    } {
   if (ticket.status !== "in_review") {
-    return { route: false, why: `not in review (${ticket.status})`, coverage: null };
+    return {
+      route: false,
+      why: `not in review (${ticket.status})`,
+      code: "not_in_review",
+      coverage: null,
+    };
   }
   if (!host.laneApplies(ticket)) {
     return {
       route: false,
       why: "the independent tester does not gate this ticket",
+      code: "not_gated",
       coverage: null,
     };
   }
@@ -282,6 +302,7 @@ export function testerRoutePlan(
     return {
       route: false,
       why: `the delivery head of ${unavailable.map((m) => m.repo).join(", ")} cannot be read: ${unavailable[0]!.why}`,
+      code: "head_unreadable",
       coverage: null,
     };
   }
@@ -290,6 +311,7 @@ export function testerRoutePlan(
     return {
       route: false,
       why: `the tester already passed ${coverage.tested ? coverage.tested.slice(0, 12) : "this candidate"}`,
+      code: "covered",
       coverage,
     };
   }
@@ -298,10 +320,11 @@ export function testerRoutePlan(
     return {
       route: false,
       why: `CI has not passed on ${coverage.head ? coverage.head.slice(0, 12) : "the candidate"} yet (${ci.state ?? "no result"}): the tester runs after the gates`,
+      code: "ci_pending",
       coverage,
     };
   }
-  return { route: true, why: null, coverage };
+  return { route: true, why: null, code: "routed", coverage };
 }
 
 /** Every in_review ticket the tester gates and has not passed, sent to it (see routeToTester). */
@@ -334,6 +357,7 @@ export function routeAllToTester(
         routed: false,
         why: err instanceof Error ? err.message : String(err),
         head: null,
+        code: "error",
       });
     }
   }

@@ -378,12 +378,12 @@ gaffer_tick_close_delivery() {
     log "H3: ci-gate.sh not loaded — skipping (GAFFER_REQUIRE_CI=${GAFFER_REQUIRE_CI:-0})"
   fi
 
-  # TESTER FIRST (lib/tester.sh): the gates passed and nothing reviews it before a person
-  # (REVIEW_MODE=human), so a delivery the independent tester gates goes to it now, before
-  # the person sees it in Review; its PASS brings it back to review. With a reviewer agent
-  # (agent|both) the agent review pass routes it after its verdict instead. Dispatch
-  # decides whether the tester gates the ticket; fail-soft.
-  if [ "${REVIEW_MODE:-human}" = "human" ] && declare -F gaffer_tester_route >/dev/null 2>&1; then
+  # TESTER FIRST (lib/tester.sh), in every review mode: the gates passed, so a delivery the
+  # independent tester gates goes to it now, before a person or the reviewer agent sees it;
+  # its PASS brings it back to review, where the reviewer agent (agent|both) reviews the
+  # tested commit once, and a FAIL sends it to rework with no review paid. Dispatch decides
+  # whether the tester gates the ticket (a no-op otherwise); fail-soft.
+  if declare -F gaffer_tester_route >/dev/null 2>&1; then
     gaffer_tester_route "$NUM"
   fi
 

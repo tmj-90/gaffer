@@ -30,7 +30,8 @@ hasnt() { if grep -qE -- "$3" "$2"; then no "$1"; else ok "$1"; fi; }
 
 # Review prompt: heredoc + cards appended; usage-json is output-only.
 has "RPROMPT is built as a heredoc (<<EOF)" "$REVIEW_SH" "read -r -d '' RPROMPT <<EOF"
-has 'review cards appended to RPROMPT' "$REVIEW_SH" 'RPROMPT="${RPROMPT}${_REVIEW_CARDS}"'
+has 'review cards (after the tester outcome) appended to RPROMPT' "$REVIEW_SH" 'RPROMPT="${RPROMPT}${_RTESTER_BLOCK}${_REVIEW_CARDS}"'
+has "the tester's outcome in the review packet is quarantined" "$REVIEW_SH" '$(gaffer_quarantine tester-outcome "$_RTESTER_NOTE" single)'
 hasnt "RPROMPT is never read from a usage-json file" "$REVIEW_SH" 'RPROMPT[^=]*<[[:space:]]*"?\$R_USAGE_JSON'
 hasnt "R_USAGE_JSON is never used as stdin (output capture only)" "$REVIEW_SH" '[^>:][[:space:]]*<[[:space:]]*"?\$R_USAGE_JSON'
 

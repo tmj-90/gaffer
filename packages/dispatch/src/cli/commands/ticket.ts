@@ -626,8 +626,10 @@ export function registerTicket(program: Command): void {
     .description(
       "Record what a judging lane concluded about the ticket's candidate " +
         "(the runner does this after the reviewer agent, the security reviewer, the tester " +
-        "and the eval judge). A measurement: no gate reads it; Health counts it so whether " +
-        "a lane changed the decision can be computed. System/admin only.",
+        "and the eval judge). Health counts it so whether a lane changed the decision can be " +
+        "computed, and the runner's agent review pass reads the agent-review approve/changes " +
+        "verdict on a commit so it reviews each delivered commit once; no approval or landing " +
+        "gate reads it. System/admin only.",
     )
     .requiredOption("--lane <lane>", "agent-review | security-review | tester | eval-judge")
     .requiredOption(
@@ -711,8 +713,10 @@ export function registerTicket(program: Command): void {
       "Send an in_review ticket to the independent tester before a person reviews it " +
         "(tester first: in_review -> in_testing; a PASS brings it back to review). A no-op " +
         "with the reason when the tester does not gate the ticket, it is not in review, or a " +
-        "PASS already covers its head. --all sends every such in_review ticket. The runner " +
-        "calls this after its gates (and the agent review, when that runs), and as system it " +
+        "PASS already covers its head (each route names a code: routed, not_in_review, " +
+        "not_gated, head_unreadable, covered, ci_pending, error). --all sends every such " +
+        "in_review ticket. The runner calls this after its gates, in every review mode, and " +
+        "before an agent review (which runs only on not_gated or covered); as system it " +
         "records the tester lane it ran under (runner.tester_lane) for the dashboard. System/admin only.",
     )
     .option("--all", "every in_review ticket the tester gates and has not passed")

@@ -127,6 +127,7 @@ describe("tester first: the lifecycle with the lane on", () => {
 
     const [route] = wg.routeToTester(id, runner);
     expect(route!.routed).toBe(true);
+    expect(route!.code).toBe("routed");
     expect(wg.view(id).ticket.status).toBe("in_testing");
     const routed = wg.view(id).events.filter((e) => e.event_type === "ticket.routed_to_testing");
     expect(JSON.parse(routed.at(-1)!.payload_json ?? "{}")).toMatchObject({
@@ -215,6 +216,7 @@ describe("tester first: the lifecycle with the lane on", () => {
     const [again] = wg.routeToTester(id, runner);
     expect(again!.routed).toBe(false);
     expect(again!.why).toContain("already passed");
+    expect(again!.code).toBe("covered");
     expect(refusal(() => wg.routeToTester(id, agentActor)).code).toBe("ACTOR_NOT_PERMITTED");
     expect(refusal(() => wg.routeToTester(id, reviewer)).code).toBe("ACTOR_NOT_PERMITTED");
   });
@@ -303,6 +305,7 @@ describe("tester first: the lifecycle with the lane on", () => {
     const id = delivered(wg);
     const [r] = wg.routeToTester(id, runner);
     expect(r!.routed).toBe(false);
+    expect(r!.code).toBe("not_gated");
     expect(wg.approveReview(id, reviewer).ticket.status).toBe("ready_for_merge");
   });
 });
@@ -491,6 +494,7 @@ describe("tester first: review findings (coverage edges)", () => {
     const [r] = wg.routeToTester(id, runner);
     expect(r!.routed).toBe(false);
     expect(r!.why).toContain("CI has not passed");
+    expect(r!.code).toBe("ci_pending");
     expect(wg.pendingTesterRoutes()).toBe(0);
     expect(wg.view(id).ticket.status).toBe("in_review");
 
@@ -506,6 +510,7 @@ describe("tester first: review findings (coverage edges)", () => {
     wg.db.prepare("UPDATE repositories SET local_path = NULL").run();
     const [r] = wg.routeToTester(id, runner);
     expect(r!.routed).toBe(false);
+    expect(r!.code).toBe("head_unreadable");
     expect(wg.pendingTesterRoutes()).toBe(0);
   });
 });

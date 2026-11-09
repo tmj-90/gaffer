@@ -71,7 +71,13 @@ if [ -e .git ] && [ -f package.json ]; then
   fn="helper${GAFFER_TICKET:-0}"
   # With the marker present the delivery ALSO touches an auth path (a security-sensitive file).
   [ -e "__TOUCH_AUTH__" ] && { mkdir -p src/auth; printf 'export const check = () => true;\n' > "src/auth/$fn.js"; }
-  grep -q "$fn" src/tasks.js || { printf 'export function %s(l){return l;}\n' "$fn" >> src/tasks.js; git -c user.email=s@s -c user.name=s add -A >/dev/null; git -c user.email=s@s -c user.name=s commit -qm "feat: $fn" >/dev/null; }
+  if grep -q "$fn" src/tasks.js; then
+    # A re-delivery (rework) is a new head: one more line, committed. One agent review is
+    # paid per delivered commit, so case B's second review needs a commit of its own.
+    printf '// rework %s\n' "$$" >> src/tasks.js; git -c user.email=s@s -c user.name=s add -A >/dev/null; git -c user.email=s@s -c user.name=s commit -qm "fix: $fn rework" >/dev/null
+  else
+    printf 'export function %s(l){return l;}\n' "$fn" >> src/tasks.js; git -c user.email=s@s -c user.name=s add -A >/dev/null; git -c user.email=s@s -c user.name=s commit -qm "feat: $fn" >/dev/null
+  fi
   printf '{"type":"result","subtype":"success","is_error":false,"result":"done.\\n\\nSmallest-change note: modified src/tasks.js only.","total_cost_usd":0.02,"num_turns":3}\n'; exit 0
 fi
 printf '{"type":"result","subtype":"success","is_error":false,"result":"ok"}\n'

@@ -43,7 +43,10 @@
 // fetched) for a repo that lands through its PR. When the approved commit is already in one
 // of them but no landing is on record (the merger died after git or the provider moved and
 // before Dispatch recorded it), the decision is `landed-upstream` (with `landedRef`): the
-// caller records the landing and never merges or asks for that PR again.
+// caller records the landing and never merges or asks for that PR again. The evidence
+// gates still bind it (an acceptance ticket's tester PASS, a PASS bound to the approved
+// commit, the required CI rule); only the branch-head checks are moot. A remote-tracking
+// ref counts only when the caller's fetch just updated it.
 // REQUIRED CI (readCiState): once the runner records CI results for a ticket, the pin about
 // to land must have a recorded PASS; the CI gate polls the primary repo's PR, so a
 // secondary repo's pin is held only by a non-PASS result recorded for that exact commit.
@@ -327,7 +330,7 @@ export function landingDecision(args) {
   if (!d.ok) return d;
   // This repo's approved commit landed in an earlier, partial run (on record, or in git
   // with the record missing): nothing lands now.
-  if (d.kind === "already-landed" || d.kind === "landed-upstream") return d;
+  if (d.kind === "already-landed") return d;
   // REQUIRED CI: the commit about to land must have a recorded CI PASS when the runner
   // has been recording CI for this ticket — every landing path asks this, not only the
   // approve that preceded it.
@@ -339,7 +342,9 @@ export function landingDecision(args) {
       `required CI has ${state === "fail" ? "FAILED" : "not passed"} for ${String(d.pin).slice(0, 12)} (${state || "no result for this commit"})`,
       { head: d.head },
     );
-  if (d.kind === "secondary") {
+  // LANDED UPSTREAM, NOT RECORDED: the record it is about to write is still a landing, so
+  // the CI rule binds it as it binds a landing (the crashed run passed it already).
+  if (d.kind === "secondary" || (d.kind === "landed-upstream" && args.secondary)) {
     // A SECONDARY repo: the CI gate polls the PRIMARY repo's PR (the ticket's pr_url), so
     // CI results name primary commits and this repo's commit is gated by its review pin
     // and the merge gate. A result recorded for THIS exact commit still binds: anything
@@ -349,6 +354,33 @@ export function landingDecision(args) {
   }
   if (ci.required && ci.state !== "pass") return red(ci.state);
   return d;
+}
+
+/**
+ * LANDED UPSTREAM, NOT RECORDED: the tester evidence a landing of the primary repo's
+ * approved commit `reviewed` needs, without a branch head to compare (the same rules as
+ * the head path below). → a hold, or null when the evidence allows the record.
+ */
+function upstreamEvidenceHold(ev, reviewed) {
+  const where = `(its approved commit ${String(reviewed).slice(0, 12)} is already upstream; nothing recorded)`;
+  const pass = ev.pass;
+  if (!pass)
+    return ev.acceptance
+      ? hold("unverified", `acceptance ticket has no tester PASS on record ${where}`)
+      : null;
+  if (pass.provenance === "human") return null;
+  const tested = typeof pass.tested_commit === "string" ? pass.tested_commit.toLowerCase() : "";
+  if (!/^[0-9a-f]{40,64}$/.test(tested))
+    return ev.acceptance
+      ? hold("unverified", `acceptance PASS is not bound to a tested commit ${where}`)
+      : null;
+  if (tested !== String(reviewed).toLowerCase())
+    return hold(
+      "unverified",
+      `the tester's PASS is for ${tested.slice(0, 12)}, not the approved commit ${where}`,
+      { tested, reviewed },
+    );
+  return null;
 }
 
 function testerLandingDecision({
@@ -377,7 +409,12 @@ function testerLandingDecision({
   // LANDED UPSTREAM, NOT RECORDED: the approved commit is already in the landing target
   // (an interrupted merge moved git or the provider, then died before the record). Read
   // before the branch head: the provider's --delete-branch may have removed the branch.
+  // The evidence gates still bind (the commit may have reached the target some other way
+  // than a gated landing): an acceptance ticket needs a tester PASS, and a bound PASS must
+  // be for the approved commit. Only the branch-head checks are moot (the commit landed).
   const upstream = reviewed ? landedIn(repoPath, reviewed, landedRefs) : null;
+  const upstreamHold = upstream && !secondary ? upstreamEvidenceHold(ev, reviewed) : null;
+  if (upstreamHold) return upstreamHold;
   if (upstream)
     return {
       ok: true,

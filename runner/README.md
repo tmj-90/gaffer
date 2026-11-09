@@ -454,9 +454,11 @@ The factory keeps the memory product's **Repo Digest** current and drives the
   (external review 16): a merge that died after git or the provider moved and before the
   record leaves the approved commit in the landing target with no landing on file; the
   retry checks the review pin's ancestry against that target (the default branch's
-  remote-tracking ref, fetched first, for a repo with a PR; the local default otherwise),
-  records it (`landed-upstream`, recorded `pr` / `pr-stale` / `git-verified`, each checked
-  by Dispatch against git) and never merges it or asks for its PR again. Both landing paths
+  remote-tracking ref, counted only when the fetch just updated it, for a repo with a PR;
+  the local default otherwise), records it (`landed-upstream`, recorded `pr` / `pr-stale` /
+  `git-verified`, each checked by Dispatch against git) and never merges it or asks for its
+  PR again. The tester and CI rules still bind that record (an acceptance ticket with no
+  tester PASS, or a PASS for another commit, holds even when its commit is upstream). Both landing paths
   hold the same per-ticket merge lock (`$GAFFER_DATA/locks/merge-ticket-<n>.lock`): the
   lane takes it with `bin/merge-ticket.mjs --lock-hold`, so a lane run and a `gaffer merge`
   of one ticket never land it side by side. **Every write repo** (external

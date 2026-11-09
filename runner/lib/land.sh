@@ -96,14 +96,17 @@ _gaffer_land_record() {
 # landing target already carries, for the landing check: the default branch's
 # remote-tracking ref, just fetched, for a repo with a PR (the provider merges it there;
 # the local default too only under GAFFER_PR_LOCAL_FALLBACK=1); the local default
-# otherwise. A failed fetch leaves the remote-tracking ref as it was: no shortcut is taken
-# on a stale one (the landing runs, and the provider refuses a merged PR).
+# otherwise. The remote-tracking ref counts only when this fetch (an explicit forced
+# refspec) updated it: after a failed fetch it is stale or may have been written by
+# anything with access to the checkout, so it is no proof and no shortcut is taken.
 #   _gaffer_land_landed_refs <repo_dir> <default> <pr_url> → sets _LANDED_REFS (the caller declares it)
 _gaffer_land_landed_refs() {
-  local repo="$1" def="$2" pr="$3"
+  local repo="$1" def="$2" pr="$3" rem="${GAFFER_PR_REMOTE:-origin}"
   if [ -n "$pr" ]; then
-    git -C "$repo" fetch --quiet "${GAFFER_PR_REMOTE:-origin}" "$def" >/dev/null 2>&1 || true
-    _LANDED_REFS=("refs/remotes/${GAFFER_PR_REMOTE:-origin}/$def")
+    _LANDED_REFS=()
+    if git -C "$repo" fetch --quiet "$rem" "+refs/heads/$def:refs/remotes/$rem/$def" >/dev/null 2>&1; then
+      _LANDED_REFS+=("refs/remotes/$rem/$def")
+    fi
     if _gaffer_flag_on "${GAFFER_PR_LOCAL_FALLBACK:-0}"; then _LANDED_REFS+=("refs/heads/$def"); fi
   else
     _LANDED_REFS=("refs/heads/$def")

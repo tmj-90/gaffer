@@ -2529,15 +2529,22 @@ function prLocalFallbackOn() {
  * lands where the provider merges it: its default branch is fetched from
  * GAFFER_PR_REMOTE and the remote-tracking ref is what counts (the local default only
  * when GAFFER_PR_LOCAL_FALLBACK=1 lands it locally). Without a PR: the local default.
- * A failed fetch leaves the remote-tracking ref as it was (no shortcut is taken on a
- * stale one: the normal landing runs, and the provider refuses a merged PR).
+ * The remote-tracking ref counts only when this fetch updated it (an explicit forced
+ * refspec, whatever the remote's configured one): after a failed fetch it is stale or
+ * may have been written by anything with access to the checkout, so it is no proof and
+ * no shortcut is taken (the normal landing runs: it holds on a missing branch, or the
+ * provider refuses a merged PR, until a fetch succeeds).
  */
 export function landedRefsFor({ repoPath, defaultBranch, prUrl }) {
   const def = defaultBranch || "main";
   if (!prUrl) return [`refs/heads/${def}`];
   const rem = String(process.env.GAFFER_PR_REMOTE || "origin");
-  git(repoPath, "fetch", "--quiet", rem, def);
-  return [`refs/remotes/${rem}/${def}`, ...(prLocalFallbackOn() ? [`refs/heads/${def}`] : [])];
+  const tracking = `refs/remotes/${rem}/${def}`;
+  const fetched = git(repoPath, "fetch", "--quiet", rem, `+refs/heads/${def}:${tracking}`);
+  return [
+    ...(fetched.status === 0 ? [tracking] : []),
+    ...(prLocalFallbackOn() ? [`refs/heads/${def}`] : []),
+  ];
 }
 
 /**

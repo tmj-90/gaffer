@@ -25,6 +25,10 @@
 #       not vanish: a durable hold under GAFFER_DATA makes budget admission refuse paid
 #       launches under a cap (a fresh process, as after a restart) until
 #       `usage-ledger.mjs --reconcile` books it.
+#   L5  no shortcut without proof: the "already upstream" recognition is never taken on a
+#       remote-tracking ref the fetch did not just update (the network is down; the ref
+#       says A's commit is upstream, its PR never merged), and it never skips the tester gate
+#       (an acceptance ticket with no PASS whose PR was merged outside the gates holds).
 # Run: bash runner/test/landing-recovery.test.sh   (bash 3.2 safe)
 # =====================================================================
 . "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
@@ -289,6 +293,35 @@ env $L4ENV node "$RUNNER_DIR/lib/usage-ledger.mjs" --reconcile --usd 0.42 --note
 env $L4ENV node "$RUNNER_DIR/lib/budget-admission.mjs" check --kind delivery > "$D/adm2.json" 2>/dev/null; brc=$?
 [ "$brc" -eq 0 ] && ok "L4: after the reconcile admission admits again" || fail "L4: admission after reconcile rc=$brc $(cat "$D/adm2.json")"
 grep -q '"ticket":5' "$D/ledger-dir/usage-ledger.jsonl" 2>/dev/null && ok "L4: the held call's row reached the ledger with the reconcile" || fail "L4: the held row is not in the ledger: $(cat "$D/ledger-dir/usage-ledger.jsonl" 2>/dev/null)"
+
+echo "== L5: no shortcut without proof =="
+drop_tester() {  # [acceptance]: remove the tester PASS (and mark the ticket an acceptance ticket)
+  node --no-warnings -e '
+    const { DatabaseSync } = require("node:sqlite");
+    const d = new DatabaseSync(process.argv[1]);
+    d.prepare("DELETE FROM evidence WHERE id = ?").run("ev-tester-1");
+    d.prepare("DELETE FROM work_events WHERE id = ?").run("we-tester-1");
+    if (process.argv[2] === "acceptance") d.prepare("UPDATE tickets SET acceptance = 1 WHERE number = 1").run();
+    d.close();' "$DISPATCH_DB" "${1:-}"
+}
+world l5a pr
+drop_tester
+git -C "$D/repoA" update-ref refs/remotes/origin/main "$HEAD_repoA"
+git -C "$D/repoA" remote set-url origin "$D/no-such-remote.git"
+MOCK_BLOCKED=repoA MT; rc=$?  # the network is down: the provider cannot be reached either
+[ "$(status)" = ready_for_merge ] && [ "$(landed_repos)" = "" ] && ! grep -q 'already in refs/remotes' "$D/mt.log" \
+  && ok "L5: a failed fetch takes no shortcut on the remote-tracking ref (rc=$rc, nothing recorded)" \
+  || fail "L5: failed fetch: rc=$rc status=$(status) landed=$(landed_repos) (A's PR never merged)"
+world l5b pr
+drop_tester acceptance
+git --git-dir="$D/repoA.git" update-ref refs/heads/main "$HEAD_repoA"; : > "$D/merged-repoA"
+MT; rc=$?
+[ "$rc" -eq 4 ] && [ "$(status)" = ready_for_merge ] && [ "$(landed_repos)" = "" ] && grep -q 'landing check unverified' "$D/mt.log" \
+  && ok "L5: an acceptance ticket with no tester PASS holds though its commit is upstream" \
+  || fail "L5: no PASS: rc=$rc status=$(status) landed=$(landed_repos) $(tail -2 "$D/mt.log" | tr '\n' '|')"
+: > "$D/lane.log"; LANE; rc=$?
+[ "$rc" -ne 0 ] && [ "$(status)" = ready_for_merge ] && [ "$(landed_repos)" = "" ] && grep -q 'unverified' "$D/lane.log" \
+  && ok "L5: the lane holds it too" || fail "L5: lane, no PASS: rc=$rc status=$(status) landed=$(landed_repos) $(tail -2 "$D/lane.log" | tr '\n' '|')"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "landing-recovery: ALL $PASS checks passed"; exit 0

@@ -387,7 +387,8 @@ verdict strip above, Approve beside the flags, and the server-computed diff.*
   repository's PR merged (or its default branch moved) and before the landing was
   recorded, the retry sees the approved commit already upstream, records the landing,
   and lands only what is left: no second merge, no second PR merge request, the tester
-  replay record regenerated on what landed. The merge lane, the review pass and
+  replay record regenerated on what landed. "Upstream" means the remote default as
+  just fetched (no fetch, no shortcut), and the tester and CI gates still apply. The merge lane, the review pass and
   `gaffer merge` share one lock per ticket, so two of them never land it at once.
 - **A cancellation or a red check during the merge gate stops the landing.** Every
   landing path re-checks ticket, approval and CI right before a default branch moves;

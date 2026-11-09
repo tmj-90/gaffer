@@ -2443,6 +2443,18 @@ export function readLandingPlan(ticketNumber) {
   }
 }
 
+/**
+ * TEST SEAM (runner/test/landing-recovery.test.sh): GAFFER_TEST_MERGE_CRASH_AFTER_LAND=<repo>
+ * kills this process (SIGKILL, no cleanup) right after <repo>'s merge landed (its default
+ * branch or its PR moved upstream) and before that landing is recorded in Dispatch: the
+ * window an interrupted merge leaves behind. Unset in production; it never changes what
+ * lands, only stops the run at that point.
+ */
+function crashAfterLandSeam(repoName) {
+  const want = String(process.env.GAFFER_TEST_MERGE_CRASH_AFTER_LAND || "");
+  if (want !== "" && want === String(repoName)) process.kill(process.pid, "SIGKILL");
+}
+
 /** Record one repo's landing as the system actor (idempotent; logged, never fatal). */
 function recordLandingCli(ticketNumber, repoId, sha, via) {
   if (!repoId || !sha) return;
@@ -2885,6 +2897,7 @@ function landSecondaryRepos(ticketNumber, primaryRepoId, approval = null) {
         prLocalFallback,
       });
       if (pr.kind === "landed") {
+        crashAfterLandSeam(r.repo);
         recordLandingCli(ticketNumber, r.repoId, d.pin, pr.via);
         out.landed.push(r.repo);
         if (pr.via === "pr")
@@ -2956,6 +2969,7 @@ function landSecondaryRepos(ticketNumber, primaryRepoId, approval = null) {
     log(
       `merged #${ticketNumber} in ${r.repo} (${r.branch} → ${defaultBranch}) — landed the gated merge ${res.gate.merge.slice(0, 12)}`,
     );
+    crashAfterLandSeam(r.repo);
     recordLandingCli(ticketNumber, r.repoId, d.pin, r.prUrl ? "local-fallback" : "local");
     out.landed.push(r.repo);
     out.merged.push({
@@ -3443,6 +3457,7 @@ function main() {
     // `pr-stale` landing (checked against the remote-tracking default, which the fetch
     // updated): recorded as `pr`, the local default could not show it, so the landing was
     // refused and the ticket stayed ready_for_merge with its PR already merged.
+    if (landed.via !== "earlier") crashAfterLandSeam(repo.name);
     if (landed.via !== "earlier" && repo.id)
       recordLandingCli(
         resolved.number,

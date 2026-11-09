@@ -31,6 +31,11 @@
 //     (GAFFER_WORKER_COMMAND_COST_USD=0, cost_basis "unreported") is the one documented
 //     exception and still counts as $0;
 //   • the ledger is the file the writer appends to (lib/usage-ledger-path.mjs, shared);
+//   • a call whose ledger append FAILED is not free (external review 16): the writer holds
+//     its row in $GAFFER_DATA/usage-ledger.held.jsonl, and every held row is an unknown
+//     cost (daily and lifetime) until `usage-ledger.mjs --reconcile` moves it into the
+//     ledger (a hold file the reconcile claimed and has not retired counts too); a hold
+//     file that cannot be read is an unknown spend;
 //   • FAIL CLOSED: with a cap set, a ledger that exists but cannot be read, or holds a
 //     line that is not a JSON object, is an UNKNOWN spend and refuses the launch; so
 //     is a ledger that is turned off or has no location (nothing would be booked).
@@ -87,7 +92,12 @@ import {
 import { homedir, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ledgerDisabled, resolveLedgerPath } from "./usage-ledger-path.mjs";
+import {
+  ledgerDisabled,
+  resolveHoldClaims,
+  resolveHoldPath,
+  resolveLedgerPath,
+} from "./usage-ledger-path.mjs";
 
 export const BUDGET_REFUSED_STATUS = 77;
 
@@ -177,7 +187,32 @@ export function ledgerSpend(env = process.env, now = new Date()) {
     return {
       unknown: "the usage ledger has no location (GAFFER_DATA and GAFFER_USAGE_LEDGER are unset)",
     };
-  if (!existsSync(p)) return { today: 0, lifetime: 0 }; // nothing spent yet
+  // UNBOOKED CALLS: rows held by a failed append count as unknown cost, whatever the day.
+  // A reconcile's claimed hold files (resolveHoldClaims) count until it retires them.
+  let held = 0;
+  const hold = resolveHoldPath(env);
+  for (const f of [hold, ...resolveHoldClaims(env)]) {
+    if (!f || !existsSync(f)) continue;
+    try {
+      held += readFileSync(f, "utf8")
+        .split("\n")
+        .filter((l) => l.trim() !== "").length;
+    } catch (e) {
+      return { unknown: `the held usage rows ${f} cannot be read (${e?.code ?? e})` };
+    }
+  }
+  // Nothing booked yet (held rows aside).
+  if (!existsSync(p))
+    return {
+      today: 0,
+      lifetime: 0,
+      unknownToday: held,
+      unknownAll: held,
+      held,
+      reservedUsd: 0,
+      openReservations: 0,
+      reservations: [],
+    };
   let text;
   try {
     text = readFileSync(p, "utf8");
@@ -248,7 +283,15 @@ export function ledgerSpend(env = process.env, now = new Date()) {
     if (isToday) today += c;
     // Only a reconcile row that booked a positive figure clears the unknown rows before
     // it: one at $0 (hand-written, or from an older writer) would count them as free.
-    if (r.kind === "reconcile" && r.estimated === true && finitePos(r.estimated_cost_usd)) {
+    // A HELD reconcile row (its own append failed; a later reconcile moved it here) does
+    // not clear either: it now sits after calls it never covered. Its cost still counts
+    // and its settles_reservations still settle (fail closed: an over-count at worst).
+    if (
+      r.kind === "reconcile" &&
+      r.estimated === true &&
+      r.held !== true &&
+      finitePos(r.estimated_cost_usd)
+    ) {
       unknownToday = 0;
       unknownAll = 0;
     } else if (isUnknownCostRow(r)) {
@@ -261,12 +304,23 @@ export function ledgerSpend(env = process.env, now = new Date()) {
   return {
     today,
     lifetime,
-    unknownToday,
-    unknownAll,
+    // Rows held by a failed append (and claimed, unretired ones) are unknown cost on
+    // both caps; `held` says how many of the unknown calls are those.
+    unknownToday: unknownToday + held,
+    unknownAll: unknownAll + held,
+    held,
     reservedUsd,
     openReservations: reservations.length,
     reservations,
   };
+}
+
+/** The refusal's note on held rows: they sit in the hold file, not in the ledger itself. */
+function heldNote(spend) {
+  const n = spend && typeof spend.held === "number" ? spend.held : 0;
+  return n > 0
+    ? ` (${n} of them held by a failed ledger append, in usage-ledger.held.jsonl or a reconcile's claim beside it; \`usage-ledger.mjs --open-reservations\` lists them)`
+    : "";
 }
 
 /**
@@ -339,7 +393,7 @@ export function paidLaunchAdmission({
       ok: false,
       kind,
       unknownCost: spend.unknownToday,
-      reason: `a budget cap is set but the spend cannot be established: the usage ledger holds ${spend.unknownToday} call(s) today with no reported cost and no estimate, so the paid ${kind} launch is refused (fail closed); ${RECONCILE_HINT}`,
+      reason: `a budget cap is set but the spend cannot be established: the usage ledger holds ${spend.unknownToday} call(s) today with no reported cost and no estimate${heldNote(spend)}, so the paid ${kind} launch is refused (fail closed); ${RECONCILE_HINT}`,
     };
   // The lifetime cap counts every day, so an unknown-cost row from an earlier day holds
   // it until the operator books the cost: the day turning over clears the daily hold
@@ -349,7 +403,7 @@ export function paidLaunchAdmission({
       ok: false,
       kind,
       unknownCost: spend.unknownAll,
-      reason: `the lifetime budget (GAFFER_BUDGET_USD=${caps.lifetime}) cannot be checked: the usage ledger holds ${spend.unknownAll} call(s) from an earlier day with no reported cost and no estimate, so the paid ${kind} launch is refused (fail closed); book what those calls cost with \`node runner/lib/usage-ledger.mjs --reconcile --usd <amount>\` (it counts toward the caps)`,
+      reason: `the lifetime budget (GAFFER_BUDGET_USD=${caps.lifetime}) cannot be checked: the usage ledger holds ${spend.unknownAll} call(s) from an earlier day with no reported cost and no estimate${heldNote(spend)}, so the paid ${kind} launch is refused (fail closed); book what those calls cost with \`node runner/lib/usage-ledger.mjs --reconcile --usd <amount>\` (it counts toward the caps)`,
     };
   // Open reservations (calls in flight, or that died without booking) count as spend
   // against BOTH caps, whatever day they were booked on: a call still running books its

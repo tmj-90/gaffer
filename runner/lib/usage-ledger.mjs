@@ -57,11 +57,18 @@
  *                stdout (so the bash caller can keep the human-readable log), and
  *                appends one ledger record. Used by tick.sh's bash call sites.
  */
-import { appendFileSync } from "node:fs";
-import { readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { appendFileSync, existsSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { hostname } from "node:os";
-import { resolveLedgerPath } from "./usage-ledger-path.mjs";
-import { RESERVATION_KIND, launcherAlive, takePendingReservation } from "./budget-admission.mjs";
+import { dirname } from "node:path";
+import { resolveHoldClaims, resolveHoldPath, resolveLedgerPath } from "./usage-ledger-path.mjs";
+import {
+  RESERVATION_KIND,
+  launcherAlive,
+  ledgerSpend,
+  takePendingReservation,
+  withAdmissionLock,
+} from "./budget-admission.mjs";
 
 // Spec 3 / Phase 2: the claude-JSON envelope schema is owned by the worker seam.
 // This module keeps the LEDGER-RECORD shaping + honesty rules, but the raw parse +
@@ -383,18 +390,87 @@ export function appendUsageRecord(record, env = process.env) {
     const id = takePendingReservation(path);
     if (id) record = { ...record, settles: id };
   }
+  const line = JSON.stringify(record) + "\n";
+  let err = null;
+  // A transient failure (a full disk freed, a racing rotation) gets two more tries.
+  for (let attempt = 0; attempt < APPEND_TRIES; attempt += 1) {
+    try {
+      appendFileSync(path, line);
+      return true;
+    } catch (e) {
+      err = e;
+      if (attempt + 1 < APPEND_TRIES) sleepMs(APPEND_RETRY_MS);
+    }
+  }
+  // Non-fatal, but NOT silent: a measurement gap must be visible to the operator. And the
+  // call's cost must not vanish (external review 16): its row is HELD in a durable file
+  // under GAFFER_DATA, which budget admission counts as an unknown cost (paid launches
+  // under a cap are refused) until `--reconcile` moves it into the ledger.
+  const ticket = record && record.ticket != null ? ` (ticket #${record.ticket})` : "";
+  const reason = (err && err.message) || String(err);
+  const hold = resolveHoldPath(env);
+  let held = false;
+  if (hold) {
+    try {
+      appendFileSync(
+        hold,
+        JSON.stringify({
+          ...record,
+          held: true,
+          // The reconcile books a held row once: it skips an id the ledger already has.
+          held_id: randomUUID(),
+          held_reason: `the usage-ledger append failed (${reason})`,
+        }) + "\n",
+      );
+      held = true;
+    } catch {
+      held = false;
+    }
+  }
+  process.stderr.write(
+    held
+      ? `WARNING: usage-ledger append FAILED${ticket}: the call's cost is not in the ledger ` +
+          `(UNMEASURED there, path: ${path}): ${reason}; its row is HELD in ${hold}, and budget ` +
+          `admission refuses paid launches under a cap until it is booked: fix the ledger, then run ` +
+          `\`node runner/lib/usage-ledger.mjs --reconcile --usd <amount>\`\n`
+      : `WARNING: usage-ledger append FAILED${ticket} — cost for this call goes ` +
+          `UNMEASURED (path: ${path}): ${reason}${hold ? `; the hold file ${hold} could not be written either` : ""}\n`,
+  );
+  return false;
+}
+
+const APPEND_TRIES = 3;
+const APPEND_RETRY_MS = 50;
+function sleepMs(ms) {
   try {
-    appendFileSync(path, JSON.stringify(record) + "\n");
-    return true;
-  } catch (err) {
-    // Non-fatal, but NOT silent: a measurement gap must be visible to the operator.
-    const ticket = record && record.ticket != null ? ` (ticket #${record.ticket})` : "";
-    const reason = (err && err.message) || String(err);
-    process.stderr.write(
-      `WARNING: usage-ledger append FAILED${ticket} — cost for this call goes ` +
-        `UNMEASURED (path: ${path}): ${reason}\n`,
-    );
-    return false;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    /* no Atomics.wait here: retry at once */
+  }
+}
+
+/**
+ * The rows held by failed appends in `hold` (default: resolveHoldPath), or [] when there
+ * are none. → { rows, path } | { error } when the file exists but cannot be read.
+ */
+export function readHeldRows(env = process.env, hold = resolveHoldPath(env)) {
+  if (!hold || !existsSync(hold)) return { rows: [], path: hold };
+  try {
+    const rows = readFileSync(hold, "utf8")
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .map((l) => {
+        try {
+          const r = JSON.parse(l);
+          return r && typeof r === "object" && !Array.isArray(r) ? r : { held: true };
+        } catch {
+          return { held: true, held_reason: "an unreadable held row" };
+        }
+      });
+    return { rows, path: hold };
+  } catch (e) {
+    return { error: `the held usage rows ${hold} cannot be read (${e?.code ?? e})` };
   }
 }
 
@@ -849,14 +925,111 @@ async function reconcileMain(argv, env = process.env) {
   }
   const n = argv.indexOf("--note");
   const note = n >= 0 ? provLabel(argv[n + 1]) : null;
-  const { ledgerSpend } = await import("./budget-admission.mjs");
+  // UNBOOKED CALLS (external review 16): rows a failed append HELD go into the ledger
+  // first, so the reconcile row below books them with the rest. The hold file is CLAIMED
+  // first (renamed to <hold>.claim-<pid>-<ms>, atomic): an append that fails while this
+  // runs starts a fresh hold file instead of being retired with these rows. Budget
+  // admission counts claimed rows until the claim is retired, so a reconcile that fails
+  // or dies part way keeps them unknown cost, and the next one finishes the claim. A row
+  // whose held_id the ledger already has is not appended again (a crash between the
+  // move and the retire cannot book it twice).
+  const all = argv.includes("--all-reservations");
+  const ledgerPath = resolveLedgerPath(env);
+  if (!ledgerPath) {
+    process.stderr.write(
+      "usage-ledger: the reconcile row could not be written (is GAFFER_DATA set?)\n",
+    );
+    return 1;
+  }
+  // UNBOOKED CALLS (external review 16): rows a failed append HELD go into the ledger
+  // first, so the reconcile row below books them with the rest. The hold file is CLAIMED
+  // first (renamed to <hold>.claim-<pid>-<ms>, atomic): an append that fails while this
+  // runs starts a fresh hold file instead of being retired with these rows. Budget
+  // admission counts claimed rows until the claim is retired, so a reconcile that fails
+  // or dies part way keeps them unknown cost, and the next one finishes the claim. A row
+  // whose held_id the ledger already has is not appended again (a crash between the
+  // move and the retire cannot book it twice).
+  const hold = resolveHoldPath(env);
+  if (hold && existsSync(hold)) {
+    try {
+      renameSync(hold, `${hold}.claim-${process.pid}-${Date.now()}`);
+    } catch (e) {
+      if (e?.code !== "ENOENT") {
+        process.stderr.write(
+          `usage-ledger: the held rows ${hold} could not be claimed (${e?.code ?? e}); nothing reconciled\n`,
+        );
+        return 1;
+      }
+    }
+  }
+  // The ledger's directory must exist: the admission lock below would otherwise create
+  // it, and a reconcile does not repair a ledger that cannot be written.
+  if (!existsSync(dirname(ledgerPath))) {
+    process.stderr.write(
+      `usage-ledger: the usage ledger's directory ${dirname(ledgerPath)} does not exist; nothing reconciled (the held rows stay held)\n`,
+    );
+    return 1;
+  }
+  // EXACTLY ONCE across concurrent reconciles and launches: the move, the count, the
+  // reservation sweep and the reconcile row all run under budget admission's lock
+  // (<ledger>.admit.lock.d). Two reconciles then never both move one claim (the held_id
+  // dedupe is read-then-append), and an admission never reads a half-done reconcile.
+  // The lock not free within GAFFER_LOCK_TIMEOUT refuses: nothing is moved or booked.
+  const locked = withAdmissionLock(ledgerPath, () => reconcileLocked({ usd, note, all, env }), env);
+  if (!locked.locked) {
+    process.stderr.write(
+      `usage-ledger: ${locked.reason} (a paid launch or another reconcile holds it); nothing reconciled, the held rows stay held\n`,
+    );
+    return 1;
+  }
+  return locked.value;
+}
+
+/** The reconcile proper, run under the admission lock. Returns the exit code. */
+function reconcileLocked({ usd, note, all, env }) {
+  const claims = resolveHoldClaims(env);
+  const booked = bookedHeldIds(env);
+  if (booked === null) {
+    process.stderr.write("usage-ledger: the usage ledger cannot be read; nothing reconciled\n");
+    return 1;
+  }
+  let moved = 0;
+  for (const claim of claims) {
+    const held = readHeldRows(env, claim);
+    if (held.error) {
+      process.stderr.write(`usage-ledger: ${held.error}; nothing reconciled\n`);
+      return 1;
+    }
+    for (const row of held.rows) {
+      if (typeof row.held_id === "string" && booked.has(row.held_id)) continue;
+      if (!appendLedgerLine(row, env)) {
+        process.stderr.write(
+          "usage-ledger: the held rows could not be moved into the ledger (is it writable?); nothing reconciled\n",
+        );
+        return 1;
+      }
+      if (typeof row.held_id === "string") booked.add(row.held_id);
+      moved += 1;
+    }
+  }
+  // Every claimed row is in the ledger now: retire the claims before counting (the
+  // ledger rows hold admission until the reconcile row lands).
+  for (const claim of claims) {
+    try {
+      const at = claim.lastIndexOf(".claim-");
+      renameSync(claim, `${claim.slice(0, at)}.reconciled-${claim.slice(at + ".claim-".length)}`);
+    } catch {
+      rmSync(claim, { force: true });
+    }
+  }
+  // Read AFTER the move: a held call row's `settles` closes its reservation, and a held
+  // reconcile row's `settles_reservations` close theirs, before the sweep below.
   const spend = ledgerSpend(env);
   const count = spend && typeof spend.unknownToday === "number" ? spend.unknownToday : 0;
   // RESERVATIONS: the open reservations whose launcher is no longer running (their call
   // died without booking) are settled by this booking. A reservation whose launcher is
   // alive on this host is a call in flight and stays open; one from another host is
   // left open unless --all-reservations says the operator knows it is gone.
-  const all = argv.includes("--all-reservations");
   const sweep = (Array.isArray(spend?.reservations) ? spend.reservations : [])
     .filter((r) => all || (r.host === hostname() && !launcherAlive(r)))
     .map((r) => r.reservation_id);
@@ -874,30 +1047,79 @@ async function reconcileMain(argv, env = process.env) {
     estimated_cost_usd: usd,
     estimate_basis: "operator",
     reconciled_unknown: count,
+    ...(moved > 0 ? { reconciled_held: moved } : {}),
   };
   if (sweep.length) rec.settles_reservations = sweep;
   if (note) rec.note = note;
   if (!appendUsageRecord(rec, env)) {
+    // The append fell back to the hold file: the amount is not lost. The next reconcile
+    // moves the row (its settles_reservations then settle) but, as a held row, it no
+    // longer clears the unknown calls before it: its position in the ledger moved, so
+    // it could otherwise clear calls it never covered (fail closed: they stay unknown).
+    const kept = (readHeldRows(env).rows ?? []).some(
+      (r) => r.kind === "reconcile" && r.ts === rec.ts && r.estimated_cost_usd === usd,
+    );
     process.stderr.write(
-      "usage-ledger: the reconcile row could not be written (is GAFFER_DATA set?)\n",
+      kept
+        ? `usage-ledger: the reconcile row could not be written to the ledger; it is HELD in ${resolveHoldPath(env)}: its $${usd.toFixed(4)} counts toward the caps once the next reconcile moves it, and the unknown-cost calls stay unknown until a reconcile row written to the ledger books them\n`
+        : "usage-ledger: the reconcile row could not be written (is GAFFER_DATA set?)\n",
     );
     return 1;
   }
   process.stdout.write(
     `booked $${usd.toFixed(4)} against ${count} unknown-cost call(s) today` +
+      (moved > 0
+        ? ` and ${moved} held call(s) whose ledger append had failed (now in the ledger)`
+        : "") +
       (sweep.length ? ` and ${sweep.length} open reservation(s) whose call never booked` : "") +
       "; it counts toward the caps\n",
   );
   return 0;
 }
 
+/** The held_id of every held row already in the ledger (a Set), or null when it cannot be read. */
+function bookedHeldIds(env) {
+  const path = resolveLedgerPath(env);
+  const ids = new Set();
+  if (!path || !existsSync(path)) return ids;
+  let text;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
+  for (const line of text.split("\n")) {
+    if (!line.includes('"held_id"')) continue;
+    try {
+      const r = JSON.parse(line);
+      if (r && typeof r.held_id === "string") ids.add(r.held_id);
+    } catch {
+      /* not a row the reconcile wrote */
+    }
+  }
+  return ids;
+}
+
+/** Append one row to the ledger itself (no retry, no hold): the reconcile's move. */
+function appendLedgerLine(row, env) {
+  const path = resolveLedgerPath(env);
+  if (!path) return false;
+  try {
+    appendFileSync(path, JSON.stringify(row) + "\n");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * `--open-reservations`: one JSON line per open reservation (a hold against the caps for
- * a call in flight, or one that died without booking), with `launcher_alive`. Writes no
- * ledger record. Exit 1 when the ledger cannot be read.
+ * a call in flight, or one that died without booking), with `launcher_alive`, then one
+ * per held row (`held: true`: a call whose ledger append failed, still in the hold file
+ * or a reconcile's claim). Writes no ledger record. Exit 1 when the ledger or a hold
+ * file cannot be read.
  */
 async function openReservationsMain(env = process.env) {
-  const { ledgerSpend } = await import("./budget-admission.mjs");
   const spend = ledgerSpend(env);
   if (spend.unknown) {
     process.stderr.write(`usage-ledger: ${spend.unknown}\n`);
@@ -917,6 +1139,44 @@ async function openReservationsMain(env = process.env) {
         launcher_alive: launcherAlive(r),
       }) + "\n",
     );
+  // HELD ROWS (external review 16): calls whose ledger append failed, in the hold file
+  // or in a reconcile's unretired claim. Admission refuses on them (unknown cost), so
+  // they are listed too, after the reservations: one JSON line each with `held: true`
+  // and the file it sits in, under a heading on stderr (stdout stays one JSON object
+  // per line).
+  const hold = resolveHoldPath(env);
+  const files = [hold, ...resolveHoldClaims(env)].filter((f) => f && existsSync(f));
+  let headed = false;
+  for (const f of files) {
+    const held = readHeldRows(env, f);
+    if (held.error) {
+      process.stderr.write(`usage-ledger: ${held.error}\n`);
+      return 1;
+    }
+    for (const r of held.rows) {
+      if (!headed) {
+        process.stderr.write(
+          "held rows (a failed ledger append; unknown cost until `--reconcile` moves them into the ledger):\n",
+        );
+        headed = true;
+      }
+      process.stdout.write(
+        JSON.stringify({
+          held: true,
+          source: f === hold ? "hold" : "claim",
+          file: f,
+          held_id: r.held_id ?? null,
+          ts: r.ts ?? null,
+          kind: r.kind ?? null,
+          ticket: r.ticket ?? null,
+          total_cost_usd: r.total_cost_usd ?? null,
+          estimated_cost_usd: r.estimated_cost_usd ?? null,
+          settles: r.settles ?? null,
+          held_reason: r.held_reason ?? null,
+        }) + "\n",
+      );
+    }
+  }
   return 0;
 }
 

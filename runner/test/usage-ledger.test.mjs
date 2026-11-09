@@ -265,6 +265,373 @@ console.log("== R-4b: the tick.sh ledger call site routes the module's stderr to
   );
 }
 
+console.log("== R-4c: a failed append HOLDS the row; admission refuses until --reconcile ==");
+{
+  // External review 16: the call's cost must not vanish. With GAFFER_DATA set, a row the
+  // ledger would not take (after the retries) is held in $GAFFER_DATA/usage-ledger.held.jsonl,
+  // budget admission counts it as an unknown cost under a cap, and --reconcile moves it into
+  // the ledger and clears the refusal.
+  const dir = gafferMkdtemp(join(tmpdir(), "usage-hold-"));
+  const ledger = join(dir, "no-such-dir", "usage-ledger.jsonl");
+  const env = { GAFFER_DATA: dir, GAFFER_USAGE_LEDGER: ledger, GAFFER_DAILY_BUDGET_USD: "5" };
+  const { paidLaunchAdmission } = await import(resolve(RUNNER_DIR, "lib", "budget-admission.mjs"));
+  const origWrite = process.stderr.write;
+  const errs = [];
+  process.stderr.write = (chunk) => {
+    errs.push(String(chunk));
+    return true;
+  };
+  let wrote;
+  try {
+    wrote = appendUsageRecord(
+      { ts: new Date().toISOString(), ticket: 9, measured: true, total_cost_usd: 0.25 },
+      env,
+    );
+  } finally {
+    process.stderr.write = origWrite;
+  }
+  const holdPath = join(dir, "usage-ledger.held.jsonl");
+  assert("R-4c: the append still returns false (not in the ledger)", wrote === false);
+  const heldRows = existsSync(holdPath)
+    ? readFileSync(holdPath, "utf8")
+        .trim()
+        .split("\n")
+        .map((l) => JSON.parse(l))
+    : [];
+  assert(
+    "R-4c: the row is held, marked held, ticket kept",
+    heldRows.length === 1 && heldRows[0].held === true && heldRows[0].ticket === 9,
+  );
+  assert(
+    "R-4c: the warning names the hold and the reconcile",
+    /HELD/.test(errs.join("")) && /--reconcile/.test(errs.join("")),
+  );
+  const refused = paidLaunchAdmission({ kind: "delivery", env });
+  assert(
+    "R-4c: admission under a cap refuses on the held row (unknown cost)",
+    refused.ok === false && refused.unknownCost === 1,
+  );
+  const uncapped = paidLaunchAdmission({
+    kind: "delivery",
+    env: { GAFFER_DATA: dir, GAFFER_USAGE_LEDGER: ledger, GAFFER_BUDGET_USD: "50" },
+  });
+  assert(
+    "R-4c: the lifetime cap is held by it too",
+    uncapped.ok === false && uncapped.unknownCost === 1,
+  );
+  // The ledger is still broken: the reconcile cannot move the row, keeps the hold, refuses.
+  const bad = spawnSync(process.execPath, [MOD, "--reconcile", "--usd", "0.25"], {
+    env: { ...process.env, ...env },
+    encoding: "utf8",
+  });
+  const claimed = () =>
+    readdirSync(dir).filter((n) => n.startsWith("usage-ledger.held.jsonl.claim-"));
+  assert(
+    "R-4c: a reconcile while the ledger is unwritable fails and keeps the row held (claimed)",
+    bad.status === 1 && claimed().length === 1 && !existsSync(ledger),
+  );
+  const stillRefused = paidLaunchAdmission({ kind: "delivery", env });
+  assert(
+    "R-4c: a claimed row still holds admission",
+    stillRefused.ok === false && stillRefused.unknownCost === 1,
+  );
+  spawnSync("mkdir", ["-p", join(dir, "no-such-dir")]);
+  const rec = spawnSync(process.execPath, [MOD, "--reconcile", "--usd", "0.25"], {
+    env: { ...process.env, ...env },
+    encoding: "utf8",
+  });
+  assert(
+    "R-4c: the reconcile succeeds once the ledger is writable",
+    rec.status === 0 && /1 held call/.test(rec.stdout),
+  );
+  assert("R-4c: the hold file is retired", !existsSync(holdPath) && claimed().length === 0);
+  const rows = readFileSync(ledger, "utf8")
+    .trim()
+    .split("\n")
+    .map((l) => JSON.parse(l));
+  assert(
+    "R-4c: the held row is in the ledger, before the reconcile row",
+    rows.length === 2 &&
+      rows[0].ticket === 9 &&
+      rows[0].held === true &&
+      rows[1].kind === "reconcile" &&
+      rows[1].reconciled_held === 1,
+  );
+  assert(
+    "R-4c: admission admits after the reconcile",
+    paidLaunchAdmission({ kind: "delivery", env }).ok === true,
+  );
+  // EXACTLY ONCE: a reconcile that died after moving a claimed row and before retiring the
+  // claim (the row is in the ledger and in the claim) books it once on the next run; a row
+  // held while a reconcile runs (a fresh hold file) is booked, not retired unread.
+  const again = readFileSync(ledger, "utf8")
+    .trim()
+    .split("\n")
+    .map((l) => JSON.parse(l))[0];
+  writeFileSync(join(dir, "usage-ledger.held.jsonl.claim-1-1"), JSON.stringify(again) + "\n");
+  writeFileSync(
+    holdPath,
+    JSON.stringify({ ts: new Date().toISOString(), ticket: 10, held: true, held_id: "h-10" }) +
+      "\n",
+  );
+  assert(
+    "R-4d: an unretired claim and a fresh hold both hold admission",
+    paidLaunchAdmission({ kind: "delivery", env }).unknownCost === 2,
+  );
+  const rec2 = spawnSync(process.execPath, [MOD, "--reconcile", "--usd", "0.25"], {
+    env: { ...process.env, ...env },
+    encoding: "utf8",
+  });
+  const rows2 = readFileSync(ledger, "utf8")
+    .trim()
+    .split("\n")
+    .map((l) => JSON.parse(l));
+  assert(
+    "R-4d: the row already moved is not booked twice; the fresh one is booked",
+    rec2.status === 0 &&
+      rows2.filter((r) => r.ticket === 9).length === 1 &&
+      rows2.filter((r) => r.ticket === 10).length === 1 &&
+      rows2[rows2.length - 1].reconciled_held === 1 &&
+      claimed().length === 0 &&
+      !existsSync(holdPath),
+  );
+  assert(
+    "R-4d: admission admits after it",
+    paidLaunchAdmission({ kind: "delivery", env }).ok === true,
+  );
+  // A hold file that cannot be read is an unknown spend (fail closed).
+  spawnSync("mkdir", ["-p", holdPath]);
+  const unreadable = paidLaunchAdmission({ kind: "delivery", env });
+  assert(
+    "R-4c: an unreadable hold file refuses (fail closed)",
+    unreadable.ok === false && /held usage rows/.test(unreadable.reason),
+  );
+  rmSync(dir, { recursive: true, force: true });
+}
+
+console.log(
+  "== R-4e: a held reconcile row, held call rows that settle, and the reconcile's lock ==",
+);
+{
+  // Integration of the landing and budget packages (external review 16). A held call row
+  // carries the `settles` of its reservation; the reconcile moves it BEFORE its sweep, so
+  // that reservation is closed by the call row, not swept. A reconcile row whose own append
+  // fails is held; the next reconcile moves it once, its settles_reservations settle, its
+  // cost counts, and (held, so moved past calls it never covered) it clears no unknown call.
+  const { hostname } = await import("node:os");
+  const { paidLaunchAdmission, ledgerSpend } = await import(
+    resolve(RUNNER_DIR, "lib", "budget-admission.mjs")
+  );
+  const dir = gafferMkdtemp(join(tmpdir(), "usage-hold-rec-"));
+  const ledger = join(dir, "usage-ledger.jsonl");
+  const holdPath = join(dir, "usage-ledger.held.jsonl");
+  const env = { GAFFER_DATA: dir, GAFFER_USAGE_LEDGER: ledger, GAFFER_DAILY_BUDGET_USD: "5" };
+  const dead = spawnSync("true").pid;
+  const now = new Date().toISOString();
+  const resv = (id, usd) => ({
+    ts: now,
+    kind: "reservation",
+    launch_kind: "delivery",
+    reservation_id: id,
+    reserved_usd: usd,
+    reserve_basis: "per-call-cap",
+    pid: dead,
+    host: hostname(),
+    measured: false,
+  });
+  writeFileSync(
+    ledger,
+    [resv("r-held-call", 0.5), resv("r-dead", 0.3)].map((r) => JSON.stringify(r)).join("\n") + "\n",
+  );
+  writeFileSync(
+    holdPath,
+    JSON.stringify({
+      ts: now,
+      ticket: 21,
+      kind: "delivery",
+      measured: true,
+      total_cost_usd: 0.2,
+      settles: "r-held-call",
+      held: true,
+      held_id: "h-21",
+    }) + "\n",
+  );
+  // The reconcile row's own append fails (EIO on the ledger for a reconcile row only), so
+  // appendUsageRecord holds it; the move of the held call row is not affected.
+  const preload = join(dir, "fail-reconcile-append.mjs");
+  writeFileSync(
+    preload,
+    [
+      'import fs from "node:fs";',
+      'import { syncBuiltinESMExports } from "node:module";',
+      "const orig = fs.appendFileSync;",
+      "fs.appendFileSync = (p, d, ...rest) => {",
+      '  if (String(p) === process.env.FAIL_LEDGER && String(d).includes(\'"kind":"reconcile"\')) {',
+      '    const e = new Error("EIO: injected"); e.code = "EIO"; throw e;',
+      "  }",
+      "  return orig(p, d, ...rest);",
+      "};",
+      "syncBuiltinESMExports();",
+    ].join("\n") + "\n",
+  );
+  const held1 = spawnSync(
+    process.execPath,
+    ["--import", preload, MOD, "--reconcile", "--usd", "0.4"],
+    { env: { ...process.env, ...env, FAIL_LEDGER: ledger }, encoding: "utf8" },
+  );
+  const rowsOfFile = (f) =>
+    existsSync(f)
+      ? readFileSync(f, "utf8")
+          .trim()
+          .split("\n")
+          .filter(Boolean)
+          .map((l) => JSON.parse(l))
+      : [];
+  const ledgerRows1 = rowsOfFile(ledger);
+  const heldRec = rowsOfFile(holdPath);
+  assert(
+    `R-4e: the reconcile whose own row cannot be written fails and says it is held (rc=${held1.status})`,
+    held1.status === 1 && /HELD/.test(held1.stderr),
+  );
+  assert(
+    "R-4e: the held call row was moved into the ledger first",
+    ledgerRows1.filter((r) => r.held_id === "h-21").length === 1,
+  );
+  assert(
+    "R-4e: the held reconcile row's sweep names only the dead reservation (the moved call row settled its own)",
+    heldRec.length === 1 &&
+      heldRec[0].kind === "reconcile" &&
+      heldRec[0].held === true &&
+      heldRec[0].reconciled_held === 1 &&
+      JSON.stringify(heldRec[0].settles_reservations) === JSON.stringify(["r-dead"]),
+  );
+  const refusedHeld = paidLaunchAdmission({ kind: "delivery", env });
+  assert(
+    "R-4e: the held reconcile row holds admission (unknown cost) and the refusal says it is a held row",
+    refusedHeld.ok === false &&
+      refusedHeld.unknownCost === 1 &&
+      /held by a failed ledger append/.test(String(refusedHeld.reason)),
+  );
+  const listed = spawnSync(process.execPath, [MOD, "--open-reservations"], {
+    env: { ...process.env, ...env },
+    encoding: "utf8",
+  });
+  const listedRows = listed.stdout
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((l) => JSON.parse(l));
+  assert(
+    "R-4e: --open-reservations lists the open reservation, then the held row under its own heading",
+    listed.status === 0 &&
+      listedRows.length === 2 &&
+      listedRows[0].reservation_id === "r-dead" &&
+      listedRows[1].held === true &&
+      listedRows[1].kind === "reconcile" &&
+      listedRows[1].source === "hold" &&
+      /held rows/.test(listed.stderr),
+  );
+  // A call that ran after the failed reconcile and has no cost: the held reconcile row,
+  // once moved past it, must not clear it.
+  writeFileSync(
+    ledger,
+    readFileSync(ledger, "utf8") +
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        ticket: 22,
+        kind: "delivery",
+        measured: false,
+        total_cost_usd: "unknown",
+      }) +
+      "\n",
+  );
+  const rec2 = spawnSync(process.execPath, [MOD, "--reconcile", "--usd", "0.1"], {
+    env: { ...process.env, ...env },
+    encoding: "utf8",
+  });
+  const ledgerRows2 = rowsOfFile(ledger);
+  const recs = ledgerRows2.filter((r) => r.kind === "reconcile");
+  assert(
+    `R-4e: the next reconcile moves the held reconcile row once (rc=${rec2.status} ${rec2.stderr.trim()})`,
+    rec2.status === 0 && recs.length === 2 && recs[0].held === true && !existsSync(holdPath),
+  );
+  assert(
+    "R-4e: the moved held reconcile row cleared no unknown call: the new row books the later one",
+    recs[1].reconciled_unknown === 1 && recs[1].settles_reservations === undefined,
+  );
+  const spend = ledgerSpend(env);
+  assert(
+    `R-4e: every reservation is settled once, and both reconcile amounts count (lifetime ${spend.lifetime})`,
+    spend.openReservations === 0 && Math.abs(spend.lifetime - 0.7) < 1e-9,
+  );
+  assert(
+    "R-4e: admission admits after it",
+    paidLaunchAdmission({ kind: "delivery", env }).ok === true,
+  );
+
+  // THE LOCK: the reconcile moves and books under budget admission's lock. A live holder
+  // past GAFFER_LOCK_TIMEOUT refuses (nothing moved or booked, the rows stay held).
+  writeFileSync(
+    holdPath,
+    JSON.stringify({
+      ts: now,
+      ticket: 23,
+      measured: true,
+      total_cost_usd: 0.1,
+      held: true,
+      held_id: "h-23",
+    }) + "\n",
+  );
+  const lockDir = `${ledger}.admit.lock.d`;
+  spawnSync("mkdir", ["-p", lockDir]);
+  writeFileSync(join(lockDir, "pid"), String(process.pid));
+  const before = readFileSync(ledger, "utf8");
+  const busy = spawnSync(process.execPath, [MOD, "--reconcile", "--usd", "0.1"], {
+    env: { ...process.env, ...env, GAFFER_LOCK_TIMEOUT: "1" },
+    encoding: "utf8",
+  });
+  assert(
+    `R-4e: a reconcile refuses while the admission lock is held, and says why (rc=${busy.status})`,
+    busy.status === 1 &&
+      /admission lock/.test(busy.stderr) &&
+      readFileSync(ledger, "utf8") === before &&
+      paidLaunchAdmission({ kind: "delivery", env }).unknownCost === 1,
+  );
+  rmSync(lockDir, { recursive: true, force: true });
+  // Two reconciles at once: each held row is booked exactly once.
+  const many = [];
+  for (let i = 0; i < 6; i += 1)
+    many.push(
+      JSON.stringify({
+        ts: now,
+        ticket: 30 + i,
+        measured: true,
+        total_cost_usd: 0.01,
+        held: true,
+        held_id: `h-3${i}`,
+      }),
+    );
+  writeFileSync(holdPath, many.join("\n") + "\n");
+  const { spawn } = await import("node:child_process");
+  const run = () =>
+    new Promise((res) => {
+      const c = spawn(process.execPath, [MOD, "--reconcile", "--usd", "0.05"], {
+        env: { ...process.env, ...env },
+        stdio: "ignore",
+      });
+      c.on("exit", (code) => res(code));
+    });
+  const codes = await Promise.all([run(), run()]);
+  const finalRows = rowsOfFile(ledger);
+  const ids = ["h-23", ...many.map((_, i) => `h-3${i}`)];
+  assert(
+    `R-4e: two concurrent reconciles book each held row exactly once (rc ${codes.join(",")})`,
+    codes.every((c) => c === 0) &&
+      ids.every((id) => finalRows.filter((r) => r.held_id === id).length === 1),
+  );
+  rmSync(dir, { recursive: true, force: true });
+}
+
 console.log("== AC3b: CLI prints .result text AND writes the ledger (gated on GAFFER_DATA) ==");
 {
   const dir = gafferMkdtemp(join(tmpdir(), "usage-cli-"));

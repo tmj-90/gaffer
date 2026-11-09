@@ -383,6 +383,13 @@ verdict strip above, Approve beside the flags, and the server-computed diff.*
   every write repository, each lands through the merge gate on its own, and a ticket
   where one landed and another could not reads **Partly merged** and can only be
   finished, never cancelled. A recorded pull request lands only through that PR.
+- **An interrupted merge is finished, never repeated.** If a merge dies after a
+  repository's PR merged (or its default branch moved) and before the landing was
+  recorded, the retry sees the approved commit already upstream, records the landing,
+  and lands only what is left: no second merge, no second PR merge request, the tester
+  replay record regenerated on what landed. "Upstream" means the remote default as
+  just fetched (no fetch, no shortcut), and the tester and CI gates still apply. The merge lane, the review pass and
+  `gaffer merge` share one lock per ticket, so two of them never land it at once.
 - **A cancellation or a red check during the merge gate stops the landing.** Every
   landing path re-checks ticket, approval and CI right before a default branch moves;
   a landing that had already started is reported, never read as a clean merge.
@@ -679,7 +686,12 @@ and the tester's passes.*
   Book what those calls cost with `node runner/lib/usage-ledger.mjs --reconcile --usd
   <amount>` (it counts toward the caps, so raise the cap if that uses it up) and launches
   resume. The run summary's usage section counts measured, estimated and unknown calls
-  apart.
+  apart. A call whose ledger append fails is not free either: after two retries its row
+  is held in `$GAFFER_DATA/usage-ledger.held.jsonl` and counts as an unknown cost (paid
+  launches under a cap are refused, across restarts) until the reconcile moves it into
+  the ledger, once (a reconcile that dies part way leaves it held, never booked twice;
+  the reconcile holds the admission lock while it moves and books, so two at once
+  cannot book a row twice either).
 - **Calls in flight hold their worst case against the cap.** Two launches that started
   at the same moment used to both see $0 spent against a $1 cap and run, and the ledger
   then held $1.40. Now an admitted launch reserves its worst case (the per-call cap
@@ -688,7 +700,8 @@ and the tester's passes.*
   only if its own worst case still fits. The call's real cost replaces the reservation
   when it is booked. A reservation whose call died without booking keeps holding until
   the crash path books the kill estimate or you reconcile;
-  `node runner/lib/usage-ledger.mjs --open-reservations` lists them, and the run summary
+  `node runner/lib/usage-ledger.mjs --open-reservations` lists them (and the held rows
+  above, under their own heading), and the run summary
   shows them on their own line. Set `GAFFER_MAX_CALL_USD` for the reservation to be a
   real bound: without it the kill estimate is only a floor.
 - **One Poll at a time.** A Poll pressed while the previous one runs waits for it

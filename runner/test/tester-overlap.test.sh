@@ -18,6 +18,8 @@
 #       reworked revision on).
 #   T4  a lock left by a run that is gone (its pid no longer runs, or now names another
 #       process) is taken over, and a run releases its lock when it ends.
+#   T5  the merge lane's inherited owner (GAFFER_MERGE_LOCK_OWNER) holds the merge lock only,
+#       never the tester lock; --lock-hold keeps the merge-ticket-<n>.lock path
 # Real dispatch + tick.sh (deliveries and rework), real git, bin/tester-run.mjs --live with
 # a stub agent that blocks until the test releases it.
 # Run: bash runner/test/tester-overlap.test.sh
@@ -233,11 +235,43 @@ REUSE="$(cd "$RUNNER_DIR" && LD="$WORK/reuse" LIVE="$LIVE" node --input-type=mod
   seed(processStartId(Number(process.env.LIVE)) ?? ""); out.push(acquireTicketLock("tester", 9, process.env.LD).ok);
   seed(null); out.push(acquireTicketLock("tester", 9, process.env.LD).ok);
   process.stdout.write(out.join(","));' 2>&1)"
-kill "$LIVE" 2>/dev/null; wait "$LIVE" 2>/dev/null
 case "$REUSE" in
   true,false,false) ok "T4: a live pid with another start identity is taken over; the owner's own identity, or none, is held" ;;
   *) fail "T4: pid reuse: got '$REUSE' (want true,false,false)" ;;
 esac
+# INHERITANCE (integration of the landing package): the merge lane names itself in
+# GAFFER_MERGE_LOCK_OWNER so the merge-ticket runs it makes under its lock are not
+# refused. That applies to the merge lock only: a tester lock held by the same live pid is
+# never this run's, with the variable set or the owner passed explicitly. The lane's own
+# hold (--lock-hold --owner-pid) records the owner's start identity, not merge-ticket's.
+INHERIT="$(cd "$RUNNER_DIR" && LD="$WORK/inherit" LIVE="$LIVE" GAFFER_MERGE_LOCK_OWNER="$LIVE" node --input-type=module -e '
+  import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+  import { acquireMergeLock, acquireTicketLock, processStartId } from "./bin/merge-ticket.mjs";
+  const seed = (kind) => { const dir = process.env.LD + "/locks/" + kind + "-9.lock";
+    rmSync(dir, { recursive: true, force: true }); mkdirSync(dir, { recursive: true });
+    writeFileSync(dir + "/pid", process.env.LIVE);
+    writeFileSync(dir + "/started", processStartId(Number(process.env.LIVE)) ?? ""); };
+  const out = [];
+  seed("tester"); out.push(acquireTicketLock("tester", 9, process.env.LD).ok);
+  out.push(acquireTicketLock("tester", 9, process.env.LD, { inheritedOwner: process.env.LIVE }).ok);
+  seed("merge-ticket"); const m = acquireMergeLock(9, process.env.LD); out.push(m.ok && m.inherited === true);
+  process.stdout.write(out.join(","));' 2>&1)"
+case "$INHERIT" in
+  false,false,true) ok "T5: the merge lane's inherited owner holds the merge lock only, never the tester lock" ;;
+  *) fail "T5: inheritance: got '$INHERIT' (want false,false,true)" ;;
+esac
+HOLD_OUT="$(GAFFER_DATA="$WORK/inherit-hold" node "$RUNNER_DIR/bin/merge-ticket.mjs" --lock-hold --ticket 9 --owner-pid "$LIVE" 2>&1)"; hrc=$?
+WANT_ID="$(cd "$RUNNER_DIR" && LIVE="$LIVE" node --input-type=module -e 'import { processStartId } from "./bin/merge-ticket.mjs"; process.stdout.write(processStartId(Number(process.env.LIVE)) ?? "none")' 2>/dev/null)"
+if [ "$hrc" -eq 0 ] && [ -d "$WORK/inherit-hold/locks/merge-ticket-9.lock" ] \
+  && [ "$(cat "$WORK/inherit-hold/locks/merge-ticket-9.lock/pid" 2>/dev/null)" = "$LIVE" ] \
+  && [ "$(cat "$WORK/inherit-hold/locks/merge-ticket-9.lock/started" 2>/dev/null)" = "$WANT_ID" ]; then
+  ok "T5: --lock-hold keeps the merge-ticket-<n>.lock path and records the owner's pid and start identity"
+else
+  fail "T5: --lock-hold rc=$hrc out=$HOLD_OUT started=$(cat "$WORK/inherit-hold/locks/merge-ticket-9.lock/started" 2>/dev/null) want=$WANT_ID"
+fi
+GAFFER_DATA="$WORK/inherit-hold" node "$RUNNER_DIR/bin/merge-ticket.mjs" --lock-release --ticket 9 --owner-pid "$LIVE" >/dev/null 2>&1
+[ ! -e "$WORK/inherit-hold/locks/merge-ticket-9.lock" ] && ok "T5: --lock-release by the owner frees it" || fail "T5: the lock survived --lock-release"
+kill "$LIVE" 2>/dev/null; wait "$LIVE" 2>/dev/null
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "tester-overlap: ALL $PASS checks passed"; exit 0; fi

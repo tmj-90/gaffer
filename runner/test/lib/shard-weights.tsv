@@ -29,6 +29,8 @@
 #   git-hooks-host 45, onboard-boundary 20, sandbox-docker-git-isolation 3, sandbox-docker-delivery 1.
 #   land-tester-replay-contract 115, eval-experiment 108: missing here (so 10s each) until CI
 #   run 41710618555 (macOS node 22, shard 2: both landed in one shard and overloaded it).
+#   landing-recovery: new (external review 16), nine two-repo worlds, real merges and lane runs;
+#   Linux alone at -j 1: 91s, so 180 until CI measures it.
 #   tester-overlap: new (external review 16), five real ticks and six tester runs; Linux alone
 #   at -j 1: 114s, so 230 until CI measures it.
 321	land-tester-replay.test.sh
@@ -344,4 +346,5 @@
 115	land-tester-replay-contract.test.sh
 108	eval-experiment.test.sh
 60	isolation-default.test.sh
+180	landing-recovery.test.sh
 230	tester-overlap.test.sh

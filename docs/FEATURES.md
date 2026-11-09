@@ -609,7 +609,8 @@ the ticket page, or `wg ticket tester-pass <n> --as human`.
 One tester run works on a ticket at a time. A second run for the same ticket (a second
 runner, a run started by hand) finds the first one's lock
 (`$GAFFER_DATA/locks/tester-<n>.lock`) and starts nothing; a lock whose run is gone is
-taken over. Each verdict names the testing round its run started in (the ticket's
+taken over (its pid no longer runs, or now names another process: the lock records its
+run's start time beside the pid). Each verdict names the testing round its run started in (the ticket's
 latest entry into Testing). If the ticket was sent back and delivered again while the
 tester ran, its verdict is for the old round: dispatch refuses it (`STALE_VERDICT`,
 naming both rounds), keeps it on the ticket as a stale-verdict note, and the new round

@@ -177,7 +177,7 @@ _gaffer_tester_pass() {
       # The ticket moved to a new testing round while it was tested (a rework): dispatch
       # refused the verdict as STALE_VERDICT and kept it as stale evidence. Not a hold:
       # the new round is tested by a run of its own, so it is not marked tried below.
-      log "TESTER: #$TNUM ${_T_VERDICT:+$_T_VERDICT }verdict refused as stale: ${_t_reason:-it was made in an earlier testing round} — kept as evidence; the current round is tested on its own"
+      log "TESTER: #$TNUM ${_T_VERDICT:+$_T_VERDICT }verdict refused as stale: ${_t_reason:-it was made in an earlier testing round}: kept as evidence; the current round is tested on its own"
       ;;
     *)       log "TESTER: #$TNUM tester did not run cleanly (rc=$_trc, phase=${_T_PHASE:-none}${_t_reason:+: $_t_reason}) — left in_testing for a human; see tester.log" ;;
   esac

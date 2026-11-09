@@ -16,8 +16,8 @@
 #       then recorded as usual.
 #   T3  the same for a stale PASS (the dangerous direction: an old PASS must never send a
 #       reworked revision on).
-#   T4  a lock left by a run that is gone (its pid no longer runs) is taken over, and a
-#       run releases its lock when it ends.
+#   T4  a lock left by a run that is gone (its pid no longer runs, or now names another
+#       process) is taken over, and a run releases its lock when it ends.
 # Real dispatch + tick.sh (deliveries and rework), real git, bin/tester-run.mjs --live with
 # a stub agent that blocks until the test releases it.
 # Run: bash runner/test/tester-overlap.test.sh
@@ -148,6 +148,7 @@ else
   B_REFUSED=0
   ok "T1: tester B started alongside A (no lock)"
 fi
+[ -s "$GAFFER_DATA/locks/tester-$N1.lock/started" ] && ok "T1: A's lock records its start identity beside its pid" || fail "T1: A's lock has no start identity"
 [ -f "$(cat "$CTL/cwd-A" 2>/dev/null)/test/bb-A.test.js" ] && ok "T1: A's workspace (its test file) is still there after B's start" || fail "T1: B's start destroyed A's workspace ($(cat "$CTL/cwd-A" 2>/dev/null))"
 release A
 [ "$(cat "$CTL/intact-A" 2>/dev/null)" = yes ] && ok "T1: A's workspace survived its whole run" || fail "T1: A's workspace was destroyed under it (intact=$(cat "$CTL/intact-A" 2>/dev/null))"
@@ -216,6 +217,27 @@ else
   fail "T4: a dead holder's lock refused the run: $(cat "$CTL/out-F" 2>/dev/null)"
 fi
 [ ! -e "$GAFFER_DATA/locks/tester-$N3.lock" ] && ok "T4: the lock is released when the run ends" || fail "T4: the lock is still there after the run"
+# PID REUSE: a lock whose pid now names another live process (after a reboot, or a pid
+# wrap) is not that process's: the lock records its owner's start identity beside the
+# pid, and a live pid whose start identity differs is taken over. A matching identity,
+# or an older lock with no identity, is still held.
+sleep 120 & LIVE=$!; BG_PIDS="$BG_PIDS $LIVE"
+REUSE="$(cd "$RUNNER_DIR" && LD="$WORK/reuse" LIVE="$LIVE" node --input-type=module -e '
+  import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+  import { acquireTicketLock, processStartId } from "./bin/merge-ticket.mjs";
+  const dir = process.env.LD + "/locks/tester-9.lock";
+  const seed = (started) => { rmSync(dir, { recursive: true, force: true }); mkdirSync(dir, { recursive: true });
+    writeFileSync(dir + "/pid", process.env.LIVE); if (started !== null) writeFileSync(dir + "/started", started); };
+  const out = [];
+  seed("not-the-same-process"); let r = acquireTicketLock("tester", 9, process.env.LD); out.push(r.ok); if (r.ok) r.release();
+  seed(processStartId(Number(process.env.LIVE)) ?? ""); out.push(acquireTicketLock("tester", 9, process.env.LD).ok);
+  seed(null); out.push(acquireTicketLock("tester", 9, process.env.LD).ok);
+  process.stdout.write(out.join(","));' 2>&1)"
+kill "$LIVE" 2>/dev/null; wait "$LIVE" 2>/dev/null
+case "$REUSE" in
+  true,false,false) ok "T4: a live pid with another start identity is taken over; the owner's own identity, or none, is held" ;;
+  *) fail "T4: pid reuse: got '$REUSE' (want true,false,false)" ;;
+esac
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "tester-overlap: ALL $PASS checks passed"; exit 0; fi

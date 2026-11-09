@@ -279,6 +279,37 @@ function refuseStaleVerdict(
   }
 }
 
+/**
+ * Runs the verdict's write transaction; when it refuses the verdict because the round
+ * changed (or ended) after refuseStaleVerdict's own check, e.g. during the git reads
+ * before the transaction, the stale verdict is still kept as evidence: refuseStaleVerdict
+ * records it in a transaction of its own and throws. The original refusal is rethrown if
+ * that check finds nothing to refuse.
+ */
+function recordingStale<T>(
+  internals: TesterVerdictInternals,
+  ticketRef: string,
+  verdict: "pass" | "fail",
+  input: { summary: string; round?: string; tested_commit?: string },
+  actor: Actor,
+  write: () => T,
+): T {
+  try {
+    return write();
+  } catch (e) {
+    // ILLEGAL_TRANSITION: the ticket left testing in that window. refuseStaleVerdict
+    // re-reads both and refuses only when the round really ended or moved on.
+    if (
+      input.round !== undefined &&
+      e instanceof DispatchError &&
+      (e.code === "STALE_VERDICT" || e.code === "ILLEGAL_TRANSITION")
+    ) {
+      refuseStaleVerdict(internals, ticketRef, verdict, input, actor);
+    }
+    throw e;
+  }
+}
+
 /** Inside the verdict's write transaction: the round it names is still the current one. */
 function assertCurrentRound(
   internals: TesterVerdictInternals,
@@ -401,94 +432,96 @@ export function testerPass(
   // The commit this PASS is about, for the approval's same-commit check: the tested
   // commit the runner's tester names, else (a person's waiver) the head now.
   const headNow = toReview ? (ciCandidateHead(internals, pre)?.sha ?? null) : null;
-  return inTransaction(internals.db, () => {
-    const ticket = internals.ticketSvc.resolveTicket(ticketRef);
-    if (ticket.status !== "in_testing") {
-      throw new DispatchError(
-        "ILLEGAL_TRANSITION",
-        "Only a ticket in testing can be passed by the tester.",
-        { from: ticket.status, to: target },
-      );
-    }
-    assertCurrentRound(internals, ticket, input.round);
-    const contractNow = contractHash(internals.db, ticket.id);
-    const binding = validatedBinding(input, {
-      strict: ticket.acceptance === 1 && testerProvenance(actor) !== "human",
-      currentHash: contractNow,
-      verdict: "pass",
-      human: testerProvenance(actor) === "human",
-    });
-    // ACCEPTANCE PROFILE: on a ticket whose contract names a profile, an automated PASS
-    // also needs the runner's own evidence of the running change (the CLI transcript,
-    // the API probes) for the tested commit and the current contract.
-    const acceptanceEvidence =
-      testerProvenance(actor) === "human"
-        ? null
-        : assertAcceptanceEvidence(
-            internals,
-            ticket,
-            input.acceptance_evidence,
-            binding,
-            contractNow,
-          );
-    // REQUIRED CI: the tester's PASS is the other way into ready_for_merge.
-    if (!toReview) assertCiPassed(host, ticket, ciCandidate);
-    // Record the passing test result as evidence so it is visible in review.
-    const evidenceId = newId();
-    const now = internals.clock.now();
-    internals.evidence.insert({
-      id: evidenceId,
-      ticket_id: ticket.id,
-      ac_id: null,
-      repo_id: null,
-      decision_id: null,
-      evidence_type: "test_output",
-      summary,
-      uri: input.uri ?? null,
-      // ACCEPTANCE GATE: a verdict is evidence about ONE commit and ONE contract. The
-      // runner's tester records both; the merge lane refuses to land a branch whose head
-      // is not the tested commit, and stats flag an acceptance whose contract changed.
-      payload_json: JSON.stringify({
+  return recordingStale(internals, ticketRef, "pass", input, actor, () =>
+    inTransaction(internals.db, () => {
+      const ticket = internals.ticketSvc.resolveTicket(ticketRef);
+      if (ticket.status !== "in_testing") {
+        throw new DispatchError(
+          "ILLEGAL_TRANSITION",
+          "Only a ticket in testing can be passed by the tester.",
+          { from: ticket.status, to: target },
+        );
+      }
+      assertCurrentRound(internals, ticket, input.round);
+      const contractNow = contractHash(internals.db, ticket.id);
+      const binding = validatedBinding(input, {
+        strict: ticket.acceptance === 1 && testerProvenance(actor) !== "human",
+        currentHash: contractNow,
         verdict: "pass",
-        provenance: testerProvenance(actor),
-        ...binding,
-        ...(input.round !== undefined ? { round: input.round.trim() } : {}),
-        ...(acceptanceEvidence ? { acceptance: acceptanceEvidence } : {}),
-        ...(tests !== undefined ? { tests } : {}),
-        ...(testerAgent !== undefined ? { tester_agent: testerAgent } : {}),
-      }),
-      created_by: actor.id ?? actor.type,
-      recorded_by_actor_type: actor.type,
-      created_at: now,
-    });
-    const result = internals.transitions.transition({
-      ticketId: ticket.id,
-      actor,
-      toStatus: target,
-      reason: "tester_passed",
-      expectedFromStatus: "in_testing",
-      testerVerdict: true,
-      ...(deliveryDiff ? { deliveryDiff } : {}),
-    });
-    const testedHead = binding.tested_commit ?? headNow?.toLowerCase() ?? null;
-    writeEvent(internals.db, {
-      entity_type: "ticket",
-      entity_id: ticket.id,
-      actor,
-      event_type: "ticket.tester_passed",
-      payload: {
-        evidence_id: evidenceId,
-        ...(toReview ? { to: "in_review", before_review: true } : {}),
-        ...(testedHead ? { tested_head: testedHead } : {}),
-        // The contract a PASS before review was about, when its binding names none (a
-        // person's waiver): a contract edited after it then needs the tester again.
-        ...(toReview && !binding.contract_hash && contractNow
-          ? { contract_hash: contractNow }
-          : {}),
-      },
-    });
-    return result;
-  });
+        human: testerProvenance(actor) === "human",
+      });
+      // ACCEPTANCE PROFILE: on a ticket whose contract names a profile, an automated PASS
+      // also needs the runner's own evidence of the running change (the CLI transcript,
+      // the API probes) for the tested commit and the current contract.
+      const acceptanceEvidence =
+        testerProvenance(actor) === "human"
+          ? null
+          : assertAcceptanceEvidence(
+              internals,
+              ticket,
+              input.acceptance_evidence,
+              binding,
+              contractNow,
+            );
+      // REQUIRED CI: the tester's PASS is the other way into ready_for_merge.
+      if (!toReview) assertCiPassed(host, ticket, ciCandidate);
+      // Record the passing test result as evidence so it is visible in review.
+      const evidenceId = newId();
+      const now = internals.clock.now();
+      internals.evidence.insert({
+        id: evidenceId,
+        ticket_id: ticket.id,
+        ac_id: null,
+        repo_id: null,
+        decision_id: null,
+        evidence_type: "test_output",
+        summary,
+        uri: input.uri ?? null,
+        // ACCEPTANCE GATE: a verdict is evidence about ONE commit and ONE contract. The
+        // runner's tester records both; the merge lane refuses to land a branch whose head
+        // is not the tested commit, and stats flag an acceptance whose contract changed.
+        payload_json: JSON.stringify({
+          verdict: "pass",
+          provenance: testerProvenance(actor),
+          ...binding,
+          ...(input.round !== undefined ? { round: input.round.trim() } : {}),
+          ...(acceptanceEvidence ? { acceptance: acceptanceEvidence } : {}),
+          ...(tests !== undefined ? { tests } : {}),
+          ...(testerAgent !== undefined ? { tester_agent: testerAgent } : {}),
+        }),
+        created_by: actor.id ?? actor.type,
+        recorded_by_actor_type: actor.type,
+        created_at: now,
+      });
+      const result = internals.transitions.transition({
+        ticketId: ticket.id,
+        actor,
+        toStatus: target,
+        reason: "tester_passed",
+        expectedFromStatus: "in_testing",
+        testerVerdict: true,
+        ...(deliveryDiff ? { deliveryDiff } : {}),
+      });
+      const testedHead = binding.tested_commit ?? headNow?.toLowerCase() ?? null;
+      writeEvent(internals.db, {
+        entity_type: "ticket",
+        entity_id: ticket.id,
+        actor,
+        event_type: "ticket.tester_passed",
+        payload: {
+          evidence_id: evidenceId,
+          ...(toReview ? { to: "in_review", before_review: true } : {}),
+          ...(testedHead ? { tested_head: testedHead } : {}),
+          // The contract a PASS before review was about, when its binding names none (a
+          // person's waiver): a contract edited after it then needs the tester again.
+          ...(toReview && !binding.contract_hash && contractNow
+            ? { contract_hash: contractNow }
+            : {}),
+        },
+      });
+      return result;
+    }),
+  );
 }
 
 /**
@@ -521,92 +554,94 @@ export function testerFail(
   // observation as feedback — the autonomous runner's choice, mirroring
   // `review reject --to ready`, so a tester FAIL is a bounded retry, not a stall.
   const failTo: TicketStatus = input.to === "ready" ? "ready" : "refining";
-  return inTransaction(internals.db, () => {
-    const ticket = internals.ticketSvc.resolveTicket(ticketRef);
-    if (ticket.status !== "in_testing") {
-      throw new DispatchError(
-        "ILLEGAL_TRANSITION",
-        "Only a ticket in testing can be failed by the tester.",
-        { from: ticket.status, to: failTo },
-      );
-    }
-    assertCurrentRound(internals, ticket, input.round);
-    const binding = validatedBinding(input, {
-      strict: false, // a FAIL never certifies anything; a present binding is still validated
-      currentHash: contractHash(internals.db, ticket.id),
-      verdict: "fail",
-    });
-    // Record the failing test as evidence BEFORE the AC reset / transition.
-    const evidenceId = newId();
-    const now = internals.clock.now();
-    internals.evidence.insert({
-      id: evidenceId,
-      ticket_id: ticket.id,
-      ac_id: null,
-      repo_id: null,
-      decision_id: null,
-      evidence_type: "test_output",
-      summary,
-      uri: input.uri ?? null,
-      payload_json: JSON.stringify({
+  return recordingStale(internals, ticketRef, "fail", input, actor, () =>
+    inTransaction(internals.db, () => {
+      const ticket = internals.ticketSvc.resolveTicket(ticketRef);
+      if (ticket.status !== "in_testing") {
+        throw new DispatchError(
+          "ILLEGAL_TRANSITION",
+          "Only a ticket in testing can be failed by the tester.",
+          { from: ticket.status, to: failTo },
+        );
+      }
+      assertCurrentRound(internals, ticket, input.round);
+      const binding = validatedBinding(input, {
+        strict: false, // a FAIL never certifies anything; a present binding is still validated
+        currentHash: contractHash(internals.db, ticket.id),
         verdict: "fail",
-        provenance: testerProvenance(actor),
-        ...binding,
-        ...(input.round !== undefined ? { round: input.round.trim() } : {}),
-      }),
-      created_by: actor.id ?? actor.type,
-      recorded_by_actor_type: actor.type,
-      created_at: now,
-    });
+      });
+      // Record the failing test as evidence BEFORE the AC reset / transition.
+      const evidenceId = newId();
+      const now = internals.clock.now();
+      internals.evidence.insert({
+        id: evidenceId,
+        ticket_id: ticket.id,
+        ac_id: null,
+        repo_id: null,
+        decision_id: null,
+        evidence_type: "test_output",
+        summary,
+        uri: input.uri ?? null,
+        payload_json: JSON.stringify({
+          verdict: "fail",
+          provenance: testerProvenance(actor),
+          ...binding,
+          ...(input.round !== undefined ? { round: input.round.trim() } : {}),
+        }),
+        created_by: actor.id ?? actor.type,
+        recorded_by_actor_type: actor.type,
+        created_at: now,
+      });
 
-    // PARTLY LANDED: a tester FAIL of a ticket whose change already reached a default
-    // branch holds it for a person instead of re-queueing it (as rejectReview does).
-    const landedRepos = recordedLandingRepos(internals.db, ticket.id);
-    const holdLanded = landedRepos.length > 0;
-    const { nextAttempt, capReached } = holdLanded
-      ? { nextAttempt: ticket.attempt_count, capReached: false }
-      : capRetry(ticket.attempt_count, internals.maxAttempts);
-    const target: TicketStatus = capReached || holdLanded ? "blocked" : failTo;
-    const reason = `tester_failed:${summary}`;
-    const result = internals.transitions.transition({
-      ticketId: ticket.id,
-      actor,
-      toStatus: target,
-      reason: holdLanded
-        ? `partly_landed:${reason}`
-        : capReached
-          ? `retry_cap_reached:${reason}`
-          : reason,
-      expectedFromStatus: "in_testing",
-      patch: { attempt_count: nextAttempt },
-      ...(capReached || holdLanded ? { park: true } : { testerVerdict: true }),
-    });
-    if (holdLanded) partlyLandedHold(internals, ticket, landedRepos, failTo, reason, actor);
-    if (capReached) {
+      // PARTLY LANDED: a tester FAIL of a ticket whose change already reached a default
+      // branch holds it for a person instead of re-queueing it (as rejectReview does).
+      const landedRepos = recordedLandingRepos(internals.db, ticket.id);
+      const holdLanded = landedRepos.length > 0;
+      const { nextAttempt, capReached } = holdLanded
+        ? { nextAttempt: ticket.attempt_count, capReached: false }
+        : capRetry(ticket.attempt_count, internals.maxAttempts);
+      const target: TicketStatus = capReached || holdLanded ? "blocked" : failTo;
+      const reason = `tester_failed:${summary}`;
+      const result = internals.transitions.transition({
+        ticketId: ticket.id,
+        actor,
+        toStatus: target,
+        reason: holdLanded
+          ? `partly_landed:${reason}`
+          : capReached
+            ? `retry_cap_reached:${reason}`
+            : reason,
+        expectedFromStatus: "in_testing",
+        patch: { attempt_count: nextAttempt },
+        ...(capReached || holdLanded ? { park: true } : { testerVerdict: true }),
+      });
+      if (holdLanded) partlyLandedHold(internals, ticket, landedRepos, failTo, reason, actor);
+      if (capReached) {
+        writeEvent(internals.db, {
+          entity_type: "ticket",
+          entity_id: ticket.id,
+          actor,
+          event_type: "ticket.parked_retry_cap",
+          payload: { attempt_count: nextAttempt, max_attempts: internals.maxAttempts, reason },
+        });
+      }
+      internals.ticketSvc.resetAcceptanceCriteria(ticket.id, actor);
+      const feedback: ReviewFeedback = {
+        reason,
+        reviewer: actor.id ?? null,
+        at: now,
+      };
+      internals.tickets.setReviewFeedback(ticket.id, JSON.stringify(feedback));
       writeEvent(internals.db, {
         entity_type: "ticket",
         entity_id: ticket.id,
         actor,
-        event_type: "ticket.parked_retry_cap",
-        payload: { attempt_count: nextAttempt, max_attempts: internals.maxAttempts, reason },
+        event_type: "ticket.tester_failed",
+        payload: { evidence_id: evidenceId },
       });
-    }
-    internals.ticketSvc.resetAcceptanceCriteria(ticket.id, actor);
-    const feedback: ReviewFeedback = {
-      reason,
-      reviewer: actor.id ?? null,
-      at: now,
-    };
-    internals.tickets.setReviewFeedback(ticket.id, JSON.stringify(feedback));
-    writeEvent(internals.db, {
-      entity_type: "ticket",
-      entity_id: ticket.id,
-      actor,
-      event_type: "ticket.tester_failed",
-      payload: { evidence_id: evidenceId },
-    });
-    return result;
-  });
+      return result;
+    }),
+  );
 }
 
 /**

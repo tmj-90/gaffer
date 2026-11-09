@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { Dispatch } from "../src/core.js";
 import { type Actor } from "../src/domain/types.js";
+import type { GitRunner } from "../src/services/diffService.js";
 import { currentTestingRound } from "../src/services/reviewGate/testerVerdict.js";
 import { contractHash } from "../src/util/contractHash.js";
 import { TestClock } from "../src/util/clock.js";
@@ -21,8 +22,8 @@ const agentActor: Actor = { type: "agent", id: "agent-runner" };
 const system: Actor = { type: "system" };
 const SHA = "0123456789abcdef0123456789abcdef01234567";
 
-function freshWg(): Dispatch {
-  return Dispatch.open(":memory:", new TestClock(), nonEmptyDiffRunner, { testingEnabled: true });
+function freshWg(runner: GitRunner = nonEmptyDiffRunner): Dispatch {
+  return Dispatch.open(":memory:", new TestClock(), runner, { testingEnabled: true });
 }
 
 /** Deliver the ticket (claim, evidence, submit) and send it to the tester: a new round. */
@@ -52,8 +53,8 @@ function deliverToTesting(
   expect(wg.view(id).ticket.status).toBe("in_testing");
 }
 
-function world(): { wg: Dispatch; id: string; acId: string; agentId: string } {
-  const wg = freshWg();
+function world(runner?: GitRunner): { wg: Dispatch; id: string; acId: string; agentId: string } {
+  const wg = freshWg(runner);
   wg.registerRepository({ name: "svc", default_branch: "main" }, human);
   const t = wg.createTicket(
     { title: "Ship it", description: "deliver the thing", policy_pack: "team_light" },
@@ -179,6 +180,58 @@ describe("a tester verdict names its testing round", () => {
       w.wg.db.close();
     });
   }
+
+  it("a round that changes after the first check (during the PASS's git reads) is still kept as stale evidence", () => {
+    // The verdict's own write transaction re-checks the round; a rework that lands
+    // between the first check and that transaction (the PASS resolves the head with git
+    // in between) is refused there, and the stale verdict is still recorded.
+    let hook: (() => void) | null = null;
+    const runner: GitRunner = (cwd, args) => {
+      const h = hook;
+      hook = null;
+      if (h) h();
+      return nonEmptyDiffRunner(cwd, args);
+    };
+    const w = world(runner);
+    const r1 = currentTestingRound(w.wg.db, w.id)!.id;
+    const input = passInput(w.wg, w.id, r1);
+    let fired = false;
+    hook = () => {
+      fired = true;
+      reworkIntoNewRound(w);
+    };
+    const err = refusal(() => w.wg.testerPass(w.id, input, system));
+    expect(fired).toBe(true);
+    const r2 = currentTestingRound(w.wg.db, w.id)!.id;
+    expect(r2).not.toBe(r1);
+    expect(err?.code).toBe("STALE_VERDICT");
+    expect(w.wg.view(w.id).ticket.status).toBe("in_testing");
+    expect(events(w.wg, w.id, "ticket.tester_passed")).toHaveLength(0);
+    const stale = events(w.wg, w.id, "ticket.tester_verdict_stale");
+    expect(stale).toHaveLength(1);
+    expect(stale[0]).toMatchObject({ verdict: "pass", round: r1, current_round: r2 });
+    w.wg.db.close();
+  });
+
+  it("a round that ends after the first check (a person's FAIL during the PASS's git reads) is stale too", () => {
+    let hook: (() => void) | null = null;
+    const runner: GitRunner = (cwd, args) => {
+      const h = hook;
+      hook = null;
+      if (h) h();
+      return nonEmptyDiffRunner(cwd, args);
+    };
+    const w = world(runner);
+    const r1 = currentTestingRound(w.wg.db, w.id)!.id;
+    const input = passInput(w.wg, w.id, r1);
+    hook = () => w.wg.testerFail(w.id, { summary: "a person saw AC1 fail" }, human);
+    const err = refusal(() => w.wg.testerPass(w.id, input, system));
+    expect(err?.code).toBe("STALE_VERDICT");
+    expect(err?.message).toMatch(/no longer in testing \(refining\)/);
+    expect(w.wg.view(w.id).ticket.status).toBe("refining");
+    expect(events(w.wg, w.id, "ticket.tester_verdict_stale")).toHaveLength(1);
+    w.wg.db.close();
+  });
 
   it("a verdict for a round that already ended (the ticket left testing) is stale too", () => {
     const w = world();

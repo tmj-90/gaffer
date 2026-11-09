@@ -32,7 +32,7 @@
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { rmSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { gafferMkdtemp } from "./lib/tmpdir.mjs";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
@@ -621,6 +621,41 @@ console.log(
     "strict-require + no provider: default branch untouched, no half-merge",
     git(repo, "rev-parse", "main").stdout.trim() === mainBefore &&
       git(repo, "status", "--porcelain").stdout.trim() === "",
+  );
+
+  // NO RESOLVER RUNS UNTRUSTED: the resolver merges, tests and commits through the
+  // settings.json allowlist, which the agent CLI ignores in an untrusted workspace. With
+  // ~/.claude.json unparseable (a scratch HOME) trust cannot be written, and the run
+  // refuses before the spawn.
+  const UNTRUSTED_HOME = resolve(WORKDIR, "untrusted-home");
+  mkdirSync(UNTRUSTED_HOME, { recursive: true });
+  writeFileSync(resolve(UNTRUSTED_HOME, ".claude.json"), "{ broken");
+  const untrusted = runLive({
+    HOME: UNTRUSTED_HOME,
+    GAFFER_STRICT_REQUIRE: "0",
+    STRICT_MODE: "0",
+    SANDBOX_PROVIDER: "none",
+  });
+  assert("trust unwritable: exit 1", untrusted.code === 1);
+  assert(
+    "trust unwritable: phase error naming trust_unwritable",
+    untrusted.out &&
+      untrusted.out.phase === "error" &&
+      /trust_unwritable/.test(String(untrusted.out.error || "")),
+  );
+  assert("trust unwritable: the resolver was NOT spawned", !existsSync(MARKER));
+  assert(
+    "trust unwritable: the resolver worktree was torn down",
+    !existsSync(resolve(DATA, "worktrees", "merge-ticket-7")),
+  );
+  assert(
+    "trust unwritable: the unparseable config is untouched and no lock is left",
+    readFileSync(resolve(UNTRUSTED_HOME, ".claude.json"), "utf8") === "{ broken" &&
+      !existsSync(resolve(UNTRUSTED_HOME, ".claude.json.gaffer-trust.lock")),
+  );
+  assert(
+    "trust unwritable: default branch untouched",
+    git(repo, "rev-parse", "main").stdout.trim() === mainBefore,
   );
 
   // A resolver that gives up (merges nothing) and exits 0 must not signal re-approval.

@@ -108,6 +108,9 @@ log() { :; }
 wg()  { return 0; }
 result() { :; }
 gaffer_skip_ticket() { :; }
+# Workspace trust (lib/tick-launch.sh, which this harness does not source) is out of
+# scope here and fails closed when undefined: trust-fail-closed.test.sh covers it.
+gaffer_trust_workspace() { _GAFFER_TRUST_ERROR=""; return 0; }
 _recover_or_park() { printf '%s' "$1" > "$RECOVER_MARK"; _DELIV_OUTCOME="parked"; return 0; }
 # gaffer_install_agent_env now asserts the safety hook first (real tick.sh gate). Stub it to
 # the pass path — the hook + deny-list exist in the real $RUNNER_DIR this test points at, and

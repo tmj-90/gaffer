@@ -194,6 +194,8 @@ gaffer_tick_bootstrap() {
     # boundary. FAIL CLOSED: release the claim back to ready (the scaffold resumes on
     # the next attempt), skip the ticket this run, and never spawn.
     if ! gaffer_install_agent_dir "$B_DIR" "$B_SKILLS" "bootstrap-$NUM"; then
+      [ -n "${_GAFFER_TRUST_ERROR:-}" ] \
+        && gaffer_abort_setup TRUST "$_GAFFER_TRUST_ERROR; refusing live bootstrap for #$NUM, no agent launched (fail closed)"
       gaffer_abort_setup SAFETY "agent-env install failed for bootstrap #$NUM (settings/hook wiring unverified) — refusing live bootstrap (fail closed)"
     fi
     MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.$$.json"

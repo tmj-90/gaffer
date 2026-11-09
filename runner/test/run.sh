@@ -34,6 +34,17 @@
 #   * dollar-cap opt-out: GAFFER_ALLOW_UNCAPPED=1 is exported, because a live run with
 #     no GAFFER_DAILY_BUDGET_USD / GAFFER_BUDGET_USD refuses to start and every agent
 #     here is a stub (spend-cap-required.test.sh unsets it to prove the refusal).
+#   * HOME isolation: every test runs with HOME set to a private scratch dir (holding
+#     a copy of the operator's ~/.gitconfig, so git behaves as before). Code under
+#     test writes the agent CLI's global config through HOME (trust-workspace.mjs
+#     rewrites ~/.claude.json and takes ~/.claude.json.gaffer-trust.lock), and a run
+#     once left a stale lock in the operator's real HOME that blocked every live
+#     trust write. Afterwards the HOME the run started with (GAFFER_RUN_OPERATOR_HOME
+#     overrides it, for run-harness.test.sh) is checked like operator state below: a
+#     ~/.claude.json.gaffer-* file (the trust lock, temp file, backup) newer than the
+#     run's start fails a strict run; a ~/.claude.json project entry under the temp dir
+#     added during the run is listed (not failed: the file is machine-wide, and another
+#     checkout's run may add one; the operator's own agent CLI rewrites it as well).
 #   * operator-state isolation: GAFFER_DATA points at a private dir, and DISPATCH_DB /
 #     DISPATCH_AUDIT / MEMORY_DB / GAFFER_CREW_EVENTS / CLAUDE_FLAGS / MCP_CONFIG
 #     inherited from the operator's shell are cleared. Afterwards any file written
@@ -85,7 +96,7 @@ SELF="$HERE/run.sh"
 # with the integration branch (poll-overlap-run-state runs two real Polls, ~90 s), and
 # round 4 of it added sandbox-docker-delivery-seam, worker-command, land-ignored-file and
 # git-hooks-host.
-LONG_RE='^(gate-integrity-e2e(-retry)?|dashboard-lifecycle|gaffer-plan|eval-replay|auth-gate-delivery|merge-lane|land-tester-replay(-proof|-contract)?|tester-overlap|eval-experiment|parallel-stop(-live)?|waste-controls|security-review-lane|direct-run-isolation|review-wedge|review-once-per-head|afk-review-hold|branch-retention|branch-switch-fresh|branch-switch-recovery|rework-final-trail|memory-index-after-merge|rework-cost-live|landing-revocation|landing-recovery|secondary-pr-landing|cleanup-ownership|poll-overlap-run-state|usage-limit-tick|tick-deadline|resume-abort|replay-manifest|e2e-.*|sandbox-docker-delivery-seam|worker-command|land-ignored-file|git-hooks-host)\.test\.(sh|mjs)$|^safety-hook\.test\.mjs$'
+LONG_RE='^(gate-integrity-e2e(-retry)?|dashboard-lifecycle|gaffer-plan|eval-replay|auth-gate-delivery|merge-lane|land-tester-replay(-proof|-contract)?|tester-overlap|eval-experiment|parallel-stop(-live)?|waste-controls|security-review-lane|direct-run-isolation|review-wedge|review-once-per-head|afk-review-hold|branch-retention|branch-switch-fresh|branch-switch-recovery|rework-final-trail|memory-index-after-merge|rework-cost-live|landing-revocation|landing-recovery|secondary-pr-landing|cleanup-ownership|poll-overlap-run-state|usage-limit-tick|tick-deadline|resume-abort|replay-manifest|e2e-.*|sandbox-docker-delivery-seam|worker-command|land-ignored-file|git-hooks-host|trust-fail-closed)\.test\.(sh|mjs)$|^safety-hook\.test\.mjs$'
 CAP_SH="${GAFFER_RUN_CAP_SH:-120}" CAP_MJS="${GAFFER_RUN_CAP_MJS:-300}" CAP_LONG="${GAFFER_RUN_CAP_LONG:-600}"
 
 in_ci() { [ "${GITHUB_ACTIONS:-}" = "true" ]; }
@@ -106,6 +117,12 @@ if [ "${1:-}" = "--one" ]; then
     # have its nested runs sharded by the CI job's shard.
     unset DISPATCH_DB DISPATCH_AUDIT MEMORY_DB GAFFER_CREW_EVENTS CLAUDE_FLAGS MCP_CONFIG GAFFER_RUN_SHARD
     export GAFFER_DATA="$priv/.gaffer" GAFFER_TEST_NAME="$name"
+    # A private HOME: nothing a test runs can write the operator's ~/.claude.json, its
+    # trust lock or any other dotfile. The operator's git config is copied in (not
+    # linked: a test's `git config --global` must not reach the real one).
+    mkdir -p "$priv/home"
+    [ -f "$GAFFER_RUN_OPERATOR_HOME/.gitconfig" ] && cp "$GAFFER_RUN_OPERATOR_HOME/.gitconfig" "$priv/home/.gitconfig" 2>/dev/null
+    export HOME="$priv/home"
     export PATH="$R/tripwire:$PATH" CLAUDE_BIN="$R/tripwire/claude"
     # Every agent here is a stub, so a "live" run spends nothing: opt the suite out of
     # the dollar-cap requirement (lib/budget.sh gaffer_spend_cap_ok). A test of that
@@ -262,6 +279,19 @@ exit 97
 SH
 chmod +x "$RES/tripwire/claude"
 
+# The HOME the run started with: tests get a private one (see --one), and this one's
+# ~/.claude.json namespace is checked after the run.
+export GAFFER_RUN_OPERATOR_HOME="${GAFFER_RUN_OPERATOR_HOME:-${HOME:-}}"
+# The temp-dir project entries in that ~/.claude.json, one per line (none when absent
+# or unparseable): a test fixture lives under the temp dir, so a new one is a leak.
+claude_tmp_projects() {
+  [ -f "$GAFFER_RUN_OPERATOR_HOME/.claude.json" ] && command -v node >/dev/null 2>&1 || return 0
+  node -e 'try { const c = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+    for (const k of Object.keys(c.projects || {})) if (process.argv.slice(2).some((r) => r && k.startsWith(r + "/"))) console.log(k);
+  } catch {}' "$GAFFER_RUN_OPERATOR_HOME/.claude.json" "${TMPDIR:-/tmp}" /tmp 2>/dev/null | sort -u
+}
+claude_tmp_projects >"$RES/claude-projects.before"
+
 # Operator-state guard: stamp now, look for anything written after it at the end.
 # GAFFER_RUN_STATE_ROOT (default: this checkout) exists for run-harness.test.sh.
 STATE_ROOT="${GAFFER_RUN_STATE_ROOT:-$ROOT}"
@@ -312,6 +342,19 @@ for d in "${STATE_DIRS[@]}"; do
   [ -d "$STATE_ROOT/$d" ] || continue
   while IFS= read -r f; do POLLUTED+=("${f#"$STATE_ROOT"/}"); done < <(find "$STATE_ROOT/$d" -type f -newer "$RES/stamp" 2>/dev/null)
 done
+# The operator's agent CLI config: a trust lock / temp file / backup left in the real
+# HOME, or a temp-dir project entry the run added to the real ~/.claude.json.
+HOME_ENTRIES=()
+if [ -n "$GAFFER_RUN_OPERATOR_HOME" ] && [ -d "$GAFFER_RUN_OPERATOR_HOME" ]; then
+  # shellcheck disable=SC2088  # "~/" is a label in the report, not a path to expand
+  while IFS= read -r f; do POLLUTED+=("~/${f#"$GAFFER_RUN_OPERATOR_HOME"/}"); done \
+    < <(find "$GAFFER_RUN_OPERATOR_HOME" -maxdepth 1 -name '.claude.json.gaffer-*' -newer "$RES/stamp" 2>/dev/null)
+  # A new temp-dir entry is reported, never failed: the operator's ~/.claude.json is
+  # machine-wide, so another checkout's test run (or an older runner) adds them too.
+  # shellcheck disable=SC2088
+  while IFS= read -r k; do [ -n "$k" ] && HOME_ENTRIES+=("~/.claude.json projects[$k]"); done \
+    < <(claude_tmp_projects | comm -13 "$RES/claude-projects.before" - 2>/dev/null)
+fi
 if [ ${#POLLUTED[@]} -gt 0 ] && [ "${GAFFER_TEST_STRICT:-0}" = 1 ]; then
   FAILED+=("operator state written during the run: ${POLLUTED[*]}")
 fi
@@ -325,7 +368,8 @@ report() {
   if [ ${#SKIPPED[@]} -gt 0 ]; then echo "**Skipped tests**"; echo; for x in "${SKIPPED[@]}"; do echo "- $x"; done; echo; fi
   if [ ${#SKIPLINES[@]} -gt 0 ]; then echo "**Skip reasons** (whole tests and sections)"; echo; for x in "${SKIPLINES[@]}"; do echo "- $x"; done; echo; fi
   if [ ${#TRIP[@]} -gt 0 ]; then echo "**claude tripwire hits**"; echo; for x in "${TRIP[@]}"; do echo "- \`$x\`"; done; echo; fi
-  if [ ${#POLLUTED[@]} -gt 0 ]; then echo "**Operator state written during the run** (a test is missing its private GAFFER_DATA / DISPATCH_DB)"; echo; for x in "${POLLUTED[@]}"; do echo "- $x"; done; echo; fi
+  if [ ${#POLLUTED[@]} -gt 0 ]; then echo "**Operator state written during the run** (a test is missing its private GAFFER_DATA / DISPATCH_DB, or wrote the operator HOME)"; echo; for x in "${POLLUTED[@]}"; do echo "- $x"; done; echo; fi
+  if [ ${#HOME_ENTRIES[@]} -gt 0 ]; then echo "**Trust entries added to the operator ~/.claude.json during the run** (tests here run with a private HOME, so this may be another run on this machine)"; echo; for x in "${HOME_ENTRIES[@]}"; do echo "- $x"; done; echo; fi
   echo "**Slowest 10**"; echo; echo "| s | test |"; echo "|---:|---|"
   printf '%s\n' "$slowest" | while IFS="$(printf '\t')" read -r s n; do echo "| $s | $n |"; done
 }

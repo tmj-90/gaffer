@@ -63,6 +63,7 @@
 90	poll-overlap-run-state.test.sh
 89	resume-abort.test.sh
 # replay-manifest came in after that run: its slowest LOCAL run (-j 1 on a shared box), until the next refresh.
+#   trust-fail-closed: new, six real tick.sh runs (Linux alone under shared load: 72s); 150, twice that, until the next refresh.
 160	replay-manifest.test.sh
 84	e2e-memory-routing.test.sh
 70	sandbox-docker-delivery-seam.test.sh
@@ -352,3 +353,4 @@
 180	landing-recovery.test.sh
 230	tester-overlap.test.sh
 400	review-once-per-head.test.sh
+150	trust-fail-closed.test.sh

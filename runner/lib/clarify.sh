@@ -113,7 +113,7 @@ if [ "${CLARIFY_DRAFTS_WHEN_IDLE:-0}" = "1" ] && [ "${DRAFT_COUNT:-0}" -gt 0 ]; 
       CSKILLS="$(node "$RUNNER_DIR/bin/select-skills.mjs" --role clarify --stack "$CSTACK" --skills-dir "$SKILLS_DIR" 2>/dev/null || true)"
       [ -n "$CSKILLS" ] || CSKILLS="clarify, record-evidence"
       GAFFER_UNIVERSAL_SKILLS="" gaffer_install_agent_dir "$CWT" "$CSKILLS" "clarify-$CNUM" \
-        || { log "SAFETY: clarify agent env install failed for #$CNUM — refusing live clarify (fail closed)"; result error; exit 1; }
+        || { log "SAFETY: clarify agent env install failed for #$CNUM — refusing live clarify (fail closed)${_GAFFER_TRUST_ERROR:+: $_GAFFER_TRUST_ERROR}"; result error; exit 1; }
       MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.$$.json"
       gaffer_assert_db_vars || { log "DB-VARS: DISPATCH_DB/MEMORY_DB empty — refusing live clarify (fail closed)"; result error; exit 1; }
       # Reviewer/clarify agents hold no delivery claim, so GAFFER_CLAIM_TOKEN is

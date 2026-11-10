@@ -1395,6 +1395,47 @@ console.log("== DECLARED NEEDS: the runner's own host probe ==");
       "the prompt carries the UNPROVABLE contract (prove another way first; never FAIL, never PASS)",
     );
   else fail("the prompt lacks the UNPROVABLE contract");
+  if (/Do NOT keep a test for a criterion you give up on/.test(p2))
+    ok(
+      "the prompt says to keep no test for a criterion it cannot prove (it would fail the replay)",
+    );
+  else fail("the prompt does not warn about keeping a test for an unprovable criterion");
+}
+
+console.log("== DECLARED NEEDS: the hold names who declared the need, and when ==");
+{
+  const { needsDeclaration } = await import(HELPER);
+  const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite");
+  const dir = gafferMkdtemp(resolve(tmpdir(), "tester-needs-decl-"));
+  const dbPath = resolve(dir, "d.sqlite");
+  const db = new DatabaseSync(dbPath);
+  db.exec(
+    "CREATE TABLE tickets (id TEXT, number INTEGER);" +
+      "CREATE TABLE work_events (entity_type TEXT, entity_id TEXT, actor_type TEXT, actor_id TEXT, event_type TEXT, payload_json TEXT, created_at TEXT);",
+  );
+  db.prepare("INSERT INTO tickets VALUES ('t1', 1), ('t2', 2)").run();
+  const ins = db.prepare(
+    "INSERT INTO work_events VALUES ('ticket', ?, ?, ?, 'ticket.test_contract_set', ?, ?)",
+  );
+  ins.run(
+    "t1",
+    "human",
+    "tom",
+    '{"needs":["browser"],"needs_declared":true}',
+    "2026-11-10T01:00:00.000Z",
+  );
+  ins.run("t1", "agent", "gaffer-factory", '{"needs":["browser"]}', "2026-11-10T02:00:00.000Z");
+  ins.run("t2", "agent", "x", '{"needs":["browser"]}', "2026-11-10T02:00:00.000Z");
+  db.close();
+  const d1 = needsDeclaration(dbPath, 1);
+  if (d1 && d1.by === "human:tom" && d1.at === "2026-11-10T01:00:00.000Z")
+    ok("the declaration is the event that changed the needs (a resend is not)");
+  else fail(`declaration: ${JSON.stringify(d1)}`);
+  if (needsDeclaration(dbPath, 2) === null) ok("no recorded declaration → null (the hold says so)");
+  else fail("a resend without needs_declared was read as the declaration");
+  if (needsDeclaration(resolve(dir, "none.sqlite"), 1) === null) ok("an unreadable DB → null");
+  else fail("an unreadable DB gave a declaration");
+  rmSync(dir, { recursive: true, force: true });
 }
 
 if (failures.length === 0) {

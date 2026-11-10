@@ -627,6 +627,41 @@ export function testingRound(dbPath, ticketNumber) {
   }
 }
 
+/**
+ * DECLARED NEEDS: who declared the contract's current host needs, and when: the latest
+ * `ticket.test_contract_set` event that changed them (dispatch marks it `needs_declared`;
+ * only a person may). → { by: "human:tom", at } or null when unreadable or not recorded
+ * (the hold then says so; the need still holds).
+ */
+export function needsDeclaration(dbPath, ticketNumber) {
+  let db;
+  try {
+    const { DatabaseSync } = require("node:sqlite");
+    db = new DatabaseSync(dbPath, { readOnly: true });
+    const row = db
+      .prepare(
+        "SELECT w.actor_type AS type, w.actor_id AS id, w.created_at AS at FROM work_events w " +
+          "JOIN tickets t ON t.id = w.entity_id WHERE t.number = ? AND w.entity_type = 'ticket' " +
+          "AND w.event_type = 'ticket.test_contract_set' " +
+          "AND json_extract(w.payload_json, '$.needs_declared') = 1 ORDER BY w.rowid DESC LIMIT 1",
+      )
+      .get(Number(ticketNumber));
+    if (!row || typeof row.type !== "string") return null;
+    const id = String(row.id ?? "")
+      .replace(/[^\w.@:-]+/g, "")
+      .slice(0, 60);
+    return { by: id ? `${row.type}:${id}` : row.type, at: String(row.at ?? "").slice(0, 24) };
+  } catch {
+    return null;
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      /* best-effort */
+    }
+  }
+}
+
 /** The ticket's declared risk (the ledger's join key), or null when unreadable. */
 export function ticketRisk(dbPath, ticketNumber) {
   let db;
@@ -1852,7 +1887,12 @@ function runLiveTester(context) {
   // the same hold, never a PASS. A FAIL stays a FAIL (a failure outranks an unprovable).
   if (missing.length && (verdict === "pass" || verdict === "unprovable")) {
     const all = context.acceptanceCriteria.map((_, i) => i + 1);
-    const lacks = `this host lacks ${missing.join(", ")} (declared by the test contract; probed by the runner)`;
+    // Who declared the need, and when (only a person may: dispatch refuses an agent).
+    const decl = needsDeclaration(CONFIG.dispatchDb, n);
+    const declared = decl
+      ? `declared by ${decl.by} at ${decl.at}`
+      : "declared by the test contract, who and when not recorded";
+    const lacks = `this host lacks ${missing.join(", ")} (${declared}; probed by the runner)`;
     unprovable = {
       criteria: all,
       needs: unprovable ? `${lacks}; the tester: ${unprovable.needs}` : lacks,

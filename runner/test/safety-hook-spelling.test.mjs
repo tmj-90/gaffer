@@ -525,8 +525,23 @@ for (const cmd of [
 ]) {
   t.deny(`H1 unknown program with a hand-route verb or the credential: ${cmd}`, bash(cmd), opts);
 }
-// Reads and mentions stay allowed.
+// `block` / `unblock` as the verb, after root options or through a wrapper: refused.
 for (const cmd of [
+  "wg block 5 --reason x",
+  "wg --db x.sqlite block 5 --reason x",
+  "dispatch --db=x.sqlite unblock 5",
+  "'wg' 'block' 5",
+  "echo 5 | xargs wg unblock",
+  "sh -c 'fg unblock 5'",
+  `node ${R}/../packages/dispatch/dist/cli/index.js block 5 --reason x`,
+]) {
+  t.deny(`H1 block or unblock as the verb: ${cmd}`, bash(cmd), opts);
+}
+// Reads and mentions stay allowed, `block` anywhere else after `dispatch` included.
+for (const cmd of [
+  `grep -rn "dispatch( 'core/block-editor' )" src`,
+  'rg -n "dispatch.*block" src',
+  "node scripts/dispatch.js --mode block",
   "wg ticket show 5",
   "wg ticket list -s blocked",
   'git commit -m "a tester waiver needs GAFFER_PRINCIPAL_TOKEN"',

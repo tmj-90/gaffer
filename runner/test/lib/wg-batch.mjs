@@ -108,8 +108,15 @@ if (!dbReal.startsWith(tmpRoot + sep))
 if ((process.env.GAFFER_PRINCIPAL_TOKEN ?? "").trim())
   die("refusing: GAFFER_PRINCIPAL_TOKEN is set; this helper acts as the operator ($USER) only");
 const { Dispatch } = await import(CORE);
-// The CLI's open(): an existing DB, the same option the CLI passes.
-const wg = Dispatch.open(db, undefined, undefined, { requireRegisteredAgentApprover: true });
+const { hostGateKeyring } = await import(
+  resolve(HERE, "../../../packages/dispatch/dist/events/gateSeal.js")
+);
+// The CLI's open(): an existing DB, the same options the CLI passes (the factory key
+// included, so an approval recorded here is signed exactly as the CLI signs it).
+const wg = Dispatch.open(db, undefined, undefined, {
+  requireRegisteredAgentApprover: true,
+  gateKeyring: hostGateKeyring(db),
+});
 const actor = { type: "human", id: process.env.USER ?? "cli" }; // cli/shared.ts cliActor()
 const step = (what, fn) => {
   try {

@@ -211,6 +211,8 @@ import * as planning from "./services/planningService.js";
 import * as runRegistry from "./services/runRegistryService.js";
 import * as eventLog from "./services/eventLogService.js";
 import * as ticketReads from "./services/ticketReadService.js";
+import { ephemeralGateKeyring, type GateKeyring } from "./events/gateSeal.js";
+import { setEventAnchor } from "./events/eventWriter.js";
 
 export { BOARD_COLUMNS } from "./services/boardService.js";
 export type { BoardColumn } from "./services/boardService.js";
@@ -393,6 +395,8 @@ export class Dispatch {
   private readonly maxAttemptsOverride: number | undefined;
 
   private readonly requireRegisteredAgentApprover: boolean;
+  /** SIGNED GATE EVENTS: the keyring gate events are sealed and verified with. */
+  readonly gateKeyring: GateKeyring;
 
   constructor(
     db: Db,
@@ -420,6 +424,14 @@ export class Dispatch {
        * provider. Defaults to the runner's own probe (reviewGate/waiver.ts).
        */
       isolation?: () => string;
+      /**
+       * SIGNED GATE EVENTS: the key approvals and tester verdicts are sealed with, and
+       * every landing verifies them under (events/gateSeal.ts). The trusted host entry
+       * points (the CLI and the REST server) pass the factory key; the agent-facing MCP
+       * server passes a keyring that refuses. The library default is a process-local
+       * random key, whose seals no landing path in another process ever accepts.
+       */
+      gateKeyring?: GateKeyring;
     } = {},
   ) {
     this.db = db;
@@ -432,6 +444,11 @@ export class Dispatch {
     };
     this.maxAttemptsOverride = options.maxAttempts;
     this.requireRegisteredAgentApprover = options.requireRegisteredAgentApprover ?? false;
+    this.gateKeyring = options.gateKeyring ?? ephemeralGateKeyring();
+    // SIGNED GATE EVENTS: a keyring that may write it records the event log's head outside
+    // the database after every committed write (a truncated revocation is then detected).
+    const keyring = this.gateKeyring;
+    setEventAnchor(db, keyring.anchor ? () => keyring.anchor!(db) : null);
     this.tickets = new TicketRepository(db);
     this.acs = new AcRepository(db);
     this.repos = new RepoRepository(db);
@@ -588,6 +605,7 @@ export class Dispatch {
       // registered principal (see requireRegisteredAgentApprover).
       agents: this.agents,
       requireRegisteredAgentApprover: this.requireRegisteredAgentApprover,
+      gateKeyring: this.gateKeyring,
       onTicketParked: (ticket, detail) => {
         gate.emitGate(this, this.internals, "ticket_parked", ticket, { status: "blocked", detail });
       },
@@ -681,6 +699,7 @@ export class Dispatch {
       codeIndex?: CodeIndexReader | null;
       /** A person's waiver records the factory's isolation (see the constructor). */
       isolation?: () => string;
+      gateKeyring?: GateKeyring;
     } = {},
   ): Dispatch {
     return new Dispatch(openDatabase(path), clock, gitRunner, options);

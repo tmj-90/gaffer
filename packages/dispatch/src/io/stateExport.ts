@@ -57,7 +57,11 @@ export const STATE_FORMAT_VERSION = 1;
  *    identities). A board bundle must never carry access material; an importing
  *    factory mints its own principals.
  *
- * Those three are {@link EXCLUDED_TABLES}, with their reasons. Every other table in
+ *  - `gate_seals`: the signatures of approvals and tester verdicts under THIS factory's
+ *    key (events/gateSeal.ts). Another machine has another key, so a carried seal could
+ *    never verify there; an imported approval is re-approved where it lands.
+ *
+ * Those four are {@link EXCLUDED_TABLES}, with their reasons. Every other table in
  * SCHEMA_SQL carries durable board state and IS included (`plan_sessions` and
  * `paused_deliveries` were left out while this comment said otherwise: exploratory
  * finding api/F2). The drift guard in state-export.test.ts reads both lists: a table in
@@ -132,6 +136,8 @@ export const EXCLUDED_TABLES: Readonly<Record<string, string>> = {
   schema_meta: "metadata: the bundle's schema_version; migrate() re-stamps it on import",
   runs: "machine-local run registry: this machine's pids and log paths",
   api_principals: "machine-local credentials: an importing factory mints its own",
+  gate_seals:
+    "machine-local signatures under this factory's key: an imported approval or tester verdict is re-approved or recorded again here",
 };
 
 /**
@@ -541,6 +547,10 @@ export function importState(
           db.exec(`DELETE FROM ${EXPORT_TABLES[i]}`);
         }
       }
+      // SIGNED GATE EVENTS: no seal survives an import. The bundle carries none, and one
+      // left from the replaced board (a restore of this factory's own backup has the same
+      // event ids and hashes) would make an approval revoked after the backup count again.
+      db.exec("DELETE FROM gate_seals");
       for (const table of EXPORT_TABLES) {
         const raw = (bundle.tables[table] ?? []) as ReadonlyArray<Record<string, unknown>>;
         const rows =

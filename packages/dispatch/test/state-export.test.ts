@@ -389,7 +389,12 @@ describe("dispatch state export", () => {
     // this one while the export claimed "the whole board" (exploratory finding api/F2).
     // Growing the exclusion list means changing this expectation, on purpose.
     const INTENTIONALLY_EXCLUDED = Object.keys(EXCLUDED_TABLES);
-    expect(INTENTIONALLY_EXCLUDED.sort()).toEqual(["api_principals", "runs", "schema_meta"]);
+    expect(INTENTIONALLY_EXCLUDED.sort()).toEqual([
+      "api_principals",
+      "gate_seals",
+      "runs",
+      "schema_meta",
+    ]);
     for (const reason of Object.values(EXCLUDED_TABLES)) expect(reason.length).toBeGreaterThan(10);
 
     const covered = new Set<string>([...EXPORT_TABLES, ...INTENTIONALLY_EXCLUDED]);

@@ -13,6 +13,7 @@ import {
   parseTestContract,
 } from "../../domain/types.js";
 import { writeEvent } from "../../events/eventWriter.js";
+import { sealApprovalEvent, sealTesterPassEvent } from "./sealing.js";
 import type { TransitionResult } from "../transitionService.js";
 import { recordAcCheckInput } from "../../domain/schemas.js";
 import { AC_CHECK_VERIFIER } from "../../policy/policy.js";
@@ -61,6 +62,7 @@ export type TesterVerdictInternals = Pick<
   | "clock"
   | "db"
   | "evidence"
+  | "gateKeyring"
   | "maxAttempts"
   | "reviewedHeadsResolver"
   | "unavailableWriteReposResolver"
@@ -592,7 +594,7 @@ export function testerPass(
       });
       const testedHead =
         waiver?.heads[0]?.sha ?? binding.tested_commit ?? headNow?.toLowerCase() ?? null;
-      writeEvent(internals.db, {
+      const passEventId = writeEvent(internals.db, {
         entity_type: "ticket",
         entity_id: ticket.id,
         actor,
@@ -616,6 +618,12 @@ export function testerPass(
             : {}),
         },
       });
+      // SIGNED GATE EVENTS: the verdict (a tester PASS or a person's waiver) is sealed with
+      // the row it names, and a PASS that approves (into ready_for_merge) is sealed as the
+      // approval too, with the commits the sealed approval that routed it here named.
+      sealTesterPassEvent(internals, ticket, passEventId, evidenceId);
+      if (target === "ready_for_merge")
+        sealApprovalEvent(internals, ticket, result.eventId, "routed");
       return result;
     }),
   );

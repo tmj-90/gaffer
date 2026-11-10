@@ -236,6 +236,10 @@ export function reopenForReview(
   actor: Actor,
 ): { ticketId: string; status: string; eventId: string } {
   let cause = input.cause;
+  if (cause === undefined && host.resolveTicket(ref).status === "blocked") {
+    // Only an unsigned-approval / unsigned-verdict hold reopens from blocked.
+    cause = "unsigned_approval";
+  }
   if (cause === undefined) {
     const ls = host.landingState(ref);
     cause =

@@ -160,7 +160,48 @@ EOF
     printf '  (literal "/dev/stdout")\n'
     printf '  (literal "/dev/stderr"))\n'
     if [ "$replay" = 1 ]; then _sandbox_exec_replay_rules "$write_roots" "$read_roots"; fi
+    # THE FACTORY KEY (signed gate events), LAST so it wins over every grant above: no
+    # read, no write, no listing of the keys directory, in both profiles.
+    _sandbox_exec_factory_key_rules
+    # THE OPERATOR'S REST TOKEN, also last: an agent that read it could approve as the
+    # operator over the host's REST server, which then SEALS that approval.
+    _sandbox_exec_operator_token_rules
   } > "$profile_path"
+}
+
+# The factory signing key's directory (packages/dispatch/src/events/gateSeal.ts
+# factoryKeysDir): ${XDG_CONFIG_HOME:-$HOME/.config}/gaffer/keys. Nothing relocates it.
+gaffer_factory_keys_dir() {
+  local base="${XDG_CONFIG_HOME:-}"
+  case "$base" in /*) ;; *) base="${HOME:-}/.config" ;; esac
+  printf '%s/gaffer/keys' "$base"
+}
+
+# Deny every file operation under the factory keys directory (and the HOME-default one
+# when XDG_CONFIG_HOME moved it), printed after every allow rule (SBPL is last-match-wins).
+_sandbox_exec_factory_key_rules() {
+  local kd home_kd
+  kd="$(gaffer_factory_keys_dir)"
+  home_kd="${HOME:-}/.config/gaffer/keys"
+  printf '(deny file-read* file-write*\n'
+  _sandbox_subpath_rule "$kd"
+  [ -n "${HOME:-}" ] && [ "$home_kd" != "$kd" ] && _sandbox_subpath_rule "$home_kd"
+  printf ')\n'
+}
+
+# The operator's REST bearer token (packages/dispatch/src/api/auth.ts
+# resolveDashboardTokenPath): $GAFFER_DATA/dashboard-token, or ~/.gaffer/dashboard-token
+# when GAFFER_DATA is unset. The delivery profile grants reads everywhere and writes under
+# $GAFFER_DATA, and the network is allowed: with the token an agent past the hook could
+# call the host's REST server on localhost and approve as the operator, and the host
+# process would seal that approval with the factory key. Nothing inside the sandbox needs
+# it (the MCP servers and the dispatch CLI use the sqlite files, never REST), so both
+# profiles deny reading and writing it, after every grant.
+_sandbox_exec_operator_token_rules() {
+  printf '(deny file-read* file-write*\n'
+  [ -n "${GAFFER_DATA:-}" ] && _sandbox_subpath_rule "${GAFFER_DATA}/dashboard-token"
+  [ -n "${HOME:-}" ] && _sandbox_subpath_rule "${HOME}/.gaffer/dashboard-token"
+  printf ')\n'
 }
 
 # HOME's folders and files the replay variant can neither read nor write (credentials and

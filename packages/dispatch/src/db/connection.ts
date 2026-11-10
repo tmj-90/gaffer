@@ -1397,5 +1397,53 @@ function widenPausedReasonCheckForTimeout(db: Db): void {
 export function inTransaction<T>(db: Db, fn: () => T): T {
   // `.immediate` is the IMMEDIATE-mode variant of the transaction function;
   // invoking it BEGINs IMMEDIATE and runs `fn` to completion, returning its value.
-  return db.transaction(fn).immediate();
+  if (db.inTransaction) return db.transaction(fn).immediate();
+  // The OUTERMOST transaction: its commit runs the work queued by afterCommit; a
+  // rollback discards it.
+  let out: T;
+  try {
+    out = db.transaction(fn).immediate();
+  } catch (e) {
+    AFTER_COMMIT.delete(db);
+    throw e;
+  }
+  runAfterCommit(db);
+  return out;
+}
+
+/** Work queued to run once the current outermost transaction has committed. */
+const AFTER_COMMIT = new WeakMap<Db, Set<() => void>>();
+
+function runAfterCommit(db: Db): void {
+  const queued = AFTER_COMMIT.get(db);
+  if (!queued) return;
+  AFTER_COMMIT.delete(db);
+  for (const fn of queued) {
+    try {
+      fn();
+    } catch {
+      // Best effort by contract: the commit already happened.
+    }
+  }
+}
+
+/**
+ * Run `fn` once the data written so far is COMMITTED: at once outside a transaction,
+ * else after the outermost {@link inTransaction} commits (never when it rolls back). The
+ * same function queued twice in one transaction runs once. Errors are swallowed: what
+ * runs here must be best effort (SIGNED GATE EVENTS: the event log's anchor outside the
+ * database, events/gateSeal.ts, which landing checks fail closed on).
+ */
+export function afterCommit(db: Db, fn: () => void): void {
+  if (!db.inTransaction) {
+    try {
+      fn();
+    } catch {
+      // best effort, as above
+    }
+    return;
+  }
+  let queued = AFTER_COMMIT.get(db);
+  if (!queued) AFTER_COMMIT.set(db, (queued = new Set()));
+  queued.add(fn);
 }

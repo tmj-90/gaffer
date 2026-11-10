@@ -1,4 +1,4 @@
-import { inTransaction, type Db } from "../db/connection.js";
+import { afterCommit, inTransaction, type Db } from "../db/connection.js";
 import type { Actor, WorkEvent } from "../domain/types.js";
 import { newId } from "../util/id.js";
 import { eventHash, latestEventHash } from "./eventChain.js";
@@ -43,7 +43,25 @@ export function writeEvent(db: Db, input: WriteEventInput): string {
        VALUES (@id, @entity_type, @entity_id, @actor_type, @actor_id, @event_type, @payload_json, @correlation_id, @created_at, @prev_hash, @hash)`,
     ).run({ ...fields, prev_hash, hash });
   });
+  // SIGNED GATE EVENTS: a trusted host process records the log's head outside the
+  // database once this write is committed (events/gateSeal.ts, the event-log anchor).
+  const anchor = EVENT_ANCHORS.get(db);
+  if (anchor) afterCommit(db, anchor);
   return id;
+}
+
+/** Per database handle: what records the event log's head once a write commits. */
+const EVENT_ANCHORS = new WeakMap<Db, () => void>();
+
+/**
+ * SIGNED GATE EVENTS: run `anchor` after every committed transaction in which this handle
+ * wrote an event (once per transaction). The trusted host entry points (the dispatch CLI,
+ * the REST server) record the event log's head outside the database with it, so rows
+ * deleted after a later act (a revocation truncated away) are detected by every landing.
+ */
+export function setEventAnchor(db: Db, anchor: (() => void) | null): void {
+  if (anchor) EVENT_ANCHORS.set(db, anchor);
+  else EVENT_ANCHORS.delete(db);
 }
 
 /**

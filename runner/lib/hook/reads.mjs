@@ -15,6 +15,7 @@ import {
   CRED_NAME_FRAGMENT,
   ENV_FILE_FRAGMENT,
   ENV_TEMPLATE,
+  FACTORY_KEYS_FRAGMENT,
   MCP_RUNTIME_FILE,
   PROC_ENVIRON,
   SECRET_PATH,
@@ -67,7 +68,7 @@ import { effectiveVerbAfter, extractShellDashCBodies, resolveEffectiveTokens } f
 // (`npx prettier --write src/design-tokens.json`) is not flagged; the exact
 // `dashboard-token` alternative is guard-free and always fires.
 const SECRET_PATH_FRAGMENT = new RegExp(
-  String.raw`(${ENV_FILE_FRAGMENT}|[\w./-]*\.pem\b|[\w./-]*\.key\b|[\w./-]*\.p12\b|id_rsa\b|id_ed25519\b|id_[a-z0-9]+\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|\.gnupg\/|${CLI_CREDENTIAL_FRAGMENT}|${CRED_NAME_FRAGMENT}|${MCP_RUNTIME_FILE}\b|${PROC_ENVIRON}\b|dashboard-token\b|[\w./-]*[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}\b)`,
+  String.raw`(${ENV_FILE_FRAGMENT}|${FACTORY_KEYS_FRAGMENT}|[\w./-]*\.pem\b|[\w./-]*\.key\b|[\w./-]*\.p12\b|id_rsa\b|id_ed25519\b|id_[a-z0-9]+\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|\.gnupg\/|${CLI_CREDENTIAL_FRAGMENT}|${CRED_NAME_FRAGMENT}|${MCP_RUNTIME_FILE}\b|${PROC_ENVIRON}\b|dashboard-token\b|[\w./-]*[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}\b)`,
   "i",
 );
 
@@ -76,8 +77,10 @@ const SECRET_PATH_FRAGMENT = new RegExp(
 // written literally (`.en*`, `.e?v`, `.en[v]`, `id_*`, `*.pem`, `*.key`,
 // `*credential*`, `*secret*`). We match the wildcard form specifically so
 // an ordinary glob like `*.ts` or `src/*` is not flagged.
+// (The factory keys directory, `.config/gaffer` and `gaffer/keys`, as a glob too:
+// `~/.config/gaff*`, `~/.config/gaffer/k*`, `$HOME/.config/g?ffer/keys`.)
 const SECRET_GLOB =
-  /(\.e[*?]|\.en[*?]|\.env[*?]|[*?][\w.-]*\.env\b|\.e\[|\.en\[|id_[*?]|id_\[|[*?][\w.]*\.pem\b|[*?][\w.]*\.key\b|[*?][\w.]*\.p12\b|[*?][\w./-]*credential|[*?][\w./-]*secret|credential[\w./-]*[*?]|secret[\w./-]*[*?]|[*?][\w./-]*token|token[\w./-]*[*?]|dashboard-token[*?]|mcp-runtime[\w.-]*[*?])/i;
+  /(\.config\/g[\w-]*[*?[]|\.config\/[*?[][\w-]*affer|gaffer\/[\w-]*[*?[]|g[*?[]ffer\/keys|gaffer\/k[*?[]|\.e[*?]|\.en[*?]|\.env[*?]|[*?][\w.-]*\.env\b|\.e\[|\.en\[|id_[*?]|id_\[|[*?][\w.]*\.pem\b|[*?][\w.]*\.key\b|[*?][\w.]*\.p12\b|[*?][\w./-]*credential|[*?][\w./-]*secret|credential[\w./-]*[*?]|secret[\w./-]*[*?]|[*?][\w./-]*token|token[\w./-]*[*?]|dashboard-token[*?]|mcp-runtime[\w.-]*[*?])/i;
 
 // Shell read/redirect/source positions that consume a file's CONTENTS
 // without naming a "reader" binary:
@@ -85,9 +88,9 @@ const SECRET_GLOB =
 //   `source .env` / `. .env`   load secrets into the environment
 //   `read ... < .env` / `mapfile < .env`  (the `<` rule catches these too)
 const REDIRECT_READ =
-  /<\s*["']?[\w./~$-]*(\.env|\.pem|\.key|\.p12|id_rsa|id_ed25519|\.ssh\/|\.aws\/|\.npmrc|\.git-credentials|\.netrc|\.config\/gh\/|\.config\/gcloud\/|\.docker\/config\.json|\.kube\/|\.azure\/|\.pypirc|\.pgpass|\.claude\.json|credentials|secrets?|mcp-runtime(?:\.\w+)*\.json|proc\/[^\s'"]*\/environ|dashboard-token|[._-]tokens?)/i;
+  /<\s*["']?[\w./~$-]*(gaffer\/keys|\.config\/gaffer|\.env|\.pem|\.key|\.p12|id_rsa|id_ed25519|\.ssh\/|\.aws\/|\.npmrc|\.git-credentials|\.netrc|\.config\/gh\/|\.config\/gcloud\/|\.docker\/config\.json|\.kube\/|\.azure\/|\.pypirc|\.pgpass|\.claude\.json|credentials|secrets?|mcp-runtime(?:\.\w+)*\.json|proc\/[^\s'"]*\/environ|dashboard-token|[._-]tokens?)/i;
 const SOURCE_SECRET =
-  /(^|[\n;&|])\s*(source|\.)\s+["']?[\w./~$-]*(\.env|\.pem|\.key|\.p12|id_rsa|id_ed25519|\.ssh\/|\.aws\/|\.npmrc|\.git-credentials|\.netrc|\.config\/gh\/|\.config\/gcloud\/|\.docker\/config\.json|\.kube\/|\.azure\/|\.pypirc|\.pgpass|\.claude\.json|credentials|secrets?|mcp-runtime(?:\.\w+)*\.json|proc\/[^\s'"]*\/environ|dashboard-token|[._-]tokens?)/i;
+  /(^|[\n;&|])\s*(source|\.)\s+["']?[\w./~$-]*(gaffer\/keys|\.config\/gaffer|\.env|\.pem|\.key|\.p12|id_rsa|id_ed25519|\.ssh\/|\.aws\/|\.npmrc|\.git-credentials|\.netrc|\.config\/gh\/|\.config\/gcloud\/|\.docker\/config\.json|\.kube\/|\.azure\/|\.pypirc|\.pgpass|\.claude\.json|credentials|secrets?|mcp-runtime(?:\.\w+)*\.json|proc\/[^\s'"]*\/environ|dashboard-token|[._-]tokens?)/i;
 
 // Command-substitution / pipe / xargs constructs that decouple the tool
 // from the path it operates on, hiding the data flow from static analysis.
@@ -121,7 +124,7 @@ const FILE_READ_PRIMITIVE =
 // SOURCE file is legitimate; `f=.gaffer/dashboard-token` and extensionless
 // token files stay denied.
 const SECRET_ASSIGNMENT = new RegExp(
-  String.raw`\b[\w]+=["']?[\w./~$-]*(${ENV_FILE_FRAGMENT}|\.pem\b|\.key\b|\.p12\b|id_rsa\b|id_ed25519\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|${CLI_CREDENTIAL_FRAGMENT}|${CRED_NAME_FRAGMENT}|${MCP_RUNTIME_FILE}\b|${PROC_ENVIRON}\b|dashboard-token\b|[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}\b)`,
+  String.raw`\b[\w]+=["']?[\w./~$-]*(${FACTORY_KEYS_FRAGMENT}|${ENV_FILE_FRAGMENT}|\.pem\b|\.key\b|\.p12\b|id_rsa\b|id_ed25519\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|${CLI_CREDENTIAL_FRAGMENT}|${CRED_NAME_FRAGMENT}|${MCP_RUNTIME_FILE}\b|${PROC_ENVIRON}\b|dashboard-token\b|[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}\b)`,
   "i",
 );
 

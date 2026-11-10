@@ -54,6 +54,23 @@ _gaffer_land_tester_binding() {
   return 1
 }
 
+# SIGNED GATE EVENTS: the landing check (or Dispatch's landing-begin) found the approval
+# it acts on, or the tester verdict it relies on, without a valid signature under the
+# factory key (written into the database directly, recorded before signed approvals, or
+# the key is missing). Nothing merged; the ticket leaves the merge lane for the human queue
+# (ready_for_merge -> blocked) under that reason code, so the lane does not retry it.
+#   _gaffer_land_unsigned_hold <num> <unsigned_approval|unsigned_tester_verdict> <reason> <who>
+_gaffer_land_unsigned_hold() {
+  local num="$1" code="$2" why="$3" who="${4:-MERGE}"
+  case "$code" in unsigned_approval|unsigned_tester_verdict) ;; *) code="unsigned_approval" ;; esac
+  [ -n "$why" ] || why="the approval carries no valid signature; a person re-approves it"
+  if wg ticket hold "$num" --reason-code "$code" --as system --reason "$why" >/dev/null 2>&1; then
+    log "$who: #$num HELD for a human ($code): $why; nothing merged"
+  else
+    log "$who: #$num HELD ($code): $why; nothing merged (could not move it to the human queue: left as Dispatch has it)"
+  fi
+}
+
 # PER-REPOSITORY LANDING (external review #3). A ticket with write access to several
 # repositories is approved as one change and lands as one merge PER repo. The plan is the
 # ticket's approved revisions (`landing.repos` on `wg ticket show`: one review pin per
@@ -167,6 +184,12 @@ _gaffer_land_begin() {
   [ "$rc" -eq 0 ] && return 0
   _LB_REASON="$(printf '%s\n' "$out" | jget 'd.message || ""' 2>/dev/null | head -1)"
   [ -n "$_LB_REASON" ] || _LB_REASON="the pre-landing check could not run (rc=$rc: $(printf '%s' "$out" | tail -n 1 | cut -c1-160))"
+  # SIGNED GATE EVENTS: Dispatch refused an unsigned approval or tester verdict: hold it.
+  local _lb_code
+  _lb_code="$(printf '%s\n' "$out" | jget '(d.details && d.details.reason) || ""' 2>/dev/null | head -1)"
+  case "$_lb_code" in
+    unsigned_approval|unsigned_tester_verdict) _gaffer_land_unsigned_hold "$num" "$_lb_code" "$_LB_REASON" "${_WHO:-MERGE}" ;;
+  esac
   return 1
 }
 
@@ -254,6 +277,7 @@ _gaffer_land_preflight() {
       case "$_TB_KIND" in
         moved-since-review) log "$who: #$num HELD — ${_rname}: $_rbr moved since the review approved it (reviewed ${_TB_REVIEWED:0:12}, head is now ${_TB_HEAD:0:12}); nothing merged in any repository — $(_gaffer_rereview_cmd "$num" "$_rname")" ;;
         no-head) log "$who: #$num HELD — ${_rname}: landing check: no-head: ${_TB_REASON:-the delivery branch is missing}; nothing merged in any repository — restore the branch, then land it again" ;;
+        unsigned_approval|unsigned_tester_verdict) _gaffer_land_unsigned_hold "$num" "$_TB_KIND" "$_TB_REASON" "$who" ;;
         *) log "$who: #$num HELD — ${_rname}: landing check: ${_TB_KIND:-?}: ${_TB_REASON:-no decision}; nothing merged in any repository" ;;
       esac
       return 4
@@ -471,6 +495,7 @@ _gaffer_land_one() {
     case "$_TB_KIND" in
       moved) log "$_WHO: #$RNUM HELD — $RBRANCH moved since the tester's PASS (tested ${_TB_TESTED:0:12}, head is now ${_TB_HEAD:0:12}); re-test the branch (move it back to in_review) or record a human verdict" ;;
       moved-since-review) log "$_WHO: #$RNUM HELD — $RBRANCH moved since the review approved it (reviewed ${_TB_REVIEWED:0:12}, head is now ${_TB_HEAD:0:12}${_TB_TESTED:+, tested ${_TB_TESTED:0:12}}); nobody reviewed the new commits — $(_gaffer_rereview_cmd "$RNUM" "$(basename "$RREPO")")" ;;
+      unsigned_approval|unsigned_tester_verdict) _gaffer_land_unsigned_hold "$RNUM" "$_TB_KIND" "$_TB_REASON" "$_WHO" ;;
       *)     log "$_WHO: #$RNUM HELD — landing check: ${_TB_KIND:-?}: ${_TB_REASON:-no decision}; nothing merged" ;;
     esac
     return 4

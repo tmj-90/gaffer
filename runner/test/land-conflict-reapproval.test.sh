@@ -40,7 +40,11 @@ node --no-warnings -e 'const {DatabaseSync}=require("node:sqlite");const d=new D
  CREATE TABLE ticket_repos (ticket_id TEXT, repo_id TEXT, role TEXT, branch_name TEXT, access TEXT, pr_url TEXT);
  INSERT INTO tickets VALUES ('t7',7,'x','ready_for_merge','gaffer/ticket-7-x',NULL,0);
  INSERT INTO repositories VALUES ('r1','demo','$R','main','');
- INSERT INTO ticket_repos VALUES ('t7','r1','primary','gaffer/ticket-7-x','write',NULL);"
+ INSERT INTO ticket_repos VALUES ('t7','r1','primary','gaffer/ticket-7-x','write',NULL);
+ CREATE TABLE work_events (id TEXT PRIMARY KEY, entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, actor_type TEXT NOT NULL, actor_id TEXT, event_type TEXT NOT NULL, payload_json TEXT, correlation_id TEXT, created_at TEXT NOT NULL, prev_hash TEXT, hash TEXT);"
+# Landing verifies a signed approval; this reduced fixture records one as the host does
+# (chained and sealed under this test's factory key, lib/gate-seal-fixture.mjs).
+node --no-warnings "$RUNNER_DIR/test/lib/gate-seal-fixture.mjs" "$DB" approve 7 >/dev/null || { echo "FIXTURE ERROR: approve 7" >&2; exit 1; }
 # The fake resolver really resolves (merges main in, keeping the branch side).
 FAKE="$WORK/fake-claude.sh"
 printf '#!/usr/bin/env bash\ngit -c user.email=r@r -c user.name=r merge -q -X ours --no-edit main >/dev/null 2>&1\nprintf "%%s\\n" "{\\"result\\":\\"resolved\\"}"\n' > "$FAKE"; chmod +x "$FAKE"

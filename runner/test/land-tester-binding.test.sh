@@ -42,12 +42,24 @@ sql "CREATE TABLE tickets (id TEXT PRIMARY KEY, number INTEGER UNIQUE, title TEX
      INSERT INTO tickets VALUES ('t9', 9, 'x', 'ready_for_merge', 'gaffer/ticket-9-x', NULL, 0);
      INSERT INTO repositories VALUES ('r1', 'repo', '$R', 'main', '');
      INSERT INTO ticket_repos VALUES ('t9', 'r1', 'primary', 'gaffer/ticket-9-x', 'write', NULL);"
+# SIGNED GATE EVENTS: landing verifies a signature on the approval it acts on and on the
+# tester verdict it relies on. This reduced fixture writes its rows with sqlite, which is
+# what a forged row looks like, so the host's part is played by lib/gate-seal-fixture.mjs
+# (chain the log, seal under this test's factory key, as dispatch's approve and tester-pass
+# paths do). The decision table below is about the tester binding on a SIGNED approval.
+SEAL="$RUNNER_DIR/test/lib/gate-seal-fixture.mjs"
+seal() { node --no-warnings "$SEAL" "$@" >/dev/null || { echo "FIXTURE ERROR: seal $*" >&2; exit 1; }; }
+APPROVAL9="$(node --no-warnings "$SEAL" "$DB" approve 9)" || { echo "FIXTURE ERROR: approve 9" >&2; exit 1; }
 set_pass() {  # $1 = payload json ('' = no evidence); $2 = "forged": no tester event names it
   sql "DELETE FROM evidence; DELETE FROM work_events WHERE event_type = 'ticket.tester_passed';"
+  # Deleting a host-recorded row is a truncation the landing check now detects; this table
+  # models a log that never had the PASS, so the host stand-in re-chains and re-anchors.
+  seal "$DB" chain
   # Named columns: the Node merge path's mark-merged migrates this fixture (adds columns).
   [ -n "$1" ] && sql "INSERT INTO evidence (id, ticket_id, evidence_type, summary, payload_json, created_at) VALUES ('e1', 't9', 'test_output', 'pass', '$1', '2026-09-29T00:00:00Z');"
-  # The tester pass path (dispatch testerPass) names its row in a ticket.tester_passed event.
-  [ -n "$1" ] && [ "${2:-}" != forged ] && sql "INSERT INTO work_events (id, entity_type, entity_id, actor_type, actor_id, event_type, payload_json, created_at) VALUES ('tp1', 'ticket', 't9', 'agent', 'tester-1', 'ticket.tester_passed', '{\"evidence_id\":\"e1\"}', '2026-09-29T00:00:00.000Z');"
+  # The tester pass path (dispatch testerPass) names its row in a ticket.tester_passed event,
+  # and signs it (the agent-forged case writes no event and no signature).
+  [ -n "$1" ] && [ "${2:-}" != forged ] && sql "INSERT INTO work_events (id, entity_type, entity_id, actor_type, actor_id, event_type, payload_json, created_at) VALUES ('tp1', 'ticket', 't9', 'agent', 'tester-1', 'ticket.tester_passed', '{\"evidence_id\":\"e1\"}', '2026-09-29T00:00:00.000Z');" && seal "$DB" tester-pass tp1
   return 0
 }
 decide() { node --no-warnings "$HELPER" landing --db "$DB" --ticket 9 --repo "$R" --branch gaffer/ticket-9-x; }
@@ -107,7 +119,9 @@ sql "ALTER TABLE work_events RENAME TO work_events_gone"
 set_pass_noevents() { sql "DELETE FROM evidence; INSERT INTO evidence (id, ticket_id, evidence_type, summary, payload_json, created_at) VALUES ('e1', 't9', 'test_output', 'pass', '{\"verdict\":\"pass\",\"provenance\":\"human\"}', '2026-09-29T00:00:00Z');"; }
 set_pass_noevents
 out="$(node --no-warnings "$HELPER" landing --db "$DB" --ticket 9 --repo "$R" --branch gaffer/ticket-9-x --repo-id r1)"; rc=$?
-[ "$rc" -eq 4 ] && [ "$(kind "$out")" = "unverified" ] && ok "no event table: a HUMAN PASS row is not a tester PASS on any repo (unverified)" || fail "no event table: rc=$rc $out"
+# (With no event table there is no signed approval either: the signature check holds it
+# first, as unsigned_approval. Either way nothing lands and no waiver is read.)
+[ "$rc" -eq 4 ] && [ "$(kind "$out")" = "unsigned_approval" ] && ok "no event table: nothing lands on any repo (no signed approval, no tester PASS)" || fail "no event table: rc=$rc $out"
 sql "ALTER TABLE work_events_gone RENAME TO work_events"
 sql "UPDATE tickets SET acceptance = 0"
 set_pass "{\"verdict\":\"pass\",\"provenance\":\"agent\",\"tested_commit\":\"$TESTED\"}"   # back to A3's bound row
@@ -121,7 +135,13 @@ sql2 "CREATE TABLE tickets (id TEXT PRIMARY KEY, number INTEGER UNIQUE, acceptan
       CREATE TABLE evidence (id TEXT PRIMARY KEY, ticket_id TEXT, evidence_type TEXT, summary TEXT, uri TEXT, payload_json TEXT, recorded_by_actor_type TEXT, created_at TEXT);
       CREATE TABLE work_events (id TEXT PRIMARY KEY, entity_type TEXT, entity_id TEXT, event_type TEXT, payload_json TEXT, created_at TEXT);
       INSERT INTO tickets VALUES ('t10', 10, 0);
-      INSERT INTO work_events VALUES ('w1', 'ticket', 't10', 'ticket.transitioned', '{\"from\":\"in_progress\",\"to\":\"in_review\"}', '2026-09-29T00:00:00.000Z');"
+      INSERT INTO work_events VALUES ('w1', 'ticket', 't10', 'ticket.transitioned', '{\"from\":\"in_progress\",\"to\":\"in_review\"}', '2026-09-29T00:00:00.000Z');
+      ALTER TABLE work_events ADD COLUMN actor_type TEXT NOT NULL DEFAULT 'system';
+      ALTER TABLE work_events ADD COLUMN actor_id TEXT;
+      ALTER TABLE work_events ADD COLUMN correlation_id TEXT;"
+# The approval this section's landings act on, signed as the host signs it (see SEAL above).
+node --no-warnings "$SEAL" "$DB2" approve 10 "$REVIEWED" >/dev/null || { echo "FIXTURE ERROR: approve 10" >&2; exit 1; }
+sql2 "SELECT 1;"
 pin() {  # $1 = sha, $2 = actor type, $3 = created_at
   sql2 "DELETE FROM evidence WHERE evidence_type = 'commit'; INSERT INTO evidence VALUES ('p1', 't10', 'commit', 'agent review approved', 'gaffer-reviewed-commit:$1', NULL, '$2', '$3');"
 }
@@ -135,23 +155,31 @@ out="$(decide10)"; rc=$?
 # The waiver is bound to the current head (package H1), so the review pin alone decides.
 LATE="$(g rev-parse gaffer/ticket-10-y)"
 sql2 "INSERT INTO evidence VALUES ('h1', 't10', 'test_output', 'pass', NULL, '{\"verdict\":\"pass\",\"provenance\":\"human\",\"tested_commit\":\"$LATE\"}', 'human', '2026-09-29T00:06:00.000Z');
-      INSERT INTO work_events VALUES ('w2', 'ticket', 't10', 'ticket.tester_passed', '{\"evidence_id\":\"h1\"}', '2026-09-29T00:06:00.000Z');"
+      INSERT INTO work_events (id, entity_type, entity_id, event_type, payload_json, created_at) VALUES ('w2', 'ticket', 't10', 'ticket.tester_passed', '{\"evidence_id\":\"h1\"}', '2026-09-29T00:06:00.000Z');"
+seal "$DB2" tester-pass w2
 out="$(decide10)"; rc=$?
 [ "$rc" -eq 4 ] && [ "$(kind "$out")" = "moved-since-review" ] && ok "a HUMAN tester waiver does not unpin it → hold" || fail "waiver + moved: rc=$rc $out"
 sql2 "DELETE FROM evidence WHERE id = 'h1'; DELETE FROM work_events WHERE id = 'w2';"
+seal "$DB2" chain   # a log that never had the waiver (deleting it is otherwise a truncation)
+# With no valid pin row the decision falls back to the branch head, which has moved past
+# the reviewed commit: the SIGNED approval (it sealed $REVIEWED) does not cover it, so
+# nothing lands. (Before signed approvals both cases landed the unreviewed head.)
 pin "$REVIEWED" agent 2026-09-29T00:05:00.000Z; out="$(decide10)"; rc=$?
-[ "$rc" -eq 0 ] && [ "$(kind "$out")" = "no-tester" ] && ok "a pin row recorded by an AGENT is not a pin (cannot be forged through the MCP)" || fail "agent pin: rc=$rc $out"
+[ "$rc" -eq 4 ] && [ "$(kind "$out")" = "unsigned_approval" ] && [[ "$out" == *"does not cover"* ]] && ok "a pin row recorded by an AGENT is not a pin (cannot be forged through the MCP): the moved head is not what was approved" || fail "agent pin: rc=$rc $out"
 pin "$REVIEWED" system 2026-09-28T23:00:00.000Z; out="$(decide10)"; rc=$?
-[ "$rc" -eq 0 ] && [ "$(kind "$out")" = "no-tester" ] && ok "a pin older than the ticket's latest entry into in_review is stale → ignored" || fail "stale pin: rc=$rc $out"
+[ "$rc" -eq 4 ] && [ "$(kind "$out")" = "unsigned_approval" ] && [[ "$out" == *"does not cover"* ]] && ok "a pin older than the ticket's latest entry into in_review is stale → ignored, and the moved head is not what was approved" || fail "stale pin: rc=$rc $out"
 # A tester PASS bound to a commit NOBODY reviewed (the branch moved after the approval,
 # before the tester ran) must not land just because head == tested.
 LATE="$(g rev-parse gaffer/ticket-10-y)"
 pin "$REVIEWED" system 2026-09-29T00:05:00.000Z
 sql2 "INSERT INTO evidence VALUES ('b1', 't10', 'test_output', 'pass', NULL, '{\"verdict\":\"pass\",\"provenance\":\"agent\",\"tested_commit\":\"$LATE\"}', 'agent', '2026-09-29T00:07:00.000Z');
-      INSERT INTO work_events VALUES ('w3', 'ticket', 't10', 'ticket.tester_passed', '{\"evidence_id\":\"b1\"}', '2026-09-29T00:07:00.000Z');"
+      INSERT INTO work_events (id, entity_type, entity_id, event_type, payload_json, created_at) VALUES ('w3', 'ticket', 't10', 'ticket.tester_passed', '{\"evidence_id\":\"b1\"}', '2026-09-29T00:07:00.000Z');"
+seal "$DB2" tester-pass w3
 out="$(decide10)"; rc=$?
 [ "$rc" -eq 4 ] && [ "$(kind "$out")" = "moved-since-review" ] && [[ "$out" == *"\"tested\":\"$LATE\""* ]] \
   && ok "bound tester PASS of an UNREVIEWED commit (tested != reviewed) → hold (moved-since-review)" || fail "bound but unreviewed: rc=$rc $out"
+# A person reviews LATE and approves it (the host seals the new approval with LATE).
+node --no-warnings "$SEAL" "$DB2" approve 10 "$LATE" >/dev/null || { echo "FIXTURE ERROR: approve 10 LATE" >&2; exit 1; }
 pin "$LATE" system 2026-09-29T00:06:00.000Z; out="$(decide10)"; rc=$?
 [ "$rc" -eq 0 ] && [ "$(kind "$out")" = "bound" ] && ok "bound PASS of the reviewed commit → land" || fail "bound + reviewed: rc=$rc $out"
 sql2 "DELETE FROM evidence WHERE id = 'b1'; DELETE FROM work_events WHERE id = 'w3';"
@@ -193,6 +221,8 @@ out="$(node_land)"; rc=$?
 
 echo "== C: both paths land a bound, unmoved candidate — the PINNED commit =="
 set_pass "{\"verdict\":\"pass\",\"provenance\":\"agent\",\"tested_commit\":\"$MOVED\"}"
+# A person approves the moved head (MOVED): the host seals the new approval with it.
+seal "$DB" approve 9 "$MOVED"
 bash_land; rc=$?
 [ "$rc" -eq 0 ] && g merge-base --is-ancestor "$MOVED" main && ok "Bash path lands the tested commit" || fail "Bash path did not land (rc=$rc; $(tail -2 "$LOGF" | tr '\n' ' '))"
 # reset main and try the Node path on a fresh delivery

@@ -2616,11 +2616,13 @@ export function beginLandingCli(ticketNumber, repoRef, pin, approval, via) {
   const r = runDispatch(args);
   if (!r.error && r.status === 0) return { ok: true };
   let reason = "";
+  let code = "";
   for (const text of [r.stdout, r.stderr]) {
     for (const line of String(text || "").split("\n")) {
       try {
         const j = JSON.parse(line);
         if (j && typeof j.message === "string") reason = j.message;
+        if (j && j.details && typeof j.details.reason === "string") code = j.details.reason;
       } catch {
         /* not JSON */
       }
@@ -2628,7 +2630,37 @@ export function beginLandingCli(ticketNumber, repoRef, pin, approval, via) {
   }
   if (!reason)
     reason = `the pre-landing check could not run (${(r.error?.message || r.stderr || `exit ${r.status}`).toString().trim().slice(0, 160)})`;
+  // SIGNED GATE EVENTS: Dispatch refused an unsigned approval or tester verdict: hold it.
+  if (UNSIGNED_KINDS.has(code)) holdUnsigned(ticketNumber, code, reason);
   return { ok: false, reason };
+}
+
+/** The landing-check kinds that mean "no valid signature" (lib/tester-binding.mjs). */
+export const UNSIGNED_KINDS = new Set(["unsigned_approval", "unsigned_tester_verdict"]);
+
+/**
+ * SIGNED GATE EVENTS: hold the ticket for a person (ready_for_merge -> blocked) under the
+ * reason code the signature check named. Nothing merged. → true when the hold took.
+ */
+export function holdUnsigned(ticketNumber, code, reason) {
+  const r = runDispatch([
+    "ticket",
+    "hold",
+    String(ticketNumber),
+    "--reason-code",
+    UNSIGNED_KINDS.has(code) ? code : "unsigned_approval",
+    "--reason",
+    String(reason || "the approval carries no valid signature; a person re-approves it"),
+    "--as",
+    "system",
+  ]);
+  const held = !r.error && r.status === 0;
+  log(
+    held
+      ? `#${ticketNumber} HELD for a human (${code}): nothing merged`
+      : `#${ticketNumber} could not be moved to the human queue (${code}); nothing merged, left as Dispatch has it`,
+  );
+  return held;
 }
 
 /** The line a revoked landing reports (the ticket is left in the state Dispatch set). */
@@ -3047,6 +3079,7 @@ function landSecondaryRepos(ticketNumber, primaryRepoId, approval = null) {
       }),
     });
     if (!d.ok) {
+      if (UNSIGNED_KINDS.has(d.kind)) holdUnsigned(ticketNumber, d.kind, d.reason);
       why(`landing check ${d.kind}: ${d.reason}`);
       continue;
     }
@@ -3440,6 +3473,8 @@ function main() {
     }),
   });
   if (!decision.ok) {
+    if (UNSIGNED_KINDS.has(decision.kind))
+      holdUnsigned(resolved.number, decision.kind, decision.reason);
     fail(
       `refusing to merge #${resolved.number}: landing check ${decision.kind}: ${decision.reason}` +
         (decision.kind === "moved"
@@ -3463,6 +3498,8 @@ function main() {
       ? preflightSecondaryRepos(resolved.number, repo.id || null)
       : null;
   if (preHold) {
+    if (UNSIGNED_KINDS.has(preHold.kind))
+      holdUnsigned(resolved.number, preHold.kind, preHold.reason);
     fail(preflightRefusal(resolved.number, preHold), 4);
     return;
   }

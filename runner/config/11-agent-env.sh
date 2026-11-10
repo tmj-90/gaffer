@@ -212,6 +212,9 @@ gaffer_agent_env() {
     [ "$matched" -eq 1 ] || continue
     # Read the value via indirect expansion; preserve it verbatim.
     val="${!name}"
+    # THE FACTORY KEY (signed gate events): no variable that names the keys directory
+    # (${XDG_CONFIG_HOME:-$HOME/.config}/gaffer/keys) reaches an agent, whatever its name.
+    case "$val" in *gaffer/keys*) continue ;; esac
     GAFFER_AGENT_ENV+=( "$name=$val" )
   done < <(compgen -e)
   # npx / `npm exec` auto-download guard: npm assumes --yes when stdin is not a TTY

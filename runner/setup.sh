@@ -58,6 +58,16 @@ fi
 # place. (Portable sed for macOS + Linux.)
 sed -i.bak "s#sqlite_path:.*#sqlite_path: $DISPATCH_DB#" "$CREW_CONFIG" && rm -f "$CREW_CONFIG.bak"
 echo "  ✓ databases + crew.yaml ready (dispatch db: $DISPATCH_DB)"
+# SIGNED GATE EVENTS: the factory key approvals and tester verdicts are signed with
+# (outside $GAFFER_DATA and every agent's reach). Created once; kept afterwards.
+if _gk_out="$(node "$DISPATCH_DIR/dist/cli/index.js" --db "$DISPATCH_DB" gate-key ensure 2>&1)"; then
+  _gk_path="$(printf '%s' "$_gk_out" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const j=JSON.parse(d);process.stdout.write((j.created?"created ":"kept ")+j.path)}catch{}})')"
+  echo "  ✓ factory signing key: ${_gk_path:-ready} (approvals are signed with it; back it up: a new key means re-approving what waits to land)"
+else
+  echo "  ✗ factory signing key: $(printf '%s' "$_gk_out" | tail -n 1 | cut -c1-200)"
+  echo "    Nothing lands until it exists; fix the reason above and run setup again."
+  exit 1
+fi
 
 # OS ISOLATION: every agent runs inside an OS sandbox unless GAFFER_STRICT_REQUIRE=0 is in
 # the environment (lib/sandbox.sh). Setup never fails for lack of one: it says what it

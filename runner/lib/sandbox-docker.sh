@@ -742,6 +742,45 @@ _envs+=( -e "http_proxy=http://egress-proxy:8888" -e "https_proxy=http://egress-
 # No proxy for loopback + the docker-internal proxy hostname itself.
 _envs+=( -e "NO_PROXY=localhost,127.0.0.1,egress-proxy" -e "no_proxy=localhost,127.0.0.1,egress-proxy" )
 
+# THE FACTORY KEY (signed gate events) is never mounted: refuse a bind at, under or above
+# ${XDG_CONFIG_HOME:-$HOME/.config}/gaffer/keys (a HOME mount would carry it). Checked on
+# the final mount list, the one docker gets, in dry-run mode too. Canonical paths both ways.
+_canon_path() {  # the path with its deepest existing ancestor resolved
+  local p="$1" head rest="" d
+  head="${p%/}"
+  while [ -n "$head" ] && [ ! -d "$head" ]; do rest="/${head##*/}$rest"; head="${head%/*}"; done
+  d="$( cd "${head:-/}" 2>/dev/null && pwd -P )" || { printf '%s' "$p"; return 0; }
+  [ "$d" = / ] && d=""
+  printf '%s' "$d$rest"
+}
+# The operator ACCOUNT's keys directory is always guarded (its home from the password
+# database, not $HOME), and so is an XDG_CONFIG_HOME one. A keys directory under the
+# CURRENT $HOME only when it exists or $HOME is the account's: the tester replay runs this
+# wrapper with a scratch HOME inside the scratch directory it mounts, whose (absent) keys
+# directory protects nothing, and refusing it failed every docker replay.
+_ACCT_HOME="$(node -e 'process.stdout.write(require("node:os").userInfo().homedir)' 2>/dev/null)" || _ACCT_HOME=""
+[ -n "$_ACCT_HOME" ] && _ACCT_HOME="$(_canon_path "$_ACCT_HOME")"
+_KEYS_DIRS=()
+[ -n "$_ACCT_HOME" ] && _KEYS_DIRS+=( "$(_canon_path "$_ACCT_HOME/.config/gaffer/keys")" )
+case "${XDG_CONFIG_HOME:-}" in /*) _KEYS_DIRS+=( "$(_canon_path "$XDG_CONFIG_HOME/gaffer/keys")" ) ;; esac
+if [ -n "${HOME:-}" ]; then
+  _home_kd="$(_canon_path "$HOME/.config/gaffer/keys")"
+  if [ -d "$_home_kd" ] || [ "$(_canon_path "$HOME")" = "$_ACCT_HOME" ]; then _KEYS_DIRS+=( "$_home_kd" ); fi
+fi
+[ "${#_KEYS_DIRS[@]}" -gt 0 ] || _die "refusing to run: the factory key directory cannot be located (no account home)"
+_prev=""
+for _m in ${_mounts[@]+"${_mounts[@]}"}; do
+  if [ "$_prev" = "-v" ]; then
+    _src="$(_canon_path "${_m%%:*}")"
+    [ -n "$_src" ] || _die "refusing a mount with an empty source path"
+    for _kd in "${_KEYS_DIRS[@]}"; do
+      case "$_src/" in "$_kd"/*) _die "refusing to mount $_src: it is (or is inside) the factory key directory $_kd" ;; esac
+      case "$_kd/" in "$_src"/*) _die "refusing to mount $_src: it contains the factory key directory $_kd" ;; esac
+    done
+  fi
+  _prev="$_m"
+done
+
 if [ "$_DRY_RUN" = "1" ]; then
   printf '%s\n' docker run --rm --network "$_NET_INT" \
     --cap-drop=ALL --cap-add=DAC_OVERRIDE --security-opt=no-new-privileges \

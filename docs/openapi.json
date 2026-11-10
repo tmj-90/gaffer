@@ -14890,6 +14890,7 @@
               "merge_conflict",
               "moved_since_review",
               "unpinned_repo",
+              "unsigned_approval",
               "other"
             ],
             "description": "Why it goes back: merge_conflict (the resolver fixed a conflict), moved_since_review, unpinned_repo or other. Without it, the ticket's hold when it is one of those two, else merge_conflict."

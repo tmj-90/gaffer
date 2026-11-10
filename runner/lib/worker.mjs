@@ -391,10 +391,21 @@ export function commandWorkerEnv(callerEnv, contract, env = process.env) {
   const out = {};
   for (const [k, v] of Object.entries(callerEnv || {})) {
     if (/^(ANTHROPIC_|CLAUDE_)/.test(k)) continue;
+    if (namesFactoryKey(v)) continue;
     out[k] = v;
   }
-  for (const n of commandEnvPassNames(env)) if (env[n] !== undefined) out[n] = env[n];
+  for (const n of commandEnvPassNames(env))
+    if (env[n] !== undefined && !namesFactoryKey(env[n])) out[n] = env[n];
   return { ...out, ...contract };
+}
+
+/**
+ * THE FACTORY KEY (signed gate events): true for a value naming the keys directory
+ * (${XDG_CONFIG_HOME:-$HOME/.config}/gaffer/keys). No such value reaches a worker, as
+ * gaffer_agent_env drops it from the agent env.
+ */
+export function namesFactoryKey(value) {
+  return typeof value === "string" && value.includes("gaffer/keys");
 }
 
 /**

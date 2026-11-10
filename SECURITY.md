@@ -295,7 +295,16 @@ agent's shell. Where agents run without an OS sandbox (`GAFFER_STRICT_REQUIRE=0`
 wrapping), the safety hook is all that stands between an agent and a person's verdict:
 `preflight.sh` and `gaffer status` say so, and a waiver recorded then says "recorded
 without OS isolation". The operator who can open the database file can still write
-anything in it; signing the gate events (a separate change) addresses that.
+anything in it; signing the gate events (a separate change) addresses that. Two operator
+credentials also reach a tester verdict by another road, and the principal requirement
+does not change it: the tokenless CLI can record the runner's own verdict by hand
+(`tester-pass --as system --replay passed` with the head and the contract hash), which
+reads as the tester's verified PASS rather than a waiver; and the shared API token (the
+dashboard link) or the tokenless CLI can mint a human principal (`POST /api/principals`,
+`principal create`) and waive with it. The requirement keeps a person's verdict out of an
+agent's reach and attributes it to a named principal; it does not bound the operator's
+own credentials, and until gate events are signed only the safety hook and the OS sandbox
+keep an agent off those two roads.
 
 **What the replay proves**: that those named tests executed and passed under the
 registered command on the candidate. Not what they assert. The tester's per-criterion

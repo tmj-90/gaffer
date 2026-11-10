@@ -46,7 +46,6 @@ gitc() { git -c user.email=t@t -c user.name=t "$@"; }
   printf 'export const v = 1;\n' > src/v.js
   printf 'import test from "node:test";\nimport assert from "node:assert/strict";\nimport { v } from "../src/v.js";\ntest("smoke", () => { assert.equal(v, 1); });\n' > test/smoke.test.js
   gitc add -A && gitc commit -qm init )
-DCLI="$ROOT/packages/dispatch/dist/cli/index.js"
 DB="$WORK/data/dispatch.sqlite"
 PLANT='{"verdict":"UNPROVABLE","criteria":[1],"needs":"planted by the delivery"}'
 

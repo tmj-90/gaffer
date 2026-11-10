@@ -31,9 +31,11 @@ printf '#!/bin/sh\nexit 0\n' > "$WORK/bin/sandbox-exec"; chmod +x "$WORK/bin/san
 LINE='human verdicts: agents run without OS isolation'
 CLEAN=(env -u STRICT_MODE -u GAFFER_STRICT_REQUIRE -u SANDBOX_PROVIDER -u GAFFER_MODE -u DRY_RUN
   -u GAFFER_PRINCIPAL_TOKEN HOME="$WORK/home" GAFFER_REGISTRY_PROBE=0 NO_COLOR=1)
-pf() { "${CLEAN[@]}" "$@" timeout 120 bash "$RUNNER_DIR/preflight.sh" 2>&1; }
+# A bound for each call that works where there is no `timeout` (macOS): perl's alarm.
+if command -v perl >/dev/null 2>&1; then BOUND=(perl -e 'alarm shift; exec @ARGV' 120); elif command -v timeout >/dev/null 2>&1; then BOUND=(timeout 120); else BOUND=(); fi
+pf() { "${CLEAN[@]}" "$@" ${BOUND[@]+"${BOUND[@]}"} bash "$RUNNER_DIR/preflight.sh" 2>&1; }
 wrapped() {
-  "${CLEAN[@]}" "$@" timeout 60 bash "$RUNNER_DIR/gaffer" sandbox-status 2>/dev/null \
+  "${CLEAN[@]}" "$@" ${BOUND[@]+"${BOUND[@]}"} bash "$RUNNER_DIR/gaffer" sandbox-status 2>/dev/null \
     | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const l=d.trim().split("\n").filter(x=>x.startsWith("{")).pop();process.stdout.write(String(JSON.parse(l).wrapped))}catch{process.stdout.write("?")}})'
 }
 

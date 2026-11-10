@@ -24,7 +24,13 @@
 # the hold is remembered in $GAFFER_DATA/.tester-held (kept across runs, unlike the
 # per-run .tested-tickets) keyed on when the ticket entered in_testing, so the same
 # stay is never re-tested at another paid tester call. It is tested again once it
-# leaves in_testing and comes back (a rework, a human re-route). A tester-run that
+# leaves in_testing and comes back (a rework, a human re-route).
+# UNPROVABLE (the tester's {"verdict":"UNPROVABLE",...} token, or a capability the test
+# contract declares and this host lacks; bin/tester-run.mjs phase "held", code
+# tester_unprovable) is the same hold, for a person, in EVERY posture: it never reworks
+# (GAFFER_TESTER_FAIL_TO only steers a FAIL), it is never in review so no reviewer is
+# paid for it, and nothing approves or merges it. It is remembered for the tested commit
+# too (a third field in .tester-held): a new commit on the delivery branch is tested afresh. A tester-run that
 # errors before deciding is skipped for the rest of this run only. One tester run per
 # ticket at a time (a per-ticket lock in bin/tester-run.mjs: a second is "busy" and
 # starts nothing), and each verdict names the testing round its run started in: one
@@ -121,13 +127,28 @@ _gaffer_tester_pass() {
   fi
   # Pick the first in_testing ticket not tried this run and not already HELD for a
   # human during its current stay in_testing (a held stay is skipped, never re-spun).
-  local _t_entered="" _t_tries=0
+  # UNPROVABLE holds are remembered PER HEAD as well (a third field, the tested commit):
+  # the same commit is never tested again, a new one on the delivery branch is.
+  local _t_entered="" _t_tries=0 _t_show _t_hline _t_hcommit _t_head
   while :; do
     TNUM="$(echo "$TJSON" | gaffer_json pick-unskipped "$TESTED_FILE" 2>/dev/null)"
     [ -n "$TNUM" ] || return 0
-    _t_entered="$(wg ticket show "$TNUM" 2>/dev/null | gaffer_json entered-status-at in_testing 2>/dev/null || echo '')"
-    grep -qxF "$TNUM"$'\t'"${_t_entered:--}" "$_held_file" 2>/dev/null || break
-    log "TESTER: #$TNUM is still HELD in_testing for a human (since ${_t_entered:-an unknown time}) — not re-testing it; move it out of in_testing to have it tested again"
+    _t_show="$(wg ticket show "$TNUM" 2>/dev/null)"
+    _t_entered="$(printf '%s' "$_t_show" | gaffer_json entered-status-at in_testing 2>/dev/null || echo '')"
+    _t_hline="$(awk -F '\t' -v n="$TNUM" -v e="${_t_entered:--}" '$1 == n && $2 == e { print; exit }' "$_held_file" 2>/dev/null)"
+    [ -n "$_t_hline" ] || break
+    _t_hcommit="$(printf '%s' "$_t_hline" | cut -f3)"
+    if [ -n "$_t_hcommit" ]; then
+      _t_head="$(_gaffer_tester_head "$_t_show")"
+      if [ -n "$_t_head" ] && [ "$_t_head" != "$_t_hcommit" ]; then
+        log "TESTER: #$TNUM was held for a person on ${_t_hcommit:0:12} (it cannot be proven on this host); its delivery head is now ${_t_head:0:12}: testing the new commit"
+        _gaffer_locked .skip.lock _gaffer_tester_drop_held "$_held_file" "$TNUM"
+        break
+      fi
+      log "TESTER: #$TNUM is still HELD in_testing for a person on ${_t_hcommit:0:12} (tester_unprovable, since ${_t_entered:-an unknown time}): not testing the same commit again; a person records the tester verdict, or a new commit is tested afresh"
+    else
+      log "TESTER: #$TNUM is still HELD in_testing for a human (since ${_t_entered:-an unknown time}) — not re-testing it; move it out of in_testing to have it tested again"
+    fi
     _gaffer_locked .skip.lock _gaffer_append_line "$TESTED_FILE" "$TNUM"
     _t_tries=$((_t_tries + 1)); [ "$_t_tries" -lt 50 ] || return 0
   done
@@ -192,13 +213,33 @@ _gaffer_tester_pass() {
       [ "$_T_NOW" = "in_review" ] && log "TESTER: #$TNUM PASS: back in review for a person, who approves the tested commit"
       ;;
     held)
-      log "TESTER: #$TNUM HELD in_testing — ${_t_reason:-the tester-run gave no reason} (rc=$_trc); a human decides${_T_BRANCH:+ (tests kept on $_T_BRANCH)}"
-      # The reason goes ON the ticket (a human otherwise sees an in_testing ticket with
-      # no why anywhere but data/tester.log), and the hold is remembered for this stay.
-      wg attach-evidence "$TNUM" --type manual_note \
-        --summary "tester held: ${_t_reason:-the tester-run gave no reason} — held in_testing for a human${_T_BRANCH:+; its tests are kept on $_T_BRANCH}. It is not re-tested while it stays in_testing; move it out (e.g. back to rework) to have it tested again." >/dev/null 2>&1 \
-        || log "TESTER: WARNING — could not attach the held reason to #$TNUM"
-      _gaffer_locked .skip.lock _gaffer_append_line "$_held_file" "$TNUM"$'\t'"${_t_entered:--}"
+      local _t_code _t_commit
+      _t_code="$(printf '%s' "$_T_OUT" | jget 'd.code === "tester_unprovable" ? d.code : ""' 2>/dev/null || echo '')"
+      _t_commit="$(printf '%s' "$_T_OUT" | jget '/^[0-9a-f]{40,64}$/.test(String(d.testedCommit || "")) ? d.testedCommit : ""' 2>/dev/null || echo '')"
+      if [ "$_t_code" = tester_unprovable ]; then
+        # UNPROVABLE: a hold for a person in EVERY posture (GAFFER_TESTER_FAIL_TO=ready
+        # included): no rework, no review, no approval, no merge on it. Remembered for the
+        # tested commit, so a later pass never pays for the same head again.
+        log "TESTER: #$TNUM HELD in_testing for a person: ${_t_reason:-cannot be proven on this host} (rc=$_trc); no rework, review, approval or merge on it${_T_BRANCH:+ (tests kept on $_T_BRANCH)}"
+        wg attach-evidence "$TNUM" --type manual_note \
+          --summary "tester held: ${_t_reason:-cannot be proven on this host}; held in_testing for a person${_T_BRANCH:+; its tests are kept on $_T_BRANCH}. A person decides: record the tester verdict (a PASS waives the criteria that could not be proven here, a FAIL sends it to rework). It is not tested again on this commit; a new commit is tested afresh." >/dev/null 2>&1 \
+          || log "TESTER: WARNING: could not attach the held reason to #$TNUM"
+        # Without a readable tested commit the hold is kept for the whole stay (the two-field
+        # line): a placeholder commit would never equal the head and be re-tested every pass.
+        if [ -n "$_t_commit" ]; then
+          _gaffer_locked .skip.lock _gaffer_append_line "$_held_file" "$TNUM"$'\t'"${_t_entered:--}"$'\t'"$_t_commit"
+        else
+          _gaffer_locked .skip.lock _gaffer_append_line "$_held_file" "$TNUM"$'\t'"${_t_entered:--}"
+        fi
+      else
+        log "TESTER: #$TNUM HELD in_testing — ${_t_reason:-the tester-run gave no reason} (rc=$_trc); a human decides${_T_BRANCH:+ (tests kept on $_T_BRANCH)}"
+        # The reason goes ON the ticket (a human otherwise sees an in_testing ticket with
+        # no why anywhere but data/tester.log), and the hold is remembered for this stay.
+        wg attach-evidence "$TNUM" --type manual_note \
+          --summary "tester held: ${_t_reason:-the tester-run gave no reason} — held in_testing for a human${_T_BRANCH:+; its tests are kept on $_T_BRANCH}. It is not re-tested while it stays in_testing; move it out (e.g. back to rework) to have it tested again." >/dev/null 2>&1 \
+          || log "TESTER: WARNING — could not attach the held reason to #$TNUM"
+        _gaffer_locked .skip.lock _gaffer_append_line "$_held_file" "$TNUM"$'\t'"${_t_entered:--}"
+      fi
       ;;
     busy)
       # Another tester run for this ticket holds its lock (bin/tester-run.mjs): this one
@@ -226,6 +267,28 @@ _gaffer_tester_pass() {
     *) _gaffer_locked .skip.lock _gaffer_append_line "$TESTED_FILE" "$TNUM" ;;
   esac
   result tested; exit 0
+}
+
+# The delivery head of the ticket whose `wg ticket show` JSON is $1: the primary write
+# repo's checkout and the recorded branch (as the agent review pick reads it), or "" when
+# it cannot be read (the hold then stands: an unreadable head is never a new commit).
+_gaffer_tester_head() {
+  local repo branch
+  repo="$(printf '%s' "$1" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || {}).local_path) || ""' 2>/dev/null || echo '')"
+  branch="$(printf '%s' "$1" | jget '(d.ticket && d.ticket.branch_name) || ""' 2>/dev/null || echo '')"
+  [ -n "$repo" ] && [ -d "$repo" ] && [ -n "$branch" ] || return 0
+  git -C "$repo" rev-parse --verify --quiet "refs/heads/$branch^{commit}" 2>/dev/null || true
+}
+
+# Drop every held-ticket line for ticket $2 from file $1. Called under the .skip.lock.
+_gaffer_tester_drop_held() {
+  local file="$1" tmp line
+  tmp="$file.tmp.$$"
+  : > "$tmp" || return 0
+  while IFS= read -r line; do
+    case "$line" in "$2"$'\t'*) ;; *) printf '%s\n' "$line" >> "$tmp" ;; esac
+  done < "$file"
+  mv -f "$tmp" "$file" 2>/dev/null || rm -f "$tmp"
 }
 
 # Rewrite the held-ticket file keeping only the lines whose ticket number is in $2

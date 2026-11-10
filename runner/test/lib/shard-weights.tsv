@@ -36,6 +36,11 @@
 #   review-once-per-head: new (one agent review per delivered commit), about 40 real ticks,
 #   a dozen tester runs and six reviews; Linux at -j 1 on a loaded machine: 319s, so 400
 #   until CI measures it.
+#   tester-unprovable: new (package H3, the unprovable hold), about 30 real ticks, a dozen
+#   tester runs and two landings; Linux at -j 1 on a loaded machine: 333s, so 420 until CI
+#   measures it.
+#   tester-unprovable-escape: new (package H3 review, the hold in the supervised posture and
+#   every way past it), about 10 real ticks and three tester runs; 200 until CI measures it.
 321	land-tester-replay.test.sh
 297	merge-lane.test.sh
 242	land-tester-replay-proof.test.sh
@@ -353,4 +358,6 @@
 180	landing-recovery.test.sh
 230	tester-overlap.test.sh
 400	review-once-per-head.test.sh
+420	tester-unprovable.test.sh
+200	tester-unprovable-escape.test.sh
 150	trust-fail-closed.test.sh

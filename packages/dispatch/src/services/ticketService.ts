@@ -990,12 +990,32 @@ export class TicketService {
         profile = input.profile;
         spec = null; // a spec belongs to the profile it was registered for
       }
+      // DECLARED NEEDS: absent keeps the current list; only a PERSON (human or admin)
+      // declares or changes it. A declared need the host lacks turns the tester's PASS
+      // into a hold for a person on every criterion and tells the tester not to FAIL what
+      // the host cannot show, so the agent delivering a ticket must not be able to add one
+      // to its own contract (that would turn "tested" into "a person waives"), nor drop one
+      // (that would take the hold away). An agent or the runner may resend the same list.
+      const currentNeeds = existing?.needs ?? [];
+      const requestedNeeds = input.needs === undefined ? currentNeeds : [...new Set(input.needs)];
+      const sameNeeds =
+        requestedNeeds.length === currentNeeds.length &&
+        requestedNeeds.every((c) => currentNeeds.includes(c));
+      if (!sameNeeds && actor.type !== "human" && actor.type !== "admin") {
+        throw new DispatchError(
+          "ACTOR_NOT_PERMITTED",
+          `Only a person may declare or change the host capabilities a test contract needs (now: ${currentNeeds.join(", ") || "none"}; requested: ${requestedNeeds.join(", ") || "none"}). Leave needs out to keep the current list.`,
+          { actor_type: actor.type, current: currentNeeds, requested: requestedNeeds },
+        );
+      }
+      const needs = sameNeeds ? currentNeeds : requestedNeeds;
       const contract = validateTestContract({
         changed_surfaces: input.changed_surfaces,
         runtime_deps: input.runtime_deps,
         env_vars: input.env_vars,
         run_command: input.run_command,
         harness_ready: input.harness_ready,
+        ...(needs.length ? { needs } : {}),
         ...(profile !== "unit" ? { profile } : {}),
         ...(profile !== "unit" && spec ? { profile_spec: spec } : {}),
       });
@@ -1009,6 +1029,10 @@ export class TicketService {
         payload: {
           changed_surfaces: contract.changed_surfaces.length,
           harness_ready: contract.harness_ready,
+          ...(needs.length || currentNeeds.length ? { needs } : {}),
+          // Who declared the needs and when is this event's actor and time: the runner
+          // names them on the hold (runner/bin/tester-run.mjs needsDeclaration).
+          ...(!sameNeeds ? { needs_declared: true, previous_needs: currentNeeds } : {}),
           ...(profile !== current ? { profile, previous_profile: current } : {}),
         },
       });

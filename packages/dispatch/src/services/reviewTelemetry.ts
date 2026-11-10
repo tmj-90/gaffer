@@ -78,6 +78,13 @@ export interface LaneVerdict {
   actor: string;
   /** Why a held verdict is not a verdict (the runner's reason), when held. */
   held_reason: string | null;
+  /**
+   * The held verdict's reason code (HELD_CODES); present only when it has one, so every
+   * other lane verdict's stored payload is unchanged.
+   */
+  held_code?: HeldCode;
+  /** With `tester_unprovable`: the criterion numbers (1-based) not proven on this host. */
+  criteria?: number[];
   /** The model the lane's call asked for, as a label. */
   model_requested: string | null;
 }
@@ -101,6 +108,17 @@ export function assertMayRecordLaneVerdict(actor: Actor): void {
       { actor_type: actor.type },
     );
 }
+
+/**
+ * A held verdict's reason CODE, when the hold is one a read model counts apart (a closed
+ * list). `tester_unprovable`: the tester said a criterion cannot be proven on this host
+ * (or the contract declared a capability the host lacks); a hold for a person, never a
+ * PASS. Health and `wg stats` count it apart from the other holds.
+ */
+export const HELD_CODES = ["tester_unprovable"] as const;
+export type HeldCode = (typeof HELD_CODES)[number];
+/** The most criterion numbers one held verdict names. */
+const MAX_HELD_CRITERIA = 200;
 
 export const ATTEMPT_ID_BASES = ["latest_delivery_row", "stated"] as const;
 export type AttemptIdBasis = (typeof ATTEMPT_ID_BASES)[number];
@@ -151,6 +169,33 @@ export function normalizeLaneVerdict(input: Record<string, unknown>, actor: Acto
       `attempt_id_basis is one of: ${ATTEMPT_ID_BASES.join(", ")}.`,
       { attempt_id_basis: input.attempt_id_basis },
     );
+  const codeRaw = typeof input.held_code === "string" ? input.held_code.trim() : "";
+  if (codeRaw && !(HELD_CODES as readonly string[]).includes(codeRaw))
+    throw new DispatchError("VALIDATION_ERROR", `held_code is one of: ${HELD_CODES.join(", ")}.`, {
+      held_code: input.held_code,
+    });
+  if (codeRaw && (lane !== "tester" || verdict !== "held"))
+    throw new DispatchError(
+      "VALIDATION_ERROR",
+      "held_code is only recorded on a held tester verdict.",
+      { lane, verdict, held_code: codeRaw },
+    );
+  let criteria: number[] | null = null;
+  if (input.criteria !== undefined && input.criteria !== null) {
+    const list = Array.isArray(input.criteria) ? input.criteria : [];
+    const ok =
+      codeRaw === "tester_unprovable" &&
+      list.length > 0 &&
+      list.length <= MAX_HELD_CRITERIA &&
+      list.every((c) => Number.isInteger(c) && (c as number) >= 1 && (c as number) <= 1000);
+    if (!ok)
+      throw new DispatchError(
+        "VALIDATION_ERROR",
+        "criteria is a list of criterion numbers (1-based), recorded only with held_code tester_unprovable.",
+        { criteria: input.criteria },
+      );
+    criteria = [...new Set(list as number[])].sort((a, b) => a - b);
+  }
   return {
     lane,
     verdict,
@@ -160,5 +205,7 @@ export function normalizeLaneVerdict(input: Record<string, unknown>, actor: Acto
     actor: actor.type,
     held_reason: verdict === "held" ? label(input.held_reason, 300) : null,
     model_requested: label(input.model_requested, 80),
+    ...(codeRaw ? { held_code: codeRaw as HeldCode } : {}),
+    ...(criteria ? { criteria } : {}),
   };
 }

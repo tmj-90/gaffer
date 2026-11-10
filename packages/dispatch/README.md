@@ -191,7 +191,7 @@ from the code (`node scripts/mcp-tools-doc.mjs`; a test fails when it drifts):
 | `record_repo_delivery` | `ticket_id`, `repo_id`, `branch_name?`, `commit_sha?`, `pr_url?`, `status?`, `evidence_ref?` | Record WHERE one repo's slice of a multi-repo ticket was delivered — its branch, commit, PR and a delivery `status`. |
 | `add_dependency` | `ticket`, `depends_on` | Declare that one ticket must wait for another to be `done` before it can be claimed. |
 | `set_ticket_testable` | `ticket_id`, `can_be_tested` | Mark a ticket eligible (or not) for the independent black-box testing lane. |
-| `set_test_contract` | `ticket_id`, `changed_surfaces?`, `runtime_deps?`, `env_vars?`, `run_command?`, `harness_ready?`, `profile?` | Record the testing HANDOVER the independent tester reads to stand the system up and probe the changed surfaces — never the implementation diff. |
+| `set_test_contract` | `ticket_id`, `changed_surfaces?`, `runtime_deps?`, `env_vars?`, `run_command?`, `harness_ready?`, `profile?`, `needs?` | Record the testing HANDOVER the independent tester reads to stand the system up and probe the changed surfaces — never the implementation diff. |
 | `create_epic` | `epic`, `tickets` | Create a whole dependency-ordered plan in one atomic call: an `epic` scope node that groups N draft tickets, with their acceptance criteria, per-ticket priority/risk/repo, an optional `bootstrap` (greenfield) marker, and the dependency edges between them. |
 | `create_spec` | `title`, `brief?`, `clauses?`, `target_repo?`, `scope_node_id?` | Draft a spec — an AI-drafted, human-edited statement of product intent that sits in front of decompose. |
 | `get_spec` | `spec_id` | Read a spec by id. |

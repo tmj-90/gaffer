@@ -19,6 +19,7 @@ import {
   TICKET_SCOPE_RELATIONS,
 } from "./types.js";
 import { ACCEPTANCE_PROFILES } from "./acceptanceProfile.js";
+import { HOST_CAPABILITIES } from "./hostCapabilities.js";
 
 /** Zod input schemas — validate at the CLI/MCP boundary before touching the DB. */
 
@@ -504,6 +505,12 @@ export const setTestContractInput = z.object({
   // ACCEPTANCE PROFILE: the profile NAME only (an agent may raise unit to a profile; the
   // spec the runner executes is set by a person through setAcceptanceProfile).
   profile: z.enum(ACCEPTANCE_PROFILES).optional(),
+  // DECLARED NEEDS: the host capabilities the proof needs (a closed list; an unknown name
+  // is refused here). Absent keeps the contract's current list.
+  needs: z
+    .array(z.enum(HOST_CAPABILITIES))
+    .max(HOST_CAPABILITIES.length * 2)
+    .optional(),
 });
 export type SetTestContractInput = z.infer<typeof setTestContractInput>;
 

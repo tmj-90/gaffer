@@ -10,6 +10,7 @@ import { contractHash } from "../util/contractHash.js";
 import type { HumanQueue } from "../services/humanQueueService.js";
 import { epicImplementationMembers, epicsWithOwnAcceptance } from "../services/epicAcceptance.js";
 import { readTesterReplay } from "../services/testerReplay.js";
+import { readTesterHolds, type TesterHoldsReport } from "../services/testerHolds.js";
 import { VERSION } from "../version.js";
 
 /**
@@ -361,6 +362,11 @@ export interface StatsReport {
   readonly acceptedChange: AcceptedChangeReport | null;
   /** Review time, first-pass acceptance, lane verdicts (Release A metrics), or null. */
   readonly reviewMeasures?: ReviewMeasures | null;
+  /**
+   * TESTER HOLDS: the in_testing tickets the tester could not decide this stay (a
+   * `tester_unprovable` hold apart from the others) and its verdicts counted by kind.
+   */
+  readonly testerHolds?: TesterHoldsReport;
   /**
    * TESTER VERDICTS (package H1): every recorded tester verdict, a person's waiver counted
    * apart from the tester's own PASS: `passed` (the runner's tester: agent or system),
@@ -727,6 +733,7 @@ export function computeStats(
         return null;
       }
     })(),
+    testerHolds: readTesterHolds(db),
   };
 }
 
@@ -803,6 +810,22 @@ export function renderStats(stats: StatsReport): string {
     lines.push(
       `Tester verdicts: ${tv.passed} passed by the tester · ${tv.waived} waived by a person${tv.waived_without_isolation ? ` (${tv.waived_without_isolation} recorded without OS isolation)` : ""} · ${tv.failed} failed`,
     );
+  }
+  // TESTER HOLDS: what the tester lane concluded, an unprovable hold counted apart.
+  const th = stats.testerHolds;
+  if (th) {
+    const c = th.counts;
+    lines.push("");
+    lines.push(
+      `Tester lane: ${c.pass} pass · ${c.fail} fail · ${c.unprovable} cannot be proven on this host (held for a person) · ${c.held} other holds`,
+    );
+    for (const h of th.held) {
+      lines.push(
+        h.code === "tester_unprovable"
+          ? `  #${h.number ?? "?"} held for a person: criteria ${h.criteria.join(", ") || "?"} cannot be proven on this host${h.commit ? ` (tested ${h.commit.slice(0, 12)})` : ""}: ${h.reason}`
+          : `  #${h.number ?? "?"} held for a person: ${h.reason || "no reason recorded"}`,
+      );
+    }
   }
   // ACCEPTANCE GATE: implementation merged is not build accepted.
   const a = stats.acceptance;

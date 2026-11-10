@@ -1246,6 +1246,36 @@ switch (cmd) {
       );
     break;
   }
+  // status-tester-counts: stdin = stats JSON → "pass fail unprovable held" (the tester
+  // lane's verdicts on record, an unprovable hold apart from the other holds), then the
+  // number of in_testing tickets held unprovable now, space-separated; zeros when absent.
+  case "status-tester-counts": {
+    const p = tryParse(readStdin());
+    const th = (p.ok && p.value && p.value.testerHolds) || {};
+    const c = th.counts || {};
+    const n = (v) => Math.max(0, Math.trunc(Number(v) || 0));
+    const now = (Array.isArray(th.held) ? th.held : []).filter(
+      (h) => h && h.code === "tester_unprovable",
+    ).length;
+    println([n(c.pass), n(c.fail), n(c.unprovable), n(c.held), now].join(" "));
+    break;
+  }
+  // status-tester-holds: stdin = stats JSON → one line per in_testing ticket the tester
+  // held for a person as unprovable on this host (criteria, what the host lacks, the
+  // tested commit), at most 8.
+  case "status-tester-holds": {
+    const p = tryParse(readStdin());
+    if (!p.ok) process.exit(0);
+    const held = (((p.value || {}).testerHolds || {}).held || []).filter(
+      (h) => h && h.code === "tester_unprovable",
+    );
+    const one = (v) => String(v ?? "").replace(/[\r\n\t]+/g, " ");
+    for (const h of held.slice(0, 8))
+      println(
+        `    #${one(h.number)} criteria ${(Array.isArray(h.criteria) ? h.criteria : []).join(", ") || "?"} cannot be proven on this host${h.commit ? ` (tested ${one(h.commit).slice(0, 12)})` : ""}: ${one(h.reason).slice(0, 160)}`,
+      );
+    break;
+  }
   // loop-count in_review|blocked|decisions: the integers loop.sh's closing ping reads.
   case "loop-count": {
     const p = tryParse(readStdin());

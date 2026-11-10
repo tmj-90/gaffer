@@ -2,6 +2,7 @@
 
 import { DispatchError } from "../util/errors.js";
 import { isAcceptanceProfile, type AcceptanceProfile } from "./acceptanceProfileNames.js";
+import { isHostCapability, type HostCapability } from "./hostCapabilities.js";
 
 /**
  * Why a ticket went back to review through reopen-for-review: the auto-merge resolver
@@ -324,6 +325,14 @@ export interface TestContract {
    * probes, ...). Never set by an agent: the runner runs these commands.
    */
   profile_spec?: Record<string, unknown> | null;
+  /**
+   * DECLARED NEEDS: the host capabilities this ticket's proof needs (a closed list,
+   * domain/hostCapabilities.ts). The runner probes the host for each; one that is missing
+   * makes the tester's outcome a hold for a person (`tester_unprovable`), never a PASS.
+   * Only present in the JSON when non-empty, so an older contract's raw column (and so
+   * its contract hash) is unchanged.
+   */
+  needs?: HostCapability[];
 }
 
 /**
@@ -349,6 +358,9 @@ export function parseTestContract(raw: string | null): TestContract | null {
       harness_ready: parsed.harness_ready === true,
       ...(isAcceptanceProfile(parsed.profile) && parsed.profile !== "unit"
         ? { profile: parsed.profile }
+        : {}),
+      ...(Array.isArray(parsed.needs) && parsed.needs.some(isHostCapability)
+        ? { needs: [...new Set(parsed.needs.filter(isHostCapability))] }
         : {}),
       ...(isAcceptanceProfile(parsed.profile) &&
       parsed.profile !== "unit" &&

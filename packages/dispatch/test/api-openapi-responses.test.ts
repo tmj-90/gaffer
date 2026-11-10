@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ZodType } from "zod";
 
 import { setPrincipalResolver } from "../src/api/auth.js";
+import { principalFor } from "./helpers/principal.js";
 import * as R from "../src/api/openapi/responses.js";
 import { ENDPOINTS } from "../src/api/openapi/spec.js";
 import { createApiServer } from "../src/api/server.js";
@@ -69,10 +70,12 @@ interface Res {
   location: string | null;
   body: unknown;
 }
+/** The bearer token calls send: the shared token, or a principal's for a person's act. */
+let bearer = FULL;
 async function call(method: string, path: string, body?: unknown): Promise<Res> {
   const res = await fetch(`${base}${path}`, {
     method,
-    headers: { authorization: `Bearer ${FULL}`, "content-type": "application/json" },
+    headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json" },
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
   return { status: res.status, location: res.headers.get("location"), body: await res.json() };
@@ -289,13 +292,17 @@ describe("OpenAPI response schemas match the live routes", () => {
       else wg.approveReview(t, reviewer);
       if (t === impl) wg.markMerged(t, { type: "system" });
     }
-    await expectContract("POST /tickets/:id/tester", `/tickets/${acc}/tester`, {
-      verdict: "pass",
-      summary: "bound",
-      tested_commit: "0123456789abcdef0123456789abcdef01234567",
-      contract_hash: contractHash(wg.db, acc!),
-      replay: "passed",
-    });
+    // A person's verdict is a principal's (package H1): the shared token is refused.
+    bearer = principalFor(wg, human).token;
+    try {
+      await expectContract("POST /tickets/:id/tester", `/tickets/${acc}/tester`, {
+        verdict: "pass",
+        summary: "bound",
+        contract_hash: contractHash(wg.db, acc!),
+      });
+    } finally {
+      bearer = FULL;
+    }
 
     // --- decisions -----------------------------------------------------------------
     const d = await expectContract(

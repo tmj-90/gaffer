@@ -18,6 +18,7 @@ import { Dispatch } from "../src/core.js";
 import type { Actor } from "../src/domain/types.js";
 import { readTesterReplay, TESTER_REPLAY_PREFIX } from "../src/services/testerReplay.js";
 import { DispatchError } from "../src/util/errors.js";
+import { asPerson } from "./helpers/principal.js";
 
 const human: Actor = { type: "human", id: "tom" };
 const admin: Actor = { type: "admin", id: "root" };
@@ -94,7 +95,7 @@ function testedAndLanded(opts: { waiver?: boolean } = {}) {
   // TESTER FIRST: the runner sends it to the tester before review; the PASS returns it to
   // review, and the person approves (pins) the tested commit.
   expect(d.routeToTester(t.id, system)[0]!.routed).toBe(true);
-  if (opts.waiver) d.testerPass(t.id, { summary: "checked by hand" }, human);
+  if (opts.waiver) d.testerPass(t.id, { summary: "checked by hand" }, human, asPerson(d, human));
   else
     d.testerPass(t.id, { summary: "black-box PASS", tested_commit: pin, replay: "passed" }, tester);
   expect(d.view(t.id).ticket.status).toBe("in_review");

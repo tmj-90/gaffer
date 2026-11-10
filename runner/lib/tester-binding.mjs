@@ -16,7 +16,9 @@
 // path); a verdict-shaped row the delivery agent recorded itself is not one.
 //   no tester PASS recorded   → an ordinary ticket lands (no tester involved);
 //                               an ACCEPTANCE ticket is HELD (nothing certifies it)
-//   a HUMAN PASS (waiver)     → lands, pinned to the branch head, logged as a waiver
+//   a HUMAN PASS (waiver)     → lands the commit it waived (its tested_commit) when that
+//                               is still the head, logged as a waiver; HELD when the
+//                               head moved or the waiver names no commit (package H1)
 //   an agent PASS, no commit  → an ordinary ticket lands (legacy, logged);
 //                               an ACCEPTANCE ticket is HELD (unverified)
 //   bound PASS, head == tested → lands, pinned to the tested commit
@@ -472,7 +474,29 @@ function testerLandingDecision({
       return hold("unverified", "acceptance ticket has no tester PASS on record", { head });
     return headLanding("no-tester", "no tester involved");
   }
-  if (pass.provenance === "human") return headLanding("waived", "human tester-pass (waiver)");
+  // A PERSON'S WAIVER (package H1) covers the commit it was recorded on and no other: a
+  // waiver lands only that commit (dispatch's beginLanding also refuses one a new commit
+  // or a contract edit voided). One that names no commit (recorded before waivers were
+  // bound) cannot show the head is the one the person waived: HELD.
+  if (pass.provenance === "human") {
+    const waived = typeof pass.tested_commit === "string" ? pass.tested_commit.toLowerCase() : "";
+    if (!/^[0-9a-f]{40,64}$/.test(waived))
+      return hold(
+        "unverified",
+        "a person's tester waiver names no commit (recorded before waivers were bound to the head); send the ticket back through the tester, or have a person waive it again with a principal's token",
+        { head },
+      );
+    if (head !== waived)
+      return hold(
+        "moved",
+        `${branch} moved since a person waived the tester on ${waived.slice(0, 12)}`,
+        {
+          tested: waived,
+          head,
+        },
+      );
+    return headLanding("waived", "a person's tester waiver of this commit");
+  }
   const tested = typeof pass.tested_commit === "string" ? pass.tested_commit.toLowerCase() : "";
   if (!/^[0-9a-f]{40,64}$/.test(tested)) {
     if (ev.acceptance)

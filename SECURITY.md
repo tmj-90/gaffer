@@ -268,6 +268,44 @@ them. A PASS the runner could not replay (no test command, `GAFFER_TESTER_REPLAY
 held for a human as unverified, and dispatch refuses an automated PASS without a passed
 replay. An older PASS without identities is file-level evidence only.
 
+**A person's verdict.** A person may record the tester's verdict instead: a PASS that
+waives the tester (a hold the runner cannot settle on this host, a criterion the tester
+cannot observe) or a FAIL. Dispatch accepts one only from an active human or admin
+principal with full capability, re-read from the database inside the verdict's
+transaction: `GAFFER_PRINCIPAL_TOKEN` / `--as-principal` on the CLI, the principal's
+bearer token on REST and the dashboard. The tokenless operator CLI, `--as human|admin`,
+the shared API token and a revoked principal are refused (`principal_required`). A
+waiver records what dispatch computed: every write repo's delivery head (refused when one
+cannot be read), the contract hash, the criteria it waives, the summary, the principal and
+the factory's isolation (`none` when agents run without an OS sandbox, read from the
+runner's `sandbox-status`). It carries no runner measurement. A new commit in any covered
+repo or a contract edit voids it (approval and `landing-begin` refuse as not tested, and
+the landing decision holds a waiver of another commit or of none). Every surface labels
+it "tester verdict waived by <principal> for criteria <...> on <sha>: <summary>", and an
+epic resting on one reads "accepted with N waiver(s)".
+
+The principal token is a person's credential. The runner takes it out of its own
+environment when the config loads (only `gaffer wg` hands it back to the CLI the person
+typed), the bash agent-env allowlist and the Node worker seam drop it from every agent
+launch, the command worker can never be handed it, and the docker wrapper forwards an
+allowlist that does not name it. The safety hook refuses it handed to any program and the
+hand routes around the tester (`ticket move`, `ready`, `hold`, `reopen-for-review`,
+`block`, `unblock`, `human-claim`, `human-release`, `tester-pass`, `tester-fail`) from an
+agent's shell. Where agents run without an OS sandbox (`GAFFER_STRICT_REQUIRE=0` and no
+wrapping), the safety hook is all that stands between an agent and a person's verdict:
+`preflight.sh` and `gaffer status` say so, and a waiver recorded then says "recorded
+without OS isolation". The operator who can open the database file can still write
+anything in it; signing the gate events (a separate change) addresses that. Two operator
+credentials also reach a tester verdict by another road, and the principal requirement
+does not change it: the tokenless CLI can record the runner's own verdict by hand
+(`tester-pass --as system --replay passed` with the head and the contract hash), which
+reads as the tester's verified PASS rather than a waiver; and the shared API token (the
+dashboard link) or the tokenless CLI can mint a human principal (`POST /api/principals`,
+`principal create`) and waive with it. The requirement keeps a person's verdict out of an
+agent's reach and attributes it to a named principal; it does not bound the operator's
+own credentials, and until gate events are signed only the safety hook and the OS sandbox
+keep an agent off those two roads.
+
 **What the replay proves**: that those named tests executed and passed under the
 registered command on the candidate. Not what they assert. The tester's per-criterion
 notes are its own claims.

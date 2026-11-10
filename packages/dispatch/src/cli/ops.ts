@@ -287,6 +287,17 @@ export interface EpicAcceptance {
     | "pending";
   /** True when every implementation ticket is done and the build is neither accepted nor waived. */
   readonly unaccepted: boolean;
+  /**
+   * A PERSON'S WAIVERS the acceptance rests on (package H1): the acceptance ticket's
+   * latest tester PASS when it is a person's, plus each implementation member whose latest
+   * tester PASS is a person's. Counted apart from the tester's own PASSes.
+   */
+  readonly waivers: number;
+  /**
+   * What a reader is told: the result, except that an accepted or waived build with any
+   * waiver reads "accepted with N waiver(s)", never plain "accepted".
+   */
+  readonly label: string;
   /** Provenance of the latest PASS (agent / system / human), or null when none was recorded. */
   readonly pass_provenance: string | null;
   /** Replay outcome recorded on the latest PASS (passed / failed / skipped), or null. */
@@ -350,6 +361,54 @@ export interface StatsReport {
   readonly acceptedChange: AcceptedChangeReport | null;
   /** Review time, first-pass acceptance, lane verdicts (Release A metrics), or null. */
   readonly reviewMeasures?: ReviewMeasures | null;
+  /**
+   * TESTER VERDICTS (package H1): every recorded tester verdict, a person's waiver counted
+   * apart from the tester's own PASS: `passed` (the runner's tester: agent or system),
+   * `waived` (a person's PASS), `failed` (any FAIL), `waived_without_isolation` (waivers
+   * recorded while agents ran without an OS sandbox).
+   */
+  readonly testerVerdicts?: TesterVerdictCounts;
+}
+
+export interface TesterVerdictCounts {
+  readonly passed: number;
+  readonly waived: number;
+  readonly failed: number;
+  readonly waived_without_isolation: number;
+}
+
+/** Tester verdict counts (see StatsReport.testerVerdicts); zeros on a reduced fixture. */
+export function computeTesterVerdicts(db: Db): TesterVerdictCounts {
+  const out = { passed: 0, waived: 0, failed: 0, waived_without_isolation: 0 };
+  try {
+    const rows = db
+      .prepare(
+        `SELECT w.event_type AS kind, e.payload_json AS payload_json FROM work_events w
+           JOIN evidence e ON e.id = json_extract(w.payload_json, '$.evidence_id')
+          WHERE w.entity_type = 'ticket'
+            AND w.event_type IN ('ticket.tester_passed', 'ticket.tester_failed')`,
+      )
+      .all() as Array<{ kind: string; payload_json: string | null }>;
+    for (const r of rows) {
+      if (r.kind === "ticket.tester_failed") {
+        out.failed++;
+        continue;
+      }
+      let p: { provenance?: unknown; waiver?: { isolation?: unknown } } = {};
+      try {
+        p = JSON.parse(r.payload_json ?? "{}") as typeof p;
+      } catch {
+        p = {};
+      }
+      if (p.provenance === "human") {
+        out.waived++;
+        if (!p.waiver || p.waiver.isolation === "none") out.waived_without_isolation++;
+      } else out.passed++;
+    }
+  } catch {
+    /* no event or evidence table */
+  }
+  return out;
 }
 
 /** The accepted-change report for `wg stats`, or null without a usage ledger. */
@@ -406,6 +465,35 @@ function span(ms: number | null): string {
   const m = Math.floor(s / 60);
   if (m < 60) return `${m}m`;
   return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`;
+}
+
+/** The ticket's latest tester PASS row (named by a `ticket.tester_passed` event), or null. */
+function latestTesterPass(db: Db, ticketId: string): { payload_json: string | null } | null {
+  return (
+    (db
+      .prepare(
+        `SELECT e.payload_json FROM evidence e
+          WHERE e.ticket_id = ? AND e.evidence_type = 'test_output'
+            AND e.payload_json LIKE '%"verdict":"pass"%'
+            AND EXISTS (SELECT 1 FROM work_events w WHERE w.entity_type = 'ticket'
+                         AND w.entity_id = e.ticket_id AND w.event_type = 'ticket.tester_passed'
+                         AND json_extract(w.payload_json, '$.evidence_id') = e.id)
+          ORDER BY e.created_at DESC, e.rowid DESC LIMIT 1`,
+      )
+      .get(ticketId) as { payload_json: string | null } | undefined) ?? null
+  );
+}
+
+/** True when the ticket's latest tester PASS is a person's (a waiver). Fail-soft. */
+function isWaiverPass(db: Db, ticketId: string): boolean {
+  try {
+    const row = latestTesterPass(db, ticketId);
+    return (
+      (JSON.parse(row?.payload_json ?? "{}") as { provenance?: unknown }).provenance === "human"
+    );
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -498,12 +586,9 @@ export function computeAcceptance(db: Db): AcceptanceSummary {
     let replay: string | null = null;
     let boundIdentities = false;
     try {
-      const ev = db
-        .prepare(
-          `SELECT payload_json FROM evidence WHERE ticket_id = ? AND evidence_type = 'test_output'
-             AND payload_json LIKE '%"verdict":"pass"%' ORDER BY created_at DESC, rowid DESC LIMIT 1`,
-        )
-        .get(r.id) as { payload_json: string | null } | undefined;
+      // Only a tester PASS (the row a `ticket.tester_passed` event names): a verdict-shaped
+      // row anyone else recorded (an agent's record_ac_evidence) is no PASS and no waiver.
+      const ev = latestTesterPass(db, r.id);
       if (ev?.payload_json) {
         const p = JSON.parse(ev.payload_json) as {
           tested_commit?: unknown;
@@ -555,6 +640,9 @@ export function computeAcceptance(db: Db): AcceptanceSummary {
       r.impl_done === r.impl_total &&
       result !== "accepted" &&
       result !== "waived";
+    const waivers =
+      (provenance === "human" ? 1 : 0) +
+      epicImplementationMembers(db, r.epic_id).filter((m) => isWaiverPass(db, m.id)).length;
     return {
       epic_node_id: r.epic_id,
       epic_name: r.epic_name,
@@ -566,6 +654,11 @@ export function computeAcceptance(db: Db): AcceptanceSummary {
       scope_changed: scopeChanged,
       result,
       unaccepted,
+      waivers,
+      label:
+        (result === "accepted" || result === "waived") && waivers > 0
+          ? `accepted with ${waivers} waiver${waivers === 1 ? "" : "s"}`
+          : result,
       pass_provenance: provenance,
       replay,
       accepted_commit: acceptedCommit,
@@ -621,6 +714,7 @@ export function computeStats(
     activeClaims,
     staleClaims,
     acceptance: computeAcceptance(db),
+    testerVerdicts: computeTesterVerdicts(db),
     acceptedChange: computeAcceptedChange(db, env),
     reviewMeasures: (() => {
       try {
@@ -703,16 +797,23 @@ export function renderStats(stats: StatsReport): string {
       `Escaped-defect rate: ${pc(e.rate_pct)} (${e.escaped} of ${e.accepted_changes} accepted changes in the last ${e.window_days} days were linked to a later regression; ${pc(e.all_time.rate_pct)} of ${e.all_time.accepted_changes} all time, ${e.links} link(s)). ${e.note}`,
     );
   }
+  // TESTER VERDICTS: a person's waiver is never counted as the tester's PASS.
+  const tv = stats.testerVerdicts;
+  if (tv && tv.passed + tv.waived + tv.failed > 0) {
+    lines.push(
+      `Tester verdicts: ${tv.passed} passed by the tester · ${tv.waived} waived by a person${tv.waived_without_isolation ? ` (${tv.waived_without_isolation} recorded without OS isolation)` : ""} · ${tv.failed} failed`,
+    );
+  }
   // ACCEPTANCE GATE: implementation merged is not build accepted.
   const a = stats.acceptance;
   if (a && a.epics.length > 0) {
     lines.push("");
     lines.push(
-      `Builds:  ${a.accepted} accepted (verified) · ${a.waived} waived by a human · ${a.unverified} unverified · ${a.unreplayed} not replayed on the landed revision · ${a.stale} stale · ${a.testing} in acceptance testing · ${a.failed} failed acceptance · ${a.unaccepted} NOT accepted with implementation merged`,
+      `Builds:  ${a.accepted} accepted (verified) · ${a.waived} waived by a person · ${a.unverified} unverified · ${a.unreplayed} not replayed on the landed revision · ${a.stale} stale · ${a.testing} in acceptance testing · ${a.failed} failed acceptance · ${a.unaccepted} NOT accepted with implementation merged`,
     );
     for (const e of a.epics) {
       lines.push(
-        `  ${e.epic_name}: implementation ${e.implementation_done}/${e.implementation_total} done · acceptance #${e.acceptance_ticket ?? "?"} ${e.acceptance_status} → ${e.result}${e.accepted_commit ? ` @ ${e.accepted_commit.slice(0, 12)}` : ""}${e.replayed_commit ? (e.replayed_files.length ? ` · tester assertions passed on landed ${e.replayed_commit.slice(0, 12)} (${e.replayed_files.join(", ")})` : ` · landed ${e.replayed_commit.slice(0, 12)} with NO tester test file replayed`) + (e.not_replayed_repos.length ? `; not replayed in ${e.not_replayed_repos.join(", ")}` : "") : ""}${e.result === "unreplayed" ? (e.replayed_commit ? "  ← no tester assertion ran on the revision that landed; re-test so the tester saves its tests" : "  ← the tester's assertions were never recorded passing on the revision that landed (a landing with GAFFER_TESTER_REPLAY off records nothing)") : ""}${e.result === "stale" ? "  ← the contract changed after the tester's PASS; re-test" : e.result === "unverified" ? "  ← no revision-bound PASS (commit + contract + clean replay); re-test, or waive: tester-pass --as human" : e.result === "waived" ? "  (human waiver — not a revision-bound test)" : e.unaccepted ? "  ← needs the tester or a human tester-pass" : ""}`,
+        `  ${e.epic_name}: implementation ${e.implementation_done}/${e.implementation_total} done · acceptance #${e.acceptance_ticket ?? "?"} ${e.acceptance_status} → ${e.label}${e.accepted_commit ? ` @ ${e.accepted_commit.slice(0, 12)}` : ""}${e.replayed_commit ? (e.replayed_files.length ? ` · tester assertions passed on landed ${e.replayed_commit.slice(0, 12)} (${e.replayed_files.join(", ")})` : ` · landed ${e.replayed_commit.slice(0, 12)} with NO tester test file replayed`) + (e.not_replayed_repos.length ? `; not replayed in ${e.not_replayed_repos.join(", ")}` : "") : ""}${e.result === "unreplayed" ? (e.replayed_commit ? "  ← no tester assertion ran on the revision that landed; re-test so the tester saves its tests" : "  ← the tester's assertions were never recorded passing on the revision that landed (a landing with GAFFER_TESTER_REPLAY off records nothing)") : ""}${e.result === "stale" ? "  ← the contract changed after the tester's PASS; re-test" : e.result === "unverified" ? "  ← no revision-bound PASS (commit + contract + clean replay); re-test, or waive with a principal's token: GAFFER_PRINCIPAL_TOKEN=<token> wg ticket tester-pass" : e.result === "waived" ? "  (a person's waiver, not a revision-bound test)" : e.unaccepted ? "  ← needs the tester or a person's waiver (tester-pass with a principal's token)" : ""}`,
       );
     }
   }

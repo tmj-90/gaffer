@@ -368,6 +368,11 @@ export const testerVerdictBody = z.object({
   /** The runner's acceptance evidence row, for a ticket with an acceptance profile. */
   acceptance_evidence: z.string().trim().min(1).max(200).optional(),
   /**
+   * A person's waiver (pass, a human or admin principal): the criteria it waives, by
+   * position (1 = the first) or id. Default: every criterion of the ticket.
+   */
+  criteria: z.array(z.string().trim().min(1).max(64)).max(200).optional(),
+  /**
    * The testing round the verdict was made in (the id of the ticket's entry into
    * in_testing that the tester started in). A verdict for a round that is no longer the
    * current one is a 409 STALE_VERDICT and is kept as stale evidence.

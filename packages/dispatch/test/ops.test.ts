@@ -164,8 +164,16 @@ describe("stats --json projection shape", () => {
       "openDecisions",
       "reviewMeasures",
       "staleClaims",
+      "testerVerdicts",
       "ticketsByStatus",
     ]);
+    // TESTER VERDICTS (package H1): a person's waiver counted apart from the tester's PASS.
+    expect(parsed.testerVerdicts).toEqual({
+      passed: 0,
+      waived: 0,
+      failed: 0,
+      waived_without_isolation: 0,
+    });
     // ACCEPTANCE GATE: the build-acceptance summary is always present (empty when no epic).
     expect(parsed.acceptance).toEqual({
       unaccepted: 0,

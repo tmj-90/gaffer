@@ -3,6 +3,7 @@
  * moves, the tester's PASS, holds and required CI, send-backs (reject, Fix these, Won't do)
  * with the REVOCATION-SAFE LANDING report, and the human-gate pings those transitions fire.
  */
+import type { VerdictPrincipal } from "./reviewGate/waiver.js";
 import { inTransaction } from "../db/connection.js";
 import { type Actor, type ReopenForReviewCause } from "../domain/types.js";
 import { writeEvent } from "../events/eventWriter.js";
@@ -146,10 +147,13 @@ export function testerPass(
     tester_agent?: unknown;
     /** The testing round the verdict was made in (a stale one is refused). */
     round?: string;
+    /** A person's waiver: the criteria it waives, by position or id (default: all). */
+    criteria?: readonly string[];
   },
   actor: Actor,
+  authority: { principal?: VerdictPrincipal | null } = {},
 ): TransitionResult {
-  const result = host.reviewGateSvc.testerPass(ticketRef, input, actor);
+  const result = host.reviewGateSvc.testerPass(ticketRef, input, actor, authority);
   // TESTER FIRST: the PASS returned the ticket to review: now a person is needed.
   if (result.ticket.status === "in_review") {
     emitGate(host, internals, "review_needed", result.ticket, {

@@ -694,7 +694,10 @@ function memoryPrimedPanel(t, evidence, reworkTrail) {
  * and the tester's recorded test_output evidence. The toggle POSTs /testable; the
  * contract is read-only here (filled by the implementer/reviewer via CLI/MCP).
  */
-function renderTestingCard(t, evidence) {
+function renderTestingCard(t, evidence, extra = {}) {
+  // A PERSON'S WAIVER (package H1): the sentence the server built, shown as a waiver.
+  const waiver = extra && extra.waiver && extra.waiver.label ? extra.waiver : null;
+  const epicAcc = extra && extra.epicAcceptance ? extra.epicAcceptance : null;
   const contract = parseTicketTestContract(t.test_contract);
   const testable = t.can_be_tested === 1;
 
@@ -862,6 +865,15 @@ function renderTestingCard(t, evidence) {
         el("span", { class: "switch-track" }, el("span", { class: "switch-thumb" })),
       ]),
     ]),
+    waiver
+      ? el("p", { class: "tk-waiver callout warn", role: "note" }, [
+          el("strong", {}, "Waived: "),
+          waiver.label,
+        ])
+      : null,
+    epicAcc
+      ? el("p", { class: "tk-epic-acceptance dim" }, `Epic ${epicAcc.epic}: ${epicAcc.label}`)
+      : null,
     el("h3", { class: "tk-h3" }, "Test contract"),
     contractRows,
     el("h3", { class: "tk-h3" }, "Acceptance profile"),

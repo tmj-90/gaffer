@@ -72,6 +72,11 @@ if declare -F gaffer_sandbox_probe >/dev/null 2>&1; then
   else
     no "OS sandbox: $GAFFER_SBX_PROVIDER, missing — $GAFFER_SBX_MISSING; live runs refuse to launch agents. Fix: $GAFFER_SBX_FIX (or GAFFER_STRICT_REQUIRE=0 in the environment, only inside a VM or container you trust)"
   fi
+  # HUMAN VERDICTS (package H1): agents that do run, unwrapped, are kept from a person's
+  # verdict by the safety hook alone.
+  if ! _sandbox_strict_required && ! _gaffer_agents_wrapped_probed; then
+    wn "human verdicts: $(gaffer_human_verdict_isolation_warning)"
+  fi
 fi
 if command -v "$CLAUDE_BIN" >/dev/null; then ok "claude CLI: $($CLAUDE_BIN --version 2>/dev/null | head -1)"
 else wn "claude CLI not on PATH — required for LIVE runs (dry-run works without it)"; fi

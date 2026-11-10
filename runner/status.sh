@@ -149,6 +149,13 @@ else _sbx="opted out (GAFFER_STRICT_REQUIRE=${GAFFER_STRICT_REQUIRE:-} in the en
 printf "\n  ${c_dim}posture${c_off}\n"
 printf "    %-12s %s\n" "mode:" "$_mode" "review:" "${REVIEW_MODE:-human}" "auto-merge:" "$(_on_off "${AUTO_MERGE:-0}")" \
   "day cap:" "$_cap" "ticks/day:" "${MAX_TICKS_PER_DAY:-0}" "sandbox:" "$_sbx"
+# HUMAN VERDICTS (package H1): agents that run unwrapped (the opt-out, and no OS sandbox
+# wrapping them) are kept from a person's verdict by the safety hook alone. Asked only
+# when the opt-out is in force: a required sandbox means no agent runs without one.
+if declare -F _sandbox_strict_required >/dev/null 2>&1 && ! _sandbox_strict_required \
+  && declare -F gaffer_agents_wrapped >/dev/null 2>&1 && ! gaffer_agents_wrapped; then
+  warn "human verdicts: $(gaffer_human_verdict_isolation_warning)"
+fi
 
 # Pre-build short-circuit: if the products were never built, the bundled doctor
 # CLIs (dist/cli/index.js, MEMORY_CLI_BIN) don't exist and each roll_doctor would
@@ -216,7 +223,7 @@ fi
 printf "    needs review: %s    blocked: %s    ready: %s    paused: %s\n" "$review" "$blocked" "$ready" "$paused"
 [ "$paused_waiting" -gt 0 ] && printf "    ${c_yel}paused, waiting on you: %s${c_off}  (hit a cap with its work kept — Continue or Stop it on the board, or: gaffer wg ticket continue <n>)\n" "$paused_waiting"
 [ "$resume_req" -gt 0 ] && printf "    ${c_dim}paused, Continue pressed: %s (the next tick resumes it)${c_off}\n" "$resume_req"
-[ "$unaccepted" -gt 0 ] && printf "    ${c_yel}builds NOT accepted: %s${c_off}  (implementation merged; the acceptance ticket has no tester PASS, or the tester's assertions were not replayed on the revision that landed — run the loop with the tester, or record a human verdict: wg ticket tester-pass <n> --as human)\n" "$unaccepted"
+[ "$unaccepted" -gt 0 ] && printf "    ${c_yel}builds NOT accepted: %s${c_off}  (implementation merged; the acceptance ticket has no tester PASS, or the tester's assertions were not replayed on the revision that landed: run the loop with the tester, or record a person's verdict with a principal's token: GAFFER_PRINCIPAL_TOKEN=<token> gaffer wg ticket tester-pass <n> --summary \"<what you checked>\")\n" "$unaccepted"
 # TESTER REPLAY OFF: no landing replays the tester's tests or records it, so no epic can
 # count as accepted while it is off — say so rather than leave the count to explain itself.
 case "${GAFFER_TESTER_REPLAY:-1}" in

@@ -87,6 +87,11 @@ function probes(mcpConfigPath) {
   const tokenSeen =
     "GAFFER_CLAIM_TOKEN" in process.env || /GAFFER_CLAIM_TOKEN|DISPATCH_DB|"env"/.test(cfgText);
   out.push(tokenSeen ? "TOKEN_LEAK" : "TOKEN_ABSENT");
+  // A PERSON'S CREDENTIAL (package H1): the operator's GAFFER_PRINCIPAL_TOKEN never
+  // reaches an agent, whatever the operator exported before the run.
+  out.push(
+    "GAFFER_PRINCIPAL_TOKEN" in process.env ? "PRINCIPAL_TOKEN_LEAK" : "PRINCIPAL_TOKEN_ABSENT",
+  );
   // The agent profile forwards the model credential (a decoy in the deterministic run):
   // its presence here is what makes the gates' "no credential" check non-vacuous.
   out.push(

@@ -78,7 +78,7 @@ gaffer_command_env_pass_names() {
   for n in $(printf '%s' "${GAFFER_WORKER_COMMAND_ENV:-}" | tr ',' ' '); do
     case "$n" in
       *[!A-Za-z0-9_]* | [0-9]*) continue ;;
-      DISPATCH_API_TOKEN | GAFFER_CLAIM_TOKEN | GITHUB_TOKEN | GH_TOKEN | GAFFER_NOTIFY_* | *_WEBHOOK* | *_SLACK*) continue ;;
+      DISPATCH_API_TOKEN | GAFFER_CLAIM_TOKEN | GAFFER_PRINCIPAL_TOKEN | GITHUB_TOKEN | GH_TOKEN | GAFFER_NOTIFY_* | *_WEBHOOK* | *_SLACK*) continue ;;
     esac
     printf '%s\n' "$n"
   done
@@ -192,7 +192,9 @@ gaffer_agent_env() {
       # shellcheck disable=SC2221,SC2222
       case "$name" in
         # Credential-shaped vars — never reach the agent:
-        *_TOKEN|*_SECRET|*_KEY|*_PASSWORD|*_PASSWD|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|GITHUB_TOKEN|GH_TOKEN|DISPATCH_API_TOKEN)
+        # GAFFER_PRINCIPAL_TOKEN is a PERSON's credential (package H1): with it the CLI
+        # records a human verdict, so no agent may ever hold it.
+        *_TOKEN|*_SECRET|*_KEY|*_PASSWORD|*_PASSWD|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|GITHUB_TOKEN|GH_TOKEN|DISPATCH_API_TOKEN|GAFFER_PRINCIPAL_TOKEN)
           continue ;;
         # Outbound endpoint / notify config — runner-only; the agent must not read
         # its own potential exfiltration channel:

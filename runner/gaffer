@@ -161,7 +161,20 @@ cmd="${1:-help}"; shift || true
 # principal. Every other command runs the factory itself (the loop, onboarding, the
 # dashboard and the runners it spawns), whose own bookkeeping is the operator's and
 # the system's, never a principal's, so the token is dropped for them.
-case "$cmd" in wg|approve|merge) ;; *) unset GAFFER_PRINCIPAL_TOKEN ;; esac
+# factory.config.sh already took the token out of this process's environment into the
+# unexported _GAFFER_PERSON_TOKEN (package H1); `approve` and `merge` are commands the
+# person typed, so they get it back here (merge hands it to its scope check only, never
+# to the merge lane), and `wg` gets it back on its own exec below.
+case "$cmd" in
+  approve | merge)
+    if [ -n "${_GAFFER_PERSON_TOKEN:-}" ]; then
+      GAFFER_PRINCIPAL_TOKEN="$_GAFFER_PERSON_TOKEN"
+      export GAFFER_PRINCIPAL_TOKEN
+    fi
+    ;;
+  wg) ;;
+  *) unset GAFFER_PRINCIPAL_TOKEN _GAFFER_PERSON_TOKEN ;;
+esac
 case "$cmd" in
   onboard|dashboard|status|sandbox-status|setup|demo|eval|approve|merge|run|skills|plan|lore)
     if wants_help "$@"; then usage "$cmd"; exit 0; fi ;;
@@ -571,6 +584,12 @@ wg)
   # without a dashboard: create → ac add → repo-access set → ready → (after delivery)
   # review approve. Same binary the runner uses; nothing hidden.
   # DISPATCH_CLI_NAME: its help and usage errors say `gaffer wg`, the name you typed.
+  # A PERSON'S CREDENTIAL (package H1): factory.config.sh took GAFFER_PRINCIPAL_TOKEN out
+  # of the runner's environment; the CLI the person typed gets it back, and only it.
+  if [ -n "${_GAFFER_PERSON_TOKEN:-}" ]; then
+    exec env DISPATCH_CLI_NAME="gaffer wg" GAFFER_PRINCIPAL_TOKEN="$_GAFFER_PERSON_TOKEN" \
+      node "$DISPATCH_DIR/dist/cli/index.js" --db "$DISPATCH_DB" "$@"
+  fi
   exec env DISPATCH_CLI_NAME="gaffer wg" node "$DISPATCH_DIR/dist/cli/index.js" --db "$DISPATCH_DB" "$@"
   ;;
 

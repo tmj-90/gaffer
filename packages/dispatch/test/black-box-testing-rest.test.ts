@@ -6,6 +6,7 @@ import { createApiServer } from "../src/api/server.js";
 import { Dispatch } from "../src/core.js";
 import type { Actor } from "../src/domain/types.js";
 import { TestClock } from "../src/util/clock.js";
+import { principalFor } from "./helpers/principal.js";
 import { giveTicketRealDelivery, nonEmptyDiffRunner, shownCommits } from "./helpers/realDiff.js";
 
 const human: Actor = { type: "human", id: "tom" };
@@ -41,10 +42,14 @@ async function call(
   method: string,
   path: string,
   body?: unknown,
+  token?: string,
 ): Promise<{ status: number; body: Record<string, unknown> }> {
   const res = await fetch(`${baseUrl}${path}`, {
     method,
-    headers: body !== undefined ? { "content-type": "application/json" } : {},
+    headers: {
+      ...(body !== undefined ? { "content-type": "application/json" } : {}),
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+    },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   const text = await res.text();
@@ -127,10 +132,21 @@ describe("BBT-001 REST surface", () => {
     h.wg.routeToTester(ticketId, { type: "system" });
     expect(h.wg.view(ticketId).ticket.status).toBe("in_testing");
 
-    const pass = await call(h.baseUrl, "POST", `/tickets/${ticketId}/tester`, {
+    // A person's PASS (a waiver) needs a principal's session (package H1): without one
+    // it is refused and nothing moves.
+    const anonymous = await call(h.baseUrl, "POST", `/tickets/${ticketId}/tester`, {
       verdict: "pass",
       summary: "all black-box tests pass",
     });
+    expect(anonymous.status).toBe(403);
+    expect(h.wg.view(ticketId).ticket.status).toBe("in_testing");
+    const pass = await call(
+      h.baseUrl,
+      "POST",
+      `/tickets/${ticketId}/tester`,
+      { verdict: "pass", summary: "all black-box tests pass" },
+      principalFor(h.wg, human).token,
+    );
     expect(pass.status).toBe(200);
     expect((pass.body.ticket as { status: string }).status).toBe("in_review");
 
@@ -150,10 +166,18 @@ describe("BBT-001 REST surface", () => {
     await call(h.baseUrl, "POST", `/tickets/${ticketId}/testable`, { can_be_tested: true });
     h.wg.routeToTester(ticketId, { type: "system" });
 
-    const fail = await call(h.baseUrl, "POST", `/tickets/${ticketId}/tester`, {
+    const anonymous = await call(h.baseUrl, "POST", `/tickets/${ticketId}/tester`, {
       verdict: "fail",
       summary: "endpoint returns 500",
     });
+    expect(anonymous.status).toBe(403);
+    const fail = await call(
+      h.baseUrl,
+      "POST",
+      `/tickets/${ticketId}/tester`,
+      { verdict: "fail", summary: "endpoint returns 500" },
+      principalFor(h.wg, human).token,
+    );
     expect(fail.status).toBe(200);
     expect((fail.body.ticket as { status: string }).status).toBe("refining");
   });

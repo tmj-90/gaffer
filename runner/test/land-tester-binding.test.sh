@@ -60,8 +60,13 @@ sql "UPDATE tickets SET acceptance = 1"; out="$(decide)"; rc=$?
 [ "$rc" -eq 4 ] && [ "$(kind "$out")" = "unverified" ] && ok "ACCEPTANCE ticket, no tester PASS → hold (unverified)" || fail "acceptance no pass: rc=$rc $out"
 set_pass '{"verdict":"pass","provenance":"agent"}'; out="$(decide)"; rc=$?
 [ "$rc" -eq 4 ] && [ "$(kind "$out")" = "unverified" ] && ok "ACCEPTANCE ticket, agent PASS with no commit → hold (unverified)" || fail "acceptance legacy: rc=$rc $out"
+set_pass "{\"verdict\":\"pass\",\"provenance\":\"human\",\"tested_commit\":\"$TESTED\"}"; out="$(decide)"; rc=$?
+[ "$rc" -eq 0 ] && [ "$(kind "$out")" = "waived" ] && [[ "$out" == *"\"pin\":\"$TESTED\""* ]] && ok "ACCEPTANCE ticket, HUMAN PASS bound to the head → land as a waiver, pinned to it" || fail "waiver: rc=$rc $out"
+# Package H1: a waiver covers the commit it was recorded on. Another commit, or none, holds.
+set_pass "{\"verdict\":\"pass\",\"provenance\":\"human\",\"tested_commit\":\"$(printf 'b%.0s' $(seq 40))\"}"; out="$(decide)"; rc=$?
+[ "$rc" -eq 4 ] && [ "$(kind "$out")" = "moved" ] && ok "a HUMAN waiver of another commit → hold (moved)" || fail "moved waiver: rc=$rc $out"
 set_pass '{"verdict":"pass","provenance":"human"}'; out="$(decide)"; rc=$?
-[ "$rc" -eq 0 ] && [ "$(kind "$out")" = "waived" ] && ok "ACCEPTANCE ticket, HUMAN PASS → land as a waiver" || fail "waiver: rc=$rc $out"
+[ "$rc" -eq 4 ] && [ "$(kind "$out")" = "unverified" ] && ok "a HUMAN waiver naming no commit → hold (unverified)" || fail "unbound waiver: rc=$rc $out"
 sql "UPDATE tickets SET acceptance = 0"
 set_pass '{"verdict":"pass","provenance":"agent"}'; out="$(decide)"; rc=$?
 [ "$rc" -eq 0 ] && [ "$(kind "$out")" = "legacy-unbound" ] && ok "ordinary ticket, pre-binding agent PASS → land (legacy, logged)" || fail "legacy: rc=$rc $out"
@@ -127,7 +132,9 @@ pin "$REVIEWED" system 2026-09-29T00:05:00.000Z; out="$(decide10)"; rc=$?
 g checkout -q gaffer/ticket-10-y; echo late > "$R/g"; g add -A; g commit -q -m "unreviewed late commit"; g checkout -q main
 out="$(decide10)"; rc=$?
 [ "$rc" -eq 4 ] && [ "$(kind "$out")" = "moved-since-review" ] && ok "branch moved past the reviewed commit → hold (moved-since-review)" || fail "moved since review: rc=$rc $out"
-sql2 "INSERT INTO evidence VALUES ('h1', 't10', 'test_output', 'pass', NULL, '{\"verdict\":\"pass\",\"provenance\":\"human\"}', 'human', '2026-09-29T00:06:00.000Z');
+# The waiver is bound to the current head (package H1), so the review pin alone decides.
+LATE="$(g rev-parse gaffer/ticket-10-y)"
+sql2 "INSERT INTO evidence VALUES ('h1', 't10', 'test_output', 'pass', NULL, '{\"verdict\":\"pass\",\"provenance\":\"human\",\"tested_commit\":\"$LATE\"}', 'human', '2026-09-29T00:06:00.000Z');
       INSERT INTO work_events VALUES ('w2', 'ticket', 't10', 'ticket.tester_passed', '{\"evidence_id\":\"h1\"}', '2026-09-29T00:06:00.000Z');"
 out="$(decide10)"; rc=$?
 [ "$rc" -eq 4 ] && [ "$(kind "$out")" = "moved-since-review" ] && ok "a HUMAN tester waiver does not unpin it → hold" || fail "waiver + moved: rc=$rc $out"

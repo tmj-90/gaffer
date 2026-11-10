@@ -209,7 +209,8 @@ run_lane
 case "$UNV_REASON" in "unverified: no test command registered for repo app;"*) ok "the real reason starts 'unverified: no test command registered for repo app'" ;; *) fail "reason text: $UNV_REASON" ;; esac
 grep -q '^14|manual_note|tester held: unverified: no test command registered for repo app; ' "$EVID" \
   && ok "the evidence row on #14 reads 'tester held: unverified: no test command registered …'" || fail "unverified evidence missing: $(cat "$EVID")"
-grep -q 'wg repo set-commands app --test' "$EVID" && grep -q "Referee's checks" "$EVID" && grep -q 'tester-pass 14 --as human' "$EVID" \
+# A person moves it on with a principal's token (package H1), never `--as human`.
+grep -q 'wg repo set-commands app --test' "$EVID" && grep -q "Referee's checks" "$EVID" && grep -q 'GAFFER_PRINCIPAL_TOKEN=<token> gaffer wg ticket tester-pass 14' "$EVID" && ! grep -q -- '--as human' "$EVID" \
   && ok "the note says how to register the command (CLI and dashboard) and how a human moves it on" || fail "how-to missing from the note: $(cat "$EVID")"
 grep -qx $'14\t2026-02-06T09:00:00.000Z' "$GAFFER_DATA/.tester-held" \
   && ok "the unverified hold is remembered for this stay (no re-spend on the same stay)" || fail "no hold marker for #14"

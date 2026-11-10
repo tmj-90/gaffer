@@ -319,14 +319,35 @@ gaffer_isolation_optout_notice() {
   return 0
 }
 
+# AGENTS WRAPPED: true when an agent launch is wrapped in the OS sandbox now, read after
+# gaffer_sandbox_probe: the provider is available and the launch asks for it (required, or
+# STRICT_MODE=1; lib/tick-launch.sh). When false, nothing but the safety hook stands
+# between an agent and a person's act (a tester waiver included): `gaffer preflight` and
+# `gaffer status` say so (package H1).
+_gaffer_agents_wrapped_probed() {
+  [ "$GAFFER_SBX_AVAILABLE" = 1 ] || return 1
+  _sandbox_strict_required && return 0
+  [ "${STRICT_MODE:-0}" = 1 ]
+}
+gaffer_agents_wrapped() { gaffer_sandbox_probe; _gaffer_agents_wrapped_probed; }
+
+# The one warning both say when agents run without OS isolation.
+gaffer_human_verdict_isolation_warning() {
+  printf '%s' "agents run without OS isolation, so a person's tester verdict (and every other human act) is guarded by the safety hook only; a waiver recorded now says \"recorded without OS isolation\""
+}
+
 # The isolation posture as one JSON object, for `gaffer sandbox-status` and the
-# dashboard's Settings line: {provider, available, required, optedOut, missing, fix}.
+# dashboard's Settings line: {provider, available, required, optedOut, missing, fix,
+# wrapped}. `wrapped` is whether an agent launch is wrapped in the OS sandbox now: the
+# provider is available AND the launch asks for it (required, or STRICT_MODE=1; see
+# lib/tick-launch.sh). Dispatch records it on a person's tester waiver (package H1).
 gaffer_sandbox_status_json() {
   gaffer_sandbox_probe
-  local req=true opt=false
+  local req=true opt=false wrapped=false
   if ! _sandbox_strict_required; then req=false; opt=true; fi
-  node -e 'const [p,a,r,o,m,f]=process.argv.slice(1);process.stdout.write(JSON.stringify({provider:p,available:a==="1",required:r==="true",optedOut:o==="true",missing:m,fix:f})+"\n")' \
-    "$GAFFER_SBX_PROVIDER" "$GAFFER_SBX_AVAILABLE" "$req" "$opt" "$GAFFER_SBX_MISSING" "$GAFFER_SBX_FIX"
+  if _gaffer_agents_wrapped_probed; then wrapped=true; fi
+  node -e 'const [p,a,r,o,m,f,w]=process.argv.slice(1);process.stdout.write(JSON.stringify({provider:p,available:a==="1",required:r==="true",optedOut:o==="true",missing:m,fix:f,wrapped:w==="true"})+"\n")' \
+    "$GAFFER_SBX_PROVIDER" "$GAFFER_SBX_AVAILABLE" "$req" "$opt" "$GAFFER_SBX_MISSING" "$GAFFER_SBX_FIX" "$wrapped"
 }
 
 sandbox_wrap_cmd() {

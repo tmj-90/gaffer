@@ -8,6 +8,7 @@ import { testerLaneFor, testerOffNotice } from "../src/util/testingLane.js";
 import { TestClock } from "../src/util/clock.js";
 import { DispatchError } from "../src/util/errors.js";
 import { FAKE_MERGE_BASE, giveTicketRealDelivery } from "./helpers/realDiff.js";
+import { asPerson } from "./helpers/principal.js";
 
 /**
  * TESTER FIRST (Release A wave 2): with the tester lane on, the independent tester tests a
@@ -244,7 +245,7 @@ describe("tester first: the lifecycle with the lane on", () => {
     const { wg } = world({ testingEnabled: true });
     const id = delivered(wg);
     wg.routeToTester(id, runner);
-    const res = wg.testerPass(id, { summary: "I checked it by hand" }, human);
+    const res = wg.testerPass(id, { summary: "I checked it by hand" }, human, asPerson(wg, human));
     expect(res.ticket.status).toBe("in_review");
     expect(wg.approveReview(id, reviewer).ticket.status).toBe("ready_for_merge");
   });
@@ -468,7 +469,7 @@ describe("tester first: review findings (coverage edges)", () => {
     const { wg } = world({ testingEnabled: true });
     const id = delivered(wg);
     wg.routeToTester(id, runner);
-    wg.testerPass(id, { summary: "I checked it by hand" }, human);
+    wg.testerPass(id, { summary: "I checked it by hand" }, human, asPerson(wg, human));
     expect(wg.view(id).ticket.status).toBe("in_review");
     wg.setTestContract(
       id,

@@ -1224,7 +1224,7 @@ export function recordAcceptanceEvidence(ticketNumber, payload, env = process.en
  * how a person moves the ticket on (register the commands, or record the verdict).
  */
 export function acceptanceHoldReason({ profile, spec, result, recorded, ticket }) {
-  const waive = ` To move this ticket on, record the verdict yourself: Record tester PASS or FAIL on the ticket page, or \`wg ticket tester-pass ${ticket} --as human --summary "<what you checked>"\`.`;
+  const waive = ` To move this ticket on, record the verdict yourself with your principal's token (a person's verdict needs one; \`gaffer wg principal create <your-name>\` mints it): Record tester PASS or FAIL on the ticket page signed in with it, or \`GAFFER_PRINCIPAL_TOKEN=<token> gaffer wg ticket tester-pass ${ticket} --summary "<what you checked>"\`.`;
   if (!RUNNABLE_PROFILES.includes(profile))
     return `unverified: the ${profile} acceptance profile is not run by the runner yet, so the tester's PASS is not recorded.${waive}`;
   if (!spec)
@@ -1277,7 +1277,7 @@ export function unverifiedPassReason({ replay, repoName, ticket, acceptance = fa
     (acceptance ? " (acceptance PASS without a clean replay)" : "") +
     "." +
     register +
-    ` To move this ticket on, record the verdict yourself: Record tester PASS or FAIL on the ticket page, or \`wg ticket tester-pass ${ticket} --as human --summary "<what you checked>"\` (a PASS is a waiver; a FAIL sends it to rework and it is tested again when it returns).`
+    ` To move this ticket on, record the verdict yourself with your principal's token (a person's verdict needs one; \`gaffer wg principal create <your-name>\` mints it): Record tester PASS or FAIL on the ticket page signed in with it, or \`GAFFER_PRINCIPAL_TOKEN=<token> gaffer wg ticket tester-pass ${ticket} --summary "<what you checked>"\` (a PASS is a waiver; a FAIL sends it to rework and it is tested again when it returns).`
   );
 }
 

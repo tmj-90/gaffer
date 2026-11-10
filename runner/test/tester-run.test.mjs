@@ -811,8 +811,13 @@ console.log(
     : fail(`reason: ${JSON.stringify(out && out.reason)}`);
   /wg repo set-commands live --test/.test((out && out.reason) || "") &&
   /Referee's checks/.test((out && out.reason) || "") &&
-  /--as human/.test((out && out.reason) || "")
-    ? ok("the reason says how to register one (CLI and dashboard) and how a human moves it on")
+  /GAFFER_PRINCIPAL_TOKEN=<token> gaffer wg ticket tester-pass \d+/.test(
+    (out && out.reason) || "",
+  ) &&
+  !/--as human/.test((out && out.reason) || "")
+    ? ok(
+        "the reason says how to register one (CLI and dashboard) and how a person moves it on (a principal's token, package H1)",
+      )
     : fail(`reason lacks the how-to: ${JSON.stringify(out && out.reason)}`);
   out && out.unverified === true && out.replay && out.replay.state === "skipped"
     ? ok("the held output carries unverified:true and the skipped replay")

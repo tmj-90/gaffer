@@ -1122,47 +1122,61 @@ function verdictStrip(p, hooks = {}) {
           ],
           "warn",
         )
-      : ts
-        ? verdictCell(
+      : ts && ts.waiver
+        ? // A PERSON'S WAIVER (package H1): said as a waiver, with who, what and on which
+          // commit, never as the tester's PASS.
+          verdictCell(
             "tester",
             "Tester",
-            ts.verdict === "pass" ? "Passed" : "Failed",
-            `Independent tester: ${ts.verdict === "pass" ? "passed" : "failed"}${
-              ts.tested_commit ? `, tested commit ${ts.tested_commit.slice(0, 12)}` : ""
-            }`,
+            "Waived",
+            ts.waiver.label,
             [
-              el("p", { class: "vd-sub" }, [
-                ts.tested_commit
-                  ? ["Tested ", el("code", { class: "mono" }, ts.tested_commit.slice(0, 12))]
-                  : "No commit recorded",
-                testerByline(ts),
-                ` · ${fmtTime(ts.at)}`,
-              ]),
-              el("p", { class: "vd-say" }, ts.summary),
+              el("p", { class: "vd-sub" }, [`${fmtTime(ts.at)}`]),
+              el("p", { class: "vd-say tester-waiver" }, ts.waiver.label),
             ],
-            ts.verdict === "pass" ? "ok" : "bad",
+            "warn",
           )
-        : verdictCell(
-            "tester",
-            "Tester",
-            p.tester_expected ? "Not yet" : "None",
-            p.tester_expected
-              ? "Independent tester: has not passed this commit yet"
-              : "Independent tester: not used for this ticket",
-            el(
-              "p",
-              { class: "vd-sub" },
-              runnerSkips
-                ? `Approval waits for the independent tester's PASS, but the runner last routed with GAFFER_TESTING ${runnerLane.mode}, which does not send this ticket to the tester. See Flags.`
-                : p.tester_expected
-                  ? "The independent tester tests a delivery before you review it, and approval waits for its PASS on the commit you sign."
-                  : p.tester_lane &&
-                      p.tester_lane.mode === "auto" &&
-                      p.tester_lane.missing_test_command.length
-                    ? `This ticket does not go through the independent tester: no test command is registered for ${p.tester_lane.missing_test_command.join(", ")}.`
-                    : "This ticket does not go through the independent tester.",
+        : ts
+          ? verdictCell(
+              "tester",
+              "Tester",
+              ts.verdict === "pass" ? "Passed" : "Failed",
+              `Independent tester: ${ts.verdict === "pass" ? "passed" : "failed"}${
+                ts.tested_commit ? `, tested commit ${ts.tested_commit.slice(0, 12)}` : ""
+              }`,
+              [
+                el("p", { class: "vd-sub" }, [
+                  ts.tested_commit
+                    ? ["Tested ", el("code", { class: "mono" }, ts.tested_commit.slice(0, 12))]
+                    : "No commit recorded",
+                  testerByline(ts),
+                  ` · ${fmtTime(ts.at)}`,
+                ]),
+                el("p", { class: "vd-say" }, ts.summary),
+              ],
+              ts.verdict === "pass" ? "ok" : "bad",
+            )
+          : verdictCell(
+              "tester",
+              "Tester",
+              p.tester_expected ? "Not yet" : "None",
+              p.tester_expected
+                ? "Independent tester: has not passed this commit yet"
+                : "Independent tester: not used for this ticket",
+              el(
+                "p",
+                { class: "vd-sub" },
+                runnerSkips
+                  ? `Approval waits for the independent tester's PASS, but the runner last routed with GAFFER_TESTING ${runnerLane.mode}, which does not send this ticket to the tester. See Flags.`
+                  : p.tester_expected
+                    ? "The independent tester tests a delivery before you review it, and approval waits for its PASS on the commit you sign."
+                    : p.tester_lane &&
+                        p.tester_lane.mode === "auto" &&
+                        p.tester_lane.missing_test_command.length
+                      ? `This ticket does not go through the independent tester: no test command is registered for ${p.tester_lane.missing_test_command.join(", ")}.`
+                      : "This ticket does not go through the independent tester.",
+              ),
             ),
-          ),
   );
 
   // SAME CANDIDATE and REQUIRED CI (an older server's packet has neither).

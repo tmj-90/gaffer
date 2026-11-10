@@ -1221,7 +1221,7 @@ switch (cmd) {
     break;
   }
   // status-acceptance-rows: one TSV row per epic from stats.acceptance.epics —
-  // name \t result \t acceptance ticket \t accepted commit \t replayed (landed) commit \t
+  // name \t result (its label) \t acceptance ticket \t accepted commit \t replayed (landed) commit \t
   // replayed tester test files (comma-separated).
   case "status-acceptance-rows": {
     const p = tryParse(readStdin());
@@ -1233,7 +1233,9 @@ switch (cmd) {
       println(
         [
           e.epic_name,
-          e.result,
+          // "accepted with N waiver(s)" for a build that rests on a person's waiver
+          // (package H1), never plain "accepted"; the result otherwise.
+          e.label || e.result,
           e.acceptance_ticket ?? "?",
           e.accepted_commit ?? "",
           e.replayed_commit ?? "",

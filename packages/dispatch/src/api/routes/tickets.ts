@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
+import { computeAcceptance } from "../../cli/ops.js";
 import type { Dispatch, TicketDetailPart } from "../../core.js";
 import type { Actor } from "../../domain/types.js";
 import { hideOutOfScopeDependencies } from "../../services/accessScope.js";
@@ -392,6 +393,12 @@ export async function routeTickets(
             .filter((c) => c.ticket_id === view.ticket.id)
             .map((c) => c.agent_id),
         ]),
+        // A PERSON'S WAIVER (package H1): the latest tester verdict when it is a person's
+        // PASS, with the sentence the ticket page shows; null otherwise.
+        tester_waiver: view.testerWaiver,
+        // An epic's ACCEPTANCE ticket: its epic's acceptance as `wg stats` reads it, with
+        // the label ("accepted with N waiver(s)", never plain "accepted" over a waiver).
+        epic_acceptance: view.ticket.acceptance === 1 ? epicAcceptanceOf(wg, view.ticket) : null,
       });
       return;
     }
@@ -880,10 +887,13 @@ export async function routeTickets(
   }
 
   // BBT-001: /tickets/:id/tester — record a tester verdict (pass → ready_for_merge,
-  // fail → refining) as the calling principal. A human principal (the dashboard
-  // button) records a WAIVER on an acceptance ticket, as the gate intends; an
-  // automated caller must send the binding (tested_commit / contract_hash / replay)
-  // or gets a 422 BINDING_REQUIRED. The merge stays the guarded mark-merged path.
+  // fail → refining) as the calling principal. A PERSON'S verdict (package H1) needs a
+  // named human or admin principal's token (the dashboard signed in with it): the
+  // shared API token is refused (403 ACTOR_NOT_PERMITTED, principal_required), as is a
+  // revoked principal. A person's PASS is a WAIVER bound to every write repo's head, the
+  // contract and the criteria it names; an automated caller must send the binding
+  // (tested_commit / contract_hash / replay) or gets a 422 BINDING_REQUIRED. The merge
+  // stays the guarded mark-merged path.
   if (segments.length === 3 && sub === TICKET_SUB.TESTER && method === "POST") {
     const body = testerVerdictBody.parse(await readJsonBody(req));
     const verdictInput = {
@@ -895,10 +905,22 @@ export async function routeTickets(
       ...(body.acceptance_evidence ? { acceptance_evidence: body.acceptance_evidence } : {}),
       ...(body.round ? { round: body.round } : {}),
     };
+    // The principal this request authenticated as; the shared token has none.
+    const authority = { principal: isSharedOperator() ? null : apiPrincipal() };
     const result =
       body.verdict === "pass"
-        ? wg.testerPass(id, verdictInput, apiActor())
-        : wg.testerFail(id, { ...verdictInput, ...(body.to ? { to: body.to } : {}) }, apiActor());
+        ? wg.testerPass(
+            id,
+            { ...verdictInput, ...(body.criteria ? { criteria: body.criteria } : {}) },
+            apiActor(),
+            authority,
+          )
+        : wg.testerFail(
+            id,
+            { ...verdictInput, ...(body.to ? { to: body.to } : {}) },
+            apiActor(),
+            authority,
+          );
     sendJson(res, 200, { ticket: result.ticket, event_id: result.eventId });
     return;
   }
@@ -1305,4 +1327,17 @@ export async function routeTickets(
     404,
     errorBody("NOT_FOUND", `No ticket route for ${method} /${segments.join("/")}.`),
   );
+}
+
+/** An acceptance ticket's epic acceptance (result, label, waivers), or null. Fail-soft. */
+function epicAcceptanceOf(
+  wg: Dispatch,
+  ticket: { number: number | null },
+): { epic: string; result: string; label: string; waivers: number } | null {
+  try {
+    const e = computeAcceptance(wg.db).epics.find((x) => x.acceptance_ticket === ticket.number);
+    return e ? { epic: e.epic_name, result: e.result, label: e.label, waivers: e.waivers } : null;
+  } catch {
+    return null;
+  }
 }

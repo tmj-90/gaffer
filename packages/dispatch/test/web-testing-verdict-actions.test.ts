@@ -37,7 +37,7 @@ function ticket(status: string) {
 type Call = { method: string; url: string; body: unknown };
 let calls: Call[] = [];
 
-function stubFetch(t: ReturnType<typeof ticket>): void {
+function stubFetch(t: ReturnType<typeof ticket>, detail: Record<string, unknown> = {}): void {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -76,6 +76,7 @@ function stubFetch(t: ReturnType<typeof ticket>): void {
           dependencies: [],
           evidence: [],
           events: [],
+          ...detail,
         };
       else body = { tickets: [t] };
       return new Response(JSON.stringify(body), {
@@ -198,6 +199,24 @@ describe("BBT-001 web: recording the tester's verdict from the board", () => {
       verdict: "fail",
       summary: "POST /widgets returns 500 on an empty name",
     });
+  });
+
+  it("a person's waiver is shown as one on the ticket page, with the epic's acceptance label (package H1)", async () => {
+    const label =
+      "tester verdict waived by tom for criteria 2 on 1111111111aa: checked AC2 in a browser (recorded without OS isolation)";
+    stubFetch({ ...ticket("in_review"), acceptance: 1 } as ReturnType<typeof ticket>, {
+      tester_waiver: { label },
+      epic_acceptance: {
+        epic: "Widgets",
+        result: "waived",
+        label: "accepted with 1 waiver",
+        waivers: 1,
+      },
+    });
+    await bootDetail();
+    const text = document.body.textContent || "";
+    expect(text).toContain(`Waived: ${label}`);
+    expect(text).toContain("Epic Widgets: accepted with 1 waiver");
   });
 
   it("an in_review ticket offers no tester actions", async () => {

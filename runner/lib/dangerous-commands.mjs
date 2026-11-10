@@ -438,7 +438,16 @@ export const DANGEROUS_COMMANDS = [
     // And the acceptance profile (`acceptance-profile`): the commands the runner runs for a
     // ticket's cli/api profile are a person's to register; and the runtime evidence
     // (`acceptance-evidence`): the runner's record of running them, never an agent's.
-    re: /\b(wg|dispatch|fg|crew)\b[^\n|;&]*\b(review|regression-of|acceptance-profile|acceptance-evidence|approve|approve-ready|mark-merged|record-landing|landing-begin|record-tester-replay|ci-result|eval-score|lane-verdict|scout-record|tester-route|attach-evidence|reject|repo-access|set-testable|allow-test-changes|set-commands|test-contract|tester-pass|tester-fail|repo-delivery|require-cap|set-reviewer|decisions[ \t]+resolve|agent[ \t]+rename|club[ \t]+set|wont-do|principal[ \t]+(?:create|revoke)|as-principal)\b/,
+    // And every other hand route that changes where a ticket stands around the tester
+    // (package H1): the board move (`ticket move`), `reopen-for-review`, `ticket ready`,
+    // `ticket hold`, `block` / `unblock` and the hand claim (`human-claim`,
+    // `human-release`): a person's or the runner's acts, never an agent shell's. And the
+    // person's credential itself handed to any program (`GAFFER_PRINCIPAL_TOKEN=`).
+    // `block` / `unblock` count only in the verb position (the program word, then its
+    // root options): the words are too common to match anywhere after `dispatch` (a
+    // Redux or WordPress `dispatch( 'core/block-editor' )` search, `dispatch.js --mode
+    // block`); the normalised views put a quoted, escaped or wrapped CLI in that shape.
+    re: /\b(wg|dispatch|fg|crew)\b[^\n|;&]*\b(review|regression-of|acceptance-profile|acceptance-evidence|approve|approve-ready|mark-merged|record-landing|landing-begin|record-tester-replay|ci-result|eval-score|lane-verdict|scout-record|tester-route|attach-evidence|reject|repo-access|set-testable|allow-test-changes|set-commands|test-contract|tester-pass|tester-fail|repo-delivery|require-cap|set-reviewer|decisions[ \t]+resolve|agent[ \t]+rename|club[ \t]+set|wont-do|principal[ \t]+(?:create|revoke)|as-principal|reopen-for-review|ticket[ \t]+(?:move|ready|hold)|human-claim|human-release)\b|\b(?:wg|dispatch|fg|crew)[ \t]+(?:-\S*[ \t]+(?:[^\s-]\S*[ \t]+)?)*(?:un)?block\b|\bGAFFER_PRINCIPAL_TOKEN=/,
     why: "control-plane CLI write (use the scoped MCP, not the privileged wg/dispatch/fg/crew CLI)",
     example: "wg ticket approve T-1",
     crewFlags: false,

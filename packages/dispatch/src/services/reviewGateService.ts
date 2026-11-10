@@ -20,6 +20,7 @@
  *     `blocked` (not re-queued forever). `capRetry` is the shared helper.
  */
 
+import { factoryIsolation, type VerdictPrincipal } from "./reviewGate/waiver.js";
 import { type Db } from "../db/connection.js";
 import {
   type AcStatus,
@@ -230,6 +231,12 @@ export interface ReviewGateServiceDeps {
    * human). It can only ever DENY an auto-ship; it never grants one. See observedRisk.ts.
    */
   readonly observedRiskResolver?: (ticket: Ticket) => ObservedRisk | null;
+  /**
+   * A PERSON'S WAIVER (package H1) records whether the factory's agents run without OS
+   * isolation: "none", or the OS sandbox provider that wraps them. The default asks the
+   * runner's own probe (`runner/gaffer sandbox-status`, see reviewGate/waiver.ts).
+   */
+  readonly isolation?: () => string;
 }
 
 export class ReviewGateService {
@@ -262,6 +269,7 @@ export class ReviewGateService {
       changeOnRefsResolver: deps.changeOnRefsResolver,
       policyAllowsAgentApprove: deps.policyAllowsAgentApprove,
       observedRiskResolver: deps.observedRiskResolver,
+      isolationFn: deps.isolation ?? (() => factoryIsolation()),
     };
   }
 
@@ -403,10 +411,13 @@ export class ReviewGateService {
       tester_agent?: unknown;
       /** The testing round the verdict was made in (a stale one is refused). */
       round?: string;
+      /** A person's waiver: the criteria it waives, by position or id (default: all). */
+      criteria?: readonly string[];
     },
     actor: Actor,
+    authority: { principal?: VerdictPrincipal | null } = {},
   ): TransitionResult {
-    return testerVerdict.testerPass(this, this.internals, ticketRef, input, actor);
+    return testerVerdict.testerPass(this, this.internals, ticketRef, input, actor, authority);
   }
 
   testerFail(
@@ -423,8 +434,9 @@ export class ReviewGateService {
       round?: string;
     },
     actor: Actor,
+    authority: { principal?: VerdictPrincipal | null } = {},
   ): TransitionResult {
-    return testerVerdict.testerFail(this.internals, ticketRef, input, actor);
+    return testerVerdict.testerFail(this.internals, ticketRef, input, actor, authority);
   }
 
   markMerged(ref: string, actor: Actor): TransitionResult {

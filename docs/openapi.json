@@ -6250,7 +6250,7 @@
           "Review & delivery"
         ],
         "summary": "Record the independent tester's verdict",
-        "description": "pass → ready_for_merge, fail → refining, recorded as the calling principal. On an acceptance ticket a human PASS is a waiver; an automated PASS must carry `tested_commit`, `contract_hash` and `replay: passed` (422 `BINDING_REQUIRED`). On any ticket an automated PASS whose `replay` is not `passed` (skipped, failed, or absent) is refused the same way (the runner did not show the candidate passes the tester's tests). A `contract_hash` that no longer matches the contract on record is a 409 `CONTRACT_MISMATCH`. A verdict that names its testing `round` is accepted only while that round is the ticket's current one: one made before a rework (or after the round already ended) is a 409 `STALE_VERDICT` naming both rounds, kept on the ticket as stale evidence and never recorded as the current round's verdict.",
+        "description": "pass → ready_for_merge, fail → refining, recorded as the calling principal. A PERSON'S verdict (a PASS that waives the tester, or a FAIL) needs a named human or admin principal's token: the shared token, auth switched off and a revoked principal are 403 `ACTOR_NOT_PERMITTED` (`principal_required`), nothing recorded. A person's PASS is a waiver bound to every write repo's head, the contract and the `criteria` it names (default: every criterion); it carries no runner measurement (`replay` is 422) and no commit but the head. On a ticket the tester's FAIL left in refining it waives that FAIL on the unchanged head (back to in_review; 409 `fail_not_waivable` otherwise). An automated PASS must carry `tested_commit`, `contract_hash` and `replay: passed` (422 `BINDING_REQUIRED`). On any ticket an automated PASS whose `replay` is not `passed` (skipped, failed, or absent) is refused the same way (the runner did not show the candidate passes the tester's tests). A `contract_hash` that no longer matches the contract on record is a 409 `CONTRACT_MISMATCH`. A verdict that names its testing `round` is accepted only while that round is the ticket's current one: one made before a rework (or after the round already ended) is a 409 `STALE_VERDICT` naming both rounds, kept on the ticket as stale evidence and never recorded as the current round's verdict.",
         "parameters": [
           {
             "name": "id",
@@ -6294,7 +6294,7 @@
             }
           },
           "403": {
-            "description": "The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`). A named principal acted outside its scope (`SCOPE_DENIED`: `details.scope` names its repos and tickets, `details.reason` is `outside_repo_scope`, `outside_ticket_scope`, `no_repos`, `factory_wide` or `admin_required`, with `details.ticket`, `details.outside_repos` or `details.required` saying what put it outside).",
+            "description": "The calling principal may not do this (`ACTOR_NOT_PERMITTED`). The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`). A named principal acted outside its scope (`SCOPE_DENIED`: `details.scope` names its repos and tickets, `details.reason` is `outside_repo_scope`, `outside_ticket_scope`, `no_repos`, `factory_wide` or `admin_required`, with `details.ticket`, `details.outside_repos` or `details.required` saying what put it outside).",
             "content": {
               "application/json": {
                 "schema": {
@@ -16399,6 +16399,15 @@
             "minLength": 1,
             "maxLength": 200
           },
+          "criteria": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "maxItems": 200
+          },
           "round": {
             "type": "string",
             "pattern": "^[A-Za-z0-9_-]{1,64}$"
@@ -17457,6 +17466,50 @@
               "description": "How an agent is presented (squad name, shirt number); the agent id never changes."
             },
             "description": "Every agent the ticket's claims and events name, keyed by agent id."
+          },
+          "tester_waiver": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": {}
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A person's waiver, when the latest tester verdict is a principal's PASS: `principal`, `heads` (every write repo's commit it covers), `contract_hash`, `criteria`, `summary`, `isolation` (`none` when agents ran without an OS sandbox), `waives_fail`, `evidence_id`, `at` and `label` (\"tester verdict waived by <principal> for criteria <...> on <sha>: <summary>\"). null otherwise."
+          },
+          "epic_acceptance": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "epic": {
+                    "type": "string"
+                  },
+                  "result": {
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "waivers": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "epic",
+                  "result",
+                  "label",
+                  "waivers"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "On an epic's acceptance ticket: the epic's acceptance as `wg stats` reads it; `label` reads `accepted with N waiver(s)` when it rests on a person's waiver. null otherwise."
           }
         },
         "required": [
@@ -17471,7 +17524,9 @@
           "rework_trail",
           "review_comments",
           "regression",
-          "agent_display"
+          "agent_display",
+          "tester_waiver",
+          "epic_acceptance"
         ],
         "additionalProperties": false
       },

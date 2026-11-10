@@ -1,4 +1,5 @@
 import type { Db } from "../db/connection.js";
+import { readLatestWaiver } from "./reviewGate/waiver.js";
 import { listEvents } from "../events/eventWriter.js";
 import type {
   AcStatus,
@@ -148,6 +149,24 @@ export interface DossierSubject {
   dod_evidence: DossierEvidence[];
   review_verdict: DossierReviewVerdict | null;
   gate_config: DossierGateConfig;
+  /**
+   * A PERSON'S WAIVER (package H1): present only when the ticket's latest tester verdict
+   * is a person's PASS (absent otherwise, so a dossier without one hashes as before):
+   * who waived, the criteria and commits it covers, the contract, the isolation it was
+   * recorded under, and the one sentence every surface shows.
+   */
+  tester_waiver?: DossierTesterWaiver;
+}
+
+export interface DossierTesterWaiver {
+  label: string;
+  principal: string;
+  criteria: number[];
+  heads: Array<{ repo: string; sha: string }>;
+  contract_hash: string | null;
+  isolation: string;
+  summary: string;
+  at: string;
 }
 
 /** The full dossier: the hashed subject + the hash + generation metadata + warnings. */
@@ -345,6 +364,19 @@ export class DossierService {
       review_verdict,
       gate_config,
     };
+    const waiver = readLatestWaiver(this.deps.db, ticket.id);
+    if (waiver) {
+      subject.tester_waiver = {
+        label: waiver.label,
+        principal: waiver.principal.name,
+        criteria: waiver.criteria.map((c) => c.n),
+        heads: waiver.heads.map((h) => ({ repo: h.repo, sha: h.sha })),
+        contract_hash: waiver.contract_hash,
+        isolation: waiver.isolation,
+        summary: waiver.summary,
+        at: waiver.at,
+      };
+    }
 
     return {
       schema: DOSSIER_SCHEMA,
@@ -460,6 +492,16 @@ export class DossierService {
       );
     }
     out.push("");
+
+    // A person's waiver of the tester (package H1).
+    if (s.tester_waiver) {
+      out.push("## Tester Waiver");
+      out.push("");
+      out.push(`- ${s.tester_waiver.label}`);
+      out.push(`- Contract: ${orUnknown(s.tester_waiver.contract_hash)}`);
+      out.push(`- Recorded: ${s.tester_waiver.at}`);
+      out.push("");
+    }
 
     // DoD / test-gate evidence.
     out.push("## DoD / Test-Gate Evidence");

@@ -27,6 +27,7 @@ import type {
   TesterRouteCode,
 } from "../reviewGateService.js";
 import { resolveReviewedHeads } from "./staleness.js";
+import { parseWaiver } from "./waiver.js";
 
 /** What these functions read from the {@link ReviewGateService} facade they are handed. */
 export type TesterHost = Pick<
@@ -183,6 +184,20 @@ export function testerCoverage(
         : null;
   if (recorded && recorded !== contractHash(internals.db, ticket.id)) {
     return { covered: false, why: "contract_changed", tested, head };
+  }
+  // A PERSON'S WAIVER (package H1) covers the head of EVERY write repo it recorded and no
+  // other: a new commit in any of them, a write repo added since, or heads that cannot be
+  // read now (when it recorded some) void it, as a new commit voids a tester PASS.
+  const waiver = parseWaiver(binding);
+  if (waiver) {
+    const now = (heads ?? resolveReviewedHeads(internals, ticket)).filter((h) => h.sha);
+    const shaOf = (repoId: string) =>
+      now.find((h) => h.repoId === repoId)?.sha?.toLowerCase() ?? null;
+    const moved =
+      (waiver.heads.length > 0 && now.length === 0) ||
+      waiver.heads.some((w) => shaOf(w.repo_id) !== w.sha.toLowerCase()) ||
+      now.some((h) => !waiver.heads.some((w) => w.repo_id === h.repoId));
+    if (moved) return { covered: false, why: "other_commit", tested, head };
   }
   return {
     covered: true,

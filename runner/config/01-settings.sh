@@ -28,9 +28,11 @@ if [ -n "$_gs_out" ]; then
     # $GAFFER_DATA, and a file that picks which program runs every agent turn (and which
     # secrets it gets) must not be one an agent's sandbox might reach. The same list is
     # packages/dispatch/src/api/settings.ts ENV_ONLY_KEYS.
+    # GAFFER_PRINCIPAL_TOKEN is a person's credential (package H1): the runner never acts
+    # as a principal, so a file must not hand it one after factory.config.sh took it out.
     case "$_sk" in
       GAFFER_ALLOW_UNCAPPED | GAFFER_WORKER_PROVIDER | GAFFER_WORKER_COMMAND | GAFFER_WORKER_COMMAND_ENV | \
-        GAFFER_WORKER_COMMAND_COST_USD | GAFFER_SANDBOX_WORKER_COMMAND) continue ;;
+        GAFFER_WORKER_COMMAND_COST_USD | GAFFER_SANDBOX_WORKER_COMMAND | GAFFER_PRINCIPAL_TOKEN) continue ;;
     esac
     # Internal names (a leading underscore: the re-source records, the warn-once marks,
     # runner file paths such as _GAFFER_USAGE_PAUSE_MJS that node runs) and the test

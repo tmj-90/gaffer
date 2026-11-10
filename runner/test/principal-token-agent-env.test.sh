@@ -44,6 +44,15 @@ grep -qx "kept=$TOK" <<<"$OUT" && ok "the config keeps it in an unexported shell
 grep -qx 'child=' <<<"$OUT" && ok "no child process of the runner sees the token (or the kept copy)" || fail "a child saw it: $(grep '^child=' <<<"$OUT")"
 grep -q '^agent:GAFFER_PRINCIPAL_TOKEN$\|^agent:_GAFFER_PERSON_TOKEN$' <<<"$OUT" && fail "the agent env carries the token" || ok "the agent env carries neither the token nor the kept copy"
 
+echo "== A1: settings.json cannot hand the runner a principal token =="
+mkdir -p "$WORK/sdata"
+printf '{"GAFFER_PRINCIPAL_TOKEN":"%s"}\n' "$TOK" > "$WORK/sdata/settings.json"
+OUT="$(env -u GAFFER_PRINCIPAL_TOKEN GAFFER_DATA="$WORK/sdata" RUNNER_DIR="$RUNNER_DIR" bash -c '
+  source "$RUNNER_DIR/factory.config.sh" >/dev/null 2>&1
+  printf "env=%s\n" "$(printenv GAFFER_PRINCIPAL_TOKEN || true)"
+')"
+grep -qx 'env=' <<<"$OUT" && ok "a settings.json GAFFER_PRINCIPAL_TOKEN is ignored" || fail "settings.json set the token: $(grep '^env=' <<<"$OUT")"
+
 echo "== A2: gaffer wg hands it back to the CLI the person typed, and only it =="
 if [ -f "$ROOT/packages/dispatch/dist/cli/index.js" ]; then
   export GAFFER_DATA="$WORK/data"; mkdir -p "$GAFFER_DATA"

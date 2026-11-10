@@ -236,6 +236,18 @@ export function fileGateKeyring(opts: {
     }
   };
 
+  const rmAnchorsUnderOldKey = (): void => {
+    let names: string[];
+    try {
+      names = readdirSync(join(keysDir, `${keyId}.anchor`));
+    } catch {
+      return;
+    }
+    for (const n of names) {
+      if (/^\d{16}\.json$/.test(n)) unlinkSync(join(keysDir, `${keyId}.anchor`, n));
+    }
+  };
+
   const load = (): Buffer | null => {
     assertOutsideData();
     let st;
@@ -318,6 +330,9 @@ export function fileGateKeyring(opts: {
       closeSync(fd);
     }
     chmodSync(keyPath, 0o600);
+    // A new key makes every anchor under the old one unverifiable: start the record afresh
+    // (the seals made under the old key fail on their own, and are re-made by re-approval).
+    rmAnchorsUnderOldKey();
     return key;
   };
 
@@ -406,17 +421,7 @@ export function fileGateKeyring(opts: {
       }
     }
   };
-  const clearAnchors = (): void => {
-    let names: string[];
-    try {
-      names = readdirSync(anchorDir);
-    } catch {
-      return;
-    }
-    for (const n of names) {
-      if (ANCHOR_RE.test(n)) unlinkSync(join(anchorDir, n));
-    }
-  };
+  const clearAnchors = rmAnchorsUnderOldKey;
 
   return {
     description: "the factory key",
@@ -659,22 +664,82 @@ function sealEvent(
   ).run(eventId, kind, json, keyId, mac, now);
 }
 
-/** Seal an approval event (a transition into ready_for_merge) with the pins it carries. */
+/** One pin per repo (the first given wins), sorted: the canonical list a seal binds. */
+export function normalizePins(pins: readonly ApprovalPin[]): ApprovalPin[] {
+  const seen = new Set<string>();
+  const out: ApprovalPin[] = [];
+  for (const p of pins) {
+    const sha = String(p.sha ?? "").toLowerCase();
+    const key = p.repo_id ?? "\u0000";
+    if (!SHA_RE.test(sha) || seen.has(key)) continue;
+    seen.add(key);
+    out.push({ repo_id: p.repo_id ?? null, sha });
+  }
+  return out.sort((a, b) =>
+    `${a.repo_id ?? ""}:${a.sha}` < `${b.repo_id ?? ""}:${b.sha}` ? -1 : 1,
+  );
+}
+
+/**
+ * Seal an approval event with the commits it approved. `pins` are the commits the approver
+ * named (approveReview passes them): never re-read from evidence rows and timestamps an
+ * agent with the database can write. Without `pins` (fixtures), the current review pins.
+ * Also seals an approval that ROUTES to the tester (in_review -> in_testing): the PASS
+ * that later approves takes its commits from that seal (see {@link routedApprovalPins}).
+ */
 export function sealApproval(
   db: SealDb,
   keyring: GateKeyring,
   eventId: string,
   ticketId: string,
   now: string,
+  pins?: readonly ApprovalPin[],
 ): void {
   sealEvent(
     db,
     keyring,
     eventId,
     "approval",
-    { ticket: ticketId, pins: currentApprovalPins(db, ticketId) },
+    {
+      ticket: ticketId,
+      pins: pins ? normalizePins(pins) : currentApprovalPins(db, ticketId),
+    },
     now,
   );
+}
+
+/**
+ * The commits a tester PASS that approves (in_testing -> ready_for_merge) carries: those
+ * of the sealed approval that routed the ticket to the tester, the newest one recorded
+ * after the ticket last entered in_review (rowid order, not timestamps). None (no such
+ * sealed approval): an empty list, which no landing accepts (fail closed).
+ */
+export function routedApprovalPins(
+  db: SealDb,
+  keyring: GateKeyring,
+  ticketId: string,
+): ApprovalPin[] {
+  const entered = db
+    .prepare(
+      "SELECT max(rowid) AS seq FROM work_events WHERE entity_type = 'ticket' AND entity_id = ? " +
+        "AND event_type = 'ticket.transitioned' AND json_extract(payload_json, '$.to') = 'in_review'",
+    )
+    .get(ticketId) as { seq: number | null } | undefined;
+  const rows = db
+    .prepare(
+      "SELECT w.id AS id FROM work_events w JOIN gate_seals g ON g.event_id = w.id " +
+        "WHERE w.entity_type = 'ticket' AND w.entity_id = ? AND w.event_type = 'ticket.transitioned' " +
+        "AND json_extract(w.payload_json, '$.to') = 'in_testing' AND g.kind = 'approval' AND w.rowid > ? " +
+        "ORDER BY w.rowid DESC",
+    )
+    .all(ticketId, Number(entered?.seq ?? 0)) as Array<{ id: string }>;
+  for (const r of rows) {
+    const v = verifyGateSeal(db, keyring, String(r.id), "approval");
+    if (v.ok && v.binds.ticket === ticketId && Array.isArray(v.binds.pins)) {
+      return normalizePins(v.binds.pins as ApprovalPin[]);
+    }
+  }
+  return [];
 }
 
 /** Seal a `ticket.tester_passed` event with the verdict row it names. */
@@ -969,9 +1034,17 @@ export function verifyLandingActs(
     for (const t of opts.targets ?? []) {
       const sha = String(t.sha ?? "").toLowerCase();
       if (!sha) continue;
-      // An approval that pinned nothing (a legacy, pin-less approval) has no commit list
-      // to hold the landing to; the branch-head checks of the landing decision apply.
-      if (pins.length === 0) continue;
+      // An approval that pinned nothing lands nothing: a person's approval always names
+      // the commits it approved, and an agent can strip pins from a re-read (a planted
+      // in_review entry dated in the future made a genuine approval seal none, and the
+      // unreviewed branch head then landed).
+      if (pins.length === 0) {
+        return fail(
+          "unsigned_approval",
+          "not_covered",
+          `The signed approval names no commit, so it covers ${sha.slice(0, 12)}${t.repoId ? ` in ${t.repoId}` : ""} no more than any other.`,
+        );
+      }
       const covered = pins.some(
         (p) => p.sha === sha && (t.repoId === null || p.repo_id === null || p.repo_id === t.repoId),
       );

@@ -26,7 +26,7 @@ import {
   checkShownCommits,
   recordApprovalPins,
 } from "./staleness.js";
-import { sealApprovalEvent } from "./sealing.js";
+import { pinsOf, sealApprovalEvent } from "./sealing.js";
 
 /** What these functions read from the {@link ReviewGateService} facade they are handed. */
 export type ApprovalHost = Pick<
@@ -234,6 +234,9 @@ export function approveReview(
         payload: { from: "in_review", ...(ticket.acceptance === 1 ? { acceptance: true } : {}) },
       });
       recordApprovalPins(internals, ticket, actor, pins);
+      // SIGNED GATE EVENTS: the routing approval is sealed with the commits it approved;
+      // the tester PASS that later approves carries them from this seal.
+      sealApprovalEvent(internals, ticket, result.eventId, pinsOf(pins));
       return result;
     });
   }
@@ -255,7 +258,7 @@ export function approveReview(
     recordApprovalPins(internals, ticket, actor, pins);
     // SIGNED GATE EVENTS: seal the approval with the commits it pinned (a key this
     // process may not use rolls the whole approval back: nothing unsigned is recorded).
-    sealApprovalEvent(internals, ticket, result.eventId);
+    sealApprovalEvent(internals, ticket, result.eventId, pinsOf(pins));
     return result;
   });
 }

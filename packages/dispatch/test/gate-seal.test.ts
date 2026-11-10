@@ -36,6 +36,7 @@ import {
   fileGateKeyring,
   GateKeyError,
   refusingGateKeyring,
+  sealApproval,
   verifyLandingActs,
 } from "../src/events/gateSeal.js";
 import { mcpGateKeyring } from "../src/mcp/server.js";
@@ -596,3 +597,126 @@ describe("revocation cannot be written away", () => {
     expect(() => k.readAnchor?.()).toThrow(GateKeyError);
   });
 });
+
+// PINS (independent review of H2): the commits an approval seals are the ones the approver
+// named, never a re-read of evidence rows and timestamps an agent can write. A chained
+// in_review entry dated in the future, planted before a person approved, made the genuine
+// approval seal NO pins (every pin read as stale), and a pin-less approval was not held to
+// any commit: the unreviewed head of the branch landed.
+describe("an approval seals the commits the approver named", () => {
+  const plantFutureReviewEntry = (wg: Dispatch, id: string) =>
+    forgeEvent(wg, {
+      entity_id: id,
+      actor_type: "agent",
+      event_type: "ticket.transitioned",
+      payload: { from: "in_review", to: "in_review", reason: "x", patch: null },
+    });
+  const sealedPins = (wg: Dispatch, eventId: string) =>
+    (
+      JSON.parse(
+        (
+          wg.db.prepare("SELECT binds_json FROM gate_seals WHERE event_id = ?").get(eventId) as {
+            binds_json: string;
+          }
+        ).binds_json,
+      ) as { pins: Array<{ sha: string }> }
+    ).pins.map((p) => p.sha);
+
+  it("a future-dated in_review entry planted before approval does not strip the pins", () => {
+    const w = world();
+    const { id } = inReview(w.wg);
+    plantFutureReviewEntry(w.wg, id);
+    w.wg.db
+      .prepare(
+        "UPDATE work_events SET created_at = '2099-01-01T00:00:00.000Z' WHERE id LIKE 'forged-%'",
+      )
+      .run();
+    rechainFrom(
+      w.wg,
+      (
+        w.wg.db.prepare("SELECT id FROM work_events WHERE id LIKE 'forged-%'").get() as {
+          id: string;
+        }
+      ).id,
+    );
+    w.wg.approveReview(id, human);
+    const approval = w.wg.landingApproval(id)!;
+    expect(sealedPins(w.wg, approval)).toEqual([FAKE_HEAD]);
+    // A moved head is not covered; the approved commit is.
+    const other = "f".repeat(40);
+    expect(
+      verifyLandingActs(w.wg.db, w.keyring, id, { targets: [{ repoId: null, sha: other }] }),
+    ).toMatchObject({ ok: false, failure: "not_covered" });
+    expect(
+      verifyLandingActs(w.wg.db, w.keyring, id, { targets: [{ repoId: null, sha: FAKE_HEAD }] }),
+    ).toMatchObject({ ok: true });
+  });
+
+  it("a sealed approval that names no commit lands nothing", () => {
+    const w = world();
+    const { id } = inReview(w.wg);
+    w.wg.approveReview(id, human);
+    const approval = w.wg.landingApproval(id)!;
+    // The host's own seal over an empty commit list (what the planted entry produced).
+    w.wg.db.prepare("DELETE FROM gate_seals WHERE event_id = ?").run(approval);
+    sealApproval(w.wg.db, w.keyring, approval, id, new Date().toISOString(), []);
+    expect(
+      verifyLandingActs(w.wg.db, w.keyring, id, { targets: [{ repoId: null, sha: FAKE_HEAD }] }),
+    ).toMatchObject({ ok: false, failure: "not_covered" });
+  });
+
+  it("an agent's approval routed to the tester is sealed, and the PASS that approves carries its commits", () => {
+    process.env.DISPATCH_ALLOW_AGENT_APPROVE = "1";
+    try {
+      const w = world({ testingEnabled: true });
+      const { id } = inReview(w.wg);
+      w.wg.setTestable(id, true, human);
+      const rv = w.wg.registerAgent({ display_name: "rv" }, human);
+      // The runner's agent review names the commit it approved (lib/review.sh --commit).
+      const routed = w.wg.approveReview(
+        id,
+        { type: "agent", id: rv.id },
+        { commits: [{ repo: null, sha: FAKE_HEAD }] },
+      );
+      expect(routed.ticket.status).toBe("in_testing");
+      w.wg.testerPass(id, { summary: "pass", replay: "passed" }, testerAgent);
+      expect(w.wg.view(id).ticket.status).toBe("ready_for_merge");
+      expect(sealedPins(w.wg, w.wg.landingApproval(id)!)).toEqual([FAKE_HEAD]);
+      onDefault = true;
+      expect(w.wg.markMerged(id, system).ticket.status).toBe("done");
+    } finally {
+      delete process.env.DISPATCH_ALLOW_AGENT_APPROVE;
+    }
+  });
+
+  it("a lost key: setup makes a new one, the old anchor is dropped with it, re-approval lands", () => {
+    const w = world();
+    const { id } = inReview(w.wg);
+    w.wg.approveReview(id, human);
+    rmSync(w.keyPath);
+    expect(begin0(w.wg, id)).toMatchObject({ reason: "unsigned_approval" });
+    w.keyring.ensure();
+    w.wg.holdForHuman(id, { reasonCode: "unsigned_approval", reason: "lost key" }, system);
+    w.wg.reopenForReview(
+      id,
+      { reason: "unsigned_approval", resolution: "re-approve" },
+      {
+        type: "admin",
+        id: "op",
+      },
+    );
+    w.wg.approveReview(id, human);
+    onDefault = true;
+    expect(w.wg.markMerged(id, system).ticket.status).toBe("done");
+  });
+});
+
+function begin0(wg: Dispatch, id: string) {
+  return refusal(() =>
+    wg.beginLanding(
+      id,
+      { repo: "repoA", commit: FAKE_HEAD, approval: wg.landingApproval(id)!, via: "local" },
+      system,
+    ),
+  );
+}

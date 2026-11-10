@@ -6,9 +6,11 @@
 import type { Ticket } from "../../domain/types.js";
 import {
   GateKeyError,
+  routedApprovalPins,
   sealApproval,
   sealTesterPass,
   verifyLandingActs,
+  type ApprovalPin,
   type LandingTarget,
 } from "../../events/gateSeal.js";
 import { DispatchError } from "../../util/errors.js";
@@ -27,13 +29,48 @@ function refuseKey(e: unknown): never {
   throw e;
 }
 
-/** Seal the approval event `eventId` (a transition into ready_for_merge). */
-export function sealApprovalEvent(internals: SealInternals, ticket: Ticket, eventId: string): void {
+/**
+ * Seal the approval event `eventId` (a transition into ready_for_merge, or the approval
+ * that routes a ticket to the tester) with the commits it approved: `pins` as the approver
+ * named them, or, for a tester PASS that approves, those of the sealed routing approval.
+ */
+export function sealApprovalEvent(
+  internals: SealInternals,
+  ticket: Ticket,
+  eventId: string,
+  pins: readonly ApprovalPin[] | "routed",
+): void {
   try {
-    sealApproval(internals.db, internals.gateKeyring, eventId, ticket.id, internals.clock.now());
+    sealApproval(
+      internals.db,
+      internals.gateKeyring,
+      eventId,
+      ticket.id,
+      internals.clock.now(),
+      named(
+        pins === "routed"
+          ? routedApprovalPins(internals.db, internals.gateKeyring, ticket.id)
+          : pins,
+      ),
+    );
   } catch (e) {
     refuseKey(e);
   }
+}
+
+/**
+ * The commits named, or (none named: an agent's approval through the library, whose commit
+ * the runner pinned beforehand; a routing approval sealed before signed approvals) the
+ * current review pins, re-read. A re-read an agent emptied lands nothing (a pin-less seal
+ * is refused at landing).
+ */
+function named(pins: readonly ApprovalPin[]): readonly ApprovalPin[] | undefined {
+  return pins.length > 0 ? pins : undefined;
+}
+
+/** The pins an approver named, as a seal binds them. */
+export function pinsOf(heads: readonly { repoId: string; sha: string }[]): ApprovalPin[] {
+  return heads.map((h) => ({ repo_id: h.repoId, sha: h.sha }));
 }
 
 /** Seal the `ticket.tester_passed` event `eventId` naming verdict row `evidenceId`. */

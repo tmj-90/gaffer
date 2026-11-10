@@ -523,9 +523,10 @@ export function testerPass(
       });
       // SIGNED GATE EVENTS: the verdict (a tester PASS or a person's waiver) is sealed with
       // the row it names, and a PASS that approves (into ready_for_merge) is sealed as the
-      // approval too, with the commits the approval before it pinned.
+      // approval too, with the commits the sealed approval that routed it here named.
       sealTesterPassEvent(internals, ticket, passEventId, evidenceId);
-      if (target === "ready_for_merge") sealApprovalEvent(internals, ticket, result.eventId);
+      if (target === "ready_for_merge")
+        sealApprovalEvent(internals, ticket, result.eventId, "routed");
       return result;
     }),
   );

@@ -17,6 +17,8 @@
 #   R6  a host write after the truncation does not paper over it
 #   R7  genuine: an approval lands; reopen + re-approve lands; a deliberate restore is
 #       re-anchored by a person (gate-key reanchor), reopened, re-approved and lands
+#   R8  a future-dated in_review entry planted before the approval: the approval still
+#       seals the commit the person named, and the unreviewed branch head does not land
 # Run: bash runner/test/run.sh -j 1 runner/test/signed-acts-revocation.test.sh   (bash 3.2 safe)
 # =====================================================================
 . "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
@@ -170,6 +172,35 @@ wgd agent register -n later --max-risk low >/dev/null
 n1="$(wgd events verify 2>&1 | sed -n 's/.*(\([0-9]*\) events.*/\1/p')"
 [ -n "$n0" ] && [ "${n1:-0}" -gt "$n0" ] && ok "R6: the host wrote a later event ($n0 -> $n1)" || fail "R6 fixture: no later host write ($n0 -> $n1)"
 LANE; refused "R6 after a later host write" "$?" "$D/lane.log"
+
+echo "== R8: a future-dated in_review entry planted before a person approves =="
+# Every review pin read as stale against it, so the genuine approval sealed no commit and
+# the unreviewed head of the branch landed. The seal now binds the commits the person named.
+world r8
+node --no-warnings --input-type=module -e '
+  import { createRequire } from "node:module"; const require = createRequire(import.meta.url);
+  const { DatabaseSync } = require("node:sqlite");
+  const chain = await import(process.argv[1]);
+  const d = new DatabaseSync(process.argv[2]);
+  const t = d.prepare("SELECT id FROM tickets WHERE number = 1").get();
+  const f = { id: "planted", entity_type: "ticket", entity_id: t.id, actor_type: "agent", actor_id: "a",
+    event_type: "ticket.transitioned", payload_json: JSON.stringify({ from: "in_review", to: "in_review", reason: "x", patch: null }),
+    correlation_id: null, created_at: "2099-01-01T00:00:00.000Z" };
+  const prev = chain.latestEventHash(d);
+  d.prepare("INSERT INTO work_events (id, entity_type, entity_id, actor_type, actor_id, event_type, payload_json, correlation_id, created_at, prev_hash, hash) VALUES (?,?,?,?,?,?,?,?,?,?,?)")
+    .run(f.id, f.entity_type, f.entity_id, f.actor_type, f.actor_id, f.event_type, f.payload_json, f.correlation_id, f.created_at, prev, chain.eventHash(prev, f));
+  d.close();' "$ROOT/packages/dispatch/dist/events/eventChain.js" "$D/data/dispatch.sqlite"
+approve
+git -C "$D/repo" switch -q gaffer/change
+printf 'not reviewed\n' > "$D/repo/version.txt"; git -C "$D/repo" commit -qam "unreviewed"
+OTHER="$(git -C "$D/repo" rev-parse HEAD)"; git -C "$D/repo" switch -q main
+MT; rc=$?
+if git -C "$D/repo" merge-base --is-ancestor "$OTHER" main; then
+  fail "R8: the UNREVIEWED commit landed (rc=$rc)"
+else
+  [ "$rc" -ne 0 ] && [ "$(main_head)" = "$MAIN0" ] && ok "R8: the unreviewed head does not land, main untouched" \
+    || fail "R8: rc=$rc $(tail -2 "$D/mt.log" | tr '\n' '|')"
+fi
 
 echo "== R7: genuine flows =="
 world r7a; approve; MT; landed "R7 a person's approval" "$?" "$D/mt.log"

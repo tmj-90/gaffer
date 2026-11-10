@@ -202,8 +202,11 @@ insert an approval and recompute a consistent chain, and every landing path acte
   and every `ticket.tester_passed` event (a tester PASS, or a person's waiver) carries a
   seal in the `gate_seals` table: HMAC-SHA256 under the factory key over the event's
   chain hash (its fields and its place in the chain) and the facts it binds: for an
-  approval, the review pins (commit per repo) it carries; for a verdict, the row it names
-  and a hash of that row's payload. No existing row or chain hash changes.
+  approval, the commit per repo the approver named (not a re-read of evidence rows and
+  timestamps an agent can write; a tester PASS that approves carries the commits of the
+  sealed approval that routed it to the tester); for a verdict, the row it names and a
+  hash of that row's payload. An approval that names no commit lands nothing. No existing
+  row or chain hash changes.
 - **Who signs.** Only trusted host processes: the dispatch CLI and the REST server when
   they record an approval or a verdict (the runner's own approval goes through the CLI).
   The agent-facing MCP server opens the database with a keyring that refuses any load of

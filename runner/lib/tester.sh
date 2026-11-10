@@ -224,7 +224,13 @@ _gaffer_tester_pass() {
         wg attach-evidence "$TNUM" --type manual_note \
           --summary "tester held: ${_t_reason:-cannot be proven on this host}; held in_testing for a person${_T_BRANCH:+; its tests are kept on $_T_BRANCH}. A person decides: record the tester verdict (a PASS waives the criteria that could not be proven here, a FAIL sends it to rework). It is not tested again on this commit; a new commit is tested afresh." >/dev/null 2>&1 \
           || log "TESTER: WARNING: could not attach the held reason to #$TNUM"
-        _gaffer_locked .skip.lock _gaffer_append_line "$_held_file" "$TNUM"$'\t'"${_t_entered:--}"$'\t'"${_t_commit:-unknown}"
+        # Without a readable tested commit the hold is kept for the whole stay (the two-field
+        # line): a placeholder commit would never equal the head and be re-tested every pass.
+        if [ -n "$_t_commit" ]; then
+          _gaffer_locked .skip.lock _gaffer_append_line "$_held_file" "$TNUM"$'\t'"${_t_entered:--}"$'\t'"$_t_commit"
+        else
+          _gaffer_locked .skip.lock _gaffer_append_line "$_held_file" "$TNUM"$'\t'"${_t_entered:--}"
+        fi
       else
         log "TESTER: #$TNUM HELD in_testing — ${_t_reason:-the tester-run gave no reason} (rc=$_trc); a human decides${_T_BRANCH:+ (tests kept on $_T_BRANCH)}"
         # The reason goes ON the ticket (a human otherwise sees an in_testing ticket with

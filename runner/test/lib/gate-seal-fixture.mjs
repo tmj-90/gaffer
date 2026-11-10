@@ -90,7 +90,7 @@ function ticketOf(eventId) {
 /** The head of each write repo's delivery branch for ticket `ticketId` (reduced schemas too). */
 function branchHeads(ticketId) {
   const out = [];
-  let rows = [];
+  let rows;
   try {
     rows = db
       .prepare(

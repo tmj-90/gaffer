@@ -6,6 +6,11 @@ export default defineConfig({
   test: {
     include: ["test/**/*.test.ts"],
     environment: "node",
+    // Limits sized for a loaded CI runner. Tests that spawn the built CLI several times,
+    // and temp-dir cleanup hooks, have stalled past vitest's defaults (5 s a test, 10 s a
+    // hook) there while taking under a second on a quiet machine. A hung test still fails.
+    testTimeout: 20_000,
+    hookTimeout: 30_000,
     // Clears long-lived pollers/timeouts the web SPA (app.js) leaves running
     // after each DOM test, so a timer can't fire after JSDOM teardown (vitest 3
     // fails the run on that). See test/setup-timers.ts.

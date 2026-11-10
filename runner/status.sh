@@ -246,6 +246,22 @@ if [ -n "$acc_rows" ]; then
   done <<<"$acc_rows"
 fi
 
+# TESTER HOLDS: the tester said a criterion cannot be proven on this host, so the ticket
+# is held in_testing for a person (never a pass, never a fail). Listed by ticket, and the
+# tester's verdicts counted with these holds apart, so a tester that says it too often
+# is visible.
+read -r t_pass t_fail t_unprov t_held unprovable_now <<<"$(printf '%s' "$STATS_JSON" | node "$HERE/lib/json-tool.mjs" status-tester-counts 2>/dev/null || echo '0 0 0 0 0')"
+[ "${unprovable_now:-0}" -eq "${unprovable_now:-0}" ] 2>/dev/null || unprovable_now=0
+unprovable_now="${unprovable_now:-0}"
+if [ $(( ${t_pass:-0} + ${t_fail:-0} + ${t_unprov:-0} + ${t_held:-0} )) -gt 0 ] 2>/dev/null; then
+  printf "    tester verdicts: pass %s · fail %s · cannot be proven on this host %s · other holds %s\n" "${t_pass:-0}" "${t_fail:-0}" "${t_unprov:-0}" "${t_held:-0}"
+fi
+if [ "$unprovable_now" -gt 0 ]; then
+  printf "\n  ${c_dim}held for you by the tester (cannot be proven on this host)${c_off}\n"
+  printf "${c_yel}%s${c_off}\n" "$(printf '%s' "$STATS_JSON" | node "$HERE/lib/json-tool.mjs" status-tester-holds 2>/dev/null)"
+  printf "    ${c_dim}record the tester verdict on the ticket page (a PASS waives what could not be proven here, a FAIL sends it to rework), or push a new commit${c_off}\n"
+fi
+
 # WAITING ON YOU, by ticket: the counts above said "1 awaiting review" without the
 # number or what to type. One line per ticket (up to 8 per kind) with its command.
 # Env-overridable seam (STATUS_TICKETS_CMD, the status is appended) like the others.
@@ -348,7 +364,7 @@ dec_req="$(printf '%s' "$HUMAN_QUEUE_JSON" | node "$HERE/lib/json-tool.mjs" stat
 
 # A ticket needing review, blocked, or approved-but-unmerged — or a blocking decision —
 # means a human is wanted → notify.
-attention=$(( review + blocked + merge + unaccepted + dec_req + paused_waiting ))
+attention=$(( review + blocked + merge + unaccepted + dec_req + paused_waiting + unprovable_now ))
 if [ "$attention" -gt 0 ]; then
   reasons=""; [ "$review" -gt 0 ] && reasons="$review awaiting review"
   [ "$blocked" -gt 0 ] && reasons="${reasons:+$reasons, }$blocked blocked"
@@ -356,6 +372,7 @@ if [ "$attention" -gt 0 ]; then
   [ "$unaccepted" -gt 0 ] && reasons="${reasons:+$reasons, }$unaccepted build(s) not accepted"
   [ "$dec_req" -gt 0 ] && reasons="${reasons:+$reasons, }$dec_req decision(s) a human must answer"
   [ "$paused_waiting" -gt 0 ] && reasons="${reasons:+$reasons, }$paused_waiting paused (Continue or Stop)"
+  [ "$unprovable_now" -gt 0 ] && reasons="${reasons:+$reasons, }$unprovable_now held by the tester (cannot be proven on this host)"
   notify "gaffer: $reasons — a human is needed"
 elif [ "$dec_all" -gt 0 ]; then
   ok "nothing blocking — $dec_all decision(s) open (answer: gaffer wg decisions resolve <id> --answer \"…\")"

@@ -104,6 +104,25 @@ out="$(trap - EXIT; run_status '{"ticketsByStatus":{"in_review":0,"blocked":0,"r
 case "$out$(cat "$SINK")" in *"1 build(s) not accepted"*) ok "reason names the unaccepted build" ;; *) fail "reason missing 'build(s) not accepted'" ;; esac
 has "$out" "builds NOT accepted: 1" && ok "pane shows the unaccepted-build line" || fail "pane missing the builds NOT accepted line"
 
+# --- 4c2: a ticket held by the tester as "cannot be proven on this host" (package H3) ---
+# is listed by ticket with its criteria, reason and tested commit, counts toward the
+# attention a person is notified about, and the tester's verdicts are counted with these
+# holds apart from pass, fail and the other holds.
+: > "$SINK"
+UH='{"ticketsByStatus":{"in_review":0,"blocked":0,"ready":0,"in_testing":2},"testerHolds":{"counts":{"pass":4,"fail":1,"unprovable":2,"held":1},"held":[{"number":7,"title":"Enter submits","code":"tester_unprovable","criteria":[5],"reason":"criteria 5: no browser on this host","commit":"0123456789abcdef0123456789abcdef01234567","at":"x"},{"number":8,"title":"other","code":null,"criteria":[],"reason":"no verdict token","commit":null,"at":"x"}]}}'
+out="$(trap - EXIT; run_status "$UH")"
+has "$out" "tester verdicts: pass 4 · fail 1 · cannot be proven on this host 2 · other holds 1" \
+  && ok "the tester's verdicts are counted with unprovable holds apart" || fail "tester counts line: $(printf '%s' "$out" | grep -i 'tester verdicts')"
+has "$out" "#7 criteria 5 cannot be proven on this host (tested 0123456789ab): criteria 5: no browser on this host" \
+  && ok "the held ticket is listed with its criteria, tested commit and reason" || fail "unprovable line: $(printf '%s' "$out" | grep -i 'cannot be proven' | head -3)"
+has "$out" "#8 criteria" && fail "a non-unprovable hold was listed as unprovable" || ok "only unprovable holds are listed there"
+[ -s "$SINK" ] && ok "an unprovable hold notifies (a person is needed)" || fail "an unprovable hold did not notify"
+case "$out$(cat "$SINK")" in *"1 held by the tester (cannot be proven on this host)"*) ok "the alert names the hold" ;; *) fail "alert reason missing the unprovable hold" ;; esac
+: > "$SINK"
+out="$(trap - EXIT; run_status '{"ticketsByStatus":{"in_review":0,"blocked":0,"ready":0}}')"
+has "$out" "tester verdicts:" && fail "a tester line with no verdicts on record" || ok "no tester line without verdicts (older dispatch)"
+[ -s "$SINK" ] && fail "notified with nothing held" || ok "nothing held, no alert"
+
 # --- 4d: per-epic acceptance lines read the TESTER REPLAY record, not timestamps ------
 # The line names which tester assertions passed on which LANDED revision (the runner's
 # record); a default branch that moved since is no longer guessed at from git history.

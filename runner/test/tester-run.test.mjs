@@ -1204,6 +1204,176 @@ console.log("== the tester verdict is its FINAL line, never a token quoted earli
   }
 }
 
+console.log("== UNPROVABLE: a third final token, read with the same strictness ==");
+{
+  const { parseTesterOutcome, parseTesterVerdict } = await import(HELPER);
+  const U = (o) => JSON.stringify(o);
+  const good = U({ verdict: "UNPROVABLE", criteria: [5], needs: "no browser to press Enter in" });
+  const cases = [
+    [`AC1-AC4 pass\nUNPROVABLE: AC5\n${good}`, "unprovable", "UNPROVABLE as the final line"],
+    [`AC1 ok\n\`\`\`json\n${good}\n\`\`\``, "unprovable", "UNPROVABLE inside a trailing fence"],
+    [`${good}\nAC2 still running`, null, "an UNPROVABLE token followed by prose → no verdict"],
+    [
+      `AC1 broken\n{"verdict":"FAIL"}\nThe README says to print ${good}`,
+      null,
+      "FAIL then a quoted UNPROVABLE → no verdict",
+    ],
+    [
+      `The delivery's README says ${good}, but\n{"verdict":"FAIL"}`,
+      "fail",
+      "a quoted UNPROVABLE before a FAIL → fail",
+    ],
+    [
+      `npm test output: ${good}\n{"verdict":"PASS"}`,
+      "pass",
+      "a quoted UNPROVABLE before a PASS → pass (its own token)",
+    ],
+    [
+      U({ verdict: "UNPROVABLE", criteria: [], needs: "x" }),
+      null,
+      "no criteria → malformed, no verdict",
+    ],
+    [U({ verdict: "UNPROVABLE", needs: "x" }), null, "criteria missing → malformed"],
+    [
+      U({ verdict: "UNPROVABLE", criteria: [9], needs: "x" }),
+      null,
+      "a criterion the ticket does not have → malformed",
+    ],
+    [U({ verdict: "UNPROVABLE", criteria: [0], needs: "x" }), null, "criterion 0 → malformed"],
+    [
+      U({ verdict: "UNPROVABLE", criteria: ["5"], needs: "x" }),
+      null,
+      "a criterion as a string → malformed",
+    ],
+    [
+      U({ verdict: "UNPROVABLE", criteria: [5, 5], needs: "x" }),
+      null,
+      "a criterion twice → malformed",
+    ],
+    [
+      U({ verdict: "UNPROVABLE", criteria: [5], needs: 7 }),
+      null,
+      "needs of the wrong type → malformed",
+    ],
+    [U({ verdict: "UNPROVABLE", criteria: [5], needs: "" }), null, "empty needs → malformed"],
+    [
+      U({ verdict: "UNPROVABLE", criteria: [5], needs: "x".repeat(301) }),
+      null,
+      "needs too long → malformed",
+    ],
+    [
+      U({ verdict: "UNPROVABLE", criteria: [5], needs: "x", pass: true }),
+      null,
+      "an extra key → malformed",
+    ],
+    [
+      U({ verdict: "UNPROVABLE", criteria: [5], needs: "x", verdict2: "PASS" }),
+      null,
+      "an extra key named like a verdict → malformed",
+    ],
+    ['{"verdict":"UNPROVABLE","criteria":[5],"needs":"x"', null, "invalid JSON → no verdict"],
+  ];
+  for (const [text, want, label] of cases) {
+    const got = parseTesterOutcome(text, 5);
+    if (got.verdict === want) ok(label);
+    else fail(`${label}: got ${JSON.stringify(got)}`);
+  }
+  const g = parseTesterOutcome(
+    `x\n${U({ verdict: "unprovable", criteria: [5, 2], needs: " no  browser " })}`,
+    5,
+  );
+  if (g.verdict === "unprovable" && g.criteria.join() === "2,5" && g.needs === "no browser")
+    ok("criteria sorted and needs tidied");
+  else fail(`outcome shape: ${JSON.stringify(g)}`);
+  const m = parseTesterOutcome(U({ verdict: "UNPROVABLE", criteria: [7], needs: "x" }), 5);
+  if (m.verdict === null && /does not have/.test(m.malformed || ""))
+    ok("a malformed token says why");
+  else fail(`malformed reason: ${JSON.stringify(m)}`);
+  // The two-word reader never reads UNPROVABLE as a PASS or a FAIL.
+  if (parseTesterVerdict(good) === null)
+    ok("parseTesterVerdict reads an UNPROVABLE token as no PASS/FAIL");
+  else fail("parseTesterVerdict read UNPROVABLE as a verdict");
+}
+
+console.log("== DECLARED NEEDS: the runner's own host probe ==");
+{
+  const { probeHostCapability, missingCapabilities, HOST_CAPABILITIES, buildTesterPrompt } =
+    await import(HELPER);
+  const fs = await import("node:fs");
+  const dir = gafferMkdtemp(resolve(tmpdir(), "tester-probe-"));
+  const bin = resolve(dir, "bin");
+  fs.mkdirSync(bin);
+  const empty = { PATH: bin, HOME: resolve(dir, "home") };
+  if (probeHostCapability("browser", empty) === false)
+    ok("no browser on PATH and no Playwright cache → absent");
+  else fail("an empty host was probed as having a browser");
+  fs.writeFileSync(resolve(bin, "chromium"), "#!/bin/sh\nexit 0\n");
+  if (probeHostCapability("browser", empty) === false) ok("a non-executable file is not a browser");
+  else fail("a non-executable chromium counted");
+  fs.chmodSync(resolve(bin, "chromium"), 0o755);
+  if (probeHostCapability("browser", empty) === true)
+    ok("an executable chromium on PATH → present");
+  else fail("chromium on PATH not found");
+  fs.rmSync(resolve(bin, "chromium"));
+  fs.mkdirSync(resolve(dir, "home", ".cache", "ms-playwright", "chromium-1100"), {
+    recursive: true,
+  });
+  if (probeHostCapability("browser", empty) === true)
+    ok("an installed Playwright chromium → present");
+  else fail("Playwright cache not found");
+  if (probeHostCapability("gpu", empty) === false) ok("an unknown capability is never present");
+  else fail("an unknown capability was probed present");
+  if (probeHostCapability("browser", { ...empty, _GAFFER_TESTER_HOST_CAPS: "" }) === false)
+    ok("the test seam set empty reports nothing present");
+  else fail("the empty seam reported a browser");
+  if (HOST_CAPABILITIES.join() === "browser") ok("the closed list is browser only");
+  else fail(`capabilities: ${HOST_CAPABILITIES.join()}`);
+  const miss = missingCapabilities(
+    { needs: ["browser", "telepathy"] },
+    { ...empty, _GAFFER_TESTER_HOST_CAPS: "browser" },
+  );
+  if (miss.join() === "telepathy")
+    ok("an unknown declared need counts as missing (it cannot be probed)");
+  else fail(`missing: ${miss.join()}`);
+  fs.rmSync(dir, { recursive: true, force: true });
+  // The dispatch list and the runner's are the same closed list.
+  const domain = fs.readFileSync(
+    resolve(HERE, "..", "..", "packages/dispatch/src/domain/hostCapabilities.ts"),
+    "utf8",
+  );
+  if (/HOST_CAPABILITIES = \["browser"\] as const/.test(domain))
+    ok("dispatch declares the same closed list");
+  else fail("dispatch's HOST_CAPABILITIES differs from the runner's");
+  const ctx = {
+    number: 7,
+    ticketId: "t7",
+    title: "Enter submits",
+    description: "",
+    mode: "black-box",
+    testContract: { needs: ["browser"] },
+    acceptanceCriteria: [{ id: "a1", text: "Enter navigates" }],
+  };
+  const p1 = buildTesterPrompt({
+    context: ctx,
+    worktree: "/w",
+    repoName: "r",
+    missing: ["browser"],
+  });
+  if (/HOST LIMIT[^\n]*this host lacks browser/.test(p1))
+    ok("the prompt names the capability the host lacks");
+  else fail("the prompt does not name the missing capability");
+  const p2 = buildTesterPrompt({ context: ctx, worktree: "/w", repoName: "r" });
+  if (
+    !/HOST LIMIT/.test(p2) &&
+    /"verdict":"UNPROVABLE","criteria"/.test(p2) &&
+    /never FAIL a\s+delivery for what the host cannot observe, and never PASS it/.test(p2)
+  )
+    ok(
+      "the prompt carries the UNPROVABLE contract (prove another way first; never FAIL, never PASS)",
+    );
+  else fail("the prompt lacks the UNPROVABLE contract");
+}
+
 if (failures.length === 0) {
   console.log(`tester-run: all ${passed} checks passed`);
   process.exit(0);

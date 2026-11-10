@@ -618,6 +618,35 @@ register one (`wg repo set-commands <repo> --test "<cmd>"`). You can record the 
 yourself: **Record tester PASS** (reported as a waiver) or **Record tester FAIL** on
 the ticket page, or `wg ticket tester-pass <n> --as human`.
 
+**What the host cannot show is a hold for you, never a FAIL and never a PASS.** A
+criterion this host cannot observe (no browser to press Enter in a real page, say) is one
+the tester first tries to prove another way. When it cannot, its last line is
+`{"verdict":"UNPROVABLE","criteria":[5],"needs":"<what the host lacks>"}`, read with the
+same strictness as PASS and FAIL (the token anywhere else, in a README, a commit message
+or test output, is quoted text and counts for nothing; a malformed one, with no criteria,
+a criterion the ticket does not have or an extra key, is a plain hold). Every other
+criterion is still proven the usual way: the tester's kept tests go through the clean
+replay, and a failing replay or a criterion that fails is a FAIL. When the rest pass, the
+ticket is held in Testing with the code `tester_unprovable`, the criteria, the reason and
+the tested commit: the ticket page says *Held for you*, `gaffer status` lists it under
+*held for you by the tester* (and counts it toward the attention it notifies about),
+`wg stats` lists it, and the factory log says it. It is a hold in every posture, with the
+runner allowed to drive the review gate as well: nothing is reworked, no reviewer is
+paid for it, nothing is approved or merged on it, and an epic is not accepted on it. The
+same commit is not tested again on a later pass; a new commit on the delivery branch is
+tested afresh. You move it on by recording the tester verdict (a PASS waives what could
+not be proven here; a FAIL sends it to rework), or with a new commit. `wg stats` and
+`gaffer status` count the tester's verdicts with these holds apart from PASS, FAIL and the
+other holds, so a tester that says it too often shows.
+
+A test contract can also say what its proof needs from the host:
+`wg ticket test-contract <n> --needs browser` (a closed list, `browser` for now; any other
+name is refused, `--needs none` clears it; an agent may add a need but not drop one). The
+runner checks the host itself, never on the agent's word: a browser executable on its
+`PATH` (`chromium`, `google-chrome`, `firefox`, ...) or an installed Playwright browser.
+When one is missing, the tester's prompt says which, and its outcome for every criterion
+(the contract does not say which ones need it) is the same hold; a FAIL is still a FAIL.
+
 One tester run works on a ticket at a time. A second run for the same ticket (a second
 runner, a run started by hand) finds the first one's lock
 (`$GAFFER_DATA/locks/tester-<n>.lock`) and starts nothing; a lock whose run is gone is

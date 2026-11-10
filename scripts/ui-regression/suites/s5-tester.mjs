@@ -4,7 +4,8 @@
 // the untested commit is refused); the next Poll runs the tester (stub verdicts): PASS →
 // back in Review, where the person approves the tested commit → Ready for merge, FAIL →
 // Refining with the observation as rework feedback, no verdict token → held in Testing,
-// where a human records the PASS from the ticket page (a summary required) → Review.
+// where the shared dashboard token is refused and a signed-in person (a human principal)
+// records the PASS from the ticket page as a waiver (a summary required) → Review.
 export default async function s5(t, L) {
   const p = t.page;
 
@@ -197,16 +198,71 @@ export default async function s5(t, L) {
       hasText: "Checked every acceptance criterion by hand",
     })
     .click();
-  const resP = p.waitForResponse((r) => r.url().endsWith(`/tickets/${held.id}/tester`), {
+  // The shared dashboard token is the operator, not a person: the server refuses the
+  // waiver (403, principal_required), says why, and records nothing.
+  const refusedP = p.waitForResponse((r) => r.url().endsWith(`/tickets/${held.id}/tester`), {
     timeout: 10000,
   });
+  await L.clearToast(p);
   await p.locator(".reject-dialog .reject-submit").click();
+  const refused = await refusedP.catch(() => null);
+  const refusedJson = refused ? await refused.json().catch(() => ({})) : {};
+  const refusedToast = (await L.waitToast(p, /principal/i, 8000)) || "";
+  const waivedBefore = (await L.ticketView(held.id)).tester_waiver || null;
+  t.check(
+    refused &&
+      refused.status() === 403 &&
+      /principal_required/.test(JSON.stringify(refusedJson)) &&
+      refusedToast &&
+      (await L.ticketOf(held.id)).status === "in_testing" &&
+      !waivedBefore,
+    "Record tester PASS on the shared dashboard token is refused (403 principal_required): the toast says a human or admin principal is needed, nothing is recorded and the ticket stays in Testing",
+    `shared-token tester PASS: ${refused && refused.status()} ${JSON.stringify(refusedJson).slice(0, 200)} toast='${refusedToast.slice(0, 120)}' status=${(await L.ticketOf(held.id)).status}`,
+  );
+
+  // A named person signs in with their own principal token and records the waiver.
+  const who = `ci-waiver-${L.tag("p")}`;
+  const made = await L.api("POST", "/api/principals", { name: who, capability: "full" });
+  const ptok = made.json && made.json.token;
+  t.check(
+    made.status === 201 && typeof ptok === "string" && ptok.startsWith("gfp_"),
+    `a human principal ('${who}') minted for the person who checks by hand`,
+    `POST /api/principals: ${made.status} ${JSON.stringify(made.json).slice(0, 160)}`,
+  );
+  const hp = await L.openPage(t.browser, { token: ptok, route: `ticket/${held.id}` });
+  await hp.locator('button:has-text("Record tester PASS")').click();
+  await hp
+    .locator(".reject-dialog .reject-chip", {
+      hasText: "Checked every acceptance criterion by hand",
+    })
+    .click();
+  const resP = hp.waitForResponse((r) => r.url().endsWith(`/tickets/${held.id}/tester`), {
+    timeout: 10000,
+  });
+  await hp.locator(".reject-dialog .reject-submit").click();
   const res = await resP.catch(() => null);
   const body = res ? JSON.parse(res.request().postData() || "{}") : {};
   const sh2 = await L.waitStatus(held.id, ["in_review"], 10000, 400);
   t.check(
-    body.verdict === "pass" && /by hand/.test(body.summary || "") && sh2,
-    `a human recorded the tester PASS for held #${held.number} → back in Review for the approval`,
-    `human tester PASS: ${JSON.stringify(body)} status=${(await L.ticketOf(held.id)).status}`,
+    res &&
+      res.status() < 300 &&
+      body.verdict === "pass" &&
+      /by hand/.test(body.summary || "") &&
+      sh2,
+    `a signed-in person recorded the tester PASS for held #${held.number} → back in Review for the approval`,
+    `human tester PASS: ${res && res.status()} ${JSON.stringify(body)} status=${(await L.ticketOf(held.id)).status}`,
   );
+  await hp.goto(`${L.BASE}/#/ticket/${held.id}`, { waitUntil: "load" });
+  const waiverTxt = await L.maybe(
+    async () => (await hp.textContent(".tk-waiver").catch(() => "")) || null,
+    "waiver note",
+    10000,
+    300,
+  );
+  t.check(
+    waiverTxt && /Waived/.test(waiverTxt) && waiverTxt.includes(who),
+    "the ticket page shows it as a waiver naming the person, not as the tester's PASS",
+    `waiver note on the ticket page: '${String(waiverTxt).slice(0, 200)}'`,
+  );
+  await hp.context().close();
 }

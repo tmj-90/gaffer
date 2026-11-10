@@ -626,7 +626,8 @@ name (`--criterion <n>`, repeatable; all of them by default) and records what yo
 checked and whether agents run without OS isolation. A new commit or a contract edit
 voids it, as it voids the tester's PASS. On a ticket the tester's FAIL left in Refining
 you can waive that FAIL while the branch is still the commit it failed: the ticket
-returns to Review for your approval. The ticket page, the review packet, the dossier and
+returns to Review for your approval (refused up front where the FAIL's reset criteria
+would keep the approval from passing the policy pack, e.g. `team_light`: rework it). The ticket page, the review packet, the dossier and
 `wg ticket show` read "tester verdict waived by <principal> for criteria <...> on
 <sha>: <summary>" (plus "recorded without OS isolation" when no OS sandbox wraps the
 agents), and `wg stats` counts waivers apart from the tester's PASSes. A board move, a

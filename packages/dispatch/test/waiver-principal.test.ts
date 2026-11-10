@@ -59,9 +59,12 @@ const shown = (wg: Dispatch, id: string) =>
   wg.ticketHeads(id).heads.map((h) => ({ repo: h.repo, sha: h.sha }));
 
 /** A testable ticket with two criteria, delivered and sent to the tester (in_testing). */
-function inTesting(wg: Dispatch): string {
+function inTesting(
+  wg: Dispatch,
+  pack: "solo_loose" | "team_light" | "factory_strict" | "regulated" = "solo_loose",
+): string {
   const t = wg.createTicket(
-    { title: "Ship it", description: "deliver it", policy_pack: "solo_loose" },
+    { title: "Ship it", description: "deliver it", policy_pack: pack },
     human,
   );
   wg.linkRepository(t.id, "svc", "primary", human);
@@ -448,6 +451,33 @@ describe("H1: a principal may waive a recorded tester FAIL on the unchanged head
     ).toMatch(/not held in refining by the tester's FAIL/);
     wg.db.close();
     wg2.db.close();
+  });
+
+  it("a FAIL waiver the pack's done gate would never approve (the FAIL reset the criteria) is refused, nothing recorded", () => {
+    const { wg } = world();
+    const id = inTesting(wg, "team_light");
+    testerFails(wg, id);
+    const before = (
+      wg.db.prepare("SELECT COUNT(*) AS n FROM evidence WHERE ticket_id = ?").get(id) as {
+        n: number;
+      }
+    ).n;
+    const err = refusal(() =>
+      wg.testerPass(id, { summary: "checked by hand" }, human, asPerson(wg, human)),
+    );
+    expect((err.details as { reason?: string }).reason).toBe("fail_waiver_unapprovable");
+    expect(err.message).toMatch(/team_light/);
+    expect(err.message).toMatch(/ticket ready/);
+    expect(wg.view(id).ticket.status).toBe("refining");
+    expect(readLatestWaiver(wg.db, id)).toBeNull();
+    expect(
+      (
+        wg.db.prepare("SELECT COUNT(*) AS n FROM evidence WHERE ticket_id = ?").get(id) as {
+          n: number;
+        }
+      ).n,
+    ).toBe(before);
+    wg.db.close();
   });
 
   it("the tokenless waiver of a FAIL is refused like any person's verdict", () => {

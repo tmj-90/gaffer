@@ -456,6 +456,7 @@ export function testerPass(
   // commit nobody can name).
   const waiverHeads = human ? waiverHeadsNow(internals, pre) : [];
   const failWaived = waivesFail ? assertFailWaivable(internals, pre, waiverHeads) : null;
+  if (failWaived) assertFailWaiverApprovable(internals, pre);
   const deliveryDiff =
     pre.status === "in_testing" && !toReview
       ? internals.transitions.deliveryDiffProof(pre.id)
@@ -749,6 +750,25 @@ function assertFailWaivable(
     );
   }
   return { evidenceId: verdict.evidence_id };
+}
+
+/**
+ * A FAIL WAIVER THAT COULD NEVER BE APPROVED is refused before anything is written. The
+ * tester's FAIL reset the ticket's criteria (the reject machinery), and the waiver does
+ * not undo that; where the policy pack's done gate (checked at approval) needs resolved
+ * criteria, or a criterion's check_command passed by the runner, the waived ticket would
+ * sit in review with every approval refused. Say so now and point at rework instead.
+ */
+function assertFailWaiverApprovable(internals: TesterVerdictInternals, ticket: Ticket): void {
+  const STRANDING = new Set(["AC_UNRESOLVED", "AC_CHECK_UNVERIFIED"]);
+  const preview = internals.transitions.preview(ticket.id, "ready_for_merge");
+  const stranding = (preview?.failures ?? []).filter((f) => STRANDING.has(f.code));
+  if (stranding.length === 0) return;
+  throw new DispatchError(
+    "STATE_CONFLICT",
+    `#${ticket.number ?? "?"} cannot take a waiver of the tester's FAIL: the FAIL reset its acceptance criteria and its '${ticket.policy_pack}' policy would refuse the approval (${stranding.map((f) => f.message).join(" ")}). Nothing was recorded. Send it back through the tester instead: gaffer wg ticket ready ${ticket.number ?? "<n>"} reworks it.`,
+    { reason: "fail_waiver_unapprovable", failures: stranding.map((f) => f.code) },
+  );
 }
 
 /**

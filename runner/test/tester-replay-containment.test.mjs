@@ -516,7 +516,14 @@ console.log("== the replay sandbox-exec profile (generated on any host) ==");
   assert(
     "the validation profile is unchanged (no read denials, $GAFFER_DATA writable)",
     v.status === 0 &&
-      !/deny file-read/.test(vsb) &&
+      // The factory key and the operator's REST token are denied in every profile (signed
+      // gate events); nothing else may be.
+      !/deny file-read/.test(
+        vsb.replace(
+          /\(deny file-read\* file-write\*\n(?: {2}\(subpath "[^"]*(?:gaffer\/keys|dashboard-token)"\)\n)*\)\n/g,
+          "",
+        ),
+      ) &&
       vsb.includes(`(subpath "${DATA}")`) &&
       vsb.includes(`(subpath "${HOME}/.claude")`),
     vsb,

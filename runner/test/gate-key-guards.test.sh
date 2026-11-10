@@ -9,6 +9,9 @@
 #   G2  the docker env forwarding names no key and no key path (the generated argv)
 #   G3  the sandbox-exec profiles (delivery and replay) deny reads and writes of the keys
 #       directory, after every grant (profile text everywhere; on Darwin the kernel too)
+#   G5  the sandbox-exec profiles also deny the operator's REST token ($GAFFER_DATA and
+#       ~/.gaffer dashboard-token): with it an agent could approve as the operator over the
+#       host's REST server, which would seal that approval (independent review of H2)
 #   G4  docker never mounts it: the generated mount list carries no path at, under or
 #       above the keys directory, and a write root that would carry it is refused
 # Run: bash runner/test/run.sh -j 1 runner/test/gate-key-guards.test.sh   (bash 3.2 safe)
@@ -84,6 +87,9 @@ export STRICT_ALLOW_NETWORK=1 STRICT_ALLOW_HOME=""
 # shellcheck source=../lib/sandbox.sh
 source "$RUNNER_DIR/lib/sandbox.sh"
 KREAL="$(cd "$KEYS" && pwd -P)"
+printf 'operator-token\n' > "$GAFFER_DATA/dashboard-token"; chmod 600 "$GAFFER_DATA/dashboard-token"
+TOKREAL="$(cd "$GAFFER_DATA" && pwd -P)/dashboard-token"
+AHOME_REAL="$(cd "$AHOME" && pwd -P)"
 for variant in delivery replay; do
   P="$WORK/profile-$variant.sb"
   if [ "$variant" = replay ]; then
@@ -93,13 +99,21 @@ for variant in delivery replay; do
   fi
   # The deny must come after the last allow (SBPL: last match wins).
   last_allow="$(grep -n '^(allow' "$P" | tail -1 | cut -d: -f1)"
-  deny_line="$(grep -n '^(deny file-read\* file-write\*' "$P" | tail -1 | cut -d: -f1)"
+  deny_line="$(grep -n '^(deny file-read\* file-write\*' "$P" | awk -F: -v a="${last_allow:-0}" '$1 > a { print $1; exit }')"
   sed -n "${deny_line:-1},\$p" "$P" > "$P.tail"
   if [ -n "$deny_line" ] && [ "$deny_line" -gt "${last_allow:-0}" ] \
      && grep -qF "(subpath \"$KREAL\")" "$P.tail"; then
     ok "G3: the $variant profile denies reads and writes of the keys directory, after every allow"
   else
     fail "G3: $variant profile: $(cat "$P")"
+  fi
+  # G5: the operator's REST token is denied too (with it an agent could approve over the
+  # host's REST server, and the host would seal that approval).
+  if [ -n "$deny_line" ] && grep -qF "(subpath \"$TOKREAL\")" "$P.tail" \
+     && grep -qF "(subpath \"$AHOME_REAL/.gaffer/dashboard-token\")" "$P.tail"; then
+    ok "G5: the $variant profile denies reads and writes of the dashboard token (\$GAFFER_DATA and ~/.gaffer), after every allow"
+  else
+    fail "G5: $variant profile does not deny the dashboard token: $(cat "$P")"
   fi
 done
 if [ "$(uname -s)" = Darwin ] && command -v sandbox-exec >/dev/null 2>&1; then
@@ -109,6 +123,17 @@ if [ "$(uname -s)" = Darwin ] && command -v sandbox-exec >/dev/null 2>&1; then
     else ok "G3: $variant: the kernel refuses to read the key"; fi
     if sandbox-exec -f "$P" ls "$KEYS" >/dev/null 2>&1; then fail "G3: $variant: the keys directory was LISTED"
     else ok "G3: $variant: the keys directory cannot be listed"; fi
+    if sandbox-exec -f "$P" cat "$GAFFER_DATA/dashboard-token" >/dev/null 2>&1; then fail "G5: $variant: the dashboard token was READ under sandbox-exec"
+    else ok "G5: $variant: the kernel refuses to read the dashboard token"; fi
+    # A hard link or a rename inside the writable data directory must not carry it out.
+    rm -f "$GAFFER_DATA/tok-link" "$GAFFER_DATA/tok-moved"
+    sandbox-exec -f "$P" ln "$GAFFER_DATA/dashboard-token" "$GAFFER_DATA/tok-link" >/dev/null 2>&1
+    sandbox-exec -f "$P" mv "$GAFFER_DATA/dashboard-token" "$GAFFER_DATA/tok-moved" >/dev/null 2>&1
+    if [ -e "$GAFFER_DATA/tok-moved" ] || { [ -e "$GAFFER_DATA/tok-link" ] && sandbox-exec -f "$P" cat "$GAFFER_DATA/tok-link" >/dev/null 2>&1; }; then
+      fail "G5: $variant: the dashboard token was carried out by a link or a rename"
+    else ok "G5: $variant: no link or rename carries the dashboard token out"; fi
+    [ -e "$GAFFER_DATA/tok-moved" ] && mv "$GAFFER_DATA/tok-moved" "$GAFFER_DATA/dashboard-token"
+    rm -f "$GAFFER_DATA/tok-link"
   done
 else
   echo "  (kernel enforcement runs on Darwin only; the profile text is asserted above)"

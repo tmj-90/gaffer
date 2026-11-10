@@ -249,14 +249,24 @@ insert an approval and recompute a consistent chain, and every landing path acte
   Glob, Write, `cat`, `cp`, an interpreter opening it, a path assembled from variables in
   the same command), on every provider.
   - `sandbox-exec`: both profiles (delivery and the tester replay) deny reading and
-    writing the keys directory outright, whatever the write roots grant.
+    writing the keys directory outright, whatever the write roots grant. They also deny
+    the operator's REST token (`$GAFFER_DATA/dashboard-token`, `~/.gaffer/dashboard-token`):
+    the delivery profile otherwise reads everywhere, writes under `$GAFFER_DATA` and allows
+    the network, so an agent past the hook could read the token, approve as the operator
+    over the host's REST server on localhost, and the host would seal that approval.
+    Nothing inside the sandbox needs the token (the MCP servers and the CLI use sqlite).
   - `docker`: the keys directory is never mounted; the wrapper refuses a mount at, under
-    or above it. The MCP data plane runs on the host.
+    or above the operator account's keys directory (and one under the current `HOME`
+    when it exists). The MCP data plane runs on the host; the dashboard token and the
+    other entries under `$GAFFER_DATA` are masked in the container.
   - `none` (`GAFFER_STRICT_REQUIRE=0`): **only the safety hook stands between an agent and
     the key file.** The hook is a string analyser (see the residual limits): a compiled
     binary, or a script the agent writes and runs, can read any file the operator's user
     can. Under this provider the signature proves less than it does elsewhere: an agent
-    that escapes the hook can read the key and sign a forged approval. Run without an OS
+    that escapes the hook can read the key and sign a forged approval. The hook alone
+    also guards the dashboard token (with it, the REST server seals an approval for its
+    caller) and the tokenless operator CLI (`wg ticket tester-pass --as system`, `wg
+    review approve`), which signs for whoever runs it on the host. Run without an OS
     sandbox only inside a VM or container you trust.
 
 ### Definition of Done, gate integrity and the merge gate

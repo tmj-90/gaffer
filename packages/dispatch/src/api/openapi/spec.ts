@@ -1185,8 +1185,15 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.review,
     summary: "Record the independent tester's verdict",
     description:
-      "pass → ready_for_merge, fail → refining, recorded as the calling principal. On an " +
-      "acceptance ticket a human PASS is a waiver; an automated PASS must carry " +
+      "pass → ready_for_merge, fail → refining, recorded as the calling principal. A " +
+      "PERSON'S verdict (a PASS that waives the tester, or a FAIL) needs a named human or " +
+      "admin principal's token: the shared token, auth switched off and a revoked principal " +
+      "are 403 `ACTOR_NOT_PERMITTED` (`principal_required`), nothing recorded. A person's " +
+      "PASS is a waiver bound to every write repo's head, the contract and the `criteria` it " +
+      "names (default: every criterion); it carries no runner measurement (`replay` is 422) " +
+      "and no commit but the head. On a ticket the tester's FAIL left in refining it waives " +
+      "that FAIL on the unchanged head (back to in_review; 409 `fail_not_waivable` " +
+      "otherwise). An automated PASS must carry " +
       "`tested_commit`, `contract_hash` and `replay: passed` (422 `BINDING_REQUIRED`). On " +
       "any ticket an automated PASS whose `replay` is not `passed` (skipped, failed, or absent) " +
       "is refused the same way (the runner did not show the candidate passes the tester's " +
@@ -1198,7 +1205,13 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
       "stale evidence and never recorded as the current round's verdict.",
     capability: "full",
     body: "testerVerdictBody",
-    responses: [ok("`{ ticket, event_id }`.", "TicketTransition"), notFound, conflict, invalid],
+    responses: [
+      ok("`{ ticket, event_id }`.", "TicketTransition"),
+      notFound,
+      forbidden,
+      conflict,
+      invalid,
+    ],
   },
   {
     method: "POST",

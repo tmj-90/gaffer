@@ -31,6 +31,10 @@ for f in packages/dispatch/dist/cli/index.js packages/dispatch/dist/mcp/bin.js p
   [ -f "$ROOT/$f" ] || { echo "SKIP: $f not built (run pnpm -r build)"; exit 0; }
 done
 
+# A PERSON'S CREDENTIAL exported in the operator's shell before the run (package H1): it
+# must reach no agent (asserted on the agent container's argv and the stub's own env).
+PERSON_TOKEN="gfp_seam_person_token_$$"
+export GAFFER_PRINCIPAL_TOKEN="$PERSON_TOKEN"
 # shellcheck disable=SC2034  # read by lib/docker-delivery-world.sh
 DDW_NAME=docker-delivery-seam
 # shellcheck source=lib/docker-delivery-world.sh
@@ -145,6 +149,9 @@ echo "== the MCP round trip and the result envelope =="
 EV="$(ddw_evidence "$N")"
 case "$EV" in *"docker-delivery-stub:"*"MCP_CONFIG_BRIDGED"*"MCP_ROUND_TRIP"*) ok "the agent's record_ac_evidence reached the canonical DB through the host-side bridge (its config was the bridged one)" ;; *) fail "no agent evidence on #$N (evidence: $(printf '%s' "$EV" | head -c 400))" ;; esac
 case "$EV" in *"docker-delivery-stub:"*"TOKEN_ABSENT"*) ok "the claim token never reached the agent's env or its MCP config" ;; *) fail "the stub saw the claim token (or no probe ran)" ;; esac
+case "$EV" in *"PRINCIPAL_TOKEN_ABSENT"*) ok "the operator's GAFFER_PRINCIPAL_TOKEN never reached the agent's env (H1)" ;; *) fail "the stub saw GAFFER_PRINCIPAL_TOKEN (or no probe ran)" ;; esac
+_tok_hits="$(grep -l -a -F "$PERSON_TOKEN" "$FAKE_DOCKER_LOG"/*.argv 2>/dev/null | wc -l | tr -d ' ')"
+[ "${_tok_hits:-0}" = 0 ] && ok "no container the runner asked for carries the principal token (H1)" || fail "the principal token is in $_tok_hits container argv(s)"
 # The agent's own env is `env -i <allowlist>` INSIDE the container: what the real CLI
 # needs there must be on that list, not only on the wrapper's -e flags.
 for want in GIT_SAFE_DIRECTORY EGRESS_PROXY_SET TMPDIR_USABLE; do

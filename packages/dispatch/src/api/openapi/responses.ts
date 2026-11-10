@@ -298,6 +298,19 @@ export const TicketDetail = z
     agent_display: z
       .record(z.string(), AgentDisplayView)
       .describe("Every agent the ticket's claims and events name, keyed by agent id."),
+    tester_waiver: z
+      .record(z.string(), z.unknown())
+      .nullable()
+      .describe(
+        "A person's waiver, when the latest tester verdict is a principal's PASS: `principal`, `heads` (every write repo's commit it covers), `contract_hash`, `criteria`, `summary`, `isolation` (`none` when agents ran without an OS sandbox), `waives_fail`, `evidence_id`, `at` and `label` (\"tester verdict waived by <principal> for criteria <...> on <sha>: <summary>\"). null otherwise.",
+      ),
+    epic_acceptance: z
+      .object({ epic: str, result: str, label: str, waivers: int })
+      .strict()
+      .nullable()
+      .describe(
+        "On an epic's acceptance ticket: the epic's acceptance as `wg stats` reads it; `label` reads `accepted with N waiver(s)` when it rests on a person's waiver. null otherwise.",
+      ),
   })
   .strict();
 

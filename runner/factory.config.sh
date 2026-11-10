@@ -36,6 +36,18 @@
 # further down do (GAFFER_DATA := $GAFFER_HOME/.gaffer, GAFFER_HOME := $RUNNER_DIR/..),
 # so an operator-set GAFFER_HOME with GAFFER_DATA unset reads $GAFFER_HOME/.gaffer —
 # not the runner checkout's parent — in the parent and in every child.
+# A PERSON'S CREDENTIAL (package H1). GAFFER_PRINCIPAL_TOKEN makes the dispatch CLI act
+# as a human or admin principal, which a person's tester verdict needs. The runner never
+# acts as one (its own wg calls record the system or an agent, and a principal is refused
+# those), and no agent may ever hold it: a token the operator exported before `gaffer run`
+# is taken out of this process's environment here, before anything is spawned. Only
+# `gaffer wg` hands it back, to the one CLI the person typed (runner/gaffer). The shell
+# variable is not exported: no child, agent or re-source sees it.
+if [ -n "${GAFFER_PRINCIPAL_TOKEN+x}" ]; then
+  _GAFFER_PERSON_TOKEN="$GAFFER_PRINCIPAL_TOKEN"
+  export -n _GAFFER_PERSON_TOKEN 2>/dev/null || true
+  unset GAFFER_PRINCIPAL_TOKEN
+fi
 _gs_rd="${RUNNER_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 _gs_home="${GAFFER_HOME:-$(cd "$_gs_rd/.." && pwd)}"
 _gs_file="${GAFFER_DATA:-$_gs_home/.gaffer}/settings.json"

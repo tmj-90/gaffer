@@ -571,6 +571,12 @@ wg)
   # without a dashboard: create → ac add → repo-access set → ready → (after delivery)
   # review approve. Same binary the runner uses; nothing hidden.
   # DISPATCH_CLI_NAME: its help and usage errors say `gaffer wg`, the name you typed.
+  # A PERSON'S CREDENTIAL (package H1): factory.config.sh took GAFFER_PRINCIPAL_TOKEN out
+  # of the runner's environment; the CLI the person typed gets it back, and only it.
+  if [ -n "${_GAFFER_PERSON_TOKEN:-}" ]; then
+    exec env DISPATCH_CLI_NAME="gaffer wg" GAFFER_PRINCIPAL_TOKEN="$_GAFFER_PERSON_TOKEN" \
+      node "$DISPATCH_DIR/dist/cli/index.js" --db "$DISPATCH_DB" "$@"
+  fi
   exec env DISPATCH_CLI_NAME="gaffer wg" node "$DISPATCH_DIR/dist/cli/index.js" --db "$DISPATCH_DB" "$@"
   ;;
 

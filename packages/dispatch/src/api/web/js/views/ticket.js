@@ -851,12 +851,12 @@ async function renderTicket(id) {
           class: "btn primary",
           type: "button",
           title:
-            "Record a tester PASS for this in_testing ticket (→ in_review for your approval, or → ready_for_merge when an approval sent it to the tester). Use when you verified the acceptance criteria yourself or the tester lane is held.",
+            "Record a tester PASS for this ticket as a waiver under your principal (→ in_review for your approval, or → ready_for_merge when an approval sent it to the tester). Use when you verified the acceptance criteria yourself or the tester lane is held. Needs the dashboard signed in with a human or admin principal's token.",
           onclick: () =>
             reasonSheet({
               title: `Tester pass ${ref}`,
               ticket: t,
-              intro: `Records an independent tester PASS for ${ref}. It goes back to Review, where you approve the commit it was tested on (or to Ready for merge, when an approval sent it to the tester), and what you checked is kept as test evidence.`,
+              intro: `Records your waiver of the independent tester for ${ref}, under your principal: it covers this commit and contract (a new commit or a contract edit voids it), and it is shown as a waiver, never as the tester's PASS. It goes back to Review, where you approve the commit (or to Ready for merge, when an approval sent it to the tester). Needs the dashboard signed in with a human or admin principal's token.`,
               label: "What did you check?",
               presets: [
                 "Checked every acceptance criterion by hand",
@@ -1395,7 +1395,13 @@ async function renderTicket(id) {
   // test_contract (surfaces / deps / env / run / harness), and the tester's verdict
   // evidence. Rendered on every ticket so a PO can mark it testable + fill the
   // contract ahead of time; the contract surfaces/render the same way in_testing.
-  const testingCard = roLockAll(renderTestingCard(t, view.evidence || []), "ticket");
+  const testingCard = roLockAll(
+    renderTestingCard(t, view.evidence || [], {
+      waiver: view.tester_waiver || null,
+      epicAcceptance: view.epic_acceptance || null,
+    }),
+    "ticket",
+  );
 
   // FAILURE-DIAGNOSIS: the "why did #N fail" history — the full ordered rework
   // trail (attempt 1 → 2 → …) with the distilled failing test + assertion for each.

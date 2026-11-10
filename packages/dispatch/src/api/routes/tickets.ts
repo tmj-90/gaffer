@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
+import { computeAcceptance } from "../../cli/ops.js";
 import type { Dispatch, TicketDetailPart } from "../../core.js";
 import type { Actor } from "../../domain/types.js";
 import { hideOutOfScopeDependencies } from "../../services/accessScope.js";
@@ -392,6 +393,12 @@ export async function routeTickets(
             .filter((c) => c.ticket_id === view.ticket.id)
             .map((c) => c.agent_id),
         ]),
+        // A PERSON'S WAIVER (package H1): the latest tester verdict when it is a person's
+        // PASS, with the sentence the ticket page shows; null otherwise.
+        tester_waiver: view.testerWaiver,
+        // An epic's ACCEPTANCE ticket: its epic's acceptance as `wg stats` reads it, with
+        // the label ("accepted with N waiver(s)", never plain "accepted" over a waiver).
+        epic_acceptance: view.ticket.acceptance === 1 ? epicAcceptanceOf(wg, view.ticket) : null,
       });
       return;
     }
@@ -1320,4 +1327,17 @@ export async function routeTickets(
     404,
     errorBody("NOT_FOUND", `No ticket route for ${method} /${segments.join("/")}.`),
   );
+}
+
+/** An acceptance ticket's epic acceptance (result, label, waivers), or null. Fail-soft. */
+function epicAcceptanceOf(
+  wg: Dispatch,
+  ticket: { number: number | null },
+): { epic: string; result: string; label: string; waivers: number } | null {
+  try {
+    const e = computeAcceptance(wg.db).epics.find((x) => x.acceptance_ticket === ticket.number);
+    return e ? { epic: e.epic_name, result: e.result, label: e.label, waivers: e.waivers } : null;
+  } catch {
+    return null;
+  }
 }

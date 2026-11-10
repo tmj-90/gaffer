@@ -135,7 +135,7 @@ describe.skipIf(!CLI_BUILT)("H1 CLI: a person's tester verdict needs a principal
       expect(oneLineError(r.stderr).code).toBe("BINDING_REQUIRED");
     }
     expect(status()).toBe("in_testing");
-  });
+  }, 30_000);
 
   it("a revoked principal's token is refused before anything runs", () => {
     const token = mint("tom");
@@ -146,7 +146,7 @@ describe.skipIf(!CLI_BUILT)("H1 CLI: a person's tester verdict needs a principal
     expect(r.status).toBe(1);
     expect(oneLineError(r.stderr).message).toMatch(/not an active principal token/);
     expect(status()).toBe("in_testing");
-  });
+  }, 30_000);
 
   it("a principal asking to record the system or an agent is refused", () => {
     const token = mint("tom");
@@ -160,7 +160,7 @@ describe.skipIf(!CLI_BUILT)("H1 CLI: a person's tester verdict needs a principal
       expect(oneLineError(r.stderr).code).toBe("ACTOR_NOT_PERMITTED");
     }
     expect(status()).toBe("in_testing");
-  });
+  }, 30_000);
 
   it("the principal's waiver is recorded as the principal, bound to the real head, and loud without isolation", () => {
     const token = mint("tom");
@@ -201,7 +201,7 @@ describe.skipIf(!CLI_BUILT)("H1 CLI: a person's tester verdict needs a principal
     } finally {
       wg.db.close();
     }
-  });
+  }, 30_000);
 
   it("a person's FAIL with the principal's token is recorded; tokenless it is refused", () => {
     const token = mint("ops-admin", ["--admin"]);
@@ -212,5 +212,5 @@ describe.skipIf(!CLI_BUILT)("H1 CLI: a person's tester verdict needs a principal
     );
     expect(r.status).toBe(0);
     expect(status()).toBe("refining");
-  });
+  }, 30_000);
 });

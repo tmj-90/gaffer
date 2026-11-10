@@ -326,6 +326,44 @@ describe("H1: a waiver is bound to what it waives", () => {
     wg.db.close();
   });
 
+  it("a new commit in ANY covered write repo voids it, not only the primary's", () => {
+    // Heads per delivery branch: the second repo's branch moves on its own.
+    const heads: Record<string, string> = {};
+    const runner: GitRunner = (cwd, args) => {
+      const ref = String(args.at(-1));
+      const m = /^refs\/heads\/(.+)\^\{commit\}$/.exec(ref);
+      if (args[0] === "rev-parse" && m) {
+        return { status: 0, stdout: `${heads[m[1]!] ?? SHA1}\n`, stderr: "" };
+      }
+      return movableHead({ sha: SHA1 })(cwd, args);
+    };
+    const wg = Dispatch.open(":memory:", new TestClock(), runner, {
+      testingEnabled: true,
+      isolation: () => "docker",
+    });
+    wg.registerRepository({ name: "svc", default_branch: "main" }, human);
+    const id = inTesting(wg);
+    const other = wg.registerRepository(
+      { name: "other", default_branch: "main", local_path: process.cwd() },
+      human,
+    );
+    wg.setTicketRepoAccess(
+      { ticket_id: id, repo_id: other.id, access: "write", relation: "confirmed" },
+      human,
+    );
+    wg.recordRepoDelivery({ ticket_id: id, repo_id: other.id, branch_name: "feat/other" }, human);
+    wg.testerPass(id, { summary: "by hand" }, human, asPerson(wg, human));
+    const w = readLatestWaiver(wg.db, id)!;
+    expect(w.heads.map((h) => h.repo)).toContain("other");
+    expect(wg.reviewGateSvc.testerCoverage(wg.resolveTicket(id)).covered).toBe(true);
+    heads["feat/other"] = SHA2; // a push to the second repo only
+    expect(wg.reviewGateSvc.testerCoverage(wg.resolveTicket(id))).toMatchObject({
+      covered: false,
+      why: "other_commit",
+    });
+    wg.db.close();
+  });
+
   it("a contract edit voids it, and a landing begun after the edit is refused", () => {
     const { wg } = world();
     const id = inTesting(wg);

@@ -728,7 +728,7 @@ function assertFailWaivable(
   const row = internals.db
     .prepare("SELECT payload_json FROM evidence WHERE id = ? AND ticket_id = ?")
     .get(verdict.evidence_id, ticket.id) as { payload_json: string | null } | undefined;
-  let tested: string | null = null;
+  let tested: string | null;
   try {
     const p = JSON.parse(row?.payload_json ?? "{}") as { tested_commit?: unknown };
     tested =

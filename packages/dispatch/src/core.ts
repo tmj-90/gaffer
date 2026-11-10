@@ -679,6 +679,8 @@ export class Dispatch {
        */
       requireRegisteredAgentApprover?: boolean;
       codeIndex?: CodeIndexReader | null;
+      /** A person's waiver records the factory's isolation (see the constructor). */
+      isolation?: () => string;
     } = {},
   ): Dispatch {
     return new Dispatch(openDatabase(path), clock, gitRunner, options);

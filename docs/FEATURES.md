@@ -92,9 +92,10 @@ On a greenfield run the factory sets the new repo up itself:
   created testable (all but the bootstrap). The epic's acceptance ticket is always
   tested, and until the tester passes it `gaffer status`, the run report and `wg stats`
   say the build is **not accepted**. `wg stats` reports a build as **accepted** only with
-  a replayed PASS bound to the tested commit, **waived** for a person's
-  `tester-pass --as human`, **unverified** for neither, and **stale** when the acceptance
-  ticket was edited afterwards.
+  a replayed PASS bound to the tested commit, **accepted with N waiver(s)** when it rests
+  on a person's waiver (recorded with a principal's token, see the tester section),
+  **unverified** for neither, and **stale** when the acceptance ticket was edited
+  afterwards.
 - **Sandbox and budget.** Every agent needs an OS sandbox by default, so on a host with
   none the tick refuses before it claims the bootstrap; a sandbox that fails between that
   check and the spawn parks it (`strict_require_unavailable`) before the repo is
@@ -615,8 +616,22 @@ no model credential, no factory data and no `wg` in reach. If strict mode is on 
 host has no sandbox, the PASS is held with that reason rather than replayed bare. With no test command (or
 `GAFFER_TESTER_REPLAY=0`) the PASS is held in Testing, with a note saying how to
 register one (`wg repo set-commands <repo> --test "<cmd>"`). You can record the verdict
-yourself: **Record tester PASS** (reported as a waiver) or **Record tester FAIL** on
-the ticket page, or `wg ticket tester-pass <n> --as human`.
+yourself with a principal's token: mint one once as the operator
+(`gaffer wg principal create <your-name>`, printed once), then use **Record tester
+PASS** or **Record tester FAIL** on the ticket page with the dashboard signed in with
+that token, or `GAFFER_PRINCIPAL_TOKEN=<token> gaffer wg ticket tester-pass <n> --summary
+"<what you checked>"`. The tokenless CLI and `--as human` are refused. Your PASS is a
+**waiver**: it covers every write repo's current head, the contract, the criteria you
+name (`--criterion <n>`, repeatable; all of them by default) and records what you
+checked and whether agents run without OS isolation. A new commit or a contract edit
+voids it, as it voids the tester's PASS. On a ticket the tester's FAIL left in Refining
+you can waive that FAIL while the branch is still the commit it failed: the ticket
+returns to Review for your approval. The ticket page, the review packet, the dossier and
+`wg ticket show` read "tester verdict waived by <principal> for criteria <...> on
+<sha>: <summary>" (plus "recorded without OS isolation" when no OS sandbox wraps the
+agents), and `wg stats` counts waivers apart from the tester's PASSes. A board move, a
+ready, an unblock or a reopen never takes a ticket past the tester: each leads back
+through it on the next submit.
 
 One tester run works on a ticket at a time. A second run for the same ticket (a second
 runner, a run started by hand) finds the first one's lock

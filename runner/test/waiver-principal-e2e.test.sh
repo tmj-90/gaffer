@@ -121,7 +121,7 @@ tick_until "$ACC" in_testing && ok "#$ACC delivered and sent to the tester" || f
 run_tick >/dev/null   # the tester lane: no verdict, held
 run_tick >/dev/null
 [ "$(st "$ACC")" = in_testing ] && ok "#$ACC is held in_testing for a person (no verdict)" || fail "#$ACC status=$(st "$ACC")"
-wg ticket show "$ACC" 2>/dev/null | grep -q 'tester held' && ok "the hold is on the ticket's record" || fail "no 'tester held' note on #$ACC"
+grep -q 'tester held' <<<"$(wg ticket show "$ACC" 2>/dev/null)" && ok "the hold is on the ticket's record" || fail "no 'tester held' note on #$ACC"
 
 echo "== 3: the tokenless waiver is refused =="
 for as in human admin; do

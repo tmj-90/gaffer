@@ -3,6 +3,7 @@
  * and the human queue stamped with each approved ticket's landing state, and the agent
  * lists carrying each agent's presentation. Reads only.
  */
+import { readLatestWaiver } from "./reviewGate/waiver.js";
 import {
   type AcceptanceCriterion,
   type Agent,
@@ -151,7 +152,17 @@ export interface TicketView {
    * the later tickets a person linked to this one as its regressions. Current links only.
    */
   regression: { regression_of: RegressionLinkView[]; regressed_by: RegressionLinkView[] };
+  /**
+   * A PERSON'S WAIVER (package H1): when the ticket's latest tester verdict is a person's
+   * PASS, what it waived and the one sentence every surface shows ("tester verdict waived
+   * by <principal> for criteria <...> on <sha>: <summary>", plus "recorded without OS
+   * isolation" when agents ran without an OS sandbox); null otherwise.
+   */
+  testerWaiver: TesterWaiverView | null;
 }
+
+/** A person's waiver as the ticket view shows it (see TicketView.testerWaiver). */
+export type TesterWaiverView = NonNullable<ReturnType<typeof readLatestWaiver>>;
 
 export function view(host: TicketReadHost, ref: string): TicketView {
   const ticket = host.resolveTicket(ref);
@@ -180,6 +191,7 @@ export function view(host: TicketReadHost, ref: string): TicketView {
     landing: computeLandingStatus(host.db, ticket.id),
     evalJudgment: currentJudgment(events, enteredReviewAt(ticket.id, events)),
     regression: regressionLinksOf(host, ticket.id),
+    testerWaiver: readLatestWaiver(host.db, ticket.id),
   };
 }
 

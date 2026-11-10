@@ -261,7 +261,7 @@ export function approveReview(
  * "unknown", and an unknown cannot be approved either: it fails toward the human.
  */
 export function unavailableWriteRepos(
-  internals: ApprovalInternals,
+  internals: Pick<ApprovalInternals, "unavailableWriteReposResolver">,
   ticket: Ticket,
 ): readonly UnavailableWriteRepo[] {
   if (!internals.unavailableWriteReposResolver) return [];

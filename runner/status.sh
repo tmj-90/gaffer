@@ -216,7 +216,7 @@ fi
 printf "    needs review: %s    blocked: %s    ready: %s    paused: %s\n" "$review" "$blocked" "$ready" "$paused"
 [ "$paused_waiting" -gt 0 ] && printf "    ${c_yel}paused, waiting on you: %s${c_off}  (hit a cap with its work kept — Continue or Stop it on the board, or: gaffer wg ticket continue <n>)\n" "$paused_waiting"
 [ "$resume_req" -gt 0 ] && printf "    ${c_dim}paused, Continue pressed: %s (the next tick resumes it)${c_off}\n" "$resume_req"
-[ "$unaccepted" -gt 0 ] && printf "    ${c_yel}builds NOT accepted: %s${c_off}  (implementation merged; the acceptance ticket has no tester PASS, or the tester's assertions were not replayed on the revision that landed — run the loop with the tester, or record a human verdict: wg ticket tester-pass <n> --as human)\n" "$unaccepted"
+[ "$unaccepted" -gt 0 ] && printf "    ${c_yel}builds NOT accepted: %s${c_off}  (implementation merged; the acceptance ticket has no tester PASS, or the tester's assertions were not replayed on the revision that landed — run the loop with the tester, or record a person's verdict with a principal's token: GAFFER_PRINCIPAL_TOKEN=<token> gaffer wg ticket tester-pass <n> --summary \"<what you checked>\")\n" "$unaccepted"
 # TESTER REPLAY OFF: no landing replays the tester's tests or records it, so no epic can
 # count as accepted while it is off — say so rather than leave the count to explain itself.
 case "${GAFFER_TESTER_REPLAY:-1}" in

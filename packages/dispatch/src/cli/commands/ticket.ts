@@ -24,6 +24,7 @@ import {
   warnLandedAlready,
   cliTicketFilter,
   cliUserId,
+  cliPrincipal,
 } from "../helpers.js";
 import { heavy, open } from "../runtime.js";
 import { RULES } from "../limits.js";
@@ -909,8 +910,23 @@ export function registerTicket(program: Command): void {
 
   ticket
     .command("tester-pass <ref>")
-    .description("Record an independent tester PASS (in_testing -> ready_for_merge)")
-    .requiredOption("--summary <text>", "passing test-result summary (recorded as evidence)")
+    .description(
+      "Record an independent tester PASS (in_testing -> in_review, or ready_for_merge when an approval sent it to the tester). " +
+        "A PERSON'S PASS IS A WAIVER and needs an active human or admin principal: run it with GAFFER_PRINCIPAL_TOKEN=<token> " +
+        "(or --as-principal <token>; `principal create <name>` mints one). It is bound to every write repo's head, the contract " +
+        "and the criteria it waives, and on a ticket the tester's FAIL left in refining it waives that FAIL on the unchanged head " +
+        "(back to in_review). The tokenless CLI and --as human without a principal are refused.",
+    )
+    .requiredOption(
+      "--summary <text>",
+      "passing test-result summary, or for a waiver what you checked (recorded as evidence)",
+    )
+    .option(
+      "--criterion <n>",
+      "a waiver: the criterion it waives, by position (1 = the first) or id (repeatable; default: every criterion)",
+      (v: string, prev: string[]) => [...prev, v],
+      [] as string[],
+    )
     .option("--uri <uri>", "evidence uri")
     .option(
       "--tested-commit <sha>",
@@ -945,7 +961,10 @@ export function registerTicket(program: Command): void {
       "--round <id>",
       "the testing round the verdict was made in (the runner's tester sends the round it started in; a verdict for an earlier round is refused as STALE_VERDICT and kept as stale evidence)",
     )
-    .option("--as <actor>", "actor type: agent|human|admin|system", "agent")
+    .option(
+      "--as <actor>",
+      "actor type: agent (default) | system for the runner's tester; a person's verdict is recorded as the principal whose token is set (human|admin need one)",
+    )
     .action((ref, opts, cmd) => {
       const actor = testerActor(opts.as);
       // TEST IDENTITIES are the runner's measurement: refused to every other actor here
@@ -996,8 +1015,12 @@ export function registerTicket(program: Command): void {
           ...(tests !== undefined ? { tests } : {}),
           ...(testerAgent !== undefined ? { tester_agent: testerAgent } : {}),
           ...(opts.round !== undefined ? { round: String(opts.round) } : {}),
+          ...(Array.isArray(opts.criterion) && opts.criterion.length > 0
+            ? { criteria: (opts.criterion as unknown[]).map(String) }
+            : {}),
         },
         actor,
+        { principal: cliPrincipal() },
       );
       printJson({ ok: true, status: res.ticket.status, event: res.eventId });
       wg.db.close();
@@ -1005,7 +1028,10 @@ export function registerTicket(program: Command): void {
 
   ticket
     .command("tester-fail <ref>")
-    .description("Record an independent tester FAIL (in_testing -> refining, with evidence)")
+    .description(
+      "Record an independent tester FAIL (in_testing -> refining, with evidence). A person's FAIL needs an active human or " +
+        "admin principal (GAFFER_PRINCIPAL_TOKEN / --as-principal), like a person's PASS.",
+    )
     .requiredOption(
       "--summary <text>",
       "failing-test summary (recorded as evidence + reject reason)",
@@ -1032,7 +1058,10 @@ export function registerTicket(program: Command): void {
       "--round <id>",
       "the testing round the verdict was made in (the runner's tester sends the round it started in; a verdict for an earlier round is refused as STALE_VERDICT and kept as stale evidence)",
     )
-    .option("--as <actor>", "actor type: agent|human|admin|system", "agent")
+    .option(
+      "--as <actor>",
+      "actor type: agent (default) | system for the runner's tester; a person's verdict is recorded as the principal whose token is set (human|admin need one)",
+    )
     .action((ref, opts, cmd) => {
       if (opts.to !== "refining" && opts.to !== "ready") {
         throw new DispatchError("VALIDATION_ERROR", "--to must be refining or ready");
@@ -1051,6 +1080,7 @@ export function registerTicket(program: Command): void {
           ...(opts.round !== undefined ? { round: String(opts.round) } : {}),
         },
         actor,
+        { principal: cliPrincipal() },
       );
       printJson({ ok: true, status: res.ticket.status, event: res.eventId });
       wg.db.close();

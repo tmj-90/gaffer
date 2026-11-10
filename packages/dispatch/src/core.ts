@@ -1,4 +1,5 @@
 import type { AcceptanceProfile } from "./domain/acceptanceProfile.js";
+import type { VerdictPrincipal } from "./services/reviewGate/waiver.js";
 import { type Db, openDatabase } from "./db/connection.js";
 import {
   type AcStatus,
@@ -414,6 +415,11 @@ export class Dispatch {
        * Defaults to the memory CLI when MEMORY_CLI_BIN + MEMORY_DB are set; null: none.
        */
       codeIndex?: CodeIndexReader | null;
+      /**
+       * A PERSON'S WAIVER records the factory's isolation: "none" or the OS sandbox
+       * provider. Defaults to the runner's own probe (reviewGate/waiver.ts).
+       */
+      isolation?: () => string;
     } = {},
   ) {
     this.db = db;
@@ -619,6 +625,7 @@ export class Dispatch {
       // record (what the worktree held that the committed diff cannot show, e.g. a
       // git-ignored .npmrc), unless a human allowed test changes on the ticket.
       observedRiskResolver: (ticket) => this.observedRiskFor(ticket),
+      ...(options.isolation ? { isolation: options.isolation } : {}),
     });
     this.reviewCommentSvc = new ReviewCommentService({
       db,
@@ -1241,10 +1248,17 @@ export class Dispatch {
       tester_agent?: unknown;
       /** The testing round the verdict was made in (a stale one is refused). */
       round?: string;
+      /** A person's waiver: the criteria it waives, by position or id (default: all). */
+      criteria?: readonly string[];
     },
     actor: Actor,
+    /**
+     * A PERSON'S VERDICT (package H1): the principal it is recorded for. A human or admin
+     * actor without an active human or admin principal is refused (ACTOR_NOT_PERMITTED).
+     */
+    authority: { principal?: VerdictPrincipal | null } = {},
   ): TransitionResult {
-    return reviewLifecycle.testerPass(this, this.internals, ticketRef, input, actor);
+    return reviewLifecycle.testerPass(this, this.internals, ticketRef, input, actor, authority);
   }
 
   testerFail(
@@ -1261,8 +1275,10 @@ export class Dispatch {
       round?: string;
     },
     actor: Actor,
+    /** A PERSON'S VERDICT (package H1): see testerPass. */
+    authority: { principal?: VerdictPrincipal | null } = {},
   ): TransitionResult {
-    return this.reviewGateSvc.testerFail(ticketRef, input, actor);
+    return this.reviewGateSvc.testerFail(ticketRef, input, actor, authority);
   }
 
   // --- Black-box testing handover (BBT-001) --------------------------------

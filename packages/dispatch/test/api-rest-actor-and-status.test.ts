@@ -160,24 +160,40 @@ describe("REST tester verdict runs as the calling principal", () => {
     const stale = await post(base, `/tickets/${acc}/tester`, token, {
       verdict: "pass",
       summary: "bound",
-      tested_commit: SHA,
       contract_hash: "a".repeat(64),
-      replay: "passed",
     });
     expect(stale.status).toBe(409);
     expect((stale.body.error as { code: string }).code).toBe("CONTRACT_MISMATCH");
-    const bound = await post(base, `/tickets/${acc}/tester`, token, {
+    // A principal's PASS is a person's waiver (package H1): it carries no runner
+    // measurement (a replay is 422) and binds no commit the caller names (409).
+    const measured = await post(base, `/tickets/${acc}/tester`, token, {
+      verdict: "pass",
+      summary: "bound",
+      contract_hash: contractHash(wg.db, acc),
+      replay: "passed",
+    });
+    expect(measured.status).toBe(422);
+    const named = await post(base, `/tickets/${acc}/tester`, token, {
       verdict: "pass",
       summary: "bound",
       tested_commit: SHA,
       contract_hash: contractHash(wg.db, acc),
-      replay: "passed",
+    });
+    expect(named.status).toBe(409);
+    const bound = await post(base, `/tickets/${acc}/tester`, token, {
+      verdict: "pass",
+      summary: "bound",
+      contract_hash: contractHash(wg.db, acc),
     });
     expect(bound.status).toBe(200);
     const ev = wg.db
       .prepare("SELECT payload_json FROM evidence WHERE ticket_id = ? AND summary = 'bound'")
       .get(acc) as { payload_json: string };
-    expect(JSON.parse(ev.payload_json)).toMatchObject({ tested_commit: SHA, replay: "passed" });
+    expect(JSON.parse(ev.payload_json)).toMatchObject({
+      provenance: "human",
+      contract_hash: contractHash(wg.db, acc),
+      waiver: { principal: { name: "ci-bot" } },
+    });
   });
 
   it("a malformed binding is a 422, not a silent drop", async () => {

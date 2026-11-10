@@ -6,6 +6,7 @@ import { contractHash } from "../src/util/contractHash.js";
 import { TestClock } from "../src/util/clock.js";
 import { DispatchError } from "../src/util/errors.js";
 import { giveTicketRealDelivery, nonEmptyDiffRunner } from "./helpers/realDiff.js";
+import { asPerson } from "./helpers/principal.js";
 
 /**
  * TESTER FALSE GREENS (STRATEGY section 2: refuse uncertain work rather than confidently
@@ -103,17 +104,27 @@ describe("a PASS whose clean replay did not pass is never recorded (any ticket)"
       msg = (e as Error).message;
     }
     expect(msg).toMatch(/replay/);
-    expect(msg).toMatch(/--as human/);
+    expect(msg).toMatch(/principal's token/);
     wg.db.close();
   });
 
   it("a human PASS (waiver) with replay=skipped still moves the ticket on", () => {
     const wg = freshWg();
     const id = ordinaryInTesting(wg);
+    // A waiver carries no runner measurement (package H1): a replay sent with it is refused.
+    expect(() =>
+      wg.testerPass(
+        id,
+        { summary: "Checked every acceptance criterion by hand", replay: "skipped" },
+        human,
+        asPerson(wg, human),
+      ),
+    ).toThrow(/runner's measurement/);
     const res = wg.testerPass(
       id,
-      { summary: "Checked every acceptance criterion by hand", replay: "skipped" },
+      { summary: "Checked every acceptance criterion by hand" },
       human,
+      asPerson(wg, human),
     );
     // Moved on: back to review for a person (tester first).
     expect(res.ticket.status).toBe("in_review");
@@ -154,7 +165,7 @@ describe("a PASS whose clean replay did not pass is never recorded (any ticket)"
       expect(err).toBeInstanceOf(DispatchError);
       expect((err as DispatchError).code).toBe("BINDING_REQUIRED");
       expect((err as Error).message).toMatch(/replay=passed/);
-      expect((err as Error).message).toMatch(/--as human/);
+      expect((err as Error).message).toMatch(/principal's token/);
       expect(wg.view(id).ticket.status).toBe("in_testing");
       wg.db.close();
     });
@@ -163,9 +174,9 @@ describe("a PASS whose clean replay did not pass is never recorded (any ticket)"
   it("a human PASS with no binding at all is a waiver and moves the ticket on", () => {
     const wg = freshWg();
     const id = ordinaryInTesting(wg);
-    expect(wg.testerPass(id, { summary: "checked by hand" }, human).ticket.status).toBe(
-      "in_review",
-    );
+    expect(
+      wg.testerPass(id, { summary: "checked by hand" }, human, asPerson(wg, human)).ticket.status,
+    ).toBe("in_review");
     wg.db.close();
   });
 

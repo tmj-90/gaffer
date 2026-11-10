@@ -9,6 +9,7 @@ import { TestClock } from "../src/util/clock.js";
 import { DispatchError } from "../src/util/errors.js";
 import { listEvents } from "../src/events/eventWriter.js";
 import { FAKE_HEAD, giveTicketRealDelivery, nonEmptyDiffRunner } from "./helpers/realDiff.js";
+import { asPerson } from "./helpers/principal.js";
 
 /**
  * ACCEPTANCE PROFILES (Release C, C0-C2, C6): "accepted" means the change was exercised the
@@ -550,7 +551,7 @@ describe("C6: a profile's missing evidence means no automated PASS", () => {
     const wg = freshWg();
     const id = profiled(wg, "web", { base_path: "/" });
     expect(code(() => pass(wg, id))).toBe("ACCEPTANCE_EVIDENCE_REQUIRED");
-    const res = wg.testerPass(id, { summary: "I clicked through it" }, human);
+    const res = wg.testerPass(id, { summary: "I clicked through it" }, human, asPerson(wg, human));
     expect(res.ticket.status).toBe("in_review");
     wg.db.close();
   });
@@ -558,7 +559,9 @@ describe("C6: a profile's missing evidence means no automated PASS", () => {
   it("a human PASS is a waiver without evidence; a unit ticket is unchanged", () => {
     const wg = freshWg();
     const id = profiled(wg);
-    expect(wg.testerPass(id, { summary: "ran it by hand" }, human).ticket.status).toBe("in_review");
+    expect(
+      wg.testerPass(id, { summary: "ran it by hand" }, human, asPerson(wg, human)).ticket.status,
+    ).toBe("in_review");
     const wg2 = freshWg();
     const unit = inReview(wg2);
     toTesting(wg2, unit);

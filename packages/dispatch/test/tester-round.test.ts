@@ -8,6 +8,7 @@ import { contractHash } from "../src/util/contractHash.js";
 import { TestClock } from "../src/util/clock.js";
 import { DispatchError } from "../src/util/errors.js";
 import { giveTicketRealDelivery, nonEmptyDiffRunner } from "./helpers/realDiff.js";
+import { asPerson } from "./helpers/principal.js";
 
 /**
  * TESTING ROUNDS (external review 16): a tester verdict names the testing round its run
@@ -71,7 +72,12 @@ function world(runner?: GitRunner): { wg: Dispatch; id: string; acId: string; ag
 
 /** Round 1 is FAILed by a person, the rework is delivered: the ticket is in round 2. */
 function reworkIntoNewRound(w: ReturnType<typeof world>): void {
-  w.wg.testerFail(w.id, { summary: "a person saw AC1 fail", to: "ready" }, human);
+  w.wg.testerFail(
+    w.id,
+    { summary: "a person saw AC1 fail", to: "ready" },
+    human,
+    asPerson(w.wg, human),
+  );
   expect(w.wg.view(w.id).ticket.status).toBe("ready");
   deliverToTesting(w.wg, w.id, w.acId, w.agentId);
 }
@@ -224,7 +230,8 @@ describe("a tester verdict names its testing round", () => {
     const w = world(runner);
     const r1 = currentTestingRound(w.wg.db, w.id)!.id;
     const input = passInput(w.wg, w.id, r1);
-    hook = () => w.wg.testerFail(w.id, { summary: "a person saw AC1 fail" }, human);
+    hook = () =>
+      w.wg.testerFail(w.id, { summary: "a person saw AC1 fail" }, human, asPerson(w.wg, human));
     const err = refusal(() => w.wg.testerPass(w.id, input, system));
     expect(err?.code).toBe("STALE_VERDICT");
     expect(err?.message).toMatch(/no longer in testing \(refining\)/);
@@ -262,7 +269,7 @@ describe("a tester verdict names its testing round", () => {
   it("a verdict without a round (a person's, an older runner's) is checked as before", () => {
     const w = world();
     reworkIntoNewRound(w);
-    const res = w.wg.testerFail(w.id, { summary: "FAIL: by hand" }, human);
+    const res = w.wg.testerFail(w.id, { summary: "FAIL: by hand" }, human, asPerson(w.wg, human));
     expect(res.ticket.status).toBe("refining");
     w.wg.db.close();
   });

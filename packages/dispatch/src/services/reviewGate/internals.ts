@@ -38,4 +38,6 @@ export interface ReviewGateInternals {
   readonly changeOnRefsResolver: ReviewGateServiceDeps["changeOnRefsResolver"];
   readonly policyAllowsAgentApprove: ((ticket: Ticket) => boolean) | undefined;
   readonly observedRiskResolver: ((ticket: Ticket) => ObservedRisk | null) | undefined;
+  /** A person's waiver records the factory's isolation ("none" or the provider). */
+  readonly isolationFn: (() => string) | undefined;
 }

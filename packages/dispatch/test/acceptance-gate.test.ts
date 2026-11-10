@@ -12,6 +12,7 @@ import { ACCEPTANCE_CRITERIA } from "../src/services/epicsService.js";
 import { TestClock } from "../src/util/clock.js";
 import type { GitRunner } from "../src/services/diffService.js";
 import { FAKE_HEAD, giveTicketRealDelivery, nonEmptyDiffRunner } from "./helpers/realDiff.js";
+import { asPerson } from "./helpers/principal.js";
 
 /**
  * ACCEPTANCE GATE — "implementation tickets merged" is not "build accepted".
@@ -489,7 +490,12 @@ describe("acceptance gate: an acceptance ticket always goes to the tester (befor
     const wg = freshWg({ testingEnabled: false });
     const { accId } = epicToReview(wg);
     toTester(wg, accId);
-    wg.testerPass(accId, { summary: "waived: acceptance reviewed by hand" }, human);
+    wg.testerPass(
+      accId,
+      { summary: "waived: acceptance reviewed by hand" },
+      human,
+      asPerson(wg, human),
+    );
     approveTested(wg, accId);
     wg.markMerged(accId, systemActor);
     const a = computeStats(wg.db).acceptance;

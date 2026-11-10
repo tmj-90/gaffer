@@ -20,11 +20,13 @@ import {
 import type { ReviewGateInternals } from "./internals.js";
 import type { ReviewGateService, LandingStarted } from "../reviewGateService.js";
 import { computeApprovedUnchanged } from "./staleness.js";
+import { notTestedMessage } from "./tester.js";
+import { readLatestWaiver } from "./waiver.js";
 
 /** What these functions read from the {@link ReviewGateService} facade they are handed. */
 export type LandingHost = Pick<
   ReviewGateService,
-  "approvalRef" | "ciStatus" | "landingsStarted" | "recordLanding"
+  "approvalRef" | "ciStatus" | "landingsStarted" | "recordLanding" | "testerCoverage"
 >;
 /** The facade's private state these functions read. */
 export type LandingInternals = Pick<
@@ -262,6 +264,21 @@ export function beginLanding(
       "VALIDATION_ERROR",
       "commit must be a full git commit id (40 or 64 hex characters).",
     );
+  }
+  // A PERSON'S WAIVER (package H1) lands only while it still covers what lands: a new
+  // commit in a covered repo or a contract edit voids it as it voids a tester PASS, and
+  // the landing is refused as not tested (git runs here, outside the write transaction).
+  const pre = internals.ticketSvc.resolveTicket(ref);
+  if (readLatestWaiver(internals.db, pre.id)) {
+    const cov = host.testerCoverage(pre);
+    if (!cov.covered) {
+      throw new DispatchError("STATE_CONFLICT", notTestedMessage(pre, cov), {
+        reason: "not_tested",
+        why: cov.why,
+        tested: cov.tested,
+        head: cov.head,
+      });
+    }
   }
   return inTransaction(internals.db, () => {
     const ticket = internals.ticketSvc.resolveTicket(ref);

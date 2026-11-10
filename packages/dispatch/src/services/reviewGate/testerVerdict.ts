@@ -43,6 +43,14 @@ import type { ReviewGateService } from "../reviewGateService.js";
 import { enteredTestingBeforeReview } from "./tester.js";
 import { ciCandidateHead, assertCiPassed } from "./ci.js";
 import { partlyLandedHold } from "./landing.js";
+import { resolveReviewedHeads } from "./staleness.js";
+import { unavailableWriteRepos } from "./approval.js";
+import {
+  assertVerdictPrincipal,
+  waivedCriteria,
+  type VerdictPrincipal,
+  type WaiverBinding,
+} from "./waiver.js";
 
 /** What these functions read from the {@link ReviewGateService} facade they are handed. */
 export type TesterVerdictHost = Pick<ReviewGateService, "ciStatus">;
@@ -55,6 +63,8 @@ export type TesterVerdictInternals = Pick<
   | "evidence"
   | "maxAttempts"
   | "reviewedHeadsResolver"
+  | "unavailableWriteReposResolver"
+  | "isolationFn"
   | "ticketSvc"
   | "tickets"
   | "transitions"
@@ -133,7 +143,7 @@ export function validatedBinding(
     if (missing.length > 0) {
       throw new DispatchError(
         "BINDING_REQUIRED",
-        `An automated PASS on an acceptance ticket must be bound to what was tested; missing: ${missing.join(", ")}. A human can waive instead (tester-pass --as human), which is reported as waived, not verified.`,
+        `An automated PASS on an acceptance ticket must be bound to what was tested; missing: ${missing.join(", ")}. A person can waive instead, with a human or admin principal's token (GAFFER_PRINCIPAL_TOKEN=<token> wg ticket tester-pass), which is reported as waived, not verified.`,
         { missing },
       );
     }
@@ -150,8 +160,8 @@ export function validatedBinding(
     throw new DispatchError(
       "BINDING_REQUIRED",
       out.replay
-        ? `An automated PASS whose clean replay is '${out.replay}' is not a verified PASS: the runner did not show the candidate passes the tester's tests (register the repo's test command and re-test). A human can record the verdict instead (tester-pass --as human), which is reported as a waiver.`
-        : "An automated PASS must carry the runner's clean replay (replay=passed): without it nothing shows the candidate passes the tester's tests. A human can record the verdict instead (tester-pass --as human), which is reported as a waiver.",
+        ? `An automated PASS whose clean replay is '${out.replay}' is not a verified PASS: the runner did not show the candidate passes the tester's tests (register the repo's test command and re-test). A person can record the verdict instead, with a human or admin principal's token (GAFFER_PRINCIPAL_TOKEN=<token> wg ticket tester-pass), which is reported as a waiver.`
+        : "An automated PASS must carry the runner's clean replay (replay=passed): without it nothing shows the candidate passes the tester's tests. A person can record the verdict instead, with a human or admin principal's token (GAFFER_PRINCIPAL_TOKEN=<token> wg ticket tester-pass), which is reported as a waiver.",
       { missing: ["replay=passed"], replay: state },
     );
   }
@@ -353,13 +363,33 @@ export function testerPass(
     tester_agent?: unknown;
     /** The testing round the verdict was made in (see currentTestingRound). */
     round?: string;
+    /** A person's waiver: the criteria it waives, by position or id (default: all). */
+    criteria?: readonly string[];
   },
   actor: Actor,
+  authority: { principal?: VerdictPrincipal | null } = {},
 ): TransitionResult {
   const summary = input.summary.trim();
   if (summary.length === 0) {
     throw new DispatchError("VALIDATION_ERROR", "A test-result summary is required.");
   }
+  // A PERSON'S VERDICT (package H1): an active human or admin principal, or nothing.
+  // Checked before anything is written (a stale verdict is kept as evidence below).
+  const human = testerProvenance(actor) === "human";
+  assertVerdictPrincipal(
+    internals.db,
+    actor,
+    authority.principal,
+    internals.ticketSvc.resolveTicket(ticketRef).number,
+    "pass",
+  );
+  if (!human && input.criteria !== undefined) {
+    throw new DispatchError(
+      "VALIDATION_ERROR",
+      "Criteria are named on a person's waiver only; the tester's PASS covers the whole contract.",
+    );
+  }
+  if (human) assertNoRunnerBinding(input);
   refuseStaleVerdict(internals, ticketRef, "pass", input, actor);
   // TEST IDENTITIES (external review 10): the tests the landing replay must see pass. Only
   // the runner's tester lane measures them (its own clean replay), so only the system
@@ -414,8 +444,18 @@ export function testerPass(
   // nested transition() is only a savepoint inside it, so "before transition()" is
   // not enough). The gate re-checks the proof's fingerprint inside the transaction.
   const pre = internals.ticketSvc.resolveTicket(ticketRef);
-  const toReview = pre.status === "in_testing" && enteredTestingBeforeReview(internals, pre.id);
+  // WAIVING A RECORDED FAIL: a person's PASS of a ticket the tester's FAIL left in
+  // refining, on the commit the tester failed (checked below). It returns to review, where
+  // a person approves the commit (the approval reads the waiver as the tester's coverage).
+  const waivesFail = human && pre.status === "refining";
+  const toReview =
+    waivesFail || (pre.status === "in_testing" && enteredTestingBeforeReview(internals, pre.id));
   const target: TicketStatus = toReview ? "in_review" : "ready_for_merge";
+  // THE WAIVER'S BINDING (git, outside the write transaction): every write repo's delivery
+  // head now. A write repo whose head cannot be read refuses the waiver (it would cover a
+  // commit nobody can name).
+  const waiverHeads = human ? waiverHeadsNow(internals, pre) : [];
+  const failWaived = waivesFail ? assertFailWaivable(internals, pre, waiverHeads) : null;
   const deliveryDiff =
     pre.status === "in_testing" && !toReview
       ? internals.transitions.deliveryDiffProof(pre.id)
@@ -435,13 +475,24 @@ export function testerPass(
   return recordingStale(internals, ticketRef, "pass", input, actor, () =>
     inTransaction(internals.db, () => {
       const ticket = internals.ticketSvc.resolveTicket(ticketRef);
-      if (ticket.status !== "in_testing") {
+      // The principal again, inside the write: a revocation committed meanwhile refuses.
+      const principalNow = assertVerdictPrincipal(
+        internals.db,
+        actor,
+        authority.principal,
+        ticket.number,
+        "pass",
+      );
+      if (ticket.status !== "in_testing" && !(failWaived && ticket.status === "refining")) {
         throw new DispatchError(
           "ILLEGAL_TRANSITION",
-          "Only a ticket in testing can be passed by the tester.",
+          human
+            ? "A person's tester verdict is recorded on a ticket in testing, or (a waiver of the tester's FAIL) on a ticket the tester's FAIL left in refining."
+            : "Only a ticket in testing can be passed by the tester.",
           { from: ticket.status, to: target },
         );
       }
+      if (failWaived) assertFailWaivable(internals, ticket, waiverHeads, failWaived);
       assertCurrentRound(internals, ticket, input.round);
       const contractNow = contractHash(internals.db, ticket.id);
       const binding = validatedBinding(input, {
@@ -465,6 +516,33 @@ export function testerPass(
             );
       // REQUIRED CI: the tester's PASS is the other way into ready_for_merge.
       if (!toReview) assertCiPassed(host, ticket, ciCandidate);
+      // A person's waiver: what it covers, computed here (never the caller's word).
+      const waiver: WaiverBinding | null = principalNow
+        ? {
+            principal: { id: principalNow.id, name: principalNow.name },
+            actor: { type: actor.type, id: actor.id ?? "" },
+            heads: waiverHeads.map((h) => ({
+              repo_id: h.repoId,
+              repo: h.repo,
+              sha: h.sha.toLowerCase(),
+            })),
+            contract_hash: contractNow,
+            criteria: waivedCriteria(internals.acs.listForTicket(ticket.id), input.criteria),
+            summary,
+            isolation: isolationNow(internals),
+            ...(failWaived ? { waives_fail: failWaived.evidenceId } : {}),
+          }
+        : null;
+      // A waiver covers the head dispatch read, never a commit the caller names.
+      if (waiver && binding.tested_commit && waiver.heads[0]?.sha !== binding.tested_commit) {
+        throw new DispatchError(
+          "STATE_CONFLICT",
+          waiver.heads[0]
+            ? `tested_commit ${binding.tested_commit.slice(0, 12)} is not the branch head ${waiver.heads[0].sha.slice(0, 12)}: a waiver covers the head it is recorded on.`
+            : `tested_commit ${binding.tested_commit.slice(0, 12)} names a commit, but the ticket has no write repository head to bind a waiver to.`,
+          { tested: binding.tested_commit, head: waiver.heads[0]?.sha ?? null },
+        );
+      }
       // Record the passing test result as evidence so it is visible in review.
       const evidenceId = newId();
       const now = internals.clock.now();
@@ -484,6 +562,15 @@ export function testerPass(
           verdict: "pass",
           provenance: testerProvenance(actor),
           ...binding,
+          // A waiver is bound like a tester PASS (the primary head, the contract), so every
+          // reader of tested_commit / contract_hash holds it to the same commit.
+          ...(waiver
+            ? {
+                ...(waiver.heads[0] ? { tested_commit: waiver.heads[0].sha } : {}),
+                ...(waiver.contract_hash ? { contract_hash: waiver.contract_hash } : {}),
+                waiver,
+              }
+            : {}),
           ...(input.round !== undefined ? { round: input.round.trim() } : {}),
           ...(acceptanceEvidence ? { acceptance: acceptanceEvidence } : {}),
           ...(tests !== undefined ? { tests } : {}),
@@ -497,12 +584,13 @@ export function testerPass(
         ticketId: ticket.id,
         actor,
         toStatus: target,
-        reason: "tester_passed",
-        expectedFromStatus: "in_testing",
-        testerVerdict: true,
+        reason: failWaived ? "tester_fail_waived" : "tester_passed",
+        expectedFromStatus: failWaived ? "refining" : "in_testing",
+        ...(failWaived ? { testerWaiver: true } : { testerVerdict: true }),
         ...(deliveryDiff ? { deliveryDiff } : {}),
       });
-      const testedHead = binding.tested_commit ?? headNow?.toLowerCase() ?? null;
+      const testedHead =
+        waiver?.heads[0]?.sha ?? binding.tested_commit ?? headNow?.toLowerCase() ?? null;
       writeEvent(internals.db, {
         entity_type: "ticket",
         entity_id: ticket.id,
@@ -517,11 +605,150 @@ export function testerPass(
           ...(toReview && !binding.contract_hash && contractNow
             ? { contract_hash: contractNow }
             : {}),
+          ...(waiver
+            ? {
+                waiver: true,
+                principal: waiver.principal.name,
+                isolation: waiver.isolation,
+                ...(waiver.waives_fail ? { waives_fail: waiver.waives_fail } : {}),
+              }
+            : {}),
         },
       });
       return result;
     }),
   );
+}
+
+/**
+ * A person's waiver carries no runner measurement: the clean replay, the tests commit and
+ * the acceptance evidence are the runner's to record, and a waiver is not a test.
+ */
+function assertNoRunnerBinding(input: {
+  replay?: string;
+  tests_commit?: string;
+  acceptance_evidence?: string;
+  tests?: unknown;
+  tester_agent?: unknown;
+}): void {
+  const named = [
+    ...(input.replay !== undefined ? ["replay"] : []),
+    ...(input.tests_commit !== undefined ? ["tests_commit"] : []),
+    ...(input.acceptance_evidence !== undefined ? ["acceptance_evidence"] : []),
+    ...(input.tests !== undefined ? ["tests"] : []),
+    ...(input.tester_agent !== undefined ? ["tester_agent"] : []),
+  ];
+  if (named.length > 0) {
+    throw new DispatchError(
+      "VALIDATION_ERROR",
+      `A person's waiver records what you checked, not a test run: ${named.join(", ")} ${named.length === 1 ? "is" : "are"} the runner's measurement and cannot be sent with it.`,
+      { fields: named },
+    );
+  }
+}
+
+/** Every write repo's delivery head now, for a waiver; refused when any cannot be read. */
+function waiverHeadsNow(internals: TesterVerdictInternals, ticket: Ticket) {
+  const unavailable = unavailableWriteRepos(internals, ticket);
+  if (unavailable.length > 0) {
+    throw new DispatchError(
+      "STATE_CONFLICT",
+      `A waiver covers the commit of every write repository, and the delivery head of ${unavailable.map((u) => u.repo).join(", ")} cannot be read: ${unavailable[0]!.why}. Nothing was recorded.`,
+      { reason: "head_unreadable", repos: unavailable.map((u) => u.repo) },
+    );
+  }
+  return resolveReviewedHeads(internals, ticket).filter((h) => typeof h.sha === "string" && h.sha);
+}
+
+/** The factory's isolation now ("none" or the provider); a failing probe reads "none". */
+function isolationNow(internals: Pick<TesterVerdictInternals, "isolationFn">): string {
+  try {
+    const v = internals.isolationFn?.() ?? "none";
+    return typeof v === "string" && v ? v : "none";
+  } catch {
+    return "none";
+  }
+}
+
+/**
+ * WAIVING A RECORDED FAIL (package H1 item 3): allowed only while the ticket is in
+ * refining BECAUSE of the tester's FAIL (its latest transition is that FAIL's, from
+ * in_testing, so nothing moved it since) and the branch head is still the commit the
+ * tester failed (the FAIL's tested commit, which the runner's tester records). A FAIL
+ * with no tested commit, a moved head or a ticket moved since is refused: a waiver
+ * covers the commit the tester judged, never a later one. Returns the FAIL's evidence id.
+ */
+function assertFailWaivable(
+  internals: TesterVerdictInternals,
+  ticket: Ticket,
+  heads: ReadonlyArray<{ sha: string }>,
+  expected?: { evidenceId: string },
+): { evidenceId: string } {
+  const refuse = (why: string, details: Record<string, unknown> = {}): never => {
+    throw new DispatchError(
+      "STATE_CONFLICT",
+      `#${ticket.number ?? "?"} cannot take a waiver of the tester's FAIL: ${why}. A person waives a FAIL only on the commit the tester failed, while the FAIL holds the ticket in refining; otherwise it goes back through the tester (gaffer wg ticket ready ${ticket.number ?? "<n>"} reworks it).`,
+      { reason: "fail_not_waivable", ...details },
+    );
+  };
+  const last = internals.db
+    .prepare(
+      `SELECT json_extract(payload_json, '$.from') AS from_status,
+              json_extract(payload_json, '$.to') AS to_status,
+              json_extract(payload_json, '$.reason') AS reason
+         FROM work_events WHERE entity_type = 'ticket' AND entity_id = ?
+          AND event_type = 'ticket.transitioned' ORDER BY rowid DESC LIMIT 1`,
+    )
+    .get(ticket.id) as
+    { from_status: string | null; to_status: string | null; reason: string | null } | undefined;
+  if (
+    !last ||
+    last.to_status !== "refining" ||
+    last.from_status !== "in_testing" ||
+    !String(last.reason ?? "").startsWith("tester_failed:")
+  ) {
+    refuse("it is not held in refining by the tester's FAIL", {
+      last_transition: last ? `${last.from_status}->${last.to_status}` : null,
+    });
+  }
+  const verdict = internals.db
+    .prepare(
+      `SELECT event_type, json_extract(payload_json, '$.evidence_id') AS evidence_id
+         FROM work_events WHERE entity_type = 'ticket' AND entity_id = ?
+          AND event_type IN ('ticket.tester_passed', 'ticket.tester_failed')
+        ORDER BY rowid DESC LIMIT 1`,
+    )
+    .get(ticket.id) as { event_type: string; evidence_id: string | null } | undefined;
+  if (!verdict || verdict.event_type !== "ticket.tester_failed" || !verdict.evidence_id) {
+    return refuse("its latest tester verdict is not a FAIL");
+  }
+  if (expected && expected.evidenceId !== verdict.evidence_id) {
+    return refuse("another tester verdict was recorded meanwhile");
+  }
+  const row = internals.db
+    .prepare("SELECT payload_json FROM evidence WHERE id = ? AND ticket_id = ?")
+    .get(verdict.evidence_id, ticket.id) as { payload_json: string | null } | undefined;
+  let tested: string | null = null;
+  try {
+    const p = JSON.parse(row?.payload_json ?? "{}") as { tested_commit?: unknown };
+    tested =
+      typeof p.tested_commit === "string" && /^[0-9a-f]{40,64}$/i.test(p.tested_commit)
+        ? p.tested_commit.toLowerCase()
+        : null;
+  } catch {
+    tested = null;
+  }
+  if (!tested)
+    return refuse("the FAIL names no tested commit, so an unchanged head cannot be shown");
+  const head = heads[0]?.sha?.toLowerCase() ?? null;
+  if (!head) return refuse("its branch head cannot be read");
+  if (head !== tested) {
+    return refuse(
+      `the branch moved since the tester failed ${tested.slice(0, 12)} (now ${head.slice(0, 12)})`,
+      { tested, head },
+    );
+  }
+  return { evidenceId: verdict.evidence_id };
 }
 
 /**
@@ -543,11 +770,20 @@ export function testerFail(
     round?: string;
   },
   actor: Actor,
+  authority: { principal?: VerdictPrincipal | null } = {},
 ): TransitionResult {
   const summary = input.summary.trim();
   if (summary.length === 0) {
     throw new DispatchError("VALIDATION_ERROR", "A failing-test summary is required.");
   }
+  // A PERSON'S FAIL (package H1): an active human or admin principal, or nothing.
+  assertVerdictPrincipal(
+    internals.db,
+    actor,
+    authority.principal,
+    internals.ticketSvc.resolveTicket(ticketRef).number,
+    "fail",
+  );
   refuseStaleVerdict(internals, ticketRef, "fail", input, actor);
   // Where a FAIL lands (below the retry cap): `refining` holds the ticket for a human
   // (the default, unchanged); `ready` re-queues it for REWORK with the failing
@@ -565,6 +801,13 @@ export function testerFail(
         );
       }
       assertCurrentRound(internals, ticket, input.round);
+      const principalNow = assertVerdictPrincipal(
+        internals.db,
+        actor,
+        authority.principal,
+        ticket.number,
+        "fail",
+      );
       const binding = validatedBinding(input, {
         strict: false, // a FAIL never certifies anything; a present binding is still validated
         currentHash: contractHash(internals.db, ticket.id),
@@ -586,6 +829,7 @@ export function testerFail(
           verdict: "fail",
           provenance: testerProvenance(actor),
           ...binding,
+          ...(principalNow ? { principal: { id: principalNow.id, name: principalNow.name } } : {}),
           ...(input.round !== undefined ? { round: input.round.trim() } : {}),
         }),
         created_by: actor.id ?? actor.type,
@@ -746,7 +990,7 @@ export function assertAcceptanceEvidence(
   const refuse = (why: string): never => {
     throw new DispatchError(
       "ACCEPTANCE_EVIDENCE_REQUIRED",
-      `An automated PASS on a ticket with the ${profile} acceptance profile needs the runner's passed ${profile} evidence for the tested commit: ${why}. A human can record the verdict instead (tester-pass --as human), which is reported as a waiver.`,
+      `An automated PASS on a ticket with the ${profile} acceptance profile needs the runner's passed ${profile} evidence for the tested commit: ${why}. A person can record the verdict instead, with a human or admin principal's token (GAFFER_PRINCIPAL_TOKEN=<token> wg ticket tester-pass), which is reported as a waiver.`,
       { profile, ...(evidenceId ? { acceptance_evidence: evidenceId } : {}) },
     );
   };

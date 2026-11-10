@@ -100,6 +100,10 @@ export const ALLOWED: ReadonlySet<string> = new Set([
   // `review reject --to ready`): straight back to the queue with the failing
   // observation as the rework feedback. Guarded by the same `testerVerdict` flag.
   "in_testing->ready",
+  // WAIVING A RECORDED FAIL (package H1): a person's principal waives the tester's FAIL
+  // on the unchanged head; the ticket returns to review for a person's approval. Guarded
+  // by `testerWaiver`, which only the waiver path sets (ReviewGateService.testerPass).
+  "refining->in_review",
   // Park a testing ticket whose retry budget is exhausted, mirroring the review
   // park; guarded by the `park` flag.
   "in_testing->blocked",
@@ -283,6 +287,13 @@ export interface TransitionInput {
    */
   testerVerdict?: boolean;
   /**
+   * WAIVING A RECORDED FAIL (package H1) opt-in flag for `refining -> in_review`: set only
+   * by the tester-pass path for a person's principal waiving the tester's FAIL on the
+   * commit it failed. Without it the edge is ILLEGAL_TRANSITION, so a board move can never
+   * take a failed ticket back to review around the tester.
+   */
+  testerWaiver?: boolean;
+  /**
    * PAUSE-ON-CAP opt-in flag the pause path (`in_progress|in_review|claimed ->
    * paused`) MUST set. Pausing an in-flight delivery on a turn/budget cap is a
    * deliberate runner action taken only by {@link Dispatch.pauseDelivery}; without
@@ -453,6 +464,13 @@ export const GUARDED_EDGES: readonly GuardedEdge[] = [
     anyOf: ["testerVerdict"],
     message: "A ticket can only move into or out of testing via the testing-lane paths.",
     why: "BBT-001: into the lane on approval or by the runner before review, out of it on a tester verdict — never a drag.",
+  },
+  {
+    edges: ["refining->in_review"],
+    anyOf: ["testerWaiver"],
+    message:
+      "A ticket the tester failed returns to review only through a person's waiver of that FAIL (tester-pass with a principal's token), or through rework and the tester again.",
+    why: "Package H1: a board move from refining to review would skip the tester's FAIL; only a principal's waiver of the FAIL on the unchanged head may.",
   },
   {
     edges: ["to:paused"],

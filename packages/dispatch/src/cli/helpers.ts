@@ -97,8 +97,18 @@ export function humanOrSystemActor(as: unknown): Actor {
 }
 
 /** Resolve a `--as <type>` flag to an Actor (BBT-001 tester verdict commands). */
-export function testerActor(as: string): Actor {
-  switch (parseAs(as, ["agent", "human", "admin", "system"] as const)) {
+/**
+ * The actor a tester verdict from the CLI records. Acting as a principal (its token),
+ * the principal itself: a person's verdict needs one (package H1), and `--as system` or
+ * `--as agent` were refused before the command ran (principalGate). Without one, `--as`
+ * names the runner's tester (agent, the default, or system); `--as human|admin` without
+ * a principal names a person the service then refuses: a flag is not a person.
+ */
+export function testerActor(as: string | undefined): Actor {
+  if (actingPrincipal && (as === undefined || as === "human" || as === "admin")) {
+    return principalActor(actingPrincipal);
+  }
+  switch (parseAs(as ?? "agent", ["agent", "human", "admin", "system"] as const)) {
     case "human":
       return cliActor();
     case "admin":

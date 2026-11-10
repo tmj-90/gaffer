@@ -880,10 +880,13 @@ export async function routeTickets(
   }
 
   // BBT-001: /tickets/:id/tester — record a tester verdict (pass → ready_for_merge,
-  // fail → refining) as the calling principal. A human principal (the dashboard
-  // button) records a WAIVER on an acceptance ticket, as the gate intends; an
-  // automated caller must send the binding (tested_commit / contract_hash / replay)
-  // or gets a 422 BINDING_REQUIRED. The merge stays the guarded mark-merged path.
+  // fail → refining) as the calling principal. A PERSON'S verdict (package H1) needs a
+  // named human or admin principal's token (the dashboard signed in with it): the
+  // shared API token is refused (403 ACTOR_NOT_PERMITTED, principal_required), as is a
+  // revoked principal. A person's PASS is a WAIVER bound to every write repo's head, the
+  // contract and the criteria it names; an automated caller must send the binding
+  // (tested_commit / contract_hash / replay) or gets a 422 BINDING_REQUIRED. The merge
+  // stays the guarded mark-merged path.
   if (segments.length === 3 && sub === TICKET_SUB.TESTER && method === "POST") {
     const body = testerVerdictBody.parse(await readJsonBody(req));
     const verdictInput = {
@@ -895,10 +898,22 @@ export async function routeTickets(
       ...(body.acceptance_evidence ? { acceptance_evidence: body.acceptance_evidence } : {}),
       ...(body.round ? { round: body.round } : {}),
     };
+    // The principal this request authenticated as; the shared token has none.
+    const authority = { principal: isSharedOperator() ? null : apiPrincipal() };
     const result =
       body.verdict === "pass"
-        ? wg.testerPass(id, verdictInput, apiActor())
-        : wg.testerFail(id, { ...verdictInput, ...(body.to ? { to: body.to } : {}) }, apiActor());
+        ? wg.testerPass(
+            id,
+            { ...verdictInput, ...(body.criteria ? { criteria: body.criteria } : {}) },
+            apiActor(),
+            authority,
+          )
+        : wg.testerFail(
+            id,
+            { ...verdictInput, ...(body.to ? { to: body.to } : {}) },
+            apiActor(),
+            authority,
+          );
     sendJson(res, 200, { ticket: result.ticket, event_id: result.eventId });
     return;
   }

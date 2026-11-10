@@ -102,7 +102,7 @@ import {
 } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join, resolve, sep } from "node:path";
+import { delimiter, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { acquireTicketLock, resolveTicket } from "./merge-ticket.mjs";
@@ -819,7 +819,9 @@ export const BROWSER_EXECUTABLES = Object.freeze([
 
 function executableOnPath(name, pathVar) {
   for (const dir of String(pathVar || "").split(delimiter)) {
-    if (!dir) continue;
+    // Only absolute directories: a relative entry ("." or "node_modules/.bin") would be
+    // read against this process's working directory, which may be a delivery's checkout.
+    if (!dir || !isAbsolute(dir)) continue;
     try {
       const st = statSync(join(dir, name));
       if (st.isFile() && (st.mode & 0o111) !== 0) return true;
@@ -854,7 +856,9 @@ export function probeHostCapability(name, env = process.env) {
       (env.HOME ? join(env.HOME, ".cache", "ms-playwright") : "");
     try {
       return (
-        Boolean(cache) && readdirSync(cache).some((d) => /^(chromium|firefox|webkit)-/.test(d))
+        Boolean(cache) &&
+        isAbsolute(cache) &&
+        readdirSync(cache).some((d) => /^(chromium|firefox|webkit)-/.test(d))
       );
     } catch {
       return false;

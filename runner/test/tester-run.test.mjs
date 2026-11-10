@@ -1321,6 +1321,29 @@ console.log("== DECLARED NEEDS: the runner's own host probe ==");
   if (probeHostCapability("browser", empty) === true)
     ok("an installed Playwright chromium → present");
   else fail("Playwright cache not found");
+  // A relative PATH entry or Playwright path is read against this process's working
+  // directory, which may be a delivery's checkout: never a probe answer.
+  fs.rmSync(resolve(dir, "home", ".cache"), { recursive: true, force: true });
+  const cwd0 = process.cwd();
+  const planted = resolve(dir, "planted");
+  fs.mkdirSync(resolve(planted, "rel"), { recursive: true });
+  fs.writeFileSync(resolve(planted, "chromium"), "#!/bin/sh\nexit 0\n");
+  fs.chmodSync(resolve(planted, "chromium"), 0o755);
+  fs.mkdirSync(resolve(planted, "pw", "chromium-1"), { recursive: true });
+  process.chdir(planted);
+  try {
+    if (probeHostCapability("browser", { ...empty, PATH: `.:rel:${bin}` }) === false)
+      ok("a chromium planted in the working directory via a relative PATH entry is not a browser");
+    else fail("a relative PATH entry satisfied the browser probe");
+    if (probeHostCapability("browser", { ...empty, PLAYWRIGHT_BROWSERS_PATH: "pw" }) === false)
+      ok("a relative PLAYWRIGHT_BROWSERS_PATH is not a Playwright install");
+    else fail("a relative Playwright path satisfied the browser probe");
+  } finally {
+    process.chdir(cwd0);
+  }
+  fs.mkdirSync(resolve(dir, "home", ".cache", "ms-playwright", "chromium-1100"), {
+    recursive: true,
+  });
   if (probeHostCapability("gpu", empty) === false) ok("an unknown capability is never present");
   else fail("an unknown capability was probed present");
   if (probeHostCapability("browser", { ...empty, _GAFFER_TESTER_HOST_CAPS: "" }) === false)

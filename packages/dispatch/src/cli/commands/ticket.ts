@@ -643,6 +643,14 @@ export function registerTicket(program: Command): void {
       "how the attempt was found: latest_delivery_row (the runner's ledger join) | stated",
     )
     .option("--held-reason <text>", "why a held verdict is not a verdict")
+    .option(
+      "--held-code <code>",
+      "a held tester verdict's reason code: tester_unprovable (counted apart from other holds)",
+    )
+    .option(
+      "--criteria <numbers>",
+      "with --held-code tester_unprovable: the criterion numbers not proven, comma-separated",
+    )
     .option("--model <label>", "the model the lane's call asked for")
     .option("--as <actor>", "actor type: system|admin", "system")
     .action((ref, opts, cmd) => {
@@ -658,6 +666,16 @@ export function registerTicket(program: Command): void {
           ...(opts.attemptId ? { attempt_id: String(opts.attemptId) } : {}),
           ...(opts.attemptIdBasis ? { attempt_id_basis: String(opts.attemptIdBasis) } : {}),
           ...(opts.heldReason ? { held_reason: String(opts.heldReason) } : {}),
+          ...(opts.heldCode ? { held_code: String(opts.heldCode) } : {}),
+          ...(opts.criteria !== undefined
+            ? {
+                criteria: String(opts.criteria)
+                  .split(",")
+                  .map((c) => c.trim())
+                  .filter(Boolean)
+                  .map((c) => (/^\d+$/.test(c) ? Number(c) : c)),
+              }
+            : {}),
           ...(opts.model ? { model_requested: String(opts.model) } : {}),
         },
         actor,
@@ -831,15 +849,26 @@ export function registerTicket(program: Command): void {
     .description(
       "Record (replace) a ticket's test_contract — the testing handover the " +
         "independent tester reads to stand the system up (never the diff). Refused once " +
-        "the ticket is in testing (CONTRACT_FROZEN).",
+        "the ticket is in testing (CONTRACT_FROZEN). --needs declares a host capability " +
+        "the proof needs (closed list: browser; any other name is refused): the runner " +
+        "probes the host itself, and when it is missing the tester is told so and the " +
+        "outcome is a hold for a person (tester_unprovable), never a PASS. Without " +
+        "--needs the declared list is kept; --needs none clears it (a person only).",
     )
     .option("--surface <surface...>", "changed boundary surface(s): API/endpoint/CLI/page", [])
     .option("--dep <dep...>", "runtime dependency to stand up (e.g. 'Postgres 16')", [])
     .option("--env <var...>", "environment variable the tester sets", [])
     .option("--run <command>", "how to bring the system up / invoke the surface", "")
     .option("--harness-ready", "a black-box harness already exists for this surface", false)
+    .option(
+      "--needs <capability...>",
+      "host capability the proof needs (browser), or none to clear the list",
+    )
     .action((ref, opts, cmd) => {
       const wg = open(cmd.optsWithGlobals());
+      const needs: string[] | undefined = Array.isArray(opts.needs)
+        ? (opts.needs as unknown[]).map(String).filter((n) => n !== "none")
+        : undefined;
       const contract = wg.setTestContract(
         ref,
         {
@@ -848,6 +877,7 @@ export function registerTicket(program: Command): void {
           env_vars: opts.env,
           run_command: opts.run,
           harness_ready: opts.harnessReady,
+          ...(needs !== undefined ? { needs } : {}),
         },
         cliActor(),
       );

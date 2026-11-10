@@ -792,6 +792,12 @@ const testContractShape = z.object({
     .nullable()
     .optional()
     .describe("The commands the runner runs for the profile, set by a person."),
+  needs: z
+    .array(z.enum(["browser"]))
+    .optional()
+    .describe(
+      "Host capabilities the proof needs; the runner probes for each, and a missing one holds the tester's outcome for a person (tester_unprovable). Absent means none.",
+    ),
 });
 
 export const TestContractSet = z

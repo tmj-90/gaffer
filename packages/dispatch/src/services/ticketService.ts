@@ -990,12 +990,23 @@ export class TicketService {
         profile = input.profile;
         spec = null; // a spec belongs to the profile it was registered for
       }
+      // DECLARED NEEDS: absent keeps the current list. A person replaces it; an agent may
+      // only add to it (dropping a declared need would let a delivery's own agent take
+      // away the hold a missing capability puts on its proof).
+      const currentNeeds = existing?.needs ?? [];
+      const needs =
+        input.needs === undefined
+          ? currentNeeds
+          : actor.type === "agent"
+            ? [...new Set([...currentNeeds, ...input.needs])]
+            : [...new Set(input.needs)];
       const contract = validateTestContract({
         changed_surfaces: input.changed_surfaces,
         runtime_deps: input.runtime_deps,
         env_vars: input.env_vars,
         run_command: input.run_command,
         harness_ready: input.harness_ready,
+        ...(needs.length ? { needs } : {}),
         ...(profile !== "unit" ? { profile } : {}),
         ...(profile !== "unit" && spec ? { profile_spec: spec } : {}),
       });
@@ -1009,6 +1020,7 @@ export class TicketService {
         payload: {
           changed_surfaces: contract.changed_surfaces.length,
           harness_ready: contract.harness_ready,
+          ...(needs.length || currentNeeds.length ? { needs } : {}),
           ...(profile !== current ? { profile, previous_profile: current } : {}),
         },
       });

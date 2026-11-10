@@ -164,8 +164,14 @@ describe("stats --json projection shape", () => {
       "openDecisions",
       "reviewMeasures",
       "staleClaims",
+      "testerHolds",
       "ticketsByStatus",
     ]);
+    // TESTER HOLDS (H3): always present; nothing held and no verdicts on an empty factory.
+    expect(parsed.testerHolds).toEqual({
+      held: [],
+      counts: { pass: 0, fail: 0, unprovable: 0, held: 0 },
+    });
     // ACCEPTANCE GATE: the build-acceptance summary is always present (empty when no epic).
     expect(parsed.acceptance).toEqual({
       unaccepted: 0,

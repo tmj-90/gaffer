@@ -127,6 +127,34 @@ function refCard(kind, status) {
   );
 }
 
+/**
+ * UNPROVABLE: the runner's hold on this testing stay when the tester said a criterion
+ * cannot be proven on this host (its `ticket.lane_verdict`, held, code tester_unprovable,
+ * recorded after the ticket last entered in_testing; only the runner or an admin records
+ * one). → { criteria: number[], reason, commit } or null.
+ */
+function testerUnprovableHold(events) {
+  const list = events || [];
+  const pj = (e) => parseJsonSafe(e.payload_json) || {};
+  let entered = -1;
+  list.forEach((e, i) => {
+    if (e.event_type === "ticket.transitioned" && pj(e).to === "in_testing") entered = i;
+  });
+  for (let i = list.length - 1; i > entered; i -= 1) {
+    const e = list[i];
+    if (e.event_type !== "ticket.lane_verdict") continue;
+    const p = pj(e);
+    if (p.lane !== "tester") continue;
+    if (p.verdict !== "held" || p.held_code !== "tester_unprovable") return null;
+    return {
+      criteria: Array.isArray(p.criteria) ? p.criteria.filter((c) => Number.isInteger(c)) : [],
+      reason: typeof p.held_reason === "string" ? p.held_reason : "",
+      commit: typeof p.commit === "string" ? p.commit : "",
+    };
+  }
+  return null;
+}
+
 /** The sentence under a ticket's title: where it stands, in plain words, from its data. */
 function ticketLede(t, trail, events, doneAt, evidence = []) {
   const last = trail[trail.length - 1];
@@ -186,11 +214,22 @@ function ticketLede(t, trail, events, doneAt, evidence = []) {
           trail.length ? `after ${plural(trail.length, "rework")}.` : "first time, with no rework."
         }`,
       ];
-    case "in_testing":
+    case "in_testing": {
+      const hold = testerUnprovableHold(events);
+      if (hold)
+        return [
+          el("b", { class: "is-red" }, "Held for you. "),
+          `The tester could not prove ${
+            hold.criteria.length ? `criteria ${hold.criteria.join(", ")}` : "every criterion"
+          } on this host${hold.reason ? ` (${hold.reason})` : ""}${
+            hold.commit ? `, tested on ${hold.commit.slice(0, 12)}` : ""
+          }. It is not a pass and not a fail: nothing is reworked, reviewed or merged on it. Record the tester verdict yourself, or a new commit is tested afresh.`,
+        ];
       return [
         el("b", {}, "In testing. "),
         "An independent tester is checking it against its test contract before it can merge.",
       ];
+    }
     case "claimed":
     case "in_progress": {
       const by = deliveredBy(events);

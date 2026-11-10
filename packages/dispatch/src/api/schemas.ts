@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { ACCEPTANCE_PROFILES } from "../domain/acceptanceProfile.js";
+import { HOST_CAPABILITIES } from "../domain/hostCapabilities.js";
 
 // Validation errors keep their zod 3 codes, fields and messages (see the module).
 import "../util/zod3Compat.js";
@@ -328,6 +329,11 @@ export const setTestContractBody = z.object({
   harness_ready: z.boolean().default(false),
   /** The acceptance profile name (kept when absent); its spec is set on /acceptance-profile. */
   profile: z.enum(ACCEPTANCE_PROFILES).optional(),
+  /** The host capabilities the proof needs (closed list: browser); absent keeps the current list. */
+  needs: z
+    .array(z.enum(HOST_CAPABILITIES))
+    .max(HOST_CAPABILITIES.length * 2)
+    .optional(),
 });
 export type SetTestContractBody = z.infer<typeof setTestContractBody>;
 

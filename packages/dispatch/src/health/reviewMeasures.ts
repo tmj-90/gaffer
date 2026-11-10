@@ -4,7 +4,8 @@
  *
  *   review_time     human review time per accepted ticket (health/reviewTime.ts)
  *   first_pass      first-pass acceptance (health/firstPass.ts)
- *   lane_verdicts   `ticket.lane_verdict` counts per lane and verdict
+ *   lane_verdicts   `ticket.lane_verdict` counts per lane and verdict (a tester hold
+ *                   coded tester_unprovable counts as `unprovable`, not `held`)
  *   escaped_defects escaped accepted changes over accepted changes, from the regression
  *                   links a person filed (health/escapedDefects.ts)
  *   lane_value      what each judging lane changed: verdicts against the person's decision,
@@ -133,8 +134,14 @@ export function readReviewMeasures(db: Db, opts: ReviewMeasureOptions = {}): Rev
     .all() as Array<{ ticketId: string; at: string }>;
   const laneRows = db
     .prepare(
+      // A held tester verdict coded tester_unprovable ("cannot be proven on this host")
+      // is counted as `unprovable`, apart from pass, fail and the other holds, so a
+      // tester that says it too often is visible.
       `SELECT json_extract(payload_json, '$.lane') AS lane,
-              json_extract(payload_json, '$.verdict') AS verdict,
+              CASE WHEN json_extract(payload_json, '$.verdict') = 'held'
+                        AND json_extract(payload_json, '$.held_code') = 'tester_unprovable'
+                   THEN 'unprovable'
+                   ELSE json_extract(payload_json, '$.verdict') END AS verdict,
               COUNT(*) AS n
          FROM work_events
         WHERE entity_type = 'ticket' AND event_type = ?

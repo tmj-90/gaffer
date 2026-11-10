@@ -285,6 +285,30 @@ describe("acceptance gate: an acceptance ticket always goes to the tester (befor
     expect(a.accepted).toBe(0);
   });
 
+  it("UNPROVABLE (H3): an acceptance ticket the tester held as tester_unprovable keeps the build NOT accepted", () => {
+    const wg = freshWg({ testingEnabled: false });
+    const { accId } = epicToReview(wg);
+    toTester(wg, accId);
+    wg.recordLaneVerdict(
+      accId,
+      {
+        lane: "tester",
+        verdict: "held",
+        commit: SHA,
+        held_reason: "criteria 1: no browser on this host",
+        held_code: "tester_unprovable",
+        criteria: [1],
+      },
+      systemActor,
+    );
+    const stats = computeStats(wg.db);
+    expect(wg.view(accId).ticket.status).toBe("in_testing");
+    expect(stats.acceptance.epics[0]!.result).toBe("testing");
+    expect(stats.acceptance.accepted).toBe(0);
+    expect(stats.acceptance.unaccepted).toBe(1);
+    expect(stats.testerHolds?.held.map((h) => h.code)).toEqual(["tester_unprovable"]);
+  });
+
   it("an automated PASS on an acceptance ticket WITHOUT a binding is refused (BINDING_REQUIRED) — it cannot become verified", () => {
     const wg = freshWg({ testingEnabled: false });
     const { accId } = epicToReview(wg);

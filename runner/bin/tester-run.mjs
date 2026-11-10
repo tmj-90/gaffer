@@ -1775,6 +1775,9 @@ function runLiveTester(context) {
   // prove, and what it lacks; and why a malformed final token was not read.
   let unprovable = null;
   let malformed = "";
+  // What the tester itself answered, before a declared need the host lacks turned it into
+  // a hold: a PASS whose clean replay fails is held, as on main, never made a FAIL here.
+  let testerSaid = null;
   let text = "";
   let usageLimit = null;
   // The tester agent's run id (the envelope's session id), recorded on a system PASS.
@@ -1838,6 +1841,7 @@ function runLiveTester(context) {
       ? { verdict: null }
       : parseTesterOutcome(text, context.acceptanceCriteria.length);
     verdict = outcome.verdict;
+    testerSaid = verdict;
     malformed = outcome.malformed ?? "";
     if (verdict === "unprovable") unprovable = { criteria: outcome.criteria, needs: outcome.needs };
   }
@@ -2001,14 +2005,15 @@ function runLiveTester(context) {
     );
     return;
   }
-  // UNPROVABLE (the tester's token, or a declared capability the host lacks): a failing
-  // clean replay of the tester's kept tests is a FAIL, as a failing criterion is (a failure
-  // outranks an unprovable). Otherwise the ticket is HELD in_testing for a person with the
+  // UNPROVABLE (the tester's token, or a declared capability the host lacks): when the
+  // tester itself answered UNPROVABLE, a failing clean replay of its kept tests is a FAIL,
+  // as a failing criterion is (a failure outranks an unprovable). A tester PASS made a hold
+  // by a declared need keeps main's rule for a PASS whose replay fails: a hold. Otherwise the ticket is HELD in_testing for a person with the
   // code tester_unprovable, the criteria, what the host lacks and the tested commit, in
   // every posture: never a PASS, never a rework, never reviewed, approved or merged on it.
   if (verdict === "unprovable") {
     const list = unprovable.criteria.join(", ");
-    if (replay && replay.state === "failed") {
+    if (replay && replay.state === "failed" && testerSaid === "unprovable") {
       verdict = "fail";
       summaryOverride = `FAIL: the tester's tests failed on a clean replay (${replay.reason}); criteria ${list} were also not provable on this host (${unprovable.needs})`;
       log(`#${n}: ${summaryOverride.slice(0, 300)}`);
@@ -2017,7 +2022,9 @@ function runLiveTester(context) {
         ? "no clean replay ran"
         : replay.state === "passed"
           ? `the other criteria passed the clean replay (${replay.reason})`
-          : `the clean replay did not run (${replay.state}: ${replay.reason || "no reason given"})`;
+          : replay.state === "failed"
+            ? `the tester's PASS did not survive the clean replay either (${replay.reason})`
+            : `the clean replay did not run (${replay.state}: ${replay.reason || "no reason given"})`;
       const reason = `${UNPROVABLE_CODE}: criteria ${list} cannot be proven on this host (${unprovable.needs}); ${replayNote}; tested commit ${testedCommit ? testedCommit.slice(0, 12) : "unknown"}`;
       log(`#${n}: ${reason.slice(0, 400)}; HOLDING in_testing for a person`);
       recordLaneVerdict(n, "held", {

@@ -753,9 +753,21 @@ _canon_path() {  # the path with its deepest existing ancestor resolved
   [ "$d" = / ] && d=""
   printf '%s' "$d$rest"
 }
-_KEYS_BASE="${XDG_CONFIG_HOME:-}"; case "$_KEYS_BASE" in /*) ;; *) _KEYS_BASE="${HOME:-}/.config" ;; esac
-_KEYS_DIRS=( "$(_canon_path "$_KEYS_BASE/gaffer/keys")" )
-[ -n "${HOME:-}" ] && _KEYS_DIRS+=( "$(_canon_path "$HOME/.config/gaffer/keys")" )
+# The operator ACCOUNT's keys directory is always guarded (its home from the password
+# database, not $HOME), and so is an XDG_CONFIG_HOME one. A keys directory under the
+# CURRENT $HOME only when it exists or $HOME is the account's: the tester replay runs this
+# wrapper with a scratch HOME inside the scratch directory it mounts, whose (absent) keys
+# directory protects nothing, and refusing it failed every docker replay.
+_ACCT_HOME="$(node -e 'process.stdout.write(require("node:os").userInfo().homedir)' 2>/dev/null)" || _ACCT_HOME=""
+[ -n "$_ACCT_HOME" ] && _ACCT_HOME="$(_canon_path "$_ACCT_HOME")"
+_KEYS_DIRS=()
+[ -n "$_ACCT_HOME" ] && _KEYS_DIRS+=( "$(_canon_path "$_ACCT_HOME/.config/gaffer/keys")" )
+case "${XDG_CONFIG_HOME:-}" in /*) _KEYS_DIRS+=( "$(_canon_path "$XDG_CONFIG_HOME/gaffer/keys")" ) ;; esac
+if [ -n "${HOME:-}" ]; then
+  _home_kd="$(_canon_path "$HOME/.config/gaffer/keys")"
+  if [ -d "$_home_kd" ] || [ "$(_canon_path "$HOME")" = "$_ACCT_HOME" ]; then _KEYS_DIRS+=( "$_home_kd" ); fi
+fi
+[ "${#_KEYS_DIRS[@]}" -gt 0 ] || _die "refusing to run: the factory key directory cannot be located (no account home)"
 _prev=""
 for _m in ${_mounts[@]+"${_mounts[@]}"}; do
   if [ "$_prev" = "-v" ]; then

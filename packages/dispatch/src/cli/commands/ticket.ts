@@ -853,7 +853,8 @@ export function registerTicket(program: Command): void {
         "the proof needs (closed list: browser; any other name is refused): the runner " +
         "probes the host itself, and when it is missing the tester is told so and the " +
         "outcome is a hold for a person (tester_unprovable), never a PASS. Without " +
-        "--needs the declared list is kept; --needs none clears it (a person only).",
+        "--needs the declared list is kept; --needs none clears it. Only a person declares " +
+        "or changes the list (an agent is refused).",
     )
     .option("--surface <surface...>", "changed boundary surface(s): API/endpoint/CLI/page", [])
     .option("--dep <dep...>", "runtime dependency to stand up (e.g. 'Postgres 16')", [])

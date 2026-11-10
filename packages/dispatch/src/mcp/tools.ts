@@ -232,8 +232,9 @@ export const toolSchemas = {
     // profile (cli, api, ...); it never changes one a person set and never registers the
     // commands the runner runs for it (a person does: wg ticket acceptance-profile).
     profile: z.enum(ACCEPTANCE_PROFILES).optional(),
-    // DECLARED NEEDS: host capabilities the proof needs (closed list: browser). An agent
-    // may add one; it never removes one already declared.
+    // DECLARED NEEDS: host capabilities the proof needs (closed list: browser). Only a
+    // person declares or changes them (ticketService.setTestContract): an agent may resend
+    // the current list or leave it out, never add or drop a need.
     needs: z.array(z.enum(HOST_CAPABILITIES)).optional(),
   },
   create_epic: {

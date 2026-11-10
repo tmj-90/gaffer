@@ -641,9 +641,11 @@ other holds, so a tester that says it too often shows.
 
 A test contract can also say what its proof needs from the host:
 `wg ticket test-contract <n> --needs browser` (a closed list, `browser` for now; any other
-name is refused, `--needs none` clears it; an agent may add a need but not drop one). The
-runner checks the host itself, never on the agent's word: a browser executable on its
-`PATH` (`chromium`, `google-chrome`, `firefox`, ...) or an installed Playwright browser.
+name is refused, `--needs none` clears it; only a person declares or changes it, never an
+agent, so the agent delivering a ticket cannot turn its own tester PASS into a hold; the
+hold names who declared the need and when). The runner checks the host itself, never on
+the agent's word: a browser executable on an absolute directory of its own `PATH`
+(`chromium`, `google-chrome`, `firefox`, ...) or an installed Playwright browser.
 When one is missing, the tester's prompt says which, and its outcome for every criterion
 (the contract does not say which ones need it) is the same hold; a FAIL is still a FAIL.
 

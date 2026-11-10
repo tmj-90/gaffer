@@ -8,8 +8,10 @@
  *  - Health's lane verdict counts and `wg stats` count it apart from pass, fail and the
  *    other holds, and `wg stats` lists the in_testing tickets held for it this stay;
  *  - a test contract may declare host capabilities its proof needs (`needs`, a closed list:
- *    browser); an unknown name is refused when the contract is set, an agent may add one but
- *    never drop one already declared, and leaving it out keeps the list.
+ *    browser); an unknown name is refused when the contract is set, only a person declares
+ *    or changes the list (never an agent: the agent delivering a ticket must not turn its
+ *    own tester PASS into a hold a person waives), leaving it out keeps the list, and the
+ *    event that changed it says who and when.
  */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -196,23 +198,50 @@ describe("declared needs on the test contract", () => {
     wg.db.close();
   });
 
-  it("an agent may add a need but never drop one a person declared", () => {
+  it("an agent (the delivery's own, or the runner) never declares, adds or drops a need", () => {
     const wg = open();
     const t = wg.createTicket({ title: "Enter submits the form" }, human);
+    // The agent delivering the ticket cannot declare a need on its own contract: it would
+    // turn every tester PASS into a hold a person waives.
+    expect(() =>
+      wg.setTestContract(t.id, { run_command: "npm test", needs: ["browser"] }, agent),
+    ).toThrow(/Only a person may declare/);
+    expect(() =>
+      wg.setTestContract(t.id, { run_command: "npm test", needs: ["browser"] }, system),
+    ).toThrow(/Only a person may declare/);
+    expect(wg.setTestContract(t.id, { run_command: "npm test" }, agent).needs).toBeUndefined();
+    // A person declares it; the agent can neither drop nor change it, but may resend it.
     wg.setTestContract(t.id, { run_command: "npm test", needs: ["browser"] }, human);
-    const after = wg.setTestContract(t.id, { run_command: "npm test", needs: [] }, agent);
-    expect(after.needs).toEqual(["browser"]);
+    expect(() => wg.setTestContract(t.id, { run_command: "npm test", needs: [] }, agent)).toThrow(
+      /Only a person may declare/,
+    );
+    expect(
+      wg.setTestContract(t.id, { run_command: "npm test", needs: ["browser"] }, agent).needs,
+    ).toEqual(["browser"]);
+    expect(wg.setTestContract(t.id, { run_command: "npm run test" }, agent).needs).toEqual([
+      "browser",
+    ]);
+    // The event that declared it names the person and the time; resends do not.
+    const rows = wg.db
+      .prepare(
+        `SELECT actor_type, actor_id, json_extract(payload_json, '$.needs_declared') AS d
+           FROM work_events WHERE entity_id = ? AND event_type = 'ticket.test_contract_set'
+          ORDER BY rowid`,
+      )
+      .all(t.id) as Array<{ actor_type: string; actor_id: string | null; d: number | null }>;
+    expect(rows.filter((r) => r.d === 1)).toEqual([{ actor_type: "human", actor_id: "tom", d: 1 }]);
     wg.db.close();
   });
 
-  it("the agent's MCP tool refuses an unknown capability name", () => {
+  it("the agent's MCP tool refuses an unknown capability name and any need it declares", () => {
     const wg = open();
     const t = wg.createTicket({ title: "Enter submits the form" }, human);
     const tools = makeHandlers(wg, agent);
     const bad = tools.set_test_contract({ ticket_id: t.id, needs: ["camera"] });
     expect(JSON.stringify(bad)).toMatch(/error|invalid|VALIDATION/i);
-    const good = tools.set_test_contract({ ticket_id: t.id, needs: ["browser"] });
-    expect(JSON.stringify(good)).toMatch(/"needs":\["browser"\]/);
+    const own = tools.set_test_contract({ ticket_id: t.id, needs: ["browser"] });
+    expect(JSON.stringify(own)).toMatch(/ACTOR_NOT_PERMITTED/);
+    expect(wg.resolveTicket(t.id).test_contract ?? "").not.toMatch(/browser/);
     wg.db.close();
   });
 });

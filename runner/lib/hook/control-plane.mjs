@@ -76,6 +76,11 @@ const CP_SINGLE_VERBS = new Set([
   "require-cap",
   "set-reviewer",
   "reject",
+  // Package H1: the other hand routes around the tester's verdict.
+  "reopen-for-review",
+  "unblock",
+  "human-claim",
+  "human-release",
 ]);
 const CP_PAIRS = [
   ["principal", /^(?:create|revoke)$/],
@@ -95,6 +100,9 @@ const CP_PAIRS = [
   // its own. Review-rule drafts (D6) are proposed from a person's feedback by the server
   // or a person, never by an agent shell.
   ["ticket", /^regression-of$/],
+  // Package H1: a board move, ready and a hold change where a ticket stands around the
+  // tester's verdict; `block` only as the ticket verb (a word too common to stand alone).
+  ["ticket", /^(?:move|ready|hold)$/],
   ["review-rules", /^propose$/],
   // The code index the Review's callers row is read from (memory `index build`): only the
   // runner rebuilds it; `index neighbours` / `index stats` stay open.
@@ -108,6 +116,8 @@ function cpVerbNear(words) {
   const head = words.slice(0, 3);
   if (head.some((w) => CP_SINGLE_VERBS.has(w))) return true;
   if (words.some((w) => w === "--as-principal" || w.startsWith("--as-principal="))) return true;
+  // A person's credential handed to a program the hook cannot name (package H1).
+  if (words.some((w) => /^GAFFER_PRINCIPAL_TOKEN=/.test(w))) return true;
   for (let i = 0; i < Math.min(words.length, 4); i += 1) {
     for (const [first, second] of CP_PAIRS) {
       if (words[i] === first && words.slice(i + 1).some((w) => second.test(w))) return true;

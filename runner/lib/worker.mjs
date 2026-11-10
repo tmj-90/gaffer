@@ -358,7 +358,21 @@ export function commandOptOutWarning() {
 // GAFFER_WORKER_COMMAND_ENV names them (the dispatch API token, the claim token, the
 // repo host tokens, the notify channels).
 const COMMAND_ENV_NEVER =
-  /^(DISPATCH_API_TOKEN|GAFFER_CLAIM_TOKEN|GITHUB_TOKEN|GH_TOKEN)$|^GAFFER_NOTIFY_|_WEBHOOK|_SLACK/;
+  /^(DISPATCH_API_TOKEN|GAFFER_CLAIM_TOKEN|GAFFER_PRINCIPAL_TOKEN|GITHUB_TOKEN|GH_TOKEN)$|^GAFFER_NOTIFY_|_WEBHOOK|_SLACK/;
+
+/**
+ * A PERSON'S CREDENTIAL (package H1): GAFFER_PRINCIPAL_TOKEN makes the dispatch CLI act
+ * as a human or admin principal, and a person's tester verdict needs exactly that. It
+ * never reaches an agent process, whatever env a launcher hands the seam (and when it
+ * hands none, the inherited env loses it too). The bash seam's allowlist drops it the same
+ * way (config/11-agent-env.sh).
+ */
+export const PERSON_CREDENTIAL_ENV = ["GAFFER_PRINCIPAL_TOKEN"];
+export function withoutPersonCredentials(env) {
+  const out = { ...(env || {}) };
+  for (const k of PERSON_CREDENTIAL_ENV) delete out[k];
+  return out;
+}
 
 /** The env names GAFFER_WORKER_COMMAND_ENV lets through to the command worker (validated). */
 export function commandEnvPassNames(env = process.env) {
@@ -809,6 +823,8 @@ export function deliver({ bin, argv, cwd, timeoutMs, maxBuffer, env, kind = "wor
     // codex / local / any other value — FAIL CLOSED. No spawn.
     return failClosedResult(unsupportedProviderMessage(provider));
   }
+  // A person's principal token never reaches the agent (see withoutPersonCredentials).
+  env = withoutPersonCredentials(env ?? process.env);
   // USAGE WINDOW (lib/usage-pause.mjs): while $GAFFER_DATA/usage-pause.json is in force
   // the bash seam starts no tick (tick.sh, worker.sh, loop.sh exit 75) and `gaffer plan`
   // starts no turn (exit 75). Every Node launcher (the dashboard's planner, Suggest work,

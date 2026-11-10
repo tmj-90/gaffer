@@ -100,6 +100,8 @@ export GAFFER_DATA="$WORK/data" CLAUDE_BIN="$WORK/bin/claude" CLAUDE_FLAGS="" \
 unset GAFFER_DOD_TYPECHECK_CMD GAFFER_TESTER_REPLAY TESTER_STUB_TAG
 # shellcheck source=../factory.config.sh
 source "$RUNNER_DIR/factory.config.sh" >/dev/null 2>&1
+# shellcheck source=lib/principal.sh
+. "$HERE/lib/principal.sh"
 wg init >/dev/null 2>&1; lg init >/dev/null 2>&1
 wg repo add -n repo --path "$R" --branch main --stack node --test "npm test" --lint "npm run lint" >/dev/null 2>&1
 run_tick() { ( cd "$RUNNER_DIR" && bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" ) | grep '^TICK_RESULT=' ; }
@@ -170,7 +172,8 @@ stale_round() {
   head1="$(branch_head "$n")"
   start_tester "$n" "$tag" "$verdict"
   wait_any "$CTL/started-$tag" "$CTL/rc-$tag" && [ -e "$CTL/started-$tag" ] || { fail "$tag did not start: $(cat "$CTL/out-$tag" "$CTL/err-$tag" 2>/dev/null | tail -5)"; return 1; }
-  wg ticket tester-fail "$n" --summary "a person saw AC1 fail" --to ready --as human >/dev/null 2>&1 || { fail "the person's FAIL was refused"; return 1; }
+  # A person's FAIL is a principal's (package H1): runner/test/lib/principal.sh.
+  gaffer_test_as_person ticket tester-fail "$n" --summary "a person saw AC1 fail" --to ready >/dev/null 2>"$CTL/person-fail-$tag.err" || { fail "the person's FAIL was refused: $(tail -1 "$CTL/person-fail-$tag.err")"; return 1; }
   run_tick >/dev/null
   head2="$(branch_head "$n")"
   [ "$(st "$n")" = in_testing ] && [ "$head1" != "$head2" ] && ok "rework delivered (${head1:0:8} -> ${head2:0:8}) and #$n is in a new testing round" || { fail "rework: status=$(st "$n") head ${head1:0:8} -> ${head2:0:8}"; return 1; }

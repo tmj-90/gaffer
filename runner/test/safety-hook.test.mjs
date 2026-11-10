@@ -1481,6 +1481,44 @@ for (const [label, cmd] of [
   ["dispatch repo set-commands --lint", "dispatch repo set-commands app --lint ''"],
   ["dispatch ticket test-contract", "dispatch ticket test-contract 5 --run 'npm start'"],
   ["wg ticket tester-pass", "wg ticket tester-pass 5 --summary ok"],
+  // Package H1: a person's tester verdict and every hand route around the tester.
+  ["wg ticket tester-fail", "wg ticket tester-fail 5 --summary saw it"],
+  [
+    "wg ticket tester-pass with a principal",
+    "wg ticket tester-pass 5 --summary ok --as-principal gfp_abc",
+  ],
+  [
+    "GAFFER_PRINCIPAL_TOKEN= tester-pass",
+    "GAFFER_PRINCIPAL_TOKEN=gfp_abc wg ticket tester-pass 5 --summary ok",
+  ],
+  [
+    "env GAFFER_PRINCIPAL_TOKEN= tester-fail",
+    "env GAFFER_PRINCIPAL_TOKEN=gfp_abc wg ticket tester-fail 5 --summary x",
+  ],
+  ["wg ticket move (board move)", "wg ticket move 5 in_review"],
+  [
+    "GAFFER_PRINCIPAL_TOKEN= ticket move",
+    "GAFFER_PRINCIPAL_TOKEN=gfp_abc wg ticket move 5 in_review",
+  ],
+  [
+    "wg ticket reopen-for-review",
+    "wg ticket reopen-for-review 5 --reason r --resolution s --as admin",
+  ],
+  ["wg unblock", "wg unblock 5"],
+  ["wg ticket ready", "wg ticket ready 5"],
+  ["xargs wg ticket move", "echo 5 | xargs wg ticket move 5 in_review"],
+  [
+    "eval wg ticket reopen-for-review",
+    "eval 'wg ticket reopen-for-review 5 --reason r --resolution s'",
+  ],
+  [
+    "sh -c tester-pass with a principal",
+    "sh -c 'GAFFER_PRINCIPAL_TOKEN=gfp_abc wg ticket tester-pass 5 --summary ok'",
+  ],
+  [
+    "node -e ticket move",
+    `node -e "require('child_process').execSync('wg ticket move 5 in_review')"`,
+  ],
   ["wg ticket repo-delivery record", "wg ticket repo-delivery record 5 app --status done"],
   [
     "raw sqlite3 on DISPATCH_DB path",

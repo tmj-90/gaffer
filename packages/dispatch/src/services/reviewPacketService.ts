@@ -1,4 +1,5 @@
 import { SCOUT_RECORDED_EVENT, scoutRaisedFact, type ScoutRecord } from "./scoutRecord.js";
+import { parseWaiver, waiverLabel, type WaiverBinding } from "./reviewGate/waiver.js";
 import type { Db } from "../db/connection.js";
 import type {
   AcStatus,
@@ -123,6 +124,12 @@ export interface PacketTester {
   summary: string;
   at: string;
   by: string;
+  /**
+   * A PERSON'S WAIVER (package H1): who waived, the criteria and commits it covers, the
+   * isolation it was recorded under, and the one sentence every surface shows. null for
+   * the tester's own verdict.
+   */
+  waiver: (WaiverBinding & { label: string }) | null;
 }
 
 export interface PacketCost {
@@ -619,9 +626,17 @@ function readTester(
       summary: e.summary.split("\n")[0]!.slice(0, 300),
       at: e.created_at,
       by: e.created_by,
+      waiver: waiverOf(p),
     };
   }
   return null;
+}
+
+/** A PASS's waiver with its label, or null (a FAIL, or the tester's own PASS). */
+function waiverOf(p: Record<string, unknown>): PacketTester["waiver"] {
+  if (p.verdict !== "pass") return null;
+  const w = parseWaiver(p);
+  return w ? { ...w, label: waiverLabel(w) } : null;
 }
 
 /** The latest review pin, unless it predates the ticket's latest entry into review (stale). */

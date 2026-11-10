@@ -149,6 +149,13 @@ else _sbx="opted out (GAFFER_STRICT_REQUIRE=${GAFFER_STRICT_REQUIRE:-} in the en
 printf "\n  ${c_dim}posture${c_off}\n"
 printf "    %-12s %s\n" "mode:" "$_mode" "review:" "${REVIEW_MODE:-human}" "auto-merge:" "$(_on_off "${AUTO_MERGE:-0}")" \
   "day cap:" "$_cap" "ticks/day:" "${MAX_TICKS_PER_DAY:-0}" "sandbox:" "$_sbx"
+# HUMAN VERDICTS (package H1): agents that run unwrapped (the opt-out, and no OS sandbox
+# wrapping them) are kept from a person's verdict by the safety hook alone. Asked only
+# when the opt-out is in force: a required sandbox means no agent runs without one.
+if declare -F _sandbox_strict_required >/dev/null 2>&1 && ! _sandbox_strict_required \
+  && declare -F gaffer_agents_wrapped >/dev/null 2>&1 && ! gaffer_agents_wrapped; then
+  warn "human verdicts: $(gaffer_human_verdict_isolation_warning)"
+fi
 
 # Pre-build short-circuit: if the products were never built, the bundled doctor
 # CLIs (dist/cli/index.js, MEMORY_CLI_BIN) don't exist and each roll_doctor would

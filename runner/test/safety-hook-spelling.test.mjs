@@ -478,4 +478,61 @@ for (const cmd of [
   t.allow(`a mention of the identity flags: ${cmd}`, bash(cmd), opts);
 }
 
+// (l) PACKAGE H1: a person's tester verdict needs a principal's token, and no hand route
+// around the tester may run from an agent's shell. Each verb, with the principal's token
+// as a flag, as an assignment prefix, through env, xargs, eval, sh -c, an inline
+// interpreter, a variable program name and the CLI by path: all refused.
+const TOK = "gfp_" + "x".repeat(40);
+const H1_VERBS = [
+  "ticket tester-pass 5 --summary ok",
+  "ticket tester-fail 5 --summary ok",
+  "ticket move 5 in_review",
+  "ticket reopen-for-review 5 --reason r --resolution s",
+  "unblock 5",
+  "ticket ready 5",
+  "ticket hold 5 --reason-code x --reason y",
+  "human-claim 5",
+];
+for (const v of H1_VERBS) {
+  for (const cmd of [
+    `wg ${v}`,
+    `wg --as-principal ${TOK} ${v}`,
+    `wg ${v} --as-principal=${TOK}`,
+    `GAFFER_PRINCIPAL_TOKEN=${TOK} wg ${v}`,
+    `env GAFFER_PRINCIPAL_TOKEN=${TOK} wg ${v}`,
+    `export GAFFER_PRINCIPAL_TOKEN=${TOK}; wg ${v}`,
+    `echo 5 | xargs wg ${v}`,
+    `eval 'GAFFER_PRINCIPAL_TOKEN=${TOK} wg ${v}'`,
+    `sh -c 'wg --as-principal ${TOK} ${v}'`,
+    `bash -c "GAFFER_PRINCIPAL_TOKEN=${TOK} wg ${v}"`,
+    `node -e "require('child_process').execSync('wg ${v}', { env: { GAFFER_PRINCIPAL_TOKEN: '${TOK}' } })"`,
+    `python3 -c "import subprocess; subprocess.run('wg ${v}', shell=True)"`,
+    `W=wg; $W ${v}`,
+    `node ${R}/../packages/dispatch/dist/cli/index.js ${v}`,
+    `gaffer wg ${v}`,
+  ]) {
+    t.deny(`H1 hand route from an agent shell: ${cmd}`, bash(cmd), opts);
+  }
+}
+// A program the hook cannot name, handed the person's credential or a hand-route verb.
+for (const cmd of [
+  `export GAFFER_PRINCIPAL_TOKEN=${TOK}; $CLI ticket tester-pass 5 --summary ok`,
+  `GAFFER_PRINCIPAL_TOKEN=${TOK} $CLI x`,
+  `$DISPATCH_CLI ticket move 5 in_review`,
+  `$DISPATCH_CLI ticket reopen-for-review 5 --reason r --resolution s`,
+  `$DISPATCH_CLI unblock 5`,
+  `$DISPATCH_CLI --as-principal ${TOK} ticket show 5`,
+]) {
+  t.deny(`H1 unknown program with a hand-route verb or the credential: ${cmd}`, bash(cmd), opts);
+}
+// Reads and mentions stay allowed.
+for (const cmd of [
+  "wg ticket show 5",
+  "wg ticket list -s blocked",
+  'git commit -m "a tester waiver needs GAFFER_PRINCIPAL_TOKEN"',
+  "grep -rn GAFFER_PRINCIPAL_TOKEN docs",
+]) {
+  t.allow(`H1 read or mention: ${cmd}`, bash(cmd), opts);
+}
+
 t.done();

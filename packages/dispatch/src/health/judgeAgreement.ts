@@ -216,8 +216,10 @@ const meanOf = (xs: number[]): number | null =>
   xs.length ? round2(xs.reduce((a, b) => a + b, 0) / xs.length) : null;
 
 function deciderOf(t: TransitionPoint): Decider {
-  if (t.from === "in_testing" || (t.reason ?? "").includes("tester_")) return "tester";
+  // A person's tester verdict (a waiver, a person's FAIL: package H1) is a person's
+  // decision, counted apart from the independent tester's own.
   if (t.actorType === "human" || t.actorType === "admin") return "human";
+  if (t.from === "in_testing" || (t.reason ?? "").includes("tester_")) return "tester";
   if (t.actorType === "agent") return "agent";
   return "system";
 }

@@ -11,12 +11,18 @@
 // seals the named events under the factory key of the CURRENT HOME (each runner test has
 // a private one), as dispatch's approve / tester-pass paths do, then anchors the log's head
 // outside the database as the host does after each write.
-//   node gate-seal-fixture.mjs <db> chain
-//   node gate-seal-fixture.mjs <db> approval <event-id>      (a transition into ready_for_merge;
-//                                                             re-seals it after a re-chain)
+//   node gate-seal-fixture.mjs <db> chain                    (every command first re-chains the log
+//                                                             and re-makes every existing seal over
+//                                                             its event's new hash, then re-anchors)
+//   node gate-seal-fixture.mjs <db> approval <event-id>      (seal a transition into ready_for_merge
+//                                                             that has no seal yet)
 //   node gate-seal-fixture.mjs <db> tester-pass <event-id>   (a ticket.tester_passed event)
-//   node gate-seal-fixture.mjs <db> approve <ticket-number>  (insert + chain + seal an approval)
+//   node gate-seal-fixture.mjs <db> approve <ticket-number> [<sha>|<repo-id>=<sha>]...
+//                                                            (insert + chain + seal an approval of
+//                                                             those commits; none named: the heads
+//                                                             of the ticket's delivery branches)
 // =====================================================================
+import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
@@ -81,15 +87,54 @@ function ticketOf(eventId) {
   if (!r) throw new Error(`no event ${eventId}`);
   return r;
 }
+/** The head of each write repo's delivery branch for ticket `ticketId` (reduced schemas too). */
+function branchHeads(ticketId) {
+  const out = [];
+  let rows = [];
+  try {
+    rows = db
+      .prepare(
+        `SELECT tr.repo_id AS repo_id, COALESCE(tr.branch_name, t.branch_name) AS branch, r.local_path AS path
+           FROM ticket_repos tr JOIN repositories r ON r.id = tr.repo_id JOIN tickets t ON t.id = tr.ticket_id
+          WHERE tr.ticket_id = ? AND COALESCE(tr.access, 'write') = 'write'`,
+      )
+      .all(ticketId);
+  } catch {
+    return out; // no repo tables: nothing to pin
+  }
+  for (const r of rows) {
+    if (!r.branch || !r.path) continue;
+    const g = spawnSync(
+      "git",
+      ["-C", r.path, "rev-parse", "--verify", "-q", `${r.branch}^{commit}`],
+      {
+        encoding: "utf8",
+      },
+    );
+    if (g.status === 0) out.push({ repo_id: r.repo_id, sha: g.stdout.trim() });
+  }
+  return out;
+}
 const keyring = seal.hostGateKeyring(dbPath);
 ensureTable();
 chainAll();
+// The host stand-in re-records: a seal whose event was re-chained above is made again over
+// the event's new chain hash, with the facts it bound (a log that always looked like this).
+for (const r of db
+  .prepare(
+    "SELECT g.event_id AS id, g.kind AS kind, g.binds_json AS binds, w.hash AS hash FROM gate_seals g JOIN work_events w ON w.id = g.event_id",
+  )
+  .all()) {
+  const { mac } = keyring.signMac(seal.sealMaterial(r.kind, r.id, r.hash, r.binds));
+  db.prepare("UPDATE gate_seals SET mac = ? WHERE event_id = ?").run(mac, r.id);
+}
 // A fixture re-records: a seal made before a re-chain no longer matches the row's hash.
 const unseal = (id) => db.prepare("DELETE FROM gate_seals WHERE event_id = ?").run(id);
 if (cmd === "approval") {
   const r = ticketOf(arg);
-  unseal(arg);
-  seal.sealApproval(db, keyring, arg, r.entity_id, now());
+  // Already sealed: re-made above over its current hash, with the commits it bound.
+  const had = db.prepare("SELECT 1 FROM gate_seals WHERE event_id = ?").get(arg);
+  if (!had) seal.sealApproval(db, keyring, arg, r.entity_id, now());
 } else if (cmd === "tester-pass") {
   const r = ticketOf(arg);
   unseal(arg);
@@ -98,6 +143,14 @@ if (cmd === "approval") {
 } else if (cmd === "approve") {
   const t = db.prepare("SELECT id FROM tickets WHERE number = ?").get(Number(arg));
   if (!t) throw new Error(`no ticket #${arg}`);
+  // A host approval names the commits it approved (approveReview seals exactly those):
+  // the commits given after the ticket number (<sha> or <repo-id>=<sha>), else the current
+  // head of each write repo's delivery branch, as a person approving it now would.
+  const pins = process.argv.slice(5).map((a) => {
+    const i = a.indexOf("=");
+    return i < 0 ? { repo_id: null, sha: a } : { repo_id: a.slice(0, i), sha: a.slice(i + 1) };
+  });
+  if (pins.length === 0) pins.push(...branchHeads(t.id));
   const id = `fixture-approval-${randomUUID()}`;
   const cols = new Set(
     db
@@ -120,7 +173,7 @@ if (cmd === "approval") {
     now(),
   );
   chainAll();
-  seal.sealApproval(db, keyring, id, t.id, now());
+  seal.sealApproval(db, keyring, id, t.id, now(), pins);
   process.stdout.write(`${id}\n`);
 } else if (cmd !== "chain") {
   process.stderr.write(`unknown command ${cmd}\n`);

@@ -135,7 +135,7 @@ sql2 "CREATE TABLE tickets (id TEXT PRIMARY KEY, number INTEGER UNIQUE, acceptan
       ALTER TABLE work_events ADD COLUMN actor_id TEXT;
       ALTER TABLE work_events ADD COLUMN correlation_id TEXT;"
 # The approval this section's landings act on, signed as the host signs it (see SEAL above).
-node --no-warnings "$SEAL" "$DB2" approve 10 >/dev/null || { echo "FIXTURE ERROR: approve 10" >&2; exit 1; }
+node --no-warnings "$SEAL" "$DB2" approve 10 "$REVIEWED" >/dev/null || { echo "FIXTURE ERROR: approve 10" >&2; exit 1; }
 sql2 "SELECT 1;"
 pin() {  # $1 = sha, $2 = actor type, $3 = created_at
   sql2 "DELETE FROM evidence WHERE evidence_type = 'commit'; INSERT INTO evidence VALUES ('p1', 't10', 'commit', 'agent review approved', 'gaffer-reviewed-commit:$1', NULL, '$2', '$3');"
@@ -154,10 +154,13 @@ out="$(decide10)"; rc=$?
 [ "$rc" -eq 4 ] && [ "$(kind "$out")" = "moved-since-review" ] && ok "a HUMAN tester waiver does not unpin it → hold" || fail "waiver + moved: rc=$rc $out"
 sql2 "DELETE FROM evidence WHERE id = 'h1'; DELETE FROM work_events WHERE id = 'w2';"
 seal "$DB2" chain   # a log that never had the waiver (deleting it is otherwise a truncation)
+# With no valid pin row the decision falls back to the branch head, which has moved past
+# the reviewed commit: the SIGNED approval (it sealed $REVIEWED) does not cover it, so
+# nothing lands. (Before signed approvals both cases landed the unreviewed head.)
 pin "$REVIEWED" agent 2026-09-29T00:05:00.000Z; out="$(decide10)"; rc=$?
-[ "$rc" -eq 0 ] && [ "$(kind "$out")" = "no-tester" ] && ok "a pin row recorded by an AGENT is not a pin (cannot be forged through the MCP)" || fail "agent pin: rc=$rc $out"
+[ "$rc" -eq 4 ] && [ "$(kind "$out")" = "unsigned_approval" ] && [[ "$out" == *"does not cover"* ]] && ok "a pin row recorded by an AGENT is not a pin (cannot be forged through the MCP): the moved head is not what was approved" || fail "agent pin: rc=$rc $out"
 pin "$REVIEWED" system 2026-09-28T23:00:00.000Z; out="$(decide10)"; rc=$?
-[ "$rc" -eq 0 ] && [ "$(kind "$out")" = "no-tester" ] && ok "a pin older than the ticket's latest entry into in_review is stale → ignored" || fail "stale pin: rc=$rc $out"
+[ "$rc" -eq 4 ] && [ "$(kind "$out")" = "unsigned_approval" ] && [[ "$out" == *"does not cover"* ]] && ok "a pin older than the ticket's latest entry into in_review is stale → ignored, and the moved head is not what was approved" || fail "stale pin: rc=$rc $out"
 # A tester PASS bound to a commit NOBODY reviewed (the branch moved after the approval,
 # before the tester ran) must not land just because head == tested.
 LATE="$(g rev-parse gaffer/ticket-10-y)"
@@ -168,6 +171,8 @@ seal "$DB2" tester-pass w3
 out="$(decide10)"; rc=$?
 [ "$rc" -eq 4 ] && [ "$(kind "$out")" = "moved-since-review" ] && [[ "$out" == *"\"tested\":\"$LATE\""* ]] \
   && ok "bound tester PASS of an UNREVIEWED commit (tested != reviewed) → hold (moved-since-review)" || fail "bound but unreviewed: rc=$rc $out"
+# A person reviews LATE and approves it (the host seals the new approval with LATE).
+node --no-warnings "$SEAL" "$DB2" approve 10 "$LATE" >/dev/null || { echo "FIXTURE ERROR: approve 10 LATE" >&2; exit 1; }
 pin "$LATE" system 2026-09-29T00:06:00.000Z; out="$(decide10)"; rc=$?
 [ "$rc" -eq 0 ] && [ "$(kind "$out")" = "bound" ] && ok "bound PASS of the reviewed commit → land" || fail "bound + reviewed: rc=$rc $out"
 sql2 "DELETE FROM evidence WHERE id = 'b1'; DELETE FROM work_events WHERE id = 'w3';"
@@ -209,6 +214,8 @@ out="$(node_land)"; rc=$?
 
 echo "== C: both paths land a bound, unmoved candidate — the PINNED commit =="
 set_pass "{\"verdict\":\"pass\",\"provenance\":\"agent\",\"tested_commit\":\"$MOVED\"}"
+# A person approves the moved head (MOVED): the host seals the new approval with it.
+seal "$DB" approve 9 "$MOVED"
 bash_land; rc=$?
 [ "$rc" -eq 0 ] && g merge-base --is-ancestor "$MOVED" main && ok "Bash path lands the tested commit" || fail "Bash path did not land (rc=$rc; $(tail -2 "$LOGF" | tr '\n' ' '))"
 # reset main and try the Node path on a fresh delivery

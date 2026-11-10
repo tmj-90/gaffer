@@ -979,7 +979,7 @@ export function verifyLandingActs(
         a.failure,
         `Nothing lands on this approval: ${a.detail}.` +
           (a.failure === "unsigned"
-            ? " An approval recorded before signed approvals existed, or written into the database directly, has no signature."
+            ? " An approval recorded before signed approvals existed, restored from a state export (seals are not exported), or written into the database directly, has no signature."
             : ""),
       );
     }

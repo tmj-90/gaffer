@@ -143,7 +143,11 @@ export function recordLanding(
     // SIGNED GATE EVENTS: nothing is recorded as landed on an approval (or a tester
     // verdict) that does not verify under the factory key, nor for a commit the signed
     // approval did not pin.
-    assertSignedActs(internals, ticket, [{ repoId: target.repoId, sha }]);
+    // A landing that STARTED on a verified approval before a revocation is recorded all the
+    // same (git carries it): its approval is checked, not whether it is still current.
+    assertSignedActs(internals, ticket, [{ repoId: target.repoId, sha }], null, {
+      revocation: !startedBefore,
+    });
     if (UNVERIFIABLE_LANDING_VIAS.has(input.via ?? ""))
       assertPrLanding(internals, ticket, target, sha, input.via as "pr" | "pr-stale");
     // A LOCAL landing is checkable: the merge paths merge the pinned commit itself, so

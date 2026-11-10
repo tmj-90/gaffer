@@ -72,6 +72,13 @@ export function registerPortability(program: Command): void {
       const wg = open(cmd.optsWithGlobals(), { create: true });
       try {
         const res = importStateFromJson(wg.db, json, { force: opts.force });
+        // SIGNED GATE EVENTS: the imported log is this factory's record from now on (the
+        // import removed every seal, so nothing approved before it lands unapproved).
+        try {
+          wg.gateKeyring.reanchor?.(wg.db);
+        } catch {
+          // no factory key yet: the first approval creates it and anchors the log
+        }
         printJson({ ok: true, ...res });
       } finally {
         wg.db.close();

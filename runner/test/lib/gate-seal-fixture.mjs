@@ -9,7 +9,8 @@
 // directly carries none: exactly what an attacker's row looks like. This helper is the
 // fixture's stand-in for the host: it hash-chains every unchained row (in rowid order) and
 // seals the named events under the factory key of the CURRENT HOME (each runner test has
-// a private one), as dispatch's approve / tester-pass paths do.
+// a private one), as dispatch's approve / tester-pass paths do, then anchors the log's head
+// outside the database as the host does after each write.
 //   node gate-seal-fixture.mjs <db> chain
 //   node gate-seal-fixture.mjs <db> approval <event-id>      (a transition into ready_for_merge;
 //                                                             re-seals it after a re-chain)
@@ -124,5 +125,12 @@ if (cmd === "approval") {
 } else if (cmd !== "chain") {
   process.stderr.write(`unknown command ${cmd}\n`);
   process.exit(2);
+}
+// The host records the event log's head outside the database after every write it makes
+// (the event-log anchor every landing checks); a fixture that re-chains history re-anchors.
+try {
+  keyring.reanchor(db);
+} catch (e) {
+  if (!(e instanceof seal.GateKeyError)) throw e; // no factory key yet: nothing is sealed
 }
 db.close();

@@ -56,6 +56,36 @@ export function registerDiagnostics(program: Command): void {
       }
     });
 
+  gateKey
+    .command("reanchor")
+    .description(
+      "After restoring the database from a backup on purpose, record its event log as this factory's record " +
+        "(landings refuse while the log lacks rows the factory anchored); approvals in the restored log count again",
+    )
+    .option("--json", "emit machine-readable JSON (the default)", false)
+    .action((_opts, cmd) => {
+      assertCliDbExists(cmd.optsWithGlobals().db);
+      const dbPath = resolveDbPath(cmd.optsWithGlobals().db);
+      const wg = open(cmd.optsWithGlobals());
+      try {
+        const head = fileGateKeyring({ dbPath }).reanchor(wg.db);
+        printJson({ ok: true, anchored: head ? { seq: head.seq, id: head.id } : null });
+      } catch (e) {
+        if (e instanceof GateKeyError) {
+          throw new DispatchError(
+            "GATE_KEY_REFUSED",
+            `The factory key is not usable: ${e.message}.`,
+            {
+              reason: e.why,
+            },
+          );
+        }
+        throw e;
+      } finally {
+        wg.db.close();
+      }
+    });
+
   program
     .command("doctor")
     .description("Diagnose the database: schema, counts, stale claims, integrity")

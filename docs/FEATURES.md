@@ -414,7 +414,8 @@ verdict strip above, Approve beside the flags, and the server-computed diff.*
   about to land is the one the signature covers. An approval written into the database
   by hand, edited, or recorded before signing existed is held for you
   (`unsigned_approval`, or `unsigned_tester_verdict` for the verdict); reopen it for
-  review and approve it again. Keep the key with your backups: a new key means
+  review and approve it again. An approval you undid stays undone even if the database
+  is edited or rolled back. Keep the key with your backups: a new key means
   re-approving what is waiting to land.
 - **Every attempt names its model and its CLI version**, on the usage-ledger row and
   in the ticket page's **Attempts** history.

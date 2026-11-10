@@ -29,6 +29,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Dispatch } from "../src/core.js";
 import type { Actor } from "../src/domain/types.js";
 import { eventHash, latestEventHash, verifyEventChain } from "../src/events/eventChain.js";
+import { writeEvent } from "../src/events/eventWriter.js";
 import {
   factoryKeyId,
   factoryKeysDir,
@@ -436,5 +437,162 @@ describe("the hold and the way back", () => {
         w.wg.reopenForReview(id, { reason: "x", resolution: "y" }, { type: "admin", id: "op" }),
       ),
     ).toMatchObject({ code: "ILLEGAL_TRANSITION" });
+  });
+});
+
+// REVOCATION (independent review of H2): an approval undone after it was given must never
+// land again, whatever an attacker with the sqlite file writes. Main and the first cut of
+// signed approvals landed every one of these: the old approval keeps a valid seal, so a
+// status written back to ready_for_merge (with or without deleting the later rows, or
+// with the whole file rolled back to a copy) was enough.
+describe("revocation cannot be written away", () => {
+  const admin: Actor = { type: "admin", id: "op" };
+  const reopen = (wg: Dispatch, id: string) =>
+    wg.reopenForReview(id, { reason: "changed my mind", resolution: "look again" }, admin);
+  const setStatus = (wg: Dispatch, id: string, s: string) =>
+    wg.db.prepare("UPDATE tickets SET status = ? WHERE id = ?").run(s, id);
+  const approvalSeq = (wg: Dispatch, id: string) =>
+    (wg.db.prepare("SELECT rowid AS seq FROM work_events WHERE id = ?").get(id) as { seq: number })
+      .seq;
+  const begin = (wg: Dispatch, id: string) =>
+    refusal(() =>
+      wg.beginLanding(
+        id,
+        { repo: "repoA", commit: FAKE_HEAD, approval: wg.landingApproval(id)!, via: "local" },
+        system,
+      ),
+    );
+
+  it("a reopened approval with its status written back: refused (the approval is not the latest move)", () => {
+    const w = world();
+    const { id } = inReview(w.wg);
+    w.wg.approveReview(id, human);
+    reopen(w.wg, id);
+    setStatus(w.wg, id, "ready_for_merge");
+    expect(begin(w.wg, id)).toMatchObject({ code: "STATE_CONFLICT", reason: "unsigned_approval" });
+    onDefault = true;
+    expect(refusal(() => w.wg.markMerged(id, system))).toMatchObject({
+      reason: "unsigned_approval",
+    });
+  });
+
+  it("the revocation deleted from the log (truncation) and the status reset: refused", () => {
+    const w = world();
+    const { id } = inReview(w.wg);
+    w.wg.approveReview(id, human);
+    const approval = w.wg.landingApproval(id)!;
+    const seq = approvalSeq(w.wg, approval);
+    reopen(w.wg, id);
+    w.wg.db.prepare("DELETE FROM work_events WHERE rowid > ?").run(seq);
+    setStatus(w.wg, id, "ready_for_merge");
+    expect(verifyEventChain(w.wg.db).ok).toBe(true); // the shortened log verifies on its own
+    const r = begin(w.wg, id);
+    expect(r).toMatchObject({ code: "STATE_CONFLICT", reason: "unsigned_approval" });
+    expect(r.message).toMatch(/deleted or rewritten/);
+    // A later write by the host does not paper over it: the anchor never moves past a gap.
+    writeEvent(w.wg.db, {
+      entity_type: "ticket",
+      entity_id: id,
+      actor: system,
+      event_type: "ticket.note",
+      payload: { later: true },
+    });
+    expect(begin(w.wg, id)).toMatchObject({ reason: "unsigned_approval" });
+    // The runner's landing decision reads the same check from another process.
+    const other = verifyLandingActs(
+      w.wg.db,
+      fileGateKeyring({ dbPath: w.dbPath, keysDir: w.keysDir }),
+      id,
+    );
+    expect(other).toMatchObject({ ok: false, failure: "truncated" });
+  });
+
+  it("the revocation deleted and the rows after it re-chained with new content: refused", () => {
+    const w = world();
+    const { id } = inReview(w.wg);
+    w.wg.approveReview(id, human);
+    const approval = w.wg.landingApproval(id)!;
+    reopen(w.wg, id);
+    const reopenId = (
+      w.wg.db
+        .prepare(
+          "SELECT id FROM work_events WHERE event_type = 'ticket.transitioned' ORDER BY rowid DESC LIMIT 1",
+        )
+        .get() as { id: string }
+    ).id;
+    // Replace the reopen with a harmless row at the same place and fix the chain.
+    w.wg.db
+      .prepare(
+        "UPDATE work_events SET event_type = 'ticket.note', payload_json = '{}' WHERE id = ?",
+      )
+      .run(reopenId);
+    rechainFrom(w.wg, reopenId);
+    setStatus(w.wg, id, "ready_for_merge");
+    expect(w.wg.landingApproval(id)).toBe(approval);
+    expect(begin(w.wg, id)).toMatchObject({ reason: "unsigned_approval" });
+  });
+
+  it("the whole database rolled back to a copy taken at approval: refused", () => {
+    const w = world();
+    const { id } = inReview(w.wg);
+    w.wg.approveReview(id, human);
+    const snap = join(w.root, "snap.sqlite");
+    w.wg.db.prepare("VACUUM INTO ?").run(snap);
+    reopen(w.wg, id);
+    w.wg.db.close();
+    writeFileSync(w.dbPath, readFileSync(snap));
+    rmSync(`${w.dbPath}-wal`, { force: true });
+    rmSync(`${w.dbPath}-shm`, { force: true });
+    const wg2 = Dispatch.open(w.dbPath, systemClock, runner, { gateKeyring: w.keyring });
+    expect(wg2.view(id).ticket.status).toBe("ready_for_merge");
+    expect(begin(wg2, id)).toMatchObject({ reason: "unsigned_approval" });
+    wg2.db.close();
+  });
+
+  it("a deleted anchor is not a pass: refused until the host records one again", () => {
+    const w = world();
+    const { id } = inReview(w.wg);
+    w.wg.approveReview(id, human);
+    rmSync(join(w.keysDir, `${factoryKeyId(w.dbPath)}.anchor`), { recursive: true, force: true });
+    expect(begin(w.wg, id)).toMatchObject({ reason: "unsigned_approval" });
+  });
+
+  it("a person re-anchors a database restored on purpose, reopens, re-approves: it lands", () => {
+    const w = world();
+    const { id } = inReview(w.wg);
+    w.wg.approveReview(id, human);
+    const seq = approvalSeq(w.wg, w.wg.landingApproval(id)!);
+    reopen(w.wg, id);
+    w.wg.db.prepare("DELETE FROM work_events WHERE rowid > ?").run(seq);
+    setStatus(w.wg, id, "ready_for_merge");
+    expect(begin(w.wg, id)).toMatchObject({ reason: "unsigned_approval" });
+    expect(w.wg.view(id).ticket.status).toBe("ready_for_merge");
+    w.keyring.reanchor(w.wg.db);
+    reopen(w.wg, id);
+    w.wg.approveReview(id, human);
+    const approval = w.wg.landingApproval(id)!;
+    w.wg.beginLanding(id, { repo: "repoA", commit: FAKE_HEAD, approval, via: "local" }, system);
+    onDefault = true;
+    w.wg.recordLanding(id, { repo: "repoA", commit: FAKE_HEAD, via: "local" }, system);
+    expect(w.wg.markMerged(id, system).ticket.status).toBe("done");
+  });
+
+  it("a landing that started before the approval was revoked is still recorded (git carries it)", () => {
+    const w = world();
+    const { id } = inReview(w.wg);
+    w.wg.approveReview(id, human);
+    const approval = w.wg.landingApproval(id)!;
+    w.wg.beginLanding(id, { repo: "repoA", commit: FAKE_HEAD, approval, via: "local" }, system);
+    reopen(w.wg, id);
+    onDefault = true;
+    expect(
+      w.wg.recordLanding(id, { repo: "repoA", commit: FAKE_HEAD, via: "local" }, system).recorded,
+    ).toBe(true);
+  });
+
+  it("the agent-facing MCP keyring anchors nothing and its writes still work", () => {
+    const k = mcpGateKeyring();
+    expect(k.anchor).toBeUndefined();
+    expect(() => k.readAnchor?.()).toThrow(GateKeyError);
   });
 });

@@ -67,11 +67,13 @@ export function assertSignedActs(
   ticket: Ticket,
   targets: readonly LandingTarget[],
   approvalId?: string | null,
+  opts: { revocation?: boolean } = {},
 ): void {
   const v = verifyLandingActs(internals.db, internals.gateKeyring, ticket.id, {
     targets,
     approvalId: approvalId ?? null,
     ticketNumber: ticket.number,
+    ...(opts.revocation === false ? { revocation: false } : {}),
   });
   if (v.ok) return;
   throw new DispatchError("STATE_CONFLICT", `#${ticket.number ?? "?"} cannot land: ${v.reason}`, {

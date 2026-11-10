@@ -211,6 +211,7 @@ import * as runRegistry from "./services/runRegistryService.js";
 import * as eventLog from "./services/eventLogService.js";
 import * as ticketReads from "./services/ticketReadService.js";
 import { ephemeralGateKeyring, type GateKeyring } from "./events/gateSeal.js";
+import { setEventAnchor } from "./events/eventWriter.js";
 
 export { BOARD_COLUMNS } from "./services/boardService.js";
 export type { BoardColumn } from "./services/boardService.js";
@@ -438,6 +439,10 @@ export class Dispatch {
     this.maxAttemptsOverride = options.maxAttempts;
     this.requireRegisteredAgentApprover = options.requireRegisteredAgentApprover ?? false;
     this.gateKeyring = options.gateKeyring ?? ephemeralGateKeyring();
+    // SIGNED GATE EVENTS: a keyring that may write it records the event log's head outside
+    // the database after every committed write (a truncated revocation is then detected).
+    const keyring = this.gateKeyring;
+    setEventAnchor(db, keyring.anchor ? () => keyring.anchor!(db) : null);
     this.tickets = new TicketRepository(db);
     this.acs = new AcRepository(db);
     this.repos = new RepoRepository(db);

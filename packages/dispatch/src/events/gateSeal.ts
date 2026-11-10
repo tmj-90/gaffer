@@ -8,8 +8,11 @@ import {
   lstatSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readSync,
   realpathSync,
+  renameSync,
+  unlinkSync,
   writeSync,
 } from "node:fs";
 import { homedir } from "node:os";
@@ -112,12 +115,69 @@ export interface GateKeyring {
    * Throws {@link GateKeyError} where the key may not be loaded at all.
    */
   verifyMac(material: string): { mac: string; keyId: string } | { missing: string };
+  /**
+   * EVENT-LOG ANCHOR: record the log's current head outside the database, after a write
+   * is committed. Never creates a key; refuses to move on from an anchor whose row is gone
+   * or changed (that is the evidence of a truncation, kept until a person re-anchors).
+   * Absent on a keyring that may not write it (the agent-facing MCP server).
+   */
+  anchor?(db: SealDb): void;
+  /** The recorded head, MAC verified, or why there is none. Never creates anything. */
+  readAnchor?(): AnchorRead;
+  /** A person's deliberate act: record this database's current head, whatever was before. */
+  reanchor?(db: SealDb): EventAnchor | null;
 }
+
+/** The event log's head as a trusted host process last saw it after a commit. */
+export interface EventAnchor {
+  seq: number;
+  id: string;
+  hash: string;
+}
+export type AnchorRead = EventAnchor | { missing: string } | { broken: string };
 
 const KEY_BYTES = 32;
 
 function hmacHex(key: Buffer, material: string): string {
   return createHmac("sha256", key).update(material).digest("hex");
+}
+
+/** The event log's head (the newest row), or null on an empty log. */
+export function eventLogHead(db: SealDb): EventAnchor | null {
+  const row = db
+    .prepare("SELECT rowid AS seq, id, hash FROM work_events ORDER BY rowid DESC LIMIT 1")
+    .get() as { seq: number; id: string; hash: string | null } | undefined;
+  if (!row || !row.hash) return null;
+  return { seq: Number(row.seq), id: String(row.id), hash: String(row.hash) };
+}
+
+/** The anchored row is still in the log, unchanged, at the same place. */
+export function anchorRowPresent(db: SealDb, a: EventAnchor): boolean {
+  const row = db.prepare("SELECT id, hash FROM work_events WHERE rowid = ?").get(a.seq) as
+    { id: string; hash: string | null } | undefined;
+  return !!row && String(row.id) === a.id && String(row.hash ?? "") === a.hash;
+}
+
+function anchorMaterial(keyId: string, a: EventAnchor): string {
+  return ["gaffer-event-anchor", "1", keyId, String(a.seq), a.id, a.hash].join("\n");
+}
+
+/**
+ * Move the anchor on to the log's head: only forward, and only while the anchored row is
+ * still there unchanged. A broken or vanished anchor is never replaced here: it is the
+ * evidence that rows were deleted or rewritten, and every landing refuses on it until a
+ * person re-anchors (`dispatch gate-key reanchor`).
+ */
+function advanceAnchor(db: SealDb, read: () => AnchorRead, write: (a: EventAnchor) => void): void {
+  const head = eventLogHead(db);
+  if (!head) return;
+  const cur = read();
+  if ("broken" in cur) return;
+  if (!("missing" in cur)) {
+    if (!anchorRowPresent(db, cur)) return;
+    if (head.seq <= cur.seq) return;
+  }
+  write(head);
 }
 
 function isWithin(child: string, parent: string): boolean {
@@ -152,7 +212,11 @@ export function fileGateKeyring(opts: {
   dbPath: string;
   env?: NodeJS.ProcessEnv;
   keysDir?: string;
-}): GateKeyring & { readonly keyPath: string; ensure(): { created: boolean; path: string } } {
+}): GateKeyring & {
+  readonly keyPath: string;
+  ensure(): { created: boolean; path: string };
+  reanchor(db: SealDb): EventAnchor | null;
+} {
   if (!opts.dbPath || opts.dbPath === ":memory:") {
     throw new GateKeyError("an in-memory database has no factory key", "refused");
   }
@@ -257,9 +321,127 @@ export function fileGateKeyring(opts: {
     return key;
   };
 
+  // EVENT-LOG ANCHOR: one small file per recorded head, named by its rowid, beside the key
+  // (same directory, same protection). The newest name wins, so two processes writing at
+  // once can only leave the higher head; older files are pruned.
+  const anchorDir = join(keysDir, `${keyId}.anchor`);
+  const ANCHOR_RE = /^(\d{16})\.json$/;
+  const readAnchor = (): AnchorRead => {
+    let names: string[];
+    try {
+      names = readdirSync(anchorDir).filter((n) => ANCHOR_RE.test(n));
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") return { missing: "no anchor recorded" };
+      return {
+        broken: `the anchor cannot be read (${(e as NodeJS.ErrnoException).code ?? "error"})`,
+      };
+    }
+    if (names.length === 0) return { missing: "no anchor recorded" };
+    names.sort();
+    const name = names[names.length - 1]!;
+    const key = load();
+    if (!key) return { broken: "the factory key does not exist" };
+    let parsed: { seq?: unknown; id?: unknown; hash?: unknown; mac?: unknown };
+    try {
+      const fd = openSync(
+        join(anchorDir, name),
+        fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0),
+      );
+      try {
+        const size = Math.min(fstatSync(fd).size, 4096);
+        const buf = Buffer.alloc(size);
+        readSync(fd, buf, 0, size, 0);
+        parsed = JSON.parse(buf.toString("utf8")) as typeof parsed;
+      } finally {
+        closeSync(fd);
+      }
+    } catch {
+      return { broken: `the anchor ${name} cannot be read` };
+    }
+    const a: EventAnchor = {
+      seq: Number(parsed.seq),
+      id: String(parsed.id ?? ""),
+      hash: String(parsed.hash ?? ""),
+    };
+    const want = Buffer.from(hmacHex(key, anchorMaterial(keyId, a)), "hex");
+    const got = Buffer.from(String(parsed.mac ?? ""), "hex");
+    if (
+      !Number.isSafeInteger(a.seq) ||
+      `${String(a.seq).padStart(16, "0")}.json` !== name ||
+      want.length !== got.length ||
+      !timingSafeEqual(want, got)
+    ) {
+      return { broken: `the anchor ${name} does not verify under the factory key` };
+    }
+    return a;
+  };
+  const writeAnchor = (a: EventAnchor): void => {
+    const key = load();
+    if (!key) return; // nothing is sealed without a key; the first approval creates both
+    mkdirSync(anchorDir, { recursive: true, mode: 0o700 });
+    const name = `${String(a.seq).padStart(16, "0")}.json`;
+    const tmp = join(anchorDir, `.${name}.${process.pid}.${randomBytes(4).toString("hex")}`);
+    const fd = openSync(
+      tmp,
+      fsConstants.O_WRONLY |
+        fsConstants.O_CREAT |
+        fsConstants.O_EXCL |
+        (fsConstants.O_NOFOLLOW ?? 0),
+      0o600,
+    );
+    try {
+      writeSync(fd, JSON.stringify({ ...a, mac: hmacHex(key, anchorMaterial(keyId, a)) }));
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(tmp, join(anchorDir, name));
+    for (const n of readdirSync(anchorDir)) {
+      if (ANCHOR_RE.test(n) && n < name) {
+        try {
+          unlinkSync(join(anchorDir, n));
+        } catch {
+          // another writer pruned it first
+        }
+      }
+    }
+  };
+  const clearAnchors = (): void => {
+    let names: string[];
+    try {
+      names = readdirSync(anchorDir);
+    } catch {
+      return;
+    }
+    for (const n of names) {
+      if (ANCHOR_RE.test(n)) unlinkSync(join(anchorDir, n));
+    }
+  };
+
   return {
     description: "the factory key",
     keyPath,
+    anchor(db: SealDb) {
+      assertOutsideData();
+      advanceAnchor(db, readAnchor, writeAnchor);
+    },
+    readAnchor() {
+      assertOutsideData();
+      return readAnchor();
+    },
+    reanchor(db: SealDb) {
+      assertOutsideData();
+      if (!load()) {
+        throw new GateKeyError(
+          "the factory key does not exist (gaffer setup creates it)",
+          "refused",
+        );
+      }
+      const head = eventLogHead(db);
+      clearAnchors();
+      if (head) writeAnchor(head);
+      return head;
+    },
     signMac(material: string) {
       const key = load() ?? create();
       return { mac: hmacHex(key, material), keyId };
@@ -286,10 +468,21 @@ export function fileGateKeyring(opts: {
 export function ephemeralGateKeyring(): GateKeyring {
   const key = randomBytes(KEY_BYTES);
   const keyId = `ephemeral-${createHash("sha256").update(key).digest("hex").slice(0, 12)}`;
+  let anchored: EventAnchor | null = null;
   return {
     description: "a process-local key",
     signMac: (material) => ({ mac: hmacHex(key, material), keyId }),
     verifyMac: (material) => ({ mac: hmacHex(key, material), keyId }),
+    anchor: (db) =>
+      advanceAnchor(
+        db,
+        () => anchored ?? { missing: "no anchor recorded" },
+        (a) => {
+          anchored = a;
+        },
+      ),
+    readAnchor: () => anchored ?? { missing: "no anchor recorded" },
+    reanchor: (db) => (anchored = eventLogHead(db)),
   };
 }
 
@@ -305,7 +498,13 @@ export function refusingGateKeyring(who: string): GateKeyring {
       "refused",
     );
   };
-  return { description: `${who} (no key)`, signMac: refuse, verifyMac: refuse };
+  return {
+    description: `${who} (no key)`,
+    signMac: refuse,
+    verifyMac: refuse,
+    readAnchor: refuse,
+    reanchor: refuse,
+  };
 }
 
 /** The exact bytes a seal's MAC covers. */
@@ -607,7 +806,7 @@ export type LandingActsCheck =
       ok: false;
       code: "unsigned_approval" | "unsigned_tester_verdict";
       reason: string;
-      failure: SealFailure | "no_approval" | "not_covered";
+      failure: SealFailure | "no_approval" | "not_covered" | "revoked" | "truncated";
     };
 
 /** The latest transition into ready_for_merge (the approval every landing acts on). */
@@ -622,7 +821,17 @@ export function latestApprovalEvent(db: SealDb, ticketId: string): string | null
   return row?.id ?? null;
 }
 
-function remedy(failure: SealFailure | "no_approval" | "not_covered", verdict: boolean): string {
+type LandingFailure = SealFailure | "no_approval" | "not_covered" | "revoked" | "truncated";
+
+function remedy(failure: LandingFailure, verdict: boolean): string {
+  if (failure === "truncated") {
+    return (
+      "Nothing lands until a person checks the factory: if the database was restored from a backup on purpose, " +
+      "run `gaffer wg gate-key reanchor` (approvals in the restored log count again: reopen any that were revoked), " +
+      "then reopen and re-approve: gaffer wg ticket reopen-for-review <n> --as admin --reason unsigned_approval " +
+      "--resolution re-approve, then gaffer approve <n>."
+    );
+  }
   if (failure === "missing_key") {
     return (
       "The factory key is missing: run `gaffer setup` to create one, then re-approve the ticket " +
@@ -649,6 +858,14 @@ export function verifyLandingActs(
     targets?: readonly LandingTarget[];
     approvalId?: string | null;
     ticketNumber?: number | string | null;
+    /**
+     * REVOCATION (default on): the approval must still be the ticket's latest move, and the
+     * event log must still hold the head this factory anchored outside the database, so a
+     * revocation deleted from the log (or a status written over it) lands nothing. Off only
+     * where a landing that already STARTED on a verified approval is recorded after a
+     * revocation (recordLanding's started-before path: git already carries it).
+     */
+    revocation?: boolean;
   } = {},
 ): LandingActsCheck {
   const n =
@@ -657,7 +874,7 @@ export function verifyLandingActs(
       : String(opts.ticketNumber);
   const fail = (
     code: "unsigned_approval" | "unsigned_tester_verdict",
-    failure: SealFailure | "no_approval" | "not_covered",
+    failure: LandingFailure,
     what: string,
   ): LandingActsCheck => ({
     ok: false,
@@ -680,6 +897,14 @@ export function verifyLandingActs(
     }
   };
   return guard(() => {
+    // Read the anchor BEFORE any row: it is written after a commit, so every row it names is
+    // visible to the reads that follow (a read snapshot never predates it).
+    const revocation = opts.revocation !== false;
+    const anchor: AnchorRead | null = revocation
+      ? keyring.readAnchor
+        ? keyring.readAnchor()
+        : { missing: "this keyring records no anchor" }
+      : null;
     const approval = opts.approvalId ?? latestApprovalEvent(db, ticketId);
     if (!approval) return fail("unsigned_approval", "no_approval", "No approval is on record.");
     const a = verifyGateSeal(db, keyring, approval, "approval");
@@ -695,6 +920,50 @@ export function verifyLandingActs(
     }
     if (a.binds.ticket !== ticketId) {
       return fail("unsigned_approval", "mismatch", "Its signature is for another ticket.");
+    }
+    if (revocation) {
+      // An approval stands only while it is the ticket's latest move: a reopen, a hold, a
+      // send-back or a cancel after it undoes it, whatever the status column says.
+      const last = db
+        .prepare(
+          "SELECT id, json_extract(payload_json, '$.from') AS f, json_extract(payload_json, '$.to') AS t " +
+            "FROM work_events WHERE entity_type = 'ticket' AND entity_id = ? " +
+            "AND event_type = 'ticket.transitioned' ORDER BY rowid DESC LIMIT 1",
+        )
+        .get(ticketId) as { id: string; f: string | null; t: string | null } | undefined;
+      if (!last || String(last.id) !== approval) {
+        return fail(
+          "unsigned_approval",
+          "revoked",
+          `Nothing lands on this approval: it was undone after it was given (the ticket's latest recorded move is ${last?.f ?? "?"} -> ${last?.t ?? "?"}), so a status that reads ready_for_merge was not set by an approval.`,
+        );
+      }
+      // The event log must still hold the head a trusted host process anchored outside the
+      // database after its last write: rows deleted after it (a revocation truncated away,
+      // or the whole file rolled back to a copy) break this.
+      const an = anchor!;
+      if ("missing" in an || "broken" in an) {
+        return fail(
+          "unsigned_approval",
+          "truncated",
+          `Nothing lands on this approval: this factory has no usable record of its event log outside the database (${"missing" in an ? an.missing : an.broken}); the host writes one after every act it records, so it was removed, or never written for this approval.`,
+        );
+      }
+      if (!anchorRowPresent(db, an)) {
+        return fail(
+          "unsigned_approval",
+          "truncated",
+          `Nothing lands on this approval: the event log no longer holds event ${an.seq} as this factory recorded it outside the database, so rows were deleted or rewritten after it (a revocation may have been removed).`,
+        );
+      }
+      const chain = chainVerifiesUpTo(db, an.seq);
+      if (!chain.ok) {
+        return fail(
+          "unsigned_approval",
+          "truncated",
+          `Nothing lands on this approval: the event log's hash chain does not verify up to the head this factory recorded (first bad row ${chain.at}).`,
+        );
+      }
     }
     const pins = Array.isArray(a.binds.pins) ? (a.binds.pins as ApprovalPin[]) : [];
     for (const t of opts.targets ?? []) {

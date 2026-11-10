@@ -52,6 +52,9 @@ seal() { node --no-warnings "$SEAL" "$@" >/dev/null || { echo "FIXTURE ERROR: se
 APPROVAL9="$(node --no-warnings "$SEAL" "$DB" approve 9)" || { echo "FIXTURE ERROR: approve 9" >&2; exit 1; }
 set_pass() {  # $1 = payload json ('' = no evidence); $2 = "forged": no tester event names it
   sql "DELETE FROM evidence; DELETE FROM work_events WHERE event_type = 'ticket.tester_passed';"
+  # Deleting a host-recorded row is a truncation the landing check now detects; this table
+  # models a log that never had the PASS, so the host stand-in re-chains and re-anchors.
+  seal "$DB" chain
   # Named columns: the Node merge path's mark-merged migrates this fixture (adds columns).
   [ -n "$1" ] && sql "INSERT INTO evidence (id, ticket_id, evidence_type, summary, payload_json, created_at) VALUES ('e1', 't9', 'test_output', 'pass', '$1', '2026-09-29T00:00:00Z');"
   # The tester pass path (dispatch testerPass) names its row in a ticket.tester_passed event,
@@ -150,6 +153,7 @@ seal "$DB2" tester-pass w2
 out="$(decide10)"; rc=$?
 [ "$rc" -eq 4 ] && [ "$(kind "$out")" = "moved-since-review" ] && ok "a HUMAN tester waiver does not unpin it → hold" || fail "waiver + moved: rc=$rc $out"
 sql2 "DELETE FROM evidence WHERE id = 'h1'; DELETE FROM work_events WHERE id = 'w2';"
+seal "$DB2" chain   # a log that never had the waiver (deleting it is otherwise a truncation)
 pin "$REVIEWED" agent 2026-09-29T00:05:00.000Z; out="$(decide10)"; rc=$?
 [ "$rc" -eq 0 ] && [ "$(kind "$out")" = "no-tester" ] && ok "a pin row recorded by an AGENT is not a pin (cannot be forged through the MCP)" || fail "agent pin: rc=$rc $out"
 pin "$REVIEWED" system 2026-09-28T23:00:00.000Z; out="$(decide10)"; rc=$?

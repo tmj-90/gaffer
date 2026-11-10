@@ -219,6 +219,21 @@ insert an approval and recompute a consistent chain, and every landing path acte
   chain: nothing merges and the ticket is held for a person (`unsigned_approval`,
   `unsigned_tester_verdict`), with what to do (re-approve; for a missing key, run setup
   first). There is no grandfathering: an approval from before the upgrade is re-approved.
+- **A revoked approval stays revoked.** The old approval keeps its valid seal after a
+  reopen, a send-back, a won't-do or a hold undoes it, so landing also requires that the
+  approval is still the ticket's latest move (a status written back to `ready_for_merge`
+  is not an approval), and that the event log still holds the head a trusted host process
+  recorded outside the database after its last write: `<id>.anchor/` beside the key, a
+  MAC'd (rowid, id, hash) under the same key, moved forward after every committed write by
+  the CLI or the REST server. Deleting the rows after an approval (revocation by
+  truncation), rewriting them with a recomputed chain, or rolling the whole file back to a
+  copy breaks it, and the anchor never moves on past a gap, so a later host write does not
+  hide one. Nothing lands until a person runs `gaffer wg gate-key reanchor` (only after
+  restoring a backup on purpose: approvals in the restored log count again) and reopens and
+  re-approves. A state import removes every seal and re-anchors. What the anchor cannot
+  see: rows written by the agent-facing MCP server after the host's last write (an agent's
+  own acts, which an agent could equally not have made), and a crash between a host commit
+  and its anchor write.
 - **Where the key lives.** `${XDG_CONFIG_HOME:-$HOME/.config}/gaffer/keys/<id>.key`, 32
   random bytes, mode 0600 (a looser mode is refused), in a 0700 directory. `<id>` is a hash
   of the canonical path of the dispatch database's directory (`$GAFFER_DATA`), never of
@@ -535,9 +550,8 @@ a presence boolean, and an argument not on the allowlist is never copied.
 - **The factory key is only as safe as the provider.** Signed approvals stop a forged row
   only while the agent cannot read the key. Under `sandbox-exec` and `docker` the OS keeps
   it out of reach; under `SANDBOX_PROVIDER=none` / `GAFFER_STRICT_REQUIRE=0` only the hook
-  does. A signature also cannot tell a current approval from an older genuine one if the
-  log after it is truncated (deleting the newest rows leaves a valid chain); record the
-  chain head somewhere the database's writers cannot reach to catch that.
+  does. The event-log anchor that catches a truncated revocation lives beside the key and
+  is exactly as safe: under `none`, an agent that escapes the hook can rewrite it too.
 - **The isolation opt-out exists.** `GAFFER_STRICT_REQUIRE=0` in the environment runs
   agents without an OS sandbox, with only the worktree and the hook around them, and
   nothing verifies the VM or container it vouches for. On a non-macOS host without Docker

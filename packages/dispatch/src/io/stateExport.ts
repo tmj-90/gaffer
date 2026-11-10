@@ -547,6 +547,10 @@ export function importState(
           db.exec(`DELETE FROM ${EXPORT_TABLES[i]}`);
         }
       }
+      // SIGNED GATE EVENTS: no seal survives an import. The bundle carries none, and one
+      // left from the replaced board (a restore of this factory's own backup has the same
+      // event ids and hashes) would make an approval revoked after the backup count again.
+      db.exec("DELETE FROM gate_seals");
       for (const table of EXPORT_TABLES) {
         const raw = (bundle.tables[table] ?? []) as ReadonlyArray<Record<string, unknown>>;
         const rows =

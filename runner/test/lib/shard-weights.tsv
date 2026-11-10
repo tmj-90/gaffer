@@ -35,6 +35,8 @@
 #   at -j 1: 114s, so 230 until CI measures it.
 #   signed-acts: new (signed gate events), thirteen one-repo worlds with real merges and lane
 #   runs; Linux alone at -j 1: 57s, so 115 until CI measures it.
+#   signed-acts-revocation: new (independent review of signed gate events), eleven one-repo
+#   worlds with real merges and lane runs; Linux alone at -j 1: see the review, 2x until CI.
 #   review-once-per-head: new (one agent review per delivered commit), about 40 real ticks,
 #   a dozen tester runs and six reviews; Linux at -j 1 on a loaded machine: 319s, so 400
 #   until CI measures it.
@@ -354,6 +356,7 @@
 60	isolation-default.test.sh
 180	landing-recovery.test.sh
 115	signed-acts.test.sh
+100	signed-acts-revocation.test.sh
 230	tester-overlap.test.sh
 400	review-once-per-head.test.sh
 150	trust-fail-closed.test.sh

@@ -168,6 +168,10 @@ world() {  # <case> <pr|local>: a two-repo ticket, approved with both heads pinn
     d.prepare("INSERT INTO work_events (id, entity_type, entity_id, actor_type, event_type, payload_json) VALUES (?, ?, ?, ?, ?, ?)")
       .run("we-tester-1", "ticket", t.id, "system", "ticket.tester_passed", JSON.stringify({ evidence_id: "ev-tester-1", tested_head: tested }));
     d.close();' "$DISPATCH_DB" "$HEAD_repoA" "$tc" "$TESTER_IDS"
+  # Landing verifies a signature on the tester verdict it relies on; a row written with
+  # sqlite has none (it is what a forged PASS looks like). Record it as the host does:
+  # chained and sealed under this test's factory key (lib/gate-seal-fixture.mjs).
+  node --no-warnings "$RUNNER_DIR/test/lib/gate-seal-fixture.mjs" "$DISPATCH_DB" tester-pass we-tester-1 >/dev/null
   wgd ticket ci-result 1 --commit "$HEAD_repoA" --state pass --as system >/dev/null
   wgd review approve 1 --reviewer fixture --commit "repoA=$HEAD_repoA" --commit "repoB=$HEAD_repoB" >/dev/null
   APPROVAL="$(wgd ticket landing 1 | jf 'd.approval || ""')"
@@ -303,6 +307,10 @@ drop_tester() {  # [acceptance]: remove the tester PASS (and mark the ticket an 
     d.prepare("DELETE FROM work_events WHERE id = ?").run("we-tester-1");
     if (process.argv[2] === "acceptance") d.prepare("UPDATE tickets SET acceptance = 1 WHERE number = 1").run();
     d.close();' "$DISPATCH_DB" "${1:-}"
+  # Deleting rows breaks the event chain, which landing refuses as an edited log
+  # (unsigned_approval). Model a ticket that never had the PASS instead: re-chain the log
+  # and re-seal its approval as the host would have recorded it.
+  node --no-warnings "$RUNNER_DIR/test/lib/gate-seal-fixture.mjs" "$DISPATCH_DB" approval "$APPROVAL" >/dev/null
 }
 world l5a pr
 drop_tester

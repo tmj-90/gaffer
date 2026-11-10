@@ -136,6 +136,11 @@ export const ALLOWED: ReadonlySet<string> = new Set([
   // is a SYSTEM/admin-only reopen — guarded below by `reopenForReview`, so it can
   // never be conjured by an arbitrary user board-drag of a `done` card.
   "done->in_review",
+  // SIGNED GATE EVENTS: a ticket the landing held because its approval (or tester
+  // verdict) carries no valid signature (`held:unsigned_approval`,
+  // `held:unsigned_tester_verdict`) goes back to review for a person to re-approve it.
+  // The same guarded reopen-for-review path, and only from those holds.
+  "blocked->in_review",
   // P1 retry-cap park: a delivery rejected at review for the Nth time (N = max
   // attempts) is PARKED to `blocked` (needs-human) instead of being re-queued to
   // be re-delivered forever. Guarded by the `park` flag so only the reject path
@@ -425,7 +430,7 @@ export interface GuardedEdge {
 
 export const GUARDED_EDGES: readonly GuardedEdge[] = [
   {
-    edges: ["done->in_review", "ready_for_merge->in_review"],
+    edges: ["done->in_review", "ready_for_merge->in_review", "blocked->in_review"],
     anyOf: ["reopenForReview"],
     message: "A ticket can only return to review via the reopen-for-review path.",
     why: "Auto-merge re-approval / conflict-reopen are deliberate system actions, never a card drag into in_review.",

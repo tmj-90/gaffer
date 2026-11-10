@@ -67,6 +67,7 @@ const STATUS_FOR_CODE: Record<DispatchErrorCode, number> = {
   READ_ONLY_TOKEN: 403,
   UNAUTHORIZED: 401,
   NOT_CONFIGURED: 503,
+  GATE_KEY_REFUSED: 403,
   // The database stayed write-locked by another process past the busy timeout: a
   // transient condition, so a client retries rather than reading a server crash.
   DB_BUSY: 503,

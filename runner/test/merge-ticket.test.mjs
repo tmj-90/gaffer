@@ -58,6 +58,14 @@ process.env.GAFFER_DATA = PRIVATE_DATA;
 process.env.DISPATCH_DB = resolve(PRIVATE_DATA, "dispatch.sqlite");
 process.env.MEMORY_DB = resolve(PRIVATE_DATA, "memory.sqlite");
 process.on("exit", () => rmSync(PRIVATE_DATA, { recursive: true, force: true }));
+// SIGNED GATE EVENTS: the factory key the fixtures' approvals are signed with lives under
+// ${XDG_CONFIG_HOME:-$HOME/.config}/gaffer/keys. Pin it to a private directory (outside
+// every fixture database's directory) for this file and every child it spawns, so a case
+// that swaps HOME (the untrusted-workspace one) still verifies the same approval, and a
+// standalone run never writes the operator's own keys directory.
+const PRIVATE_XDG = gafferMkdtemp(resolve(tmpdir(), "merge-ticket-xdg-"));
+process.env.XDG_CONFIG_HOME = PRIVATE_XDG;
+process.on("exit", () => rmSync(PRIVATE_XDG, { recursive: true, force: true }));
 const SKILL = resolve(RUNNER_DIR, "skills", "resolve-merge-conflict", "SKILL.md");
 const {
   resolveTicket,
@@ -135,7 +143,11 @@ function makeDb(rows, { legacySchema = false } = {}) {
       "CREATE TABLE repositories (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, " +
       `local_path TEXT, default_branch TEXT NOT NULL DEFAULT 'main'${gates});` +
       "CREATE TABLE ticket_repos (ticket_id TEXT, repo_id TEXT, role TEXT DEFAULT 'primary', " +
-      `branch_name TEXT, access TEXT DEFAULT 'write'${pr});`,
+      `branch_name TEXT, access TEXT DEFAULT 'write'${pr});` +
+      // SIGNED GATE EVENTS: the event log the approval below is recorded in.
+      "CREATE TABLE work_events (id TEXT PRIMARY KEY, entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, " +
+      "actor_type TEXT NOT NULL, actor_id TEXT, event_type TEXT NOT NULL, payload_json TEXT, " +
+      "correlation_id TEXT, created_at TEXT NOT NULL, prev_hash TEXT, hash TEXT);",
   );
   for (const r of rows) {
     if (legacySchema) {
@@ -186,6 +198,18 @@ function makeDb(rows, { legacySchema = false } = {}) {
     }
   }
   db.close();
+  // SIGNED GATE EVENTS: landing verifies a signed approval. An approved (ready_for_merge)
+  // row gets one recorded as the host records it, chained and sealed under this test's
+  // factory key (lib/gate-seal-fixture.mjs); a row written with sqlite alone has none.
+  for (const r of rows) {
+    if ((r.status ?? "ready_for_merge") !== "ready_for_merge") continue;
+    const sealed = spawnSync(
+      process.execPath,
+      [resolve(RUNNER_DIR, "test/lib/gate-seal-fixture.mjs"), dbPath, "approve", String(r.number)],
+      { encoding: "utf8" },
+    );
+    if (sealed.status !== 0) throw new Error(`fixture approval failed: ${sealed.stderr}`);
+  }
   return dbPath;
 }
 

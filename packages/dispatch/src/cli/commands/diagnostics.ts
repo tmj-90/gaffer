@@ -4,6 +4,7 @@ import type { Command } from "commander";
 
 import type { Dispatch } from "../../core.js";
 import { DispatchError } from "../../util/errors.js";
+import { fileGateKeyring, GateKeyError } from "../../events/gateSeal.js";
 import { assertCliDbExists, resolveDbPath } from "../../util/paths.js";
 import { cliActor, printJson } from "../helpers.js";
 import {
@@ -20,6 +21,40 @@ import {
 
 export function registerDiagnostics(program: Command): void {
   // --- Operational commands --------------------------------------------------
+
+  // SIGNED GATE EVENTS: the factory key approvals and tester verdicts are sealed with.
+  // `gaffer setup` runs `gate-key ensure`; the first approval recorded on the host creates
+  // the key too when it is absent. Nothing here prints or exports the key itself.
+  const gateKey = program
+    .command("gate-key")
+    .description(
+      "The factory signing key: approvals and tester verdicts are sealed with it and every landing verifies them",
+    );
+  gateKey
+    .command("ensure")
+    .description(
+      "Create the factory key for this database when it is absent (mode 0600, outside the data directory); print where it is",
+    )
+    .option("--json", "emit machine-readable JSON (the default)", false)
+    .action((_opts, cmd) => {
+      assertCliDbExists(cmd.optsWithGlobals().db);
+      const dbPath = resolveDbPath(cmd.optsWithGlobals().db);
+      try {
+        const r = fileGateKeyring({ dbPath }).ensure();
+        printJson({ ok: true, created: r.created, path: r.path });
+      } catch (e) {
+        if (e instanceof GateKeyError) {
+          throw new DispatchError(
+            "GATE_KEY_REFUSED",
+            `The factory key is not usable: ${e.message}.`,
+            {
+              reason: e.why,
+            },
+          );
+        }
+        throw e;
+      }
+    });
 
   program
     .command("doctor")

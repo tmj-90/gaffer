@@ -20,6 +20,7 @@ import {
 import type { ReviewGateInternals } from "./internals.js";
 import type { ReviewGateService, LandingStarted } from "../reviewGateService.js";
 import { computeApprovedUnchanged } from "./staleness.js";
+import { assertSignedActs } from "./sealing.js";
 
 /** What these functions read from the {@link ReviewGateService} facade they are handed. */
 export type LandingHost = Pick<
@@ -34,6 +35,7 @@ export type LandingInternals = Pick<
   | "clock"
   | "db"
   | "evidence"
+  | "gateKeyring"
   | "landedOnDefaultResolver"
   | "ticketSvc"
   | "transitions"
@@ -138,6 +140,10 @@ export function recordLanding(
         status: before,
       };
     }
+    // SIGNED GATE EVENTS: nothing is recorded as landed on an approval (or a tester
+    // verdict) that does not verify under the factory key, nor for a commit the signed
+    // approval did not pin.
+    assertSignedActs(internals, ticket, [{ repoId: target.repoId, sha }]);
     if (UNVERIFIABLE_LANDING_VIAS.has(input.via ?? ""))
       assertPrLanding(internals, ticket, target, sha, input.via as "pr" | "pr-stale");
     // A LOCAL landing is checkable: the merge paths merge the pinned commit itself, so
@@ -294,6 +300,11 @@ export function beginLanding(
         },
       );
     }
+    // SIGNED GATE EVENTS: the approval this landing acts on, and the tester verdict it
+    // relies on, must verify under the factory key, and the commit about to land must be
+    // one the signed approval pinned. Otherwise nothing lands (the runner holds the ticket
+    // for a person, reason unsigned_approval / unsigned_tester_verdict).
+    assertSignedActs(internals, ticket, [{ repoId: target?.repoId ?? null, sha }], approval);
     // REQUIRED CI for the approved commits must still be green.
     if (host.ciStatus(ticket.id, null).required) {
       const pins = landing.repos.filter((r) => r.pinned).map((r) => r.sha);
@@ -470,6 +481,17 @@ export function markMerged(
     );
   }
   const ticket = internals.ticketSvc.resolveTicket(ref);
+  // SIGNED GATE EVENTS: `done` only on an approval (and tester verdict) that verifies
+  // under the factory key, covering every approved revision on record.
+  if (ticket.status === "ready_for_merge") {
+    assertSignedActs(
+      internals,
+      ticket,
+      computeLandingStatus(internals.db, ticket.id)
+        .repos.filter((r) => r.pinned)
+        .map((r) => ({ repoId: r.repoId, sha: r.sha })),
+    );
+  }
   // PER-REPOSITORY LANDING: `done` means EVERY approved revision landed. A two-repo
   // ticket whose second repo's change is still on its delivery branch stays
   // ready_for_merge (a visible "partly merged" item in the human queue); the merge

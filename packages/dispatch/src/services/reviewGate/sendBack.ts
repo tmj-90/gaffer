@@ -196,8 +196,28 @@ export function reopenFromWontDo(
   });
 }
 
+/** The hold reason codes a signed-acts landing check places (see reviewGate/sealing.ts). */
+export const UNSIGNED_HOLD_CODES: readonly string[] = [
+  "unsigned_approval",
+  "unsigned_tester_verdict",
+];
+
+/** True when the ticket's latest move into blocked was an unsigned-approval/verdict hold. */
+function unsignedHold(internals: Pick<SendBackInternals, "db">, ticketId: string): boolean {
+  const row = internals.db
+    .prepare(
+      `SELECT json_extract(payload_json, '$.reason') AS reason FROM work_events
+          WHERE entity_type = 'ticket' AND entity_id = ? AND event_type = 'ticket.transitioned'
+            AND json_extract(payload_json, '$.to') = 'blocked'
+          ORDER BY rowid DESC LIMIT 1`,
+    )
+    .get(ticketId) as { reason: string | null } | undefined;
+  return UNSIGNED_HOLD_CODES.some((c) => row?.reason === `held:${c}`);
+}
+
 /**
- * Reopen a merged or merging ticket for review (`done | ready_for_merge -> in_review`).
+ * Reopen a merged or merging ticket for review (`done | ready_for_merge -> in_review`), or
+ * one held for an unsigned approval or tester verdict (`blocked -> in_review`).
  * SYSTEM/admin only.
  */
 export function reopenForReview(
@@ -220,10 +240,13 @@ export function reopenForReview(
   }
   return inTransaction(internals.db, () => {
     const ticket = internals.ticketSvc.resolveTicket(ref);
-    if (ticket.status !== "done" && ticket.status !== "ready_for_merge") {
+    // SIGNED GATE EVENTS: a ticket held because its approval or tester verdict carries no
+    // valid signature is reopened for a person to re-approve; no other hold is.
+    const heldUnsigned = ticket.status === "blocked" && unsignedHold(internals, ticket.id);
+    if (ticket.status !== "done" && ticket.status !== "ready_for_merge" && !heldUnsigned) {
       throw new DispatchError(
         "ILLEGAL_TRANSITION",
-        "Only a done or merging ticket can be reopened for review.",
+        "Only a done or merging ticket, or one held for an unsigned approval or tester verdict, can be reopened for review.",
         { from: ticket.status, to: "in_review" },
       );
     }

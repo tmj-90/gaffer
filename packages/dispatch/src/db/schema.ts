@@ -6,7 +6,7 @@
  * partial unique index (one active claim per ticket) are preserved — SQLite
  * supports both. Enum validation is also enforced in the application layer.
  */
-export const SCHEMA_VERSION = 33;
+export const SCHEMA_VERSION = 34;
 
 /**
  * The schema_meta key holding when this database started hiding the eval judge's grade
@@ -343,6 +343,21 @@ CREATE TABLE IF NOT EXISTS work_events (
 CREATE INDEX IF NOT EXISTS idx_events_entity ON work_events(entity_type, entity_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_type ON work_events(event_type, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_correlation ON work_events(correlation_id);
+
+-- SIGNED GATE EVENTS (v34): the seal of an approval (a transition into ready_for_merge)
+-- or of a tester PASS / waiver (ticket.tester_passed): HMAC-SHA256 under the factory key
+-- (outside $GAFFER_DATA) over the event's chain hash and the facts it binds. Kept beside
+-- the event in its own table so no existing row or chain hash changes; no foreign key, so
+-- a state import that replaces work_events never trips over it. Machine-local, like the
+-- key it was made with (see events/gateSeal.ts).
+CREATE TABLE IF NOT EXISTS gate_seals (
+  event_id   TEXT PRIMARY KEY,
+  kind       TEXT NOT NULL CHECK (kind IN ('approval','tester_pass')),
+  binds_json TEXT NOT NULL,
+  key_id     TEXT NOT NULL,
+  mac        TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
 
 -- ============================================================================
 -- Factory Map scope graph (FG-001 + FG-002). Additive, schema_version 2.

@@ -191,6 +191,56 @@ The gate is enforced in the control plane, not by convention.
   refuses a landing git does not show on the default branch. A partial landing stays in
   Ready for merge as "Partly merged" and can only be finished.
 
+### Signed approvals and tester verdicts
+
+An approval used to be a row: the `ticket.transitioned` event into `ready_for_merge`. The
+hash chain over `work_events` has no key, so anyone who could write the sqlite file could
+insert an approval and recompute a consistent chain, and every landing path acted on it.
+
+- **What is signed.** Every transition into `ready_for_merge` (a person's or an admin's
+  approval, the runner's own approval in an autonomous mode, a tester PASS that approves)
+  and every `ticket.tester_passed` event (a tester PASS, or a person's waiver) carries a
+  seal in the `gate_seals` table: HMAC-SHA256 under the factory key over the event's
+  chain hash (its fields and its place in the chain) and the facts it binds: for an
+  approval, the review pins (commit per repo) it carries; for a verdict, the row it names
+  and a hash of that row's payload. No existing row or chain hash changes.
+- **Who signs.** Only trusted host processes: the dispatch CLI and the REST server when
+  they record an approval or a verdict (the runner's own approval goes through the CLI).
+  The agent-facing MCP server opens the database with a keyring that refuses any load of
+  the key; it has no approving tool. A signing that cannot use the key rolls the whole
+  approval back: nothing unsigned is recorded.
+- **What landing checks.** `wg ticket landing-begin` (the last word before a default
+  branch moves or a PR merge is asked for), `record-landing` (including the landed-upstream
+  recovery) and `mark-merged` refuse, and `runner/lib/tester-binding.mjs` (the one landing
+  decision `land.sh`, the merge lane and `gaffer merge` apply) holds, unless the approval
+  the landing acts on and the tester verdict it relies on verify under the key, the chain
+  verifies from genesis up to them, and the commit about to land is one the signed
+  approval pinned for that repo. A missing key, a missing signature, a mismatch or a broken
+  chain: nothing merges and the ticket is held for a person (`unsigned_approval`,
+  `unsigned_tester_verdict`), with what to do (re-approve; for a missing key, run setup
+  first). There is no grandfathering: an approval from before the upgrade is re-approved.
+- **Where the key lives.** `${XDG_CONFIG_HOME:-$HOME/.config}/gaffer/keys/<id>.key`, 32
+  random bytes, mode 0600 (a looser mode is refused), in a 0700 directory. `<id>` is a hash
+  of the canonical path of the dispatch database's directory (`$GAFFER_DATA`), never of
+  anything stored where an agent writes. A keys directory inside the data directory is
+  refused. `gaffer setup` creates the key; so does the first approval recorded on the host.
+  Verification never creates it.
+- **Keeping it from agents, per provider.** The agent environment (`gaffer_agent_env`,
+  `lib/worker.mjs`, the docker env forwarding) carries neither the key nor its path. The
+  safety hook refuses any tool call or command that names the keys directory (Read, Grep,
+  Glob, Write, `cat`, `cp`, an interpreter opening it, a path assembled from variables in
+  the same command), on every provider.
+  - `sandbox-exec`: both profiles (delivery and the tester replay) deny reading and
+    writing the keys directory outright, whatever the write roots grant.
+  - `docker`: the keys directory is never mounted; the wrapper refuses a mount at, under
+    or above it. The MCP data plane runs on the host.
+  - `none` (`GAFFER_STRICT_REQUIRE=0`): **only the safety hook stands between an agent and
+    the key file.** The hook is a string analyser (see the residual limits): a compiled
+    binary, or a script the agent writes and runs, can read any file the operator's user
+    can. Under this provider the signature proves less than it does elsewhere: an agent
+    that escapes the hook can read the key and sign a forged approval. Run without an OS
+    sandbox only inside a VM or container you trust.
+
 ### Definition of Done, gate integrity and the merge gate
 
 Before a delivery reaches review, the runner (never the agent) runs the enabled gates
@@ -482,6 +532,12 @@ a presence boolean, and an argument not on the allowlist is never copied.
   paths that `safety-hook.test.mjs` pins, but a child's syscalls are invisible to it.
   `sandbox-exec` also isolates neither reads nor egress. The default host isolation on
   macOS is therefore write-only isolation.
+- **The factory key is only as safe as the provider.** Signed approvals stop a forged row
+  only while the agent cannot read the key. Under `sandbox-exec` and `docker` the OS keeps
+  it out of reach; under `SANDBOX_PROVIDER=none` / `GAFFER_STRICT_REQUIRE=0` only the hook
+  does. A signature also cannot tell a current approval from an older genuine one if the
+  log after it is truncated (deleting the newest rows leaves a valid chain); record the
+  chain head somewhere the database's writers cannot reach to catch that.
 - **The isolation opt-out exists.** `GAFFER_STRICT_REQUIRE=0` in the environment runs
   agents without an OS sandbox, with only the worktree and the hook around them, and
   nothing verifies the VM or container it vouches for. On a non-macOS host without Docker

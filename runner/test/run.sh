@@ -95,8 +95,9 @@ SELF="$HERE/run.sh"
 # GAFFER_TEST_EXHAUSTIVE=1 form (~220 s). gaffer-plan and poll-overlap-run-state came in
 # with the integration branch (poll-overlap-run-state runs two real Polls, ~90 s), and
 # round 4 of it added sandbox-docker-delivery-seam, worker-command, land-ignored-file and
-# git-hooks-host.
-LONG_RE='^(gate-integrity-e2e(-retry)?|dashboard-lifecycle|gaffer-plan|eval-replay|auth-gate-delivery|merge-lane|land-tester-replay(-proof|-contract)?|tester-overlap|eval-experiment|parallel-stop(-live)?|waste-controls|security-review-lane|direct-run-isolation|review-wedge|review-once-per-head|afk-review-hold|branch-retention|branch-switch-fresh|branch-switch-recovery|rework-final-trail|memory-index-after-merge|rework-cost-live|landing-revocation|landing-recovery|secondary-pr-landing|cleanup-ownership|poll-overlap-run-state|usage-limit-tick|tick-deadline|resume-abort|replay-manifest|e2e-.*|sandbox-docker-delivery-seam|worker-command|land-ignored-file|git-hooks-host|trust-fail-closed)\.test\.(sh|mjs)$|^safety-hook\.test\.mjs$'
+# git-hooks-host. signed-acts (signed gate events: thirteen one-repo worlds, real merges and
+# lane runs) came with package H2.
+LONG_RE='^(gate-integrity-e2e(-retry)?|dashboard-lifecycle|gaffer-plan|eval-replay|auth-gate-delivery|merge-lane|land-tester-replay(-proof|-contract)?|tester-overlap|eval-experiment|parallel-stop(-live)?|waste-controls|security-review-lane|direct-run-isolation|review-wedge|review-once-per-head|afk-review-hold|branch-retention|branch-switch-fresh|branch-switch-recovery|rework-final-trail|memory-index-after-merge|rework-cost-live|landing-revocation|landing-recovery|signed-acts|secondary-pr-landing|cleanup-ownership|poll-overlap-run-state|usage-limit-tick|tick-deadline|resume-abort|replay-manifest|e2e-.*|sandbox-docker-delivery-seam|worker-command|land-ignored-file|git-hooks-host|trust-fail-closed)\.test\.(sh|mjs)$|^safety-hook\.test\.mjs$'
 CAP_SH="${GAFFER_RUN_CAP_SH:-120}" CAP_MJS="${GAFFER_RUN_CAP_MJS:-300}" CAP_LONG="${GAFFER_RUN_CAP_LONG:-600}"
 
 in_ci() { [ "${GITHUB_ACTIONS:-}" = "true" ]; }
@@ -123,6 +124,9 @@ if [ "${1:-}" = "--one" ]; then
     mkdir -p "$priv/home"
     [ -f "$GAFFER_RUN_OPERATOR_HOME/.gitconfig" ] && cp "$GAFFER_RUN_OPERATOR_HOME/.gitconfig" "$priv/home/.gitconfig" 2>/dev/null
     export HOME="$priv/home"
+    # The factory signing key lives under ${XDG_CONFIG_HOME:-$HOME/.config}/gaffer/keys:
+    # with the private HOME and no XDG override, each test's key is its own.
+    unset XDG_CONFIG_HOME
     export PATH="$R/tripwire:$PATH" CLAUDE_BIN="$R/tripwire/claude"
     # Every agent here is a stub, so a "live" run spends nothing: opt the suite out of
     # the dollar-cap requirement (lib/budget.sh gaffer_spend_cap_ok). A test of that

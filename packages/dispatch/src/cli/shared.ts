@@ -1,4 +1,5 @@
 import { Dispatch } from "../core.js";
+import { hostGateKeyring } from "../events/gateSeal.js";
 import { assertCliDbExists, resolveDbPath } from "../util/paths.js";
 
 // The CLI helpers that need the database. A command module never imports this file
@@ -16,7 +17,11 @@ export function open(
   { create = false }: { create?: boolean } = {},
 ): Dispatch {
   if (!create) assertCliDbExists(opts.db);
-  return Dispatch.open(resolveDbPath(opts.db), undefined, undefined, {
+  const path = resolveDbPath(opts.db);
+  return Dispatch.open(path, undefined, undefined, {
     requireRegisteredAgentApprover: true,
+    // SIGNED GATE EVENTS: the CLI is a trusted host entry point; it signs and verifies
+    // with the factory key (created on the first approval when `gaffer setup` did not).
+    gateKeyring: hostGateKeyring(path),
   });
 }

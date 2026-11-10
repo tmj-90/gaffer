@@ -407,6 +407,15 @@ verdict strip above, Approve beside the flags, and the server-computed diff.*
 - **The event log is tamper-evident.** Every event is hash-chained and carries the
   runner tick that wrote it; `dispatch events verify`, `dispatch doctor` and Health's
   Event log card check the chain.
+- **Nothing lands on an unsigned approval.** Every approval and every tester verdict a
+  landing relies on is signed with a factory key that lives outside the data directory
+  and out of every agent's reach (`~/.config/gaffer/keys`, created by `gaffer setup`).
+  Each landing path checks the signature, the hash chain up to it and that the commit
+  about to land is the one the signature covers. An approval written into the database
+  by hand, edited, or recorded before signing existed is held for you
+  (`unsigned_approval`, or `unsigned_tester_verdict` for the verdict); reopen it for
+  review and approve it again. Keep the key with your backups: a new key means
+  re-approving what is waiting to land.
 - **Every attempt names its model and its CLI version**, on the usage-ledger row and
   in the ticket page's **Attempts** history.
 

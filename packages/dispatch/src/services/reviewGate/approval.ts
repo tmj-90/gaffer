@@ -26,6 +26,7 @@ import {
   checkShownCommits,
   recordApprovalPins,
 } from "./staleness.js";
+import { sealApprovalEvent } from "./sealing.js";
 
 /** What these functions read from the {@link ReviewGateService} facade they are handed. */
 export type ApprovalHost = Pick<
@@ -40,6 +41,7 @@ export type ApprovalInternals = Pick<
   | "clock"
   | "db"
   | "evidence"
+  | "gateKeyring"
   | "observedRiskResolver"
   | "policyAllowsAgentApprove"
   | "requireRegisteredAgentApprover"
@@ -251,6 +253,9 @@ export function approveReview(
     });
     assertWriteReposAvailable(ticket, unavailable); // rolls the transition back
     recordApprovalPins(internals, ticket, actor, pins);
+    // SIGNED GATE EVENTS: seal the approval with the commits it pinned (a key this
+    // process may not use rolls the whole approval back: nothing unsigned is recorded).
+    sealApprovalEvent(internals, ticket, result.eventId);
     return result;
   });
 }

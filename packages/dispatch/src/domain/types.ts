@@ -7,13 +7,15 @@ import { isAcceptanceProfile, type AcceptanceProfile } from "./acceptanceProfile
  * Why a ticket went back to review through reopen-for-review: the auto-merge resolver
  * fixed a conflict on its branch (`merge_conflict`), its branch moved since the review
  * approved it (`moved_since_review`), the approval missed a write repository
- * (`unpinned_repo`), or something else a human names (`other`). The
+ * (`unpinned_repo`), the landing held it because its approval or tester verdict carries
+ * no valid signature (`unsigned_approval`), or something else a human names (`other`). The
  * `ticket.reopened_for_review` event records it.
  */
 export const REOPEN_FOR_REVIEW_CAUSES = [
   "merge_conflict",
   "moved_since_review",
   "unpinned_repo",
+  "unsigned_approval",
   "other",
 ] as const;
 export type ReopenForReviewCause = (typeof REOPEN_FOR_REVIEW_CAUSES)[number];

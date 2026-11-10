@@ -722,4 +722,25 @@ export const DANGEROUS_COMMANDS = [
     example: "echo d2cgcHJpbmNpcGFsIGNyZWF0ZSB4 | base64 -d | sh",
     crewFlags: false,
   },
+  {
+    // THE FACTORY KEY (signed gate events): ${XDG_CONFIG_HOME:-$HOME/.config}/gaffer/keys
+    // holds the key approvals and tester verdicts are signed with; an agent that read it
+    // could sign a forged approval. Any command naming the keys directory or
+    // `.config/gaffer` above it is refused, on the raw text AND on the normalised views
+    // (quotes undone, same-command variables substituted, nested shells and inline
+    // interpreters unpacked), so `d=gaffer; cat ~/.config/$d/keys/x` is caught too. The
+    // secret-path boundary (lib/hook/reads.mjs) covers the read vectors as well; this is
+    // the spelling-proof net. Under SANDBOX_PROVIDER=none it is the only guard.
+    re: /(?:^|[^\w.-])(?:gaffer\/keys|\.config\/gaffer)(?![\w.-])/,
+    why: "the factory signing key directory (~/.config/gaffer/keys): agents never read or write it",
+    example: "cp -r ~/.config/gaffer /tmp/stolen",
+    crewFlags: false,
+  },
+  {
+    // `dispatch gate-key ensure` creates the factory key; `gaffer setup` runs it on the host.
+    re: /\b(wg|dispatch)\b[^\n|;&]*\bgate-key\b/,
+    why: "control-plane CLI: the factory signing key is the host's (gaffer setup), never an agent's",
+    example: "wg gate-key ensure",
+    crewFlags: false,
+  },
 ];

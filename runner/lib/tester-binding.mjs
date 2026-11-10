@@ -32,6 +32,12 @@
 // recorded before the ticket last (re)entered in_review describes an older candidate and
 // is ignored.
 // Fail CLOSED: an unreadable DB, an unknown ticket or an unresolvable branch head HOLD.
+// SIGNED GATE EVENTS (before all of the above): the approval the landing acts on and the
+// tester verdict it relies on must carry a valid signature under the factory key, the event
+// chain verifying up to them, and the commit about to land must be one the signed approval
+// pinned (packages/dispatch/src/events/gateSeal.ts, the same check Dispatch's landing-begin,
+// record-landing and mark-merged apply). Otherwise → HELD, kind `unsigned_approval` or
+// `unsigned_tester_verdict`; the callers hold the ticket for a person under that reason code.
 //
 // PER-REPOSITORY (multi-repo tickets): --repo-id <id> reads THAT repo's pin and reports
 // `already-landed` when its approved commit has a landing on record (a retry never
@@ -61,6 +67,20 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
+
+// SIGNED GATE EVENTS: the very checks Dispatch applies (packages/dispatch/src/events/
+// gateSeal.ts, built), so a landing decided here holds on exactly what Dispatch's
+// landing-begin / record-landing / mark-merged refuse. Missing (an unbuilt checkout): every
+// landing holds, fail closed.
+let gateSeal = null;
+let gateSealError = "";
+try {
+  gateSeal = await import(
+    new URL("../../packages/dispatch/dist/events/gateSeal.js", import.meta.url).href
+  );
+} catch (e) {
+  gateSealError = String(e?.message ?? e);
+}
 
 function hold(kind, reason, extra = {}) {
   return { ok: false, pin: null, kind, reason, ...extra };
@@ -325,9 +345,61 @@ export function reReviewCommand(ticketNumber, repo) {
   );
 }
 
+/**
+ * SIGNED GATE EVENTS: hold unless the approval this landing acts on and the tester verdict
+ * it relies on carry a valid signature under the factory key (the event chain verifying up
+ * to them), and every commit in `targets` is one the signed approval pinned. → a hold
+ * (kind `unsigned_approval` | `unsigned_tester_verdict`, the reason saying what to do), or
+ * null. Read-only: verification never creates the key. Fail closed on anything unreadable.
+ */
+export function signedActsHold(dbPath, ticketNumber, targets = []) {
+  if (!dbPath || !existsSync(dbPath))
+    return hold("unreadable", `dispatch DB not found (${dbPath || "unset"})`);
+  if (!gateSeal)
+    return hold(
+      "unsigned_approval",
+      `the signature check cannot run (packages/dispatch is not built: ${gateSealError || "unavailable"}); nothing lands until it can`,
+    );
+  let db;
+  try {
+    const { DatabaseSync } = require("node:sqlite");
+    db = new DatabaseSync(dbPath, { readOnly: true });
+    const num = parseInt(String(ticketNumber ?? "").replace(/^#/, ""), 10);
+    const t = db.prepare("SELECT id, number FROM tickets WHERE number = ?").get(num);
+    if (!t) return hold("unreadable", `ticket #${num} not found`);
+    const v = gateSeal.verifyLandingActs(db, gateSeal.hostGateKeyring(dbPath), String(t.id), {
+      targets,
+      ticketNumber: t.number,
+    });
+    return v.ok ? null : hold(v.code, v.reason, { failure: v.failure });
+  } catch (e) {
+    return hold(
+      "unsigned_approval",
+      `the approval's signature could not be verified (${e?.message ?? e})`,
+    );
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      /* already closed */
+    }
+  }
+}
+
 export function landingDecision(args) {
+  // SIGNED GATE EVENTS, first: a forged or unsigned approval holds as such, whatever the
+  // rest of the decision would have said.
+  const unsigned = signedActsHold(args.dbPath, args.ticketNumber);
+  if (unsigned) return unsigned;
   const d = testerLandingDecision(args);
   if (!d.ok) return d;
+  // The commit about to land (or be recorded) must be one the signed approval pinned.
+  const notCovered = d.pin
+    ? signedActsHold(args.dbPath, args.ticketNumber, [
+        { repoId: args.repoId ?? null, sha: String(d.pin) },
+      ])
+    : null;
+  if (notCovered) return notCovered;
   // This repo's approved commit landed in an earlier, partial run (on record, or in git
   // with the record missing): nothing lands now.
   if (d.kind === "already-landed") return d;

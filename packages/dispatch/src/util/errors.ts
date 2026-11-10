@@ -64,6 +64,9 @@ export const DISPATCH_ERROR_CODES = [
   // A --path that is a directory but not inside a git checkout (repo add).
   "NOT_A_GIT_REPO",
   "UNSAFE_BIND",
+  // SIGNED GATE EVENTS: this process may not (or cannot) use the factory key, so an
+  // approval or tester verdict it would have to sign was not recorded.
+  "GATE_KEY_REFUSED",
   "INTERNAL_ERROR",
 ] as const;
 export type DispatchErrorCode = (typeof DISPATCH_ERROR_CODES)[number];

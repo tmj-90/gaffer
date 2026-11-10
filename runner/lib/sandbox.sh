@@ -160,7 +160,30 @@ EOF
     printf '  (literal "/dev/stdout")\n'
     printf '  (literal "/dev/stderr"))\n'
     if [ "$replay" = 1 ]; then _sandbox_exec_replay_rules "$write_roots" "$read_roots"; fi
+    # THE FACTORY KEY (signed gate events), LAST so it wins over every grant above: no
+    # read, no write, no listing of the keys directory, in both profiles.
+    _sandbox_exec_factory_key_rules
   } > "$profile_path"
+}
+
+# The factory signing key's directory (packages/dispatch/src/events/gateSeal.ts
+# factoryKeysDir): ${XDG_CONFIG_HOME:-$HOME/.config}/gaffer/keys. Nothing relocates it.
+gaffer_factory_keys_dir() {
+  local base="${XDG_CONFIG_HOME:-}"
+  case "$base" in /*) ;; *) base="${HOME:-}/.config" ;; esac
+  printf '%s/gaffer/keys' "$base"
+}
+
+# Deny every file operation under the factory keys directory (and the HOME-default one
+# when XDG_CONFIG_HOME moved it), printed after every allow rule (SBPL is last-match-wins).
+_sandbox_exec_factory_key_rules() {
+  local kd home_kd
+  kd="$(gaffer_factory_keys_dir)"
+  home_kd="${HOME:-}/.config/gaffer/keys"
+  printf '(deny file-read* file-write*\n'
+  _sandbox_subpath_rule "$kd"
+  [ -n "${HOME:-}" ] && [ "$home_kd" != "$kd" ] && _sandbox_subpath_rule "$home_kd"
+  printf ')\n'
 }
 
 # HOME's folders and files the replay variant can neither read nor write (credentials and

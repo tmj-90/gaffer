@@ -236,6 +236,16 @@ const PROC_ENVIRON = String.raw`proc\/[^\s'"]*\/environ`;
 // vector. (`.ssh/`, `.aws/`, `.gnupg/` were already secret FRAGMENTS for Bash; they are
 // listed here too so the Read/Write tools and the search tools agree.)
 const CLI_CREDENTIAL_PATHS = String.raw`\.config\/gh\/.*|\.config\/gcloud\/.*|\.docker\/config\.json|\.kube\/.*|\.azure\/.*|\.ssh\/.*|\.aws\/.*|\.gnupg\/.*|\.pypirc|\.pgpass|credentials\.tfrc\.json|\.claude\.json`;
+// THE FACTORY KEY (signed gate events): approvals and tester verdicts are signed with a key
+// in ${XDG_CONFIG_HOME:-$HOME/.config}/gaffer/keys (packages/dispatch/src/events/
+// gateSeal.ts). An agent that read it could sign a forged approval, so the keys directory,
+// and `.config/gaffer` above it, are secret paths on every read and write vector. The
+// directory always ends in `gaffer/keys` (no knob relocates it), whatever XDG_CONFIG_HOME
+// says, so the name alone identifies it. Under SANDBOX_PROVIDER=none this is the ONLY
+// guard between an agent and the key (SECURITY.md).
+const FACTORY_KEYS_PATH = String.raw`gaffer\/keys(?:\/.*)?|\.config\/gaffer(?:\/.*)?`;
+// The same for matching anywhere in a raw command (not end-anchored).
+const FACTORY_KEYS_FRAGMENT = String.raw`gaffer\/keys(?![\w.-])|\.config\/gaffer(?![\w.-])`;
 // Same families for matching anywhere in a raw command (not end-anchored).
 const CLI_CREDENTIAL_FRAGMENT = String.raw`credentials\.tfrc\.json|\.config\/gh\/|\.config\/gcloud\/|\.docker\/config\.json\b|\.kube\/|\.azure\/|\.pypirc\b|\.pgpass\b|\.claude\.json\b`;
 // ENV-FILE and CREDENTIAL-NAME fragments (false-positive fix). The old `\.env\b` and
@@ -265,7 +275,7 @@ const CRED_NAME_FRAGMENT = String.raw`(?<![\w$.-])(?:\w[\w-]*[_-]|\.)?credential
 // could be a renamed real `.env`, so it stays a secret; see isTrackedEnvTemplate.
 const ENV_TEMPLATE = /(^|\/)\.env\.(?:example|sample|template|dist|defaults)$/i;
 const SECRET_PATH = new RegExp(
-  String.raw`(^|\/)(\.env([._-][\w-]+)?|[\w-][\w.-]*\.env|\.netrc|\.npmrc|\.git-credentials|${CLI_CREDENTIAL_PATHS}|id_[a-z0-9]+|.*\.pem|.*\.key|.*\.p12|(\.|\w[\w-]*[_-])?credentials(\.(json|toml|ya?ml|ini|txt))?|(\w[\w-]*[_-])?secrets?\.(json|ya?ml|txt|toml|ini)|client_secret[\w.-]*\.json|${MCP_RUNTIME_FILE}|${PROC_ENVIRON}|dashboard-token(\.[\w-]+)?|[\w.-]*[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}(\.[\w-]+)?)$`,
+  String.raw`(^|\/)(\.env([._-][\w-]+)?|[\w-][\w.-]*\.env|\.netrc|\.npmrc|\.git-credentials|${CLI_CREDENTIAL_PATHS}|${FACTORY_KEYS_PATH}|id_[a-z0-9]+|.*\.pem|.*\.key|.*\.p12|(\.|\w[\w-]*[_-])?credentials(\.(json|toml|ya?ml|ini|txt))?|(\w[\w-]*[_-])?secrets?\.(json|ya?ml|txt|toml|ini)|client_secret[\w.-]*\.json|${MCP_RUNTIME_FILE}|${PROC_ENVIRON}|dashboard-token(\.[\w-]+)?|[\w.-]*[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}(\.[\w-]+)?)$`,
   "i",
 );
 const GIT_INTERNAL = /(^|\/)\.git(\/|$)/;
@@ -348,6 +358,7 @@ export {
   CRED_NAME_FRAGMENT,
   ENV_FILE_FRAGMENT,
   ENV_TEMPLATE,
+  FACTORY_KEYS_FRAGMENT,
   GIT_INTERNAL,
   MCP_RUNTIME_FILE,
   PROC_ENVIRON,

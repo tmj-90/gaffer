@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
 import { Dispatch } from "../core.js";
+import { refusingGateKeyring, type GateKeyring } from "../events/gateSeal.js";
 import { DatabaseOpenError, DatabaseTooNewError } from "../db/connection.js";
 import type { Actor } from "../domain/types.js";
 import { systemClock } from "../util/clock.js";
@@ -300,6 +301,15 @@ export function createDispatchServer(wg: Dispatch, actor: Actor): McpServer {
   return server;
 }
 
+/**
+ * SIGNED GATE EVENTS: the keyring the agent-facing MCP server opens its database with. It
+ * never loads the factory key: a sign or a verify through it is refused (GateKeyError), so
+ * nothing an agent reaches through MCP can produce or check a signature.
+ */
+export function mcpGateKeyring(): GateKeyring {
+  return refusingGateKeyring("the dispatch MCP server");
+}
+
 /** Open the configured DB and serve the MCP tools over stdio. */
 export async function runStdioServer(): Promise<void> {
   const dbPath = resolveDbPath();
@@ -308,7 +318,12 @@ export async function runStdioServer(): Promise<void> {
   // (which MCP clients surface on launch failure) and exit cleanly instead.
   let wg: Dispatch;
   try {
-    wg = Dispatch.open(dbPath, systemClock, undefined, { requireRegisteredAgentApprover: true });
+    wg = Dispatch.open(dbPath, systemClock, undefined, {
+      requireRegisteredAgentApprover: true,
+      // SIGNED GATE EVENTS: the agent-facing MCP server never loads the factory key. It
+      // has no approving tool; any path that would sign or verify is refused outright.
+      gateKeyring: mcpGateKeyring(),
+    });
   } catch (err) {
     if (err instanceof DatabaseTooNewError || err instanceof DatabaseOpenError) {
       process.stderr.write(`dispatch-mcp: ${err.message}\n`);

@@ -1,3 +1,5 @@
+import { fileURLToPath } from "node:url";
+
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
@@ -13,7 +15,15 @@ export default defineConfig({
     // Audit writes are off by default in tests so the suite doesn't litter an
     // audit.jsonl beside the cwd DB. The dedicated audit tests opt back in by
     // pointing DISPATCH_AUDIT at a temp file and clearing this flag locally.
-    env: { DISPATCH_AUDIT_OFF: "1" },
+    // SIGNED GATE EVENTS: a test that drives the real CLI or REST server signs approvals
+    // with the factory key under ${XDG_CONFIG_HOME:-$HOME/.config}/gaffer/keys. Keep those
+    // keys out of the developer's own config, in a directory no test database lives in.
+    env: {
+      DISPATCH_AUDIT_OFF: "1",
+      XDG_CONFIG_HOME: fileURLToPath(
+        new URL("./node_modules/.cache/vitest-gate-keys", import.meta.url),
+      ),
+    },
     // The DOM tests boot the dashboard afresh per test case with a cache-busting
     // query (`import(app.js?t=…)`). Left to vite-node, every one of those is a
     // new module id, so the MAIN vitest process transforms the 800 KB bundle

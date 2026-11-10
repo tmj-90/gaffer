@@ -21,6 +21,7 @@
  */
 
 import { type Db } from "../db/connection.js";
+import { ephemeralGateKeyring, type GateKeyring } from "../events/gateSeal.js";
 import {
   type AcStatus,
   type Actor,
@@ -159,6 +160,12 @@ export interface ReviewGateServiceDeps {
    */
   readonly requireRegisteredAgentApprover?: boolean | undefined;
   /**
+   * SIGNED GATE EVENTS: seals every approval and tester PASS this service records, and
+   * verifies them before any landing is started, recorded or completed. Undefined: a
+   * process-local random key (fixtures), never accepted by another process.
+   */
+  readonly gateKeyring?: GateKeyring | undefined;
+  /**
    * Called after rejectReview parks a ticket (retry cap reached).
    * Best-effort — errors are swallowed so notifications never break callers.
    */
@@ -254,6 +261,7 @@ export class ReviewGateService {
       runnerTesterLaneFn: deps.runnerTesterLane,
       agents: deps.agents,
       requireRegisteredAgentApprover: deps.requireRegisteredAgentApprover ?? false,
+      gateKeyring: deps.gateKeyring ?? ephemeralGateKeyring(),
       onTicketParked: deps.onTicketParked,
       approvalShaResolver: deps.approvalShaResolver,
       reviewedHeadsResolver: deps.reviewedHeadsResolver,

@@ -4,6 +4,7 @@
  * constructor from ReviewGateServiceDeps; nothing outside the review gate sees it.
  */
 import type { Db } from "../../db/connection.js";
+import type { GateKeyring } from "../../events/gateSeal.js";
 import type { AcRepository } from "../../repositories/acRepository.js";
 import type { EvidenceRepository } from "../../repositories/evidenceRepository.js";
 import type { TicketRepository } from "../../repositories/ticketRepository.js";
@@ -30,6 +31,8 @@ export interface ReviewGateInternals {
   readonly runnerTesterLaneFn: ReviewGateServiceDeps["runnerTesterLane"];
   readonly agents: AgentRepository | undefined;
   readonly requireRegisteredAgentApprover: boolean;
+  /** SIGNED GATE EVENTS: seals approvals / tester PASSes; landings verify them. */
+  readonly gateKeyring: GateKeyring;
   readonly onTicketParked: ((ticket: Ticket, detail: string) => void) | undefined;
   readonly approvalShaResolver: ApprovalShaResolver | undefined;
   readonly reviewedHeadsResolver: ReviewGateServiceDeps["reviewedHeadsResolver"];

@@ -5,6 +5,7 @@ import { Command } from "commander";
 
 import { authConfigured, deriveReadToken, describeApiToken, ensureApiToken } from "./auth.js";
 import { Dispatch } from "../core.js";
+import { hostGateKeyring } from "../events/gateSeal.js";
 import { resolveDbPath } from "../util/paths.js";
 import { DEFAULT_API_PORT, assertSafeBind, createApiServer, endEventStreams } from "./server.js";
 import { refreshIsolationStatus } from "./isolation.js";
@@ -106,6 +107,8 @@ program
     const port = resolvePort(opts.port);
     const wg = Dispatch.open(dbPath, undefined, undefined, {
       requireRegisteredAgentApprover: true,
+      // SIGNED GATE EVENTS: the REST server is a trusted host entry point.
+      gateKeyring: hostGateKeyring(dbPath),
     });
     // RUN-ACTIVITY: reconcile orphaned runs left `running` by a previous API
     // process that died mid-run (its child's exit listener died with it). Any

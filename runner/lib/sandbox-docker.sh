@@ -742,6 +742,33 @@ _envs+=( -e "http_proxy=http://egress-proxy:8888" -e "https_proxy=http://egress-
 # No proxy for loopback + the docker-internal proxy hostname itself.
 _envs+=( -e "NO_PROXY=localhost,127.0.0.1,egress-proxy" -e "no_proxy=localhost,127.0.0.1,egress-proxy" )
 
+# THE FACTORY KEY (signed gate events) is never mounted: refuse a bind at, under or above
+# ${XDG_CONFIG_HOME:-$HOME/.config}/gaffer/keys (a HOME mount would carry it). Checked on
+# the final mount list, the one docker gets, in dry-run mode too. Canonical paths both ways.
+_canon_path() {  # the path with its deepest existing ancestor resolved
+  local p="$1" head rest="" d
+  head="${p%/}"
+  while [ -n "$head" ] && [ ! -d "$head" ]; do rest="/${head##*/}$rest"; head="${head%/*}"; done
+  d="$( cd "${head:-/}" 2>/dev/null && pwd -P )" || { printf '%s' "$p"; return 0; }
+  [ "$d" = / ] && d=""
+  printf '%s' "$d$rest"
+}
+_KEYS_BASE="${XDG_CONFIG_HOME:-}"; case "$_KEYS_BASE" in /*) ;; *) _KEYS_BASE="${HOME:-}/.config" ;; esac
+_KEYS_DIRS=( "$(_canon_path "$_KEYS_BASE/gaffer/keys")" )
+[ -n "${HOME:-}" ] && _KEYS_DIRS+=( "$(_canon_path "$HOME/.config/gaffer/keys")" )
+_prev=""
+for _m in ${_mounts[@]+"${_mounts[@]}"}; do
+  if [ "$_prev" = "-v" ]; then
+    _src="$(_canon_path "${_m%%:*}")"
+    [ -n "$_src" ] || _die "refusing a mount with an empty source path"
+    for _kd in "${_KEYS_DIRS[@]}"; do
+      case "$_src/" in "$_kd"/*) _die "refusing to mount $_src: it is (or is inside) the factory key directory $_kd" ;; esac
+      case "$_kd/" in "$_src"/*) _die "refusing to mount $_src: it contains the factory key directory $_kd" ;; esac
+    done
+  fi
+  _prev="$_m"
+done
+
 if [ "$_DRY_RUN" = "1" ]; then
   printf '%s\n' docker run --rm --network "$_NET_INT" \
     --cap-drop=ALL --cap-add=DAC_OVERRIDE --security-opt=no-new-privileges \

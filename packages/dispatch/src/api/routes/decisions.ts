@@ -1,7 +1,8 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import type { Dispatch } from "../../core.js";
-import { requestTicketFilter } from "../scopeGate.js";
+import { scopeDecisionList } from "../../services/accessScope.js";
+import { requestDecisionFilter } from "../scopeGate.js";
 import { errorBody, methodNotAllowed, readJsonBody, sendCreated, sendJson } from "../http.js";
 import { createDecisionBody, resolveDecisionBody } from "../schemas.js";
 import { apiActor } from "./context.js";
@@ -18,15 +19,9 @@ export async function routeDecisions(
     if (method === "GET") {
       // PRINCIPAL SCOPES: a scoped principal sees the decisions on its tickets only
       // (every ticket a decision is linked to must be visible; one with none is not).
-      const visible = requestTicketFilter(wg);
-      const all = wg.listPendingDecisions();
+      // The one decision rule (services/accessScope.ts decisionInScope).
       sendJson(res, 200, {
-        decisions: visible
-          ? all.filter((d) => {
-              const ids = wg.decisionTicketIds(d.id);
-              return ids.length > 0 && ids.every(visible);
-            })
-          : all,
+        decisions: scopeDecisionList(wg.listPendingDecisions(), requestDecisionFilter(wg)),
       });
       return;
     }

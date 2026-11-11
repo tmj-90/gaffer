@@ -259,15 +259,15 @@ export function routeReadModels(
     // (a decision with no ticket, and the factory-wide lore drafts, are outside it).
     const visible = requestTicketFilter(wg);
     if (visible) {
-      // A decision shows only when every ticket it is linked to is in scope, the rule
-      // GET /decisions applies (its Answer would otherwise be refused).
+      // A decision shows only when the one decision rule lets it (every ticket it is
+      // linked to in scope, as GET /decisions; its Answer would otherwise be refused).
+      const decisionVisible = wg.decisionVisibility(visible);
       q.items = q.items.filter(
         (i) =>
           i.ticket !== null &&
           visible(i.ticket.id) &&
           (i.kind !== "decision" ||
-            !i.decisionId ||
-            wg.decisionTicketIds(i.decisionId).every(visible)),
+            (i.decisionId !== null && (decisionVisible?.(i.decisionId) ?? true))),
       );
       q.counts = recount(q.items);
       sendJson(res, 200, q);

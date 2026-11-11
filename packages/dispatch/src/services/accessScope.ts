@@ -220,3 +220,66 @@ export function hideOutOfScopeDependencies<
     visible(d.depends_on_ticket_id) ? d : { ...d, title: null, outside_scope: true as const },
   );
 }
+
+/**
+ * DECISION VISIBILITY: THE rule for whether a holder may read a decision. A decision is
+ * readable only when EVERY ticket it is linked to (blocks or informs) is one the holder
+ * may read; a decision linked to no ticket is factory-wide, so a scoped holder never
+ * reads it. `ticketVisible` is the holder's ticket filter; null (unscoped) reads all.
+ *
+ * Every surface asks this one function: the direct routes (GET /decisions/:id,
+ * GET /decisions), and every nested place a decision's content can reach a reader (a
+ * ticket's detail, its claimability, the human queue, the factory MCP mount, the CLI
+ * acting as a principal). What a holder may not read still shows where it BLOCKS the
+ * holder's ticket, as {@link OUTSIDE_SCOPE_DECISION}; the policy itself always counts
+ * every decision (a hidden decision still blocks).
+ */
+export function decisionInScope(
+  linkedTicketIds: readonly string[],
+  ticketVisible: ((ticketId: string) => boolean) | null,
+): boolean {
+  if (!ticketVisible) return true;
+  return linkedTicketIds.length > 0 && linkedTicketIds.every((id) => ticketVisible(id));
+}
+
+/**
+ * A blocking decision the holder may not read, as it sees it: the fact that a decision
+ * outside its scope blocks the ticket, and nothing else (no id to look it up by, no
+ * title, question, options, answer or linked tickets). Same shape as a dependency
+ * outside the scope (`title: null, outside_scope: true`).
+ */
+export interface OutsideScopeDecision {
+  readonly id: null;
+  readonly title: null;
+  readonly outside_scope: true;
+}
+export const OUTSIDE_SCOPE_DECISION: OutsideScopeDecision = Object.freeze({
+  id: null,
+  title: null,
+  outside_scope: true as const,
+});
+
+/**
+ * A ticket's BLOCKING decisions as a holder sees them: each one it may read whole, each
+ * other one as {@link OUTSIDE_SCOPE_DECISION} (so the count of blockers stays true).
+ * `decisionVisible` is the holder's decision filter (null: unscoped, list unchanged).
+ */
+export function scopeBlockingDecisions<T extends { id: string }>(
+  decisions: readonly T[],
+  decisionVisible: ((decisionId: string) => boolean) | null,
+): Array<T | OutsideScopeDecision> {
+  if (!decisionVisible) return [...decisions];
+  return decisions.map((d) => (decisionVisible(d.id) ? d : OUTSIDE_SCOPE_DECISION));
+}
+
+/**
+ * Decisions that do NOT block (resolved ones, pending lists) as a holder sees them: the
+ * ones it may read; the rest are left out (they hold nothing of the holder's back).
+ */
+export function scopeDecisionList<T extends { id: string }>(
+  decisions: readonly T[],
+  decisionVisible: ((decisionId: string) => boolean) | null,
+): T[] {
+  if (!decisionVisible) return [...decisions];
+  return decisions.filter((d) => decisionVisible(d.id));
+}

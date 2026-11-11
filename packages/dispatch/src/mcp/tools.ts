@@ -14,7 +14,11 @@ import type { Spec } from "../domain/types.js";
 import { ACCEPTANCE_PROFILES } from "../domain/acceptanceProfile.js";
 import { HOST_CAPABILITIES } from "../domain/hostCapabilities.js";
 import type { Actor } from "../domain/types.js";
-import { evaluateTicketScope } from "../services/accessScope.js";
+import {
+  evaluateTicketScope,
+  scopeBlockingDecisions,
+  scopeDecisionList,
+} from "../services/accessScope.js";
 import { DispatchError } from "../util/errors.js";
 import { toZod3Issues } from "../util/zod3Compat.js";
 
@@ -426,18 +430,49 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
     };
   };
   /**
+   * The tickets this mount is bound to (the runner's bindings, plus a draft this server
+   * created while it is still a draft): the mount's ticket scope.
+   */
+  const mountTickets = (ticket: { id: string; status: string }): string[] => {
+    const b = bindings();
+    const tickets = [b.claimed, b.scope, b.review].filter((x): x is string => Boolean(x));
+    if (draftsCreatedHere.has(ticket.id) && ticket.status === "draft") tickets.push(ticket.id);
+    return tickets;
+  };
+  /**
+   * DECISION VISIBILITY on this mount: in factory context an agent reads a decision only
+   * when every ticket it is linked to is in the mount's ticket scope (the one rule,
+   * services/accessScope.ts decisionInScope, that a scoped principal gets on REST and
+   * the CLI). Null outside the factory (and for non-agent actors): no filtering.
+   */
+  const mountDecisionFilter = (): ((decisionId: string) => boolean) | null => {
+    if (actor.type !== "agent" || !inFactoryContext()) return null;
+    const memo = new Map<string, boolean>();
+    return wg.decisionVisibility((ticketId: string): boolean => {
+      const hit = memo.get(ticketId);
+      if (hit !== undefined) return hit;
+      const t = wg.tickets.findById(ticketId);
+      const ok = t
+        ? evaluateTicketScope(
+            { tickets: mountTickets(t) },
+            { id: t.id, number: t.number, repos: [] },
+          ).allowed
+        : false;
+      memo.set(ticketId, ok);
+      return ok;
+    });
+  };
+  /**
    * Refuse an agent write to a ticket outside this mount's scope (factory only).
    * Resolves `ref` first, so an unknown ticket still reads NOT_FOUND.
    */
   const assertTicketInScope = (ref: string, tool: ToolName): void => {
     if (actor.type !== "agent" || !inFactoryContext()) return;
     const ticket = wg.resolveTicket(ref);
-    const b = bindings();
     // The mount's scope is a ticket scope (the runner's bindings, plus a draft this
     // server created while it is still a draft), decided by the same evaluation a
     // scoped principal goes through (services/accessScope.ts): one truth.
-    const tickets = [b.claimed, b.scope, b.review].filter((x): x is string => Boolean(x));
-    if (draftsCreatedHere.has(ticket.id) && ticket.status === "draft") tickets.push(ticket.id);
+    const tickets = mountTickets(ticket);
     if (
       evaluateTicketScope({ tickets }, { id: ticket.id, number: ticket.number, repos: [] }).allowed
     )
@@ -606,6 +641,7 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
       guard(() => {
         const a = z.object(toolSchemas.get_ticket).parse(args);
         const view = wg.view(a.ticket_id);
+        const decisionVisible = mountDecisionFilter();
         // WG-001: a COMPACT scope summary only (primary + counts), never the full
         // graph internals (edges, confidence, reasons) — same redaction discipline
         // as projectEvents. WG-002: the partitioned write/read/test/denied repo
@@ -672,24 +708,28 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
             text: quarantine("acceptance-criterion", ac.text),
           })),
           repositories: view.repositories,
-          blocking_decisions: view.blockingDecisions,
+          // DECISION VISIBILITY: a decision linked to a ticket outside this mount's
+          // scope shows as a generic blocker (it still blocks), and its answer is left out.
+          blocking_decisions: scopeBlockingDecisions(view.blockingDecisions, decisionVisible),
           // The human's ANSWERS: decisions linked to this ticket that were resolved
           // (accepted/rejected). Without this the answer a human gave via
           // `decisions resolve --answer` never reached the agent — the decision
           // drops out of blocking_decisions once resolved, and event payloads are
           // redacted below. Free text is enveloped: a decision's title/question may
           // have been written by an (injectable) intake agent.
-          resolved_decisions: view.resolvedDecisions.map((d) => ({
-            id: d.id,
-            relation: d.relation,
-            status: d.status,
-            severity: d.severity,
-            title: quarantine("decision-title", d.title),
-            question: quarantine("decision-question", d.question),
-            answer: quarantine("decision-answer", d.resolved_answer),
-            resolved_by: d.resolved_by,
-            resolved_at: d.resolved_at,
-          })),
+          resolved_decisions: scopeDecisionList(view.resolvedDecisions, decisionVisible).map(
+            (d) => ({
+              id: d.id,
+              relation: d.relation,
+              status: d.status,
+              severity: d.severity,
+              title: quarantine("decision-title", d.title),
+              question: quarantine("decision-question", d.question),
+              answer: quarantine("decision-answer", d.resolved_answer),
+              resolved_by: d.resolved_by,
+              resolved_at: d.resolved_at,
+            }),
+          ),
           dependencies,
           scope_summary: scope,
           work_repos: {
@@ -903,7 +943,10 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
       }),
 
     list_pending_decisions: (_args: Args): ToolResult =>
-      guard(() => ({ decisions: wg.listPendingDecisions() })),
+      // DECISION VISIBILITY: a factory mount lists only the decisions it may read.
+      guard(() => ({
+        decisions: scopeDecisionList(wg.listPendingDecisions(), mountDecisionFilter()),
+      })),
 
     request_decision: (args: Args): ToolResult =>
       guard(() => {

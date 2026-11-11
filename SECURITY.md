@@ -547,8 +547,20 @@ the shared operator token mints or revokes principals; recording a merge and reo
 done ticket are admin acts. One evaluation (`accessScope.ts`) decides every scoped
 request on REST, the CLI and the factory MCP mount: a scoped principal sees exactly the
 tickets it may change, everything factory-wide is refused (`403 SCOPE_DENIED`), and
-repository-level writes need an admin principal. With `GAFFER_PRINCIPAL_TOKEN` the CLI
+repository-level writes need an admin principal. A decision is readable only when every
+ticket it is linked to is (`decisionInScope`), on every surface that carries one: the
+decision routes, a ticket's detail and claimability, the human queue, the factory MCP
+mount and `wg ticket show`. One the holder may not read still shows where it blocks the
+holder's ticket, as `{ id: null, title: null, outside_scope: true }` with no title,
+question or answer, and the policy still counts it. With `GAFFER_PRINCIPAL_TOKEN` the CLI
 resolves the same principal and enforces the same scope.
+
+A request's credential is resolved once, before any gate, into a frozen identity that
+every later check and route reads. The shared operator is whoever presented the shared
+token (or a server with auth off), never a request whose principal went missing: a
+principal token that does not resolve is refused with 401, and a principal revoked part
+way through a request stays that principal until the request ends (the live event feed
+re-checks on every write and stops when the credential no longer resolves the same way).
 
 Claim tokens are opaque leases stored only as SHA-256 hashes. Every `work_events` row is
 hash-chained (`prev_hash`, `hash`); `dispatch events verify`, `dispatch doctor` and the

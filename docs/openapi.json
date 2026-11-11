@@ -17084,148 +17084,174 @@
           "blocking_decisions": {
             "type": "array",
             "items": {
-              "type": "object",
-              "properties": {
-                "id": {
-                  "type": "string"
-                },
-                "title": {
-                  "type": "string"
-                },
-                "question": {
-                  "type": "string"
-                },
-                "rationale": {
-                  "anyOf": [
-                    {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "id": {
                       "type": "string"
                     },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "status": {
-                  "type": "string",
-                  "enum": [
-                    "requested",
-                    "agent_proposed",
-                    "human_required",
-                    "accepted",
-                    "rejected",
-                    "superseded"
-                  ]
-                },
-                "decision_type": {
-                  "type": "string"
-                },
-                "severity": {
-                  "type": "string",
-                  "enum": [
-                    "log_only",
-                    "agent_can_choose",
-                    "human_preferred",
-                    "human_required",
-                    "security_required"
-                  ]
-                },
-                "proposed_answer": {
-                  "anyOf": [
-                    {
+                    "title": {
                       "type": "string"
                     },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "proposed_by": {
-                  "anyOf": [
-                    {
+                    "question": {
                       "type": "string"
                     },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "confidence": {
-                  "anyOf": [
-                    {
+                    "rationale": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "requested",
+                        "agent_proposed",
+                        "human_required",
+                        "accepted",
+                        "rejected",
+                        "superseded"
+                      ]
+                    },
+                    "decision_type": {
                       "type": "string"
                     },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "resolved_answer": {
-                  "anyOf": [
-                    {
+                    "severity": {
+                      "type": "string",
+                      "enum": [
+                        "log_only",
+                        "agent_can_choose",
+                        "human_preferred",
+                        "human_required",
+                        "security_required"
+                      ]
+                    },
+                    "proposed_answer": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "proposed_by": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "confidence": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "resolved_answer": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "resolved_by": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "resolved_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "memory_record_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "created_at": {
                       "type": "string"
                     },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "resolved_by": {
-                  "anyOf": [
-                    {
+                    "updated_at": {
                       "type": "string"
-                    },
-                    {
-                      "type": "null"
                     }
-                  ]
+                  },
+                  "required": [
+                    "id",
+                    "title",
+                    "question",
+                    "rationale",
+                    "status",
+                    "decision_type",
+                    "severity",
+                    "proposed_answer",
+                    "proposed_by",
+                    "confidence",
+                    "resolved_answer",
+                    "resolved_by",
+                    "resolved_at",
+                    "memory_record_id",
+                    "created_at",
+                    "updated_at"
+                  ],
+                  "description": "A decision."
                 },
-                "resolved_at": {
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
+                {
+                  "type": "object",
+                  "properties": {
+                    "id": {
                       "type": "null"
-                    }
-                  ]
-                },
-                "memory_record_id": {
-                  "anyOf": [
-                    {
-                      "type": "string"
                     },
-                    {
+                    "title": {
                       "type": "null"
+                    },
+                    "outside_scope": {
+                      "const": true
                     }
-                  ]
-                },
-                "created_at": {
-                  "type": "string"
-                },
-                "updated_at": {
-                  "type": "string"
+                  },
+                  "required": [
+                    "id",
+                    "title",
+                    "outside_scope"
+                  ],
+                  "additionalProperties": false,
+                  "description": "A blocking decision outside this credential's scope (no id or content)."
                 }
-              },
-              "required": [
-                "id",
-                "title",
-                "question",
-                "rationale",
-                "status",
-                "decision_type",
-                "severity",
-                "proposed_answer",
-                "proposed_by",
-                "confidence",
-                "resolved_answer",
-                "resolved_by",
-                "resolved_at",
-                "memory_record_id",
-                "created_at",
-                "updated_at"
-              ],
-              "description": "A decision."
-            }
+              ]
+            },
+            "description": "Open decisions blocking the ticket. One a scoped principal may not read (also linked to a ticket outside its scope) is `{ id: null, title: null, outside_scope: true }`: it still blocks."
           },
           "dependencies": {
             "type": "array",

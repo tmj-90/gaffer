@@ -193,6 +193,8 @@ waiting for Merge now, and the done lane.*
   or `wg principal create <name> --repo <name> --ticket <n>`) sees only its tickets,
   opens on the Work board, keeps the controls on its own tickets and finds every
   factory-wide control switched off. Repository-level changes need an admin principal.
+  A decision shared with a ticket outside its scope shows on its ticket only as "A
+  decision outside this token's scope" (it still blocks), never its question.
 - **Who the CLI is.** `wg whoami` says who writes are recorded as: `$USER`, asserted,
   without a token; with `GAFFER_PRINCIPAL_TOKEN=<token>`, `wg`, `gaffer approve` and
   `gaffer merge` act as that principal, its read-only flag and scope enforced as on the

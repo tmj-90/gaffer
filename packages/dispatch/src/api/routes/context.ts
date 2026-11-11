@@ -3,6 +3,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { Dispatch } from "../../core.js";
 import type { Actor } from "../../domain/types.js";
 import type { PrincipalView } from "../../repositories/principalRepository.js";
+import type { RequestAuth } from "../auth.js";
 import type { MemoryReader } from "../memoryReader.js";
 import type { MergeRunner } from "../mergeRunner.js";
 import type { OnboardRunner } from "../onboard.js";
@@ -19,25 +20,33 @@ import { DispatchError } from "../../util/errors.js";
 export const API_ACTOR: Actor = { type: "human", id: "dispatch-api" };
 
 /**
- * PER-PRINCIPAL CREDENTIALS: the request-scoped actor. The dispatcher resolves the
- * bearer credential once (server.ts) and runs the route under {@link runWithActor};
- * every route reads {@link apiActor} so an event or evidence row it writes names
- * the principal that acted. Outside a request (tests calling a route directly)
- * it falls back to {@link API_ACTOR}.
+ * PER-PRINCIPAL CREDENTIALS: the request-scoped identity. The dispatcher resolves the
+ * bearer credential ONCE (server.ts, auth.ts `resolveRequestAuth`) and runs the route
+ * under {@link runWithAuth}; every later decision in the request reads that frozen
+ * context ({@link apiAuth}, {@link apiActor}, {@link apiPrincipal},
+ * {@link isSharedOperator}) and never looks the credential up again. Outside a request
+ * (tests or internal callers invoking a route directly) there is no credential at all
+ * and the operator's {@link API_ACTOR} applies.
  */
 interface RequestContext {
-  actor: Actor;
-  /** The principal the request authenticated as (null: the shared token). */
-  principal: PrincipalView | null;
+  readonly auth: RequestAuth;
+  readonly actor: Actor;
 }
 const requestContext = new AsyncLocalStorage<RequestContext>();
 
-export function runWithActor<T>(
-  actor: Actor,
-  fn: () => Promise<T>,
-  principal: PrincipalView | null = null,
-): Promise<T> {
-  return requestContext.run({ actor, principal }, fn);
+/** Run `fn` as the request whose credential resolved to `auth` (server.ts, once). */
+export function runWithAuth<T>(auth: RequestAuth, fn: () => Promise<T>): Promise<T> {
+  if (auth.via === "principal" && !auth.principal) {
+    // Unreachable by construction (auth.ts); refuse rather than widen if it ever is.
+    throw new DispatchError("UNAUTHORIZED", "The credential's principal could not be resolved.");
+  }
+  const actor = auth.principal ? auth.principal.actor : API_ACTOR;
+  return requestContext.run(Object.freeze({ auth, actor }), fn);
+}
+
+/** The identity this request authenticated with, or null outside any request. */
+export function apiAuth(): RequestAuth | null {
+  return requestContext.getStore()?.auth ?? null;
 }
 
 export function apiActor(): Actor {
@@ -46,17 +55,19 @@ export function apiActor(): Actor {
 
 /** The principal this request authenticated as, or null (the shared token, or no request). */
 export function apiPrincipal(): PrincipalView | null {
-  return requestContext.getStore()?.principal ?? null;
+  return requestContext.getStore()?.auth.principal?.principal ?? null;
 }
 
 /**
- * True when the request runs as the shared operator token (or outside any request), not
- * as a named principal. Decided by identity, not by id: a principal whose actor id
- * happens to be the operator's ("dispatch-api") is still that principal.
+ * True when the request runs as the shared operator token (or auth is disabled, or
+ * outside any request), not as a named principal. Decided by HOW the request
+ * authenticated, never by a principal being absent: a request that authenticated with a
+ * principal token is that principal for its whole life, and one whose principal token
+ * did not resolve never got here (401).
  */
 export function isSharedOperator(): boolean {
-  const a = requestContext.getStore()?.actor;
-  return a === undefined || a === API_ACTOR;
+  const ctx = requestContext.getStore();
+  return ctx === undefined || ctx.auth.via !== "principal";
 }
 
 /**

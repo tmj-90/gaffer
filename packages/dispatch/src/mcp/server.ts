@@ -92,7 +92,9 @@ export const TOOL_DESCRIPTIONS: Record<keyof typeof toolSchemas, string> = {
     "claim to load the ACs you must satisfy, and again before submitting to " +
     "confirm every required AC has evidence. A non-empty `blocking_decisions` " +
     "list means the ticket is gated on a human/product call — do not try to " +
-    "work around it; resolve or wait on the decision. `resolved_decisions` " +
+    "work around it; resolve or wait on the decision. An entry with " +
+    "`outside_scope: true` (no id or title) is a decision also linked to a ticket " +
+    "outside this mount's scope: it still blocks. `resolved_decisions` " +
     "carries each linked decision a human has already answered (its `answer`) — " +
     "build to that answer. `review_comments` carries the human reviewer's " +
     "comments (a `must_fix` one that is `open` is a requirement your next " +
@@ -175,7 +177,8 @@ export const TOOL_DESCRIPTIONS: Record<keyof typeof toolSchemas, string> = {
     "whether the question you're about to ask has already been asked (don't " +
     "duplicate it). Read-only. An empty list means nothing is pending — it is " +
     "NOT a licence to make a human-required call yourself; if you need a " +
-    "decision that isn't here, raise it with `request_decision`.",
+    "decision that isn't here, raise it with `request_decision`. In the factory " +
+    "it lists only decisions whose every ticket is in this mount's scope.",
   request_decision:
     "**Escalate a real decision to a human — a product, architectural, or " +
     "security question that is not yours to answer.** Provide a clear `title` " +

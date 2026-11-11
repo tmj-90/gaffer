@@ -5,9 +5,13 @@ import {
   type AccessAction,
   type AccessScope,
   OPERATOR_ACCESS,
+  OUTSIDE_SCOPE_DECISION,
   authorizeAccess,
+  decisionInScope,
   evaluateRepoScope,
   evaluateTicketScope,
+  scopeBlockingDecisions,
+  scopeDecisionList,
 } from "../src/services/accessScope.js";
 
 /**
@@ -167,5 +171,30 @@ describe("authorizeAccess: every combination", () => {
     });
     expect(authorizeAccess(ro, actions.readInA as AccessAction).allowed).toBe(true);
     expect(authorizeAccess(ro, actions.readInB as AccessAction).allowed).toBe(false);
+  });
+});
+
+describe("decision visibility: the one rule", () => {
+  const onlyA = (id: string) => id === "A";
+  it("every linked ticket must be visible; none linked is factory-wide; unscoped reads all", () => {
+    expect(decisionInScope(["A"], onlyA)).toBe(true);
+    expect(decisionInScope(["A", "B"], onlyA)).toBe(false);
+    expect(decisionInScope(["B"], onlyA)).toBe(false);
+    expect(decisionInScope([], onlyA)).toBe(false);
+    expect(decisionInScope(["A", "B"], null)).toBe(true);
+    expect(decisionInScope([], null)).toBe(true);
+  });
+  it("a blocker it may not read becomes the bare marker; a non-blocking one is left out", () => {
+    const own = { id: "d1", title: "own" };
+    const shared = { id: "d2", title: "shared" };
+    const visible = (id: string) => id === "d1";
+    expect(scopeBlockingDecisions([own, shared], visible)).toEqual([
+      own,
+      { id: null, title: null, outside_scope: true },
+    ]);
+    expect(scopeBlockingDecisions([own, shared], visible)[1]).toBe(OUTSIDE_SCOPE_DECISION);
+    expect(scopeDecisionList([own, shared], visible)).toEqual([own]);
+    expect(scopeBlockingDecisions([own, shared], null)).toEqual([own, shared]);
+    expect(scopeDecisionList([own, shared], null)).toEqual([own, shared]);
   });
 });

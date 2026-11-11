@@ -1,3 +1,4 @@
+import { scopeBlockingDecisions } from "./accessScope.js";
 import { type Db, inTransaction } from "../db/connection.js";
 import {
   addAcInput,
@@ -783,7 +784,10 @@ export class TicketService {
    * Report whether a ticket passes its policy pack's readiness gate (WG-004) AND
    * is dependency-clear (EP-001), WITHOUT mutating it.
    */
-  claimability(ticketRef: string): ClaimabilityResult {
+  claimability(
+    ticketRef: string,
+    decisionVisible: ((decisionId: string) => boolean) | null = null,
+  ): ClaimabilityResult {
     const ticket = this.resolveTicket(ticketRef);
 
     const unsatisfied = this.ticketDependencies.unsatisfiedDependencies(ticket.id);
@@ -801,13 +805,18 @@ export class TicketService {
 
     // cli-wg/F-12: an open blocking decision keeps a ticket out of every claim (the
     // candidate scan skips it whatever its pack), so it is a blocker here too.
+    // DECISION VISIBILITY: every blocking decision counts; one the reader may not read
+    // (services/accessScope.ts decisionInScope) is named generically, never by title.
     const decisions = this.decisions.blockingForTicket(ticket.id);
     if (decisions.length > 0) {
+      const names = scopeBlockingDecisions(decisions, decisionVisible).map((d) =>
+        d.title === null ? "a decision outside this credential's scope" : d.title,
+      );
       dependencyBlockers.push({
         code: "DECISION_BLOCKED",
-        message: `Waiting on ${decisions.length === 1 ? "a decision" : `${decisions.length} decisions`}: ${decisions
-          .map((d) => d.title)
-          .join("; ")} (answer it: gaffer wg decisions resolve <id>).`,
+        message: `Waiting on ${decisions.length === 1 ? "a decision" : `${decisions.length} decisions`}: ${names.join(
+          "; ",
+        )} (answer it: gaffer wg decisions resolve <id>).`,
       });
     }
 

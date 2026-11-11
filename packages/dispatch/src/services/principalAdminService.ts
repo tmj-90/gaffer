@@ -24,6 +24,7 @@ import {
   type AccessAction,
   type ScopeTicket,
   authorizeAccess,
+  decisionInScope,
   describeDenial,
   isScoped,
   evaluateTicketScope,
@@ -239,6 +240,31 @@ export function decisionTicketIds(host: PrincipalAdminHost, decisionId: string):
       .prepare("SELECT DISTINCT ticket_id FROM ticket_decisions WHERE decision_id = ?")
       .all(decisionId) as Array<{ ticket_id: string }>
   ).map((r) => r.ticket_id);
+}
+
+/**
+ * DECISION VISIBILITY for a holder whose ticket filter is `ticketVisible`: a predicate
+ * on a decision id, true when the holder may read that decision (the one rule,
+ * {@link decisionInScope}). Null when the holder is unscoped (no filtering). An unknown
+ * decision is not visible.
+ */
+export function decisionVisibility(
+  host: PrincipalAdminHost,
+  ticketVisible: ((ticketId: string) => boolean) | null,
+): ((decisionId: string) => boolean) | null {
+  if (!ticketVisible) return null;
+  const memo = new Map<string, boolean>();
+  const linked = host.db.prepare(
+    "SELECT DISTINCT ticket_id FROM ticket_decisions WHERE decision_id = ?",
+  );
+  return (decisionId: string): boolean => {
+    const hit = memo.get(decisionId);
+    if (hit !== undefined) return hit;
+    const ids = (linked.all(decisionId) as Array<{ ticket_id: string }>).map((r) => r.ticket_id);
+    const ok = decisionInScope(ids, ticketVisible);
+    memo.set(decisionId, ok);
+    return ok;
+  };
 }
 
 /**

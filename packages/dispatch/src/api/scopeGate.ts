@@ -2,7 +2,7 @@ import type { IncomingMessage } from "node:http";
 
 import type { Dispatch } from "../core.js";
 import type { PrincipalView } from "../repositories/principalRepository.js";
-import { type AccessAction, isScoped } from "../services/accessScope.js";
+import { type AccessAction, decisionInScope, isScoped } from "../services/accessScope.js";
 import { principalScope } from "../services/principalService.js";
 import { readJsonBody } from "./http.js";
 import { apiPrincipal } from "./routes/context.js";
@@ -35,7 +35,10 @@ import { apiPrincipal } from "./routes/context.js";
  *   - `/tickets`, `/tickets/details`, `/api/board`, `/api/human-queue`, `/claims`,
  *     `/decisions`, `/api/events/stream`  → filtered to its tickets by the route;
  *   - `/scope/repos?all=1`                → filtered to the repos it reaches by the route;
- *   - `/decisions/:id`                    → a read of its ticket(s);
+ *   - `/decisions/:id`                    → a read of every ticket it is linked to (the
+ *                                           one decision rule, accessScope.ts
+ *                                           decisionInScope, which nested responses
+ *                                           apply too: ticket detail, claimability...);
  *   - `/api/whoami`, `/api/squad`, `/api/club`, `/api/openapi.json`, `/repositories`,
  *     `/agents`                           → no ticket content: open;
  *   - everything else                     → a factory-wide read (refused).
@@ -79,7 +82,7 @@ export async function authorizePrincipalRequest(
         break;
       case "decisions":
         if (second === undefined) return;
-        if (segments.length === 2) return decision(wg, second, "read_ticket", check);
+        if (segments.length === 2) return decision(wg, principal, second, "read_ticket", check);
         break;
       case "repositories":
       case "agents":
@@ -176,7 +179,7 @@ export async function authorizePrincipalRequest(
         if (typeof body.ticket_id === "string") return ticket(body.ticket_id, "write_ticket");
         return check({ kind: "write_factory" });
       }
-      return decision(wg, second, "write_ticket", check);
+      return decision(wg, principal, second, "write_ticket", check);
     }
     case "repos": {
       if (second === "onboard") return check({ kind: "write_repo" });
@@ -201,17 +204,26 @@ function repoId(wg: Dispatch, ref: string): string {
   return (wg.repos.findById(ref) ?? wg.repos.findByName(ref))?.id ?? ref;
 }
 
-/** A decision's tickets: every linked ticket must pass; none linked ⇒ factory-wide. */
+/**
+ * A decision's tickets: every linked ticket must pass; none linked ⇒ factory-wide. A
+ * READ asks the one decision-visibility rule ({@link decisionInScope}, which every
+ * nested response asks too); the per-ticket checks then name the ticket that put it
+ * outside the scope in the refusal.
+ */
 function decision(
   wg: Dispatch,
+  principal: PrincipalView,
   decisionId: string,
   kind: "read_ticket" | "write_ticket",
   check: (a: AccessAction) => void,
 ): void {
   const ids = wg.decisionTicketIds(decisionId);
+  if (kind === "read_ticket" && decisionInScope(ids, wg.ticketVisibility(principal))) return;
   if (ids.length === 0)
     return check({ kind: kind === "read_ticket" ? "read_factory" : "write_factory" });
   for (const id of ids) check({ kind, ticket: wg.scopeTicket(id) });
+  // Not readable by the rule, yet every ticket check passed: refuse all the same.
+  if (kind === "read_ticket") check({ kind: "read_factory" });
 }
 
 /**
@@ -221,6 +233,15 @@ function decision(
 export function requestTicketFilter(wg: Dispatch): ((ticketId: string) => boolean) | null {
   const p = apiPrincipal();
   return p ? wg.ticketVisibility(p) : null;
+}
+
+/**
+ * The decision filter for the current request: null when the caller is not a scoped
+ * principal, else true for each decision it may read (the one rule, applied to its
+ * ticket filter). Every route that returns a decision's content applies it.
+ */
+export function requestDecisionFilter(wg: Dispatch): ((decisionId: string) => boolean) | null {
+  return wg.decisionVisibility(requestTicketFilter(wg));
 }
 
 /**

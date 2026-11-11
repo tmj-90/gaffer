@@ -12,7 +12,7 @@ import {
 import { readIdleLoops, resolveCrewConfigPath, writeIdleLoops } from "../idleLoops.js";
 import { LORE_ID_RE, type MemoryReader } from "../memoryReader.js";
 import { buildOpenApiDocument } from "../openapi/spec.js";
-import { isAdminRequest, requestCapability, requestPrincipal } from "../auth.js";
+import { adminAuth, resolveRequestAuth } from "../auth.js";
 import { DispatchError, notFound } from "../../util/errors.js";
 import {
   autonomyPolicyBody,
@@ -26,7 +26,7 @@ import {
 } from "../schemas.js";
 import { isolationStatusForRequest } from "../isolation.js";
 import { listSettings, readSecretSetting, settingProblems, writeSettings } from "../settings.js";
-import { apiActor, apiPrincipal } from "./context.js";
+import { apiActor, apiAuth, apiPrincipal, isSharedOperator } from "./context.js";
 import { forgetLoreDrafts, forgetLoreStatus, routeReadModels } from "./readModels.js";
 
 /**
@@ -96,7 +96,9 @@ export async function routeApi(
   // GET /api/settings; a read token or a human principal gets 403 here.
   if (segments.length === 4 && segments[1] === "settings" && segments[2] === "secret") {
     if (method !== "GET") return methodNotAllowed(res);
-    if (!isAdminRequest(req)) {
+    // The request's identity as resolved once (server.ts); outside a request, the operator.
+    const auth = apiAuth();
+    if (auth !== null && !adminAuth(auth)) {
       throw new DispatchError(
         "ACTOR_NOT_PERMITTED",
         "Only an admin principal may read a secret setting back; others see whether it is configured and its host.",
@@ -125,13 +127,13 @@ export async function routeApi(
   // its writes are attributed to, and the principal (null for the shared token).
   if (segments.length === 2 && segments[1] === "whoami") {
     if (method !== "GET") return methodNotAllowed(res);
-    const p = requestPrincipal(req);
+    const p = apiPrincipal();
     sendJson(res, 200, {
-      capability: requestCapability(req) ?? "full",
+      capability: apiAuth()?.capability ?? "full",
       actor: apiActor(),
-      principal: p ? { id: p.principal.id, name: p.principal.name } : null,
+      principal: p ? { id: p.id, name: p.name } : null,
       // PRINCIPAL SCOPES: the repos and tickets this credential may reach (null: all).
-      scope: p ? p.principal.scope : null,
+      scope: p ? p.scope : null,
     });
     return;
   }
@@ -490,9 +492,19 @@ function streamEvents(wg: Dispatch, url: URL, req: IncomingMessage, res: ServerR
   // A named frame tells the client why, so it does not read it as a network blip.
   // PRINCIPAL SCOPES: a scoped principal's feed carries only the events of its tickets
   // (the cursor still moves past the rest, so nothing is replayed).
+  // The re-check may only narrow: the feed goes on while the credential still resolves
+  // the way it did at open (same kind, same principal), and stops otherwise.
   const principal = apiPrincipal();
+  const opened = apiAuth();
   const stillAuthorised = (): boolean => {
-    if (requestCapability(req) !== null) return true;
+    const now = resolveRequestAuth(req);
+    if (
+      now.capability !== null &&
+      (opened === null ||
+        (now.via === opened.via && now.principal?.principal.id === opened.principal?.principal.id))
+    ) {
+      return true;
+    }
     if (!res.writableEnded) res.write("event: auth_revoked\ndata: {}\n\n");
     stop();
     return false;
@@ -534,8 +546,10 @@ function streamEvents(wg: Dispatch, url: URL, req: IncomingMessage, res: ServerR
  * with auth disabled — no principal resolves then) may mint or revoke principals.
  * Writes the 403 and returns true when the caller authenticated with a principal.
  */
-function refuseIfPrincipal(req: IncomingMessage, res: ServerResponse): boolean {
-  if (requestPrincipal(req) === null) return false;
+function refuseIfPrincipal(_req: IncomingMessage, res: ServerResponse): boolean {
+  // The request's identity as resolved once: a principal token stays a principal, even
+  // if a later lookup would no longer find it (which used to read as the operator).
+  if (isSharedOperator()) return false;
   sendJson(
     res,
     403,

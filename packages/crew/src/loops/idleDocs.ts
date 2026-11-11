@@ -5,11 +5,11 @@ import {
   applyScanFinding,
   finalizeScan,
   repoCandidates,
-  safeRead,
   shouldSkipForReadyTickets,
   type IdleScanOutcome,
 } from "./idleScans.js";
 import type { IdleLoopDeps } from "./idleLoop.js";
+import { OutsideRepositoryError, readRepoText } from "../safety/repoBoundary.js";
 import { resolveMinDeliveredTickets, type RepoConfig } from "../config/schema.js";
 
 const LOOP = "documentation";
@@ -44,14 +44,29 @@ function readmeCommands(readme: string): string[] {
  */
 export function scanDocs(repo: RepoConfig, root: string): DocFinding[] {
   const findings: DocFinding[] = [];
-  const readmePath = README_CANDIDATES.map((n) => join(root, n)).find((p) => existsSync(p));
+  const readmeName = README_CANDIDATES.find((n) => existsSync(join(root, n)));
 
-  if (!readmePath) {
+  if (!readmeName) {
     findings.push({ kind: "missing_readme", detail: "No README.md found at the repo root." });
     return findings;
   }
 
-  const readme = safeRead(readmePath);
+  // Only a README that resolves INSIDE the repository is read (a README linked to another
+  // file in the repo is fine): its commands are quoted into a draft ticket, and a link to a
+  // file outside would quote the operator's other files there.
+  let readme: string;
+  try {
+    readme = readRepoText(root, readmeName);
+  } catch (err) {
+    const outside = err instanceof OutsideRepositoryError;
+    findings.push({
+      kind: "missing_readme",
+      detail: outside
+        ? `${readmeName} resolves outside the repository, so it was not read.`
+        : `${readmeName} could not be read.`,
+    });
+    return findings;
+  }
   if (!SETUP_HEADING_RE.test(readme)) {
     findings.push({
       kind: "missing_setup",

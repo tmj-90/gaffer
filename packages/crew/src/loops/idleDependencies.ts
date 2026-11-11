@@ -5,12 +5,12 @@ import {
   applyScanFinding,
   finalizeScan,
   repoCandidates,
-  safeRead,
   shouldSkipForReadyTickets,
   type IdleScanOutcome,
 } from "./idleScans.js";
 import { idleHostExecRefused, type IdleLoopDeps } from "./idleLoop.js";
 import { resolveMinDeliveredTickets, type RepoConfig } from "../config/schema.js";
+import { readRepoText } from "../safety/repoBoundary.js";
 
 const LOOP = "dependency_hygiene";
 
@@ -114,7 +114,15 @@ export function scanDependencies(
   const findings: DependencyFinding[] = [];
   const pkgPath = join(root, "package.json");
   if (existsSync(pkgPath)) {
-    findings.push(...scanPackageJson(safeRead(pkgPath)));
+    // Only a package.json inside the repository: its names and ranges are quoted into a
+    // draft ticket, and a committed link could point at a file outside it.
+    let text: string;
+    try {
+      text = readRepoText(root, "package.json");
+    } catch {
+      text = "";
+    }
+    if (text) findings.push(...scanPackageJson(text));
   }
 
   const auditCommand = deps.config.loops.idle_dependencies.audit_command;

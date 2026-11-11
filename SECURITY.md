@@ -173,7 +173,10 @@ link either. A refusal names the path and the fix (`unsafe_worktree_path`): a de
 or bootstrap is parked `blocked` with that reason code and no agent is launched (a
 resumed delivery goes back to `paused`, keeping its worktree and uncommitted work), the
 review pass holds the ticket, and the clarify pass, the tester and the merge-conflict
-resolver refuse to start. A `node_modules` link whose parent is a symlink is skipped
+resolver refuse to start. Reads follow the same rule where the runner copies a
+repository-named file somewhere an agent or a ticket can read it: the tester's clean replay
+reads the tester's test files through `safeReadFile` (a link fails the replay), and the
+idle maintenance scans never follow a link out of the repository. A `node_modules` link whose parent is a symlink is skipped
 and logged. Trusting a workspace neutralises a committed `.claude/settings.local.json`
 the same way, and refuses when `.claude` is a symlink or the file cannot be replaced (a
 directory there); that refusal parks or holds the ticket like the others. The rendered settings are

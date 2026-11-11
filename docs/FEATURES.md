@@ -449,7 +449,12 @@ human-gated knowledge the factory works from:
   stamp and the caveat that it is a map to verify against the code. Onboarding reads
   only files inside the repository and strips credentials from remote URLs.
 - **Feature ledger**: what is backlog, building and shipped per repo, so the factory
-  knows what already exists before it proposes building it again.
+  knows what already exists before it proposes building it again. A feature is marked
+  shipped only when every ticket of it has landed: every ticket carrying its
+  `Feature-Id:` line, every other member of their epic and the epic's acceptance ticket
+  (`wg epic feature-status <id>` lists them; a cancelled ticket is not waited for). A
+  landing that cannot read Dispatch or memory ships nothing, and an idle tick ships a
+  feature whose last ticket landed while memory was unreachable.
 - **File cards**: one per source file (path, symbols, content hash, a short summary),
   used to choose what to read before a ticket. After every merge they are brought in
   line with the merged commit, renames included, and checked against it before memory

@@ -34,18 +34,22 @@
  *   APPLY (merge, deterministic, NO agent): on a CLEAN merge bin/merge-ticket.mjs
  *   reads the ticket's evidence (`wg ticket show`), finds the LAST
  *   GAFFER_DIGEST_DELTA_V1 payload, and replays it as plain CLI writes — stamping
- *   each digest section with `source: "merge:#<n>"` and advancing/adding the
- *   feature to `shipped`. No model is spawned in the merge hot path.
+ *   each digest section with `source: "merge:#<n>"`. No model is spawned in the merge
+ *   hot path.
  *
  *   FALLBACK: a merge with NO prepared delta (e.g. an older delivery) still does a
- *   MINIMAL deterministic update — stamp the repo digest freshness with
- *   `source: "merge:#<n>"` and advance/add the linked feature to `shipped`. Still
- *   no agent.
+ *   MINIMAL deterministic update: stamp the repo digest freshness with
+ *   `source: "merge:#<n>"`. Still no agent.
  *
- * IDEMPOTENCE: every write carries `--source merge:#<n>` (digest) or is an
- * advance to a terminal status (feature). A re-run merge re-stamps the same
- * source and re-asserts `shipped` — a no-op, never a double-apply. `advance_feature`
- * to a status the feature already holds is expected to be a no-op on the memory side.
+ *   FEATURE: the feature the ticket belongs to (its `Feature-Id:` line, its epic's, or
+ *   the feature a prepared delta names) is advanced to `shipped` only on the landing
+ *   after which EVERY ticket of the feature has landed (external review 17; see
+ *   featureStatusArgs below and shipFeatureIfLanded in bin/merge-ticket.mjs). The digest
+ *   step above still runs on every merge.
+ *
+ * IDEMPOTENCE: every digest write carries `--source merge:#<n>`; a feature already
+ * shipped is never advanced again (memory refuses shipped -> shipped, and the merge
+ * reports it as already shipped).
  *
  * Every function here is PURE (argv/string builders + a parser). The actual spawn,
  * the try/catch, and the gating live in the caller (merge-ticket.mjs), mirroring
@@ -277,6 +281,82 @@ export function featureIdFromView(view) {
   const desc = String(view?.ticket?.description ?? view?.description ?? "");
   const m = /^\s*Feature-Id:\s*(\S+)\s*$/im.exec(desc);
   return m ? m[1] : null;
+}
+
+/**
+ * A FEATURE SHIPS WHEN ALL ITS WORK HAS LANDED (external review 17, finding 3).
+ *
+ * Every ticket of a feature epic carries the same `Feature-Id:` line, so shipping on the
+ * merge of any one of them shipped the feature when its FIRST ticket landed. The merge
+ * now asks Dispatch which tickets make up the feature and ships only when all of them
+ * have landed (`wg epic feature-status`, services/featureLanding.ts in dispatch: the
+ * tickets carrying the marker, plus every confirmed member of their epics and each
+ * epic's own acceptance ticket; a cancelled ticket is listed but not counted).
+ *
+ * The argv for that read: the feature by id, and/or the ticket that just landed (alone,
+ * Dispatch resolves the feature from the ticket: its own marker, else its epic's, which
+ * is how the epic's acceptance ticket, which carries no marker, reaches its feature).
+ */
+export function featureStatusArgs({ featureId, ticketNumber } = {}) {
+  const id = String(featureId ?? "").trim();
+  const n = String(ticketNumber ?? "").trim();
+  return ["epic", "feature-status", ...(id ? [id] : []), ...(n ? ["--ticket", n] : [])];
+}
+
+/**
+ * Parse `wg epic feature-status` output. Null (FAIL CLOSED: the caller ships nothing)
+ * unless it is the expected shape: an object whose `complete` is a boolean and whose
+ * `tickets` is an array. `complete` is true only when Dispatch said exactly `true`.
+ */
+export function parseFeatureLanding(stdout) {
+  let obj;
+  try {
+    obj = JSON.parse(String(stdout ?? ""));
+  } catch {
+    return null;
+  }
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return null;
+  if (typeof obj.complete !== "boolean" || !Array.isArray(obj.tickets)) return null;
+  const featureId =
+    typeof obj.feature_id === "string" && obj.feature_id.trim() ? obj.feature_id.trim() : null;
+  return {
+    featureId,
+    complete: obj.complete === true && featureId !== null,
+    reason: String(obj.reason ?? ""),
+    pending: Array.isArray(obj.pending) ? obj.pending : [],
+    tickets: obj.tickets,
+  };
+}
+
+/**
+ * Parse the memory CLI's `features ... --json` listing into `[{id, repo, name, status}]`,
+ * or null when it is not a JSON array (the caller treats that as memory unreadable).
+ */
+export function parseFeatureRows(stdout) {
+  let rows;
+  try {
+    rows = JSON.parse(String(stdout ?? ""));
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(rows)) return null;
+  return rows
+    .filter((r) => r && typeof r === "object" && typeof r.id === "string" && r.id.trim())
+    .map((r) => ({
+      id: r.id,
+      repo: String(r.repo ?? ""),
+      name: String(r.name ?? ""),
+      status: String(r.status ?? ""),
+    }));
+}
+
+/** The memory-CLI job that ships a feature whose every ticket landed. Pure. */
+export function buildFeatureAdvanceCommand(featureId) {
+  return {
+    kind: "feature-advance",
+    command: MEMORY_CLI,
+    args: ["feature", "advance", String(featureId ?? "").trim(), "--to", FEATURE_STATUS.SHIPPED],
+  };
 }
 
 /**

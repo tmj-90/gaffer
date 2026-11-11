@@ -56,6 +56,8 @@
 //   --timeout-ms N       (GAFFER_MERGE_TIMEOUT_MS, default 600000) resolver kill-timer.
 //   --apply-digest-only  the merge already landed (review.sh AFK path): skip git + claude
 //                        and run only the post-merge memory step (digest + feature).
+//   --reconcile-features ship every `building` feature whose tickets have all landed (the
+//                        idle pass, lib/tick-idle.sh); needs no --ticket.
 //   --dry-run            do NOT spawn claude or mutate git; print the planned merge
 //                        target + resolver claude argv as JSON (the test seam).
 //   --lock-hold / --lock-release --owner-pid <pid>
@@ -74,6 +76,14 @@
 //                When it FAILS, `applied:false` + `error` are carried here AND a
 //                prominent WARNING is logged (R-3), so a stale digest / a feature
 //                stuck at `building` is VISIBLE rather than silently swallowed.
+//                `digest.feature` is the feature decision: { id, decision: shipped |
+//                held | already_shipped | added_shipped | ship_failed, reason } (null:
+//                the ticket belongs to no feature). A feature ships only on the landing
+//                after which every ticket of it has landed (external review 17).
+//   features-reconciled (--reconcile-features):
+//              { "phase":"features-reconciled", ok, checked, shipped:[id…], held }
+//              — every `building` feature whose tickets all landed is shipped (exit 0;
+//                2 when Dispatch or memory could not be read).
 //   partially_merged:
 //              { "phase":"partially_merged", ticket, landed:[repo…], pending:[repo…], error }
 //              (exit 4) — PER-REPOSITORY LANDING: a multi-repo ticket lands one merge per
@@ -149,8 +159,12 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   buildApplyCommands,
+  buildFeatureAdvanceCommand,
   buildFeatureShippedCommands,
   buildMinimalDigestStamp,
+  featureStatusArgs,
+  parseFeatureLanding,
+  parseFeatureRows,
   selectPreparedDelta,
   featureIdFromView,
 } from "../lib/feature-digest.mjs";
@@ -281,6 +295,11 @@ function parseArgs(argv) {
         break;
       case "--owner-pid":
         opts.ownerPid = parseInt(next() ?? "", 10) || 0;
+        break;
+      case "--reconcile-features":
+        // RE-EVALUATION (external review 17): ship every building feature whose tickets
+        // have all landed (lib/tick-idle.sh runs it on an idle tick). No --ticket.
+        opts.reconcileFeatures = true;
         break;
       case "--apply-digest-only":
         // The merge ALREADY landed elsewhere (the runner's unattended AFK merge in
@@ -2158,16 +2177,20 @@ export function readTicketView(ticketNumber) {
  *
  *   1. read the ticket's prepared evidence (best-effort);
  *   2. if a GAFFER_DIGEST_DELTA_V1 payload is present → replay its section deltas
- *      (source=merge:#<n>) + ship the feature it names;
+ *      (source=merge:#<n>);
  *   3. else (no prepared delta) → MINIMAL fallback: stamp the digest freshness
- *      (source=merge:#<n>) + advance/add the linked feature → shipped.
+ *      (source=merge:#<n>);
+ *   4. the FEATURE the ticket belongs to ships only when every ticket of it has landed
+ *      (shipFeatureIfLanded, external review 17): the per-ticket digest update above
+ *      runs on every merge, the feature write only on the landing that completes it.
  *
  * Every memory-CLI write is run best-effort: a non-zero exit (or a memory product
  * that hasn't shipped the `digest`/`feature` write verbs yet) is LOGGED, never
  * fatal — mirroring signalReapproval / the usage-ledger discipline. The merge has
  * already landed; nothing here can un-land it or fail it. Idempotent: re-running
- * re-stamps the same source and re-asserts `shipped` (a no-op). Returns a summary
- * `{ applied, prepared, jobs:[{kind, ok}] }` for the emitted JSON + the tests.
+ * re-stamps the same source; a feature already shipped is never advanced again.
+ * Returns `{ applied, prepared, jobs:[{kind, ok}], feature }` for the emitted JSON +
+ * the tests (`feature`: the shipping decision, null when the ticket has no feature).
  *
  * GATED on GAFFER_DIGEST_DISABLE=1 (an explicit off-switch); a thrown error anywhere
  * is swallowed and reported as `{ applied:false, error }`.
@@ -2179,45 +2202,220 @@ export function applyDigestAndFeature({ ticketNumber, repo, featureId } = {}) {
   try {
     const view = readTicketView(ticketNumber);
     const delta = selectPreparedDelta(view);
-    // The ticket's own `Feature-Id:` line (stamped on every feature-epic ticket) is the
-    // authoritative ledger row to advance; an explicit featureId still wins.
-    if (!String(featureId ?? "").trim()) featureId = featureIdFromView(view) ?? undefined;
-    let jobs;
-    if (delta) {
-      jobs = buildApplyCommands(delta, { ticketNumber, repo, featureId });
-    } else {
-      // Minimal deterministic fallback: stamp freshness + ship the linked feature
-      // (only emits a feature job when an id is known — never invents one).
-      jobs = [
-        buildMinimalDigestStamp({ ticketNumber, repo }),
-        ...buildFeatureShippedCommands({ ticketNumber, repo, featureId }),
-      ];
-    }
-    const ran = [];
-    for (const job of jobs) {
-      let ok = false;
-      try {
-        // Digest + feature jobs target the MEMORY CLI (see lib/feature-digest.mjs):
-        // job.command is MEMORY_CLI ("lg"), run via runMemoryCli (DB through env).
-        const res = runMemoryCli(job.args);
-        ok = !res.error && res.status === 0;
-        if (!ok) {
-          log(
-            `digest/feature write skipped (\`${job.command} ${job.args.join(" ")}\` exit ` +
-              `${res.status ?? "spawn-error"}) — memory not updated for this job; merge unaffected`,
-          );
-        }
-      } catch (e) {
-        log(`digest/feature write threw (${e?.message ?? e}) — swallowed; merge unaffected`);
-      }
-      ran.push({ kind: job.kind, ok });
-    }
-    return { applied: true, prepared: Boolean(delta), jobs: ran };
+    // The digest half only: the feature note a delta carries goes through the same
+    // landing rule as a Feature-Id (shipFeatureIfLanded), never straight to shipped.
+    const jobs = delta
+      ? buildApplyCommands({ ...delta, feature: undefined }, { ticketNumber, repo })
+      : [buildMinimalDigestStamp({ ticketNumber, repo })];
+    const ran = runMemoryJobs(jobs);
+    const feature = shipFeatureIfLanded({ ticketNumber, repo, featureId, view, delta });
+    ran.push(...feature.ran);
+    return { applied: true, prepared: Boolean(delta), jobs: ran, feature: feature.decision };
   } catch (e) {
     // A failure to even read/build must NEVER fail the merge.
     log(`digest/feature apply aborted (${e?.message ?? e}) — swallowed; merge already landed`);
     return { applied: false, prepared: false, error: String(e?.message ?? e), jobs: [] };
   }
+}
+
+/** Run memory-CLI jobs in order, best-effort; `[{kind, ok}]`. */
+function runMemoryJobs(jobs) {
+  const ran = [];
+  for (const job of jobs) {
+    let ok = false;
+    try {
+      // Digest + feature jobs target the MEMORY CLI (see lib/feature-digest.mjs):
+      // job.command is MEMORY_CLI ("lg"), run via runMemoryCli (DB through env).
+      const res = runMemoryCli(job.args);
+      ok = !res.error && res.status === 0;
+      if (!ok) {
+        log(
+          `digest/feature write skipped (\`${job.command} ${job.args.join(" ")}\` exit ` +
+            `${res.status ?? "spawn-error"}) — memory not updated for this job; merge unaffected`,
+        );
+      }
+    } catch (e) {
+      log(`digest/feature write threw (${e?.message ?? e}) — swallowed; merge unaffected`);
+    }
+    ran.push({ kind: job.kind, ok });
+  }
+  return ran;
+}
+
+/** Ask Dispatch for a feature's tickets and whether they all landed; null if unreadable. */
+function readFeatureLanding({ featureId, ticketNumber }) {
+  const res = runDispatch(featureStatusArgs({ featureId, ticketNumber }));
+  if (res.error || res.status !== 0) return null;
+  return parseFeatureLanding(res.stdout);
+}
+
+/** The memory CLI's feature rows (`features <repo> --json` / `features --all --json`). */
+function readFeatureRows(args) {
+  const res = runMemoryCli(args);
+  if (res.error || res.status !== 0) return null;
+  return parseFeatureRows(res.stdout);
+}
+
+/**
+ * Ship a feature (advance it to `shipped`) and report what happened. A refusal with exit
+ * 2 is memory's illegal_transition, which for a move to `shipped` means it is already
+ * shipped (another landing shipped it first): reported as such, never as a failure.
+ */
+function shipFeature(id, reason) {
+  const job = buildFeatureAdvanceCommand(id);
+  let res;
+  try {
+    res = runMemoryCli(job.args);
+  } catch (e) {
+    res = { error: e };
+  }
+  if (!res.error && res.status === 0) {
+    log(`feature ${id}: shipped (${reason})`);
+    return { ran: [{ kind: job.kind, ok: true }], decision: { id, decision: "shipped", reason } };
+  }
+  if (!res.error && res.status === 2) {
+    return {
+      ran: [{ kind: job.kind, ok: true }],
+      decision: { id, decision: "already_shipped", reason },
+    };
+  }
+  // Memory could not be written: the feature stays `building`, and the next landing or
+  // the idle re-evaluation pass (--reconcile-features) ships it.
+  log(
+    `feature ${id}: every ticket landed but the ship was not recorded (memory exit ` +
+      `${res.status ?? "spawn-error"}); it stays building until the next landing or idle pass re-evaluates it`,
+  );
+  return {
+    ran: [{ kind: job.kind, ok: false }],
+    decision: { id, decision: "ship_failed", reason },
+  };
+}
+
+/**
+ * FEATURE SHIPS WHEN ALL ITS WORK HAS LANDED (external review 17, finding 3). The one
+ * decision every landing path reaches (the dashboard / `gaffer merge`, local or PR mode,
+ * the AFK and merge-lane landing through --apply-digest-only, the `already_merged`
+ * re-run) and the idle re-evaluation pass shares:
+ *
+ *   - which feature: the explicit id, else the ticket's own `Feature-Id:` line, else the
+ *     feature Dispatch resolves for the ticket (its epic's: an epic's acceptance ticket
+ *     carries no marker). A prepared delta that names a feature with no id: the existing
+ *     ledger row by that name (repo + name, as addFeature dedupes), counted with this
+ *     ticket as one of its tickets; a name the ledger does not know yet is a feature this
+ *     one ticket built, recorded as shipped (it has no other work to wait for).
+ *   - ship only when Dispatch says every counted ticket of it is done (`complete`).
+ *   - FAIL CLOSED: Dispatch or memory unreadable, an unexpected answer, or a ticket in
+ *     epics that name two features → nothing shipped, logged; the next landing or the
+ *     idle pass re-evaluates.
+ *
+ * Returns `{ ran:[{kind, ok}], decision }` (decision null: the ticket has no feature).
+ */
+export function shipFeatureIfLanded({ ticketNumber, repo, featureId, view, delta } = {}) {
+  const held = (id, reason) => {
+    log(`feature ${id ?? "?"}: not shipped on the landing of #${ticketNumber}: ${reason}`);
+    return { ran: [], decision: { id, decision: "held", reason } };
+  };
+  const note =
+    delta?.feature && typeof delta.feature === "object" && String(delta.feature.name ?? "").trim()
+      ? delta.feature
+      : null;
+  let id = String(featureId ?? "").trim() || featureIdFromView(view) || "";
+  if (!id) {
+    const own = readFeatureLanding({ ticketNumber });
+    if (!own) return held(null, "Dispatch could not say which feature the ticket belongs to");
+    if (own.featureId) {
+      return own.complete
+        ? shipFeature(own.featureId, own.reason)
+        : held(own.featureId, own.reason);
+    }
+    if (!note) return { ran: [], decision: null };
+    // A prepared delta names the feature by name (the delivery agent knew no id).
+    const featureRepo = String(note.repo || repo || "").trim();
+    const name = String(note.name).trim().toLowerCase();
+    const rows = readFeatureRows(["features", featureRepo, "--json"]);
+    if (!rows) return held(null, `memory could not list the features of ${featureRepo}`);
+    const existing = rows.find((r) => r.name.trim().toLowerCase() === name);
+    if (!existing) {
+      const jobs = buildFeatureShippedCommands({ ticketNumber, repo, feature: note });
+      const ran = runMemoryJobs(jobs);
+      return {
+        ran,
+        decision: {
+          id: null,
+          name: note.name,
+          decision: ran.every((j) => j.ok) ? "added_shipped" : "ship_failed",
+          reason: "a feature the ledger did not know, built by this ticket alone",
+        },
+      };
+    }
+    if (existing.status === "shipped") {
+      return {
+        ran: [],
+        decision: { id: existing.id, decision: "already_shipped", reason: "already shipped" },
+      };
+    }
+    id = existing.id;
+  }
+  const landing = readFeatureLanding({ featureId: id, ticketNumber });
+  if (!landing) return held(id, "Dispatch could not list the feature's tickets");
+  return landing.complete ? shipFeature(id, landing.reason) : held(id, landing.reason);
+}
+
+/**
+ * `gaffer merge <n>` on a ticket that already landed re-evaluates its feature: the
+ * landing that completed the feature may have found memory unreachable. The same
+ * decision as any landing; nothing on a dry run or with GAFFER_DIGEST_DISABLE=1.
+ */
+function featureOnRerun(ticketNumber, dryRun) {
+  if (dryRun || process.env.GAFFER_DIGEST_DISABLE === "1") return null;
+  try {
+    return shipFeatureIfLanded({ ticketNumber, view: readTicketView(ticketNumber) }).decision;
+  } catch (e) {
+    log(`feature re-evaluation for #${ticketNumber} failed (${e?.message ?? e})`);
+    return null;
+  }
+}
+
+/**
+ * RE-EVALUATION (external review 17): ship every `building` feature whose tickets have
+ * all landed. A feature whose last ticket landed while memory (or Dispatch) could not be
+ * read is not shipped on that landing (fail closed); this pass, run on an idle tick
+ * (lib/tick-idle.sh) and by `merge-ticket.mjs --reconcile-features`, ships it then.
+ * Read-only unless a feature is complete. Returns `{ ok, checked, shipped, held, error? }`.
+ */
+export function reconcileFeatures() {
+  if (process.env.GAFFER_DIGEST_DISABLE === "1") {
+    return { ok: true, checked: 0, shipped: [], held: 0, skipped: "GAFFER_DIGEST_DISABLE=1" };
+  }
+  // No memory database yet: nothing can be building (and opening one would create it).
+  if (!existsSync(CONFIG.memoryDb)) {
+    return { ok: true, checked: 0, shipped: [], held: 0, skipped: "no memory database" };
+  }
+  const rows = readFeatureRows(["features", "--all", "--status", "building", "--json"]);
+  if (!rows) return { ok: false, checked: 0, shipped: [], held: 0, error: "memory unreadable" };
+  const shipped = [];
+  let held = 0;
+  let unreadable = 0;
+  for (const f of rows) {
+    const landing = readFeatureLanding({ featureId: f.id });
+    if (!landing) {
+      unreadable += 1;
+      continue;
+    }
+    if (!landing.complete) {
+      held += 1;
+      continue;
+    }
+    const out = shipFeature(f.id, landing.reason);
+    if (out.decision.decision === "shipped") shipped.push(f.id);
+  }
+  return {
+    ok: unreadable === 0,
+    checked: rows.length,
+    shipped,
+    held,
+    ...(unreadable ? { error: `Dispatch unreadable for ${unreadable} feature(s)` } : {}),
+  };
 }
 
 /**
@@ -2243,7 +2441,11 @@ export function formatDigestApplyLog(digest, ticketNumber) {
       level: "info",
       message:
         `digest/feature: ${digest.prepared ? "applied prepared delta" : "minimal stamp (no prepared delta)"} ` +
-        `for #${ticketNumber} [${jobs}]`,
+        `for #${ticketNumber} [${jobs}]` +
+        (digest.feature
+          ? `; feature ${digest.feature.id ?? digest.feature.name ?? "?"}: ${digest.feature.decision}` +
+            (digest.feature.decision === "held" ? ` (${digest.feature.reason})` : "")
+          : ""),
     };
   }
   if (digest.skipped) {
@@ -3219,6 +3421,14 @@ function landSecondaryRepos(ticketNumber, primaryRepoId, approval = null) {
 function main() {
   const opts = parseArgs(process.argv.slice(2));
 
+  if (opts.reconcileFeatures) {
+    const r = reconcileFeatures();
+    if (r.shipped.length > 0) log(`features shipped on re-evaluation: ${r.shipped.join(", ")}`);
+    if (!r.ok) log(`feature re-evaluation incomplete: ${r.error}`);
+    emit({ phase: "features-reconciled", ...r }, r.ok ? 0 : 2);
+    return;
+  }
+
   if (!String(opts.ticket).trim()) {
     fail("--ticket <number> is required (the approved ticket whose branch is being merged)");
     return;
@@ -3266,7 +3476,8 @@ function main() {
     }
     if (st.status === "done") {
       log(notLandableReason(opts.ticket, "done"));
-      emit({ phase: "already_merged", ticket: Number(opts.ticket) }, 0);
+      const feature = featureOnRerun(Number(opts.ticket), opts.dryRun);
+      emit({ phase: "already_merged", ticket: Number(opts.ticket), feature }, 0);
       return;
     }
     if (st.status !== "ready_for_merge") {
@@ -3291,7 +3502,8 @@ function main() {
   const notApproved = notLandableReason(resolved.number, resolved.status);
   if (!landable && resolved.status === "done" && !opts.dryRun && !opts.applyDigestOnly) {
     log(notApproved);
-    emit({ phase: "already_merged", ticket: resolved.number }, 0);
+    const feature = featureOnRerun(resolved.number, opts.dryRun);
+    emit({ phase: "already_merged", ticket: resolved.number, feature }, 0);
     return;
   }
   if (!landable && (!opts.dryRun || opts.applyDigestOnly)) {

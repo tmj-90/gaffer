@@ -17,6 +17,25 @@ _gaffer_idle_decompose_script() {
   return 0
 }
 
+# FEATURE RE-EVALUATION (external review 17). A feature ships only on the landing that
+# completes it (bin/merge-ticket.mjs shipFeatureIfLanded), and that landing ships nothing
+# when Dispatch or memory cannot be read (fail closed). So a feature whose last ticket
+# landed while memory was unreachable would stay `building` for good: on every idle pass
+# this asks Dispatch about each `building` feature and ships the ones whose tickets have
+# all landed. No model call; quiet unless it ships something or cannot read. Skipped on a
+# dry run and with GAFFER_DIGEST_DISABLE=1 (the switch for all post-merge memory work).
+_gaffer_idle_feature_reconcile() {
+  [ "${DRY_RUN:-0}" = "1" ] && return 0
+  [ "${GAFFER_DIGEST_DISABLE:-0}" = "1" ] && return 0
+  [ -f "$HERE/bin/merge-ticket.mjs" ] || return 0
+  _FR_OUT="$(node "$HERE/bin/merge-ticket.mjs" --reconcile-features 2>>"$GAFFER_DATA/merge-digest.log" </dev/null)"
+  _FR_RC=$?
+  _FR_SHIPPED="$(printf '%s' "$_FR_OUT" | jget '((d && d.shipped) || []).join(" ")' 2>/dev/null || true)"
+  [ -n "$_FR_SHIPPED" ] && log "feature ledger: shipped $_FR_SHIPPED (every ticket landed; re-evaluated on an idle pass)"
+  [ "$_FR_RC" -ne 0 ] && log "feature ledger: the idle re-evaluation could not read Dispatch or memory (rc=$_FR_RC); building features are re-evaluated on the next idle pass (see merge-digest.log)"
+  return 0
+}
+
 # The feature-backlog planner (sets _FB_RAN, _FB_SPENT, _FB_LATER). Moved verbatim from tick.sh; called from tick.sh.
 _gaffer_idle_feature_backlog() {
 # ── Idle feature backlog ── the Settings "Feature backlog" toggle

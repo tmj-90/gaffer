@@ -24,6 +24,7 @@ import type { Database } from "better-sqlite3";
 
 import type { Boundary, BoundaryRole, BoundaryRow, BoundaryStatus } from "../db/types.js";
 import { newLoreId } from "./ids.js";
+import { inWriteTx } from "./writeTx.js";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -125,68 +126,75 @@ function upsertBoundary(
     );
   }
   const ts = nowIso();
-  const existing = db
-    .prepare("SELECT * FROM boundaries WHERE repo = ? AND contract = ? AND role = ?")
-    .get(repo, contract, input.role) as BoundaryRow | undefined;
+  // The trust gate below reads the edge's status; the read and the write are ONE write
+  // transaction, so an agent re-declaration that read `draft` can never overwrite an
+  // edge a human approved in between (external review 17, same shape as the feature
+  // ledger's stale transitions).
+  const boundaryId = inWriteTx(db, (): string => {
+    const existing = db
+      .prepare("SELECT * FROM boundaries WHERE repo = ? AND contract = ? AND role = ?")
+      .get(repo, contract, input.role) as BoundaryRow | undefined;
 
-  if (existing) {
-    // Trust gate: the agent/draft path can only refresh a still-draft
-    // edge. If the existing edge has already been ratified or retired by
-    // a human, an agent re-declaration must NOT mutate it — return it
-    // untouched. Without this an agent could overwrite the source/detail
-    // of a human-approved edge while it stays active, bypassing review.
-    if (status === "draft" && existing.status !== "draft") {
-      return getBoundary(db, existing.id)!;
-    }
-    // A human re-asserting an edge can promote a draft to active; an
-    // agent re-declaration of a draft keeps it a draft.
-    const nextStatus =
-      status === "active" && existing.status === "draft" ? "active" : existing.status;
-    db.prepare(
-      `UPDATE boundaries SET
+    if (existing) {
+      // Trust gate: the agent/draft path can only refresh a still-draft
+      // edge. If the existing edge has already been ratified or retired by
+      // a human, an agent re-declaration must NOT mutate it — return it
+      // untouched. Without this an agent could overwrite the source/detail
+      // of a human-approved edge while it stays active, bypassing review.
+      if (status === "draft" && existing.status !== "draft") {
+        return existing.id;
+      }
+      // A human re-asserting an edge can promote a draft to active; an
+      // agent re-declaration of a draft keeps it a draft.
+      const nextStatus =
+        status === "active" && existing.status === "draft" ? "active" : existing.status;
+      db.prepare(
+        `UPDATE boundaries SET
          kind = ?, detail = ?, source = ?, author = ?,
          status = ?, updated_at = ?
        WHERE id = ?`,
-    ).run(
-      input.kind ?? existing.kind,
-      input.detail ?? existing.detail,
-      input.source ?? existing.source,
-      input.author ?? existing.author,
-      nextStatus,
-      ts,
-      existing.id,
-    );
-    db.prepare(
-      "INSERT INTO events (lore_id, kind, ts, payload) VALUES (?, 'boundary_updated', ?, ?)",
-    ).run(existing.id, ts, JSON.stringify({ repo, contract, role: input.role }));
-    return getBoundary(db, existing.id)!;
-  }
+      ).run(
+        input.kind ?? existing.kind,
+        input.detail ?? existing.detail,
+        input.source ?? existing.source,
+        input.author ?? existing.author,
+        nextStatus,
+        ts,
+        existing.id,
+      );
+      db.prepare(
+        "INSERT INTO events (lore_id, kind, ts, payload) VALUES (?, 'boundary_updated', ?, ?)",
+      ).run(existing.id, ts, JSON.stringify({ repo, contract, role: input.role }));
+      return existing.id;
+    }
 
-  const id = newLoreId();
-  db.prepare(
-    `INSERT INTO boundaries
+    const id = newLoreId();
+    db.prepare(
+      `INSERT INTO boundaries
        (id, repo, contract, role, kind, status, detail, source, author, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    id,
-    repo,
-    contract,
-    input.role,
-    input.kind ?? null,
-    status,
-    input.detail ?? null,
-    input.source ?? null,
-    input.author ?? null,
-    ts,
-    ts,
-  );
-  db.prepare("INSERT INTO events (lore_id, kind, ts, payload) VALUES (?, ?, ?, ?)").run(
-    id,
-    status === "draft" ? "boundary_suggested" : "boundary_declared",
-    ts,
-    JSON.stringify({ repo, contract, role: input.role }),
-  );
-  return getBoundary(db, id)!;
+    ).run(
+      id,
+      repo,
+      contract,
+      input.role,
+      input.kind ?? null,
+      status,
+      input.detail ?? null,
+      input.source ?? null,
+      input.author ?? null,
+      ts,
+      ts,
+    );
+    db.prepare("INSERT INTO events (lore_id, kind, ts, payload) VALUES (?, ?, ?, ?)").run(
+      id,
+      status === "draft" ? "boundary_suggested" : "boundary_declared",
+      ts,
+      JSON.stringify({ repo, contract, role: input.role }),
+    );
+    return id;
+  });
+  return getBoundary(db, boundaryId)!;
 }
 
 /** Human-declared edge. Lands `active` — visible in the default map. */
@@ -208,45 +216,54 @@ export function getBoundary(db: Database, id: string): Boundary | null {
 /** Promote a draft edge → active. Null on unknown id / non-draft. */
 export function approveBoundary(db: Database, id: string): Boundary | null {
   const ts = nowIso();
-  const r = db
-    .prepare(
-      "UPDATE boundaries SET status = 'active', updated_at = ? WHERE id = ? AND status = 'draft'",
-    )
-    .run(ts, id);
-  if (r.changes === 0) return null;
-  db.prepare("INSERT INTO events (lore_id, kind, ts) VALUES (?, 'boundary_approved', ?)").run(
-    id,
-    ts,
-  );
-  return getBoundary(db, id);
+  // The conditional UPDATE is the check; its event commits with it.
+  const moved = inWriteTx(db, (): boolean => {
+    const r = db
+      .prepare(
+        "UPDATE boundaries SET status = 'active', updated_at = ? WHERE id = ? AND status = 'draft'",
+      )
+      .run(ts, id);
+    if (r.changes === 0) return false;
+    db.prepare("INSERT INTO events (lore_id, kind, ts) VALUES (?, 'boundary_approved', ?)").run(
+      id,
+      ts,
+    );
+    return true;
+  });
+  return moved ? getBoundary(db, id) : null;
 }
 
 /** Drop a draft edge entirely. Refuses non-drafts (use deprecate). */
 export function rejectBoundary(db: Database, id: string): boolean {
   const ts = nowIso();
-  const row = db.prepare("SELECT status FROM boundaries WHERE id = ?").get(id) as
-    { status: BoundaryStatus } | undefined;
-  if (!row || row.status !== "draft") return false;
-  db.prepare("DELETE FROM boundaries WHERE id = ?").run(id);
-  db.prepare("INSERT INTO events (lore_id, kind, ts) VALUES (?, 'boundary_rejected', ?)").run(
-    id,
-    ts,
-  );
-  return true;
+  // Delete only while it is still a draft, in one write transaction with its event:
+  // checked first and deleted after, an edge approved meanwhile was dropped.
+  return inWriteTx(db, (): boolean => {
+    const r = db.prepare("DELETE FROM boundaries WHERE id = ? AND status = 'draft'").run(id);
+    if (r.changes === 0) return false;
+    db.prepare("INSERT INTO events (lore_id, kind, ts) VALUES (?, 'boundary_rejected', ?)").run(
+      id,
+      ts,
+    );
+    return true;
+  });
 }
 
 /** Mark an edge deprecated — kept for history, hidden from the default map. */
 export function deprecateBoundary(db: Database, id: string): Boundary | null {
   const ts = nowIso();
-  const r = db
-    .prepare("UPDATE boundaries SET status = 'deprecated', updated_at = ? WHERE id = ?")
-    .run(ts, id);
-  if (r.changes === 0) return null;
-  db.prepare("INSERT INTO events (lore_id, kind, ts) VALUES (?, 'boundary_deprecated', ?)").run(
-    id,
-    ts,
-  );
-  return getBoundary(db, id);
+  const moved = inWriteTx(db, (): boolean => {
+    const r = db
+      .prepare("UPDATE boundaries SET status = 'deprecated', updated_at = ? WHERE id = ?")
+      .run(ts, id);
+    if (r.changes === 0) return false;
+    db.prepare("INSERT INTO events (lore_id, kind, ts) VALUES (?, 'boundary_deprecated', ?)").run(
+      id,
+      ts,
+    );
+    return true;
+  });
+  return moved ? getBoundary(db, id) : null;
 }
 
 export interface ListBoundariesOptions {

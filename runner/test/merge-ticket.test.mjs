@@ -1415,6 +1415,11 @@ console.log("== B9: --apply-digest-only → digest/feature apply with no git mut
       "if (real[0] === 'ticket' && real[1] === 'show') {",
       `  process.stdout.write(readFileSync(${JSON.stringify(VIEW)}, 'utf8')); process.exit(0);`,
       "}",
+      // Dispatch's answer for the feature (external review 17): every ticket landed.
+      "if (real[0] === 'epic' && real[1] === 'feature-status') {",
+      "  process.stdout.write(JSON.stringify({ feature_id: real[2], complete: true, tickets: [], reason: 'stub' }));",
+      "  process.exit(0);",
+      "}",
       "process.exit(0);",
     ].join("\n"),
   );

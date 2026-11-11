@@ -24,6 +24,7 @@ import {
 import type { Embedder } from "./embedding.js";
 import { newLoreId } from "./ids.js";
 import { MIN_MATCH_FROM, denseQueryText, queryTerms, toFtsMatch } from "./queryTokens.js";
+import { inWriteTx } from "./writeTx.js";
 
 const LORE_KIND_SET = new Set<string>(LORE_KINDS);
 
@@ -835,23 +836,33 @@ function recordRead(db: Database, ids: ReadonlyArray<string>, via: "search" | "g
 /** Promote draft → active. Returns null on unknown id or non-draft status. */
 export function approveLore(db: Database, id: string): Lore | null {
   const ts = nowIso();
-  const r = db
-    .prepare("UPDATE lore SET status = 'active', updated_at = ? WHERE id = ? AND status = 'draft'")
-    .run(ts, id);
-  if (r.changes === 0) return null;
-  db.prepare("INSERT INTO events (lore_id, kind, ts) VALUES (?, 'approved', ?)").run(id, ts);
-  return getLore(db, id, { recordRead: false });
+  // The conditional UPDATE is the check; the event row commits with it (one write
+  // transaction), so an approval is never recorded without its audit event.
+  const moved = inWriteTx(db, (): boolean => {
+    const r = db
+      .prepare(
+        "UPDATE lore SET status = 'active', updated_at = ? WHERE id = ? AND status = 'draft'",
+      )
+      .run(ts, id);
+    if (r.changes === 0) return false;
+    db.prepare("INSERT INTO events (lore_id, kind, ts) VALUES (?, 'approved', ?)").run(id, ts);
+    return true;
+  });
+  return moved ? getLore(db, id, { recordRead: false }) : null;
 }
 
 /** Mark deprecated — stays findable only with `includeDeprecated`. */
 export function deprecateLore(db: Database, id: string): Lore | null {
   const ts = nowIso();
-  const r = db
-    .prepare("UPDATE lore SET status = 'deprecated', updated_at = ? WHERE id = ?")
-    .run(ts, id);
-  if (r.changes === 0) return null;
-  db.prepare("INSERT INTO events (lore_id, kind, ts) VALUES (?, 'deprecated', ?)").run(id, ts);
-  return getLore(db, id, { recordRead: false });
+  const moved = inWriteTx(db, (): boolean => {
+    const r = db
+      .prepare("UPDATE lore SET status = 'deprecated', updated_at = ? WHERE id = ?")
+      .run(ts, id);
+    if (r.changes === 0) return false;
+    db.prepare("INSERT INTO events (lore_id, kind, ts) VALUES (?, 'deprecated', ?)").run(id, ts);
+    return true;
+  });
+  return moved ? getLore(db, id, { recordRead: false }) : null;
 }
 
 /** Thrown inside the supersede transaction to roll back an `approveReplacement`. */
@@ -899,33 +910,36 @@ export function supersedeLore(
   opts: { approveReplacement?: boolean } = {},
 ): Lore | null {
   const ts = nowIso();
-  const done = db.transaction((): boolean => {
-    if (opts.approveReplacement) {
-      const r = db
-        .prepare(
-          "UPDATE lore SET status = 'active', updated_at = ? WHERE id = ? AND status = 'draft'",
-        )
-        .run(ts, newId);
-      if (r.changes > 0) {
-        db.prepare("INSERT INTO events (lore_id, kind, ts) VALUES (?, 'approved', ?)").run(
-          newId,
-          ts,
-        );
+  // IMMEDIATE: the refusal check below reads both rows; with the write lock taken at
+  // BEGIN no concurrent status move can land between that check and the write.
+  const done = (): boolean =>
+    inWriteTx(db, (): boolean => {
+      if (opts.approveReplacement) {
+        const r = db
+          .prepare(
+            "UPDATE lore SET status = 'active', updated_at = ? WHERE id = ? AND status = 'draft'",
+          )
+          .run(ts, newId);
+        if (r.changes > 0) {
+          db.prepare("INSERT INTO events (lore_id, kind, ts) VALUES (?, 'approved', ?)").run(
+            newId,
+            ts,
+          );
+        }
       }
-    }
-    if (supersedeRefusal(db, oldId, newId) !== null) {
-      // Roll back an approval made above: the supersede is all or nothing.
-      if (opts.approveReplacement) throw new SupersedeAborted();
-      return false;
-    }
-    db.prepare(
-      "UPDATE lore SET status = 'superseded', superseded_by = ?, updated_at = ? WHERE id = ?",
-    ).run(newId, ts, oldId);
-    db.prepare(
-      "INSERT INTO events (lore_id, kind, ts, payload) VALUES (?, 'superseded', ?, ?)",
-    ).run(oldId, ts, JSON.stringify({ supersededBy: newId }));
-    return true;
-  });
+      if (supersedeRefusal(db, oldId, newId) !== null) {
+        // Roll back an approval made above: the supersede is all or nothing.
+        if (opts.approveReplacement) throw new SupersedeAborted();
+        return false;
+      }
+      db.prepare(
+        "UPDATE lore SET status = 'superseded', superseded_by = ?, updated_at = ? WHERE id = ?",
+      ).run(newId, ts, oldId);
+      db.prepare(
+        "INSERT INTO events (lore_id, kind, ts, payload) VALUES (?, 'superseded', ?, ?)",
+      ).run(oldId, ts, JSON.stringify({ supersededBy: newId }));
+      return true;
+    });
   try {
     if (!done()) return null;
   } catch (err) {
@@ -944,34 +958,40 @@ export function supersedeLore(
  * still right" cases).
  */
 export function verifyLore(db: Database, id: string, nextReviewAfter?: string | null): Lore | null {
-  const current = db.prepare("SELECT review_after FROM lore WHERE id = ?").get(id) as
-    { review_after: string | null } | undefined;
-  if (!current) return null;
+  // review_after is read and rewritten in one write transaction.
+  const found = inWriteTx(db, (): boolean => {
+    const current = db.prepare("SELECT review_after FROM lore WHERE id = ?").get(id) as
+      { review_after: string | null } | undefined;
+    if (!current) return false;
 
-  const ts = nowIso();
-  let newReview: string | null = current.review_after;
-  if (nextReviewAfter === null) {
-    // Explicit "leave alone" — keep whatever's there.
-    newReview = current.review_after;
-  } else if (typeof nextReviewAfter === "string") {
-    assertIsoDate(nextReviewAfter, "nextReviewAfter");
-    newReview = nextReviewAfter;
-  } else if (isStale(current.review_after)) {
-    // Default: lapsed → forward N days. Fresh review_after is left alone.
-    const forward = new Date(Date.now() + VERIFY_DEFAULT_FORWARD_DAYS * 86_400_000);
-    newReview = forward.toISOString();
-  }
+    const ts = nowIso();
+    let newReview: string | null = current.review_after;
+    if (nextReviewAfter === null) {
+      // Explicit "leave alone" — keep whatever's there.
+      newReview = current.review_after;
+    } else if (typeof nextReviewAfter === "string") {
+      assertIsoDate(nextReviewAfter, "nextReviewAfter");
+      newReview = nextReviewAfter;
+    } else if (isStale(current.review_after)) {
+      // Default: lapsed → forward N days. Fresh review_after is left alone.
+      const forward = new Date(Date.now() + VERIFY_DEFAULT_FORWARD_DAYS * 86_400_000);
+      newReview = forward.toISOString();
+    }
 
-  const r = db
-    .prepare("UPDATE lore SET last_verified_at = ?, review_after = ?, updated_at = ? WHERE id = ?")
-    .run(ts, newReview, ts, id);
-  if (r.changes === 0) return null;
-  db.prepare("INSERT INTO events (lore_id, kind, ts, payload) VALUES (?, 'verified', ?, ?)").run(
-    id,
-    ts,
-    JSON.stringify({ reviewAfter: newReview }),
-  );
-  return getLore(db, id, { recordRead: false });
+    const r = db
+      .prepare(
+        "UPDATE lore SET last_verified_at = ?, review_after = ?, updated_at = ? WHERE id = ?",
+      )
+      .run(ts, newReview, ts, id);
+    if (r.changes === 0) return false;
+    db.prepare("INSERT INTO events (lore_id, kind, ts, payload) VALUES (?, 'verified', ?, ?)").run(
+      id,
+      ts,
+      JSON.stringify({ reviewAfter: newReview }),
+    );
+    return true;
+  });
+  return found ? getLore(db, id, { recordRead: false }) : null;
 }
 
 /**
@@ -1080,99 +1100,105 @@ export function listLoreVersions(db: Database, id: string): LoreVersion[] {
 }
 
 export function updateLore(db: Database, id: string, input: UpdateLoreInput): Lore | null {
-  const current = db.prepare("SELECT * FROM lore WHERE id = ?").get(id) as LoreRow | undefined;
-  if (!current) return null;
+  // The row the update is computed from (fallbacks, the confidence clamp, the version
+  // snapshot) is read INSIDE the write transaction: read before it, a concurrent update
+  // or status move was overwritten with stale values.
+  const found = inWriteTx(db, (): boolean => {
+    const current = db.prepare("SELECT * FROM lore WHERE id = ?").get(id) as LoreRow | undefined;
+    if (!current) return false;
 
-  assertIsoDate(input.reviewAfter === null ? undefined : input.reviewAfter, "reviewAfter");
-  assertHttpUrl(input.source, "source");
+    assertIsoDate(input.reviewAfter === null ? undefined : input.reviewAfter, "reviewAfter");
+    assertHttpUrl(input.source, "source");
 
-  // Resolve final values, falling back to current row when not provided.
-  const title = input.title ?? current.title;
-  const summary = input.summary ?? current.summary;
-  const body = input.body ?? current.body;
-  const author = input.author !== undefined ? input.author : current.author;
-  const team = input.team !== undefined ? input.team : current.team;
-  // Empty string is the explicit "clear the source" signal (since the
-  // `source: undefined` case means "no change"). NULL in storage; the
-  // confidence re-clamp will catch any high→medium fallout.
-  const source =
-    input.source === "" ? null : input.source !== undefined ? input.source : current.source;
-  const reviewAfter =
-    input.reviewAfter === null
-      ? null
-      : input.reviewAfter !== undefined
-        ? input.reviewAfter
-        : current.review_after;
-  const restricted =
-    input.restricted !== undefined ? (input.restricted ? 1 : 0) : current.restricted;
-  const kind = input.kind !== undefined ? normaliseKind(input.kind) : (current.kind ?? "other");
-  // Confidence: caller's claim, but re-clamped given (possibly new) source + current status.
-  const confidence = clampConfidence(
-    input.confidence ?? current.confidence,
-    !!source,
-    current.status,
-  );
+    // Resolve final values, falling back to current row when not provided.
+    const title = input.title ?? current.title;
+    const summary = input.summary ?? current.summary;
+    const body = input.body ?? current.body;
+    const author = input.author !== undefined ? input.author : current.author;
+    const team = input.team !== undefined ? input.team : current.team;
+    // Empty string is the explicit "clear the source" signal (since the
+    // `source: undefined` case means "no change"). NULL in storage; the
+    // confidence re-clamp will catch any high→medium fallout.
+    const source =
+      input.source === "" ? null : input.source !== undefined ? input.source : current.source;
+    const reviewAfter =
+      input.reviewAfter === null
+        ? null
+        : input.reviewAfter !== undefined
+          ? input.reviewAfter
+          : current.review_after;
+    const restricted =
+      input.restricted !== undefined ? (input.restricted ? 1 : 0) : current.restricted;
+    const kind = input.kind !== undefined ? normaliseKind(input.kind) : (current.kind ?? "other");
+    // Confidence: caller's claim, but re-clamped given (possibly new) source + current status.
+    const confidence = clampConfidence(
+      input.confidence ?? current.confidence,
+      !!source,
+      current.status,
+    );
 
-  const ts = nowIso();
-  const tx = db.transaction(() => {
-    // VERSION HISTORY: snapshot the row as it is NOW before overwriting it, so the
-    // prior text survives (version 1 == the original). See migration 012.
-    snapshotLoreVersion(db, current, ts);
-    db.prepare(
-      `UPDATE lore SET
+    const ts = nowIso();
+    const tx = db.transaction(() => {
+      // VERSION HISTORY: snapshot the row as it is NOW before overwriting it, so the
+      // prior text survives (version 1 == the original). See migration 012.
+      snapshotLoreVersion(db, current, ts);
+      db.prepare(
+        `UPDATE lore SET
         title = ?, summary = ?, body = ?,
         author = ?, team = ?, source = ?,
         review_after = ?, confidence = ?, restricted = ?,
         kind = ?, updated_at = ?
        WHERE id = ?`,
-    ).run(
-      title,
-      summary,
-      body,
-      author,
-      team,
-      source,
-      reviewAfter,
-      confidence,
-      restricted,
-      kind,
-      ts,
-      id,
-    );
-    // If any of title/summary/body changed, reindex FTS for this row.
-    if (input.title !== undefined || input.summary !== undefined || input.body !== undefined) {
-      // Need the rowid for FTS — fetch via a join since `lore.id` is a
-      // separate string id from the implicit rowid.
-      const rowid = (
-        db.prepare("SELECT rowid FROM lore WHERE id = ?").get(id) as {
-          rowid: number;
-        }
-      ).rowid;
-      db.prepare("DELETE FROM lore_fts WHERE rowid = ?").run(rowid);
-      db.prepare("INSERT INTO lore_fts(rowid, title, summary, body) VALUES (?, ?, ?, ?)").run(
-        rowid,
+      ).run(
         title,
         summary,
         body,
+        author,
+        team,
+        source,
+        reviewAfter,
+        confidence,
+        restricted,
+        kind,
+        ts,
+        id,
       );
-      refreshLoreEmbedding(db, id, title, summary);
-    }
-    if (input.repos !== undefined) {
-      const repos = Array.from(new Set(input.repos.map(normaliseRepo).filter(Boolean))).sort();
-      db.prepare("DELETE FROM lore_repos WHERE lore_id = ?").run(id);
-      const ins = db.prepare("INSERT INTO lore_repos (lore_id, repo) VALUES (?, ?)");
-      for (const r of repos) ins.run(id, r);
-    }
-    if (input.tags !== undefined) {
-      const tags = Array.from(new Set(input.tags.map(normaliseTag).filter(Boolean))).sort();
-      db.prepare("DELETE FROM lore_tags WHERE lore_id = ?").run(id);
-      const ins = db.prepare("INSERT INTO lore_tags (lore_id, tag) VALUES (?, ?)");
-      for (const t of tags) ins.run(id, t);
-    }
-    db.prepare("INSERT INTO events (lore_id, kind, ts) VALUES (?, 'updated', ?)").run(id, ts);
+      // If any of title/summary/body changed, reindex FTS for this row.
+      if (input.title !== undefined || input.summary !== undefined || input.body !== undefined) {
+        // Need the rowid for FTS — fetch via a join since `lore.id` is a
+        // separate string id from the implicit rowid.
+        const rowid = (
+          db.prepare("SELECT rowid FROM lore WHERE id = ?").get(id) as {
+            rowid: number;
+          }
+        ).rowid;
+        db.prepare("DELETE FROM lore_fts WHERE rowid = ?").run(rowid);
+        db.prepare("INSERT INTO lore_fts(rowid, title, summary, body) VALUES (?, ?, ?, ?)").run(
+          rowid,
+          title,
+          summary,
+          body,
+        );
+        refreshLoreEmbedding(db, id, title, summary);
+      }
+      if (input.repos !== undefined) {
+        const repos = Array.from(new Set(input.repos.map(normaliseRepo).filter(Boolean))).sort();
+        db.prepare("DELETE FROM lore_repos WHERE lore_id = ?").run(id);
+        const ins = db.prepare("INSERT INTO lore_repos (lore_id, repo) VALUES (?, ?)");
+        for (const r of repos) ins.run(id, r);
+      }
+      if (input.tags !== undefined) {
+        const tags = Array.from(new Set(input.tags.map(normaliseTag).filter(Boolean))).sort();
+        db.prepare("DELETE FROM lore_tags WHERE lore_id = ?").run(id);
+        const ins = db.prepare("INSERT INTO lore_tags (lore_id, tag) VALUES (?, ?)");
+        for (const t of tags) ins.run(id, t);
+      }
+      db.prepare("INSERT INTO events (lore_id, kind, ts) VALUES (?, 'updated', ?)").run(id, ts);
+    });
+    tx();
+    return true;
   });
-  tx();
-  return getLore(db, id, { recordRead: false });
+  return found ? getLore(db, id, { recordRead: false }) : null;
 }
 
 /**
@@ -1193,13 +1219,15 @@ export function updateLore(db: Database, id: string, input: UpdateLoreInput): Lo
  */
 export function rejectLore(db: Database, id: string, reason?: string): boolean {
   const ts = nowIso();
-  const row = db.prepare("SELECT rowid, status FROM lore WHERE id = ?").get(id) as
-    { rowid: number; status: LoreStatus } | undefined;
-  if (!row) return false;
-  if (row.status !== "draft") return false;
   const trimmed = reason?.trim();
   const payload = trimmed ? JSON.stringify({ reason: trimmed }) : null;
-  const tx = db.transaction(() => {
+  // The draft check and the delete are ONE write transaction: checked before it, a
+  // record approved meanwhile by another connection was hard-deleted as a "draft".
+  return inWriteTx(db, (): boolean => {
+    const row = db.prepare("SELECT rowid, status FROM lore WHERE id = ?").get(id) as
+      { rowid: number; status: LoreStatus } | undefined;
+    if (!row) return false;
+    if (row.status !== "draft") return false;
     db.prepare("DELETE FROM lore_fts WHERE rowid = ?").run(row.rowid);
     db.prepare("DELETE FROM lore WHERE id = ?").run(id);
     db.prepare("DELETE FROM lore_embeddings WHERE lore_id = ?").run(id);
@@ -1226,9 +1254,8 @@ export function rejectLore(db: Database, id: string, reason?: string): boolean {
       ts,
       payload,
     );
+    return true;
   });
-  tx();
-  return true;
 }
 
 /**
@@ -1271,10 +1298,10 @@ export function getRejectionReason(db: Database, id: string): string | undefined
 
 export function deleteLore(db: Database, id: string): boolean {
   const ts = nowIso();
-  const row = db.prepare("SELECT rowid FROM lore WHERE id = ?").get(id) as
-    { rowid: number } | undefined;
-  if (!row) return false;
-  const tx = db.transaction(() => {
+  return inWriteTx(db, (): boolean => {
+    const row = db.prepare("SELECT rowid FROM lore WHERE id = ?").get(id) as
+      { rowid: number } | undefined;
+    if (!row) return false;
     db.prepare("DELETE FROM lore_fts WHERE rowid = ?").run(row.rowid);
     db.prepare("DELETE FROM lore WHERE id = ?").run(id);
     db.prepare("DELETE FROM lore_embeddings WHERE lore_id = ?").run(id);
@@ -1282,9 +1309,8 @@ export function deleteLore(db: Database, id: string): boolean {
     // the earlier text go too (and migration 014's trigger guarantees it).
     db.prepare("DELETE FROM lore_version WHERE lore_id = ?").run(id);
     db.prepare("INSERT INTO events (lore_id, kind, ts) VALUES (?, 'deleted', ?)").run(id, ts);
+    return true;
   });
-  tx();
-  return true;
 }
 
 /**

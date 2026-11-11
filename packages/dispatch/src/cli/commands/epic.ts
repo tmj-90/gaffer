@@ -32,4 +32,27 @@ export function registerEpic(program: Command): void {
       });
       wg.db.close();
     });
+  epic
+    .command("feature-status [featureId]")
+    .description(
+      "Which tickets make up a feature of the memory ledger and whether they have all " +
+        "landed: every ticket carrying `Feature-Id: <id>`, plus every confirmed member of an " +
+        "epic holding one of them and that epic's own acceptance ticket. `complete` is true " +
+        "only when at least one counted ticket exists and every counted ticket is done; a " +
+        "cancelled (won't-do) ticket is listed but not counted. With --ticket <n> alone, the " +
+        "feature is the one that ticket belongs to (its own marker, else its epic's). Read only.",
+    )
+    .option("--ticket <ref>", "a ticket of the feature (number or id)")
+    .action(async (featureId: string | undefined, opts: { ticket?: string }, cmd) => {
+      // Loaded on use: the CLI loads no service module for help or a usage error.
+      const { featureLanding } = await import("../../services/featureLanding.js");
+      const wg = open(cmd.optsWithGlobals());
+      try {
+        printJson(
+          featureLanding(wg.db, { featureId: featureId ?? null, ticketRef: opts.ticket ?? null }),
+        );
+      } finally {
+        wg.db.close();
+      }
+    });
 }

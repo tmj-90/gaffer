@@ -19,7 +19,10 @@ It holds two kinds of knowledge:
 2. **Repo Understanding**: the *Repo Digest* (a living overview / structure /
    conventions / stack TLDR, one per repo) and the *feature ledger*
    (`backlog → building → shipped`). These are factual post-merge reflections, so
-   they apply directly (no draft gate) but keep a full audit trail. The digest is
+   they apply directly (no draft gate) but keep a full audit trail. Every ledger write
+   validates and writes in one `BEGIN IMMEDIATE` transaction, so two writers on two
+   connections cannot both claim a feature or move a shipped one backwards: the second
+   waits for the first and gets the same `illegal_transition` refusal. The digest is
    **a map, not the territory**: every digest carries the reminder to verify it
    against the actual code for high-stakes work.
 

@@ -549,11 +549,20 @@ request on REST, the CLI and the factory MCP mount: a scoped principal sees exac
 tickets it may change, everything factory-wide is refused (`403 SCOPE_DENIED`), and
 repository-level writes need an admin principal. A decision is readable only when every
 ticket it is linked to is (`decisionInScope`), on every surface that carries one: the
-decision routes, a ticket's detail and claimability, the human queue, the factory MCP
-mount and `wg ticket show`. One the holder may not read still shows where it blocks the
-holder's ticket, as `{ id: null, title: null, outside_scope: true }` with no title,
-question or answer, and the policy still counts it. With `GAFFER_PRINCIPAL_TOKEN` the CLI
-resolves the same principal and enforces the same scope.
+decision routes, a ticket's detail and claimability, the human queue and `wg ticket
+show` under `GAFFER_PRINCIPAL_TOKEN`. One the holder may not read still shows where it
+blocks the holder's ticket, as `{ id: null, title: null, outside_scope: true }` with no
+title, question or answer, and the policy still counts it. With `GAFFER_PRINCIPAL_TOKEN`
+the CLI resolves the same principal and enforces the same scope. The factory MCP mount is
+not a principal and is not held to that rule: it carries no credential, opens the factory
+database itself and reads any ticket through `get_ticket`, and the runner already puts
+the answers on the agent's ticket into its prompt, so hiding them there protected nothing
+while it cost the reviewer, tester, clarify and planning agents (whose only source is
+`get_ticket`) the answer to a decision on their own ticket. A factory agent reads every
+decision linked to a ticket its mount is bound to, whatever else it is linked to, and the
+unattached ones; a decision only on other tickets is left out of `list_pending_decisions`
+and shows on another ticket only as the generic blocker. Its writes stay bound to its
+tickets.
 
 A request's credential is resolved once, before any gate, into a frozen identity that
 every later check and route reads. The shared operator is whoever presented the shared

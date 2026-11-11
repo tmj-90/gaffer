@@ -303,55 +303,128 @@ describe("one decision-visibility rule (REST)", () => {
   });
 });
 
-describe("one decision-visibility rule (factory MCP mount)", () => {
-  it("a mount bound to A sees the shared decision only as a generic blocker", () => {
+describe("the factory MCP mount: every decision on the agent's own ticket", () => {
+  // The factory mount is not a scoped principal: it carries no credential, opens the
+  // factory database itself and reads any ticket whole through get_ticket, and the runner
+  // already hands a delivery agent each answer (`_RD`, from `wg ticket show` with no
+  // principal). Hiding a decision there protected nothing, and it starved the reviewer,
+  // tester, clarify and planning agents, whose only source is get_ticket (and _RD keeps
+  // only the last five answers). So a mount reads every decision linked to a ticket it is
+  // bound to, whatever else that decision is linked to.
+  const bindings: Array<[string, (w: World) => void]> = [
+    [
+      "delivery / clarify (GAFFER_SCOPE_TICKET)",
+      (w) => (process.env.GAFFER_SCOPE_TICKET = String(w.a.number)),
+    ],
+    [
+      "reviewer / tester (GAFFER_REVIEW_TICKET)",
+      (w) => (process.env.GAFFER_REVIEW_TICKET = String(w.a.number)),
+    ],
+  ];
+  for (const [role, bind] of bindings) {
+    it(`a ${role} mount bound to A reads the decisions shared with B whole, answers included`, () => {
+      const wg = Dispatch.open(":memory:", new TestClock());
+      const w = seed(wg);
+      // More answers than the runner's prompt carries (its last five), all shared with B.
+      const extra: string[] = [];
+      for (let i = 0; i < 6; i += 1) {
+        const d = wg.createDecision(
+          {
+            title: `OLD-${i}`,
+            question: `old ${i}?`,
+            severity: "human_required",
+            ticketId: w.a.id,
+            ticketIds: [w.b.id],
+          },
+          human,
+        );
+        wg.resolveDecision(
+          { decisionId: d.id, status: "accepted", answer: `OLD-ANSWER-${i}` },
+          human,
+        );
+        extra.push(`OLD-ANSWER-${i}`);
+      }
+      process.env.GAFFER_FACTORY = "1";
+      bind(w);
+      const h = makeHandlers(wg, mcpAgent);
+
+      const got = h.get_ticket({ ticket_id: w.a.id });
+      expect(got.isError).toBeUndefined();
+      const text = JSON.stringify(got.structuredContent);
+      const blocking = got.structuredContent.blocking_decisions as Blocking;
+      expect(blocking.map((d) => d.title).sort()).toEqual([OWN_TITLE, SHARED_TITLE].sort());
+      expect(text).not.toContain("outside_scope");
+      for (const answer of [ANSWER, ...extra]) expect(text, role).toContain(answer);
+      expect((got.structuredContent.resolved_decisions as unknown[]).length).toBe(7);
+
+      const pending = JSON.stringify(h.list_pending_decisions({}).structuredContent);
+      expect(pending).toContain(SHARED_TITLE);
+      expect(pending).toContain(OWN_TITLE);
+      wg.db.close();
+    });
+  }
+
+  it("a mount bound to A does not read a decision linked only to B; an unattached one stays open to all", () => {
     const wg = Dispatch.open(":memory:", new TestClock());
     const w = seed(wg);
+    const bOnly = wg.createDecision(
+      {
+        title: "B-ONLY-TITLE-q7",
+        question: "B-ONLY-QUESTION-q7",
+        severity: "human_required",
+        ticketId: w.b.id,
+      },
+      human,
+    );
+    wg.createDecision(
+      { title: "UNATTACHED-TITLE-q7", question: "unattached?", severity: "human_required" },
+      human,
+    );
     process.env.GAFFER_FACTORY = "1";
     process.env.GAFFER_SCOPE_TICKET = String(w.a.number);
     const h = makeHandlers(wg, mcpAgent);
 
-    const got = h.get_ticket({ ticket_id: w.a.id });
-    expect(got.isError).toBeUndefined();
-    const text = JSON.stringify(got.structuredContent);
-    expectNoRestricted(text, w, "MCP get_ticket");
-    const blocking = got.structuredContent.blocking_decisions as Blocking;
-    expect(blocking).toHaveLength(2);
-    expect(blocking.filter((d) => d.outside_scope === true)).toEqual([
-      { id: null, title: null, outside_scope: true },
-    ]);
-    expect(blocking.find((d) => d.id === w.own.id)?.title).toBe(OWN_TITLE);
-    // A restricted answer is left out (it no longer blocks anything).
-    expect(got.structuredContent.resolved_decisions).toEqual([]);
+    const pending = JSON.stringify(h.list_pending_decisions({}).structuredContent);
+    expect(pending).not.toContain("B-ONLY");
+    expect(pending).not.toContain(bOnly.id);
+    expect(pending).toContain("UNATTACHED-TITLE-q7");
+    expect(pending).toContain(SHARED_TITLE);
 
-    const pending = h.list_pending_decisions({});
-    expectNoRestricted(JSON.stringify(pending.structuredContent), w, "MCP list_pending_decisions");
-    expect((pending.structuredContent.decisions as Decision[]).map((d) => d.id)).toEqual([
-      w.own.id,
-    ]);
+    // Reading B (no write follows from it) shows the decision on A and B, and B's own one
+    // only as the generic blocker.
+    const gotB = h.get_ticket({ ticket_id: w.b.id });
+    const textB = JSON.stringify(gotB.structuredContent);
+    expect(textB).not.toContain("B-ONLY");
+    expect(textB).not.toContain(bOnly.id);
+    expect(textB).toContain(SHARED_TITLE);
+    expect(
+      (gotB.structuredContent.blocking_decisions as Blocking).filter((d) => d.outside_scope),
+    ).toEqual([{ id: null, title: null, outside_scope: true }]);
     wg.db.close();
   });
 
-  it("negative control: outside the factory, and a mount bound to A and B, read it whole", () => {
+  it("outside the factory, and for a human actor, nothing is filtered", () => {
     const wg = Dispatch.open(":memory:", new TestClock());
     const w = seed(wg);
-    for (const bind of [
-      () => undefined,
-      () => {
+    wg.createDecision(
+      { title: "B-ONLY-TITLE-q7", question: "?", severity: "human_required", ticketId: w.b.id },
+      human,
+    );
+    for (const [actor, factory] of [
+      [mcpAgent, false],
+      [human, true],
+    ] as const) {
+      if (factory) {
         process.env.GAFFER_FACTORY = "1";
         process.env.GAFFER_SCOPE_TICKET = String(w.a.number);
-        process.env.GAFFER_REVIEW_TICKET = String(w.b.number);
-      },
-    ]) {
-      bind();
-      const h = makeHandlers(wg, mcpAgent);
-      const got = h.get_ticket({ ticket_id: w.a.id });
-      const text = JSON.stringify(got.structuredContent);
-      expect(text).toContain(SHARED_TITLE);
-      expect(text).toContain(ANSWER);
-      expect(text).not.toContain("outside_scope");
-      const pending = h.list_pending_decisions({});
-      expect(JSON.stringify(pending.structuredContent)).toContain(SHARED_TITLE);
+      }
+      const h = makeHandlers(wg, actor);
+      expect(JSON.stringify(h.list_pending_decisions({}).structuredContent)).toContain(
+        "B-ONLY-TITLE-q7",
+      );
+      expect(JSON.stringify(h.get_ticket({ ticket_id: w.b.id }).structuredContent)).toContain(
+        "B-ONLY-TITLE-q7",
+      );
     }
     wg.db.close();
   });

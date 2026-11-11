@@ -229,8 +229,10 @@ export function hideOutOfScopeDependencies<
  *
  * Every surface asks this one function: the direct routes (GET /decisions/:id,
  * GET /decisions), and every nested place a decision's content can reach a reader (a
- * ticket's detail, its claimability, the human queue, the factory MCP mount, the CLI
- * acting as a principal). What a holder may not read still shows where it BLOCKS the
+ * ticket's detail, its claimability, the human queue, the CLI acting as a principal).
+ * The factory MCP mount is not a principal and uses its own, wider filter (mcp/tools.ts
+ * mountDecisionFilter: every decision on a ticket it is bound to). What a holder may not
+ * read still shows where it BLOCKS the
  * holder's ticket, as {@link OUTSIDE_SCOPE_DECISION}; the policy itself always counts
  * every decision (a hidden decision still blocks).
  */

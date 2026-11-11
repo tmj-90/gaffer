@@ -440,16 +440,25 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
     return tickets;
   };
   /**
-   * DECISION VISIBILITY on this mount: in factory context an agent reads a decision only
-   * when every ticket it is linked to is in the mount's ticket scope (the one rule,
-   * services/accessScope.ts decisionInScope, that a scoped principal gets on REST and
-   * the CLI). Null outside the factory (and for non-agent actors): no filtering.
+   * DECISION VISIBILITY on this mount. The factory mount is NOT a scoped principal: it
+   * holds no credential, opens the factory database itself, reads any ticket whole
+   * through get_ticket, and the runner already puts the recent answers on the bound
+   * ticket into the delivery prompt (`_RD`, from `wg ticket show` with no principal).
+   * So the principals' rule (services/accessScope.ts decisionInScope: every linked
+   * ticket in scope) is not applied here: it protected nothing and hid from the
+   * reviewer, tester, clarify and planning agents (whose only source is get_ticket) the
+   * answer to a decision on their own ticket that is also linked to another ticket.
+   * In factory context an agent reads a decision linked to ANY ticket it is bound to
+   * (whatever else it is linked to) and an unattached one (it "stays open to all", see
+   * request_decision); a decision only on other tickets is left out of
+   * list_pending_decisions and shown on another ticket only as the generic blocker.
+   * Null outside the factory (and for non-agent actors): no filtering.
    */
   const mountDecisionFilter = (): ((decisionId: string) => boolean) | null => {
     if (actor.type !== "agent" || !inFactoryContext()) return null;
-    const memo = new Map<string, boolean>();
-    return wg.decisionVisibility((ticketId: string): boolean => {
-      const hit = memo.get(ticketId);
+    const ticketMemo = new Map<string, boolean>();
+    const boundTicket = (ticketId: string): boolean => {
+      const hit = ticketMemo.get(ticketId);
       if (hit !== undefined) return hit;
       const t = wg.tickets.findById(ticketId);
       const ok = t
@@ -458,9 +467,18 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
             { id: t.id, number: t.number, repos: [] },
           ).allowed
         : false;
-      memo.set(ticketId, ok);
+      ticketMemo.set(ticketId, ok);
       return ok;
-    });
+    };
+    const memo = new Map<string, boolean>();
+    return (decisionId: string): boolean => {
+      const hit = memo.get(decisionId);
+      if (hit !== undefined) return hit;
+      const ids = wg.decisionTicketIds(decisionId);
+      const ok = ids.length === 0 || ids.some(boundTicket);
+      memo.set(decisionId, ok);
+      return ok;
+    };
   };
   /**
    * Refuse an agent write to a ticket outside this mount's scope (factory only).

@@ -43,6 +43,10 @@
       "types": "./dist/services/testIntegrity.d.ts",
       "import": "./dist/services/testIntegrity.js"
     },
+    "./ticket-markers": {
+      "types": "./dist/util/ticketMarkers.d.ts",
+      "import": "./dist/util/ticketMarkers.js"
+    },
     "./zod3-compat": {
       "types": "./dist/util/zod3Compat.d.ts",
       "import": "./dist/util/zod3Compat.js"

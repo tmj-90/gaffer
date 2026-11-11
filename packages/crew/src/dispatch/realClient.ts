@@ -1,5 +1,11 @@
 import { existsSync } from "node:fs";
 
+import {
+  descriptionHasFindingKey,
+  descriptionHasSource,
+  quoteMarkerLines,
+} from "dispatch/ticket-markers";
+
 import { CrewError } from "../util/errors.js";
 import type {
   DispatchRepository,
@@ -147,7 +153,11 @@ export interface DispatchFacade {
   };
   submitForReview?(input: unknown, actor?: unknown): { status?: string; eventId?: string };
   markBlocked?(input: unknown, actor?: unknown): { eventId?: string };
-  createDraftTicket?(input: unknown, actor?: unknown): { ticketId?: string; number?: number };
+  createDraftTicket?(
+    input: unknown,
+    actor?: unknown,
+  ): { ticketId?: string; number?: number; deduped?: boolean };
+  findTicketBySource?(sourceUrl: string): { ticketId?: string } | undefined;
   createTicket?(input: unknown, actor?: unknown): { id?: string; number?: number };
   /** WG epic creation: file an epic + its tickets from a decomposed plan. */
   createEpic?(
@@ -691,12 +701,15 @@ export class RealDispatchClient implements DispatchClient {
     repoName?: string;
     evidenceSummary?: string;
     findingKey?: string;
+    sourceUrl?: string;
     policyPack?: string;
-  }): { ticketId: string; number: number } {
+  }): { ticketId: string; number: number; deduped?: boolean } {
     // Stamp the stable de-dup marker into the description so later ticks find
     // the existing open ticket via findOpenTicketByFindingKey.
+    // An idle-loop draft carries scan output (repository text an agent can write): its
+    // marker-shaped lines are quoted so only the Finding-Key trailer below is read back.
     const description = p.findingKey
-      ? `${p.description ?? ""}\n\nFinding-Key: ${p.findingKey}`
+      ? `${quoteMarkerLines(p.description ?? "")}\n\nFinding-Key: ${p.findingKey}`
       : (p.description ?? "");
     // Operator's configured policy pack threads through; default to solo_loose
     // when unset so behaviour matches the schema default.
@@ -711,9 +724,20 @@ export class RealDispatchClient implements DispatchClient {
       return {
         ticketId: String(required(res.ticketId, "createDraftTicket.ticketId")),
         number: Number(required(res.number, "createDraftTicket.number")),
+        ...(res.deduped === true ? { deduped: true } : {}),
       };
     }
     const create = required(this.facade.createTicket, "createDraftTicket");
+    // Older facade shape with no atomic source check: look up first.
+    if (p.sourceUrl !== undefined) {
+      const existing = this.findTicketBySource(p.sourceUrl);
+      if (existing) {
+        const row = (this.facade.list?.call(this.facade) ?? []).find(
+          (r) => String(r.id) === existing.ticketId,
+        );
+        return { ticketId: existing.ticketId, number: Number(row?.number ?? 0), deduped: true };
+      }
+    }
     const res = create.call(
       this.facade,
       { title: p.title, description, policy_pack: policyPack },
@@ -726,13 +750,18 @@ export class RealDispatchClient implements DispatchClient {
   }
 
   findTicketBySource(sourceUrl: string): { ticketId: string } | undefined {
-    // Query existing tickets and match the `Source: <url>` marker ingest writes
-    // into the description. `list()` with no status returns the full backlog;
-    // matching here keeps dedup independent of any external relabel side effect.
+    // Dispatch's own exact lookup when the facade has it; otherwise list the full
+    // backlog and apply the same shared matcher (the last `Source:` line, canonical
+    // URL, compared exactly). Dedup stays independent of any external relabel.
+    if (this.facade.findTicketBySource) {
+      const hit = this.facade.findTicketBySource.call(this.facade, sourceUrl);
+      return hit?.ticketId ? { ticketId: String(hit.ticketId) } : undefined;
+    }
     const list = required(this.facade.list, "list");
-    const needle = `Source: ${sourceUrl}`;
     const rows = list.call(this.facade);
-    const match = rows.find((row) => String(row.description ?? "").includes(needle));
+    const match = rows.find((row) =>
+      descriptionHasSource(String(row.description ?? ""), sourceUrl),
+    );
     return match ? { ticketId: String(match.id) } : undefined;
   }
 
@@ -741,12 +770,11 @@ export class RealDispatchClient implements DispatchClient {
     // ignoring tickets that have reached a terminal state so a resurfacing
     // finding whose prior ticket was resolved can be re-drafted.
     const list = required(this.facade.list, "list");
-    const needle = `Finding-Key: ${findingKey}`;
     const rows = list.call(this.facade);
     const match = rows.find(
       (row) =>
         !TERMINAL_TICKET_STATUSES.has(String(row.status ?? "")) &&
-        String(row.description ?? "").includes(needle),
+        descriptionHasFindingKey(String(row.description ?? ""), findingKey),
     );
     return match ? { ticketId: String(match.id) } : undefined;
   }

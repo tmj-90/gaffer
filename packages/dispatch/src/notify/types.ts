@@ -117,7 +117,13 @@ export interface NotifyDeliveryReport {
 export interface HttpTransport {
   (
     url: string,
-    init: { method: string; headers: Record<string, string>; body: string },
+    init: {
+      method: string;
+      headers: Record<string, string>;
+      body: string;
+      /** Aborted at the sink's deadline; a transport should stop the request on it. */
+      signal?: AbortSignal;
+    },
   ): Promise<{ ok: boolean; status: number }>;
 }
 

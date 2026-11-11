@@ -43,6 +43,7 @@ import type { ClaimService } from "./claimService.js";
 import type { Clock } from "../util/clock.js";
 import { DispatchError, notFound } from "../util/errors.js";
 import { newId } from "../util/id.js";
+import { descriptionHasSource } from "../util/ticketMarkers.js";
 import { TESTER_REPLAY_PREFIX } from "./testerReplay.js";
 import {
   ACCEPTANCE_EVIDENCE_PAYLOAD_MAX,
@@ -1484,11 +1485,29 @@ export class TicketService {
       repoName?: string;
       evidenceSummary?: string;
       policyPack?: string;
+      /**
+       * The canonical source identity (issue ingest). When set, the description must
+       * record it as its `Source:` marker, and an existing ticket for the same source
+       * is returned (`deduped: true`) instead of creating a second one. The lookup and
+       * the insert share one IMMEDIATE transaction, so two ingests racing on the same
+       * database cannot both create.
+       */
+      sourceUrl?: string;
     },
     actor: Actor,
     linkRepo?: (ticketId: string, repoName: string, actor: Actor) => void,
-  ): { ticketId: string; number: number } {
+  ): { ticketId: string; number: number; deduped?: boolean } {
     return inTransaction(this.db, () => {
+      if (input.sourceUrl !== undefined) {
+        if (!descriptionHasSource(input.description ?? "", input.sourceUrl)) {
+          throw new DispatchError(
+            "VALIDATION_ERROR",
+            "A draft created for a source must record that source as its last Source: line.",
+          );
+        }
+        const existing = this.findTicketBySource(input.sourceUrl);
+        if (existing) return { ...existing, deduped: true };
+      }
       const ticket = this.createTicket(
         {
           // Machine-made (idle loops): collapse control characters rather than fail.
@@ -1528,6 +1547,21 @@ export class TicketService {
       }
       return { ticketId: ticket.id, number: ticket.number ?? 0 };
     });
+  }
+
+  /**
+   * The ticket whose description records exactly `sourceUrl` as its source (its last
+   * `Source:` line, canonicalised; see util/ticketMarkers.ts). The oldest wins if an
+   * earlier substring-matching build ever let two exist.
+   */
+  findTicketBySource(sourceUrl: string): { ticketId: string; number: number } | undefined {
+    const rows = this.db
+      .prepare(
+        "SELECT id, number, description FROM tickets WHERE instr(description, 'Source:') > 0 ORDER BY created_at, number",
+      )
+      .all() as Array<{ id: string; number: number | null; description: string }>;
+    const hit = rows.find((r) => descriptionHasSource(r.description, sourceUrl));
+    return hit ? { ticketId: hit.id, number: hit.number ?? 0 } : undefined;
   }
 
   /**

@@ -1,3 +1,5 @@
+import { formatSourceMarker, quoteMarkerLines } from "dispatch/ticket-markers";
+
 import type { CommandRunner } from "../adapters/commandRunner.js";
 import type { CrewConfig } from "../config/schema.js";
 import type { EventLog } from "../events/eventLog.js";
@@ -9,8 +11,12 @@ import type { DispatchClient } from "../dispatch/client.js";
  * in HOW they list labelled issues from their source; once an issue is
  * normalised they all create Dispatch drafts through the SAME dedup contract:
  *
- *   identity = the issue's source URL, recorded into the draft description as a
- *   `Source: <url>` marker and looked up via {@link DispatchClient.findTicketBySource}.
+ *   identity = the issue's canonical source URL, recorded as the draft description's
+ *   LAST line `Source: <url>` and looked up via {@link DispatchClient.findTicketBySource}.
+ *   The match is exact on the canonical URL (dispatch/ticket-markers: scheme and
+ *   host case, trailing slash and fragment normalised), never a substring, and
+ *   Dispatch repeats the check inside the create transaction so two racing
+ *   ingests cannot both create.
  *
  * This makes ingest idempotent independent of any source-side side effect
  * (relabelling, status change): re-running ingest finds the existing ticket by
@@ -80,15 +86,19 @@ export function ingestIssueAsDraft(
   // draft so whoever promotes it sees them; the Source marker stays the last line.
   const labels = (issue.labels ?? []).filter(Boolean);
   const labelLine = labels.length ? `\n\nLabels: ${labels.join(", ")}` : "";
-  const description = `${issue.body ?? ""}${labelLine}\n\nSource: ${issue.url}`;
+  // The body and labels are outside text: their marker-shaped lines are quoted so they
+  // cannot pose as the factory's Source, Finding-Key or Feature-Id (ONE place, here).
+  const outside = quoteMarkerLines(`${issue.body ?? ""}${labelLine}`);
+  const description = `${outside}\n\n${formatSourceMarker(issue.url)}`;
   const created = dispatch.createDraftTicket({
     title: issue.title,
     description,
     evidenceSummary: opts.evidenceSummary,
+    sourceUrl: issue.url,
     ...(opts.repoName !== undefined ? { repoName: opts.repoName } : {}),
     ...(opts.policyPack !== undefined ? { policyPack: opts.policyPack } : {}),
   });
-  return { ticketId: created.ticketId, deduped: false };
+  return { ticketId: created.ticketId, deduped: created.deduped === true };
 }
 
 /** Quote a CLI argument for safe interpolation into a single shell command. */

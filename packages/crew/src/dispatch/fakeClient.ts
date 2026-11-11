@@ -1,5 +1,11 @@
 import { randomUUID } from "node:crypto";
 
+import {
+  descriptionHasFindingKey,
+  descriptionHasSource,
+  quoteMarkerLines,
+} from "dispatch/ticket-markers";
+
 import { CrewError, notFound } from "../util/errors.js";
 import type {
   DispatchRepository,
@@ -517,11 +523,29 @@ export class FakeDispatchClient implements DispatchClient {
     repoName?: string;
     evidenceSummary?: string;
     findingKey?: string;
+    sourceUrl?: string;
     policyPack?: string;
-  }): { ticketId: string; number: number } {
+  }): { ticketId: string; number: number; deduped?: boolean } {
+    // An idle-loop draft carries scan output (repository text an agent can write): its
+    // marker-shaped lines are quoted so only the Finding-Key trailer below is read back.
     const description = p.findingKey
-      ? `${p.description ?? ""}\n\nFinding-Key: ${p.findingKey}`
+      ? `${quoteMarkerLines(p.description ?? "")}\n\nFinding-Key: ${p.findingKey}`
       : (p.description ?? "");
+    // Same contract as Dispatch: the description records the source, and an
+    // existing ticket for it is returned instead of a second one.
+    if (p.sourceUrl !== undefined) {
+      if (!descriptionHasSource(description, p.sourceUrl)) {
+        throw new CrewError(
+          "VALIDATION_ERROR",
+          "A draft created for a source must record that source as its last Source: line.",
+        );
+      }
+      const existing = this.findTicketBySource(p.sourceUrl);
+      if (existing) {
+        const t = this.resolve(existing.ticketId);
+        return { ticketId: t.id, number: t.number, deduped: true };
+      }
+    }
     const ticket = this.seedTicket({
       title: p.title,
       description,
@@ -543,15 +567,17 @@ export class FakeDispatchClient implements DispatchClient {
   }
 
   findTicketBySource(sourceUrl: string): { ticketId: string } | undefined {
-    const needle = `Source: ${sourceUrl}`;
-    const match = [...this.tickets.values()].find((t) => t.description.includes(needle));
+    const match = [...this.tickets.values()].find((t) =>
+      descriptionHasSource(t.description, sourceUrl),
+    );
     return match ? { ticketId: match.id } : undefined;
   }
 
   findOpenTicketByFindingKey(findingKey: string): { ticketId: string } | undefined {
-    const needle = `Finding-Key: ${findingKey}`;
     const match = [...this.tickets.values()].find(
-      (t) => !TERMINAL_TICKET_STATUSES.has(t.status) && t.description.includes(needle),
+      (t) =>
+        !TERMINAL_TICKET_STATUSES.has(t.status) &&
+        descriptionHasFindingKey(t.description, findingKey),
     );
     return match ? { ticketId: match.id } : undefined;
   }

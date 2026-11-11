@@ -113,12 +113,31 @@ function existingDir(target: string | null): string | null {
   }
 }
 
-/** True when `dir` or a folder above it holds `.git` (a checkout, a worktree, a submodule). */
-function insideGitCheckout(dir: string): boolean {
-  for (let d = dir; ; d = dirname(d)) {
+/**
+ * True when `dir` or a folder above it holds `.git` (a checkout, a worktree, a
+ * submodule). Like git's own discovery (which `dispatch repo add` uses), the search
+ * never climbs into a directory named in `GIT_CEILING_DIRECTORIES`, so the API and
+ * the CLI give the same answer for the same folder.
+ */
+function insideGitCheckout(dir: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  const ceilings = gitCeilings(env);
+  for (let d = dir; ;) {
     if (existsSync(join(d, ".git"))) return true;
-    if (dirname(d) === d) return false;
+    const up = dirname(d);
+    if (up === d || ceilings.has(up)) return false;
+    d = up;
   }
+}
+
+/** The absolute, symlink-resolved entries of `GIT_CEILING_DIRECTORIES`. */
+function gitCeilings(env: NodeJS.ProcessEnv): Set<string> {
+  const out = new Set<string>();
+  for (const entry of (env.GIT_CEILING_DIRECTORIES ?? "").split(":")) {
+    if (!entry.startsWith("/")) continue;
+    const dir = existingDir(entry);
+    out.add(dir ?? resolve(entry));
+  }
+  return out;
 }
 
 /** True when `dir` itself is a bare repository (HEAD, objects/ and refs/, no .git). */

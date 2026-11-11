@@ -1,3 +1,4 @@
+import { scrubMessage, urlOrigin } from "../redactUrl.js";
 import type { HttpTransport, NotifyEvent, NotifySink } from "../types.js";
 
 /**
@@ -6,7 +7,12 @@ import type { HttpTransport, NotifyEvent, NotifySink } from "../types.js";
  * 20+ (the engine floor) ships a global `fetch`, so no dependency is needed.
  */
 const fetchTransport: HttpTransport = async (url, init) => {
-  const res = await fetch(url, init);
+  // Never follow a redirect: a 3xx could move the POST (and its body) to a host the
+  // URL policy would have refused. The 3xx comes back as a non-2xx answer, so the sink
+  // reports it as a failed delivery by origin and status; the Location is never read.
+  const res = await fetch(url, { ...init, redirect: "manual" });
+  // The body is never read; cancel it so the connection is released at once.
+  await res.body?.cancel().catch(() => undefined);
   return { ok: res.ok, status: res.status };
 };
 
@@ -32,16 +38,39 @@ export class WebhookSink implements NotifySink {
   }
 
   async deliver(event: NotifyEvent): Promise<void> {
-    const res = await withTimeout(
-      this.transport(this.url, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: this.renderBody(event),
-      }),
-      this.timeoutMs,
-    );
+    // The URL is a credential (Slack keeps its secret in the path): every message this
+    // sink produces names it by its ORIGIN only (see ../redactUrl.ts).
+    const where = urlOrigin(this.url);
+    const controller = new AbortController();
+    let res: { ok: boolean; status: number };
+    try {
+      res = await withTimeout(
+        () =>
+          this.transport(this.url, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: this.renderBody(event),
+            signal: controller.signal,
+          }),
+        this.timeoutMs,
+        // At the deadline the request itself is aborted, not only abandoned: a hung
+        // endpoint must not keep a socket open behind a promise nobody awaits.
+        () => controller.abort(),
+        `webhook POST to ${where} timed out after ${this.timeoutMs}ms`,
+      );
+    } catch (err) {
+      if (err instanceof WebhookTimeoutError) throw err;
+      const message = err instanceof Error ? err.message : String(err);
+      // The transport's error is deliberately NOT attached as `cause`: its message and
+      // its own cause can quote the URL (a fetch error does), and a logger that prints
+      // the cause chain would put the credential back in the log.
+      // eslint-disable-next-line preserve-caught-error
+      throw new Error(
+        `webhook POST to ${where} failed: ${scrubMessage(message, this.url)}${causeCode(err)}`,
+      );
+    }
     if (!res.ok) {
-      throw new Error(`webhook POST to ${redact(this.url)} returned ${res.status}`);
+      throw new Error(`webhook POST to ${where} returned ${res.status}`);
     }
   }
 
@@ -60,34 +89,50 @@ export class WebhookSink implements NotifySink {
 /** Default per-delivery timeout — a hung endpoint must not wedge the loop. */
 export const DEFAULT_WEBHOOK_TIMEOUT_MS = 5_000;
 
-/** Reject after `ms` so a never-resolving transport cannot hang forever. */
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+class WebhookTimeoutError extends Error {}
+
+/**
+ * Run `start()` and reject after `ms` so a never-resolving transport cannot hang
+ * forever; `onTimeout` runs at the deadline (it aborts the request). A transport that
+ * ignores the abort signal still times out, as before.
+ */
+function withTimeout<T>(
+  start: () => Promise<T>,
+  ms: number,
+  onTimeout: () => void,
+  timeoutMessage: string,
+): Promise<T> {
   return new Promise<T>((resolvePromise, reject) => {
-    const timer = setTimeout(
-      () => reject(new Error(`webhook delivery timed out after ${ms}ms`)),
-      ms,
-    );
+    let settled = false;
+    const timer = setTimeout(() => {
+      settled = true;
+      reject(new WebhookTimeoutError(timeoutMessage));
+      onTimeout();
+    }, ms);
     // Don't let the timer keep the process alive on its own.
     if (typeof timer.unref === "function") timer.unref();
+    let promise: Promise<T>;
+    try {
+      promise = start();
+    } catch (err) {
+      promise = Promise.reject(err);
+    }
     promise.then(
       (value) => {
         clearTimeout(timer);
-        resolvePromise(value);
+        if (!settled) resolvePromise(value);
       },
-      (err) => {
+      (err: unknown) => {
         clearTimeout(timer);
-        reject(err instanceof Error ? err : new Error(String(err)));
+        if (!settled) reject(err instanceof Error ? err : new Error(String(err)));
       },
     );
   });
 }
 
-/** Strip any query/userinfo from a URL before logging — secrets ride in those. */
-function redact(url: string): string {
-  try {
-    const u = new URL(url);
-    return `${u.protocol}//${u.host}${u.pathname}`;
-  } catch {
-    return "<url>";
-  }
+/** ` (ECONNREFUSED)` from a fetch error's cause, when it has a plain error code. */
+function causeCode(err: unknown): string {
+  const cause = (err as { cause?: { code?: unknown } } | null)?.cause;
+  const code = cause && typeof cause.code === "string" ? cause.code : "";
+  return /^[A-Z][A-Z0-9_]{1,40}$/.test(code) ? ` (${code})` : "";
 }

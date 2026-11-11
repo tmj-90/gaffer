@@ -593,7 +593,19 @@ a presence boolean, and an argument not on the allowlist is never copied.
   `GAFFER_NOTIFY_ALLOW_PRIVATE=1`) and send a minimal body (kind, ticket number, status,
   dashboard URL) unless `GAFFER_NOTIFY_FULL_PAYLOAD=1`. The URLs are credentials, so the
   settings API reports only `configured` and the host; only an admin principal reads
-  the value back.
+  the value back. A failed delivery is logged and reported with the sink name, the
+  URL's origin and the status only (never the path, where Slack keeps its secret, the
+  query or user information), every URL in a sink's error is cut to its origin, and
+  the dashboard link in an event is sent without user information or a query. A
+  delivery that times out is aborted, and a redirect is never followed: a 3xx answer
+  is a failed delivery, so it cannot move the POST to a host the URL policy refuses.
+- **Ticket markers.** The factory reads a few marker lines back from a ticket
+  description as its own (`Source:` for issue ingest dedupe, `Finding-Key:` for the idle
+  loops, `Feature-Id:` for which feature a merge ships). Outside text that lands in a
+  description (an ingested issue body and its labels, an idle scan's summary of repository
+  text, a planned ticket's text) has every marker-shaped line quoted as `> `, in any case
+  and after any line break, so it cannot dedupe an issue, suppress a loop's draft or name
+  a feature; only the trailer the factory appends is read back.
 - **Memory.** Agent suggestions (`suggest_lore`, `report_conflict`) land as drafts, and
   the record a conflict challenges is never mutated. Restricted records are left out of
   default search, and an MCP fetch of one is refused unless

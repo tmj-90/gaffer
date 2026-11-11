@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished } from "vitest";
 
 import { Dispatch } from "../src/core.js";
 
@@ -67,6 +67,14 @@ describe("cli-wg F-06: repo add validates --path and the name", () => {
   });
 
   it("refuses a directory that is not a git repo, as onboard does (B1 review)", () => {
+    // The temp dir may live inside a checkout (TMPDIR under a git work tree): stop
+    // git's upward search at our own folder rather than assume no checkout above it.
+    const prev = process.env.GIT_CEILING_DIRECTORIES;
+    process.env.GIT_CEILING_DIRECTORIES = dir;
+    onTestFinished(() => {
+      if (prev === undefined) delete process.env.GIT_CEILING_DIRECTORIES;
+      else process.env.GIT_CEILING_DIRECTORIES = prev;
+    });
     const r = runCli(db, ["repo", "add", "-n", "notgit", "--path", join(dir, "notgit")]);
     expect(errorCode(r.error)).toBe("NOT_A_GIT_REPO");
     expect(String((r.error as Error).message)).toMatch(/is not a git repository.*git init/);

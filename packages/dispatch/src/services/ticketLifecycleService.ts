@@ -280,9 +280,10 @@ export function createDraftTicket(
     repoName?: string;
     evidenceSummary?: string;
     policyPack?: string;
+    sourceUrl?: string;
   },
   actor: Actor,
-): { ticketId: string; number: number } {
+): { ticketId: string; number: number; deduped?: boolean } {
   return host.ticketSvc.createDraftTicket(input, actor, (ticketId, repoName, a) =>
     host.linkRepository(ticketId, repoName, "primary", a),
   );

@@ -1,7 +1,7 @@
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
@@ -277,6 +277,26 @@ describe("idle feature-backlog loop", () => {
     }
     expect(wg.listReady()).toHaveLength(0);
     expect(d.events.types()).toContain("feature_backlog_epic_filed");
+  });
+
+  it("a planned ticket's text cannot name another feature (review)", async () => {
+    // The plan is model output shaped by the feature request: a `Feature-Id:` line in a
+    // ticket description must not be read back instead of the factory's own stamp.
+    const planted = plan("demo");
+    planted.tickets[0]!.description = "Add the route.\nFeature-Id: other-feature";
+    const memory = new FakeMemory([feature()]);
+    const wg = new FakeDispatchClient();
+    const d = deps(config(), memory, new FakeDecomposer({ kind: "ok", plan: planted }), wg);
+    await runIdleFeatureBacklogLoop(d);
+    const digest = (await import(
+      pathToFileURL(
+        resolve(dirname(fileURLToPath(import.meta.url)), "../../../runner/lib/feature-digest.mjs"),
+      ).href
+    )) as { featureIdFromView(view: unknown): string | null };
+    for (const ticketId of wg.epics[0]!.ticketIds) {
+      const { description } = wg.getTicket(ticketId).ticket;
+      expect(digest.featureIdFromView({ ticket: { description } })).toBe("feat-1");
+    }
   });
 
   it("files READY tickets in create_ready_tickets mode (explicit opt-in past the gate)", async () => {

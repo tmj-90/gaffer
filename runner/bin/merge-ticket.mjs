@@ -82,7 +82,7 @@
 //                after which every ticket of it has landed (external review 17).
 //   features-reconciled (--reconcile-features):
 //              { "phase":"features-reconciled", ok, checked, shipped:[id…], held }
-//              — every `building` feature whose tickets all landed is shipped (exit 0;
+//              every `building` feature whose tickets all landed is shipped (exit 0;
 //                2 when Dispatch or memory could not be read).
 //   partially_merged:
 //              { "phase":"partially_merged", ticket, landed:[repo…], pending:[repo…], error }

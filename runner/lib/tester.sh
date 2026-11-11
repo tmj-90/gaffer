@@ -251,7 +251,25 @@ _gaffer_tester_pass() {
       # the new round is tested by a run of its own, so it is not marked tried below.
       log "TESTER: #$TNUM ${_T_VERDICT:+$_T_VERDICT }verdict refused as stale: ${_t_reason:-it was made in an earlier testing round}: kept as evidence; the current round is tested on its own"
       ;;
-    *)       log "TESTER: #$TNUM tester did not run cleanly (rc=$_trc, phase=${_T_PHASE:-none}${_t_reason:+: $_t_reason}) — left in_testing for a human; see tester.log" ;;
+    *)
+      log "TESTER: #$TNUM tester did not run cleanly (rc=$_trc, phase=${_T_PHASE:-none}${_t_reason:+: $_t_reason}) — left in_testing for a human; see tester.log"
+      # The reason goes ON the ticket, as every other refusal site does: a person sees
+      # why it sits in in_testing without reading tester.log.
+      case "$_t_reason" in
+        *unsafe_worktree_path*)
+          # The delivery branch holds a link where the runner writes the tester's files
+          # (bin/tester-run.mjs refused to write through it, no agent started). It is
+          # still there on every later pass, so the stay is held like any other hold.
+          wg attach-evidence "$TNUM" --type manual_note \
+            --summary "tester refused (unsafe_worktree_path): $_t_reason. No tester was started; held in_testing for a person. It is tested again once the ticket leaves in_testing and comes back (a rework that removes the link)." >/dev/null 2>&1 \
+            || log "TESTER: WARNING: could not attach the refusal to #$TNUM"
+          _gaffer_locked .skip.lock _gaffer_append_line "$_held_file" "$TNUM"$'\t'"${_t_entered:--}" ;;
+        *)
+          wg attach-evidence "$TNUM" --type manual_note \
+            --summary "tester did not run: ${_t_reason:-no reason given (rc=$_trc, phase=${_T_PHASE:-none}); see tester.log}. Left in_testing for a human; it is tried again on the next run." >/dev/null 2>&1 \
+            || log "TESTER: WARNING: could not attach the tester error to #$TNUM" ;;
+      esac
+      ;;
   esac
   # One attempt per ticket per run for a ticket the tester could NOT decide (held /
   # errored): it is not re-spun every tick. A RECORDED verdict moves the ticket out of

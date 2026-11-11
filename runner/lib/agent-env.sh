@@ -123,9 +123,19 @@ gaffer_install_agent_dir() {
 # claim to `blocked` with reason code unsafe_worktree_path and a reason that names the
 # path and the fix, skip the ticket this run. A repository's committed link does not go
 # away on a retry, so releasing to `ready` would only refuse again every tick.
+# A RESUMED delivery (_RESUMING=1) goes back to `paused` instead (gaffer_resume_abort):
+# its preserved worktree holds the paused attempt's uncommitted work, and a `blocked`
+# ticket that a person unblocks is claimed afresh, and a fresh delivery clears the stale
+# worktree before re-creating it. Paused, the worktree stays (the pause-keep invariant),
+# the ticket names the link and the worktree, and Continue retries once the link is gone.
 gaffer_park_unsafe_path() {
   local num="$1" what="${2:-agent}"
   log "SAFETY: refusing to launch the $what for #$num (fail closed, unsafe_worktree_path): $_GAFFER_UNSAFE_PATH_ERROR"
+  if [ "${_RESUMING:-0}" = "1" ] && declare -F gaffer_resume_abort >/dev/null 2>&1; then
+    gaffer_resume_abort "$_GAFFER_UNSAFE_PATH_ERROR. The paused work is kept in ${PRIMARY_REPO:-its preserved worktree}: remove or replace that link there, then press Continue. No agent was launched"
+    gaffer_skip_ticket "$num"
+    return 0
+  fi
   wg attach-evidence "$num" --type manual_note \
     --summary "PARKED (unsafe_worktree_path): $_GAFFER_UNSAFE_PATH_ERROR" >/dev/null 2>&1 || true
   gaffer_release_delivery blocked "$_GAFFER_UNSAFE_PATH_ERROR, then unblock it ('gaffer wg unblock $num'). No agent was launched." unsafe_worktree_path

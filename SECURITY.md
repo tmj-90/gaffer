@@ -170,7 +170,8 @@ not a regular file, or a parent below the worktree that is a symlink or not a di
 is refused, and the file lands by renaming a fresh temp file in the checked directory,
 never through a link. The cleanup that removes a refused file never deletes through a
 link either. A refusal names the path and the fix (`unsafe_worktree_path`): a delivery
-or bootstrap is parked `blocked` with that reason code and no agent is launched, the
+or bootstrap is parked `blocked` with that reason code and no agent is launched (a
+resumed delivery goes back to `paused`, keeping its worktree and uncommitted work), the
 review pass holds the ticket, and the clarify pass, the tester and the merge-conflict
 resolver refuse to start. A `node_modules` link whose parent is a symlink is skipped
 and logged. Trusting a workspace neutralises a committed `.claude/settings.local.json`

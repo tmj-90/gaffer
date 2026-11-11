@@ -35,6 +35,8 @@
 // =====================================================================
 import {
   closeSync,
+  constants as fsConstants,
+  fstatSync,
   fsyncSync,
   lstatSync,
   mkdirSync,
@@ -59,12 +61,17 @@ export const EXIT_UNSAFE = 4;
 
 /** A write the runner refused because a path below the root is a link or not what it expects. */
 export class UnsafePathError extends Error {
-  constructor(root, rel, why) {
+  constructor(root, rel, why, { read = false } = {}) {
     super(
-      `${UNSAFE_PATH_CODE}: ${rel} in ${root} ${why}; the runner writes its own agent files ` +
-        `(.claude/settings.json, .claude/skills, CLAUDE.factory.md, node_modules links) there ` +
-        `before an agent runs and never writes through a symbolic link or outside the ` +
-        `directory. Replace the link with a regular file or directory in the repository, or ` +
+      `${UNSAFE_PATH_CODE}: ${rel} in ${root} ${why}; ` +
+        (read
+          ? `the runner copies repository files from there into a checkout an agent or a ` +
+            `ticket can read and never reads through a symbolic link or outside the directory. `
+          : `the runner writes its own agent files ` +
+            `(.claude/settings.json, .claude/skills, CLAUDE.factory.md, node_modules links) there ` +
+            `before an agent runs and never writes through a symbolic link or outside the ` +
+            `directory. `) +
+        `Replace the link with a regular file or directory in the repository, or ` +
         `remove it from the branch`,
     );
     this.name = "UnsafePathError";
@@ -99,13 +106,13 @@ function linkWhy(p) {
  * Split `rel` into plain components. Refuses an absolute path, an empty one, and any
  * `.` / `..` component (a runner path is always a plain relative path).
  */
-function components(root, rel) {
+function components(root, rel, read = false) {
   if (typeof rel !== "string" || rel === "" || isAbsolute(rel)) {
-    throw new UnsafePathError(root, String(rel), "is not a plain relative path");
+    throw new UnsafePathError(root, String(rel), "is not a plain relative path", { read });
   }
   const parts = rel.split("/").filter((c) => c !== "");
   if (parts.length === 0 || parts.some((c) => c === "." || c === "..")) {
-    throw new UnsafePathError(root, rel, "is not a plain relative path");
+    throw new UnsafePathError(root, rel, "is not a plain relative path", { read });
   }
   return parts;
 }
@@ -123,9 +130,9 @@ function realRoot(root) {
  * mkdir. Returns `{ real, dir, base, missing }`: the real root, the checked real parent
  * directory, the last component, and whether a parent was missing (without `create`).
  */
-function walkParents(root, rel, { create = false } = {}) {
+function walkParents(root, rel, { create = false, read = false } = {}) {
   const real = realRoot(root);
-  const parts = components(root, rel);
+  const parts = components(root, rel, read);
   const base = parts.pop();
   let dir = real;
   let sofar = "";
@@ -142,15 +149,17 @@ function walkParents(root, rel, { create = false } = {}) {
       }
       st = lstatSync(p);
     }
-    if (st.isSymbolicLink()) throw new UnsafePathError(root, sofar, linkWhy(p));
-    if (!st.isDirectory()) throw new UnsafePathError(root, sofar, "is not a directory");
+    if (st.isSymbolicLink()) throw new UnsafePathError(root, sofar, linkWhy(p), { read });
+    if (!st.isDirectory()) throw new UnsafePathError(root, sofar, "is not a directory", { read });
     dir = p;
   }
   // Belt and braces: every component was a real directory, so the parent's real path
   // is itself, inside the root.
   const back = realpathSync(dir);
   if (back !== dir || !(dir === real || dir.startsWith(real + "/"))) {
-    throw new UnsafePathError(root, parts.join("/") || ".", "resolves outside the directory");
+    throw new UnsafePathError(root, parts.join("/") || ".", "resolves outside the directory", {
+      read,
+    });
   }
   return { real, dir, base, missing: false };
 }
@@ -214,6 +223,32 @@ export function safeWriteFile(root, rel, data, { mode = 0o644 } = {}) {
     throw err;
   }
   return dest;
+}
+
+/**
+ * Read `<root>/<rel>` without following a link: every parent below the root must be a real
+ * directory (lstat), and the file itself a regular file, not a symlink (dangling or not);
+ * it is opened with O_NOFOLLOW where the platform has it and checked again on the open
+ * descriptor. Returns the content (a Buffer), or null when nothing is there; throws
+ * UnsafePathError (a read refusal) otherwise. For files a repository or an agent names
+ * that the runner copies into a place an agent or a ticket can read.
+ */
+export function safeReadFile(root, rel) {
+  const refuse = (why) => new UnsafePathError(root, rel, why, { read: true });
+  const { dir, base, missing } = walkParents(root, rel, { read: true });
+  if (missing) return null;
+  const p = join(dir, base);
+  const st = lstatOrNull(p);
+  if (st === null) return null;
+  if (st.isSymbolicLink()) throw refuse(linkWhy(p));
+  if (!st.isFile()) throw refuse("exists and is not a regular file");
+  const fd = openSync(p, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW || 0));
+  try {
+    if (!fstatSync(fd).isFile()) throw refuse("exists and is not a regular file");
+    return readFileSync(fd);
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /** Copy the file `src` to `<root>/<rel>` (see safeWriteFile). */

@@ -223,6 +223,74 @@ if (sw) {
     /^unsafe_worktree_path: /.test(cli.stderr),
   );
   assert("1p: the outside file is byte-identical", intact(s9, "s9"));
+  // safeReadFile: the read side (a repository-named file copied where an agent can read it)
+  if (typeof sw.safeReadFile !== "function") {
+    assert("1r: lib/safe-write.mjs exports safeReadFile", false);
+  } else {
+    const { safeReadFile } = sw;
+    r = wt("rd1");
+    const sr = sentinel("rd-secret");
+    mkdirSync(join(r, "test"));
+    symlinkSync(sr, join(r, "test", "leak.test.js"));
+    e = thrown(() => safeReadFile(r, "test/leak.test.js"));
+    assert("1r: a link at the source is refused", unsafe(e, "test/leak.test.js"));
+    assert(
+      "1r: the read refusal says it never reads through a link",
+      /never reads through a symbolic link/.test(String(e?.message)),
+    );
+    mkdirSync(join(OUT, "rd-dir"));
+    writeFileSync(join(OUT, "rd-dir", "x.test.js"), "OUTSIDE\n");
+    symlinkSync(join(OUT, "rd-dir"), join(r, "ext"));
+    assert(
+      "1r: a parent link is refused",
+      unsafe(
+        thrown(() => safeReadFile(r, "ext/x.test.js")),
+        "ext",
+      ),
+    );
+    symlinkSync(join(OUT, "rd-none"), join(r, "dangling.js"));
+    assert(
+      "1r: a dangling link is refused (not read as absent)",
+      unsafe(
+        thrown(() => safeReadFile(r, "dangling.js")),
+        "dangling.js",
+      ),
+    );
+    mkdirSync(join(r, "adir"));
+    assert(
+      "1r: a directory is refused",
+      unsafe(
+        thrown(() => safeReadFile(r, "adir")),
+        "adir",
+      ),
+    );
+    assert(
+      "1r: a missing file is null",
+      safeReadFile(r, "test/none.js") === null && safeReadFile(r, "nodir/x.js") === null,
+    );
+    writeFileSync(join(r, "test", "ok.test.js"), "OK\n");
+    assert("1r: a regular file is read", String(safeReadFile(r, "test/ok.test.js")) === "OK\n");
+  }
+}
+
+// ── 1t. tester-replay.mjs reads the checkout's package.json without following a link ──
+console.log("== 1t: tester-replay.mjs resolveTestCommand ==");
+{
+  const tr = await import(resolve(RUNNER_DIR, "lib", "tester-replay.mjs"));
+  const r = wt("rtc");
+  writeFileSync(join(OUT, "pkg.json"), JSON.stringify({ scripts: { test: "OUTSIDE-CMD" } }));
+  symlinkSync(join(OUT, "pkg.json"), join(r, "package.json"));
+  const got = tr.resolveTestCommand({ worktree: r, testCommand: "npm test" });
+  assert(
+    "1t: a package.json linked outside the checkout is not read into the command",
+    !String(got.command).includes("OUTSIDE-CMD"),
+  );
+  const r2 = wt("rtc2");
+  writeFileSync(join(r2, "package.json"), JSON.stringify({ scripts: { test: "node --test" } }));
+  assert(
+    "1t: a regular package.json still resolves the test script",
+    tr.resolveTestCommand({ worktree: r2, testCommand: "npm test" }).command === "node --test",
+  );
 }
 
 // ── 2. writeAgentSettings (agent-home.mjs) ─────────────────────────────────

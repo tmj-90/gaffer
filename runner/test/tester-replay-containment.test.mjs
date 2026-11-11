@@ -35,6 +35,7 @@ import {
   readdirSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -658,6 +659,56 @@ console.log("== (f) a pooled flaky rerun of the landing's tests gate gets a fres
 }
 
 // Nothing the replays left behind: every replay checkout and scratch dir is gone.
+console.log("== a tester test file that is a symlink is never read into the replay ==");
+// The tester's checkout can hold a committed or tester-made link at a test path (or a
+// parent), pointing at a host file (here the dummy key outside the checkout). Copying it
+// into the replay would put that file's content in a checkout the replay's test code (and
+// its output, the ticket's evidence) can read: the copy is refused (unsafe_worktree_path),
+// the replay fails closed, and nothing runs.
+{
+  const OUTDIR = join(WORK, "outside-tests");
+  mkdirSync(OUTDIR, { recursive: true });
+  writeFileSync(join(OUTDIR, "x.test.mjs"), "// OUTSIDE-SECRET-MARKER\n");
+  const cases = {
+    "a link at the test path": () => {
+      rmSync(join(TESTER, "test", "leak.test.mjs"), { force: true });
+      symlinkSync(SSH_KEY, join(TESTER, "test", "leak.test.mjs"));
+      return { file: "test/leak.test.mjs", named: "test/leak.test.mjs" };
+    },
+    "a link as a parent directory": () => {
+      rmSync(join(TESTER, "ext"), { force: true });
+      symlinkSync(OUTDIR, join(TESTER, "ext"));
+      return { file: "ext/x.test.mjs", named: "ext" };
+    },
+  };
+  for (const [label, make] of Object.entries(cases)) {
+    const { file, named } = make();
+    rmSync(MARKER, { force: true });
+    const res = replayTesterTests({
+      repoPath: REPO,
+      testedCommit: COMMIT,
+      testerWorktree: TESTER,
+      testFiles: [file],
+      testCommand: 'node --test; echo "RAN"',
+      n: nReplay++,
+    });
+    assert(`${label}: the replay fails closed`, res.state === "failed", JSON.stringify(res));
+    assert(
+      `${label}: the reason is unsafe_worktree_path naming ${named}`,
+      /unsafe_worktree_path: /.test(String(res.reason)) && String(res.reason).includes(named),
+      String(res.reason),
+    );
+    const tail = String(res.tail || "");
+    assert(
+      `${label}: nothing ran and no outside content reached the output`,
+      !tail.includes("RAN") && !tail.includes("dummy key") && !tail.includes("OUTSIDE-SECRET"),
+      tail.slice(0, 200),
+    );
+  }
+  rmSync(join(TESTER, "test", "leak.test.mjs"), { force: true });
+  rmSync(join(TESTER, "ext"), { force: true });
+}
+
 const leftovers = readdirSync(join(DATA, "worktrees")).filter((d) =>
   d.startsWith("tester-replay-1"),
 );

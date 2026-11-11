@@ -108,7 +108,14 @@ import { agentChildEnv, buildClaudeArgv, renderPoMcpRuntime } from "./product-ow
 import { selectForRole, stackPackNote, ticketStacks } from "./select-skills.mjs";
 import { recordSkillUsage } from "./record-skill-usage.mjs";
 import { trustAgentWorkspace } from "../lib/trust-agent-workspace.mjs";
-import { UnsafePathError, safeCopyFile, safeMkdir, safeSymlink } from "../lib/safe-write.mjs";
+import {
+  UnsafePathError,
+  safeCopyFile,
+  safeMkdir,
+  safeReadFile,
+  safeSymlink,
+  safeWriteFile,
+} from "../lib/safe-write.mjs";
 import {
   detectUsageLimit,
   extractResultText,
@@ -1106,17 +1113,20 @@ export function replayTesterTests({
   phase("checkout");
   try {
     for (const f of testFiles) {
-      const src = resolve(testerWorktree, f);
-      if (!existsSync(src)) continue; // the tester deleted it: the candidate's copy still runs
-      // The replay is a checkout of the DELIVERED commit: a symlink it commits at a test
-      // path (or a parent) must not carry the copy outside the checkout.
+      // Both sides go through lib/safe-write.mjs. READ: the tester's checkout can hold a
+      // link at a test path (or a parent) to a host file; reading through it would put
+      // that file in a checkout the replay's test code and its output can read, so a link
+      // or a non-regular file is refused. WRITE: the replay is a checkout of the DELIVERED
+      // commit, and a link it commits there must not carry the copy outside it.
       try {
-        safeCopyFile(replay, f, src);
+        const data = safeReadFile(testerWorktree, f);
+        if (data === null) continue; // the tester deleted it: the candidate's copy still runs
+        safeWriteFile(replay, f, data);
       } catch (err) {
         if (!(err instanceof UnsafePathError)) throw err;
         return {
           state: "failed",
-          reason: `the tester's test file was not copied into the replay: ${err.message}`,
+          reason: `the tester's test file ${f} was not copied into the replay: ${err.message}`,
         };
       }
     }

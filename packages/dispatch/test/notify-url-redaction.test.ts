@@ -239,10 +239,7 @@ describe("a webhook redirect is a failed delivery, never followed (review)", () 
       res.writeHead(302, { location });
       res.end();
     });
-    for (const make of [
-      (u: string) => new WebhookSink(u),
-      (u: string) => new SlackSink(u),
-    ]) {
+    for (const make of [(u: string) => new WebhookSink(u), (u: string) => new SlackSink(u)]) {
       const sink = make(`http://127.0.0.1:${hookPort}/services/TFAKE/BFAKE/${SECRET}`);
       const { logged, reported } = await failThrough(sink);
       expect(reported).toBe(`webhook POST to http://127.0.0.1:${hookPort} returned 302`);

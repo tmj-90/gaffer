@@ -138,4 +138,25 @@ reset; W11B="$WORK/w11b"; mkdir -p "$W11B/packages"; ln -s "$OUT/nm-dangling" "$
 gaffer_link_node_modules "$REPO" "$W11B"
 [ ! -e "$OUT/nm-dangling" ] && ok "11: a dangling parent link creates nothing outside" || fail "11: created $OUT/nm-dangling"
 
+echo "== 12: a path the TRUST step refuses (unsafe_worktree_path) is the same refusal as the installer's =="
+# The real gaffer_git_main_worktree + gaffer_trust_workspace (lib/tick-launch.sh), the real
+# trust-workspace.mjs, a scratch HOME. A committed .claude/settings.local.json that is a
+# directory cannot be neutralised: trust refuses with unsafe_worktree_path. The launch sites
+# park on _GAFFER_UNSAFE_PATH_ERROR (blocked, no retry); without it the delivery fell back
+# to a TRUST setup error, released to ready and refused again on every run.
+FN12="$WORK/trust-fns.sh"
+awk '/^gaffer_git_main_worktree\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$RUNNER_DIR/lib/tick-launch.sh" > "$FN12"
+awk '/^gaffer_trust_workspace\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$RUNNER_DIR/lib/tick-launch.sh" >> "$FN12"
+# shellcheck disable=SC1090
+source "$FN12"
+GAFFER_LOG="$WORK/gaffer12.log"; : > "$GAFFER_LOG"
+HERE_SAVE="${HERE}"; HERE="$RUNNER_DIR"
+reset; W12="$WORK/w12"; mkdir -p "$W12/.claude/settings.local.json"; git init -q "$W12"
+( export HOME="$WORK/home12"; mkdir -p "$HOME"
+  gaffer_install_agent_dir "$W12" "run-tests" "delivery-12" >/dev/null 2>&1; rc=$?
+  printf '%s\n%s\n' "$rc" "${_GAFFER_UNSAFE_PATH_ERROR:-}" > "$WORK/r12" )
+HERE="$HERE_SAVE"
+[ "$(sed -n 1p "$WORK/r12")" != 0 ] && ok "12: the install refuses (fail closed)" || fail "12: the install returned 0"
+case "$(sed -n 2p "$WORK/r12")" in *unsafe_worktree_path:*settings.local.json*) ok "12: _GAFFER_UNSAFE_PATH_ERROR names .claude/settings.local.json (the launch sites park)" ;; *) fail "12: no unsafe-path reason: '$(sed -n 2p "$WORK/r12")'" ;; esac
+
 echo; [ "$FAIL" -eq 0 ] && echo "worktree-write-safety: ALL $PASS checks passed" || { echo "worktree-write-safety: $FAIL FAILED ($PASS passed)"; exit 1; }

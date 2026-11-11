@@ -174,7 +174,8 @@ or bootstrap is parked `blocked` with that reason code and no agent is launched,
 review pass holds the ticket, and the clarify pass, the tester and the merge-conflict
 resolver refuse to start. A `node_modules` link whose parent is a symlink is skipped
 and logged. Trusting a workspace neutralises a committed `.claude/settings.local.json`
-the same way, and refuses when `.claude` is a symlink. The rendered settings are
+the same way, and refuses when `.claude` is a symlink or the file cannot be replaced (a
+directory there); that refusal parks or holds the ticket like the others. The rendered settings are
 verified by one rule (`runner/lib/agent-settings.mjs`) whichever launcher writes them:
 valid JSON, the safety hook as a PreToolUse command hook covering Bash, Write, Edit,
 MultiEdit, NotebookEdit, Read, Grep, Glob and LS, each entry with `"onFailure": "block"`

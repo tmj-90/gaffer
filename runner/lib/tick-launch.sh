@@ -57,19 +57,21 @@ gaffer_trust_workspace() {
   # differs from the worktree. KEY_ONLY: the agent runs in the worktree (whose own
   # settings.local.json the first call neutralized), so we only write the trust key
   # for the main root — never mutate the onboarded repo's working tree.
-  local main path key_only errf rc tail fix
+  local main path key_only errf rc tail fix unsafe
   main="$(gaffer_git_main_worktree "$dir")"
   [ -n "$main" ] && [ "$main" != "$dir" ] && [ -d "$main" ] || main=""
   for path in "$dir" ${main:+"$main"}; do
     key_only=""
     [ "$path" = "$dir" ] || key_only=1
     errf="$(mktemp "${TMPDIR:-/tmp}/gaffer-trust.XXXXXX" 2>/dev/null)" || errf=""
+    unsafe=""
     if [ -n "$errf" ]; then
       GAFFER_DATA="${GAFFER_DATA:-}" GAFFER_TRUST_ALLOW_REPO=1 GAFFER_TRUST_KEY_ONLY="$key_only" \
         node "$RUNNER_DIR/lib/trust-workspace.mjs" "$path" 2>"$errf"
       rc=$?
       cat "$errf" >>"$GAFFER_LOG" 2>/dev/null || true
       tail="$(tail -n 2 "$errf" 2>/dev/null | tr '\n' ' ' | cut -c1-300)"
+      unsafe="$(grep 'unsafe_worktree_path:' "$errf" 2>/dev/null | tail -n 1)"
       rm -f "$errf"
     else
       GAFFER_DATA="${GAFFER_DATA:-}" GAFFER_TRUST_ALLOW_REPO=1 GAFFER_TRUST_KEY_ONLY="$key_only" \
@@ -86,6 +88,11 @@ gaffer_trust_workspace() {
       *) fix="fix ~/.claude.json or remove its stale lock ~/.claude.json.gaffer-trust.lock, then run again" ;;
     esac
     _GAFFER_TRUST_ERROR="trust_unwritable: $path (exit $rc): ${tail% }; $fix"
+    # A path in the worktree trust refused to write through (.claude/settings.local.json
+    # that cannot be neutralised) is the same refusal as the installer's: the launch sites
+    # park on _GAFFER_UNSAFE_PATH_ERROR (blocked with the path) instead of a setup error
+    # that releases the ticket to ready and refuses it again on every run.
+    [ -n "$unsafe" ] && _GAFFER_UNSAFE_PATH_ERROR="unsafe_worktree_path:${unsafe#*unsafe_worktree_path:}"
     log "TRUST: could not pre-trust $path${key_only:+ (main repo root of $dir)}: $_GAFFER_TRUST_ERROR"
     return 1
   done

@@ -575,7 +575,8 @@ a presence boolean, and an argument not on the allowlist is never copied.
   URL's origin and the status only (never the path, where Slack keeps its secret, the
   query or user information), every URL in a sink's error is cut to its origin, and
   the dashboard link in an event is sent without user information or a query. A
-  delivery that times out is aborted.
+  delivery that times out is aborted, and a redirect is never followed: a 3xx answer
+  is a failed delivery, so it cannot move the POST to a host the URL policy refuses.
 - **Memory.** Agent suggestions (`suggest_lore`, `report_conflict`) land as drafts, and
   the record a conflict challenges is never mutated. Restricted records are left out of
   default search, and an MCP fetch of one is refused unless

@@ -7,7 +7,10 @@ import type { HttpTransport, NotifyEvent, NotifySink } from "../types.js";
  * 20+ (the engine floor) ships a global `fetch`, so no dependency is needed.
  */
 const fetchTransport: HttpTransport = async (url, init) => {
-  const res = await fetch(url, init);
+  // Never follow a redirect: a 3xx could move the POST (and its body) to a host the
+  // URL policy would have refused. The 3xx comes back as a non-2xx answer, so the sink
+  // reports it as a failed delivery by origin and status; the Location is never read.
+  const res = await fetch(url, { ...init, redirect: "manual" });
   // The body is never read; cancel it so the connection is released at once.
   await res.body?.cancel().catch(() => undefined);
   return { ok: res.ok, status: res.status };

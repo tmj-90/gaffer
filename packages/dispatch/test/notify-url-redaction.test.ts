@@ -210,3 +210,48 @@ describe("scrubMessage on hostile free text (review)", () => {
     expect(out).not.toContain("FAKE_WEBHOOK");
   });
 });
+
+describe("a webhook redirect is a failed delivery, never followed (review)", () => {
+  const servers: Server[] = [];
+  afterEach(async () => {
+    for (const s of servers.splice(0)) {
+      s.closeAllConnections();
+      await new Promise<void>((r) => s.close(() => r()));
+    }
+  });
+
+  async function listen(handler: Parameters<typeof createServer>[1]): Promise<number> {
+    const s = createServer(handler);
+    servers.push(s);
+    await new Promise<void>((r) => s.listen(0, "127.0.0.1", () => r()));
+    return (s.address() as AddressInfo).port;
+  }
+
+  it("a 302 to another host is reported by sink, origin and status; the target gets nothing", async () => {
+    const reached: string[] = [];
+    const targetPort = await listen((req, res) => {
+      reached.push(`${req.method} ${req.url}`);
+      res.writeHead(200);
+      res.end();
+    });
+    const location = `http://127.0.0.1:${targetPort}/landing/LOCATION_MARKER_${SECRET}`;
+    const hookPort = await listen((_req, res) => {
+      res.writeHead(302, { location });
+      res.end();
+    });
+    for (const make of [
+      (u: string) => new WebhookSink(u),
+      (u: string) => new SlackSink(u),
+    ]) {
+      const sink = make(`http://127.0.0.1:${hookPort}/services/TFAKE/BFAKE/${SECRET}`);
+      const { logged, reported } = await failThrough(sink);
+      expect(reported).toBe(`webhook POST to http://127.0.0.1:${hookPort} returned 302`);
+      expectNoSecret(reported, ...logged);
+      for (const t of [reported, ...logged]) {
+        expect(t).not.toContain("LOCATION_MARKER");
+        expect(t).not.toContain(String(targetPort));
+      }
+    }
+    expect(reached).toEqual([]);
+  });
+});

@@ -186,3 +186,27 @@ describe("a timed-out notification aborts its HTTP request", () => {
     expect(gotSignal?.aborted).toBe(true);
   });
 });
+
+describe("scrubMessage on hostile free text (review)", () => {
+  it("runs in linear time on a long dotted run with no URL in it", async () => {
+    const { scrubMessage } = await import("../src/notify/redactUrl.js");
+    // A run of scheme characters (letters and dots) used to be re-scanned from every
+    // word boundary: 100k characters took seconds, so a long sink error could stall
+    // the notifier.
+    const text = "a.".repeat(50_000);
+    const started = Date.now();
+    expect(scrubMessage(text, SLACK)).toBe(text);
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+
+  it("cuts a quoted URL to its origin before removing pieces of the configured one", async () => {
+    const { scrubMessage } = await import("../src/notify/redactUrl.js");
+    // The secret wrapped onto a second line: removing the path segment `services` first
+    // inserted `<redacted>`, which ended the URL match early and left the rest of the
+    // path (and the first half of the secret) in the message.
+    const wrapped = `failed: https://hooks.slack.com/services/TFAKE/BFAKE/FAKE_WEBHOOK\n_SECRET`;
+    const out = scrubMessage(wrapped, SLACK);
+    expect(out).toBe("failed: https://hooks.slack.com\n_SECRET");
+    expect(out).not.toContain("FAKE_WEBHOOK");
+  });
+});

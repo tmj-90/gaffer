@@ -31,20 +31,25 @@ export function urlOrigin(raw: string): string {
 }
 
 // An absolute URL in free text: scheme, then everything up to whitespace or a quote.
-const URL_IN_TEXT = /\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>`]+/gi;
+// A scheme starts only where no scheme character precedes it (not merely at a word
+// boundary): with `\b`, a long run like `a.a.a.` was re-scanned from every dot,
+// which is quadratic in the length of the message.
+const URL_IN_TEXT = /(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*:\/\/[^\s"'<>`]+/gi;
 
 /**
  * `text` with no trace of a URL beyond its origin. `configured` (the sink's URL, when
  * known) is removed piece by piece as well, whatever form the text quotes it in.
  */
 export function scrubMessage(text: string, configured?: string): string {
-  let out = text;
+  // URLs first: removing a piece of the configured URL inserts `<redacted>`, which
+  // would end a URL match early and leave the rest of its path in the message.
+  let out = text.replace(URL_IN_TEXT, (m) => urlOrigin(m));
   if (configured !== undefined && configured.trim() !== "") {
     const raw = configured.trim();
     out = out.split(raw).join(urlOrigin(raw));
     for (const piece of urlPieces(raw)) out = out.split(piece).join("<redacted>");
   }
-  return out.replace(URL_IN_TEXT, (m) => urlOrigin(m));
+  return out;
 }
 
 /** The parts of a URL that may carry a secret, longest first. */

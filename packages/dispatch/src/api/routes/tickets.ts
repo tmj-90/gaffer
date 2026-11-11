@@ -3,7 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { computeAcceptance } from "../../cli/ops.js";
 import type { Dispatch, TicketDetailPart } from "../../core.js";
 import type { Actor } from "../../domain/types.js";
-import { hideOutOfScopeDependencies } from "../../services/accessScope.js";
+import { hideOutOfScopeDependencies, scopeBlockingDecisions } from "../../services/accessScope.js";
 import { settleApproveOutcome } from "../../services/approveOutcome.js";
 import { AUTO_MERGE_ENV, envFlagOn } from "../../services/autonomyPolicyService.js";
 import { DispatchError } from "../../util/errors.js";
@@ -58,7 +58,7 @@ import {
 } from "../schemas.js";
 import { API_ACTOR, apiActor, apiPrincipal, isSharedOperator, operatorActor } from "./context.js";
 import { forgetLoreDrafts } from "./readModels.js";
-import { requestTicketFilter } from "../scopeGate.js";
+import { requestDecisionFilter, requestTicketFilter } from "../scopeGate.js";
 import { reviewRuleThreshold } from "../../health/reviewRules.js";
 import { proposeReviewRules } from "../../services/reviewRuleService.js";
 
@@ -357,7 +357,12 @@ export async function routeTickets(
         // node), so the Epics view can group tickets under their epic without a
         // new endpoint. The data is already computed by `view()`.
         scopes: view.scopes,
-        blocking_decisions: view.blockingDecisions,
+        // DECISION VISIBILITY: a decision a scoped principal may not read (one also
+        // linked to a ticket outside its scope) shows as a generic blocker, no content.
+        blocking_decisions: scopeBlockingDecisions(
+          view.blockingDecisions,
+          requestDecisionFilter(wg),
+        ),
         dependencies: hideOutOfScopeDependencies(view.dependencies, requestTicketFilter(wg)),
         evidence: view.evidence,
         events: view.events,
@@ -1299,7 +1304,9 @@ export async function routeTickets(
 
   // /tickets/:id/claimability — GET {ready, blockers, warnings} from the gate.
   if (segments.length === 3 && sub === TICKET_SUB.CLAIMABILITY && method === "GET") {
-    sendJson(res, 200, wg.claimability(id));
+    // DECISION VISIBILITY: a blocking decision outside the caller's scope is named
+    // generically (it still blocks).
+    sendJson(res, 200, wg.claimability(id, requestDecisionFilter(wg)));
     return;
   }
 

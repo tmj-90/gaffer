@@ -1351,10 +1351,17 @@ async function renderTicket(id) {
           blockers.map((d) =>
             el("li", {}, [
               ycard(18),
-              el("div", {}, [
-                el("strong", {}, d.title),
-                el("div", { class: "ac-meta" }, `${d.severity} · ${d.status}`),
-              ]),
+              // A decision outside a scoped token's scope comes as the bare fact (no id,
+              // title or question: the server leaves them out), and it still blocks.
+              d.outside_scope
+                ? el("div", { title: scopeTitle() }, [
+                    el("strong", {}, "A decision outside this token's scope"),
+                    el("div", { class: "ac-meta dim" }, "It still blocks this ticket."),
+                  ])
+                : el("div", {}, [
+                    el("strong", {}, d.title),
+                    el("div", { class: "ac-meta" }, `${d.severity} · ${d.status}`),
+                  ]),
             ]),
           ),
         ),

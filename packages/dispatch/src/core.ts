@@ -816,6 +816,16 @@ export class Dispatch {
     return principalAdmin.decisionTicketIds(this, decisionId);
   }
 
+  /**
+   * DECISION VISIBILITY: may a holder with this ticket filter read a decision? Null when
+   * unscoped. The one rule every decision-bearing response applies.
+   */
+  decisionVisibility(
+    ticketVisible: ((ticketId: string) => boolean) | null,
+  ): ((decisionId: string) => boolean) | null {
+    return principalAdmin.decisionVisibility(this, ticketVisible);
+  }
+
   assertPrincipalAccess(principal: PrincipalView, action: AccessAction, access?: Access): void {
     return principalAdmin.assertPrincipalAccess(this, principal, action, access);
   }
@@ -1055,8 +1065,15 @@ export class Dispatch {
    * forces `ready:false` — even for a ticket already in `ready` status — so the
    * runner/UI sees the hard gate that stops a claim.
    */
-  claimability(ticketRef: string): ClaimabilityResult {
-    return this.ticketSvc.claimability(ticketRef);
+  /**
+   * `decisionVisible`: the reader's decision filter (null or omitted: unscoped). A
+   * blocking decision it may not read is still a blocker, named generically.
+   */
+  claimability(
+    ticketRef: string,
+    decisionVisible?: ((decisionId: string) => boolean) | null,
+  ): ClaimabilityResult {
+    return this.ticketSvc.claimability(ticketRef, decisionVisible);
   }
 
   /** cli-wg/F-12: ready, not by hand, deps done, no open blocking decision. */

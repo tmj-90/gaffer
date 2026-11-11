@@ -10,7 +10,11 @@ import {
   TICKET_STATUSES,
 } from "../../domain/types.js";
 import type { AutonomyPolicyGate } from "../../repositories/autonomyPolicyRepository.js";
-import { hideOutOfScopeDependencies } from "../../services/accessScope.js";
+import {
+  hideOutOfScopeDependencies,
+  scopeBlockingDecisions,
+  scopeDecisionList,
+} from "../../services/accessScope.js";
 import { DispatchError } from "../../util/errors.js";
 import {
   AS_HUMAN_OR_SYSTEM_HELP,
@@ -227,8 +231,13 @@ export function registerTicket(program: Command): void {
       // BLINDING: while the ticket is in review and the judge's view has not been opened
       // this round, the eval judge's grade is hidden (Dispatch.readerView).
       const { judgeHidden, ...view } = wg.readerView(ref);
+      // DECISION VISIBILITY: a decision a scoped principal may not read (one also linked
+      // to a ticket outside its scope) is a generic blocker, and its answer is left out.
+      const decisionVisible = wg.decisionVisibility(cliTicketFilter(wg));
       printJson({
         ...view,
+        blockingDecisions: scopeBlockingDecisions(view.blockingDecisions, decisionVisible),
+        resolvedDecisions: scopeDecisionList(view.resolvedDecisions, decisionVisible),
         dependencies: hideOutOfScopeDependencies(view.dependencies, cliTicketFilter(wg)),
         ...(judgeHidden
           ? {

@@ -258,6 +258,12 @@ export const TicketDetailsBatch = z
   })
   .strict();
 
+/** A blocking decision outside a scoped principal's scope: the fact, no content. */
+const OutsideScopeDecisionRow = z
+  .object({ id: z.null(), title: z.null(), outside_scope: z.literal(true) })
+  .strict()
+  .describe("A blocking decision outside this credential's scope (no id or content).");
+
 /** One side of an escaped-defect link (MF5). */
 const RegressionLinkView = z
   .object({
@@ -278,7 +284,11 @@ export const TicketDetail = z
     acceptance_criteria: z.array(AcceptanceCriterionRow),
     repositories: z.array(z.record(z.string(), z.unknown())),
     scopes: z.array(z.record(z.string(), z.unknown())),
-    blocking_decisions: z.array(DecisionRow),
+    blocking_decisions: z
+      .array(z.union([DecisionRow, OutsideScopeDecisionRow]))
+      .describe(
+        "Open decisions blocking the ticket. One a scoped principal may not read (also linked to a ticket outside its scope) is `{ id: null, title: null, outside_scope: true }`: it still blocks.",
+      ),
     dependencies: z.array(z.record(z.string(), z.unknown())),
     evidence: z.array(z.record(z.string(), z.unknown())),
     events: z.array(z.record(z.string(), z.unknown())),

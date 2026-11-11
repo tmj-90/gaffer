@@ -3,11 +3,11 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { Dispatch } from "../core.js";
 import {
   authConfigured,
-  hasValidBearer,
-  isMutationAuthorized,
-  isRequestAuthorized,
-  requestPrincipal,
+  authorized,
+  mutationAuthorized,
+  resolveRequestAuth,
   setPrincipalResolver,
+  validBearer,
 } from "./auth.js";
 import { errorBody, handleError, sendJson } from "./http.js";
 import { createMemoryReader, type MemoryReader } from "./memoryReader.js";
@@ -18,7 +18,7 @@ import { createPollWorkRunner, type PollWorkRunner } from "./pollWork.js";
 import { authorizePrincipalRequest } from "./scopeGate.js";
 import { createProductOwnerRunner, type ProductOwnerRunner } from "./productOwner.js";
 import { routeApi } from "./routes/api.js";
-import { API_ACTOR, runWithActor } from "./routes/context.js";
+import { runWithAuth } from "./routes/context.js";
 import { routeClaims } from "./routes/claims.js";
 import { routeDecisions } from "./routes/decisions.js";
 import { routeEpics } from "./routes/epics.js";
@@ -206,7 +206,13 @@ async function route(
     // caller is legitimate (this lets a tokened client reach a `--host 0.0.0.0` or
     // proxy-fronted deploy whose Host header never matches the bind host). NOTE:
     // hasValidBearer, not header presence — a wrong token gets no bypass.
-    if (!hasValidBearer(req) && !isHostHeaderAllowed(req, bindHost)) {
+    //
+    // IDENTITY, RESOLVED ONCE: the credential is looked up here, once, and every gate
+    // below and every route reads this one frozen answer (routes/context.ts). A
+    // principal revoked by another process part way through the request cannot turn
+    // it into the shared operator, and a credential that does not resolve is refused.
+    const auth = resolveRequestAuth(req);
+    if (!validBearer(auth) && !isHostHeaderAllowed(req, bindHost)) {
       sendJson(res, 403, {
         error: { code: "FORBIDDEN_HOST", message: "Host or Origin not permitted." },
       });
@@ -220,7 +226,7 @@ async function route(
     // present the token — loopback reads included. There is no tokenless loopback
     // read path (the SPA sends the bearer on every call). No-op only when auth is
     // fully disabled (no token configured — embedder/test posture).
-    if (!isRequestAuthorized(req)) {
+    if (!authorized(auth)) {
       sendJson(res, 401, {
         error: { code: "UNAUTHORIZED", message: "Missing or invalid bearer token." },
       });
@@ -238,7 +244,7 @@ async function route(
     // full token, so this is strictly additive: zero behaviour change for an
     // operator who does nothing. No per-route allowlist — it keys on the existing
     // method structure.
-    if (method !== "GET" && method !== "HEAD" && !isMutationAuthorized(req)) {
+    if (method !== "GET" && method !== "HEAD" && !mutationAuthorized(auth)) {
       sendJson(res, 403, {
         error: {
           code: "READ_ONLY_TOKEN",
@@ -250,34 +256,30 @@ async function route(
 
     // PER-PRINCIPAL CREDENTIALS: attribute everything this request writes to the
     // principal it authenticated as (the shared token keeps the single API actor).
-    const principal = requestPrincipal(req);
-    await runWithActor(
-      principal ? principal.actor : API_ACTOR,
-      async () => {
-        // PRINCIPAL SCOPES: a named principal's request is checked against its admin
-        // flag and repo/ticket scope before any route runs (api/scopeGate.ts); a
-        // refusal is 403 SCOPE_DENIED naming the scope. The shared token skips it.
-        if (principal) {
-          await authorizePrincipalRequest(wg, principal.principal, method, segments, req);
-        }
-        await dispatchResource(
-          wg,
-          runner,
-          planBuildRunner,
-          mergeRunner,
-          pollWorkRunner,
-          memoryReader,
-          onboardRunner,
-          specAuthorRunner,
-          method,
-          segments,
-          url,
-          req,
-          res,
-        );
-      },
-      principal ? principal.principal : null,
-    );
+    const principal = auth.principal;
+    await runWithAuth(auth, async () => {
+      // PRINCIPAL SCOPES: a named principal's request is checked against its admin
+      // flag and repo/ticket scope before any route runs (api/scopeGate.ts); a
+      // refusal is 403 SCOPE_DENIED naming the scope. The shared token skips it.
+      if (principal) {
+        await authorizePrincipalRequest(wg, principal.principal, method, segments, req);
+      }
+      await dispatchResource(
+        wg,
+        runner,
+        planBuildRunner,
+        mergeRunner,
+        pollWorkRunner,
+        memoryReader,
+        onboardRunner,
+        specAuthorRunner,
+        method,
+        segments,
+        url,
+        req,
+        res,
+      );
+    });
   } catch (err) {
     handleError(res, err);
   }

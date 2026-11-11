@@ -51,20 +51,68 @@ export function setPrincipalResolver(resolver: PrincipalResolver | null): void {
 }
 
 /**
- * The principal a request authenticates as, or null when it carries none (a
- * shared token, or no token). A principal is only resolved when the credential
- * has the principal-token shape and the shared tokens did NOT match, so the
- * shared tokens keep their exact semantics.
+ * IDENTITY, RESOLVED ONCE (external review 17). Everything the server decides about a
+ * request's credential, from one lookup: whether it is valid, its capability tier, and
+ * the principal it authenticated as. The server resolves it once per request
+ * ({@link resolveRequestAuth}), freezes it, and runs the request under it
+ * (routes/context.ts); no later step looks the credential up again, so a revocation by
+ * another process part way through a request cannot change who the request is.
+ *
+ * `via` says HOW it authenticated, and only `shared_full` / `shared_read` / `disabled`
+ * are the shared operator: being the operator is decided by having presented the shared
+ * token (or auth being off), never by a principal being absent. A principal-shaped
+ * token that does not resolve is `none` (refused with 401), never the operator.
  */
-export function requestPrincipal(req: IncomingMessage): ResolvedPrincipal | null {
-  if (!principalResolver) return null;
+export interface RequestAuth {
+  /**
+   * - `disabled`: no token configured (the embedder/test posture): the operator;
+   * - `shared_full` / `shared_read`: the shared full token / its derived read token;
+   * - `principal`: an active named principal token;
+   * - `none`: missing, malformed, unknown or revoked: refused upstream.
+   */
+  readonly via: "disabled" | "shared_full" | "shared_read" | "principal" | "none";
+  /** The capability tier (null: no valid credential). */
+  readonly capability: ApiCapability | null;
+  /** The principal it authenticated as (set exactly when a principal token resolved). */
+  readonly principal: ResolvedPrincipal | null;
+}
+
+/**
+ * Resolve a request's credential: the ONE lookup a request's identity comes from (the
+ * principal resolver runs at most once). The shared tokens are compared first so their
+ * semantics never change; a principal is resolved only when the credential has the
+ * principal-token shape and matched neither. With auth disabled a principal token is
+ * still resolved (its writes are attributed to it), as before.
+ */
+export function resolveRequestAuth(req: IncomingMessage): RequestAuth {
   const full = apiToken();
   const provided = bearer(req);
-  if (provided.length === 0 || !looksLikePrincipalToken(provided)) return null;
-  if (full && (tokenMatches(provided, full) || tokenMatches(provided, deriveReadToken(full)))) {
-    return null;
+  const done = (
+    via: RequestAuth["via"],
+    capability: ApiCapability | null,
+    principal: ResolvedPrincipal | null = null,
+  ): RequestAuth => Object.freeze({ via, capability, principal });
+  if (full && provided.length > 0) {
+    if (tokenMatches(provided, full)) return done("shared_full", "full");
+    if (tokenMatches(provided, deriveReadToken(full))) return done("shared_read", "read");
   }
-  return principalResolver(provided);
+  const principal =
+    principalResolver && provided.length > 0 && looksLikePrincipalToken(provided)
+      ? principalResolver(provided)
+      : null;
+  if (!full) return principal ? done("principal", "full", principal) : done("disabled", "full");
+  if (principal) return done("principal", principal.principal.capability, principal);
+  return done("none", null);
+}
+
+/**
+ * The principal a request authenticates as, or null when it carries none (a shared
+ * token, or no token). A FRESH lookup: inside a request, read the request's resolved
+ * identity instead (routes/context.ts `apiAuth()`); this is for code that must re-check
+ * the credential on purpose (a live feed cut off on revocation).
+ */
+export function requestPrincipal(req: IncomingMessage): ResolvedPrincipal | null {
+  return resolveRequestAuth(req).principal;
 }
 
 /** The configured bearer token, trimmed; "" means auth is disabled. */
@@ -236,16 +284,7 @@ export function deriveReadToken(full: string): string {
  *   down-graded.
  */
 export function requestCapability(req: IncomingMessage): ApiCapability | null {
-  const full = apiToken();
-  if (!full) return "full";
-  const provided = bearer(req);
-  if (provided.length === 0) return null;
-  if (tokenMatches(provided, full)) return "full";
-  if (tokenMatches(provided, deriveReadToken(full))) return "read";
-  // A named principal token: its stored capability (revoked/unknown ⇒ null).
-  const p = requestPrincipal(req);
-  if (p) return p.principal.capability;
-  return null;
+  return resolveRequestAuth(req).capability;
 }
 
 /**
@@ -257,7 +296,14 @@ export function requestCapability(req: IncomingMessage): ApiCapability | null {
  * are byte-for-byte unchanged.
  */
 export function isMutationAuthorized(req: IncomingMessage): boolean {
-  return apiToken().length === 0 || requestCapability(req) === "full";
+  return mutationAuthorized(resolveRequestAuth(req));
+}
+
+/** {@link isMutationAuthorized} on an identity already resolved. */
+export function mutationAuthorized(auth: RequestAuth): boolean {
+  return auth.via === "disabled" || (auth.via !== "principal" && !apiToken())
+    ? true
+    : apiToken().length === 0 || auth.capability === "full";
 }
 
 /**
@@ -267,12 +313,14 @@ export function isMutationAuthorized(req: IncomingMessage): boolean {
  * `human` principal are not admins. Gates read-back of secret-bearing settings.
  */
 export function isAdminRequest(req: IncomingMessage): boolean {
-  const full = apiToken();
-  if (!full) return true;
-  const provided = bearer(req);
-  if (provided.length === 0) return false;
-  if (tokenMatches(provided, full)) return true;
-  const p = requestPrincipal(req);
+  return adminAuth(resolveRequestAuth(req));
+}
+
+/** {@link isAdminRequest} on an identity already resolved. */
+export function adminAuth(auth: RequestAuth): boolean {
+  if (!apiToken()) return true;
+  if (auth.via === "shared_full") return true;
+  const p = auth.via === "principal" ? auth.principal : null;
   return Boolean(p && p.principal.capability === "full" && p.principal.actor_type === "admin");
 }
 
@@ -287,7 +335,12 @@ export function isAdminRequest(req: IncomingMessage): boolean {
  * LAN (phone / proxied deploy whose Host never matches the bind host) can load.
  */
 export function hasValidBearer(req: IncomingMessage): boolean {
-  return apiToken().length > 0 && requestCapability(req) !== null;
+  return validBearer(resolveRequestAuth(req));
+}
+
+/** {@link hasValidBearer} on an identity already resolved. */
+export function validBearer(auth: RequestAuth): boolean {
+  return apiToken().length > 0 && auth.capability !== null;
 }
 
 /**
@@ -295,7 +348,12 @@ export function hasValidBearer(req: IncomingMessage): boolean {
  * configured), or a correct `Authorization: Bearer <token>` is present.
  */
 export function isAuthorized(req: IncomingMessage): boolean {
-  return apiToken().length === 0 || hasValidBearer(req);
+  return authorized(resolveRequestAuth(req));
+}
+
+/** {@link isAuthorized} on an identity already resolved. */
+export function authorized(auth: RequestAuth): boolean {
+  return apiToken().length === 0 || validBearer(auth);
 }
 
 /**

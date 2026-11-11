@@ -6,6 +6,7 @@ import type {
   Notifier,
   NotifySink,
 } from "./types.js";
+import { linkWithoutCredentials, scrubMessage } from "./redactUrl.js";
 
 /** Logger default — wraps `console.warn` so prod logs land somewhere visible. */
 const consoleLogger: NotifyLogger = {
@@ -20,13 +21,29 @@ const consoleLogger: NotifyLogger = {
  * dropped, so nothing agent-controllable is exfiltrated to a webhook/Slack sink.
  */
 export function redactEvent(event: NotifyEvent): NotifyEvent {
+  const url = event.url !== undefined ? linkWithoutCredentials(event.url) : undefined;
   return {
     kind: event.kind,
     at: event.at,
     ...(event.status !== undefined ? { status: event.status } : {}),
     ...(event.ticket_number !== undefined ? { ticket_number: event.ticket_number } : {}),
-    ...(event.url !== undefined ? { url: event.url } : {}),
+    ...(url !== undefined ? { url } : {}),
   };
+}
+
+/**
+ * Every outbound event, redacted or full, carries its deep link without user
+ * information or a query: a `GAFFER_DASHBOARD_URL` set to the dashboard's
+ * `?token=` login link must not post the token to a webhook or Slack channel.
+ */
+function withSafeLink(event: NotifyEvent): NotifyEvent {
+  if (event.url === undefined) return event;
+  const url = linkWithoutCredentials(event.url);
+  if (url === event.url) return event;
+  const copy: { -readonly [K in keyof NotifyEvent]: NotifyEvent[K] } = { ...event };
+  if (url === undefined) delete copy.url;
+  else copy.url = url;
+  return copy;
 }
 
 /**
@@ -70,7 +87,7 @@ export class CompositeNotifier implements Notifier {
     // When redaction is on, strip agent-influenceable free text BEFORE the event
     // reaches any sink, so every outbound channel (webhook + Slack) gets the
     // minimal shape — one chokepoint rather than per-sink redaction.
-    const outbound = this.redact ? redactEvent(event) : event;
+    const outbound = this.redact ? redactEvent(event) : withSafeLink(event);
     for (const sink of this.sinks) {
       this.fireOne(sink, outbound);
     }
@@ -84,7 +101,7 @@ export class CompositeNotifier implements Notifier {
    */
   async notifyAndReport(event: NotifyEvent): Promise<NotifyDeliveryReport> {
     if (!this.allow.has(event.kind)) return { filtered: true, sinks: [] };
-    const outbound = this.redact ? redactEvent(event) : event;
+    const outbound = this.redact ? redactEvent(event) : withSafeLink(event);
     const sinks = await Promise.all(
       this.sinks.map(async (sink) => {
         try {
@@ -95,7 +112,7 @@ export class CompositeNotifier implements Notifier {
           return {
             name: sink.name,
             ok: false,
-            error: err instanceof Error ? err.message : String(err),
+            error: scrubMessage(err instanceof Error ? err.message : String(err)),
           };
         }
       }),
@@ -118,7 +135,9 @@ export class CompositeNotifier implements Notifier {
   }
 
   private logFailure(sinkName: string, err: unknown): void {
-    const message = err instanceof Error ? err.message : String(err);
+    // A sink's own error is scrubbed again here (a custom or desktop sink may quote
+    // a URL): a log line names a URL by its origin only.
+    const message = scrubMessage(err instanceof Error ? err.message : String(err));
     this.logger.warn(`[notify] sink '${sinkName}' failed: ${message}`);
   }
 }

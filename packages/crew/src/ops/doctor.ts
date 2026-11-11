@@ -360,23 +360,24 @@ function modeLooserThan(path: string, required: number): string | undefined {
  * creates the log itself.
  */
 function isAuditWritable(path: string): boolean {
+  // The writer appends to `path` and creates its missing parents, so the answer is
+  // yes only when that can work: an existing target must be a FILE we may write
+  // (a directory there cannot be appended to), and the nearest existing ancestor
+  // must be a DIRECTORY we may write (nothing can be created under a regular file,
+  // whatever its permission bits say; that used to read as writable).
   try {
     if (existsSync(path)) {
+      if (!statSync(path).isFile()) return false;
       accessSync(path, constants.W_OK);
       return true;
     }
-    const dir = dirname(path);
-    if (existsSync(dir)) {
-      accessSync(dir, constants.W_OK);
-      return true;
+    let ancestor = dirname(path);
+    while (!existsSync(ancestor)) {
+      const up = dirname(ancestor);
+      if (up === ancestor) return false;
+      ancestor = up;
     }
-    // Parent dir absent: the writer would mkdir it. Walk up to the nearest
-    // existing ancestor and check we could create beneath it.
-    let ancestor = dirname(dir);
-    while (ancestor && ancestor !== dirname(ancestor) && !existsSync(ancestor)) {
-      ancestor = dirname(ancestor);
-    }
-    if (!existsSync(ancestor)) return false;
+    if (!statSync(ancestor).isDirectory()) return false;
     accessSync(ancestor, constants.W_OK);
     return true;
   } catch {

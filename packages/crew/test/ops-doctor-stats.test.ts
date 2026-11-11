@@ -5,7 +5,15 @@
  *   - structuredContent presence on every MCP tool;
  *   - the MCP audit wiring redacts free-text args (no command/prompt leak).
  */
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -209,14 +217,15 @@ describe("ops: doctor + stats + audit wiring", () => {
     expect(report.ok).toBe(false);
   });
 
-  // As root every directory is writable, so the "not writable" branch cannot be
-  // observed — skip (with the reason in the title) instead of failing in a root
-  // container; the ok-path test below still runs.
-  const isRoot = typeof process.getuid === "function" && process.getuid() === 0;
-  it.skipIf(isRoot)("doctor warns when the audit log target is not writable", async () => {
-    // Point the audit path at a location whose nearest existing ancestor doesn't
-    // exist on any writable root: a path under a guaranteed-missing absolute dir.
-    const unwritable = "/crew-nonexistent-root-xyz/deep/audit.jsonl";
+  // The "not writable" branch used to point the audit log under a missing top-level
+  // directory and assume "/" is not writable: false for root, and for a test user who
+  // owns "/" (doctor then correctly said the writer could create it). Each case below
+  // builds its own unwritable target instead of assuming the host.
+  it("doctor warns when the audit log's nearest existing ancestor is a file", async () => {
+    // No one, root included, can create a directory under a regular file.
+    const blocker = join(tmp, "audit-blocker");
+    writeFileSync(blocker, "");
+    const unwritable = join(blocker, "deep", "audit.jsonl");
     const report = await runDoctor({
       ctx,
       openDispatch: async () => dispatch,
@@ -226,6 +235,43 @@ describe("ops: doctor + stats + audit wiring", () => {
     expect(auditCheck?.level).toBe("warn");
     expect(auditCheck?.detail).toContain("not writable");
     expect(auditCheck?.fix).toBeDefined();
+  });
+
+  it("doctor warns when the audit log path is a directory, or its parent is a file", async () => {
+    const asDir = join(tmp, "audit-is-a-dir");
+    mkdirSync(asDir);
+    const fileParent = join(tmp, "audit-parent-file");
+    writeFileSync(fileParent, "");
+    for (const unwritable of [asDir, join(fileParent, "audit.jsonl")]) {
+      const report = await runDoctor({
+        ctx,
+        openDispatch: async () => dispatch,
+        env: { GAFFER_AUDIT: unwritable },
+      });
+      const auditCheck = report.checks.find((c) => c.label === "Audit log");
+      expect(auditCheck?.level, unwritable).toBe("warn");
+      expect(auditCheck?.detail).toContain("not writable");
+    }
+  });
+
+  // Permission bits do not bind root, so this case needs a non-root user.
+  const isRoot = typeof process.getuid === "function" && process.getuid() === 0;
+  it.skipIf(isRoot)("doctor warns when the audit log's directory is read-only", async () => {
+    const ro = join(tmp, "audit-readonly");
+    mkdirSync(ro);
+    chmodSync(ro, 0o500);
+    try {
+      const report = await runDoctor({
+        ctx,
+        openDispatch: async () => dispatch,
+        env: { GAFFER_AUDIT: join(ro, "audit.jsonl") },
+      });
+      const auditCheck = report.checks.find((c) => c.label === "Audit log");
+      expect(auditCheck?.level).toBe("warn");
+      expect(auditCheck?.detail).toContain("not writable");
+    } finally {
+      chmodSync(ro, 0o700);
+    }
   });
 
   it("doctor reports the audit log ok when its directory is writable", async () => {

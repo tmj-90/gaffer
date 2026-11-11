@@ -1864,10 +1864,16 @@ export class Dispatch {
       repoName?: string;
       evidenceSummary?: string;
       policyPack?: string;
+      sourceUrl?: string;
     },
     actor: Actor,
-  ): { ticketId: string; number: number } {
+  ): { ticketId: string; number: number; deduped?: boolean } {
     return ticketLifecycle.createDraftTicket(this, input, actor);
+  }
+
+  /** The ticket recording exactly this source (ingest dedup; see util/ticketMarkers.ts). */
+  findTicketBySource(sourceUrl: string): { ticketId: string; number: number } | undefined {
+    return this.ticketSvc.findTicketBySource(sourceUrl);
   }
 
   attachDeliveryEvidence(

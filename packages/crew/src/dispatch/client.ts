@@ -344,17 +344,27 @@ export interface DispatchClient {
      */
     findingKey?: string;
     /**
+     * The issue's source URL (ingest). The description must already end with its
+     * `Source:` marker (`formatSourceMarker`). Dispatch checks for an existing ticket
+     * with the same canonical source inside the create transaction and returns it
+     * with `deduped: true` instead of creating a second one, so two racing ingests
+     * cannot both create.
+     */
+    sourceUrl?: string;
+    /**
      * Dispatch policy pack to create the draft under (e.g. `solo_loose`,
      * `factory_strict`). Threaded from `config.default_policy_pack`. Omitted →
      * Dispatch's own default (`solo_loose`) applies.
      */
     policyPack?: string;
-  }): { ticketId: string; number: number };
+  }): { ticketId: string; number: number; deduped?: boolean };
   /**
    * Find an existing ticket whose description records the given source URL
-   * (written by ingest as `Source: <url>`). This is the source of truth for
-   * ingest dedup: it lets creation be idempotent independent of any external
-   * relabelling side effect. Returns the matching ticket id, or undefined.
+   * (written by ingest as its last `Source: <url>` line). The match is EXACT on the
+   * canonical URL (dispatch/ticket-markers), never a substring: `issues/1` is not
+   * `issues/10`. This is the source of truth for ingest dedup: it lets creation be
+   * idempotent independent of any external relabelling side effect. Returns the
+   * matching ticket id, or undefined.
    */
   findTicketBySource(sourceUrl: string): { ticketId: string } | undefined;
   /**

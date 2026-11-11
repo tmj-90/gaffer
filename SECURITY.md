@@ -571,7 +571,11 @@ a presence boolean, and an argument not on the allowlist is never copied.
   `GAFFER_NOTIFY_ALLOW_PRIVATE=1`) and send a minimal body (kind, ticket number, status,
   dashboard URL) unless `GAFFER_NOTIFY_FULL_PAYLOAD=1`. The URLs are credentials, so the
   settings API reports only `configured` and the host; only an admin principal reads
-  the value back.
+  the value back. A failed delivery is logged and reported with the sink name, the
+  URL's origin and the status only (never the path, where Slack keeps its secret, the
+  query or user information), every URL in a sink's error is cut to its origin, and
+  the dashboard link in an event is sent without user information or a query. A
+  delivery that times out is aborted.
 - **Memory.** Agent suggestions (`suggest_lore`, `report_conflict`) land as drafts, and
   the record a conflict challenges is never mutated. Restricted records are left out of
   default search, and an MCP fetch of one is refused unless

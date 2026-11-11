@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -134,9 +134,20 @@ describe("detectDefaultBranch", () => {
 
   it("returns undefined for a missing path or a non-git directory", () => {
     expect(detectDefaultBranch(undefined)).toBeUndefined();
-    const plain = mkdtempSync(join(tmpdir(), "gaffer-plain-"));
-    dirs.push(plain);
-    expect(detectDefaultBranch(plain)).toBeUndefined();
+    const outer = realpathSync(mkdtempSync(join(tmpdir(), "gaffer-plain-")));
+    dirs.push(outer);
+    const plain = join(outer, "plain");
+    mkdirSync(plain);
+    // The temp dir may live inside a checkout (TMPDIR under a git work tree): stop
+    // git's upward search at our own folder rather than assume no checkout above it.
+    const prev = process.env.GIT_CEILING_DIRECTORIES;
+    process.env.GIT_CEILING_DIRECTORIES = outer;
+    try {
+      expect(detectDefaultBranch(plain)).toBeUndefined();
+    } finally {
+      if (prev === undefined) delete process.env.GIT_CEILING_DIRECTORIES;
+      else process.env.GIT_CEILING_DIRECTORIES = prev;
+    }
   });
 });
 

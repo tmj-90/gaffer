@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -222,7 +222,12 @@ describe("POST /repos/onboard", () => {
   it("refuses an existing directory that is not a git repository, and a symlink to one (exploratory finding api-robustness/F7)", async () => {
     // /etc and a symlink to it used to be registered as repos (default branch main, a
     // Memory digest written) and then accepted as a write target.
-    const dir = mkdtempSync(join(tmpdir(), "wg-onboard-nogit-"));
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "wg-onboard-nogit-")));
+    // The temp dir may itself live inside a checkout (TMPDIR under a git work tree):
+    // stop the upward .git search at our own folder, as git does, instead of
+    // assuming the host has no checkout above it.
+    const prevCeiling = process.env.GIT_CEILING_DIRECTORIES;
+    process.env.GIT_CEILING_DIRECTORIES = dir;
     try {
       const plain = join(dir, "plain");
       mkdirSync(plain);
@@ -242,6 +247,8 @@ describe("POST /repos/onboard", () => {
       expect(ok.status).toBe(202);
       expect(h.runs).toEqual([{ repo: plain }]);
     } finally {
+      if (prevCeiling === undefined) delete process.env.GIT_CEILING_DIRECTORIES;
+      else process.env.GIT_CEILING_DIRECTORIES = prevCeiling;
       rmSync(dir, { recursive: true, force: true });
     }
   });

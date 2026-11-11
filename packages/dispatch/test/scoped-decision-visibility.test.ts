@@ -241,18 +241,6 @@ describe("one decision-visibility rule (REST)", () => {
       { id: null, title: null, outside_scope: true },
     ]);
 
-    // Claimability: still blocked by both decisions, the shared one named generically.
-    const claim = await call(base, "GET", `/tickets/${a.id}/claimability`, tok);
-    expect(claim.status).toBe(200);
-    expectNoRestricted(claim.text, w, "GET /tickets/:id/claimability");
-    expect(claim.body.ready).toBe(false);
-    const blocker = (claim.body.blockers as Array<{ code: string; message: string }>).find(
-      (b) => b.code === "DECISION_BLOCKED",
-    );
-    expect(blocker?.message).toContain("2 decisions");
-    expect(blocker?.message).toContain(OWN_TITLE);
-    expect(blocker?.message).toContain("outside this credential's scope");
-
     // The policy still counts the hidden decision: A is not claimable for anyone.
     expect(wg.claimability(a.id).ready).toBe(false);
     expect(
@@ -279,6 +267,23 @@ describe("one decision-visibility rule (REST)", () => {
     }
     // The live feed carries ticket events only.
     expectNoRestricted(await readStream(base, tok, 800), w, "GET /api/events/stream");
+  });
+
+  it("an A-only reader's claimability names the shared decision generically, and still counts it", async () => {
+    const w = await start();
+    const { base, wg, a } = w;
+    const tok = mint(wg, "a-only", [a]);
+    // Claimability: still blocked by both decisions, the shared one named generically.
+    const claim = await call(base, "GET", `/tickets/${a.id}/claimability`, tok);
+    expect(claim.status).toBe(200);
+    expectNoRestricted(claim.text, w, "GET /tickets/:id/claimability");
+    expect(claim.body.ready).toBe(false);
+    const blocker = (claim.body.blockers as Array<{ code: string; message: string }>).find(
+      (b) => b.code === "DECISION_BLOCKED",
+    );
+    expect(blocker?.message).toContain("2 decisions");
+    expect(blocker?.message).toContain(OWN_TITLE);
+    expect(blocker?.message).toContain("outside this credential's scope");
   });
 
   it("negative control: the shared token, an unscoped principal and an A+B principal read it whole", async () => {
@@ -400,6 +405,24 @@ describe("the factory MCP mount: every decision on the agent's own ticket", () =
     expect(
       (gotB.structuredContent.blocking_decisions as Blocking).filter((d) => d.outside_scope),
     ).toEqual([{ id: null, title: null, outside_scope: true }]);
+    wg.db.close();
+  });
+
+  it("a factory mount bound to no ticket (product owner, planning) lists every pending decision", () => {
+    // Those agents are told to check list_pending_decisions before request_decision; a
+    // decision they cannot see is one they file again.
+    const wg = Dispatch.open(":memory:", new TestClock());
+    const w = seed(wg);
+    const bOnly = wg.createDecision(
+      { title: "B-ONLY-TITLE-q7", question: "?", severity: "human_required", ticketId: w.b.id },
+      human,
+    );
+    process.env.GAFFER_FACTORY = "1";
+    const h = makeHandlers(wg, mcpAgent);
+    const ids = (h.list_pending_decisions({}).structuredContent.decisions as Decision[]).map(
+      (d) => d.id,
+    );
+    expect(ids.sort()).toEqual([bOnly.id, w.shared.id, w.own.id].sort());
     wg.db.close();
   });
 

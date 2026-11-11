@@ -561,8 +561,9 @@ while it cost the reviewer, tester, clarify and planning agents (whose only sour
 `get_ticket`) the answer to a decision on their own ticket. A factory agent reads every
 decision linked to a ticket its mount is bound to, whatever else it is linked to, and the
 unattached ones; a decision only on other tickets is left out of `list_pending_decisions`
-and shows on another ticket only as the generic blocker. Its writes stay bound to its
-tickets.
+and shows on another ticket only as the generic blocker. A mount bound to no ticket
+(product owner, planning) lists every pending decision, so it does not file one again.
+Its writes stay bound to its tickets.
 
 A request's credential is resolved once, before any gate, into a frozen identity that
 every later check and route reads. The shared operator is whoever presented the shared

@@ -180,7 +180,8 @@ export const TOOL_DESCRIPTIONS: Record<keyof typeof toolSchemas, string> = {
     "NOT a licence to make a human-required call yourself; if you need a " +
     "decision that isn't here, raise it with `request_decision`. In the factory " +
     "it lists the decisions linked to a ticket this mount is bound to (whatever " +
-    "else they are linked to) and the unattached ones.",
+    "else they are linked to) and the unattached ones; a mount bound to no ticket " +
+    "(product owner, planning) lists every pending decision.",
   request_decision:
     "**Escalate a real decision to a human — a product, architectural, or " +
     "security question that is not yours to answer.** Provide a clear `title` " +

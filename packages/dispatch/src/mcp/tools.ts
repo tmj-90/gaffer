@@ -452,10 +452,15 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
    * (whatever else it is linked to) and an unattached one (it "stays open to all", see
    * request_decision); a decision only on other tickets is left out of
    * list_pending_decisions and shown on another ticket only as the generic blocker.
-   * Null outside the factory (and for non-agent actors): no filtering.
+   * Null outside the factory (and for non-agent actors): no filtering. Null too for a
+   * mount bound to NO ticket (product owner, planning): those agents are told to check
+   * list_pending_decisions before request_decision, so they see every pending decision
+   * (as before), or they would file duplicates; hiding them would protect nothing.
    */
   const mountDecisionFilter = (): ((decisionId: string) => boolean) | null => {
     if (actor.type !== "agent" || !inFactoryContext()) return null;
+    const b = bindings();
+    if (!b.claimed && !b.scope && !b.review) return null;
     const ticketMemo = new Map<string, boolean>();
     const boundTicket = (ticketId: string): boolean => {
       const hit = ticketMemo.get(ticketId);

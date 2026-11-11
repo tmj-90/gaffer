@@ -315,6 +315,11 @@ export function parseFeatureLanding(stdout) {
   } catch {
     return null;
   }
+  return featureLandingFrom(obj);
+}
+
+/** One `feature-status` answer object, checked as parseFeatureLanding does; null if not. */
+function featureLandingFrom(obj) {
   if (!obj || typeof obj !== "object" || Array.isArray(obj)) return null;
   if (typeof obj.complete !== "boolean" || !Array.isArray(obj.tickets)) return null;
   const featureId =
@@ -325,7 +330,36 @@ export function parseFeatureLanding(stdout) {
     reason: String(obj.reason ?? ""),
     pending: Array.isArray(obj.pending) ? obj.pending : [],
     tickets: obj.tickets,
+    // The features a ticket's epics name when there is more than one (no id resolved).
+    ambiguous: Array.isArray(obj.ambiguous_features)
+      ? obj.ambiguous_features.filter((f) => typeof f === "string" && f.trim())
+      : [],
   };
+}
+
+/** The argv for one `feature-status --batch` read of many features by id. Pure. */
+export function featureStatusBatchArgs(featureIds) {
+  return ["epic", "feature-status", "--batch", ...featureIds.map((f) => String(f).trim())];
+}
+
+/**
+ * Parse `wg epic feature-status --batch` output: null unless it is an array with one
+ * answer per id asked, in order, each of them for that id (FAIL CLOSED: the caller
+ * treats the whole read as unreadable). Each element is what parseFeatureLanding gives.
+ */
+export function parseFeatureLandings(stdout, featureIds) {
+  let arr;
+  try {
+    arr = JSON.parse(String(stdout ?? ""));
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(arr) || arr.length !== featureIds.length) return null;
+  const out = arr.map(featureLandingFrom);
+  for (let i = 0; i < out.length; i++) {
+    if (!out[i] || out[i].featureId !== String(featureIds[i]).trim()) return null;
+  }
+  return out;
 }
 
 /**

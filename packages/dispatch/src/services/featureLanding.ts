@@ -67,6 +67,12 @@ export interface FeatureLanding {
   readonly cancelled: Array<number | null>;
   readonly complete: boolean;
   readonly reason: string;
+  /**
+   * With a ticket named and no feature id: the features its epics name when there is
+   * more than one (the landing cannot tell which one it is for, so it ships nothing and
+   * says so; the idle pass evaluates each by id). Empty otherwise.
+   */
+  readonly ambiguous_features: string[];
 }
 
 interface TicketRow {
@@ -102,15 +108,25 @@ function epicsOf(db: Db, ticketIds: readonly string[]): Array<{ id: string; name
     .all(...ticketIds) as Array<{ id: string; name: string }>;
 }
 
-/** Every ticket carrying `Feature-Id: <featureId>` (exact id, own line). */
-function markerTickets(db: Db, featureId: string): TicketRow[] {
+/** Every ticket carrying a marker, by the feature id it names (one scan of the table). */
+type MarkerIndex = Map<string, TicketRow[]>;
+
+function markerIndex(db: Db): MarkerIndex {
   const rows = db
     .prepare(
       `SELECT id, number, title, status, acceptance, description FROM tickets
         WHERE description LIKE '%Feature-Id:%' ORDER BY number`,
     )
     .all() as TicketRow[];
-  return rows.filter((r) => featureIdOf(r.description) === featureId);
+  const index: MarkerIndex = new Map();
+  for (const r of rows) {
+    const f = featureIdOf(r.description);
+    if (!f) continue;
+    const list = index.get(f);
+    if (list) list.push(r);
+    else index.set(f, [r]);
+  }
+  return index;
 }
 
 /** The epic's confirmed implementation members (any status) and its own acceptance ticket. */
@@ -174,11 +190,26 @@ export function featureLanding(
   db: Db,
   opts: { featureId?: string | null; ticketRef?: string | null },
 ): FeatureLanding {
-  const empty = (
-    featureId: string | null,
-    from: FeatureLanding["resolved_from"],
-    reason: string,
-  ): FeatureLanding => ({
+  return landingOf(db, opts, null);
+}
+
+/**
+ * {@link featureLanding} for many features at once (by id, no ticket), in the order
+ * given: one scan of the marked tickets for all of them. The idle re-evaluation reads
+ * every `building` feature this way, in one process instead of one per feature.
+ */
+export function featureLandings(db: Db, featureIds: readonly string[]): FeatureLanding[] {
+  const index = markerIndex(db);
+  return featureIds.map((featureId) => landingOf(db, { featureId }, index));
+}
+
+function empty(
+  featureId: string | null,
+  from: FeatureLanding["resolved_from"],
+  reason: string,
+  ambiguous: string[] = [],
+): FeatureLanding {
+  return {
     feature_id: featureId,
     resolved_from: from,
     epics: [],
@@ -188,8 +219,15 @@ export function featureLanding(
     cancelled: [],
     complete: false,
     reason,
-  });
+    ambiguous_features: ambiguous,
+  };
+}
 
+function landingOf(
+  db: Db,
+  opts: { featureId?: string | null; ticketRef?: string | null },
+  index: MarkerIndex | null,
+): FeatureLanding {
   let featureId = String(opts.featureId ?? "").trim() || null;
   let from: FeatureLanding["resolved_from"] = featureId ? "argument" : null;
   const named = opts.ticketRef ? ticketByRef(db, String(opts.ticketRef)) : undefined;
@@ -200,13 +238,14 @@ export function featureLanding(
     if (!named) return empty(null, null, "no feature id and no ticket named");
     const r = resolveFromTicket(db, named);
     if (!r.id) {
-      return empty(
-        null,
-        null,
-        r.ambiguous.length > 0
-          ? `ticket ${label(named)} is in epics that name more than one feature (${r.ambiguous.join(", ")})`
-          : `ticket ${label(named)} belongs to no feature`,
-      );
+      return r.ambiguous.length > 0
+        ? empty(
+            null,
+            null,
+            `ticket ${label(named)} is in epics that name more than one feature (${r.ambiguous.join(", ")})`,
+            r.ambiguous,
+          )
+        : empty(null, null, `ticket ${label(named)} belongs to no feature`);
     }
     featureId = r.id;
     from = r.from;
@@ -218,7 +257,7 @@ export function featureLanding(
     if (cur) cur.via.add(via);
     else byId.set(row.id, { row, via: new Set([via]) });
   };
-  const marked = markerTickets(db, featureId);
+  const marked = (index ?? markerIndex(db)).get(featureId) ?? [];
   for (const r of marked) add(r, "marker");
   if (named && !byId.has(named.id)) add(named, "ticket");
 
@@ -246,18 +285,28 @@ export function featureLanding(
   const landed = counted.filter((t) => t.landed).map((t) => t.number);
   const pending = pendingT.map((t) => t.number);
   const cancelled = tickets.filter((t) => !t.counted).map((t) => t.number);
-  const complete = counted.length > 0 && pendingT.length === 0;
+  // ANCHORED: the loop files every feature as an epic, so marked tickets that no epic
+  // holds are not a feature's work, only text that names it (an ingested issue body can
+  // quote a marker). They still count as members (a stray marked ticket next to the
+  // epic has to land too), but they never complete a feature on their own: before the
+  // epic exists (claimed, still being planned) or for a feature never planned. A
+  // prepared delta's claim (the named ticket, no marked ticket at all) needs no epic.
+  const anchored = epics.length > 0 || marked.length === 0;
+  const complete = counted.length > 0 && pendingT.length === 0 && anchored;
   const reason =
     tickets.length === 0
       ? `no ticket belongs to feature ${featureId}`
       : counted.length === 0
         ? `every ticket of feature ${featureId} was cancelled: nothing landed`
-        : complete
-          ? `every ticket of feature ${featureId} landed (${landed.map((n) => `#${n ?? "?"}`).join(", ")})` +
-            (cancelled.length > 0
-              ? `; cancelled, not counted: ${cancelled.map((n) => `#${n ?? "?"}`).join(", ")}`
-              : "")
-          : `feature ${featureId} is waiting on ${pendingT.map(label).join(", ")}`;
+        : !anchored
+          ? `feature ${featureId} has no epic: ${marked.map(label).join(", ")} carry its marker ` +
+            "but no feature epic holds them, so their landing ships nothing"
+          : complete
+            ? `every ticket of feature ${featureId} landed (${landed.map((n) => `#${n ?? "?"}`).join(", ")})` +
+              (cancelled.length > 0
+                ? `; cancelled, not counted: ${cancelled.map((n) => `#${n ?? "?"}`).join(", ")}`
+                : "")
+            : `feature ${featureId} is waiting on ${pendingT.map(label).join(", ")}`;
   return {
     feature_id: featureId,
     resolved_from: from,
@@ -268,5 +317,6 @@ export function featureLanding(
     cancelled,
     complete,
     reason,
+    ambiguous_features: [],
   };
 }

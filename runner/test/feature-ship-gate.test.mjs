@@ -19,6 +19,11 @@
 //   F7  memory unreachable on the completing landing       -> still building; the idle
 //       re-evaluation (lib/tick-idle.sh -> merge-ticket.mjs --reconcile-features) ships it;
 //       a feature whose every ticket was cancelled is never shipped by it
+//   F8  a ticket that only quotes a marker (an ingested issue body) ships nothing: not a
+//       backlog feature, not a building one whose epic is not filed yet, not an unknown id
+//   F9  an epic naming two features: its landing is held with the reason, the idle pass
+//       evaluates each by id
+//   F10 the idle pass asks Dispatch once for every building feature (not once each)
 // (The PR-mode landing paths are covered end to end in feature-ship-pr-landing.test.sh.)
 // Run: node runner/test/feature-ship-gate.test.mjs
 // =====================================================================
@@ -406,6 +411,119 @@ try {
       second.status === 0 &&
         second.out?.shipped?.length === 0 &&
         featureRow(w, f.id).shippedEvents === 1,
+    );
+  }
+
+  console.log("== F8: a ticket that only quotes a marker ships nothing (review of R3) ==");
+  {
+    const w = world("f8");
+    const addFeature = (name, status) =>
+      /added feature (\S+)/.exec(
+        w.lg("feature", "add", "demo", "--name", name, "--summary", "s", "--status", status),
+      )[1];
+    const ticket = (title, desc) =>
+      JSON.parse(w.wg("ticket", "create", "-t", title, "-d", desc)).ticket.number;
+    // An ingested issue body quoting a backlog feature's marker in a code block.
+    const backlog = addFeature("Never built", "backlog");
+    const t1 = ticket("Issue #12", "Steps to reproduce:\n```\nFeature-Id: " + backlog + "\n```\n");
+    setStatus(w, "done", t1);
+    const r1 = landed(w, t1);
+    assert(
+      `F8: a backlog feature is never shipped by a ticket quoting its marker (got ${featureRow(w, backlog).status}, ${r1.feature?.decision})`,
+      featureRow(w, backlog).status === "backlog" && r1.feature?.decision === "held",
+    );
+    // A feature claimed into building whose epic is not filed yet (still being planned).
+    const planning = addFeature("In planning", "building");
+    const t2 = ticket("Issue #13", "Feature-Id: " + planning);
+    setStatus(w, "done", t2);
+    const r2 = landed(w, t2);
+    assert(
+      `F8: a building feature with no epic yet is not shipped by a stray marked ticket (got ${featureRow(w, planning).status}, ${r2.feature?.decision})`,
+      featureRow(w, planning).status === "building" && r2.feature?.decision === "held",
+    );
+    const rec = mergeTicket(w, ["--reconcile-features"]);
+    assert(
+      "F8: nor by the idle pass",
+      rec.status === 0 && featureRow(w, planning).status === "building",
+    );
+    // An id the ledger does not hold: held and said so, not reported as a failed ship.
+    const t3 = ticket("Typo", "Feature-Id: nosuchfeature");
+    setStatus(w, "done", t3);
+    const r3 = landed(w, t3);
+    assert(
+      `F8: an unknown feature id is held, not a failed ship (${r3.feature?.decision}: ${r3.feature?.reason})`,
+      r3.feature?.decision === "held" && /no feature nosuchfeature/.test(r3.feature?.reason ?? ""),
+    );
+  }
+
+  console.log("== F9: an epic naming two features ships neither on its landing, says why ==");
+  {
+    const w = world("f9");
+    const ids = ["Alpha", "Beta"].map(
+      (name) =>
+        /added feature (\S+)/.exec(
+          w.lg("feature", "add", "demo", "--name", name, "--summary", "s", "--status", "building"),
+        )[1],
+    );
+    const planFile = resolve(w.dir, "plan-two.json");
+    writeFileSync(
+      planFile,
+      JSON.stringify({
+        epic: { name: "Two features", description: "x" },
+        tickets: ids.map((id, i) => ({
+          title: `part ${i}`,
+          description: `p\n\nFeature-Id: ${id}`,
+          acceptanceCriteria: ["w"],
+          repo: "demo",
+          dependsOn: [],
+        })),
+      }),
+    );
+    const res = JSON.parse(w.wg("epic", "create", planFile));
+    setStatus(w, "done", ...res.ticket_numbers, res.acceptance_ticket_number);
+    const r = landed(w, res.acceptance_ticket_number);
+    assert(
+      `F9: the acceptance landing is held with the reason (${JSON.stringify(r.feature)})`,
+      r.feature?.decision === "held" &&
+        /more than one feature/.test(r.feature?.reason ?? "") &&
+        ids.every((id) => featureRow(w, id).status === "building"),
+    );
+    const rec = mergeTicket(w, ["--reconcile-features"]);
+    assert(
+      "F9: the idle pass evaluates each by id and ships both",
+      rec.status === 0 && ids.every((id) => featureRow(w, id).status === "shipped"),
+    );
+  }
+
+  console.log("== F10: the idle pass asks Dispatch once for every building feature ==");
+  {
+    const w = world("f10");
+    const fs = [featureEpic(w, { name: "One" }), featureEpic(w, { name: "Two" })];
+    featureEpic(w, { name: "Three" });
+    for (const f of fs) setStatus(w, "done", ...f.tickets, f.acceptance);
+    const count = resolve(w.dir, "dispatch-calls.txt");
+    const wrapper = resolve(w.dir, "dispatch-count.mjs");
+    writeFileSync(
+      wrapper,
+      [
+        'import { appendFileSync } from "node:fs";',
+        'import { spawnSync } from "node:child_process";',
+        `appendFileSync(${JSON.stringify(count)}, process.argv.slice(2).join(" ") + "\\n");`,
+        `const r = spawnSync(process.execPath, [${JSON.stringify(DISPATCH_JS)}, ...process.argv.slice(2)], { stdio: "inherit" });`,
+        "process.exit(r.status ?? 1);",
+      ].join("\n"),
+    );
+    const rec = mergeTicket(w, ["--reconcile-features"], { DISPATCH_CLI: wrapper });
+    const calls = existsSync(count)
+      ? require("node:fs").readFileSync(count, "utf8").trim().split("\n").filter(Boolean)
+      : [];
+    assert(
+      `F10: two complete features shipped, one held (${JSON.stringify(rec.out)})`,
+      rec.status === 0 && rec.out?.shipped?.length === 2 && rec.out?.held === 1,
+    );
+    assert(
+      `F10: one Dispatch process for three features (got ${calls.length}: ${calls.join(" | ")})`,
+      calls.length === 1,
     );
   }
 } finally {

@@ -1420,6 +1420,11 @@ console.log("== B9: --apply-digest-only → digest/feature apply with no git mut
       "  process.stdout.write(JSON.stringify({ feature_id: real[2], complete: true, tickets: [], reason: 'stub' }));",
       "  process.exit(0);",
       "}",
+      // Memory's ledger: the feature is being built (a landing ships only that).
+      "if (real[0] === 'features' && real.includes('--all')) {",
+      "  process.stdout.write(JSON.stringify([{ id: 'lore_f9', repo: 'demo9', name: 'f9', status: 'building' }]));",
+      "  process.exit(0);",
+      "}",
       "process.exit(0);",
     ].join("\n"),
   );

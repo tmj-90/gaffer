@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 
 import { Dispatch } from "../src/core.js";
 import type { Actor } from "../src/domain/types.js";
-import { featureIdOf, featureLanding } from "../src/services/featureLanding.js";
+import { featureIdOf, featureLanding, featureLandings } from "../src/services/featureLanding.js";
 import { TestClock } from "../src/util/clock.js";
 
 const human: Actor = { type: "human", id: "tom" };
@@ -135,6 +135,82 @@ describe("featureLanding membership and decision", () => {
     expect(
       featureLanding(wg.db, { featureId: "f6", ticketRef: String(docs.number) }).complete,
     ).toBe(true);
+  });
+
+  it("marked tickets that no epic holds never complete a feature (a stray marker is not a feature)", () => {
+    // The loop files every feature as an epic. A ticket that only CARRIES the marker
+    // (an ingested issue body quoting it, in a code block or not) used to complete a
+    // feature that had no epic yet (claimed, still being planned) or never had one (a
+    // backlog feature): its landing shipped a feature nobody built.
+    const wg = fresh();
+    const stray = wg.createTicket(
+      { title: "Issue #12", description: "Steps:\n```\nFeature-Id: f8\n```\n" },
+      human,
+    );
+    setStatus(wg, "done", stray.number!);
+    const r = featureLanding(wg.db, { featureId: "f8" });
+    expect(r.tickets.map((t) => t.number)).toEqual([stray.number]);
+    expect(r.complete).toBe(false);
+    expect(r.reason).toMatch(/no epic/);
+    const byTicket = featureLanding(wg.db, { ticketRef: String(stray.number) });
+    expect(byTicket.feature_id).toBe("f8");
+    expect(byTicket.complete).toBe(false);
+    // Once the feature's epic exists, the stray ticket is one more ticket to land.
+    const [t1, acc] = featureEpic(wg, "f8", 1).ticketNumbers as [number, number];
+    setStatus(wg, "done", t1, acc);
+    expect(featureLanding(wg.db, { featureId: "f8" }).complete).toBe(true);
+    // An epic filed without an acceptance ticket still anchors the feature.
+    const [solo] = featureEpic(wg, "f9", 1, { acceptance: false }).ticketNumbers as [number];
+    setStatus(wg, "done", solo);
+    expect(featureLanding(wg.db, { featureId: "f9" }).complete).toBe(true);
+    // A prepared delta's claim (the named ticket, no marker anywhere) needs no epic.
+    const docs = wg.createTicket({ title: "Docs", description: "docs" }, human);
+    setStatus(wg, "done", docs.number!);
+    expect(
+      featureLanding(wg.db, { featureId: "f10", ticketRef: String(docs.number) }).complete,
+    ).toBe(true);
+  });
+
+  it("says which features a ticket's epics name when they name more than one", () => {
+    const wg = fresh();
+    const res = wg.createEpic(
+      {
+        epic: { name: "Two features", description: "x" },
+        tickets: [
+          {
+            title: "A",
+            description: "a\n\nFeature-Id: fa",
+            acceptanceCriteria: ["w"],
+            repo: "app",
+          },
+          {
+            title: "B",
+            description: "b\n\nFeature-Id: fb",
+            acceptanceCriteria: ["w"],
+            repo: "app",
+          },
+        ],
+      },
+      human,
+    );
+    const acc = res.acceptanceTicketNumber!;
+    const r = featureLanding(wg.db, { ticketRef: String(acc) });
+    expect(r.feature_id).toBeNull();
+    expect(r.ambiguous_features).toEqual(["fa", "fb"]);
+    expect(featureLanding(wg.db, { featureId: "fa" }).ambiguous_features).toEqual([]);
+  });
+
+  it("answers for many features in one call, each as it would alone", () => {
+    const wg = fresh();
+    const [a1, aacc] = featureEpic(wg, "ma", 1).ticketNumbers as [number, number];
+    featureEpic(wg, "mb", 2);
+    setStatus(wg, "done", a1, aacc);
+    const many = featureLandings(wg.db, ["ma", "mb", "none"]);
+    expect(many.map((r) => r.feature_id)).toEqual(["ma", "mb", "none"]);
+    for (const r of many) {
+      expect(r).toEqual(featureLanding(wg.db, { featureId: r.feature_id }));
+    }
+    expect(many.map((r) => r.complete)).toEqual([true, false, false]);
   });
 
   it("a feature with no tickets is never complete", () => {

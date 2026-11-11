@@ -116,13 +116,13 @@ rework_head() {
 }
 
 # Seed memory: a digest (so `digest touch` has something to stamp) and a BUILDING feature
-# whose id rides on the ticket description (`Feature-Id:`), exactly as the feature-backlog
-# loop stamps it — case C proves the AFK merge ships it.
+# whose id rides on the ticket description (`Feature-Id:`), filed as the one ticket of a
+# feature epic exactly as the feature-backlog loop files it (a marked ticket that no epic
+# holds never completes a feature); case C proves the AFK merge ships it.
 lg digest set repo --source onboard --overview o --structure s --conventions c --stack k >/dev/null 2>&1
 FEAT_ID="$(lg feature add repo --name "Hold probe" --summary "probe" --status building 2>/dev/null | sed -n 's/^memory: added feature \([^ ]*\) .*/\1/p')"
-N="$(wg ticket create -t "Hold probe" -d "deliver then review
-
-Feature-Id: $FEAT_ID" 2>/dev/null | jget 'd.ticket.number')"
+N="$(printf '{"epic":{"name":"Hold probe","description":"probe","acceptance":false},"tickets":[{"title":"Hold probe","description":"deliver then review\\n\\nFeature-Id: %s","acceptanceCriteria":["helper added"],"repo":"repo","testable":false,"dependsOn":[]}]}' "$FEAT_ID" \
+  | wg epic create - 2>/dev/null | jget 'd.ticket_numbers[0]')"
 wg ac add "$N" -t "helper added" >/dev/null 2>&1
 wg ticket repo-access set "$N" repo --access write --relation confirmed >/dev/null 2>&1
 wg ticket ready "$N" >/dev/null 2>&1

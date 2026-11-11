@@ -163,7 +163,9 @@ import {
   buildFeatureShippedCommands,
   buildMinimalDigestStamp,
   featureStatusArgs,
+  featureStatusBatchArgs,
   parseFeatureLanding,
+  parseFeatureLandings,
   parseFeatureRows,
   selectPreparedDelta,
   featureIdFromView,
@@ -2249,6 +2251,35 @@ function readFeatureLanding({ featureId, ticketNumber }) {
   return parseFeatureLanding(res.stdout);
 }
 
+/**
+ * Ask Dispatch about many features in ONE process (`feature-status --batch`), a chunk of
+ * ids per call; null when any chunk is unreadable. The idle pass used to spawn one
+ * Dispatch process per building feature (about 0.2 s each, on every idle pass).
+ */
+const FEATURE_STATUS_CHUNK = 200;
+function readFeatureLandings(featureIds) {
+  const out = [];
+  for (let i = 0; i < featureIds.length; i += FEATURE_STATUS_CHUNK) {
+    const ids = featureIds.slice(i, i + FEATURE_STATUS_CHUNK);
+    const res = runDispatch(featureStatusBatchArgs(ids));
+    if (res.error || res.status !== 0) return null;
+    const answers = parseFeatureLandings(res.stdout, ids);
+    if (!answers) return null;
+    out.push(...answers);
+  }
+  return out;
+}
+
+/**
+ * Where the ledger has a feature: its status, "missing" when there is no such row, or
+ * null when memory cannot be read.
+ */
+function featureStatusInLedger(id) {
+  const rows = readFeatureRows(["features", "--all", "--json"]);
+  if (!rows) return null;
+  return rows.find((r) => r.id === id)?.status || "missing";
+}
+
 /** The memory CLI's feature rows (`features <repo> --json` / `features --all --json`). */
 function readFeatureRows(args) {
   const res = runMemoryCli(args);
@@ -2303,10 +2334,13 @@ function shipFeature(id, reason) {
  *     ledger row by that name (repo + name, as addFeature dedupes), counted with this
  *     ticket as one of its tickets; a name the ledger does not know yet is a feature this
  *     one ticket built, recorded as shipped (it has no other work to wait for).
- *   - ship only when Dispatch says every counted ticket of it is done (`complete`).
+ *   - ship only when Dispatch says every counted ticket of it is done (`complete`; marked
+ *     tickets that no epic holds never complete a feature), and, for a feature found by
+ *     its marker or epic, only while the ledger has it in `building` (a marker is text a
+ *     ticket description can quote: it never ships a backlog feature or an unknown id).
  *   - FAIL CLOSED: Dispatch or memory unreadable, an unexpected answer, or a ticket in
- *     epics that name two features → nothing shipped, logged; the next landing or the
- *     idle pass re-evaluates.
+ *     epics that name two features: nothing shipped, logged with the reason; the next
+ *     landing or the idle pass (which evaluates each feature by id) re-evaluates.
  *
  * Returns `{ ran:[{kind, ok}], decision }` (decision null: the ticket has no feature).
  */
@@ -2320,43 +2354,69 @@ export function shipFeatureIfLanded({ ticketNumber, repo, featureId, view, delta
       ? delta.feature
       : null;
   let id = String(featureId ?? "").trim() || featureIdFromView(view) || "";
+  let landing = null;
+  let byDeltaName = false;
   if (!id) {
     const own = readFeatureLanding({ ticketNumber });
     if (!own) return held(null, "Dispatch could not say which feature the ticket belongs to");
     if (own.featureId) {
-      return own.complete
-        ? shipFeature(own.featureId, own.reason)
-        : held(own.featureId, own.reason);
+      id = own.featureId;
+      landing = own;
+    } else if (own.ambiguous.length > 0) {
+      // Its epics name more than one feature: this landing cannot tell which one it
+      // completes, so it ships none and says so; the idle pass evaluates each by id.
+      return held(null, own.reason);
+    } else {
+      if (!note) return { ran: [], decision: null };
+      // A prepared delta names the feature by name (the delivery agent knew no id).
+      const featureRepo = String(note.repo || repo || "").trim();
+      const name = String(note.name).trim().toLowerCase();
+      const rows = readFeatureRows(["features", featureRepo, "--json"]);
+      if (!rows) return held(null, `memory could not list the features of ${featureRepo}`);
+      const existing = rows.find((r) => r.name.trim().toLowerCase() === name);
+      if (!existing) {
+        const jobs = buildFeatureShippedCommands({ ticketNumber, repo, feature: note });
+        const ran = runMemoryJobs(jobs);
+        return {
+          ran,
+          decision: {
+            id: null,
+            name: note.name,
+            decision: ran.every((j) => j.ok) ? "added_shipped" : "ship_failed",
+            reason: "a feature the ledger did not know, built by this ticket alone",
+          },
+        };
+      }
+      if (existing.status === "shipped") {
+        return {
+          ran: [],
+          decision: { id: existing.id, decision: "already_shipped", reason: "already shipped" },
+        };
+      }
+      id = existing.id;
+      byDeltaName = true;
     }
-    if (!note) return { ran: [], decision: null };
-    // A prepared delta names the feature by name (the delivery agent knew no id).
-    const featureRepo = String(note.repo || repo || "").trim();
-    const name = String(note.name).trim().toLowerCase();
-    const rows = readFeatureRows(["features", featureRepo, "--json"]);
-    if (!rows) return held(null, `memory could not list the features of ${featureRepo}`);
-    const existing = rows.find((r) => r.name.trim().toLowerCase() === name);
-    if (!existing) {
-      const jobs = buildFeatureShippedCommands({ ticketNumber, repo, feature: note });
-      const ran = runMemoryJobs(jobs);
-      return {
-        ran,
-        decision: {
-          id: null,
-          name: note.name,
-          decision: ran.every((j) => j.ok) ? "added_shipped" : "ship_failed",
-          reason: "a feature the ledger did not know, built by this ticket alone",
-        },
-      };
-    }
-    if (existing.status === "shipped") {
-      return {
-        ran: [],
-        decision: { id: existing.id, decision: "already_shipped", reason: "already shipped" },
-      };
-    }
-    id = existing.id;
   }
-  const landing = readFeatureLanding({ featureId: id, ticketNumber });
+  if (!byDeltaName) {
+    // A marker is text anyone who writes a ticket description can copy. The loop marks
+    // tickets only for a feature it claimed into `building`, so a landing ships only a
+    // `building` feature: never a backlog one nobody planned, never an id the ledger
+    // does not hold (a delta naming a feature keeps its own rule above).
+    const status = featureStatusInLedger(id);
+    if (status === null) return held(id, "memory could not list the feature ledger");
+    if (status === "shipped") {
+      return { ran: [], decision: { id, decision: "already_shipped", reason: "already shipped" } };
+    }
+    if (status !== "building") {
+      return held(
+        id,
+        status === "missing"
+          ? `the ledger holds no feature ${id}`
+          : `feature ${id} is ${status}: a landing ships only a feature claimed into building`,
+      );
+    }
+  }
+  if (!landing) landing = readFeatureLanding({ featureId: id, ticketNumber });
   if (!landing) return held(id, "Dispatch could not list the feature's tickets");
   return landing.complete ? shipFeature(id, landing.reason) : held(id, landing.reason);
 }
@@ -2393,29 +2453,30 @@ export function reconcileFeatures() {
   }
   const rows = readFeatureRows(["features", "--all", "--status", "building", "--json"]);
   if (!rows) return { ok: false, checked: 0, shipped: [], held: 0, error: "memory unreadable" };
+  if (rows.length === 0) return { ok: true, checked: 0, shipped: [], held: 0 };
+  // One Dispatch process for all of them (in chunks), not one per feature.
+  const landings = readFeatureLandings(rows.map((f) => f.id));
+  if (!landings) {
+    return {
+      ok: false,
+      checked: rows.length,
+      shipped: [],
+      held: 0,
+      error: `Dispatch unreadable for ${rows.length} feature(s)`,
+    };
+  }
   const shipped = [];
   let held = 0;
-  let unreadable = 0;
-  for (const f of rows) {
-    const landing = readFeatureLanding({ featureId: f.id });
-    if (!landing) {
-      unreadable += 1;
-      continue;
-    }
+  rows.forEach((f, i) => {
+    const landing = landings[i];
     if (!landing.complete) {
       held += 1;
-      continue;
+      return;
     }
     const out = shipFeature(f.id, landing.reason);
     if (out.decision.decision === "shipped") shipped.push(f.id);
-  }
-  return {
-    ok: unreadable === 0,
-    checked: rows.length,
-    shipped,
-    held,
-    ...(unreadable ? { error: `Dispatch unreadable for ${unreadable} feature(s)` } : {}),
-  };
+  });
+  return { ok: true, checked: rows.length, shipped, held };
 }
 
 /**

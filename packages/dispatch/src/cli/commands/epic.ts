@@ -33,26 +33,43 @@ export function registerEpic(program: Command): void {
       wg.db.close();
     });
   epic
-    .command("feature-status [featureId]")
+    .command("feature-status [featureIds...]")
     .description(
       "Which tickets make up a feature of the memory ledger and whether they have all " +
         "landed: every ticket carrying `Feature-Id: <id>`, plus every confirmed member of an " +
         "epic holding one of them and that epic's own acceptance ticket. `complete` is true " +
-        "only when at least one counted ticket exists and every counted ticket is done; a " +
-        "cancelled (won't-do) ticket is listed but not counted. With --ticket <n> alone, the " +
-        "feature is the one that ticket belongs to (its own marker, else its epic's). Read only.",
+        "only when at least one counted ticket exists, every counted ticket is done and an " +
+        "epic holds the marked tickets; a cancelled (won't-do) ticket is listed but not " +
+        "counted. With --ticket <n> alone, the feature is the one that ticket belongs to (its " +
+        "own marker, else its epic's). With --batch, one answer per feature id, as a JSON " +
+        "array. Read only.",
     )
     .option("--ticket <ref>", "a ticket of the feature (number or id)")
-    .action(async (featureId: string | undefined, opts: { ticket?: string }, cmd) => {
-      // Loaded on use: the CLI loads no service module for help or a usage error.
-      const { featureLanding } = await import("../../services/featureLanding.js");
-      const wg = open(cmd.optsWithGlobals());
-      try {
-        printJson(
-          featureLanding(wg.db, { featureId: featureId ?? null, ticketRef: opts.ticket ?? null }),
-        );
-      } finally {
-        wg.db.close();
-      }
-    });
+    .option("--batch", "answer for every feature id given, as a JSON array (no --ticket)")
+    .action(
+      async (featureIds: string[], opts: { ticket?: string; batch?: boolean }, cmd: Command) => {
+        if (opts.batch && opts.ticket !== undefined) {
+          cmd.error("error: --batch takes feature ids only, not --ticket", { exitCode: 2 });
+        }
+        if (!opts.batch && featureIds.length > 1) {
+          cmd.error("error: more than one feature id needs --batch", { exitCode: 2 });
+        }
+        // Loaded on use: the CLI loads no service module for help or a usage error.
+        const { featureLanding, featureLandings } =
+          await import("../../services/featureLanding.js");
+        const wg = open(cmd.optsWithGlobals());
+        try {
+          printJson(
+            opts.batch
+              ? featureLandings(wg.db, featureIds)
+              : featureLanding(wg.db, {
+                  featureId: featureIds[0] ?? null,
+                  ticketRef: opts.ticket ?? null,
+                }),
+          );
+        } finally {
+          wg.db.close();
+        }
+      },
+    );
 }

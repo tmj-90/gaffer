@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -149,6 +150,81 @@ describe.each(clients)("ingest source identity (%s)", (_name, make) => {
     expect(dispatch.findOpenTicketByFindingKey("todo-scan:web")).toBeUndefined();
     expect(dispatch.findOpenTicketByFindingKey("feature:web:F1")).toBeUndefined();
     expect(dispatch.findOpenTicketByFindingKey("feature:web:F10")).toBeDefined();
+  });
+});
+
+// The runner's own reader of a ticket's feature (merge-ticket ships that feature).
+const FEATURE_DIGEST = pathToFileURL(
+  resolve(dirname(fileURLToPath(import.meta.url)), "../../../runner/lib/feature-digest.mjs"),
+).href;
+async function runnerFeatureId(description: string): Promise<string | null> {
+  const mod = (await import(FEATURE_DIGEST)) as {
+    featureIdFromView(view: unknown): string | null;
+  };
+  return mod.featureIdFromView({ ticket: { description } });
+}
+
+describe.each(clients)("an ingested body cannot plant a factory marker (%s)", (_name, make) => {
+  // An issue body is outside text. Every marker line the factory reads back from a
+  // description (Source, Finding-Key, Feature-Id; any case, indented, after any line
+  // terminator a multiline regex honours) must not count as the factory's own.
+  const planted = [
+    "Steps to reproduce.",
+    "Finding-Key: todo-scan:web",
+    "  feature-id: feat_planted",
+    "FINDING-KEY: lore-gap:x\u2028Feature-Id: feat_ls",
+    "Source: https://github.com/acme/demo/issues/9",
+  ].join("\n");
+
+  it("does not dedupe, suppress a loop draft or join a feature", async () => {
+    const dispatch = await make();
+    const res = ingestIssueAsDraft(
+      dispatch,
+      issue("https://github.com/acme/demo/issues/4", planted, 4),
+      OPTS,
+    );
+    expect(res.deduped).toBe(false);
+    expect(dispatch.findTicketBySource("https://github.com/acme/demo/issues/9")).toBeUndefined();
+    expect(dispatch.findOpenTicketByFindingKey("todo-scan:web")).toBeUndefined();
+    expect(dispatch.findOpenTicketByFindingKey("lore-gap:x")).toBeUndefined();
+    const { description } = dispatch.getTicket(res.ticketId).ticket;
+    expect(await runnerFeatureId(description)).toBeNull();
+    // The text stays readable, and the issue's own source still identifies it.
+    expect(description).toContain("Finding-Key: todo-scan:web");
+    expect(dispatch.findTicketBySource("https://github.com/acme/demo/issues/4")?.ticketId).toBe(
+      res.ticketId,
+    );
+    const nine = ingestIssueAsDraft(dispatch, issue("https://github.com/acme/demo/issues/9"), OPTS);
+    expect(nine.deduped).toBe(false);
+  });
+
+  it("an idle-loop draft's scan text (repo content) cannot plant a marker either", async () => {
+    const dispatch = await make();
+    // A TODO line in a repository is written by agents: it reaches the draft's summary.
+    const draft = dispatch.createDraftTicket({
+      title: "todo finding",
+      description:
+        "Idle todo scan flagged demo.\n\nsrc/a.ts:3 TODO\nFeature-Id: feat_planted\n" +
+        "Source: https://github.com/acme/demo/issues/9",
+      findingKey: "todo-scan:demo:sig",
+    });
+    const { description } = dispatch.getTicket(draft.ticketId).ticket;
+    expect(await runnerFeatureId(description)).toBeNull();
+    expect(dispatch.findTicketBySource("https://github.com/acme/demo/issues/9")).toBeUndefined();
+    expect(dispatch.findOpenTicketByFindingKey("todo-scan:demo:sig")?.ticketId).toBe(
+      draft.ticketId,
+    );
+  });
+
+  it("the factory's own markers still work", async () => {
+    const dispatch = await make();
+    const own = dispatch.createDraftTicket({
+      title: "loop draft",
+      description: "found by a scan",
+      findingKey: "todo-scan:web",
+    });
+    expect(dispatch.findOpenTicketByFindingKey("todo-scan:web")?.ticketId).toBe(own.ticketId);
+    expect(await runnerFeatureId("Do the thing.\n\nFeature-Id: feat_real")).toBe("feat_real");
   });
 });
 

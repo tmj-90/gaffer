@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 
-import { descriptionHasFindingKey, descriptionHasSource } from "dispatch/ticket-markers";
+import {
+  descriptionHasFindingKey,
+  descriptionHasSource,
+  quoteMarkerLines,
+} from "dispatch/ticket-markers";
 
 import { CrewError, notFound } from "../util/errors.js";
 import type {
@@ -522,8 +526,10 @@ export class FakeDispatchClient implements DispatchClient {
     sourceUrl?: string;
     policyPack?: string;
   }): { ticketId: string; number: number; deduped?: boolean } {
+    // An idle-loop draft carries scan output (repository text an agent can write): its
+    // marker-shaped lines are quoted so only the Finding-Key trailer below is read back.
     const description = p.findingKey
-      ? `${p.description ?? ""}\n\nFinding-Key: ${p.findingKey}`
+      ? `${quoteMarkerLines(p.description ?? "")}\n\nFinding-Key: ${p.findingKey}`
       : (p.description ?? "");
     // Same contract as Dispatch: the description records the source, and an
     // existing ticket for it is returned instead of a second one.

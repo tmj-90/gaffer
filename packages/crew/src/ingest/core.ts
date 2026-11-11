@@ -1,4 +1,4 @@
-import { formatSourceMarker } from "dispatch/ticket-markers";
+import { formatSourceMarker, quoteMarkerLines } from "dispatch/ticket-markers";
 
 import type { CommandRunner } from "../adapters/commandRunner.js";
 import type { CrewConfig } from "../config/schema.js";
@@ -86,7 +86,10 @@ export function ingestIssueAsDraft(
   // draft so whoever promotes it sees them; the Source marker stays the last line.
   const labels = (issue.labels ?? []).filter(Boolean);
   const labelLine = labels.length ? `\n\nLabels: ${labels.join(", ")}` : "";
-  const description = `${issue.body ?? ""}${labelLine}\n\n${formatSourceMarker(issue.url)}`;
+  // The body and labels are outside text: their marker-shaped lines are quoted so they
+  // cannot pose as the factory's Source, Finding-Key or Feature-Id (ONE place, here).
+  const outside = quoteMarkerLines(`${issue.body ?? ""}${labelLine}`);
+  const description = `${outside}\n\n${formatSourceMarker(issue.url)}`;
   const created = dispatch.createDraftTicket({
     title: issue.title,
     description,

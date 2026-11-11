@@ -577,6 +577,13 @@ a presence boolean, and an argument not on the allowlist is never copied.
   the dashboard link in an event is sent without user information or a query. A
   delivery that times out is aborted, and a redirect is never followed: a 3xx answer
   is a failed delivery, so it cannot move the POST to a host the URL policy refuses.
+- **Ticket markers.** The factory reads a few marker lines back from a ticket
+  description as its own (`Source:` for issue ingest dedupe, `Finding-Key:` for the idle
+  loops, `Feature-Id:` for which feature a merge ships). Outside text that lands in a
+  description (an ingested issue body and its labels, an idle scan's summary of repository
+  text, a planned ticket's text) has every marker-shaped line quoted as `> `, in any case
+  and after any line break, so it cannot dedupe an issue, suppress a loop's draft or name
+  a feature; only the trailer the factory appends is read back.
 - **Memory.** Agent suggestions (`suggest_lore`, `report_conflict`) land as drafts, and
   the record a conflict challenges is never mutated. Restricted records are left out of
   default search, and an MCP fetch of one is refused unless

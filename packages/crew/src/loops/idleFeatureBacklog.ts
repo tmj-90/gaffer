@@ -31,6 +31,8 @@
  *  - a stable finding key makes the epic idempotent across ticks;
  *  - any failure is caught and reported — a bad tick never crashes the runtime.
  */
+import { quoteMarkerLines } from "dispatch/ticket-markers";
+
 import { dateStamp } from "../util/clock.js";
 import { findingKey } from "./idleScans.js";
 import { resolveFeatureFailureStore, type FeatureFailureStore } from "./featureBacklogFailures.js";
@@ -222,8 +224,10 @@ async function processFeature(
       tickets: plan.tickets.map((t) => ({
         title: t.title,
         // The feature id rides on EVERY ticket (not only the epic) so the merge runner
-        // can read it back (`Feature-Id:` marker) and advance the feature to shipped.
-        description: `${t.description}\n\nFeature-Id: ${feature.id}`,
+        // can read it back (`Feature-Id:` marker) and advance the feature to shipped. The
+        // planned text is model output: its marker-shaped lines are quoted so it cannot
+        // name another feature (the runner reads the FIRST Feature-Id line).
+        description: `${quoteMarkerLines(t.description)}\n\nFeature-Id: ${feature.id}`,
         acceptanceCriteria: t.acceptanceCriteria,
         priority: t.priority,
         repoName: t.repo,

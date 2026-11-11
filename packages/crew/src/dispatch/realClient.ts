@@ -1,6 +1,10 @@
 import { existsSync } from "node:fs";
 
-import { descriptionHasFindingKey, descriptionHasSource } from "dispatch/ticket-markers";
+import {
+  descriptionHasFindingKey,
+  descriptionHasSource,
+  quoteMarkerLines,
+} from "dispatch/ticket-markers";
 
 import { CrewError } from "../util/errors.js";
 import type {
@@ -702,8 +706,10 @@ export class RealDispatchClient implements DispatchClient {
   }): { ticketId: string; number: number; deduped?: boolean } {
     // Stamp the stable de-dup marker into the description so later ticks find
     // the existing open ticket via findOpenTicketByFindingKey.
+    // An idle-loop draft carries scan output (repository text an agent can write): its
+    // marker-shaped lines are quoted so only the Finding-Key trailer below is read back.
     const description = p.findingKey
-      ? `${p.description ?? ""}\n\nFinding-Key: ${p.findingKey}`
+      ? `${quoteMarkerLines(p.description ?? "")}\n\nFinding-Key: ${p.findingKey}`
       : (p.description ?? "");
     // Operator's configured policy pack threads through; default to solo_loose
     // when unset so behaviour matches the schema default.

@@ -13,6 +13,36 @@
 
 export const SOURCE_MARKER = "Source";
 export const FINDING_KEY_MARKER = "Finding-Key";
+/** Stamped by crew's feature-backlog loop; runner/lib/feature-digest.mjs reads it to ship a feature. */
+export const FEATURE_ID_MARKER = "Feature-Id";
+
+/**
+ * Every marker line the factory reads back from a ticket description as its own. A new
+ * reader of a new marker adds its name here, so outside text cannot plant it.
+ */
+export const FACTORY_MARKERS: readonly string[] = [
+  SOURCE_MARKER,
+  FINDING_KEY_MARKER,
+  FEATURE_ID_MARKER,
+];
+
+// A line that any factory reader could take for a marker: optional horizontal space,
+// a marker name in any case, optional space, a colon. Line starts follow JavaScript's
+// multiline `^` (after \n, \r, U+2028 and U+2029), as the runner's readers do.
+const OUTSIDE_MARKER_LINE = new RegExp(
+  `^(?=[^\\S\\r\\n\\u2028\\u2029]*(?:${FACTORY_MARKERS.join("|")})[^\\S\\r\\n\\u2028\\u2029]*:)`,
+  "gim",
+);
+
+/**
+ * Outside text (an ingested issue body) with every marker-shaped line quoted as `> `,
+ * so no anchored whole-line reader (Source, Finding-Key, Feature-Id) takes it for the
+ * factory's own marker. The text stays readable; only the factory's trailer, appended
+ * after it, is read back.
+ */
+export function quoteMarkerLines(text: string): string {
+  return text.replace(OUTSIDE_MARKER_LINE, "> ");
+}
 
 /**
  * The value of the last whole-line `name: <value>` marker in `description`, if any.

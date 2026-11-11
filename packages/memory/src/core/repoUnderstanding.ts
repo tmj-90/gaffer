@@ -40,6 +40,7 @@ import type { Database } from "better-sqlite3";
 import type { Feature, FeatureRow, FeatureStatus, RepoDigest, RepoDigestRow } from "../db/types.js";
 import { newLoreId } from "./ids.js";
 import { stripEnvelopeTokens } from "./untrusted.js";
+import { inWriteTx } from "./writeTx.js";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -143,10 +144,11 @@ export function upsertDigest(db: Database, input: UpsertDigestInput): RepoDigest
   const conventions = stripEnvelopeTokens(input.conventions);
   const stack = stripEnvelopeTokens(input.stack);
 
-  const existing = db.prepare("SELECT repo FROM repo_digest WHERE repo = ?").get(repo) as
-    { repo: string } | undefined;
-
-  const tx = db.transaction(() => {
+  inWriteTx(db, () => {
+    // Read INSIDE the write transaction: a first write by two callers at once used
+    // to see "no digest" twice and both INSERT (the second failed on the key).
+    const existing = db.prepare("SELECT repo FROM repo_digest WHERE repo = ?").get(repo) as
+      { repo: string } | undefined;
     if (existing) {
       db.prepare(
         `UPDATE repo_digest SET
@@ -169,8 +171,85 @@ export function upsertDigest(db: Database, input: UpsertDigestInput): RepoDigest
       "INSERT INTO events (lore_id, kind, ts, payload) VALUES (?, 'digest_updated', ?, ?)",
     ).run(repo, ts, JSON.stringify({ repo, source, superseded: !!existing }));
   });
-  tx();
   return getDigest(db, repo)!;
+}
+
+/** The sections a partial digest write may carry; an omitted one keeps its value. */
+export interface MergeDigestInput {
+  readonly repo: string;
+  readonly overview?: string;
+  readonly structure?: string;
+  readonly conventions?: string;
+  readonly stack?: string;
+  readonly source: string;
+}
+
+/** Why {@link mergeDigest} refused: a first digest must carry every section. */
+export class DigestMergeError extends Error {
+  readonly missing: readonly string[];
+  constructor(repo: string, missing: readonly string[]) {
+    super(
+      `no digest for '${repo}' yet: the first set must include every section ` +
+        `(missing: ${missing.join(", ")})`,
+    );
+    this.name = "DigestMergeError";
+    this.missing = missing;
+  }
+}
+
+/**
+ * PARTIAL digest write: merge the passed sections into the current digest, keeping
+ * every section not passed. The read of the current digest and the write happen in
+ * ONE write transaction, so two partial writes at once never lose each other's
+ * sections (the CLI used to read the digest, then upsert it in a separate step).
+ * A first digest must carry every section ({@link DigestMergeError}).
+ */
+export function mergeDigest(
+  db: Database,
+  input: MergeDigestInput,
+): { digest: RepoDigest; created: boolean } {
+  const repo = normaliseRepo(input.repo);
+  return inWriteTx(db, () => {
+    const existing = getDigest(db, repo);
+    if (!existing) {
+      const missing: string[] = [];
+      if (input.overview === undefined) missing.push("--overview");
+      if (input.structure === undefined) missing.push("--structure");
+      if (input.conventions === undefined) missing.push("--conventions");
+      if (input.stack === undefined) missing.push("--stack");
+      if (missing.length > 0) throw new DigestMergeError(repo, missing);
+    }
+    const digest = upsertDigest(db, {
+      repo,
+      overview: input.overview ?? existing!.overview,
+      structure: input.structure ?? existing!.structure,
+      conventions: input.conventions ?? existing!.conventions,
+      stack: input.stack ?? existing!.stack,
+      source: input.source,
+    });
+    return { digest, created: !existing };
+  });
+}
+
+/**
+ * Freshness stamp: re-stamp `source` / `updated_at` and keep every section exactly as
+ * it is now, read and written in ONE write transaction (a section written by a
+ * concurrent partial set is never put back to its old text). Null when the repo has
+ * no digest yet.
+ */
+export function touchDigest(db: Database, repo: string, source: string): RepoDigest | null {
+  return inWriteTx(db, () => {
+    const existing = getDigest(db, repo);
+    if (!existing) return null;
+    return upsertDigest(db, {
+      repo: existing.repo,
+      overview: existing.overview,
+      structure: existing.structure,
+      conventions: existing.conventions,
+      stack: existing.stack,
+      source,
+    });
+  });
 }
 
 /** Fetch the current digest for a repo, or null if none has been written. */
@@ -266,42 +345,45 @@ export function addFeature(db: Database, input: AddFeatureInput): Feature {
   //     are still empty;
   //   • a blank incoming summary / provenance never overwrites a recorded one (a
   //     brownfield epic with no description used to wipe the backlog summary).
-  const existing = db
-    .prepare(
-      "SELECT id, status, summary, scope_node, area, provenance FROM feature WHERE repo = ? AND lower(name) = lower(?) LIMIT 1",
-    )
-    .get(repo, name) as
-    | {
-        id: string;
-        status: FeatureStatus;
-        summary: string;
-        scope_node: string | null;
-        area: string | null;
-        provenance: string | null;
-      }
-    | undefined;
-  if (existing) {
-    const order: FeatureStatus[] = ["backlog", "building", "shipped"];
-    const advances = order.indexOf(status) > order.indexOf(existing.status);
-    const next = advances ? status : existing.status;
-    const blank = (v: string | null | undefined): boolean => v == null || v.trim() === "";
-    const pick = (incoming: string | null | undefined, current: string | null): string | null => {
-      if (blank(incoming)) return current;
-      if (advances || blank(current)) return incoming as string;
-      return current;
-    };
-    const nextSummary = pick(summary, existing.summary) ?? "";
-    const nextScope = pick(scopeNode, existing.scope_node);
-    const nextArea = pick(area, existing.area);
-    const nextProvenance = pick(provenance, existing.provenance);
-    const changed =
-      advances ||
-      nextSummary !== existing.summary ||
-      nextScope !== existing.scope_node ||
-      nextArea !== existing.area ||
-      nextProvenance !== existing.provenance;
-    if (!changed) return getFeature(db, existing.id)!;
-    const tx0 = db.transaction(() => {
+  // The dedupe read, the decision and the write are ONE write transaction: a re-add
+  // that read `building`, while another caller advanced the row to `shipped`, used to
+  // write `building` back (and two first adds both inserted a row).
+  const featureId = inWriteTx(db, (): string => {
+    const existing = db
+      .prepare(
+        "SELECT id, status, summary, scope_node, area, provenance FROM feature WHERE repo = ? AND lower(name) = lower(?) LIMIT 1",
+      )
+      .get(repo, name) as
+      | {
+          id: string;
+          status: FeatureStatus;
+          summary: string;
+          scope_node: string | null;
+          area: string | null;
+          provenance: string | null;
+        }
+      | undefined;
+    if (existing) {
+      const order: FeatureStatus[] = ["backlog", "building", "shipped"];
+      const advances = order.indexOf(status) > order.indexOf(existing.status);
+      const next = advances ? status : existing.status;
+      const blank = (v: string | null | undefined): boolean => v == null || v.trim() === "";
+      const pick = (incoming: string | null | undefined, current: string | null): string | null => {
+        if (blank(incoming)) return current;
+        if (advances || blank(current)) return incoming as string;
+        return current;
+      };
+      const nextSummary = pick(summary, existing.summary) ?? "";
+      const nextScope = pick(scopeNode, existing.scope_node);
+      const nextArea = pick(area, existing.area);
+      const nextProvenance = pick(provenance, existing.provenance);
+      const changed =
+        advances ||
+        nextSummary !== existing.summary ||
+        nextScope !== existing.scope_node ||
+        nextArea !== existing.area ||
+        nextProvenance !== existing.provenance;
+      if (!changed) return existing.id;
       db.prepare(
         `UPDATE feature SET status = ?, summary = ?, scope_node = ?, area = ?, provenance = ?,
            updated_at = ?
@@ -314,14 +396,10 @@ export function addFeature(db: Database, input: AddFeatureInput): Feature {
         ts,
         JSON.stringify({ repo, from: existing.status, to: next, dedupedBy: "repo+name" }),
       );
-    });
-    tx0();
-    return getFeature(db, existing.id)!;
-  }
+      return existing.id;
+    }
 
-  const id = newLoreId();
-
-  const tx = db.transaction(() => {
+    const id = newLoreId();
     db.prepare(
       `INSERT INTO feature
          (id, repo, scope_node, name, summary, status, area, provenance, created_at, updated_at)
@@ -341,9 +419,9 @@ export function addFeature(db: Database, input: AddFeatureInput): Feature {
     db.prepare(
       "INSERT INTO events (lore_id, kind, ts, payload) VALUES (?, 'feature_added', ?, ?)",
     ).run(id, ts, JSON.stringify({ repo, scopeNode: scopeNode ?? null, status }));
+    return id;
   });
-  tx();
-  return getFeature(db, id)!;
+  return getFeature(db, featureId)!;
 }
 
 export function getFeature(db: Database, id: string): Feature | null {
@@ -388,25 +466,37 @@ export function advanceFeature(db: Database, id: string, toStatus: FeatureStatus
       `advanceFeature: '${toStatus}' is not a valid status`,
     );
   }
-  const current = db.prepare("SELECT status FROM feature WHERE id = ?").get(id) as
-    { status: FeatureStatus } | undefined;
-  if (!current) {
-    throw new AdvanceFeatureError("unknown_id", `advanceFeature: no feature with id '${id}'`);
-  }
-  if (!isLegalFeatureTransition(current.status, toStatus)) {
-    throw new AdvanceFeatureError(
-      "illegal_transition",
-      `advanceFeature: ${current.status} → ${toStatus} is not a legal transition`,
-    );
-  }
   const ts = nowIso();
-  const tx = db.transaction(() => {
-    db.prepare("UPDATE feature SET status = ?, updated_at = ? WHERE id = ?").run(toStatus, ts, id);
+  // Read, validate and write in ONE write transaction (IMMEDIATE: the lock is taken
+  // before the read), and the UPDATE is conditional on the status that was validated.
+  // A concurrent claim, ship or release on another connection either finished before
+  // this read (and is validated against) or waits for this commit; it can never land
+  // between the check and the write (external review 17).
+  inWriteTx(db, () => {
+    const current = db.prepare("SELECT status FROM feature WHERE id = ?").get(id) as
+      { status: FeatureStatus } | undefined;
+    if (!current) {
+      throw new AdvanceFeatureError("unknown_id", `advanceFeature: no feature with id '${id}'`);
+    }
+    if (!isLegalFeatureTransition(current.status, toStatus)) {
+      throw new AdvanceFeatureError(
+        "illegal_transition",
+        `advanceFeature: ${current.status} → ${toStatus} is not a legal transition`,
+      );
+    }
+    const moved = db
+      .prepare("UPDATE feature SET status = ?, updated_at = ? WHERE id = ? AND status = ?")
+      .run(toStatus, ts, id, current.status);
+    if (moved.changes !== 1) {
+      throw new AdvanceFeatureError(
+        "illegal_transition",
+        `advanceFeature: the feature is no longer '${current.status}'`,
+      );
+    }
     db.prepare(
       "INSERT INTO events (lore_id, kind, ts, payload) VALUES (?, 'feature_advanced', ?, ?)",
     ).run(id, ts, JSON.stringify({ from: current.status, to: toStatus }));
   });
-  tx();
   return getFeature(db, id)!;
 }
 
@@ -423,25 +513,37 @@ export function advanceFeature(db: Database, id: string, toStatus: FeatureStatus
  * shows the claim was returned.
  */
 export function releaseFeature(db: Database, id: string): Feature {
-  const current = db.prepare("SELECT status FROM feature WHERE id = ?").get(id) as
-    { status: FeatureStatus } | undefined;
-  if (!current) {
-    throw new AdvanceFeatureError("unknown_id", `releaseFeature: no feature with id '${id}'`);
-  }
-  if (current.status !== "building") {
-    throw new AdvanceFeatureError(
-      "illegal_transition",
-      `releaseFeature: only a 'building' feature can be released (it is '${current.status}')`,
-    );
-  }
   const ts = nowIso();
-  const tx = db.transaction(() => {
-    db.prepare("UPDATE feature SET status = 'backlog', updated_at = ? WHERE id = ?").run(ts, id);
+  // Same discipline as advanceFeature: the `building` check and the move back to
+  // `backlog` are one write transaction, conditional on `building`, so a stale release
+  // can never move a feature that was shipped meanwhile back to the backlog.
+  inWriteTx(db, () => {
+    const current = db.prepare("SELECT status FROM feature WHERE id = ?").get(id) as
+      { status: FeatureStatus } | undefined;
+    if (!current) {
+      throw new AdvanceFeatureError("unknown_id", `releaseFeature: no feature with id '${id}'`);
+    }
+    if (current.status !== "building") {
+      throw new AdvanceFeatureError(
+        "illegal_transition",
+        `releaseFeature: only a 'building' feature can be released (it is '${current.status}')`,
+      );
+    }
+    const moved = db
+      .prepare(
+        "UPDATE feature SET status = 'backlog', updated_at = ? WHERE id = ? AND status = 'building'",
+      )
+      .run(ts, id);
+    if (moved.changes !== 1) {
+      throw new AdvanceFeatureError(
+        "illegal_transition",
+        "releaseFeature: the feature is no longer 'building'",
+      );
+    }
     db.prepare(
       "INSERT INTO events (lore_id, kind, ts, payload) VALUES (?, 'feature_released', ?, ?)",
     ).run(id, ts, JSON.stringify({ from: "building", to: "backlog" }));
   });
-  tx();
   return getFeature(db, id)!;
 }
 
@@ -508,5 +610,29 @@ export function listFeatures(
          name`,
     )
     .all(...params) as FeatureRow[];
+  return rows.map(rowToFeature);
+}
+
+/**
+ * Every feature in the ledger, across repos, optionally narrowed by status, in the same
+ * order as {@link listFeatures} (then by repo). The merge runner's re-evaluation pass
+ * reads the `building` ones: a feature whose last ticket landed while memory could not be
+ * written is shipped there, instead of being stranded in `building`.
+ */
+export function listAllFeatures(db: Database, opts: { status?: FeatureStatus } = {}): Feature[] {
+  if (opts.status !== undefined && !ALLOWED_FEATURE_STATUSES.has(opts.status)) {
+    throw new Error(
+      `listAllFeatures: status must be one of backlog | building | shipped (got ${JSON.stringify(opts.status)})`,
+    );
+  }
+  const rows = db
+    .prepare(
+      `SELECT * FROM feature
+       ${opts.status !== undefined ? "WHERE status = ?" : ""}
+       ORDER BY
+         CASE status WHEN 'backlog' THEN 0 WHEN 'building' THEN 1 ELSE 2 END,
+         repo, name`,
+    )
+    .all(...(opts.status !== undefined ? [opts.status] : [])) as FeatureRow[];
   return rows.map(rowToFeature);
 }

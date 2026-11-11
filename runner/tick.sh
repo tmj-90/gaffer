@@ -371,6 +371,8 @@ declare -F _gaffer_tester_pass >/dev/null 2>&1 && _gaffer_tester_pass
 _gaffer_clarify_pass
 
 
+_gaffer_idle_feature_reconcile   # lib/tick-idle.sh: ship building features whose tickets all landed (no model call)
+
 _gaffer_idle_feature_backlog   # lib/tick-idle.sh: the feature-backlog planner (sets _FB_RAN, _FB_SPENT, _FB_LATER)
 
 _gaffer_idle_maintenance   # lib/tick-idle.sh: the maintenance lane (may exit)

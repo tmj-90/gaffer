@@ -187,6 +187,56 @@ describe.runIf(existsSync(MEMORY_MCP_BIN))("idle loops against the real memory-m
     expect(await client.listBacklogFeatures("demo", "backlog")).toHaveLength(1);
   });
 
+  it("a claim lost to another factory plans nothing and spends nothing", async () => {
+    // Another factory (a second connection to the same memory DB) claims the feature
+    // between this tick's backlog listing and its own claim. Memory refuses the second
+    // claim (illegal_transition); the loop must neither plan nor file, nor release the
+    // claim it never held.
+    const cfg = config();
+    const client = await connect(cfg);
+    await client.addFeature({
+      repo: "demo",
+      name: "Data export",
+      summary: "CSV export",
+      status: "backlog",
+      area: "src/export",
+      provenance: "test",
+    });
+    const [listed] = await client.listBacklogFeatures("demo", "backlog");
+    const other = await resolveAsyncMemory(cfg, new EventLog(new TestClock()), {
+      MEMORY_MCP_BIN,
+      MEMORY_DB: memoryDb,
+      MEMORY_AUDIT_LOG: join(tmp, "data", "memory-audit-2.jsonl"),
+    });
+    const racing: AsyncMemoryClient = Object.create(client) as AsyncMemoryClient;
+    racing.advanceFeature = async (id, to) => {
+      await other!.advanceFeature(id, to);
+      return client.advanceFeature(id, to);
+    };
+    let planned = 0;
+    const d = deps(cfg, racing, {
+      decompose: async () => {
+        planned += 1;
+        return PLAN;
+      },
+    });
+    try {
+      const outcome = await runIdleFeatureBacklogLoop(d);
+      expect(outcome.status).toBe("no_findings");
+    } finally {
+      await other!.close();
+    }
+    expect(planned).toBe(0);
+    expect(d.events.types()).toContain("feature_backlog_claim_failed");
+    expect(d.events.types()).not.toContain("feature_backlog_claimed");
+    expect(d.events.types()).not.toContain("feature_backlog_rolled_back");
+    const wg = d.dispatch as FakeDispatchClient;
+    expect(wg.events.filter((e) => e.type === "epic.created")).toHaveLength(0);
+    // The other factory's claim stands.
+    const building = await client.listBacklogFeatures("demo", "building");
+    expect(building.map((f) => f.id)).toEqual([listed!.id]);
+  });
+
   it("the lore-gap loop does not re-suggest a convention already waiting as a draft", async () => {
     const cfg = config();
     const client = await connect(cfg);

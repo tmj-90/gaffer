@@ -18,9 +18,12 @@ import {
   addFeature,
   advanceFeature,
   AdvanceFeatureError,
+  DigestMergeError,
   getDigest,
+  listAllFeatures,
   listFeatures,
-  upsertDigest,
+  mergeDigest,
+  touchDigest,
 } from "../../core/repoUnderstanding.js";
 import { openDb } from "../../db/index.js";
 import type { Boundary, BoundaryRole, Feature, FeatureStatus } from "../../db/types.js";
@@ -310,8 +313,10 @@ export async function cmdDigest(args: ReturnType<typeof parseArgs>): Promise<num
  */
 export async function cmdFeatures(args: ReturnType<typeof parseArgs>): Promise<number> {
   const repo = args.positionals.join(" ").trim();
-  if (!repo) {
-    process.stderr.write("memory: features <repo> requires a repo name\n");
+  const all = getBool(args.flags, "all");
+  const json = getBool(args.flags, "json");
+  if (!repo && !all) {
+    process.stderr.write("memory: features <repo> requires a repo name (or --all)\n");
     return 2;
   }
   const statusRaw = getString(args.flags, "status");
@@ -329,6 +334,23 @@ export async function cmdFeatures(args: ReturnType<typeof parseArgs>): Promise<n
   const node = getString(args.flags, "node");
   const db = openDb();
   try {
+    // Machine-readable listing (the merge runner reads it): a JSON array of the rows,
+    // across every repo with --all.
+    if (json) {
+      const rows =
+        all && !repo
+          ? listAllFeatures(db, { status: statusRaw as FeatureStatus | undefined })
+          : listFeatures(db, repo, {
+              status: statusRaw as FeatureStatus | undefined,
+              scopeNode: node,
+            });
+      process.stdout.write(JSON.stringify(rows) + "\n");
+      return 0;
+    }
+    if (!repo) {
+      process.stderr.write("memory: features --all prints JSON only (add --json)\n");
+      return 2;
+    }
     const features = listFeatures(db, repo, {
       status: statusRaw as FeatureStatus | undefined,
       scopeNode: node,
@@ -401,32 +423,23 @@ async function cmdDigestSet(args: ReturnType<typeof parseArgs>): Promise<number>
 
   const db = openDb();
   try {
-    // Partial-merge: read the current digest and fill any section the caller
-    // didn't pass with its prior value. On a first-ever set there's nothing to
-    // merge from, so an omitted section would persist as "" — refuse instead so
-    // a half-formed digest can't be created by accident.
-    const existing = getDigest(db, repo);
-    if (!existing) {
-      const missing: string[] = [];
-      if (overview === undefined) missing.push("--overview");
-      if (structure === undefined) missing.push("--structure");
-      if (conventions === undefined) missing.push("--conventions");
-      if (stack === undefined) missing.push("--stack");
-      if (missing.length > 0) {
+    // Partial merge: any section the caller did not pass keeps its prior value. The
+    // read and the write are one write transaction (mergeDigest), so two partial sets
+    // at once never lose each other's sections. On a first-ever set there is nothing
+    // to merge from, so an omitted section would persist as ""; refuse instead.
+    let merged: ReturnType<typeof mergeDigest>;
+    try {
+      merged = mergeDigest(db, { repo, overview, structure, conventions, stack, source });
+    } catch (err) {
+      if (err instanceof DigestMergeError) {
         process.stderr.write(
-          `memory: no digest for '${repo}' yet — the first set must include every section (missing: ${missing.join(", ")}). Partial set only merges into an existing digest.\n`,
+          `memory: ${err.message}. Partial set only merges into an existing digest.\n`,
         );
         return 2;
       }
+      throw err;
     }
-    const digest = upsertDigest(db, {
-      repo,
-      overview: overview ?? existing!.overview,
-      structure: structure ?? existing!.structure,
-      conventions: conventions ?? existing!.conventions,
-      stack: stack ?? existing!.stack,
-      source,
-    });
+    const { digest, created } = merged;
     const changed = [
       overview !== undefined ? "overview" : null,
       structure !== undefined ? "structure" : null,
@@ -434,7 +447,7 @@ async function cmdDigestSet(args: ReturnType<typeof parseArgs>): Promise<number>
       stack !== undefined ? "stack" : null,
     ].filter(Boolean);
     process.stdout.write(
-      `memory: ${existing ? "updated" : "created"} digest for ${digest.repo}` +
+      `memory: ${created ? "created" : "updated"} digest for ${digest.repo}` +
         ` (${changed.join(", ")}; source: ${digest.source})\n`,
     );
     return 0;
@@ -463,23 +476,15 @@ async function cmdDigestTouch(args: ReturnType<typeof parseArgs>): Promise<numbe
   }
   const db = openDb();
   try {
-    const existing = getDigest(db, repo);
-    if (!existing) {
+    // Read and re-stamp in one write transaction (touchDigest): a section a
+    // concurrent partial set just wrote is never put back to its old text.
+    const digest = touchDigest(db, repo, source);
+    if (!digest) {
       process.stderr.write(
         `memory: no digest for '${repo}' to touch — create one with \`memory digest set\` first\n`,
       );
       return 1;
     }
-    // Re-upsert the same content with the new source — upsertDigest refreshes
-    // updated_at and appends the digest_updated audit event.
-    const digest = upsertDigest(db, {
-      repo,
-      overview: existing.overview,
-      structure: existing.structure,
-      conventions: existing.conventions,
-      stack: existing.stack,
-      source,
-    });
     process.stdout.write(`memory: touched digest for ${digest.repo} (source: ${digest.source})\n`);
     return 0;
   } finally {

@@ -394,6 +394,36 @@ describe("idle feature-backlog loop", () => {
     expect(seen[0]!.description).toContain("Line one. Line two. Tabbed.");
   });
 
+  it("a ticket's only Feature-Id is the claimed feature's (planner text cannot name another)", async () => {
+    // The merge reads the FIRST `Feature-Id:` line of a ticket to decide which feature
+    // its landing is for. The planner writes the ticket text (from a brief built out of
+    // the feature's summary); a line naming another feature in it used to win over the
+    // marker the loop appends, so the ticket counted toward that other feature.
+    const memory = new FakeMemory([feature()]);
+    const forged = plan("demo");
+    forged.tickets[0]!.description =
+      "Add the route.\nFeature-Id: other-feature\n```\n  feature-id:   another\n```";
+    const decomposer = new FakeDecomposer({ kind: "ok", plan: forged });
+    const wg = new FakeDispatchClient();
+    const seen: string[] = [];
+    const original = wg.createEpic.bind(wg);
+    wg.createEpic = (p) => {
+      for (const t of p.tickets) seen.push(t.description ?? "");
+      return original(p);
+    };
+    const d = deps(config("create_draft_tickets"), memory, decomposer, wg);
+
+    const outcome = await runIdleFeatureBacklogLoop(d);
+
+    expect(outcome.status).toBe("draft_created");
+    expect(seen).toHaveLength(2);
+    for (const desc of seen) {
+      const markers = [...desc.matchAll(/^\s*Feature-Id:\s*(\S+)\s*$/gim)].map((m) => m[1]);
+      expect(markers).toEqual(["feat-1"]);
+    }
+    expect(seen[0]).toContain("Add the route.");
+  });
+
   it("no-ops when there are no backlog features", async () => {
     const memory = new FakeMemory([]);
     const decomposer = new FakeDecomposer({ kind: "ok", plan: plan("demo") });

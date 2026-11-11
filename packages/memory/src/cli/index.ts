@@ -248,6 +248,9 @@ COMMANDS
                             lifecycle status. --node filters to a single
                             scope-node (a sub-area of the repo); omit it
                             to list every feature in the repo.
+  features <repo> --json | features --all --json [--status backlog|building|shipped]
+                            The same ledger as a JSON array of rows (id, repo,
+                            name, status, ...); --all lists every repo.
   card get --canonical <url-or-path> --repo <name> --path <file-path> [--json]
                             Fetch a single file card. Mechanical fields
                             (path, loc, symbols) always present; model

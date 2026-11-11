@@ -47,6 +47,12 @@ const {
   buildEpicBuildingCommands,
   digestSectionFlag,
   featureIdFromView,
+  featureStatusArgs,
+  featureStatusBatchArgs,
+  parseFeatureLanding,
+  parseFeatureLandings,
+  parseFeatureRows,
+  buildFeatureAdvanceCommand,
 } = await import(LIB);
 const { applyDigestAndFeature } = await import(MERGE);
 
@@ -96,7 +102,24 @@ writeFileSync(
     "  if (v && existsSync(v)) { process.stdout.write(readFileSync(v, 'utf8')); process.exit(0); }",
     "  process.stdout.write('{}'); process.exit(0);",
     "}",
-    "process.exit(parseInt(process.env.WG_EXIT || '0', 10));",
+    // The landing rule (external review 17): `epic feature-status` answers that every
+    // ticket of a named feature landed (this file tests the apply wiring; the rule
+    // itself is feature-ship-gate.test.mjs, against the real Dispatch), and a ticket
+    // alone resolves to no feature. `features <repo> --json`: an empty repo ledger.
+    "const exitCode = parseInt(process.env.WG_EXIT || '0', 10);",
+    "if (exitCode === 0 && real[0] === 'epic' && real[1] === 'feature-status') {",
+    "  const id = real[2] && real[2] !== '--ticket' ? real[2] : null;",
+    "  process.stdout.write(JSON.stringify({ feature_id: id, complete: Boolean(id), tickets: [], reason: 'stub' }));",
+    "  process.exit(0);",
+    "}",
+    // `features --all --json`: the ledger the landing checks a marked feature against
+    // (a landing ships only a `building` feature); the ids the cases below mark.
+    "if (exitCode === 0 && real[0] === 'features' && real.includes('--all')) {",
+    "  process.stdout.write(JSON.stringify(['lore_feat77', 'lore_feat78'].map((id) => ({ id, repo: 'demo', name: id, status: 'building' }))));",
+    "  process.exit(0);",
+    "}",
+    "if (exitCode === 0 && real[0] === 'features') { process.stdout.write('[]'); process.exit(0); }",
+    "process.exit(exitCode);",
   ].join("\n"),
 );
 
@@ -571,6 +594,93 @@ console.log("== B11: Feature-Id on the ticket → `feature advance <id> --to shi
     "sections:[] delta still stamps freshness",
     calls2.some((c) => c[0] === "digest" && c[1] === "touch"),
   );
+}
+
+// ── R17: the landing-rule helpers fail closed on anything but the expected answer ────
+console.log("== R17: feature-status argv + fail-closed parsing ==");
+{
+  eq("argv: id and ticket", featureStatusArgs({ featureId: "f1", ticketNumber: 7 }), [
+    "epic",
+    "feature-status",
+    "f1",
+    "--ticket",
+    "7",
+  ]);
+  eq("argv: ticket alone", featureStatusArgs({ ticketNumber: 7 }), [
+    "epic",
+    "feature-status",
+    "--ticket",
+    "7",
+  ]);
+  for (const [label, text] of [
+    ["empty", ""],
+    ["garbage", "not json"],
+    ["an array", "[]"],
+    ["complete as a string", '{"feature_id":"f","complete":"true","tickets":[]}'],
+    ["no tickets array", '{"feature_id":"f","complete":true}'],
+  ]) {
+    assert(`parseFeatureLanding: ${label} -> null`, parseFeatureLanding(text) === null);
+  }
+  assert(
+    "parseFeatureLanding: complete without a feature id is not complete",
+    parseFeatureLanding('{"feature_id":null,"complete":true,"tickets":[]}')?.complete === false,
+  );
+  assert(
+    "parseFeatureLanding: a complete answer",
+    parseFeatureLanding('{"feature_id":"f","complete":true,"tickets":[],"reason":"r"}')
+      ?.complete === true,
+  );
+  assert("parseFeatureRows: not an array -> null", parseFeatureRows("{}") === null);
+  eq(
+    "parseFeatureRows: keeps rows with an id",
+    parseFeatureRows('[{"id":"a","repo":"r","name":"N","status":"building"},{"name":"no id"}]'),
+    [{ id: "a", repo: "r", name: "N", status: "building" }],
+  );
+  eq("batch argv", featureStatusBatchArgs(["a", " b "]), [
+    "epic",
+    "feature-status",
+    "--batch",
+    "a",
+    "b",
+  ]);
+  const one = (id, complete) =>
+    JSON.stringify({ feature_id: id, complete, tickets: [], reason: "r" });
+  eq(
+    "parseFeatureLandings: one answer per id, in order",
+    parseFeatureLandings(`[${one("a", true)},${one("b", false)}]`, ["a", "b"])?.map((r) => [
+      r.featureId,
+      r.complete,
+    ]),
+    [
+      ["a", true],
+      ["b", false],
+    ],
+  );
+  for (const [label, text] of [
+    ["not an array", one("a", true)],
+    ["fewer answers than ids", `[${one("a", true)}]`],
+    ["answers out of order", `[${one("b", true)},${one("a", true)}]`],
+    ["a malformed answer", `[${one("a", true)},{"feature_id":"b"}]`],
+  ]) {
+    assert(
+      `parseFeatureLandings: ${label} -> null`,
+      parseFeatureLandings(text, ["a", "b"]) === null,
+    );
+  }
+  eq(
+    "parseFeatureLanding: the features an ambiguous ticket's epics name",
+    parseFeatureLanding(
+      '{"feature_id":null,"complete":false,"tickets":[],"ambiguous_features":["x","y"]}',
+    )?.ambiguous,
+    ["x", "y"],
+  );
+  eq("advance argv", buildFeatureAdvanceCommand("f9").args, [
+    "feature",
+    "advance",
+    "f9",
+    "--to",
+    "shipped",
+  ]);
 }
 
 try {

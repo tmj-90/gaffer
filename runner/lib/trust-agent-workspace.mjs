@@ -52,11 +52,13 @@ export function trustAgentWorkspace(worktree, { gafferData = "", log = () => {} 
     if (err) log(err);
     if (r.status !== 0) {
       const tail = err.split("\n").slice(-2).join(" ").slice(0, 300);
-      const fix = /not valid JSON/.test(tail)
-        ? "fix ~/.claude.json (it is not valid JSON)"
-        : /refusing/.test(tail)
-          ? "the path is not a factory worktree or a repo the factory vouches for"
-          : "remove the stale lock ~/.claude.json.gaffer-trust.lock if no factory run is writing trust right now, or fix ~/.claude.json";
+      const fix = /unsafe_worktree_path/.test(tail)
+        ? "replace the symbolic link the message names with a regular file or directory in the repository"
+        : /not valid JSON/.test(tail)
+          ? "fix ~/.claude.json (it is not valid JSON)"
+          : /refusing/.test(tail)
+            ? "the path is not a factory worktree or a repo the factory vouches for"
+            : "remove the stale lock ~/.claude.json.gaffer-trust.lock if no factory run is writing trust right now, or fix ~/.claude.json";
       throw new Error(
         `trust_unwritable: ${path} (exit ${r.status ?? r.signal}): ${tail || "no output"}; ${fix}`,
       );

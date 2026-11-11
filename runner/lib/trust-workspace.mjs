@@ -51,6 +51,7 @@ import {
 import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import { acquireTrustLock } from "./trust-lock.mjs";
+import { UnsafePathError, checkPath, safeCopyFile, safeWriteFile } from "./safe-write.mjs";
 
 const target = process.argv[2];
 if (!target || !target.startsWith("/")) {
@@ -219,17 +220,28 @@ function validateTarget(dir) {
  * Neutralize a repo-committed `.claude/settings.local.json` in the target worktree.
  * A malicious target repo could commit one to widen the agent's (non-filesystem)
  * tool permissions; filesystem writes stay hook-gated, but we close this anyway.
- * Best-effort: a symlink is unlinked (never followed — it could point at the
- * operator's real settings); a regular file is backed up (.gaffer-orig) then
- * overwritten with an empty `{}` so Claude Code reads no widened permissions.
+ * A symlink AT settings.local.json is unlinked (never followed: it could point at the
+ * operator's real settings); a regular file is backed up (.gaffer-orig, best-effort)
+ * then overwritten with an empty `{}` so Claude Code reads no widened permissions.
+ * Every write goes through lib/safe-write.mjs: a `.claude` that is a symlink (or not a
+ * directory) is never written through, and neither is a committed `.gaffer-orig` link.
+ * Returns an UnsafePathError when `.claude` (or the file) cannot be written safely: the
+ * caller refuses to trust the workspace, so no agent runs there (fail closed). Other
+ * failures stay best-effort, as before.
  */
 function neutralizeCommittedLocalSettings(dir) {
+  try {
+    checkPath(dir, ".claude", "dir");
+  } catch (err) {
+    if (err instanceof UnsafePathError) return err;
+    return null;
+  }
   const localSettings = join(dir, ".claude", "settings.local.json");
   let st;
   try {
     st = lstatSync(localSettings);
   } catch {
-    return; // absent → nothing to neutralize
+    return null; // absent → nothing to neutralize
   }
   try {
     if (st.isSymbolicLink()) {
@@ -237,18 +249,20 @@ function neutralizeCommittedLocalSettings(dir) {
       console.error(
         `trust-workspace: neutralized a SYMLINKED .claude/settings.local.json in ${dir}`,
       );
-      return;
+      return null;
     }
     try {
-      copyFileSync(localSettings, localSettings + ".gaffer-orig");
+      safeCopyFile(dir, ".claude/settings.local.json.gaffer-orig", localSettings);
     } catch {
-      /* backup is best-effort */
+      /* backup is best-effort (a committed .gaffer-orig link is refused, not followed) */
     }
-    writeFileSync(localSettings, "{}\n");
+    safeWriteFile(dir, ".claude/settings.local.json", "{}\n");
     console.error(`trust-workspace: neutralized committed .claude/settings.local.json in ${dir}`);
-  } catch {
+  } catch (err) {
+    if (err instanceof UnsafePathError) return err;
     /* neutralization is best-effort — a failure must not block trusting */
   }
+  return null;
 }
 
 // 1) VALIDATE before touching anything — refuse a path that isn't a factory worktree.
@@ -262,7 +276,11 @@ if (!validateTarget(target)) process.exit(2);
 // mutating the onboarded repo's working tree here would be a gratuitous, surprising
 // change to the user's repo. Only the trust-key write is needed for the main root.
 if (process.env.GAFFER_TRUST_KEY_ONLY !== "1") {
-  neutralizeCommittedLocalSettings(target);
+  const unsafe = neutralizeCommittedLocalSettings(target);
+  if (unsafe) {
+    console.error(`trust-workspace: ${unsafe.message}; trust NOT written for ${target}`);
+    process.exit(2);
+  }
 }
 
 // 3) Acquire the lock (taking a stale one over); a LIVE holder for the whole spin means

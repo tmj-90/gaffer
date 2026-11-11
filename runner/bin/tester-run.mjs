@@ -88,7 +88,6 @@ import { createHash } from "node:crypto";
 import {
   appendFileSync,
   chmodSync,
-  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -97,12 +96,11 @@ import {
   realpathSync,
   rmSync,
   statSync,
-  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { acquireTicketLock, resolveTicket } from "./merge-ticket.mjs";
@@ -110,6 +108,14 @@ import { agentChildEnv, buildClaudeArgv, renderPoMcpRuntime } from "./product-ow
 import { selectForRole, stackPackNote, ticketStacks } from "./select-skills.mjs";
 import { recordSkillUsage } from "./record-skill-usage.mjs";
 import { trustAgentWorkspace } from "../lib/trust-agent-workspace.mjs";
+import {
+  UnsafePathError,
+  safeCopyFile,
+  safeMkdir,
+  safeReadFile,
+  safeSymlink,
+  safeWriteFile,
+} from "../lib/safe-write.mjs";
 import {
   detectUsageLimit,
   extractResultText,
@@ -970,7 +976,6 @@ export function linkNodeModules(repoPath, checkout) {
       if (e.name === "node_modules") {
         // The install may itself be a symlink (a shared store): follow it for the check.
         const src = resolve(repoPath, childRel);
-        const dst = resolve(checkout, childRel);
         let nonEmpty = false;
         try {
           nonEmpty = statSync(src).isDirectory() && readdirSync(src).length > 0;
@@ -978,21 +983,13 @@ export function linkNodeModules(repoPath, checkout) {
           /* unreadable */
         }
         // Never create a link outside the checkout: the delivery branch may have turned
-        // a parent directory into a symlink pointing elsewhere.
-        let inside = false;
-        try {
-          const root = realpathSync(checkout);
-          const parent = realpathSync(dirname(dst));
-          inside = parent === root || parent.startsWith(root + sep);
-        } catch {
-          /* parent missing */
-        }
-        if (nonEmpty && inside && !existsSync(dst)) {
+        // a parent directory into a symlink pointing elsewhere (lib/safe-write.mjs refuses
+        // any symlinked parent and never clobbers an existing path, a dangling link included).
+        if (nonEmpty) {
           try {
-            symlinkSync(src, dst, "dir");
-            linked.push(childRel);
+            if (safeSymlink(checkout, childRel, src)) linked.push(childRel);
           } catch {
-            /* best-effort */
+            /* best-effort: an unsafe parent or a failed link leaves this one out */
           }
         }
         continue; // never descend into an install
@@ -1116,11 +1113,22 @@ export function replayTesterTests({
   phase("checkout");
   try {
     for (const f of testFiles) {
-      const src = resolve(testerWorktree, f);
-      if (!existsSync(src)) continue; // the tester deleted it: the candidate's copy still runs
-      const dst = resolve(replay, f);
-      mkdirSync(dirname(dst), { recursive: true });
-      copyFileSync(src, dst);
+      // Both sides go through lib/safe-write.mjs. READ: the tester's checkout can hold a
+      // link at a test path (or a parent) to a host file; reading through it would put
+      // that file in a checkout the replay's test code and its output can read, so a link
+      // or a non-regular file is refused. WRITE: the replay is a checkout of the DELIVERED
+      // commit, and a link it commits there must not carry the copy outside it.
+      try {
+        const data = safeReadFile(testerWorktree, f);
+        if (data === null) continue; // the tester deleted it: the candidate's copy still runs
+        safeWriteFile(replay, f, data);
+      } catch (err) {
+        if (!(err instanceof UnsafePathError)) throw err;
+        return {
+          state: "failed",
+          reason: `the tester's test file ${f} was not copied into the replay: ${err.message}`,
+        };
+      }
     }
     const linked = linkNodeModules(repoPath, replay);
     phase("copy+link");
@@ -1584,7 +1592,10 @@ export function installTesterAgentDir(worktree, ticketNumber, stack) {
   // every write repo's packs (see testerStacks).
   const stacks = (Array.isArray(stack) ? stack : [stack]).filter(Boolean);
   const claudeDir = resolve(worktree, ".claude");
-  mkdirSync(claudeDir, { recursive: true });
+  // Every write into the checkout goes through lib/safe-write.mjs: a committed symlink at
+  // .claude, .claude/settings.json, .claude/skills or CLAUDE.factory.md throws
+  // UnsafePathError (unsafe_worktree_path, naming the path) and the spawn is refused.
+  safeMkdir(worktree, ".claude");
   const mount = resolve(GAFFER_DATA, "skills-mounts", `tester-${ticketNumber}`);
   const names = selectForRole("test", {
     skillsDir: CONFIG.skillsDir,
@@ -1608,7 +1619,7 @@ export function installTesterAgentDir(worktree, ticketNumber, stack) {
   // Render AND verify the safety-hook wiring (throws "SAFETY: …" on an unwired or
   // unreadable template; the caller's fail() then refuses the spawn — fail closed).
   writeAgentSettings(claudeDir, CONFIG.claudeSettings);
-  copyFileSync(resolve(RUNNER_DIR, "claude", "CLAUDE.md"), resolve(worktree, "CLAUDE.factory.md"));
+  safeCopyFile(worktree, "CLAUDE.factory.md", resolve(RUNNER_DIR, "claude", "CLAUDE.md"));
   return names;
 }
 

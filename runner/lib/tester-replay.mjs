@@ -68,6 +68,7 @@ import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { readTesterEvidence } from "./tester-binding.mjs";
+import { safeReadFile } from "./safe-write.mjs";
 
 export const TESTS_BRANCH_PREFIX = "gaffer-tests/ticket-";
 
@@ -439,8 +440,11 @@ function readPackageJson({ worktree, base }) {
     if (r.status === 0) pkg = parse(r.stdout || "");
   }
   if (!pkg && worktree) {
+    // Never through a link (lib/safe-write.mjs): a package.json linked to a file outside
+    // the checkout would put that file's scripts into the command and its evidence.
     try {
-      pkg = parse(readFileSync(join(worktree, "package.json"), "utf8"));
+      const buf = safeReadFile(worktree, "package.json");
+      pkg = buf === null ? null : parse(buf.toString("utf8"));
     } catch {
       pkg = null;
     }

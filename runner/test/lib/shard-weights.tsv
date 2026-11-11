@@ -367,3 +367,7 @@
 420	tester-unprovable.test.sh
 200	tester-unprovable-escape.test.sh
 150	trust-fail-closed.test.sh
+# worktree-link-refusal: new (external review 17), four real tick.sh runs (Linux alone at -j 1 under shared load: 59s); 120, twice that, until the next refresh.
+120	worktree-link-refusal.test.sh
+# resume-unsafe-path: new (external review 17 follow-up), three real tick.sh runs (Linux alone at -j 1: 31s); 70, about twice that, until the next refresh.
+70	resume-unsafe-path.test.sh

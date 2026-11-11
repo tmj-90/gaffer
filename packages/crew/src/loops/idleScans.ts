@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 import { dateStamp } from "../util/clock.js";
@@ -293,7 +293,13 @@ export function shouldSkipForReadyTickets(deps: IdleLoopDeps, loop: string): boo
 const IGNORED_DIRS = new Set(["node_modules", ".git", "dist", "build", "coverage", ".next"]);
 const MAX_FILES = 5000;
 
-/** Recursively list files under `root` whose name matches `match`, bounded. */
+/**
+ * Recursively list files under `root` whose name matches `match`, bounded. A symbolic
+ * link (to a file or a directory) is never followed: the scans put paths, import names
+ * and source snippets into draft tickets and lore, and a committed link could point at
+ * any file the operator can read. A file reached through a link inside the repository is
+ * scanned at its real path anyway.
+ */
 export function walkFiles(root: string, match: (name: string) => boolean): string[] {
   const out: string[] = [];
   if (!existsSync(root)) return out;
@@ -310,7 +316,7 @@ export function walkFiles(root: string, match: (name: string) => boolean): strin
       const full = join(dir, entry);
       let s;
       try {
-        s = statSync(full);
+        s = lstatSync(full);
       } catch {
         continue;
       }

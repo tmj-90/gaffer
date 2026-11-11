@@ -221,6 +221,33 @@ grep -qx tested "$RESULTS" && ! grep -qx usage_paused "$RESULTS" \
 grep -qx 14 "$GAFFER_DATA/.tested-tickets" && ok "#14 is skipped for the rest of this run" || fail "#14 not marked tried for this run"
 result() { :; }
 
+echo "== 9: a tester REFUSED by a path it will not write through (unsafe_worktree_path) says so on the ticket =="
+# bin/tester-run.mjs refuses to install its agent wiring into a checkout of the delivery
+# whose branch holds a link where the runner writes (phase error, the reason in d.error).
+# The delivery's committed link is still there on every later pass, so the reason goes on
+# the ticket (a person replaces the link) and the stay is remembered (no retry each run).
+new_run; : > "$EVID"
+printf '[{"number":15,"status":"in_testing"}]' > "$LIST"
+echo "2026-02-07T09:00:00.000Z" > "$WORK/entered-15"
+printf '{"phase":"error","error":"failed to install the tester wiring: unsafe_worktree_path: .claude/settings.json in /w/tester-15 is a symbolic link (to /etc/x); Replace the link with a regular file or directory in the repository, or remove it from the branch"}' > "$WORK/reply-15.json"
+echo 1 > "$WORK/rc-15"
+run_lane
+grep -q '^15|manual_note|.*unsafe_worktree_path: .claude/settings.json .*Replace the link' "$EVID" \
+  && ok "the refusal and its fix are on #15 as a manual_note" || fail "no unsafe_worktree_path note on #15: $(cat "$EVID")"
+grep -qx $'15\t2026-02-07T09:00:00.000Z' "$GAFFER_DATA/.tester-held" \
+  && ok "the refusal is remembered for this stay" || fail "no hold marker for #15"
+new_run; run_lane
+[ "$(spawns_of 15)" = 1 ] && ok "the next run does not start the tester again for the same stay" || fail "#15 spawns: $(spawns_of 15)"
+echo "== 9b: any other tester error still reaches the ticket =="
+new_run; : > "$EVID"
+printf '[{"number":16,"status":"in_testing"}]' > "$LIST"
+echo "2026-02-07T10:00:00.000Z" > "$WORK/entered-16"
+printf '{"phase":"error","error":"could not check out delivery branch gaffer/ticket-16-x into a tester worktree: fatal: bad ref"}' > "$WORK/reply-16.json"
+echo 1 > "$WORK/rc-16"
+run_lane
+grep -q '^16|manual_note|.*could not check out delivery branch' "$EVID" \
+  && ok "the error reason is on #16 as a manual_note" || fail "no error note on #16: $(cat "$EVID")"
+
 echo "== entered-status-at reads the LATEST transition into the status =="
 J='{"events":[{"event_type":"ticket.transitioned","created_at":"2026-01-02T00:00:00.000Z","payload_json":"{\"to\":\"in_testing\"}"},{"event_type":"ticket.transitioned","created_at":"2026-01-05T00:00:00.000Z","payload_json":"{\"to\":\"in_testing\"}"},{"event_type":"ticket.transitioned","created_at":"2026-01-09T00:00:00.000Z","payload_json":"{\"to\":\"refining\"}"}]}'
 [ "$(printf '%s' "$J" | node "$RUNNER_DIR/lib/json-tool.mjs" entered-status-at in_testing)" = "2026-01-05T00:00:00.000Z" ] \

@@ -138,7 +138,9 @@ Tickets flow through draft, ready, in progress, blocked and review lanes:
 - **Draft**: being shaped. Acceptance criteria are added before a ticket can go ready.
 - **Ready**: claimable. A ready ticket with no repo it may write to is parked as
   blocked (`no_write_repo`); one whose write repo has no local checkout as
-  `no_local_repo_path`.
+  `no_local_repo_path`; one whose worktree holds a symlink where the runner writes the
+  agent's files (`.claude`, `.claude/settings.json`, `.claude/skills`,
+  `CLAUDE.factory.md`) as `unsafe_worktree_path`, with the path and the fix.
 - **In progress**: claimed by an agent (the card shows which).
 - **Blocked**: surfaced for a human, not retried forever. Park a ticket yourself with
   `gaffer wg block <n> --reason "..."` and send it back with `gaffer wg unblock <n>`

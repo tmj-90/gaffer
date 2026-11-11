@@ -311,6 +311,9 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
       [ -n "$RSKILLS" ] || RSKILLS="review-ticket, adversarial-reviewer, record-evidence"
       if ! GAFFER_UNIVERSAL_SKILLS="" gaffer_install_agent_dir "$WT" "$RSKILLS" "review-$RNUM"; then
         log "SAFETY: reviewer agent env install failed for #$RNUM — refusing live review (fail closed)"
+        if [ -n "${_GAFFER_UNSAFE_PATH_ERROR:-}" ]; then
+          _review_hold_ticket "the runner refused to write the reviewer's files into the review worktree ($_GAFFER_UNSAFE_PATH_ERROR)"; return 0
+        fi
         if [ -n "${_GAFFER_TRUST_ERROR:-}" ]; then
           _review_hold_ticket "workspace trust was not written, so a reviewer would run with its permissions ignored ($_GAFFER_TRUST_ERROR)"; return 0
         fi

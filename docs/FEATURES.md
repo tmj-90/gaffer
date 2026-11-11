@@ -458,7 +458,12 @@ human-gated knowledge the factory works from:
   failed one is). Marked tickets that no feature epic holds never complete a feature,
   and a landing ships only a feature in `building`. A landing that cannot read Dispatch
   or memory ships nothing, and an idle tick ships a feature whose last ticket landed
-  while memory was unreachable.
+  while memory was unreachable. `gaffer status` lists, under "features held", each
+  building feature whose other work has all landed but which cannot ship: a failed or
+  blocked ticket, a ticket carrying its `Feature-Id:` outside its epic, or an epic that
+  names two features, with the ticket numbers and what to do (at most five lines, then a
+  count; "unknown" when memory or Dispatch cannot be read; nothing without a memory
+  database). `wg epic feature-status` gives the same as `hold`.
 - **File cards**: one per source file (path, symbols, content hash, a short summary),
   used to choose what to read before a ticket. After every merge they are brought in
   line with the merged commit, renames included, and checked against it before memory

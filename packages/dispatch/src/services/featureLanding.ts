@@ -73,6 +73,21 @@ export interface FeatureLanding {
    * says so; the idle pass evaluates each by id). Empty otherwise.
    */
   readonly ambiguous_features: string[];
+  /**
+   * Why this feature cannot ship although the rest of its work has landed, for a person
+   * (`gaffer status`, "features held"): every ticket still to land is failed, blocked, or
+   * a stray ticket carrying the marker outside the epic; or its marked tickets have no
+   * epic; or its epic also names another feature, so a landing cannot tell which feature
+   * it completes. Null while work is simply in progress (or the feature can ship).
+   */
+  readonly hold: FeatureHold | null;
+}
+
+export interface FeatureHold {
+  /** The tickets that hold it. */
+  readonly tickets: Array<number | null>;
+  /** In plain words, what holds it and what a person can do. */
+  readonly reason: string;
 }
 
 interface TicketRow {
@@ -220,6 +235,7 @@ function empty(
     complete: false,
     reason,
     ambiguous_features: ambiguous,
+    hold: null,
   };
 }
 
@@ -262,9 +278,15 @@ function landingOf(
   if (named && !byId.has(named.id)) add(named, "ticket");
 
   const epics: FeatureLanding["epics"] = [];
+  // Tickets of its epics that carry ANOTHER feature's marker (the epic names two).
+  const entangled = new Map<string, { row: TicketRow; feature: string }>();
   for (const e of epicsOf(db, [...byId.keys()])) {
     const { members, acceptance } = epicMembers(db, e.id);
-    for (const m of members) add(m, "epic");
+    for (const m of members) {
+      add(m, "epic");
+      const f = featureIdOf(m.description);
+      if (f && f !== featureId) entangled.set(m.id, { row: m, feature: f });
+    }
     if (acceptance) add(acceptance, "epic");
     epics.push({ id: e.id, name: e.name, acceptance_ticket: acceptance?.number ?? null });
   }
@@ -318,5 +340,69 @@ function landingOf(
     complete,
     reason,
     ambiguous_features: [],
+    hold: holdOf({ counted, pendingT, complete, anchored, marked, epics, entangled }),
+  };
+}
+
+const nums = (ts: ReadonlyArray<{ number: number | null }>): string =>
+  ts.map((t) => `#${t.number ?? "?"}`).join(", ");
+
+/** See {@link FeatureLanding.hold}. */
+function holdOf(f: {
+  counted: FeatureLandingTicket[];
+  pendingT: FeatureLandingTicket[];
+  complete: boolean;
+  anchored: boolean;
+  marked: TicketRow[];
+  epics: FeatureLanding["epics"];
+  entangled: Map<string, { row: TicketRow; feature: string }>;
+}): FeatureHold | null {
+  if (f.counted.length === 0) return null;
+  const stuck = f.pendingT.filter((t) => t.status === "failed" || t.status === "blocked");
+  const stray = f.pendingT.filter(
+    (t) => !stuck.includes(t) && f.epics.length > 0 && t.via.length === 1 && t.via[0] === "marker",
+  );
+  const inProgress = f.pendingT.filter((t) => !stuck.includes(t) && !stray.includes(t));
+  if (inProgress.length > 0) return null; // work is still moving: nothing to tell a person
+  const tickets: Array<number | null> = [];
+  const why: string[] = [];
+  const failed = stuck.filter((t) => t.status === "failed");
+  const blocked = stuck.filter((t) => t.status === "blocked");
+  if (failed.length > 0) {
+    tickets.push(...failed.map((t) => t.number));
+    why.push(`${nums(failed)} failed (retry or cancel it)`);
+  }
+  if (blocked.length > 0) {
+    tickets.push(...blocked.map((t) => t.number));
+    why.push(`${nums(blocked)} is blocked (see why, then retry or cancel it)`);
+  }
+  if (stray.length > 0) {
+    tickets.push(...stray.map((t) => t.number));
+    why.push(
+      `${nums(stray)} carries its Feature-Id outside its epic and is not done (land or cancel it)`,
+    );
+  }
+  if (!f.anchored && f.pendingT.length === 0) {
+    const rows = f.marked.map((r) => ({ number: r.number }));
+    tickets.push(...rows.map((r) => r.number));
+    why.push(
+      `${nums(rows)} carries its Feature-Id but no feature epic holds it, so nothing ships it`,
+    );
+  }
+  if (f.entangled.size > 0 && (f.complete || why.length > 0)) {
+    const own = f.counted.filter((t) => t.via.includes("marker") && t.via.includes("epic"));
+    const rows = [...f.entangled.values()];
+    tickets.push(...own.map((t) => t.number), ...rows.map((r) => r.row.number));
+    const others = [...new Set(rows.map((r) => r.feature))].sort().join(", ");
+    why.push(
+      `its epic names more than one feature (${nums(own)} this one, ${nums(rows.map((r) => r.row))} ` +
+        `feature ${others}), so a landing cannot tell which feature it completes` +
+        (f.complete ? "; every ticket landed and the next idle pass ships it" : ""),
+    );
+  }
+  if (why.length === 0) return null;
+  return {
+    tickets: [...new Set(tickets)].sort((a, b) => (a ?? 0) - (b ?? 0)),
+    reason: why.join("; "),
   };
 }

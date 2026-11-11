@@ -213,6 +213,37 @@ describe("featureLanding membership and decision", () => {
     expect(many.map((r) => r.complete)).toEqual([true, false, false]);
   });
 
+  it("says what holds a feature whose other work landed, and nothing while work moves", () => {
+    const wg = fresh();
+    // In progress: no hold.
+    const [p1, p2] = featureEpic(wg, "h1").ticketNumbers as [number, number, number];
+    setStatus(wg, "done", p1);
+    setStatus(wg, "in_progress", p2);
+    expect(featureLanding(wg.db, { featureId: "h1" }).hold).toBeNull();
+    // A failed ticket is all that is left: held, naming it.
+    const [f1, f2, facc] = featureEpic(wg, "h2").ticketNumbers as [number, number, number];
+    setStatus(wg, "done", f1, facc);
+    setStatus(wg, "failed", f2);
+    expect(featureLanding(wg.db, { featureId: "h2" }).hold).toEqual({
+      tickets: [f2],
+      reason: `#${f2} failed (retry or cancel it)`,
+    });
+    // A failed ticket while another is still moving: work moves, no hold yet.
+    const [g1, g2] = featureEpic(wg, "h3").ticketNumbers as [number, number, number];
+    setStatus(wg, "failed", g1);
+    setStatus(wg, "ready", g2);
+    expect(featureLanding(wg.db, { featureId: "h3" }).hold).toBeNull();
+    // A stray marked ticket outside the epic, open, after the epic landed.
+    const e4 = featureEpic(wg, "h4", 1).ticketNumbers as [number, number];
+    const stray = wg.createTicket({ title: "Stray", description: "x\n\nFeature-Id: h4" }, human);
+    setStatus(wg, "done", ...e4);
+    const h4 = featureLanding(wg.db, { featureId: "h4" }).hold;
+    expect(h4?.tickets).toEqual([stray.number]);
+    expect(h4?.reason).toMatch(/outside its epic/);
+    // A complete feature with nothing odd ships on the idle pass: no hold.
+    expect(featureLanding(wg.db, { featureId: "f-none" }).hold).toBeNull();
+  });
+
   it("a feature with no tickets is never complete", () => {
     const wg = fresh();
     const r = featureLanding(wg.db, { featureId: "nothing" });

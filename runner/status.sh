@@ -269,6 +269,18 @@ if [ "$unprovable_now" -gt 0 ]; then
   printf "    ${c_dim}record the tester verdict on the ticket page (a PASS waives what could not be proven here, a FAIL sends it to rework), or push a new commit${c_off}\n"
 fi
 
+# FEATURES HELD: a feature of the memory ledger ships only when every ticket of it landed.
+# One whose remaining work is a failed / blocked ticket, a stray ticket carrying its
+# Feature-Id, or whose epic names two features stays `building`; name it, with the tickets
+# and why (lib/features-held.mjs: one memory read, one Dispatch call; nothing without a
+# memory database; "unknown" when either cannot be read, never a failed status).
+held_features="$(MEMORY_DB="$MEMORY_DB" DISPATCH_DB="$DISPATCH_DB" MEMORY_CLI_BIN="${MEMORY_CLI_BIN:-}" \
+  DISPATCH_DIR="$DISPATCH_DIR" node "$HERE/lib/features-held.mjs" 2>/dev/null)"
+if [ -n "$held_features" ]; then
+  printf "\n  ${c_dim}features held (all other work landed)${c_off}\n"
+  printf '%s\n' "$held_features" | sed "s/^/    /"
+fi
+
 # WAITING ON YOU, by ticket: the counts above said "1 awaiting review" without the
 # number or what to type. One line per ticket (up to 8 per kind) with its command.
 # Env-overridable seam (STATUS_TICKETS_CMD, the status is appended) like the others.

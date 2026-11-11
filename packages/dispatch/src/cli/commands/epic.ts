@@ -42,7 +42,9 @@ export function registerEpic(program: Command): void {
         "epic holds the marked tickets; a cancelled (won't-do) ticket is listed but not " +
         "counted. With --ticket <n> alone, the feature is the one that ticket belongs to (its " +
         "own marker, else its epic's). With --batch, one answer per feature id, as a JSON " +
-        "array. Read only.",
+        "array. `hold` says what keeps a feature from shipping once its other work landed " +
+        "(a failed or blocked ticket, a stray marked ticket, an epic naming two features). " +
+        "Read only.",
     )
     .option("--ticket <ref>", "a ticket of the feature (number or id)")
     .option("--batch", "answer for every feature id given, as a JSON array (no --ticket)")

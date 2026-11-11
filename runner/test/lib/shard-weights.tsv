@@ -371,3 +371,6 @@
 120	worktree-link-refusal.test.sh
 # resume-unsafe-path: new (external review 17 follow-up), three real tick.sh runs (Linux alone at -j 1: 31s); 70, about twice that, until the next refresh.
 70	resume-unsafe-path.test.sh
+# feature-ship-gate, feature-ship-pr-landing: new (external review 17), real Dispatch and Memory CLIs and a PR-mode landing (Linux at -j 2 in the full suite: 19s and 11s); about twice that until the next refresh.
+40	feature-ship-gate.test.mjs
+25	feature-ship-pr-landing.test.sh

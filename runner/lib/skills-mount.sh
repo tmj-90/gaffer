@@ -12,6 +12,11 @@
 # copies — see gaffer_skills_mount) — so the agent auto-loads only skills it might
 # actually use, without changing what any skill DOES.
 
+# Every write below into the agent's directory goes through gaffer_safe_fs
+# (lib/agent-env.sh -> lib/safe-write.mjs): never through a symlink, never outside it.
+# shellcheck source=agent-env.sh
+declare -F gaffer_safe_fs >/dev/null 2>&1 || . "$(dirname "${BASH_SOURCE[0]}")/agent-env.sh"
+
 # Universal delivery-mechanics skills mounted on EVERY agent regardless of
 # stack/area — the core delivery flow fires on every ticket (run the tests, the
 # linter and coverage; minimise + self-review the diff; record evidence; record the
@@ -170,12 +175,20 @@ _gsm_is_our_link() {
 #
 #   FAIL-SOFT: an empty resulting set installs the WHOLE library (copies) instead, so
 #   the optimisation can never leave an agent with no skills.
+#
+#   FAIL CLOSED on a link: a `.claude` or `.claude/skills` in <dest> that is a symlink
+#   (Gaffer's own older mount link excepted, which is replaced) or not a directory
+#   returns 1 with _GAFFER_UNSAFE_PATH_ERROR naming it, and installs nothing: copying
+#   through a repository's link could land Gaffer's files anywhere the link points.
 gaffer_skills_mount() {
   local dest="$1" selected="${2:-}" mount_key="${3:-mount}"
   local claude_dir="$dest/.claude"
   local skills="$claude_dir/skills"
-  mkdir -p "$claude_dir" 2>/dev/null || true
   [ -d "${SKILLS_DIR:-}" ] || return 0
+  if ! gaffer_safe_fs mkdir "$dest" .claude; then
+    _agent_env_log "SAFETY: mounting no skills into $dest: ${_GAFFER_UNSAFE_PATH_ERROR:-${_GAFFER_SAFE_FS_ERROR:-cannot make .claude}} (fail closed)"
+    return 1
+  fi
 
   local key mount=""
   key="$(_gaffer_skills_mount_key "$mount_key")"
@@ -209,16 +222,17 @@ gaffer_skills_mount() {
   # is installed INTO, beside its skills (Claude Code reads `.claude/skills/<name>/`
   # one level deep only: the old mount linked the whole set in as
   # `.claude/skills/<mount-key>/<name>/`, one directory too deep, where nothing loads).
-  # A repo symlink or file there is left exactly as it is, and nothing is installed:
-  # copying through a foreign link could land Gaffer's files outside `.claude/`, where
-  # the git exclude does not cover them.
+  # A repo symlink or file there is left exactly as it is, nothing is installed, and the
+  # launch is refused (return 1, the reason in _GAFFER_UNSAFE_PATH_ERROR): copying
+  # through a foreign link could land Gaffer's files outside `.claude/`, where the git
+  # exclude does not cover them.
   if _gsm_is_our_link "$skills"; then rm -f "$skills" 2>/dev/null || true; fi
-  _gsm_remove_copies "$skills"
-  if [ -L "$skills" ] || { [ -e "$skills" ] && [ ! -d "$skills" ]; }; then
-    printf 'gaffer: %s is not a directory Gaffer can install into; mounting no skills there\n' "$skills" >&2
-    return 0
+  if ! gaffer_safe_fs check "$dest" .claude/skills dir; then
+    _agent_env_log "SAFETY: mounting no skills into $dest: ${_GAFFER_UNSAFE_PATH_ERROR:-${_GAFFER_SAFE_FS_ERROR:-cannot check .claude/skills}} (fail closed)"
+    return 1
   fi
-  [ -d "$skills" ] || { mkdir -p "$skills" 2>/dev/null && : > "$skills/$_GSM_ROOT_MARK"; } || return 0
+  _gsm_remove_copies "$skills"
+  [ -d "$skills" ] || { gaffer_safe_fs mkdir "$dest" .claude/skills && : > "$skills/$_GSM_ROOT_MARK"; } || return 0
 
   for name in $list; do
     # Never overwrite what is there: a repo skill of the same name WINS (the prompt says
@@ -276,6 +290,9 @@ gaffer_skills_note() {
 gaffer_skills_unmount() {
   local dest="${1:-}" claude link ours=0
   [ -n "$dest" ] || return 0
+  # Never remove anything through a `.claude` that is a symlink (or not a directory):
+  # what is behind it is not Gaffer's.
+  gaffer_safe_fs check "$dest" .claude dir || return 0
   claude="$dest/.claude"
   link="$claude/skills"
   if _gsm_is_our_link "$link"; then
@@ -289,7 +306,7 @@ gaffer_skills_unmount() {
     _gsm_remove_copies "$link"
   fi
   [ "$ours" = 1 ] || return 0
-  rm -f "$claude/settings.json" 2>/dev/null || true
+  gaffer_safe_fs remove "$dest" .claude/settings.json || true   # a regular file only
   rmdir "$claude" 2>/dev/null || true              # no-op (fails safely) if not empty
   return 0
 }

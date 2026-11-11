@@ -162,6 +162,7 @@ import {
 } from "../lib/onboard-analyze.mjs";
 import { maxTurnsArgv, roleTurns, Worker } from "../lib/worker.mjs";
 import { mountRoleSkills, writeAgentSettings } from "../lib/agent-home.mjs";
+import { safeMkdir } from "../lib/safe-write.mjs";
 import { trustAgentWorkspace } from "../lib/trust-agent-workspace.mjs";
 import { mountedNames, recordSkillUsage } from "./record-skill-usage.mjs";
 import {
@@ -817,7 +818,10 @@ export function installProjectLocalWiring(
   { stack = "" } = {},
 ) {
   const claudeDir = resolve(worktreePath, ".claude");
-  mkdirSync(claudeDir, { recursive: true });
+  // Never through a link: a committed symlink at .claude, .claude/skills or
+  // .claude/settings.json throws UnsafePathError (unsafe_worktree_path, naming the path)
+  // from here or the two calls below, and the resolver spawn is refused (fail closed).
+  safeMkdir(worktreePath, ".claude");
 
   mountRoleSkills(claudeDir, {
     role: "merge",

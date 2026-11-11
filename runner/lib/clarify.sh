@@ -112,8 +112,19 @@ if [ "${CLARIFY_DRAFTS_WHEN_IDLE:-0}" = "1" ] && [ "${DRAFT_COUNT:-0}" -gt 0 ]; 
       [ -n "$CSTACK" ] || CSTACK="$(echo "$CSHOW" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || {}).stack) || ""' 2>/dev/null)"
       CSKILLS="$(node "$RUNNER_DIR/bin/select-skills.mjs" --role clarify --stack "$CSTACK" --skills-dir "$SKILLS_DIR" 2>/dev/null || true)"
       [ -n "$CSKILLS" ] || CSKILLS="clarify, record-evidence"
-      GAFFER_UNIVERSAL_SKILLS="" gaffer_install_agent_dir "$CWT" "$CSKILLS" "clarify-$CNUM" \
-        || { log "SAFETY: clarify agent env install failed for #$CNUM — refusing live clarify (fail closed)${_GAFFER_TRUST_ERROR:+: $_GAFFER_TRUST_ERROR}"; result error; exit 1; }
+      if ! GAFFER_UNIVERSAL_SKILLS="" gaffer_install_agent_dir "$CWT" "$CSKILLS" "clarify-$CNUM"; then
+        # A refused worktree path (a committed symlink the runner will not write through)
+        # is the repository's: say so on the draft, and skip it for this run.
+        if [ -n "${_GAFFER_UNSAFE_PATH_ERROR:-}" ]; then
+          log "SAFETY: refusing to launch the clarify agent for #$CNUM (fail closed, unsafe_worktree_path): $_GAFFER_UNSAFE_PATH_ERROR"
+          wg attach-evidence "$CNUM" --type manual_note \
+            --summary "CLARIFY REFUSED (unsafe_worktree_path): $_GAFFER_UNSAFE_PATH_ERROR; the draft is clarified once the repository's default branch no longer holds the link" >/dev/null 2>&1 || true
+          _gaffer_locked .skip.lock _gaffer_append_line "$CLARIFIED_FILE" "$CNUM"
+        else
+          log "SAFETY: clarify agent env install failed for #$CNUM; refusing live clarify (fail closed)${_GAFFER_TRUST_ERROR:+: $_GAFFER_TRUST_ERROR}"
+        fi
+        result error; exit 1
+      fi
       MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.$$.json"
       gaffer_assert_db_vars || { log "DB-VARS: DISPATCH_DB/MEMORY_DB empty — refusing live clarify (fail closed)"; result error; exit 1; }
       # Reviewer/clarify agents hold no delivery claim, so GAFFER_CLAIM_TOKEN is

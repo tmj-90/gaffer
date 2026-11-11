@@ -39,10 +39,12 @@ import {
 } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { selectForRole } from "../bin/select-skills.mjs";
+import { writeVerifiedSettings } from "./agent-settings.mjs";
+import { UnsafePathError, checkPath, safeMkdir, safeWriteFile } from "./safe-write.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const RUNNER_DIR = resolve(HERE, "..");
@@ -169,6 +171,12 @@ export function installSkillCopies(
   { skillsDir, key = "mount", manifestDir = "" },
 ) {
   const link = resolve(claudeDir, "skills");
+  // NEVER THROUGH A LINK: `.claude` itself must be a real directory (made when absent)
+  // under the agent's directory; a symlink there, or a foreign `.claude/skills` link
+  // below, throws UnsafePathError (the caller refuses the spawn).
+  const root = dirname(resolve(claudeDir));
+  const claudeRel = basename(resolve(claudeDir));
+  safeMkdir(root, claudeRel);
   let st;
   try {
     st = lstatSync(link);
@@ -191,18 +199,20 @@ export function installSkillCopies(
       target.startsWith(resolve(skillsDir) + "/") ||
       target === resolve(claudeDir, "skills-mount") ||
       /\/skills-mounts\/[^/]+$/.test(target);
-    if (!ours) return [];
+    // Any other link is the repo's: nothing is installed through it, and the spawn is
+    // refused with the path named (checkPath throws UnsafePathError).
+    if (!ours) checkPath(root, `${claudeRel}/skills`, "dir");
     rmSync(link, { force: true });
   } else if (st && !st.isDirectory()) {
-    return []; // a file the repo owns: never replaced
+    checkPath(root, `${claudeRel}/skills`, "dir"); // a file the repo owns: refused, never replaced
   } else if (st) {
     // Gaffer's previous copies go; the repo's OWN skills (no marker) stay, and Gaffer's
     // are installed beside them at `.claude/skills/<name>/` (never a level deeper).
     removeSkillCopies(link);
   }
   if (!isDir(link)) {
-    mkdirSync(link, { recursive: true });
-    writeFileSync(resolve(link, SKILL_ROOT_MARK), "");
+    safeMkdir(root, `${claudeRel}/skills`);
+    safeWriteFile(root, `${claudeRel}/skills/${SKILL_ROOT_MARK}`, "");
   }
   if (manifestDir) {
     rmSync(manifestDir, { recursive: true, force: true });
@@ -282,12 +292,14 @@ export function mountRoleSkills(
   const manifestDir = resolve(claudeDir, "skills-mount");
   try {
     if (names.length === 0) {
-      rmSync(manifestDir, { recursive: true, force: true });
       installSkillCopies(claudeDir, libraryNames(skillsDir), { skillsDir, key: role || "library" });
+      rmSync(manifestDir, { recursive: true, force: true });
       return [];
     }
     return installSkillCopies(claudeDir, names, { skillsDir, key: role, manifestDir });
-  } catch {
+  } catch (err) {
+    // A path Gaffer refused to write through is the spawn's refusal, not a soft miss.
+    if (err instanceof UnsafePathError) throw err;
     /* skills stay invisible for this turn; the prompt still carries the contract */
     return [];
   }
@@ -314,87 +326,28 @@ export function secretReadDenyRules() {
   }
 }
 
-/** Does some PreToolUse matcher (a `A|B` regex) cover `tool`? */
-function hookCovers(entries, tool) {
-  return entries.some((m) => {
-    try {
-      return new RegExp(`^(?:${m.matcher})$`).test(tool);
-    } catch {
-      return false;
-    }
-  });
-}
-
 /**
  * Render the settings template into `<claudeDir>/settings.json` with ${RUNNER_DIR}
- * resolved for THIS checkout, and VERIFY the safety-hook wiring by parsing the JSON
- * (a "PreToolUse" string inside a _comment does not count): hooks.PreToolUse must
- * hold entries whose command runs `${RUNNER_DIR}/safety-hook.mjs`, covering Bash,
- * the write tools and Read, and each such hook must carry `"onFailure": "block"` and a
- * timeout (a hook that times out otherwise lets the tool run). The file is read back
- * and compared. On any failure the
- * file is removed and an Error starting "SAFETY:" is thrown (fail closed).
+ * resolved for THIS checkout, and VERIFY it by the ONE rule the shell writer applies too
+ * (lib/agent-settings.mjs validateAgentSettings): the rendered JSON carries the safety
+ * hook as a PreToolUse command hook covering every tool the hook decides, each entry
+ * with `"onFailure": "block"` and a timeout (a "PreToolUse" string inside a _comment
+ * does not count). The file is written through lib/safe-write.mjs (never through a
+ * symlink at `.claude` or `settings.json`) and read back. On a rule failure the file is
+ * removed and an Error starting "SAFETY:" is thrown; on a path refusal an UnsafePathError
+ * (`unsafe_worktree_path: ...`) is thrown. Both fail closed.
  */
 export function writeAgentSettings(
   claudeDir,
   settingsPath = process.env.CLAUDE_SETTINGS || resolve(RUNNER_DIR, "claude", "settings.json"),
 ) {
-  const target = resolve(claudeDir, "settings.json");
-  const hookPath = resolve(RUNNER_DIR, "safety-hook.mjs");
-  const refuse = (why) => {
-    rmSync(target, { force: true });
-    throw new Error(
-      `SAFETY: ${why} — refusing to launch an agent without its safety hook (fail closed)`,
-    );
-  };
-  let rendered;
-  try {
-    rendered = readFileSync(settingsPath, "utf8").split("${RUNNER_DIR}").join(RUNNER_DIR);
-  } catch (err) {
-    return refuse(`cannot read the agent settings template ${settingsPath}: ${err.message}`);
-  }
-  let parsed;
-  try {
-    parsed = JSON.parse(rendered);
-  } catch (err) {
-    return refuse(`agent settings template ${settingsPath} is not valid JSON: ${err.message}`);
-  }
-  const pre = parsed?.hooks?.PreToolUse;
-  const wired = Array.isArray(pre)
-    ? pre.filter(
-        (m) =>
-          m &&
-          typeof m.matcher === "string" &&
-          Array.isArray(m.hooks) &&
-          m.hooks.some((h) => typeof h?.command === "string" && h.command.includes(hookPath)),
-      )
-    : [];
-  // Claude Code RUNS the tool when a hook times out or crashes unless the entry says
-  // onFailure: block, so every safety-hook entry must say it, with a bounded timeout.
-  for (const m of wired) {
-    for (const h of m.hooks) {
-      if (typeof h?.command !== "string" || !h.command.includes(hookPath)) continue;
-      if (h.onFailure !== "block" || !(typeof h.timeout === "number" && h.timeout > 0)) {
-        return refuse(
-          `${settingsPath} safety-hook entry for ${m.matcher} lacks "onFailure": "block" and a timeout (a timed-out hook would let the tool run)`,
-        );
-      }
-    }
-  }
-  for (const tool of ["Bash", "Write", "Edit", "Read"]) {
-    if (!hookCovers(wired, tool)) {
-      return refuse(
-        `${settingsPath} has no PreToolUse safety-hook (${hookPath}) matcher for ${tool}`,
-      );
-    }
-  }
-  try {
-    writeFileSync(target, rendered);
-    if (readFileSync(target, "utf8") !== rendered) throw new Error("read-back mismatch");
-  } catch (err) {
-    return refuse(`could not write ${target}: ${err.message}`);
-  }
-  return target;
+  const abs = resolve(claudeDir);
+  return writeVerifiedSettings(
+    dirname(abs),
+    `${basename(abs)}/settings.json`,
+    settingsPath,
+    RUNNER_DIR,
+  );
 }
 
 export function makeAgentHome(prefix = "agent-home-", { role = "", stacks = [], text = "" } = {}) {

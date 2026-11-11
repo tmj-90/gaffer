@@ -177,10 +177,12 @@ gaffer_skills_mount "$PLAIN" "java-conventions" "delivery-10"
 gaffer_skills_mount_cleanup "delivery-10" "$PLAIN"
 [ ! -e "$PLAIN/.claude" ] && ok "4c: teardown leaves no .claude behind" || fail "4c: residue: $(find "$PLAIN/.claude" | paste -sd, -)"
 
-echo "== 4d: a repo's .claude/skills SYMLINK is left alone (nothing copied through it) =="
+echo "== 4d: a repo's .claude/skills SYMLINK is left alone (nothing copied through it) and refuses the mount =="
 LNK="$WORK/link-repo"; mkdir -p "$LNK/my-skills/own" "$LNK/.claude"; printf 'OWN\n' > "$LNK/my-skills/own/SKILL.md"
 ln -s ../my-skills "$LNK/.claude/skills"
-gaffer_skills_mount "$LNK" "java-conventions" "delivery-11" 2>/dev/null
+_GAFFER_UNSAFE_PATH_ERROR=""
+if gaffer_skills_mount "$LNK" "java-conventions" "delivery-11" 2>/dev/null; then fail "4d: the mount returned 0 with a skills link (the launch must be refused)"; else ok "4d: the mount refuses (rc 1, fail closed)"; fi
+case "${_GAFFER_UNSAFE_PATH_ERROR:-}" in *unsafe_worktree_path:*.claude/skills*) ok "4d: the refusal names .claude/skills" ;; *) fail "4d: reason: '${_GAFFER_UNSAFE_PATH_ERROR:-}'" ;; esac
 [ "$(readlink "$LNK/.claude/skills")" = ../my-skills ] && [ ! -e "$LNK/my-skills/java-conventions" ] \
   && ok "4d: the repo link is intact and nothing landed outside .claude/" || fail "4d: $(ls -A "$LNK/my-skills" | paste -sd, -)"
 

@@ -568,6 +568,11 @@ $_trail_q
     # uncontained — an install failure is THIS attempt's failure (retry with
     # the reason, or park when the bounds are spent); the agent is NOT run.
     if ! gaffer_install_agent_env; then
+      # A refused worktree path (unsafe_worktree_path) does not go away on a retry.
+      if [ -n "${_GAFFER_UNSAFE_PATH_ERROR:-}" ]; then
+        gaffer_park_unsafe_path "$NUM" "delivery agent (retry)"
+        result error; exit 0
+      fi
       _recover_or_park "agent-env-install" "could not install the agent environment (safety-hook settings, skills mount, workspace trust, brief) into the retry worktree — the agent was NOT launched for this attempt (fail closed)${_GAFFER_TRUST_ERROR:+: $_GAFFER_TRUST_ERROR}"
       [ "$_DELIV_OUTCOME" = "retry" ] && continue
       result error; exit 0

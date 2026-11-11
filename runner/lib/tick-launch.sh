@@ -79,6 +79,7 @@ gaffer_trust_workspace() {
     fi
     [ "$rc" -eq 0 ] && continue
     case "$tail" in
+      *unsafe_worktree_path*) fix="replace the symbolic link the message names with a regular file or directory in the repository, then run again" ;;
       *"not valid JSON"*) fix="fix ~/.claude.json (it is not valid JSON), then run again" ;;
       *lock*) fix="remove the stale lock ~/.claude.json.gaffer-trust.lock if no factory run is writing trust right now, then run again" ;;
       *refusing*) fix="the path is not a factory worktree or a repo the factory vouches for" ;;
@@ -641,6 +642,14 @@ gaffer_tick_prepare_launch() {
   }
   # Attempt 1's install (the retry loop re-runs it for every later attempt).
   if ! gaffer_install_agent_env; then
+    # A path in the worktree the runner refused to write through (a committed symlink
+    # at .claude, .claude/settings.json, .claude/skills or CLAUDE.factory.md) is the
+    # repository's, not a setup fault: it is still there on the next tick, so park the
+    # ticket blocked with the path and the fix instead of releasing it to ready.
+    if [ -n "${_GAFFER_UNSAFE_PATH_ERROR:-}" ]; then
+      gaffer_park_unsafe_path "$NUM" "delivery agent"
+      result error; exit 0
+    fi
     [ -n "${_GAFFER_TRUST_ERROR:-}" ] \
       && gaffer_abort_setup TRUST "$_GAFFER_TRUST_ERROR; refusing live run for #$NUM, no agent launched (fail closed)"
     gaffer_abort_setup SAFETY "agent-env install failed for #$NUM — refusing live run (fail closed)"

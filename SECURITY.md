@@ -40,6 +40,7 @@ Test files are under `runner/test/` (`.sh`, `.mjs`) or `packages/*/test/` (`.ts`
 | --- | --- | --- | --- |
 | Safety hook | Writes only in the worktree, no secret reads, no control-plane CLI or raw DB access, no base-branch ref rewrites, no git config or hook edits; fails closed | `safety-hook*.test.mjs` (with `safety-hook-golden-corpus.test.mjs`, every verdict pinned), the crew parity tests | A compiled binary or a script the agent writes and runs |
 | Throwaway worktrees | Delivery never touches your checkout; teardown removes only what the run owns | `cleanup-ownership.test.sh`, `crash-cleanup.test.sh` | A narrow teardown race (residual limits) |
+| Agent files in the worktree | The runner's host-side writes into a worktree (settings, brief, skills, `node_modules` links) never follow a symlink or leave it; a committed link parks the ticket with the path; one settings rule for shell and Node | `worktree-write-safety.test.sh`, `worktree-write-safety.test.mjs`, `worktree-link-refusal.test.sh`, `agent-settings-rule.test.mjs` | A path changed between the check and the rename by another process on the host |
 | Runner git | The runner's own git never runs repository hooks, drivers or helpers | `git-hooks-host.test.sh` | |
 | Agent environment | Built from an allowlist; credential env vars stripped; CLI credential stores are secret paths | `agent-env-scrub.test.sh`, `safety-hook-credentials.test.mjs` | Credentials outside the listed stores while `HOME` is shared |
 | Prompt quarantine | Untrusted ticket text reaches the agent inside `<untrusted-*>` envelopes | `prompt-quarantine.test.sh` | A model can still be persuaded by data |
@@ -159,6 +160,25 @@ agent is launched there: a delivery or bootstrap ends the tick as a setup error 
 clarify pass, the independent tester and the merge-conflict resolver refuse to start. A lock
 left by a run that is gone, one that records no holder, or one older than
 `GAFFER_TRUST_LOCK_STALE_MS` (60 s) is taken over.
+
+Before an agent runs, the runner writes its own files into the agent's worktree on the
+host, outside any sandbox: `.claude/settings.json`, the `.claude/skills` copies,
+`CLAUDE.factory.md` and the `node_modules` links. The repository decides what is at
+those paths, so every such write goes through `runner/lib/safe-write.mjs`, for the
+shell and the Node launchers alike: a destination that is a symlink (dangling or not) or
+not a regular file, or a parent below the worktree that is a symlink or not a directory,
+is refused, and the file lands by renaming a fresh temp file in the checked directory,
+never through a link. The cleanup that removes a refused file never deletes through a
+link either. A refusal names the path and the fix (`unsafe_worktree_path`): a delivery
+or bootstrap is parked `blocked` with that reason code and no agent is launched, the
+review pass holds the ticket, and the clarify pass, the tester and the merge-conflict
+resolver refuse to start. A `node_modules` link whose parent is a symlink is skipped
+and logged. Trusting a workspace neutralises a committed `.claude/settings.local.json`
+the same way, and refuses when `.claude` is a symlink. The rendered settings are
+verified by one rule (`runner/lib/agent-settings.mjs`) whichever launcher writes them:
+valid JSON, the safety hook as a PreToolUse command hook covering Bash, Write, Edit,
+MultiEdit, NotebookEdit, Read, Grep, Glob and LS, each entry with `"onFailure": "block"`
+and a timeout.
 
 Untrusted ticket fields the agent reads through `get_ticket` (title, description,
 criterion text, review feedback, and the title, question and answer of each resolved

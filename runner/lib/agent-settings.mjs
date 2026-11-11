@@ -37,8 +37,11 @@ import { EXIT_UNSAFE, UnsafePathError, safeRemoveFile, safeWriteFile } from "./s
 export const EXIT_SAFETY = 3;
 
 /**
- * Every tool the safety hook decides (lib/hook/decide.mjs): a tool missing from the
- * PreToolUse matchers never reaches the hook at all.
+ * The file tools the safety hook decides (lib/hook/decide.mjs) that the shipped template
+ * routes to it: a tool missing from the PreToolUse matchers never reaches the hook at all.
+ * decide.mjs also decides NotebookRead, which the shipped template does not match (current
+ * Claude Code reads notebooks with Read); it is not required here so that template stays
+ * accepted.
  */
 export const REQUIRED_TOOLS = Object.freeze([
   "Bash",
@@ -52,9 +55,13 @@ export const REQUIRED_TOOLS = Object.freeze([
   "LS",
 ]);
 
-/** Substitute `${RUNNER_DIR}` in the template text (literal, no regex). */
+/**
+ * Substitute `${RUNNER_DIR}` in the template text (literal, no regex) with the NORMALISED
+ * runner directory: the shell hands over an inherited RUNNER_DIR as it is (a trailing
+ * slash included), and validateAgentSettings looks for the resolved hook path.
+ */
 export function renderAgentSettings(templateText, runnerDir) {
-  return String(templateText).split("${RUNNER_DIR}").join(runnerDir);
+  return String(templateText).split("${RUNNER_DIR}").join(resolve(runnerDir));
 }
 
 /** Does the PreToolUse matcher `m` cover `tool` (Claude Code's matcher semantics)? */

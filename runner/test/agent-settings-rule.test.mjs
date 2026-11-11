@@ -160,6 +160,37 @@ for (const [label, [text, expected]] of Object.entries(TABLE)) {
   }
 }
 
+// The runner directory as the shell hands it over is not always normalised (factory.config.sh
+// keeps an inherited RUNNER_DIR, a trailing slash included). The old shell check grepped for
+// the raw "$RUNNER_DIR/safety-hook.mjs" and accepted it; the shared rule must too, from both
+// entry points, or every shell-launched agent is refused.
+{
+  const shipPath = resolve(RUNNER_DIR, "claude", "settings.json");
+  const dir = join(T, "slash-sh");
+  const script = [
+    'RUNNER_DIR="$1"; CLAUDE_SETTINGS="$2"',
+    'source "$RUNNER_DIR/lib/agent-env.sh"',
+    'gaffer_write_agent_settings "$3"',
+  ].join("\n");
+  const r = spawnSync("bash", ["-c", script, "x", `${RUNNER_DIR}/`, shipPath, dir], {
+    encoding: "utf8",
+  });
+  assert(
+    "a RUNNER_DIR with a trailing slash: the shell writer accepts the shipped template",
+    r.status === 0 && existsSync(join(dir, ".claude", "settings.json")),
+  );
+  const { writeVerifiedSettings } = await import("../lib/agent-settings.mjs");
+  const nd = join(T, "slash-nd");
+  mkdirSync(nd, { recursive: true });
+  let ok = true;
+  try {
+    writeVerifiedSettings(nd, ".claude/settings.json", shipPath, `${RUNNER_DIR}/`);
+  } catch {
+    ok = false;
+  }
+  assert("a runner dir with a trailing slash: the Node writer accepts the shipped template", ok);
+}
+
 rmSync(T, { recursive: true, force: true });
 console.log();
 if (failures.length === 0) {

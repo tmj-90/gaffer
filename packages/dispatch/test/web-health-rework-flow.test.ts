@@ -162,7 +162,8 @@ describe("web: Health — rework a reviewer caused", () => {
     ]);
     expect(rows).toContainEqual(["Waiting to merge", "7d 0h"]);
     expect(rows).toContainEqual(["In review or testing", "3m"]);
-    expect(rows).toContainEqual(["Queued after work began", "100%"]);
+    // 99.9% is short of 100: pct() says ">99%" (beside "<1%" efficiency), never a perfect 100%.
+    expect(rows).toContainEqual(["Queued after work began", ">99%"]);
     // A send-back waiting for rework is its own row, not "Before work started".
     expect(rows).toContainEqual(["Sent back, waiting for rework", "3h 0m"]);
     expect(rows).toContainEqual(["Before work started", "1m"]);

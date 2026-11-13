@@ -104,8 +104,8 @@ ui_world() {
       ui_run_fixtures after "${fixtures[@]+"${fixtures[@]}"}" || { ui_teardown; exit 2; }
     fi
     if [ "$_SERVE" = 1 ]; then
-      printf 'BASE=http://127.0.0.1:%s TOKEN=%s REPO_PATH=%s OUT=%s ROOT=%s GAFFER_DATA=%s PW_CORE_ROOT=%s%s\n' \
-        "$PORT" "$TOKEN" "$R" "$OUT/shots" "$ROOT" "$GAFFER_DATA" "${PW_CORE_ROOT:-}" \
+      printf 'BASE=http://127.0.0.1:%s TOKEN=%s REPO_PATH=%s OUT=%s ROOT=%s GAFFER_DATA=%s XDG_CONFIG_HOME=%s PW_CORE_ROOT=%s%s\n' \
+        "$PORT" "$TOKEN" "$R" "$OUT/shots" "$ROOT" "$GAFFER_DATA" "$XDG_CONFIG_HOME" "${PW_CORE_ROOT:-}" \
         "${FAKE_GH_STATE:+ FAKE_GH_STATE=$FAKE_GH_STATE}"
       exit 0
     fi

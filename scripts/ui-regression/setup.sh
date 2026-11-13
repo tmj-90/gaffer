@@ -36,6 +36,12 @@ if [ -f "$OUT/data/dashboard.pid" ]; then
 fi
 gaffer_test_rm_work --anywhere "$OUT" || { echo "ui-regression: refusing to wipe UI_REGRESS_OUT=$OUT (see above)" >&2; exit 70; }
 mkdir -p "$OUT/data" "$OUT/shots" "$OUT/bin"
+# The factory's signing key and its tamper anchor live under ${XDG_CONFIG_HOME:-$HOME/.config}/gaffer/keys,
+# named from the data path. Left in the operator's HOME, every world would add a key there, and a re-run
+# in the same $OUT would meet the previous run's anchor and hold its first merge as unsigned_approval.
+# Each world keeps its own beside its data; every process the world starts, and every suite, inherits it.
+export XDG_CONFIG_HOME="$OUT/config"
+mkdir -p "$XDG_CONFIG_HOME"
 
 # ── playwright-core (no browser download) + axe-core (a11y audit) into the out dir ──
 # UI_PW_CACHE (run-suites.sh sets it): install once into that dir, which the wipe above

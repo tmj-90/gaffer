@@ -10,7 +10,17 @@
 // owner) → every view renders → SSE live refresh. Captures console errors + failed
 // requests + screenshots. Exits 1 on any hard failure.
 import { execFileSync } from "node:child_process";
-import { writeFileSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
+import {
+  writeFileSync,
+  mkdirSync,
+  readFileSync,
+  unlinkSync,
+  existsSync,
+  statSync,
+  realpathSync,
+} from "node:fs";
+import { createHash } from "node:crypto";
+import os from "node:os";
 import { createRequire } from "node:module";
 import path from "node:path";
 
@@ -41,6 +51,7 @@ mkdirSync(OUT, { recursive: true });
 
 const RUN_TAG = `run-${Date.now().toString(36)}`;
 const results = [];
+const RUN_STARTED_MS = Date.now();
 const consoleErrors = [];
 const failedRequests = [];
 const ok = (m) => {
@@ -1864,6 +1875,26 @@ try {
 } finally {
   await browser.close();
 }
+
+// The world's factory key stays beside the world (setup.sh exports XDG_CONFIG_HOME under $OUT): the
+// approvals above were sealed with it, and nothing this run did may write a key into the operator's
+// HOME. A key left there by one run used to hold the next run's first merge as unsigned_approval.
+if (process.env.GAFFER_DATA) {
+  const id = createHash("sha256")
+    .update(`gaffer-factory-key\u0000${realpathSync(process.env.GAFFER_DATA)}`)
+    .digest("hex")
+    .slice(0, 24);
+  const operatorKeys = path.join(os.homedir(), ".config", "gaffer", "keys");
+  const worldConfig = (process.env.XDG_CONFIG_HOME ?? "").trim();
+  const worldKeys = worldConfig ? path.join(worldConfig, "gaffer", "keys") : operatorKeys;
+  const homeKey = path.join(operatorKeys, `${id}.key`);
+  worldKeys !== operatorKeys && existsSync(path.join(worldKeys, `${id}.key`))
+    ? ok("gate key: the world's approvals are sealed with a key kept beside the world")
+    : bad(`gate key: the world's key is not beside the world (keys dir ${worldKeys})`);
+  existsSync(homeKey) && statSync(homeKey).mtimeMs >= RUN_STARTED_MS
+    ? bad(`gate key: this run wrote a key into the operator's HOME (${homeKey})`)
+    : ok("gate key: nothing written into the operator's ~/.config/gaffer/keys");
+} else note("GAFFER_DATA not set: the gate key location check is skipped");
 
 console.log("\n== console errors ==");
 for (const e of consoleErrors) console.log("  " + e.slice(0, 300));

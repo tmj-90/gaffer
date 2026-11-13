@@ -269,7 +269,8 @@
     gap: 6px;
     flex-wrap: wrap;
   }
-  .board-card.needs .card-tags {
+  .board-card.needs .card-tags,
+  .board-card.needs .card-top > .badge.st {
     margin-right: 14px;
   }
   /* The status beside the number is statusBadge size s (components.css). A long landing

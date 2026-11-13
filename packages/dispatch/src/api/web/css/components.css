@@ -831,6 +831,13 @@
   .kpi--inline .kpi-val {
     font: 700 var(--t20) / 1.1 var(--f-text) !important;
   }
+  /* The font shorthand above resets font-variant-numeric to normal (and important), so
+     the proportional figures are restated here (a fallback face may default to tabular). */
+  .kpi--hero .kpi-val,
+  .kpi--row .kpi-val,
+  .kpi--inline .kpi-val {
+    font-variant-numeric: proportional-nums !important;
+  }
   @media (max-width: 760px) {
     .kpi--hero .kpi-val {
       font-size: var(--t34) !important;

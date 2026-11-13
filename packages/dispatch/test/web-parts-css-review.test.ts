@@ -54,3 +54,34 @@ describe("dataTable on a phone (stackOnPhone)", () => {
     expect(hit, "a phone rule gives the stacked table's caption display: block").toBeTruthy();
   });
 });
+
+describe("statCell sizes keep proportional figures", () => {
+  it("each sized figure restates proportional-nums after its important font shorthand", () => {
+    // `font: ... !important` resets font-variant-numeric to normal with importance, which
+    // outranks the plain proportional-nums on .kpi-val (seen as "normal" in a browser).
+    const all = rules("components.css");
+    for (const size of ["hero", "row", "inline"]) {
+      const sel = `.kpi--${size} .kpi-val`;
+      const fvn = all.filter(
+        (r) => r.selectors.includes(sel) && r.decls["font-variant-numeric"] !== undefined,
+      );
+      expect(
+        fvn.some((r) => /proportional-nums\s*!important/.test(r.decls["font-variant-numeric"]!)),
+        `${sel} sets font-variant-numeric: proportional-nums !important`,
+      ).toBe(true);
+    }
+  });
+});
+
+describe("Work board card", () => {
+  it("a needs card's status word clears the yellow card pinned at its top right", () => {
+    // The 14px ticketRef made the top row short, so "Paused" rose under the yellow card;
+    // the tags already kept 14px clear of it, the status beside the number did not.
+    const hit = rules("views/work.css").find(
+      (r) =>
+        r.selectors.includes(".board-card.needs .card-top > .badge.st") &&
+        parseFloat(r.decls["margin-right"] || "0") >= 14,
+    );
+    expect(hit, "a rule keeps a needs card's status 14px clear of the yellow card").toBeTruthy();
+  });
+});

@@ -120,6 +120,11 @@ export default async function s11(t, L) {
   const row = p
     .locator(`.needs-item a[href*="${parked.id}"], .needs-item:has-text("#${parked.number}") a`)
     .first();
+  // t.visit's "rendered" check passes on the ticket page's text still in #app (a hash
+  // navigation), and Health paints its treatment table only after /api/health and the
+  // flow panels' own fetches: a bare count() raced that paint and read 0 while the
+  // table, a moment later, named the ticket. Wait for the row (as long as visit waits).
+  await row.waitFor({ timeout: 15000 }).catch(() => null);
   const listed = await row.count();
   t.check(
     listed > 0,

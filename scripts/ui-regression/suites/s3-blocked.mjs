@@ -27,7 +27,7 @@ export default async function s3(t, L) {
   await t.visit("work");
   // The board paints from a fresh fetch after the navigation, so wait for the card
   // to show the parked state before reading it (a slow runner read 'Claimed' here).
-  const stuckSel = `.board-card:has(.num:text-is("#${stuck.number}"))`;
+  const stuckSel = `.board-card:has(.tref:text-is("#${stuck.number}"))`;
   await p
     .locator(stuckSel, { hasText: /Rework exhausted/ })
     .first()
@@ -165,7 +165,7 @@ export default async function s3(t, L) {
     ready: true,
   });
   await t.visit("work");
-  const cardSel = `.board-card:has(.num:text-is("#${hand.number}"))`;
+  const cardSel = `.board-card:has(.tref:text-is("#${hand.number}"))`;
   await p.locator(`${cardSel} button:has-text("I'll do this by hand")`).click();
   const mine = await L.maybe(
     async () => {

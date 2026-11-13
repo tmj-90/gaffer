@@ -253,13 +253,12 @@
     gap: 4px 8px;
     flex-wrap: wrap;
   }
-  .card-top .num {
-    font: 800 var(--t26) / 1 var(--f-display);
-    letter-spacing: 0.01em;
+  /* The number is ticketRef size s (14px, set in components.css), quieter than the title. */
+  .card-top .tref {
     margin-right: auto;
   }
-  .bc-blocked .card-top .num,
-  .bc-failed .card-top .num,
+  .bc-blocked .card-top .tref,
+  .bc-failed .card-top .tref,
   .bc-blocked .card-title,
   .bc-failed .card-title {
     color: var(--red);
@@ -270,30 +269,23 @@
     gap: 6px;
     flex-wrap: wrap;
   }
-  .board-card.needs .card-tags {
+  .board-card.needs .card-tags,
+  .board-card.needs .card-top > .badge.st {
     margin-right: 14px;
   }
-  .card-pri {
-    font: 700 var(--t12) / 1 var(--f-cond);
-    color: var(--ink-2);
-  }
-  .card-status {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
+  /* The status beside the number is statusBadge size s (components.css). A long landing
+     word ("Approved · waiting for Merge now") wraps on the card instead of clipping. */
+  .card-top .badge.st {
+    flex: 0 1 auto;
     min-width: 0;
-    font: 700 var(--t12) / 1.15 var(--f-cond);
-    color: var(--ink);
-  }
-  .card-status .glyph {
-    flex: none;
-  }
-  .card-status.st-failed {
-    color: var(--red);
+    white-space: normal;
+    text-overflow: clip;
+    line-height: 1.2;
   }
   /* Greedy wrapping, as the comp: a balanced title split "/repeat-orders" at its hyphen. */
+  /* The title is the loudest thing on the card (A-21): 16px bold over the 14px number. */
   .card-title {
-    font: 600 var(--t14) / 1.28 var(--f-cond);
+    font: 700 var(--t16) / 1.25 var(--f-cond);
     overflow-wrap: anywhere;
     text-wrap: pretty;
     /* A 200-character title is three lines on the card (its link's title has it all). */

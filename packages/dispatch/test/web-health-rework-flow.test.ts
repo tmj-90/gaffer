@@ -148,7 +148,8 @@ describe("web: Health — rework a reviewer caused", () => {
     const kpi = Array.from(document.querySelectorAll(".form-guide .kpi")).find(
       (k) => k.querySelector(".kpi-label")?.textContent === "Flow efficiency",
     );
-    expect(kpi?.querySelector(".kpi-val")?.textContent).toBe("<1");
+    // "%" is part of the value (statCell joins it: audit A-32).
+    expect(kpi?.querySelector(".kpi-val")?.textContent).toBe("<1%");
     expect(kpi?.querySelector(".kpi-sub")?.textContent).toBe("of lead time an agent worked");
     const eff = document.querySelector(".form-guide .fg-eff");
     expect(eff?.querySelector(".band")?.getAttribute("aria-label")).toBe(
@@ -161,7 +162,8 @@ describe("web: Health — rework a reviewer caused", () => {
     ]);
     expect(rows).toContainEqual(["Waiting to merge", "7d 0h"]);
     expect(rows).toContainEqual(["In review or testing", "3m"]);
-    expect(rows).toContainEqual(["Queued after work began", "100%"]);
+    // 99.9% is short of 100: pct() says ">99%" (beside "<1%" efficiency), never a perfect 100%.
+    expect(rows).toContainEqual(["Queued after work began", ">99%"]);
     // A send-back waiting for rework is its own row, not "Before work started".
     expect(rows).toContainEqual(["Sent back, waiting for rework", "3h 0m"]);
     expect(rows).toContainEqual(["Before work started", "1m"]);

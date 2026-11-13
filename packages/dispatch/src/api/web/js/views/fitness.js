@@ -2,11 +2,11 @@
 // Moved verbatim from app.js (the entry); the module map is in app.js.
 
 import { api } from "../api.js";
-import { svgBars } from "../charts.js";
+import { barChart, chartFigure } from "../charts.js";
 import { ensureSquad } from "../club.js";
-import { band, panelHead, statCell } from "../components.js";
+import { band, meter, panelHead, statCell } from "../components.js";
 import { el } from "../dom.js";
-import { fmtDuration, money, moneyW, plural } from "../format.js";
+import { fmtDuration, money, moneyW, pct, plural } from "../format.js";
 import { agentChip, glyph, ycard } from "../icons.js";
 import { allTickets } from "../matchday.js";
 import { devFlowPanel, needsPanel } from "../panels.js";
@@ -125,7 +125,7 @@ async function fitnessRoomPanels(healthRes) {
           el("div", {}, [
             el("dt", {}, "Queued after work began"),
             el("dd", { class: "tabnum" }, [
-              waiting.queue_pct != null ? `${Math.round(waiting.queue_pct)}%` : "—",
+              pct(waiting.queue_pct),
               el("small", {}, "of lead time: review, merge queue, send-backs, holds"),
             ]),
           ]),
@@ -135,6 +135,18 @@ async function fitnessRoomPanels(healthRes) {
   const left = right;
 
   // --- Form guide: the flow numbers, each from the server's one definition ------
+  // The two daily series as {t, v} on the 14-day grid: the sparklines and the chart
+  // read time, never categories (F-B1).
+  // A series the server did not serve is no series (never the zeroed fallback drawn
+  // as if it were data): no sparkline, and the chart's days read "no data".
+  const dayT = days.map((d) => Date.parse(`${d.key}T00:00:00Z`));
+  const served = (s) => Array.isArray(s) && s.length === N;
+  const timed = (s) => (served(s) ? s.map((v, i) => ({ t: dayT[i], v })) : undefined);
+  const phone = !!(window.matchMedia && window.matchMedia("(max-width: 760px)").matches);
+  const cycleRows = days.map((d, i) => ({
+    label: d.lbl,
+    value: served(flowCycle.series) ? flowCycle.series[i] : null,
+  }));
   right.appendChild(
     el("section", { class: "card panel form-guide", "aria-label": "Flow" }, [
       panelHead("Form guide", "last 14 days", null, { kit: "claret" }),
@@ -143,16 +155,20 @@ async function fitnessRoomPanels(healthRes) {
           label: "Cycle time",
           value: cycleTime.toFixed(1),
           unit: "days",
-          series: cycleLine,
+          series: timed(flowCycle.series),
+          seriesFmt: (v) => fmtDuration(v * DAY),
           flip: "cycle",
+          size: "row",
         }),
         statCell({
           label: "Throughput",
           value: String(last7),
           unit: "shipped / 7d",
           sub: `${prev7} the week before`,
-          series: doneByDay,
+          series: timed(flowThr.series),
+          seriesFmt: (v) => `${v} shipped`,
           flip: "thr",
+          size: "row",
         }),
         statCell({
           label: "Flow efficiency",
@@ -160,6 +176,7 @@ async function fitnessRoomPanels(healthRes) {
           unit: flowEff == null ? null : "%",
           sub: flowEff == null ? "nothing shipped yet" : "of lead time an agent worked",
           flip: "eff",
+          size: "row",
         }),
         statCell({
           label: "Deployments",
@@ -167,6 +184,7 @@ async function fitnessRoomPanels(healthRes) {
           unit: "all-time",
           series: deploySeries,
           flip: "dep",
+          size: "row",
         }),
         statCell({
           label: "Lead time",
@@ -174,38 +192,49 @@ async function fitnessRoomPanels(healthRes) {
           unit: "days",
           series: leadSeries,
           flip: "lead",
+          size: "row",
         }),
       ]),
       // The results by day: the cycle time as a bar per day, and what flow efficiency means.
       el("div", { class: "fg-detail" }, [
-        el("div", { class: "fg-chart" }, [
-          el("h3", { class: "fg-h" }, "Cycle time, by day"),
-          el("div", {
-            class: "chart",
-            html: svgBars(cycleLine, {
-              labels: days.map((d) => d.lbl),
-              fmt: (v) => `${(+v).toFixed(1)}d`,
-              label: "Median cycle time by day",
-              today: true,
-              // Drawn at the width it shows at, so its tick labels stay readable.
-              ...(window.matchMedia && window.matchMedia("(max-width: 760px)").matches
-                ? { width: 360, height: 130 }
-                : { width: 720, height: 150 }),
-            }),
+        // The shared chart figure: bars capped at 24px with nice ticks in a unit that
+        // fits (minutes for a 2-minute cycle, never "0.0 days"), focusable bars with one
+        // tooltip, and a table view (F-B4).
+        chartFigure({
+          title: "Cycle time, by day",
+          caption: "Median per day over the last 14 days; today's bar is picked out.",
+          cls: "fg-chart",
+          chart: barChart({
+            rows: cycleRows,
+            unit: "days",
+            label: "Median cycle time by day",
+            current: cycleRows.length - 1,
+            // Drawn at the width it shows at, so its tick labels stay readable.
+            ...(phone ? { width: 360, height: 170 } : { width: 720, height: 190 }),
           }),
-        ]),
+          columns: [
+            { key: "label", label: "Day" },
+            { key: "value", label: "Median cycle time", numeric: true },
+          ],
+          rows: cycleRows.map((r) => ({
+            label: r.label,
+            value: r.value == null ? null : fmtDuration(r.value * DAY),
+          })),
+        }),
         el("div", { class: "fg-eff flow-eff" }, [
           el("h3", { class: "fg-h" }, [
             "Flow efficiency ",
             el("b", { class: "tabnum" }, flowEff == null ? "—" : `${flowEffText}%`),
           ]),
-          band(
-            flowEff ?? 0,
-            100,
-            flowEff == null
-              ? "Flow efficiency not measured yet"
-              : `Flow efficiency ${flowEffText}% of lead time with an agent working on the ticket`,
-          ),
+          // A share with no limit: a meter on a 0-100 track, no limit tick (F-D2).
+          meter({
+            value: flowEff ?? 0,
+            max: 100,
+            ariaLabel:
+              flowEff == null
+                ? "Flow efficiency not measured yet"
+                : `Flow efficiency ${flowEffText}% of lead time with an agent working on the ticket`,
+          }),
           el(
             "p",
             { class: "section-note" },

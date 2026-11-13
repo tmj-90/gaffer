@@ -213,8 +213,10 @@
     font-size: var(--t34);
     margin-left: 6px;
   }
-  .fg-chart .chart svg {
-    max-height: 190px;
+  /* The code index's one measure tile sits flush with the panel's text, at tile width. */
+  .code-index-panel > .measure-tile {
+    max-width: 30rem;
+    padding: 0;
   }
   .fg-eff {
     display: grid;

@@ -4,11 +4,10 @@
 import { api } from "./api.js";
 import { el, field } from "./dom.js";
 import { plural } from "./format.js";
-import { glyph } from "./icons.js";
 import { router } from "./router.js";
 import { closeSheet, openSheet, sheetOpen } from "./sheet.js";
 import { appState } from "./state.js";
-import { statusLabel } from "./status.js";
+import { statusLabel, ticketHead } from "./status.js";
 import { guard, toast } from "./toast.js";
 import { WONT_DO_PRESETS } from "./views/review-comments.js";
 
@@ -151,14 +150,10 @@ function hideRepoSheet(repo, after) {
   });
 }
 
-/** The ticket a sheet acts on, named at its top: glyph, number and title. */
+/** The ticket a sheet acts on, named at its top: the shared ticketHead (title first). */
 function sheetTicket(t) {
   if (!t) return null;
-  return el("p", { class: "rs-ticket" }, [
-    t.status ? glyph(t.status, 16, statusLabel(t.status, t.landing_state)) : null,
-    t.number != null ? el("b", { class: "rs-num tabnum" }, `#${t.number}`) : null,
-    t.title ? el("span", { class: "rs-title" }, t.title) : null,
-  ]);
+  return ticketHead(t, { level: 0, refSize: "s", cls: "rs-ticket" });
 }
 
 /**

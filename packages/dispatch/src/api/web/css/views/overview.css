@@ -239,8 +239,9 @@
     font: 500 var(--t13) / var(--lh-detail) var(--f-detail);
     color: var(--ink-2);
   }
+  /* The reason in plain words (reasonTag); the raw code is in its title. */
   .own-code {
-    font: 400 var(--t12) / 1.35 var(--f-mono);
+    font: 600 var(--t13) / 1.35 var(--f-detail);
   }
   .own-note {
     min-width: 0;

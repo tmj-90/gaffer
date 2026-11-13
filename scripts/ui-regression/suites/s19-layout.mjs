@@ -85,7 +85,7 @@ export default async function s19(t, L) {
           .filter((c) => c.getBoundingClientRect().width > 0 && c.scrollWidth > c.clientWidth + 1)
           .map(
             (c) =>
-              `${c.querySelector(".num")?.textContent || "?"} (+${c.scrollWidth - c.clientWidth}px)`,
+              `${c.querySelector(".tref")?.textContent || "?"} (+${c.scrollWidth - c.clientWidth}px)`,
           );
         const card = document.querySelector(`.board-card[data-id="${heldId}"]`);
         const title = card && card.querySelector(".card-title");

@@ -216,6 +216,13 @@ describe("BBT-001 web: recording the tester's verdict from the board", () => {
     await bootDetail();
     const text = document.body.textContent || "";
     expect(text).toContain(`Waived: ${label}`);
+    // The shared callout (needs tone: the yellow card and the mark wash), not an unstyled <p>.
+    const w = document.querySelector(".tk-waiver")!;
+    expect(w.classList.contains("callout")).toBe(true);
+    expect(w.classList.contains("callout-needs")).toBe(true);
+    expect(w.getAttribute("role")).toBe("note");
+    expect(w.querySelector(".ycard")).not.toBeNull();
+    expect(w.querySelector(".callout-title")?.textContent).toBe("Waived:");
     expect(text).toContain("Epic Widgets: accepted with 1 waiver");
   });
 

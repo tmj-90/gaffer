@@ -181,5 +181,11 @@ describe("web: ticket-detail Add-AC form — check_command", () => {
       true,
     );
     expect(metas.some((m) => m.includes("verify: manual review"))).toBe(true);
+    // Each criterion carries a verdict mark (its own glyph and its word), not a ticket
+    // lifecycle glyph: a met criterion is not drawn as a "done" ticket (A-23).
+    const marks = Array.from(document.querySelectorAll(".tk-ac-list .vmark"));
+    expect(marks.map((m) => m.className)).toEqual(["vmark vm-pass", "vmark vm-open"]);
+    expect(marks.map((m) => m.textContent)).toEqual(["satisfied", "pending"]);
+    expect(document.querySelector(".tk-ac-list svg.glyph")).toBeNull();
   });
 });

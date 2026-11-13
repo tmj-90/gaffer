@@ -20,6 +20,7 @@ import {
   statusBadge,
   statusLabel,
   ticketActionKeys,
+  verdictMark,
 } from "../status.js";
 import { guard, toast } from "../toast.js";
 import { renderAddAcForm } from "./acceptance.js";
@@ -1265,10 +1266,6 @@ async function renderTicket(id) {
               "li",
               { class: `ac-${ac.status}` },
               el("div", { class: "ac-item" }, [
-                glyph(
-                  ac.status === "satisfied" ? "done" : ac.status === "failed" ? "failed" : "draft",
-                  16,
-                ),
                 el("div", { class: "ac-text" }, [
                   el("div", {}, ac.text),
                   el(
@@ -1287,7 +1284,12 @@ async function renderTicket(id) {
                     ].join(""),
                   ),
                 ]),
-                el("span", { class: "ac-state" }, String(ac.status || "").replace(/_/g, " ")),
+                // A criterion's verdict mark (its own glyph set and its word), never a
+                // ticket lifecycle glyph: a met criterion is not a "done" ticket (A-23).
+                verdictMark(
+                  ac.status === "satisfied" ? "pass" : ac.status === "failed" ? "fail" : "open",
+                  { word: String(ac.status || "open").replace(/_/g, " ") },
+                ),
               ]),
             ),
           ),

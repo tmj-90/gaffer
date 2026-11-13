@@ -91,7 +91,7 @@ describe("web: What I own lane", () => {
         {
           kind: "review",
           label: "Review sign-off",
-          reason: "please review",
+          reason: "tester_passed",
           ticket: { id: "tk-2", number: 7, title: "Ship it", status: "in_review" },
           decisionId: null,
           severity: null,
@@ -141,6 +141,10 @@ describe("web: What I own lane", () => {
 
     // Review + regulated approval rows are present and distinctly styled.
     expect(panel!.querySelector(".own-row--review")).not.toBeNull();
+    // A bare server code as the reason reads in words (A-25), never "tester_passed".
+    expect(panel!.querySelector(".own-row--review .own-reason")?.textContent).toBe(
+      "Tester passed it",
+    );
     expect(panel!.querySelector(".own-row--ready_approval")).not.toBeNull();
   });
 
@@ -181,8 +185,14 @@ describe("web: What I own lane", () => {
       "DoD failed after 3 attempts (branch preserved)",
     );
     // Structured code + advisory action are surfaced.
-    expect(row!.querySelector(".own-code")?.textContent).toBe("rework_exhausted");
-    expect(row!.querySelector(".own-action")?.textContent).toMatch(/unpark/);
+    // In plain words (A-25), the raw code kept in its title.
+    const code = row!.querySelector(".own-code")!;
+    expect(code.textContent).toBe("Rework ran out of attempts");
+    expect(code.getAttribute("title")).toBe("Server reason code: rework_exhausted");
+    expect(row!.querySelector(".own-action")?.textContent).toBe("→\u00a0Unpark it");
+    expect(row!.querySelector(".own-action")?.getAttribute("title")).toMatch(/unpark$/);
+    // The wait in the one duration format (A-30): "15m", never "15 min".
+    expect(row!.querySelector(".own-age")?.textContent).toBe("Waited 15m");
   });
 
   it("ESCAPES a hostile parked reason string (text node, never innerHTML)", async () => {

@@ -8,7 +8,15 @@
    =========================================================================== */
 
 @layer components {
-  /* --- buttons: primary (the one sign-off), secondary, quiet, danger ------ */
+  /* --- buttons: one documented set (components.js button()) -----------------
+     primary   .btn.primary  the one sign-off per view (ink fill)
+     secondary .btn          the default: ink frame on paper
+     danger    .btn.danger   destroys or stops something (red frame, red word)
+     link      .btn-link     an action that reads as a link inside a sentence
+     ghost     .btn.ghost    a borderless secondary for a dense toolbar row
+     .btn.small reads smaller but keeps the 40/44px target; .btn.big is the
+     programme-type sign-off. .btn.ok and .btn.quiet are older names for primary
+     and ghost. Labels sit on the type scale (16, small 14). */
   .btn {
     display: inline-flex;
     align-items: center;
@@ -20,7 +28,7 @@
     background: var(--paper);
     color: var(--ink);
     border-radius: var(--r);
-    font: 700 15px / 1.1 var(--f-text);
+    font: 700 var(--t16) / 1.1 var(--f-text);
     text-decoration: none;
     white-space: nowrap;
   }
@@ -51,7 +59,6 @@
   .btn.danger:hover:not(:disabled) {
     background: var(--red-wash);
   }
-  .btn.ghost,
   /* A button that reads as a link inside a sentence ("No cup runs yet. Plan a build
      and …"). Without this it kept the browser's ButtonFace grey (#6b6b6b under the
      floodlit kit: 2.4:1 for its text). It takes the sentence's colour, like an <a>. */
@@ -75,14 +82,19 @@
     cursor: not-allowed;
     text-decoration-style: dotted;
   }
+  /* Ghost: a borderless secondary. It keeps the button's padding and target (it
+     used to share .btn-link's inline, zero-padding rules and lost both). */
+  .btn.ghost,
   .btn.quiet {
     background: none;
     border-color: transparent;
     padding: 0 6px;
     text-decoration: underline;
+    text-decoration-thickness: 1.5px;
     text-underline-offset: 3px;
   }
-  .btn.ghost:hover:not(:disabled) {
+  .btn.ghost:hover:not(:disabled),
+  .btn.quiet:hover:not(:disabled) {
     background: none;
     text-decoration-thickness: 2px;
   }
@@ -514,6 +526,30 @@
   .panel-link {
     font: 700 var(--t14) var(--f-text);
   }
+  /* The one heading scale: panelHead({ level }) 2 | 3 | 4 at 26 / 20 / 16 px, the same
+     on a block (a head with no level keeps the older sizes until its view moves). */
+  .ph-l2 .panel-title,
+  .panel-head.block.ph-l2 .panel-title {
+    font-size: var(--t26);
+    line-height: 1.05;
+  }
+  .ph-l3 .panel-title,
+  .panel-head.block.ph-l3 .panel-title,
+  .cf-title {
+    font: 800 var(--t20) / 1.1 var(--f-display);
+    text-transform: uppercase;
+    letter-spacing: 0.01em;
+  }
+  .ph-l4 .panel-title,
+  .panel-head.block.ph-l4 .panel-title {
+    font-size: var(--t16);
+    line-height: 1.15;
+    letter-spacing: 0.03em;
+  }
+  .ph-l3 .panel-aux,
+  .ph-l4 .panel-aux {
+    font-size: var(--t14);
+  }
   .panel-head.block {
     justify-content: flex-start;
   }
@@ -780,6 +816,40 @@
   .kpi-val {
     font: 800 var(--t52) / 1 var(--f-display);
     color: var(--board-ink);
+    /* A standalone figure: proportional numerals (tabular only in columns). */
+    font-variant-numeric: proportional-nums;
+  }
+  /* statCell({ size }) owns its figure. These are !important on purpose: inside cascade
+     layers an important declaration in an earlier layer (components) outranks every
+     view sheet, so no view can restyle a sized cell (the drift audit A-33 found). */
+  .kpi--hero .kpi-val {
+    font: 800 var(--t52) / 1 var(--f-display) !important;
+  }
+  .kpi--row .kpi-val {
+    font: 800 var(--t34) / 1 var(--f-display) !important;
+  }
+  .kpi--inline .kpi-val {
+    font: 700 var(--t20) / 1.1 var(--f-text) !important;
+  }
+  /* The font shorthand above resets font-variant-numeric to normal (and important), so
+     the proportional figures are restated here (a fallback face may default to tabular). */
+  .kpi--hero .kpi-val,
+  .kpi--row .kpi-val,
+  .kpi--inline .kpi-val {
+    font-variant-numeric: proportional-nums !important;
+  }
+  @media (max-width: 760px) {
+    .kpi--hero .kpi-val {
+      font-size: var(--t34) !important;
+    }
+    .kpi--row .kpi-val {
+      font-size: var(--t26) !important;
+    }
+  }
+  /* A missing value: a dash, and the short reason under it. */
+  .kpi-reason {
+    font: 500 var(--t13) / 1.35 var(--f-detail);
+    color: var(--board-ink-2);
   }
   .kpi-val.y {
     color: var(--yellow);
@@ -813,6 +883,8 @@
   .card .kpi-label,
   .card .kpi-unit,
   .card .kpi-sub,
+  .card .kpi-reason,
+  .view > .kpi-row .kpi-reason,
   .view > .kpi-row .kpi-label,
   .view > .kpi-row .kpi-unit,
   .view > .kpi-row .kpi-sub {
@@ -862,8 +934,15 @@
   .scoreboard .band-fill {
     background: var(--sky);
   }
-  .band-fill.over {
+  .band-fill.over,
+  .band-over {
     background: var(--red);
+  }
+  /* meter(): the overrun past the limit's tick, its own red part. */
+  .band-over {
+    position: absolute;
+    top: 0;
+    bottom: 0;
   }
   .band-tick {
     position: absolute;
@@ -1641,30 +1720,15 @@
   .act-intro {
     color: var(--ink-2);
   }
+  /* The ticket a sheet acts on: the shared ticketHead (title, then number and status)
+     in a quiet frame (no side tab). On --paper, not --paper-2: the 14px ticketRef is
+     claret-ink, which the club kit makes readable (4.5:1) on --paper only; on the
+     darker wash a dark-mode kit ink read 4.48:1. */
   .rs-ticket {
-    display: flex;
-    align-items: baseline;
-    gap: 4px 10px;
-    flex-wrap: wrap;
     padding: 10px 12px;
     border: var(--frame);
-    border-left: 6px solid var(--sky);
     border-radius: var(--r);
-    background: var(--paper-2);
-  }
-  .rs-ticket .glyph {
-    align-self: center;
-    flex: none;
-  }
-  .rs-num {
-    font: 800 var(--t26) / 1 var(--f-display);
-    color: var(--claret-ink);
-  }
-  .rs-title {
-    flex: 1 1 12rem;
-    min-width: 0;
-    font: 700 var(--t16) / 1.3 var(--f-text);
-    overflow-wrap: anywhere;
+    background: var(--paper);
   }
   .reject-chips {
     display: flex;
@@ -1866,5 +1930,719 @@
     .palette-scrim {
       padding-top: 16px;
     }
+  }
+}
+
+/* ===========================================================================
+   The shared parts (components.js, charts.js, status.js): measure tile,
+   sparkline, bar chart and its figure, meters, segmented bar, data table,
+   callout, inline empty state and the ticket parts. Chart marks use the
+   --viz-* tokens (never the club kit), with fallbacks until they exist.
+   =========================================================================== */
+@layer components {
+  /* --- measure tile ---------------------------------------------------------- */
+  .measure-tile {
+    --mt-ink-2: var(--ink-2);
+    --mt-track: var(--viz-track, var(--rule-2));
+    --spark-surface: var(--paper);
+    display: grid;
+    align-content: start;
+    gap: 6px;
+    padding: 12px 16px;
+    min-width: 0;
+    color: inherit;
+  }
+  .scoreboard .measure-tile,
+  .sb-cells .measure-tile,
+  .block-ink .measure-tile {
+    --mt-ink-2: var(--board-ink-2);
+    --mt-track: var(--viz-track, var(--board-rule));
+    --spark-surface: var(--board-2);
+  }
+  .mt-top {
+    display: flex;
+    justify-content: flex-start;
+    align-items: baseline;
+    gap: 4px 10px;
+    flex-wrap: wrap;
+  }
+  .mt-label {
+    font: 700 var(--t14) / 1.25 var(--f-text);
+  }
+  .mt-period {
+    padding: 1px 6px;
+    border: 1px solid currentColor;
+    border-radius: var(--r);
+    font: 600 var(--t12) / 1.3 var(--f-cond);
+    color: var(--mt-ink-2);
+    white-space: nowrap;
+  }
+  .mt-figure {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .mt-val {
+    font: 700 var(--t34) / 1 var(--f-text);
+    font-variant-numeric: proportional-nums;
+  }
+  .measure-tile.is-small .mt-val,
+  .measure-tile.is-missing .mt-val {
+    color: var(--mt-ink-2);
+  }
+  .mt-unit {
+    font: 500 var(--t14) / 1.3 var(--f-text);
+    color: var(--mt-ink-2);
+  }
+  .mt-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 2px 12px;
+    font: 500 var(--t13) / 1.4 var(--f-text);
+    color: var(--mt-ink-2);
+  }
+  .mt-n {
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+  }
+  .mt-delta {
+    font-weight: 700;
+    white-space: nowrap;
+    color: inherit;
+  }
+  .mt-delta.is-better {
+    color: var(--ok);
+  }
+  .mt-delta.is-worse {
+    color: var(--red);
+  }
+  .scoreboard .mt-delta.is-better,
+  .sb-cells .mt-delta.is-better {
+    color: var(--board-ok);
+  }
+  .scoreboard .mt-delta.is-worse,
+  .sb-cells .mt-delta.is-worse {
+    color: var(--board-red-2);
+  }
+  .mt-dvs {
+    font-weight: 500;
+    color: var(--mt-ink-2);
+  }
+  .mt-whisker-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .mt-whisker {
+    position: relative;
+    flex: 1 1 auto;
+    max-width: 160px;
+    height: 10px;
+    background: linear-gradient(var(--mt-track), var(--mt-track)) 0 50% / 100% 2px no-repeat;
+  }
+  .wh-range {
+    position: absolute;
+    top: 2px;
+    bottom: 2px;
+    min-width: 2px;
+    border-radius: 1px;
+    background: var(--viz-muted, var(--mt-ink-2));
+  }
+  .wh-point {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    margin-left: -1px;
+    background: var(--viz-mark, currentColor);
+  }
+  .mt-range {
+    font: 600 var(--t12) / 1.2 var(--f-text);
+    color: var(--mt-ink-2);
+    white-space: nowrap;
+  }
+  .mt-note,
+  .mt-def p {
+    margin: 0;
+    font: 500 var(--t13) / 1.45 var(--f-text);
+    color: var(--mt-ink-2);
+    max-width: 60ch;
+  }
+  .mt-def summary {
+    width: max-content;
+    max-width: 100%;
+    cursor: pointer;
+    font: 600 var(--t13) / 1.4 var(--f-text);
+    color: var(--mt-ink-2);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+  .mt-def[open] summary {
+    margin-bottom: 4px;
+  }
+
+  /* --- sparkline ------------------------------------------------------------- */
+  .kpi-row,
+  .sb-cells {
+    --spark-surface: var(--board-2);
+  }
+  .card .kpi-row,
+  .view > .kpi-row {
+    --spark-surface: var(--paper);
+  }
+  .spark {
+    position: relative;
+    display: block;
+    min-width: 0;
+    border-radius: var(--r);
+  }
+  .spark-plot {
+    position: relative;
+    display: block;
+    margin: 0 6px;
+  }
+  .spark-svg2 {
+    display: block;
+    width: 100%;
+    overflow: visible;
+  }
+  .spark-line {
+    fill: none;
+    stroke: var(--viz-mark, currentColor);
+    stroke-width: 2;
+    stroke-linejoin: round;
+    stroke-linecap: round;
+  }
+  .spark-baseline {
+    stroke: currentColor;
+    stroke-opacity: 0.35;
+    stroke-width: 1;
+  }
+  .spark-dot,
+  .spark-hover {
+    position: absolute;
+    width: 8px;
+    height: 8px;
+    margin: -4px 0 0 -4px;
+    border-radius: var(--r-round);
+    background: var(--viz-accent, currentColor);
+    box-shadow: 0 0 0 2px var(--spark-surface, var(--paper));
+    pointer-events: none;
+  }
+  .spark-hover {
+    background: var(--viz-mark, currentColor);
+  }
+  .spark-x {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    margin-left: -0.5px;
+    background: currentColor;
+    opacity: 0.5;
+    pointer-events: none;
+  }
+  .spark-readout,
+  .bc-tip {
+    position: absolute;
+    z-index: 3;
+    padding: 3px 8px;
+    border-radius: var(--r);
+    background: var(--board);
+    color: var(--board-ink);
+    font: 600 var(--t12) / 1.3 var(--f-text);
+    white-space: nowrap;
+    pointer-events: none;
+  }
+  .spark-readout {
+    right: 0;
+    bottom: 100%;
+    margin-bottom: 4px;
+  }
+  .spark:focus-visible {
+    outline-offset: 4px;
+  }
+
+  /* --- bar chart and its figure ----------------------------------------------- */
+  .bar-chart {
+    position: relative;
+    min-width: 0;
+  }
+  .bc-svg {
+    display: block;
+    width: 100%;
+    height: auto;
+    overflow: visible;
+  }
+  .bc-grid {
+    stroke: var(--viz-grid, var(--rule-2));
+    stroke-width: 1;
+    shape-rendering: crispEdges;
+  }
+  .bc-base {
+    stroke: var(--rule);
+    stroke-width: 1;
+    shape-rendering: crispEdges;
+  }
+  .bc-bar {
+    fill: var(--viz-mark, var(--ink-2));
+  }
+  .bc-bar.is-current {
+    fill: var(--viz-accent, var(--ink));
+  }
+  .bc-ytick,
+  .bc-xtick {
+    font: 600 12px var(--f-cond);
+    fill: var(--ink-2);
+    font-variant-numeric: tabular-nums;
+  }
+  .bc-hit {
+    fill: transparent;
+    cursor: default;
+  }
+  .bc-hit:hover {
+    fill: color-mix(in srgb, var(--ink) 6%, transparent);
+  }
+  .bc-hit:focus-visible {
+    outline: none;
+    box-shadow: none;
+    fill: color-mix(in srgb, var(--ink) 8%, transparent);
+    stroke: var(--focus);
+    stroke-width: 2;
+  }
+  .bc-tip {
+    display: grid;
+    gap: 1px;
+    transform: translate(-50%, calc(-100% - 6px));
+  }
+  .bc-tip strong {
+    font: 700 var(--t14) / 1.2 var(--f-text);
+  }
+  .chart-figure {
+    display: grid;
+    align-content: start;
+    gap: 8px;
+    min-width: 0;
+    margin: 0;
+  }
+  .cf-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 4px 12px;
+    flex-wrap: wrap;
+  }
+  .cf-titles {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+  }
+  .cf-cap {
+    font: 500 var(--t14) / 1.4 var(--f-text);
+    color: var(--ink-2);
+  }
+  .cf-toggle {
+    font-size: var(--t14);
+  }
+
+  /* --- meter rows and the segmented bar -------------------------------------- */
+  .meter-list {
+    display: grid;
+    grid-template-columns: minmax(6ch, max-content) minmax(80px, 1fr) max-content;
+    gap: 8px 12px;
+    align-items: center;
+  }
+  .meter-row {
+    display: grid;
+    grid-template-columns: minmax(0, 16ch) minmax(60px, 1fr) max-content;
+    gap: 8px 12px;
+    align-items: center;
+    min-width: 0;
+  }
+  .meter-list > .meter-row {
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
+  }
+  .mr-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font: 600 var(--t14) / 1.3 var(--f-text);
+  }
+  .mr-bar {
+    position: relative;
+    height: 8px;
+    border-radius: 1px;
+    background: var(--viz-track, var(--rule-2));
+  }
+  .mr-fill {
+    position: absolute;
+    inset: 0 auto 0 0;
+    border-radius: 1px;
+    background: var(--viz-mark, var(--ink-2));
+  }
+  .mr-whisker {
+    position: absolute;
+    top: 50%;
+    height: 0;
+    border-top: 2px solid var(--ink);
+    transform: translateY(-1px);
+  }
+  .mr-whisker::before,
+  .mr-whisker::after {
+    content: "";
+    position: absolute;
+    top: -6px;
+    width: 2px;
+    height: 10px;
+    background: var(--ink);
+  }
+  .mr-whisker::before {
+    left: 0;
+  }
+  .mr-whisker::after {
+    right: 0;
+  }
+  .mr-fig {
+    font: 600 var(--t14) / 1.3 var(--f-text);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    text-align: right;
+  }
+  .seg-wrap {
+    display: grid;
+    gap: 8px;
+    min-width: 0;
+  }
+  .seg-bar {
+    display: flex;
+    gap: 2px;
+    height: 8px;
+    border-radius: var(--r-round);
+    overflow: hidden;
+  }
+  .seg-wrap.is-tall .seg-bar {
+    height: 28px;
+    border-radius: 0;
+    overflow: visible;
+  }
+  .seg {
+    flex: 1 1 0;
+    min-width: 2px;
+  }
+  .seg-wrap.is-tall .seg {
+    display: flex;
+    align-items: center;
+    padding: 0 6px;
+    border-radius: 4px;
+    font: 700 var(--t12) / 1 var(--f-text);
+    color: var(--paper);
+  }
+  .seg-1 {
+    background: var(--viz-mark, var(--ink));
+  }
+  .seg-2 {
+    background: var(--viz-accent, var(--ink-2));
+  }
+  .seg-3 {
+    background: var(--viz-muted, var(--rule));
+  }
+  .seg-4 {
+    background: var(--viz-track, var(--rule-2));
+  }
+  .seg-wrap.is-tall .seg-3,
+  .seg-wrap.is-tall .seg-4 {
+    color: var(--ink);
+  }
+  .seg-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 16px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    font: 500 var(--t13) / 1.4 var(--f-text);
+    color: var(--ink-2);
+  }
+  .seg-legend b {
+    color: var(--ink);
+    font-variant-numeric: tabular-nums;
+  }
+  .seg-key {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    margin-right: 6px;
+    border-radius: 2px;
+    vertical-align: -1px;
+  }
+  @media (max-width: 760px) {
+    .meter-list {
+      grid-template-columns: minmax(0, 1fr) max-content;
+      gap: 4px 12px;
+    }
+    .meter-list > .meter-row .mr-bar {
+      grid-column: 1 / -1;
+      grid-row: 2;
+    }
+  }
+
+  /* --- data table ------------------------------------------------------------- */
+  /* A real table that scrolls sideways inside its card on a phone (never the page). */
+  .dt-wrap {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+  .data-table {
+    width: 100%;
+    border-collapse: collapse;
+    font: 500 var(--t14) / 1.4 var(--f-text);
+  }
+  .data-table caption {
+    padding-bottom: 6px;
+    caption-side: top;
+    text-align: left;
+    font: 600 var(--t13) / 1.3 var(--f-text);
+    color: var(--ink-2);
+  }
+  .data-table th,
+  .data-table td {
+    padding: 8px 12px;
+    border-bottom: var(--hair);
+    text-align: left;
+    vertical-align: top;
+  }
+  .data-table th:first-child,
+  .data-table td:first-child {
+    padding-left: 0;
+  }
+  .data-table thead th {
+    font: 700 var(--t12) / 1.25 var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--ink-2);
+    border-bottom: 2px solid var(--rule);
+    white-space: nowrap;
+    vertical-align: bottom;
+  }
+  /* Not .num: that global class is the 20px display numeral. */
+  .data-table .dt-num {
+    text-align: right;
+    font-size: var(--t16);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .data-table thead .dt-num {
+    font-size: var(--t12);
+  }
+  .data-table .al-center {
+    text-align: center;
+  }
+  .data-table thead th:first-child,
+  .data-table tbody th[scope="row"] {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    background: var(--paper);
+  }
+  .data-table tbody th[scope="row"] {
+    font: 700 var(--t14) / 1.4 var(--f-text);
+    text-transform: none;
+    letter-spacing: 0;
+    color: var(--ink);
+    white-space: nowrap;
+  }
+  .data-table .dt-group th {
+    padding-top: 14px;
+    background: var(--paper);
+    font: 700 var(--t12) / 1.25 var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--ink-2);
+  }
+  .dt-missing,
+  .dt-empty {
+    color: var(--ink-2);
+  }
+  @media (max-width: 760px) {
+    .dt-stack .data-table,
+    .dt-stack .data-table tbody,
+    .dt-stack .data-table tr,
+    .dt-stack .data-table th,
+    .dt-stack .data-table td {
+      display: block;
+    }
+    .dt-stack .data-table thead {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+    }
+    /* The caption stays a full-width line: as a table-caption inside a block table it
+       shrank to its longest word ("Index / coverage / by / repository"). */
+    .dt-stack .data-table caption {
+      display: block;
+    }
+    .dt-stack .data-table tr {
+      padding: 8px 0;
+      border-bottom: var(--hair);
+    }
+    /* In a labelled card a figure sits beside its label like every other value. */
+    .dt-stack .data-table .dt-num {
+      text-align: left;
+    }
+    .dt-stack .data-table td,
+    .dt-stack .data-table tbody th[scope="row"] {
+      position: static;
+      display: grid;
+      grid-template-columns: minmax(0, 45%) minmax(0, 1fr);
+      gap: 12px;
+      padding: 2px 0;
+      border: 0;
+    }
+    .dt-stack .data-table td::before,
+    .dt-stack .data-table tbody th[scope="row"]::before {
+      content: attr(data-label);
+      font: 600 var(--t13) / 1.4 var(--f-text);
+      color: var(--ink-2);
+      text-align: left;
+    }
+  }
+
+  /* --- callout and the inline empty state ------------------------------------- */
+  .callout {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 10px 12px;
+    border: 1px solid var(--rule);
+    border-radius: var(--r);
+    background: var(--paper);
+    color: var(--ink);
+    font: 500 var(--t14) / 1.45 var(--f-text);
+  }
+  .callout > svg {
+    flex: none;
+    margin-top: 2px;
+  }
+  .callout-text {
+    min-width: 0;
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+  .callout-title {
+    font-weight: 800;
+  }
+  .callout-needs {
+    border: 2px solid var(--ink);
+    background: var(--mark-wash);
+  }
+  .callout-bad {
+    border: 2px solid var(--red);
+    background: var(--red-wash);
+  }
+  .callout-bad > .glyph {
+    color: var(--red);
+  }
+  .empty-inline {
+    font: 500 var(--t14) / 1.45 var(--f-text);
+    color: var(--ink-2);
+    max-width: 75ch;
+  }
+
+  /* --- the ticket parts ------------------------------------------------------- */
+  .tref {
+    font: 800 var(--t20) / 1 var(--f-display);
+    letter-spacing: 0.01em;
+    color: var(--claret-ink);
+    white-space: nowrap;
+    text-decoration: none;
+  }
+  .tref-s {
+    font-size: var(--t14);
+  }
+  .tref-l {
+    font-size: var(--t26);
+  }
+  a.tref:hover {
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  .ticket-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 6px 12px;
+    min-width: 0;
+  }
+  .th-title {
+    grid-column: 1;
+    margin: 0;
+    font: 800 var(--t34) / 1.02 var(--f-display);
+    overflow-wrap: anywhere;
+    text-wrap: pretty;
+  }
+  h2.th-title {
+    font-size: var(--t26);
+  }
+  p.th-title {
+    font: 700 var(--t16) / 1.3 var(--f-text);
+  }
+  .th-mark {
+    grid-column: 2;
+    grid-row: 1;
+    align-self: start;
+  }
+  .th-meta {
+    grid-column: 1 / -1;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 12px;
+    margin: 0;
+    font: 500 var(--t14) / 1.35 var(--f-text);
+    color: var(--ink-2);
+  }
+  .th-lede {
+    grid-column: 1 / -1;
+    margin: 0;
+    font: 500 var(--t16) / 1.45 var(--f-text);
+    color: var(--ink-2);
+    max-width: 75ch;
+  }
+  .badge.st.st-s {
+    gap: 5px;
+    font: 700 var(--t13) / 1.15 var(--f-text);
+  }
+  .badge.st.st-l {
+    gap: 8px;
+    font-size: var(--t16);
+  }
+  .vmark {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font: 700 var(--t14) / 1 var(--f-text);
+    white-space: nowrap;
+    color: var(--ink);
+  }
+  .vglyph {
+    flex: none;
+  }
+  .vm-pass {
+    color: var(--ok);
+  }
+  .vm-fail {
+    color: var(--red);
+  }
+  .vm-skip,
+  .vm-open {
+    color: var(--ink-2);
+  }
+  .prio {
+    font-variant-numeric: tabular-nums;
   }
 }

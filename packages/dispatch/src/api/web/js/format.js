@@ -1,4 +1,6 @@
-// Formatting: durations, relative times, days, money, plurals.
+// Formatting: durations, relative times, days, money, percent, plurals. One format per
+// kind of number: fmtDuration for every duration, money()/moneyW() for every amount,
+// pct() for every percentage (no view builds its own).
 // Moved verbatim from app.js (the entry); the module map is in app.js.
 
 import { clockTime } from "./freshness.js";
@@ -15,6 +17,12 @@ function fmtDuration(ms) {
   const day = Math.floor(hr / 24);
   return `${day}d ${hr % 24}h`;
 }
+
+/**
+ * @deprecated the Team sheet's old "9 h 16 min" wait. An alias of fmtDuration (one
+ * duration format everywhere) until its last caller moves to fmtDuration.
+ */
+const fmtWait = fmtDuration;
 
 /** Relative time from an ISO stamp, e.g. "3d ago" / "just now". */
 function fmtRelative(iso) {
@@ -56,6 +64,24 @@ function moneyW(v) {
   if (typeof v !== "number" || !Number.isFinite(v)) return "—";
   return Number.isInteger(v) ? `$${v}` : money(v);
 }
+/** The mark for a missing figure (U+2014): never a zero, always with its reason nearby. */
+const MISSING = "\u2014";
+
+/**
+ * A percentage, one format everywhere: the "%" is part of the value ("2.5%", never
+ * "2.5 %"); whole numbers at 10 and above ("96%"), one decimal below ("2.5%", "5%"
+ * when the decimal is 0), "<0.1%" for a sliver above zero. `decimals` fixes the
+ * places instead (a column that must align). No figure reads as MISSING, never "0%".
+ */
+function pct(v, { decimals } = {}) {
+  if (typeof v !== "number" || !Number.isFinite(v)) return MISSING;
+  if (typeof decimals === "number") return `${v.toFixed(decimals)}%`;
+  const a = Math.abs(v);
+  if (a > 0 && a < 0.05) return `${v < 0 ? ">-" : "<"}0.1%`;
+  const one = Number(v.toFixed(1));
+  if (Math.abs(one) >= 10) return `${Math.round(v)}%`;
+  return `${String(one)}%`;
+}
 /** JSON.parse that answers null for a malformed or empty payload. */
 function parseJsonSafe(text) {
   try {
@@ -70,13 +96,16 @@ function plural(n, one, many = one + "s") {
 }
 
 export {
+  MISSING,
   fmtDuration,
+  fmtWait,
   fmtRelative,
   fmtTime,
   WEEKDAYS,
   fmtDay,
   money,
   moneyW,
+  pct,
   parseJsonSafe,
   plural,
 };

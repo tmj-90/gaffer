@@ -148,7 +148,8 @@ describe("web: Health — rework a reviewer caused", () => {
     const kpi = Array.from(document.querySelectorAll(".form-guide .kpi")).find(
       (k) => k.querySelector(".kpi-label")?.textContent === "Flow efficiency",
     );
-    expect(kpi?.querySelector(".kpi-val")?.textContent).toBe("<1");
+    // "%" is part of the value (statCell joins it: audit A-32).
+    expect(kpi?.querySelector(".kpi-val")?.textContent).toBe("<1%");
     expect(kpi?.querySelector(".kpi-sub")?.textContent).toBe("of lead time an agent worked");
     const eff = document.querySelector(".form-guide .fg-eff");
     expect(eff?.querySelector(".band")?.getAttribute("aria-label")).toBe(

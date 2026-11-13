@@ -161,10 +161,11 @@ describe("web: Health view", () => {
     // ROI KPI row: five headline metrics from /api/health.
     // One money format everywhere: dollars and cents.
     expect(kpiValue("Cost / feature")).toBe("$1.00");
-    expect(kpiValue("Skill hit-rate")).toBe("70");
-    expect(kpiValue("Spend by kind")).toBe("70"); // delivery 1.4 / 2.0 = 70%
-    expect(kpiValue("Rework cost")).toBe("15");
-    expect(kpiValue("Measured coverage")).toBe("80");
+    // "%" is part of the value now (statCell joins it, no "70 %" gap: audit A-32).
+    expect(kpiValue("Skill hit-rate")).toBe("70%");
+    expect(kpiValue("Spend by kind")).toBe("70%"); // delivery 1.4 / 2.0 = 70%
+    expect(kpiValue("Rework cost")).toBe("15%");
+    expect(kpiValue("Measured coverage")).toBe("80%");
 
     // Skill hit-rate detail lists the per-skill rows.
     const skillRows = document.querySelectorAll(".hrow");

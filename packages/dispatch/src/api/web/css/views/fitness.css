@@ -67,7 +67,7 @@
     display: grid;
     place-items: center;
     border-radius: var(--r-round);
-    background: #fff;
+    background: var(--counter-face);
     border: 1.5px solid var(--counter-ink);
     color: var(--counter-ink);
     box-shadow: 0 2px 0 rgb(0 0 0 / 0.3);
@@ -232,7 +232,7 @@
     white-space: pre-wrap;
     max-height: 60vh;
     overflow: auto;
-    font: 12.5px / 1.5 var(--f-mono);
+    font: var(--t13) / 1.5 var(--f-mono);
     background: var(--board);
     color: var(--board-ink);
     padding: 10px 12px;

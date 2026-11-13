@@ -184,7 +184,9 @@ waiting for Merge now, and the done lane.*
 
 - **The club and the squad.** The header crest carries the club's name and short name
   (`/api/club`); with the full token it opens *Name your club* (name, crest letters,
-  two kit colours, with a contrast guard). Every agent is shown by its display name and
+  two kit colours, with a contrast guard; a colour too close to a referee's card keeps
+  to the shirts and crest while blocks and hoops use the house kit, and the sheet says
+  so). Every agent is shown by its display name and
   shirt number. The **Squad** page (`#/squad`) renames an agent in place; a taken shirt
   number is refused with the holder's name.
 - **Read-only access.** A read-scoped token (Settings → Access,

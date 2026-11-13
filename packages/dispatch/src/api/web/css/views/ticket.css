@@ -49,7 +49,7 @@
   }
   .ft-plaque .ft-v {
     font: 800 var(--t34) / 1 var(--f-display);
-    color: #fff;
+    color: var(--board-ink);
   }
   .ft-plaque .ft-t {
     font: 600 var(--t14) / 1 var(--f-cond);
@@ -280,7 +280,7 @@
   }
   .sl-v {
     font: 400 var(--t20) / 1.25 var(--f-mono);
-    color: #fff;
+    color: var(--board-ink);
     overflow-wrap: anywhere;
   }
   .sl-rec .sl-v {
@@ -513,13 +513,13 @@
   .conf-bar {
     width: 54px;
     height: 6px;
-    background: var(--rule-2);
+    background: var(--viz-track);
     overflow: hidden;
   }
   .conf-fill {
     display: block;
     height: 100%;
-    background: var(--ink);
+    background: var(--viz-mark);
   }
 
   /* Attempts: a penalty shootout, oldest first; each attempt's output folds away. */

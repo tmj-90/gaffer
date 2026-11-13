@@ -434,15 +434,15 @@
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 0;
-    background: var(--pitch);
+    background: var(--paper-2);
     border-radius: var(--r);
   }
   .pb-step {
     display: grid;
     gap: 6px;
     padding: var(--s4) var(--s5);
-    color: var(--chalk);
-    border-left: 2px dashed rgb(242 247 239 / 0.5);
+    color: var(--ink);
+    border-left: var(--hair);
   }
   .pb-step:first-child {
     border-left: 0;
@@ -460,7 +460,7 @@
     width: 40px;
     height: 40px;
     border-radius: var(--r-round);
-    background: #fff;
+    background: var(--counter-face);
     color: var(--counter-ink);
     font: 800 var(--t20) / 1 var(--f-display);
     box-shadow: var(--counter-shadow);
@@ -474,7 +474,7 @@
     }
     .pb-step {
       border-left: 0;
-      border-top: 2px dashed rgb(242 247 239 / 0.5);
+      border-top: var(--hair);
     }
     .pb-step:first-child {
       border-top: 0;

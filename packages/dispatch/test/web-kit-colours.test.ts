@@ -1,0 +1,129 @@
+// @vitest-environment jsdom
+//
+// The club kit never reads as a referee's card (src/api/web/js/kit.js).
+// Referee yellow means "needs you", red means blocked or failed, the green means a
+// passed check. A club colour closer than OKLab 15 (x100, the dataviz palette
+// validator's measure) to any of them, in either kit, would turn identity into
+// status wherever it paints a block, a hoop or a chart. kitTokens keeps such a
+// colour on the identity tokens (--kit-1, --kit-2: shirts and the crest) and
+// leaves the role tokens (claret and sky: header, blocks, hoops, washes) on the
+// house values; the club editor says so in one line.
+
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+
+import { beforeAll, describe, expect, it } from "vitest";
+
+const KIT_JS = path.join(path.resolve(process.cwd(), "src/api/web"), "js", "kit.js");
+
+type Tokens = Record<string, string | null>;
+type Clash = { card: string; words: string; distance: number } | null;
+type Kit = {
+  KIT_CLASH: number;
+  okDistance: (a: number[], b: number[]) => number;
+  cardClash: (hex: string | null) => Clash;
+  kitClashes: (p: string | null, s: string | null) => Array<{ which: string; card: string }>;
+  kitClashNote: (p: string | null, s: string | null) => string;
+  kitTokens: (p: string | null, s: string | null) => Tokens;
+};
+let kit: Kit;
+
+const HOUSE_CLARET = "#7a1631";
+const HOUSE_SKY = "#95cdeb";
+const DOCS_GOLD = "#f2c14e"; // the docs club's second colour: 4.6 from the yellow card
+const RED_KIT = "#d00027";
+const GREEN_KIT = "#00843d";
+const SAFE_BLUE = "#1d4ed8";
+
+const ROLE_CLARET = ["--claret", "--claret-ink", "--on-claret", "--on-claret-2"];
+const ROLE_SKY = [
+  "--sky",
+  "--on-sky",
+  "--on-sky-2",
+  "--sky-wash",
+  "--sky-on-board",
+  "--sky-block",
+  "--on-sky-block",
+  "--on-sky-block-2",
+];
+
+beforeAll(async () => {
+  kit = (await import(`${pathToFileURL(KIT_JS).href}?t=${Date.now()}`)) as Kit;
+});
+
+describe("web: club colours and the referee's cards", () => {
+  it("measures OKLab distance as the palette validator does", () => {
+    expect(kit.KIT_CLASH).toBe(15);
+    // #f2c14e vs --yellow #ffcc1f: 4.6 (Audit A, A-01).
+    expect(kit.okDistance([242, 193, 78], [255, 204, 31])).toBeCloseTo(4.6, 1);
+    expect(kit.okDistance([0, 0, 0], [0, 0, 0])).toBe(0);
+  });
+
+  it("the docs club's gold is the yellow card: blocks and hoops keep the house sky, shirts keep the gold", () => {
+    const c = kit.cardClash(DOCS_GOLD);
+    expect(c?.card).toBe("yellow");
+    expect(c?.distance).toBeLessThan(15);
+    const t = kit.kitTokens(HOUSE_CLARET, DOCS_GOLD);
+    for (const k of ROLE_SKY) expect(t[k], k).toBeNull();
+    expect(t["--kit-2"]).toBe(DOCS_GOLD);
+    // The shirt's stencil number is still cut in the club's own second colour.
+    expect(t["--shirt-no"]).toBe("var(--kit-2)");
+    // The first colour is fine and still dresses the header.
+    expect(t["--claret"]).toBe(HOUSE_CLARET);
+    expect(kit.kitClashNote(HOUSE_CLARET, DOCS_GOLD)).toBe(
+      "Your second colour is close to the referee's yellow card (needs you), so blocks and hoops use the house sky; shirts and the crest keep it.",
+    );
+  });
+
+  it("a red kit is the red card: the header and blocks keep the house claret, the crest keeps the red", () => {
+    expect(kit.cardClash(RED_KIT)?.card).toBe("red");
+    const t = kit.kitTokens(RED_KIT, "#ffffff");
+    for (const k of ROLE_CLARET) expect(t[k], k).toBeNull();
+    expect(t["--kit-1"]).toBe(RED_KIT);
+    expect(t["--on-kit-1"]).toBe("#ffffff");
+    expect(t["--shirt-edge"]).toMatch(/^rgb\(/);
+    // White is not a card colour: it still dresses the sky role.
+    expect(t["--sky"]).toBe("#ffffff");
+    expect(kit.kitClashNote(RED_KIT, "#ffffff")).toMatch(
+      /^Your first colour is close to the referee's red card \(blocked or failed\), so the header and blocks use the house claret/,
+    );
+  });
+
+  it("a green kit is the passed-check green, as either colour", () => {
+    expect(kit.cardClash(GREEN_KIT)?.card).toBe("ok");
+    const asFirst = kit.kitTokens(GREEN_KIT, null);
+    expect(asFirst["--claret"]).toBeNull();
+    expect(asFirst["--kit-1"]).toBe(GREEN_KIT);
+    const asSecond = kit.kitTokens(null, GREEN_KIT);
+    expect(asSecond["--sky"]).toBeNull();
+    expect(asSecond["--sky-block"]).toBeNull();
+    expect(asSecond["--kit-2"]).toBe(GREEN_KIT);
+    expect(kit.kitClashes(GREEN_KIT, GREEN_KIT).map((c) => c.which)).toEqual([
+      "primary",
+      "secondary",
+    ]);
+    expect(kit.kitClashNote(GREEN_KIT, DOCS_GOLD)).toMatch(
+      /^Both colours are close to the green of a passed check and the referee's yellow card/,
+    );
+  });
+
+  it("a safe blue is worn everywhere, and its sky block is chosen for each kit", () => {
+    expect(kit.cardClash(SAFE_BLUE)).toBeNull();
+    expect(kit.kitClashNote(SAFE_BLUE, HOUSE_SKY)).toBe("");
+    const t = kit.kitTokens(SAFE_BLUE, "#ffffff");
+    expect(t["--claret"]).toBe(SAFE_BLUE);
+    expect(t["--kit-1"]).toBe(SAFE_BLUE);
+    expect(t["--kit-2"]).toBe("#ffffff");
+    // The floodlit block is a deep step of the club colour, not the light one flipped.
+    expect(t["--sky-block"]).toMatch(/^light-dark\(#ffffff, rgb\(\d+ \d+ \d+\)\)$/);
+    expect(t["--on-sky-block"]).toMatch(/^light-dark\(rgb\(14 23 38\), rgb\(255 255 255\)\)$/);
+  });
+
+  it("the house kit itself is not flagged, and no kit means house values", () => {
+    expect(kit.cardClash(HOUSE_CLARET)).toBeNull();
+    expect(kit.cardClash(HOUSE_SKY)).toBeNull();
+    const t = kit.kitTokens(null, null);
+    expect(Object.values(t).every((v) => v === null)).toBe(true);
+    expect(Object.keys(t)).toEqual(expect.arrayContaining(["--kit-1", "--kit-2", "--sky-block"]));
+  });
+});

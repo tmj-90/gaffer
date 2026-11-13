@@ -277,8 +277,8 @@ function agentShirt(name, size = 24, no) {
     },
     [
       svgEl("defs", {}, svgEl("clipPath", { id }, svgEl("path", { d: SHIRT_PATH }))),
-      svgEl("path", { d: SHIRT_PATH, fill: "var(--claret)" }),
-      svgEl("g", { "clip-path": `url(#${id})`, fill: "var(--sky)" }, [
+      svgEl("path", { d: SHIRT_PATH, fill: "var(--kit-1)" }),
+      svgEl("g", { "clip-path": `url(#${id})`, fill: "var(--kit-2)" }, [
         svgEl("path", { d: "M13 4 Q20 9.5 27 4 L27 6.4 Q20 12 13 6.4 Z" }),
         svgEl("path", { d: "M10 9.6 L20 15 L30 9.6 L30 12.6 L20 18 L10 12.6 Z" }),
         svgEl("rect", { x: 0, y: 15.5, width: 6.5, height: 3 }),
@@ -333,15 +333,15 @@ function crest(cls = "crest", w = 34, h = 40, letters = "G") {
     [
       svgEl("path", {
         d: "M22 2 L41 8 V26 C41 38 32 46 22 50 C12 46 3 38 3 26 V8 Z",
-        fill: "var(--sky)",
+        fill: "var(--kit-2)",
         stroke: "var(--crest-edge)",
         "stroke-width": 2.4,
       }),
-      svgEl("path", { d: "M22 2 L41 8 V26 C41 38 32 46 22 50 Z", fill: "var(--claret)" }),
+      svgEl("path", { d: "M22 2 L41 8 V26 C41 38 32 46 22 50 Z", fill: "var(--kit-1)" }),
       svgEl("path", {
         d: "M14 40 C15 30 18 22 26 13",
         fill: "none",
-        stroke: "var(--claret)",
+        stroke: "var(--kit-1)",
         "stroke-width": 2,
         "stroke-linecap": "round",
       }),
@@ -349,7 +349,7 @@ function crest(cls = "crest", w = 34, h = 40, letters = "G") {
         svgEl("path", {
           d: `M${15.2 + i * 2.2} ${35 - i * 5} q-6 -1 -8 -5`,
           fill: "none",
-          stroke: "var(--claret)",
+          stroke: "var(--kit-1)",
           "stroke-width": 1.8,
           "stroke-linecap": "round",
         }),
@@ -360,8 +360,8 @@ function crest(cls = "crest", w = 34, h = 40, letters = "G") {
             y: 21,
             width: 35.6,
             height: 13,
-            fill: "var(--claret)",
-            stroke: "var(--sky)",
+            fill: "var(--kit-1)",
+            stroke: "var(--kit-2)",
             "stroke-width": 1.2,
             class: "crest-band",
           })

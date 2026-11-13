@@ -17,7 +17,7 @@
     font-size: var(--t34);
   }
   .physio-board .kpi-spark {
-    color: var(--sky);
+    color: var(--viz-mark);
   }
   /* Wrapped, the six cells keep one frame: the first cell of each row drops its
      left rule, and every row after the first carries the same rule on top. */
@@ -51,7 +51,7 @@
     max-width: 60ch;
   }
   .physio-board .hl-clauses a {
-    color: #fff;
+    color: var(--board-ink);
     text-decoration-color: var(--yellow);
     text-decoration-thickness: 2px;
     text-underline-offset: 4px;
@@ -597,13 +597,13 @@
   }
   .df-bar {
     height: 8px;
-    background: var(--rule-2);
+    background: var(--viz-track);
     overflow: hidden;
   }
   .df-bar i {
     display: block;
     height: 100%;
-    background: var(--ink);
+    background: var(--viz-mark);
   }
   .tone-danger .df-bar i,
   .tone-bad .df-bar i {
@@ -632,7 +632,7 @@
   }
   .health-spark {
     height: 46px;
-    color: var(--ink);
+    color: var(--viz-mark);
   }
   .health-spark svg {
     height: 46px;

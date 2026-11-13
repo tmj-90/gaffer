@@ -133,10 +133,10 @@ function shirtGroup(no, x = 0, y = 0, scale = 1, numPx) {
     "g",
     { transform: `translate(${x} ${y}) scale(${scale})` },
     svgS("defs", {}, svgS("clipPath", { id }, svgS("path", { d: SHIRT_PATH }))),
-    svgS("path", { d: SHIRT_PATH, fill: "var(--claret)" }),
+    svgS("path", { d: SHIRT_PATH, fill: "var(--kit-1)" }),
     svgS(
       "g",
-      { "clip-path": `url(#${id})`, fill: "var(--sky)" },
+      { "clip-path": `url(#${id})`, fill: "var(--kit-2)" },
       svgS("path", { d: "M13 4 Q20 9.5 27 4 L27 6.4 Q20 12 13 6.4 Z" }),
       svgS("path", { d: "M10 9.6 L20 15 L30 9.6 L30 12.6 L20 18 L10 12.6 Z" }),
       svgS("rect", { x: 0, y: 15.5, width: 6.5, height: 3 }),

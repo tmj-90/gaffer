@@ -272,12 +272,12 @@
   .scope-gnode.type-epic .sg-top {
     margin: -10px -12px 0;
     padding: 8px 12px 6px;
-    background: var(--sky);
-    color: var(--on-sky);
+    background: var(--sky-block);
+    color: var(--on-sky-block);
   }
   .scope-gnode.type-epic .sg-top .badge {
-    color: var(--on-sky);
-    border-color: var(--on-sky);
+    color: var(--on-sky-block);
+    border-color: var(--on-sky-block);
     background: transparent;
   }
   /* outside the ground: a dotted chalk boundary round the card */
@@ -296,7 +296,7 @@
     height: 30px;
     padding: 0 4px;
     border-radius: var(--r-round);
-    background: #fff;
+    background: var(--counter-face);
     border: 1.5px solid var(--counter-ink);
     box-shadow: 0 2px 0 rgb(0 0 0 / 0.3);
   }
@@ -317,7 +317,7 @@
     height: 11px;
     border-radius: 1px;
     background: var(--red);
-    outline: 1.5px solid #fff;
+    outline: 1.5px solid var(--counter-face);
   }
   .mag-red.is-key {
     position: static;
@@ -341,9 +341,9 @@
     background: linear-gradient(
         90deg,
         transparent 3px,
-        #fff 3px 5px,
+        var(--counter-face) 3px 5px,
         transparent 5px 7px,
-        #fff 7px 9px,
+        var(--counter-face) 7px 9px,
         transparent 9px
       )
       var(--counter-ink);
@@ -351,7 +351,7 @@
     background-position: 0 2px;
     background-repeat: no-repeat;
     background-color: var(--counter-ink);
-    outline: 1.5px solid #fff;
+    outline: 1.5px solid var(--counter-face);
   }
   /* a counter on the Map is a link to its ticket, above the card's own link */
   a.mag {

@@ -175,11 +175,12 @@ describe("web: the club and the squad", () => {
     name.dispatchEvent(new Event("input"));
     short.value = "RFC";
     short.dispatchEvent(new Event("input"));
-    // A kit too light for white text: the preview flips the text on it to ink.
-    prim.value = "#ffe600";
+    // A kit too light for white text: the preview flips the text on it to ink. (A pale
+    // blue: a light yellow would now be the yellow card and keep to shirts and crest.)
+    prim.value = "#e8eefc";
     prim.dispatchEvent(new Event("input"));
     const preview = sheet.querySelector<HTMLElement>(".club-preview")!;
-    expect(preview.style.getPropertyValue("--claret")).toBe("#ffe600");
+    expect(preview.style.getPropertyValue("--claret")).toBe("#e8eefc");
     expect(preview.style.getPropertyValue("--on-claret")).toBe("var(--counter-ink)");
     expect(preview.querySelector(".cp-name")?.textContent).toBe("Real Factory FC");
     expect(preview.querySelector(".crest-t")?.textContent).toBe("RFC");
@@ -200,7 +201,7 @@ describe("web: the club and the squad", () => {
             ...CLUB,
             name: "Real Factory FC",
             short_name: "RFC",
-            kit_primary: "#ffe600",
+            kit_primary: "#e8eefc",
             name_effective: "Real Factory FC",
             short_name_effective: "RFC",
           },
@@ -224,12 +225,39 @@ describe("web: the club and the squad", () => {
     expect(patches[1]?.body).toEqual({
       name: "Real Factory FC",
       short_name: "RFC",
-      kit_primary: "#ffe600",
+      kit_primary: "#e8eefc",
     });
     expect(document.querySelector(".brand-name")?.textContent).toBe("Real Factory FC");
     expect(document.querySelector(".brand .crest-t")?.textContent).toBe("RFC");
-    expect(root.getPropertyValue("--claret")).toBe("#ffe600");
+    expect(root.getPropertyValue("--claret")).toBe("#e8eefc");
     expect(root.getPropertyValue("--on-claret")).toBe("var(--counter-ink)");
+  });
+
+  it("a kit colour too close to a referee's card keeps to shirts and the crest, and the editor says why", async () => {
+    stubFetch("full");
+    await mountShell("#/squad");
+    await boot();
+    const btn = await until(() => document.querySelector<HTMLButtonElement>("button.crest-btn"));
+    btn.click();
+    const sheet = await until(() => document.querySelector(".sheet.open"));
+    const clash = sheet.querySelector<HTMLElement>(".club-clash")!;
+    expect(clash.textContent).toBe("");
+    // The docs club's gold: 4.6 from the yellow card ("needs you").
+    const sec = sheet.querySelectorAll<HTMLInputElement>("input.club-kit-in")[1]!;
+    sec.value = "#f2c14e";
+    sec.dispatchEvent(new Event("input"));
+    const preview = sheet.querySelector<HTMLElement>(".club-preview")!;
+    // The crest and shirts wear the gold; the header hoop and sky blocks keep the house sky.
+    expect(preview.style.getPropertyValue("--kit-2")).toBe("#f2c14e");
+    expect(preview.style.getPropertyValue("--sky")).not.toBe("#f2c14e");
+    expect(preview.style.getPropertyValue("--sky-block")).not.toContain("#f2c14e");
+    expect(clash.textContent).toMatch(/second colour is close to the referee's yellow card/);
+    expect(clash.textContent).toMatch(/house sky/);
+    // A safe colour clears the line again.
+    sec.value = "#ffffff";
+    sec.dispatchEvent(new Event("input"));
+    expect(preview.style.getPropertyValue("--sky")).toBe("#ffffff");
+    expect(clash.textContent).toBe("");
   });
 
   it("a shirt on the tactics board wears the agent's number and is labelled with its name", async () => {

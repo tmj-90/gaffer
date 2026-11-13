@@ -22,6 +22,7 @@ import {
   applyClub,
   clubLetters,
   clubName,
+  kitClashNote,
   kitTokens,
   readHouseKit,
   rgbHex,
@@ -119,6 +120,8 @@ function openClubSheet() {
   });
   const err = el("p", { class: "form-error club-err", role: "alert", hidden: "" });
   const note = el("p", { class: "club-note", "aria-live": "polite" });
+  // A colour too close to a referee's card keeps to shirts and the crest: say so.
+  const clash = el("p", { class: "club-note club-clash", "aria-live": "polite" });
   const prevName = el("span", { class: "cp-name" });
   const prevCrest = el("span", { class: "cp-crest" });
   const prevShirt = el("span", { class: "cp-shirt" });
@@ -143,6 +146,7 @@ function openClubSheet() {
     note.textContent = tokens["--on-claret"]
       ? "A light kit: the words on it turn dark so they stay readable."
       : "";
+    clash.textContent = kitClashNote(k.primary, k.secondary);
   };
   nameIn.addEventListener("input", paint);
   shortIn.addEventListener("input", paint);
@@ -226,6 +230,7 @@ function openClubSheet() {
       ),
       preview,
       note,
+      clash,
       el(
         "p",
         { class: "act-hint club-hint", id: hintId },

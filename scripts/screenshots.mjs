@@ -654,6 +654,11 @@ async function moveTimeline() {
     const moved = moveText(txt, f);
     if (moved !== txt) writeFileSync(file, moved);
   }
+  // The event log was rewritten on purpose (moved timestamps, recomputed hash chain), which
+  // the factory's tamper anchor rightly reads as a rollback: every later landing would hold
+  // as `unsigned_approval`. Re-anchor, the documented step after a deliberate rewrite or a
+  // restore, so approvals recorded from here on land as they do in a real factory.
+  wgArgs("gate-key", "reanchor");
   restartDashboard(true);
 }
 

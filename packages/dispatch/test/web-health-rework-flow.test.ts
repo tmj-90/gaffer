@@ -204,20 +204,23 @@ describe("web: Health — rework a reviewer caused", () => {
       throughput: { last7: 3, prev7: 0, series: series.map((v) => (v === null ? 0 : 1)) },
     };
     await loadApp();
-    const chart = document.querySelector(".form-guide .fg-chart svg");
-    expect(chart).not.toBeNull();
+    const fig = document.querySelector(".form-guide .fg-chart");
+    expect(fig).not.toBeNull();
     // Two real days, two bars: no zero sliver stands in for an empty day.
-    expect(chart?.querySelectorAll("rect.chart-bar")).toHaveLength(2);
-    expect(chart?.querySelectorAll("rect.is-zero")).toHaveLength(0);
-    expect(chart?.getAttribute("aria-label")).toMatch(/ none, /);
-    expect(chart?.getAttribute("aria-label")).not.toMatch(/0\.0d/);
-    // The Cycle time sparkline joins the two real days only: one move, one line, no NaN.
+    expect(fig?.querySelectorAll("path.bc-bar")).toHaveLength(2);
+    const said = Array.from(fig?.querySelectorAll(".bc-hit") ?? []).map(
+      (h) => h.getAttribute("aria-label") ?? "",
+    );
+    expect(said.filter((l) => /: no data$/.test(l))).toHaveLength(12);
+    expect(said.join(" | ")).not.toMatch(/: 0(\.0)?\s?d|: 0s/);
+    // The Cycle time cell: two real days are too few for a sparkline (it needs four), so it
+    // draws none rather than a line through zeros; whatever it draws carries no NaN.
     const kpi = Array.from(document.querySelectorAll(".form-guide .kpi")).find(
       (k) => k.querySelector(".kpi-label")?.textContent === "Cycle time",
     );
-    const d = kpi?.querySelector(".spark-line")?.getAttribute("d") ?? "";
-    expect(d).not.toContain("NaN");
-    expect(d.match(/[ML]/g)).toEqual(["M", "L"]);
+    expect(kpi).toBeDefined();
+    expect(kpi?.innerHTML ?? "").not.toContain("NaN");
+    expect(kpi?.querySelector(".spark, .spark-svg")).toBeNull();
   });
 
   it("a quiet week draws no zero in the Lead time sparkline: an empty trailing week is skipped", async () => {

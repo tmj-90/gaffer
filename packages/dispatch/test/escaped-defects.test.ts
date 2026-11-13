@@ -139,7 +139,13 @@ describe("escaped-defect read model (hand-worked fixture)", () => {
       rate_pct: 33.3,
     });
     // All time: A, B, C, E, F; A and C escaped -> 2 of 5 = 40%.
-    expect(r.all_time).toEqual({ accepted_changes: 5, escaped: 2, rate_pct: 40 });
+    // Wilson 95% upper on 2 of 5: (0.4 + 0.38416 + 1.96 * sqrt(0.048 + 0.038416)) / 1.76832.
+    expect(r.all_time).toEqual({
+      accepted_changes: 5,
+      escaped: 2,
+      rate_pct: 40,
+      upper_95_pct: 76.9,
+    });
     // Links a person filed: D1, D2, D3, D4 (D5 is an agent's).
     expect(r.links).toBe(4);
     expect(r.filed_by).toEqual({ human: 3, admin: 1 });
@@ -235,7 +241,24 @@ describe("filing a regression link", () => {
     wg.fileRegression(defect.id, change.id, human);
     const out = renderStats(computeStats(wg.db, new Date().toISOString(), {}));
     expect(out).toMatch(/Escaped-defect rate: 50% \(1 of 2 accepted changes in the last 30 days/);
+    // The window before, in the same sentence; no history dumped into the text.
+    expect(out).toMatch(/; n\/a of 0 in the 30 days before; 50% of 2 all time/);
+    expect(out).not.toMatch(/by_month|2026-W/);
     expect(out).toMatch(/Counts only what a person filed/);
+  });
+
+  it("wg stats says how high a zero escaped-defect rate could still be, and which window each figure covers", () => {
+    accepted(wg);
+    accepted(wg, "Another");
+    const out = renderStats(computeStats(wg.db, new Date().toISOString(), {}));
+    // 0 of 2: the Wilson 95% upper bound is 65.8%.
+    expect(out).toMatch(
+      /Escaped-defect rate: 0% \(0 of 2 accepted changes in the last 30 days were linked to a later regression, so the rate could still be up to 65\.8%;/,
+    );
+    expect(out).toMatch(
+      /First-pass acceptance: [^(]*\(\d+ of 2 done with no send-back after review, all time;/,
+    );
+    expect(out).toMatch(/Human review time per accepted ticket: .* over \d+, all time \(/);
   });
 });
 

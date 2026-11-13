@@ -475,9 +475,13 @@ export function routeReadModels(
     const WINDOW_MIN = 1;
     const WINDOW_MAX = 365;
     const rawWindow = Number.parseInt(url.searchParams.get("window_days") ?? "", 10);
-    const windowDays = Number.isFinite(rawWindow)
+    // The window the caller asked for, if any: it also applies to the four quality
+    // measures below. Not asked, each measure keeps the window it always had (first-pass,
+    // review time and accepted-change cost all time; escaped defects 30 days).
+    const askedWindow = Number.isFinite(rawWindow)
       ? Math.min(WINDOW_MAX, Math.max(WINDOW_MIN, rawWindow))
-      : 30;
+      : null;
+    const windowDays = askedWindow ?? 30;
     const govRows = wg.db
       .prepare(
         `SELECT entity_id                              AS ticket_id,
@@ -545,14 +549,20 @@ export function routeReadModels(
       ledgerRows,
       allTickets.map((t) => ({ id: t.id, number: t.number ?? -1, status: t.status })),
       govTransitions,
+      { nowMs, windowDays: askedWindow },
     );
 
     // REVIEW AND ACCEPTANCE MEASURES (Release A metrics): human review time per accepted
     // ticket (median/p75/p90, split into queue wait and decision time where the Review
     // view recorded an open), first-pass acceptance split by approver, the judging lanes'
     // verdict counts, and the escaped-defect rate from the regression links a person filed
-    // (accepted changes in the same window as governance).
-    const reviewMeasures = readReviewMeasures(wg.db, { nowMs, windowDays, ledger: ledgerRows });
+    // (accepted changes in the same window as governance). Each carries its window, the
+    // equal window before and a weekly (escaped defects: monthly) history.
+    const reviewMeasures = readReviewMeasures(wg.db, {
+      nowMs,
+      ...(askedWindow !== null ? { windowDays: askedWindow } : {}),
+      ledger: ledgerRows,
+    });
     // ROUTING SCORECARD (delta gap 4): per provider x model x role x work class, from the
     // ledger, the runner's replay manifests and the outcomes above. Report only; n on every
     // figure; under the minimum a cell reads "too few to compare". A read failure omits it.

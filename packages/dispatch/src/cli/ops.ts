@@ -463,6 +463,11 @@ function usd(n: number | null): string {
   return n === null ? "n/a" : `$${n.toFixed(2)}`;
 }
 
+/** The window a figure covers, in words: "all time" or "in the last 30 days". */
+function period(days: number | null): string {
+  return days === null ? "all time" : `in the last ${days} days`;
+}
+
 /** Milliseconds → "3h 05m" / "12m" / "40s". */
 function span(ms: number | null): string {
   if (ms === null) return "n/a";
@@ -757,7 +762,7 @@ export function renderStats(stats: StatsReport): string {
     const o = c.by_outcome;
     lines.push("");
     lines.push(
-      `Cost per accepted change: ${usd(c.cost_per_accepted_change_usd)} (all attempts, ${usd(c.attributed_spend_usd)} over ${c.accepted_changes} done; the done tickets alone cost ${usd(c.accepted_only_cost_per_change_usd)} each)`,
+      `Cost per accepted change: ${usd(c.cost_per_accepted_change_usd)} (all attempts, ${period(c.window_days)}, ${usd(c.attributed_spend_usd)} over ${c.accepted_changes} done; the done tickets alone cost ${usd(c.accepted_only_cost_per_change_usd)} each)`,
     );
     lines.push(
       `  attempts per accepted change: ${c.attempts_per_accepted_change ?? "n/a"} · spend not accepted: ${usd(o.parked_or_failed.spend_usd)} parked or failed (${o.parked_or_failed.tickets}), ${usd(o.abandoned.spend_usd)} abandoned (${o.abandoned.tickets}), ${usd(o.in_flight.spend_usd)} in flight (${o.in_flight.tickets}) · ${usd(c.unattributed_usd)} with no ticket (not in the ratio)`,
@@ -775,10 +780,10 @@ export function renderStats(stats: StatsReport): string {
     const pc = (v: number | null): string => (v === null ? "n/a" : `${v}%`);
     lines.push("");
     lines.push(
-      `First-pass acceptance: ${pc(fp.rate_pct)} (${fp.first_pass} of ${fp.done} done with no send-back after review; ${pc(fp.strict.rate_pct)} with no runner retry either) · human-approved ${pc(fp.by_approver.human.rate_pct)} of ${fp.by_approver.human.done}, agent-approved ${pc(fp.by_approver.agent.rate_pct)} of ${fp.by_approver.agent.done}`,
+      `First-pass acceptance: ${pc(fp.rate_pct)} (${fp.first_pass} of ${fp.done} done with no send-back after review, ${period(fp.window_days)}; ${pc(fp.strict.rate_pct)} with no runner retry either) · human-approved ${pc(fp.by_approver.human.rate_pct)} of ${fp.by_approver.human.done}, agent-approved ${pc(fp.by_approver.agent.rate_pct)} of ${fp.by_approver.agent.done}`,
     );
     lines.push(
-      `Human review time per accepted ticket: median ${span(p.median_ms)}, p75 ${span(p.p75_ms)}, p90 ${span(p.p90_ms)} over ${p.n} (${rt.basis.replace("_", " ")}; ${rt.accepted_without_human_decision} accepted with no human decision not counted)`,
+      `Human review time per accepted ticket: median ${span(p.median_ms)}, p75 ${span(p.p75_ms)}, p90 ${span(p.p90_ms)} over ${p.n}, ${period(rt.window_days)} (${rt.basis.replace("_", " ")}; ${rt.accepted_without_human_decision} accepted with no human decision not counted)`,
     );
     lines.push(
       `  active (approximate: last open to decision, capped at ${span(rt.active.cap_ms)}): median ${span(rt.active.per_accepted_ticket.median_ms)} per accepted ticket over ${rt.active.per_accepted_ticket.n}, ${span(rt.active.per_round.median_ms)} per round over ${rt.active.per_round.n} (${rt.active.capped_rounds} capped)`,
@@ -801,7 +806,7 @@ export function renderStats(stats: StatsReport): string {
     lines.push(`  ${lv.footnote}`);
     const e = m.escaped_defects;
     lines.push(
-      `Escaped-defect rate: ${pc(e.rate_pct)} (${e.escaped} of ${e.accepted_changes} accepted changes in the last ${e.window_days} days were linked to a later regression; ${pc(e.all_time.rate_pct)} of ${e.all_time.accepted_changes} all time, ${e.links} link(s)). ${e.note}`,
+      `Escaped-defect rate: ${pc(e.rate_pct)} (${e.escaped} of ${e.accepted_changes} accepted changes in the last ${e.window_days} days were linked to a later regression${e.escaped === 0 && e.upper_95_pct !== null ? `, so the rate could still be up to ${e.upper_95_pct}%` : ""}; ${pc(e.previous.rate_pct)} of ${e.previous.accepted_changes} in the ${e.window_days} days before; ${pc(e.all_time.rate_pct)} of ${e.all_time.accepted_changes} all time, ${e.links} link(s)). ${e.note}`,
     );
   }
   // TESTER VERDICTS: a person's waiver is never counted as the tester's PASS.

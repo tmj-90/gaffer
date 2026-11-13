@@ -185,4 +185,64 @@ describe("web: Health — rework a reviewer caused", () => {
       "No shipped ticket has a transition history yet.",
     );
   });
+
+  it("a day with no completion in the cycle series draws no bar and no zero, and nothing breaks", async () => {
+    // The server's cycle series: null on a day with no completion (it used to carry the
+    // day before forward, and read 0 before the first completion).
+    const series = [null, null, null, null, null, null, null, null, null, null, 2, null, 4, null];
+    health = {
+      ...HEALTH,
+      cycle_time: {
+        median_days: 3,
+        p75_days: 3.5,
+        p90_days: 3.8,
+        series,
+        series_n: series.map((v) => (v === null ? 0 : 1)),
+      },
+      throughput: { last7: 3, prev7: 0, series: series.map((v) => (v === null ? 0 : 1)) },
+    };
+    await loadApp();
+    const chart = document.querySelector(".form-guide .fg-chart svg");
+    expect(chart).not.toBeNull();
+    // Two real days, two bars: no zero sliver stands in for an empty day.
+    expect(chart?.querySelectorAll("rect.chart-bar")).toHaveLength(2);
+    expect(chart?.querySelectorAll("rect.is-zero")).toHaveLength(0);
+    expect(chart?.getAttribute("aria-label")).toMatch(/ none, /);
+    expect(chart?.getAttribute("aria-label")).not.toMatch(/0\.0d/);
+    // The Cycle time sparkline joins the two real days only: one move, one line, no NaN.
+    const kpi = Array.from(document.querySelectorAll(".form-guide .kpi")).find(
+      (k) => k.querySelector(".kpi-label")?.textContent === "Cycle time",
+    );
+    const d = kpi?.querySelector(".spark-line")?.getAttribute("d") ?? "";
+    expect(d).not.toContain("NaN");
+    expect(d.match(/[ML]/g)).toEqual(["M", "L"]);
+  });
+
+  it("a quiet week draws no zero in the Lead time sparkline: an empty trailing week is skipped", async () => {
+    // One completion 13 days ago and one today: the 7-day trailing mean has nothing on
+    // days 7 to 12. Those days are gaps, not a zero-day lead time on the baseline.
+    const series = [3, null, null, null, null, null, null, null, null, null, null, null, null, 5];
+    health = {
+      ...HEALTH,
+      cycle_time: {
+        median_days: 4,
+        p75_days: 4.5,
+        p90_days: 4.8,
+        series,
+        series_n: series.map((v) => (v === null ? 0 : 1)),
+      },
+      throughput: { last7: 1, prev7: 1, series: series.map((v) => (v === null ? 0 : 1)) },
+    };
+    await loadApp();
+    const kpi = Array.from(document.querySelectorAll(".form-guide .kpi")).find(
+      (k) => k.querySelector(".kpi-label")?.textContent === "Lead time",
+    );
+    const d = kpi?.querySelector(".spark-line")?.getAttribute("d") ?? "";
+    expect(d).not.toContain("NaN");
+    const points = [...d.matchAll(/[ML]([\d.]+) ([\d.]+)/g)].map((m) => Number(m[2]));
+    // Days 0-6 (the first completion in their week) and day 13: eight points, none at 0.
+    expect(points).toHaveLength(8);
+    const baseline = Number(kpi?.querySelector(".spark-base")?.getAttribute("y1"));
+    expect(points.every((y) => y < baseline)).toBe(true);
+  });
 });

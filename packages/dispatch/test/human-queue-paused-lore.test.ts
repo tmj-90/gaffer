@@ -13,6 +13,7 @@ import { createApiServer } from "../src/api/server.js";
 import type { LoreSummary, MemoryReader } from "../src/api/memoryReader.js";
 import { Dispatch } from "../src/core.js";
 import type { Actor } from "../src/domain/types.js";
+import { parseSpendUsd } from "../src/services/humanQueueService.js";
 
 const human: Actor = { type: "human", id: "tom" };
 const system: Actor = { type: "system" };
@@ -24,6 +25,7 @@ interface QueueItem {
   ticket: { id: string } | null;
   suggestedAction?: string | null;
   loreDrafts?: number;
+  spend_usd?: number | null;
 }
 interface Queue {
   items: QueueItem[];
@@ -104,6 +106,18 @@ function pausedTicket(): string {
   return t.id;
 }
 
+describe("parseSpendUsd: the runner's relayed spend as dollars", () => {
+  it("reads the runner's four-decimal string and refuses what is not a figure", () => {
+    expect(parseSpendUsd("$2.5600")).toBe(2.56);
+    expect(parseSpendUsd("$0.9500")).toBe(0.95);
+    expect(parseSpendUsd("3")).toBe(3);
+    expect(parseSpendUsd("unknown")).toBeNull();
+    expect(parseSpendUsd("")).toBeNull();
+    expect(parseSpendUsd(null)).toBeNull();
+    expect(parseSpendUsd(undefined)).toBeNull();
+  });
+});
+
 describe("GET /api/human-queue: paused deliveries and lore drafts wait on the human", () => {
   it("a paused delivery is a row (Continue or Stop), until Continue is pressed", async () => {
     wg = Dispatch.open(":memory:");
@@ -114,6 +128,8 @@ describe("GET /api/human-queue: paused deliveries and lore drafts wait on the hu
     expect(row?.label).toBe("Paused");
     expect(row?.reason).toContain("hit the turn cap after 999 turns");
     expect(row?.reason).toContain("$0.02 spent so far");
+    // The spend as a number for the client to format (A-31); the string stays in the reason.
+    expect(row?.spend_usd).toBe(0.02);
     expect(row?.suggestedAction).toBe("continue");
     expect(q.counts.paused).toBe(1);
 

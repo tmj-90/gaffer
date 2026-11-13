@@ -33,7 +33,23 @@
  *
  * Percentiles interpolate linearly between ranks (the common "type 7" estimate), rounded
  * to whole milliseconds. Pure: the caller supplies the events.
+ *
+ * Period (health/measurePeriods.ts): with `windowDays` the report counts by decision
+ * time: a round by its decision, an accepted ticket by its last human decision (all of
+ * its rounds summed there), an agent-only accepted ticket by its acceptance. `previous`
+ * is the N days before; `by_week` is the per-accepted-ticket median over the last 12 ISO
+ * weeks by last human decision. Without it the report is all time, as before.
  */
+import {
+  ALL_TIME,
+  inRange,
+  previousRange,
+  rangeIso,
+  weekGrid,
+  windowRange,
+  type MeasureRange,
+  type WeekBucket,
+} from "./measurePeriods.js";
 
 /** A status transition from the event log (`ticket.transitioned`). */
 export interface ReviewTimeTransition {
@@ -77,8 +93,24 @@ export const ACTIVE_CAP_MS = 2 * 60 * 60_000;
 export const ACTIVE_NOTE =
   "Active (approximate): from the last time a person opened the ticket or a raw view in the round to their decision, capped at 2 hours. Closer to attention than decision time, still not reading time.";
 
+/** The headline over the equal window before this one. */
+export interface ReviewTimePrevious {
+  readonly since: string;
+  readonly until: string;
+  readonly per_accepted_ticket: Percentiles;
+  readonly accepted_without_human_decision: number;
+}
+
+/** One ISO week, by each accepted ticket's last human decision. */
+export interface ReviewTimeWeek extends WeekBucket {
+  readonly n: number;
+  readonly median_ms: number | null;
+}
+
 export interface ReviewTimeReport {
   readonly measure: "human_review_time_per_accepted_ticket";
+  /** The window the figures cover, in days, by decision time; null is all time. */
+  readonly window_days: number | null;
   readonly basis: ReviewTimeBasis;
   readonly basis_note: string;
   /** Per accepted ticket: the sum of its human rounds' decision time (or span). */
@@ -99,6 +131,10 @@ export interface ReviewTimeReport {
   };
   /** Last open -> decision, capped: the approximate attention figure. */
   readonly active: ActiveReviewTime;
+  /** The equal window before; null when the window is all time. */
+  readonly previous: ReviewTimePrevious | null;
+  /** The last 12 ISO weeks; an empty week has n 0 and a null median. */
+  readonly by_week: readonly ReviewTimeWeek[];
   readonly limits: readonly string[];
 }
 
@@ -168,22 +204,33 @@ export function isApprovingRound(r: ReviewRound): boolean {
   return r.exitTo !== null && APPROVED_TO.has(r.exitTo);
 }
 
-function lastInRound(opens: readonly ReviewOpen[], r: ReviewRound): number | null {
-  let last: number | null = null;
+/** Open times per ticket, so a round looks only at its own ticket's opens. */
+function opensByTicket(opens: readonly ReviewOpen[]): Map<string, number[]> {
+  const out = new Map<string, number[]>();
   for (const o of opens) {
-    if (o.ticketId !== r.ticketId || o.atMs < r.enteredMs || o.atMs > r.exitMs) continue;
-    if (last === null || o.atMs > last) last = o.atMs;
+    const list = out.get(o.ticketId);
+    if (list) list.push(o.atMs);
+    else out.set(o.ticketId, [o.atMs]);
   }
-  return last;
+  return out;
 }
 
-function firstInRound(opens: readonly ReviewOpen[], r: ReviewRound): number | null {
+function firstInRound(opens: Map<string, number[]>, r: ReviewRound): number | null {
   let first: number | null = null;
-  for (const o of opens) {
-    if (o.ticketId !== r.ticketId || o.atMs < r.enteredMs || o.atMs > r.exitMs) continue;
-    if (first === null || o.atMs < first) first = o.atMs;
+  for (const at of opens.get(r.ticketId) ?? []) {
+    if (at < r.enteredMs || at > r.exitMs) continue;
+    if (first === null || at < first) first = at;
   }
   return first;
+}
+
+function lastInRound(opens: Map<string, number[]>, r: ReviewRound): number | null {
+  let last: number | null = null;
+  for (const at of opens.get(r.ticketId) ?? []) {
+    if (at < r.enteredMs || at > r.exitMs) continue;
+    if (last === null || at > last) last = at;
+  }
+  return last;
 }
 
 export const REVIEW_TIME_LIMITS: readonly string[] = [
@@ -191,6 +238,7 @@ export const REVIEW_TIME_LIMITS: readonly string[] = [
   "a round with no open event (older history, a decision from the CLI, a read-only viewer) counts its full span in review, queue wait included",
   "only human or admin decisions count; tickets that only an agent approved are counted apart",
   "active time runs from the last open in the round to the decision, capped at two hours: an approximation of attention, not a measurement of reading",
+  "a window, the previous window and the weekly history count by decision time: an accepted ticket at its last human decision, with all of its rounds",
 ];
 
 const BASIS_NOTE: Record<ReviewTimeBasis, string> = {
@@ -203,79 +251,136 @@ const BASIS_NOTE: Record<ReviewTimeBasis, string> = {
   none: "No accepted ticket has a human review decision yet.",
 };
 
-/** The report (see the module comment). */
-export function reviewTimeReport(input: {
-  transitions: readonly ReviewTimeTransition[];
-  opens: readonly ReviewOpen[];
-  rawOpens: readonly ReviewOpen[];
-  tickets: readonly { id: string; status: string }[];
-}): ReviewTimeReport {
-  const done = new Set(input.tickets.filter((t) => t.status === "done").map((t) => t.id));
-  const rounds = reviewRounds(input.transitions);
-  const humanRounds = rounds.filter((r) => isHuman(r.exitActor));
+/** One human-decided round, with what the open events say about it. */
+interface RoundFacts {
+  readonly round: ReviewRound;
+  readonly span: number;
+  /** First `ticket.review_opened` in the round, or null. */
+  readonly opened: number | null;
+  /** Last open of either kind in the round, or null. */
+  readonly lastOpen: number | null;
+}
 
-  const perTicket = new Map<string, number>();
-  const ticketOpened = new Map<string, { opened: number; total: number }>();
+/** One accepted ticket's human review, summed over its human-decided rounds. */
+interface TicketFacts {
+  cost: number;
+  rounds: number;
+  opened: number;
+  activeSum: number;
+  activeAll: boolean;
+  /** Its last human decision: where a window or a week counts it. */
+  lastDecisionMs: number;
+  /** Its approving human round, if one approved it. */
+  approving: RoundFacts | null;
+}
+
+/** The report (see the module comment). */
+export function reviewTimeReport(
+  input: {
+    transitions: readonly ReviewTimeTransition[];
+    opens: readonly ReviewOpen[];
+    rawOpens: readonly ReviewOpen[];
+    tickets: readonly { id: string; status: string }[];
+  },
+  period: { readonly nowMs?: number; readonly windowDays?: number | null } = {},
+): ReviewTimeReport {
+  const done = new Set(input.tickets.filter((t) => t.status === "done").map((t) => t.id));
+  const humanRounds = reviewRounds(input.transitions).filter((r) => isHuman(r.exitActor));
+  const opens = opensByTicket(input.opens);
+  const rawOpens = opensByTicket(input.rawOpens);
+  const allOpens = opensByTicket([...input.opens, ...input.rawOpens]);
+
+  // One pass over the rounds: each round's facts, and each accepted ticket's sum.
+  const rounds: RoundFacts[] = [];
+  const perTicket = new Map<string, TicketFacts>();
+  for (const r of humanRounds) {
+    const f: RoundFacts = {
+      round: r,
+      span: r.exitMs - r.enteredMs,
+      opened: firstInRound(opens, r),
+      lastOpen: lastInRound(allOpens, r),
+    };
+    rounds.push(f);
+    if (!done.has(r.ticketId)) continue;
+    const t = perTicket.get(r.ticketId) ?? {
+      cost: 0,
+      rounds: 0,
+      opened: 0,
+      activeSum: 0,
+      activeAll: true,
+      lastDecisionMs: r.exitMs,
+      approving: null,
+    };
+    t.cost += f.opened !== null ? r.exitMs - f.opened : f.span;
+    t.rounds += 1;
+    if (f.opened !== null) t.opened += 1;
+    if (f.lastOpen === null) t.activeAll = false;
+    else t.activeSum += Math.min(r.exitMs - f.lastOpen, ACTIVE_CAP_MS);
+    t.lastDecisionMs = Math.max(t.lastDecisionMs, r.exitMs);
+    if (isApprovingRound(r)) t.approving = f;
+    perTicket.set(r.ticketId, t);
+  }
+  // When each done ticket was accepted (its last move to done), for the tickets no human
+  // decided: a window counts them by acceptance.
+  const acceptedAt = new Map<string, number>();
+  for (const t of input.transitions)
+    if (t.toStatus === "done" && done.has(t.ticketId))
+      acceptedAt.set(t.ticketId, Math.max(acceptedAt.get(t.ticketId) ?? t.atMs, t.atMs));
+  const withoutHuman = (range: MeasureRange): number => {
+    let n = 0;
+    for (const id of done) {
+      if (perTicket.has(id)) continue;
+      if (range === ALL_TIME || inRange(range, acceptedAt.get(id) ?? Number.NaN)) n += 1;
+    }
+    return n;
+  };
+  const ticketsIn = (range: MeasureRange): TicketFacts[] =>
+    [...perTicket.values()].filter((t) => range === ALL_TIME || inRange(range, t.lastDecisionMs));
+
+  const nowMs = period.nowMs ?? Date.now();
+  const windowDays = period.windowDays ?? null;
+  const win = windowRange(nowMs, windowDays);
+  const winRounds = rounds.filter((f) => win === ALL_TIME || inRange(win, f.round.exitMs));
+  const winTickets = ticketsIn(win);
+
   const queue: number[] = [];
   const decision: number[] = [];
   const spans: number[] = [];
+  const activeRounds: number[] = [];
   let withOpen = 0;
-  for (const r of humanRounds) {
-    const span = r.exitMs - r.enteredMs;
-    spans.push(span);
-    const opened = firstInRound(input.opens, r);
-    let cost = span;
-    if (opened !== null) {
+  let capped = 0;
+  for (const f of winRounds) {
+    spans.push(f.span);
+    if (f.opened !== null) {
       withOpen += 1;
-      queue.push(opened - r.enteredMs);
-      decision.push(r.exitMs - opened);
-      cost = r.exitMs - opened;
+      queue.push(f.opened - f.round.enteredMs);
+      decision.push(f.round.exitMs - f.opened);
     }
-    if (!done.has(r.ticketId)) continue;
-    perTicket.set(r.ticketId, (perTicket.get(r.ticketId) ?? 0) + cost);
-    const o = ticketOpened.get(r.ticketId) ?? { opened: 0, total: 0 };
-    o.total += 1;
-    if (opened !== null) o.opened += 1;
-    ticketOpened.set(r.ticketId, o);
+    if (f.lastOpen !== null) {
+      const span = f.round.exitMs - f.lastOpen;
+      if (span > ACTIVE_CAP_MS) capped += 1;
+      activeRounds.push(Math.min(span, ACTIVE_CAP_MS));
+    }
   }
 
   // ACTIVE (approximate): the last open of either kind to the decision, capped.
-  const allOpens = [...input.opens, ...input.rawOpens];
-  const activeRounds: number[] = [];
-  const activeTicket = new Map<string, { sum: number; all: boolean }>();
-  let capped = 0;
-  for (const r of humanRounds) {
-    const last = lastInRound(allOpens, r);
-    const a = done.has(r.ticketId) ? (activeTicket.get(r.ticketId) ?? { sum: 0, all: true }) : null;
-    if (last === null) {
-      if (a) activeTicket.set(r.ticketId, { ...a, all: false });
-      continue;
-    }
-    const span = r.exitMs - last;
-    if (span > ACTIVE_CAP_MS) capped += 1;
-    const v = Math.min(span, ACTIVE_CAP_MS);
-    activeRounds.push(v);
-    if (a) activeTicket.set(r.ticketId, { sum: a.sum + v, all: a.all });
-  }
   const active: ActiveReviewTime = {
     basis: "last_open_to_decision_capped",
     cap_ms: ACTIVE_CAP_MS,
     note: ACTIVE_NOTE,
-    per_accepted_ticket: percentiles(
-      [...activeTicket.values()].filter((x) => x.all).map((x) => x.sum),
-    ),
+    per_accepted_ticket: percentiles(winTickets.filter((t) => t.activeAll).map((t) => t.activeSum)),
     per_round: percentiles(activeRounds),
     capped_rounds: capped,
   };
 
   let allOpened = true;
   let noneOpened = true;
-  for (const o of ticketOpened.values()) {
-    if (o.opened < o.total) allOpened = false;
-    if (o.opened > 0) noneOpened = false;
+  for (const t of winTickets) {
+    if (t.opened < t.rounds) allOpened = false;
+    if (t.opened > 0) noneOpened = false;
   }
   const basis: ReviewTimeBasis =
-    perTicket.size === 0
+    winTickets.length === 0
       ? "none"
       : allOpened
         ? "decision_time"
@@ -284,24 +389,40 @@ export function reviewTimeReport(input: {
           : "mixed";
 
   // The approving round of each accepted ticket: its last human round that approved.
-  const approving = new Map<string, ReviewRound>();
-  for (const r of humanRounds)
-    if (done.has(r.ticketId) && isApprovingRound(r)) approving.set(r.ticketId, r);
   let instrumented = 0;
   let clean = 0;
-  for (const r of approving.values()) {
-    if (firstInRound(input.opens, r) === null) continue;
+  for (const t of winTickets) {
+    const f = t.approving;
+    if (f === null || f.opened === null) continue;
     instrumented += 1;
-    if (firstInRound(input.rawOpens, r) === null) clean += 1;
+    if (firstInRound(rawOpens, f.round) === null) clean += 1;
+  }
+
+  const prev = previousRange(nowMs, windowDays);
+  const previous: ReviewTimePrevious | null = prev
+    ? {
+        ...rangeIso(prev),
+        per_accepted_ticket: percentiles(ticketsIn(prev).map((t) => t.cost)),
+        accepted_without_human_decision: withoutHuman(prev),
+      }
+    : null;
+
+  // Weekly history: one pass, each accepted ticket into the week of its last decision.
+  const grid = weekGrid(nowMs);
+  const weeks: number[][] = grid.buckets.map(() => []);
+  for (const t of perTicket.values()) {
+    const i = grid.indexOf(t.lastDecisionMs);
+    if (i >= 0) weeks[i]!.push(t.cost);
   }
 
   return {
     measure: "human_review_time_per_accepted_ticket",
+    window_days: windowDays,
     basis,
     basis_note: BASIS_NOTE[basis],
-    per_accepted_ticket: percentiles([...perTicket.values()]),
-    accepted_without_human_decision: [...done].filter((id) => !perTicket.has(id)).length,
-    rounds: { human_decided: humanRounds.length, with_open_event: withOpen },
+    per_accepted_ticket: percentiles(winTickets.map((t) => t.cost)),
+    accepted_without_human_decision: withoutHuman(win),
+    rounds: { human_decided: winRounds.length, with_open_event: withOpen },
     queue_wait: percentiles(queue),
     decision: percentiles(decision),
     review_ready_to_decision: percentiles(spans),
@@ -311,6 +432,11 @@ export function reviewTimeReport(input: {
       pct: instrumented > 0 ? Math.round((clean / instrumented) * 1000) / 10 : null,
     },
     active,
+    previous,
+    by_week: grid.buckets.map((b, i) => {
+      const p = percentiles(weeks[i]!);
+      return { ...b, n: p.n, median_ms: p.median_ms };
+    }),
     limits: REVIEW_TIME_LIMITS,
   };
 }

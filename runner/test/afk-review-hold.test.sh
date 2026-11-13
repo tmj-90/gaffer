@@ -12,7 +12,7 @@
 # COMMIT: once a case leaves a real verdict (approve, changes) on the head, the next case
 # that needs a reviewer runs on a rework (a new head; rework_head below), because the
 # review pass never pays for a second review of a commit dispatch holds a verdict for
-# (pinned in review-once-per-head.test.sh). Case C then grants every
+# (pinned in review-once-per-head.test.sh and -resubmit.test.sh). Case C then grants every
 # gate and proves the SHIP path end to end: merge → done, the post-merge memory
 # work (digest freshness stamped, the ticket's Feature-Id advanced to shipped, no
 # duplicate ledger row), the merged branch deleted, and the reviewer's MCP runtime

@@ -37,9 +37,10 @@
 #   runs; Linux alone at -j 1: 57s, so 115 until CI measures it.
 #   signed-acts-revocation: new (independent review of signed gate events), eleven one-repo
 #   worlds with real merges and lane runs; Linux alone at -j 1: see the review, 2x until CI.
-#   review-once-per-head: new (one agent review per delivered commit), about 40 real ticks,
-#   a dozen tester runs and six reviews; Linux at -j 1 on a loaded machine: 319s, so 400
-#   until CI measures it.
+#   review-once-per-head (-races, -resubmit): one file of about 40 real ticks until it ran
+#   603s on a macOS nightly runner (over the 600s cap; 522s on CI macOS); split three ways
+#   on one shared world (lib/review-once-world.sh). Linux at -j 2: 88s, 83s and about 126s,
+#   so 180, 170 and 250 until CI measures them.
 #   tester-unprovable: new (package H3, the unprovable hold), about 30 real ticks, a dozen
 #   tester runs and two landings; Linux at -j 1 on a loaded machine: 333s, so 420 until CI
 #   measures it.
@@ -363,7 +364,9 @@
 115	signed-acts.test.sh
 100	signed-acts-revocation.test.sh
 230	tester-overlap.test.sh
-400	review-once-per-head.test.sh
+180	review-once-per-head.test.sh
+170	review-once-per-head-races.test.sh
+250	review-once-per-head-resubmit.test.sh
 420	tester-unprovable.test.sh
 200	tester-unprovable-escape.test.sh
 150	trust-fail-closed.test.sh

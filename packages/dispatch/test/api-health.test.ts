@@ -606,6 +606,101 @@ describe("GET /api/health", () => {
     }
   });
 
+  it("serves the four quality measures with their window, the window before and a history", async () => {
+    const h = await startHarness({
+      GAFFER_DATA: undefined,
+      GAFFER_USAGE_LEDGER: undefined,
+      MEMORY_CLI_BIN: undefined,
+      MEMORY_DB: undefined,
+    });
+    try {
+      const nowMs = Date.parse(h.clock.now());
+      let seq = 0;
+      const tx = (tid: string, actor: string, from: string, to: string, daysAgo: number) =>
+        h.wg.db
+          .prepare(
+            `INSERT INTO work_events (id, entity_type, entity_id, actor_type, event_type, payload_json, created_at)
+             VALUES (@id, 'ticket', @tid, @actor, 'ticket.transitioned', @p, @at)`,
+          )
+          .run({
+            id: `ev-${seq++}`,
+            tid,
+            actor,
+            p: JSON.stringify({ from, to }),
+            at: new Date(nowMs - daysAgo * DAY).toISOString(),
+          });
+      const done = (title: string, daysAgo: number): void => {
+        const t = h.wg.createTicket({ title }, human);
+        h.wg.db.prepare(`UPDATE tickets SET status='done' WHERE id=?`).run(t.id);
+        tx(t.id, "system", "in_progress", "in_review", daysAgo + 0.1);
+        tx(t.id, "human", "in_review", "ready_for_merge", daysAgo + 0.05);
+        tx(t.id, "system", "ready_for_merge", "done", daysAgo);
+      };
+      done("Accepted three days ago", 3);
+      done("Accepted ten days ago", 10);
+
+      type Measure = {
+        window_days: number | null;
+        previous: Record<string, unknown> | null;
+        by_week?: unknown[];
+        by_month?: unknown[];
+      };
+      const plain = (await get(h.baseUrl, "/api/health")).body;
+      const fp = plain.first_pass as Measure & { done: number };
+      const rt = plain.review_time as Measure;
+      const ac = plain.accepted_change as Measure & { accepted_changes: number };
+      const ed = plain.escaped_defects as Measure & {
+        accepted_changes: number;
+        upper_95_pct: number | null;
+      };
+      // Not asked: each keeps the window it always had, and says so.
+      expect([fp.window_days, rt.window_days, ac.window_days, ed.window_days]).toEqual([
+        null,
+        null,
+        null,
+        30,
+      ]);
+      expect(fp.done).toBe(2);
+      expect(fp.previous).toBeNull();
+      expect(ed.previous).not.toBeNull();
+      expect(ed).toMatchObject({ accepted_changes: 2, upper_95_pct: 65.8 });
+      for (const m of [fp, rt, ac]) expect(m.by_week).toHaveLength(12);
+      expect(ed.by_month).toHaveLength(6);
+      const cycle = plain.cycle_time as {
+        series: unknown[];
+        series_n: number[];
+        p90_days: unknown;
+      };
+      expect(cycle.series_n).toHaveLength(14);
+      expect(cycle).toHaveProperty("p75_days");
+
+      // Asked: the window applies to all four, with the equal window before.
+      const week = (await get(h.baseUrl, "/api/health?window_days=7")).body;
+      const fp7 = week.first_pass as Measure & { done: number };
+      const rt7 = week.review_time as Measure & { per_accepted_ticket: { n: number } };
+      const ac7 = week.accepted_change as Measure & { accepted_changes: number };
+      const ed7 = week.escaped_defects as Measure & { accepted_changes: number };
+      expect([fp7.window_days, rt7.window_days, ac7.window_days, ed7.window_days]).toEqual([
+        7, 7, 7, 7,
+      ]);
+      expect([
+        fp7.done,
+        rt7.per_accepted_ticket.n,
+        ac7.accepted_changes,
+        ed7.accepted_changes,
+      ]).toEqual([1, 1, 1, 1]);
+      expect(fp7.previous).toMatchObject({ done: 1, first_pass: 1 });
+      expect(ac7.previous).toMatchObject({ accepted_changes: 1 });
+      expect(ed7.previous).toMatchObject({ accepted_changes: 1 });
+      expect((rt7.previous as { per_accepted_ticket: { n: number } }).per_accepted_ticket.n).toBe(
+        1,
+      );
+      expect((week.governance as { windowDays: number }).windowDays).toBe(7);
+    } finally {
+      await h.close();
+    }
+  });
+
   it("returns 405 for POST /api/health", async () => {
     const h = await startHarness({ GAFFER_DATA: undefined, GAFFER_USAGE_LEDGER: undefined });
     try {

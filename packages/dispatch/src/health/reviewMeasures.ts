@@ -73,9 +73,14 @@ export interface ReviewMeasures {
 export const DEFAULT_WINDOW_DAYS = 30;
 
 export interface ReviewMeasureOptions {
-  /** Now, for the windowed figures (default: the wall clock). */
+  /** Now, for the windowed figures and the histories (default: the wall clock). */
   readonly nowMs?: number;
-  /** Accepted in the last N days (default 30, Health's governance window). */
+  /**
+   * The window, in days, a caller asked for. Given, it applies to first-pass acceptance
+   * and review time as well as the escaped-defect rate. Absent, each keeps the window it
+   * always had: first-pass acceptance and review time all time, the escaped-defect rate
+   * the last 30 days (Health's governance window). Each report names its window.
+   */
   readonly windowDays?: number;
   /** The usage ledger's rows, for each lane's cost per attempt (none: no spend). */
   readonly ledger?: readonly HealthRow[];
@@ -88,6 +93,8 @@ const ms = (iso: string): number => Date.parse(iso) || 0;
 
 /** Every measure above from the database. */
 export function readReviewMeasures(db: Db, opts: ReviewMeasureOptions = {}): ReviewMeasures {
+  const nowMs = opts.nowMs ?? Date.now();
+  const period = { nowMs, windowDays: opts.windowDays ?? null };
   const tickets = db.prepare("SELECT id, status FROM tickets").all() as Array<{
     id: string;
     status: string;
@@ -206,13 +213,16 @@ export function readReviewMeasures(db: Db, opts: ReviewMeasureOptions = {}): Rev
       not_analysed: notAnalysed,
       listed_pct: known > 0 ? Math.round((100 * listed) / known) : null,
     },
-    review_time: reviewTimeReport({
-      transitions,
-      opens: opensOf(REVIEW_OPENED_EVENT),
-      rawOpens: opensOf(REVIEW_RAW_OPENED_EVENT),
-      tickets,
-    }),
-    first_pass: firstPassAcceptance({ transitions, retries, tickets }),
+    review_time: reviewTimeReport(
+      {
+        transitions,
+        opens: opensOf(REVIEW_OPENED_EVENT),
+        rawOpens: opensOf(REVIEW_RAW_OPENED_EVENT),
+        tickets,
+      },
+      period,
+    ),
+    first_pass: firstPassAcceptance({ transitions, retries, tickets }, period),
     scout: scoutCoverage({
       events: (
         db
@@ -247,7 +257,7 @@ export function readReviewMeasures(db: Db, opts: ReviewMeasureOptions = {}): Rev
       links: currentRegressionLinks(regressionRows),
       transitions,
       tickets,
-      nowMs: opts.nowMs ?? Date.now(),
+      nowMs,
       windowDays: opts.windowDays ?? DEFAULT_WINDOW_DAYS,
     }),
     lane_value: laneValueReport({

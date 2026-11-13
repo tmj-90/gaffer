@@ -79,6 +79,12 @@ export interface HumanQueueItem {
   suggestedAction?: "unpark" | "refine" | "cancel" | "continue" | null;
   /** `lore_drafts` only: how many drafts await approval. */
   loreDrafts?: number;
+  /**
+   * `paused` only: what the delivery had spent when it paused, in US dollars, as a
+   * number for the client to format; null when the runner relayed no figure ("unknown").
+   * The reason sentence still carries the runner's preformatted string for one release.
+   */
+  spend_usd?: number | null;
   /** When the wait started (ISO instant). */
   since: string;
   /** How long the item has waited, in ms, relative to the service clock. */
@@ -127,6 +133,18 @@ const READY_APPROVAL_REASON =
 const REVIEWER_ASSIGNMENT_REASON =
   "Policy gate (factory_strict/regulated) — assign a reviewer before it can be made ready.";
 const PARKED_NO_CODE_LABEL = "blocked (no reason recorded)";
+/**
+ * The spend-so-far the runner relayed ("$2.5600", "2.56", "unknown") as dollars, or null
+ * when it is not a figure.
+ */
+export function parseSpendUsd(spend: string | null | undefined): number | null {
+  if (typeof spend !== "string") return null;
+  const m = /^\s*\$?\s*(\d+(?:\.\d+)?)\s*$/.exec(spend);
+  if (!m) return null;
+  const v = Number(m[1]);
+  return Number.isFinite(v) ? v : null;
+}
+
 /** A paused delivery's reason, in the ticket page's words. */
 function pausedReason(p: PausedDelivery | undefined): string {
   const spend = p && p.spend ? `, ${p.spend} spent so far` : "";
@@ -371,6 +389,7 @@ export class HumanQueueService {
         decisionId: null,
         severity: null,
         suggestedAction: "continue",
+        spend_usd: parseSpendUsd(p?.spend),
         since,
         waitedMs: waited(since),
       });

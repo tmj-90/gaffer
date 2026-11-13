@@ -22,11 +22,14 @@ const NOW = Date.parse("2025-01-15T12:00:00Z");
 const daysAgo = (n: number) => new Date(NOW - n * DAY).toISOString();
 
 describe("deliveryFlow — zero-state", () => {
-  it("returns zeros for no tickets", () => {
+  it("returns zeros for no tickets, and a null cycle on every day (nothing completed)", () => {
     const flow = deliveryFlow([], NOW);
     expect(flow.cycle_time.median_days).toBe(0);
+    expect(flow.cycle_time.p75_days).toBeNull();
+    expect(flow.cycle_time.p90_days).toBeNull();
     expect(flow.cycle_time.series).toHaveLength(14);
-    expect(flow.cycle_time.series.every((v) => v === 0)).toBe(true);
+    expect(flow.cycle_time.series.every((v) => v === null)).toBe(true);
+    expect(flow.cycle_time.series_n).toEqual(new Array(14).fill(0));
     expect(flow.throughput.last7).toBe(0);
     expect(flow.throughput.prev7).toBe(0);
     expect(flow.throughput.series).toHaveLength(14);
@@ -76,14 +79,41 @@ describe("deliveryFlow — throughput", () => {
     expect(flow.throughput.series.reduce((a, b) => a + b, 0)).toBe(3);
   });
 
-  it("reproduces the old client series shape (oldest→newest, carried-forward cycle)", () => {
+  it("keeps the series shape (oldest→newest): today holds the 2-day cycle, earlier days null", () => {
     const tickets: FlowTicket[] = [
       { status: "done", created_at: daysAgo(2), updated_at: daysAgo(0) }, // today, 2d
     ];
     const flow = deliveryFlow(tickets, NOW);
-    // The last series slot (today) carries the 2-day cycle; earlier slots are 0.
     expect(flow.cycle_time.series[13]).toBeCloseTo(2);
-    expect(flow.cycle_time.series[0]).toBe(0);
+    // Before the first completion there is no cycle time: null, not 0.
+    expect(flow.cycle_time.series[0]).toBeNull();
+    expect(flow.cycle_time.series_n[13]).toBe(1);
+    expect(flow.cycle_time.series_n[0]).toBe(0);
+  });
+});
+
+describe("deliveryFlow: the cycle series never invents a value (F-B2, F-E2)", () => {
+  it("an empty day is null with n 0, never the day before carried forward; p75 and p90 beside the median", () => {
+    const tickets: FlowTicket[] = [
+      // Day index 10 (3 days ago): two completions, 1 and 3 days -> mean 2, n 2.
+      { status: "done", created_at: daysAgo(4), updated_at: daysAgo(3) },
+      { status: "done", created_at: daysAgo(6), updated_at: daysAgo(3) },
+      // Day index 12 (yesterday): one completion, 4 days.
+      { status: "done", created_at: daysAgo(5), updated_at: daysAgo(1) },
+    ];
+    const flow = deliveryFlow(tickets, NOW);
+    const s = flow.cycle_time.series;
+    expect(s[10]).toBeCloseTo(2);
+    expect(s[12]).toBeCloseTo(4);
+    // Day 11 and today had no completion: null, not 2 (carried) and not 0.
+    expect(s[11]).toBeNull();
+    expect(s[13]).toBeNull();
+    expect(s.slice(0, 10).every((v) => v === null)).toBe(true);
+    expect(flow.cycle_time.series_n).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 1, 0]);
+    // Sorted cycles [1, 3, 4]: median 3, p75 = 3 + 0.5 * 1 = 3.5, p90 = 3 + 0.8 * 1 = 3.8.
+    expect(flow.cycle_time.median_days).toBeCloseTo(3);
+    expect(flow.cycle_time.p75_days).toBe(3.5);
+    expect(flow.cycle_time.p90_days).toBe(3.8);
   });
 });
 

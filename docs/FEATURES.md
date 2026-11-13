@@ -231,7 +231,13 @@ the usage ledger and the transition log, and says only what those can show:
 - **Escaped defects**: the share of accepted changes a person later linked a defect to.
   Link one on the later ticket's page (the *Escaped defects* card) or with
   `wg ticket regression-of <ticket> --of <change>`. Gaffer never guesses a regression,
-  and an agent can neither file nor withdraw one.
+  and an agent can neither file nor withdraw one. Beside the rate is its Wilson 95%
+  upper bound, so a zero on a small sample says how high it could still be.
+- **Each of these four says which window it covers.** The escaped-defect rate counts the
+  last 30 days and the other three all time, unless the caller asks for a window
+  (`GET /api/health?window_days=N`), and then all four use it. Each also serves the same figures over the equal window before
+  and twelve weeks of history (the escaped-defect rate six monthly cohorts, the recent
+  ones marked as still maturing); an empty week is shown as empty, never as zero.
 - **Lane verdicts and what each lane changed.** The reviewer agent, the security
   reviewer, the tester and the eval judge each record their verdict
   (`ticket.lane_verdict`, runner-recorded only). Health counts how often each differed

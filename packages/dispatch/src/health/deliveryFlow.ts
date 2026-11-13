@@ -18,8 +18,11 @@
  * `done`, from the work_events log) and the maths uses it; `updated_at` is only
  * the fallback for tickets that never emitted a transition (seeded/imported).
  *
- *   - cycle time      = median of (done_at - created_at) in days over `done` tickets
- *   - cycle series    = per-completion-day mean cycle, carried forward across the window
+ *   - cycle time      = median of (done_at - created_at) in days over `done` tickets,
+ *                       with p75 and p90 over the same tickets (null when none)
+ *   - cycle series    = per-completion-day mean cycle over the window; null on a day
+ *                       with no completion (never carried forward, never a fake 0),
+ *                       with `series_n`, the completions behind each day
  *   - throughput      = tickets `done` bucketed per completion UTC day over the window
  *   - last7/prev7     = trailing-7 vs prior-7 shipped counts
  *   - flow efficiency = median over done tickets of (time an agent was WORKING the
@@ -51,6 +54,8 @@
  * claims only what the log can establish: time with an agent on it is work, time
  * between hand-offs is a queue, and the merge wait is reported on its own.
  */
+
+import { quantileSorted } from "./measurePeriods.js";
 
 /** Minimal ticket shape needed for delivery-flow maths. */
 export interface FlowTicket {
@@ -93,8 +98,18 @@ export interface DeliveryFlow {
   cycle_time: {
     /** Median created→done time in days over shipped tickets (0 when none). */
     median_days: number;
-    /** Per-day carried-forward mean cycle, oldest→newest, length = windowDays. */
-    series: number[];
+    /** 75th percentile of the same, in days (linear interpolation); null when none. */
+    p75_days: number | null;
+    /** 90th percentile of the same, in days; null when none. */
+    p90_days: number | null;
+    /**
+     * Per completion day, the mean created→done time in days of the tickets that
+     * completed that day, oldest→newest, length = windowDays. Null on a day with no
+     * completion: an empty day has no cycle time.
+     */
+    series: (number | null)[];
+    /** How many completions each `series` day averages (0 on a null day). */
+    series_n: number[];
   };
   throughput: {
     /** Tickets shipped in the trailing 7 days of the window. */
@@ -175,6 +190,15 @@ function median(values: number[]): number {
   const sorted = [...values].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
   return sorted.length % 2 === 1 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
+}
+
+/** Linear-interpolated quantile of a sample, rounded to 0.01; null when empty. */
+function quantileDays(values: readonly number[], q: number): number | null {
+  const v = quantileSorted(
+    [...values].sort((a, b) => a - b),
+    q,
+  );
+  return v === null ? null : Math.round(v * 100) / 100;
 }
 
 /** The completion timestamp to use for a done ticket: `done_at`, else `updated_at`. */
@@ -259,22 +283,27 @@ export function deliveryFlow(
     }
   }
 
-  // Cycle series: mean of that day's cycles, carried forward across gaps.
-  let carry: number | null = null;
+  // Cycle series: the mean of that day's cycles; a day with none is null, never the
+  // day before's value carried forward and never 0.
   const cycleSeries = dayKeys.map((_, i) => {
     const bucket = cycleByDay.get(i);
-    if (bucket && bucket.length > 0) {
-      carry = bucket.reduce((a, b) => a + b, 0) / bucket.length;
-    }
-    return carry == null ? 0 : Math.round(carry * 100) / 100;
+    if (!bucket || bucket.length === 0) return null;
+    return Math.round((bucket.reduce((a, b) => a + b, 0) / bucket.length) * 100) / 100;
   });
+  const cycleSeriesN = dayKeys.map((_, i) => cycleByDay.get(i)?.length ?? 0);
 
   const sum = (arr: number[]) => arr.reduce((a, b) => a + b, 0);
   const last7 = sum(doneByDay.slice(-7));
   const prev7 = sum(doneByDay.slice(-14, -7));
 
   return {
-    cycle_time: { median_days: median(cycleVals), series: cycleSeries },
+    cycle_time: {
+      median_days: median(cycleVals),
+      p75_days: quantileDays(cycleVals, 0.75),
+      p90_days: quantileDays(cycleVals, 0.9),
+      series: cycleSeries,
+      series_n: cycleSeriesN,
+    },
     throughput: { last7, prev7, series: doneByDay },
     flow_efficiency: {
       median_pct: effVals.length === 0 ? null : Math.round(median(effVals) * 10) / 10,

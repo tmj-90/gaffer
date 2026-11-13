@@ -19,6 +19,7 @@ const KIT_JS = path.join(path.resolve(process.cwd(), "src/api/web"), "js", "kit.
 type Tokens = Record<string, string | null>;
 type Clash = { card: string; words: string; distance: number } | null;
 type Kit = {
+  applyClub: (club: Record<string, unknown>) => void;
   KIT_CLASH: number;
   okDistance: (a: number[], b: number[]) => number;
   cardClash: (hex: string | null) => Clash;
@@ -125,5 +126,62 @@ describe("web: club colours and the referee's cards", () => {
     const t = kit.kitTokens(null, null);
     expect(Object.values(t).every((v) => v === null)).toBe(true);
     expect(Object.keys(t)).toEqual(expect.arrayContaining(["--kit-1", "--kit-2", "--sky-block"]));
+  });
+
+  it("a sky block's text reads at 4.5:1 on both kits, whatever the club's second colour", () => {
+    // The floodlit block mixes the club colour down toward the dark page; a white
+    // second colour (a common kit) landed on a mid grey where white text read 4.48:1.
+    const rgb = (v: string) =>
+      v.startsWith("#")
+        ? [1, 3, 5].map((i) => parseInt(v.slice(i, i + 2), 16))
+        : (/rgb\((\d+) (\d+) (\d+)\)/.exec(v) ?? []).slice(1).map(Number);
+    const sides = (v: string | null) => {
+      const m = /^light-dark\((.+), (rgb\(.+\)|#[0-9a-f]{6})\)$/i.exec(v ?? "");
+      if (!m) throw new Error(`not a light-dark pair: ${v}`);
+      return [rgb(m[1]!), rgb(m[2]!)];
+    };
+    const lum = (c: number[]) => {
+      const f = (x: number) => {
+        const v = x / 255;
+        return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+      };
+      return 0.2126 * f(c[0]!) + 0.7152 * f(c[1]!) + 0.0722 * f(c[2]!);
+    };
+    const ratio = (a: number[], b: number[]) => {
+      const [x, y] = [lum(a), lum(b)];
+      return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+    };
+    const worst: Array<[string, number]> = [];
+    const hexes = ["#ffffff", "#f8f8f8", "#7a7a7a", "#808080", "#8a5cf5", "#2a9d8f", "#e0e0e0"];
+    for (let r = 0; r < 256; r += 51)
+      for (let g = 0; g < 256; g += 51)
+        for (let b = 0; b < 256; b += 51)
+          hexes.push(`#${[r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("")}`);
+    for (const hex of hexes) {
+      if (kit.cardClash(hex)) continue;
+      const t = kit.kitTokens(SAFE_BLUE, hex);
+      const ground = sides(t["--sky-block"]);
+      const ink = sides(t["--on-sky-block"]);
+      const ink2 = sides(t["--on-sky-block-2"]);
+      for (const i of [0, 1]) {
+        const a = ratio(ink[i]!, ground[i]!);
+        const b = ratio(ink2[i]!, ground[i]!);
+        if (a < 4.5 || b < 4.5) worst.push([`${hex} ${i ? "dark" : "light"}`, Math.min(a, b)]);
+      }
+    }
+    expect(worst).toEqual([]);
+    // A safe colour that already reads keeps its own hex on the day kit.
+    expect(kit.kitTokens(SAFE_BLUE, "#ffffff")["--sky-block"]).toMatch(/^light-dark\(#ffffff, /);
+  });
+
+  it("the browser's bar follows the header: a first colour that gives way there gives way here", () => {
+    document.head.innerHTML = '<meta name="theme-color" content="#7a1631" />';
+    const meta = document.querySelector('meta[name="theme-color"]')!;
+    kit.applyClub({ kit_primary: SAFE_BLUE, kit_secondary: null });
+    expect(meta.getAttribute("content")).toBe(SAFE_BLUE);
+    kit.applyClub({ kit_primary: RED_KIT, kit_secondary: "#ffffff" });
+    expect(meta.getAttribute("content")).toBe(HOUSE_CLARET);
+    kit.applyClub({ kit_primary: null, kit_secondary: null });
+    expect(meta.getAttribute("content")).toBe(HOUSE_CLARET);
   });
 });

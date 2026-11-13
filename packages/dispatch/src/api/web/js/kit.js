@@ -145,6 +145,16 @@ function inkOn(bg) {
   return { light, on, quiet: contrastRatio(quiet, bg) >= 4.5 ? quiet : on };
 }
 /**
+ * A block's ground for a club colour: the colour itself when white or ink reads on
+ * it at 4.5:1, else the colour stepped away from its text until one does (a mid
+ * tone, such as white mixed down for the floodlit block, reads at only 4.2 to 4.5).
+ */
+function blockGround(bg) {
+  const t = inkOn(bg);
+  if (contrastRatio(bg, t.on) >= 4.5) return bg;
+  return readableOn(bg, t.on, t.light ? [0, 0, 0] : RGB_WHITE);
+}
+/**
  * The kit tokens for a club's colours: { token: value } (null = the house value).
  * Applied to :root for the whole app, or to one element for a live preview.
  * The role tokens (claret and sky: the header, blocks, hoops, washes) take a club
@@ -200,12 +210,16 @@ function kitTokens(primary, secondary) {
       `light-dark(color-mix(in srgb, ${secondary} 20%, var(--paper)), color-mix(in srgb, ${secondary} 10%, var(--paper)))`;
     out["--sky-on-board"] = contrastRatio(S, RGB_BOARD) < 4.5 ? "var(--board-ink-2)" : "var(--sky)";
     // A sky block is chosen for each kit: the club colour on the day kit, a deep
-    // step of it under floodlights (as the house sky's block is), each with its text.
-    const dark = mixRgb(S, RGB_PAPER_DARK, 0.62);
+    // step of it under floodlights (as the house sky's block is), each with its text
+    // at 4.5:1 or better.
+    const day = blockGround(S);
+    const dark = blockGround(mixRgb(S, RGB_PAPER_DARK, 0.62));
+    const b = inkOn(day);
     const d = inkOn(dark);
-    out["--sky-block"] = `light-dark(${secondary}, ${rgbCss(dark)})`;
-    out["--on-sky-block"] = `light-dark(${rgbCss(t.on)}, ${rgbCss(d.on)})`;
-    out["--on-sky-block-2"] = `light-dark(${rgbCss(t.quiet)}, ${rgbCss(d.quiet)})`;
+    const dayCss = day === S ? secondary : rgbCss(day);
+    out["--sky-block"] = `light-dark(${dayCss}, ${rgbCss(dark)})`;
+    out["--on-sky-block"] = `light-dark(${rgbCss(b.on)}, ${rgbCss(d.on)})`;
+    out["--on-sky-block-2"] = `light-dark(${rgbCss(b.quiet)}, ${rgbCss(d.quiet)})`;
   }
   if (P0 || S0) {
     // The stencil number is cut in the second colour: on a shirt of a close colour it
@@ -265,7 +279,10 @@ function applyClub(club) {
   const meta = document.querySelector('meta[name="theme-color"]');
   if (meta) {
     if (!meta.dataset.house) meta.dataset.house = meta.getAttribute("content") || "";
-    meta.setAttribute("content", club.kit_primary || meta.dataset.house);
+    // The browser's bar is the header's colour: a first colour that gives way to the
+    // house claret there gives way here too.
+    const own = club.kit_primary && hexRgb(club.kit_primary) && !cardClash(club.kit_primary);
+    meta.setAttribute("content", own ? club.kit_primary : meta.dataset.house);
   }
   paintBrand();
 }

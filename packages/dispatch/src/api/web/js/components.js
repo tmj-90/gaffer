@@ -508,7 +508,8 @@ function dataTable({
   const cellOf = (col, row, i) => {
     const raw = row[col.key];
     let out = col.format ? col.format(raw, row) : raw;
-    if (out == null || out === "")
+    // No figure (null, empty, or a number that is not one: NaN) is a dash with its reason.
+    if (out == null || out === "" || (typeof out === "number" && !Number.isFinite(out)))
       out = el("span", { class: "dt-missing", title: col.missing || "not recorded" }, MISSING);
     else if (typeof out === "number") out = col.numeric ? NUM.format(out) : String(out);
     const align = col.align || (col.numeric ? "right" : null);
@@ -550,7 +551,8 @@ function dataTable({
           { class: "dt-group" },
           el(
             "th",
-            { colspan: String(columns.length), scope: "colgroup" },
+            // The group's label heads the rows under it (a row group), not columns.
+            { colspan: String(columns.length), scope: "rowgroup" },
             groupLabel ? groupLabel(k, rs) : String(k),
           ),
         ),

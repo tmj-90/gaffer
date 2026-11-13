@@ -292,6 +292,16 @@ describe("dataTable", () => {
     expect(t.classList.contains("dt-stack")).toBe(true);
     expect(t.querySelector("tbody td")!.getAttribute("data-label")).toBe("Files");
   });
+
+  it("a group header heads its rows (scope rowgroup), and NaN is a dash (review)", () => {
+    const t = C.dataTable({ columns, rows, groupBy: "group" });
+    const heads = [...t.querySelectorAll("tr.dt-group th")];
+    expect(heads.map((th) => th.getAttribute("scope"))).toEqual(["rowgroup", "rowgroup"]);
+    const nan = C.dataTable({ columns, rows: [{ repo: "x", files: Number.NaN, built: "now" }] });
+    const cell = nan.querySelector("tbody tr")!.children[1]!;
+    expect(cell.textContent).toBe("\u2014");
+    expect(cell.textContent).not.toContain("NaN");
+  });
 });
 
 describe("callout, emptyState inline, buttons", () => {

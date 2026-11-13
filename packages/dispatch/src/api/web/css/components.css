@@ -2473,9 +2473,18 @@
       overflow: hidden;
       clip-path: inset(50%);
     }
+    /* The caption stays a full-width line: as a table-caption inside a block table it
+       shrank to its longest word ("Index / coverage / by / repository"). */
+    .dt-stack .data-table caption {
+      display: block;
+    }
     .dt-stack .data-table tr {
       padding: 8px 0;
       border-bottom: var(--hair);
+    }
+    /* In a labelled card a figure sits beside its label like every other value. */
+    .dt-stack .data-table .dt-num {
+      text-align: left;
     }
     .dt-stack .data-table td,
     .dt-stack .data-table tbody th[scope="row"] {

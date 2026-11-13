@@ -217,4 +217,32 @@ describe("web: Health — rework a reviewer caused", () => {
     expect(d).not.toContain("NaN");
     expect(d.match(/[ML]/g)).toEqual(["M", "L"]);
   });
+
+  it("a quiet week draws no zero in the Lead time sparkline: an empty trailing week is skipped", async () => {
+    // One completion 13 days ago and one today: the 7-day trailing mean has nothing on
+    // days 7 to 12. Those days are gaps, not a zero-day lead time on the baseline.
+    const series = [3, null, null, null, null, null, null, null, null, null, null, null, null, 5];
+    health = {
+      ...HEALTH,
+      cycle_time: {
+        median_days: 4,
+        p75_days: 4.5,
+        p90_days: 4.8,
+        series,
+        series_n: series.map((v) => (v === null ? 0 : 1)),
+      },
+      throughput: { last7: 1, prev7: 1, series: series.map((v) => (v === null ? 0 : 1)) },
+    };
+    await loadApp();
+    const kpi = Array.from(document.querySelectorAll(".form-guide .kpi")).find(
+      (k) => k.querySelector(".kpi-label")?.textContent === "Lead time",
+    );
+    const d = kpi?.querySelector(".spark-line")?.getAttribute("d") ?? "";
+    expect(d).not.toContain("NaN");
+    const points = [...d.matchAll(/[ML]([\d.]+) ([\d.]+)/g)].map((m) => Number(m[2]));
+    // Days 0-6 (the first completion in their week) and day 13: eight points, none at 0.
+    expect(points).toHaveLength(8);
+    const baseline = Number(kpi?.querySelector(".spark-base")?.getAttribute("y1"));
+    expect(points.every((y) => y < baseline)).toBe(true);
+  });
 });

@@ -67,10 +67,13 @@ async function fitnessRoomPanels(healthRes) {
   // deployments: cumulative tickets shipped (a monotonic delivery curve)
   let depAcc = 0;
   const deploySeries = doneByDay.map((v) => (depAcc += v));
-  // lead time: 7-day trailing mean of daily cycle (a smoothed lead trend)
+  // lead time: 7-day trailing mean of daily cycle (a smoothed lead trend). A day whose
+  // trailing week has no completion is null (the sparkline skips it), never a 0: the
+  // server's cycle series is null on a day with no completion, so a quiet week would
+  // otherwise read as a zero-day lead time.
   const leadSeries = cycleLine.map((_, i) => {
     const w = cycleLine.slice(Math.max(0, i - 6), i + 1).filter((x) => x > 0);
-    return w.length ? +(w.reduce((a, b) => a + b, 0) / w.length).toFixed(2) : 0;
+    return w.length ? +(w.reduce((a, b) => a + b, 0) / w.length).toFixed(2) : null;
   });
   // --- headline metrics -----------------------------------------------------
   // Cycle time + throughput are server-authoritative (from /api/health above).

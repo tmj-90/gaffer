@@ -83,8 +83,16 @@ describe("statCell: sizes, proportional figures, a missing value", () => {
   });
 
   it("a {t, v} series draws the new sparkline", () => {
-    const c = C.statCell({ label: "x", value: "1", series: weekly([1, 2, 3, 4]) });
+    const c = C.statCell({
+      label: "Done",
+      value: "1",
+      series: weekly([1, 2, 3, 4]),
+      seriesFmt: (v: number) => `${v} shipped`,
+    });
     expect(c.querySelector(".spark")).not.toBeNull();
+    expect(c.querySelector(".spark")!.getAttribute("aria-label")).toBe(
+      "Done, 4 weeks, 1 shipped to 4 shipped",
+    );
   });
 });
 
@@ -236,12 +244,12 @@ describe("dataTable", () => {
     expect(table.querySelector("caption")!.textContent).toBe("Code index by repo");
     const ths = [...table.querySelectorAll("thead th")];
     expect(ths.map((th) => th.getAttribute("scope"))).toEqual(["col", "col", "col"]);
-    expect(ths[1]!.classList.contains("num")).toBe(true);
+    expect(ths[1]!.classList.contains("dt-num")).toBe(true);
     const first = table.querySelector("tbody tr")!;
     expect(first.firstElementChild!.tagName).toBe("TH");
     expect(first.firstElementChild!.getAttribute("scope")).toBe("row");
     expect(first.children[1]!.textContent).toBe("1,200");
-    expect(first.children[1]!.classList.contains("num")).toBe(true);
+    expect(first.children[1]!.classList.contains("dt-num")).toBe(true);
     expect(first.children[2]!.textContent).toBe("at noon");
   });
 

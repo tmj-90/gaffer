@@ -4,7 +4,7 @@
 import { readOnly } from "../access.js";
 import { api } from "../api.js";
 import { actorName } from "../club.js";
-import { panelHead, statCell } from "../components.js";
+import { callout, panelHead, statCell } from "../components.js";
 import { safeHttpUrl } from "../diff.js";
 import { clear, el } from "../dom.js";
 import {
@@ -865,11 +865,11 @@ function renderTestingCard(t, evidence, extra = {}) {
         el("span", { class: "switch-track" }, el("span", { class: "switch-thumb" })),
       ]),
     ]),
+    // A person vouched for a criterion the tester did not pass: the shared callout, needs
+    // tone (the reviewer is the one who must accept it). Its old "callout warn" class had
+    // no rule, so it rendered as a plain paragraph (audit A-40).
     waiver
-      ? el("p", { class: "tk-waiver callout warn", role: "note" }, [
-          el("strong", {}, "Waived: "),
-          waiver.label,
-        ])
+      ? callout({ tone: "needs", title: "Waived:", body: waiver.label, cls: "tk-waiver" })
       : null,
     epicAcc
       ? el("p", { class: "tk-epic-acceptance dim" }, `Epic ${epicAcc.epic}: ${epicAcc.label}`)

@@ -4,7 +4,7 @@
 import { roLock } from "../access.js";
 import { panelHead } from "../components.js";
 import { el } from "../dom.js";
-import { fmtTime, plural } from "../format.js";
+import { fmtTime, fmtWait, plural } from "../format.js";
 import { agentChip, glyph, icon, ycard } from "../icons.js";
 import { ON_BENCH } from "../matchday.js";
 import {
@@ -14,6 +14,7 @@ import {
   readyApprovalSheet,
   unblockSheet,
 } from "../sheets.js";
+import { reasonTag, reasonText } from "../status.js";
 import { deliveredBy } from "./review-comments.js";
 import { integrityFlagOf } from "./review-packet.js";
 
@@ -57,8 +58,9 @@ function whatIOwnPanel(queue, f) {
     "section",
     { class: "card what-i-own", id: "what-i-own", "aria-label": "Team sheet" },
     [
+      // The claret block by meaning: this is what the viewer must act on.
       panelHead("Team sheet", items.length ? `needs you · ${total}` : null, null, {
-        kit: "claret",
+        tone: "needs",
       }),
     ],
   );
@@ -175,17 +177,6 @@ function ownActionControl(it, primary, f) {
         : null;
   }
 }
-/** How long a team-sheet row has waited, in words a programme would print: "9 h 16 min". */
-function fmtWait(ms) {
-  if (ms == null || !Number.isFinite(ms) || ms < 0) return "—";
-  const min = Math.floor(ms / 60000);
-  if (min < 1) return "under a minute";
-  if (min < 60) return `${min} min`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr} h ${min % 60} min`;
-  const day = Math.floor(hr / 24);
-  return `${day} ${day === 1 ? "day" : "days"} ${hr % 24} h`;
-}
 
 /** A decision's question: its title from /decisions (the reason is the detail). */
 function decisionTitle(it, f) {
@@ -258,7 +249,9 @@ function renderOwnedItem(it, i = 0, f = null) {
   // not land" was false for an approval nothing lands, one the merge lane lands next
   // tick, and one landing now.
   const landing = it.kind === "awaiting_merge" && t ? t.landing_state : null;
-  const reason = (landing && landing.detail) || it.reason || "(no reason given)";
+  const said = (landing && landing.detail) || it.reason || "(no reason given)";
+  // A bare server code as the reason ("tester_passed") reads in words (A-25).
+  const reason = /^[a-z]+(_[a-z]+)+$/.test(said) ? reasonText(said) : said;
   // Who played it: the agent on the ticket's latest claim (a change, a merge, a parked ticket).
   const by = f && t && OWN_BY_KINDS.has(it.kind) ? deliveredBy(f.details.get(t.id)?.events) : null;
   const tFlag =
@@ -311,19 +304,17 @@ function renderOwnedItem(it, i = 0, f = null) {
         // one group, so the advice never wraps onto a line of its own.
         it.reasonCode != null || it.suggestedAction
           ? el("span", { class: "own-note" }, [
-              it.reasonCode != null
-                ? el(
-                    "span",
-                    { class: "own-code", title: "The server's reason code" },
-                    it.reasonCode,
-                  )
-                : null,
+              // Plain words, the raw code in the title (A-25).
+              it.reasonCode != null ? reasonTag(it.reasonCode, "own-code") : null,
               it.reasonCode != null && it.suggestedAction ? "\u00a0\u00a0" : null,
               it.suggestedAction
                 ? el(
                     "span",
-                    { class: "own-action", title: "What the server suggests" },
-                    `→\u00a0${it.suggestedAction}`,
+                    {
+                      class: "own-action",
+                      title: `What the server suggests: ${it.suggestedAction}`,
+                    },
+                    `→\u00a0${reasonText(it.suggestedAction)}`,
                   )
                 : null,
             ])

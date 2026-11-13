@@ -27,7 +27,7 @@ export default async function s1(t, L) {
   const reworking = await L.maybe(
     async () => {
       const txt = await p
-        .textContent(`.board-card:has(.num:text-is("#${tk.number}"))`)
+        .textContent(`.board-card:has(.tref:text-is("#${tk.number}"))`)
         .catch(() => "");
       return /Reworking · attempt 2\/\d/.test(txt || "") ? txt : null;
     },

@@ -197,8 +197,16 @@ describe("web: the Match Day Work view", () => {
     input.value = "#11";
     input.dispatchEvent(new Event("input"));
     await new Promise((r) => setTimeout(r, 40));
-    const nums = [...document.querySelectorAll("#app .board-card .num")].map((n) => n.textContent);
+    const nums = [...document.querySelectorAll("#app .board-card .tref")].map((n) => n.textContent);
     expect(nums).toEqual(["#11"]);
+    // The number is the shared ticketRef at card size (14px, quieter than the 16px title,
+    // audit A-21) and not a second link: the title is the card's one link.
+    const ref = document.querySelector("#app .board-card .tref")!;
+    expect(ref.className).toBe("tref tref-s");
+    expect(ref.tagName).toBe("SPAN");
+    expect(document.querySelector("#app .board-card .num")).toBeNull();
+    const pri = document.querySelector("#app .board-card .prio")!;
+    expect(pri.textContent).toMatch(/^P\d$/);
     // "#1" is ticket 1 exactly, never #10, #11 or #12.
     input.value = "#1";
     input.dispatchEvent(new Event("input"));

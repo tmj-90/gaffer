@@ -378,10 +378,10 @@
     background: var(--red);
   }
 
-  /* Acceptance criteria: glyph · text · state, one rule between. */
+  /* Acceptance criteria: text · verdict mark (glyph + word), one rule between. */
   .ac-item {
     display: grid;
-    grid-template-columns: 16px minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) auto;
     align-items: start;
     gap: 10px;
     padding: 9px 0;
@@ -391,15 +391,8 @@
   .tk-ac-list > li:first-child .ac-item {
     border-top: 0;
   }
-  .ac-item .glyph {
+  .ac-item .vmark {
     margin-top: 2px;
-  }
-  .ac-satisfied .ac-item .glyph {
-    color: var(--ok);
-  }
-  .ac-failed .ac-item .glyph,
-  .ac-failed .ac-item .ac-state {
-    color: var(--red);
   }
   .ac-text .ac-meta {
     font-size: var(--t12);

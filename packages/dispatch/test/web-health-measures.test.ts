@@ -367,13 +367,45 @@ describe("web: Health shows the code index's coverage and the callers row's shar
     const panel = document.querySelector('[aria-label="Code index"]')!;
     expect(panel).not.toBeNull();
     const t = panel.textContent!.replace(/\s+/g, " ");
+    // The callers share is a measure tile (k of n, a Wilson whisker), not a sentence (F-C4).
+    const tile = panel.querySelector(".measure-tile")!;
+    expect(tile.querySelector(".mt-val")?.textContent).toBe("75%");
+    expect(tile.querySelector(".mt-n")?.textContent).toBe("3 of 4 review opens");
+    expect(tile.querySelector(".mt-whisker")).not.toBeNull();
+    expect(tile.classList.contains("is-small")).toBe(true); // 4 opens: too few, greyed
     expect(t).toContain(
-      "listed callers in 3 of 4 review opens (1 had no changed symbol to list, 0 were not analysed); 1 earlier opens did not record it.",
+      "1 had no changed symbol to list, 0 were not analysed; 1 earlier opens did not record it.",
     );
-    expect(t).toContain(
-      "120 files (30 tests) · 400 exported symbols · 500 imports resolved, 4 unresolved · 80 test links over 60 modules",
-    );
-    expect(t).toContain("at c0ffee12");
+    // The per-repo coverage is a real table (A-36, F-C4), numbers right-aligned.
+    const table = panel.querySelector("table.data-table")!;
+    expect(panel.querySelector(".dt-wrap")?.classList.contains("dt-stack")).toBe(true);
+    const heads = [...table.querySelectorAll("thead th")].map((th) => th.textContent);
+    expect(heads).toEqual([
+      "Repo",
+      "Files",
+      "Test files",
+      "Exported symbols",
+      "Imports resolved",
+      "Unresolved",
+      "Test links",
+      "Modules with tests",
+      "Built",
+      "Commit",
+    ]);
+    const row = table.querySelector("tbody tr")!;
+    expect(row.querySelector("th[scope=row]")?.textContent).toBe("svc");
+    expect([...row.querySelectorAll("td.dt-num")].map((td) => td.textContent)).toEqual([
+      "120",
+      "30",
+      "400",
+      "500",
+      "4",
+      "80",
+      "60",
+    ]);
+    expect(row.querySelector("code")?.textContent).toBe("c0ffee12");
+    // A plain level-2 head: Health keeps its blocks for the sections it leads with (A-03).
+    expect(panel.querySelector(".panel-head")?.className).toBe("panel-head ph-l2");
     expect(t).not.toMatch(/score|confiden/i);
   });
 
@@ -391,9 +423,15 @@ describe("web: Health shows the code index's coverage and the callers row's shar
       code_index: { available: false, reason: "Memory is not configured." },
     };
     await loadApp();
-    const t = document.querySelector('[aria-label="Code index"]')!.textContent!;
+    const panel = document.querySelector('[aria-label="Code index"]')!;
+    const t = panel.textContent!;
     expect(t).toContain("No review open has recorded the callers row yet.");
+    expect(panel.querySelector(".measure-tile .mt-val")?.textContent).toBe("\u2014");
     expect(t).toContain("Index coverage: Memory is not configured.");
+    // One quiet inline line, not a hand-rolled paragraph (A-42).
+    expect(panel.querySelector(".empty-inline")?.textContent).toBe(
+      "Index coverage: Memory is not configured.",
+    );
   });
 });
 
@@ -435,15 +473,29 @@ describe("Health: the pre-work scout card", () => {
     const panel = document.querySelector('[aria-label="Pre-work scout"]')!;
     expect(panel).not.toBeNull();
     const t = panel.textContent!.replace(/\s+/g, " ");
-    expect(t).toContain(
-      "9 delivery attempts scouted on 7 tickets: the code index added files in 5, named files and stack frames only in 3, nothing found in 1. The risk was raised in 2.",
+    expect(t).toContain("9 delivery attempts scouted on 7 tickets. The risk was raised in 2.");
+    // What each attempt started with: a thin segmented bar named in full (F-C3).
+    const bar = panel.querySelector(".seg-bar")!;
+    expect(bar.getAttribute("aria-label")).toBe(
+      "What each scouted attempt started with: Index added files 5 (56%), Named files and stack frames only 3 (33%), Nothing found 1 (11%)",
     );
+    expect([...panel.querySelectorAll(".seg-legend li")].map((li) => li.textContent)).toEqual([
+      "Index added files 5",
+      "Named files and stack frames only 3",
+      "Nothing found 1",
+    ]);
+    // One money format: never "$0.0321" (A-31).
     expect(t).toContain(
-      "Model scout: 2 runs, 5 files kept, 1 dropped as not in the checkout, $0.0321 (1 of unknown cost).",
+      "Model scout: 2 runs, 5 files kept, 1 dropped as not in the checkout, $0.03 (1 of unknown cost).",
     );
-    expect(t).toContain("Index added files: 75% first-pass (3 of 4 done tickets)");
-    expect(t).toContain("Nothing found: n/a first-pass (0 of 0 done tickets)");
-    expect(t).toContain("Not scouted: 60% first-pass (6 of 10 done tickets)");
+    // First-pass by arm: a rate row each, the count beside the rate, a whisker (F-C3).
+    const fig = (arm: string) =>
+      panel.querySelector(`.meter-row[data-arm="${arm}"] .mr-fig`)?.textContent;
+    expect(fig("index_items")).toBe("75% · 3 of 4");
+    expect(fig("nothing_found")).toBe("none yet");
+    expect(fig("no_record")).toBe("60% · 6 of 10");
+    expect(panel.querySelector('.meter-row[data-arm="index_items"] .mr-whisker')).not.toBeNull();
+    expect(panel.querySelector('.meter-row[data-arm="nothing_found"] .mr-fill')).toBeNull();
     expect(t).not.toMatch(/recommend|score|confiden/i);
   });
 

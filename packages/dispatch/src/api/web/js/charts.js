@@ -327,9 +327,10 @@ function barChart({ rows = [], unit = "count", label, current, width = 720, heig
   const top = Math.max(step, Math.ceil(maxU / step - 1e-9) * step);
   const W = width;
   const Hh = height;
+  // pt leaves room above the tallest bar for the shared tooltip, inside the chart's box.
   const pl = 44,
     pr = 8,
-    pt = 10,
+    pt = 40,
     pb = 26;
   const base = Hh - pb;
   const plotH = base - pt;
@@ -388,9 +389,11 @@ function barChart({ rows = [], unit = "count", label, current, width = 720, heig
       role: "img",
       "aria-label": `${r.label ?? ""}: ${said}`,
     });
+    const topY = v != null && v > 0 ? Y(v * ax.scale) : base;
     const show = () => {
       tip.replaceChildren(el("strong", {}, said), el("span", {}, String(r.label ?? "")));
       tip.style.left = `${((cx / W) * 100).toFixed(2)}%`;
+      tip.style.top = `${((topY / Hh) * 100).toFixed(2)}%`;
       tip.hidden = false;
     };
     const hide = () => {
@@ -430,8 +433,8 @@ function barChart({ rows = [], unit = "count", label, current, width = 720, heig
     },
     kids,
   );
-  svg.style.maxWidth = `${W}px`;
-  return el("div", { class: "bar-chart" }, [svg, tip]);
+  // The wrapper, not just the SVG, stops at W px, so the tooltip's % matches the bars.
+  return el("div", { class: "bar-chart", style: { maxWidth: `${W}px` } }, [svg, tip]);
 }
 
 // --- chartFigure: the container every chart mounts in ---------------------------

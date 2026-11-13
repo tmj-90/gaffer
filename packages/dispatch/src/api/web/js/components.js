@@ -127,7 +127,7 @@ function splitPct(unit) {
  * null value is a dash with its `reason` (a title and a visible short line), never a
  * zero. "%" is part of the value ("70%", no gap). `series` is either {t, v} points
  * (the sparkline: an even time grid, >= 4 points) or, for older callers, a plain
- * array (the old spark). No delta chips: a "▲100%" the data cannot support is not
+ * array (the old spark); `seriesFmt` formats its readout. No delta chips: a "▲100%" the data cannot support is not
  * shown. `flip` keys a digit flip on first paint/change.
  */
 function statCell({
@@ -144,6 +144,7 @@ function statCell({
   cls,
   size,
   reason,
+  seriesFmt,
 }) {
   const missing = value === null || value === undefined;
   const why = reason || "no figure yet";
@@ -154,7 +155,7 @@ function statCell({
     .join(" ");
   const spark =
     Array.isArray(series) && series.length && series[0] && typeof series[0] === "object"
-      ? sparkline(series, { label })
+      ? sparkline(series, { label, fmt: seriesFmt })
       : series && series.length > 1
         ? el("div", { class: "kpi-spark", html: svgSpark(series) })
         : null;
@@ -505,7 +506,7 @@ function dataTable({
     const align = col.align || (col.numeric ? "right" : null);
     const attrs = {
       class:
-        [col.numeric ? "num" : null, align ? `al-${align}` : null].filter(Boolean).join(" ") ||
+        [col.numeric ? "dt-num" : null, align ? `al-${align}` : null].filter(Boolean).join(" ") ||
         null,
       "data-label": stackOnPhone ? col.label : null,
     };
@@ -564,7 +565,7 @@ function dataTable({
             {
               scope: "col",
               class:
-                [c.numeric ? "num" : null, align ? `al-${align}` : null]
+                [c.numeric ? "dt-num" : null, align ? `al-${align}` : null]
                   .filter(Boolean)
                   .join(" ") || null,
             },

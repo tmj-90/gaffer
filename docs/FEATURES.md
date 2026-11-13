@@ -495,7 +495,10 @@ the one its file name names. It is built at onboarding and refreshed after every
 re-reading only changed files, with generated and vendored paths skipped and the walk
 capped (a capped build says its counts are partial). When a ticket names a path or a
 symbol, the delivery's context lists up to five callers and tests of each, with the
-reason. Health shows each repo's index coverage. `GAFFER_CODE_INDEX=0` turns it off.
+reason. Health shows each repo's index coverage as a table (files, test files, exported
+symbols, imports resolved and unresolved, test links, modules with tests, when built and
+at which commit), and how often the Review's callers row listed callers as a share with
+its count. `GAFFER_CODE_INDEX=0` turns it off.
 
 ### The pre-work scout
 

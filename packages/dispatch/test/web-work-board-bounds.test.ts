@@ -152,7 +152,7 @@ describe("web: Work board counts and bounds", () => {
     expect(lane.querySelectorAll(".board-card").length).toBe(25);
     expect(lane.querySelector(".board-col-count")?.textContent).toBe("200");
     // The newest first: #1199 is on the board, #1000 is not.
-    const nums = Array.from(lane.querySelectorAll(".board-card .num")).map((n) => n.textContent);
+    const nums = Array.from(lane.querySelectorAll(".board-card .tref")).map((n) => n.textContent);
     expect(nums[0]).toBe("#1199");
     expect(nums).not.toContain("#1000");
     // The rest is one link away in the List view, filtered to Done.

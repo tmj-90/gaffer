@@ -1765,7 +1765,7 @@ try {
       const laneCount = (col) =>
         page.textContent(`.board-col[data-column="${col}"] .board-col-count`);
       const moveTo = async (lane) => {
-        const cardLoc = page.locator(`.board-card:has(.num:text-is("${num}"))`).first();
+        const cardLoc = page.locator(`.board-card:has(.tref:text-is("${num}"))`).first();
         await cardLoc.locator("button.card-move-btn").click();
         await page.locator(".movemenu-item", { hasText: lane }).click();
         await sleep(2500);

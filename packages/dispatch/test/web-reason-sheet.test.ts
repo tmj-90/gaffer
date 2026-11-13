@@ -137,6 +137,12 @@ describe("web: reasons are asked in the club's sheet, not window.prompt", () => 
     trigger!.click();
     expect(openSheet()?.querySelector("#sheet-title")?.textContent).toBe("Won't do #6");
     expect(openSheet()?.querySelector(".rs-ticket")?.textContent).toContain(T.title);
+    // The shared ticketHead: the title first, then the number (ticketRef) and the status.
+    const head = openSheet()!.querySelector(".rs-ticket")!;
+    expect(head.classList.contains("ticket-head")).toBe(true);
+    expect(head.firstElementChild?.className).toBe("th-title");
+    expect(head.querySelector(".th-meta .tref")?.textContent).toBe("#6");
+    expect(head.querySelector(".th-meta .badge.st")?.textContent).toBe("Blocked");
     const submit = openSheet()!.querySelector<HTMLButtonElement>(".reject-submit")!;
     expect(submit.textContent).toBe("Won't do");
     expect(submit.getAttribute("aria-disabled"), "held until there is a reason").toBe("true");

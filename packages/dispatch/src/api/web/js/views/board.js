@@ -11,7 +11,16 @@ import { agentChip, badge, glyph, icon, kitShirt, repoTag, ycard } from "../icon
 import { announce } from "../live.js";
 import { navigate, router } from "../router.js";
 import { wontDoSheet } from "../sheets.js";
-import { hasTicketAction, pipelineDots, riskBadge, statusBadge, statusLabel } from "../status.js";
+import {
+  hasTicketAction,
+  pipelineDots,
+  priorityTag,
+  riskBadge,
+  statusBadge,
+  statusLabel,
+  ticketRef,
+  ticketRefText,
+} from "../status.js";
 import { guard, toast } from "../toast.js";
 import { progPage } from "./programme.js";
 import {
@@ -548,39 +557,28 @@ function humanLaneAction(card) {
   return null;
 }
 
-/** A status word with its glyph, at card size (for a card whose status is not its lane's). */
-function cardStatus(status, landing) {
-  return el(
-    "span",
-    { class: `card-status st-${status}`, title: landing && landing.detail ? landing.detail : null },
-    [glyph(status, 14), el("span", {}, statusLabel(status, landing))],
-  );
-}
-
 /**
  * A board card: an <article> whose title is the link (stretched over the card).
  * `laneKey` is the lane it sits in, so a refining, claimed or paused card says so.
  */
 function renderBoardCard(card, laneKey, needs) {
-  const numText = card.number != null ? `#${card.number}` : card.id.slice(0, 8);
+  const numText = ticketRefText(card);
   const need = needsLabel(card, needs);
   const href = card.status === "in_review" ? `#/review/${card.id}` : `#/ticket/${card.id}`;
 
+  // The number is the shared ticketRef at card size, quieter than the title (A-21); not
+  // a link of its own: the card's title is its one link, stretched over the card.
   const top = el("div", { class: "card-top" }, [
-    el("span", { class: "num" }, numText),
+    ticketRef(card, { size: "s", link: false }),
     // An approved or held card always says where its landing is (the lane cannot).
     card.landing_state
-      ? cardStatus(card.status, card.landing_state)
+      ? statusBadge(card.status, card.landing_state, { size: "s" })
       : laneKey && card.status !== laneKey && card.status !== "done"
-        ? cardStatus(card.status)
+        ? statusBadge(card.status, null, { size: "s" })
         : null,
     el("span", { class: "card-tags" }, [
       card.blockingCount ? badge(`${card.blockingCount} blocking`, "status-blocked") : null,
-      el(
-        "span",
-        { class: "card-pri tabnum", title: `Priority ${card.priority}` },
-        `P${card.priority}`,
-      ),
+      priorityTag(card.priority),
       riskBadge(card.risk_level),
     ]),
   ]);

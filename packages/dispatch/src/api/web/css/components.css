@@ -1952,7 +1952,7 @@
   }
   .mt-top {
     display: flex;
-    justify-content: space-between;
+    justify-content: flex-start;
     align-items: baseline;
     gap: 4px 10px;
     flex-wrap: wrap;
@@ -2204,7 +2204,6 @@
     stroke-width: 2;
   }
   .bc-tip {
-    top: 0;
     display: grid;
     gap: 1px;
     transform: translate(-50%, calc(-100% - 6px));
@@ -2214,6 +2213,7 @@
   }
   .chart-figure {
     display: grid;
+    align-content: start;
     gap: 8px;
     min-width: 0;
     margin: 0;
@@ -2419,13 +2419,14 @@
     white-space: nowrap;
     vertical-align: bottom;
   }
-  .data-table .num {
+  /* Not .num: that global class is the 20px display numeral. */
+  .data-table .dt-num {
     text-align: right;
     font-size: var(--t16);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
-  .data-table thead .num {
+  .data-table thead .dt-num {
     font-size: var(--t12);
   }
   .data-table .al-center {
@@ -2439,7 +2440,11 @@
     background: var(--paper);
   }
   .data-table tbody th[scope="row"] {
-    font-weight: 700;
+    font: 700 var(--t14) / 1.4 var(--f-text);
+    text-transform: none;
+    letter-spacing: 0;
+    color: var(--ink);
+    white-space: nowrap;
   }
   .data-table .dt-group th {
     padding-top: 14px;

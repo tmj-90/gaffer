@@ -3,7 +3,16 @@
 
 import { api } from "../api.js";
 import { svgSpark } from "../charts.js";
-import { emptyState, kpiCard, panelHead, viewHead } from "../components.js";
+import {
+  dataTable,
+  emptyState,
+  kpiCard,
+  measureTile,
+  meterRow,
+  panelHead,
+  segBar,
+  viewHead,
+} from "../components.js";
 import { el } from "../dom.js";
 import { fmtDuration, fmtTime, money, plural } from "../format.js";
 import { icon } from "../icons.js";
@@ -224,94 +233,160 @@ function laneValueCard(health) {
 }
 
 /**
- * CODE INDEX (delta gap 1): each repo's index coverage (files, exported symbols, imports
- * resolved, test links, when built and at which commit) and how often the Review's
- * callers row listed callers. Counts as served; null when the server sends neither.
+ * CODE INDEX (delta gap 1): each repo's index coverage as a table (files, exported
+ * symbols, imports resolved, test links, when built and at which commit) and, as a
+ * measure tile, how often the Review's callers row listed callers. Counts as served;
+ * null when the server sends neither.
  */
 function codeIndexCard(health) {
   const ic = health.impact_callers || null;
   const ci = health.code_index || null;
   if (!ic && !ci) return null;
   const repos = ci && ci.available && Array.isArray(ci.repos) ? ci.repos : [];
-  const repoLine = (r) => {
+  const anyCaps = repos.some((r) => r.stats && r.stats.capsHit && r.stats.capsHit.length);
+  const columns = [
+    { key: "repo", label: "Repo" },
+    { key: "files", label: "Files", numeric: true },
+    { key: "testFiles", label: "Test files", numeric: true },
+    { key: "exportedSymbols", label: "Exported symbols", numeric: true },
+    { key: "refs", label: "Imports resolved", numeric: true },
+    { key: "unresolved", label: "Unresolved", numeric: true },
+    { key: "testLinks", label: "Test links", numeric: true },
+    { key: "modulesWithTests", label: "Modules with tests", numeric: true },
+    {
+      key: "builtAt",
+      label: "Built",
+      format: (v) => (v ? fmtTime(v) : null),
+      missing: "build time not recorded",
+    },
+    {
+      key: "commit",
+      label: "Commit",
+      format: (v) => (v ? el("code", { class: "mono" }, String(v).slice(0, 8)) : null),
+      missing: "commit not recorded",
+    },
+    ...(anyCaps
+      ? [
+          {
+            key: "capsHit",
+            label: "Cap hit",
+            format: (v) => (v && v.length ? v.join(", ") : "none"),
+          },
+        ]
+      : []),
+  ];
+  const rows = repos.map((r) => {
     const st = r.stats || {};
-    return el("li", { dataset: { repo: r.repo } }, [
-      el("strong", {}, r.repo),
-      el(
-        "span",
-        {},
-        ` ${plural(st.files || 0, "file")} (${st.testFiles || 0} tests) · ${plural(st.exportedSymbols || 0, "exported symbol")} · ${st.refs || 0} imports resolved, ${st.unresolved || 0} unresolved · ${plural(st.testLinks || 0, "test link")} over ${plural(st.modulesWithTests || 0, "module")}`,
-      ),
-      el(
-        "small",
-        { class: "dim" },
-        ` built ${r.builtAt ? fmtTime(r.builtAt) : "?"} at ${r.commit ? String(r.commit).slice(0, 8) : "an unknown commit"}${st.capsHit && st.capsHit.length ? ` · cap hit: ${st.capsHit.join(", ")}` : ""}`,
-      ),
-    ]);
-  };
-  const callersLine = !ic
-    ? "not served by this server"
+    return {
+      repo: r.repo,
+      files: st.files ?? null,
+      testFiles: st.testFiles ?? null,
+      exportedSymbols: st.exportedSymbols ?? null,
+      refs: st.refs ?? null,
+      unresolved: st.unresolved ?? null,
+      testLinks: st.testLinks ?? null,
+      modulesWithTests: st.modulesWithTests ?? null,
+      builtAt: r.builtAt || null,
+      commit: r.commit || null,
+      capsHit: st.capsHit || [],
+    };
+  });
+  const callers = !ic
+    ? measureTile({
+        label: "Callers listed on Review",
+        value: null,
+        note: "Not served by this server.",
+      })
     : ic.known
-      ? `The Review's callers row listed callers in ${ic.listed} of ${plural(ic.known, "review open")} (${ic.none_changed} had no changed symbol to list, ${ic.not_analysed} were not analysed)${ic.opens > ic.known ? `; ${ic.opens - ic.known} earlier opens did not record it` : ""}.`
-      : "No review open has recorded the callers row yet.";
+      ? measureTile({
+          label: "Callers listed on Review",
+          k: ic.listed,
+          n: ic.known,
+          nLabel: "review opens",
+          period: "all time",
+          note: `${ic.none_changed} had no changed symbol to list, ${ic.not_analysed} were not analysed${ic.opens > ic.known ? `; ${ic.opens - ic.known} earlier opens did not record it` : ""}.`,
+          definition:
+            "Of the review opens that recorded it, how many showed callers of a changed symbol in the Review's callers row (found by import text, not a full call graph).",
+        })
+      : measureTile({
+          label: "Callers listed on Review",
+          value: null,
+          note: "No review open has recorded the callers row yet.",
+        });
   return el("section", { class: "card panel code-index-panel", "aria-label": "Code index" }, [
     panelHead("Code index", "files, symbols, imports and tests, by import text", null, {
-      kit: "ink",
+      level: 2,
     }),
-    el("p", { class: "code-index-callers" }, callersLine),
+    callers,
     repos.length
-      ? el("ul", { class: "lane-value-list code-index-list" }, repos.map(repoLine))
-      : el(
-          "p",
-          { class: "dim" },
+      ? dataTable({
+          columns,
+          rows,
+          caption: "Index coverage by repository",
+          cls: "code-index-table",
+          // Ten columns: on a phone each repo is a labelled card, not a sideways scroll.
+          stackOnPhone: true,
+        })
+      : emptyState(
           ci && !ci.available
             ? `Index coverage: ${ci.reason || "Memory is not configured."}`
-            : "No repo has a code index yet (it is built at onboard and refreshed after each merge).",
+            : "No repo has a code index yet.",
+          ci && !ci.available ? null : "It is built at onboard and refreshed after each merge.",
+          null,
+          null,
+          { inline: true },
         ),
   ]);
 }
 
 /**
- * PRE-WORK SCOUT (delta gap 3): what the runner's scout gave the delivery attempts (items
- * from the code index vs named only, risk raised, model scout runs and their cost) and
- * first-pass acceptance split by what it found. Counts as served, no recommendation;
- * null when the server sends none.
+ * PRE-WORK SCOUT (delta gap 3): what the runner's scout gave the delivery attempts (a thin
+ * segmented bar: items from the code index, named only, nothing found; risk raised,
+ * model scout runs and their cost) and first-pass acceptance split by what it found (a
+ * rate row per arm with its count and a Wilson whisker). Counts as served, no
+ * recommendation; null when the server sends none.
  */
 function scoutCard(health) {
   const sc = health.scout || null;
   if (!sc) return null;
-  const pct = (v) => (v === null || v === undefined ? "n/a" : `${v}%`);
   const fp = sc.first_pass || {};
   const arm = (k, label) => {
-    const c = fp[k] || { done: 0, first_pass: 0, rate_pct: null };
-    return el("li", { dataset: { arm: k } }, [
-      el("strong", {}, label),
-      el(
-        "span",
-        {},
-        ` ${pct(c.rate_pct)} first-pass (${c.first_pass} of ${plural(c.done, "done ticket")})`,
-      ),
-    ]);
+    const c = fp[k] || { done: 0, first_pass: 0 };
+    const row = meterRow({ name: label, k: c.first_pass, n: c.done, whisker: true });
+    row.dataset.arm = k;
+    return row;
   };
   const ms = sc.model_scout || { runs: 0 };
-  const usd = "$" + Number(ms.cost_usd || 0).toFixed(4);
   const head = sc.attempts
-    ? `${plural(sc.attempts, "delivery attempt")} scouted on ${plural(sc.tickets, "ticket")}: the code index added files in ${sc.with_index_items}, named files and stack frames only in ${sc.named_only}, nothing found in ${sc.empty}. The risk was raised in ${sc.risk_raised}.`
+    ? `${plural(sc.attempts, "delivery attempt")} scouted on ${plural(sc.tickets, "ticket")}. The risk was raised in ${sc.risk_raised}.`
     : "No delivery has been scouted yet (the runner scouts before each delivery).";
   const model = ms.runs
-    ? `Model scout: ${plural(ms.runs, "run")}, ${plural(ms.kept_files, "file")} kept, ${ms.dropped} dropped as not in the checkout, ${usd}${ms.cost_unknown ? ` (${ms.cost_unknown} of unknown cost)` : ""}.`
+    ? `Model scout: ${plural(ms.runs, "run")}, ${plural(ms.kept_files, "file")} kept, ${ms.dropped} dropped as not in the checkout, ${money(Number(ms.cost_usd || 0))}${ms.cost_unknown ? ` (${ms.cost_unknown} of unknown cost)` : ""}.`
     : "Model scout: no run (the read-only model scout is off by default).";
   return el("section", { class: "card panel scout-panel", "aria-label": "Pre-work scout" }, [
     panelHead("Pre-work scout", "what each delivery started with, and how it went", null, {
       kit: "ink",
     }),
     el("p", { class: "scout-coverage" }, head),
+    sc.attempts
+      ? segBar(
+          [
+            { label: "Index added files", value: sc.with_index_items },
+            { label: "Named files and stack frames only", value: sc.named_only },
+            { label: "Nothing found", value: sc.empty },
+          ],
+          { label: "What each scouted attempt started with" },
+        )
+      : null,
     el("p", { class: "scout-model dim" }, model),
-    el("ul", { class: "lane-value-list scout-first-pass" }, [
-      arm("index_items", "Index added files:"),
-      arm("named_only", "Named only:"),
-      arm("nothing_found", "Nothing found:"),
-      arm("no_record", "Not scouted:"),
+    panelHead("First-pass acceptance, by what the scout found", "done tickets", null, {
+      level: 3,
+    }),
+    el("div", { class: "meter-list scout-first-pass" }, [
+      arm("index_items", "Index added files"),
+      arm("named_only", "Named only"),
+      arm("nothing_found", "Nothing found"),
+      arm("no_record", "Not scouted"),
     ]),
     el("p", { class: "lane-value-foot" }, (sc.limits || []).join("; ")),
   ]);

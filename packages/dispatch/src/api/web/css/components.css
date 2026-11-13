@@ -1721,12 +1721,14 @@
     color: var(--ink-2);
   }
   /* The ticket a sheet acts on: the shared ticketHead (title, then number and status)
-     in a quiet frame (no side tab). */
+     in a quiet frame (no side tab). On --paper, not --paper-2: the 14px ticketRef is
+     claret-ink, which the club kit makes readable (4.5:1) on --paper only; on the
+     darker wash a dark-mode kit ink read 4.48:1. */
   .rs-ticket {
     padding: 10px 12px;
     border: var(--frame);
     border-radius: var(--r);
-    background: var(--paper-2);
+    background: var(--paper);
   }
   .reject-chips {
     display: flex;

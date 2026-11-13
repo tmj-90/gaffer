@@ -85,3 +85,12 @@ describe("Work board card", () => {
     expect(hit, "a rule keeps a needs card's status 14px clear of the yellow card").toBeTruthy();
   });
 });
+
+describe("the reason sheet's ticket", () => {
+  it("sits on --paper, the ground the kit's claret-ink is made readable on", () => {
+    // kit.js steps --claret-ink to 4.5:1 against --paper; the 14px ticketRef on the
+    // --paper-2 wash read 4.48:1 in dark mode with the demo club's kit (axe, serious).
+    const hit = rules("components.css").filter((r) => r.selectors.includes(".rs-ticket"));
+    expect(hit.map((r) => r.decls.background).filter(Boolean)).toEqual(["var(--paper)"]);
+  });
+});

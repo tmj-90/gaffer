@@ -135,7 +135,7 @@ describe("web: club colours and the referee's cards", () => {
       v.startsWith("#")
         ? [1, 3, 5].map((i) => parseInt(v.slice(i, i + 2), 16))
         : (/rgb\((\d+) (\d+) (\d+)\)/.exec(v) ?? []).slice(1).map(Number);
-    const sides = (v: string | null) => {
+    const sides = (v: string | null | undefined) => {
       const m = /^light-dark\((.+), (rgb\(.+\)|#[0-9a-f]{6})\)$/i.exec(v ?? "");
       if (!m) throw new Error(`not a light-dark pair: ${v}`);
       return [rgb(m[1]!), rgb(m[2]!)];

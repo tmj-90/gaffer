@@ -148,8 +148,9 @@ function statCell({
 }) {
   const missing = value === null || value === undefined;
   const why = reason || "no figure yet";
-  // A dash stays a dash: a "%" after it would claim a unit for a figure that is not there.
-  const u = value === MISSING ? { pctSign: false, unit } : splitPct(unit);
+  // A dash stays a dash: a "%" after it would claim a unit for a figure that is not
+  // there, so a caller's own MISSING drops the "%" (a word unit like "not wired" stays).
+  const u = value === MISSING ? { pctSign: false, unit: splitPct(unit).unit } : splitPct(unit);
   const classes = ["kpi", size ? `kpi--${size}` : null, missing ? "is-missing" : null, cls]
     .filter(Boolean)
     .join(" ");
@@ -328,7 +329,14 @@ function measureTile({
         : null,
       whisker,
       spark ? el("div", { class: "mt-spark" }, spark) : null,
-      note ? el("p", { class: "mt-note" }, note) : null,
+      // A missing figure always says why in visible text, not only in a title.
+      note || missing
+        ? el(
+            "p",
+            { class: "mt-note" },
+            note || (isRate && n === 0 ? "No sample yet." : "No figure yet."),
+          )
+        : null,
       definition
         ? el("details", { class: "mt-def" }, [
             el("summary", {}, "What this counts"),
@@ -358,7 +366,7 @@ function meter({ value, limit, max, warnAt = 0.9, label, fmt = String, ariaLabel
   const w = (x) => `${((x / scale) * 100).toFixed(2).replace(/\.00$/, "")}%`;
   const said =
     ariaLabel ||
-    `${label ? `${label}: ` : ""}${fmt(v)}${lim != null ? ` of ${fmt(lim)}` : typeof max === "number" ? ` of ${fmt(max)}` : ""}${
+    `${label ? `${label}: ` : ""}${fmt(v)}${lim != null ? ` of ${fmt(lim)}` : typeof max === "number" && max > 0 ? ` of ${fmt(max)}` : ""}${
       over
         ? `, over the limit by ${fmt(Math.round((v - lim) * 100) / 100)}`
         : warn

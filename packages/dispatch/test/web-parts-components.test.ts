@@ -76,6 +76,17 @@ describe("statCell: sizes, proportional figures, a missing value", () => {
     expect(c.querySelector(".kpi-reason")!.textContent).toBe("nothing measured yet");
   });
 
+  it("a caller's own dash drops a '%' unit, never '\u2014%' (review)", () => {
+    const c = C.statCell({ label: "Rework cost", value: "\u2014", unit: "%" });
+    expect(c.textContent).toBe("Rework cost\u2014");
+    const share = C.statCell({ label: "Spend", value: "\u2014", unit: "% of spend" });
+    expect(share.querySelector(".kpi-val")!.textContent).toBe("\u2014");
+    expect(share.querySelector(".kpi-unit")!.textContent).toBe("of spend");
+    // A word unit is the reason, and stays.
+    const wired = C.statCell({ label: "Skill hit-rate", value: "\u2014", unit: "not wired" });
+    expect(wired.querySelector(".kpi-unit")!.textContent).toBe("not wired");
+  });
+
   it("kpiCard is a deprecated wrapper over statCell", () => {
     const c = C.kpiCard({ label: "Cost", value: "$1.00", tone: "bad", delta: 4 });
     expect(c.classList.contains("kpi")).toBe(true);
@@ -155,6 +166,14 @@ describe("measureTile: the measure spec", () => {
     expect(t.querySelector(".mt-val")!.textContent).toBe("\u2014");
     expect(t.textContent).toContain("nothing accepted yet");
   });
+
+  it("null value with no note still says why in visible text (review)", () => {
+    const none = C.measureTile({ label: "First-pass", k: 0, n: 0 });
+    expect(none.querySelector(".mt-val")!.textContent).toBe("\u2014");
+    expect(none.querySelector(".mt-note")!.textContent).toBe("No sample yet.");
+    const bare = C.measureTile({ label: "Review time", value: null });
+    expect(bare.querySelector(".mt-note")!.textContent).toBe("No figure yet.");
+  });
 });
 
 describe("meter, meterRow, segBar; band is a wrapper", () => {
@@ -177,6 +196,12 @@ describe("meter, meterRow, segBar; band is a wrapper", () => {
     const warn = C.meter({ value: 23, limit: 25 });
     expect(warn.classList.contains("is-warn")).toBe(true);
     expect(warn.getAttribute("aria-label")).toMatch(/near the limit/);
+  });
+
+  it("meter with max 0 never says 'of 0' (review)", () => {
+    expect(C.meter({ value: 0, max: 0, label: "Queue" }).getAttribute("aria-label")).toBe(
+      "Queue: 0",
+    );
   });
 
   it("band(value, max, label) keeps its DOM and label", () => {

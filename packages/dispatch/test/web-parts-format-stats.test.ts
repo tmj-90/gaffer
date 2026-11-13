@@ -60,6 +60,17 @@ describe("format: one duration, one money, one percent", () => {
     expect(fmt.pct(Number.NaN)).toBe("\u2014");
     expect(fmt.pct(2.5)).not.toMatch(/\s%/);
   });
+
+  it("pct: a figure short of 100 never reads as a perfect 100% (review)", () => {
+    // 199 of 200 is 99.5%: whole-number rounding said "100%", a claim of no failures.
+    expect(fmt.pct(99.5)).toBe(">99%");
+    expect(fmt.pct(99.96)).toBe(">99%");
+    expect(fmt.pct(99.4)).toBe("99%");
+    expect(fmt.pct(100)).toBe("100%");
+    expect(fmt.pct(9.95)).toBe("9.9%");
+    expect(fmt.pct(0.0004)).toBe("<0.1%");
+    expect(fmt.pct("50" as unknown as number)).toBe("\u2014");
+  });
 });
 
 describe("stats: wilson and delta (pure)", () => {

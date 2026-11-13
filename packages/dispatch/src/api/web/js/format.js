@@ -70,7 +70,8 @@ const MISSING = "\u2014";
 /**
  * A percentage, one format everywhere: the "%" is part of the value ("2.5%", never
  * "2.5 %"); whole numbers at 10 and above ("96%"), one decimal below ("2.5%", "5%"
- * when the decimal is 0), "<0.1%" for a sliver above zero. `decimals` fixes the
+ * when the decimal is 0), "<0.1%" for a sliver above zero and ">99%" for a figure
+ * just short of 100 (199 of 200 never reads as a perfect "100%"). `decimals` fixes the
  * places instead (a column that must align). No figure reads as MISSING, never "0%".
  */
 function pct(v, { decimals } = {}) {
@@ -78,6 +79,7 @@ function pct(v, { decimals } = {}) {
   if (typeof decimals === "number") return `${v.toFixed(decimals)}%`;
   const a = Math.abs(v);
   if (a > 0 && a < 0.05) return `${v < 0 ? ">-" : "<"}0.1%`;
+  if (v >= 99.5 && v < 100) return ">99%";
   const one = Number(v.toFixed(1));
   if (Math.abs(one) >= 10) return `${Math.round(v)}%`;
   return `${String(one)}%`;

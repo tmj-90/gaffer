@@ -230,6 +230,16 @@ describe("web: chart marks have their own tokens", () => {
 });
 
 describe("web: dark mode is chosen, not flipped", () => {
+  it("the house claret as text reads at 4.5:1 on paper, paper-2 and the sky wash in each kit", () => {
+    // The club's own kit is guarded in kit.js (web-kit-colours); this holds the house values.
+    const ink = pair("--claret-ink");
+    for (const i of [0, 1])
+      for (const ground of ["--paper", "--paper-2", "--sky-wash"])
+        expect(
+          contrast(ink[i]!, pair(ground)[i]!),
+          `${ground} ${i ? "dark" : "light"}`,
+        ).toBeGreaterThanOrEqual(4.5);
+  });
   it("a sky block has a deep floodlit ground with its own text", () => {
     const [light, dark] = pair("--sky-block");
     expect(light.toLowerCase()).toBe(token("--sky").toLowerCase());

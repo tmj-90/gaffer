@@ -184,4 +184,66 @@ describe("web: club colours and the referee's cards", () => {
     kit.applyClub({ kit_primary: null, kit_secondary: null });
     expect(meta.getAttribute("content")).toBe(HOUSE_CLARET);
   });
+
+  it("claret as text reads at 4.5:1 on paper, paper-2 and the sky wash, in both kits, for any first colour", () => {
+    // Ticket numbers and ranks wear --claret-ink on zebra rows (--paper-2) and on the
+    // selected row's --sky-wash, not only on --paper: a navy kit's floodlit step read
+    // 4.97 on paper but 4.48 on paper-2 (axe serious at 14px).
+    const rgb = (v: string) => (/rgb\((\d+) (\d+) (\d+)\)/.exec(v) ?? []).slice(1).map(Number);
+    const sides = (v: string | null | undefined) => {
+      const m = /^light-dark\((rgb\([^)]+\)), (rgb\([^)]+\))\)$/.exec(v ?? "");
+      if (!m) throw new Error(`not a light-dark pair: ${v}`);
+      return [rgb(m[1]!), rgb(m[2]!)];
+    };
+    const lum = (c: number[]) => {
+      const f = (x: number) => {
+        const v = x / 255;
+        return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+      };
+      return 0.2126 * f(c[0]!) + 0.7152 * f(c[1]!) + 0.0722 * f(c[2]!);
+    };
+    const ratio = (a: number[], b: number[]) => {
+      const [x, y] = [lum(a), lum(b)];
+      return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+    };
+    const mix = (a: number[], b: number[], t: number) =>
+      a.map((v, i) => Math.round(v + (b[i]! - v) * t));
+    const hx = (h: string) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+    const PAPER = [hx("#ffffff"), hx("#1f2430")];
+    const PAPER_2 = [hx("#f6f8f3"), hx("#262c39")];
+    const firsts = ["#1f4e79", "#1d4ed8", "#7a1631", "#000000", "#2a9d8f", "#8a5cf5", "#be185d"];
+    for (let r = 0; r < 256; r += 51)
+      for (let g = 0; g < 256; g += 51)
+        for (let b = 0; b < 256; b += 51)
+          firsts.push(`#${[r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("")}`);
+    const short: string[] = [];
+    for (const second of [null, "#ffffff", "#95cdeb", "#0ea5e9", "#1d4ed8"]) {
+      const S = second ? hx(second) : null;
+      const wash = [
+        S ? mix(hx("#ffffff"), S, 0.2) : hx("#ddeff9"),
+        S ? mix(hx("#1f2430"), S, 0.1) : hx("#1e3442"),
+      ];
+      for (const first of firsts) {
+        if (kit.cardClash(first)) continue;
+        const ink = sides(kit.kitTokens(first, second)["--claret-ink"]);
+        for (const i of [0, 1])
+          for (const [name, ground] of [
+            ["paper", PAPER[i]!],
+            ["paper-2", PAPER_2[i]!],
+            ["sky wash", wash[i]!],
+          ] as const) {
+            const c = ratio(ink[i]!, ground);
+            if (c < 4.5)
+              short.push(`${first}/${second} ${i ? "dark" : "light"} ${name} ${c.toFixed(2)}`);
+          }
+      }
+    }
+    expect(short).toEqual([]);
+  });
+
+  it("a second colour is text on the scoreboard only where it reads on every board ground", () => {
+    // #3b82f6 reads 4.6:1 on --board but 4.4:1 on --board-2: the board's quiet ink instead.
+    expect(kit.kitTokens(SAFE_BLUE, "#3b82f6")["--sky-on-board"]).toBe("var(--board-ink-2)");
+    expect(kit.kitTokens(SAFE_BLUE, "#95cdeb")["--sky-on-board"]).toBe("var(--sky)");
+  });
 });

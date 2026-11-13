@@ -12,6 +12,14 @@ const RGB_WHITE = [255, 255, 255];
 const RGB_INK = [14, 23, 38]; // --ink / --counter-ink
 const RGB_PAPER_DARK = [31, 36, 48]; // --paper, floodlit
 const RGB_BOARD = [17, 19, 24]; // --board
+// Every ground kit text sits on (tokens.css): --paper and --paper-2 in each kit, and
+// the scoreboard's --board and --board-2 (the board is dark in both kits).
+const RGB_PAPER_2 = [246, 248, 243]; // --paper-2, day
+const RGB_PAPER_2_DARK = [38, 44, 57]; // --paper-2, floodlit
+const RGB_BOARDS = [RGB_BOARD, [14, 16, 21], [29, 32, 41], [26, 29, 37]];
+// The house --sky-wash (selected and hover rows), day and floodlit.
+const RGB_HOUSE_WASH = [221, 239, 249];
+const RGB_HOUSE_WASH_DARK = [30, 52, 66];
 const RGB_HOUSE_CLARET = [122, 22, 49];
 const RGB_HOUSE_SKY = [149, 205, 235];
 function hexRgb(hex) {
@@ -37,11 +45,12 @@ function contrastRatio(a, b) {
 }
 const mixRgb = (a, b, t) => a.map((v, i) => Math.round(v + (b[i] - v) * t));
 const rgbCss = (c) => `rgb(${c[0]} ${c[1]} ${c[2]})`;
-/** Move `c` towards `to` until it reads at `min`:1 on `bg`. */
+/** Move `c` towards `to` until it reads at `min`:1 on `bg` (one ground or several). */
 function readableOn(c, bg, to, min = 4.5) {
+  const grounds = Array.isArray(bg[0]) ? bg : [bg];
   for (let t = 0; t <= 1.0001; t += 0.05) {
     const m = mixRgb(c, to, t);
-    if (contrastRatio(m, bg) >= min) return m;
+    if (grounds.every((g) => contrastRatio(m, g) >= min)) return m;
   }
   return to;
 }
@@ -198,8 +207,13 @@ function kitTokens(primary, secondary) {
     out["--claret"] = primary;
     out["--on-claret"] = t.light ? null : "var(--counter-ink)";
     out["--on-claret-2"] = rgbCss(t.quiet);
-    out["--claret-ink"] =
-      `light-dark(${rgbCss(readableOn(P, RGB_WHITE, RGB_INK))}, ${rgbCss(readableOn(P, RGB_PAPER_DARK, RGB_WHITE))})`;
+    // Claret as text (ticket numbers, ranks) sits on paper, the zebra paper-2 and the
+    // selected-row sky wash: it reads at 4.5:1 on every one of them, in each kit.
+    const wash = S ? mixRgb(RGB_WHITE, S, 0.2) : RGB_HOUSE_WASH;
+    const washDark = S ? mixRgb(RGB_PAPER_DARK, S, 0.1) : RGB_HOUSE_WASH_DARK;
+    const day = readableOn(P, [RGB_WHITE, RGB_PAPER_2, wash], RGB_INK);
+    const night = readableOn(P, [RGB_PAPER_DARK, RGB_PAPER_2_DARK, washDark], RGB_WHITE);
+    out["--claret-ink"] = `light-dark(${rgbCss(day)}, ${rgbCss(night)})`;
   }
   if (S) {
     const t = inkOn(S);
@@ -208,7 +222,9 @@ function kitTokens(primary, secondary) {
     out["--on-sky-2"] = rgbCss(t.quiet);
     out["--sky-wash"] =
       `light-dark(color-mix(in srgb, ${secondary} 20%, var(--paper)), color-mix(in srgb, ${secondary} 10%, var(--paper)))`;
-    out["--sky-on-board"] = contrastRatio(S, RGB_BOARD) < 4.5 ? "var(--board-ink-2)" : "var(--sky)";
+    out["--sky-on-board"] = RGB_BOARDS.every((g) => contrastRatio(S, g) >= 4.5)
+      ? "var(--sky)"
+      : "var(--board-ink-2)";
     // A sky block is chosen for each kit: the club colour on the day kit, a deep
     // step of it under floodlights (as the house sky's block is), each with its text
     // at 4.5:1 or better.

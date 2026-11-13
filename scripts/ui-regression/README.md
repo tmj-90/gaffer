@@ -120,7 +120,9 @@ recorded (env, argv, prompt) in `$GAFFER_DATA/stub-calls.jsonl`.
 
 `run-suites.sh --serve` builds the world and leaves the dashboard up, printing the
 env to drive `node scripts/ui-regression/run-suites.mjs <suite>` against it while
-writing a suite.
+writing a suite. Export all of it, `XDG_CONFIG_HOME` included: each world keeps its factory
+signing key under `$OUT/config`, never in your `~/.config/gaffer/keys`, and a suite whose CLI
+calls read another key sees every approval as unsigned.
 
 ### Several worlds at once (`-j N`)
 

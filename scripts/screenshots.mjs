@@ -82,6 +82,10 @@ const die = (m) => {
 
 // ── the world ───────────────────────────────────────────────────────────────
 const ENV_FILE = `${OUT}/world.env`;
+// The world's signing key and its tamper anchor stay beside the world (setup.sh exports the same
+// XDG_CONFIG_HOME for the dashboard and its factory). This process's own CLI calls (the timeline
+// re-anchor among them) must read the same key, never one in the operator's HOME.
+process.env.XDG_CONFIG_HOME = `${OUT}/config`;
 // The agent CLI must be the harness's stub: CLAUDE_BIN and the first `claude` on PATH
 // both resolve to ${OUT}/bin/claude, or nothing starts.
 const STUB_GUARD = `[ "\${CLAUDE_BIN:-}" = "${OUT}/bin/claude" ] && [ "$(command -v claude)" = "${OUT}/bin/claude" ] \\

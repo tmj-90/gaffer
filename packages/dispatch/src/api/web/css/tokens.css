@@ -117,19 +117,20 @@
        drafts, ochre stores, orange assembly, violet-magenta inspection and
        loading, teal test rig, green despatch, kraft parcels. Status stays with
        the referee's cards (yellow needs you, red blocked/failed); robots wear the
-       club kit (--claret, --shirt-no) so a club's own colours reach them too.
+       club's own colours (--kit-1, --shirt-no), as shirts do.
        The six stage hues are validated in drawing order (drawing, stores,
        assembly, inspection, test rig, loading, despatch) with the dataviz palette
        validator on --fl-ground in both kits: every neighbour at least OKLab 15
        apart, CVD at least 8, inside the lightness band; contrast on the slab is
        relieved by the station names, which are always drawn. Inspection sits at
-       least OKLab 22 from the status red of its kit. */
+       least OKLab 22 from the status red of its kit, and assembly (with the
+       robots' hard hats) keeps an orange hue at least 20 degrees from it. */
     --fl-stage: light-dark(#d9e3e8, #121f33); /* behind the slab */
     --fl-shade: light-dark(#0b1a2b, #000814); /* mixed in for the darker faces */
     --fl-lift: #ffffff; /* mixed in for the lit faces */
     --fl-draft: light-dark(#7193e7, #6d8de0);
     --fl-ready: light-dark(#a37118, #b78814);
-    --fl-build: light-dark(#fb7a3c, #c84128);
+    --fl-build: light-dark(#fb7a3c, #ae4800);
     --fl-inspect: light-dark(#fc76cf, #ba2b92);
     --fl-test: light-dark(#1584a1, #12a1bf);
     --fl-done: light-dark(#3ba65d, #43a94f);

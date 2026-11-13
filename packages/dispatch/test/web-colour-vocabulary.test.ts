@@ -103,6 +103,15 @@ function dE(a: string, b: string, kind?: string): number {
 }
 const cvd = (a: string, b: string) => Math.min(dE(a, b, "protan"), dE(a, b, "deutan"));
 const okL = (h: string) => oklabLin(lin(h))[0]!;
+/** The OKLCH hue angle between two colours, in degrees (0 to 180). */
+function hueGap(a: string, b: string): number {
+  const hue = (h: string) => {
+    const [, x, y] = oklabLin(lin(h));
+    return (Math.atan2(y!, x!) * 180) / Math.PI;
+  };
+  const d = Math.abs(hue(a) - hue(b)) % 360;
+  return d > 180 ? 360 - d : d;
+}
 function contrast(a: string, b: string): number {
   const y = (h: string) => {
     const [r, g, bl] = lin(h);
@@ -288,6 +297,10 @@ describe("web: the factory floor's stations", () => {
       }
       // Inspection is clearly apart from the status red of its kit.
       expect(dE(pair("--fl-inspect")[i], pair("--red")[i])).toBeGreaterThanOrEqual(22);
+      // Assembly (and the robots' hard hats, which wear it) stays orange: its hue is
+      // at least 20 degrees from the red card's, so a hat beside the jam bay never
+      // reads as blocked. (A rust step at 11 degrees off the floodlit red did.)
+      expect(hueGap(pair("--fl-build")[i], pair("--red")[i])).toBeGreaterThanOrEqual(20);
     });
   }
 });

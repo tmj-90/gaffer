@@ -395,6 +395,15 @@ function barChart({ rows = [], unit = "count", label, current, width = 720, heig
       tip.style.left = `${((cx / W) * 100).toFixed(2)}%`;
       tip.style.top = `${((topY / Hh) * 100).toFixed(2)}%`;
       tip.hidden = false;
+      // Centred on its bar, but never past the chart's edges: the first and last bars'
+      // tips slid off the side (over the card's edge at phone width).
+      const boxW = tip.parentElement ? tip.parentElement.clientWidth : 0;
+      const tipW = tip.offsetWidth;
+      if (boxW > 0 && tipW > 0) {
+        const at = (cx / W) * boxW;
+        const half = Math.min(tipW, boxW) / 2;
+        tip.style.left = `${Math.min(Math.max(at, half), boxW - half).toFixed(1)}px`;
+      }
     };
     const hide = () => {
       tip.hidden = true;

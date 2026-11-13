@@ -122,6 +122,29 @@ describe("barChart", () => {
     c.remove();
   });
 
+  it("the shared tooltip stays inside the chart at its first and last bar (review)", () => {
+    // At 390px the last bar's tip, centred on the bar, ran past the chart onto the
+    // card's edge. jsdom has no layout: give the chart 330px and the tip 70px.
+    const c = K.barChart({ rows, unit: "ms", width: 360 });
+    document.body.appendChild(c);
+    const tip = c.querySelector(".bc-tip") as HTMLElement;
+    Object.defineProperty(c, "clientWidth", { configurable: true, value: 330 });
+    Object.defineProperty(tip, "offsetWidth", { configurable: true, value: 70 });
+    const hits = [...c.querySelectorAll(".bc-hit")] as SVGElement[];
+    for (const h of [hits[0]!, hits[3]!]) {
+      h.dispatchEvent(new FocusEvent("focus"));
+      const left = parseFloat(tip.style.left);
+      expect(tip.style.left).toMatch(/px$/);
+      expect(left - 35).toBeGreaterThanOrEqual(0);
+      expect(left + 35).toBeLessThanOrEqual(330);
+    }
+    // A middle bar stays centred on its bar.
+    hits[1]!.dispatchEvent(new FocusEvent("focus"));
+    const mid = ((44 + (360 - 52) / 4 + (360 - 52) / 8) / 360) * 330;
+    expect(parseFloat(tip.style.left)).toBeCloseTo(mid, 0);
+    c.remove();
+  });
+
   it("the current bar is accented", () => {
     const c = K.barChart({ rows, unit: "ms", current: 1 });
     expect(c.querySelector("path.bc-bar.is-current")).not.toBeNull();

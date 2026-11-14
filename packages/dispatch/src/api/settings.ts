@@ -942,11 +942,23 @@ function derivedOf(env: NodeJS.ProcessEnv): Map<string, SettingSource> {
  */
 /**
  * Keys read from the operator's real environment ONLY: settings.json never sets them,
- * in this process or in the runner (runner/factory.config.sh skips the same keys).
+ * in this process or in the runner (runner/config/01-settings.sh `_GAFFER_ENV_ONLY_KEYS`
+ * is the same list, pinned by test/settings.test.ts).
  * GAFFER_ALLOW_UNCAPPED lifts the live-run dollar-cap requirement, so a hand-edited
- * settings.json must not be able to switch it on (SECURITY.md).
+ * settings.json must not be able to switch it on (SECURITY.md). The worker provider
+ * knobs pick the program that runs every agent turn and the secrets it gets, and
+ * GAFFER_PRINCIPAL_TOKEN is a person's credential. None of them is in SETTING_DEFS
+ * either: the runner's settings loader takes only SETTING_DEFS keys minus these.
  */
-export const ENV_ONLY_KEYS: ReadonlySet<string> = new Set(["GAFFER_ALLOW_UNCAPPED"]);
+export const ENV_ONLY_KEYS: ReadonlySet<string> = new Set([
+  "GAFFER_ALLOW_UNCAPPED",
+  "GAFFER_WORKER_PROVIDER",
+  "GAFFER_WORKER_COMMAND",
+  "GAFFER_WORKER_COMMAND_ENV",
+  "GAFFER_WORKER_COMMAND_COST_USD",
+  "GAFFER_SANDBOX_WORKER_COMMAND",
+  "GAFFER_PRINCIPAL_TOKEN",
+]);
 
 export function applySettingsToEnv(
   env: NodeJS.ProcessEnv = process.env,

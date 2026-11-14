@@ -15,6 +15,7 @@ import {
   readSettingsFile,
   resolveSettingsPath,
   SETTING_DEFS,
+  ENV_ONLY_KEYS,
   writeSettings,
 } from "../src/api/settings.js";
 
@@ -438,6 +439,26 @@ describe("settings bootstrap: settings.json + GAFFER_MODE presets become env DEF
     ).toBeUndefined();
     expect(presetsFor("strict", { GAFFER_STRICT_REQUIRE: "0" })["STRICT_MODE"]).toBe("1");
     expect(presetsFor("lite", { GAFFER_STRICT_REQUIRE: "1" })["STRICT_MODE"]).toBe("1");
+  });
+
+  it("the runner's settings.json allowlist is exactly SETTING_DEFS minus ENV_ONLY_KEYS", () => {
+    // runner/config/01-settings.sh takes from settings.json only the keys this API can
+    // write; a key on one side and not the other is either a dashboard setting the runner
+    // silently ignores or a file key the runner obeys that no person can set through the
+    // API. Both lists are literal words between the quotes of their assignment.
+    const part = readFileSync(resolve(__dirname, "../../../runner/config/01-settings.sh"), "utf8");
+    const words = (name: string): string[] => {
+      const m = new RegExp(`^${name}="([^"]*)"`, "m").exec(part);
+      expect(m, `${name} assignment in 01-settings.sh`).not.toBeNull();
+      return m![1]!.split(/\s+/).filter((w) => w !== "");
+    };
+    const shellAllow = words("_GAFFER_SETTINGS_KEYS");
+    const shellEnvOnly = words("_GAFFER_ENV_ONLY_KEYS");
+    const apiKeys = SETTING_DEFS.map((d) => d.key).filter((k) => !ENV_ONLY_KEYS.has(k));
+    expect(new Set(shellAllow).size).toBe(shellAllow.length);
+    expect([...shellAllow].sort()).toEqual([...apiKeys].sort());
+    expect([...shellEnvOnly].sort()).toEqual([...ENV_ONLY_KEYS].sort());
+    for (const k of shellEnvOnly) expect(shellAllow).not.toContain(k);
   });
 
   it("MODE_PRESETS matches what runner/factory.config.sh actually derives for every mode", () => {

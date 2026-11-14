@@ -67,7 +67,18 @@
     min-width: 0;
   }
   .sb-cells {
-    grid-template-columns: repeat(4, minmax(120px, auto));
+    grid-template-columns: repeat(3, minmax(120px, auto));
+  }
+  /* The blocked clauses the screen does not name, as one quiet count line (A-50):
+     a wide screen names two, a phone one. */
+  .hl-more {
+    display: block;
+    margin-top: 6px;
+    font: 700 var(--t20) / 1.2 var(--f-text);
+    color: var(--board-ink-2);
+  }
+  .hl-more-phone {
+    display: none;
   }
   .sb-small .view-hero-status {
     margin: 0;
@@ -1202,17 +1213,14 @@
     }
   }
   @media (max-width: 760px) {
-    /* Said once on a phone: the Team Sheet carries how many need you, so the
-       headline leads with the work and the scoreboard keeps the three counters
-       not already on screen (the pitch, today's deliveries, the wage bill). */
-    .hl:has(.hl-block) > .hl-count {
+    /* On a phone the count line stays (it is the hero's only "need you" figure)
+       and one blocked clause leads, then "and N more blocked" (A-50). */
+    .hl-block.hl-extra,
+    .hl-more-wide {
       display: none;
     }
-    .sb-cells .kpi.sc-needs {
-      display: none;
-    }
-    .sb-cells:has(.sc-needs) {
-      grid-template-columns: 0.9fr 0.9fr 1.3fr;
+    .hl-more-phone {
+      display: block;
     }
     .own-more {
       min-height: 44px;
@@ -1234,7 +1242,7 @@
     }
     .sb-cells {
       justify-self: stretch;
-      grid-template-columns: 0.8fr 0.9fr 0.9fr 1.3fr;
+      grid-template-columns: 0.9fr 0.9fr 1.3fr;
     }
     .sb-cells .kpi {
       padding: 6px 8px 8px;

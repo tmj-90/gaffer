@@ -7,9 +7,8 @@
 //  - The same rule for every headline / scoreboard sentence that named a ticket by
 //    number first: the first thing waiting, an approved-but-unmerged change, the squad's
 //    tickets, the Fitness board's recurring injuries, the Review page's "moved on" card.
-//  - On a phone "3 things need you" is said once (the Team Sheet keeps it): the
-//    headline's count and the scoreboard's Need-you cell give way to what is not
-//    already on screen.
+//  - "3 things need you" is said once in the hero: the headline keeps the count on
+//    every width and there is no Need-you cell beside it (A-13, A-50).
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -206,20 +205,20 @@ describe("web overview: the headline leads with the work", () => {
     expect(sub).toContain("on Webhook delivery for task events #3");
   });
 
-  it("on a phone the count is said once: the Team Sheet keeps it", async () => {
+  it("on a phone the count line stays and one blocked clause leads (A-50)", async () => {
     tickets = [BLOCKED, REVIEW];
     queue = { items: [item("parked", BLOCKED), item("review", REVIEW)], counts: { total: 2 } };
     await boot();
-    // The Team Sheet carries the count …
+    // The Team Sheet carries the count in its head; the headline says it once in the hero.
     expect(document.querySelector("#what-i-own .panel-aux")?.textContent).toBe("needs you · 2");
-    // … and the other two spots are marked so the phone layout can drop them.
     expect(hl().querySelector(".hl-count")?.textContent).toBe("2 things need you.");
-    const needsCell = document.querySelector(".scoreboard .sb-cells .kpi.sc-needs");
-    expect(needsCell?.textContent).toContain("Need you");
+    // No Need-you cell repeats it beside the headline (A-13).
+    expect(document.querySelector(".scoreboard .sb-cells .kpi.sc-needs")).toBeNull();
     const css = readFileSync(path.join(WEB, "css/views/overview.css"), "utf8");
     const phone = css.slice(css.indexOf("@media (max-width: 760px)"));
-    expect(phone).toMatch(/\.hl:has\(\.hl-block\) > \.hl-count \{\s*display: none;/);
-    expect(phone).toMatch(/\.sb-cells \.kpi\.sc-needs \{\s*display: none;/);
+    // The phone layout no longer hides the count.
+    expect(phone).not.toMatch(/\.hl-count \{\s*display: none;/);
+    expect(phone).toMatch(/\.hl-block\.hl-extra,\s*\.hl-more-wide \{\s*display: none;/);
     // The phone order is unchanged: the Team Sheet comes before the pitch.
     const sheet = document.getElementById("what-i-own") as HTMLElement;
     const pitch = document.querySelector(".tactics") as HTMLElement;

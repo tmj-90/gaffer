@@ -3,9 +3,9 @@
 
 import { api } from "./api.js";
 import { ensureSquad, learnAgents, squad } from "./club.js";
-import { band, statCell } from "./components.js";
+import { meter, statCell } from "./components.js";
 import { el, svgEl } from "./dom.js";
-import { fmtDay, money, moneyW, plural } from "./format.js";
+import { fmtDay, money, moneyW, pct, plural } from "./format.js";
 import { clockTime } from "./freshness.js";
 import { SHIRT_PATH, glyph, learnKits } from "./icons.js";
 import { routeSignal } from "./router.js";
@@ -552,9 +552,13 @@ function hlWork(t, fallback = "A ticket") {
  * link to its object, and the WORK leads, never a ticket number: "5 things need you.
  * ■ Webhook delivery for task events #10 is blocked by a failing test." (the number is the muted
  * reference after the title). With nothing parked the first thing waiting leads
- * ("Export to CSV #12 awaits your sign-off."). On a phone the count gives way to that
- * clause: the Team Sheet says how many, once. When nothing needs you, it says what the
+ * ("Export to CSV #12 awaits your sign-off."). When nothing needs you, it says what the
  * squad is doing instead.
+ *
+ * Every number is said once in the hero (A-13): the count is the headline's (there is
+ * no Need-you cell beside it), and the sub line keeps only the queue's breakdown; the
+ * agents on the pitch and the wage bill are the scoreboard cells' own figures. On a
+ * phone the count stays and the blocked clauses stop at one, then "and N more" (A-50).
  */
 function matchHeadline(f) {
   const items = f.items;
@@ -568,16 +572,6 @@ function matchHeadline(f) {
   );
   const onPitch = f.summary.activeClaims ?? f.claims.length;
   const slots = f.slots;
-  const today = f.cost && typeof f.cost.today_usd === "number" ? f.cost.today_usd : null;
-  const wage =
-    today == null
-      ? null
-      : f.budget
-        ? `${money(today)} of ${moneyW(f.budget)} wage bill today`
-        : `${money(today)} wage bill today`;
-  const squadLine = slots
-    ? `${onPitch} of ${slots} agents on the pitch`
-    : `${plural(onPitch, "agent")} on the pitch`;
   const sub = [];
   let lead;
   if (items.length) {
@@ -588,7 +582,7 @@ function matchHeadline(f) {
         `${plural(items.length, "thing")} ${items.length === 1 ? "needs" : "need"} you.`,
       ),
     ];
-    for (const p of parked.slice(0, 2)) {
+    parked.slice(0, 2).forEach((p, i) => {
       const t = rowTicket(f, p);
       const epic = t && f.epicOf.get(t.id);
       const test = parkedOnTest(f, t, p.reason);
@@ -598,7 +592,8 @@ function matchHeadline(f) {
         el(
           "a",
           {
-            class: "hl-block",
+            // The second clause is for a wide screen only: a phone shows one, then the rest as a count.
+            class: i ? "hl-block hl-extra" : "hl-block",
             href: t ? `#/ticket/${t.id}` : "#what-i-own",
             title: t ? t.title : null,
           },
@@ -619,7 +614,28 @@ function matchHeadline(f) {
           ],
         ),
       );
-    }
+    });
+    // The blocked clauses the screen does not name, as a count: on a phone everything
+    // after the first, on a wide screen everything after the second.
+    const blockedWord = (n) => `and ${n} more blocked`;
+    if (parked.length > 1)
+      lead.push(
+        " ",
+        el(
+          "a",
+          { class: "hl-more hl-more-phone", href: "#what-i-own" },
+          blockedWord(parked.length - 1),
+        ),
+      );
+    if (parked.length > 2)
+      lead.push(
+        " ",
+        el(
+          "a",
+          { class: "hl-more hl-more-wide", href: "#what-i-own" },
+          blockedWord(parked.length - 2),
+        ),
+      );
     // Nothing parked: the first thing waiting leads, named by its work.
     if (!parked.length) {
       const r0 = reviews[0] && rowTicket(f, reviews[0]);
@@ -687,10 +703,10 @@ function matchHeadline(f) {
     if (merges.length > 2) sub.push(`${merges.length - 2} more approved, not merged`);
     if (others.length)
       sub.push(el("a", { href: "#what-i-own" }, plural(others.length, "other call")));
-    sub.push(squadLine);
   } else {
     lead = [el("span", { class: "hl-count hl-calm" }, "Nothing needs you.")];
-    // What the squad is on, by the work (the number after it): at most two named.
+    // What the squad is on, by the work (the number after it): at most two named. How
+    // many are on the pitch is the scoreboard cell's figure, not repeated here.
     const on = f.claims
       .filter((c) => c.ticket_number != null)
       .sort((a, b) => a.ticket_number - b.ticket_number);
@@ -700,47 +716,64 @@ function matchHeadline(f) {
         hlWork({ number: c.ticket_number, title: c.ticket_title || "" }, `#${c.ticket_number}`),
       );
     const free = slots ? Math.max(0, slots - onPitch) : null;
-    sub.push(
-      el("span", {}, [
-        squadLine,
-        ...(named.length
-          ? [
-              ", on ",
-              ...named.flatMap((w, i) => (i ? [" and ", ...w] : w)),
-              on.length > 2 ? ` and ${on.length - 2} more` : "",
-            ]
-          : []),
-        free != null ? `; ${plural(free, "slot")} free` : "",
-      ]),
-    );
+    const parts = [
+      ...(named.length
+        ? [
+            "Squad on ",
+            ...named.flatMap((w, i) => (i ? [" and ", ...w] : w)),
+            on.length > 2 ? ` and ${on.length - 2} more` : "",
+          ]
+        : []),
+      free != null ? `${named.length ? "; " : ""}${plural(free, "slot")} free` : "",
+    ].filter((x) => x !== "");
+    if (parts.length) sub.push(el("span", {}, parts));
   }
   if (f.summary.staleClaims > 0)
     sub.push(
       el("a", { href: "#/work" }, `${plural(f.summary.staleClaims, "stale claim")} (no heartbeat)`),
     );
-  if (wage) sub.push(wage);
   return { lead, sub };
 }
 
 /**
- * The stadium scoreboard: the headline sentence plus four counters (need you ·
- * on the pitch against the slots · delivered today · the wage bill against the
- * daily budget). Full-bleed and always dark; the digits flip once on arrival.
+ * A usual day's deliveries: the median of the days before today in the server's
+ * throughput series (F-E4), so "Delivered today 2" has a reference. Null with fewer
+ * than four days of history.
+ */
+function usualDelivered(health) {
+  const series = health && health.throughput && health.throughput.series;
+  if (!Array.isArray(series) || series.length < 5) return null;
+  const past = series
+    .slice(0, -1)
+    .filter((v) => typeof v === "number" && Number.isFinite(v))
+    .sort((a, b) => a - b);
+  if (past.length < 4) return null;
+  const mid = past.length >> 1;
+  const m = past.length % 2 ? past[mid] : (past[mid - 1] + past[mid]) / 2;
+  return Math.round(m * 10) / 10;
+}
+
+/**
+ * The stadium scoreboard: the headline sentence plus three counters (on the pitch
+ * against the slots · delivered today against a usual day · the wage bill against
+ * the daily budget). How many need you is the headline's count, said once. Full-bleed
+ * and always dark; the digits flip once on arrival.
  */
 function overviewScoreboard(f) {
   const { lead, sub } = matchHeadline(f);
-  const total = f.items.length;
   const onPitch = f.summary.activeClaims ?? f.claims.length;
   const today = f.cost && typeof f.cost.today_usd === "number" ? f.cost.today_usd : null;
-  const subP = el("p", { class: "hl-sub" });
+  const subP = sub.length ? el("p", { class: "hl-sub" }) : null;
   sub.forEach((c, i) => {
     if (i) subP.appendChild(el("span", { class: "sep", "aria-hidden": "true" }, " · "));
     subP.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
   });
+  const delivered = f.summary.deliveredToday ?? 0;
+  const usual = usualDelivered(f.health);
   const chain = f.health?.event_log;
   const logStatus =
     chain?.chain_ok === false
-      ? `Ledger: event log ALTERED at seq ${chain.broken_at_seq} — see Health`
+      ? `Ledger: event log ALTERED at seq ${chain.broken_at_seq}: see Health`
       : chain?.chain_ok === true
         ? `Ledger: event log intact (${chain.events} events)`
         : null;
@@ -751,17 +784,6 @@ function overviewScoreboard(f) {
       el("div", { class: "sb-side" }, [
         el("div", { class: "sb-cells kpi-row", role: "group", "aria-label": "Today" }, [
           statCell({
-            label: "Need you",
-            // Plain figures in every cell: "Need you 03" beside "On the pitch 4" read as
-            // two different kinds of number.
-            value: String(total),
-            needs: total > 0,
-            href: "#what-i-own",
-            flip: "needs",
-            title: `${total} waiting for you`,
-            cls: "sc-needs",
-          }),
-          statCell({
             label: "On the pitch",
             value: f.slots ? `${onPitch}/${f.slots}` : String(onPitch),
             href: "#tactics",
@@ -769,29 +791,35 @@ function overviewScoreboard(f) {
             title: f.slots
               ? `${onPitch} of ${f.slots} agent slots working`
               : `${onPitch} agents working`,
+            sub: "agents working",
           }),
           statCell({
             label: "Delivered today",
-            value: String(f.summary.deliveredToday ?? 0),
+            value: String(delivered),
             // The tickets that landed today are the Floor's lorry ("N despatched
             // today"); the done list holds every landing ever, so it never matched.
             href: "#/floor",
             flip: "delivered",
-            title: `${plural(f.summary.deliveredToday ?? 0, "ticket")} landed (done) today: the Floor's lorry shows them`,
+            title: `${plural(delivered, "ticket")} landed (done) today: the Floor's lorry shows them`,
+            // A count needs a reference (F-E4): a usual day, the median of the days before.
+            sub: usual != null ? `usual ${usual}` : null,
+            cls: "sc-delivered",
           }),
           statCell({
             label: "Wage bill",
-            value: today == null ? "—" : money(today),
+            value: today == null ? null : money(today),
+            reason: "no spend read yet",
             flip: "wage",
             title: "API-equivalent spend today, from the usage ledger",
             after:
               today != null && f.budget
                 ? el("div", { class: "sc-band" }, [
-                    band(
-                      today,
-                      f.budget,
-                      `${money(today)} of the ${moneyW(f.budget)} daily budget (${Math.round((today / f.budget) * 100)}%)`,
-                    ),
+                    meter({
+                      value: today,
+                      limit: f.budget,
+                      fmt: (v) => money(v),
+                      ariaLabel: `${money(today)} of the ${moneyW(f.budget)} daily budget (${pct((today / f.budget) * 100)})`,
+                    }),
                     el("span", { class: "kpi-sub" }, `of ${moneyW(f.budget)} today`),
                   ])
                 : el("span", { class: "kpi-sub" }, "today, API-equivalent"),

@@ -199,6 +199,13 @@ describe("web: the boot room's team instructions", () => {
     expect(document.querySelector(".boot-dirty")?.textContent).toContain("1 unsaved change");
     expect(document.querySelector(".boot-dirty")?.textContent).toContain("Autonomy mode");
     expect(document.querySelector("#set-GAFFER_MODE")?.classList.contains("is-dirty")).toBe(true);
+    // Unsaved is not a needs-you count: the section link and the room's count wear the
+    // ink "Unsaved" badge, never the yellow card's nav-count.
+    const grp = document.querySelector("#set-GAFFER_MODE")!.closest(".settings-group")!;
+    const link = document.querySelector(`.boot-links a[href="#${grp.id}"]`)!;
+    expect(link.querySelector(".unsaved-tag")?.textContent).toBe("Unsaved");
+    expect(document.querySelector(".boot-unsaved .unsaved-tag")?.textContent).toBe("1");
+    expect(document.querySelector(".boot-unsaved .nav-count.urgent")).toBeNull();
     (document.querySelector(".settings-form") as HTMLFormElement).requestSubmit();
     await tick();
     await tick();
@@ -220,6 +227,7 @@ describe("web: the boot room's team instructions", () => {
     back.dispatchEvent(new Event("change", { bubbles: true }));
     await tick();
     expect(document.querySelector(".boot-dirty")?.textContent).toBe("No unsaved changes.");
+    expect(document.querySelector(".boot-links .unsaved-tag")).toBeNull();
     expect(document.querySelector(".ti-table")).toBeNull();
   });
 

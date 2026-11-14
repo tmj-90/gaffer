@@ -37,7 +37,7 @@
     white-space: nowrap;
   }
   .hl .hl-ref {
-    font-size: 0.62em;
+    font-size: var(--t34);
     font-weight: 700;
     letter-spacing: 0.02em;
     vertical-align: 0.12em;
@@ -45,7 +45,7 @@
   /* Off the dark board (the Review page's "moved on" card) it is ink on paper. */
   .rv-gone-h .hl-ref {
     color: var(--ink-2);
-    font-size: 0.62em;
+    font-size: var(--t20);
   }
   .hl q {
     quotes: "\201C" "\201D";
@@ -366,7 +366,7 @@
     opacity: 0.45;
   }
   .zl {
-    font: 700 18px var(--f-cond);
+    font: 700 var(--t16) var(--f-cond);
     fill: var(--chalk);
     text-transform: uppercase;
     letter-spacing: 0.08em;
@@ -392,7 +392,7 @@
     stroke-width: 2;
   }
   .cl {
-    font: 600 17px var(--f-detail);
+    font: 600 var(--t16) var(--f-detail);
     fill: var(--chalk);
   }
   .kit-chalk {
@@ -403,7 +403,7 @@
     fill: transparent;
   }
   .disc {
-    fill: #fff;
+    fill: var(--counter-face);
     stroke: var(--counter-ink);
     stroke-width: 1.5;
   }
@@ -411,7 +411,7 @@
     fill: rgb(0 0 0 / 0.35);
   }
   .disc-n {
-    font: 800 22px var(--f-display);
+    font: 800 var(--t20) var(--f-display);
     fill: var(--counter-ink);
   }
   .tag-plate {
@@ -422,7 +422,7 @@
   }
   .tag-t {
     font: 600 16px var(--f-detail);
-    fill: #fff;
+    fill: var(--board-ink);
     letter-spacing: 0.02em;
   }
   .tag-t2 {
@@ -459,7 +459,7 @@
     opacity: 0.95;
   }
   .tally-n {
-    font: 800 22px var(--f-display);
+    font: 800 var(--t20) var(--f-display);
     fill: var(--chalk);
   }
   .touchline {
@@ -526,7 +526,7 @@
   .key-tag {
     font: 700 var(--t12) / 1 var(--f-cond);
     background: var(--board);
-    color: #fff;
+    color: var(--board-ink);
     padding: 4px 6px;
     border-radius: 3px;
   }
@@ -534,7 +534,7 @@
     color: var(--sky-on-board);
   }
   .key-disc {
-    fill: #fff;
+    fill: var(--counter-face);
     stroke: var(--ink);
     stroke-width: 1.5;
   }
@@ -788,13 +788,13 @@
     width: 44px;
     height: 8px;
     margin-right: 6px;
-    background: var(--rule-2);
+    background: var(--viz-track);
     position: relative;
   }
   .pct-bar span {
     position: absolute;
     inset: 0 auto 0 0;
-    background: var(--ink);
+    background: var(--viz-mark);
   }
 
   .wage-host {
@@ -808,7 +808,7 @@
     overflow: visible;
   }
   .wage-chart .grid {
-    stroke: var(--rule-2);
+    stroke: var(--viz-grid);
   }
   .wage-chart .axis {
     stroke: var(--ink);
@@ -822,10 +822,10 @@
     font-weight: 700;
   }
   .wage-chart .bar {
-    fill: var(--ink-2);
+    fill: var(--viz-mark);
   }
   .wage-chart .bar-today {
-    fill: var(--claret);
+    fill: var(--viz-accent);
   }
   .wage-chart .val {
     font: 700 12px var(--f-cond);
@@ -833,7 +833,7 @@
   }
   .wage-chart .val-today {
     font: 800 16px var(--f-display);
-    fill: var(--claret-ink);
+    fill: var(--ink);
   }
   .budget-line {
     stroke: var(--ink);
@@ -879,14 +879,16 @@
     display: block;
     min-width: 3px;
   }
+  /* Spend by kind: chart marks, never the kit (the series hue, the accent, then
+     greys for the tail; the key names every part). */
   .kb-0 {
-    background: var(--ink);
+    background: var(--viz-mark);
   }
   .kb-1 {
-    background: var(--claret);
+    background: var(--viz-accent);
   }
   .kb-2 {
-    background: var(--sky);
+    background: var(--viz-muted);
   }
   .kb-3 {
     background: var(--ink-2);
@@ -1017,7 +1019,7 @@
   .res-ft {
     font: 800 var(--t14) / 1 var(--f-display);
     background: var(--board);
-    color: #fff;
+    color: var(--board-ink);
     padding: 3px 5px;
     border-radius: var(--r);
   }
@@ -1222,6 +1224,9 @@
     }
     .hl {
       font-size: var(--t34);
+    }
+    .hl .hl-ref {
+      font-size: var(--t20);
     }
     .hl-sub {
       font-size: var(--t14);

@@ -464,7 +464,7 @@ function floorRobot(x0, y0, no, carry) {
         [x + 0.14, y + 0.15, 0.555],
         [x - 0.14, y + 0.15, 0.555],
       ],
-      "var(--claret)",
+      "var(--kit-1)",
       u,
       "f fl-bot-plate",
     ),
@@ -920,6 +920,8 @@ function floorScene(m) {
   {
     const g = svgEl("g", { class: "fl-desk" });
     const b = { x: 0.9, y: 6.4, w: 2.5, d: 2.4, h: 0.95 };
+    // the plinth takes the header's claret: a club colour that gives way to the house
+    // kit on blocks (a referee's card) does not paint the desk that lights for you
     g.append(fBox(b.x, b.y, 0, b.w, b.d, 0.12, { base: "var(--claret)" }));
     g.append(
       fBox(b.x, b.y, 0.12, b.w, b.d, b.h - 0.12, {

@@ -316,7 +316,8 @@ async function renderSettings() {
     saveBtn.disabled = n === 0;
     saveBar.classList.toggle("is-clean", n === 0);
     idxDirty.textContent = n ? String(n) : "none";
-    idxDirty.className = n ? "nav-count urgent" : "boot-n";
+    // Unsaved is not a needs-you count: the ink outline badge, never the yellow card.
+    idxDirty.className = n ? "unsaved-tag" : "boot-n";
     const dirty = new Set(keys);
     for (const [key, ed] of editors)
       if (ed.row) ed.row.classList.toggle("is-dirty", dirty.has(key));
@@ -325,8 +326,10 @@ async function renderSettings() {
       const tag = g.querySelector(".grp-dirty");
       tag.hidden = !c;
       tag.textContent = c ? `${c} unsaved` : "";
-      const link = index.querySelector(`a[href="#${g.id}"] .boot-n`);
-      if (link) link.classList.toggle("is-dirty", c > 0);
+      const link = index.querySelector(`a[href="#${g.id}"]`);
+      const tagEl = link && link.querySelector(".unsaved-tag");
+      if (link && c && !tagEl) link.appendChild(el("span", { class: "unsaved-tag" }, "Unsaved"));
+      else if (tagEl && !c) tagEl.remove();
     }
     instructions.sync();
   };

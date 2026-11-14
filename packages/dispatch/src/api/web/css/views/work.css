@@ -110,7 +110,7 @@
   .board {
     display: grid;
     grid-template-columns: repeat(8, minmax(0, 1fr));
-    border: 2px solid var(--board);
+    border: 2px solid var(--board-frame);
     border-radius: var(--r);
     min-height: 560px;
     min-width: 0;
@@ -803,7 +803,7 @@
       min-height: 0;
     }
     .board-col {
-      border: 2px solid var(--board);
+      border: 2px solid var(--board-frame);
       border-radius: var(--r);
     }
     .lane-d > summary {

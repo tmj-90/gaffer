@@ -12,6 +12,14 @@ const RGB_WHITE = [255, 255, 255];
 const RGB_INK = [14, 23, 38]; // --ink / --counter-ink
 const RGB_PAPER_DARK = [31, 36, 48]; // --paper, floodlit
 const RGB_BOARD = [17, 19, 24]; // --board
+// Every ground kit text sits on (tokens.css): --paper and --paper-2 in each kit, and
+// the scoreboard's --board and --board-2 (the board is dark in both kits).
+const RGB_PAPER_2 = [246, 248, 243]; // --paper-2, day
+const RGB_PAPER_2_DARK = [38, 44, 57]; // --paper-2, floodlit
+const RGB_BOARDS = [RGB_BOARD, [14, 16, 21], [29, 32, 41], [26, 29, 37]];
+// The house --sky-wash (selected and hover rows), day and floodlit.
+const RGB_HOUSE_WASH = [221, 239, 249];
+const RGB_HOUSE_WASH_DARK = [30, 52, 66];
 const RGB_HOUSE_CLARET = [122, 22, 49];
 const RGB_HOUSE_SKY = [149, 205, 235];
 function hexRgb(hex) {
@@ -37,13 +45,106 @@ function contrastRatio(a, b) {
 }
 const mixRgb = (a, b, t) => a.map((v, i) => Math.round(v + (b[i] - v) * t));
 const rgbCss = (c) => `rgb(${c[0]} ${c[1]} ${c[2]})`;
-/** Move `c` towards `to` until it reads at `min`:1 on `bg`. */
+/** Move `c` towards `to` until it reads at `min`:1 on `bg` (one ground or several). */
 function readableOn(c, bg, to, min = 4.5) {
+  const grounds = Array.isArray(bg[0]) ? bg : [bg];
   for (let t = 0; t <= 1.0001; t += 0.05) {
     const m = mixRgb(c, to, t);
-    if (contrastRatio(m, bg) >= min) return m;
+    if (grounds.every((g) => contrastRatio(m, g) >= min)) return m;
   }
   return to;
+}
+// OKLab distance (x100): the measure the dataviz palette validator uses.
+function oklab(c) {
+  const [r, g, b] = c.map((v) => {
+    const x = v / 255;
+    return x <= 0.04045 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4;
+  });
+  const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+  const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+  const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+  return [
+    0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s,
+    1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s,
+    0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s,
+  ];
+}
+function okDistance(a, b) {
+  const p = oklab(a);
+  const q = oklab(b);
+  return 100 * Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]);
+}
+// The referee's cards (tokens.css --yellow, --red, --ok, day and floodlit values).
+// A club colour closer than KIT_CLASH to any of them would read as a status where
+// it paints a block, a hoop or a chart, so there it gives way to the house kit.
+const KIT_CLASH = 15;
+const CARDS = [
+  { card: "yellow", words: "the referee's yellow card (needs you)", rgb: [[255, 204, 31]] },
+  {
+    card: "red",
+    words: "the referee's red card (blocked or failed)",
+    rgb: [
+      [200, 16, 46],
+      [255, 123, 123],
+    ],
+  },
+  {
+    card: "ok",
+    words: "the green of a passed check",
+    rgb: [
+      [31, 107, 58],
+      [127, 212, 154],
+    ],
+  },
+];
+/**
+ * The card a colour is too close to ({ card, words, distance }), or null. The house
+ * kit's own two colours are the fallback and never flagged (the house sky sits 12.7
+ * from the floodlit pass green, where it is only a hoop and a collar; its floodlit
+ * block is the deep --sky-block).
+ */
+function cardClash(hex) {
+  const c = hexRgb(hex);
+  if (!c) return null;
+  const h = rgbHex(c);
+  if (h === rgbHex(RGB_HOUSE_CLARET) || h === rgbHex(RGB_HOUSE_SKY)) return null;
+  let near = null;
+  for (const k of CARDS) {
+    for (const rgb of k.rgb) {
+      const d = okDistance(c, rgb);
+      if (d < KIT_CLASH && (!near || d < near.distance))
+        near = { card: k.card, words: k.words, distance: Math.round(d * 10) / 10 };
+    }
+  }
+  return near;
+}
+/** The club's colours that clash with a card: [{ which, hex, card, words, distance }]. */
+function kitClashes(primary, secondary) {
+  const out = [];
+  for (const [which, hex] of [
+    ["primary", primary],
+    ["secondary", secondary],
+  ]) {
+    const c = cardClash(hex);
+    if (c) out.push({ which, hex, ...c });
+  }
+  return out;
+}
+/** One line for the club editor: which colour gave way, to what, and why ("" if none). */
+function kitClashNote(primary, secondary) {
+  const clashes = kitClashes(primary, secondary);
+  if (!clashes.length) return "";
+  const ord = { primary: "first", secondary: "second" };
+  const house = {
+    primary: "the header and blocks use the house claret",
+    secondary: "blocks and hoops use the house sky",
+  };
+  if (clashes.length === 2) {
+    const cards = [...new Set(clashes.map((c) => c.words))].join(" and ");
+    return `Both colours are close to ${cards}, so the header, blocks and hoops use the house kit; shirts and the crest keep yours.`;
+  }
+  const c = clashes[0];
+  return `Your ${ord[c.which]} colour is close to ${c.words}, so ${house[c.which]}; shirts and the crest keep it.`;
 }
 /** A text colour on `bg` (white or ink, whichever reads better) and its quieter tint. */
 function inkOn(bg) {
@@ -53,13 +154,33 @@ function inkOn(bg) {
   return { light, on, quiet: contrastRatio(quiet, bg) >= 4.5 ? quiet : on };
 }
 /**
+ * A block's ground for a club colour: the colour itself when white or ink reads on
+ * it at 4.5:1, else the colour stepped away from its text until one does (a mid
+ * tone, such as white mixed down for the floodlit block, reads at only 4.2 to 4.5).
+ */
+function blockGround(bg) {
+  const t = inkOn(bg);
+  if (contrastRatio(bg, t.on) >= 4.5) return bg;
+  return readableOn(bg, t.on, t.light ? [0, 0, 0] : RGB_WHITE);
+}
+/**
  * The kit tokens for a club's colours: { token: value } (null = the house value).
  * Applied to :root for the whole app, or to one element for a live preview.
+ * The role tokens (claret and sky: the header, blocks, hoops, washes) take a club
+ * colour only when it is at least KIT_CLASH from every referee's card; a colour
+ * that is too close stays on the identity tokens (--kit-1, --kit-2: shirts, the
+ * crest) and the roles keep the house values. Charts never read the kit
+ * (--viz-* in tokens.css).
  */
 function kitTokens(primary, secondary) {
-  const P = hexRgb(primary);
-  const S = hexRgb(secondary);
+  const P0 = hexRgb(primary);
+  const S0 = hexRgb(secondary);
+  const P = P0 && !cardClash(primary) ? P0 : null;
+  const S = S0 && !cardClash(secondary) ? S0 : null;
   const out = {
+    "--kit-1": null,
+    "--on-kit-1": null,
+    "--kit-2": null,
     "--claret": null,
     "--claret-ink": null,
     "--on-claret": null,
@@ -71,15 +192,28 @@ function kitTokens(primary, secondary) {
     "--sky-wash": null,
     "--shirt-no": null,
     "--sky-on-board": null,
+    "--sky-block": null,
+    "--on-sky-block": null,
+    "--on-sky-block-2": null,
   };
+  if (P0) {
+    out["--kit-1"] = primary;
+    out["--on-kit-1"] = inkOn(P0).light ? "#ffffff" : "var(--counter-ink)";
+    out["--shirt-edge"] = rgbCss(mixRgb(P0, [0, 0, 0], 0.55));
+  }
+  if (S0) out["--kit-2"] = secondary;
   if (P) {
     const t = inkOn(P);
     out["--claret"] = primary;
     out["--on-claret"] = t.light ? null : "var(--counter-ink)";
     out["--on-claret-2"] = rgbCss(t.quiet);
-    out["--shirt-edge"] = rgbCss(mixRgb(P, [0, 0, 0], 0.55));
-    out["--claret-ink"] =
-      `light-dark(${rgbCss(readableOn(P, RGB_WHITE, RGB_INK))}, ${rgbCss(readableOn(P, RGB_PAPER_DARK, RGB_WHITE))})`;
+    // Claret as text (ticket numbers, ranks) sits on paper, the zebra paper-2 and the
+    // selected-row sky wash: it reads at 4.5:1 on every one of them, in each kit.
+    const wash = S ? mixRgb(RGB_WHITE, S, 0.2) : RGB_HOUSE_WASH;
+    const washDark = S ? mixRgb(RGB_PAPER_DARK, S, 0.1) : RGB_HOUSE_WASH_DARK;
+    const day = readableOn(P, [RGB_WHITE, RGB_PAPER_2, wash], RGB_INK);
+    const night = readableOn(P, [RGB_PAPER_DARK, RGB_PAPER_2_DARK, washDark], RGB_WHITE);
+    out["--claret-ink"] = `light-dark(${rgbCss(day)}, ${rgbCss(night)})`;
   }
   if (S) {
     const t = inkOn(S);
@@ -88,14 +222,32 @@ function kitTokens(primary, secondary) {
     out["--on-sky-2"] = rgbCss(t.quiet);
     out["--sky-wash"] =
       `light-dark(color-mix(in srgb, ${secondary} 20%, var(--paper)), color-mix(in srgb, ${secondary} 10%, var(--paper)))`;
-    out["--sky-on-board"] = contrastRatio(S, RGB_BOARD) < 4.5 ? "var(--board-ink-2)" : "var(--sky)";
+    out["--sky-on-board"] = RGB_BOARDS.every((g) => contrastRatio(S, g) >= 4.5)
+      ? "var(--sky)"
+      : "var(--board-ink-2)";
+    // A sky block is chosen for each kit: the club colour on the day kit, a deep
+    // step of it under floodlights (as the house sky's block is), each with its text
+    // at 4.5:1 or better.
+    const day = blockGround(S);
+    const dark = blockGround(mixRgb(S, RGB_PAPER_DARK, 0.62));
+    const b = inkOn(day);
+    const d = inkOn(dark);
+    const dayCss = day === S ? secondary : rgbCss(day);
+    out["--sky-block"] = `light-dark(${dayCss}, ${rgbCss(dark)})`;
+    out["--on-sky-block"] = `light-dark(${rgbCss(b.on)}, ${rgbCss(d.on)})`;
+    out["--on-sky-block-2"] = `light-dark(${rgbCss(b.quiet)}, ${rgbCss(d.quiet)})`;
   }
-  if (P || S) {
+  if (P0 || S0) {
     // The stencil number is cut in the second colour: on a shirt of a close colour it
-    // takes the shirt's text colour instead.
-    const p = P || RGB_HOUSE_CLARET;
-    const s2 = S || RGB_HOUSE_SKY;
-    out["--shirt-no"] = contrastRatio(p, s2) < 3 ? "var(--on-claret)" : "var(--sky)";
+    // takes the shirt's text colour instead. Shirts always wear the club's colours.
+    const p = P0 || RGB_HOUSE_CLARET;
+    const s2 = S0 || RGB_HOUSE_SKY;
+    out["--shirt-no"] =
+      contrastRatio(p, s2) < 3
+        ? inkOn(p).light
+          ? "#ffffff"
+          : "var(--counter-ink)"
+        : "var(--kit-2)";
   }
   return out;
 }
@@ -143,7 +295,10 @@ function applyClub(club) {
   const meta = document.querySelector('meta[name="theme-color"]');
   if (meta) {
     if (!meta.dataset.house) meta.dataset.house = meta.getAttribute("content") || "";
-    meta.setAttribute("content", club.kit_primary || meta.dataset.house);
+    // The browser's bar is the header's colour: a first colour that gives way to the
+    // house claret there gives way here too.
+    const own = club.kit_primary && hexRgb(club.kit_primary) && !cardClash(club.kit_primary);
+    meta.setAttribute("content", own ? club.kit_primary : meta.dataset.house);
   }
   paintBrand();
 }
@@ -152,6 +307,11 @@ export {
   RGB_HOUSE_CLARET,
   RGB_HOUSE_SKY,
   rgbHex,
+  KIT_CLASH,
+  okDistance,
+  cardClash,
+  kitClashes,
+  kitClashNote,
   kitTokens,
   readHouseKit,
   setKitTokens,

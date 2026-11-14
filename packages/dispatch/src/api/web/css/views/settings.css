@@ -84,11 +84,25 @@
     font: 700 var(--t12) / 1.2 var(--f-cond);
     color: var(--ink-2);
   }
-  .boot-n.is-dirty {
+  /* Unsaved is not a referee's card: an ink outline badge with the word, never
+     status yellow (yellow is only for what needs you). One look for every
+     unsaved marker in the room. */
+  .unsaved-tag,
+  .grp-dirty,
+  .setting-unsaved,
+  .boot-dirty.is-dirty strong {
     padding: 0 5px;
-    background: var(--yellow);
-    color: var(--on-yellow);
+    border: 1.5px solid var(--ink);
     border-radius: var(--r);
+    background: var(--paper);
+    color: var(--ink);
+    font: 800 var(--t12) / 1.35 var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .unsaved-tag {
+    margin-left: 6px;
+    white-space: nowrap;
   }
   .boot-unsaved {
     display: flex;
@@ -419,12 +433,14 @@
   .gng-list .glyph {
     margin-top: 1px;
   }
+  /* A no-go is advice, not a referee's card: it reads loudest by being full
+     white beside the quieter go rows, with its own glyph and word. */
   .gng-list .is-go {
-    color: var(--board-ink);
+    color: var(--board-ink-2);
   }
   .gng-list .is-nogo .glyph,
   .gng-list .is-nogo .gng-word {
-    color: var(--yellow);
+    color: var(--board-ink);
   }
   .gng-word {
     font: 800 var(--t14) / 1.2 var(--f-cond);
@@ -473,13 +489,7 @@
     border-bottom: var(--frame);
   }
   .grp-dirty {
-    padding: 2px 7px;
-    background: var(--yellow);
-    color: var(--on-yellow);
-    border-radius: var(--r);
-    font: 800 var(--t12) / 1.35 var(--f-cond);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
+    padding: 1px 7px;
   }
   details.settings-group > summary::after,
   .boot-fold > summary::after {
@@ -556,13 +566,6 @@
   }
   .setting-unsaved {
     display: none;
-    padding: 0 5px;
-    background: var(--yellow);
-    color: var(--on-yellow);
-    border-radius: var(--r);
-    font: 800 var(--t12) / 1.35 var(--f-cond);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
   }
   .setting-row.is-dirty .setting-unsaved {
     display: inline-block;
@@ -672,10 +675,9 @@
     color: var(--ink);
   }
   .boot-dirty.is-dirty strong {
-    padding: 0 5px;
-    background: var(--yellow);
-    color: var(--on-yellow);
-    border-radius: var(--r);
+    font-size: var(--t14);
+    text-transform: none;
+    letter-spacing: 0;
   }
 
   /* Idle-loop scans fold. */

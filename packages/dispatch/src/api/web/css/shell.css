@@ -42,8 +42,8 @@
     flex: none;
   }
   .crest-t {
-    font: 900 15px var(--f-display);
-    fill: var(--on-claret);
+    font: 900 var(--t15) var(--f-display);
+    fill: var(--on-kit-1);
   }
   /* The crest is the club's badge: with a full token it opens "Name your club". */
   .crest-btn {
@@ -109,7 +109,7 @@
     padding: 0 10px;
     flex: none;
     color: var(--on-claret-2);
-    font: 600 15px var(--f-text);
+    font: 600 var(--t15) var(--f-text);
     text-decoration: none;
     white-space: nowrap;
     background: none;
@@ -141,7 +141,7 @@
     height: 22px;
     padding: 0 6px;
     border-radius: var(--r);
-    font: 800 15px / 1 var(--f-display);
+    font: 800 var(--t15) / 1 var(--f-display);
     background: color-mix(in srgb, var(--on-claret) 14%, transparent);
     color: var(--on-claret);
   }
@@ -156,7 +156,7 @@
     padding: 0 10px;
     flex: none;
     color: var(--on-claret-2);
-    font: 600 15px var(--f-text);
+    font: 600 var(--t15) var(--f-text);
     background: none;
     border: 0;
   }
@@ -231,7 +231,7 @@
     border: 2px solid color-mix(in srgb, var(--on-claret) 55%, transparent);
     color: var(--on-claret);
     border-radius: var(--r);
-    font: 700 15px var(--f-text);
+    font: 700 var(--t15) var(--f-text);
     text-decoration: none;
     white-space: nowrap;
   }
@@ -405,14 +405,14 @@
       justify-content: center;
       gap: 6px;
       height: 56px;
-      color: #e4e8ee;
-      font: 700 15px var(--f-text);
+      color: var(--board-ink-2);
+      font: 700 var(--t15) var(--f-text);
       background: none;
       border: 0;
       text-decoration: none;
     }
     .bottomnav-item.active {
-      color: #fff;
+      color: var(--board-ink);
       box-shadow: inset 0 -4px 0 var(--yellow);
     }
     .bottomnav-item .nav-count {

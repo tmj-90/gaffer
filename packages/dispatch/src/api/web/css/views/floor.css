@@ -120,8 +120,9 @@
   .fl-sw-lit {
     background: var(--fl-glass-lit);
   }
+  /* the key's robot wears what the robots wear: the club's own first colour */
   .fl-sw-bot {
-    background: var(--claret);
+    background: var(--kit-1);
   }
   .fl-sw-tank,
   .fl-sw-stores {

@@ -8,6 +8,7 @@
 // Overview's Team Sheet: a long card body is clamped to four lines behind a
 // More toggle, so the Tactics Board beside it is not pushed down the page.
 
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -15,7 +16,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { batchedReads } from "./helpers/batchedReads.js";
 
-const APP_JS = path.join(path.resolve(process.cwd(), "src/api/web"), "app.js");
+const WEB = path.resolve(process.cwd(), "src/api/web");
+const APP_JS = path.join(WEB, "app.js");
 
 const ago = (min: number) => new Date(Date.now() - min * 60e3).toISOString();
 
@@ -313,6 +315,25 @@ describe("web: the Floor", () => {
     const row = view.querySelector(".fl-bench li")!;
     expect(row.textContent).toContain("Kev");
     expect(row.querySelector(".shirt-no")?.textContent).toBe("9");
+  });
+
+  it("robots and the key's robot wear the club's own first colour; the desk keeps the header's claret", async () => {
+    // A club colour too close to a referee's card stays on shirts (--kit-1) and gives
+    // way to the house claret on blocks (--claret). The robot is a shirt; the key must
+    // show what the robots wear; the desk plinth (beside the glass that lights while a
+    // decision waits for you) is a block, not a shirt.
+    stubFetch(FULL);
+    mountShell("#/floor");
+    await boot();
+    const view = await floorReady();
+    const plate = view.querySelector<SVGElement>("a.fl-robot .fl-bot-plate")!;
+    expect(plate.getAttribute("style")).toContain("var(--kit-1)");
+    const desk = view.querySelector(".fl-desk")!;
+    expect(desk.innerHTML).not.toContain("--kit-1");
+    expect(desk.innerHTML).toContain("var(--claret)");
+    const css = readFileSync(path.join(WEB, "css", "views", "floor.css"), "utf8");
+    const sw = /\.fl-sw-bot\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+    expect(sw).toMatch(/background:\s*var\(--kit-1\)/);
   });
 
   it("a stale claim puts no robot on the floor", async () => {

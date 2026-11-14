@@ -319,8 +319,8 @@
     display: grid;
     gap: 2px;
     padding: 10px 14px 8px;
-    background: var(--sky);
-    color: var(--on-sky);
+    background: var(--sky-block);
+    color: var(--on-sky-block);
   }
   .pb-proposal-name {
     font: 800 var(--t34) / 1 var(--f-display);

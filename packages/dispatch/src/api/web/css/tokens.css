@@ -3,6 +3,10 @@
    The gaffer is the manager; the factory is the club on match day.
    Colour vocabularies never overlap:
      club kit (claret + sky) ........ identity only: header, crest, shirts, blocks
+                                       (a club colour within OKLab 15 of a referee's
+                                       card never reaches a block, a hoop or a chart:
+                                       see kitTokens in js/kit.js)
+     chart marks (--viz-*) .......... data only, never the kit, never a card colour
      referee's cards (yellow, red) .. status only: needs-you / blocked-or-failed,
                                        always paired with a glyph shape and a word
      pitch greens ................... the ground of drawings only, never text/state
@@ -69,10 +73,21 @@
     --on-sky: #0e1726;
     --on-sky-2: #1d3a52; /* secondary text on sky (6.9:1) */
     --sky-wash: light-dark(#ddeff9, #1e3442); /* selected / hover wash */
-    --shirt-no: var(--sky); /* the stencil number on a shirt */
+    --shirt-no: var(--kit-2); /* the stencil number on a shirt */
     --sky-on-board: var(--sky); /* the second kit colour as text on the scoreboard */
+    /* A sky block's ground: chosen for each kit, not the light sky flipped. The
+       floodlit block is a deep sky so it does not glare on the dark page. */
+    --sky-block: light-dark(#95cdeb, #1f4f6b);
+    --on-sky-block: light-dark(#0e1726, #eef1f4);
+    --on-sky-block-2: light-dark(#1d3a52, #b9d5e7); /* 6.9:1 light, 5.7:1 floodlit */
+    /* The club's colours as worn on shirts, the crest and the robots: always the
+       club's own, even when a role token above falls back to the house value. */
+    --kit-1: var(--claret);
+    --on-kit-1: var(--on-claret); /* the crest's letters */
+    --kit-2: var(--sky);
     /* The club's own kit (GET /api/club kit_primary / kit_secondary) overrides the
-       claret and sky tokens on :root from app.js (kitTokens), contrast-guarded. */
+       claret and sky tokens on :root from app.js (kitTokens), contrast-guarded and
+       kept off blocks, hoops and charts when it is too close to a card colour. */
 
     /* --- the scoreboard: always dark, both kits --------------------------- */
     --board: light-dark(#111318, #0e1015);
@@ -85,6 +100,9 @@
     --board-ok: #8ee0a8; /* + lines and passed marks on the board */
     --board-ink-3: #8a93a3; /* separators on the board, never text that carries meaning */
     --counter-ink: #0e1726; /* ink on a white magnet counter: counters stay white in both kits */
+    --counter-face: #ffffff; /* the magnet counter itself, and its ring */
+    /* the board's outline: the floodlit board needs a lit edge on the dark page */
+    --board-frame: light-dark(var(--board), #687185);
 
     /* --- pitch (drawings only) -------------------------------------------- */
     --pitch: light-dark(#2c7a43, #1f5a32);
@@ -96,19 +114,26 @@
 
     /* --- the factory floor (#/floor, drawings only) ------------------------
        The stations keep their own hues (lifecycle stage, never status): blue
-       drafts, ochre stores, orange assembly, magenta inspection and loading,
-       teal test rig, green despatch, kraft parcels. Status stays with the
-       referee's cards (yellow needs you, red blocked/failed); robots wear the
-       club kit (--claret, --shirt-no) so a club's own colours reach them too. */
+       drafts, ochre stores, orange assembly, violet-magenta inspection and
+       loading, teal test rig, green despatch, kraft parcels. Status stays with
+       the referee's cards (yellow needs you, red blocked/failed); robots wear the
+       club's own colours (--kit-1, --shirt-no), as shirts do.
+       The six stage hues are validated in drawing order (drawing, stores,
+       assembly, inspection, test rig, loading, despatch) with the dataviz palette
+       validator on --fl-ground in both kits: every neighbour at least OKLab 15
+       apart, CVD at least 8, inside the lightness band; contrast on the slab is
+       relieved by the station names, which are always drawn. Inspection sits at
+       least OKLab 22 from the status red of its kit, and assembly (with the
+       robots' hard hats) keeps an orange hue at least 20 degrees from it. */
     --fl-stage: light-dark(#d9e3e8, #121f33); /* behind the slab */
     --fl-shade: light-dark(#0b1a2b, #000814); /* mixed in for the darker faces */
     --fl-lift: #ffffff; /* mixed in for the lit faces */
-    --fl-draft: light-dark(#6e93e6, #7fa2f5);
-    --fl-ready: light-dark(#f0a830, #f5b651);
-    --fl-build: light-dark(#f26b2a, #ff8a4c);
-    --fl-inspect: light-dark(#d81b60, #ff5c9a);
-    --fl-test: light-dark(#1aa6b7, #3bc2d4);
-    --fl-done: light-dark(#3fa45b, #5cc46e);
+    --fl-draft: light-dark(#7193e7, #6d8de0);
+    --fl-ready: light-dark(#a37118, #b78814);
+    --fl-build: light-dark(#fb7a3c, #ae4800);
+    --fl-inspect: light-dark(#fc76cf, #ba2b92);
+    --fl-test: light-dark(#1584a1, #12a1bf);
+    --fl-done: light-dark(#3ba65d, #43a94f);
     --fl-ground: light-dark(#eef3f6, #1b2d45); /* the slab's top */
     --fl-joint: light-dark(#d5e0e7, #243a57);
     --fl-slab-l: light-dark(#9fb3c1, #0a1424);
@@ -160,6 +185,29 @@
     --ok: light-dark(#1f6b3a, #7fd49a); /* passed gates, + lines (text ≥ 4.5:1) */
     --ok-wash: light-dark(#e3f2e4, #18301f);
 
+    /* --- chart marks: data, never the kit ---------------------------------
+       A chart mark never wears a club colour or a referee's card. Validated with
+       the dataviz palette validator (mark and accent as a two-colour categorical
+       set) on every surface they sit on: paper, paper-2 and the ground in each
+       kit, and the scoreboard (always dark) for the board steps. Every value is
+       at least OKLab 15 from the status yellow, red and green of its kit.
+         --viz-mark ..... the one series (bars, sparklines, meter fills)
+         --viz-accent ... the one mark the chart is about (today, this period)
+         --viz-muted .... de-emphasised marks (zero stubs, the rest)
+         --viz-grid ..... gridlines and axis hairlines
+         --viz-track .... a meter's unfilled track (a lighter step of the mark)
+       Inside a .scoreboard the --viz-board-* steps take over (components.css). */
+    --viz-mark: light-dark(#2a78d6, #3987e5);
+    --viz-accent: light-dark(#9a2b9a, #d63097);
+    --viz-muted: light-dark(#7d8797, #7a8496);
+    --viz-grid: light-dark(#e1e5dc, #2c3240);
+    --viz-track: light-dark(#d3e3f6, #26364c);
+    --viz-board-mark: #3987e5;
+    --viz-board-accent: #d63097;
+    --viz-board-muted: #727c8e;
+    --viz-board-grid: #2a2f3a;
+    --viz-board-track: #22304a;
+
     /* --- diff ---------------------------------------------------------------- */
     --add: var(--ok);
     --add-wash: var(--ok-wash);
@@ -193,6 +241,7 @@
     --t12: 12px; /* floor: meta only, weight ≥ 600 */
     --t13: 13px; /* operational detail in the body face (the condensed floor is 12) */
     --t14: 14px;
+    --t15: 15px; /* control labels only: buttons, the nav, the header counts (one named step) */
     --t16: 16px;
     --t20: 20px;
     --t26: 26px;
@@ -204,7 +253,10 @@
     --r: 2px; /* rows, cards, buttons: printed matter */
     --r-round: 999px; /* magnet counters and glyphs only */
     --counter-shadow: 0 2px 0 rgb(14 23 38 / 0.18); /* a physical counter; nothing else */
-    --frame: 2px solid var(--ink); /* the programme-page frame */
+    /* The programme-page frame: ink on the day kit; a mid grey under floodlights,
+       where an ink frame would be a near-white 2px line round every card. */
+    --frame-ink: light-dark(var(--ink), #687185);
+    --frame: 2px solid var(--frame-ink);
     --hair: 1px solid var(--rule);
     --s1: 4px;
     --s2: 8px;

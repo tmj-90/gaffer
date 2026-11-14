@@ -1016,8 +1016,10 @@
     box-shadow: inset 6px 0 0 var(--red);
     background: var(--red-wash);
   }
+  /* Worth a look, not a referee's card: the stripe is ink, not status yellow
+     (yellow is only for what needs you). */
   .vd-cell.vd-warn {
-    box-shadow: inset 6px 0 0 var(--yellow);
+    box-shadow: inset 6px 0 0 var(--ink-2);
   }
   .vd-k {
     font: 700 var(--t12) / 1 var(--f-cond);

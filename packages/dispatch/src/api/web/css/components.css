@@ -222,7 +222,7 @@
     padding: 0 14px;
     border: 0;
     background: none;
-    font: 700 15px var(--f-text);
+    font: 700 var(--t15) var(--f-text);
   }
   .segmented button svg {
     width: 16px;
@@ -371,7 +371,7 @@
     flex: none;
   }
   .shirt-no {
-    font: 900 15px / 1 var(--f-stencil);
+    font: 900 var(--t15) / 1 var(--f-stencil);
     fill: var(--shirt-no);
   }
   .repo,
@@ -576,9 +576,9 @@
     color: var(--on-claret);
   }
   .block-sky {
-    --block-ink-2: var(--on-sky-2);
-    background: var(--sky);
-    color: var(--on-sky);
+    --block-ink-2: var(--on-sky-block-2);
+    background: var(--sky-block);
+    color: var(--on-sky-block);
   }
   .block-ink {
     --block-ink-2: var(--board-ink-2);
@@ -728,6 +728,12 @@
     background: var(--board);
     color: var(--board-ink);
     border-bottom: 4px solid var(--yellow);
+    /* The board is dark in both kits: its chart marks take the board steps. */
+    --viz-mark: var(--viz-board-mark);
+    --viz-accent: var(--viz-board-accent);
+    --viz-muted: var(--viz-board-muted);
+    --viz-grid: var(--viz-board-grid);
+    --viz-track: var(--viz-board-track);
   }
   .scoreboard-in {
     max-width: 1440px;
@@ -752,7 +758,7 @@
     max-width: 70ch;
   }
   .hl-sub a {
-    color: #fff;
+    color: var(--board-ink);
     text-decoration-color: var(--yellow);
   }
   .scoreboard .view-hero-status {
@@ -760,7 +766,7 @@
     margin-top: 10px;
   }
   .scoreboard .view-hero-status:not(.ok) {
-    color: #ff8e98;
+    color: var(--board-red-2);
   }
   .scoreboard :focus-visible {
     outline-color: var(--yellow);
@@ -860,7 +866,7 @@
     color: var(--board-ink-2);
   }
   .kpi-spark {
-    color: var(--sky);
+    color: var(--viz-mark);
     height: 28px;
   }
   .kpi-spark svg {
@@ -897,7 +903,7 @@
   }
   .card .kpi-spark,
   .view > .kpi-row .kpi-spark {
-    color: var(--ink-2);
+    color: var(--viz-mark);
   }
   /* Digits flip in on first paint and on change (never a count-up). */
   .dg {
@@ -919,20 +925,14 @@
   .band {
     position: relative;
     height: 8px;
-    background: var(--rule-2);
+    background: var(--viz-track);
     border-radius: 1px;
     min-width: 60px;
-  }
-  .scoreboard .band {
-    background: var(--board-rule);
   }
   .band-fill {
     position: absolute;
     inset: 0 auto 0 0;
-    background: var(--ink-2);
-  }
-  .scoreboard .band-fill {
-    background: var(--sky);
+    background: var(--viz-mark);
   }
   .band-fill.over,
   .band-over {
@@ -953,7 +953,7 @@
     transform: translateX(-1px);
   }
   .scoreboard .band-tick {
-    background: #fff;
+    background: var(--board-ink);
   }
 
   /* --- charts (inline SVG, axes always drawn, text ≥ 12px) ------------------ */
@@ -968,7 +968,7 @@
   }
   .chart-axis,
   .chart .cg {
-    stroke: var(--rule);
+    stroke: var(--viz-grid);
     stroke-width: 1;
   }
   .chart-base {
@@ -976,13 +976,13 @@
     stroke-width: 1.5;
   }
   .chart-bar {
-    fill: var(--ink);
+    fill: var(--viz-mark);
   }
   .chart-bar.is-today {
-    fill: var(--claret-ink);
+    fill: var(--viz-accent);
   }
   .chart-bar.is-zero {
-    fill: var(--rule);
+    fill: var(--viz-muted);
   }
   .chart-tick,
   .chart .cx {
@@ -1570,7 +1570,7 @@
     max-width: min(640px, calc(100vw - 32px));
     padding: 12px 18px;
     background: var(--board);
-    color: #fff;
+    color: var(--board-ink);
     border-radius: var(--r);
     box-shadow: 0 3px 0 var(--red);
     font: 600 var(--t16) / 1.35 var(--f-text);

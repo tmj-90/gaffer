@@ -925,6 +925,7 @@ function renderClaimsPanel(claims, readAt = Date.now()) {
   }
   const rows = claims.map((c) => {
     const ended = Date.parse(c.expires_at) < now;
+    const num = ticketRefText({ id: c.ticket_id, number: c.ticket_number });
     const agentLabel = agentWho(c.agent_id, c.agent_display_name).name;
     return el("tr", { class: ended ? "is-stale" : "" }, [
       el(

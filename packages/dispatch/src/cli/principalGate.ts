@@ -46,6 +46,8 @@ const RULES: Record<string, Rule> = {
   whoami: { kind: "whoami" },
   "ticket create": { kind: "create_ticket" },
   "ticket list": { kind: "list_tickets" },
+  // Filtered to the principal's repo scope by the command itself (Dispatch.autonomyLadder).
+  "autonomy ladder": { kind: "open" },
   ...Object.fromEntries(
     [
       "ticket show",

@@ -76,6 +76,12 @@ export interface ReviewDecisionRow {
   toStatus: string | null;
   reason: string | null;
   approvedUnchanged: boolean | null;
+  /**
+   * When the decision was recorded (the event's created_at). The autonomy ladder restarts
+   * a row's count at a step-down, so only decisions after it count. Absent on a synthetic
+   * row (it then always counts).
+   */
+  at?: string;
 }
 
 /**
@@ -309,6 +315,7 @@ export class EventRepository {
     const rows = this.db
       .prepare(
         `SELECT e.id                                          AS decision_id,
+                e.created_at                                  AS at,
                 r.id                                          AS repo_id,
                 r.name                                        AS repo_name,
                 t.risk_level                                  AS risk_level,
@@ -338,6 +345,7 @@ export class EventRepository {
       )
       .all() as Array<{
       decision_id: string;
+      at: string;
       repo_id: string;
       repo_name: string;
       risk_level: string;
@@ -358,6 +366,7 @@ export class EventRepository {
       toStatus: r.to_status,
       reason: r.reason,
       approvedUnchanged: r.approved_unchanged === null ? null : r.approved_unchanged === 1,
+      at: r.at,
     }));
   }
 

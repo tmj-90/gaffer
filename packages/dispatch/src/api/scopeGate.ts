@@ -34,6 +34,7 @@ import { apiPrincipal } from "./routes/context.js";
  *   - `/tickets/:ref/…`                   → a read of that ticket;
  *   - `/tickets`, `/tickets/details`, `/api/board`, `/api/human-queue`, `/claims`,
  *     `/decisions`, `/api/events/stream`  → filtered to its tickets by the route;
+ *   - `/api/autonomy/ladder`              → filtered to the repos in its repo scope;
  *   - `/scope/repos?all=1`                → filtered to the repos it reaches by the route;
  *   - `/decisions/:id`                    → a read of every ticket it is linked to (the
  *                                           one decision rule, accessScope.ts
@@ -97,6 +98,8 @@ export async function authorizePrincipalRequest(
         }
         // The live feed: filtered to its tickets' events by the route.
         if (segments.length === 3 && second === "events" && third === "stream") return;
+        // The autonomy ladder: filtered to the repos in its repo scope by the facade.
+        if (segments.length === 3 && second === "autonomy" && third === "ladder") return;
         break;
       default:
         break;

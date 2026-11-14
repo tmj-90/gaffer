@@ -37,6 +37,29 @@ export const UNCHANGED_THRESHOLD = 0.9;
  *  confidence by this factor so a same-repo recommendation always outranks it. */
 export const CROSS_REPO_CONFIDENCE_FACTOR = 0.8;
 
+/**
+ * AUTONOMY STEP-DOWN, trigger (c): this many tester FAILs or UNPROVABLE holds on
+ * automatically approved changes at one repo x risk, inside the window, take the approve
+ * gate back. The one knob: `GAFFER_AUTONOMY_STEPDOWN_FAILS` (a Settings key, autonomy
+ * group), read by {@link stepDownTesterFails}.
+ */
+export const STEP_DOWN_TESTER_FAILS_DEFAULT = 2;
+export const STEP_DOWN_TESTER_FAILS_ENV = "GAFFER_AUTONOMY_STEPDOWN_FAILS";
+
+/** The window trigger (c) counts in (it also never reaches back past the last step-down or lift). */
+export const STEP_DOWN_WINDOW_DAYS = 30;
+
+/**
+ * The tester-failure count that steps autonomy down. A whole number 1..50 from the
+ * environment; anything else (unset, junk, 0) is the default 2.
+ */
+export function stepDownTesterFails(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = (env[STEP_DOWN_TESTER_FAILS_ENV] ?? "").trim();
+  if (!/^[0-9]{1,2}$/.test(raw)) return STEP_DOWN_TESTER_FAILS_DEFAULT;
+  const n = Number(raw);
+  return n >= 1 && n <= 50 ? n : STEP_DOWN_TESTER_FAILS_DEFAULT;
+}
+
 /** The two gates a recommendation can concern. Memory is deferred (Phase 3+). */
 export type AutonomyGate = "approve" | "merge";
 

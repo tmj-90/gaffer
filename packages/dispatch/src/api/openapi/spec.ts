@@ -362,6 +362,19 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
   },
   {
     method: "GET",
+    path: "/api/autonomy/ladder",
+    tag: T.read,
+    summary: "The autonomy ladder",
+    description:
+      "For every repository x risk (low to critical) x gate (approve, merge): the rung (`person`, `suggested`, `automatic`), the evidence behind it (k of n human decisions since the window opened, the rate with its 95% Wilson interval, the threshold and minimum sample), the distance to the next rung in plain words, and any step-down in force (when, why, what lifts it). Critical always reads `ceiling: true`. `?repo=<id|name>` narrows to one repository. A scoped principal sees only the repositories in its repo scope. `recent_step_downs` lists the step-downs of the last 7 days.",
+    capability: "read",
+    query: {
+      repo: { description: "One repository (id or name)." },
+    },
+    responses: [ok("`AutonomyLadder`."), notFound],
+  },
+  {
+    method: "GET",
     path: "/api/autonomy/recommendations",
     tag: T.read,
     summary: "Advisory autonomy recommendations",

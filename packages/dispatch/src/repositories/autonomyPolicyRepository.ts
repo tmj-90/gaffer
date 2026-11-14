@@ -1,4 +1,5 @@
 import type { Db } from "../db/connection.js";
+import { stepDownInForce } from "../services/autonomyStepDownStore.js";
 
 /**
  * GRADUATED-AUTONOMY (Spec 2, Phase 3) — data access for the `autonomy_policy`
@@ -92,6 +93,15 @@ export class AutonomyPolicyRepository {
           WHERE repo_id = @repoId AND risk_level = @riskLevel AND gate = @gate`,
       )
       .get({ repoId, riskLevel, gate }) as AutonomyPolicyRow | undefined;
+  }
+
+  /**
+   * AUTONOMY STEP-DOWN: is a step-down in force for (repo, risk, gate)? Read from the
+   * event chain (services/autonomyStepDownStore.ts); the row itself is never changed by a
+   * step-down. The enforcement treats a throw as in force (fail closed).
+   */
+  stepDownInForce(repoId: string, riskLevel: string, gate: string): boolean {
+    return stepDownInForce(this.db, repoId, riskLevel, gate);
   }
 
   /**

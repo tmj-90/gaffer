@@ -1,8 +1,9 @@
 import type { Command } from "commander";
 
 import { AUTONOMY_MODES } from "../../repositories/autonomyPolicyRepository.js";
+import type { AutonomyLadder } from "../../services/autonomyLadderService.js";
 import { DispatchError } from "../../util/errors.js";
-import { printJson } from "../helpers.js";
+import { cliPrincipal, printJson } from "../helpers.js";
 import { open } from "../runtime.js";
 
 /**
@@ -23,7 +24,29 @@ import { open } from "../runtime.js";
  * boundary.
  */
 export function registerAutonomy(program: Command): void {
-  const autonomy = program.command("autonomy").description("Graduated-autonomy policy (read-only)");
+  const autonomy = program
+    .command("autonomy")
+    .description("Graduated-autonomy policy and the autonomy ladder");
+
+  autonomy
+    .command("ladder")
+    .description(
+      "The autonomy ladder: for every repo x risk x gate (approve, merge) the rung " +
+        "(person / suggested / automatic), the evidence behind it, the distance to the next " +
+        "rung and any step-down in force. A scoped principal sees only its repos. No mutation.",
+    )
+    .option("--repo <repo>", "one repository (id or name)")
+    .option("--json", "print the read model as JSON")
+    .action((opts, cmd) => {
+      const wg = open(cmd.optsWithGlobals());
+      try {
+        const ladder = wg.autonomyLadder(cliPrincipal(), opts.repo as string | undefined);
+        if (opts.json) printJson({ ok: true, ...ladder });
+        else process.stdout.write(renderLadder(ladder));
+      } finally {
+        wg.db.close();
+      }
+    });
 
   autonomy
     .command("list")
@@ -65,4 +88,48 @@ export function registerAutonomy(program: Command): void {
       printJson({ ok: true, count: policies.length, policies });
       wg.db.close();
     });
+}
+
+const RUNG_WORD: Record<string, string> = {
+  person: "a person decides",
+  suggested: "suggested",
+  automatic: "automatic",
+};
+
+/** The ladder as plain text: one block per repo, one line per risk x gate. */
+export function renderLadder(ladder: AutonomyLadder): string {
+  const lines: string[] = [];
+  if (ladder.repos.length === 0) lines.push("No repositories to show.");
+  for (const repo of ladder.repos) {
+    lines.push(`${repo.repo_name}`);
+    for (const row of repo.rows) {
+      for (const gate of ["approve", "merge"] as const) {
+        const c = row.gates[gate];
+        const word = c.ceiling
+          ? "not allowed"
+          : c.step_down
+            ? "stepped down"
+            : (RUNG_WORD[c.rung] ?? c.rung);
+        const ev = c.evidence;
+        const figure = ev.n > 0 ? `${ev.k} of ${ev.n}` : "none yet";
+        lines.push(
+          `  ${row.risk_level.padEnd(8)} ${gate.padEnd(7)} ${word.padEnd(17)} ${figure.padEnd(10)} ${c.distance.text}`,
+        );
+        if (c.step_down) {
+          lines.push(`      why: ${c.step_down.why}`);
+          lines.push(`      lift: ${c.step_down.lift.text}`);
+        }
+      }
+    }
+  }
+  if (ladder.recent_step_downs.length > 0) {
+    lines.push("");
+    lines.push("Step-downs in the last 7 days:");
+    for (const r of ladder.recent_step_downs) {
+      lines.push(
+        `  ${r.at}  ${r.repo_name} ${r.risk_level}/${r.gate}${r.in_force ? "" : " (lifted)"}: ${r.why}`,
+      );
+    }
+  }
+  return lines.join("\n") + "\n";
 }

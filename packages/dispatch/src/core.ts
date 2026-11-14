@@ -199,6 +199,15 @@ import type { JudgeRevealResult, ReviewOpenResult } from "./services/ticketRecor
 import * as gate from "./services/gateNotifications.js";
 import * as ticketGit from "./services/ticketGitService.js";
 import * as autonomyGate from "./services/autonomyGateService.js";
+import { computeLadder, type AutonomyLadder } from "./services/autonomyLadderService.js";
+import { readStepDowns } from "./services/autonomyStepDownStore.js";
+import { notFound } from "./util/errors.js";
+import {
+  STEP_DOWN_WINDOW_DAYS,
+  stepDownTesterFails,
+} from "./services/autonomyRecommendationService.js";
+import { isScoped as isScopedAccess } from "./services/accessScope.js";
+import { principalScope as principalAccessScope } from "./services/principalService.js";
 import * as principalAdmin from "./services/principalAdminService.js";
 import * as landing from "./services/landingFactsService.js";
 import * as reviewLifecycle from "./services/reviewLifecycleService.js";
@@ -753,6 +762,37 @@ export class Dispatch {
     write_repo_ids: string[];
   } {
     return autonomyGate.autonomyGateDecision(this, ticket, gate);
+  }
+
+  /**
+   * THE AUTONOMY LADDER: every repo x risk x gate with its rung, the evidence behind it,
+   * the distance to the next rung and any step-down in force (autonomyLadderService.ts).
+   * A scoped principal sees only the repos in its repo scope (a ticket grant reaches no
+   * repo's autonomy), and no cross-repo counts. Read-only.
+   */
+  autonomyLadder(viewer: PrincipalView | null = null, repo?: string): AutonomyLadder {
+    const scope = viewer ? principalAccessScope(viewer) : null;
+    const scoped = isScopedAccess(scope);
+    const reach = scoped ? new Set(scope.repos ?? []) : null;
+    let repos = this.listRepositories().filter((r) => !reach || reach.has(r.id));
+    if (repo !== undefined) {
+      const want = this.repos.findById(repo) ?? this.repos.findByName(repo);
+      if (!want || (reach && !reach.has(want.id))) throw notFound("repository", repo);
+      repos = repos.filter((r) => r.id === want.id);
+      if (repos.length === 0) repos = [want];
+    }
+    return computeLadder({
+      now: this.clock.now(),
+      repos: repos.map((r) => ({ id: r.id, name: r.name })),
+      policies: this.autonomyPolicy.list(),
+      decisions: this.events.reviewDecisions(),
+      recommendations: this.autonomyRecommendationsList(),
+      stepDowns: readStepDowns(this.db),
+      env: process.env,
+      showCrossRepoCounts: !scoped,
+      stepDownTesterFails: stepDownTesterFails(),
+      stepDownWindowDays: STEP_DOWN_WINDOW_DAYS,
+    });
   }
 
   /** Every stored autonomy policy joined to its repo name (Settings surface). */

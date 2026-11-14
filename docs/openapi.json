@@ -1181,6 +1181,75 @@
         "x-capability": "full"
       }
     },
+    "/api/autonomy/ladder": {
+      "get": {
+        "operationId": "getApiAutonomyLadder",
+        "tags": [
+          "Read models"
+        ],
+        "summary": "The autonomy ladder",
+        "description": "For every repository x risk (low to critical) x gate (approve, merge): the rung (`person`, `suggested`, `automatic`), the evidence behind it (k of n human decisions since the window opened, the rate with its 95% Wilson interval, the threshold and minimum sample), the distance to the next rung in plain words, and any step-down in force (when, why, what lifts it). Critical always reads `ceiling: true`. `?repo=<id|name>` narrows to one repository. A scoped principal sees only the repositories in its repo scope. `recent_step_downs` lists the step-downs of the last 7 days.",
+        "parameters": [
+          {
+            "name": "repo",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "One repository (id or name)."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "`AutonomyLadder`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The Host/Origin is not permitted for a token-less request (`FORBIDDEN_HOST`). A named principal acted outside its scope (`SCOPE_DENIED`: `details.scope` names its repos and tickets, `details.reason` is `outside_repo_scope`, `outside_ticket_scope`, `no_repos`, `factory_wide` or `admin_required`, with `details.ticket`, `details.outside_repos` or `details.required` saying what put it outside).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource (`NOT_FOUND`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "read"
+      }
+    },
     "/api/autonomy/recommendations": {
       "get": {
         "operationId": "getApiAutonomyRecommendations",

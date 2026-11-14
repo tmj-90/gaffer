@@ -31,6 +31,7 @@ import {
   cliPrincipal,
 } from "../helpers.js";
 import { heavy, open } from "../runtime.js";
+import { registerFindingCommands } from "./finding.js";
 import { RULES } from "../limits.js";
 
 /** A --cause value, or a VALIDATION_ERROR naming the ones there are. */
@@ -734,6 +735,8 @@ export function registerTicket(program: Command): void {
       printJson({ ok: true, ...res, withdrawn: Boolean(opts.withdraw) });
       wg.db.close();
     });
+
+  registerFindingCommands(ticket);
 
   ticket
     .command("tester-route [ref]")

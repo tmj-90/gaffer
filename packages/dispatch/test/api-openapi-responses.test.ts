@@ -223,6 +223,20 @@ describe("OpenAPI response schemas match the live routes", () => {
       note: "broke it",
     });
     await expectContract("GET /tickets/:id", `/tickets/${defect.id}`);
+    // POST-MERGE FINDINGS: the regression note above became one on t1; a person adds one.
+    const added = await expectContract(
+      "POST /tickets/:id/findings",
+      `/tickets/${t1.id}/findings`,
+      { text: "missed the empty case", category: "test_gap", paths: ["src/a.ts"] },
+      201,
+    );
+    await expectContract("GET /tickets/:id/findings", `/tickets/${t1.id}/findings`);
+    await expectContract(
+      "POST /tickets/:id/findings/:findingId/withdraw",
+      `/tickets/${t1.id}/findings/${(added.body as { finding: { id: string } }).finding.id}/withdraw`,
+      { reason: "duplicate" },
+    );
+    await expectContract("GET /tickets/:id", `/tickets/${t1.id}`);
     await expectContract(
       "POST /tickets/:id/reopen-for-review",
       `/tickets/${t1.id}/reopen-for-review`,

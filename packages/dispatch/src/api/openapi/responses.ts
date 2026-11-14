@@ -278,6 +278,41 @@ const RegressionLinkView = z
   })
   .strict();
 
+/** POST-MERGE FINDINGS: one finding as every surface shows it. */
+export const FindingView = z
+  .object({
+    id: str,
+    ticket_id: str,
+    number: int.nullable(),
+    text: str.describe("What went wrong, in the person's words (untrusted text)."),
+    category: z
+      .enum(["missed_requirement", "wrong_assumption", "test_gap", "convention", "other"])
+      .nullable(),
+    paths: z.array(str).describe("Repo-relative paths or globs it concerns."),
+    paths_source: z
+      .enum(["given", "delivery", "none"])
+      .describe("given: the person named them; delivery: the change's recorded delivery."),
+    criteria: z.array(z.object({ id: str, text: str }).strict()),
+    repo: nstr,
+    source: z
+      .enum(["person", "regression"])
+      .describe("regression: a regression link's note on a later ticket."),
+    regression_ticket: z.object({ ticket_id: str, number: int.nullable() }).strict().nullable(),
+    filed_by: z.object({ type: str, id: nstr }).strict(),
+    filed_at: str,
+    withdrawn: z
+      .object({ by: z.object({ type: str, id: nstr }).strict(), at: str, reason: str })
+      .strict()
+      .nullable(),
+    lesson: z.object({ lore_id: nstr, proposed_at: str, proposed_by: str }).strict().nullable(),
+    fix_ticket: z.object({ ticket_id: str, number: int.nullable() }).strict().nullable(),
+  })
+  .strict();
+
+export const FindingWrite = z.object({ finding: FindingView, event_id: eventId }).strict();
+
+export const Findings = z.object({ ticket_id: str, findings: z.array(FindingView) }).strict();
+
 export const TicketDetail = z
   .object({
     ticket: TicketRow,
@@ -305,6 +340,9 @@ export const TicketDetail = z
       .describe(
         "Escaped defects: the accepted changes a person linked this ticket to as their regression, and the later tickets linked to this one.",
       ),
+    findings: z
+      .array(FindingView)
+      .describe("Post-merge findings: what people said went wrong after it was done."),
     agent_display: z
       .record(z.string(), AgentDisplayView)
       .describe("Every agent the ticket's claims and events name, keyed by agent id."),

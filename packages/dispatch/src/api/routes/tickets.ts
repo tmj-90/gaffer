@@ -58,6 +58,7 @@ import {
 } from "../schemas.js";
 import { API_ACTOR, apiActor, apiPrincipal, isSharedOperator, operatorActor } from "./context.js";
 import { forgetLoreDrafts } from "./readModels.js";
+import { routeFindings } from "./findings.js";
 import { requestDecisionFilter, requestTicketFilter } from "../scopeGate.js";
 import { reviewRuleThreshold } from "../../health/reviewRules.js";
 import { proposeReviewRules } from "../../services/reviewRuleService.js";
@@ -385,6 +386,8 @@ export async function routeTickets(
             regressed_by: view.regression.regressed_by.map(hide),
           };
         })(),
+        // POST-MERGE FINDINGS: what people said went wrong after it was done (oldest first).
+        findings: view.findings,
         // SQUAD: the presentation (display name, shirt number, role) of every
         // REGISTERED agent this ticket names — event actors, the reviewer, the
         // creator and any active claim holder — keyed by agent id. Additive: the
@@ -421,6 +424,15 @@ export async function routeTickets(
     methodNotAllowed(res);
     return;
   }
+
+  // POST-MERGE FINDINGS: a person's "what went wrong" on a done ticket (routes/findings.ts).
+  // A new finding can complete a repeated-feedback rule, proposed after the response.
+  if (
+    await routeFindings(wg, id, method, segments, req, res, {
+      added: () => proposeRulesAfterResponse(res, wg, memoryReader),
+    })
+  )
+    return;
 
   const sub = segments[2] as string;
 

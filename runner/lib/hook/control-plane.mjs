@@ -100,6 +100,9 @@ const CP_PAIRS = [
   // its own. Review-rule drafts (D6) are proposed from a person's feedback by the server
   // or a person, never by an agent shell.
   ["ticket", /^regression-of$/],
+  // Post-merge findings (backlog 59): what went wrong on a done change, and turning one
+  // into a lesson or a fix ticket, are a person's acts; `finding list` stays a read.
+  ["finding", /^(?:add|withdraw|lesson|fix-ticket)$/],
   // Package H1: a board move, ready and a hold change where a ticket stands around the
   // tester's verdict; `block` only as the ticket verb (a word too common to stand alone).
   ["ticket", /^(?:move|ready|hold)$/],

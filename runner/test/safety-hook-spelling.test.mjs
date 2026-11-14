@@ -152,6 +152,15 @@ for (const cmd of [
   "wg 'review-rules' prop''ose",
   "$X review-rules propose",
   "dispatch review-rules propose --repo app",
+  // Post-merge findings (backlog 59): writing, withdrawing or acting on one.
+  "wg ticket finding add 7 --text 'it broke'",
+  "wg ticket finding withdraw 7 1a2b3c4d --reason x",
+  "dispatch ticket finding lesson 7 1a2b3c4d",
+  "wg ticket finding fix-ticket 7 1a2b3c4d",
+  "wg ticket 'finding' a''dd 7 --text x",
+  "$X ticket finding add 7 --text x",
+  "W=wg; $W ticket finding lesson 7 1a2b",
+  "bash -c 'wg ticket finding add 7 --text x'",
 ]) {
   t.deny(`human-only measure verb: ${cmd}`, bash(cmd), opts);
 }
@@ -425,6 +434,10 @@ for (const cmd of [
   'git log --grep "regression-of"',
   "grep -rn regression-of docs/",
   "$PKG regression-of lodash",
+  // Reading findings stays open to an agent.
+  "wg ticket finding list 7",
+  "wg ticket finding list 7 --json",
+  'grep -rn "finding add" docs/',
   // Quoted text keeps its quotes' meaning: no separator inside it starts a command.
   'echo "a | xargs wg"',
   'echo "printenv"',

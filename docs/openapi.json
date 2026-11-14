@@ -5817,6 +5817,280 @@
         "x-capability": "full"
       }
     },
+    "/tickets/{id}/findings": {
+      "get": {
+        "operationId": "getTicketsByIdFindings",
+        "tags": [
+          "Review & delivery"
+        ],
+        "summary": "The post-merge findings on a ticket",
+        "description": "What people said went wrong on this change after it was done, oldest first; a withdrawn one stays, marked. A read (an agent may read findings).",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "`{ ticket_id, findings }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Findings"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The Host/Origin is not permitted for a token-less request (`FORBIDDEN_HOST`). A named principal acted outside its scope (`SCOPE_DENIED`: `details.scope` names its repos and tickets, `details.reason` is `outside_repo_scope`, `outside_ticket_scope`, `no_repos`, `factory_wide` or `admin_required`, with `details.ticket`, `details.outside_repos` or `details.required` saying what put it outside).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource (`NOT_FOUND`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "read"
+      },
+      "post": {
+        "operationId": "postTicketsByIdFindings",
+        "tags": [
+          "Review & delivery"
+        ],
+        "summary": "Say what went wrong on a done ticket",
+        "description": "A post-merge finding on a ticket that is done: `text`, an optional `category` (missed_requirement, wrong_assumption, test_gap, convention, other), optional `paths` (repo-relative paths or globs; default: the paths the change's recorded delivery touched) and `criteria` (the ticket's acceptance-criterion ids). Recorded as `ticket.finding_added` with who wrote it. It counts as review feedback for the repeated-feedback rules and can become a lesson or a fix ticket. Human or admin principals only; an agent is refused, and a scoped principal only on tickets in scope.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/addFindingBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "`{ finding, event_id }`. The Location header names the created resource.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FindingWrite"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The calling principal may not do this (`ACTOR_NOT_PERMITTED`). The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`). A named principal acted outside its scope (`SCOPE_DENIED`: `details.scope` names its repos and tickets, `details.reason` is `outside_repo_scope`, `outside_ticket_scope`, `no_repos`, `factory_wide` or `admin_required`, with `details.ticket`, `details.outside_repos` or `details.required` saying what put it outside).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource (`NOT_FOUND`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body or query failed validation (`VALIDATION_ERROR`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "full"
+      }
+    },
+    "/tickets/{id}/findings/{findingId}/withdraw": {
+      "post": {
+        "operationId": "postTicketsByIdFindingsByFindingIdWithdraw",
+        "tags": [
+          "Review & delivery"
+        ],
+        "summary": "Withdraw a post-merge finding",
+        "description": "Take a finding back with a `reason` (`ticket.finding_withdrawn`). Soft: the finding stays in the log and in the list, marked withdrawn; nothing is deleted. A withdrawn finding no longer counts anywhere. Human or admin principals only.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
+          },
+          {
+            "name": "findingId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "findingId."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/withdrawFindingBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "`{ finding, event_id }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FindingWrite"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The calling principal may not do this (`ACTOR_NOT_PERMITTED`). The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`). A named principal acted outside its scope (`SCOPE_DENIED`: `details.scope` names its repos and tickets, `details.reason` is `outside_repo_scope`, `outside_ticket_scope`, `no_repos`, `factory_wide` or `admin_required`, with `details.ticket`, `details.outside_repos` or `details.required` saying what put it outside).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource (`NOT_FOUND`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body or query failed validation (`VALIDATION_ERROR`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "full"
+      }
+    },
     "/tickets/{id}/review-raw-opened": {
       "post": {
         "operationId": "postTicketsByIdReviewRawOpened",
@@ -12165,6 +12439,52 @@
           "text"
         ]
       },
+      "addFindingBody": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "maxLength": 4000
+          },
+          "category": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "missed_requirement",
+                  "wrong_assumption",
+                  "test_gap",
+                  "convention",
+                  "other"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 500
+            },
+            "maxItems": 50
+          },
+          "criteria": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            },
+            "maxItems": 50
+          }
+        },
+        "required": [
+          "text"
+        ]
+      },
       "addTicketDependencyBody": {
         "type": "object",
         "properties": {
@@ -13348,6 +13668,598 @@
             }
           }
         }
+      },
+      "Findings": {
+        "type": "object",
+        "properties": {
+          "ticket_id": {
+            "type": "string"
+          },
+          "findings": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "ticket_id": {
+                  "type": "string"
+                },
+                "number": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "text": {
+                  "type": "string",
+                  "description": "What went wrong, in the person's words (untrusted text)."
+                },
+                "category": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "missed_requirement",
+                        "wrong_assumption",
+                        "test_gap",
+                        "convention",
+                        "other"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "paths": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Repo-relative paths or globs it concerns."
+                },
+                "paths_source": {
+                  "type": "string",
+                  "enum": [
+                    "given",
+                    "delivery",
+                    "none"
+                  ],
+                  "description": "given: the person named them; delivery: the change's recorded delivery."
+                },
+                "criteria": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "text": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "text"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "repo": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "source": {
+                  "type": "string",
+                  "enum": [
+                    "person",
+                    "regression"
+                  ],
+                  "description": "regression: a regression link's note on a later ticket."
+                },
+                "regression_ticket": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "ticket_id": {
+                          "type": "string"
+                        },
+                        "number": {
+                          "anyOf": [
+                            {
+                              "type": "integer"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "ticket_id",
+                        "number"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "filed_by": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string"
+                    },
+                    "id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "id"
+                  ],
+                  "additionalProperties": false
+                },
+                "filed_at": {
+                  "type": "string"
+                },
+                "withdrawn": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "by": {
+                          "type": "object",
+                          "properties": {
+                            "type": {
+                              "type": "string"
+                            },
+                            "id": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "type",
+                            "id"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "at": {
+                          "type": "string"
+                        },
+                        "reason": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "by",
+                        "at",
+                        "reason"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "lesson": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "lore_id": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "proposed_at": {
+                          "type": "string"
+                        },
+                        "proposed_by": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "lore_id",
+                        "proposed_at",
+                        "proposed_by"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "fix_ticket": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "ticket_id": {
+                          "type": "string"
+                        },
+                        "number": {
+                          "anyOf": [
+                            {
+                              "type": "integer"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "ticket_id",
+                        "number"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "ticket_id",
+                "number",
+                "text",
+                "category",
+                "paths",
+                "paths_source",
+                "criteria",
+                "repo",
+                "source",
+                "regression_ticket",
+                "filed_by",
+                "filed_at",
+                "withdrawn",
+                "lesson",
+                "fix_ticket"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "ticket_id",
+          "findings"
+        ],
+        "additionalProperties": false
+      },
+      "FindingWrite": {
+        "type": "object",
+        "properties": {
+          "finding": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "ticket_id": {
+                "type": "string"
+              },
+              "number": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "text": {
+                "type": "string",
+                "description": "What went wrong, in the person's words (untrusted text)."
+              },
+              "category": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "missed_requirement",
+                      "wrong_assumption",
+                      "test_gap",
+                      "convention",
+                      "other"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "paths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Repo-relative paths or globs it concerns."
+              },
+              "paths_source": {
+                "type": "string",
+                "enum": [
+                  "given",
+                  "delivery",
+                  "none"
+                ],
+                "description": "given: the person named them; delivery: the change's recorded delivery."
+              },
+              "criteria": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "text": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "text"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "repo": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "source": {
+                "type": "string",
+                "enum": [
+                  "person",
+                  "regression"
+                ],
+                "description": "regression: a regression link's note on a later ticket."
+              },
+              "regression_ticket": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "ticket_id": {
+                        "type": "string"
+                      },
+                      "number": {
+                        "anyOf": [
+                          {
+                            "type": "integer"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "ticket_id",
+                      "number"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "filed_by": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "type",
+                  "id"
+                ],
+                "additionalProperties": false
+              },
+              "filed_at": {
+                "type": "string"
+              },
+              "withdrawn": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "by": {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string"
+                          },
+                          "id": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "type",
+                          "id"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "at": {
+                        "type": "string"
+                      },
+                      "reason": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "by",
+                      "at",
+                      "reason"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "lesson": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "lore_id": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "proposed_at": {
+                        "type": "string"
+                      },
+                      "proposed_by": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "lore_id",
+                      "proposed_at",
+                      "proposed_by"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "fix_ticket": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "ticket_id": {
+                        "type": "string"
+                      },
+                      "number": {
+                        "anyOf": [
+                          {
+                            "type": "integer"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "ticket_id",
+                      "number"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "ticket_id",
+              "number",
+              "text",
+              "category",
+              "paths",
+              "paths_source",
+              "criteria",
+              "repo",
+              "source",
+              "regression_ticket",
+              "filed_by",
+              "filed_at",
+              "withdrawn",
+              "lesson",
+              "fix_ticket"
+            ],
+            "additionalProperties": false
+          },
+          "event_id": {
+            "type": "string",
+            "description": "The id of the work event the change wrote."
+          }
+        },
+        "required": [
+          "finding",
+          "event_id"
+        ],
+        "additionalProperties": false
       },
       "fixTheseBody": {
         "type": "object",
@@ -17468,6 +18380,291 @@
             "additionalProperties": false,
             "description": "Escaped defects: the accepted changes a person linked this ticket to as their regression, and the later tickets linked to this one."
           },
+          "findings": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "ticket_id": {
+                  "type": "string"
+                },
+                "number": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "text": {
+                  "type": "string",
+                  "description": "What went wrong, in the person's words (untrusted text)."
+                },
+                "category": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "missed_requirement",
+                        "wrong_assumption",
+                        "test_gap",
+                        "convention",
+                        "other"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "paths": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Repo-relative paths or globs it concerns."
+                },
+                "paths_source": {
+                  "type": "string",
+                  "enum": [
+                    "given",
+                    "delivery",
+                    "none"
+                  ],
+                  "description": "given: the person named them; delivery: the change's recorded delivery."
+                },
+                "criteria": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "text": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "text"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "repo": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "source": {
+                  "type": "string",
+                  "enum": [
+                    "person",
+                    "regression"
+                  ],
+                  "description": "regression: a regression link's note on a later ticket."
+                },
+                "regression_ticket": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "ticket_id": {
+                          "type": "string"
+                        },
+                        "number": {
+                          "anyOf": [
+                            {
+                              "type": "integer"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "ticket_id",
+                        "number"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "filed_by": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string"
+                    },
+                    "id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "id"
+                  ],
+                  "additionalProperties": false
+                },
+                "filed_at": {
+                  "type": "string"
+                },
+                "withdrawn": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "by": {
+                          "type": "object",
+                          "properties": {
+                            "type": {
+                              "type": "string"
+                            },
+                            "id": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "type",
+                            "id"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "at": {
+                          "type": "string"
+                        },
+                        "reason": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "by",
+                        "at",
+                        "reason"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "lesson": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "lore_id": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "proposed_at": {
+                          "type": "string"
+                        },
+                        "proposed_by": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "lore_id",
+                        "proposed_at",
+                        "proposed_by"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "fix_ticket": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "ticket_id": {
+                          "type": "string"
+                        },
+                        "number": {
+                          "anyOf": [
+                            {
+                              "type": "integer"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "ticket_id",
+                        "number"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "ticket_id",
+                "number",
+                "text",
+                "category",
+                "paths",
+                "paths_source",
+                "criteria",
+                "repo",
+                "source",
+                "regression_ticket",
+                "filed_by",
+                "filed_at",
+                "withdrawn",
+                "lesson",
+                "fix_ticket"
+              ],
+              "additionalProperties": false
+            },
+            "description": "Post-merge findings: what people said went wrong after it was done."
+          },
           "agent_display": {
             "type": "object",
             "additionalProperties": {
@@ -17581,6 +18778,7 @@
           "rework_trail",
           "review_comments",
           "regression",
+          "findings",
           "agent_display",
           "tester_waiver",
           "epic_acceptance"
@@ -19321,6 +20519,18 @@
           "scope"
         ],
         "additionalProperties": false
+      },
+      "withdrawFindingBody": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string",
+            "maxLength": 1000
+          }
+        },
+        "required": [
+          "reason"
+        ]
       },
       "wontDoBody": {
         "type": "object",

@@ -435,6 +435,9 @@ export const DANGEROUS_COMMANDS = [
     // a person's or a bot's delegated access, never an agent's to mint or act as.
     // And the escaped-defect link (`regression-of`): a person's judgement that a change
     // caused a defect, never an agent's (`review-rules propose` is matched by `review`).
+    // And a post-merge finding (`ticket finding add|withdraw|lesson|fix-ticket`): what
+    // went wrong on a done change, and the lesson or fix ticket made from it, are a
+    // person's word; an agent reads findings (`finding list`, get_ticket) and never writes one.
     // And the acceptance profile (`acceptance-profile`): the commands the runner runs for a
     // ticket's cli/api profile are a person's to register; and the runtime evidence
     // (`acceptance-evidence`): the runner's record of running them, never an agent's.
@@ -447,7 +450,7 @@ export const DANGEROUS_COMMANDS = [
     // root options): the words are too common to match anywhere after `dispatch` (a
     // Redux or WordPress `dispatch( 'core/block-editor' )` search, `dispatch.js --mode
     // block`); the normalised views put a quoted, escaped or wrapped CLI in that shape.
-    re: /\b(wg|dispatch|fg|crew)\b[^\n|;&]*\b(review|regression-of|acceptance-profile|acceptance-evidence|approve|approve-ready|mark-merged|record-landing|landing-begin|record-tester-replay|ci-result|eval-score|lane-verdict|scout-record|tester-route|attach-evidence|reject|repo-access|set-testable|allow-test-changes|set-commands|test-contract|tester-pass|tester-fail|repo-delivery|require-cap|set-reviewer|decisions[ \t]+resolve|agent[ \t]+rename|club[ \t]+set|wont-do|principal[ \t]+(?:create|revoke)|as-principal|reopen-for-review|ticket[ \t]+(?:move|ready|hold)|human-claim|human-release)\b|\b(?:wg|dispatch|fg|crew)[ \t]+(?:-\S*[ \t]+(?:[^\s-]\S*[ \t]+)?)*(?:un)?block\b|\bGAFFER_PRINCIPAL_TOKEN=/,
+    re: /\b(wg|dispatch|fg|crew)\b[^\n|;&]*\b(review|regression-of|acceptance-profile|acceptance-evidence|approve|approve-ready|mark-merged|record-landing|landing-begin|record-tester-replay|ci-result|eval-score|lane-verdict|scout-record|tester-route|attach-evidence|reject|repo-access|set-testable|allow-test-changes|set-commands|test-contract|tester-pass|tester-fail|repo-delivery|require-cap|set-reviewer|decisions[ \t]+resolve|finding[ \t]+(?:add|withdraw|lesson|fix-ticket)|agent[ \t]+rename|club[ \t]+set|wont-do|principal[ \t]+(?:create|revoke)|as-principal|reopen-for-review|ticket[ \t]+(?:move|ready|hold)|human-claim|human-release)\b|\b(?:wg|dispatch|fg|crew)[ \t]+(?:-\S*[ \t]+(?:[^\s-]\S*[ \t]+)?)*(?:un)?block\b|\bGAFFER_PRINCIPAL_TOKEN=/,
     why: "control-plane CLI write (use the scoped MCP, not the privileged wg/dispatch/fg/crew CLI)",
     example: "wg ticket approve T-1",
     crewFlags: false,

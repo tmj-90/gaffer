@@ -206,6 +206,7 @@ import * as ticketLifecycle from "./services/ticketLifecycleService.js";
 import * as testerLane from "./services/testerLaneService.js";
 import * as ticketRecords from "./services/ticketRecordsService.js";
 import * as regressions from "./services/regressionService.js";
+import * as findings from "./services/findingService.js";
 import * as ticketLinks from "./services/ticketLinksService.js";
 import * as planning from "./services/planningService.js";
 import * as runRegistry from "./services/runRegistryService.js";
@@ -253,6 +254,7 @@ export type {
   TicketView,
 } from "./services/ticketReadService.js";
 export type { RegressionLinkView } from "./services/regressionService.js";
+export type { FindingView } from "./services/findingService.js";
 
 /**
  * The execution boundary for a ticket, partitioned by access (WG-002). Only
@@ -1465,6 +1467,30 @@ export class Dispatch {
 
   regressionLinkRows(): RegressionLink[] {
     return regressions.regressionLinkRows(this);
+  }
+
+  /** POST-MERGE FINDINGS: a person says what went wrong on a done ticket. */
+  addFinding(
+    ref: string,
+    input: findings.AddFindingInput,
+    actor: Actor,
+  ): { finding: findings.FindingView; eventId: string } {
+    return findings.addFinding(this, ref, input, actor);
+  }
+
+  /** Take a finding back (soft, with a reason). A person's act. */
+  withdrawFinding(
+    ref: string,
+    findingId: string,
+    reason: unknown,
+    actor: Actor,
+  ): { finding: findings.FindingView; eventId: string } {
+    return findings.withdrawFinding(this, ref, findingId, reason, actor);
+  }
+
+  /** The findings on one ticket (withdrawn ones included, marked), oldest first. */
+  findingsOf(ref: string): findings.FindingView[] {
+    return findings.readFindings(this.db, this.resolveTicket(ref).id);
   }
 
   ciStatus(

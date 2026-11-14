@@ -1435,6 +1435,12 @@ for (const [label, cmd] of [
   // Proposing review-rule drafts from a person's feedback is a person's (or the server's)
   // act (D6); an agent proposes lore only through the memory MCP, as its own draft.
   ["wg review-rules propose", "wg review-rules propose"],
+  // A post-merge finding, its withdrawal, and the lesson or fix ticket made from it are a
+  // person's acts (backlog 59): an agent reads findings, never writes one.
+  ["wg ticket finding add", "wg ticket finding add 7 --text 'header row lost'"],
+  ["wg ticket finding withdraw", "wg ticket finding withdraw 7 1a2b3c4d --reason dup"],
+  ["dispatch ticket finding lesson", "dispatch ticket finding lesson 7 1a2b3c4d"],
+  ["wg ticket finding fix-ticket", "wg ticket finding fix-ticket 7 1a2b3c4d"],
   // Tester first: only the runner sends a delivery to the tester before review.
   ["wg ticket tester-route --as system", "wg ticket tester-route 5 --as system"],
   ["dispatch ticket tester-route --all", "dispatch ticket tester-route --all --as admin"],

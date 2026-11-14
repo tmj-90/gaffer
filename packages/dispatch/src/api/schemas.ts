@@ -321,6 +321,23 @@ export const regressionOfBody = z.object({
 });
 export type RegressionOfBody = z.infer<typeof regressionOfBody>;
 
+/** POST-MERGE FINDINGS: what went wrong on a done ticket (the service validates the rest). */
+export const addFindingBody = z.object({
+  text: z.string().max(4_000),
+  category: z
+    .enum(["missed_requirement", "wrong_assumption", "test_gap", "convention", "other"])
+    .nullable()
+    .optional(),
+  paths: z.array(z.string().max(500)).max(50).optional(),
+  criteria: z.array(z.string().trim().min(1).max(80)).max(50).optional(),
+});
+export type AddFindingBody = z.infer<typeof addFindingBody>;
+
+export const withdrawFindingBody = z.object({
+  reason: z.string().max(1_000),
+});
+export type WithdrawFindingBody = z.infer<typeof withdrawFindingBody>;
+
 export const setTestContractBody = z.object({
   changed_surfaces: z.array(z.string().trim().min(1).max(500)).max(100).default([]),
   runtime_deps: z.array(z.string().trim().min(1).max(500)).max(100).default([]),

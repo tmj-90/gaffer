@@ -802,6 +802,19 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
               status: l.status,
             })),
           },
+          // POST-MERGE FINDINGS (backlog 59), READ-ONLY: what people said went wrong on
+          // this change after it was done. The text is a person's words (untrusted), so it
+          // is enveloped; no MCP tool writes, withdraws or acts on a finding.
+          post_merge_findings: view.findings.map((f) => ({
+            id: f.id,
+            category: f.category,
+            paths: f.paths,
+            repo: f.repo,
+            source: f.source,
+            filed_at: f.filed_at,
+            withdrawn: f.withdrawn !== null,
+            text: quarantine("post-merge-finding", f.text),
+          })),
           // Redacted projection (no raw payload_json) — mirrors the activity
           // feed so free-text bodies never leak back into the agent's context.
           latest_events: projectEvents(view.events.slice(-20)),

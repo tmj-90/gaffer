@@ -1102,6 +1102,47 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     ],
   },
   {
+    method: "GET",
+    path: "/tickets/:id/findings",
+    tag: T.review,
+    summary: "The post-merge findings on a ticket",
+    description:
+      "What people said went wrong on this change after it was done, oldest first; a " +
+      "withdrawn one stays, marked. A read (an agent may read findings).",
+    capability: "read",
+    responses: [ok("`{ ticket_id, findings }`.", "Findings"), notFound],
+  },
+  {
+    method: "POST",
+    path: "/tickets/:id/findings",
+    tag: T.review,
+    summary: "Say what went wrong on a done ticket",
+    description:
+      "A post-merge finding on a ticket that is done: `text`, an optional `category` " +
+      "(missed_requirement, wrong_assumption, test_gap, convention, other), optional " +
+      "`paths` (repo-relative paths or globs; default: the paths the change's recorded " +
+      "delivery touched) and `criteria` (the ticket's acceptance-criterion ids). Recorded " +
+      "as `ticket.finding_added` with who wrote it. It counts as review feedback for the " +
+      "repeated-feedback rules and can become a lesson or a fix ticket. Human or admin " +
+      "principals only; an agent is refused, and a scoped principal only on tickets in scope.",
+    capability: "full",
+    body: "addFindingBody",
+    responses: [created("`{ finding, event_id }`.", "FindingWrite"), notFound, invalid, forbidden],
+  },
+  {
+    method: "POST",
+    path: "/tickets/:id/findings/:findingId/withdraw",
+    tag: T.review,
+    summary: "Withdraw a post-merge finding",
+    description:
+      "Take a finding back with a `reason` (`ticket.finding_withdrawn`). Soft: the finding " +
+      "stays in the log and in the list, marked withdrawn; nothing is deleted. A withdrawn " +
+      "finding no longer counts anywhere. Human or admin principals only.",
+    capability: "full",
+    body: "withdrawFindingBody",
+    responses: [ok("`{ finding, event_id }`.", "FindingWrite"), notFound, invalid, forbidden],
+  },
+  {
     method: "POST",
     path: "/tickets/:id/review-raw-opened",
     tag: T.review,

@@ -15,6 +15,7 @@ import {
   hasTicketAction,
   pipelineDots,
   priorityTag,
+  reasonTag,
   riskBadge,
   statusBadge,
   statusLabel,
@@ -439,7 +440,8 @@ function renderBoard(columns, closed, wontDo = [], needs = null, totals = null) 
 function closedRow(t, action) {
   const repo = (t.repos || [])[0];
   return el("li", { class: `closed-row bc-${t.status}` }, [
-    el("span", { class: "closed-num tabnum" }, t.number != null ? `#${t.number}` : "—"),
+    // The one ticket number build (A-20): the title is the row's link, so the ref is not.
+    el("span", { class: "closed-num" }, ticketRef(t, { size: "s", link: false })),
     el("a", { class: "closed-title", href: `#/ticket/${t.id}` }, t.title),
     el("span", { class: "closed-meta" }, [
       riskBadge(t.risk_level),
@@ -672,10 +674,15 @@ function renderBoardCard(card, laneKey, needs) {
       cls = "card-reject card-rework-exhausted";
       title = "Rework loop hit its attempt/cost ceiling — needs a human";
     }
+    // A server code as the reason ("tester_failed:FAIL:") reads in words, the raw code in
+    // the title (A-25).
+    const why = /^[a-z]+(_[a-z]+)+(:|$)/.test(String(fb.reason || ""))
+      ? reasonTag(fb.reason)
+      : fb.reason;
     return el("p", { class: cls, title }, [
       el("span", { class: "card-reject-label" }, label),
       " ",
-      fb.reason,
+      why,
     ]);
   })();
 
@@ -858,7 +865,7 @@ function renderWorkList(allTickets, needs, claims = []) {
             "tr",
             { class: `wl-row st-${t.status}${need ? " needs" : ""}`, dataset: { id: t.id } },
             [
-              el("td", { class: "c-num wl-num tabnum" }, t.number != null ? `#${t.number}` : "—"),
+              el("td", { class: "c-num wl-num" }, ticketRef(t, { size: "s", link: false })),
               el("th", { scope: "row", class: "c-title wl-title" }, [
                 need
                   ? el(
@@ -881,7 +888,8 @@ function renderWorkList(allTickets, needs, claims = []) {
               el("td", { class: "c-status" }, statusBadge(t.status, t.landing_state)),
               el("td", { class: "c-agent" }, who),
               el("td", { class: "c-risk" }, riskBadge(t.risk_level)),
-              el("td", { class: "c-pri tabnum" }, `P${t.priority}`),
+              // One priority chip (A-24): "P0" with its words in the title, none when unset.
+              el("td", { class: "c-pri" }, priorityTag(t.priority)),
               el("td", { class: "c-stage" }, pipelineDots(t.status)),
               el("td", { class: "c-time wl-time tabnum" }, fmtTime(t.updated_at)),
             ],
@@ -910,12 +918,13 @@ function renderClaimsPanel(claims, readAt = Date.now()) {
   );
   page.dataset.sig = hashText(JSON.stringify(claims));
   if (claims.length === 0) {
-    page.appendChild(el("p", { class: "quiet claims-empty" }, "No agents are working right now."));
+    page.appendChild(
+      emptyState("No agents are working right now.", null, null, null, { inline: true }),
+    );
     return page;
   }
   const rows = claims.map((c) => {
     const ended = Date.parse(c.expires_at) < now;
-    const num = c.ticket_number != null ? `#${c.ticket_number}` : c.ticket_id.slice(0, 8);
     const agentLabel = agentWho(c.agent_id, c.agent_display_name).name;
     return el("tr", { class: ended ? "is-stale" : "" }, [
       el(
@@ -925,7 +934,14 @@ function renderClaimsPanel(claims, readAt = Date.now()) {
       ),
       el("td", { class: "cl-ticket" }, [
         el("a", { href: `#/ticket/${c.ticket_id}` }, [
-          el("span", { class: "cl-num tabnum" }, num),
+          el(
+            "span",
+            { class: "cl-num" },
+            ticketRef(
+              { id: c.ticket_id, number: c.ticket_number, status: c.ticket_status },
+              { size: "s", link: false },
+            ),
+          ),
           " ",
           c.ticket_title,
         ]),

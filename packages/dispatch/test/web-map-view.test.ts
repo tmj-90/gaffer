@@ -184,6 +184,10 @@ describe("web: Map view (the scouting map)", () => {
     // reads Blocked, To review, In play.
     const counts = Array.from(row!.querySelectorAll(".reg-n")).map((n) => n.textContent);
     expect(counts).toEqual(["1", "0", "1"]);
+    // The counts are numeric columns of the shared table (A-34), not display numerals.
+    expect(reg!.querySelector("table.data-table caption")).not.toBeNull();
+    const numCells = Array.from(row!.querySelectorAll("td.dt-num")).map((n) => n.textContent);
+    expect(numCells).toEqual(["1", "0", "1"]);
     // The unmapped repo is a free agent, not in the register.
     expect(reg!.querySelector('[data-repo-id="r-free"]')).toBeNull();
     const free = document.querySelector("[data-section='unmapped']");

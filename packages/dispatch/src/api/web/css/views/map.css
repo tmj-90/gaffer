@@ -550,16 +550,32 @@
     font: 600 var(--t12) / 1.2 var(--f-cond);
     color: var(--ink-2);
   }
+  /* A count in the register's numeric column: the table part's 16 px tabular figure
+     with its mark, never the display face (A-34). */
   .reg-n {
     display: inline-flex;
     align-items: center;
     justify-content: flex-end;
     gap: 6px;
-    font: 800 var(--t26) / 1 var(--f-display);
   }
   .reg-n.is-zero {
     color: var(--ink-2);
-    font-weight: 600;
+  }
+  /* The register's rows carry .repo-row for the map filter; they stay table rows
+     (the gate-command .repo-row below is a flex row), and stack on a phone. */
+  .map-reg tr.repo-row {
+    display: table-row;
+  }
+  .map-reg tr.repo-row[hidden] {
+    display: none;
+  }
+  @media (max-width: 760px) {
+    .map-reg tr.repo-row {
+      display: block;
+    }
+    .map-reg .reg-n {
+      justify-content: flex-start;
+    }
   }
   .reg-n.is-red {
     color: var(--red);

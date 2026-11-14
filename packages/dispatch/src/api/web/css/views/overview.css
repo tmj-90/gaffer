@@ -163,14 +163,15 @@
   }
   .own-row {
     display: grid;
-    grid-template-columns: 40px minmax(0, 1fr) auto;
+    grid-template-columns: 28px minmax(0, 1fr) auto;
     align-items: start;
     gap: 4px 12px;
     padding: 14px 16px 14px 12px;
   }
+  /* The rank is an order, not the subject: 20 px in quiet ink so the title leads (A-21). */
   .own-rank {
-    font: 900 var(--t34) / 1 var(--f-stencil);
-    color: var(--claret-ink);
+    font: 800 var(--t20) / 1 var(--f-display);
+    color: var(--ink-2);
     text-align: center;
     padding-top: 2px;
   }
@@ -193,13 +194,8 @@
   }
   .own-row--parked .own-kind,
   .own-row--parked .own-title,
-  .own-row--parked .own-reason,
-  .own-row--parked .own-ref {
+  .own-row--parked .own-reason {
     color: var(--red);
-  }
-  .own-ref {
-    font: 800 var(--t20) / 1 var(--f-display);
-    color: var(--ink);
   }
   .own-title {
     font: 700 var(--t16) / 1.35 var(--f-text);
@@ -1287,9 +1283,6 @@
     .own-row {
       grid-template-columns: 28px minmax(0, 1fr);
       padding: 12px 12px 14px 8px;
-    }
-    .own-rank {
-      font-size: var(--t26);
     }
     .own-cta {
       grid-column: 2;

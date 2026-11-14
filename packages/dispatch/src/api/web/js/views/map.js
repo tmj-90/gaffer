@@ -3,7 +3,7 @@
 
 import { roLock } from "../access.js";
 import { api } from "../api.js";
-import { emptyState, panelHead, viewHead } from "../components.js";
+import { dataTable, emptyState, panelHead, viewHead } from "../components.js";
 import { el, field } from "../dom.js";
 import { plural } from "../format.js";
 import { clockTime } from "../freshness.js";
@@ -892,53 +892,58 @@ function renderRepoRegister(repos, unmapped, ov) {
   const rows = mapped.map((r) => {
     const t = mapTally(ov.liveOfRepo.get(r.id));
     const grounds = ov.groundsOf.get(r.id) || [];
-    return el("tr", { class: "repo-row", dataset: { kind: "repo", repoId: r.id } }, [
-      el("th", { scope: "row", class: "reg-repo" }, [
+    return {
+      repo: [
         el("a", { href: `#/repo/${r.id}` }, repoTag(r.name, 22)),
         el(
           "span",
           { class: "reg-sub" },
           [r.stack, r.default_branch].filter(Boolean).join(" · ") || null,
         ),
-      ]),
-      regCell(
-        "Grounds",
-        el(
-          "span",
-          { class: "reg-grounds" },
-          grounds.map((g) =>
-            el("span", { class: "reg-ground" }, [
-              el("a", { href: `#/node/${g.node.id}` }, g.node.name),
-              el("span", { class: "reg-acc" }, [g.relation, g.access].filter(Boolean).join(" · ")),
-            ]),
-          ),
+      ],
+      grounds: el(
+        "span",
+        { class: "reg-grounds" },
+        grounds.map((g) =>
+          el("span", { class: "reg-ground" }, [
+            el("a", { href: `#/node/${g.node.id}` }, g.node.name),
+            el("span", { class: "reg-acc" }, [g.relation, g.access].filter(Boolean).join(" · ")),
+          ]),
         ),
       ),
-      regCell("Blocked", regCount(t.red, "red"), "reg-num"),
-      regCell("To review", regCount(t.yellow, "yellow"), "reg-num"),
-      anyPaused ? regCell("Paused", regCount(t.paused, "paused"), "reg-num") : null,
-      regCell("In play", regCount(t.play), "reg-num"),
-      regCell("Gates", regGates(r), "reg-gc"),
-    ]);
+      red: regCount(t.red, "red"),
+      yellow: regCount(t.yellow, "yellow"),
+      paused: regCount(t.paused, "paused"),
+      play: regCount(t.play),
+      gates: regGates(r),
+    };
+  });
+  // The counts are numeric columns of the one table part (A-34): 16 px tabular,
+  // right-aligned, never the display face.
+  const table = dataTable({
+    caption: "Every repo at a ground: where it plays and what is live in it",
+    columns: [
+      { key: "repo", label: "Repo" },
+      { key: "grounds", label: "Plays at" },
+      { key: "red", label: "Blocked", numeric: true },
+      { key: "yellow", label: "To review", numeric: true },
+      anyPaused ? { key: "paused", label: "Paused", numeric: true } : null,
+      { key: "play", label: "In play", numeric: true },
+      { key: "gates", label: "Gates" },
+    ].filter(Boolean),
+    rows,
+    stackOnPhone: true,
+    cls: "map-reg",
+  });
+  // The filter above the map hides rows by their text (applyFactoryFilter).
+  table.querySelectorAll("tbody tr").forEach((tr, i) => {
+    tr.classList.add("repo-row");
+    tr.dataset.kind = "repo";
+    tr.dataset.repoId = mapped[i].id;
   });
   return el("section", { class: "card prog map-register", "aria-label": "Who plays where" }, [
     head,
-    el("table", { class: "reg-table" }, [
-      el(
-        "thead",
-        {},
-        el("tr", {}, [
-          el("th", { scope: "col" }, "Repo"),
-          el("th", { scope: "col" }, "Plays at"),
-          el("th", { scope: "col", class: "reg-num" }, "Blocked"),
-          el("th", { scope: "col", class: "reg-num" }, "To review"),
-          anyPaused ? el("th", { scope: "col", class: "reg-num" }, "Paused") : null,
-          el("th", { scope: "col", class: "reg-num" }, "In play"),
-          el("th", { scope: "col" }, "Gates"),
-        ]),
-      ),
-      el("tbody", {}, rows),
-    ]),
+    table,
   ]);
 }
 

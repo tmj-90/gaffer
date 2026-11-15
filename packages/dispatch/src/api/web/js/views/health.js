@@ -171,7 +171,7 @@ function firstPassTile(fp, wd) {
     measureTile({
       label,
       value: counted ? undefined : null,
-      k: counted ? fp.first_pass ?? 0 : undefined,
+      k: counted ? (fp.first_pass ?? 0) : undefined,
       n: counted ? fp.done : undefined,
       nLabel: "with no send-back",
       period: periodOf(fp.window_days ?? wd),

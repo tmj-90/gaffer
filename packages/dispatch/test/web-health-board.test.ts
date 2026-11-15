@@ -354,7 +354,20 @@ describe("web: the rendered Health page tells the quality story first", () => {
 
   it("a sparkline's readout names the UTC week or month, whatever the viewer's time zone", async () => {
     await loadApp();
-    const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const MON = [
+      "Jan",
+      "Feb",
+      "Mar",
+      "Apr",
+      "May",
+      "Jun",
+      "Jul",
+      "Aug",
+      "Sep",
+      "Oct",
+      "Nov",
+      "Dec",
+    ];
     const now = new Date();
     const monday = new Date(Date.now() - ((now.getUTCDay() + 6) % 7) * DAY);
     const readout = (label: string) => {

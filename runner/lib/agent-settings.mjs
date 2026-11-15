@@ -20,6 +20,8 @@
 //   * every one of those safety-hook entries says `"onFailure": "block"` and carries a
 //     positive numeric timeout (Claude Code otherwise runs the tool when the hook times
 //     out or crashes);
+//   * the settings do not switch hooks off (`"disableAllHooks"` other than false,
+//     `"allowManagedHooksOnly"`);
 //   * together their matchers cover EVERY tool the safety hook decides (REQUIRED_TOOLS).
 //     A matcher of "*" or "" (or none) covers every tool, as in Claude Code.
 // The file is written through lib/safe-write.mjs (never through a link) and read back.
@@ -160,6 +162,26 @@ export function validateAgentSettings(text, runnerDir) {
   const namesHook = (h) =>
     h && h.type === "command" && typeof h.command === "string" && h.command.includes(hookPath);
   const runsHook = (h) => namesHook(h) && hookCommandProblem(h, hookPath) === null;
+  // A settings file can switch every hook off without touching PreToolUse:
+  // `"disableAllHooks": true` (and, where Claude Code honours it, `allowManagedHooksOnly`,
+  // which drops project hooks). Either one means the safety hook never runs. An explicit
+  // `"disableAllHooks": false` is what the shipped template writes: project settings take
+  // precedence over the user's, so it keeps a `true` in ~/.claude/settings.json from
+  // switching the factory's hook off.
+  if (parsed && typeof parsed === "object") {
+    if ("disableAllHooks" in parsed && parsed.disableAllHooks !== false) {
+      return {
+        ok: false,
+        why: `the settings set "disableAllHooks" to ${JSON.stringify(parsed.disableAllHooks)}, which switches the safety hook off (only false is allowed)`,
+      };
+    }
+    if ("allowManagedHooksOnly" in parsed && parsed.allowManagedHooksOnly !== false) {
+      return {
+        ok: false,
+        why: `the settings set "allowManagedHooksOnly", which drops the project's hooks and with them the safety hook`,
+      };
+    }
+  }
   const pre = parsed?.hooks?.PreToolUse;
   const wired = Array.isArray(pre)
     ? pre.filter(

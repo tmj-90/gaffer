@@ -7,9 +7,23 @@
 //   • the same answers as the old RegExp construction on every small pattern and name
 //     (an exhaustive sweep, where the RegExp is still safe to run);
 //   • the patterns that stalled, and far larger ones, answered in milliseconds;
-//   • a range written backwards matches every name (a superset) instead of throwing.
+//   • a range written backwards matches every name (a superset) instead of throwing;
+//   • at least every name bash itself matches, compared with the real shell in the C and
+//     a UTF-8 locale on generated patterns and names (quoted `!`, `^` and `-` inside a
+//     bracket, case folding, names outside ASCII): a name the hook does not match is a
+//     path it never judges.
 // Run: node runner/test/hook-glob-matcher.test.mjs
-import { componentMatcher } from "../lib/hook/expand.mjs";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import {
+  VarTable,
+  componentMatcher,
+  expandWordFields,
+  globField,
+  newBudget,
+} from "../lib/hook/expand.mjs";
+import { scratchDir } from "./lib/hook-harness.mjs";
 
 let pass = 0;
 const fails = [];
@@ -51,7 +65,7 @@ function referenceRegExp(pattern, nocase) {
   return new RegExp(`^${re}$`, nocase ? "is" : "s");
 }
 
-console.log("== 1: the same answers as the old RegExp on every small pattern ==");
+console.log("== 1: the old RegExp's answers on every small pattern (more names under nocase) ==");
 {
   const atoms = [
     "a",
@@ -90,9 +104,14 @@ console.log("== 1: the same answers as the old RegExp on every small pattern =="
     for (const nocase of [false, true]) {
       const want = referenceRegExp(pattern, nocase);
       const got = componentMatcher(comp(pattern), { nocase });
+      // Under nocase a negated set is any one character (bash folds its endpoints and
+      // its members by the locale): the answers may only grow.
+      const exact = !nocase || !/\[[!^]/.test(pattern);
       for (const name of names) {
         compared += 1;
-        if (want.test(name) !== got.test(name)) {
+        const w = want.test(name);
+        const g = got.test(name);
+        if (exact ? w !== g : w && !g) {
           differ += 1;
           if (!firstDiff)
             firstDiff = `${JSON.stringify(pattern)} nocase=${nocase} name=${JSON.stringify(name)}`;
@@ -196,6 +215,151 @@ console.log("== 4: ordinary glob rules ==");
     componentMatcher(quoted, {}).test("*.j") && !componentMatcher(quoted, {}).test("a.j"),
     "a quoted star is a literal star",
   );
+}
+
+console.log("== 5: quoting, case folding and names outside ASCII ==");
+{
+  /** Parts as the lexer hands them: `\\x` is a quoted x. */
+  const parts = (pattern) => {
+    const out = [];
+    for (let i = 0; i < pattern.length; i += 1) {
+      if (pattern[i] === "\\" && i + 1 < pattern.length) out.push({ c: pattern[++i], q: true });
+      else out.push({ c: pattern[i], q: false });
+    }
+    return out;
+  };
+  const m = (pattern, opts = {}) => componentMatcher(parts(pattern), opts);
+  ok(m(".[\\!e]nv").test(".env"), "a quoted ! opening a bracket is a literal: .[\\!e]nv is .env");
+  ok(m(".[\\^e]nv").test(".env"), "so is a quoted ^");
+  ok(!m(".[!e]nv").test(".env"), "an unquoted ! still negates");
+  ok(m("[a\\-c]").test("-"), "a quoted - is a literal: [a\\-c] holds -");
+  ok(m("[.-K]", { nocase: true }).test("_"), "nocase folds a range's endpoints: [.-K] holds _");
+  ok(m("[!a]", { nocase: true }).test("A"), "under nocase a negated set is any one character");
+  ok(m("[a-z]", { collate: true }).test("B"), "ranges by collation: a range is any character");
+  ok(
+    m("??").test("\u00e9") && m("??").test("\u{1f600}x"),
+    "? against names outside ASCII: a superset",
+  );
+  ok(
+    m("k*", { nocase: true }).test("\u212a.txt"),
+    "nocase: the Kelvin sign is k in a UTF-8 locale",
+  );
+  ok(m("\u212a*", { nocase: true }).test("k.txt"), "nocase: a non-ASCII letter in the pattern");
+  ok(!m("*.js").test("\u00e9.ts") && m("*.ts").test("\u00e9.ts"), "stars and literals stay exact");
+}
+
+console.log("== 6: at least what bash matches, against the real shell ==");
+{
+  const ver = spawnSync("bash", ["-c", "echo ${BASH_VERSINFO[0]}"], { encoding: "utf8" });
+  const major = Number(String(ver.stdout).trim());
+  const locales = ["C"];
+  const utf8 = spawnSync("bash", ["-c", "printf %s \u00e9 | wc -m"], {
+    encoding: "utf8",
+    env: { PATH: process.env.PATH, LC_ALL: "C.UTF-8" },
+  });
+  if (String(utf8.stdout).trim() === "1") locales.push("C.UTF-8");
+  if (!(major >= 5)) {
+    console.log(`  note: bash ${ver.stdout.trim() || "?"} here; the comparison needs bash 5`);
+  } else {
+    let seed = 20261115;
+    const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+    const pick = (a) => a[Math.floor(rnd() * a.length)];
+    const NAME = [
+      ..."abcABzZ-][!^.e_09~ ",
+      "\u00e9",
+      "\u00df",
+      "\u212a",
+      "k",
+      "K",
+      "\u{1f600}",
+      "\n",
+    ];
+    const PAT = [..."abcAz-]!^.ek_0", "\u00e9"];
+    const quote = (c) => (c === "\n" ? "$'\\n'" : rnd() < 0.5 && c !== "'" ? `'${c}'` : `\\${c}`);
+    const lit = (c) => (/[A-Za-z0-9_.,-]/.test(c) && rnd() < 0.7 ? c : quote(c));
+    const set = () => {
+      let s = "[";
+      if (rnd() < 0.35) s += pick(["!", "^", "\\!", "'!'", "\\^", '"^"']);
+      if (rnd() < 0.2) s += "]";
+      if (rnd() < 0.2) s += "-";
+      for (let i = 0, n = 1 + Math.floor(rnd() * 3); i < n; i += 1) {
+        const r = rnd();
+        const c = pick(PAT.filter((x) => x !== "]"));
+        if (r < 0.35) s += `${c}-${pick(PAT.filter((x) => x !== "]"))}`;
+        else if (r < 0.5) s += quote(pick(PAT));
+        else if (r < 0.65) s += pick(["a\\-c", "a'-'c", "\\]", "'['"]);
+        else s += c === "!" || c === "^" ? `\\${c}` : c;
+      }
+      if (rnd() < 0.2) s += "-";
+      return `${s}]`;
+    };
+    const pattern = () => {
+      let p = "";
+      let glob = false;
+      for (let i = 0, n = 1 + Math.floor(rnd() * 4); i < n; i += 1) {
+        const r = rnd();
+        if (r < 0.2) ((p += "*"), (glob = true));
+        else if (r < 0.35) ((p += "?"), (glob = true));
+        else if (r < 0.65) ((p += set()), (glob = true));
+        else p += lit(pick(NAME));
+      }
+      return glob ? p : `${p}*`;
+    };
+    const ROOT = scratchDir("gaffer-glob-bash-");
+    let cases = 0;
+    const misses = [];
+    for (let i = 0; i < 150; i += 1) {
+      const dir = join(ROOT, String(i));
+      mkdirSync(dir);
+      for (let j = 0, k = 3 + Math.floor(rnd() * 10); j < k; j += 1) {
+        let n = "";
+        for (let c = 0, len = 1 + Math.floor(rnd() * 4); c < len; c += 1) n += pick(NAME);
+        if (n !== "." && n !== "..") writeFileSync(join(dir, n), "");
+      }
+      const pat = pattern();
+      const ex = expandWordFields(pat, new VarTable({}, ""), [dir]);
+      for (const loc of locales) {
+        for (const [nocase, dotglob] of [
+          [false, false],
+          [true, false],
+          [false, true],
+          [true, true],
+        ]) {
+          const opts = [nocase ? "nocaseglob" : "", dotglob ? "dotglob" : ""].join(" ").trim();
+          const sh =
+            `cd "$1" || exit 9; shopt -s nullglob ${opts}; ` +
+            `eval 'for f in '"$2"'; do printf "%s\\0" "$f"; done'`;
+          const r = spawnSync("bash", ["-c", sh, "glob", dir, pat], {
+            encoding: "utf8",
+            env: { PATH: process.env.PATH, LC_ALL: loc },
+          });
+          if (r.status !== 0) continue;
+          cases += 1;
+          if (!ex.fields) continue; // the hook refuses what it cannot expand
+          const hook = new Set();
+          let refused = false;
+          for (const f of ex.fields) {
+            const g = globField(f, dir, newBudget(), { nocase, dotglob });
+            if (g.kind === "paths") for (const p of g.paths) hook.add(p.slice(dir.length + 1));
+            else if (g.kind === "literal") hook.add(g.path);
+            else if (g.kind !== "nomatch") refused = true;
+          }
+          if (refused) continue;
+          for (const name of r.stdout.split("\0")) {
+            if (name !== "" && !hook.has(name)) {
+              misses.push(`${JSON.stringify(pat)} ${loc} ${opts || "-"}: ${JSON.stringify(name)}`);
+            }
+          }
+        }
+      }
+    }
+    rmSync(ROOT, { recursive: true, force: true });
+    ok(cases > 600, `compared with bash on ${cases} pattern, locale and option cases`);
+    ok(
+      misses.length === 0,
+      `every name bash matches, the hook matches (${misses.length} missed: ${misses.slice(0, 5).join("; ")})`,
+    );
+  }
 }
 
 if (fails.length > 0) {

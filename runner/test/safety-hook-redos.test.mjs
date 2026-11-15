@@ -16,6 +16,8 @@
 import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 
+import { nodeInlineControlPlane } from "../lib/dangerous-commands.mjs";
+import { dynamicNames } from "../lib/hook/expand.mjs";
 import { HOOK, bash, scratchDir, suite } from "./lib/hook-harness.mjs";
 
 const t = suite("safety-hook-redos");
@@ -42,6 +44,9 @@ const longInputs = {
   // The decoded-payload rule scanned from every decoder word to the end of the line.
   "8000x base64 |": `${"base64 |".repeat(8000)}`,
   "9000x base64": `${"base64 ".repeat(9000)}`,
+  // The inline-node control-plane rule retried every later `node`, flag and package word
+  // (cubic: 10s for this input, past three minutes for the whole hook at 63 KB).
+  "2048x node -e": `${"node -e ".repeat(2048)}`,
 };
 
 // Rule level: a failed match (`zz` is no command) is where backtracking explodes.
@@ -64,6 +69,35 @@ for (const [label, prefix] of Object.entries({ ...inputs, ...longInputs })) {
   );
   const ms = res.status === 0 ? Number(res.stdout.trim()) : Infinity;
   t.assert(`all deny rules on "${label}" finish in < 1s (took ${ms}ms)`, ms < 1000);
+}
+
+// The inline-node rule is a linear scan now; it answers as its expression did on small
+// random commands (where the expression is still safe to run).
+{
+  const reference =
+    /\bnode\b[^\n|;&]*(?:-e|--eval|-p|--print|-r|--require)\b[^\n]*(?:(?:dispatch|crew|memory)[^\n]*\/dist\/|\b(?:DISPATCH_DB|MEMORY_DB)\b|(?:dispatch|memory)[^\s'"\n]*\.sqlite)/i;
+  const parts = ["node", "NODE", "nodejs", "xnode", " ", "-e", "-E", "--eval", "-p", "--print"];
+  parts.push("-r", "--require", "-ex", "\n", "|", ";", "&", "dispatch", "Crew", "memory", "/dist/");
+  parts.push("/DIST/", "/dist", "DISPATCH_DB", "memory_db", "XDISPATCH_DB", ".sqlite", "'", '"');
+  parts.push("a", "/", "x.sqlite", "-", "\t");
+  let seed = 3;
+  const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  let differ = 0;
+  let first = "";
+  for (let i = 0; i < 100000; i += 1) {
+    let s = "";
+    for (let j = 0, n = 1 + Math.floor(rnd() * 10); j < n; j += 1) {
+      s += parts[Math.floor(rnd() * parts.length)];
+    }
+    if (reference.test(s) !== nodeInlineControlPlane(s)) {
+      differ += 1;
+      if (!first) first = JSON.stringify(s);
+    }
+  }
+  t.assert(
+    `the inline-node rule answers as its expression did on 100000 commands (first difference: ${first})`,
+    differ === 0,
+  );
 }
 
 // Whole hook: a spawned process with a hard kill, so a regression reports instead of
@@ -139,6 +173,80 @@ for (const [label, command] of [
       status === want && ms - baseline < 1000,
     );
   }
+}
+
+// The question "can this command set $NAME in a way the hook does not follow" (read,
+// printf -v, declare -a, ...) was one regular expression per variable name, with nested
+// runs that backtracked in the cube of the command's length: `declare -aaa...` of 6 KB
+// and three variables, or 11000 `read` words and forty, kept the hook busy past its
+// timeout. The names are now collected once per command by linear scans.
+{
+  // The same answers as the expression on small random commands (where it is still safe
+  // to run): the scans are a faster form of it, not a different rule.
+  const reference = (cmd, n) =>
+    new RegExp(
+      String.raw`\b(?:read|mapfile|readarray|getopts|select)\b[^\n;&|]*?(?<![\w$])${n}(?!\w)|\bprintf\b[^\n;&|]*-v[ \t]*["']?${n}\b|\(\([^)]*\b${n}\b|\blet\b[^\n;&|]*\b${n}\b|(?<![\w$])${n}(?:\[[^\]]*\])?\+?=\(|(?<![\w$])${n}\+=|(?<![\w$])${n}\[|\bdeclare\b[^\n;&|]*-\w*[naAi]\w*[^\n;&|]*\b${n}\b|\b(?:typeset|local)\b[^\n;&|]*-\w*[naAi]\w*[^\n;&|]*\b${n}\b|\bunset\b[^\n;&|]*-\w*n\w*[^\n;&|]*\b${n}\b`,
+    ).test(cmd);
+  const parts = [..."();&|$[]=+'\"-\n ", "read", "mapfile", "select", "printf", "-v", "let"];
+  parts.push("declare", "typeset", "local", "unset", "-a", "-n", "-xn", "-bA", "-i", "((");
+  parts.push("))", "=(", "+=", "ZZ", "ZZ", "Y", "aZZ", "ZZb", "x", "_1", "  ");
+  let seed = 7;
+  const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  let differ = 0;
+  let first = "";
+  for (let i = 0; i < 40000; i += 1) {
+    let cmd = "";
+    for (let j = 0, len = 1 + Math.floor(rnd() * 12); j < len; j += 1) {
+      cmd += parts[Math.floor(rnd() * parts.length)];
+    }
+    const names = dynamicNames(cmd);
+    for (const n of ["ZZ", "Y", "x", "_1"]) {
+      if (names.has(n) !== reference(cmd, n)) {
+        differ += 1;
+        if (!first) first = `${JSON.stringify(cmd)} ${n}`;
+      }
+    }
+  }
+  t.assert(
+    `the scans answer as the expression did on 160000 name checks (first difference: ${first})`,
+    differ === 0,
+  );
+}
+{
+  const vars = (k) => Array.from({ length: k }, (_, i) => `src/$V${i}`).join(" ");
+  for (const [label, command] of [
+    ["declare -a...a (6000) and 3 variables", `declare -${"a".repeat(6000)}; cat ${vars(3)}`],
+    ["11000 read words and 40 variables", `${"read ".repeat(11000)}; cat ${vars(40)}`],
+    ["5500 printf -v and 40 variables", `${"printf -v ".repeat(5500)}; cat ${vars(40)}`],
+    ["6000 unset -n and 40 variables", `${"unset -n ".repeat(6000)}; cat ${vars(40)}`],
+  ]) {
+    const { status, ms } = timed(command);
+    t.assert(
+      `hook answers ${label} with exit 0 in < 2s over start-up (exit ${status}, ${ms}ms, start-up ${baseline}ms)`,
+      status === 0 && ms - baseline < 2000,
+    );
+  }
+}
+
+// Rules that rescan a long word at every command position inside it (`{` starts one)
+// are quadratic in each of about fifty rules, over every resolved view: 63 KB of `${`
+// took the whole hook about 100 s, past Claude Code's hook timeout (a version without
+// onFailure: block then runs the tool). Past its rule budget (decide.mjs
+// RULE_TIME_BUDGET_MS) the hook refuses the command as unverifiable, inside the timeout.
+{
+  const start = Date.now();
+  const res = spawnSync(process.execPath, [HOOK], {
+    input: JSON.stringify(bash(`${"${".repeat(31500)}zz`)),
+    cwd: opts.cwd,
+    env: { ...process.env, ...opts.env },
+    encoding: "utf8",
+    timeout: 58_000,
+  });
+  const ms = Date.now() - start;
+  t.assert(
+    `63 KB of \${: refused as unverifiable before the hook's 60 s timeout (exit ${res.status}, ${ms}ms)`,
+    res.status === 2 && /ran out of time/.test(res.stderr) && ms < 50_000,
+  );
 }
 
 // The ~100 KB deep path (`echo x > /a/a/…`, and the same path as a Write) took ~60-70s

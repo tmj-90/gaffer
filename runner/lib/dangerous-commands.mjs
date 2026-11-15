@@ -61,6 +61,47 @@
 // and as flag+next wrapper: 2^N backtracking on a failed match, and ~25 pairs ran
 // the hook past its timeout (safety-hook-redos.test.mjs pins this). `cmdAt(name)`
 // builds a rule regex for a command name (or alternation) at that position.
+/**
+ * The inline-node control-plane rule (see DANGEROUS_COMMANDS): on one line, `node` and then
+ * `-e`/`--eval`/`-p`/`--print`/`-r`/`--require` in the same simple command, and after
+ * that flag, on the same line, the Dispatch/Crew/Memory dist (`dispatch` ... `/dist/`), the
+ * DISPATCH_DB / MEMORY_DB name, or a `dispatch`/`memory` word ending in `.sqlite`. Case
+ * insensitive. Linear: the earliest flag on a line leaves the longest rest, so it is the
+ * only one tried.
+ */
+export function nodeInlineControlPlane(s) {
+  for (const line of String(s).split("\n")) {
+    let from = -1;
+    const segRe = /[^|;&]+/g;
+    for (let seg = segRe.exec(line); seg !== null && from < 0; seg = segRe.exec(line)) {
+      const n = /\bnode\b/i.exec(seg[0]);
+      if (!n) continue;
+      const flag = /(?:-e|--eval|-p|--print|-r|--require)\b/gi;
+      flag.lastIndex = n.index + n[0].length;
+      const f = flag.exec(seg[0]);
+      if (f) from = seg.index + f.index + f[0].length;
+    }
+    if (from < 0) continue;
+    const rest = line.slice(from);
+    if (/\b(?:DISPATCH_DB|MEMORY_DB)\b/i.test(rest)) return true;
+    const pkg = /dispatch|crew|memory/i.exec(rest);
+    if (pkg) {
+      const dist = /\/dist\//gi;
+      dist.lastIndex = pkg.index + pkg[0].length;
+      if (dist.test(rest)) return true;
+    }
+    const tokRe = /[^\s'"]+/g;
+    for (let t = tokRe.exec(rest); t !== null; t = tokRe.exec(rest)) {
+      const m = /dispatch|memory/i.exec(t[0]);
+      if (!m) continue;
+      const sq = /\.sqlite/gi;
+      sq.lastIndex = m.index + m[0].length;
+      if (sq.test(t[0])) return true;
+    }
+  }
+  return false;
+}
+
 const TOK = String.raw`[^\s;&|()<>\`"'\\]+`;
 const PATH_QUAL = String.raw`(?:[^\s;&|()<>\`"'\\]*\/)?`;
 const WRAPPERS =
@@ -580,7 +621,12 @@ export const DANGEROUS_COMMANDS = [
     // `\b(?:DISPATCH_DB|MEMORY_DB)\b` covers `$DISPATCH_DB` AND `process.env.DISPATCH_DB` /
     // `process.env["MEMORY_DB"]` — the latter used to be caught only by accident, by
     // the `.env` secret fragment that also refused every `process.env` grep.
-    re: /\bnode\b[^\n|;&]*(?:-e|--eval|-p|--print|-r|--require)\b[^\n]*(?:(?:dispatch|crew|memory)[^\n]*\/dist\/|\b(?:DISPATCH_DB|MEMORY_DB)\b|(?:dispatch|memory)[^\s'"\n]*\.sqlite)/i,
+    //
+    // Not a regular expression any more: written as one, its `\bnode\b[^\n|;&]*` + flag +
+    // `[^\n]*` + `(?:dispatch|crew|memory)[^\n]*\/dist\/` retried every later `node`,
+    // flag and package word (`node -e ` repeated to 63 KB ran the hook past three
+    // minutes). nodeInlineControlPlane answers the same question in one pass per line.
+    re: { source: "nodeInlineControlPlane", flags: "i", test: (s) => nodeInlineControlPlane(s) },
     why: "inline node (-e/--require) reaching the control-plane dist or the Dispatch/Memory DB directly — bypasses the actor/gate system; use the scoped MCP tools",
     example: "node -e \"require('…/dispatch/dist/core.js')\"",
     crewFlags: false,

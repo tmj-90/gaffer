@@ -141,6 +141,15 @@ for (const cmd of [
   "cat lnk/t*",
   "grep -R operator lnk",
   "cp -rL lnk src/copy",
+  // A quoted `!` or `^` opening a bracket is a literal, not a negation: bash expands
+  // `.[\!e]nv` to .env. The hook read it as "not e", matched nothing and judged only the
+  // directory, so the secret was read.
+  "cat .[\\!e]nv",
+  "cat .['!'e]nv",
+  'cat .["^"e]nv',
+  "cat .[\\^e]nv",
+  // A quoted `-` is a literal: `[d\-f]` holds `-`, and bash reads it so.
+  "cat .e[m\\-o]v",
 ]) {
   each("deny", cmd, bash(cmd));
 }

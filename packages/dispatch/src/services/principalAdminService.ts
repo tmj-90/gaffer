@@ -8,7 +8,7 @@ import { inReadSnapshot, inTransaction } from "../db/connection.js";
 import { type Actor } from "../domain/types.js";
 import { writeEvent } from "../events/eventWriter.js";
 import { GateKeyError } from "../events/gateSeal.js";
-import type { RowSealCheck } from "../events/rowSeal.js";
+import { anchorReadFirst, type RowSealCheck } from "../events/rowSeal.js";
 import {
   matchingCreationEvent,
   principalRowsFingerprint,
@@ -383,14 +383,17 @@ export function resolvePrincipalToken(
   // from THAT row. It is never looked up again by id: a writer that showed a forged row
   // to the first read and put the genuine one back for a second would otherwise sign in
   // with authority no seal covers. The row, its seal and the event the seal names are
-  // read inside one snapshot, so they agree with each other as well.
+  // read inside one snapshot, so they agree with each other as well. The event-log anchor
+  // (outside the database) is read BEFORE the snapshot opens (anchorReadFirst), so a
+  // commit by another connection meanwhile is never taken for a truncated log.
   type Found =
     | { kind: "signed"; row: PrincipalView }
     | { kind: "refused"; id: string; name: string; check: RowSealCheck };
+  const keyring = anchorReadFirst(host.gateKeyring);
   const found = inReadSnapshot(host.db, (): Found | null => {
     const stored = host.principals.findActiveStoredByHash(hash);
     if (!stored || stored.token_hash !== hash) return null;
-    const check = verifyPrincipalRow(host.db, host.gateKeyring, stored);
+    const check = verifyPrincipalRow(host.db, keyring, stored);
     if (!check.ok) return { kind: "refused", id: stored.id, name: stored.name, check };
     return { kind: "signed", row: host.principals.viewOf(stored) };
   });
@@ -475,8 +478,11 @@ export function reviewUnsignedPrincipals(host: PrincipalAdminHost): UnsignedPrin
   // its scope) and the code they confirm are both computed from that row, never from a
   // later read of it. A writer that changes a row while this is being built cannot pair
   // a benign row on screen with the code of another.
+  // The anchor first, as for a sign-in: a genuine row is not listed as unsigned because
+  // another connection committed while the list was being read.
+  const keyring = anchorReadFirst(host.gateKeyring);
   return inReadSnapshot(host.db, () => {
-    const entries = unsignedPrincipalRows(host.db, host.gateKeyring);
+    const entries = unsignedPrincipalRows(host.db, keyring);
     return {
       unsigned: entries.map(({ row, unsigned }) => ({
         ...unsigned,

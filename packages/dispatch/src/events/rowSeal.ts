@@ -276,6 +276,41 @@ function chainOkUpTo(db: SealDb, seq: number, track: Tracked): boolean {
 }
 
 /**
+ * The keyring `keyring` with its event-log anchor read NOW, once, for a verification that
+ * runs inside a read snapshot opened AFTER this call ({@link import("../db/connection.js").inReadSnapshot}).
+ *
+ * The anchor lives outside the database and a writer moves it on only after its commit,
+ * so every row it names is visible to a snapshot that starts after it was read. Read the
+ * other way round (the snapshot first, the anchor during the check), a commit by any
+ * other connection between the two shows an anchor past the snapshot's last row, which
+ * reads exactly like a truncated log: a genuine principal was refused (a 401, a live feed
+ * cut off) whenever the factory wrote an event mid sign-in. The landing check reads its
+ * anchor before any row for the same reason.
+ *
+ * Verification only: the result signs nothing new on its own behalf and cannot move or
+ * reset the anchor (`anchor` and `reanchor` are left out). An anchor that could not be
+ * read fails each check that asks for it, as it would have at the time.
+ */
+export function anchorReadFirst(keyring: GateKeyring): GateKeyring {
+  if (!keyring.readAnchor) return keyring;
+  let read: { anchor: AnchorRead } | { error: unknown };
+  try {
+    read = { anchor: keyring.readAnchor() };
+  } catch (e) {
+    read = { error: e };
+  }
+  return {
+    description: keyring.description,
+    signMac: (material: string) => keyring.signMac(material),
+    verifyMac: (material: string) => keyring.verifyMac(material),
+    readAnchor: (): AnchorRead => {
+      if ("error" in read) throw read.error;
+      return read.anchor;
+    },
+  };
+}
+
+/**
  * Verify a row's seal against the row's facts as they are now. Read-only: never creates
  * a key, a seal or an anchor. `facts` null: the row is not on record (refused).
  */

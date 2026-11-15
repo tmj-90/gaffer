@@ -1418,6 +1418,9 @@ export function inTransaction<T>(db: Db, fn: () => T): T {
  * several rows which must agree with each other (a principal and its seal). `fn` must not
  * write: a write would have to upgrade the snapshot and can fail against a newer commit.
  * Inside an open transaction it simply runs (that transaction is already one snapshot).
+ * State kept OUTSIDE the database that names rows in it (the event-log anchor) must be
+ * read before this is called, never inside: a commit after the snapshot began would make
+ * it name a row the snapshot cannot see (events/rowSeal.ts `anchorReadFirst`).
  */
 export function inReadSnapshot<T>(db: Db, fn: () => T): T {
   if (db.inTransaction) return fn();

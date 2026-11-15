@@ -212,6 +212,18 @@ grep -qE '^(GITHUB_TOKEN|ANTHROPIC_API_KEY|DISPATCH_DB|SOME_SECRET|GAFFER_NOTIFY
 grep -q '^CI=1$' "$WORK/env-none" && grep -q '^PATH=' "$WORK/env-none" && ok "no wrap: PATH and CI=1 are there" || fail "no wrap: base env missing"
 GH="$(sed -n 's/^HOME=//p' "$WORK/env-none")"
 [ -n "$GH" ] && [ "$GH" != "$HOME" ] && [ ! -e "$GH" ] && ok "no wrap: HOME is a throwaway dir, removed after the run" || fail "no wrap: HOME=$GH (real HOME $HOME)"
+# The knob never passes a loader-injection or environment-control name, nor a credential
+# spelled in lower case, whatever the operator lists.
+gate_env knob GAFFER_DOD_ENV_PASS="NODE_OPTIONS,BASH_ENV ENV LD_PRELOAD DYLD_INSERT_LIBRARIES GIT_SSH_COMMAND GIT_CONFIG_GLOBAL SSH_AUTH_SOCK PYTHONSTARTUP PERL5OPT RUBYOPT github_token my_Api_Key KEEP_ME" \
+  NODE_OPTIONS="--require /tmp/x.js" BASH_ENV=/tmp/x.sh ENV=/tmp/x.sh LD_PRELOAD=/tmp/x.so DYLD_INSERT_LIBRARIES=/tmp/x.dylib \
+  GIT_SSH_COMMAND="sh /tmp/x" GIT_CONFIG_GLOBAL=/tmp/gc SSH_AUTH_SOCK=/tmp/agent.sock PYTHONSTARTUP=/tmp/x.py PERL5OPT=-Mx RUBYOPT=-rx \
+  github_token=gh-lower my_Api_Key=k-lower KEEP_ME=yes
+if grep -qE '^(NODE_OPTIONS|BASH_ENV|ENV|LD_PRELOAD|DYLD_INSERT_LIBRARIES|GIT_SSH_COMMAND|GIT_CONFIG_GLOBAL|SSH_AUTH_SOCK|PYTHONSTARTUP|PERL5OPT|RUBYOPT|github_token|my_Api_Key)=' "$WORK/env-knob"; then
+  fail "the knob passed a loader, environment-control or lower-case credential name: $(grep -E '^(NODE_OPTIONS|BASH_ENV|ENV|LD_|DYLD_|GIT_SSH|GIT_CONFIG_G|SSH_AUTH|PYTHONSTARTUP|PERL5OPT|RUBYOPT|github_token|my_Api_Key)=' "$WORK/env-knob" | cut -d= -f1 | tr '\n' ' ')"
+else
+  grep -q '^KEEP_ME=yes$' "$WORK/env-knob" && ok "the knob refuses loader-injection, environment-control and lower-case credential names, and passes an ordinary one" \
+    || fail "the knob dropped an ordinary name"
+fi
 gate_env inv _GAFFER_DOD_INVOCATION_ENV="NODE_OPTIONS GAFFER_REPLAY_PROOF_KEY_FILE GITHUB_TOKEN" NODE_OPTIONS=--no-warnings GAFFER_REPLAY_PROOF_KEY_FILE=/p/k
 grep -q '^NODE_OPTIONS=--no-warnings$' "$WORK/env-inv" && grep -q '^GAFFER_REPLAY_PROOF_KEY_FILE=/p/k$' "$WORK/env-inv" \
   && ! grep -q '^GITHUB_TOKEN=' "$WORK/env-inv" && ok "the runner's own invocation names (the tester replay's) pass; a credential among them does not" \

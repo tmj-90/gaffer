@@ -701,7 +701,7 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     type: "csv",
     group: "quality",
     label: "Variables the gates may see",
-    help: "Every gate run (tests, typecheck, lint, acceptance checks, the merge gate) starts from an empty environment plus PATH, a throwaway HOME, the locale, CI=1, the proxy and CA settings and the toolchain homes. Name here (comma separated) any other variable your tests need. Names only: a credential-shaped name (*_TOKEN, *_KEY, *_SECRET, *_PASSWORD), an endpoint (*_URL, *_WEBHOOK*), ANTHROPIC_*, CLAUDE_*, DISPATCH_*, MEMORY_*, AWS_* or GAFFER_* is never passed, even when listed.",
+    help: "Every gate run (tests, typecheck, lint, acceptance checks, the merge gate) starts from an empty environment plus PATH, a throwaway HOME, the locale, CI=1, the proxy and CA settings and the toolchain homes. Name here (comma separated) any other variable your tests need. Names only: a credential-shaped name (*_TOKEN, *_KEY, *_SECRET, *_PASSWORD), an endpoint (*_URL, *_WEBHOOK*), ANTHROPIC_*, CLAUDE_*, DISPATCH_*, MEMORY_*, AWS_* or GAFFER_*, and a name that loads code into or redirects what the gate starts (PATH, HOME, NODE_OPTIONS, BASH_ENV, LD_*, DYLD_*, GIT_*, SSH_AUTH_SOCK, PYTHONPATH, ...) is never passed, even when listed, in any letter case.",
   },
   {
     key: "MINIMALISM_REQUIRE_NOTE",

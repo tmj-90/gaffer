@@ -30,11 +30,24 @@ gaffer_env_name_is_endpoint() {
 # knob included): every credential and endpoint above, the model provider's whole
 # namespace, the operator's REST and dispatch settings, the agent CLI's configuration, the
 # factory's own knobs and internals.
+#
+# Also refused: every name that injects code into, or redirects, what the gate starts
+# (the loaders' preload and option variables, the shells' startup files, git's command,
+# config and directory overrides, the interpreters' startup and option variables), the
+# names the gate's own list fixes (PATH, HOME, TMPDIR) and an agent socket that signs as
+# the operator (SSH_AUTH_SOCK, GPG_AGENT_INFO). Matched in any letter case: a lower-case
+# github_token is the same credential.
 gaffer_env_name_never_for_gates() {
-  gaffer_env_name_is_credential "$1" && return 0
-  gaffer_env_name_is_endpoint "$1" && return 0
-  case "$1" in
-    ANTHROPIC_*|CLAUDE_*|DISPATCH_*|MEMORY_*|GAFFER_*|_*|AWS_*|GOOGLE_*|AZURE_*|NPM_CONFIG_*|npm_config_*) return 0 ;;
+  local up
+  up="$(printf '%s' "$1" | tr 'abcdefghijklmnopqrstuvwxyz' 'ABCDEFGHIJKLMNOPQRSTUVWXYZ')"
+  gaffer_env_name_is_credential "$up" && return 0
+  gaffer_env_name_is_endpoint "$up" && return 0
+  case "$up" in
+    ANTHROPIC_*|CLAUDE_*|DISPATCH_*|MEMORY_*|GAFFER_*|_*|AWS_*|GOOGLE_*|AZURE_*|NPM_CONFIG_*) return 0 ;;
+    PATH|HOME|TMPDIR|TMP|TEMP|SHELL|IFS|ENV|BASH_ENV|BASHOPTS|SHELLOPTS|PS4|PROMPT_COMMAND|CDPATH|ZDOTDIR) return 0 ;;
+    LD_*|DYLD_*|NODE_OPTIONS|NODE_PATH|NODE_REPL_EXTERNAL_MODULE|GIT_*|SSH_AUTH_SOCK|SSH_ASKPASS|GPG_AGENT_INFO|GNUPGHOME) return 0 ;;
+    PYTHONSTARTUP|PYTHONPATH|PYTHONHOME|PYTHONUSERBASE|PERL5OPT|PERL5LIB|PERLLIB|RUBYOPT|RUBYLIB|JAVA_TOOL_OPTIONS|JDK_JAVA_OPTIONS) return 0 ;;
+    *_PROXY|*_AUTH|*_CREDENTIALS|*_PAT|*_APIKEY|*_COOKIE|*_SESSION) return 0 ;;
   esac
   return 1
 }

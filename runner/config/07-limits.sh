@@ -76,8 +76,9 @@ _gaffer_deprecated GAFFER_GREENFIELD_INSTALL "set GAFFER_DOD_INSTALL=0 instead (
 # Every gate run starts from `env -i` plus a short list (lib/dod.sh gaffer_dod_gate_env:
 # PATH, a throwaway HOME, locale, CI=1, proxy and CA, the toolchain homes). A project
 # whose tests need one more variable names it here; a credential-shaped name, an endpoint,
-# ANTHROPIC_*, CLAUDE_*, DISPATCH_*, MEMORY_*, AWS_* or GAFFER_* is never passed, named or not.
-: "${GAFFER_DOD_ENV_PASS:=}"   # extra environment variable NAMES (comma or space separated) every gate run receives from the runner's environment; credential-shaped and factory names are refused whatever is listed
+# ANTHROPIC_*, CLAUDE_*, DISPATCH_*, MEMORY_*, AWS_* or GAFFER_* is never passed, named or not,
+# and neither is a loader or environment-control name (lib/env-scrub.sh).
+: "${GAFFER_DOD_ENV_PASS:=}"   # extra environment variable NAMES (comma or space separated) every gate run receives from the runner's environment; credential-shaped, factory and loader names (NODE_OPTIONS, BASH_ENV, LD_*, DYLD_*, GIT_*, PATH, HOME...) are refused whatever is listed
 : "${GAFFER_DOD_SANDBOX:=1}"   # 1 = run the DoD gates and criterion checks inside the agent's OS sandbox (they run agent-written code); 0 opts out, and the opt-out is logged
 # PR mode: when `gh pr merge` fails or gh is absent, 1 lands the branch LOCALLY (the PR
 # stays open — the previous behaviour). Default 0: HOLD the ticket at ready_for_merge

@@ -210,6 +210,20 @@ const GIT_ADD_ALL = /^git\s+add\s+(?:-A\b|--all\b|\.(?:\s|$))/i;
 const GIT_COMMIT = /^git\s+commit\b/i;
 
 /**
+ * Every git the hook spawns runs with the hardening lib/hook/git.mjs gitLookup passes: no
+ * fsmonitor and no hooks. A repo's own config (`core.fsmonitor` names a program git runs
+ * on `status`) must not make the safety hook execute repository code.
+ */
+const HOOK_GIT_HARDENING = ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null"];
+function hookGit(dir, args) {
+  return spawnSync("git", ["-C", dir, ...HOOK_GIT_HARDENING, ...args], {
+    encoding: "utf8",
+    timeout: 4000,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+}
+
+/**
  * Best-effort repo inspection: does the repo at `cwd` currently have an
  * untracked/modified secret file (staged is included)? Used to decide `git
  * add .`/`-A`. Returns true (deny) if so. On any failure (git missing, not a
@@ -217,10 +231,7 @@ const GIT_COMMIT = /^git\s+commit\b/i;
  */
 function repoHasUnstagedOrModifiedSecret(cwd) {
   try {
-    const res = spawnSync("git", ["-C", cwd, "status", "--porcelain", "-uall"], {
-      encoding: "utf8",
-      timeout: 4000,
-    });
+    const res = hookGit(cwd, ["status", "--porcelain", "-uall"]);
     if (res.status !== 0 || typeof res.stdout !== "string") return false;
     return (
       res.stdout
@@ -245,10 +256,7 @@ function repoHasUnstagedOrModifiedSecret(cwd) {
  */
 function repoHasStagedSecret(cwd) {
   try {
-    const res = spawnSync("git", ["-C", cwd, "diff", "--cached", "--name-only"], {
-      encoding: "utf8",
-      timeout: 4000,
-    });
+    const res = hookGit(cwd, ["diff", "--cached", "--name-only"]);
     if (res.status !== 0 || typeof res.stdout !== "string") return false;
     return (
       res.stdout
@@ -315,10 +323,7 @@ function gitSecretReason(segment, cwd) {
  * fallback (deny when we cannot prove the repo is secret-free). */
 function gitInspectionAvailable(cwd) {
   try {
-    const res = spawnSync("git", ["-C", cwd, "rev-parse", "--is-inside-work-tree"], {
-      encoding: "utf8",
-      timeout: 4000,
-    });
+    const res = hookGit(cwd, ["rev-parse", "--is-inside-work-tree"]);
     return res.status === 0 && String(res.stdout).trim() === "true";
   } catch {
     return false;
@@ -362,11 +367,7 @@ function isTrackedEnvTemplate(abs) {
   if (!ENV_TEMPLATE.test(abs)) return false;
   try {
     if (lstatSync(abs).isSymbolicLink()) return false;
-    const res = spawnSync(
-      "git",
-      ["-C", dirname(abs), "ls-files", "--error-unmatch", "--", basename(abs)],
-      { encoding: "utf8", timeout: 4000 },
-    );
+    const res = hookGit(dirname(abs), ["ls-files", "--error-unmatch", "--", basename(abs)]);
     return res.status === 0;
   } catch {
     return false;

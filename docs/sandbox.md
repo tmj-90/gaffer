@@ -54,7 +54,11 @@ changes.
 `sandbox-exec` is a write sandbox, not a jail. It wraps the whole agent process,
 which needs the network for its own model calls, so it cannot isolate egress, and it
 does not isolate reads: under it, the path "read host data, encode it, send it out"
-stays open. The `docker` provider closes both.
+stays open. The `docker` provider closes both. What `sandbox-exec` does contain: no write outside the
+worktree, the temp dirs and the agent CLI's runtime state, none to the factory's control
+files under `$GAFFER_DATA` and none to the agent CLI's user configuration. What it does
+not: reads, egress, and the agent writing the dispatch and memory databases directly
+(the in-sandbox MCP servers need them writable). `docker` is the stronger provider.
 
 ## Configuration
 
@@ -64,8 +68,9 @@ stays open. The `docker` provider closes both.
 | `SANDBOX_PROVIDER` | auto (see above) | `docker`, `sandbox-exec` or `none`. |
 | `GAFFER_STRICT_REQUIRE` | `1` | `1` refuses to launch an agent without a sandbox. `0` in the environment (only there) is the opt-out. |
 | `STRICT_ALLOW_NETWORK` | `1` | Allow network inside the sandbox. `0` breaks a `sandbox-exec` run, because the agent's own model call is denied too. |
-| `STRICT_ALLOW_HOME` | `$HOME/.claude $HOME/.cache` | HOME paths the sandbox may write (the agent CLI's own state and cache). |
-| `GAFFER_DOD_SANDBOX` | `1` | Run the DoD gates and criterion checks under the same wrap; they execute agent-written code. |
+| `STRICT_ALLOW_HOME` | `$HOME/.claude $HOME/.cache` | HOME paths the agent (never a gate) may write: the agent CLI's own state and cache. Its configuration surface stays denied. |
+| `GAFFER_DOD_SANDBOX` | `1` | Run the DoD gates and criterion checks under the sandbox (the validation profile); they execute agent-written code. |
+| `GAFFER_DOD_ENV_PASS` | empty | Extra variable names every gate run receives; credential-shaped and factory names are refused. |
 
 These are plain environment variables (all of them are in
 [CONFIG.md](CONFIG.md)), so scope them however you scope config:
@@ -86,38 +91,110 @@ concurrent workers never share one). The profile is SBPL, which is last-match-wi
 1. `(allow default)`: reads, and everything else, broadly allowed.
 2. `(deny file-write*)`: revoke all writes.
 3. One `(allow file-write* ...)` that grants writes back only to each write root (the
-   delivery worktrees), `$GAFFER_DATA`, the temp dirs (`$TMPDIR`,
-   `/private/var/folders`, `/tmp`), each path in `$STRICT_ALLOW_HOME`, and
-   `/dev/null`, `/dev/stdout`, `/dev/stderr`.
+   delivery worktrees), the temp dirs (`$TMPDIR`, `/private/var/folders`, `/tmp`), each
+   path in `$STRICT_ALLOW_HOME` (the agent profile only), and `/dev/null`,
+   `/dev/stdout`, `/dev/stderr`.
+4. `(deny file-write* (subpath $GAFFER_DATA) ...)` with a literal deny for every parent
+   directory of `$GAFFER_DATA` (so a rename of a parent cannot swap in another data
+   directory), then writes granted back to the write roots that live under it and, for
+   the agent profile only, to the files the in-sandbox writers need: the dispatch and
+   memory databases with their `-wal`, `-shm` and `-journal` files, the crew events log
+   and the safety hook's `safety-blocks.jsonl` and `tool-metrics.jsonl`. This is the same
+   set the docker legacy layout leaves visible (`sandbox-exec-data-plane.test.sh` D3).
+5. A deny, by name, of every host-trusted file under `$GAFFER_DATA`, even where a write
+   root would cover it (see the table below).
+6. A deny of the agent CLI's user configuration in `~/.claude` and in
+   `CLAUDE_CONFIG_DIR`: the directory itself and its parents, every top-level `*.json`
+   (`settings.json`, `settings.local.json`, `keybindings.json`) and `*.md` (`CLAUDE.md`),
+   and the `hooks`, `agents`, `commands`, `skills`, `plugins`, `output-styles`, `rules`,
+   `local` and `bin` directories, plus `~/.claude.json` and its backups. A planted user
+   setting or hook would run in every later agent and in your own CLI. The CLI's runtime
+   state (`projects/`, `todos/`, `statsig/`, `shell-snapshots/`, `history.jsonl`) stays
+   writable, except each project's auto-memory directory (`projects/*/memory`), which the
+   CLI loads into later sessions. A macOS volume is case-insensitive by default and the
+   kernel checks a file being created by the name as typed, so these denies are also
+   written in every letter case (`CLAUDE.MD`, `Skills/`), and any name under the
+   directory holding a non-ASCII byte is denied (the volume folds some non-ASCII letters
+   to ASCII ones). `$GAFFER_DATA` itself is denied in every letter case too.
+7. Read and write denies for the factory keys directory, the operator's REST token and
+   the runner's acceptance signing key.
 
 `process-exec` and `process-fork` are allowed; network follows `STRICT_ALLOW_NETWORK`.
 Because the temp dirs are writable (build tools need them), the escape it blocks is a
-write into your home, another repo or anywhere else outside the worktree and the list.
+write into your home, another repo, the factory's control files or anywhere else outside
+the worktree and the list. A path that cannot be written into SBPL faithfully (a quote or
+a line break in `$GAFFER_DATA` or `$HOME`) refuses the profile, and the launch with it.
 
-`runner/test/strict-mode.test.sh` proves, with real temp dirs and a generated profile,
-that a write inside the worktree succeeds, a write outside it (including a path built
-at runtime) is blocked by the OS, `python3 -m unittest` still runs, and the seam
-dispatches each provider correctly.
+### Who writes what under `$GAFFER_DATA`
+
+| Entry | Written by | Trusted by the host as | Agent profile |
+| --- | --- | --- | --- |
+| `dispatch.sqlite`, `memory.sqlite` and their `-wal`/`-shm`/`-journal` | the in-sandbox MCP servers; the host CLI | board and memory state | writable (the residual limit: use docker's bridge to close it) |
+| `events.jsonl` (crew events), `safety-blocks.jsonl`, `tool-metrics.jsonl` | the MCP servers, the safety hook | telemetry | writable |
+| `settings.json` and `.settings.*.tmp` | the dashboard | configuration exported into every runner process | denied |
+| `usage-pause.json`, `.usage-pause.lock` | the runner | the usage pause | denied |
+| `usage-ledger*.jsonl`, `eval-ledger.jsonl`, any `*ledger*` | the runner | spend caps, verdicts | denied |
+| `delivery-metrics.jsonl`, `context-selection.jsonl`, `skills-telemetry.jsonl`, `command-worker.jsonl` | the runner | dashboard figures | denied |
+| `audit.jsonl`, `memory-audit.jsonl` | the MCP servers (append, fail-soft) | the audit trail people read | denied (as docker masks them; the append is skipped) |
+| dot entries (`.failed-tickets`, `.reviewed-tickets`, `.tester-held`, `.merge-held-tickets`, `.daily-ticks`, `.route/`, `.workers/`, `.dod-serial/`, ...) | the runner | per-ticket state | denied |
+| `crew.yaml` | you, the runner | configuration | denied |
+| `mcp-runtime.*.json`, `mcp-product-owner-runtime.json` | the runner | MCP configuration (the agent only reads its own) | denied |
+| `strict-profile.*`, `sandbox-*-roots.*`, `worker-prompt.*` | the runner | the sandbox's own configuration | denied |
+| `dashboard-token`, `acceptance-signing.key` | the dashboard, the runner | credentials | denied, reads too |
+| `dashboard-url`, `dashboard.pid`, `*.log`, `agent_id`, `agent_reviewer_id` | the runner (agent output reaches the log through an inherited descriptor) | facts and identity | denied |
+| `skills-mounts/`, `sandbox-git/`, `locks/`, `run-state/`, `runs/`, `manifests/`, `scout/`, `experiments/` | the runner | skills agents load, runner state | denied |
+| `worktrees/<this call's>` | the agent | the code under review | writable (a write root) |
+| `worktrees/<another call's>` | other agents | their code | denied |
+
+### The gates' profile
+
+The DoD gates, the acceptance checks, the pre-gate install and `bin/dod-regate.sh` (the
+merge gate, the conflict re-gate, the tester replay through the landing path) run agent
+code with no hook, so they never run under the agent's profile file. Each run gets a fresh
+`GAFFER_SANDBOX_PROFILE=validation` profile, removed afterwards: rules 1 to 7 with its
+worktree as the only write root, no `$GAFFER_DATA` grant beyond it and no HOME grant. A
+profile that cannot be generated means the gate is not run. Every gate run, on every
+provider and with no sandbox at all, also starts from `env -i` plus PATH, a throwaway
+HOME, the locale, `CI=1`, the proxy and CA settings, `TERM`/`TZ`, the toolchain homes
+(`GOPATH`, `CARGO_HOME`, `RUSTUP_HOME`, `JAVA_HOME`, `NVM_DIR`, `PNPM_HOME`, ...), a
+placeholder git identity and the names you list in `GAFFER_DOD_ENV_PASS`. A
+credential-shaped name, an endpoint, `ANTHROPIC_*`, `CLAUDE_*`, `DISPATCH_*`, `MEMORY_*`,
+`AWS_*` or `GAFFER_*` never passes, listed or not.
+
+### How it is tested
+
+`runner/test/strict-mode.test.sh` proves on macOS, with real temp dirs and a generated
+profile, that a write inside the worktree succeeds, a write outside it (including a path
+built at runtime) or to `settings.json` is blocked by the OS, `python3 -m unittest`
+still runs, and the seam dispatches each provider correctly.
+`runner/test/sandbox-exec-data-plane.test.sh` and `sandbox-exec-agent-config.test.sh`
+read real generated profiles through a small SBPL evaluator
+(`runner/test/lib/sbpl-eval.mjs`), so the profile's meaning is checked on every host;
+their macOS sections check the kernel: an append to `settings.json`, a temp-file rename
+over it, a hard link to it, a rename of `$GAFFER_DATA` or `~/.claude` and a write to
+`~/.claude/settings.json` or `CLAUDE.md` all fail, while a SQLite write in WAL mode to
+the dispatch database and a write under `~/.claude/projects` succeed, and a gate cannot
+write the database. `dod-sandbox-wrap.test.sh` checks the gates' profile and
+environment.
 
 What is not fully validated: a whole live agent run under the profile. The agent CLI
 writes to state and cache paths that vary by host and version. If a live run is
 blocked on a path it legitimately needs, the block shows in `$GAFFER_LOG` as a sandbox
-or permission error on that path; add it to `STRICT_ALLOW_HOME`.
+or permission error on that path; add it to `STRICT_ALLOW_HOME` (the configuration
+surface listed in rule 6 stays denied whatever you add).
 
 ### The tester replay's profile
 
 The tester lane's clean replay runs the tester's own test files, so it asks for
-`GAFFER_SANDBOX_PROFILE=replay`. Under `sandbox-exec` that is the profile above with
-these rules after the write grant (so they win):
+`GAFFER_SANDBOX_PROFILE=replay`. Under `sandbox-exec` that is the gates' validation profile
+(no `$GAFFER_DATA` grant beyond the write roots: the replay's checkout, which lives under
+`$GAFFER_DATA/worktrees`, and its scratch `HOME`, `TMPDIR` and `PATH` directory; no
+`$STRICT_ALLOW_HOME`) with these rules added (so they win):
 
-1. `(deny file-write* (subpath $GAFFER_DATA))`, then writes granted back to the write
-   roots only (the replay's checkout, which lives under `$GAFFER_DATA/worktrees`, and
-   its scratch `HOME`, `TMPDIR` and `PATH` directory). `$GAFFER_DATA` itself and
-   `$STRICT_ALLOW_HOME` are not write roots here.
-2. `(deny file-read-data (subpath $GAFFER_DATA))`, then reads allowed back for the
+1. `(deny file-read-data (subpath $GAFFER_DATA))`, then reads allowed back for the
    write roots and the read roots (the dependency links and the repository's git
    directory). Metadata stays readable, so the checkout's own path still resolves.
-3. `(deny file-read* file-write* ...)` for HOME's credential and agent folders:
+2. `(deny file-read* file-write* ...)` for HOME's credential and agent folders:
    `~/.ssh`, `~/.aws`, `~/.config/gh`, `~/.config/gcloud`, `~/.azure`, `~/.kube`,
    `~/.docker`, `~/.claude`, `~/.npmrc`, `~/.netrc`, `~/.pypirc`, `~/.git-credentials`,
    cargo's `credentials` files and `~/.gnupg`. The replay's own `HOME` is a scratch
@@ -279,7 +356,8 @@ it runs. Without a credential it fails at once and names the two secrets.
 
 - The opt-out exists. `GAFFER_STRICT_REQUIRE=0` in the environment runs agents without
   an OS sandbox, and nothing checks that the VM or container you vouched for is there.
-- `sandbox-exec`, the macOS default, restricts writes only (see above).
+- `sandbox-exec`, the macOS default, restricts writes only (see above), and still lets
+  the agent write the dispatch and memory databases directly.
 - The containment and delivery tests need a Docker daemon, so they run in CI, not on
   every developer machine; the seam test runs everywhere.
 - The container runs as root with only `DAC_OVERRIDE`, so on a Linux host the files it

@@ -245,9 +245,10 @@ export function strictRequireOptedOut(env = process.env) {
  * accepted boundary is the docker sandbox WITH the host-side MCP bridge:
  *   • "none"         no OS sandbox at all on this host (or SANDBOX_PROVIDER=none/unknown);
  *   • "write-only"   SANDBOX_PROVIDER=sandbox-exec: a write-only boundary whose profile
- *                    still grants writes under $GAFFER_DATA (settings.json, the dispatch
- *                    and memory databases, the usage ledger). claude-code's in-process
- *                    hook refuses those writes; a command worker has none;
+ *                    still grants writes to the dispatch and memory databases under
+ *                    $GAFFER_DATA (the in-sandbox MCP servers need them), and reads
+ *                    broadly. claude-code's in-process hook guards those; a command
+ *                    worker has none;
  *   • "not-docker"   a wrap that is not the docker wrapper reached the seam;
  *   • "legacy"       docker without the MCP bridge (GAFFER_MCP_BRIDGE off, the macOS
  *                    default): the databases are mounted read-write in the container.
@@ -260,7 +261,7 @@ export function commandSandboxRefusalMessage(why = "none") {
   const head = {
     none: "has no in-process safety hook, so it needs the docker sandbox and no OS sandbox is available on this host",
     "write-only":
-      "needs the docker sandbox: SANDBOX_PROVIDER=sandbox-exec only restricts writes, and its profile still lets the worker write $GAFFER_DATA (settings.json, the dispatch and memory databases, the usage ledger), which only claude-code's in-process safety hook guards",
+      "needs the docker sandbox: SANDBOX_PROVIDER=sandbox-exec only restricts writes, and its profile still lets the worker write the dispatch and memory databases under $GAFFER_DATA, which only claude-code's in-process safety hook guards",
     "not-docker":
       "needs the docker sandbox, and the wrap handed to the worker seam is not the docker wrapper",
     legacy:

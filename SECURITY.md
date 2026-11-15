@@ -54,7 +54,9 @@ Test files are under `runner/test/` (`.sh`, `.mjs`) or `packages/*/test/` (`.ts`
 | Required CI | No recorded PASS for the exact commit is a hold | `ci-required-before-review.test.ts`, `h3-ci-gate.test.sh` | |
 | Landing | Never overwrites an ignored local file; a revocation stops every landing not yet started | `land-ignored-file.test.sh`, `revocation-safe-landing.test.ts` | A landing already started is reported, not undone |
 | OS sandbox (`docker`) | Read and egress isolation; data plane on the host; private git dir | `sandbox-docker-containment.test.sh`, `sandbox-docker-mounts.test.sh`, `sandbox-docker-git-isolation.test.sh`, `sandbox-docker-delivery.test.sh` | A live agent inside it is proven only where you run it |
-| OS sandbox (`sandbox-exec`) | Writes only in the allowed roots | `strict-mode.test.sh` | Reads, egress, writes under `$GAFFER_DATA` |
+| OS sandbox (`sandbox-exec`) | Writes only in the allowed roots; under `$GAFFER_DATA` only the databases, the crew events log and the hook's ledgers (the agent) or nothing but the worktree (the gates); never `settings.json`, the usage pause, the ledgers, the runner's state, the generated profiles or the agent CLI's user configuration | `strict-mode.test.sh` (macOS), `sandbox-exec-data-plane.test.sh`, `sandbox-exec-agent-config.test.sh` (profile meaning on every host, the kernel on macOS) | Reads, egress, the agent writing the databases directly; hard-link and rename behaviour is proven by the macOS sections only |
+| Settings loader | `settings.json` sets only the keys the dashboard API writes; anything else (NODE_OPTIONS, BASH_ENV, DYLD_*, CLAUDE_BIN, CLAUDE_FLAGS, the gate sandbox opt-out...) is ignored and named | `settings-allowlist.test.sh`, `settings.test.ts` (the two lists pinned) | A person who sets an autonomy or budget key through the dashboard |
+| Gate environment | Every gate run starts from `env -i`: no model key, no `*_TOKEN`/`*_KEY`/`*_SECRET`, no `DISPATCH_*`, no principal token, on every provider and with no sandbox | `dod-sandbox-wrap.test.sh` | What a test reads from the files it can read |
 | Default host isolation | `GAFFER_STRICT_REQUIRE=1` in every mode; no working sandbox means no launch, refused before any claim with the fix | `isolation-default.test.sh`, `strict-require.test.sh`, `autonomy-containment.test.sh` | `GAFFER_STRICT_REQUIRE=0` in the environment (never settings.json) |
 | Planning agents and scout | Read-only tool sets, safety-hook settings verified before spawn | `security-md-planning-agents.test.mjs`, `scout-gather.test.sh` | |
 | Replay manifests and experiments | Manifests hold ids, commits, settings and hashes, never prompt text or credentials (mode 600, 16 KiB cap); the experiment runner is denied to agents in every launch form and its live mode needs a hard USD cap | `replay-manifest.test.sh`, `eval-experiment.test.sh`, `safety-hook-spelling.test.mjs` | |
@@ -273,13 +275,14 @@ insert an approval and recompute a consistent chain, and every landing path acte
   safety hook refuses any tool call or command that names the keys directory (Read, Grep,
   Glob, Write, `cat`, `cp`, an interpreter opening it, a path assembled from variables in
   the same command), on every provider.
-  - `sandbox-exec`: both profiles (delivery and the tester replay) deny reading and
-    writing the keys directory outright, whatever the write roots grant. They also deny
-    the operator's REST token (`$GAFFER_DATA/dashboard-token`, `~/.gaffer/dashboard-token`):
-    the delivery profile otherwise reads everywhere, writes under `$GAFFER_DATA` and allows
-    the network, so an agent past the hook could read the token, approve as the operator
-    over the host's REST server on localhost, and the host would seal that approval.
-    Nothing inside the sandbox needs the token (the MCP servers and the CLI use sqlite).
+  - `sandbox-exec`: every profile (the agent, the gates' validation profile and the
+    tester replay) denies reading and writing the keys directory outright, whatever the
+    write roots grant. They also deny the operator's REST token
+    (`$GAFFER_DATA/dashboard-token`, `~/.gaffer/dashboard-token`) and the runner's
+    acceptance signing key: the agent profile otherwise reads everywhere and allows the
+    network, so an agent past the hook could read the token, approve as the operator over
+    the host's REST server on localhost, and the host would seal that approval. Nothing
+    inside the sandbox needs either (the MCP servers and the CLI use sqlite).
   - `docker`: the keys directory is never mounted; the wrapper refuses a mount at, under
     or above the operator account's keys directory (and one under the current `HOME`
     when it exists). The MCP data plane runs on the host; the dashboard token and the
@@ -521,6 +524,29 @@ model credential, and so does the pre-gate dependency install, with `--ignore-sc
 and a stripped environment (a package manager can still run repository code such as a
 `.pnpmfile.cjs`, which is why the install is inside the wrap).
 
+The `sandbox-exec` provider (macOS) is a write filter and nothing more. After this
+release its agent profile denies every write under `$GAFFER_DATA` (also where a temp
+grant contains it, and on every parent directory, so no rename swaps the directory) and
+grants back only what the in-sandbox writers need: the dispatch and memory databases
+with their `-wal`/`-shm`/`-journal` files, the crew events log and the safety hook's two
+ledgers (the same set the docker legacy layout leaves visible, pinned by a test). The
+host-trusted files are denied by name after that: `settings.json` and its temp
+siblings, `usage-pause.json`, every ledger, the per-ticket marker files, `crew.yaml`, the
+MCP runtime configs, the generated profiles, the agent ids and the skills mounts. Every
+profile also denies the agent CLI's user configuration (`~/.claude` settings, `CLAUDE.md`,
+hooks, agents, commands, skills, plugins, and `~/.claude.json`), while its runtime state
+(`projects/`, `todos/`, `statsig/`, `shell-snapshots/`) stays writable. The gates (DoD,
+acceptance checks, the pre-gate install, the merge gate) never run under the agent's
+profile: each run gets a fresh validation profile with no `$GAFFER_DATA` grant beyond
+its worktree and no HOME grant. Every gate run, on every provider and with no sandbox,
+starts from `env -i` plus PATH, a throwaway HOME, locale, CI=1, proxy and CA settings,
+the toolchain homes and the names in `GAFFER_DOD_ENV_PASS`; no credential-shaped name
+ever passes. What `sandbox-exec` still does not contain: reads (the agent can read
+anything your user can, except the keys, the REST token and the acceptance key), egress
+(the network is open), and the agent writing the two databases directly instead of
+through the MCP tools. **`docker` is the stronger provider**: read and egress isolation,
+and with the bridge no database in the container at all.
+
 The wrap is applied inside the single worker seam, so every agent spawn (delivery,
 bootstrap, reviewer, clarify, eval judge, and through the Node seam the planner, Suggest
 work, onboarding, the spec author, the merge resolver and the tester) is contained the
@@ -652,11 +678,26 @@ a presence boolean, and an argument not on the allowlist is never copied.
   compiled binary, a script the agent writes and then runs, a child process's own
   syscalls and content-only data flows are out of its reach. It shrinks the gap to
   dynamic reads and fully dynamic non-secret paths; it does not close it.
-- **`sandbox-exec` still permits writes under `$GAFFER_DATA`**, where `settings.json`,
-  `usage-pause.json` and the ledgers live. The hook refuses every write vector to those
-  paths that `safety-hook.test.mjs` pins, but a child's syscalls are invisible to it.
-  `sandbox-exec` also isolates neither reads nor egress. The default host isolation on
-  macOS is therefore write-only isolation.
+- **`sandbox-exec` still permits writes to the dispatch and memory databases** under
+  `$GAFFER_DATA` (the in-sandbox MCP servers need them), so code the agent runs can change
+  board and memory rows without the MCP tools' checks. `settings.json`, the usage pause,
+  the ledgers and the other control files are no longer writable, and `settings.json`
+  is an allowlist of dashboard keys besides. `sandbox-exec` also isolates neither reads
+  nor egress, so the default host isolation on macOS is write-only isolation. Kernel
+  behaviour (hard links, renames, SQLite's journal files) is proven only by the macOS CI
+  sections of `sandbox-exec-data-plane.test.sh` and `sandbox-exec-agent-config.test.sh`.
+  `~/.cache` stays writable for the agent (not for the gates), and tools there that you
+  run outside the sandbox (corepack's pnpm and yarn, Playwright's browsers) could be
+  replaced by agent code. The MCP servers' audit logs (`audit.jsonl`,
+  `memory-audit.jsonl`) are not writable from the sandbox, so MCP calls on macOS go
+  unaudited (the servers warn and carry on). The files the agent may write (the
+  databases' `-wal`/`-shm`/`-journal` names, the hook's ledgers) can also be replaced by a
+  symlink, which host processes that open them follow. Use `docker` where you can.
+- **Agent launches still read user-level settings.** No launch passes
+  `--setting-sources project,local`: an operator who authenticates through user-level
+  settings (`apiKeyHelper`, `env`) would lose it, and that cannot be proved without the
+  real CLI. Sandboxed code can no longer write those settings, but a person's own user
+  settings still reach every agent.
 - **The factory key is only as safe as the provider.** Signed approvals stop a forged row
   only while the agent cannot read the key. Under `sandbox-exec` and `docker` the OS keeps
   it out of reach; under `SANDBOX_PROVIDER=none` / `GAFFER_STRICT_REQUIRE=0` only the hook

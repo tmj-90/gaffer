@@ -983,6 +983,14 @@ gaffer_tick_launch_attempt() {
     gaffer_release_delivery ready "the paid delivery launch was refused by the budget admission (no agent ran); not counted as an attempt" budget_refused
     gaffer_skip_ticket "$NUM"
     log "BUDGET: #$NUM — the paid delivery launch was refused by the budget admission (see the line above); released to ready without counting an attempt"
+    # A refusal of rework attempt 2 or 3 follows a PAID attempt 1 in this same tick: the
+    # tick spent, so it must not read as no_work (loop.sh refunds a no_work tick's day
+    # slot, and MAX_TICKS_PER_DAY then undercounts). It reports error, which keeps the
+    # slot; only a refusal before any paid attempt is no_work.
+    if [ "${_DELIV_ATTEMPT:-1}" -gt 1 ] 2>/dev/null; then
+      log "BUDGET: #$NUM — attempt $_DELIV_ATTEMPT refused after a paid attempt this tick; the tick counts toward the day cap"
+      result error; exit 0
+    fi
     result no_work; exit 0
   fi
   # ── GUARD C: PAUSE-ON-CAP detection (BEFORE the ledger removes the JSON) ─────

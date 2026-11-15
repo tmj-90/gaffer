@@ -123,7 +123,7 @@
 27	pr-create-e2e.test.sh
 26	tick-parked-result.test.sh
 24	auto-merge.test.sh
-23	budget-refused-delivery.test.sh
+36	budget-refused-delivery.test.sh
 23	model-routing.test.sh
 23	usage-pause.test.sh
 22	bootstrap-hook-fail-closed.test.sh

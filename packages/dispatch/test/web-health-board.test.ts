@@ -315,6 +315,34 @@ describe("web: the rendered Health page tells the quality story first", () => {
     );
   });
 
+  it("each measure's delta word follows its own direction of good (cost and escaped: lower is better)", async () => {
+    // Cost rose against a full period before (worse); escaped fell from 5% (better).
+    const inner = globalThis.fetch as unknown as (u: RequestInfo | URL) => Promise<Response>;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const res = await inner(input);
+        if (!String(input).includes("/api/health")) return res;
+        const p = (await res.json()) as Record<string, Record<string, unknown>>;
+        p.accepted_change!.previous = { accepted_changes: 20, cost_per_accepted_change_usd: 0.4 };
+        return new Response(JSON.stringify(p), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }),
+    );
+    await loadApp();
+    const tiles = [...document.querySelectorAll(".measure-strip > .measure-tile")];
+    const cost = tiles[2]!.querySelector(".mt-delta")!;
+    expect(cost.classList.contains("is-worse")).toBe(true);
+    expect(cost.querySelector(".mt-dglyph")?.textContent).toBe("▲");
+    expect(cost.textContent).toContain("worse vs the 30 days before");
+    const esc = tiles[3]!.querySelector(".mt-delta")!;
+    expect(esc.classList.contains("is-better")).toBe(true);
+    expect(esc.querySelector(".mt-dglyph")?.textContent).toBe("▼");
+    expect(esc.textContent).toContain("−5 pts better vs the 30 days before");
+  });
+
   it("no sparkline is fed fewer than 4 points, and none plots categories", async () => {
     await loadApp();
     const view = document.querySelector(".health-view")!;

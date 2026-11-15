@@ -451,6 +451,13 @@ describe("REST and the live feed refuse an unsigned principal", () => {
         body: JSON.stringify({ all: true }),
       });
       expect(byPrincipal.status).toBe(403);
+      // No token over loopback is no one.
+      const anon = await fetch(`${s.base}/api/principal-signatures/resign`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ all: true }),
+      });
+      expect(anon.status).toBe(401);
       // The operator's --all needs the fingerprint of the list it reviewed.
       const op = { authorization: `Bearer ${FULL}`, "content-type": "application/json" };
       const blind = await fetch(`${s.base}/api/principal-signatures/resign`, {

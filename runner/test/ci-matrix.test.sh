@@ -154,6 +154,8 @@ for p in runner/lib/land.sh runner/test/x.test.sh runner/sandbox/profile.sb scri
 done
 paths_say false docs/testing.md packages/dispatch/src/core.ts packages/crew/web/app.tsx README.md CHANGELOG.md \
   && ok "C6 docs and package sources alone skip them" || fail "C6 docs / package sources trigger the macOS shards"
+paths_say false runner/README.md scripts/ui-regression/README.md .github/PULL_REQUEST_TEMPLATE.md \
+  && ok "C6 markdown under a relevant path skips them" || fail "C6 a markdown file triggers the macOS shards"
 paths_say false && ok "C6 no changed path skips them" || fail "C6 an empty change triggers the macOS shards"
 paths_say false "xrunner/a" "docs/runner/a.md" "packages/dispatch/src/package.json" \
   && ok "C6 only the real paths count (no substring matches)" || fail "C6 a lookalike path triggers the macOS shards"

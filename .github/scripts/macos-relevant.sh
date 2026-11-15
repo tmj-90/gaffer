@@ -12,7 +12,8 @@
 #   .github/**                    the workflows and the scripts the shards run
 #   package.json, packages/*/package.json, pnpm-lock.yaml, pnpm-workspace.yaml,
 #   .npmrc, .nvmrc                the manifests, the lockfile, the Node pin
-# Anything else (package sources, docs, the dashboard UI) skips them on that push;
+# Markdown never counts, even under those paths. Anything else (package sources, docs,
+# the dashboard UI) skips them on that push;
 # nightly.yml runs them every night either way.
 #
 # Usage:
@@ -29,6 +30,8 @@ set -uo pipefail
 
 relevant_path() {
   case "$1" in
+    # Prose behaves the same everywhere, wherever it lives (runner/README.md, docs).
+    *.md) return 1 ;;
     runner/* | scripts/* | .github/*) return 0 ;;
     package.json | pnpm-lock.yaml | pnpm-workspace.yaml | .npmrc | .nvmrc) return 0 ;;
     # One level only: packages/<name>/package.json, never a fixture deeper down.

@@ -195,7 +195,7 @@ steps are in `runner-shard.yml`, which `nightly.yml` calls too.
 The macOS-relevant paths are the ones that can behave differently on macOS:
 `runner/**` (lib, config, bin, sandbox, the tests), `scripts/**`, `.github/**`,
 `package.json`, `packages/*/package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`,
-`.npmrc` and `.nvmrc`. The `changes` job decides with
+`.npmrc` and `.nvmrc`, except Markdown files anywhere. The `changes` job decides with
 `.github/scripts/macos-relevant.sh`, which diffs the push's previous head (a pull
 request: its base) against the commit under test. When it cannot tell (a new branch, a
 force push, a failed diff) the macOS shards run. A change to package sources or docs

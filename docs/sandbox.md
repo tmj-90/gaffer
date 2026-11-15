@@ -110,7 +110,12 @@ concurrent workers never share one). The profile is SBPL, which is last-match-wi
    `local` and `bin` directories, plus `~/.claude.json` and its backups. A planted user
    setting or hook would run in every later agent and in your own CLI. The CLI's runtime
    state (`projects/`, `todos/`, `statsig/`, `shell-snapshots/`, `history.jsonl`) stays
-   writable.
+   writable, except each project's auto-memory directory (`projects/*/memory`), which the
+   CLI loads into later sessions. A macOS volume is case-insensitive by default and the
+   kernel checks a file being created by the name as typed, so these denies are also
+   written in every letter case (`CLAUDE.MD`, `Skills/`), and any name under the
+   directory holding a non-ASCII byte is denied (the volume folds some non-ASCII letters
+   to ASCII ones). `$GAFFER_DATA` itself is denied in every letter case too.
 7. Read and write denies for the factory keys directory, the operator's REST token and
    the runner's acceptance signing key.
 

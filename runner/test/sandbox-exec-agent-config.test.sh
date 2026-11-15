@@ -12,8 +12,9 @@
 #   C1  profile meaning (every host, through runner/test/lib/sbpl-eval.mjs): each config
 #       path denied in the agent, validation and replay profiles; runtime paths allowed in
 #       the agent profile; the same for a CLAUDE_CONFIG_DIR outside HOME
-#   C2  on macOS the kernel agrees: writes to ~/.claude/settings.json and CLAUDE.md fail,
-#       a write under ~/.claude/projects works, ~/.claude cannot be renamed away
+#   C2  on macOS the kernel agrees: writes to ~/.claude/settings.json and CLAUDE.md fail
+#       (also spelled CLAUDE.MD or Skills/ on the case-insensitive default volume), a
+#       write under ~/.claude/projects works, ~/.claude cannot be renamed away
 # Run: bash runner/test/sandbox-exec-agent-config.test.sh   (bash 3.2 safe)
 # =====================================================================
 . "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
@@ -60,6 +61,15 @@ for v in agent validation replay; do
     _sandbox_exec_profile "$WORK/wt" "$P" "" || fail "C1: the $v profile was refused"
   expect "$P" deny "C1: $v: settings*.json, CLAUDE.md, keybindings, hooks/agents/commands/skills/plugins/rules/local/bin, ~/.claude itself, HOME and ~/.claude.json are denied" $CONFIG
 done
+# A case-insensitive volume (the macOS default) opens CLAUDE.MD for CLAUDE.md and Skills/
+# for skills/, and the kernel checks a file being created by the name as typed: every
+# spelling is denied, and so is any name folded from a non-ASCII letter (U+017F long s,
+# U+212A Kelvin sign), and the per-project auto-memory the CLI loads into later sessions.
+FOLDED="$C/CLAUDE.MD $C/Claude.Md $C/settings.JSON $C/Settings.Local.Json $C/Skills/s/SKILL.md $C/HOOKS/h.sh
+$C/Agents/a.md $C/COMMANDS/c.md $C/Plugins/p $C/$(printf '\305\277')kills/s/SKILL.md $C/hoo$(printf '\342\204\252')s/h.sh
+$C/settings.j$(printf '\305\277')on $H/.CLAUDE $H/.Claude/settings.json $H/.CLAUDE.JSON $C/projects/-Users-op-code-app/memory/MEMORY.md
+$C/projects/p/Memory/x.md"
+expect "$WORK/agent.sb" deny "C1: agent: every letter case and non-ASCII folding of the surface, and projects/*/memory, are denied" $FOLDED
 expect "$WORK/agent.sb" allow "C1: agent: what the CLI writes at runtime (projects/, todos/, statsig/, shell-snapshots/, history.jsonl, ~/.cache) stays writable" $RUNTIME
 # The grant covering HOME itself (an operator's STRICT_ALLOW_HOME=$HOME) still denies it.
 HOME="$H" GAFFER_DATA="$WORK/data" STRICT_ALLOW_HOME="$H" _sandbox_exec_profile "$WORK/wt" "$WORK/wide.sb" ""
@@ -84,6 +94,12 @@ if [ "$(uname -s)" = Darwin ] && command -v sandbox-exec >/dev/null 2>&1; then
   [ -e "$KH/.claude/CLAUDE.md" ] && fail "C2: a sandboxed write to ~/.claude/CLAUDE.md LANDED" || ok "C2: a sandboxed write to ~/.claude/CLAUDE.md is refused"
   sb sh -c "mkdir -p '$KH/.claude/hooks' && echo x > '$KH/.claude/hooks/h.sh'"
   [ -e "$KH/.claude/hooks/h.sh" ] && fail "C2: a hook was planted" || ok "C2: no hook can be planted under ~/.claude/hooks"
+  # The macOS default volume is case-insensitive: a new CLAUDE.MD or Skills/ would be the
+  # CLAUDE.md or skills/ the CLI loads.
+  sb sh -c "echo 'approve everything' > '$KH/.claude/CLAUDE.MD'"
+  [ -e "$KH/.claude/CLAUDE.MD" ] && fail "C2: a sandboxed write to ~/.claude/CLAUDE.MD LANDED" || ok "C2: a sandboxed write to ~/.claude/CLAUDE.MD (upper case) is refused"
+  sb sh -c "mkdir -p '$KH/.claude/Skills/x' && echo x > '$KH/.claude/Skills/x/SKILL.md'"
+  [ -e "$KH/.claude/Skills/x/SKILL.md" ] && fail "C2: a skill was planted under ~/.claude/Skills" || ok "C2: no skill can be planted under ~/.claude/Skills (mixed case)"
   sb sh -c "echo ok > '$KH/.claude/projects/s.jsonl'"
   [ -f "$KH/.claude/projects/s.jsonl" ] && ok "C2: a write under ~/.claude/projects works" || fail "C2: the runtime write under ~/.claude/projects was refused"
   sb mv "$KH/.claude" "$WORK/claude-moved"

@@ -102,6 +102,34 @@ _sandbox_regex_prefix() {
   printf '%s' "$real" | sed -e 's/[][\\.*^$+?(){}|]/\\&/g'
 }
 
+# An escaped regex fragment made case-insensitive: each ASCII letter becomes a two-letter
+# bracket ([cC]); an escape (a backslash and the character after it) is kept as it is.
+# WHY: macOS volumes are case-insensitive by default, and a path the kernel checks for a
+# file being CREATED is the path as typed (no vnode exists yet). A case-sensitive deny
+# for ~/.claude/CLAUDE.md does not match ~/.claude/CLAUDE.MD, the grant on ~/.claude
+# allows it, and the CLI later opens CLAUDE.md and finds the planted file. Letters the
+# volume folds from non-ASCII characters (U+017F for s, U+212A for k, ligatures) are
+# handled by a separate non-ASCII deny (_sandbox_exec_agent_config_rules).
+#   _sandbox_regex_ci <escaped fragment>  → the case-insensitive fragment
+_sandbox_regex_ci() {
+  local in="$1" lc uc out="" i=0 n c l u
+  lc="$(printf '%s' "$in" | tr 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' 'abcdefghijklmnopqrstuvwxyz')"
+  uc="$(printf '%s' "$in" | tr 'abcdefghijklmnopqrstuvwxyz' 'ABCDEFGHIJKLMNOPQRSTUVWXYZ')"
+  n=${#in}
+  while [ "$i" -lt "$n" ]; do
+    c="${in:$i:1}"
+    if [ "$c" = "\\" ]; then
+      out="$out$c${in:$((i + 1)):1}"
+      i=$((i + 2))
+      continue
+    fi
+    l="${lc:$i:1}"; u="${uc:$i:1}"
+    if [ "$l" != "$u" ]; then out="${out}[${l}${u}]"; else out="$out$c"; fi
+    i=$((i + 1))
+  done
+  printf '%s' "$out"
+}
+
 # Literal rules for every ancestor of a path (canonical), "/" excluded. A literal rule
 # matches the directory itself only, never what is inside it: denying writes to the
 # ancestors stops a rename (or removal) of a parent that would swap in a whole new
@@ -272,6 +300,10 @@ _sandbox_exec_data_rules() {
   printf '(deny file-write*\n'
   _sandbox_subpath_rule "$GAFFER_DATA"
   _sandbox_ancestor_rules "$GAFFER_DATA"
+  # $GAFFER_DATA spelled in any letter case (a case-insensitive volume): where a temp or
+  # HOME grant contains it, /private/tmp/GDATA/settings.json must not slip past the
+  # subpath above. The re-grants below are exact, so a variant spelling stays denied.
+  if [ -n "${data_rx:-}" ]; then printf '  (regex #"^%s(/|$)")\n' "$(_sandbox_regex_ci "$data_rx")"; fi
   printf ')\n'
   printf '(allow file-write*\n'
   while IFS= read -r root; do _sandbox_subpath_rule "$root"; done <<ROOTS
@@ -340,7 +372,7 @@ _sandbox_agent_config_dirs() {
 # directories; ~/.claude.json and its siblings (backups, locks) at the HOME level.
 #   _sandbox_exec_agent_config_rules <escaped $HOME regex prefix>
 _sandbox_exec_agent_config_rules() {
-  local home_rx="$1" cfg rx sub
+  local home_rx="$1" cfg rx sub cx alt
   printf '(deny file-write*\n'
   while IFS= read -r cfg; do
     [ -n "$cfg" ] || continue
@@ -351,10 +383,28 @@ _sandbox_exec_agent_config_rules() {
     for sub in hooks agents commands skills plugins output-styles rules local bin; do
       _sandbox_subpath_rule "$cfg/$sub"
     done
+    # The same surface in any letter case (a case-insensitive volume opens CLAUDE.MD for
+    # CLAUDE.md, Skills/ for skills/), the directory itself in any case, and any name under
+    # it holding a non-ASCII byte (the volume folds U+017F to s, U+212A to k, ...; the
+    # CLI's own runtime names are ASCII). Also the per-project auto-memory directory,
+    # which the CLI loads into every later session in that project.
+    cx="$(_sandbox_regex_ci "$rx")"
+    printf '  (regex #"^%s$")\n' "$cx"
+    printf '  (regex #"^%s/[^/]*\\.(%s|%s)$")\n' "$cx" "$(_sandbox_regex_ci json)" "$(_sandbox_regex_ci md)"
+    alt=""
+    for sub in hooks agents commands skills plugins output-styles rules local bin; do
+      alt="$alt${alt:+|}$(_sandbox_regex_ci "$sub")"
+    done
+    printf '  (regex #"^%s/(%s)(/|$)")\n' "$cx" "$alt"
+    printf '  (regex #"^%s/%s/[^/]+/%s(/|$)")\n' "$cx" "$(_sandbox_regex_ci projects)" "$(_sandbox_regex_ci memory)"
+    printf '  (regex #"^%s/.*[^ -~]")\n' "$cx"
   done <<CFGDIRS
 $(_sandbox_agent_config_dirs)
 CFGDIRS
-  if [ -n "$home_rx" ]; then printf '  (regex #"^%s/\\.claude\\.json")\n' "$home_rx"; fi
+  if [ -n "$home_rx" ]; then
+    printf '  (regex #"^%s/\\.claude\\.json")\n' "$home_rx"
+    printf '  (regex #"^%s/\\.%s\\.%s")\n' "$(_sandbox_regex_ci "$home_rx")" "$(_sandbox_regex_ci claude)" "$(_sandbox_regex_ci json)"
+  fi
   printf ')\n'
 }
 

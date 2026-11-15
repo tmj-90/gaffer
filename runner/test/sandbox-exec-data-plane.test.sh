@@ -95,6 +95,10 @@ PT="$WORK/agent-tmp.sb"
 TMPDIR="$WORK" GAFFER_SANDBOX_PROFILE="" _sandbox_exec_profile "$WT" "$PT" ""
 expect "$PT" deny "D1: with TMPDIR containing \$GAFFER_DATA the control files are still denied" $CONTROL
 expect "$PT" allow "D1: ...and the writers still allowed" $WRITERS
+# On a case-insensitive volume (the macOS default) $WORK/DATA is $WORK/data: a spelling of
+# $GAFFER_DATA in another case must not fall back to the temp grant.
+expect "$PT" deny "D1: with TMPDIR containing \$GAFFER_DATA, \$GAFFER_DATA in another letter case is denied too" \
+  "$WORK/DATA/settings.json" "$WORK/Data/usage-pause.json" "$WORK/DATA/new-control-file" "$WORK/dATA"
 # A write root that contains $GAFFER_DATA (a misconfigured root): the named control files
 # are still denied (the last deny block), the databases still allowed.
 PW="$WORK/agent-wide.sb"
@@ -163,6 +167,8 @@ if [ "$(uname -s)" = Darwin ] && command -v sandbox-exec >/dev/null 2>&1; then
   grep -q NODE_OPTIONS "$D/settings.json" && fail "D4: a sandboxed append to settings.json LANDED" || ok "D4: a sandboxed append to settings.json is refused by the kernel"
   sb sh -c "printf 'x' > '$D/.settings.1.f.tmp' && mv '$D/.settings.1.f.tmp' '$D/settings.json'"
   grep -q MAX_TICKS "$D/settings.json" && ok "D4: a temp-file-and-rename over settings.json is refused" || fail "D4: settings.json replaced by a rename"
+  sb sh -c "echo '{\"NODE_OPTIONS\":\"x\"}' >> '$WORK/DATA/settings.json'" # $WORK is under the temp grant
+  grep -q NODE_OPTIONS "$D/settings.json" && fail "D4: an append through \$GAFFER_DATA in upper case LANDED" || ok "D4: \$GAFFER_DATA spelled in another case is refused too"
   sb sh -c "printf 'x' > '$D/usage-ledger.jsonl'"; [ -s "$D/usage-ledger.jsonl" ] && fail "D4: the usage ledger was written" || ok "D4: the usage ledger cannot be written"
   if command -v sqlite3 >/dev/null 2>&1; then
     if sb sqlite3 "$D/dispatch.sqlite" 'pragma journal_mode=wal; create table t(x); insert into t values(1);' >/dev/null \

@@ -3,13 +3,18 @@
  *
  * Walks EVERY operation in docs/openapi.json and asserts, for four callers:
  *   - no token:            every operation but the tokenless ones is 401;
- *   - the read token:      no state-changing operation succeeds;
- *   - a read-only principal (unscoped, capability read): no state-changing operation
- *                          succeeds;
+ *   - the read token:      every state-changing operation is refused (403);
+ *   - a read-only principal (unscoped, capability read): every state-changing operation
+ *                          is refused (403);
  *   - a scoped principal (full capability, repo scope "app"), every path parameter
- *                          pointing at an object OUTSIDE its scope: no state-changing
- *                          operation succeeds, and no read returns that object's data.
- * After each caller's sweep the database holds exactly what it held before. A new
+ *                          pointing at an object OUTSIDE its scope: every state-changing
+ *                          operation is refused (403), and no read returns that object's
+ *                          data.
+ * The refusal must be the gate's 403, not just any failure: the body sent is "{}", so a
+ * route missing its check would still fail validation and a "no 2xx" rule would pass.
+ * After each caller's writes, and after every caller's reads (the shared token's too),
+ * the database holds exactly what it held before, row for row (only a principal's
+ * last_used_at may move). A new
  * route lands in the spec (scripts/openapi.mjs --check keeps them in step), so it is
  * swept here by construction and cannot be silently open.
  */
@@ -165,20 +170,39 @@ function concrete(path: string): string {
   });
 }
 
-/** Everything that can change, as row counts per table plus the tickets' state. */
+/**
+ * Everything that can change: every row of every table, whole. Row counts alone would
+ * miss an UPDATE (a repository's commands, a principal's scope, a delivery's branch).
+ */
 function snapshot(): string {
   const tables = (
     wg.db
-      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+      )
       .all() as Array<{ name: string }>
   ).map((t) => t.name);
-  const counts = tables.map(
-    (t) => `${t}:${(wg.db.prepare(`SELECT COUNT(*) AS n FROM "${t}"`).get() as { n: number }).n}`,
-  );
-  const state = wg.db
-    .prepare("SELECT id, status, title, policy_pack FROM tickets ORDER BY id")
-    .all();
-  return JSON.stringify({ counts, state });
+  // A principal's last_used_at is bookkeeping every authenticated request may touch.
+  const rows = tables.map((t) => [
+    t,
+    (
+      wg.db.prepare(`SELECT * FROM "${t}" ORDER BY rowid`).all() as Array<Record<string, unknown>>
+    ).map((r) => (t === "api_principals" ? { ...r, last_used_at: null } : r)),
+  ]);
+  return JSON.stringify(rows);
+}
+
+/** The first difference between two snapshots, for a readable failure. */
+function firstChange(before: string, after: string): string {
+  if (before === after) return "";
+  const a = JSON.parse(before) as Array<[string, unknown[]]>;
+  const b = JSON.parse(after) as Array<[string, unknown[]]>;
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    if (JSON.stringify(a[i]) !== JSON.stringify(b[i])) {
+      return `table ${a[i]?.[0] ?? b[i]?.[0]} changed: ${JSON.stringify(b[i]?.[1]).slice(0, 400)}`;
+    }
+  }
+  return "changed";
 }
 
 /**
@@ -276,16 +300,33 @@ describe("authorisation meta test over every operation in docs/openapi.json", ()
   }, 60_000);
 
   for (const caller of ["read", "readOnly", "scoped"] as const) {
-    it(`${caller}: no state-changing operation succeeds, and the database is unchanged`, async () => {
+    it(`${caller}: every state-changing operation is refused by the gate, and the database is unchanged`, async () => {
       const before = snapshot();
-      const succeeded: string[] = [];
+      // Refused by the AUTHORISATION gate (403), not merely failed: the body is "{}", so
+      // a route whose own check is missing would still answer 400/422 (or a 409 from an
+      // unrelated guard) and a "no 2xx" assertion would pass with the hole open.
+      const notRefused: string[] = [];
       for (const op of writes) {
         const r = await send(op, tokens[caller]!);
-        if (ok(r.status))
-          succeeded.push(`${op.method} ${op.path} -> ${r.status} ${r.text.slice(0, 120)}`);
+        if (r.status !== 403)
+          notRefused.push(`${op.method} ${op.path} -> ${r.status} ${r.text.slice(0, 120)}`);
       }
-      expect(succeeded).toEqual([]);
-      expect(snapshot()).toBe(before);
+      expect(notRefused).toEqual([]);
+      expect(firstChange(before, snapshot())).toBe("");
+    }, 60_000);
+  }
+
+  for (const caller of ["read", "readOnly", "scoped", "full"] as const) {
+    it(`${caller}: no read changes the database`, async () => {
+      const before = snapshot();
+      const token = caller === "full" ? FULL : tokens[caller]!;
+      for (const op of OPS.filter((o) => o.method === "GET")) {
+        for (const query of queryVariants(op.path)) {
+          if (op.path === "/api/events/stream") await readStream(token);
+          else await send(op, token, query);
+        }
+      }
+      expect(firstChange(before, snapshot())).toBe("");
     }, 60_000);
   }
 

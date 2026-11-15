@@ -212,7 +212,7 @@ describe("web: chart marks have their own tokens", () => {
       ["views/overview.css", ".kb-1", /background:\s*var\(--viz-accent\)/],
       ["views/overview.css", ".kb-2", /background:\s*var\(--viz-muted\)/],
       // The League table's share bar is the shared meter now (.band-fill above).
-      ["views/ticket.css", ".conf-fill", /background:\s*var\(--viz-mark\)/],
+      // The ticket boundary confidence bar is the shared meter now (.band-fill above).
       // The Epics round bar is the shared meter now (.band-fill above), not its own build.
     ];
     for (const [file, sel, want] of marks) {
@@ -224,7 +224,7 @@ describe("web: chart marks have their own tokens", () => {
     for (const f of ALL_FILES) {
       const css = strip(read(f));
       for (const m of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
-        if (!/(spark|chart|band-fill|df-bar|kb-\d|pct-bar|conf-fill)/.test(m[1]!)) continue;
+        if (!/(spark|chart|band-fill|df-bar|kb-\d|pct-bar)/.test(m[1]!)) continue;
         expect(m[2], `${f} ${m[1]!.trim()}`).not.toMatch(/var\(--(sky|claret|claret-ink)\)/);
       }
     }

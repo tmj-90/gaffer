@@ -46,6 +46,9 @@
  *   deny-list.mjs      lib/dangerous-commands.mjs, loaded so that a failure blocks
  *   interpreters.mjs   the inline-interpreter write and read boundary
  *   reads.mjs          secret reads and credentials, git secret ops, Bash read targets
+ *   expand.mjs         shell-word expansion (variables, ~, braces, globs) for the read checks
+ *   read-operands.mjs  the read boundary after expansion: every read operand expanded and
+ *                      judged, unexpandable ones refused, words expanding to secrets
  *   writes.mjs         Bash write targets
  *   installs.mjs       the bootstrap install allowance, --ignore-scripts
  *   git.mjs            branch creation, branch ref rewrites, the git execution surface

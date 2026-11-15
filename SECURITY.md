@@ -85,6 +85,26 @@ always gets the same decision. It:
 - scopes writes to the ticket's worktrees (`GAFFER_WRITE_ROOTS`);
 - denies reads of secret files by path, on every read vector, not by a list of reader
   binaries;
+- expands every read operand the way the shell will before judging it: the variables
+  in its environment and those the command assigns, `~`, braces, and globs against the
+  real filesystem (bounded, never through a symlinked directory), each match checked
+  like a literal path. The read vectors covered are the read and copy tools, `<`
+  redirects, `$(< file)`, `find ... -exec` start points, xargs-fed readers, `eval`,
+  `sh -c` and command-substitution bodies. A directory that holds or sits above
+  `GAFFER_DATA`, the MCP config directory or HOME is refused as a read operand; an
+  operand it cannot expand (`read`, `$(...)`, an xargs placeholder) is refused; a glob
+  with no match is judged by its literal directory; and a word anywhere that expands to
+  a secret path is refused unless the command only lists or removes it. `$_` is
+  unknown, extglob groups (`+(.)env`) are globs, CDPATH makes a relative `cd` unknown,
+  and `..` is taken physically, as the kernel takes it: through a symlinked directory
+  `wt/..` is the link target's parent, so file-tool paths, search roots and bash write
+  targets are judged at both their lexical and physical place. A loop or `xargs` that
+  takes file names from a listing of `GAFFER_DATA`, the MCP config directory or HOME
+  (`find $GAFFER_DATA | while read f; do gzip -c "$f"; done`) is refused whatever
+  program reads them, and `7z`, `pax`, `bsdtar`, `cpio -o` and `git grep / diff
+  --no-index` are read vectors. Git's stored text (a commit message may name a
+  control-plane CLI) is never run, also not through a variable (`a=$(git log ...);
+  eval "$a"`);
 - denies the control-plane CLI and raw database access, including a self-spawned
   control-plane MCP (`node .../dispatch/dist/mcp`), `node -e` reaching the dist or the
   database, and reading another process's environment (`ps`, `/proc/*/environ`);
@@ -107,6 +127,13 @@ always gets the same decision. It:
   their own. The words that name what a privileged CLI does (`wg`, `dispatch`, `fg`,
   `crew`, `gaffer`, `memory`) must be plain literals; a `$(...)`, an unassigned
   variable, a glob, or `xargs`/`parallel`/`find -exec` filling one in is refused.
+  A command proven to be data only (plain `git commit` / `log` / `show`, `echo`,
+  `grep`, `cat` and the like, with no variable, substitution, pipe, backslash, newline
+  or here-document) is judged with the CLI in command position, so a commit message
+  or a search that names it is not refused; running git's stored text as a command
+  (`$(git log -1 --format=%s)`, `git log ... | sh`, `eval "$(git ...)"`) is refused. A
+  script file the agent wrote and then runs (`bash x.sh`, `cat x.sh | bash`) is as
+  invisible to the hook as a file the Write tool wrote (see the residual limits);
 
 It fails closed: when it cannot prove a target is in scope, it blocks. Every hook
 entry in the settings template carries `"onFailure": "block"` and a 60-second
@@ -678,6 +705,9 @@ a presence boolean, and an argument not on the allowlist is never copied.
   compiled binary, a script the agent writes and then runs, a child process's own
   syscalls and content-only data flows are out of its reach. It shrinks the gap to
   dynamic reads and fully dynamic non-secret paths; it does not close it.
+  Globs are expanded when the hook decides: a symlink to a secret created by an earlier
+  step of the same command through a path the hook cannot see (an interpreter, a
+  compiled tool) is not there yet when a later glob is expanded.
 - **`sandbox-exec` still permits writes to the dispatch and memory databases** under
   `$GAFFER_DATA` (the in-sandbox MCP servers need them), so code the agent runs can change
   board and memory rows without the MCP tools' checks. `settings.json`, the usage pause,

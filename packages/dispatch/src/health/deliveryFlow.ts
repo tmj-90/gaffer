@@ -96,8 +96,8 @@ export interface FlowWaitMs {
 /** The authoritative cycle-time + throughput + flow-efficiency read model. */
 export interface DeliveryFlow {
   cycle_time: {
-    /** Median created→done time in days over shipped tickets (0 when none). */
-    median_days: number;
+    /** Median created→done time in days over shipped tickets; null when none shipped. */
+    median_days: number | null;
     /** 75th percentile of the same, in days (linear interpolation); null when none. */
     p75_days: number | null;
     /** 90th percentile of the same, in days; null when none. */
@@ -298,7 +298,8 @@ export function deliveryFlow(
 
   return {
     cycle_time: {
-      median_days: median(cycleVals),
+      // Nothing shipped is no figure, never a zero-day cycle time.
+      median_days: cycleVals.length === 0 ? null : median(cycleVals),
       p75_days: quantileDays(cycleVals, 0.75),
       p90_days: quantileDays(cycleVals, 0.9),
       series: cycleSeries,

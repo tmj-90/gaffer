@@ -381,7 +381,8 @@ async function loadMatchDay() {
       return null;
     }),
     opt("/api/cost", null),
-    opt("/api/health", null),
+    // The lighter read: the Overview shows the ledger figures and the event log only.
+    opt("/api/health?view=summary", null),
     opt("/api/settings", null),
     opt("/claims", { claims: [] }),
     opt("/agents", { agents: [] }),

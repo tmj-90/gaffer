@@ -434,7 +434,8 @@ function meterRow({ name, k, n, fmt, limit, whisker = false }) {
 
 /**
  * Part of a whole, one bar: each part a segment (2px surface gaps between them, a part
- * at zero draws nothing), and a legend of names with their counts, so colour is never
+ * at zero draws nothing; four distinct --viz steps, none the colour of an empty track),
+ * and a legend of names with their counts, so colour is never
  * the only key. The bar's accessible name gives every part's name, count and share.
  *   parts: [{ label, value }]; opts: { label, legend = true, tall = false }
  */
@@ -490,7 +491,7 @@ const NUM = new Intl.NumberFormat("en-GB");
  * A real <table> for multi-column data (never dot-joined rows): a caption, th scope
  * on every head, the first column as row headers (sticky when the table scrolls
  * sideways), numeric columns right-aligned in 16px tabular figures. On a phone it
- * scrolls inside its own card (a focusable region), or with `stackOnPhone` each row
+ * scrolls inside its own card (a region that is a tab stop only while it scrolls), or with `stackOnPhone` each row
  * becomes a labelled card. A null cell is a dash with the column's `missing` reason.
  *   columns: [{ key, label, align, numeric, format(value, row), missing }]
  *   opts: { rows, groupBy (key or fn), groupLabel(fn), caption, stackOnPhone, empty, cls }
@@ -586,16 +587,23 @@ function dataTable({
     ),
     ...bodies,
   ]);
-  return el(
+  const wrap = el(
     "div",
     {
       class: ["dt-wrap", stackOnPhone ? "dt-stack" : null, cls].filter(Boolean).join(" "),
-      tabindex: "0",
       role: "region",
       "aria-label": caption || "Table",
     },
     table,
   );
+  // A tab stop only while it scrolls sideways (keyboard users need to reach a scrolled
+  // table; a table that fits is one more stop for nothing). Re-read on every resize.
+  const sync = () => {
+    if (wrap.scrollWidth > wrap.clientWidth + 1) wrap.setAttribute("tabindex", "0");
+    else wrap.removeAttribute("tabindex");
+  };
+  if (typeof ResizeObserver === "function") new ResizeObserver(sync).observe(wrap);
+  return wrap;
 }
 
 // --- callouts and buttons ------------------------------------------------------

@@ -94,3 +94,29 @@ describe("the reason sheet's ticket", () => {
     expect(hit.map((r) => r.decls.background).filter(Boolean)).toEqual(["var(--paper)"]);
   });
 });
+
+describe("segBar segments (REVIEW-P2 follow-up)", () => {
+  it("four parts take four distinct steps and none is the empty track's colour", () => {
+    const all = rules("components.css");
+    const bg = (sel: string) =>
+      all
+        .filter((r) => r.selectors.includes(sel) && r.decls.background)
+        .map((r) => r.decls.background)[0];
+    const segs = [".seg-1", ".seg-2", ".seg-3", ".seg-4"].map(bg);
+    expect(segs.every(Boolean), "each segment has a background").toBe(true);
+    expect(new Set(segs).size).toBe(4);
+    // The track of a meter (and of a whisker) is --viz-track: no part may wear it.
+    for (const s of segs) expect(s).not.toMatch(/--viz-track/);
+    // The muted grey is never drawn next to the accent (one colour to a deuteranope).
+    expect(segs[2]).not.toMatch(/--viz-muted/);
+  });
+});
+
+describe("sparkline readout (REVIEW-P2 follow-up)", () => {
+  it("sits under the plot, so it never covers the figure and its unit above", () => {
+    const r = rules("components.css").filter((x) => x.selectors.includes(".spark-readout"));
+    const own = r.find((x) => x.selectors.length === 1);
+    expect(own?.decls.top).toBe("100%");
+    expect(own?.decls.bottom).toBeUndefined();
+  });
+});

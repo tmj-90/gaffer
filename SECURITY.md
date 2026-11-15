@@ -571,8 +571,12 @@ SHA-256, shown once) carry an actor (`human` or `admin`), a capability (`full` o
 the shared operator token mints or revokes principals; recording a merge and reopening a
 done ticket are admin acts. One evaluation (`accessScope.ts`) decides every scoped
 request on REST, the CLI and the factory MCP mount: a scoped principal sees exactly the
-tickets it may change, everything factory-wide is refused (`403 SCOPE_DENIED`), and
-repository-level writes need an admin principal. A decision is readable only when every
+tickets it may change, everything factory-wide is refused (`403 SCOPE_DENIED`), the
+repository and agent lists (`/repositories` in every hidden mode, `/scope/repos?all=1`,
+`/agents`, `/api/squad`) hold only the repositories it reaches and the agents on its
+tickets, and repository-level writes need an admin principal. Its own identity
+(`/api/whoami`), the club's name and kit (`/api/club`) and the API description
+(`/api/openapi.json`) stay open to it: none carries ticket or repository content. A decision is readable only when every
 ticket it is linked to is (`decisionInScope`), on every surface that carries one: the
 decision routes, a ticket's detail and claimability, the human queue and `wg ticket
 show` under `GAFFER_PRINCIPAL_TOKEN`. One the holder may not read still shows where it

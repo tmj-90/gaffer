@@ -26,6 +26,7 @@ import {
 } from "../schemas.js";
 import { isolationStatusForRequest } from "../isolation.js";
 import { listSettings, readSecretSetting, settingProblems, writeSettings } from "../settings.js";
+import { requestAgentFilter } from "../scopeGate.js";
 import { apiActor, apiAuth, apiPrincipal, isSharedOperator } from "./context.js";
 import { forgetLoreDrafts, forgetLoreStatus, routeReadModels } from "./readModels.js";
 
@@ -205,7 +206,13 @@ export async function routeApi(
   }
   if (segments.length === 2 && segments[1] === "squad") {
     if (method !== "GET") return methodNotAllowed(res);
-    sendJson(res, 200, { club: wg.getClub(), agents: wg.listSquad() });
+    // PRINCIPAL SCOPES: a scoped principal sees the agents on its tickets only.
+    const seen = requestAgentFilter(wg);
+    const agents = wg.listSquad();
+    sendJson(res, 200, {
+      club: wg.getClub(),
+      agents: seen ? agents.filter((a) => seen(a.agent_id)) : agents,
+    });
     return;
   }
   if (segments.length === 4 && segments[1] === "squad" && segments[2] === "agents") {

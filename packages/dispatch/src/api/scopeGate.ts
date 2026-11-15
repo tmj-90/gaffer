@@ -39,8 +39,11 @@ import { apiPrincipal } from "./routes/context.js";
  *                                           one decision rule, accessScope.ts
  *                                           decisionInScope, which nested responses
  *                                           apply too: ticket detail, claimability...);
- *   - `/api/whoami`, `/api/squad`, `/api/club`, `/api/openapi.json`, `/repositories`,
- *     `/agents`                           → no ticket content: open;
+ *   - `/repositories` (every hidden mode)  → filtered to the repos it reaches by the route;
+ *   - `/agents`, `/api/squad`             → filtered to the agents on its tickets by the route;
+ *   - `/api/whoami`, `/api/club`, `/api/openapi.json` → no ticket or repo content: open
+ *                                           (its own identity, the club's name and kit,
+ *                                           the public API description);
  *   - everything else                     → a factory-wide read (refused).
  */
 export async function authorizePrincipalRequest(
@@ -262,4 +265,26 @@ export function requestRepoFilter(wg: Dispatch): ((repoId: string) => boolean) |
   const ids = new Set<string>(scope.repos ?? []);
   for (const t of scope.tickets ?? []) for (const r of wg.repos.listForTicket(t)) ids.add(r.id);
   return (repoId: string) => ids.has(repoId);
+}
+
+/**
+ * The agents a scoped principal may see (GET /agents, GET /api/squad): those that hold
+ * or held a claim on one of its tickets, or acted on one (a reviewer or tester agent),
+ * so its tickets still show who worked them and nothing else of the factory's squad.
+ * Null when the caller is not a scoped principal (no filtering).
+ */
+export function requestAgentFilter(wg: Dispatch): ((agentId: string) => boolean) | null {
+  const visible = requestTicketFilter(wg);
+  if (!visible) return null;
+  const rows = wg.db
+    .prepare(
+      `SELECT DISTINCT ticket_id AS t, agent_id AS a FROM ticket_claims
+       UNION
+       SELECT DISTINCT entity_id AS t, actor_id AS a FROM work_events
+        WHERE entity_type = 'ticket' AND actor_type = 'agent' AND actor_id IS NOT NULL`,
+    )
+    .all() as Array<{ t: string; a: string }>;
+  const ids = new Set<string>();
+  for (const r of rows) if (visible(r.t)) ids.add(r.a);
+  return (agentId: string) => ids.has(agentId);
 }

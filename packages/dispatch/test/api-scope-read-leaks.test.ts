@@ -147,3 +147,60 @@ describe("F2 sweep: a repo ref the gate and the route could resolve differently"
     expect(ok.status).toBe(201);
   });
 });
+
+describe("F3: /repositories, /agents and /api/squad are filtered for a scoped principal", () => {
+  /** A ticket on `repo`, claimed by a new agent named `agentName`. */
+  function claimedOn(wg: Dispatch, repo: string, agentName: string) {
+    const t = wg.createTicket({ title: `on ${repo}`, priority: 1, risk_level: "low" }, human);
+    wg.setTicketRepoAccess(
+      { ticket_id: t.id, repo_id: repo, access: "write", relation: "confirmed" },
+      human,
+    );
+    wg.addAcceptanceCriterion({ ticket_id: t.id, text: "works" }, human);
+    wg.markReady(t.id, human);
+    const a = wg.registerAgent({ display_name: agentName }, human);
+    wg.claimTicket({ ticket_id: t.id, agent_id: a.id, ttl_seconds: 600 }, { type: "system" });
+    return a;
+  }
+
+  it("a scoped principal sees only the repos it reaches and the agents on its tickets", async () => {
+    const { wg, app, priv, scoped, get } = await start();
+    const mine = claimedOn(wg, app.id, "app-bot");
+    const theirs = claimedOn(wg, priv.id, "payments-bot");
+    for (const q of ["", "?hidden=1", "?hidden=true", "?hidden=only"]) {
+      const r = await get(`/repositories${q}`, scoped);
+      expect(r.status, q).toBe(200);
+      expect(r.text, q).not.toContain("/srv/secret/payments");
+      expect(r.text, q).not.toContain("/srv/secret/hidden");
+      expect(
+        (r.body.repositories as Array<{ id: string }>).map((x) => x.id),
+        q,
+      ).toEqual(q === "?hidden=only" ? [] : [app.id]);
+    }
+    const agents = await get("/agents", scoped);
+    expect((agents.body.agents as Array<{ id: string }>).map((a) => a.id)).toEqual([mine.id]);
+    const squad = await get("/api/squad", scoped);
+    expect(squad.status).toBe(200);
+    const ids = (squad.body.agents as Array<{ agent_id: string }>).map((a) => a.agent_id);
+    expect(ids).toEqual([mine.id]);
+    expect(ids).not.toContain(theirs.id);
+  });
+
+  it("the shared token and an unscoped principal see everything as before", async () => {
+    const { wg, app, priv, hidden, unscoped, get } = await start();
+    claimedOn(wg, app.id, "app-bot");
+    claimedOn(wg, priv.id, "payments-bot");
+    for (const token of [FULL, unscoped]) {
+      const all = await get("/repositories?hidden=1", token);
+      expect((all.body.repositories as Array<{ id: string }>).map((x) => x.id).sort()).toEqual(
+        [app.id, priv.id, hidden.id].sort(),
+      );
+      const only = await get("/repositories?hidden=only", token);
+      expect((only.body.repositories as Array<{ id: string }>).map((x) => x.id)).toEqual([
+        hidden.id,
+      ]);
+      expect((await get("/agents", token)).body.agents).toHaveLength(2);
+      expect((await get("/api/squad", token)).body.agents).toHaveLength(2);
+    }
+  });
+});

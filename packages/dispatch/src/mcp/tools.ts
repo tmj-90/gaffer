@@ -772,9 +772,18 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
             // Written by the delivery agent, read by the tester: enveloped (F2 sweep).
             test_contract: quarantineTestContract(parseTestContract(view.ticket.test_contract)),
           },
+          // The criterion text and its verification method are free text an agent may
+          // have written (add_acceptance_criterion): both enveloped. check_command stays
+          // raw on purpose: it is a command the agent is told to run verbatim (the
+          // record-evidence skill) and the runner executes, so escaping its `<` would
+          // break it, and running it already trusts it far more than reading it.
           acceptance_criteria: view.acceptanceCriteria.map((ac) => ({
             ...ac,
             text: quarantine("acceptance-criterion", ac.text),
+            verification_method:
+              ac.verification_method === null
+                ? null
+                : quarantine("ac-verification", ac.verification_method),
           })),
           repositories: view.repositories,
           // DECISION VISIBILITY: a decision linked to a ticket outside this mount's

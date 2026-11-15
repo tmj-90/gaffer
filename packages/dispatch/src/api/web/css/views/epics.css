@@ -19,6 +19,8 @@
     font: 800 var(--t20) / 1.15 var(--f-display);
     color: var(--ink);
     text-decoration: none;
+    /* The shared row head is nowrap; a campaign name wraps instead. */
+    white-space: normal;
     overflow-wrap: anywhere;
   }
   .ep-season .ep-t-name:hover {
@@ -329,6 +331,14 @@
     }
     .ep-round {
       padding: 12px;
+    }
+    /* A long status ("Approved · waiting for Merge now") wraps under the number
+       instead of widening the card past its lane at 320 px. */
+    .ep-ties {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .dn-top {
+      flex-wrap: wrap;
     }
   }
 }

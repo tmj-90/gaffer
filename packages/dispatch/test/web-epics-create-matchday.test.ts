@@ -201,6 +201,16 @@ describe("web: Match Day season and Plan-a-build page", () => {
       "utf8",
     );
     expect(css).not.toMatch(/ep-t-name[^{]*\{[^}]*text-overflow: ellipsis/);
+    // The shared table's row head is nowrap; the campaign name opts back into wrapping,
+    // or a long name ran past a phone's stacked card and was cut by its scroll box.
+    const nameRule = /\.ep-season \.ep-t-name \{([^}]*)\}/.exec(css)![1]!;
+    expect(nameRule).toMatch(/white-space:\s*normal/);
+    // On a phone a draw card's long status wraps under its number, inside its lane.
+    const phone = css.slice(css.indexOf("@media (max-width: 760px)"));
+    expect(/\.ep-ties \{([^}]*)\}/.exec(phone)?.[1]).toMatch(
+      /grid-template-columns:\s*minmax\(0, 1fr\)/,
+    );
+    expect(/\.dn-top \{([^}]*)\}/.exec(phone)?.[1]).toMatch(/flex-wrap:\s*wrap/);
     // A reference table: a plain head, no block (A-02, A-03).
     expect(card.querySelector(".panel-head.block")).toBeNull();
   });

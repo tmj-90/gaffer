@@ -1053,15 +1053,24 @@ gaffer_tick_launch_attempt() {
     # context (branch, primary worktree, full worktree map, repo, attempt, turns,
     # spend), and notify the human gate (the dispatch notifier carries spend +
     # dashboard URL; GAFFER_NOTIFY_REDACT honoured at the dispatch layer).
-    if wg ticket pause "$NUM" --reason "$_PAUSE_REASON" \
+    if gaffer_pause_delivery --reason "$_PAUSE_REASON" \
         --branch "$WORK_BRANCH" --worktree "$PRIMARY_REPO" \
         --worktrees-json "$_WT_JSON" --repo "${REPO_PATH:-}" \
         --attempt "$_DELIV_ATTEMPT" \
-        ${_CAP_TURNS:+--turns "$_CAP_TURNS"} --spend "$_CAP_SPEND" >/dev/null 2>&1; then
+        ${_CAP_TURNS:+--turns "$_CAP_TURNS"} --spend "$_CAP_SPEND"; then
       log "CAP: paused #$NUM (-> paused) — resume context persisted, human gate notified"
       gaffer_tick_branch_ledger preserved   # BRANCH LEDGER: kept for the resume
     else
-      log "CAP: WARNING — could not pause #$NUM via dispatch; worktree is still kept alive (KEEP flag set) — needs a human"
+      # The pause did not take (gaffer_pause_delivery retried it). Do not claim it:
+      # park the ticket to `blocked` for a person (reason pause_failed) with its
+      # branch kept, like a rework park, and report an error. The WIP checkpoint
+      # above committed any uncommitted work, so the branch holds all of it.
+      log "CAP: could not pause #$NUM via dispatch after 3 attempts (${_GAFFER_PAUSE_ERR:-no error text}) — parking it to blocked (pause_failed), branch $WORK_BRANCH kept"
+      GAFFER_KEEP_DELIVERY_BRANCH=1
+      gaffer_cleanup_worktrees
+      gaffer_release_delivery blocked "hit the ${_PAUSE_REASON} cap mid-delivery and the pause could not be recorded (branch $WORK_BRANCH preserved): ${_GAFFER_PAUSE_ERR:-no error text}" pause_failed "$_DELIV_ATTEMPT" "${_MAX_DELIVERY_ATTEMPTS:-}"
+      gaffer_skip_ticket "$NUM"
+      result error; exit 0
     fi
     # THE CRUX: keep the worktree alive past this tick's normal end-of-run cleanup AND
     # any crash/signal. Raise the retention flag so the EXIT/INT/TERM trap's

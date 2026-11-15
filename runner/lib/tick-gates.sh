@@ -77,6 +77,35 @@ gaffer_release_delivery() {
 # failure path must keep working even when the dispatch call itself is what
 # failed — so the runner owns this counter locally. Increment is taken under
 # the same lock helper as the skip-file so concurrent workers never lose a count.
+# PAUSE ON CAP, with the release path's bounded retry. One failed `wg ticket pause` (a
+# busy SQLite writer past busy_timeout, a slow node start-up) used to be logged and then
+# reported as `paused` anyway: the ticket sat `claimed` with no pause context (no
+# Continue on the dashboard), the crash trap skipped the claim release because of the
+# keep-worktree flag, and when the lease lapsed the ticket was delivered again from
+# attempt 1 although it had just hit a cap meant to wait for a person. Now: three tries
+# with a short back-off; a pause that reads back as `paused` counts (the CLI may have
+# failed after its write). Returns 0 when the ticket is paused, 1 when it is not, with
+# the CLI's last error in _GAFFER_PAUSE_ERR. The arguments are passed to
+# `wg ticket pause "$NUM"` as they are.
+#   gaffer_pause_delivery <wg ticket pause args...>
+gaffer_pause_delivery() {
+  local _try _out=""
+  _GAFFER_PAUSE_ERR=""
+  for _try in 1 2 3; do
+    if _out="$(wg ticket pause "$NUM" "$@" 2>&1)"; then
+      [ "$_try" -gt 1 ] && log "CAP: paused #$NUM after $_try attempts"
+      return 0
+    fi
+    [ "$_try" -lt 3 ] && sleep "$_try"
+  done
+  if [ "$(wg ticket show "$NUM" 2>/dev/null | jget 'd.ticket.status' 2>/dev/null)" = "paused" ]; then
+    log "CAP: #$NUM reads paused although the pause command failed; treating it as paused"
+    return 0
+  fi
+  _GAFFER_PAUSE_ERR="$(printf '%s' "$_out" | tail -n 3 | tr '\n' ' ' | cut -c1-300)"
+  return 1
+}
+
 gaffer_nocommit_file() { printf '%s/.nocommit-failures/%s' "$GAFFER_DATA" "$1"; }
 gaffer_nocommit_count() { local _f _n; _f="$(gaffer_nocommit_file "$1")"; _n="$(cat "$_f" 2>/dev/null || echo 0)"; case "$_n" in ''|*[!0-9]*) _n=0 ;; esac; printf '%s' "$_n"; }
 _gaffer_nocommit_record_unlocked() { local _f _n; _f="$(gaffer_nocommit_file "$1")"; mkdir -p "${_f%/*}" 2>/dev/null; _n="$(gaffer_nocommit_count "$1")"; _n=$((_n + 1)); printf '%s' "$_n" > "$_f"; printf '%s' "$_n"; }

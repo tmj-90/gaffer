@@ -265,7 +265,7 @@ framework-free ES-module app (no build step) under a self-only CSP. It binds
 (`dispatch principal create <name> [--read] [--admin] [--repo <name>] [--ticket <n>]`)
 give each person or bot its own identity, capability and scope, each signed with the
 factory key (`dispatch principal unsigned` lists the ones that are not, `dispatch
-principal resign <name>|--all --confirm <code>` is the operator re-signing them after review; see the root
+principal resign <name>|--all --confirm <code>` (a code from `unsigned`) is the operator re-signing them after review; see the root
 [SECURITY.md](../../SECURITY.md#signed-principals)). There is no TLS, so do not
 expose it beyond localhost without a TLS-terminating proxy. Auth is a bearer token,
 and it gates **every data-returning request**, whatever the token's provenance, the

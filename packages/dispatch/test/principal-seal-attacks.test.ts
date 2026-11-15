@@ -135,6 +135,32 @@ describe("re-sign --all cannot be made to bless a forged row", () => {
   });
 });
 
+describe("re-sign by name signs the row as the person reviewed it", () => {
+  it("a row changed after the review is not signed with its old code; nothing is signed without one", () => {
+    const f = factory();
+    const wg = f.open();
+    const legacy = wg.createPrincipal({ name: "ci", capability: "read" }, operator);
+    wg.db.exec("DELETE FROM row_seals");
+    expect(() => wg.resignPrincipals({ names: ["ci"] }, operator)).toThrow(/review/i);
+    const reviewed = wg.reviewUnsignedPrincipals().unsigned.find((u) => u.name === "ci")!;
+    expect(reviewed.capability).toBe("read");
+    // After the person looked, the unsigned row is raised to full by a database writer.
+    wg.db
+      .prepare("UPDATE api_principals SET capability = 'full' WHERE id = ?")
+      .run(legacy.principal.id);
+    expect(() =>
+      wg.resignPrincipals({ names: ["ci"], confirm: reviewed.review_code }, operator),
+    ).toThrow(/does not match what you reviewed/);
+    expect(wg.resolvePrincipalToken(legacy.token)).toBeNull();
+    // Put back as reviewed: the code holds and it is signed as read.
+    wg.db
+      .prepare("UPDATE api_principals SET capability = 'read' WHERE id = ?")
+      .run(legacy.principal.id);
+    wg.resignPrincipals({ names: ["ci"], confirm: reviewed.review_code }, operator);
+    expect(wg.resolvePrincipalToken(legacy.token)?.principal.capability).toBe("read");
+  });
+});
+
 describe("other attacks", () => {
   it("a seal does not carry across data directories (the key is per data path)", () => {
     const shared = mkdtempSync(join(tmpdir(), "principal-attack-keys-"));

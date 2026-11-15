@@ -424,8 +424,15 @@ export function listUnsignedPrincipals(host: PrincipalAdminHost): UnsignedPrinci
   return unsignedPrincipals(host.db, host.gateKeyring);
 }
 
-/** One unsigned principal as a person reviews it: what it may do, where, made by whom. */
-export type UnsignedPrincipalReviewRow = UnsignedPrincipal & { scope: PrincipalScopeView | null };
+/**
+ * One unsigned principal as a person reviews it: what it may do, where, made by whom, and
+ * the code of that one row (re-signing it by name needs the code, so a row changed after
+ * the person looked at it is not signed as it now is).
+ */
+export type UnsignedPrincipalReviewRow = UnsignedPrincipal & {
+  scope: PrincipalScopeView | null;
+  review_code: string;
+};
 
 /**
  * What a person reviews before re-signing with `all`: every active unsigned principal with
@@ -447,15 +454,22 @@ export interface UnsignedPrincipalReview {
 export function reviewUnsignedPrincipals(host: PrincipalAdminHost): UnsignedPrincipalReview {
   const unsigned = unsignedPrincipals(host.db, host.gateKeyring);
   return {
-    unsigned: unsigned.map((u) => ({ ...u, scope: host.principals.get(u.id)?.scope ?? null })),
-    fingerprint: reviewFingerprint(host, unsigned),
+    unsigned: unsigned.map((u) => ({
+      ...u,
+      scope: host.principals.get(u.id)?.scope ?? null,
+      review_code: reviewFingerprint(host, [u.id]),
+    })),
+    fingerprint: reviewFingerprint(
+      host,
+      unsigned.map((u) => u.id),
+    ),
   };
 }
 
-/** The fingerprint of an unsigned list: every row's stored identity and authority. */
-function reviewFingerprint(host: PrincipalAdminHost, unsigned: UnsignedPrincipal[]): string {
-  const rows = unsigned
-    .map((u) => readPrincipalRow(host.db, u.id))
+/** The fingerprint of a set of principal rows: each row's stored identity and authority. */
+function reviewFingerprint(host: PrincipalAdminHost, ids: readonly string[]): string {
+  const rows = ids
+    .map((id) => readPrincipalRow(host.db, id))
     .filter((r): r is NonNullable<typeof r> => r !== null)
     .map((r) => [
       r.id,
@@ -493,7 +507,10 @@ export interface ResignResult {
  * Of that list, a row with no matching `principal.created` event is still skipped and must
  * be named on purpose (a heuristic for a row inserted straight into the database: a forged
  * event defeats it, which is why the review is required). `names`: exactly those (a revoked
- * or unknown one is refused; an already signed one is skipped).
+ * or unknown one is refused; an already signed one is skipped), with `confirm` the
+ * review code of the one row named, or the fingerprint of the whole list: a row changed
+ * between the person's review and the re-sign (a raised capability, a widened scope, a
+ * swapped token hash) is not signed.
  */
 export function resignPrincipals(
   host: PrincipalAdminHost,
@@ -515,19 +532,25 @@ export function resignPrincipals(
     throw new DispatchError("VALIDATION_ERROR", "Pass names or --all, not both.");
   }
   const confirm = String(input.confirm ?? "").trim();
-  if (input.all && confirm === "") {
+  const noReview = (): never => {
     throw new DispatchError(
       "VALIDATION_ERROR",
-      "Nothing was re-signed: review the unsigned principals first (gaffer wg principal unsigned lists who each one is, what it may do and who created it), then pass the confirmation code it prints: gaffer wg principal resign --all --confirm <code>. A row written into the database can carry a forged creation event, so only your review tells it apart.",
+      "Nothing was re-signed: review the unsigned principals first (gaffer wg principal unsigned lists who each one is, what it may do and who created it), then pass the code it prints: gaffer wg principal resign <name> --confirm <its review_code>, or gaffer wg principal resign --all --confirm <the list code>. A row written into the database can carry a forged creation event, so only your review tells it apart.",
     );
-  }
+  };
+  if (input.all && confirm === "") noReview();
   const result: ResignResult = { resigned: [], skipped: [] };
   const now = host.clock.now();
   inTransaction(host.db, () => {
     const targets: Array<{ id: string; name: string; explicit: boolean }> = [];
     if (input.all) {
       const list = unsignedPrincipals(host.db, host.gateKeyring);
-      if (reviewFingerprint(host, list) !== confirm) {
+      if (
+        reviewFingerprint(
+          host,
+          list.map((u) => u.id),
+        ) !== confirm
+      ) {
         throw new DispatchError(
           "STATE_CONFLICT",
           "Nothing was re-signed: the unsigned principals changed since you reviewed them (a sign-in was added, changed or removed). Review the list again (gaffer wg principal unsigned) and confirm its new code.",
@@ -547,6 +570,22 @@ export function resignPrincipals(
           );
         }
         targets.push({ id: row.id, name: row.name, explicit: true });
+      }
+      if (confirm === "") noReview();
+      const named = reviewFingerprint(
+        host,
+        targets.map((t) => t.id),
+      );
+      const whole = reviewFingerprint(
+        host,
+        unsignedPrincipals(host.db, host.gateKeyring).map((u) => u.id),
+      );
+      if (confirm !== named && confirm !== whole) {
+        throw new DispatchError(
+          "STATE_CONFLICT",
+          "Nothing was re-signed: the code does not match what you reviewed (the principal was changed since, or the code is another row's). Review it again (gaffer wg principal unsigned) and confirm its new review_code.",
+          { reason: "review_stale" },
+        );
       }
     }
     for (const t of targets) {

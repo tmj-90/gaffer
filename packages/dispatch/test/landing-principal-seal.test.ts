@@ -122,7 +122,10 @@ describe("the landing refuses an approval whose principal is not signed", () => 
       w.wg.beginLanding(id, { repo: "repoA", commit: FAKE_HEAD, approval, via: "local" }, system),
     ).toThrow(/principal alice is not signed/);
 
-    w.wg.resignPrincipals({ names: ["alice"] }, operator);
+    w.wg.resignPrincipals(
+      { names: ["alice"], confirm: w.wg.reviewUnsignedPrincipals().fingerprint },
+      operator,
+    );
     expect(verifyLandingActs(w.wg.db, w.keyring, id, target).ok).toBe(true);
   });
 

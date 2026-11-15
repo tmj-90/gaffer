@@ -97,5 +97,15 @@ describe.skipIf(!CLI_BUILT)("wg principal: sealed rows on the CLI", () => {
     expect(all.stderr).toMatch(/Not re-signed: root/);
     expect(runBin(db, ["whoami"], env(legacy.token)).status).toBe(0);
     expect(runBin(db, ["whoami"], env(forged)).status).not.toBe(0);
+    // By name: refused without the row's review code, signed with it.
+    expect(runBin(db, ["principal", "resign", "root"], env()).status).not.toBe(0);
+    const again = JSON.parse(runBin(db, ["principal", "unsigned"], env()).stdout) as {
+      unsigned: Array<{ name: string; review_code: string }>;
+    };
+    const root = again.unsigned.find((u) => u.name === "root")!;
+    expect(
+      runBin(db, ["principal", "resign", "root", "--confirm", root.review_code], env()).status,
+    ).toBe(0);
+    expect(runBin(db, ["whoami"], env(forged)).status).toBe(0);
   });
 });

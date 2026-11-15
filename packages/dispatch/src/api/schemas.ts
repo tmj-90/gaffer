@@ -1151,8 +1151,9 @@ export type CreatePrincipalBody = z.infer<typeof createPrincipalBody>;
 /**
  * Body for POST /api/principal-signatures/resign: SEALED PRINCIPALS, a person re-signs
  * principals the factory does not honour. `names` (ids or names) or `all` (the unsigned
- * principals whose creation is on record, of the list the person reviewed: `confirm` is
- * that list's fingerprint from GET /api/principal-signatures), not both.
+ * principals whose creation is on record, of the list the person reviewed), not both.
+ * `confirm` is what the person reviewed, from GET /api/principal-signatures: the list's
+ * `fingerprint`, or for one named row its `review_code`.
  */
 export const resignPrincipalsBody = z
   .object({

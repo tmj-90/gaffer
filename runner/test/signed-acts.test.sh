@@ -19,7 +19,8 @@
 #   S8  `gate-key ensure` (what gaffer setup runs): creates a 0600 key, then keeps it
 #   S9  SEALED PRINCIPALS: an approval made through a principal whose row is no longer
 #       signed by this factory (its seal removed in the database) does not land; a person's
-#       `wg principal resign` puts it back and it lands
+#       `wg principal resign` (with the review code `principal unsigned` printed) puts it back
+#       and it lands
 # Run: bash runner/test/run.sh -j 1 runner/test/signed-acts.test.sh   (bash 3.2 safe)
 # =====================================================================
 . "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
@@ -265,7 +266,8 @@ sqlrun 'd.prepare("DELETE FROM row_seals").run();'   # her row is now unsigned (
 MT; rc=$?
 refused_and_held "S9 unsigned principal" unsigned_approval "$rc" "$D/mt.log"
 grep -q "principal alice is not signed by this factory" "$D/mt.log" && ok "S9: the refusal names the principal" || fail "S9: $(tail -2 "$D/mt.log")"
-wgd principal resign alice >/dev/null 2>&1 && ok "S9: the operator re-signs alice" || fail "S9: resign"
+CODE="$(wgd principal unsigned 2>/dev/null | jf 'd.unsigned.find((u) => u.name === "alice").review_code')"
+wgd principal resign alice --confirm "$CODE" >/dev/null 2>&1 && ok "S9: the operator reviews and re-signs alice" || fail "S9: resign (code=$CODE)"
 wgd ticket reopen-for-review 1 --as admin --reason unsigned_approval --resolution re-approve >/dev/null 2>&1
 GAFFER_PRINCIPAL_TOKEN="$PTOK" wgd review approve 1 --commit "repo=$HEAD" >/dev/null 2>&1
 MT; rc=$?

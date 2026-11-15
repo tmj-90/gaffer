@@ -329,7 +329,10 @@ describe("re-signing principals created before signing (a person's act)", () => 
     const again = f.open();
     expect(again.resolvePrincipalToken(legacy2.token)).not.toBeNull();
     // Named on purpose, after review: signed.
-    expect(again.resignPrincipals({ names: ["intruder"] }, operator).resigned).toHaveLength(1);
+    const code = again.reviewUnsignedPrincipals().unsigned.find((u) => u.name === "intruder")!;
+    expect(
+      again.resignPrincipals({ names: ["intruder"], confirm: code.review_code }, operator).resigned,
+    ).toHaveLength(1);
     expect(again.resolvePrincipalToken(forged)).not.toBeNull();
     // A revoked principal is never re-signed.
     again.revokePrincipal("old-1", operator);
@@ -359,7 +362,10 @@ describe("doctor names every principal the factory does not honour", () => {
     ]);
     expect(about("ghost")).toEqual([expect.objectContaining({ level: "fail" })]);
     expect(report.exitCode).toBe(1);
-    wg.resignPrincipals({ names: ["old", "ghost"] }, operator);
+    wg.resignPrincipals(
+      { names: ["old", "ghost"], confirm: wg.reviewUnsignedPrincipals().fingerprint },
+      operator,
+    );
     const clean = runDoctor(wg.db, f.dbPath, undefined, f.keyring());
     expect(
       clean.checks.some((c) => c.label === "Principals: every active principal is signed"),

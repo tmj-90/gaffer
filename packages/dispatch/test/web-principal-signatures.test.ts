@@ -26,6 +26,7 @@ const UNSIGNED = [
     failure: "unsigned",
     detail: "it carries no signature",
     creation_event: "ev1",
+    review_code: "aaaaaaaaaaaaaaaa",
   },
   {
     id: "p2",
@@ -150,7 +151,8 @@ describe("web: the unsigned sign-ins callout in Settings", () => {
     const one = box.querySelector('[data-principal="old-ci"] button') as HTMLButtonElement;
     one.click();
     await settle();
-    expect(posts[0]!.body).toEqual({ names: ["p1"] });
+    // One row: the code of the row as shown, so a row changed since is not signed.
+    expect(posts[0]!.body).toEqual({ names: ["p1"], confirm: "aaaaaaaaaaaaaaaa" });
     const all = [...box.querySelectorAll("button")].find((b) =>
       /Re-sign the 2 listed/.test(b.textContent ?? ""),
     ) as HTMLButtonElement;

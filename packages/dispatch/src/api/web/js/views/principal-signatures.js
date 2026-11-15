@@ -7,8 +7,8 @@
 // it renders nothing when every sign-in is signed.
 //
 // Re-signing is the operator's act (the shared token): the server refuses a principal's
-// session (403), so such a session sees the list and no buttons. "Re-sign all" sends the
-// fingerprint of the list shown here: a sign-in added or changed after it rendered is
+// session (403), so such a session sees the list and no buttons. "Re-sign" sends the code
+// of the row shown and "Re-sign all" the fingerprint of the list shown here: a sign-in added or changed after it rendered is
 // never signed by that click (the server refuses, and the list reloads). Each row shows
 // who it acts as, what it may do, where (its scope), who created it and when, because a
 // row written into the database can carry a forged creation event: only the person's
@@ -112,7 +112,9 @@ function item(u, manage) {
     el("strong", {}, u.name),
     ` (${facts})`,
     warn,
-    manage ? resignButton("Re-sign", { names: [u.id] }, `Re-signed “${u.name}”`) : null,
+    manage && u.review_code
+      ? resignButton("Re-sign", { names: [u.id], confirm: u.review_code }, `Re-signed “${u.name}”`)
+      : null,
   ]);
 }
 

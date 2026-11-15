@@ -113,14 +113,14 @@ then re-sign the ones you recognise and revoke the rest:
 
 ```bash
 runner/gaffer wg principal unsigned          # who, what it may do, where, made by whom; prints a code
-runner/gaffer wg principal resign alice      # one, after review
+runner/gaffer wg principal resign alice --confirm <its review_code>   # one, after review
 runner/gaffer wg principal resign --all --confirm <code>   # the list you reviewed (creation on record)
 runner/gaffer wg principal revoke stranger   # one you did not create
 ```
 
 Check every row: a process that can write the database can forge a row AND a matching
 creation event, so "creation on record" is not proof; only you know which sign-ins you
-made. The code changes if a row is added or changed after you looked, and `--all` then
+made. The codes change if a row is added or changed after you looked, and the re-sign then
 signs nothing.
 
 Only the operator re-signs (a principal token is refused, agents are refused by the

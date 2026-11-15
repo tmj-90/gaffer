@@ -1,8 +1,9 @@
 // SEALED PRINCIPALS on the CLI (the built binary, the way `gaffer wg` runs it):
 // GAFFER_PRINCIPAL_TOKEN for a row written straight into sqlite is refused like an unknown
-// token; `principal unsigned` names it; `principal resign` is the operator's (a principal
-// token is refused), `--all` revives rows created before signing and leaves a row with no
-// creation on record for a person to name.
+// token; `principal unsigned` names it and prints the code of its list; `principal resign`
+// is the operator's (a principal token is refused), and `--all` needs that code: it then
+// revives rows created before signing and leaves a row with no creation on record for a
+// person to name.
 
 import { createHash, randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -78,8 +79,14 @@ describe.skipIf(!CLI_BUILT)("wg principal: sealed rows on the CLI", () => {
     });
     expect(runBin(db, ["whoami"], env(legacy.token)).status).not.toBe(0);
 
-    // The operator: --all revives the legacy row, not the forged one.
-    const all = runBin(db, ["principal", "resign", "--all"], env());
+    // The operator's --all signs nothing without the code of the list it reviewed.
+    const blind = runBin(db, ["principal", "resign", "--all"], env());
+    expect(blind.status).not.toBe(0);
+    expect(oneLineError(blind.stderr).message).toMatch(/review the unsigned principals first/);
+    expect(list.stderr).toMatch(/resign --all --confirm [0-9a-f]{16}/);
+    const code = (JSON.parse(list.stdout) as { fingerprint: string }).fingerprint;
+    // With it: --all revives the legacy row, not the forged one (no creation on record).
+    const all = runBin(db, ["principal", "resign", "--all", "--confirm", code], env());
     expect(all.status).toBe(0);
     const res = JSON.parse(all.stdout) as {
       resigned: Array<{ name: string }>;

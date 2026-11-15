@@ -34,7 +34,7 @@ import { apiPrincipal } from "./routes/context.js";
  *   - `/tickets/:ref/…`                   → a read of that ticket;
  *   - `/tickets`, `/tickets/details`, `/api/board`, `/api/human-queue`, `/claims`,
  *     `/decisions`, `/api/events/stream`  → filtered to its tickets by the route;
- *   - `/scope/repos?all=1`                → filtered to the repos it reaches by the route;
+ *   - `/scope/repos?all=1` (no node, no repo) → filtered to the repos it reaches by the route;
  *   - `/decisions/:id`                    → a read of every ticket it is linked to (the
  *                                           one decision rule, accessScope.ts
  *                                           decisionInScope, which nested responses
@@ -69,12 +69,11 @@ export async function authorizePrincipalRequest(
         return;
       case "scope":
         // Every repo's grounds in one read: filtered to the repos it reaches by the route.
-        if (
-          second === "repos" &&
-          segments.length === 2 &&
-          new URL(req.url ?? "/", "http://localhost").searchParams.get("all") === "1"
-        ) {
-          return;
+        // Only the ?all=1 branch: the route answers ?node= and ?repo= BEFORE it looks at
+        // all, so a request naming either is the factory-wide read it is (sec-authz-2 F2).
+        if (second === "repos" && segments.length === 2) {
+          const params = new URL(req.url ?? "/", "http://localhost").searchParams;
+          if (params.get("all") === "1" && !params.has("node") && !params.has("repo")) return;
         }
         break;
       case "claims":
@@ -124,7 +123,7 @@ export async function authorizePrincipalRequest(
             if (r && typeof r.repo_id === "string") names.push(r.repo_id);
           }
         }
-        check({ kind: "create_ticket", repos: names.map((n) => repoId(wg, n)) });
+        check({ kind: "create_ticket", repos: names.flatMap((n) => repoIds(wg, n)) });
         // Placing it on the map or in an epic is the operator's (see scope links below).
         if (Array.isArray(body.scopeNodeIds) && body.scopeNodeIds.length > 0) {
           return scopeLink();
@@ -161,7 +160,7 @@ export async function authorizePrincipalRequest(
           }
         }
         const repos =
-          named.length > 0 ? named.map((n) => repoId(wg, n)) : wg.scopeTicket(second).repos;
+          named.length > 0 ? named.flatMap((n) => repoIds(wg, n)) : wg.scopeTicket(second).repos;
         return check({ kind: "write_repo", repos });
       }
       return;
@@ -183,7 +182,7 @@ export async function authorizePrincipalRequest(
     }
     case "repos": {
       if (second === "onboard") return check({ kind: "write_repo" });
-      if (second !== undefined) return check({ kind: "write_repo", repos: [repoId(wg, second)] });
+      if (second !== undefined) return check({ kind: "write_repo", repos: repoIds(wg, second) });
       return check({ kind: "write_factory" });
     }
     case "api": {
@@ -199,9 +198,17 @@ export async function authorizePrincipalRequest(
   }
 }
 
-/** A repo name or id → its id (an unknown one is kept: it can never be inside a scope). */
-function repoId(wg: Dispatch, ref: string): string {
-  return (wg.repos.findById(ref) ?? wg.repos.findByName(ref))?.id ?? ref;
+/**
+ * A repo name or id → every repo id it can mean (an unknown one is kept: it can never be
+ * inside a scope). Services resolve a ref by id first in some places and by name first
+ * in others (repoService linkRepository), so a repo NAMED after another repo's id would
+ * be checked as one repo here and acted on as the other: both must pass.
+ */
+function repoIds(wg: Dispatch, ref: string): string[] {
+  const ids = [wg.repos.findById(ref)?.id, wg.repos.findByName(ref)?.id].filter(
+    (x): x is string => x !== undefined,
+  );
+  return ids.length > 0 ? [...new Set(ids)] : [ref];
 }
 
 /**

@@ -19,6 +19,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { setPrincipalResolver } from "../src/api/auth.js";
+import { runDoctor } from "../src/cli/ops.js";
 import { createApiServer } from "../src/api/server.js";
 import { Dispatch } from "../src/core.js";
 import type { Actor } from "../src/domain/types.js";
@@ -281,6 +282,36 @@ describe("re-signing principals created before signing (a person's act)", () => 
     again.revokePrincipal("old-1", operator);
     expect(() => again.resignPrincipals({ names: ["old-1"] }, operator)).toThrow(/revoked/);
     again.db.close();
+  });
+});
+
+describe("doctor names every principal the factory does not honour", () => {
+  it("a forged row is a failure, a row from before signing a warning, a signed one nothing", () => {
+    const f = factory();
+    const wg = f.open();
+    wg.createPrincipal({ name: "good" }, operator);
+    const old = wg.createPrincipal({ name: "old" }, operator);
+    wg.db.prepare("DELETE FROM row_seals WHERE row_id = ?").run(old.principal.id);
+    forgeRow(wg, "ghost");
+    const report = runDoctor(wg.db, f.dbPath, undefined, f.keyring());
+    const about = (n: string) => report.checks.filter((c) => c.label.startsWith(`Principal ${n}:`));
+    expect(about("good")).toEqual([]);
+    expect(about("old")).toEqual([
+      expect.objectContaining({
+        level: "warn",
+        detail: expect.stringMatching(
+          /principal old is not signed by this factory: it was created before signing, restored from a backup, or written outside the factory/,
+        ),
+      }),
+    ]);
+    expect(about("ghost")).toEqual([expect.objectContaining({ level: "fail" })]);
+    expect(report.exitCode).toBe(1);
+    wg.resignPrincipals({ names: ["old", "ghost"] }, operator);
+    const clean = runDoctor(wg.db, f.dbPath, undefined, f.keyring());
+    expect(
+      clean.checks.some((c) => c.label === "Principals: every active principal is signed"),
+    ).toBe(true);
+    wg.db.close();
   });
 });
 

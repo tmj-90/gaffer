@@ -487,32 +487,131 @@ export function fieldText(field) {
   return field.map((p) => p.c).join("");
 }
 
-function escapeRe(s) {
-  return s.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+// ---------------------------------------------------------------------------
+// Glob component matching, without a regular expression.
+//
+// A component used to be turned into a RegExp (`*` as `.*`). A backtracking engine
+// tries every way to split a name between the stars, so `*a*a*a…b` against one name of
+// eighty `a`s never came back: 49 bytes of command stalled the hook until its timeout.
+// The matcher below is the two-pointer wildcard walk: it remembers only the LAST star
+// and where that star's match began, so a name of n code units against m tokens costs
+// at most n*m steps, whatever the pattern.
+// ---------------------------------------------------------------------------
+const T_STAR = 0;
+const T_ANY = 1;
+const T_LIT = 2;
+const T_SET = 3;
+
+// A case-insensitive comparison key for one UTF-16 code unit (what the RegExp `i` flag
+// compared: the upper-case form when it is a single unit, and never a non-ASCII unit
+// folded onto an ASCII one).
+function foldUnit(ch) {
+  const u = ch.toUpperCase();
+  if (u.length !== 1) return ch;
+  if (ch.charCodeAt(0) >= 128 && u.charCodeAt(0) < 128) return ch;
+  return u;
+}
+
+/**
+ * A bracket expression's inside (after an optional leading `!` / `^`) as a set token, or
+ * null when it holds a range written backwards (`[z-a]`): the caller treats that as
+ * syntax it does not model. Every character is literal; `x-y` is a range by code unit.
+ */
+function setToken(body, negated) {
+  const singles = new Set();
+  const ranges = [];
+  for (let i = 0; i < body.length; i += 1) {
+    if (body[i + 1] === "-" && i + 2 < body.length) {
+      const lo = body.charCodeAt(i);
+      const hi = body.charCodeAt(i + 2);
+      if (lo > hi) return null;
+      ranges.push([lo, hi]);
+      i += 2;
+    } else singles.add(body[i]);
+  }
+  return { t: T_SET, singles, ranges, negated };
+}
+
+function unitMatches(tok, ch, nocase) {
+  if (tok.t === T_ANY) return true;
+  if (tok.t === T_LIT) return nocase ? foldUnit(tok.c) === foldUnit(ch) : tok.c === ch;
+  const forms = nocase ? new Set([ch, ch.toLowerCase(), ch.toUpperCase()]) : [ch];
+  let hit = false;
+  for (const f of forms) {
+    if (f.length !== 1) continue;
+    const code = f.charCodeAt(0);
+    if (tok.singles.has(f) || tok.ranges.some(([lo, hi]) => code >= lo && code <= hi)) {
+      hit = true;
+      break;
+    }
+  }
+  if (!hit && nocase) {
+    const key = foldUnit(ch);
+    for (const x of tok.singles) {
+      if (foldUnit(x) === key) {
+        hit = true;
+        break;
+      }
+    }
+  }
+  return tok.negated ? !hit : hit;
+}
+
+/** True when `name` matches the whole token list. At most name.length * tokens.length steps. */
+export function matchGlobTokens(tokens, name, nocase = false) {
+  let need = 0;
+  for (const tok of tokens) if (tok.t !== T_STAR) need += 1;
+  if (need > name.length) return false;
+  let p = 0;
+  let s = 0;
+  let starP = -1;
+  let starS = 0;
+  while (s < name.length) {
+    if (p < tokens.length && tokens[p].t === T_STAR) {
+      starP = p;
+      starS = s;
+      p += 1;
+    } else if (p < tokens.length && unitMatches(tokens[p], name[s], nocase)) {
+      p += 1;
+      s += 1;
+    } else if (starP !== -1) {
+      p = starP + 1;
+      starS += 1;
+      s = starS;
+    } else return false;
+  }
+  while (p < tokens.length && tokens[p].t === T_STAR) p += 1;
+  return p === tokens.length;
 }
 
 // One glob component as a name matcher. `wild`: written in a syntax not modelled here
-// (extglob `@(...)` / `!(...)`, zsh qualifiers `*(...)`, POSIX classes): it matches
-// every name, dot entries included (a superset of anything the shell could match).
-function componentMatcher(comp, opts) {
-  let re = "";
+// (extglob `@(...)` / `!(...)`, zsh qualifiers `*(...)`, POSIX classes, a range written
+// backwards): it matches every name, dot entries included (a superset of anything the
+// shell could match).
+export function componentMatcher(comp, opts) {
+  const tokens = [];
+  const lit = (text) => {
+    for (const c of text) for (let i = 0; i < c.length; i += 1) tokens.push({ t: T_LIT, c: c[i] });
+  };
   let wild = false;
   for (let j = 0; j < comp.length; j += 1) {
     const p = comp[j];
     if (p.q) {
-      re += escapeRe(p.c);
+      lit(p.c);
       continue;
     }
     if (p.c === "(" && j > 0 && !comp[j - 1].q && /[?*+@!]/.test(comp[j - 1].c)) wild = true;
-    if (p.c === "*") re += ".*";
-    else if (p.c === "?") re += ".";
+    if (p.c === "*") {
+      // A run of stars is one star.
+      if (tokens.length === 0 || tokens[tokens.length - 1].t !== T_STAR) tokens.push({ t: T_STAR });
+    } else if (p.c === "?") tokens.push({ t: T_ANY });
     else if (p.c === "[") {
       let k = j + 1;
       if (k < comp.length && !comp[k].q && (comp[k].c === "!" || comp[k].c === "^")) k += 1;
       if (k < comp.length && comp[k].c === "]") k += 1;
       while (k < comp.length && !(comp[k].c === "]" && !comp[k].q)) k += 1;
       if (k >= comp.length) {
-        re += "\\[";
+        lit("[");
         continue;
       }
       const inner = comp
@@ -521,19 +620,27 @@ function componentMatcher(comp, opts) {
         .join("");
       if (inner.includes("[:") || inner.includes("[=") || inner.includes("[.")) {
         wild = true;
-        re += ".";
+        tokens.push({ t: T_ANY });
       } else {
         const neg = /^[!^]/.test(inner);
-        const body = (neg ? inner.slice(1) : inner).replace(/[\\\]^[]/g, "\\$&");
-        re += `[${neg ? "^" : ""}${body}]`;
+        const set = setToken(neg ? inner.slice(1) : inner, neg);
+        if (set) tokens.push(set);
+        else {
+          wild = true;
+          tokens.push({ t: T_ANY });
+        }
       }
       j = k;
-    } else re += escapeRe(p.c);
+    } else lit(p.c);
   }
   const dot = comp.length > 0 && comp[0].c === ".";
   if (wild) return { test: () => true, dots: true, hidden: true };
-  const rx = new RegExp(`^${re}$`, opts.nocase ? "is" : "s");
-  return { test: (name) => rx.test(name), dots: dot, hidden: dot || opts.dotglob };
+  const nocase = Boolean(opts.nocase);
+  return {
+    test: (name) => matchGlobTokens(tokens, name, nocase),
+    dots: dot,
+    hidden: dot || opts.dotglob,
+  };
 }
 
 function isDir(path) {

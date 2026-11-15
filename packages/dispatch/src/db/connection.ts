@@ -1411,6 +1411,19 @@ export function inTransaction<T>(db: Db, fn: () => T): T {
   return out;
 }
 
+/**
+ * Run `fn`'s READS against one snapshot of the database: every statement inside sees the
+ * same committed state, whatever another connection writes meanwhile (a deferred
+ * transaction; under WAL its first read fixes the snapshot). For a decision that reads
+ * several rows which must agree with each other (a principal and its seal). `fn` must not
+ * write: a write would have to upgrade the snapshot and can fail against a newer commit.
+ * Inside an open transaction it simply runs (that transaction is already one snapshot).
+ */
+export function inReadSnapshot<T>(db: Db, fn: () => T): T {
+  if (db.inTransaction) return fn();
+  return db.transaction(fn).deferred();
+}
+
 /** Work queued to run once the current outermost transaction has committed. */
 const AFTER_COMMIT = new WeakMap<Db, Set<() => void>>();
 

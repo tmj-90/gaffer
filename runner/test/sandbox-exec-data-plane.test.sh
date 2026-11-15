@@ -55,6 +55,9 @@ mkdir -p "$WT" "$GAFFER_DATA/worktrees/ticket-2"
 source "$RUNNER_DIR/lib/sandbox.sh"
 
 D="$GAFFER_DATA"
+# The temp dir as the profile names it: /tmp is a link on macOS (/private/tmp), and a
+# profile grants the real directory, never the link's spelling.
+TMPX="$(cd /tmp && pwd -P)/x"
 # What sandboxed code must never write (who trusts each: docs/sandbox.md).
 CONTROL="$D/settings.json $D/.settings.123.0a1b.tmp $D/settings.json.bak $D/usage-pause.json $D/.usage-pause.lock
 $D/usage-ledger.jsonl $D/usage-ledger.held.jsonl $D/.ledger.lock $D/eval-ledger.jsonl $D/delivery-metrics.jsonl
@@ -90,7 +93,7 @@ else ok "D1: no allow form grants the whole of \$GAFFER_DATA"; fi
 expect "$PA" deny "D1: every control file under \$GAFFER_DATA (and \$GAFFER_DATA itself, its parent, a sibling worktree) is denied" $CONTROL
 expect "$PA" allow "D1: the databases with their -wal/-shm/-journal, the crew events log and the hook's two ledgers stay writable" $WRITERS
 expect "$PA" allow "D1: the agent's own worktree, the temp dir and ~/.claude/projects stay writable" \
-  "$WT/src/a.js" "$WT/.git" /tmp/x "$HOME/.claude/projects/p/s.jsonl"
+  "$WT/src/a.js" "$WT/.git" "$TMPX" "$HOME/.claude/projects/p/s.jsonl"
 # A temp grant that contains $GAFFER_DATA (GAFFER_DATA under TMPDIR) changes nothing.
 PT="$WORK/agent-tmp.sb"
 TMPDIR="$WORK" GAFFER_SANDBOX_PROFILE="" _sandbox_exec_profile "$WT" "$PT" ""
@@ -127,7 +130,7 @@ GAFFER_SANDBOX_PROFILE=validation _sandbox_exec_profile "$WT" "$PV" "" || fail "
 grep -q '^;; variant: validation$' "$PV" && ok "D2: the profile says it is the validation variant" || fail "D2: no variant line"
 expect "$PV" deny "D2: no control file, no database, no ledger and no HOME path is writable from a gate" \
   $CONTROL $WRITERS "$HOME/.claude/projects/p" "$HOME/.cache/x"
-expect "$PV" allow "D2: the gate's own worktree and the temp dir stay writable" "$WT/node_modules/.cache/x" "$WT/out.txt" /tmp/x
+expect "$PV" allow "D2: the gate's own worktree and the temp dir stay writable" "$WT/node_modules/.cache/x" "$WT/out.txt" "$TMPX"
 grep -qF "(subpath \"$HOME/.cache\")" "$PV" && fail "D2: STRICT_ALLOW_HOME is granted to a gate" || ok "D2: STRICT_ALLOW_HOME is not granted to a gate"
 
 echo "== D3: the agent profile keeps the docker legacy layout's data plane =="

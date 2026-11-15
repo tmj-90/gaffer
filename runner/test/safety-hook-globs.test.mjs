@@ -311,11 +311,14 @@ for (const cmd of [
 }
 
 // Outside the roots (production profile): the same as the literal form.
+// /etc/passw*, not /etc/host*: the refusal names the first match, and that is /etc/passwd
+// on every host, while /etc/host* starts with host.conf on Linux and hosts on macOS (the
+// golden corpus records the whole reason).
 for (const cmd of [
-  "cat /etc/host*",
+  "cat /etc/passw*",
   "cat /etc/{hosts,passwd}",
   "cat ~/.bash*",
-  "cat < /etc/host*",
+  "cat < /etc/passw*",
 ]) {
   each("deny", cmd, bash(cmd), ["roots", "bootstrap"]);
 }

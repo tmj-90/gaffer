@@ -115,26 +115,31 @@ export class PrincipalRepository {
   private view(row: StoredRow | undefined): PrincipalView | undefined {
     if (!row) return undefined;
     const { scope_repos, scope_tickets, ...rest } = row;
-    const repos = idList(scope_repos);
-    const tickets = idList(scope_tickets);
+    return { ...rest, scope: this.resolveScope(scope_repos, scope_tickets) };
+  }
+
+  /** Stored scope columns as callers see them: the ids, each with its current name or number. */
+  private resolveScope(
+    scopeRepos: string | null,
+    scopeTickets: string | null,
+  ): PrincipalScopeView | null {
+    const repos = idList(scopeRepos);
+    const tickets = idList(scopeTickets);
+    if (repos === null && tickets === null) return null;
     const repoName = this.db.prepare("SELECT name FROM repositories WHERE id = ?");
     const ticketNo = this.db.prepare("SELECT number FROM tickets WHERE id = ?");
-    const scope: PrincipalScopeView | null =
-      repos === null && tickets === null
-        ? null
-        : {
-            repos:
-              repos?.map((id) => ({
-                id,
-                name: (repoName.get(id) as { name: string } | undefined)?.name ?? null,
-              })) ?? null,
-            tickets:
-              tickets?.map((id) => ({
-                id,
-                number: (ticketNo.get(id) as { number: number } | undefined)?.number ?? null,
-              })) ?? null,
-          };
-    return { ...rest, scope };
+    return {
+      repos:
+        repos?.map((id) => ({
+          id,
+          name: (repoName.get(id) as { name: string } | undefined)?.name ?? null,
+        })) ?? null,
+      tickets:
+        tickets?.map((id) => ({
+          id,
+          number: (ticketNo.get(id) as { number: number } | undefined)?.number ?? null,
+        })) ?? null,
+    };
   }
 
   get(id: string): PrincipalView | undefined {
@@ -160,15 +165,28 @@ export class PrincipalRepository {
     ).map((r) => this.view(r) as PrincipalView);
   }
 
-  /** The ACTIVE row for a token hash, or undefined (unknown or revoked). */
-  findActiveByHash(tokenHash: string): PrincipalView | undefined {
-    return this.view(
-      this.db
-        .prepare(
-          `SELECT ${PUBLIC_COLUMNS} FROM api_principals WHERE token_hash = ? AND revoked_at IS NULL`,
-        )
-        .get(tokenHash) as StoredRow | undefined,
-    );
+  /**
+   * The ACTIVE stored row for a token hash with every column a seal binds (the hash
+   * included), or undefined (unknown or revoked). Sign-in verifies THIS row and builds
+   * what it returns from it ({@link viewOf}): the row is never read a second time.
+   */
+  findActiveStoredByHash(tokenHash: string): PrincipalRow | undefined {
+    return this.db
+      .prepare(
+        `SELECT ${PUBLIC_COLUMNS}, token_hash FROM api_principals WHERE token_hash = ? AND revoked_at IS NULL`,
+      )
+      .get(tokenHash) as PrincipalRow | undefined;
+  }
+
+  /** The public view of exactly this stored row (no second read of `api_principals`). */
+  viewOf(row: PrincipalRow): PrincipalView {
+    const { token_hash: _hash, ...stored } = row;
+    return this.view(stored) as PrincipalView;
+  }
+
+  /** The scope of exactly this stored row, resolved to names and numbers (null: unscoped). */
+  scopeOf(row: Pick<PrincipalRow, "scope_repos" | "scope_tickets">): PrincipalScopeView | null {
+    return this.resolveScope(row.scope_repos, row.scope_tickets);
   }
 
   /** Stamp revoked_at once; returns false when the row is missing or already revoked. */

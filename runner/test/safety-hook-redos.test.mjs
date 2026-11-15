@@ -14,6 +14,7 @@
 //   • the prefix still sees through real valued options (`nice -n 5 gh …`).
 // Run: node test/safety-hook-redos.test.mjs
 import { spawnSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
 
 import { HOOK, bash, scratchDir, suite } from "./lib/hook-harness.mjs";
 
@@ -116,6 +117,28 @@ for (const [label, command] of [
     `hook answers 8000 repeated git -C dirs in < 1s over start-up (exit ${status}, ${ms}ms, start-up ${baseline}ms)`,
     ms - baseline < 1000,
   );
+}
+
+// A glob with many stars against ONE long file name. The component matcher was a RegExp
+// (`*` as `.*`): 20 star-letter pairs against a name of eighty `a`s backtracked for
+// longer than the hook's timeout, from a 49-byte command. The matcher is now bounded by
+// name length times pattern length (test/hook-glob-matcher.test.mjs); the whole hook
+// answers these in < 1s over start-up.
+{
+  mkdirSync(`${ROOT}/src`, { recursive: true });
+  writeFileSync(`${ROOT}/src/${"a".repeat(80)}`, "");
+  for (const [label, command, want] of [
+    ["20 star-letter pairs + b (no match)", `cat src/${"*a".repeat(20)}b`, 0],
+    ["20 star-letter pairs (a match)", `cat src/${"*a".repeat(20)}`, 0],
+    ["400 star-letter pairs + b", `cat src/${"*a".repeat(400)}b`, 0],
+    ["the same glob over the factory's data dir", `cat $GAFFER_DATA/${"*a".repeat(20)}b`, 2],
+  ]) {
+    const { status, ms } = timed(command);
+    t.assert(
+      `hook answers a glob of ${label} with exit ${want} in < 1s over start-up (exit ${status}, ${ms}ms, start-up ${baseline}ms)`,
+      status === want && ms - baseline < 1000,
+    );
+  }
 }
 
 // The ~100 KB deep path (`echo x > /a/a/…`, and the same path as a Write) took ~60-70s

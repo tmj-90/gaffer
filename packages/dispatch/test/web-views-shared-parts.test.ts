@@ -78,3 +78,37 @@ describe("web: views on the shared parts", () => {
     expect(page.querySelector("a > b")).toBeNull();
   });
 });
+
+describe("web: a ground's and a repo's head keep their meta row styled", () => {
+  // The meta line (type, risk, owner, "Part of") borrowed the ticket page's .tk-meta;
+  // the ticket head moved to its own parts and that rule went with it, so the line
+  // ran together ("DOMAINMEDIUMPart of TaskFlow"). Every meta class these views use
+  // has a rule of its own that spaces its items.
+  it("every *-meta class in scope-node.js and repo.js has a flex rule with a gap", async () => {
+    const { readFileSync, readdirSync } = await import("node:fs");
+    const web = path.resolve(process.cwd(), "src/api/web");
+    const css = [
+      readFileSync(path.join(web, "css/components.css"), "utf8"),
+      ...readdirSync(path.join(web, "css/views")).map((f) =>
+        readFileSync(path.join(web, "css/views", f), "utf8"),
+      ),
+    ]
+      .join("\n")
+      .replace(/\/\*[\s\S]*?\*\//g, "");
+    const used = new Set<string>();
+    for (const f of ["scope-node.js", "repo.js"]) {
+      const src = readFileSync(path.join(VIEWS, f), "utf8");
+      for (const m of src.matchAll(/class: "([a-z]+-meta)"/g)) used.add(m[1]!);
+    }
+    expect(used.size).toBeGreaterThan(0);
+    for (const cls of used) {
+      // A rule whose selector list names the class on its own (grouped selectors too).
+      const rules = [...css.matchAll(/([^{}]+)\{([^}]*)\}/g)].filter((m) =>
+        m[1]!.split(",").some((sel) => sel.trim() === `.${cls}`),
+      );
+      const decls = rules.map((m) => m[2]).join(";");
+      expect(decls, cls).toMatch(/display:\s*flex/);
+      expect(decls, cls).toMatch(/gap:/);
+    }
+  });
+});

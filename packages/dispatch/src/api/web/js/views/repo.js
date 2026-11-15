@@ -112,7 +112,7 @@ async function renderRepo(id) {
     el("header", { class: "gr-head" }, [
       el("div", { class: "gr-kit" }, kitShirt(repo.name, 96)),
       el("div", { class: "gr-head-main" }, [
-        el("div", { class: "tk-meta" }, [
+        el("div", { class: "gr-meta" }, [
           el("span", { class: `gr-mapped${isMapped ? "" : " is-off"}` }, [
             glyph(isMapped ? "done" : "draft", 16),
             el(

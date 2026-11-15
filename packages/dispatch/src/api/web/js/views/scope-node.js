@@ -200,7 +200,7 @@ async function renderNode(id) {
   wrap.appendChild(
     el("header", { class: `gr-head is-node type-${node.type}` }, [
       el("div", { class: "gr-head-main" }, [
-        el("div", { class: "tk-meta" }, [
+        el("div", { class: "gr-meta" }, [
           el("span", { class: "gr-type" }, typeLabel(node.type)),
           riskBadge(node.risk_level),
           node.owner ? el("span", { class: "gr-owner" }, `Run by @${node.owner}`) : null,

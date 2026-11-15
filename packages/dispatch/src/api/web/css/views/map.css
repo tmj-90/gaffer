@@ -765,6 +765,15 @@
     gap: 10px;
     min-width: 0;
   }
+  /* The meta line: type, risk, owner, "Part of" (its own rule since the ticket
+     head, whose .tk-meta it used to borrow, moved to its own parts). */
+  .gr-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 16px;
+    font-size: var(--t14);
+  }
   .gr-head .detail-title {
     font: 800 var(--t52) / 1.02 var(--f-display);
     overflow-wrap: anywhere;

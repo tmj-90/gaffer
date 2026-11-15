@@ -124,12 +124,19 @@ _gaffer_poll_lock_reap() {
   fi
   return 1
 }
+# The atomic take of a lock directory (config/10-locks.sh says why a bare mkdir is not
+# one). Defined here too, identically, for a caller that sources this file on its own.
+declare -F _gaffer_lock_take_dir >/dev/null 2>&1 || _gaffer_lock_take_dir() {
+  local d="$1" pid="${2:-$$}"
+  mkdir "$d" 2>/dev/null || return 1
+  ( set -o noclobber; printf '%s\n' "$pid" > "$d/pid" ) 2>/dev/null
+}
 gaffer_poll_lock_acquire() {
   local _lock="${GAFFER_DATA:?}/.poll.lock.d" _pid _said=0 _waited=0 _nopid=0 _age _stale
   local _limit="${GAFFER_POLL_WAIT_TIMEOUT:-0}"
   case "$_limit" in ''|*[!0-9]*) _limit=0 ;; esac
   _stale="$(_gaffer_poll_lock_stale_after)"
-  while ! mkdir "$_lock" 2>/dev/null; do
+  while ! _gaffer_lock_take_dir "$_lock"; do
     _pid="$(cat "$_lock/pid" 2>/dev/null)"
     if [ -n "$_pid" ] && ! kill -0 "$_pid" 2>/dev/null; then
       # The holder is gone: an abandoned lock. Two waiters can both see that; the
@@ -168,7 +175,6 @@ gaffer_poll_lock_acquire() {
     sleep 1
     _waited=$((_waited + 1))
   done
-  printf '%s\n' "$$" > "$_lock/pid" 2>/dev/null || true
   _GAFFER_POLL_LOCK_HELD=1
   return 0
 }

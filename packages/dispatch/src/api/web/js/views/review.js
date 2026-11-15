@@ -1415,8 +1415,8 @@ async function renderReview(param) {
   );
   // The bar's height (it grows with its line and when Approve's label wraps) keeps room
   // for it under the page and lifts a toast above it, so it never covers the last row.
-  if (typeof ResizeObserver === "function") {
-    const ro = new ResizeObserver(() => {
+  if (typeof window.ResizeObserver === "function") {
+    const ro = new window.ResizeObserver(() => {
       if (!signbar.isConnected) return ro.disconnect();
       const h = Math.ceil(signbar.getBoundingClientRect().height);
       document.documentElement.style.setProperty("--rv-bar-h", `${h}px`);

@@ -73,7 +73,7 @@ MARK3="$(wc -l < "$GAFFER_DATA/factory.log" | tr -d ' ')"
 R3="$(GAFFER_MAX_DELIVERY_ATTEMPTS=3 GAFFER_MAX_NOCOMMIT_FAILURES=3 GAFFER_DAILY_BUDGET_USD=0.02 run_tick)"
 echo deliver > "$MODE"
 [ "$(deliveries)" = 1 ] && ok "B3: attempt 1 ran (one paid delivery call)" || fail "B3: $(deliveries) delivery call(s)"
-grep -q "BUDGET: #[0-9]* . the paid delivery launch was refused" <<<"$(tail -n +"$((MARK3 + 1))" "$GAFFER_DATA/factory.log")" \
+grep -q "BUDGET: #[0-9]* .* the paid delivery launch was refused" <<<"$(tail -n +"$((MARK3 + 1))" "$GAFFER_DATA/factory.log")" \
   && ok "B3: attempt 2 was refused by the budget admission" || fail "B3: no budget refusal for attempt 2 ($R3)"
 [ "$R3" != "TICK_RESULT=no_work" ] && ok "B3: the tick reports ${R3#TICK_RESULT=}, not no_work (a paid attempt ran)" \
   || fail "B3: a tick with a paid attempt reported no_work (its day slot would be refunded)"

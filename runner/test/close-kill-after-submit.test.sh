@@ -12,7 +12,7 @@
 # For each pack, the REAL gaffer_tick_close_delivery runs against a real dispatch DB and
 # a real worktree; its submit is the real `wg submit` followed by a kill (exit 143), so
 # nothing after the submit runs. Then a person approves the delivered commit.
-#   K1  solo_loose      K2  team_light      K3  factory_strict
+#   K1  solo_loose      K2  team_light      K3  factory_strict      K4  regulated
 #   each: the ticket is in_review, the delivery row and branch_name are recorded, and
 #   the approval passes (ready_for_merge)
 #
@@ -35,7 +35,7 @@ export DISPATCH_AUDIT_OFF=1 GIT_CONFIG_NOSYSTEM=1 LC_ALL=C
 jf() { node "$RUNNER_DIR/lib/json-tool.mjs" expr "$1"; }
 
 n=0
-for pack in solo_loose team_light factory_strict; do
+for pack in solo_loose team_light factory_strict regulated; do
   n=$((n + 1))
   echo "== K$n: $pack, killed right after the submit =="
   D="$WORK/$pack"; mkdir -p "$D/home" "$D/data" "$D/repo" "$D/wts"
@@ -51,6 +51,8 @@ for pack in solo_loose team_light factory_strict; do
   AC="$(wgd ac add 1 -t AC --verify test | jf 'd.ac_id')"
   wgd ticket set-reviewer 1 --reviewer op >/dev/null 2>&1
   wgd ticket repo-access set 1 repoA --access write --relation confirmed >/dev/null
+  # regulated: a person grants the ready-approval before the ticket may go ready.
+  [ "$pack" = regulated ] && wgd ticket approve-ready 1 >/dev/null 2>&1
   wgd ticket ready 1 >/dev/null
   AGENT="$(wgd agent register -n fx --max-risk high | jf 'd.agent.id')"
   TOKEN="$(wgd claim-ticket 1 --agent "$AGENT" --ttl 900 | jf 'd.claimToken')"

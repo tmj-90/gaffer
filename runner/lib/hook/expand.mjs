@@ -23,9 +23,9 @@
  * module the hook and the tests import); see the map in its header.
  */
 
-import { readdirSync, statSync, lstatSync } from "node:fs";
+import { readdirSync, realpathSync, statSync, lstatSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 
 // The bounds. Constants on purpose, never env-configurable (a knob could only loosen).
 // variants: brace-expansion and variable-candidate products per word; matches: paths a
@@ -436,9 +436,50 @@ export function expandAssignmentValue(raw, table, cwds) {
 // ---------------------------------------------------------------------------
 const isGlobPart = (p) => p.v === undefined && !p.q && (p.c === "*" || p.c === "?" || p.c === "[");
 
+// An extglob group `+(...)`, `@(...)`, `!(...)`, `?(...)`, `*(...)`: with extglob on
+// (an rc file or an earlier `shopt -s extglob` line) `+(.)env` matches `.env` although
+// it holds no `*`, `?` or `[`.
+const isExtglobOpen = (field, j) =>
+  j > 0 &&
+  field[j].v === undefined &&
+  !field[j].q &&
+  field[j].c === "(" &&
+  field[j - 1].v === undefined &&
+  !field[j - 1].q &&
+  /[?*+@!]/.test(field[j - 1].c);
+
 /** Does a field carry an active glob character? */
 export function fieldHasGlob(field) {
-  return field.some(isGlobPart);
+  return field.some((p, j) => isGlobPart(p) || isExtglobOpen(field, j));
+}
+
+/**
+ * One path step taken the way the kernel takes it: `..` leaves the PHYSICAL directory
+ * (a symlinked `wt -> $GAFFER_DATA/worktrees` makes `wt/..` the data directory, not the
+ * worktree that a lexical join would give). Null when `..` follows a path that does not
+ * exist yet (a link this same command may create): nothing bounds where it lands.
+ */
+export function physicalJoin(dir, name) {
+  if (dir === null) return null;
+  if (name === "" || name === ".") return dir;
+  if (name === "..") {
+    try {
+      return dirname(realpathSync(dir));
+    } catch {
+      return null;
+    }
+  }
+  return join(dir, name);
+}
+
+/** An absolute path with `.` / `..` steps resolved physically (see physicalJoin), or null. */
+export function physicalPath(abs) {
+  let cur = "/";
+  for (const step of String(abs).split("/")) {
+    cur = physicalJoin(cur, step);
+    if (cur === null) return null;
+  }
+  return cur;
 }
 
 /** The text of a field (quotes already removed). */
@@ -544,7 +585,8 @@ function walkDirs(dir, budget, opts, depth, out) {
  * Returns { kind: "literal", path } when the field has no active glob character, else
  * { kind: "paths", paths, prefix } (every match), { kind: "nomatch", prefix } (the shell
  * would pass the word through unexpanded), { kind: "capped", prefix }, or { kind:
- * "unknown" } (a relative glob with no known cwd); with `walk` false it returns
+ * "unknown" } (a relative glob with no known cwd), { kind: "dotdot" } (a `..` after a
+ * path that does not exist yet, see physicalJoin); with `walk` false it returns
  * { kind: "capped", prefix } without listing anything. `prefix` is the directory the
  * literal part of the pattern names: no match can lie outside it (a glob never matches
  * `/`, so climbing out needs a literal `..` after it, which the walk resolves).
@@ -562,10 +604,12 @@ export function globField(field, cwd, budget, opts, walk = true) {
   let k = 0;
   if (absolute) k = 1;
   while (k < comps.length && !fieldHasGlob(comps[k])) {
-    if (comps[k].length) base = join(base, fieldText(comps[k]));
+    if (comps[k].length) base = physicalJoin(base, fieldText(comps[k]));
     k += 1;
   }
-  const prefix = resolve(base);
+  // `..` after a path that does not exist yet: no literal prefix bounds the matches.
+  if (base === null) return { kind: "dotdot" };
+  const prefix = base;
   // walk = false: only the literal prefix is wanted (the caller is past its word budget).
   if (!walk) return { kind: "capped", prefix };
   let cur = [prefix];
@@ -579,7 +623,8 @@ export function globField(field, cwd, budget, opts, walk = true) {
         continue;
       }
       if (!fieldHasGlob(comp)) {
-        cur = cur.map((d) => join(d, fieldText(comp)));
+        cur = cur.map((d) => physicalJoin(d, fieldText(comp)));
+        if (cur.includes(null)) return { kind: "dotdot" };
         continue;
       }
       const next = [];
@@ -607,7 +652,8 @@ export function globField(field, cwd, budget, opts, walk = true) {
           for (const name of names) {
             if (name.startsWith(".") && !m.hidden && name !== "." && name !== "..") continue;
             if (!m.test(name)) continue;
-            const p = join(d, name);
+            const p = name === "." || name === ".." ? physicalJoin(d, name) : join(d, name);
+            if (p === null) continue;
             if (!last && !isDir(p)) continue;
             next.push(p);
           }

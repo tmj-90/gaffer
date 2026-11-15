@@ -52,6 +52,11 @@ git(WORK, "-c", "user.email=t@example.invalid", "-c", "user.name=t", "commit", "
 // A symlink planted in the worktree that points at the token.
 mkdirSync(`${WORK}/lnk`);
 symlinkSync(`${DATA}/dashboard-token`, `${WORK}/lnk/tok`);
+// Links planted by an earlier call whose `..` the kernel takes physically: wt/.. and
+// p/q/s/../../.. are the data directory, not the worktree a lexical join gives.
+mkdirSync(`${WORK}/dd/p/q`, { recursive: true });
+symlinkSync(`${DATA}/worktrees`, `${WORK}/dd/wt`);
+symlinkSync("../../..", `${WORK}/dd/p/q/s`);
 // More matches than a glob may produce.
 mkdirSync(`${WORK}/many`);
 for (let i = 0; i < 2100; i += 1) writeFileSync(`${WORK}/many/f${i}`, "");
@@ -167,6 +172,37 @@ for (const cmd of [
   "ls $GAFFER_DATA/m* && cp $_ src/leak.txt",
 ]) {
   each("deny", `last-argument $_: ${cmd}`, bash(cmd));
+}
+// `..` after a symlinked directory is taken physically (the kernel's way); a `..` after
+// a path this command may still create is refused; CDPATH makes a relative cd unknown;
+// an extglob group with no `*`, `?` or `[` is still a glob.
+for (const cmd of [
+  "cat dd/wt/../d*",
+  "cat dd/wt/../m*",
+  "head -c 99 dd/wt/../dash*",
+  "cp dd/wt/../d* src/x",
+  "cat dd/p/q/s/../../../d*",
+  "cat dd/p/q/s/../../../dashboard-tok?n",
+  "cd -P dd/wt/.. && cat d*",
+  "cd dd/wt/..; cat ./m*",
+  "tar cf - -C dd/wt/.. .",
+  "grep -r . dd/wt/..",
+  "mkdir -p n/m && cat n/m/../../../../d*",
+  "CDPATH=$GAFFER_DATA/..; cd data && cat d*",
+  "export CDPATH=$GAFFER_DATA; cd worktrees/..; cat m*",
+  "shopt -s extglob\ncat +(.)env",
+  "shopt -s extglob\ncat @(.)env",
+  "shopt -s extglob\ngrep x ?(.)env",
+]) {
+  each("deny", `physical ..: ${cmd.replace("\n", "; ")}`, bash(cmd));
+}
+for (const cmd of [
+  "cat ./src/../README.md",
+  "cd src && cat ../README.md",
+  "cd .. && cd repo && cat README.md",
+  "cat src/@types.ts",
+]) {
+  each("allow", `physical ..: ${cmd}`, bash(cmd));
 }
 {
   const r = decide(bash('while read f; do cat "$f"; done < list.txt'), {

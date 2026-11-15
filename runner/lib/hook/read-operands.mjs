@@ -35,6 +35,7 @@ import {
   globOptions,
   lexWord,
   newBudget,
+  physicalPath,
 } from "./expand.mjs";
 import { SECRET_PATH, canonicalize, classifyRootAccess } from "./paths.mjs";
 import {
@@ -384,6 +385,8 @@ class Walk {
   constructor(cmd, roots) {
     this.roots = roots;
     this.opts = globOptions(cmd);
+    // CDPATH set in the environment or anywhere in the command (nested bodies included).
+    this.cdpath = Boolean(process.env.CDPATH) || /\bCDPATH\b/.test(cmd);
     this.table = new VarTable(process.env, cmd);
     this.stdinReader = false;
     this.dirWords = [];
@@ -433,6 +436,9 @@ class Walk {
         if (g.kind === "unknown") {
           return `relative read operand after a cd the hook cannot follow (${tk.slice(0, 80)}); use an absolute path or a literal cd`;
         }
+        if (g.kind === "dotdot") {
+          return `read operand with a .. after a path that does not exist yet (${tk.slice(0, 80)}): the kernel resolves .. through whatever is created there; ${NAME_THE_FILE}`;
+        }
         if (g.kind === "capped") {
           return `read operand glob matches past the hook's limits (${tk.slice(0, 80)}, in ${g.prefix}); ${NAME_THE_FILE}`;
         }
@@ -447,7 +453,13 @@ class Walk {
           if (!p.startsWith("/") && cwd === null) {
             return `relative read operand after a cd the hook cannot follow (${tk.slice(0, 80)}); use an absolute path or a literal cd`;
           }
-          const why = this.pathReason(resolve(cwd ?? "/", p), tk, follow);
+          // `..` is taken physically, as the kernel takes it: through a symlinked
+          // directory `wt/..` is the link target's parent, not the worktree.
+          const phys = physicalPath(p.startsWith("/") ? p : `${cwd ?? ""}/${p}`);
+          if (phys === null) {
+            return `read operand with a .. after a path that does not exist yet (${tk.slice(0, 80)}): the kernel resolves .. through whatever is created there; ${NAME_THE_FILE}`;
+          }
+          const why = this.pathReason(phys, tk, follow);
           if (why) return why;
         }
       }
@@ -517,8 +529,8 @@ class Walk {
         const paths = g.kind === "literal" ? [g.path] : g.paths;
         for (const p of paths) {
           if (!p || (!p.startsWith("/") && cwd === null)) continue;
-          const lexical = resolve(cwd ?? "/", p);
-          if (lexical.startsWith("/dev/")) continue;
+          const lexical = physicalPath(p.startsWith("/") ? p : `${cwd ?? ""}/${p}`);
+          if (lexical === null || lexical.startsWith("/dev/")) continue;
           const abs = canonicalize(lexical);
           const dir = isDirectory(abs);
           if (
@@ -869,7 +881,17 @@ class Walk {
                     ? g.paths[0]
                     : null;
               if (p === null || (!p.startsWith("/") && cwd === null)) next.push(null);
-              else next.push(canonicalize(resolve(cwd ?? "/", p)));
+              else {
+                // Both the logical cd (bash's default: `..` taken lexically) and the
+                // physical one (`cd -P`, `set -P`): through a symlink they differ.
+                const raw = p.startsWith("/") ? p : `${cwd ?? ""}/${p}`;
+                next.push(canonicalize(resolve(raw)));
+                const phys = physicalPath(raw);
+                next.push(phys === null ? null : canonicalize(phys));
+                // CDPATH (from the environment or set by the command) sends a relative
+                // name that does not start with `.` somewhere the hook does not follow.
+                if (this.cdpath && !/^\.\.?(?:\/|$)/.test(p) && !p.startsWith("/")) next.push(null);
+              }
             }
           }
         }
@@ -920,7 +942,7 @@ class Walk {
                 more.push(
                   f === null || (cwd === null && !f.startsWith("/"))
                     ? null
-                    : resolve(cwd ?? "/", f),
+                    : physicalPath(f.startsWith("/") ? f : `${cwd ?? ""}/${f}`),
                 );
               }
             }

@@ -207,6 +207,9 @@
     --viz-board-muted: #727c8e;
     --viz-board-grid: #2a2f3a;
     --viz-board-track: #22304a;
+    /* A third part of a whole (segBar): violet, validated beside mark, accent, muted. */
+    --viz-part-3: light-dark(#b667ff, #af56fd);
+    --viz-board-part-3: #af56fd;
 
     /* --- diff ---------------------------------------------------------------- */
     --add: var(--ok);

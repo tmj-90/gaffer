@@ -734,6 +734,7 @@
     --viz-muted: var(--viz-board-muted);
     --viz-grid: var(--viz-board-grid);
     --viz-track: var(--viz-board-track);
+    --viz-part-3: var(--viz-board-part-3);
   }
   .scoreboard-in {
     max-width: 1440px;
@@ -2348,14 +2349,6 @@
      dark). None is the empty track's colour. Checked with the palette validator on paper,
      paper-2, board and board-2 in both kits (viz/v1/validator-seg.txt): every adjacent
      pair passes CVD and the normal-vision floor, every part clears 3:1. */
-  .seg-wrap,
-  .seg-legend {
-    --viz-seg-3: light-dark(#b667ff, #af56fd);
-  }
-  .scoreboard .seg-wrap,
-  .scoreboard .seg-legend {
-    --viz-seg-3: #af56fd;
-  }
   .seg-1 {
     background: var(--viz-mark, var(--ink));
   }
@@ -2363,7 +2356,7 @@
     background: var(--viz-accent, var(--ink-2));
   }
   .seg-3 {
-    background: var(--viz-seg-3);
+    background: var(--viz-part-3);
   }
   .seg-4 {
     background: var(--viz-muted, var(--rule));

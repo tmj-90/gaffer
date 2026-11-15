@@ -99,10 +99,12 @@ env | grep -E '^(GAFFER_|DISPATCH_|MEMORY_)' | sort > "$D/env"
 # only on an allow does the "agent" read the file. Records "<skill> <hook exit>".
 hook_read() {
   local cmd f rc
-  cmd="$(grep -o 'node [^"]*safety-hook.mjs' .claude/settings.json 2>/dev/null | head -1)"
+  # The command as the settings hold it (the hook path is quoted there), run through a
+  # shell as Claude Code runs a hook command.
+  cmd="$(node -e 'const s=JSON.parse(require("fs").readFileSync(".claude/settings.json","utf8"));const h=((s.hooks||{}).PreToolUse||[]).flatMap((m)=>m.hooks||[]).find((x)=>/safety-hook\.mjs/.test(x.command||""));process.stdout.write(h?h.command:"")' 2>/dev/null)"
   f="$PWD/.claude/skills/$1/SKILL.md"
   if [ -z "$cmd" ]; then echo "$1 nohook" >> "$D/hookreads"; return 0; fi
-  printf '{"tool_name":"Read","tool_input":{"file_path":"%s"}}' "$f" | $cmd >/dev/null 2>>"$D/hook.err"; rc=$?
+  printf '{"tool_name":"Read","tool_input":{"file_path":"%s"}}' "$f" | sh -c "$cmd" >/dev/null 2>>"$D/hook.err"; rc=$?
   echo "$1 $rc" >> "$D/hookreads"
   if [ "$rc" = 0 ]; then head -1 "$f" > "$D/read.$1" 2>/dev/null; fi
   return 0

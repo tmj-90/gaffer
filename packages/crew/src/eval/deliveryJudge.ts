@@ -18,7 +18,11 @@
 // the context primer, so a delivery cannot prompt-inject its own grade.
 // =====================================================================
 
-import { QUARANTINE_ESCAPE_NOTE, neutralizeUntrustedDelimiters } from "../runtime/context/quarantine.js";
+import {
+  QUARANTINE_ESCAPE_NOTE,
+  neutralizeUntrustedDelimiters,
+  quarantine,
+} from "../runtime/context/quarantine.js";
 
 /** The five rubric dimensions the judge scores, each 0–5. */
 export const RUBRIC_DIMENSIONS = [
@@ -95,8 +99,12 @@ function envelope(tag: string, body: string): string {
  * `parseJudgeVerdict` can recover it tolerantly.
  */
 export function renderJudgePrompt(input: JudgeInput): string {
+  // The title and each criterion are ticket text (intake, issue or agent written): each in
+  // its own envelope, like the diff, the evidence and the test output below.
   const acLines = input.acceptanceCriteria.length
-    ? input.acceptanceCriteria.map((ac) => `- (${ac.id}) ${ac.text}`).join("\n")
+    ? input.acceptanceCriteria
+        .map((ac) => `- (${ac.id}) ${quarantine("acceptance-criterion", ac.text)}`)
+        .join("\n")
     : "- (none recorded)";
 
   const dims = RUBRIC_DIMENSIONS.map((d) => `"${d}"`).join(", ");
@@ -109,7 +117,7 @@ export function renderJudgePrompt(input: JudgeInput): string {
     "",
     QUARANTINE_NOTICE,
     "",
-    `Ticket: ${input.ticketTitle}`,
+    `Ticket: ${quarantine("ticket-title", input.ticketTitle, "single")}`,
     "",
     "Acceptance criteria:",
     acLines,

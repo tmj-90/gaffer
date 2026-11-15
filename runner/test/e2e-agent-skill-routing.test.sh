@@ -381,6 +381,7 @@ if [ -z "$K1" ]; then fail "5: no intake agent spawn"; else
     "clarify,record-evidence,user-story,prd,typescript-conventions" \
     "create-branch,run-coverage,add-api-endpoint,review-ticket,black-box-test,python-conventions,mobile-ui"
   prompt_has "$K1" "#$C1" && ok "5: intake prompt targets draft #$C1" || fail "5: intake prompt does not name #$C1"
+  prompt_has "$K1" "$QUARANTINE_NOTICE" && ok "5: intake prompt carries the quarantine notice" || fail "5: intake prompt lacks the quarantine notice"
   grep -q "\"GAFFER_SCOPE_TICKET\": *\"$C1\"" "$K1/mcp.json" 2>/dev/null && ok "5: intake's dispatch MCP scoped to GAFFER_SCOPE_TICKET=$C1" || fail "5: intake's dispatch MCP lacks GAFFER_SCOPE_TICKET=$C1"
   [ "$(st "$C1")" = "draft" ] && ok "5: the draft stays a draft (intake never marks ready)" || fail "5: #$C1 is '$(st "$C1")'"
 fi
@@ -391,6 +392,7 @@ echo "== 6. PRODUCT OWNER: the product role, not the whole library =="
 P1="$(last_call po)"
 if [ -z "$P1" ]; then fail "6: the product-owner agent did not run: $(tail -2 "$GAFFER_DATA/po.log" | tr '\n' '|' | cut -c1-300)"; else
   ok "6: the product-owner agent ran"
+  prompt_has "$P1" "$QUARANTINE_NOTICE" && ok "6: the product-owner prompt carries the quarantine notice" || fail "6: the product-owner prompt lacks the quarantine notice"
   assert_skills "6: product-owner/alpha" "$P1" \
     "product-owner,product-discovery,rice,user-story,prd,copywriting,seo-audit" \
     "create-branch,run-tests,add-api-endpoint,review-ticket,black-box-test,csharp-conventions,terraform-patterns"

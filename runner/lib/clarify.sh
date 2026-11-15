@@ -164,7 +164,9 @@ if [ "${CLARIFY_DRAFTS_WHEN_IDLE:-0}" = "1" ] && [ "${DRAFT_COUNT:-0}" -gt 0 ]; 
       _CLARIFY_CARDS="$(gaffer_prime_context_block "$CREPO" "$(basename "$CREPO")" \
         "$(printf '%s %s' "$CTITLE" "$_CDESC")" 2>/dev/null || true)"
       read -r -d '' CPROMPT <<EOF || true
-You are an INTAKE agent — do NOT implement anything and do NOT write code. Use the
+You are an INTAKE agent — do NOT implement anything and do NOT write code.
+$QUARANTINE_NOTICE
+Use the
 clarify skill on DRAFT ticket #$CNUM: call get_ticket (dispatch) and search_lore
 (memory), read the repo read-only, then find the load-bearing ambiguities (the
 gaps whose answer would change the implementation, scope, or acceptance). For each,

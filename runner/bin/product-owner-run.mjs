@@ -65,7 +65,7 @@ import { primeContextBlock } from "../lib/context-primer.mjs";
 import { mountedNames, recordSkillUsage } from "./record-skill-usage.mjs";
 import { mountRoleSkills, writeAgentSettings } from "../lib/agent-home.mjs";
 import { maxTurnsArgv, roleTurns, Worker } from "../lib/worker.mjs";
-import { QUARANTINE_ESCAPE_NOTE, quarantine } from "../lib/agent-io.mjs";
+import { QUARANTINE_ESCAPE_NOTE, QUARANTINE_NOTICE, quarantine } from "../lib/agent-io.mjs";
 
 // node:sqlite is only reachable via createRequire in an ESM module.
 const require = createRequire(import.meta.url);
@@ -403,6 +403,9 @@ export function buildPrompt({ repoName, repoPath, maxTickets, openWork = null })
     `Use the product-owner skill to propose the next product work for the repo "${repoName}"`,
     `(checked out at ${repoPath} — inspect it there: README, docs, package manifest, brand`,
     `files, and \`git log\`).`,
+    // The standing notice: the open-work block, the file cards and every MCP answer it
+    // reads (tickets, pending decisions, lore) carry outside text in <untrusted-*> tags.
+    QUARANTINE_NOTICE,
     cardContext,
     ...[openWorkBlock(openWork ?? {})].filter(Boolean),
     "",

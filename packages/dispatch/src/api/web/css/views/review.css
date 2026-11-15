@@ -1147,10 +1147,13 @@
   }
   .rv-backing-row {
     display: grid;
-    grid-template-columns: 22px minmax(0, 1fr) auto;
+    grid-template-columns: 7.5rem minmax(0, 1fr) auto;
     gap: 0 8px;
     align-items: baseline;
     padding: 3px 0;
+  }
+  .rv-backing-row > .vmark {
+    align-self: center;
   }
   .rv-backing-fact {
     overflow-wrap: anywhere;

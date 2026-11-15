@@ -626,7 +626,9 @@ export class TicketService {
    * Return a blocked ticket to the queue: to `to` when given, else to draft or
    * refining when that is where a person blocked it from, else to ready (the ready
    * gate applies, so a ticket that no longer passes it is refused with POLICY_DENIED;
-   * `to: "refining"` then parks it for triage). Writes `ticket.unblocked`.
+   * `to: "refining"` then parks it for triage). A delivery held from review, testing
+   * or ready_for_merge comes back as a rework round: its attempt is counted and its
+   * criteria are reset, as a review rejection does. Writes `ticket.unblocked`.
    */
   humanUnblockTicket(
     ref: string,
@@ -663,19 +665,32 @@ export class TicketService {
       }
       const target: TicketStatus =
         to ?? (blockedFrom === "draft" || blockedFrom === "refining" ? blockedFrom : "ready");
+      // A HELD DELIVERY back into the queue is a send-back. The runner holds an approved
+      // (or in-review / in-testing) delivery for a person (holdForHuman: merge gate red,
+      // CI red, ...) with neither of the resets rejectReview gives a send-back. Unblocked
+      // to the queue as it was, the ticket was redelivered with its criteria still
+      // satisfied by the previous delivery's evidence and no attempt counted, so the
+      // retry cap never saw the round. Do what the reject path does: bump attempt_count
+      // and reset every criterion to pending.
+      const reworkRound =
+        blockedFrom === "ready_for_merge" ||
+        blockedFrom === "in_testing" ||
+        blockedFrom === "in_review";
       this.transitions.transition({
         ticketId: ticket.id,
         actor,
         toStatus: target,
         reason: "unblock",
         humanBlock: true,
+        ...(reworkRound ? { patch: { attempt_count: ticket.attempt_count + 1 } } : {}),
       });
+      if (reworkRound) this.resetAcceptanceCriteria(ticket.id, actor);
       const eventId = writeEvent(this.db, {
         entity_type: "ticket",
         entity_id: ticket.id,
         actor,
         event_type: "ticket.unblocked",
-        payload: { to: target },
+        payload: reworkRound ? { to: target, rework_from: blockedFrom } : { to: target },
       });
       return { ticketId: ticket.id, status: target, eventId };
     });

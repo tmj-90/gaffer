@@ -286,12 +286,21 @@ wrote. How each of these is enforced, and its limits, is in
 
 ### What the Review view shows
 
-- **What was asked**: the ticket's description, above everything else.
-- **The verdict strip: the runner's facts, not the agent's words.** Each
+The decision comes first: the ticket header (the title, then its number, status, who
+delivered it and how long it has waited), one row of verdict cells, then the sign-off
+with Approve, Fix these and Send back, all on the first screen of a laptop. On a phone
+those three actions stay in a bar above the tab bar while you read the diff.
+
+- **What was asked**: the ticket's description, a quote in the header, folded after a
+  few lines.
+- **The verdict strip: the runner's facts, not the agent's words.** One row of cells,
+  each a label, a pass, fail or flag mark and one word; open a cell's *Detail* for the
+  rest. Each
   Definition-of-Done gate (passed, failed or skipped, with the command it ran), the
   test count the runner saw in the gate's own output, the independent tester's verdict
-  and the commit it tested, cost and turns so far, the attempt and who sent it back
-  before, the risk level with its reasons, and the reviewed-commit pin. The
+  and the commit it tested, cost and turns so far (beside what an accepted change
+  typically costs here), the attempt and who sent it back before, the risk level with
+  its reasons, and the reviewed-commit pin. The
   acceptance-criteria table shows each criterion's check command and the runner's
   exit code, or **no machine evidence** when only the agent's word backs it. When the
   agent's summary claims a whole-suite count the runner's output contradicts, a flag

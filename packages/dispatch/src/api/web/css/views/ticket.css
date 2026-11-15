@@ -1,59 +1,25 @@
-/* Ticket — one object page. The head says where it stands: a red card when it
-   is out (blocked/failed), a yellow card when it waits on you (review, merge, a
-   capped delivery), a full-time plaque when it is done. Then the one next move
+/* Ticket: one object page. The head is the shared ticket head (as on Review):
+   the title first, the meta under it, the yellow card only when it waits on you
+   (review, a capped or parked delivery, a merge only you can start). Then the one next move
    (or the full-time result), the failing test as a scoreline, the attempts as a
    penalty shootout, the diff, the runner's logs, the boundary, testing and the
    scouting report. The side column holds the cup run, the brief, the criteria,
    the minute-by-minute match report and the record. */
 
 @layer views {
-  /* The head: a referee's card when it is out, the meta line, the headline, the lede. */
-  .card.tk-head {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr);
-    gap: var(--s5);
-    border: 0;
-    background: none;
-    padding: 0;
+  /* The head: the shared ticket head; its stage pips run the full width under it. */
+  .tk-head > .tk-dots {
+    grid-column: 1 / -1;
   }
-  .card.tk-head.has-mark {
-    grid-template-columns: 120px minmax(0, 1fr);
-    align-items: start;
+  .tk-card {
+    display: block;
+    margin-top: 2px;
+    transform: rotate(-8deg);
   }
   .ref-yellow .ref-card-face {
     fill: var(--yellow);
     stroke: var(--ycard-edge);
     stroke-width: 2;
-  }
-  /* Full time: a scoreboard-black plaque with a yellow rule (never yellow on grass). */
-  .ft-plaque {
-    display: grid;
-    justify-items: center;
-    align-content: center;
-    gap: 4px;
-    width: 116px;
-    padding: 12px 8px 14px;
-    margin-top: 6px;
-    background: var(--board);
-    color: var(--board-ink);
-    border-top: 6px solid var(--yellow);
-    border-radius: var(--r);
-    box-shadow: var(--counter-shadow);
-    text-align: center;
-  }
-  .ft-plaque .ft-l {
-    font: 700 var(--t12) / 1 var(--f-cond);
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: var(--yellow);
-  }
-  .ft-plaque .ft-v {
-    font: 800 var(--t34) / 1 var(--f-display);
-    color: var(--board-ink);
-  }
-  .ft-plaque .ft-t {
-    font: 600 var(--t14) / 1 var(--f-cond);
-    color: var(--board-ink-2);
   }
   .ref-card {
     transform: rotate(-6deg);
@@ -72,34 +38,8 @@
   .ref-card-glyph {
     fill: var(--glyph-knock);
   }
-  .tk-head-main {
-    display: grid;
-    gap: 10px;
-    min-width: 0;
-  }
-  .tk-meta {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 8px 16px;
-    font-size: var(--t14);
-  }
   .tk-epic-link {
     color: var(--ink);
-  }
-  .tk-head .detail-title {
-    font: 800 var(--t52) / 1.02 var(--f-display);
-    overflow-wrap: anywhere;
-    text-wrap: balance;
-  }
-  .tk-no {
-    font-family: var(--f-stencil);
-    color: var(--claret-ink);
-  }
-  .tk-lede {
-    max-width: 62ch;
-    font-size: var(--t20);
-    line-height: 1.4;
   }
   .tk-lede .is-red {
     color: var(--red);
@@ -131,17 +71,8 @@
   .tk-side {
     gap: var(--s4);
   }
-  .tk-h2 {
-    display: flex;
-    align-items: baseline;
-    flex-wrap: wrap;
-    gap: 4px 10px;
-    font: 800 var(--t34) / 1 var(--f-display);
-    text-transform: uppercase;
-  }
-  .tk-h3 {
-    font: 800 var(--t20) / 1.1 var(--f-display);
-    text-transform: uppercase;
+  .tk-testing > .ph-l3,
+  .tk-brief > .ph-l4 {
     margin-top: var(--s2);
   }
   .tk-diff {
@@ -208,32 +139,17 @@
     font-size: var(--t12);
   }
 
-  /* The runner's logs: live run (spinner) or a finished one (glyph), and its log. */
-  .tk-run-list li {
-    display: grid;
-    grid-template-columns: 18px minmax(0, 1fr) auto;
-    gap: 6px 12px;
-    align-items: center;
-    padding: 8px 0;
-    border-top: var(--hair);
-  }
-  .tk-run-list li:first-child {
-    border-top: 0;
-  }
-  .tk-run-main {
-    display: grid;
-    gap: 4px;
-    min-width: 0;
-  }
+  /* The runner's logs: one row per run in a table (A-36), its verdict a mark. */
   .tk-run-h {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 10px;
     font-size: var(--t14);
-    overflow-wrap: anywhere;
   }
-  .tk-run .g-done {
-    color: var(--ok);
-  }
-  .tk-run .g-failed {
-    color: var(--red);
+  .tk-run-table td,
+  .tk-run-table th {
+    vertical-align: middle;
   }
   .card.tk-move {
     border-color: var(--claret);
@@ -776,7 +692,7 @@
   }
   .tt-row {
     display: grid;
-    grid-template-columns: 18px minmax(0, 1fr);
+    grid-template-columns: 7.5rem minmax(0, 1fr);
     gap: 2px 10px;
     padding: 6px 0;
     border-top: var(--hair);
@@ -784,12 +700,6 @@
   }
   .tt-row > .tt-who {
     grid-column: 2;
-  }
-  .tt-pass > .glyph {
-    color: var(--ok);
-  }
-  .tt-fail > .glyph {
-    color: var(--red);
   }
 
   @media (max-width: 760px) {
@@ -803,17 +713,6 @@
     }
   }
   @media (max-width: 760px) {
-    .ft-plaque {
-      width: 64px;
-      padding: 8px 4px 10px;
-      border-top-width: 4px;
-    }
-    .ft-plaque .ft-v {
-      font-size: var(--t20);
-    }
-    .tk-h2 {
-      font-size: var(--t26);
-    }
     .tk-add-ac .inline-form {
       grid-template-columns: minmax(0, 1fr);
     }
@@ -834,38 +733,9 @@
     .tk-ft .kpi-row > .kpi:last-child:nth-child(odd) {
       grid-column: 1 / -1;
     }
-    /* Phone: the card (or plaque) sits beside the meta line only; the headline,
-       the lede and the pips run the full width under it. */
-    .card.tk-head.has-mark {
-      grid-template-columns: 64px minmax(0, 1fr);
-      gap: 10px var(--s3);
-    }
-    .card.tk-head.has-mark .tk-head-main {
-      display: contents;
-    }
-    .card.tk-head.has-mark > :first-child {
-      grid-row: 1;
-      grid-column: 1;
-    }
-    .card.tk-head.has-mark .tk-meta {
-      grid-row: 1;
-      grid-column: 2;
-      align-self: center;
-    }
-    .card.tk-head.has-mark .detail-title,
-    .card.tk-head.has-mark .tk-lede,
-    .card.tk-head.has-mark .tk-dots {
-      grid-column: 1 / -1;
-    }
     .ref-card {
       width: 60px;
       height: 75px;
-    }
-    .tk-head .detail-title {
-      font-size: var(--t34);
-    }
-    .tk-lede {
-      font-size: var(--t16);
     }
     .scoreline {
       grid-template-columns: minmax(0, 1fr);

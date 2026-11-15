@@ -4,7 +4,7 @@
 import { readOnly } from "../access.js";
 import { api } from "../api.js";
 import { actorName } from "../club.js";
-import { callout, panelHead, statCell } from "../components.js";
+import { callout, dataTable, panelHead, statCell } from "../components.js";
 import { safeHttpUrl } from "../diff.js";
 import { clear, el } from "../dom.js";
 import {
@@ -21,7 +21,7 @@ import { glyph } from "../icons.js";
 import { formatPayload, humanizeEvent } from "../panels.js";
 import { routeSignal, router } from "../router.js";
 import { runDuration, viewRunDetail, viewRunLog } from "../runs.js";
-import { statusLabel } from "../status.js";
+import { statusLabel, verdictMark } from "../status.js";
 import { guard, toast } from "../toast.js";
 import {
   parseTesterAgent,
@@ -32,11 +32,13 @@ import {
   renderRuntimeAcceptance,
   testerRecordedBy,
 } from "./acceptance.js";
+import { factoryNorms } from "./review-packet.js";
 import {
   evidenceKind,
   noteReviewOpen,
   reviewEvidenceList,
   sinceStatus,
+  whoChip,
 } from "./review-comments.js";
 
 /**
@@ -141,7 +143,7 @@ function regressionCard(t, reg) {
     );
   }
   return el("section", { class: "card panel tk-regressions", "aria-label": "Escaped defects" }, [
-    panelHead("Escaped defects"),
+    panelHead("Escaped defects", null, null, { level: 3 }),
     rows.length ? el("ul", { class: "tk-regression-list" }, rows) : null,
     form,
     el(
@@ -262,8 +264,23 @@ function fullTimeCard(t, { trail, events, acList, doneAt }) {
   const sat = acList.filter((a) => a.status === "satisfied").length;
   const goes = deliveryCount(t, trail);
   const took = claimAt && doneAt ? Date.parse(doneAt) - Date.parse(claimAt) : null;
+  const lead = t.created_at && doneAt ? Date.parse(doneAt) - Date.parse(t.created_at) : null;
+  // F-E4: this ticket's created-to-done time beside the factory's median of the same span
+  // (Health's cycle time over every shipped ticket), so "Claim to merge" has a reference.
+  // The norm is filled when Health answers; the page never waits for it.
+  const norm = el("div", { class: "kpi-sub tk-ft-norm", hidden: "" });
+  factoryNorms().then((n) => {
+    const d = n && n.cycleMedianDays;
+    if (typeof d !== "number") return;
+    norm.textContent = `factory median ${fmtDuration(d * 86_400_000)}`;
+    norm.title = "Health's cycle time: the median created-to-done time of every shipped ticket.";
+    norm.hidden = false;
+  });
   return el("section", { class: "card panel tk-ft", "aria-label": "Full time" }, [
-    panelHead("Full time", doneAt ? fmtTime(doneAt) : null, null, { kit: "ink" }),
+    panelHead("Full time", doneAt ? fmtTime(doneAt) : null, null, {
+      tone: "reference",
+      level: 2,
+    }),
     el("p", { class: "tk-move-t" }, [
       trail.length
         ? `Merged after ${plural(trail.length, "rework")}: it went through the gates ${plural(goes, "time")}.`
@@ -280,6 +297,9 @@ function fullTimeCard(t, { trail, events, acList, doneAt }) {
       took != null && took >= 0
         ? statCell({ label: "Claim to merge", value: fmtDuration(took) })
         : null,
+      lead != null && lead >= 0
+        ? statCell({ label: "Created to done", value: fmtDuration(lead), after: norm })
+        : null,
     ]),
     el("div", { class: "btn-row" }, [
       t.pr_url && safeHttpUrl(t.pr_url)
@@ -291,15 +311,6 @@ function fullTimeCard(t, { trail, events, acList, doneAt }) {
         : null,
       el("a", { class: "btn", href: "#/work?status=done" }, "See it on the board"),
     ]),
-  ]);
-}
-
-/** The full-time plaque in a done ticket's head: scoreboard black, the merge date. */
-function fullTimePlaque(at) {
-  return el("div", { class: "ft-plaque", "aria-hidden": "true" }, [
-    el("span", { class: "ft-l" }, "Full time"),
-    el("b", { class: "ft-v" }, at ? fmtDay(at, { weekday: false }) : "Done"),
-    at ? el("span", { class: "ft-t tabnum" }, clockTime(Date.parse(at))) : null,
   ]);
 }
 
@@ -462,7 +473,7 @@ function ticketMatchReport(events, repos) {
     "Show the raw data",
   );
   return el("section", { class: "card panel tk-report", "aria-label": "Match report" }, [
-    el("div", { class: "panel-head" }, [
+    el("div", { class: "panel-head ph-l3" }, [
       el("h2", { class: "panel-title" }, [
         "Match report",
         el("span", { class: "panel-aux" }, plural(events.length, "event")),
@@ -496,7 +507,7 @@ function ticketRunsPanel(t, events) {
       delivering ? "On the pitch" : "Match footage",
       delivering ? "the live run" : "the runner's log of each delivery",
       null,
-      delivering ? { kit: "ink" } : {},
+      { level: 2 },
     ),
     body,
   );
@@ -536,82 +547,75 @@ function ticketRunsPanel(t, events) {
     if (delivering && !liveRun) {
       // Marked delivering but no live run attached ⇒ likely a hung/orphaned claim.
       body.appendChild(
-        el("div", { class: "delivering-banner is-warn" }, [
-          el("span", { class: "delivering-dot is-warn" }),
-          el(
-            "span",
-            {},
-            "Marked delivering, but no live run is attached — it may be stuck or already ended.",
-          ),
-        ]),
+        callout({
+          tone: "needs",
+          cls: "delivering-banner",
+          body: "Marked delivering, but no live run is attached: it may be stuck or already ended.",
+        }),
       );
     }
     if (!found.length) {
       if (!delivering) panel.remove();
       return;
     }
+    // One row per run, one column per fact (A-36): a real table, not a dot-joined line,
+    // stacked into labelled cards on a phone. The run's verdict is a verdictMark (A-23).
+    const viewLog = (run, on) => () => {
+      if (t.status === "in_review")
+        noteReviewOpen(t.id, sinceStatus(events, "in_review"), "run_log");
+      return on
+        ? viewRunDetail(run.id, `Delivery of #${t.number}`)
+        : viewRunLog(run, `Delivery of #${t.number} · log`);
+    };
+    const rows = found.map(({ run, d }) => {
+      const on = run.status === "running";
+      return {
+        run: el("span", { class: `tk-run-h${on ? " is-live" : ""}` }, [
+          on
+            ? el("span", { class: "run-spinner", "aria-hidden": "true" })
+            : verdictMark(run.status === "failed" ? "fail" : "pass", {
+                word: run.status === "failed" ? "failed" : "finished",
+              }),
+          el("b", {}, on ? `Delivering #${t.number}` : `Delivery of #${t.number}`),
+        ]),
+        started: on ? `since ${clockTime(Date.parse(run.started_at))}` : fmtTime(run.started_at),
+        took: runDuration(run),
+        phase: d.phase || null,
+        // This run's own turns and spend (run_*), not the ticket's totals: two runs of
+        // one ticket read the same cumulative figure.
+        turns: runTurns(d) > 0 ? runTurns(d) : null,
+        cost: runCost(d) > 0 ? money(runCost(d)) : null,
+        outcome: d.outcome
+          ? d.outcome === "blocked"
+            ? "parked as blocked"
+            : `ended ${statusLabel(d.outcome).replace(/_/g, " ").toLowerCase()}`
+          : on
+            ? "running"
+            : run.status,
+        log: el(
+          "button",
+          { class: "btn small run-viewlog", type: "button", onclick: viewLog(run, on) },
+          on ? "View live log →" : "View log",
+        ),
+      };
+    });
     body.appendChild(
-      el(
-        "ul",
-        { class: "clean tk-run-list" },
-        found.map(({ run, d }) => {
-          const on = run.status === "running";
-          const chips = [
-            d.phase ? el("span", { class: "run-detail-chip" }, d.phase) : null,
-            // This run's own turns and spend (run_*), not the ticket's totals: two
-            // runs of one ticket read the same cumulative figure.
-            runTurns(d) > 0
-              ? el("span", { class: "run-detail-chip" }, plural(runTurns(d), "turn"))
-              : null,
-            runCost(d) > 0
-              ? el("span", { class: "run-detail-chip tabnum" }, money(runCost(d)))
-              : null,
-            d.outcome
-              ? el(
-                  "span",
-                  { class: "run-detail-chip" },
-                  d.outcome === "blocked"
-                    ? "parked as blocked"
-                    : `ended ${statusLabel(d.outcome).replace(/_/g, " ").toLowerCase()}`,
-                )
-              : null,
-          ];
-          return el("li", { class: `tk-run${on ? " is-live" : ""}` }, [
-            on
-              ? el("span", { class: "run-spinner", "aria-hidden": "true" })
-              : glyph(run.status === "failed" ? "failed" : "done", 16),
-            el("div", { class: "tk-run-main" }, [
-              el("p", { class: "tk-run-h" }, [
-                el("b", {}, on ? `Delivering #${t.number}` : `Delivery of #${t.number}`),
-                " ",
-                el(
-                  "span",
-                  { class: "dim" },
-                  on
-                    ? `since ${clockTime(Date.parse(run.started_at))} · ${runDuration(run)}`
-                    : `${fmtTime(run.started_at)} · ${runDuration(run)} · ${run.status}`,
-                ),
-              ]),
-              el("div", { class: "run-detail-chips" }, chips),
-            ]),
-            el(
-              "button",
-              {
-                class: "btn small run-viewlog",
-                type: "button",
-                onclick: () => {
-                  if (t.status === "in_review")
-                    noteReviewOpen(t.id, sinceStatus(events, "in_review"), "run_log");
-                  return on
-                    ? viewRunDetail(run.id, `Delivery of #${t.number}`)
-                    : viewRunLog(run, `Delivery of #${t.number} · log`);
-                },
-              },
-              on ? "View live log →" : "View log",
-            ),
-          ]);
-        }),
-      ),
+      dataTable({
+        caption: `Delivery runs of #${t.number}`,
+        stackOnPhone: true,
+        cls: "tk-run-table",
+        columns: [
+          { key: "run", label: "Run" },
+          { key: "started", label: "Started" },
+          { key: "took", label: "Took" },
+          { key: "phase", label: "Phase", missing: "no phase recorded" },
+          { key: "turns", label: "Turns", numeric: true, missing: "no turns recorded" },
+          { key: "cost", label: "Cost", align: "right", missing: "no spend recorded" },
+          { key: "outcome", label: "Outcome" },
+          { key: "log", label: "Log" },
+        ],
+        rows,
+      }),
     );
   })();
   return panel;
@@ -642,7 +646,7 @@ function memoryPrimedPanel(t, evidence, reworkTrail) {
         ? { txt: `needed ${reworks} rework${reworks === 1 ? "" : "s"}`, cls: "warn" }
         : { txt: statusLabel(t.status, t.landing_state).toLowerCase(), cls: "dim" };
 
-  const head = el("div", { class: "panel-head mem-primed-head" }, [
+  const head = el("div", { class: "panel-head ph-l2 mem-primed-head" }, [
     el("h2", { class: "panel-title" }, "The scouting report"),
     el("span", { class: "panel-aux mem-primed-outcome " + outcome.cls }, outcome.txt),
   ]);
@@ -755,7 +759,10 @@ function renderTestingCard(t, evidence, extra = {}) {
           const prov = parseTesterProvenance(e.payload_json);
           const verdict = parseTesterVerdict(e.payload_json);
           return el("li", { class: `tt-row tt-${verdict}` }, [
-            glyph(verdict === "pass" ? "done" : "failed", 16, verdict === "pass" ? "Pass" : "Fail"),
+            // A tester verdict is a verdictMark, never a ticket lifecycle glyph (A-23).
+            verdictMark(verdict === "pass" ? "pass" : "fail", {
+              word: verdict === "pass" ? "Pass" : "Fail",
+            }),
             el("div", {}, [
               e.summary,
               // BBT-001 provenance badge: who produced this verdict (derived from the
@@ -770,7 +777,10 @@ function renderTestingCard(t, evidence, extra = {}) {
                   )
                 : null,
             ]),
-            el("div", { class: "ac-meta tt-who" }, `${e.created_by} · ${fmtTime(e.created_at)}`),
+            el("div", { class: "ac-meta tt-who" }, [
+              whoChip(e.created_by),
+              ` · ${fmtTime(e.created_at)}`,
+            ]),
           ]);
         }),
       )
@@ -817,13 +827,9 @@ function renderTestingCard(t, evidence, extra = {}) {
               ? ` (${tests} bound test${tests === 1 ? "" : "s"} passed)`
               : " (file-level evidence only)";
           return el("li", { class: files.length ? "tt-row tt-pass" : "tt-row" }, [
-            glyph(
-              files.length ? "done" : "blocked",
-              16,
-              files.length
-                ? "Passed on the landed revision"
-                : "No tester test ran on the landed revision",
-            ),
+            verdictMark(files.length ? "pass" : "skip", {
+              word: files.length ? "replayed" : "not replayed",
+            }),
             el("div", {}, [
               files.length ? "Passed on the landed revision " : "Landed ",
               el("code", { class: "mono" }, sha.slice(0, 12)),
@@ -845,7 +851,7 @@ function renderTestingCard(t, evidence, extra = {}) {
       );
 
   return el("section", { class: "card panel tk-testing", "aria-label": "Independent testing" }, [
-    panelHead("Independent testing", testable ? "black-box tester on" : "off", null, {}),
+    panelHead("Independent testing", testable ? "black-box tester on" : "off", null, { level: 2 }),
     el("div", { class: "setting-row tk-testable" }, [
       el("div", { class: "setting-meta" }, [
         el("div", { class: "setting-label" }, [
@@ -874,15 +880,15 @@ function renderTestingCard(t, evidence, extra = {}) {
     epicAcc
       ? el("p", { class: "tk-epic-acceptance dim" }, `Epic ${epicAcc.epic}: ${epicAcc.label}`)
       : null,
-    el("h3", { class: "tk-h3" }, "Test contract"),
+    panelHead("Test contract", null, null, { level: 3 }),
     contractRows,
-    el("h3", { class: "tk-h3" }, "Acceptance profile"),
+    panelHead("Acceptance profile", null, null, { level: 3 }),
     renderAcceptanceProfile(t, closed),
-    el("h3", { class: "tk-h3" }, "Runtime acceptance"),
+    panelHead("Runtime acceptance", null, null, { level: 3 }),
     renderRuntimeAcceptance(evidence),
-    el("h3", { class: "tk-h3" }, "Tester results"),
+    panelHead("Tester results", null, null, { level: 3 }),
     evidenceList,
-    el("h3", { class: "tk-h3" }, "On the landed revision"),
+    panelHead("On the landed revision", null, null, { level: 3 }),
     replayList,
   ]);
 }
@@ -893,7 +899,6 @@ export {
   shippedFiles,
   deliveryCount,
   fullTimeCard,
-  fullTimePlaque,
   ticketMatchReport,
   ticketRunsPanel,
   memoryPrimedPanel,

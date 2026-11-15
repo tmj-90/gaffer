@@ -286,10 +286,10 @@ describe("web: gate integrity", () => {
     await boot();
     const flag = document.querySelector(".dod-item.dod-i-flag");
     expect(flag).not.toBeNull();
-    expect(flag!.querySelector(".dod-mark.dod-flag")?.textContent).toBe("!");
-    expect(flag!.querySelector(".dod-word")?.textContent).toBe("flagged");
+    // A verdictMark (glyph and word), never the failed mark nor a text character.
+    expect(flag!.querySelector(".vmark.vm-flag .vm-word")?.textContent).toBe("flagged");
     expect(flag!.querySelector(".dod-note")?.textContent).toMatch(/deleted 1 test file/);
-    expect(document.querySelector(".dod-mark.dod-fail")).toBeNull();
+    expect(document.querySelector(".review-dod .vmark.vm-fail")).toBeNull();
     expect(document.querySelector(".dod-i-pass .dod-src")?.textContent).toMatch(
       /^base: script "test"/,
     );

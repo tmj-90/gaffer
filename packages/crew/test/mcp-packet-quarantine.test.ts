@@ -18,14 +18,26 @@ describe("crew get_context_packet envelopes outside text", () => {
     const p = {
       factory: { name: "f", mode: "solo" },
       stacks: ["node"],
-      ticket: { id: "t1", number: 7, title: EVIL, description: EVIL, status: "ready", policyPack: "p", riskLevel: "low", branchName: null },
+      ticket: {
+        id: "t1",
+        number: 7,
+        title: EVIL,
+        description: EVIL,
+        status: "ready",
+        policyPack: "p",
+        riskLevel: "low",
+        branchName: null,
+      },
       acceptanceCriteria: [{ id: "ac1", text: EVIL, status: "pending" }],
       repositories: [],
       workScope: {},
       verification: { testCommands: [], lintCommands: [], coverageCommands: [] },
       relevantLore: [lore],
       scopedLore: [{ ...lore, reason: "r", priority: 0 }],
-      productContext: { intent: [{ id: "i1", title: EVIL, summary: EVIL, kind: "decision", reason: "r" }], guidance: ["g"] },
+      productContext: {
+        intent: [{ id: "i1", title: EVIL, summary: EVIL, kind: "decision", reason: "r" }],
+        guidance: ["g"],
+      },
       skills: [],
       forbiddenActions: [],
       constraints: ["c"],
@@ -35,9 +47,15 @@ describe("crew get_context_packet envelopes outside text", () => {
     } as unknown as ContextPacket;
     const q = quarantinePacket(p);
     expect(q.ticket.title).toBe(`<untrusted-ticket-title>${esc(EVIL)}</untrusted-ticket-title>`);
-    expect(q.ticket.description).toBe(`<untrusted-ticket-description>${esc(EVIL)}</untrusted-ticket-description>`);
-    expect(q.acceptanceCriteria[0]!.text).toBe(`<untrusted-acceptance-criterion>${esc(EVIL)}</untrusted-acceptance-criterion>`);
-    expect(q.evidenceExpectations[0]).toMatch(/^<untrusted-evidence-expectation>[^<]*<\/untrusted-evidence-expectation>$/);
+    expect(q.ticket.description).toBe(
+      `<untrusted-ticket-description>${esc(EVIL)}</untrusted-ticket-description>`,
+    );
+    expect(q.acceptanceCriteria[0]!.text).toBe(
+      `<untrusted-acceptance-criterion>${esc(EVIL)}</untrusted-acceptance-criterion>`,
+    );
+    expect(q.evidenceExpectations[0]).toMatch(
+      /^<untrusted-evidence-expectation>[^<]*<\/untrusted-evidence-expectation>$/,
+    );
     for (const r of [q.relevantLore[0]!, q.scopedLore[0]!, q.productContext.intent[0]!]) {
       expect(r.title).toBe(`<untrusted-lore>${esc(EVIL)}</untrusted-lore>`);
       expect(r.summary).toBe(`<untrusted-lore>${esc(EVIL)}</untrusted-lore>`);

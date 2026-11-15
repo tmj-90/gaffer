@@ -29,7 +29,9 @@ describe("untrusted escaper (shared vectors)", () => {
     expect(escapeUntrusted(v.input)).toBe(v.escaped);
     expect(escapeUntrusted(v.escaped)).toBe(v.escaped);
     const w = quarantine("ticket-title", v.input);
-    expect(w.slice("<untrusted-ticket-title>".length, -"</untrusted-ticket-title>".length)).not.toContain("<");
+    expect(
+      w.slice("<untrusted-ticket-title>".length, -"</untrusted-ticket-title>".length),
+    ).not.toContain("<");
     expect(count(w, "</untrusted-ticket-title>")).toBe(1);
   });
 

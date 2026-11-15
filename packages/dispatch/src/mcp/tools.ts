@@ -126,9 +126,14 @@ function quarantineReviewFeedback<T extends { reason: string }>(fb: T | null): T
  * harness_ready, the profile name and the needs are closed values; profile_spec is set
  * by a person and is left as written.
  */
-function quarantineTestContract<T extends { changed_surfaces: string[]; runtime_deps: string[]; env_vars: string[]; run_command: string }>(
-  c: T | null,
-): T | null {
+function quarantineTestContract<
+  T extends {
+    changed_surfaces: string[];
+    runtime_deps: string[];
+    env_vars: string[];
+    run_command: string;
+  },
+>(c: T | null): T | null {
   if (c === null) return null;
   return {
     ...c,
@@ -361,7 +366,9 @@ function specResult(spec: Spec): Record<string, unknown> {
     clauses: parseSpecClauses(spec.clauses_json).map((c) => ({
       ...c,
       text: quarantine("spec-clause", c.text),
-      ...(c.rationale !== undefined ? { rationale: quarantine("spec-rationale", c.rationale) } : {}),
+      ...(c.rationale !== undefined
+        ? { rationale: quarantine("spec-rationale", c.rationale) }
+        : {}),
     })),
     target_repo: spec.target_repo,
     scope_node_id: spec.scope_node_id,

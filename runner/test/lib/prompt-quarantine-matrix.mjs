@@ -61,7 +61,13 @@ function check(promptName, prompt, rows) {
     ["contract runtime_deps", "dep", "test-contract"],
     ["contract env_vars", "env", "test-contract"],
     ["contract run_command", "run_command", "test-contract"],
-    ["contract profile (its own line, and in the contract)", "profile", "acceptance-profile", 1, ["test-contract"]],
+    [
+      "contract profile (its own line, and in the contract)",
+      "profile",
+      "acceptance-profile",
+      1,
+      ["test-contract"],
+    ],
     ["declared need the runner does not know", "need", "declared-need"],
   ]);
   if (/<<<REQUIREMENTS|^REQUIREMENTS>>>$/m.test(prompt.replace(/MARK_[\s\S]*?PASS"\}/g, ""))) {
@@ -77,7 +83,14 @@ function check(promptName, prompt, rows) {
     brief: hostile("brief", "app-brief"),
     repo: hostile("repo", "target-repo"),
     history: [{ role: "user", text: hostile("history", "conversation-history") }],
-    spec: [{ clause_id: "c1", kind: "requirement", text: hostile("clause", "spec"), rationale: hostile("rationale", "spec") }],
+    spec: [
+      {
+        clause_id: "c1",
+        kind: "requirement",
+        text: hostile("clause", "spec"),
+        rationale: hostile("rationale", "spec"),
+      },
+    ],
   });
   check("decompose", prompt, [
     ["brief", "brief", "app-brief"],
@@ -91,7 +104,11 @@ function check(promptName, prompt, rows) {
   ]);
   check(
     "decompose revision",
-    d.buildRevisionPrompt({ brief: hostile("rbrief", "app-brief") }, hostile("cplan", "current-plan"), hostile("critique", "critique")),
+    d.buildRevisionPrompt(
+      { brief: hostile("rbrief", "app-brief") },
+      hostile("cplan", "current-plan"),
+      hostile("critique", "critique"),
+    ),
     [
       ["current plan", "cplan", "current-plan"],
       ["critique", "critique", "critique"],
@@ -122,7 +139,10 @@ function check(promptName, prompt, rows) {
     repoName: "app",
     repoPath: "/nonexistent/app",
     maxTickets: 3,
-    openWork: { items: [{ number: 4, status: "ready", title: hostile("openwork", "open-work") }], more: 0 },
+    openWork: {
+      items: [{ number: 4, status: "ready", title: hostile("openwork", "open-work") }],
+      more: 0,
+    },
   });
   check("product-owner", prompt, [["open work titles", "openwork", "open-work"]]);
 }
@@ -135,7 +155,13 @@ function check(promptName, prompt, rows) {
     readme: hostile("readme", "readme"),
     tree: hostile("tree", "tree"),
     modulesInfo: { kind: "maven-multimodule", modules: [hostile("module", "modules")] },
-    subManifests: [{ module: hostile("smpath", "submanifest-path"), file: "pom.xml", content: hostile("smbody", "submanifest") }],
+    subManifests: [
+      {
+        module: hostile("smpath", "submanifest-path"),
+        file: "pom.xml",
+        content: hostile("smbody", "submanifest"),
+      },
+    ],
     adrTitles: [hostile("adr", "adr-titles")],
     recentCommits: [{ sha: "abc1234", subject: hostile("commit", "recent-commits") }],
     deprecationMarkers: [{ file: "a.js", line: 1, text: hostile("marker", "deprecation-markers") }],
@@ -155,16 +181,28 @@ function check(promptName, prompt, rows) {
     ["paths not read", "skipped", "skipped-paths"],
   ]);
   const st = { imports: [hostile("imports", "imports")], symbols: [hostile("symbols", "symbols")] };
-  check("onboard card", ob.buildCardPrompt(hostile("path", "file-path"), "js", st, hostile("snippet", "snippet")), [
-    ["file path", "path", "file-path"],
-    ["imports", "imports", "imports"],
-    ["symbols", "symbols", "symbols"],
-    ["snippet", "snippet", "snippet"],
-  ]);
+  check(
+    "onboard card",
+    ob.buildCardPrompt(hostile("path", "file-path"), "js", st, hostile("snippet", "snippet")),
+    [
+      ["file path", "path", "file-path"],
+      ["imports", "imports", "imports"],
+      ["symbols", "symbols", "symbols"],
+      ["snippet", "snippet", "snippet"],
+    ],
+  );
   check(
     "onboard card batch",
     ob.buildCardBatchPrompt([
-      { rel: hostile("bpath", "file-path-0"), fileType: "js", structure: { imports: [hostile("bimports", "imports-0")], symbols: [hostile("bsymbols", "symbols-0")] }, snippet: hostile("bsnippet", "snippet-0") },
+      {
+        rel: hostile("bpath", "file-path-0"),
+        fileType: "js",
+        structure: {
+          imports: [hostile("bimports", "imports-0")],
+          symbols: [hostile("bsymbols", "symbols-0")],
+        },
+        snippet: hostile("bsnippet", "snippet-0"),
+      },
     ]),
     [
       ["file path", "bpath", "file-path-0"],
@@ -175,11 +213,17 @@ function check(promptName, prompt, rows) {
   );
   check(
     "onboard card review",
-    ob.buildCardReviewPrompt(hostile("rpath", "file-path"), "js", { imports: [], symbols: [] }, hostile("rsnippet", "snippet"), {
-      tldr: hostile("tldr", "card-draft"),
-      rolePrimary: "x",
-      roleTags: [],
-    }),
+    ob.buildCardReviewPrompt(
+      hostile("rpath", "file-path"),
+      "js",
+      { imports: [], symbols: [] },
+      hostile("rsnippet", "snippet"),
+      {
+        tldr: hostile("tldr", "card-draft"),
+        rolePrimary: "x",
+        roleTags: [],
+      },
+    ),
     [
       ["file path", "rpath", "file-path"],
       ["snippet", "rsnippet", "snippet"],

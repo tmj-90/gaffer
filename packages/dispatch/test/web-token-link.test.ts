@@ -17,7 +17,10 @@ const KEY = "wg_api_token";
 let authHeaders: string[] = [];
 
 function json(obj: unknown, status = 200): Response {
-  return new Response(JSON.stringify(obj), { status, headers: { "content-type": "application/json" } });
+  return new Response(JSON.stringify(obj), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
 }
 const tick = () => new Promise((r) => setTimeout(r, 0));
 

@@ -85,7 +85,7 @@ for (const [label, q] of [
 // The shell door: gaffer_quarantine pipes through json-tool.mjs.
 for (const v of vectors) {
   for (const mode of ["multi", "single"]) {
-    let outText = "";
+    let outText;
     try {
       outText = execFileSync(
         "bash",
@@ -103,11 +103,19 @@ for (const v of vectors) {
     assert(`gaffer_quarantine ${mode} "${v.name}" matches the vector`, outText === want);
   }
 }
-const sh = execFileSync("bash", ["-c", `. "${LIB}/quarantine.sh"; printf '%s' "$QUARANTINE_NOTICE"`], {
-  encoding: "utf8",
-});
-assert("the shell QUARANTINE_NOTICE says what &lt; means", /&lt; inside these tags is a literal </.test(sh));
-if (mod) assert("the shell notice and the module notice are the same text", sh === mod.QUARANTINE_NOTICE);
+const sh = execFileSync(
+  "bash",
+  ["-c", `. "${LIB}/quarantine.sh"; printf '%s' "$QUARANTINE_NOTICE"`],
+  {
+    encoding: "utf8",
+  },
+);
+assert(
+  "the shell QUARANTINE_NOTICE says what &lt; means",
+  /&lt; inside these tags is a literal </.test(sh),
+);
+if (mod)
+  assert("the shell notice and the module notice are the same text", sh === mod.QUARANTINE_NOTICE);
 
 if (failures.length) {
   console.error(`FAIL untrusted-escape: ${failures.length} failed, ${passed} passed`);

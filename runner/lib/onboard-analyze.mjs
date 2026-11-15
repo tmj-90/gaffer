@@ -731,7 +731,9 @@ export function buildAnalysisPrompt(material) {
   if (scan?.testCommand) facts.push(`test=${scan.testCommand}`);
   // The branch, remote and build/test commands are read from the repo: quarantined.
   if (facts.length > 0)
-    lines.push(`Scan facts: ${sharedQuarantine("scan-facts", facts.join("  "), { singleLine: true })}`);
+    lines.push(
+      `Scan facts: ${sharedQuarantine("scan-facts", facts.join("  "), { singleLine: true })}`,
+    );
   lines.push("");
 
   if (readme) lines.push("README:", quarantine("readme", readme), "");

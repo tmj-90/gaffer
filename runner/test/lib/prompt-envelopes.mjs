@@ -41,8 +41,10 @@ export function checkEnvelope(prompt, id, tag, n = 1, alsoIn = []) {
   const problems = [];
   const open = `<untrusted-${tag}>`;
   const close = `</untrusted-${tag}>`;
-  if (count(prompt, open) !== n) problems.push(`${open} appears ${count(prompt, open)} times, want ${n}`);
-  if (count(prompt, close) !== n) problems.push(`${close} appears ${count(prompt, close)} times, want ${n}`);
+  if (count(prompt, open) !== n)
+    problems.push(`${open} appears ${count(prompt, open)} times, want ${n}`);
+  if (count(prompt, close) !== n)
+    problems.push(`${close} appears ${count(prompt, close)} times, want ${n}`);
   const sp = spans(prompt, tag);
   for (const [a, b] of sp) {
     if (prompt.slice(a, b).includes("<")) problems.push(`a raw < inside ${open}`);

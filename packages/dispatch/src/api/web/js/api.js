@@ -65,7 +65,11 @@ function adoptTokenFromUrl() {
 function askToSwitchToken(linkToken) {
   document.getElementById("token-switch")?.remove();
   const close = () => box.remove();
-  const keep = el("button", { class: "btn primary", type: "button", onclick: close }, "Keep current");
+  const keep = el(
+    "button",
+    { class: "btn primary", type: "button", onclick: close },
+    "Keep current",
+  );
   const swap = el(
     "button",
     {
@@ -92,7 +96,11 @@ function askToSwitchToken(linkToken) {
       },
     },
     [
-      el("span", { class: "toast-msg", id: "token-switch-msg" }, "This link carries a different sign-in. Switch to it?"),
+      el(
+        "span",
+        { class: "toast-msg", id: "token-switch-msg" },
+        "This link carries a different sign-in. Switch to it?",
+      ),
       el("span", { class: "btn-row" }, [keep, swap]),
     ],
   );

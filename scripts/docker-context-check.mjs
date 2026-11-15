@@ -189,7 +189,11 @@ export function checkContext(root, { ignoreText } = {}) {
 }
 
 /** The Dockerfiles the pin gate reads (relative to the context root). */
-export const DOCKERFILES = ["Dockerfile", "runner/sandbox/Dockerfile", "runner/sandbox/egress-proxy/Dockerfile"];
+export const DOCKERFILES = [
+  "Dockerfile",
+  "runner/sandbox/Dockerfile",
+  "runner/sandbox/egress-proxy/Dockerfile",
+];
 
 const EXACT_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 
@@ -202,7 +206,9 @@ export function unpinnedLines(text) {
   const out = [];
   const stages = new Set();
   const args = new Map();
-  const lines = String(text).replace(/\\\r?\n/g, " ").split(/\r?\n/);
+  const lines = String(text)
+    .replace(/\\\r?\n/g, " ")
+    .split(/\r?\n/);
   lines.forEach((raw, i) => {
     const line = raw.trim();
     const arg = /^ARG\s+([A-Za-z_][A-Za-z0-9_]*)(?:=(\S*))?/i.exec(line);
@@ -211,19 +217,30 @@ export function unpinnedLines(text) {
     if (from) {
       const image = from[1];
       if (from[2]) stages.add(from[2].toLowerCase());
-      if (image !== "scratch" && !stages.has(image.toLowerCase()) && !/@sha256:[0-9a-f]{64}$/.test(image))
+      if (
+        image !== "scratch" &&
+        !stages.has(image.toLowerCase()) &&
+        !/@sha256:[0-9a-f]{64}$/.test(image)
+      )
         out.push({ line: i + 1, text: line, why: "FROM without an image digest (@sha256:...)" });
     }
     const npm = /\bnpm\s+(?:install|i)\s+(?:-g|--global)\b(.*)$/.exec(line);
     if (npm) {
-      const pkgs = npm[1].split(/\s+|&&|;/).map((t) => t.replace(/^["']|["']$/g, "")).filter((t) => t && !t.startsWith("-"));
+      const pkgs = npm[1]
+        .split(/\s+|&&|;/)
+        .map((t) => t.replace(/^["']|["']$/g, ""))
+        .filter((t) => t && !t.startsWith("-"));
       for (const pkg of pkgs) {
         const at = pkg.lastIndexOf("@");
         let version = at > 0 ? pkg.slice(at + 1) : "";
         const ref = /^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$/.exec(version);
         if (ref) version = args.get(ref[1]) ?? "";
         if (!EXACT_VERSION.test(version))
-          out.push({ line: i + 1, text: line, why: `npm install -g ${pkg} without an exact version` });
+          out.push({
+            line: i + 1,
+            text: line,
+            why: `npm install -g ${pkg} without an exact version`,
+          });
       }
     }
   });
@@ -255,7 +272,8 @@ function main(argv) {
   for (const m of missing)
     process.stderr.write(`MISSING from the build context (the build needs it): ${m}\n`);
   const unpinned = checkPins(root);
-  for (const u of unpinned) process.stderr.write(`UNPINNED in ${u.file}:${u.line}: ${u.why} (${u.text})\n`);
+  for (const u of unpinned)
+    process.stderr.write(`UNPINNED in ${u.file}:${u.line}: ${u.why} (${u.text})\n`);
   if (violations.length || missing.length || unpinned.length) process.exit(1);
   process.stderr.write(
     `docker-context-check: OK: ${context.length} files in the context, none forbidden, every build input present, every Dockerfile pinned\n`,

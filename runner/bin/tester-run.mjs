@@ -1495,9 +1495,7 @@ export function buildTesterPrompt({
   // mode, the worktree path, the registry repo name and the runner's own skill names are
   // the runner's, not outside text.
   const acs = context.acceptanceCriteria
-    .map(
-      (a, i) => `  ${i + 1}. [ac_id ${a.id}] ${quarantine("acceptance-criterion", a.text)}`,
-    )
+    .map((a, i) => `  ${i + 1}. [ac_id ${a.id}] ${quarantine("acceptance-criterion", a.text)}`)
     .join("\n");
   const contract = quarantine(
     "test-contract",

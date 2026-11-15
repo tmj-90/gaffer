@@ -229,7 +229,9 @@ describe("deliveryJudgeCli", () => {
     });
     const { stdout, exitCode } = runJudgeCli(["--mode", "prompt"], input);
     expect(exitCode).toBe(0);
-    expect(stdout).toContain("(AC1) <untrusted-acceptance-criterion>do x</untrusted-acceptance-criterion>");
+    expect(stdout).toContain(
+      "(AC1) <untrusted-acceptance-criterion>do x</untrusted-acceptance-criterion>",
+    );
     expect(stdout).toContain("<untrusted-delivery-diff>");
   });
 

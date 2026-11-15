@@ -107,7 +107,11 @@ test("every repo Dockerfile is pinned (base image by digest, the CLI at an exact
   assert.deepEqual(ctx.checkPins(ROOT), []);
   for (const f of ["Dockerfile", "runner/sandbox/Dockerfile"]) {
     const text = readFileSync(join(ROOT, f), "utf8");
-    assert.match(text, /^ARG CLAUDE_CODE_VERSION=\d+\.\d+\.\d+$/m, `${f} pins the CLI through an ARG`);
+    assert.match(
+      text,
+      /^ARG CLAUDE_CODE_VERSION=\d+\.\d+\.\d+$/m,
+      `${f} pins the CLI through an ARG`,
+    );
     assert.match(text, /npm install -g "@anthropic-ai\/claude-code@\$\{CLAUDE_CODE_VERSION\}"/, f);
   }
 });

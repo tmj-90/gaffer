@@ -63,7 +63,11 @@ describe("crew quarantine (shared vectors)", () => {
     }
     const brief = buildBrief({ id: "f", name: "n", summary: evil } as never);
     // The framing line names the tag; the envelope is the last line.
-    const inner = between(brief.split("\n").pop() ?? "", "<untrusted-feature>", "</untrusted-feature>");
+    const inner = between(
+      brief.split("\n").pop() ?? "",
+      "<untrusted-feature>",
+      "</untrusted-feature>",
+    );
     expect(inner).toHaveLength(1);
     expect(inner[0]).not.toContain("<");
   });

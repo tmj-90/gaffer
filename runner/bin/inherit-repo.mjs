@@ -326,7 +326,8 @@ export function buildPrompt({ title, description, candidates }) {
   // The title, the description and each repo's purpose are ticket / agent text: each in
   // its own envelope. The repo names are the registry's (the answer is checked against them).
   const lines = candidates.map(
-    (c) => `- ${c.repo}: ${quarantine("repo-purpose", c.purpose || "(no description)", { singleLine: true })}`,
+    (c) =>
+      `- ${c.repo}: ${quarantine("repo-purpose", c.purpose || "(no description)", { singleLine: true })}`,
   );
   return [
     "You are wiring a feature ticket in a multi-app epic to the ONE repository it belongs in.",

@@ -106,7 +106,7 @@ export default async function s2(t, L) {
   );
   await L.shot(p, "s2-wont-do-area");
   await area
-    .locator(`li:has(.closed-num:text-is("#${draft.number}")) button:has-text("Reopen")`)
+    .locator(`li:has(.closed-num .tref:text-is("#${draft.number}")) button:has-text("Reopen")`)
     .click();
   const reopened = await L.waitStatus(draft.id, ["refining"], 10000, 400);
   const tst = await L.waitToast(p, /Reopened to refining/, 5000);

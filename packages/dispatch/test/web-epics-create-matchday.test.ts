@@ -46,7 +46,7 @@ const DEPS: Record<string, { depends_on_ticket_id: string; number: number; satis
     "t-4": [{ depends_on_ticket_id: "t-2", number: 2, satisfied: false }],
   };
 
-function stubFetch(): void {
+function stubFetch(nodes: unknown[] = [EPIC]): void {
   vi.stubGlobal(
     "fetch",
     vi.fn(
@@ -69,7 +69,7 @@ function stubFetch(): void {
             events: [],
           });
         }
-        if (url.includes("/scope/nodes")) return json({ nodes: [EPIC] });
+        if (url.includes("/scope/nodes")) return json({ nodes });
         if (url.includes("/tickets")) return json({ tickets: TICKETS });
         if (url.includes("/repositories")) return json({ repositories: [] });
         if (url.includes("/plan-sessions")) return json({ session: null });
@@ -129,6 +129,25 @@ describe("web: Match Day season and Plan-a-build page", () => {
     const next = document.querySelector(".epic-next")?.textContent || "";
     expect(next).toContain("#5 Remind the shopper");
     expect(next).not.toContain("#4");
+  });
+
+  it("an empty season has one primary: Plan a build in the head, a link in the empty line", async () => {
+    vi.unstubAllGlobals();
+    stubFetch([]);
+    mountShell("#/epics");
+    await import(`${pathToFileURL(APP_JS).href}?t=${Date.now()}`);
+    await settle();
+
+    const empty = document.querySelector("#app .empty-state")!;
+    expect(empty.querySelector(".es-title")?.textContent).toBe("No campaigns on the fixture list.");
+    // One primary button per view (A-43): the view head's Plan a build.
+    const primaries = [...document.querySelectorAll("#app .btn.primary")];
+    expect(primaries.map((b) => b.textContent)).toEqual(["Plan a build"]);
+    expect(empty.querySelector(".btn.primary")).toBeNull();
+    const plan = [...empty.querySelectorAll("button")].find(
+      (b) => b.textContent === "Plan a build",
+    );
+    expect(plan?.className).toBe("btn-link");
   });
 
   it("hosts Plan a build inline on #/create and hands it back to the sheet on leaving", async () => {

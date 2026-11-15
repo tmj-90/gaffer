@@ -4,7 +4,7 @@
 import { agentTitle, agentWho, roLock } from "../access.js";
 import { api } from "../api.js";
 import { ensureSquad } from "../club.js";
-import { dataTable, emptyState, meter, panelHead, viewHead } from "../components.js";
+import { button, dataTable, emptyState, meter, panelHead, viewHead } from "../components.js";
 import { el, svgEl } from "../dom.js";
 import { plural } from "../format.js";
 import { agentShirt, glyph, icon, kitShirt, ycard } from "../icons.js";
@@ -166,12 +166,8 @@ async function renderEpics(param) {
         "No campaigns on the fixture list.",
         "Describe what to build in plain words: Plan a build proposes the draw (draft tickets, round by round), and the campaign lands here once you confirm it.",
         null,
-        roLock(
-          el("button", { class: "btn primary", type: "button", onclick: () => openPlanBuild() }, [
-            icon("spark"),
-            el("span", {}, "Plan a build"),
-          ]),
-        ),
+        // The view head's Plan a build is the one primary (A-43): here it is a link.
+        roLock(button("Plan a build", { kind: "link", onclick: () => openPlanBuild() })),
       ),
     );
     return wrap;

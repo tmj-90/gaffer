@@ -255,6 +255,47 @@ describe.runIf(existsSync(MEMORY_MCP_BIN))("idle loops against the real memory-m
     expect(second.status).toBe("no_findings");
   });
 
+  // Memory escapes every `<` of the text it serves to an agent (`&lt;`). Crew is not an
+  // agent: it unwraps that text and files it where a person reads it (the epic text) and
+  // de-duplicates against it, so the escape must not leak into what crew stores or compares.
+  it("a < in a feature reaches the epic text and the de-dupe list as <, never &lt;", async () => {
+    const cfg = config();
+    const client = await connect(cfg);
+    await client.addFeature({
+      repo: "demo",
+      name: "Map<K, V> cache",
+      summary: "Use a <dl> list",
+      status: "backlog",
+      area: "src/cache",
+      provenance: "test",
+    });
+    const rows = await client.listBacklogFeatures("demo", "backlog");
+    expect(rows.map((r) => [r.name, r.summary])).toEqual([["Map<K, V> cache", "Use a <dl> list"]]);
+    const existing = await client.listFeatures("demo");
+    expect(existing.map((f) => f.name)).toEqual(["Map<K, V> cache"]);
+    const briefs: string[] = [];
+    const d = deps(cfg, client, {
+      decompose: async (req) => {
+        briefs.push(req.brief);
+        return PLAN;
+      },
+    });
+    const wg = d.dispatch as FakeDispatchClient;
+    const createEpic = wg.createEpic.bind(wg);
+    let epicDescription = "";
+    wg.createEpic = (p) => {
+      epicDescription = p.description ?? "";
+      return createEpic(p);
+    };
+    expect((await runIdleFeatureBacklogLoop(d)).status).toBe("draft_created");
+    expect(epicDescription).toContain("'Map<K, V> cache'");
+    expect(epicDescription).not.toContain("&lt;");
+    // The planner (a model) still reads it escaped, inside one envelope.
+    expect(briefs[0]).toContain(
+      "<untrusted-feature>Map&lt;K, V> cache: Use a &lt;dl> list</untrusted-feature>",
+    );
+  });
+
   it("buildBrief neutralises a delimiter inside the feature text", () => {
     const brief = buildBrief({
       id: "f",

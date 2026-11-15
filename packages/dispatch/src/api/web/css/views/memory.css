@@ -130,7 +130,7 @@
   /* The strip: this repo's numbers on the stadium board (always dark, both
      kits), big numerals, the drafts that wait for you lit in yellow. */
   .view > .kpi-row.mem-stats {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     background: var(--board);
     color: var(--board-ink);
     border: 2px solid var(--board-rule);
@@ -149,10 +149,15 @@
   .view > .kpi-row.mem-stats .kpi-unit {
     font-size: var(--t16);
   }
+  /* The figures are sized statCells ("row"): the part owns their size (A-33). */
   .view > .kpi-row.mem-stats .kpi-val {
-    font-size: var(--t52);
     color: var(--board-ink);
     white-space: nowrap;
+  }
+  .mem-asof {
+    margin-top: calc(-1 * var(--s2));
+    font: 600 var(--t14) / 1.4 var(--f-text);
+    color: var(--ink-2);
   }
   .view > .kpi-row.mem-stats .kpi-val.y {
     color: var(--yellow);

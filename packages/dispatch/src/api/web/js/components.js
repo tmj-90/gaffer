@@ -127,7 +127,7 @@ function splitPct(unit) {
  * null value is a dash with its `reason` (a title and a visible short line), never a
  * zero. "%" is part of the value ("70%", no gap). `series` is either {t, v} points
  * (the sparkline: an even time grid, >= 4 points) or, for older callers, a plain
- * array (the old spark); `seriesFmt` formats its readout. No delta chips: a "▲100%" the data cannot support is not
+ * array (the old spark); `seriesFmt` formats its readout values and `seriesFmtT` its times. No delta chips: a "▲100%" the data cannot support is not
  * shown. `flip` keys a digit flip on first paint/change.
  */
 function statCell({
@@ -145,6 +145,7 @@ function statCell({
   size,
   reason,
   seriesFmt,
+  seriesFmtT,
 }) {
   const missing = value === null || value === undefined;
   const why = reason || "no figure yet";
@@ -156,7 +157,7 @@ function statCell({
     .join(" ");
   const spark =
     Array.isArray(series) && series.length && series[0] && typeof series[0] === "object"
-      ? sparkline(series, { label, fmt: seriesFmt })
+      ? sparkline(series, { label, fmt: seriesFmt, fmtT: seriesFmtT })
       : series && series.length > 1
         ? el("div", { class: "kpi-spark", html: svgSpark(series) })
         : null;
@@ -201,7 +202,8 @@ const DELTA_GLYPH = { up: "▲", down: "▼", flat: "=" };
  *               period: signed, a glyph and the word better/worse, coloured by direction x
  *               goodWhen; hidden when either period's n is under minN (default 10)
  *   series      [{t, v}] for a sparkline (hidden below 4 points); the previous period's
- *               value is its faint baseline
+ *               value is its faint baseline; `fmtT` says how its readout names a time
+ *               (default: the grid's local-date words)
  *   definition  what it counts, behind a disclosure (keyboard reachable)
  *   note        a small line under it (what it leaves out, why it is missing)
  *   format      how a non-rate value reads (default String); deltaFormat for its change
@@ -224,6 +226,7 @@ function measureTile({
   deltaFormat,
   minN = 10,
   cls,
+  fmtT,
 }) {
   const isRate = typeof k === "number" && typeof n === "number";
   const v =
@@ -288,6 +291,7 @@ function measureTile({
     ? sparkline(series, {
         label,
         fmt: show,
+        fmtT,
         baseline: delta && typeof delta.prev === "number" ? delta.prev : undefined,
       })
     : null;

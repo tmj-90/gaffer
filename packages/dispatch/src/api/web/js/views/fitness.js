@@ -117,6 +117,11 @@ async function fitnessRoomPanels(healthRes, opts = {}) {
   const dayT = days.map((d) => Date.parse(`${d.key}T00:00:00Z`));
   const served = (s) => Array.isArray(s) && s.length === N;
   const timed = (s) => (served(s) ? s.map((v, i) => ({ t: dayT[i], v })) : undefined);
+  // The readout names the UTC day, as the chart and its table do (never the local date).
+  const utcDayWords = (t) => {
+    const d = new Date(t);
+    return `${d.getUTCDate()}/${d.getUTCMonth() + 1} (UTC)`;
+  };
   const phone = !!(window.matchMedia && window.matchMedia("(max-width: 760px)").matches);
   const cycleRows = days.map((d, i) => ({
     label: d.lbl,
@@ -143,6 +148,7 @@ async function fitnessRoomPanels(healthRes, opts = {}) {
           ],
           series: timed(flowCycle.series),
           seriesFmt: (v) => fmtDuration(v * DAY),
+          seriesFmtT: utcDayWords,
           flip: "cycle",
           size: "row",
           cls: "fg-cycle",
@@ -155,6 +161,7 @@ async function fitnessRoomPanels(healthRes, opts = {}) {
           sub: [chip("last 7 days"), prev7 == null ? null : ` ${prev7} the 7 days before`],
           series: timed(flowThr.series),
           seriesFmt: (v) => `${v} shipped`,
+          seriesFmtT: utcDayWords,
           flip: "thr",
           size: "row",
           cls: "fg-throughput",

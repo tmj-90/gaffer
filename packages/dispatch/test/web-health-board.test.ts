@@ -352,6 +352,24 @@ describe("web: the rendered Health page tells the quality story first", () => {
     ).toContain("last 90 days");
   });
 
+  it("a sparkline's readout names the UTC week or month, whatever the viewer's time zone", async () => {
+    await loadApp();
+    const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const now = new Date();
+    const monday = new Date(Date.now() - ((now.getUTCDay() + 6) % 7) * DAY);
+    const readout = (label: string) => {
+      const s = document.querySelector<HTMLElement>(`[aria-label="${label}"] .spark`)!;
+      s.dispatchEvent(new Event("focus"));
+      return s.querySelector(".spark-readout")?.textContent;
+    };
+    expect(readout("First-pass acceptance")).toBe(
+      `UTC week of ${monday.getUTCDate()} ${MON[monday.getUTCMonth()]}: 91%`,
+    );
+    expect(readout("Escaped-defect rate")).toBe(
+      `${MON[now.getUTCMonth()]} ${now.getUTCFullYear()}: 0%`,
+    );
+  });
+
   it("two quick window changes: the older, slower read never repaints over the newer choice", async () => {
     await loadApp();
     // From here the 365-day read is slow and the 7-day read answers at once.

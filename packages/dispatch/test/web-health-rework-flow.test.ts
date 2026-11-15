@@ -263,6 +263,13 @@ describe("web: Health — rework a reviewer caused", () => {
     expect((d.match(/M/g) || []).length).toBe(4);
     // Its readout and summary name UTC days.
     expect(document.querySelector(".form-guide .cf-cap")?.textContent).toMatch(/UTC day/);
+    // The sparkline's readout names today's UTC day too (not the local date).
+    const spark = kpi.querySelector<HTMLElement>(".spark")!;
+    spark.dispatchEvent(new Event("focus"));
+    const today = new Date();
+    expect(spark.querySelector(".spark-readout")?.textContent).toBe(
+      `${today.getUTCDate()}/${today.getUTCMonth() + 1} (UTC): 5d 0h`,
+    );
   });
 
   it("nothing shipped: the Cycle time cell is a dash with the reason, never 0.0 days", async () => {

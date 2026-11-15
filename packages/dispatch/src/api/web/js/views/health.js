@@ -45,6 +45,10 @@ function utcMonth(ms) {
 }
 const weekT = (b) => Date.parse(`${b.start}T00:00:00Z`);
 const monthT = (b) => Date.parse(`${b.month}-01T00:00:00Z`);
+/** How a sparkline's readout names a UTC bucket (its local-date default would put a
+ *  Monday 00:00 UTC week, or a UTC month, on the day or month before west of UTC). */
+const WEEK_WORDS = (t) => `UTC week of ${utcDay(t)}`;
+const MONTH_WORDS = (t) => utcMonth(t);
 
 /**
  * The Health banner for a usage-window pause (/api/health `usage_pause`, read from
@@ -175,6 +179,7 @@ function firstPassTile(fp, wd) {
         ? { prev: prev.rate_pct, prevN: prev.done, goodWhen: "up", label: beforeOf(wd) }
         : null,
       series: history(fp.by_week, weekT, (b) => b.rate_pct),
+      fmtT: WEEK_WORDS,
       note: fp.done ? `${notes.join(" ")}${why}`.trim() : "Nothing was accepted in this window.",
       definition:
         "Of the tickets accepted (moved to done) in the window, how many went through with no send-back after review and were never reopened. The strict rate also counts the runner's own retries after a failed gate.",
@@ -203,6 +208,7 @@ function reviewTimeTile(rt, wd) {
         ? { prev: prev.median_ms, prevN: prev.n, goodWhen: "down", label: beforeOf(wd) }
         : null,
       series: history(rt.by_week, weekT, (b) => b.median_ms),
+      fmtT: WEEK_WORDS,
       note: has
         ? `Median per accepted ticket; p75 ${fmtDuration(per.p75_ms)}, p90 ${fmtDuration(per.p90_ms)}.${why}`
         : rt.basis_note || "No accepted ticket has a human review decision in this window.",
@@ -242,6 +248,7 @@ function acceptedCostTile(ac, wd) {
           }
         : null,
       series: history(ac.by_week, weekT, (b) => b.cost_per_accepted_change_usd),
+      fmtT: WEEK_WORDS,
       note: has ? `${notes.join(" ")}${why}`.trim() : "Nothing was accepted in this window.",
       definition:
         "Every attempt's spend on the tickets whose outcome settled in the window (accepted, parked, failed or abandoned), over the changes accepted: failed work is part of the price. Each ticket counts where its outcome last settled; work still in flight is in no period.",
@@ -301,6 +308,7 @@ function escapedTile(esc, wd) {
           }
         : null,
       series: history(months, monthT, (b) => b.rate_pct),
+      fmtT: MONTH_WORDS,
       note: n ? `${notes.join(" ")}${why}`.trim() : "Nothing was accepted in this window.",
       definition:
         `${esc.note || ""} A change accepted recently has had less time for a defect to surface.`.trim(),
@@ -1334,6 +1342,7 @@ async function renderHealth() {
             nLabel: "clean",
             period: "all time",
             series: recallWeeks(recall.by_day),
+            fmtT: WEEK_WORDS,
             note: `Of the deliveries that were served memory, ${recall.reworked || 0} were reworked and ${recall.blocked || 0} blocked${typeof recall.items_adjusted === "number" ? `; ${plural(recall.items_adjusted, "memory item")} adjusted from the outcomes` : ""}.`,
             definition:
               "Of the deliveries Memory served knowledge to, how many went through clean (no rework, not blocked). The memory items behind a reworked or blocked one are marked down.",

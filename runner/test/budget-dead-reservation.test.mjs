@@ -98,8 +98,7 @@ function world(extra = {}) {
             .filter((l) => l.trim())
             .map((l) => JSON.parse(l))
         : [],
-    append: (r) =>
-      writeFileSync(ledger, JSON.stringify(r) + "\n", { flag: "a" }),
+    append: (r) => writeFileSync(ledger, JSON.stringify(r) + "\n", { flag: "a" }),
   };
 }
 const deadPid = () =>
@@ -176,7 +175,9 @@ console.log("== D2/D3/D4: a launcher that may still be alive is never settled ==
   const st = pidStartTime(process.pid);
   w.append(resv("r-live-start", process.pid, st ? { pid_start: st } : {}));
   w.append(resv("r-live-nostart", process.pid));
-  const reused = st ? resv("r-reused", process.pid, { pid_start: String(Number(st) + 12345) }) : null;
+  const reused = st
+    ? resv("r-reused", process.pid, { pid_start: String(Number(st) + 12345) })
+    : null;
   if (reused) w.append(reused);
   const r = reserve(w, "delivery", process.pid);
   check(r.status === 0, "the new launch is admitted", r.stderr);
@@ -239,7 +240,11 @@ console.log("== D7: six reservations at once settle a dead reservation exactly o
       }),
   );
   const codes = await Promise.all(runs);
-  check(codes.every((c) => c === 0), "all six are admitted", codes.join(","));
+  check(
+    codes.every((c) => c === 0),
+    "all six are admitted",
+    codes.join(","),
+  );
   check(
     settleOf(w, "r-dead-race").length === 1,
     "the dead reservation has exactly one settle row",
@@ -257,7 +262,9 @@ console.log("== D8: with measured history of the kind the settle books its P10 =
   reserve(w, "delivery", process.pid);
   const s = settleOf(w, "r-dead-hist");
   check(
-    s.length === 1 && s[0].estimate_basis === "history-p10" && Math.abs(s[0].estimated_cost_usd - 0.44) < 1e-9,
+    s.length === 1 &&
+      s[0].estimate_basis === "history-p10" &&
+      Math.abs(s[0].estimated_cost_usd - 0.44) < 1e-9,
     "the settle books the review history's P10 ($0.44)",
     JSON.stringify(s),
   );

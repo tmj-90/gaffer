@@ -43,4 +43,3 @@ export function killEstimateFromHistory(text, kind, minSamples = KILL_ESTIMATE_M
   const p10 = lo === hi ? costs[lo] : costs[lo] + (costs[hi] - costs[lo]) * (rank - lo);
   return p10 > 0 ? p10 : null;
 }
-

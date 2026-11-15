@@ -271,7 +271,7 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
         log "review of #$RNUM is already running in another lane (pid $_rowner) — not reviewing it twice"
         _review_cleanup; _review_restore_traps; return 0
       elif [ "$_rclaim_rc" != 0 ]; then
-        log "review of #$RNUM: could not take its review claim (held by ${_rowner:-a lane that has not written its pid yet}) — skipping this tick"
+        log "review of #$RNUM: could not take its review claim (held by ${_rowner:-a lane that has not written its pid yet}); skipping this tick"
         _review_cleanup; _review_restore_traps; return 0
       fi
       _RCLAIMED=1

@@ -120,10 +120,15 @@ console.log("== C4: a $0.30 cap holds exactly three $0.10 calls in flight ==");
     host: hostname(),
     ...(st ? { pid_start: st } : {}),
   });
-  const two = ask(world([resv("r-live-1"), resv("r-live-2")], { GAFFER_DAILY_BUDGET_USD: "0.3" }), "0.1");
+  const two = ask(
+    world([resv("r-live-1"), resv("r-live-2")], { GAFFER_DAILY_BUDGET_USD: "0.3" }),
+    "0.1",
+  );
   check(two.status === 0, "a third $0.10 call fits beside two in flight under $0.30", two.stdout);
   const three = ask(
-    world([resv("r-live-1"), resv("r-live-2"), resv("r-live-3")], { GAFFER_DAILY_BUDGET_USD: "0.3" }),
+    world([resv("r-live-1"), resv("r-live-2"), resv("r-live-3")], {
+      GAFFER_DAILY_BUDGET_USD: "0.3",
+    }),
     "0.1",
   );
   check(three.status === 3, "a fourth does not", three.stdout);

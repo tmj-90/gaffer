@@ -988,7 +988,7 @@ gaffer_tick_launch_attempt() {
     # slot, and MAX_TICKS_PER_DAY then undercounts). It reports error, which keeps the
     # slot; only a refusal before any paid attempt is no_work.
     if [ "${_DELIV_ATTEMPT:-1}" -gt 1 ] 2>/dev/null; then
-      log "BUDGET: #$NUM — attempt $_DELIV_ATTEMPT refused after a paid attempt this tick; the tick counts toward the day cap"
+      log "BUDGET: #$NUM: attempt $_DELIV_ATTEMPT refused after a paid attempt this tick; the tick counts toward the day cap"
       result error; exit 0
     fi
     result no_work; exit 0
@@ -1073,7 +1073,7 @@ gaffer_tick_launch_attempt() {
       # park the ticket to `blocked` for a person (reason pause_failed) with its
       # branch kept, like a rework park, and report an error. The WIP checkpoint
       # above committed any uncommitted work, so the branch holds all of it.
-      log "CAP: could not pause #$NUM via dispatch after 3 attempts (${_GAFFER_PAUSE_ERR:-no error text}) — parking it to blocked (pause_failed), branch $WORK_BRANCH kept"
+      log "CAP: could not pause #$NUM via dispatch after 3 attempts (${_GAFFER_PAUSE_ERR:-no error text}); parking it to blocked (pause_failed), branch $WORK_BRANCH kept"
       GAFFER_KEEP_DELIVERY_BRANCH=1
       gaffer_cleanup_worktrees
       gaffer_release_delivery blocked "hit the ${_PAUSE_REASON} cap mid-delivery and the pause could not be recorded (branch $WORK_BRANCH preserved): ${_GAFFER_PAUSE_ERR:-no error text}" pause_failed "$_DELIV_ATTEMPT" "${_MAX_DELIVERY_ATTEMPTS:-}"

@@ -473,10 +473,7 @@ export function paidLaunchAdmission({
       };
     // Other calls are in flight: this one starts only if its own worst case fits beside
     // them, so the ceiling holds for the calls already running.
-    if (
-      reserved > 0 &&
-      toMicro(b.spent) + toMicro(reserved) + toMicro(worst.usd) > toMicro(b.cap)
-    )
+    if (reserved > 0 && toMicro(b.spent) + toMicro(reserved) + toMicro(worst.usd) > toMicro(b.cap))
       return {
         ok: false,
         kind,
@@ -672,7 +669,7 @@ function appendRow(ledgerPath, row) {
 export function settleDeadReservations(ledgerPath, env = process.env, host = hostname()) {
   const spend = ledgerSpend(env);
   if (spend.unknown || !spend.reservations?.length) return [];
-  let text = "";
+  let text;
   try {
     text = readFileSync(ledgerPath, "utf8");
   } catch {

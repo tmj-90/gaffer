@@ -427,7 +427,7 @@ EOF
       log "$_WHO: #$RNUM merged in $_done repositories (${_landed_names}) and marked done"
     fi
   else
-    log "$_WHO: #$RNUM LANDED but NOT marked done: mark-merged failed ($(printf '%s' "$_mm_out" | tail -n 2 | tr '\n' ' ' | cut -c1-300)) — held (still ready_for_merge); the digest step and the branch deletion did not run, and the next merge pass marks it done from the recorded landing (verify: wg ticket landing $RNUM)"
+    log "$_WHO: #$RNUM LANDED but NOT marked done: mark-merged failed ($(printf '%s' "$_mm_out" | tail -n 2 | tr '\n' ' ' | cut -c1-300)); held (still ready_for_merge); the digest step and the branch deletion did not run, and the next merge pass marks it done from the recorded landing (verify: wg ticket landing $RNUM)"
     return 4
   fi
   # POST-MERGE MEMORY WORK — the SAME step the dashboard merge (merge-ticket.mjs)

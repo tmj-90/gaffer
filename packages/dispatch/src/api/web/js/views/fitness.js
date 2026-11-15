@@ -528,10 +528,10 @@ function fitnessTestPanel({
     cost && typeof cost.today_estimated_usd === "number" ? cost.today_estimated_usd : 0;
   const days = Array.isArray(h.daily_spend) ? h.daily_spend : [];
   const overDays = budget ? days.filter((d) => (d.total_cost_usd || 0) > budget).length : null;
-  const rework =
-    h.rework && typeof h.rework.rework_cost_share_pct === "number"
-      ? h.rework.rework_cost_share_pct
-      : null;
+  // The server's share is 0 when nothing was spent: no figure, as in the wage row.
+  const spent = typeof h.total_usd === "number" && h.total_usd > 0;
+  const hasShare = !!h.rework && typeof h.rework.rework_cost_share_pct === "number";
+  const rework = hasShare && spent ? h.rework.rework_cost_share_pct : null;
   const reworkRows = h.rework && Array.isArray(h.rework.by_ticket) ? h.rework.by_ticket : null;
   const reworked = reworkRows ? reworkRows.length : null;
   // Which tickets were sent back (all-time, from the ledger), and whether any shipped:
@@ -541,7 +541,9 @@ function fitnessTestPanel({
   const shippedBack = named.filter((r) => statusOf.get(r.ticket) === "done").length;
   const reworkSub =
     rework == null
-      ? "no rework data"
+      ? hasShare
+        ? "no spend recorded"
+        : "no rework data"
       : [
           named.length
             ? `all-time: ${named
@@ -554,7 +556,7 @@ function fitnessTestPanel({
               ? `${shippedBack} since shipped`
               : "none shipped yet"
             : null,
-          `${rework}% of spend`,
+          `${pct(rework)} of spend`,
         ]
           .filter(Boolean)
           .join(" · ");

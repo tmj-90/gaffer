@@ -114,7 +114,7 @@ MAIN1="$(g rev-parse main)"
 echo "== L2: the next pass marks it done =="
 export GAFFER_DIGEST_DISABLE=1
 poll_land; rc=$?
-[ "$rc" -eq 0 ] && [ "$(status)" = done ] && ok "L2 the next pass heals it (rc 0, done)" || fail "L2 rc=$rc status=$(status): $(tail -3 "$D/land.log")"
+[ "$rc" -eq 0 ] && [ "$(status)" = "done" ] && ok "L2 the next pass heals it (rc 0, done)" || fail "L2 rc=$rc status=$(status): $(tail -3 "$D/land.log")"
 [ "$(g rev-parse main)" = "$MAIN1" ] && ok "L2 main was not merged again" || fail "L2 main moved again"
 branch_kept && fail "L2 the merged branch is still there" || ok "L2 the merged branch is deleted once done"
 
@@ -129,7 +129,7 @@ grep -q "LANDED but NOT marked done" "$D/merge.log" && ok "M1 it says landed but
 
 echo "== M2: the next gaffer merge marks it done =="
 ( cd "$D" && GAFFER_DIGEST_DISABLE=1 bash "$RUNNER_DIR/gaffer" merge 1 ) > "$D/merge2.log" 2>&1; rc=$?
-[ "$(status)" = done ] && ok "M2 the next merge heals it (done, exit $rc)" || fail "M2 rc=$rc status=$(status): $(tail -4 "$D/merge2.log")"
+[ "$(status)" = "done" ] && ok "M2 the next merge heals it (done, exit $rc)" || fail "M2 rc=$rc status=$(status): $(tail -4 "$D/merge2.log")"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "land-mark-merged-failure: ALL $PASS checks passed"; exit 0

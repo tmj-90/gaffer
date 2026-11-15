@@ -117,6 +117,10 @@ const RESERVATION_ID_RE = /^r-[A-Za-z0-9-]{4,64}$/;
 export const SPEND_CAP_HINT =
   "no dollar cap is set: set GAFFER_DAILY_BUDGET_USD (try 5) or GAFFER_BUDGET_USD in your environment or the dashboard's Settings → Budget & caps; GAFFER_ALLOW_UNCAPPED=1 runs without one";
 
+// MONEY IN INTEGER MICRO-DOLLARS: a running float sum of decimal dollars is not exact
+// (ten $0.10 calls sum to 0.9999999999999999), and a "below the cap" test on it admitted
+// one more call at an exact boundary. Every sum and every cap test runs on integers.
+const toMicro = (usd) => Math.round(usd * 1e6);
 const finiteNonNeg = (v) => typeof v === "number" && Number.isFinite(v) && v >= 0;
 const finitePos = (v) => typeof v === "number" && Number.isFinite(v) && v > 0;
 
@@ -224,8 +228,9 @@ export function ledgerSpend(env = process.env, now = new Date()) {
     return { unknown: `the usage ledger ${p} cannot be read (${e?.code ?? e})` };
   }
   const day = now.toISOString().slice(0, 10);
-  let today = 0;
-  let lifetime = 0;
+  // Integer micro-dollars (toMicro); returned as dollars at the end.
+  let todayMicro = 0;
+  let lifetimeMicro = 0;
   // Unknown-cost rows since the last operator reconcile row: those booked today (they
   // hold the DAILY cap) and all of them, whatever the day (they hold the LIFETIME cap: a
   // call whose cost was never established does not become free when the UTC day turns;
@@ -282,9 +287,9 @@ export function ledgerSpend(env = process.env, now = new Date()) {
       r.estimated_cost_usd >= 0
     )
       c = r.estimated_cost_usd;
-    lifetime += c;
+    lifetimeMicro += toMicro(c);
     const isToday = typeof r.ts === "string" && r.ts.slice(0, 10) === day;
-    if (isToday) today += c;
+    if (isToday) todayMicro += toMicro(c);
     // Only a reconcile row that booked a positive figure clears the unknown rows before
     // it: one at $0 (hand-written, or from an older writer) would count them as free.
     // A HELD reconcile row (its own append failed; a later reconcile moved it here) does
@@ -304,10 +309,10 @@ export function ledgerSpend(env = process.env, now = new Date()) {
     }
   }
   const reservations = [...open.values()];
-  const reservedUsd = reservations.reduce((a, r) => a + r.reserved_usd, 0);
+  const reservedUsd = reservations.reduce((a, r) => a + toMicro(r.reserved_usd), 0) / 1e6;
   return {
-    today,
-    lifetime,
+    today: todayMicro / 1e6,
+    lifetime: lifetimeMicro / 1e6,
     // Rows held by a failed append (and claimed, unretired ones) are unknown cost on
     // both caps; `held` says how many of the unknown calls are those.
     unknownToday: unknownToday + held,
@@ -450,15 +455,14 @@ export function paidLaunchAdmission({
     caps.lifetime === null ? null : { cap: caps.lifetime, spent: spend.lifetime, reserved };
   const held =
     reserved > 0 ? ` and $${reserved.toFixed(4)} held by ${nOpen} open reservation(s)` : "";
-  // EPS: a sum of decimal dollars (0.1 + 0.2) is not exact in binary; the fit test
-  // allows for it so a cap that holds exactly N worst cases admits N.
-  const EPS = 1e-9;
+  // Both tests compare integer micro-dollars (toMicro), so a cap that holds exactly N
+  // calls admits N and refuses the N+1th, with no float slack either way.
   for (const [b, label, knob, when] of [
     [daily, "daily", "GAFFER_DAILY_BUDGET_USD", " today"],
     [lifetime, "lifetime", "GAFFER_BUDGET_USD", ""],
   ]) {
     if (!b) continue;
-    if (!(b.spent + reserved < b.cap))
+    if (!(toMicro(b.spent) + toMicro(reserved) < toMicro(b.cap)))
       return {
         ok: false,
         kind,
@@ -469,7 +473,10 @@ export function paidLaunchAdmission({
       };
     // Other calls are in flight: this one starts only if its own worst case fits beside
     // them, so the ceiling holds for the calls already running.
-    if (reserved > 0 && b.spent + reserved + worst.usd > b.cap + EPS)
+    if (
+      reserved > 0 &&
+      toMicro(b.spent) + toMicro(reserved) + toMicro(worst.usd) > toMicro(b.cap)
+    )
       return {
         ok: false,
         kind,

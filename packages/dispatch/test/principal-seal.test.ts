@@ -26,6 +26,7 @@ import type { Actor } from "../src/domain/types.js";
 import { eventHash } from "../src/events/eventChain.js";
 import { fileGateKeyring } from "../src/events/gateSeal.js";
 import { verifyPrincipal } from "../src/events/principalSeal.js";
+import { mcpGateKeyring } from "../src/mcp/server.js";
 import { exportState, importState } from "../src/io/stateExport.js";
 import { assertVerdictPrincipal } from "../src/services/reviewGate/waiver.js";
 import { systemClock } from "../src/util/clock.js";
@@ -237,6 +238,52 @@ describe("a principal row is honoured only with a valid seal", () => {
       ),
     ).toThrow(/not signed by this factory/);
     wg.db.close();
+  });
+});
+
+describe("upgrade and the agent-facing server", () => {
+  it("an existing database gains row_seals on open and nothing is signed for its principals", () => {
+    const f = factory();
+    const wg = f.open();
+    const { principal, token } = wg.createPrincipal({ name: "before" }, operator);
+    // A factory from before signing: no row_seals table at all.
+    wg.db.exec("DROP TABLE row_seals");
+    wg.db.close();
+    const again = f.open();
+    const t = again.db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'row_seals'")
+      .get();
+    expect(t).toBeTruthy();
+    expect((again.db.prepare("SELECT COUNT(*) AS n FROM row_seals").get() as { n: number }).n).toBe(
+      0,
+    );
+    expect(again.resolvePrincipalToken(token)).toBeNull();
+    expect(again.listUnsignedPrincipals().map((u) => u.id)).toEqual([principal.id]);
+    again.db.close();
+  });
+
+  it("the MCP server's keyring can neither sign a principal nor accept one", () => {
+    const f = factory();
+    const host = f.open();
+    const { token } = host.createPrincipal({ name: "real" }, operator);
+    host.db.close();
+    const mcp = Dispatch.open(f.dbPath, systemClock, undefined, { gateKeyring: mcpGateKeyring() });
+    expect(mcp.resolvePrincipalToken(token)).toBeNull();
+    expect(() => mcp.createPrincipal({ name: "minted" }, operator)).toThrow(
+      /never loads the factory key/,
+    );
+    expect(
+      mcp.db.prepare("SELECT id FROM api_principals WHERE name = 'minted'").get(),
+    ).toBeUndefined();
+    expect(() => mcp.resignPrincipals({ all: true }, operator)).toThrow(
+      /never loads the factory key/,
+    );
+    expect(
+      mcp.db
+        .prepare("SELECT COUNT(*) AS n FROM work_events WHERE event_type = 'principal.resigned'")
+        .get(),
+    ).toEqual({ n: 0 });
+    mcp.db.close();
   });
 });
 

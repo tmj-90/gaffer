@@ -351,4 +351,71 @@ describe("web: the rendered Health page tells the quality story first", () => {
       [...document.querySelectorAll(".gov-tile .mt-period")].map((c) => c.textContent),
     ).toContain("last 90 days");
   });
+
+  it("two quick window changes: the older, slower read never repaints over the newer choice", async () => {
+    await loadApp();
+    // From here the 365-day read is slow and the 7-day read answers at once.
+    let release365: () => void = () => {};
+    const gate365 = new Promise<void>((r) => (release365 = r));
+    const inner = globalThis.fetch as unknown as (u: RequestInfo | URL) => Promise<Response>;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input).includes("window_days=365")) await gate365;
+        return inner(input);
+      }),
+    );
+    const pick = (v: string) => {
+      const sel = document.querySelector<HTMLSelectElement>("#health-window")!;
+      sel.value = v;
+      sel.dispatchEvent(new Event("change"));
+    };
+    pick("365");
+    for (let i = 0; i < 3; i++) await tick();
+    pick("7");
+    for (let i = 0; i < 6; i++) await tick();
+    release365();
+    for (let i = 0; i < 6; i++) await tick();
+    const chips = [...document.querySelectorAll(".measure-strip .mt-period")].map(
+      (c) => c.textContent,
+    );
+    expect(chips).toEqual(Array(4).fill("last 7 days"));
+    expect(document.querySelector(".measure-head")?.textContent).toContain("last 7 days");
+    expect(
+      [...document.querySelectorAll(".gov-tile .mt-period")].map((c) => c.textContent),
+    ).toEqual(Array(3).fill("last 7 days"));
+    expect(document.querySelector<HTMLSelectElement>("#health-window")!.value).toBe("7");
+  });
+
+  it("a window read that fails keeps the window showing, says so, and keeps the keyboard on the select", async () => {
+    await loadApp();
+    const inner = globalThis.fetch as unknown as (u: RequestInfo | URL) => Promise<Response>;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) =>
+        String(input).includes("window_days=90")
+          ? new Response("{}", { status: 500, headers: { "content-type": "application/json" } })
+          : inner(input),
+      ),
+    );
+    const sel = document.querySelector<HTMLSelectElement>("#health-window")!;
+    sel.focus();
+    sel.value = "90";
+    sel.dispatchEvent(new Event("change"));
+    for (let i = 0; i < 6; i++) await tick();
+    // Measures and the referee's record still agree on the 30 days they show.
+    expect(
+      [...document.querySelectorAll(".measure-strip .mt-period")].map((c) => c.textContent),
+    ).toEqual(Array(4).fill("last 30 days"));
+    expect(
+      [...document.querySelectorAll(".gov-tile .mt-period")].map((c) => c.textContent),
+    ).toEqual(Array(3).fill("last 30 days"));
+    expect(document.querySelector(".gov-emptystate")).toBeNull();
+    expect(document.querySelector(".gov-failed")?.textContent).toBe(
+      "Could not read the last 90 days; still showing the last 30 days.",
+    );
+    const now = document.querySelector<HTMLSelectElement>("#health-window")!;
+    expect(now.value).toBe("30");
+    expect(document.activeElement).toBe(now);
+  });
 });

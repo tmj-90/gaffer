@@ -198,9 +198,13 @@
   .gov-tiles .mt-val {
     font-size: var(--t26);
   }
-  .gov-emptystate {
+  .gov-emptystate,
+  .gov-failed {
     font-size: var(--t14);
     color: var(--ink-2);
+  }
+  .gov-failed {
+    margin: 8px 0 0;
   }
   /* --- running now, bouncing, decisions, activity ------------------------------ */
   .run-list {

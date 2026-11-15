@@ -264,7 +264,11 @@ async function fitnessRoomPanels(healthRes, opts = {}) {
             note: "No eligible deliveries in this window.",
             cls: "gov-tile gov-tile-empty",
           });
-    const paint = (gov) => {
+    // The newest change wins: a slower, older read never repaints over a newer choice.
+    let asked = 0;
+    const paint = (gov, failedDays = null) => {
+      // A repaint replaces the select: keep the keyboard on it.
+      const refocus = !!document.activeElement && document.activeElement.id === "health-window";
       govPanel.replaceChildren();
       const wd = gov && gov.windowDays ? gov.windowDays : opts.windowDays || 30;
       const sel = el(
@@ -275,10 +279,14 @@ async function fitnessRoomPanels(healthRes, opts = {}) {
           title: "Time window for the referee's record and the four measures",
           onchange: async (e) => {
             const v = Number(e.target.value);
+            const mine = ++asked;
             const res = opts.onWindow
               ? await opts.onWindow(v)
               : await api("GET", "/api/health?window_days=" + v).catch(() => null);
-            paint(res && res.governance ? res.governance : { empty: true, windowDays: v });
+            if (mine !== asked || (res && res.superseded)) return;
+            // A failed read is not an empty window: keep what is showing and say so.
+            if (!res) return paint(gov, v);
+            paint(res.governance ? res.governance : { empty: true, windowDays: v });
           },
         },
         [7, 30, 90, 365].map((n) => {
@@ -300,6 +308,15 @@ async function fitnessRoomPanels(healthRes, opts = {}) {
           el("label", { class: "gov-win" }, [el("span", { class: "sr-only" }, "Window"), sel]),
         ]),
       );
+      if (refocus) sel.focus();
+      if (failedDays)
+        govPanel.appendChild(
+          el(
+            "p",
+            { class: "gov-failed", role: "status" },
+            `Could not read the last ${failedDays} days; still showing the last ${wd} days.`,
+          ),
+        );
       if (!gov || gov.empty) {
         govPanel.appendChild(
           el(

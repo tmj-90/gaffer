@@ -1242,10 +1242,19 @@ async function renderHealth() {
     detailHost.replaceChildren(measuresDetail(h));
   };
   paintMeasures(health);
+  // Two quick changes race two reads: only the newest may paint, so an older (slower)
+  // response never repaints the board over the window the viewer chose last. A read
+  // that fails keeps the window that is showing (the Referee's record says so).
+  let asked = 0;
   const onWindow = async (days) => {
-    windowDays = WINDOWS.includes(days) ? days : 30;
-    const res = await api("GET", `/api/health?window_days=${windowDays}`).catch(() => null);
-    if (res) paintMeasures(res);
+    const want = WINDOWS.includes(days) ? days : 30;
+    const mine = ++asked;
+    const res = await api("GET", `/api/health?window_days=${want}`).catch(() => null);
+    if (mine !== asked) return { superseded: true };
+    if (res) {
+      windowDays = want;
+      paintMeasures(res);
+    }
     return res;
   };
 

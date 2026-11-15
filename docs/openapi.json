@@ -459,6 +459,152 @@
         "x-capability": "full"
       }
     },
+    "/api/principal-signatures": {
+      "get": {
+        "operationId": "getApiPrincipalSignatures",
+        "tags": [
+          "Configuration"
+        ],
+        "summary": "Principals this factory does not honour",
+        "description": "Every active principal without a valid signature under the factory key (created before signing, restored from a backup, or written outside the factory), with why (`failure`, `detail`) and whether a matching `principal.created` event is on record (`creation_event`). Such a principal is refused like an unknown token until a person re-signs it. Never carries token material.",
+        "responses": {
+          "200": {
+            "description": "`{ unsigned: UnsignedPrincipal[] }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The Host/Origin is not permitted for a token-less request (`FORBIDDEN_HOST`). A named principal acted outside its scope (`SCOPE_DENIED`: `details.scope` names its repos and tickets, `details.reason` is `outside_repo_scope`, `outside_ticket_scope`, `no_repos`, `factory_wide` or `admin_required`, with `details.ticket`, `details.outside_repos` or `details.required` saying what put it outside).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "read"
+      }
+    },
+    "/api/principal-signatures/resign": {
+      "post": {
+        "operationId": "postApiPrincipalSignaturesResign",
+        "tags": [
+          "Configuration"
+        ],
+        "summary": "Re-sign principals (a person's act)",
+        "description": "Signs the named principals (`names`, ids or names), or every unsigned principal whose `principal.created` event is on record and matches it (`all`; one without is skipped and must be named), with a `principal.resigned` event each. A revoked principal is refused (409). Shared operator token only: a principal token is refused. Nothing is ever signed on upgrade or on a read.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/resignPrincipalsBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "`{ resigned: [{ id, name, event_id }], skipped: [{ id, name, reason }] }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller authenticated with a principal token; only the shared operator token may manage principals (`PRINCIPAL_ADMIN_REQUIRED`). The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`). A named principal acted outside its scope (`SCOPE_DENIED`: `details.scope` names its repos and tickets, `details.reason` is `outside_repo_scope`, `outside_ticket_scope`, `no_repos`, `factory_wide` or `admin_required`, with `details.ticket`, `details.outside_repos` or `details.required` saying what put it outside).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource (`NOT_FOUND`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A named principal is revoked (`STATE_CONFLICT`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body or query failed validation (`VALIDATION_ERROR`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "full"
+      }
+    },
     "/api/settings": {
       "get": {
         "operationId": "getApiSettings",
@@ -15078,6 +15224,24 @@
         ],
         "additionalProperties": false,
         "description": "The Behavioural surface of one repo's delivery (`?include=impact`), read from the diff and the tree at `headSha`. Advisory: nothing gates on it."
+      },
+      "resignPrincipalsBody": {
+        "type": "object",
+        "properties": {
+          "names": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "maxItems": 200
+          },
+          "all": {
+            "type": "boolean"
+          }
+        },
+        "description": "Additional validation rule applies (not expressible in JSON Schema)."
       },
       "resolveDecisionBody": {
         "type": "object",

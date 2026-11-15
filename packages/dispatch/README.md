@@ -263,8 +263,10 @@ single-page app, over the same facade the CLI and MCP server use. The SPA is a
 framework-free ES-module app (no build step) under a self-only CSP. It binds
 `127.0.0.1` by default. The shared token acts as one operator; named principals
 (`dispatch principal create <name> [--read] [--admin] [--repo <name>] [--ticket <n>]`)
-give each person or bot its own identity, capability and scope (see the root
-[SECURITY.md](../../SECURITY.md#dashboard-api-and-identity)). There is no TLS, so do not
+give each person or bot its own identity, capability and scope, each signed with the
+factory key (`dispatch principal unsigned` lists the ones that are not, `dispatch
+principal resign <name>|--all` is the operator re-signing them; see the root
+[SECURITY.md](../../SECURITY.md#signed-principals)). There is no TLS, so do not
 expose it beyond localhost without a TLS-terminating proxy. Auth is a bearer token,
 and it gates **every data-returning request**, whatever the token's provenance, the
 HTTP method or the bind:

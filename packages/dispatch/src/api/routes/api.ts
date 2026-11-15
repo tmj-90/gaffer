@@ -182,7 +182,7 @@ export async function routeApi(
     sendJson(res, 200, { principal });
     return;
   }
-  // SEALED PRINCIPALS — GET /api/principal-signatures lists the active principals this
+  // SEALED PRINCIPALS: GET /api/principal-signatures lists the active principals this
   // factory does not honour (created before signing, restored from a backup, or written
   // outside the factory), with why; POST /api/principal-signatures/resign is a person's
   // deliberate re-sign, operator only like minting (a principal token is refused).

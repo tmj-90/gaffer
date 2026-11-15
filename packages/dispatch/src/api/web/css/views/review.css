@@ -184,6 +184,11 @@
   .rv-actions {
     display: contents;
   }
+  /* The phone bar's own line: what stands between the reviewer and Approve. On a wide
+     screen the card's banners sit right above the buttons, so the line is not drawn. */
+  .rv-bar-note {
+    display: none;
+  }
   .review-card-actions .btn.danger {
     margin-left: auto;
   }
@@ -1383,7 +1388,7 @@
     /* The sticky sign-off bar (A-51): Approve, Fix these and Send back fixed above
        the tab bar while the page scrolls under it. The page keeps room for it. */
     .view-review:has(.rv-actions) {
-      padding-bottom: 150px;
+      padding-bottom: max(150px, calc(var(--rv-bar-h, 150px) + 24px));
     }
     .rv-actions {
       position: fixed;
@@ -1401,6 +1406,45 @@
     }
     body:has(#bottomnav[hidden]) .rv-actions {
       bottom: env(safe-area-inset-bottom);
+    }
+    /* What the card says before Approve (the asks, the tests changed, the moved head,
+       why Approve is off), in the bar itself, so it is on screen when Approve is. */
+    .rv-actions > .rv-bar-note:not([hidden]) {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 44px;
+      margin: 0;
+      padding: 4px 4px 4px 10px;
+      border: 1px solid var(--rule-2);
+      border-radius: var(--r);
+      background: var(--paper-2);
+      color: var(--ink);
+      font: 600 var(--t14) / 1.3 var(--f-text);
+    }
+    .rv-actions > .rv-bar-note.is-needs {
+      border-color: var(--ink);
+      background: var(--mark-wash);
+    }
+    .rv-bar-t {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+    .rv-bar-go {
+      flex: none;
+      min-height: 36px;
+      padding: 0 10px;
+      border: 0;
+      background: none;
+      color: var(--ink);
+      font: inherit;
+      text-decoration: underline;
+      cursor: pointer;
+    }
+    /* A toast rides above the bar, never over Approve. */
+    body:has(.view-review .rv-actions) .toast {
+      bottom: calc(var(--rv-bar-h, 130px) + 76px + env(safe-area-inset-bottom));
     }
     .rv-actions .btn {
       min-width: 0;

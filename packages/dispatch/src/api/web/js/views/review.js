@@ -455,6 +455,7 @@ async function renderReview(param) {
         approveBtn.setAttribute("aria-label", `Approved #${t.number}: ${done.done_label}`);
         approveBtn.prepend(icon("check", "", 20));
       }
+      paintBarNote();
       nextLine.hidden = true;
       // The yellow card is withdrawn from the title; the queue tab shows the move.
       const card = wrap.querySelector(".rv-head .rv-card");
@@ -663,7 +664,7 @@ async function renderReview(param) {
         cls: "diff-moved-banner",
         title: "The change moved since you opened it.",
         body: [
-          "Nothing was approved. The diff below is the new head — review it again before you approve. ",
+          "Nothing was approved. The diff below is the new head: review it again before you approve. ",
           el("small", { class: "mono" }, moved.message),
         ],
       })
@@ -674,6 +675,65 @@ async function renderReview(param) {
   );
   // GATE INTEGRITY: filled once the diff loads, from the server's `test-modified` flag.
   const integritySlot = el("div", { class: "integrity-slot" });
+  // THE PHONE BAR'S OWN LINE: on a phone the three actions float in a fixed bar while the
+  // sign-off card (its asks, the integrity banner, the moved banner, why Approve is off)
+  // can be off screen. So whatever stands between the reviewer and Approve also rides in
+  // the bar, on a line above the buttons, with a Read control that brings the card's
+  // notes into view. Not drawn on a wide screen, where the card's own banners sit right
+  // above the buttons. It only repeats what the card says: it changes no gate.
+  const barNote = el("p", { class: "rv-bar-note", hidden: "" });
+  const goToNotes = () => {
+    const target = movedBanner || asksSlot.firstChild || integritySlot.firstChild || signoff;
+    target?.scrollIntoView({
+      block: "start",
+      behavior: prefersReducedMotion() ? "auto" : "smooth",
+    });
+  };
+  const paintBarNote = () => {
+    const bits = [];
+    let needs = false;
+    if (!isApproved()) {
+      if (!diffState.approvable) bits.push(`Approve blocked: ${diffState.reason}`);
+      else if (moved) {
+        needs = true;
+        bits.push("The change moved: this is the new head, review it again");
+      }
+      if (integritySlot.querySelector(".integrity-banner:not(.is-allowed)")) {
+        needs = true;
+        bits.push("the tests that gate it changed");
+      }
+      if (shownAsks.length) {
+        needs = true;
+        bits.push(
+          shownAsks.length === 1
+            ? "a human is asked for before you sign"
+            : `${shownAsks.length} requests for a human before you sign`,
+        );
+      }
+    }
+    clear(barNote);
+    barNote.hidden = !bits.length;
+    barNote.classList.toggle("is-needs", needs);
+    if (!bits.length) return;
+    const text = bits.join(" · ").replace(/^./, (c) => c.toUpperCase());
+    barNote.append(
+      needs ? ycard(14) : icon("alert", "", 16),
+      el("span", { class: "rv-bar-t" }, text),
+    );
+    if (needs)
+      barNote.append(
+        el(
+          "button",
+          {
+            class: "rv-bar-go",
+            type: "button",
+            "aria-label": "Read them in the sign-off",
+            onclick: goToNotes,
+          },
+          "Read",
+        ),
+      );
+  };
 
   // Flags: what to look at before signing. Evidence flags now; the diff's risk
   // annotations join them once the diff loads.
@@ -812,6 +872,7 @@ async function renderReview(param) {
   function paintAsks() {
     clear(asksSlot);
     const list = shownAsks;
+    paintBarNote();
     if (!list.length) return;
     // The shared callout, needs tone (A-40): a person is asked for before the sign-off.
     const box = callout({
@@ -863,9 +924,10 @@ async function renderReview(param) {
       if (approveBtn && !isApproved() && !readOnly()) approveBtn.removeAttribute("disabled");
     } else {
       diffBlockBanner.style.display = "";
-      if (diffBlockText) diffBlockText.textContent = `Approve blocked — ${diffState.reason}`;
+      if (diffBlockText) diffBlockText.textContent = `Approve blocked: ${diffState.reason}`;
       if (approveBtn) approveBtn.setAttribute("disabled", "");
     }
+    paintBarNote();
     const live = repos.filter((r) => !r.unavailable);
     strip?._setRisk(live.flatMap((r) => r.riskAnnotations || []));
     strip?._setShown(repos);
@@ -1264,6 +1326,7 @@ async function renderReview(param) {
         "the change moved since you opened it. Reload the diff and review the new head first.",
     };
     if (approveBtn) approveBtn.setAttribute("disabled", "");
+    paintBarNote();
     clear(movedLiveBanner);
     movedLiveBanner.append(
       ycard(16),
@@ -1348,8 +1411,18 @@ async function renderReview(param) {
   const signbar = el(
     "div",
     { class: "rv-actions", role: "group", "aria-label": `Sign off #${t.number}` },
-    [approveBtn, fixBtn, sendBackBtn].filter(Boolean),
+    [canApprove ? barNote : null, approveBtn, fixBtn, sendBackBtn].filter(Boolean),
   );
+  // The bar's height (it grows with its line and when Approve's label wraps) keeps room
+  // for it under the page and lifts a toast above it, so it never covers the last row.
+  if (typeof ResizeObserver === "function") {
+    const ro = new ResizeObserver(() => {
+      if (!signbar.isConnected) return ro.disconnect();
+      const h = Math.ceil(signbar.getBoundingClientRect().height);
+      document.documentElement.style.setProperty("--rv-bar-h", `${h}px`);
+    });
+    ro.observe(signbar);
+  }
   signoff = el(
     "section",
     {

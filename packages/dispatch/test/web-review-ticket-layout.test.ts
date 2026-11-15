@@ -116,6 +116,9 @@ type World = {
   ticket: Record<string, unknown>;
   health: unknown;
   events?: unknown[];
+  evidence?: unknown[];
+  anns?: unknown[];
+  emptyDiff?: boolean;
 };
 let world: World;
 
@@ -144,8 +147,10 @@ function stubFetch(): void {
               files: 1,
               additions: 1,
               deletions: 0,
-              diff: "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1,1 +1,2 @@\n a\n+b",
-              riskAnnotations: [],
+              diff: world.emptyDiff
+                ? ""
+                : "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1,1 +1,2 @@\n a\n+b",
+              riskAnnotations: world.anns || [],
             },
           ],
         };
@@ -168,7 +173,7 @@ function stubFetch(): void {
           scopes: [],
           blocking_decisions: [],
           dependencies: [],
-          evidence: [],
+          evidence: world.evidence || [],
           events: world.events || [],
           rework_trail: [],
           review_comments: COMMENTS,
@@ -203,6 +208,84 @@ const app = () => document.getElementById("app") as HTMLElement;
 const before = (a: Element, b: Element) =>
   Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
 
+// On a phone the sign-off actions float in a fixed bar while the card's banners (the asks,
+// the tests that changed, why Approve is off) can be off screen: the bar carries them too,
+// on its own line above the buttons, so Approve is never on screen without them.
+describe("web: the phone sign-off bar says what stands before Approve", () => {
+  beforeEach(() => {
+    world = { queue: [T], ticket: T, health: HEALTH };
+    vi.resetModules();
+    stubFetch();
+    mount("#/review");
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    document.body.innerHTML = "";
+  });
+  const note = () => app().querySelector(".rv-actions > .rv-bar-note") as HTMLElement | null;
+
+  it("draws no line when nothing stands before Approve", async () => {
+    await boot();
+    expect((app().querySelector("button.signoff-btn") as HTMLButtonElement).disabled).toBe(false);
+    expect(note(), "the bar's line exists").toBeTruthy();
+    expect(note()!.hidden).toBe(true);
+  });
+
+  it("carries a request for a human, ahead of Approve in the bar", async () => {
+    world.evidence = [
+      {
+        id: "ev-ask",
+        ticket_id: T.id,
+        kind: "note",
+        summary: "This change needs a human: confirm the limit with support",
+        created_at: "2026-10-30T09:59:00Z",
+        created_by: "system",
+      },
+    ];
+    await boot();
+    expect(app().querySelector(".signoff-asks"), "the card's asks").toBeTruthy();
+    const n = note()!;
+    expect(n.hidden).toBe(false);
+    expect(n.textContent).toContain("A human is asked for before you sign");
+    expect(n.classList.contains("is-needs")).toBe(true);
+    const bar = app().querySelector(".rv-actions")!;
+    expect(bar.firstElementChild).toBe(n);
+    expect(before(n, bar.querySelector("button.signoff-btn")!)).toBe(true);
+  });
+
+  it("carries the tests that gate it changing", async () => {
+    world.anns = [
+      { kind: "test-modified", detail: "test/a.test.ts changed", path: "test/a.test.ts" },
+    ];
+    await boot();
+    expect(app().querySelector(".integrity-banner:not(.is-allowed)")).toBeTruthy();
+    expect(note()!.hidden).toBe(false);
+    expect(note()!.textContent).toContain("The tests that gate it changed");
+  });
+
+  it("says why Approve is off, in plain punctuation, in the bar and the card", async () => {
+    world.emptyDiff = true;
+    await boot();
+    expect((app().querySelector("button.signoff-btn") as HTMLButtonElement).disabled).toBe(true);
+    const card = app().querySelector(".diff-block-banner")!.textContent || "";
+    expect(card).toMatch(/^Approve blocked: /);
+    expect(note()!.hidden).toBe(false);
+    expect(note()!.textContent).toMatch(/^Approve blocked: /);
+  });
+
+  it("shows the line only in the phone's bar", () => {
+    const css = readFileSync(path.join(WEB, "css/views/review.css"), "utf8");
+    expect(css).toMatch(/\.rv-bar-note\s*\{\s*display:\s*none;/);
+    const phone = css.slice(css.lastIndexOf("@media (max-width: 760px)"));
+    expect(phone).toMatch(
+      /\.rv-actions > \.rv-bar-note:not\(\[hidden\]\)\s*\{[^}]*display:\s*flex/,
+    );
+    // The page keeps room for the bar at its real height, and a toast rides above it.
+    expect(phone).toMatch(/padding-bottom:\s*max\(150px,\s*calc\(var\(--rv-bar-h/);
+    expect(phone).toMatch(/\.toast\s*\{\s*bottom:\s*calc\(var\(--rv-bar-h/);
+  });
+});
+
 describe("web: Review leads with the decision", () => {
   beforeEach(() => {
     world = { queue: [T], ticket: T, health: HEALTH };
@@ -233,7 +316,7 @@ describe("web: Review leads with the decision", () => {
     }
     // The three sign-off actions are one group (the phone's bar), Won't do apart.
     const bar = app().querySelector(".signoff .rv-actions")!;
-    expect([...bar.querySelectorAll("button")].map((b) => b.textContent)).toEqual([
+    expect([...bar.querySelectorAll(":scope > button")].map((b) => b.textContent)).toEqual([
       "Approve",
       "Fix these (1)",
       "Send back…",

@@ -122,6 +122,18 @@ describe("web: Idle loops status line reflects the runner's effective behaviour"
     expect(text).not.toMatch(/will run 2 lanes/);
   });
 
+  it("Settings has one primary: Save changes; the idle loops save is secondary (A-43)", async () => {
+    await render({ maintenance: true, loops: [lane("idle_tech_debt", "Tech debt", true)] });
+    const primaries = [...document.querySelectorAll("#app .btn.primary")].map((b) =>
+      (b.textContent || "").trim(),
+    );
+    expect(primaries).toEqual(["Save changes"]);
+    const idle = [...document.querySelectorAll("#app button")].find((b) =>
+      /Save idle loops/.test(b.textContent ?? ""),
+    )!;
+    expect(idle.className).toBe("btn");
+  });
+
   it("GAFFER_MAINTENANCE=0 is the kill switch whatever the panel says", async () => {
     const text = await render({
       maintenance: true,

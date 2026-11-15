@@ -3,13 +3,24 @@
 
 import { api } from "../api.js";
 import { actorName } from "../club.js";
-import { emptyState, panelHead } from "../components.js";
+import { emptyState, meterRow, panelHead } from "../components.js";
 import { clear, el, field } from "../dom.js";
+import { pct } from "../format.js";
 import { icon } from "../icons.js";
 import { router } from "../router.js";
+import { reasonText } from "../status.js";
 import { runAsyncAction, toast } from "../toast.js";
 import { autonomyGateLabel, isPolicyActive, submitAutonomyPolicy } from "./formation.js";
 import { resolveTargetRepos, targetPicker } from "./plan.js";
+
+/** Confidence is full once a bucket holds twice the server's 10-decision floor. */
+const CONFIDENCE_FULL_N = 20;
+/** The server's headline in plain words: "for risk=low" reads "for low risk". */
+function reasonPlain(text) {
+  return String(text)
+    .replace(/\brisk=(\w+)/g, (_m, v) => `${v} risk`)
+    .replace(/\s+\u2014\s+/g, ": ");
+}
 
 function autonomyRecommendationsPanel(recs, policies, { inert = false } = {}) {
   if (!Array.isArray(recs) || recs.length === 0) return null;
@@ -35,6 +46,7 @@ function autonomyRecommendationsPanel(recs, policies, { inert = false } = {}) {
 /** One recommendation row with its inline evidence + explicit enable/confirm flow. */
 function autonomyRecItem(r, policies, { inert = false } = {}) {
   const confPct = Math.round((Number(r.confidence) || 0) * 100);
+  const risk = reasonText(`risk=${r.riskLevel}`);
   const reasons = Array.isArray(r.reasons) ? r.reasons : [];
   const active = isPolicyActive(policies, r.repoId, r.riskLevel, r.gate);
 
@@ -69,7 +81,7 @@ function autonomyRecItem(r, policies, { inert = false } = {}) {
           mode: "auto",
           confirm: true,
         },
-        `Enabled ${autonomyGateLabel(r.gate).toLowerCase()} for risk=${r.riskLevel} in ${r.repoName || "repo"}.`,
+        `Enabled ${autonomyGateLabel(r.gate).toLowerCase()} for ${risk.toLowerCase()} in ${r.repoName || "repo"}.`,
       ),
     );
     action.appendChild(
@@ -77,7 +89,7 @@ function autonomyRecItem(r, policies, { inert = false } = {}) {
         el(
           "p",
           { class: "ar-confirm-note" },
-          `This grants ${autonomyGateLabel(r.gate).toLowerCase()} for risk=${r.riskLevel} in ${r.repoName || "this repo"}. Reversible any time.`,
+          `This grants ${autonomyGateLabel(r.gate).toLowerCase()} for ${risk.toLowerCase()} in ${r.repoName || "this repo"}. Reversible any time.`,
         ),
         el("div", { class: "btn-row" }, [confirmBtn, cancelBtn]),
       ]),
@@ -100,18 +112,49 @@ function autonomyRecItem(r, policies, { inert = false } = {}) {
     renderEnable();
   }
 
+  // The evidence as a rate with its count and a Wilson 95% whisker (F-E1): "approved 12
+  // of 12", never a bare percentage. The merge gate rests on approvals left unedited.
+  const sample = r.sample || {};
+  const merge = r.gate === "merge";
+  const k = merge ? sample.unchanged : sample.approvals;
+  const n = merge ? sample.unchangedKnown : sample.total;
+  const evidence =
+    typeof k === "number" && typeof n === "number"
+      ? el(
+          "div",
+          { class: "meter-list ar-evidence" },
+          meterRow({
+            name: merge ? "Approved unedited" : "Approved",
+            k,
+            n,
+            whisker: true,
+            fmt: (kk, nn) => `${merge ? "approved unedited" : "approved"} ${kk} of ${nn}`,
+          }),
+        )
+      : null;
   return el("li", { class: "ar-item" }, [
-    el("div", { class: "ar-item-head" }, [
+    // A level-3 row head (20 px) over body text at the body's small size (A-15).
+    el("h3", { class: "ar-item-head" }, [
       el("span", { class: `ar-gate ar-gate-${r.gate}` }, autonomyGateLabel(r.gate)),
-      el("span", { class: "ar-risk" }, `risk=${r.riskLevel}`),
+      el("span", { class: "ar-risk" }, risk),
       el("span", { class: "ar-repo" }, r.repoName || ""),
-      el("span", { class: "ar-conf dim tabnum", title: "confidence" }, `${confPct}%`),
     ]),
-    el("p", { class: "ar-headline" }, r.headline || ""),
+    evidence,
+    // Confidence stays, labelled and defined (F-E1).
+    el("p", { class: "ar-conf" }, [
+      el("span", { class: "ar-conf-label" }, "Confidence "),
+      el("b", {}, pct(confPct)),
+      el(
+        "span",
+        { class: "ar-conf-def" },
+        `: the approval rate scaled by how much evidence there is (full from ${CONFIDENCE_FULL_N} decisions${r.reasons && r.reasons.some((x) => /other repo|across all repos|cross/i.test(x)) ? ", and lower for evidence from other repositories" : ""}).`,
+      ),
+    ]),
+    el("p", { class: "ar-headline" }, r.headline ? reasonPlain(r.headline) : ""),
     reasons.length
       ? el(
           "ul",
-          { class: "ar-reasons dim" },
+          { class: "ar-reasons" },
           reasons.map((reason) => el("li", {}, reason)),
         )
       : null,
@@ -150,13 +193,13 @@ function autonomyPoliciesPanel(policies, { inert = false } = {}) {
             offBtn,
             "Turning off…",
             { repo_id: p.repo_id, risk_level: p.risk_level, gate: p.gate, mode: "off" },
-            `Turned off ${autonomyGateLabel(p.gate).toLowerCase()} for risk=${p.risk_level} in ${p.repo_name || "repo"}.`,
+            `Turned off ${autonomyGateLabel(p.gate).toLowerCase()} for ${reasonText(`risk=${p.risk_level}`).toLowerCase()} in ${p.repo_name || "repo"}.`,
           ),
         );
         return el("li", { class: "ar-item ap-item" }, [
           el("div", { class: "ar-item-head" }, [
             el("span", { class: `ar-gate ar-gate-${p.gate}` }, autonomyGateLabel(p.gate)),
-            el("span", { class: "ar-risk" }, `risk=${p.risk_level}`),
+            el("span", { class: "ar-risk" }, reasonText(`risk=${p.risk_level}`)),
             el("span", { class: "ar-repo" }, p.repo_name || ""),
             inert
               ? el(
@@ -793,7 +836,9 @@ function renderIdleLoopsPanel(view, repos, nodes, envSettings = []) {
   refreshStatus();
 
   // ── Save ──────────────────────────────────────────────────────────────────
-  const saveBtn = el("button", { class: "btn primary", type: "button" }, [
+  // A secondary save: the idle loops live in crew.yaml, apart from the settings form,
+  // and the form's Save changes is the view's one primary (A-43).
+  const saveBtn = el("button", { class: "btn", type: "button" }, [
     icon("check"),
     el("span", {}, "Save idle loops"),
   ]);

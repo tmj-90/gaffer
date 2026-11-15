@@ -170,6 +170,30 @@ export default async function s19(t, L) {
         `block budget @1280: ${budgetViews} views lead with at most two block heads, and every claret head sits on a section with an action`,
       );
 
+  // ── Settings at 320 px with the dial raised (P1 review follow-up) ─────────
+  {
+    const pg = await L.openPage(t.browser, { width: 320, height: 700 });
+    await pg.goto(`${L.BASE}/#/settings`, { waitUntil: "load" });
+    const dial = await pg
+      .waitForSelector('.dial-input[value="autonomous"]', { timeout: 15000, state: "attached" })
+      .catch(() => null);
+    await pg.evaluate(() => {
+      const up = document.querySelector('.dial-input[value="autonomous"]');
+      if (up) {
+        up.checked = true;
+        up.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    });
+    await pg.waitForSelector(".gng", { timeout: 5000 }).catch(() => null);
+    const sw = await pg.evaluate(() => document.documentElement.scrollWidth);
+    t.check(
+      Boolean(dial) && sw <= 320,
+      "Settings at 320 px with the dial raised fits the screen (no sideways scroll)",
+      `Settings @320 with the dial raised: dial=${Boolean(dial)} scrollWidth=${sw}`,
+    );
+    await pg.context().close();
+  }
+
   const p = await L.openPage(t.browser, { width: 1000, height: 900 });
 
   // ── the Search palette keeps focus and closes on Esc (F-06) ──────────────

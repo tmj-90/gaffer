@@ -5,8 +5,9 @@ import { api } from "../api.js";
 import { panelHead } from "../components.js";
 import { clear, el, svgEl } from "../dom.js";
 import { moneyW, plural } from "../format.js";
-import { agentShirt, glyph, icon, ycard } from "../icons.js";
+import { agentShirt, icon, ycard } from "../icons.js";
 import { router } from "../router.js";
+import { verdictMark } from "../status.js";
 import { runAsyncAction, toast } from "../toast.js";
 import { formationLaneRepos } from "./settings.js";
 
@@ -460,8 +461,9 @@ function teamInstructions(all, editors, policies) {
               { class: "gng-list" },
               checks.map((c) =>
                 el("li", { class: c.ok ? "is-go" : "is-nogo" }, [
-                  glyph(c.ok ? "done" : "failed", 18),
-                  el("span", { class: "gng-word" }, c.ok ? "Go" : "No-go"),
+                  // Advice, not a referee's card: the verdict glyph set with its word
+                  // (a flag for No-go), never the lifecycle "failed" cross.
+                  verdictMark(c.ok ? "pass" : "flag", { word: c.ok ? "Go" : "No-go", size: 18 }),
                   el("span", { class: "gng-text" }, [
                     c.ok ? c.go : c.nogo,
                     " ",

@@ -283,7 +283,7 @@ describe("web: status yellow is only status", () => {
   });
 
   it("the no-go row and the review strip's warn cell do not wear yellow", () => {
-    expect(decls("views/settings.css", ".gng-list .is-nogo .glyph")).not.toMatch(/--yellow/);
+    expect(decls("views/settings.css", ".gng-list .is-nogo .vmark")).not.toMatch(/--yellow/);
     expect(decls("views/review.css", ".vd-cell.vd-warn")).not.toMatch(/--yellow/);
   });
 });

@@ -104,7 +104,7 @@
 40	delivery-lifecycle.test.sh
 40	stabilisation-integration.test.sh
 39	demo-isolation.test.sh
-38	dashboard-lifecycle.test.sh
+49	dashboard-lifecycle.test.sh
 38	scan-claimable-first.test.sh
 37	dry-run-preview.test.sh
 36	maintenance-lane.test.sh
@@ -382,3 +382,40 @@
 # feature-ship-gate, feature-ship-pr-landing: new (external review 17), real Dispatch and Memory CLIs and a PR-mode landing (Linux at -j 2 in the full suite: 19s and 11s); about twice that until the next refresh.
 40	feature-ship-gate.test.mjs
 25	feature-ship-pr-landing.test.sh
+# Measured in the full local run of Nov 15 (main 38680e5, run.sh -j 2 on a 4-CPU box, every test PASS):
+# the tests that run predates or that had no line; dashboard-lifecycle (38 -> 49) from the same run.
+1	budget-day-utc.test.sh
+13	config-diet.test.sh
+1	config-parts.test.sh
+3	context-primer-index.test.sh
+2	gate-key-guards.test.sh
+1	pause-failed.test.sh
+6	preflight-hook-rules.test.sh
+13	preflight-human-verdicts.test.sh
+4	principal-token-agent-env.test.sh
+5	register-retry.test.sh
+3	sandbox-exec-agent-config.test.sh
+5	sandbox-exec-data-plane.test.sh
+7	scout-gather.test.sh
+1	settings-allowlist.test.sh
+3	tester-first.test.sh
+1	tick-phase-libs.test.sh
+78	waiver-principal-e2e.test.sh
+3	worktree-write-safety.test.sh
+2	agent-settings-rule.test.mjs
+1	budget-cap-boundary.test.mjs
+8	budget-concurrency.test.mjs
+1	eval-experiment-interval.test.mjs
+8	hook-glob-matcher.test.mjs
+1	safety-hook-cp-mentions.test.mjs
+4	safety-hook-factory-key.test.mjs
+1	safety-hook-git-hardening.test.mjs
+4	safety-hook-globs.test.mjs
+14	safety-hook-golden-corpus.test.mjs
+1	scout-packet.test.mjs
+8	status-features-held.test.mjs
+18	tester-acceptance.test.mjs
+13	tester-replay-contract.test.mjs
+2	trust-workspace-lock.test.mjs
+2	untrusted-escape.test.mjs
+1	worktree-write-safety.test.mjs

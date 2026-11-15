@@ -8,6 +8,10 @@
 //   • the OLD deny-list (the regression) is caught: repos/ and .env reached the context;
 //   • the matcher follows Docker's semantics (`**`, `!` re-includes, last match wins,
 //     a parent-directory match covers what is under it).
+//   • PINS (F5): every repo Dockerfile names its base image by digest and installs the
+//     Claude Code CLI at an exact version (through an ARG default); the gate refuses a
+//     FROM by tag, an `npm install -g` with no version, `@latest`, or an ARG with no
+//     exact default, and accepts an earlier stage, scratch and `pkg@${ARG}`.
 // Run: node --test runner/test/docker-context.test.mjs
 // =====================================================================
 import assert from "node:assert/strict";
@@ -18,6 +22,7 @@ import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
+import * as ctx from "../../scripts/docker-context-check.mjs";
 import {
   checkContext,
   isExcluded,
@@ -95,4 +100,28 @@ test("the matcher follows Docker's rules", () => {
   assert.equal(isExcluded(r2, "build/out.js"), true); // leading slash + trailing slash cleaned
   assert.equal(isExcluded(r2, "tmp/a"), true);
   assert.equal(isExcluded(r2, "src/build/out.js"), false); // anchored at the root
+});
+
+test("every repo Dockerfile is pinned (base image by digest, the CLI at an exact version)", () => {
+  assert.equal(typeof ctx.checkPins, "function", "the pin gate exists");
+  assert.deepEqual(ctx.checkPins(ROOT), []);
+  for (const f of ["Dockerfile", "runner/sandbox/Dockerfile"]) {
+    const text = readFileSync(join(ROOT, f), "utf8");
+    assert.match(text, /^ARG CLAUDE_CODE_VERSION=\d+\.\d+\.\d+$/m, `${f} pins the CLI through an ARG`);
+    assert.match(text, /npm install -g "@anthropic-ai\/claude-code@\$\{CLAUDE_CODE_VERSION\}"/, f);
+  }
+});
+
+test("the pin gate refuses what floats and accepts what is pinned", () => {
+  assert.equal(typeof ctx.unpinnedLines, "function", "the pin gate exists");
+  const why = (t) => ctx.unpinnedLines(t).map((u) => u.why);
+  const D = "sha256:" + "a".repeat(64);
+  assert.equal(why("FROM node:22-bookworm-slim").length, 1);
+  assert.equal(why("FROM --platform=linux/amd64 node:22").length, 1);
+  assert.equal(why("RUN npm install -g @anthropic-ai/claude-code").length, 1);
+  assert.equal(why("RUN npm install -g @anthropic-ai/claude-code@latest").length, 1);
+  assert.equal(why('ARG V\nRUN npm install -g "x@${V}"').length, 1);
+  assert.equal(why("RUN npm i --global x@^1.2.0").length, 1);
+  assert.deepEqual(why(`FROM node:22@${D} AS build\nFROM build\nFROM scratch`), []);
+  assert.deepEqual(why('ARG V=2.1.0\nRUN npm install -g "x@${V}" y@1.0.0-rc.1'), []);
 });

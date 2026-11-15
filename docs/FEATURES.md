@@ -597,7 +597,10 @@ install. Settings shows that posture as a read-only line in its Sandbox group: t
 provider, available or missing, required or opted out, and the fix. The opt-out is
 `GAFFER_STRICT_REQUIRE=0` in the environment, for a runner you contain yourself; with a
 ship or mutate flag on as well, the runner warns about it twice
-([docs/sandbox.md](sandbox.md)).
+([docs/sandbox.md](sandbox.md)). The gates run agent-written code, so each gate run
+starts from an empty environment (PATH, a throwaway HOME, locale, proxy and toolchain
+homes); the Quality group's "Variables the gates may see" (`GAFFER_DOD_ENV_PASS`) names
+any other variable your tests need, and credential-shaped names are never passed.
 
 ![The boot room: the Team instructions dial on Supervised, who plays each position, and autonomy suggestions drawn from the review record](img/settings.png)
 

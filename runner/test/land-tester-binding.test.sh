@@ -202,9 +202,11 @@ bash_land() { : > "$LOGF"; : > "$CALLS"; gaffer_land_delivery 9 "$R" gaffer/tick
 # The fixture DB is hand-rolled (no Dispatch schema), so the real Dispatch CLI cannot open
 # it: a stand-in answers the one call the landing cannot do without — the pre-landing
 # revocation re-check (`ticket landing-begin`, external review #8; its own suite is
-# dispatch's revocation-safe-landing) — and fails every other call, as the real CLI did.
+# dispatch's revocation-safe-landing) and `ticket mark-merged` (a landing whose mark-merged
+# fails is held, exit 4: land-mark-merged-failure.test.sh), and fails every other call, as
+# the real CLI did against this reduced fixture.
 STUB_DISPATCH="$WORK/dispatch-stub.mjs"
-printf '%s\n' 'if (process.argv.includes("landing-begin")) { console.log("{\"ok\":true}"); } else { process.exit(1); }' > "$STUB_DISPATCH"
+printf '%s\n' 'if (process.argv.includes("landing-begin") || process.argv.includes("mark-merged")) { console.log("{\"ok\":true}"); } else { process.exit(1); }' > "$STUB_DISPATCH"
 node_land() { DISPATCH_CLI="$STUB_DISPATCH" DISPATCH_DB="$DB" GAFFER_DATA="$WORK/data" GAFFER_DIGEST_DISABLE=1 node "$RUNNER_DIR/bin/merge-ticket.mjs" --ticket 9 2>"$WORK/node.err"; }
 
 echo "== B: the SAME moved candidate is refused by BOTH landing paths =="

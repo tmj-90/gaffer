@@ -11,8 +11,27 @@
  * did not, so the "sanitised on write" claim was true for one of two doors.
  * Stripping in core closes both.
  *
- * ISOLATION: no imports from dispatch or crew.
+ * The serve-time BOUNDARY is `escapeUntrusted` below (every `<` escaped); the
+ * write-time `stripEnvelopeTokens` is storage hygiene only and keeps the stored
+ * text readable (a code snippet keeps its `<`).
+ *
+ * ISOLATION: no imports from dispatch or crew, so `escapeUntrusted` is a twin of
+ * packages/dispatch/src/util/untrusted.ts and runner/lib/untrusted.mjs; all three run
+ * the same vector file (runner/test/fixtures/quarantine-vectors.json) so they cannot drift.
  */
+
+/** The sentence every quarantine notice carries so the model reads `&lt;` right. */
+export const QUARANTINE_ESCAPE_NOTE = "&lt; inside these tags is a literal <.";
+
+/**
+ * Escape EVERY `<` of untrusted text to `&lt;` (null/undefined become ""). Matching a
+ * delimiter-shaped token could not win against invisible characters and look-alike
+ * letters; with no raw `<` left the text cannot close or fake an envelope. `&` is left
+ * alone so the transform is idempotent (escaping twice changes nothing).
+ */
+export function escapeUntrusted(value: string | null | undefined): string {
+  return String(value ?? "").replace(/</g, "&lt;");
+}
 
 // Escape (never delete) the `<` of every untrusted-* delimiter — opening or closing,
 // any tag, any case, padded with whitespace / zero-width characters, terminated or

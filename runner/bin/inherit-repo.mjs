@@ -46,6 +46,7 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { loadRegistry } from "./route-model.mjs";
 import { roleModel, roleTurnCap, withCallBudget } from "../lib/worker.mjs";
+import { QUARANTINE_NOTICE, quarantine } from "../lib/untrusted.mjs";
 
 const require = createRequire(import.meta.url);
 
@@ -322,12 +323,18 @@ export function resolveInheritance(graph, bootstrapTicketId) {
  * the answer is in the candidate set and never links an invented repo.
  */
 export function buildPrompt({ title, description, candidates }) {
-  const lines = candidates.map((c) => `- ${c.repo}: ${c.purpose || "(no description)"}`);
+  // The title, the description and each repo's purpose are ticket / agent text: each in
+  // its own envelope. The repo names are the registry's (the answer is checked against them).
+  const lines = candidates.map(
+    (c) =>
+      `- ${c.repo}: ${quarantine("repo-purpose", c.purpose || "(no description)", { singleLine: true })}`,
+  );
   return [
     "You are wiring a feature ticket in a multi-app epic to the ONE repository it belongs in.",
+    QUARANTINE_NOTICE,
     "",
-    `Ticket title: ${title}`,
-    `Ticket description: ${description || "(none)"}`,
+    `Ticket title: ${quarantine("ticket-title", title, { singleLine: true })}`,
+    `Ticket description: ${quarantine("ticket-description", description || "(none)")}`,
     "",
     "Candidate repositories (the epic's bootstrapped repos):",
     ...lines,

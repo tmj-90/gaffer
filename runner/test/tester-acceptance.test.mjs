@@ -893,7 +893,9 @@ console.log(
   );
   const prompt = existsSync(CAPTURE) ? readFileSync(CAPTURE, "utf8") : "";
   check(
-    /Acceptance profile: cli/.test(prompt) && /bin\/cli\.mjs/.test(prompt),
+    /Acceptance profile: <untrusted-acceptance-profile>cli<\/untrusted-acceptance-profile>/.test(
+      prompt,
+    ) && /bin\/cli\.mjs/.test(prompt),
     "the tester's prompt names the profile and its registered commands",
   );
 }

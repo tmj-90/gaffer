@@ -39,7 +39,9 @@ describe("renderJudgePrompt", () => {
 
   it("carries the ticket, AC, and all five rubric dimensions", () => {
     expect(prompt).toContain("Add password rotation");
-    expect(prompt).toContain("(AC1) rotate every 90 days");
+    expect(prompt).toContain(
+      "(AC1) <untrusted-acceptance-criterion>rotate every 90 days</untrusted-acceptance-criterion>",
+    );
     for (const d of RUBRIC_DIMENSIONS) expect(prompt).toContain(`"${d}"`);
   });
 
@@ -227,7 +229,9 @@ describe("deliveryJudgeCli", () => {
     });
     const { stdout, exitCode } = runJudgeCli(["--mode", "prompt"], input);
     expect(exitCode).toBe(0);
-    expect(stdout).toContain("(AC1) do x");
+    expect(stdout).toContain(
+      "(AC1) <untrusted-acceptance-criterion>do x</untrusted-acceptance-criterion>",
+    );
     expect(stdout).toContain("<untrusted-delivery-diff>");
   });
 

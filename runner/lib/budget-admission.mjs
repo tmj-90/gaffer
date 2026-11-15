@@ -64,16 +64,19 @@
 //     (no agent spawned) releases it with a `settles` row of its own;
 //   • a reservation whose call died without booking stays OPEN and keeps holding both
 //     caps (fail closed) until the shell crash path books its kill estimate
-//     (config/14-usage.sh gaffer_usage_settle_crashed) or the operator reconciles
+//     (config/14-usage.sh gaffer_usage_settle_crashed), the next reservation settles it
+//     (settleDeadReservations: on this host, only once its launcher is provably gone,
+//     with the same labelled kill estimate), or the operator reconciles
 //     (`usage-ledger.mjs --reconcile`, which settles the reservations whose launcher is
-//     no longer running).
+//     no longer running). A reservation whose launcher may still be alive (a live pid
+//     with no recorded start time, or another host) is never settled automatically.
 // A reservation is never a reading: it carries `reserved_usd` and its basis, never a
 // total_cost_usd or an estimated_cost_usd, so no cost view or estimator reads it as one.
 //
 // CLI: node lib/budget-admission.mjs check [--kind <launcher>] [--worst-usd <n>]
 //      → one JSON line { ok, kind, reason, daily, lifetime }; exit 0 admitted · 3 refused
 //      node lib/budget-admission.mjs reserve --kind <launcher> [--worst-usd <n>]
-//           [--ticket <n>] [--pid <launcher pid>] [--out <file>]
+//           [--ticket <n>] [--pid <launcher pid, default: the calling process>] [--out <file>]
 //      → the check and, when admitted under a cap, one reservation row, under the lock;
 //        the reservation id is written to <file>; exit 0 admitted · 3 refused
 //      node lib/budget-admission.mjs release (--id <id> | --file <file>) [--reason <text>]
@@ -85,6 +88,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  readlinkSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -92,6 +96,7 @@ import {
 import { homedir, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { killEstimateFromHistory } from "./kill-estimate.mjs";
 import {
   ledgerDisabled,
   resolveHoldClaims,
@@ -113,6 +118,10 @@ const RESERVATION_ID_RE = /^r-[A-Za-z0-9-]{4,64}$/;
 export const SPEND_CAP_HINT =
   "no dollar cap is set: set GAFFER_DAILY_BUDGET_USD (try 5) or GAFFER_BUDGET_USD in your environment or the dashboard's Settings → Budget & caps; GAFFER_ALLOW_UNCAPPED=1 runs without one";
 
+// MONEY IN INTEGER MICRO-DOLLARS: a running float sum of decimal dollars is not exact
+// (ten $0.10 calls sum to 0.9999999999999999), and a "below the cap" test on it admitted
+// one more call at an exact boundary. Every sum and every cap test runs on integers.
+const toMicro = (usd) => Math.round(usd * 1e6);
 const finiteNonNeg = (v) => typeof v === "number" && Number.isFinite(v) && v >= 0;
 const finitePos = (v) => typeof v === "number" && Number.isFinite(v) && v > 0;
 
@@ -220,8 +229,9 @@ export function ledgerSpend(env = process.env, now = new Date()) {
     return { unknown: `the usage ledger ${p} cannot be read (${e?.code ?? e})` };
   }
   const day = now.toISOString().slice(0, 10);
-  let today = 0;
-  let lifetime = 0;
+  // Integer micro-dollars (toMicro); returned as dollars at the end.
+  let todayMicro = 0;
+  let lifetimeMicro = 0;
   // Unknown-cost rows since the last operator reconcile row: those booked today (they
   // hold the DAILY cap) and all of them, whatever the day (they hold the LIFETIME cap: a
   // call whose cost was never established does not become free when the UTC day turns;
@@ -278,9 +288,9 @@ export function ledgerSpend(env = process.env, now = new Date()) {
       r.estimated_cost_usd >= 0
     )
       c = r.estimated_cost_usd;
-    lifetime += c;
+    lifetimeMicro += toMicro(c);
     const isToday = typeof r.ts === "string" && r.ts.slice(0, 10) === day;
-    if (isToday) today += c;
+    if (isToday) todayMicro += toMicro(c);
     // Only a reconcile row that booked a positive figure clears the unknown rows before
     // it: one at $0 (hand-written, or from an older writer) would count them as free.
     // A HELD reconcile row (its own append failed; a later reconcile moved it here) does
@@ -300,10 +310,10 @@ export function ledgerSpend(env = process.env, now = new Date()) {
     }
   }
   const reservations = [...open.values()];
-  const reservedUsd = reservations.reduce((a, r) => a + r.reserved_usd, 0);
+  const reservedUsd = reservations.reduce((a, r) => a + toMicro(r.reserved_usd), 0) / 1e6;
   return {
-    today,
-    lifetime,
+    today: todayMicro / 1e6,
+    lifetime: lifetimeMicro / 1e6,
     // Rows held by a failed append (and claimed, unretired ones) are unknown cost on
     // both caps; `held` says how many of the unknown calls are those.
     unknownToday: unknownToday + held,
@@ -321,6 +331,36 @@ function heldNote(spend) {
   return n > 0
     ? ` (${n} of them held by a failed ledger append, in usage-ledger.held.jsonl or a reconcile's claim beside it; \`usage-ledger.mjs --open-reservations\` lists them)`
     : "";
+}
+
+/**
+ * Which open reservations can never book their own cost: on this host with a launcher
+ * that is provably gone (`dead`, the next reservation settles them), or on another host
+ * (`elsewhere`, this host cannot check their launcher).
+ */
+function reservationStates(spend, host = hostname()) {
+  let dead = 0;
+  let elsewhere = 0;
+  for (const r of spend?.reservations ?? []) {
+    if (!r || r.host !== host) elsewhere += 1;
+    else if (!launcherAlive(r, host)) dead += 1;
+  }
+  return { dead, elsewhere };
+}
+
+/** The refusal's note on open reservations that will not book their cost by themselves. */
+function reservationNote(spend) {
+  const { dead, elsewhere } = reservationStates(spend);
+  const parts = [];
+  if (dead > 0)
+    parts.push(
+      `${dead} of them belong to a launcher that is no longer running and will never book its cost; the next paid launch settles them with a labelled kill estimate`,
+    );
+  if (elsewhere > 0)
+    parts.push(
+      `${elsewhere} of them were booked on another host, whose launcher this host cannot check, so they stay held; \`node runner/lib/usage-ledger.mjs --open-reservations\` lists them and \`--reconcile --usd <amount> --all-reservations\` settles them once you know those calls are gone`,
+    );
+  return parts.length ? ` (${parts.join("; ")})` : "";
 }
 
 /**
@@ -416,30 +456,29 @@ export function paidLaunchAdmission({
     caps.lifetime === null ? null : { cap: caps.lifetime, spent: spend.lifetime, reserved };
   const held =
     reserved > 0 ? ` and $${reserved.toFixed(4)} held by ${nOpen} open reservation(s)` : "";
-  // EPS: a sum of decimal dollars (0.1 + 0.2) is not exact in binary; the fit test
-  // allows for it so a cap that holds exactly N worst cases admits N.
-  const EPS = 1e-9;
+  // Both tests compare integer micro-dollars (toMicro), so a cap that holds exactly N
+  // calls admits N and refuses the N+1th, with no float slack either way.
   for (const [b, label, knob, when] of [
     [daily, "daily", "GAFFER_DAILY_BUDGET_USD", " today"],
     [lifetime, "lifetime", "GAFFER_BUDGET_USD", ""],
   ]) {
     if (!b) continue;
-    if (!(b.spent + reserved < b.cap))
+    if (!(toMicro(b.spent) + toMicro(reserved) < toMicro(b.cap)))
       return {
         ok: false,
         kind,
-        reason: `the ${label} budget is exhausted (${knob}=${b.cap}, spent $${b.spent.toFixed(4)}${when}${held}) — the paid ${kind} launch was not started`,
+        reason: `the ${label} budget is exhausted (${knob}=${b.cap}, spent $${b.spent.toFixed(4)}${when}${held})${reserved > 0 ? reservationNote(spend) : ""} — the paid ${kind} launch was not started`,
         daily,
         lifetime,
         worst,
       };
     // Other calls are in flight: this one starts only if its own worst case fits beside
     // them, so the ceiling holds for the calls already running.
-    if (reserved > 0 && b.spent + reserved + worst.usd > b.cap + EPS)
+    if (reserved > 0 && toMicro(b.spent) + toMicro(reserved) + toMicro(worst.usd) > toMicro(b.cap))
       return {
         ok: false,
         kind,
-        reason: `the ${label} budget cannot hold another call (${knob}=${b.cap}, spent $${b.spent.toFixed(4)}${when}${held} for calls in flight; this launch reserves $${worst.usd.toFixed(4)}, ${worst.basis}) — the paid ${kind} launch was not started; it fits once those calls book their cost`,
+        reason: `the ${label} budget cannot hold another call (${knob}=${b.cap}, spent $${b.spent.toFixed(4)}${when}${held}; this launch reserves $${worst.usd.toFixed(4)}, ${worst.basis})${reservationNote(spend)} — the paid ${kind} launch was not started; it fits once the calls still running book their cost`,
         daily,
         lifetime,
         worst,
@@ -488,6 +527,26 @@ export function pidStartTime(pid) {
 }
 
 /**
+ * The pid namespace process `pid` lives in ("self" for this process), as the kernel names
+ * it (/proc/<pid>/ns/pid, e.g. "pid:[4026531836]"), or null where there is no /proc
+ * (macOS) or no such process. A pid only names a process inside one namespace: a
+ * launcher in a container that shares this hostname (docker --network=host or
+ * --uts=host, a hostNetwork pod) and this data dir has a pid this namespace cannot see.
+ */
+export function pidNamespace(pid) {
+  if (pid !== "self") {
+    const n = Number(pid);
+    if (!Number.isInteger(n) || n <= 0) return null;
+  }
+  try {
+    const v = readlinkSync(`/proc/${pid}/ns/pid`);
+    return typeof v === "string" && v ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Is a reservation's launcher still running on this host (its call may be in flight)?
  * A pid that is alive but whose start time differs from the one the reservation
  * recorded is a reused pid: the launcher is gone. Without a recorded start time, or
@@ -495,6 +554,12 @@ export function pidStartTime(pid) {
  */
 export function launcherAlive(r, host = hostname()) {
   if (!r || r.host !== host) return false;
+  // Booked from another pid namespace with the same hostname: its pid means nothing
+  // here, so it cannot be told dead (fail closed: the hold stays until a reconcile).
+  if (typeof r.pid_ns === "string" && r.pid_ns) {
+    const mine = pidNamespace("self");
+    if (mine !== null && mine !== r.pid_ns) return true;
+  }
   if (!pidAlive(r.pid)) return false;
   if (typeof r.pid_start === "string" && r.pid_start) {
     const now = pidStartTime(r.pid);
@@ -614,6 +679,68 @@ function appendRow(ledgerPath, row) {
 }
 
 /**
+ * Settle every open reservation on THIS host whose launcher is provably gone (a dead
+ * pid, or a live pid whose start time differs from the one the reservation recorded:
+ * launcherAlive). Such a call was interrupted (Ctrl-C, a kill, the outer tick bound)
+ * before it booked its row, and outside the delivery lane nothing else settles it, so
+ * it would hold both caps for good. Each gets the row the shell crash path books
+ * (config/14-usage.sh gaffer_usage_settle_crashed): a labelled kill ESTIMATE, the P10 of
+ * the factory's measured history for that kind, else GAFFER_KILL_ESTIMATE_USD (default
+ * 0.05), naming the reservation in `settles`. With the estimate turned off
+ * (GAFFER_KILL_ESTIMATE_USD=0 and no history) the row is an unknown-cost row, which
+ * refuses launches until the operator reconciles (fail closed, as the crash path does).
+ * Never touched: a reservation from another host, one with no usable pid, one whose
+ * launcher is alive or cannot be told from a reused pid (no recorded start time). Must
+ * run under the admission lock. Returns the ids it settled.
+ */
+export function settleDeadReservations(ledgerPath, env = process.env, host = hostname()) {
+  const spend = ledgerSpend(env);
+  if (spend.unknown || !spend.reservations?.length) return [];
+  let text;
+  try {
+    text = readFileSync(ledgerPath, "utf8");
+  } catch {
+    return [];
+  }
+  const rawKill = String(env.GAFFER_KILL_ESTIMATE_USD ?? "").trim();
+  const floor = rawKill === "" ? KILL_ESTIMATE_DEFAULT : Number(rawKill);
+  const done = [];
+  for (const r of spend.reservations) {
+    if (!r || r.host !== host) continue;
+    const pid = Number(r.pid);
+    if (!Number.isInteger(pid) || pid <= 0) continue;
+    if (launcherAlive(r, host)) continue;
+    const kind = typeof r.launch_kind === "string" && r.launch_kind ? r.launch_kind : null;
+    let est = null;
+    let basis = null;
+    const hist = killEstimateFromHistory(text, kind);
+    if (hist != null && hist > 0) {
+      est = hist;
+      basis = "history-p10";
+    } else if (finitePos(floor)) {
+      est = floor;
+      basis = "flat-floor";
+    }
+    const row = {
+      ts: new Date().toISOString(),
+      ticket: r.ticket ?? null,
+      kind,
+      measured: false,
+      unknown_reason: `the launcher (pid ${pid}) exited before booking this call; settled by the next admission`,
+      models: "unknown",
+      total_cost_usd: "unknown",
+      num_turns: "unknown",
+      duration_ms: "unknown",
+      ...(est != null ? { estimated: true, estimated_cost_usd: est, estimate_basis: basis } : {}),
+      settles: r.reservation_id,
+      settled_by: "admission",
+    };
+    if (appendRow(ledgerPath, row)) done.push(r.reservation_id);
+  }
+  return done;
+}
+
+/**
  * The admission check AND, when it admits under a cap, the reservation row, as one
  * locked step. Returns the admission (`ok`, `reason`, ...) plus `reservation:
  * { id, usd, basis }` when one was booked. No cap (the GAFFER_ALLOW_UNCAPPED opt-out)
@@ -637,6 +764,13 @@ export function reservePaidLaunch({
   const held = withAdmissionLock(
     ledgerPath,
     () => {
+      // Interrupted calls first: a reservation whose launcher is gone holds headroom no
+      // call will ever use (settleDeadReservations books its kill estimate instead).
+      const settled = settleDeadReservations(ledgerPath, env);
+      if (settled.length)
+        process.stderr.write(
+          `gaffer: budget: settled ${settled.length} reservation(s) of launchers no longer running with a kill estimate (${settled.join(", ")})\n`,
+        );
       const d = paidLaunchAdmission({ kind, env, now: new Date(), worstUsd });
       if (!d.ok) return d;
       const id = `r-${Date.now().toString(36)}-${randomBytes(5).toString("hex")}`;
@@ -657,6 +791,10 @@ export function reservePaidLaunch({
       // pid reused by another process for the launcher (lib/usage-ledger.mjs).
       const st = pidStartTime(row.pid);
       if (st !== null) row.pid_start = st;
+      // And its pid namespace, so a launcher in a container that shares this hostname is
+      // never read as dead from outside it (launcherAlive).
+      const ns = pidNamespace(row.pid);
+      if (ns !== null) row.pid_ns = ns;
       if (!appendRow(ledgerPath, row))
         return {
           ok: false,
@@ -741,7 +879,10 @@ function main(argv) {
           kind,
           worstUsd,
           ticket: opt("--ticket"),
-          pid: opt("--pid"),
+          // The launcher is the process that asked: this CLI exits as soon as it has
+          // answered, so its own pid would read as a dead launcher at once and the next
+          // admission would settle a call that is still running.
+          pid: /^\d+$/.test(String(opt("--pid") ?? "")) ? opt("--pid") : process.ppid,
           remember: false,
         })
       : paidLaunchAdmission({ kind, worstUsd });

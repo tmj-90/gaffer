@@ -13,6 +13,8 @@
 #       attempt_count 0, the no-commit counter untouched, no branch left
 #   B2. a daily cap already spent: the same (whether the tick's own cap gate or the
 #       launch admission is the one that refuses)
+#   B3. attempt 1 paid and failed its gate, attempt 2 refused by the cap: the tick does
+#       not report no_work (its day slot must not be refunded)
 # Run: bash runner/test/budget-refused-delivery.test.sh
 # =====================================================================
 set -uo pipefail
@@ -59,6 +61,24 @@ T="$(new_ready "Add helper capped" "add a helper")"
 printf '{"ts":"%s","kind":"delivery","total_cost_usd":9}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GAFFER_DATA/usage-ledger.jsonl"
 export GAFFER_DAILY_BUDGET_USD=1
 check B2 "$T" "$(run_tick)"
+
+echo "== B3. rework attempt 2 refused after a PAID attempt 1: the tick is not no_work =="
+# Audit finding 8a: attempt 1 ran (a paid call, $0.02 at the stub) and failed its gate;
+# the daily cap ($0.02) then refuses attempt 2 at the launch admission. The tick spent,
+# so it must not report no_work: loop.sh refunds a no_work tick's day slot.
+rm -f "$GAFFER_DATA/.failed-tickets" "$GAFFER_DATA/usage-ledger.jsonl"
+T="$(new_ready "Add helper rework" "add a helper")"
+echo break-test > "$MODE"
+MARK3="$(wc -l < "$GAFFER_DATA/factory.log" | tr -d ' ')"
+R3="$(GAFFER_MAX_DELIVERY_ATTEMPTS=3 GAFFER_MAX_NOCOMMIT_FAILURES=3 GAFFER_DAILY_BUDGET_USD=0.02 run_tick)"
+echo deliver > "$MODE"
+[ "$(deliveries)" = 1 ] && ok "B3: attempt 1 ran (one paid delivery call)" || fail "B3: $(deliveries) delivery call(s)"
+grep -q "BUDGET: #[0-9]* .* the paid delivery launch was refused" <<<"$(tail -n +"$((MARK3 + 1))" "$GAFFER_DATA/factory.log")" \
+  && ok "B3: attempt 2 was refused by the budget admission" || fail "B3: no budget refusal for attempt 2 ($R3)"
+[ "$R3" != "TICK_RESULT=no_work" ] && ok "B3: the tick reports ${R3#TICK_RESULT=}, not no_work (a paid attempt ran)" \
+  || fail "B3: a tick with a paid attempt reported no_work (its day slot would be refunded)"
+( source "$RUNNER_DIR/lib/budget.sh" 2>/dev/null; gaffer_tick_counts_toward_day_cap "${R3#TICK_RESULT=}" ) \
+  && ok "B3: and that result counts toward MAX_TICKS_PER_DAY" || fail "B3: ${R3#TICK_RESULT=} is refunded"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "PASS ($PASS checks)"; exit 0; fi

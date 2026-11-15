@@ -40,7 +40,7 @@ echo "== bump + persistence =="
 gaffer_bump_day_count
 gaffer_bump_day_count
 [ "$(gaffer_day_count)" = "2" ] && ok "two bumps → count 2" || fail "count should be 2 (got $(gaffer_day_count))"
-grep -q "$(date +%Y-%m-%d) 2" "$DAILY_COUNTER_FILE" && ok "today's count persisted to file" || fail "file should hold today's date + count"
+grep -q "$(date -u +%Y-%m-%d) 2" "$DAILY_COUNTER_FILE" && ok "today's count persisted to file" || fail "file should hold today's date + count"
 # Re-source to simulate a fresh loop.sh run reading the same persisted file.
 source "$RUNNER_DIR/lib/budget.sh"
 [ "$(gaffer_day_count)" = "2" ] && ok "count survives re-source (across runs)" || fail "count should survive re-source"

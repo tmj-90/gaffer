@@ -114,15 +114,15 @@ _gaffer_poll_lock_stale_after() {
   case "$_g" in ''|*[!0-9]*|0) _g=30 ;; esac
   printf '%s' "$(( _o + _g + 60 ))"
 }
-# Remove an abandoned poll lock: through the guarded takeover when factory.config.sh
-# is loaded (always, in the runner), else the plain removal this file had before.
+# Remove an abandoned poll lock through the guarded takeover (factory.config.sh is
+# always loaded in the runner). Without it the lock is not taken over: a plain removal
+# is the race the guard exists for (two waiters both removing and both holding).
 _gaffer_poll_lock_reap() {
   if declare -F _gaffer_lock_reap >/dev/null 2>&1; then
     _gaffer_lock_reap "$@"
     return $?
   fi
-  rm -rf "$1" 2>/dev/null || true
-  return 0
+  return 1
 }
 gaffer_poll_lock_acquire() {
   local _lock="${GAFFER_DATA:?}/.poll.lock.d" _pid _said=0 _waited=0 _nopid=0 _age _stale

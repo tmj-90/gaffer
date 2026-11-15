@@ -80,9 +80,10 @@ gaffer_is_self_target() {
 : "${MAX_TICKS:=5}"           # hard cap on ticks per loop run (cost guard)
 : "${EMPTY_POLL_LIMIT:=2}"    # stop after this many consecutive empty polls (no_work, or an idle maintenance tick that filed nothing)
 : "${TICK_SLEEP:=30}"         # seconds between ticks
-# Per-CALENDAR-DAY tick cap across loop.sh runs (overnight cost guard): MAX_TICKS
+# Per-CALENDAR-DAY (UTC) tick cap across loop.sh runs (overnight cost guard): MAX_TICKS
 # bounds one run, but launchd re-runs loop.sh, so this bounds the whole day's
-# spend. The count persists in DAILY_COUNTER_FILE and resets each day. 0 = off.
+# spend. The count persists in DAILY_COUNTER_FILE and resets each UTC day, the same
+# day the USD cap below uses. 0 = off.
 : "${MAX_TICKS_PER_DAY:=50}"
 DAILY_COUNTER_FILE="${DAILY_COUNTER_FILE:-$GAFFER_DATA/.daily-ticks}"
 # Per-CALENDAR-DAY (UTC) USD spend ceiling (Part B). MAX_TICKS_PER_DAY bounds the

@@ -194,6 +194,28 @@ The rest is the same as the [quickstart](../quickstart.md#5-run-the-factory):
 dollar cap. Strict mode and the sandbox providers are in
 [docs/sandbox.md](../docs/sandbox.md).
 
+### Abandoned delivery branches
+
+Before a tick measures a repo's branch pressure it sweeps the `gaffer/ticket-<n>-...`
+branches of tickets marked Won't do. It never deletes them. A branch is swept only when
+all of these hold: the ticket reads `cancelled`, this factory's own branch ledger
+(`$GAFFER_DATA/branch-ledger.tsv`) says it cut exactly that branch for that ticket (by
+ticket id, so a reset factory or a second data dir on the same checkout never touches an
+older factory's branch), the branch was never kept for rework or a pause (a "preserved"
+row), no delivery row names it, it is unmerged, and no worktree has it checked out.
+Won't do can be undone, so a swept branch is moved, not dropped: its tip is written to
+`refs/gaffer/abandoned/<branch>-<sha12>` first, and the factory log says so
+(`SWEEP: archived abandoned branch ...`). To bring one back:
+
+```bash
+git for-each-ref refs/gaffer/abandoned/          # list archived branches
+git branch gaffer/ticket-7-add-login refs/gaffer/abandoned/gaffer/ticket-7-add-login-<sha12>
+git update-ref -d refs/gaffer/abandoned/<...>    # drop one for good
+```
+
+Branches cut before the ledger existed have no row and are kept; a cancelled ticket's
+branch does not count toward the branch cap either way.
+
 ---
 
 ## Reference

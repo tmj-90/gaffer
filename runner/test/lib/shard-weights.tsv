@@ -90,6 +90,7 @@
 59	self-op-ban-integration.test.sh
 55	auth-gate-delivery.test.sh
 55	concurrency-bookkeeping.test.sh
+55	lock-takeover-race.test.sh
 49	cli-contract-regression.test.sh
 48	merge-ticket.test.mjs
 47	replay-recovery.test.mjs
@@ -123,7 +124,7 @@
 27	pr-create-e2e.test.sh
 26	tick-parked-result.test.sh
 24	auto-merge.test.sh
-23	budget-refused-delivery.test.sh
+36	budget-refused-delivery.test.sh
 23	model-routing.test.sh
 23	usage-pause.test.sh
 22	bootstrap-hook-fail-closed.test.sh
@@ -133,6 +134,7 @@
 22	recall-feedback.test.sh
 21	gaffer-colour.test.sh
 21	memory-audit-path.test.sh
+20	close-kill-after-submit.test.sh
 20	gaffer-lore.test.sh
 20	onboard-boundary.test.sh
 19	budget-admission.test.sh
@@ -142,6 +144,7 @@
 17	day-cap-no-work.test.sh
 17	direct-run-isolation.test.sh
 17	e2e-lifecycle.test.sh
+17	land-mark-merged-failure.test.sh
 16	parallel-claim.test.sh
 16	registry-probe.test.sh
 15	agent-self-submit.test.sh
@@ -270,6 +273,7 @@
 2	select-skills.test.mjs
 2	skills-dedup.test.sh
 2	skills-wiring.test.sh
+2	budget-dead-reservation.test.mjs
 1	agent-env-scrub.test.sh
 1	agent-env-shell.test.sh
 1	agent-env.test.sh

@@ -235,7 +235,11 @@ gaffer_tick_claim_candidate() {
       # instead excluded from the pressure count itself, and the candidate's own
       # preserved branch is bypassed (it gets reused, not added) — so parked work
       # never starves the repo. Then measure pressure.
-      gaffer_sweep_abandoned_branches "$_crepo" "${_cdef:-main}" >/dev/null 2>&1 || true
+      # Every archived branch is logged with the ref that keeps its commits.
+      while IFS=$'\t' read -r _swb _swref; do
+        [ -n "$_swb" ] || continue
+        log "SWEEP: archived abandoned branch $_swb of a cancelled ticket in '${_cname:-$_crepo}' to $_swref (restore: git branch $_swb $_swref)"
+      done < <(gaffer_sweep_abandoned_branches "$_crepo" "${_cdef:-main}" 2>/dev/null || true)
       read -r _pb _pr _pc <<< "$(gaffer_repo_pressure "$_crepo" "${_cdef:-main}" "$_cname" "$_cand")"
       if gaffer_repo_in_backpressure "${_pb:-0}" "${_pr:-0}" "${_pc:-0}"; then
         _gaffer_locked .bp.lock _gaffer_bp_record "$BP_FILE" "${_cname:-$_crepo}" "$_pb/$_pr/$_pc" "$GAFFER_BACKPRESSURE_REASON"

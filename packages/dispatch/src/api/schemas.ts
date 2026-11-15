@@ -1148,6 +1148,21 @@ export const createPrincipalBody = z.object({
 });
 export type CreatePrincipalBody = z.infer<typeof createPrincipalBody>;
 
+/**
+ * Body for POST /api/principal-signatures/resign: SEALED PRINCIPALS, a person re-signs
+ * principals the factory does not honour. `names` (ids or names) or `all` (every unsigned
+ * principal whose creation is on record), not both.
+ */
+export const resignPrincipalsBody = z
+  .object({
+    names: z.array(z.string().trim().min(1).max(200)).max(200).optional(),
+    all: z.boolean().optional(),
+  })
+  .refine((b) => (b.all === true) !== (b.names?.length ?? 0) > 0, {
+    message: "pass names or all, exactly one",
+  });
+export type ResignPrincipalsBody = z.infer<typeof resignPrincipalsBody>;
+
 // --- Squad (club identity + agent display names; presentation only) --------
 
 /** A kit colour: `#rgb` or `#rrggbb` (stored as lowercase `#rrggbb`); "" clears. */

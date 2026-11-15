@@ -7,6 +7,17 @@
 import { inTransaction } from "../db/connection.js";
 import { type Actor } from "../domain/types.js";
 import { writeEvent } from "../events/eventWriter.js";
+import { GateKeyError } from "../events/gateSeal.js";
+import {
+  matchingCreationEvent,
+  readPrincipalRow,
+  retirePrincipalSeal,
+  sealPrincipal,
+  unsignedPrincipalMessage,
+  unsignedPrincipals,
+  verifyPrincipal,
+  type UnsignedPrincipal,
+} from "../events/principalSeal.js";
 import {
   type PrincipalActorType,
   type PrincipalCapability,
@@ -36,8 +47,27 @@ import type { Dispatch } from "../core.js";
 /** What these functions read from the {@link Dispatch} facade they are handed. */
 export type PrincipalAdminHost = Pick<
   Dispatch,
-  "clock" | "db" | "getDecision" | "principals" | "repos" | "resolveTicket" | "tickets"
+  | "clock"
+  | "db"
+  | "gateKeyring"
+  | "getDecision"
+  | "principals"
+  | "repos"
+  | "resolveTicket"
+  | "tickets"
 >;
+
+/** A key this process may not sign with: the whole act rolls back. */
+function refuseSealKey(e: unknown): never {
+  if (e instanceof GateKeyError) {
+    throw new DispatchError(
+      "GATE_KEY_REFUSED",
+      `Nothing was recorded: ${e.message}. Principals are signed with the factory key on the host (gaffer setup creates it).`,
+      { reason: e.why },
+    );
+  }
+  throw e;
+}
 
 /**
  * Mint a named bearer credential bound to an actor identity and a capability.
@@ -127,7 +157,7 @@ export function createPrincipal(
       scopeRepos: scopeRepos?.map((r) => r.id),
       scopeTickets: scopeTickets?.map((t) => t.id),
     });
-    writeEvent(host.db, {
+    const eventId = writeEvent(host.db, {
       entity_type: "principal",
       entity_id: row.id,
       actor,
@@ -141,6 +171,13 @@ export function createPrincipal(
         ...(scopeTickets ? { scope_tickets: scopeTickets.map((t) => t.number) } : {}),
       },
     });
+    // SEALED PRINCIPALS: the row is honoured only with this seal (same transaction: a key
+    // that cannot be used rolls the whole creation back).
+    try {
+      sealPrincipal(host.db, host.gateKeyring, row.id, eventId, now);
+    } catch (e) {
+      refuseSealKey(e);
+    }
     return row;
   });
   return { principal, token };
@@ -169,6 +206,9 @@ export function revokePrincipal(
   const now = host.clock.now();
   return inTransaction(host.db, () => {
     host.principals.revoke(row.id, now);
+    // SEALED PRINCIPALS: the seal is retired with the revocation, and the revocation event
+    // supersedes any copy of it restored later.
+    retirePrincipalSeal(host.db, row.id);
     writeEvent(host.db, {
       entity_type: "principal",
       entity_id: row.id,
@@ -330,6 +370,14 @@ export function resolvePrincipalToken(
 ): { principal: PrincipalView; actor: Actor } | null {
   const row = host.principals.findActiveByHash(hashPrincipalToken(token));
   if (!row) return null;
+  // SEALED PRINCIPALS: an active row is a principal only with a valid seal under the
+  // factory key; anything else is refused exactly like an unknown token. Never creates a
+  // key or a seal.
+  const check = verifyPrincipal(host.db, host.gateKeyring, row.id);
+  if (!check.ok) {
+    logUnsignedPrincipal(row.id, row.name, check);
+    return null;
+  }
   const now = host.clock.now();
   if (!row.last_used_at || Date.parse(now) - Date.parse(row.last_used_at) > 60_000) {
     try {
@@ -339,4 +387,128 @@ export function resolvePrincipalToken(
     }
   }
   return { principal: row, actor: principalActor(row) };
+}
+
+/** One server-side line per principal and reason per process (not one per request). */
+const LOGGED_UNSIGNED = new Set<string>();
+function logUnsignedPrincipal(
+  id: string,
+  name: string,
+  check: Parameters<typeof unsignedPrincipalMessage>[1],
+): void {
+  const key = `${id}:${check.ok ? "" : check.failure}`;
+  if (LOGGED_UNSIGNED.has(key)) return;
+  LOGGED_UNSIGNED.add(key);
+  try {
+    process.stderr.write(`dispatch: sign-in refused: ${unsignedPrincipalMessage(name, check)}\n`);
+  } catch {
+    // logging never decides authentication
+  }
+}
+
+/** Every active principal this factory does not honour (doctor, the dashboard callout). */
+export type UnsignedPrincipalView = UnsignedPrincipal;
+export function listUnsignedPrincipals(host: PrincipalAdminHost): UnsignedPrincipal[] {
+  return unsignedPrincipals(host.db, host.gateKeyring);
+}
+
+export interface ResignResult {
+  resigned: Array<{ id: string; name: string; event_id: string }>;
+  skipped: Array<{ id: string; name: string; reason: string }>;
+}
+
+/**
+ * RE-SIGN principals the factory does not honour (created before signing, restored from a
+ * backup, or written outside the factory): a PERSON's deliberate act, operator only (the
+ * REST and CLI gates refuse every principal token; the safety hook denies the verb to
+ * agents). Each re-signed row gets a `principal.resigned` event and a fresh seal in one
+ * transaction. Nothing is ever signed on upgrade or on a read.
+ *
+ * `all`: every active unsigned principal whose `principal.created` event is on record and
+ * matches the row; one without such an event (the shape of a row written straight into
+ * the database) is skipped and must be named on purpose. `names`: exactly those (a revoked
+ * or unknown one is refused; an already signed one is skipped).
+ */
+export function resignPrincipals(
+  host: PrincipalAdminHost,
+  input: { names?: readonly string[] | undefined; all?: boolean | undefined },
+  actor: Actor,
+): ResignResult {
+  const names = (input.names ?? []).map((n) => String(n).trim()).filter((n) => n !== "");
+  if (!input.all && names.length === 0) {
+    throw new DispatchError(
+      "VALIDATION_ERROR",
+      "Name the principals to re-sign, or pass --all (every unsigned principal whose creation is on record).",
+    );
+  }
+  if (input.all && names.length > 0) {
+    throw new DispatchError("VALIDATION_ERROR", "Pass names or --all, not both.");
+  }
+  const targets: Array<{ id: string; name: string; explicit: boolean }> = [];
+  if (input.all) {
+    for (const u of unsignedPrincipals(host.db, host.gateKeyring)) {
+      targets.push({ id: u.id, name: u.name, explicit: false });
+    }
+  } else {
+    for (const ref of names) {
+      const row = host.principals.get(ref) ?? host.principals.getByName(ref);
+      if (!row) throw notFound("principal", ref);
+      if (row.revoked_at) {
+        throw new DispatchError(
+          "STATE_CONFLICT",
+          `Principal '${row.name}' is revoked; a revoked principal is never re-signed (create a new one). Nothing was re-signed.`,
+          { name: row.name },
+        );
+      }
+      targets.push({ id: row.id, name: row.name, explicit: true });
+    }
+  }
+  const result: ResignResult = { resigned: [], skipped: [] };
+  const now = host.clock.now();
+  inTransaction(host.db, () => {
+    for (const t of targets) {
+      const before = verifyPrincipal(host.db, host.gateKeyring, t.id);
+      if (before.ok) {
+        result.skipped.push({ id: t.id, name: t.name, reason: "already signed" });
+        continue;
+      }
+      const row = readPrincipalRow(host.db, t.id);
+      if (!row || row.revoked_at !== null) {
+        result.skipped.push({ id: t.id, name: t.name, reason: "revoked" });
+        continue;
+      }
+      const created = matchingCreationEvent(host.db, row);
+      if (!created && !t.explicit) {
+        result.skipped.push({
+          id: t.id,
+          name: t.name,
+          reason:
+            "no matching principal.created event on record (the shape of a row written outside the factory): review it and re-sign it by name, or revoke it",
+        });
+        continue;
+      }
+      const eventId = writeEvent(host.db, {
+        entity_type: "principal",
+        entity_id: t.id,
+        actor,
+        event_type: "principal.resigned",
+        payload: {
+          name: row.name,
+          capability: row.capability,
+          actor_type: row.actor_type,
+          actor_id: row.actor_id,
+          scoped: row.scope_repos !== null || row.scope_tickets !== null,
+          creation_event: created,
+          was: before.failure,
+        },
+      });
+      try {
+        sealPrincipal(host.db, host.gateKeyring, t.id, eventId, now);
+      } catch (e) {
+        refuseSealKey(e);
+      }
+      result.resigned.push({ id: t.id, name: t.name, event_id: eventId });
+    }
+  });
+  return result;
 }

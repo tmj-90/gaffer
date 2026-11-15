@@ -235,6 +235,38 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     ],
   },
 
+  {
+    method: "GET",
+    path: "/api/principal-signatures",
+    tag: T.config,
+    summary: "Principals this factory does not honour",
+    description:
+      "Every active principal without a valid signature under the factory key (created before signing, restored from a backup, or written outside the factory), with why (`failure`, `detail`) and whether a matching `principal.created` event is on record (`creation_event`). Such a principal is refused like an unknown token until a person re-signs it. Never carries token material.",
+    capability: "read",
+    responses: [ok("`{ unsigned: UnsignedPrincipal[] }`.")],
+  },
+  {
+    method: "POST",
+    path: "/api/principal-signatures/resign",
+    tag: T.config,
+    summary: "Re-sign principals (a person's act)",
+    description:
+      "Signs the named principals (`names`, ids or names), or every unsigned principal whose `principal.created` event is on record and matches it (`all`; one without is skipped and must be named), with a `principal.resigned` event each. A revoked principal is refused (409). Shared operator token only: a principal token is refused. Nothing is ever signed on upgrade or on a read.",
+    capability: "full",
+    body: "resignPrincipalsBody",
+    responses: [
+      ok("`{ resigned: [{ id, name, event_id }], skipped: [{ id, name, reason }] }`."),
+      invalid,
+      notFound,
+      principalAdminRequired,
+      {
+        status: 409,
+        description: "A named principal is revoked (`STATE_CONFLICT`).",
+        content: "json",
+      },
+    ],
+  },
+
   // --- /api configuration ----------------------------------------------------
   {
     method: "GET",

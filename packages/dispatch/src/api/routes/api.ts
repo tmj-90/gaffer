@@ -17,6 +17,7 @@ import { DispatchError, notFound } from "../../util/errors.js";
 import {
   autonomyPolicyBody,
   createPrincipalBody,
+  resignPrincipalsBody,
   idleLoopsBody,
   memoryLoreQuery,
   rejectLoreBody,
@@ -179,6 +180,22 @@ export async function routeApi(
     if (refuseIfPrincipal(req, res)) return;
     const principal = wg.revokePrincipal(segments[2] ?? "", apiActor());
     sendJson(res, 200, { principal });
+    return;
+  }
+  // SEALED PRINCIPALS — GET /api/principal-signatures lists the active principals this
+  // factory does not honour (created before signing, restored from a backup, or written
+  // outside the factory), with why; POST /api/principal-signatures/resign is a person's
+  // deliberate re-sign, operator only like minting (a principal token is refused).
+  if (segments.length === 2 && segments[1] === "principal-signatures") {
+    if (method !== "GET") return methodNotAllowed(res);
+    sendJson(res, 200, { unsigned: wg.listUnsignedPrincipals() });
+    return;
+  }
+  if (segments.length === 3 && segments[1] === "principal-signatures" && segments[2] === "resign") {
+    if (method !== "POST") return methodNotAllowed(res);
+    if (refuseIfPrincipal(req, res)) return;
+    const body = resignPrincipalsBody.parse(await readJsonBody(req));
+    sendJson(res, 200, wg.resignPrincipals({ names: body.names, all: body.all }, apiActor()));
     return;
   }
   // SQUAD — the operator's team identity for the dashboard's Match Day view.
@@ -555,7 +572,7 @@ function refuseIfPrincipal(_req: IncomingMessage, res: ServerResponse): boolean 
     403,
     errorBody(
       "PRINCIPAL_ADMIN_REQUIRED",
-      "Only the shared operator token (or the local CLI) may create or revoke principals.",
+      "Only the shared operator token (or the local CLI) may create, revoke or re-sign principals.",
     ),
   );
   return true;

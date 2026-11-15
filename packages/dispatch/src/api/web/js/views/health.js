@@ -151,18 +151,24 @@ function firstPassTile(fp, wd) {
     notes.push(
       `${pct(strict.rate_pct)} counting the runner's own retries (${strict.first_pass} of ${fp.done}).`,
     );
-  const h = fp.by_approver?.human;
-  const a = fp.by_approver?.agent;
-  if (fp.done && h && a)
-    notes.push(
-      `Approved by a person: ${h.first_pass} of ${h.done}; by an agent: ${a.first_pass} of ${a.done}.`,
-    );
+  // Only the approvers who accepted something: "by an agent: 0 of 0" is no figure.
+  const split = [
+    ["a person", fp.by_approver?.human],
+    ["an agent", fp.by_approver?.agent],
+    ["the system", fp.by_approver?.system],
+  ]
+    .filter(([, x]) => x && x.done > 0)
+    .map(([who, x]) => `by ${who}: ${x.first_pass} of ${x.done}`);
+  if (fp.done && split.length) notes.push(`Approved ${split.join("; ")}.`);
   const why = fp.done ? noDeltaWhy(fp.done, prev?.done, beforeOf(wd)) : "";
+  // Nothing accepted: a dash and the reason, not "0 of 0" marked as a small sample.
+  const counted = fp.done > 0;
   return utcSpark(
     measureTile({
       label,
-      k: fp.first_pass ?? 0,
-      n: fp.done ?? 0,
+      value: counted ? undefined : null,
+      k: counted ? fp.first_pass ?? 0 : undefined,
+      n: counted ? fp.done : undefined,
       nLabel: "with no send-back",
       period: periodOf(fp.window_days ?? wd),
       delta: prev
@@ -280,8 +286,10 @@ function escapedTile(esc, wd) {
   return utcSpark(
     measureTile({
       label,
-      k,
-      n,
+      // Nothing accepted: a dash and the reason, not "0 of 0" marked as a small sample.
+      value: n > 0 ? undefined : null,
+      k: n > 0 ? k : undefined,
+      n: n > 0 ? n : undefined,
       nLabel: "came back as a regression",
       period: periodOf(esc.window_days ?? wd),
       delta: prev

@@ -322,6 +322,30 @@ describe("web: Health shows the four top-level measures", () => {
     expect(measure("Escaped-defect rate")?.value).toBe("\u2014");
     expect(measure("Escaped-defect rate")?.note).toBe("Nothing was accepted in this window.");
     expect(document.querySelector(".measure-strip")?.textContent).not.toMatch(/\b0%/);
+    // No count of nothing marked as a small sample beside the dash.
+    expect(document.querySelector(".measure-strip")?.textContent).not.toMatch(/0 of 0/);
+    expect(document.querySelector(".measure-strip .mt-small")).toBeNull();
+  });
+
+  it("names only the approvers who accepted something (never 'by an agent: 0 of 0')", async () => {
+    healthPayload = {
+      ...(DEGRADED_HEALTH as object),
+      first_pass: {
+        ...MEASURES.first_pass,
+        done: 12,
+        first_pass: 11,
+        rate_pct: 91.7,
+        by_approver: {
+          human: { done: 12, first_pass: 11, rate_pct: 91.7 },
+          agent: { done: 0, first_pass: 0, rate_pct: null },
+          system: { done: 0, first_pass: 0, rate_pct: null },
+        },
+      },
+    };
+    await loadApp();
+    const note = measure("First-pass acceptance")?.note ?? "";
+    expect(note).toContain("Approved by a person: 11 of 12.");
+    expect(note).not.toMatch(/0 of 0/);
   });
 });
 

@@ -1,7 +1,13 @@
 # Releasing Gaffer
 
 A release is a git tag. Pushing `vX.Y.Z` runs `.github/workflows/release.yml`, which
-builds and tests the tagged commit and publishes, from that commit alone:
+builds and tests the tagged commit and publishes, from that commit alone. It runs as two
+jobs: `build` (a read-only token) installs, tests and packs the assets; `publish` (the
+only job with `contents: write` and `packages: write`) runs no repository test or script,
+checks the assets against the build job's `SHA256SUMS`, builds and pushes the image and
+creates the release. The image's base is pinned by digest and the Claude Code CLI by
+`ARG CLAUDE_CODE_VERSION` (bump both as their Dockerfile comments say; Dependabot
+proposes base digests, the CLI pin is bumped by hand).
 
 | Artifact                                  | Where                                                            |
 | ----------------------------------------- | ---------------------------------------------------------------- |

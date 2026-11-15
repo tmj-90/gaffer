@@ -78,6 +78,7 @@
 84	e2e-memory-routing.test.sh
 70	sandbox-docker-delivery-seam.test.sh
 65	rework-final-trail.test.sh
+70	rework-feedback-quarantine.test.sh
 64	e2e-release-gate-ci-required.test.sh
 64	setup-error-circuit.test.sh
 63	e2e-release-gate-epic-verdict.test.sh

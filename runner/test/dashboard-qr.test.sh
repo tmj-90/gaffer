@@ -19,6 +19,8 @@
 # Run: bash test/dashboard-qr.test.sh
 # =====================================================================
 . "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tty.sh"     # gaffer_test_tty: stdout on a pty
+. "$(dirname "${BASH_SOURCE[0]}")/lib/skip.sh"    # gaffer_skip
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -97,12 +99,14 @@ for d in "${_pdirs[@]}"; do
 done
 
 run_gaffer() {
-  # $1 = data dir, $2 = PATH to use, rest = gaffer args. Captures stdout+stderr.
+  # $1 = data dir, $2 = PATH to use, rest = gaffer args. Captures stdout+stderr, with
+  # stdout on a terminal (the token and its QR are printed only to one).
   local data="$1"; local usepath="$2"; shift 2
   mkdir -p "$data"
-  PATH="$usepath" GAFFER_DATA="$data" GAFFER_HOME="$RUNNER_DIR/.." \
+  gaffer_test_tty env PATH="$usepath" GAFFER_DATA="$data" GAFFER_HOME="$RUNNER_DIR/.." \
     bash "$RUNNER_DIR/gaffer" dashboard "$@" 2>&1
 }
+gaffer_test_tty_available || gaffer_skip "no script(1) to give the launcher a terminal"
 
 echo "== AC1: qrencode present → QR of the URL WITH token embedded =="
 out_present="$(run_gaffer "$WORK/data-present" "$FAKES:$QRDIR:$PATH" --lan)"; rc_present=$?
@@ -127,6 +131,19 @@ if [ "$rc_absent" -eq 0 ] \
 else
   fail "absent-qrencode path did not degrade gracefully (rc=$rc_absent)"
   printf '    --- output ---\n%s\n    --------------\n' "$out_absent"
+fi
+
+echo "== not a terminal: neither the token nor a QR of it is printed =="
+mkdir -p "$WORK/data-pipe"
+out_pipe="$(PATH="$FAKES:$QRDIR:$PATH" GAFFER_DATA="$WORK/data-pipe" GAFFER_HOME="$RUNNER_DIR/.." \
+  bash "$RUNNER_DIR/gaffer" dashboard --lan 2>&1)"; rc_pipe=$?
+TOK_PIPE="$(cat "$WORK/data-pipe/dashboard-token" 2>/dev/null)"
+if [ "$rc_pipe" -eq 0 ] && [ -n "$TOK_PIPE" ] && ! grep -qF "$TOK_PIPE" <<<"$out_pipe" \
+   && ! grep -qF "$QRMARK" <<<"$out_pipe" && grep -qF "$WORK/data-pipe/dashboard-token" <<<"$out_pipe"; then
+  ok "a log gets the token file, not the token or its QR"
+else
+  fail "non-terminal --lan output carried the token or a QR, or named no token file (rc=$rc_pipe)"
+  printf '    --- output ---\n%s\n    --------------\n' "$out_pipe"
 fi
 
 # PROOF (static): the QR block is guarded by `command -v qrencode` so its absence

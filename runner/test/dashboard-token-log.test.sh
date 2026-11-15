@@ -11,11 +11,13 @@
 #   • an existing 0755 dir and 0644 log (an older install) are tightened;
 #   • a log that already leaked a token is deleted and the token ROTATED (the
 #     leaked value no longer authenticates);
-#   • the already-up path keeps the log 0600 and re-prints the ?token= login URL.
+#   • the already-up path keeps the log 0600 and re-prints how to log in (the ?token=
+#     login URL on a terminal, the token file otherwise, so a log never keeps it).
 # Needs packages/dispatch built (dist/api/bin.js) and curl; skips cleanly otherwise.
 # Run: bash test/dashboard-token-log.test.sh
 # =====================================================================
 . "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tty.sh"     # gaffer_test_tty: stdout on a pty
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -58,14 +60,22 @@ code="$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $NEW" "
 grep -qF "$NEW" "$DATA/dashboard.log" && fail "the new token was written to dashboard.log" || ok "the token is NOT in dashboard.log"
 grep -qF "$LEAKED" "$DATA/dashboard.log" && fail "the leaked token survived in dashboard.log" || ok "the leaked log line is gone"
 grep -q "dashboard-token" "$DATA/dashboard.log" && ok "the log names the token FILE instead" || fail "log does not reference the token file: $(cat "$DATA/dashboard.log")"
-[[ "$OUT" == *"?token=$NEW"* ]] && ok "gaffer dashboard still prints the login URL" || fail "no ?token= login URL: $OUT"
+[[ "$OUT" != *"$NEW"* ]] && [[ "$OUT" == *"$DATA/dashboard-token"* ]] \
+  && ok "a non-terminal stdout gets the token FILE, never the token" || fail "login hint wrong (token printed, or no token file named): $OUT"
 
 echo "== already up: the log stays 0600 =="
 chmod 644 "$DATA/dashboard.log"
 OUT="$(dash)"
 [[ "$OUT" == *"already up"* ]] && [ "$(mode "$DATA/dashboard.log")" = "600" ] \
   && ok "already-up path re-tightens the log to 0600" || fail "already up: mode $(mode "$DATA/dashboard.log") out=$OUT"
-[[ "$OUT" == *"?token=$NEW"* ]] && ok "already-up path prints the login URL again (?token=)" || fail "already up: no ?token= URL: $OUT"
+[[ "$OUT" != *"$NEW"* ]] && [[ "$OUT" == *"$DATA/dashboard-token"* ]] \
+  && ok "already-up path names the token file again (not the token: not a terminal)" || fail "already up: login hint wrong: $OUT"
+if gaffer_test_tty_available; then
+  TTY_OUT="$(gaffer_test_tty env GAFFER_DATA="$DATA" DISPATCH_API_PORT="$PORT" bash "$RUNNER_DIR/gaffer" dashboard 2>&1)"
+  [[ "$TTY_OUT" == *"?token=$NEW"* ]] && ok "on a terminal the already-up path prints the login URL again (?token=)" || fail "tty already up: no ?token= URL: $TTY_OUT"
+else
+  echo "  SKIP: no script(1) to give the launcher a terminal"
+fi
 stop_server
 
 echo "== a fresh factory: nothing leaks from the first start =="

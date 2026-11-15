@@ -1356,7 +1356,17 @@ try {
     const all = await allTicketRows();
     const open = all.filter((t) => !["done", "cancelled"].includes(t.status)).length;
     await page.goto(`${BASE}/#/floor`, { waitUntil: "load" });
-    await sleep(1200);
+    // Wait for the drawing itself (a bounded poll), not a fixed sleep: under load the
+    // Floor's reads can take longer than any sleep chosen here (REVIEW-P3 follow-up 6).
+    await page
+      .waitForFunction(
+        (n) =>
+          Boolean(document.querySelector("svg.fl-svg")) &&
+          (n === 0 || document.querySelectorAll("svg.fl-svg a.fl-parcel").length > 0),
+        open,
+        { timeout: 20000 },
+      )
+      .catch(() => null);
     const fl = await page.evaluate(() => {
       const ps = [...document.querySelectorAll("svg.fl-svg a.fl-parcel:not([data-status='done'])")];
       return {
@@ -1422,7 +1432,15 @@ try {
         const p3 = await c3.newPage();
         await p3.goto(`${BASE}/?token=${TOKEN}#/health`, { waitUntil: "load" });
         await p3.evaluate((t) => document.documentElement.setAttribute("data-theme", t), theme);
-        await sleep(900);
+        // Wait for the note (a bounded poll): Health can still say "Loading..." after a
+        // fixed 900 ms when the machine is busy (REVIEW-P3 follow-up 6).
+        await p3
+          .waitForFunction(
+            () => (document.querySelector(".usage-pause-note")?.textContent || "").trim().length,
+            null,
+            { timeout: 20000 },
+          )
+          .catch(() => null);
         const got = await p3.evaluate(() => {
           const n = document.querySelector(".usage-pause-note");
           return {

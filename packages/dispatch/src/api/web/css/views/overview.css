@@ -745,13 +745,10 @@
     font-size: var(--t14);
   }
 
-  /* The League table is the shared dataTable (A-34): the share done carries its count
-     beside the shared meter. */
-  .lt-table .lt-done {
-    display: inline-grid;
-    grid-template-columns: 40px auto;
-    align-items: center;
-    gap: 8px;
+  /* The League table is the shared dataTable (A-34): the share done carries its count. */
+  .lt-table .lt-done,
+  .lt-table .is-red {
+    white-space: nowrap;
   }
   .lt-table .is-red {
     color: var(--red);

@@ -2,7 +2,7 @@
 //
 // Views on the shared parts (audit A-31, A-32, A-34, A-35, A-36, A-42): the Overview's
 // League table is the one dataTable (numeric columns, the share done as "3 of 6 · 50%"
-// beside the shared meter, a missing spend as a dash with its reason), and the quiet
+// a missing spend as a dash with its reason), and the quiet
 // "nothing here" lines on the Overview's pages and a ground's page are the one inline
 // emptyState, not hand-rolled paragraphs.
 
@@ -16,7 +16,7 @@ const load = (f: string) =>
   import(`${pathToFileURL(path.join(VIEWS, f)).href}?t=${Date.now()}-${Math.random()}`);
 
 describe("web: views on the shared parts", () => {
-  it("the League table is a dataTable with the share done counted and metered", async () => {
+  it("the League table is a dataTable with the share done counted", async () => {
     document.body.innerHTML = `<main id="app"></main>`;
     const { leagueTable } = await load("programme.js");
     const f = {
@@ -35,7 +35,6 @@ describe("web: views on the shared parts", () => {
     const first = table.querySelector("tbody tr")!;
     const done = first.querySelector("td.dt-num .lt-done")!;
     expect(done.textContent).toBe("3 of 6 · 50%");
-    expect(done.querySelector(".meter")).not.toBeNull();
     // A repo with no spend recorded: a dash with its reason, never "$0.00".
     const second = table.querySelectorAll("tbody tr")[1]!;
     expect(second.querySelector(".dt-missing")?.getAttribute("title")).toBe("no spend recorded");

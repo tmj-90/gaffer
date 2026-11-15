@@ -3,7 +3,7 @@
 
 import { agentTitle, agentWho, roLock } from "../access.js";
 import { actorName, agentNames, squad } from "../club.js";
-import { dataTable, emptyState, meter, panelHead } from "../components.js";
+import { dataTable, emptyState, panelHead } from "../components.js";
 import { el } from "../dom.js";
 import { WEEKDAYS, fmtDay, fmtTime, money, moneyW, parseJsonSafe, pct, plural } from "../format.js";
 import { clockTime } from "../freshness.js";
@@ -218,7 +218,7 @@ function leagueTable(f) {
     "repos by share done",
     rows.length
       ? // The one table part (A-34, A-36): counts are numeric columns, the share done
-        // is pct() with its count and the shared meter (A-32, A-35).
+        // is pct() with its count (A-32).
         dataTable({
           caption: "Repos by share of their tickets done",
           cls: "lt-table",
@@ -240,10 +240,8 @@ function leagueTable(f) {
               ? el("span", { class: "is-red" }, [glyph("blocked", 12), " ", String(r.blocked)])
               : 0,
             spend: spend.has(r.repo) ? money(spend.get(r.repo)) : null,
-            done: el("span", { class: "lt-done" }, [
-              meter({ value: r.done, max: r.total, label: `${r.repo} done` }),
-              `${r.done} of ${r.total} · ${pct(r.pct)}`,
-            ]),
+            // The count and the share; a bar beside them did not fit the card's column.
+            done: el("span", { class: "lt-done" }, `${r.done} of ${r.total} · ${pct(r.pct)}`),
           })),
         })
       : emptyState("No repos with tickets yet.", null, null, null, { inline: true }),

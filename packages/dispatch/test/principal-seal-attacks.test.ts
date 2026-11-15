@@ -16,6 +16,7 @@ import type { Actor } from "../src/domain/types.js";
 import { eventHash, latestEventHash } from "../src/events/eventChain.js";
 import { fileGateKeyring } from "../src/events/gateSeal.js";
 import { verifyPrincipal } from "../src/events/principalSeal.js";
+import { rowSealFullWalks } from "../src/events/rowSeal.js";
 import { systemClock } from "../src/util/clock.js";
 
 const operator: Actor = { type: "human", id: "tom" };
@@ -267,6 +268,26 @@ describe("other attacks", () => {
     });
   }
 
+  it("after the first check, a sign-in walks only what was appended, whoever wrote it", () => {
+    const f = factory();
+    const wg = f.open();
+    const { token } = wg.createPrincipal({ name: "fast" }, operator);
+    expect(wg.resolvePrincipalToken(token)).not.toBeNull();
+    const walks = rowSealFullWalks();
+    for (let i = 0; i < 3; i++) {
+      wg.createTicket({ title: `own ${i}`, description: "x" }, operator); // the server's write
+      expect(wg.resolvePrincipalToken(token)).not.toBeNull();
+      const other = new Database(f.dbPath); // another process appends
+      try {
+        appendEventTo(other, i);
+      } finally {
+        other.close();
+      }
+      expect(wg.resolvePrincipalToken(token)).not.toBeNull();
+    }
+    expect(rowSealFullWalks()).toBe(walks);
+  });
+
   it("a corrupt event under a warm memo, written by another process, refuses (fails closed)", () => {
     const f = factory();
     const wg = f.open();
@@ -294,6 +315,28 @@ describe("other attacks", () => {
     expect(wg.resolvePrincipalToken(token)).toBeNull();
   });
 });
+
+/** Append a chained note from another connection. */
+function appendEventTo(db: Database.Database, i: number): void {
+  const prev = (
+    db.prepare("SELECT hash FROM work_events ORDER BY rowid DESC LIMIT 1").get() as { hash: string }
+  ).hash;
+  const row = {
+    id: `other-${i}-${randomBytes(4).toString("hex")}`,
+    entity_type: "ticket",
+    entity_id: "t",
+    actor_type: "agent",
+    actor_id: "a",
+    event_type: "ticket.note",
+    payload_json: "{}",
+    correlation_id: null,
+    created_at: new Date().toISOString(),
+  };
+  db.prepare(
+    "INSERT INTO work_events (id, entity_type, entity_id, actor_type, actor_id, event_type, payload_json, correlation_id, created_at, prev_hash, hash) " +
+      "VALUES (@id, @entity_type, @entity_id, @actor_type, @actor_id, @event_type, @payload_json, @correlation_id, @created_at, @prev_hash, @hash)",
+  ).run({ ...row, prev_hash: prev, hash: eventHash(prev, row as never) });
+}
 
 /** Recompute every row's chain hash (what a writer does after deleting a row). */
 function rechain(db: Database.Database): void {

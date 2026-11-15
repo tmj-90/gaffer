@@ -1,8 +1,8 @@
 import { timingSafeEqual } from "node:crypto";
 
+import { EVENT_CHAIN_GENESIS, eventHash, type ChainedEventFields } from "./eventChain.js";
 import {
   anchorRowPresent,
-  chainVerifiesUpTo,
   GateKeyError,
   type AnchorRead,
   type GateKeyring,
@@ -140,27 +140,127 @@ function changedFacts(signedJson: string, liveJson: string): string[] {
 }
 
 /**
- * The chain verifies from genesis up to `seq`. Remembered per database handle while
- * nothing has been written to the file since (PRAGMA data_version moves on another
- * connection's commit, total_changes() on this one's), so a server that checks a
- * principal on every request walks the log only after a write.
+ * The chain verifies up to `seq`, as far as a sealed row of `entityType` depends on it.
+ * A REST server checks a principal on every request, and walking a 100k-event log from
+ * genesis costs most of a second, so the walk is INCREMENTAL per database handle:
+ *  - the first check walks the whole log from genesis (as {@link chainVerifiesUpTo}) and
+ *    remembers the verified head and every row of `entityType` (rowid and hash);
+ *  - a later check walks only the rows appended since, linking from the remembered head;
+ *  - when another connection has committed since (PRAGMA data_version moved), it first
+ *    re-reads the remembered head and re-hashes every remembered row of `entityType`: a
+ *    rechain changes the head, and a lifecycle event deleted or rewritten in place (a
+ *    revocation removed or turned into something else, without a rechain) is missing or no
+ *    longer hashes to what was verified. Any doubt falls back to the full walk.
+ * A row of another entity type rewritten in place without a rechain is not re-read here:
+ * it decides nothing about a sealed row (the landing check walks the whole log itself).
  */
-const CHAIN_MEMO = new WeakMap<object, { key: string; ok: boolean }>();
+interface ChainMemo {
+  dataVersion: string;
+  ok: boolean;
+  /** The verified head (ok only). */
+  seq: number;
+  hash: string;
+  /** Every verified row of the entity type: rowid -> hash. */
+  rows: Map<number, string>;
+}
+const CHAIN_MEMO = new WeakMap<object, Map<string, ChainMemo>>();
 
-function chainOkUpTo(db: SealDb, seq: number): boolean {
-  let key: string | null;
-  try {
-    const dv = db.prepare("PRAGMA data_version").get() as Record<string, unknown> | undefined;
-    const tc = db.prepare("SELECT total_changes() AS n").get() as { n: number } | undefined;
-    key = `${String(dv ? Object.values(dv)[0] : "")}:${String(tc?.n ?? "")}:${seq}`;
-  } catch {
-    key = null;
+type ChainRow = ChainedEventFields & { seq: number; prev_hash: string | null; hash: string | null };
+const CHAIN_COLUMNS =
+  "rowid AS seq, id, entity_type, entity_id, actor_type, actor_id, event_type, " +
+  "payload_json, correlation_id, created_at, prev_hash, hash";
+
+function dataVersion(db: SealDb): string {
+  const dv = db.prepare("PRAGMA data_version").get() as Record<string, unknown> | undefined;
+  return String(dv ? Object.values(dv)[0] : "");
+}
+
+/** Walk rows (from, to] linking from `prev`; record rows of `entityType`. Null: broken. */
+function walk(
+  db: SealDb,
+  from: number,
+  to: number,
+  prev: string,
+  entityType: string,
+  rows: Map<number, string>,
+): { seq: number; hash: string } | null {
+  const list = db
+    .prepare(
+      `SELECT ${CHAIN_COLUMNS} FROM work_events WHERE rowid > ? AND rowid <= ? ORDER BY rowid ASC`,
+    )
+    .all(from, to) as ChainRow[];
+  let expected = prev;
+  let last = from;
+  for (const row of list) {
+    if (row.hash === null || row.prev_hash === null) return null;
+    if (row.prev_hash !== expected || eventHash(row.prev_hash, row) !== row.hash) return null;
+    expected = row.hash;
+    last = Number(row.seq);
+    if (String(row.entity_type) === entityType) rows.set(last, row.hash);
   }
-  const hit = key ? CHAIN_MEMO.get(db) : undefined;
-  if (hit && hit.key === key) return hit.ok;
-  const ok = chainVerifiesUpTo(db, seq).ok;
-  if (key) CHAIN_MEMO.set(db, { key, ok });
-  return ok;
+  if (last !== to) return null;
+  return { seq: last, hash: expected };
+}
+
+/** How many full walks from genesis this process made (a test seam for the cost). */
+let fullWalks = 0;
+export function rowSealFullWalks(): number {
+  return fullWalks;
+}
+
+function fullWalk(db: SealDb, seq: number, entityType: string, dv: string): ChainMemo {
+  fullWalks += 1;
+  const rows = new Map<number, string>();
+  const head = walk(db, 0, seq, EVENT_CHAIN_GENESIS, entityType, rows);
+  return head
+    ? { dataVersion: dv, ok: true, seq: head.seq, hash: head.hash, rows }
+    : { dataVersion: dv, ok: false, seq: 0, hash: "", rows };
+}
+
+/** The remembered head and rows of the entity type are still exactly as verified. */
+function memoStillHolds(db: SealDb, memo: ChainMemo, foreignWrite: boolean): boolean {
+  const head = db.prepare("SELECT hash FROM work_events WHERE rowid = ?").get(memo.seq) as
+    { hash: string | null } | undefined;
+  if (!head || head.hash !== memo.hash) return false;
+  if (!foreignWrite) return true;
+  const one = db.prepare(`SELECT ${CHAIN_COLUMNS} FROM work_events WHERE rowid = ?`);
+  for (const [rowid, hash] of memo.rows) {
+    const row = one.get(rowid) as ChainRow | undefined;
+    if (!row || row.hash !== hash || row.prev_hash === null) return false;
+    if (eventHash(row.prev_hash, row) !== hash) return false;
+  }
+  return true;
+}
+
+function chainOkUpTo(db: SealDb, seq: number, entityType: string): boolean {
+  const dv = dataVersion(db);
+  let perDb = CHAIN_MEMO.get(db);
+  if (!perDb) {
+    perDb = new Map();
+    CHAIN_MEMO.set(db, perDb);
+  }
+  const memo = perDb.get(entityType);
+  let next: ChainMemo;
+  if (!memo) {
+    next = fullWalk(db, seq, entityType, dv);
+  } else if (!memo.ok) {
+    // A broken chain stays broken until the file changes under another connection.
+    next = memo.dataVersion === dv ? memo : fullWalk(db, seq, entityType, dv);
+  } else if (!memoStillHolds(db, memo, memo.dataVersion !== dv)) {
+    next = fullWalk(db, seq, entityType, dv);
+  } else if (seq <= memo.seq) {
+    // Already verified: the row at `seq` must still be there (a check that names it).
+    const at = db.prepare("SELECT 1 AS x FROM work_events WHERE rowid = ?").get(seq);
+    next = at ? { ...memo, dataVersion: dv } : fullWalk(db, seq, entityType, dv);
+  } else {
+    const rows = new Map(memo.rows);
+    const head = walk(db, memo.seq, seq, memo.hash, entityType, rows);
+    next = head
+      ? { dataVersion: dv, ok: true, seq: head.seq, hash: head.hash, rows }
+      : fullWalk(db, seq, entityType, dv);
+  }
+  perDb.set(entityType, next);
+  return next.ok && next.seq >= seq;
 }
 
 /**
@@ -292,7 +392,7 @@ function verifyRowSealInner(
       detail: `the event log no longer holds event ${anchor.seq} as this factory recorded it outside the database (rows were deleted or rewritten; a revocation may have been removed)`,
     };
   }
-  if (!chainOkUpTo(db, Math.max(anchor.seq, Number(ev.seq)))) {
+  if (!chainOkUpTo(db, Math.max(anchor.seq, Number(ev.seq)), subject.entityType)) {
     return {
       ok: false,
       failure: "chain",

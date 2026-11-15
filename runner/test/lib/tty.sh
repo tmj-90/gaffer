@@ -8,7 +8,7 @@ gaffer_test_tty() {
   gaffer_test_tty_available || return 77
   local cmd="" a
   for a in "$@"; do cmd+="$(printf '%q ' "$a")"; done
-  if script --version 2>/dev/null | grep -q util-linux; then
+  if grep -q util-linux <<<"$(script --version 2>/dev/null)"; then
     script -qec "$cmd" /dev/null </dev/null | tr -d '\r'
     return "${PIPESTATUS[0]}"
   fi

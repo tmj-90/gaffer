@@ -84,7 +84,7 @@ PA="$WORK/agent.sb"
 GAFFER_SANDBOX_PROFILE="" _sandbox_exec_profile "$WT" "$PA" "" || fail "D1: the agent profile was refused"
 grep -q '^;; variant: agent$' "$PA" && ok "D1: the profile says it is the agent variant" || fail "D1: no variant line"
 # No allow form grants the whole of $GAFFER_DATA any more.
-if awk '/^\(allow file-write\*/{a=1} a&&/^\)|\)\)$/{a=0} a' "$PA" | grep -qF "(subpath \"$D\")"; then
+if grep -qF "(subpath \"$D\")" <<<"$(awk '/^\(allow file-write\*/{a=1} a&&/^\)|\)\)$/{a=0} a' "$PA")"; then
   fail "D1: an allow form still grants (subpath \"\$GAFFER_DATA\")"
 else ok "D1: no allow form grants the whole of \$GAFFER_DATA"; fi
 expect "$PA" deny "D1: every control file under \$GAFFER_DATA (and \$GAFFER_DATA itself, its parent, a sibling worktree) is denied" $CONTROL

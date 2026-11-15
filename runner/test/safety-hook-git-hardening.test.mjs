@@ -5,10 +5,11 @@
 // fsmonitor program must not make the hook run it (sandbox audit, low note).
 // Run: node runner/test/safety-hook-git-hardening.test.mjs
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isTrackedEnvTemplate, secretBoundaryReason } from "../lib/hook/reads.mjs";
+import { gafferMkdtemp } from "./lib/tmpdir.mjs";
 
 let pass = 0;
 const fails = [];
@@ -22,7 +23,7 @@ const ok = (cond, label) => {
   }
 };
 
-const dir = mkdtempSync(join(tmpdir(), "gaffer-hook-git-"));
+const dir = gafferMkdtemp(join(tmpdir(), "gaffer-hook-git-"));
 try {
   const git = (...a) => spawnSync("git", ["-C", dir, ...a], { encoding: "utf8" });
   git("init", "-q");

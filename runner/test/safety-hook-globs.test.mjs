@@ -208,15 +208,43 @@ for (const cmd of [
 // data directory, whatever a lexical resolve says.
 {
   const via = `${WORK}/dd/wt/..`;
-  each("deny", "Write through wt/..", tool("Write", { file_path: `${via}/settings.json`, content: "{}" }));
-  each("deny", "Edit through wt/..", tool("Edit", { file_path: `${via}/tool-metrics.jsonl`, old_string: "{}", new_string: "x" }), ["roots", "bootstrap"]);
-  each("deny", "NotebookEdit through wt/..", tool("NotebookEdit", { notebook_path: `${via}/x.ipynb`, new_source: "x" }));
-  each("deny", "Read through wt/..", tool("Read", { file_path: `${via}/tool-metrics.jsonl` }), ["roots", "bootstrap"]);
-  each("deny", "Grep content through wt/..", tool("Grep", { pattern: ".", path: via, output_mode: "content" }));
-  each("deny", "Grep relative wt/..", tool("Grep", { pattern: ".", path: "dd/wt/..", output_mode: "content" }));
+  each(
+    "deny",
+    "Write through wt/..",
+    tool("Write", { file_path: `${via}/settings.json`, content: "{}" }),
+  );
+  each(
+    "deny",
+    "Edit through wt/..",
+    tool("Edit", { file_path: `${via}/tool-metrics.jsonl`, old_string: "{}", new_string: "x" }),
+    ["roots", "bootstrap"],
+  );
+  each(
+    "deny",
+    "NotebookEdit through wt/..",
+    tool("NotebookEdit", { notebook_path: `${via}/x.ipynb`, new_source: "x" }),
+  );
+  each("deny", "Read through wt/..", tool("Read", { file_path: `${via}/tool-metrics.jsonl` }), [
+    "roots",
+    "bootstrap",
+  ]);
+  each(
+    "deny",
+    "Grep content through wt/..",
+    tool("Grep", { pattern: ".", path: via, output_mode: "content" }),
+  );
+  each(
+    "deny",
+    "Grep relative wt/..",
+    tool("Grep", { pattern: ".", path: "dd/wt/..", output_mode: "content" }),
+  );
   each("deny", "redirect through wt/..", bash("echo x > dd/wt/../settings.json"));
   each("deny", "append through wt/..", bash("printf x >> dd/wt/../usage-pause.json"));
-  each("allow", "Write with a plain ..", tool("Write", { file_path: `${WORK}/src/../notes.md`, content: "x" }));
+  each(
+    "allow",
+    "Write with a plain ..",
+    tool("Write", { file_path: `${WORK}/src/../notes.md`, content: "x" }),
+  );
   each("allow", "Grep with a plain ..", tool("Grep", { pattern: "x", path: `${WORK}/src/..` }));
 }
 // File names from a listing of a directory that holds secrets reach whatever program a

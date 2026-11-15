@@ -92,7 +92,17 @@ always gets the same decision. It:
   `GAFFER_DATA`, the MCP config directory or HOME is refused as a read operand; an
   operand it cannot expand (`read`, `$(...)`, an xargs placeholder) is refused; a glob
   with no match is judged by its literal directory; and a word anywhere that expands to
-  a secret path is refused unless the command only lists or removes it;
+  a secret path is refused unless the command only lists or removes it. `$_` is
+  unknown, extglob groups (`+(.)env`) are globs, CDPATH makes a relative `cd` unknown,
+  and `..` is taken physically, as the kernel takes it: through a symlinked directory
+  `wt/..` is the link target's parent, so file-tool paths, search roots and bash write
+  targets are judged at both their lexical and physical place. A loop or `xargs` that
+  takes file names from a listing of `GAFFER_DATA`, the MCP config directory or HOME
+  (`find $GAFFER_DATA | while read f; do gzip -c "$f"; done`) is refused whatever
+  program reads them, and `7z`, `pax`, `bsdtar`, `cpio -o` and `git grep / diff
+  --no-index` are read vectors. Git's stored text (a commit message may name a
+  control-plane CLI) is never run, also not through a variable (`a=$(git log ...);
+  eval "$a"`);
 - denies the control-plane CLI and raw database access, including a self-spawned
   control-plane MCP (`node .../dispatch/dist/mcp`), `node -e` reaching the dist or the
   database, and reading another process's environment (`ps`, `/proc/*/environ`);

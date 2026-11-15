@@ -540,8 +540,12 @@ class Walk {
           this.table.ifsChanged = true;
           for (const f of u.fields ?? []) {
             const t = f.map((p) => p.c).join("");
-            const abs = t && (t.startsWith("/") || cwd !== null) ? physicalPath(t.startsWith("/") ? t : `${cwd}/${t}`) : null;
-            if (abs !== null && isDirectory(abs)) this.dirWords.push({ abs: canonicalize(abs), raw });
+            const abs =
+              t && (t.startsWith("/") || cwd !== null)
+                ? physicalPath(t.startsWith("/") ? t : `${cwd}/${t}`)
+                : null;
+            if (abs !== null && isDirectory(abs))
+              this.dirWords.push({ abs: canonicalize(abs), raw });
           }
         }
         continue;
@@ -651,7 +655,12 @@ class Walk {
       const write = args.some((t) => /^-[A-Za-z]*w/.test(normalizeVerb(t)));
       plain(args, ["-f", "-s", "-x", "-b", "-o", "-B", "-G", "-T", "-U", "-p"]);
       if (write && out.length === 0) this.stdinReader = true;
-      return { operands: out, follow: args.some((t) => /^-[A-Za-z]*[LH]/.test(normalizeVerb(t))), extraCwds, placeholder };
+      return {
+        operands: out,
+        follow: args.some((t) => /^-[A-Za-z]*[LH]/.test(normalizeVerb(t))),
+        extraCwds,
+        placeholder,
+      };
     }
     if (SEVEN_ZIP.has(verb)) {
       // `7z a ARCHIVE FILES...`: the files after the archive are read (`-i@list`, `@list`
@@ -667,11 +676,14 @@ class Walk {
     if (verb === "git" && args.some((t) => normalizeVerb(t) === "--no-index")) {
       // `git grep --no-index PATTERN PATH...` / `git diff --no-index A B` read any file.
       let k = 0;
-      while (k < args.length && normalizeVerb(args[k]).startsWith("-")) k += /^-[Cc]$/.test(normalizeVerb(args[k])) ? 2 : 1;
+      while (k < args.length && normalizeVerb(args[k]).startsWith("-"))
+        k += /^-[Cc]$/.test(normalizeVerb(args[k])) ? 2 : 1;
       const sub = normalizeVerb(args[k] ?? "");
       const ops = args.slice(k + 1).filter((t) => !normalizeVerb(t).startsWith("-"));
       if (sub === "grep") {
-        const explicit = args.some((t) => /^-[ef]$|^--(?:regexp|file)(?:=|$)/.test(normalizeVerb(t)));
+        const explicit = args.some((t) =>
+          /^-[ef]$|^--(?:regexp|file)(?:=|$)/.test(normalizeVerb(t)),
+        );
         out.push(...(explicit ? ops : ops.slice(1)));
         if (!ops.slice(explicit ? 0 : 1).length) out.push(".");
       } else if (sub === "diff") out.push(...ops);

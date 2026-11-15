@@ -430,7 +430,8 @@ function checkWrite(filePath, tool = "Write", input = null) {
   if (expanded === null) block(`write to an unresolvable ~user path (fail closed): ${filePath}`);
   // Both the lexical and the physical (kernel) place: through a symlinked directory
   // `wt/../settings.json` lands beside the link's target (canonicalCandidates).
-  for (const abs of canonicalCandidates(process.cwd(), expanded)) checkWriteAt(abs, filePath, tool, input, roots);
+  for (const abs of canonicalCandidates(process.cwd(), expanded))
+    checkWriteAt(abs, filePath, tool, input, roots);
   allow();
 }
 
@@ -472,7 +473,7 @@ function checkRead(filePath) {
       block(`read of a secret file (keeps secrets out of model context): ${filePath}`);
     }
     // Repo-access boundary: reads are allowed inside (write-roots ∪ read-roots).
-    // A read fully outside all roots is denied — but ONLY when roots are
+    // A read fully outside all roots is denied, but ONLY when roots are
     // explicitly configured. Under the single-repo fallback, reads stay
     // unrestricted (preserving today's behaviour, never more restrictive).
     if (roots.configured && classifyRootAccess(abs, roots) === "outside") {

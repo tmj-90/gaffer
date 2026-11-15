@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import type { GateKeyring, SealDb } from "./gateSeal.js";
 import {
   retireRowSeal,
@@ -97,6 +99,10 @@ export function retirePrincipalSeal(db: SealDb, id: string): void {
 /**
  * The principal `id` may act: on record, not revoked, and sealed by this factory for
  * its current identity, authority and state. Read-only; never creates a key or a seal.
+ *
+ * It answers a yes/no question about an ID. A caller that goes on to USE the row's
+ * fields (who it acts as, what it may do, where) must not read the row again for them:
+ * it reads the row once and hands that row to {@link verifyPrincipalRow}.
  */
 export function verifyPrincipal(db: SealDb, keyring: GateKeyring, id: string): RowSealCheck {
   let row: PrincipalSealRow | null;
@@ -110,10 +116,51 @@ export function verifyPrincipal(db: SealDb, keyring: GateKeyring, id: string): R
     };
   }
   if (!row) return { ok: false, failure: "unsigned", detail: "the principal is not on record" };
+  return verifyPrincipalRow(db, keyring, row);
+}
+
+/**
+ * THESE facts are a principal that may act: `row` as the caller read it is not revoked
+ * and carries a valid seal under the factory key over exactly its identity, token hash,
+ * capability, actor and scope. The row is not read again, so what the caller accepts
+ * from `row` afterwards is what was verified, whatever another connection writes between
+ * the caller's read and this check. Read-only; never creates a key or a seal.
+ */
+export function verifyPrincipalRow(
+  db: SealDb,
+  keyring: GateKeyring,
+  row: PrincipalSealRow,
+): RowSealCheck {
   if (row.revoked_at !== null) {
     return { ok: false, failure: "superseded", detail: "the principal is revoked" };
   }
-  return verifyRowSeal(db, keyring, principalSubject(id), principalFacts(row));
+  return verifyRowSeal(db, keyring, principalSubject(row.id), principalFacts(row));
+}
+
+/**
+ * The confirmation code of a set of principal rows AS HANDED IN: each row's stored
+ * identity and authority, order-independent. What a person is shown and the code they
+ * confirm must be computed from the same rows (`reviewUnsignedPrincipals`).
+ */
+export function principalRowsFingerprint(rows: readonly PrincipalSealRow[]): string {
+  const facts = rows
+    .map((r) => [
+      r.id,
+      r.name,
+      r.token_hash,
+      r.capability,
+      r.actor_type,
+      r.actor_id,
+      r.scope_repos,
+      r.scope_tickets,
+      r.created_at,
+      r.created_by,
+    ])
+    .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+  return createHash("sha256")
+    .update(JSON.stringify(["gaffer-unsigned-principals", 1, facts]))
+    .digest("hex")
+    .slice(0, 16);
 }
 
 /** The operator-facing sentence for a principal that is not signed (logs, doctor). */
@@ -187,6 +234,17 @@ export function matchingCreationEvent(db: SealDb, row: PrincipalSealRow): string
 
 /** Every ACTIVE principal that does not verify (what a person reviews and re-signs). */
 export function unsignedPrincipals(db: SealDb, keyring: GateKeyring): UnsignedPrincipal[] {
+  return unsignedPrincipalRows(db, keyring).map((e) => e.unsigned);
+}
+
+/**
+ * The same list with the stored row each entry was built from, so a caller can show a
+ * row and fingerprint it without reading it again.
+ */
+export function unsignedPrincipalRows(
+  db: SealDb,
+  keyring: GateKeyring,
+): Array<{ row: PrincipalSealRow; unsigned: UnsignedPrincipal }> {
   let rows: PrincipalSealRow[];
   try {
     rows = db
@@ -197,22 +255,25 @@ export function unsignedPrincipals(db: SealDb, keyring: GateKeyring): UnsignedPr
   } catch {
     return [];
   }
-  const out: UnsignedPrincipal[] = [];
+  const out: Array<{ row: PrincipalSealRow; unsigned: UnsignedPrincipal }> = [];
   for (const row of rows) {
     const v = verifyRowSeal(db, keyring, principalSubject(row.id), principalFacts(row));
     if (v.ok) continue;
     out.push({
-      id: row.id,
-      name: row.name,
-      capability: row.capability,
-      actor_type: row.actor_type,
-      actor_id: row.actor_id,
-      created_at: row.created_at,
-      created_by: row.created_by,
-      scoped: row.scope_repos !== null || row.scope_tickets !== null,
-      failure: v.failure,
-      detail: v.detail,
-      creation_event: matchingCreationEvent(db, row),
+      row,
+      unsigned: {
+        id: row.id,
+        name: row.name,
+        capability: row.capability,
+        actor_type: row.actor_type,
+        actor_id: row.actor_id,
+        created_at: row.created_at,
+        created_by: row.created_by,
+        scoped: row.scope_repos !== null || row.scope_tickets !== null,
+        failure: v.failure,
+        detail: v.detail,
+        creation_event: matchingCreationEvent(db, row),
+      },
     });
   }
   return out;

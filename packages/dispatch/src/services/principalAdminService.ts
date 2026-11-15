@@ -4,20 +4,22 @@
  * principalService.ts and accessScope.ts (the light modules the CLI's fast paths load); this
  * module is their database side.
  */
-import { createHash } from "node:crypto";
-
-import { inTransaction } from "../db/connection.js";
+import { inReadSnapshot, inTransaction } from "../db/connection.js";
 import { type Actor } from "../domain/types.js";
 import { writeEvent } from "../events/eventWriter.js";
 import { GateKeyError } from "../events/gateSeal.js";
+import type { RowSealCheck } from "../events/rowSeal.js";
 import {
   matchingCreationEvent,
+  principalRowsFingerprint,
   readPrincipalRow,
   retirePrincipalSeal,
   sealPrincipal,
   unsignedPrincipalMessage,
+  unsignedPrincipalRows,
   unsignedPrincipals,
   verifyPrincipal,
+  verifyPrincipalRow,
   type UnsignedPrincipal,
 } from "../events/principalSeal.js";
 import {
@@ -371,16 +373,33 @@ export function resolvePrincipalToken(
   host: PrincipalAdminHost,
   token: string,
 ): { principal: PrincipalView; actor: Actor } | null {
-  const row = host.principals.findActiveByHash(hashPrincipalToken(token));
-  if (!row) return null;
+  const hash = hashPrincipalToken(token);
   // SEALED PRINCIPALS: an active row is a principal only with a valid seal under the
   // factory key; anything else is refused exactly like an unknown token. Never creates a
   // key or a seal.
-  const check = verifyPrincipal(host.db, host.gateKeyring, row.id);
-  if (!check.ok) {
-    logUnsignedPrincipal(row.id, row.name, check);
+  //
+  // ONE READ, ONE SNAPSHOT. The row is read once, by the token hash; the seal is checked
+  // over the facts of THAT row; the identity, capability and scope returned are built
+  // from THAT row. It is never looked up again by id: a writer that showed a forged row
+  // to the first read and put the genuine one back for a second would otherwise sign in
+  // with authority no seal covers. The row, its seal and the event the seal names are
+  // read inside one snapshot, so they agree with each other as well.
+  type Found =
+    | { kind: "signed"; row: PrincipalView }
+    | { kind: "refused"; id: string; name: string; check: RowSealCheck };
+  const found = inReadSnapshot(host.db, (): Found | null => {
+    const stored = host.principals.findActiveStoredByHash(hash);
+    if (!stored || stored.token_hash !== hash) return null;
+    const check = verifyPrincipalRow(host.db, host.gateKeyring, stored);
+    if (!check.ok) return { kind: "refused", id: stored.id, name: stored.name, check };
+    return { kind: "signed", row: host.principals.viewOf(stored) };
+  });
+  if (!found) return null;
+  if (found.kind === "refused") {
+    logUnsignedPrincipal(found.id, found.name, found.check);
     return null;
   }
+  const row = found.row;
   const now = host.clock.now();
   if (!row.last_used_at || Date.parse(now) - Date.parse(row.last_used_at) > 60_000) {
     try {
@@ -452,42 +471,34 @@ export interface UnsignedPrincipalReview {
 }
 
 export function reviewUnsignedPrincipals(host: PrincipalAdminHost): UnsignedPrincipalReview {
-  const unsigned = unsignedPrincipals(host.db, host.gateKeyring);
-  return {
-    unsigned: unsigned.map((u) => ({
-      ...u,
-      scope: host.principals.get(u.id)?.scope ?? null,
-      review_code: reviewFingerprint(host, [u.id]),
-    })),
-    fingerprint: reviewFingerprint(
-      host,
-      unsigned.map((u) => u.id),
-    ),
-  };
+  // ONE READ, ONE SNAPSHOT: each row is read once; what the person is shown (its fields,
+  // its scope) and the code they confirm are both computed from that row, never from a
+  // later read of it. A writer that changes a row while this is being built cannot pair
+  // a benign row on screen with the code of another.
+  return inReadSnapshot(host.db, () => {
+    const entries = unsignedPrincipalRows(host.db, host.gateKeyring);
+    return {
+      unsigned: entries.map(({ row, unsigned }) => ({
+        ...unsigned,
+        scope: host.principals.scopeOf(row),
+        review_code: principalRowsFingerprint([row]),
+      })),
+      fingerprint: principalRowsFingerprint(entries.map((e) => e.row)),
+    };
+  });
 }
 
-/** The fingerprint of a set of principal rows: each row's stored identity and authority. */
+/**
+ * The fingerprint of the principal rows `ids` name, as they are stored now. Only for the
+ * re-sign transaction (an IMMEDIATE transaction: one snapshot, no other writer), where the
+ * code a person confirmed is compared with what is about to be signed.
+ */
 function reviewFingerprint(host: PrincipalAdminHost, ids: readonly string[]): string {
-  const rows = ids
-    .map((id) => readPrincipalRow(host.db, id))
-    .filter((r): r is NonNullable<typeof r> => r !== null)
-    .map((r) => [
-      r.id,
-      r.name,
-      r.token_hash,
-      r.capability,
-      r.actor_type,
-      r.actor_id,
-      r.scope_repos,
-      r.scope_tickets,
-      r.created_at,
-      r.created_by,
-    ])
-    .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
-  return createHash("sha256")
-    .update(JSON.stringify(["gaffer-unsigned-principals", 1, rows]))
-    .digest("hex")
-    .slice(0, 16);
+  return principalRowsFingerprint(
+    ids
+      .map((id) => readPrincipalRow(host.db, id))
+      .filter((r): r is NonNullable<typeof r> => r !== null),
+  );
 }
 
 export interface ResignResult {

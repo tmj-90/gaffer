@@ -1,4 +1,4 @@
-/* Ticket — one object page. The head is the shared ticket head (as on Review):
+/* Ticket: one object page. The head is the shared ticket head (as on Review):
    the title first, the meta under it, the yellow card only when it waits on you
    (review, a capped or parked delivery, a merge only you can start). Then the one next move
    (or the full-time result), the failing test as a scoreline, the attempts as a

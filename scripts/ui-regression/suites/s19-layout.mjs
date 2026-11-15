@@ -71,7 +71,7 @@ function insetAudit() {
     const bl = parseFloat(getComputedStyle(c).borderLeftWidth) || 0;
     for (const k of c.querySelectorAll(":scope > .panel-head, :scope > .dt-wrap")) {
       if (!k.getBoundingClientRect().width) continue;
-      const walk = document.createTreeWalker(k, NodeFilter.SHOW_TEXT, {
+      const walk = document.createTreeWalker(k, 4 /* NodeFilter.SHOW_TEXT */, {
         acceptNode: (n) => (n.textContent.trim() ? 1 : 3),
       });
       const tx = walk.nextNode();

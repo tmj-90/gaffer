@@ -529,6 +529,7 @@ gaffer_tick_create_worktrees() {
     elif git -C "$rpath" worktree add -B "$WORK_BRANCH" "$rwt" "$rbase" >/dev/null 2>&1; then
       _BRANCH_CREATED_THIS_TICK+="$rpath"$'\n'   # this tick owns the branch (BRANCH RETENTION)
       _gaffer_note_branch_cut "$rpath"            # GATE INTEGRITY: the cut commit, now
+      gaffer_tick_branch_ledger cut "$rpath"      # BRANCH LEDGER: this factory cut it
       log "created worktree for ${rname:-repo} ($rpath) at $rwt on branch $WORK_BRANCH off $rbase for #$NUM"
       # GREENFIELD FIRST-RUN: a freshly-bootstrapped repo has a package.json+lockfile
       # but no node_modules, so the symlink below no-ops and the first ticket's test
@@ -1058,6 +1059,7 @@ gaffer_tick_launch_attempt() {
         --attempt "$_DELIV_ATTEMPT" \
         ${_CAP_TURNS:+--turns "$_CAP_TURNS"} --spend "$_CAP_SPEND" >/dev/null 2>&1; then
       log "CAP: paused #$NUM (-> paused) — resume context persisted, human gate notified"
+      gaffer_tick_branch_ledger preserved   # BRANCH LEDGER: kept for the resume
     else
       log "CAP: WARNING — could not pause #$NUM via dispatch; worktree is still kept alive (KEEP flag set) — needs a human"
     fi

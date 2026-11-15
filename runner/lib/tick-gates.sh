@@ -46,7 +46,7 @@ gaffer_release_delivery() {
       local _suffix=""; [ "$_try" -gt 1 ] && _suffix=" after $_try attempts"
       log "$_verb #$NUM → $to ($reason)$_suffix"
       GAFFER_CLAIM_RESOLVED=1
-      case "$to" in blocked|refining) _GAFFER_TICK_PARKED=1 ;; esac
+      case "$to" in blocked|refining) _GAFFER_TICK_PARKED=1; gaffer_tick_branch_ledger preserved ;; esac
       return 0
     fi
     [ "$_try" -lt 3 ] && sleep "$_try"

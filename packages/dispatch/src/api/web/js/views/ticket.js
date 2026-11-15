@@ -4,22 +4,23 @@
 import { readOnly, roLock, roLockAll, scopeTitle } from "../access.js";
 import { api } from "../api.js";
 import { ensureAgents } from "../club.js";
-import { panelHead } from "../components.js";
+import { callout, panelHead } from "../components.js";
 import { renderTicketDiff, safeHttpUrl } from "../diff.js";
 import { clear, el, svgEl } from "../dom.js";
 import { fmtTime, money, parseJsonSafe, plural } from "../format.js";
-import { badge, glyph, icon, repoTag, ycard } from "../icons.js";
+import { badge, glyph, repoTag, ycard } from "../icons.js";
 import { ticketSignature } from "../live.js";
 import { OFF_PITCH, allTickets, ticketDetails } from "../matchday.js";
 import { detailBackHash, errorPage, routeSignal, router, setDocTitle } from "../router.js";
 import { reasonSheet, unblockSheet, wontDoSheet } from "../sheets.js";
 import {
   pipelineDots,
+  priorityTag,
   riskBadge,
   stageCaption,
-  statusBadge,
   statusLabel,
   ticketActionKeys,
+  ticketHead,
   verdictMark,
 } from "../status.js";
 import { guard, toast } from "../toast.js";
@@ -39,7 +40,6 @@ import {
 import {
   deliveryCount,
   fullTimeCard,
-  fullTimePlaque,
   memoryPrimedPanel,
   regressionCard,
   renderTestingCard,
@@ -288,6 +288,9 @@ function failingTestCard(trail) {
   const f = parseFailure(last.distilled_failure);
   const head = panelHead(
     last.gate === "tests" || f.name ? "The failing test" : `The failing gate: ${last.gate}`,
+    null,
+    null,
+    { level: 2 },
   );
   const body = [];
   if (f.file || f.name)
@@ -478,7 +481,7 @@ function renderFailureHistory(trail, runs = []) {
       ],
     );
   return el("section", { class: "card failure-history" }, [
-    el("div", { class: "panel-head" }, [
+    el("div", { class: "panel-head ph-l2" }, [
       el("h2", { class: "panel-title" }, [
         "Attempts",
         el(
@@ -574,7 +577,7 @@ function renderFailureHistory(trail, runs = []) {
 /** Attempts with no failure on record: each run, its model and its CLI version. */
 function renderAgentRuns(runs) {
   return el("section", { class: "card failure-history agent-runs" }, [
-    el("div", { class: "panel-head" }, [
+    el("div", { class: "panel-head ph-l2" }, [
       el("h2", { class: "panel-title" }, [
         "Attempts",
         el("span", { class: "panel-aux" }, runs.length === 1 ? "1 run" : `${runs.length} runs`),
@@ -634,7 +637,8 @@ async function ticketEpicCard(t, scopes) {
     (m) => (deps.get(m.id) || []).includes(t.id) && m.status !== "done",
   );
   return el("section", { class: "card panel tk-epic" }, [
-    panelHead(epic.name, null, { text: "Campaign", href: `#/epics/${epic.id}` }, { kit: "sky" }),
+    // A side-column reference, not a section the page leads with: no block (A-10).
+    panelHead(epic.name, null, { text: "Campaign", href: `#/epics/${epic.id}` }, { level: 3 }),
     el(
       "ol",
       { class: "tk-rounds" },
@@ -1105,15 +1109,16 @@ async function renderTicket(id) {
             p.spend ? `spend so far ${p.spend}` : null,
             p.turns != null ? `${p.turns} turns` : null,
           ].filter(Boolean);
-          return el("div", { class: "reopen-banner paused-banner" }, [
-            icon("alert"),
-            el("div", {}, [
-              el("strong", {}, "Delivery paused — "),
-              `${reasonLabel} mid-delivery. The worktree + branch are kept alive` +
-                (bits.length ? ` (${bits.join(", ")})` : "") +
-                ". Continue to resume in place, or Stop to abandon it.",
-            ]),
-          ]);
+          // The shared callout (A-40), needs tone: the delivery waits on your Continue.
+          return callout({
+            tone: "needs",
+            cls: "paused-banner",
+            title: "Delivery paused:",
+            body:
+              `${reasonLabel} mid-delivery. The worktree and branch are kept alive` +
+              (bits.length ? ` (${bits.join(", ")})` : "") +
+              ". Continue to resume in place, or Stop to abandon it.",
+          });
         })()
       : null;
 
@@ -1122,52 +1127,49 @@ async function renderTicket(id) {
     (view.repositories || []).find((r) => r.access === "write") || view.repositories?.[0];
   const epicScope = (view.scopes || []).find((s) => s.type === "epic");
   const out = t.status === "blocked" || t.status === "failed";
-  // Yellow: it waits on you (a sign-off, a merge, a capped delivery).
-  const needsYou = ["in_review", "ready_for_merge", "paused"].includes(t.status);
+  // It waits on you: a sign-off, a capped delivery, an out ticket only you can send back
+  // in, or an approval whose landing waits on your Merge now (or a hold you must clear).
+  // An approval the runner lands on its own does not (A-22: the card only when it does).
+  const landingKind = t.landing_state && t.landing_state.kind;
+  const needsYou =
+    out ||
+    ["in_review", "paused"].includes(t.status) ||
+    (t.status === "ready_for_merge" &&
+      (!t.landing_state || landingKind === "held" || landingKind === "waiting_for_merge"));
   const doneAt = t.status === "done" ? sinceStatus(events, "done") || t.updated_at : null;
-  const mark = out
-    ? refCard("red", t.status)
-    : needsYou
-      ? refCard("yellow")
-      : t.status === "done"
-        ? fullTimePlaque(doneAt)
-        : null;
-  const head = el(
-    "header",
-    {
-      class: `card tk-head tk-${t.status}${out ? " is-out" : ""}${mark ? " has-mark" : ""}`,
-    },
-    [
-      mark,
-      el("div", { class: "tk-head-main" }, [
-        el("p", { class: "tk-meta" }, [
-          statusBadge(t.status, t.landing_state),
-          repoW ? repoTag(repoW.name, 20) : null,
-          riskBadge(t.risk_level, { long: true }),
-          // The acceptance ticket is its campaign's Final: say so where it is named.
-          epicScope && isAcceptanceTicket(t) ? el("span", { class: "tk-final" }, "Final") : null,
-          epicScope
-            ? el("a", { class: "tk-epic-link", href: `#/epics/${epicScope.id}` }, epicScope.name)
-            : null,
-          t.policy_pack ? policyChip(t.policy_pack) : null,
-          badge(`priority ${t.priority}`, "no-dot"),
-          // TRACK-3a: the per-ticket delivery-budget ceiling, when set.
-          t.delivery_budget_usd != null
-            ? badge(`budget ${money(Number(t.delivery_budget_usd))}`, "no-dot")
-            : null,
-        ]),
-        el("h1", { class: "detail-title" }, [
-          el("span", { class: "tk-no" }, t.number != null ? `#${t.number}` : ""),
-          t.number != null ? " " : "",
-          t.title,
-        ]),
-        el("p", { class: "tk-lede" }, ticketLede(t, trail, events, doneAt, view.evidence || [])),
-        el("div", { class: "tk-dots" }, [
-          pipelineDots(t.status),
-          el("span", { class: "tk-stage", "aria-hidden": "true" }, stageCaption(t.status)),
-        ]),
-      ]),
+  // One ticket header (A-22): the shared ticketHead, as Review draws it. The title first,
+  // the meta under it (the number, the status, then the facts), the lede, the stage pips.
+  const head = ticketHead(t, {
+    level: 1,
+    refSize: "m",
+    link: false,
+    cls: `tk-head tk-${t.status}${out ? " is-out" : ""}${needsYou ? " has-mark" : ""}`,
+    mark: needsYou ? ycard(28, "tk-card") : null,
+    facts: [
+      repoW ? repoTag(repoW.name, 20) : null,
+      riskBadge(t.risk_level, { long: true }),
+      // The acceptance ticket is its campaign's Final: say so where it is named.
+      epicScope && isAcceptanceTicket(t) ? el("span", { class: "tk-final" }, "Final") : null,
+      epicScope
+        ? el("a", { class: "tk-epic-link", href: `#/epics/${epicScope.id}` }, epicScope.name)
+        : null,
+      t.policy_pack ? policyChip(t.policy_pack) : null,
+      priorityTag(t.priority),
+      // TRACK-3a: the per-ticket delivery-budget ceiling, when set.
+      t.delivery_budget_usd != null
+        ? badge(`budget ${money(Number(t.delivery_budget_usd))}`, "no-dot")
+        : null,
     ],
+    lede: ticketLede(t, trail, events, doneAt, view.evidence || []),
+  });
+  head.querySelector(".th-title")?.classList.add("detail-title");
+  head.querySelector(".th-meta")?.classList.add("tk-meta");
+  head.querySelector(".th-lede")?.classList.add("tk-lede");
+  head.append(
+    el("div", { class: "tk-dots" }, [
+      pipelineDots(t.status),
+      el("span", { class: "tk-stage", "aria-hidden": "true" }, stageCaption(t.status)),
+    ]),
   );
 
   // Claimability only means something before a claim: never "Ready to claim" on a
@@ -1236,8 +1238,11 @@ async function renderTicket(id) {
       ? fullTimeCard(t, { trail, events, acList, doneAt })
       : moveActions.length || moveWords[t.status]
         ? el("section", { class: "card panel tk-move", "aria-label": "Your move" }, [
+            // A block only where it leads the page: claret when the move is yours, else
+            // the reference black (one of the two blocks a view may lead with).
             panelHead("Your move", null, null, {
-              kit: out || needsYou ? "claret" : "ink",
+              tone: needsYou ? "needs" : "reference",
+              level: 2,
             }),
             moveWords[t.status] ? el("p", { class: "tk-move-t" }, moveWords[t.status]) : null,
             pausedBanner,
@@ -1256,6 +1261,8 @@ async function renderTicket(id) {
     panelHead(
       "Acceptance criteria",
       `${acList.filter((a) => a.status === "satisfied").length} of ${acList.length} satisfied`,
+      null,
+      { level: 3 },
     ),
     acList.length
       ? el(
@@ -1325,19 +1332,19 @@ async function renderTicket(id) {
   const diffCard =
     delivered || wip
       ? el("section", { class: "tk-diff", "aria-label": "Diff" }, [
-          el("h2", { class: "tk-h2" }, [
+          panelHead(
             t.status === "done" ? "What shipped" : wip ? "Work in progress" : "The delivery",
-            el(
-              "span",
-              { class: "panel-aux" },
-              t.status === "done" ? "merged" : wip ? "on its branch, not merged" : "on its branch",
-            ),
-          ]),
+            t.status === "done" ? "merged" : wip ? "on its branch, not merged" : "on its branch",
+            null,
+            { level: 2 },
+          ),
           reopenedForReview(events)
-            ? el("div", { class: "reopen-banner" }, [
-                icon("alert"),
-                "Merge conflict resolved on the branch — re-review the resolved diff before re-approving.",
-              ])
+            ? callout({
+                tone: "needs",
+                cls: "reopen-banner",
+                title: "Merge conflict resolved on the branch:",
+                body: "re-review the resolved diff before you approve it again.",
+              })
             : null,
           (t.status === "done" && shippedFiles(view.evidence || [])) ||
             reviewRawWatch(renderTicketDiff(t.id, null, { collapsed: true }), t, events),
@@ -1346,7 +1353,7 @@ async function renderTicket(id) {
 
   const sideBlockers = blockers.length
     ? el("section", { class: "card panel tk-blockers", "aria-label": "Blocking decisions" }, [
-        panelHead("Blocking decisions", String(blockers.length), null, { kit: "claret" }),
+        panelHead("Blocking decisions", String(blockers.length), null, { tone: "needs", level: 3 }),
         el(
           "ul",
           { class: "clean tk-blocker-list" },
@@ -1372,7 +1379,7 @@ async function renderTicket(id) {
     : null;
 
   const sideFields = el("section", { class: "card panel tk-record", "aria-label": "The record" }, [
-    panelHead("The record"),
+    panelHead("The record", null, null, { level: 3 }),
     el("dl", { class: "kv" }, [
       el("dt", {}, "Branch"),
       el("dd", {}, t.branch_name ? el("code", { class: "mono" }, t.branch_name) : "—"),
@@ -1405,11 +1412,11 @@ async function renderTicket(id) {
   // The brief: what the ticket asks for, and what it waits on.
   const deps = view.dependencies || [];
   const brief = el("section", { class: "card panel tk-brief", "aria-label": "The brief" }, [
-    panelHead("The brief"),
+    panelHead("The brief", null, null, { level: 3 }),
     t.description
       ? el("p", { class: "desc" }, t.description)
       : el("p", { class: "desc dim" }, "No description."),
-    el("h3", { class: "tk-h3" }, "Depends on"),
+    panelHead("Depends on", null, null, { level: 4 }),
     deps.length
       ? el(
           "ul",

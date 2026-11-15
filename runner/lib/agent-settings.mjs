@@ -12,7 +12,11 @@
 // validateAgentSettings:
 //   * the rendered settings parse as JSON;
 //   * hooks.PreToolUse holds entries whose hooks run `<runner>/safety-hook.mjs` as a
-//     `"type": "command"` hook;
+//     `"type": "command"` hook: the command is exactly `node <hook>` (or the hook path
+//     alone), one plain command with no shell syntax, and the entry holds no key that
+//     could change whether it blocks (`"async"`). An entry that names the hook path
+//     without running it (a comment, `true || node <hook>`, a background hook) is
+//     refused, not counted;
 //   * every one of those safety-hook entries says `"onFailure": "block"` and carries a
 //     positive numeric timeout (Claude Code otherwise runs the tool when the hook times
 //     out or crashes);
@@ -28,7 +32,7 @@
 //        check an already-rendered file against the rule (exit 0 / 3).
 // =====================================================================
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { basename, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { EXIT_UNSAFE, UnsafePathError, safeRemoveFile, safeWriteFile } from "./safe-write.mjs";
@@ -76,6 +80,68 @@ function matcherCovers(m, tool) {
 }
 
 /**
+ * The words of `command` when it is ONE plain command, else null. Plain: words separated
+ * by blanks, single or double quotes around a word allowed, and nothing the shell would
+ * act on: no `;`, `&`, `|`, redirect, subshell, `$` or backtick expansion, backslash,
+ * comment, glob, brace or leading tilde, and no line break. A hook command is run by a
+ * shell, so anything else can turn "the safety hook" into a different command that
+ * merely mentions it.
+ */
+export function plainCommandWords(command) {
+  const words = [];
+  let cur = null;
+  for (let i = 0; i < command.length; i += 1) {
+    const c = command[i];
+    if (c === " " || c === "\t") {
+      if (cur !== null) words.push(cur);
+      cur = null;
+    } else if (c === "'" || c === '"') {
+      const end = command.indexOf(c, i + 1);
+      if (end === -1) return null;
+      const inner = command.slice(i + 1, end);
+      if (c === '"' && /[$`\\!]/.test(inner)) return null;
+      if (/[\n\r]/.test(inner)) return null;
+      cur = (cur ?? "") + inner;
+      i = end;
+    } else if (/[;&|<>()$`\\#\n\r*?[\]{}!]/.test(c) || (c === "~" && cur === null)) {
+      return null;
+    } else cur = (cur ?? "") + c;
+  }
+  if (cur !== null) words.push(cur);
+  return words;
+}
+
+/** The keys a safety-hook entry may carry: any other could change how, or whether, it runs. */
+const HOOK_ENTRY_KEYS = new Set(["type", "command", "timeout", "onFailure", "statusMessage"]);
+
+/**
+ * Why hook entry `h` does not RUN the safety hook at `hookPath`, or null when it does. It
+ * runs it when its command is exactly `node <hookPath>` (`node` by name or by an absolute
+ * path) or `<hookPath>` alone, as one plain command, and the entry holds no key this rule
+ * does not know (`"async": true`, for one, starts the hook in the background, where its
+ * verdict blocks nothing).
+ */
+export function hookCommandProblem(h, hookPath) {
+  const unknown = Object.keys(h).filter((k) => !HOOK_ENTRY_KEYS.has(k));
+  if (unknown.length > 0) {
+    return `it sets ${unknown.join(", ")}, which this check does not know (a key such as "async" changes whether the hook can block; allowed: ${[...HOOK_ENTRY_KEYS].join(", ")})`;
+  }
+  const words = plainCommandWords(h.command);
+  // A runner directory whose path holds a blank or a character the shell acts on has to
+  // be quoted in the template, or the shell splits it and the hook never starts.
+  const bare = plainCommandWords(`node ${hookPath}`);
+  const quote = bare && bare.length === 2 && bare[1] === hookPath ? "" : '"';
+  const form = `its command must be exactly: node ${quote}${hookPath}${quote}`;
+  if (words === null) {
+    return `its command is not one plain command (shell syntax, an expansion or a comment); ${form}`;
+  }
+  const isNode = (w) => w === "node" || (isAbsolute(w) && basename(w) === "node");
+  if (words.length === 1 && words[0] === hookPath) return null;
+  if (words.length === 2 && isNode(words[0]) && words[1] === hookPath) return null;
+  return form;
+}
+
+/**
  * Check rendered settings text against the rule. Returns `{ ok: true, parsed }` or
  * `{ ok: false, why }` (why: one sentence, no "SAFETY:" prefix).
  */
@@ -87,14 +153,34 @@ export function validateAgentSettings(text, runnerDir) {
   } catch (err) {
     return { ok: false, why: `the rendered settings are not valid JSON: ${err.message}` };
   }
-  const runsHook = (h) =>
+  // An entry that NAMES the hook (so a mistake in it is reported as one) and an entry that
+  // RUNS it. Naming is not running: `# node <hook>`, `true || node <hook>`,
+  // `echo <hook>` and a hook started in the background all carry the path and decide
+  // nothing.
+  const namesHook = (h) =>
     h && h.type === "command" && typeof h.command === "string" && h.command.includes(hookPath);
+  const runsHook = (h) => namesHook(h) && hookCommandProblem(h, hookPath) === null;
   const pre = parsed?.hooks?.PreToolUse;
   const wired = Array.isArray(pre)
     ? pre.filter(
         (m) => m && typeof m === "object" && Array.isArray(m.hooks) && m.hooks.some(runsHook),
       )
     : [];
+  if (Array.isArray(pre)) {
+    for (const m of pre) {
+      if (!m || typeof m !== "object" || !Array.isArray(m.hooks)) continue;
+      for (const h of m.hooks) {
+        if (!namesHook(h)) continue;
+        const problem = hookCommandProblem(h, hookPath);
+        if (problem) {
+          return {
+            ok: false,
+            why: `the PreToolUse entry for ${m.matcher ?? "*"} names the safety hook but does not run it: ${problem}`,
+          };
+        }
+      }
+    }
+  }
   if (wired.length === 0) {
     return { ok: false, why: `no PreToolUse hook runs the safety hook (${hookPath})` };
   }

@@ -64,7 +64,18 @@ check() { # <test file under runner/test>
   node -e 'process.stdout.write(JSON.stringify({BASH_ENV:process.argv[1]}))' "$WORK/trip.sh" > "$CO/.gaffer/settings.json"
   : > "$CO/.gaffer/dispatch.sqlite"; : > "$CO/.gaffer/memory.sqlite"
   touch -t 200001010000 "$CO/.gaffer/settings.json" "$CO/.gaffer/dispatch.sqlite" "$CO/.gaffer/memory.sqlite"
+  # THE SETTINGS TRIPWIRE. settings.json is an allowlist of dashboard keys now, so the
+  # planted BASH_ENV no longer runs anything (it stays as a second wire: if the allowlist
+  # ever regressed, $TRIPPED would appear). What shows a test fell back to the checkout
+  # is that its settings.json was READ: the file's access time. Modified in 2001 and last
+  # read in 2000, so a read moves the access time on every filesystem that keeps one
+  # (relatime on Linux and the APFS default both update it when it is older than the
+  # modification time). The stamp sits a few seconds in the past so a read in the same
+  # clock tick still counts. The sanity probe below proves the wire works here.
+  touch -m -t 200101010000 "$CO/.gaffer/settings.json"
+  touch -a -t 200001010000 "$CO/.gaffer/settings.json"
   : > "$WORK/stamp"
+  perl -e 'my $t = time - 5; utime($t, $t, $ARGV[0]) or die "utime: $!"' "$WORK/stamp"
   local cmd=(bash); case "$t" in *.mjs) cmd=(node) ;; esac
   (cd "$CO" && env -u GAFFER_DATA -u DISPATCH_DB -u DISPATCH_AUDIT -u MEMORY_DB -u GAFFER_CREW_EVENTS \
       -u CLAUDE_FLAGS -u MCP_CONFIG -u BASH_ENV -u GAFFER_TEST_NAME \
@@ -76,6 +87,8 @@ check() { # <test file under runner/test>
   # 142 = SIGALRM from the bound: a hung run proves nothing either way.
   if [ "$rc" -eq 142 ]; then fail "$t timed out (300s) — last lines: $(tail -3 "$WORK/out" | tr '\n' ' ')"; return; fi
   if [ -e "$TRIPPED" ]; then fail "$t applied the checkout's .gaffer/settings.json (rc $rc)"
+  elif [ -n "$(find "$CO/.gaffer/settings.json" -anewer "$WORK/stamp" 2>/dev/null)" ]; then
+    fail "$t read the checkout's .gaffer/settings.json (rc $rc)"
   else ok "$t did not apply the checkout's settings.json"; fi
   if [ "${#leaked[@]}" -gt 0 ]; then fail "$t wrote the checkout's operator state (rc $rc): ${leaked[*]}"
   else ok "$t wrote no checkout operator state"; fi

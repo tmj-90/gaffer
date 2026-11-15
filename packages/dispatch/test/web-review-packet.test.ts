@@ -389,8 +389,9 @@ describe("web: the review packet on The Gaffer's Sign-off", () => {
     );
     expect(gi).toBeTruthy();
     expect(gi!.classList.contains("vd-g-flag")).toBe(true);
-    expect(gi!.querySelector(".dod-mark.dod-flag")?.textContent).toBe("!");
-    expect(gi!.querySelector(".vd-word")?.textContent).toBe("flagged");
+    // The gate's verdict is a verdictMark (its own glyph and its word), not a "!" char.
+    expect(gi!.querySelector(".vmark.vm-flag .vglyph")).not.toBeNull();
+    expect(gi!.querySelector(".vmark.vm-flag .vm-word")?.textContent).toBe("flagged");
     expect(gi!.querySelector(".vd-note")?.textContent).toBe(finding);
     expect(label(".vd-cell.vd-gates")).toBe("Gates: passed, 2 of 3 ran");
     // The strip's risk cell takes the diff's test-modified reason (strip._setRisk) …
@@ -488,14 +489,17 @@ describe("web: the review packet on The Gaffer's Sign-off", () => {
     expect(runner!.textContent).toContain("Runner · exit 0");
     expect(runner!.textContent).toContain("verified by runner:check");
     expect(runner!.querySelector(".ycard")).toBeNull();
+    expect(runner!.querySelector(".ac-ev-in .vmark.vm-pass")).not.toBeNull();
     expect(runner!.getAttribute("aria-label")).toBe(
       "clearDone removes completed tasks: satisfied. The runner ran the check: exit 0.",
     );
 
-    // Agent-only evidence: a yellow card and the words, never an exit code.
+    // Agent-only evidence: the flagged verdict mark (worth a look, not a "needs you"
+    // card) and the words, never an exit code.
     for (const r of [agent!, none!]) {
       expect(r.className).toContain("ac-ev-none");
-      expect(r.querySelector(".ycard")).not.toBeNull();
+      expect(r.querySelector(".ac-ev-in .vmark.vm-flag")).not.toBeNull();
+      expect(r.querySelector(".ycard")).toBeNull();
       expect(r.textContent).toContain("No machine evidence");
       expect(r.textContent).not.toContain("exit");
     }

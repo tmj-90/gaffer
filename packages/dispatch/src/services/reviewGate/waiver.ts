@@ -27,6 +27,12 @@ import { fileURLToPath } from "node:url";
 
 import type { Db } from "../../db/connection.js";
 import type { Actor } from "../../domain/types.js";
+import type { GateKeyring } from "../../events/gateSeal.js";
+import {
+  readPrincipalRow,
+  unsignedPrincipalMessage,
+  verifyPrincipalRow,
+} from "../../events/principalSeal.js";
 import type { PrincipalView } from "../../repositories/principalRepository.js";
 import { DispatchError } from "../../util/errors.js";
 
@@ -52,6 +58,7 @@ export function principalHowTo(ticketNumber: number | null, verb: "pass" | "fail
  */
 export function assertVerdictPrincipal(
   db: Db,
+  keyring: GateKeyring,
   actor: Actor,
   principal: VerdictPrincipal | null | undefined,
   ticketNumber: number | null,
@@ -70,20 +77,9 @@ export function assertVerdictPrincipal(
       "this call carries no principal (the tokenless CLI, `--as human|admin`, and the shared API token are not one)",
     );
   }
-  const row = db
-    .prepare(
-      `SELECT id, name, capability, actor_type, actor_id, revoked_at FROM api_principals WHERE id = ?`,
-    )
-    .get(principal!.id) as
-    | {
-        id: string;
-        name: string;
-        capability: string;
-        actor_type: string;
-        actor_id: string;
-        revoked_at: string | null;
-      }
-    | undefined;
+  // Read ONCE, with every column its seal binds: the checks below and the seal check are
+  // all made on this row, never on a later read of it.
+  const row = readPrincipalRow(db, principal!.id);
   if (!row) return refuse("the principal is unknown");
   if (row.revoked_at) return refuse(`principal '${row.name}' is revoked`);
   if (row.actor_type !== "human" && row.actor_type !== "admin") {
@@ -95,6 +91,10 @@ export function assertVerdictPrincipal(
       `the actor (${actor.type}:${actor.id ?? ""}) is not principal '${row.name}' (${row.actor_type}:${row.actor_id})`,
     );
   }
+  // SEALED PRINCIPALS: a row the factory did not sign (or one changed since) is no person.
+  // The seal is checked over the row read above. Never creates a key or a seal.
+  const sealed = verifyPrincipalRow(db, keyring, row);
+  if (!sealed.ok) return refuse(unsignedPrincipalMessage(row.name, sealed));
   return {
     id: row.id,
     name: row.name,

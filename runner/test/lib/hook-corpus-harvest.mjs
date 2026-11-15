@@ -132,7 +132,25 @@ if (isMain) {
     }
     console.log(`harvest: ran ${s}`);
   }
-  const records = readFileSync(out, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse);
+  // A command whose verdict depends on what the HOST's own directories hold cannot be
+  // pinned here: its suite asserts it in the suite's own tree, on every host. From the
+  // corpus cwd, ../../../d* is /d* where /tmp is a real directory (it matches /dev: allowed)
+  // and /private/d* on macOS (no match, and /private holds GAFFER_DATA: refused). The
+  // corpus pins the same rule with a by-hand entry that stays inside its tree (cat ../d*).
+  const HOST_DEPENDENT = new Set(["cat ../../../d*"]);
+  const hostDependent = (rec) => {
+    try {
+      return HOST_DEPENDENT.has(JSON.parse(rec.raw)?.tool_input?.command);
+    } catch {
+      return false;
+    }
+  };
+  const records = readFileSync(out, "utf8")
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map(JSON.parse)
+    .filter((rec) => !hostDependent(rec));
   rmSync(work, { recursive: true, force: true });
 
   const tmpRoots = [...new Set([tmpdir(), "/tmp"].filter(existsSync).map((d) => realpathSync(d)))];

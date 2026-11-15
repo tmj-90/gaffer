@@ -1399,6 +1399,9 @@ function replayOnMergeCandidate({
       env: {
         ...env,
         ...inv.env,
+        // The gate starts from env -i (lib/dod.sh gaffer_dod_gate_env): the invocation's own
+        // names are the ones it passes on (never a credential-shaped one).
+        _GAFFER_DOD_INVOCATION_ENV: Object.keys(inv.env || {}).join(" "),
         GAFFER_DOD: "1",
         GAFFER_DOD_TESTS: "1",
         GAFFER_DOD_TYPECHECK: "0",

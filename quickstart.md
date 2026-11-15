@@ -69,7 +69,8 @@ have a minute; the answers become lore drafts for review.
 runner/gaffer dashboard
 ```
 
-Setup already started it; this prints the `http://127.0.0.1:8787/?token=...` link again.
+Setup already started it; this prints the `http://127.0.0.1:8787/?token=...` link again
+(in a terminal: piped or logged output names the token file, `.gaffer/dashboard-token`, instead).
 Open it on this machine (or paste the token at the login prompt). The dashboard binds
 loopback only, and every data request needs that token.
 
@@ -295,7 +296,7 @@ If you would rather not install Node, pnpm and the agent CLI on the machine:
 export ANTHROPIC_API_KEY=…            # or CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token`
 mkdir -p repos                        # the repos you want the factory to work on
 docker compose up -d                  # builds the image, starts the dashboard on 127.0.0.1:8787
-docker compose logs dashboard | grep token=   # the login URL, token included
+docker compose exec dashboard cat /data/dashboard-token   # the login token (the logs never carry it)
 ```
 
 State lives in the `gaffer-data` volume; repos under `./repos` appear at `/repos` inside

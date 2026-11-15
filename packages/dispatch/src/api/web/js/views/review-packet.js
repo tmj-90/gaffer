@@ -4,19 +4,18 @@
 import { roLock } from "../access.js";
 import { api } from "../api.js";
 import { actorName } from "../club.js";
+import { callout, panelHead } from "../components.js";
 import { splitDiffFiles } from "../diff.js";
 import { clear, el } from "../dom.js";
 import { fmtTime, money, moneyW, plural } from "../format.js";
-import { icon, ycard } from "../icons.js";
 import { router } from "../router.js";
 import { viewRunLog } from "../runs.js";
 import { closeSheet } from "../sheet.js";
 import { actionSheet } from "../sheets.js";
-import { riskBadge } from "../status.js";
+import { reasonText, riskBadge, verdictMark } from "../status.js";
 import { guard, toast } from "../toast.js";
 import { testerByline } from "./acceptance.js";
-import { redCard } from "./epics.js";
-import { parseDodEvidence } from "./review-comments.js";
+import { acVerdict as acVerdictOf, parseDodEvidence } from "./review-comments.js";
 
 // --- Gate integrity: the delivery changed the tests that decide it is done -----
 
@@ -104,70 +103,76 @@ function integrityBanner(t, anns) {
     ),
   );
   const shown = items.slice(0, 8);
-  return el(
-    "div",
-    {
-      class: `warn-box integrity-banner${allowed ? " is-allowed" : ""}`,
-      role: allowed ? "status" : "alert",
-      "aria-label": allowed
-        ? "Test changes are allowed on this ticket."
-        : "This delivery changed the tests that gate it.",
-    },
-    [
-      icon("alert"),
-      el("div", { class: "integrity-body" }, [
-        el(
-          "p",
-          { class: "integrity-h" },
-          allowed
-            ? "Test changes are allowed on this ticket."
-            : "This delivery changed the tests that decide it is done.",
-        ),
-        el(
-          "ul",
-          { class: "integrity-items" },
-          [
-            ...shown.map((line) => el("li", {}, line)),
-            items.length > shown.length
-              ? el("li", { class: "dim" }, `and ${items.length - shown.length} more`)
-              : null,
-          ].filter(Boolean),
-        ),
-        el(
-          "p",
-          { class: "integrity-note" },
-          allowed
-            ? "A person allowed it, so the gate reads PASS with a note from its next run. Check the changes are the ones the ticket asked for."
-            : "A green gate proves less when its own tests changed. Auto-approve is held until a person looks.",
-        ),
-        // A read token sees the control switched off (the server refuses it anyway).
-        roLock(
-          el(
-            "button",
-            {
-              class: "btn small",
-              type: "button",
-              onclick: () => allowTestChangesSheet(t, !allowed),
-            },
-            allowed ? "Withdraw allowance…" : "Allow test changes…",
-          ),
-          "ticket",
-        ),
-      ]),
-    ],
+  // The shared callout (A-40): needs while it holds an approve for a person, info once a
+  // person allowed it. Its head line is the callout's text; the findings and the control
+  // follow it in the same box.
+  const box = callout({
+    tone: allowed ? "info" : "needs",
+    title: allowed
+      ? "Test changes are allowed on this ticket."
+      : "This delivery changed the tests that decide it is done.",
+    role: allowed ? "status" : "alert",
+    cls: `integrity-banner${allowed ? " is-allowed" : ""}`,
+  });
+  box.setAttribute(
+    "aria-label",
+    allowed
+      ? "Test changes are allowed on this ticket."
+      : "This delivery changed the tests that gate it.",
   );
+  box.querySelector(".callout-text")?.classList.add("integrity-h");
+  const body = el("div", { class: "integrity-body" }, [
+    el(
+      "ul",
+      { class: "integrity-items" },
+      [
+        ...shown.map((line) => el("li", {}, line)),
+        items.length > shown.length
+          ? el("li", { class: "dim" }, `and ${items.length - shown.length} more`)
+          : null,
+      ].filter(Boolean),
+    ),
+    el(
+      "p",
+      { class: "integrity-note" },
+      allowed
+        ? "A person allowed it, so the gate reads PASS with a note from its next run. Check the changes are the ones the ticket asked for."
+        : "A green gate proves less when its own tests changed. Auto-approve is held until a person looks.",
+    ),
+    // A read token sees the control switched off (the server refuses it anyway).
+    roLock(
+      el(
+        "button",
+        {
+          class: "btn small",
+          type: "button",
+          onclick: () => allowTestChangesSheet(t, !allowed),
+        },
+        allowed ? "Withdraw allowance…" : "Allow test changes…",
+      ),
+      "ticket",
+    ),
+  ]);
+  box.appendChild(body);
+  return box;
 }
 
-/** One flag: a yellow card, a caps title, what it means, who raised it. */
+/**
+ * One flag, through the shared callout (A-40): the needs tone (something to check before
+ * signing), its title in bold, what it means, then who raised it.
+ */
 function reviewFlag(title, body, source) {
-  return el("li", { class: "flag" }, [
-    ycard(22, "flag-card"),
-    el("div", { class: "flag-body" }, [
-      el("h3", { class: "flag-title" }, title),
-      el("p", { class: "flag-text" }, body),
-      source ? el("p", { class: "flag-src" }, source) : null,
-    ]),
-  ]);
+  const box = callout({
+    tone: "needs",
+    title,
+    body: [
+      el("span", { class: "flag-text" }, body),
+      source ? el("span", { class: "flag-src" }, source) : null,
+    ],
+    cls: "flag-box",
+  });
+  box.querySelector(".callout-title")?.classList.add("flag-title");
+  return el("li", { class: "flag" }, box);
 }
 
 /**
@@ -380,10 +385,61 @@ function prunePacketCache(tickets) {
   for (const id of packetCache.keys()) if (!live.has(id)) packetCache.delete(id);
 }
 
+/**
+ * The factory's norms a figure on Review or a ticket page is read against (F-E4, F-A6):
+ * what an accepted change typically costs, how long a change waits before a person opens
+ * it, and the median created-to-done time of every shipped ticket. One /api/health read,
+ * shared for a minute; null when it cannot be read. Never blocks a page: callers fill
+ * their line when it answers.
+ */
+const NORMS_TTL_MS = 60_000;
+let normsCache = null;
+function factoryNorms() {
+  const now = Date.now();
+  if (normsCache && now - normsCache.at < NORMS_TTL_MS) return normsCache.p;
+  const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+  const p = api("GET", "/api/health")
+    .then((h) => {
+      if (!h || typeof h !== "object") return null;
+      const ac = h.accepted_change || {};
+      const qw = (h.review_time && h.review_time.queue_wait) || {};
+      const ct = h.cycle_time || {};
+      // median_days reads 0 when nothing shipped; p75 is null then, so it says "none".
+      const shipped = ct.p75_days != null;
+      return {
+        typicalCostUsd: num(ac.accepted_changes) ? num(ac.cost_per_accepted_change_usd) : null,
+        acceptedChanges: num(ac.accepted_changes) || 0,
+        queueWaitMs: num(qw.n) ? num(qw.median_ms) : null,
+        queueWaitN: num(qw.n) || 0,
+        cycleMedianDays: shipped ? num(ct.median_days) : null,
+      };
+    })
+    .catch(() => null);
+  normsCache = { at: now, p };
+  return p;
+}
+
 const VD_WORD = { PASS: "passed", FAIL: "failed", FLAG: "flagged", SKIPPED: "skipped" };
-/** One cell of the verdict strip: a caps label, the verdict, then its detail. */
+/** A runner gate status as a verdict (a FLAG is the "!" mark, never a skip). */
+const GATE_VERDICT = { PASS: "pass", FAIL: "fail", FLAG: "flag", SKIPPED: "skip" };
+/**
+ * A cell's tone as its verdict mark: ok passed, bad failed, warn worth a look; a fact
+ * that is not a verdict (cost, the attempt, the pin) reads with the dash.
+ */
+const TONE_VERDICT = { ok: "pass", bad: "fail", warn: "flag" };
+/** The verdict line of a cell: its mark and its one word (a control stays itself). */
+function verdictValue(value, tone) {
+  if (value && value.nodeType === 1 && value.tagName === "BUTTON") return value;
+  return verdictMark(TONE_VERDICT[tone] || "skip", { word: value });
+}
+/**
+ * One cell of the verdict strip (A-11, A-41): a caps label, a verdictMark with the
+ * cell's one word, and the detail behind a disclosure. No side stripe: the mark and the
+ * word say the verdict. `_setVerdict(value, tone)` repaints the mark and the word.
+ */
 function verdictCell(key, label, value, aria, body, tone = "") {
-  return el(
+  const v = el("p", { class: "vd-v" }, verdictValue(value, tone));
+  const cell = el(
     "div",
     {
       class: `vd-cell vd-${key}${tone ? ` vd-${tone}` : ""}`,
@@ -392,9 +448,41 @@ function verdictCell(key, label, value, aria, body, tone = "") {
     },
     [
       el("p", { class: "vd-k" }, label),
-      el("p", { class: "vd-v" }, value),
-      el("div", { class: "vd-body" }, body),
+      v,
+      el("details", { class: "vd-more" }, [
+        el("summary", { class: "vd-sum" }, [
+          "Detail",
+          el("span", { class: "sr-only" }, `: ${label}`),
+        ]),
+        el("div", { class: "vd-body" }, body),
+      ]),
     ],
+  );
+  cell._setVerdict = (nextValue, nextTone = "") => {
+    clear(v);
+    v.appendChild(verdictValue(nextValue, nextTone));
+    cell.classList.remove("vd-ok", "vd-bad", "vd-warn");
+    if (nextTone) cell.classList.add(`vd-${nextTone}`);
+  };
+  return cell;
+}
+/**
+ * A recorded reason that may open with a server code ("tester_failed:empty list"): the
+ * code in plain words (reasonText), then what follows it, the raw text in the title
+ * (A-25). Free text with no code stays as written.
+ */
+function reasonLine(raw) {
+  const s = String(raw == null ? "" : raw);
+  const m = /^([a-z][a-z0-9]*(?:_[a-z0-9]+)+)(?::|$)(.*)$/s.exec(s);
+  if (!m) return el("span", { class: "vd-why" }, s);
+  const rest = m[2]
+    .replace(/^(?:\s*(?:FAIL|PASS|CHANGES|FLAG):?)+/i, "")
+    .replace(/^[:\s]+/, "")
+    .trim();
+  return el(
+    "span",
+    { class: "vd-why", title: `Server reason code: ${s}` },
+    rest ? `${reasonText(m[1])}: ${rest}` : reasonText(m[1]),
   );
 }
 /** Who sent a delivery back, said plainly. */
@@ -541,7 +629,7 @@ function judgeCellOpen(jd) {
  * REVIEW FACTS (intent): what was asked, the ticket's description as the human wrote it,
  * above the runner's facts. Text only: a description is untrusted text.
  */
-const INTENT_FOLD_CHARS = 600;
+const INTENT_FOLD_CHARS = 280;
 function intentBlock(intent) {
   const body = el(
     "p",
@@ -549,7 +637,11 @@ function intentBlock(intent) {
     intent ||
       "The ticket has no description: the title and the acceptance criteria are all that was asked.",
   );
-  const kids = [el("h2", { class: "rv-intent-h" }, "What was asked"), body];
+  // A plain quote block (A-41): a small label, then the words as written. No side stripe.
+  const kids = [
+    el("p", { class: "rv-intent-h" }, "What was asked"),
+    el("blockquote", { class: "rv-intent-q" }, body),
+  ];
   if (intent && intent.length > INTENT_FOLD_CHARS) {
     body.classList.add("is-folded");
     const more = el(
@@ -568,7 +660,7 @@ function intentBlock(intent) {
     );
     kids.push(more);
   }
-  return el("section", { class: "rv-intent", "aria-label": "What was asked" }, kids);
+  return el("figure", { class: "rv-intent", "aria-label": "What was asked" }, kids);
 }
 
 /** The Behavioural surface's order: what callers see first, what was generated last. */
@@ -712,7 +804,7 @@ function impactPanel(repos) {
     ]);
   });
   return el("section", { class: "card panel rv-impact", "aria-label": "Behavioural surface" }, [
-    el("h3", { class: "rv-h3" }, "Behavioural surface"),
+    panelHead("Behavioural surface", null, null, { level: 3 }),
     el(
       "p",
       { class: "rv-impact-sub dim" },
@@ -890,10 +982,8 @@ function candidateCell(p, onRunLog) {
     });
     if (!moved) return;
     state = "moved";
-    cell.querySelector(".vd-v").textContent = value(state);
+    cell._setVerdict(value(state), "warn");
     cell.setAttribute("aria-label", `Candidate: ${value(state).toLowerCase()}`);
-    cell.classList.remove("vd-ok", "vd-bad");
-    cell.classList.add("vd-warn");
     sub.textContent = words(state);
   };
   return cell;
@@ -960,11 +1050,7 @@ function backingPanel(rows) {
   const not = el("ul", { class: "clean rv-backing-list rv-unbacked" });
   const rowEl = (b) =>
     el("li", { class: `rv-backing-row ${b.holds ? "is-held" : "is-unheld"}` }, [
-      el(
-        "span",
-        { class: `dod-mark dod-${b.holds ? "pass" : "skip"}`, "aria-hidden": "true" },
-        b.holds ? "✓" : "–",
-      ),
+      verdictMark(b.holds ? "pass" : "skip", { word: b.holds ? "holds" : "not backed" }),
       el("span", { class: "rv-backing-fact" }, b.fact),
       el("small", { class: "rv-backing-src" }, b.source),
       BACKING_TARGET[b.cell]
@@ -998,9 +1084,9 @@ function backingPanel(rows) {
   let base = rows || [];
   paint(base);
   const panel = el("section", { class: "card panel rv-backing", "aria-label": "What backs this" }, [
-    el("h2", { class: "rv-h2" }, "What backs this"),
+    panelHead("What backs this", null, null, { level: 2 }),
     holds,
-    el("h3", { class: "rv-h3" }, "What is not backed"),
+    panelHead("What is not backed", null, null, { level: 3 }),
     not,
   ]);
   panel._setImpact = (extra) => paint([...base, ...(extra || [])]);
@@ -1035,16 +1121,12 @@ function verdictStrip(p, hooks = {}) {
                   ? "flag"
                   : "skip";
           return el("li", { class: `vd-gate vd-g-${st}` }, [
-            el(
-              "span",
-              { class: `dod-mark dod-${st}`, "aria-hidden": "true" },
-              { pass: "✓", fail: "✗", flag: "!", skip: "–" }[st],
-            ),
+            // The gate's verdict, the one mark set (A-23): never a text character.
+            verdictMark(GATE_VERDICT[r.status] || st, { word: VD_WORD[r.status] || r.status }),
             el("b", {}, r.gate),
             multiRepo && r.repo && r.repo !== "-"
               ? el("span", { class: "vd-gate-repo" }, r.repo)
               : null,
-            el("span", { class: `vd-word vd-w-${st}` }, VD_WORD[r.status] || r.status),
             r.command
               ? el("code", { class: "vd-cmd mono" }, r.command)
               : r.note
@@ -1067,7 +1149,7 @@ function verdictStrip(p, hooks = {}) {
     );
   } else gateBody.push(el("p", { class: "vd-sub" }, "The runner has recorded no gate report."));
   for (const d of p.disagreements || [])
-    gateBody.push(el("p", { class: "vd-flag" }, [ycard(16), d.message]));
+    gateBody.push(callout({ tone: "needs", body: d.message, cls: "vd-flag" }));
   // The integrity row checks the gates; it is not one of them (it never "ran" the work).
   const gateList = g ? g.rows.filter((r) => r.gate !== "integrity") : [];
   const ran = gateList.filter((r) => r.status !== "SKIPPED").length;
@@ -1191,29 +1273,40 @@ function verdictStrip(p, hooks = {}) {
   const c = p.cost;
   const unknown = c.ledger_status === "unreadable";
   const untracked = c.ledger_status === "unconfigured" || c.ledger_status === "no_ticket";
-  cells.push(
-    verdictCell(
-      "cost",
-      "Cost",
-      unknown ? "Unknown" : untracked ? "Not tracked" : money(c.cost_usd),
+  // F-E4: the cost so far beside what an accepted change typically costs here (Health's
+  // cost per accepted change, every attempt counted), filled once the norm is read.
+  const costNorm = el("p", { class: "vd-norm", hidden: "" });
+  const costCell = verdictCell(
+    "cost",
+    "Cost",
+    unknown ? "Unknown" : untracked ? "Not tracked" : money(c.cost_usd),
+    unknown
+      ? "Cost: unknown, the usage ledger could not be read"
+      : untracked
+        ? "Cost: not tracked, no usage ledger"
+        : `Cost so far: ${money(c.cost_usd)} over ${plural(c.num_turns, "turn")}`,
+    el("p", { class: "vd-sub" }, [
       unknown
-        ? "Cost: unknown, the usage ledger could not be read"
+        ? "The usage ledger could not be read."
         : untracked
-          ? "Cost: not tracked, no usage ledger"
-          : `Cost so far: ${money(c.cost_usd)} over ${plural(c.num_turns, "turn")}`,
-      el("p", { class: "vd-sub" }, [
-        unknown
-          ? "The usage ledger could not be read."
-          : untracked
-            ? "No usage ledger is configured."
-            : plural(c.num_turns, "turn"),
-        !unknown && c.estimated_usd > 0 ? ` · ${money(c.estimated_usd)} of it estimated` : "",
-        c.unknown_calls ? ` · ${plural(c.unknown_calls, "call")} unmeasured` : "",
-        c.budget_usd != null ? ` · budget ${moneyW(c.budget_usd)}` : "",
-      ]),
-      unknown ? "warn" : "",
-    ),
+          ? "No usage ledger is configured."
+          : plural(c.num_turns, "turn"),
+      !unknown && c.estimated_usd > 0 ? ` · ${money(c.estimated_usd)} of it estimated` : "",
+      c.unknown_calls ? ` · ${plural(c.unknown_calls, "call")} unmeasured` : "",
+      c.budget_usd != null ? ` · budget ${moneyW(c.budget_usd)}` : "",
+    ]),
+    unknown ? "warn" : "",
   );
+  costCell.querySelector(".vd-v").after(costNorm);
+  cells.push(costCell);
+  if (!unknown && !untracked && typeof hooks.norms?.then === "function")
+    hooks.norms.then((n) => {
+      const typ = n && n.typicalCostUsd;
+      if (typeof typ !== "number" || !Number.isFinite(typ)) return;
+      costNorm.textContent = `typical ${money(typ)}`;
+      costNorm.title = `What an accepted change costs here: all spend over ${plural(n.acceptedChanges || 0, "accepted change")}, every attempt counted (Health).`;
+      costNorm.hidden = false;
+    });
 
   // Attempts and the rework history (latest three).
   const at = p.attempts;
@@ -1235,7 +1328,7 @@ function verdictStrip(p, hooks = {}) {
                   el("li", {}, [
                     el("span", { class: "vd-when tabnum" }, fmtTime(r.at)),
                     ` Sent back by ${reworkWho(r)}: `,
-                    el("span", { class: "vd-why" }, r.reason),
+                    reasonLine(r.reason),
                   ]),
                 ),
             ),
@@ -1257,6 +1350,7 @@ function verdictStrip(p, hooks = {}) {
     riskBadge(p.risk.level, { long: true }),
     `Risk: ${p.risk.level}`,
     [riskList, riskSub],
+    p.risk.level === "high" || p.risk.level === "critical" ? "warn" : "",
   );
   const paintRisk = (anns) => {
     clear(riskList);
@@ -1297,10 +1391,20 @@ function verdictStrip(p, hooks = {}) {
   if (jd) cells.push(judgeCellOpen(jd));
   else if (p.judge_hidden) cells.push(judgeCell({ onReveal: hooks.onJudgeReveal }));
 
+  // One row of cells at a fixed column count (A-11): every cell in one row on a wide
+  // screen, two even rows when narrower, pairs on a phone (an odd last cell spans the
+  // row), so no cell is ever stranded alone on a row of its own.
   const strip = el(
     "section",
     { class: "rv-verdict", "aria-label": "The runner's verdict" },
-    el("div", { class: "vd-cells" }, cells),
+    el(
+      "div",
+      {
+        class: "vd-cells",
+        style: { "--vd-n": cells.length, "--vd-half": Math.ceil(cells.length / 2) },
+      },
+      cells,
+    ),
   );
   strip._setRisk = paintRisk;
   strip._setShown = (repos) => candCell?._setShown(repos);
@@ -1341,7 +1445,10 @@ function acTable(rows) {
           [
             el("td", { class: "ac-ev-t" }, [
               el("span", {}, a.text),
-              el("span", { class: "ac-state" }, String(a.status || "").replace(/_/g, " ")),
+              // The criterion's state, the one verdict mark set (A-23).
+              verdictMark(acVerdictOf(a.status), {
+                word: String(a.status || "open").replace(/_/g, " "),
+              }),
             ]),
             el(
               "td",
@@ -1354,11 +1461,11 @@ function acTable(rows) {
               "td",
               { class: "ac-ev-what" },
               el("div", { class: "ac-ev-in" }, [
-                tone === "ok"
-                  ? el("span", { class: "dod-mark dod-pass", "aria-hidden": "true" }, "✓")
-                  : tone === "bad"
-                    ? redCard(16)
-                    : ycard(16),
+                // What backs it, as a verdict: a passing check passed, a failing one
+                // failed, only the agent's word (or nothing) flagged for a look.
+                verdictMark(tone === "ok" ? "pass" : tone === "bad" ? "fail" : "flag", {
+                  word: tone === "ok" ? "checked" : tone === "bad" ? "check failed" : "unchecked",
+                }),
                 el("span", { class: "ac-ev-word" }, [
                   kind === "runner" || kind === "human"
                     ? el("span", {}, [
@@ -1388,6 +1495,7 @@ function acTable(rows) {
 }
 
 export {
+  factoryNorms,
   testModifiedAnns,
   integrityFlagOf,
   integrityBanner,

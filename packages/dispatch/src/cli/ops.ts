@@ -3,6 +3,8 @@ import { existsSync, statSync } from "node:fs";
 import { DISPATCH_UPGRADE_HINT, type Db } from "../db/connection.js";
 import { SCHEMA_VERSION } from "../db/schema.js";
 import { verifyEventChain } from "../events/eventChain.js";
+import { hostGateKeyring, type GateKeyring } from "../events/gateSeal.js";
+import { unsignedPrincipalMessage, unsignedPrincipals } from "../events/principalSeal.js";
 import { acceptedChangeCost, type AcceptedChangeReport } from "../health/acceptedChange.js";
 import { readReviewMeasures, type ReviewMeasures } from "../health/reviewMeasures.js";
 import { readHealthRows, resolveLedgerPath } from "../health/healthAggregator.js";
@@ -47,7 +49,13 @@ function count(db: Db, sql: string, ...params: unknown[]): number {
  * signal, surfaced by the entry point). `dbPath` is used only for the file
  * permission/existence checks; pass `:memory:` to skip them.
  */
-export function runDoctor(db: Db, dbPath: string, nowIso = new Date().toISOString()): DoctorReport {
+export function runDoctor(
+  db: Db,
+  dbPath: string,
+  nowIso = new Date().toISOString(),
+  /** The keyring principals are verified with (default: the factory key for a file). */
+  keyring?: GateKeyring,
+): DoctorReport {
   const checks: DoctorCheck[] = [];
   const onDisk = dbPath !== ":memory:";
 
@@ -213,8 +221,43 @@ export function runDoctor(db: Db, dbPath: string, nowIso = new Date().toISOStrin
     }
   }
 
+  // 9. SEALED PRINCIPALS: every active principal must carry a valid seal under the factory
+  //    key, or it cannot sign in. Named, with why. Read-only: never creates a key or a seal.
+  const principalKeyring = keyring ?? (onDisk ? safeHostKeyring(dbPath) : null);
+  if (principalKeyring && tableExists(db, "api_principals")) {
+    const unsigned = unsignedPrincipals(db, principalKeyring);
+    if (unsigned.length === 0) {
+      checks.push({ label: "Principals: every active principal is signed", level: "ok" });
+    }
+    for (const u of unsigned) {
+      checks.push({
+        label: `Principal ${u.name}: not signed by this factory (${u.failure})`,
+        // No matching creation on record is the shape of a row written straight into the
+        // database: a failure. One created before signing or restored is a warning.
+        level: u.creation_event ? "warn" : "fail",
+        detail: unsignedPrincipalMessage(u.name, {
+          ok: false,
+          failure: u.failure as never,
+          detail: u.detail,
+        }),
+        fix: u.creation_event
+          ? `Review it, then \`gaffer wg principal resign ${u.name}\` (or \`resign --all --confirm <code>\` with the code \`gaffer wg principal unsigned\` prints, or the dashboard's Settings), or revoke it.`
+          : `No matching principal.created event is on record: if you did not create it, revoke it (\`gaffer wg principal revoke ${u.name}\`); re-sign it by name only if you did.`,
+      });
+    }
+  }
+
   const hasFail = checks.some((c) => c.level === "fail");
   return { exitCode: hasFail ? 1 : 0, checks };
+}
+
+/** The factory keyring for a doctor read, or null when it cannot be used here. */
+function safeHostKeyring(dbPath: string): GateKeyring | null {
+  try {
+    return hostGateKeyring(dbPath);
+  } catch {
+    return null;
+  }
 }
 
 export function renderDoctor(report: DoctorReport): string {

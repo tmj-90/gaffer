@@ -608,6 +608,40 @@ try {
     : bad("Review view never rendered the diff");
   await shot(page, "review-diff");
 
+  // ── 4b. (decision first) on a 1440x900 screen Approve is on the first screen; on a
+  //        phone the sign-off actions ride in a bar that stays in view while it scrolls.
+  {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await sleep(300);
+    const top = await page
+      .$eval("button.signoff-btn", (b) => b.getBoundingClientRect().top + window.scrollY)
+      .catch(() => null);
+    top != null && top + 40 <= 900
+      ? ok(`Review: Approve is on the first screen at 1440x900 (top ${Math.round(top)}px)`)
+      : bad(`Review: Approve top ${top}px is below the first 900px at 1440x900`);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight / 2));
+    await sleep(300);
+    const bar = await page
+      .$eval(".rv-actions", (n) => {
+        const r = n.getBoundingClientRect();
+        return {
+          pos: getComputedStyle(n).position,
+          inView: r.top >= 0 && r.bottom <= window.innerHeight,
+          approve: Boolean(n.querySelector("button.signoff-btn")),
+        };
+      })
+      .catch(() => null);
+    bar && bar.pos === "fixed" && bar.inView && bar.approve
+      ? ok("Review @390: the sign-off bar (Approve, Fix these, Send back) stays in view mid-page")
+      : bad(`Review @390: sign-off bar ${JSON.stringify(bar)}`);
+    await shot(page, "review-phone-signbar");
+    await page.setViewportSize({ width: 1400, height: 1000 });
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await sleep(200);
+  }
+
   // ── 5. (review packet) the runner's verdict strip under the title ─────────
   //   One dossier read (?include=packet) draws the gates with their commands, the
   //   tester, cost and turns, the attempt, risk, and the criteria table: the
@@ -1133,7 +1167,8 @@ try {
         headers: { Authorization: `Bearer ${minted}` },
       });
       const txt = asRead.ok ? await asRead.text() : "";
-      txt && !txt.includes("SECRET") && txt.includes('"host":"hooks.slack.com"')
+      // The path, not the bare word: a setting's help text may say SECRET.
+      txt && !txt.includes("UI/REGRESS") && txt.includes('"host":"hooks.slack.com"')
         ? ok("API: a read principal sees a webhook as configured + host only")
         : bad(`API: settings leaked a webhook to a read principal (${asRead.status})`);
       const back = await fetch(`${BASE}/api/settings/secret/GAFFER_NOTIFY_SLACK_URL`, {

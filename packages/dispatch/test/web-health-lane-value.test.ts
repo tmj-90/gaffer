@@ -172,8 +172,19 @@ const LANE_VALUE = {
 };
 
 const card = () => document.querySelector<HTMLElement>('[aria-label="What each lane changed"]');
-const laneLine = (lane: string) =>
-  card()?.querySelector<HTMLElement>(`li[data-lane="${lane}"]`)?.textContent ?? "";
+/** A lane's table row (F-C2), as its cells' text, keyed by the row header's label. */
+const laneRow = (label: string): string[] => {
+  const tr = [...(card()?.querySelectorAll("tbody tr") ?? [])].find((r) =>
+    (r.querySelector("th[scope=row]")?.textContent ?? "").startsWith(label),
+  );
+  return tr ? [...tr.children].map((c) => c.textContent ?? "") : [];
+};
+const differed = (label: string) => {
+  const tr = [...(card()?.querySelectorAll("tbody tr") ?? [])].find((r) =>
+    (r.querySelector("th[scope=row]")?.textContent ?? "").startsWith(label),
+  );
+  return tr?.querySelector(".dv")?.getAttribute("aria-label") ?? "";
+};
 
 describe("web: Health shows what each lane changed", () => {
   beforeEach(() => {
@@ -192,13 +203,38 @@ describe("web: Health shows what each lane changed", () => {
     await loadApp();
     expect(card()).not.toBeNull();
     expect(card()!.textContent).toMatch(/5 attempts · 4 decided by a person/);
-    expect(laneLine("agent-review")).toMatch(/5 verdicts/);
-    expect(laneLine("agent-review")).toMatch(/differed from the person 2 of 4/);
-    expect(laneLine("agent-review")).toMatch(/2 it passed and the person sent back/);
-    expect(laneLine("agent-review")).toMatch(/only lane on 1 send-back/);
-    expect(laneLine("agent-review")).toMatch(/\$0\.10 per attempt over 5/);
-    expect(laneLine("security-review")).toMatch(/safety lane/);
-    expect(laneLine("plan-debate")).toMatch(/Plan debate no verdicts recorded/);
+    // A table, one row per lane with verdicts (F-C2): verdicts, compared, the diverging
+    // differed bar, send-backs only it asked for, cost per attempt.
+    const heads = [...card()!.querySelectorAll("thead th")].map((th) => th.textContent);
+    expect(heads).toEqual([
+      "Lane",
+      "Verdicts",
+      "A person decided too",
+      "Differed: it blocked | it passed",
+      "Only lane on a send-back",
+      "Cost per attempt",
+    ]);
+    expect(laneRow("Reviewer agent")).toEqual([
+      "Reviewer agent",
+      "5",
+      "4",
+      "022 of 4",
+      "1",
+      "$0.10",
+    ]);
+    expect(differed("Reviewer agent")).toBe(
+      "Differed from the person 2 of 4: 0 it blocked and the person passed, 2 it passed and the person sent back",
+    );
+    // The bar has a side for each way of differing; a zero side draws no mark.
+    const bar = card()!.querySelector(".dv")!;
+    expect(bar.querySelector(".dv-left i")).toBeNull();
+    expect(bar.querySelector(".dv-right i")).not.toBeNull();
+    expect(laneRow("Security review")[0]).toBe("Security review safety lane");
+    // A lane with no verdicts is no row: it folds into one muted line.
+    expect(laneRow("Plan debate")).toEqual([]);
+    expect(card()!.querySelector(".lane-value-quiet")?.textContent).toBe(
+      "No verdicts recorded: Plan debate.",
+    );
     const foot = card()!.querySelector(".lane-value-foot")?.textContent ?? "";
     expect(foot).toMatch(/1 of 4 send-backs no lane asked for/);
     expect(foot).toMatch(/never switched off by telemetry/);
@@ -222,12 +258,19 @@ describe("web: Health shows what each lane changed", () => {
       lane_value: { ...LANE_VALUE, lanes: [...LANE_VALUE.lanes, judge] },
     };
     await loadApp();
-    expect(laneLine("eval-judge")).toMatch(/blind decisions: differed 2 of 3/);
-    expect(laneLine("eval-judge")).toMatch(
-      /after the judge's view was opened: 0 of 2 \(the grade may have swayed those\)/,
+    // The judge's blind decisions get a column; its title gives the revealed ones.
+    const heads = [...card()!.querySelectorAll("thead th")].map((th) => th.textContent);
+    expect(heads).toContain("Blind decisions differed");
+    const col = heads.indexOf("Blind decisions differed");
+    expect(laneRow("Eval judge")[col]).toBe("2 of 3");
+    const tr = [...card()!.querySelectorAll("tbody tr")].find((r) =>
+      (r.textContent ?? "").startsWith("Eval judge"),
+    )!;
+    expect(tr.children[col]!.querySelector("span")?.getAttribute("title")).toBe(
+      "After the judge's view was opened: 0 of 2 (the grade may have swayed those)",
     );
-    // Other lanes carry no blinding line.
-    expect(laneLine("agent-review")).not.toMatch(/blind decisions/);
+    // Other lanes carry no blinding figure: a dash with its reason.
+    expect(laneRow("Reviewer agent")[col]).toBe("\u2014");
   });
 
   it("an older server without the report shows no card", async () => {

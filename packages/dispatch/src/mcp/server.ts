@@ -31,7 +31,11 @@ export const TOOL_DESCRIPTIONS: Record<keyof typeof toolSchemas, string> = {
     "(`factory_strict`, `regulated`) require evidence-backed ACs before a " +
     "ticket can pass review; choosing `solo_loose` to dodge that gate defeats " +
     "the point. Set `risk_level` to the real blast radius, not the convenient " +
-    "one — it gates which agents may claim the work.",
+    "one: it gates which agents may claim the work.\n\n" +
+    "In the Gaffer FACTORY a mount bound to a ticket drafts only on the " +
+    "repositories that ticket writes, never under a looser `policy_pack` than " +
+    "the ticket's (an omitted pack takes it); the product-owner mount drafts on " +
+    "its repository.",
   add_acceptance_criterion:
     "**Add ONE concrete, checkable acceptance criterion to a draft ticket.** " +
     "An AC is the contract the work is judged against, so make it falsifiable: " +
@@ -171,7 +175,13 @@ export const TOOL_DESCRIPTIONS: Record<keyof typeof toolSchemas, string> = {
     "Under `factory_strict`/`regulated`, EVERY write repo needs delivery evidence " +
     "(a branch/PR, or review_ready/done) before the ticket can reach `done` — " +
     "this is how you supply it per repo. For a single-repo ticket, one call " +
-    "covers it; `record_delivery_artifact` still records the ticket-level summary.",
+    "covers it; `record_delivery_artifact` still records the ticket-level summary. " +
+    "An agent records only on a ticket it is delivering (claimed or in_progress, " +
+    "with an active claim) and never changes a branch, commit or PR already " +
+    "recorded. In the Gaffer FACTORY the runner records each write repo's branch, " +
+    "commit and review_ready at close: only the mount holding the claim may call " +
+    "this, and only for progress (a pre-review status or an evidence_ref); a " +
+    "reviewer or tester mount is refused.",
   list_pending_decisions:
     "**List the decisions awaiting a human/product answer.** Call this when a " +
     "ticket is blocked on a decision, or before raising a new one, to check " +
@@ -212,7 +222,8 @@ export const TOOL_DESCRIPTIONS: Record<keyof typeof toolSchemas, string> = {
     "`claim_ticket` refuses it with `DEPENDENCY_BLOCKED`. Use this to hard-gate " +
     "phases (data model before features, bootstrap before everything). A " +
     "self-dependency, a duplicate edge, or one that would form a cycle is " +
-    "rejected — the dependency graph stays a DAG.",
+    "rejected; the dependency graph stays a DAG. In the Gaffer FACTORY both " +
+    "tickets must be ones this mount is bound to (or drafts it created).",
   set_ticket_testable:
     "**Mark a ticket eligible (or not) for the independent black-box testing lane.** " +
     "Pass `ticket_id` and `can_be_tested`. Set it when an OBSERVABLE BOUNDARY may " +
@@ -247,7 +258,8 @@ export const TOOL_DESCRIPTIONS: Record<keyof typeof toolSchemas, string> = {
     "Tickets land as `draft` (nothing auto-delivers); ready them explicitly when " +
     "the plan is confirmed. The call is all-or-nothing: an out-of-range index, a " +
     "self-dependency or a cyclic plan rejects the entire epic. Returns the epic " +
-    "node id and the created ticket numbers in plan order.",
+    "node id and the created ticket numbers in plan order. Every planned ticket " +
+    "follows `create_ticket`'s factory rule for its repo and pack.",
   create_spec:
     "**Draft a spec — an AI-drafted, human-edited statement of product intent that " +
     "sits in front of decompose.** Provide `title`, an optional `brief`, and " +
@@ -265,7 +277,8 @@ export const TOOL_DESCRIPTIONS: Record<keyof typeof toolSchemas, string> = {
     "**Freeze a draft spec — take an immutable snapshot of the intent.** Pass " +
     "`spec_id`. Only a `draft` spec can be frozen (draft→frozen); a frozen spec is " +
     "IMMUTABLE — freezing or editing a spec that is already frozen or superseded is " +
-    "rejected. Freeze when the clauses are settled and ready to drive delivery.",
+    "rejected. Freezing is a person's act: an agent's call is always refused " +
+    "(ACTOR_NOT_PERMITTED); a person freezes the spec from the dashboard or CLI.",
   get_squad:
     "**Read the squad: the club name and each registered agent's display name, " +
     "shirt number and role.** Read-only and presentation only — every other tool " +

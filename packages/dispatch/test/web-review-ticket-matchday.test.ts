@@ -369,7 +369,9 @@ describe("web: Match Day review + ticket", () => {
     const cells = Array.from(app.querySelectorAll(".rv-clear-board .kpi")).map(
       (c) => c.textContent || "",
     );
-    expect(cells.find((c) => c.startsWith("To merge"))).toContain("01");
+    // Plain figures (F-E4): a count reads "1", never a scoreboard's zero-padded "01".
+    expect(cells.find((c) => c.startsWith("To merge"))).toBe("To merge1");
+    expect(cells.find((c) => c.startsWith("Waiting"))).toBe("Waiting0");
     const results = app.querySelector(".rv-results")?.textContent || "";
     expect(results).toContain("#16");
     // No landing_state in this payload: the neutral word, never "merging".

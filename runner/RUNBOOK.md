@@ -105,6 +105,29 @@ runner/gaffer wg principal revoke ci-viewer
 The token (`gfp_…`) is printed once; only its hash is stored. `GET /api/whoami` tells
 a caller which principal and capability its token carries.
 
+**Signed principals.** Each principal is signed with the factory key when it is created.
+A principal without a valid signature cannot sign in (401, as an unknown token): one
+created before this was added, one restored from a backup, or one written into the
+database outside the factory. `gaffer wg doctor` and Settings name them. Review them,
+then re-sign the ones you recognise and revoke the rest:
+
+```bash
+runner/gaffer wg principal unsigned          # who, what it may do, where, made by whom; prints a code
+runner/gaffer wg principal resign alice --confirm <its review_code>   # one, after review
+runner/gaffer wg principal resign --all --confirm <code>   # the list you reviewed (creation on record)
+runner/gaffer wg principal revoke stranger   # one you did not create
+```
+
+Check every row: a process that can write the database can forge a row AND a matching
+creation event, so "creation on record" is not proof; only you know which sign-ins you
+made. The codes change if a row is added or changed after you looked, and the re-sign then
+signs nothing.
+
+Only the operator re-signs (a principal token is refused, agents are refused by the
+safety hook). After restoring the database from a backup: `gaffer wg gate-key reanchor`,
+then re-sign. A lost factory key means every principal must be re-signed under the new
+one (`gaffer setup` creates it), as every approval must be re-approved.
+
 The dashboard's action buttons (Suggest work, Merge, Poll for work, Onboard) need
 their commands in the API's environment; `gaffer dashboard` wires them, and
 [`.env.example`](../.env.example) lists them if you start `api/bin.js` by hand.

@@ -118,7 +118,7 @@ async function loadApp(): Promise<void> {
 }
 function govTile(label: string): Element | undefined {
   return Array.from(document.querySelectorAll(".gov-tile")).find(
-    (t) => t.querySelector(".gov-tile-label")?.textContent === label,
+    (t) => t.querySelector(".mt-label")?.textContent === label,
   );
 }
 
@@ -136,10 +136,14 @@ describe("web: Health — rework a reviewer caused", () => {
 
   it("the referee's Rework rate reads 1 of 1 sent back, and says who sends tickets back", async () => {
     await loadApp();
+    // A measure tile (F-D3): the rate, its counts, its window chip; 1 is a small sample.
     const tile = govTile("Rework rate");
-    expect(tile?.querySelector(".gov-tile-val")?.textContent).toBe("100%");
-    expect(tile?.querySelector(".gov-tile-sub")?.textContent).toBe(
-      "1 of 1 merged in 30 days had been sent back first, by a reviewer, the tester or a failed gate",
+    expect(tile?.querySelector(".mt-val")?.textContent).toBe("100%");
+    expect(tile?.querySelector(".mt-n")?.textContent).toBe("1 of 1 merged had been sent back");
+    expect(tile?.querySelector(".mt-period")?.textContent).toBe("last 30 days");
+    expect(tile?.classList.contains("is-small")).toBe(true);
+    expect(tile?.querySelector(".mt-def p")?.textContent).toMatch(
+      /sent back first, by a reviewer, the tester or a failed gate/,
     );
   });
 
@@ -150,7 +154,10 @@ describe("web: Health — rework a reviewer caused", () => {
     );
     // "%" is part of the value (statCell joins it: audit A-32).
     expect(kpi?.querySelector(".kpi-val")?.textContent).toBe("<1%");
-    expect(kpi?.querySelector(".kpi-sub")?.textContent).toBe("of lead time an agent worked");
+    // Its window chip and its n: the served sample (F-E2, F-E6).
+    expect(kpi?.querySelector(".kpi-sub")?.textContent).toBe(
+      "every shipped ticket median of 1 ticket: time an agent worked",
+    );
     const eff = document.querySelector(".form-guide .fg-eff");
     expect(eff?.querySelector(".band")?.getAttribute("aria-label")).toBe(
       "Flow efficiency <1% of lead time with an agent working on the ticket",
@@ -223,10 +230,10 @@ describe("web: Health — rework a reviewer caused", () => {
     expect(kpi?.querySelector(".spark, .spark-svg")).toBeNull();
   });
 
-  it("a quiet week draws no zero in the Lead time sparkline: an empty trailing week is skipped", async () => {
-    // One completion 13 days ago and one today: the 7-day trailing mean has nothing on
-    // days 7 to 12. Those days are gaps, not a zero-day lead time on the baseline.
-    const series = [3, null, null, null, null, null, null, null, null, null, null, null, null, 5];
+  it("the Form guide drops the client Lead time and Deployments, and the cycle line breaks at empty days", async () => {
+    // Lead time and Deployments were client recomputations (a 7-day mean of the cycle
+    // series, a cumulative count beside an all-time value): dropped (F-B2, F-E2).
+    const series = [3, 4, null, 5, 6, null, null, 7, 8, null, null, null, null, 5];
     health = {
       ...HEALTH,
       cycle_time: {
@@ -239,15 +246,49 @@ describe("web: Health — rework a reviewer caused", () => {
       throughput: { last7: 1, prev7: 1, series: series.map((v) => (v === null ? 0 : 1)) },
     };
     await loadApp();
-    const kpi = Array.from(document.querySelectorAll(".form-guide .kpi")).find(
-      (k) => k.querySelector(".kpi-label")?.textContent === "Lead time",
+    const labels = [...document.querySelectorAll(".form-guide .kpi-label")].map(
+      (l) => l.textContent,
     );
-    const d = kpi?.querySelector(".spark-line")?.getAttribute("d") ?? "";
+    expect(labels).toEqual(["Cycle time", "Throughput", "Flow efficiency"]);
+    const kpi = [...document.querySelectorAll(".form-guide .kpi")].find(
+      (k) => k.querySelector(".kpi-label")?.textContent === "Cycle time",
+    )!;
+    // p75 and p90 beside the median, and the window it covers (F-E2).
+    expect(kpi.querySelector(".kpi-sub")?.textContent).toBe(
+      "every shipped ticket median; p75 4.5d, p90 4.8d",
+    );
+    // An empty day is a gap: the line starts again after each null (no join across it).
+    const d = kpi.querySelector(".spark-line")?.getAttribute("d") ?? "";
     expect(d).not.toContain("NaN");
-    const points = [...d.matchAll(/[ML]([\d.]+) ([\d.]+)/g)].map((m) => Number(m[2]));
-    // Days 0-6 (the first completion in their week) and day 13: eight points, none at 0.
-    expect(points).toHaveLength(8);
-    const baseline = Number(kpi?.querySelector(".spark-base")?.getAttribute("y1"));
-    expect(points.every((y) => y < baseline)).toBe(true);
+    expect((d.match(/M/g) || []).length).toBe(4);
+    // Its readout and summary name UTC days.
+    expect(document.querySelector(".form-guide .cf-cap")?.textContent).toMatch(/UTC day/);
+    // The sparkline's readout names today's UTC day too (not the local date).
+    const spark = kpi.querySelector<HTMLElement>(".spark")!;
+    spark.dispatchEvent(new Event("focus"));
+    const today = new Date();
+    expect(spark.querySelector(".spark-readout")?.textContent).toBe(
+      `${today.getUTCDate()}/${today.getUTCMonth() + 1} (UTC): 5d 0h`,
+    );
+  });
+
+  it("nothing shipped: the Cycle time cell is a dash with the reason, never 0.0 days", async () => {
+    health = {
+      ...HEALTH,
+      cycle_time: {
+        median_days: null,
+        p75_days: null,
+        p90_days: null,
+        series: Array(14).fill(null),
+        series_n: Array(14).fill(0),
+      },
+    };
+    await loadApp();
+    const kpi = [...document.querySelectorAll(".form-guide .kpi")].find(
+      (k) => k.querySelector(".kpi-label")?.textContent === "Cycle time",
+    )!;
+    expect(kpi.querySelector(".kpi-val")?.textContent).toBe("\u2014");
+    expect(kpi.querySelector(".kpi-reason")?.textContent).toBe("nothing has shipped yet");
+    expect(kpi.textContent).not.toContain("0.0");
   });
 });

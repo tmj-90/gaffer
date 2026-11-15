@@ -163,7 +163,9 @@ describe("web type: condensed for headlines, the body face for operational detai
   });
 
   it("the headlines keep the programme's display face", () => {
-    for (const sel of [".rv-h2", ".rv-title"]) {
+    // Review's sections are panelHead level 2 on the one scale (A-10), its title the
+    // shared ticket head's: both in the display face.
+    for (const sel of [".rv-flags .ph-l2 .panel-title", ".rv-title"]) {
       const el = document.querySelector(sel);
       expect(el, sel).toBeTruthy();
       expect(fontOf(el!), sel).toContain("--f-display");

@@ -130,6 +130,16 @@ export class SpecsService {
    * or re-drafted.
    */
   freezeSpec(id: string, actor: Actor): Spec {
+    // A PERSON'S ACT: freezing is irreversible (the frozen spec drives decompose and
+    // coverage, and seeds draft lore), so an agent never freezes one, on any surface.
+    if (actor.type === "agent") {
+      throw new DispatchError(
+        "ACTOR_NOT_PERMITTED",
+        "Freezing a spec is a person's act: an agent cannot freeze one. Propose clauses; a " +
+          "person reviews and freezes the spec.",
+        { spec_id: id, actor_type: actor.type },
+      );
+    }
     const frozen = inTransaction(this.db, () => {
       const spec = this.specs.findById(id);
       if (!spec) throw notFound("spec", id);

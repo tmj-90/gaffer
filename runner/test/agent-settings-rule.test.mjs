@@ -102,6 +102,91 @@ const TABLE = {
     }),
     false,
   ],
+  // External review 18: the rule recognised the hook by its path appearing anywhere in the
+  // command. Each of these names the hook and runs something else (or nothing that blocks).
+  "the hook path in a comment after another command": [
+    JSON.stringify({ hooks: { PreToolUse: [entry(ALL, { command: `true # ${HOOK}` })] } }),
+    false,
+  ],
+  "a command that is only a comment": [
+    JSON.stringify({ hooks: { PreToolUse: [entry(ALL, { command: `# ${HOOK}` })] } }),
+    false,
+  ],
+  "the hook behind ||": [
+    JSON.stringify({ hooks: { PreToolUse: [entry(ALL, { command: `true || ${HOOK}` })] } }),
+    false,
+  ],
+  "the hook with its verdict discarded (; true)": [
+    JSON.stringify({ hooks: { PreToolUse: [entry(ALL, { command: `${HOOK}; true` })] } }),
+    false,
+  ],
+  "the hook in the background (&)": [
+    JSON.stringify({ hooks: { PreToolUse: [entry(ALL, { command: `${HOOK} &` })] } }),
+    false,
+  ],
+  "the hook path as an argument to echo": [
+    JSON.stringify({
+      hooks: { PreToolUse: [entry(ALL, { command: "echo ${RUNNER_DIR}/safety-hook.mjs" })] },
+    }),
+    false,
+  ],
+  "the hook path as an argument to node -e": [
+    JSON.stringify({
+      hooks: {
+        PreToolUse: [entry(ALL, { command: "node -e 0 ${RUNNER_DIR}/safety-hook.mjs" })],
+      },
+    }),
+    false,
+  ],
+  "the hook piped into something that exits 0": [
+    JSON.stringify({ hooks: { PreToolUse: [entry(ALL, { command: `${HOOK} | cat` })] } }),
+    false,
+  ],
+  "the hook inside a command substitution": [
+    JSON.stringify({ hooks: { PreToolUse: [entry(ALL, { command: `echo $(${HOOK})` })] } }),
+    false,
+  ],
+  "a different file whose name ends like the hook's": [
+    JSON.stringify({
+      hooks: {
+        PreToolUse: [entry(ALL, { command: "node ${RUNNER_DIR}/safety-hook.mjs.bak" })],
+      },
+    }),
+    false,
+  ],
+  "an asynchronous hook (its verdict blocks nothing)": [
+    JSON.stringify({ hooks: { PreToolUse: [entry(ALL, { async: true })] } }),
+    false,
+  ],
+  "a key the rule does not know": [
+    JSON.stringify({ hooks: { PreToolUse: [entry(ALL, { background: true })] } }),
+    false,
+  ],
+  "a real entry beside one that only names the hook": [
+    JSON.stringify({
+      hooks: { PreToolUse: [entry(ALL), entry("Bash", { command: `true # ${HOOK}` })] },
+    }),
+    false,
+  ],
+  "the hook path quoted, node by absolute path, a status message": [
+    JSON.stringify({
+      hooks: {
+        PreToolUse: [
+          entry(ALL, {
+            command: '/usr/bin/node "${RUNNER_DIR}/safety-hook.mjs"',
+            statusMessage: "checking",
+          }),
+        ],
+      },
+    }),
+    true,
+  ],
+  "the hook path alone (run by its own first line)": [
+    JSON.stringify({
+      hooks: { PreToolUse: [entry(ALL, { command: "${RUNNER_DIR}/safety-hook.mjs" })] },
+    }),
+    true,
+  ],
   "not JSON": ['{"hooks": {"PreToolUse": [ ' + HOOK, false],
   "no hooks at all": [JSON.stringify({ permissions: {} }), false],
 };

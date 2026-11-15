@@ -665,6 +665,14 @@ elif [ "$_MODE" = "legacy" ] && [ -n "${GAFFER_DATA:-}" ] && [ -d "$GAFFER_DATA"
     done
     return 1
   }
+  # The masking below covers only files that EXIST. settings.json is the one host-trusted
+  # file whose absence is normal (no dashboard setting saved yet): the agent could create
+  # it in the rw mount and the next runner would apply its keys (autonomy, budget,
+  # webhooks). An empty map is what an absent file means, so create one to be masked.
+  if [ ! -e "$GAFFER_DATA/settings.json" ] && [ ! -L "$GAFFER_DATA/settings.json" ]; then
+    ( umask 077 && printf '{}\n' > "$GAFFER_DATA/settings.json" ) 2>/dev/null \
+      || _die "cannot create $GAFFER_DATA/settings.json to mask it from the container (fail closed)"
+  fi
   for _e in "$GAFFER_DATA"/* "$GAFFER_DATA"/.[!.]*; do
     [ -e "$_e" ] || [ -L "$_e" ] || continue
     _b="$(basename "$_e")"

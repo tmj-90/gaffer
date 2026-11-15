@@ -484,7 +484,7 @@ console.log("== the replay sandbox-exec profile (generated on any host) ==");
         sb.indexOf(`(subpath "${HOME}/.claude")`, denyHome),
     sb,
   );
-  const denyWrite = sb.indexOf(`(deny file-write*\n  (subpath "${DATA}"))`);
+  const denyWrite = sb.indexOf(`(deny file-write*\n  (subpath "${DATA}")\n`);
   const regrant = sb.indexOf("(allow file-write*", denyWrite);
   assert(
     "replay profile: $GAFFER_DATA is not a write root (writes there denied, the checkout re-granted)",
@@ -514,19 +514,18 @@ console.log("== the replay sandbox-exec profile (generated on any host) ==");
   const vsb = existsSync(join(WORK, "validation.sb"))
     ? readFileSync(join(WORK, "validation.sb"), "utf8")
     : "";
+  // The validation profile (the gates): no read denials beyond the always-denied secrets,
+  // and no write grant for $GAFFER_DATA (beyond the write roots) or HOME (sandbox audit F1c).
+  const allowForms = [...vsb.matchAll(/^\(allow file-write\*\n([\s\S]*?)\)\n/gm)].map((m) => m[1]);
   assert(
-    "the validation profile is unchanged (no read denials, $GAFFER_DATA writable)",
+    "the validation profile has no read denials and grants neither $GAFFER_DATA nor HOME",
     v.status === 0 &&
-      // The factory key and the operator's REST token are denied in every profile (signed
-      // gate events); nothing else may be.
-      !/deny file-read/.test(
-        vsb.replace(
-          /\(deny file-read\* file-write\*\n(?: {2}\(subpath "[^"]*(?:gaffer\/keys|dashboard-token)"\)\n)*\)\n/g,
-          "",
-        ),
+      vsb.includes(";; variant: validation") &&
+      !/deny file-read-data/.test(vsb) &&
+      !allowForms.some(
+        (f) => f.includes(`(subpath "${DATA}")`) || f.includes(`(subpath "${HOME}/.claude")`),
       ) &&
-      vsb.includes(`(subpath "${DATA}")`) &&
-      vsb.includes(`(subpath "${HOME}/.claude")`),
+      vsb.includes(`(deny file-write*\n  (subpath "${DATA}")`),
     vsb,
   );
 }

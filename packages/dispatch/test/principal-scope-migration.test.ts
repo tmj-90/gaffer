@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Dispatch } from "../src/core.js";
 import { SCHEMA_VERSION } from "../src/db/schema.js";
 import type { Actor } from "../src/domain/types.js";
+import { ephemeralGateKeyring } from "../src/events/gateSeal.js";
 
 const human: Actor = { type: "human", id: "tom" };
 let dir = "";
@@ -24,7 +25,10 @@ describe("schema v31: principal scopes", () => {
   it("adds the scope columns to a v30 database; an old principal stays unscoped", () => {
     dir = mkdtempSync(join(tmpdir(), "principal-v31-"));
     const db = join(dir, "d.sqlite");
-    const first = Dispatch.open(db);
+    // One factory key across the opens (SEALED PRINCIPALS: a principal is honoured only
+    // under the key that signed it; the library default is a key per process handle).
+    const gateKeyring = ephemeralGateKeyring();
+    const first = Dispatch.open(db, undefined, undefined, { gateKeyring });
     const repo = first.registerRepository({ name: "app", default_branch: "main" }, human);
     const { token } = first.createPrincipal({ name: "old-bot" }, human);
     // Make it a v30 database: no scope columns, version 30.
@@ -34,7 +38,7 @@ describe("schema v31: principal scopes", () => {
     first.db.close();
 
     for (let open = 0; open < 2; open += 1) {
-      const wg = Dispatch.open(db);
+      const wg = Dispatch.open(db, undefined, undefined, { gateKeyring });
       const cols = (
         wg.db.prepare("PRAGMA table_info(api_principals)").all() as Array<{ name: string }>
       ).map((c) => c.name);

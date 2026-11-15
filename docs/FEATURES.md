@@ -199,6 +199,12 @@ waiting for Merge now, and the done lane.*
   factory-wide control switched off. Repository-level changes need an admin principal.
   A decision shared with a ticket outside its scope shows on its ticket only as "A
   decision outside this token's scope" (it still blocks), never its question.
+- **Signed sign-ins.** Every principal is signed with the factory key; one that is not
+  (created before signing, restored from a backup, or written outside the factory) cannot
+  sign in. Settings says "N sign-ins were created before signing. Review and re-sign."
+  with the list (who each acts as, what it may do, where, who created it and when) and
+  Re-sign buttons for the operator; `wg principal unsigned` and `wg principal resign
+  <name>|--all --confirm <code>` (the codes `unsigned` prints) do the same on the CLI.
 - **Who the CLI is.** `wg whoami` says who writes are recorded as: `$USER`, asserted,
   without a token; with `GAFFER_PRINCIPAL_TOKEN=<token>`, `wg`, `gaffer approve` and
   `gaffer merge` act as that principal, its read-only flag and scope enforced as on the
@@ -244,6 +250,13 @@ the usage ledger and the transition log, and says only what those can show:
   (`GET /api/health?window_days=N`), and then all four use it. Each also serves the same figures over the equal window before
   and twelve weeks of history (the escaped-defect rate six monthly cohorts, the recent
   ones marked as still maturing); an empty week is shown as empty, never as zero.
+- **On the page, the four measures are the scoreboard**: one tile each with its count
+  (a rate under 10 greys and shows no change), its window, the change against the window
+  before, a sparkline of its weeks (UTC weeks; months for escaped defects) and its 95%
+  interval. The Referee's record window select sets the window for all four. Under them,
+  *Behind the four measures* shows who approved, review time split into waiting to be
+  opened and deciding, spend by how each ticket ended (with the accepted tickets' own
+  price for reference) and the monthly cohorts, each history also as a table.
 - **Lane verdicts and what each lane changed.** The reviewer agent, the security
   reviewer, the tester and the eval judge each record their verdict
   (`ticket.lane_verdict`, runner-recorded only). Health counts how often each differed
@@ -277,12 +290,21 @@ wrote. How each of these is enforced, and its limits, is in
 
 ### What the Review view shows
 
-- **What was asked**: the ticket's description, above everything else.
-- **The verdict strip: the runner's facts, not the agent's words.** Each
+The decision comes first: the ticket header (the title, then its number, status, who
+delivered it and how long it has waited), one row of verdict cells, then the sign-off
+with Approve, Fix these and Send back, all on the first screen of a laptop. On a phone
+those three actions stay in a bar above the tab bar while you read the diff.
+
+- **What was asked**: the ticket's description, a quote in the header, folded after a
+  few lines.
+- **The verdict strip: the runner's facts, not the agent's words.** One row of cells,
+  each a label, a pass, fail or flag mark and one word; open a cell's *Detail* for the
+  rest. Each
   Definition-of-Done gate (passed, failed or skipped, with the command it ran), the
   test count the runner saw in the gate's own output, the independent tester's verdict
-  and the commit it tested, cost and turns so far, the attempt and who sent it back
-  before, the risk level with its reasons, and the reviewed-commit pin. The
+  and the commit it tested, cost and turns so far (beside what an accepted change
+  typically costs here), the attempt and who sent it back before, the risk level with
+  its reasons, and the reviewed-commit pin. The
   acceptance-criteria table shows each criterion's check command and the runner's
   exit code, or **no machine evidence** when only the agent's word backs it. When the
   agent's summary claims a whole-suite count the runner's output contradicts, a flag
@@ -612,7 +634,10 @@ install. Settings shows that posture as a read-only line in its Sandbox group: t
 provider, available or missing, required or opted out, and the fix. The opt-out is
 `GAFFER_STRICT_REQUIRE=0` in the environment, for a runner you contain yourself; with a
 ship or mutate flag on as well, the runner warns about it twice
-([docs/sandbox.md](sandbox.md)).
+([docs/sandbox.md](sandbox.md)). The gates run agent-written code, so each gate run
+starts from an empty environment (PATH, a throwaway HOME, locale, proxy and toolchain
+homes); the Quality group's "Variables the gates may see" (`GAFFER_DOD_ENV_PASS`) names
+any other variable your tests need, and credential-shaped names are never passed.
 
 ![The boot room: the Team instructions dial on Supervised, who plays each position, and autonomy suggestions drawn from the review record](img/settings.png)
 

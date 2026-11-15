@@ -1065,7 +1065,7 @@ async function capture() {
   await pageShot("memory", "Memory", 1600);
   await go("health", ".routing-panel");
   await pageShot("health", "Health", 2400);
-  await elShot("health-measures", "Health: the four measures", ".measures-panel", 16);
+  await elShot("health-measures", "Health: the four measures", ".measures-board", 16);
   await elShot("health-routing", "Health: routing scorecard", ".routing-panel", 16);
   await go("settings");
   await pageShot("settings", "Settings", 1500);

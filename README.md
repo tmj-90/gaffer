@@ -25,7 +25,7 @@ It's alpha. It gives an agent a shell inside the repos you point it at, so keep 
 
 ## How a ticket gets done
 
-A ticket can't be marked ready until it has at least one acceptance criterion; the stricter policy packs (`team_light` and up) also require a repo it's allowed to write to. Under the default `solo_loose` pack a ticket with no write repo goes ready with a warning, and the runner parks it as blocked for you (reason `no_write_repo`) instead of delivering it. A criterion can carry a check command (`--check "npm test"`), which the runner runs itself rather than taking the agent's word for it.
+A ticket can't be marked ready until it has at least one acceptance criterion; the stricter policy packs (`team_light` and up) also require a repo it's allowed to write to. Under the default `solo_loose` pack a ticket with no repo linked at all goes ready with a warning, and the runner parks it as blocked for you (reason `no_write_repo`) instead of delivering it; a ticket whose only linked repos are read-only is refused at ready, as in the stricter packs. A criterion can carry a check command (`--check "npm test"`), which the runner runs itself rather than taking the agent's word for it.
 
 `gaffer run` makes one pass over the ready queue and then exits. There's no daemon unless you ask for one. Each pass takes a ticket through these steps, and your own checkout is never touched:
 

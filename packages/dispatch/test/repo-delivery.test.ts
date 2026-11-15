@@ -123,6 +123,11 @@ describe("WG-005: per-repo delivery — MCP surface", () => {
   it("record_repo_delivery tool writes a row; get_ticket carries a compact summary", () => {
     const wg = fresh();
     const { ticketId, repoId } = ticketWithWriteRepo(wg);
+    // An agent records on a ticket it is delivering (claimed, with an active claim).
+    wg.addAcceptanceCriterion({ ticket_id: ticketId, text: "works" }, human);
+    wg.markReady(ticketId, human);
+    const bot = wg.registerAgent({ display_name: "a" }, human);
+    wg.claimTicket({ ticket_id: ticketId, agent_id: bot.id, ttl_seconds: 600 }, systemActor);
     const tools = makeHandlers(wg, agentActor);
 
     const rec = tools.record_repo_delivery({

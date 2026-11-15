@@ -22,6 +22,7 @@ import {
   teamInstructions,
   testingLaneOff,
 } from "./formation.js";
+import { principalSignaturesCallout } from "./principal-signatures.js";
 
 // ===========================================================================
 //  View: Create ticket
@@ -256,6 +257,7 @@ async function renderSettings() {
     main.appendChild(fold);
   }
 
+  main.appendChild(principalSignaturesCallout(whoamiRes)); // SEALED PRINCIPALS: unsigned sign-ins
   // PER-PRINCIPAL CREDENTIALS: who is signed in, the named credentials, mint/revoke.
   const acc = accessPanel(
     whoamiRes,

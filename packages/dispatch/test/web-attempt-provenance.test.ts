@@ -513,10 +513,11 @@ describe("web: Match footage shows each run's own turns and cost (exploratory fi
     );
     await boot();
     for (let i = 0; i < 8; i++) await tick();
-    const rows = [...document.querySelectorAll(".tk-run-list .tk-run")].map((r) => r.textContent);
+    // The runs are a table (A-36): one row per run, its own turns in the Turns column.
+    const rows = [...document.querySelectorAll(".tk-run-table tbody tr")];
     expect(rows).toHaveLength(2);
-    expect(rows.join(" | ")).toContain("12 turns");
-    expect(rows.join(" | ")).toContain("6 turns");
-    expect(rows.join(" | ")).not.toContain("18 turns");
+    const turns = rows.map((r) => r.querySelector('td[data-label="Turns"]')?.textContent);
+    expect(turns.sort()).toEqual(["12", "6"]);
+    expect(turns).not.toContain("18");
   });
 });

@@ -12,7 +12,7 @@ the board refreshes itself over the live event stream.
 ```bash
 pnpm -r build
 npx playwright@1.63.0 install chromium # once, same version as the pinned playwright-core (or PLAYWRIGHT_CHROMIUM=/path/to/chromium)
-bash scripts/ui-regression/run.sh      # ~2 minutes
+bash scripts/ui-regression/run.sh      # ~3 minutes
 ```
 
 Output: `/tmp/gaffer-ui-regression/shots/` (one screenshot per step) and
@@ -43,8 +43,8 @@ govern — the dashboard's real CSP stays in force for everything the page itsel
 
 ## Layout sweep
 
-Every view is loaded at 375, 390, 768, 1024, 1280, 1440 and 1920px (and the Overview/Work at
-360 and 320px). Each must be no wider than the viewport, keep the header's Search,
+Every view is loaded at 375, 390, 768, 1024, 1280, 1440 and 1920px (and the Overview, Work,
+Review and Floor at 360 and 320px). Each must be no wider than the viewport, keep the header's Search,
 New and Logout controls on screen, render no 24-grid icon wider than 48px, keep the
 Overview's development-flow strip a scrolling flex row, and show the first board
 card / the team sheet above the fold. The Review step also checks that a live

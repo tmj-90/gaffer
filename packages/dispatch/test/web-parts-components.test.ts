@@ -9,7 +9,7 @@
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 
 const WEB = path.resolve(process.cwd(), "src/api/web/js");
 const load = (f: string) =>
@@ -250,6 +250,42 @@ describe("meter, meterRow, segBar; band is a wrapper", () => {
   });
 });
 
+describe("dataTable is a tab stop only while it scrolls", () => {
+  it("adds tabindex when its table overflows and drops it when it fits again", () => {
+    const seen: Array<() => void> = [];
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        cb: () => void;
+        constructor(cb: () => void) {
+          this.cb = cb;
+          seen.push(cb);
+        }
+        observe() {}
+        disconnect() {}
+      },
+    );
+    try {
+      const t = C.dataTable({
+        columns: [{ key: "a", label: "A" }],
+        rows: [{ a: "x" }],
+        caption: "Wide",
+      });
+      expect(seen.length).toBe(1);
+      let sw = 900;
+      Object.defineProperty(t, "scrollWidth", { get: () => sw });
+      Object.defineProperty(t, "clientWidth", { get: () => 320 });
+      seen[0]!();
+      expect(t.getAttribute("tabindex")).toBe("0");
+      sw = 320;
+      seen[0]!();
+      expect(t.hasAttribute("tabindex")).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
 describe("dataTable", () => {
   const columns = [
     { key: "repo", label: "Repo" },
@@ -264,7 +300,9 @@ describe("dataTable", () => {
   it("a real table: caption, th scope, numeric columns right and tabular, row headers", () => {
     const t = C.dataTable({ columns, rows, caption: "Code index by repo" });
     expect(t.classList.contains("dt-wrap")).toBe(true);
-    expect(t.getAttribute("tabindex")).toBe("0");
+    // A table that fits is not a tab stop (jsdom lays nothing out: it never scrolls).
+    expect(t.hasAttribute("tabindex")).toBe(false);
+    expect(t.getAttribute("role")).toBe("region");
     const table = t.querySelector("table.data-table")!;
     expect(table.querySelector("caption")!.textContent).toBe("Code index by repo");
     const ths = [...table.querySelectorAll("thead th")];

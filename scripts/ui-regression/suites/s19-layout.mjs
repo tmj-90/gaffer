@@ -23,19 +23,23 @@ const VIEWS = (w, t) =>
     ["overview", "overview"],
     ["work", "work"],
     ["work?mode=list", "work list"],
+    ["review", "review"],
     [`review/${w.review.id}`, "review/:id"],
     [`ticket/${w.held.id}`, "ticket"],
     ["epics", "epics"],
     w.epicId ? [`epics/${w.epicId}`, "epics/:id"] : null,
     ["create", "create"],
     ["factory", "map"],
+    w.node ? [`node/${w.node.id}`, "node/:id"] : null,
     ["specs", "specs"],
+    w.spec ? [`specs/${w.spec.id}`, "specs/:id"] : null,
     ["memory", "memory"],
     ["squad", "squad"],
     ["floor", "floor"],
     ["health", "health"],
     ["settings", "settings"],
     [`repo/${encodeURIComponent(t.repo.id)}`, "repo/:id"],
+    ["hidden", "hidden"],
   ].filter(Boolean);
 
 // The block budget (audit A-02, A-03): a view leads with at most two block heads
@@ -60,7 +64,7 @@ function blockAudit() {
   return { heads: heads.map(said), idleClaret };
 }
 
-// A head or a table that sits straight in a card keeps the card's inset: its first
+// A head, a table or an empty line that sits straight in a card keeps the card's inset: its first
 // text starts at least 8 px inside the card's border (a programme card has no padding
 // of its own, so a plain level-2 head once ran flush against the frame).
 function insetAudit() {
@@ -69,7 +73,9 @@ function insetAudit() {
     const cb = c.getBoundingClientRect();
     if (!cb.width) continue;
     const bl = parseFloat(getComputedStyle(c).borderLeftWidth) || 0;
-    for (const k of c.querySelectorAll(":scope > .panel-head, :scope > .dt-wrap")) {
+    for (const k of c.querySelectorAll(
+      ":scope > .panel-head, :scope > .dt-wrap, :scope > .empty-inline, :scope > .empty-state",
+    )) {
       if (!k.getBoundingClientRect().width) continue;
       const walk = document.createTreeWalker(k, 4 /* NodeFilter.SHOW_TEXT */, {
         acceptNode: (n) => (n.textContent.trim() ? 1 : 3),
@@ -263,6 +269,36 @@ export default async function s19(t, L) {
     await pg.context().close();
   }
 
+  // ── Health at 320 px: a stacked table fits its card (V3 review) ────────────
+  // A row head kept the table's nowrap when the table stacked into label/value cards,
+  // so "Ready to decision (clock)" and "still maturing" ran 25 and 34 px past the card.
+  {
+    const pg = await L.openPage(t.browser, { width: 320, height: 700 });
+    await pg.goto(`${L.BASE}/#/health`, { waitUntil: "load" });
+    await pg.waitForSelector(".dt-stack", { timeout: 20000 }).catch(() => null);
+    await L.sleep(900);
+    const st = await pg.evaluate(() => {
+      const all = [...document.querySelectorAll(".dt-wrap.dt-stack")].filter(
+        (e) => e.getBoundingClientRect().width > 0,
+      );
+      return {
+        n: all.length,
+        over: all
+          .filter((e) => e.scrollWidth > e.clientWidth + 1)
+          .map(
+            (e) =>
+              `${(e.querySelector("caption")?.textContent || "table").slice(0, 40)} +${e.scrollWidth - e.clientWidth}px`,
+          ),
+      };
+    });
+    t.check(
+      st.n > 0 && st.over.length === 0,
+      `Health at 320 px: its ${st.n} stacked tables fit their cards (no sideways scroll inside a card)`,
+      `Health @320 stacked tables: ${st.n} seen, scrolling sideways: ${st.over.join(" | ") || "none"}`,
+    );
+    await pg.context().close();
+  }
+
   const p = await L.openPage(t.browser, { width: 1000, height: 900 });
 
   // ── the Search palette keeps focus and closes on Esc (F-06) ──────────────
@@ -449,6 +485,14 @@ export default async function s19(t, L) {
   await p.goto(`${L.BASE}/#/review/${w.review.id}`, { waitUntil: "load" });
   await p.waitForSelector(".vd-gate, .dod-item", { timeout: 20000 }).catch(() => null);
   await L.sleep(1200);
+  // The notes live behind the Gates cell's Detail disclosure: open it, as a reviewer
+  // does, and measure them there. Chromium lays out a closed <details> body
+  // (content-visibility: hidden) at the closed cell's width, so a closed note read as
+  // "73 px" although nobody can see it; an open cell takes the whole row.
+  await p.evaluate(() => {
+    for (const d of document.querySelectorAll(".vd-cell.vd-gates details.vd-more")) d.open = true;
+  });
+  await L.sleep(300);
   const gates = await p.evaluate(() => {
     const red = getComputedStyle(document.documentElement).getPropertyValue("--red").trim();
     const probe = document.createElement("span");
@@ -460,18 +504,29 @@ export default async function s19(t, L) {
       (n) => getComputedStyle(n).color,
     );
     // A note squeezed into a column a few characters wide wraps every few letters.
-    const narrow = [...document.querySelectorAll(".vd-cmd, .vd-note")]
-      .filter((n) => n.getBoundingClientRect().width > 0)
+    const notes = [...document.querySelectorAll(".vd-cmd, .vd-note")].filter(
+      (n) => !n.closest("details:not([open])") && n.getBoundingClientRect().width > 0,
+    );
+    const narrow = notes
       .filter((n) => n.getBoundingClientRect().width < 120 && n.textContent.length > 12)
       .map(
         (n) => `${n.textContent.slice(0, 30)} (${Math.round(n.getBoundingClientRect().width)}px)`,
       );
-    return { redRgb, passNotes, narrow, rows: document.querySelectorAll(".vd-gate").length };
+    return {
+      redRgb,
+      passNotes,
+      narrow,
+      seen: notes.length,
+      rows: document.querySelectorAll(".vd-gate").length,
+    };
   });
   t.check(
-    gates.rows > 0 && gates.narrow.length === 0 && gates.passNotes.every((c) => c !== gates.redRgb),
-    `the sign-off's ${gates.rows} gate rows give each note room (none squeezed), and a passing gate's note is not red (${gates.passNotes.length} checked)`,
-    `gate notes: squeezed=${gates.narrow.join(" | ")} pass-note colours=${gates.passNotes.join(",")} (red ${gates.redRgb}) rows=${gates.rows}`,
+    gates.rows > 0 &&
+      gates.seen > 0 &&
+      gates.narrow.length === 0 &&
+      gates.passNotes.every((c) => c !== gates.redRgb),
+    `the sign-off's ${gates.rows} gate rows give each of their ${gates.seen} notes room once the Gates detail is open (none squeezed), and a passing gate's note is not red (${gates.passNotes.length} checked)`,
+    `gate notes: seen=${gates.seen} squeezed=${gates.narrow.join(" | ")} pass-note colours=${gates.passNotes.join(",")} (red ${gates.redRgb}) rows=${gates.rows}`,
   );
   await L.shot(p, "s19-review-gates");
   await p.context().close();

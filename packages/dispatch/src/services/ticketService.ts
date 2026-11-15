@@ -1415,6 +1415,7 @@ export class TicketService {
         );
       }
       const existing = this.repoDeliveries.find(ticket.id, repo.id);
+      if (actor.type === "agent") this.assertAgentRepoDelivery(ticket, repo.name, input, existing);
       // GATE INTEGRITY: the base commit is write-once. Replacing a stored one needs the
       // runner's word that it cut the branch again (`base_recut`); anything else (a retry
       // re-recording after the agent ran, whose branch tip holds the agent's commits)
@@ -1463,6 +1464,61 @@ export class TicketService {
       });
       return { delivery, eventId };
     });
+  }
+
+  /**
+   * RUNNER-OWNED DELIVERY RECORD: the per-repo branch, commit and status are what the
+   * Review diff, the approval pin (writeRepoHeads), required CI (ciCandidateCommits) and
+   * the strict done gate read. The runner records them at close (`wg ticket repo-delivery
+   * record --as system`, tick-close.sh / tick-bootstrap.sh) and crew records them as the
+   * system actor; a person may record them over REST or the CLI. An AGENT may record
+   * only on a ticket it is delivering: claimed or in_progress, with an active claim. Anything past
+   * delivery (in_review, in_testing, ready_for_merge, done, ...) is refused, so a
+   * reviewer or tester agent can never re-point the delivery it judges. And once a
+   * branch, commit or PR is on the row (the runner's record of a round), an agent can
+   * never change it: only a host-side call (system or a person) moves it, for a new
+   * round. Same rule the base commit already follows.
+   */
+  private assertAgentRepoDelivery(
+    ticket: Ticket,
+    repoName: string,
+    input: {
+      branch_name?: string | undefined;
+      commit_sha?: string | undefined;
+      pr_url?: string | undefined;
+    },
+    existing: TicketRepoDelivery | undefined,
+  ): void {
+    const activeClaim =
+      this.db
+        .prepare("SELECT 1 FROM ticket_claims WHERE ticket_id = ? AND status = 'active' LIMIT 1")
+        .get(ticket.id) !== undefined;
+    const delivering = ticket.status === "claimed" || ticket.status === "in_progress";
+    if (!delivering || !activeClaim) {
+      throw new DispatchError(
+        "ACTOR_NOT_PERMITTED",
+        `An agent records a repo delivery only on a ticket it is delivering (claimed or ` +
+          `in_progress, with an active claim); #${ticket.number} is ${ticket.status}. The runner records the ` +
+          "delivery at close.",
+        { ticket_id: ticket.id, status: ticket.status, actor_type: "agent" },
+      );
+    }
+    const pinned: Array<[string, string | null | undefined, string | undefined]> = [
+      ["branch_name", existing?.branch_name, input.branch_name],
+      ["commit_sha", existing?.commit_sha, input.commit_sha],
+      ["pr_url", existing?.pr_url, input.pr_url],
+    ];
+    for (const [field, stored, given] of pinned) {
+      if (given === undefined || stored == null || stored === "") continue;
+      if (stored !== given.trim()) {
+        throw new DispatchError(
+          "ACTOR_NOT_PERMITTED",
+          `Delivery for repo '${repoName}' already records a ${field}; an agent cannot change ` +
+            "it (the runner records each round's delivery).",
+          { ticket_id: ticket.id, field, actor_type: "agent" },
+        );
+      }
+    }
   }
 
   listRepoDeliveries(ticketRef: string): TicketRepoDeliveryWithRepo[] {

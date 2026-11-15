@@ -171,7 +171,13 @@ export const TOOL_DESCRIPTIONS: Record<keyof typeof toolSchemas, string> = {
     "Under `factory_strict`/`regulated`, EVERY write repo needs delivery evidence " +
     "(a branch/PR, or review_ready/done) before the ticket can reach `done` — " +
     "this is how you supply it per repo. For a single-repo ticket, one call " +
-    "covers it; `record_delivery_artifact` still records the ticket-level summary.",
+    "covers it; `record_delivery_artifact` still records the ticket-level summary. " +
+    "An agent records only on a ticket it is delivering (claimed or in_progress, " +
+    "with an active claim) and never changes a branch, commit or PR already " +
+    "recorded. In the Gaffer FACTORY the runner records each write repo's branch, " +
+    "commit and review_ready at close: only the mount holding the claim may call " +
+    "this, and only for progress (a pre-review status or an evidence_ref); a " +
+    "reviewer or tester mount is refused.",
   list_pending_decisions:
     "**List the decisions awaiting a human/product answer.** Call this when a " +
     "ticket is blocked on a decision, or before raising a new one, to check " +

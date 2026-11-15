@@ -525,6 +525,51 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
         "runner executes it), and the contract is frozen under review. Raise it in your verdict.",
     );
   };
+  /**
+   * RUNNER-OWNED DELIVERY RECORD (factory): the runner records each write repo's branch,
+   * commit and review_ready status at close (tick-close.sh, as the system actor), after
+   * its gates ran on exactly that branch. In the factory an agent records a repo delivery
+   * only from the mount that holds the delivery CLAIM on that ticket (never a reviewer /
+   * tester / clarify mount bound by GAFFER_REVIEW_TICKET or GAFFER_SCOPE_TICKET alone),
+   * and then only progress (a pre-review status, an evidence note): never a branch,
+   * commit or PR, nor the review_ready / done statuses the done gate counts as evidence,
+   * so nothing the review, the approval pin, required CI or the landing reads can come
+   * from an agent's word. The service adds the status, claim and write-once checks.
+   */
+  const refuseFactoryRepoDelivery = (a: {
+    ticket_id: string;
+    branch_name?: string | undefined;
+    commit_sha?: string | undefined;
+    pr_url?: string | undefined;
+    status?: string | undefined;
+  }): void => {
+    if (actor.type !== "agent" || !inFactoryContext()) return;
+    const id = wg.resolveTicket(a.ticket_id).id;
+    if (bindings().claimed !== id) {
+      throw new DispatchError(
+        "FACTORY_RUNNER_OWNED",
+        "record_repo_delivery: in factory context only the delivery mount that holds the " +
+          "claim on this ticket may record its repo delivery; the runner records the branch " +
+          "and commit at close. A reviewer or tester raises a concern in its verdict.",
+        { ticket_id: id, tool: "record_repo_delivery" },
+      );
+    }
+    const runnerOwned = [
+      a.branch_name !== undefined ? "branch_name" : null,
+      a.commit_sha !== undefined ? "commit_sha" : null,
+      a.pr_url !== undefined ? "pr_url" : null,
+      a.status === "review_ready" || a.status === "done" ? `status ${a.status}` : null,
+    ].filter((x): x is string => x !== null);
+    if (runnerOwned.length > 0) {
+      throw new DispatchError(
+        "FACTORY_RUNNER_OWNED",
+        `record_repo_delivery: ${runnerOwned.join(", ")} is runner-owned in factory context ` +
+          "(the runner records the gated branch, commit and review_ready at close). Record " +
+          "progress only: a pre-review status or an evidence_ref.",
+        { ticket_id: id, tool: "record_repo_delivery", fields: runnerOwned },
+      );
+    }
+  };
   const raw = {
     create_ticket: (args: Args): ToolResult =>
       guard(() => {
@@ -640,6 +685,7 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
       guard(() => {
         const a = z.object(toolSchemas.record_repo_delivery).parse(args);
         assertTicketInScope(a.ticket_id, "record_repo_delivery");
+        refuseFactoryRepoDelivery(a);
         const res = wg.recordRepoDelivery(
           {
             ticket_id: a.ticket_id,

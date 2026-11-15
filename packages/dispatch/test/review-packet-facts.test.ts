@@ -144,13 +144,9 @@ describe("REVIEW FACTS: intent, same candidate, CI, run links, backing", () => {
   });
 
   it("a commit the agent recorded is its word, never the runner's gated commit", () => {
-    const d0 = deliver({ commit: null });
-    // The agent records the head itself (its MCP tool can pass a commit).
-    const agent = d.registerAgent({ display_name: "Other", max_risk: "critical" }, human);
-    d.recordRepoDelivery(
-      { ticket_id: d0.id, repo_id: d0.repoId, commit_sha: FAKE_HEAD },
-      { type: "agent", id: agent.id },
-    );
+    // The agent records the head itself while it delivers (a standalone MCP tool can pass
+    // a commit on its own claimed ticket; past delivery it is refused).
+    const d0 = deliver({ commit: FAKE_HEAD, by: { type: "agent", id: "other-agent" } });
     const p = packetOf(d0.id);
     expect(p.candidate[0]).toMatchObject({ gated_sha: FAKE_HEAD, gated_by: "agent", same: false });
     expect(p.backing.find((b) => b.cell === "candidate")!.fact).toMatch(/recorded by the agent/);

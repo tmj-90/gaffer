@@ -143,18 +143,21 @@ describe("factory ticket scope (MCP agent writes)", () => {
 
     it(`${tool}: a ticket bound by GAFFER_SCOPE_TICKET / GAFFER_REVIEW_TICKET (by number) passes`, () => {
       const { wg, victim, spare } = seedDelivery();
+      // The per-repo delivery record is the runner's: only the mount holding the claim
+      // records it (repo-delivery-runner-owned.test.ts); a scope or review binding alone
+      // is refused.
+      const bound = (r: ToolResult): void => {
+        if (tool === "record_repo_delivery") expect(code(r)).toBe("FACTORY_RUNNER_OWNED");
+        else expect(r.isError).toBeUndefined();
+      };
       process.env.GAFFER_FACTORY = "1";
       process.env.GAFFER_SCOPE_TICKET = String(victim.number);
-      expect(
-        call(makeHandlers(wg, agent), victim.id, spare.id, victim.number).isError,
-      ).toBeUndefined();
+      bound(call(makeHandlers(wg, agent), victim.id, spare.id, victim.number));
 
       delete process.env.GAFFER_SCOPE_TICKET;
       process.env.GAFFER_REVIEW_TICKET = String(spare.number);
       const other = humanTicket(wg, "other");
-      expect(
-        call(makeHandlers(wg, agent), spare.id, other.id, spare.number).isError,
-      ).toBeUndefined();
+      bound(call(makeHandlers(wg, agent), spare.id, other.id, spare.number));
     });
 
     it(`${tool}: factory context with nothing bound is refused (fail closed)`, () => {
@@ -167,9 +170,11 @@ describe("factory ticket scope (MCP agent writes)", () => {
 
     it(`${tool}: outside the factory, and for a human actor, nothing changes`, () => {
       const { wg, victim, spare } = seedDelivery();
-      expect(
-        call(makeHandlers(wg, agent), victim.id, spare.id, victim.number).isError,
-      ).toBeUndefined();
+      const outside = call(makeHandlers(wg, agent), victim.id, spare.id, victim.number);
+      // The service itself refuses an agent's delivery record on a ticket it is not
+      // delivering (the victim is ready, unclaimed), on every mount.
+      if (tool === "record_repo_delivery") expect(code(outside)).toBe("ACTOR_NOT_PERMITTED");
+      else expect(outside.isError).toBeUndefined();
       process.env.GAFFER_FACTORY = "1";
       const third = humanTicket(wg, "third");
       expect(

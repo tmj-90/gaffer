@@ -588,7 +588,13 @@ decision linked to a ticket its mount is bound to, whatever else it is linked to
 unattached ones; a decision only on other tickets is left out of `list_pending_decisions`
 and shows on another ticket only as the generic blocker. A mount bound to no ticket
 (product owner, planning) lists every pending decision, so it does not file one again.
-Its writes stay bound to its tickets.
+Its writes stay bound to its tickets. The per-repo delivery record (branch, commit,
+status) that the Review diff, the approval pin, required CI and the landing read is the
+runner's: it records each write repo's branch, commit and `review_ready` at close as the
+system actor. An agent records one only on a ticket it is delivering (claimed or
+in_progress, with an active claim) and never changes a branch, commit or PR already
+recorded; in the factory only the mount holding the delivery claim may, and only progress,
+so a reviewer or tester mount cannot re-point the delivery it judges.
 
 A request's credential is resolved once, before any gate, into a frozen identity that
 every later check and route reads. The shared operator is whoever presented the shared

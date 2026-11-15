@@ -136,6 +136,10 @@ describe("factory ticket scope (MCP agent writes)", () => {
         // In scope, but a claimed ticket's contract is frozen (api-robustness F3): the
         // refusal is the contract guard's, not the scope guard's.
         expect(code(mine)).toBe("CONTRACT_FROZEN");
+      } else if (tool === "add_dependency") {
+        // Both ends are scope-checked (sec-authz-2 F4): the spare is outside the mount.
+        // factory-draft-binding.test.ts pins an edge with both ends in scope.
+        expect(code(mine)).toBe("FACTORY_RUNNER_OWNED");
       } else {
         expect(mine.isError).toBeUndefined();
       }
@@ -146,8 +150,10 @@ describe("factory ticket scope (MCP agent writes)", () => {
       // The per-repo delivery record is the runner's: only the mount holding the claim
       // records it (repo-delivery-runner-owned.test.ts); a scope or review binding alone
       // is refused.
+      // add_dependency checks both ends, and the other end here is outside the binding.
       const bound = (r: ToolResult): void => {
-        if (tool === "record_repo_delivery") expect(code(r)).toBe("FACTORY_RUNNER_OWNED");
+        if (tool === "record_repo_delivery" || tool === "add_dependency")
+          expect(code(r)).toBe("FACTORY_RUNNER_OWNED");
         else expect(r.isError).toBeUndefined();
       };
       process.env.GAFFER_FACTORY = "1";

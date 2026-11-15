@@ -592,7 +592,15 @@ decision linked to a ticket its mount is bound to, whatever else it is linked to
 unattached ones; a decision only on other tickets is left out of `list_pending_decisions`
 and shows on another ticket only as the generic blocker. A mount bound to no ticket
 (product owner, planning) lists every pending decision, so it does not file one again.
-Its writes stay bound to its tickets. The per-repo delivery record (branch, commit,
+Its writes stay bound to its tickets: every ticket write (criteria, test contract,
+testable flag, decisions, both ends of a dependency) names a ticket the runner bound the
+mount to (claim, `GAFFER_SCOPE_TICKET`, `GAFFER_REVIEW_TICKET`) or a draft that server
+created. Its new drafts (`create_ticket`, `create_epic`) name only repositories its bound
+ticket writes, never under a looser policy pack than that ticket's; the product-owner
+mount (no ticket, `GAFFER_DEFAULT_TICKET_REPO`) drafts on its repository; a planning
+mount bound to neither may draft on any registered repository. Every draft still needs a
+person to ready it. Freezing a spec is a person's act: dispatch refuses it for any agent.
+A spec draft (`create_spec`) stays open to agents. The per-repo delivery record (branch, commit,
 status) that the Review diff, the approval pin, required CI and the landing read is the
 runner's: it records each write repo's branch, commit and `review_ready` at close as the
 system actor. An agent records one only on a ticket it is delivering (claimed or

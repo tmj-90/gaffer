@@ -212,7 +212,11 @@ directory there); that refusal parks or holds the ticket like the others. The re
 verified by one rule (`runner/lib/agent-settings.mjs`) whichever launcher writes them:
 valid JSON, the safety hook as a PreToolUse command hook covering Bash, Write, Edit,
 MultiEdit, NotebookEdit, Read, Grep, Glob and LS, each entry with `"onFailure": "block"`
-and a timeout.
+and a timeout. "The safety hook" means an entry that runs it: its command is exactly
+`node <runner>/safety-hook.mjs` (or the hook path alone) as one plain command, and the
+entry holds no key the rule does not know. A custom template whose entry only names the
+hook path (in a comment, behind `||`, with `; true` after it, in the background, as an
+argument to something else) or marks it `"async"` is refused at launch.
 
 Untrusted ticket fields the agent reads through `get_ticket` (title, description,
 criterion text, review feedback, the test contract, review comments, and the free text of
@@ -365,6 +369,16 @@ the operator's token file to the sandbox did not help: the attacker never needed
   the factory". Verification never creates a key or a seal; with the key gone every
   principal is refused. The agent-facing MCP server holds no key and can neither verify
   nor sign.
+- **The row that is verified is the row that is used.** A database writer can act between
+  two reads of one decision, so each decision reads a principal once. Sign-in reads the row
+  by its token hash, checks the seal over that row's facts and builds the identity,
+  capability and scope it returns from that same row, inside one read snapshot with the
+  seal and the event it names; it never looks the row up again by id. (It used to: a
+  writer that showed a forged row to the first read and put the genuine row back for the
+  second signed in with authority no seal covered.) The unsigned-principal review builds
+  what it shows and the codes a person confirms from one read of each row in one snapshot;
+  a person's tester verdict checks the seal over the row it read. The re-sign itself runs
+  in a write transaction that no other writer can interleave.
 - **Revocation stays revoked.** Revoking writes `principal.revoked` and retires the seal in
   the same transaction. Flipping `revoked_at` back to NULL, restoring a copy of the old
   seal, or both, is refused: the revocation event supersedes the seal. Deleting the

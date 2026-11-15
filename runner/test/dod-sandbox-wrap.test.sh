@@ -200,8 +200,12 @@ gate_env() {   # <label> [VAR=value ...]: run `env` as a gate with the operator'
       GAFFER_DOD_ENV_PASS="MY_SETTING GITHUB_TOKEN ANTHROPIC_API_KEY DISPATCH_DB SOME_SECRET GAFFER_NOTIFY_SLACK_URL NOT_SET" \
       MY_SETTING=kept-value
     for kv in "$@"; do export "${kv?}"; done
-    gaffer_dod_run_one "$WT" "$WORK/env-$label" 'env' >/dev/null 2>&1 )
+    gaffer_dod_run_one "$WT" "$WORK/env-$label" 'env' >/dev/null 2>"$WORK/err-$label"
+    echo "$?" >"$WORK/rc-$label" )
 }
+# Why a gate_env run produced no usable env file: its exit status and what it wrote to
+# stderr, so a gate that never started is told apart from a name the filter dropped.
+gate_diag() { printf 'rc=%s stderr=%s' "$(cat "$WORK/rc-$1" 2>/dev/null)" "$(head -c 400 "$WORK/err-$1" 2>/dev/null | tr '\n' ' ')"; }
 unset GAFFER_DOD_WRAP
 gate_env none
 grep -E "$LEAKS" "$WORK/env-none" >/dev/null && fail "no wrap: the gate saw $(grep -E "$LEAKS" "$WORK/env-none" | cut -d= -f1 | tr '\n' ' ')" \
@@ -214,15 +218,32 @@ GH="$(sed -n 's/^HOME=//p' "$WORK/env-none")"
 [ -n "$GH" ] && [ "$GH" != "$HOME" ] && [ ! -e "$GH" ] && ok "no wrap: HOME is a throwaway dir, removed after the run" || fail "no wrap: HOME=$GH (real HOME $HOME)"
 # The knob never passes a loader-injection or environment-control name, nor a credential
 # spelled in lower case, whatever the operator lists.
+# The filter decides on the NAME alone, so it is asked directly first, on every host.
+NEVER=""
+for n in NODE_OPTIONS BASH_ENV ENV LD_PRELOAD LD_LIBRARY_PATH DYLD_INSERT_LIBRARIES DYLD_LIBRARY_PATH GIT_SSH_COMMAND \
+  GIT_CONFIG_GLOBAL SSH_AUTH_SOCK PYTHONSTARTUP PERL5OPT RUBYOPT github_token my_Api_Key dyld_insert_libraries; do
+  gaffer_env_name_never_for_gates "$n" || NEVER="$NEVER $n"
+done
+[ -z "$NEVER" ] && ok "the filter refuses every loader, environment-control and lower-case credential name by name" \
+  || fail "the filter would pass:$NEVER"
+gaffer_env_name_never_for_gates KEEP_ME && fail "the filter refuses an ordinary name (KEEP_ME)" || ok "the filter passes an ordinary name"
+# Then the live run. The runner's own shell holds these values while it starts the gate, so
+# a value has to be one the host can live with: on macOS a DYLD_INSERT_LIBRARIES naming a
+# library that does not exist aborts every unprotected program the runner itself starts
+# (bash, node, timeout) before any gate runs, which is the loader working, not the filter.
+# There the live run leaves that one value out; its name is still in the knob, and the
+# name check above covers it on every host.
+DYLD_LIVE="DYLD_INSERT_LIBRARIES=/tmp/x.dylib"
+[ "$(uname -s)" = Darwin ] && DYLD_LIVE="KEEP_ME_TOO=unlisted"
 gate_env knob GAFFER_DOD_ENV_PASS="NODE_OPTIONS,BASH_ENV ENV LD_PRELOAD DYLD_INSERT_LIBRARIES GIT_SSH_COMMAND GIT_CONFIG_GLOBAL SSH_AUTH_SOCK PYTHONSTARTUP PERL5OPT RUBYOPT github_token my_Api_Key KEEP_ME" \
-  NODE_OPTIONS="--require /tmp/x.js" BASH_ENV=/tmp/x.sh ENV=/tmp/x.sh LD_PRELOAD=/tmp/x.so DYLD_INSERT_LIBRARIES=/tmp/x.dylib \
+  NODE_OPTIONS="--require /tmp/x.js" BASH_ENV=/tmp/x.sh ENV=/tmp/x.sh LD_PRELOAD=/tmp/x.so "$DYLD_LIVE" \
   GIT_SSH_COMMAND="sh /tmp/x" GIT_CONFIG_GLOBAL=/tmp/gc SSH_AUTH_SOCK=/tmp/agent.sock PYTHONSTARTUP=/tmp/x.py PERL5OPT=-Mx RUBYOPT=-rx \
   github_token=gh-lower my_Api_Key=k-lower KEEP_ME=yes
 if grep -qE '^(NODE_OPTIONS|BASH_ENV|ENV|LD_PRELOAD|DYLD_INSERT_LIBRARIES|GIT_SSH_COMMAND|GIT_CONFIG_GLOBAL|SSH_AUTH_SOCK|PYTHONSTARTUP|PERL5OPT|RUBYOPT|github_token|my_Api_Key)=' "$WORK/env-knob"; then
   fail "the knob passed a loader, environment-control or lower-case credential name: $(grep -E '^(NODE_OPTIONS|BASH_ENV|ENV|LD_|DYLD_|GIT_SSH|GIT_CONFIG_G|SSH_AUTH|PYTHONSTARTUP|PERL5OPT|RUBYOPT|github_token|my_Api_Key)=' "$WORK/env-knob" | cut -d= -f1 | tr '\n' ' ')"
 else
   grep -q '^KEEP_ME=yes$' "$WORK/env-knob" && ok "the knob refuses loader-injection, environment-control and lower-case credential names, and passes an ordinary one" \
-    || fail "the knob dropped an ordinary name"
+    || fail "the knob dropped an ordinary name ($(gate_diag knob))"
 fi
 gate_env inv _GAFFER_DOD_INVOCATION_ENV="NODE_OPTIONS GAFFER_REPLAY_PROOF_KEY_FILE GITHUB_TOKEN" NODE_OPTIONS=--no-warnings GAFFER_REPLAY_PROOF_KEY_FILE=/p/k
 grep -q '^NODE_OPTIONS=--no-warnings$' "$WORK/env-inv" && grep -q '^GAFFER_REPLAY_PROOF_KEY_FILE=/p/k$' "$WORK/env-inv" \

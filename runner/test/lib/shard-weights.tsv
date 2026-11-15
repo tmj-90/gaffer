@@ -142,6 +142,7 @@
 17	day-cap-no-work.test.sh
 17	direct-run-isolation.test.sh
 17	e2e-lifecycle.test.sh
+17	land-mark-merged-failure.test.sh
 16	parallel-claim.test.sh
 16	registry-probe.test.sh
 15	agent-self-submit.test.sh

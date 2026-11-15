@@ -414,14 +414,21 @@ EOF
     return 4
   fi
   # Every approved revision landed → done (the server re-checks every repo).
-  if wg ticket mark-merged "$RNUM" --as system >/dev/null 2>&1; then
+  # A mark-merged that fails is NOT a merge the caller may report: the ticket is still
+  # ready_for_merge and its dependents stay blocked. Return held (4) BEFORE the digest /
+  # feature step (which would read the feature as shipped) and the branch deletion. The
+  # landings are on record, so the next pass skips the git work and only marks it done
+  # (a transient failure heals there); a failure that persists stays visible as held.
+  local _mm_out
+  if _mm_out="$(wg ticket mark-merged "$RNUM" --as system 2>&1 >/dev/null)"; then
     if [ "$_done" -eq 1 ]; then
       log "$_WHO: #$RNUM merged (${_LANDED_BRANCHES[0]} → $RDEFAULT, via ${_LANDED_VIA[0]}) and marked done"
     else
       log "$_WHO: #$RNUM merged in $_done repositories (${_landed_names}) and marked done"
     fi
   else
-    log "$_WHO: #$RNUM merged but mark-merged failed — verify state (wg ticket landing $RNUM)"
+    log "$_WHO: #$RNUM LANDED but NOT marked done: mark-merged failed ($(printf '%s' "$_mm_out" | tail -n 2 | tr '\n' ' ' | cut -c1-300)) — held (still ready_for_merge); the digest step and the branch deletion did not run, and the next merge pass marks it done from the recorded landing (verify: wg ticket landing $RNUM)"
+    return 4
   fi
   # POST-MERGE MEMORY WORK — the SAME step the dashboard merge (merge-ticket.mjs)
   # runs: apply the digest delta the delivery agent prepared (or stamp

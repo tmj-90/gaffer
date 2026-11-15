@@ -4102,17 +4102,23 @@ function main() {
       return;
     }
     // Flip the ticket ready_for_merge → done now that the branch is actually merged.
-    // Non-fatal: the merge already landed; a failure just leaves it in ready_for_merge
-    // (a human can run `wg ticket mark-merged <n> --as system`).
+    // A failure is not a merge to report: the ticket is still ready_for_merge and its
+    // dependents stay blocked. Exit 4 (held) BEFORE the digest / feature step (which
+    // would read the feature as shipped) and the branch deletion. The landing is on
+    // record, so the next merge run skips the git work and marks it done.
     const mm = runDispatch(["ticket", "mark-merged", String(resolved.number), "--as", "system"]);
     if (mm.error || mm.status !== 0) {
-      log(
-        `WARNING: #${resolved.number} merged but mark-merged failed (exit ${mm.status ?? "spawn-error"}` +
-          `${mm.stderr ? ": " + mm.stderr.trim().slice(0, 120) : ""}) — flip to done manually`,
+      fail(
+        `LANDED but NOT marked done: #${resolved.number} is on ${repo.name}'s ${repo.defaultBranch} but ` +
+          `mark-merged failed (exit ${mm.status ?? "spawn-error"}` +
+          `${mm.stderr ? ": " + mm.stderr.trim().slice(0, 200) : ""}); the ticket stays ready_for_merge, ` +
+          `the digest step and the branch deletion did not run, and the next merge run marks it done ` +
+          `from the recorded landing`,
+        4,
       );
-    } else {
-      log(`marked #${resolved.number} merged → done`);
+      return;
     }
+    log(`marked #${resolved.number} merged → done`);
     // POST-REVIEW digest refresh + feature → shipped — deterministic, NO agent.
     // The delivery agent PREPARED the delta as recorded evidence; we APPLY it here
     // (or fall back to a minimal stamp). Best-effort + fully swallowed: this can

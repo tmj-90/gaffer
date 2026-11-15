@@ -209,8 +209,8 @@ Won't do can be undone, so a swept branch is moved, not dropped: its tip is writ
 
 ```bash
 git for-each-ref refs/gaffer/abandoned/          # list archived branches
-git branch gaffer/ticket-7-add-login refs/gaffer/abandoned/gaffer/ticket-7-add-login-<sha12>
-git update-ref -d refs/gaffer/abandoned/<...>    # drop one for good
+git branch gaffer/ticket-7-add-login refs/gaffer/abandoned/gaffer/ticket-7-add-login-0123456789ab
+git update-ref -d refs/gaffer/abandoned/gaffer/ticket-7-add-login-0123456789ab   # drop one for good
 ```
 
 Branches cut before the ledger existed have no row and are kept; a cancelled ticket's

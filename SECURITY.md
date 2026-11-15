@@ -83,6 +83,16 @@ always gets the same decision. It:
 - scopes writes to the ticket's worktrees (`GAFFER_WRITE_ROOTS`);
 - denies reads of secret files by path, on every read vector, not by a list of reader
   binaries;
+- expands every read operand the way the shell will before judging it: the variables
+  in its environment and those the command assigns, `~`, braces, and globs against the
+  real filesystem (bounded, never through a symlinked directory), each match checked
+  like a literal path. The read vectors covered are the read and copy tools, `<`
+  redirects, `$(< file)`, `find ... -exec` start points, xargs-fed readers, `eval`,
+  `sh -c` and command-substitution bodies. A directory that holds or sits above
+  `GAFFER_DATA`, the MCP config directory or HOME is refused as a read operand; an
+  operand it cannot expand (`read`, `$(...)`, an xargs placeholder) is refused; a glob
+  with no match is judged by its literal directory; and a word anywhere that expands to
+  a secret path is refused unless the command only lists or removes it;
 - denies the control-plane CLI and raw database access, including a self-spawned
   control-plane MCP (`node .../dispatch/dist/mcp`), `node -e` reaching the dist or the
   database, and reading another process's environment (`ps`, `/proc/*/environ`);
@@ -652,6 +662,9 @@ a presence boolean, and an argument not on the allowlist is never copied.
   compiled binary, a script the agent writes and then runs, a child process's own
   syscalls and content-only data flows are out of its reach. It shrinks the gap to
   dynamic reads and fully dynamic non-secret paths; it does not close it.
+  Globs are expanded when the hook decides: a symlink to a secret created by an earlier
+  step of the same command through a path the hook cannot see (an interpreter, a
+  compiled tool) is not there yet when a later glob is expanded.
 - **`sandbox-exec` still permits writes under `$GAFFER_DATA`**, where `settings.json`,
   `usage-pause.json` and the ledgers live. The hook refuses every write vector to those
   paths that `safety-hook.test.mjs` pins, but a child's syscalls are invisible to it.

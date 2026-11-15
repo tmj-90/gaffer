@@ -42,6 +42,7 @@ import {
   secretBoundaryReason,
   stripSearchPatterns,
 } from "./reads.mjs";
+import { expandedReadReason } from "./read-operands.mjs";
 import { UNVERIFIABLE_TARGET } from "./shell.mjs";
 import { extractBashWriteTargets } from "./writes.mjs";
 
@@ -386,6 +387,13 @@ function checkCommand(cmd) {
 
   const frontDoor = factoryExecutionReason(cmd, roots);
   if (frontDoor) block(`${frontDoor} — "${cmd.slice(0, 120)}"`);
+
+  // Read boundary after shell expansion (F1): a read operand with a wildcard, a brace or
+  // a variable used to be skipped above. lib/hook/read-operands.mjs expands every read
+  // operand as the shell would and refuses what it cannot expand; it also refuses any
+  // word that expands to a secret path. It only adds refusals.
+  const expandedRead = expandedReadReason(cmd, roots);
+  if (expandedRead) block(`${expandedRead} (command: "${cmd.slice(0, 120)}")`);
 
   allow();
 }

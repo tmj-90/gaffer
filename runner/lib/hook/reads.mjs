@@ -666,9 +666,8 @@ const XARGS_READ_VERBS = new Set([...READ_TOOL_VERBS]);
  *
  * Conservative on purpose: we only return operands that look like real path
  * literals (no globs, no `$`/`` ` `` interpolation, no flags, no fd/dev nodes).
- * Dynamic reads are intentionally NOT surfaced here — the secret-path guard
- * already covers the high-value case and fail-closing reads would be too
- * aggressive (the honest residual: a runtime-built read path can still slip).
+ * Globs, braces and variables are expanded and judged by lib/hook/read-operands.mjs,
+ * which also refuses an operand it cannot expand.
  */
 function extractBashReadTargets(cmd) {
   const targets = [];
@@ -734,8 +733,10 @@ function extractBashReadTargets(cmd) {
         continue;
       }
       if (!raw) continue;
-      // Skip non-path-literals: globs, interpolation, fds, sed scripts
-      // like `1,5p` / `s/a/b/`, and bare option-ish tokens.
+      // Skip non-path-literals here: globs, interpolation, fds, sed scripts
+      // like `1,5p` / `s/a/b/`, and bare option-ish tokens. A glob or a variable is NOT
+      // left unchecked: lib/hook/read-operands.mjs expands every read operand as the
+      // shell would and judges each match (or refuses what it cannot expand).
       if (/[*?$`]|\$\{/.test(raw)) continue;
       if (/^[&\d]+$/.test(raw)) continue; // fd redirections, not paths
       if (!everyOperand && !raw.includes("/") && !raw.includes(".")) continue; // not path-shaped
@@ -759,10 +760,14 @@ function extractBashReadTargets(cmd) {
 }
 
 export {
+  COPY_READ_VERBS,
+  READ_TOOL_VERBS,
+  SEARCH_VERBS,
   SECRET_GLOB,
   extractBashReadTargets,
   isTrackedEnvTemplate,
   maskTrackedEnvTemplates,
+  searchFileOperands,
   secretBoundaryReason,
   stripSearchPatterns,
 };

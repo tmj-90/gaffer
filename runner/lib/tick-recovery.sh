@@ -115,7 +115,13 @@ gaffer_crash_cleanup() {
     # Say WHICH way the tick ended: a signal is a kill, anything else is an exit the
     # normal flow did not resolve (a setup error that bypassed gaffer_abort_setup, a
     # bug). One fixed "runner killed" reason sent operators looking for kills.
-    if [ "${_GAFFER_EXIT_CAUSE:-exit}" = "signal" ]; then
+    if [ "${_GAFFER_PAUSE_PENDING:-0}" = "1" ]; then
+      # The tick ended while a cap pause was being recorded (tick-launch.sh): the cap
+      # meant to wait for a person still does. Park to blocked like a refused pause, with
+      # the branch kept (the cap path raised GAFFER_KEEP_DELIVERY_BRANCH before the pause).
+      gaffer_release_delivery blocked "hit a cap mid-delivery and the tick ended (${_GAFFER_EXIT_CAUSE:-exit}) while the pause was being recorded (branch ${WORK_BRANCH:-?} preserved)" pause_failed || true
+      [ -n "${SKIP_FILE:-}" ] && declare -F gaffer_skip_ticket >/dev/null 2>&1 && gaffer_skip_ticket "$NUM"
+    elif [ "${_GAFFER_EXIT_CAUSE:-exit}" = "signal" ]; then
       gaffer_release_delivery ready "runner killed mid-delivery (signal) — claim released by crash trap" || true
       # The outer per-tick bound fires as a signal too: without a skip-file entry the
       # loop's very next tick re-claimed this ticket and restarted it from attempt 1.

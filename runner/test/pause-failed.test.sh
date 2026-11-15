@@ -14,6 +14,9 @@
 #   P4  the cap path parks a refused pause to blocked (pause_failed, branch kept) and
 #       reports error, never `paused`, with the real release (stubbed `wg`)
 #   P5  the cap path in tick-launch.sh no longer claims a pause it did not record
+#   P6  a pause that hangs until the tick is killed (the outer tick bound): the crash trap
+#       parks the ticket to blocked (pause_failed), never back to ready, and keeps the
+#       branch; the replay manifest is not finished as paused
 #
 # Run: bash test/pause-failed.test.sh
 # =====================================================================
@@ -103,6 +106,61 @@ grep -q '^ledger:preserved' "$WORK/log" && ok "P4 the park marks the branch pres
 echo "== P5: no pause claimed without a recorded pause =="
 grep -q 'could not pause #$NUM via dispatch; worktree is still kept alive' "$RUNNER_DIR/lib/tick-launch.sh" \
   && fail "P5 the old warn-and-carry-on path is still there" || ok "P5 the warn-and-report-paused path is gone"
+
+echo "== P6: a hung pause ended by a kill parks the ticket, branch kept =="
+# The cap path from the lines that prepare the pause (kept branch, pause in flight)
+# through its end; a file without them runs the pause block alone.
+BLOCK6="$(awk '/# A kill while the pause is being recorded/{f=1} f{print} f&&/^    fi$/{exit}' "$RUNNER_DIR/lib/tick-launch.sh")"
+[ -n "$BLOCK6" ] || BLOCK6="$BLOCK"
+reset
+( stub_env
+  # shellcheck source=../lib/tick-recovery.sh
+  source "$RUNNER_DIR/lib/tick-recovery.sh"
+  # shellcheck disable=SC2034  # read by the extracted cap path and the crash trap
+  _PAUSE_REASON=cap_hit WORK_BRANCH=gaffer/ticket-7-x PRIMARY_REPO=/x _WT_JSON='[]' REPO_PATH=/x
+  _DELIV_ATTEMPT=1 _MAX_DELIVERY_ATTEMPTS=3 _CAP_TURNS=40 _CAP_SPEND=1.2 rc=0
+  export GAFFER_DATA="$WORK/p6data"; mkdir -p "$GAFFER_DATA"
+  # shellcheck disable=SC2034  # read by the extracted cap path and the crash trap
+  WT_ROWS="r1"$'\t'"repo"$'\t'"/x"$'\t'"main"$'\t'"/x-wt" SKIP_FILE="$WORK/skip"
+  GAFFER_KEEP_DELIVERY_BRANCH=0
+  gaffer_cleanup_worktrees() { echo "cleanup:${1:-keep-branch} keep=${GAFFER_KEEP_DELIVERY_BRANCH:-0}" >> "$WORK/log"; }
+  gaffer_skip_ticket() { echo "skip:$1" >> "$WORK/log"; }
+  gaffer_tick_branch_ledger() { echo "ledger:$1" >> "$WORK/log"; }
+  gaffer_manifest_finish() { echo "manifest:$1" >> "$WORK/log"; }
+  gaffer_manifest_close() { echo "manifest-close:$1" >> "$WORK/log"; }
+  gaffer_reap_orphan_agent() { :; }
+  result() { echo "RESULT=$1" >> "$WORK/log"; }
+  # The pause CLI "hangs" until the outer bound kills the tick: the stub signals this
+  # shell, whose traps run as tick.sh's do.
+  TICK_PID=$BASHPID
+  wg() {
+    printf '%s\n' "$*" >> "$WORK/calls"
+    case "$1 $2" in
+      "ticket pause") kill -TERM "$TICK_PID"; return 1 ;;
+      "ticket show") printf '{"ticket":{"status":"claimed"}}' ;;
+    esac
+    return 0
+  }
+  trap '_GAFFER_EXIT_CAUSE=signal; exit 143' TERM
+  trap 'gaffer_crash_cleanup' EXIT
+  eval "$BLOCK6"
+  echo "RESULT=paused" >> "$WORK/log"
+) >"$WORK/p6.out" 2>&1
+grep -q '^runner-release 7 --to blocked .*--reason-code pause_failed' "$WORK/calls" \
+  && ok "P6 the crash trap parks the ticket to blocked (pause_failed)" || fail "P6 release: $(grep runner-release "$WORK/calls" | tr '\n' ' ') $(tail -5 "$WORK/p6.out" | tr '\n' ' ')"
+grep -q '^runner-release 7 --to ready' "$WORK/calls" && fail "P6 the ticket was handed back to ready (redelivered past the cap)" \
+  || ok "P6 the ticket is not handed back to ready"
+grep -q '^cleanup:keep-branch keep=1' "$WORK/log" && ! grep -q '^cleanup:drop-branch' "$WORK/log" \
+  && ok "P6 the worktree is removed and the branch (with the WIP checkpoint) kept" || fail "P6 teardown: $(grep cleanup "$WORK/log" | tr '\n' ' ')"
+grep -q '^RESULT=paused' "$WORK/log" && fail "P6 reported paused" || ok "P6 nothing reports paused"
+grep -q '^manifest:paused' "$WORK/log" && fail "P6 the replay manifest says paused although the pause never landed" \
+  || ok "P6 the replay manifest is not finished as paused"
+# (The manifest line sits outside the extracted block: it must follow the pause call.)
+_mline="$(grep -n 'gaffer_manifest_finish "paused:' "$RUNNER_DIR/lib/tick-launch.sh" | head -1 | cut -d: -f1)"
+_pline="$(grep -n 'if gaffer_pause_delivery --reason' "$RUNNER_DIR/lib/tick-launch.sh" | head -1 | cut -d: -f1)"
+[ -n "$_mline" ] && [ -n "$_pline" ] && [ "$_mline" -gt "$_pline" ] \
+  && ok "P6 the manifest is finished as paused only after the pause call succeeded" \
+  || fail "P6 the manifest is finished as paused before the pause is attempted (line ${_mline:-?} vs ${_pline:-?})"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

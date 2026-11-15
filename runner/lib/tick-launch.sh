@@ -1049,7 +1049,8 @@ gaffer_tick_launch_attempt() {
     _PAUSE_REASON="cap_hit"
     [ "$_TIMEOUT_HIT" = "1" ] && _PAUSE_REASON="timeout"
     [ "$_BUDGET_HIT" = "1" ] && _PAUSE_REASON="budget_cap"
-    gaffer_manifest_finish "paused:$_PAUSE_REASON" "$rc"
+    # (The replay manifest is finished below, once the pause is known to have landed:
+    # a refused pause parks the ticket and the release records that instead.)
     gaffer_usage_record delivery "$NUM" "$rc" "$USAGE_JSON" "" "$_DELIV_ATTEMPT" >>"$GAFFER_LOG" 2>/dev/null || true
     rm -f "$USAGE_JSON"
     # Serialise the full worktree map (one entry per write repo) so a multi-repo
@@ -1061,12 +1062,21 @@ gaffer_tick_launch_attempt() {
     # context (branch, primary worktree, full worktree map, repo, attempt, turns,
     # spend), and notify the human gate (the dispatch notifier carries spend +
     # dashboard URL; GAFFER_NOTIFY_REDACT honoured at the dispatch layer).
+    # A kill while the pause is being recorded (a hung CLI ended by the outer tick bound,
+    # a Ctrl-C) must not hand the ticket back to `ready` (redelivered from attempt 1 past
+    # a cap meant to wait for a person) nor drop the branch the WIP checkpoint just
+    # committed to: keep the branch from here on, and tell the crash trap a pause was in
+    # flight so it parks the ticket to blocked (pause_failed) instead.
+    GAFFER_KEEP_DELIVERY_BRANCH=1
+    _GAFFER_PAUSE_PENDING=1
     if gaffer_pause_delivery --reason "$_PAUSE_REASON" \
         --branch "$WORK_BRANCH" --worktree "$PRIMARY_REPO" \
         --worktrees-json "$_WT_JSON" --repo "${REPO_PATH:-}" \
         --attempt "$_DELIV_ATTEMPT" \
         ${_CAP_TURNS:+--turns "$_CAP_TURNS"} --spend "$_CAP_SPEND"; then
       log "CAP: paused #$NUM (-> paused) — resume context persisted, human gate notified"
+      _GAFFER_PAUSE_PENDING=0
+      gaffer_manifest_finish "paused:$_PAUSE_REASON" "$rc"
       gaffer_tick_branch_ledger preserved   # BRANCH LEDGER: kept for the resume
     else
       # The pause did not take (gaffer_pause_delivery retried it). Do not claim it:

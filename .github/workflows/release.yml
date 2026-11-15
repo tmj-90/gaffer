@@ -10,10 +10,12 @@
 # Two jobs (F5). `build` holds a READ-ONLY token: it installs, checks the tag, builds,
 # runs the tests and packs the release assets, then hands them on as an artifact.
 # `publish` holds contents: write + packages: write and runs no repository test code
-# and no repository script: it downloads that artifact, verifies its SHA256SUMS, builds
-# and pushes the image from the Dockerfile (inside BuildKit, which never sees the
-# token) and creates the release from the downloaded files. So a test, a dependency
-# install script or a build script never runs where the write token is reachable.
+# and no repository script on its runner: it downloads that artifact, verifies its
+# SHA256SUMS, builds and pushes the image from the Dockerfile and creates the release
+# from the downloaded files. The image build DOES run the Dockerfile's pnpm install
+# (dependency install scripts) and pnpm -r build, but inside BuildKit's build
+# containers, which see neither the token nor the docker login. So a test, an install
+# script or a build script never runs where the write token is reachable.
 name: Release
 
 on:

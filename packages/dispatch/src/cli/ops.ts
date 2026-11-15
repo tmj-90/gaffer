@@ -241,7 +241,7 @@ export function runDoctor(
           detail: u.detail,
         }),
         fix: u.creation_event
-          ? `Review it, then \`gaffer wg principal resign ${u.name}\` (or --all, or the dashboard's Settings), or revoke it.`
+          ? `Review it, then \`gaffer wg principal resign ${u.name}\` (or \`resign --all --confirm <code>\` with the code \`gaffer wg principal unsigned\` prints, or the dashboard's Settings), or revoke it.`
           : `No matching principal.created event is on record: if you did not create it, revoke it (\`gaffer wg principal revoke ${u.name}\`); re-sign it by name only if you did.`,
       });
     }

@@ -1150,13 +1150,15 @@ export type CreatePrincipalBody = z.infer<typeof createPrincipalBody>;
 
 /**
  * Body for POST /api/principal-signatures/resign: SEALED PRINCIPALS, a person re-signs
- * principals the factory does not honour. `names` (ids or names) or `all` (every unsigned
- * principal whose creation is on record), not both.
+ * principals the factory does not honour. `names` (ids or names) or `all` (the unsigned
+ * principals whose creation is on record, of the list the person reviewed: `confirm` is
+ * that list's fingerprint from GET /api/principal-signatures), not both.
  */
 export const resignPrincipalsBody = z
   .object({
     names: z.array(z.string().trim().min(1).max(200)).max(200).optional(),
     all: z.boolean().optional(),
+    confirm: z.string().trim().max(64).optional(),
   })
   .refine((b) => (b.all === true) !== (b.names?.length ?? 0) > 0, {
     message: "pass names or all, exactly one",

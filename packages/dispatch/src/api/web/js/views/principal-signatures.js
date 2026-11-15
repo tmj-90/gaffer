@@ -7,7 +7,12 @@
 // it renders nothing when every sign-in is signed.
 //
 // Re-signing is the operator's act (the shared token): the server refuses a principal's
-// session (403), so such a session sees the list and no buttons.
+// session (403), so such a session sees the list and no buttons. "Re-sign all" sends the
+// fingerprint of the list shown here: a sign-in added or changed after it rendered is
+// never signed by that click (the server refuses, and the list reloads). Each row shows
+// who it acts as, what it may do, where (its scope), who created it and when, because a
+// row written into the database can carry a forged creation event: only the person's
+// review tells it apart.
 
 import { api } from "../api.js";
 import { el } from "../dom.js";
@@ -29,7 +34,8 @@ export function principalSignaturesCallout(whoami) {
     .then((res) => {
       const unsigned = res && Array.isArray(res.unsigned) ? res.unsigned : [];
       if (unsigned.length === 0) return;
-      host.appendChild(render(unsigned, canResign(whoami)));
+      const fingerprint = res && typeof res.fingerprint === "string" ? res.fingerprint : "";
+      host.appendChild(render(unsigned, fingerprint, canResign(whoami)));
       host.hidden = false;
     })
     .catch(() => {
@@ -43,7 +49,7 @@ function canResign(whoami) {
   return cap === "full" && !(whoami && whoami.principal);
 }
 
-function render(unsigned, manage) {
+function render(unsigned, fingerprint, manage) {
   const n = unsigned.length;
   const recorded = unsigned.filter((u) => u.creation_event);
   const box = el("div", { class: "warn-box", role: "note", "data-testid": "unsigned-principals" }, [
@@ -57,17 +63,17 @@ function render(unsigned, manage) {
       el(
         "p",
         {},
-        "Until a person re-signs them they are refused like an unknown token. Re-sign only the ones you recognise; revoke the rest in Access below.",
+        "Until a person re-signs them they are refused like an unknown token. Check each one: re-sign only the sign-ins you created yourself, with the access shown; revoke the rest in Access below.",
       ),
       el(
         "ul",
         { class: "principal-signatures-list", "aria-label": "Unsigned sign-ins" },
         unsigned.map((u) => item(u, manage)),
       ),
-      manage && recorded.length > 1
+      manage && recorded.length > 1 && fingerprint
         ? resignButton(
-            `Re-sign all ${recorded.length} with a creation on record`,
-            { all: true },
+            `Re-sign the ${recorded.length} listed with a creation on record`,
+            { all: true, confirm: fingerprint },
             "Re-signed",
           )
         : null,
@@ -76,10 +82,24 @@ function render(unsigned, manage) {
   return box;
 }
 
+function scopeText(scope) {
+  if (!scope) return "every repo and ticket";
+  const parts = [];
+  if (Array.isArray(scope.repos)) {
+    parts.push(`repos ${scope.repos.map((r) => r.name ?? r.id).join(", ") || "none"}`);
+  }
+  if (Array.isArray(scope.tickets)) {
+    parts.push(
+      `tickets ${scope.tickets.map((t) => (t.number != null ? `#${t.number}` : t.id)).join(", ") || "none"}`,
+    );
+  }
+  return parts.join("; ");
+}
+
 function item(u, manage) {
   const who = `${u.actor_type}:${u.actor_id}`;
   const facts =
-    `${u.capability}, acts as ${who}${u.scoped ? ", scoped" : ""}` +
+    `${u.capability}, acts as ${who}, ${scopeText(u.scope)}` +
     ` · created ${String(u.created_at || "").slice(0, 10)}${u.created_by ? ` by ${u.created_by}` : ""}`;
   const warn = u.creation_event
     ? null

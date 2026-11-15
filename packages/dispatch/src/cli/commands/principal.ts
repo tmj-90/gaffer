@@ -130,7 +130,13 @@ export function registerPrincipal(program: Command): void {
     .action((_opts, cmd) => {
       const wg = open(cmd.optsWithGlobals());
       try {
-        printJson({ ok: true, unsigned: wg.listUnsignedPrincipals() });
+        const review = wg.reviewUnsignedPrincipals();
+        if (review.unsigned.length > 0) {
+          process.stderr.write(
+            `Review each one (who it acts as, what it may do, where, who created it). Re-sign one by name, or all of this list with: gaffer wg principal resign --all --confirm ${review.fingerprint}\n`,
+          );
+        }
+        printJson({ ok: true, ...review });
       } finally {
         wg.db.close();
       }
@@ -140,14 +146,19 @@ export function registerPrincipal(program: Command): void {
     .command("resign [names...]")
     .description(
       "A PERSON re-signs principals the factory does not honour, after reviewing them (`principal unsigned`). " +
-        "--all signs every one whose creation is on record; one without must be named.",
+        "--all needs --confirm with the code `principal unsigned` printed for the list you reviewed; a row whose creation is not on record must be named.",
     )
-    .option("--all", "every unsigned principal whose principal.created event matches it", false)
-    .action((names: string[], opts: { all: boolean }, cmd) => {
+    .option(
+      "--all",
+      "the reviewed list's unsigned principals whose principal.created event matches",
+      false,
+    )
+    .option("--confirm <code>", "with --all: the confirmation code of the list you reviewed")
+    .action((names: string[], opts: { all: boolean; confirm?: string }, cmd) => {
       const wg = open(cmd.optsWithGlobals());
       try {
         const res = wg.resignPrincipals(
-          { names: names.length > 0 ? names : undefined, all: opts.all },
+          { names: names.length > 0 ? names : undefined, all: opts.all, confirm: opts.confirm },
           cliActor(),
         );
         for (const s of res.skipped) {

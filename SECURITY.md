@@ -343,12 +343,19 @@ the operator's token file to the sandbox did not help: the attacker never needed
   Revoking a principal withholds its approvals that have not landed: re-approve them.
 - **Upgrade and restore.** Nothing is signed on upgrade: that would bless a forged row.
   Principals created before this change stop working until a person reviews and re-signs
-  them, with one deliberate act: `gaffer wg principal unsigned` lists them (with whether
-  a matching `principal.created` event is on record), `gaffer wg principal resign <name>`
-  or `--all` signs them (operator only), or the callout in Settings (Access). `--all` signs
-  only rows whose creation event is on record and matches the row; a row without one (the
-  shape of a row written straight into the database) must be named after review, or
-  revoked. Principals are not part of the state export, and row seals are neither
+  them, with one deliberate act: `gaffer wg principal unsigned` lists them (who each acts
+  as, its capability and scope, created_by and created_at, whether a matching
+  `principal.created` event is on record) and prints a confirmation code for exactly that
+  list; `gaffer wg principal resign <name>` signs one, `gaffer wg principal resign --all
+  --confirm <code>` signs the listed rows whose creation event is on record (operator
+  only), or the callout in Settings (Access), which shows the same list. **The review is
+  the control, not the creation event.** A process that can write the database can also
+  append a `principal.created` event that matches its forged row (the chain has no key),
+  and a forged event written before signing existed cannot be told from a real one: the
+  event check only catches a row inserted with no event at all. So `--all` signs nothing
+  without the code, and a row added or changed after the review changes the code, so the
+  operator's routine step cannot be made to sign a row the operator never saw. Re-sign
+  only the sign-ins you created yourself with the access shown; revoke the rest. Principals are not part of the state export, and row seals are neither
   exported nor kept by an import: after restoring a backup, run `gaffer wg gate-key
   reanchor` as before, then re-sign the principals you recognise.
 

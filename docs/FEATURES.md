@@ -200,8 +200,9 @@ waiting for Merge now, and the done lane.*
 - **Signed sign-ins.** Every principal is signed with the factory key; one that is not
   (created before signing, restored from a backup, or written outside the factory) cannot
   sign in. Settings says "N sign-ins were created before signing. Review and re-sign."
-  with the list and a Re-sign button for the operator; `wg principal unsigned` and
-  `wg principal resign <name>|--all` do the same on the CLI.
+  with the list (who each acts as, what it may do, where, who created it and when) and
+  Re-sign buttons for the operator; `wg principal unsigned` and `wg principal resign
+  <name>|--all --confirm <code>` do the same on the CLI.
 - **Who the CLI is.** `wg whoami` says who writes are recorded as: `$USER`, asserted,
   without a token; with `GAFFER_PRINCIPAL_TOKEN=<token>`, `wg`, `gaffer approve` and
   `gaffer merge` act as that principal, its read-only flag and scope enforced as on the

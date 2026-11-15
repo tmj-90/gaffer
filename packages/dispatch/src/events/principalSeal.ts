@@ -120,7 +120,7 @@ export function verifyPrincipal(db: SealDb, keyring: GateKeyring, id: string): R
 export function unsignedPrincipalMessage(name: string, check: RowSealCheck): string {
   const why = check.ok ? "" : ` (${check.detail})`;
   if (!check.ok && check.failure === "missing_key") {
-    return `principal ${name} cannot be checked: the factory key does not exist${why}; no principal signs in until it is restored or a person re-signs the principals under a new key (gaffer wg principal resign --all)`;
+    return `principal ${name} cannot be checked: the factory key does not exist${why}; no principal signs in until it is restored or a person reviews and re-signs the principals under a new key (gaffer wg principal unsigned, then gaffer wg principal resign)`;
   }
   return `principal ${name} is not signed by this factory: it was created before signing, restored from a backup, or written outside the factory${why}. Review it, then re-sign it (gaffer wg principal resign ${name}) or revoke it`;
 }

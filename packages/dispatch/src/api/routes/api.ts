@@ -184,18 +184,24 @@ export async function routeApi(
   }
   // SEALED PRINCIPALS: GET /api/principal-signatures lists the active principals this
   // factory does not honour (created before signing, restored from a backup, or written
-  // outside the factory), with why; POST /api/principal-signatures/resign is a person's
-  // deliberate re-sign, operator only like minting (a principal token is refused).
+  // outside the factory), with why, and the fingerprint of that list; POST
+  // /api/principal-signatures/resign is a person's deliberate re-sign, operator only like
+  // minting (a principal token is refused); `all` needs the fingerprint of the list the
+  // person reviewed.
   if (segments.length === 2 && segments[1] === "principal-signatures") {
     if (method !== "GET") return methodNotAllowed(res);
-    sendJson(res, 200, { unsigned: wg.listUnsignedPrincipals() });
+    sendJson(res, 200, wg.reviewUnsignedPrincipals());
     return;
   }
   if (segments.length === 3 && segments[1] === "principal-signatures" && segments[2] === "resign") {
     if (method !== "POST") return methodNotAllowed(res);
     if (refuseIfPrincipal(req, res)) return;
     const body = resignPrincipalsBody.parse(await readJsonBody(req));
-    sendJson(res, 200, wg.resignPrincipals({ names: body.names, all: body.all }, apiActor()));
+    sendJson(
+      res,
+      200,
+      wg.resignPrincipals({ names: body.names, all: body.all, confirm: body.confirm }, apiActor()),
+    );
     return;
   }
   // SQUAD — the operator's team identity for the dashboard's Match Day view.

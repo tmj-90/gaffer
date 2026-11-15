@@ -275,9 +275,12 @@ describe("upgrade and the agent-facing server", () => {
     expect(
       mcp.db.prepare("SELECT id FROM api_principals WHERE name = 'minted'").get(),
     ).toBeUndefined();
-    expect(() => mcp.resignPrincipals({ all: true }, operator)).toThrow(
-      /never loads the factory key/,
-    );
+    expect(() =>
+      mcp.resignPrincipals(
+        { all: true, confirm: mcp.reviewUnsignedPrincipals().fingerprint },
+        operator,
+      ),
+    ).toThrow(/never loads the factory key/);
     expect(
       mcp.db
         .prepare("SELECT COUNT(*) AS n FROM work_events WHERE event_type = 'principal.resigned'")
@@ -303,7 +306,10 @@ describe("re-signing principals created before signing (a person's act)", () => 
         .map((u) => u.name)
         .sort(),
     ).toEqual(["intruder", "old-1", "old-2"]);
-    const res = wg.resignPrincipals({ all: true }, operator);
+    const res = wg.resignPrincipals(
+      { all: true, confirm: wg.reviewUnsignedPrincipals().fingerprint },
+      operator,
+    );
     expect(res.resigned.map((r) => r.name).sort()).toEqual(["old-1", "old-2"]);
     expect(res.skipped).toEqual([
       expect.objectContaining({
@@ -445,6 +451,24 @@ describe("REST and the live feed refuse an unsigned principal", () => {
         body: JSON.stringify({ all: true }),
       });
       expect(byPrincipal.status).toBe(403);
+      // The operator's --all needs the fingerprint of the list it reviewed.
+      const op = { authorization: `Bearer ${FULL}`, "content-type": "application/json" };
+      const blind = await fetch(`${s.base}/api/principal-signatures/resign`, {
+        method: "POST",
+        headers: op,
+        body: JSON.stringify({ all: true }),
+      });
+      expect(blind.status).toBe(422);
+      const fp = (body as unknown as { fingerprint: string }).fingerprint;
+      expect(fp).toMatch(/^[0-9a-f]{16}$/);
+      forgeRow(wg, "late");
+      const stale = await fetch(`${s.base}/api/principal-signatures/resign`, {
+        method: "POST",
+        headers: op,
+        body: JSON.stringify({ all: true, confirm: fp }),
+      });
+      expect(stale.status).toBe(409);
+      expect(wg.resolvePrincipalToken(forged)).toBeNull();
     } finally {
       await s.close();
       wg.db.close();

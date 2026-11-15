@@ -36,6 +36,7 @@ const UNSIGNED = [
     created_at: "2026-01-03T00:00:00.000Z",
     created_by: "tom",
     scoped: true,
+    scope: { repos: [{ id: "r1", name: "payments" }], tickets: null },
     failure: "unsigned",
     detail: "it carries no signature",
     creation_event: "ev2",
@@ -75,7 +76,8 @@ function stubFetch(): void {
         posts.push({ url, body: JSON.parse(String(init?.body ?? "{}")) });
         return json({ resigned: [{ id: "p1", name: "old-ci", event_id: "e" }], skipped: [] });
       }
-      if (url.includes("/api/principal-signatures")) return json({ unsigned });
+      if (url.includes("/api/principal-signatures"))
+        return json({ unsigned, fingerprint: "0123456789abcdef" });
       if (url.includes("/api/whoami")) return json(whoami);
       if (url.includes("/api/settings"))
         return json({
@@ -138,17 +140,25 @@ describe("web: the unsigned sign-ins callout in Settings", () => {
     expect(box.querySelector('[data-principal="ghost"]')!.textContent).toMatch(
       /no creation on record/,
     );
+    // What a person reviews: who it acts as, what it may do, where, who created it, when.
+    const ops = box.querySelector('[data-principal="old-ops"]')!.textContent ?? "";
+    expect(ops).toMatch(/full, acts as admin:ops, repos payments/);
+    expect(ops).toMatch(/created 2026-01-03 by tom/);
+    expect(box.querySelector('[data-principal="old-ci"]')!.textContent).toMatch(
+      /every repo and ticket/,
+    );
     const one = box.querySelector('[data-principal="old-ci"] button') as HTMLButtonElement;
     one.click();
     await settle();
     expect(posts[0]!.body).toEqual({ names: ["p1"] });
     const all = [...box.querySelectorAll("button")].find((b) =>
-      /Re-sign all 2/.test(b.textContent ?? ""),
+      /Re-sign the 2 listed/.test(b.textContent ?? ""),
     ) as HTMLButtonElement;
     expect(all, "the re-sign-all button counts only rows with a creation on record").toBeTruthy();
     all.click();
     await settle();
-    expect(posts[1]!.body).toEqual({ all: true });
+    // "All" means the list on screen: the server signs only while its fingerprint holds.
+    expect(posts[1]!.body).toEqual({ all: true, confirm: "0123456789abcdef" });
   });
 
   it("a principal's session sees the list and no button", async () => {

@@ -4,7 +4,7 @@
 import { lockReason, readOnly, roLock } from "../access.js";
 import { api } from "../api.js";
 import { ensureAgents } from "../club.js";
-import { panelHead, statCell } from "../components.js";
+import { callout, panelHead, statCell } from "../components.js";
 import { renderTicketDiff, repoDiffSection, safeHttpUrl } from "../diff.js";
 import { app, clear, el, prefersReducedMotion } from "../dom.js";
 import { fmtDuration, fmtRelative, fmtTime, plural } from "../format.js";
@@ -13,7 +13,7 @@ import { clearDeskSignature, reviewSignature, updateNavBadges } from "../live.js
 import { allTickets, hlWork } from "../matchday.js";
 import { navigate, routeSignal, router } from "../router.js";
 import { confirmSheet, reasonSheet } from "../sheets.js";
-import { hasTicketAction, riskBadge, statusBadge, statusLabel } from "../status.js";
+import { hasTicketAction, riskBadge, statusBadge, statusLabel, ticketHead } from "../status.js";
 import { guard, toast } from "../toast.js";
 import {
   REJECT_REASON_PRESETS,
@@ -43,6 +43,7 @@ import {
   acTable,
   approvedFallback,
   backingPanel,
+  factoryNorms,
   humanAsks,
   impactBacking,
   impactPanel,
@@ -106,7 +107,6 @@ async function renderClearDesk(wrap) {
   const toMerge = by("ready_for_merge");
   const playing = all.filter((t) => t.status === "claimed" || t.status === "in_progress");
   const readyN = by("ready").length;
-  const medianReview = (dash?.cycleTimeByState || []).find((c) => c.status === "in_review");
   const delivered = dash?.deliveredToday;
 
   const signed =
@@ -135,9 +135,6 @@ async function renderClearDesk(wrap) {
       ? el("a", { href: "#/overview" }, `${others.join(" and ")} on your team sheet`)
       : null,
     delivered != null ? `${plural(delivered, "ticket")} landed today` : null,
-    medianReview && medianReview.samples
-      ? `a change waits ${fmtDuration(medianReview.medianMs)} for you, on the median`
-      : null,
   ].filter(Boolean);
   const sub = el("p", { class: "hl-sub" });
   bits.forEach((b, i) => {
@@ -146,6 +143,22 @@ async function renderClearDesk(wrap) {
   });
   if (sub.firstChild && sub.firstChild.nodeType === 3)
     sub.firstChild.textContent = sub.firstChild.textContent.replace(/^./, (c) => c.toUpperCase());
+  // F-A6: how long a change waits before a person opens it (Health's review_time.queue_wait,
+  // the same measure Health shows), not the wall-clock time in review. Filled when read.
+  wrap._norms = factoryNorms().then((n) => {
+    if (!n || n.queueWaitMs == null) return;
+    sub.append(
+      el("span", { class: "sep", "aria-hidden": "true" }, " · "),
+      el(
+        "span",
+        {
+          class: "rv-queue-wait",
+          title: `Median over ${plural(n.queueWaitN, "review round")} opened in Review (Health: review time, queue wait)`,
+        },
+        `a change waits ${fmtDuration(n.queueWaitMs)} before you open it`,
+      ),
+    );
+  });
   wrap.appendChild(
     el("section", { class: "scoreboard bleed rv-clear-board", "aria-label": "Review" }, [
       el("div", { class: "scoreboard-in" }, [
@@ -157,24 +170,25 @@ async function renderClearDesk(wrap) {
           "div",
           { class: "sb-cells kpi-row", role: "group", "aria-label": "Around the sign-off" },
           [
-            statCell({ label: "Waiting", value: "00", flip: "rv-wait", title: "0 in review" }),
+            // Plain figures (F-E4): a count, not a scoreboard's zero padding.
+            statCell({ label: "Waiting", value: "0", flip: "rv-wait", title: "0 in review" }),
             statCell({
               label: "In testing",
-              value: String(testing.length).padStart(2, "0"),
+              value: String(testing.length),
               href: "#/work?status=in_testing",
               flip: "rv-test",
               title: `${testing.length} with the tester`,
             }),
             statCell({
               label: "To merge",
-              value: String(toMerge.length).padStart(2, "0"),
+              value: String(toMerge.length),
               href: "#/work?status=ready_for_merge",
               flip: "rv-merge",
               title: `${toMerge.length} approved, with the merge runner`,
             }),
             statCell({
               label: "On the pitch",
-              value: String(playing.length).padStart(2, "0"),
+              value: String(playing.length),
               href: "#/work",
               flip: "rv-pitch",
               title: `${playing.length} being delivered`,
@@ -443,7 +457,7 @@ async function renderReview(param) {
       }
       nextLine.hidden = true;
       // The yellow card is withdrawn from the title; the queue tab shows the move.
-      const card = wrap.querySelector(".rv-title .rv-card");
+      const card = wrap.querySelector(".rv-head .rv-card");
       if (card && !prefersReducedMotion() && typeof card.animate === "function")
         card
           .animate(
@@ -473,7 +487,7 @@ async function renderReview(param) {
       const landing =
         (r && r.ticket && r.ticket.landing_state) ||
         (landed ? { label: landed, detail: done.sentence } : undefined);
-      if (meta && to) meta.replaceWith(statusBadge(to, landing));
+      if (meta && to) meta.replaceWith(statusBadge(to, landing, { size: "s" }));
       clear(doneLine);
       doneLine.append(
         el("span", { class: "rv-done-t" }, [
@@ -634,39 +648,37 @@ async function renderReview(param) {
     // A click-arm is put down when the pointer/focus leaves the button.
     approveBtn.addEventListener("blur", () => armedVia === "click" && disarm());
   }
-  const diffBlockBanner = el(
-    "div",
-    { class: "reopen-banner diff-block-banner", style: "display:none" },
-    [icon("alert"), ""],
-  );
+  // Why Approve is off, in the shared callout (A-40): info while the diff loads or a
+  // hold explains itself; the words are set by applyDiffState.
+  const diffBlockBanner = callout({ tone: "info", cls: "diff-block-banner" });
+  diffBlockBanner.style.display = "none";
+  const diffBlockText = diffBlockBanner.querySelector(".callout-text");
   // The approval just refused as stale: say the change moved, once, above the new diff.
   const moved = reviewMovedNotice && reviewMovedNotice.id === t.id ? reviewMovedNotice : null;
   if (moved) reviewMovedNotice = null;
   const movedBanner = moved
-    ? el(
-        "div",
-        {
-          class: "reopen-banner diff-moved-banner",
-          role: "alert",
-          "aria-label": "The change moved since you opened it, so nothing was approved.",
-        },
-        [
-          icon("alert"),
-          el("span", {}, [
-            el("b", {}, "The change moved since you opened it. "),
-            "Nothing was approved. The diff below is the new head — review it again before you approve. ",
-            el("small", { class: "mono" }, moved.message),
-          ]),
+    ? callout({
+        tone: "needs",
+        role: "alert",
+        cls: "diff-moved-banner",
+        title: "The change moved since you opened it.",
+        body: [
+          "Nothing was approved. The diff below is the new head — review it again before you approve. ",
+          el("small", { class: "mono" }, moved.message),
         ],
-      )
+      })
     : null;
+  movedBanner?.setAttribute(
+    "aria-label",
+    "The change moved since you opened it, so nothing was approved.",
+  );
   // GATE INTEGRITY: filled once the diff loads, from the server's `test-modified` flag.
   const integritySlot = el("div", { class: "integrity-slot" });
 
   // Flags: what to look at before signing. Evidence flags now; the diff's risk
   // annotations join them once the diff loads.
   const flagList = el("ul", { class: "flag-list" });
-  const flagCount = el("span", { class: "panel-aux" });
+  const flagCount = el("span", { class: "rv-aux" });
   const summary = el("p", { class: "signoff-sum" });
   const flagsNow = [];
   if (isReopened)
@@ -801,27 +813,23 @@ async function renderReview(param) {
     clear(asksSlot);
     const list = shownAsks;
     if (!list.length) return;
-    asksSlot.appendChild(
+    // The shared callout, needs tone (A-40): a person is asked for before the sign-off.
+    const box = callout({
+      tone: "needs",
+      role: "status",
+      cls: "signoff-asks",
+      title: `${list.length === 1 ? "A human is asked for" : `${list.length} requests for a human`} before you sign`,
+    });
+    box.setAttribute("aria-label", `${plural(list.length, "request")} for a human before you sign`);
+    box.querySelector(".callout-text")?.classList.add("signoff-asks-h");
+    box.appendChild(
       el(
-        "div",
-        {
-          class: "signoff-asks",
-          role: "status",
-          "aria-label": `${plural(list.length, "request")} for a human before you sign`,
-        },
-        [
-          el("p", { class: "signoff-asks-h" }, [
-            icon("alert", "", 18),
-            ` ${list.length === 1 ? "A human is asked for" : `${list.length} requests for a human`} before you sign`,
-          ]),
-          el(
-            "ul",
-            { class: "clean signoff-asks-list" },
-            list.map((a) => el("li", {}, [el("b", {}, a.title), el("span", {}, ` ${a.detail}`)])),
-          ),
-        ],
+        "ul",
+        { class: "clean signoff-asks-list" },
+        list.map((a) => el("li", {}, [el("b", {}, a.title), el("span", {}, ` ${a.detail}`)])),
       ),
     );
+    asksSlot.appendChild(box);
   }
   paintFlags([]);
 
@@ -829,7 +837,7 @@ async function renderReview(param) {
     t.branch_name ? el("code", { class: "mono" }, t.branch_name) : null,
     prUrl ? [" · ", el("a", { href: prUrl, target: "_blank", rel: "noopener" }, "PR")] : null,
   ]);
-  const diffAux = el("span", { class: "panel-aux" });
+  const diffAux = el("span", { class: "rv-aux" });
   // CHANGE IMPACT: the Behavioural surface panel, filled above the diff once it loads.
   const impactSlot = el("div", { class: "rv-impact-slot" });
   const applyDiffState = (state, repos = [], res = null) => {
@@ -855,9 +863,7 @@ async function renderReview(param) {
       if (approveBtn && !isApproved() && !readOnly()) approveBtn.removeAttribute("disabled");
     } else {
       diffBlockBanner.style.display = "";
-      clear(diffBlockBanner);
-      diffBlockBanner.appendChild(icon("alert"));
-      diffBlockBanner.appendChild(document.createTextNode(`Approve blocked — ${diffState.reason}`));
+      if (diffBlockText) diffBlockText.textContent = `Approve blocked — ${diffState.reason}`;
       if (approveBtn) approveBtn.setAttribute("disabled", "");
     }
     const live = repos.filter((r) => !r.unavailable);
@@ -895,7 +901,7 @@ async function renderReview(param) {
   };
   // --- review comments: the panel, the threads under the lines, Fix these ------------
   const commentList = el("ul", { class: "clean rc-list" });
-  const commentAux = el("span", { class: "panel-aux" });
+  const commentAux = el("span", { class: "rv-aux" });
   const fixLine = el("p", {
     class: "fix-next",
     id: `fix-next-${t.id}`,
@@ -1204,13 +1210,13 @@ async function renderReview(param) {
     }
     for (const x of rewritten)
       sinceBar.appendChild(
-        el("p", { class: "reopen-banner since-rewritten", role: "status" }, [
-          icon("alert"),
-          el("span", {}, [
-            el("b", {}, `${x.repo}: the branch history was rewritten since you sent it back. `),
-            "The commit you reviewed is not in the new head's history, so there is no interdiff to show; read the whole change.",
-          ]),
-        ]),
+        callout({
+          tone: "needs",
+          role: "status",
+          cls: "since-rewritten",
+          title: `${x.repo}: the branch history was rewritten since you sent it back.`,
+          body: "The commit you reviewed is not in the new head's history, so there is no interdiff to show; read the whole change.",
+        }),
       );
     repos.forEach((rd, i) => {
       const sec = repoDiffSection(rd, 100 + i);
@@ -1229,7 +1235,7 @@ async function renderReview(param) {
   const HEADS_POLL_MS = 20000;
   let movedLive = false;
   const movedLiveBanner = el("div", {
-    class: "reopen-banner diff-moved-banner moved-live",
+    class: "callout callout-needs diff-moved-banner moved-live",
     role: "alert",
     hidden: "",
   });
@@ -1260,8 +1266,8 @@ async function renderReview(param) {
     if (approveBtn) approveBtn.setAttribute("disabled", "");
     clear(movedLiveBanner);
     movedLiveBanner.append(
-      icon("alert"),
-      el("span", {}, [
+      ycard(16),
+      el("p", { class: "callout-text" }, [
         el("b", {}, "The change moved since you opened it. "),
         `${moved.map((m) => m.repo).join(", ")} has a new commit, so Approve is off until you reload and review the new head. `,
         el(
@@ -1291,41 +1297,57 @@ async function renderReview(param) {
   // An in_review ticket's diff carries its change-impact facts (the Behavioural surface).
   const diffBox = renderTicketDiff(t.id, applyDiffState);
 
-  // Header: the yellow card, the number, the title; then the facts in one line.
-  wrap.appendChild(
-    el("header", { class: "rv-head" }, [
-      el("h1", { class: "rv-title" }, [
-        ycard(40, "rv-card"),
-        el("span", { class: "rv-no" }, t.number != null ? `#${t.number}` : ""),
-        " ",
-        t.title,
-      ]),
-      el("p", { class: "rv-meta" }, [
-        statusBadge(t.status, t.landing_state),
-        repo ? repoTag(repo.name, 20) : null,
-        riskBadge(t.risk_level, { long: true }),
-        by
-          ? el("span", { class: "rv-by" }, ["delivered by ", agentChip(by.id, by.name, 22)])
-          : null,
-        rby && (!by || rby.id !== by.id)
-          ? el("span", { class: "rv-by rv-rby" }, ["reviewed by ", agentChip(rby.id, rby.name, 22)])
-          : null,
-        since
-          ? el(
-              "span",
-              { class: "rv-wait" },
-              `waiting ${fmtDuration(Date.now() - Date.parse(since))}`,
-            )
-          : null,
-      ]),
-      branchLine,
-      // REVIEW FACTS: what was asked, above the runner's facts (inside the header, so the
-      // strip still follows it).
-      packet && "intent" in packet ? intentBlock(packet.intent) : null,
-    ]),
-  );
+  // Header (A-22): the shared ticketHead, the title first and the meta under it: the
+  // number, the status, then who delivered it and how long it has waited. In review it
+  // waits on you, so the yellow card rides at the end of the title row. What was asked
+  // follows as a plain quote, folded after a few lines so the decision stays in view.
+  const head = ticketHead(t, {
+    level: 1,
+    refSize: "m",
+    link: false,
+    cls: "rv-head",
+    mark: ycard(28, "rv-card"),
+    facts: [
+      repo ? repoTag(repo.name, 20) : null,
+      riskBadge(t.risk_level, { long: true }),
+      by ? el("span", { class: "rv-by" }, ["delivered by ", agentChip(by.id, by.name, 22)]) : null,
+      rby && (!by || rby.id !== by.id)
+        ? el("span", { class: "rv-by rv-rby" }, ["reviewed by ", agentChip(rby.id, rby.name, 22)])
+        : null,
+      since
+        ? el("span", { class: "rv-wait" }, `waiting ${fmtDuration(Date.now() - Date.parse(since))}`)
+        : null,
+    ],
+  });
+  head.querySelector(".th-title")?.classList.add("rv-title");
+  head.querySelector(".th-meta")?.classList.add("rv-meta");
+  head.append(branchLine);
+  // REVIEW FACTS: what was asked, inside the header (so the strip still follows it).
+  if (packet && "intent" in packet) head.append(intentBlock(packet.intent));
+  wrap.appendChild(head);
+  // The verdict strip: one compact row of cells (label, mark, one word; the detail behind
+  // a disclosure), between the header and the sign-off, so Approve is on the first screen.
   if (strip) wrap.appendChild(strip);
 
+  // The three actions the sign-off is (A-51): on a phone this group becomes a bar fixed
+  // above the tab bar, so Approve, Fix these and Send back are always one tap away while
+  // the page scrolls; on a wide screen it is the head of the sign-off's button row. The
+  // buttons are the same nodes either way: the gates behind them are unchanged.
+  const sendBackBtn = hasTicketAction(t.status, "rework")
+    ? roLock(
+        el(
+          "button",
+          { class: "btn rv-send-back", type: "button", onclick: () => reject("refining") },
+          "Send back…",
+        ),
+        "ticket",
+      )
+    : null;
+  const signbar = el(
+    "div",
+    { class: "rv-actions", role: "group", "aria-label": `Sign off #${t.number}` },
+    [approveBtn, fixBtn, sendBackBtn].filter(Boolean),
+  );
   signoff = el(
     "section",
     {
@@ -1335,8 +1357,11 @@ async function renderReview(param) {
       "aria-label": "The gaffer's sign-off",
     },
     [
-      panelHead("The gaffer's sign-off", null, null, { kit: "claret" }),
+      // The one block head on Review: claret, the one thing this page asks you to do.
+      panelHead("The gaffer's sign-off", null, null, { tone: "needs", level: 2 }),
       summary,
+      // What asks for a person and why Approve is off stay ABOVE the buttons, as before:
+      // the reviewer reads them before signing (the layout moved, the order did not).
       movedBanner,
       movedLiveBanner,
       asksSlot,
@@ -1346,18 +1371,7 @@ async function renderReview(param) {
         "div",
         { class: "btn-row review-card-actions" },
         [
-          approveBtn,
-          fixBtn,
-          hasTicketAction(t.status, "rework")
-            ? roLock(
-                el(
-                  "button",
-                  { class: "btn", type: "button", onclick: () => reject("refining") },
-                  "Send back…",
-                ),
-                "ticket",
-              )
-            : null,
+          signbar,
           hasTicketAction(t.status, "wont_do")
             ? roLock(
                 el(
@@ -1390,8 +1404,10 @@ async function renderReview(param) {
   );
   signoff._actions = { approve, reject };
 
+  // Below the sign-off every section is a level-2 head on the one scale (A-10), not a
+  // block: the sign-off above is the one block this page leads with.
   const diffSection = el("section", { class: "rv-diff", "aria-label": "The diff" }, [
-    el("h2", { class: "rv-h2" }, ["The diff ", diffAux]),
+    panelHead("The diff", diffAux, null, { level: 2 }),
     impactSlot,
     sinceBar,
     sinceBox,
@@ -1409,6 +1425,8 @@ async function renderReview(param) {
     panelHead(
       "The gates",
       !dod ? "no gate report yet" : dod.dod === "PASS" ? "all passed" : "a gate failed",
+      null,
+      { level: 2 },
     ),
     dodBox ||
       el(
@@ -1417,10 +1435,7 @@ async function renderReview(param) {
         "The runner has not recorded a Definition-of-Done report for this delivery.",
       ),
     ac.length
-      ? el("h3", { class: "rv-h3" }, [
-          "Acceptance criteria ",
-          el("span", { class: "count" }, `${satisfied} of ${ac.length}`),
-        ])
+      ? panelHead("Acceptance criteria", `${satisfied} of ${ac.length}`, null, { level: 3 })
       : null,
     ac.length ? (packet ? acTable(packet.acceptance) : acChecklist(ac)) : null,
   ]);
@@ -1430,21 +1445,18 @@ async function renderReview(param) {
       el("div", { class: "rv-left" }, [
         signoff,
         el("section", { class: "rv-flags", "aria-label": "Flags" }, [
-          el("h2", { class: "rv-h2" }, ["Flags ", flagCount]),
+          panelHead("Flags", flagCount, null, { level: 2 }),
           flagList,
         ]),
         el("section", { class: "rv-comments", "aria-label": "Review comments" }, [
-          el("h2", { class: "rv-h2" }, ["Comments ", commentAux]),
+          panelHead("Comments", commentAux, null, { level: 2 }),
           el("div", { class: "btn-row rc-toolbar" }, [ticketCommentBtn]),
           commentList,
         ]),
         backing,
         checks,
         el("section", { class: "rv-evid", "aria-label": "Evidence" }, [
-          el("h2", { class: "rv-h2" }, [
-            "Evidence ",
-            el("span", { class: "panel-aux" }, String(evidence.length)),
-          ]),
+          panelHead("Evidence", String(evidence.length), null, { level: 2 }),
           reviewEvidenceList(evidence, ac, {
             repos: detail.repositories,
             asks: new Set(asks.map((a) => a.id).filter(Boolean)),

@@ -133,8 +133,14 @@ describe("I3 web: the Review-view Definition-of-Done checklist", () => {
     expect(text).toContain("all gates green");
     expect(text).toContain("tests");
     // A passing gate shows the ✓ mark; a skipped gate shows the – mark.
-    expect(document.querySelector(".dod-mark.dod-pass")?.textContent).toBe("✓");
-    expect(document.querySelector(".dod-mark.dod-skip")?.textContent).toBe("–");
+    // Each gate's verdict is a verdictMark: its own glyph and its word (A-23).
+    expect(document.querySelector(".review-dod .vmark.vm-pass .vm-word")?.textContent).toBe(
+      "passed",
+    );
+    expect(document.querySelector(".review-dod .vmark.vm-skip .vm-word")?.textContent).toBe(
+      "skipped",
+    );
+    expect(document.querySelector(".review-dod .dod-mark")).toBeNull();
   });
 
   it("renders a FAIL checklist and shows the failing gate's note as literal text (XSS-safe)", async () => {
@@ -144,7 +150,9 @@ describe("I3 web: the Review-view Definition-of-Done checklist", () => {
     const block = document.querySelector(".review-dod");
     expect(block).toBeTruthy();
     expect(block!.classList.contains("dod-bad")).toBe(true);
-    expect(document.querySelector(".dod-mark.dod-fail")?.textContent).toBe("✗");
+    expect(document.querySelector(".review-dod .vmark.vm-fail .vm-word")?.textContent).toBe(
+      "failed",
+    );
     // The HTML-looking note is rendered as text, never injected as markup: there
     // must be NO <img> element anywhere in the review surface.
     expect(document.querySelector(".review-dod img")).toBeNull();
@@ -178,7 +186,7 @@ describe("I3 web: the Review-view Definition-of-Done checklist", () => {
     expect(item!.querySelector(".dod-flaky")?.textContent).toBe("Flaky suspected");
     // Both runs are named, as text.
     expect(item!.querySelector(".dod-note-flaky")?.textContent).toBe(note);
-    expect(item!.querySelector(".dod-mark.dod-pass")?.textContent).toBe("✓");
+    expect(item!.querySelector(".vmark.vm-pass .vm-word")?.textContent).toBe("passed");
   });
 
   it("renders no DoD block when there is no DoD evidence (back-compat)", async () => {

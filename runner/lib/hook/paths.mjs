@@ -338,6 +338,36 @@ function expandTildePath(filePath) {
  * skips): `cd -`, `pushd`/`pushd +N` (dir stack), `~user` / `~-`, and a `$`, backtick
  * or glob destination. An absolute destination resolves even after an unknown cwd.
  */
+/**
+ * Where a path a tool or a command names can land: its lexical resolution (`..`
+ * collapsed first, as `path.resolve` and a logical `cd` do) and its physical one (the
+ * kernel's: `..` leaves the directory a symlink points at, so with `wt ->
+ * $GAFFER_DATA/worktrees` the path `wt/../settings.json` is the data directory's
+ * settings file). The two differ only through a symlink; a boundary judges both.
+ */
+function canonicalCandidates(base, p) {
+  const lexical = canonicalize(resolve(base, p));
+  const raw = String(p).startsWith("/") ? String(p) : `${base}/${p}`;
+  if (!/(^|\/)\.\.(\/|$)/.test(raw)) return [lexical];
+  // Step by step: realpathSync normalises `..` lexically before it resolves links, so
+  // each `..` leaves the realpath of the directory reached so far.
+  let cur = "/";
+  for (const step of raw.split("/")) {
+    if (step === "" || step === ".") continue;
+    if (step === "..") {
+      let real = cur;
+      try {
+        real = realpathSync(cur);
+      } catch {
+        /* not there (yet): the kernel would refuse it; the lexical place stands */
+      }
+      cur = dirname(real);
+    } else cur = cur === "/" ? `/${step}` : `${cur}/${step}`;
+  }
+  const physical = canonicalize(cur);
+  return physical === lexical ? [lexical] : [lexical, physical];
+}
+
 function replayCd(effective, cwd) {
   const args = effective.rest.slice(1);
   let k = 0;
@@ -364,6 +394,7 @@ export {
   PROC_ENVIRON,
   SECRET_PATH,
   TOKEN_SOURCE_EXT_GUARD,
+  canonicalCandidates,
   canonicalize,
   classifyRootAccess,
   expandTildePath,

@@ -27,6 +27,7 @@ import {
   ENV_TEMPLATE,
   GIT_INTERNAL,
   SECRET_PATH,
+  canonicalCandidates,
   canonicalize,
   classifyRootAccess,
   expandTildePath,
@@ -427,7 +428,13 @@ function checkWrite(filePath, tool = "Write", input = null) {
   // `~/.zshrc` is $HOME/.zshrc to the file tools, not <cwd>/~/.zshrc.
   const expanded = expandTildePath(filePath);
   if (expanded === null) block(`write to an unresolvable ~user path (fail closed): ${filePath}`);
-  const abs = canonicalize(resolve(process.cwd(), expanded));
+  // Both the lexical and the physical (kernel) place: through a symlinked directory
+  // `wt/../settings.json` lands beside the link's target (canonicalCandidates).
+  for (const abs of canonicalCandidates(process.cwd(), expanded)) checkWriteAt(abs, filePath, tool, input, roots);
+  allow();
+}
+
+function checkWriteAt(abs, filePath, tool, input, roots) {
   // An env TEMPLATE may be written (the agent supplies the content). Edit /
   // MultiEdit / NotebookEdit echo the file back, so they need a TRACKED template.
   const template = ENV_TEMPLATE.test(abs) && (tool === "Write" || isTrackedEnvTemplate(abs));
@@ -448,7 +455,6 @@ function checkWrite(filePath, tool = "Write", input = null) {
       `write outside write-roots (target is ${access === "read" ? "in a read-only root" : "outside all roots"}): ${filePath} [write-roots: ${roots.writeRoots.join(", ")}]`,
     );
   }
-  allow();
 }
 
 function checkRead(filePath) {
@@ -458,20 +464,22 @@ function checkRead(filePath) {
   // `~/.config/gh/hosts.yml` is $HOME/…, not <cwd>/~/…; `~user` fails closed.
   const expanded = expandTildePath(filePath);
   if (expanded === null) block(`read of an unresolvable ~user path (fail closed): ${filePath}`);
-  const abs = canonicalize(resolve(process.cwd(), expanded));
-  // Existing secret-file denial takes precedence and is never weakened.
-  if (SECRET_PATH.test(abs) && !isTrackedEnvTemplate(abs)) {
-    block(`read of a secret file (keeps secrets out of model context): ${filePath}`);
-  }
-  // Repo-access boundary: reads are allowed inside (write-roots ∪ read-roots).
-  // A read fully outside all roots is denied — but ONLY when roots are
-  // explicitly configured. Under the single-repo fallback, reads stay
-  // unrestricted (preserving today's behaviour, never more restrictive).
   const roots = resolveRoots();
-  if (roots.configured && classifyRootAccess(abs, roots) === "outside") {
-    block(
-      `read outside allowed roots: ${filePath} [write-roots: ${roots.writeRoots.join(", ")}; read-roots: ${roots.readRoots.join(", ")}]`,
-    );
+  // Lexical and physical (kernel) place, as for a write (canonicalCandidates).
+  for (const abs of canonicalCandidates(process.cwd(), expanded)) {
+    // Existing secret-file denial takes precedence and is never weakened.
+    if (SECRET_PATH.test(abs) && !isTrackedEnvTemplate(abs)) {
+      block(`read of a secret file (keeps secrets out of model context): ${filePath}`);
+    }
+    // Repo-access boundary: reads are allowed inside (write-roots ∪ read-roots).
+    // A read fully outside all roots is denied — but ONLY when roots are
+    // explicitly configured. Under the single-repo fallback, reads stay
+    // unrestricted (preserving today's behaviour, never more restrictive).
+    if (roots.configured && classifyRootAccess(abs, roots) === "outside") {
+      block(
+        `read outside allowed roots: ${filePath} [write-roots: ${roots.writeRoots.join(", ")}; read-roots: ${roots.readRoots.join(", ")}]`,
+      );
+    }
   }
   allow();
 }
@@ -614,7 +622,10 @@ function checkSearch(tool, input) {
     const expanded = expandTildePath(rawPath);
     if (expanded === null)
       block(`${tool} over an unresolvable ~user path (fail closed): ${rawPath}`);
-    base = canonicalize(resolve(process.cwd(), expanded));
+    // Lexical and physical (kernel) place: ripgrep opens `wt/..` through the link.
+    const candidates = canonicalCandidates(process.cwd(), expanded);
+    for (const c of candidates.slice(1)) checkSearchRoot(tool, c, rawPath, roots);
+    base = candidates[0];
   }
   checkSearchRoot(tool, base, rawPath || base, roots);
 
@@ -631,7 +642,7 @@ function checkSearch(tool, input) {
       if (staticBase) {
         const expanded = expandTildePath(staticBase);
         if (expanded === null) block(`Glob over an unresolvable ~user path (fail closed): ${glob}`);
-        checkSearchRoot(tool, canonicalize(resolve(base, expanded)), glob, roots);
+        for (const c of canonicalCandidates(base, expanded)) checkSearchRoot(tool, c, glob, roots);
       }
     }
   }

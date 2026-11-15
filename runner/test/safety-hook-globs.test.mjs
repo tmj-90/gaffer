@@ -204,6 +204,46 @@ for (const cmd of [
 ]) {
   each("allow", `physical ..: ${cmd}`, bash(cmd));
 }
+// The file tools and a bash redirect judge the physical place too: `dd/wt/..` is the
+// data directory, whatever a lexical resolve says.
+{
+  const via = `${WORK}/dd/wt/..`;
+  each("deny", "Write through wt/..", tool("Write", { file_path: `${via}/settings.json`, content: "{}" }));
+  each("deny", "Edit through wt/..", tool("Edit", { file_path: `${via}/tool-metrics.jsonl`, old_string: "{}", new_string: "x" }), ["roots", "bootstrap"]);
+  each("deny", "NotebookEdit through wt/..", tool("NotebookEdit", { notebook_path: `${via}/x.ipynb`, new_source: "x" }));
+  each("deny", "Read through wt/..", tool("Read", { file_path: `${via}/tool-metrics.jsonl` }), ["roots", "bootstrap"]);
+  each("deny", "Grep content through wt/..", tool("Grep", { pattern: ".", path: via, output_mode: "content" }));
+  each("deny", "Grep relative wt/..", tool("Grep", { pattern: ".", path: "dd/wt/..", output_mode: "content" }));
+  each("deny", "redirect through wt/..", bash("echo x > dd/wt/../settings.json"));
+  each("deny", "append through wt/..", bash("printf x >> dd/wt/../usage-pause.json"));
+  each("allow", "Write with a plain ..", tool("Write", { file_path: `${WORK}/src/../notes.md`, content: "x" }));
+  each("allow", "Grep with a plain ..", tool("Grep", { pattern: "x", path: `${WORK}/src/..` }));
+}
+// Archivers and git readers beyond tar / zip.
+for (const cmd of [
+  "7z a /dev/stdout $GAFFER_DATA",
+  "7za a -so x $GAFFER_DATA",
+  "pax -w $GAFFER_DATA",
+  "find $GAFFER_DATA | pax -w",
+  "bsdtar cf - $GAFFER_DATA",
+  "bsdtar -C $GAFFER_DATA -cf - .",
+  "gtar cf - dd/wt/..",
+  "find $GAFFER_DATA | cpio -o",
+  "git grep --no-index . $GAFFER_DATA",
+  "git grep --no-index -e x -- $GAFFER_DATA",
+  "git diff --no-index $GAFFER_DATA/tool-metrics.jsonl src/a.ts",
+]) {
+  each("deny", `archiver / git reader: ${cmd}`, bash(cmd), ["roots", "bootstrap"]);
+}
+for (const cmd of [
+  "7z a x.7z src",
+  "pax -w src > x.pax",
+  "find src | cpio -o > x.cpio",
+  "git grep --no-index foo src",
+  "git diff --no-index src/a.ts src/b.ts",
+]) {
+  each("allow", `archiver / git reader: ${cmd}`, bash(cmd));
+}
 {
   const r = decide(bash('while read f; do cat "$f"; done < list.txt'), {
     env: { ...process.env, ...PROFILES.roots },

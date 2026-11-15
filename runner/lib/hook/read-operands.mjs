@@ -92,6 +92,8 @@ const INTERPRETERS = new Set([
   "source",
   ".",
 ]);
+const TAR_ALIASES = new Set(["bsdtar", "gtar", "star"]);
+const SEVEN_ZIP = new Set(["7z", "7za", "7zr", "7zz"]);
 const LEADING_KEYWORDS = new Set(["!", "then", "do", "else", "elif", "time", "coproc"]);
 const OPENERS = new Set(["if", "while", "until", "case", "select", "{"]);
 const CLOSERS = new Set(["fi", "done", "esac", "}"]);
@@ -548,7 +550,8 @@ class Walk {
 
   // ---- the read operands of one simple command ------------------------------------
   readOperands(eff) {
-    const verb = basename(eff.verb);
+    // Other tar front ends read their operands as tar does.
+    const verb = TAR_ALIASES.has(basename(eff.verb)) ? "tar" : basename(eff.verb);
     const args = eff.rest.slice(1);
     const out = [];
     let follow = false;
@@ -605,6 +608,45 @@ class Walk {
         return { ...sub, placeholder: placeholder || (verb === "parallel" ? "{" : null) };
       }
       return { operands: [], follow, extraCwds, placeholder };
+    }
+    if (verb === "cpio" || verb === "afio") {
+      // `find DIR | cpio -o` archives every name fed on stdin (the xargs case).
+      if (args.some((t) => /^-[A-Za-z]*[op]|^--(?:create|pass-through)$/.test(normalizeVerb(t)))) {
+        this.stdinReader = true;
+      }
+      return { operands: out, follow, extraCwds, placeholder };
+    }
+    if (verb === "pax") {
+      // `pax -w DIR` writes an archive of DIR to stdout; with no operand it reads names
+      // from stdin.
+      const write = args.some((t) => /^-[A-Za-z]*w/.test(normalizeVerb(t)));
+      plain(args, ["-f", "-s", "-x", "-b", "-o", "-B", "-G", "-T", "-U", "-p"]);
+      if (write && out.length === 0) this.stdinReader = true;
+      return { operands: out, follow: args.some((t) => /^-[A-Za-z]*[LH]/.test(normalizeVerb(t))), extraCwds, placeholder };
+    }
+    if (SEVEN_ZIP.has(verb)) {
+      // `7z a ARCHIVE FILES...`: the files after the archive are read (`-i@list`, `@list`
+      // read a list file; it and every operand are judged).
+      const ops = args.filter((t) => !normalizeVerb(t).startsWith("-"));
+      out.push(...ops.slice(2).map((t) => t.replace(/^(['"]?)@/, "$1")));
+      for (const t of args) {
+        const m = /^(['"]?)-[ix]!?(?:r[-0]?)?@(.+)$/.exec(t);
+        if (m) out.push(m[1] + m[2]);
+      }
+      return { operands: out, follow, extraCwds, placeholder };
+    }
+    if (verb === "git" && args.some((t) => normalizeVerb(t) === "--no-index")) {
+      // `git grep --no-index PATTERN PATH...` / `git diff --no-index A B` read any file.
+      let k = 0;
+      while (k < args.length && normalizeVerb(args[k]).startsWith("-")) k += /^-[Cc]$/.test(normalizeVerb(args[k])) ? 2 : 1;
+      const sub = normalizeVerb(args[k] ?? "");
+      const ops = args.slice(k + 1).filter((t) => !normalizeVerb(t).startsWith("-"));
+      if (sub === "grep") {
+        const explicit = args.some((t) => /^-[ef]$|^--(?:regexp|file)(?:=|$)/.test(normalizeVerb(t)));
+        out.push(...(explicit ? ops : ops.slice(1)));
+        if (!ops.slice(explicit ? 0 : 1).length) out.push(".");
+      } else if (sub === "diff") out.push(...ops);
+      return { operands: out, follow, extraCwds, placeholder };
     }
     if (verb === "dd") {
       for (const t of args)
@@ -979,7 +1021,7 @@ export function expandedReadReason(cmd, roots) {
     for (const { abs, raw } of walk.dirWords) {
       const s = sensitiveDirReason(abs);
       if (s)
-        return `file names fed to a reader through xargs come from ${s} (word ${raw.slice(0, 60)}); ${NAME_THE_FILE}`;
+        return `file names fed on stdin to a reader (xargs, cpio, pax) come from ${s} (word ${raw.slice(0, 60)}); ${NAME_THE_FILE}`;
     }
   }
   return null;

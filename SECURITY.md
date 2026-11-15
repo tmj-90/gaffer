@@ -216,7 +216,11 @@ and a timeout. "The safety hook" means an entry that runs it: its command is exa
 `node <runner>/safety-hook.mjs` (or the hook path alone) as one plain command, and the
 entry holds no key the rule does not know. A custom template whose entry only names the
 hook path (in a comment, behind `||`, with `; true` after it, in the background, as an
-argument to something else) or marks it `"async"` is refused at launch.
+argument to something else) or marks it `"async"` is refused at launch. So is a template that sets
+`"disableAllHooks"` to anything but false or sets `"allowManagedHooksOnly"`. The shipped template
+sets `"disableAllHooks": false`: project settings take precedence over the user's, so a `true` in
+`~/.claude/settings.json` cannot switch the hook off (managed settings still can). `"onFailure"`
+needs Claude Code 2.1.295 or later; an older version runs the tool when the hook times out or crashes.
 
 Untrusted ticket fields the agent reads through `get_ticket` (title, description,
 criterion text, review feedback, and the title, question and answer of each resolved

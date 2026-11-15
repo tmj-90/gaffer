@@ -202,9 +202,11 @@ describe("web: chart marks have their own tokens", () => {
       ["components.css", ".chart-bar.is-today", /fill:\s*var\(--viz-accent\)/],
       ["components.css", ".chart-bar.is-zero", /fill:\s*var\(--viz-muted\)/],
       ["components.css", ".chart .cg", /stroke:\s*var\(--viz-grid\)/],
-      ["views/health.css", ".physio-board .kpi-spark", /color:\s*var\(--viz-mark\)/],
-      ["views/health.css", ".df-bar i", /background:\s*var\(--viz-mark\)/],
-      ["views/health.css", ".health-spark", /color:\s*var\(--viz-mark\)/],
+      // Health's ROI sparklines (categories drawn as time) and bar rows are gone (V1);
+      // its diverging lane bar takes the two opposite marks.
+      ["views/health.css", ".dv-left i", /background:\s*var\(--viz-accent\)/],
+      ["views/health.css", ".dv-right i", /background:\s*var\(--viz-mark\)/],
+      ["components.css", ".seg-3", /background:\s*var\(--viz-part-3\)/],
       ["views/overview.css", ".wage-chart .bar", /fill:\s*var\(--viz-mark\)/],
       ["views/overview.css", ".wage-chart .bar-today", /fill:\s*var\(--viz-accent\)/],
       ["views/overview.css", ".kb-1", /background:\s*var\(--viz-accent\)/],

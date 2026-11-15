@@ -1,44 +1,50 @@
 // View: Health / ROI.
-// Moved verbatim from app.js (the entry); the module map is in app.js.
+// The quality story first: the four measures are the scoreboard (one measure tile each,
+// over the window the Referee's record select sets), what is behind them under it, then
+// the comparison tables (routing, lanes, scout), the physio's flow panels and the deep
+// reads. The module map is in app.js.
 
 import { api } from "../api.js";
-import { svgSpark } from "../charts.js";
 import {
   dataTable,
   emptyState,
-  kpiCard,
   measureTile,
   meterRow,
   panelHead,
   segBar,
+  statCell,
   viewHead,
 } from "../components.js";
 import { el } from "../dom.js";
-import { fmtDuration, fmtTime, money, plural } from "../format.js";
-import { icon } from "../icons.js";
+import { fmtDuration, fmtTime, money, pct, plural } from "../format.js";
+import { glyph, icon } from "../icons.js";
 import { hlWork } from "../matchday.js";
 import { waitingNote } from "../panels.js";
 import { fitnessRoomPanels } from "./fitness.js";
 
 // --- Health / ROI view ------------------------------------------------------
 
-/** One labelled figure in the recall-effectiveness panel. */
-function recallStat(label, value) {
-  return el("div", { class: "recall-stat" }, [
-    el("span", { class: "recall-stat-val tabnum" }, value),
-    el("span", { class: "recall-stat-label" }, label),
-  ]);
-}
+const DAY = 86_400_000;
+/** The windows the Referee's record offers; the four measures follow the same one. */
+const WINDOWS = [7, 30, 90, 365];
+/** The window shown: kept for this page's life, so a repaint keeps the viewer's choice. */
+let windowDays = 30;
+/** Below this n a rate reads as counts, greyed, with no delta (routing_scorecard.min_n). */
+const MIN_N = 10;
 
-/** A generic name · value · progress-bar row (reused for kinds + skills). */
-function healthBarRow(name, valueText, ratio, tone) {
-  const pct = Math.max(2, Math.min(100, (Number.isFinite(ratio) ? ratio : 0) * 100));
-  return el("div", { class: `hrow tone-${tone || "accent"}` }, [
-    el("span", { class: "hrow-name", title: name }, name),
-    el("span", { class: "hrow-val tabnum" }, valueText),
-    el("span", { class: "df-bar" }, el("i", { style: `width:${pct}%` })),
-  ]);
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+/** A UTC date as "24 Aug" (the server's weeks and months are UTC buckets). */
+function utcDay(ms) {
+  const d = new Date(ms);
+  return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}`;
 }
+/** A UTC month as "Oct 2026". */
+function utcMonth(ms) {
+  const d = new Date(ms);
+  return `${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
+}
+const weekT = (b) => Date.parse(`${b.start}T00:00:00Z`);
+const monthT = (b) => Date.parse(`${b.month}-01T00:00:00Z`);
 
 /**
  * The Health banner for a usage-window pause (/api/health `usage_pause`, read from
@@ -80,138 +86,601 @@ function usagePauseNote(p) {
   );
 }
 
-/**
- * The four top-level measures every feature must move (Release A metrics): first-pass
- * acceptance, human review time (the median per accepted ticket), accepted-change cost
- * and the escaped-defect rate. Each reads a server figure as served (null shows a dash,
- * never a zero) with the sentence that says what it counts; the escaped-defect rate
- * counts only the regression links a person filed, and says so.
- */
-/**
- * The active (approximate) review time beside the basis note: the last open in a round to
- * the decision, capped, labelled as an approximation. Empty when the server has none.
- */
-function activeNote(a) {
-  if (!a || !a.per_accepted_ticket || a.per_accepted_ticket.median_ms == null) return "";
-  return ` Active, approximate: median ${fmtDuration(a.per_accepted_ticket.median_ms)} per accepted ticket (last open to decision, capped at ${fmtDuration(a.cap_ms)}).`;
+/** A served history as sparkline points: {t, v} per bucket, null where it has no value. */
+function history(buckets, timeOf, valueOf) {
+  if (!Array.isArray(buckets)) return undefined;
+  const pts = buckets
+    .map((b) => {
+      const t = timeOf(b);
+      const v = valueOf(b);
+      return Number.isFinite(t)
+        ? { t, v: typeof v === "number" && Number.isFinite(v) ? v : null }
+        : null;
+    })
+    .filter(Boolean);
+  return pts.length ? pts : undefined;
 }
 
-function fourMeasures(health) {
-  const fp = health.first_pass || null;
-  const rt = health.review_time || null;
-  const ac = health.accepted_change || null;
-  const esc = health.escaped_defects || null;
-  const pct = (v) => (typeof v === "number" ? `${v}%` : "—");
-  const per = rt && rt.per_accepted_ticket ? rt.per_accepted_ticket : null;
-  const cell = (label, value, note) =>
-    el("div", {}, [el("dt", {}, label), el("dd", {}, [value, el("small", {}, note)])]);
-  const fpNote = !fp
-    ? "not served by this server"
-    : fp.done
-      ? `${fp.first_pass} of ${fp.done} done with no send-back after review · human-approved ${pct(fp.by_approver?.human?.rate_pct)} of ${fp.by_approver?.human?.done ?? 0}, agent-approved ${pct(fp.by_approver?.agent?.rate_pct)} of ${fp.by_approver?.agent?.done ?? 0}`
-      : "nothing has been accepted yet";
-  const rtNote = !rt
-    ? "not served by this server"
-    : per && per.n
-      ? `median of ${per.n} accepted · p75 ${fmtDuration(per.p75_ms)} · p90 ${fmtDuration(per.p90_ms)}. ${rt.basis_note || ""}${activeNote(rt.active)}`
-      : rt.basis_note || "no accepted ticket has a human review decision yet";
-  const acNote =
-    ac && ac.cost_per_accepted_change_usd != null
-      ? `every attempt counted${ac.attempts_per_accepted_change != null ? ` · ${ac.attempts_per_accepted_change} attempts each` : ""}`
-      : "nothing has been accepted yet";
-  return el("section", { class: "card panel measures-panel", "aria-label": "The four measures" }, [
-    panelHead("The four measures", "what every feature has to move", null, { kit: "ink" }),
-    el("dl", { class: "measures-facts" }, [
-      cell("First-pass acceptance", fp ? pct(fp.rate_pct) : "—", fpNote),
-      cell(
-        "Human review time",
-        per && per.median_ms != null ? fmtDuration(per.median_ms) : "—",
-        rtNote,
-      ),
-      cell(
-        "Accepted-change cost",
-        ac && ac.cost_per_accepted_change_usd != null
-          ? money(ac.cost_per_accepted_change_usd)
-          : "—",
-        acNote,
-      ),
-      cell(
-        "Escaped-defect rate",
-        !esc
-          ? "—"
-          : esc.recorded && typeof esc.rate_pct === "number"
-            ? `${esc.rate_pct}%`
-            : esc.recorded
-              ? "—"
-              : "Not recorded yet",
-        !esc
-          ? "not served by this server"
-          : esc.recorded
-            ? `${esc.escaped ?? 0} of ${esc.accepted_changes ?? 0} accepted in the last ${esc.window_days ?? 30} days linked to a later regression · ${esc.all_time && typeof esc.all_time.rate_pct === "number" ? `${esc.all_time.rate_pct}%` : "—"} all time. ${esc.note || ""}`
-            : (esc.note || "").replace(/^Not recorded yet:\s*/, ""),
-      ),
+/** A disclosure for the long words (A-54): a short summary line, the detail inside. */
+function more(summary, body, cls) {
+  return el("details", { class: cls ? `hx-more ${cls}` : "hx-more" }, [
+    el("summary", {}, summary),
+    ...[].concat(body),
+  ]);
+}
+
+/**
+ * The sparkline of a tile names its grid as UTC (the server buckets weeks from Monday
+ * 00:00 UTC and months as UTC months): in its accessible name and its title.
+ */
+function utcSpark(tile, unit) {
+  const s = tile.querySelector(".spark");
+  if (!s) return tile;
+  const said = s.getAttribute("aria-label") || "";
+  s.setAttribute("aria-label", said.replace(` ${unit},`, ` UTC ${unit},`));
+  const box = tile.querySelector(".mt-spark");
+  if (box)
+    box.title =
+      unit === "weeks"
+        ? "By UTC week (from Monday 00:00 UTC); the last week is still running."
+        : "By UTC month; the last month is still running.";
+  return tile;
+}
+
+/** Why a tile shows no change: too few in either period, or nothing before. */
+function noDeltaWhy(n, prevN, prevLabel) {
+  if (typeof prevN !== "number") return "";
+  if (prevN === 0) return ` No change shown: nothing in ${prevLabel}.`;
+  if (prevN < MIN_N || (typeof n === "number" && n < MIN_N))
+    return ` No change shown: under ${MIN_N} in one of the two periods.`;
+  return "";
+}
+
+/** The board's period words: "last 30 days". */
+const periodOf = (wd) => (wd ? `last ${wd} days` : "all time");
+const beforeOf = (wd) => (wd ? `the ${wd} days before` : "the period before");
+
+/** First-pass acceptance: k of n with no send-back, the strict rate in its note. */
+function firstPassTile(fp, wd) {
+  const label = "First-pass acceptance";
+  if (!fp) return measureTile({ label, value: null, note: "Not served by this server." });
+  const prev = fp.previous || null;
+  const strict = fp.strict || null;
+  const notes = [];
+  if (fp.done && strict && typeof strict.first_pass === "number")
+    notes.push(
+      `${pct(strict.rate_pct)} counting the runner's own retries (${strict.first_pass} of ${fp.done}).`,
+    );
+  const h = fp.by_approver?.human;
+  const a = fp.by_approver?.agent;
+  if (fp.done && h && a)
+    notes.push(
+      `Approved by a person: ${h.first_pass} of ${h.done}; by an agent: ${a.first_pass} of ${a.done}.`,
+    );
+  const why = fp.done ? noDeltaWhy(fp.done, prev?.done, beforeOf(wd)) : "";
+  return utcSpark(
+    measureTile({
+      label,
+      k: fp.first_pass ?? 0,
+      n: fp.done ?? 0,
+      nLabel: "with no send-back",
+      period: periodOf(fp.window_days ?? wd),
+      delta: prev
+        ? { prev: prev.rate_pct, prevN: prev.done, goodWhen: "up", label: beforeOf(wd) }
+        : null,
+      series: history(fp.by_week, weekT, (b) => b.rate_pct),
+      note: fp.done ? `${notes.join(" ")}${why}`.trim() : "Nothing was accepted in this window.",
+      definition:
+        "Of the tickets accepted (moved to done) in the window, how many went through with no send-back after review and were never reopened. The strict rate also counts the runner's own retries after a failed gate.",
+      cls: "mt-first-pass",
+    }),
+    "weeks",
+  );
+}
+
+/** Human review time: the median per accepted ticket, p75 and p90 in its note. */
+function reviewTimeTile(rt, wd) {
+  const label = "Human review time";
+  if (!rt) return measureTile({ label, value: null, note: "Not served by this server." });
+  const per = rt.per_accepted_ticket || {};
+  const prev = rt.previous?.per_accepted_ticket || null;
+  const has = per.median_ms != null;
+  const why = has ? noDeltaWhy(per.n, prev?.n, beforeOf(wd)) : "";
+  return utcSpark(
+    measureTile({
+      label,
+      value: has ? per.median_ms : null,
+      format: fmtDuration,
+      n: has ? per.n : undefined,
+      period: periodOf(rt.window_days ?? wd),
+      delta: prev
+        ? { prev: prev.median_ms, prevN: prev.n, goodWhen: "down", label: beforeOf(wd) }
+        : null,
+      series: history(rt.by_week, weekT, (b) => b.median_ms),
+      note: has
+        ? `Median per accepted ticket; p75 ${fmtDuration(per.p75_ms)}, p90 ${fmtDuration(per.p90_ms)}.${why}`
+        : rt.basis_note || "No accepted ticket has a human review decision in this window.",
+      definition:
+        `${rt.basis_note || ""} All of a ticket's human review rounds are summed and counted at its last human decision.`.trim(),
+      cls: "mt-review-time",
+    }),
+    "weeks",
+  );
+}
+
+/** Accepted-change cost: every attempt's spend over the changes accepted. */
+function acceptedCostTile(ac, wd) {
+  const label = "Accepted-change cost";
+  if (!ac) return measureTile({ label, value: null, note: "Not served by this server." });
+  const prev = ac.previous || null;
+  const has = typeof ac.cost_per_accepted_change_usd === "number";
+  const notes = [];
+  if (has && ac.attempts_per_accepted_change != null)
+    notes.push(`${ac.attempts_per_accepted_change} attempts per accepted change.`);
+  if (typeof ac.unattributed_usd === "number" && ac.unattributed_usd > 0)
+    notes.push(`${money(ac.unattributed_usd)} of spend no ticket claims is not in the price.`);
+  const why = has ? noDeltaWhy(ac.accepted_changes, prev?.accepted_changes, beforeOf(wd)) : "";
+  return utcSpark(
+    measureTile({
+      label,
+      value: has ? ac.cost_per_accepted_change_usd : null,
+      format: money,
+      n: has ? ac.accepted_changes : undefined,
+      period: periodOf(ac.window_days ?? wd),
+      delta: prev
+        ? {
+            prev: prev.cost_per_accepted_change_usd,
+            prevN: prev.accepted_changes,
+            goodWhen: "down",
+            label: beforeOf(wd),
+          }
+        : null,
+      series: history(ac.by_week, weekT, (b) => b.cost_per_accepted_change_usd),
+      note: has ? `${notes.join(" ")}${why}`.trim() : "Nothing was accepted in this window.",
+      definition:
+        "Every attempt's spend on the tickets whose outcome settled in the window (accepted, parked, failed or abandoned), over the changes accepted: failed work is part of the price. Each ticket counts where its outcome last settled; work still in flight is in no period.",
+      cls: "mt-accepted-cost",
+    }),
+    "weeks",
+  );
+}
+
+/** Escaped-defect rate: the regression links a person filed, the upper bound at zero. */
+function escapedTile(esc, wd) {
+  const label = "Escaped-defect rate";
+  if (!esc) return measureTile({ label, value: null, note: "Not served by this server." });
+  if (!esc.recorded)
+    return measureTile({
+      label,
+      value: null,
+      note: `Not recorded yet: ${(esc.note || "").replace(/^Not recorded yet:\s*/, "")}`,
+    });
+  const prev = esc.previous || null;
+  const n = esc.accepted_changes ?? 0;
+  const k = esc.escaped ?? 0;
+  const months = Array.isArray(esc.by_month) ? esc.by_month : [];
+  const maturing = months
+    .filter((m) => m.maturing && m.accepted > 0)
+    .map((m) => utcMonth(monthT(m)));
+  const notes = [];
+  if (n && typeof esc.upper_95_pct === "number")
+    notes.push(
+      k === 0
+        ? `None filed, but it could be up to ${pct(esc.upper_95_pct)} (the 95% upper bound).`
+        : `It could be up to ${pct(esc.upper_95_pct)} (the 95% upper bound).`,
+    );
+  const at = esc.all_time;
+  if (at && at.accepted_changes > 0 && typeof at.rate_pct === "number")
+    notes.push(`All time: ${pct(at.rate_pct)} (${at.escaped} of ${at.accepted_changes}).`);
+  if (maturing.length)
+    notes.push(
+      `Still maturing: ${maturing.join(" and ")} (accepted under ${esc.maturing_days ?? 30} days ago, so defects may still surface).`,
+    );
+  const why = n ? noDeltaWhy(n, prev?.accepted_changes, beforeOf(wd)) : "";
+  return utcSpark(
+    measureTile({
+      label,
+      k,
+      n,
+      nLabel: "came back as a regression",
+      period: periodOf(esc.window_days ?? wd),
+      delta: prev
+        ? {
+            prev: prev.rate_pct,
+            prevN: prev.accepted_changes,
+            goodWhen: "down",
+            label: beforeOf(wd),
+          }
+        : null,
+      series: history(months, monthT, (b) => b.rate_pct),
+      note: n ? `${notes.join(" ")}${why}`.trim() : "Nothing was accepted in this window.",
+      definition:
+        `${esc.note || ""} A change accepted recently has had less time for a defect to surface.`.trim(),
+      cls: "mt-escaped",
+    }),
+    "months",
+  );
+}
+
+/** The four measures, as the board's tiles, all the same size. */
+function measureTiles(h, wd) {
+  return [
+    firstPassTile(h.first_pass || null, wd),
+    reviewTimeTile(h.review_time || null, wd),
+    acceptedCostTile(h.accepted_change || null, wd),
+    escapedTile(h.escaped_defects || null, wd),
+  ];
+}
+
+// --- behind the four measures (the detail under the board) --------------------
+
+/** A served weekly history as a small table: the sparkline's table twin, UTC weeks. */
+function weekTable(buckets, caption, columns) {
+  if (!Array.isArray(buckets) || !buckets.length) return null;
+  return more(
+    "Week by week (UTC weeks)",
+    dataTable({
+      caption,
+      columns: [
+        {
+          key: "start",
+          label: "Week of (UTC)",
+          format: (v, r) =>
+            `${utcDay(Date.parse(`${v}T00:00:00Z`))}${r.partial ? " (so far)" : ""}`,
+        },
+        ...columns,
+      ],
+      rows: buckets.slice().reverse(),
+      stackOnPhone: true,
+    }),
+  );
+}
+
+/** A rate cell: counts always; the rate greyed and plain counts under MIN_N. */
+function rateText(k, n) {
+  if (!n) return null;
+  return n < MIN_N
+    ? el("span", { class: "rt-few", title: `Only ${n}: too few to read as a rate` }, `${k} of ${n}`)
+    : `${pct((k / n) * 100)} · ${k} of ${n}`;
+}
+
+function firstPassDetail(fp) {
+  if (!fp) return null;
+  const ap = fp.by_approver || {};
+  const rows = [
+    ["A person", ap.human],
+    ["An agent", ap.agent],
+    ["The system", ap.system],
+  ]
+    .filter(([, x]) => x && x.done)
+    .map(([who, x]) => ({ who, done: x.done, rate: x }));
+  return el("div", { class: "md-col" }, [
+    panelHead("First-pass acceptance", "by who approved", null, { level: 3 }),
+    rows.length
+      ? dataTable({
+          caption: "First-pass acceptance by approver",
+          stackOnPhone: true,
+          columns: [
+            { key: "who", label: "Approved by" },
+            { key: "done", label: "Accepted", numeric: true },
+            {
+              key: "rate",
+              label: "First pass",
+              numeric: true,
+              format: (x) => rateText(x.first_pass, x.done),
+            },
+          ],
+          rows,
+        })
+      : emptyState("Nothing accepted in this window.", null, null, null, { inline: true }),
+    weekTable(fp.by_week, "First-pass acceptance by UTC week", [
+      { key: "done", label: "Accepted", numeric: true },
+      {
+        key: "first_pass",
+        label: "First pass",
+        numeric: true,
+        format: (v, r) => rateText(v, r.done),
+        missing: "nothing accepted that week",
+      },
     ]),
-    // ADAPTIVE TESTER LANE: where the independent tester is off and why (the server's
-    // one-line notice per repository with no registered test command).
-    // LANE-SETTING CONSISTENCY: the runner's recorded lane differs from this dashboard's
-    // (the server puts that notice first); said as a warning, not a dim note.
-    ...(health.tester_lane && Array.isArray(health.tester_lane.notices)
-      ? health.tester_lane.notices.map((n, i) =>
+  ]);
+}
+
+function reviewTimeDetail(rt) {
+  if (!rt) return null;
+  const span = (label, x, missing) => ({
+    label,
+    median: x?.median_ms ?? null,
+    p75: x?.p75_ms ?? null,
+    p90: x?.p90_ms ?? null,
+    n: x?.n ?? null,
+    missing,
+  });
+  const rows = [
+    span("Per accepted ticket", rt.per_accepted_ticket),
+    span("Waiting to be opened", rt.queue_wait),
+    span("Open to decision", rt.decision),
+    span("Ready to decision (clock time)", rt.review_ready_to_decision),
+    span("Active, approximate", rt.active?.per_accepted_ticket),
+  ].filter((r) => r.n);
+  const dur = (v) => (v == null ? null : fmtDuration(v));
+  const raw = rt.approved_without_raw_logs;
+  return el("div", { class: "md-col" }, [
+    panelHead("Human review time", "where the time went", null, { level: 3 }),
+    rows.length
+      ? dataTable({
+          caption: "Review time: waiting to be opened against deciding",
+          stackOnPhone: true,
+          columns: [
+            { key: "label", label: "Span" },
+            { key: "median", label: "Median", numeric: true, format: dur },
+            { key: "p75", label: "p75", numeric: true, format: dur },
+            { key: "p90", label: "p90", numeric: true, format: dur },
+            { key: "n", label: "n", numeric: true },
+          ],
+          rows,
+        })
+      : emptyState("No human review decision in this window.", null, null, null, { inline: true }),
+    raw && raw.instrumented
+      ? el(
+          "p",
+          { class: "md-note" },
+          `Approved without opening the raw logs: ${raw.count} of ${raw.instrumented} recorded approvals.`,
+        )
+      : null,
+    rt.active?.note
+      ? more("What active time means", el("p", { class: "md-note" }, rt.active.note))
+      : null,
+    weekTable(rt.by_week, "Median review time by UTC week", [
+      { key: "n", label: "Accepted", numeric: true },
+      {
+        key: "median_ms",
+        label: "Median",
+        numeric: true,
+        format: (v) => (v == null ? null : fmtDuration(v)),
+        missing: "no decision that week",
+      },
+    ]),
+  ]);
+}
+
+function acceptedCostDetail(ac) {
+  if (!ac) return null;
+  const bo = ac.by_outcome || {};
+  const parts = [
+    ["Accepted", bo.accepted],
+    ["In flight", bo.in_flight],
+    ["Parked or failed", bo.parked_or_failed],
+    ["Abandoned", bo.abandoned],
+  ].map(([label, x]) => ({ label, usd: x?.spend_usd ?? 0, tickets: x?.tickets ?? 0 }));
+  const total = parts.reduce((a, p) => a + p.usd, 0);
+  return el("div", { class: "md-col" }, [
+    panelHead("Accepted-change cost", "where the spend went", null, { level: 3 }),
+    total > 0
+      ? el("div", { class: "md-spend" }, [
+          segBar(
+            parts.map((p) => ({ label: p.label, value: Math.round(p.usd * 100) / 100 })),
+            { label: "Spend by how each ticket ended, in dollars", legend: false },
+          ),
+          el(
+            "ul",
+            { class: "seg-legend md-legend" },
+            parts.map((p, i) =>
+              el("li", {}, [
+                el("span", { class: `seg-key seg-${i + 1}` }),
+                `${p.label} `,
+                el("b", {}, money(p.usd)),
+                ` (${plural(p.tickets, "ticket")})`,
+              ]),
+            ),
+          ),
+        ])
+      : emptyState("No spend on a settled ticket in this window.", null, null, null, {
+          inline: true,
+        }),
+    typeof ac.accepted_only_cost_per_change_usd === "number"
+      ? el(
+          "p",
+          { class: "md-note" },
+          `For reference: ${money(ac.accepted_only_cost_per_change_usd)} per change counting the accepted tickets' own spend only (failed and abandoned work left out).`,
+        )
+      : null,
+    typeof ac.unattributed_usd === "number"
+      ? el(
+          "p",
+          { class: "md-note" },
+          `${money(ac.unattributed_usd)} of spend in the window has no ticket and is not in either price.`,
+        )
+      : null,
+    weekTable(ac.by_week, "Accepted-change cost by UTC week", [
+      { key: "accepted", label: "Accepted", numeric: true },
+      { key: "spend_usd", label: "Spend", numeric: true, format: money },
+      {
+        key: "cost_per_accepted_change_usd",
+        label: "Per change",
+        numeric: true,
+        format: (v) => (v == null ? null : money(v)),
+        missing: "nothing accepted that week",
+      },
+    ]),
+  ]);
+}
+
+function escapedDetail(esc) {
+  if (!esc || !esc.recorded) return null;
+  const months = Array.isArray(esc.by_month) ? esc.by_month : [];
+  return el("div", { class: "md-col" }, [
+    panelHead("Escaped-defect rate", "by the month a change was accepted", null, { level: 3 }),
+    months.length
+      ? dataTable({
+          caption: "Escaped defects by UTC month of acceptance",
+          stackOnPhone: true,
+          columns: [
+            {
+              key: "month",
+              label: "Month (UTC)",
+              // A cohort accepted under maturing_days ago is marked: defects may still surface.
+              format: (v, r) =>
+                el("span", {}, [
+                  `${utcMonth(monthT(r))}${r.partial ? " (so far)" : ""}`,
+                  r.maturing && r.accepted
+                    ? el("span", { class: "md-maturing" }, " still maturing")
+                    : null,
+                ]),
+            },
+            { key: "accepted", label: "Accepted", numeric: true },
+            {
+              key: "escaped",
+              label: "Escaped",
+              numeric: true,
+              format: (v, r) => rateText(v, r.accepted),
+              missing: "nothing accepted that month",
+            },
+          ],
+          rows: months.slice().reverse(),
+        })
+      : null,
+    Array.isArray(esc.limits) && esc.limits.length
+      ? more(
+          "What it leaves out",
+          el(
+            "ul",
+            { class: "md-limits" },
+            esc.limits.map((x) => el("li", {}, x)),
+          ),
+        )
+      : null,
+  ]);
+}
+
+/**
+ * What is behind the four measures: who approved, where review time went, where the
+ * spend went (the accepted-only price for reference), the monthly cohorts with the
+ * maturing ones marked, and each history as a table. Plus the tester lane notices.
+ */
+function measuresDetail(h) {
+  const notices =
+    h.tester_lane && Array.isArray(h.tester_lane.notices)
+      ? h.tester_lane.notices.map((n, i) =>
           el(
             "p",
             {
               class:
-                i === 0 && health.tester_lane.runner_differs
+                i === 0 && h.tester_lane.runner_differs
                   ? "measures-notice warn-text"
                   : "measures-notice dim",
             },
             n,
           ),
         )
-      : []),
+      : [];
+  return el(
+    "section",
+    { class: "card panel measures-detail", "aria-label": "Behind the four measures" },
+    [
+      panelHead("Behind the four measures", null, null, { level: 2 }),
+      ...notices,
+      el(
+        "div",
+        { class: "md-grid" },
+        [
+          firstPassDetail(h.first_pass || null),
+          reviewTimeDetail(h.review_time || null),
+          acceptedCostDetail(h.accepted_change || null),
+          escapedDetail(h.escaped_defects || null),
+        ].filter(Boolean),
+      ),
+    ],
+  );
+}
+
+// --- the comparison tables ------------------------------------------------------
+
+/** What each lane's verdicts did against the person: a diverging bar about a midline. */
+function differedBar(l, max) {
+  const a = l.differed_lane_blocked || 0;
+  const b = l.differed_lane_passed || 0;
+  const said = `Differed from the person ${l.differed} of ${l.compared}: ${a} it blocked and the person passed, ${b} it passed and the person sent back`;
+  const side = (v, cls) =>
+    el(
+      "span",
+      { class: `dv-side ${cls}` },
+      v > 0 ? el("i", { style: `width:${((v / max) * 100).toFixed(1)}%` }) : null,
+    );
+  return el("span", { class: "dv", role: "img", "aria-label": said, title: said }, [
+    el("span", { class: "dv-n" }, String(a)),
+    side(a, "dv-left"),
+    side(b, "dv-right"),
+    el("span", { class: "dv-n" }, String(b)),
+    el("span", { class: "dv-of" }, `${l.differed} of ${l.compared}`),
   ]);
 }
 
 /**
- * WHAT EACH LANE CHANGED (D1): per judging lane, how often its verdict differed from the
- * person's decision on the same attempt, how often it was the only lane on a send-back,
- * and its ledger cost per attempt; "no verdicts recorded" where a lane has none. Counts
- * only: the footnote says nothing here recommends switching a lane off, and that a safety
- * lane is never switched off by telemetry. Null when the server does not serve it.
+ * WHAT EACH LANE CHANGED (D1, F-C2): one row per lane that recorded verdicts (verdicts,
+ * attempts a person also decided, a diverging bar of how it differed, send-backs only it
+ * asked for, cost per attempt; the eval judge's blind decisions); lanes with no verdicts
+ * on one muted line. Counts only: nothing here recommends switching a lane off.
  */
 function laneValueCard(health) {
   const lv = health.lane_value || null;
   if (!lv || !Array.isArray(lv.lanes)) return null;
-  const line = (l) => {
-    if (l.note)
-      return el("li", { dataset: { lane: l.lane } }, [
-        el("strong", {}, l.label),
-        el("span", { class: "dim" }, ` ${l.note}`),
-      ]);
-    // BLINDING: the eval judge's comparisons, split by whether the person had opened its
-    // view before deciding. Only the blind ones are independent of the grade.
-    const b = l.blinding;
-    const facts = [
-      `${plural(l.verdicts_recorded, "verdict")}`,
-      l.compared
-        ? `differed from the person ${l.differed} of ${l.compared} (${l.differed_lane_blocked} it blocked and the person passed, ${l.differed_lane_passed} it passed and the person sent back)`
-        : "no attempt a person also decided",
-      ...(b && l.compared
-        ? [
-            `blind decisions: differed ${b.blind.differed} of ${b.blind.compared}; after the judge's view was opened: ${b.revealed.differed} of ${b.revealed.compared} (the grade may have swayed those)`,
-          ]
-        : []),
-      `only lane on ${plural(l.unique_catches, "send-back")}`,
-      l.cost_per_attempt_usd == null
-        ? "no ledger spend of its own"
-        : `${money(l.cost_per_attempt_usd)} per attempt over ${plural(l.ledger_attempts, "ledger attempt")}`,
-    ];
-    return el("li", { dataset: { lane: l.lane } }, [
-      el("strong", {}, l.label),
-      l.safety ? el("span", { class: "lane-value-safety" }, " safety lane") : null,
-      el("span", {}, ` ${facts.join(" · ")}`),
-    ]);
-  };
+  const judged = lv.lanes.filter((l) => !l.note);
+  const quiet = lv.lanes.filter((l) => l.note);
+  const max = Math.max(
+    1,
+    ...judged.map((l) => Math.max(l.differed_lane_blocked || 0, l.differed_lane_passed || 0)),
+  );
+  const anyBlind = judged.some((l) => l.blinding);
+  const columns = [
+    {
+      key: "label",
+      label: "Lane",
+      format: (v, l) =>
+        l.safety
+          ? el("span", {}, [v, el("span", { class: "lane-value-safety" }, " safety lane")])
+          : v,
+    },
+    { key: "verdicts_recorded", label: "Verdicts", numeric: true },
+    { key: "compared", label: "A person decided too", numeric: true },
+    {
+      key: "differed",
+      label: "Differed: it blocked | it passed",
+      format: (v, l) => (l.compared ? differedBar(l, max) : null),
+      missing: "no attempt a person also decided",
+    },
+    ...(anyBlind
+      ? [
+          {
+            key: "blinding",
+            label: "Blind decisions differed",
+            numeric: true,
+            format: (b, l) =>
+              b && l.compared
+                ? el(
+                    "span",
+                    {
+                      title: `After the judge's view was opened: ${b.revealed.differed} of ${b.revealed.compared} (the grade may have swayed those)`,
+                    },
+                    `${b.blind.differed} of ${b.blind.compared}`,
+                  )
+                : null,
+            missing: "not split: only the eval judge's view can be opened before deciding",
+          },
+        ]
+      : []),
+    { key: "unique_catches", label: "Only lane on a send-back", numeric: true },
+    {
+      key: "cost_per_attempt_usd",
+      label: "Cost per attempt",
+      numeric: true,
+      format: (v, l) =>
+        v == null
+          ? null
+          : el("span", { title: `over ${plural(l.ledger_attempts, "ledger attempt")}` }, money(v)),
+      missing: "no ledger spend of its own",
+    },
+  ];
   return el(
     "section",
     { class: "card panel lane-value-panel", "aria-label": "What each lane changed" },
@@ -220,14 +689,39 @@ function laneValueCard(health) {
         "What each lane changed",
         `${plural(lv.attempts, "attempt")} · ${lv.attempts_with_person_decision} decided by a person`,
         null,
-        { kit: "ink" },
+        { level: 2 },
       ),
-      el("ul", { class: "lane-value-list" }, lv.lanes.map(line)),
+      judged.length
+        ? dataTable({
+            columns,
+            rows: judged,
+            caption:
+              "Each lane's verdicts against the person's decision on the same attempt. The bar's left side: the lane blocked and the person passed; right: the lane passed and the person sent it back.",
+            cls: "lane-value-table",
+          })
+        : emptyState("No lane has recorded a verdict yet.", null, null, null, { inline: true }),
+      quiet.length
+        ? el(
+            "p",
+            { class: "lane-value-quiet" },
+            `No verdicts recorded: ${quiet.map((l) => `${l.label}${l.safety ? " (safety lane)" : ""}`).join(", ")}.`,
+          )
+        : null,
       el(
         "p",
         { class: "lane-value-foot" },
         `${lv.send_backs_no_lane_caught} of ${plural(lv.send_backs, "send-back")} no lane asked for. ${lv.footnote || ""}`,
       ),
+      Array.isArray(lv.limits) && lv.limits.length
+        ? more(
+            "How these are counted",
+            el(
+              "ul",
+              { class: "md-limits" },
+              lv.limits.map((x) => el("li", {}, x)),
+            ),
+          )
+        : null,
     ],
   );
 }
@@ -340,22 +834,23 @@ function codeIndexCard(health) {
 }
 
 /**
- * PRE-WORK SCOUT (delta gap 3): what the runner's scout gave the delivery attempts (a thin
- * segmented bar: items from the code index, named only, nothing found; risk raised,
- * model scout runs and their cost) and first-pass acceptance split by what it found (a
- * rate row per arm with its count and a Wilson whisker). Counts as served, no
- * recommendation; null when the server sends none.
+ * PRE-WORK SCOUT (delta gap 3, F-C3): what each scouted attempt started with (a thin
+ * segmented bar: items from the code index, named only, nothing found) and first-pass
+ * acceptance by what it found (a rate row per arm with its count and a Wilson whisker;
+ * arms with no done ticket on one muted line). Observational, never a recommendation.
  */
 function scoutCard(health) {
   const sc = health.scout || null;
   if (!sc) return null;
   const fp = sc.first_pass || {};
-  const arm = (k, label) => {
-    const c = fp[k] || { done: 0, first_pass: 0 };
-    const row = meterRow({ name: label, k: c.first_pass, n: c.done, whisker: true });
-    row.dataset.arm = k;
-    return row;
-  };
+  const arms = [
+    ["index_items", "Index added files"],
+    ["named_only", "Named only"],
+    ["nothing_found", "Nothing found"],
+    ["no_record", "Not scouted"],
+  ].map(([k, label]) => ({ k, label, c: fp[k] || { done: 0, first_pass: 0 } }));
+  const withDone = arms.filter((a) => a.c.done > 0);
+  const empty = arms.filter((a) => !(a.c.done > 0));
   const ms = sc.model_scout || { runs: 0 };
   const head = sc.attempts
     ? `${plural(sc.attempts, "delivery attempt")} scouted on ${plural(sc.tickets, "ticket")}. The risk was raised in ${sc.risk_raised}.`
@@ -365,7 +860,7 @@ function scoutCard(health) {
     : "Model scout: no run (the read-only model scout is off by default).";
   return el("section", { class: "card panel scout-panel", "aria-label": "Pre-work scout" }, [
     panelHead("Pre-work scout", "what each delivery started with, and how it went", null, {
-      kit: "ink",
+      level: 2,
     }),
     el("p", { class: "scout-coverage" }, head),
     sc.attempts
@@ -382,86 +877,318 @@ function scoutCard(health) {
     panelHead("First-pass acceptance, by what the scout found", "done tickets", null, {
       level: 3,
     }),
-    el("div", { class: "meter-list scout-first-pass" }, [
-      arm("index_items", "Index added files"),
-      arm("named_only", "Named only"),
-      arm("nothing_found", "Nothing found"),
-      arm("no_record", "Not scouted"),
-    ]),
-    el("p", { class: "lane-value-foot" }, (sc.limits || []).join("; ")),
+    el(
+      "p",
+      { class: "scout-caption" },
+      "Observational: which tickets name code differs, so this is not a controlled experiment.",
+    ),
+    withDone.length
+      ? el(
+          "div",
+          { class: "meter-list scout-first-pass" },
+          withDone.map((a) => {
+            const small = a.c.done < MIN_N;
+            const row = meterRow({
+              name: a.label,
+              k: a.c.first_pass,
+              n: a.c.done,
+              whisker: true,
+              fmt: small ? (k, n) => `${k} of ${n}` : undefined,
+            });
+            row.dataset.arm = a.k;
+            if (small) row.classList.add("is-small");
+            return row;
+          }),
+        )
+      : null,
+    empty.length
+      ? el(
+          "p",
+          { class: "scout-empty" },
+          `No done ticket yet: ${empty.map((a) => a.label).join(", ")}.`,
+        )
+      : null,
+    Array.isArray(sc.limits) && sc.limits.length
+      ? more(
+          "How these are counted",
+          el(
+            "ul",
+            { class: "md-limits" },
+            sc.limits.map((x) => el("li", {}, x)),
+          ),
+        )
+      : null,
   ]);
 }
 
+/** A routing figure ({ value, n }): the value with its n under it; "too few" under min n. */
+function routingRate(r, show) {
+  if (!r) return null;
+  if (r.value === null || r.value === undefined)
+    return el("span", { class: "rt-few" }, `too few (n=${r.n})`);
+  return el("span", { class: "rt" }, [show(r.value), el("small", { class: "rt-n" }, `n ${r.n}`)]);
+}
+
 /**
- * ROUTING SCORECARD (delta gap 4): per provider x model x role x work class, what each
- * routed model did, with n on every figure; a cell under the minimum reads "too few to
- * compare" and shows no rate. Cells come in the server's fixed order, never ranked, and
- * there is no composite score. The one Routing line says whether `wg routing recommend`
- * has an advisory registry change to show; nothing is applied from here. Null when the
- * server sends no scorecard.
+ * ROUTING SCORECARD (delta gap 4, F-C1): per provider x model x role x work class, what
+ * each routed model did, as two tables (the implement role's outcomes; the other roles'
+ * calls and spend), n under every figure, cells under the minimum on one muted line.
+ * Server order, never ranked, no composite score; the definitions behind a disclosure.
  */
 function routingCard(health) {
   const rs = health.routing_scorecard || null;
   if (!rs || !Array.isArray(rs.cells)) return null;
-  const rate = (r, unit) => {
-    if (!r) return "n/a";
-    if (r.value === null || r.value === undefined) return `too few to compare (n=${r.n})`;
-    const v = unit === "$" ? money(r.value) : unit === "%" ? `${r.value}%` : `${r.value}`;
-    return `${v} (n=${r.n})`;
-  };
-  const line = (c) => {
-    const head = `${c.role} · ${c.provider} · ${c.model} · risk ${c.risk} · stack ${c.stack}`;
-    if (c.too_few)
-      return el("li", { dataset: { role: c.role, model: c.model } }, [
-        el("strong", {}, head),
-        el("span", { class: "dim" }, ` n=${c.n} · ${c.note || "too few to compare"}`),
-      ]);
-    const spend = `${money(c.spend_usd || 0)} over ${plural(c.calls, "call")}${c.estimated_rows ? `, ${c.estimated_rows} estimated` : ""}${c.unknown_rows ? `, ${c.unknown_rows} of unknown cost left out` : ""}`;
-    const facts =
-      c.role === "implement"
-        ? [
-            `n=${c.n}`,
-            `submitted ${rate(c.submission_pct, "%")}`,
-            `rework ${rate(c.rework_pct, "%")}`,
-            `first pass ${rate(c.first_pass_pct, "%")}`,
-            `attempts per accepted change ${rate(c.attempts_per_accepted_change, "")}`,
-            `cost per accepted change ${rate(c.cost_per_accepted_change_usd, "$")}${c.cost_unknown_rows ? ` (${plural(c.cost_unknown_rows, "call")} of unknown cost left out)` : ""}`,
-            `escaped ${rate(c.escaped_defect_pct, "%")}`,
-            `tester false greens ${rate(c.tester_false_greens, "")}`,
-            spend,
-          ]
-        : [`n=${c.n}`, spend];
-    return el("li", { dataset: { role: c.role, model: c.model } }, [
-      el("strong", {}, head),
-      el("span", {}, ` ${facts.join(" · ")}`),
+  const providers = new Set(rs.cells.map((c) => c.provider));
+  const who = (c) => (providers.size > 1 ? `${c.provider} ${c.model}` : c.model);
+  // Spend with its calls (the implement table counts attempts, not calls) and what it
+  // leaves out; the other roles' table already has a Calls column.
+  const spend = (c, withCalls = true) => {
+    const extra = [
+      withCalls ? plural(c.calls, "call") : null,
+      c.estimated_rows ? `${c.estimated_rows} estimated` : null,
+      c.unknown_rows ? `${c.unknown_rows} of unknown cost left out` : null,
+    ].filter(Boolean);
+    return el("span", { class: "rt" }, [
+      money(c.spend_usd || 0),
+      extra.length ? el("small", { class: "rt-n" }, extra.join(", ")) : null,
     ]);
   };
+  const impl = rs.cells.filter((c) => c.role === "implement");
+  const implOk = impl.filter((c) => !c.too_few);
+  const implFew = impl.filter((c) => c.too_few);
+  const others = rs.cells.filter((c) => c.role !== "implement");
+  const pctOf = (v) => pct(v);
+  const implTable = implOk.length
+    ? dataTable({
+        caption: `Implement role${providers.size === 1 ? `, ${[...providers][0]}` : ""}`,
+        cls: "routing-table routing-implement",
+        columns: [
+          { key: "model", label: "Model", format: (v, c) => who(c) },
+          { key: "risk", label: "Risk" },
+          { key: "stack", label: "Stack" },
+          { key: "n", label: "Attempts", numeric: true },
+          {
+            key: "submission_pct",
+            label: "Submitted",
+            numeric: true,
+            format: (r) => routingRate(r, pctOf),
+          },
+          {
+            key: "rework_pct",
+            label: "Rework",
+            numeric: true,
+            format: (r) => routingRate(r, pctOf),
+          },
+          {
+            key: "first_pass_pct",
+            label: "First pass",
+            numeric: true,
+            format: (r) => routingRate(r, pctOf),
+          },
+          {
+            key: "attempts_per_accepted_change",
+            label: "Attempts per accepted",
+            numeric: true,
+            format: (r) => routingRate(r, String),
+          },
+          {
+            key: "cost_per_accepted_change_usd",
+            label: "Cost per accepted",
+            numeric: true,
+            format: (r, c) =>
+              r && c.cost_unknown_rows
+                ? el(
+                    "span",
+                    { title: `${plural(c.cost_unknown_rows, "call")} of unknown cost left out` },
+                    [routingRate(r, money)],
+                  )
+                : routingRate(r, money),
+          },
+          {
+            key: "escaped_defect_pct",
+            label: "Escaped",
+            numeric: true,
+            format: (r) => routingRate(r, pctOf),
+          },
+          {
+            key: "tester_false_greens",
+            label: "Tester false greens",
+            numeric: true,
+            format: (r) => routingRate(r, String),
+          },
+          { key: "spend_usd", label: "Spend", numeric: true, format: (v, c) => spend(c) },
+        ].map((col) => ({ ...col, missing: col.missing || "not served for this cell" })),
+        rows: implOk,
+      })
+    : null;
+  const otherTable = others.length
+    ? dataTable({
+        caption: "Other roles: calls and spend",
+        stackOnPhone: true,
+        cls: "routing-table routing-other",
+        columns: [
+          { key: "role", label: "Role" },
+          { key: "model", label: "Model", format: (v, c) => who(c) },
+          { key: "risk", label: "Risk" },
+          { key: "stack", label: "Stack" },
+          { key: "n", label: "Calls", numeric: true },
+          { key: "spend_usd", label: "Spend", numeric: true, format: (v, c) => spend(c, false) },
+        ],
+        rows: others,
+      })
+    : null;
   const r = health.routing || null;
+  const defs =
+    rs.definitions && typeof rs.definitions === "object" ? Object.entries(rs.definitions) : [];
   return el("section", { class: "card panel routing-panel", "aria-label": "Routing scorecard" }, [
     panelHead(
       "Routing scorecard",
       `${plural(rs.rows, "ledger row")} · ${plural(rs.manifests, "replay manifest")} · minimum n ${rs.min_n}`,
       null,
-      { kit: "ink" },
+      { level: 2 },
     ),
     rs.cells.length
-      ? el("ul", { class: "lane-value-list routing-cells" }, rs.cells.map(line))
-      : el("p", { class: "dim" }, "No routed call is in the usage ledger yet."),
+      ? null
+      : emptyState("No routed call is in the usage ledger yet.", null, null, null, {
+          inline: true,
+        }),
+    implTable
+      ? el(
+          "p",
+          { class: "routing-cap" },
+          "What the tickets whose first delivery attempt ran in each cell did; on a phone the table scrolls sideways.",
+        )
+      : null,
+    implTable,
+    implFew.length
+      ? el(
+          "p",
+          { class: "routing-few" },
+          `Too few to compare (under ${rs.min_n}): ${implFew.map((c) => `${who(c)} · risk ${c.risk} · ${c.stack} (n ${c.n})`).join("; ")}.`,
+        )
+      : null,
+    otherTable,
     r ? el("p", { class: "routing-line" }, r.line) : null,
     el("p", { class: "lane-value-foot" }, rs.footnote || ""),
+    defs.length || (Array.isArray(rs.limits) && rs.limits.length)
+      ? more("What each column counts", [
+          el(
+            "dl",
+            { class: "md-defs" },
+            defs.map(([k, v]) =>
+              el("div", {}, [el("dt", {}, k.replace(/_/g, " ")), el("dd", {}, v)]),
+            ),
+          ),
+          Array.isArray(rs.limits)
+            ? el(
+                "ul",
+                { class: "md-limits" },
+                rs.limits.map((x) => el("li", {}, x)),
+              )
+            : null,
+        ])
+      : null,
   ]);
 }
 
+// --- the wage bill's quiet row and the deep reads ------------------------------------
+
 /**
- * Factory Health / ROI surface. Reads the ONE authoritative /api/health envelope
- * and renders the ROI KPI row (cost/feature, skill hit-rate, spend-by-kind,
- * rework-cost share, measured-coverage %) plus the two newly-wired dead sources:
- * the skill selected-vs-applied hit-rate detail and the recall-effectiveness
- * trend. Every source degrades gracefully — a missing one renders a clean "—" /
- * "not wired" cell rather than a broken card.
+ * The ledger figures that used to fill the scoreboard, as one quiet row for "Where the
+ * wages go" (F-A1): skill hit-rate, spend by kind, rework cost share and measured
+ * coverage. No sparkline (they are categories, not time: F-B1); a missing figure is a
+ * dash with its reason, never a zero (F-E3). The cost per shipped ticket is gone (F-A4):
+ * the accepted-change tile carries the price.
+ */
+function roiRow(health) {
+  const skills = health.skills || {};
+  const byKind = Array.isArray(health.by_kind) ? health.by_kind : [];
+  const total = typeof health.total_usd === "number" ? health.total_usd : 0;
+  const top = byKind[0] || null;
+  const rework = health.rework || null;
+  const cov = health.coverage || null;
+  const hit = typeof skills.overall_hit_rate_pct === "number" ? skills.overall_hit_rate_pct : null;
+  return el(
+    "div",
+    { class: "kpi-row roi-row", role: "group", "aria-label": "The wage bill in figures" },
+    [
+      statCell({
+        label: "Skill hit-rate",
+        value: hit == null ? null : pct(hit),
+        sub:
+          hit == null
+            ? null
+            : `${skills.total_applied ?? 0} of ${skills.total_selected ?? 0} mounted skills applied`,
+        reason: "no skill telemetry yet",
+        size: "inline",
+      }),
+      statCell({
+        label: "Spend by kind",
+        value: top && total > 0 ? pct(((top.total_cost_usd || 0) / total) * 100) : null,
+        sub: top && total > 0 ? `on ${top.kind} calls, of ${money(total)}` : null,
+        reason: "no spend recorded",
+        size: "inline",
+      }),
+      statCell({
+        label: "Rework cost",
+        value:
+          rework && typeof rework.rework_cost_share_pct === "number" && total > 0
+            ? pct(rework.rework_cost_share_pct)
+            : null,
+        sub:
+          rework && total > 0 && typeof rework.total_rework_cost_usd === "number"
+            ? `${money(rework.total_rework_cost_usd)} of spend went on rework`
+            : null,
+        reason: total > 0 ? "no rework data" : "no spend recorded",
+        size: "inline",
+      }),
+      statCell({
+        label: "Measured coverage",
+        value:
+          cov && cov.total_count > 0 && typeof cov.coverage_pct === "number"
+            ? pct(cov.coverage_pct)
+            : null,
+        sub:
+          cov && cov.total_count > 0
+            ? `${cov.measured_count} of ${cov.total_count} calls measured`
+            : null,
+        reason: "no ledger rows yet",
+        size: "inline",
+      }),
+    ],
+  );
+}
+
+/** Recall's weekly effectiveness (UTC weeks from Monday), a gap for a week with none. */
+function recallWeeks(byDay) {
+  const map = new Map();
+  for (const d of Array.isArray(byDay) ? byDay : []) {
+    const t = Date.parse(`${d.date}T00:00:00Z`);
+    if (!Number.isFinite(t)) continue;
+    const mon = t - ((new Date(t).getUTCDay() + 6) % 7) * DAY;
+    const b = map.get(mon) || { clean: 0, total: 0 };
+    b.clean += d.clean || 0;
+    b.total += d.total || 0;
+    map.set(mon, b);
+  }
+  if (!map.size) return [];
+  const ks = [...map.keys()].sort((a, b) => a - b);
+  const out = [];
+  for (let t = ks[0]; t <= ks[ks.length - 1]; t += 7 * DAY) {
+    const b = map.get(t);
+    out.push({ t, v: b && b.total ? (b.clean / b.total) * 100 : null });
+  }
+  return out;
+}
+
+// --- the page ----------------------------------------------------------------
+
+/**
+ * Factory Health / ROI surface. Reads the one /api/health envelope over the chosen
+ * window; every source degrades to a dash with its reason, never a broken card.
  */
 async function renderHealth() {
-  const health = await api("GET", "/api/health").catch(() => null);
+  const health = await api("GET", `/api/health?window_days=${windowDays}`).catch(() => null);
 
   const wrap = el("div", { class: "view health-view" });
 
@@ -485,149 +1212,123 @@ async function renderHealth() {
 
   const skills = health.skills || {};
   const recall = health.recall || { available: false };
-  const byKind = Array.isArray(health.by_kind) ? health.by_kind : [];
   const skillList = Array.isArray(skills.by_skill) ? skills.by_skill : [];
-  const dailySpend = Array.isArray(health.daily_spend) ? health.daily_spend : [];
-  const totalUsd = typeof health.total_usd === "number" ? health.total_usd : 0;
   const eventLog =
     health.event_log && typeof health.event_log.chain_ok === "boolean" ? health.event_log : null;
 
-  // --- ROI KPI row ----------------------------------------------------------
-  const costPerFeature = health.cost_per_shipped_usd; // ticket-level (epic deferred)
-  const hitRate =
-    typeof skills.overall_hit_rate_pct === "number" ? skills.overall_hit_rate_pct : null;
-  const topKind = byKind[0] || null;
-  const kindShare =
-    topKind && totalUsd > 0 ? Math.round(((topKind.total_cost_usd || 0) / totalUsd) * 100) : 0;
-  const reworkShare =
-    health.rework && typeof health.rework.rework_cost_share_pct === "number"
-      ? health.rework.rework_cost_share_pct
-      : 0;
-  const coveragePct =
-    health.coverage && typeof health.coverage.coverage_pct === "number"
-      ? health.coverage.coverage_pct
-      : 0;
-
-  const spendSeries = dailySpend.map((d) => d.total_cost_usd || 0);
-  const skillSeries = skillList.map((s) => s.hit_rate_pct || 0);
-  const kindSeries = byKind.map((k) => k.total_cost_usd || 0);
-  const recallSeries =
-    recall.available && Array.isArray(recall.by_day)
-      ? recall.by_day.map((d) => d.effectiveness_pct || 0)
-      : [];
-
-  const kpis = el("div", { class: "sb-cells kpi-row", role: "group", "aria-label": "Fitness" }, [
-    kpiCard({
-      label: "Cost / feature",
-      value: costPerFeature == null ? "—" : money(costPerFeature),
-      unit: "per shipped",
-      tone: "accent",
-      delta: 0,
-      goodWhenDown: true,
-      series: spendSeries.length ? spendSeries : [0],
-    }),
-    kpiCard({
-      label: "Skill hit-rate",
-      value: hitRate == null ? "—" : String(hitRate),
-      unit: hitRate == null ? "not wired" : "%",
-      tone: "ok",
-      delta: 0,
-      series: skillSeries.length ? skillSeries : [0],
-    }),
-    kpiCard({
-      label: "Spend by kind",
-      value: topKind ? String(kindShare) : "—",
-      unit: topKind ? `% ${topKind.kind}` : "no spend",
-      tone: "amber",
-      delta: 0,
-      series: kindSeries.length ? kindSeries : [0],
-    }),
-    kpiCard({
-      label: "Rework cost",
-      value: String(reworkShare),
-      unit: "% of spend",
-      tone: "danger",
-      delta: 0,
-      goodWhenDown: true,
-      series: [reworkShare],
-    }),
-    kpiCard({
-      label: "Measured coverage",
-      value: String(coveragePct),
-      unit: "%",
-      tone: "accent",
-      delta: 0,
-      series: [coveragePct],
-    }),
-    // TAMPER-EVIDENT LOG: the work_events hash chain, re-derived server-side.
-    // A break means an event was rewritten, deleted or re-ordered after the fact —
-    // every rollup on this page is derived from that log, so it is shown first-class.
-    eventLog
-      ? kpiCard({
-          label: "Event log",
-          value: eventLog.chain_ok ? "intact" : "BROKEN",
-          unit: eventLog.chain_ok
-            ? `${eventLog.events} events chained`
-            : `at seq ${eventLog.broken_at_seq} (${eventLog.reason})`,
-          tone: eventLog.chain_ok ? "ok" : "danger",
-          delta: 0,
-          series: [eventLog.chain_ok ? 1 : 0],
-        })
-      : null,
-  ]);
+  // --- The four measures: the board's tiles and the detail under it, repainted when
+  // the Referee's record window changes.
+  const strip = el("div", {
+    class: "sb-cells measure-strip",
+    role: "group",
+    "aria-label": "The four measures",
+  });
+  const stripHead = el("div", { class: "measure-head" });
+  const detailHost = el("div", { class: "measures-detail-host" });
+  const paintMeasures = (h) => {
+    const wd = (h.first_pass && h.first_pass.window_days) || windowDays;
+    stripHead.replaceChildren(
+      panelHead(
+        "The four measures",
+        `${periodOf(wd)}, against ${beforeOf(wd)} · weeks and months are UTC`,
+        { href: "#health-window", text: "Change the window" },
+        { level: 2, tone: "reference" },
+      ),
+    );
+    strip.replaceChildren(...measureTiles(h, wd));
+    detailHost.replaceChildren(measuresDetail(h));
+  };
+  paintMeasures(health);
+  const onWindow = async (days) => {
+    windowDays = WINDOWS.includes(days) ? days : 30;
+    const res = await api("GET", `/api/health?window_days=${windowDays}`).catch(() => null);
+    if (res) paintMeasures(res);
+    return res;
+  };
 
   // --- The deep reads: skill hit-rate and recall. Each is drawn only with data to
   // show; a source that has measured nothing yet is one clause in the line below.
   const unmeasured = [];
+  const appliedSkills = skillList
+    .filter((s) => (s.applied || 0) > 0 || (s.refused || 0) > 0)
+    .sort((a, b) => (b.applied || 0) - (a.applied || 0) || (b.selected || 0) - (a.selected || 0));
+  const neverSkills = skillList.filter((s) => !((s.applied || 0) > 0 || (s.refused || 0) > 0));
   const skillPanel = skillList.length
     ? el("section", { class: "card panel skill-panel", "aria-label": "Skill hit-rate" }, [
         panelHead(
           "Skill hit-rate",
           `${plural(skills.total_records || 0, "delivery", "deliveries")} · applied of selected`,
           null,
-          { kit: "ink" },
+          { level: 2 },
         ),
-        el(
-          "div",
-          { class: "hlist" },
-          skillList.map((s) =>
-            healthBarRow(
-              s.skill,
-              // A refused read (the hook blocked it: the agent never saw the skill) is
-              // shown beside the hit-rate, never counted as use.
-              `${s.applied}/${s.selected} · ${s.hit_rate_pct}%` +
-                (s.refused ? ` · ${s.refused} refused` : ""),
-              (s.hit_rate_pct || 0) / 100,
-              s.refused ? "amber" : s.hit_rate_pct >= 50 ? "ok" : "amber",
-            ),
-          ),
-        ),
+        appliedSkills.length
+          ? el(
+              "div",
+              { class: "meter-list skill-list" },
+              appliedSkills.map((s) => {
+                const n = s.selected || 0;
+                const k = s.applied || 0;
+                const small = n < MIN_N;
+                // A refused read (the hook blocked it: the agent never saw the skill) is
+                // shown beside the hit-rate, never counted as use.
+                const row = meterRow({
+                  name: s.skill,
+                  k,
+                  n,
+                  fmt: () =>
+                    `${small ? `${k} of ${n}` : `${pct((k / n) * 100)} · ${k} of ${n}`}${s.refused ? ` · ${s.refused} refused` : ""}`,
+                });
+                row.dataset.skill = s.skill;
+                if (small) row.classList.add("is-small");
+                return row;
+              }),
+            )
+          : null,
+        neverSkills.length
+          ? more(
+              `${plural(neverSkills.length, "skill")} selected but never applied`,
+              el(
+                "p",
+                { class: "skill-never-list" },
+                neverSkills.map((s) => `${s.skill} (${s.selected})`).join(", "),
+              ),
+              "skill-never",
+            )
+          : null,
       ])
     : (unmeasured.push([
         "Skill hit-rate",
         "no skill telemetry yet: it appears once deliveries mount skills",
       ]),
       null);
-  const recallHas =
-    recall.available &&
-    (recallSeries.length ||
-      recall.effectiveness_pct != null ||
-      (recall.clean || 0) + (recall.reworked || 0) + (recall.blocked || 0) > 0);
+  const rTotal = (recall.clean || 0) + (recall.reworked || 0) + (recall.blocked || 0);
+  const recallHas = recall.available && (recall.effectiveness_pct != null || rTotal > 0);
   const recallPanel = recallHas
     ? el("section", { class: "card panel recall-panel", "aria-label": "Recall effectiveness" }, [
-        panelHead("Recall effectiveness", "memory feedback", null, { kit: "ink" }),
-        el("div", { class: "recall-figures" }, [
-          recallStat(
-            "Effectiveness",
-            recall.effectiveness_pct == null ? "—" : `${recall.effectiveness_pct}%`,
-          ),
-          recallStat("Clean", String(recall.clean || 0)),
-          recallStat("Reworked", String(recall.reworked || 0)),
-          recallStat("Blocked", String(recall.blocked || 0)),
-        ]),
-        recallSeries.length
-          ? el("div", { class: "health-spark", html: svgSpark(recallSeries) })
-          : null,
+        panelHead("Recall effectiveness", "memory feedback", null, { level: 2 }),
+        utcSpark(
+          measureTile({
+            label: "Recall effectiveness",
+            k: recall.clean || 0,
+            n: rTotal,
+            nLabel: "clean",
+            period: "all time",
+            series: recallWeeks(recall.by_day),
+            note: `Of the deliveries that were served memory, ${recall.reworked || 0} were reworked and ${recall.blocked || 0} blocked${typeof recall.items_adjusted === "number" ? `; ${plural(recall.items_adjusted, "memory item")} adjusted from the outcomes` : ""}.`,
+            definition:
+              "Of the deliveries Memory served knowledge to, how many went through clean (no rework, not blocked). The memory items behind a reworked or blocked one are marked down.",
+            cls: "mt-recall",
+          }),
+          "weeks",
+        ),
+        segBar(
+          [
+            { label: "Clean", value: recall.clean || 0 },
+            { label: "Reworked", value: recall.reworked || 0 },
+            { label: "Blocked", value: recall.blocked || 0 },
+          ],
+          { label: "How the deliveries served memory went" },
+        ),
       ])
     : (unmeasured.push([
         "Recall effectiveness",
@@ -638,8 +1339,12 @@ async function renderHealth() {
       null);
 
   // The flow panels (form guide, governance, development flow, treatment table,
-  // running now, bouncing, wages) — the physio's charts, read from their own endpoints.
-  const panels = await fitnessRoomPanels(health).catch((e) => {
+  // running now, bouncing, wages): the physio's charts, read from their own endpoints.
+  const panels = await fitnessRoomPanels(health, {
+    windowDays,
+    onWindow,
+    roi: roiRow(health),
+  }).catch((e) => {
     if (e && e.code === "ABORTED") throw e;
     return [];
   });
@@ -651,7 +1356,14 @@ async function renderHealth() {
   const gov = pick("gov-panel");
   const running = pick("run-activity");
   const bouncing = pick("bouncing-panel");
-  const wages = pick("wages-panel");
+  // The wage bill carries the ledger row; if the flow panels could not be read, the row
+  // still stands in a card of its own.
+  const wages =
+    pick("wages-panel") ||
+    el("section", { class: "card panel wages-panel", "aria-label": "Where the wages go" }, [
+      panelHead("Where the wages go", "usage ledger", null, { level: 2 }),
+      roiRow(health),
+    ]);
   const fitness = pick("fitness-test");
   const rest = flat.filter(
     (p) => ![formGuide, treatment, devFlow, gov, running, bouncing, wages, fitness].includes(p),
@@ -703,6 +1415,21 @@ async function renderHealth() {
       ? el("span", {}, ["last ledger record ", el("span", { class: "u-nowrap" }, lastRead)])
       : null,
   ].filter(Boolean);
+  // TAMPER-EVIDENT LOG: the work_events hash chain, re-derived server-side; every figure
+  // on this page is derived from that log. Board small print, as on the Overview; a
+  // break reads red, with its glyph and the word.
+  const logLine = eventLog
+    ? el("p", { class: `view-hero-status physio-log${eventLog.chain_ok ? " ok" : ""}` }, [
+        eventLog.chain_ok ? glyph("done", 14) : glyph("failed", 14),
+        el(
+          "span",
+          {},
+          eventLog.chain_ok
+            ? `Event log intact: ${eventLog.events} events chained`
+            : `Event log BROKEN at seq ${eventLog.broken_at_seq} (${eventLog.reason}): every figure here is read from it`,
+        ),
+      ])
+    : null;
   wrap.appendChild(
     el(
       "section",
@@ -726,7 +1453,11 @@ async function renderHealth() {
               ...facts.flatMap((f) => [" · ", f]),
             ]),
           ]),
-          kpis,
+          el("section", { class: "measures-board", "aria-label": "The four measures" }, [
+            stripHead,
+            strip,
+          ]),
+          logLine ? el("div", { class: "physio-small" }, logLine) : null,
         ]),
       ],
     ),
@@ -735,16 +1466,10 @@ async function renderHealth() {
   // usage window / a rate limit. Say so first: it is why nothing is moving.
   const usagePause = health.usage_pause && health.usage_pause.active ? health.usage_pause : null;
   if (usagePause) wrap.appendChild(usagePauseNote(usagePause));
-  // The four top-level measures, under the verdict: what every feature has to move.
-  wrap.appendChild(fourMeasures(health));
-  const lanes = laneValueCard(health);
-  if (lanes) wrap.appendChild(lanes);
-  const codeIndex = codeIndexCard(health);
-  if (codeIndex) wrap.appendChild(codeIndex);
-  const scout = scoutCard(health);
-  if (scout) wrap.appendChild(scout);
-  const routing = routingCard(health);
-  if (routing) wrap.appendChild(routing);
+  // Behind the four measures, then the comparison tables: the rest of the quality story.
+  wrap.appendChild(detailHost);
+  for (const card of [routingCard(health), laneValueCard(health), scoutCard(health)])
+    if (card) wrap.appendChild(card);
   if (bouncing) bouncing.id = "health-injuries";
   const wait = treatment ? waitingNote(treatment._waiting) : null;
   if (wait && devFlow) devFlow.appendChild(wait);
@@ -797,6 +1522,7 @@ async function renderHealth() {
       span(7, wages),
       span(5, gov),
       span(12, running),
+      span(12, codeIndexCard(health)),
       ...deep.map((p) => span(deep.length > 1 ? 6 : 12, p)),
       ...rest.map((r) => span(12, r)),
     ]),
@@ -813,4 +1539,4 @@ async function renderHealth() {
   return wrap;
 }
 
-export { healthBarRow, renderHealth };
+export { renderHealth };

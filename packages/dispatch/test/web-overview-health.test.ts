@@ -179,9 +179,9 @@ describe("web: Overview cycle-time/throughput from /api/health", () => {
     location.hash = "#/health";
     await loadApp();
 
-    // With no health payload the cards still render (zeroed), never crashing.
-    expect(kpiValue("Cycle time")).toBe("0.0");
-    expect(kpiValue("Throughput")).toBe("0");
+    // With no health payload the cells still render, as dashes, never a zero (F-E3).
+    expect(kpiValue("Cycle time")).toBe("\u2014");
+    expect(kpiValue("Throughput")).toBe("\u2014");
 
     // Restore for other tests.
     healthPayload = {

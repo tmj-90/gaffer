@@ -130,7 +130,10 @@ describe("web: Health — the physio room", () => {
     // One day in the ledger went past $25.
     expect(ftCell("Wage bill", "Days over")?.querySelector(".ft-v")?.textContent).toBe("1");
     expect(ftCell("Deliveries", "Rate")?.querySelector(".ft-v")?.textContent).toBe("3");
-    expect(ftCell("Deliveries", "Reworked")?.querySelector(".ft-v")?.textContent).toBe("1");
+    // Says its window, so it never reads against the referee's 30-day rework rate (F-A5).
+    expect(ftCell("Deliveries", "Sent back (all time)")?.querySelector(".ft-v")?.textContent).toBe(
+      "1",
+    );
   });
 
   it("collapses all-OK to one sentence and leaves the treatment table out", async () => {
@@ -249,8 +252,10 @@ describe("web: Health — the physio room", () => {
     // The duplicates are gone: one cycle-time chart (inside the form guide), no
     // separate Flow efficiency or Progress by repository pages.
     expect(document.querySelectorAll(".form-guide .fg-chart").length).toBe(1);
-    const titles = Array.from(document.querySelectorAll(".panel-title")).map((h) =>
-      h.firstChild?.textContent?.trim(),
+    // Section heads only (a card's own head): the Form guide's level-3 sub-heads are part
+    // of the form guide, not pages of their own.
+    const titles = Array.from(document.querySelectorAll(".card > .panel-head .panel-title")).map(
+      (h) => h.firstChild?.textContent?.trim(),
     );
     expect(titles).not.toContain("Cycle time");
     expect(titles).not.toContain("Flow efficiency");

@@ -312,7 +312,7 @@ function finishedRunRow(run) {
 function runActivityPanel() {
   const POLL_MS = 3000;
   const card = el("div", { class: "card panel run-activity", id: "running-now" }, [
-    panelHead("Running now", "background runs: polls, suggestions, merges", null, { kit: "ink" }),
+    panelHead("Running now", "background runs: polls, suggestions, merges", null, { level: 2 }),
   ]);
   const listWrap = el("div", { class: "run-activity-body" }, [
     el("p", { class: "dim" }, "Loading runs…"),

@@ -4,22 +4,25 @@
 import { api } from "../api.js";
 import { barChart, chartFigure } from "../charts.js";
 import { ensureSquad } from "../club.js";
-import { band, meter, panelHead, statCell } from "../components.js";
+import { band, measureTile, meter, meterRow, panelHead, statCell } from "../components.js";
 import { el } from "../dom.js";
-import { fmtDuration, money, moneyW, pct, plural } from "../format.js";
+import { MISSING, fmtDuration, money, moneyW, pct, plural } from "../format.js";
 import { agentChip, glyph, ycard } from "../icons.js";
 import { allTickets } from "../matchday.js";
 import { devFlowPanel, needsPanel } from "../panels.js";
 import { runActivityPanel } from "../runs.js";
-import { healthBarRow } from "./health.js";
 
 /**
  * The physio room's flow panels (moved off the Overview, which is the comp's
  * programme now): the Form guide, Governance ROI, the cost line, Development
  * flow, the treatment table (at risk / stale), cycle time and flow efficiency,
  * the "keeps bouncing" list and Running now. Returns the panels in order.
+ *   opts: { windowDays, onWindow(days) -> Promise<health | null>, roi }: the window the
+ *   page shows, what the Referee's record select calls to re-read every measure over a
+ *   new window (it repaints the governance tiles from what comes back), and the wage
+ *   bill's row of ledger figures.
  */
-async function fitnessRoomPanels(healthRes) {
+async function fitnessRoomPanels(healthRes, opts = {}) {
   const [{ summary }, ticketsRes, decisionsRes, costRes, bouncingRes, claimsRes, settingsRes] =
     await Promise.all([
       api("GET", "/api/dashboard"),
@@ -36,7 +39,6 @@ async function fitnessRoomPanels(healthRes) {
   const tickets = ticketsRes.tickets || [];
   const decisions = decisionsRes.decisions || [];
   const staleClaims = summary.staleClaims || 0;
-  const doneTickets = tickets.filter((t) => t.status === "done");
 
   // --- real time-series, bucketed by day from ticket + event timestamps -----
   const DAY = 86_400_000;
@@ -45,53 +47,25 @@ async function fitnessRoomPanels(healthRes) {
   const days = [];
   for (let i = N - 1; i >= 0; i--) {
     const d = new Date(now - i * DAY);
-    days.push({ key: d.toISOString().slice(0, 10), lbl: `${d.getDate()}/${d.getMonth() + 1}` });
+    // UTC days, as the server buckets them (one convention: the weeks are UTC too).
+    days.push({
+      key: d.toISOString().slice(0, 10),
+      lbl: `${d.getUTCDate()}/${d.getUTCMonth() + 1}`,
+    });
   }
-  // AUTHORITATIVE cycle-time / throughput: read the ONE server-side definition
-  // from /api/health (src/health/deliveryFlow.ts) instead of recomputing it here.
-  // The server reproduces the former client maths, so displayed numbers are
-  // unchanged. Falls back to a zeroed 14-day shape when the endpoint is
-  // unavailable, so the KPI cards still render.
+  // AUTHORITATIVE cycle time and throughput: the ONE server-side definition from
+  // /api/health (src/health/deliveryFlow.ts). A figure the server did not send is no
+  // figure: a dash with its reason, never a zero.
   const health = healthRes || {};
   const flowCycle = health.cycle_time || {};
   const flowThr = health.throughput || {};
-  const zeroSeries = () => days.map(() => 0);
-  const cycleLine =
-    Array.isArray(flowCycle.series) && flowCycle.series.length === N
-      ? flowCycle.series
-      : zeroSeries();
-  const doneByDay =
-    Array.isArray(flowThr.series) && flowThr.series.length === N ? flowThr.series : zeroSeries();
-
-  // --- distinct, real per-metric daily series (each KPI gets its own shape) --
-  // deployments: cumulative tickets shipped (a monotonic delivery curve)
-  let depAcc = 0;
-  const deploySeries = doneByDay.map((v) => (depAcc += v));
-  // lead time: 7-day trailing mean of daily cycle (a smoothed lead trend). A day whose
-  // trailing week has no completion is null (the sparkline skips it), never a 0: the
-  // server's cycle series is null on a day with no completion, so a quiet week would
-  // otherwise read as a zero-day lead time.
-  const leadSeries = cycleLine.map((_, i) => {
-    const w = cycleLine.slice(Math.max(0, i - 6), i + 1).filter((x) => x > 0);
-    return w.length ? +(w.reduce((a, b) => a + b, 0) / w.length).toFixed(2) : null;
-  });
-  // --- headline metrics -----------------------------------------------------
-  // Cycle time + throughput are server-authoritative (from /api/health above).
-  // cycleVals is retained ONLY to derive the Lead-time percentile below.
-  const cycleVals = doneTickets
-    .map((t) => (Date.parse(t.updated_at) - Date.parse(t.created_at)) / DAY)
-    .filter((x) => x >= 0);
-  const cycleTime = typeof flowCycle.median_days === "number" ? flowCycle.median_days : 0;
-  const leadTime = cycleVals.length
-    ? Math.max(
-        ...cycleVals
-          .slice()
-          .sort((a, b) => a - b)
-          .slice(0, Math.ceil(cycleVals.length / 2)),
-      ) || cycleTime
-    : 0;
-  const last7 = typeof flowThr.last7 === "number" ? flowThr.last7 : 0;
-  const prev7 = typeof flowThr.prev7 === "number" ? flowThr.prev7 : 0;
+  const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+  // The median over every shipped ticket (null when nothing has shipped), with p75/p90.
+  const cycleTime = num(flowCycle.median_days);
+  const p75 = num(flowCycle.p75_days);
+  const p90 = num(flowCycle.p90_days);
+  const last7 = num(flowThr.last7);
+  const prev7 = num(flowThr.prev7);
   // Flow efficiency is SERVER-ONLY: the median (time an agent worked the ticket /
   // lead time) over shipped tickets, from the transition log (src/health/deliveryFlow.ts).
   // Review, testing, the merge queue, send-backs and holds are waiting, served as
@@ -100,6 +74,7 @@ async function fitnessRoomPanels(healthRes) {
   // read 100% for a single shipped ticket however long it had waited to merge.
   const flowEffServer = health.flow_efficiency || {};
   const flowEff = typeof flowEffServer.median_pct === "number" ? flowEffServer.median_pct : null;
+  const effN = typeof flowEffServer.sample === "number" ? flowEffServer.sample : null;
   const flowEffText =
     flowEff == null ? "—" : flowEff > 0 && flowEff < 1 ? "<1" : String(Math.round(flowEff));
   const waiting = health.waiting || {};
@@ -135,10 +110,10 @@ async function fitnessRoomPanels(healthRes) {
   const left = right;
 
   // --- Form guide: the flow numbers, each from the server's one definition ------
-  // The two daily series as {t, v} on the 14-day grid: the sparklines and the chart
-  // read time, never categories (F-B1).
-  // A series the server did not serve is no series (never the zeroed fallback drawn
-  // as if it were data): no sparkline, and the chart's days read "no data".
+  // The daily series as {t, v} on the 14-day UTC grid: the sparklines and the chart
+  // read time, never categories (F-B1); a day with no completion is a gap (F-B2).
+  // A series the server did not serve is no series (never a zeroed fallback drawn as
+  // if it were data): no sparkline, and the chart's days read "no data".
   const dayT = days.map((d) => Date.parse(`${d.key}T00:00:00Z`));
   const served = (s) => Array.isArray(s) && s.length === N;
   const timed = (s) => (served(s) ? s.map((v, i) => ({ t: dayT[i], v })) : undefined);
@@ -146,86 +121,99 @@ async function fitnessRoomPanels(healthRes) {
   const cycleRows = days.map((d, i) => ({
     label: d.lbl,
     value: served(flowCycle.series) ? flowCycle.series[i] : null,
+    n: Array.isArray(flowCycle.series_n) ? flowCycle.series_n[i] : null,
   }));
+  // The window each figure covers, as a chip on its cell (F-E2).
+  const chip = (text) => el("span", { class: "fg-period" }, text);
+  const daysTxt = (v) => (v == null ? "" : `${v.toFixed(1)}d`);
   right.appendChild(
     el("section", { class: "card panel form-guide", "aria-label": "Flow" }, [
-      panelHead("Form guide", "last 14 days", null, { kit: "claret" }),
+      panelHead("Form guide", "how work flows to done", null, { level: 2 }),
       el("div", { class: "kpi-row" }, [
         statCell({
           label: "Cycle time",
-          value: cycleTime.toFixed(1),
+          value: cycleTime == null ? null : cycleTime.toFixed(1),
           unit: "days",
+          reason: "nothing has shipped yet",
+          sub: [
+            chip("every shipped ticket"),
+            cycleTime == null
+              ? null
+              : ` median; p75 ${daysTxt(p75) || MISSING}, p90 ${daysTxt(p90) || MISSING}`,
+          ],
           series: timed(flowCycle.series),
           seriesFmt: (v) => fmtDuration(v * DAY),
           flip: "cycle",
           size: "row",
+          cls: "fg-cycle",
         }),
         statCell({
           label: "Throughput",
-          value: String(last7),
-          unit: "shipped / 7d",
-          sub: `${prev7} the week before`,
+          value: last7 == null ? null : String(last7),
+          unit: "shipped",
+          reason: "not served by this server",
+          sub: [chip("last 7 days"), prev7 == null ? null : ` ${prev7} the 7 days before`],
           series: timed(flowThr.series),
           seriesFmt: (v) => `${v} shipped`,
           flip: "thr",
           size: "row",
+          cls: "fg-throughput",
         }),
         statCell({
           label: "Flow efficiency",
-          value: flowEffText,
-          unit: flowEff == null ? null : "%",
-          sub: flowEff == null ? "nothing shipped yet" : "of lead time an agent worked",
+          value: flowEff == null ? null : flowEffText,
+          unit: "%",
+          reason: "nothing has shipped yet",
+          sub: [
+            chip("every shipped ticket"),
+            flowEff == null
+              ? null
+              : ` median of ${plural(effN ?? 0, "ticket")}: time an agent worked`,
+          ],
           flip: "eff",
           size: "row",
-        }),
-        statCell({
-          label: "Deployments",
-          value: String(doneTickets.length),
-          unit: "all-time",
-          series: deploySeries,
-          flip: "dep",
-          size: "row",
-        }),
-        statCell({
-          label: "Lead time",
-          value: leadTime.toFixed(1),
-          unit: "days",
-          series: leadSeries,
-          flip: "lead",
-          size: "row",
+          cls: "fg-eff-cell",
         }),
       ]),
       // The results by day: the cycle time as a bar per day, and what flow efficiency means.
       el("div", { class: "fg-detail" }, [
         // The shared chart figure: bars capped at 24px with nice ticks in a unit that
         // fits (minutes for a 2-minute cycle, never "0.0 days"), focusable bars with one
-        // tooltip, and a table view (F-B4).
+        // tooltip, and a table view (F-B4). It plots the mean of each day's completions,
+        // and says so.
         chartFigure({
           title: "Cycle time, by day",
-          caption: "Median per day over the last 14 days; today's bar is picked out.",
+          caption:
+            "The mean of the tickets completed each UTC day over the last 14 days; a day with none has no bar. Today's bar, once there is one, is picked out.",
           cls: "fg-chart",
           chart: barChart({
             rows: cycleRows,
             unit: "days",
-            label: "Median cycle time by day",
+            label: "Mean cycle time by UTC day",
             current: cycleRows.length - 1,
             // Drawn at the width it shows at, so its tick labels stay readable.
             ...(phone ? { width: 360, height: 170 } : { width: 720, height: 190 }),
           }),
           columns: [
-            { key: "label", label: "Day" },
-            { key: "value", label: "Median cycle time", numeric: true },
+            { key: "label", label: "Day (UTC)" },
+            {
+              key: "value",
+              label: "Mean cycle time",
+              numeric: true,
+              missing: "no completion that day",
+            },
+            { key: "n", label: "Completed", numeric: true },
           ],
           rows: cycleRows.map((r) => ({
             label: r.label,
             value: r.value == null ? null : fmtDuration(r.value * DAY),
+            n: r.n,
           })),
         }),
         el("div", { class: "fg-eff flow-eff" }, [
-          el("h3", { class: "fg-h" }, [
-            "Flow efficiency ",
-            el("b", { class: "tabnum" }, flowEff == null ? "—" : `${flowEffText}%`),
-          ]),
+          panelHead("Flow efficiency", flowEff == null ? null : `${flowEffText}% median`, null, {
+            level: 3,
+          }),
           // A share with no limit: a meter on a 0-100 track, no limit tick (F-D2).
           meter({
             value: flowEff ?? 0,
@@ -248,36 +236,49 @@ async function fitnessRoomPanels(healthRes) {
 
   // --- Governance-ROI panel: does the oversight machinery EARN its cost? -------
   // Merge / rework / unattended-safe rates from /api/health.governance, computed
-  // server-side from REAL ticket transitions (src/health/governanceRoi.ts) — never
-  // the demo dataset. Window-selectable. Every rate is shown WITH the raw counts it
-  // derives from, and an empty window renders an explicit note, never a fake 0%.
+  // server-side from REAL ticket transitions (src/health/governanceRoi.ts), never
+  // the demo dataset. Each rate is a measure tile with its counts, its window chip and
+  // its Wilson interval; an empty window renders an explicit note, never a fake 0%.
+  // The window select drives this panel AND the four measures on the board (the page's
+  // onWindow re-reads them all and hands the governance back here).
   {
     const govPanel = el("section", {
       class: "card panel gov-panel",
       "aria-label": "Referee's record",
     });
-    const pct = (r) => (r && typeof r.rate === "number" ? Math.round(r.rate * 100) : null);
-    const tile = (label, r, subFn) => {
-      const p = pct(r);
-      const has = p !== null;
-      return el("div", { class: "gov-tile" + (has ? "" : " gov-tile-empty") }, [
-        el("div", { class: "gov-tile-label" }, label),
-        el("div", { class: "gov-tile-val tabnum" }, has ? p + "%" : "—"),
-        el("div", { class: "gov-tile-sub" }, has ? subFn(r) : "no eligible deliveries yet"),
-      ]);
-    };
+    const tile = (label, r, wd, nLabel, definition) =>
+      r && typeof r.denominator === "number" && r.denominator > 0
+        ? measureTile({
+            label,
+            k: r.numerator,
+            n: r.denominator,
+            nLabel,
+            period: `last ${wd} days`,
+            definition,
+            cls: "gov-tile",
+          })
+        : measureTile({
+            label,
+            value: null,
+            period: `last ${wd} days`,
+            note: "No eligible deliveries in this window.",
+            cls: "gov-tile gov-tile-empty",
+          });
     const paint = (gov) => {
       govPanel.replaceChildren();
-      const wd = gov && gov.windowDays ? gov.windowDays : 30;
+      const wd = gov && gov.windowDays ? gov.windowDays : opts.windowDays || 30;
       const sel = el(
         "select",
         {
+          id: "health-window",
           class: "gov-window",
-          title: "Time window for the governance rates",
+          title: "Time window for the referee's record and the four measures",
           onchange: async (e) => {
-            const v = e.target.value;
-            const res = await api("GET", "/api/health?window_days=" + v).catch(() => null);
-            paint(res && res.governance ? res.governance : { empty: true, windowDays: Number(v) });
+            const v = Number(e.target.value);
+            const res = opts.onWindow
+              ? await opts.onWindow(v)
+              : await api("GET", "/api/health?window_days=" + v).catch(() => null);
+            paint(res && res.governance ? res.governance : { empty: true, windowDays: v });
           },
         },
         [7, 30, 90, 365].map((n) => {
@@ -287,14 +288,14 @@ async function fitnessRoomPanels(healthRes) {
         }),
       );
       govPanel.appendChild(
-        panelHead("Referee's record", "does review earn its keep", null, { kit: "sky" }),
+        panelHead("Referee's record", "does review earn its keep", null, { level: 2 }),
       );
       govPanel.appendChild(
         el("div", { class: "gov-head" }, [
           el(
             "p",
             { class: "gov-note" },
-            "Governance ROI, from the factory's own ticket transitions: how often review lets a change through, and whether what it lets through stays shipped.",
+            "From the factory's own ticket transitions: how often review lets a change through, and whether what it lets through stays shipped. The window also sets the four measures.",
           ),
           el("label", { class: "gov-win" }, [el("span", { class: "sr-only" }, "Window"), sel]),
         ]),
@@ -304,7 +305,7 @@ async function fitnessRoomPanels(healthRes) {
           el(
             "div",
             { class: "gov-emptystate" },
-            `No deliveries reached a review decision in the last ${wd} days — governance ROI needs shipped/rejected history to measure. Ship some tickets to done first.`,
+            `No deliveries reached a review decision in the last ${wd} days: governance needs shipped or rejected history to measure. Ship some tickets to done first.`,
           ),
         );
         return;
@@ -314,24 +315,27 @@ async function fitnessRoomPanels(healthRes) {
           tile(
             "Merge rate",
             gov.mergeRate,
-            (r) => `${r.numerator} merged of ${r.denominator} reviewed`,
+            wd,
+            "reviewed were merged",
+            "Of the deliveries that reached a review decision in the window, how many were merged.",
           ),
           tile(
             "Rework rate",
             gov.reworkRate,
-            (r) =>
-              `${r.numerator} of ${r.denominator} merged in ${wd} days had been sent back first, by a reviewer, the tester or a failed gate`,
+            wd,
+            "merged had been sent back",
+            "Of the tickets merged in the window, how many had been sent back first, by a reviewer, the tester or a failed gate (the runner's own retries count here, unlike first-pass acceptance).",
           ),
           tile(
             "Unattended-safe",
             gov.unattendedSafeRate,
-            (r) =>
-              `${r.numerator} of ${r.denominator} agent-approved merge cycle${r.denominator === 1 ? "" : "s"} stayed shipped` +
-              // Observation age: a cycle merged minutes ago is "not reopened YET".
-              (Number.isFinite(gov.counts?.youngestUnattendedMergeAgeMs) &&
-              gov.counts.youngestUnattendedMergeAgeMs !== null
-                ? ` · newest ${fmtDuration(gov.counts.youngestUnattendedMergeAgeMs)} ago`
-                : ""),
+            wd,
+            "agent-approved stayed shipped",
+            `Of the agent-approved merge cycles in the window, how many were never reopened.${
+              Number.isFinite(gov.counts?.youngestUnattendedMergeAgeMs)
+                ? ` The newest merged ${fmtDuration(gov.counts.youngestUnattendedMergeAgeMs)} ago, so it has had little time to be reopened.`
+                : ""
+            }`,
           ),
         ]),
       );
@@ -345,7 +349,7 @@ async function fitnessRoomPanels(healthRes) {
   // Max/Pro subscription. A killed or timed-out call carries a labelled estimate.
   {
     const byKind = Array.isArray(health.by_kind) ? health.by_kind : [];
-    const maxKind = Math.max(1, ...byKind.map((k) => k.total_cost_usd || 0));
+    const maxKind = Math.max(0, ...byKind.map((k) => k.total_cost_usd || 0));
     const top =
       costRes && Array.isArray(costRes.top_tickets) ? costRes.top_tickets.slice(0, 3) : [];
     const byNum = new Map(tickets.map((t) => [t.number, t]));
@@ -353,7 +357,7 @@ async function fitnessRoomPanels(healthRes) {
       costRes && typeof costRes.total_usd === "number" ? costRes.total_usd : health.total_usd;
     const est = costRes ? costRes.estimated_usd : health.estimated_usd;
     const costed = costRes ? costRes.ticket_count : health.ticket_count;
-    if (byKind.length || top.length || total > 0)
+    if (byKind.length || top.length || total > 0 || opts.roi)
       right.appendChild(
         el(
           "section",
@@ -370,25 +374,32 @@ async function fitnessRoomPanels(healthRes) {
                 ? `${money(total)} all-time${est > 0 ? ` incl. ${money(est)} est.` : ""} · ${plural(costed || 0, "ticket")} costed`
                 : "usage ledger",
               null,
-              { kit: "claret" },
+              { level: 2 },
             ),
+            // The ledger figures in one quiet row (they left the scoreboard: F-A1).
+            opts.roi || null,
             el("div", { class: "wg-cols" }, [
               byKind.length
-                ? el("div", { class: "hlist" }, [
-                    el("h3", { class: "fg-h" }, "By kind of call"),
-                    ...byKind.map((k) =>
-                      healthBarRow(
-                        k.kind,
-                        money(k.total_cost_usd),
-                        (k.total_cost_usd || 0) / maxKind,
-                        "amber",
+                ? el("div", { class: "wg-kinds" }, [
+                    panelHead("By kind of call", null, null, { level: 3 }),
+                    // Bars against the largest kind; a kind at zero draws no sliver (F-D1).
+                    el(
+                      "div",
+                      { class: "meter-list" },
+                      byKind.map((k) =>
+                        meterRow({
+                          name: k.kind,
+                          k: k.total_cost_usd || 0,
+                          n: maxKind,
+                          fmt: () => money(k.total_cost_usd),
+                        }),
                       ),
                     ),
                   ])
                 : null,
               top.length
                 ? el("div", { class: "wg-top" }, [
-                    el("h3", { class: "fg-h" }, "Top earners"),
+                    panelHead("Top earners", null, null, { level: 3 }),
                     el(
                       "ol",
                       { class: "clean wg-earners" },
@@ -543,7 +554,7 @@ function fitnessTestPanel({
   const slotsFull = slots && claims != null && claims >= slots;
   const overBudget = budget && today != null && today > budget;
   return el("section", { class: "card prog fitness-test", "aria-label": "Fitness test" }, [
-    panelHead("Fitness test", "load · queue · faults", null, { kit: "ink" }),
+    panelHead("Fitness test", "load · queue · faults", null, { level: 2 }),
     el("div", { class: "ft-grid" }, [
       row("Squad", "agent slots", [
         cell(
@@ -621,8 +632,12 @@ function fitnessTestPanel({
         ),
       ]),
       row("Deliveries", "the delivery line", [
-        cell("Rate", String(last7 || 0), "shipped in 7 days"),
-        cell("Reworked", reworked == null ? "—" : String(reworked), reworkSub),
+        cell(
+          "Rate",
+          last7 == null ? MISSING : String(last7),
+          last7 == null ? "not served by this server" : "shipped in 7 days",
+        ),
+        cell("Sent back (all time)", reworked == null ? MISSING : String(reworked), reworkSub),
         cell(
           "Per call",
           dur == null ? "—" : fmtDuration(dur),
@@ -646,9 +661,7 @@ function renderBouncingPanel(bouncing) {
       "Recurring injuries",
       `${plural(bouncing.length, "ticket")} ${bouncing.length === 1 ? "keeps" : "keep"} bouncing`,
       null,
-      {
-        kit: "red",
-      },
+      { level: 2 },
     ),
     el(
       "p",

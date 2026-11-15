@@ -219,6 +219,33 @@ for (const cmd of [
   each("allow", "Write with a plain ..", tool("Write", { file_path: `${WORK}/src/../notes.md`, content: "x" }));
   each("allow", "Grep with a plain ..", tool("Grep", { pattern: "x", path: `${WORK}/src/..` }));
 }
+// File names from a listing of a directory that holds secrets reach whatever program a
+// loop or xargs runs, recognised reader or not.
+for (const cmd of [
+  'find $GAFFER_DATA -type f | while read f; do gzip -c "$f"; done',
+  'find $GAFFER_DATA -type f | while read f; do zstd -c "$f"; done',
+  'ls $GAFFER_DATA | while read f; do xz -c "$GAFFER_DATA/$f"; done',
+  'for f in $(ls $GAFFER_DATA); do gzip -c "$GAFFER_DATA/$f"; done',
+  'while read f; do iconv -f utf8 "$f"; done <<< "$(find $GAFFER_DATA -type f)"',
+  'find $GAFFER_DATA -type f > list.txt; while read f; do lz4 -c "$f"; done < list.txt',
+  'find $GAFFER_DATA -type f -print0 | while IFS= read -r -d "" f; do cut -c1- "$f"; done',
+  'cd $GAFFER_DATA; find . -type f | while read f; do gzip -c "$f"; done',
+  `find ${DATA} -type f | while read f; do bzip2 -c "$f"; done`,
+  "cd $GAFFER_DATA && find -type f | xargs gzip -c",
+  "find $GAFFER_DATA -type f | xargs -n1 zstd -c",
+]) {
+  each("deny", `names from a secret listing: ${cmd}`, bash(cmd));
+}
+for (const cmd of [
+  'git ls-files | while read f; do wc -l "$f"; done',
+  'for f in $(git ls-files); do wc -l "$f"; done',
+  'git diff --name-only | while read f; do npx prettier --check "$f"; done',
+  'cd src && ls | while read f; do echo "$f"; done',
+  "git ls-files | xargs gzip -k",
+  'find src -name "*.ts" | xargs wc -l',
+]) {
+  each("allow", `names from the worktree: ${cmd}`, bash(cmd));
+}
 // Archivers and git readers beyond tar / zip.
 for (const cmd of [
   "7z a /dev/stdout $GAFFER_DATA",

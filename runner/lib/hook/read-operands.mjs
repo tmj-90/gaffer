@@ -390,7 +390,11 @@ class Walk {
     // CDPATH set in the environment or anywhere in the command (nested bodies included).
     this.cdpath = Boolean(process.env.CDPATH) || /\bCDPATH\b/.test(cmd);
     this.table = new VarTable(process.env, cmd);
+    this.topCmd = cmd;
     this.stdinReader = false;
+    // Set by `read` / `mapfile` / `readarray` and by a for loop over a substitution:
+    // file names the hook cannot see reach any program, recognised reader or not.
+    this.nameReader = false;
     this.dirWords = [];
     this.mentionWords = 0;
     // Work done for the read operands of the whole command (EXPAND_LIMITS.command), and
@@ -511,11 +515,37 @@ class Walk {
     const expandable =
       lexed.parts.some((p) => p.v !== undefined) ||
       lexed.parts.some((p) => !p.q && /[*?[{~]/.test(p.c));
-    if (!expandable) return null;
+    if (!expandable) {
+      // A literal directory word still names where listed file names come from (see
+      // nameReader / stdinReader in expandedReadReason).
+      const text = lexed.unknown ? "" : lexed.parts.map((p) => p.c).join("");
+      if (text.includes("/") && !text.startsWith("-")) {
+        for (const cwd of cwds) {
+          if (cwd === null && !text.startsWith("/")) continue;
+          const abs = physicalPath(text.startsWith("/") ? text : `${cwd}/${text}`);
+          if (abs !== null && isDirectory(abs)) this.dirWords.push({ abs: canonicalize(abs), raw });
+        }
+      }
+      return null;
+    }
     this.mentionWords += 1;
     for (const cwd of cwds) {
       const r = expandWordFields(raw, this.table, [cwd]);
-      if (!r.fields) continue;
+      if (!r.fields) {
+        // A changed IFS makes every unquoted variable unknown; for the directory words
+        // (where listed names come from) the unsplit value is still a candidate.
+        if (r.unknown && this.table.ifsChanged) {
+          this.table.ifsChanged = false;
+          const u = expandWordFields(raw, this.table, [cwd]);
+          this.table.ifsChanged = true;
+          for (const f of u.fields ?? []) {
+            const t = f.map((p) => p.c).join("");
+            const abs = t && (t.startsWith("/") || cwd !== null) ? physicalPath(t.startsWith("/") ? t : `${cwd}/${t}`) : null;
+            if (abs !== null && isDirectory(abs)) this.dirWords.push({ abs: canonicalize(abs), raw });
+          }
+        }
+        continue;
+      }
       for (const field of r.fields) {
         const budget = newBudget();
         // Past 64 glob words only the literal prefix of each is judged (time bound).
@@ -602,9 +632,8 @@ class Walk {
       if (inner) {
         const sub = this.readOperands(inner);
         const iv = basename(inner.verb);
-        if (READ_TOOL_VERBS.has(iv) || COPY_READ_VERBS.has(iv) || SEARCH_VERBS.has(iv)) {
-          this.stdinReader = true;
-        }
+        // Whatever xargs runs gets the names (`xargs gzip -c` reads as `xargs cat` does).
+        if (iv) this.stdinReader = true;
         return { ...sub, placeholder: placeholder || (verb === "parallel" ? "{" : null) };
       }
       return { operands: [], follow, extraCwds, placeholder };
@@ -836,6 +865,7 @@ class Walk {
               for (const cwd of unknown ? [] : cwds) {
                 const r = expandWordFields(raw, this.table, [cwd]);
                 if (!r.fields) {
+                  if (r.unknown) this.nameReader = true;
                   unknown = true;
                   break;
                 }
@@ -938,11 +968,15 @@ class Walk {
           }
         }
         cwds = definite() ? [...new Set(next)] : [...new Set([...cwds, ...next])];
-        for (const c of cwds) nestedCwds.add(c);
+        for (const c of cwds) {
+          nestedCwds.add(c);
+          if (c !== null) this.dirWords.push({ abs: c, raw: `cd ${unquote(cmdWords[1] ?? "")}` });
+        }
         depth = Math.max(0, depth - closing);
         continue;
       }
       const eff = resolveEffectiveTokens(cmdWords);
+      if (eff && /^(?:read|mapfile|readarray)$/.test(basename(eff.verb))) this.nameReader = true;
       if (eff) {
         const verb = basename(eff.verb);
         // eval runs its arguments as a command line.
@@ -952,7 +986,8 @@ class Walk {
         const governed =
           /^(?:ls|stat|file|rm)$/.test(verb) ||
           (verb === "git" && /^(?:rm|status|ls-files)$/.test(normalizeVerb(eff.rest[1] ?? "")));
-        const plainCmd = !/[|`<]|\$\(|\bxargs\b/.test(cmd);
+        // Judged on the whole command: a listing inside `$(ls DIR)` feeds a loop.
+        const plainCmd = !/[|`<]|\$\(|\bxargs\b/.test(this.topCmd);
         if (!(governed && plainCmd)) {
           for (const w of eff.rest) {
             const why = this.mentionReason(w, cwds);
@@ -1022,6 +1057,16 @@ export function expandedReadReason(cmd, roots) {
       const s = sensitiveDirReason(abs);
       if (s)
         return `file names fed on stdin to a reader (xargs, cpio, pax) come from ${s} (word ${raw.slice(0, 60)}); ${NAME_THE_FILE}`;
+    }
+  }
+  // File names read by `read` / `mapfile` or a for loop over a substitution
+  // (`find $GAFFER_DATA -type f | while read f; do gzip -c "$f"; done`): they reach any
+  // program, so a listing of a directory that holds secrets is refused whatever reads.
+  if (walk.nameReader) {
+    for (const { abs, raw } of walk.dirWords) {
+      const s = sensitiveDirReason(abs);
+      if (s)
+        return `file names read by a loop (read, mapfile, for over a substitution) come from ${s} (word ${raw.slice(0, 60)}); ${NAME_THE_FILE}`;
     }
   }
   return null;

@@ -595,7 +595,8 @@ request on REST, the CLI and the factory MCP mount: a scoped principal sees exac
 tickets it may change, everything factory-wide is refused (`403 SCOPE_DENIED`), the
 repository and agent lists (`/repositories` in every hidden mode, `/scope/repos?all=1`,
 `/agents`, `/api/squad`) hold only the repositories it reaches and the agents on its
-tickets, and repository-level writes need an admin principal (a ticket's own
+tickets (a ticket it reaches that links another repository shows that repository's name
+and access, never its location or gate commands), and repository-level writes need an admin principal (a ticket's own
 runner-executed commands are a ticket write, see "What a ticket writer can make the
 runner run" below). Its own identity
 (`/api/whoami`), the club's name and kit (`/api/club`) and the API description

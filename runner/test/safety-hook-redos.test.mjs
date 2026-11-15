@@ -228,6 +228,27 @@ for (const [label, command] of [
   }
 }
 
+// Rules that rescan a long word at every command position inside it (`{` starts one)
+// are quadratic in each of about fifty rules, over every resolved view: 63 KB of `${`
+// took the whole hook about 100 s, past Claude Code's hook timeout (a version without
+// onFailure: block then runs the tool). Past its rule budget (decide.mjs
+// RULE_TIME_BUDGET_MS) the hook refuses the command as unverifiable, inside the timeout.
+{
+  const start = Date.now();
+  const res = spawnSync(process.execPath, [HOOK], {
+    input: JSON.stringify(bash(`${"${".repeat(31500)}zz`)),
+    cwd: opts.cwd,
+    env: { ...process.env, ...opts.env },
+    encoding: "utf8",
+    timeout: 58_000,
+  });
+  const ms = Date.now() - start;
+  t.assert(
+    `63 KB of \${: refused as unverifiable before the hook's 60 s timeout (exit ${res.status}, ${ms}ms)`,
+    res.status === 2 && /ran out of time/.test(res.stderr) && ms < 50_000,
+  );
+}
+
 // The ~100 KB deep path (`echo x > /a/a/…`, and the same path as a Write) took ~60-70s
 // to decide in the secret-path regexes, which are polynomial in the input length. The
 // input-size cap now blocks it before any rule runs: the whole spawned hook answers

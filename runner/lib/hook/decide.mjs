@@ -263,6 +263,23 @@ function allow() {
 // input). Set per decision by decideRaw(); the wrapper passes a writeSync(1, …) sink.
 let STDOUT_SINK = null;
 
+// A WALL-CLOCK BUDGET for the deny rules. Several rules are polynomial in the command's
+// length (a long word with a `{` every other character: each command position inside it
+// rescans the word), and the rules run over every resolved view of the command: on 63 KB
+// of `${` the whole hook took about 100 s, past Claude Code's hook timeout, where a version
+// without `onFailure: block` runs the tool unchecked. Past this budget the command is
+// refused as unverifiable, well inside the timeout. A constant, never configurable (a knob
+// could only loosen it); no legitimate command comes near it.
+export const RULE_TIME_BUDGET_MS = 10_000;
+let DECISION_STARTED = 0;
+function withinRuleBudget(cmd) {
+  if (Date.now() - DECISION_STARTED > RULE_TIME_BUDGET_MS) {
+    block(
+      `unverifiable: the hook ran out of time deciding this command (over ${RULE_TIME_BUDGET_MS / 1000}s in its rules); split it into shorter commands (command: "${cmd.slice(0, 120)}")`,
+    );
+  }
+}
+
 function checkCommand(cmd) {
   // A bootstrap tick (GAFFER_BOOTSTRAP_INSTALL=1) may relax ONLY the install-tagged
   // package-manager DENY rules, and ONLY for a command inside the fresh bootstrap dir. Compute it
@@ -278,6 +295,7 @@ function checkCommand(cmd) {
   for (const rule of rules) {
     // On a bootstrap tick the install-tagged rules are judged per segment below.
     if (rule.install && bootDir) continue;
+    withinRuleBudget(cmd);
     if (rule.re.test(cmd)) block(`${rule.why} — "${cmd.slice(0, 120)}"`);
   }
   // The same rules over the command as the shell would resolve it (quotes, backslashes,
@@ -291,6 +309,7 @@ function checkCommand(cmd) {
       // Install rules are judged on the raw text (and per segment on a bootstrap tick);
       // a rule marked `spellings: false` matches mentions anywhere and is raw-only too.
       if (rule.install || rule.spellings === false) continue;
+      withinRuleBudget(cmd);
       if (rule.re.test(view)) {
         block(
           `${rule.why} (as the shell would run it: "${view.slice(0, 100)}") — "${cmd.slice(0, 120)}"`,
@@ -830,6 +849,7 @@ export function decideRaw(raw, { env, cwd, stdout } = {}) {
     CURRENT_TOOL = null;
     CURRENT_TARGET = null;
     TOOL_OBSERVED = false;
+    DECISION_STARTED = Date.now();
     STDOUT_SINK =
       stdout ??
       ((text) => {

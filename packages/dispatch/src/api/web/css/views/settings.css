@@ -1060,4 +1060,15 @@
       flex-wrap: wrap;
     }
   }
+  /* At 320 px the count, Discard and Save changes do not fit one row (the count
+     slid under Discard): the count takes its own line above the two buttons. */
+  @media (max-width: 359px) {
+    .boot-save {
+      flex-wrap: wrap;
+      row-gap: 4px;
+    }
+    .boot-dirty {
+      flex: 1 0 100%;
+    }
+  }
 }

@@ -229,6 +229,37 @@ export default async function s19(t, L) {
       "Settings at 320 px with the dial raised fits the screen (no sideways scroll)",
       `Settings @320 with the dial raised: dial=${Boolean(dial)} scrollWidth=${sw}`,
     );
+    // The unsaved bar's count, Discard and Save changes sit side by side or wrap,
+    // never on top of each other ("1 unsaDiscard" at 320 px).
+    const clash = await pg.evaluate(() => {
+      const bar = document.querySelector(".boot-save");
+      if (!bar || !bar.getBoundingClientRect().width) return "no unsaved bar";
+      const box = (e) => {
+        const r = document.createRange();
+        r.selectNodeContents(e);
+        return r.getBoundingClientRect();
+      };
+      const parts = [...bar.children].filter((c) => c.getBoundingClientRect().width);
+      const out = [];
+      for (let i = 0; i < parts.length; i++)
+        for (let j = i + 1; j < parts.length; j++) {
+          const a = box(parts[i]);
+          const b = box(parts[j]);
+          if (
+            a.right > b.left + 1 &&
+            b.right > a.left + 1 &&
+            a.bottom > b.top + 1 &&
+            b.bottom > a.top + 1
+          )
+            out.push(`${parts[i].textContent.trim()} / ${parts[j].textContent.trim()}`);
+        }
+      return out.join("; ");
+    });
+    t.check(
+      clash === "",
+      "Settings at 320 px: the unsaved bar's count, Discard and Save changes do not overlap",
+      `Settings @320 unsaved bar overlaps: ${clash}`,
+    );
     await pg.context().close();
   }
 

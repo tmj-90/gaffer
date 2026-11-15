@@ -215,15 +215,19 @@ waiting for Merge now, and the done lane.*
 **The Team sheet** on the Overview lists everything waiting on you, one action a row:
 decisions, sign-offs, approved changes to merge, blocked tickets, a delivery paused at
 a cap (Continue offers Continue and Stop) and one row for the lore drafts awaiting
-approval. *Delivered today* counts the tickets that landed since midnight UTC. The
-scoreboard headline leads with the work, not the number ("Webhook delivery #10 is
-blocked by a failing test.").
+approval. *Delivered today* counts the tickets that landed since midnight UTC, with a
+usual day beside it (the median of the days before). The scoreboard headline leads
+with the work, not the number ("Webhook delivery #10 is blocked by a failing test."),
+and says how many things need you once: the scoreboard's cells are the agents on the
+pitch, the deliveries and the wage bill. On a phone it names one blocked ticket, then
+"and N more blocked".
 
 **The Floor** (`#/floor`) draws the live factory as an isometric floor: stations along
 a conveyor in lifecycle order, one parcel per open ticket, a robot in the agent's shirt
 number on every live claim, a jam bay for blocked, paused and failed tickets, a spend
 tank against the daily budget and a lorry carrying what was done today. Everything on
-it is a link, and the stations are listed as text under the drawing.
+it is a link, and the stations are listed as text under the drawing. On a phone the
+station list comes first and the drawing is a figure you tap to zoom.
 
 **Health** (`#/health`, `GET /api/health`, and `gaffer wg stats` in the terminal) reads
 the usage ledger and the transition log, and says only what those can show:

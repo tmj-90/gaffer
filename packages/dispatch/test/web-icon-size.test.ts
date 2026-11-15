@@ -78,11 +78,12 @@ describe("web: every icon is sized", () => {
       expect(Number(svg.getAttribute("height"))).toBeLessThanOrEqual(48);
     }
     // The panel that rendered an 830px lock. The boot room's Access panel now
-    // opens on a kit-colour title block (no padlock icon beside its heading), so
-    // the check is that it rendered and every icon left in it is sized.
+    // opens on a plain level-2 head (no padlock icon beside its heading, and no
+    // block: Settings spends its two block heads elsewhere), so the check is that
+    // it rendered and every icon left in it is sized.
     const access = document.querySelector(".access-panel");
     expect(access).not.toBeNull();
-    expect(access!.querySelector(".panel-head.block .panel-title")?.textContent).toBe("Access");
+    expect(access!.querySelector(".panel-head .panel-title")?.textContent).toBe("Access");
     for (const svg of Array.from(access!.querySelectorAll("svg"))) {
       expect(Number(svg.getAttribute("width"))).toBeGreaterThan(0);
       expect(Number(svg.getAttribute("width"))).toBeLessThanOrEqual(48);

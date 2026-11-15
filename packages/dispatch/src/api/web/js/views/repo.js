@@ -10,7 +10,7 @@ import { badge, glyph, kitShirt, ycard } from "../icons.js";
 import { boardAll } from "../matchday.js";
 import { navigate, router, setDocTitle } from "../router.js";
 import { confirmSheet, hideRepoSheet, valueSheet } from "../sheets.js";
-import { riskBadge, statusBadge } from "../status.js";
+import { riskBadge, statusBadge, ticketRef } from "../status.js";
 import { guard, toast } from "../toast.js";
 import {
   MAP_TONE_RANK,
@@ -112,7 +112,7 @@ async function renderRepo(id) {
     el("header", { class: "gr-head" }, [
       el("div", { class: "gr-kit" }, kitShirt(repo.name, 96)),
       el("div", { class: "gr-head-main" }, [
-        el("div", { class: "tk-meta" }, [
+        el("div", { class: "gr-meta" }, [
           el("span", { class: `gr-mapped${isMapped ? "" : " is-off"}` }, [
             glyph(isMapped ? "done" : "draft", 16),
             el(
@@ -163,7 +163,7 @@ async function renderRepo(id) {
   roLock(branchBtn, "repo");
   const kvRow = (k, v) => [el("dt", {}, k), el("dd", {}, v)];
   const groundCard = el("section", { class: "card gr-card", "aria-label": "The ground" }, [
-    panelHead("The ground", "where the work is done", null, { kit: "claret" }),
+    panelHead("The ground", "where the work is done", null, { tone: "reference", level: 2 }),
     el("dl", { class: "kv gr-kv" }, [
       ...kvRow(
         "Path",
@@ -200,13 +200,13 @@ async function renderRepo(id) {
   ]);
 
   const checksCard = el("section", { class: "card gr-card", "aria-label": "Referee's checks" }, [
-    panelHead("Referee's checks", "the Definition of Done", null, { kit: "sky" }),
+    panelHead("Referee's checks", "the Definition of Done", null, { level: 2 }),
     roLockAll(renderRepoCommandsEditor(repo), "repo"),
   ]);
 
   const scopeCard = el("section", { class: "card gr-card", "aria-label": "On the map" }, [
     panelHead("On the map", `${scopes.length} ground${scopes.length === 1 ? "" : "s"}`, null, {
-      kit: "ink",
+      level: 2,
     }),
     el(
       "p",
@@ -219,7 +219,9 @@ async function renderRepo(id) {
           { class: "clean gr-rows" },
           scopes.map((s) => renderRepoScopeRow(repo, s)),
         )
-      : el("p", { class: "quiet" }, "Not on the map: this repo is its own single-repo scope."),
+      : emptyState("Not on the map: this repo is its own single-repo scope.", null, null, null, {
+          inline: true,
+        }),
     el("h3", { class: "gr-sub" }, "Link to a ground"),
     renderAddAssociationForm(repo, allNodes, scopes),
   ]);
@@ -234,7 +236,7 @@ async function renderRepo(id) {
           ? `${tickets.length > 8 ? `8 of ${tickets.length}` : plural(tickets.length, "ticket")} delivering here, live first`
           : "",
         null,
-        { kit: "ink" },
+        { level: 2 },
       ),
       tickets
         ? fixtureList(sortedT, { empty: "No ticket delivers to this repo yet." })
@@ -399,7 +401,9 @@ function renderRepoTickets(repo, tickets, err) {
     return box;
   }
   if (!tickets.length) {
-    box.appendChild(el("p", { class: "quiet" }, "No tickets reference this repo yet."));
+    box.appendChild(
+      emptyState("No tickets reference this repo yet.", null, null, null, { inline: true }),
+    );
     return box;
   }
   const recent = [...tickets]
@@ -414,7 +418,8 @@ function renderRepoTickets(repo, tickets, err) {
           "li",
           {},
           el("a", { class: "repo-ticket-row", href: `#/ticket/${t.id}` }, [
-            el("span", { class: "num" }, t.number != null ? `#${t.number}` : t.id.slice(0, 8)),
+            // The one ticket number build (A-20); the row is the link.
+            ticketRef(t, { size: "s", link: false }),
             el("span", { class: "repo-ticket-title" }, t.title),
             el("span", { class: "repo-ticket-side" }, [
               statusBadge(t.status, t.landing_state),

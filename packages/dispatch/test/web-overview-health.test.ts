@@ -191,4 +191,38 @@ describe("web: Overview cycle-time/throughput from /api/health", () => {
     };
     ticketsPayload = { tickets: [] };
   });
+
+  it("reads the summary over Health's 30-day window and labels the accepted-change price", async () => {
+    healthPayload = {
+      total_usd: 12,
+      cost_per_shipped_usd: 3,
+      shipped_count: 4,
+      accepted_change: {
+        window_days: 30,
+        accepted_changes: 4,
+        cost_per_accepted_change_usd: 2.5,
+        attempts_per_accepted_change: 1.5,
+      },
+      cycle_time: { median_days: 3.5, series: zeros14() },
+      throughput: { last7: 9, prev7: 3, series: zeros14() },
+    };
+    await loadApp();
+    for (let i = 0; i < 8; i++) await tick();
+    const urls = (fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls.map((c) =>
+      String(c[0]),
+    );
+    const health = urls.filter((u) => u.includes("/api/health"));
+    expect(health.length).toBeGreaterThan(0);
+    for (const u of health) {
+      expect(u).toContain("view=summary");
+      expect(u).toContain("window_days=30");
+    }
+    const facts = [...document.querySelectorAll(".wage-facts > div")].find(
+      (d) => d.querySelector("dt")?.textContent === "Per accepted change",
+    )!;
+    expect(facts.querySelector("dd")?.textContent).toContain("$2.50");
+    expect(facts.querySelector("small")?.textContent).toBe(
+      "last 30 days · 4 accepted · 1.5 attempts each, every attempt counted",
+    );
+  });
 });

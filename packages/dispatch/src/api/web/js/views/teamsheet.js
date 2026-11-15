@@ -2,9 +2,9 @@
 // Moved verbatim from app.js (the entry); the module map is in app.js.
 
 import { roLock } from "../access.js";
-import { panelHead } from "../components.js";
+import { emptyState, panelHead } from "../components.js";
 import { el } from "../dom.js";
-import { fmtTime, fmtWait, plural } from "../format.js";
+import { fmtDuration, fmtTime, plural } from "../format.js";
 import { agentChip, glyph, icon, ycard } from "../icons.js";
 import { ON_BENCH } from "../matchday.js";
 import {
@@ -14,7 +14,7 @@ import {
   readyApprovalSheet,
   unblockSheet,
 } from "../sheets.js";
-import { reasonTag, reasonText } from "../status.js";
+import { reasonTag, reasonText, ticketRef } from "../status.js";
 import { deliveredBy } from "./review-comments.js";
 import { integrityFlagOf } from "./review-packet.js";
 
@@ -61,6 +61,7 @@ function whatIOwnPanel(queue, f) {
       // The claret block by meaning: this is what the viewer must act on.
       panelHead("Team sheet", items.length ? `needs you · ${total}` : null, null, {
         tone: "needs",
+        level: 2,
       }),
     ],
   );
@@ -70,20 +71,16 @@ function whatIOwnPanel(queue, f) {
     const bench = f ? f.tickets.filter((t) => ON_BENCH.has(t.status)) : [];
     const drafts = bench.filter((t) => t.status === "draft").length;
     card.appendChild(
-      el("div", { class: "empty-state" }, [
-        el(
-          "p",
-          { class: "es-title" },
-          "Nothing needs you. Every ticket in play is with an agent or the queue.",
-        ),
+      emptyState(
+        "Nothing needs you. Every ticket in play is with an agent or the queue.",
         bench.length
-          ? el("p", { class: "es-sub" }, [
+          ? [
               `On the bench: ${[drafts ? `${drafts} draft` : "", bench.length - drafts ? `${bench.length - drafts} refining` : ""].filter(Boolean).join(", ")}. `,
               el("a", { href: "#/work?status=draft" }, "Pick one to sharpen"),
               " and it joins the fixtures.",
-            ])
+            ]
           : null,
-      ]),
+      ),
     );
     return card;
   }
@@ -241,7 +238,6 @@ const OWN_BY_KINDS = new Set(["review", "awaiting_merge", "parked"]);
 /** One team-sheet row: rank · card · kind · #ref, the title (a link), the reason, the wait, the action. */
 function renderOwnedItem(it, i = 0, f = null) {
   const t = it.ticket;
-  const ref = t ? (t.number != null ? `#${t.number}` : t.id.slice(0, 8)) : null;
   const href = t ? (it.kind === "review" ? `#/review/${t.id}` : `#/ticket/${t.id}`) : null;
   const title = t && t.title ? t.title : it.kind === "decision" ? decisionTitle(it, f) : null;
   // An approved change's row says why it waits in its landing_state's words (the ticket
@@ -266,7 +262,8 @@ function renderOwnedItem(it, i = 0, f = null) {
           // An approved change says where its landing is (the ticket page's own words).
           (landing && landing.label) || OWN_WORD[it.kind] || it.label,
         ]),
-        ref ? el("span", { class: "own-ref" }, ref) : null,
+        // The one ticket number build (A-20), small: the title below is the row's link.
+        t ? el("span", { class: "own-ref" }, ticketRef(t, { size: "s", link: false })) : null,
       ]),
       title ? el("p", { class: "own-title" }, href ? el("a", { href }, title) : title) : null,
       // A decision's reason IS its question text; the title above is its headline.
@@ -280,7 +277,7 @@ function renderOwnedItem(it, i = 0, f = null) {
           : el(
               "span",
               { class: "own-age tabnum", title: `Waiting since ${fmtTime(it.since)}` },
-              `Waited ${fmtWait(it.waitedMs)}`,
+              `Waited ${fmtDuration(it.waitedMs)}`,
             ),
         by
           ? el("span", { class: "own-by" }, [

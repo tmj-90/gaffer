@@ -419,17 +419,6 @@
     gap: 6px;
     font: 600 var(--t12) var(--f-cond);
   }
-  .conf-bar {
-    width: 54px;
-    height: 6px;
-    background: var(--viz-track);
-    overflow: hidden;
-  }
-  .conf-fill {
-    display: block;
-    height: 100%;
-    background: var(--viz-mark);
-  }
 
   /* Attempts: a penalty shootout, oldest first; each attempt's output folds away. */
   .failure-history {

@@ -3,7 +3,7 @@
 
 import { readOnly, roLock, roLockAll } from "../access.js";
 import { api } from "../api.js";
-import { panelHead, viewHead } from "../components.js";
+import { emptyState, panelHead, viewHead } from "../components.js";
 import { clear, el, field } from "../dom.js";
 import { plural } from "../format.js";
 import { badge } from "../icons.js";
@@ -138,7 +138,7 @@ async function renderCreate(param) {
     { class: "card prog cr-ticket", id: "one-ticket", "aria-labelledby": "one-ticket-h" },
     [
       (() => {
-        const h = panelHead("One ticket", "a friendly: outside any campaign", null, { kit: "sky" });
+        const h = panelHead("One ticket", "a friendly: outside any campaign", null, { level: 2 });
         h.querySelector(".panel-title").id = "one-ticket-h";
         return h;
       })(),
@@ -298,7 +298,10 @@ function renderRepoScopeSelector({ nodes, allRepos, getDraft, onChange }) {
         ]),
       );
     }
-    if (!attached.size) repoList.appendChild(el("p", { class: "dim" }, "No repos attached yet."));
+    if (!attached.size)
+      repoList.appendChild(
+        emptyState("No repos attached yet.", null, null, null, { inline: true }),
+      );
     renderWriteHint();
   }
 
@@ -361,7 +364,9 @@ function renderRepoScopeSelector({ nodes, allRepos, getDraft, onChange }) {
     } catch (e) {
       if (e.code === "UNAUTHORIZED") return;
       suggestBox.appendChild(
-        el("p", { class: "dim" }, "Suggestions unavailable — attach repos manually."),
+        emptyState("Suggestions unavailable: attach repos manually.", null, null, null, {
+          inline: true,
+        }),
       );
     }
   }

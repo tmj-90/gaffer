@@ -146,6 +146,23 @@ function kitClashNote(primary, secondary) {
   const c = clashes[0];
   return `Your ${ord[c.which]} colour is close to ${c.words}, so ${house[c.which]}; shirts and the crest keep it.`;
 }
+/** The house claret as text, day and floodlit (tokens.css --claret-ink). */
+const HOUSE_INK_DAY = [122, 22, 49];
+const HOUSE_INK_NIGHT = [232, 180, 196];
+/** A derived text colour, or `house` when it sits within KIT_CLASH of a referee's card. */
+function inkClear(c, house) {
+  return CARDS.some((k) => k.rgb.some((rgb) => okDistance(c, rgb) < KIT_CLASH)) ? house : c;
+}
+/**
+ * The crest's letters on the first colour: white when it reads at 4.5:1, else the ink
+ * stepped toward black with readableOn until it does (white or black always can: a
+ * mid tone that gave the plain ink only 4.24:1 now reads at 4.5).
+ */
+function crestInk(bg) {
+  if (contrastRatio(bg, RGB_WHITE) >= 4.5) return "#ffffff";
+  const ink = readableOn(RGB_INK, bg, [0, 0, 0]);
+  return rgbHex(ink) === rgbHex(RGB_INK) ? "var(--counter-ink)" : rgbCss(ink);
+}
 /** A text colour on `bg` (white or ink, whichever reads better) and its quieter tint. */
 function inkOn(bg) {
   const light = contrastRatio(bg, RGB_WHITE) >= contrastRatio(bg, RGB_INK);
@@ -198,7 +215,7 @@ function kitTokens(primary, secondary) {
   };
   if (P0) {
     out["--kit-1"] = primary;
-    out["--on-kit-1"] = inkOn(P0).light ? "#ffffff" : "var(--counter-ink)";
+    out["--on-kit-1"] = crestInk(P0);
     out["--shirt-edge"] = rgbCss(mixRgb(P0, [0, 0, 0], 0.55));
   }
   if (S0) out["--kit-2"] = secondary;
@@ -211,8 +228,13 @@ function kitTokens(primary, secondary) {
     // selected-row sky wash: it reads at 4.5:1 on every one of them, in each kit.
     const wash = S ? mixRgb(RGB_WHITE, S, 0.2) : RGB_HOUSE_WASH;
     const washDark = S ? mixRgb(RGB_PAPER_DARK, S, 0.1) : RGB_HOUSE_WASH_DARK;
-    const day = readableOn(P, [RGB_WHITE, RGB_PAPER_2, wash], RGB_INK);
-    const night = readableOn(P, [RGB_PAPER_DARK, RGB_PAPER_2_DARK, washDark], RGB_WHITE);
+    // A stepped ink can land near a referee's card although the club colour does not
+    // (#009900 steps to 10.3 from the pass green): text then keeps the house ink.
+    const day = inkClear(readableOn(P, [RGB_WHITE, RGB_PAPER_2, wash], RGB_INK), HOUSE_INK_DAY);
+    const night = inkClear(
+      readableOn(P, [RGB_PAPER_DARK, RGB_PAPER_2_DARK, washDark], RGB_WHITE),
+      HOUSE_INK_NIGHT,
+    );
     out["--claret-ink"] = `light-dark(${rgbCss(day)}, ${rgbCss(night)})`;
   }
   if (S) {
@@ -310,6 +332,7 @@ export {
   KIT_CLASH,
   okDistance,
   cardClash,
+  crestInk,
   kitClashes,
   kitClashNote,
   kitTokens,

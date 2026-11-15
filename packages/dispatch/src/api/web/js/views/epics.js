@@ -4,7 +4,7 @@
 import { agentTitle, agentWho, roLock } from "../access.js";
 import { api } from "../api.js";
 import { ensureSquad } from "../club.js";
-import { emptyState, panelHead, viewHead } from "../components.js";
+import { button, dataTable, emptyState, meter, panelHead, viewHead } from "../components.js";
 import { el, svgEl } from "../dom.js";
 import { plural } from "../format.js";
 import { agentShirt, glyph, icon, kitShirt, ycard } from "../icons.js";
@@ -17,7 +17,7 @@ import {
 } from "../matchday.js";
 import { jumpTo, routeSignal } from "../router.js";
 import { unblockSheet } from "../sheets.js";
-import { statusBadge, statusLabel } from "../status.js";
+import { statusBadge, statusLabel, ticketRef } from "../status.js";
 import { openPlanBuild } from "./plan.js";
 import { progPage } from "./programme.js";
 import { SPEC_STATUS_LABEL, specCoverageRollup, specGapCount } from "./specs.js";
@@ -166,12 +166,8 @@ async function renderEpics(param) {
         "No campaigns on the fixture list.",
         "Describe what to build in plain words: Plan a build proposes the draw (draft tickets, round by round), and the campaign lands here once you confirm it.",
         null,
-        roLock(
-          el("button", { class: "btn primary", type: "button", onclick: () => openPlanBuild() }, [
-            icon("spark"),
-            el("span", {}, "Plan a build"),
-          ]),
-        ),
+        // The view head's Plan a build is the one primary (A-43): here it is a link.
+        roLock(button("Plan a build", { kind: "link", onclick: () => openPlanBuild() })),
       ),
     );
     return wrap;
@@ -388,57 +384,51 @@ function seasonTable(seasons) {
         ? `All ${s.phases.length} rounds won`
         : `Round ${s.liveIdx + 1} of ${s.phases.length}`
       : "No rounds";
-    return el("tr", { class: s.held.length ? "is-held" : "" }, [
+    const rounds = [
       el(
-        "th",
-        { scope: "row", class: "ep-t-name" },
-        el("a", { href: `#epic-${s.epic.id}`, title: name }, name),
+        "span",
+        { class: "ep-mini", role: "img", "aria-label": roundsLabel },
+        s.phases.map((p, i) => {
+          const tix = s.byPhase.get(p) || [];
+          const d = tix.filter((t) => t.status === "done").length;
+          const isHeld = tix.some((t) => s.heldIds.has(t.id));
+          return el("i", {
+            class: isHeld
+              ? "is-held"
+              : d === tix.length
+                ? "is-won"
+                : i === s.liveIdx
+                  ? "is-live"
+                  : "",
+            style: { "--p": `${tix.length ? Math.round((d / tix.length) * 100) : 0}%` },
+          });
+        }),
       ),
-      el("td", { class: "ep-t-rounds" }, [
-        el(
-          "span",
-          { class: "ep-mini", role: "img", "aria-label": roundsLabel },
-          s.phases.map((p, i) => {
-            const tix = s.byPhase.get(p) || [];
-            const d = tix.filter((t) => t.status === "done").length;
-            const isHeld = tix.some((t) => s.heldIds.has(t.id));
-            return el("i", {
-              class: isHeld
-                ? "is-held"
-                : d === tix.length
-                  ? "is-won"
-                  : i === s.liveIdx
-                    ? "is-live"
-                    : "",
-              style: { "--p": `${tix.length ? Math.round((d / tix.length) * 100) : 0}%` },
-            });
-          }),
-        ),
-        el("span", { class: "ep-t-sub", "aria-hidden": "true" }, roundsLabel),
-      ]),
-      el("td", { class: "ep-t-num tabnum" }, `${s.done}/${s.members.length}`),
-      el("td", { class: "ep-t-where" }, where),
-    ]);
+      el("span", { class: "ep-t-sub", "aria-hidden": "true" }, roundsLabel),
+    ];
+    return {
+      // The name wraps, never truncates (A-52): the full name is the link's text.
+      name: el("a", { class: "ep-t-name", href: `#epic-${s.epic.id}` }, name),
+      rounds,
+      // The score is a numeric column in body figures (A-34), with its count.
+      done: s.members.length ? `${s.done} of ${s.members.length}` : null,
+      where,
+    };
   });
-  return progPage("ep-table", "claret", "The table", `${plural(seasons.length, "campaign")}`, [
-    el("div", { class: "ep-table-scroll" }, [
-      el("table", { class: "ep-season" }, [
-        el(
-          "caption",
-          { class: "sr-only" },
-          "Every campaign: its rounds, tickets done and what holds it",
-        ),
-        el("thead", {}, [
-          el("tr", {}, [
-            el("th", { scope: "col" }, "Campaign"),
-            el("th", { scope: "col" }, "Rounds"),
-            el("th", { scope: "col", class: "ep-t-num" }, "Done"),
-            el("th", { scope: "col" }, "Where it stands"),
-          ]),
-        ]),
-        el("tbody", {}, rows),
-      ]),
-    ]),
+  // A reference table: no block (A-02, A-03); the one shared table part (A-34).
+  return progPage("ep-table", null, "The table", `${plural(seasons.length, "campaign")}`, [
+    dataTable({
+      caption: "Every campaign: its rounds, tickets done and what holds it",
+      columns: [
+        { key: "name", label: "Campaign" },
+        { key: "rounds", label: "Rounds" },
+        { key: "done", label: "Done", numeric: true, missing: "no tickets yet" },
+        { key: "where", label: "Where it stands" },
+      ],
+      rows,
+      stackOnPhone: true,
+      cls: "ep-season",
+    }),
   ]);
 }
 
@@ -457,7 +447,9 @@ function renderEpicCard(s, ctx, specLink, focused) {
     epic.name,
     aux,
     { text: "On the map", href: `#/node/${epic.id}` },
-    { kit: "sky", level: "h2" },
+    // A plain level-2 head: a campaign is a section of the page, not a block the view
+    // leads with (A-03); Held / Needs you ride beside it with their card and word.
+    { level: 2 },
   );
   if (held.length)
     head.appendChild(el("span", { class: "ep-flag" }, [redCard(22), el("span", {}, "Held")]));
@@ -666,7 +658,8 @@ function renderEpicDag(byPhase, phases, ctx) {
       },
       [
         el("span", { class: "dn-top" }, [
-          el("span", { class: "dn-num" }, t.number != null ? `#${t.number}` : "—"),
+          // The one ticket number build, small on a card (A-20, A-21).
+          el("span", { class: "dn-num" }, ticketRef(t, { size: "s", link: false })),
           needs ? ycard(16) : null,
           statusBadge(t.status, t.landing_state),
         ]),
@@ -706,17 +699,12 @@ function renderEpicDag(byPhase, phases, ctx) {
       [
         el("header", { class: "ep-round-head" }, [
           el("h3", { class: "ep-round-name" }, name),
+          el("span", { class: "ep-round-frac", "aria-hidden": "true" }, `${done} of ${tix.length}`),
+          // The one used-of-a-whole bar (A-35): done of the round, no limit tick.
           el(
             "span",
-            { class: "ep-round-frac tabnum", "aria-hidden": "true" },
-            `${done}/${tix.length}`,
-          ),
-          el(
-            "span",
-            { class: "ep-round-bar", "aria-hidden": "true" },
-            el("i", {
-              style: { width: `${tix.length ? Math.round((done / tix.length) * 100) : 0}%` },
-            }),
+            { class: "ep-round-meter", "aria-hidden": "true" },
+            meter({ value: done, max: tix.length, label: `${name} done` }),
           ),
         ]),
         el(
@@ -830,4 +818,4 @@ function drawEpicLines(draw) {
   }
 }
 
-export { computePhases, isAcceptanceTicket, redCard, renderEpics };
+export { computePhases, isAcceptanceTicket, redCard, renderEpics, seasonTable };

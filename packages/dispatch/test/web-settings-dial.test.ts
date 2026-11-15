@@ -8,6 +8,7 @@
 // Also: an address under #/ that names no page renders the 404 page, not the
 // Overview.
 
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -139,6 +140,9 @@ describe("web: the boot room's team instructions", () => {
     const check = testingCheck()!;
     expect(check.className).toContain("is-nogo");
     expect(check.textContent).toContain("No repository has a registered test command");
+    // A No-go is advice: the verdict flag with its word, never the "failed" cross (P1 follow-up).
+    expect(check.querySelector(".vmark.vm-flag .vm-word")?.textContent).toBe("No-go");
+    expect(check.querySelector(".glyph")).toBeNull();
   });
 
   it("under auto with a test command registered somewhere, the squad plays Testing", async () => {
@@ -251,5 +255,14 @@ describe("web: the boot room's team instructions", () => {
     expect(view.querySelector(".err-code")?.textContent).toBe("404");
     expect(view.querySelector('a.btn.primary[href="#/overview"]')).not.toBeNull();
     expect(document.title).toBe("Page not found · Gaffer");
+  });
+
+  it("the boot room's column may shrink, so 320 px with the dial raised does not scroll sideways", () => {
+    const css = readFileSync(
+      path.resolve(process.cwd(), "src/api/web/css/views/settings.css"),
+      "utf8",
+    );
+    const rule = /\.boot-main \{([^}]*)\}/.exec(css)![1]!;
+    expect(rule).toMatch(/grid-template-columns:\s*minmax\(0, 1fr\)/);
   });
 });

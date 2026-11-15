@@ -1391,7 +1391,17 @@ try {
     const all = await allTicketRows();
     const open = all.filter((t) => !["done", "cancelled"].includes(t.status)).length;
     await page.goto(`${BASE}/#/floor`, { waitUntil: "load" });
-    await sleep(1200);
+    // Wait for the drawing itself (a bounded poll), not a fixed sleep: under load the
+    // Floor's reads can take longer than any sleep chosen here (REVIEW-P3 follow-up 6).
+    await page
+      .waitForFunction(
+        (n) =>
+          Boolean(document.querySelector("svg.fl-svg")) &&
+          (n === 0 || document.querySelectorAll("svg.fl-svg a.fl-parcel").length > 0),
+        open,
+        { timeout: 20000 },
+      )
+      .catch(() => null);
     const fl = await page.evaluate(() => {
       const ps = [...document.querySelectorAll("svg.fl-svg a.fl-parcel:not([data-status='done'])")];
       return {
@@ -1457,7 +1467,15 @@ try {
         const p3 = await c3.newPage();
         await p3.goto(`${BASE}/?token=${TOKEN}#/health`, { waitUntil: "load" });
         await p3.evaluate((t) => document.documentElement.setAttribute("data-theme", t), theme);
-        await sleep(900);
+        // Wait for the note (a bounded poll): Health can still say "Loading..." after a
+        // fixed 900 ms when the machine is busy (REVIEW-P3 follow-up 6).
+        await p3
+          .waitForFunction(
+            () => (document.querySelector(".usage-pause-note")?.textContent || "").trim().length,
+            null,
+            { timeout: 20000 },
+          )
+          .catch(() => null);
         const got = await p3.evaluate(() => {
           const n = document.querySelector(".usage-pause-note");
           return {
@@ -1664,14 +1682,15 @@ try {
             pipeDisplay: pipe ? getComputedStyle(pipe).display : null,
             card: card ? card.getBoundingClientRect().toJSON() : null,
             sheetTop: sheet ? sheet.getBoundingClientRect().top : null,
-            // "N things need you" is said once on a phone: with rows on the Team Sheet,
-            // the headline's count and the scoreboard's Need-you cell are not shown.
-            needYouRepeats:
+            // "N things need you" is said once in the hero (A-13, A-50): with rows on the
+            // Team Sheet the headline's count shows on every width and no scoreboard
+            // cell repeats it. The visible count spots in the scoreboard, by class.
+            needYouShown:
               sheet && sheet.querySelector(".own-row")
                 ? [...document.querySelectorAll(".scoreboard .hl-count, .scoreboard .sc-needs")]
                     .filter((n) => n.getBoundingClientRect().width > 0)
                     .map((n) => n.className)
-                : [],
+                : null,
             // The headline leads with the work: no clause opens on a ticket number.
             hlLeadsWithNumber: [...document.querySelectorAll(".scoreboard .hl-block")]
               .map((n) => n.textContent.trim())
@@ -1715,9 +1734,13 @@ try {
         }
         if (m.grounds.length) problems.push(`${tag} ${m.grounds.join(", ")}`);
         if (m.doubleRules) problems.push(`${tag} ${m.doubleRules} treatment rows ruled twice`);
-        if (v === "overview" && w <= 760 && m.needYouRepeats.length)
+        if (
+          v === "overview" &&
+          m.needYouShown &&
+          (m.needYouShown.length !== 1 || m.needYouShown[0] !== "hl-count")
+        )
           problems.push(
-            `${tag} the need-you count repeats beside the Team Sheet (${m.needYouRepeats.join(", ")})`,
+            `${tag} the need-you count is not said exactly once in the headline (${m.needYouShown.join(", ") || "none shown"})`,
           );
         if (m.hlLeadsWithNumber.length)
           problems.push(`${tag} a headline clause leads with a number: ${m.hlLeadsWithNumber[0]}`);

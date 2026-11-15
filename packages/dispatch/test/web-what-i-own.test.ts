@@ -7,6 +7,7 @@
 //     to its ticket,
 //   - shows a quiet empty state when nothing is owed.
 
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -137,6 +138,16 @@ describe("web: What I own lane", () => {
     expect(decisionRow.querySelector("button.own-act")?.textContent).toBe("Answer…");
     // Ticket ref + a waited stamp are shown.
     expect(decisionRow.querySelector(".own-ref")?.textContent).toBe("#12");
+    // The one ticket number build at row size, not a second link (A-20, A-21).
+    expect(decisionRow.querySelector(".own-ref .tref")?.className).toBe("tref tref-s");
+    // The rank is an order in quiet 20 px ink, never louder than the title (A-21).
+    const css = readFileSync(
+      path.resolve(process.cwd(), "src/api/web/css/views/overview.css"),
+      "utf8",
+    );
+    const rank = /\.own-rank \{([^}]*)\}/.exec(css)![1]!;
+    expect(rank).toContain("var(--t20)");
+    expect(rank).toContain("var(--ink-2)");
     expect(decisionRow.querySelector(".own-age")?.textContent).toMatch(/waited/i);
 
     // Review + regulated approval rows are present and distinctly styled.

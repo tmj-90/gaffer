@@ -5,6 +5,7 @@
 // EXPLICIT CONFIRM step (with the evidence still visible); confirming POSTs the
 // policy with confirm:true. Also covers the active-policies one-click OFF.
 
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -32,6 +33,7 @@ const REC = {
   confidence: 0.95,
   reasons: ["approved 38 of 40 low-risk reviews in api-repo", "95% agreement across 40 decisions"],
   headline: "approved 38/40 low-risk reviews in api-repo — consider auto-approve for risk=low",
+  sample: { approvals: 38, rejections: 2, total: 40, unchanged: 30, unchangedKnown: 35 },
 };
 
 let lastPost: { url: string; body: any } | null = null;
@@ -168,5 +170,34 @@ describe("web: Graduated Autonomy enable flow", () => {
       gate: "approve",
       mode: "off",
     });
+  });
+
+  it("a suggestion reads 'approved 38 of 40' with a whisker, a defined confidence and plain risk words", async () => {
+    stubFetch([REC]);
+    await import(`${pathToFileURL(APP_JS).href}?t=${Date.now()}`);
+    await tick();
+    await tick();
+    const item = document.querySelector(".autonomy-recs .ar-item")!;
+    expect(item).not.toBeNull();
+    // A level-3 row head (A-15), with the risk in words, never "risk=low" (A-25).
+    const head = item.querySelector("h3.ar-item-head")!;
+    expect(head.textContent).toContain("Low risk");
+    expect(item.textContent).not.toContain("risk=");
+    // The evidence is a meterRow with its count and a Wilson whisker (F-E1).
+    const row = item.querySelector(".meter-list .meter-row")!;
+    expect(row.querySelector(".mr-fig")?.textContent).toBe("approved 38 of 40");
+    expect(row.querySelector(".mr-whisker")).not.toBeNull();
+    // Confidence is labelled and defined, not a bare "95%".
+    const conf = item.querySelector(".ar-conf")!;
+    expect(conf.textContent).toMatch(
+      /^Confidence 95%: the approval rate scaled by how much evidence/,
+    );
+    // The body sits at the small body size under the head.
+    const css = readFileSync(
+      path.resolve(process.cwd(), "src/api/web/css/views/settings.css"),
+      "utf8",
+    );
+    expect(css).toMatch(/\.ar-headline,\s*\.ar-conf \{\s*font-size: var\(--t14\)/);
+    expect(css).toMatch(/\.ar-item-head \{[^}]*var\(--t20\)/);
   });
 });

@@ -85,7 +85,9 @@ describe("web: Delivered today", () => {
     expect(delivered.getAttribute("href")).toBe("#/floor");
     expect(delivered.title).toBe("2 tickets landed (done) today: the Floor's lorry shows them");
     expect(delivered.querySelector(".kpi-val")?.textContent).toBe("2");
-    expect(cell("Need you")!.querySelector(".kpi-val")?.textContent).toBe("1");
+    // How many need you is the headline's count, not a second cell (A-13).
+    expect(cell("Need you")).toBeUndefined();
+    expect(document.querySelector(".scoreboard .hl-count")?.textContent).toBe("1 thing needs you.");
   });
 
   // ui-explore/F-15: "Work 4" had no visible explanation (only an aria-label).

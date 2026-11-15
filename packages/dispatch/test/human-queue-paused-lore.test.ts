@@ -95,13 +95,13 @@ async function queue(reader: MemoryReader): Promise<Queue> {
 }
 
 /** A ticket claimed by an agent, then paused at the turn cap. */
-function pausedTicket(): string {
+function pausedTicket(spend = "$0.02"): string {
   const t = wg!.createTicket({ title: "Capped", description: "d" }, human);
   wg!.addAcceptanceCriterion({ ticket_id: t.id, text: "ok" }, human);
   wg!.markReady(t.id, human);
   const agent = wg!.registerAgent({ display_name: "a" }, human);
   wg!.claimNextTicket({ agentId: agent.id, ttlSeconds: 600 }, human);
-  wg!.pauseDelivery(t.id, { reason: "cap_hit", turns: 999, spend: "$0.02" }, system);
+  wg!.pauseDelivery(t.id, { reason: "cap_hit", turns: 999, spend }, system);
   expect(wg!.view(t.id).ticket.status).toBe("paused");
   return t.id;
 }
@@ -137,6 +137,30 @@ describe("GET /api/human-queue: paused deliveries and lore drafts wait on the hu
     const after = await queue(memoryWith([]));
     expect(after.items.find((i) => i.kind === "paused")).toBeUndefined();
     expect(after.counts.paused).toBe(0);
+  });
+
+  it("the reason says the runner's four-decimal spend in dollars and cents, as money() does", async () => {
+    wg = Dispatch.open(":memory:");
+    pausedTicket("$0.9500");
+    const row = (await queue(memoryWith([]))).items.find((i) => i.kind === "paused");
+    expect(row?.reason).toContain("$0.95 spent so far");
+    expect(row?.reason).not.toContain("$0.9500");
+    expect(row?.spend_usd).toBe(0.95);
+  });
+
+  it("a spend under a cent reads <$0.01", async () => {
+    wg = Dispatch.open(":memory:");
+    pausedTicket("$0.0034");
+    const row = (await queue(memoryWith([]))).items.find((i) => i.kind === "paused");
+    expect(row?.reason).toContain("<$0.01 spent so far");
+  });
+
+  it("a spend that is not a figure is left as the runner relayed it", async () => {
+    wg = Dispatch.open(":memory:");
+    pausedTicket("unknown");
+    const other = (await queue(memoryWith([]))).items.find((i) => i.kind === "paused");
+    expect(other?.reason).toContain("unknown spent so far");
+    expect(other?.spend_usd).toBeNull();
   });
 
   it("lore drafts awaiting approval are ONE row that names them and counts them", async () => {

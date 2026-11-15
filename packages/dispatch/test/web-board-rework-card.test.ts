@@ -64,13 +64,27 @@ const EXHAUSTED_CARD = {
   },
 };
 
+// A human rejection whose reason is the server's code (A-25).
+const REJECTED_CARD = {
+  ...EXHAUSTED_CARD,
+  id: "tkt-rj",
+  number: 91,
+  title: "Export to CSV",
+  status: "in_review",
+  lastReviewFeedback: {
+    reason: "tester_failed:FAIL:",
+    reviewer: "tester",
+    at: "2026-01-02T00:00:00Z",
+  },
+};
+
 function emptyColumns() {
   return [
     { column: "draft", cards: [] },
     { column: "ready", cards: [] },
     { column: "in_progress", cards: [REWORKING_CARD] },
     { column: "blocked", cards: [EXHAUSTED_CARD] },
-    { column: "in_review", cards: [] },
+    { column: "in_review", cards: [REJECTED_CARD] },
     { column: "in_testing", cards: [] },
     { column: "ready_for_merge", cards: [] },
     { column: "done", cards: [] },
@@ -161,6 +175,18 @@ describe("rework loop web: the board card surfaces the rework state", () => {
     expect(blocked?.querySelector("article.board-card")).toBeTruthy();
     expect(blocked?.querySelector(".board-card .card-link")?.getAttribute("href")).toMatch(
       /^#\/ticket\//,
+    );
+  });
+
+  it("a rejection whose reason is a server code reads in words, the code in the title", async () => {
+    stubFetch();
+    await bootBoard();
+    const rej = document.querySelector('.board-card[data-id="tkt-rj"] .card-reject')!;
+    expect(rej).toBeTruthy();
+    expect(rej.textContent).toContain("Tester failed it");
+    expect(rej.textContent).not.toContain("tester_failed");
+    expect(rej.querySelector(".reason")?.getAttribute("title")).toBe(
+      "Server reason code: tester_failed:FAIL:",
     );
   });
 });

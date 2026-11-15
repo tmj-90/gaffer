@@ -697,6 +697,14 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     help: "Reject deliveries that touch forbidden paths (node_modules, .claude/, factory internals). On by default.",
   },
   {
+    key: "GAFFER_DOD_ENV_PASS",
+    type: "csv",
+    group: "quality",
+    label: "Variables the gates may see",
+    help:
+      "Every gate run (tests, typecheck, lint, acceptance checks, the merge gate) starts from an empty environment plus PATH, a throwaway HOME, the locale, CI=1, the proxy and CA settings and the toolchain homes. Name here (comma separated) any other variable your tests need. Names only: a credential-shaped name (*_TOKEN, *_KEY, *_SECRET, *_PASSWORD), an endpoint (*_URL, *_WEBHOOK*), ANTHROPIC_*, CLAUDE_*, DISPATCH_*, MEMORY_*, AWS_* or GAFFER_* is never passed, even when listed.",
+  },
+  {
     key: "MINIMALISM_REQUIRE_NOTE",
     type: "boolean",
     group: "quality",
@@ -1231,6 +1239,11 @@ export function settingValueProblem(
   if (def.key.endsWith("_URL")) {
     const problem = notifyUrlProblem(value, { allowPrivate: notifyAllowsPrivate(env) });
     if (problem !== null) return "is not an allowed webhook address";
+  }
+  if (def.key === "GAFFER_DOD_ENV_PASS") {
+    const names = value.split(/[\s,]+/).filter((n) => n !== "");
+    if (names.some((n) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(n)))
+      return "must be variable names separated by commas";
   }
   return null;
 }

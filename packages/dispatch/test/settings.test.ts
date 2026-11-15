@@ -16,6 +16,7 @@ import {
   resolveSettingsPath,
   SETTING_DEFS,
   ENV_ONLY_KEYS,
+  settingValueProblem,
   writeSettings,
 } from "../src/api/settings.js";
 
@@ -439,6 +440,15 @@ describe("settings bootstrap: settings.json + GAFFER_MODE presets become env DEF
     ).toBeUndefined();
     expect(presetsFor("strict", { GAFFER_STRICT_REQUIRE: "0" })["STRICT_MODE"]).toBe("1");
     expect(presetsFor("lite", { GAFFER_STRICT_REQUIRE: "1" })["STRICT_MODE"]).toBe("1");
+  });
+
+  it("GAFFER_DOD_ENV_PASS takes variable names only", () => {
+    const def = SETTING_DEFS.find((d) => d.key === "GAFFER_DOD_ENV_PASS")!;
+    expect(def).toBeDefined();
+    expect(settingValueProblem(def, "MY_VAR, OTHER_VAR")).toBeNull();
+    expect(settingValueProblem(def, "")).toBeNull();
+    expect(settingValueProblem(def, "MY_VAR=1")).not.toBeNull();
+    expect(settingValueProblem(def, "A;rm -rf /")).not.toBeNull();
   });
 
   it("the runner's settings.json allowlist is exactly SETTING_DEFS minus ENV_ONLY_KEYS", () => {

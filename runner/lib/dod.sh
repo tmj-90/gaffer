@@ -120,6 +120,79 @@ gaffer_dod_install_env() {
   eval "$_hv=\"\$_h\""
 }
 
+# THE GATE'S ENVIRONMENT (sandbox audit F2). Every gate run (the DoD gates, the acceptance
+# checks, dod-regate.sh: the merge gate, the conflict re-gate and the tester replay) starts
+# from `env -i` plus this list, on every provider and with no sandbox at all, exactly as
+# the pre-gate install does: the gate executes agent-written code, and the runner's own
+# environment carries the operator's model key, GITHUB_TOKEN, DISPATCH_API_TOKEN (with it a
+# test could approve as the operator over REST, and the server would seal it) and the
+# rest. The list:
+#   * gaffer_dod_install_env: PATH, a throwaway HOME (removed after the run), TMPDIR,
+#     locale, CI=1, the proxy and CA settings (under docker the container's own values);
+#   * on the host: TERM, TZ, the other LC_* names, the remaining trust-store and proxy
+#     names the agent env passes, the toolchain homes (GOROOT, GOPATH, GOMODCACHE,
+#     CARGO_HOME, RUSTUP_HOME, JAVA_HOME, NVM_DIR, PNPM_HOME, COREPACK_HOME, VOLTA_HOME,
+#     PYENV_ROOT, VIRTUAL_ENV, DOTNET_ROOT, ... and ~/.cargo, ~/.rustup, ~/go when they
+#     exist, as the tester replay does) and a placeholder git identity, since the scratch
+#     HOME has no ~/.gitconfig and a test that commits would otherwise fail;
+#   * the names in GAFFER_DOD_ENV_PASS (the operator's pass-through knob, names only);
+#   * the runner's own invocation names for this run (_GAFFER_DOD_INVOCATION_ENV: the
+#     tester replay's NODE_OPTIONS and proof key file path) and _GAFFER_DOD_EXTRA_ENV.
+# No credential or endpoint name ever passes (lib/env-scrub.sh, the agent scrub's own
+# patterns), and the knob cannot name the model provider, the agent CLI, dispatch or the
+# factory's knobs either (gaffer_env_name_never_for_gates). A value naming the factory
+# keys directory never passes.
+#   gaffer_dod_gate_env <array-name> <home-var-name>
+_GAFFER_DOD_TOOLCHAIN_ENV="GOROOT GOPATH GOMODCACHE GOFLAGS GOTOOLCHAIN GOCACHE CARGO_HOME RUSTUP_HOME RUSTUP_TOOLCHAIN JAVA_HOME NVM_DIR NVM_BIN PNPM_HOME COREPACK_HOME VOLTA_HOME PYENV_ROOT VIRTUAL_ENV DOTNET_ROOT"
+gaffer_dod_gate_env() {
+  local _garr="$1" _ghv="$2" _gv _gn _gh=""
+  local -a _ge=()
+  if ! declare -F gaffer_env_name_never_for_gates >/dev/null 2>&1; then
+    # shellcheck source=env-scrub.sh
+    . "$_GAFFER_DOD_LIB_DIR/env-scrub.sh" 2>/dev/null || return 1
+  fi
+  gaffer_dod_install_env _ge _gh || return 1
+  local _docker=0
+  [ "${SANDBOX_PROVIDER:-sandbox-exec}" = "docker" ] && [ -n "${GAFFER_DOD_WRAP:-}" ] && _docker=1
+  _gdod_add() {   # <name> <value>: append unless already named, never a credential
+    gaffer_env_name_is_credential "$1" && return 0
+    gaffer_env_name_is_endpoint "$1" && return 0
+    case "$2" in *gaffer/keys*) return 0 ;; esac
+    local _x
+    for _x in ${_ge[@]+"${_ge[@]}"}; do [ "${_x%%=*}" = "$1" ] && return 0; done
+    _ge+=( "$1=$2" )
+  }
+  if [ "$_docker" = 0 ]; then
+    for _gn in TERM TZ LC_CTYPE LC_MESSAGES LC_NUMERIC LC_COLLATE LC_TIME CURL_CA_BUNDLE REQUESTS_CA_BUNDLE \
+               GIT_SSL_CAINFO ALL_PROXY all_proxy $_GAFFER_DOD_TOOLCHAIN_ENV; do
+      eval "_gv=\${$_gn:-}"
+      [ -n "$_gv" ] && _gdod_add "$_gn" "$_gv"
+    done
+    if [ -n "${HOME:-}" ]; then
+      [ -z "${CARGO_HOME:-}" ] && [ -d "$HOME/.cargo" ] && _gdod_add CARGO_HOME "$HOME/.cargo"
+      [ -z "${RUSTUP_HOME:-}" ] && [ -d "$HOME/.rustup" ] && _gdod_add RUSTUP_HOME "$HOME/.rustup"
+      [ -z "${GOPATH:-}" ] && [ -d "$HOME/go" ] && _gdod_add GOPATH "$HOME/go"
+    fi
+    _gdod_add GIT_AUTHOR_NAME "Gaffer gate"; _gdod_add GIT_AUTHOR_EMAIL "gate@gaffer.invalid"
+    _gdod_add GIT_COMMITTER_NAME "Gaffer gate"; _gdod_add GIT_COMMITTER_EMAIL "gate@gaffer.invalid"
+  fi
+  for _gn in $(printf '%s' "${GAFFER_DOD_ENV_PASS:-}" | tr ',' ' '); do
+    case "$_gn" in *[!A-Za-z0-9_]* | [0-9]* | '') continue ;; esac
+    gaffer_env_name_never_for_gates "$_gn" && continue
+    eval "_gv=\${$_gn-}"
+    eval "[ -n \"\${$_gn+x}\" ]" && _gdod_add "$_gn" "$_gv"
+  done
+  for _gn in ${_GAFFER_DOD_INVOCATION_ENV:-}; do
+    case "$_gn" in *[!A-Za-z0-9_]* | [0-9]* | '') continue ;; esac
+    eval "[ -n \"\${$_gn+x}\" ]" || continue
+    eval "_gv=\${$_gn-}"
+    _gdod_add "$_gn" "$_gv"
+  done
+  unset -f _gdod_add
+  eval "$_garr=(\"\${_ge[@]}\")"
+  eval "$_ghv=\"\$_gh\""
+}
+
 # THE GATE'S OWN SANDBOX (sandbox audit F1c). GAFFER_DOD_WRAP is the wrap the agent got.
 # Under docker the wrapper reads GAFFER_SANDBOX_PROFILE=validation itself (no data plane,
 # no credential). A sandbox-exec wrap names a profile file that was generated for the
@@ -295,7 +368,7 @@ gaffer_dod_run_one() {
   # (~/.bash_profile etc.), which re-admits nvm/rbenv PATH shims and profile-exported
   # credentials that gaffer_agent_env deliberately scrubbed — making the DoD gate
   # non-reproducible and re-leaking the ambient environment. `bash -c` runs the gate
-  # in the scrubbed env the runner already established.
+  # in the stripped environment gaffer_dod_gate_env builds (env -i, below).
   # VALIDATION ISOLATION: GAFFER_DOD_WRAP (exported by tick.sh when an OS sandbox
   # provider wraps the agent — `sandbox-exec -f <profile>` or the docker wrapper
   # prefix) runs the gate command inside the SAME containment the agent had, with the
@@ -305,10 +378,10 @@ gaffer_dod_run_one() {
   # invocation, byte-for-byte. Word-split deliberately: the wrap is a command prefix.
   # Under the docker provider the image's own PATH/HOME must apply (the host's do not
   # exist inside) — mirrors lib/worker.sh's substitution for the agent spawn.
-  local _wrap="${GAFFER_DOD_WRAP:-}" _env=() _profile=()
+  local _wrap="${GAFFER_DOD_WRAP:-}" _profile=() _genv=() _ghome=""
   # Extra env for THIS run only (the flaky rerun's serial hints, gaffer_dod_rerun_serial).
   local _xenv=()
-  if [ -n "${_GAFFER_DOD_EXTRA_ENV[*]-}" ]; then _xenv=(env "${_GAFFER_DOD_EXTRA_ENV[@]}"); fi
+  if [ -n "${_GAFFER_DOD_EXTRA_ENV[*]-}" ]; then _xenv=("${_GAFFER_DOD_EXTRA_ENV[@]}"); fi
   if [ -n "$_wrap" ]; then
     # VALIDATION PROFILE (explicit, independent of the agent bridge's lifetime): the
     # wrapper mounts NO data plane (no databases, no ledgers, no bridge socket — the
@@ -320,9 +393,13 @@ gaffer_dod_run_one() {
       return 127
     fi
   fi
-  if [ -n "$_wrap" ] && [ "${SANDBOX_PROVIDER:-sandbox-exec}" = "docker" ]; then
-    _env=( env "HOME=${GAFFER_SANDBOX_HOME:-/root}"
-               "PATH=${GAFFER_SANDBOX_PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}" )
+  # THE GATE'S ENVIRONMENT (sandbox audit F2): env -i plus gaffer_dod_gate_env, on every
+  # provider and with no sandbox at all. Under docker its list carries the image's HOME and
+  # PATH (the host's do not exist inside). A list that cannot be built: the gate is not run.
+  if ! gaffer_dod_gate_env _genv _ghome; then
+    _gaffer_dod_gate_wrap_done "$_wrap"
+    printf 'gaffer: the gate was not run: its environment could not be built (fail closed)\n' > "$outfile"
+    return 127
   fi
   # STDIN FROM /dev/null: both callers (gaffer_run_dod_gates, gaffer_run_ac_checks)
   # read their gate rows from stdin. A gate that reads stdin (a Django test-DB prompt,
@@ -330,8 +407,9 @@ gaffer_dod_run_one() {
   # remaining rows, so later repos' gates and later ACs never ran and the gate PASSED.
   # shellcheck disable=SC2086  # $_wrap is a command prefix, split on purpose
   ( cd "$wt" 2>/dev/null || exit 127
-    gaffer_timeout "$GAFFER_DOD_TIMEOUT" ${_profile[@]+"${_profile[@]}"} $_wrap ${_env[@]+"${_env[@]}"} ${_xenv[@]+"${_xenv[@]}"} bash -c "$cmd" ) </dev/null >"$outfile" 2>&1
+    gaffer_timeout "$GAFFER_DOD_TIMEOUT" ${_profile[@]+"${_profile[@]}"} $_wrap env -i "${_genv[@]}" ${_xenv[@]+"${_xenv[@]}"} bash -c "$cmd" ) </dev/null >"$outfile" 2>&1
   local _grc=$?
+  [ -n "$_ghome" ] && rm -rf "$_ghome"
   _gaffer_dod_gate_wrap_done "$_wrap"
   return "$_grc"
 }

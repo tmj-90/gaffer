@@ -846,7 +846,11 @@ _gaffer_merge_gate_tester_replay() {
   fi
   log "$who: #$num TESTER REPLAY — running the tester's $_MG_REPLAY_COUNT test file(s) ($files) on the merge candidate ${_MG_MERGE:0:12} ($irunner, $([ "$imode" = files ] && echo "by path" || echo "the registered command"))"
   local -a _renv=()
-  while IFS= read -r line; do [ -n "$line" ] && _renv+=("$line"); done <<< "$ienv"
+  local _rnames=""
+  while IFS= read -r line; do [ -n "$line" ] && { _renv+=("$line"); _rnames="$_rnames ${line%%=*}"; }; done <<< "$ienv"
+  # The gate starts from env -i (lib/dod.sh gaffer_dod_gate_env): these names, the
+  # invocation's own, are the ones it passes on (never a credential-shaped one).
+  _renv+=("_GAFFER_DOD_INVOCATION_ENV=${_rnames# }")
   _renv+=(GAFFER_DOD=1 GAFFER_DOD_TESTS=1 GAFFER_DOD_TYPECHECK=0 GAFFER_DOD_LINT=0 "GAFFER_DOD_TESTS_OUTPUT=$iout")
   # The merge gate already installed this worktree's dependencies.
   [ "$dodrc" = "0" ] && _renv+=(GAFFER_DOD_INSTALL=0)

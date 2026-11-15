@@ -47,6 +47,10 @@
       "types": "./dist/util/ticketMarkers.d.ts",
       "import": "./dist/util/ticketMarkers.js"
     },
+    "./untrusted": {
+      "types": "./dist/util/untrusted.d.ts",
+      "import": "./dist/util/untrusted.js"
+    },
     "./zod3-compat": {
       "types": "./dist/util/zod3Compat.d.ts",
       "import": "./dist/util/zod3Compat.js"

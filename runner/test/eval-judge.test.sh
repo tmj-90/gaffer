@@ -153,7 +153,7 @@ grep -q '<untrusted-delivery-diff>' "$WORK/last-prompt.txt" \
   && ok "judge prompt quarantined the diff (untrusted envelope)" || no "prompt missing the quarantine envelope"
 grep -q 'AC1' "$WORK/last-prompt.txt" \
   && ok "judge prompt carries the acceptance criteria" || no "prompt missing the ACs"
-grep -qx 'Ticket: Rotate the constant' "$WORK/last-prompt.txt" \
+grep -qx 'Ticket: <untrusted-ticket-title>Rotate the constant</untrusted-ticket-title>' "$WORK/last-prompt.txt" \
   && ok "judge prompt carries the ticket title from the nested ticket show shape" \
   || no "judge prompt title wrong: $(grep '^Ticket:' "$WORK/last-prompt.txt")"
 # TEXT-ONLY JUDGE: it grades inline text, so it gets no built-in tools, no MCP tools,

@@ -88,7 +88,8 @@ describe("WG-049: review-rejection feedback", () => {
     );
     expect(claim.claimed).toBe(true);
     expect(claim.last_review_feedback).toEqual({
-      reason: "rethink the approach",
+      // Enveloped like get_ticket's (F2): a reviewer's words are data for the agent.
+      reason: "<untrusted-review-feedback>rethink the approach</untrusted-review-feedback>",
       reviewer: "rev",
       at: expect.any(String),
     });
@@ -113,7 +114,9 @@ describe("WG-049: review-rejection feedback", () => {
     wg.markReady(ticketId, human);
     const claim = structured(h.claim_next_ticket({ agent_id: agent.id, ttl_seconds: 600 }));
     expect(claim.ticket_id).toBe(ticketId);
-    expect((claim.last_review_feedback as ReviewFeedback).reason).toBe("needs error handling");
+    expect((claim.last_review_feedback as ReviewFeedback).reason).toBe(
+      "<untrusted-review-feedback>needs error handling</untrusted-review-feedback>",
+    );
   });
 
   it("AC3: the board card surfaces the rejection reason on a refining ticket", () => {

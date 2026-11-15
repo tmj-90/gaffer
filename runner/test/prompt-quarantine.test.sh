@@ -14,6 +14,9 @@
 #      → crew's renderPromptCli.js) wraps a hostile $TITLE and the review feedback
 #      in their envelopes and prepends the standing data-not-instructions notice.
 #      tick.sh itself builds no quarantined prompt fragments (they were dead code).
+#   5. Every other prompt builder (the independent tester, ...; the matrix in
+#      lib/prompt-quarantine-matrix.mjs): a hostile payload in each outside or
+#      agent-written field sits inside exactly one envelope of its own tag.
 # Run: bash test/prompt-quarantine.test.sh (section 4 needs the crew dist).
 # =====================================================================
 . "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
@@ -178,6 +181,19 @@ if grep -qE 'gaffer_quarantine (ticket-title|review-feedback)|PRIOR REVIEW FEEDB
 else
   ok "tick.sh builds no prompt fragments of its own (crew's renderer owns the text)"
 fi
+
+echo "== every prompt builder: a hostile payload in each field sits in exactly one envelope =="
+# runner/test/lib/prompt-quarantine-matrix.mjs builds each agent prompt with a hostile
+# payload in every outside or agent-written field and checks each lands inside one
+# envelope of its own tag, whose closer appears exactly once, with no raw < inside.
+_MX="$(node "$HERE/lib/prompt-quarantine-matrix.mjs" 2>&1)"; _MXRC=$?
+while IFS= read -r _l; do
+  case "$_l" in
+    "  ok   "*) ok "${_l#  ok   }" ;;
+    "  FAIL "*) fail "${_l#  FAIL }" ;;
+  esac
+done <<<"$_MX"
+[ "$_MXRC" -eq 0 ] || fail "the prompt quarantine matrix exited $_MXRC: $(printf '%s' "$_MX" | tail -3)"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

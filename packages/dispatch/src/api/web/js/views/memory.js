@@ -625,7 +625,7 @@ function renderFeatureLedger(repo, res) {
     ]);
     const list = el("div", { class: "ledger-list" });
     if (inGroup.length === 0) {
-      list.appendChild(el("p", { class: "ledger-empty" }, "Nothing here."));
+      list.appendChild(emptyState("Nothing here.", null, null, null, { inline: true }));
     } else {
       const byNode = new Map();
       for (const f of inGroup) {
@@ -1110,7 +1110,9 @@ function loreHistory(l) {
     if (!h || !h.available) {
       loreHistoryRead.delete(l.id); // let a later open try again
       body.replaceChildren(
-        el("p", { class: "dim" }, `History unavailable: ${(h && h.reason) || "no answer"}.`),
+        emptyState(`History unavailable: ${(h && h.reason) || "no answer"}.`, null, null, null, {
+          inline: true,
+        }),
       );
       return;
     }
@@ -1121,7 +1123,9 @@ function loreHistory(l) {
             { class: "lore-versions", "aria-label": `Versions of “${l.title}”, newest first` },
             [line(h.current, true), ...h.versions.map((v) => line(v, false))],
           )
-        : el("p", { class: "dim" }, "No earlier versions: this record has not been edited."),
+        : emptyState("No earlier versions: this record has not been edited.", null, null, null, {
+            inline: true,
+          }),
     );
   };
   box.addEventListener("toggle", () => {

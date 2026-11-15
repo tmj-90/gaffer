@@ -4,7 +4,7 @@
 import { agentTitle, agentWho } from "../access.js";
 import { viewHead } from "../components.js";
 import { clear, el, prefersReducedMotion, svgEl } from "../dom.js";
-import { money, moneyW, plural } from "../format.js";
+import { money, moneyW, pct, plural } from "../format.js";
 import { clockTime, freshness } from "../freshness.js";
 import { agentTag, glyph } from "../icons.js";
 import { loadMatchDay } from "../matchday.js";
@@ -994,7 +994,7 @@ function floorScene(m) {
       today == null
         ? "Spend tank: no spend recorded today."
         : budget
-          ? `Spend tank: ${money(today)} of today's ${moneyW(budget)} budget (${Math.round((today / budget) * 100)}%).`
+          ? `Spend tank: ${money(today)} of today's ${moneyW(budget)} budget (${pct((today / budget) * 100)}).`
           : `Spend tank: ${money(today)} spent today. No daily budget is set, so the tank has no scale.`;
     const g = svgEl("g", {
       class: `fl-tank${hot ? " is-hot" : ""}`,

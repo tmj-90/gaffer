@@ -3,7 +3,7 @@
 
 import { agentTitle, agentWho, roLock } from "../access.js";
 import { actorName, agentNames, squad } from "../club.js";
-import { panelHead } from "../components.js";
+import { dataTable, emptyState, meter, panelHead } from "../components.js";
 import { el } from "../dom.js";
 import { WEEKDAYS, fmtDay, fmtTime, money, moneyW, parseJsonSafe, pct, plural } from "../format.js";
 import { clockTime } from "../freshness.js";
@@ -202,7 +202,7 @@ function injuryList(f) {
             ]),
           ),
         )
-      : el("p", { class: "quiet" }, "No failed or paused tickets."),
+      : emptyState("No failed or paused tickets.", null, null, null, { inline: true }),
   );
 }
 
@@ -211,54 +211,43 @@ function leagueTable(f) {
   const rows = (f.summary.repoProgress || [])
     .slice()
     .sort((a, b) => b.pct - a.pct || b.done - a.done);
-  const head = ["Pos", "Repo", "Tickets", "Done", "In play", "Blocked", "Spend", "Done %"];
   return progPage(
     "league",
     null,
     "League table",
     "repos by share done",
     rows.length
-      ? el("div", { class: "lt-wrap" }, [
-          el("table", { class: "lt" }, [
-            el(
-              "thead",
-              {},
-              el(
-                "tr",
-                {},
-                head.map((h, i) => el("th", { scope: "col", class: i > 1 ? "num" : null }, h)),
-              ),
-            ),
-            el(
-              "tbody",
-              {},
-              rows.map((r, i) =>
-                el("tr", {}, [
-                  el("td", { class: "pos" }, String(i + 1)),
-                  el("th", { scope: "row" }, repoTag(r.repo, 20)),
-                  el("td", { class: "num" }, String(r.total)),
-                  el("td", { class: "num" }, String(r.done)),
-                  el("td", { class: "num" }, String(r.inFlight ?? 0)),
-                  el(
-                    "td",
-                    { class: `num${r.blocked ? " is-red" : ""}` },
-                    r.blocked ? [glyph("blocked", 12), " ", String(r.blocked)] : "0",
-                  ),
-                  el("td", { class: "num" }, spend.has(r.repo) ? money(spend.get(r.repo)) : "—"),
-                  el("td", { class: "num" }, [
-                    el(
-                      "span",
-                      { class: "pct-bar", "aria-hidden": "true" },
-                      el("span", { style: { width: `${r.pct}%` } }),
-                    ),
-                    `${r.pct}%`,
-                  ]),
-                ]),
-              ),
-            ),
-          ]),
-        ])
-      : el("p", { class: "quiet" }, "No repos with tickets yet."),
+      ? // The one table part (A-34, A-36): counts are numeric columns, the share done
+        // is pct() with its count and the shared meter (A-32, A-35).
+        dataTable({
+          caption: "Repos by share of their tickets done",
+          cls: "lt-table",
+          stackOnPhone: true,
+          columns: [
+            { key: "repo", label: "Repo" },
+            { key: "pos", label: "Pos", numeric: true },
+            { key: "total", label: "Tickets", numeric: true },
+            { key: "inFlight", label: "In play", numeric: true },
+            { key: "blocked", label: "Blocked", numeric: true },
+            { key: "spend", label: "Spend", numeric: true, missing: "no spend recorded" },
+            { key: "done", label: "Done", numeric: true },
+          ],
+          rows: rows.map((r, i) => ({
+            repo: repoTag(r.repo, 20),
+            pos: i + 1,
+            total: r.total,
+            inFlight: r.inFlight ?? 0,
+            blocked: r.blocked
+              ? el("span", { class: "is-red" }, [glyph("blocked", 12), " ", String(r.blocked)])
+              : 0,
+            spend: spend.has(r.repo) ? money(spend.get(r.repo)) : null,
+            done: el("span", { class: "lt-done" }, [
+              meter({ value: r.done, max: r.total, label: `${r.repo} done` }),
+              `${r.done} of ${r.total} · ${pct(r.pct)}`,
+            ]),
+          })),
+        })
+      : emptyState("No repos with tickets yet.", null, null, null, { inline: true }),
   );
 }
 
@@ -358,7 +347,8 @@ function wageSvg(f, W) {
               "text-anchor": anchor,
               class: today ? "val val-today" : "val",
             },
-            full ? money(v) : v >= 9.5 ? `$${Math.round(v)}` : `$${v.toFixed(1)}`,
+            // The shared money formats (A-31): whole dollars when the bar is narrow.
+            full || v < 9.5 ? money(v) : moneyW(Math.round(v)),
           ),
         );
       }
@@ -614,7 +604,7 @@ function squadForm(f) {
             "Form: the tickets each agent claimed recently, oldest first, with where each one is now.",
           ),
         ]
-      : el("p", { class: "quiet" }, "No agents registered yet."),
+      : emptyState("No agents registered yet.", null, null, null, { inline: true }),
   );
 }
 
@@ -648,7 +638,7 @@ function fullTime(f) {
             ]),
           ),
         )
-      : el("p", { class: "quiet" }, "Nothing delivered yet."),
+      : emptyState("Nothing delivered yet.", null, null, null, { inline: true }),
   );
 }
 
@@ -683,7 +673,7 @@ function fixtures(f) {
             ]);
           }),
         )
-      : el("p", { class: "quiet" }, "No ticket is ready to be claimed."),
+      : emptyState("No ticket is ready to be claimed.", null, null, null, { inline: true }),
   );
 }
 

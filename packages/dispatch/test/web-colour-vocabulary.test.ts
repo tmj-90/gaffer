@@ -209,7 +209,7 @@ describe("web: chart marks have their own tokens", () => {
       ["views/overview.css", ".wage-chart .bar-today", /fill:\s*var\(--viz-accent\)/],
       ["views/overview.css", ".kb-1", /background:\s*var\(--viz-accent\)/],
       ["views/overview.css", ".kb-2", /background:\s*var\(--viz-muted\)/],
-      ["views/overview.css", ".pct-bar span", /background:\s*var\(--viz-mark\)/],
+      // The League table's share bar is the shared meter now (.band-fill above).
       ["views/ticket.css", ".conf-fill", /background:\s*var\(--viz-mark\)/],
       // The Epics round bar is the shared meter now (.band-fill above), not its own build.
     ];

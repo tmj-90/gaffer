@@ -10,7 +10,7 @@ import { badge, glyph, kitShirt, ycard } from "../icons.js";
 import { boardAll } from "../matchday.js";
 import { navigate, router, setDocTitle } from "../router.js";
 import { confirmSheet, hideRepoSheet, valueSheet } from "../sheets.js";
-import { riskBadge, statusBadge } from "../status.js";
+import { riskBadge, statusBadge, ticketRef } from "../status.js";
 import { guard, toast } from "../toast.js";
 import {
   MAP_TONE_RANK,
@@ -219,7 +219,9 @@ async function renderRepo(id) {
           { class: "clean gr-rows" },
           scopes.map((s) => renderRepoScopeRow(repo, s)),
         )
-      : el("p", { class: "quiet" }, "Not on the map: this repo is its own single-repo scope."),
+      : emptyState("Not on the map: this repo is its own single-repo scope.", null, null, null, {
+          inline: true,
+        }),
     el("h3", { class: "gr-sub" }, "Link to a ground"),
     renderAddAssociationForm(repo, allNodes, scopes),
   ]);
@@ -399,7 +401,9 @@ function renderRepoTickets(repo, tickets, err) {
     return box;
   }
   if (!tickets.length) {
-    box.appendChild(el("p", { class: "quiet" }, "No tickets reference this repo yet."));
+    box.appendChild(
+      emptyState("No tickets reference this repo yet.", null, null, null, { inline: true }),
+    );
     return box;
   }
   const recent = [...tickets]
@@ -414,7 +418,8 @@ function renderRepoTickets(repo, tickets, err) {
           "li",
           {},
           el("a", { class: "repo-ticket-row", href: `#/ticket/${t.id}` }, [
-            el("span", { class: "num" }, t.number != null ? `#${t.number}` : t.id.slice(0, 8)),
+            // The one ticket number build (A-20); the row is the link.
+            ticketRef(t, { size: "s", link: false }),
             el("span", { class: "repo-ticket-title" }, t.title),
             el("span", { class: "repo-ticket-side" }, [
               statusBadge(t.status, t.landing_state),

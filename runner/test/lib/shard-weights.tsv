@@ -89,6 +89,7 @@
 59	self-op-ban-integration.test.sh
 55	auth-gate-delivery.test.sh
 55	concurrency-bookkeeping.test.sh
+55	lock-takeover-race.test.sh
 49	cli-contract-regression.test.sh
 48	merge-ticket.test.mjs
 47	replay-recovery.test.mjs

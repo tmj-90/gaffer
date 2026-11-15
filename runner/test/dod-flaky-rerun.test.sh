@@ -44,6 +44,10 @@ trap '[ -n "$SLEEPER" ] && kill "$SLEEPER" 2>/dev/null; gaffer_test_rm_work "$WO
 gaffer_timeout() { local s="$1"; shift; "$@"; return $?; }
 # shellcheck source=../lib/dod.sh
 source "$RUNNER_DIR/lib/dod.sh"
+# The guarded lock takeover (_gaffer_lock_reap) the runner always has loaded: the rerun
+# lock never takes over a dead holder's lock without it.
+# shellcheck source=../config/10-locks.sh
+source "$RUNNER_DIR/config/10-locks.sh"; unset _GAFFER_CONFIG_PART
 export GAFFER_DATA="$WORK/data"; mkdir -p "$GAFFER_DATA"
 WT="$WORK/wt"; mkdir -p "$WT"
 # A test command that fails on its first N runs, then passes; it logs each run's

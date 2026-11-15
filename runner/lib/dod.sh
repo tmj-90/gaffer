@@ -353,8 +353,18 @@ gaffer_dod_rerun_serial() {
   mkdir -p "$dir" 2>/dev/null || return 75
   while ! mkdir "$lock" 2>/dev/null; do
     holder="$(cat "$lock/pid" 2>/dev/null)"
-    # A holder that died leaves its lock: reap it (liveness, never age).
-    if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then rm -rf "$lock" 2>/dev/null; continue; fi
+    # A holder that died leaves its lock: reap it (liveness, never age), through the
+    # guarded takeover (config/10-locks.sh _gaffer_lock_reap re-checks the pid under a
+    # guard), so two waiters that both saw the dead pid cannot both take the lock. A
+    # lock with no pid (a holder between its mkdir and its pid write) is waited on,
+    # and reaped only once older than GAFFER_LOCK_STALE. No guarded reap: wait.
+    if declare -F _gaffer_lock_reap >/dev/null 2>&1; then
+      if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
+        _gaffer_lock_reap "$lock" "$holder" && continue
+      elif [ -z "$holder" ]; then
+        _gaffer_lock_reap "$lock" "" "${GAFFER_LOCK_STALE:-120}" && continue
+      fi
+    fi
     [ "$waited" -ge "${GAFFER_DOD_TIMEOUT:-900}" ] && return 75
     sleep 1; waited=$((waited + 1))
   done

@@ -111,6 +111,38 @@ _gaffer_review_back() {
   fi
 }
 
+# Take the per-ticket review claim (a mkdir lock with the lane's pid inside).
+#   _gaffer_review_claim <claim-dir> → 0 taken (our pid written) · 1 a live lane holds it
+#   (its pid on stdout) · 2 not taken in time (the holder's pid, if any, on stdout).
+# Taking over a dead lane's claim with a bare `rm -rf` then `mkdir` let two lanes hold it
+# at once (both saw the dead pid, the second removed the first's fresh claim), and a
+# claim whose pid was not written yet read as dead and was taken from a live lane. The
+# takeover goes through _gaffer_lock_reap (config/10-locks.sh), which re-checks the pid
+# under a guard; a claim with no pid is reaped only once older than GAFFER_LOCK_STALE (a
+# live lane writes its pid right after its mkdir). Without the guarded reap nothing is
+# taken over (fail closed: the caller skips the ticket this tick).
+_gaffer_review_claim() {
+  local d="$1" owner="" tries=0
+  while ! mkdir "$d" 2>/dev/null; do
+    owner="$(cat "$d/pid" 2>/dev/null || true)"
+    if [ -n "$owner" ] && kill -0 "$owner" 2>/dev/null; then
+      printf '%s' "$owner"; return 1
+    fi
+    if declare -F _gaffer_lock_reap >/dev/null 2>&1; then
+      if [ -n "$owner" ]; then
+        _gaffer_lock_reap "$d" "$owner" && continue
+      else
+        _gaffer_lock_reap "$d" "" "${GAFFER_LOCK_STALE:-120}" && continue
+      fi
+    fi
+    tries=$((tries + 1))
+    [ "$tries" -ge "${_GAFFER_REVIEW_CLAIM_TRIES:-20}" ] && { printf '%s' "$owner"; return 2; }
+    sleep 0.1
+  done
+  echo "$$" > "$d/pid"
+  return 0
+}
+
 _gaffer_agent_review_pass() {
 if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
   REVIEWED_FILE="${GAFFER_RUN_STATE_DIR:-$GAFFER_DATA}/.reviewed-tickets"; touch "$REVIEWED_FILE"
@@ -233,16 +265,16 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
       if [ -z "${RBRANCH:-}" ]; then
         _review_hold_ticket "no delivery branch recorded"; return 0
       fi
-      if ! mkdir "$_RCLAIM" 2>/dev/null; then
-        _rowner="$(cat "$_RCLAIM/pid" 2>/dev/null || true)"
-        if [ -n "$_rowner" ] && kill -0 "$_rowner" 2>/dev/null; then
-          log "review of #$RNUM is already running in another lane (pid $_rowner) — not reviewing it twice"
-          _review_cleanup; _review_restore_traps; return 0
-        fi
-        rm -rf "$_RCLAIM"
-        mkdir "$_RCLAIM" 2>/dev/null || { log "review of #$RNUM: could not take its review claim — skipping this tick"; _review_cleanup; _review_restore_traps; return 0; }
+      # THE REVIEW CLAIM (_gaffer_review_claim): one lane per ticket.
+      _rowner="$(_gaffer_review_claim "$_RCLAIM")"; _rclaim_rc=$?
+      if [ "$_rclaim_rc" = 1 ]; then
+        log "review of #$RNUM is already running in another lane (pid $_rowner) — not reviewing it twice"
+        _review_cleanup; _review_restore_traps; return 0
+      elif [ "$_rclaim_rc" != 0 ]; then
+        log "review of #$RNUM: could not take its review claim (held by ${_rowner:-a lane that has not written its pid yet}) — skipping this tick"
+        _review_cleanup; _review_restore_traps; return 0
       fi
-      _RCLAIMED=1; echo "$$" > "$_RCLAIM/pid"
+      _RCLAIMED=1
       # REVIEWED CANDIDATE: the exact commit under review, resolved once. The reviewer works
       # on a DETACHED checkout of it (never the live branch: a commit the reviewer made on a
       # checked-out branch WAS the delivery and shipped unreviewed on its own APPROVE), and

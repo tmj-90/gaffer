@@ -20,7 +20,8 @@ export function registerPrincipal(program: Command): void {
     .command("principal")
     .description(
       "Named API credentials: `create` mints a token bound to an actor identity (shown once), " +
-        "`list` shows every principal, `revoke` disables one.",
+        "`list` shows every principal, `revoke` disables one, `unsigned` lists the ones this " +
+        "factory does not honour and `resign` is a person re-signing them.",
     );
 
   principal
@@ -116,6 +117,43 @@ export function registerPrincipal(program: Command): void {
       const wg = open(cmd.optsWithGlobals());
       try {
         printJson({ ok: true, principal: wg.revokePrincipal(ref, cliActor()) });
+      } finally {
+        wg.db.close();
+      }
+    });
+
+  principal
+    .command("unsigned")
+    .description(
+      "List the active principals this factory does not honour (created before signing, restored from a backup, or written outside the factory)",
+    )
+    .action((_opts, cmd) => {
+      const wg = open(cmd.optsWithGlobals());
+      try {
+        printJson({ ok: true, unsigned: wg.listUnsignedPrincipals() });
+      } finally {
+        wg.db.close();
+      }
+    });
+
+  principal
+    .command("resign [names...]")
+    .description(
+      "A PERSON re-signs principals the factory does not honour, after reviewing them (`principal unsigned`). " +
+        "--all signs every one whose creation is on record; one without must be named.",
+    )
+    .option("--all", "every unsigned principal whose principal.created event matches it", false)
+    .action((names: string[], opts: { all: boolean }, cmd) => {
+      const wg = open(cmd.optsWithGlobals());
+      try {
+        const res = wg.resignPrincipals(
+          { names: names.length > 0 ? names : undefined, all: opts.all },
+          cliActor(),
+        );
+        for (const s of res.skipped) {
+          process.stderr.write(`Not re-signed: ${s.name}: ${s.reason}\n`);
+        }
+        printJson({ ok: true, ...res });
       } finally {
         wg.db.close();
       }

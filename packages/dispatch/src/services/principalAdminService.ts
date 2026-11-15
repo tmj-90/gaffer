@@ -389,18 +389,27 @@ export function resolvePrincipalToken(
   return { principal: row, actor: principalActor(row) };
 }
 
-/** One server-side line per principal and reason per process (not one per request). */
+/**
+ * Where a refused unsigned principal is reported: the REST server sets a sink (one
+ * server-side line per principal and reason per process, not one per request). The CLI
+ * sets none: its refusal is the same one-line error as an unknown token.
+ */
+let unsignedLog: ((line: string) => void) | null = null;
+export function setUnsignedPrincipalLog(sink: ((line: string) => void) | null): void {
+  unsignedLog = sink;
+}
 const LOGGED_UNSIGNED = new Set<string>();
 function logUnsignedPrincipal(
   id: string,
   name: string,
   check: Parameters<typeof unsignedPrincipalMessage>[1],
 ): void {
+  if (!unsignedLog) return;
   const key = `${id}:${check.ok ? "" : check.failure}`;
   if (LOGGED_UNSIGNED.has(key)) return;
   LOGGED_UNSIGNED.add(key);
   try {
-    process.stderr.write(`dispatch: sign-in refused: ${unsignedPrincipalMessage(name, check)}\n`);
+    unsignedLog(`dispatch: sign-in refused: ${unsignedPrincipalMessage(name, check)}`);
   } catch {
     // logging never decides authentication
   }

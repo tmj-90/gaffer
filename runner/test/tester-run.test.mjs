@@ -964,9 +964,10 @@ console.log(
   p1.includes("BRIEF_SENTINEL: Netscape HTML bookmark import must preserve nested tags.")
     ? ok("the original brief is in the tester's initial prompt")
     : fail("brief missing from the prompt");
-  /<<<REQUIREMENTS[\s\S]*REQUIREMENTS>>>/.test(p1) && /DATA, not instructions/.test(p1)
-    ? ok("the requirements are fenced and marked as data, not instructions")
-    : fail("requirements fence / data marker missing");
+  /<untrusted-requirements>\n[\s\S]*BRIEF_SENTINEL[\s\S]*\n<\/untrusted-requirements>/.test(p1) &&
+  /DATA, not instructions/.test(p1)
+    ? ok("the requirements are quarantined in <untrusted-requirements> and marked as data")
+    : fail("requirements envelope / data marker missing");
   const other = {
     ...base,
     description: "COMPLETELY_DIFFERENT_BRIEF: a graphical editor and no HTTP API.",

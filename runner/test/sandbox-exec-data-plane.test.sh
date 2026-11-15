@@ -16,6 +16,7 @@
 #   D3  the set the agent profile lets a process write equals the set the docker
 #       provider's legacy layout leaves unmasked (lib/sandbox-docker.sh), so the two
 #       providers keep one data plane;
+#   D5  the docker legacy layout masks a settings.json that did not exist yet;
 #   D4  on macOS the kernel agrees: a sandboxed append to settings.json fails, a sqlite
 #       write to the dispatch database succeeds, a rename of $GAFFER_DATA fails, and a hard
 #       link does not carry a write through to settings.json.
@@ -154,6 +155,20 @@ else
   [ -n "$DOCKER_KEEP" ] && [ "$DOCKER_KEEP" = "$EXEC_KEEP" ] \
     && ok "D3: the files docker leaves visible are exactly the files sandbox-exec lets a process write:$EXEC_KEEP" \
     || fail "D3: docker keeps [$DOCKER_KEEP] but sandbox-exec allows [$EXEC_KEEP]"
+fi
+
+echo "== D5: docker legacy masks a settings.json that did not exist yet =="
+# The legacy layout masks only files that exist. With no settings.json yet (nothing saved
+# in the dashboard) the agent could create one in the rw mount; the wrapper now creates an
+# empty map first, so it is masked like the rest.
+D5="$WORK/data5"; mkdir -p "$D5/worktrees/t"; printf '{}\n' > "$D5/mcp-runtime.self.json"; printf '%s\n' "$D5/worktrees/t" > "$WORK/wroots5"
+ARGV5="$(GAFFER_DATA="$D5" GAFFER_SANDBOX_DRY_RUN=1 GAFFER_MCP_BRIDGE=0 bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WORK/wroots5" "$RRF" -- claude --mcp-config "$D5/mcp-runtime.self.json" 2>"$WORK/docker5.err")"; rc=$?
+if [ "$rc" -ne 0 ]; then fail "D5: the docker legacy dry run failed rc=$rc: $(tail -3 "$WORK/docker5.err")"
+else
+  case "$ARGV5" in *"/dev/null:$D5/settings.json:ro"*) m=1 ;; *) m=0 ;; esac
+  [ "$m" = 1 ] && [ "$(cat "$D5/settings.json" 2>/dev/null)" = "{}" ] \
+    && ok "D5: an absent settings.json is created as {} and masked from the container" \
+    || fail "D5: settings.json not masked (file: $(cat "$D5/settings.json" 2>/dev/null || echo absent))"
 fi
 
 echo "== D4: the kernel (macOS only) =="

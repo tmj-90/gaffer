@@ -88,6 +88,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  readlinkSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -526,6 +527,26 @@ export function pidStartTime(pid) {
 }
 
 /**
+ * The pid namespace process `pid` lives in ("self" for this process), as the kernel names
+ * it (/proc/<pid>/ns/pid, e.g. "pid:[4026531836]"), or null where there is no /proc
+ * (macOS) or no such process. A pid only names a process inside one namespace: a
+ * launcher in a container that shares this hostname (docker --network=host or
+ * --uts=host, a hostNetwork pod) and this data dir has a pid this namespace cannot see.
+ */
+export function pidNamespace(pid) {
+  if (pid !== "self") {
+    const n = Number(pid);
+    if (!Number.isInteger(n) || n <= 0) return null;
+  }
+  try {
+    const v = readlinkSync(`/proc/${pid}/ns/pid`);
+    return typeof v === "string" && v ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Is a reservation's launcher still running on this host (its call may be in flight)?
  * A pid that is alive but whose start time differs from the one the reservation
  * recorded is a reused pid: the launcher is gone. Without a recorded start time, or
@@ -533,6 +554,12 @@ export function pidStartTime(pid) {
  */
 export function launcherAlive(r, host = hostname()) {
   if (!r || r.host !== host) return false;
+  // Booked from another pid namespace with the same hostname: its pid means nothing
+  // here, so it cannot be told dead (fail closed: the hold stays until a reconcile).
+  if (typeof r.pid_ns === "string" && r.pid_ns) {
+    const mine = pidNamespace("self");
+    if (mine !== null && mine !== r.pid_ns) return true;
+  }
   if (!pidAlive(r.pid)) return false;
   if (typeof r.pid_start === "string" && r.pid_start) {
     const now = pidStartTime(r.pid);
@@ -764,6 +791,10 @@ export function reservePaidLaunch({
       // pid reused by another process for the launcher (lib/usage-ledger.mjs).
       const st = pidStartTime(row.pid);
       if (st !== null) row.pid_start = st;
+      // And its pid namespace, so a launcher in a container that shares this hostname is
+      // never read as dead from outside it (launcherAlive).
+      const ns = pidNamespace(row.pid);
+      if (ns !== null) row.pid_ns = ns;
       if (!appendRow(ledgerPath, row))
         return {
           ok: false,

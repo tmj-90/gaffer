@@ -24,11 +24,15 @@
 //   D7  concurrency: 6 reservations at once settle a dead one exactly once
 //   D8  the history estimate: with measured history of the kind, the settle books its P10
 //   D9  the shell crash path settles the review, security-review and clarify envelopes
+//   D10 a reservation booked from another pid namespace that shares this hostname (a
+//       container on the host network sharing the data dir) is never settled: its pid
+//       reads dead here while its call may be running; a reservation from this
+//       namespace records it
 //
 // Run: node test/budget-dead-reservation.test.mjs
 // =====================================================================
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -282,6 +286,39 @@ console.log("== D9: the shell crash path settles the review lanes' own envelopes
       new RegExp(`gaffer_usage_settle_crashed ${kind} "[^"]*" "\\$\\{${v}:-\\}"`).test(rec),
       `gaffer_crash_cleanup settles the ${kind} envelope (${v})`,
     );
+}
+
+console.log("== D10: a launcher in another pid namespace (same hostname) is never settled ==");
+{
+  const w = world({ GAFFER_DAILY_BUDGET_USD: "100" });
+  const mine = (() => {
+    try {
+      return readlinkSync("/proc/self/ns/pid");
+    } catch {
+      return null;
+    }
+  })();
+  if (mine === null) check(true, "D10 skipped: no /proc pid namespaces on this platform");
+  else {
+    w.append(resv("r-other-ns", deadPid(), { pid_ns: "pid:[1]" }));
+    w.append(resv("r-this-ns-dead", deadPid(), { pid_ns: mine }));
+    const r = reserve(w, "review", process.pid);
+    check(r.status === 0, "D10 the new launch is admitted", r.stderr);
+    check(
+      settleOf(w, "r-other-ns").length === 0,
+      "D10 the other namespace's reservation is untouched (its pid means nothing here)",
+    );
+    check(
+      settleOf(w, "r-this-ns-dead").length === 1,
+      "D10 a dead launcher of this namespace is still settled",
+    );
+    const own = w.rows().find((x) => x.kind === "reservation" && x.pid === process.pid);
+    check(
+      own && own.pid_ns === mine,
+      "D10 a new reservation records its pid namespace",
+      JSON.stringify(own),
+    );
+  }
 }
 
 console.log();

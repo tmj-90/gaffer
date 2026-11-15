@@ -66,7 +66,8 @@ if ! gaffer_dod_enabled; then printf 'DoD: OFF\n'; exit 3; fi
 export GAFFER_DOD_WRAP=""
 if [ "${STRICT_MODE:-0}" = "1" ] || { declare -F _sandbox_strict_required >/dev/null 2>&1 && _sandbox_strict_required; }; then
   _WRAP=""
-  if ! _WRAP="$(sandbox_wrap_cmd "$WT" "" 2>/dev/null)"; then
+  # The validation profile (sandbox audit F1c): no $GAFFER_DATA grant, no HOME grant.
+  if ! _WRAP="$(GAFFER_SANDBOX_PROFILE=validation sandbox_wrap_cmd "$WT" "" 2>/dev/null)"; then
     # The one actionable message (lib/sandbox.sh: the host's situation, the fix, the
     # environment opt-out), made safe for the JSON note fail_line prints.
     _SBX_HINT=""

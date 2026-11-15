@@ -148,6 +148,46 @@ _hostenv_s="$(printf '%s\n' "${_hostenv[@]}")"
 grep -qx "TMPDIR=${TMPDIR:-/tmp}" <<<"$_hostenv_s" && ok "host install env: the host TMPDIR (unchanged)" || fail "host install env lost the host TMPDIR"
 grep -qE 'egress-proxy|GIT_CONFIG' <<<"$_hostenv_s" && fail "host install env carries the container's settings" || ok "host install env: no container-only settings"
 
+echo "== 8: sandbox-exec: a gate never runs under the AGENT's profile (sandbox audit F1c) =="
+# A stub sandbox-exec (this host may have none) records the profile it was handed, then
+# runs the command. The agent's wrap names an agent profile (databases and ~/.claude
+# writable); the gate must get a fresh VALIDATION profile instead, removed after the run.
+SBIN="$WORK/sbin"; SDATA="$WORK/sdata"; mkdir -p "$SBIN" "$SDATA"
+cat > "$SBIN/sandbox-exec" <<'STUB'
+#!/usr/bin/env bash
+[ "$1" = "-f" ] || exit 64
+cp "$2" "${SBX_SEEN:?}.$(date +%s%N 2>/dev/null || echo 0).$$"; printf '%s\n' "$2" >> "${SBX_SEEN}.paths"
+shift 2; exec "$@"
+STUB
+chmod +x "$SBIN/sandbox-exec"
+export SBX_SEEN="$WORK/seen"
+( export PATH="$SBIN:$PATH" GAFFER_DATA="$SDATA" HOME="/nonexistent-dod-home.$$" STRICT_ALLOW_HOME="/nonexistent-dod-home.$$/.claude"
+  # shellcheck source=../lib/sandbox.sh
+  source "$RUNNER_DIR/lib/sandbox.sh"
+  AGENT_WRAP="$(SANDBOX_PROVIDER=sandbox-exec sandbox_wrap_cmd "$WT" "")"
+  export GAFFER_DOD_WRAP="$AGENT_WRAP" SANDBOX_PROVIDER=sandbox-exec
+  gaffer_dod_run_one "$WT" "$WORK/out8" 'echo gate-ran'; echo "rc=$?" > "$WORK/rc8"
+  printf '%s\n' "${AGENT_WRAP#sandbox-exec -f }" > "$WORK/agentprof8"
+  # A validation profile that cannot be generated: the gate is not run.
+  GAFFER_DATA="$WORK/bad\"data" gaffer_dod_run_one "$WT" "$WORK/out8b" 'echo SHOULD-NOT-RUN'; echo "rc=$?" > "$WORK/rc8b"
+)
+SEEN="$(ls "$WORK"/seen.[0-9]* 2>/dev/null | head -1)"
+grep -q '^rc=0$' "$WORK/rc8" && grep -q gate-ran "$WORK/out8" && ok "the gate ran through sandbox-exec" || fail "gate did not run: $(cat "$WORK/rc8" "$WORK/out8" 2>/dev/null)"
+[ -n "$SEEN" ] && grep -q '^;; variant: validation$' "$SEEN" && ok "the gate's profile is the validation variant" || fail "the gate ran under: $(head -3 "$SEEN" 2>/dev/null)"
+grep -qxF "$(cat "$WORK/agentprof8")" "$WORK/seen.paths" && fail "the gate was handed the agent's own profile file" || ok "the agent's profile file was never handed to the gate"
+V="$(node "$HERE/lib/sbpl-eval.mjs" "$SEEN" write "$SDATA/dispatch.sqlite" "$SDATA/settings.json" "$SDATA/usage-ledger.jsonl" "/nonexistent-dod-home.$$/.claude/projects/x" "$WT/out.txt" 2>&1 | tr '\n' ' ')"
+case "$V" in
+  "deny $SDATA/dispatch.sqlite deny $SDATA/settings.json deny $SDATA/usage-ledger.jsonl deny /nonexistent-dod-home.$$/.claude/projects/x allow $WT/out.txt ")
+    ok "under it the gate can write its worktree but no database, settings, ledger or HOME path" ;;
+  *) fail "validation profile verdicts: $V" ;;
+esac
+GPROF="$(tail -1 "$WORK/seen.paths")"
+[ -n "$GPROF" ] && [ ! -e "$GPROF" ] && ok "the gate's profile file is removed after the run" || fail "gate profile left behind: $GPROF"
+grep -q '^rc=127$' "$WORK/rc8b" && ! grep -q SHOULD-NOT-RUN "$WORK/out8b" && grep -q 'not run' "$WORK/out8b" \
+  && ok "a validation profile that cannot be set up fails the gate without running it (fail closed)" || fail "unbuildable profile: $(cat "$WORK/rc8b" "$WORK/out8b")"
+grep -q 'GAFFER_SANDBOX_PROFILE=validation sandbox_wrap_cmd "$WT"' "$RUNNER_DIR/bin/dod-regate.sh" \
+  && ok "dod-regate.sh (the merge gate, the conflict re-gate, the tester replay) asks for the validation profile" || fail "dod-regate.sh does not ask for the validation profile"
+
 echo "== 5: source pins — tick.sh hands the agent's wrap to the gates =="
 grep -q 'export GAFFER_DOD_WRAP="$WRAP"' "$RUNNER_DIR/lib/tick-launch.sh" && ok "tick.sh exports GAFFER_DOD_WRAP=\$WRAP under an active provider" || fail "tick.sh should export GAFFER_DOD_WRAP from the agent's WRAP"
 grep -q 'export GAFFER_DOD_WRAP=""' "$RUNNER_DIR/lib/tick-launch.sh" && ok "tick.sh resets GAFFER_DOD_WRAP per tick (no stale wrap leaks across ticks)" || fail "tick.sh should reset GAFFER_DOD_WRAP"

@@ -4,6 +4,7 @@
 # sourced standalone (tests, the gate replay) resolves the workspace default itself.
 [ -n "${CREW_DIR:-}" ] || CREW_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../packages/crew" 2>/dev/null && pwd)"
 _GAFFER_JSON_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/json-tool.mjs"
+_GAFFER_DOD_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 #
 # The single biggest "factory, not vibe" lever: a configurable, deterministically
 # ENFORCED Definition of Done that every non-empty delivery must clear BEFORE the
@@ -119,6 +120,36 @@ gaffer_dod_install_env() {
   eval "$_hv=\"\$_h\""
 }
 
+# THE GATE'S OWN SANDBOX (sandbox audit F1c). GAFFER_DOD_WRAP is the wrap the agent got.
+# Under docker the wrapper reads GAFFER_SANDBOX_PROFILE=validation itself (no data plane,
+# no credential). A sandbox-exec wrap names a profile file that was generated for the
+# AGENT (the databases and ~/.claude writable), so a gate never runs under it: it gets a
+# fresh validation profile (lib/sandbox.sh: no $GAFFER_DATA grant beyond the worktree,
+# no HOME grant) whose only write root is the gate's worktree. A profile that cannot be
+# generated means the gate is not run (fail closed).
+#   _gaffer_dod_gate_wrap <worktree>  → echoes the wrap to use; rc 1 = refused
+_gaffer_dod_gate_wrap() {
+  local wt="$1" w="${GAFFER_DOD_WRAP:-}"
+  case "$w" in
+    sandbox-exec\ * | */sandbox-exec\ *)
+      if ! declare -F sandbox_wrap_cmd >/dev/null 2>&1; then
+        # shellcheck source=sandbox.sh
+        . "$_GAFFER_DOD_LIB_DIR/sandbox.sh" 2>/dev/null || return 1
+      fi
+      GAFFER_SANDBOX_PROFILE=validation SANDBOX_PROVIDER=sandbox-exec GAFFER_STRICT_REQUIRE=1 \
+        sandbox_wrap_cmd "$wt" "" 2>/dev/null || return 1 ;;
+    *) printf '%s' "$w" ;;
+  esac
+}
+# The profile file a validation wrap made for one run, removed after it (sandbox-exec only).
+_gaffer_dod_gate_wrap_done() {
+  case "${1:-}" in
+    "${GAFFER_DOD_WRAP:-}") ;;
+    sandbox-exec\ -f\ *) rm -f "${1#sandbox-exec -f }" 2>/dev/null ;;
+  esac
+  return 0
+}
+
 # PRE-GATE ENABLER (not a gate). A fresh delivery worktree has no node_modules, so
 # the DoD test gate cannot run — the first greenfield deliveries fail "tests could
 # not run" until deps are present. This installs the worktree's dependencies IN THE
@@ -195,6 +226,11 @@ gaffer_dod_install_deps() {
     esac
   else
     _profile=( env GAFFER_SANDBOX_PROFILE=validation GAFFER_MCP_BRIDGE_SOCKET= GAFFER_SANDBOX_DATA_PLANE=none )
+    if ! _wrap="$(_gaffer_dod_gate_wrap "$dir")"; then
+      printf 'gaffer: dod-install: the validation sandbox for %s could not be set up: NOT running %s install (fail closed; the test gate will surface missing deps)\n' "$dir" "$pm" >&2
+      echo "SKIPPED:sandbox_unavailable:$pm"
+      return 0
+    fi
   fi
   gaffer_dod_install_env _ienv _ihome
   local _out _rc
@@ -206,6 +242,7 @@ gaffer_dod_install_deps() {
     gaffer_timeout "$GAFFER_DOD_INSTALL_TIMEOUT" ${_profile[@]+"${_profile[@]}"} $_wrap env -i "${_ienv[@]}" bash -c "$_script" ) </dev/null >"$_out" 2>&1
   _rc=$?
   [ -n "$_ihome" ] && rm -rf "$_ihome"
+  _gaffer_dod_gate_wrap_done "$_wrap"
 
   # Fail-soft verdict. Success = node_modules materialised → echo the pm for the
   # caller's log. Otherwise the install was ATTEMPTED but failed: surface the
@@ -278,6 +315,10 @@ gaffer_dod_run_one() {
     # agent's bridge is gone by now and must not be inferred) and forwards NO model
     # credential. A gate never needs either. Set as env for the wrapper process itself.
     _profile=( env GAFFER_SANDBOX_PROFILE=validation GAFFER_MCP_BRIDGE_SOCKET= GAFFER_SANDBOX_DATA_PLANE=none )
+    if ! _wrap="$(_gaffer_dod_gate_wrap "$wt")"; then
+      printf 'gaffer: the gate was not run: its validation sandbox profile could not be set up (fail closed)\n' > "$outfile"
+      return 127
+    fi
   fi
   if [ -n "$_wrap" ] && [ "${SANDBOX_PROVIDER:-sandbox-exec}" = "docker" ]; then
     _env=( env "HOME=${GAFFER_SANDBOX_HOME:-/root}"
@@ -290,7 +331,9 @@ gaffer_dod_run_one() {
   # shellcheck disable=SC2086  # $_wrap is a command prefix, split on purpose
   ( cd "$wt" 2>/dev/null || exit 127
     gaffer_timeout "$GAFFER_DOD_TIMEOUT" ${_profile[@]+"${_profile[@]}"} $_wrap ${_env[@]+"${_env[@]}"} ${_xenv[@]+"${_xenv[@]}"} bash -c "$cmd" ) </dev/null >"$outfile" 2>&1
-  return $?
+  local _grc=$?
+  _gaffer_dod_gate_wrap_done "$_wrap"
+  return "$_grc"
 }
 _GAFFER_DOD_EXTRA_ENV=()
 

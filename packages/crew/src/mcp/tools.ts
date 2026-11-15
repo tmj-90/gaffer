@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import { audit, summariseArgs, type AuditOptions } from "../audit/index.js";
-import { buildContextPacket } from "../context/packet.js";
+import { buildContextPacket, type ContextPacket } from "../context/packet.js";
 import { EventLog } from "../events/eventLog.js";
 import { NullMemoryClient } from "../memory/client.js";
 import { resolveAsyncMemory } from "../memory/factory.js";
@@ -11,6 +11,7 @@ import { withDispatchRepos } from "../registry/dispatchRepos.js";
 import type { RepoRegistry } from "../registry/repoRegistry.js";
 import { systemCommandRunner } from "../adapters/commandRunner.js";
 import type { FactoryContext } from "../runtime/wiring.js";
+import { QUARANTINE_NOTICE, quarantine } from "../runtime/context/quarantine.js";
 import { classifyCommand } from "../safety/commandGuard.js";
 import { checkFileWrite } from "../safety/fsGuard.js";
 import { checkWithLiveHook, compareVerdicts } from "../safety/liveHook.js";
@@ -224,6 +225,31 @@ function withAudit(
   };
 }
 
+/** Envelope the free text of a context packet as an MCP answer carries it. */
+export function quarantinePacket(p: ContextPacket): ContextPacket {
+  const lore = <T extends { title: string; summary: string }>(r: T): T => ({
+    ...r,
+    title: quarantine("lore", r.title, "single"),
+    summary: quarantine("lore", r.summary),
+  });
+  return {
+    ...p,
+    ticket: {
+      ...p.ticket,
+      title: quarantine("ticket-title", p.ticket.title, "single"),
+      description: quarantine("ticket-description", p.ticket.description),
+    },
+    acceptanceCriteria: p.acceptanceCriteria.map((ac) => ({
+      ...ac,
+      text: quarantine("acceptance-criterion", ac.text),
+    })),
+    evidenceExpectations: p.evidenceExpectations.map((e) => quarantine("evidence-expectation", e)),
+    relevantLore: p.relevantLore.map(lore),
+    scopedLore: p.scopedLore.map(lore),
+    productContext: { ...p.productContext, intent: p.productContext.intent.map(lore) },
+  };
+}
+
 /**
  * Build the handler map. Read-only tools never mutate; `run_idle_loop` is the
  * only mutating tool: it files idle-loop findings as tickets (drafts, unless a
@@ -373,7 +399,11 @@ export function makeHandlers(deps: HandlerDeps): Record<ToolName, ToolHandler> {
           memory,
           skillRegistry: loadSkillRegistry({ factoryDir: ctx.loaded.rootDir }),
         });
-        return { packet };
+        // The packet is read by an agent: the ticket text, the criteria (and the
+        // evidence lines built from them) and every lore title / summary are outside
+        // or agent-written text, so each is enveloped at this boundary (F2 sweep). The
+        // packet's token report and fingerprint describe the unwrapped content.
+        return { packet: quarantinePacket(packet), quarantine_notice: QUARANTINE_NOTICE };
       }),
 
     run_idle_loop: () =>

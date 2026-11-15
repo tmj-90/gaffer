@@ -42,7 +42,8 @@ describe("Spec-Driven Development (Phase 1a): MCP tools", () => {
     expect(clauses[0]?.clause_id.length).toBeGreaterThan(0);
 
     const fetched = structured(h.get_spec({ spec_id: specId }));
-    expect(fetched.title).toBe("Auth revamp");
+    // The MCP answer envelopes the spec's free text (F2).
+    expect(fetched.title).toBe("<untrusted-spec-title>Auth revamp</untrusted-spec-title>");
 
     const frozen = structured(h.freeze_spec({ spec_id: specId }));
     expect(frozen.status).toBe("frozen");

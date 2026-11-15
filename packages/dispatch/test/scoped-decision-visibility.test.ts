@@ -357,7 +357,10 @@ describe("the factory MCP mount: every decision on the agent's own ticket", () =
       expect(got.isError).toBeUndefined();
       const text = JSON.stringify(got.structuredContent);
       const blocking = got.structuredContent.blocking_decisions as Blocking;
-      expect(blocking.map((d) => d.title).sort()).toEqual([OWN_TITLE, SHARED_TITLE].sort());
+      // The MCP answer envelopes a pending decision's title (agent-written text).
+      expect(blocking.map((d) => d.title).sort()).toEqual(
+        [OWN_TITLE, SHARED_TITLE].map((t) => `<untrusted-decision-title>${t}</untrusted-decision-title>`).sort(),
+      );
       expect(text).not.toContain("outside_scope");
       for (const answer of [ANSWER, ...extra]) expect(text, role).toContain(answer);
       expect((got.structuredContent.resolved_decisions as unknown[]).length).toBe(7);

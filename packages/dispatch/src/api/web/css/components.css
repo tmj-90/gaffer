@@ -2511,6 +2511,10 @@
       gap: 12px;
       padding: 2px 0;
       border: 0;
+      /* A row head's nowrap is for a scrolling table: stacked, it wraps in its column
+         ("Ready to decision (clock)" ran 25 px past a 320 px card). */
+      white-space: normal;
+      overflow-wrap: anywhere;
     }
     .dt-stack .data-table td::before,
     .dt-stack .data-table tbody th[scope="row"]::before {

@@ -581,6 +581,13 @@
   .prog.card > .dt-wrap {
     margin: 0 var(--s4) var(--s4);
   }
+  /* So does an empty line ("Nothing delivered yet.", "No agents are working right now."). */
+  .prog.card > .empty-inline {
+    padding: 0 var(--s4) var(--s4);
+  }
+  .prog.card > .empty-state {
+    padding: var(--s2) var(--s4) var(--s4);
+  }
   .prog .quiet {
     padding: var(--s4);
     color: var(--ink-2);

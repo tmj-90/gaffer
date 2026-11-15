@@ -10,7 +10,7 @@ import { clockTime } from "../freshness.js";
 import { agentShirt, glyph, repoTag } from "../icons.js";
 import { OFF_PITCH, benchedCampaignLine, svgS } from "../matchday.js";
 import { humanizeEvent, renderFeedRow } from "../panels.js";
-import { statusBadge, statusLabel } from "../status.js";
+import { statusBadge, statusLabel, ticketRef } from "../status.js";
 import { computePhases } from "./epics.js";
 import { openPlanBuild } from "./plan.js";
 import { pausedInfo } from "./review-comments.js";
@@ -133,7 +133,7 @@ function cupRuns(f) {
                           },
                           [
                             glyph(t.status, 16),
-                            el("b", {}, `#${t.number}`),
+                            ticketRef(t, { size: "s", link: false }),
                             el("span", { class: "tie-t" }, t.title),
                           ],
                         ),
@@ -629,7 +629,11 @@ function fullTime(f) {
             el("li", {}, [
               el("span", { class: "res-ft", "aria-hidden": "true" }, "FT"),
               el("time", { datetime: t.updated_at }, fmtDay(t.updated_at, { weekday: false })),
-              el("a", { href: `#/ticket/${t.id}` }, [el("b", {}, `#${t.number}`), " ", t.title]),
+              el("a", { href: `#/ticket/${t.id}` }, [
+                ticketRef(t, { size: "s", link: false }),
+                " ",
+                t.title,
+              ]),
               el(
                 "span",
                 { class: "res-cost" },
@@ -662,7 +666,11 @@ function fixtures(f) {
             const red = deps.some((d) => OFF_PITCH.has(d.status));
             return el("li", {}, [
               glyph("ready", 16),
-              el("a", { href: `#/ticket/${t.id}` }, [el("b", {}, `#${t.number}`), " ", t.title]),
+              el("a", { href: `#/ticket/${t.id}` }, [
+                ticketRef(t, { size: "s", link: false }),
+                " ",
+                t.title,
+              ]),
               el(
                 "span",
                 { class: red ? "fx-gate is-red" : "fx-gate" },

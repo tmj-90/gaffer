@@ -67,4 +67,15 @@ describe("web: views on the shared parts", () => {
     expect(node.querySelector(".repo-ticket-row .tref")?.className).toBe("tref tref-s");
     expect(node.querySelector(".repo-ticket-row .num")).toBeNull();
   });
+
+  it("the Fixtures page numbers each ready ticket with ticketRef s, not a bold #N", async () => {
+    document.body.innerHTML = `<main id="app"></main>`;
+    const { fixtures } = await load("programme.js");
+    const t = { id: "tk-3", number: 3, title: "Due dates", status: "ready", priority: 1 };
+    const page = fixtures({ tickets: [t], details: new Map(), byId: new Map([[t.id, t]]) });
+    const ref = page.querySelector("a .tref")!;
+    expect(ref.className).toBe("tref tref-s");
+    expect(ref.textContent).toBe("#3");
+    expect(page.querySelector("a > b")).toBeNull();
+  });
 });

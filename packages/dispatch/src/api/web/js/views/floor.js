@@ -8,7 +8,7 @@ import { money, moneyW, pct, plural } from "../format.js";
 import { clockTime, freshness } from "../freshness.js";
 import { agentTag, glyph } from "../icons.js";
 import { loadMatchDay } from "../matchday.js";
-import { statusLabel } from "../status.js";
+import { statusLabel, ticketRef } from "../status.js";
 import { deliveredBy, sinceStatus } from "./review-comments.js";
 import { hashText } from "./work.js";
 
@@ -1501,7 +1501,11 @@ async function renderFloor() {
           m.robots.map((p) =>
             el("li", {}, [
               agentTag(p.who.name, 22, p.who.no, agentTitle(p.who)),
-              el("a", { href: `#/ticket/${p.id}` }, [el("b", {}, `#${p.number}`), " ", p.title]),
+              el("a", { href: `#/ticket/${p.id}` }, [
+                ticketRef(p, { size: "s", link: false }),
+                " ",
+                p.title,
+              ]),
               el(
                 "span",
                 { class: "fl-bench-st" },

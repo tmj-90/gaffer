@@ -16,6 +16,7 @@
 import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 
+import { dynamicNames } from "../lib/hook/expand.mjs";
 import { HOOK, bash, scratchDir, suite } from "./lib/hook-harness.mjs";
 
 const t = suite("safety-hook-redos");
@@ -137,6 +138,59 @@ for (const [label, command] of [
     t.assert(
       `hook answers a glob of ${label} with exit ${want} in < 1s over start-up (exit ${status}, ${ms}ms, start-up ${baseline}ms)`,
       status === want && ms - baseline < 1000,
+    );
+  }
+}
+
+// The question "can this command set $NAME in a way the hook does not follow" (read,
+// printf -v, declare -a, ...) was one regular expression per variable name, with nested
+// runs that backtracked in the cube of the command's length: `declare -aaa...` of 6 KB
+// and three variables, or 11000 `read` words and forty, kept the hook busy past its
+// timeout. The names are now collected once per command by linear scans.
+{
+  // The same answers as the expression on small random commands (where it is still safe
+  // to run): the scans are a faster form of it, not a different rule.
+  const reference = (cmd, n) =>
+    new RegExp(
+      String.raw`\b(?:read|mapfile|readarray|getopts|select)\b[^\n;&|]*?(?<![\w$])${n}(?!\w)|\bprintf\b[^\n;&|]*-v[ \t]*["']?${n}\b|\(\([^)]*\b${n}\b|\blet\b[^\n;&|]*\b${n}\b|(?<![\w$])${n}(?:\[[^\]]*\])?\+?=\(|(?<![\w$])${n}\+=|(?<![\w$])${n}\[|\bdeclare\b[^\n;&|]*-\w*[naAi]\w*[^\n;&|]*\b${n}\b|\b(?:typeset|local)\b[^\n;&|]*-\w*[naAi]\w*[^\n;&|]*\b${n}\b|\bunset\b[^\n;&|]*-\w*n\w*[^\n;&|]*\b${n}\b`,
+    ).test(cmd);
+  const parts = [..."();&|$[]=+'\"-\n ", "read", "mapfile", "select", "printf", "-v", "let"];
+  parts.push("declare", "typeset", "local", "unset", "-a", "-n", "-xn", "-bA", "-i", "((");
+  parts.push("))", "=(", "+=", "ZZ", "ZZ", "Y", "aZZ", "ZZb", "x", "_1", "  ");
+  let seed = 7;
+  const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  let differ = 0;
+  let first = "";
+  for (let i = 0; i < 40000; i += 1) {
+    let cmd = "";
+    for (let j = 0, len = 1 + Math.floor(rnd() * 12); j < len; j += 1) {
+      cmd += parts[Math.floor(rnd() * parts.length)];
+    }
+    const names = dynamicNames(cmd);
+    for (const n of ["ZZ", "Y", "x", "_1"]) {
+      if (names.has(n) !== reference(cmd, n)) {
+        differ += 1;
+        if (!first) first = `${JSON.stringify(cmd)} ${n}`;
+      }
+    }
+  }
+  t.assert(
+    `the scans answer as the expression did on 160000 name checks (first difference: ${first})`,
+    differ === 0,
+  );
+}
+{
+  const vars = (k) => Array.from({ length: k }, (_, i) => `src/$V${i}`).join(" ");
+  for (const [label, command] of [
+    ["declare -a...a (6000) and 3 variables", `declare -${"a".repeat(6000)}; cat ${vars(3)}`],
+    ["11000 read words and 40 variables", `${"read ".repeat(11000)}; cat ${vars(40)}`],
+    ["5500 printf -v and 40 variables", `${"printf -v ".repeat(5500)}; cat ${vars(40)}`],
+    ["6000 unset -n and 40 variables", `${"unset -n ".repeat(6000)}; cat ${vars(40)}`],
+  ]) {
+    const { status, ms } = timed(command);
+    t.assert(
+      `hook answers ${label} with exit 0 in < 2s over start-up (exit ${status}, ${ms}ms, start-up ${baseline}ms)`,
+      status === 0 && ms - baseline < 2000,
     );
   }
 }

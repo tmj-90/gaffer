@@ -265,6 +265,68 @@ function expandBraces(parts) {
  * or `+=` form) is UNKNOWN everywhere; after an `eval`, `source` or `.` (they can set
  * anything) the caller marks every name unknown (allUnknown).
  */
+/**
+ * Every name the command `cmd` may set in a way the hook does not follow (see
+ * VarTable.dynamic). Each scan is linear in the command's length. A name is a whole word
+ * (`\w+`, not part of a longer one):
+ *  - after `read`, `mapfile`, `readarray`, `getopts` or `select` in the same simple
+ *    command (not right after a `$`);
+ *  - right after `-v` (blanks and one quote allowed) following `printf`;
+ *  - after `let`; after `((` up to the next `)`;
+ *  - after an option word holding n, a, A or i following `declare`, `typeset` or `local`
+ *    (n following `unset`), in the same simple command;
+ *  - directly before `=(`, `+=(`, `+=` or `[`.
+ * Simple commands are split at a newline, `;`, `&` and `|`.
+ */
+export function dynamicNames(cmd) {
+  const names = new Set();
+  const wordsFrom = (text, from, notAfterDollar) => {
+    const re = /\w+/g;
+    re.lastIndex = from;
+    for (let m = re.exec(text); m !== null; m = re.exec(text)) {
+      const before = m.index > 0 ? text[m.index - 1] : "";
+      if (/\w/.test(before) || (notAfterDollar && before === "$")) continue;
+      names.add(m[0]);
+    }
+  };
+  const afterOption = (seg, keyword, letters) => {
+    const k = keyword.exec(seg);
+    if (!k) return;
+    const re = /-(\w*)/g;
+    re.lastIndex = k.index + k[0].length;
+    for (let m = re.exec(seg); m !== null; m = re.exec(seg)) {
+      const at = m[1].search(letters);
+      if (at >= 0) {
+        wordsFrom(seg, m.index + at + 2, false);
+        return;
+      }
+    }
+  };
+  for (const seg of cmd.split(/[\n;&|]/)) {
+    const r = /\b(?:read|mapfile|readarray|getopts|select)\b/.exec(seg);
+    if (r) wordsFrom(seg, r.index + r[0].length, true);
+    const p = /\bprintf\b/.exec(seg);
+    if (p) {
+      const re = /-v[ \t]*["']?(\w+)/g;
+      re.lastIndex = p.index + p[0].length;
+      for (let m = re.exec(seg); m !== null; m = re.exec(seg)) names.add(m[1]);
+    }
+    const l = /\blet\b/.exec(seg);
+    if (l) wordsFrom(seg, l.index + l[0].length, false);
+    afterOption(seg, /\bdeclare\b/, /[naAi]/);
+    afterOption(seg, /\b(?:typeset|local)\b/, /[naAi]/);
+    afterOption(seg, /\bunset\b/, /n/);
+  }
+  for (const chunk of cmd.split(")")) {
+    const i = chunk.indexOf("((");
+    if (i >= 0) wordsFrom(chunk, i + 2, false);
+  }
+  for (const re of [/(?<![\w$])(\w+)\+?=\(/g, /(?<![\w$])(\w+)\+=/g, /(?<![\w$])(\w+)\[/g]) {
+    for (let m = re.exec(cmd); m !== null; m = re.exec(cmd)) names.add(m[1]);
+  }
+  return names;
+}
+
 export class VarTable {
   constructor(env, cmd) {
     this.env = env;
@@ -275,6 +337,7 @@ export class VarTable {
     this.allUnknown = false;
     this.ifsChanged = /(?<![\w$])IFS(?:\+?=)/.test(cmd);
     this.dynamicCache = new Map();
+    this.dynamicSet = null;
     // Bumped on every change, so a caller may cache what a word expanded to.
     this.version = 0;
   }
@@ -285,13 +348,25 @@ export class VarTable {
     this.version += 1;
   }
 
+  // True when the command can set `name` in a way the hook does not follow: `read`,
+  // `mapfile`, `printf -v`, arithmetic, `let`, an array form, `declare`/`typeset`/`local`
+  // with -n/-a/-A/-i, `unset -n`. It was one regular expression per name, with nested
+  // `[^\n;&|]*` and `\w*` runs that backtracked in the cube of the command's length
+  // (`declare -aaa...` of 8000 bytes took minutes per variable name, past the hook's
+  // timeout). The names are now collected once per command by linear scans
+  // (dynamicNames), the same set the expression matched.
   dynamic(name) {
     if (this.dynamicCache.has(name)) return this.dynamicCache.get(name);
     const n = name.replace(/[^\w]/g, "");
-    const re = new RegExp(
-      String.raw`\b(?:read|mapfile|readarray|getopts|select)\b[^\n;&|]*?(?<![\w$])${n}(?!\w)|\bprintf\b[^\n;&|]*-v[ \t]*["']?${n}\b|\(\([^)]*\b${n}\b|\blet\b[^\n;&|]*\b${n}\b|(?<![\w$])${n}(?:\[[^\]]*\])?\+?=\(|(?<![\w$])${n}\+=|(?<![\w$])${n}\[|\bdeclare\b[^\n;&|]*-\w*[naAi]\w*[^\n;&|]*\b${n}\b|\b(?:typeset|local)\b[^\n;&|]*-\w*[naAi]\w*[^\n;&|]*\b${n}\b|\bunset\b[^\n;&|]*-\w*n\w*[^\n;&|]*\b${n}\b`,
-    );
-    const hit = re.test(this.cmd);
+    let hit;
+    if (n === "") {
+      // No word characters (a special parameter such as `$@`): unknown, the cautious
+      // answer (the expression it replaces said yes for most commands anyway).
+      hit = true;
+    } else {
+      if (!this.dynamicSet) this.dynamicSet = dynamicNames(this.cmd);
+      hit = this.dynamicSet.has(n);
+    }
     this.dynamicCache.set(name, hit);
     return hit;
   }

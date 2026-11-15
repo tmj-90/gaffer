@@ -24,6 +24,7 @@
 
 import { readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
+import { escapeUntrusted, quarantine } from "./untrusted.mjs";
 
 // node:child_process costs about 10 ms to load and only two subcommands run git, so
 // it is loaded when one of them does (exploratory finding testspeed/TS-5): the runner
@@ -75,19 +76,8 @@ function pyStr(v) {
 function isObj(v) {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
-// Escape (never delete) the `<` of every untrusted-* delimiter — opening or closing,
-// any tag, any case, padded with whitespace / zero-width characters, terminated or
-// not. Deleting a delimiter in one pass let a nested token reassemble itself:
-// `</untrus</untrusted-a>ted-x>` minus the inner token IS `</untrusted-x>`, which
-// closed the envelope early. Escaping removes no text, so nothing can rejoin and one
-// pass is safe (and idempotent). Same rule as crew's deliveryJudge.
-const UNTRUSTED_DELIMITER_RE =
-  // eslint-disable-next-line no-control-regex -- the C0 separators are whitespace to python and to a model reading the prompt
-  /<(?=[\s\x1c-\x1f\x85\u200b-\u200d\u2060]*\/?[\s\x1c-\x1f\x85\u200b-\u200d\u2060]*untrusted)/gi;
-/** Neutralise <untrusted-*> delimiter tokens so retrieval data cannot close an envelope. */
-function sanitize(s) {
-  return String(s ?? "").replace(UNTRUSTED_DELIMITER_RE, "&lt;");
-}
+/** Escape every `<` of retrieval data (lib/untrusted.mjs) so it cannot close an envelope. */
+const sanitize = escapeUntrusted;
 /**
  * The cards-for-scope packet lore the delivery primer shows: top 4 hits that are not
  * product intent (that has its own PRODUCT CONTEXT block). Mirrors primerLore in
@@ -1093,13 +1083,11 @@ switch (cmd) {
   }
 
   // ── quarantine.sh ───────────────────────────────────────────────────────────────
-  // quarantine <tag> <single|block>: wrap stdin in <untrusted-TAG> after neutralising
-  // every smuggled untrusted-* delimiter; `single` collapses whitespace to one line.
+  // quarantine <tag> <single|block>: wrap stdin in <untrusted-TAG> after escaping every
+  // `<` of it (lib/untrusted.mjs); `single` collapses whitespace to one line.
   case "quarantine": {
     const [tag, mode] = args;
-    let data = sanitize(readStdin());
-    if (mode === "single") data = data.replace(/\s+/g, " ").trim();
-    out(`<untrusted-${tag}>${data}</untrusted-${tag}>`);
+    out(quarantine(tag, readStdin(), { singleLine: mode === "single" }));
     break;
   }
 

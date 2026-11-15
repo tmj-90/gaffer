@@ -31,7 +31,7 @@ export const TOOL_DESCRIPTIONS: Record<keyof typeof toolSchemas, string> = {
     "(`factory_strict`, `regulated`) require evidence-backed ACs before a " +
     "ticket can pass review; choosing `solo_loose` to dodge that gate defeats " +
     "the point. Set `risk_level` to the real blast radius, not the convenient " +
-    "one — it gates which agents may claim the work.\n\n" +
+    "one: it gates which agents may claim the work.\n\n" +
     "In the Gaffer FACTORY a mount bound to a ticket drafts only on the " +
     "repositories that ticket writes, never under a looser `policy_pack` than " +
     "the ticket's (an omitted pack takes it); the product-owner mount drafts on " +
@@ -222,7 +222,7 @@ export const TOOL_DESCRIPTIONS: Record<keyof typeof toolSchemas, string> = {
     "`claim_ticket` refuses it with `DEPENDENCY_BLOCKED`. Use this to hard-gate " +
     "phases (data model before features, bootstrap before everything). A " +
     "self-dependency, a duplicate edge, or one that would form a cycle is " +
-    "rejected — the dependency graph stays a DAG. In the Gaffer FACTORY both " +
+    "rejected; the dependency graph stays a DAG. In the Gaffer FACTORY both " +
     "tickets must be ones this mount is bound to (or drafts it created).",
   set_ticket_testable:
     "**Mark a ticket eligible (or not) for the independent black-box testing lane.** " +

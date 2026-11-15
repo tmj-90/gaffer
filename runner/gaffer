@@ -309,7 +309,7 @@ dashboard)
   # The token the server will use: an operator-set DISPATCH_API_TOKEN wins (the server
   # reads it from the env), else the saved token file.
   dash_token() { if [ -n "$_GAFFER_OP_API_TOKEN" ]; then printf '%s' "$_GAFFER_OP_API_TOKEN"; else tr -d ' \n' < "$TOKFILE" 2>/dev/null; fi; }
-  # dash_login_hint <base-url> <lead> — how to log in. A ?token= link only when stdout is
+  # dash_login_hint <base-url> <lead>: how to log in. A ?token= link only when stdout is
   # a terminal: piped, redirected or supervised output (docker compose logs, systemd, a
   # CI log) would keep the full credential, so there it names the URL and the token file
   # instead. The token file is 0600 under GAFFER_DATA.
@@ -399,9 +399,9 @@ dashboard)
     # The login link carries the token, so it is printed only to a terminal: a
     # supervisor's log (docker compose logs) would keep it otherwise.
     if [ -t 1 ]; then
-      say "dashboard (foreground, $fg_host:$DASH_PORT) — open with your token: $GAFFER_DASHBOARD_URL/?token=$TOK"
+      say "dashboard (foreground, $fg_host:$DASH_PORT): open with your token: $GAFFER_DASHBOARD_URL/?token=$TOK"
     else
-      say "dashboard (foreground, $fg_host:$DASH_PORT) — open $GAFFER_DASHBOARD_URL and log in with the token in $TOKFILE (not printed: this output is not a terminal and a log would keep it)"
+      say "dashboard (foreground, $fg_host:$DASH_PORT): open $GAFFER_DASHBOARD_URL and log in with the token in $TOKFILE (not printed: this output is not a terminal and a log would keep it)"
     fi
     exec env $(gaffer_dashboard_env_unset_flags) GAFFER_DATA="$GAFFER_DATA" CREW_DIR="$CREW_DIR" CREW_CONFIG="$CREW_CONFIG" MEMORY_CLI_BIN="$MEMORY_CLI_BIN" MEMORY_DB="$MEMORY_DB" DISPATCH_DB="$DISPATCH_DB" DISPATCH_PRODUCT_OWNER_CMD="$PRODUCT_OWNER_CMD" DISPATCH_PRODUCT_OWNER_REPO="${DISPATCH_PRODUCT_OWNER_REPO:-}" DISPATCH_MERGE_CMD="$MERGE_CMD" DISPATCH_TICK_CMD="$TICK_CMD" DISPATCH_ONBOARD_CMD="$ONBOARD_CMD" DISPATCH_EPIC_FEATURE_CMD="$EPIC_FEATURE_CMD" DISPATCH_API_TOKEN="$TOK" GAFFER_DASHBOARD_URL="$GAFFER_DASHBOARD_URL" node "$DISPATCH_DIR/dist/api/bin.js" --port "$DASH_PORT" --host "$fg_host"
   fi

@@ -58,7 +58,7 @@ import {
 } from "../schemas.js";
 import { API_ACTOR, apiActor, apiPrincipal, isSharedOperator, operatorActor } from "./context.js";
 import { forgetLoreDrafts } from "./readModels.js";
-import { requestDecisionFilter, requestTicketFilter } from "../scopeGate.js";
+import { requestDecisionFilter, requestRepoRedactor, requestTicketFilter } from "../scopeGate.js";
 import { reviewRuleThreshold } from "../../health/reviewRules.js";
 import { proposeReviewRules } from "../../services/reviewRuleService.js";
 
@@ -310,6 +310,7 @@ export async function routeTickets(
     // PRINCIPAL SCOPES: a scoped principal reads only its tickets (one outside it is
     // `missing`), and a dependency outside its scope comes without its title.
     const visible = requestTicketFilter(wg);
+    const redact = requestRepoRedactor(wg);
     const read = wg.ticketDetailsBatch(
       q.ids ? { ids: q.ids } : { limit, offset },
       include,
@@ -326,7 +327,9 @@ export async function routeTickets(
           visible && d.dependencies
             ? { ...d, dependencies: hideOutOfScopeDependencies(d.dependencies, visible) }
             : d,
-        ),
+        )
+        // PRINCIPAL SCOPES: a linked repo outside its reach comes without its location.
+        .map((d) => (d.repositories ? { ...d, repositories: redact(d.repositories) } : d)),
       missing: read.missing,
       total: read.total,
       ...(q.ids
@@ -352,7 +355,8 @@ export async function routeTickets(
       sendJson(res, 200, {
         ticket: { ...view.ticket, ...withLanding(wg, view.ticket) },
         acceptance_criteria: view.acceptanceCriteria,
-        repositories: view.repositories,
+        // PRINCIPAL SCOPES: a linked repo outside its reach comes without its location.
+        repositories: requestRepoRedactor(wg)(view.repositories),
         // `scopes` carries the ticket↔scope links (incl. its containing `epic`
         // node), so the Epics view can group tickets under their epic without a
         // new endpoint. The data is already computed by `view()`.
@@ -1262,7 +1266,19 @@ export async function routeTickets(
 
   // /tickets/:id/work-repos — GET the partitioned execution boundary.
   if (segments.length === 3 && sub === TICKET_SUB.WORK_REPOS && method === "GET") {
-    sendJson(res, 200, { work_repos: wg.workPacketRepos(id) });
+    // PRINCIPAL SCOPES: a linked repo outside its reach comes without its location.
+    const redact = requestRepoRedactor(wg);
+    const wr = wg.workPacketRepos(id);
+    sendJson(res, 200, {
+      work_repos: {
+        writeRepos: redact(wr.writeRepos),
+        readOnlyRepos: redact(wr.readOnlyRepos),
+        testRepos: redact(wr.testRepos),
+        deniedRepos: redact(wr.deniedRepos),
+        suggestedRepos: redact(wr.suggestedRepos),
+        rejectedRepos: redact(wr.rejectedRepos),
+      },
+    });
     return;
   }
 

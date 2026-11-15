@@ -205,6 +205,52 @@ describe("F3: /repositories, /agents and /api/squad are filtered for a scoped pr
   });
 });
 
+describe("F3 nested: a ticket's link to a repo outside the scope carries no location", () => {
+  /** An in-scope ticket (writes app) that also READS the out-of-scope repo. */
+  function readsPrivate(wg: Dispatch, app: string, priv: string) {
+    return wg.createTicketWithLinks(
+      { title: "reads payments", description: "", policy_pack: "solo_loose" },
+      {
+        repoAccess: [
+          { repo_id: app, access: "write" as const },
+          { repo_id: priv, access: "read" as const },
+        ],
+      },
+      human,
+    );
+  }
+
+  it("ticket detail, the batched details and work-repos keep the name and access only", async () => {
+    const { wg, app, priv, scoped, get } = await start();
+    wg.setRepoCommands(priv.id, { test_command: "secret-gate-cmd" }, human);
+    const t = readsPrivate(wg, app.id, priv.id);
+    for (const path of [
+      `/tickets/${t.id}`,
+      `/tickets/details?ids=${t.id}`,
+      `/tickets/${t.id}/work-repos`,
+    ]) {
+      const r = await get(path, scoped);
+      expect(r.status, path).toBe(200);
+      expect(r.text, path).not.toContain("/srv/secret/payments");
+      expect(r.text, path).not.toContain("secret-gate-cmd");
+      // The ticket's contract stays readable: which repo it reads, and that it reads it.
+      expect(r.text, path).toContain("payments-private");
+      // Its own repo keeps its location.
+      expect(r.text, path).toContain("/srv/secret/app");
+    }
+  });
+
+  it("the shared token and an unscoped principal still see every link whole", async () => {
+    const { wg, app, priv, unscoped, get } = await start();
+    const t = readsPrivate(wg, app.id, priv.id);
+    for (const token of [FULL, unscoped]) {
+      for (const path of [`/tickets/${t.id}`, `/tickets/${t.id}/work-repos`]) {
+        expect((await get(path, token)).text, path).toContain("/srv/secret/payments");
+      }
+    }
+  });
+});
+
 describe("F5: runner-executed commands a ticket writer may set (SECURITY.md, Definition of Done)", () => {
   it("a scoped writer sets a check_command on its own ticket only; repo gate commands need admin", async () => {
     const { wg, app, priv, post } = await start();

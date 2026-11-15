@@ -268,6 +268,32 @@ export function requestRepoFilter(wg: Dispatch): ((repoId: string) => boolean) |
 }
 
 /**
+ * A ticket a scoped principal reaches can link a repository outside its reach (a read
+ * repo the operator added to a ticket on an in-scope repo). The link stays readable
+ * (the repo's id and name, the ticket's access to it: the ticket's contract), but the
+ * repository's location and gate commands are blanked, as GET /repositories leaves the
+ * whole row out. Identity when the caller is not a scoped principal.
+ */
+export function requestRepoRedactor(
+  wg: Dispatch,
+): <T extends { id: string }>(rows: readonly T[]) => T[] {
+  const reach = requestRepoFilter(wg);
+  return <T extends { id: string }>(rows: readonly T[]): T[] =>
+    rows.map((r) =>
+      !reach || reach(r.id)
+        ? r
+        : ({
+            ...r,
+            local_path: null,
+            remote_url: null,
+            test_command: null,
+            lint_command: null,
+            coverage_command: null,
+          } as T),
+    );
+}
+
+/**
  * The agents a scoped principal may see (GET /agents, GET /api/squad): those that hold
  * or held a claim on one of its tickets, or acted on one (a reviewer or tester agent),
  * so its tickets still show who worked them and nothing else of the factory's squad.

@@ -311,10 +311,13 @@ runner's own count contradicts (a consistency check, not a gate).
 **What a ticket writer can make the runner run.** Anyone who may write a ticket (the
 shared token, the tokenless CLI, or a human or admin principal with write on it, scoped
 or not) can give it `check_command` criteria and a `cli` / `api` acceptance profile
-whose argv lists the runner executes. An agent can add a `check_command` only to a
-ticket its mount is bound to before it is claimed (never from a reviewer or tester
-mount) and never sets an acceptance profile; the contract freezes once the ticket is
-claimed. That is
+whose argv lists the runner executes. In the factory an agent can add a
+`check_command` only to a ticket its mount is bound to, or a draft it created, before it
+is claimed (never from a reviewer or tester mount); outside the factory an MCP agent can
+add one to any ticket not yet claimed. An agent may name an acceptance profile for a
+ticket's test contract (`set_test_contract` `profile`, never replacing one a person set)
+but never registers the argv the runner runs for it: a person does. The contract freezes
+once the ticket is claimed. That is
 deliberate and not admin-gated: those commands run only for that ticket, in its own
 worktree or a fresh checkout of its tested commit, through the same gate path as the
 repository's test command (`gaffer_dod_run_one`: the gate sandbox profile with no data

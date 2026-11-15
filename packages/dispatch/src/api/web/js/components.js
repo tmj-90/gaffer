@@ -602,7 +602,8 @@ function dataTable({
     if (wrap.scrollWidth > wrap.clientWidth + 1) wrap.setAttribute("tabindex", "0");
     else wrap.removeAttribute("tabindex");
   };
-  if (typeof ResizeObserver === "function") new ResizeObserver(sync).observe(wrap);
+  const RO = globalThis.ResizeObserver;
+  if (typeof RO === "function") new RO(sync).observe(wrap);
   return wrap;
 }
 

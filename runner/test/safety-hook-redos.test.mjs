@@ -16,6 +16,7 @@
 import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 
+import { nodeInlineControlPlane } from "../lib/dangerous-commands.mjs";
 import { dynamicNames } from "../lib/hook/expand.mjs";
 import { HOOK, bash, scratchDir, suite } from "./lib/hook-harness.mjs";
 
@@ -43,6 +44,9 @@ const longInputs = {
   // The decoded-payload rule scanned from every decoder word to the end of the line.
   "8000x base64 |": `${"base64 |".repeat(8000)}`,
   "9000x base64": `${"base64 ".repeat(9000)}`,
+  // The inline-node control-plane rule retried every later `node`, flag and package word
+  // (cubic: 10s for this input, past three minutes for the whole hook at 63 KB).
+  "2048x node -e": `${"node -e ".repeat(2048)}`,
 };
 
 // Rule level: a failed match (`zz` is no command) is where backtracking explodes.
@@ -65,6 +69,35 @@ for (const [label, prefix] of Object.entries({ ...inputs, ...longInputs })) {
   );
   const ms = res.status === 0 ? Number(res.stdout.trim()) : Infinity;
   t.assert(`all deny rules on "${label}" finish in < 1s (took ${ms}ms)`, ms < 1000);
+}
+
+// The inline-node rule is a linear scan now; it answers as its expression did on small
+// random commands (where the expression is still safe to run).
+{
+  const reference =
+    /\bnode\b[^\n|;&]*(?:-e|--eval|-p|--print|-r|--require)\b[^\n]*(?:(?:dispatch|crew|memory)[^\n]*\/dist\/|\b(?:DISPATCH_DB|MEMORY_DB)\b|(?:dispatch|memory)[^\s'"\n]*\.sqlite)/i;
+  const parts = ["node", "NODE", "nodejs", "xnode", " ", "-e", "-E", "--eval", "-p", "--print"];
+  parts.push("-r", "--require", "-ex", "\n", "|", ";", "&", "dispatch", "Crew", "memory", "/dist/");
+  parts.push("/DIST/", "/dist", "DISPATCH_DB", "memory_db", "XDISPATCH_DB", ".sqlite", "'", '"');
+  parts.push("a", "/", "x.sqlite", "-", "\t");
+  let seed = 3;
+  const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  let differ = 0;
+  let first = "";
+  for (let i = 0; i < 100000; i += 1) {
+    let s = "";
+    for (let j = 0, n = 1 + Math.floor(rnd() * 10); j < n; j += 1) {
+      s += parts[Math.floor(rnd() * parts.length)];
+    }
+    if (reference.test(s) !== nodeInlineControlPlane(s)) {
+      differ += 1;
+      if (!first) first = JSON.stringify(s);
+    }
+  }
+  t.assert(
+    `the inline-node rule answers as its expression did on 100000 commands (first difference: ${first})`,
+    differ === 0,
+  );
 }
 
 // Whole hook: a spawned process with a hard kill, so a regression reports instead of

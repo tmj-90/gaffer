@@ -1290,6 +1290,8 @@ async function renderReview(param) {
         // BLINDING: opening the judge's collapsed view before deciding is recorded.
         // review14/2: one request records the reveal and returns the grade.
         onJudgeReveal: () => revealJudge(t.id, since),
+        // F-E4: the cost cell's "typical $X" (Health's cost per accepted change).
+        norms: factoryNorms(),
       })
     : null;
   // INSPECTABLE CONFIDENCE: the server's backing rows (an older server sends none).

@@ -5,6 +5,11 @@
 # its own: it reads what the parts before it set. Lines moved verbatim from
 # factory.config.sh. The last line tells factory.config.sh this part loaded whole.
 
+# The environment names that never cross into code the factory did not write (the agent
+# env scrub in 11-agent-env.sh and every gate run in lib/dod.sh use the same list).
+# shellcheck source=lib/env-scrub.sh
+[ -f "$RUNNER_DIR/lib/env-scrub.sh" ] && source "$RUNNER_DIR/lib/env-scrub.sh"
+
 # Strict-execution-mode provider seam (defines sandbox_wrap_cmd). Sourced last so
 # it can read the GAFFER_DATA / STRICT_* config above. Best-effort: a missing file
 # must not break the suite, but it ships in-tree so this is just defensive.

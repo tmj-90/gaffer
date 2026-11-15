@@ -6,7 +6,7 @@
  * audit module directly (not via the live MCP server, which requires
  * a stdio harness) and assert on the JSONL produced.
  */
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -145,6 +145,24 @@ describe("defaultAuditPath — the one resolver every reader shares", () => {
     } finally {
       if (prevDb === undefined) delete process.env["MEMORY_DB"];
       else process.env["MEMORY_DB"] = prevDb;
+    }
+  });
+});
+
+describe("an audit log that cannot be created never breaks a tool call", () => {
+  // On macOS the agent's sandbox-exec profile denies every write to the memory audit
+  // log under $GAFFER_DATA (only the host may write it). When the file does not exist
+  // yet, creating it fails; audit() must swallow that like any other append failure,
+  // or every memory MCP tool call fails (the tools call audit() again from their catch).
+  it("returns normally when the file cannot be created", async () => {
+    const blocker = join(tmpdir(), `lore-audit-blocker-${Date.now()}-${process.pid}`);
+    writeFileSync(blocker, "a file, so nothing can be created beneath it");
+    process.env["MEMORY_AUDIT_LOG"] = join(blocker, "memory-audit.jsonl");
+    try {
+      const { audit } = await freshAudit();
+      expect(() => audit({ tool: "search_lore", request: { q: { chars: 3 } } })).not.toThrow();
+    } finally {
+      rmSync(blocker, { force: true });
     }
   });
 });

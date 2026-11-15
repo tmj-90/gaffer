@@ -13,7 +13,7 @@ import {
 import type { Spec } from "../domain/types.js";
 import { ACCEPTANCE_PROFILES } from "../domain/acceptanceProfile.js";
 import { HOST_CAPABILITIES } from "../domain/hostCapabilities.js";
-import type { Actor } from "../domain/types.js";
+import { POLICY_PACKS, type Actor, type PolicyPack } from "../domain/types.js";
 import {
   evaluateTicketScope,
   scopeBlockingDecisions,
@@ -525,6 +525,117 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
         "runner executes it), and the contract is frozen under review. Raise it in your verdict.",
     );
   };
+  /**
+   * FACTORY DRAFT BINDING: what an agent's new drafts (create_ticket, create_epic) may
+   * name in factory context. A mount bound to a ticket (delivery, resume, bootstrap,
+   * clarify, reviewer, tester) creates drafts only on repositories its bound ticket(s)
+   * WRITE, and never under a looser policy pack than the strictest bound ticket's (an
+   * omitted pack takes that floor). A mount bound to no ticket is the product owner
+   * (GAFFER_DEFAULT_TICKET_REPO names its repository: drafts stay on it) or a planning
+   * mount (no repository named: drafts on any registered repository, as before). Every
+   * draft still needs a person to ready it. Null outside the factory or for non-agents.
+   */
+  const factoryDraftBounds = (): { repos: Set<string> | null; floor: PolicyPack } | null => {
+    if (actor.type !== "agent" || !inFactoryContext()) return null;
+    const b = bindings();
+    const bound = [...new Set([b.claimed, b.scope, b.review].filter((x): x is string => !!x))];
+    if (bound.length > 0) {
+      const repos = new Set<string>();
+      let floor: PolicyPack = "solo_loose";
+      for (const id of bound) {
+        for (const r of wg.workPacketRepos(id).writeRepos) repos.add(r.id);
+        const pack = wg.tickets.findById(id)?.policy_pack as PolicyPack | undefined;
+        if (pack && POLICY_PACKS.indexOf(pack) > POLICY_PACKS.indexOf(floor)) floor = pack;
+      }
+      return { repos, floor };
+    }
+    const fallback = (process.env.GAFFER_DEFAULT_TICKET_REPO ?? "").trim();
+    if (fallback !== "") return { repos: new Set(repoRefIds(fallback)), floor: "solo_loose" };
+    return { repos: null, floor: "solo_loose" };
+  };
+  /** Every registered repo id a ref can mean (id first, or name): an unknown ref, none. */
+  const repoRefIds = (ref: string): string[] =>
+    [...new Set([wg.repos.findById(ref)?.id, wg.repos.findByName(ref)?.id])].filter(
+      (x): x is string => x !== undefined,
+    );
+  /**
+   * Refuse a factory agent's draft that names a repository outside its binding or a
+   * policy pack looser than its floor; returns the pack to create the draft with.
+   */
+  const boundDraft = (
+    tool: ToolName,
+    repo: string | undefined,
+    pack: PolicyPack | undefined,
+  ): PolicyPack | undefined => {
+    const bounds = factoryDraftBounds();
+    if (!bounds) return pack;
+    if (repo !== undefined && repo.trim() !== "" && bounds.repos) {
+      const ids = repoRefIds(repo.trim());
+      if (ids.length > 0 && !ids.every((id) => bounds.repos!.has(id))) {
+        throw new DispatchError(
+          "FACTORY_RUNNER_OWNED",
+          `${tool}: in factory context an agent drafts tickets only on the repositories its ` +
+            `mount is bound to; '${repo}' is outside them. Raise a request_decision instead.`,
+          { tool, repo },
+        );
+      }
+    }
+    if (pack === undefined) return bounds.floor === "solo_loose" ? undefined : bounds.floor;
+    if (POLICY_PACKS.indexOf(pack) < POLICY_PACKS.indexOf(bounds.floor)) {
+      throw new DispatchError(
+        "FACTORY_RUNNER_OWNED",
+        `${tool}: policy pack '${pack}' is looser than '${bounds.floor}', the floor for this ` +
+          "mount's drafts.",
+        { tool, policy_pack: pack, floor: bounds.floor },
+      );
+    }
+    return pack;
+  };
+  /**
+   * RUNNER-OWNED DELIVERY RECORD (factory): the runner records each write repo's branch,
+   * commit and review_ready status at close (tick-close.sh, as the system actor), after
+   * its gates ran on exactly that branch. In the factory an agent records a repo delivery
+   * only from the mount that holds the delivery CLAIM on that ticket (never a reviewer /
+   * tester / clarify mount bound by GAFFER_REVIEW_TICKET or GAFFER_SCOPE_TICKET alone),
+   * and then only progress (a pre-review status, an evidence note): never a branch,
+   * commit or PR, nor the review_ready / done statuses the done gate counts as evidence,
+   * so nothing the review, the approval pin, required CI or the landing reads can come
+   * from an agent's word. The service adds the status, claim and write-once checks.
+   */
+  const refuseFactoryRepoDelivery = (a: {
+    ticket_id: string;
+    branch_name?: string | undefined;
+    commit_sha?: string | undefined;
+    pr_url?: string | undefined;
+    status?: string | undefined;
+  }): void => {
+    if (actor.type !== "agent" || !inFactoryContext()) return;
+    const id = wg.resolveTicket(a.ticket_id).id;
+    if (bindings().claimed !== id) {
+      throw new DispatchError(
+        "FACTORY_RUNNER_OWNED",
+        "record_repo_delivery: in factory context only the delivery mount that holds the " +
+          "claim on this ticket may record its repo delivery; the runner records the branch " +
+          "and commit at close. A reviewer or tester raises a concern in its verdict.",
+        { ticket_id: id, tool: "record_repo_delivery" },
+      );
+    }
+    const runnerOwned = [
+      a.branch_name !== undefined ? "branch_name" : null,
+      a.commit_sha !== undefined ? "commit_sha" : null,
+      a.pr_url !== undefined ? "pr_url" : null,
+      a.status === "review_ready" || a.status === "done" ? `status ${a.status}` : null,
+    ].filter((x): x is string => x !== null);
+    if (runnerOwned.length > 0) {
+      throw new DispatchError(
+        "FACTORY_RUNNER_OWNED",
+        `record_repo_delivery: ${runnerOwned.join(", ")} is runner-owned in factory context ` +
+          "(the runner records the gated branch, commit and review_ready at close). Record " +
+          "progress only: a pre-review status or an evidence_ref.",
+        { ticket_id: id, tool: "record_repo_delivery", fields: runnerOwned },
+      );
+    }
+  };
   const raw = {
     create_ticket: (args: Args): ToolResult =>
       guard(() => {
@@ -535,13 +646,15 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
         // Created in one transaction with the link, so an unknown repo leaves no orphan
         // draft behind for the agent's retry to duplicate.
         const repo = (a.repo ?? process.env.GAFFER_DEFAULT_TICKET_REPO)?.trim();
+        // FACTORY DRAFT BINDING: the repo and pack a factory agent's draft may carry.
+        const policyPack = boundDraft("create_ticket", repo, a.policy_pack);
         const ticket = wg.createTicketWithLinks(
           {
             title: a.title,
             description: a.description ?? "",
             priority: a.priority,
             risk_level: a.risk_level,
-            policy_pack: a.policy_pack,
+            policy_pack: policyPack,
           },
           { repo: repo && repo !== "" ? repo : undefined },
           actor,
@@ -640,6 +753,7 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
       guard(() => {
         const a = z.object(toolSchemas.record_repo_delivery).parse(args);
         assertTicketInScope(a.ticket_id, "record_repo_delivery");
+        refuseFactoryRepoDelivery(a);
         const res = wg.recordRepoDelivery(
           {
             ticket_id: a.ticket_id,
@@ -885,8 +999,11 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
     add_dependency: (args: Args): ToolResult =>
       guard(() => {
         const a = z.object(toolSchemas.add_dependency).parse(args);
-        // Only the DEPENDENT side is scope-checked: that is the ticket the edge blocks.
+        // Both sides are scope-checked: the dependent is the ticket the edge blocks, and
+        // the other end is a ticket whose completion it waits on (an agent must not wire
+        // its drafts or its ticket to tickets outside its mount).
         assertTicketInScope(a.ticket, "add_dependency");
+        assertTicketInScope(a.depends_on, "add_dependency");
         const res = wg.addDependency({ ticket: a.ticket, depends_on: a.depends_on }, actor);
         return {
           ticket_id: res.ticketId,
@@ -898,7 +1015,12 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
     create_epic: (args: Args): ToolResult =>
       guard(() => {
         const a = z.object(toolSchemas.create_epic).parse(args);
-        const res = wg.createEpic(a, actor);
+        // FACTORY DRAFT BINDING: every planned ticket's repo (whatever its access) and pack.
+        const tickets = a.tickets.map((t) => {
+          const pack = boundDraft("create_epic", t.repo, t.policy_pack);
+          return pack === undefined ? t : { ...t, policy_pack: pack };
+        });
+        const res = wg.createEpic({ ...a, tickets }, actor);
         for (const n of res.ticketNumbers) draftsCreatedHere.add(wg.resolveTicket(String(n)).id);
         return { epic_node_id: res.epicNodeId, ticket_numbers: res.ticketNumbers };
       }),

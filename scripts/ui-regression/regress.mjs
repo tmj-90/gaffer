@@ -1133,7 +1133,8 @@ try {
         headers: { Authorization: `Bearer ${minted}` },
       });
       const txt = asRead.ok ? await asRead.text() : "";
-      txt && !txt.includes("SECRET") && txt.includes('"host":"hooks.slack.com"')
+      // The path, not the bare word: a setting's help text may say SECRET.
+      txt && !txt.includes("UI/REGRESS") && txt.includes('"host":"hooks.slack.com"')
         ? ok("API: a read principal sees a webhook as configured + host only")
         : bad(`API: settings leaked a webhook to a read principal (${asRead.status})`);
       const back = await fetch(`${BASE}/api/settings/secret/GAFFER_NOTIFY_SLACK_URL`, {

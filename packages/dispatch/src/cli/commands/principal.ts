@@ -20,7 +20,8 @@ export function registerPrincipal(program: Command): void {
     .command("principal")
     .description(
       "Named API credentials: `create` mints a token bound to an actor identity (shown once), " +
-        "`list` shows every principal, `revoke` disables one.",
+        "`list` shows every principal, `revoke` disables one, `unsigned` lists the ones this " +
+        "factory does not honour and `resign` is a person re-signing them.",
     );
 
   principal
@@ -116,6 +117,57 @@ export function registerPrincipal(program: Command): void {
       const wg = open(cmd.optsWithGlobals());
       try {
         printJson({ ok: true, principal: wg.revokePrincipal(ref, cliActor()) });
+      } finally {
+        wg.db.close();
+      }
+    });
+
+  principal
+    .command("unsigned")
+    .description(
+      "List the active principals this factory does not honour (created before signing, restored from a backup, or written outside the factory)",
+    )
+    .action((_opts, cmd) => {
+      const wg = open(cmd.optsWithGlobals());
+      try {
+        const review = wg.reviewUnsignedPrincipals();
+        if (review.unsigned.length > 0) {
+          process.stderr.write(
+            `Review each one (who it acts as, what it may do, where, who created it). Re-sign one with: gaffer wg principal resign <name> --confirm <its review_code>; all of this list with: gaffer wg principal resign --all --confirm ${review.fingerprint}\n`,
+          );
+        }
+        printJson({ ok: true, ...review });
+      } finally {
+        wg.db.close();
+      }
+    });
+
+  principal
+    .command("resign [names...]")
+    .description(
+      "A PERSON re-signs principals the factory does not honour, after reviewing them (`principal unsigned`). " +
+        "Each needs --confirm with a code `principal unsigned` printed: a row's review_code to re-sign it by name, the list's code for --all; a row whose creation is not on record must be named.",
+    )
+    .option(
+      "--all",
+      "the reviewed list's unsigned principals whose principal.created event matches",
+      false,
+    )
+    .option(
+      "--confirm <code>",
+      "the code of what you reviewed: the named row's review_code, or the list's code",
+    )
+    .action((names: string[], opts: { all: boolean; confirm?: string }, cmd) => {
+      const wg = open(cmd.optsWithGlobals());
+      try {
+        const res = wg.resignPrincipals(
+          { names: names.length > 0 ? names : undefined, all: opts.all, confirm: opts.confirm },
+          cliActor(),
+        );
+        for (const s of res.skipped) {
+          process.stderr.write(`Not re-signed: ${s.name}: ${s.reason}\n`);
+        }
+        printJson({ ok: true, ...res });
       } finally {
         wg.db.close();
       }

@@ -17,6 +17,7 @@ import { DispatchError, notFound } from "../../util/errors.js";
 import {
   autonomyPolicyBody,
   createPrincipalBody,
+  resignPrincipalsBody,
   idleLoopsBody,
   memoryLoreQuery,
   rejectLoreBody,
@@ -26,6 +27,7 @@ import {
 } from "../schemas.js";
 import { isolationStatusForRequest } from "../isolation.js";
 import { listSettings, readSecretSetting, settingProblems, writeSettings } from "../settings.js";
+import { requestAgentFilter } from "../scopeGate.js";
 import { apiActor, apiAuth, apiPrincipal, isSharedOperator } from "./context.js";
 import { forgetLoreDrafts, forgetLoreStatus, routeReadModels } from "./readModels.js";
 
@@ -181,6 +183,28 @@ export async function routeApi(
     sendJson(res, 200, { principal });
     return;
   }
+  // SEALED PRINCIPALS: GET /api/principal-signatures lists the active principals this
+  // factory does not honour (created before signing, restored from a backup, or written
+  // outside the factory), with why, and the fingerprint of that list; POST
+  // /api/principal-signatures/resign is a person's deliberate re-sign, operator only like
+  // minting (a principal token is refused); `all` needs the fingerprint of the list the
+  // person reviewed.
+  if (segments.length === 2 && segments[1] === "principal-signatures") {
+    if (method !== "GET") return methodNotAllowed(res);
+    sendJson(res, 200, wg.reviewUnsignedPrincipals());
+    return;
+  }
+  if (segments.length === 3 && segments[1] === "principal-signatures" && segments[2] === "resign") {
+    if (method !== "POST") return methodNotAllowed(res);
+    if (refuseIfPrincipal(req, res)) return;
+    const body = resignPrincipalsBody.parse(await readJsonBody(req));
+    sendJson(
+      res,
+      200,
+      wg.resignPrincipals({ names: body.names, all: body.all, confirm: body.confirm }, apiActor()),
+    );
+    return;
+  }
   // SQUAD — the operator's team identity for the dashboard's Match Day view.
   //   GET   /api/club                — the club (name / short name / kit; "Gaffer" default).
   //   PATCH /api/club                — partial update; null or "" clears a field.
@@ -205,7 +229,13 @@ export async function routeApi(
   }
   if (segments.length === 2 && segments[1] === "squad") {
     if (method !== "GET") return methodNotAllowed(res);
-    sendJson(res, 200, { club: wg.getClub(), agents: wg.listSquad() });
+    // PRINCIPAL SCOPES: a scoped principal sees the agents on its tickets only.
+    const seen = requestAgentFilter(wg);
+    const agents = wg.listSquad();
+    sendJson(res, 200, {
+      club: wg.getClub(),
+      agents: seen ? agents.filter((a) => seen(a.agent_id)) : agents,
+    });
     return;
   }
   if (segments.length === 4 && segments[1] === "squad" && segments[2] === "agents") {
@@ -407,15 +437,35 @@ const STREAM_POLL_MS = 1000;
 const STREAM_HEARTBEAT_MS = 15_000;
 /** Max events flushed per tick — a burst is drained across ticks, never unbounded. */
 const STREAM_BATCH = 200;
-/** Concurrent stream cap: this is a single-operator control plane, not a broadcast bus. */
-const STREAM_MAX_CLIENTS = 16;
+/**
+ * Concurrent stream caps: this is a single-operator control plane, not a broadcast bus.
+ * The cap is PER CREDENTIAL with a ceiling on everyone else, so a holder of the read
+ * token (the one handed to phones) or of a principal token cannot starve the operator's
+ * live feed: the shared full token (or a server with auth off) has its own
+ * {@link STREAM_MAX_OPERATOR} slots that no other credential counts against; every other
+ * credential gets {@link STREAM_MAX_PER_CREDENTIAL}, and all of them together
+ * {@link STREAM_MAX_OTHERS}.
+ */
+const STREAM_MAX_OPERATOR = 16;
+const STREAM_MAX_PER_CREDENTIAL = 4;
+const STREAM_MAX_OTHERS = 16;
 /**
  * Hard lifetime of one stream (ms). The credential is re-checked on every tick, so
  * this is the backstop that forces a periodic re-authentication; the dashboard
  * reconnects with ?since=<last seq> and loses nothing.
  */
 const STREAM_MAX_LIFETIME_MS = 60 * 60 * 1000;
-let streamClients = 0;
+/** Open streams per credential key ("operator", "read", "principal:<id>"). */
+const streamsByCredential = new Map<string, number>();
+let otherStreams = 0;
+
+/** The stream-cap key of the request's credential. */
+function streamCredential(): string {
+  const auth = apiAuth();
+  if (!auth || auth.via === "disabled" || auth.via === "shared_full") return "operator";
+  if (auth.via === "principal" && auth.principal) return `principal:${auth.principal.principal.id}`;
+  return auth.via === "shared_read" ? "read" : `other:${auth.via}`;
+}
 /** How to end each open stream (see {@link endEventStreams}). */
 const openStreams = new Set<(note: string) => void>();
 
@@ -433,7 +483,14 @@ export function endEventStreams(note = "server shutting down"): number {
 }
 
 function streamEvents(wg: Dispatch, url: URL, req: IncomingMessage, res: ServerResponse): void {
-  if (streamClients >= STREAM_MAX_CLIENTS) {
+  const credential = streamCredential();
+  const operator = credential === "operator";
+  const mine = streamsByCredential.get(credential) ?? 0;
+  if (
+    operator
+      ? mine >= STREAM_MAX_OPERATOR
+      : mine >= STREAM_MAX_PER_CREDENTIAL || otherStreams >= STREAM_MAX_OTHERS
+  ) {
     sendJson(res, 503, errorBody("STREAM_BUSY", "Too many concurrent event streams."));
     return;
   }
@@ -459,7 +516,8 @@ function streamEvents(wg: Dispatch, url: URL, req: IncomingMessage, res: ServerR
   const beyond = requested > latest;
   let cursor = beyond ? latest : requested;
 
-  streamClients += 1;
+  streamsByCredential.set(credential, (streamsByCredential.get(credential) ?? 0) + 1);
+  if (!operator) otherStreams += 1;
   res.writeHead(200, {
     "content-type": "text/event-stream; charset=utf-8",
     "cache-control": "no-cache, no-transform",
@@ -478,7 +536,10 @@ function streamEvents(wg: Dispatch, url: URL, req: IncomingMessage, res: ServerR
   const stop = (note?: string): void => {
     if (closed) return;
     closed = true;
-    streamClients -= 1;
+    const left = (streamsByCredential.get(credential) ?? 1) - 1;
+    if (left > 0) streamsByCredential.set(credential, left);
+    else streamsByCredential.delete(credential);
+    if (!operator) otherStreams -= 1;
     openStreams.delete(stop);
     clearInterval(poll);
     clearInterval(beat);
@@ -555,7 +616,7 @@ function refuseIfPrincipal(_req: IncomingMessage, res: ServerResponse): boolean 
     403,
     errorBody(
       "PRINCIPAL_ADMIN_REQUIRED",
-      "Only the shared operator token (or the local CLI) may create or revoke principals.",
+      "Only the shared operator token (or the local CLI) may create, revoke or re-sign principals.",
     ),
   );
   return true;

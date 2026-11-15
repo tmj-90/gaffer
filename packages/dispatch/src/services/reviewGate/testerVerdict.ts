@@ -380,6 +380,7 @@ export function testerPass(
   const human = testerProvenance(actor) === "human";
   assertVerdictPrincipal(
     internals.db,
+    internals.gateKeyring,
     actor,
     authority.principal,
     internals.ticketSvc.resolveTicket(ticketRef).number,
@@ -481,6 +482,7 @@ export function testerPass(
       // The principal again, inside the write: a revocation committed meanwhile refuses.
       const principalNow = assertVerdictPrincipal(
         internals.db,
+        internals.gateKeyring,
         actor,
         authority.principal,
         ticket.number,
@@ -807,6 +809,7 @@ export function testerFail(
   // A PERSON'S FAIL (package H1): an active human or admin principal, or nothing.
   assertVerdictPrincipal(
     internals.db,
+    internals.gateKeyring,
     actor,
     authority.principal,
     internals.ticketSvc.resolveTicket(ticketRef).number,
@@ -831,6 +834,7 @@ export function testerFail(
       assertCurrentRound(internals, ticket, input.round);
       const principalNow = assertVerdictPrincipal(
         internals.db,
+        internals.gateKeyring,
         actor,
         authority.principal,
         ticket.number,

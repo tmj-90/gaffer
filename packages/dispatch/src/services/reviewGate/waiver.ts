@@ -27,6 +27,8 @@ import { fileURLToPath } from "node:url";
 
 import type { Db } from "../../db/connection.js";
 import type { Actor } from "../../domain/types.js";
+import type { GateKeyring } from "../../events/gateSeal.js";
+import { unsignedPrincipalMessage, verifyPrincipal } from "../../events/principalSeal.js";
 import type { PrincipalView } from "../../repositories/principalRepository.js";
 import { DispatchError } from "../../util/errors.js";
 
@@ -52,6 +54,7 @@ export function principalHowTo(ticketNumber: number | null, verb: "pass" | "fail
  */
 export function assertVerdictPrincipal(
   db: Db,
+  keyring: GateKeyring,
   actor: Actor,
   principal: VerdictPrincipal | null | undefined,
   ticketNumber: number | null,
@@ -95,6 +98,10 @@ export function assertVerdictPrincipal(
       `the actor (${actor.type}:${actor.id ?? ""}) is not principal '${row.name}' (${row.actor_type}:${row.actor_id})`,
     );
   }
+  // SEALED PRINCIPALS: re-read inside the transaction, so verified here too: a row the
+  // factory did not sign (or one changed since) is no person. Never creates a key or a seal.
+  const sealed = verifyPrincipal(db, keyring, row.id);
+  if (!sealed.ok) return refuse(unsignedPrincipalMessage(row.name, sealed));
   return {
     id: row.id,
     name: row.name,

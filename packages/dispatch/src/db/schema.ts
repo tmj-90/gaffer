@@ -359,6 +359,23 @@ CREATE TABLE IF NOT EXISTS gate_seals (
   created_at TEXT NOT NULL
 );
 
+-- SEALED CONTROL ROWS: the seal of a row that decides who may act (an api_principals
+-- row; later an autonomy policy and a ticket's risk level): HMAC-SHA256 under the factory
+-- key over the row's identity and authority and the chain hash of the event that set that
+-- state (see events/rowSeal.ts). A row without a valid seal is not honoured. Created by
+-- SCHEMA_SQL on open (a new table, no version bump). Machine-local like gate_seals: never
+-- exported, dropped on import.
+CREATE TABLE IF NOT EXISTS row_seals (
+  kind       TEXT NOT NULL,
+  row_id     TEXT NOT NULL,
+  event_id   TEXT NOT NULL,
+  facts_json TEXT NOT NULL,
+  key_id     TEXT NOT NULL,
+  mac        TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (kind, row_id)
+);
+
 -- ============================================================================
 -- Factory Map scope graph (FG-001 + FG-002). Additive, schema_version 2.
 --

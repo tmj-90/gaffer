@@ -29,6 +29,8 @@
 //
 // Each entry:
 //   re        RegExp tested against the raw command string (the runtime rule).
+//   cmdRe     (optional) the rule with its program word in command position, used by the
+//             hook in place of `re` for a command proven to be data only (see the rule).
 //   why       Human-readable reason surfaced on block.
 //   install   (optional) true tags the package-manager rules the greenfield
 //             bootstrap allowance may relax (install/ci/update into the fresh repo).
@@ -42,7 +44,7 @@
 //             records the gap explicitly rather than letting it pass silently.
 // =====================================================================
 
-/** @typedef {{ re: RegExp, why: string, install?: boolean, example: string, crewFlags: boolean }} DangerousCommandRule */
+/** @typedef {{ re: RegExp, cmdRe?: RegExp, why: string, install?: boolean, example: string, crewFlags: boolean }} DangerousCommandRule */
 
 // COMMAND POSITION prefix shared by the command-name rules below: line start or after
 // ; & | ( ` { ! $( then/do/else, or the start of a shell's `-c "…"` body or of a quoted
@@ -431,8 +433,8 @@ export const DANGEROUS_COMMANDS = [
     // withdraw-comment|fix`, matched by `review` below): a delivery agent must never write,
     // resolve or withdraw its reviewer's comments, or send a change back with them; it
     // reads them through get_ticket and answers with a reply (agent evidence, a claim).
-    // And the credentials (`principal create|revoke`, `--as-principal`): a principal is
-    // a person's or a bot's delegated access, never an agent's to mint or act as.
+    // And the credentials (`principal create|revoke|resign`, `--as-principal`): a principal
+    // is a person's or a bot's delegated access, never an agent's to mint, re-sign or act as.
     // And the escaped-defect link (`regression-of`): a person's judgement that a change
     // caused a defect, never an agent's (`review-rules propose` is matched by `review`).
     // And the acceptance profile (`acceptance-profile`): the commands the runner runs for a
@@ -447,7 +449,18 @@ export const DANGEROUS_COMMANDS = [
     // root options): the words are too common to match anywhere after `dispatch` (a
     // Redux or WordPress `dispatch( 'core/block-editor' )` search, `dispatch.js --mode
     // block`); the normalised views put a quoted, escaped or wrapped CLI in that shape.
-    re: /\b(wg|dispatch|fg|crew)\b[^\n|;&]*\b(review|regression-of|acceptance-profile|acceptance-evidence|approve|approve-ready|mark-merged|record-landing|landing-begin|record-tester-replay|ci-result|eval-score|lane-verdict|scout-record|tester-route|attach-evidence|reject|repo-access|set-testable|allow-test-changes|set-commands|test-contract|tester-pass|tester-fail|repo-delivery|require-cap|set-reviewer|decisions[ \t]+resolve|agent[ \t]+rename|club[ \t]+set|wont-do|principal[ \t]+(?:create|revoke)|as-principal|reopen-for-review|ticket[ \t]+(?:move|ready|hold)|human-claim|human-release)\b|\b(?:wg|dispatch|fg|crew)[ \t]+(?:-\S*[ \t]+(?:[^\s-]\S*[ \t]+)?)*(?:un)?block\b|\bGAFFER_PRINCIPAL_TOKEN=/,
+    re: /\b(wg|dispatch|fg|crew)\b[^\n|;&]*\b(review|regression-of|acceptance-profile|acceptance-evidence|approve|approve-ready|mark-merged|record-landing|landing-begin|record-tester-replay|ci-result|eval-score|lane-verdict|scout-record|tester-route|attach-evidence|reject|repo-access|set-testable|allow-test-changes|set-commands|test-contract|tester-pass|tester-fail|repo-delivery|require-cap|set-reviewer|decisions[ \t]+resolve|agent[ \t]+rename|club[ \t]+set|wont-do|principal[ \t]+(?:create|revoke|resign)|as-principal|reopen-for-review|ticket[ \t]+(?:move|ready|hold)|human-claim|human-release)\b|\b(?:wg|dispatch|fg|crew)[ \t]+(?:-\S*[ \t]+(?:[^\s-]\S*[ \t]+)?)*(?:un)?block\b|\bGAFFER_PRINCIPAL_TOKEN=/,
+    // The same rule with the CLI in COMMAND position (CMD_POS, as the gaffer rule below).
+    // The hook uses it instead of `re` only for a command that controlPlaneDataOnly()
+    // (lib/hook/control-plane.mjs) proves is data only: every segment a plain git commit /
+    // add / status / diff / log / show, echo / printf (not piped), grep / rg (no --pre),
+    // cat, ls and the like, with no variable, substitution, backslash, pipe, newline or
+    // here-document anywhere. There a word is only ever data (`git commit -m "dispatch:
+    // reject bad events"`, `grep -rn "dispatch.*approve" src`, `echo "fg then approve" >
+    // notes.txt`). Every other command, every evasion included, is judged by `re`.
+    cmdRe: new RegExp(
+      String.raw`${CMD_POS}(?:wg|dispatch|fg|crew)${WORD_END}[^\n|;&]*\b(?:review|regression-of|acceptance-profile|acceptance-evidence|approve|approve-ready|mark-merged|record-landing|landing-begin|record-tester-replay|ci-result|eval-score|lane-verdict|scout-record|tester-route|attach-evidence|reject|repo-access|set-testable|allow-test-changes|set-commands|test-contract|tester-pass|tester-fail|repo-delivery|require-cap|set-reviewer|decisions[ \t]+resolve|agent[ \t]+rename|club[ \t]+set|wont-do|principal[ \t]+(?:create|revoke|resign)|as-principal|reopen-for-review|ticket[ \t]+(?:move|ready|hold)|human-claim|human-release)\b|${CMD_POS}(?:wg|dispatch|fg|crew)[ \t]+(?:-\S*[ \t]+(?:[^\s-]\S*[ \t]+)?)*(?:un)?block\b|\bGAFFER_PRINCIPAL_TOKEN=`,
+    ),
     why: "control-plane CLI write (use the scoped MCP, not the privileged wg/dispatch/fg/crew CLI)",
     example: "wg ticket approve T-1",
     crewFlags: false,

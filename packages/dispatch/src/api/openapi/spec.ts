@@ -235,6 +235,39 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     ],
   },
 
+  {
+    method: "GET",
+    path: "/api/principal-signatures",
+    tag: T.config,
+    summary: "Principals this factory does not honour",
+    description:
+      "Every active principal without a valid signature under the factory key (created before signing, restored from a backup, or written outside the factory), with why (`failure`, `detail`), what a person reviews (capability, actor, `scope` resolved to repo names and ticket numbers, `created_by`, `created_at`) and whether a matching `principal.created` event is on record (`creation_event`; a database writer can forge one, so it is a hint, not proof). `fingerprint` identifies exactly this list and each row's `review_code` that row: re-signing needs one of them. Such a principal is refused like an unknown token until a person re-signs it. Never carries token material.",
+    capability: "read",
+    responses: [ok("`{ unsigned: UnsignedPrincipal[], fingerprint }`.")],
+  },
+  {
+    method: "POST",
+    path: "/api/principal-signatures/resign",
+    tag: T.config,
+    summary: "Re-sign principals (a person's act)",
+    description:
+      "Signs the named principals (`names`, ids or names, with `confirm` the one row's `review_code` or the list's `fingerprint`), or (`all` with `confirm`, the `fingerprint` of the list the person reviewed from GET /api/principal-signatures) every principal of that list whose `principal.created` event is on record and matches it (one without is skipped and must be named), with a `principal.resigned` event each. Without `confirm` it is refused (422); a row or list changed since the review is refused (409) and nothing is signed. A revoked principal is refused (409). Shared operator token only: a principal token is refused. Nothing is ever signed on upgrade or on a read.",
+    capability: "full",
+    body: "resignPrincipalsBody",
+    responses: [
+      ok("`{ resigned: [{ id, name, event_id }], skipped: [{ id, name, reason }] }`."),
+      invalid,
+      notFound,
+      principalAdminRequired,
+      {
+        status: 409,
+        description:
+          "A named principal is revoked, or the unsigned list changed since the review `confirm` names (`STATE_CONFLICT`).",
+        content: "json",
+      },
+    ],
+  },
+
   // --- /api configuration ----------------------------------------------------
   {
     method: "GET",

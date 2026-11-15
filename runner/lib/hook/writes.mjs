@@ -8,6 +8,7 @@
 
 import { basename, resolve } from "node:path";
 import {
+  canonicalCandidates,
   canonicalize,
   expandTildeWord,
   isInsideAny,
@@ -81,7 +82,7 @@ function extractAwkRedirectTargets(awkBody) {
     // A quoted literal, or a bare path-shaped token, is a resolvable destination.
     if (quoted || raw.includes("/") || raw.includes(".") || raw.startsWith("~")) {
       sawLiteral = true;
-      targets.push(canonicalize(resolve(process.cwd(), raw)));
+      targets.push(...canonicalCandidates(process.cwd(), raw));
     }
     // Otherwise the destination is a bare identifier (a variable) → dynamic.
   }
@@ -188,7 +189,9 @@ function extractBashWriteTargets(cmd) {
     //     wrongly surface a legitimate device write as an out-of-root target.
     const lexical = resolve(effectiveCwd ?? "/", p);
     if (lexical === "/dev" || lexical.startsWith("/dev/")) return;
-    targets.push(canonicalize(lexical));
+    // The kernel takes `..` physically: through a symlinked directory the write lands
+    // beside the link's target (canonicalCandidates), so both places are judged.
+    targets.push(...canonicalCandidates(effectiveCwd ?? "/", p));
   };
 
   // FAIL-CLOSED gate (S-1/S-4): if the WHOLE command has quoting we cannot

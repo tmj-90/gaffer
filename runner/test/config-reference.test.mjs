@@ -369,7 +369,9 @@ console.log(
     .slice(0, text.indexOf("## Deprecated"))
     .split("\n")
     .filter((l) => l.startsWith("| `")).length;
-  ok(rowsInTables < 120, `the tables hold fewer than 120 rows (${rowsInTables})`);
+  // 121: GAFFER_DOD_ENV_PASS (the gates' environment pass-through, sandbox audit F2) is
+  // the one knob added since the diet set this cap.
+  ok(rowsInTables < 121, `the tables hold fewer than 121 rows (${rowsInTables})`);
   ok(
     new RegExp(`\\| Rows in the tables \\| ${rowsInTables} \\|`).test(text),
     "the metrics say the same row count",

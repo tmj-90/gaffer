@@ -199,6 +199,12 @@ waiting for Merge now, and the done lane.*
   factory-wide control switched off. Repository-level changes need an admin principal.
   A decision shared with a ticket outside its scope shows on its ticket only as "A
   decision outside this token's scope" (it still blocks), never its question.
+- **Signed sign-ins.** Every principal is signed with the factory key; one that is not
+  (created before signing, restored from a backup, or written outside the factory) cannot
+  sign in. Settings says "N sign-ins were created before signing. Review and re-sign."
+  with the list (who each acts as, what it may do, where, who created it and when) and
+  Re-sign buttons for the operator; `wg principal unsigned` and `wg principal resign
+  <name>|--all --confirm <code>` (the codes `unsigned` prints) do the same on the CLI.
 - **Who the CLI is.** `wg whoami` says who writes are recorded as: `$USER`, asserted,
   without a token; with `GAFFER_PRINCIPAL_TOKEN=<token>`, `wg`, `gaffer approve` and
   `gaffer merge` act as that principal, its read-only flag and scope enforced as on the
@@ -608,7 +614,10 @@ install. Settings shows that posture as a read-only line in its Sandbox group: t
 provider, available or missing, required or opted out, and the fix. The opt-out is
 `GAFFER_STRICT_REQUIRE=0` in the environment, for a runner you contain yourself; with a
 ship or mutate flag on as well, the runner warns about it twice
-([docs/sandbox.md](sandbox.md)).
+([docs/sandbox.md](sandbox.md)). The gates run agent-written code, so each gate run
+starts from an empty environment (PATH, a throwaway HOME, locale, proxy and toolchain
+homes); the Quality group's "Variables the gates may see" (`GAFFER_DOD_ENV_PASS`) names
+any other variable your tests need, and credential-shaped names are never passed.
 
 ![The boot room: the Team instructions dial on Supervised, who plays each position, and autonomy suggestions drawn from the review record](img/settings.png)
 

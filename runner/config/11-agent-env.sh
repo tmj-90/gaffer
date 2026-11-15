@@ -139,6 +139,17 @@ gaffer_node_ca_fallback() {
 GAFFER_AGENT_ENV=()
 gaffer_agent_env() {
   GAFFER_AGENT_ENV=()
+  # The shared name patterns (credential-shaped, outbound endpoints) live in
+  # lib/env-scrub.sh (19-libs.sh loads it). Without them nothing is scrubbed, so the env
+  # stays EMPTY and the call fails (fail closed): never a launch with the full environment.
+  if ! declare -F gaffer_env_name_is_credential >/dev/null 2>&1 || ! declare -F gaffer_env_name_is_endpoint >/dev/null 2>&1; then
+    # shellcheck source=../lib/env-scrub.sh
+    [ -f "${RUNNER_DIR:-}/lib/env-scrub.sh" ] && . "$RUNNER_DIR/lib/env-scrub.sh"
+    if ! declare -F gaffer_env_name_is_credential >/dev/null 2>&1 || ! declare -F gaffer_env_name_is_endpoint >/dev/null 2>&1; then
+      printf 'gaffer: lib/env-scrub.sh is missing: the agent environment cannot be scrubbed, so it is left empty (fail closed)\n' >&2
+      return 1
+    fi
+  fi
   # Provider-AGNOSTIC base: the working shell, locale, MCP data-plane wiring, and
   # the write/read-root boundary vars. Every worker provider needs these.
   local keep_exact=(
@@ -186,21 +197,10 @@ gaffer_agent_env() {
     # every provider except claude-code, so the bare form crashes gaffer_agent_env there.
     for kd in ${keep_despite_deny[@]+"${keep_despite_deny[@]}"}; do [ "$name" = "$kd" ] && { keep_forced=1; break; }; done
     if [ "$keep_forced" -eq 0 ]; then
-      # The credential deny pattern's named entries are deliberately redundant with the
-      # *_TOKEN / *_KEY globs: they document the exact secrets this list exists for and
-      # survive a future glob edit.
-      # shellcheck disable=SC2221,SC2222
-      case "$name" in
-        # Credential-shaped vars — never reach the agent:
-        # GAFFER_PRINCIPAL_TOKEN is a PERSON's credential (package H1): with it the CLI
-        # records a human verdict, so no agent may ever hold it.
-        *_TOKEN|*_SECRET|*_KEY|*_PASSWORD|*_PASSWD|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|GITHUB_TOKEN|GH_TOKEN|DISPATCH_API_TOKEN|GAFFER_PRINCIPAL_TOKEN)
-          continue ;;
-        # Outbound endpoint / notify config — runner-only; the agent must not read
-        # its own potential exfiltration channel:
-        GAFFER_NOTIFY_*|*_WEBHOOK*|*_SLACK*|*_URL)
-          continue ;;
-      esac
+      # Credential-shaped vars and the runner's outbound endpoints never reach the agent
+      # (the patterns live in lib/env-scrub.sh, shared with the gates' environment).
+      gaffer_env_name_is_credential "$name" && continue
+      gaffer_env_name_is_endpoint "$name" && continue
     fi
     local matched=0
     local k

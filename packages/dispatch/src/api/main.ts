@@ -6,6 +6,7 @@ import { Command } from "commander";
 import { authConfigured, deriveReadToken, describeApiToken, ensureApiToken } from "./auth.js";
 import { Dispatch } from "../core.js";
 import { hostGateKeyring } from "../events/gateSeal.js";
+import { setUnsignedPrincipalLog } from "../services/principalAdminService.js";
 import { resolveDbPath } from "../util/paths.js";
 import { DEFAULT_API_PORT, assertSafeBind, createApiServer, endEventStreams } from "./server.js";
 import { refreshIsolationStatus } from "./isolation.js";
@@ -117,6 +118,19 @@ program
     const swept = wg.sweepStaleRuns();
     if (swept.length > 0) {
       process.stdout.write(`dispatch-api: reconciled ${swept.length} orphaned run(s)\n`);
+    }
+    // SEALED PRINCIPALS: a sign-in refused because the principal is not signed by this
+    // factory is logged here (once per principal and reason), beside the 401 it gets.
+    setUnsignedPrincipalLog((line) => process.stderr.write(`${line}\n`));
+    const unsigned = wg.listUnsignedPrincipals();
+    if (unsigned.length > 0) {
+      process.stderr.write(
+        `dispatch-api: ${unsigned.length} principal(s) are not signed by this factory and cannot sign in (${unsigned
+          .map((u) => u.name)
+          .join(
+            ", ",
+          )}): review them with \`gaffer wg principal unsigned\`, then \`gaffer wg principal resign\` (or in the dashboard's Settings).\n`,
+      );
     }
     // Pass the bind host so the server emits HSTS only for a non-loopback bind.
     const server = createApiServer(wg, undefined, undefined, undefined, undefined, opts.host);

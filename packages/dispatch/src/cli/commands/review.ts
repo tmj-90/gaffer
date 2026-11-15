@@ -53,7 +53,11 @@ export function registerReview(program: Command): void {
             ? cliActor() // CLI IDENTITY: the principal's own actor (human or admin)
             : { type: "human", id: opts.reviewer ?? cliActor().id };
       const commits = ((opts.commit as string[] | undefined) ?? []).map(parseCommitFlag);
-      const res = wg.approveReview(ref, actor, { commits, requireCommits: true });
+      const res = wg.approveReview(ref, actor, {
+        commits,
+        requireCommits: true,
+        principal: as === "agent" ? null : cliPrincipal(),
+      });
       printJson({ ok: true, status: res.ticket.status, event: res.eventId, policy: res.policy });
       wg.db.close();
     });

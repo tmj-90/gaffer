@@ -5,7 +5,7 @@ import { agentTitle, agentWho, roLock } from "../access.js";
 import { actorName, agentNames, squad } from "../club.js";
 import { panelHead } from "../components.js";
 import { el } from "../dom.js";
-import { WEEKDAYS, fmtDay, fmtTime, money, moneyW, parseJsonSafe, plural } from "../format.js";
+import { WEEKDAYS, fmtDay, fmtTime, money, moneyW, parseJsonSafe, pct, plural } from "../format.js";
 import { clockTime } from "../freshness.js";
 import { agentShirt, glyph, repoTag } from "../icons.js";
 import { OFF_PITCH, benchedCampaignLine, svgS } from "../matchday.js";
@@ -29,6 +29,21 @@ function progPage(cls, tone, title, aux, body) {
     panelHead(title, aux, null, { tone: tone || undefined, level: 2 }),
     ...[].concat(body),
   ]);
+}
+
+/** "last 30 days · 4 accepted · 2 attempts each": the accepted-change price's period and count. */
+function acceptedChangeNote(ac) {
+  if (!ac) return "";
+  const period = typeof ac.window_days === "number" ? `last ${ac.window_days} days` : "all time";
+  return [
+    period,
+    typeof ac.accepted_changes === "number" ? `${ac.accepted_changes} accepted` : null,
+    ac.attempts_per_accepted_change != null
+      ? `${ac.attempts_per_accepted_change} attempts each, every attempt counted`
+      : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 /** Cup runs: every epic as rounds (dependency depth); the acceptance ticket is the Final. */
@@ -418,13 +433,8 @@ function wageBill(f) {
           el("dt", {}, "Per accepted change"),
           el("dd", {}, [
             money(h.accepted_change?.cost_per_accepted_change_usd),
-            el(
-              "small",
-              {},
-              h.accepted_change && h.accepted_change.attempts_per_accepted_change != null
-                ? `every attempt counted · ${h.accepted_change.attempts_per_accepted_change} attempts each`
-                : "",
-            ),
+            // The one windowed figure here says its period and its count (A-32, F-E4).
+            el("small", {}, acceptedChangeNote(h.accepted_change)),
           ]),
         ]),
         el("div", {}, [
@@ -437,7 +447,7 @@ function wageBill(f) {
               // Rework = delivery spend on the attempts after a reviewer, the tester
               // or a failed gate sent the ticket back (the ledger's attempt timeline).
               h.rework?.rework_cost_share_pct != null
-                ? `${h.rework.rework_cost_share_pct}% of spend, on attempts after a send-back`
+                ? `${pct(h.rework.rework_cost_share_pct)} of spend, on attempts after a send-back`
                 : "",
             ),
           ]),

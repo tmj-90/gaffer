@@ -381,7 +381,9 @@ async function loadMatchDay() {
       return null;
     }),
     opt("/api/cost", null),
-    opt("/api/health", null),
+    // The lighter summary read, over the same 30-day window as Health, so the one
+    // windowed figure the Overview shows (the accepted-change price) names its period.
+    opt(`/api/health?view=summary&window_days=${OVERVIEW_WINDOW_DAYS}`, null),
     opt("/api/settings", null),
     opt("/claims", { claims: [] }),
     opt("/agents", { agents: [] }),
@@ -503,6 +505,9 @@ async function loadMatchDay() {
     clubName: (squad.club && squad.club.name) || summary.clubName || factoryNode?.name || null,
   };
 }
+
+/** The window the Overview reads its health figures over: Health's default, 30 days. */
+const OVERVIEW_WINDOW_DAYS = 30;
 
 /** The ticket a team-sheet row is about (with its current status), if any. */
 function rowTicket(f, it) {

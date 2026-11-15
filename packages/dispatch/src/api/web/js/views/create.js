@@ -364,7 +364,7 @@ function renderRepoScopeSelector({ nodes, allRepos, getDraft, onChange }) {
     } catch (e) {
       if (e.code === "UNAUTHORIZED") return;
       suggestBox.appendChild(
-        emptyState("Suggestions unavailable — attach repos manually.", null, null, null, {
+        emptyState("Suggestions unavailable: attach repos manually.", null, null, null, {
           inline: true,
         }),
       );

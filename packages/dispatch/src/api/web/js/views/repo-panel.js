@@ -52,6 +52,8 @@ function renderRepoPanel(ticketId, claimBox, { readOnly = false, ticket = null }
       panelHead(
         "The boundary",
         readOnly ? (merged ? "read-only: merged" : "read-only access") : "where agents may play",
+        null,
+        { level: 2 },
       ),
       el(
         "p",

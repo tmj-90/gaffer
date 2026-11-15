@@ -254,7 +254,7 @@ async function renderNode(id) {
       "Fixtures",
       book ? (live.length ? `${live.length} live, worst first` : "nothing live") : "",
       null,
-      { kit: "claret" },
+      { tone: "reference", level: 2 },
     ),
     book
       ? fixtureList(live, {
@@ -273,14 +273,14 @@ async function renderNode(id) {
           "Results",
           results.length ? `latest ${Math.min(8, results.length)} of ${results.length} done` : "",
           null,
-          { kit: "ink" },
+          { level: 2 },
         ),
         fixtureList(results, { byTime: true, empty: "Nothing shipped from here yet." }),
       ])
     : null;
 
   const repoCard = el("section", { class: "card gr-card", "aria-label": "Who plays here" }, [
-    panelHead("Who plays here", plural(repos.length, "repo"), null, { kit: "sky" }),
+    panelHead("Who plays here", plural(repos.length, "repo"), null, { level: 2 }),
     isClub
       ? el(
           "p",
@@ -341,11 +341,11 @@ function renderNewGround(allNodes) {
   wrap.appendChild(
     el("div", { class: "detail-grid" }, [
       el("section", { class: "card gr-card", "aria-label": "The ground" }, [
-        panelHead("The ground", "name, type, owner, risk", null, { kit: "claret" }),
+        panelHead("The ground", "name, type, owner, risk", null, { tone: "reference", level: 2 }),
         renderNodeForm(null, allNodes),
       ]),
       el("section", { class: "card gr-card gr-types", "aria-label": "Which type" }, [
-        panelHead("Which type", "where it stands on the map", null, { kit: "sky" }),
+        panelHead("Which type", "where it stands on the map", null, { level: 2 }),
         el(
           "dl",
           { class: "kv gr-kv gr-typekey" },
@@ -509,7 +509,7 @@ function renderConnectionsCard(node, allNodes, allEdges) {
   return roLockAll(
     el("section", { class: "card gr-card", "aria-label": "Neighbours" }, [
       panelHead("Neighbours", `${outgoing.length + incoming.length} on the map`, null, {
-        kit: "sky",
+        level: 2,
       }),
       list,
       el("h3", { class: "gr-sub" }, "Add a connection"),

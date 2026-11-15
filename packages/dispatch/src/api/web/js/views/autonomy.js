@@ -14,7 +14,11 @@ import { resolveTargetRepos, targetPicker } from "./plan.js";
 function autonomyRecommendationsPanel(recs, policies, { inert = false } = {}) {
   if (!Array.isArray(recs) || recs.length === 0) return null;
   return el("div", { class: "card panel autonomy-recs" }, [
-    panelHead("Autonomy suggestions", "from your review track record", null, { kit: "sky" }),
+    panelHead("Autonomy suggestions", "from your review track record", null, {
+      // A suggestion waits for the viewer's Turn on: the one claret block (A-02).
+      tone: "needs",
+      level: 2,
+    }),
     el(
       "p",
       { class: "section-note" },
@@ -124,7 +128,7 @@ function autonomyPoliciesPanel(policies, { inert = false } = {}) {
   const active = (Array.isArray(policies) ? policies : []).filter((p) => p.mode === "auto");
   if (active.length === 0) return null;
   return el("div", { class: `card panel autonomy-policies${inert ? " is-inert" : ""}` }, [
-    panelHead(inert ? "Active autonomy (inert)" : "Active autonomy", null, null, { kit: "sky" }),
+    panelHead(inert ? "Active autonomy (inert)" : "Active autonomy", null, null, { level: 2 }),
     el(
       "p",
       { class: "section-note" },
@@ -209,7 +213,7 @@ function accessPanel(whoami, principals) {
         ? "the shared token"
         : "unknown";
   const card = el("div", { class: "card panel access-panel" }, [
-    panelHead("Access", "the keys to the ground", null, { kit: "ink" }),
+    panelHead("Access", "the keys to the ground", null, { level: 2 }),
     el(
       "p",
       { class: "section-note" },

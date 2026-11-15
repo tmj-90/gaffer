@@ -18,10 +18,15 @@ import { repoRelative } from "./ticket.js";
 
 // --- The programme pages -----------------------------------------------------
 
-/** A programme page: a kit-colour title block over a 2px ink frame. */
-function progPage(cls, kit, title, aux, body) {
+/**
+ * A programme page: a level-2 head over a 2px ink frame. `tone` (a panelHead tone:
+ * "needs" | "reference" | "drawing" | "broken") paints the head as a block; most pages
+ * pass null, since a view leads with at most two blocks and claret is only for what
+ * the viewer must act on (A-02, A-03, A-10).
+ */
+function progPage(cls, tone, title, aux, body) {
   return el("section", { class: `card prog ${cls}`, "aria-label": title }, [
-    panelHead(title, aux, null, { kit }),
+    panelHead(title, aux, null, { tone: tone || undefined, level: 2 }),
     ...[].concat(body),
   ]);
 }
@@ -29,7 +34,7 @@ function progPage(cls, kit, title, aux, body) {
 /** Cup runs: every epic as rounds (dependency depth); the acceptance ticket is the Final. */
 function cupRuns(f) {
   if (!f.epics.length) {
-    return progPage("campaigns", "sky", "Cup runs", "epics, by phase", [
+    return progPage("campaigns", null, "Cup runs", "epics, by phase", [
       el("p", { class: "quiet" }, [
         "No cup runs yet. ",
         roLock(
@@ -45,7 +50,7 @@ function cupRuns(f) {
   }
   return progPage(
     "campaigns",
-    "sky",
+    null,
     "Cup runs",
     "epics, by phase",
     // A held campaign leads: it is the one that needs a look.
@@ -162,7 +167,7 @@ function injuryList(f) {
   const list = f.tickets.filter((t) => t.status === "failed" || t.status === "paused");
   return progPage(
     "injuries",
-    "red",
+    null,
     "Injury list",
     "failed or paused",
     list.length
@@ -194,7 +199,7 @@ function leagueTable(f) {
   const head = ["Pos", "Repo", "Tickets", "Done", "In play", "Blocked", "Spend", "Done %"];
   return progPage(
     "league",
-    "claret",
+    null,
     "League table",
     "repos by share done",
     rows.length
@@ -387,7 +392,7 @@ function wageBill(f) {
   const est = f.cost && f.cost.estimated_usd > 0 ? f.cost.estimated_usd : 0;
   const sec = progPage(
     "wage",
-    "ink",
+    null,
     "Wage bill",
     f.cost && typeof f.cost.total_usd === "number"
       ? `${money(f.cost.total_usd)} this season`
@@ -514,7 +519,7 @@ function squadForm(f) {
   const onPitch = f.claims.length;
   return progPage(
     "squad",
-    "sky",
+    null,
     "Squad & form",
     f.slots ? `${onPitch} of ${f.slots} on the pitch` : `${onPitch} on the pitch`,
     agents.length
@@ -613,7 +618,7 @@ function fullTime(f) {
   );
   return progPage(
     "results",
-    "ink",
+    null,
     "Full time",
     "recently done",
     done.length
@@ -643,7 +648,7 @@ function fixtures(f) {
     .sort((a, b) => (b.priority || 0) - (a.priority || 0) || a.number - b.number);
   return progPage(
     "fixtures",
-    "sky",
+    null,
     "Fixtures",
     `${ready.length} ready`,
     ready.length
@@ -815,7 +820,7 @@ function matchReport(f) {
   const evs = f.events.slice(0, 30);
   return progPage(
     "report",
-    "ink",
+    null,
     "Match report",
     f.events.length ? `the latest ${plural(lines.length, "event")}` : null,
     lines.length || evs.length

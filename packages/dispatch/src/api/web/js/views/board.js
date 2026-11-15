@@ -908,7 +908,7 @@ function renderClaimsPanel(claims, readAt = Date.now()) {
   const now = Date.now();
   const page = progPage(
     "claims-panel",
-    "ink",
+    null,
     "On the pitch",
     [
       `${plural(claims.length, "agent")} holding tickets · as of `,

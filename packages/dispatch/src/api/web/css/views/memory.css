@@ -226,14 +226,15 @@
     margin-top: var(--s4);
     padding-bottom: 6px;
     border-bottom: var(--frame);
-    font: 800 var(--t26) / 1 var(--f-display);
+    /* A level-3 head under the Club lore section (A-10, A-15). */
+    font: 800 var(--t20) / 1 var(--f-display);
     text-transform: uppercase;
   }
   .lore-group:first-child {
     margin-top: 0;
   }
   .lore-group .count {
-    font: 800 var(--t26) / 1 var(--f-display);
+    font: 800 var(--t20) / 1 var(--f-display);
     color: var(--ink-2);
   }
   .lore-row {

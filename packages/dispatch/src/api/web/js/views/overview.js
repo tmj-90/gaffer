@@ -93,7 +93,7 @@ function overviewSkeleton() {
       ]),
       el("div", { class: "ov-main", "aria-hidden": "true" }, [
         el("div", { class: "card what-i-own" }, [
-          panelHead("Team sheet", null, null, { kit: "claret" }),
+          panelHead("Team sheet", null, null, { tone: "needs", level: 2 }),
           el("ol", { class: "own-well" }, [row(), row(), row()]),
         ]),
         el("section", { class: "tactics" }, [

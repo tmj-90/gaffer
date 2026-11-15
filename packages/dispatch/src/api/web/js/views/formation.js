@@ -281,7 +281,7 @@ function teamInstructions(all, editors, policies) {
     "section",
     { class: "card boot-page instructions", id: "instructions", "aria-label": "Team instructions" },
     [
-      panelHead("Team instructions", null, null, { kit: "claret" }),
+      panelHead("Team instructions", null, null, { tone: "reference", level: 2 }),
       head,
       dial,
       board,

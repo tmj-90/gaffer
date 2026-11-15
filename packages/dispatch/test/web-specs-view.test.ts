@@ -200,6 +200,18 @@ describe("web: Specs view", () => {
     mountShell("#/specs");
     await boot();
     expect(document.body.textContent || "").toContain("No specs yet");
+    // The one empty state, not a block-headed card louder than the view title (A-15, A-42).
+    const empty = document.querySelector("#app .empty-state")!;
+    expect(empty).not.toBeNull();
+    expect(empty.querySelector(".es-title")?.textContent).toBe("No specs yet.");
+    expect(document.querySelector("#app .panel-head.block")).toBeNull();
+    expect(document.querySelector("#app .playbook-empty")).toBeNull();
+    // One primary on the view (A-43): Author a spec; the empty state's action is a link.
+    expect(document.querySelectorAll("#app .btn.primary")).toHaveLength(1);
+    const write = [...empty.querySelectorAll("button")].find(
+      (b) => b.textContent === "Write the first play",
+    )!;
+    expect(write.className).toBe("btn-link");
   });
 
   it("renders the coverage trace: clauses, their ACs, and satisfied/open state", async () => {

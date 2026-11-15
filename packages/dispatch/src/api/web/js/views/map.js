@@ -591,7 +591,8 @@ function renderScopeGraph(nodes, edges, ov, readAt = Date.now()) {
         .filter(Boolean)
         .join(" · "),
       null,
-      { kit: "ink" },
+      // The map is the drawing the view leads with: its one block (A-03).
+      { tone: "drawing", level: 2 },
     ),
   ]);
   const search = el("input", {
@@ -874,7 +875,7 @@ function renderRepoRegister(repos, unmapped, ov) {
   const free = new Set(unmapped.map((r) => r.id));
   const mapped = repos.filter((r) => !free.has(r.id));
   const head = panelHead("Who plays where", `${plural(mapped.length, "repo")} at a ground`, null, {
-    kit: "claret",
+    level: 2,
   });
   if (!mapped.length)
     return el("section", { class: "card prog map-register", "aria-label": "Who plays where" }, [
@@ -950,7 +951,7 @@ function renderRepoRegister(repos, unmapped, ov) {
 /** Free agents: repos with no ground, each playing as its own single-repo scope. */
 function renderUnmappedSection(unmapped, repos = [], hiddenN = 0, { ov = null, grounds = 0 } = {}) {
   const head = panelHead("Free agents", `${plural(unmapped.length, "repo")} with no ground`, null, {
-    kit: "sky",
+    level: 2,
   });
   const card = el(
     "section",
@@ -1222,7 +1223,7 @@ async function renderHidden() {
     ]),
   );
   wrap.appendChild(
-    progPage("map-free", "ink", "Left out of the squad", plural(repos.length, "repo"), [
+    progPage("map-free", null, "Left out of the squad", plural(repos.length, "repo"), [
       el("table", { class: "reg-table reg-free" }, [
         el(
           "thead",

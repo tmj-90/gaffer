@@ -407,7 +407,8 @@
     align-items: baseline;
     justify-content: space-between;
     gap: 12px;
-    font: 800 var(--t26) / 1 var(--f-display);
+    /* A level-3 head inside its board (A-10). */
+    font: 800 var(--t20) / 1 var(--f-display);
     text-transform: uppercase;
   }
   .gng-n {

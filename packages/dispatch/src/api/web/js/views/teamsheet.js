@@ -61,6 +61,7 @@ function whatIOwnPanel(queue, f) {
       // The claret block by meaning: this is what the viewer must act on.
       panelHead("Team sheet", items.length ? `needs you · ${total}` : null, null, {
         tone: "needs",
+        level: 2,
       }),
     ],
   );

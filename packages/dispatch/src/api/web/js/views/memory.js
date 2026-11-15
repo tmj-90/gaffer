@@ -489,7 +489,9 @@ function renderDigestCard(repo, res, repos = []) {
     dataset: { section: "digest" },
     "aria-label": "Scouting report",
   });
-  card.appendChild(panelHead("Scouting report", `Repo Digest · ${repo}`, null, { kit: "claret" }));
+  card.appendChild(
+    panelHead("Scouting report", `Repo Digest · ${repo}`, null, { tone: "reference", level: 2 }),
+  );
   if (!res || res.available === false) {
     card.appendChild(memoryUnavailable(res ? res.reason : ""));
     return card;
@@ -559,7 +561,7 @@ function renderFeatureLedger(repo, res) {
       ["Honours board", ok ? el("span", { class: "count" }, String(features.length)) : null],
       `Feature ledger · ${repo}`,
       null,
-      { kit: "sky" },
+      { level: 2 },
     ),
   );
   if (!ok) {
@@ -688,7 +690,8 @@ function renderLoreList(res, repo, opts = {}) {
           ]
         : null,
       null,
-      { kit: "ink" },
+      // Claret only while drafts wait for the viewer's Approve or Reject (A-02).
+      { tone: draftCount > 0 ? "needs" : null, level: 2 },
     ),
   );
 

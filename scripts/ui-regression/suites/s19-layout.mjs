@@ -38,6 +38,28 @@ const VIEWS = (w, t) =>
     [`repo/${encodeURIComponent(t.repo.id)}`, "repo/:id"],
   ].filter(Boolean);
 
+// The block budget (audit A-02, A-03): a view leads with at most two block heads
+// (claret, ink, sky or red panel heads, and the Tactics board's dark head), and a
+// claret head, "needs you", sits only on a section with something to act on. Health,
+// Review and Ticket are left to the packages that own them until they merge.
+const BLOCK_BUDGET_SKIP = new Set(["health", "review/:id", "ticket"]);
+function blockAudit() {
+  const heads = [...document.querySelectorAll("#app .panel-head.block, #app .tactics-head")].filter(
+    (h) => h.getBoundingClientRect().width > 0,
+  );
+  const said = (h) => (h.textContent || "").replace(/\s+/g, " ").trim().slice(0, 32);
+  const idleClaret = heads
+    .filter((h) => h.classList.contains("block-claret"))
+    .filter((h) => {
+      const sec = h.closest("section, article, .card") || h.parentElement;
+      return !sec.querySelector(
+        "button:not([disabled]), a.btn, input:not([type=hidden]):not([disabled]), select, textarea",
+      );
+    })
+    .map(said);
+  return { heads: heads.map(said), idleClaret };
+}
+
 /** Relative luminance contrast of two rgb() strings (alpha ignored). */
 function contrast(a, b) {
   const lum = (s) => {
@@ -61,6 +83,8 @@ export default async function s19(t, L) {
   );
 
   // ── the sweep: four widths, every view ────────────────────────────────────
+  const budget = [];
+  let budgetViews = 0;
   for (const [vw, vh] of [
     [375, 812],
     [768, 1024],
@@ -80,6 +104,14 @@ export default async function s19(t, L) {
         .catch(() => null);
       await L.sleep(900);
       problems.push(...(await L.layoutProblems(pg, label)));
+      if (vw === 1280 && !BLOCK_BUDGET_SKIP.has(label)) {
+        const b = await pg.evaluate(blockAudit);
+        if (b.heads.length > 2)
+          budget.push(`${label}: ${b.heads.length} block heads (${b.heads.join(" | ")})`);
+        if (b.idleClaret.length)
+          budget.push(`${label}: claret with nothing to act on (${b.idleClaret.join(" | ")})`);
+        budgetViews += 1;
+      }
       const m = await pg.evaluate((heldId) => {
         const over = [...document.querySelectorAll(".board-card")]
           .filter((c) => c.getBoundingClientRect().width > 0 && c.scrollWidth > c.clientWidth + 1)
@@ -131,6 +163,12 @@ export default async function s19(t, L) {
     if (vw === 375) await L.shot(pg, "s19-work-375");
     await pg.context().close();
   }
+
+  budget.length
+    ? t.bad(`block budget @1280: ${budget.join("; ").slice(0, 1200)}`)
+    : t.ok(
+        `block budget @1280: ${budgetViews} views lead with at most two block heads, and every claret head sits on a section with an action`,
+      );
 
   const p = await L.openPage(t.browser, { width: 1000, height: 900 });
 

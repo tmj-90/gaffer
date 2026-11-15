@@ -3,7 +3,7 @@
 
 import { roLock } from "../access.js";
 import { api } from "../api.js";
-import { emptyState, panelHead, viewHead } from "../components.js";
+import { button, emptyState, panelHead, viewHead } from "../components.js";
 import { el } from "../dom.js";
 import { fmtRelative, plural } from "../format.js";
 import { badge, glyph, icon, repoTag } from "../icons.js";
@@ -204,44 +204,25 @@ async function renderSpecList() {
     ]);
     const epics = (nodesRes.nodes || []).filter((n) => n.type === "epic");
     const live = (ticketsRes.tickets || []).filter((t) => !TERMINAL.has(t.status));
+    // The one empty state (A-15, A-42): a quiet sentence, not a block louder than the
+    // view title, and its action a link (the view head's Author a spec is the one
+    // primary, A-43).
     wrap.appendChild(
-      el("section", { class: "card playbook-empty" }, [
-        panelHead("No specs yet", null, null, { kit: "ink" }),
-        el(
-          "div",
-          { class: "pb-steps", role: "list" },
-          [
-            ["1", "The brief", "Say what to build in a paragraph."],
-            ["2", "The clauses", "Gaffer drafts testable clauses; you edit them."],
-            ["3", "Frozen", "Each clause is traced to the acceptance criteria that prove it."],
-          ].map(([n, h, t]) =>
-            el("div", { class: "pb-step", role: "listitem" }, [
-              el("span", { class: "pb-n", "aria-hidden": "true" }, n),
-              el("h3", {}, h),
-              el("p", {}, t),
-            ]),
-          ),
-        ),
-        el(
-          "p",
-          { class: "pb-now" },
-          epics.length || live.length
+      emptyState(
+        "No specs yet.",
+        [
+          "Write a brief in a paragraph; Gaffer drafts testable clauses you edit; once frozen, each clause is traced to the acceptance criteria that prove it. ",
+          ...(epics.length || live.length
             ? [
                 `Playing without a written spec right now: ${plural(epics.length, "campaign")}${epics.length ? ` (${epics.map((e) => e.name).join(", ")})` : ""} and ${plural(live.length, "live ticket")}. `,
                 el("a", { href: "#/epics" }, "See the season"),
                 ".",
               ]
-            : "Nothing is on the pitch yet: a spec is a good first play.",
-        ),
-        el("div", { class: "btn-row" }, [
-          roLock(
-            el("button", { class: "btn primary", type: "button", onclick: () => openSpecBuild() }, [
-              icon("spark"),
-              el("span", {}, "Write the first play"),
-            ]),
-          ),
-        ]),
-      ]),
+            : ["Nothing is on the pitch yet: a spec is a good first play."]),
+        ],
+        null,
+        roLock(button("Write the first play", { kind: "link", onclick: () => openSpecBuild() })),
+      ),
     );
     return wrap;
   }
@@ -282,8 +263,11 @@ async function renderSpecList() {
   wrap.appendChild(
     el("section", { class: "card prog spec-plays", "aria-labelledby": "spec-plays-h" }, [
       (() => {
+        // The view's lead section: a reference block, not claret (nothing here waits
+        // on the viewer, A-02).
         const h = panelHead("The plays", `${plural(specs.length, "spec")}, as written`, null, {
-          kit: "claret",
+          tone: "reference",
+          level: 2,
         });
         h.querySelector(".panel-title").id = "spec-plays-h";
         return h;
@@ -585,7 +569,7 @@ async function renderSpecDetail(specId) {
             `${gapsN} coverage gap${gapsN === 1 ? "" : "s"}`,
             `${gapsN === 1 ? "a requirement" : "requirements"} with no acceptance criterion covering ${gapsN === 1 ? "it" : "them"}`,
             null,
-            { kit: "red" },
+            { tone: "broken", level: 2 },
           ),
           el(
             "ul",
@@ -666,7 +650,7 @@ async function renderSpecDetail(specId) {
   wrap.appendChild(
     progPage(
       "spec-clauses",
-      "ink",
+      null,
       "The clauses",
       `${plural(clauses.length, "clause")}, in the order written`,
       [

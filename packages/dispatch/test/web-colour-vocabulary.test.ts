@@ -211,7 +211,7 @@ describe("web: chart marks have their own tokens", () => {
       ["views/overview.css", ".kb-2", /background:\s*var\(--viz-muted\)/],
       ["views/overview.css", ".pct-bar span", /background:\s*var\(--viz-mark\)/],
       ["views/ticket.css", ".conf-fill", /background:\s*var\(--viz-mark\)/],
-      ["views/epics.css", ".ep-round-bar i", /background:\s*var\(--viz-mark\)/],
+      // The Epics round bar is the shared meter now (.band-fill above), not its own build.
     ];
     for (const [file, sel, want] of marks) {
       const d = decls(file, sel);

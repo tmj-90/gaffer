@@ -163,7 +163,7 @@ async function renderRepo(id) {
   roLock(branchBtn, "repo");
   const kvRow = (k, v) => [el("dt", {}, k), el("dd", {}, v)];
   const groundCard = el("section", { class: "card gr-card", "aria-label": "The ground" }, [
-    panelHead("The ground", "where the work is done", null, { kit: "claret" }),
+    panelHead("The ground", "where the work is done", null, { tone: "reference", level: 2 }),
     el("dl", { class: "kv gr-kv" }, [
       ...kvRow(
         "Path",
@@ -200,13 +200,13 @@ async function renderRepo(id) {
   ]);
 
   const checksCard = el("section", { class: "card gr-card", "aria-label": "Referee's checks" }, [
-    panelHead("Referee's checks", "the Definition of Done", null, { kit: "sky" }),
+    panelHead("Referee's checks", "the Definition of Done", null, { level: 2 }),
     roLockAll(renderRepoCommandsEditor(repo), "repo"),
   ]);
 
   const scopeCard = el("section", { class: "card gr-card", "aria-label": "On the map" }, [
     panelHead("On the map", `${scopes.length} ground${scopes.length === 1 ? "" : "s"}`, null, {
-      kit: "ink",
+      level: 2,
     }),
     el(
       "p",
@@ -234,7 +234,7 @@ async function renderRepo(id) {
           ? `${tickets.length > 8 ? `8 of ${tickets.length}` : plural(tickets.length, "ticket")} delivering here, live first`
           : "",
         null,
-        { kit: "ink" },
+        { level: 2 },
       ),
       tickets
         ? fixtureList(sortedT, { empty: "No ticket delivers to this repo yet." })

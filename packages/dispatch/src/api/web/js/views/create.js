@@ -138,7 +138,7 @@ async function renderCreate(param) {
     { class: "card prog cr-ticket", id: "one-ticket", "aria-labelledby": "one-ticket-h" },
     [
       (() => {
-        const h = panelHead("One ticket", "a friendly: outside any campaign", null, { kit: "sky" });
+        const h = panelHead("One ticket", "a friendly: outside any campaign", null, { level: 2 });
         h.querySelector(".panel-title").id = "one-ticket-h";
         return h;
       })(),

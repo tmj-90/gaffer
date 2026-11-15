@@ -310,7 +310,8 @@
     display: inline-flex;
     align-items: baseline;
     gap: 10px;
-    font: 800 var(--t34) / 1 var(--f-display);
+    /* A level-2 section head on the one scale (A-10). */
+    font: 800 var(--t26) / 1 var(--f-display);
     text-transform: uppercase;
   }
   .tb-title .panel-aux {
@@ -1300,9 +1301,6 @@
     }
     .tb-port {
       display: inline;
-    }
-    .tb-title {
-      font-size: var(--t26);
     }
     .touchline {
       grid-template-columns: minmax(0, 1fr);

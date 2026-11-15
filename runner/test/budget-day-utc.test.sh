@@ -9,6 +9,9 @@
 #       is on another calendar date than UTC right now, the tick day is the UTC date
 #   U2  a reserved day slot is recorded under the UTC date, and the count reads back
 #   U3  the counter and the dollar cap's day agree (gaffer_day_usd_spent keys on UTC)
+#   U4  an upgrade mid-day: a record the old runner wrote under the LOCAL date still counts
+#       today (no second day's ticks), and a UTC-keyed record never carries into the next
+#       UTC day because its day equals the local date
 # Run: bash test/budget-day-utc.test.sh
 # =====================================================================
 . "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
@@ -52,6 +55,23 @@ case "$out" in *"count=1"*"$utc 1"*) ok "U2 the slot is recorded as '$utc 1' and
 echo "== U3: the tick day and the dollar cap's day are the same day =="
 grep -q 'date -u +%Y-%m-%d' "$RUNNER_DIR/lib/budget.sh" && ! grep -qE '^_gaffer_today\(\).*[^-]date \+%Y-%m-%d' "$RUNNER_DIR/lib/budget.sh" \
   && ok "U3 both caps key on date -u" || fail "U3 the tick day still reads the local date"
+
+echo "== U4: an operator upgrading mid-day does not get a second day's ticks =="
+for tz in Pacific/Kiritimati Etc/GMT+12; do
+  utc="$(date -u +%Y-%m-%d)"; loc="$(TZ="$tz" date +%Y-%m-%d)"
+  [ "$loc" != "$utc" ] || continue
+  # The old runner's record: the local date, no "utc" mark, 7 ticks spent today.
+  printf '%s 7\n' "$loc" > "$WORK/legacy"
+  got="$(TZ="$tz" bash -c 'unset GAFFER_TODAY_OVERRIDE; export DAILY_COUNTER_FILE="$2"; source "$1/lib/budget.sh"; gaffer_day_count' _ "$RUNNER_DIR" "$WORK/legacy")"
+  [ "$got" = 7 ] && ok "U4 TZ=$tz: the pre-upgrade local-date record ($loc 7) still counts 7 today" \
+    || fail "U4 TZ=$tz: the pre-upgrade record read as $got, not 7 (a second day's ticks)"
+  # A record this runner wrote (UTC-keyed) on a day that happens to be the local date is
+  # an earlier UTC day: it must not carry.
+  printf '%s 7 utc\n' "$loc" > "$WORK/tagged"
+  got="$(TZ="$tz" bash -c 'unset GAFFER_TODAY_OVERRIDE; export DAILY_COUNTER_FILE="$2"; source "$1/lib/budget.sh"; gaffer_day_count' _ "$RUNNER_DIR" "$WORK/tagged")"
+  [ "$got" = 0 ] && ok "U4 TZ=$tz: a UTC-keyed record of another UTC day reads 0" \
+    || fail "U4 TZ=$tz: a UTC-keyed record of another UTC day read $got"
+done
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "PASS: $PASS checks"; exit 0; fi

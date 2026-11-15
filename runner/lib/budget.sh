@@ -17,12 +17,19 @@ _gaffer_today() { if [ -n "${GAFFER_TODAY_OVERRIDE:-}" ]; then printf '%s' "$GAF
 
 # Echo today's persisted tick count — 0 if there is no record, or the record is
 # from an earlier day (a new calendar day resets the count).
+# The record is "<day> <count> utc". A record without the "utc" mark was written by a
+# runner that keyed the day on the host's LOCAL date: on the day of the upgrade it is
+# still today's count when its day is today's local date, so an operator who upgrades
+# mid-day does not get a second day's ticks (fail closed: the carried count can only
+# hold the cap earlier, once, until the first write re-keys the record on UTC).
 gaffer_day_count() {
-  local today d c
+  local today d c t
   today="$(_gaffer_today)"
   if [ -f "$DAILY_COUNTER_FILE" ]; then
-    read -r d c < "$DAILY_COUNTER_FILE" || true
+    read -r d c t < "$DAILY_COUNTER_FILE" || true
     if [ "$d" = "$today" ]; then echo "${c:-0}"; return; fi
+    if [ "$t" != "utc" ] && [ -n "$d" ] && [ -z "${GAFFER_TODAY_OVERRIDE:-}" ] \
+       && [ "$d" = "$(date +%Y-%m-%d)" ]; then echo "${c:-0}"; return; fi
   fi
   echo 0
 }
@@ -49,7 +56,7 @@ _gaffer_bump_day_count_unlocked() {
   local today c
   today="$(_gaffer_today)"
   c=$(( $(gaffer_day_count) + 1 ))
-  printf '%s %s\n' "$today" "$c" > "$DAILY_COUNTER_FILE"
+  printf '%s %s utc\n' "$today" "$c" > "$DAILY_COUNTER_FILE"
 }
 
 # ── ATOMIC ADMISSION (reserve, then refund) ──────────────────────────────────
@@ -80,7 +87,7 @@ _gaffer_reserve_day_tick_unlocked() {
   if [ "${MAX_TICKS_PER_DAY:-0}" -gt 0 ] 2>/dev/null && [ "$c" -ge "$MAX_TICKS_PER_DAY" ]; then
     return 1
   fi
-  printf '%s %s\n' "$today" "$((c + 1))" > "$DAILY_COUNTER_FILE" || return 2
+  printf '%s %s utc\n' "$today" "$((c + 1))" > "$DAILY_COUNTER_FILE" || return 2
   printf '%s' "$today"
   return 0
 }
@@ -113,7 +120,7 @@ _gaffer_refund_day_tick_unlocked() {
   [ "$d" = "$day" ] || return 0          # the counter has rolled to another day: no-op
   c="${c:-0}"
   [ "$c" -gt 0 ] 2>/dev/null || return 0
-  printf '%s %s\n' "$d" "$((c - 1))" > "$DAILY_COUNTER_FILE"
+  printf '%s %s utc\n' "$d" "$((c - 1))" > "$DAILY_COUNTER_FILE"
 }
 
 # gaffer_reserve_run_tick <counter-file> <max> — the PER-RUN pool budget, atomically.

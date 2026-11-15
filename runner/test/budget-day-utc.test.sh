@@ -56,6 +56,17 @@ echo "== U3: the tick day and the dollar cap's day are the same day =="
 grep -q 'date -u +%Y-%m-%d' "$RUNNER_DIR/lib/budget.sh" && ! grep -qE '^_gaffer_today\(\).*[^-]date \+%Y-%m-%d' "$RUNNER_DIR/lib/budget.sh" \
   && ok "U3 both caps key on date -u" || fail "U3 the tick day still reads the local date"
 
+echo "== U2b: a refund of today's reserved slot gives it back (the record carries the utc mark) =="
+out="$(bash -c '
+  unset GAFFER_TODAY_OVERRIDE
+  export DAILY_COUNTER_FILE="$2/.daily-ticks-refund" MAX_TICKS_PER_DAY=5 GAFFER_DATA="$2"
+  source "$1/lib/budget.sh"
+  rm -f "$DAILY_COUNTER_FILE"
+  d1="$(gaffer_reserve_day_tick)"; gaffer_reserve_day_tick >/dev/null
+  gaffer_refund_day_tick "$d1"
+  echo "count=$(gaffer_day_count)"' _ "$RUNNER_DIR" "$WORK")"
+[ "$out" = "count=1" ] && ok "U2b two reservations and one refund leave 1" || fail "U2b got: $out (a refund did not apply)"
+
 echo "== U4: an operator upgrading mid-day does not get a second day's ticks =="
 for tz in Pacific/Kiritimati Etc/GMT+12; do
   utc="$(date -u +%Y-%m-%d)"; loc="$(TZ="$tz" date +%Y-%m-%d)"

@@ -116,7 +116,7 @@ _gaffer_refund_day_tick_unlocked() {
   local day="${1:-}" d c
   [ -n "$day" ] || return 2
   [ -f "$DAILY_COUNTER_FILE" ] || return 0
-  read -r d c < "$DAILY_COUNTER_FILE" || return 0
+  read -r d c _ < "$DAILY_COUNTER_FILE" || return 0
   [ "$d" = "$day" ] || return 0          # the counter has rolled to another day: no-op
   c="${c:-0}"
   [ "$c" -gt 0 ] 2>/dev/null || return 0

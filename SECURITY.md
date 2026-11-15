@@ -337,8 +337,9 @@ the operator's token file to the sandbox did not help: the attacker never needed
   principal is not signed (`unsigned_approval`, failure `unsigned_principal`); so does the
   review that routed a ticket to the tester and a person's waiver (whose verdict row names
   its principal under the verdict's seal). An approval sealed before this change names no
-  principal: the landing then checks every principal speaking as its human or admin actor,
-  so a forged principal's approval from before the upgrade does not land after it.
+  principal, and nothing in the log says which principal made it (checking the rows that
+  speak as its actor is undone by deleting a forged one), so a person's or an admin's such
+  approval is held until it is re-approved; the runner's and an agent's still count.
   Revoking a principal withholds its approvals that have not landed: re-approve them.
 - **Upgrade and restore.** Nothing is signed on upgrade: that would bless a forged row.
   Principals created before this change stop working until a person reviews and re-signs

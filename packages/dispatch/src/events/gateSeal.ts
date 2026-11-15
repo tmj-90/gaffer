@@ -539,7 +539,7 @@ export interface ApprovalBinds {
   /**
    * SEALED PRINCIPALS: the principal the approval was made through (its id), or null (the
    * operator, the runner, an agent). Absent only on a seal made before principals were
-   * sealed: the landing then checks every principal speaking as the approval's actor.
+   * sealed: the landing then holds a human's or admin's approval until it is re-approved.
    */
   principal?: string | null;
 }
@@ -778,10 +778,11 @@ export function principalOf(binds: Record<string, unknown>): string | null | und
 /**
  * SEALED PRINCIPALS at landing: the principal an approving act was made through must still
  * be signed by this factory. A seal that names one: that principal. A seal from before
- * principals were sealed (no `principal`): every principal row speaking as the event's
- * human or admin actor (a forged principal's approval that slipped in before the upgrade
- * lands nothing; a person re-signs the genuine one, or re-approves). Null when it holds,
- * else why not.
+ * principals were sealed (no `principal`) made by a human or admin actor is held: it could
+ * have been made through a principal row written into the database, and nothing in the log
+ * says which principal made it (a check of the rows speaking as its actor is undone by
+ * deleting the forged row), so a person re-approves it. The runner's and an agent's legacy
+ * approvals name no principal and still count. Null when it holds, else why not.
  */
 function approvingPrincipalProblem(
   db: SealDb,
@@ -800,20 +801,9 @@ function approvingPrincipalProblem(
   const ev = db
     .prepare("SELECT actor_type, actor_id FROM work_events WHERE id = ?")
     .get(eventId) as { actor_type: string; actor_id: string | null } | undefined;
-  if (!ev || (ev.actor_type !== "human" && ev.actor_type !== "admin")) return null;
-  let rows: Array<{ id: string; name: string }>;
-  try {
-    rows = db
-      .prepare("SELECT id, name FROM api_principals WHERE actor_type = ? AND actor_id = ?")
-      .all(ev.actor_type, ev.actor_id ?? "") as Array<{ id: string; name: string }>;
-  } catch {
-    return null; // a database from before principals: no principal could have approved
-  }
-  for (const r of rows) {
-    const v = verifyPrincipal(db, keyring, String(r.id));
-    if (!v.ok) return unsignedPrincipalMessage(String(r.name), v);
-  }
-  return null;
+  if (!ev) return "the approving event is not on record";
+  if (ev.actor_type !== "human" && ev.actor_type !== "admin") return null;
+  return `the approval by ${ev.actor_type}:${ev.actor_id ?? ""} was signed before principals were, so this factory cannot tell which principal made it (one written into the database looks the same); a person re-approves it`;
 }
 
 /** Seal a `ticket.tester_passed` event with the verdict row it names. */
@@ -971,12 +961,9 @@ type LandingFailure =
 
 function remedy(failure: LandingFailure, verdict: boolean): string {
   if (failure === "unsigned_principal") {
-    return (
-      "If that principal is genuine, a person re-signs it (gaffer wg principal resign <name>) and the landing goes ahead; " +
-      (verdict
-        ? "otherwise revoke it and record the verdict again through the tester or a signed principal's waiver."
-        : "otherwise revoke it and re-approve: gaffer wg ticket reopen-for-review <n> --as admin --reason unsigned_approval --resolution re-approve, then gaffer approve <n>.")
-    );
+    return verdict
+      ? "If the principal named is genuine, a person re-signs it (gaffer wg principal resign <name>) and the landing goes ahead; otherwise revoke it and record the verdict again through the tester or a signed principal's waiver."
+      : "If the principal named is genuine, a person re-signs it (gaffer wg principal resign <name>) and the landing goes ahead. Otherwise revoke it; then, as for an approval signed before principals were, re-approve: gaffer wg ticket reopen-for-review <n> --as admin --reason unsigned_approval --resolution re-approve, then gaffer approve <n>.";
   }
   if (failure === "truncated") {
     return (
@@ -1078,12 +1065,15 @@ export function verifyLandingActs(
     // SEALED PRINCIPALS: the principal the approval was made through must still be signed
     // by this factory; for a tester PASS that approves, so must the approval that routed
     // the ticket to the tester (the person's review the PASS carries).
-    const approver = approvingPrincipalProblem(db, keyring, approval, principalOf(a.binds));
+    const approvedVia = principalOf(a.binds);
+    const approver = approvingPrincipalProblem(db, keyring, approval, approvedVia);
     if (approver) {
       return fail(
         "unsigned_approval",
         "unsigned_principal",
-        `Nothing lands on this approval: it was made through a principal this factory does not trust: ${approver}.`,
+        approvedVia === undefined
+          ? `Nothing lands on this approval: ${approver}.`
+          : `Nothing lands on this approval: it was made through a principal this factory does not trust: ${approver}.`,
       );
     }
     const routing = routingApproval(db, keyring, ticketId);
@@ -1093,7 +1083,9 @@ export function verifyLandingActs(
         return fail(
           "unsigned_approval",
           "unsigned_principal",
-          `Nothing lands on this approval: the review that sent it to the tester was made through a principal this factory does not trust: ${router}.`,
+          routing.principal === undefined
+            ? `Nothing lands on this approval: the review that sent it to the tester: ${router}.`
+            : `Nothing lands on this approval: the review that sent it to the tester was made through a principal this factory does not trust: ${router}.`,
         );
       }
     }

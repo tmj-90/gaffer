@@ -1,9 +1,9 @@
 // SEALED PRINCIPALS at landing. An approval's seal binds the principal it was made through,
 // and the landing check (verifyLandingActs: landing-begin, record-landing, mark-merged and
 // the runner's tester-binding.mjs) refuses while that principal is not signed by this
-// factory. An approval sealed BEFORE principals were sealed names no principal: the landing
-// then checks every principal speaking as the approval's actor, so a forged principal's
-// approval that slipped in before the upgrade does not land after it.
+// factory. An approval sealed BEFORE principals were sealed names no principal: a person's
+// or an admin's is held until re-approved (a forged principal's approval that slipped in
+// before the upgrade does not land after it, even once the forged row is deleted).
 
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -82,6 +82,19 @@ function binds(wg: Dispatch, eventId: string): Record<string, unknown> {
   ) as Record<string, unknown>;
 }
 
+/** Re-seal an approval in the format from before principals were sealed (no `principal`). */
+function resealLegacy(w: ReturnType<typeof world>, eventId: string): void {
+  const old = binds(w.wg, eventId);
+  const legacy = JSON.stringify({ ticket: old.ticket, pins: old.pins });
+  const ev = w.wg.db.prepare("SELECT hash FROM work_events WHERE id = ?").get(eventId) as {
+    hash: string;
+  };
+  const { mac } = w.keyring.signMac(sealMaterial("approval", eventId, ev.hash, legacy));
+  w.wg.db
+    .prepare("UPDATE gate_seals SET binds_json = ?, mac = ? WHERE event_id = ?")
+    .run(legacy, mac, eventId);
+}
+
 describe("the landing refuses an approval whose principal is not signed", () => {
   it("binds the principal it was made through; refuses once its seal is gone; a re-sign restores it", () => {
     const w = world();
@@ -130,17 +143,8 @@ describe("the landing refuses an approval whose principal is not signed", () => 
     const id = inReview(w.wg);
     const res = w.wg.approveReview(id, { type: "admin", id: "mallory" });
     // Re-seal it in the format from before this change: no `principal` in the binds.
-    const old = binds(w.wg, res.eventId);
-    const legacy = JSON.stringify({ ticket: old.ticket, pins: old.pins });
-    const ev = w.wg.db.prepare("SELECT hash FROM work_events WHERE id = ?").get(res.eventId) as {
-      hash: string;
-    };
-    const { mac } = w.keyring.signMac(sealMaterial("approval", res.eventId, ev.hash, legacy));
-    w.wg.db
-      .prepare("UPDATE gate_seals SET binds_json = ?, mac = ? WHERE event_id = ?")
-      .run(legacy, mac, res.eventId);
+    resealLegacy(w, res.eventId);
     const target = { targets: [{ repoId: null, sha: FAKE_HEAD }] };
-    expect(verifyLandingActs(w.wg.db, w.keyring, id, target).ok).toBe(true);
     // The forged principal the approval went through, written into the database.
     w.wg.db
       .prepare(
@@ -153,6 +157,27 @@ describe("the landing refuses an approval whose principal is not signed", () => 
     // Revoking the forged row does not hide it.
     w.wg.db.prepare("UPDATE api_principals SET revoked_at = ? WHERE id = 'forged'").run("x");
     expect(verifyLandingActs(w.wg.db, w.keyring, id, target).ok).toBe(false);
+  });
+
+  it("an approval sealed before principals were sealed, by a person, is held: deleting the forged row it went through does not let it land", () => {
+    const w = world();
+    const id = inReview(w.wg);
+    const res = w.wg.approveReview(id, { type: "admin", id: "mallory" });
+    resealLegacy(w, res.eventId);
+    const target = { targets: [{ repoId: null, sha: FAKE_HEAD }] };
+    // The forged principal the approval went through is simply deleted (or never existed).
+    w.wg.db.prepare("DELETE FROM api_principals").run();
+    const v = verifyLandingActs(w.wg.db, w.keyring, id, target);
+    expect(v).toMatchObject({
+      ok: false,
+      code: "unsigned_approval",
+      failure: "unsigned_principal",
+    });
+    expect(v.ok ? "" : v.reason).toMatch(/re-approve/);
+    // The way back: a person re-approves under this release; the new seal names its principal.
+    w.wg.reopenForReview(id, { reason: "unsigned_approval", resolution: "re-approve" }, system);
+    w.wg.approveReview(id, operator);
+    expect(verifyLandingActs(w.wg.db, w.keyring, id, target).ok).toBe(true);
   });
 
   it("a person's waiver relied on at landing needs its principal signed", () => {

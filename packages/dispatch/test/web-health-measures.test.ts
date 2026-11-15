@@ -185,17 +185,19 @@ const NOT_RECORDED = {
   note: "Not recorded yet: an escaped defect needs a human-filed link from the defect to the accepted change it escaped from, and Gaffer has none yet.",
 };
 
-function measure(label: string): { value: string; note: string } | null {
-  const panel = document.querySelector('[aria-label="The four measures"]');
-  if (!panel) return null;
-  for (const cell of Array.from(panel.querySelectorAll(".measures-facts > div"))) {
-    if (cell.querySelector("dt")?.textContent === label) {
-      const dd = cell.querySelector("dd");
-      const note = dd?.querySelector("small")?.textContent ?? "";
-      return { value: (dd?.textContent ?? "").replace(note, "").trim(), note };
-    }
-  }
-  return null;
+/** A measure tile on the board: its figure, n line, note and definition. */
+function measure(
+  label: string,
+): { value: string; n: string; note: string; def: string; small: boolean } | null {
+  const tile = document.querySelector(`.measure-strip > .measure-tile[aria-label="${label}"]`);
+  if (!tile) return null;
+  return {
+    value: tile.querySelector(".mt-val")?.textContent ?? "",
+    n: tile.querySelector(".mt-n")?.textContent ?? "",
+    note: tile.querySelector(".mt-note")?.textContent ?? "",
+    def: tile.querySelector(".mt-def p")?.textContent ?? "",
+    small: tile.classList.contains("is-small"),
+  };
 }
 
 describe("web: Health shows the four top-level measures", () => {
@@ -221,9 +223,9 @@ describe("web: Health shows the four top-level measures", () => {
       },
     };
     await loadApp();
-    const notes = [
-      ...document.querySelectorAll('[aria-label="The four measures"] .measures-notice'),
-    ].map((n) => n.textContent);
+    const notes = [...document.querySelectorAll(".measures-detail .measures-notice")].map(
+      (n) => n.textContent,
+    );
     expect(notes).toEqual(["independent tester off: no test command registered for taskflow-web"]);
   });
 
@@ -242,9 +244,7 @@ describe("web: Health shows the four top-level measures", () => {
       },
     };
     await loadApp();
-    const notes = [
-      ...document.querySelectorAll('[aria-label="The four measures"] .measures-notice'),
-    ];
+    const notes = [...document.querySelectorAll(".measures-detail .measures-notice")];
     expect(notes.map((n) => n.textContent)).toEqual([
       split,
       "independent tester off: no test command registered for taskflow-web",
@@ -256,33 +256,41 @@ describe("web: Health shows the four top-level measures", () => {
   it("first-pass acceptance, median human review time, accepted-change cost and escaped defects", async () => {
     healthPayload = { ...(FULL_HEALTH as object), ...MEASURES };
     await loadApp();
+    // Each measure is a tile on the board (F-A1): the figure, its n line, and under 10
+    // the rate greys and says the sample is small (F-A3).
     const fp = measure("First-pass acceptance");
     expect(fp?.value).toBe("40%");
-    expect(fp?.note).toMatch(/2 of 5 done/);
-    expect(fp?.note).toMatch(/human-approved 33\.3% of 3/);
+    expect(fp?.n).toBe("2 of 5 with no send-back");
+    expect(fp?.small).toBe(true);
+    // The strict rate, served and never drawn before (F-A5, F-E6).
+    expect(fp?.note).toMatch(/20% counting the runner's own retries \(1 of 5\)/);
+    expect(fp?.note).toMatch(/Approved by a person: 1 of 3; by an agent: 1 of 2/);
     const rt = measure("Human review time");
     expect(rt?.value).toBe("50m");
-    expect(rt?.note).toMatch(/median of 3 accepted/);
-    expect(rt?.note).toMatch(/p90 58m/);
-    expect(rt?.note).toMatch(/Mixed/);
-    expect(rt?.note).toMatch(/Active, approximate: median 12m per accepted ticket/);
-    expect(rt?.note).toMatch(/capped at 2h/);
+    expect(rt?.n).toBe("n 3");
+    expect(rt?.note).toMatch(/p75 55m, p90 58m/);
+    expect(rt?.def).toMatch(/Mixed/);
+    // The active time and the spans sit behind the tile, in the detail table.
+    const spans = [...document.querySelectorAll(".measures-detail tbody tr")].map(
+      (tr) => tr.textContent,
+    );
+    expect(spans.some((t) => /Active, approximate12m/.test(t ?? ""))).toBe(true);
     const cost = measure("Accepted-change cost");
     expect(cost?.value).toBe("$1.25");
-    expect(cost?.note).toMatch(/1\.4 attempts each/);
+    expect(cost?.note).toMatch(/1\.4 attempts per accepted change/);
     const esc = measure("Escaped-defect rate");
     expect(esc?.value).toBe("25%");
-    expect(esc?.note).toMatch(/1 of 4 accepted in the last 30 days linked to a later regression/);
-    expect(esc?.note).toMatch(/40% all time/);
-    expect(esc?.note).toMatch(/Counts only what a person filed/);
+    expect(esc?.n).toBe("1 of 4 came back as a regression");
+    expect(esc?.note).toMatch(/All time: 40% \(2 of 5\)/);
+    expect(esc?.def).toMatch(/Counts only what a person filed/);
   });
 
   it("an older server that does not record escaped defects still says what is missing", async () => {
     healthPayload = { ...(FULL_HEALTH as object), ...MEASURES, escaped_defects: NOT_RECORDED };
     await loadApp();
     const esc = measure("Escaped-defect rate");
-    expect(esc?.value).toBe("Not recorded yet");
-    expect(esc?.note).toMatch(/human-filed link from the defect to the accepted change/);
+    expect(esc?.value).toBe("\u2014");
+    expect(esc?.note).toMatch(/^Not recorded yet: an escaped defect needs a human-filed link/);
   });
 
   it("an empty factory reads as no data, never as zero, escaped defects included", async () => {
@@ -304,14 +312,40 @@ describe("web: Health shows the four top-level measures", () => {
       },
     };
     await loadApp();
-    expect(measure("First-pass acceptance")?.value).toBe("—");
-    expect(measure("Human review time")?.value).toBe("—");
+    expect(measure("First-pass acceptance")?.value).toBe("\u2014");
+    expect(measure("First-pass acceptance")?.note).toBe("Nothing was accepted in this window.");
+    expect(measure("Human review time")?.value).toBe("\u2014");
     expect(measure("Human review time")?.note).toMatch(
       /No accepted ticket has a human review decision yet/,
     );
-    expect(measure("Accepted-change cost")?.value).toBe("—");
-    expect(measure("Escaped-defect rate")?.value).toBe("—");
-    expect(measure("Escaped-defect rate")?.note).toMatch(/0 of 0 accepted/);
+    expect(measure("Accepted-change cost")?.value).toBe("\u2014");
+    expect(measure("Escaped-defect rate")?.value).toBe("\u2014");
+    expect(measure("Escaped-defect rate")?.note).toBe("Nothing was accepted in this window.");
+    expect(document.querySelector(".measure-strip")?.textContent).not.toMatch(/\b0%/);
+    // No count of nothing marked as a small sample beside the dash.
+    expect(document.querySelector(".measure-strip")?.textContent).not.toMatch(/0 of 0/);
+    expect(document.querySelector(".measure-strip .mt-small")).toBeNull();
+  });
+
+  it("names only the approvers who accepted something (never 'by an agent: 0 of 0')", async () => {
+    healthPayload = {
+      ...(DEGRADED_HEALTH as object),
+      first_pass: {
+        ...MEASURES.first_pass,
+        done: 12,
+        first_pass: 11,
+        rate_pct: 91.7,
+        by_approver: {
+          human: { done: 12, first_pass: 11, rate_pct: 91.7 },
+          agent: { done: 0, first_pass: 0, rate_pct: null },
+          system: { done: 0, first_pass: 0, rate_pct: null },
+        },
+      },
+    };
+    await loadApp();
+    const note = measure("First-pass acceptance")?.note ?? "";
+    expect(note).toContain("Approved by a person: 11 of 12.");
+    expect(note).not.toMatch(/0 of 0/);
   });
 });
 
@@ -491,11 +525,19 @@ describe("Health: the pre-work scout card", () => {
     // First-pass by arm: a rate row each, the count beside the rate, a whisker (F-C3).
     const fig = (arm: string) =>
       panel.querySelector(`.meter-row[data-arm="${arm}"] .mr-fig`)?.textContent;
-    expect(fig("index_items")).toBe("75% · 3 of 4");
-    expect(fig("nothing_found")).toBe("none yet");
+    // Under 10 done tickets an arm reads as its counts, greyed (no rate to compare).
+    expect(fig("index_items")).toBe("3 of 4");
+    expect(panel.querySelector('.meter-row[data-arm="index_items"]')!.classList).toContain(
+      "is-small",
+    );
     expect(fig("no_record")).toBe("60% · 6 of 10");
     expect(panel.querySelector('.meter-row[data-arm="index_items"] .mr-whisker')).not.toBeNull();
-    expect(panel.querySelector('.meter-row[data-arm="nothing_found"] .mr-fill')).toBeNull();
+    // An arm with no done ticket is no row: it folds into one muted line.
+    expect(panel.querySelector('.meter-row[data-arm="nothing_found"]')).toBeNull();
+    expect(panel.querySelector(".scout-empty")?.textContent).toBe(
+      "No done ticket yet: Nothing found.",
+    );
+    expect(t).toContain("not a controlled experiment");
     expect(t).not.toMatch(/recommend|score|confiden/i);
   });
 
@@ -577,14 +619,44 @@ describe("Health: the routing scorecard card", () => {
     expect(panel).not.toBeNull();
     const t = panel.textContent!.replace(/\s+/g, " ");
     expect(t).toContain("30 ledger rows · 12 replay manifests · minimum n 10");
-    expect(t).toContain(
-      "implement · claude-code · model-a · risk low · stack node n=13 · submitted 92.3% (n=13)",
-    );
-    expect(t).toContain("first pass 83.3% (n=12)");
-    expect(t).toContain("escaped too few to compare (n=4)");
-    expect(t).toContain("1 of unknown cost left out");
-    expect(t).toContain(
-      "implement · claude-code · model-b · risk low · stack node n=4 · too few to compare",
+    // A real table (F-C1): th scope, numbers right-aligned, n under every rate.
+    const table = panel.querySelector(".routing-implement table")!;
+    expect([...table.querySelectorAll("thead th")].map((th) => th.textContent)).toEqual([
+      "Model",
+      "Risk",
+      "Stack",
+      "Attempts",
+      "Submitted",
+      "Rework",
+      "First pass",
+      "Attempts per accepted",
+      "Cost per accepted",
+      "Escaped",
+      "Tester false greens",
+      "Spend",
+    ]);
+    const rows = [...table.querySelectorAll("tbody tr")];
+    // The cell under the minimum is no row: its rates would be noise.
+    expect(rows.length).toBe(1);
+    const cells = [...rows[0]!.children].map((c) => c.textContent);
+    expect(rows[0]!.firstElementChild!.getAttribute("scope")).toBe("row");
+    expect(cells).toEqual([
+      "model-a",
+      "low",
+      "node",
+      "13",
+      "92%n 13",
+      "7.7%n 13",
+      "83%n 12",
+      "1.17n 12",
+      "$0.64n 12",
+      "too few (n=4)",
+      "1n 12",
+      "$7.7013 calls, 1 of unknown cost left out",
+    ]);
+    expect(rows[0]!.children[4]!.classList.contains("dt-num")).toBe(true);
+    expect(panel.querySelector(".routing-few")?.textContent).toBe(
+      "Too few to compare (under 10): model-b · risk low · node (n 4).",
     );
     expect(t).toContain("Routing: no registry change proposed. Report only.");
     expect(t).not.toMatch(/recommend|best|winner|confiden/i);

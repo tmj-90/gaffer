@@ -153,15 +153,35 @@ describe("web: Overview cycle-time/throughput from /api/health", () => {
     };
   });
 
+  it("the Overview asks for the lighter summary read; Health asks for its window", async () => {
+    const urls = () =>
+      (fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls
+        .map((c) => String(c[0]))
+        .filter((u) => u.includes("/api/health"));
+    await loadApp();
+    expect(urls().length).toBeGreaterThan(0);
+    // The Overview reads the ledger figures and the event log only: never the full payload.
+    expect(urls().every((u) => u.includes("view=summary"))).toBe(true);
+
+    vi.resetModules();
+    document.body.innerHTML = "";
+    stubFetch();
+    mountShell("#/health");
+    await loadApp();
+    // Health sends the window its four measures and the Referee's record cover.
+    expect(urls().length).toBeGreaterThan(0);
+    expect(urls().every((u) => /window_days=30\b/.test(u) && !u.includes("view="))).toBe(true);
+  });
+
   it("falls back to a zeroed shape when /api/health is unavailable", async () => {
     healthPayload = null;
     ticketsPayload = { tickets: [] };
     location.hash = "#/health";
     await loadApp();
 
-    // With no health payload the cards still render (zeroed), never crashing.
-    expect(kpiValue("Cycle time")).toBe("0.0");
-    expect(kpiValue("Throughput")).toBe("0");
+    // With no health payload the cells still render, as dashes, never a zero (F-E3).
+    expect(kpiValue("Cycle time")).toBe("\u2014");
+    expect(kpiValue("Throughput")).toBe("\u2014");
 
     // Restore for other tests.
     healthPayload = {

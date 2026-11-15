@@ -70,7 +70,7 @@ function devFlowPanel(_tickets, byStatus, _now) {
   }));
 
   return el("div", { class: "card panel pipeline-panel" }, [
-    el("div", { class: "panel-head" }, [
+    el("div", { class: "panel-head ph-l2" }, [
       el("h2", { class: "panel-title" }, [
         "Phases of play",
         el("span", { class: "panel-aux" }, "bench to net"),
@@ -292,8 +292,9 @@ function needsPanel({ tickets = [], byStatus = {}, summary = {}, decisions = [],
     : el("div", { class: "needs-empty" }, [icon("check"), "All clear: nothing is waiting on you."]);
 
   const card = el("div", { class: "card panel needs-hero" }, [
+    // A plain level-2 head: Health keeps its blocks for the four measures (A-03).
     panelHead("Treatment table", items.length ? plural(total, "thing") : "all clear", null, {
-      kit: items.length ? "red" : "sky",
+      level: 2,
     }),
     body,
   ]);

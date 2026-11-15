@@ -24,7 +24,8 @@ const daysAgo = (n: number) => new Date(NOW - n * DAY).toISOString();
 describe("deliveryFlow — zero-state", () => {
   it("returns zeros for no tickets, and a null cycle on every day (nothing completed)", () => {
     const flow = deliveryFlow([], NOW);
-    expect(flow.cycle_time.median_days).toBe(0);
+    // Nothing shipped has no median: null, never a zero-day cycle time.
+    expect(flow.cycle_time.median_days).toBeNull();
     expect(flow.cycle_time.p75_days).toBeNull();
     expect(flow.cycle_time.p90_days).toBeNull();
     expect(flow.cycle_time.series).toHaveLength(14);

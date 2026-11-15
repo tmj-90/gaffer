@@ -464,7 +464,8 @@ function barChart({ rows = [], unit = "count", label, current, width = 720, heig
 /**
  * A chart's figure: its title (a level-3 heading on the one scale), a caption, the
  * chart, and a "Show as table" toggle that swaps the chart for `rows` as a real table
- * (the chart's accessible twin: every value without hovering). The figure grows with
+ * (the chart's accessible twin: every value without hovering); the button keeps its
+ * name and says it is on with aria-pressed. The figure grows with
  * its content (axis band included), never a fixed height with a nested scroll.
  *   opts: { title, caption, chart, rows, columns, level = 3, cls }
  */
@@ -483,7 +484,7 @@ function chartFigure({ title, caption, chart, rows = [], columns, level = 3, cls
     const table = tableBox.hidden;
     tableBox.hidden = !table;
     chartBox.hidden = table;
-    toggle.textContent = table ? "Show as chart" : "Show as table";
+    // A toggle keeps its name; aria-pressed alone says which view is showing.
     toggle.setAttribute("aria-pressed", String(table));
   });
   return el("figure", { class: cls ? `chart-figure ${cls}` : "chart-figure" }, [

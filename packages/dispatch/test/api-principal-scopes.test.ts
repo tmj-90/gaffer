@@ -247,6 +247,9 @@ describe("principal scopes (REST)", () => {
     expect(poll.body.error?.details).toMatchObject({ reason: "factory_wide" });
     expect((await call(base, "GET", "/api/runs", tok)).status).toBe(403);
     expect((await call(base, "GET", "/api/cost", tok)).status).toBe(403);
+    // Health is factory-wide, the Overview's lighter read included (the gate is by path).
+    expect((await call(base, "GET", "/api/health", tok)).status).toBe(403);
+    expect((await call(base, "GET", "/api/health?view=summary", tok)).status).toBe(403);
     // Reads with no ticket content stay open.
     expect((await call(base, "GET", "/api/squad", tok)).status).toBe(200);
     expect((await call(base, "GET", "/repositories", tok)).status).toBe(200);
@@ -439,6 +442,12 @@ describe("principal scopes (REST)", () => {
     expect(write.body.error?.code).toBe("READ_ONLY_TOKEN");
     const who = await call(base, "GET", "/api/whoami", tok);
     expect(who.body).toMatchObject({ capability: "read", scope: { repos: [{ name: "app" }] } });
+    // A read token with no scope reads the Overview's summary (a read, no write).
+    const ro = await mint(base, { name: "ro-all", capability: "read" });
+    const sum = await call(base, "GET", "/api/health?view=summary", ro);
+    expect(sum.status).toBe(200);
+    expect(sum.body.view).toBe("summary");
+    expect((await call(base, "GET", "/api/health?view=summary", tok)).status).toBe(403);
   });
 });
 

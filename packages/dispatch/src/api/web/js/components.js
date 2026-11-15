@@ -127,7 +127,7 @@ function splitPct(unit) {
  * null value is a dash with its `reason` (a title and a visible short line), never a
  * zero. "%" is part of the value ("70%", no gap). `series` is either {t, v} points
  * (the sparkline: an even time grid, >= 4 points) or, for older callers, a plain
- * array (the old spark); `seriesFmt` formats its readout. No delta chips: a "▲100%" the data cannot support is not
+ * array (the old spark); `seriesFmt` formats its readout values and `seriesFmtT` its times. No delta chips: a "▲100%" the data cannot support is not
  * shown. `flip` keys a digit flip on first paint/change.
  */
 function statCell({
@@ -145,6 +145,7 @@ function statCell({
   size,
   reason,
   seriesFmt,
+  seriesFmtT,
 }) {
   const missing = value === null || value === undefined;
   const why = reason || "no figure yet";
@@ -156,7 +157,7 @@ function statCell({
     .join(" ");
   const spark =
     Array.isArray(series) && series.length && series[0] && typeof series[0] === "object"
-      ? sparkline(series, { label, fmt: seriesFmt })
+      ? sparkline(series, { label, fmt: seriesFmt, fmtT: seriesFmtT })
       : series && series.length > 1
         ? el("div", { class: "kpi-spark", html: svgSpark(series) })
         : null;
@@ -201,7 +202,8 @@ const DELTA_GLYPH = { up: "▲", down: "▼", flat: "=" };
  *               period: signed, a glyph and the word better/worse, coloured by direction x
  *               goodWhen; hidden when either period's n is under minN (default 10)
  *   series      [{t, v}] for a sparkline (hidden below 4 points); the previous period's
- *               value is its faint baseline
+ *               value is its faint baseline; `fmtT` says how its readout names a time
+ *               (default: the grid's local-date words)
  *   definition  what it counts, behind a disclosure (keyboard reachable)
  *   note        a small line under it (what it leaves out, why it is missing)
  *   format      how a non-rate value reads (default String); deltaFormat for its change
@@ -224,6 +226,7 @@ function measureTile({
   deltaFormat,
   minN = 10,
   cls,
+  fmtT,
 }) {
   const isRate = typeof k === "number" && typeof n === "number";
   const v =
@@ -288,6 +291,7 @@ function measureTile({
     ? sparkline(series, {
         label,
         fmt: show,
+        fmtT,
         baseline: delta && typeof delta.prev === "number" ? delta.prev : undefined,
       })
     : null;
@@ -434,7 +438,8 @@ function meterRow({ name, k, n, fmt, limit, whisker = false }) {
 
 /**
  * Part of a whole, one bar: each part a segment (2px surface gaps between them, a part
- * at zero draws nothing), and a legend of names with their counts, so colour is never
+ * at zero draws nothing; four distinct --viz steps, none the colour of an empty track),
+ * and a legend of names with their counts, so colour is never
  * the only key. The bar's accessible name gives every part's name, count and share.
  *   parts: [{ label, value }]; opts: { label, legend = true, tall = false }
  */
@@ -490,7 +495,7 @@ const NUM = new Intl.NumberFormat("en-GB");
  * A real <table> for multi-column data (never dot-joined rows): a caption, th scope
  * on every head, the first column as row headers (sticky when the table scrolls
  * sideways), numeric columns right-aligned in 16px tabular figures. On a phone it
- * scrolls inside its own card (a focusable region), or with `stackOnPhone` each row
+ * scrolls inside its own card (a region that is a tab stop only while it scrolls), or with `stackOnPhone` each row
  * becomes a labelled card. A null cell is a dash with the column's `missing` reason.
  *   columns: [{ key, label, align, numeric, format(value, row), missing }]
  *   opts: { rows, groupBy (key or fn), groupLabel(fn), caption, stackOnPhone, empty, cls }
@@ -586,16 +591,24 @@ function dataTable({
     ),
     ...bodies,
   ]);
-  return el(
+  const wrap = el(
     "div",
     {
       class: ["dt-wrap", stackOnPhone ? "dt-stack" : null, cls].filter(Boolean).join(" "),
-      tabindex: "0",
       role: "region",
       "aria-label": caption || "Table",
     },
     table,
   );
+  // A tab stop only while it scrolls sideways (keyboard users need to reach a scrolled
+  // table; a table that fits is one more stop for nothing). Re-read on every resize.
+  const sync = () => {
+    if (wrap.scrollWidth > wrap.clientWidth + 1) wrap.setAttribute("tabindex", "0");
+    else wrap.removeAttribute("tabindex");
+  };
+  const RO = globalThis.ResizeObserver;
+  if (typeof RO === "function") new RO(sync).observe(wrap);
+  return wrap;
 }
 
 // --- callouts and buttons ------------------------------------------------------

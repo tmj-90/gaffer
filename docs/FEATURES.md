@@ -246,6 +246,13 @@ the usage ledger and the transition log, and says only what those can show:
   (`GET /api/health?window_days=N`), and then all four use it. Each also serves the same figures over the equal window before
   and twelve weeks of history (the escaped-defect rate six monthly cohorts, the recent
   ones marked as still maturing); an empty week is shown as empty, never as zero.
+- **On the page, the four measures are the scoreboard**: one tile each with its count
+  (a rate under 10 greys and shows no change), its window, the change against the window
+  before, a sparkline of its weeks (UTC weeks; months for escaped defects) and its 95%
+  interval. The Referee's record window select sets the window for all four. Under them,
+  *Behind the four measures* shows who approved, review time split into waiting to be
+  opened and deciding, spend by how each ticket ended (with the accepted tickets' own
+  price for reference) and the monthly cohorts, each history also as a table.
 - **Lane verdicts and what each lane changed.** The reviewer agent, the security
   reviewer, the tester and the eval judge each record their verdict
   (`ticket.lane_verdict`, runner-recorded only). Health counts how often each differed

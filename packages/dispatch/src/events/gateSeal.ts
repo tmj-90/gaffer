@@ -19,6 +19,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 
 import { EVENT_CHAIN_GENESIS, eventHash, type ChainedEventFields } from "./eventChain.js";
+import { unsignedPrincipalMessage, verifyPrincipal } from "./principalSeal.js";
 
 /**
  * SIGNED GATE EVENTS. The approval a landing acts on (the ticket's latest transition into
@@ -535,6 +536,12 @@ export interface ApprovalPin {
 export interface ApprovalBinds {
   ticket: string;
   pins: ApprovalPin[];
+  /**
+   * SEALED PRINCIPALS: the principal the approval was made through (its id), or null (the
+   * operator, the runner, an agent). Absent only on a seal made before principals were
+   * sealed: the landing then checks every principal speaking as the approval's actor.
+   */
+  principal?: string | null;
 }
 export interface TesterPassBinds {
   ticket: string;
@@ -637,6 +644,7 @@ function bindsJson(binds: ApprovalBinds | TesterPassBinds): string {
     return JSON.stringify({
       ticket: binds.ticket,
       pins: binds.pins.map((p) => ({ repo_id: p.repo_id, sha: p.sha })),
+      ...(binds.principal !== undefined ? { principal: binds.principal } : {}),
     });
   }
   return JSON.stringify({
@@ -694,6 +702,7 @@ export function sealApproval(
   ticketId: string,
   now: string,
   pins?: readonly ApprovalPin[],
+  principal: string | null = null,
 ): void {
   sealEvent(
     db,
@@ -703,6 +712,7 @@ export function sealApproval(
     {
       ticket: ticketId,
       pins: pins ? normalizePins(pins) : currentApprovalPins(db, ticketId),
+      principal,
     },
     now,
   );
@@ -719,6 +729,19 @@ export function routedApprovalPins(
   keyring: GateKeyring,
   ticketId: string,
 ): ApprovalPin[] {
+  return routingApproval(db, keyring, ticketId)?.pins ?? [];
+}
+
+/**
+ * The sealed approval that routed `ticketId` to the tester (see {@link routedApprovalPins}):
+ * its event, the commits it named and the principal it was made through (undefined: a
+ * seal from before principals were sealed). Null when there is none.
+ */
+export function routingApproval(
+  db: SealDb,
+  keyring: GateKeyring,
+  ticketId: string,
+): { eventId: string; pins: ApprovalPin[]; principal: string | null | undefined } | null {
   const entered = db
     .prepare(
       "SELECT max(rowid) AS seq FROM work_events WHERE entity_type = 'ticket' AND entity_id = ? " +
@@ -736,10 +759,61 @@ export function routedApprovalPins(
   for (const r of rows) {
     const v = verifyGateSeal(db, keyring, String(r.id), "approval");
     if (v.ok && v.binds.ticket === ticketId && Array.isArray(v.binds.pins)) {
-      return normalizePins(v.binds.pins as ApprovalPin[]);
+      return {
+        eventId: String(r.id),
+        pins: normalizePins(v.binds.pins as ApprovalPin[]),
+        principal: principalOf(v.binds),
+      };
     }
   }
-  return [];
+  return null;
+}
+
+/** The principal an approval seal names: an id, null, or undefined (a seal from before). */
+export function principalOf(binds: Record<string, unknown>): string | null | undefined {
+  if (!("principal" in binds)) return undefined;
+  return typeof binds.principal === "string" ? binds.principal : null;
+}
+
+/**
+ * SEALED PRINCIPALS at landing: the principal an approving act was made through must still
+ * be signed by this factory. A seal that names one: that principal. A seal from before
+ * principals were sealed (no `principal`): every principal row speaking as the event's
+ * human or admin actor (a forged principal's approval that slipped in before the upgrade
+ * lands nothing; a person re-signs the genuine one, or re-approves). Null when it holds,
+ * else why not.
+ */
+function approvingPrincipalProblem(
+  db: SealDb,
+  keyring: GateKeyring,
+  eventId: string,
+  principal: string | null | undefined,
+): string | null {
+  if (principal === null) return null;
+  if (typeof principal === "string") {
+    const v = verifyPrincipal(db, keyring, principal);
+    if (v.ok) return null;
+    const row = db.prepare("SELECT name FROM api_principals WHERE id = ?").get(principal) as
+      { name: string } | undefined;
+    return unsignedPrincipalMessage(row?.name ?? principal, v);
+  }
+  const ev = db
+    .prepare("SELECT actor_type, actor_id FROM work_events WHERE id = ?")
+    .get(eventId) as { actor_type: string; actor_id: string | null } | undefined;
+  if (!ev || (ev.actor_type !== "human" && ev.actor_type !== "admin")) return null;
+  let rows: Array<{ id: string; name: string }>;
+  try {
+    rows = db
+      .prepare("SELECT id, name FROM api_principals WHERE actor_type = ? AND actor_id = ?")
+      .all(ev.actor_type, ev.actor_id ?? "") as Array<{ id: string; name: string }>;
+  } catch {
+    return null; // a database from before principals: no principal could have approved
+  }
+  for (const r of rows) {
+    const v = verifyPrincipal(db, keyring, String(r.id));
+    if (!v.ok) return unsignedPrincipalMessage(String(r.name), v);
+  }
+  return null;
 }
 
 /** Seal a `ticket.tester_passed` event with the verdict row it names. */
@@ -871,7 +945,13 @@ export type LandingActsCheck =
       ok: false;
       code: "unsigned_approval" | "unsigned_tester_verdict";
       reason: string;
-      failure: SealFailure | "no_approval" | "not_covered" | "revoked" | "truncated";
+      failure:
+        | SealFailure
+        | "no_approval"
+        | "not_covered"
+        | "revoked"
+        | "truncated"
+        | "unsigned_principal";
     };
 
 /** The latest transition into ready_for_merge (the approval every landing acts on). */
@@ -886,9 +966,18 @@ export function latestApprovalEvent(db: SealDb, ticketId: string): string | null
   return row?.id ?? null;
 }
 
-type LandingFailure = SealFailure | "no_approval" | "not_covered" | "revoked" | "truncated";
+type LandingFailure =
+  SealFailure | "no_approval" | "not_covered" | "revoked" | "truncated" | "unsigned_principal";
 
 function remedy(failure: LandingFailure, verdict: boolean): string {
+  if (failure === "unsigned_principal") {
+    return (
+      "If that principal is genuine, a person re-signs it (gaffer wg principal resign <name>) and the landing goes ahead; " +
+      (verdict
+        ? "otherwise revoke it and record the verdict again through the tester or a signed principal's waiver."
+        : "otherwise revoke it and re-approve: gaffer wg ticket reopen-for-review <n> --as admin --reason unsigned_approval --resolution re-approve, then gaffer approve <n>.")
+    );
+  }
   if (failure === "truncated") {
     return (
       "Nothing lands until a person checks the factory: if the database was restored from a backup on purpose, " +
@@ -985,6 +1074,28 @@ export function verifyLandingActs(
     }
     if (a.binds.ticket !== ticketId) {
       return fail("unsigned_approval", "mismatch", "Its signature is for another ticket.");
+    }
+    // SEALED PRINCIPALS: the principal the approval was made through must still be signed
+    // by this factory; for a tester PASS that approves, so must the approval that routed
+    // the ticket to the tester (the person's review the PASS carries).
+    const approver = approvingPrincipalProblem(db, keyring, approval, principalOf(a.binds));
+    if (approver) {
+      return fail(
+        "unsigned_approval",
+        "unsigned_principal",
+        `Nothing lands on this approval: it was made through a principal this factory does not trust: ${approver}.`,
+      );
+    }
+    const routing = routingApproval(db, keyring, ticketId);
+    if (routing && routing.eventId !== approval) {
+      const router = approvingPrincipalProblem(db, keyring, routing.eventId, routing.principal);
+      if (router) {
+        return fail(
+          "unsigned_approval",
+          "unsigned_principal",
+          `Nothing lands on this approval: the review that sent it to the tester was made through a principal this factory does not trust: ${router}.`,
+        );
+      }
     }
     if (revocation) {
       // An approval stands only while it is the ticket's latest move: a reopen, a hold, a
@@ -1085,6 +1196,19 @@ export function verifyLandingActs(
           detail: "the verdict row is not the one its signature covers",
         };
       }
+      if (good) {
+        // SEALED PRINCIPALS: a person's waiver names its principal in the verdict row the
+        // seal covers; that principal must still be signed by this factory.
+        const waiver = waiverPrincipalId(pass.payloadJson);
+        const problem = waiver ? approvingPrincipalProblem(db, keyring, "", waiver) : null;
+        if (problem) {
+          return fail(
+            "unsigned_tester_verdict",
+            "unsigned_principal",
+            `The waiver this landing relies on was recorded through a principal this factory does not trust: ${problem}.`,
+          );
+        }
+      }
       if (!good) {
         const failure: SealFailure = last && !last.ok ? last.failure : "unsigned";
         const detail = last && !last.ok ? last.detail : "it carries no signature";
@@ -1097,6 +1221,17 @@ export function verifyLandingActs(
     }
     return { ok: true, approval };
   });
+}
+
+/** The principal id a waiver's verdict row names, or null (an agent tester's PASS). */
+function waiverPrincipalId(payloadJson: string): string | null {
+  try {
+    const p = JSON.parse(payloadJson) as { waiver?: { principal?: { id?: unknown } } };
+    const id = p?.waiver?.principal?.id;
+    return typeof id === "string" && id.length > 0 ? id : null;
+  } catch {
+    return null;
+  }
 }
 
 /**

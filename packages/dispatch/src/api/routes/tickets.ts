@@ -610,6 +610,7 @@ export async function routeTickets(
       const result = wg.approveReview(id, apiActor(), {
         commits: (body.commits ?? []).map((c) => ({ repo: c.repo ?? null, sha: c.sha })),
         requireCommits: true,
+        principal: isSharedOperator() ? null : apiPrincipal(),
       });
       // The ticket has reached `ready_for_merge` via the review-approve path (NOT
       // `done` — `done` means the merge actually landed). When AUTO_MERGE ("Auto-merge on

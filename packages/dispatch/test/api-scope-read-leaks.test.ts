@@ -204,3 +204,35 @@ describe("F3: /repositories, /agents and /api/squad are filtered for a scoped pr
     }
   });
 });
+
+describe("F5: runner-executed commands a ticket writer may set (SECURITY.md, Definition of Done)", () => {
+  it("a scoped writer sets a check_command on its own ticket only; repo gate commands need admin", async () => {
+    const { wg, app, priv, post } = await start();
+    const writer = wg.createPrincipal(
+      { name: "writer", capability: "full", actorType: "human", repos: ["app"] },
+      human,
+    ).token;
+    const reader = wg.createPrincipal(
+      { name: "reader", capability: "read", actorType: "human", repos: ["app"] },
+      human,
+    ).token;
+    const mk = (repo: string) =>
+      wg.createTicketWithLinks(
+        { title: `on ${repo}`, description: "", policy_pack: "solo_loose" },
+        { repoAccess: [{ repo_id: repo, access: "write" as const }] },
+        human,
+      );
+    const mine = mk(app.id);
+    const theirs = mk(priv.id);
+    const ac = { text: "health is green", check_command: "npm test -- health" };
+    // Its own ticket: the command is a per-ticket contract, run like the repo's own gates
+    // (same sandbox, timeout and scrubbed environment) in that ticket's worktree only.
+    expect((await post(`/tickets/${mine.id}/acceptance-criteria`, writer, ac)).status).toBe(201);
+    // Another repo's ticket, or a read-only principal: refused.
+    expect((await post(`/tickets/${theirs.id}/acceptance-criteria`, writer, ac)).status).toBe(403);
+    expect((await post(`/tickets/${mine.id}/acceptance-criteria`, reader, ac)).status).toBe(403);
+    // Repository gate commands run for every ticket on the repo: an admin act.
+    const repoCmd = await post(`/repos/${app.id}/commands`, writer, { test_command: "npm test" });
+    expect(repoCmd.status).toBe(403);
+  });
+});

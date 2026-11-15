@@ -308,6 +308,24 @@ Coverage, SAST and docs checks are not gates. The Review view shows gate results
 from rows the `system` actor recorded, and flags an agent-claimed test count the
 runner's own count contradicts (a consistency check, not a gate).
 
+**What a ticket writer can make the runner run.** Anyone who may write a ticket (the
+shared token, the tokenless CLI, or a human or admin principal with write on it, scoped
+or not) can give it `check_command` criteria and a `cli` / `api` acceptance profile
+whose argv lists the runner executes. An agent can add a `check_command` only to a
+ticket its mount is bound to before it is claimed (never from a reviewer or tester
+mount) and never sets an acceptance profile; the contract freezes once the ticket is
+claimed. That is
+deliberate and not admin-gated: those commands run only for that ticket, in its own
+worktree or a fresh checkout of its tested commit, through the same gate path as the
+repository's test command (`gaffer_dod_run_one`: the gate sandbox profile with no data
+plane and no model credential when an OS sandbox is present, a timeout, the scrubbed
+agent environment; the acceptance argv also cannot set `HOME`, `TMPDIR`, `LD_PRELOAD`,
+`BASH_ENV` or `GAFFER_*`). A ticket writer can already make the runner execute code of
+its choosing by describing it in the ticket for the delivery agent to write and the test
+gate to run, so a per-ticket command grants nothing a ticket write does not. A
+repository's own gate commands (`POST /repos/:id/commands`) run for every ticket on that
+repository, other people's included, so they need an admin principal.
+
 Gate integrity resists an agent that weakens its own tests:
 
 1. **The base is a recorded commit.** When the runner cuts the delivery branch it
@@ -574,7 +592,9 @@ request on REST, the CLI and the factory MCP mount: a scoped principal sees exac
 tickets it may change, everything factory-wide is refused (`403 SCOPE_DENIED`), the
 repository and agent lists (`/repositories` in every hidden mode, `/scope/repos?all=1`,
 `/agents`, `/api/squad`) hold only the repositories it reaches and the agents on its
-tickets, and repository-level writes need an admin principal. Its own identity
+tickets, and repository-level writes need an admin principal (a ticket's own
+runner-executed commands are a ticket write, see "What a ticket writer can make the
+runner run" below). Its own identity
 (`/api/whoami`), the club's name and kit (`/api/club`) and the API description
 (`/api/openapi.json`) stay open to it: none carries ticket or repository content. A decision is readable only when every
 ticket it is linked to is (`decisionInScope`), on every surface that carries one: the

@@ -400,7 +400,7 @@ function reviewTimeDetail(rt) {
     span("Per accepted ticket", rt.per_accepted_ticket),
     span("Waiting to be opened", rt.queue_wait),
     span("Open to decision", rt.decision),
-    span("Ready to decision (clock time)", rt.review_ready_to_decision),
+    span("Ready to decision (clock)", rt.review_ready_to_decision),
     span("Active, approximate", rt.active?.per_accepted_ticket),
   ].filter((r) => r.n);
   const dur = (v) => (v == null ? null : fmtDuration(v));
@@ -508,7 +508,10 @@ function acceptedCostDetail(ac) {
 
 function escapedDetail(esc) {
   if (!esc || !esc.recorded) return null;
-  const months = Array.isArray(esc.by_month) ? esc.by_month : [];
+  const all = Array.isArray(esc.by_month) ? esc.by_month : [];
+  // The months before the first accepted change say nothing: start the table there.
+  const first = all.findIndex((m) => m.accepted > 0);
+  const months = first < 0 ? [] : all.slice(first);
   return el("div", { class: "md-col" }, [
     panelHead("Escaped-defect rate", "by the month a change was accepted", null, { level: 3 }),
     months.length

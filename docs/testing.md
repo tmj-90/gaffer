@@ -186,16 +186,37 @@ steps are in `runner-shard.yml`, which `nightly.yml` calls too.
 
 | cell | when | shards |
 | --- | --- | --- |
+| package tests, ubuntu, node 22 and 24 | every push | (`checks`, `packages`) |
 | runner, ubuntu, node 22 | every push | 3 |
-| runner, ubuntu, node 24 | every push | 3 |
-| runner, macOS, node 22 | every push | 3 (shard 1 also runs the package tests and the macOS e2e) |
-| runner, macOS, node 24 | nightly (03:17 UTC) and on demand (`workflow_dispatch`) | 3, `GAFFER_TEST_EXHAUSTIVE=1` |
+| runner, macOS, node 22 | a push or pull request that changes a macOS-relevant path (below); nightly | 4 (shard 1 also runs the macOS package tests and the macOS e2e) |
+| runner, ubuntu, node 24 | nightly | 3 |
+| runner, macOS, node 24 | nightly | 3 (shard 1 also runs the package tests) |
 
-macOS node 24 moved to the nightly run because GitHub runs at most 5 macOS jobs at
-once: with six, the sixth queued for 755 s on run 41338925244 and the run took
-26.4 min. The nightly run has the same strictness, the same caps and the same
-evidence upload on a failure, so a regression only that cell catches is at most a
-day old. A failed night is a red run on the Actions tab and the Nightly badge.
+The macOS-relevant paths are the ones that can behave differently on macOS:
+`runner/**` (lib, config, bin, sandbox, the tests), `scripts/**`, `.github/**`,
+`package.json`, `packages/*/package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`,
+`.npmrc` and `.nvmrc`. The `changes` job decides with
+`.github/scripts/macos-relevant.sh`, which diffs the push's previous head (a pull
+request: its base) against the commit under test. When it cannot tell (a new branch, a
+force push, a failed diff) the macOS shards run. A change to package sources or docs
+alone skips them on that push.
+
+`ci-result` ("CI result") runs after every other job, whatever happened, and passes
+only when each one passed or the macOS shards were skipped by that rule. It is the one
+check to require if a branch rule is added: a skipped job never leaves it waiting.
+
+The nightly run (03:17 UTC, `nightly.yml`) runs every runner cell a push may leave
+out, with the same strictness, the same caps and the same evidence upload on a
+failure, and `GAFFER_TEST_EXHAUSTIVE=1`. So a regression only a nightly cell catches
+is at most a day old. A failed night is a red run on the Actions tab and the Nightly
+badge. To run the full matrix by hand (before a release, or on a branch whose push
+skipped the macOS shards), start `Nightly` from the Actions tab (`workflow_dispatch`,
+pick the branch).
+
+Why: one push used about 118 Linux and 60 macOS machine-minutes, and macOS minutes
+bill at ten times Linux on a private repository. GitHub also runs at most 5 macOS jobs
+at once; a sixth queued 755 s on run 41338925244. A newer push to the same branch or
+pull request cancels the older run (`concurrency` in `ci.yml`).
 
 The browser suites run as `ui-regression` (the golden path) and `ui-scenarios`, five
 groups of scenario suites; `runner/test/ci-matrix.test.sh` checks that every suite is

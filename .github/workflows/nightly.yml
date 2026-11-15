@@ -1,19 +1,24 @@
 name: Nightly
 
-# The cells that are too costly to run on every push, run once a day on main with
-# the same strictness as ci.yml (GAFFER_TEST_STRICT=1, the same caps, the claude
-# tripwire, the operator-state guard) and the same evidence upload on a failure.
+# Every runner cell a push may leave out, once a day on main with the same strictness as
+# ci.yml (GAFFER_TEST_STRICT=1, the same caps, the claude tripwire, the operator-state
+# guard) and the same evidence upload on a failure:
 #
-#   runner / macOS node 24: 3 shards (runner-shard.yml), shard 1 with the package
-#   tests. ci.yml runs the other three cells on every push; see the `runner` comment
-#   there for why this one moved (the 5-concurrent-macOS limit queued it 755 s).
+#   runner / ubuntu node 24: 3 shards. ci.yml runs ubuntu node 22 on every push; the
+#   package tests on node 24 stay on every push there (the `packages` job).
+#   runner / macOS node 22: 4 shards, shard 1 with the package tests and the macOS e2e.
+#   ci.yml runs them on a push only when it changes a macOS-relevant path
+#   (.github/scripts/macos-relevant.sh); here they run every night either way.
+#   runner / macOS node 24: 3 shards, shard 1 with the package tests (the 5-concurrent-
+#   macOS limit queued a sixth push-time macOS job 755 s on run 41338925244).
 #   GAFFER_TEST_EXHAUSTIVE=1: tests with a cheap default form run their full form
 #   (direct-run-isolation re-runs every listed test, not only the quick ones).
 #
 # A failed night is a red run on the Actions tab and on the Nightly badge in
 # README.md, and GitHub mails it to whoever last changed the schedule; the failing
-# shard's evidence is uploaded as runner-test-evidence-macos-latest-node24-shard<K>of3.
-# Run it by hand from the Actions tab (workflow_dispatch), e.g. before a release.
+# shard's evidence is uploaded as runner-test-evidence-<os>-node<N>-shard<K>of<N>.
+# Run it by hand from the Actions tab (workflow_dispatch) for the full matrix on any
+# branch, e.g. before a release or on a pull request that skipped the macOS shards.
 on:
   schedule:
     - cron: "17 3 * * *"
@@ -33,6 +38,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - { os: ubuntu-latest, node: "24", shard: 1, shards: 3, head_start: 0 }
+          - { os: ubuntu-latest, node: "24", shard: 2, shards: 3, head_start: 0 }
+          - { os: ubuntu-latest, node: "24", shard: 3, shards: 3, head_start: 0 }
+          # The same rows as ci.yml `runner-macos` (runner/test/ci-matrix.test.sh C2).
+          # prettier-ignore
+          - { os: macos-latest, node: "22", shard: 1, shards: 4, head_start: 1100, packages: true, e2e: true }
+          - { os: macos-latest, node: "22", shard: 2, shards: 4, head_start: 1100 }
+          - { os: macos-latest, node: "22", shard: 3, shards: 4, head_start: 1100 }
+          - { os: macos-latest, node: "22", shard: 4, shards: 4, head_start: 1100 }
           # head_start ≈ the package tests' wall time (135 s on run 41338925244) × -j 3.
           - { os: macos-latest, node: "24", shard: 1, shards: 3, head_start: 400, packages: true }
           - { os: macos-latest, node: "24", shard: 2, shards: 3, head_start: 400 }
@@ -45,4 +59,5 @@ jobs:
       shards: ${{ matrix.shards }}
       head_start: ${{ matrix.head_start }}
       packages: ${{ matrix.packages == true }}
+      e2e: ${{ matrix.e2e == true }}
       exhaustive: true

@@ -38,7 +38,9 @@
 #       time (the slowest cell of the run its header names), and every real test whose
 #       time there is at least two thirds of the .sh/.mjs cap matches LONG_RE (so it
 #       gets CAP_LONG, not a cap a loaded CI runner kills it under), and every LONG_RE
-#       test has a weight line (an unlisted one counts 10s and unbalances the shards)
+#       test has a weight line (an unlisted one counts 10s and unbalances the shards);
+#       no LONG_RE entry is stale (it names no real test, or a named test now weighs
+#       under a third of the short cap)
 # Run: bash runner/test/run-harness.test.sh
 # =====================================================================
 . "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
@@ -293,6 +295,41 @@ done <"$WORK/all"
   || fail "H10 add to LONG_RE in run.sh:$short_heavy"
 [ -z "$long_unweighted" ] && ok "H10 every LONG_RE test has a line in lib/shard-weights.tsv" \
   || fail "H10 LONG_RE tests with no shard weight:$long_unweighted"
+# Stale entries: every named alternative of LONG_RE (the top-level `|` branches of its
+# group; a wildcard branch such as e2e-.* is exempt from the weight rule) still names a
+# real test, and a named test light enough for the short cap with room to spare (under a
+# third of it) has left LONG_RE: there it only takes a queue-first slot from a heavy one.
+# direct-run-isolation stays: its nightly GAFFER_TEST_EXHAUSTIVE form takes ~220 s.
+stale="$(LONG_RE="$LONG_RE" CAP_SH="$CAP_SH" CAP_MJS="$CAP_MJS" node -e '
+  const fs = require("fs");
+  const files = fs.readFileSync(process.argv[1], "utf8").split("\n").filter(Boolean).map((f) => f.split("/").pop());
+  const w = new Map();
+  for (const l of fs.readFileSync(process.argv[2], "utf8").split("\n")) {
+    if (!l || l.startsWith("#")) continue;
+    const [s, f] = l.split("\t"); w.set(f, Number(s));
+  }
+  const re = process.env.LONG_RE, m = /^\^\((.*)\)\\\.test\\\.\(sh\|mjs\)\$/.exec(re.split("|^")[0]);
+  if (!m) { console.log("LONG_RE-unparsed"); process.exit(0); }
+  const alts = []; let depth = 0, cur = "";
+  for (const ch of m[1]) {
+    if (ch === "(") depth++; else if (ch === ")") depth--;
+    if (ch === "|" && depth === 0) { alts.push(cur); cur = ""; } else cur += ch;
+  }
+  alts.push(cur);
+  const keep = new Set(["direct-run-isolation"]);
+  for (const a of alts) {
+    const r = new RegExp("^(" + a + ")\\.test\\.(sh|mjs)$");
+    const hit = files.filter((f) => r.test(f));
+    if (!hit.length) { console.log(a + "(no such test)"); continue; }
+    if (a.includes(".*") || keep.has(a)) continue;
+    for (const f of hit) {
+      const cap = f.endsWith(".mjs") ? Number(process.env.CAP_MJS) : Number(process.env.CAP_SH);
+      if (w.has(f) && w.get(f) * 3 < cap) console.log(f + "(" + w.get(f) + "s)");
+    }
+  }
+' "$WORK/all" "$W" | tr '\n' ' ')"
+[ -z "$stale" ] && ok "H10 every named LONG_RE entry is a real test that still needs the long cap" \
+  || fail "H10 stale LONG_RE entries (remove them from run.sh): $stale"
 for t in memory-index-after-merge.test.sh rework-cost-live.test.sh usage-limit-tick.test.sh tick-deadline.test.sh resume-abort.test.sh; do
   [[ "$t" =~ $LONG_RE ]] && ok "H10 $t (several live ticks) gets the long cap" || fail "H10 $t is not in LONG_RE"
 done

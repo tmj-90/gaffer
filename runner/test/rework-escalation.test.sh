@@ -98,7 +98,7 @@ else
   fail "A5 a failed quarantine fell back to the raw trail ($_REWORK_BLOCK)"
 fi
 gaffer_quarantine() { printf '%s' "$2"; }
-_REWORK_HISTORY=$'── attempt 1 — definition-of-done ──\nAssertionError: expected 3 to be 4\n'
+_REWORK_HISTORY=$'── attempt 1, definition-of-done ──\nAssertionError: expected 3 to be 4\n'
 
 echo "== PART B: gaffer_ticket_rework_spend — the cost side of the double-bound =="
 # The summation lives in _gaffer_ticket_spend; the three public names are one-line

@@ -456,7 +456,7 @@ $real
     # prompt; the agent is told the trail is unavailable and the log says why.
     local _trail_q
     if ! _trail_q="$(gaffer_quarantine rework-feedback "$_REWORK_HISTORY" 2>/dev/null)" || [ -z "$_trail_q" ]; then
-      log "REWORK: #${NUM:-?} the failure trail could not be quarantined — left out of the attempt $attempt prompt"
+      log "REWORK: #${NUM:-?} the failure trail could not be quarantined, so it is left out of the attempt $attempt prompt"
       _trail_q="(failure trail unavailable: it could not be quarantined, so it is left out; run the repo's gates yourself to see what fails)"
     fi
     _REWORK_BLOCK="

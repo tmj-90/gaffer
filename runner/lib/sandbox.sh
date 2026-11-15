@@ -238,6 +238,7 @@ ROOTS
     if [ -n "${GAFFER_DATA:-}" ]; then _sandbox_exec_data_rules "$variant" "$write_roots"; fi
     if [ "$variant" = replay ]; then _sandbox_exec_replay_rules "$write_roots" "$read_roots"; fi
     if [ -n "${GAFFER_DATA:-}" ]; then _sandbox_exec_control_file_rules "$data_rx"; fi
+    _sandbox_exec_agent_config_rules "$home_rx"
     # THE FACTORY KEY (signed gate events), LAST so it wins over every grant above: no
     # read, no write, no listing of the keys directory, in every profile.
     _sandbox_exec_factory_key_rules

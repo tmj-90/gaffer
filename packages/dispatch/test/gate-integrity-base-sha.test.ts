@@ -158,10 +158,11 @@ describe("recording the base commit", () => {
     expect(() =>
       d.recordRepoDelivery({ ticket_id: id, repo_id: repoId, base_sha: "main" }, human),
     ).toThrow();
-    // The end-of-delivery record (branch + commit, no base) keeps the stored base.
+    // The end-of-delivery record (branch + commit, no base) keeps the stored base. It is
+    // the runner's (system): an agent records nothing on a ticket past delivery.
     d.recordRepoDelivery(
       { ticket_id: id, repo_id: repoId, commit_sha: "c".repeat(40), status: "review_ready" },
-      agent,
+      { type: "system" },
     );
     expect(d.listRepoDeliveries(id)[0]!.base_sha).toBe(base);
     d.db.close();

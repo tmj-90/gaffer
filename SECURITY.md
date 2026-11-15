@@ -338,6 +338,27 @@ Coverage, SAST and docs checks are not gates. The Review view shows gate results
 from rows the `system` actor recorded, and flags an agent-claimed test count the
 runner's own count contradicts (a consistency check, not a gate).
 
+**What a ticket writer can make the runner run.** Anyone who may write a ticket (the
+shared token, the tokenless CLI, or a human or admin principal with write on it, scoped
+or not) can give it `check_command` criteria and a `cli` / `api` acceptance profile
+whose argv lists the runner executes. In the factory an agent can add a
+`check_command` only to a ticket its mount is bound to, or a draft it created, before it
+is claimed (never from a reviewer or tester mount); outside the factory an MCP agent can
+add one to any ticket not yet claimed. An agent may name an acceptance profile for a
+ticket's test contract (`set_test_contract` `profile`, never replacing one a person set)
+but never registers the argv the runner runs for it: a person does. The contract freezes
+once the ticket is claimed. That is
+deliberate and not admin-gated: those commands run only for that ticket, in its own
+worktree or a fresh checkout of its tested commit, through the same gate path as the
+repository's test command (`gaffer_dod_run_one`: the gate sandbox profile with no data
+plane and no model credential when an OS sandbox is present, a timeout, the scrubbed
+agent environment; the acceptance argv also cannot set `HOME`, `TMPDIR`, `LD_PRELOAD`,
+`BASH_ENV` or `GAFFER_*`). A ticket writer can already make the runner execute code of
+its choosing by describing it in the ticket for the delivery agent to write and the test
+gate to run, so a per-ticket command grants nothing a ticket write does not. A
+repository's own gate commands (`POST /repos/:id/commands`) run for every ticket on that
+repository, other people's included, so they need an admin principal.
+
 Gate integrity resists an agent that weakens its own tests:
 
 1. **The base is a recorded commit.** When the runner cuts the delivery branch it
@@ -624,8 +645,15 @@ SHA-256, shown once) carry an actor (`human` or `admin`), a capability (`full` o
 the shared operator token mints or revokes principals; recording a merge and reopening a
 done ticket are admin acts. One evaluation (`accessScope.ts`) decides every scoped
 request on REST, the CLI and the factory MCP mount: a scoped principal sees exactly the
-tickets it may change, everything factory-wide is refused (`403 SCOPE_DENIED`), and
-repository-level writes need an admin principal. A decision is readable only when every
+tickets it may change, everything factory-wide is refused (`403 SCOPE_DENIED`), the
+repository and agent lists (`/repositories` in every hidden mode, `/scope/repos?all=1`,
+`/agents`, `/api/squad`) hold only the repositories it reaches and the agents on its
+tickets (a ticket it reaches that links another repository shows that repository's name
+and access, never its location or gate commands), and repository-level writes need an admin principal (a ticket's own
+runner-executed commands are a ticket write, see "What a ticket writer can make the
+runner run" below). Its own identity
+(`/api/whoami`), the club's name and kit (`/api/club`) and the API description
+(`/api/openapi.json`) stay open to it: none carries ticket or repository content. A decision is readable only when every
 ticket it is linked to is (`decisionInScope`), on every surface that carries one: the
 decision routes, a ticket's detail and claimability, the human queue and `wg ticket
 show` under `GAFFER_PRINCIPAL_TOKEN`. One the holder may not read still shows where it
@@ -641,7 +669,21 @@ decision linked to a ticket its mount is bound to, whatever else it is linked to
 unattached ones; a decision only on other tickets is left out of `list_pending_decisions`
 and shows on another ticket only as the generic blocker. A mount bound to no ticket
 (product owner, planning) lists every pending decision, so it does not file one again.
-Its writes stay bound to its tickets.
+Its writes stay bound to its tickets: every ticket write (criteria, test contract,
+testable flag, decisions, both ends of a dependency) names a ticket the runner bound the
+mount to (claim, `GAFFER_SCOPE_TICKET`, `GAFFER_REVIEW_TICKET`) or a draft that server
+created. Its new drafts (`create_ticket`, `create_epic`) name only repositories its bound
+ticket writes, never under a looser policy pack than that ticket's; the product-owner
+mount (no ticket, `GAFFER_DEFAULT_TICKET_REPO`) drafts on its repository; a planning
+mount bound to neither may draft on any registered repository. Every draft still needs a
+person to ready it. Freezing a spec is a person's act: dispatch refuses it for any agent.
+A spec draft (`create_spec`) stays open to agents. The per-repo delivery record (branch, commit,
+status) that the Review diff, the approval pin, required CI and the landing read is the
+runner's: it records each write repo's branch, commit and `review_ready` at close as the
+system actor. An agent records one only on a ticket it is delivering (claimed or
+in_progress, with an active claim) and never changes a branch, commit or PR already
+recorded; in the factory only the mount holding the delivery claim may, and only progress,
+so a reviewer or tester mount cannot re-point the delivery it judges.
 
 A request's credential is resolved once, before any gate, into a frozen identity that
 every later check and route reads. The shared operator is whoever presented the shared

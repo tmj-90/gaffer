@@ -27,6 +27,7 @@
 # Run: bash runner/test/dashboard-lifecycle.test.sh   (bash 3.2 safe)
 # =====================================================================
 . "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tty.sh"     # gaffer_test_tty: stdout on a pty
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -80,7 +81,7 @@ P1="$(cat "$DATA/dashboard.pid" 2>/dev/null)"; T1="$(tok)"
 [ "$RC" -eq 0 ] && has "$OUT" "dashboard up" && ok "fresh start: exit 0, 'dashboard up'" || fail "fresh start rc=$RC: $OUT"
 [ -n "$P1" ] && alive "$P1" && [ "$(listener)" = "$P1" ] && ok "the pid file names the live server holding the port ($P1)" || fail "pid file '$P1' vs listener '$(listener)'"
 [ "$(code "$T1")" = 200 ] && ok "the printed token authenticates" || fail "token got $(code "$T1")"
-has "$OUT" "?token=$T1" && ok "the login URL carries the token" || fail "no login URL: $OUT"
+! has "$OUT" "$T1" && has "$OUT" "$DATA/dashboard-token" && ok "not a terminal: the hint names the token file, never the token" || fail "login hint wrong: $OUT"
 
 echo "== B: --restart stops the old server and rotates the token =="
 dash --restart
@@ -90,7 +91,12 @@ gone_within "$P1" && ok "the old server ($P1) is gone" || fail "the old server $
 [ -n "$P2" ] && [ "$P2" != "$P1" ] && alive "$P2" && [ "$(listener)" = "$P2" ] && ok "the new pid ($P2) holds the port" || fail "new pid '$P2' listener '$(listener)'"
 [ -n "$T2" ] && [ "$T2" != "$T1" ] && ok "the token rotated" || fail "token not rotated"
 [ "$(code "$T1")" = 401 ] && [ "$(code "$T2")" = 200 ] && ok "old token 401, new token 200" || fail "old $(code "$T1") new $(code "$T2")"
-has "$OUT" "?token=$T2" && ok "the NEW token is printed" || fail "printed URL is not the new token: $OUT"
+if gaffer_test_tty_available; then
+  TTY_OUT="$(gaffer_test_tty env GAFFER_DATA="$DATA" DISPATCH_API_PORT="$PORT" bash "$RUNNER_DIR/gaffer" dashboard 2>&1)"
+  has "$TTY_OUT" "?token=$T2" && ok "on a terminal the login URL carries the NEW token" || fail "tty: printed URL is not the new token: $TTY_OUT"
+else
+  echo "  SKIP: no script(1) to give the launcher a terminal"
+fi
 
 echo "== C: --restart with a garbage pid file finds the server by its port =="
 echo "garbage" > "$DATA/dashboard.pid"

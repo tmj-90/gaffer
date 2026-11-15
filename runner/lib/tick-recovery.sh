@@ -39,6 +39,14 @@ gaffer_crash_cleanup() {
   if declare -F gaffer_usage_settle_crashed >/dev/null 2>&1; then
     gaffer_usage_settle_crashed delivery "${NUM:-}" "${USAGE_JSON:-}"
     gaffer_usage_settle_crashed bootstrap "${NUM:-}" "${B_USAGE_JSON:-}"
+    # The review, security-review and clarify lanes run in this same shell and their
+    # traps chain here, so an interrupted reviewer settles its own envelope too. The
+    # lanes with a private envelope (eval judge, scout, inherit, every Node launcher)
+    # are settled by the next reservation once this process is gone
+    # (budget-admission.mjs settleDeadReservations).
+    gaffer_usage_settle_crashed review "${RNUM:-}" "${R_USAGE_JSON:-}"
+    gaffer_usage_settle_crashed security-review "${RNUM:-}" "${S_USAGE_JSON:-}"
+    gaffer_usage_settle_crashed clarify "${CNUM:-${NUM:-}}" "${C_USAGE_JSON:-}"
   fi
   # REPLAY MANIFEST (lib/replay-manifest.sh): an attempt no outcome completed ends here:
   # `killed` on a signal, `ended` on any other exit. After the reap (a measurement never

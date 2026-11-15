@@ -269,6 +269,7 @@
 2	select-skills.test.mjs
 2	skills-dedup.test.sh
 2	skills-wiring.test.sh
+2	budget-dead-reservation.test.mjs
 1	agent-env-scrub.test.sh
 1	agent-env-shell.test.sh
 1	agent-env.test.sh

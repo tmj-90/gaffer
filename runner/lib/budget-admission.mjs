@@ -64,16 +64,19 @@
 //     (no agent spawned) releases it with a `settles` row of its own;
 //   • a reservation whose call died without booking stays OPEN and keeps holding both
 //     caps (fail closed) until the shell crash path books its kill estimate
-//     (config/14-usage.sh gaffer_usage_settle_crashed) or the operator reconciles
+//     (config/14-usage.sh gaffer_usage_settle_crashed), the next reservation settles it
+//     (settleDeadReservations: on this host, only once its launcher is provably gone,
+//     with the same labelled kill estimate), or the operator reconciles
 //     (`usage-ledger.mjs --reconcile`, which settles the reservations whose launcher is
-//     no longer running).
+//     no longer running). A reservation whose launcher may still be alive (a live pid
+//     with no recorded start time, or another host) is never settled automatically.
 // A reservation is never a reading: it carries `reserved_usd` and its basis, never a
 // total_cost_usd or an estimated_cost_usd, so no cost view or estimator reads it as one.
 //
 // CLI: node lib/budget-admission.mjs check [--kind <launcher>] [--worst-usd <n>]
 //      → one JSON line { ok, kind, reason, daily, lifetime }; exit 0 admitted · 3 refused
 //      node lib/budget-admission.mjs reserve --kind <launcher> [--worst-usd <n>]
-//           [--ticket <n>] [--pid <launcher pid>] [--out <file>]
+//           [--ticket <n>] [--pid <launcher pid, default: the calling process>] [--out <file>]
 //      → the check and, when admitted under a cap, one reservation row, under the lock;
 //        the reservation id is written to <file>; exit 0 admitted · 3 refused
 //      node lib/budget-admission.mjs release (--id <id> | --file <file>) [--reason <text>]
@@ -92,6 +95,7 @@ import {
 import { homedir, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { killEstimateFromHistory } from "./kill-estimate.mjs";
 import {
   ledgerDisabled,
   resolveHoldClaims,
@@ -324,6 +328,36 @@ function heldNote(spend) {
 }
 
 /**
+ * Which open reservations can never book their own cost: on this host with a launcher
+ * that is provably gone (`dead`, the next reservation settles them), or on another host
+ * (`elsewhere`, this host cannot check their launcher).
+ */
+function reservationStates(spend, host = hostname()) {
+  let dead = 0;
+  let elsewhere = 0;
+  for (const r of spend?.reservations ?? []) {
+    if (!r || r.host !== host) elsewhere += 1;
+    else if (!launcherAlive(r, host)) dead += 1;
+  }
+  return { dead, elsewhere };
+}
+
+/** The refusal's note on open reservations that will not book their cost by themselves. */
+function reservationNote(spend) {
+  const { dead, elsewhere } = reservationStates(spend);
+  const parts = [];
+  if (dead > 0)
+    parts.push(
+      `${dead} of them belong to a launcher that is no longer running and will never book its cost; the next paid launch settles them with a labelled kill estimate`,
+    );
+  if (elsewhere > 0)
+    parts.push(
+      `${elsewhere} of them were booked on another host, whose launcher this host cannot check, so they stay held; \`node runner/lib/usage-ledger.mjs --open-reservations\` lists them and \`--reconcile --usd <amount> --all-reservations\` settles them once you know those calls are gone`,
+    );
+  return parts.length ? ` (${parts.join("; ")})` : "";
+}
+
+/**
  * The worst case a launch reserves: `{ usd, basis }`. The call's own per-call cap
  * (`worstUsd`, the --max-budget-usd it is launched with) where given, else
  * GAFFER_MAX_CALL_USD (clamped to GAFFER_BUDGET_REMAINING, lib/worker.mjs callBudgetUsd
@@ -428,7 +462,7 @@ export function paidLaunchAdmission({
       return {
         ok: false,
         kind,
-        reason: `the ${label} budget is exhausted (${knob}=${b.cap}, spent $${b.spent.toFixed(4)}${when}${held}) — the paid ${kind} launch was not started`,
+        reason: `the ${label} budget is exhausted (${knob}=${b.cap}, spent $${b.spent.toFixed(4)}${when}${held})${reserved > 0 ? reservationNote(spend) : ""} — the paid ${kind} launch was not started`,
         daily,
         lifetime,
         worst,
@@ -439,7 +473,7 @@ export function paidLaunchAdmission({
       return {
         ok: false,
         kind,
-        reason: `the ${label} budget cannot hold another call (${knob}=${b.cap}, spent $${b.spent.toFixed(4)}${when}${held} for calls in flight; this launch reserves $${worst.usd.toFixed(4)}, ${worst.basis}) — the paid ${kind} launch was not started; it fits once those calls book their cost`,
+        reason: `the ${label} budget cannot hold another call (${knob}=${b.cap}, spent $${b.spent.toFixed(4)}${when}${held}; this launch reserves $${worst.usd.toFixed(4)}, ${worst.basis})${reservationNote(spend)} — the paid ${kind} launch was not started; it fits once the calls still running book their cost`,
         daily,
         lifetime,
         worst,
@@ -614,6 +648,68 @@ function appendRow(ledgerPath, row) {
 }
 
 /**
+ * Settle every open reservation on THIS host whose launcher is provably gone (a dead
+ * pid, or a live pid whose start time differs from the one the reservation recorded:
+ * launcherAlive). Such a call was interrupted (Ctrl-C, a kill, the outer tick bound)
+ * before it booked its row, and outside the delivery lane nothing else settles it, so
+ * it would hold both caps for good. Each gets the row the shell crash path books
+ * (config/14-usage.sh gaffer_usage_settle_crashed): a labelled kill ESTIMATE, the P10 of
+ * the factory's measured history for that kind, else GAFFER_KILL_ESTIMATE_USD (default
+ * 0.05), naming the reservation in `settles`. With the estimate turned off
+ * (GAFFER_KILL_ESTIMATE_USD=0 and no history) the row is an unknown-cost row, which
+ * refuses launches until the operator reconciles (fail closed, as the crash path does).
+ * Never touched: a reservation from another host, one with no usable pid, one whose
+ * launcher is alive or cannot be told from a reused pid (no recorded start time). Must
+ * run under the admission lock. Returns the ids it settled.
+ */
+export function settleDeadReservations(ledgerPath, env = process.env, host = hostname()) {
+  const spend = ledgerSpend(env);
+  if (spend.unknown || !spend.reservations?.length) return [];
+  let text = "";
+  try {
+    text = readFileSync(ledgerPath, "utf8");
+  } catch {
+    return [];
+  }
+  const rawKill = String(env.GAFFER_KILL_ESTIMATE_USD ?? "").trim();
+  const floor = rawKill === "" ? KILL_ESTIMATE_DEFAULT : Number(rawKill);
+  const done = [];
+  for (const r of spend.reservations) {
+    if (!r || r.host !== host) continue;
+    const pid = Number(r.pid);
+    if (!Number.isInteger(pid) || pid <= 0) continue;
+    if (launcherAlive(r, host)) continue;
+    const kind = typeof r.launch_kind === "string" && r.launch_kind ? r.launch_kind : null;
+    let est = null;
+    let basis = null;
+    const hist = killEstimateFromHistory(text, kind);
+    if (hist != null && hist > 0) {
+      est = hist;
+      basis = "history-p10";
+    } else if (finitePos(floor)) {
+      est = floor;
+      basis = "flat-floor";
+    }
+    const row = {
+      ts: new Date().toISOString(),
+      ticket: r.ticket ?? null,
+      kind,
+      measured: false,
+      unknown_reason: `the launcher (pid ${pid}) exited before booking this call; settled by the next admission`,
+      models: "unknown",
+      total_cost_usd: "unknown",
+      num_turns: "unknown",
+      duration_ms: "unknown",
+      ...(est != null ? { estimated: true, estimated_cost_usd: est, estimate_basis: basis } : {}),
+      settles: r.reservation_id,
+      settled_by: "admission",
+    };
+    if (appendRow(ledgerPath, row)) done.push(r.reservation_id);
+  }
+  return done;
+}
+
+/**
  * The admission check AND, when it admits under a cap, the reservation row, as one
  * locked step. Returns the admission (`ok`, `reason`, ...) plus `reservation:
  * { id, usd, basis }` when one was booked. No cap (the GAFFER_ALLOW_UNCAPPED opt-out)
@@ -637,6 +733,13 @@ export function reservePaidLaunch({
   const held = withAdmissionLock(
     ledgerPath,
     () => {
+      // Interrupted calls first: a reservation whose launcher is gone holds headroom no
+      // call will ever use (settleDeadReservations books its kill estimate instead).
+      const settled = settleDeadReservations(ledgerPath, env);
+      if (settled.length)
+        process.stderr.write(
+          `gaffer: budget: settled ${settled.length} reservation(s) of launchers no longer running with a kill estimate (${settled.join(", ")})\n`,
+        );
       const d = paidLaunchAdmission({ kind, env, now: new Date(), worstUsd });
       if (!d.ok) return d;
       const id = `r-${Date.now().toString(36)}-${randomBytes(5).toString("hex")}`;
@@ -741,7 +844,10 @@ function main(argv) {
           kind,
           worstUsd,
           ticket: opt("--ticket"),
-          pid: opt("--pid"),
+          // The launcher is the process that asked: this CLI exits as soon as it has
+          // answered, so its own pid would read as a dead launcher at once and the next
+          // admission would settle a call that is still running.
+          pid: /^\d+$/.test(String(opt("--pid") ?? "")) ? opt("--pid") : process.ppid,
           remember: false,
         })
       : paidLaunchAdmission({ kind, worstUsd });

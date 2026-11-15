@@ -468,11 +468,18 @@ _gaffer_dod_wait_for_rerun() {
 }
 # gaffer_dod_rerun_serial <worktree> <outfile> <cmd> → the rerun's exit status, or 75
 # when the serial lock could not be taken in time (nothing was run).
+# The atomic take of a lock directory (config/10-locks.sh says why a bare mkdir is not
+# one). Defined here too, identically, for a caller that sources this file on its own.
+declare -F _gaffer_lock_take_dir >/dev/null 2>&1 || _gaffer_lock_take_dir() {
+  local d="$1" pid="${2:-$$}"
+  mkdir "$d" 2>/dev/null || return 1
+  ( set -o noclobber; printf '%s\n' "$pid" > "$d/pid" ) 2>/dev/null
+}
 gaffer_dod_rerun_serial() {
   local wt="$1" outfile="$2" cmd="$3" dir lock waited=0 holder rc
   dir="$(_gaffer_dod_serial_dir)"; lock="$dir/rerun.lock"
   mkdir -p "$dir" 2>/dev/null || return 75
-  while ! mkdir "$lock" 2>/dev/null; do
+  while ! _gaffer_lock_take_dir "$lock"; do
     holder="$(cat "$lock/pid" 2>/dev/null)"
     # A holder that died leaves its lock: reap it (liveness, never age), through the
     # guarded takeover (config/10-locks.sh _gaffer_lock_reap re-checks the pid under a
@@ -489,7 +496,6 @@ gaffer_dod_rerun_serial() {
     [ "$waited" -ge "${GAFFER_DOD_TIMEOUT:-900}" ] && return 75
     sleep 1; waited=$((waited + 1))
   done
-  printf '%s\n' "$$" > "$lock/pid"
   # Let the other workers' in-flight gate runs finish (bounded): a marker whose
   # process is gone is stale and ignored.
   _gaffer_dod_unmark

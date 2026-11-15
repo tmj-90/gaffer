@@ -121,9 +121,16 @@ _gaffer_review_back() {
 # under a guard; a claim with no pid is reaped only once older than GAFFER_LOCK_STALE (a
 # live lane writes its pid right after its mkdir). Without the guarded reap nothing is
 # taken over (fail closed: the caller skips the ticket this tick).
+# The atomic take of a lock directory (config/10-locks.sh says why a bare mkdir is not
+# one). Defined here too, identically, for a caller that sources this file on its own.
+declare -F _gaffer_lock_take_dir >/dev/null 2>&1 || _gaffer_lock_take_dir() {
+  local d="$1" pid="${2:-$$}"
+  mkdir "$d" 2>/dev/null || return 1
+  ( set -o noclobber; printf '%s\n' "$pid" > "$d/pid" ) 2>/dev/null
+}
 _gaffer_review_claim() {
   local d="$1" owner="" tries=0
-  while ! mkdir "$d" 2>/dev/null; do
+  while ! _gaffer_lock_take_dir "$d"; do
     owner="$(cat "$d/pid" 2>/dev/null || true)"
     if [ -n "$owner" ] && kill -0 "$owner" 2>/dev/null; then
       printf '%s' "$owner"; return 1
@@ -139,7 +146,6 @@ _gaffer_review_claim() {
     [ "$tries" -ge "${_GAFFER_REVIEW_CLAIM_TRIES:-20}" ] && { printf '%s' "$owner"; return 2; }
     sleep 0.1
   done
-  echo "$$" > "$d/pid"
   return 0
 }
 

@@ -132,7 +132,9 @@ reset
   result() { echo "RESULT=$1" >> "$WORK/log"; }
   # The pause CLI "hangs" until the outer bound kills the tick: the stub signals this
   # shell, whose traps run as tick.sh's do.
-  TICK_PID=$BASHPID
+  # $BASHPID is bash 4+; macOS /bin/bash is 3.2. `exec sh` replaces the command
+  # substitution's subshell, so its $PPID is this shell: the pid BASHPID would give.
+  TICK_PID="${BASHPID:-$(exec sh -c 'echo $PPID')}"
   wg() {
     printf '%s\n' "$*" >> "$WORK/calls"
     case "$1 $2" in

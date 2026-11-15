@@ -265,6 +265,68 @@ function expandBraces(parts) {
  * or `+=` form) is UNKNOWN everywhere; after an `eval`, `source` or `.` (they can set
  * anything) the caller marks every name unknown (allUnknown).
  */
+/**
+ * Every name the command `cmd` may set in a way the hook does not follow (see
+ * VarTable.dynamic). Each scan is linear in the command's length. A name is a whole word
+ * (`\w+`, not part of a longer one):
+ *  - after `read`, `mapfile`, `readarray`, `getopts` or `select` in the same simple
+ *    command (not right after a `$`);
+ *  - right after `-v` (blanks and one quote allowed) following `printf`;
+ *  - after `let`; after `((` up to the next `)`;
+ *  - after an option word holding n, a, A or i following `declare`, `typeset` or `local`
+ *    (n following `unset`), in the same simple command;
+ *  - directly before `=(`, `+=(`, `+=` or `[`.
+ * Simple commands are split at a newline, `;`, `&` and `|`.
+ */
+export function dynamicNames(cmd) {
+  const names = new Set();
+  const wordsFrom = (text, from, notAfterDollar) => {
+    const re = /\w+/g;
+    re.lastIndex = from;
+    for (let m = re.exec(text); m !== null; m = re.exec(text)) {
+      const before = m.index > 0 ? text[m.index - 1] : "";
+      if (/\w/.test(before) || (notAfterDollar && before === "$")) continue;
+      names.add(m[0]);
+    }
+  };
+  const afterOption = (seg, keyword, letters) => {
+    const k = keyword.exec(seg);
+    if (!k) return;
+    const re = /-(\w*)/g;
+    re.lastIndex = k.index + k[0].length;
+    for (let m = re.exec(seg); m !== null; m = re.exec(seg)) {
+      const at = m[1].search(letters);
+      if (at >= 0) {
+        wordsFrom(seg, m.index + at + 2, false);
+        return;
+      }
+    }
+  };
+  for (const seg of cmd.split(/[\n;&|]/)) {
+    const r = /\b(?:read|mapfile|readarray|getopts|select)\b/.exec(seg);
+    if (r) wordsFrom(seg, r.index + r[0].length, true);
+    const p = /\bprintf\b/.exec(seg);
+    if (p) {
+      const re = /-v[ \t]*["']?(\w+)/g;
+      re.lastIndex = p.index + p[0].length;
+      for (let m = re.exec(seg); m !== null; m = re.exec(seg)) names.add(m[1]);
+    }
+    const l = /\blet\b/.exec(seg);
+    if (l) wordsFrom(seg, l.index + l[0].length, false);
+    afterOption(seg, /\bdeclare\b/, /[naAi]/);
+    afterOption(seg, /\b(?:typeset|local)\b/, /[naAi]/);
+    afterOption(seg, /\bunset\b/, /n/);
+  }
+  for (const chunk of cmd.split(")")) {
+    const i = chunk.indexOf("((");
+    if (i >= 0) wordsFrom(chunk, i + 2, false);
+  }
+  for (const re of [/(?<![\w$])(\w+)\+?=\(/g, /(?<![\w$])(\w+)\+=/g, /(?<![\w$])(\w+)\[/g]) {
+    for (let m = re.exec(cmd); m !== null; m = re.exec(cmd)) names.add(m[1]);
+  }
+  return names;
+}
+
 export class VarTable {
   constructor(env, cmd) {
     this.env = env;
@@ -275,6 +337,7 @@ export class VarTable {
     this.allUnknown = false;
     this.ifsChanged = /(?<![\w$])IFS(?:\+?=)/.test(cmd);
     this.dynamicCache = new Map();
+    this.dynamicSet = null;
     // Bumped on every change, so a caller may cache what a word expanded to.
     this.version = 0;
   }
@@ -285,13 +348,25 @@ export class VarTable {
     this.version += 1;
   }
 
+  // True when the command can set `name` in a way the hook does not follow: `read`,
+  // `mapfile`, `printf -v`, arithmetic, `let`, an array form, `declare`/`typeset`/`local`
+  // with -n/-a/-A/-i, `unset -n`. It was one regular expression per name, with nested
+  // `[^\n;&|]*` and `\w*` runs that backtracked in the cube of the command's length
+  // (`declare -aaa...` of 8000 bytes took minutes per variable name, past the hook's
+  // timeout). The names are now collected once per command by linear scans
+  // (dynamicNames), the same set the expression matched.
   dynamic(name) {
     if (this.dynamicCache.has(name)) return this.dynamicCache.get(name);
     const n = name.replace(/[^\w]/g, "");
-    const re = new RegExp(
-      String.raw`\b(?:read|mapfile|readarray|getopts|select)\b[^\n;&|]*?(?<![\w$])${n}(?!\w)|\bprintf\b[^\n;&|]*-v[ \t]*["']?${n}\b|\(\([^)]*\b${n}\b|\blet\b[^\n;&|]*\b${n}\b|(?<![\w$])${n}(?:\[[^\]]*\])?\+?=\(|(?<![\w$])${n}\+=|(?<![\w$])${n}\[|\bdeclare\b[^\n;&|]*-\w*[naAi]\w*[^\n;&|]*\b${n}\b|\b(?:typeset|local)\b[^\n;&|]*-\w*[naAi]\w*[^\n;&|]*\b${n}\b|\bunset\b[^\n;&|]*-\w*n\w*[^\n;&|]*\b${n}\b`,
-    );
-    const hit = re.test(this.cmd);
+    let hit;
+    if (n === "") {
+      // No word characters (a special parameter such as `$@`): unknown, the cautious
+      // answer (the expression it replaces said yes for most commands anyway).
+      hit = true;
+    } else {
+      if (!this.dynamicSet) this.dynamicSet = dynamicNames(this.cmd);
+      hit = this.dynamicSet.has(n);
+    }
     this.dynamicCache.set(name, hit);
     return hit;
   }
@@ -504,7 +579,8 @@ const T_SET = 3;
 
 // A case-insensitive comparison key for one UTF-16 code unit (what the RegExp `i` flag
 // compared: the upper-case form when it is a single unit, and never a non-ASCII unit
-// folded onto an ASCII one).
+// folded onto an ASCII one). Only ASCII names reach it under nocase: a name with any
+// other character matches every case-insensitive pattern (see matchGlobTokens).
 function foldUnit(ch) {
   const u = ch.toUpperCase();
   if (u.length !== 1) return ch;
@@ -512,22 +588,71 @@ function foldUnit(ch) {
   return u;
 }
 
+// The single-unit lower and upper forms of a unit (itself where a form is longer).
+function caseForms(ch) {
+  const out = [ch];
+  for (const f of [ch.toLowerCase(), ch.toUpperCase()]) if (f.length === 1) out.push(f);
+  return out;
+}
+
 /**
- * A bracket expression's inside (after an optional leading `!` / `^`) as a set token, or
- * null when it holds a range written backwards (`[z-a]`): the caller treats that as
- * syntax it does not model. Every character is literal; `x-y` is a range by code unit.
+ * A bracket expression's inside as a token. `units` are its characters, each with `q`
+ * (quoted). Every way the shell might read it is covered, so the token matches at least
+ * what bash matches, in the C and in a UTF-8 locale:
+ *  - a leading `!` / `^` negates only unquoted (`[\!e]` is the set of `!` and `e`);
+ *  - `x-y` is a range by code unit; a quoted `-` (`[a\-c]`) is a literal, kept with the
+ *    range as well;
+ *  - under nocase a range also holds its endpoints' lower and upper forms (bash folds the
+ *    endpoints: `[.-K]` matches `_`);
+ *  - a negated set whose reading is not certain (nocase, a quoted `-`, ranges compared by
+ *    collation) is any one character, and so is a set with a range under collation.
+ * Null for a range written backwards (`[z-a]`): the caller treats it as syntax it does
+ * not model.
  */
-function setToken(body, negated) {
+function setToken(units, opts) {
+  let i = 0;
+  let negated = false;
+  if (units.length > 0 && !units[0].q && (units[0].c === "!" || units[0].c === "^")) {
+    negated = true;
+    i = 1;
+  }
   const singles = new Set();
   const ranges = [];
-  for (let i = 0; i < body.length; i += 1) {
-    if (body[i + 1] === "-" && i + 2 < body.length) {
-      const lo = body.charCodeAt(i);
-      const hi = body.charCodeAt(i + 2);
+  let unsure = Boolean(opts.nocase);
+  for (; i < units.length; i += 1) {
+    const a = units[i];
+    const dash = units[i + 1];
+    if (dash && dash.c === "-" && i + 2 < units.length) {
+      const lo = a.c.charCodeAt(0);
+      const hi = units[i + 2].c.charCodeAt(0);
+      if (dash.q) {
+        // Read both ways: `a`, `-` and what follows as literals, and the range.
+        unsure = true;
+        singles.add(a.c);
+        singles.add("-");
+        if (lo <= hi) ranges.push([lo, hi]);
+        i += 1;
+        continue;
+      }
       if (lo > hi) return null;
       ranges.push([lo, hi]);
       i += 2;
-    } else singles.add(body[i]);
+    } else singles.add(a.c);
+  }
+  if (ranges.length > 0 && opts.collate) return { t: T_ANY };
+  if (negated && unsure) return { t: T_ANY };
+  if (opts.nocase) {
+    for (const [lo, hi] of [...ranges]) {
+      const l = caseForms(String.fromCharCode(lo));
+      const h = caseForms(String.fromCharCode(hi));
+      for (let k = 1; k < 3; k += 1) {
+        if (l[k] !== undefined && h[k] !== undefined) {
+          const a = l[k].charCodeAt(0);
+          const b = h[k].charCodeAt(0);
+          if (a <= b) ranges.push([a, b]);
+        }
+      }
+    }
   }
   return { t: T_SET, singles, ranges, negated };
 }
@@ -557,8 +682,26 @@ function unitMatches(tok, ch, nocase) {
   return tok.negated ? !hit : hit;
 }
 
-/** True when `name` matches the whole token list. At most name.length * tokens.length steps. */
+// Any character outside ASCII (one UTF-16 unit of it is enough).
+const NON_ASCII = /[\u0080-\uffff]/;
+
+/**
+ * True when `name` matches the whole token list. At most name.length * tokens.length steps.
+ *
+ * A name with a character outside ASCII matches every pattern that holds a `?` or a
+ * bracket expression, and every case-insensitive pattern: the shell counts such a name in
+ * bytes (the C locale) or in characters (a UTF-8 locale) and folds case by the locale,
+ * where this walk counts UTF-16 units, so an exact answer could miss a name the shell
+ * matches (`??` is `é` in the C locale and a one-emoji name in a UTF-8 one). Matching
+ * more names only means more paths are judged.
+ */
 export function matchGlobTokens(tokens, name, nocase = false) {
+  if (
+    NON_ASCII.test(name) &&
+    (nocase || tokens.some((tok) => tok.t === T_ANY || tok.t === T_SET))
+  ) {
+    return true;
+  }
   let need = 0;
   for (const tok of tokens) if (tok.t !== T_STAR) need += 1;
   if (need > name.length) return false;
@@ -590,8 +733,14 @@ export function matchGlobTokens(tokens, name, nocase = false) {
 // shell could match).
 export function componentMatcher(comp, opts) {
   const tokens = [];
+  const nocase = Boolean(opts.nocase);
   const lit = (text) => {
-    for (const c of text) for (let i = 0; i < c.length; i += 1) tokens.push({ t: T_LIT, c: c[i] });
+    for (let i = 0; i < text.length; i += 1) {
+      // Under nocase a non-ASCII letter folds by the locale (the Kelvin sign is `k` in a
+      // UTF-8 locale): any one unit, a superset.
+      if (nocase && text.charCodeAt(i) >= 128) tokens.push({ t: T_ANY });
+      else tokens.push({ t: T_LIT, c: text[i] });
+    }
   };
   let wild = false;
   for (let j = 0; j < comp.length; j += 1) {
@@ -614,16 +763,16 @@ export function componentMatcher(comp, opts) {
         lit("[");
         continue;
       }
-      const inner = comp
-        .slice(j + 1, k)
-        .map((x) => x.c)
-        .join("");
+      const units = [];
+      for (const x of comp.slice(j + 1, k)) {
+        for (let u = 0; u < x.c.length; u += 1) units.push({ c: x.c[u], q: Boolean(x.q) });
+      }
+      const inner = units.map((x) => x.c).join("");
       if (inner.includes("[:") || inner.includes("[=") || inner.includes("[.")) {
         wild = true;
         tokens.push({ t: T_ANY });
       } else {
-        const neg = /^[!^]/.test(inner);
-        const set = setToken(neg ? inner.slice(1) : inner, neg);
+        const set = setToken(units, opts);
         if (set) tokens.push(set);
         else {
           wild = true;
@@ -635,7 +784,6 @@ export function componentMatcher(comp, opts) {
   }
   const dot = comp.length > 0 && comp[0].c === ".";
   if (wild) return { test: () => true, dots: true, hidden: true };
-  const nocase = Boolean(opts.nocase);
   return {
     test: (name) => matchGlobTokens(tokens, name, nocase),
     dots: dot,
@@ -785,6 +933,9 @@ export function globOptions(cmd) {
   return {
     dotglob: /\bdotglob\b|\bGLOBIGNORE\b|\bglob_?dots\b|\bsetopt\b/i.test(cmd),
     nocase: /\bnocaseglob\b|\bsetopt\b/i.test(cmd),
+    // `shopt -u globasciiranges`: bash then compares a range by the locale's collation
+    // (`[a-z]` holds `B` in en_US.UTF-8), which is not modelled: a range is any character.
+    collate: /\bglobasciiranges\b|\bsetopt\b/i.test(cmd),
   };
 }
 

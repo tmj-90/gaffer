@@ -18,6 +18,8 @@
 #   D1  DoD rerun lock, a dead-pid lock, three reruns at once, 10 rounds: the reruns never
 #       overlap
 #   D2  DoD rerun lock with no pid yet: left alone (the rerun gives up in time, rc 75)
+#   K1  the take itself is atomic where mkdir(1) is not (a racy stand-in for uutils mkdir)
+#   K2  every lock directory in runner/ is taken through that one take
 #   P1  no bare `rm -rf` takeover of a lock is left in runner/ (lib and bin shell)
 #
 # Run: bash test/lock-takeover-race.test.sh
@@ -149,6 +151,70 @@ echo "== D2: a rerun lock with no pid yet is left alone =="
 ) > "$WORK/d2.out" 2>&1
 grep -q NOPID_KEPT "$WORK/d2.out" && ok "D2 a fresh pid-less rerun lock is not taken (rc 75, nothing ran)" \
   || fail "D2 a fresh pid-less rerun lock was taken: $(cat "$WORK/d2.out")"
+
+echo "== K1: the take is atomic even where mkdir(1) is not =="
+# uutils coreutils' mkdir (the default on Ubuntu 25.10 and later) checks "exists?" and
+# then creates, and exits 0 when the directory appeared in between: two racers both
+# "create" a lock. This stand-in does the same with the window held open, first on PATH
+# for the contenders. Four start together on a path that does not exist.
+REAL_MKDIR="$(command -v mkdir)"
+mkdir -p "$WORK/racybin" "$WORK/k1"
+{
+  printf '%s\n' '#!/bin/sh'
+  printf 'REAL=%s\n' "$REAL_MKDIR"
+  printf '%s\n' 'case "$1" in -*) exec "$REAL" "$@" ;; esac' \
+    '[ "$#" = 1 ] || exec "$REAL" "$@"' \
+    '[ -e "$1" ] && exit 1' \
+    'sleep 0.05' \
+    '"$REAL" "$1" 2>/dev/null || { [ -d "$1" ] && exit 0; exit 1; }' \
+    'exit 0'
+} > "$WORK/racybin/mkdir"
+chmod +x "$WORK/racybin/mkdir"
+{
+  printf '%s\n' '#!/usr/bin/env bash' \
+    '# $1 = mode (take|bare), $2 = lock dir, $3 = barrier, $4 = out' \
+    'source "$RUNNER_DIR/config/10-locks.sh"; unset _GAFFER_CONFIG_PART' \
+    'while [ ! -e "$3" ]; do :; done' \
+    'if [ "$1" = take ]; then _gaffer_lock_take_dir "$2"; else mkdir "$2" 2>/dev/null; fi' \
+    '[ "$?" = 0 ] && echo "won $$" >> "$4"' \
+    'exit 0'
+} > "$WORK/take.sh"
+chmod +x "$WORK/take.sh"
+k1_rounds() {  # <mode> <rounds>: prints "<rounds with more than one winner> <rounds with none>"
+  local mode="$1" rounds="$2" many=0 zero=0 i j n L B O
+  for i in $(seq 1 "$rounds"); do
+    mkdir -p "$WORK/k1/$mode-$i"
+    L="$WORK/k1/$mode-$i/lock"; B="$WORK/k1/$mode-go-$i"; O="$WORK/k1/$mode-out-$i"; : > "$O"
+    for j in 1 2 3 4; do PATH="$WORK/racybin:$PATH" "$WORK/take.sh" "$mode" "$L" "$B" "$O" & done
+    touch "$B"; wait
+    n="$(grep -c won "$O")"
+    [ "$n" -gt 1 ] && many=$((many + 1))
+    [ "$n" -eq 0 ] && zero=$((zero + 1))
+  done
+  echo "$many $zero"
+}
+read -r K_MANY K_ZERO <<<"$(k1_rounds bare 10)"
+[ "$K_MANY" -gt 0 ] && ok "K1 the stand-in is racy: a bare mkdir had more than one winner in $K_MANY of 10 rounds" \
+  || fail "K1 the racy mkdir stand-in never let two in (the check below would prove nothing)"
+read -r K_MANY K_ZERO <<<"$(k1_rounds take 30)"
+[ "$K_MANY" -eq 0 ] && ok "K1 _gaffer_lock_take_dir: one taker at most in every one of 30 rounds" \
+  || fail "K1 two takers held one lock in $K_MANY of 30 rounds"
+[ "$K_ZERO" -eq 0 ] && ok "K1 ...and the lock was taken every round" || fail "K1 nobody took a free lock in $K_ZERO of 30 rounds"
+[ "$(cat "$WORK/k1/take-1/lock/pid" 2>/dev/null)" = "$(sed -n 's/^won //p' "$WORK/k1/take-out-1")" ] \
+  && ok "K1 the pid file names the one winner" || fail "K1 the pid file does not name the winner"
+
+echo "== K2: every lock in runner/ takes its directory through the atomic take =="
+# A lock acquired with a bare mkdir in a loop or a condition is the bug above.
+HITS="$(grep -nE '(while|until|if)[[:space:]]+!?[[:space:]]*mkdir[[:space:]]+"\$' "$RUNNER_DIR"/lib/*.sh "$RUNNER_DIR"/*.sh "$RUNNER_DIR"/config/*.sh "$RUNNER_DIR"/bin/*.sh 2>/dev/null || true)"
+[ -z "$HITS" ] && ok "K2 no lock is taken with a bare mkdir" || fail "K2 a lock is still taken with a bare mkdir: $HITS"
+K2_MISSING=""
+for f in config/10-locks.sh lib/review.sh lib/dod.sh lib/run-state.sh; do
+  grep -q '_gaffer_lock_take_dir "\$' "$RUNNER_DIR/$f" || K2_MISSING="$K2_MISSING $f"
+done
+[ -z "$K2_MISSING" ] && ok "K2 the lock files all call _gaffer_lock_take_dir" || fail "K2 no _gaffer_lock_take_dir call in:$K2_MISSING"
+N_DEF="$(cat "$RUNNER_DIR/config/10-locks.sh" "$RUNNER_DIR/lib/review.sh" "$RUNNER_DIR/lib/dod.sh" "$RUNNER_DIR/lib/run-state.sh" | grep -c 'set -o noclobber; printf')"
+[ "$N_DEF" = 4 ] && ok "K2 the take is the same exclusive pid-file create in each of its four definitions" \
+  || fail "K2 expected four identical definitions of the take, found $N_DEF"
 
 echo "== P1: no bare rm -rf takeover of a mkdir lock left in runner/ =="
 # A takeover is an rm of a lock/claim dir followed by a retry of its mkdir; the guarded

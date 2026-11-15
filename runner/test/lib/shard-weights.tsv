@@ -214,7 +214,7 @@
 5	lite-mode.test.sh
 5	minimalism.test.sh
 5	paid-launch-cap-required.test.sh
-5	safety-hook-redos.test.mjs
+25	safety-hook-redos.test.mjs
 5	safety-hook-tilde.test.mjs
 5	skills-mount.test.sh
 5	spec-freeze-seeds-lore.test.sh

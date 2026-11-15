@@ -187,6 +187,26 @@ const TABLE = {
     }),
     true,
   ],
+  // Review 18 follow-up: a settings file switches every hook off without touching
+  // PreToolUse. Claude Code honours "disableAllHooks" from any settings source, so the
+  // template may only set it to false (which also overrides a true in the user's own
+  // settings: project settings take precedence).
+  "disableAllHooks: true beside a correct entry": [
+    JSON.stringify({ disableAllHooks: true, hooks: { PreToolUse: [entry(ALL)] } }),
+    false,
+  ],
+  'disableAllHooks: "true" (a string)': [
+    JSON.stringify({ disableAllHooks: "true", hooks: { PreToolUse: [entry(ALL)] } }),
+    false,
+  ],
+  "disableAllHooks: false (what the shipped template writes)": [
+    JSON.stringify({ disableAllHooks: false, hooks: { PreToolUse: [entry(ALL)] } }),
+    true,
+  ],
+  "allowManagedHooksOnly: true (drops project hooks)": [
+    JSON.stringify({ allowManagedHooksOnly: true, hooks: { PreToolUse: [entry(ALL)] } }),
+    false,
+  ],
   "not JSON": ['{"hooks": {"PreToolUse": [ ' + HOOK, false],
   "no hooks at all": [JSON.stringify({ permissions: {} }), false],
 };
@@ -274,6 +294,31 @@ for (const [label, [text, expected]] of Object.entries(TABLE)) {
     ok = false;
   }
   assert("a runner dir with a trailing slash: the Node writer accepts the shipped template", ok);
+}
+
+// The shipped template quotes the hook path, so a runner directory with a blank in it
+// still launches (it used to be refused: the shell would split the path), and the
+// command bash runs is still exactly node and the hook.
+{
+  const { renderAgentSettings, validateAgentSettings } = await import("../lib/agent-settings.mjs");
+  const blank = "/opt/my factory/runner";
+  const rendered = renderAgentSettings(shipped, blank);
+  assert(
+    "a runner dir with a blank: the shipped template is accepted",
+    validateAgentSettings(rendered, blank).ok === true,
+  );
+  const cmd = JSON.parse(rendered).hooks.PreToolUse[0].hooks[0].command;
+  const words = spawnSync("bash", ["-c", `set -- ${cmd}; printf '<%s>' "$@"`], {
+    encoding: "utf8",
+  }).stdout;
+  assert(
+    `bash splits the shipped command into node and the hook path (${words})`,
+    words === `<node><${blank}/safety-hook.mjs>`,
+  );
+  assert(
+    "the shipped template sets disableAllHooks to false",
+    JSON.parse(shipped).disableAllHooks === false,
+  );
 }
 
 rmSync(T, { recursive: true, force: true });

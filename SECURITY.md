@@ -688,7 +688,11 @@ a presence boolean, and an argument not on the allowlist is never copied.
   sections of `sandbox-exec-data-plane.test.sh` and `sandbox-exec-agent-config.test.sh`.
   `~/.cache` stays writable for the agent (not for the gates), and tools there that you
   run outside the sandbox (corepack's pnpm and yarn, Playwright's browsers) could be
-  replaced by agent code. Use `docker` where you can.
+  replaced by agent code. The MCP servers' audit logs (`audit.jsonl`,
+  `memory-audit.jsonl`) are not writable from the sandbox, so MCP calls on macOS go
+  unaudited (the servers warn and carry on). The files the agent may write (the
+  databases' `-wal`/`-shm`/`-journal` names, the hook's ledgers) can also be replaced by a
+  symlink, which host processes that open them follow. Use `docker` where you can.
 - **Agent launches still read user-level settings.** No launch passes
   `--setting-sources project,local`: an operator who authenticates through user-level
   settings (`apiKeyHelper`, `env`) would lose it, and that cannot be proved without the

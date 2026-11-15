@@ -273,7 +273,7 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     group: "budget",
     label: "Max ticks / day",
     help:
-      "Per-UTC-day ceiling on factory ticks that did (or may have done) paid work — a " +
+      "Per-UTC-day ceiling on factory ticks that did (or may have done) paid work; a " +
       "no-work poll does not count. It resets with the dollar cap, at midnight UTC. " +
       "A running loop re-reads it before every tick. 0 = unlimited.",
   },

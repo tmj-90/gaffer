@@ -155,6 +155,10 @@ for (const cmd of [
   'read -r c < <(git log -1 --pretty=%B); eval "$c"',
   'read -r c <<< "$(git log -1 --pretty=%B)"; eval "$c"',
   'a=$(git log -1 --pretty=%B) && if true; then eval "$a"; fi',
+  // a data verb that runs a program it is given is not data only
+  "sort --compress-program=wg approve.txt",
+  "sort --compress=wg -k1 'wg approve 1'",
+  "rg --pre=wg 'approve' src",
 ]) {
   each("deny", cmd);
 }

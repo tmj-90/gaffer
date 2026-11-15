@@ -984,8 +984,9 @@ function normalizedCommandViews(cmd, depth = 0) {
 //   - no `$` (variables, $( ), $(( )), $'...'), backtick, backslash, newline, pipe,
 //     here-document or here-string, process substitution, and balanced quotes;
 //   - every segment's program is a plain literal word from DATA_VERBS, or git with a
-//     subcommand from GIT_DATA_SUBCOMMANDS (so no `git -c alias.x='!...'`), and rg
-//     without --pre. None of these runs a word it is given.
+//     subcommand from GIT_DATA_SUBCOMMANDS (so no `git -c alias.x='!...'`), rg
+//     without --pre and sort without --compress-program. None of these runs a word it
+//     is given.
 // Anything else (a shell, eval, xargs, a wrapper, an interpreter, a script, a keyword
 // or group, an assignment) is not data only, and the full rule applies as before.
 // ---------------------------------------------------------------------
@@ -1044,6 +1045,8 @@ function controlPlaneDataOnly(cmd) {
     }
     if (!DATA_VERBS.has(verb)) return false;
     if (verb === "rg" && words.some((w) => /^["']?--pre/.test(w))) return false;
+    // GNU sort runs the program named by --compress-program (`--com` abbreviates it).
+    if (verb === "sort" && words.some((w) => /^["']?--com/.test(w))) return false;
   }
   return true;
 }

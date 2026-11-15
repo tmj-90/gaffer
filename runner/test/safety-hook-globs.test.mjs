@@ -155,6 +155,19 @@ for (const cmd of [
 // with X unset reads the directory src/ and stays allowed.
 each("deny", "read X < list.txt; cat src/$X", bash("read X < list.txt; cat src/$X"));
 each("allow", "cat src/$UNSET_IN_ENV", bash("cat src/$UNSET_IN_ENV"));
+// `$_` is the last argument of the previous command after expansion, not an unset
+// variable: listing a secret is allowed, so `$_` would carry its path to a reader.
+for (const cmd of [
+  "ls $GAFFER_DATA/dashboard-token; cat $_",
+  "ls $GAFFER_DATA/d*; cat $_",
+  'ls $GAFFER_DATA/d* >/dev/null; cat "$_"',
+  "stat $GAFFER_DATA/dashboard-to?en >/dev/null && cat $_",
+  "ls $GAFFER_DATA >/dev/null; cat $_/d*",
+  "ls $MCP_CONFIG; base64 ${_}",
+  "ls $GAFFER_DATA/m* && cp $_ src/leak.txt",
+]) {
+  each("deny", `last-argument $_: ${cmd}`, bash(cmd));
+}
 {
   const r = decide(bash('while read f; do cat "$f"; done < list.txt'), {
     env: { ...process.env, ...PROFILES.roots },

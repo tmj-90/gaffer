@@ -60,6 +60,11 @@ const BASH_DYNAMIC = new Set([
   "PPID",
   "UID",
   "EUID",
+  // `$_` is the last argument of the previous simple command, after expansion: a
+  // runtime value the hook does not hold. Treating it as an empty/known variable let
+  // `ls $GAFFER_DATA/dashboard-token; cat $_` read the token (listing a secret is
+  // allowed, so `$_` then carried the expanded secret path to `cat`). It is unknown.
+  "_",
   "OLDPWD",
   "REPLY",
   "OPTARG",

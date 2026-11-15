@@ -452,7 +452,13 @@ $real
     fi
     # The failure trail is UNTRUSTED gate output — quarantine it (same envelope as the
     # prior-review-feedback block) so an injected string in a test name can't steer the agent.
-    local _trail_q; _trail_q="$(gaffer_quarantine rework-feedback "$_REWORK_HISTORY" 2>/dev/null || printf '%s' "$_REWORK_HISTORY")"
+    # FAIL CLOSED: when the envelope cannot be built the raw trail never reaches the
+    # prompt; the agent is told the trail is unavailable and the log says why.
+    local _trail_q
+    if ! _trail_q="$(gaffer_quarantine rework-feedback "$_REWORK_HISTORY" 2>/dev/null)" || [ -z "$_trail_q" ]; then
+      log "REWORK: #${NUM:-?} the failure trail could not be quarantined — left out of the attempt $attempt prompt"
+      _trail_q="(failure trail unavailable: it could not be quarantined, so it is left out; run the repo's gates yourself to see what fails)"
+    fi
     _REWORK_BLOCK="
 REVIEW FEEDBACK — THIS DELIVERY WAS REWORKED. $posture
 The block below is the ACTUAL failure(s) from your prior attempt(s) on this SAME

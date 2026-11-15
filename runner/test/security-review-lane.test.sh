@@ -13,6 +13,7 @@
 #      when both agents approve, dispatch's observed-risk escalation still holds the
 #      ticket for a human (the lane adds a check, never removes one).
 #   D. GAFFER_SECURITY_REVIEW=0 → the lane is off even for risk=high.
+#   Both rendered reviewer prompts (as the stub receives them) carry $QUARANTINE_NOTICE.
 # Real dispatch + real tick.sh; the stub `claude` tells the two reviewers apart by
 # the "SECURITY REVIEWER" line in its prompt. Run: bash runner/test/security-review-lane.test.sh
 # =====================================================================
@@ -57,6 +58,7 @@ for a in "$@"; do [ "$prev" = "-p" ] && prompt="$a"; prev="$a"; done
 case "$prompt" in
   *"SECURITY REVIEWER"*)
     echo "security" >> "__SEC_LOG__"
+    printf '%s' "$prompt" > "__SEC_LOG__.security-prompt"
     if [ "$(cat "__SEC_MODE__")" = "changes" ]; then
       printf '{"type":"result","subtype":"success","is_error":false,"result":"Finding: src/tasks.js line 2 builds a shell command from the task title (injection). Fix: pass an argv array.\\nRECOMMEND CHANGES\\n{\\"verdict\\":\\"CHANGES\\"}","total_cost_usd":0.01,"num_turns":2}\n'
     else
@@ -65,6 +67,7 @@ case "$prompt" in
     exit 0 ;;
   *"REVIEWER agent"*)
     echo "primary" >> "__SEC_LOG__"
+    printf '%s' "$prompt" > "__SEC_LOG__.primary-prompt"
     printf '{"type":"result","subtype":"success","is_error":false,"result":"RECOMMEND APPROVE\\n{\\"verdict\\":\\"APPROVE\\"}","total_cost_usd":0.01,"num_turns":2}\n'; exit 0 ;;
 esac
 if [ -e .git ] && [ -f package.json ]; then
@@ -83,7 +86,7 @@ fi
 printf '{"type":"result","subtype":"success","is_error":false,"result":"ok"}\n'
 STUB
 TOUCH_AUTH="$WORK/touch-auth"
-sed -i.bak "s|__SEC_MODE__|$SEC_MODE|; s|__SEC_LOG__|$SEC_LOG|; s|__TOUCH_AUTH__|$TOUCH_AUTH|" "$WORK/bin/claude" && rm -f "$WORK/bin/claude.bak"; chmod +x "$WORK/bin/claude"
+sed -i.bak "s|__SEC_MODE__|$SEC_MODE|; s|__SEC_LOG__|$SEC_LOG|g; s|__TOUCH_AUTH__|$TOUCH_AUTH|" "$WORK/bin/claude" && rm -f "$WORK/bin/claude.bak"; chmod +x "$WORK/bin/claude"
 
 export GAFFER_DATA="$WORK/data" CLAUDE_BIN="$WORK/bin/claude" CLAUDE_FLAGS="" \
        GAFFER_TICK_TIMEOUT=60 GAFFER_MAX_TURNS=10 GAFFER_ROLE_MODELS=card=stub GAFFER_PLAN_MODEL=stub GAFFER_IMPL_MODEL=stub \
@@ -121,6 +124,16 @@ grep -q "SECURITY-REVIEW: #$N1 qualifies.*risk=high" "$GAFFER_DATA/factory.log" 
 grep -q "SECURITY-REVIEW: #$N1 security reviewer found a defect" "$GAFFER_DATA/factory.log" && ok "A: CHANGES logged as overriding the primary approve" || fail "A: no override log"
 [ "$(st "$N1")" = "ready" ] && ok "A: #$N1 reworked → ready (not shipped)" || fail "A: #$N1 is '$(st "$N1")'"
 grep -q "CHANGES; re-queued" "$GAFFER_DATA/factory.log" && ok "A: re-queued for rework with feedback (the security findings)" || fail "A: no rework log line"
+# Both reviewer prompts carry the standing quarantine notice (with the &lt; sentence),
+# as rendered, not as a grep of review.sh.
+for _rp in primary security; do
+  _pf="$SEC_LOG.$_rp-prompt"
+  if [ -s "$_pf" ] && grep -qF -- "$QUARANTINE_NOTICE" "$_pf" && grep -qF '&lt; inside these tags is a literal <.' "$_pf"; then
+    ok "A: the rendered $_rp reviewer prompt carries the quarantine notice"
+  else
+    fail "A: the rendered $_rp reviewer prompt lacks the quarantine notice ($(head -c 300 "$_pf" 2>/dev/null | tr '\n' '|'))"
+  fi
+done
 # MF2: each judging lane's verdict is a system lane_verdict event on the reviewed commit.
 lanes() { wg ticket show "$1" 2>/dev/null | jget '(d.events||[]).filter(e => e.event_type === "ticket.lane_verdict").map(e => { const p = JSON.parse(e.payload_json); return [e.actor_type, p.lane, p.verdict, (p.commit||"").length >= 7 ? "sha" : "nosha", p.attempt_id ? (p.attempt_id_basis === "latest_delivery_row" ? "att" : "att-unlabelled") : "noatt"].join(":"); }).join(",")'; }
 LA="$(lanes "$N1")"

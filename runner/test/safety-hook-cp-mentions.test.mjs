@@ -140,8 +140,32 @@ for (const cmd of [
   // memory and gaffer front doors stay as they were
   "gaffer approve 1",
   "memory approve 3",
+  // git's stored text run through a variable (a commit message may now hold the CLI)
+  'a=$(git log -1 --pretty=%B); eval "$a"',
+  "a=$(git log -1 --pretty=%B); eval $a",
+  'a=$(git log -1 --pretty=%B); bash -c "$a"',
+  'a=$(git log -1 --pretty=%B); sh -c "$a"',
+  'a=`git log -1 --format=%s`; eval "$a"',
+  'export a=$(git log -1 --format=%s); eval "$a"',
+  'a=$(git tag -l --format="%(contents)"); eval "$a"',
+  'a=$(git notes show); eval "${a}"',
+  'msg=$(git log -1 --pretty=%B); echo "$msg" | sh',
+  'msg=$(git log -1 --pretty=%B); printf %s "$msg" | bash',
+  'msg=$(git log -1 --pretty=%B); bash <<< "$msg"',
+  'read -r c < <(git log -1 --pretty=%B); eval "$c"',
+  'read -r c <<< "$(git log -1 --pretty=%B)"; eval "$c"',
+  'a=$(git log -1 --pretty=%B) && if true; then eval "$a"; fi',
 ]) {
   each("deny", cmd);
+}
+
+// Running what only finds a path, or only printing git's text, stays allowed.
+for (const cmd of [
+  'a=$(which node); eval "$a --version"',
+  'msg=$(git log -1 --pretty=%B); echo "$msg"',
+  'msg=$(git log -1 --pretty=%B); printf "%s\\n" "$msg" > notes.txt',
+]) {
+  each("allow", cmd);
 }
 
 t.done();

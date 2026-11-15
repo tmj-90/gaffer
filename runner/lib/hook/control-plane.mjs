@@ -594,9 +594,122 @@ function wordSubstitutions(word) {
   return out;
 }
 
+// The words of a segment with quotes, `$(...)` (nested) and backticks kept whole.
+function splitWordsRespectingSubs(text) {
+  const words = [];
+  let cur = "";
+  const n = text.length;
+  let i = 0;
+  const flush = () => {
+    if (cur) words.push(cur);
+    cur = "";
+  };
+  while (i < n) {
+    const c = text[i];
+    if (c === "'" || c === '"' || c === "`") {
+      const close = text.indexOf(c, i + 1);
+      const end = close === -1 ? n : close + 1;
+      cur += text.slice(i, end);
+      i = end;
+      continue;
+    }
+    if (c === "\\") {
+      cur += text.slice(i, i + 2);
+      i += 2;
+      continue;
+    }
+    if ((c === "$" || c === "<" || c === ">") && text[i + 1] === "(") {
+      let depth = 0;
+      let k = i + 1;
+      for (; k < n; k += 1) {
+        if (text[k] === "(") depth += 1;
+        else if (text[k] === ")" && --depth === 0) break;
+      }
+      cur += text.slice(i, k + 1);
+      i = k + 1;
+      continue;
+    }
+    if (/\s/.test(c)) {
+      flush();
+      i += 1;
+      continue;
+    }
+    cur += c;
+    i += 1;
+  }
+  flush();
+  return words;
+}
+
+// The variable names a command assigns from git's stored text (a command substitution
+// that readsGitText, or one the hook cannot parse), so running that variable later is
+// running git's stored text. `a=$(git log -1 --pretty=%B)` taints `a`; so does
+// `read c < <(git log -1 --pretty=%B)`. A substitution that only finds a path/sha
+// (`$(git rev-parse HEAD)`, `$(which node)`) does not taint, exactly as a direct eval of
+// it is allowed.
+function gitTextTaintedVars(cmd) {
+  const tainted = new Set();
+  const taintIf = (name, rhs) => {
+    if (!/^[A-Za-z_]\w*$/.test(name)) return;
+    if (wordSubstitutions(rhs).some((b) => b === "" || readsGitText(b))) tainted.add(name);
+  };
+  for (const seg of pipelineSegments(cmd)) {
+    // Words of the segment with `$(...)`, backticks and quotes kept whole (tokenizeSegment
+    // splits a substitution on its inner spaces, which would read `$(which node)` as an
+    // unbalanced `$(which`).
+    let words = splitWordsRespectingSubs(seg.text.trim());
+    while (words.length && STORED_TEXT_LEADS.has(shellWord(words[0]))) words = words.slice(1);
+    if (words.length && /^\(/.test(words[0]) && !/^\$\(/.test(words[0])) {
+      const stripped = words[0].replace(/^\(+/, "");
+      words = stripped ? [stripped, ...words.slice(1)] : words.slice(1);
+    }
+    let i = 0;
+    if (["export", "declare", "local", "readonly", "typeset"].includes(shellWord(words[0] ?? ""))) {
+      i = 1;
+      while (i < words.length && shellWord(words[i]).startsWith("-")) i += 1;
+    }
+    // Leading assignments, alone or in front of a command.
+    for (; i < words.length; i += 1) {
+      const m = /^([A-Za-z_]\w*)\+?=([\s\S]*)$/.exec(words[i]);
+      if (!m) break;
+      taintIf(m[1], m[2]);
+    }
+    // `read [opts] NAME... < <(git …)` or `read … <<< "$(git …)"`.
+    const eff = words.length ? resolveEffectiveTokens(words) : null;
+    if (eff && basename(shellWord(eff.verb)) === "read") {
+      const psub = /<[ \t]*<\(((?:[^()]|\([^()]*\))*)\)/.exec(seg.text);
+      const here = /<<<[ \t]*(\S+)/.exec(seg.text);
+      const feedsGit =
+        (psub && readsGitText(psub[1])) ||
+        (here && wordSubstitutions(here[1]).some((b) => b === "" || readsGitText(b)));
+      if (feedsGit) {
+        for (const w of eff.rest.slice(1)) {
+          const name = shellWord(w);
+          if (/^[A-Za-z_]\w*$/.test(name)) tainted.add(name);
+        }
+      }
+    }
+  }
+  return tainted;
+}
+
+// The variable names a word references through `$NAME` / `${NAME}` (single-quoted spans
+// are literal, so nothing there expands).
+function wordVarRefs(word) {
+  const out = new Set();
+  for (const m of String(word)
+    .replace(/'[^']*'/g, "")
+    .matchAll(/\$\{?([A-Za-z_]\w*)\}?/g)) {
+    out.add(m[1]);
+  }
+  return out;
+}
+
 function storedTextExecutionReason(cmd, depth = 0) {
   if (depth > MAX_VIEW_DEPTH || typeof cmd !== "string") return null;
   const segs = pipelineSegments(cmd);
+  const tainted = gitTextTaintedVars(cmd);
+  const refsTainted = (word) => [...wordVarRefs(word)].some((v) => tainted.has(v));
   for (let s = 0; s < segs.length; s += 1) {
     let words = tokenizeSegment(segs[s].text.trim());
     while (words.length && STORED_TEXT_LEADS.has(shellWord(words[0]))) words = words.slice(1);
@@ -632,9 +745,20 @@ function storedTextExecutionReason(cmd, depth = 0) {
             return `eval of a command substitution runs text the hook cannot read (${a.slice(0, 60)}); run the command itself`;
           }
         }
+        if (refsTainted(a)) {
+          return `eval of a variable that holds git's stored text (${a.slice(0, 60)}): a commit message, note or tag is not a command; run the command itself`;
+        }
       }
     }
     const plainArgs = stripRedirects(args);
+    // A shell running a `-c` body that is, or references, git's stored text
+    // (`a=$(git log -1 --pretty=%B); bash -c "$a"`).
+    if (SHELL_NAMES.has(prog)) {
+      const ci = plainArgs.findIndex((a) => /^-[A-Za-z]*c[A-Za-z]*$/.test(shellWord(a)));
+      if (ci !== -1 && refsTainted(plainArgs[ci + 1] ?? "")) {
+        return `a shell running a variable that holds git's stored text (${shellWord(plainArgs[ci + 1] ?? "").slice(0, 60)}); run the command itself`;
+      }
+    }
     const readsStdin =
       (SHELL_NAMES.has(prog) &&
         !plainArgs.some((a) => /^-[A-Za-z]*c[A-Za-z]*$/.test(shellWord(a))) &&
@@ -644,14 +768,17 @@ function storedTextExecutionReason(cmd, depth = 0) {
         /^(?:\/dev\/stdin|-)$/.test(shellWord(plainArgs[0] ?? "")));
     if (readsStdin) {
       if (segs[s].sep === "|" && s > 0) {
-        if (readsGitText(segs[s - 1].text)) {
+        // Upstream prints git's stored text, directly or by echoing a tainted variable
+        // (`msg=$(git log -1 --pretty=%B); echo "$msg" | sh`).
+        const up = segs[s - 1].text;
+        if (readsGitText(up) || tokenizeSegment(up.trim()).some((w) => refsTainted(w))) {
           return `a shell reading its program from git's stored text (a commit message is not a command); run the command itself`;
         }
       }
       const here = eff.rest.findIndex((w) => /^\d*<<<$/.test(w) || /^\d*<<</.test(w));
       if (here !== -1) {
         const word = /^\d*<<<$/.test(eff.rest[here]) ? (eff.rest[here + 1] ?? "") : eff.rest[here];
-        if (wordSubstitutions(word).some((b) => b === "" || readsGitText(b))) {
+        if (wordSubstitutions(word).some((b) => b === "" || readsGitText(b)) || refsTainted(word)) {
           return `a shell reading its program from a here-string that expands something (${word.slice(0, 60)}); run the command itself`;
         }
       }

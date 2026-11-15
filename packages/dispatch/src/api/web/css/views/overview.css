@@ -573,6 +573,14 @@
   .prog.card > .panel-head.block {
     margin: 0;
   }
+  /* A programme card has no padding of its own (its rows run edge to edge), so a
+     plain head and a table carry the card's inset themselves. */
+  .prog.card > .panel-head:not(.block) {
+    padding: var(--s3) var(--s4) var(--s2);
+  }
+  .prog.card > .dt-wrap {
+    margin: 0 var(--s4) var(--s4);
+  }
   .prog .quiet {
     padding: var(--s4);
     color: var(--ink-2);

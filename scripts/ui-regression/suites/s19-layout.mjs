@@ -40,9 +40,9 @@ const VIEWS = (w, t) =>
 
 // The block budget (audit A-02, A-03): a view leads with at most two block heads
 // (claret, ink, sky or red panel heads, and the Tactics board's dark head), and a
-// claret head, "needs you", sits only on a section with something to act on. Health,
-// Review and Ticket are left to the packages that own them until they merge.
-const BLOCK_BUDGET_SKIP = new Set(["health", "review/:id", "ticket"]);
+// claret head, "needs you", sits only on a section with something to act on. Every
+// view is held to it (Health, Review and Ticket too, since their packages merged).
+const BLOCK_BUDGET_SKIP = new Set([]);
 function blockAudit() {
   const heads = [...document.querySelectorAll("#app .panel-head.block, #app .tactics-head")].filter(
     (h) => h.getBoundingClientRect().width > 0,
@@ -58,6 +58,31 @@ function blockAudit() {
     })
     .map(said);
   return { heads: heads.map(said), idleClaret };
+}
+
+// A head or a table that sits straight in a card keeps the card's inset: its first
+// text starts at least 8 px inside the card's border (a programme card has no padding
+// of its own, so a plain level-2 head once ran flush against the frame).
+function insetAudit() {
+  const out = [];
+  for (const c of document.querySelectorAll("#app .card")) {
+    const cb = c.getBoundingClientRect();
+    if (!cb.width) continue;
+    const bl = parseFloat(getComputedStyle(c).borderLeftWidth) || 0;
+    for (const k of c.querySelectorAll(":scope > .panel-head, :scope > .dt-wrap")) {
+      if (!k.getBoundingClientRect().width) continue;
+      const walk = document.createTreeWalker(k, NodeFilter.SHOW_TEXT, {
+        acceptNode: (n) => (n.textContent.trim() ? 1 : 3),
+      });
+      const tx = walk.nextNode();
+      if (!tx) continue;
+      const rg = document.createRange();
+      rg.selectNodeContents(tx);
+      const inset = Math.round(rg.getBoundingClientRect().left - cb.left - bl);
+      if (inset < 8) out.push(`"${tx.textContent.trim().slice(0, 24)}" ${inset}px`);
+    }
+  }
+  return out;
 }
 
 /** Relative luminance contrast of two rgb() strings (alpha ignored). */
@@ -85,6 +110,7 @@ export default async function s19(t, L) {
   // ── the sweep: four widths, every view ────────────────────────────────────
   const budget = [];
   let budgetViews = 0;
+  const flush = [];
   for (const [vw, vh] of [
     [375, 812],
     [768, 1024],
@@ -104,6 +130,10 @@ export default async function s19(t, L) {
         .catch(() => null);
       await L.sleep(900);
       problems.push(...(await L.layoutProblems(pg, label)));
+      if (vw === 375 || vw === 1280) {
+        const f = await pg.evaluate(insetAudit);
+        if (f.length) flush.push(`${label}@${vw}: ${f.join(", ")}`);
+      }
       if (vw === 1280 && !BLOCK_BUDGET_SKIP.has(label)) {
         const b = await pg.evaluate(blockAudit);
         if (b.heads.length > 2)
@@ -168,6 +198,14 @@ export default async function s19(t, L) {
     ? t.bad(`block budget @1280: ${budget.join("; ").slice(0, 1200)}`)
     : t.ok(
         `block budget @1280: ${budgetViews} views lead with at most two block heads, and every claret head sits on a section with an action`,
+      );
+
+  flush.length
+    ? t.bad(
+        `card inset @375 and @1280: heads or tables flush with the frame: ${flush.join("; ").slice(0, 1200)}`,
+      )
+    : t.ok(
+        "card inset @375 and @1280: every head and table in a card starts 8 px or more inside its frame",
       );
 
   // ── Settings at 320 px with the dial raised (P1 review follow-up) ─────────

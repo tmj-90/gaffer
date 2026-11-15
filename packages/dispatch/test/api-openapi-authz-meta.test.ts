@@ -217,6 +217,7 @@ function queryVariants(path: string): string[] {
   if (path === "/repositories") q.push("?hidden=1", "?hidden=only");
   if (path === "/tickets" || path === "/api/board") q.push(`?repo=${ids.repo}`);
   if (path === "/tickets/details") q.push(`?ids=${ids.ticket}`);
+  if (path === "/api/health") q.push("?view=summary", "?view=summary&window_days=7");
   return q;
 }
 

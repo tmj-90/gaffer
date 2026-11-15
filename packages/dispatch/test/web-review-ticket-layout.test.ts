@@ -119,6 +119,7 @@ type World = {
   evidence?: unknown[];
   anns?: unknown[];
   emptyDiff?: boolean;
+  healthMode?: "hang" | "fail";
 };
 let world: World;
 
@@ -129,6 +130,10 @@ function stubFetch(): void {
       const url = String(input);
       const t = world.ticket;
       let body: unknown;
+      if (url.includes("/api/health") && world.healthMode === "hang")
+        return new Promise<Response>(() => {});
+      if (url.includes("/api/health") && world.healthMode === "fail")
+        return new Response("{}", { status: 500, headers: { "content-type": "application/json" } });
       if (url.includes("/api/health")) body = world.health;
       else if (url.includes("status=in_review")) body = { tickets: world.queue };
       else if (url.includes("/dossier"))
@@ -284,6 +289,42 @@ describe("web: the phone sign-off bar says what stands before Approve", () => {
     expect(phone).toMatch(/padding-bottom:\s*max\(150px,\s*calc\(var\(--rv-bar-h/);
     expect(phone).toMatch(/\.toast\s*\{\s*bottom:\s*calc\(var\(--rv-bar-h/);
   });
+});
+
+// The factory norms (typical cost, queue wait, cycle median) come from a background
+// health read. A slow or failing read must never hold up or break the sign-off: Review
+// renders, Approve arms and the ticket page draws its head while it hangs or fails.
+describe("web: a slow or failing health read never holds up the sign-off", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    document.body.innerHTML = "";
+  });
+  for (const mode of ["hang", "fail"] as const) {
+    it(`Review signs off while the health read ${mode}s`, async () => {
+      vi.resetModules();
+      world = { queue: [T], ticket: T, health: HEALTH, healthMode: mode };
+      stubFetch();
+      mount("#/review");
+      await boot();
+      const approve = app().querySelector("button.signoff-btn") as HTMLButtonElement;
+      expect(approve, "Approve is drawn").toBeTruthy();
+      expect(approve.disabled).toBe(false);
+      approve.click();
+      expect(approve.classList.contains("btn-armed"), "the first click arms").toBe(true);
+      // No typical cost is claimed when the norms never came.
+      expect(app().textContent).not.toMatch(/typical \$/);
+    });
+    it(`the ticket page draws its head while the health read ${mode}s`, async () => {
+      vi.resetModules();
+      world = { queue: [], ticket: T, health: HEALTH, healthMode: mode };
+      stubFetch();
+      mount(`#/ticket/${T.id}`);
+      await boot();
+      expect(app().querySelector(".tk-head.ticket-head")?.firstElementChild?.textContent).toBe(
+        "Clear done tasks",
+      );
+    });
+  }
 });
 
 describe("web: Review leads with the decision", () => {

@@ -11,7 +11,7 @@ import { Buffer } from "node:buffer";
 import { appendFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { normalizedCommandViews } from "./control-plane.mjs";
+import { controlPlaneDataOnly, normalizedCommandViews } from "./control-plane.mjs";
 import { DENY_COMMANDS } from "./deny-list.mjs";
 import { factoryExecutionReason } from "./factory.mjs";
 import {
@@ -268,7 +268,13 @@ function checkCommand(cmd) {
   // once; every other rule (and the install rule itself, when not a scoped
   // bootstrap install) stays in force.
   const bootDir = bootstrapInstallDir();
-  for (const rule of DENY_COMMANDS) {
+  // A rule with a command-position form (cmdRe: the control-plane CLIs) is judged by it
+  // only when the whole command is provably data (lib/hook/control-plane.mjs), so a
+  // commit message or a grep pattern that names the CLI is not refused; every other
+  // command is judged by the rule's full form.
+  const dataOnly = controlPlaneDataOnly(cmd);
+  const rules = DENY_COMMANDS.map((r) => (r.cmdRe && dataOnly ? { ...r, re: r.cmdRe } : r));
+  for (const rule of rules) {
     // On a bootstrap tick the install-tagged rules are judged per segment below.
     if (rule.install && bootDir) continue;
     if (rule.re.test(cmd)) block(`${rule.why} — "${cmd.slice(0, 120)}"`);
@@ -280,7 +286,7 @@ function checkCommand(cmd) {
   for (const why of normalised.reasons) block(`${why} — "${cmd.slice(0, 120)}"`);
   for (const view of normalised.views) {
     if (view === cmd) continue;
-    for (const rule of DENY_COMMANDS) {
+    for (const rule of rules) {
       // Install rules are judged on the raw text (and per segment on a bootstrap tick);
       // a rule marked `spellings: false` matches mentions anywhere and is raw-only too.
       if (rule.install || rule.spellings === false) continue;

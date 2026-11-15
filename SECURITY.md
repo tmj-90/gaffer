@@ -115,6 +115,13 @@ always gets the same decision. It:
   their own. The words that name what a privileged CLI does (`wg`, `dispatch`, `fg`,
   `crew`, `gaffer`, `memory`) must be plain literals; a `$(...)`, an unassigned
   variable, a glob, or `xargs`/`parallel`/`find -exec` filling one in is refused.
+  A command proven to be data only (plain `git commit` / `log` / `show`, `echo`,
+  `grep`, `cat` and the like, with no variable, substitution, pipe, backslash, newline
+  or here-document) is judged with the CLI in command position, so a commit message
+  or a search that names it is not refused; running git's stored text as a command
+  (`$(git log -1 --format=%s)`, `git log ... | sh`, `eval "$(git ...)"`) is refused. A
+  script file the agent wrote and then runs (`bash x.sh`, `cat x.sh | bash`) is as
+  invisible to the hook as a file the Write tool wrote (see the residual limits);
 
 It fails closed: when it cannot prove a target is in scope, it blocks. Every hook
 entry in the settings template carries `"onFailure": "block"` and a 60-second

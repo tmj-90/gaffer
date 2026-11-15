@@ -296,8 +296,12 @@ each("allow", "Glob in the worktree", tool("Glob", { pattern: "src/*.ts", path: 
       GAFFER_BOOTSTRAP_DIR: map["{{W}}"],
     },
   };
+  // The one denial the work set out to lift (F2): a note that only names a CLI, the
+  // same shape as `echo "fg then approve" > notes.txt`, the auditor's own "allow".
+  const LIFTED = new Set(["lg35"]);
   let checked = 0;
   for (const [id, , , payload] of PAYLOADS) {
+    if (LIFTED.has(id)) continue;
     const input = Object.fromEntries(Object.entries(payload.input).map(([k, v]) => [k, fill(v)]));
     for (const p of DENIED_BEFORE[id] ?? []) {
       const r = decide(

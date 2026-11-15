@@ -1369,13 +1369,8 @@ async function renderFloor() {
         ? `${money(m.today)} of the ${moneyW(m.budget)} wage bill`
         : `${money(m.today)} wage bill today`,
   ];
-  wrap.appendChild(
-    viewHead(
-      "Floor",
-      "The factory floor: every ticket as a parcel moving station to station, every agent a robot on the one it holds.",
-    ),
-  );
-  wrap.appendChild(el("p", { class: "fl-facts" }, facts.join(" · ")));
+  // The subtitle is the facts line; what the drawing is goes in its legend (A-14).
+  wrap.appendChild(viewHead("Floor", facts.join(" · ")));
 
   // The stream line lives outside the data signature: it follows the tracker.
   const streamP = el("p", { class: "fl-stream", hidden: true });
@@ -1421,6 +1416,37 @@ async function renderFloor() {
   const tip = el("div", { class: "fl-tip", "aria-hidden": "true", hidden: true });
   const stage = el("div", { class: "fl-stage" }, [svg, tip]);
   wireFloorTips(stage, tip);
+  // On a phone the drawing is a figure you tap to zoom (A-53): at the screen's width its
+  // labels are a few pixels high, so a tap draws it at its own size, scrolling sideways
+  // inside the figure. The button only shows at phone width.
+  const zoom = el(
+    "button",
+    { class: "btn small fl-zoom", type: "button", "aria-pressed": "false" },
+    "Zoom the drawing",
+  );
+  zoom.addEventListener("click", () => {
+    const on = !stage.classList.contains("is-zoomed");
+    stage.classList.toggle("is-zoomed", on);
+    zoom.setAttribute("aria-pressed", String(on));
+    // A zoomed drawing scrolls: a focusable, named region, so keys can scroll it too.
+    if (on) {
+      stage.setAttribute("tabindex", "0");
+      stage.setAttribute("role", "region");
+      stage.setAttribute("aria-label", "The floor, drawn at full size");
+      stage.scrollLeft = 0;
+    } else {
+      stage.removeAttribute("tabindex");
+      stage.removeAttribute("role");
+      stage.removeAttribute("aria-label");
+    }
+  });
+  const figure = el("figure", { class: "fl-figure" }, [
+    stage,
+    el("figcaption", { class: "fl-zoom-bar" }, [zoom]),
+  ]);
+  // Touch has no hover: say "tap" there (A-53).
+  const touch =
+    typeof window.matchMedia === "function" && window.matchMedia("(hover: none)").matches;
 
   // The key and the text of the floor: stations in lifecycle order with their
   // tickets, and who is on the benches (shirt, name, ticket).
@@ -1493,14 +1519,16 @@ async function renderFloor() {
           "The floor",
           el("span", { class: "panel-aux" }, `${m.open.length} in play`),
         ]),
-        el(
-          "p",
-          { class: "fl-note" },
-          "The line runs from the drawing office to the lorry; the jam bay is off it. Hover or focus a parcel for its ticket.",
-        ),
       ]),
-      stage,
-      el("div", { class: "fl-legend" }, [key, el("div", { class: "fl-lists" }, [stations, bench])]),
+      figure,
+      el("div", { class: "fl-legend" }, [
+        el("p", { class: "fl-note" }, [
+          "Every ticket is a parcel moving station to station, every agent a robot on the one it holds. The line runs from the drawing office to the lorry; the jam bay is off it. ",
+          touch ? "Tap a parcel to open its ticket." : "Hover or focus a parcel for its ticket.",
+        ]),
+        key,
+        el("div", { class: "fl-lists" }, [stations, bench]),
+      ]),
     ]),
   );
 

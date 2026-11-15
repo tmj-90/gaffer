@@ -134,7 +134,8 @@ function opMatches(ops, op) {
 
 function filterMatches(f, path) {
   if (f.kind === "literal") return path === f.value;
-  if (f.kind === "subpath") return path === f.value || path.startsWith(`${f.value.replace(/\/$/, "")}/`);
+  if (f.kind === "subpath")
+    return path === f.value || path.startsWith(`${f.value.replace(/\/$/, "")}/`);
   return f.value.test(path);
 }
 

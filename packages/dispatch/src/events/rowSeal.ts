@@ -140,19 +140,22 @@ function changedFacts(signedJson: string, liveJson: string): string[] {
 }
 
 /**
- * The chain verifies up to `seq`, as far as a sealed row of `entityType` depends on it.
+ * The chain verifies up to `seq`, as far as a sealed row's lifecycle depends on it.
  * A REST server checks a principal on every request, and walking a 100k-event log from
  * genesis costs most of a second, so the walk is INCREMENTAL per database handle:
  *  - the first check walks the whole log from genesis (as {@link chainVerifiesUpTo}) and
- *    remembers the verified head and every row of `entityType` (rowid and hash);
+ *    remembers the verified head and every LIFECYCLE row of the subject's entity type
+ *    (its `entityType` and one of its `lifecycleEvents`; rowid and hash), so a part B
+ *    subject on `ticket` events remembers its few risk events, not every ticket event;
  *  - a later check walks only the rows appended since, linking from the remembered head;
  *  - when another connection has committed since (PRAGMA data_version moved), it first
- *    re-reads the remembered head and re-hashes every remembered row of `entityType`: a
+ *    re-reads the remembered head and re-hashes every remembered lifecycle row: a
  *    rechain changes the head, and a lifecycle event deleted or rewritten in place (a
  *    revocation removed or turned into something else, without a rechain) is missing or no
  *    longer hashes to what was verified. Any doubt falls back to the full walk.
- * A row of another entity type rewritten in place without a rechain is not re-read here:
- * it decides nothing about a sealed row (the landing check walks the whole log itself).
+ * Any other row rewritten in place without a rechain is not re-read here: it decides
+ * nothing about a sealed row (turned INTO a lifecycle event, it is newer than the seal's
+ * event and supersedes it: refused). The landing check walks the whole log itself.
  */
 interface ChainMemo {
   dataVersion: string;
@@ -160,7 +163,7 @@ interface ChainMemo {
   /** The verified head (ok only). */
   seq: number;
   hash: string;
-  /** Every verified row of the entity type: rowid -> hash. */
+  /** Every verified lifecycle row: rowid -> hash. */
   rows: Map<number, string>;
 }
 const CHAIN_MEMO = new WeakMap<object, Map<string, ChainMemo>>();
@@ -175,13 +178,16 @@ function dataVersion(db: SealDb): string {
   return String(dv ? Object.values(dv)[0] : "");
 }
 
-/** Walk rows (from, to] linking from `prev`; record rows of `entityType`. Null: broken. */
+/** The lifecycle rows a chain memo remembers. */
+type Tracked = Pick<RowSealSubject, "entityType" | "lifecycleEvents">;
+
+/** Walk rows (from, to] linking from `prev`; record the lifecycle rows. Null: broken. */
 function walk(
   db: SealDb,
   from: number,
   to: number,
   prev: string,
-  entityType: string,
+  track: Tracked,
   rows: Map<number, string>,
 ): { seq: number; hash: string } | null {
   const list = db
@@ -196,7 +202,12 @@ function walk(
     if (row.prev_hash !== expected || eventHash(row.prev_hash, row) !== row.hash) return null;
     expected = row.hash;
     last = Number(row.seq);
-    if (String(row.entity_type) === entityType) rows.set(last, row.hash);
+    if (
+      String(row.entity_type) === track.entityType &&
+      track.lifecycleEvents.includes(String(row.event_type))
+    ) {
+      rows.set(last, row.hash);
+    }
   }
   if (last !== to) return null;
   return { seq: last, hash: expected };
@@ -208,16 +219,16 @@ export function rowSealFullWalks(): number {
   return fullWalks;
 }
 
-function fullWalk(db: SealDb, seq: number, entityType: string, dv: string): ChainMemo {
+function fullWalk(db: SealDb, seq: number, track: Tracked, dv: string): ChainMemo {
   fullWalks += 1;
   const rows = new Map<number, string>();
-  const head = walk(db, 0, seq, EVENT_CHAIN_GENESIS, entityType, rows);
+  const head = walk(db, 0, seq, EVENT_CHAIN_GENESIS, track, rows);
   return head
     ? { dataVersion: dv, ok: true, seq: head.seq, hash: head.hash, rows }
     : { dataVersion: dv, ok: false, seq: 0, hash: "", rows };
 }
 
-/** The remembered head and rows of the entity type are still exactly as verified. */
+/** The remembered head and lifecycle rows are still exactly as verified. */
 function memoStillHolds(db: SealDb, memo: ChainMemo, foreignWrite: boolean): boolean {
   const head = db.prepare("SELECT hash FROM work_events WHERE rowid = ?").get(memo.seq) as
     { hash: string | null } | undefined;
@@ -232,34 +243,35 @@ function memoStillHolds(db: SealDb, memo: ChainMemo, foreignWrite: boolean): boo
   return true;
 }
 
-function chainOkUpTo(db: SealDb, seq: number, entityType: string): boolean {
+function chainOkUpTo(db: SealDb, seq: number, track: Tracked): boolean {
+  const key = `${track.entityType}\n${[...track.lifecycleEvents].sort().join(",")}`;
   const dv = dataVersion(db);
   let perDb = CHAIN_MEMO.get(db);
   if (!perDb) {
     perDb = new Map();
     CHAIN_MEMO.set(db, perDb);
   }
-  const memo = perDb.get(entityType);
+  const memo = perDb.get(key);
   let next: ChainMemo;
   if (!memo) {
-    next = fullWalk(db, seq, entityType, dv);
+    next = fullWalk(db, seq, track, dv);
   } else if (!memo.ok) {
     // A broken chain stays broken until the file changes under another connection.
-    next = memo.dataVersion === dv ? memo : fullWalk(db, seq, entityType, dv);
+    next = memo.dataVersion === dv ? memo : fullWalk(db, seq, track, dv);
   } else if (!memoStillHolds(db, memo, memo.dataVersion !== dv)) {
-    next = fullWalk(db, seq, entityType, dv);
+    next = fullWalk(db, seq, track, dv);
   } else if (seq <= memo.seq) {
     // Already verified: the row at `seq` must still be there (a check that names it).
     const at = db.prepare("SELECT 1 AS x FROM work_events WHERE rowid = ?").get(seq);
-    next = at ? { ...memo, dataVersion: dv } : fullWalk(db, seq, entityType, dv);
+    next = at ? { ...memo, dataVersion: dv } : fullWalk(db, seq, track, dv);
   } else {
     const rows = new Map(memo.rows);
-    const head = walk(db, memo.seq, seq, memo.hash, entityType, rows);
+    const head = walk(db, memo.seq, seq, memo.hash, track, rows);
     next = head
       ? { dataVersion: dv, ok: true, seq: head.seq, hash: head.hash, rows }
-      : fullWalk(db, seq, entityType, dv);
+      : fullWalk(db, seq, track, dv);
   }
-  perDb.set(entityType, next);
+  perDb.set(key, next);
   return next.ok && next.seq >= seq;
 }
 
@@ -392,7 +404,7 @@ function verifyRowSealInner(
       detail: `the event log no longer holds event ${anchor.seq} as this factory recorded it outside the database (rows were deleted or rewritten; a revocation may have been removed)`,
     };
   }
-  if (!chainOkUpTo(db, Math.max(anchor.seq, Number(ev.seq)), subject.entityType)) {
+  if (!chainOkUpTo(db, Math.max(anchor.seq, Number(ev.seq)), subject)) {
     return {
       ok: false,
       failure: "chain",

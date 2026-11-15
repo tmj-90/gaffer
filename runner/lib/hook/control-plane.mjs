@@ -90,7 +90,7 @@ const CP_SINGLE_VERBS = new Set([
   "human-release",
 ]);
 const CP_PAIRS = [
-  ["principal", /^(?:create|revoke)$/],
+  ["principal", /^(?:create|revoke|resign)$/],
   ["decisions", /^resolve$/],
   ["agent", /^rename$/],
   ["club", /^set$/],

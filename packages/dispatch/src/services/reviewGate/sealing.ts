@@ -6,7 +6,7 @@
 import type { Ticket } from "../../domain/types.js";
 import {
   GateKeyError,
-  routedApprovalPins,
+  routingApproval,
   sealApproval,
   sealTesterPass,
   verifyLandingActs,
@@ -39,19 +39,20 @@ export function sealApprovalEvent(
   ticket: Ticket,
   eventId: string,
   pins: readonly ApprovalPin[] | "routed",
+  /** The principal the approval was made through (null: none); a routed one carries its router's. */
+  principal: string | null = null,
 ): void {
   try {
+    const routed =
+      pins === "routed" ? routingApproval(internals.db, internals.gateKeyring, ticket.id) : null;
     sealApproval(
       internals.db,
       internals.gateKeyring,
       eventId,
       ticket.id,
       internals.clock.now(),
-      named(
-        pins === "routed"
-          ? routedApprovalPins(internals.db, internals.gateKeyring, ticket.id)
-          : pins,
-      ),
+      named(pins === "routed" ? (routed?.pins ?? []) : pins),
+      pins === "routed" ? (routed?.principal ?? null) : principal,
     );
   } catch (e) {
     refuseKey(e);

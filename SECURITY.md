@@ -61,7 +61,7 @@ Test files are under `runner/test/` (`.sh`, `.mjs`) or `packages/*/test/` (`.ts`
 | Planning agents and scout | Read-only tool sets, safety-hook settings verified before spawn | `security-md-planning-agents.test.mjs`, `scout-gather.test.sh` | |
 | Replay manifests and experiments | Manifests hold ids, commits, settings and hashes, never prompt text or credentials (mode 600, 16 KiB cap); the experiment runner is denied to agents in every launch form and its live mode needs a hard USD cap | `replay-manifest.test.sh`, `eval-experiment.test.sh`, `safety-hook-spelling.test.mjs` | |
 | Command worker | Runs only inside the `docker` sandbox with the bridge | `worker-command.test.sh` | Turn and tool caps are hints |
-| Dashboard and API | Bearer token on every data request, loopback by default, named principals with scopes | `api-auth.test.ts`, `api-auth-loopback-hardening.test.ts`, `api-principal-scopes.test.ts` | No TLS; a tokenless CLI is operator trust |
+| Dashboard and API | Bearer token on every data request, loopback by default, named principals with scopes, each signed with the factory key | `api-auth.test.ts`, `api-auth-loopback-hardening.test.ts`, `api-principal-scopes.test.ts`, `principal-seal.test.ts`, `landing-principal-seal.test.ts` | No TLS; a tokenless CLI is operator trust |
 | Claims and logs | Claim tokens stored as hashes; hash-chained event log; content-redacted audit logs | `m2-claims.test.ts`, `event-chain.test.ts`, `audit.test.ts` | The chain has no key |
 | Budget | A live run needs a dollar cap; caps reserved atomically; only the CLI can report a usage limit | `budget-admission.test.sh`, `lifetime-budget-gate.test.sh`, `usage-limit-detect.test.mjs` | One long call can overshoot |
 | Notifications | SSRF policy, redacted bodies, URLs never returned | `notify.test.ts` | Endpoints you choose |
@@ -323,6 +323,72 @@ insert an approval and recompute a consistent chain, and every landing path acte
     caller) and the tokenless operator CLI (`wg ticket tester-pass --as system`, `wg
     review approve`), which signs for whoever runs it on the host. Run without an OS
     sandbox only inside a VM or container you trust.
+
+### Signed principals
+
+Signed gate events protect the acts (an approval, a tester verdict) and the event chain.
+They did not protect the rows that decide who may act: a process that could write the
+sqlite file (on the macOS sandbox the in-sandbox MCP servers write it by design) inserted
+an `api_principals` row with a token hash it chose, `admin` and unscoped, called the
+loopback REST API with that token, and the server sealed a real approval for it. Denying
+the operator's token file to the sandbox did not help: the attacker never needed it.
+
+- **What is signed.** Every principal row carries a seal in `row_seals`: HMAC-SHA256 under
+  the factory key over its identity and authority (id, name, token hash, capability, actor
+  type and id, repo and ticket scope, created_at, created_by) and the id and chain hash of
+  the event that last set its state (`principal.created`, or `principal.resigned`), so the
+  seal is bound to its place in the log. `events/rowSeal.ts` is generic: the autonomy
+  policy and a ticket's risk level are meant to use it next.
+- **Verified at every decision point, every time.** The REST auth pipeline, the CLI's
+  `GAFFER_PRINCIPAL_TOKEN` / `--as-principal` path, the live event feed's per-write
+  re-check and a person's tester verdict (re-read inside its transaction) all go through
+  one check: the MAC must verify over the row as it is now (a swapped token hash, a raised
+  capability, a widened scope or another row's seal copied over is refused), the bound
+  event must be on record and be the row's latest lifecycle event, and the event log must
+  still hold the head the host anchored outside the database. A row without a valid seal
+  is refused exactly like an unknown token (401, or the CLI's UNAUTHORIZED), the REST
+  server logs it once, and `dispatch doctor` names it: "principal <name> is not signed by
+  this factory: it was created before signing, restored from a backup, or written outside
+  the factory". Verification never creates a key or a seal; with the key gone every
+  principal is refused. The agent-facing MCP server holds no key and can neither verify
+  nor sign.
+- **Revocation stays revoked.** Revoking writes `principal.revoked` and retires the seal in
+  the same transaction. Flipping `revoked_at` back to NULL, restoring a copy of the old
+  seal, or both, is refused: the revocation event supersedes the seal. Deleting the
+  revocation event as well breaks the chain up to the anchored head (or the anchored row
+  itself), as a removed revocation of an approval does.
+- **Who signs.** Only the trusted host paths that create a principal today (the shared
+  operator token over REST, the operator CLI) and the re-sign below. A principal token,
+  even an admin's, may not create, revoke or re-sign principals, and the safety hook
+  refuses `principal create|revoke|resign` from an agent's shell.
+- **Landing.** An approval's seal now binds the principal it was made through (null for
+  the operator, the runner and agents), and every landing (`landing-begin`,
+  `record-landing`, `mark-merged`, `runner/lib/tester-binding.mjs`) refuses while that
+  principal is not signed (`unsigned_approval`, failure `unsigned_principal`); so does the
+  review that routed a ticket to the tester and a person's waiver (whose verdict row names
+  its principal under the verdict's seal). An approval sealed before this change names no
+  principal, and nothing in the log says which principal made it (checking the rows that
+  speak as its actor is undone by deleting a forged one), so a person's or an admin's such
+  approval is held until it is re-approved; the runner's and an agent's still count.
+  Revoking a principal withholds its approvals that have not landed: re-approve them.
+- **Upgrade and restore.** Nothing is signed on upgrade: that would bless a forged row.
+  Principals created before this change stop working until a person reviews and re-signs
+  them, with one deliberate act: `gaffer wg principal unsigned` lists them (who each acts
+  as, its capability and scope, created_by and created_at, whether a matching
+  `principal.created` event is on record) and prints a confirmation code for exactly that
+  list and a `review_code` for each row; `gaffer wg principal resign <name> --confirm
+  <review_code>` signs one, `gaffer wg principal resign --all --confirm <code>` signs the
+  listed rows whose creation event is on record (operator only), or the callout in Settings (Access), which shows the same list. **The review is
+  the control, not the creation event.** A process that can write the database can also
+  append a `principal.created` event that matches its forged row (the chain has no key),
+  and a forged event written before signing existed cannot be told from a real one: the
+  event check only catches a row inserted with no event at all. So a re-sign signs nothing
+  without a code, and a row added or changed after the review changes the code, so the
+  operator's routine step cannot be made to sign a row the operator never saw, or a row
+  raised to admin after the operator looked at it. Re-sign
+  only the sign-ins you created yourself with the access shown; revoke the rest. Principals are not part of the state export, and row seals are neither
+  exported nor kept by an import: after restoring a backup, run `gaffer wg gate-key
+  reanchor` as before, then re-sign the principals you recognise.
 
 ### Definition of Done, gate integrity and the merge gate
 

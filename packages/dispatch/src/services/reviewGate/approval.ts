@@ -236,7 +236,7 @@ export function approveReview(
       recordApprovalPins(internals, ticket, actor, pins);
       // SIGNED GATE EVENTS: the routing approval is sealed with the commits it approved;
       // the tester PASS that later approves carries them from this seal.
-      sealApprovalEvent(internals, ticket, result.eventId, pinsOf(pins));
+      sealApprovalEvent(internals, ticket, result.eventId, pinsOf(pins), principalId(opts));
       return result;
     });
   }
@@ -258,9 +258,15 @@ export function approveReview(
     recordApprovalPins(internals, ticket, actor, pins);
     // SIGNED GATE EVENTS: seal the approval with the commits it pinned (a key this
     // process may not use rolls the whole approval back: nothing unsigned is recorded).
-    sealApprovalEvent(internals, ticket, result.eventId, pinsOf(pins));
+    sealApprovalEvent(internals, ticket, result.eventId, pinsOf(pins), principalId(opts));
     return result;
   });
+}
+
+/** SEALED PRINCIPALS: the principal an approval is made through, as its seal binds it. */
+function principalId(opts: ApproveReviewOptions | undefined): string | null {
+  const id = opts?.principal?.id;
+  return typeof id === "string" && id.length > 0 ? id : null;
 }
 
 /**

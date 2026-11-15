@@ -61,7 +61,11 @@ export const STATE_FORMAT_VERSION = 1;
  *    key (events/gateSeal.ts). Another machine has another key, so a carried seal could
  *    never verify there; an imported approval is re-approved where it lands.
  *
- * Those four are {@link EXCLUDED_TABLES}, with their reasons. Every other table in
+ *  - `row_seals`: the signatures of control rows (principals) under THIS factory's key
+ *    (events/rowSeal.ts). The principals are not carried, and a restore of this factory's
+ *    own backup must not revive a seal: a restored principal is re-signed by a person.
+ *
+ * Those five are {@link EXCLUDED_TABLES}, with their reasons. Every other table in
  * SCHEMA_SQL carries durable board state and IS included (`plan_sessions` and
  * `paused_deliveries` were left out while this comment said otherwise: exploratory
  * finding api/F2). The drift guard in state-export.test.ts reads both lists: a table in
@@ -138,6 +142,8 @@ export const EXCLUDED_TABLES: Readonly<Record<string, string>> = {
   api_principals: "machine-local credentials: an importing factory mints its own",
   gate_seals:
     "machine-local signatures under this factory's key: an imported approval or tester verdict is re-approved or recorded again here",
+  row_seals:
+    "machine-local signatures of control rows (principals) under this factory's key: an importing factory signs its own",
 };
 
 /**
@@ -551,6 +557,9 @@ export function importState(
       // left from the replaced board (a restore of this factory's own backup has the same
       // event ids and hashes) would make an approval revoked after the backup count again.
       db.exec("DELETE FROM gate_seals");
+      // SEALED CONTROL ROWS: likewise no row seal survives an import (the principals they
+      // sign are not carried, and a restored seal must never bless a restored row).
+      db.exec("DELETE FROM row_seals");
       for (const table of EXPORT_TABLES) {
         const raw = (bundle.tables[table] ?? []) as ReadonlyArray<Record<string, unknown>>;
         const rows =

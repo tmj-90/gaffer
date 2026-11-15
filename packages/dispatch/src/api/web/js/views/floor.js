@@ -1446,7 +1446,8 @@ async function renderFloor() {
   ]);
   // Touch has no hover: say "tap" there (A-53).
   const touch =
-    typeof window.matchMedia === "function" && window.matchMedia("(hover: none)").matches;
+    typeof window.matchMedia === "function" &&
+    (window.matchMedia("(hover: none)").matches || window.matchMedia("(pointer: coarse)").matches);
 
   // The key and the text of the floor: stations in lifecycle order with their
   // tickets, and who is on the benches (shirt, name, ticket).

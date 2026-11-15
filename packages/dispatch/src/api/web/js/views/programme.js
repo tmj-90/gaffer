@@ -225,16 +225,15 @@ function leagueTable(f) {
           stackOnPhone: true,
           columns: [
             { key: "repo", label: "Repo" },
-            { key: "pos", label: "Pos", numeric: true },
             { key: "total", label: "Tickets", numeric: true },
             { key: "inFlight", label: "In play", numeric: true },
             { key: "blocked", label: "Blocked", numeric: true },
             { key: "spend", label: "Spend", numeric: true, missing: "no spend recorded" },
             { key: "done", label: "Done", numeric: true },
           ],
-          rows: rows.map((r, i) => ({
+          // The rows run in league order; the position needs no column of its own.
+          rows: rows.map((r) => ({
             repo: repoTag(r.repo, 20),
-            pos: i + 1,
             total: r.total,
             inFlight: r.inFlight ?? 0,
             blocked: r.blocked

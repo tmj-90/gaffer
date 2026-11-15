@@ -133,6 +133,7 @@
 22	recall-feedback.test.sh
 21	gaffer-colour.test.sh
 21	memory-audit-path.test.sh
+20	close-kill-after-submit.test.sh
 20	gaffer-lore.test.sh
 20	onboard-boundary.test.sh
 19	budget-admission.test.sh
@@ -149,7 +150,6 @@
 15	e2e-afk-autonomous-ship.test.sh
 15	gaffer-cli-args.test.sh
 15	pr-landing-not-fast-forwarded.test.sh
-15	close-kill-after-submit.test.sh
 14	auth-gate.test.sh
 14	e2e-spec-to-done.test.sh
 14	run-harness.test.sh

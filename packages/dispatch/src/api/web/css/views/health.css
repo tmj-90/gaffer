@@ -562,6 +562,10 @@
   .fitness-test.card {
     padding: 0;
   }
+  /* Its head is a plain level-2 head now (no block): give it the card's inset. */
+  .fitness-test.card > .panel-head {
+    padding: var(--s4) var(--s4) var(--s2);
+  }
   .ft-grid {
     display: grid;
   }

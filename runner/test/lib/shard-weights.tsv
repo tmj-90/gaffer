@@ -149,6 +149,7 @@
 15	e2e-afk-autonomous-ship.test.sh
 15	gaffer-cli-args.test.sh
 15	pr-landing-not-fast-forwarded.test.sh
+15	close-kill-after-submit.test.sh
 14	auth-gate.test.sh
 14	e2e-spec-to-done.test.sh
 14	run-harness.test.sh

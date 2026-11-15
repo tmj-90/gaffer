@@ -8,9 +8,12 @@
 # is exempt (gaffer_tick_counts_toward_day_cap), so an idle daemon cannot burn the cap.
 # shellcheck shell=bash
 
-# The calendar day every helper below keys on. GAFFER_TODAY_OVERRIDE is a TEST seam
+# The calendar day every helper below keys on: the UTC date, the same day the dollar
+# cap (GAFFER_DAILY_BUDGET_USD, gaffer_day_usd_spent below) and the usage ledger key
+# on, so on a host outside UTC the tick cap and the dollar cap roll over together
+# (the tick day used to be the host's local date). GAFFER_TODAY_OVERRIDE is a TEST seam
 # (the midnight-rollover proof in test/budget-admission.test.sh); production never sets it.
-_gaffer_today() { if [ -n "${GAFFER_TODAY_OVERRIDE:-}" ]; then printf '%s' "$GAFFER_TODAY_OVERRIDE"; else date +%Y-%m-%d; fi; }
+_gaffer_today() { if [ -n "${GAFFER_TODAY_OVERRIDE:-}" ]; then printf '%s' "$GAFFER_TODAY_OVERRIDE"; else date -u +%Y-%m-%d; fi; }
 
 # Echo today's persisted tick count — 0 if there is no record, or the record is
 # from an earlier day (a new calendar day resets the count).

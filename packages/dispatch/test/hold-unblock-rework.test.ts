@@ -82,6 +82,34 @@ describe("hold for a human, then unblock back into the queue", () => {
     wg.db.close();
   });
 
+  // The dashboard's Unblock sheet does not call humanUnblockTicket: it posts a board move
+  // (POST /tickets/:id/move, Dispatch.moveTicket), and blocked -> ready / refining is a
+  // legal board edge. The reset must not depend on which door the person used.
+  for (const to of ["ready", "refining"] as const) {
+    it(`the dashboard's Unblock (a board move to ${to}) is a rework round too`, () => {
+      const wg = freshWg();
+      const { id } = approved(wg);
+      const before = wg.view(id).ticket.attempt_count;
+      wg.holdForHuman(id, { reasonCode: "merge_gate_red", reason: "red on main" }, system);
+      expect(wg.moveTicket(id, to, human).ticket.status).toBe(to);
+      expect(acStatuses(wg, id)).toEqual(["pending"]);
+      expect(wg.view(id).ticket.attempt_count).toBe(before + 1);
+      wg.db.close();
+    });
+  }
+
+  it("a board move out of a person's own block (from ready) keeps criteria and attempt", () => {
+    const wg = freshWg();
+    const t = wg.createTicket({ title: "T", description: "x", policy_pack: "team_light" }, human);
+    wg.addAcceptanceCriterion({ ticket_id: t.id, text: "ok" }, human);
+    giveTicketRealDelivery(wg, t.id, human, { repoName: "billing-api" });
+    wg.markReady(t.id, human);
+    wg.humanBlockTicket(t.id, "waiting on design", human);
+    wg.moveTicket(t.id, "refining", human);
+    expect(wg.view(t.id).ticket.attempt_count).toBe(0);
+    wg.db.close();
+  });
+
   it("a ticket a person blocked from ready (no delivery) keeps its criteria and attempt", () => {
     const wg = freshWg();
     const t = wg.createTicket({ title: "T", description: "x", policy_pack: "team_light" }, human);

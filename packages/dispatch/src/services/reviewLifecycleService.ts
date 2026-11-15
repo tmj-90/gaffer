@@ -11,6 +11,7 @@ import { recordedLandingRepos } from "./landingStatus.js";
 import { fixTheseReason, type ReviewCommentView } from "./reviewCommentService.js";
 import { rejectOutcome as decideRejectOutcome, type RejectOutcome } from "./rejectOutcome.js";
 import { resolveMoveTarget } from "./boardService.js";
+import { isHeldDeliveryBlock } from "./ticketService.js";
 import { type LandingStarted } from "./reviewGateService.js";
 import { type TransitionResult } from "./transitionService.js";
 import { DispatchError } from "../util/errors.js";
@@ -33,6 +34,7 @@ export type ReviewLifecycleHost = Pick<
   | "reviewCommentSvc"
   | "reviewGateSvc"
   | "tickets"
+  | "ticketSvc"
   | "transitions"
 >;
 /** The facade's private state these functions read. */
@@ -75,6 +77,28 @@ export function moveTicket(
     return host.rejectReview(ticket.id, toStatus, actor, "board_move");
   }
   return inTransaction(host.db, () => {
+    // The dashboard's Unblock is this board move (blocked -> ready / refining). A HELD
+    // DELIVERY (blocked from review, testing or ready_for_merge) returned to the queue is
+    // a send-back, exactly as TicketService.humanUnblockTicket treats it: the attempt is
+    // counted and every criterion reset, or the next done gate would pass on the previous
+    // delivery's evidence and the retry cap would never see the round.
+    if (
+      ticket.status === "blocked" &&
+      (toStatus === "ready" || toStatus === "refining") &&
+      isHeldDeliveryBlock(host.ticketSvc.blockedFromStatus(ticket.id))
+    ) {
+      const current = host.resolveTicket(ticket.id);
+      const moved = host.transitions.transition({
+        ticketId: ticket.id,
+        actor,
+        toStatus,
+        reason: "board_move",
+        expectedFromStatus: "blocked",
+        patch: { attempt_count: current.attempt_count + 1 },
+      });
+      host.ticketSvc.resetAcceptanceCriteria(ticket.id, actor);
+      return moved;
+    }
     // Handing in unleased in-progress work (a by-hand delivery, a tokenless resume)
     // by a move stays legal; dragging work an agent still holds a lease on is not.
     const unleasedSubmit =

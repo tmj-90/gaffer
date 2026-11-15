@@ -645,24 +645,7 @@ export class TicketService {
           { status: ticket.status, ticket_id: ticket.id },
         );
       }
-      // Where it was blocked from: the LAST transition into `blocked`, whichever path
-      // took it (a person, an agent's token, the runner's park, a board move). Only a
-      // human block writes `from` on ticket.blocked, so an older human block from draft
-      // must not decide where a later in-flight block goes back to.
-      const row = this.db
-        .prepare(
-          `SELECT payload_json FROM work_events
-            WHERE entity_type = 'ticket' AND entity_id = ? AND event_type = 'ticket.transitioned'
-              AND json_extract(payload_json, '$.to') = 'blocked'
-            ORDER BY created_at DESC, rowid DESC LIMIT 1`,
-        )
-        .get(ticket.id) as { payload_json: string | null } | undefined;
-      let blockedFrom: unknown;
-      try {
-        blockedFrom = (JSON.parse(row?.payload_json ?? "{}") as { from?: unknown }).from;
-      } catch {
-        blockedFrom = undefined;
-      }
+      const blockedFrom = this.blockedFromStatus(ticket.id);
       const target: TicketStatus =
         to ?? (blockedFrom === "draft" || blockedFrom === "refining" ? blockedFrom : "ready");
       // A HELD DELIVERY back into the queue is a send-back. The runner holds an approved
@@ -672,10 +655,7 @@ export class TicketService {
       // satisfied by the previous delivery's evidence and no attempt counted, so the
       // retry cap never saw the round. Do what the reject path does: bump attempt_count
       // and reset every criterion to pending.
-      const reworkRound =
-        blockedFrom === "ready_for_merge" ||
-        blockedFrom === "in_testing" ||
-        blockedFrom === "in_review";
+      const reworkRound = isHeldDeliveryBlock(blockedFrom);
       this.transitions.transition({
         ticketId: ticket.id,
         actor,
@@ -874,6 +854,29 @@ export class TicketService {
   }
 
   // --- AC management -------------------------------------------------------
+
+  /**
+   * Where a blocked ticket was blocked from: the `from` of the LAST transition into
+   * `blocked`, whichever path took it (a person, an agent's token, the runner's park or
+   * hold, a board move). Only a human block writes `from` on ticket.blocked, so an older
+   * human block from draft must not decide where a later in-flight block goes back to.
+   * Undefined when it cannot be read.
+   */
+  blockedFromStatus(ticketId: string): unknown {
+    const row = this.db
+      .prepare(
+        `SELECT payload_json FROM work_events
+          WHERE entity_type = 'ticket' AND entity_id = ? AND event_type = 'ticket.transitioned'
+            AND json_extract(payload_json, '$.to') = 'blocked'
+          ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+      )
+      .get(ticketId) as { payload_json: string | null } | undefined;
+    try {
+      return (JSON.parse(row?.payload_json ?? "{}") as { from?: unknown }).from;
+    } catch {
+      return undefined;
+    }
+  }
 
   /**
    * Reset every acceptance criterion on a ticket back to `pending` (NOT satisfied).
@@ -1699,4 +1702,15 @@ export class TicketService {
     // The id, or #N / T-N / N (see TicketRepository.resolveRef).
     return this.tickets.resolveRef(ref);
   }
+}
+
+/**
+ * A ticket blocked from review, testing or ready_for_merge is a HELD DELIVERY: returning
+ * it to the queue (an unblock, or the dashboard's Unblock, which is a board move) is a
+ * send-back, so it gets the reject path's resets (attempt counted, criteria pending).
+ */
+export function isHeldDeliveryBlock(blockedFrom: unknown): boolean {
+  return (
+    blockedFrom === "ready_for_merge" || blockedFrom === "in_testing" || blockedFrom === "in_review"
+  );
 }

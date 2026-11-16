@@ -379,8 +379,8 @@ export function beginLanding(
 /**
  * THE AUTONOMY LADDER: refuse a landing whose approval (the ticket's latest move into
  * ready_for_merge, with the review approval on its current path) was not a person's while
- * the merge gate is held for the ticket (a
- * step-down in force, the critical ceiling). STATE_CONFLICT reason
+ * the merge gate is held for the ticket (a step-down in force, the critical ceiling), or,
+ * for an approval an agent made, while the approve gate is held. STATE_CONFLICT reason
  * `autonomy_stepped_down` / `autonomy_ceiling`: the runner lands nothing and the ticket
  * waits for a person. A resolver that throws is a hold; an approval that cannot be read is
  * treated as not a person's (fail closed).
@@ -402,12 +402,23 @@ export function assertMergeGateNotHeld(
   // the ticket's current path (as the merge lane reads it, json-tool approval-actor) are
   // both a person's: a person's tester PASS (a waiver) carries an AGENT's approval forward.
   const isPerson = (t: string | undefined): boolean => t === "human" || t === "admin";
-  if (isPerson(by) && isPerson(reviewApprovalActor(internals.db, ticket.id))) return;
-  let hold: AutonomyHold | null;
-  try {
-    hold = resolve(ticket, "merge");
-  } catch {
-    hold = { kind: "stepped_down", repoId: "unknown" };
+  const onPath = reviewApprovalActor(internals.db, ticket.id);
+  if (isPerson(by) && isPerson(onPath)) return;
+  const holdOf = (g: "approve" | "merge"): AutonomyHold | null => {
+    try {
+      return resolve(ticket, g);
+    } catch {
+      return { kind: "stepped_down", repoId: "unknown" };
+    }
+  };
+  // The merge gate first; then, for an approval an agent made, the approve gate too: a
+  // step-down of approve says the agent's approvals at this row are not trusted, so one
+  // given before it (still waiting to land) does not land without a person either.
+  let gate: "approve" | "merge" = "merge";
+  let hold = holdOf("merge");
+  if (!hold && !isPerson(onPath)) {
+    gate = "approve";
+    hold = holdOf("approve");
   }
   if (!hold) return;
   // What lands it: a person's own approval (back to review, then approve), or, for a
@@ -416,13 +427,14 @@ export function assertMergeGateNotHeld(
   const n = ticket.number;
   const lift =
     hold.kind === "stepped_down"
-      ? `, or a person lifts the step-down (gaffer wg autonomy lift ${hold.repoId} --risk ${ticket.risk_level} --gate merge)`
+      ? `, or a person lifts the step-down (gaffer wg autonomy lift ${hold.repoId} --risk ${ticket.risk_level} --gate ${gate})`
       : "";
   throw new DispatchError(
     "STATE_CONFLICT",
-    `#${n} was approved without a person and its merge gate is now held. ${holdMessage(hold, "merge")} Nothing may land on that approval, Merge now included. To land it, a person approves it: gaffer wg ticket reopen-for-review ${n} --as admin --reason "a person approves it" --resolution "re-review", then gaffer approve ${n}${lift}.`,
+    `#${n} was approved without a person and its ${gate} gate is now held. ${holdMessage(hold, gate)} Nothing may land on that approval, Merge now included. To land it, a person approves it: gaffer wg ticket reopen-for-review ${n} --as admin --reason "a person approves it" --resolution "re-review", then gaffer approve ${n}${lift}.`,
     {
       reason: hold.kind === "ceiling" ? "autonomy_ceiling" : "autonomy_stepped_down",
+      gate,
       ...(hold.repoId ? { repo_id: hold.repoId } : {}),
     },
   );

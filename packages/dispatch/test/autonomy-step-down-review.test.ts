@@ -265,6 +265,34 @@ describe("who approved: the landing check reads the review approval, as the merg
   });
 });
 
+describe("an approve step-down holds an agent's approval still waiting to land", () => {
+  it("approved by the agent while approve was automatic, the step-down comes before the landing", () => {
+    const wg = freshWg();
+    try {
+      const { id, repoId } = delivered(wg, "low");
+      enable(wg, repoId, "low", "approve");
+      enable(wg, repoId, "low", "merge");
+      expect(wg.approveReview(id, agent).ticket.status).toBe("ready_for_merge");
+      // Two strikes on other automatic approvals take the APPROVE gate back (trigger c);
+      // the merge gate stays automatic.
+      stepDown(wg, repoId, "low", "approve");
+      expect(wg.autonomyGateDecision(wg.resolveTicket(id), "merge").decision).toBe("allow");
+      const r = refusal(() =>
+        wg.beginLanding(
+          id,
+          { repo: "repoA", commit: FAKE_HEAD, approval: wg.landingApproval(id)!, via: "local" },
+          system,
+        ),
+      );
+      expect(r).toMatchObject({ code: "STATE_CONFLICT", reason: "autonomy_stepped_down" });
+      expect(r.message).toMatch(/approve gate is now held/);
+      expect(r.message).toMatch(/--gate approve/);
+    } finally {
+      wg.db.close();
+    }
+  });
+});
+
 describe("the trigger and its act commit together", () => {
   function autoApprovedInTesting(wg: Dispatch, repo: string, risk: RiskLevel) {
     const t = ticketOn(wg, repo, risk);

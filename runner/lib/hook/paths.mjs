@@ -38,9 +38,22 @@ function canonicalize(p, depth = 0) {
     // Refuse to resolve a path we cannot bound safely — fail CLOSED via throw.
     throw new Error("canonicalize: path too long or too deeply nested to resolve safely");
   }
+  // A path under /proc names the process that looks: `/proc/self/cwd` is the HOOK's
+  // directory here and the command's directory when it runs (`cd /ro && touch
+  // /proc/self/cwd/x` wrote /ro/x while the hook judged <its cwd>/x). It is kept as
+  // written, under /proc, which no root holds.
+  const lexical = resolve(p);
+  if (isProcPath(lexical)) return lexical;
   try {
     // realpathSync resolves ALL symlinks when the whole path exists.
-    return realpathSync(p);
+    const real = realpathSync(p);
+    // A link into /proc on the way (`/dev/fd`, `/dev/stdin`, or one the agent made):
+    // the same, kept in its /proc form.
+    if (real !== lexical) {
+      const viaProc = procForm(lexical);
+      if (viaProc !== null) return viaProc;
+    }
+    return real;
   } catch {
     // p does not fully exist yet. If its FINAL component is a symlink (including a
     // dangling one), follow the link to its target and canonicalise THAT so an
@@ -57,6 +70,48 @@ function canonicalize(p, depth = 0) {
     if (parent === p) return p;
     return resolve(canonicalize(parent, depth + 1), basename(p));
   }
+}
+
+function isProcPath(p) {
+  return p === "/proc" || p.startsWith("/proc/");
+}
+
+/**
+ * The /proc path that an existing absolute path reaches through its symlinks, or null
+ * when its resolution never enters /proc. The links are followed one step at a time the
+ * way the kernel does (`..` after a link leaves the link's target), at most 40 of them.
+ */
+function procForm(abs) {
+  let rest = abs.split("/").filter(Boolean);
+  let cur = "/";
+  let hops = 0;
+  while (rest.length) {
+    const comp = rest.shift();
+    if (comp === ".") continue;
+    const next = comp === ".." ? dirname(cur) : cur === "/" ? `/${comp}` : `${cur}/${comp}`;
+    if (isProcPath(next)) return rest.length ? `${next}/${rest.join("/")}` : next;
+    let st;
+    try {
+      st = lstatSync(next);
+    } catch {
+      return null;
+    }
+    if (!st.isSymbolicLink()) {
+      cur = next;
+      continue;
+    }
+    hops += 1;
+    if (hops > 40) return null;
+    let target;
+    try {
+      target = readlinkSync(next);
+    } catch {
+      return null;
+    }
+    if (target.startsWith("/")) cur = "/";
+    rest = [...target.split("/").filter(Boolean), ...rest];
+  }
+  return null;
 }
 
 // =====================================================================

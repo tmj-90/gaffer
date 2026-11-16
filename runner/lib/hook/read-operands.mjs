@@ -37,8 +37,18 @@ import {
   newBudget,
   physicalPath,
 } from "./expand.mjs";
-import { CD_VERBS, CwdFlow, cwdUnion, textMayChangeDir } from "./cwd-flow.mjs";
+import {
+  CD_VERBS,
+  CwdFlow,
+  DIR_SENSITIVE_NAMES,
+  cdpathMaySet,
+  cwdUnion,
+  dynamicAssignment,
+  dynamicWord,
+  textMayChangeDir,
+} from "./cwd-flow.mjs";
 import { SECRET_PATH, canonicalize, classifyRootAccess } from "./paths.mjs";
+import { extractBashWriteTargets } from "./writes.mjs";
 import {
   COPY_READ_VERBS,
   READ_TOOL_VERBS,
@@ -345,6 +355,9 @@ function segDirPlan(segs) {
   const n = segs.length;
   const meta = new Array(n);
   const poisonAt = new Set();
+  // Where the directory becomes unknown for good (CwdFlow.stick; see dirPlan in
+  // inline-programs.mjs, which reads the same shapes).
+  const stickAt = new Set();
   const frames = [];
   let fnPending = false;
   let anyCd = false;
@@ -375,11 +388,14 @@ function segDirPlan(segs) {
     for (;;) {
       const t = tokens[i] === undefined ? null : normalizeVerb(tokens[i]);
       if (t === null) break;
-      const fnHead = /^[A-Za-z_][\w.:-]*\(\)(\{?)$/.exec(t);
+      const fnHead = /^([A-Za-z_.][\w.:-]*)\(\)(\{?)$/.exec(t);
       if (fnHead || t === "function") {
+        // `cd() { :; }`, `function cd { ... }`: a directory verb redefined.
+        const name = fnHead ? fnHead[1] : normalizeVerb(tokens[i + 1] ?? "").replace(/\(\)\{?$/, "");
+        if (DIR_SENSITIVE_NAMES.has(name)) stickAt.add(s);
         fnPending = true;
         i += t === "function" ? 2 : 1;
-        if (fnHead?.[1] === "{") {
+        if (fnHead?.[2] === "{") {
           frames.push({ kind: "fn", start: s, hasCd: false });
           fnPending = false;
         }
@@ -400,7 +416,10 @@ function segDirPlan(segs) {
       if (PLAN_CLOSERS.has(t)) {
         const f = frames.pop();
         if (!f) broken = true;
-        else if (f.hasCd && (f.kind === "loop" || f.kind === "fn")) {
+        else if (f.hasCd && f.kind === "fn") {
+          stickAt.add(f.start);
+          for (const g of frames) g.hasCd = true;
+        } else if (f.hasCd && f.kind === "loop") {
           poisonAt.add(f.start);
           for (const g of frames) g.hasCd = true;
         } else if (f.hasCd) for (const g of frames) g.hasCd = true;
@@ -425,15 +444,36 @@ function segDirPlan(segs) {
     }
     if (fnPending && i < tokens.length && normalizeVerb(tokens[i]) !== "{") broken = true;
     let j = i;
-    while (j < tokens.length && ASSIGNMENT_TOKEN.test(tokens[j])) j += 1;
-    while (j < tokens.length && /^(?:command|builtin)$/.test(normalizeVerb(tokens[j]))) j += 1;
+    // Redirections may come first (`>/dev/null cd ..`), and assignments.
+    const isRedirect = (x) => /^(?:\d*|&)(?:<<?<?|>>?|<>)[|&]?/.test(x) && !/^["']/.test(x);
+    for (;;) {
+      if (j < tokens.length && ASSIGNMENT_TOKEN.test(tokens[j])) j += 1;
+      else if (j < tokens.length && isRedirect(tokens[j])) {
+        // `> file` takes the next word as its target.
+        j += /^(?:\d*|&)(?:<<?<?|>>?|<>)[|&]?$/.test(tokens[j]) ? 2 : 1;
+      } else break;
+    }
+    // `command -p cd`, `builtin cd`: the options of the two wrappers are skipped.
+    while (j < tokens.length && /^(?:command|builtin)$/.test(normalizeVerb(tokens[j]))) {
+      j += 1;
+      while (j < tokens.length && /^-/.test(normalizeVerb(tokens[j]))) j += 1;
+    }
     const verb = header ? null : basename(normalizeVerb(tokens[j] ?? ""));
+    const dynamicVerb = verb !== null && tokens[j] !== undefined && dynamicWord(tokens[j]);
     const changesDir = verb !== null && (CD_VERBS.has(verb) || verb === "source" || verb === ".");
     const laterBody =
       verb !== null &&
       (verb === "trap" || verb === "alias" || verb === "eval") &&
-      tokens.slice(j + 1).some((w) => textMayChangeDir(unquote(w)));
-    if (changesDir || laterBody) {
+      tokens.slice(j + 1).some((w) => dynamicWord(w) || textMayChangeDir(unquote(w)));
+    const aliasRedefines =
+      verb === "alias" &&
+      tokens
+        .slice(j + 1)
+        .some((w) => DIR_SENSITIVE_NAMES.has(/^([^=]*)=/s.exec(unquote(w))?.[1] ?? ""));
+    if (laterBody || aliasRedefines || dynamicVerb || verb === "source" || verb === "." || verb === "enable") {
+      stickAt.add(s);
+    }
+    if (changesDir || laterBody || dynamicVerb || aliasRedefines || verb === "enable") {
       anyCd = true;
       for (const f of frames) f.hasCd = true;
     }
@@ -446,7 +486,40 @@ function segDirPlan(segs) {
     parens = Math.max(0, parens - closed);
   }
   if (frames.length || fnPending) broken = true;
-  return { meta, poisonAt, anyCd, broken };
+  return { meta, poisonAt, stickAt, anyCd, broken };
+}
+
+/**
+ * The directories `env -C DIR` / `env --chdir=DIR` in these tokens sends its command
+ * to, from each of `cwds` (null: one the hook cannot know), or null when there is none.
+ */
+function envChdirDirs(tokens, cwds) {
+  const at = tokens.findIndex((t) => basename(normalizeVerb(t)) === "env");
+  if (at === -1) return null;
+  let dir = null;
+  for (let k = at + 1; k < tokens.length; k += 1) {
+    const t = normalizeVerb(tokens[k]);
+    if (t === "-C" || t === "--chdir") dir = tokens[k + 1] ?? "";
+    else if (/^-C./.test(t)) dir = tokens[k].replace(/^(["']?)-C/, "$1");
+    else if (/^--chdir=/.test(t)) dir = tokens[k].replace(/^(["']?)--chdir=/, "$1");
+    else if (/^-[iu0v]|^--(?:ignore|unset|null|debug)/.test(t)) {
+      if (t === "-u" || t === "--unset") k += 1;
+      continue;
+    } else if (ASSIGNMENT_TOKEN.test(t) || t === "-") continue;
+    else break;
+    if (dir !== null) break;
+  }
+  if (dir === null) return null;
+  const d = unquote(dir);
+  if (!d || /[$`*?[~]/.test(d)) return [null];
+  return cwds.map((c) => {
+    if (!d.startsWith("/") && c === null) return null;
+    try {
+      return canonicalize(resolve(d.startsWith("/") ? d : `${c}/${d}`));
+    } catch {
+      return null;
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -550,9 +623,14 @@ class Walk {
   constructor(cmd, roots) {
     this.roots = roots;
     this.opts = globOptions(cmd);
-    // CDPATH set in the environment or anywhere in the command (nested bodies included).
-    this.cdpath = Boolean(process.env.CDPATH) || /\bCDPATH\b/.test(cmd);
+    // CDPATH set in the environment, named anywhere in the command (nested bodies
+    // included), or possibly set by text the hook does not
+    // read (cwd-flow.mjs cdpathMaySet).
+    this.cdpath = cdpathMaySet(cmd);
     this.table = new VarTable(process.env, cmd);
+    // An assignment under a name the hook cannot see (`declare "$n=v"`) may give any
+    // variable any value, anywhere in the command (a loop runs later text first).
+    if (dynamicAssignment(cmd)) this.table.forgetAll();
     this.topCmd = cmd;
     this.stdinReader = false;
     // Set by `read` / `mapfile` / `readarray` and by a for loop over a substitution:
@@ -567,12 +645,18 @@ class Walk {
     // When set (expandedWriteTargets), the write targets of every command the walk
     // reaches, expanded: absolute paths, or UNVERIFIABLE_TARGET for one it cannot expand.
     this.writes = null;
+    this.startCwd = canonicalize(process.cwd());
+    this.substituting = /(?:^|[^\w-])(?:xargs|find|parallel)(?![\w-])/.test(cmd);
     this.caseOpen = 0;
   }
 
   // ---- the write targets of one command (expandedWriteTargets) --------------------
-  collectWrites(eff, cwds) {
+  collectWrites(eff, cwds, depth = 0) {
     const verb = basename(eff.verb);
+    if (verb === "find") {
+      this.findWrites(eff, cwds, depth);
+      return;
+    }
     const spec = WRITE_VERBS[verb];
     if (!spec) return;
     const args = eff.rest.slice(1);
@@ -602,6 +686,59 @@ class Walk {
     if (spec.target) targets = target !== null ? [target] : ops.slice(-1);
     else targets = ops.slice(spec.skip ?? 0);
     for (const raw of targets) this.writeTarget(raw, cwds);
+  }
+
+  /**
+   * The commands `find` runs (-exec, -execdir, -ok, -okdir) write like any command: each
+   * is judged with `{}` standing for a file under a start point. A -execdir command
+   * runs in the found file's directory, which the hook does not know: its other
+   * relative paths are judged from an unknown directory, and a shell it runs is not
+   * followed (refused).
+   */
+  findWrites(eff, cwds, depth) {
+    if (depth > 2) {
+      this.writes.push(UNVERIFIABLE_TARGET);
+      return;
+    }
+    const args = eff.rest.slice(1);
+    const norm = args.map(normalizeVerb);
+    let k = 0;
+    while (k < args.length && /^-(?:[HLP]|D|O\d*)$/.test(norm[k])) k += norm[k] === "-D" ? 2 : 1;
+    const starts = [];
+    while (k < args.length && !/^[-(!,]|^\\[(!]/.test(norm[k])) starts.push(args[k++]);
+    if (!starts.length) starts.push(".");
+    for (; k < args.length; k += 1) {
+      const action = norm[k];
+      if (!/^-(?:exec|execdir|ok|okdir)$/.test(action)) continue;
+      const inDir = action === "-execdir" || action === "-okdir";
+      const inner = [];
+      for (k += 1; k < args.length && !/^(?:;|\+)$/.test(norm[k]); k += 1) inner.push(args[k]);
+      if (!inner.length) continue;
+      const innerVerb = basename(normalizeVerb(inner[0]));
+      if (inDir && (SHELLS.has(innerVerb) || INTERPRETERS.has(innerVerb))) {
+        this.writes.push(UNVERIFIABLE_TARGET);
+        continue;
+      }
+      for (const start of starts) {
+        // `{}` is a file under this start point (a name the hook gives it).
+        const words = inner.map((w) => w.split("{}").join(`${start}/__find_match__`));
+        const innerEff = resolveEffectiveTokens(words);
+        if (!innerEff) continue;
+        if (!inDir) {
+          this.collectWrites(innerEff, cwds, depth + 1);
+          for (const c of cwds) this.writes.push(...extractBashWriteTargets(words.join(" "), c));
+          continue;
+        }
+        // In the found file's directory: `{}` is judged from where find runs, the rest
+        // from an unknown directory (a relative path there is unverifiable).
+        this.collectWrites(innerEff, cwds, depth + 1);
+        for (const c of cwds) this.writes.push(...extractBashWriteTargets(words.join(" "), c));
+        const rest = inner.map((w) => (w.includes("{}") ? "/dev/null" : w));
+        const restEff = resolveEffectiveTokens(rest);
+        if (restEff) this.collectWrites(restEff, [null], depth + 1);
+        this.writes.push(...extractBashWriteTargets(rest.join(" "), null));
+      }
+    }
   }
 
   writeTarget(raw, cwds) {
@@ -1048,6 +1185,7 @@ class Walk {
     for (let s = 0; s < segs.length; s += 1) {
       const seg = segs[s];
       const nextSep = segs[s + 1]?.sep ?? "";
+      if (plan.stickAt.has(s)) flow.stick();
       if (plan.poisonAt.has(s)) flow.poison();
       const dm = plan.meta[s];
       // A function body runs where it is called: unknown while the command changes
@@ -1055,7 +1193,23 @@ class Walk {
       const before = dm.fnBody ? (plan.anyCd ? [null] : flow.input(";")) : flow.input(seg.sep);
       cwds = before;
       for (const c of before) nestedCwds.add(c);
+      let cwdsBeforeEnv = null;
       try {
+        // The write targets only the segment extractor knows (writes.mjs: sed -i, awk
+        // redirects, rsync, curl -o, git clone, ...), judged from every directory the
+        // shell may be in here. The decision also runs that extractor once over the
+        // whole command from the start directory, so a segment run only there adds
+        // nothing.
+        // `env -C DIR cmd` runs cmd in DIR: its relative paths are judged from there too
+        // (added, never replacing: a word misread as `env -C` only adds a directory).
+        const envDirs = envChdirDirs(tokenizeSegment(seg.text.trim()), cwds);
+        if (envDirs) {
+          cwdsBeforeEnv = cwds;
+          cwds = cwdUnion(cwds, envDirs);
+        }
+        if (this.writes && !(cwds.length === 1 && cwds[0] === this.startCwd)) {
+          for (const c of cwds) this.writes.push(...extractBashWriteTargets(seg.text, c));
+        }
         bodies.push(...substitutionBodies(seg.text));
         let tokens = tokenizeSegment(seg.text.trim());
         // Subshell / group parentheses and braces glued to words.
@@ -1211,7 +1365,9 @@ class Walk {
         // cd / pushd / popd: the cwds later relative operands resolve against.
         if (verb0 === "cd" || verb0 === "pushd" || verb0 === "popd") {
           const next = [];
-          if (verb0 === "popd") next.push(null);
+          // A body run by xargs, find or parallel has text substituted into it (`xargs -I{}
+          // sh -c 'cd {} && ...'`): where its `cd` goes is unknown.
+          if (verb0 === "popd" || (nesting > 0 && this.substituting)) next.push(null);
           else {
             let k = 1;
             while (k < cmdWords.length && /^-[LPe@]+$/.test(normalizeVerb(cmdWords[k]))) k += 1;
@@ -1324,6 +1480,8 @@ class Walk {
         depth = Math.max(0, depth - closing);
       } finally {
         if (!dm.fnBody) {
+          // `env -C` moves only the command it runs, never this shell.
+          if (cwdsBeforeEnv !== null) cwds = cwdsBeforeEnv;
           const after = dm.unknownAfter ? cwdUnion(cwds, [null]) : cwds;
           for (const c of after) nestedCwds.add(c);
           flow.step(seg.sep, nextSep, before, after, { scoped: dm.scoped, negate: dm.negate });

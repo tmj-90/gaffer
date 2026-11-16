@@ -71,6 +71,8 @@ class CwdFlow {
     this.list = null;
     // The input of the current pipeline (every element starts from it).
     this.pipeIn = null;
+    // Set by stick(): from here on every command may also run somewhere unknown.
+    this.sticky = false;
   }
 
   /** The directory set a command preceded by `sep` starts in. */
@@ -92,6 +94,7 @@ class CwdFlow {
    * header); `negate`: it ran under `!`.
    */
   step(sep, nextSep, before, after, { scoped = false, negate = false } = {}) {
+    if (this.sticky) after = cwdUnion(after, [null]);
     const changed = !sameSet(before, after);
     let succ =
       changed && (scoped || PIPE.has(sep) || PIPE.has(nextSep)) ? cwdUnion(before, after) : after;
@@ -113,7 +116,18 @@ class CwdFlow {
     this.pipeIn = null;
   }
 
-  /** From here on the directory is unknown. */
+  /**
+   * From here on, and for good, the directory is unknown: something defined here runs
+   * later, when the hook cannot see it (a function or trap body that may change
+   * directory, an alias, a redefined `cd`). A later absolute `cd` does not undo it, as
+   * it does after poison(): the body may run after that `cd` too.
+   */
+  stick() {
+    this.sticky = true;
+    this.poison();
+  }
+
+  /** From here on the directory is unknown (until a `cd` the hook can follow). */
   poison() {
     this.outer = cwdUnion(this.outer, [null]);
     if (this.list) {
@@ -129,11 +143,92 @@ class CwdFlow {
 /** A word that changes the directory of the shell that runs it. */
 const CD_VERBS = new Set(["cd", "pushd", "popd"]);
 
-/** Whether a command text (a trap, alias or eval body) may change directory. */
+/**
+ * Whether a command text (a trap, alias or eval body) may change directory, now or when
+ * it runs later: it names a directory verb or `source`, defines something that runs
+ * later (a function, a trap, an alias, `enable`), runs text of its own (`eval`), or holds
+ * an expansion whose text the hook does not see (`trap "$T" DEBUG`).
+ */
 function textMayChangeDir(text) {
-  return /(?:^|[^\w.-])(?:cd|pushd|popd|source)(?=$|[^\w.-])|(?:^|[;&|(){}\s])\.(?=\s)/.test(
+  return /(?:^|[^\w.-])(?:cd|pushd|popd|source|eval|trap|alias|enable|function|builtin|command)(?=$|[^\w.-])|(?:^|[;&|(){}\s])\.(?=\s)|\(\s*\)|[$`]/.test(
     String(text),
   );
 }
 
-export { CD_VERBS, CwdFlow, MAX_DIRS, cwdUnion, textMayChangeDir };
+/**
+ * Names whose redefinition (a function or an alias) changes what the analysis reads as
+ * a directory change: after `cd() { :; }` a `cd` no longer moves the shell, after
+ * `cd() { builtin cd /x; }` it moves it somewhere else.
+ */
+const DIR_SENSITIVE_NAMES = new Set([
+  ...CD_VERBS,
+  "builtin",
+  "command",
+  "source",
+  ".",
+  "eval",
+  "exec",
+  "trap",
+  "alias",
+  "enable",
+]);
+
+/**
+ * Whether the command may assign a variable whose NAME the hook does not see:
+ * `declare "$n=v"`, `export "${x}ATH=v"`, `printf -v "$n"`, `read "$n"`, `${!n:=v}`. Any
+ * variable, CDPATH and the one a `cd` operand names among them, may then hold anything.
+ * One pass over the text.
+ */
+function dynamicAssignment(cmd) {
+  const text = String(cmd);
+  if (/\$\{![^}]*=/.test(text)) return true;
+  for (const seg of text.split(/[\n;&|]/)) {
+    const m = /(?:^|[^\w-])(declare|typeset|local|export|readonly|printf|read|mapfile|readarray|getopts)(?![\w-])/.exec(seg);
+    if (!m) continue;
+    const words = seg.slice(m.index + m[0].length).split(/[ \t]+/).filter(Boolean);
+    for (let k = 0; k < words.length; k += 1) {
+      const w = words[k];
+      if (m[1] === "printf") {
+        if (/^-v/.test(w) && /[$`]/.test(w.length > 2 ? w : (words[k + 1] ?? ""))) return true;
+        continue;
+      }
+      if (/^-/.test(w)) continue;
+      const name = w.split("=")[0];
+      if (/[$`]/.test(name)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Whether CDPATH may be set when a `cd` runs, which sends a relative name that does not
+ * start with `.` somewhere the hook does not follow: set in the environment, named in
+ * the command (quotes and backslashes do not hide it), or set by text the hook does not
+ * read (`eval`, `source`, `.`, ANSI-C quoting, an assignment whose name it cannot see).
+ */
+function cdpathMaySet(cmd) {
+  const text = String(cmd);
+  return (
+    Boolean(process.env.CDPATH) ||
+    /CDPATH/.test(text.replace(/["'\\]/g, "")) ||
+    /(?:^|[^\w-])(?:eval|source)(?![\w-])|(?:^|[;&|(){}\s])\.(?=\s)|\$'/.test(text) ||
+    dynamicAssignment(text)
+  );
+}
+
+/** A command word whose text the hook does not see (`$C`, `"$@"`, `$(...)`). */
+function dynamicWord(text) {
+  return /[$`]/.test(String(text));
+}
+
+export {
+  CD_VERBS,
+  CwdFlow,
+  DIR_SENSITIVE_NAMES,
+  MAX_DIRS,
+  cdpathMaySet,
+  cwdUnion,
+  dynamicAssignment,
+  dynamicWord,
+  textMayChangeDir,
+};

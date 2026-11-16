@@ -19,9 +19,12 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { RUNNER_DIR } from "../src/api/runnerConfig.js";
+import { loadSchema, RUNNER_DIR } from "../src/api/runnerConfig.js";
 import { applySettingsToEnv, resetDerivedSettings } from "../src/api/settings.js";
 import { envFlagOn } from "../src/services/autonomyPolicyService.js";
+
+/** The old keys: the dashboard's own readers need the runner's reading of each. */
+const OLD_KEYS = new Set(loadSchema().oldKeys.map((o) => o.key));
 
 const PERMISSIVE_OLD_FILE = {
   GAFFER_MODE: "supervised",
@@ -231,6 +234,17 @@ describe("P-B1: a dashboard-started run gets what a command-line run gets", () =
       }
     expect(differ).toEqual([]);
     expect(server["GAFFER_PLAN_MODEL"]).toBe("sonnet");
+    // A value the config keeps to itself is not pushed: DRY_RUN's default is decided by
+    // the launcher before it sources the config (Poll for work runs live when unset), and
+    // a DRY_RUN=1 handed down turned every dashboard poll into a preview.
+    expect(cliEnv["DRY_RUN"]).toBeUndefined();
+    expect(server["DRY_RUN"]).toBeUndefined();
+    // No derived value reaches a dashboard helper that a runner's helper would not see.
+    const extra: string[] = [];
+    for (const s of schema.settings)
+      for (const n of s.derives.map((d) => d.name))
+        if (cliEnv[n] === undefined && server[n] !== undefined && !OLD_KEYS.has(n)) extra.push(n);
+    expect(extra).toEqual([]);
     // The address the launcher handed the server on purpose stays.
     expect(server["GAFFER_DASHBOARD_URL"]).toBe("http://127.0.0.1:9911");
     // ...and a run the dashboard starts still derives every value afresh (but the

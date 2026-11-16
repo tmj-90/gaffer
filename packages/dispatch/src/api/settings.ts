@@ -283,21 +283,23 @@ function appliedOf(env: NodeJS.ProcessEnv): Set<string> {
 }
 
 /**
- * The names the dashboard takes into its own environment: the fourteen, and every value
- * they derive, with the value the RUNNER derives for it (never more permissive than the
- * setting). The dashboard's own readers need them (the approve floor, auto merge, PR
- * mode, the tester lane, notifications, budgets), and so do the helpers it starts that
- * are not runner scripts and never re-source the config: the Plan a build planner and
- * the spec author read the planning model, the worker seam the kill estimate and the MCP
- * bridge. Every old key is a derived name, so it is covered too.
+ * The names the dashboard takes into its own environment, each with the value the
+ * RUNNER derives for it (never more permissive than the setting): the fourteen; every
+ * name an old settings.json key used to carry (the dashboard's own readers: the approve
+ * floor, auto merge, PR mode, the tester lane, notifications, budgets); and every other
+ * derived value the runner's config EXPORTS (records.exported), because the helpers the
+ * dashboard starts that are not runner scripts (the Plan a build planner, the spec
+ * author, the worker seam) read them from their environment just as a runner's helpers
+ * do. A value the config keeps to itself is never pushed: DRY_RUN, say, whose default a
+ * launcher decides before it sources the config (poll-once.sh runs live when unset).
  */
 const DASHBOARD_NAMES: readonly string[] = [
-  ...new Set([
-    ...SETTING_DEFS.map((d) => d.key).filter((k) => k !== "GAFFER_DATA"),
-    ...loadSchema().settings.flatMap((s) => s.derives.map((d) => d.name)),
-    ...loadSchema().oldKeys.map((o) => o.key),
-  ]),
+  ...SETTING_DEFS.map((d) => d.key).filter((k) => k !== "GAFFER_DATA"),
+  ...loadSchema().oldKeys.map((o) => o.key),
 ];
+const DERIVED_NAMES: readonly string[] = loadSchema().settings.flatMap((s) =>
+  s.derives.map((d) => d.name),
+);
 
 /** The settings file as last applied to an env (see refreshSettingsEnv). */
 const APPLIED_FILE = new WeakMap<object, { path: string; sig: string }>();
@@ -352,7 +354,11 @@ export function applySettingsToEnv(
   APPLIED_FILE.set(env, { path, sig: fileSignature(path) });
   const rc = runnerConfigFor(env, path);
   if (rc.ok) {
-    for (const name of DASHBOARD_NAMES) {
+    const names = new Set([
+      ...DASHBOARD_NAMES,
+      ...DERIVED_NAMES.filter((n) => rc.records.exported.has(n)),
+    ]);
+    for (const name of names) {
       const s = rc.records.settings.get(name);
       if (s) {
         if (s.origin === "settings.json" && s.value !== "") want.set(name, s.value);

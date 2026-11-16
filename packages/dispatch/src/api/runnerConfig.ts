@@ -70,6 +70,8 @@ export function loadSchema(): SettingsSchema {
 export interface RunnerRecords {
   readonly settings: ReadonlyMap<string, { origin: string; value: string }>;
   readonly derived: ReadonlyMap<string, { origin: string; set: boolean; value: string }>;
+  /** The derived values the config exports (what a helper a runner starts would see). */
+  readonly exported: ReadonlySet<string>;
 }
 
 /** The masked report `gaffer config show --all --json` prints (bin/config-show.mjs). */
@@ -100,13 +102,15 @@ export type RunnerConfigRead =
 export function parseRunnerRecords(text: string): RunnerRecords {
   const settings = new Map<string, { origin: string; value: string }>();
   const derived = new Map<string, { origin: string; set: boolean; value: string }>();
+  const exported = new Set<string>();
   for (const line of text.split("\n")) {
     const f = line.split("\t");
     if (f[0] === "S" && f[1]) settings.set(f[1], { origin: f[2] ?? "", value: f[3] ?? "" });
     else if (f[0] === "D" && f[1])
       derived.set(f[1], { origin: f[2] ?? "", set: f[3] === "1", value: f[4] ?? "" });
+    else if (f[0] === "X" && f[1]) exported.add(f[1]);
   }
-  return { settings, derived };
+  return { settings, derived, exported };
 }
 
 const cache = new Map<string, RunnerConfigRead>();

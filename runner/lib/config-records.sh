@@ -4,6 +4,7 @@
 #   S <setting> <origin: environment|settings.json|default> <value>
 #   D <derived name> <origin: environment|settings.json|derived> <set: 1|0> <value>
 #   M <old key> <old value> <setting> <derived value> <decision>
+#   X <derived name>   (run on its own only: the derived values the config exports)
 # Two readers, one source: `gaffer config show` pipes them into bin/config-show.mjs (which
 # hides every secret), and the dashboard runs this file on its own (below) to learn the
 # values the runner will use, so it never keeps a second copy of the derivation tables.
@@ -47,4 +48,13 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   # shellcheck source=../factory.config.sh
   source "$_gcr_here/factory.config.sh"
   gaffer_config_records
+  # For the dashboard only (`gaffer config show` never runs this block): which derived
+  # values this config EXPORTS, i.e. what a helper a runner starts would find in its
+  # environment. The dashboard hands only those (and the old keys its own readers need)
+  # to the helpers it starts; a value the config keeps to itself (DRY_RUN, whose
+  # default a launcher such as poll-once.sh decides before sourcing) is never pushed.
+  _gcr_exported=" $(compgen -e | tr '\n' ' ') "
+  while IFS= read -r _gcr_n; do
+    case "$_gcr_exported" in *" $_gcr_n "*) printf 'X\t%s\n' "$_gcr_n" ;; esac
+  done < <(node -e 'for (const s of require(process.argv[1]).settings) for (const d of s.derives) console.log(d.name)' "$RUNNER_DIR/config/settings-schema.json")
 fi

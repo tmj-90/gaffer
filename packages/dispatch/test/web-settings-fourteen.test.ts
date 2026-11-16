@@ -352,6 +352,9 @@ describe("web: the migration callout and its removal act", () => {
       .map((c) => c.textContent)
       .sort();
     expect(dropped).toEqual(OLD.cleanup.drop.map((d) => d.key).sort());
+    // Nothing rewritten: no rewrite list, and no stray "null" text in its place.
+    expect(confirm.textContent).not.toMatch(/null/);
+    expect(confirm.querySelector(".mig-rewrite")).toBeNull();
     expect(posts).toHaveLength(0);
     (document.querySelector(".mig-remove") as HTMLButtonElement).click();
     await tick();

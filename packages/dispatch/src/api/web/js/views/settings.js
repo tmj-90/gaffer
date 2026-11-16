@@ -564,7 +564,8 @@ function migrationCallout(migration, cleanup) {
       router();
     }),
   );
-  confirm.append(
+  // Element.append writes a null as the text "null": only real nodes go in.
+  const parts = [
     el("p", { class: "mig-confirm-lede" }, [
       el("strong", {}, "This rewrites settings.json keeping only the fourteen settings. "),
       "It removes:",
@@ -595,7 +596,8 @@ function migrationCallout(migration, cleanup) {
         )
       : null,
     el("div", { class: "mig-actions" }, [removeBtn, cancelBtn]),
-  );
+  ];
+  confirm.append(...parts.filter(Boolean));
   box.append(el("div", { class: "mig-act" }, [start]), confirm);
   return box;
 }

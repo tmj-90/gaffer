@@ -565,6 +565,17 @@ const PY_RESTRICTED = {
   importlib: new Set(["metadata"]),
   urllib: new Set(["parse"]),
 };
+const PY_VERSION_ONLY = {
+  sqlite3: new Set(["sqlite_version", "sqlite_version_info", "version", "version_info"]),
+  ssl: new Set([
+    "OPENSSL_VERSION",
+    "OPENSSL_VERSION_INFO",
+    "OPENSSL_VERSION_NUMBER",
+    "HAS_SNI",
+    "HAS_ALPN",
+    "HAS_TLSv1_3",
+  ]),
+};
 const PY_SITE_READ = new Set(
   "getsitepackages getusersitepackages getuserbase ENABLE_USER_SITE USER_SITE USER_BASE PREFIXES".split(
     " ",
@@ -697,6 +708,9 @@ function pyModulePolicy(dotted) {
   if (top.startsWith("_") && top !== "__future__") return { cap: true };
   // site's readers; its addsitedir() runs .pth files.
   if (dotted === "site") return { allow: PY_SITE_READ, mod: "site" };
+  // Version fields of capability modules (`sqlite3.sqlite_version`, `ssl.OPENSSL_VERSION`):
+  // only those members pass, so `connect` or `wrap_socket` is still refused.
+  if (dotted === top && PY_VERSION_ONLY[top]) return { allow: PY_VERSION_ONLY[top], mod: top };
   if (PY_CAP_MODULES.has(top)) return { cap: true };
   // json.tool's main() writes the file named by sys.argv.
   if (dotted === "json.tool" || dotted.startsWith("json.tool.")) return { cap: true };

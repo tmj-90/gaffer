@@ -153,16 +153,32 @@ always gets the same decision. It:
   `alias` values are read the same way. So are the ways an interpreter is made to run
   code its program text does not show: interactive mode reading stdin (`python -i`,
   `node -i`, `php -a`, `perl -d`, `bun repl`), a preload or startup variable set by the
-  command (`NODE_OPTIONS=--require`, `PERL5OPT`, `PERL5DB`, `RUBYOPT`, `PHPRC`,
-  `PYTHONSTARTUP`, `PYTHONINSPECT`, `LD_PRELOAD`, `BROWSER`, `BASH_ENV`), `node
-  --import data:...`, `php -d auto_prepend_file=...`, `deno run https://...`; all are
-  refused. A standard-library `python -m` command line is read: `-m timeit` code is
-  judged as a program, the output paths of `-m json.tool`, `-m venv` and `-m cProfile -o`
-  as writes, and the other standard-library command lines that can write, run code or
-  serve (`-m http.server`, `-m zipfile`, `-m pdb`, ...) are refused. awk and sed
-  programs are read for `system()`, pipes, `print >`, `w`, `e` and `r`; sqlite3
-  commands for `.shell`, `.output`, `writefile()` and the like; an inline program of
-  lua, R, osascript, tclsh, expect, make or dc is refused. Text matching is not a
+  command (`NODE_OPTIONS=--require`, `PERL5OPT`, `PERL5DB`, `RUBYOPT -r`, `PHPRC`,
+  `PYTHONSTARTUP`, `LD_PRELOAD`, `BASH_ENV`), `node --import data:...`, `php -d
+  auto_prepend_file=...`, `deno run https://...`; all are refused. A variable that runs
+  code for whatever command reads it is refused in front of any command, not only an
+  interpreter: `NODE_OPTIONS` carrying a `data:` or `/dev/stdin` module (`npm test`
+  starts node), `PERL5OPT=-M...`, `PS4` with a substitution, `PYTHONINSPECT`, a dotted
+  `PYTHONWARNINGS` category, `MAKEFLAGS` / `MAKEFILES` carrying make text,
+  `GIT_CONFIG_*` (the environment form of `git -c`), `GIT_SSH_COMMAND` and the other
+  programs git runs, an editor other than a plain one or a sed script, a pager other
+  than `cat` or `less`, `LESSOPEN`, a JVM `-XX:OnError`; `PYTHONPYCACHEPREFIX` and
+  `NODE_V8_COVERAGE` are judged as writes. A standard-library `python -m` command line
+  is read: `-m timeit` code is judged as a program, the output paths of `-m json.tool`,
+  `-m venv`, `-m cProfile -o`, `-m py_compile`, `-m compileall -l` and `-m zipfile` /
+  `-m tarfile -c` as writes, listing an archive and `-m pydoc NAME` pass, `-m
+  http.server` passes only on the loopback interface serving the worktree, and the
+  other standard-library command lines that can write, run code or serve (`-m pdb`,
+  `-m tarfile -e`, `-m ensurepip`, ...) are refused. awk and sed programs are read for
+  `system()`, pipes, `print >`, `getline <`, `w`, `e` and `r`, with their options as GNU
+  getopt reads them (any unambiguous prefix of a long option); sqlite3 commands for
+  dot-commands in any abbreviation, functions that reach files or code (also behind
+  identifier quotes or comments), `ATTACH` and `VACUUM INTO`, and its database path is
+  judged as a write unless it is opened `-readonly`; make's command line for `--eval`, a
+  makefile on stdin and assignments make expands (`X=$(shell ...)` runs when any recipe
+  runs); an inline program of lua, R, osascript, tclsh, expect or dc is refused. A
+  command the walker cannot lex is refused (bash runs the lines before the one it cannot
+  parse). Text matching is not a
   parser: a third-party package or local module the program imports is not analysed (a
   list of well-known capability packages is refused, and a few package save methods need
   a literal path), nor is a program file;
@@ -910,8 +926,15 @@ a presence boolean, and an argument not on the allowlist is never copied.
   engine) does so unseen. In JavaScript a function fetched by a member name computed at
   run time is refused when it is called directly or through a variable, but not after it
   passes through an array or an object. Interpreters other than the ones named above
-  (`ed`, `ex`/`vim -c`, `emacs --eval`, `gdb -ex`, a database file `sqlite3` creates at
-  its path argument) are judged only by the rest of the hook. Environment variables
+  (`ed`, `ex`/`vim -c`, `emacs --eval`, `gdb -ex`) are judged only by the rest of the
+  hook. Variables that point a runtime at files the agent wrote (`PYTHONHOME`,
+  `PYTHONUSERBASE`, `BUNDLE_GEMFILE`, `npm_config_script_shell`, `JAVA_TOOL_OPTIONS
+  -javaagent:`, `LD_LIBRARY_PATH`, `CC` for a makefile) are the program-file residual
+  above; `TMPDIR` names where programs put temporary files and is not judged. The Bash
+  write-target extractor reads a command as segments split on `;`, `&&`, `|` and
+  newlines: a write verb inside `( )`, `{ }`, an `if`/`case` body, `exec`, a command
+  substitution, a `trap` or `eval` string, or text piped to `sh` is judged only when
+  another rule names its path. Environment variables
   exported by an earlier command, if the agent's shell keeps them, are not seen. A lexer
   can also misjudge where a string ends in an exotic program; a capability word inside
   text is refused for that reason, but a determined obfuscation in a language's dark

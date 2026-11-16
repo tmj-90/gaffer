@@ -45,12 +45,13 @@
  *                      privileged CLI names, sh -c bodies
  *   deny-list.mjs      lib/dangerous-commands.mjs, loaded so that a failure blocks
  *   inline-lex.mjs     a lexer for inline programs (strings, comments, interpolation)
+ *   inline-other.mjs   awk, sed and sqlite3 programs and make command lines read for
+ *                      writes, reads and commands; lua, R, osascript, tcl, expect and dc
+ *                      inline programs refused
  *   inline-programs.mjs the programs a command hands to an interpreter, as it receives
  *                      them (shell dequoting, wrappers, xargs, sh -c, heredocs, stdin,
- *                      command and process substitutions, trap, preload variables,
- *                      python -m command lines)
- *   inline-other.mjs   awk, sed and sqlite3 programs read for writes and commands; lua,
- *                      R, osascript, tcl, expect, make and dc inline programs refused
+ *                      command and process substitutions, trap, preload variables and
+ *                      variables that run code for any command, python -m command lines)
  *   interpreters.mjs   the inline-interpreter write and read boundary, and the
  *                      capability rule (no write, process, network or dynamic code)
  *   reads.mjs          secret reads and credentials, git secret ops, Bash read targets

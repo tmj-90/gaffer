@@ -3,9 +3,11 @@
  * R, osascript, tcl and expect, make, sqlite3, dc). Each one is read only far enough to
  * find what it can do beyond printing: awk `system()`, pipes and `print > file`; sed `w`,
  * `e`, `r` and the `s///w` / `s///e` flags; sqlite3 dot-commands and SQL functions that
- * write or run commands. A program that cannot be read this way, and any inline program
- * of lua, R, osascript, tclsh, expect, make or dc, is refused: those languages are not
- * modelled at all.
+ * write or run commands, and its database file (a write); make's own command line
+ * (`--eval`, a makefile on stdin, assignments make expands). Long options are matched
+ * by any prefix GNU getopt accepts. A program that cannot be read this way, and any
+ * inline program of lua, R, osascript, tclsh, expect or dc, is refused: those languages
+ * are not modelled at all.
  *
  * Called by lib/hook/inline-programs.mjs for one simple command; it records reasons and
  * the literal paths a program writes (`{ lang: "writes" }`, judged against the write

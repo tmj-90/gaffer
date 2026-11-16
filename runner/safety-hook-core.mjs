@@ -41,6 +41,9 @@
  *   shell.mjs          tokenizing, quoting, segments, redirects, variable substitution
  *   paths.mjs          canonicalize, write and read roots, the secret-path families,
  *                      tilde expansion and cd replay
+ *   cwd-flow.mjs       the directories the shell may be in at each command (subshells,
+ *                      pipelines, conditionals, a cd that may fail): a relative path is
+ *                      judged from every one of them
  *   verbs.mjs          the effective verb: assignments, wrappers, package runners, the
  *                      privileged CLI names, sh -c bodies
  *   deny-list.mjs      lib/dangerous-commands.mjs, loaded so that a failure blocks

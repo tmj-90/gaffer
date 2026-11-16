@@ -37,6 +37,7 @@ import {
   newBudget,
   physicalPath,
 } from "./expand.mjs";
+import { CD_VERBS, CwdFlow, cwdUnion, textMayChangeDir } from "./cwd-flow.mjs";
 import { SECRET_PATH, canonicalize, classifyRootAccess } from "./paths.mjs";
 import {
   COPY_READ_VERBS,
@@ -281,9 +282,18 @@ function substitutionBodies(text) {
 // ---------------------------------------------------------------------------
 // Redirections: the `<` read targets, and the words left once every redirect is gone.
 // ---------------------------------------------------------------------------
+// A redirection target that names a file: not a descriptor (`>&2`, `>&-`) and not a
+// process substitution (`> >(tee log)`, a command of its own).
+function isFileTarget(target) {
+  return !/^[-\d]+$/.test(target) && !/^[<>]?\(/.test(target);
+}
+
 function splitRedirects(tokens) {
   const words = [];
   const reads = [];
+  // Output redirection targets (`> f`, `>> f`, `2> f`, `>& f`, `<> f`): the write
+  // boundary judges them with this walk's directories (cwd-flow.mjs).
+  const writes = [];
   for (let k = 0; k < tokens.length; k += 1) {
     const tk = tokens[k];
     if (/^["']/.test(tk) || !/[<>]/.test(tk)) {
@@ -292,6 +302,11 @@ function splitRedirects(tokens) {
     }
     const parts = splitRedirectToken(tk);
     if (parts.length === 1) {
+      // A bare operator (`> f`): its target is the next word (kept as a word, as before).
+      const next = tokens[k + 1];
+      if (/^\d*(?:>>|>|<>)&?$/.test(tk) && next !== undefined && isFileTarget(next)) {
+        writes.push(next);
+      }
       words.push(tk);
       continue;
     }
@@ -308,9 +323,130 @@ function splitRedirects(tokens) {
     }
     if (target === undefined) break;
     if (/^\d*<>?$/.test(op) && !/^[-\d]+$/.test(target)) reads.push(target);
+    if (/^\d*(?:>>|>|<>)&?$/.test(op) && isFileTarget(target)) writes.push(target);
     // `<&N` / `>&N` duplicate a descriptor; `<<` / `<<<` take a delimiter or a word.
   }
-  return { words, reads };
+  return { words, reads, writes };
+}
+
+const PLAN_OPENERS = new Set(["if", "while", "until", "for", "select", "case", "{"]);
+const PLAN_LOOPS = new Set(["while", "until", "for", "select"]);
+const PLAN_CLOSERS = new Set(["fi", "done", "esac", "}"]);
+const PLAN_MIDS = new Set(["then", "do", "else", "elif", "time", "exec"]);
+const AND_OR_PIPE = new Set(["&&", "||", "|", "|&"]);
+
+/**
+ * THE DIRECTORY FLOW of a segmented command (cwd-flow.mjs): per segment, whether its
+ * `cd` can be relied on and where the directory becomes unknown (a loop or function
+ * body that changes directory, a trap or alias that may, a structure not followed).
+ * Linear in the number of segments.
+ */
+function segDirPlan(segs) {
+  const n = segs.length;
+  const meta = new Array(n);
+  const poisonAt = new Set();
+  const frames = [];
+  let fnPending = false;
+  let anyCd = false;
+  let broken = false;
+  let parens = 0;
+  const term = new Array(n);
+  for (let s = n - 1; s >= 0; s -= 1) {
+    const next = segs[s + 1]?.sep ?? "";
+    term[s] = AND_OR_PIPE.has(next) && s + 1 < n ? term[s + 1] : next;
+  }
+  for (let s = 0; s < n; s += 1) {
+    let tokens = tokenizeSegment(segs[s].text.trim());
+    let opened = 0;
+    if (tokens.length && /^\(+/.test(tokens[0]) && !/^\(\(/.test(tokens[0])) {
+      opened = /^\(+/.exec(tokens[0])[0].length;
+      tokens[0] = tokens[0].slice(opened);
+      if (!tokens[0]) tokens = tokens.slice(1);
+    }
+    parens += opened;
+    const atParens = parens;
+    const last = tokens[tokens.length - 1] ?? "";
+    const closed =
+      /^["']/.test(last) || /\$\(|\(/.test(last) ? 0 : (/\)+$/.exec(last)?.[0].length ?? 0);
+    let i = 0;
+    let negate = false;
+    let coproc = false;
+    let header = false;
+    for (;;) {
+      const t = tokens[i] === undefined ? null : normalizeVerb(tokens[i]);
+      if (t === null) break;
+      const fnHead = /^[A-Za-z_][\w.:-]*\(\)(\{?)$/.exec(t);
+      if (fnHead || t === "function") {
+        fnPending = true;
+        i += t === "function" ? 2 : 1;
+        if (fnHead?.[1] === "{") {
+          frames.push({ kind: "fn", start: s, hasCd: false });
+          fnPending = false;
+        }
+        continue;
+      }
+      if (PLAN_OPENERS.has(t)) {
+        const kind = t === "{" && fnPending ? "fn" : PLAN_LOOPS.has(t) ? "loop" : "block";
+        if (fnPending && t !== "{") broken = true;
+        fnPending = false;
+        frames.push({ kind, start: s, hasCd: false });
+        i += 1;
+        if (t === "for" || t === "select" || t === "case") {
+          header = true;
+          break;
+        }
+        continue;
+      }
+      if (PLAN_CLOSERS.has(t)) {
+        const f = frames.pop();
+        if (!f) broken = true;
+        else if (f.hasCd && (f.kind === "loop" || f.kind === "fn")) {
+          poisonAt.add(f.start);
+          for (const g of frames) g.hasCd = true;
+        } else if (f.hasCd) for (const g of frames) g.hasCd = true;
+        i += 1;
+        continue;
+      }
+      if (PLAN_MIDS.has(t)) {
+        i += 1;
+        continue;
+      }
+      if (t === "!") {
+        negate = !negate;
+        i += 1;
+        continue;
+      }
+      if (t === "coproc") {
+        coproc = true;
+        i += 1;
+        continue;
+      }
+      break;
+    }
+    if (fnPending && i < tokens.length && normalizeVerb(tokens[i]) !== "{") broken = true;
+    let j = i;
+    while (j < tokens.length && ASSIGNMENT_TOKEN.test(tokens[j])) j += 1;
+    while (j < tokens.length && /^(?:command|builtin)$/.test(normalizeVerb(tokens[j]))) j += 1;
+    const verb = header ? null : basename(normalizeVerb(tokens[j] ?? ""));
+    const changesDir = verb !== null && (CD_VERBS.has(verb) || verb === "source" || verb === ".");
+    const laterBody =
+      verb !== null &&
+      (verb === "trap" || verb === "alias" || verb === "eval") &&
+      tokens.slice(j + 1).some((w) => textMayChangeDir(unquote(w)));
+    if (changesDir || laterBody) {
+      anyCd = true;
+      for (const f of frames) f.hasCd = true;
+    }
+    meta[s] = {
+      scoped: frames.length > 0 || atParens > 0 || coproc || term[s] === "&",
+      negate,
+      fnBody: frames.some((f) => f.kind === "fn"),
+      unknownAfter: laterBody,
+    };
+    parens = Math.max(0, parens - closed);
+  }
+  if (frames.length || fnPending) broken = true;
+  return { meta, poisonAt, anyCd, broken };
 }
 
 // ---------------------------------------------------------------------------
@@ -904,267 +1040,295 @@ class Walk {
     let depth = 0;
     const nestedCwds = new Set(cwds);
     const bodies = [];
+    // THE DIRECTORY FLOW (cwd-flow.mjs): each segment's operands are judged from every
+    // directory the shell may be in when it runs; this walk resolves each `cd` target.
+    const plan = segDirPlan(segs);
+    const flow = new CwdFlow(cwds);
+    if (plan.broken && plan.anyCd) flow.poison();
     for (let s = 0; s < segs.length; s += 1) {
       const seg = segs[s];
       const nextSep = segs[s + 1]?.sep ?? "";
-      bodies.push(...substitutionBodies(seg.text));
-      let tokens = tokenizeSegment(seg.text.trim());
-      // Subshell / group parentheses and braces glued to words.
-      if (tokens.length && /^\(+/.test(tokens[0]) && !/^\(\(/.test(tokens[0])) {
-        const m = /^\(+/.exec(tokens[0])[0];
-        depth += m.length;
-        tokens[0] = tokens[0].slice(m.length);
-        if (!tokens[0]) tokens = tokens.slice(1);
-      }
-      let closing = 0;
-      if (tokens.length) {
-        const last = tokens[tokens.length - 1];
-        const m = /\)+$/.exec(last);
-        if (m && depth > 0 && !/^["']/.test(last) && !/\$\(|\(/.test(last)) {
-          closing = Math.min(m[0].length, depth);
-          tokens[tokens.length - 1] = last.slice(0, last.length - closing);
-          if (!tokens[tokens.length - 1]) tokens.pop();
+      if (plan.poisonAt.has(s)) flow.poison();
+      const dm = plan.meta[s];
+      // A function body runs where it is called: unknown while the command changes
+      // directory anywhere; it does not move this flow.
+      const before = dm.fnBody ? (plan.anyCd ? [null] : flow.input(";")) : flow.input(seg.sep);
+      cwds = before;
+      for (const c of before) nestedCwds.add(c);
+      try {
+        bodies.push(...substitutionBodies(seg.text));
+        let tokens = tokenizeSegment(seg.text.trim());
+        // Subshell / group parentheses and braces glued to words.
+        if (tokens.length && /^\(+/.test(tokens[0]) && !/^\(\(/.test(tokens[0])) {
+          const m = /^\(+/.exec(tokens[0])[0];
+          depth += m.length;
+          tokens[0] = tokens[0].slice(m.length);
+          if (!tokens[0]) tokens = tokens.slice(1);
         }
-      }
-      const definite = () =>
-        depth === 0 && !["||", "|", "&"].includes(seg.sep) && nextSep !== "|" && nextSep !== "&";
-      // Leading keywords, and a case pattern (`a)`, `*.ts|*.js)`) inside a case.
-      for (;;) {
-        const w = normalizeVerb(tokens[0] ?? "");
-        if (LEADING_KEYWORDS.has(w)) tokens = tokens.slice(1);
-        else if (this.caseOpen > 0 && /^\(?[^()$`]*\)$/.test(tokens[0] ?? ""))
-          tokens = tokens.slice(1);
-        else if (OPENERS.has(w)) {
+        let closing = 0;
+        if (tokens.length) {
+          const last = tokens[tokens.length - 1];
+          const m = /\)+$/.exec(last);
+          if (m && depth > 0 && !/^["']/.test(last) && !/\$\(|\(/.test(last)) {
+            closing = Math.min(m[0].length, depth);
+            tokens[tokens.length - 1] = last.slice(0, last.length - closing);
+            if (!tokens[tokens.length - 1]) tokens.pop();
+          }
+        }
+        // An assignment that certainly happened (not after `&&` / `||`, not in a pipeline, a
+        // backgrounded list or a block): only then does it replace the value it had.
+        const definite = () =>
+          depth === 0 &&
+          !dm.scoped &&
+          !["||", "&&", "|", "|&", "&"].includes(seg.sep) &&
+          !["|", "|&", "&"].includes(nextSep);
+        // Leading keywords, and a case pattern (`a)`, `*.ts|*.js)`) inside a case.
+        for (;;) {
+          const w = normalizeVerb(tokens[0] ?? "");
+          if (LEADING_KEYWORDS.has(w)) tokens = tokens.slice(1);
+          else if (this.caseOpen > 0 && /^\(?[^()$`]*\)$/.test(tokens[0] ?? ""))
+            tokens = tokens.slice(1);
+          else if (OPENERS.has(w)) {
+            depth += 1;
+            if (w === "case") {
+              // `case WORD in PATTERN) cmd`: the first branch's command shares the segment.
+              this.caseOpen += 1;
+              const inAt = tokens.findIndex((x, k) => k >= 2 && normalizeVerb(x) === "in");
+              tokens = inAt === -1 ? [] : tokens.slice(inAt + 1);
+            } else tokens = tokens.slice(1);
+          } else if (CLOSERS.has(w)) {
+            if (w === "esac") this.caseOpen = Math.max(0, this.caseOpen - 1);
+            depth = Math.max(0, depth - 1);
+            tokens = tokens.slice(1);
+          } else break;
+        }
+        const { words, reads, writes } = splitRedirects(tokens);
+        if (this.writes) for (const w of writes) this.writeTarget(w, cwds);
+        // Function definitions open a body.
+        if (
+          words.length &&
+          (/^[A-Za-z_][\w.:-]*\(\)\{?$/.test(words[0]) || words[0] === "function")
+        ) {
           depth += 1;
-          if (w === "case") {
-            // `case WORD in PATTERN) cmd`: the first branch's command shares the segment.
-            this.caseOpen += 1;
-            const inAt = tokens.findIndex((x, k) => k >= 2 && normalizeVerb(x) === "in");
-            tokens = inAt === -1 ? [] : tokens.slice(inAt + 1);
-          } else tokens = tokens.slice(1);
-        } else if (CLOSERS.has(w)) {
-          if (w === "esac") this.caseOpen = Math.max(0, this.caseOpen - 1);
-          depth = Math.max(0, depth - 1);
-          tokens = tokens.slice(1);
-        } else break;
-      }
-      const { words, reads } = splitRedirects(tokens);
-      // Function definitions open a body.
-      if (
-        words.length &&
-        (/^[A-Za-z_][\w.:-]*\(\)\{?$/.test(words[0]) || words[0] === "function")
-      ) {
-        depth += 1;
-        words.splice(0, words[0] === "function" ? 2 : 1);
-        if (words[0] === "{") words.shift();
-      }
-      const w0 = normalizeVerb(words[0] ?? "");
-      // Redirect read targets are read operands of any command.
-      for (const r of reads) {
-        const why = this.operandReason(r, cwds);
-        if (why) return why;
-      }
-      // Here-document bodies: code when a shell or interpreter reads them.
-      const consumer = (w) => SHELLS.has(basename(w)) || INTERPRETERS.has(basename(w));
-      const nextWord = normalizeVerb(tokenizeSegment((segs[s + 1]?.text ?? "").trim())[0] ?? "");
-      // `echo 'cmd' | sh`: the words echo or printf print are the shell's program.
-      if (nextSep === "|" && SHELLS.has(basename(nextWord)) && /^(?:echo|printf)$/.test(w0)) {
-        bodies.push(words.slice(1).map(unquote).join(" "));
-      }
-      for (const h of seg.heredocs) {
-        if (consumer(w0) || (nextSep === "|" && consumer(nextWord))) bodies.push(h.body);
-        else if (!h.quoted) bodies.push(...substitutionBodies(h.body));
-      }
-      if (w0 === "for" || w0 === "select") {
-        depth += 1;
-        const name = words[1];
-        const inAt = words.findIndex((x, k) => k >= 2 && normalizeVerb(x) === "in");
-        if (name && /^[A-Za-z_]\w*$/.test(name)) {
-          if (w0 === "select" || inAt === -1) this.table.assign(name, null, false, cwds);
+          words.splice(0, words[0] === "function" ? 2 : 1);
+          if (words[0] === "{") words.shift();
+        }
+        const w0 = normalizeVerb(words[0] ?? "");
+        // Redirect read targets are read operands of any command.
+        for (const r of reads) {
+          const why = this.operandReason(r, cwds);
+          if (why) return why;
+        }
+        // Here-document bodies: code when a shell or interpreter reads them.
+        const consumer = (w) => SHELLS.has(basename(w)) || INTERPRETERS.has(basename(w));
+        const nextWord = normalizeVerb(tokenizeSegment((segs[s + 1]?.text ?? "").trim())[0] ?? "");
+        // `echo 'cmd' | sh`: the words echo or printf print are the shell's program.
+        if (nextSep === "|" && SHELLS.has(basename(nextWord)) && /^(?:echo|printf)$/.test(w0)) {
+          bodies.push(words.slice(1).map(unquote).join(" "));
+        }
+        for (const h of seg.heredocs) {
+          if (consumer(w0) || (nextSep === "|" && consumer(nextWord))) bodies.push(h.body);
+          else if (!h.quoted) bodies.push(...substitutionBodies(h.body));
+        }
+        if (w0 === "for" || w0 === "select") {
+          depth += 1;
+          const name = words[1];
+          const inAt = words.findIndex((x, k) => k >= 2 && normalizeVerb(x) === "in");
+          if (name && /^[A-Za-z_]\w*$/.test(name)) {
+            if (w0 === "select" || inAt === -1) this.table.assign(name, null, false, cwds);
+            else {
+              const values = [];
+              let unknown = false;
+              for (const raw of words.slice(inAt + 1)) {
+                const why = this.mentionReason(raw, cwds);
+                if (why) return why;
+                // Once the list is longer than a variable may hold, the loop variable is
+                // unknown and its words need no more expanding.
+                for (const cwd of unknown ? [] : cwds) {
+                  const r = expandWordFields(raw, this.table, [cwd]);
+                  if (!r.fields) {
+                    if (r.unknown) this.nameReader = true;
+                    unknown = true;
+                    break;
+                  }
+                  for (const f of r.fields) {
+                    const g = globField(f, cwd, newBudget(), this.opts);
+                    if (g.kind === "literal") values.push(g.path);
+                    else if (g.kind === "paths") values.push(...g.paths);
+                    else if (g.kind === "nomatch") values.push(f.map((p) => p.c).join(""));
+                    else unknown = true;
+                  }
+                  if (values.length > EXPAND_LIMITS.variants) unknown = true;
+                }
+              }
+              this.table.assign(name, unknown ? null : values, false, cwds);
+            }
+          }
+          continue;
+        }
+        if (w0 === "case") {
+          depth += 1;
+          continue;
+        }
+        // Assignments, alone or in front of a command; export / declare / local forms.
+        let j = 0;
+        if (["export", "declare", "local", "readonly", "typeset"].includes(w0)) {
+          j = 1;
+          let flagsOk = true;
+          while (j < words.length && words[j].startsWith("-")) {
+            if (!/^-[xrg]+$/.test(words[j])) flagsOk = false;
+            j += 1;
+          }
+          for (; j < words.length; j += 1) {
+            const m = /^([A-Za-z_]\w*)=([\s\S]*)$/.exec(words[j]);
+            if (!m) continue;
+            const v = flagsOk ? expandAssignmentValue(m[2], this.table, cwds) : null;
+            this.table.assign(m[1], v, definite(), cwds);
+          }
+          continue;
+        }
+        while (j < words.length && ASSIGNMENT_TOKEN.test(words[j])) j += 1;
+        const prefixOnly = j === words.length;
+        for (const a of words.slice(0, j)) {
+          const eq = a.indexOf("=");
+          const name = a.slice(0, eq).replace(/\+$/, "");
+          const v =
+            a[eq - 1] === "+" ? null : expandAssignmentValue(a.slice(eq + 1), this.table, cwds);
+          this.table.assign(name, v, prefixOnly && definite(), cwds);
+        }
+        if (prefixOnly) {
+          depth = Math.max(0, depth - closing);
+          continue;
+        }
+        const cmdWords = words.slice(j);
+        const verb0 = basename(normalizeVerb(cmdWords[0]));
+        if (verb0 === "unset") {
+          for (const name of cmdWords.slice(1)) {
+            if (/^[A-Za-z_]\w*$/.test(name)) this.table.assign(name, [""], definite(), cwds);
+          }
+          continue;
+        }
+        // cd / pushd / popd: the cwds later relative operands resolve against.
+        if (verb0 === "cd" || verb0 === "pushd" || verb0 === "popd") {
+          const next = [];
+          if (verb0 === "popd") next.push(null);
           else {
-            const values = [];
-            let unknown = false;
-            for (const raw of words.slice(inAt + 1)) {
-              const why = this.mentionReason(raw, cwds);
+            let k = 1;
+            while (k < cmdWords.length && /^-[LPe@]+$/.test(normalizeVerb(cmdWords[k]))) k += 1;
+            if (cmdWords[k] === "--") k += 1;
+            const arg = cmdWords[k];
+            if (arg === undefined) next.push(verb0 === "cd" ? canonicalize(homedir()) : null);
+            else if (/^[-+]/.test(unquote(arg))) next.push(null);
+            else {
+              for (const cwd of cwds) {
+                const r = expandWordFields(arg, this.table, [cwd]);
+                const fields = r.fields ?? [];
+                if (!r.fields || fields.length !== 1) {
+                  next.push(null);
+                  continue;
+                }
+                const g = globField(fields[0], cwd, newBudget(), this.opts);
+                const p =
+                  g.kind === "literal"
+                    ? g.path
+                    : g.kind === "paths" && g.paths.length === 1
+                      ? g.paths[0]
+                      : null;
+                if (p === null || (!p.startsWith("/") && cwd === null)) next.push(null);
+                else {
+                  // Both the logical cd (bash's default: `..` taken lexically) and the
+                  // physical one (`cd -P`, `set -P`): through a symlink they differ.
+                  const raw = p.startsWith("/") ? p : `${cwd ?? ""}/${p}`;
+                  next.push(canonicalize(resolve(raw)));
+                  const phys = physicalPath(raw);
+                  next.push(phys === null ? null : canonicalize(phys));
+                  // CDPATH (from the environment or set by the command) sends a relative
+                  // name that does not start with `.` somewhere the hook does not follow.
+                  if (this.cdpath && !/^\.\.?(?:\/|$)/.test(p) && !p.startsWith("/"))
+                    next.push(null);
+                }
+              }
+            }
+          }
+          // The directories if the cd succeeded; the flow decides what they replace.
+          cwds = cwdUnion(next);
+          for (const c of cwds) {
+            nestedCwds.add(c);
+            if (c !== null) this.dirWords.push({ abs: c, raw: `cd ${unquote(cmdWords[1] ?? "")}` });
+          }
+          depth = Math.max(0, depth - closing);
+          continue;
+        }
+        const eff = resolveEffectiveTokens(cmdWords);
+        if (eff && /^(?:read|mapfile|readarray)$/.test(basename(eff.verb))) this.nameReader = true;
+        if (eff) {
+          const verb = basename(eff.verb);
+          if (this.writes) this.collectWrites(eff, cwds);
+          // eval runs its arguments as a command line.
+          if (verb === "eval" && eff.rest.length > 1) {
+            bodies.push(eff.rest.slice(1).map(unquote).join(" "));
+          }
+          // trap runs its first argument as a command line when the signal comes.
+          if (verb === "trap") {
+            const body = eff.rest.slice(1).find((x) => !/^-[lp-]*$/.test(unquote(x)));
+            if (body !== undefined && unquote(body) !== "-") bodies.push(unquote(body));
+          }
+          const governed =
+            /^(?:ls|stat|file|rm)$/.test(verb) ||
+            (verb === "git" && /^(?:rm|status|ls-files)$/.test(normalizeVerb(eff.rest[1] ?? "")));
+          // Judged on the whole command: a listing inside `$(ls DIR)` feeds a loop.
+          const plainCmd = !/[|`<]|\$\(|\bxargs\b/.test(this.topCmd);
+          if (!(governed && plainCmd)) {
+            for (const w of eff.rest) {
+              const why = this.mentionReason(w, cwds);
               if (why) return why;
-              // Once the list is longer than a variable may hold, the loop variable is
-              // unknown and its words need no more expanding.
-              for (const cwd of unknown ? [] : cwds) {
-                const r = expandWordFields(raw, this.table, [cwd]);
-                if (!r.fields) {
-                  if (r.unknown) this.nameReader = true;
-                  unknown = true;
-                  break;
-                }
-                for (const f of r.fields) {
-                  const g = globField(f, cwd, newBudget(), this.opts);
-                  if (g.kind === "literal") values.push(g.path);
-                  else if (g.kind === "paths") values.push(...g.paths);
-                  else if (g.kind === "nomatch") values.push(f.map((p) => p.c).join(""));
-                  else unknown = true;
-                }
-                if (values.length > EXPAND_LIMITS.variants) unknown = true;
-              }
-            }
-            this.table.assign(name, unknown ? null : values, false, cwds);
-          }
-        }
-        continue;
-      }
-      if (w0 === "case") {
-        depth += 1;
-        continue;
-      }
-      // Assignments, alone or in front of a command; export / declare / local forms.
-      let j = 0;
-      if (["export", "declare", "local", "readonly", "typeset"].includes(w0)) {
-        j = 1;
-        let flagsOk = true;
-        while (j < words.length && words[j].startsWith("-")) {
-          if (!/^-[xrg]+$/.test(words[j])) flagsOk = false;
-          j += 1;
-        }
-        for (; j < words.length; j += 1) {
-          const m = /^([A-Za-z_]\w*)=([\s\S]*)$/.exec(words[j]);
-          if (!m) continue;
-          const v = flagsOk ? expandAssignmentValue(m[2], this.table, cwds) : null;
-          this.table.assign(m[1], v, definite(), cwds);
-        }
-        continue;
-      }
-      while (j < words.length && ASSIGNMENT_TOKEN.test(words[j])) j += 1;
-      const prefixOnly = j === words.length;
-      for (const a of words.slice(0, j)) {
-        const eq = a.indexOf("=");
-        const name = a.slice(0, eq).replace(/\+$/, "");
-        const v =
-          a[eq - 1] === "+" ? null : expandAssignmentValue(a.slice(eq + 1), this.table, cwds);
-        this.table.assign(name, v, prefixOnly && definite(), cwds);
-      }
-      if (prefixOnly) {
-        depth = Math.max(0, depth - closing);
-        continue;
-      }
-      const cmdWords = words.slice(j);
-      const verb0 = basename(normalizeVerb(cmdWords[0]));
-      if (verb0 === "unset") {
-        for (const name of cmdWords.slice(1)) {
-          if (/^[A-Za-z_]\w*$/.test(name)) this.table.assign(name, [""], definite(), cwds);
-        }
-        continue;
-      }
-      // cd / pushd / popd: the cwds later relative operands resolve against.
-      if (verb0 === "cd" || verb0 === "pushd" || verb0 === "popd") {
-        const next = [];
-        if (verb0 === "popd") next.push(null);
-        else {
-          let k = 1;
-          while (k < cmdWords.length && /^-[LPe@]+$/.test(normalizeVerb(cmdWords[k]))) k += 1;
-          if (cmdWords[k] === "--") k += 1;
-          const arg = cmdWords[k];
-          if (arg === undefined) next.push(verb0 === "cd" ? canonicalize(homedir()) : null);
-          else if (/^[-+]/.test(unquote(arg))) next.push(null);
-          else {
-            for (const cwd of cwds) {
-              const r = expandWordFields(arg, this.table, [cwd]);
-              const fields = r.fields ?? [];
-              if (!r.fields || fields.length !== 1) {
-                next.push(null);
-                continue;
-              }
-              const g = globField(fields[0], cwd, newBudget(), this.opts);
-              const p =
-                g.kind === "literal"
-                  ? g.path
-                  : g.kind === "paths" && g.paths.length === 1
-                    ? g.paths[0]
-                    : null;
-              if (p === null || (!p.startsWith("/") && cwd === null)) next.push(null);
-              else {
-                // Both the logical cd (bash's default: `..` taken lexically) and the
-                // physical one (`cd -P`, `set -P`): through a symlink they differ.
-                const raw = p.startsWith("/") ? p : `${cwd ?? ""}/${p}`;
-                next.push(canonicalize(resolve(raw)));
-                const phys = physicalPath(raw);
-                next.push(phys === null ? null : canonicalize(phys));
-                // CDPATH (from the environment or set by the command) sends a relative
-                // name that does not start with `.` somewhere the hook does not follow.
-                if (this.cdpath && !/^\.\.?(?:\/|$)/.test(p) && !p.startsWith("/")) next.push(null);
-              }
             }
           }
-        }
-        cwds = definite() ? [...new Set(next)] : [...new Set([...cwds, ...next])];
-        for (const c of cwds) {
-          nestedCwds.add(c);
-          if (c !== null) this.dirWords.push({ abs: c, raw: `cd ${unquote(cmdWords[1] ?? "")}` });
-        }
-        depth = Math.max(0, depth - closing);
-        continue;
-      }
-      const eff = resolveEffectiveTokens(cmdWords);
-      if (eff && /^(?:read|mapfile|readarray)$/.test(basename(eff.verb))) this.nameReader = true;
-      if (eff) {
-        const verb = basename(eff.verb);
-        if (this.writes) this.collectWrites(eff, cwds);
-        // eval runs its arguments as a command line.
-        if (verb === "eval" && eff.rest.length > 1) {
-          bodies.push(eff.rest.slice(1).map(unquote).join(" "));
-        }
-        // trap runs its first argument as a command line when the signal comes.
-        if (verb === "trap") {
-          const body = eff.rest.slice(1).find((x) => !/^-[lp-]*$/.test(unquote(x)));
-          if (body !== undefined && unquote(body) !== "-") bodies.push(unquote(body));
-        }
-        const governed =
-          /^(?:ls|stat|file|rm)$/.test(verb) ||
-          (verb === "git" && /^(?:rm|status|ls-files)$/.test(normalizeVerb(eff.rest[1] ?? "")));
-        // Judged on the whole command: a listing inside `$(ls DIR)` feeds a loop.
-        const plainCmd = !/[|`<]|\$\(|\bxargs\b/.test(this.topCmd);
-        if (!(governed && plainCmd)) {
-          for (const w of eff.rest) {
-            const why = this.mentionReason(w, cwds);
+          // eval / source / . can set any variable: nothing is known after them.
+          if (verb === "eval" || verb === "source" || verb === ".") this.table.forgetAll();
+          const { operands, follow, extraCwds, placeholder } = this.readOperands(eff);
+          let opCwds = cwds;
+          if (extraCwds.length) {
+            const more = [];
+            if (extraCwds[0] === "@ln") {
+              const dest = operands[operands.length - 1];
+              for (const cwd of cwds) {
+                const r = expandWordFields(dest, this.table, [cwd]);
+                const f = r.fields?.length === 1 ? r.fields[0].map((p) => p.c).join("") : null;
+                if (f === null || cwd === null) more.push(null);
+                else {
+                  const abs = resolve(cwd, f);
+                  more.push(isDirectory(abs) ? abs : dirname(abs));
+                }
+              }
+            } else {
+              for (const raw of extraCwds) {
+                for (const cwd of cwds) {
+                  const r = expandWordFields(raw, this.table, [cwd]);
+                  const f = r.fields?.length === 1 ? r.fields[0].map((p) => p.c).join("") : null;
+                  more.push(
+                    f === null || (cwd === null && !f.startsWith("/"))
+                      ? null
+                      : physicalPath(f.startsWith("/") ? f : `${cwd ?? ""}/${f}`),
+                  );
+                }
+              }
+            }
+            opCwds = [...new Set([...cwds, ...more])];
+          }
+          for (const op of operands) {
+            const why = this.operandReason(op, opCwds, { follow, placeholder });
             if (why) return why;
           }
         }
-        // eval / source / . can set any variable: nothing is known after them.
-        if (verb === "eval" || verb === "source" || verb === ".") this.table.forgetAll();
-        const { operands, follow, extraCwds, placeholder } = this.readOperands(eff);
-        let opCwds = cwds;
-        if (extraCwds.length) {
-          const more = [];
-          if (extraCwds[0] === "@ln") {
-            const dest = operands[operands.length - 1];
-            for (const cwd of cwds) {
-              const r = expandWordFields(dest, this.table, [cwd]);
-              const f = r.fields?.length === 1 ? r.fields[0].map((p) => p.c).join("") : null;
-              if (f === null || cwd === null) more.push(null);
-              else {
-                const abs = resolve(cwd, f);
-                more.push(isDirectory(abs) ? abs : dirname(abs));
-              }
-            }
-          } else {
-            for (const raw of extraCwds) {
-              for (const cwd of cwds) {
-                const r = expandWordFields(raw, this.table, [cwd]);
-                const f = r.fields?.length === 1 ? r.fields[0].map((p) => p.c).join("") : null;
-                more.push(
-                  f === null || (cwd === null && !f.startsWith("/"))
-                    ? null
-                    : physicalPath(f.startsWith("/") ? f : `${cwd ?? ""}/${f}`),
-                );
-              }
-            }
-          }
-          opCwds = [...new Set([...cwds, ...more])];
-        }
-        for (const op of operands) {
-          const why = this.operandReason(op, opCwds, { follow, placeholder });
-          if (why) return why;
+        depth = Math.max(0, depth - closing);
+      } finally {
+        if (!dm.fnBody) {
+          const after = dm.unknownAfter ? cwdUnion(cwds, [null]) : cwds;
+          for (const c of after) nestedCwds.add(c);
+          flow.step(seg.sep, nextSep, before, after, { scoped: dm.scoped, negate: dm.negate });
         }
       }
-      depth = Math.max(0, depth - closing);
     }
     // sh -c bodies, eval arguments, $( ), backticks, <( ) and shell-read here-documents.
     for (const body of [...extractShellDashCBodies(cmd), ...bodies]) {

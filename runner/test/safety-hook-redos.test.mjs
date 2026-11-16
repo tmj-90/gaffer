@@ -229,6 +229,12 @@ for (const [label, command] of [
     "RUBYOPT switches": `RUBYOPT='${rep("-W ")}' ruby -e 1`,
     "NODE_OPTIONS imports": `NODE_OPTIONS='${rep("--import a ")}' npm test`,
     "PYTHONWARNINGS filters": `PYTHONWARNINGS='${rep("ignore::a,")}' pytest`,
+    // The directory flow (lib/hook/cwd-flow.mjs): every program judged from every
+    // directory the shell may be in, the sets bounded.
+    "subshell cds before a write": `${rep("(cd a); ")}python3 -c 'open("x","w")'`,
+    "conditional cds before a write": `${rep("if true; then cd a; fi; ")}python3 -c 'open("x","w")'`,
+    "function bodies with cd before a write": `${rep("f() { cd a; }; ")}python3 -c 'open("x","w")'`,
+    "an && chain of cds before a read": `${rep("cd .. && ")}python3 -c 'open("x").read()'`,
   };
   for (const [label, command] of Object.entries(worst)) {
     const start = performance.now();
@@ -343,6 +349,31 @@ const timedCpu = (command) => {
     t.assert(
       `hook answers ${label} with exit 0 in < 2s over start-up, by the clock or by its own CPU time (exit ${status}, ${ms}ms, start-up ${baseMs}ms; CPU ${cpu}ms, start-up ${baseCpu}ms)`,
       status === 0 && ms < 8000 && (ms - baseMs < 2000 || cpu - baseCpu < 2000),
+    );
+  }
+}
+
+// THE DIRECTORY FLOW (lib/hook/cwd-flow.mjs, external review 20): every relative path is
+// judged from every directory the shell may be in, so thousands of `cd`s in subshells,
+// blocks, function bodies or an `&&` chain must stay linear (the directory sets are
+// bounded, cwd-flow.mjs MAX_DIRS). Each is refused (a relative write after a directory
+// the hook cannot bound) well inside the budget. (The inline rule's own cases are in the
+// list above; with an inline program after thousands of cds the factory front-door
+// rule, factory.mjs, is what costs time, as it did before.)
+{
+  const base = [1, 2, 3].map(() => timedCpu("echo hi"));
+  const baseMs = Math.max(...base.map((b) => b.ms));
+  const baseCpu = Math.max(...base.map((b) => b.cpu));
+  for (const [label, command] of [
+    ["4000 subshell cds, then a touch", `${"(cd a); ".repeat(4000)}touch x`],
+    ["2500 conditional cds, then a touch", `${"if true; then cd a; fi; ".repeat(2500)}touch x`],
+    ["2500 function bodies with cd, then a touch", `${"f() { cd a; }; ".repeat(2500)}touch x`],
+    ["6000 cds in an && chain, then a redirect", `${"cd .. && ".repeat(6000)}echo 1 > x`],
+  ]) {
+    const { status, ms, cpu } = timedCpu(command);
+    t.assert(
+      `hook answers ${label} with exit 2 in < 2s over start-up, by the clock or by its own CPU time (exit ${status}, ${ms}ms, start-up ${baseMs}ms; CPU ${cpu}ms, start-up ${baseCpu}ms)`,
+      status === 2 && ms < 8000 && (ms - baseMs < 2000 || cpu - baseCpu < 2000),
     );
   }
 }

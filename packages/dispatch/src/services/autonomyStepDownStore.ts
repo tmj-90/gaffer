@@ -21,8 +21,14 @@ import type { Db } from "../db/connection.js";
  * one is `autonomy.stepped_down`. The time of the latest step-down (lifted or not) is where
  * the evidence count for that row restarts.
  */
-export const AUTONOMY_STEPPED_DOWN_EVENT = "autonomy.stepped_down" as const;
-export const AUTONOMY_STEP_DOWN_LIFTED_EVENT = "autonomy.step_down_lifted" as const;
+// The event names and the gate's point read live with the policy store (a data-access
+// module the CLI may load at start without pulling a service in, test/cli-lazy-load).
+import {
+  AUTONOMY_STEP_DOWN_LIFTED_EVENT,
+  AUTONOMY_STEPPED_DOWN_EVENT,
+  stepDownInForce,
+} from "../repositories/autonomyPolicyRepository.js";
+export { AUTONOMY_STEP_DOWN_LIFTED_EVENT, AUTONOMY_STEPPED_DOWN_EVENT, stepDownInForce };
 
 /** What caused a step-down. `cascade` is a merge step-down at a lower risk in the repo. */
 export const STEP_DOWN_TRIGGERS = ["regression", "reopened", "tester_failures", "cascade"] as const;
@@ -175,29 +181,4 @@ export function readStepDowns(db: Db, repoId?: string): Map<string, StepDownStat
     }
   }
   return out;
-}
-
-/**
- * Is a step-down in force for (repo, risk, gate)? The point read the gate asks on every
- * decision: the latest step-down or lift for that row decides. Throws on a database error;
- * the gate treats a throw as "in force" (fail closed).
- */
-export function stepDownInForce(db: Db, repoId: string, riskLevel: string, gate: string): boolean {
-  const row = db
-    .prepare(
-      `SELECT event_type FROM work_events
-        WHERE entity_type = 'repository' AND entity_id = @repoId
-          AND event_type IN (@down, @lift)
-          AND json_extract(payload_json, '$.risk_level') = @riskLevel
-          AND json_extract(payload_json, '$.gate') = @gate
-        ORDER BY rowid DESC LIMIT 1`,
-    )
-    .get({
-      repoId,
-      riskLevel,
-      gate,
-      down: AUTONOMY_STEPPED_DOWN_EVENT,
-      lift: AUTONOMY_STEP_DOWN_LIFTED_EVENT,
-    }) as { event_type: string } | undefined;
-  return row?.event_type === AUTONOMY_STEPPED_DOWN_EVENT;
 }

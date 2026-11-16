@@ -1433,12 +1433,12 @@ export class Dispatch {
     /** A PERSON'S VERDICT (package H1): see testerPass. */
     authority: { principal?: VerdictPrincipal | null } = {},
   ): TransitionResult {
-    // AUTONOMY STEP-DOWN, trigger (c): the FAIL and the step-down it causes commit together.
-    return inTransaction(this.db, () => {
-      const result = this.reviewGateSvc.testerFail(ticketRef, input, actor, authority);
-      stepDown.stepDownForTesterVerdict(this.stepDownHost(), result.ticket.id, actor);
-      return result;
-    });
+    // AUTONOMY STEP-DOWN, trigger (c): counted once the FAIL is recorded. Not one
+    // transaction with it: a refused (stale) FAIL keeps the evidence it records before it
+    // throws, and a rollback would lose it. A step-down that fails to write throws here.
+    const result = this.reviewGateSvc.testerFail(ticketRef, input, actor, authority);
+    stepDown.stepDownForTesterVerdict(this.stepDownHost(), result.ticket.id, actor);
+    return result;
   }
 
   // --- Black-box testing handover (BBT-001) --------------------------------
@@ -1557,19 +1557,17 @@ export class Dispatch {
     input: Record<string, unknown>,
     actor: Actor,
   ): { ticketId: string; eventId: string; verdict: LaneVerdict } {
-    // AUTONOMY STEP-DOWN, trigger (c): an UNPROVABLE hold counts like a FAIL; the verdict
-    // and the step-down it causes commit together.
-    return inTransaction(this.db, () => {
-      const res = ticketRecords.recordLaneVerdict(this, ref, input, actor);
-      if (
-        res.verdict.lane === "tester" &&
-        res.verdict.verdict === "held" &&
-        res.verdict.held_code === "tester_unprovable"
-      ) {
-        stepDown.stepDownForTesterVerdict(this.stepDownHost(), res.ticketId, actor);
-      }
-      return res;
-    });
+    // AUTONOMY STEP-DOWN, trigger (c): an UNPROVABLE hold counts like a FAIL, once the
+    // verdict is recorded (as testerFail).
+    const res = ticketRecords.recordLaneVerdict(this, ref, input, actor);
+    if (
+      res.verdict.lane === "tester" &&
+      res.verdict.verdict === "held" &&
+      res.verdict.held_code === "tester_unprovable"
+    ) {
+      stepDown.stepDownForTesterVerdict(this.stepDownHost(), res.ticketId, actor);
+    }
+    return res;
   }
 
   recordScout(
@@ -1682,14 +1680,12 @@ export class Dispatch {
     eventId: string;
     stepped_down: stepDown.SteppedDownRow[];
   } {
-    // AUTONOMY STEP-DOWN, trigger (b): a person reopened a change that landed; the reopen
-    // and the step-down it causes commit together.
-    return inTransaction(this.db, () => {
-      const from = this.resolveTicket(ref).status;
-      const res = reviewLifecycle.reopenForReview(this, ref, input, actor);
-      const stepped = stepDown.stepDownForReopen(this.stepDownHost(), res.ticketId, from, actor);
-      return { ...res, stepped_down: stepped };
-    });
+    // AUTONOMY STEP-DOWN, trigger (b): a person reopened a change that landed; counted
+    // once the reopen is recorded (as testerFail).
+    const from = this.resolveTicket(ref).status;
+    const res = reviewLifecycle.reopenForReview(this, ref, input, actor);
+    const stepped = stepDown.stepDownForReopen(this.stepDownHost(), res.ticketId, from, actor);
+    return { ...res, stepped_down: stepped };
   }
 
   rejectReview(

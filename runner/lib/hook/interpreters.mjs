@@ -1375,6 +1375,14 @@ function analyseJs(toks, prog, roots, caps, writes) {
       cap(caps, "reaches members of this (the global object at the top level)");
       continue;
     }
+    if (name === "constructor" || name === "__proto__") {
+      // A destructured or keyed `constructor` (`const {constructor: F} = f`) reaches the
+      // Function constructor as surely as `.constructor`; a class's own constructor is fine.
+      if (!(name === "constructor" && inClass[i] && isP(next, "("))) {
+        cap(caps, `reaches ${name}`);
+        continue;
+      }
+    }
     if (JS_DANGER_IDS.has(name)) {
       if (isP(next, ":") && (isP(prev, "{") || isP(prev, ","))) continue; // an object key
       cap(caps, `uses ${name}`);

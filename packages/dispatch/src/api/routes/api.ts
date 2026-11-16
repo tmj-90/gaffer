@@ -15,6 +15,7 @@ import { buildOpenApiDocument } from "../openapi/spec.js";
 import { adminAuth, resolveRequestAuth } from "../auth.js";
 import { DispatchError, notFound } from "../../util/errors.js";
 import {
+  autonomyLiftBody,
   autonomyPolicyBody,
   createPrincipalBody,
   idleLoopsBody,
@@ -280,6 +281,27 @@ export async function routeApi(
       apiActor(),
     );
     sendJson(res, 200, { policy });
+    return;
+  }
+
+  // AUTONOMY STEP-DOWN: POST /api/autonomy/lift — a person gives autonomy back for one
+  // (repo x risk x gate). The service refuses anything but the shared operator token or an
+  // active human/admin principal with full capability (an agent principal, the runner).
+  if (segments.length === 3 && segments[1] === "autonomy" && segments[2] === "lift") {
+    if (method !== "POST") return methodNotAllowed(res);
+    const body = autonomyLiftBody.parse(await readJsonBody(req));
+    const lifted = wg.liftAutonomyStepDown(
+      {
+        repo: body.repo_id,
+        riskLevel: body.risk_level,
+        gate: body.gate,
+        how: body.how,
+        reason: body.reason ?? null,
+      },
+      apiActor(),
+      { sharedOperator: isSharedOperator(), principal: apiPrincipal() },
+    );
+    sendJson(res, 200, { lifted: { event_id: lifted.eventId, how: lifted.how } });
     return;
   }
 

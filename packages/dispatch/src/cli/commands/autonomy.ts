@@ -3,7 +3,8 @@ import type { Command } from "commander";
 import { AUTONOMY_MODES } from "../../repositories/autonomyPolicyRepository.js";
 import type { AutonomyLadder } from "../../services/autonomyLadderService.js";
 import { DispatchError } from "../../util/errors.js";
-import { cliPrincipal, printJson } from "../helpers.js";
+import { RISK_LEVELS, type RiskLevel } from "../../domain/types.js";
+import { cliActor, cliPrincipal, printJson } from "../helpers.js";
 import { open } from "../runtime.js";
 
 /**
@@ -43,6 +44,46 @@ export function registerAutonomy(program: Command): void {
         const ladder = wg.autonomyLadder(cliPrincipal(), opts.repo as string | undefined);
         if (opts.json) printJson({ ok: true, ...ladder });
         else process.stdout.write(renderLadder(ladder));
+      } finally {
+        wg.db.close();
+      }
+    });
+
+  autonomy
+    .command("lift <repo>")
+    .description(
+      "Give autonomy back for one repo x risk x gate after a step-down. A person's act: " +
+        "run it with GAFFER_PRINCIPAL_TOKEN=<token> of an active human or admin principal " +
+        "(or --as-principal <token>); the tokenless CLI is refused. Without --override the " +
+        "evidence since the step-down must clear the bar again.",
+    )
+    .requiredOption("--risk <risk>", "low | medium | high | critical")
+    .requiredOption("--gate <gate>", "approve | merge")
+    .option("--override", "give it back before the evidence clears the bar (needs --reason)")
+    .option("--reason <text>", "why (required with --override)")
+    .action((repo, opts, cmd) => {
+      const risk = String(opts.risk);
+      const gate = String(opts.gate);
+      if (!(RISK_LEVELS as readonly string[]).includes(risk)) {
+        throw new DispatchError("VALIDATION_ERROR", `--risk must be one of ${RISK_LEVELS.join(", ")}.`);
+      }
+      if (gate !== "approve" && gate !== "merge") {
+        throw new DispatchError("VALIDATION_ERROR", "--gate must be approve or merge.");
+      }
+      const wg = open(cmd.optsWithGlobals());
+      try {
+        const lifted = wg.liftAutonomyStepDown(
+          {
+            repo: String(repo),
+            riskLevel: risk as RiskLevel,
+            gate,
+            how: opts.override ? "override" : "reenable",
+            reason: opts.reason ? String(opts.reason) : null,
+          },
+          cliActor(),
+          { principal: cliPrincipal() },
+        );
+        printJson({ ok: true, event_id: lifted.eventId, how: lifted.how });
       } finally {
         wg.db.close();
       }

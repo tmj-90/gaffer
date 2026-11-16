@@ -259,6 +259,21 @@ function evidenceMore(e: LadderEvidence): number {
   return Math.max(main, moreNeeded(e.agreement.k, e.agreement.n, MIN_SAMPLES, AGREEMENT_THRESHOLD));
 }
 
+/**
+ * The evidence for one row since `since` (same-repo human decisions only: no prior), and
+ * how many more decisions it needs. What a re-enable after a step-down is judged on.
+ */
+export function rowEvidence(
+  decisions: readonly ReviewDecisionRow[],
+  repoId: string,
+  risk: string,
+  gate: AutonomyGate,
+  since: string | null,
+): { evidence: LadderEvidence; more: number } {
+  const evidence = evidenceFor(gate, tally(decisions, repoId, risk, since), since);
+  return { evidence, more: evidenceMore(evidence) };
+}
+
 /** "7 of 10 decisions, 100% agreement: 3 more" (or the merge wording). */
 export function distanceText(e: LadderEvidence, more: number): string {
   const noun = e.measure === "agreement" ? "decisions" : "approvals with a known edit record";

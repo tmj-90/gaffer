@@ -361,6 +361,17 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     responses: [ok("The resulting policy."), invalid],
   },
   {
+    method: "POST",
+    path: "/api/autonomy/lift",
+    tag: T.config,
+    summary: "Give autonomy back after a step-down",
+    description:
+      "A person's act only: the shared operator token, or an active human or admin principal with full capability (an agent principal is refused with 403 `ACTOR_NOT_PERMITTED`; MCP has no such tool). `how: reenable` needs the evidence since the step-down to clear the bar again (409 `STATE_CONFLICT` with the distance otherwise); `how: override` needs a `reason`. A merge row cannot be lifted while a lower risk's merge row in the same repository is still stepped down. Recorded as `autonomy.step_down_lifted` on the event chain.",
+    capability: "full",
+    body: "autonomyLiftBody",
+    responses: [ok("`{ lifted: { event_id, how } }`."), invalid, forbidden, conflict, notFound],
+  },
+  {
     method: "GET",
     path: "/api/autonomy/ladder",
     tag: T.read,

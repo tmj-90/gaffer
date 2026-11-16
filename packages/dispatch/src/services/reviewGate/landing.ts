@@ -23,6 +23,7 @@ import { computeApprovedUnchanged } from "./staleness.js";
 import { assertSignedActs } from "./sealing.js";
 import { notTestedMessage } from "./tester.js";
 import { readLatestWaiver } from "./waiver.js";
+import { holdMessage, type AutonomyHold } from "../autonomyPolicyService.js";
 
 /** What these functions read from the {@link ReviewGateService} facade they are handed. */
 export type LandingHost = Pick<
@@ -33,6 +34,7 @@ export type LandingHost = Pick<
 export type LandingInternals = Pick<
   ReviewGateInternals,
   | "approvalShaResolver"
+  | "autonomyHoldFn"
   | "changeOnRefsResolver"
   | "clock"
   | "db"
@@ -307,6 +309,11 @@ export function beginLanding(
         { reason: "approval_changed", started_on: input.approval, current: approval },
       );
     }
+    // THE AUTONOMY LADDER (the in-flight race): an approval that was not a person's lands
+    // only through the merge gate, so a step-down (or the ceiling) recorded while this
+    // landing was being prepared stops it here, exactly like a revocation. A person's
+    // approval is a person's decision and is not held by it.
+    assertMergeGateNotHeld(internals, ticket, approval);
     const landing = computeLandingStatus(internals.db, ticket.id);
     const target = landing.repos.find((r) => r.repoId === input.repo || r.repo === input.repo);
     // A legacy approval (no per-repo pins) has no plan: the status/approval/CI checks
@@ -367,6 +374,46 @@ export function beginLanding(
       eventId,
     };
   });
+}
+
+/**
+ * THE AUTONOMY LADDER: refuse a landing whose approval (the ticket's latest move into
+ * ready_for_merge) was not a person's while the merge gate is held for the ticket (a
+ * step-down in force, the critical ceiling). STATE_CONFLICT reason
+ * `autonomy_stepped_down` / `autonomy_ceiling`: the runner lands nothing and the ticket
+ * waits for a person. A resolver that throws is a hold; an approval that cannot be read is
+ * treated as not a person's (fail closed).
+ */
+export function assertMergeGateNotHeld(
+  internals: Pick<LandingInternals, "autonomyHoldFn" | "db">,
+  ticket: Ticket,
+  approval: string | null,
+): void {
+  const resolve = internals.autonomyHoldFn;
+  if (!resolve) return;
+  const by = approval
+    ? (
+        internals.db
+          .prepare(`SELECT actor_type FROM work_events WHERE id = ?`)
+          .get(approval) as { actor_type: string } | undefined
+      )?.actor_type
+    : undefined;
+  if (by === "human" || by === "admin") return;
+  let hold: AutonomyHold | null;
+  try {
+    hold = resolve(ticket, "merge");
+  } catch {
+    hold = { kind: "stepped_down", repoId: "unknown" };
+  }
+  if (!hold) return;
+  throw new DispatchError(
+    "STATE_CONFLICT",
+    `#${ticket.number} was approved without a person and its merge gate is now held. ${holdMessage(hold, "merge")} Nothing may land on that approval.`,
+    {
+      reason: hold.kind === "ceiling" ? "autonomy_ceiling" : "autonomy_stepped_down",
+      ...(hold.repoId ? { repo_id: hold.repoId } : {}),
+    },
+  );
 }
 
 /**

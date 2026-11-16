@@ -16,6 +16,11 @@ import type { AutonomyMode, AutonomyPolicyGate } from "../repositories/autonomyP
  *   With no policy rows anywhere, {@link isAutonomyAllowed} reduces to exactly the
  *   pre-Phase-3 env check — the proof-of-no-regression the tests pin down.
  *
+ * HOLDS COME FIRST (the autonomy ladder): the critical CEILING and a STEP-DOWN in force
+ * (autonomyStepDownStore.ts) deny before either allow-path is asked, so they can only
+ * ever take autonomy away, never grant it. With no step-down on record and a risk below
+ * critical the decision is exactly the one above.
+ *
  * FAIL-CLOSED specifics:
  *   - a ticket with NO write repos never gets an auto grant (empty set ⇒ false);
  *   - a multi-write-repo ticket needs a mode='auto' row for EVERY write repo — one
@@ -106,6 +111,8 @@ export function policyGrantsAuto(
   gate: AutonomyPolicyGate,
 ): boolean {
   if (repoIds.length === 0) return false; // no write repo ⇒ never auto (fail-closed).
+  // The ceiling and a step-down in force hold any row, whatever its mode says.
+  if (autonomyHold(lookup, repoIds, riskLevel, gate)) return false;
   return repoIds.every((repoId) => lookup.get(repoId, riskLevel, gate)?.mode === "auto");
 }
 
@@ -199,5 +206,8 @@ export function isAutonomyAllowed(
   gate: AutonomyPolicyGate,
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
+  // The ceiling and a step-down hold BEFORE either allow-path: taking autonomy back must
+  // hold whether a policy row or the mode's env floor gave it.
+  if (autonomyHold(lookup, repoIds, riskLevel, gate)) return false;
   return envAllowsAuto(gate, env) || policyGrantsAuto(lookup, repoIds, riskLevel, gate);
 }

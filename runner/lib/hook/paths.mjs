@@ -246,6 +246,13 @@ const CLI_CREDENTIAL_PATHS = String.raw`\.config\/gh\/.*|\.config\/gcloud\/.*|\.
 const FACTORY_KEYS_PATH = String.raw`gaffer\/keys(?:\/.*)?|\.config\/gaffer(?:\/.*)?`;
 // The same for matching anywhere in a raw command (not end-anchored).
 const FACTORY_KEYS_FRAGMENT = String.raw`gaffer\/keys(?![\w.-])|\.config\/gaffer(?![\w.-])`;
+// THE TICK'S HELPER SERVERS (runner/lib/helper-servers.sh): their request pipes live in
+// $GAFFER_DATA/wg-serve/<pid>.<random>. The servers run what reaches them with the
+// runner's authority and answer only lines that carry the tick's key, which agent code
+// never sees; this second guard refuses any tool call or command that names the
+// directory at all (reading, writing, listing, globbing), on every provider.
+const TICK_SERVERS_PATH = String.raw`wg-serve(?:\/.*)?`;
+const TICK_SERVERS_FRAGMENT = String.raw`(?<![\w.-])wg-serve(?![\w.-])`;
 // Same families for matching anywhere in a raw command (not end-anchored).
 const CLI_CREDENTIAL_FRAGMENT = String.raw`credentials\.tfrc\.json|\.config\/gh\/|\.config\/gcloud\/|\.docker\/config\.json\b|\.kube\/|\.azure\/|\.pypirc\b|\.pgpass\b|\.claude\.json\b`;
 // ENV-FILE and CREDENTIAL-NAME fragments (false-positive fix). The old `\.env\b` and
@@ -275,7 +282,7 @@ const CRED_NAME_FRAGMENT = String.raw`(?<![\w$.-])(?:\w[\w-]*[_-]|\.)?credential
 // could be a renamed real `.env`, so it stays a secret; see isTrackedEnvTemplate.
 const ENV_TEMPLATE = /(^|\/)\.env\.(?:example|sample|template|dist|defaults)$/i;
 const SECRET_PATH = new RegExp(
-  String.raw`(^|\/)(\.env([._-][\w-]+)?|[\w-][\w.-]*\.env|\.netrc|\.npmrc|\.git-credentials|${CLI_CREDENTIAL_PATHS}|${FACTORY_KEYS_PATH}|id_[a-z0-9]+|.*\.pem|.*\.key|.*\.p12|(\.|\w[\w-]*[_-])?credentials(\.(json|toml|ya?ml|ini|txt))?|(\w[\w-]*[_-])?secrets?\.(json|ya?ml|txt|toml|ini)|client_secret[\w.-]*\.json|${MCP_RUNTIME_FILE}|${PROC_ENVIRON}|dashboard-token(\.[\w-]+)?|[\w.-]*[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}(\.[\w-]+)?)$`,
+  String.raw`(^|\/)(\.env([._-][\w-]+)?|[\w-][\w.-]*\.env|\.netrc|\.npmrc|\.git-credentials|${CLI_CREDENTIAL_PATHS}|${FACTORY_KEYS_PATH}|${TICK_SERVERS_PATH}|id_[a-z0-9]+|.*\.pem|.*\.key|.*\.p12|(\.|\w[\w-]*[_-])?credentials(\.(json|toml|ya?ml|ini|txt))?|(\w[\w-]*[_-])?secrets?\.(json|ya?ml|txt|toml|ini)|client_secret[\w.-]*\.json|${MCP_RUNTIME_FILE}|${PROC_ENVIRON}|dashboard-token(\.[\w-]+)?|[\w.-]*[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}(\.[\w-]+)?)$`,
   "i",
 );
 const GIT_INTERNAL = /(^|\/)\.git(\/|$)/;
@@ -393,6 +400,7 @@ export {
   MCP_RUNTIME_FILE,
   PROC_ENVIRON,
   SECRET_PATH,
+  TICK_SERVERS_FRAGMENT,
   TOKEN_SOURCE_EXT_GUARD,
   canonicalCandidates,
   canonicalize,

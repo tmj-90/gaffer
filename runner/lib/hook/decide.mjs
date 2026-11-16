@@ -21,7 +21,12 @@ import {
   refRewriteReason,
 } from "./git.mjs";
 import { bootstrapInstallDir, bootstrapInstallReason } from "./installs.mjs";
-import { inlineReadBoundaryReason, inlineWriteBoundaryReason } from "./interpreters.mjs";
+import {
+  inlineCapability,
+  inlineProgramReadReason,
+  inlineReadBoundaryReason,
+  inlineWriteBoundaryReason,
+} from "./interpreters.mjs";
 import {
   AGENT_SETTINGS,
   ENV_TEMPLATE,
@@ -43,7 +48,7 @@ import {
   secretBoundaryReason,
   stripSearchPatterns,
 } from "./reads.mjs";
-import { expandedReadReason } from "./read-operands.mjs";
+import { expandedReadReason, expandedWriteTargets } from "./read-operands.mjs";
 import { UNVERIFIABLE_TARGET } from "./shell.mjs";
 import { extractBashWriteTargets } from "./writes.mjs";
 
@@ -333,7 +338,18 @@ function checkCommand(cmd) {
 
   // Repo-access boundary for bash write ops and branch creation.
   const roots = resolveRoots();
-  for (const target of extractBashWriteTargets(cmd)) {
+  // Each distinct target once: a target can need a git lookup (gitExecSurfaceReason), and
+  // `awk '{print 1>x print 1>x ...}'` named the same one thousands of times (50 s).
+  // The segment extractor, and the expansion walk that also reads `( )`, `{ }`, if / for
+  // / case bodies, substitutions, eval, trap and sh -c bodies with loop variables known.
+  const writeTargets = new Set([
+    ...extractBashWriteTargets(cmd),
+    ...expandedWriteTargets(cmd, roots),
+  ]);
+  for (const target of writeTargets) {
+    // Many distinct targets each cost git lookups: past the budget, refuse rather than
+    // let the hook's own timeout decide.
+    withinRuleBudget(cmd);
     // BASH-vs-WRITE PARITY: a bash write op must obey the SAME `.git` protection
     // the Write tool applies in checkWrite — not just the write-root boundary. A
     // `.git/…` write (e.g. `echo … > .git/hooks/post-commit`, `cp evil
@@ -420,6 +436,39 @@ function checkCommand(cmd) {
   // word that expands to a secret path. It only adds refusals.
   const expandedRead = expandedReadReason(cmd, roots);
   if (expandedRead) block(`${expandedRead} (command: "${cmd.slice(0, 120)}")`);
+
+  // Inline programs by capability (lib/hook/interpreters.mjs, 63C): a program the hook
+  // cannot see, or one that can write, start a process, reach the network or run code
+  // built at run time (other than a write to a literal path in a write root), is refused.
+  // Last, so a command another rule refuses keeps that rule's reason; it only adds refusals.
+  withinRuleBudget(cmd);
+  const inline = inlineCapability(cmd, roots);
+  if (inline.reason) block(`${inline.reason} (command: "${cmd.slice(0, 120)}")`);
+  // The literal paths an allowed inline program writes get the Bash write-target checks:
+  // `node -e 'fs.writeFileSync(".claude/settings.json", ...)'` used to pass on its root.
+  for (const target of inline.targets) {
+    if (GIT_INTERNAL.test(target)) {
+      block(
+        `inline program write inside .git (hooks / exec-hijack surface): ${target} (command: "${cmd.slice(0, 120)}")`,
+      );
+    }
+    const gitWhy = gitExecSurfaceReason(target, DRIVER_SELECTION.test(cmd) ? null : "");
+    if (gitWhy) block(`inline program ${gitWhy} (command: "${cmd.slice(0, 120)}")`);
+    if (AGENT_SETTINGS.test(target)) {
+      block(
+        `inline program write to the agent settings file (safety-hook removal surface): ${target} (command: "${cmd.slice(0, 120)}")`,
+      );
+    }
+    if (
+      (SECRET_PATH.test(target) || SECRET_PATH.test(target + "/")) &&
+      !ENV_TEMPLATE.test(target)
+    ) {
+      block(`inline program write to a secret file: ${target} (command: "${cmd.slice(0, 120)}")`);
+    }
+  }
+  // The read rules over the same normalised program text.
+  const inlineProgramRead = inlineProgramReadReason(cmd, roots);
+  if (inlineProgramRead) block(`${inlineProgramRead} (command: "${cmd.slice(0, 120)}")`);
 
   allow();
 }

@@ -45,7 +45,13 @@ import {
   isTrackedEnvTemplate,
   searchFileOperands,
 } from "./reads.mjs";
-import { normalizeVerb, splitRedirectToken, tokenizeSegment, unquote } from "./shell.mjs";
+import {
+  UNVERIFIABLE_TARGET,
+  normalizeVerb,
+  splitRedirectToken,
+  tokenizeSegment,
+  unquote,
+} from "./shell.mjs";
 import { ASSIGNMENT_TOKEN, extractShellDashCBodies, resolveEffectiveTokens } from "./verbs.mjs";
 
 const NAME_THE_FILE =
@@ -78,6 +84,27 @@ const VALUE_FLAGS = {
 // A long option whose value names a file the tool reads (`--files-from=F`).
 const FILE_VALUE_OPTION = /^--[\w-]*(?:file|from|input|include)[\w-]*=|^--in=/;
 const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh"]);
+// Verbs that write, delete or change the paths they are given: `target` takes the last
+// operand (or `-t DIR`), `skip` drops leading operands that are not paths (a mode, an
+// owner), `values` are flags whose value is not a path.
+const WRITE_VERBS = {
+  touch: { values: ["-d", "-t", "-r", "--date", "--reference"] },
+  mkdir: { values: ["-m", "--mode"] },
+  rmdir: {},
+  rm: {},
+  unlink: {},
+  shred: { values: ["-n", "-s", "--iterations", "--size"] },
+  truncate: { values: ["-s", "-r", "--size", "--reference"] },
+  chmod: { skip: 1, values: ["--reference"] },
+  chown: { skip: 1, values: ["--reference", "--from"] },
+  chgrp: { skip: 1, values: ["--reference"] },
+  tee: {},
+  cp: { target: true, values: ["-S", "--suffix"] },
+  mv: { target: true, values: ["-S", "--suffix"] },
+  ln: { target: true, values: ["-S", "--suffix"] },
+  install: { target: true, values: ["-m", "-o", "-g", "-S", "--mode", "--owner", "--group"] },
+  dd: {},
+};
 const INTERPRETERS = new Set([
   "node",
   "nodejs",
@@ -94,7 +121,7 @@ const INTERPRETERS = new Set([
 ]);
 const TAR_ALIASES = new Set(["bsdtar", "gtar", "star"]);
 const SEVEN_ZIP = new Set(["7z", "7za", "7zr", "7zz"]);
-const LEADING_KEYWORDS = new Set(["!", "then", "do", "else", "elif", "time", "coproc"]);
+const LEADING_KEYWORDS = new Set(["!", "then", "do", "else", "elif", "time", "coproc", "exec"]);
 const OPENERS = new Set(["if", "while", "until", "case", "select", "{"]);
 const CLOSERS = new Set(["fi", "done", "esac", "}"]);
 
@@ -401,6 +428,82 @@ class Walk {
     // the verdict per operand already judged under the same variable values.
     this.work = 0;
     this.cache = new Map();
+    // When set (expandedWriteTargets), the write targets of every command the walk
+    // reaches, expanded: absolute paths, or UNVERIFIABLE_TARGET for one it cannot expand.
+    this.writes = null;
+    this.caseOpen = 0;
+  }
+
+  // ---- the write targets of one command (expandedWriteTargets) --------------------
+  collectWrites(eff, cwds) {
+    const verb = basename(eff.verb);
+    const spec = WRITE_VERBS[verb];
+    if (!spec) return;
+    const args = eff.rest.slice(1);
+    const ops = [];
+    let target = null;
+    let dashdash = false;
+    for (let k = 0; k < args.length; k += 1) {
+      const u = unquote(args[k]);
+      if (!dashdash && u === "--") {
+        dashdash = true;
+        continue;
+      }
+      if (!dashdash && u.startsWith("-") && u !== "-") {
+        if (spec.target && (u === "-t" || u === "--target-directory")) target = args[k + 1];
+        else if (spec.target && /^--target-directory=/.test(u)) target = u.slice(19);
+        else if (spec.target && /^-t./.test(u)) target = u.slice(2);
+        if ((spec.values ?? []).includes(u) || u === "-t" || u === "--target-directory") k += 1;
+        continue;
+      }
+      if (verb === "dd") {
+        if (/^of=/.test(u)) ops.push(u.slice(3));
+        continue;
+      }
+      ops.push(args[k]);
+    }
+    let targets;
+    if (spec.target) targets = target !== null ? [target] : ops.slice(-1);
+    else targets = ops.slice(spec.skip ?? 0);
+    for (const raw of targets) this.writeTarget(raw, cwds);
+  }
+
+  writeTarget(raw, cwds) {
+    const tk = raw.trim();
+    if (!tk || tk === "-") return;
+    for (const cwd of cwds) {
+      const r = expandWordFields(tk, this.table, [cwd]);
+      if (!r.fields || r.unknown || r.unverifiable || r.capped) {
+        this.writes.push(UNVERIFIABLE_TARGET);
+        return;
+      }
+      for (const field of r.fields) {
+        const g = globField(field, cwd, newBudget(), this.opts);
+        const paths =
+          g.kind === "literal"
+            ? [g.path]
+            : g.kind === "paths"
+              ? g.paths
+              : g.kind === "nomatch"
+                ? [field.map((p) => p.c).join("")]
+                : null;
+        if (paths === null) {
+          this.writes.push(UNVERIFIABLE_TARGET);
+          return;
+        }
+        for (const p of paths) {
+          if (p === "") continue;
+          if (!p.startsWith("/") && cwd === null) {
+            this.writes.push(UNVERIFIABLE_TARGET);
+            return;
+          }
+          const lexical = resolve(p.startsWith("/") ? p : `${cwd}/${p}`);
+          if (lexical === "/dev" || lexical.startsWith("/dev/")) continue;
+          const phys = physicalPath(lexical);
+          this.writes.push(phys === null ? UNVERIFIABLE_TARGET : canonicalize(phys));
+        }
+      }
+    }
   }
 
   // ---- one read operand -------------------------------------------------------
@@ -825,14 +928,22 @@ class Walk {
       }
       const definite = () =>
         depth === 0 && !["||", "|", "&"].includes(seg.sep) && nextSep !== "|" && nextSep !== "&";
-      // Leading keywords.
+      // Leading keywords, and a case pattern (`a)`, `*.ts|*.js)`) inside a case.
       for (;;) {
         const w = normalizeVerb(tokens[0] ?? "");
         if (LEADING_KEYWORDS.has(w)) tokens = tokens.slice(1);
+        else if (this.caseOpen > 0 && /^\(?[^()$`]*\)$/.test(tokens[0] ?? ""))
+          tokens = tokens.slice(1);
         else if (OPENERS.has(w)) {
           depth += 1;
-          tokens = tokens.slice(1);
+          if (w === "case") {
+            // `case WORD in PATTERN) cmd`: the first branch's command shares the segment.
+            this.caseOpen += 1;
+            const inAt = tokens.findIndex((x, k) => k >= 2 && normalizeVerb(x) === "in");
+            tokens = inAt === -1 ? [] : tokens.slice(inAt + 1);
+          } else tokens = tokens.slice(1);
         } else if (CLOSERS.has(w)) {
+          if (w === "esac") this.caseOpen = Math.max(0, this.caseOpen - 1);
           depth = Math.max(0, depth - 1);
           tokens = tokens.slice(1);
         } else break;
@@ -856,6 +967,10 @@ class Walk {
       // Here-document bodies: code when a shell or interpreter reads them.
       const consumer = (w) => SHELLS.has(basename(w)) || INTERPRETERS.has(basename(w));
       const nextWord = normalizeVerb(tokenizeSegment((segs[s + 1]?.text ?? "").trim())[0] ?? "");
+      // `echo 'cmd' | sh`: the words echo or printf print are the shell's program.
+      if (nextSep === "|" && SHELLS.has(basename(nextWord)) && /^(?:echo|printf)$/.test(w0)) {
+        bodies.push(words.slice(1).map(unquote).join(" "));
+      }
       for (const h of seg.heredocs) {
         if (consumer(w0) || (nextSep === "|" && consumer(nextWord))) bodies.push(h.body);
         else if (!h.quoted) bodies.push(...substitutionBodies(h.body));
@@ -991,9 +1106,15 @@ class Walk {
       if (eff && /^(?:read|mapfile|readarray)$/.test(basename(eff.verb))) this.nameReader = true;
       if (eff) {
         const verb = basename(eff.verb);
+        if (this.writes) this.collectWrites(eff, cwds);
         // eval runs its arguments as a command line.
         if (verb === "eval" && eff.rest.length > 1) {
           bodies.push(eff.rest.slice(1).map(unquote).join(" "));
+        }
+        // trap runs its first argument as a command line when the signal comes.
+        if (verb === "trap") {
+          const body = eff.rest.slice(1).find((x) => !/^-[lp-]*$/.test(unquote(x)));
+          if (body !== undefined && unquote(body) !== "-") bodies.push(unquote(body));
         }
         const governed =
           /^(?:ls|stat|file|rm)$/.test(verb) ||
@@ -1082,6 +1203,20 @@ export function expandedReadReason(cmd, roots) {
     }
   }
   return null;
+}
+
+/**
+ * The write targets of a Bash command once the shell has expanded its words, in every
+ * command the walk reaches: inside `( )`, `{ }`, if / while / for / case bodies,
+ * functions, `$( )`, backticks, `eval`, `trap` and `sh -c` bodies, with loop variables and
+ * `cd` followed. Absolute canonical paths, or UNVERIFIABLE_TARGET for a target the hook
+ * cannot expand. The caller judges each like a Bash write target.
+ */
+export function expandedWriteTargets(cmd, roots) {
+  const walk = new Walk(cmd, roots);
+  walk.writes = [];
+  walk.commandReason(cmd, [canonicalize(process.cwd())]);
+  return walk.writes;
 }
 
 export { splitCommand };

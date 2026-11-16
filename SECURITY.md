@@ -134,6 +134,54 @@ always gets the same decision. It:
   (`$(git log -1 --format=%s)`, `git log ... | sh`, `eval "$(git ...)"`) is refused. A
   script file the agent wrote and then runs (`bash x.sh`, `cat x.sh | bash`) is as
   invisible to the hook as a file the Write tool wrote (see the residual limits);
+- refuses an inline interpreter program (`python -c`, `node -e` / `-p`, `deno eval`,
+  `bun -e`, `ruby -e`, `perl -e`, `php -r`, and the same programs fed on stdin by a
+  here-document, a here-string or `echo` / `printf`, also behind wrappers, `xargs`,
+  `sh -c` and `eval`) unless it is visibly free of file-writing, process, network and
+  dynamic-code capabilities. It reads the program as the interpreter will receive it
+  (the shell's quoting undone, a `cd` before it followed), lexes it per language, and
+  refuses any such capability under any alias or spelling: a capability module imported
+  under any name, a member of `os`, `sys`, `fs`, `process`, `File` and the like outside a
+  read-only list, `eval` / `exec` / `getattr` / `__import__` / dunders, `Function`,
+  `constructor`, computed member names, `send`, string callables, backticks. The one
+  capability it allows is a write whose every path is a literal inside a write root, and
+  that path then gets the checks a Bash write target gets (`.git`, the agent settings,
+  the git execution surface, secret files). A program it cannot see (a command
+  substitution, an xargs placeholder, a variable the command sets at run time, a program
+  piped in from `curl` or `base64 -d`) is refused. The programs inside `$(...)`,
+  backticks, `<(...)` / `>(...)`, an unquoted here-document's expansions, `trap` and
+  `alias` values are read the same way. So are the ways an interpreter is made to run
+  code its program text does not show: interactive mode reading stdin (`python -i`,
+  `node -i`, `php -a`, `perl -d`, `bun repl`), a preload or startup variable set by the
+  command (`NODE_OPTIONS=--require`, `PERL5OPT`, `PERL5DB`, `RUBYOPT -r`, `PHPRC`,
+  `PYTHONSTARTUP`, `LD_PRELOAD`, `BASH_ENV`), `node --import data:...`, `php -d
+  auto_prepend_file=...`, `deno run https://...`; all are refused. A variable that runs
+  code for whatever command reads it is refused in front of any command, not only an
+  interpreter: `NODE_OPTIONS` carrying a `data:` or `/dev/stdin` module (`npm test`
+  starts node), `PERL5OPT=-M...`, `PS4` with a substitution, `PYTHONINSPECT`, a dotted
+  `PYTHONWARNINGS` category, `MAKEFLAGS` / `MAKEFILES` carrying make text,
+  `GIT_CONFIG_*` (the environment form of `git -c`), `GIT_SSH_COMMAND` and the other
+  programs git runs, an editor other than a plain one or a sed script, a pager other
+  than `cat` or `less`, `LESSOPEN`, a JVM `-XX:OnError`; `PYTHONPYCACHEPREFIX` and
+  `NODE_V8_COVERAGE` are judged as writes. A standard-library `python -m` command line
+  is read: `-m timeit` code is judged as a program, the output paths of `-m json.tool`,
+  `-m venv`, `-m cProfile -o`, `-m py_compile`, `-m compileall -l` and `-m zipfile` /
+  `-m tarfile -c` as writes, listing an archive and `-m pydoc NAME` pass, `-m
+  http.server` passes only on the loopback interface serving the worktree, and the
+  other standard-library command lines that can write, run code or serve (`-m pdb`,
+  `-m tarfile -e`, `-m ensurepip`, ...) are refused. awk and sed programs are read for
+  `system()`, pipes, `print >`, `getline <`, `w`, `e` and `r`, with their options as GNU
+  getopt reads them (any unambiguous prefix of a long option); sqlite3 commands for
+  dot-commands in any abbreviation, functions that reach files or code (also behind
+  identifier quotes or comments), `ATTACH` and `VACUUM INTO`, and its database path is
+  judged as a write unless it is opened `-readonly`; make's command line for `--eval`, a
+  makefile on stdin and assignments make expands (`X=$(shell ...)` runs when any recipe
+  runs); an inline program of lua, R, osascript, tclsh, expect or dc is refused. A
+  command the walker cannot lex is refused (bash runs the lines before the one it cannot
+  parse). Text matching is not a
+  parser: a third-party package or local module the program imports is not analysed (a
+  list of well-known capability packages is refused, and a few package save methods need
+  a literal path), nor is a program file;
 
 It fails closed: when it cannot prove a target is in scope, it blocks. Every hook
 entry in the settings template carries `"onFailure": "block"` and a 60-second
@@ -338,7 +386,11 @@ insert an approval and recompute a consistent chain, and every landing path acte
   - `none` (`GAFFER_STRICT_REQUIRE=0`): **only the safety hook stands between an agent and
     the key file.** The hook is a string analyser (see the residual limits): a compiled
     binary, or a script the agent writes and runs, can read any file the operator's user
-    can. Under this provider the signature proves less than it does elsewhere: an agent
+    can. An inline program (`python -c`, `node -e`, ...) is refused unless it is visibly
+    free of file-writing, process, network and dynamic-code capabilities, but a program
+    the agent first writes into its worktree and then runs (`python x.py`, a module it
+    imports) is not analysed at all: the write roots apply to the Write tool, not to what
+    a script does when it runs. Under this provider the signature proves less than it does elsewhere: an agent
     that escapes the hook can read the key and sign a forged approval. The hook alone
     also guards the dashboard token (with it, the REST server seals an approval for its
     caller) and the tokenless operator CLI (`wg ticket tester-pass --as system`, `wg
@@ -862,7 +914,32 @@ a presence boolean, and an argument not on the allowlist is never copied.
 
 - **The safety hook is a string analyser.** It is hardened and fails closed, but a
   compiled binary, a script the agent writes and then runs, a child process's own
-  syscalls and content-only data flows are out of its reach. It shrinks the gap to
+  syscalls and content-only data flows are out of its reach. Inline interpreter programs
+  are refused when they show a file-writing, process, network or dynamic-code capability,
+  judged on their text: a program file (`python x.py`, `node x.js`, `ruby -r ./x`, a
+  local or third-party module an inline program imports, `python -m` of a package or a
+  local module, `node -r ./x`, a directory put on `PYTHONPATH`, `NODE_PATH`, `RUBYLIB`
+  or `PERL5LIB`) is not read, so under `SANDBOX_PROVIDER=none` that remains open, and the
+  autonomy modes require containment (`runner/config/15-modes.sh`). An installed
+  package's own API is not modelled either: beyond the listed capability packages, a
+  package that writes files or compiles strings into code (a build tool, a template
+  engine) does so unseen. In JavaScript a function fetched by a member name computed at
+  run time is refused when it is called directly or through a variable, but not after it
+  passes through an array or an object. Interpreters other than the ones named above
+  (`ed`, `ex`/`vim -c`, `emacs --eval`, `gdb -ex`) are judged only by the rest of the
+  hook. Variables that point a runtime at files the agent wrote (`PYTHONHOME`,
+  `PYTHONUSERBASE`, `BUNDLE_GEMFILE`, `npm_config_script_shell`, `JAVA_TOOL_OPTIONS
+  -javaagent:`, `LD_LIBRARY_PATH`, `CC` for a makefile) are the program-file residual
+  above; `TMPDIR` names where programs put temporary files and is not judged. Bash write
+  targets are read in every command the expansion walk reaches (`( )`, `{ }`, if / for /
+  case bodies, functions, substitutions, `eval`, `trap`, `sh -c`, `echo ... | sh`); a
+  shell program that only exists at run time (`eval "$(tool)"`, a program piped to `sh`
+  from another command, bash evaluating a quoted `a[$(cmd)]` as arithmetic) is not.
+  Environment variables
+  exported by an earlier command, if the agent's shell keeps them, are not seen. A lexer
+  can also misjudge where a string ends in an exotic program; a capability word inside
+  text is refused for that reason, but a determined obfuscation in a language's dark
+  corners is a residual, not a proof. It shrinks the gap to
   dynamic reads and fully dynamic non-secret paths; it does not close it.
   Globs are expanded when the hook decides: a symlink to a secret created by an earlier
   step of the same command through a path the hook cannot see (an interpreter, a

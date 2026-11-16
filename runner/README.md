@@ -579,7 +579,8 @@ from `lib/hook/`, where the rules live one concern per module:
 | `lib/hook/verbs.mjs` | the effective verb behind assignments, wrappers and package runners; the privileged CLI names; `sh -c` bodies |
 | `lib/hook/deny-list.mjs` | loads `lib/dangerous-commands.mjs` (the deny list) so that a failure blocks |
 | `lib/hook/inline-lex.mjs` | a lexer for inline programs: strings decoded, comments dropped, interpolated code read as code |
-| `lib/hook/inline-programs.mjs` | the programs a command hands to an interpreter, as the interpreter receives them (shell dequoting, wrappers, `xargs`, `sh -c`, `eval`, heredocs, stdin, `cd`) |
+| `lib/hook/inline-programs.mjs` | the programs a command hands to an interpreter, as the interpreter receives them (shell dequoting, wrappers, `xargs`, `sh -c`, `eval`, heredocs, stdin, `cd`, command and process substitutions, `trap`), preload variables and interactive modes, standard-library `python -m` command lines |
+| `lib/hook/inline-other.mjs` | awk, sed and sqlite3 programs read for commands and writes; inline lua, R, osascript, tcl, expect, make and dc programs refused |
 | `lib/hook/interpreters.mjs` | the inline-interpreter write and read boundary (`python -c`, `node -e`, heredocs) and the capability rule: an inline program that can write, start a process, reach the network or run code built at run time is refused, except a write to a literal path in a write root |
 | `lib/hook/reads.mjs` | secret reads and credentials, git secret operations, env templates, Bash read targets |
 | `lib/hook/writes.mjs` | Bash write targets |

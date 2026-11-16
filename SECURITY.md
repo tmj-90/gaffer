@@ -148,10 +148,24 @@ always gets the same decision. It:
   that path then gets the checks a Bash write target gets (`.git`, the agent settings,
   the git execution surface, secret files). A program it cannot see (a command
   substitution, an xargs placeholder, a variable the command sets at run time, a program
-  piped in from `curl` or `base64 -d`) is refused. Text matching is not a parser: a
-  third-party package or local module the program imports is not analysed (a list of
-  well-known capability packages is refused, and a few package save methods need a
-  literal path), nor is a program file;
+  piped in from `curl` or `base64 -d`) is refused. The programs inside `$(...)`,
+  backticks, `<(...)` / `>(...)`, an unquoted here-document's expansions, `trap` and
+  `alias` values are read the same way. So are the ways an interpreter is made to run
+  code its program text does not show: interactive mode reading stdin (`python -i`,
+  `node -i`, `php -a`, `perl -d`, `bun repl`), a preload or startup variable set by the
+  command (`NODE_OPTIONS=--require`, `PERL5OPT`, `PERL5DB`, `RUBYOPT`, `PHPRC`,
+  `PYTHONSTARTUP`, `PYTHONINSPECT`, `LD_PRELOAD`, `BROWSER`, `BASH_ENV`), `node
+  --import data:...`, `php -d auto_prepend_file=...`, `deno run https://...`; all are
+  refused. A standard-library `python -m` command line is read: `-m timeit` code is
+  judged as a program, the output paths of `-m json.tool`, `-m venv` and `-m cProfile -o`
+  as writes, and the other standard-library command lines that can write, run code or
+  serve (`-m http.server`, `-m zipfile`, `-m pdb`, ...) are refused. awk and sed
+  programs are read for `system()`, pipes, `print >`, `w`, `e` and `r`; sqlite3
+  commands for `.shell`, `.output`, `writefile()` and the like; an inline program of
+  lua, R, osascript, tclsh, expect, make or dc is refused. Text matching is not a
+  parser: a third-party package or local module the program imports is not analysed (a
+  list of well-known capability packages is refused, and a few package save methods need
+  a literal path), nor is a program file;
 
 It fails closed: when it cannot prove a target is in scope, it blocks. Every hook
 entry in the settings template carries `"onFailure": "block"` and a 60-second
@@ -887,12 +901,21 @@ a presence boolean, and an argument not on the allowlist is never copied.
   syscalls and content-only data flows are out of its reach. Inline interpreter programs
   are refused when they show a file-writing, process, network or dynamic-code capability,
   judged on their text: a program file (`python x.py`, `node x.js`, `ruby -r ./x`, a
-  local or third-party module an inline program imports, `python -m`, `node -r`) is not
-  read, so under `SANDBOX_PROVIDER=none` that remains open, and the autonomy modes
-  require containment (`runner/config/15-modes.sh`). A lexer can also misjudge where a
-  string ends in an exotic program; a capability word inside text is refused for that
-  reason, but a determined obfuscation in a language's dark corners is a residual, not a
-  proof. It shrinks the gap to
+  local or third-party module an inline program imports, `python -m` of a package or a
+  local module, `node -r ./x`, a directory put on `PYTHONPATH`, `NODE_PATH`, `RUBYLIB`
+  or `PERL5LIB`) is not read, so under `SANDBOX_PROVIDER=none` that remains open, and the
+  autonomy modes require containment (`runner/config/15-modes.sh`). An installed
+  package's own API is not modelled either: beyond the listed capability packages, a
+  package that writes files or compiles strings into code (a build tool, a template
+  engine) does so unseen. In JavaScript a function fetched by a member name computed at
+  run time is refused when it is called directly or through a variable, but not after it
+  passes through an array or an object. Interpreters other than the ones named above
+  (`ed`, `ex`/`vim -c`, `emacs --eval`, `gdb -ex`, a database file `sqlite3` creates at
+  its path argument) are judged only by the rest of the hook. Environment variables
+  exported by an earlier command, if the agent's shell keeps them, are not seen. A lexer
+  can also misjudge where a string ends in an exotic program; a capability word inside
+  text is refused for that reason, but a determined obfuscation in a language's dark
+  corners is a residual, not a proof. It shrinks the gap to
   dynamic reads and fully dynamic non-secret paths; it does not close it.
   Globs are expanded when the hook decides: a symlink to a secret created by an earlier
   step of the same command through a path the hook cannot see (an interpreter, a

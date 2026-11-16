@@ -906,9 +906,23 @@ function simple(c, prev, ctx, out, feed = null) {
 function inspectWords(words, c, prev, ctx, out, feed, guard = 0) {
   if (words.length === 0) return;
   if (guard > 24) {
-    // Unread, so refused (`env env ... node -e ...`): past this many wrappers and
-    // keywords the command is not followed.
-    out.reasons.push("a command behind more wrappers and keywords than the hook reads");
+    // Past this many wrappers and keywords the command is not followed: refused when any
+    // word left (quotes already removed, so `n''ode` reads as node) could run a program
+    // (`env env ... node -e ...`); `env -i env -i ... echo hi` stays allowed.
+    const runs = words.some((w) => {
+      const b = basename(w.text);
+      return (
+        interpreterLang(w.text) ||
+        otherInterpreterName(w.text) ||
+        SHELLS.has(b) ||
+        /^(?:busybox|eval|trap|alias|source|\.)$/.test(b) ||
+        /\s/.test(w.text) ||
+        w.subst ||
+        w.dynamic ||
+        w.vars.length > 0
+      );
+    });
+    if (runs) out.reasons.push("a command behind more wrappers and keywords than the hook reads");
     return;
   }
   const texts = words.map((w) => wordText(w, ctx));

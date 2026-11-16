@@ -1808,9 +1808,18 @@ export class Dispatch {
       return { ...reviewLifecycle.reopenForReview(this, ref, input, actor), stepped_down: [] };
     }
     return inTransaction(this.db, () => {
-      const from = this.resolveTicket(ref).status;
+      const before = this.resolveTicket(ref);
+      // What was automatic is classified from the history as it stands BEFORE the reopen
+      // is written (the reopen starts a new review path with no approval on it).
+      const gates = stepDown.automaticGates(this.db, before.id);
       const res = reviewLifecycle.reopenForReview(this, ref, input, actor);
-      const stepped = stepDown.stepDownForReopen(this.stepDownHost(), res.ticketId, from, actor);
+      const stepped = stepDown.stepDownForReopen(
+        this.stepDownHost(),
+        res.ticketId,
+        before.status,
+        gates,
+        actor,
+      );
       return { ...res, stepped_down: stepped };
     });
   }

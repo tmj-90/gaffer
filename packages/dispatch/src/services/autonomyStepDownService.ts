@@ -122,15 +122,6 @@ export function automaticGates(
     )
     .get({ id: ticketId, ...(beforeRowid === undefined ? {} : { before: beforeRowid }) }) as
     { actor_type: string } | undefined;
-  const toMerge = db
-    .prepare(
-      `SELECT actor_type FROM work_events
-        WHERE entity_type = 'ticket' AND entity_id = @id AND event_type = 'ticket.transitioned'
-          AND json_extract(payload_json, '$.to') = 'ready_for_merge'${before}
-        ORDER BY rowid DESC LIMIT 1`,
-    )
-    .get({ id: ticketId, ...(beforeRowid === undefined ? {} : { before: beforeRowid }) }) as
-    { actor_type: string } | undefined;
   const status = (
     db.prepare(`SELECT status FROM tickets WHERE id = ?`).get(ticketId) as
       { status: string } | undefined
@@ -144,10 +135,35 @@ export function automaticGates(
           LIMIT 1`,
       )
       .get(ticketId) as unknown) !== undefined;
+  // The merge gate is about the delivery that LANDED: read its path as it stood when it
+  // landed (up to its latest move into done), not as it stands now. Read after a later
+  // reopen, the reopen's move into in_review starts a new path with no approval on it, and
+  // that missing approval was taken for an automatic one (external review 20: a person's
+  // approval that landed stepped autonomy down when a person reopened it).
+  const landedAt = db
+    .prepare(
+      `SELECT rowid AS r FROM work_events
+        WHERE entity_type = 'ticket' AND entity_id = @id AND event_type = 'ticket.transitioned'
+          AND json_extract(payload_json, '$.to') = 'done'${before}
+        ORDER BY rowid DESC LIMIT 1`,
+    )
+    .get({ id: ticketId, ...(beforeRowid === undefined ? {} : { before: beforeRowid }) }) as
+    { r: number } | undefined;
+  const pathEnd = landedAt ? Number(landedAt.r) : beforeRowid;
+  const toMerge = db
+    .prepare(
+      `SELECT actor_type FROM work_events
+        WHERE entity_type = 'ticket' AND entity_id = @id AND event_type = 'ticket.transitioned'
+          AND json_extract(payload_json, '$.to') = 'ready_for_merge'${pathEnd === undefined ? "" : " AND rowid < @before"}
+        ORDER BY rowid DESC LIMIT 1`,
+    )
+    .get({ id: ticketId, ...(pathEnd === undefined ? {} : { before: pathEnd }) }) as
+    { actor_type: string } | undefined;
   // Merge was automatic unless BOTH the move into ready_for_merge and the review approval on
   // the path it landed on were a person's (a person's tester PASS carries an agent's approval
-  // forward; the landing check reads it the same way, reviewGate/landing.ts).
-  const onPath = reviewApprovalActor(db, ticketId, beforeRowid);
+  // forward; the landing check reads it the same way, reviewGate/landing.ts). No approval on
+  // that path at all is NOT a person's approval: it counts as automatic (fail closed).
+  const onPath = reviewApprovalActor(db, ticketId, pathEnd);
   return {
     approve: approval !== undefined && !isPerson(approval.actor_type),
     merge: landed && toMerge !== undefined && (!isPerson(toMerge.actor_type) || !isPerson(onPath)),
@@ -304,18 +320,22 @@ export function stepDownForRegression(
   );
 }
 
-/** Trigger (b): a person reopened `ref` for review; `fromStatus` is where it was. */
+/**
+ * Trigger (b): a person reopened `ref` for review; `fromStatus` is where it was and
+ * `gates` what was automatic for it, classified from its history BEFORE the reopen was
+ * written (in the same transaction as the reopen and this step-down).
+ */
 export function stepDownForReopen(
   host: StepDownHost,
   ref: string,
   fromStatus: string,
+  gates: { approve: boolean; merge: boolean },
   actor: Actor,
 ): SteppedDownRow[] {
   // Only a PERSON reopening a change that LANDED: the runner's own reopen (system: the
   // conflict resolver) and a reopen before landing are not a verdict on the change.
   if (!isPerson(actor.type) || fromStatus !== "done") return [];
   const ticket = host.resolveTicket(ref);
-  const gates = automaticGates(host.db, ticket.id);
   if (!gates.approve && !gates.merge) return [];
   const tickets = [ticketRef(ticket)];
   const levels = stepDownLevels(host, ticket);

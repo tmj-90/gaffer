@@ -315,6 +315,12 @@ describe("attacks main accepted", () => {
     const r = refusal(() => w.wg.beginLanding(id, { repo: "repoA", commit: FAKE_HEAD }, system));
     expect(r.code).toBe("STATE_CONFLICT");
     expect(["unsigned_approval", "autonomy_risk_unsigned"]).toContain(r.reason);
+    // With the anchor moved onto the rewritten log as well (so the risk check passes), the
+    // seal check itself refuses the edited approval.
+    w.keyring.reanchor(w.wg.db);
+    expect(
+      refusal(() => w.wg.beginLanding(id, { repo: "repoA", commit: FAKE_HEAD }, system)),
+    ).toMatchObject({ code: "STATE_CONFLICT", reason: "unsigned_approval" });
   });
 
   it("the approved commit swapped (the review pin rewritten) under a genuine signature: refused", () => {

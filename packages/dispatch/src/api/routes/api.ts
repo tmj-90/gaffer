@@ -19,6 +19,8 @@ import {
   autonomyPolicyBody,
   createPrincipalBody,
   resignPrincipalsBody,
+  resignAutonomyPoliciesBody,
+  resignTicketRisksBody,
   idleLoopsBody,
   memoryLoreQuery,
   rejectLoreBody,
@@ -311,6 +313,71 @@ export async function routeApi(
       apiActor(),
     );
     sendJson(res, 200, { policy });
+    return;
+  }
+
+  // SEALED AUTONOMY: what is not signed, and a person's re-sign.
+  //   GET  /api/autonomy/signatures             policy rows not signed (off until signed)
+  //   POST /api/autonomy/signatures/resign      a person re-signs reviewed rows
+  //   GET  /api/autonomy/risk-signatures        open tickets whose risk is not signed
+  //   POST /api/autonomy/risk-signatures/resign a person re-signs reviewed ticket risks
+  // scopeGate.ts asks a repo-level write (admin, unscoped) of a principal; the service also
+  // refuses any actor that is not a person and any principal that is not an active,
+  // unscoped admin with full capability. No MCP tool reaches them.
+  if (segments.length === 3 && segments[1] === "autonomy" && segments[2] === "signatures") {
+    if (method !== "GET") return methodNotAllowed(res);
+    sendJson(res, 200, wg.reviewUnsignedAutonomyPolicies());
+    return;
+  }
+  if (
+    segments.length === 4 &&
+    segments[1] === "autonomy" &&
+    segments[2] === "signatures" &&
+    segments[3] === "resign"
+  ) {
+    if (method !== "POST") return methodNotAllowed(res);
+    const body = resignAutonomyPoliciesBody.parse(await readJsonBody(req));
+    sendJson(
+      res,
+      200,
+      wg.resignAutonomyPolicies(
+        {
+          ...(body.ids ? { ids: body.ids } : {}),
+          ...(body.all !== undefined ? { all: body.all } : {}),
+          confirm: body.confirm,
+        },
+        apiActor(),
+        isSharedOperator() ? null : apiPrincipal(),
+      ),
+    );
+    return;
+  }
+  if (segments.length === 3 && segments[1] === "autonomy" && segments[2] === "risk-signatures") {
+    if (method !== "GET") return methodNotAllowed(res);
+    sendJson(res, 200, wg.reviewUnsignedTicketRisks());
+    return;
+  }
+  if (
+    segments.length === 4 &&
+    segments[1] === "autonomy" &&
+    segments[2] === "risk-signatures" &&
+    segments[3] === "resign"
+  ) {
+    if (method !== "POST") return methodNotAllowed(res);
+    const body = resignTicketRisksBody.parse(await readJsonBody(req));
+    sendJson(
+      res,
+      200,
+      wg.resignTicketRisks(
+        {
+          ...(body.tickets ? { tickets: body.tickets } : {}),
+          ...(body.all !== undefined ? { all: body.all } : {}),
+          confirm: body.confirm,
+        },
+        apiActor(),
+        isSharedOperator() ? null : apiPrincipal(),
+      ),
+    );
     return;
   }
 

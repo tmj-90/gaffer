@@ -1133,6 +1133,35 @@ export const autonomyLiftBody = z.object({
 });
 export type AutonomyLiftBody = z.infer<typeof autonomyLiftBody>;
 
+/**
+ * Body for POST /api/autonomy/signatures/resign: SEALED AUTONOMY, a person re-signs policy
+ * rows the factory does not honour. `ids` (exactly those rows) or `all` (the reviewed list);
+ * `confirm` is the code GET /api/autonomy/signatures printed for what the person reviewed.
+ */
+export const resignAutonomyPoliciesBody = z
+  .object({
+    ids: z.array(z.string().min(1).max(200)).max(500).optional(),
+    all: z.boolean().optional(),
+    confirm: z.string().max(64),
+  })
+  .strict();
+
+/**
+ * Body for POST /api/autonomy/risk-signatures/resign: a person re-signs the risk of open
+ * tickets the factory does not honour. `tickets` (ids or numbers) or `all`; `confirm` is the
+ * code GET /api/autonomy/risk-signatures printed.
+ */
+export const resignTicketRisksBody = z
+  .object({
+    tickets: z
+      .array(z.union([z.string().min(1).max(200), z.number().int().positive()]))
+      .max(5000)
+      .optional(),
+    all: z.boolean().optional(),
+    confirm: z.string().max(64),
+  })
+  .strict();
+
 // --- Per-principal API credentials -------------------------------------------
 
 /**

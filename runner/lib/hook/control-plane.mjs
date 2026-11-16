@@ -107,8 +107,9 @@ const CP_PAIRS = [
   // its own. Review-rule drafts (D6) are proposed from a person's feedback by the server
   // or a person, never by an agent shell.
   ["ticket", /^regression-of$/],
-  // The autonomy ladder: giving autonomy back after a step-down is a person's act.
-  ["autonomy", /^lift$/],
+  // The autonomy ladder: giving autonomy back after a step-down is a person's act, and so
+  // is signing the policy rows and ticket risks that decide autonomy (sealed autonomy).
+  ["autonomy", /^(?:lift|resign|risk-resign)$/],
   // Package H1: a board move, ready and a hold change where a ticket stands around the
   // tester's verdict; `block` only as the ticket verb (a word too common to stand alone).
   ["ticket", /^(?:move|ready|hold)$/],

@@ -51,6 +51,10 @@ const RULES: Record<string, Rule> = {
   // Giving autonomy back after a step-down: a factory-wide repo-level write (admin), the
   // REST rule for /api/autonomy/* (api/scopeGate.ts).
   "autonomy lift": { kind: "write_repo" },
+  // SEALED AUTONOMY: re-signing policy rows or ticket risks is a factory-wide write (admin,
+  // unscoped); the service also refuses a read-only, revoked or non-admin principal.
+  "autonomy resign": { kind: "write_repo" },
+  "autonomy risk-resign": { kind: "write_repo" },
   ...Object.fromEntries(
     [
       "ticket show",
@@ -184,6 +188,8 @@ const RULES: Record<string, Rule> = {
       "principal unsigned",
       "autonomy list",
       "autonomy policies",
+      "autonomy unsigned",
+      "autonomy risk-unsigned",
       "club show",
       "ticket resume-requested",
     ].map((c) => [c, READ_FACTORY]),

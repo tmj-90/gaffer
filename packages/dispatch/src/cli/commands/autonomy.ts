@@ -92,6 +92,109 @@ export function registerAutonomy(program: Command): void {
       }
     });
 
+  // SEALED AUTONOMY: what is not signed, and a PERSON's re-sign. The re-sign verbs are on
+  // the safety hook's control-plane deny list (an agent's shell never reaches them), MCP
+  // has no such tool, and the service refuses an agent, the runner, and any principal that
+  // is not an active, unscoped admin with full capability.
+  autonomy
+    .command("unsigned")
+    .description(
+      "List the autonomy policy rows this factory does not honour (written before signing, " +
+        "restored from a backup, or written outside the factory): each one is off until a " +
+        "person reviews it and re-signs it (`autonomy resign`). No mutation.",
+    )
+    .action((_opts, cmd) => {
+      const wg = open(cmd.optsWithGlobals());
+      try {
+        const review = wg.reviewUnsignedAutonomyPolicies();
+        if (review.unsigned.length > 0) {
+          process.stderr.write(
+            `Review each row (repo, risk, gate, mode, who enabled it and when). Re-sign one with: gaffer wg autonomy resign <id> --confirm <its review_code>; all of this list with: gaffer wg autonomy resign --all --confirm ${review.fingerprint}\n`,
+          );
+        }
+        printJson({ ok: true, ...review });
+      } finally {
+        wg.db.close();
+      }
+    });
+
+  autonomy
+    .command("resign [ids...]")
+    .description(
+      "A PERSON re-signs autonomy policy rows the factory does not honour, after reviewing " +
+        "them (`autonomy unsigned`). Needs --confirm with the code it printed: a row's " +
+        "review_code to re-sign it by id, the list's code for --all.",
+    )
+    .option("--all", "every row of the reviewed list", false)
+    .option("--confirm <code>", "the code of what you reviewed")
+    .action((ids: string[], opts: { all: boolean; confirm?: string }, cmd) => {
+      const wg = open(cmd.optsWithGlobals());
+      try {
+        const res = wg.resignAutonomyPolicies(
+          {
+            ...(ids.length > 0 ? { ids } : {}),
+            all: opts.all,
+            ...(opts.confirm !== undefined ? { confirm: opts.confirm } : {}),
+          },
+          cliActor(),
+          cliPrincipal(),
+        );
+        printJson({ ok: true, ...res });
+      } finally {
+        wg.db.close();
+      }
+    });
+
+  autonomy
+    .command("risk-unsigned")
+    .description(
+      "List the open tickets whose risk level this factory does not honour (in flight " +
+        "before signing, imported, or changed outside the factory), counted per risk: each " +
+        "is decided as the highest risk (a person decides) until a person re-signs it " +
+        "(`autonomy risk-resign`), or, if it was never claimed, until its first claim. No mutation.",
+    )
+    .action((_opts, cmd) => {
+      const wg = open(cmd.optsWithGlobals());
+      try {
+        const review = wg.reviewUnsignedTicketRisks();
+        if (review.unsigned.length > 0) {
+          process.stderr.write(
+            `Review each ticket's risk. Re-sign some with: gaffer wg autonomy risk-resign <ticket>... --confirm <their code>; all of this list with: gaffer wg autonomy risk-resign --all --confirm ${review.fingerprint}\n`,
+          );
+        }
+        printJson({ ok: true, ...review });
+      } finally {
+        wg.db.close();
+      }
+    });
+
+  autonomy
+    .command("risk-resign [tickets...]")
+    .description(
+      "A PERSON re-signs the risk level of open tickets the factory does not honour, after " +
+        "reviewing them (`autonomy risk-unsigned`). Needs --confirm with the list's code (or " +
+        "the code of exactly the tickets named).",
+    )
+    .option("--all", "every ticket of the reviewed list", false)
+    .option("--confirm <code>", "the code of what you reviewed")
+    .action((tickets: string[], opts: { all: boolean; confirm?: string }, cmd) => {
+      const wg = open(cmd.optsWithGlobals());
+      try {
+        const res = wg.resignTicketRisks(
+          {
+            ...(tickets.length > 0 ? { tickets } : {}),
+            all: opts.all,
+            ...(opts.confirm !== undefined ? { confirm: opts.confirm } : {}),
+          },
+          cliActor(),
+          cliPrincipal(),
+        );
+        printJson({ ok: true, ...res });
+      } finally {
+        wg.db.close();
+      }
+    });
+
   autonomy
     .command("list")
     .description(
@@ -153,7 +256,9 @@ export function renderLadder(ladder: AutonomyLadder): string {
           ? "not allowed"
           : c.step_down
             ? "stepped down"
-            : (RUNG_WORD[c.rung] ?? c.rung);
+            : c.policy_signed === false
+              ? "not signed"
+              : (RUNG_WORD[c.rung] ?? c.rung);
         const ev = c.evidence;
         const figure = ev.n > 0 ? `${ev.k} of ${ev.n}` : "none yet";
         lines.push(

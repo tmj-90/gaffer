@@ -75,7 +75,7 @@ export function holdReason(hold: AutonomyHold): string {
 
 /** The words every surface uses for an unsigned risk. */
 export const RISK_UNSIGNED_MESSAGE =
-  "This ticket's risk level is not signed by this factory, so it is decided as the highest risk: a person decides (a person can review and re-sign it: gaffer wg ticket risk-resign).";
+  "This ticket's risk level is not signed by this factory, so it is decided as the highest risk: a person decides (a person can review and re-sign it: gaffer wg autonomy risk-resign).";
 
 /**
  * The holds that come before every allow-path (approve and merge; memory has none):

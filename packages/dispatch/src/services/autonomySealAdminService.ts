@@ -483,7 +483,7 @@ export function resignRisks(
 ): ResignRisksResult {
   assertResigner(host, actor, principal);
   const refs = (input.tickets ?? []).map((s) => String(s).trim()).filter((s) => s !== "");
-  const cmd = "gaffer wg ticket risk-unsigned";
+  const cmd = "gaffer wg autonomy risk-unsigned";
   if (!input.all && refs.length === 0) {
     throw new DispatchError(
       "VALIDATION_ERROR",
@@ -575,7 +575,7 @@ export function autonomySealSummary(host: AutonomySealHost): AutonomySealSummary
   }
   if (needAct > 0) {
     messages.push(
-      `${needAct} open ticket${needAct === 1 ? "'s risk is" : "s' risks are"} not signed: each is decided as the highest risk (a person decides) until a person re-signs it (gaffer wg ticket risk-unsigned, then gaffer wg ticket risk-resign)`,
+      `${needAct} open ticket${needAct === 1 ? "'s risk is" : "s' risks are"} not signed: each is decided as the highest risk (a person decides) until a person re-signs it (gaffer wg autonomy risk-unsigned, then gaffer wg autonomy risk-resign)`,
     );
   }
   return {

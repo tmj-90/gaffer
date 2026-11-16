@@ -179,8 +179,28 @@ for (const cmd of [
 ]) {
   t.deny(`autonomy lift: ${cmd}`, bash(cmd), opts);
 }
+// (h1b) sealed autonomy (S5 part B): signing the policy rows and ticket risks that decide
+// autonomy is a person's act. An agent that could sign would bless a row or a lowered risk
+// it wrote into the database itself.
+for (const cmd of [
+  "wg autonomy resign --all --confirm 0123456789abcdef",
+  "gaffer wg autonomy resign 01HX --confirm 0123456789abcdef",
+  "wg autonomy risk-resign --all --confirm 0123456789abcdef",
+  "dispatch autonomy risk-resign 12 13 --confirm 0123456789abcdef",
+  "node packages/dispatch/dist/cli/index.js autonomy resign --all --confirm x",
+  "wg 'autonomy' resign --all --confirm x",
+  "wg autonomy re''sign --all --confirm x",
+  "W=wg; $W autonomy risk-resign --all --confirm x",
+  "$X autonomy resign --all --confirm x",
+  "bash -c 'wg autonomy risk-resign --all --confirm x'",
+  "wg --db x.sqlite autonomy resign --all --confirm x",
+]) {
+  t.deny(`autonomy re-sign: ${cmd}`, bash(cmd), opts);
+}
 // The reads stay open, and a mention is not a command.
 for (const cmd of [
+  "wg autonomy unsigned",
+  "wg autonomy risk-unsigned",
   "wg autonomy ladder --json",
   "wg autonomy ladder --repo api",
   "wg autonomy list",

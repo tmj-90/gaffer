@@ -505,7 +505,8 @@ on the same `events/rowSeal.ts` as signed principals):
 
 - **Policy rows.** Enabling, changing or re-signing a row writes an
   `autonomy_policy.enabled` / `.changed` / `.resigned` event and seals the row's authority
-  (id, repo, risk, gate, mode, who enabled it and when, created_at) against that event, in
+  (id, repo id and the repository it names: name, checkout path and remote; risk, gate,
+  mode, who enabled it and when, created_at) against that event, in
   one transaction; turning it off writes `autonomy_policy.disabled` and retires the seal.
   Every decision that can answer "automatic" (the runner's `wg ticket auto-decision`, an
   agent's approve, the landing check, the landing facts, the ladder, the

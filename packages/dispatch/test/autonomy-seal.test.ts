@@ -272,6 +272,45 @@ describe("policy rows: honoured only with a valid seal", () => {
   });
 });
 
+describe("policy rows: bound to the repository they name", () => {
+  it("a signed row whose repo id is pointed at another checkout grants nothing", () => {
+    const { wg } = world();
+    try {
+      const sandbox = wg.registerRepository(
+        { name: "sandbox", default_branch: "main", local_path: "/srv/sandbox" },
+        human,
+      ).id;
+      wg.registerRepository(
+        { name: "prod", default_branch: "main", local_path: "/srv/prod" },
+        human,
+      );
+      enable(wg, sandbox, "low", "merge");
+      const t = ticketOn(wg, "sandbox", "low");
+      expect(decide(wg, t.id, "merge").decision).toBe("allow");
+      // A database writer re-points the sandbox id at prod's checkout (name, path, remote).
+      wg.db
+        .prepare(
+          "UPDATE repositories SET name = 'prod-old', local_path = '/srv/prod-old' WHERE name = 'prod'",
+        )
+        .run();
+      wg.db
+        .prepare(
+          "UPDATE repositories SET name = 'prod', local_path = '/srv/prod', remote_url = 'git@x:prod' WHERE id = ?",
+        )
+        .run(sandbox);
+      expect(decide(wg, t.id, "merge").decision).toBe("deny");
+      const listed = wg.listAutonomyPolicies().find((p) => p.repo_id === sandbox)!;
+      expect(listed.signed).toBe(false);
+      expect(listed.seal_problem).toMatch(/repo_local_path/);
+      // A person who reviews it sees the checkout it now names, and the code covers it.
+      const review = wg.reviewUnsignedAutonomyPolicies();
+      expect(review.unsigned[0]).toMatchObject({ repo_name: "prod", repo_path: "/srv/prod" });
+    } finally {
+      wg.db.close();
+    }
+  });
+});
+
 describe("ticket risk: read only through a verified seal", () => {
   it("a key holder seals at creation; a risk lowered by direct SQL is decided as the highest", () => {
     const { wg } = world();

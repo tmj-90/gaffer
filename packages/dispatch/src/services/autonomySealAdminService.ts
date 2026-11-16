@@ -224,6 +224,9 @@ export interface UnsignedPolicy {
   id: string;
   repo_id: string;
   repo_name: string;
+  /** The repository's checkout and remote as the row is signed over them. */
+  repo_path: string | null;
+  repo_remote: string | null;
   risk_level: string;
   gate: string;
   mode: string;
@@ -238,8 +241,29 @@ export interface UnsignedPolicy {
 const POLICY_COLUMNS =
   "p.id, p.repo_id, p.risk_level, p.gate, p.mode, p.enabled_by, p.enabled_at, p.created_at";
 
-function policyCodeRow(r: PolicySealRow): unknown[] {
-  return [r.id, r.repo_id, r.risk_level, r.gate, r.mode, r.enabled_by, r.enabled_at, r.created_at];
+/** A stored policy row with the repository it names, as a person reviews it. */
+type ReviewedPolicyRow = PolicySealRow & {
+  repo_name: string;
+  repo_path: string | null;
+  repo_remote: string | null;
+};
+
+function policyCodeRow(r: ReviewedPolicyRow): unknown[] {
+  // The repository the row names is part of what is signed (events/autonomySeal.ts
+  // policyFacts), so it is part of what the person reviews and confirms.
+  return [
+    r.id,
+    r.repo_id,
+    r.repo_name,
+    r.repo_path,
+    r.repo_remote,
+    r.risk_level,
+    r.gate,
+    r.mode,
+    r.enabled_by,
+    r.enabled_at,
+    r.created_at,
+  ];
 }
 
 const POLICY_LABEL = "gaffer-unsigned-autonomy-policies";
@@ -247,12 +271,13 @@ const POLICY_LABEL = "gaffer-unsigned-autonomy-policies";
 function unsignedPolicyRows(
   db: AutonomySealHost["db"],
   keyring: GateKeyring,
-): Array<{ row: PolicySealRow & { repo_name: string }; failure: string; detail: string }> {
-  let rows: Array<PolicySealRow & { repo_name: string }>;
+): Array<{ row: ReviewedPolicyRow; failure: string; detail: string }> {
+  let rows: ReviewedPolicyRow[];
   try {
     rows = db
       .prepare(
-        `SELECT ${POLICY_COLUMNS}, COALESCE(r.name, p.repo_id) AS repo_name
+        `SELECT ${POLICY_COLUMNS}, COALESCE(r.name, p.repo_id) AS repo_name,
+                r.local_path AS repo_path, r.remote_url AS repo_remote
            FROM autonomy_policy p LEFT JOIN repositories r ON r.id = p.repo_id
           WHERE p.mode != 'off' ORDER BY repo_name, p.risk_level, p.gate`,
       )

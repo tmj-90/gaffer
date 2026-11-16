@@ -76,11 +76,41 @@ export function policySubject(id: string): RowSealSubject {
   };
 }
 
-/** What a policy row's seal binds: where it applies, what it allows, who and when. */
-export function policyFacts(row: PolicySealRow): RowFacts {
+/** The repository a policy row names, as the repositories table holds it now. */
+export interface PolicyRepoIdentity {
+  name: string | null;
+  local_path: string | null;
+  remote_url: string | null;
+}
+
+/**
+ * The identity of repository `repoId` (null fields when there is none). A policy row's seal
+ * binds it: the repositories row is a plain row, and a database writer that pointed a signed
+ * row's repo id at another checkout would otherwise carry that row's autonomy to it.
+ */
+export function policyRepoIdentity(db: SealDb, repoId: string): PolicyRepoIdentity {
+  const r = db
+    .prepare("SELECT name, local_path, remote_url FROM repositories WHERE id = ?")
+    .get(repoId) as
+    { name: string | null; local_path: string | null; remote_url: string | null } | undefined;
+  return {
+    name: r?.name ?? null,
+    local_path: r?.local_path ?? null,
+    remote_url: r?.remote_url ?? null,
+  };
+}
+
+/**
+ * What a policy row's seal binds: where it applies (the repo id AND the repository it names:
+ * name, checkout path, remote), what it allows, who and when.
+ */
+export function policyFacts(row: PolicySealRow, repo: PolicyRepoIdentity): RowFacts {
   return {
     id: row.id,
     repo_id: row.repo_id,
+    repo_name: repo.name,
+    repo_local_path: repo.local_path,
+    repo_remote_url: repo.remote_url,
     risk_level: row.risk_level,
     gate: row.gate,
     mode: row.mode,
@@ -98,7 +128,14 @@ export function sealPolicy(
   eventId: string,
   now: string,
 ): void {
-  sealRow(db, keyring, policySubject(row.id), eventId, policyFacts(row), now);
+  sealRow(
+    db,
+    keyring,
+    policySubject(row.id),
+    eventId,
+    policyFacts(row, policyRepoIdentity(db, row.repo_id)),
+    now,
+  );
 }
 
 export function retirePolicySeal(db: SealDb, id: string): void {
@@ -115,7 +152,12 @@ export function verifyPolicyRow(
   row: PolicySealRow,
 ): RowSealCheck {
   if (row.mode === "off") return { ok: true, eventId: "" };
-  return verifyRowSeal(db, keyring, policySubject(row.id), policyFacts(row));
+  return verifyRowSeal(
+    db,
+    keyring,
+    policySubject(row.id),
+    policyFacts(row, policyRepoIdentity(db, row.repo_id)),
+  );
 }
 
 // ---------------------------------------------------------------------------------------

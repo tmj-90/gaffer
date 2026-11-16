@@ -110,6 +110,7 @@ to the same version.
 - **The runner no longer needs python3**, and its text processing runs through one typed renderer.
 - **`runner/tick.sh` is orchestration only.** Its phases (admission and claim, launch, the delivery gates and the submit / rework / park decision, the close path, idle work, crash recovery and resume, the greenfield bootstrap) moved verbatim into `runner/lib/tick-*.sh`, which `tick.sh` sources up front and will not run without; no behaviour changed.
 - **The runner's config is split by area.** `runner/factory.config.sh` is now a short file that sources `runner/config/NN-area.sh` in a fixed order and stops when a part is missing or did not load whole; no knob, default or precedence changed.
+- **CI costs about half on a push that leaves the runner alone.** The macOS runner shards run on a push or pull request only when it changes a path that can behave differently on macOS (`runner/**`, `scripts/**`, `.github/**`, the package manifests, the lockfile, the Node pin; Markdown never counts), and the runner tests on Node 24 run nightly (the package tests on Node 24 stay on every push). The nightly workflow runs every cell a push may leave out, `workflow_dispatch` on it runs the full matrix by hand, and one always-running `CI result` check is the one a branch rule can require ([docs/testing.md](docs/testing.md#what-ci-runs-and-when)). No runner test file runs longer than 150 s at `-j 2` any more: the eight slowest are split on their independent sections, each half on its own world, with every check kept.
 
 ### CLI and API
 

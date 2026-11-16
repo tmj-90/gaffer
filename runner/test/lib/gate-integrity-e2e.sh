@@ -43,3 +43,15 @@ dod_explain() {  # <ticket-number>
   grep -F "#$1 " "$GAFFER_DATA/factory.log" 2>/dev/null | tail -n 20 | sed 's/^/        log: /'
   return 0
 }
+# WHY a review tick left no hold on a ticket, for a failure message: what the tick
+# answered, the ticket's event types in order, the factory-log lines naming it and the
+# end of the ticks' stderr. A missing hold with the ticket still in_review means the
+# review never reached the approve (another ticket was picked, the tick was refused, a
+# dispatch call failed): only these lines say which.
+hold_explain() {  # <ticket-number> <the review tick's TICK_RESULT line>
+  printf '        tick: %s\n' "${2:-(no TICK_RESULT line)}"
+  wg ticket show "$1" 2>/dev/null | jget '(d.events || []).map((e) => e.event_type).join(" ")' | sed 's/^/        events: /'
+  grep -F "#$1 " "$GAFFER_DATA/factory.log" 2>/dev/null | tail -n 12 | sed 's/^/        log: /'
+  tail -n 12 "$GAFFER_DATA/tick.stderr.log" 2>/dev/null | cut -c1-300 | sed 's/^/        stderr: /'
+  return 0
+}

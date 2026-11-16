@@ -72,9 +72,10 @@
 94	branch-switch-fresh.test.sh
 90	poll-overlap-run-state.test.sh
 89	resume-abort.test.sh
-# replay-manifest came in after that run: its slowest LOCAL run (-j 1 on a shared box), until the next refresh.
+# replay-manifest came in after that run: its slowest LOCAL run (-j 1 on a shared box), until the next refresh;
+# 160 -> 95 once its E4 stopped waiting out a fixed 60 s agent sleep (91 s at most in five -j 2 runs).
 #   trust-fail-closed: new, six real tick.sh runs (Linux alone under shared load: 72s); 150, twice that, until the next refresh.
-160	replay-manifest.test.sh
+95	replay-manifest.test.sh
 84	e2e-memory-routing.test.sh
 70	sandbox-docker-delivery-seam.test.sh
 65	rework-final-trail.test.sh

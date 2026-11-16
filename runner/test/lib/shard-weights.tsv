@@ -437,3 +437,4 @@
 # GAFFER_WG_SERVE=0 alone locally; served times the merge-lane ratio 1.12, rounded up, until CI
 # measures it.
 80	autonomy-step-down.test.sh
+90	autonomy-sealed.test.sh

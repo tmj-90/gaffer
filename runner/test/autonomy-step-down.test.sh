@@ -35,9 +35,12 @@ CORE_JS="$ROOT/packages/dispatch/dist/core.js"
 
 # The graduated grant: `auto` rows for low risk at both gates (what a person enables on
 # Settings > Autonomy; the REST surface is the only writer, so this calls the same service).
+# SEALED AUTONOMY: opened with the factory key (as the REST server does), so the rows are
+# signed with the key every runner CLI call verifies them under.
 DISPATCH_DB="$DISPATCH_DB" node --input-type=module -e "
   import { Dispatch } from '$CORE_JS';
-  const wg = Dispatch.open(process.env.DISPATCH_DB);
+  import { hostGateKeyring } from '$ROOT/packages/dispatch/dist/events/gateSeal.js';
+  const wg = Dispatch.open(process.env.DISPATCH_DB, undefined, undefined, { gateKeyring: hostGateKeyring(process.env.DISPATCH_DB) });
   const repo = wg.repos.findByName('repo');
   for (const gate of ['approve', 'merge']) {
     wg.setAutonomyPolicy({ repoId: repo.id, riskLevel: 'low', gate, mode: 'auto', confirm: true }, { type: 'human', id: 'op' });

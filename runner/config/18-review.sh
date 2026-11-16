@@ -188,7 +188,8 @@ gaffer_lite_trivial_reason() {
   printf 'trivial\n'
 }
 
-# LITE MODE trivial classifier — I/O wrapper. Gathers the ticket risk (dispatch) + the
+# LITE MODE trivial classifier — I/O wrapper. Gathers the ticket risk (dispatch's decided
+# risk, as `wg ticket auto-decision` reports it) + the
 # delivered diff's size and paths (git, from the review worktree's branch vs base) and runs
 # the pure core. Returns 0 (trivial → runner may auto-approve) / 1 (non-trivial → hold for a
 # human). Sets GAFFER_LITE_REASON / _LINES / _FILES for the caller's log + evidence marker.
@@ -196,7 +197,9 @@ gaffer_lite_trivial_reason() {
 #   $1 ticket#   $2 repo-path   $3 base-ref   $4 delivery-branch
 gaffer_ticket_is_trivial() {
   local _num="$1" _repo="$2" _base="$3" _branch="$4" _risk _stat _lines _files _paths _r
-  _risk="$(wg ticket show "$_num" 2>/dev/null | jget 'd.ticket.risk_level || "medium"' 2>/dev/null || echo medium)"
+  # SEALED AUTONOMY: the risk the autonomy decision uses (the signed one; an unsigned risk
+  # reads as the highest), never the stored column a database writer could lower.
+  _risk="$(wg ticket auto-decision "$_num" --gate approve 2>/dev/null | jget 'd.risk_level || "medium"' 2>/dev/null || echo medium)"
   _stat="$(git -C "$_repo" diff "$_base"..."$_branch" --numstat 2>/dev/null)"
   _lines="$(printf '%s\n' "$_stat" | awk 'NF{a+=($1 ~ /^[0-9]+$/ ? $1 : 0)+($2 ~ /^[0-9]+$/ ? $2 : 0)} END{print a+0}')"
   _files="$(printf '%s\n' "$_stat" | awk 'NF' | grep -c . || true)"

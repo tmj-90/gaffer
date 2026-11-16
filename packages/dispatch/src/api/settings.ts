@@ -288,7 +288,7 @@ function appliedOf(env: NodeJS.ProcessEnv): Set<string> {
  * setting). The dashboard's own readers need them (the approve floor, auto merge, PR
  * mode, the tester lane, notifications, budgets), and so do the helpers it starts that
  * are not runner scripts and never re-source the config: the Plan a build planner and
- * the spec author read GAFFER_PLAN_MODEL, the worker seam the kill estimate and the MCP
+ * the spec author read the planning model, the worker seam the kill estimate and the MCP
  * bridge. Every old key is a derived name, so it is covered too.
  */
 const DASHBOARD_NAMES: readonly string[] = [

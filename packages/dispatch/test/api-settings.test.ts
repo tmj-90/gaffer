@@ -83,7 +83,7 @@ describe("API: GET/POST /api/settings", () => {
       derived: { name: string; setting: string }[];
       migration: unknown[];
       overrides: unknown[];
-      cleanup: { drop: unknown[]; rewrite: unknown[] };
+      cleanup: { drop: unknown[]; rewrite: unknown[]; digest: string };
     };
     expect(body.settings.map((s) => s.key)).toEqual(SETTING_DEFS.map((d) => d.key));
     const effort = body.settings.find((s) => s.key === "GAFFER_EFFORT");
@@ -98,7 +98,7 @@ describe("API: GET/POST /api/settings", () => {
     );
     expect(body.migration).toEqual([]);
     expect(body.cleanup).toMatchObject({ drop: [], rewrite: [] });
-    expect((body.cleanup as { digest: string }).digest).toMatch(/^[0-9a-f]{32}$/);
+    expect(body.cleanup.digest).toMatch(/^[0-9a-f]{32}$/);
   });
 
   it("POST (and PUT) persists a setting to settings.json and reflects it back", async () => {

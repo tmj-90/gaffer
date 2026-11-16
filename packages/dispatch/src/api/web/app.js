@@ -37,9 +37,10 @@
 //   js/views/          one module per view or view part: overview, teamsheet,
 //                      tactics, programme, fitness, work, board, ticket,
 //                      ticket-cards, acceptance, repo-panel, create, settings,
-//                      formation, autonomy, health, review, review-comments,
-//                      review-packet, map, scope-node, repo, epics, plan,
-//                      spec-build, specs, memory, onboarding, squad, floor
+//                      formation, autonomy, autonomy-ladder, health, review,
+//                      review-comments, review-packet, map, scope-node, repo,
+//                      epics, plan, spec-build, specs, memory, onboarding,
+//                      squad, floor
 
 import { learnWhoami } from "./js/access.js";
 import { adoptTokenFromUrl, api, authToken } from "./js/api.js";

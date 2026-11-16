@@ -11,6 +11,7 @@ import { routeSignal, router } from "../router.js";
 import { runAsyncAction, toast } from "../toast.js";
 import {
   accessPanel,
+  autonomyLadderPanel,
   autonomyPoliciesPanel,
   autonomyRecommendationsPanel,
   renderIdleLoopsPanel,
@@ -220,6 +221,7 @@ async function renderSettings() {
   // B17: those policies are consulted ONLY by the agent review pass. Under
   // REVIEW_MODE=human (supervised, the default) no reviewer agent runs, so an enabled
   // grant showed "Enabled" here and never acted. Say so wherever a grant is shown.
+  main.appendChild(autonomyLadderPanel()); // THE AUTONOMY LADDER (js/views/autonomy-ladder.js)
   const inertCount = autonomyPoliciesInert(autonomyPolicies, all);
   if (inertCount > 0) main.appendChild(inertPoliciesNote(inertCount));
   const polPanel = autonomyPoliciesPanel(autonomyPolicies, { inert: inertCount > 0 });

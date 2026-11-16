@@ -1,0 +1,142 @@
+/* The autonomy ladder (Settings > Autonomy, js/views/autonomy-ladder.js): per repository,
+   risk rows by gate columns. Each cell leads with its rung (a word and a mark), then the
+   evidence row, the bar and the distance; a stepped-down cell adds its callout and the
+   lift. On a phone the table stacks to one gate per row, with the gate named in the cell. */
+
+@layer views {
+  .al-body {
+    display: grid;
+    gap: var(--s5);
+    min-width: 0;
+  }
+  .al-repo {
+    display: grid;
+    gap: var(--s3);
+    min-width: 0;
+  }
+  .al-table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+  }
+  .al-table th,
+  .al-table td {
+    padding: var(--s3);
+    border-top: var(--hair);
+    text-align: left;
+    vertical-align: top;
+  }
+  .al-table thead th {
+    font: 700 var(--t14) var(--f-text);
+    color: var(--ink-2);
+    border-top: 0;
+  }
+  .al-table thead th:first-child,
+  .al-risk {
+    width: 7.5rem;
+  }
+  .al-risk {
+    font: 700 var(--t16) var(--f-text);
+  }
+  .al-cell {
+    display: grid;
+    gap: var(--s2);
+    min-width: 0;
+  }
+  .al-gate-label {
+    display: none;
+    font: 700 var(--t13) var(--f-text);
+    color: var(--ink-2);
+  }
+  .al-rung {
+    display: flex;
+    align-items: center;
+    gap: var(--s2);
+    margin: 0;
+    font: 700 var(--t15) var(--f-text);
+  }
+  .al-rung svg {
+    flex: none;
+  }
+  .al-ceiling .al-rung,
+  .al-person .al-rung {
+    color: var(--ink-2);
+  }
+  .al-bar,
+  .al-distance {
+    margin: 0;
+    font-size: var(--t14);
+  }
+  .al-distance {
+    font-variant-numeric: tabular-nums;
+  }
+  .al-lift {
+    display: grid;
+    gap: var(--s1);
+  }
+  .al-lift-label {
+    font: 700 var(--t13) var(--f-text);
+    color: var(--ink-2);
+  }
+  .al-lift-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s2);
+    align-items: center;
+  }
+  .al-reason {
+    flex: 1 1 12rem;
+    min-width: 0;
+    min-height: var(--tap);
+  }
+
+  /* The Overview line: one per repository that stepped down in the last 7 days. */
+  .al-overview {
+    display: grid;
+    gap: var(--s1);
+  }
+  .al-overview-line {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--s2);
+    margin: 0;
+    padding: var(--s2) var(--s3);
+    background: var(--red-wash);
+    border-radius: var(--r);
+  }
+  .al-overview-line svg {
+    flex: none;
+    margin-top: 3px;
+    color: var(--red);
+  }
+
+  /* Phone: one gate per row, the gate named in its cell, no sideways scroll. */
+  @media (max-width: 600px) {
+    .al-table,
+    .al-table tbody,
+    .al-table tr,
+    .al-table th,
+    .al-table td {
+      display: block;
+      width: 100%;
+    }
+    .al-table thead {
+      display: none;
+    }
+    .al-table tr {
+      border-top: var(--hair);
+      padding-top: var(--s2);
+    }
+    .al-table th,
+    .al-table td {
+      border-top: 0;
+      padding: var(--s2) 0;
+    }
+    .al-table td + td {
+      border-top: 1px dashed var(--rule);
+    }
+    .al-gate-label {
+      display: block;
+    }
+  }
+}

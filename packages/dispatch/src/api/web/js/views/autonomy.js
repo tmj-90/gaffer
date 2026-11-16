@@ -889,3 +889,4 @@ function renderIdleLoopsPanel(view, repos, nodes, envSettings = []) {
 }
 
 export { autonomyRecommendationsPanel, autonomyPoliciesPanel, accessPanel, renderIdleLoopsPanel };
+export { autonomyLadderPanel } from "./autonomy-ladder.js";

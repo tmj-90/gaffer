@@ -16,6 +16,7 @@ import {
   squadForm,
   wageBill,
 } from "./programme.js";
+import { autonomyStepDownLine } from "./autonomy-ladder.js";
 import { pitchBoard, tacticsBoard } from "./tactics.js";
 import { whatIOwnPanel } from "./teamsheet.js";
 import { hashText } from "./work.js";
@@ -175,6 +176,7 @@ async function renderOverview() {
   // the pitch mostly empty: Squad & form moves up into it, as in the idle comp.
   const idle = f.items.length <= 2;
   wrap.appendChild(overviewScoreboard(f));
+  wrap.appendChild(autonomyStepDownLine()); // THE AUTONOMY LADDER: a step-down of the last 7 days
   const sheet = whatIOwnPanel(f.queue, f);
   const board = tacticsBoard(f);
   const squad = squadForm(f);

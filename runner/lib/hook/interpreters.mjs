@@ -565,6 +565,11 @@ const PY_RESTRICTED = {
   importlib: new Set(["metadata"]),
   urllib: new Set(["parse"]),
 };
+const PY_SITE_READ = new Set(
+  "getsitepackages getusersitepackages getuserbase ENABLE_USER_SITE USER_SITE USER_BASE PREFIXES".split(
+    " ",
+  ),
+);
 const PY_SYS_DENY = new Set(
   "modules meta_path path_hooks path_importer_cache settrace setprofile call_tracing breakpointhook remote_exec addaudithook".split(
     " ",
@@ -629,7 +634,15 @@ const PY_DANGER_ATTRS = new Set(
     "importlib builtins pty mmap tempfile pickle marshal startfile chroot setuid seteuid setgid " +
     "mkfifo mknod removedirs renames ftruncate fchmod lchown fchown makedirs symlink link " +
     "truncate utime remove copyfile copytree copy2 rmtree chown chdir fchdir attrgetter " +
-    "methodcaller get_field vformat"
+    "methodcaller get_field vformat " +
+    // The dynamic builtins reached as attributes (`enum.bltns.exec`, `builtins` under any
+    // module's alias), and functions that evaluate annotation strings as code.
+    "bltns exec eval getattr setattr delattr globals locals vars breakpoint help " +
+    "get_type_hints ForwardRef evaluate_forward_ref get_annotations singledispatch " +
+    "singledispatchmethod " +
+    // What a module reached through another one offers under a generic name.
+    "write_history_file append_history_file interact InteractiveConsole " +
+    "InteractiveInterpreter compile_command runctx runcall"
   ).split(" "),
 );
 // The save methods of common packages (numpy, pandas, matplotlib, PIL, polars, ...): a
@@ -659,24 +672,44 @@ const PY_CAP_MODULES = new Set(
     "httpx aiohttp urllib3 paramiko fabric invoke sh plumbum pexpect psutil docker boto3 " +
     "botocore wsgiref signal threading _thread argparse netrc pipes py_compile compileall " +
     "smtpd uu xml zipapp asynchat asyncore cgitb readline syslog tracemalloc pstats idlelib " +
-    "copyreg turtle tkinter nntplib faulthandler ossaudiodev spwd"
+    "copyreg turtle tkinter nntplib faulthandler ossaudiodev spwd antigravity lib2to3 " +
+    "turtledemo cgi annotationlib"
   ).split(" "),
+);
+// Capability modules that may be reached as an attribute of another module
+// (`tokenize.io`, `importlib.metadata.zipfile`, `email.utils.socket`): every name above
+// but the few that are also common attribute names of plain objects (`sys.stdin.readline`,
+// `err.code`), whose dangerous members are named in PY_DANGER_ATTRS instead.
+const PY_CHAIN_CAP = new Set(
+  [...PY_CAP_MODULES].filter(
+    (m) => !["readline", "code", "select", "signal", "trace", "profile", "resource"].includes(m),
+  ),
+);
+// Bare names that evaluate strings as code (after `from typing import *`).
+const PY_DANGER_BARE = new Set(
+  "get_type_hints ForwardRef evaluate_forward_ref get_annotations singledispatch singledispatchmethod bltns".split(
+    " ",
+  ),
 );
 
 function pyModulePolicy(dotted) {
   const top = dotted.split(".")[0];
   if (top.startsWith("_") && top !== "__future__") return { cap: true };
+  // site's readers; its addsitedir() runs .pth files.
+  if (dotted === "site") return { allow: PY_SITE_READ, mod: "site" };
   if (PY_CAP_MODULES.has(top)) return { cap: true };
-  if (dotted.startsWith("urllib.") && dotted !== "urllib.parse") return { cap: true };
-  if (dotted.startsWith("importlib.") && !dotted.startsWith("importlib.metadata")) {
+  // json.tool's main() writes the file named by sys.argv.
+  if (dotted === "json.tool" || dotted.startsWith("json.tool.")) return { cap: true };
+  // `from urllib.parse import urlparse` and `from os.path import join` name members of
+  // the safe submodules (`urllib.parse.urlparse`), not other submodules.
+  const under = (m) => dotted === m || dotted.startsWith(m + ".");
+  if (dotted.startsWith("urllib.") && !under("urllib.parse")) return { cap: true };
+  if (dotted.startsWith("importlib.") && !under("importlib.metadata")) {
     return { cap: true };
   }
-  if (dotted.startsWith("os.") && dotted !== "os.path") return { cap: true };
-  if (
-    dotted === "os.path" ||
-    dotted === "urllib.parse" ||
-    dotted.startsWith("importlib.metadata")
-  ) {
+  if (dotted.startsWith("os.") && !under("os.path")) return { cap: true };
+
+  if (under("os.path") || under("urllib.parse") || under("importlib.metadata")) {
     return { safe: true };
   }
   if (top === "sys") return { sys: true };
@@ -776,7 +809,11 @@ function analysePython(toks, prog, roots, caps, writes) {
         const subPolicy = pyModulePolicy(sub);
         const why = subPolicy.cap ? `imports ${sub}` : pyMemberWhy(policy, member, name);
         if (why) cap(caps, why);
-        bindings.set(bound, { policy: { safe: true }, mod: sub, member });
+        // `from tokenize import io`: a module imported from another keeps its own policy.
+        if (PY_CHAIN_CAP.has(member)) cap(caps, `imports the module ${member} from ${name}`);
+        if (PY_RESTRICTED[member] && member !== "importlib" && member !== "urllib") {
+          bindings.set(bound, { policy: pyModulePolicy(member), mod: member });
+        } else bindings.set(bound, { policy: { safe: true }, mod: sub, member });
         if (isP(toks[j], ",")) j += 1;
       }
     }
@@ -811,6 +848,15 @@ function analysePython(toks, prog, roots, caps, writes) {
     }
     // A keyword argument name (`f(eval=1)`) is not the builtin.
     if (isP(next, "=") && (isP(prev, "(") || isP(prev, ","))) continue;
+    if (PY_DANGER_BARE.has(name)) {
+      cap(caps, `uses ${name}, which evaluates strings as code`);
+      continue;
+    }
+    if ((name === "environ" || name === "environb") && bindings.get(name)?.member) {
+      const why = pyEnvironWhy(toks, i, match);
+      if (why) cap(caps, why);
+      continue;
+    }
     if (PY_DYNAMIC_BUILTINS.has(name)) {
       cap(caps, `runs code built at run time (${name})`);
       continue;
@@ -842,9 +888,86 @@ function analysePython(toks, prog, roots, caps, writes) {
       }
       const why = pyMemberWhy(b.policy, member, b.mod);
       if (why) cap(caps, why);
+      if (
+        !why &&
+        b.policy.allow === PY_RESTRICTED.os &&
+        (member === "environ" || member === "environb")
+      ) {
+        const envWhy = pyEnvironWhy(toks, i + 2, match);
+        if (envWhy) cap(caps, envWhy);
+      }
       skip[i + 2] = 1;
     }
   }
+  // PYTHONINSPECT in the environment at exit makes python read a program from stdin.
+  if (prog.text.includes("PYTHONINSPECT"))
+    cap(caps, "names PYTHONINSPECT (interactive mode at exit)");
+}
+
+const PY_ENVIRON_READS = new Set(["get", "copy", "items", "keys", "values"]);
+const PY_ENVIRON_TAKERS = new Set([
+  "dict",
+  "print",
+  "len",
+  "sorted",
+  "list",
+  "str",
+  "repr",
+  "set",
+  "tuple",
+]);
+
+// An assignment operator at k: `=`, `+=`, `|=`, `//=`, ... (not `==`).
+function pyAssignAt(toks, k) {
+  const t = toks[k];
+  if (isP(t, "=") || isP(t, "+=") || isP(t, "-=")) return true;
+  if (!t || t.t !== "p" || !/^(?:[*/%&|^@<>]|\*\*|<<|>>)$/.test(t.v)) return false;
+  let n = k + 1;
+  if (isP(toks[n], "/") && t.v === "/" && toks[n].s === t.e) n += 1;
+  return isP(toks[n], "=") && toks[n].s === toks[n - 1].e;
+}
+
+// Why the use of os.environ at j changes the environment (or hands it to code that can),
+// or null for a read. In the environment PYTHONINSPECT turns a finished program into an
+// interactive one reading stdin.
+function pyEnvironWhy(toks, j, match) {
+  const next = toks[j + 1];
+  const del = toks[j - 1]?.v === "del" || (isDot(toks[j - 1]) && toks[j - 3]?.v === "del");
+  if (del) return "deletes from os.environ";
+  if (isDot(next)) {
+    return toks[j + 2]?.t === "id" && PY_ENVIRON_READS.has(toks[j + 2].v)
+      ? null
+      : `changes os.environ (.${toks[j + 2]?.v ?? "?"})`;
+  }
+  if (isP(next, "[")) {
+    const close = match[j + 1];
+    if (close < 0 || pyAssignAt(toks, close + 1)) return "assigns into os.environ";
+    return null;
+  }
+  if (pyAssignAt(toks, j + 1)) return "assigns to os.environ";
+  // The base of a dotted name `os.environ`: the token before the dot-chain start.
+  let base = j;
+  if (isDot(toks[j - 1]) && toks[j - 2]?.t === "id") base = j - 2;
+  const before = toks[base - 1];
+  if (
+    isP(before, "=") ||
+    (isP(before, "=") === false && isP(before, ":") && isP(toks[base], "="))
+  ) {
+    return "takes os.environ as a value the hook cannot follow";
+  }
+  if (isP(before, "[") || isP(before, "{") || isP(before, ":")) {
+    return "puts os.environ in a container the hook cannot follow";
+  }
+  if (isP(before, "(") || isP(before, ",")) {
+    // An argument: only a few functions that copy or print it.
+    let open = base - 1;
+    while (open >= 0 && !isP(toks[open], "(")) open -= 1;
+    const callee = toks[open - 1];
+    if (!(callee?.t === "id" && PY_ENVIRON_TAKERS.has(callee.v) && !isDot(toks[open - 2]))) {
+      return "hands os.environ to code the hook cannot follow";
+    }
+  }
+  return null;
 }
 
 // Builtin open() or a .open() method: read modes pass; a write needs a literal path.
@@ -907,6 +1030,18 @@ function pyPathReceiver(toks, dot, match) {
 function pyAttribute(toks, i, match, bindings, prog, roots, caps, writes) {
   const name = toks[i].v;
   const next = toks[i + 1];
+  if (PY_CHAIN_CAP.has(name)) {
+    cap(caps, `reaches the module .${name}`);
+    return;
+  }
+  if (name === "io" || name === "codecs" || name === "urllib") {
+    // `tokenize.io.FileIO(...)`: a restricted module reached through another keeps its list.
+    const member = isDot(next) && toks[i + 2]?.t === "id" ? toks[i + 2].v : null;
+    if (member === null || !PY_RESTRICTED[name].has(member)) {
+      cap(caps, `reaches .${name}${member ? "." + member : ""}`);
+      return;
+    }
+  }
   if (name === "open") {
     const recv = pyPathReceiver(toks, i - 1, match);
     pyOpen(toks, i, match, prog, roots, caps, writes, ".open()", recv);
@@ -1050,7 +1185,24 @@ const JS_DANGER_ATTRS = new Set(
     "chmodSync chownSync utimesSync mkdtempSync lchmodSync lchownSync lutimesSync futimesSync " +
     "fchmodSync fchownSync ftruncateSync writevSync writev writeFile appendFile copyFile " +
     "symlink mkdtemp writer openSync _load _compile _resolveFilename _extensions _cache " +
-    "_initPaths _findPath _nodeModulePaths"
+    "_initPaths _findPath _nodeModulePaths " +
+    // Walking an object's hidden members reaches `constructor` without naming it.
+    "getPrototypeOf setPrototypeOf getOwnPropertyNames getOwnPropertyDescriptor " +
+    "getOwnPropertyDescriptors ownKeys"
+  ).split(" "),
+);
+// Names that are a capability wherever they appear as a bare identifier, not only after a
+// dot: a destructuring key (`const { execSync: x } = m`) reaches the member as surely.
+const JS_STRICT_IDS = new Set(
+  (
+    "execSync execFileSync spawnSync execFile _linkedBinding dlopen mainModule " +
+    "getBuiltinModule prepareStackTrace writeFileSync appendFileSync createWriteStream " +
+    "writeSync copyFileSync cpSync renameSync rmSync rmdirSync unlinkSync mkdirSync " +
+    "symlinkSync linkSync truncateSync chmodSync chownSync utimesSync mkdtempSync lchmodSync " +
+    "lchownSync lutimesSync futimesSync fchmodSync fchownSync ftruncateSync writevSync _load " +
+    "_compile _resolveFilename _extensions _cache _initPaths _findPath _nodeModulePaths " +
+    "__defineGetter__ __defineSetter__ __lookupGetter__ __lookupSetter__ getPrototypeOf " +
+    "setPrototypeOf getOwnPropertyNames getOwnPropertyDescriptor getOwnPropertyDescriptors"
   ).split(" "),
 );
 // String values that name an escape: `x["constructor"]`, `require("child_process")`.
@@ -1067,17 +1219,32 @@ const JS_CAP_MODULES = new Set(
     "cross-spawn node-fetch axios got undici fs-extra rimraf mkdirp graceful-fs tmp puppeteer " +
     "playwright ssh2 ws request superagent zx node-pty @actions/exec @actions/io nodemailer " +
     "open opener sudo-prompt write-file-atomic jsonfile del cpy make-dir move-file tar " +
-    "adm-zip archiver unzipper extract-zip basic-ftp ssh2-sftp-client simple-git"
+    "adm-zip archiver unzipper extract-zip basic-ftp ssh2-sftp-client simple-git " +
+    // Build tools and template engines that write files or compile strings into code.
+    "esbuild vite rollup webpack tinyexec nano-spawn @npmcli/run-script @npmcli/promise-spawn " +
+    "spawndamnit ejs pug handlebars nunjucks lodash.template vm2 isolated-vm bun npm pnpm " +
+    "yarn corepack npx"
   ).split(" "),
 );
+// Packages whose version fields are read in one-liners but whose API can write or compile
+// code (`typescript.sys.writeFile`, `lodash.template`): only the version members pass.
+const JS_VERSION_ONLY = new Set(["typescript", "lodash", "underscore", "lodash-es"]);
 
 function jsModulePolicy(spec) {
   const m = spec.replace(/^node:/, "");
+  // `data:` and `https:` URLs carry or fetch a program; `/dev/stdin` and `/proc/self/fd/0`
+  // read one from input; `bun:ffi` and the rest of bun's own modules are capabilities.
+  if (/^[A-Za-z][\w+.-]*:/.test(m)) return { cap: true, mod: m };
+  if (/^\/(?:dev|proc)\//.test(m)) return { cap: true, mod: m };
+  if (JS_VERSION_ONLY.has(m)) return { unknown: true, mod: m };
   if (/^(?:\.{1,2}\/|\/)/.test(m) || m === "." || m === "..") {
     if (/\.json$/.test(m)) return { safe: true };
     // A path into node_modules names a package: judge it by its name.
     const pkg = /(?:^|\/)node_modules\/((?:@[^/]+\/)?[^/]+)/.exec(m);
     if (pkg) return jsModulePolicy(pkg[1]);
+    // An absolute path is installed code the hook cannot name (`/usr/share/nodejs/npm/...`);
+    // a relative one is a file in the worktree (the documented residual).
+    if (m.startsWith("/")) return { cap: true, mod: m };
     return { safe: true };
   }
   if (m === "fs") return { fs: true, mod: "fs" };
@@ -1179,6 +1346,8 @@ function analyseJs(toks, prog, roots, caps, writes) {
     } else writes.push({ paths, what: label });
   };
 
+  // Names assigned a member picked at run time (`const F = o[k]`): calling one is refused.
+  const tainted = new Set();
   // Names the program declares shadow the builtins node -e puts on the global object.
   const declared = new Set();
   for (let i = 0; i + 1 < toks.length; i += 1) {
@@ -1360,10 +1529,36 @@ function analyseJs(toks, prog, roots, caps, writes) {
     if (
       isP(t, "[") &&
       i > 0 &&
-      (prev.t === "id" || prev.t === "str" || isP(prev, ")") || isP(prev, "]"))
+      ((prev.t === "id" && !JS_KEYWORDS_BEFORE_VALUE.has(prev.v)) ||
+        isP(prev, "?.") ||
+        prev.t === "str" ||
+        isP(prev, ")") ||
+        isP(prev, "]"))
     ) {
-      jsComputed(toks, i, match, bindings, caps, declared);
+      jsComputed(toks, i, match, bindings, caps, declared, tainted);
       continue;
+    }
+    if (
+      isP(t, "[") &&
+      (isP(prev, "{") || isP(prev, ",")) &&
+      match[i] > i &&
+      isP(toks[match[i] + 1], ":")
+    ) {
+      // `{ [k]: F } = o`: a computed key in an object literal or pattern.
+      if (
+        match[i] - i !== 2 ||
+        (toks[i + 1].t !== "num" && literalAt(toks, i + 1, i + 2) === null)
+      ) {
+        cap(caps, "takes a member whose name is built at run time");
+      }
+      continue;
+    }
+    if (isP(t, "(") && isP(prev, ")") && match[i - 1] >= 0) {
+      // `(0, o[k])(...)`: calling a parenthesised expression that picks a member at run time.
+      const open = match[i - 1];
+      if (i - open > 256 || jsHasRuntimeMember(toks, open, i - 1, match)) {
+        cap(caps, "calls an expression that picks a member at run time");
+      }
     }
     if (t.t !== "id" || done[i]) continue;
     const name = t.v;
@@ -1371,8 +1566,18 @@ function analyseJs(toks, prog, roots, caps, writes) {
       if (JS_DANGER_ATTRS.has(name)) cap(caps, `reaches .${name}`);
       continue;
     }
-    if (name === "this" && (isDot(next) || isP(next, "[")) && !inClass[i]) {
-      cap(caps, "reaches members of this (the global object at the top level)");
+    if (name === "this" && !inClass[i]) {
+      // In sloppy code `this` is the global object at the top level and in a plain
+      // function call (`(function(){return this})()`), with require and process on it.
+      cap(caps, "uses this (the global object outside a class)");
+      continue;
+    }
+    if (JS_STRICT_IDS.has(name) && !bindings.has(name)) {
+      cap(caps, `names ${name}`);
+      continue;
+    }
+    if (tainted.has(name) && (jsCalledAt(toks, i) || isP(prev, "(") || isP(prev, ","))) {
+      cap(caps, `calls ${name}, a member picked at run time`);
       continue;
     }
     if (name === "constructor" || name === "__proto__") {
@@ -1458,7 +1663,35 @@ function jsDestructure(toks, open, close, b, bindings, done, caps, memberWhy) {
 }
 
 // `X[...]`: a member picked at run time.
-function jsComputed(toks, open, match, bindings, caps, declared) {
+// Keywords after which `[` opens an array literal or a pattern, not a member access.
+const JS_KEYWORDS_BEFORE_VALUE = new Set(
+  "const let var return typeof in of case new delete void throw yield await else do instanceof".split(
+    " ",
+  ),
+);
+
+// Whether the identifier at i is called: `f(`, `` f`...` ``, `f.call(`, `new f`.
+function jsCalledAt(toks, i) {
+  const next = toks[i + 1];
+  if (isP(next, "(") || (next?.t === "str" && next.kind === "template")) return true;
+  if (isDot(next) && /^(?:call|apply|bind)$/.test(toks[i + 2]?.v ?? "")) return true;
+  return toks[i - 1]?.t === "id" && toks[i - 1].v === "new";
+}
+
+// Whether toks (a, b) hold a computed member access with a key that is not a literal.
+function jsHasRuntimeMember(toks, a, b, match) {
+  for (let k = a + 1; k < b; k += 1) {
+    if (!isP(toks[k], "[")) continue;
+    const p = toks[k - 1];
+    if (!(p.t === "id" || p.t === "str" || isP(p, ")") || isP(p, "]"))) continue;
+    const c = match[k];
+    if (c !== k + 2) return true;
+    if (toks[k + 1].t !== "num" && literalAt(toks, k + 1, k + 2) === null) return true;
+  }
+  return false;
+}
+
+function jsComputed(toks, open, match, bindings, caps, declared, tainted = new Set()) {
   const close = match[open];
   if (close < 0) return;
   const prev = toks[open - 1];
@@ -1484,6 +1717,28 @@ function jsComputed(toks, open, match, bindings, caps, declared) {
     kind = "arith";
   }
   const after = toks[close + 1];
+  if (kind === "num" && (isP(after, "(") || (after?.t === "str" && after.kind === "template"))) {
+    cap(caps, "calls a member picked by index");
+    return;
+  }
+  if (kind === "ident" || kind === "arith") {
+    if (
+      (after?.t === "str" && after.kind === "template") ||
+      (isDot(after) && /^(?:call|apply|bind)$/.test(toks[close + 2]?.v ?? ""))
+    ) {
+      cap(caps, "calls a member picked at run time");
+      return;
+    }
+    // `F = a.b[k]`: remember F, refused if it is called.
+    let k = open - 1;
+    while (k >= 0) {
+      if (toks[k].t === "id" || isDot(toks[k])) k -= 1;
+      else if ((isP(toks[k], ")") || isP(toks[k], "]")) && match[k] >= 0 && match[k] < k)
+        k = match[k] - 1;
+      else break;
+    }
+    if (isP(toks[k], "=") && toks[k - 1]?.t === "id") tainted.add(toks[k - 1].v);
+  }
   if (kind === "danger") cap(caps, `reaches the member "${inner[0].v}"`);
   else if (kind === "complex") cap(caps, "picks a member with a name built at run time");
   else if ((kind === "ident" || kind === "arith") && isP(after, "(")) {
@@ -1520,16 +1775,17 @@ function jsRuntimeGlobal(toks, i, match, caps, writes, name, done) {
     return;
   }
   if (name === "Bun" && member === "file") {
-    // `Bun.file(p).text()` reads; `.writer()`, `.write()`, `.delete()` write.
+    // `Bun.file(p).text()` reads; anything else (`.writer()`, `.write()`, `.delete()`, or
+    // the file kept in a variable for later) is refused.
     const close = isP(toks[open], "(") ? match[open] : -1;
     const after = close > 0 ? toks[close + 2] : null;
-    if (
+    if (!(
       close > 0 &&
       isDot(toks[close + 1]) &&
       after &&
-      /^(?:write|writer|delete|unlink)$/.test(after.v)
-    ) {
-      cap(caps, `writes through Bun.file().${after.v}`);
+      /^(?:text|json|arrayBuffer|bytes|stream|exists|size|type|name|lastModified)$/.test(after.v)
+    )) {
+      cap(caps, `uses Bun.file()${after?.v ? "." + after.v : ""} in a way that may write`);
     }
     return;
   }
@@ -1602,6 +1858,9 @@ function analyseRuby(toks, prog, roots, caps, writes) {
       const lit = literalAt(toks, a, a + 1);
       if (lit === null) cap(caps, `${name}s a library whose name is built at run time`);
       else if (name === "require" && !RUBY_SAFE_LIBS.has(lit)) cap(caps, `requires ${lit}`);
+      else if (lit.startsWith("/")) {
+        cap(caps, `${name}s ${lit} (installed code or input, not a worktree file)`);
+      }
       continue;
     }
     if (RUBY_DANGER.has(name)) {
@@ -1759,7 +2018,7 @@ function analysePerl(toks, prog, roots, caps, writes, src) {
     const mod = spec.replace(/^-/, "").split("=")[0];
     if (!PERL_SAFE_MODULES.has(mod)) cap(caps, `loads the module ${mod}`);
   }
-  if (src.includes("(?{") || src.includes("(??{"))
+  if (src.includes("(?{") || src.includes("(??{") || src.includes("(*{"))
     cap(caps, "runs code inside a regular expression");
   for (let i = 0; i < toks.length; i += 1) {
     const t = toks[i];
@@ -1773,6 +2032,11 @@ function analysePerl(toks, prog, roots, caps, writes, src) {
     }
     if (t.t === "var") {
       if (t.v === "^I") cap(caps, "edits files in place ($^I)");
+      // `\&CORE::readpipe`, `&CORE::open(...)`, `*CORE::GLOBAL::open = ...`: a builtin
+      // reached as a code reference skips every check on its name.
+      if ((t.sigil === "&" || t.sigil === "*") && /^(?:main)?(?:::)?CORE::/.test(t.v)) {
+        cap(caps, `reaches the builtin ${t.v} as a code reference`);
+      }
       continue;
     }
     if (isP(t, "*") && isP(next, "{")) cap(caps, "reaches a symbol by name (*{...})");
@@ -1962,6 +2226,24 @@ const PHP_WRITES = {
   symlink: 2,
   link: 2,
 };
+// More functions that write a file, open one for writing, or start something, by name.
+const PHP_MORE_WRITES = new Set(
+  (
+    "gzopen gzwrite gzputs bzopen bzwrite xmlwriter_open_uri imagepng imagejpeg imagegif " +
+    "imagewebp imagebmp imagewbmp imagexbm imageavif imagegd imagegd2 image2wbmp iptcembed " +
+    "dio_open fputcsv fwrite fputs ftruncate flock tmpfile"
+  ).split(" "),
+);
+// Methods that write a file when given a path (`$xml->asXML("/x")`, `$dom->save("/x")`).
+const PHP_WRITE_METHODS = new Set(
+  (
+    "save savehtmlfile asxml savexml openfile openuri extractto writeimage writeimages " +
+    "writeimagefile compress decompress buildfromdirectory buildfromiterator addfile"
+  ).split(" "),
+);
+const PHP_DANGER_CLASSES = new Set(
+  "splfileinfo xmlwriter domdocument simplexmlelement imagick gmagick".split(" "),
+);
 const PHP_URL_READS = new Set([
   "file_get_contents",
   "file",
@@ -1986,7 +2268,9 @@ function analysePhp(toks, prog, roots, caps, writes) {
         t.exact &&
         (PHP_DANGER.has(t.v.toLowerCase()) ||
           PHP_CALLABLE_TAKERS.has(t.v.toLowerCase()) ||
-          PHP_WRITES[t.v.toLowerCase()] !== undefined)
+          PHP_WRITES[t.v.toLowerCase()] !== undefined ||
+          PHP_MORE_WRITES.has(t.v.toLowerCase().replace(/^\\/, "")) ||
+          PHP_URL_READS.has(t.v.toLowerCase().replace(/^\\/, "")))
       )
         cap(caps, `names the function ${t.v} in a string (a callable)`);
       if (isP(next, "(")) cap(caps, "calls a string as a function");
@@ -2005,20 +2289,54 @@ function analysePhp(toks, prog, roots, caps, writes) {
       continue;
     }
     if (t.t !== "id") continue;
-    const name = t.v.toLowerCase().replace(/^\\/, "");
+    // `\file_put_contents` and `namespace\file_put_contents` name the global function.
+    const name = t.v
+      .toLowerCase()
+      .replace(/^\\/, "")
+      .replace(/^namespace\\/, "");
     if (isP(prev, "->") || isP(prev, "::")) {
       if (name === "fromcallable") cap(caps, "builds a closure from a callable");
+      else if (PHP_WRITE_METHODS.has(name) && isP(next, "(") && !isP(toks[i + 2], ")")) {
+        cap(caps, `writes through the method ${t.v}()`);
+      }
       continue;
     }
     if (name === "new") {
       const cls = next?.t === "id" ? next.v.toLowerCase().replace(/^\\/, "") : null;
       if (cls === null) cap(caps, "creates an object of a class chosen at run time");
-      else if (PHP_DANGER.has(cls)) cap(caps, `creates ${next.v}`);
+      else if (PHP_DANGER.has(cls) || PHP_DANGER_CLASSES.has(cls)) cap(caps, `creates ${next.v}`);
+      continue;
+    }
+    if (name === "use" && next?.t === "id" && /^(?:function|const)$/i.test(next.v)) {
+      // `use function file_put_contents as f;`: an alias hides the name from every check.
+      cap(caps, "imports a function under another name (use function)");
       continue;
     }
     if (/^(?:include|include_once|require|require_once)$/.test(name)) {
       const a = isP(next, "(") ? i + 2 : i + 1;
-      if (literalAt(toks, a, a + 1) === null) cap(caps, `${name}s a file named at run time`);
+      const lit = literalAt(toks, a, a + 1);
+      if (lit === null) cap(caps, `${name}s a file named at run time`);
+      else if (lit.includes("://") || lit.startsWith("/")) {
+        cap(caps, `${name}s ${lit.slice(0, 40)} (a stream or input, not a file)`);
+      }
+      continue;
+    }
+    if (PHP_MORE_WRITES.has(name) && isP(next, "(")) {
+      if (
+        name === "fwrite" ||
+        name === "fputs" ||
+        name === "fputcsv" ||
+        name === "ftruncate" ||
+        name === "flock"
+      ) {
+        // Writing to an open handle: only STDOUT / STDERR (the handle's open was judged).
+        const h = toks[i + 2];
+        if (!(h?.t === "id" && /^(?:STDOUT|STDERR)$/.test(h.v)) && !(h?.t === "var")) {
+          cap(caps, `writes through ${t.v} to a handle the hook cannot follow`);
+        }
+        continue;
+      }
+      cap(caps, `uses ${t.v}, which writes files`);
       continue;
     }
     if (PHP_CALLABLE_TAKERS.has(name)) {
@@ -2092,6 +2410,8 @@ const ANALYSERS = {
 /** Why one inline program is refused, or null; its allowed write targets go to `targets`. */
 function programReason(prog, roots, targets) {
   const lang = prog.lang;
+  // Output paths of a command line the shell layer read (`python -m venv DIR`).
+  if (lang === "writes") return writePathsReason(prog.paths, prog.cwd, roots, prog.what, targets);
   const variants = lang === "perl" ? [{ perlTick: false }, { perlTick: true }] : [{}];
   for (const opts of variants) {
     const lexed = lexProgram(lang, prog.text, opts);
@@ -2156,6 +2476,7 @@ const BOUNDED_READ_PATTERNS = READ_PRIMITIVE_PATTERNS.map(
 function inlineProgramReadReason(cmd, roots) {
   const { programs } = inlinePrograms(cmd);
   for (const prog of programs) {
+    if (prog.lang === "writes") continue;
     if (roots.configured) {
       for (const global of BOUNDED_READ_PATTERNS) {
         for (const m of prog.text.matchAll(global)) {

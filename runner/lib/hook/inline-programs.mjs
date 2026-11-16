@@ -25,6 +25,7 @@
 
 import { basename } from "node:path";
 import { decodeEscapes } from "./inline-lex.mjs";
+import { otherInterpreter, otherInterpreterName } from "./inline-other.mjs";
 import { replayCd } from "./paths.mjs";
 import { resolveEffectiveTokens } from "./verbs.mjs";
 
@@ -34,7 +35,8 @@ const MAX_DEPTH = 6;
 function interpreterLang(word) {
   const b = basename(word);
   if (/^(?:python|pypy)[0-9.]*$/.test(b)) return "python";
-  if (/^(?:node|nodejs|bun|tsx|ts-node|ts-node-esm|esno|esr|babel-node)$/.test(b)) return "js";
+  if (/^(?:node|nodejs)(?:-?[0-9][0-9.]*)?$/.test(b)) return "js"; // node22, node-20.1
+  if (/^(?:bun|tsx|ts-node|ts-node-esm|esno|esr|babel-node)$/.test(b)) return "js";
   if (b === "deno") return "deno";
   if (/^(?:ruby|jruby|truffleruby|irb)[0-9.]*$/.test(b)) return "ruby";
   if (/^perl[0-9.]*$/.test(b)) return "perl";
@@ -129,6 +131,10 @@ function lexShell(cmd) {
   let word = null;
   let pendingRedir = null;
   const heredocs = [];
+  // The command text of every substitution (`$(...)`, backticks, `<(...)`, `>(...)`,
+  // `${X:-$(...)}`, and those in an unquoted here-document): the shell runs each of them
+  // before or beside the command, so the caller reads them as commands too.
+  const substs = [];
   const n = cmd.length;
   let i = 0;
 
@@ -161,6 +167,7 @@ function lexShell(cmd) {
       const end = matchParen(cmd, k + 1);
       word.text += cmd.slice(k, end);
       word.subst = true;
+      substs.push(cmd.slice(k + 2, Math.max(k + 2, end - 1)));
       return end;
     }
     if (nx === "{") {
@@ -168,7 +175,10 @@ function lexShell(cmd) {
       const inner = cmd.slice(k + 2, end - 1);
       word.text += cmd.slice(k, end);
       if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(inner)) word.vars.push(inner);
-      else word.subst = true; // `${X:-$(cmd)}`, `${!X}`, `${X/a/b}`: not followed
+      else {
+        word.subst = true; // `${X:-$(cmd)}`, `${!X}`, `${X/a/b}`: not followed as a value
+        substs.push(inner); // but a substitution inside it still runs
+      }
       return end;
     }
     const m = /^[A-Za-z_][A-Za-z0-9_]*/.exec(cmd.slice(k + 1, k + 257));
@@ -260,6 +270,7 @@ function lexShell(cmd) {
           if (end === -1) return { error: "an unbalanced backtick" };
           word.text += cmd.slice(k, end + 1);
           word.subst = true;
+          substs.push(backtickBody(cmd.slice(k + 1, end), true));
           k = end + 1;
           continue;
         }
@@ -280,6 +291,7 @@ function lexShell(cmd) {
       newWord();
       word.text += cmd.slice(i, end + 1);
       word.subst = true;
+      substs.push(backtickBody(cmd.slice(i + 1, end), false));
       i = end + 1;
       continue;
     }
@@ -308,12 +320,13 @@ function lexShell(cmd) {
       const m = /^(?:<<<|<<-|<<|<>|<&|<|>>|>&|>\||>|&>>|&>)/.exec(cmd.slice(i, i + 3));
       const op = m[0];
       i += op.length;
-      if (op === "<(" || (op === "<" && cmd[i] === "(")) {
-        // Process substitution: a command of its own (judged by the other rules).
+      if ((op === "<" || op === ">") && cmd[i] === "(") {
+        // Process substitution `<(cmd)` / `>(cmd)`: a command of its own, read below.
         newWord();
         const end = matchParen(cmd, i);
-        word.text += "<" + cmd.slice(i, end);
+        word.text += op + cmd.slice(i, end);
         word.subst = true;
+        substs.push(cmd.slice(i + 1, Math.max(i + 1, end - 1)));
         i = end;
         continue;
       }
@@ -329,7 +342,14 @@ function lexShell(cmd) {
     // bash runs a here-document that reaches the end of input; its body is what remains.
     for (const h of heredocs) h.body = h.body ?? "";
   }
-  return { cmds };
+  for (const c of cmds) for (const r of c.redirs) if (r.substs) substs.push(...r.substs);
+  return { cmds, substs };
+}
+
+// A backtick substitution's command: `\\`, `` \` `` and `\$` lose their backslash (and `\"`
+// inside double quotes).
+function backtickBody(body, inDouble) {
+  return body.replace(inDouble ? /\\([\\`$"])/g : /\\([\\`$])/g, "$1");
 }
 
 function backtickEnd(s, k) {
@@ -418,6 +438,7 @@ function readHeredoc(cmd, i, h) {
   }
   let body = lines.length ? lines.join("\n") + "\n" : "";
   h.vars = [];
+  h.substs = [];
   h.subst = false;
   if (!h.quoted) {
     // An unquoted here-document expands `$...` and backticks; `\$`, `` \` ``, `\\` escape.
@@ -432,6 +453,18 @@ function readHeredoc(cmd, i, h) {
       if (c === "`" || (c === "$" && (body[j + 1] === "(" || body[j + 1] === "{"))) {
         if (c === "`" || body[j + 1] === "(" || !/^\$\{[A-Za-z_]\w*\}/.test(body.slice(j, j + 260)))
           h.subst = true;
+        // The substitution runs when the here-document is expanded: keep its command.
+        if (c === "`") {
+          const end = backtickEnd(body, j);
+          if (end !== -1) h.substs.push(backtickBody(body.slice(j + 1, end), false));
+          else h.substs.push(body.slice(j + 1));
+        } else if (body[j + 1] === "(") {
+          const end = matchParen(body, j + 1);
+          h.substs.push(body.slice(j + 2, Math.max(j + 2, end - 1)));
+        } else {
+          const end = matchBrace(body, j + 1);
+          h.substs.push(body.slice(j + 2, Math.max(j + 2, end - 1)));
+        }
       }
       if (c === "$") {
         const m = /^\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*)|([0-9@*#?$!-]))/.exec(
@@ -474,8 +507,9 @@ function inlinePrograms(cmd, cwd = process.cwd()) {
 
 function walk(text, ctx, out) {
   if (ctx.depth > MAX_DEPTH) {
-    if (interpreterMentioned(text)) {
-      out.reasons.push("an interpreter nested deeper than the hook reads (shells in shells)");
+    // Unread, so refused: a quoted interpreter name hides from a word search here.
+    if (/[A-Za-z]/.test(text)) {
+      out.reasons.push("a command nested deeper than the hook reads (shells in shells)");
     }
     return;
   }
@@ -486,7 +520,14 @@ function walk(text, ctx, out) {
     }
     return;
   }
-  const { cmds } = lexed;
+  const { cmds, substs } = lexed;
+  // Substitutions run in a subshell of their own: a `cd` or an assignment there does not
+  // move the command around them.
+  // Every one is read: a quoted name (`$(n''ode -e ...)`) hides from a word search.
+  for (const body of substs) {
+    if (!body) continue;
+    walk(body, { ...ctx, vars: new Map(ctx.vars), depth: ctx.depth + 1 }, out);
+  }
   for (let k = 0; k < cmds.length; k += 1) {
     const prev = k > 0 && (cmds[k - 1].op === "|" || cmds[k - 1].op === "|&") ? cmds[k - 1] : null;
     simple(cmds[k], prev, ctx, out);
@@ -494,7 +535,9 @@ function walk(text, ctx, out) {
 }
 
 function interpreterMentioned(text) {
-  for (const m of text.matchAll(/[A-Za-z][\w.-]*/g)) if (interpreterLang(m[0])) return true;
+  for (const m of text.matchAll(/[A-Za-z][\w.-]*/g)) {
+    if (interpreterLang(m[0]) || otherInterpreterName(m[0])) return true;
+  }
   return false;
 }
 
@@ -570,9 +613,61 @@ function recordAssignments(words, ctx, start = 0) {
     if (!m) break;
     const w = words[k];
     ctx.vars.set(m[1], w.subst || w.dynamic || w.vars.length ? null : m[2]);
+    notePreload(ctx, w);
     k += 1;
   }
   return k;
+}
+
+// Environment variables that make an interpreter or a shell load or run code its
+// program text does not show (a preload module, a startup file, a debugger, a library,
+// a browser or pager command, interactive mode reading stdin).
+const PRELOAD_VARS = new Set([
+  "PERL5OPT",
+  "PERL5DB",
+  "PERL_JSON_BACKEND",
+  "PERLIO",
+  "RUBYOPT",
+  "PHPRC",
+  "PHP_INI_SCAN_DIR",
+  "PYTHONSTARTUP",
+  "PYTHONINSPECT",
+  "PYTHONBREAKPOINT",
+  "NODE_REPL_EXTERNAL_MODULE",
+  "LD_PRELOAD",
+  "LD_AUDIT",
+  "DYLD_INSERT_LIBRARIES",
+  "GCONV_PATH",
+  "BROWSER",
+  "BASH_ENV",
+  "ENV",
+]);
+// NODE_OPTIONS flags that load or expose code (most NODE_OPTIONS uses are memory limits).
+const NODE_OPTIONS_LOADS =
+  /(?:^|\s)(?:-r|--require|--import|--loader|--experimental-loader|--experimental-specifier-resolution|--inspect[\w-]*|-i|--interactive)(?:[=\s]|$)/;
+
+// Remember why an assignment word makes the interpreters after it unreadable, if it does.
+function notePreload(ctx, w) {
+  const m = ASSIGN.exec(w.text);
+  if (!m) return;
+  const name = m[1];
+  if (PRELOAD_VARS.has(name)) {
+    ctx.preload = `the command sets ${name}, which makes an interpreter load or run code the hook cannot see`;
+  } else if (name === "NODE_OPTIONS") {
+    if (w.subst || w.dynamic || w.vars.length || NODE_OPTIONS_LOADS.test(m[2])) {
+      ctx.preload = "the command sets NODE_OPTIONS to load code the hook cannot see";
+    }
+  } else if (name === "MAKEFLAGS" || name === "GNUMAKEFLAGS" || name === "MFLAGS") {
+    // `MAKEFLAGS=--eval=...` runs make text; `-j8` and the like pass.
+    if (
+      w.subst ||
+      w.dynamic ||
+      w.vars.length ||
+      /--eval|--file|--makefile|(?:^|\s)-\w*[Ef]/.test(m[2])
+    ) {
+      ctx.preload = `the command sets ${name} to read make text the hook cannot see`;
+    }
+  }
 }
 
 // The stdin of a simple command: { kind: "none" | "literal" | "file" | "unknown", texts }.
@@ -639,8 +734,21 @@ function simple(c, prev, ctx, out, feed = null) {
     recordAssignments(words, ctx);
     return;
   }
-  for (const w of words.slice(0, firstNonAssign)) ctx.vars.set(ASSIGN.exec(w.text)[1], null);
+  for (const w of words.slice(0, firstNonAssign)) {
+    ctx.vars.set(ASSIGN.exec(w.text)[1], null);
+    notePreload(ctx, w);
+  }
   const w0 = words[firstNonAssign].text;
+  // `read NODE_OPTIONS; export NODE_OPTIONS`, `printf -v PERL5OPT ...`: a preload variable
+  // given a value the hook does not see.
+  if (
+    /^(?:export|declare|local|readonly|typeset|read|mapfile|readarray|printf)$/.test(w0) &&
+    words
+      .slice(firstNonAssign + 1)
+      .some((w) => PRELOAD_VARS.has(w.text) || w.text === "NODE_OPTIONS" || w.text === "MAKEFLAGS")
+  ) {
+    ctx.preload = `the command gives a preload variable a value the hook cannot see (${w0})`;
+  }
   if (["export", "declare", "local", "readonly", "typeset"].includes(w0)) {
     let k = firstNonAssign + 1;
     while (k < words.length && words[k].text.startsWith("-")) k += 1;
@@ -648,6 +756,14 @@ function simple(c, prev, ctx, out, feed = null) {
     return;
   }
   if (w0 === "read" || w0 === "mapfile" || w0 === "readarray" || w0 === "getopts") {
+    // `mapfile -C 'cmd'` runs its callback as a command.
+    for (let k = firstNonAssign + 1; k < words.length; k += 1) {
+      const t = words[k].text;
+      const cb = t === "-C" ? wordText(words[k + 1] ?? { text: "", vars: [] }, ctx) : null;
+      const glued = /^-C(.+)$/s.exec(t);
+      const body = cb ?? (glued ? glued[1] : null);
+      if (body) walk(body, { ...ctx, depth: ctx.depth + 1 }, out);
+    }
     for (const w of words.slice(firstNonAssign + 1)) {
       if (/^[A-Za-z_]\w*$/.test(w.text)) ctx.vars.set(w.text, null);
     }
@@ -711,6 +827,25 @@ function inspectWords(words, c, prev, ctx, out, feed, guard = 0) {
   ) {
     return inspectWords(words.slice(1), c, prev, ctx, out, feed, guard + 1);
   }
+  if (first === "trap") {
+    // `trap 'cmd' EXIT`: the shell runs the first argument as a command.
+    let k = 1;
+    while (k < texts.length && /^-[lp-]*$/.test(texts[k]) && texts[k] !== "-") k += 1;
+    if (texts[k] !== undefined) {
+      const why = unreadableWhy(words[k], ctx);
+      if (why) out.reasons.push(`${why} (trap)`);
+      walk(texts[k], { ...ctx, depth: ctx.depth + 1 }, out);
+    }
+    return;
+  }
+  if (first === "alias") {
+    // An alias runs its value where it is used (with expand_aliases on).
+    for (let k = 1; k < texts.length; k += 1) {
+      const m = /^[^=]+=(.*)$/s.exec(texts[k]);
+      if (m) walk(m[1], { ...ctx, depth: ctx.depth + 1 }, out);
+    }
+    return;
+  }
   if (first === "cd" || first === "pushd" || first === "popd") {
     const arg = texts.slice(1).find((t) => !/^-[LPe@]+$/.test(t));
     const relative = arg !== undefined && !arg.startsWith("/") && !arg.startsWith("~");
@@ -754,6 +889,7 @@ function inspectWords(words, c, prev, ctx, out, feed, guard = 0) {
         k += 2;
         continue;
       }
+      if (ASSIGN.test(t)) notePreload(ctx, words[k]);
       if (t.startsWith("-") || ASSIGN.test(t)) {
         k += 1;
         continue;
@@ -779,8 +915,25 @@ function inspectWords(words, c, prev, ctx, out, feed, guard = 0) {
   first = basename(texts[0]);
   const lang = interpreterLang(texts[0]);
   if (lang) return interpreter(lang, words, c, prev, ctx, out, feed);
+  if (otherInterpreterName(texts[0])) {
+    // awk, sed, sqlite3, lua, R, ...: lib/hook/inline-other.mjs.
+    const unseen = words.slice(1).find((w) => argUnseen(w, ctx));
+    if (unseen || (feed?.placeholder && texts.some((t) => t.includes(feed.placeholder)))) {
+      out.reasons.push(`${first} is given a program the hook cannot see`);
+      return;
+    }
+    if (feed?.appends && /^(?:awk|gawk|mawk|nawk|sed|gsed|sqlite3)$/.test(first) === false) {
+      out.reasons.push(`${first} run by xargs or parallel (its program could arrive from input)`);
+      return;
+    }
+    if (ctx.preload) out.reasons.push(ctx.preload);
+    otherInterpreter(texts, ctx.cwd, out, () => stdinOf(c, prev, ctx));
+    return;
+  }
   if (SHELLS.has(first) || (first === "busybox" && SHELLS.has(texts[1] ?? ""))) {
     const ws = first === "busybox" ? words.slice(1) : words;
+    if (ctx.preload && /BASH_ENV|ENV|LD_|DYLD_|GCONV/.test(ctx.preload))
+      out.reasons.push(ctx.preload);
     const ci = ws.findIndex((w, idx) => idx > 0 && /^-[A-Za-z]*c[A-Za-z]*$/.test(w.text));
     if (ci !== -1) {
       const body = ws[ci + 1];
@@ -1008,21 +1161,156 @@ const VALUE_LETTERS = {
 // Letters that take optional glued digits and may be followed by more letters.
 const DIGIT_LETTERS = { ruby: new Set(["0", "T"]), perl: new Set(["0", "l", "C"]) };
 
+// php -d settings that cannot load code or write files (auto_prepend_file, error_log,
+// extension, include_path, sendmail_path and the rest are refused).
+const PHP_SAFE_INI = new Set(
+  (
+    "display_errors display_startup_errors error_reporting memory_limit max_execution_time " +
+    "max_input_time date.timezone html_errors precision serialize_precision short_open_tag " +
+    "default_charset log_errors zend.assertions assert.active assert.exception output_buffering " +
+    "implicit_flush default_socket_timeout report_memleaks variables_order register_argc_argv " +
+    "intl.default_locale mbstring.language mbstring.internal_encoding pcre.jit " +
+    "pcre.backtrack_limit pcre.recursion_limit zend.enable_gc opcache.enable opcache.enable_cli"
+  ).split(" "),
+);
+
+// The Python standard library's top-level modules (3.11 to 3.14). `python -m` of one of
+// these runs a command line the hook can read; any other module is a package or a local
+// file, as invisible as a script (the documented residual).
+const PY_STDLIB = new Set(
+  (
+    "abc aifc annotationlib antigravity argparse array ast asynchat asyncio asyncore atexit " +
+    "audioop base64 bdb binascii bisect builtins bz2 cProfile calendar cgi cgitb chunk cmath " +
+    "cmd code codecs codeop collections colorsys compileall compression concurrent " +
+    "configparser contextlib contextvars copy copyreg crypt csv ctypes curses dataclasses " +
+    "datetime dbm decimal difflib dis distutils doctest email encodings ensurepip enum errno " +
+    "faulthandler fcntl filecmp fileinput fnmatch fractions ftplib functools gc genericpath " +
+    "getopt getpass gettext glob graphlib grp gzip hashlib heapq hmac html http idlelib " +
+    "imaplib imghdr imp importlib inspect io ipaddress itertools json keyword lib2to3 " +
+    "linecache locale logging lzma mailbox mailcap marshal math mimetypes mmap modulefinder " +
+    "msilib msvcrt multiprocessing netrc nis nntplib nt ntpath nturl2path numbers opcode " +
+    "operator optparse os ossaudiodev pathlib pdb pickle pickletools pipes pkgutil platform " +
+    "plistlib poplib posix posixpath pprint profile pstats pty pwd py_compile pyclbr pydoc " +
+    "pydoc_data pyexpat queue quopri random re readline reprlib resource rlcompleter runpy " +
+    "sched secrets select selectors shelve shlex shutil signal site smtpd smtplib sndhdr " +
+    "socket socketserver spwd sqlite3 sre_compile sre_constants sre_parse ssl stat statistics " +
+    "string stringprep struct subprocess sunau symtable sys sysconfig syslog tabnanny tarfile " +
+    "telnetlib tempfile termios textwrap this threading time timeit tkinter token tokenize " +
+    "tomllib trace traceback tracemalloc tty turtle turtledemo types typing unicodedata " +
+    "unittest urllib uu uuid venv warnings wave weakref webbrowser winreg winsound wsgiref " +
+    "xdrlib xml xmlrpc zipapp zipfile zipimport zlib zoneinfo"
+  ).split(" "),
+);
+// Standard-library command lines that only read and print, or run files the agent wrote
+// (unittest, doctest: the residual), or are judged by the install rules (pip).
+const PY_M_READ_ONLY = new Set(
+  (
+    "unittest doctest tokenize ast dis base64 calendar platform sysconfig site uuid tabnanny " +
+    "pyclbr symtable mimetypes filecmp this quopri pip"
+  ).split(" "),
+);
+
+/**
+ * `python -m MODULE ARGS`: a standard-library module's command line is read here. Its
+ * code arguments (`-m timeit`) are inline programs, its output paths (`-m json.tool IN
+ * OUT`, `-m venv DIR`, `-m cProfile -o FILE`) are writes judged against the write roots,
+ * and a command line that can write, run code or reach the network otherwise is refused.
+ */
+function pythonModule(mod, argv, argWords, cwd, ctx, out, name) {
+  const top = mod.split(".")[0];
+  if (!PY_STDLIB.has(top)) return;
+  const via = `${name} -m ${mod}`;
+  if (argWords.some((w) => argUnseen(w, ctx))) {
+    out.reasons.push(`${via} is given arguments the hook cannot see`);
+    return;
+  }
+  const writes = (paths, what) => {
+    if (paths.length) out.programs.push({ lang: "writes", paths, cwd, via, what });
+  };
+  // Split ARGS into options (with the given value-taking ones) and positionals.
+  const split = (valued) => {
+    const opts = [];
+    const pos = [];
+    for (let k = 0; k < argv.length; k += 1) {
+      const a = argv[k];
+      if (a === "--") {
+        pos.push(...argv.slice(k + 1));
+        break;
+      }
+      if (a.startsWith("-") && a !== "-") {
+        const eq = a.indexOf("=");
+        const flag = eq === -1 ? a : a.slice(0, eq);
+        if (valued.has(flag) && eq === -1) {
+          opts.push([flag, argv[k + 1] ?? ""]);
+          k += 1;
+        } else if (/^-[a-zA-Z]./.test(a) && valued.has(a.slice(0, 2))) {
+          opts.push([a.slice(0, 2), a.slice(2)]);
+        } else opts.push([flag, eq === -1 ? null : a.slice(eq + 1)]);
+      } else pos.push(a);
+    }
+    return { opts, pos };
+  };
+  if (mod === "timeit") {
+    const { opts, pos } = split(
+      new Set(["-n", "--number", "-r", "--repeat", "-s", "--setup", "-u", "--unit"]),
+    );
+    const code = opts.filter(([f]) => f === "-s" || f === "--setup").map(([, v]) => v ?? "");
+    if (pos.length) code.push(pos.join("\n"));
+    for (const text of code) out.programs.push({ lang: "python", text, cwd, via, preload: [] });
+    return;
+  }
+  if (mod === "json.tool" || mod === "json") {
+    const { pos } = split(new Set(["--indent"]));
+    writes(
+      pos.slice(1, 2).filter((p) => p !== "-"),
+      "json.tool",
+    );
+    return;
+  }
+  if (mod === "venv") {
+    const { pos } = split(new Set(["--prompt"]));
+    writes(pos, "venv");
+    return;
+  }
+  if (mod === "cProfile" || mod === "profile") {
+    // Runs a script or module (the residual); `-o FILE` writes the profile.
+    const { opts } = split(new Set(["-o", "--outfile", "-s", "--sort", "-m"]));
+    writes(
+      opts.filter(([f]) => f === "-o" || f === "--outfile").map(([, v]) => v ?? ""),
+      "cProfile -o",
+    );
+    return;
+  }
+  if (PY_M_READ_ONLY.has(mod) || PY_M_READ_ONLY.has(top)) return;
+  out.reasons.push(
+    `${via} runs a standard-library command line that can write files, run code or reach the network`,
+  );
+}
+
 /**
  * Find the inline programs of one interpreter invocation (`words` start at the
  * interpreter) and record them, or a reason when the program cannot be seen.
  */
 function interpreter(lang, words, c, prev, ctx, out, feed) {
+  if (ctx.preload) out.reasons.push(ctx.preload);
   const texts = words.map((w) => wordText(w, ctx));
   const programs = []; // words (or { text }) that hold program text
   let script = null; // the first operand: a script file (or the end of the options)
   let cwd = ctx.cwd;
   let sawModule = false;
   const preload = []; // ruby -r LIB, perl -M MODULE
+  let perlSplit = null; // perl -F PATTERN
   const progLang = lang === "deno" ? "js" : lang;
   const name = basename(texts[0]);
   let k = 1;
   if (lang === "deno") {
+    // Global flags may come before the subcommand (`deno -A eval ...`).
+    let s0 = 1;
+    while (s0 < texts.length && texts[s0].startsWith("-") && texts[s0] !== "-") {
+      s0 += /^(?:-L|--log-level)$/.test(texts[s0]) ? 2 : 1;
+    }
+    words = [words[0], ...words.slice(s0)];
+    texts.splice(1, s0 - 1);
     const sub = texts[1];
     if (sub === "eval") {
       k = 2;
@@ -1047,10 +1335,26 @@ function interpreter(lang, words, c, prev, ctx, out, feed) {
       script = texts[k] ?? null;
       if (script === "-") script = null;
       else if (script === null && sub) script = "";
+      if (script && /^[A-Za-z][\w+.-]*:/.test(script)) {
+        // `deno run data:...` or `https://...`: a program in the URL or fetched from the network.
+        out.reasons.push(`deno runs a program from a URL (${script.slice(0, 40)})`);
+        return;
+      }
     } else {
       script = sub; // deno task / test / x / install: files and packages, not inline text
     }
   } else {
+    if (name === "bun" && texts[1] === "repl") {
+      out.reasons.push("bun repl reads its program from stdin");
+      return;
+    }
+    if (name === "bun" && texts[1] === "exec") {
+      // `bun exec "script"` runs a shell script with Bun's shell.
+      const why = words[2] && unreadableWhy(words[2], ctx);
+      if (why) out.reasons.push(`${why} (bun exec)`);
+      if (texts[2]) walk(texts[2], { ...ctx, depth: ctx.depth + 1 }, out);
+      return;
+    }
     while (k < texts.length) {
       const t = texts[k];
       if (argUnseen(words[k], ctx)) {
@@ -1073,6 +1377,21 @@ function interpreter(lang, words, c, prev, ctx, out, feed) {
       if (lang === "js") {
         // node / bun options.
         const m = /^--(eval|print)=(.*)$/s.exec(t);
+        if (/^(?:-i|--interactive|--inspect[\w-]*(?:=.*)?|--experimental-repl-await)$/s.test(t)) {
+          // A REPL reads its program from stdin; an inspector opens a port that runs code.
+          out.reasons.push(`${name} ${t.split("=")[0]} runs code the hook cannot see`);
+          return;
+        }
+        const pre = /^(?:-r|--require|--import|--loader|--experimental-loader)(?:=(.*))?$/s.exec(t);
+        const preVal = pre ? (pre[1] ?? texts[k + 1] ?? "") : null;
+        if (
+          preVal !== null &&
+          ((/^[A-Za-z][\w+.-]*:/.test(preVal) && !/^node:/.test(preVal)) ||
+            /^\/(?:dev|proc)\//.test(preVal))
+        ) {
+          out.reasons.push(`${name} preloads code from ${preVal.slice(0, 40)}`);
+          return;
+        }
         if (m) programs.push({ ...words[k], text: m[2] });
         else if (/^(?:-e|--eval|-p|--print|-pe|-ep)$/.test(t)) {
           programs.push(words[k + 1] ?? { text: "", missing: true });
@@ -1105,7 +1424,23 @@ function interpreter(lang, words, c, prev, ctx, out, feed) {
           script = texts[k + 1] ?? "";
           break;
         }
-        if (/^(?:-d|-c|-z|-F|--define|--php-ini|--zend-extension)$/.test(t)) {
+        if (t === "-a" || t === "--interactive") {
+          out.reasons.push(`${name} -a reads its program from stdin`);
+          return;
+        }
+        const ini = /^(?:-d|--define)(?:=?(.+))?$/s.exec(t);
+        if (ini) {
+          // `-d auto_prepend_file=php://stdin` runs a program the hook cannot see: only
+          // settings that cannot load or write anything pass.
+          const setting = (ini[1] ?? texts[k + 1] ?? "").split("=")[0].trim().toLowerCase();
+          if (!PHP_SAFE_INI.has(setting)) {
+            out.reasons.push(`${name} -d ${setting.slice(0, 40)} may load code or write files`);
+            return;
+          }
+          k += ini[1] ? 1 : 2;
+          continue;
+        }
+        if (/^(?:-c|-z|-F|--php-ini|--zend-extension)$/.test(t)) {
           k += 2;
           continue;
         }
@@ -1135,7 +1470,35 @@ function interpreter(lang, words, c, prev, ctx, out, feed) {
         }
         if (lang === "python" && ch === "m") {
           sawModule = true;
+          const modName = t.slice(j + 1) || texts[k + 1] || "";
+          if (!t.slice(j + 1) && words[k + 1] && argUnseen(words[k + 1], ctx)) {
+            out.reasons.push(`${name} -m is given a module name the hook cannot see`);
+            return;
+          }
+          const argv = texts.slice(t.slice(j + 1) ? k + 1 : k + 2);
+          pythonModule(
+            modName,
+            argv,
+            words.slice(t.slice(j + 1) ? k + 1 : k + 2),
+            cwd,
+            ctx,
+            out,
+            name,
+          );
           break;
+        }
+        if (lang === "python" && ch === "i") {
+          out.reasons.push(`${name} -i reads a program from stdin after its own`);
+          return;
+        }
+        if (lang === "perl" && ch === "d") {
+          out.reasons.push(`${name} -d runs a debugger or a Devel:: module the hook cannot see`);
+          return;
+        }
+        if (lang === "perl" && ch === "F") {
+          // `-F/pattern/` becomes `split(/pattern/)` in the program: a pattern can hold code.
+          const pat = t.slice(j + 1);
+          perlSplit = /^[/"']/.test(pat) ? pat : `'${pat.replace(/[\\']/g, "\\$&")}'`;
         }
         if (DIGIT_LETTERS[lang]?.has(ch)) {
           // `-l`, `-0777`, `-C7`, ruby `-T1`: optional digits, then more letters (`-lane`).
@@ -1184,6 +1547,7 @@ function interpreter(lang, words, c, prev, ctx, out, feed) {
     }
     texts2.push(wordText(p, ctx));
   }
+  if (perlSplit !== null) texts2.push(`split(${perlSplit}, $_);`);
   if (texts2.length) {
     // Ruby and Perl run every -e together, one per line; node and php the last one.
     const joined = lang === "ruby" || lang === "perl" ? [texts2.join("\n")] : texts2;

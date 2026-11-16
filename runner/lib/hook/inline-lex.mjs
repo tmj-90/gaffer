@@ -495,7 +495,9 @@ class Lexer {
     if (DIGIT.test(c) || (c === "." && DIGIT.test(next ?? ""))) {
       let k = i + 1;
       while (k < this.n && /[0-9A-Za-z_.]/.test(s[k])) {
-        if (s[k] === "." && s[k + 1] === ".") break;
+        // A dot continues a number only before a digit: in `1.instance_eval`,
+        // `1.0.constructor` and `0x1.__class__` the name after the dot is a member.
+        if (s[k] === "." && !DIGIT.test(s[k + 1] ?? "")) break;
         k += 1;
       }
       this.push({ t: "num", v: s.slice(i, k), s: i, e: k });
@@ -683,6 +685,14 @@ class Lexer {
     if (L === "perl" && c === "$" && s[k] === "^" && /[A-Z]/.test(s[k + 1] ?? "")) {
       this.push({ t: "var", v: "^" + s[k + 1], sigil: "$", s: i, e: k + 2 });
       return k + 2;
+    }
+    if (L === "perl" && c === "$" && s[k] === "{" && s[k + 1] === "^") {
+      // `${^I}`, `${^WARNING_BITS}`: a caret variable spelled with braces.
+      const close = s.indexOf("}", k);
+      if (close !== -1 && close - k < 64 && /^\^[A-Z_]+$/.test(s.slice(k + 1, close))) {
+        this.push({ t: "var", v: s.slice(k + 1, close), sigil: "$", s: i, e: close + 1 });
+        return close + 1;
+      }
     }
     if (ID_START.test(s[k] ?? "") || (L === "perl" && s[k] === ":" && s[k + 1] === ":")) {
       let name = "";

@@ -464,7 +464,11 @@ function inlinePrograms(cmd, cwd = process.cwd()) {
   // The capability rule and the read rule ask for the same command: read it once.
   if (LAST.cmd === cmd && LAST.cwd === cwd) return LAST.out;
   const out = { programs: [], reasons: [] };
-  walk(cmd, { cwd, vars: new Map(), depth: 0, raw: cmd, sets: new Map() }, out);
+  walk(
+    cmd,
+    { cwd, vars: new Map(), depth: 0, raw: cmd, sets: new Map(), fileVars: new Set() },
+    out,
+  );
   LAST = { cmd, cwd, out };
   return out;
 }
@@ -529,6 +533,20 @@ function unreadableWhy(word, ctx) {
 function setsNameCached(ctx, v) {
   if (!ctx.sets.has(v)) ctx.sets.set(v, setsName(ctx.raw, v));
   return ctx.sets.get(v);
+}
+
+// Whether an interpreter's option-or-script word could carry a program the hook cannot
+// see: a command substitution, the shell's positional parameters (`"$@"` in a function),
+// or a variable the command sets at run time (`read`, a `for` over unseen words). An
+// environment variable or a `for` over visible file names is taken as a script path.
+function argUnseen(word, ctx) {
+  if (word.subst || word.dynamic) return true;
+  for (const v of word.vars) {
+    if (/^[0-9@*#?$!-]$/.test(v)) return true;
+    if (ctx.fileVars.has(v)) continue;
+    if (ctx.vars.has(v) ? ctx.vars.get(v) === null : setsNameCached(ctx, v)) return true;
+  }
+  return false;
 }
 
 // Whether the command names `v` other than as an expansion (`read v`, `for v in`, `v=$(...)`).
@@ -638,7 +656,18 @@ function simple(c, prev, ctx, out, feed = null) {
   }
   if (w0 === "for" || w0 === "select") {
     const name = words[firstNonAssign + 1]?.text;
-    if (name && /^[A-Za-z_]\w*$/.test(name)) ctx.vars.set(name, null);
+    if (name && /^[A-Za-z_]\w*$/.test(name)) {
+      ctx.vars.set(name, null);
+      // `for f in test/*.js`: every value is a visible word that is not an option.
+      const list = words.slice(firstNonAssign + 3);
+      const plain = w0 === "for" && words[firstNonAssign + 2]?.text === "in";
+      if (
+        plain &&
+        list.every((w) => !w.subst && !w.dynamic && !w.vars.length && !w.text.startsWith("-"))
+      ) {
+        ctx.fileVars.add(name);
+      } else ctx.fileVars.delete(name);
+    }
     return;
   }
   inspectWords(words.slice(firstNonAssign), c, prev, ctx, out, feed);
@@ -686,9 +715,21 @@ function inspectWords(words, c, prev, ctx, out, feed, guard = 0) {
   if (first === "cd" || first === "pushd" || first === "popd") {
     const arg = texts.slice(1).find((t) => !/^-[LPe@]+$/.test(t));
     const relative = arg !== undefined && !arg.startsWith("/") && !arg.startsWith("~");
-    if (first !== "cd" || (relative && (process.env.CDPATH || /CDPATH/.test(ctx.raw)))) {
+    ctx.cds = (ctx.cds ?? 0) + 1;
+    if (
+      first !== "cd" ||
+      ctx.cwd === null ||
+      ctx.cds > 32 || // past this many, the directory is unknown (bounded work)
+      (relative && (process.env.CDPATH || /CDPATH/.test(ctx.raw)))
+    ) {
       ctx.cwd = null; // the directory stack and CDPATH are unknown to a stateless hook
-    } else ctx.cwd = replayCd({ verb: "cd", rest: texts }, ctx.cwd);
+    } else {
+      try {
+        ctx.cwd = replayCd({ verb: "cd", rest: texts }, ctx.cwd);
+      } catch {
+        ctx.cwd = null; // a path too deep to resolve: unknown
+      }
+    }
     return;
   }
   if (first === "env") {
@@ -1013,8 +1054,8 @@ function interpreter(lang, words, c, prev, ctx, out, feed) {
   } else {
     while (k < texts.length) {
       const t = texts[k];
-      if (words[k].subst || words[k].dynamic || /[$`]/.test(t)) {
-        // `python3 "$@"`, `node $ARGS`: an option or the script could be a program flag.
+      if (argUnseen(words[k], ctx)) {
+        // `python3 "$@"`, `node $(cat args)`: an option or the script could be a program flag.
         out.reasons.push(
           `${name} is given arguments the hook cannot see (${t.slice(0, 40)}), so its program could be inline`,
         );

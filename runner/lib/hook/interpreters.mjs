@@ -384,6 +384,7 @@ const ADVICE =
   "it cannot be proven to stay inside the write roots. Use the Write/Edit tools for files, or put the program in a file inside the worktree and run it";
 
 const cap = (caps, why) => caps.push(why);
+const MAX_INLINE_WRITE_TARGETS = 64;
 
 // Brackets: match[i] is the index of the token closing the bracket at i.
 function matchBrackets(toks) {
@@ -453,7 +454,12 @@ function writePathsReason(paths, cwd, roots, what, targets = []) {
     if (!raw.startsWith("/") && cwd === null) {
       return `writes through ${what} to a relative path after a directory change the hook cannot follow`;
     }
-    const abs = canonicalize(resolve(cwd ?? "/", raw));
+    let abs;
+    try {
+      abs = canonicalize(resolve(cwd ?? "/", raw));
+    } catch {
+      return `writes through ${what} to a path too deep to resolve`;
+    }
     const access = classifyRootAccess(abs, roots);
     if (access !== "write") {
       return `writes through ${what} to ${raw}, which is ${access === "read" ? "in a read-only root" : "outside the write roots"}`;
@@ -2085,8 +2091,22 @@ function inlineCapability(cmd, roots) {
     const why = programReason(prog, roots, targets);
     if (why) return { reason: `inline ${prog.via} program ${why}: ${ADVICE}`, targets };
   }
-  return { reason: null, targets };
+  const unique = [...new Set(targets)];
+  if (unique.length > MAX_INLINE_WRITE_TARGETS) {
+    // Each target is judged like a Bash write target; bound that work.
+    return {
+      reason: `inline interpreter programs write more than ${MAX_INLINE_WRITE_TARGETS} files in one command: ${ADVICE}`,
+      targets: [],
+    };
+  }
+  return { reason: null, targets: unique };
 }
+
+// The read primitives above with their unbounded `[^,]*` scans bounded, so a long
+// program costs linear time here.
+const BOUNDED_READ_PATTERNS = READ_PRIMITIVE_PATTERNS.map(
+  (re) => new RegExp(re.source.split("[^,]*").join("[^,]{0,256}"), re.flags + "g"),
+);
 
 /**
  * The read rules over the normalised program text: the read primitives of the read
@@ -2097,13 +2117,17 @@ function inlineProgramReadReason(cmd, roots) {
   const { programs } = inlinePrograms(cmd);
   for (const prog of programs) {
     if (roots.configured) {
-      for (const re of READ_PRIMITIVE_PATTERNS) {
-        const global = new RegExp(re.source, re.flags.includes("g") ? re.flags : re.flags + "g");
+      for (const global of BOUNDED_READ_PATTERNS) {
         for (const m of prog.text.matchAll(global)) {
           const raw = m[1] ? stripQuotes(m[1]) : "";
           if (!raw || /[$`]|\$\{|#\{/.test(raw)) continue;
           if (!raw.startsWith("/") && prog.cwd === null) continue;
-          const abs = canonicalize(resolve(prog.cwd ?? "/", raw));
+          let abs;
+          try {
+            abs = canonicalize(resolve(prog.cwd ?? "/", raw));
+          } catch {
+            return `inline interpreter reads a path too deep to resolve: ${raw.slice(0, 80)}`;
+          }
           if (classifyRootAccess(abs, roots) === "outside") {
             return `inline interpreter reads a file outside allowed roots: ${raw} [write-roots: ${roots.writeRoots.join(", ")}; read-roots: ${roots.readRoots.join(", ")}]`;
           }

@@ -18,6 +18,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 
 import { nodeInlineControlPlane } from "../lib/dangerous-commands.mjs";
 import { dynamicNames } from "../lib/hook/expand.mjs";
+import { inlineCapability, inlineProgramReadReason } from "../lib/hook/interpreters.mjs";
 import { HOOK, bash, scratchDir, suite } from "./lib/hook-harness.mjs";
 
 const t = suite("safety-hook-redos");
@@ -151,6 +152,53 @@ for (const [label, command] of [
     `hook answers 8000 repeated git -C dirs in < 1s over start-up (exit ${status}, ${ms}ms, start-up ${baseline}ms)`,
     ms - baseline < 1000,
   );
+}
+
+// The inline-program capability rule (63C: lib/hook/inline-programs.mjs reads the shell,
+// lib/hook/inline-lex.mjs lexes the program, lib/hook/interpreters.mjs judges it) is one
+// pass with bounded lookahead: each worst case below, near the 64 KiB field cap, is decided
+// by the rule (both halves) in < 1s.
+{
+  const roots = { writeRoots: [ROOT], readRoots: [], configured: true };
+  const K = 60000;
+  const rep = (x) => x.repeat(Math.floor(K / x.length));
+  const worst = {
+    "python nested parens": `python3 -c '${"(".repeat(30000)}${")".repeat(30000)}'`,
+    "python open(": `python3 -c '${rep("open(")}'`,
+    "python f-string fields": `python3 -c 'f"${rep("{x}")}"'`,
+    "python nested f-strings": `python3 -c '${rep('f"{')}'`,
+    "python import chain": `python3 -c 'import ${rep("a.")}b'`,
+    "python dunder strings": `python3 -c '"${rep("__a")}"'`,
+    "python Path writes": `python3 -c '${rep('Path("x").write_text(1);')}'`,
+    "python distinct writes": `python3 -c '${Array.from({ length: 2600 }, (_, i) => `open("f${i}","w");`).join("")}'`,
+    "js computed members": `node -e '${rep("x[")}${rep("]")}'`.slice(0, K),
+    "js string concat": `node -e '${rep('"a"+')}"a"'`,
+    "js templates": `node -e '${rep("`${")}'`,
+    "js regex literals": `node -e '${rep("(/a/)")}'`,
+    "js destructuring": `node -e 'const {${rep("a,")}}=require("fs")'`,
+    "ruby interpolation": `ruby -e '"${rep("#{")}'`,
+    "ruby paren-less File.write": `ruby -e '${rep("File.write ")}'`,
+    "perl subscripts": `perl -e '"${rep("$a{")}"'`,
+    "perl quote-like": `perl -e '${rep("s{a}{b}")}'`,
+    "perl paren-less unlink": `perl -e '${rep("unlink ")}'`,
+    "php interpolation": `php -r '"${rep("{$a")}"'`,
+    "php callable takers": `php -r '${rep("array_map(")}'`,
+    "shell sh -c nesting": rep("sh -c "),
+    "shell variables": `python3 -c "${rep("$a")}"`,
+    "shell cd": rep("cd a; "),
+    "shell interpreters": rep("python3 "),
+    "shell runner words": `watch ${rep("'python3 -c x' ")}`,
+  };
+  for (const [label, command] of Object.entries(worst)) {
+    const start = performance.now();
+    inlineCapability(command, roots);
+    inlineProgramReadReason(command, roots);
+    const ms = Math.round(performance.now() - start);
+    t.assert(
+      `the inline capability rule decides ${label} (${command.length} B) in < 1s (took ${ms}ms)`,
+      ms < 1000,
+    );
+  }
 }
 
 // A glob with many stars against ONE long file name. The component matcher was a RegExp

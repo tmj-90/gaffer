@@ -127,6 +127,72 @@ t.deny(
 t.deny("a shell reading a verb from stdin", bash("echo 'wg ticket approve 3' | bash -s"), opts);
 t.allow("a read-only CLI verb with xargs-fed ids", bash("echo 3 | xargs wg ticket show"), opts);
 
+// Arguments the hook cannot see could carry `-c PROG`; a loop over visible files cannot.
+t.deny("a function passing $@ to python3", bash(`py(){ python3 "$@"; }; py -c 'import os'`), opts);
+t.deny("python3 given words read at run time", bash("read A; python3 $A"), opts);
+t.deny("a for loop whose values are options", bash("for f in -c x; do python3 $f; done"), opts);
+t.allow("a for loop over test files", bash(`for f in tests/*.py; do python3 "$f"; done`), opts);
+t.deny(
+  "an interpreter named by a variable",
+  bash(`PY=python3; $PY -c 'import os; os.system("id")'`),
+  opts,
+);
+t.deny("an interpreter named by a substitution", bash(`$(which python3) -c 'print(1)'`), opts);
+t.deny(
+  "a program on /dev/stdin",
+  bash(`python3 /dev/stdin <<< 'import os; os.system("id")'`),
+  opts,
+);
+t.deny("tsx -e", bash(`npx tsx -e 'require("child_process").execSync("id")'`), opts);
+t.deny("irb on stdin", bash(`echo 'system("id")' | irb`), opts);
+t.deny("contextlib.chdir", bash(`python3 -c 'import contextlib; contextlib.chdir("/etc")'`), opts);
+t.deny("perl $^I", bash(`perl -e '$^I=".bak"; print'`), opts);
+t.deny(
+  "argparse.FileType",
+  bash(`python3 -c 'import argparse; argparse.FileType("w")("/etc/x")'`),
+  opts,
+);
+t.deny(
+  "operator getters",
+  bash(
+    `python3 -c 'import operator, platform; operator.methodcaller("system", "id")(operator.attrgetter("os")(platform))'`,
+  ),
+  opts,
+);
+t.deny(
+  "a package save method to an outside path",
+  bash(`python3 -c 'import numpy as np; np.save("/etc/x", [1])'`),
+  opts,
+);
+t.allow(
+  "a package save method to a literal path in the root",
+  bash(`python3 -c 'import numpy as np; np.save("out.npy", [1])'`),
+  opts,
+);
+t.deny(
+  "many distinct inline writes",
+  bash(`python3 -c '${Array.from({ length: 80 }, (_, i) => `open("f${i}","w");`).join("")}'`),
+  opts,
+);
+
+// An allowed inline write still gets the Bash write-target checks (it skipped them before).
+t.deny(
+  "an inline write to the agent settings",
+  bash(`node -e 'require("fs").writeFileSync(".claude/settings.json","{}")'`),
+  opts,
+);
+t.deny(
+  "an inline write into .git/hooks",
+  bash(`python3 -c 'open(".git/hooks/pre-commit","w").write("x")'`),
+  opts,
+);
+t.deny("an inline write to .env", bash(`python3 -c 'open(".env","w").write("A=1")'`), opts);
+t.allow(
+  "an inline write to a tracked-style env template",
+  bash(`python3 -c 'open("app.env.example","w").write("A=")'`),
+  opts,
+);
+
 // A text mention is not a program: a commit message or a grep pattern stays allowed.
 t.allow("a grep for an inline program", bash(`grep -rn "python3 -c" src`), opts);
 t.allow(

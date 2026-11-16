@@ -28,7 +28,7 @@ gaffer_tick_bootstrap() {
     # SELF-OPERATION BAN (greenfield): a bootstrap target that would land IN a
     # Gaffer component must be refused too — same override, same set-aside.
     if [ "${GAFFER_ALLOW_SELF_DELIVERY:-0}" != "1" ] && gaffer_is_self_target "$B_DIR"; then
-      log "SELF-OP: refusing bootstrap #$NUM — target '$B_DIR' is (or is inside) a Gaffer component; the factory must not scaffold over its own source. Export GAFFER_ALLOW_SELF_DELIVERY=1 before starting the runner to override (first-party dogfooding only; it is not a setting)."
+      log "SELF-OP: refusing bootstrap #$NUM: target '$B_DIR' is (or is inside) a Gaffer component; the factory must not scaffold over its own source. Export GAFFER_ALLOW_SELF_DELIVERY=1 before starting the runner to override (first-party dogfooding only; it is not a setting)."
       wg attach-evidence "$NUM" --type manual_note \
         --summary "SELF-OP BAN: refused bootstrap — target '$B_DIR' is a Gaffer component (factory's own source). Override with GAFFER_ALLOW_SELF_DELIVERY=1 in the environment (no setting turns it on)." >/dev/null 2>&1 || true
       # RUNNER-OWNED-BOOKKEEPING: the runner holds the claim now, so release it first

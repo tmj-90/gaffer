@@ -4,7 +4,7 @@
 import { table } from "../lookup.js";
 import { api } from "../api.js";
 import { actorName } from "../club.js";
-import { emptyState, meterRow, panelHead } from "../components.js";
+import { callout, emptyState, meterRow, panelHead } from "../components.js";
 import { clear, el, field } from "../dom.js";
 import { pct } from "../format.js";
 import { icon } from "../icons.js";
@@ -171,8 +171,16 @@ function autonomyRecItem(r, policies, { inert = false } = {}) {
 function autonomyPoliciesPanel(policies, { inert = false } = {}) {
   const active = (Array.isArray(policies) ? policies : []).filter((p) => p.mode === "auto");
   if (active.length === 0) return null;
+  // SEALED AUTONOMY: rows this factory has not signed are off until a person signs them.
+  const unsigned = active.filter((p) => p.signed === false).length;
   return el("div", { class: `card panel autonomy-policies${inert ? " is-inert" : ""}` }, [
     panelHead(inert ? "Active autonomy (inert)" : "Active autonomy", null, null, { level: 2 }),
+    unsigned > 0
+      ? callout({
+          tone: "bad",
+          body: `${unsigned} automatic ${unsigned === 1 ? "row is" : "rows are"} not signed: ${unsigned === 1 ? "it is" : "they are"} off until you sign ${unsigned === 1 ? "it" : "them"}. Review and sign each one on the ladder below, or turn it off.`,
+        })
+      : null,
     el(
       "p",
       { class: "section-note" },
@@ -212,7 +220,16 @@ function autonomyPoliciesPanel(policies, { inert = false } = {}) {
                   },
                   "auto · inert",
                 )
-              : el("span", { class: "ap-mode" }, "auto"),
+              : p.signed === false
+                ? el(
+                    "span",
+                    {
+                      class: "ap-mode inert",
+                      title: "Not signed by this factory: it grants nothing.",
+                    },
+                    "auto · not signed",
+                  )
+                : el("span", { class: "ap-mode" }, "auto"),
           ]),
           p.enabled_by
             ? el(

@@ -59,8 +59,19 @@
     flex: none;
   }
   .al-ceiling .al-rung,
-  .al-person .al-rung {
+  .al-person .al-rung,
+  .al-unsigned .al-rung {
     color: var(--ink-2);
+  }
+  /* Sealed autonomy: an unsigned row, and the review-then-sign action. */
+  .al-sign {
+    display: grid;
+    gap: var(--s1);
+    justify-items: start;
+  }
+  .al-sign-facts {
+    margin: 0;
+    font-size: var(--t14);
   }
   .al-bar,
   .al-lift-after,

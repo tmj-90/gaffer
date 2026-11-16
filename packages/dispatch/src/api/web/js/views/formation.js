@@ -503,7 +503,12 @@ function isPolicyActive(policies, repoId, riskLevel, gate) {
     Array.isArray(policies) &&
     policies.some(
       (p) =>
-        p.repo_id === repoId && p.risk_level === riskLevel && p.gate === gate && p.mode === "auto",
+        p.repo_id === repoId &&
+        p.risk_level === riskLevel &&
+        p.gate === gate &&
+        p.mode === "auto" &&
+        // SEALED AUTONOMY: an unsigned row is off, so it is not "already automatic".
+        p.signed !== false,
     )
   );
 }

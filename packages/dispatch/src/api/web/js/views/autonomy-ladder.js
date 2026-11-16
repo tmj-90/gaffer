@@ -32,6 +32,9 @@ function rungOf(cell) {
     return { key: "ceiling", word: "Not allowed", mark: () => icon("lock", "al-mark", 16) };
   if (cell.step_down)
     return { key: "stepped", word: "Stepped down", mark: () => glyph("failed", 16) };
+  // SEALED AUTONOMY: a row this factory has not signed grants nothing.
+  if (cell.policy_signed === false && cell.rung !== "automatic")
+    return { key: "unsigned", word: "Not signed", mark: () => glyph("blocked", 16) };
   if (cell.rung === "automatic")
     return { key: "automatic", word: "Automatic", mark: () => glyph("done", 16) };
   if (cell.rung === "suggested")
@@ -84,6 +87,54 @@ function liftForm(repo, cell) {
   ]);
 }
 
+/**
+ * SEALED AUTONOMY: the one action that fixes an unsigned row. A person first sees exactly
+ * the row as stored (mode, who enabled it, when), then signs that row with its own review
+ * code (a row changed after the review is refused by the server).
+ */
+function signForm(repo, cell) {
+  const box = el("div", { class: "al-sign" });
+  const review = button("Review and sign", { size: "small" });
+  review.addEventListener("click", () =>
+    runAsyncAction(review, "Reading…", async () => {
+      const res = await api("GET", "/api/autonomy/signatures");
+      const row = ((res && res.unsigned) || []).find(
+        (u) =>
+          u.repo_id === repo.repo_id && u.risk_level === cell.risk_level && u.gate === cell.gate,
+      );
+      clear(box);
+      if (!row) {
+        box.appendChild(el("p", { class: "dim" }, "Nothing to sign here any more."));
+        return;
+      }
+      const sign = button("Sign this row", { size: "small" });
+      sign.addEventListener("click", () =>
+        runAsyncAction(sign, "Signing…", async () => {
+          await api("POST", "/api/autonomy/signatures/resign", {
+            ids: [row.id],
+            confirm: row.review_code,
+          });
+          toast(
+            `${GATE_WORD[cell.gate]} at ${cell.risk_level} risk in ${repo.repo_name}: the row is signed.`,
+            { ok: true },
+          );
+          router();
+        }),
+      );
+      box.appendChild(
+        el("p", { class: "al-sign-facts" }, [
+          `Mode ${row.mode}, enabled by ${row.enabled_by || "nobody on record"}`,
+          row.enabled_at ? ` on ${String(row.enabled_at).slice(0, 10)}` : "",
+          `. Why it is not signed: ${row.detail}. Sign it only if you turned it on.`,
+        ]),
+      );
+      box.appendChild(sign);
+    }),
+  );
+  box.appendChild(review);
+  return box;
+}
+
 /** One cell: rung, evidence, distance, and the step-down or ceiling callout. */
 function ladderCell(repo, cell) {
   const r = rungOf(cell);
@@ -113,6 +164,7 @@ function ladderCell(repo, cell) {
   if (cell.distance && cell.distance.text) {
     out.appendChild(el("p", { class: "al-distance" }, cell.distance.text));
   }
+  if (r.key === "unsigned") out.appendChild(signForm(repo, cell));
   if (cell.step_down) {
     const sd = cell.step_down;
     out.appendChild(

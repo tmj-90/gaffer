@@ -186,6 +186,62 @@ describe("web: the autonomy ladder", () => {
     });
   });
 
+  it("an unsigned row reads as its own state with the one action that fixes it", async () => {
+    // SEALED AUTONOMY: the api/low/approve row written into the database (no seal).
+    const wg = Dispatch.open(":memory:");
+    let model: any;
+    try {
+      const api = repoNamed(wg, "api");
+      wg.db
+        .prepare(
+          "INSERT INTO autonomy_policy (id, repo_id, risk_level, gate, mode, enabled_by, enabled_at, created_at, updated_at) VALUES ('forged', ?, 'low', 'approve', 'auto', 'tom', '2026-11-01T00:00:00.000Z', '2026-11-01T00:00:00.000Z', '2026-11-01T00:00:00.000Z')",
+        )
+        .run(api);
+      model = JSON.parse(JSON.stringify(wg.autonomyLadder(null, "api")));
+      const review = JSON.parse(JSON.stringify(wg.reviewUnsignedAutonomyPolicies()));
+      stubFetch(model);
+      const base = (globalThis.fetch as any).getMockImplementation();
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+          const get = (init?.method ?? "GET").toUpperCase() === "GET";
+          if (String(input).includes("/api/autonomy/signatures") && get)
+            return new Response(JSON.stringify(review), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            });
+          return base(input, init);
+        }),
+      );
+    } finally {
+      wg.db.close();
+    }
+    const mod = await import(`${LADDER_JS}?t=${Date.now()}`);
+    const root = mod.renderLadder(model) as HTMLElement;
+    document.getElementById("app")!.appendChild(root);
+    const cell = root.querySelectorAll('tr[data-risk="low"] .al-cell')[0]!;
+    expect(cell.getAttribute("data-rung")).toBe("unsigned");
+    expect(cell.querySelector(".al-rung-word")!.textContent).toBe("Not signed");
+    expect(cell.querySelector(".al-distance")!.textContent).toMatch(
+      /^Not signed: a person decides/,
+    );
+    const reviewBtn = cell.querySelector(".al-sign button") as HTMLButtonElement;
+    expect(reviewBtn.textContent).toContain("Review and sign");
+    reviewBtn.click();
+    await tick();
+    await tick();
+    expect(cell.querySelector(".al-sign-facts")!.textContent).toContain("enabled by tom");
+    const sign = cell.querySelector(".al-sign button") as HTMLButtonElement;
+    expect(sign.textContent).toContain("Sign this row");
+    sign.click();
+    await tick();
+    await tick();
+    expect(posts.length).toBe(1);
+    expect(posts[0]!.url).toContain("/api/autonomy/signatures/resign");
+    expect(posts[0]!.body).toMatchObject({ ids: ["forged"] });
+    expect(String(posts[0]!.body.confirm)).toMatch(/^[0-9a-f]{16}$/);
+  });
+
   it("a climbing cell shows k of n with its whisker and the distance in plain numbers", async () => {
     stubFetch(ladder);
     const mod = await import(`${LADDER_JS}?t=${Date.now()}`);

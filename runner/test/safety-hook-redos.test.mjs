@@ -188,6 +188,21 @@ for (const [label, command] of [
     "shell cd": rep("cd a; "),
     "shell interpreters": rep("python3 "),
     "shell runner words": `watch ${rep("'python3 -c x' ")}`,
+    // Added by the review: substitutions, trap, python -m, awk, sed and long member chains.
+    "js computed chain": `node -e 'x${rep("[k]")}'`,
+    "shell command substitutions": rep("$(node -e 1) "),
+    "shell backticks": rep("`node -e 1` "),
+    "shell process substitutions": `cat ${rep("<(node -e 1) ")}`,
+    "shell nested substitutions": `echo ${"$(".repeat(5000)}node -e 1${")".repeat(5000)}`,
+    "shell here-document substitutions": `cat <<E\n${rep("$(node -e 1)")}\nE`,
+    "shell trap": rep("trap 'node -e 1' EXIT; "),
+    "python -m timeit": rep("python3 -m timeit 1; "),
+    "python environ": `python3 -c 'import os;${rep("os.environ[1];")}'`,
+    "python module chain": `python3 -c 'import tokenize; tokenize${rep(".io")}'`,
+    "awk prints": `awk '{${rep("print 1>")}}'`,
+    "awk regexes": `awk '${rep("/a/ ")}'`,
+    "sed script": `sed '${rep("s/a/b/;")}' f`,
+    "sed addresses": `sed '${rep("/a/,")}p' f`,
   };
   for (const [label, command] of Object.entries(worst)) {
     const start = performance.now();

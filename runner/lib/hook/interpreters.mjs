@@ -1731,7 +1731,13 @@ function jsComputed(toks, open, match, bindings, caps, declared, tainted = new S
     }
     // `F = a.b[k]`: remember F, refused if it is called.
     let k = open - 1;
+    let steps = 0;
     while (k >= 0) {
+      if (++steps > 256) {
+        // Bounded work: a member chain this long is refused rather than walked.
+        cap(caps, "picks members in a chain longer than the hook reads");
+        return;
+      }
       if (toks[k].t === "id" || isDot(toks[k])) k -= 1;
       else if ((isP(toks[k], ")") || isP(toks[k], "]")) && match[k] >= 0 && match[k] < k)
         k = match[k] - 1;

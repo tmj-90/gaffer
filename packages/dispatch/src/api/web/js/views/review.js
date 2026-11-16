@@ -63,10 +63,15 @@ let lastSignedOff = null;
 
 /**
  * STALE REVISION: set when an approval was refused because the branch moved after the
- * diff was shown. The re-rendered Review view reads it once and says so above the new
- * diff, so the human knows what they are now looking at is a different commit.
+ * diff was shown. The re-rendered Review view says so above the new diff, so the human
+ * knows what they are now looking at is a different commit. The notice stays until that
+ * change is signed off, another change is opened, or it is MOVED_NOTICE_MS old. It used
+ * to be dropped by the first render that read it: when a live refresh started a second
+ * render at that moment the first never reached the page, and the reviewer saw a new
+ * diff with no banner (and any later refresh removed a banner that did appear).
  */
 let reviewMovedNotice = null;
+const MOVED_NOTICE_MS = 15 * 60 * 1000;
 
 /** The commits a rendered diff covered: one `{ repo, sha }` per repo with a known head. */
 function shownCommits(repos) {
@@ -435,7 +440,7 @@ async function renderReview(param) {
         });
       } catch (e) {
         if (!isStaleRevision(e)) throw e;
-        reviewMovedNotice = { id: t.id, message: e.message };
+        reviewMovedNotice = { id: t.id, message: e.message, at: Date.now() };
         toast("Not approved — the change moved since you opened it. The new diff is loaded.", {});
         router();
         return;
@@ -446,6 +451,8 @@ async function renderReview(param) {
       // read the status and the merge result instead.
       const done = (r && r.approve_outcome) || approvedFallback(to, r && r.merge);
       lastSignedOff = { id: t.id, number: t.number, at: new Date().toISOString() };
+      // Signed off: the new head was reviewed, so the moved notice has done its job.
+      if (reviewMovedNotice && reviewMovedNotice.id === t.id) reviewMovedNotice = null;
       // Stay on the diff: the button says it is done and where the change went, and
       // moving on is its own link.
       if (approveBtn) {
@@ -654,9 +661,14 @@ async function renderReview(param) {
   const diffBlockBanner = callout({ tone: "info", cls: "diff-block-banner" });
   diffBlockBanner.style.display = "none";
   const diffBlockText = diffBlockBanner.querySelector(".callout-text");
-  // The approval just refused as stale: say the change moved, once, above the new diff.
-  const moved = reviewMovedNotice && reviewMovedNotice.id === t.id ? reviewMovedNotice : null;
-  if (moved) reviewMovedNotice = null;
+  // The approval just refused as stale: say the change moved above the new diff, on
+  // every render of this change until it is signed off (see reviewMovedNotice).
+  if (
+    reviewMovedNotice &&
+    (reviewMovedNotice.id !== t.id || Date.now() - reviewMovedNotice.at > MOVED_NOTICE_MS)
+  )
+    reviewMovedNotice = null;
+  const moved = reviewMovedNotice;
   const movedBanner = moved
     ? callout({
         tone: "needs",

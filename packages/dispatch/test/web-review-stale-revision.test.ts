@@ -30,6 +30,10 @@ type Call = { method: string; url: string; body: unknown };
 let calls: Call[] = [];
 let headA = SHA_A;
 let refuseNextApprove = false;
+/** When set, every response takes this long: it widens the moment a view is still loading. */
+let responseDelayMs = 0;
+/** The ticket's updated_at in the queue listing: a new value makes a live refresh rebuild the view. */
+let ticketUpdatedAt = "2026-01-01T00:00:00.000Z";
 
 function repoDiff(repo: string, repoId: string, headSha: string) {
   return {
@@ -78,7 +82,9 @@ function stubFetch(): void {
         }
       } else if (url.match(/\/tickets\/tkt-1$/)) {
         payload = { ...TICKET, ticket: TICKET, acceptance_criteria: [], evidence: [], events: [] };
-      } else if (url.includes("/tickets")) payload = { tickets: [TICKET] };
+      } else if (url.includes("/tickets"))
+        payload = { tickets: [{ ...TICKET, updated_at: ticketUpdatedAt }] };
+      if (responseDelayMs) await new Promise((r) => setTimeout(r, responseDelayMs));
       return new Response(JSON.stringify(payload), {
         status,
         headers: { "content-type": "application/json" },
@@ -115,6 +121,8 @@ describe("web review: approve names the commits it rendered (stale revision)", (
     calls = [];
     headA = SHA_A;
     refuseNextApprove = false;
+    responseDelayMs = 0;
+    ticketUpdatedAt = "2026-01-01T00:00:00.000Z";
     mountShell();
     vi.resetModules();
     stubFetch();
@@ -164,7 +172,8 @@ describe("web review: approve names the commits it rendered (stale revision)", (
     });
     // The view did not claim success, and told the human what happened.
     expect(document.querySelector(".rv-done:not([hidden])")).toBeNull();
-    const banner = document.querySelector(".diff-moved-banner");
+    // (not the hidden live-head banner, which shares the class)
+    const banner = document.querySelector(".diff-moved-banner:not(.moved-live)");
     expect(banner, "the moved banner is shown above the reloaded diff").not.toBeNull();
     expect(banner!.getAttribute("role")).toBe("alert");
     expect(banner!.getAttribute("aria-label")).toBe(
@@ -173,6 +182,65 @@ describe("web review: approve names the commits it rendered (stale revision)", (
     expect(banner!.textContent).toContain("The change moved since you opened it.");
     expect(calls.filter((c) => c.url.endsWith("/diff")).length).toBeGreaterThan(diffLoadsBefore);
     // Approving again now sends the NEW head.
+    pressKey("a");
+    await tick();
+    pressKey("a");
+    await settle();
+    expect(approves()).toHaveLength(2);
+    expect(approves()[1]!.body).toEqual({
+      commits: [
+        { repo: "repo-a", sha: SHA_A2 },
+        { repo: "repo-b", sha: SHA_B },
+      ],
+    });
+  });
+
+  // The banner the refusal draws, not the hidden live-head one that shares its class.
+  const movedBanner = () => document.querySelector(".diff-moved-banner:not(.moved-live)");
+  // What the live stream does on an event: re-read the current view in place.
+  const liveRefresh = () => document.dispatchEvent(new Event("visibilitychange"));
+
+  it("the moved banner survives a render that a live refresh replaces, and later refreshes", async () => {
+    await import(`${pathToFileURL(APP_JS).href}?t=${Date.now()}`);
+    await settle();
+    refuseNextApprove = true;
+    headA = SHA_A2;
+    responseDelayMs = 5;
+    pressKey("a");
+    await tick();
+    pressKey("a");
+    // The refusal is followed by a live refresh (on a busy machine the refused view is
+    // still loading when it comes): the refresh re-reads the view while the page shows
+    // the loading placeholder. Whichever render ends up on the page must carry the
+    // banner: it used to belong to the first render that read the notice, and the
+    // refresh then put a view with no banner over it.
+    const app = document.getElementById("app")!;
+    let refreshed = false;
+    for (let i = 0; i < 200 && !refreshed; i++) {
+      await wait(1);
+      const first = app.firstElementChild as HTMLElement | null;
+      if (approves().length === 1 && first && first.dataset.sig == null) {
+        liveRefresh();
+        refreshed = true;
+      }
+    }
+    expect(refreshed, "a live refresh ran while the refused view was loading").toBe(true);
+    await wait(120);
+    responseDelayMs = 0;
+    await settle();
+    expect(approves()).toHaveLength(1);
+    expect(movedBanner(), "the banner reached the page").not.toBeNull();
+    // Any later event on the ticket makes a live refresh rebuild the view (the queue
+    // signature is each ticket's updated_at). The rebuilt view still says the change
+    // moved: nothing was approved yet. It used to come back without the banner.
+    const shown = app.firstElementChild;
+    ticketUpdatedAt = "2026-01-01T00:00:05.000Z";
+    liveRefresh();
+    await wait(50);
+    await settle();
+    expect(app.firstElementChild, "the refresh rebuilt the view").not.toBe(shown);
+    expect(movedBanner(), "the banner is still there after the view was rebuilt").not.toBeNull();
+    // The new head can still be signed off from under the banner.
     pressKey("a");
     await tick();
     pressKey("a");

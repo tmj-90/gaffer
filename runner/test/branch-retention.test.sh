@@ -83,7 +83,9 @@ SHIM
 chmod +x "$WORK/shim/node"
 echo deliver > "$MODE"
 I="$(new_ready "Dod parse fail" "deliver a helper")"
-( PATH="$WORK/shim:$PATH" run_tick >/dev/null )
+# GAFFER_WG_SERVE=0: the fault is injected into a json-tool PROCESS; served, the call
+# never starts one (wg-serve.test.sh covers a JSON server that fails).
+( PATH="$WORK/shim:$PATH" GAFFER_WG_SERVE=0 run_tick >/dev/null )
 BI="$(branch_of "$I")"
 grep -q "delivery FAILED for #$I — DoD gate commands unresolvable; parked, removed worktree, branch .* PRESERVED" "$GAFFER_DATA/factory.log" && ok "I: the DoD config-fail path ran (logs PRESERVED)" || fail "I: the DoD parse-fail path did not run"
 [ -n "$BI" ] && [ "$(commits_on "$BI")" -ge 1 ] && ok "I: the branch the log calls PRESERVED really is ($BI, $(commits_on "$BI") commit(s))" || fail "I: branch for #$I is gone after the DoD parse-fail park"

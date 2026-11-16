@@ -413,6 +413,12 @@ _shadow_config() {  # <host-worktree> <private-git-dir>: the ONLY config the pri
 _GIT_PRIV_BASE="${GAFFER_DATA:-${TMPDIR:-/tmp}}/sandbox-git"
 mkdir -p "$_GIT_PRIV_BASE" 2>/dev/null || true
 chmod 700 "$_GIT_PRIV_BASE" 2>/dev/null || true
+# The same for the ticks' dispatch servers (config/17-cli.sh): each tick's request pipes
+# live in $GAFFER_DATA/wg-serve/<pid>.<random>, so this one parent, masked like any
+# entry that exists now, hides a server a sibling tick starts after this container.
+if [ -n "${GAFFER_DATA:-}" ]; then
+  ( umask 077 && mkdir -p "$GAFFER_DATA/wg-serve" ) 2>/dev/null || true
+fi
 for _wr in ${_WRITE_ROOTS[@]+"${_WRITE_ROOTS[@]}"}; do
   [ -f "$_wr/.git" ] || continue          # only LINKED worktrees have a .git FILE
   if ! _verified_linked_worktree "$_wr"; then

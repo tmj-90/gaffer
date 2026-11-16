@@ -344,6 +344,15 @@ insert an approval and recompute a consistent chain, and every landing path acte
     caller) and the tokenless operator CLI (`wg ticket tester-pass --as system`, `wg
     review approve`), which signs for whoever runs it on the host. Run without an OS
     sandbox only inside a VM or container you trust.
+  - **The tick's dispatch server** (`runner/config/17-cli.sh`) is that operator CLI kept
+    running for one tick: it runs whatever command reaches its request pipe, as the
+    operator. Its pipes live in a 0700 directory under `$GAFFER_DATA/wg-serve`, never on
+    an inherited file descriptor, and the server exits with its tick. Under `sandbox-exec`
+    every profile denies writing anything there (it is not one of the in-sandbox writers);
+    under `docker` the wrapper creates `wg-serve/` before it masks the entries of
+    `$GAFFER_DATA`, so it is masked; under `none` it is as reachable as the CLI itself.
+    Sandboxed code can still READ a reply file under `sandbox-exec` (reads are open
+    there), which holds nothing the database it can also read does not.
 
 ### Signed principals
 

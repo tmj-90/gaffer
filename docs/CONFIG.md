@@ -23,12 +23,12 @@ child, test seams) and deprecated names are listed at the end, not in the tables
 
 | Metric | Count |
 |---|---|
-| Knobs with a default line | 95 |
+| Knobs with a default line | 97 |
 | Knobs with no default line (the fallback is where they are read) | 16 |
 | Knobs editable in the dashboard | 59 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
 | Env reads in code with no default and no UI entry | 0 |
-| Rows in the tables | 120 |
+| Rows in the tables | 122 |
 | Deprecated names (still work for one release) | 37 |
 | Removed names (ignored, with a warning) | 18 |
 | Internal names and test seams (not knobs) | 99 |
@@ -202,6 +202,23 @@ estimate is 0) is a floor, not a bound, and a call can cost more than it held.
 | `GAFFER_EGRESS_ALLOW` | _(empty)_ |  | runner | Extra hosts the docker sandbox's default-deny egress proxy lets through, on top of the model endpoint and the package registries ($GAFFER_DATA/egress-allow.txt adds more; docs/sandbox.md). (No default line: read in `runner/lib/egress-allowlist.mjs`.) |
 | `GAFFER_STRICT_REQUIRE` | `1` |  | crew, dispatch, runner | 1 (the default, in every mode) = every agent launch runs inside the OS sandbox or is refused (fail closed): `gaffer run`, the loop, a tick and the dashboard's Poll for work refuse before claiming anything, with the fix. 0 (or false/no/off) in the ENVIRONMENT is the opt-out, for a runner you contain yourself (a VM or container): agents then run unwrapped, and it is said once per process. settings.json cannot set 0. (No default line: read in `runner/lib/sandbox.sh`.) |
 | `GAFFER_SANDBOX_IMAGE` | `gaffer-sandbox:latest` |  | runner | The image the docker sandbox provider runs each delivery in (`docker compose --profile sandbox build` builds it). (No default line: read in `runner/lib/sandbox-docker.sh`.) |
+
+### Troubleshooting: the tick's dispatch server
+
+**One dispatch process per tick.** A tick runs its dispatch CLI calls (`wg`) through
+one long-lived dispatch process (`packages/dispatch/dist/cli/serve.js`) over named
+pipes in `$GAFFER_DATA/wg-serve/<tick pid>.<random>`, instead of starting node for
+each call. Each call runs through the same code as the one-shot CLI and prints the same
+output; a call the server cannot run identically (another command, a terminal on
+stdout or stderr, a changed PATH or start-up environment, bash older than 4.4) runs
+one-shot. A server that dies, hangs or answers garbage fails that call (a
+`WG_SERVER_FAILED` line on stderr) and the rest of the tick runs one-shot. The server
+stops with its tick, and exits by itself when the tick is gone.
+
+| Variable | Default | UI | Read by | Notes |
+|---|---|---|---|---|
+| `GAFFER_WG_SERVE` | `1` |  | runner | 1 = a tick sends its dispatch CLI (`wg`) calls to one long-lived dispatch process instead of starting node for each; 0 runs every call as its own process (troubleshooting). |
+| `GAFFER_WG_SERVE_TIMEOUT` | `120` |  | runner | Seconds a served `wg` call waits for its reply before it fails (closed) and the rest of the tick runs one-shot. |
 
 ### Review and landing
 

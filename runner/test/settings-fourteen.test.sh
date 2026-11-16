@@ -90,6 +90,12 @@ V="$(cfg GAFFER_TESTING=No GAFFER_DAILY_BUDGET_USD=abc -- 'printf "%s|%s" "$GAFF
 V="$(cfg GAFFER_GATES="tests, lint" -- "$(vals GAFFER_DOD_TESTS GAFFER_DOD_LINT GAFFER_DOD_TYPECHECK)")"
 [ "$V" = "GAFFER_DOD_TESTS=1 GAFFER_DOD_LINT=1 GAFFER_DOD_TYPECHECK=0 " ] && ok "a gate list in the environment runs only the gates it names" || fail "env gate list: $V"
 
+# Every dollar form the dashboard API accepted and stored (5, 5.25, 5. and .5) loads.
+for v in 5 5.25 5. .5; do
+  file "{\"GAFFER_DAILY_BUDGET_USD\":\"$v\"}"
+  V="$(cfg -- 'printf "%s" "$GAFFER_DAILY_BUDGET_USD"')"
+  [ "$V" = "$v" ] && ok "a stored budget of '$v' loads" || fail "budget '$v' stopped the config: $(cat "$WORK/err")"
+done
 # A setting the dashboard cleared is stored as "" (writeSettings): it is the default,
 # never a value that stops the config.
 file '{"GAFFER_MODE":"","GAFFER_TESTING":"","GAFFER_CONCURRENCY":"","GAFFER_EFFORT":"","GAFFER_MODELS":"","DISPATCH_API_PORT":"","GAFFER_GATES":"","GAFFER_SANDBOX":""}'

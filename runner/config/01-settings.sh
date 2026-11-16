@@ -64,7 +64,9 @@ _gaffer_setting_problem() {
       [ -n "$v" ] && case " $choices " in *" $v "*) return 0 ;; esac
       _GAFFER_SP="is not one of: ${choices// /, }" ;;
     usd)
-      re='^[0-9]+([.][0-9]+)?$'
+      # The forms the dashboard API has always accepted (5, 5.25, 5. and .5: a stored one
+      # must never stop a factory) and the spend gate's awk reads.
+      re='^([0-9]+([.][0-9]*)?|[.][0-9]+)$'
       { [ -z "$v" ] || [[ "$v" =~ $re ]]; } && return 0
       _GAFFER_SP="is not a dollar amount (digits with an optional decimal part; empty is no cap)" ;;
     count)

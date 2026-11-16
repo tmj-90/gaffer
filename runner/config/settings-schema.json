@@ -764,7 +764,7 @@
         },
         {
           "name": "STRICT_MODE",
-          "note": "1 = wrap every agent launch in the provider; on whenever the sandbox is required, which is the default in every mode",
+          "note": "1 = wrap every agent launch in the provider. Effectively 1: 15-modes.sh turns it on whenever the sandbox is required (every mode); this 0 applies only under the environment opt-out GAFFER_STRICT_REQUIRE=0",
           "all": {
             "how": "value",
             "value": "0",

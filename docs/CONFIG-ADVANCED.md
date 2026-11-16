@@ -152,7 +152,7 @@ Accepted: auto, docker, sandbox-exec. Default: auto. Its table: `runner/config/1
 | Derived value | auto (default) | docker | sandbox-exec | Note |
 |---|---|---|---|---|
 | `SANDBOX_PROVIDER` | _from the setting (see note)_ | `docker` | `sandbox-exec` | the OS sandbox provider every agent launch runs in (auto: sandbox-exec where it exists, else docker) |
-| `STRICT_MODE` | `0` | `0` | `0` | 1 = wrap every agent launch in the provider; on whenever the sandbox is required, which is the default in every mode |
+| `STRICT_MODE` | `0` | `0` | `0` | 1 = wrap every agent launch in the provider. Effectively 1: 15-modes.sh turns it on whenever the sandbox is required (every mode); this 0 applies only under the environment opt-out GAFFER_STRICT_REQUIRE=0 |
 | `STRICT_ALLOW_NETWORK` | `1` | `1` | `1` | 1 = the sandbox lets the agent reach the network (the agent CLI needs its API); the docker provider still allows only its egress list |
 | `STRICT_ALLOW_HOME` | _computed_ (`$HOME/.claude $HOME/.cache`) | _computed_ (`$HOME/.claude $HOME/.cache`) | _computed_ (`$HOME/.claude $HOME/.cache`) | HOME paths the sandbox may write (the agent CLI state and cache) |
 | `GAFFER_SANDBOX_IMAGE` | `gaffer-sandbox:latest` _(read in runner/lib/sandbox-docker.sh)_ | `gaffer-sandbox:latest` _(read in runner/lib/sandbox-docker.sh)_ | `gaffer-sandbox:latest` _(read in runner/lib/sandbox-docker.sh)_ | the image the docker provider runs each delivery in (read in lib/sandbox-docker.sh) |

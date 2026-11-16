@@ -36,7 +36,7 @@ fi
 _gaffer_derive GAFFER_SANDBOX <<'_GAFFER_TABLE_'
 #                     auto                       docker  sandbox-exec
 ?SANDBOX_PROVIDER     @_GAFFER_SANDBOX_DETECTED  docker  sandbox-exec   # the OS sandbox provider every agent launch runs in (auto: sandbox-exec where it exists, else docker)
-STRICT_MODE           ~   # 1 = wrap every agent launch in the provider; on whenever the sandbox is required, which is the default in every mode
+STRICT_MODE           ~   # 1 = wrap every agent launch in the provider. Effectively 1: 15-modes.sh turns it on whenever the sandbox is required (every mode); this 0 applies only under the environment opt-out GAFFER_STRICT_REQUIRE=0
 STRICT_ALLOW_NETWORK  ~   # 1 = the sandbox lets the agent reach the network (the agent CLI needs its API); the docker provider still allows only its egress list
 STRICT_ALLOW_HOME     ~   # HOME paths the sandbox may write (the agent CLI state and cache)
 GAFFER_SANDBOX_IMAGE  ~   # the image the docker provider runs each delivery in (read in lib/sandbox-docker.sh)

@@ -121,7 +121,16 @@ function ladderCell(repo, cell) {
         body: `${sd.why} ${sd.lift ? sd.lift.text : ""}`.trim(),
       }),
     );
-    out.appendChild(liftForm(repo, cell));
+    // A cascaded row lifts only after the lower risk it follows (the server's rule too).
+    out.appendChild(
+      sd.cascade_from
+        ? el(
+            "p",
+            { class: "al-lift-after dim" },
+            `Give ${sd.cascade_from} risk back first: if ${sd.cascade_from} is not trusted, ${cell.risk_level} is not either.`,
+          )
+        : liftForm(repo, cell),
+    );
   }
   return out;
 }

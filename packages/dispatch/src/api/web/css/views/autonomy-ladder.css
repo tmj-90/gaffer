@@ -63,6 +63,7 @@
     color: var(--ink-2);
   }
   .al-bar,
+  .al-lift-after,
   .al-distance {
     margin: 0;
     font-size: var(--t14);

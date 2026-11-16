@@ -160,6 +160,9 @@ describe("web: the autonomy ladder", () => {
     // The cascade reads as its own reason.
     const highMerge = api.querySelectorAll('tr[data-risk="high"] .al-cell')[1]!;
     expect(highMerge.textContent).toContain("after a lower risk stepped down");
+    // ... and lifts only after low: no form there, a sentence that says so.
+    expect(highMerge.querySelector("button")).toBeNull();
+    expect(highMerge.textContent).toContain("Give low risk back first");
     // Medium approve is automatic (its row, not stepped down).
     const medApprove = api.querySelectorAll('tr[data-risk="medium"] .al-cell')[0]!;
     expect(medApprove.querySelector(".al-rung-word")!.textContent).toBe("Automatic");

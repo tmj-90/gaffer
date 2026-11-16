@@ -1,10 +1,12 @@
 # shellcheck shell=bash
-# Shared world for the TESTER REPLAY landing tests (land-tester-replay.test.sh A-F,
-# land-tester-replay-proof.test.sh G-K): a fixture repo whose smoke suite stays green,
+# Shared world for the TESTER REPLAY landing tests (land-tester-replay.test.sh A, E, F;
+# land-tester-replay-merge-now.test.sh B-D; land-tester-replay-proof.test.sh G-K; each
+# builds its own copy): a fixture repo whose smoke suite stays green,
 # a bare origin, a stub claude, real dispatch + memory + tick.sh, and the tester and
 # landing helpers. Sourced after the caller set HERE/RUNNER_DIR/ROOT and sourced
-# lib/tmpdir.sh. Split in two files so each stays well inside run.sh's long cap under
-# CI's -j load: one file with every section took over 600s on the ubuntu runners.
+# lib/tmpdir.sh. Split in three files so each stays well inside run.sh's long cap under
+# CI's -j load: one file with every section took over 600s on the ubuntu runners, and
+# A-F alone 250 s at -j 2 locally.
 [ -f "$ROOT/packages/dispatch/dist/cli/index.js" ] || { echo "SKIP: dispatch CLI not built"; exit 0; }
 [ -f "$ROOT/packages/crew/dist/runtime/context/renderPromptCli.js" ] || { echo "SKIP: crew not built"; exit 0; }
 PASS=0; FAILURES=()

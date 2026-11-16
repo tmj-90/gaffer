@@ -202,9 +202,11 @@ also names the ticket's other write repos, which the tester never ran in (`not_r
 the tester tests the primary repo only). `wg stats` counts an epic as accepted only on that
 record **with at least one tester test file** (`unreplayed` otherwise: zero tester assertions
 ran on what landed), and `gaffer status` and the dashboard ticket page read it instead of
-guessing from timestamps. Tests: `test/land-tester-replay.test.sh` (every landing path),
-`test/land-tester-replay-proof.test.sh` (what the record names and the proof a file ran) and
-`test/e2e-release-gate-tester-replay.test.sh` (the reviewer's fixture, end to end).
+guessing from timestamps. Tests: `test/land-tester-replay.test.sh` and
+`test/land-tester-replay-merge-now.test.sh` (every landing path),
+`test/land-tester-replay-proof.test.sh` and `test/land-tester-replay-scoped.test.sh` (what
+the record names and the proof a file ran) and `test/e2e-release-gate-tester-replay.test.sh`
+with `-scoped.test.sh` (the reviewer's fixture, end to end).
 
 **Required CI** (`GAFFER_REQUIRE_CI=1`, PR mode): `lib/ci-gate.sh` reads `gh pr checks
 --json name,state,bucket,link` (the real CLI fields; `fixtures/gh` holds the recorded field

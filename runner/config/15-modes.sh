@@ -25,85 +25,64 @@
 #                                  stays on even with an explicit GAFFER_STRICT_REQUIRE=0)
 #
 # PRECEDENCE (highest wins):
-#   real env var  >  explicit settings.json key  >  mode default  >  config default
-# The mode only FILLS a flag the operator has not already pinned: every line is
-# `: "${K:=…}"`, a no-op when K is already set. Real env vars are exported into
-# this shell before the file runs; explicit settings.json keys were applied by
-# the loader ABOVE (both therefore win over the mode). Any flag a mode leaves
-# untouched falls through to its ORIGINAL default line further down — which still
-# carries the safety comments. Net effect: with GAFFER_MODE unset, the
-# 'supervised' cluster equals the historical hard defaults exactly, so existing
-# setups behave byte-identically.
+#   real env var  >  the GAFFER_MODE table below  >  (nothing else)
+# GAFFER_MODE is one of the fourteen settings; the flags it moves are derived values,
+# no longer settings.json keys (an old key for one is compared with the table in
+# 01-settings.sh: a stricter old value wins, a more permissive one is ignored). The
+# table only FILLS a flag nobody pinned: a real env var is in this shell before the
+# file runs and wins. Net effect: with GAFFER_MODE unset, the 'supervised' column
+# equals the historical hard defaults exactly, so existing setups behave identically
+# (runner/test/config-defaults.test.sh pins every mode against the values before).
 #
-# Parity note: these 6 flags are consumed the same way whether set here or via
-# settings.json — the 5 shell flags (REVIEW_MODE/AUTO_MERGE/MERGE_ON_AGENT_REVIEW/
-# GAFFER_AUTO_PUSH/STRICT_MODE) are read in-process by tick.sh; the 2 external
-# flags (DISPATCH_ALLOW_AGENT_APPROVE/MEMORY_AUTO_APPROVE) are read from the env
-# of the dispatch/memory processes. None are exported from here today, so the
-# mode sets plain (unexported) shell vars — identical wiring to a settings.json
-# value, no export/consumer change.
+# Parity note: the 5 shell flags (REVIEW_MODE/AUTO_MERGE/MERGE_ON_AGENT_REVIEW/
+# GAFFER_AUTO_PUSH/STRICT_MODE) are read in-process by tick.sh; the 2 external flags
+# (DISPATCH_ALLOW_AGENT_APPROVE/MEMORY_AUTO_APPROVE) are read from the env of the
+# dispatch/memory processes. None are exported from here, so the mode sets plain
+# (unexported) shell vars, as it always did.
 : "${GAFFER_MODE:=supervised}"
-case "$GAFFER_MODE" in
-  autonomous|strict)
-    : "${REVIEW_MODE:=agent}"
-    : "${DISPATCH_ALLOW_AGENT_APPROVE:=1}"
-    : "${MERGE_ON_AGENT_REVIEW:=1}"
-    : "${AUTO_MERGE:=1}"
-    : "${GAFFER_AUTO_PUSH:=1}"
-    : "${MEMORY_AUTO_APPROVE:=1}"
-    ;;
-  lite)
-    # LITE — auto-approve genuinely TRIVIAL work; hold everything else for a human; a
-    # human still MERGES. Lite relaxes ONLY the human-REVIEW requirement, and only for
-    # tickets that are low-risk, tiny (within GAFFER_LITE_MAX_DIFF), touch no sensitive
-    # path, AND already passed EVERY deterministic gate (DoD tests/lint/typecheck +
-    # hygiene) AND earned an APPROVE from the reviewer agent. It does NOT auto-merge or
-    # auto-push (approve → hold at ready_for_merge for a human to land). The env approve
-    # FLOOR is on so the SERVER accepts the runner's agent-approve; the RUNNER narrows
-    # that to trivial tickets per `gaffer_ticket_is_trivial` (a non-trivial ticket holds
-    # for a human even with the floor on). Because auto-approve removes the human quality
-    # gate, DISPATCH_ALLOW_AGENT_APPROVE=1 trips the autonomy→containment rule below, so
-    # the OS sandbox becomes mandatory (GAFFER_STRICT_REQUIRE=1) — set it 0 explicitly
-    # only if you contain the runner out-of-band.
-    : "${REVIEW_MODE:=agent}"
-    : "${DISPATCH_ALLOW_AGENT_APPROVE:=1}"
-    : "${MERGE_ON_AGENT_REVIEW:=0}"
-    : "${AUTO_MERGE:=0}"
-    : "${GAFFER_AUTO_PUSH:=0}"
-    : "${MEMORY_AUTO_APPROVE:=0}"
-    ;;
-  graduated)
-    # GRADUATED (earned trust). The reviewer AGENT runs (REVIEW_MODE=agent) so there is a
-    # verdict for the runner to act on — but the env autonomy FLOOR is identical to
-    # supervised (approve OFF, merge held, no push, no memory-auto): the per-repo/risk
-    # autonomy POLICY is the ONLY allow-path. The runner's AFK ship gate consults that
-    # policy per ticket (tick.sh → `wg ticket auto-decision`), so a ticket ships iff its
-    # write-repos+risk are EARNED (a mode='auto' approve AND merge row) and HOLDS for a
-    # human otherwise. Inert until the operator adds `auto` policy rows — ships dark + safe.
-    # (GAFFER_AUTO_PUSH stays 0: an earned merge lands on the local default branch and the
-    # operator pushes when they choose; opt in explicitly to auto-push earned merges.)
-    : "${REVIEW_MODE:=agent}"
-    : "${DISPATCH_ALLOW_AGENT_APPROVE:=0}"
-    : "${MERGE_ON_AGENT_REVIEW:=0}"
-    : "${AUTO_MERGE:=0}"
-    : "${GAFFER_AUTO_PUSH:=0}"
-    : "${MEMORY_AUTO_APPROVE:=0}"
-    ;;
-  *)   # supervised (default) — and any unrecognised value → safe posture
-    # A typo (`yolo`, `autonomus`) used to fall back to supervised in silence: say so,
-    # once per process tree (the config is re-sourced by every child script).
-    if [ "$GAFFER_MODE" != supervised ] && [ "${_GAFFER_MODE_WARNED:-}" != "$GAFFER_MODE" ]; then
+# A typo (`yolo`, `autonomus`) in the ENVIRONMENT keeps its old reading: said once per
+# process tree (the config is re-sourced by every child script), and the supervised
+# column applies. (A settings.json value is validated in 01-settings.sh and stops the
+# config instead.)
+case " supervised lite graduated autonomous strict " in
+  *" $GAFFER_MODE "*) ;;
+  *)
+    if [ "${_GAFFER_MODE_WARNED:-}" != "$GAFFER_MODE" ]; then
       printf "gaffer: GAFFER_MODE='%s' is not a mode (supervised, graduated, lite, autonomous, strict) — using supervised: a human approves every merge\n" "$GAFFER_MODE" >&2
       export _GAFFER_MODE_WARNED="$GAFFER_MODE"
-    fi
-    : "${REVIEW_MODE:=human}"
-    : "${DISPATCH_ALLOW_AGENT_APPROVE:=0}"
-    : "${MERGE_ON_AGENT_REVIEW:=0}"
-    : "${AUTO_MERGE:=0}"
-    : "${GAFFER_AUTO_PUSH:=0}"
-    : "${MEMORY_AUTO_APPROVE:=0}"
-    ;;
+    fi ;;
 esac
+# The mode's table. supervised (the default, safe): a human approves every merge.
+# lite: auto-approve genuinely TRIVIAL work, hold everything else for a human, and a
+# human still MERGES; lite relaxes ONLY the human-review requirement, and only for
+# tickets that are low-risk, tiny (within GAFFER_LITE_MAX_DIFF), touch no sensitive
+# path, passed EVERY deterministic gate and earned an APPROVE from the reviewer agent.
+# The approve FLOOR is on so the server accepts the runner's agent-approve; the RUNNER
+# narrows that to trivial tickets (gaffer_ticket_is_trivial), and the floor trips the
+# autonomy->containment rule below. graduated (earned trust): the reviewer AGENT runs so
+# there is a verdict to act on, but the env floor equals supervised: the per-repo/risk
+# autonomy POLICY is the only allow-path (tick.sh -> `wg ticket auto-decision`), inert
+# until the operator adds `auto` policy rows, and an earned merge is not pushed.
+# autonomous / strict: agents approve; approved work auto-merges and pushes; the OS
+# sandbox is required (containment block below).
+# These values are plain (unexported) shell variables, exactly as the mode set them
+# before: tick.sh reads the shell flags in-process, and the dispatch and memory
+# processes get theirs where the runner starts them.
+_gaffer_derive GAFFER_MODE --no-export <<'_GAFFER_TABLE_'
+#                              supervised  lite   graduated  autonomous  strict
+REVIEW_MODE                    human       agent  agent      agent       agent   # who reviews in_review tickets: human, agent (a reviewer agent, never the implementer) or both (an agent screens, a person approves)
+DISPATCH_ALLOW_AGENT_APPROVE   0           1      0          1           1       # 1 = dispatch accepts an approval the runner makes on an agent reviewer verdict (the env floor)
+MERGE_ON_AGENT_REVIEW          0           0      0          1           1       # 1 (with AUTO_MERGE) = an agent-approved ticket merges with no person in the loop
+AUTO_MERGE                     0           0      0          1           1       # 1 = an approved ticket lands on the default branch without a second click
+GAFFER_AUTO_PUSH               0           0      0          1           1       # 1 = landed agent work is pushed to origin (a plain git push, from the runner)
+MEMORY_AUTO_APPROVE            0           0      0          1           1       # 1 = a lesson an agent proposes goes live without review
+GAFFER_MEMORY_AUTO_PROMOTE     ~           # follows MEMORY_AUTO_APPROVE: 1 = a requirement distilled from a delivered ticket goes live at once; 0 = it lands as a draft
+GAFFER_SECURITY_REVIEW         ~           # 1 = a delivery that touches a sensitive path gets a second, security-focused review; 0 disables the lane
+GAFFER_MERGE_LANE              ~           # 1 = a tick lands a ticket that is ready to merge and allowed to (a person approved it, or it earned it); 0 = a person merges
+GAFFER_CONFLICT_RESOLVER       ~           # 1 = a merge conflict is resolved by an agent and re-reviewed; 0 = the ticket waits for a person
+GAFFER_LITE_MAX_DIFF           ~           # lite mode trivial-diff bounds as "lines=60 files=4" (the defaults)
+GAFFER_ALLOW_SELF_DELIVERY     ~           # 1 = let the factory deliver to its own source (first-party dogfooding); 0 refuses
+_GAFFER_TABLE_
 # strict = the autonomous cluster with STRICT_MODE pinned on. autonomous gets STRICT_MODE=1
 # too (from GAFFER_STRICT_REQUIRE, below), so the two differ only when the operator sets
 # GAFFER_STRICT_REQUIRE=0: strict still wraps the agent in the sandbox where one exists.
@@ -242,14 +221,14 @@ export GAFFER_STRICT_REQUIRE
 : "${GAFFER_IDLE_HOST_EXEC:=0}"   # 1 = allow idle repo commands (coverage_command, audit_command, tsc/semgrep oracles) on the host under GAFFER_STRICT_REQUIRE
 export GAFFER_IDLE_HOST_EXEC
 
-# Who reviews in_review tickets before they can be approved to done:
+# What the GAFFER_MODE table's flags mean (their values come from the table above):
+# Who reviews in_review tickets before they can be approved to done (REVIEW_MODE):
 #   human → only a person approves (dispatch review approve, or the board)
 #   agent → a reviewer AGENT (≠ the implementer) reviews via the review-ticket skill
 #   both  → an agent screens first, then a human confirms: the agent's CHANGES verdict
 #           can bounce the delivery to rework (when the approve gate is earned), but its
 #           APPROVE is never an approval — the ticket waits in_review for the human,
 #           in every autonomy mode (gaffer_afk_ship_plan)
-: "${REVIEW_MODE:=human}"
 
 # AUTO_MERGE ("Auto-merge on approval") — land a HUMAN-approved ticket's branch on the
 # repo's default branch without a second click.
@@ -267,7 +246,6 @@ export GAFFER_IDLE_HOST_EXEC
 # ticket carries a pr_url from GAFFER_CREATE_PR), where the merge happens THROUGH the PR
 # via `gh pr merge` and the local default branch is fast-forwarded from the remote (see
 # the H4 block below).
-: "${AUTO_MERGE:=0}"
 
 # MERGE_ON_AGENT_REVIEW ("Auto-merge on agent review") EXTENDS AUTO_MERGE to approvals the
 # runner made on an agent reviewer's verdict. The merge gate is AUTO_MERGE=1 AND
@@ -281,9 +259,8 @@ export GAFFER_IDLE_HOST_EXEC
 # the human merge gate entirely: an agent-approved ticket may merge to the default branch
 # with NO human in the loop, so a single prompt-injected or mistaken review can land code
 # unreviewed. Do NOT set it for any factory you would leave running overnight without an
-# OS sandbox. Keep it 0 (the default) unless you are actively supervising a
-# fully-autonomous experiment and accept that risk.
-: "${MERGE_ON_AGENT_REVIEW:=0}"
+# OS sandbox. Keep it 0 (the supervised, lite and graduated value) unless you are actively
+# supervising a fully-autonomous experiment and accept that risk.
 
 # GAFFER_AUTO_PUSH=1 — the final step of the AFK cycle. After the runner auto-approves and
 # safe-merges an agent-reviewed ticket into the default branch (AUTO_MERGE=1 +
@@ -291,6 +268,5 @@ export GAFFER_IDLE_HOST_EXEC
 # `git push`), and it runs in the RUNNER, not the agent, so it is a deliberate autonomy-mode
 # capability rather than an agent action. Leave OFF to keep the factory fully local (merges
 # accumulate on the default branch locally; you push when you choose).
-: "${GAFFER_AUTO_PUSH:=0}"
 
 _GAFFER_CONFIG_PART=15-modes

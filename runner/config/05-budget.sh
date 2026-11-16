@@ -136,5 +136,14 @@ fi
 # here is inert.
 : "${GAFFER_CHEAP_PHASES:=}"
 export GAFFER_MODEL_REGISTRY GAFFER_BUDGET_REMAINING GAFFER_BUDGET_LOW_THRESHOLD GAFFER_CHEAP_PHASES
+# GAFFER_BUDGET_USD (a setting) and what follows from it. The low-budget threshold is
+# 20% of it (above), the per-ticket rework ceiling equals it (07-limits.sh). The per-call
+# cap stays opt-in: nothing derives one, so a call is bounded as before.
+_gaffer_derive GAFFER_BUDGET_USD <<'_GAFFER_TABLE_'
+GAFFER_BUDGET_LOW_THRESHOLD  ~   # the dollar headroom at or under which the router picks one tier cheaper: 20% of GAFFER_BUDGET_USD, 0 when it is unset
+GAFFER_REWORK_BUDGET_USD     ~   # follows GAFFER_BUDGET_USD: the most one ticket may spend across its rework attempts; empty = no ceiling but the attempt cap
+GAFFER_MAX_CALL_USD          ~   # a hard dollar cap on each agent call (claude --max-budget-usd); empty = none
+GAFFER_CHEAP_PHASES          ~   # phases routed one tier cheaper whatever the budget (implement, review, clarify); empty = none
+_GAFFER_TABLE_
 
 _GAFFER_CONFIG_PART=05-budget

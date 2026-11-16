@@ -25,11 +25,29 @@
 # `sandbox-exec` so the degrade/refusal messages name the macOS-only tool honestly.
 # Before this the default was always `sandbox-exec`, which on Linux silently meant
 # "no OS sandbox" even on a host with Docker right there.
+# GAFFER_SANDBOX (a setting) picks it: auto is that detection, docker or sandbox-exec
+# name the provider. `none` is not a setting value: only an environment
+# SANDBOX_PROVIDER=none (or the GAFFER_STRICT_REQUIRE=0 opt-out) runs agents unwrapped.
+_GAFFER_SANDBOX_DETECTED=sandbox-exec
 if [ -z "${SANDBOX_PROVIDER+x}" ]; then
-  if command -v sandbox-exec >/dev/null 2>&1; then SANDBOX_PROVIDER=sandbox-exec
-  elif command -v docker >/dev/null 2>&1; then SANDBOX_PROVIDER=docker
-  else SANDBOX_PROVIDER=sandbox-exec; fi
+  if command -v sandbox-exec >/dev/null 2>&1; then _GAFFER_SANDBOX_DETECTED=sandbox-exec
+  elif command -v docker >/dev/null 2>&1; then _GAFFER_SANDBOX_DETECTED=docker; fi
 fi
+_gaffer_derive GAFFER_SANDBOX <<'_GAFFER_TABLE_'
+#                     auto                       docker  sandbox-exec
+?SANDBOX_PROVIDER     @_GAFFER_SANDBOX_DETECTED  docker  sandbox-exec   # the OS sandbox provider every agent launch runs in (auto: sandbox-exec where it exists, else docker)
+STRICT_MODE           ~   # 1 = wrap every agent launch in the provider; on whenever the sandbox is required, which is the default in every mode
+STRICT_ALLOW_NETWORK  ~   # 1 = the sandbox lets the agent reach the network (the agent CLI needs its API); the docker provider still allows only its egress list
+STRICT_ALLOW_HOME     ~   # HOME paths the sandbox may write (the agent CLI state and cache)
+GAFFER_SANDBOX_IMAGE  ~   # the image the docker provider runs each delivery in (read in lib/sandbox-docker.sh)
+GAFFER_SANDBOX_LIMITS ~   # docker sandbox caps as "cpus=4 memory=4g pids=512"; a cap not named keeps that default
+GAFFER_MCP_BRIDGE     ~   # docker provider: auto (on, except macOS) runs the MCP data plane on the host behind one socket; 1 forces on, 0 off
+GAFFER_DOD_SANDBOX    ~   # 1 = the Definition-of-Done gates and criterion checks run inside the agent sandbox; 0 opts out, logged
+GAFFER_EGRESS_ALLOW   ~   # extra hosts the docker sandbox egress proxy lets through (read in lib/egress-allowlist.mjs)
+GAFFER_REGISTRY_PROBE ~   # 1 = check before a docker launch that the package registries answer through the egress proxy; 0 skips it
+GAFFER_IDLE_HOST_EXEC ~   # 1 = allow idle repo commands (coverage, audit, oracles) on the host while the sandbox is required; 0 refuses them
+_GAFFER_TABLE_
+unset _GAFFER_SANDBOX_DETECTED
 # Allow outbound network from inside the sandbox. IMPORTANT HONEST NOTE: because
 # strict mode wraps the WHOLE `claude -p` process, network CANNOT be denied
 # without breaking Claude's own API calls — so this defaults to 1 (allow). True
@@ -77,9 +95,8 @@ fi
 # diff; MINIMALISM_REQUIRE_NOTE=1 sends it back to rework instead (for unsupervised
 # runs). An oversized diff never fails: it flags `needs_human_review: oversized_diff`
 # visibly, also when the note is missing or boilerplate.
-: "${MINIMALISM_REQUIRE_NOTE:=0}"     # 1 = a delivery with no smallest-change note goes back to rework (0 = flag it for review)
-: "${OVERSIZED_MAX_LINES:=400}"       # > this many changed lines → flag (not fail) oversized_diff
-: "${OVERSIZED_MAX_FILES:=12}"        # > this many changed files → flag (not fail) oversized_diff
+# MINIMALISM_REQUIRE_NOTE, OVERSIZED_MAX_LINES and OVERSIZED_MAX_FILES are derived from
+# GAFFER_GATES (its table in 07-limits.sh).
 
 # (4) GREENFIELD bootstrap ("create-a-repo") mode. A dispatch `bootstrap` ticket
 # has no repo to branch — the runner CREATES one at <root>/<name>, git-inits it,

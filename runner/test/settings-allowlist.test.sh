@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =====================================================================
-# settings.json is an ALLOWLIST: the runner takes from it only the keys the dashboard's
-# settings API can write (sandbox audit F1a).
+# settings.json is an ALLOWLIST: the runner takes from it only the fourteen settings
+# (sandbox audit F1a; package 61).
 # ---------------------------------------------------------------------
 # settings.json lives in $GAFFER_DATA. The loader (runner/config/01-settings.sh) used to
 # export every key but a short deny-list, so a file written by agent code made the next
@@ -10,10 +10,11 @@
 # lane on the host or the gates out of the sandbox. This pins, with a clean environment
 # and the real config:
 #   1. none of those keys (nor an unknown one) is applied, and each is named on stderr;
-#   2. a real dashboard setting (MAX_TICKS, an autonomy flag the dashboard edits) still
-#      applies, and a real environment value still wins over the file.
-# The list's parity with packages/dispatch/src/api/settings.ts is pinned by
-# packages/dispatch/test/settings.test.ts.
+#   2. a setting (GAFFER_CONCURRENCY, a budget) still applies and is exported, and a real
+#      environment value still wins over the file; an old dashboard key that would widen
+#      autonomy (DISPATCH_ALLOW_AGENT_APPROVE=1 under supervised) is NOT applied;
+#   3. the allowlist is exactly the fourteen.
+# The old dashboard keys and their migration are pinned by settings-fourteen.test.sh.
 # Zero deps beyond node. Run: bash runner/test/settings-allowlist.test.sh
 # =====================================================================
 . "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
@@ -74,14 +75,23 @@ done
 grep -q 'GAFFER_ALLOW_UNCAPPED' "$WORK/err" && fail "an environment-only key is talked about (it is skipped silently, as before)" \
   || ok "an environment-only key is skipped without a line (as before)"
 
-echo "== 2: a real dashboard setting still applies; the environment still wins =="
-V="$(cfg -- 'printf "%s|%s|%s" "$MAX_TICKS" "$DISPATCH_ALLOW_AGENT_APPROVE" "$GAFFER_BUDGET_USD"')"
-[ "$V" = "9|1|3" ] && ok "MAX_TICKS, the dashboard's agent-approve flag and its budget apply from the file (a person's act through the API)" \
-  || fail "dashboard settings not applied: $V"
-V="$(cfg MAX_TICKS=4 -- 'printf "%s" "$MAX_TICKS"')"
+echo "== 2: a setting still applies; the environment still wins; an old autonomy key does not =="
+{
+  printf '{"GAFFER_CONCURRENCY":"3","DISPATCH_ALLOW_AGENT_APPROVE":"1","GAFFER_BUDGET_USD":"3"}\n'
+} > "$WORK/data/settings.json"
+V="$(cfg -- 'printf "%s|%s|%s" "$GAFFER_CONCURRENCY" "$DISPATCH_ALLOW_AGENT_APPROVE" "$GAFFER_BUDGET_USD"')"
+[ "$V" = "3|0|3" ] && ok "GAFFER_CONCURRENCY and GAFFER_BUDGET_USD apply from the file; the old DISPATCH_ALLOW_AGENT_APPROVE=1 does not (supervised derives 0)" \
+  || fail "settings not applied as expected: $V"
+grep -q 'settings.json key DISPATCH_ALLOW_AGENT_APPROVE is no longer a setting; ignored: GAFFER_MODE decides it' "$WORK/err" \
+  && ok "the old key is named once, with the setting that decides it now" || fail "no migration line: $(cat "$WORK/err")"
+V="$(cfg GAFFER_CONCURRENCY=4 -- 'printf "%s" "$GAFFER_CONCURRENCY"')"
 [ "$V" = 4 ] && ok "a real environment value wins over the file" || fail "env did not win: $V"
-V="$(cfg -- 'env | grep -c "^MAX_TICKS=9$"')"
-[ "$V" = 1 ] && ok "a dashboard setting is exported to children" || fail "MAX_TICKS not exported: $V"
+V="$(cfg -- 'env | grep -c "^GAFFER_CONCURRENCY=3$"')"
+[ "$V" = 1 ] && ok "a setting from the file is exported to children" || fail "GAFFER_CONCURRENCY not exported: $V"
+
+echo "== 3: the allowlist is the fourteen settings =="
+V="$(cfg -- 'printf "%s" "$_GAFFER_SETTINGS_KEYS" | tr -s " " "\n" | grep -c .')"
+[ "$V" = 14 ] && ok "fourteen names" || fail "the allowlist holds $V names"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

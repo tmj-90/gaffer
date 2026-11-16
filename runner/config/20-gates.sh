@@ -9,15 +9,25 @@
 # Clarify gate: when idle (nothing ready), run a headless clarify pass over an
 # un-specified DRAFT. OFF by default — clarifying spends tokens every idle tick.
 # Set to 1 for a factory you want actively refining its own backlog while idle.
-: "${CLARIFY_DRAFTS_WHEN_IDLE:=0}"
-: "${IDLE_DRAFT_WHEN_IDLE:=0}"
 # Maintenance lane ENV override. The lane's own switch is crew.yaml's
 # loops.maintenance.enabled (Settings → Idle loops). Empty (default) = crew.yaml
 # decides; 0 = kill switch (an idle tick never asks crew); 1 = force the lane even
 # when the crew.yaml switch is off. It only turns the LANE on: the lane rotates
 # through the idle loops you enabled (each loop's own flag), so with none enabled an
 # idle tick still does nothing and reports no_work.
-: "${GAFFER_MAINTENANCE:=}"   # env override for the idle maintenance lane: empty = crew.yaml decides, 0 = off, 1 = force (a lane must still be enabled)
+# GAFFER_IDLE (a setting) decides the idle work. auto (the default) changes nothing:
+# the crew.yaml switches (Settings, Idle loops) decide, as before. off stops all of it;
+# maintenance forces the maintenance lane on (one of its loops must still be enabled);
+# backlog turns on the feature-backlog planner; all does both and also clarifies and
+# drafts tickets while idle. The two crew switches are exported for crew when set.
+_gaffer_derive GAFFER_IDLE <<'_GAFFER_TABLE_'
+#                              auto  off  maintenance  backlog  all
+CLARIFY_DRAFTS_WHEN_IDLE       0     0    0            0        1    # 1 = an idle tick runs a clarify pass over an unspecified draft (spends tokens every idle tick)
+IDLE_DRAFT_WHEN_IDLE           0     0    0            0        1    # 1 = an idle tick may draft a new ticket from what it found
+GAFFER_MAINTENANCE             ""    0    1            0        1    # the maintenance lane: empty = crew.yaml decides, 0 = off, 1 = forced on (a lane must still be enabled)
+GAFFER_IDLE_FEATURE_BACKLOG    -     0    0            1        1    # the feature-backlog planner: unset = crew.yaml decides, 1 = on, 0 = off (read by crew)
+GAFFER_IDLE_MODE               -     # what the idle loops may file: observe_only, create_draft_tickets or create_ready_tickets; unset = crew.yaml decides (read by crew)
+_GAFFER_TABLE_
 
 # --- H4: real PR creation (opt-in) -------------------------------------------
 # When GAFFER_CREATE_PR=1 AND the primary write repo has a GitHub remote, the
@@ -31,7 +41,19 @@
 # fast-forward the local default branch from GAFFER_PR_REMOTE; a gh failure falls
 # back to the local merge with the reason logged. Without a pr_url the merge is the
 # local one, exactly as before.
-: "${GAFFER_CREATE_PR:=0}"   # 1/true/yes/on to enable real PR creation; default OFF
+# GAFFER_LANDING (a setting): local, or pr (a pull request per delivery, landed through
+# it, CI required). The CI gate skips a repository with no checks, so pr never waits on
+# checks that do not exist.
+_gaffer_derive GAFFER_LANDING <<'_GAFFER_TABLE_'
+#                           local  pr
+GAFFER_CREATE_PR            0      1     # 1 = open a pull request for each delivery (needs a GitHub remote and gh)
+GAFFER_REQUIRE_CI           0      1     # 1 = a delivery enters review only once its pull request checks are green
+GAFFER_PR_MERGE_METHOD      ~      # how an approved pull request is landed: merge, squash or rebase
+GAFFER_PR_REMOTE            ~      # the git remote delivery branches and pull requests are pushed to
+GAFFER_PR_LOCAL_FALLBACK    ~      # 1 = when gh cannot merge the pull request, land the branch locally; 0 holds the ticket for a person
+GAFFER_CI_TIMEOUT_POLICY    ~      # with CI required: block (the default) rejects a delivery whose checks time out; proceed lets it through with a note (read in lib/ci-gate.sh)
+GAFFER_PROVENANCE_TRAILERS  ~      # 1 = a landed merge carries the ticket provenance trailers; 0 = the plain merge message
+_GAFFER_TABLE_
 GAFFER_GH_BIN="${GAFFER_GH_BIN:-gh}"     # injectable gh binary (for tests)
 : "${GAFFER_PR_MERGE_METHOD:=merge}"   # how an approved PR is landed: merge | squash | rebase
 export GAFFER_CREATE_PR GAFFER_GH_BIN GAFFER_PR_MERGE_METHOD
@@ -47,8 +69,8 @@ export GAFFER_CREATE_PR GAFFER_GH_BIN GAFFER_PR_MERGE_METHOD
 # and SKIPS (proceeds to review) instead of polling a PR that never exists and
 # rejecting every delivery at the timeout.
 # Off by default — fully backward-compatible when unset.
-: "${GAFFER_REQUIRE_CI:=0}"            # 1/true/yes/on to require CI green before review (needs GAFFER_CREATE_PR)
-: "${GAFFER_CI_POLL_ATTEMPTS:=20}"     # max poll cycles before "still pending" timeout
+# GAFFER_CI_POLL_ATTEMPTS (polls before "still pending") is derived from GAFFER_EFFORT
+# (07-limits.sh).
 : "${GAFFER_CI_POLL_INTERVAL_SECS:=30}" # seconds between polls
 export GAFFER_REQUIRE_CI GAFFER_CI_POLL_ATTEMPTS GAFFER_CI_POLL_INTERVAL_SECS
 
@@ -92,7 +114,7 @@ export GAFFER_REQUIRE_CI GAFFER_CI_POLL_ATTEMPTS GAFFER_CI_POLL_INTERVAL_SECS
 # feedback counts, never an agent's or the tester's. 2..20; `wg review-rules` lists them.
 # Read by dispatch (the dashboard server and `gaffer wg`), so it is a dashboard setting and
 # exported like the other dispatch knobs: an unexported default here never reached it.
-: "${GAFFER_REVIEW_RULE_REPEAT:=3}"
+# Derived from GAFFER_GATES (07-limits.sh): 3, or 2 under strict.
 export GAFFER_REVIEW_RULE_REPEAT
 # Post-delivery quality judging (gaffer_eval_judge_delivery): scores a submitted
 # delivery on the crew rubric into the eval ledger (pass rate / cost-per-pass /
@@ -126,5 +148,11 @@ if [ -f "$RUNNER_DIR/lib/git-safe.sh" ]; then
   source "$RUNNER_DIR/lib/git-safe.sh"
   gaffer_git_harden
 fi
+
+# THE OLD settings.json KEYS that no table row met (a constant default line, or a value
+# computed in code): each meets its final value now, the stricter reading wins, and each
+# is said once (01-settings.sh _gaffer_old_key).
+for _gk in $_GAFFER_OLD_KEYS; do _gaffer_old_key "$_gk"; done
+unset _gk
 
 _GAFFER_CONFIG_PART=20-gates

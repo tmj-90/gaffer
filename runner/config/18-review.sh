@@ -118,6 +118,12 @@ gaffer_afk_ship_plan() {
   fi
 }
 
+# GAFFER_TESTING (a setting) is read as it is (on, off, or the auto default) by
+# lib/tester.sh and by dispatch; its table names what it decides beside the lane.
+_gaffer_derive GAFFER_TESTING <<'_GAFFER_TABLE_'
+GAFFER_TESTER_REPLAY  ~   # 1 = the runner replays the tester tests in a clean, contained checkout before a PASS counts; 0 holds every PASS for a person (read in runner/bin/tester-run.mjs)
+_GAFFER_TABLE_
+
 # The lite bounds: how small a diff must be to count as trivial.
 : "${GAFFER_LITE_MAX_DIFF:=}"   # lite mode's trivial-diff bounds as "lines=60 files=4" (the defaults); a bound not named keeps its default.
 _gaffer_deprecated GAFFER_LITE_MAX_LINES 'set GAFFER_LITE_MAX_DIFF="lines=N" instead'

@@ -97,6 +97,13 @@ _gaffer_deprecated GAFFER_CAP_DETECT_TURNS "a call is cap-hit at GAFFER_MAX_TURN
 # alive, set the ticket `paused`, persist the resume context, notify, and wait for a
 # human's one-click Continue (re-enter the SAME worktree) / Stop (tear down + abandon).
 # Set to 0 to fall back to the legacy park-to-refining + teardown behaviour.
+# GAFFER_DAILY_BUDGET_USD (a setting, defaulted in 13-stop.sh) is the day's dollar cap;
+# its table names the cap-related values beside it.
+_gaffer_derive GAFFER_DAILY_BUDGET_USD <<'_GAFFER_TABLE_'
+GAFFER_PAUSE_ON_CAP             ~   # 1 = a delivery that hits a turn or dollar cap is paused with its worktree kept, for a one-click Continue; 0 = park it and tear the worktree down
+GAFFER_USAGE_PAUSE_DEFAULT_MIN  ~   # minutes admission pauses after a usage-limit refusal that printed no reset time (at least 10)
+GAFFER_KILL_ESTIMATE_USD        ~   # dollars booked for a call killed or timed out before it reported its cost (the budget gates count it)
+_GAFFER_TABLE_
 : "${GAFFER_PAUSE_ON_CAP:=1}"        # 1 = pause+keep worktree (default); 0 = legacy park+teardown
 export GAFFER_PAUSE_ON_CAP
 # USAGE-WINDOW PAUSE: minutes to pause admission after a usage-limit / rate-limit
@@ -126,6 +133,39 @@ if [ -z "${GAFFER_DASHBOARD_URL:-}" ] && [ -s "$GAFFER_DATA/dashboard-url" ]; th
   unset _gaffer_persisted_url
 fi
 : "${GAFFER_DASHBOARD_URL:=http://127.0.0.1:${DISPATCH_API_PORT:-8787}}"   # the dashboard link in notifications; set it when the dashboard sits behind a proxy or another host name
+# DISPATCH_API_PORT (a setting; `gaffer dashboard` reads it, 8787 by default) and what
+# follows from it.
+_gaffer_derive DISPATCH_API_PORT <<'_GAFFER_TABLE_'
+GAFFER_DASHBOARD_URL            ~   # the dashboard link in notifications: the --lan address `gaffer dashboard --lan` saved, else http://127.0.0.1:<DISPATCH_API_PORT>; set it when the dashboard sits behind a proxy
+DISPATCH_ALLOWED_HOSTS          ~   # extra host names (comma-separated) the dashboard Host and Origin check accepts, for a reverse proxy or a DNS name in front of it (read by dispatch)
+GAFFER_DASHBOARD_START_TIMEOUT  ~   # seconds a new dashboard server gets to come up (read in runner/gaffer)
+_GAFFER_TABLE_
+
+# GAFFER_NOTIFY (a setting): where to tell a person. Its items fill the three channels
+# the dispatch notifier reads: an https://hooks.slack.com/ URL is the Slack channel,
+# any other http(s) URL the webhook, "desktop" the desktop banner. Exported, so the
+# dispatch CLI and the dashboard the runner starts send through them.
+_GAFFER_NOTIFY_WEBHOOK=""; _GAFFER_NOTIFY_SLACK=""; _GAFFER_NOTIFY_DESKTOP=""
+if [ -n "${GAFFER_NOTIFY:-}" ]; then
+  case "$-" in *f*) _gn_f=1 ;; *) _gn_f=0; set -f ;; esac
+  for _gn in ${GAFFER_NOTIFY//,/ }; do
+    case "$_gn" in
+      desktop) _GAFFER_NOTIFY_DESKTOP=1 ;;
+      https://hooks.slack.com/*) _GAFFER_NOTIFY_SLACK="$_gn" ;;
+      http://* | https://*) _GAFFER_NOTIFY_WEBHOOK="$_gn" ;;
+    esac
+  done
+  [ "$_gn_f" = 1 ] || set +f
+  unset _gn _gn_f
+fi
+_gaffer_derive GAFFER_NOTIFY <<'_GAFFER_TABLE_'
+GAFFER_NOTIFY_WEBHOOK_URL   @?_GAFFER_NOTIFY_WEBHOOK   # POST every gate event as JSON to this URL
+GAFFER_NOTIFY_SLACK_URL     @?_GAFFER_NOTIFY_SLACK     # post every gate event to this Slack incoming webhook
+GAFFER_NOTIFY_DESKTOP       @?_GAFFER_NOTIFY_DESKTOP   # 1 = a native desktop banner for every gate event
+GAFFER_NOTIFY_EVENTS        -   # which event kinds are sent (comma-separated); unset = every gate event (read by dispatch)
+GAFFER_NOTIFY_FULL_PAYLOAD  -   # 1 = send the full event text, including what an agent wrote; unset = redacted (read by dispatch)
+_GAFFER_TABLE_
+unset _GAFFER_NOTIFY_WEBHOOK _GAFFER_NOTIFY_SLACK _GAFFER_NOTIFY_DESKTOP
 export GAFFER_DASHBOARD_URL
 
 # FINDING-6 (b): TERM->KILL grace (seconds) for gaffer_timeout's process-group

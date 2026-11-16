@@ -1065,7 +1065,9 @@ const JS_CAP_MODULES = new Set(
     "child_process worker_threads cluster net http https http2 dgram dns dns/promises tls vm v8 " +
     "inspector repl module wasi trace_events fs/promises sqlite sea test process shelljs execa " +
     "cross-spawn node-fetch axios got undici fs-extra rimraf mkdirp graceful-fs tmp puppeteer " +
-    "playwright ssh2 ws request superagent zx"
+    "playwright ssh2 ws request superagent zx node-pty @actions/exec @actions/io nodemailer " +
+    "open opener sudo-prompt write-file-atomic jsonfile del cpy make-dir move-file tar " +
+    "adm-zip archiver unzipper extract-zip basic-ftp ssh2-sftp-client simple-git"
   ).split(" "),
 );
 
@@ -1186,6 +1188,36 @@ function analyseJs(toks, prog, roots, caps, writes) {
     if (n.t === "id") declared.add(n.v);
     else if ((isP(n, "{") || isP(n, "[")) && match[i + 1] > i + 1) {
       for (let k = i + 2; k < match[i + 1]; k += 1) if (toks[k].t === "id") declared.add(toks[k].v);
+    }
+  }
+  // Class bodies are strict code where `this` is the instance, never the global object.
+  const inClass = new Uint8Array(toks.length);
+  for (let i = 0; i < toks.length; i += 1) {
+    if (toks[i].t !== "id" || toks[i].v !== "class") continue;
+    let k = i + 1;
+    while (k < toks.length && k - i < 8 && !isP(toks[k], "{")) k += 1;
+    if (isP(toks[k], "{") && match[k] > k) inClass.fill(1, k, match[k]);
+  }
+  // `const { env, argv } = process`: each name is checked like `process.name`.
+  for (let i = 2; i < toks.length; i += 1) {
+    if (
+      toks[i].t === "id" &&
+      toks[i].v === "process" &&
+      isP(toks[i - 1], "=") &&
+      isP(toks[i - 2], "}") &&
+      match[i - 2] >= 0
+    ) {
+      jsDestructure(
+        toks,
+        match[i - 2],
+        i - 2,
+        { kind: "process" },
+        bindings,
+        done,
+        caps,
+        (kind, mod, m) => (PROCESS_ALLOWED.has(m) ? null : `uses process.${m}`),
+      );
+      done[i] = 1;
     }
   }
   // Bindings: `X = require("m")[.member]`, `{a, b: c} = require("m")`, `import ... from "m"`.
@@ -1339,7 +1371,7 @@ function analyseJs(toks, prog, roots, caps, writes) {
       if (JS_DANGER_ATTRS.has(name)) cap(caps, `reaches .${name}`);
       continue;
     }
-    if (name === "this" && (isDot(next) || isP(next, "["))) {
+    if (name === "this" && (isDot(next) || isP(next, "[")) && !inClass[i]) {
       cap(caps, "reaches members of this (the global object at the top level)");
       continue;
     }

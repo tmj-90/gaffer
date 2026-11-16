@@ -103,6 +103,12 @@
     "php -r 'var_dump(json_decode(file_get_contents(\"composer.json\"))->name);'",
     "php -r 'file_put_contents(\"out.txt\", \"hi\");'",
     "bun -e 'console.log(Bun.version)'",
+    "node -e 'const {execPath} = process; console.log(execPath)'",
+    "node -e 'class A { constructor(x) { this.x = x } } console.log(new A(1).x)'",
+    "python3 -c 'from collections import namedtuple; P = namedtuple(\"P\", \"x y\"); print(P(1, 2)._asdict())'",
+    "node -e 'const o = {a: 1}; const k = \"a\"; console.log(o[k])'",
+    "perl -MList::Util=sum -le 'print sum(1..10)'",
+    "php -r 'echo implode(\",\", array_map(fn($x) => $x * 2, [1,2,3]));'",
     "deno eval 'console.log(Deno.version.deno)'"
   ],
   "hostile": [

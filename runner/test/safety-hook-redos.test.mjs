@@ -14,7 +14,8 @@
 //   • the prefix still sees through real valued options (`nice -n 5 gh …`).
 // Run: node test/safety-hook-redos.test.mjs
 import { spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import path from "node:path";
 
 import { nodeInlineControlPlane } from "../lib/dangerous-commands.mjs";
 import { dynamicNames } from "../lib/hook/expand.mjs";
@@ -300,7 +301,37 @@ for (const [label, command] of [
     differ === 0,
   );
 }
+// These four are scans the hook does in-process (no git lookup), so the bound is on the
+// hook's own CPU time when the clock misses it: on a shared CI runner the clock also
+// measures the neighbours (one macOS run took 2117 ms of wall time for work that is
+// linear and costs about a quarter of the bound). The clock still has to stay inside the
+// hook's real budget. A super-linear scan burns CPU and fails either way.
+const CPU_PRELOAD = new URL("./lib/cpu-report.mjs", import.meta.url).href;
+const CPU_OUT = path.join(ROOT, "cpu-ms");
+const timedCpu = (command) => {
+  rmSync(CPU_OUT, { force: true });
+  const start = Date.now();
+  const res = spawnSync(process.execPath, ["--import", CPU_PRELOAD, HOOK], {
+    input: JSON.stringify(bash(command)),
+    cwd: opts.cwd,
+    env: { ...process.env, ...opts.env, GAFFER_TEST_CPU_OUT: CPU_OUT },
+    encoding: "utf8",
+    timeout: 10_000,
+  });
+  const ms = Date.now() - start;
+  let cpu = Infinity;
+  try {
+    const n = Number(readFileSync(CPU_OUT, "utf8"));
+    if (Number.isFinite(n)) cpu = n;
+  } catch {
+    // killed before it could report: the clock alone decides
+  }
+  return { status: res.status, ms, cpu };
+};
 {
+  const base = [1, 2, 3].map(() => timedCpu("echo hi"));
+  const baseMs = Math.max(...base.map((b) => b.ms));
+  const baseCpu = Math.max(...base.map((b) => b.cpu));
   const vars = (k) => Array.from({ length: k }, (_, i) => `src/$V${i}`).join(" ");
   for (const [label, command] of [
     ["declare -a...a (6000) and 3 variables", `declare -${"a".repeat(6000)}; cat ${vars(3)}`],
@@ -308,10 +339,10 @@ for (const [label, command] of [
     ["5500 printf -v and 40 variables", `${"printf -v ".repeat(5500)}; cat ${vars(40)}`],
     ["6000 unset -n and 40 variables", `${"unset -n ".repeat(6000)}; cat ${vars(40)}`],
   ]) {
-    const { status, ms } = timed(command);
+    const { status, ms, cpu } = timedCpu(command);
     t.assert(
-      `hook answers ${label} with exit 0 in < 2s over start-up (exit ${status}, ${ms}ms, start-up ${baseline}ms)`,
-      status === 0 && ms - baseline < 2000,
+      `hook answers ${label} with exit 0 in < 2s over start-up, by the clock or by its own CPU time (exit ${status}, ${ms}ms, start-up ${baseMs}ms; CPU ${cpu}ms, start-up ${baseCpu}ms)`,
+      status === 0 && ms < 8000 && (ms - baseMs < 2000 || cpu - baseCpu < 2000),
     );
   }
 }

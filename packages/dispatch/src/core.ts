@@ -205,7 +205,7 @@ import * as stepDown from "./services/autonomyStepDownService.js";
 import { notFound } from "./util/errors.js";
 import {
   STEP_DOWN_WINDOW_DAYS,
-  stepDownTesterFails,
+  STEP_DOWN_TESTER_FAILS,
 } from "./services/autonomyRecommendationService.js";
 import { isScoped as isScopedAccess } from "./services/accessScope.js";
 import { principalScope as principalAccessScope } from "./services/principalService.js";
@@ -807,7 +807,7 @@ export class Dispatch {
       stepDowns: readStepDowns(this.db),
       env: process.env,
       showCrossRepoCounts: !scoped,
-      stepDownTesterFails: stepDownTesterFails(),
+      stepDownTesterFails: STEP_DOWN_TESTER_FAILS,
       stepDownWindowDays: STEP_DOWN_WINDOW_DAYS,
     });
   }
@@ -825,8 +825,8 @@ export class Dispatch {
 
   /**
    * AUTONOMY STEP-DOWN: give autonomy back for one (repo x risk x gate). A person's act
-   * only (the shared operator token or an active human/admin principal with full
-   * capability); re-enable once the evidence since the step-down clears the bar, or
+   * only (the operator, or an active principal with full capability; never an agent or
+   * the runner); re-enable once the evidence since the step-down clears the bar, or
    * override with a reason. See services/autonomyStepDownService.ts.
    */
   liftAutonomyStepDown(
@@ -1433,10 +1433,12 @@ export class Dispatch {
     /** A PERSON'S VERDICT (package H1): see testerPass. */
     authority: { principal?: VerdictPrincipal | null } = {},
   ): TransitionResult {
-    const result = this.reviewGateSvc.testerFail(ticketRef, input, actor, authority);
-    // AUTONOMY STEP-DOWN, trigger (c): count it against the automatic approvals.
-    stepDown.stepDownForTesterVerdict(this.stepDownHost(), result.ticket.id, actor);
-    return result;
+    // AUTONOMY STEP-DOWN, trigger (c): the FAIL and the step-down it causes commit together.
+    return inTransaction(this.db, () => {
+      const result = this.reviewGateSvc.testerFail(ticketRef, input, actor, authority);
+      stepDown.stepDownForTesterVerdict(this.stepDownHost(), result.ticket.id, actor);
+      return result;
+    });
   }
 
   // --- Black-box testing handover (BBT-001) --------------------------------
@@ -1555,16 +1557,19 @@ export class Dispatch {
     input: Record<string, unknown>,
     actor: Actor,
   ): { ticketId: string; eventId: string; verdict: LaneVerdict } {
-    const res = ticketRecords.recordLaneVerdict(this, ref, input, actor);
-    // AUTONOMY STEP-DOWN, trigger (c): an UNPROVABLE hold counts like a FAIL.
-    if (
-      res.verdict.lane === "tester" &&
-      res.verdict.verdict === "held" &&
-      res.verdict.held_code === "tester_unprovable"
-    ) {
-      stepDown.stepDownForTesterVerdict(this.stepDownHost(), res.ticketId, actor);
-    }
-    return res;
+    // AUTONOMY STEP-DOWN, trigger (c): an UNPROVABLE hold counts like a FAIL; the verdict
+    // and the step-down it causes commit together.
+    return inTransaction(this.db, () => {
+      const res = ticketRecords.recordLaneVerdict(this, ref, input, actor);
+      if (
+        res.verdict.lane === "tester" &&
+        res.verdict.verdict === "held" &&
+        res.verdict.held_code === "tester_unprovable"
+      ) {
+        stepDown.stepDownForTesterVerdict(this.stepDownHost(), res.ticketId, actor);
+      }
+      return res;
+    });
   }
 
   recordScout(
@@ -1677,11 +1682,14 @@ export class Dispatch {
     eventId: string;
     stepped_down: stepDown.SteppedDownRow[];
   } {
-    const from = this.resolveTicket(ref).status;
-    const res = reviewLifecycle.reopenForReview(this, ref, input, actor);
-    // AUTONOMY STEP-DOWN, trigger (b): a person reopened a change that landed.
-    const stepped = stepDown.stepDownForReopen(this.stepDownHost(), res.ticketId, from, actor);
-    return { ...res, stepped_down: stepped };
+    // AUTONOMY STEP-DOWN, trigger (b): a person reopened a change that landed; the reopen
+    // and the step-down it causes commit together.
+    return inTransaction(this.db, () => {
+      const from = this.resolveTicket(ref).status;
+      const res = reviewLifecycle.reopenForReview(this, ref, input, actor);
+      const stepped = stepDown.stepDownForReopen(this.stepDownHost(), res.ticketId, from, actor);
+      return { ...res, stepped_down: stepped };
+    });
   }
 
   rejectReview(

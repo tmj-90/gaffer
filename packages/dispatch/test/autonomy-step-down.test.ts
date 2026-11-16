@@ -5,13 +5,13 @@
  *
  *  - triggers: (a) a regression linked to an automatic change; (b) a person reopening an
  *    automatically landed change; (c) N tester FAILs / UNPROVABLE holds on automatically
- *    approved changes (N = GAFFER_AUTONOMY_STEPDOWN_FAILS, default 2);
+ *    approved changes (N = STEP_DOWN_TESTER_FAILS, 2, a constant: no knob);
  *  - effect: an `autonomy.stepped_down` event per row; the gate holds the row for a person
  *    (the policy row stays, the env floor does not reach past it); the suggestion's count
  *    restarts; a merge step-down cascades to every higher risk;
- *  - lift: a person only (shared token or a human/admin principal with full capability),
- *    never an agent, the runner or MCP; re-enable after the bar is cleared again, or an
- *    override with a reason;
+ *  - lift: a person only (the operator, or an admin principal with full capability), never
+ *    an agent, the runner or MCP; re-enable after the bar is cleared again, or an override
+ *    with a reason;
  *  - the in-flight race: a step-down recorded while a landing is prepared stops it.
  */
 import { mkdtempSync, rmSync } from "node:fs";
@@ -25,9 +25,11 @@ import { createApiServer } from "../src/api/server.js";
 import { Dispatch } from "../src/core.js";
 import type { Actor, RiskLevel } from "../src/domain/types.js";
 import { writeEvent } from "../src/events/eventWriter.js";
+import { hostGateKeyring } from "../src/events/gateSeal.js";
 import { makeHandlers } from "../src/mcp/tools.js";
 import { isAutonomyAllowed } from "../src/services/autonomyPolicyService.js";
 import { AUTONOMY_STEPPED_DOWN_EVENT } from "../src/services/autonomyStepDownStore.js";
+import { STEP_DOWN_TESTER_FAILS } from "../src/services/autonomyRecommendationService.js";
 import { systemClock } from "../src/util/clock.js";
 import { CLI_BUILT, oneLineError, runBin } from "./helpers/cliBin.js";
 import {
@@ -44,12 +46,7 @@ import { FAKE_HEAD, giveTicketRealDelivery, nonEmptyDiffRunner } from "./helpers
 const admin: Actor = { type: "admin", id: "ops" };
 const system: Actor = { type: "system" };
 const agent: Actor = { type: "agent", id: "gaffer-factory" };
-const FLAGS = [
-  "AUTO_MERGE",
-  "MERGE_ON_AGENT_REVIEW",
-  "DISPATCH_ALLOW_AGENT_APPROVE",
-  "GAFFER_AUTONOMY_STEPDOWN_FAILS",
-];
+const FLAGS = ["AUTO_MERGE", "MERGE_ON_AGENT_REVIEW", "DISPATCH_ALLOW_AGENT_APPROVE"];
 const saved: Record<string, string | undefined> = {};
 beforeEach(() => {
   for (const f of FLAGS) {
@@ -138,7 +135,9 @@ describe("trigger (a): a regression of an automatic change", () => {
     const first = stepDowns(wg, api)[0]!;
     expect(first.by).toBe("human:tom");
     expect(first.tickets.map((t) => t.number)).toEqual([defect.number, change.number]);
-    expect(first.why).toContain(`#${defect.number} was linked by human:tom as a regression of #${change.number}`);
+    expect(first.why).toContain(
+      `#${defect.number} was linked by human:tom as a regression of #${change.number}`,
+    );
     expect(stepDowns(wg, api)[2]!.cascade_from).toBe("low");
     // The gate: a person decides, even with the policy rows still on.
     expect(allowed(wg, api, "low", "merge")).toBe(false);
@@ -148,8 +147,11 @@ describe("trigger (a): a regression of an automatic change", () => {
     // The env floor does not reach past a step-down either.
     process.env.AUTO_MERGE = "1";
     process.env.MERGE_ON_AGENT_REVIEW = "1";
+    process.env.DISPATCH_ALLOW_AGENT_APPROVE = "1";
     expect(allowed(wg, api, "low", "merge")).toBe(false);
+    expect(allowed(wg, api, "low", "approve")).toBe(false);
     expect(allowed(wg, api, "medium", "approve")).toBe(true); // not stepped down
+    expect(allowed(wg, api, "medium", "merge")).toBe(false); // the cascade
     // The ladder shows it with its reason and what lifts it.
     const cell = wg.autonomyLadder().repos[0]!.rows[0]!.gates.merge;
     expect(cell.rung).toBe("person");
@@ -218,7 +220,12 @@ describe("trigger (b): a person reopens an automatically landed change", () => {
 });
 
 describe("trigger (c): tester FAILs and UNPROVABLE holds on automatic approvals", () => {
-  function autoApprovedInTesting(wg: Dispatch, repo: string, risk: RiskLevel, approver = agentApprover) {
+  function autoApprovedInTesting(
+    wg: Dispatch,
+    repo: string,
+    risk: RiskLevel,
+    approver = agentApprover,
+  ) {
     const t = ticketOn(wg, repo, risk);
     writeEvent(wg.db, {
       entity_type: "ticket",
@@ -233,7 +240,12 @@ describe("trigger (c): tester FAILs and UNPROVABLE holds on automatic approvals"
   const unprovable = (wg: Dispatch, id: string) =>
     wg.recordLaneVerdict(
       id,
-      { lane: "tester", verdict: "held", held_code: "tester_unprovable", held_reason: "no display" },
+      {
+        lane: "tester",
+        verdict: "held",
+        held_code: "tester_unprovable",
+        held_reason: "no display",
+      },
       system,
     );
 
@@ -260,15 +272,29 @@ describe("trigger (c): tester FAILs and UNPROVABLE holds on automatic approvals"
     wg.db.close();
   });
 
-  it("the knob: GAFFER_AUTONOMY_STEPDOWN_FAILS=3 needs a third", () => {
-    process.env.GAFFER_AUTONOMY_STEPDOWN_FAILS = "3";
+  it("N is a constant (2), with no knob; a strike older than the window does not count", () => {
+    expect(STEP_DOWN_TESTER_FAILS).toBe(2);
+    process.env.GAFFER_AUTONOMY_STEPDOWN_FAILS = "9"; // the first draft's knob: ignored
     const wg = Dispatch.open(":memory:");
-    const api = repoNamed(wg, "api");
-    for (let i = 0; i < 2; i += 1) unprovable(wg, autoApprovedInTesting(wg, "api", "high").id);
-    expect(rows(wg, api)).toEqual([]);
-    unprovable(wg, autoApprovedInTesting(wg, "api", "high").id);
-    expect(rows(wg, api)).toEqual(["high/approve/tester_failures"]);
-    wg.db.close();
+    try {
+      const api = repoNamed(wg, "api");
+      const old = autoApprovedInTesting(wg, "api", "high");
+      unprovable(wg, old.id);
+      // Age that strike past the 30-day window.
+      wg.db
+        .prepare(
+          `UPDATE work_events SET created_at = '2020-01-01T00:00:00.000Z'
+            WHERE entity_id = ? AND event_type = 'ticket.lane_verdict'`,
+        )
+        .run(old.id);
+      unprovable(wg, autoApprovedInTesting(wg, "api", "high").id);
+      expect(rows(wg, api)).toEqual([]);
+      unprovable(wg, autoApprovedInTesting(wg, "api", "high").id);
+      expect(rows(wg, api)).toEqual(["high/approve/tester_failures"]);
+    } finally {
+      delete process.env.GAFFER_AUTONOMY_STEPDOWN_FAILS;
+      wg.db.close();
+    }
   });
 });
 
@@ -279,16 +305,26 @@ describe("the count restarts at the step-down", () => {
     decisions(wg, "api", "low", 10);
     const recs = () =>
       wg.autonomyRecommendationsList().filter((r) => r.repoId === api && r.riskLevel === "low");
-    expect(recs().map((r) => r.gate).sort()).toEqual(["approve", "merge"]);
+    expect(
+      recs()
+        .map((r) => r.gate)
+        .sort(),
+    ).toEqual(["approve", "merge"]);
     const change = landedChange(wg, "api", "low");
     wg.fileRegression(ticketOn(wg, "api", "low").id, change.id, human);
     expect(recs()).toEqual([]);
     const ladder = () => wg.autonomyLadder().repos[0]!.rows[0]!.gates;
     expect(ladder().approve.evidence.n).toBe(0);
     expect(ladder().approve.evidence.since).toBeTruthy();
-    expect(ladder().approve.distance.text).toBe("Stepped down: 0 of 10 decisions: 10 more to re-enable.");
+    expect(ladder().approve.distance.text).toBe(
+      "Stepped down: 0 of 10 decisions: 10 more to re-enable.",
+    );
     decisions(wg, "api", "low", 10);
-    expect(recs().map((r) => r.gate).sort()).toEqual(["approve", "merge"]);
+    expect(
+      recs()
+        .map((r) => r.gate)
+        .sort(),
+    ).toEqual(["approve", "merge"]);
     expect(ladder().approve.step_down?.lift.reenable_ready).toBe(true);
     wg.db.close();
   });
@@ -305,39 +341,67 @@ describe("lifting is a person's act", () => {
   });
   afterEach(() => wg.db.close());
 
-  const lift = (actor: Actor, authority: Parameters<Dispatch["liftAutonomyStepDown"]>[2], how: "reenable" | "override" = "override", gate: "approve" | "merge" = "merge", risk: RiskLevel = "low") =>
+  const lift = (
+    actor: Actor,
+    authority: Parameters<Dispatch["liftAutonomyStepDown"]>[2],
+    how: "reenable" | "override" = "override",
+    gate: "approve" | "merge" = "merge",
+    risk: RiskLevel = "low",
+  ) =>
     wg.liftAutonomyStepDown(
-      { repo: "api", riskLevel: risk, gate, how, reason: how === "override" ? "the regression was in a dependency" : null },
+      {
+        repo: "api",
+        riskLevel: risk,
+        gate,
+        how,
+        reason: how === "override" ? "the regression was in a dependency" : null,
+      },
       actor,
       authority,
     );
 
-  it("an agent, the runner, the tokenless CLI and a read-only principal are refused", () => {
-    expect(refusal(() => lift(agent, { sharedOperator: true }))).toMatchObject({
+  it("an agent, the runner, a read-only, revoked or borrowed principal are refused", () => {
+    expect(refusal(() => lift(agent, {}))).toMatchObject({
       code: "ACTOR_NOT_PERMITTED",
       reason: "person_required",
     });
-    expect(refusal(() => lift(system, { sharedOperator: true })).code).toBe("ACTOR_NOT_PERMITTED");
-    expect(refusal(() => lift(human, {})).code).toBe("ACTOR_NOT_PERMITTED");
-    const { principal } = wg.createPrincipal(
+    expect(refusal(() => lift(system, {})).code).toBe("ACTOR_NOT_PERMITTED");
+    const { principal: reader } = wg.createPrincipal(
       { name: "reader", capability: "read", actorType: "human", actorId: "rae" },
       human,
     );
     expect(
-      refusal(() => lift({ type: "human", id: "rae" }, { principal })).message,
+      refusal(() => lift({ type: "human", id: "rae" }, { principal: reader })).message,
     ).toMatch(/read-only/);
-    const { principal: bot } = wg.createPrincipal(
-      { name: "bot", actorType: "agent", actorId: "bot" },
+    const { principal: gone } = wg.createPrincipal(
+      { name: "gone", actorType: "admin", actorId: "gil" },
       human,
     );
-    expect(refusal(() => lift({ type: "agent", id: "bot" }, { principal: bot })).code).toBe(
-      "ACTOR_NOT_PERMITTED",
+    wg.revokePrincipal("gone", human);
+    expect(refusal(() => lift({ type: "admin", id: "gil" }, { principal: gone })).message).toMatch(
+      /revoked/,
+    );
+    // A principal speaks only for its own actor: an agent cannot borrow a person's row.
+    const { principal: ops } = wg.createPrincipal(
+      { name: "ops-admin", actorType: "admin", actorId: "ops" },
+      human,
+    );
+    expect(refusal(() => lift(agent, { principal: ops })).code).toBe("ACTOR_NOT_PERMITTED");
+    expect(refusal(() => lift({ type: "admin", id: "eve" }, { principal: ops })).message).toMatch(
+      /not principal 'ops-admin'/,
     );
     expect(allowed(wg, api, "low", "merge")).toBe(false);
+    expect(
+      wg.db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM work_events WHERE event_type = 'autonomy.step_down_lifted'`,
+        )
+        .get(),
+    ).toEqual({ n: 0 });
   });
 
   it("re-enable waits for the bar; override needs a reason; both are events and the gate opens again", () => {
-    expect(refusal(() => lift(human, { sharedOperator: true }, "reenable"))).toMatchObject({
+    expect(refusal(() => lift(human, {}, "reenable"))).toMatchObject({
       code: "STATE_CONFLICT",
       reason: "evidence_short",
     });
@@ -346,14 +410,14 @@ describe("lifting is a person's act", () => {
         wg.liftAutonomyStepDown(
           { repo: "api", riskLevel: "low", gate: "merge", how: "override", reason: " " },
           human,
-          { sharedOperator: true },
+          {},
         ),
       ).code,
     ).toBe("VALIDATION_ERROR");
     // Medium merge is stepped down by the cascade: it cannot go first.
-    expect(
-      refusal(() => lift(human, { sharedOperator: true }, "override", "merge", "medium")),
-    ).toMatchObject({ reason: "lower_risk_stepped_down" });
+    expect(refusal(() => lift(human, {}, "override", "merge", "medium"))).toMatchObject({
+      reason: "lower_risk_stepped_down",
+    });
     const p = principalFor(wg, human);
     const done = lift(human, { principal: p.principal }, "override");
     expect(done.how).toBe("override");
@@ -368,10 +432,10 @@ describe("lifting is a person's act", () => {
       risk_level: "low",
       reason: "the regression was in a dependency",
     });
-    expect(refusal(() => lift(human, { sharedOperator: true })).reason).toBe("not_stepped_down");
+    expect(refusal(() => lift(human, {})).reason).toBe("not_stepped_down");
     // Re-enable after the evidence since the step-down clears the bar.
     decisions(wg, "api", "low", 10);
-    expect(lift(human, { sharedOperator: true }, "reenable", "approve").how).toBe("reenabled");
+    expect(lift(human, {}, "reenable", "approve").how).toBe("reenabled");
   });
 
   it("MCP has no tool that lifts a step-down", () => {
@@ -390,14 +454,18 @@ describe("REST and CLI lift", () => {
     else process.env.DISPATCH_API_TOKEN = savedToken;
   });
 
-  it("POST /api/autonomy/lift: an agent principal is refused, the shared token lifts", async () => {
+  it("POST /api/autonomy/lift: a read-only or non-admin principal is refused, the shared token lifts", async () => {
     process.env.DISPATCH_AUDIT_OFF = "1";
     process.env.DISPATCH_API_TOKEN = FULL;
     const wg = Dispatch.open(":memory:");
     const api = repoNamed(wg, "api");
     wg.fileRegression(ticketOn(wg, "api", "low").id, landedChange(wg, "api", "low").id, human);
-    const { token: botToken } = wg.createPrincipal(
-      { name: "factory-bot", actorType: "agent", actorId: "gaffer-factory" },
+    const { token: readTok } = wg.createPrincipal(
+      { name: "reader", capability: "read", actorType: "human", actorId: "rae" },
+      human,
+    );
+    const { token: humanTok } = wg.createPrincipal(
+      { name: "dev", actorType: "human", actorId: "dee" },
       human,
     );
     const server = createApiServer(wg);
@@ -412,10 +480,17 @@ describe("REST and CLI lift", () => {
       return { status: res.status, body: (await res.json()) as Record<string, any> };
     };
     try {
-      const body = { repo_id: api, risk_level: "low", gate: "approve", how: "override", reason: "known flake" };
-      const bot = await post(botToken, body);
-      expect(bot.status).toBe(403);
-      expect(bot.body.error.code).toBe("ACTOR_NOT_PERMITTED");
+      const body = {
+        repo_id: api,
+        risk_level: "low",
+        gate: "approve",
+        how: "override",
+        reason: "known flake",
+      };
+      expect((await post(readTok, body)).status).toBe(403);
+      const dev = await post(humanTok, body);
+      expect(dev.status).toBe(403);
+      expect(wg.autonomyPolicy.stepDownInForce(api, "low", "approve")).toBe(true);
       const ok = await post(FULL, body);
       expect(ok.status).toBe(200);
       expect(ok.body.lifted.how).toBe("override");
@@ -427,31 +502,55 @@ describe("REST and CLI lift", () => {
     }
   });
 
-  it.skipIf(!CLI_BUILT)("wg autonomy lift: the tokenless CLI is refused, a person's principal token lifts", () => {
-    const dir = mkdtempSync(join(tmpdir(), "step-down-cli-"));
-    try {
-      const db = join(dir, "d.db");
-      const wg = Dispatch.open(db);
-      const api = repoNamed(wg, "api");
-      wg.fileRegression(ticketOn(wg, "api", "low").id, landedChange(wg, "api", "low").id, human);
-      const { token } = wg.createPrincipal({ name: "tom", actorType: "human", actorId: "tom" }, human);
-      wg.db.close();
-      const args = ["autonomy", "lift", "api", "--risk", "low", "--gate", "merge", "--override", "--reason", "flaky dependency"];
-      const bare = runBin(db, args, { env: { GAFFER_PRINCIPAL_TOKEN: undefined } });
-      expect(bare.status).not.toBe(0);
-      expect(oneLineError(bare.stderr).code).toBe("ACTOR_NOT_PERMITTED");
-      const asAgent = runBin(db, [...args, "--as", "agent"], { env: { GAFFER_PRINCIPAL_TOKEN: undefined } });
-      expect(asAgent.status).not.toBe(0);
-      const ok = runBin(db, args, { env: { GAFFER_PRINCIPAL_TOKEN: token } });
-      expect(ok.status).toBe(0);
-      expect(JSON.parse(ok.stdout)).toMatchObject({ ok: true, how: "override" });
-      const wg2 = Dispatch.open(db);
-      expect(wg2.autonomyPolicy.stepDownInForce(api, "low", "merge")).toBe(false);
-      wg2.db.close();
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
+  it.skipIf(!CLI_BUILT)(
+    "wg autonomy lift: no --as, a non-admin principal is refused, the operator lifts",
+    () => {
+      const dir = mkdtempSync(join(tmpdir(), "step-down-cli-"));
+      try {
+        const db = join(dir, "d.db");
+        // The host keyring: a principal row the CLI honours is signed with the factory key.
+        const wg = Dispatch.open(db, undefined, undefined, { gateKeyring: hostGateKeyring(db) });
+        const api = repoNamed(wg, "api");
+        wg.fileRegression(ticketOn(wg, "api", "low").id, landedChange(wg, "api", "low").id, human);
+        const { token } = wg.createPrincipal(
+          { name: "dee", actorType: "human", actorId: "dee" },
+          human,
+        );
+        wg.db.close();
+        const args = [
+          "autonomy",
+          "lift",
+          "api",
+          "--risk",
+          "low",
+          "--gate",
+          "merge",
+          "--override",
+          "--reason",
+          "flaky dependency",
+        ];
+        // The command takes no --as: its actor is the operator or the principal, never an
+        // agent or the runner.
+        const asAgent = runBin(db, [...args, "--as", "agent"], {
+          env: { GAFFER_PRINCIPAL_TOKEN: undefined },
+        });
+        expect(asAgent.status).not.toBe(0);
+        expect(asAgent.stderr).toMatch(/unknown option '--as'/);
+        // A human principal without admin: a repo-level change it may not make.
+        const dev = runBin(db, args, { env: { GAFFER_PRINCIPAL_TOKEN: token } });
+        expect(dev.status).not.toBe(0);
+        expect(oneLineError(dev.stderr).code).toBe("SCOPE_DENIED");
+        const ok = runBin(db, args, { env: { GAFFER_PRINCIPAL_TOKEN: undefined } });
+        expect(ok.status).toBe(0);
+        expect(JSON.parse(ok.stdout)).toMatchObject({ ok: true, how: "override" });
+        const wg2 = Dispatch.open(db);
+        expect(wg2.autonomyPolicy.stepDownInForce(api, "low", "merge")).toBe(false);
+        wg2.db.close();
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 describe("the gate on the live path", () => {
@@ -468,7 +567,13 @@ describe("the gate on the live path", () => {
     const a = wg.registerAgent({ display_name: "a", max_risk: "critical" }, human);
     const claim = wg.claimNextTicket({ agentId: a.id, ttlSeconds: 600 }, agentActor);
     wg.recordEvidence(
-      { claimToken: claim!.claimToken, ticket_id: t.id, ac_id: ac.id, evidence_type: "test_output", summary: "passed" },
+      {
+        claimToken: claim!.claimToken,
+        ticket_id: t.id,
+        ac_id: ac.id,
+        evidence_type: "test_output",
+        summary: "passed",
+      },
       agentActor,
     );
     wg.submitForReview({ claimToken: claim!.claimToken, ticket_id: t.id, reason: "d" }, agentActor);
@@ -492,7 +597,14 @@ describe("the gate on the live path", () => {
       entity_id: repoId,
       actor: system,
       event_type: AUTONOMY_STEPPED_DOWN_EVENT,
-      payload: { risk_level: "low", gate: "approve", trigger: "tester_failures", why: "two strikes", tickets: [], cascade_from: null },
+      payload: {
+        risk_level: "low",
+        gate: "approve",
+        trigger: "tester_failures",
+        why: "two strikes",
+        tickets: [],
+        cascade_from: null,
+      },
     });
     expect(refusal(() => wg.approveReview(id, agent))).toMatchObject({
       code: "ACTOR_NOT_PERMITTED",
@@ -521,10 +633,19 @@ describe("the gate on the live path", () => {
       entity_id: repoId,
       actor: human,
       event_type: AUTONOMY_STEPPED_DOWN_EVENT,
-      payload: { risk_level: "low", gate: "merge", trigger: "regression", why: "a regression", tickets: [], cascade_from: null },
+      payload: {
+        risk_level: "low",
+        gate: "merge",
+        trigger: "regression",
+        why: "a regression",
+        tickets: [],
+        cascade_from: null,
+      },
     });
     expect(
-      refusal(() => wg.beginLanding(id, { repo: "repoA", commit: FAKE_HEAD, approval, via: "local" }, system)),
+      refusal(() =>
+        wg.beginLanding(id, { repo: "repoA", commit: FAKE_HEAD, approval, via: "local" }, system),
+      ),
     ).toMatchObject({ code: "STATE_CONFLICT", reason: "autonomy_stepped_down" });
     expect(wg.view(id).events.some((e) => e.event_type === "ticket.landing_started")).toBe(false);
     wg.db.close();
@@ -538,12 +659,20 @@ describe("the gate on the live path", () => {
       entity_id: repoId,
       actor: human,
       event_type: AUTONOMY_STEPPED_DOWN_EVENT,
-      payload: { risk_level: "low", gate: "merge", trigger: "regression", why: "a regression", tickets: [], cascade_from: null },
+      payload: {
+        risk_level: "low",
+        gate: "merge",
+        trigger: "regression",
+        why: "a regression",
+        tickets: [],
+        cascade_from: null,
+      },
     });
     expect(wg.approveReview(id, human).ticket.status).toBe("ready_for_merge");
     const approval = wg.landingApproval(id)!;
     expect(
-      wg.beginLanding(id, { repo: "repoA", commit: FAKE_HEAD, approval, via: "local" }, system).commit,
+      wg.beginLanding(id, { repo: "repoA", commit: FAKE_HEAD, approval, via: "local" }, system)
+        .commit,
     ).toBe(FAKE_HEAD);
     wg.db.close();
   });

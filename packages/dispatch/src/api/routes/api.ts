@@ -314,9 +314,10 @@ export async function routeApi(
     return;
   }
 
-  // AUTONOMY STEP-DOWN: POST /api/autonomy/lift — a person gives autonomy back for one
-  // (repo x risk x gate). The service refuses anything but the shared operator token or an
-  // active human/admin principal with full capability (an agent principal, the runner).
+  // AUTONOMY STEP-DOWN: POST /api/autonomy/lift, a person gives autonomy back for one
+  // (repo x risk x gate). scopeGate.ts asks a repo-level write (admin) of a principal; the
+  // service refuses any actor that is not a person and any principal that is revoked or
+  // read-only. No MCP tool reaches it.
   if (segments.length === 3 && segments[1] === "autonomy" && segments[2] === "lift") {
     if (method !== "POST") return methodNotAllowed(res);
     const body = autonomyLiftBody.parse(await readJsonBody(req));
@@ -329,7 +330,7 @@ export async function routeApi(
         reason: body.reason ?? null,
       },
       apiActor(),
-      { sharedOperator: isSharedOperator(), principal: apiPrincipal() },
+      { principal: isSharedOperator() ? null : apiPrincipal() },
     );
     sendJson(res, 200, { lifted: { event_id: lifted.eventId, how: lifted.how } });
     return;

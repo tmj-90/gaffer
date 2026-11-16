@@ -1,5 +1,6 @@
 import type { ReviewDecisionRow } from "../repositories/eventRepository.js";
 import { RISK_LEVELS, type RiskLevel } from "../domain/types.js";
+import { AUTONOMY_CEILING_RISK, priorAllowedAt } from "./autonomyPolicyService.js";
 
 /**
  * GRADUATED-AUTONOMY (Spec 2, Phase 2) — the read-only, advisory recommendation
@@ -40,25 +41,13 @@ export const CROSS_REPO_CONFIDENCE_FACTOR = 0.8;
 /**
  * AUTONOMY STEP-DOWN, trigger (c): this many tester FAILs or UNPROVABLE holds on
  * automatically approved changes at one repo x risk, inside the window, take the approve
- * gate back. The one knob: `GAFFER_AUTONOMY_STEPDOWN_FAILS` (a Settings key, autonomy
- * group), read by {@link stepDownTesterFails}.
+ * gate back. A named constant on purpose, not an operator setting: the bar for taking
+ * autonomy back sits beside the bar for suggesting it (MIN_SAMPLES).
  */
-export const STEP_DOWN_TESTER_FAILS_DEFAULT = 2;
-export const STEP_DOWN_TESTER_FAILS_ENV = "GAFFER_AUTONOMY_STEPDOWN_FAILS";
+export const STEP_DOWN_TESTER_FAILS = 2;
 
 /** The window trigger (c) counts in (it also never reaches back past the last step-down or lift). */
 export const STEP_DOWN_WINDOW_DAYS = 30;
-
-/**
- * The tester-failure count that steps autonomy down. A whole number 1..50 from the
- * environment; anything else (unset, junk, 0) is the default 2.
- */
-export function stepDownTesterFails(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = (env[STEP_DOWN_TESTER_FAILS_ENV] ?? "").trim();
-  if (!/^[0-9]{1,2}$/.test(raw)) return STEP_DOWN_TESTER_FAILS_DEFAULT;
-  const n = Number(raw);
-  return n >= 1 && n <= 50 ? n : STEP_DOWN_TESTER_FAILS_DEFAULT;
-}
 
 /** The two gates a recommendation can concern. Memory is deferred (Phase 3+). */
 export type AutonomyGate = "approve" | "merge";
@@ -221,6 +210,8 @@ export function computeRecommendationsAllTime(
   rows.forEach((row, index) => {
     if (!GROUND_TRUTH_ACTORS.has(row.actorType)) return; // only human/admin evidence.
     if (!isRiskLevel(row.riskLevel)) return;
+    // THE CEILING: a person always decides critical changes, so nothing is suggested there.
+    if (row.riskLevel === AUTONOMY_CEILING_RISK) return;
     const outcome = classifyDecision(row);
     if (outcome === "other") return;
     const key = `${row.repoId}\u0000${row.riskLevel}`;
@@ -332,6 +323,8 @@ export function computeRecommendationsAllTime(
   // requires the varying approve-vs-reject agreement rate (the guard below), so a
   // degenerate approved-unchanged=100% cannot alone grant auto-merge.
   for (const b of perRisk.values()) {
+    // HIGH needs the full evidence bar: the prior never counts there (nor at critical).
+    if (!priorAllowedAt(b.riskLevel)) continue;
     const total = b.approvals + b.rejections;
     if (total < MIN_SAMPLES) continue;
     const agreementRate = b.approvals / total;

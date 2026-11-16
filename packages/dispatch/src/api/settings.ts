@@ -433,20 +433,6 @@ export const SETTING_DEFS: readonly SettingDef[] = [
       "the webhook/Slack endpoint is inside your trust boundary.",
   },
 
-  {
-    key: "GAFFER_AUTONOMY_STEPDOWN_FAILS",
-    type: "int",
-    min: 1,
-    group: "autonomy",
-    label: "Step down after tester failures",
-    help:
-      "How many tester FAILs or 'cannot be proven here' holds on automatically approved " +
-      "changes, at one repo and risk within 30 days, take agent approval back for that repo " +
-      "and risk (a person decides until a person gives it back on Settings > Autonomy). " +
-      "Default 2. A regression linked to an automatic change, or a person reopening one " +
-      "that landed, steps down at once whatever this says.",
-  },
-
   // --- Autonomy (cont.): who reviews a delivery ---
   {
     key: "REVIEW_MODE",

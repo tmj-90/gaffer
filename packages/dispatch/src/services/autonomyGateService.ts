@@ -8,7 +8,13 @@ import {
   type AutonomyPolicyRow,
   type AutonomyMode,
 } from "../repositories/autonomyPolicyRepository.js";
-import { autonomyHold, holdMessage, isAutonomyAllowed } from "./autonomyPolicyService.js";
+import {
+  AUTONOMY_CEILING_RISK,
+  CEILING_MESSAGE,
+  autonomyHold,
+  holdMessage,
+  isAutonomyAllowed,
+} from "./autonomyPolicyService.js";
 import { DispatchError, notFound } from "../util/errors.js";
 import { newId } from "../util/id.js";
 import type { Dispatch } from "../core.js";
@@ -77,6 +83,20 @@ export function setAutonomyPolicy(
 ): AutonomyPolicyRow {
   const repo = host.repos.findById(input.repoId);
   if (!repo) throw notFound("repository", input.repoId);
+  // THE CEILING (product rule): a person always decides critical changes, at either gate.
+  // Enabling any mode there is refused; turning a row off stays allowed (fail safe), and a
+  // row that already exists is ignored at decision time (autonomyHold).
+  if (
+    input.mode !== "off" &&
+    input.riskLevel === AUTONOMY_CEILING_RISK &&
+    (input.gate === "approve" || input.gate === "merge")
+  ) {
+    throw new DispatchError("VALIDATION_ERROR", CEILING_MESSAGE, {
+      reason: "autonomy_ceiling",
+      gate: input.gate,
+      risk_level: input.riskLevel,
+    });
+  }
   // Trust boundary: enabling any non-off mode demands an explicit confirmation that
   // the operator saw the evidence. Disabling (off) is always allowed (fail-safe).
   if (input.mode !== "off" && input.confirm !== true) {

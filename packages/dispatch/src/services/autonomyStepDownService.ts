@@ -8,10 +8,10 @@
  *       that was approved or landed automatically;
  *   (b) `reopened`: a person reopens for review a change that landed automatically (the
  *       one "this was not accepted" act there is);
- *   (c) `tester_failures`: N tester FAILs or UNPROVABLE holds (N = the
- *       GAFFER_AUTONOMY_STEPDOWN_FAILS setting, default 2) on automatically approved changes
- *       at one repo x risk inside the window (30 days, and never before the row's last
- *       step-down or lift).
+ *   (c) `tester_failures`: N tester FAILs or UNPROVABLE holds (N = STEP_DOWN_TESTER_FAILS,
+ *       2, a named constant beside MIN_SAMPLES, not a setting) on automatically approved
+ *       changes at one repo x risk inside the window (30 days, and never before the row's
+ *       last step-down or lift).
  *
  * Effect: one `autonomy.stepped_down` event per (repo x risk x gate) on the chain (see
  * autonomyStepDownStore.ts), naming the trigger, the tickets and who or what caused it.
@@ -25,11 +25,15 @@
  * move into ready_for_merge) was not a person's. Counting a person's merge of an agent's
  * approval as automatic errs toward taking autonomy back (fail closed).
  *
- * Lifting (liftStepDown) is a person's act only: the shared operator token, or an active
- * human or admin principal with full capability. Never an agent, the runner (system), MCP
- * (whose callers are agents) or the tokenless CLI (an agent shell could claim `--as human`
- * there). Two ways: re-enable once the evidence since the step-down clears the bar again,
- * or an explicit override with a reason. Both are events.
+ * Lifting (liftStepDown) is a person's act only, through the same gates as the other
+ * person-only verbs (approve, a waiver, `principal resign`): the actor must be a person
+ * (human or admin), never an agent or the runner (system); a principal must be active and
+ * hold full capability (REST and the CLI also require admin for this repo-level change,
+ * api/scopeGate.ts and cli/principalGate.ts). The shared operator token and the tokenless
+ * CLI are the operator; an agent's shell never reaches `wg autonomy lift` (the safety
+ * hook's control-plane rules refuse it) and MCP has no such tool. Two ways: re-enable once
+ * the evidence since the step-down clears the bar again, or an explicit override with a
+ * reason. Both are events.
  */
 import { inTransaction, type Db } from "../db/connection.js";
 import { RISK_LEVELS, type Actor, type RiskLevel, type Ticket } from "../domain/types.js";
@@ -39,7 +43,7 @@ import type { ReviewDecisionRow } from "../repositories/eventRepository.js";
 import { DispatchError, notFound } from "../util/errors.js";
 import { distanceText, rowEvidence } from "./autonomyLadderService.js";
 import type { AutonomyGate } from "./autonomyRecommendationService.js";
-import { STEP_DOWN_WINDOW_DAYS, stepDownTesterFails } from "./autonomyRecommendationService.js";
+import { STEP_DOWN_TESTER_FAILS, STEP_DOWN_WINDOW_DAYS } from "./autonomyRecommendationService.js";
 import {
   AUTONOMY_STEP_DOWN_LIFTED_EVENT,
   AUTONOMY_STEPPED_DOWN_EVENT,
@@ -83,8 +87,7 @@ export function automaticGates(
         ORDER BY rowid DESC LIMIT 1`,
     )
     .get({ id: ticketId, ...(beforeRowid === undefined ? {} : { before: beforeRowid }) }) as
-    | { actor_type: string }
-    | undefined;
+    { actor_type: string } | undefined;
   const toMerge = db
     .prepare(
       `SELECT actor_type FROM work_events
@@ -93,12 +96,10 @@ export function automaticGates(
         ORDER BY rowid DESC LIMIT 1`,
     )
     .get({ id: ticketId, ...(beforeRowid === undefined ? {} : { before: beforeRowid }) }) as
-    | { actor_type: string }
-    | undefined;
+    { actor_type: string } | undefined;
   const status = (
     db.prepare(`SELECT status FROM tickets WHERE id = ?`).get(ticketId) as
-      | { status: string }
-      | undefined
+      { status: string } | undefined
   )?.status;
   const landed =
     status === "done" ||
@@ -277,11 +278,10 @@ export function stepDownForTesterVerdict(
   host: StepDownHost,
   ref: string,
   actor: Actor,
-  env: NodeJS.ProcessEnv = process.env,
 ): SteppedDownRow[] {
   const ticket = host.resolveTicket(ref);
   if (!automaticGates(host.db, ticket.id).approve) return [];
-  const limit = stepDownTesterFails(env);
+  const limit = STEP_DOWN_TESTER_FAILS;
   const windowStart = new Date(Date.now() - STEP_DOWN_WINDOW_DAYS * DAY_MS).toISOString();
   const states = readStepDowns(host.db);
   const out: SteppedDownRow[] = [];
@@ -336,17 +336,15 @@ export function stepDownForTesterVerdict(
   return out;
 }
 
-/** Who is lifting: how the call authenticated. */
+/** Who is lifting: the principal the call authenticated as, if any. */
 export interface LiftAuthority {
-  /** The shared operator token (REST). */
-  sharedOperator?: boolean;
-  /** The principal the call authenticated as (REST principal token, CLI GAFFER_PRINCIPAL_TOKEN). */
+  /** The principal (REST principal token, CLI GAFFER_PRINCIPAL_TOKEN); absent for the operator. */
   principal?: PrincipalView | null;
 }
 
 /** One sentence for every refusal of a lift by the wrong caller. */
 const LIFT_PERSON_ONLY =
-  "Giving autonomy back is a person's act: the shared operator token, or an active human or admin principal with full capability (never an agent, the runner or MCP; on the CLI set GAFFER_PRINCIPAL_TOKEN).";
+  "Giving autonomy back is a person's act: the operator (the shared token, or the CLI without a principal token), or an active principal with full capability; never an agent, the runner or MCP.";
 
 function assertLifter(db: Db, actor: Actor, authority: LiftAuthority): void {
   const refuse = (why: string): never => {
@@ -357,30 +355,28 @@ function assertLifter(db: Db, actor: Actor, authority: LiftAuthority): void {
   };
   if (!isPerson(actor.type)) refuse(`This call is ${actor.type}.`);
   const p = authority.principal ?? null;
-  if (p) {
-    const row = db
-      .prepare(
-        `SELECT name, capability, actor_type, actor_id, revoked_at FROM api_principals WHERE id = ?`,
-      )
-      .get(p.id) as
-      | {
-          name: string;
-          capability: string;
-          actor_type: string;
-          actor_id: string;
-          revoked_at: string | null;
-        }
-      | undefined;
-    if (!row) return refuse("The principal is unknown.");
-    if (row.revoked_at) return refuse(`Principal '${row.name}' is revoked.`);
-    if (!isPerson(row.actor_type)) refuse(`Principal '${row.name}' is not a person.`);
-    if (row.capability !== "full") refuse(`Principal '${row.name}' is read-only.`);
-    if (row.actor_type !== actor.type || row.actor_id !== (actor.id ?? "")) {
-      refuse(`The actor is not principal '${row.name}'.`);
-    }
-    return;
+  if (!p) return;
+  // Re-read the row: the caller's view may be older than a revocation.
+  const row = db
+    .prepare(
+      `SELECT name, capability, actor_type, actor_id, revoked_at FROM api_principals WHERE id = ?`,
+    )
+    .get(p.id) as
+    | {
+        name: string;
+        capability: string;
+        actor_type: string;
+        actor_id: string;
+        revoked_at: string | null;
+      }
+    | undefined;
+  if (!row) return refuse("The principal is unknown.");
+  if (row.revoked_at) refuse(`Principal '${row.name}' is revoked.`);
+  if (!isPerson(row.actor_type)) refuse(`Principal '${row.name}' is not a person.`);
+  if (row.capability !== "full") refuse(`Principal '${row.name}' is read-only.`);
+  if (row.actor_type !== actor.type || row.actor_id !== (actor.id ?? "")) {
+    refuse(`The actor is not principal '${row.name}'.`);
   }
-  if (authority.sharedOperator !== true) refuse("This call carries no principal.");
 }
 
 /**

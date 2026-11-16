@@ -21,8 +21,8 @@ import { open } from "../runtime.js";
  *    when `auto` rows exist but REVIEW_MODE=human: in supervised mode no reviewer
  *    agent runs, so no policy is ever consulted and the grants are inert.
  *
- * No mutation; enable/disable stays on the REST surface behind its explicit-confirm
- * boundary.
+ * Enable/disable stays on the REST surface behind its explicit-confirm boundary. The one
+ * write here is `autonomy lift` (a person gives autonomy back after a step-down).
  */
 export function registerAutonomy(program: Command): void {
   const autonomy = program
@@ -52,9 +52,9 @@ export function registerAutonomy(program: Command): void {
   autonomy
     .command("lift <repo>")
     .description(
-      "Give autonomy back for one repo x risk x gate after a step-down. A person's act: " +
-        "run it with GAFFER_PRINCIPAL_TOKEN=<token> of an active human or admin principal " +
-        "(or --as-principal <token>); the tokenless CLI is refused. Without --override the " +
+      "Give autonomy back for one repo x risk x gate after a step-down. A person's act " +
+        "(the operator, or an admin principal with full capability; never --as agent or " +
+        "system, and the safety hook keeps it from agent shells). Without --override the " +
         "evidence since the step-down must clear the bar again.",
     )
     .requiredOption("--risk <risk>", "low | medium | high | critical")
@@ -65,7 +65,10 @@ export function registerAutonomy(program: Command): void {
       const risk = String(opts.risk);
       const gate = String(opts.gate);
       if (!(RISK_LEVELS as readonly string[]).includes(risk)) {
-        throw new DispatchError("VALIDATION_ERROR", `--risk must be one of ${RISK_LEVELS.join(", ")}.`);
+        throw new DispatchError(
+          "VALIDATION_ERROR",
+          `--risk must be one of ${RISK_LEVELS.join(", ")}.`,
+        );
       }
       if (gate !== "approve" && gate !== "merge") {
         throw new DispatchError("VALIDATION_ERROR", "--gate must be approve or merge.");

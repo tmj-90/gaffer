@@ -1001,12 +1001,16 @@ export type SettingsBody = z.infer<typeof settingsBody>;
 
 /**
  * Body for POST /api/settings/remove-old-keys: the removal act. `drop` and `rewrite`
- * repeat the keys the page showed (GET /api/settings `cleanup`), so a file that changed
- * since is refused (409) and nothing the person did not see is removed.
+ * repeat the keys the page showed (GET /api/settings `cleanup`) and `digest` the file it
+ * was made from, so a file that changed since is refused (409) and nothing the person did
+ * not see is removed or rewritten.
  */
 export const removeOldKeysBody = z.object({
   drop: z.array(z.string().max(200)).max(500),
   rewrite: z.array(z.string().max(200)).max(50),
+  // The plan's digest (GET /api/settings `cleanup.digest`): a file that changed in any
+  // way since the page showed the plan, a value included, is refused (409).
+  digest: z.string().max(128),
 });
 export type RemoveOldKeysBody = z.infer<typeof removeOldKeysBody>;
 

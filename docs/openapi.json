@@ -612,7 +612,7 @@
           "Configuration"
         ],
         "summary": "List the fourteen settings and what they derive",
-        "description": "The fourteen settings (runner/config/settings-schema.json) as `settings: SettingView[]`: `key`, `label`, `group`, `kind`, `values`, `default`, `description`, `writable` (false for GAFFER_DATA), `value` (stored in settings.json), `effective` (what a run uses), `origin` (default | dashboard | environment), `envLocked` (the operator's real environment sets it: read-only) and `derives` (the setting's table from the schema). GAFFER_NOTIFY is secret: `value` and `effective` are masked (channel kinds and hosts only), `channels` and `configured` say what is in force. Read-only blocks from the runner's own config (the printer behind `gaffer config show`): `derived` (every derived value: `name`, `value`, `decidedBy`, `setting`, `source` setting | environment | old-key), `migration` (old settings.json keys: `key`, `setting`, `old`, `derived`, `differs`, `decision`, `inForce`), `overrides` (derived values a real environment variable sets), `cleanup` (what the removal act would drop and rewrite) and `configError` when the runner refuses the file. Every secret in every block is masked. `isolation` is the agent isolation posture (`runner/gaffer sandbox-status`).",
+        "description": "The fourteen settings (runner/config/settings-schema.json) as `settings: SettingView[]`: `key`, `label`, `group`, `kind`, `values`, `default`, `description`, `writable` (false for GAFFER_DATA), `value` (stored in settings.json), `effective` (what a run uses), `origin` (default | dashboard | environment), `envLocked` (the operator's real environment sets it: read-only) and `derives` (the setting's table from the schema). GAFFER_NOTIFY is secret: `value` and `effective` are masked (channel kinds and hosts only), `channels` and `configured` say what is in force. Read-only blocks from the runner's own config (the printer behind `gaffer config show`): `derived` (every derived value: `name`, `value`, `decidedBy`, `setting`, `source` setting | environment | old-key), `migration` (old settings.json keys: `key`, `setting`, `old`, `derived`, `differs`, `decision`, `inForce`), `overrides` (derived values a real environment variable sets), `cleanup` (what the removal act would drop and rewrite: each dropped key with its masked value, `loosens` with `setting` and `after` when the old value is stricter and in force now, so removing it makes the factory looser, and a `digest` of the file the plan was made from; the value of a key the runner never read is not shown) and `configError` when the runner refuses the file. Every secret in every block is masked. `isolation` is the agent isolation posture (`runner/gaffer sandbox-status`).",
         "responses": {
           "200": {
             "description": "`{ settings, derived, migration, overrides, cleanup, configError?, isolation }`.",
@@ -881,7 +881,7 @@
           "Configuration"
         ],
         "summary": "Remove the old keys from settings.json",
-        "description": "The person's removal act: rewrites settings.json atomically keeping only the fourteen settings (a stored value the runner would refuse is trimmed, clamped or cleared). `drop` and `rewrite` repeat the keys GET /api/settings `cleanup` showed; when the file changed since, nothing is written and the answer is 409 (`STATE_CONFLICT`). Same authority as writing settings.",
+        "description": "The person's removal act: rewrites settings.json atomically keeping only the fourteen settings (a stored value the runner would refuse is trimmed, clamped or cleared). `drop` and `rewrite` repeat the keys GET /api/settings `cleanup` showed and `digest` its digest; when the file changed in any way since (a value included), nothing is written and the answer is 409 (`STATE_CONFLICT`). Same authority as writing settings.",
         "requestBody": {
           "required": true,
           "content": {
@@ -15676,11 +15676,16 @@
               "maxLength": 200
             },
             "maxItems": 50
+          },
+          "digest": {
+            "type": "string",
+            "maxLength": 128
           }
         },
         "required": [
           "drop",
-          "rewrite"
+          "rewrite",
+          "digest"
         ]
       },
       "ReopenedForReview": {

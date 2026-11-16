@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -700,12 +700,32 @@ export interface MigrationView {
   readonly inForce: string;
 }
 
+/** One key the removal act drops. */
+export interface CleanupDrop {
+  readonly key: string;
+  /** The stored value, masked (a key the runner never read: not shown at all). */
+  readonly value: string;
+  /**
+   * True when the old value is in force now because it is stricter than what its
+   * setting derives: removing it makes the factory LOOSER, and the page says so.
+   */
+  readonly loosens?: true;
+  /** For `loosens`: the setting that decides it once removed, and what it derives. */
+  readonly setting?: string;
+  readonly after?: string;
+}
+
 /** What the removal act would do to settings.json, shown before it is done. */
 export interface CleanupPlan {
   /** Keys it removes (every key that is not one of the fourteen), values masked. */
-  readonly drop: readonly { key: string; value: string }[];
+  readonly drop: readonly CleanupDrop[];
   /** Stored values of the fourteen it rewrites (padded, out of range), masked. */
   readonly rewrite: readonly { key: string; from: string; to: string }[];
+  /**
+   * The file this plan was made from (a keyed hash of its bytes, never the bytes). The
+   * act repeats it: a file that changed in any way since, a value included, is refused.
+   */
+  readonly digest: string;
 }
 
 /** The whole GET /api/settings body (beside the isolation posture). */
@@ -735,6 +755,30 @@ function masked(name: string, value: string): string {
   return name === "GAFFER_NOTIFY" ? maskNotify(value) : "(set, hidden)";
 }
 
+/**
+ * The value of a key in settings.json as GET /api/settings shows it. A key the runner
+ * never read (neither a setting nor an old key) is not shown at all: its name is enough
+ * to decide on removing it, and such a key can hold anything (a hand-stored token under
+ * a name the secret rule does not know), which a read-only viewer must not learn.
+ */
+function shownValue(name: string, value: string): string {
+  if (value !== "" && !DEF_BY_KEY.has(name) && !OLD_KEY_SETTING.has(name)) return "(not shown)";
+  return masked(name, value);
+}
+
+/** Per-process key for {@link fileDigest}: a plan does not outlive the server. */
+const DIGEST_KEY = randomBytes(32);
+/** A keyed hash of settings.json's bytes ("" for no file). */
+function fileDigest(path: string): string {
+  let bytes: Buffer;
+  try {
+    bytes = readFileSync(path);
+  } catch {
+    bytes = Buffer.alloc(0);
+  }
+  return createHmac("sha256", DIGEST_KEY).update(bytes).digest("hex").slice(0, 32);
+}
+
 /** How a stored value of one of the fourteen is rewritten by the removal act. */
 function storedRewrite(def: SettingDef, stored: string, env: NodeJS.ProcessEnv): string | null {
   if (stored === "") return null;
@@ -749,19 +793,37 @@ export function cleanupPlan(
   env: NodeJS.ProcessEnv = process.env,
   path: string = resolveSettingsPath(env),
 ): CleanupPlan {
+  const digest = fileDigest(path);
   const raw = readSettingsFileRaw(path);
-  const drop: { key: string; value: string }[] = [];
+  // The old keys whose value is in force now (stricter than the setting's reading).
+  const kept = new Map<string, { setting: string; derived: string }>();
+  const rc = runnerConfigFor(env, path);
+  if (rc.ok)
+    for (const m of rc.report.migration)
+      if (m.decision === "kept") kept.set(m.key, { setting: m.setting, derived: m.derived });
+  const drop: CleanupDrop[] = [];
   const rewrite: { key: string; from: string; to: string }[] = [];
   for (const [k, v] of Object.entries(raw)) {
     const def = DEF_BY_KEY.get(k);
     if (!def || !def.writable) {
-      drop.push({ key: k, value: masked(k, v) });
+      const kk = kept.get(k);
+      drop.push(
+        kk
+          ? {
+              key: k,
+              value: shownValue(k, v),
+              loosens: true,
+              setting: kk.setting,
+              after: kk.derived,
+            }
+          : { key: k, value: shownValue(k, v) },
+      );
       continue;
     }
     const to = storedRewrite(def, v, env);
     if (to !== null) rewrite.push({ key: k, from: masked(k, v), to: masked(k, to) });
   }
-  return { drop, rewrite };
+  return { drop, rewrite, digest };
 }
 
 /**
@@ -853,7 +915,7 @@ export function settingsReport(
     migration.push({
       key: k,
       setting: "",
-      old: masked(k, v),
+      old: shownValue(k, v),
       derived: "",
       differs: false,
       decision: "not-a-setting",
@@ -965,7 +1027,7 @@ export function writeSettings(
  * written and a CONFLICT is thrown, so nothing is removed that the person did not see.
  */
 export function removeOldKeys(
-  expected: { drop: readonly string[]; rewrite: readonly string[] },
+  expected: { drop: readonly string[]; rewrite: readonly string[]; digest: string },
   env: NodeJS.ProcessEnv = process.env,
   path: string = resolveSettingsPath(env),
 ): CleanupPlan {
@@ -973,6 +1035,7 @@ export function removeOldKeys(
   const same = (a: readonly string[], b: readonly string[]) =>
     JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());
   if (
+    plan.digest !== expected.digest ||
     !same(
       plan.drop.map((d) => d.key),
       expected.drop,

@@ -464,7 +464,11 @@ describe("the removal act", () => {
     const env = op();
     const plan = cleanupPlan(env, settingsPath);
     removeOldKeys(
-      { drop: plan.drop.map((d) => d.key), rewrite: plan.rewrite.map((r) => r.key) },
+      {
+        drop: plan.drop.map((d) => d.key),
+        rewrite: plan.rewrite.map((r) => r.key),
+        digest: plan.digest,
+      },
       env,
       settingsPath,
     );
@@ -486,9 +490,64 @@ describe("the removal act", () => {
   it("refuses when the file changed since the page showed the plan", () => {
     writeFileSync(settingsPath, JSON.stringify(OLD));
     const env = op();
-    expect(() => removeOldKeys({ drop: ["AUTO_MERGE"], rewrite: [] }, env, settingsPath)).toThrow(
-      /changed since/,
-    );
+    const plan = cleanupPlan(env, settingsPath);
+    expect(() =>
+      removeOldKeys({ drop: ["AUTO_MERGE"], rewrite: [], digest: plan.digest }, env, settingsPath),
+    ).toThrow(/changed since/);
     expect(readSettingsFileRaw(settingsPath)).toEqual(OLD);
+  });
+
+  it("refuses a file whose VALUES changed since the plan, the keys alike (the person saw other values)", () => {
+    writeFileSync(settingsPath, JSON.stringify(OLD));
+    const env = op();
+    const plan = cleanupPlan(env, settingsPath);
+    expect(plan.rewrite).toEqual([{ key: "GAFFER_CONCURRENCY", from: " 3", to: "3" }]);
+    // Between the page's plan and the person's click the stored value changes: the same
+    // keys, but the act would now clamp to 64 what the person saw become 3.
+    const changed = { ...OLD, GAFFER_CONCURRENCY: " 300" };
+    writeFileSync(settingsPath, JSON.stringify(changed));
+    expect(() =>
+      removeOldKeys(
+        {
+          drop: plan.drop.map((d) => d.key),
+          rewrite: plan.rewrite.map((r) => r.key),
+          digest: plan.digest,
+        },
+        env,
+        settingsPath,
+      ),
+    ).toThrow(/changed since/);
+    expect(readSettingsFileRaw(settingsPath)).toEqual(changed);
+  });
+
+  it("marks each old key whose removal makes the factory looser, with what decides it after", () => {
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({ GAFFER_EFFORT: "large", GAFFER_TICK_TIMEOUT: "1800", AUTO_MERGE: "1" }),
+    );
+    const env = op();
+    const report = settingsReport(env, settingsPath);
+    const tt = report.migration.find((m) => m.key === "GAFFER_TICK_TIMEOUT")!;
+    expect(tt.decision).toBe("kept");
+    const drop = new Map(report.cleanup.drop.map((d) => [d.key, d]));
+    expect(drop.get("GAFFER_TICK_TIMEOUT")).toMatchObject({
+      loosens: true,
+      setting: "GAFFER_EFFORT",
+      after: tt.derived,
+    });
+    // A permissive old key the mode already overrules: removing it changes nothing.
+    expect(drop.get("AUTO_MERGE")!.loosens).toBeUndefined();
+  });
+
+  it("never shows the value of a key the runner never read (only its name)", () => {
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({ GH_PAT: "ghp_hand_stored_token", AUTO_MERGE: "1" }),
+    );
+    const report = settingsReport(op(), settingsPath);
+    const text = JSON.stringify(report);
+    expect(text).not.toContain("ghp_hand_stored_token");
+    expect(report.cleanup.drop.find((d) => d.key === "GH_PAT")!.value).toBe("(not shown)");
+    expect(report.migration.find((m) => m.key === "GH_PAT")!.old).toBe("(not shown)");
   });
 });

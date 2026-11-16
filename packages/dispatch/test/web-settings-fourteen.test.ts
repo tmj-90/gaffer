@@ -341,6 +341,23 @@ describe("web: the migration callout and its removal act", () => {
     expect(box.innerHTML).not.toContain("page-secret-token");
   });
 
+  it("the confirm says, for each stricter old key, that removing it makes the factory looser", async () => {
+    // An old per-ticket time limit stricter than Effort large is in force today; the
+    // person removing it must read that the factory gets looser, key by key.
+    await boot(reportFor({ GAFFER_EFFORT: "large", GAFFER_TICK_TIMEOUT: "1800", AUTO_MERGE: "1" }));
+    (document.querySelector(".mig-start") as HTMLButtonElement).click();
+    const confirm = document.querySelector(".mig-confirm") as HTMLElement;
+    const items = [...confirm.querySelectorAll(".mig-drop li")];
+    const tt = items.find((li) => /GAFFER_TICK_TIMEOUT/.test(li.textContent ?? ""))!;
+    expect(tt.textContent).toMatch(/Looser after removal/);
+    expect(tt.textContent).toMatch(/GAFFER_EFFORT then decides it/);
+    const am = items.find((li) => /AUTO_MERGE/.test(li.textContent ?? ""))!;
+    expect(am.textContent).not.toMatch(/Looser/);
+    expect(confirm.querySelector(".mig-loosens-lede")!.textContent).toMatch(
+      /makes the factory looser/,
+    );
+  });
+
   it("the removal act shows exactly what it drops, and posts only after the confirm", async () => {
     await boot(OLD);
     const start = document.querySelector(".mig-start") as HTMLButtonElement;
@@ -364,6 +381,7 @@ describe("web: the migration callout and its removal act", () => {
     expect(posts[0]!.body).toEqual({
       drop: OLD.cleanup.drop.map((d) => d.key),
       rewrite: [],
+      digest: OLD.cleanup.digest,
     });
   });
 

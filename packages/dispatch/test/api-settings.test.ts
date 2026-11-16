@@ -97,7 +97,8 @@ describe("API: GET/POST /api/settings", () => {
       "GAFFER_EFFORT",
     );
     expect(body.migration).toEqual([]);
-    expect(body.cleanup).toEqual({ drop: [], rewrite: [] });
+    expect(body.cleanup).toMatchObject({ drop: [], rewrite: [] });
+    expect((body.cleanup as { digest: string }).digest).toMatch(/^[0-9a-f]{32}$/);
   });
 
   it("POST (and PUT) persists a setting to settings.json and reflects it back", async () => {
@@ -196,13 +197,13 @@ describe("API: GET/POST /api/settings", () => {
       JSON.stringify({ GAFFER_MODE: "lite", AUTO_MERGE: "1", FOO: "x" }),
     );
     const get = (await (await fetch(`${h.baseUrl}/api/settings`)).json()) as {
-      cleanup: { drop: { key: string }[]; rewrite: { key: string }[] };
+      cleanup: { drop: { key: string }[]; rewrite: { key: string }[]; digest: string };
     };
     expect(get.cleanup.drop.map((d) => d.key).sort()).toEqual(["AUTO_MERGE", "FOO"]);
     const stale = await fetch(`${h.baseUrl}/api/settings/remove-old-keys`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ drop: ["AUTO_MERGE"], rewrite: [] }),
+      body: JSON.stringify({ drop: ["AUTO_MERGE"], rewrite: [], digest: get.cleanup.digest }),
     });
     expect(stale.status).toBe(409);
     expect(JSON.parse(readFileSync(h.settingsPath, "utf8"))).toEqual({
@@ -213,7 +214,11 @@ describe("API: GET/POST /api/settings", () => {
     const ok = await fetch(`${h.baseUrl}/api/settings/remove-old-keys`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ drop: ["AUTO_MERGE", "FOO"], rewrite: [] }),
+      body: JSON.stringify({
+        drop: ["AUTO_MERGE", "FOO"],
+        rewrite: [],
+        digest: get.cleanup.digest,
+      }),
     });
     expect(ok.status).toBe(200);
     expect(JSON.parse(readFileSync(h.settingsPath, "utf8"))).toEqual({ GAFFER_MODE: "lite" });

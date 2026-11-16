@@ -559,24 +559,45 @@ function migrationCallout(migration, cleanup) {
       await api("POST", "/api/settings/remove-old-keys", {
         drop: drop.map((d) => d.key),
         rewrite: rewrite.map((r) => r.key),
+        digest: String(cleanup.digest || ""),
       });
       toast(`Removed ${plural(drop.length, "old key")} from settings.json.`, { ok: true });
       router();
     }),
   );
+  // An old key whose value is in force now because it is stricter than its setting:
+  // removing it makes the factory looser, and the person must read that for each one.
+  const loosening = drop.filter((d) => d.loosens);
   // Element.append writes a null as the text "null": only real nodes go in.
   const parts = [
     el("p", { class: "mig-confirm-lede" }, [
       el("strong", {}, "This rewrites settings.json keeping only the fourteen settings. "),
       "It removes:",
     ]),
+    loosening.length
+      ? el("p", { class: "mig-loosens-lede", role: "note" }, [
+          el(
+            "strong",
+            {},
+            `${plural(loosening.length, "of these keys", "of these keys")} ${loosening.length === 1 ? "is" : "are"} stricter than your settings and in force now: removing ${loosening.length === 1 ? "it" : "them"} makes the factory looser. `,
+          ),
+          "Each is marked below with what decides it afterwards.",
+        ])
+      : null,
     el(
       "ul",
       { class: "mig-drop" },
       drop.map((d) =>
-        el("li", {}, [
+        el("li", { class: d.loosens ? "mig-loosens" : null }, [
           el("code", { class: "mono" }, d.key),
           d.value !== "" ? ` = ${d.value}` : " (empty)",
+          d.loosens
+            ? el(
+                "span",
+                { class: "mig-loosens-word" },
+                ` Looser after removal: this old value is in force now; ${d.setting || "its setting"} then decides it (${d.after !== "" && d.after != null ? d.after : "left unset"}).`,
+              )
+            : null,
         ]),
       ),
     ),

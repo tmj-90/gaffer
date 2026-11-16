@@ -166,7 +166,10 @@ describe("secret settings never reach a non-admin principal", () => {
       { name: "bob", capability: "full", actorType: "human", actorId: "bob" },
       { type: "admin", id: "op" },
     );
-    const plan = { drop: ["GAFFER_NOTIFY_WEBHOOK_URL"], rewrite: [] };
+    const cleanup = (await (await get("/api/settings", FULL)).json()).cleanup as {
+      digest: string;
+    };
+    const plan = { drop: ["GAFFER_NOTIFY_WEBHOOK_URL"], rewrite: [], digest: cleanup.digest };
     for (const token of [deriveReadToken(FULL), human.token]) {
       const w = await post("/api/settings", token, { settings: { GAFFER_EFFORT: "large" } });
       const r = await post("/api/settings/remove-old-keys", token, plan);

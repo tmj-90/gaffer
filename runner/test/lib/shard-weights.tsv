@@ -46,18 +46,18 @@
 #   measures it.
 #   tester-unprovable-escape: new (package H3 review, the hold in the supervised posture and
 #   every way past it), about 10 real ticks and three tester runs; 200 until CI measures it.
-321	land-tester-replay.test.sh
-297	merge-lane.test.sh
-242	land-tester-replay-proof.test.sh
-237	e2e-release-gate-tester-replay.test.sh
-261	waste-controls.test.sh
+166	land-tester-replay.test.sh
+104	merge-lane.test.sh
+97	land-tester-replay-proof.test.sh
+125	e2e-release-gate-tester-replay.test.sh
+99	waste-controls.test.sh
 187	e2e-agent-skill-routing.test.sh
 176	gate-integrity-e2e-retry.test.sh
 154	e2e-multi-repo-delivery.test.sh
 151	gate-integrity-e2e.test.sh
 148	e2e-per-path-stack-routing.test.sh
 148	review-wedge.test.sh
-133	afk-review-hold.test.sh
+100	afk-review-hold.test.sh
 131	e2e-release-gate-merge-combination.test.sh
 130	branch-retention.test.sh
 129	memory-index-after-merge.test.sh
@@ -372,7 +372,7 @@
 180	review-once-per-head.test.sh
 170	review-once-per-head-races.test.sh
 250	review-once-per-head-resubmit.test.sh
-420	tester-unprovable.test.sh
+61	tester-unprovable.test.sh
 200	tester-unprovable-escape.test.sh
 150	trust-fail-closed.test.sh
 # worktree-link-refusal: new (external review 17), four real tick.sh runs (Linux alone at -j 1 under shared load: 59s); 120, twice that, until the next refresh.
@@ -419,3 +419,16 @@
 2	trust-workspace-lock.test.mjs
 2	untrusted-escape.test.mjs
 1	worktree-write-safety.test.mjs
+# The eight files over 150 s at -j 2, split on their independent sections (Nov 16): every
+# half (the parents' lines above too) is its seconds alone in a run.sh -j 2 batch of the
+# halves, times the parent's CI-weight / local-seconds ratio (merge-lane 1.12,
+# land-tester-replay 1.28, -proof 1.22, e2e-release-gate-tester-replay 1.27,
+# waste-controls 1.3, afk-review-hold 0.84, tester-unprovable 1.2), until CI measures them.
+122	merge-lane-conflict.test.sh
+116	tester-unprovable-verdicts.test.sh
+128	tester-unprovable-tokens.test.sh
+106	waste-controls-fresh-branch.test.sh
+114	land-tester-replay-merge-now.test.sh
+118	land-tester-replay-scoped.test.sh
+106	e2e-release-gate-tester-replay-scoped.test.sh
+26	afk-review-hold-moved.test.sh

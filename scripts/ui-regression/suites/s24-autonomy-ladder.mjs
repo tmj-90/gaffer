@@ -5,7 +5,8 @@
 // here is a stub), so the agent-ships path s4 has to skip runs here:
 //   1. climbing: Settings > Autonomy shows the ladder for the sample repo, every cell with
 //      a word, critical with the ceiling;
-//   2. automatic: low approve and merge enabled (REST, confirm), REVIEW_MODE=agent; a
+//   2. automatic: low approve and merge enabled (REST, confirm), the Autonomy mode
+//      graduated (GAFFER_MODE: the reviewer agent runs and the policies decide); a
 //      low-risk ticket is delivered, the reviewer agent approves it and the runner lands it
 //      on its own (done, approved by an agent); the ladder reads Automatic;
 //   3. stepped down: a person links a regression of that change; the ladder shows the
@@ -123,7 +124,12 @@ export default async function s24(t, L) {
     "enabling critical/merge is refused with the ceiling's sentence",
     `enabling critical/merge answered ${crit.status} ${JSON.stringify(crit.json).slice(0, 200)}`,
   );
-  await L.putSettings({ REVIEW_MODE: "agent" });
+  const put = await L.putSettings({ GAFFER_MODE: "graduated" });
+  t.check(
+    put.status < 300,
+    "the Autonomy mode set to graduated (the one setting that grants autonomy; the policies decide what ships)",
+    `GAFFER_MODE=graduated answered ${put.status} ${JSON.stringify(put.json).slice(0, 160)}`,
+  );
   const shipTo = async (tk, want) => {
     await t.visit("work");
     for (let i = 0; i < 6; i++) {

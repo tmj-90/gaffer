@@ -3,8 +3,9 @@
 // file) and a sample repo whose origin is a local bare repo plus a github.com remote, so
 // the runner's PR seams (lib/pr-create.sh, lib/ci-gate.sh, gaffer_pr_merge /
 // merge-ticket.mjs) all run for real against it.
-//   1. Settings (the UI): 'Deliver as a pull request' + 'Require CI green before review'
-//      on, a short CI poll; saved and effective.
+//   1. Settings (the UI): Landing set to pr (GAFFER_LANDING: a pull request per delivery
+//      and CI required before review); saved and effective. The short CI poll (10 polls
+//      x 3 s) is this server's environment: those are derived values, not settings.
 //   2. Delivery of #A with CI PENDING: the branch is pushed and `gh pr create` opens the
 //      PR (its URL lands on the ticket, the ticket page links it); the CI gate polls the
 //      PR's checks — and asks gh only for fields gh has.
@@ -15,8 +16,8 @@
 //      `gh pr merge <url> --merge --delete-branch --match-head-commit <head>`, the
 //      remote main gets the merge, the local main is fast-forwarded to it, the ticket is
 //      done and its page offers 'Open the PR'.
-//   5. #B delivered on green and approved; CI then turns RED; with Auto-merge on, the
-//      merge lane must hold #B instead of landing it on the earlier green.
+//   5. #B delivered on green and approved; CI then turns RED; with the Autonomous mode
+//      (auto merge), the merge lane must hold #B instead of landing it on the earlier green.
 // Steps 2 (fields), 3 and 5 are the CI-required approval rule another package
 // (wp/g-external-review-2) is fixing: where today's code does not do it yet the step is
 // a `note` that says "pending external-review-2", and it becomes a real check once that
@@ -24,7 +25,10 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
-export const server = { env: {}, fixtures: ["fake-gh", "pr-remote"] };
+export const server = {
+  env: { GAFFER_CI_POLL_ATTEMPTS: "10", GAFFER_CI_POLL_INTERVAL_SECS: "3" },
+  fixtures: ["fake-gh", "pr-remote"],
+};
 
 const PENDING = "pending external-review-2";
 
@@ -77,18 +81,17 @@ export default async function s4b(t, L) {
   // ── 1. PR mode + required CI, through Settings ────────────────────────────
   ci("pending");
   await t.visit("settings");
-  await t.setSetting("GAFFER_CREATE_PR", "1");
-  await t.setSetting("GAFFER_REQUIRE_CI", "1");
-  await t.setSetting("GAFFER_CI_POLL_ATTEMPTS", "10");
-  await t.setSetting("GAFFER_CI_POLL_INTERVAL_SECS", "3");
+  await t.setSetting("GAFFER_LANDING", "pr");
   const sv = await t.saveSettings();
-  const eff = await L.settingsMap();
+  const eff = await L.derivedMap();
   t.check(
     sv.status < 300 &&
-      eff.get("GAFFER_CREATE_PR")?.effective === "1" &&
-      eff.get("GAFFER_REQUIRE_CI")?.effective === "1" &&
-      eff.get("GAFFER_CI_POLL_INTERVAL_SECS")?.effective === "3",
-    "Settings: 'Deliver as a pull request' + 'Require CI green before review' (10 polls × 3s) saved and effective",
+      sv.sent.GAFFER_LANDING === "pr" &&
+      eff.get("GAFFER_CREATE_PR")?.value === "1" &&
+      eff.get("GAFFER_REQUIRE_CI")?.value === "1" &&
+      eff.get("GAFFER_CI_POLL_INTERVAL_SECS")?.value === "3" &&
+      eff.get("GAFFER_CI_POLL_INTERVAL_SECS")?.source === "environment",
+    "Settings: Landing pr saved; the runner derives a pull request and required CI from it (10 polls x 3 s from this server's environment)",
     `PR/CI settings save: ${sv.status} sent=${JSON.stringify(sv.sent)}`,
   );
 
@@ -314,7 +317,7 @@ export default async function s4b(t, L) {
       ci("fail");
       const mainB = L.git(remote, "rev-parse", "main").trim();
       await t.visit("settings");
-      await t.setSetting("AUTO_MERGE", "1");
+      await t.setSetting("GAFFER_MODE", "autonomous");
       await t.saveSettings();
       // The merge lane runs at the start of the next tick: Poll until a tick has run
       // (a poll right after the last one can be turned away) and read what it did.
@@ -357,7 +360,7 @@ export default async function s4b(t, L) {
         );
       else t.bad(`after a red CI #${b.number} is '${bEnd.status}' and the remote main moved`);
       await t.visit("settings");
-      await t.setSetting("AUTO_MERGE", "0");
+      await t.setSetting("GAFFER_MODE", "supervised");
       await t.saveSettings();
     }
   }

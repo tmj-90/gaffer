@@ -1161,7 +1161,7 @@ try {
     // it is set and its host, and cannot read it back.
     {
       await api("POST", "/api/settings", {
-        settings: { GAFFER_NOTIFY_SLACK_URL: "https://hooks.slack.com/services/UI/REGRESS/SECRET" },
+        settings: { GAFFER_NOTIFY: "https://hooks.slack.com/services/UI/REGRESS/SECRET" },
       });
       const asRead = await fetch(`${BASE}/api/settings`, {
         headers: { Authorization: `Bearer ${minted}` },
@@ -1169,9 +1169,9 @@ try {
       const txt = asRead.ok ? await asRead.text() : "";
       // The path, not the bare word: a setting's help text may say SECRET.
       txt && !txt.includes("UI/REGRESS") && txt.includes('"host":"hooks.slack.com"')
-        ? ok("API: a read principal sees a webhook as configured + host only")
+        ? ok("API: a read principal sees the notify webhook as its channel and host only")
         : bad(`API: settings leaked a webhook to a read principal (${asRead.status})`);
-      const back = await fetch(`${BASE}/api/settings/secret/GAFFER_NOTIFY_SLACK_URL`, {
+      const back = await fetch(`${BASE}/api/settings/secret/GAFFER_NOTIFY`, {
         headers: { Authorization: `Bearer ${minted}` },
       });
       back.status === 403
@@ -1180,18 +1180,15 @@ try {
       // The page is already on #/settings, so a goto to the same hash would not re-render
       // it: reload to read the settings as saved by the POST above.
       await page.reload({ waitUntil: "load" });
-      await page
-        .waitForSelector("#set-GAFFER_NOTIFY_SLACK_URL .setting-secret", { timeout: 5000 })
-        .catch(() => {});
+      const slackSel = '#set-GAFFER_NOTIFY [data-channel="slack"] .setting-secret';
+      await page.waitForSelector(slackSel, { timeout: 5000 }).catch(() => {});
       await sleep(400);
-      const maskedTxt =
-        (await page.textContent("#set-GAFFER_NOTIFY_SLACK_URL .setting-secret").catch(() => "")) ||
-        "";
+      const maskedTxt = (await page.textContent(slackSel).catch(() => "")) || "";
       maskedTxt.includes("hooks.slack.com") && !maskedTxt.includes("SECRET")
         ? ok("Settings: the Slack webhook shows masked (set · host) with Replace")
         : bad(`Settings: the webhook field is not masked: '${maskedTxt.slice(0, 80)}'`);
       await shot(page, "settings-secret-masked");
-      await api("POST", "/api/settings", { settings: { GAFFER_NOTIFY_SLACK_URL: "" } });
+      await api("POST", "/api/settings", { settings: { GAFFER_NOTIFY: "" } });
     }
     const denied = await fetch(`${BASE}/tickets`, {
       method: "POST",

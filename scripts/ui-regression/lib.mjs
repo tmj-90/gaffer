@@ -253,6 +253,11 @@ export async function settingsMap() {
   const list = Array.isArray(r) ? r : r.settings || [];
   return new Map(list.map((s) => [s.key, s]));
 }
+/** The values the settings derive, as the runner reports them: name -> { value, decidedBy, setting, source }. */
+export async function derivedMap() {
+  const r = (await api("GET", "/api/settings")).json;
+  return new Map((r.derived || []).map((d) => [d.name, d]));
+}
 /** Write settings through the API (setup/teardown only; suites save through the UI). */
 export const putSettings = (values) => api("POST", "/api/settings", { settings: values });
 export function readSettingsFile() {

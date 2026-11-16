@@ -3,7 +3,12 @@
 // with a reason from their ticket pages, a queued (ready) one from its Work card's
 // Move menu, both show in the Work board's Won't do area, Reopen works from the
 // board and from the ticket page, the delivery branch survives the close, and an
-// abandoned branch does not count against MAX_OPEN_AGENT_BRANCHES_PER_REPO.
+// abandoned branch does not count against MAX_OPEN_AGENT_BRANCHES_PER_REPO. That cap is
+// a derived value (GAFFER_CONCURRENCY decides it; no setting lowers it to 1), so this
+// suite runs on its OWN server whose environment sets it, the one way to override a
+// derived value; Settings lists it under Overridden from the environment.
+export const server = { env: { MAX_OPEN_AGENT_BRANCHES_PER_REPO: "1" }, fixtures: [] };
+
 export default async function s2(t, L) {
   const p = t.page;
 
@@ -134,12 +139,13 @@ export default async function s2(t, L) {
 
   // ── an abandoned branch does not hold the open-branch cap ─────────────────
   await t.visit("settings");
-  await t.setSetting("MAX_OPEN_AGENT_BRANCHES_PER_REPO", "1");
-  const saved = await t.saveSettings();
+  const over = (await p.textContent("#settings-overrides").catch(() => "")) || "";
   t.check(
-    saved.status < 300 && saved.sent.MAX_OPEN_AGENT_BRANCHES_PER_REPO === "1",
-    "Settings: MAX_OPEN_AGENT_BRANCHES_PER_REPO=1 saved",
-    `cap save: ${saved.status} ${JSON.stringify(saved.sent)}`,
+    (await L.derivedMap()).get("MAX_OPEN_AGENT_BRANCHES_PER_REPO")?.value === "1" &&
+      /MAX_OPEN_AGENT_BRANCHES_PER_REPO/.test(over) &&
+      /GAFFER_CONCURRENCY/.test(over),
+    "Settings: the open-branch cap of 1 is listed as overridden from the environment (GAFFER_CONCURRENCY would decide it otherwise)",
+    `override list: '${over.slice(0, 200)}'`,
   );
   await L.api("POST", `/tickets/${del.id}/wont-do`, {
     reason: "abandoned again for the cap check",

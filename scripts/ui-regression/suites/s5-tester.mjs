@@ -1,4 +1,4 @@
-// S5 the independent tester lane. GAFFER_TESTING is switched on in Settings; a
+// S5 the independent tester lane. GAFFER_TESTING is set to on in Settings; a
 // ticket's "Eligible for black-box testing" switch is flipped on its page. TESTER FIRST:
 // the delivery tick sends each one to Testing BEFORE the human review (an approval of
 // the untested commit is refused); the next Poll runs the tester (stub verdicts): PASS →
@@ -10,13 +10,13 @@ export default async function s5(t, L) {
   const p = t.page;
 
   await t.visit("settings");
-  await t.setSetting("GAFFER_TESTING", "1");
+  await t.setSetting("GAFFER_TESTING", "on");
   const sv = await t.saveSettings();
   t.check(
     sv.status < 300 &&
-      sv.sent.GAFFER_TESTING === "1" &&
-      (await L.settingsMap()).get("GAFFER_TESTING")?.effective === "1",
-    "Settings: the tester lane (GAFFER_TESTING) switched on and saved; /api/settings reports it effective",
+      sv.sent.GAFFER_TESTING === "on" &&
+      (await L.settingsMap()).get("GAFFER_TESTING")?.effective === "on",
+    "Settings: Independent testing (GAFFER_TESTING) set to on and saved; /api/settings reports it in force",
     `GAFFER_TESTING save: ${sv.status} ${JSON.stringify(sv.sent)}`,
   );
 

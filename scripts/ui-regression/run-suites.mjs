@@ -178,7 +178,10 @@ function makeContext(name, repo) {
     await btn.click();
     return L.waitStatus(tk.id, ["in_testing", "ready_for_merge", "done"], 20000, 500);
   };
-  /** Drive one Settings row the way an operator does (switch, select or box). */
+  /**
+   * Drive one Settings control the way an operator does: a segmented choice or the
+   * Autonomy mode dial (a radio per value), a switch, a select or a box.
+   */
   t.setSetting = async (key, value) => {
     const pg = t.page;
     const row = pg.locator(`#set-${key}`);
@@ -187,6 +190,11 @@ function makeContext(name, repo) {
       if (d) d.open = true;
       n.scrollIntoView({ block: "center" });
     });
+    const radio = row.locator(`input[type="radio"][value="${String(value)}"]`);
+    if (await radio.count()) {
+      await radio.first().check({ force: true });
+      return;
+    }
     const cb = row.locator('input[type="checkbox"]');
     if (await cb.count()) {
       const want = value === true || value === "1";

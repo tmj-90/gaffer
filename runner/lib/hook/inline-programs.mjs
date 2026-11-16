@@ -904,7 +904,13 @@ function simple(c, prev, ctx, out, feed = null) {
 
 // Follow one command's words to the program that runs; record inline programs.
 function inspectWords(words, c, prev, ctx, out, feed, guard = 0) {
-  if (guard > 24 || words.length === 0) return;
+  if (words.length === 0) return;
+  if (guard > 24) {
+    // Unread, so refused (`env env ... node -e ...`): past this many wrappers and
+    // keywords the command is not followed.
+    out.reasons.push("a command behind more wrappers and keywords than the hook reads");
+    return;
+  }
   const texts = words.map((w) => wordText(w, ctx));
   let first = basename(texts[0]);
   if (

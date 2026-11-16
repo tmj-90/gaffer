@@ -220,15 +220,26 @@ export function leafCommandPath(program: Command, args: readonly string[]): stri
     else return null;
   }
   if (args.slice(i).some((a) => a === "--help" || a === "-h")) return null;
+  // Commander's own walk: a token naming a subcommand dispatches to it; otherwise a
+  // command with an action of its own runs it (`stats` has `stats routing` below it).
   let cur = program;
-  while (cur.commands.length > 0) {
-    const token = args[i++];
-    if (token === undefined || token.startsWith("-")) return null;
-    const sub = findSub(cur, token);
-    if (!sub) return null;
-    cur = sub;
+  for (;;) {
+    const token = args[i];
+    const sub = token !== undefined && !token.startsWith("-") ? findSub(cur, token) : undefined;
+    if (sub) {
+      cur = sub;
+      i += 1;
+      continue;
+    }
+    if (cur === program) return null;
+    if (cur.commands.length === 0 || hasAction(cur)) return commandPath(cur);
+    return null;
   }
-  return commandPath(cur);
+}
+
+/** Whether a command runs an action of its own (commander keeps no public accessor). */
+function hasAction(cmd: Command): boolean {
+  return typeof (cmd as unknown as { _actionHandler?: unknown })._actionHandler === "function";
 }
 
 /** Put back what one command could leave behind in this process for the next one. */
@@ -477,8 +488,12 @@ export async function serveFifo(dir: string, ownerPid: number): Promise<void> {
   for (const sig of ["SIGINT", "SIGTERM", "SIGHUP", "SIGPIPE"] as const) {
     process.on(sig, () => undefined);
   }
-  await server.preload();
+  // Hold the request FIFO first: a line written while no process has it open is lost
+  // when its writer closes it. `ready` tells the caller it may send from now on (a line
+  // sent during the preload below waits in the FIFO).
   const fd = openSync(join(dir, "req"), fsConstants.O_RDWR | fsConstants.O_NONBLOCK);
+  writeFileSync(join(dir, "ready"), "", { mode: 0o600 });
+  await server.preload();
   const input = new Socket({ fd, readable: true, writable: false });
   const lines = createInterface({ input, crlfDelay: Infinity });
   let stopping = false;

@@ -269,6 +269,7 @@ describe.skipIf(SKIP)("serve: a served call equals the one-shot call", () => {
       if (r.code !== 0) throw new Error(`setup ${args.join(" ")}: ${r.stderr}`);
       return r.stdout;
     };
+    spawnSync("git", ["init", "-q", dir]);
     setup(["init"]);
     setup(["repo", "add", "-n", "repo", "--path", dir, "--branch", "main", "--stack", "node"]);
     const t = (title: string): void => {
@@ -540,6 +541,8 @@ describe.skipIf(SKIP || process.platform === "win32")("serve: the FIFO transport
           "set -u",
           `D="${d}/s"; mkdir -m 700 "$D"; mkfifo "$D/req"`,
           `"${process.execPath}" "${SERVE_BIN}" --fifo "$D" --owner-pid $$ & P=$!`,
+          'for i in $(seq 1 100); do [ -e "$D/ready" ] && break; sleep 0.1; done',
+          '[ -e "$D/ready" ] && echo READY',
           `printf '%s\\0' GWG1 1.1.1 "${d}" 0022 0 0 4 --db "${db}" ticket list > "$D/q.1.1.1"`,
           'mkfifo "$D/r.1.1.1"; exec 7<>"$D/r.1.1.1"',
           "printf '1.1.1\\n' 1<>\"$D/req\"",
@@ -552,9 +555,11 @@ describe.skipIf(SKIP || process.platform === "win32")("serve: the FIFO transport
         ].join("\n"),
       );
       const r = spawnSync("bash", [script], { encoding: "utf8", timeout: 60_000 });
+      expect(r.stdout).toMatch(/^READY$/m);
       expect(r.stdout).toMatch(/^REPLY=GWG1 1\.1\.1 R 0 o$/m);
       expect(r.stdout).toContain("[]");
-      // After D only the request FIFO is left; after Q the server removed its dir and exited 0.
+      // After D only the request FIFO and `ready` are left; after Q the server removed its
+      // dir and exited 0.
       expect(r.stdout).toMatch(/^req$/m);
       expect(r.stdout).not.toMatch(/^s\.1\.1\.1\.0$/m);
       expect(r.stdout).toMatch(/^EXIT=0$/m);

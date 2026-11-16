@@ -91,8 +91,8 @@ while [ "$i" -lt "${#EXPRS[@]}" ]; do
 done
 [ "$bad" = 0 ] && ok "J1: all $(( ${#EXPRS[@]} / 2 )) fields equal the separate jget reads" || :
 [ "$V0" = "${TITLE_RAW%$'\n\n'}" ] && ok "J1: the hostile title came back as data (trailing newlines stripped as \$(...) does)" || fail "J1: title [$V0]"
-[ "$V6" = "ab" ] && ok "J1: a NUL inside a value is dropped, as a command substitution drops it" || fail "J1: nul [$V6]"
-[ "$V7" = "red plain" ] && ok "J1: colour codes are stripped as jget strips them in a pipe" || fail "J1: ansi [$V7]"
+[ "$V12" = "ab" ] && ok "J1: a NUL inside a value is dropped, as a command substitution drops it" || fail "J1: nul [$V12]"
+[ "$V14" = "red plain" ] && ok "J1: colour codes are stripped as jget strips them in a pipe" || fail "J1: ansi [$V14]"
 [ ! -e "$PWNED" ] && ok "J1: nothing in the values ran" || fail "J1: a value was executed ($PWNED exists)"
 
 echo "== J2: defaults =="

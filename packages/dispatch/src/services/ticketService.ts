@@ -299,6 +299,10 @@ export class TicketService {
         payload: {
           title: ticket.title,
           policy_pack: ticket.policy_pack,
+          // SEALED AUTONOMY: the risk the creator stated, on the chain. The trusted host
+          // seals an unsigned ticket's risk at its first claim only when the stored column
+          // still says this (events/autonomySeal.ts firstClaimMaySeal).
+          risk_level: ticket.risk_level,
           ...(ticket.bootstrap === 1 ? { bootstrap: true } : {}),
           ...(ticket.acceptance === 1 ? { acceptance: true } : {}),
         },

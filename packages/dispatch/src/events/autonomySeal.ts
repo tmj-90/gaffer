@@ -228,8 +228,27 @@ export function decidedRisk(
  * claim row). A ticket in flight before this change, an imported one, one whose seal was
  * removed, or one claimed before: never (a person re-signs it). The caller also verifies
  * the whole chain before it seals (a deleted earlier claim must not pass for a first one).
+ *
+ * And only the risk its CREATOR stated: the ticket has exactly one `ticket.created` event,
+ * and the stored column still says the risk that event recorded. A ticket the planner, a
+ * keyless process or a person filed at one risk and a database writer lowered before the
+ * claim is not sealed at the writer's value (a person re-signs it); a row inserted with no
+ * creation on record is not sealed at all. A creation event from before the risk was
+ * recorded in it carries none: the stored column is all there is (as before).
  */
 export function firstClaimMaySeal(db: SealDb, ticketId: string, claimId: string): boolean {
+  const created = db
+    .prepare(
+      "SELECT payload_json FROM work_events WHERE entity_type = 'ticket' AND entity_id = ? AND event_type = 'ticket.created'",
+    )
+    .all(ticketId) as Array<{ payload_json: string | null }>;
+  if (created.length !== 1) return false;
+  const stated = payloadOf(created[0]!.payload_json);
+  if ("risk_level" in stated) {
+    const stored = db.prepare("SELECT risk_level FROM tickets WHERE id = ?").get(ticketId) as
+      { risk_level: string } | undefined;
+    if (!stored || String(stored.risk_level) !== stated.risk_level) return false;
+  }
   const risk = db
     .prepare(
       "SELECT 1 AS x FROM work_events WHERE entity_type = 'ticket' AND entity_id = ? AND event_type = ? LIMIT 1",
@@ -263,7 +282,7 @@ const LIFTED = "autonomy.step_down_lifted";
 /** The claim history the claim rule reads (a chain track, never a seal's lifecycle). */
 export const CLAIM_TRACK: Pick<RowSealSubject, "entityType" | "lifecycleEvents"> = {
   entityType: "ticket",
-  lifecycleEvents: ["claim.created", "ticket.human_claimed"],
+  lifecycleEvents: ["claim.created", "ticket.created", "ticket.human_claimed"],
 };
 
 /** The chain track every "is a step-down in force" answer checks. */

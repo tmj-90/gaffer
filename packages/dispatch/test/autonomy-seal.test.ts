@@ -384,6 +384,81 @@ describe("ticket risk: read only through a verified seal", () => {
     }
   });
 
+  it("the first claim never seals a value a database writer put in place of the one the creator stated", () => {
+    const w = world();
+    const mcp = keyless(w);
+    const lib = Dispatch.open(w.dbPath); // the planner: crew's idle loops (a process-local key)
+    try {
+      const api = repoNamed(w.wg, "api");
+      enable(w.wg, api, "low", "merge");
+      const ready = (id: string) => {
+        w.wg.linkRepository(id, "api", "primary", human);
+        w.wg.addAcceptanceCriterion({ ticket_id: id, text: "ok" }, human);
+        w.wg.markReady(id, human);
+      };
+      const claimIt = (id: string) => {
+        const a = w.wg.registerAgent({ display_name: `a-${id}`, max_risk: "critical" }, human);
+        w.wg.claimTicket({ ticket_id: id, agent_id: a.id, ttl_seconds: 600 }, agentRunner);
+      };
+      // (1) The planner files at the default (medium); a writer lowers it before the claim.
+      const planned = lib.createTicket({ title: "Planned", description: "x" }, agent);
+      ready(planned.id);
+      w.wg.db.prepare("UPDATE tickets SET risk_level = 'low' WHERE id = ?").run(planned.id);
+      expect(
+        w.wg.reviewUnsignedTicketRisks().unsigned.find((u) => u.id === planned.id),
+      ).toMatchObject({
+        sealed_at_claim: false,
+      });
+      claimIt(planned.id);
+      expect(sealRow(w.wg, "ticket_risk", planned.id)).toBeUndefined();
+      expect(w.wg.autonomyRisk(w.wg.resolveTicket(planned.id))).toMatchObject({
+        level: "critical",
+        signed: false,
+      });
+      expect(decide(w.wg, planned.id, "merge").decision).toBe("deny");
+      // (2) A keyless creation at high that a person made ready; lowered before the claim.
+      const drafted = mcp.createTicket(
+        { title: "Drafted", description: "x", risk_level: "high" },
+        agent,
+      );
+      ready(drafted.id);
+      w.wg.db.prepare("UPDATE tickets SET risk_level = 'low' WHERE id = ?").run(drafted.id);
+      claimIt(drafted.id);
+      expect(sealRow(w.wg, "ticket_risk", drafted.id)).toBeUndefined();
+      // (3) A row inserted straight into the table (no creation on record) is never sealed.
+      const cols = (w.wg.db.prepare("PRAGMA table_info(tickets)").all() as Array<{ name: string }>)
+        .map((c) => c.name)
+        .filter((c) => c !== "id" && c !== "number");
+      w.wg.db
+        .prepare(
+          `INSERT INTO tickets (id, number, ${cols.join(", ")}) SELECT 'inserted', 9999, ${cols.join(", ")} FROM tickets WHERE id = ?`,
+        )
+        .run(drafted.id);
+      w.wg.db
+        .prepare(
+          "INSERT INTO ticket_repos (ticket_id, repo_id, relation, access, created_at) SELECT 'inserted', repo_id, relation, access, created_at FROM ticket_repos WHERE ticket_id = ?",
+        )
+        .run(drafted.id);
+      w.wg.db
+        .prepare("UPDATE tickets SET status = 'ready', risk_level = 'low' WHERE id = 'inserted'")
+        .run();
+      claimIt("inserted");
+      expect(sealRow(w.wg, "ticket_risk", "inserted")).toBeUndefined();
+      // The unlowered control: the planner's own value is still sealed at the first claim.
+      const honest = lib.createTicket({ title: "Honest", description: "x" }, agent);
+      ready(honest.id);
+      claimIt(honest.id);
+      expect(w.wg.autonomyRisk(w.wg.resolveTicket(honest.id))).toMatchObject({
+        level: "medium",
+        signed: true,
+      });
+    } finally {
+      lib.db.close();
+      mcp.db.close();
+      w.wg.db.close();
+    }
+  });
+
   it("a later claim never re-signs: a keyless first claim, or a value changed after the seal", () => {
     const w = world();
     const mcp = keyless(w);

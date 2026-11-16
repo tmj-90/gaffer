@@ -520,10 +520,13 @@ on the same `events/rowSeal.ts` as signed principals):
   (held), never the stored value. Who seals: a KEY HOLDER at creation (the REST server,
   the host CLI); the trusted host at a ticket's FIRST claim when nothing sealed it before
   (a ticket created through the agent-facing MCP server, which holds no key, or an agent's
-  sandboxed CLI, which cannot read it). The claim rule seals only a ticket that has no
-  risk record, no seal and no earlier claim, and only after checking that its claim
-  history and risk records are intact in the chain; a later claim never re-signs a changed
-  value, and nothing else repairs a missing or broken seal.
+  sandboxed CLI, which cannot read it), and tickets the planner's idle loops file. The
+  claim rule seals only a ticket that has no risk record, no seal and no earlier claim,
+  exactly one `ticket.created` event, and a stored risk equal to the one that event
+  recorded (a risk lowered by a database writer between creation and claim is not sealed:
+  a person re-signs it), and only after checking that its creation, claim history and risk
+  records are intact in the chain; a later claim never re-signs a changed value, and
+  nothing else repairs a missing or broken seal.
 - **Lifts.** A lift of a step-down is a person's act, sealed with the lift event (its id,
   chain hash, the row it gives back, how and by whom). A lift without a valid seal is
   ignored: the step-down stays in force, and its evidence count does not restart. A
@@ -552,8 +555,9 @@ on the same `events/rowSeal.ts` as signed principals):
 
 What a database writer can still do: take autonomy away (forge a step-down, break a seal,
 delete rows: every such change is a hold for a person, a denial of service it had
-anyway); state a low risk for a ticket it creates through MCP, which the first claim then
-seals (the observed-risk comparison at approval is the defence, as before); rewrite events
+anyway); state a low risk for a ticket it creates itself (through MCP, or a row it inserts
+with a creation event it appends), which the first claim then seals (the observed-risk
+comparison at approval is the defence, as before); rewrite events
 written by a keyless process after the last anchor, before a key holder's next write moves
 the anchor (the claim rule checks up to the head, but a deletion with a rechain of that
 unanchored tail is not detectable); and anything that needs the factory key, which it does
@@ -1028,8 +1032,9 @@ a presence boolean, and an argument not on the allowlist is never copied.
   What such a write cannot do any more: grant itself a principal (signed principals) or
   automatic approval or merge (sealed autonomy: a policy row, a lowered risk or a lift it
   writes counts for nothing). It can still state a low risk for a ticket it creates
-  through MCP before that ticket's first claim seals it (the observed-risk comparison at
-  approval is the defence), and take autonomy away.
+  itself (through MCP, or a row it inserts with a creation event it appends) before that
+  ticket's first claim seals it (the observed-risk comparison at approval is the defence),
+  and take autonomy away.
 - **Agent launches still read user-level settings.** No launch passes
   `--setting-sources project,local`: an operator who authenticates through user-level
   settings (`apiKeyHelper`, `env`) would lose it, and that cannot be proved without the

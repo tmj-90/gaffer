@@ -177,8 +177,9 @@ const CHAIN_COLUMNS =
 type Tracked = Pick<RowSealSubject, "entityType" | "lifecycleEvents">;
 
 /**
- * Every lifecycle track a check may ask about (the sealed subjects, and the claim history
- * the trusted host reads before it seals a ticket's risk at its first claim). One list for
+ * Every lifecycle track a check may ask about (the sealed subjects, and the creation and
+ * claim history the trusted host reads before it seals a ticket's risk at its first claim).
+ * One list for
  * every process, so a checkpoint one process records covers what another asks.
  */
 const KNOWN_TRACKS: readonly Tracked[] = [
@@ -196,7 +197,10 @@ const KNOWN_TRACKS: readonly Tracked[] = [
     ],
   },
   { entityType: "ticket", lifecycleEvents: ["ticket.risk_set"] },
-  { entityType: "ticket", lifecycleEvents: ["claim.created", "ticket.human_claimed"] },
+  {
+    entityType: "ticket",
+    lifecycleEvents: ["claim.created", "ticket.created", "ticket.human_claimed"],
+  },
   {
     entityType: "repository",
     lifecycleEvents: ["autonomy.stepped_down", "autonomy.step_down_lifted"],

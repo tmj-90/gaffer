@@ -15,9 +15,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const APP_JS = path.join(path.resolve(process.cwd(), "src/api/web"), "app.js");
 const SRC = readFileSync(path.join(path.dirname(APP_JS), "js/router.js"), "utf8");
 
-/** The keys of a top-level `const NAME = { … };` object literal in app.js. */
+/** The keys of a top-level `const NAME = table({ … });` lookup table in router.js. */
 function objectKeys(name: string): string[] {
-  const m = new RegExp(`\\nconst ${name} = \\{([\\s\\S]*?)\\n\\};`).exec(SRC);
+  const m = new RegExp(`\\nconst ${name} = table\\(\\{([\\s\\S]*?)\\n\\}\\);`).exec(SRC);
   if (!m) throw new Error(`const ${name} not found in app.js`);
   return [...m[1]!.matchAll(/^\s+([a-z]+):/gm)].map((k) => k[1]!);
 }

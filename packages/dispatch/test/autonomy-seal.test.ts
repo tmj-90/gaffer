@@ -24,7 +24,7 @@ import {
   AUTONOMY_STEPPED_DOWN_EVENT,
 } from "../src/services/autonomyStepDownStore.js";
 import { systemClock } from "../src/util/clock.js";
-import { repoNamed, ticketOn } from "./helpers/autonomyLadder.js";
+import { landedChange, repoNamed, ticketOn } from "./helpers/autonomyLadder.js";
 import { giveTicketRealDelivery, nonEmptyDiffRunner } from "./helpers/realDiff.js";
 
 const human: Actor = { type: "human", id: "tom" };
@@ -516,6 +516,102 @@ describe("step-down lifts: a person's sealed act", () => {
       } finally {
         again.db.close();
       }
+    } finally {
+      wg.db.close();
+    }
+  });
+});
+
+describe("step-downs land on the signed risk, not the stored column", () => {
+  function steppedRows(wg: Dispatch, repoId: string): string[] {
+    return (
+      wg.db
+        .prepare(
+          "SELECT payload_json FROM work_events WHERE entity_type = 'repository' AND entity_id = ? AND event_type = ? ORDER BY rowid",
+        )
+        .all(repoId, AUTONOMY_STEPPED_DOWN_EVENT) as Array<{ payload_json: string }>
+    ).map((r) => {
+      const p = JSON.parse(r.payload_json) as { risk_level: string; gate: string };
+      return `${p.risk_level}/${p.gate}`;
+    });
+  }
+
+  it("a regression of a change whose stored risk was raised after it landed still steps its own row down", () => {
+    for (const raised of ["high", "critical"] as const) {
+      const { wg } = world();
+      try {
+        const api = repoNamed(wg, "api");
+        enable(wg, api, "low", "approve");
+        enable(wg, api, "low", "merge");
+        const landed = landedChange(wg, "api", "low");
+        // A database writer moves the landed change out of the low row.
+        wg.db.prepare("UPDATE tickets SET risk_level = ? WHERE id = ?").run(raised, landed.id);
+        const defect = ticketOn(wg, "api", "medium", "It broke");
+        const res = wg.fileRegression(String(defect.number), String(landed.number), human);
+        const rows = res.stepped_down.map((r) => `${r.riskLevel}/${r.gate}`);
+        expect(rows).toEqual(expect.arrayContaining(["low/approve", "low/merge"]));
+        expect(steppedRows(wg, api)).toEqual(expect.arrayContaining(["low/approve", "low/merge"]));
+        const next = ticketOn(wg, "api", "low", "Next");
+        expect(decide(wg, next.id, "approve").decision).toBe("deny");
+        expect(decide(wg, next.id, "merge").decision).toBe("deny");
+      } finally {
+        wg.db.close();
+      }
+    }
+  });
+
+  it("a signed risk steps down exactly its own row, as before", () => {
+    const { wg } = world();
+    try {
+      const api = repoNamed(wg, "api");
+      enable(wg, api, "low", "approve");
+      const landed = landedChange(wg, "api", "low");
+      const defect = ticketOn(wg, "api", "medium", "It broke");
+      const res = wg.fileRegression(String(defect.number), String(landed.number), human);
+      expect(res.stepped_down.map((r) => `${r.riskLevel}/${r.gate}`).sort()).toEqual([
+        "critical/merge",
+        "high/merge",
+        "low/approve",
+        "low/merge",
+        "medium/merge",
+      ]);
+    } finally {
+      wg.db.close();
+    }
+  });
+
+  it("tester failures counted toward a row cannot be moved out of it by editing the stored risk", () => {
+    const { wg } = world();
+    try {
+      const api = repoNamed(wg, "api");
+      enable(wg, api, "low", "approve");
+      const strike = (title: string) => {
+        const t = ticketOn(wg, "api", "low", title);
+        writeEvent(wg.db, {
+          entity_type: "ticket",
+          entity_id: t.id,
+          actor: agent,
+          event_type: "ticket.transitioned",
+          payload: { from: "in_review", to: "in_testing", reason: "review_approved_to_testing" },
+        });
+        wg.db.prepare("UPDATE tickets SET status = 'in_testing' WHERE id = ?").run(t.id);
+        return t;
+      };
+      const unprovable = (id: string) =>
+        wg.recordLaneVerdict(
+          id,
+          { lane: "tester", verdict: "held", held_code: "tester_unprovable", held_reason: "x" },
+          { type: "system" },
+        );
+      const a = strike("A");
+      unprovable(a.id);
+      // The writer moves the first strike's ticket out of the low row before the second.
+      wg.db.prepare("UPDATE tickets SET risk_level = 'high' WHERE id = ?").run(a.id);
+      const b = strike("B");
+      unprovable(b.id);
+      expect(steppedRows(wg, api)).toContain("low/approve");
+      const next = ticketOn(wg, "api", "low", "Next");
+      expect(decide(wg, next.id, "approve").decision).toBe("deny");
     } finally {
       wg.db.close();
     }

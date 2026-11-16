@@ -18,7 +18,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { setPrincipalResolver } from "../src/api/auth.js";
 import { createApiServer } from "../src/api/server.js";
@@ -279,14 +279,16 @@ describe("trigger (c): tester FAILs and UNPROVABLE holds on automatic approvals"
     try {
       const api = repoNamed(wg, "api");
       const old = autoApprovedInTesting(wg, "api", "high");
-      unprovable(wg, old.id);
-      // Age that strike past the 30-day window.
-      wg.db
-        .prepare(
-          `UPDATE work_events SET created_at = '2020-01-01T00:00:00.000Z'
-            WHERE entity_id = ? AND event_type = 'ticket.lane_verdict'`,
-        )
-        .run(old.id);
+      // A strike recorded past the 30-day window. Recorded at that time rather than edited
+      // in place afterwards: an edited event breaks the hash chain, and with it every
+      // signed risk (SEALED AUTONOMY: an unsigned risk steps down every level).
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        vi.setSystemTime(new Date("2020-01-01T00:00:00.000Z"));
+        unprovable(wg, old.id);
+      } finally {
+        vi.useRealTimers();
+      }
       unprovable(wg, autoApprovedInTesting(wg, "api", "high").id);
       expect(rows(wg, api)).toEqual([]);
       unprovable(wg, autoApprovedInTesting(wg, "api", "high").id);

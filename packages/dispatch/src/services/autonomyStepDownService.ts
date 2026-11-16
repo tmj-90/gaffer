@@ -38,7 +38,7 @@
 import { inTransaction, type Db } from "../db/connection.js";
 import { RISK_LEVELS, type Actor, type RiskLevel, type Ticket } from "../domain/types.js";
 import { writeEvent } from "../events/eventWriter.js";
-import { sealLift } from "../events/autonomySeal.js";
+import { decidedRisk, sealLift } from "../events/autonomySeal.js";
 import { GateKeyError, type GateKeyring } from "../events/gateSeal.js";
 import type { PrincipalView } from "../repositories/principalRepository.js";
 import type { ReviewDecisionRow } from "../repositories/eventRepository.js";
@@ -70,6 +70,33 @@ export interface StepDownHost {
   readonly gateKeyring: GateKeyring;
   /** SEALED AUTONOMY: which lift events count (sealed ones). */
   liftCounts(eventId: string): boolean;
+}
+
+/**
+ * SEALED AUTONOMY: the risk levels a step-down about `ticket` applies to. The stored column
+ * is honoured only when its seal verifies; a database writer that raised or lowered it (on
+ * a change that already landed) would otherwise move the step-down onto a row that did not
+ * earn it and leave the row that did automatic. An unsigned risk could be any level, so
+ * every level steps down (fail closed: a person lifts what was not meant).
+ */
+function stepDownLevels(
+  host: Pick<StepDownHost, "db" | "gateKeyring">,
+  ticket: { id: string; risk_level: string },
+): string[] {
+  let risk: { level: string; signed: boolean };
+  try {
+    risk = decidedRisk(host.db, host.gateKeyring, ticket);
+  } catch {
+    risk = { level: ticket.risk_level, signed: false };
+  }
+  return risk.signed ? [risk.level] : [...RISK_LEVELS];
+}
+
+/** The words a step-down says about the risk it was recorded at. */
+function riskWords(levels: readonly string[], stored: string): string {
+  return levels.length === 1
+    ? `a ${levels[0]}-risk change`
+    : `a change whose risk level (${stored} as stored) is not signed by this factory, so every risk level steps down,`;
 }
 
 /** The reasons the approve path stamps on a review approval. */
@@ -260,17 +287,20 @@ export function stepDownForRegression(
   const gates = automaticGates(host.db, original.id);
   if (!gates.approve && !gates.merge) return [];
   const tickets = [ticketRef(defect), ticketRef(original)];
-  return recordStepDowns(
-    host,
-    {
-      repoIds: host.writeRepoIds(original),
-      riskLevel: original.risk_level,
-      gates: gatesOf(gates),
-      trigger: "regression",
-      why: `${num(tickets[0]!)} was linked by ${who(actor)} as a regression of ${num(tickets[1]!)}, a ${original.risk_level}-risk change ${how(gates)}.`,
-      tickets,
-    },
-    actor,
+  const levels = stepDownLevels(host, original);
+  return levels.flatMap((riskLevel) =>
+    recordStepDowns(
+      host,
+      {
+        repoIds: host.writeRepoIds(original),
+        riskLevel,
+        gates: gatesOf(gates),
+        trigger: "regression",
+        why: `${num(tickets[0]!)} was linked by ${who(actor)} as a regression of ${num(tickets[1]!)}, ${riskWords(levels, original.risk_level)} ${how(gates)}.`,
+        tickets,
+      },
+      actor,
+    ),
   );
 }
 
@@ -288,17 +318,20 @@ export function stepDownForReopen(
   const gates = automaticGates(host.db, ticket.id);
   if (!gates.approve && !gates.merge) return [];
   const tickets = [ticketRef(ticket)];
-  return recordStepDowns(
-    host,
-    {
-      repoIds: host.writeRepoIds(ticket),
-      riskLevel: ticket.risk_level,
-      gates: gatesOf(gates),
-      trigger: "reopened",
-      why: `${num(tickets[0]!)} was reopened for review by ${who(actor)} after it was ${how(gates)} (${ticket.risk_level} risk).`,
-      tickets,
-    },
-    actor,
+  const levels = stepDownLevels(host, ticket);
+  return levels.flatMap((riskLevel) =>
+    recordStepDowns(
+      host,
+      {
+        repoIds: host.writeRepoIds(ticket),
+        riskLevel,
+        gates: gatesOf(gates),
+        trigger: "reopened",
+        why: `${num(tickets[0]!)} was reopened for review by ${who(actor)} after it was ${how(gates)} (${levels.length === 1 ? `${riskLevel} risk` : `its risk level, ${ticket.risk_level} as stored, is not signed by this factory, so every risk level steps down`}).`,
+        tickets,
+      },
+      actor,
+    ),
   );
 }
 
@@ -321,18 +354,27 @@ export function stepDownForTesterVerdict(
   const windowStart = new Date(Date.now() - STEP_DOWN_WINDOW_DAYS * DAY_MS).toISOString();
   const states = readStepDowns(host.db, (id) => host.liftCounts(id));
   const out: SteppedDownRow[] = [];
+  // SEALED AUTONOMY: the rows are counted at each ticket's SIGNED risk; a ticket whose risk
+  // is not signed counts at every level (a database writer must not move failures out of a
+  // row's count, nor this ticket's failure onto another row, by editing the stored column).
+  const levelsOf = new Map<string, readonly string[]>();
+  const levels = (t: { id: string; risk_level: string }): readonly string[] => {
+    let hit = levelsOf.get(t.id);
+    if (!hit) {
+      hit = stepDownLevels(host, t);
+      levelsOf.set(t.id, hit);
+    }
+    return hit;
+  };
   for (const repoId of host.writeRepoIds(ticket)) {
-    const state = states.get(stepDownKey(repoId, ticket.risk_level, "approve"));
-    if (state?.inForce) continue;
-    let since = windowStart;
-    for (const t of [state?.lastStepDown?.at, state?.lastLift?.at]) if (t && t > since) since = t;
     const rows = host.db
       .prepare(
-        `SELECT e.rowid AS rowid, e.entity_id AS ticket_id, t.number AS number
+        `SELECT e.rowid AS rowid, e.entity_id AS ticket_id, t.number AS number,
+                t.risk_level AS risk_level, e.created_at AS created_at
            FROM work_events e
            JOIN tickets t ON t.id = e.entity_id
            JOIN ticket_repos tr ON tr.ticket_id = t.id AND tr.repo_id = @repoId AND tr.access = 'write'
-          WHERE e.entity_type = 'ticket' AND e.created_at > @since AND t.risk_level = @risk
+          WHERE e.entity_type = 'ticket' AND e.created_at > @window
             AND (e.event_type = 'ticket.tester_failed'
                  OR (e.event_type = @lane
                      AND json_extract(e.payload_json, '$.lane') = 'tester'
@@ -340,34 +382,47 @@ export function stepDownForTesterVerdict(
                      AND json_extract(e.payload_json, '$.held_code') = 'tester_unprovable'))
           ORDER BY e.rowid`,
       )
-      .all({ repoId, since, risk: ticket.risk_level, lane: LANE_VERDICT_EVENT }) as Array<{
+      .all({ repoId, window: windowStart, lane: LANE_VERDICT_EVENT }) as Array<{
       rowid: number;
       ticket_id: string;
       number: number | null;
+      risk_level: string;
+      created_at: string;
     }>;
-    const counted = rows.filter((r) => automaticGates(host.db, r.ticket_id, r.rowid).approve);
-    if (counted.length < limit) continue;
-    const seen = new Set<string>();
-    const tickets: StepDownTicket[] = [];
-    for (const r of counted) {
-      if (seen.has(r.ticket_id)) continue;
-      seen.add(r.ticket_id);
-      tickets.push({ id: r.ticket_id, number: r.number });
+    for (const risk of levels(ticket)) {
+      const state = states.get(stepDownKey(repoId, risk, "approve"));
+      if (state?.inForce) continue;
+      let since = windowStart;
+      for (const t of [state?.lastStepDown?.at, state?.lastLift?.at]) if (t && t > since) since = t;
+      const counted = rows.filter(
+        (r) =>
+          String(r.created_at) > since &&
+          levels({ id: r.ticket_id, risk_level: r.risk_level }).includes(risk) &&
+          automaticGates(host.db, r.ticket_id, r.rowid).approve,
+      );
+      if (counted.length < limit) continue;
+      const seen = new Set<string>();
+      const tickets: StepDownTicket[] = [];
+      for (const r of counted) {
+        if (seen.has(r.ticket_id)) continue;
+        seen.add(r.ticket_id);
+        tickets.push({ id: r.ticket_id, number: r.number });
+      }
+      out.push(
+        ...recordStepDowns(
+          host,
+          {
+            repoIds: [repoId],
+            riskLevel: risk,
+            gates: ["approve"],
+            trigger: "tester_failures",
+            why: `${counted.length} tester FAILs or unprovable holds on automatically approved ${risk}-risk changes (${tickets.map(num).join(", ")}) within ${STEP_DOWN_WINDOW_DAYS} days; the limit is ${limit}.`,
+            tickets,
+          },
+          actor,
+        ),
+      );
     }
-    out.push(
-      ...recordStepDowns(
-        host,
-        {
-          repoIds: [repoId],
-          riskLevel: ticket.risk_level,
-          gates: ["approve"],
-          trigger: "tester_failures",
-          why: `${counted.length} tester FAILs or unprovable holds on automatically approved ${ticket.risk_level}-risk changes (${tickets.map(num).join(", ")}) within ${STEP_DOWN_WINDOW_DAYS} days; the limit is ${limit}.`,
-          tickets,
-        },
-        actor,
-      ),
-    );
   }
   return out;
 }

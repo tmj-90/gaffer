@@ -930,11 +930,12 @@ a presence boolean, and an argument not on the allowlist is never copied.
   hook. Variables that point a runtime at files the agent wrote (`PYTHONHOME`,
   `PYTHONUSERBASE`, `BUNDLE_GEMFILE`, `npm_config_script_shell`, `JAVA_TOOL_OPTIONS
   -javaagent:`, `LD_LIBRARY_PATH`, `CC` for a makefile) are the program-file residual
-  above; `TMPDIR` names where programs put temporary files and is not judged. The Bash
-  write-target extractor reads a command as segments split on `;`, `&&`, `|` and
-  newlines: a write verb inside `( )`, `{ }`, an `if`/`case` body, `exec`, a command
-  substitution, a `trap` or `eval` string, or text piped to `sh` is judged only when
-  another rule names its path. Environment variables
+  above; `TMPDIR` names where programs put temporary files and is not judged. Bash write
+  targets are read in every command the expansion walk reaches (`( )`, `{ }`, if / for /
+  case bodies, functions, substitutions, `eval`, `trap`, `sh -c`, `echo ... | sh`); a
+  shell program that only exists at run time (`eval "$(tool)"`, a program piped to `sh`
+  from another command, bash evaluating a quoted `a[$(cmd)]` as arithmetic) is not.
+  Environment variables
   exported by an earlier command, if the agent's shell keeps them, are not seen. A lexer
   can also misjudge where a string ends in an exotic program; a capability word inside
   text is refused for that reason, but a determined obfuscation in a language's dark

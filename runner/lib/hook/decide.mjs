@@ -48,7 +48,7 @@ import {
   secretBoundaryReason,
   stripSearchPatterns,
 } from "./reads.mjs";
-import { expandedReadReason } from "./read-operands.mjs";
+import { expandedReadReason, expandedWriteTargets } from "./read-operands.mjs";
 import { UNVERIFIABLE_TARGET } from "./shell.mjs";
 import { extractBashWriteTargets } from "./writes.mjs";
 
@@ -340,7 +340,13 @@ function checkCommand(cmd) {
   const roots = resolveRoots();
   // Each distinct target once: a target can need a git lookup (gitExecSurfaceReason), and
   // `awk '{print 1>x print 1>x ...}'` named the same one thousands of times (50 s).
-  for (const target of new Set(extractBashWriteTargets(cmd))) {
+  // The segment extractor, and the expansion walk that also reads `( )`, `{ }`, if / for
+  // / case bodies, substitutions, eval, trap and sh -c bodies with loop variables known.
+  const writeTargets = new Set([
+    ...extractBashWriteTargets(cmd),
+    ...expandedWriteTargets(cmd, roots),
+  ]);
+  for (const target of writeTargets) {
     // Many distinct targets each cost git lookups: past the budget, refuse rather than
     // let the hook's own timeout decide.
     withinRuleBudget(cmd);

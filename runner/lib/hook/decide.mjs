@@ -338,7 +338,12 @@ function checkCommand(cmd) {
 
   // Repo-access boundary for bash write ops and branch creation.
   const roots = resolveRoots();
-  for (const target of extractBashWriteTargets(cmd)) {
+  // Each distinct target once: a target can need a git lookup (gitExecSurfaceReason), and
+  // `awk '{print 1>x print 1>x ...}'` named the same one thousands of times (50 s).
+  for (const target of new Set(extractBashWriteTargets(cmd))) {
+    // Many distinct targets each cost git lookups: past the budget, refuse rather than
+    // let the hook's own timeout decide.
+    withinRuleBudget(cmd);
     // BASH-vs-WRITE PARITY: a bash write op must obey the SAME `.git` protection
     // the Write tool applies in checkWrite — not just the write-root boundary. A
     // `.git/…` write (e.g. `echo … > .git/hooks/post-commit`, `cp evil

@@ -154,6 +154,16 @@ for (const [label, command] of [
   );
 }
 
+// A write target can cost git lookups (lib/hook/git.mjs gitExecSurfaceReason): the same
+// target named thousands of times took 40 s before each distinct target was judged once.
+{
+  const { status, ms } = timed(`awk '{${"print 1>x ".repeat(6000)}}'`);
+  t.assert(
+    `hook answers 6000 redirections to one awk target with exit 2 in < 2s over start-up (exit ${status}, ${ms}ms, start-up ${baseline}ms)`,
+    status === 2 && ms - baseline < 2000,
+  );
+}
+
 // The inline-program capability rule (63C: lib/hook/inline-programs.mjs reads the shell,
 // lib/hook/inline-lex.mjs lexes the program, lib/hook/interpreters.mjs judges it) is one
 // pass with bounded lookahead: each worst case below, near the 64 KiB field cap, is decided

@@ -344,6 +344,26 @@ insert an approval and recompute a consistent chain, and every landing path acte
     caller) and the tokenless operator CLI (`wg ticket tester-pass --as system`, `wg
     review approve`), which signs for whoever runs it on the host. Run without an OS
     sandbox only inside a VM or container you trust.
+  - **The tick's helper servers** (`runner/config/17-cli.sh`): the dispatch server is that
+    operator CLI kept running for one tick, and runs whatever command reaches its request
+    pipe, as the operator; the JSON server runs `runner/lib/json-tool.mjs`, which reads
+    files, can run `git show` and evaluates the expression it is given. Their pipes live
+    in 0700 directories under `$GAFFER_DATA/wg-serve`, never on an inherited file
+    descriptor, and they exit with their tick. The 0700 mode stops no process of the
+    operator's user, and an agent is one (with `GAFFER_DATA` in its environment), so each
+    server answers only lines that end with the tick key: 128 random bits the tick makes,
+    keeps only in its shell's memory (never exported, never in an argv or a file) and
+    hands each server through a pipe on its stdin. No call is in flight while the agent
+    runs, so agent code that finds the pipes has nothing to copy the key from; the
+    safety hook also refuses any command that names `wg-serve`. What remains is a process
+    left running past the agent's turn, which could read a request line or swap a
+    request file during a later call; such a process can equally start the operator CLI
+    itself (the `none` residual below). Under `sandbox-exec` every profile denies writing anything there (it is not
+    one of the in-sandbox writers); under `docker` the wrapper creates `wg-serve/` before
+    it masks the entries of `$GAFFER_DATA`, so it is masked; under `none` they are as
+    reachable as the CLI itself. Sandboxed code can still READ a reply file under
+    `sandbox-exec` (reads are open there), which holds nothing the database it can also
+    read does not.
 
 ### Signed principals
 

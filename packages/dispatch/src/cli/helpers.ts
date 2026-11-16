@@ -173,8 +173,19 @@ export function writeOutputFile(path: string, data: string): void {
   }
 }
 
+/**
+ * The tick's dispatch server (serveCore.ts) reads its requests on its own channel; a
+ * command it runs has no stdin of the caller's to read. It serves only commands that
+ * never read stdin, and this makes sure: a read fails instead of taking the server's.
+ */
+let stdinBlocked = false;
+export function blockStdin(on: boolean): void {
+  stdinBlocked = on;
+}
+
 /** Read the whole of stdin as a UTF-8 string (used when no file path is given). */
 export function readStdin(): string {
+  if (stdinBlocked) throw new Error("internal: a served command tried to read stdin");
   // fd 0 is stdin; a synchronous full read keeps the command's control flow
   // simple and matches the rest of the CLI (no streaming needed for a plan).
   return readFileSync(0, "utf8");

@@ -19,6 +19,7 @@ import {
   MCP_RUNTIME_FILE,
   PROC_ENVIRON,
   SECRET_PATH,
+  TICK_SERVERS_FRAGMENT,
   TOKEN_SOURCE_EXT_GUARD,
   canonicalize,
   expandTildeWord,
@@ -68,7 +69,7 @@ import { effectiveVerbAfter, extractShellDashCBodies, resolveEffectiveTokens } f
 // (`npx prettier --write src/design-tokens.json`) is not flagged; the exact
 // `dashboard-token` alternative is guard-free and always fires.
 const SECRET_PATH_FRAGMENT = new RegExp(
-  String.raw`(${ENV_FILE_FRAGMENT}|${FACTORY_KEYS_FRAGMENT}|[\w./-]*\.pem\b|[\w./-]*\.key\b|[\w./-]*\.p12\b|id_rsa\b|id_ed25519\b|id_[a-z0-9]+\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|\.gnupg\/|${CLI_CREDENTIAL_FRAGMENT}|${CRED_NAME_FRAGMENT}|${MCP_RUNTIME_FILE}\b|${PROC_ENVIRON}\b|dashboard-token\b|[\w./-]*[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}\b)`,
+  String.raw`(${ENV_FILE_FRAGMENT}|${FACTORY_KEYS_FRAGMENT}|${TICK_SERVERS_FRAGMENT}|[\w./-]*\.pem\b|[\w./-]*\.key\b|[\w./-]*\.p12\b|id_rsa\b|id_ed25519\b|id_[a-z0-9]+\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|\.gnupg\/|${CLI_CREDENTIAL_FRAGMENT}|${CRED_NAME_FRAGMENT}|${MCP_RUNTIME_FILE}\b|${PROC_ENVIRON}\b|dashboard-token\b|[\w./-]*[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}\b)`,
   "i",
 );
 
@@ -124,7 +125,7 @@ const FILE_READ_PRIMITIVE =
 // SOURCE file is legitimate; `f=.gaffer/dashboard-token` and extensionless
 // token files stay denied.
 const SECRET_ASSIGNMENT = new RegExp(
-  String.raw`\b[\w]+=["']?[\w./~$-]*(${FACTORY_KEYS_FRAGMENT}|${ENV_FILE_FRAGMENT}|\.pem\b|\.key\b|\.p12\b|id_rsa\b|id_ed25519\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|${CLI_CREDENTIAL_FRAGMENT}|${CRED_NAME_FRAGMENT}|${MCP_RUNTIME_FILE}\b|${PROC_ENVIRON}\b|dashboard-token\b|[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}\b)`,
+  String.raw`\b[\w]+=["']?[\w./~$-]*(${FACTORY_KEYS_FRAGMENT}|${TICK_SERVERS_FRAGMENT}|${ENV_FILE_FRAGMENT}|\.pem\b|\.key\b|\.p12\b|id_rsa\b|id_ed25519\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|${CLI_CREDENTIAL_FRAGMENT}|${CRED_NAME_FRAGMENT}|${MCP_RUNTIME_FILE}\b|${PROC_ENVIRON}\b|dashboard-token\b|[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}\b)`,
   "i",
 );
 

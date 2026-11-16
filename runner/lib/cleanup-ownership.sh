@@ -21,6 +21,9 @@
 # Dispatch access is injected via GAFFER_WG_SHOW_CMD (prints `ticket show <ref>` JSON;
 # the ref is appended), defaulting to tick.sh's `wg`, so tests can run hermetically.
 _GAFFER_GCO_JSON_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/json-tool.mjs"
+# The JSON server reaches this lib's json-tool calls through gaffer_json_at
+# (config/17-cli.sh); sourced alone (a test), they run json-tool directly.
+declare -F gaffer_json_at >/dev/null 2>&1 || gaffer_json_at() { local t="$1"; shift; node "$t" "$@"; }
 _GAFFER_OWN_CLAIM_ID="${_GAFFER_OWN_CLAIM_ID:-}"
 _GCO_WHY=""
 
@@ -40,7 +43,7 @@ _gco_wg_show() {
 gaffer_note_own_claim() {
   local out
   out="$(_gco_wg_show "$1" 2>/dev/null)" || out=""
-  _GAFFER_OWN_CLAIM_ID="$(printf '%s' "$out" | node "$_GAFFER_GCO_JSON_TOOL" latest-claim-id 2>/dev/null || true)"
+  _GAFFER_OWN_CLAIM_ID="$(printf '%s' "$out" | gaffer_json_at "$_GAFFER_GCO_JSON_TOOL" latest-claim-id 2>/dev/null || true)"
   return 0
 }
 
@@ -57,7 +60,7 @@ gaffer_cleanup_owned() {
     _GCO_WHY="Dispatch could not be read (rc=$rc), so ownership is unknown"
     return 1
   fi
-  verdict="$(printf '%s' "$out" | node "$_GAFFER_GCO_JSON_TOOL" cleanup-owner --claim "${_GAFFER_OWN_CLAIM_ID:-}" --what "$what" 2>/dev/null || true)"
+  verdict="$(printf '%s' "$out" | gaffer_json_at "$_GAFFER_GCO_JSON_TOOL" cleanup-owner --claim "${_GAFFER_OWN_CLAIM_ID:-}" --what "$what" 2>/dev/null || true)"
   case "$verdict" in
     owned) return 0 ;;
     foreign*|unknown*) _GCO_WHY="${verdict#*	}" ;;

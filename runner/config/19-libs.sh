@@ -9,6 +9,8 @@
 # env scrub in 11-agent-env.sh and every gate run in lib/dod.sh use the same list).
 # shellcheck source=lib/env-scrub.sh
 [ -f "$RUNNER_DIR/lib/env-scrub.sh" ] && source "$RUNNER_DIR/lib/env-scrub.sh"
+# The tick's helper servers (config/17-cli.sh wg / gaffer_json call into it).
+[ -f "$RUNNER_DIR/lib/helper-servers.sh" ] && source "$RUNNER_DIR/lib/helper-servers.sh"
 
 # Strict-execution-mode provider seam (defines sandbox_wrap_cmd). Sourced last so
 # it can read the GAFFER_DATA / STRICT_* config above. Best-effort: a missing file

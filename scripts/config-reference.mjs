@@ -82,6 +82,7 @@ export const AREAS = {
   "14-usage": "The usage ledger",
   "15-modes": "Autonomy modes",
   "16-sandbox": "The sandbox, hygiene and backpressure",
+  "17-cli": "Troubleshooting: the tick's dispatch server",
   "18-review": "Review and landing",
   "20-gates": "Idle lanes, pull requests, CI and the eval judge",
 };
@@ -111,6 +112,19 @@ export const AREA_NOTES = {
     "cap bounds a call: without `GAFFER_MAX_CALL_USD` the reservation (its row's",
     "`reserve_basis` reads `kill-estimate`, or `floor` for the $0.05 used when the kill",
     "estimate is 0) is a floor, not a bound, and a call can cost more than it held.",
+  ],
+  "Troubleshooting: the tick's dispatch server": [
+    "**Two helper processes per tick.** A tick runs its dispatch CLI calls (`wg`) through",
+    "one long-lived dispatch process (`packages/dispatch/dist/cli/serve.js`) and its JSON",
+    "helper calls (`gaffer_json`, `jget`) through one long-lived JSON process",
+    "(`runner/lib/json-serve.mjs`), over named pipes in `$GAFFER_DATA/wg-serve/<tick",
+    "pid>.<random>`, instead of starting node for each call. Each call runs the same code",
+    "as the one-shot call and prints the same output; a call a server cannot run",
+    "identically (another command, a terminal on stdout or stderr, a changed PATH or",
+    "start-up environment, bash older than 4.4) runs one-shot. A dispatch server that dies,",
+    "hangs or answers garbage fails that call (a `WG_SERVER_FAILED` line on stderr); a JSON",
+    "call is simply run again one-shot. Either way the rest of the tick runs one-shot. The",
+    "servers stop with their tick, and exit by themselves when the tick is gone.",
   ],
 };
 /** The area of each runner lib that defaults a knob. */

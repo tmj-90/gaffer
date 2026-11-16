@@ -1,6 +1,9 @@
 # Gaffer orphaned-worktree recovery (A-1 parallel execution).
 # shellcheck shell=bash
 _GAFFER_JSON_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/json-tool.mjs"
+# The JSON server reaches this lib's json-tool calls through gaffer_json_at
+# (config/17-cli.sh); sourced alone (a test), they run json-tool directly.
+declare -F gaffer_json_at >/dev/null 2>&1 || gaffer_json_at() { local t="$1"; shift; node "$t" "$@"; }
 #
 # A killed worker (SIGKILL, a crashed host, an OOM) leaves its per-ticket worktree
 # dir under $GAFFER_DATA/worktrees/ticket-<NUM>/ behind, and its claim is reaped
@@ -48,7 +51,7 @@ _orphan_ticket_status() {
   local out rc=0 st
   out="$(_orphan_wg_show "$1" 2>/dev/null)" || rc=$?
   if [ "$rc" -ne 0 ] || [ -z "$out" ]; then echo UNKNOWN; return 0; fi
-  st="$(printf '%s' "$out" | node "$_GAFFER_JSON_TOOL" ticket-status 2>/dev/null || true)"
+  st="$(printf '%s' "$out" | gaffer_json_at "$_GAFFER_JSON_TOOL" ticket-status 2>/dev/null || true)"
   case "$st" in
     draft|refining|ready|claimed|in_progress|blocked|in_review|in_testing|ready_for_merge|done|failed|cancelled|paused) echo "$st" ;;
     *) echo UNKNOWN ;;

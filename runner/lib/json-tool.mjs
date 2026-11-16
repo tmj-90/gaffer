@@ -130,6 +130,48 @@ switch (cmd) {
     break;
   }
 
+  // ── fields: several jget reads of ONE document in one process ─────────────────
+  // fields <expr> <default> [<expr> <default>]...: stdin JSON → d; for each pair, the
+  // value `$(jget '<expr>' 2>/dev/null || echo '<default>')` would give, followed by a
+  // NUL (no value can hold one: bash drops NUL bytes from a command substitution). That
+  // is the expr output above with the trailing newlines a command substitution strips
+  // removed; an unparseable document or a throwing expression gives the default. All
+  // values are printed at once. gaffer_json_vars (config/17-cli.sh) reads them into
+  // shell variables without eval.
+  case "fields": {
+    if (args.length === 0 || args.length % 2 !== 0) {
+      process.stderr.write("json-tool fields: expects <expr> <default> pairs\n");
+      process.exit(2);
+    }
+    let d;
+    let parsed = true;
+    try {
+      d = parseStdin();
+    } catch {
+      parsed = false;
+    }
+    // What `$(...)` keeps of a printed line: no NUL bytes, no trailing newlines.
+    const substituted = (s) => s.replace(/\0/g, "").replace(/\n+$/, "");
+    const values = [];
+    for (let i = 0; i < args.length; i += 2) {
+      const dflt = substituted(args[i + 1]);
+      if (!parsed) {
+        values.push(dflt);
+        continue;
+      }
+      try {
+        // The runner's own literal (never data), evaluated as `expr` does.
+        const fn = new Function("d", "env", "argv", `"use strict"; return (${args[i]});`);
+        const v = pyStr(fn(d, process.env, []));
+        values.push(substituted(COLOUR ? v : v.replace(ANSI_SGR, "")));
+      } catch {
+        values.push(dflt);
+      }
+    }
+    out(values.map((v) => `${v}\0`).join(""));
+    break;
+  }
+
   // ── selection helpers (tick.sh / clarify.sh / review.sh) ────────────────────
   // pick-unskipped <skip-file> [--all]: stdin = ticket list; numbers not in the
   // skip file, first only (default) or every one (--all). Missing skip file → exit 1

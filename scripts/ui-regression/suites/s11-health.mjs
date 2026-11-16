@@ -10,17 +10,19 @@
 // tick's own output.
 export default async function s11(t, L) {
   const p = t.page;
-  await L.putSettings({ GAFFER_MAX_DELIVERY_ATTEMPTS: "1" });
+  // seed: Effort small (two attempts; GAFFER_EFFORT decides the attempt cap) and a
+  // delivery that fails every one of them, so it parks.
+  await L.putSettings({ GAFFER_EFFORT: "small" });
   const parked = await L.seedTicket(t, {
     title: `Injured ticket (${L.tag("s11")})`,
     acs: ["covered by a test"],
     ready: true,
   });
-  L.setStubMode(parked.number, "fail_first");
+  L.setStubMode(parked.number, "fail_always");
   await t.visit("work");
   await t.poll();
   await L.waitStatus(parked.id, L.SETTLED, 240000);
-  await L.putSettings({ GAFFER_MAX_DELIVERY_ATTEMPTS: "" });
+  await L.putSettings({ GAFFER_EFFORT: "" });
   if ((await L.ticketOf(parked.id)).status !== "blocked")
     t.bad(`seed: #${parked.number} did not park (${(await L.ticketOf(parked.id)).status})`);
 

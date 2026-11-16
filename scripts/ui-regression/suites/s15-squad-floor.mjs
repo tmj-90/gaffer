@@ -133,17 +133,19 @@ export default async function s15(t, L) {
   } else t.bad("could not get two agents on the squad for the taken-number check");
 
   // ── the jam bay lights for a blocked ticket ───────────────────────────────
-  await L.putSettings({ GAFFER_MAX_DELIVERY_ATTEMPTS: "1" });
+  // seed: Effort small (two attempts; GAFFER_EFFORT decides the attempt cap) and a
+  // delivery that fails every one of them, so it parks.
+  await L.putSettings({ GAFFER_EFFORT: "small" });
   const jam = await L.seedTicket(t, {
     title: `Jammed parcel (${L.tag("s15")})`,
     acs: ["covered by a test"],
     ready: true,
   });
-  L.setStubMode(jam.number, "fail_first");
+  L.setStubMode(jam.number, "fail_always");
   await t.visit("work");
   await t.poll();
   await L.waitStatus(jam.id, L.SETTLED, 240000);
-  await L.putSettings({ GAFFER_MAX_DELIVERY_ATTEMPTS: "" });
+  await L.putSettings({ GAFFER_EFFORT: "" });
   await t.visit("floor");
   // From Work this is a hash-only navigation, so visit() returns once its settle ends,
   // and the Floor's twelve reads (loadMatchDay) can take longer than that on a loaded

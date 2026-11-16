@@ -8,7 +8,9 @@ export default async function s3(t, L) {
   const p = t.page;
 
   // ── a delivery that exhausts its attempts parks to blocked ────────────────
-  await L.putSettings({ GAFFER_MAX_DELIVERY_ATTEMPTS: "1" }); // seed: one attempt only
+  // seed: Effort small (two attempts; GAFFER_EFFORT decides the attempt cap) and a
+  // delivery that fails every one of them.
+  await L.putSettings({ GAFFER_EFFORT: "small" });
   const stuck = await L.seedTicket(t, {
     title: `Rework-exhausted ticket (${L.tag("s3")})`,
     acs: ["covered by a test"],
@@ -20,10 +22,10 @@ export default async function s3(t, L) {
   const parked = await L.waitStatus(stuck.id, L.SETTLED, 240000);
   t.check(
     parked?.status === "blocked",
-    `a delivery that failed its only attempt is parked: #${stuck.number} → blocked`,
+    `a delivery that failed every attempt (Effort small: two) is parked: #${stuck.number} → blocked`,
     `the exhausted delivery ended '${parked?.status}'`,
   );
-  await L.putSettings({ GAFFER_MAX_DELIVERY_ATTEMPTS: "" });
+  await L.putSettings({ GAFFER_EFFORT: "" });
   await t.visit("work");
   // The board paints from a fresh fetch after the navigation, so wait for the card
   // to show the parked state before reading it (a slow runner read 'Claimed' here).
@@ -74,13 +76,15 @@ export default async function s3(t, L) {
     `the Team Sheet still offers Unblock for #${stuck.number}`,
   );
   // Park it again (a second exhausted attempt) and unblock it to Ready this time.
-  await L.putSettings({ GAFFER_MAX_DELIVERY_ATTEMPTS: "1" });
+  // seed: Effort small (two attempts; GAFFER_EFFORT decides the attempt cap) and a
+  // delivery that fails every one of them, so it parks.
+  await L.putSettings({ GAFFER_EFFORT: "small" });
   await L.api("POST", `/tickets/${stuck.id}/ready`);
   L.setStubMode(stuck.number, "fail_always");
   await t.visit("work");
   await t.poll();
   await L.waitStatus(stuck.id, L.SETTLED, 240000);
-  await L.putSettings({ GAFFER_MAX_DELIVERY_ATTEMPTS: "" });
+  await L.putSettings({ GAFFER_EFFORT: "" });
   if ((await L.ticketOf(stuck.id)).status !== "blocked")
     t.note(
       `#${stuck.number} did not park a second time (${(await L.ticketOf(stuck.id)).status}); Unblock → Ready not exercised`,

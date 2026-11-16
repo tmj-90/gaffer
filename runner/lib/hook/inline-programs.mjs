@@ -517,7 +517,11 @@ function walk(text, ctx, out) {
   }
   const lexed = lexShell(text);
   if (lexed.error) {
-    if (interpreterMentioned(text)) {
+    // Refused whenever it holds a word: bash runs every line before the one it cannot
+    // parse (`n''ode -e ...` then `echo "$(x"` on the next line runs node), and a quoted
+    // interpreter name hides from a word search. A text bash rejects whole runs nothing,
+    // so the refusal costs nothing there.
+    if (/[A-Za-z]/.test(text)) {
       out.reasons.push(`the command cannot be read as the shell will run it (${lexed.error})`);
     }
     return;
@@ -1089,8 +1093,10 @@ function inspectWords(words, c, prev, ctx, out, feed, guard = 0) {
       ) {
         out.reasons.push("a shell program filled in by xargs, parallel or find from their input");
       }
+      // A body the hook cannot read is a program it cannot see, whatever words it shows
+      // (`X=$(printf ...); sh -c "$X"`).
       const why = unreadableWhy(body, ctx);
-      if (why && interpreterMentioned(body.text)) out.reasons.push(why);
+      if (why) out.reasons.push(`${why} (${first} -c)`);
       return walk(wordText(body, ctx), { ...ctx, depth: ctx.depth + 1 }, out);
     }
     const script = ws.slice(1).find((w) => !w.text.startsWith("-"));
@@ -1111,6 +1117,8 @@ function inspectWords(words, c, prev, ctx, out, feed, guard = 0) {
       .slice(1)
       .map((w) => wordText(w, ctx))
       .join(" ");
+    // `eval "$(direnv export bash)"`, `eval "$(pyenv init -)"`: a tool's output is run as
+    // a program everywhere; refused only when the words show an interpreter.
     if (why && interpreterMentioned(body)) out.reasons.push(why);
     // eval runs in the current shell: a `cd` in it moves the commands after it.
     ctx.depth += 1;

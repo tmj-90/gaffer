@@ -25,11 +25,21 @@ import {
   memoryLoreQuery,
   rejectLoreBody,
   settingsBody,
+  removeOldKeysBody,
   updateClubBody,
   updateSquadAgentBody,
 } from "../schemas.js";
 import { isolationStatusForRequest } from "../isolation.js";
-import { listSettings, readSecretSetting, settingProblems, writeSettings } from "../settings.js";
+import {
+  applyNotifyChange,
+  readSecretSetting,
+  readSettingsFile,
+  removeOldKeys,
+  resolveSettingsPath,
+  settingProblems,
+  settingsReport,
+  writeSettings,
+} from "../settings.js";
 import { requestAgentFilter } from "../scopeGate.js";
 import { apiActor, apiAuth, apiPrincipal, isSharedOperator } from "./context.js";
 import { forgetLoreDrafts, forgetLoreStatus, routeReadModels } from "./readModels.js";
@@ -50,26 +60,31 @@ export async function routeApi(
   req: IncomingMessage,
   res: ServerResponse,
 ): Promise<void> {
-  // GET/POST /api/settings — the UI-editable factory config layer. GET reports
-  // every known setting (file value + envLocked + group); POST merges + writes
-  // settings.json atomically, refusing env-locked keys (env always wins) and
-  // dropping anything outside the known allow-list. Behind the same bearer
-  // gate + security headers as the rest of the control plane (checked above).
+  // GET /api/settings: the fourteen settings (value, origin, env-lock) and what the
+  // runner's own config derives from them (derived, migration, overrides, the removal
+  // plan); secrets masked. POST (or PUT) writes settings.json atomically: only the
+  // fourteen, validated as the runner validates them; any other key refuses the whole
+  // write, naming the setting that decides it now. Behind the same bearer gate, scope
+  // gate (an admin-level write) and security headers as the rest of the control plane.
   if (segments.length === 2 && segments[1] === "settings") {
     if (method === "GET") {
       // The isolation posture rides along (runner/gaffer sandbox-status, probed on each
-      // load): the Sandbox group shows it as a read-only line. The load never waits
-      // long for the probe: it answers with the posture it has and the fresh probe
-      // shows on the next load (isolation.ts).
+      // load): the Sandbox control shows it as a read-only line. The load never waits
+      // long for the probe (isolation.ts).
       const isolation = await isolationStatusForRequest();
-      sendJson(res, 200, { settings: listSettings(), isolation });
+      sendJson(res, 200, { ...settingsReport(), isolation });
       return;
     }
-    if (method === "POST") {
+    if (method === "POST" || method === "PUT") {
       const body = settingsBody.parse(await readJsonBody(req));
-      // One invalid value refuses the whole write (422 naming each field and why), so
-      // a bad field is never half-saved beside good ones and never silently dropped.
-      const problems = settingProblems(body.settings);
+      const updates: Record<string, string> = { ...body.settings };
+      if (body.notify !== undefined) {
+        const stored = readSettingsFile(resolveSettingsPath())["GAFFER_NOTIFY"] ?? "";
+        updates["GAFFER_NOTIFY"] = applyNotifyChange(updates["GAFFER_NOTIFY"] ?? stored, body.notify);
+      }
+      // One refused key or value refuses the whole write (422 naming each and why), so a
+      // bad field is never half-saved beside good ones and never silently dropped.
+      const problems = settingProblems(updates);
       if (problems.length > 0) {
         throw new DispatchError(
           "VALIDATION_ERROR",
@@ -77,15 +92,14 @@ export async function routeApi(
           { invalid: problems },
         );
       }
-      const result = writeSettings(body.settings);
-      // A saved SANDBOX_PROVIDER changes the posture: probe again with the new env and
-      // wait a little longer for that answer, since the person just changed it.
+      const result = writeSettings(updates);
+      // A saved GAFFER_SANDBOX changes the posture: probe again and wait a little longer.
       const isolation = await isolationStatusForRequest(process.env, {
         fresh: true,
         waitMs: 4_000,
       });
       sendJson(res, 200, {
-        settings: listSettings(),
+        ...settingsReport(),
         isolation,
         written: result.written,
         rejected: result.rejected,
@@ -95,6 +109,18 @@ export async function routeApi(
       return;
     }
     return methodNotAllowed(res);
+  }
+  // POST /api/settings/remove-old-keys: the person's removal act. Rewrites settings.json
+  // keeping only the fourteen, after the page showed exactly what goes (the body repeats
+  // those keys; a file that changed since is refused with 409 and nothing is written).
+  // Same authority as editing settings (the full token; an admin-level write for a
+  // principal, scopeGate.ts).
+  if (segments.length === 3 && segments[1] === "settings" && segments[2] === "remove-old-keys") {
+    if (method !== "POST") return methodNotAllowed(res);
+    const body = removeOldKeysBody.parse(await readJsonBody(req));
+    const removed = removeOldKeys(body);
+    sendJson(res, 200, { ...settingsReport(), removed });
+    return;
   }
   // GET /api/settings/secret/:key — an ADMIN principal reads a secret-bearing setting
   // back (external review #5). Every other principal sees only configured + host in

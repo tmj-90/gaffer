@@ -983,13 +983,32 @@ export type RejectLoreBody = z.infer<typeof rejectLoreBody>;
 export const settingsBody = z.object({
   settings: z
     .record(z.string(), z.string().max(4_000))
-    // Bound the key count so a single POST can't hand the write loop a
-    // huge-cardinality object (unknown keys are dropped later, but the loop
-    // still iterates every key on this single-threaded process).
+    // Bound the key count so a single write can't hand the loop a huge-cardinality
+    // object. Only the fourteen settings are accepted; any other key refuses the write.
     .refine((r) => Object.keys(r).length <= 100, { error: "Too many settings keys." })
     .default({}),
+  // A change to GAFFER_NOTIFY that keeps the saved URLs on the server (the page never
+  // holds them): undefined keeps a channel, null or "" removes it, a string replaces it.
+  notify: z
+    .object({
+      desktop: z.boolean().optional(),
+      webhook: z.string().max(4_000).nullable().optional(),
+      slack: z.string().max(4_000).nullable().optional(),
+    })
+    .optional(),
 });
 export type SettingsBody = z.infer<typeof settingsBody>;
+
+/**
+ * Body for POST /api/settings/remove-old-keys: the removal act. `drop` and `rewrite`
+ * repeat the keys the page showed (GET /api/settings `cleanup`), so a file that changed
+ * since is refused (409) and nothing the person did not see is removed.
+ */
+export const removeOldKeysBody = z.object({
+  drop: z.array(z.string().max(200)).max(500),
+  rewrite: z.array(z.string().max(200)).max(50),
+});
+export type RemoveOldKeysBody = z.infer<typeof removeOldKeysBody>;
 
 // --- Plan sessions (H9 — durable async plan-build chat) --------------------
 

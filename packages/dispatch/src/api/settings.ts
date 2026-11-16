@@ -5,959 +5,138 @@ import { dirname, join, resolve } from "node:path";
 
 import { notifyAllowsPrivate, notifyUrlProblem } from "../notify/urlPolicy.js";
 import { DispatchError } from "../util/errors.js";
+import {
+  loadSchema,
+  readRunnerConfig,
+  type RunnerConfigRead,
+  type SchemaSetting,
+} from "./runnerConfig.js";
 
 /**
- * UI-editable factory settings — the dispatch side of an env-override config
- * layer.
+ * The dashboard side of the fourteen settings.
  *
- * The factory's runtime config is all environment variables (sourced from
- * `factory.config.sh` in the runner). This module adds a small, UI-editable
- * persistence file the runner reads with **env-override** semantics: an explicit
- * environment variable ALWAYS wins over the file. Concretely the runner sources
- * the file and then applies `: "${KEY:=<file-value>}"` so a key already set in
- * the environment is left untouched.
+ * A factory has fourteen settings (runner/config/01-settings.sh, generated into
+ * runner/config/settings-schema.json); every other value is DERIVED from them by the
+ * runner's tables, and a real environment variable still overrides a derived value.
+ * This module:
+ *   - reads the names, kinds, accepted values, defaults and descriptions of the
+ *     fourteen from the schema (never a second copy here; a test fails on drift);
+ *   - validates a value exactly as the runner's `_gaffer_setting_problem` does, then
+ *     trims and stores it in `$GAFFER_DATA/settings.json` atomically (temp file and
+ *     rename). Any other key is refused with the setting that now decides it;
+ *   - asks the runner's own config (runnerConfig.ts) what a run would use, for the
+ *     page's "What this sets", the migration callout and the override list;
+ *   - puts in THIS process's environment only the fourteen and the values the runner
+ *     derives for the names the dashboard reads (never an old settings.json value as
+ *     it stands), each with the runner's re-source record, so every runner the
+ *     dashboard starts derives them afresh from settings.json, exactly as a run
+ *     started from the command line does (P-B1 of the part A review).
  *
- * The contract this module owns:
+ * env-locked: a setting is read-only in the UI when the OPERATOR set it in the real
+ * environment (which always wins over the file). The operator's names come from the
+ * launcher's `_GAFFER_OPERATOR_ENV` record (runner/factory.config.sh), or, for a
+ * dashboard started any other way, the names in the environment when it started.
  *
- *   - Storage: `$GAFFER_DATA/settings.json` — a FLAT JSON object mapping a known
- *     setting key to its STRING value, e.g. `{ "MAX_TICKS": "50" }`. Values are
- *     always strings (env vars are strings); the UI coerces booleans/ints to the
- *     string form the runner expects ("0"/"1" for booleans).
- *   - env-locked: a key is read-only in the UI when `process.env[KEY]` is set,
- *     because an explicit env var overrides the file, so editing the file for
- *     that key would have no effect. The API reports such keys `envLocked` and
- *     {@link writeSettings} refuses to persist them.
- *
- * The file is the source of truth for UI edits; the runner is the consumer.
- * Changes take effect on the NEXT factory tick — there is no live restart, and
- * none is needed: every tick re-sources the config, and a running loop or
- * `gaffer run --daemon` re-derives what its parent exported (factory.config.sh
- * "RE-SOURCE HYGIENE"), so only the operator's real env still overrides the file.
- * The day caps (MAX_TICKS_PER_DAY, GAFFER_DAILY_BUDGET_USD) are re-read by loop.sh
- * and every pool worker before each admission (lib/budget.sh
- * gaffer_refresh_day_caps). The run-shape knobs a loop reads once when it starts —
- * MAX_TICKS, GAFFER_CONCURRENCY, TICK_SLEEP, EMPTY_POLL_LIMIT — apply from the next
- * loop pass (the next daemon pass, or the next run).
+ * Changes take effect on the NEXT factory tick: every tick re-sources the config.
  */
 
-/** A logical grouping for the settings panel's sections. */
+/** How the page groups the fourteen (presentation only; the schema holds the rest). */
 export type SettingGroup =
   | "autonomy"
-  | "delivery"
-  | "execution"
-  | "idle-loops"
   | "budget"
-  | "planning-debate"
-  | "quality"
-  | "sandbox"
-  | "notifications";
+  | "work"
+  | "safety"
+  | "delivery"
+  | "notify"
+  | "location";
 
-/**
- * The value type a setting carries, so the UI renders the right control: `int` is a
- * whole number of 0 or more (or `min`), `number` a decimal of 0 or more (a dollar
- * figure such as 2.50).
- */
-export type SettingType = "boolean" | "int" | "number" | "csv" | "string";
-
-/** Static descriptor for one known setting. */
+/** Static descriptor for one setting: the schema's fields plus a label and a group. */
 export interface SettingDef {
   readonly key: string;
-  readonly type: SettingType;
-  readonly group: SettingGroup;
+  /** The schema's kind: choice, usd, count, models, gates, testing, notify, path, port. */
+  readonly kind: string;
+  /** The accepted choices (presets for models; standard/strict for gates). */
+  readonly values: readonly string[];
+  /** The default as a value ("" when the schema says none). */
+  readonly default: string;
+  readonly description: string;
   readonly label: string;
-  readonly help?: string;
-  /**
-   * Closed set of allowed values for an enum-style `string` setting (e.g.
-   * GAFFER_MODE). When present the UI renders a dropdown instead of a free-text
-   * box, and {@link writeSettings} refuses any value outside the list (empty is
-   * always allowed — it clears the override back to the built-in default).
-   */
-  readonly choices?: readonly string[];
-  /** The lowest value an `int` setting accepts (default 0). */
-  readonly min?: number;
-  /**
-   * SECRET-BEARING (external review #5): the value itself is a credential — a Slack or
-   * generic webhook URL is posting authority on its own. GET /api/settings never returns
-   * it to any principal: it reports `configured` and the URL's `host` only. An ADMIN
-   * principal reads the value back through GET /api/settings/secret/:key; the dashboard
-   * shows a masked field with a Replace action. New secret keys set this and inherit it.
-   */
-  readonly secret?: boolean;
-}
-
-/** One setting as reported to the UI by GET /api/settings. */
-export interface SettingView {
-  readonly key: string;
-  /** Current file value, or "" when unset in settings.json. */
-  readonly value: string;
-  /**
-   * The value the factory will actually use: the operator's env when locked, else
-   * the stored file value, else the GAFFER_MODE preset, else "" (built-in default).
-   */
-  readonly effective: string;
-  /** Where `effective` came from. */
-  readonly source: SettingSource;
-  /** True iff the OPERATOR set this key in the real environment — read-only in the UI. */
-  readonly envLocked: boolean;
-  readonly type: SettingType;
   readonly group: SettingGroup;
-  readonly label: string;
-  readonly help?: string;
-  /** Allowed values for an enum setting — the UI renders these as a dropdown. */
-  readonly choices?: readonly string[];
-  /** The lowest value an `int` setting accepts, when it is above 0. */
-  readonly min?: number;
-  /** A secret-bearing key: `value`/`effective` are always "" — see `configured`/`host`. */
-  readonly secret?: true;
-  /** Secret keys only: true when a value is in force (env or file). */
-  readonly configured?: boolean;
-  /** Secret keys only: the URL's host (e.g. hooks.slack.com) when it parses, else null. */
-  readonly host?: string | null;
+  /** False for GAFFER_DATA: shown, never written from the dashboard. */
+  readonly writable: boolean;
+  /** The value can hold a credential (webhook URLs): never returned, only masked. */
+  readonly secret: boolean;
 }
 
 /**
- * The known settings, grouped. This is the allow-list: GET reports exactly these
- * keys and POST silently drops anything not in here, so the UI can never write an
- * arbitrary env var into the file.
+ * Label and group for each setting. Presentation only: the names here must be the
+ * schema's fourteen (test/settings.test.ts fails if they drift), and every other field
+ * comes from the schema.
  */
-export const SETTING_DEFS: readonly SettingDef[] = [
-  // --- Autonomy: how much the factory may do without a human in the loop ---
-  {
-    key: "GAFFER_MODE",
-    type: "string",
-    choices: ["supervised", "lite", "graduated", "autonomous", "strict"],
-    group: "autonomy",
-    label: "Autonomy mode",
-    help:
-      "Preset that sets the whole autonomy cluster at once (review mode, agent " +
-      "approval, auto-merge, auto-push, memory auto-approve): supervised · lite · " +
-      "graduated · autonomous · strict. supervised (default) keeps a human on every " +
-      "merge; lite auto-approves only GENUINELY TRIVIAL tickets (low risk, tiny diff, " +
-      "no sensitive path) that passed every gate + earned an APPROVE from the reviewer " +
-      "agent — and still leaves a human to MERGE (never auto-merges); non-trivial " +
-      "tickets hold for you. " +
-      "graduated ships what each repo has EARNED at its risk level and holds " +
-      "everything else for you (the reviewer agent runs, but the per-repo/risk autonomy " +
-      "policy is the sole allow-path — set grants in the per-repo policy editor); " +
-      "autonomous lets agents approve and auto-merges + pushes approved work, below " +
-      "critical risk: a person always decides critical changes, in every mode, and a " +
-      "repo x risk whose autonomy stepped down waits for a person until a person lifts it. " +
-      "Every mode runs agents inside the OS sandbox (GAFFER_STRICT_REQUIRE and " +
-      "STRICT_MODE default on: no sandbox, no agent); with the human gate gone, opting " +
-      "out with GAFFER_STRICT_REQUIRE=0 in the environment is warned about loudly. " +
-      "strict sets the same flags as autonomous; the one difference is that strict " +
-      "keeps STRICT_MODE on even when you set GAFFER_STRICT_REQUIRE=0 (the sandbox is " +
-      "still used where available, just not required). SANDBOX_PROVIDER picks the " +
-      "sandbox: docker (any host with Docker) gives real read + egress isolation; " +
-      "sandbox-exec (macOS) is a write-only sandbox. " +
-      "Picking a mode prevents a " +
-      "half-configured autonomy posture. The individual knobs below still " +
-      "override the mode — an explicitly-set flag always wins.",
-  },
-  {
-    key: "DISPATCH_ALLOW_AGENT_APPROVE",
-    type: "boolean",
-    group: "autonomy",
-    label: "Agents may approve reviews",
-    help:
-      "Let an agent actor approve a ticket's review (otherwise human-only). Off by default; " +
-      "the autonomous, strict and lite modes turn it on. An agent " +
-      "approve is still held for a person whenever the real diff's observed risk exceeds " +
-      "the declared risk, and ALWAYS when the delivery changed the tests that gate it " +
-      "(deleted or renamed a test file, added a skip/only marker, changed a gate script, " +
-      "one of its pre/post hooks or a script it runs, touched test config, or added or changed a " +
-      "package-manager rc file such as .npmrc) — unless a " +
-      "person allowed test changes on that ticket (`wg ticket allow-test-changes <n>`, or " +
-      "Allow test changes on the Review page). The allowance clears the hold only; the " +
-      "gate still runs the base commit's scripts.",
-  },
-  {
-    key: "MERGE_ON_AGENT_REVIEW",
-    type: "boolean",
-    group: "autonomy",
-    label: "Auto-merge on agent review",
-    help:
-      "Extend Auto-merge on approval to approvals the runner makes on an agent reviewer's " +
-      "verdict. Needs Auto-merge on approval ON as well: on its own this merges nothing " +
-      "(agent-approved tickets wait at ready-for-merge and the run logs a warning). With " +
-      "both on, an agent-approved ticket lands with no human in the loop — an OS sandbox is " +
-      "then required (GAFFER_STRICT_REQUIRE).",
-  },
-  {
-    key: "MEMORY_AUTO_APPROVE",
-    type: "boolean",
-    group: "autonomy",
-    label: "Auto-approve runner memory drafts",
-    help:
-      "Let the memory the runner itself files go live without a human review step: the " +
-      "requirement distilled from each delivered ticket, onboarding's induction lore and " +
-      "`memory suggest` from the CLI. Lore a delivery agent suggests over MCP always " +
-      "stays a draft for you to approve, whatever this says. Off by default; the " +
-      "autonomous and strict modes turn it on.",
-  },
-  {
-    key: "GAFFER_TESTING",
-    type: "boolean",
-    group: "autonomy",
-    label: "Independent black-box testing",
-    help:
-      "The independent black-box tester tests a testable ticket's delivery BEFORE you " +
-      "review it (in_review → in_testing → back to in_review on a PASS; a FAIL sends it " +
-      "back to rework), and you approve only the commit it passed. The tester gets the " +
-      "contract + AC, never the diff. Unset (the default, auto): on for a ticket whose " +
-      "write repos all have a registered test command, off where one has none (a PASS " +
-      "there cannot be replayed, so it would be held as unverified; Review and Health say " +
-      "so). On: every testable ticket. Off: none, except an epic's acceptance ticket, " +
-      "which is always tested. A planned build's tickets are testable unless this is " +
-      "off (all but the bootstrap); `wg ticket set-testable <n>` marks or unmarks one. " +
-      "The dashboard and the runner each read it: the value saved here reaches both, and a " +
-      "value exported in one environment wins only there, so set it here and export it in " +
-      "neither (Health and Review say when the runner last routed under a different one).",
-  },
+const PRESENTATION: Readonly<Record<string, { label: string; group: SettingGroup }>> = {
+  GAFFER_MODE: { label: "Autonomy mode", group: "autonomy" },
+  GAFFER_DAILY_BUDGET_USD: { label: "Daily budget (USD)", group: "budget" },
+  GAFFER_BUDGET_USD: { label: "Lifetime budget (USD)", group: "budget" },
+  GAFFER_MODELS: { label: "Models", group: "work" },
+  GAFFER_EFFORT: { label: "Effort per ticket", group: "work" },
+  GAFFER_CONCURRENCY: { label: "Tickets at once", group: "work" },
+  GAFFER_IDLE: { label: "When idle", group: "work" },
+  GAFFER_SANDBOX: { label: "Sandbox", group: "safety" },
+  GAFFER_GATES: { label: "Gates", group: "safety" },
+  GAFFER_TESTING: { label: "Independent testing", group: "safety" },
+  GAFFER_LANDING: { label: "Landing", group: "delivery" },
+  GAFFER_NOTIFY: { label: "Notify", group: "notify" },
+  GAFFER_DATA: { label: "Data location", group: "location" },
+  DISPATCH_API_PORT: { label: "Dashboard port", group: "location" },
+};
 
-  // --- Idle loops: the between-work background loops + their mode ---
-  {
-    key: "GAFFER_IDLE_FEATURE_BACKLOG",
-    type: "boolean",
-    group: "idle-loops",
-    label: "Feature-backlog idle loop",
-    help:
-      "When idle, pull one `backlog` feature from the factory's memory ledger and plan it " +
-      "as an epic. Each idle tick (before the maintenance lane) claims one `backlog` " +
-      "feature, moves it to `building`, makes ONE paid plan call (the runner's own " +
-      "bin/decompose.mjs, run unattended with --force-plan so it plans without asking " +
-      "questions; counted against the day cap) and files the epic as drafts (or ready " +
-      "tickets if the idle-loop mode says so). A failed plan releases the feature back to " +
-      "`backlog`, and after `loops.idle_feature_backlog.max_plan_failures` (default 2) " +
-      "failed plans in a row idle ticks stop claiming it; plan it from the dashboard. " +
-      "Overrides the crew.yaml `loops.idle_feature_backlog.enabled` flag (the same toggle " +
-      "as the Feature backlog row in the Idle loops panel) for every crew run the runner " +
-      "spawns; empty = crew.yaml decides.",
-  },
-  {
-    key: "GAFFER_MAINTENANCE",
-    type: "string",
-    choices: ["0", "1"],
-    group: "idle-loops",
-    label: "Maintenance lane override",
-    help:
-      "Overrides the Idle loops panel's master switch (crew.yaml `loops.maintenance.enabled`): " +
-      "0 = kill switch, an idle tick never runs maintenance · 1 = run the lane even while " +
-      "the switch is off · empty = the panel decides. It only turns the LANE on: it rotates " +
-      "through the lanes you enabled, so with none enabled an idle tick still does nothing " +
-      "(and reports no_work).",
-  },
-  {
-    key: "GAFFER_IDLE_MODE",
-    type: "string",
-    choices: ["observe_only", "create_draft_tickets", "create_ready_tickets"],
-    group: "idle-loops",
-    label: "Idle-loop mode",
-    help:
-      "How far EVERY idle loop goes with a finding: observe_only reports it and files " +
-      "nothing · create_draft_tickets files a draft for a human to ready (the default) · " +
-      "create_ready_tickets files it past the human gate. When set it overrides each " +
-      "loop's `mode` in crew.yaml for the crew runs the runner spawns; empty = crew.yaml " +
-      "decides per loop.",
-  },
+function defOf(s: SchemaSetting): SettingDef {
+  const p = PRESENTATION[s.name] ?? { label: s.name, group: "work" as SettingGroup };
+  return {
+    key: s.name,
+    kind: s.kind,
+    values: s.values,
+    default: s.default.startsWith("(") ? "" : s.default,
+    description: s.description,
+    label: p.label,
+    group: p.group,
+    writable: s.name !== "GAFFER_DATA",
+    secret: s.kind === "notify",
+  };
+}
 
-  // --- Budget / caps: hard limits on a run ---
-  {
-    key: "MAX_TICKS",
-    type: "int",
-    group: "budget",
-    label: "Max ticks (run)",
-    help: "Upper bound on factory ticks for a single run. A change applies from the next loop pass.",
-  },
-  {
-    key: "MAX_TICKS_PER_DAY",
-    type: "int",
-    group: "budget",
-    label: "Max ticks / day",
-    help:
-      "Per-UTC-day ceiling on factory ticks that did (or may have done) paid work; a " +
-      "no-work poll does not count. It resets with the dollar cap, at midnight UTC. " +
-      "A running loop re-reads it before every tick. 0 = unlimited.",
-  },
-  {
-    key: "GAFFER_DAILY_BUDGET_USD",
-    type: "number",
-    group: "budget",
-    label: "Daily budget (USD)",
-    help:
-      "Per-UTC-day spend ceiling, summed from the usage ledger (measured cost plus the " +
-      "labelled estimate booked for a killed/timed-out call). Once today's spend is at " +
-      "or over it, no new paid work starts until the next UTC day — the loop, every " +
-      "parallel worker, the daemon and the dashboard's Poll button all honour it, and " +
-      "every paid agent launch (delivery, review, clarify, tester, Plan a build, " +
-      "Suggest work, onboarding analysis, the merge resolver) is refused right before " +
-      "it would start. Empty or 0 = off — but a live run needs a dollar cap: with " +
-      "neither this nor the budget ceiling set, `gaffer run`, the loop and Poll refuse " +
-      "to start (try 5; GAFFER_ALLOW_UNCAPPED=1 in the environment opts out).",
-  },
-  {
-    key: "GAFFER_TICK_TIMEOUT",
-    type: "int",
-    group: "budget",
-    label: "Tick timeout (s)",
-    help: "Wall-clock cap on a single tick before it is killed.",
-  },
-  {
-    key: "GAFFER_MAX_TURNS",
-    type: "int",
-    group: "budget",
-    label: "Max turns / agent",
-    help:
-      "Turn cap for one delivery agent call, and the ceiling for every other role " +
-      "(reviewer, clarify, planner, tester, …): each runs under the lower of its own " +
-      "cap and this one, so raising it never lifts a role above its own cap.",
-  },
-  // --- Cost-as-control (Track 3a): spend steers routing, not just reporting ---
-  {
-    key: "GAFFER_BUDGET_USD",
-    type: "number",
-    group: "budget",
-    label: "Budget ceiling (USD)",
-    help:
-      "Total factory spend ceiling in USD (summed from the usage-ledger). As " +
-      "headroom runs low the router biases cheaper; at $0 headroom no new paid work " +
-      "starts (ticks, Poll and the daemon refuse, and every paid agent launch — " +
-      "including Plan a build and Suggest work — is refused right before it would " +
-      "start) and in-flight work pauses. Empty = unlimited, though a live run needs " +
-      "this or the daily budget set.",
-  },
-  {
-    key: "GAFFER_BUDGET_LOW_THRESHOLD",
-    type: "number",
-    group: "budget",
-    label: "Budget-low threshold (USD)",
-    help:
-      "USD headroom at/under which routing biases one tier CHEAPER. Empty auto-derives " +
-      "~20% of the budget ceiling; set explicitly to override.",
-  },
-  {
-    key: "GAFFER_CHEAP_PHASES",
-    type: "csv",
-    group: "budget",
-    label: "Cheap-tier phases",
-    help:
-      "Comma-separated phases whose work is biased to the cheap model tier. " +
-      "Only 'implement' is routed through the model router today, so 'implement' is " +
-      "the only value with any effect; other phase names are inert until their call " +
-      "sites are routed. High/critical-risk work is never cheapened.",
-  },
+/** The fourteen settings, in the schema's order. The only keys the API writes. */
+export const SETTING_DEFS: readonly SettingDef[] = loadSchema().settings.map(defOf);
 
-  // --- Planning debate: multi-model plan critique ---
-  {
-    key: "GAFFER_PLAN_DEBATE",
-    type: "boolean",
-    group: "planning-debate",
-    label: "Plan debate",
-    help: "Run a multi-model debate over the plan before decomposing.",
-  },
-  {
-    key: "GAFFER_PLAN_DEBATE_MODELS",
-    type: "csv",
-    group: "planning-debate",
-    label: "Debate models",
-    help: "Comma-separated model ids that take part in the debate.",
-  },
-  {
-    key: "GAFFER_PLAN_DEBATE_MAX_ROUNDS",
-    type: "int",
-    group: "planning-debate",
-    label: "Debate max rounds",
-    help: "Upper bound on debate rounds.",
-  },
-  {
-    key: "GAFFER_PLAN_DEBATE_MIN_ESTIMATE",
-    type: "int",
-    group: "planning-debate",
-    label: "Debate min estimate",
-    help: "Only debate plans whose estimate is at least this.",
-  },
+/** The names PRESENTATION labels (the drift test compares them with the schema). */
+export const PRESENTATION_KEYS: readonly string[] = Object.keys(PRESENTATION);
 
-  // --- Notifications (H2): opt-in pings when the factory needs a human ---
-  // The factory runs unattended; these surface the human-gate transitions
-  // (review needed · ticket blocked/parked · decision pending) outside the
-  // dashboard. All default off → a no-op notifier with zero overhead. The
-  // dispatch facade reads these via src/notify/config.ts (NOTIFY_ENV).
-  {
-    key: "GAFFER_NOTIFY_WEBHOOK_URL",
-    type: "string",
-    group: "notifications",
-    label: "Webhook URL",
-    help:
-      "POST each human-gate event as JSON to this URL (the generic integration). The URL " +
-      "is a credential: the dashboard shows only whether it is set and its host; replace it " +
-      "to change it.",
-    secret: true,
-  },
-  {
-    key: "GAFFER_NOTIFY_SLACK_URL",
-    type: "string",
-    group: "notifications",
-    label: "Slack webhook URL",
-    help:
-      "Slack incoming-webhook URL — gates arrive as a Slack message. Anyone holding the URL " +
-      "can post to the channel, so it is never shown back: only whether it is set and its host.",
-    secret: true,
-  },
-  {
-    key: "GAFFER_NOTIFY_DESKTOP",
-    type: "boolean",
-    group: "notifications",
-    label: "Desktop notifications",
-    help:
-      "Fire a native desktop banner on each human gate (macOS: terminal-notifier or " +
-      "osascript; Linux: notify-send, which must be installed). Check it with " +
-      "`gaffer wg notify test` — it reports each sink and fails when one did not deliver.",
-  },
-  {
-    key: "GAFFER_NOTIFY_EVENTS",
-    type: "csv",
-    group: "notifications",
-    label: "Notify on events",
-    help:
-      "Comma-separated allow-list of gate kinds to notify on " +
-      "(review_needed · ticket_blocked · ticket_parked · decision_pending). " +
-      "Empty = all gates.",
-  },
-  {
-    key: "GAFFER_NOTIFY_FULL_PAYLOAD",
-    type: "boolean",
-    group: "notifications",
-    label: "Send full webhook payload",
-    help:
-      "Outbound notifications are REDACTED by default (kind · ticket number · status · " +
-      "dashboard URL). The free-text ticket title/detail can be prompt-injection-" +
-      "influenced, so they never leave the box unless you opt in here. Enable ONLY when " +
-      "the webhook/Slack endpoint is inside your trust boundary.",
-  },
-
-  // --- Autonomy (cont.): who reviews a delivery ---
-  {
-    key: "REVIEW_MODE",
-    type: "string",
-    choices: ["human", "agent", "both"],
-    group: "autonomy",
-    label: "Review mode",
-    help:
-      "Who reviews a delivery before merge: human · agent · both. Under agent the runner " +
-      "may act on the reviewer's verdict where the autonomy floor or an earned per-repo " +
-      "grant allows (approve, merge, or send CHANGES back to rework); otherwise the review " +
-      "is advisory and a human approves. Under both the agent screens first — a CHANGES " +
-      "verdict can still bounce the delivery to rework — but its APPROVE never approves: " +
-      "the ticket waits in review for a human to confirm, in every autonomy mode. Per-repo " +
-      "autonomy grants act only under agent or both; under human no reviewer agent runs, " +
-      "so they are inert.",
-  },
-
-  // --- Delivery: what the factory does once a ticket is approved ---
-  {
-    key: "AUTO_MERGE",
-    type: "boolean",
-    group: "delivery",
-    label: "Auto-merge on approval",
-    help:
-      "Safe-merge a HUMAN-approved ticket into the default branch on approval (the dashboard " +
-      "Approve fires the merge runner; the runner's merge lane lands human approvals made by " +
-      "any route). Off → approved tickets wait at ready-for-merge until a human presses Merge. " +
-      "An agent approval never lands on this alone: it also needs Auto-merge on agent review " +
-      "(or an earned per-repo merge grant). A conflict spawns the resolver agent, re-gates its " +
-      "resolution (conflict markers + the DoD gates) and reopens the ticket for re-review.",
-  },
-  {
-    key: "GAFFER_AUTO_PUSH",
-    type: "boolean",
-    group: "delivery",
-    label: "Push after merge",
-    help: "The final AFK step: push the default branch to origin after a successful auto-merge. Requires Auto-merge; off → merges stay local.",
-  },
-  {
-    key: "GAFFER_CREATE_PR",
-    type: "boolean",
-    group: "delivery",
-    label: "Deliver as a pull request",
-    help:
-      "Push the delivery branch and open a GitHub PR carrying the evidence. Approval then " +
-      "merges THROUGH that PR (gh pr merge, method below) and fast-forwards the local default " +
-      "branch — never a local merge that leaves the PR open. Needs the gh CLI authenticated; " +
-      "if gh fails the merge falls back to local and says so.",
-  },
-  {
-    key: "GAFFER_PR_MERGE_METHOD",
-    type: "string",
-    choices: ["merge", "squash", "rebase"],
-    group: "delivery",
-    label: "PR merge method",
-    help: "How an approved PR is landed by gh pr merge: merge (default) · squash · rebase. Only used with 'Deliver as a pull request'.",
-  },
-  {
-    key: "GAFFER_REQUIRE_CI",
-    type: "boolean",
-    group: "delivery",
-    label: "Require CI green before review",
-    help:
-      "Poll the delivery PR's CI checks and only let the ticket into review when they pass; " +
-      "red checks reject it back to rework. Required means required: approval (and a tester " +
-      "PASS) is refused until CI has passed for the exact commit being approved, a red result " +
-      "for an approved ticket holds it for a human (blocked, ci_red), and the merge lane " +
-      "re-reads CI before landing. REQUIRES 'Deliver as a pull request' — the checks " +
-      "live on the PR, so with PR delivery off this gate is skipped with a warning (it used to " +
-      "poll a PR that never existed and reject every delivery at the timeout).",
-  },
-  {
-    key: "GAFFER_ALLOW_SELF_DELIVERY",
-    type: "boolean",
-    group: "delivery",
-    label: "Allow self-delivery",
-    help:
-      "Permit the factory to deliver into its OWN repo. Off (default) is the safe choice — it never edits itself by accident: " +
-      "a ticket where any of its write repos (not only the first) is the gaffer checkout root (or any directory above it), a component dir inside it, " +
-      "or a worktree of the same git repo is set aside for a human instead of delivered.",
-  },
-
-  // --- Execution: how the loop schedules and paces work ---
-  {
-    key: "GAFFER_CONCURRENCY",
-    type: "int",
-    min: 1,
-    group: "execution",
-    label: "Concurrent ticks",
-    help:
-      "How many tickets run in parallel, each in its own git worktree. 1 = strictly serial (safest); >1 fans out. " +
-      "Above 1, a red tests gate is rerun once at concurrency 1 before the attempt counts; a pass on the rerun " +
-      "is flagged flaky suspected for the reviewer (GAFFER_DOD_FLAKY_RERUN=0 turns the rerun off). " +
-      "A change applies from the next loop pass.",
-  },
-  {
-    key: "TICK_SLEEP",
-    type: "int",
-    group: "execution",
-    label: "Pause between ticks (s)",
-    help: "Seconds the loop waits between ticks. A change applies from the next loop pass.",
-  },
-  {
-    key: "EMPTY_POLL_LIMIT",
-    type: "int",
-    group: "execution",
-    label: "Empty polls before idle",
-    help:
-      "Consecutive empty polls before the run (or a pool worker) stops: a no_work tick, or " +
-      "an idle maintenance tick whose scans filed nothing (they call no model, so they do " +
-      "not keep the run alive or consume the day cap)." +
-      " A change applies from the next loop pass.",
-  },
-  {
-    key: "MAX_CONCURRENT_TICKETS_PER_REPO",
-    type: "int",
-    group: "execution",
-    label: "Max in-flight tickets / repo",
-    help: "Cap on tickets worked at once within one repo.",
-  },
-  {
-    key: "MAX_CANDIDATES",
-    type: "int",
-    group: "execution",
-    label: "Max candidates scanned",
-    help: "Upper bound on ready tickets the scheduler considers each tick.",
-  },
-
-  // --- Budget / caps (cont.): retries, CI polling, open-work ceilings ---
-  {
-    key: "GAFFER_MAX_DELIVERY_ATTEMPTS",
-    type: "int",
-    group: "budget",
-    label: "Max delivery attempts",
-    help:
-      "How many agent runs one delivery gets inside a tick: a failed gate (tests, " +
-      "typecheck, lint or a criterion's check) is fed back and the agent reworks the " +
-      "same branch, up to this many runs, then the ticket parks to blocked with its " +
-      "branch kept. A run that fails exactly as the one before (two identical " +
-      "failures) parks it early instead of spending the rest. It is also the default " +
-      "for GAFFER_MAX_NOCOMMIT_FAILURES (runs that end with no commit, counted across " +
-      "runs) and DISPATCH_MAX_ATTEMPTS (review rejections).",
-  },
-  {
-    key: "DISPATCH_MAX_ATTEMPTS",
-    type: "int",
-    group: "budget",
-    label: "Max review rejections (Dispatch)",
-    help:
-      "Dispatch's own cap on how many times a delivery may be rejected back into the " +
-      "queue before the ticket is parked (blocked) for a human — the server-side " +
-      "wallet guard against an unbounded reject loop, enforced on every reject " +
-      "transition regardless of which runner drove it. Defaults to Max delivery " +
-      "attempts so the two caps agree; set it only to make the server stricter or " +
-      "looser than the runner's rework ladder.",
-  },
-  {
-    key: "GAFFER_MAX_NOCOMMIT_FAILURES",
-    type: "int",
-    group: "budget",
-    label: "Max no-commit failures",
-    help:
-      "Cross-run bound on deliveries that crash before committing. After this many " +
-      "no-commit/wrong-branch failures the ticket parks visibly to blocked instead of " +
-      "being re-picked (and re-billed) every run. Defaults to Max delivery attempts.",
-  },
-  {
-    key: "GAFFER_REWORK_BUDGET_USD",
-    type: "number",
-    group: "budget",
-    label: "Per-ticket rework budget (USD)",
-    help:
-      "Cumulative spend ceiling for one ticket's rework loop, counting every agent call " +
-      "booked to the ticket (delivery, review, security review, clarify, eval judge). " +
-      "Delivery stops at whichever hits first — this or Max delivery attempts — then " +
-      "parks to blocked. Defaults to the " +
-      "factory Budget ceiling; empty = no per-ticket cap (attempts alone bound it).",
-  },
-  {
-    key: "GAFFER_PAUSE_ON_CAP",
-    type: "boolean",
-    group: "budget",
-    label: "Pause on budget cap",
-    help: "When the spend ceiling is hit, pause in-flight work instead of hard-stopping.",
-  },
-  {
-    key: "GAFFER_USAGE_PAUSE_DEFAULT_MIN",
-    type: "int",
-    group: "budget",
-    label: "Usage-limit pause (min)",
-    help:
-      "When the model refuses a call on its usage window or a rate limit, the ticket goes " +
-      "back to ready without counting an attempt and the factory pauses: no tick claims " +
-      "work, and gaffer run --daemon sleeps until the pause ends (a one-shot gaffer run " +
-      "stops with exit 75 and the dashboard's Poll refuses). The pause lasts until the reset time the model reported, plus a minute; this " +
-      "setting is the wait when no reset time was reported. Default 60. Never less than " +
-      "10 minutes (a lower value is raised to 10; a reported reset is also held to at least " +
-      "10 minutes and at most 8 days). gaffer status and the Health view show the pause; " +
-      "it lifts on its own (or early: node runner/lib/usage-pause.mjs clear).",
-  },
-  {
-    key: "GAFFER_CI_POLL_ATTEMPTS",
-    type: "int",
-    group: "budget",
-    label: "CI poll attempts",
-    help: "How many times to poll CI checks (when Require-CI is on) before giving up.",
-  },
-  {
-    key: "GAFFER_CI_POLL_INTERVAL_SECS",
-    type: "int",
-    group: "budget",
-    label: "CI poll interval (s)",
-    help: "Seconds between CI check polls.",
-  },
-  {
-    key: "MAX_OPEN_AGENT_BRANCHES_PER_REPO",
-    type: "int",
-    group: "budget",
-    label: "Max open agent branches / repo",
-    help: "Ceiling on undelivered agent branches per repo — backpressure so work merges before more starts.",
-  },
-  {
-    key: "MAX_OPEN_AGENT_PRS_PER_REPO",
-    type: "int",
-    group: "budget",
-    label: "Max open agent PRs / repo",
-    help: "Ceiling on open agent-authored PRs per repo.",
-  },
-
-  // --- Idle loops (cont.): the other between-work loops ---
-  {
-    key: "CLARIFY_DRAFTS_WHEN_IDLE",
-    type: "boolean",
-    group: "idle-loops",
-    label: "Clarify vague drafts when idle",
-    help:
-      "When idle, run the clarify pass over vague draft tickets to sharpen their acceptance " +
-      "criteria and raise blocking decisions (one paid agent call per draft, once per run). " +
-      "A draft with no linked repo on disk (a greenfield epic's tickets before the bootstrap " +
-      "links one) is skipped and logged, and the pass moves on to the next draft.",
-  },
-  {
-    key: "IDLE_DRAFT_WHEN_IDLE",
-    type: "boolean",
-    group: "idle-loops",
-    label: "Run every idle scan when idle (legacy)",
-    help:
-      "When idle AND the maintenance lane is off (or failed), run ALL enabled crew idle " +
-      "loops in one pass plus GitHub/Jira ingest and the lore-gap / feature-backlog loops. " +
-      "Superseded by the maintenance lane in the Idle loops panel, which runs one " +
-      "prioritised lane per idle tick (rotating), does the same ingest + async loops, and " +
-      "can promote its own drafts. A tick that files nothing is an empty poll.",
-  },
-
-  // --- Quality gates: the runner's DoD guards on every delivery ---
-  {
-    key: "HYGIENE_ENFORCE",
-    type: "boolean",
-    group: "quality",
-    label: "Enforce repo hygiene",
-    help: "Reject deliveries that touch forbidden paths (node_modules, .claude/, factory internals). On by default.",
-  },
-  {
-    key: "GAFFER_DOD_ENV_PASS",
-    type: "csv",
-    group: "quality",
-    label: "Variables the gates may see",
-    help: "Every gate run (tests, typecheck, lint, acceptance checks, the merge gate) starts from an empty environment plus PATH, a throwaway HOME, the locale, CI=1, the proxy and CA settings and the toolchain homes. Name here (comma separated) any other variable your tests need. Names only: a credential-shaped name (*_TOKEN, *_KEY, *_SECRET, *_PASSWORD), an endpoint (*_URL, *_WEBHOOK*), ANTHROPIC_*, CLAUDE_*, DISPATCH_*, MEMORY_*, AWS_* or GAFFER_*, and a name that loads code into or redirects what the gate starts (PATH, HOME, NODE_OPTIONS, BASH_ENV, LD_*, DYLD_*, GIT_*, SSH_AUTH_SOCK, PYTHONPATH, ...) is never passed, even when listed, in any letter case.",
-  },
-  {
-    key: "MINIMALISM_REQUIRE_NOTE",
-    type: "boolean",
-    group: "quality",
-    label: "Require a smallest-change note",
-    help: "On: a delivery that records no smallest-change note goes back to rework instead of review. Off (default): it goes to review flagged needs_human_review. Oversized diffs are always flagged, never failed.",
-  },
-  {
-    key: "OVERSIZED_MAX_FILES",
-    type: "int",
-    group: "quality",
-    label: "Oversized: max files",
-    help: "A diff touching more than this many files is flagged needs_human_review: oversized_diff (a flag, never a fail; 0 turns the files cap off).",
-  },
-  {
-    key: "OVERSIZED_MAX_LINES",
-    type: "int",
-    group: "quality",
-    label: "Oversized: max lines",
-    help: "A diff changing more than this many lines is flagged needs_human_review: oversized_diff (a flag, never a fail; 0 turns the lines cap off).",
-  },
-  {
-    key: "GAFFER_REVIEW_RULE_REPEAT",
-    type: "int",
-    group: "quality",
-    label: "Review rule: repeats",
-    help: "The same send-back reason or must-fix comment from a person on this many tickets in one repo is proposed as a review-rule lore draft for a person to approve (never auto-approved). 2 to 20; default 3.",
-    min: 2,
-  },
-
-  // --- Sandbox: OS-level execution confinement, required for every agent by default ---
-  {
-    key: "STRICT_MODE",
-    type: "boolean",
-    group: "sandbox",
-    label: "Strict execution sandbox",
-    help:
-      "Wrap agent commands in the OS sandbox (SANDBOX_PROVIDER: docker, or sandbox-exec " +
-      "on macOS) for defence-in-depth. On by default in every mode, and required: " +
-      "with no sandbox on the host no agent launches. Only GAFFER_STRICT_REQUIRE=0 in " +
-      "the environment (a runner you contain yourself) makes it optional; then off " +
-      "means the permission-hook guard only.",
-  },
-  {
-    key: "STRICT_ALLOW_NETWORK",
-    type: "boolean",
-    group: "sandbox",
-    label: "Allow network in sandbox",
-    help: "When the strict sandbox is on, still permit outbound network (package installs, git, the model API).",
-  },
-  {
-    key: "SANDBOX_PROVIDER",
-    type: "string",
-    choices: ["sandbox-exec", "docker", "none"],
-    group: "sandbox",
-    label: "Sandbox provider",
-    help:
-      "Which OS-level containment backend the sandbox uses: docker " +
-      "(experimental — real read + write + egress isolation, any host with a Docker " +
-      "daemon) · sandbox-exec (macOS — write-only containment) · none (no OS " +
-      "wrapping: agents then refuse to launch unless GAFFER_STRICT_REQUIRE=0 is set in " +
-      "the environment). Empty = auto-detect (sandbox-exec on macOS, docker where the " +
-      "docker CLI is installed).",
-  },
-  {
-    key: "STRICT_ALLOW_HOME",
-    type: "string",
-    group: "sandbox",
-    label: "Sandbox writable HOME paths",
-    help:
-      "Space-separated HOME paths the strict sandbox may write to outside the worktree " +
-      "(Claude Code keeps state/cache here; denying them breaks legitimate runtime writes). " +
-      "Defaults to ~/.claude and ~/.cache.",
-  },
-] as const;
-
-/** Fast lookup of a known key → its descriptor. */
 const DEF_BY_KEY: ReadonlyMap<string, SettingDef> = new Map(SETTING_DEFS.map((d) => [d.key, d]));
+/** Old settings.json key -> the setting that decides it now (the schema's oldKeys). */
+const OLD_KEY_SETTING: ReadonlyMap<string, string> = new Map(
+  loadSchema().oldKeys.map((o) => [o.key, o.setting]),
+);
+/** Every derived name -> the setting whose table derives it. */
+const DERIVED_SETTING: ReadonlyMap<string, string> = new Map(
+  loadSchema().settings.flatMap((s) => s.derives.map((d) => [d.name, s.name] as const)),
+);
 
-/** True iff `key` is one of the known, writable setting keys. */
+/** True iff `key` is one of the fourteen settings. */
 export function isKnownSetting(key: string): boolean {
   return DEF_BY_KEY.has(key);
 }
 
-/**
- * Resolve the settings file path. Precedence: explicit override → `$GAFFER_DATA`
- * → `~/.gaffer` (a bare fallback used only when `$GAFFER_DATA` is unset). When
- * launched via the runner, `$GAFFER_DATA` is set to the repo-local `.gaffer/`
- * (next to the checkout), so that path wins. Always `settings.json`.
- */
-export function resolveSettingsPath(env: NodeJS.ProcessEnv = process.env): string {
-  const dataDir = (env.GAFFER_DATA ?? "").trim();
-  const base = dataDir !== "" ? resolve(dataDir) : join(homedir(), ".gaffer");
-  return join(base, "settings.json");
+/** The setting that now decides an old settings.json key, or null. */
+export function oldKeySetting(key: string): string | null {
+  return OLD_KEY_SETTING.get(key) ?? null;
 }
 
-/**
- * Read the persisted settings map. A missing file is the normal "nothing set
- * yet" state and yields `{}`. A present-but-unreadable / malformed file throws a
- * {@link DispatchError} so the API surfaces a clean error rather than silently
- * losing the operator's saved config.
- */
-export function readSettingsFile(path: string): Record<string, string> {
-  let raw: string;
-  try {
-    raw = readFileSync(path, "utf8");
-  } catch (err) {
-    // A missing file is expected (nothing saved yet) → empty map.
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return {};
-    throw new DispatchError("INTERNAL_ERROR", `Could not read settings file: ${describe(err)}`);
-  }
-  const trimmed = raw.trim();
-  if (trimmed === "") return {};
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(trimmed);
-  } catch {
-    throw new DispatchError("INTERNAL_ERROR", "Settings file is not valid JSON.");
-  }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    throw new DispatchError("INTERNAL_ERROR", "Settings file must be a flat JSON object.");
-  }
-  // Keep only string values for known keys; ignore anything stale/foreign so a
-  // hand-edited file can never inject an unknown key into the UI.
-  const out: Record<string, string> = {};
-  for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
-    if (isKnownSetting(k) && typeof v === "string") out[k] = v;
-  }
-  return out;
-}
-
-/**
- * The autonomy posture each GAFFER_MODE implies — a MIRROR of the `case
- * "$GAFFER_MODE"` block in runner/factory.config.sh. The runner fills these with
- * `:=` (only when unset) after settings.json, so a stored value wins over the
- * mode; the API applies the same precedence so the dashboard shows the value the
- * tick will actually use, and so its own gates (agent approve, testing lane)
- * agree with the runner. Unknown mode ⇒ supervised (the safe posture).
- *
- * STRICT_MODE mirrors the runner's isolation default (runner/config/15-modes.sh):
- * GAFFER_STRICT_REQUIRE defaults to 1 in EVERY mode, which defaults STRICT_MODE=1,
- * so the OS sandbox is on (and mandatory) whatever the mode. Omitting it here made
- * the panel report the sandbox OFF when the runner forces it on. The runner skips
- * that default when the operator sets GAFFER_STRICT_REQUIRE=0 in the environment,
- * except under strict (see {@link presetsFor}).
- */
-export const MODE_PRESETS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
-  autonomous: {
-    REVIEW_MODE: "agent",
-    DISPATCH_ALLOW_AGENT_APPROVE: "1",
-    MERGE_ON_AGENT_REVIEW: "1",
-    AUTO_MERGE: "1",
-    GAFFER_AUTO_PUSH: "1",
-    MEMORY_AUTO_APPROVE: "1",
-    STRICT_MODE: "1",
-  },
-  strict: {
-    REVIEW_MODE: "agent",
-    DISPATCH_ALLOW_AGENT_APPROVE: "1",
-    MERGE_ON_AGENT_REVIEW: "1",
-    AUTO_MERGE: "1",
-    GAFFER_AUTO_PUSH: "1",
-    MEMORY_AUTO_APPROVE: "1",
-    STRICT_MODE: "1",
-  },
-  lite: {
-    REVIEW_MODE: "agent",
-    DISPATCH_ALLOW_AGENT_APPROVE: "1",
-    MERGE_ON_AGENT_REVIEW: "0",
-    AUTO_MERGE: "0",
-    GAFFER_AUTO_PUSH: "0",
-    MEMORY_AUTO_APPROVE: "0",
-    STRICT_MODE: "1",
-  },
-  graduated: {
-    REVIEW_MODE: "agent",
-    DISPATCH_ALLOW_AGENT_APPROVE: "0",
-    MERGE_ON_AGENT_REVIEW: "0",
-    AUTO_MERGE: "0",
-    GAFFER_AUTO_PUSH: "0",
-    MEMORY_AUTO_APPROVE: "0",
-    STRICT_MODE: "1",
-  },
-  supervised: {
-    REVIEW_MODE: "human",
-    DISPATCH_ALLOW_AGENT_APPROVE: "0",
-    MERGE_ON_AGENT_REVIEW: "0",
-    AUTO_MERGE: "0",
-    GAFFER_AUTO_PUSH: "0",
-    MEMORY_AUTO_APPROVE: "0",
-    STRICT_MODE: "1",
-  },
-};
-
-/** True for the runner's truthy flag spellings (factory.config.sh _gaffer_flag_on). */
-function flagOn(v: string | undefined): boolean {
-  return ["1", "true", "yes", "on"].includes((v ?? "").trim().toLowerCase());
-}
-
-/**
- * The preset for `mode` as the runner will apply it in `env`: unknown ⇒ supervised,
- * and the STRICT_MODE default dropped where the runner would not apply it — outside
- * `strict`, an operator's explicit GAFFER_STRICT_REQUIRE=0 (in the environment: it is
- * not a setting, so settings.json never carries it here) opts out of it.
- */
-export function presetsFor(
-  mode: string,
-  env: NodeJS.ProcessEnv = process.env,
-): Readonly<Record<string, string>> {
-  const base = MODE_PRESETS[mode] ?? MODE_PRESETS["supervised"]!;
-  const req = env["GAFFER_STRICT_REQUIRE"];
-  if (mode !== "strict" && base["STRICT_MODE"] !== undefined && req !== undefined && !flagOn(req)) {
-    const { STRICT_MODE: _drop, ...rest } = base;
-    return rest;
-  }
-  return base;
-}
-
-/** Where a setting's effective value came from (see {@link SettingView.source}). */
-export type SettingSource = "env" | "file" | "mode" | "default";
-
-/**
- * Keys this process set on its OWN env from settings.json or a mode preset (see
- * {@link applySettingsToEnv}). They are NOT operator env overrides, so they are
- * never reported env-locked — the UI may still edit them.
- */
-const DERIVED_BY_ENV = new WeakMap<object, Map<string, SettingSource>>();
-function derivedOf(env: NodeJS.ProcessEnv): Map<string, SettingSource> {
-  let m = DERIVED_BY_ENV.get(env);
-  if (!m) {
-    m = new Map();
-    DERIVED_BY_ENV.set(env, m);
-  }
-  return m;
-}
-
-/**
- * Apply settings.json, then the GAFFER_MODE presets, to `env` as DEFAULTS (never
- * overwriting a key the operator set in the real environment) — the same
- * precedence runner/factory.config.sh gives the runner. Call once at API startup
- * so every env reader in this process (autonomy gates, notifier, testing lane)
- * sees what the dashboard stores, and again after each write so a change takes
- * effect without a restart. Returns the keys it set.
- */
 /**
  * Keys read from the operator's real environment ONLY: settings.json never sets them,
- * in this process or in the runner (runner/config/01-settings.sh `_GAFFER_ENV_ONLY_KEYS`
- * is the same list, pinned by test/settings.test.ts).
- * GAFFER_ALLOW_UNCAPPED lifts the live-run dollar-cap requirement, so a hand-edited
- * settings.json must not be able to switch it on (SECURITY.md). The worker provider
- * knobs pick the program that runs every agent turn and the secrets it gets, and
- * GAFFER_PRINCIPAL_TOKEN is a person's credential. None of them is in SETTING_DEFS
- * either: the runner's settings loader takes only SETTING_DEFS keys minus these.
+ * here or in the runner (runner/config/01-settings.sh `_GAFFER_ENV_ONLY_KEYS` is the
+ * same list, pinned by test/settings.test.ts). GAFFER_ALLOW_UNCAPPED lifts the live-run
+ * dollar-cap requirement; the worker provider knobs pick the program that runs every
+ * agent turn; GAFFER_PRINCIPAL_TOKEN is a person's credential.
  */
 export const ENV_ONLY_KEYS: ReadonlySet<string> = new Set([
   "GAFFER_ALLOW_UNCAPPED",
@@ -969,100 +148,349 @@ export const ENV_ONLY_KEYS: ReadonlySet<string> = new Set([
   "GAFFER_PRINCIPAL_TOKEN",
 ]);
 
-export function applySettingsToEnv(
-  env: NodeJS.ProcessEnv = process.env,
-  path: string = resolveSettingsPath(env),
-): { applied: string[] } {
-  const file = readSettingsFile(path);
-  const applied: string[] = [];
-  const isReal = (k: string) =>
-    Object.prototype.hasOwnProperty.call(env, k) && !derivedOf(env).has(k);
-  for (const [k, v] of Object.entries(file)) {
-    if (ENV_ONLY_KEYS.has(k)) continue;
-    if (isReal(k)) continue;
-    if (v === "") {
-      // An empty stored value means "cleared back to the default": drop any value
-      // this process derived earlier so the mode preset / default applies again.
-      if (derivedOf(env).has(k)) {
-        delete env[k];
-        derivedOf(env).delete(k);
-      }
-      continue;
-    }
-    env[k] = v;
-    derivedOf(env).set(k, "file");
-    applied.push(k);
+/**
+ * Resolve the settings file path. Precedence: explicit override, then `$GAFFER_DATA`,
+ * then `~/.gaffer` (a bare fallback used only when `$GAFFER_DATA` is unset).
+ */
+export function resolveSettingsPath(env: NodeJS.ProcessEnv = process.env): string {
+  const dataDir = (env.GAFFER_DATA ?? "").trim();
+  const base = dataDir !== "" ? resolve(dataDir) : join(homedir(), ".gaffer");
+  return join(base, "settings.json");
+}
+
+/**
+ * Every string entry of settings.json, old keys included (the migration needs them,
+ * and a write must never drop them: only the person's removal act does). A missing
+ * file is `{}`; an unreadable or malformed one throws, so the API reports it instead
+ * of losing the operator's saved config. Parsed as the runner parses it (a leading
+ * BOM dropped, whitespace-only is empty).
+ */
+export function readSettingsFileRaw(path: string): Record<string, string> {
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw new DispatchError("INTERNAL_ERROR", `Could not read settings file: ${describe(err)}`);
   }
-  const mode = (env["GAFFER_MODE"] ?? "").trim();
-  const presets = presetsFor(mode, env);
-  for (const [k, v] of Object.entries(presets)) {
-    if (isReal(k)) continue;
-    if (derivedOf(env).get(k) === "file") continue;
-    env[k] = v;
-    derivedOf(env).set(k, "mode");
-    applied.push(k);
+  const trimmed = raw.replace(/^﻿/, "").trim();
+  if (trimmed === "") return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    throw new DispatchError("INTERNAL_ERROR", "Settings file is not valid JSON.");
   }
-  return { applied };
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new DispatchError("INTERNAL_ERROR", "Settings file must be a flat JSON object.");
+  }
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+    if (typeof v === "string") out[k] = v;
+    else if (typeof v === "number" || typeof v === "boolean") out[k] = String(v);
+  }
+  return out;
+}
+
+/** The fourteen settings as stored in settings.json (other keys left out). */
+export function readSettingsFile(path: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(readSettingsFileRaw(path))) {
+    if (isKnownSetting(k)) out[k] = v;
+  }
+  return out;
+}
+
+// ── The operator's environment ───────────────────────────────────────────────
+
+const OPERATOR = new WeakMap<object, Set<string>>();
+/** The runner's re-source record prefix (runner/factory.config.sh RE-SOURCE HYGIENE). */
+const DV = "_GAFFER_DV_";
+const OPERATOR_RECORD = "_GAFFER_OPERATOR_ENV";
+
+/**
+ * The names the OPERATOR set in the real environment. From the launcher's
+ * `_GAFFER_OPERATOR_ENV` (runner/gaffer dashboard keeps it for the server) or, when the
+ * dashboard was started some other way, the names present the first time this runs.
+ * Either way the record is left in `env`, so every runner the dashboard starts knows
+ * which values are real environment and which it may derive afresh.
+ */
+export function operatorNames(env: NodeJS.ProcessEnv): ReadonlySet<string> {
+  let names = OPERATOR.get(env);
+  if (names) return names;
+  const rec = env[OPERATOR_RECORD];
+  if (typeof rec === "string") {
+    names = new Set(rec.split(/\s+/).filter((n) => n !== ""));
+  } else {
+    names = new Set(Object.keys(env).filter((n) => !n.startsWith("_GAFFER_")));
+    env[OPERATOR_RECORD] = ` ${[...names].join(" ")} `;
+  }
+  OPERATOR.set(env, names);
+  return names;
 }
 
 /** True iff the OPERATOR set this key in the real environment (not this process). */
 export function isEnvLocked(env: NodeJS.ProcessEnv, key: string): boolean {
-  return Object.prototype.hasOwnProperty.call(env, key) && !derivedOf(env).has(key);
-}
-
-/** Test seam: forget every derived key (a fresh process). */
-export function resetDerivedSettings(env: NodeJS.ProcessEnv = process.env): void {
-  derivedOf(env).clear();
+  return operatorNames(env).has(key) && env[key] !== undefined;
 }
 
 /**
- * Build the per-setting views GET /api/settings returns: for each known setting,
- * its current file value (or "" when unset), the value the factory will actually
- * use (`effective`) and where that came from, plus whether it is env-locked.
+ * The environment a run started from the command line would have: the operator's
+ * names only (never a value this process derived, never a re-source record), plus
+ * GAFFER_DATA naming the folder of `path`, and PATH / HOME so bash and node start.
  */
-export function listSettings(
-  env: NodeJS.ProcessEnv = process.env,
-  path: string = resolveSettingsPath(env),
-): SettingView[] {
-  const file = readSettingsFile(path);
-  const mode = (env["GAFFER_MODE"] ?? file["GAFFER_MODE"] ?? "").trim();
-  const presets = presetsFor(mode, env);
-  return SETTING_DEFS.map((def) => {
-    const locked = isEnvLocked(env, def.key);
-    const fileValue = file[def.key] ?? "";
-    let effective: string;
-    let source: SettingSource;
-    if (locked) {
-      effective = env[def.key] ?? "";
-      source = "env";
-    } else if (fileValue !== "") {
-      effective = fileValue;
-      source = "file";
-    } else if (presets[def.key] !== undefined) {
-      effective = presets[def.key]!;
-      source = "mode";
-    } else {
-      effective = "";
-      source = "default";
-    }
-    const view = {
-      key: def.key,
-      value: fileValue,
-      effective,
-      source,
-      envLocked: locked,
-      type: def.type,
-      group: def.group,
-      label: def.label,
-      ...(def.help !== undefined ? { help: def.help } : {}),
-      ...(def.choices !== undefined ? { choices: def.choices } : {}),
-      ...(def.min !== undefined ? { min: def.min } : {}),
-    };
-    return def.secret ? redactSecretView(view) : view;
-  });
+export function operatorEnv(env: NodeJS.ProcessEnv, path: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const n of operatorNames(env)) {
+    const v = env[n];
+    if (v !== undefined && !n.startsWith("_GAFFER_") && n !== "DISPATCH_API_TOKEN") out[n] = v;
+  }
+  out["PATH"] ??= process.env.PATH ?? "/usr/bin:/bin";
+  out["HOME"] ??= process.env.HOME ?? homedir();
+  out["GAFFER_DATA"] = dirname(path);
+  return out;
 }
 
-/** The host of a URL-shaped secret, or null (never any path, query or credential). */
+/** What the runner's config says a run would use now (cached on env + file bytes). */
+export function runnerConfigFor(
+  env: NodeJS.ProcessEnv = process.env,
+  path: string = resolveSettingsPath(env),
+): RunnerConfigRead {
+  return readRunnerConfig(operatorEnv(env, path));
+}
+
+/** Names this process put in an env (with their re-source records). */
+const APPLIED = new WeakMap<object, Set<string>>();
+function appliedOf(env: NodeJS.ProcessEnv): Set<string> {
+  let s = APPLIED.get(env);
+  if (!s) {
+    s = new Set();
+    APPLIED.set(env, s);
+  }
+  return s;
+}
+
+/**
+ * The names the dashboard takes into its own environment: the fourteen, and every
+ * name an old settings.json key used to carry (the dashboard's own readers: the approve
+ * floor, auto merge, PR mode, the tester lane, notifications, budgets) with the value
+ * the RUNNER derives for it, which is never more permissive than the setting.
+ */
+const DASHBOARD_NAMES: readonly string[] = [
+  ...SETTING_DEFS.map((d) => d.key).filter((k) => k !== "GAFFER_DATA"),
+  ...loadSchema().oldKeys.map((o) => o.key),
+];
+
+/**
+ * Put the settings and what the runner derives from them in `env` (never over a name
+ * the operator set). Call at API startup and after each write. Each value goes in with
+ * the runner's re-source record (`_GAFFER_DV_<NAME>`, the same value), and the
+ * operator record stays in `env`: a runner the dashboard starts then unsets these and
+ * derives them from settings.json itself, so a dashboard-started run and a command-line
+ * run use the same values, with the same origins. An old key's value in settings.json
+ * is never copied: only the runner's reading of it (the stricter one) arrives.
+ *
+ * When the runner's config cannot be read (it refuses a value, or the runner is not
+ * beside the dashboard) only the fourteen that pass validation are applied and every
+ * derived name is left unset (each reader's own default, the strict side).
+ */
+export function applySettingsToEnv(
+  env: NodeJS.ProcessEnv = process.env,
+  path: string = resolveSettingsPath(env),
+): { applied: string[]; error?: string } {
+  const op = operatorNames(env);
+  const want = new Map<string, string>();
+  const rc = runnerConfigFor(env, path);
+  if (rc.ok) {
+    for (const name of DASHBOARD_NAMES) {
+      const s = rc.records.settings.get(name);
+      if (s) {
+        if (s.origin === "settings.json" && s.value !== "") want.set(name, s.value);
+        continue;
+      }
+      const d = rc.records.derived.get(name);
+      if (d && d.set) want.set(name, d.value);
+    }
+  } else {
+    let file: Record<string, string> = {};
+    try {
+      file = readSettingsFile(path);
+    } catch {
+      file = {};
+    }
+    for (const [k, v] of Object.entries(file)) {
+      const def = DEF_BY_KEY.get(k);
+      if (!def || !def.writable || v === "") continue;
+      if (settingValueProblem(def, v, env) === null) want.set(k, v);
+    }
+  }
+  const applied: string[] = [];
+  const mine = appliedOf(env);
+  for (const k of [...mine]) {
+    if (!want.has(k)) {
+      delete env[k];
+      delete env[DV + k];
+      mine.delete(k);
+    }
+  }
+  for (const [k, v] of want) {
+    if (op.has(k)) continue;
+    env[k] = v;
+    env[DV + k] = v;
+    mine.add(k);
+    applied.push(k);
+  }
+  return rc.ok ? { applied } : { applied, error: rc.error };
+}
+
+/** Test seam: forget what this process applied (a fresh process). */
+export function resetDerivedSettings(env: NodeJS.ProcessEnv = process.env): void {
+  appliedOf(env).clear();
+  OPERATOR.delete(env);
+}
+
+// ── Validation (a mirror of the runner's _gaffer_setting_problem) ─────────────
+
+const USD_RE = /^([0-9]+([.][0-9]*)?|[.][0-9]+)$/;
+const MODEL_ID = "[A-Za-z0-9][A-Za-z0-9._:/@-]*";
+const MODELS_RE = new RegExp(`^${MODEL_ID},${MODEL_ID},${MODEL_ID}$`);
+const GATES_LIST_RE = /^(tests|lint|typecheck)([ ,]+(tests|lint|typecheck))*$/;
+
+/**
+ * Why the runner would refuse `value` for `def` from settings.json, in the runner's
+ * words (runner/config/01-settings.sh `_gaffer_setting_problem`), or null when it
+ * accepts it. The caller trims first; empty means cleared (the default) and is fine.
+ * Stricter than the runner in one place: a notify URL must also pass the outbound URL
+ * policy (http(s), no loopback or private address unless the environment allows it).
+ */
+export function settingValueProblem(
+  def: SettingDef,
+  value: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  const v = value;
+  if (v === "") return null;
+  if (!def.writable) return "is shown here but only the environment can set it";
+  switch (def.kind) {
+    case "choice":
+      return def.values.includes(v) ? null : `is not one of: ${def.values.join(", ")}`;
+    case "usd":
+      return USD_RE.test(v)
+        ? null
+        : "is not a dollar amount (digits with an optional decimal part; empty is no cap)";
+    case "count":
+      return /^[1-9][0-9]?$/.test(v) && Number(v) <= 64
+        ? null
+        : "is not a whole number from 1 to 64";
+    case "port":
+      return /^[1-9][0-9]{0,4}$/.test(v) && Number(v) <= 65535
+        ? null
+        : "is not a port number (1 to 65535)";
+    case "path":
+      return v.startsWith("/") ? null : "is not an absolute path";
+    case "models":
+      if (def.values.includes(v) || MODELS_RE.test(v)) return null;
+      return `is not a preset (${def.values.join(", ")}) or three model ids as strong,standard,cheap (each starting with a letter or digit)`;
+    case "gates":
+      if (def.values.includes(v)) return null;
+      return GATES_LIST_RE.test(v)
+        ? "is a list of gates, which turns the others off; only the environment may do that (settings.json takes standard or strict)"
+        : "is not standard, strict or a list of tests, lint, typecheck";
+    case "testing":
+      return ["auto", "on", "off", "1", "0", "true", "false", "yes", "no"].includes(
+        v.toLowerCase(),
+      )
+        ? null
+        : "is not one of: auto, on, off";
+    case "notify": {
+      let hooks = 0;
+      let slack = 0;
+      for (const item of v.split(/[\s,]+/).filter((i) => i !== "")) {
+        if (item === "desktop") continue;
+        if (item.startsWith("https://hooks.slack.com/")) slack += 1;
+        else if (item.startsWith("http://") || item.startsWith("https://")) hooks += 1;
+        else return 'holds an item that is neither "desktop" nor an http(s) URL';
+        if (notifyUrlProblem(item, { allowPrivate: notifyAllowsPrivate(env) }) !== null)
+          return "holds a URL that is not an allowed webhook address";
+      }
+      return hooks > 1 || slack > 1
+        ? "names more than one webhook URL or more than one Slack URL"
+        : null;
+    }
+    default:
+      return "is not a setting";
+  }
+}
+
+/** One key or value {@link writeSettings} refuses, with the reason in words. */
+export interface SettingProblem {
+  readonly key: string;
+  readonly label: string;
+  readonly problem: string;
+  /** For an old key: the setting that decides it now. */
+  readonly decidedBy?: string;
+}
+
+/** Why `key` cannot be written at all (it is not one of the fourteen), or null. */
+export function keyProblem(key: string): SettingProblem | null {
+  const def = DEF_BY_KEY.get(key);
+  if (def) {
+    return def.writable
+      ? null
+      : {
+          key,
+          label: def.label,
+          problem:
+            "is not written from the dashboard: settings.json lives inside it, so only the environment can move it (export GAFFER_DATA before starting the runner and the dashboard)",
+        };
+  }
+  const setting = oldKeySetting(key) ?? DERIVED_SETTING.get(key) ?? null;
+  if (setting !== null) {
+    return {
+      key,
+      label: key,
+      decidedBy: setting,
+      problem: `is no longer a setting: ${setting} decides it now (choose a ${setting} value; to override one derived value, export ${key} before starting the runner)`,
+    };
+  }
+  if (ENV_ONLY_KEYS.has(key)) {
+    return { key, label: key, problem: "is not a setting: only the environment can set it" };
+  }
+  return {
+    key,
+    label: key,
+    problem: `is not a setting (the settings are ${SETTING_DEFS.map((d) => d.key).join(", ")})`,
+  };
+}
+
+/**
+ * Every key or value in `updates` that a write refuses: a key that is not one of the
+ * fourteen (an old key names the setting that decides it now), or a value the runner
+ * would refuse (checked trimmed, as it is stored). Env-locked keys are not problems:
+ * they are reported `rejected`. The route refuses the whole write when any is found.
+ */
+export function settingProblems(
+  updates: Record<string, string>,
+  env: NodeJS.ProcessEnv = process.env,
+): SettingProblem[] {
+  const out: SettingProblem[] = [];
+  for (const [key, value] of Object.entries(updates)) {
+    const kp = keyProblem(key);
+    if (kp) {
+      out.push(kp);
+      continue;
+    }
+    const def = DEF_BY_KEY.get(key)!;
+    if (isEnvLocked(env, key)) continue;
+    const problem = settingValueProblem(def, value.trim(), env);
+    if (problem !== null) out.push({ key, label: def.label, problem });
+  }
+  return out;
+}
+
+// ── Secrets ──────────────────────────────────────────────────────────────────
+
+/** The host of a URL, or null (never any path, query or credential). */
 export function secretHost(value: string): string | null {
   try {
     const u = new URL(value.trim());
@@ -1072,201 +500,424 @@ export function secretHost(value: string): string | null {
   }
 }
 
-/** A secret setting as every principal sees it: whether it is set, and its host. */
-function redactSecretView(v: SettingView): SettingView {
-  return {
-    ...v,
-    value: "",
-    effective: "",
-    secret: true,
-    configured: v.effective.trim() !== "",
-    host: v.effective.trim() !== "" ? secretHost(v.effective) : null,
-  };
+/** One notify channel as every principal sees it: its kind and host, never the URL. */
+export interface NotifyChannel {
+  readonly kind: "desktop" | "slack" | "webhook" | "other";
+  readonly host: string | null;
 }
 
-/** True when `key` is a known secret-bearing setting. */
+/** The channels of a GAFFER_NOTIFY value, masked. */
+export function notifyChannels(value: string): NotifyChannel[] {
+  return value
+    .split(/[\s,]+/)
+    .filter((i) => i !== "")
+    .map((i) =>
+      i === "desktop"
+        ? { kind: "desktop" as const, host: null }
+        : i.startsWith("https://hooks.slack.com/")
+          ? { kind: "slack" as const, host: secretHost(i) }
+          : /^https?:\/\//.test(i)
+            ? { kind: "webhook" as const, host: secretHost(i) }
+            : { kind: "other" as const, host: null },
+    );
+}
+
+/** A masked GAFFER_NOTIFY value in words ("desktop, a Slack URL (hooks.slack.com)"). */
+export function maskNotify(value: string): string {
+  return notifyChannels(value)
+    .map((c) =>
+      c.kind === "desktop"
+        ? "desktop"
+        : c.kind === "slack"
+          ? `a Slack URL (${c.host ?? "hidden"})`
+          : c.kind === "webhook"
+            ? `a webhook URL (${c.host ?? "hidden"})`
+            : "(hidden)",
+    )
+    .join(", ");
+}
+
+/** A name whose value may hold a credential (the runner's config-show rule). */
+export function isSecretName(name: string): boolean {
+  return /TOKEN|SECRET|PASSWORD|API_KEY|WEBHOOK|SLACK|NOTIFY_.*URL|^GAFFER_NOTIFY$/.test(name);
+}
+
+/** True when `key` is a secret-bearing setting (GAFFER_NOTIFY). */
 export function isSecretSetting(key: string): boolean {
-  return SETTING_DEFS.some((d) => d.key === key && d.secret === true);
+  return DEF_BY_KEY.get(key)?.secret === true;
 }
 
 /**
  * The in-force value of ONE secret setting (env when locked, else the file), for an
  * ADMIN principal's explicit read-back (GET /api/settings/secret/:key). Null when the
- * key is not a known secret setting.
+ * key is not a secret setting.
  */
 export function readSecretSetting(
   key: string,
   env: NodeJS.ProcessEnv = process.env,
   path: string = resolveSettingsPath(env),
-): { key: string; value: string; source: SettingSource } | null {
+): { key: string; value: string; source: SettingOrigin } | null {
   if (!isSecretSetting(key)) return null;
-  if (isEnvLocked(env, key)) return { key, value: env[key] ?? "", source: "env" };
+  if (isEnvLocked(env, key)) return { key, value: env[key] ?? "", source: "environment" };
   const fileValue = readSettingsFile(path)[key] ?? "";
-  return { key, value: fileValue, source: fileValue !== "" ? "file" : "default" };
+  return { key, value: fileValue, source: fileValue !== "" ? "dashboard" : "default" };
 }
 
-/** Outcome of a settings write: which keys persisted and which were rejected. */
+// ── Views ────────────────────────────────────────────────────────────────────
+
+/** Where a setting's value came from. */
+export type SettingOrigin = "default" | "dashboard" | "environment";
+
+/** One setting as GET /api/settings reports it. */
+export interface SettingView {
+  readonly key: string;
+  readonly label: string;
+  readonly group: SettingGroup;
+  readonly kind: string;
+  readonly values: readonly string[];
+  readonly default: string;
+  readonly description: string;
+  readonly writable: boolean;
+  /** The stored settings.json value ("" when unset); masked for a secret. */
+  readonly value: string;
+  /** The value a run uses now; masked for a secret. */
+  readonly effective: string;
+  readonly origin: SettingOrigin;
+  /** True iff the OPERATOR set it in the real environment: read-only on the page. */
+  readonly envLocked: boolean;
+  readonly secret?: true;
+  /** A secret only: the channels in force, masked. */
+  readonly channels?: readonly NotifyChannel[];
+  /** A secret only: true when a value is in force. */
+  readonly configured?: boolean;
+}
+
+/** One derived value: what a run uses and what decided it (secrets masked). */
+export interface DerivedView {
+  readonly name: string;
+  readonly value: string | null;
+  readonly decidedBy: string;
+  readonly setting: string;
+  readonly note?: string;
+  /** Where the value came from: the setting, a real environment variable, or an old key. */
+  readonly source: "setting" | "environment" | "old-key";
+}
+
+/** One old settings.json key: what decides it now and what happened to it. */
+export interface MigrationView {
+  readonly key: string;
+  readonly setting: string;
+  /** The stored value (masked when it may hold a credential). */
+  readonly old: string;
+  /** What the setting derives (masked likewise). */
+  readonly derived: string;
+  readonly differs: boolean;
+  /** kept | stricter-derived | same | ignored | environment | not-a-setting */
+  readonly decision: string;
+  /** In plain words: which reading is in force. */
+  readonly inForce: string;
+}
+
+/** What the removal act would do to settings.json, shown before it is done. */
+export interface CleanupPlan {
+  /** Keys it removes (every key that is not one of the fourteen), values masked. */
+  readonly drop: readonly { key: string; value: string }[];
+  /** Stored values of the fourteen it rewrites (padded, out of range), masked. */
+  readonly rewrite: readonly { key: string; from: string; to: string }[];
+}
+
+/** The whole GET /api/settings body (beside the isolation posture). */
+export interface SettingsReport {
+  readonly settings: SettingView[];
+  readonly derived: DerivedView[];
+  readonly migration: MigrationView[];
+  /** Derived values a real environment variable sets (masked). */
+  readonly overrides: { name: string; value: string | null; setting: string }[];
+  readonly cleanup: CleanupPlan;
+  /** Set when the runner's config refuses to load (it names the setting and why). */
+  readonly configError?: string;
+}
+
+const IN_FORCE: Readonly<Record<string, string>> = {
+  kept: "the old value is in force: it is stricter than what the setting derives (or the setting leaves it unset)",
+  "stricter-derived":
+    "the setting's value is in force: the old value was more permissive or costlier",
+  same: "the setting derives the same value",
+  ignored: "the setting's value is in force",
+  environment: "the environment sets it, so neither applies",
+  "not-a-setting": "ignored: it was never a setting the runner reads from settings.json",
+};
+
+function masked(name: string, value: string): string {
+  if (!isSecretName(name) || value === "") return value;
+  return name === "GAFFER_NOTIFY" ? maskNotify(value) : "(set, hidden)";
+}
+
+/** How a stored value of one of the fourteen is rewritten by the removal act. */
+function storedRewrite(def: SettingDef, stored: string, env: NodeJS.ProcessEnv): string | null {
+  if (stored === "") return null;
+  const t = stored.trim();
+  if (def.kind === "count" && /^[0-9]+$/.test(t) && Number(t) > 64) return "64";
+  if (settingValueProblem(def, t, env) === null) return t === stored ? null : t;
+  return "";
+}
+
+/** What the removal act would do now. */
+export function cleanupPlan(
+  env: NodeJS.ProcessEnv = process.env,
+  path: string = resolveSettingsPath(env),
+): CleanupPlan {
+  const raw = readSettingsFileRaw(path);
+  const drop: { key: string; value: string }[] = [];
+  const rewrite: { key: string; from: string; to: string }[] = [];
+  for (const [k, v] of Object.entries(raw)) {
+    const def = DEF_BY_KEY.get(k);
+    if (!def || !def.writable) {
+      drop.push({ key: k, value: masked(k, v) });
+      continue;
+    }
+    const to = storedRewrite(def, v, env);
+    if (to !== null) rewrite.push({ key: k, from: masked(k, v), to: masked(k, to) });
+  }
+  return { drop, rewrite };
+}
+
+/**
+ * GET /api/settings: the fourteen with value, origin and env-lock, plus the read-only
+ * blocks the runner's config reports (derived, migration, overrides), and the removal
+ * plan. Every secret is masked.
+ */
+export function settingsReport(
+  env: NodeJS.ProcessEnv = process.env,
+  path: string = resolveSettingsPath(env),
+): SettingsReport {
+  const file = readSettingsFile(path);
+  const raw = readSettingsFileRaw(path);
+  const rc = runnerConfigFor(env, path);
+  const settings = SETTING_DEFS.map((def): SettingView => {
+    const locked = isEnvLocked(env, def.key);
+    const stored = file[def.key] ?? "";
+    let effective: string;
+    let origin: SettingOrigin;
+    if (locked) {
+      effective = env[def.key] ?? "";
+      origin = "environment";
+    } else if (rc.ok) {
+      const s = rc.records.settings.get(def.key);
+      effective = s?.value ?? "";
+      origin =
+        s?.origin === "environment"
+          ? "environment"
+          : s?.origin === "settings.json"
+            ? "dashboard"
+            : "default";
+    } else if (stored.trim() !== "") {
+      effective = stored;
+      origin = "dashboard";
+    } else {
+      effective = def.default;
+      origin = "default";
+    }
+    if (effective === "" && origin === "default") effective = def.default;
+    if (def.key === "GAFFER_DATA") effective = dirname(path);
+    const base = {
+      key: def.key,
+      label: def.label,
+      group: def.group,
+      kind: def.kind,
+      values: def.values,
+      default: def.default,
+      description: def.description,
+      writable: def.writable,
+      envLocked: locked,
+    };
+    if (def.secret) {
+      return {
+        ...base,
+        value: maskNotify(stored),
+        effective: maskNotify(effective),
+        origin,
+        secret: true,
+        channels: notifyChannels(effective),
+        configured: effective.trim() !== "",
+      };
+    }
+    return { ...base, value: stored, effective, origin };
+  });
+  const derived: DerivedView[] = [];
+  const overrides: { name: string; value: string | null; setting: string }[] = [];
+  const migration: MigrationView[] = [];
+  if (rc.ok) {
+    for (const d of rc.report.derived) {
+      const source: DerivedView["source"] =
+        d.decidedBy === "environment"
+          ? "environment"
+          : d.decidedBy.startsWith("settings.json")
+            ? "old-key"
+            : "setting";
+      derived.push({ ...d, source });
+      if (source === "environment")
+        overrides.push({ name: d.name, value: d.value, setting: d.setting });
+    }
+    for (const m of rc.report.migration) {
+      migration.push({ ...m, inForce: IN_FORCE[m.decision] ?? m.decision });
+    }
+  }
+  // A key in the file the runner neither reads nor migrates (it says so and ignores it).
+  const seen = new Set(migration.map((m) => m.key));
+  for (const [k, v] of Object.entries(raw)) {
+    if (DEF_BY_KEY.has(k) || seen.has(k) || OLD_KEY_SETTING.has(k)) continue;
+    migration.push({
+      key: k,
+      setting: "",
+      old: masked(k, v),
+      derived: "",
+      differs: false,
+      decision: "not-a-setting",
+      inForce: IN_FORCE["not-a-setting"]!,
+    });
+  }
+  return {
+    settings,
+    derived,
+    migration,
+    overrides,
+    cleanup: cleanupPlan(env, path),
+    ...(rc.ok ? {} : { configError: rc.error }),
+  };
+}
+
+/** The fourteen settings (GET /api/settings `settings`). */
+export function listSettings(
+  env: NodeJS.ProcessEnv = process.env,
+  path: string = resolveSettingsPath(env),
+): SettingView[] {
+  return settingsReport(env, path).settings;
+}
+
+// ── Writes ───────────────────────────────────────────────────────────────────
+
+/** Outcome of a settings write. */
 export interface WriteSettingsResult {
   readonly written: string[];
-  /** Known keys skipped because they are env-locked (env overrides the file). */
+  /** Settings skipped because the operator's environment sets them (env wins). */
   readonly rejected: string[];
-  /** Unknown keys silently dropped (not in the allow-list). */
+  /** Keys refused: not one of the fourteen (see {@link settingProblems}). */
   readonly ignored: string[];
-  /** Known enum keys skipped because the value wasn't one of the allowed choices. */
+  /** Values refused: the runner would not accept them. */
   readonly invalid: string[];
 }
 
 /**
- * Merge `updates` into the persisted settings and write atomically.
- *
- * Rules:
- *   - Unknown keys are dropped (not in {@link SETTING_DEFS}) → `ignored`.
- *   - env-locked keys are refused (env overrides the file, so a UI edit would be
- *     a silent no-op for the runner) → `rejected`, never persisted.
- *   - Everything else is merged onto the existing file map and written.
- *
- * Atomic write: serialise to a temp file in the same directory, then rename over
- * the target, so a crash mid-write never leaves a truncated settings file.
+ * A structured change to GAFFER_NOTIFY that keeps the saved URLs on the server: the page
+ * never holds them (they are masked), so it says what to change. `undefined` keeps a
+ * channel as it is, `null` or "" removes it, a string replaces it.
+ */
+export interface NotifyChange {
+  readonly desktop?: boolean | undefined;
+  readonly webhook?: string | null | undefined;
+  readonly slack?: string | null | undefined;
+}
+
+/** The GAFFER_NOTIFY value a {@link NotifyChange} makes from the stored one. */
+export function applyNotifyChange(stored: string, change: NotifyChange): string {
+  const items = stored.split(/[\s,]+/).filter((i) => i !== "");
+  let desktop = items.includes("desktop");
+  let slack = items.find((i) => i.startsWith("https://hooks.slack.com/")) ?? "";
+  let webhook =
+    items.find((i) => /^https?:\/\//.test(i) && !i.startsWith("https://hooks.slack.com/")) ?? "";
+  if (change.desktop !== undefined) desktop = change.desktop;
+  if (change.slack !== undefined) slack = (change.slack ?? "").trim();
+  if (change.webhook !== undefined) webhook = (change.webhook ?? "").trim();
+  return [desktop ? "desktop" : "", webhook, slack].filter((i) => i !== "").join(",");
+}
+
+/**
+ * Merge `updates` into settings.json and write it atomically. Values are trimmed and
+ * must pass {@link settingValueProblem}; a cleared value ("") removes the key (the
+ * default applies). Keys that are not one of the fourteen are refused (`ignored`), the
+ * operator's environment wins (`rejected`), and every other key already in the file,
+ * old keys included, is kept as it is: only {@link removeOldKeys} removes them.
  */
 export function writeSettings(
   updates: Record<string, string>,
   env: NodeJS.ProcessEnv = process.env,
   path: string = resolveSettingsPath(env),
 ): WriteSettingsResult {
-  const current = readSettingsFile(path);
-  const merged: Record<string, string> = { ...current };
+  const merged: Record<string, string> = { ...readSettingsFileRaw(path) };
   const written: string[] = [];
   const rejected: string[] = [];
   const ignored: string[] = [];
   const invalid: string[] = [];
-
-  for (const [key, value] of Object.entries(updates)) {
-    const def = SETTING_DEFS.find((d) => d.key === key);
-    if (def === undefined) {
+  for (const [key, rawValue] of Object.entries(updates)) {
+    const def = DEF_BY_KEY.get(key);
+    if (def === undefined || !def.writable) {
       ignored.push(key);
       continue;
     }
     if (isEnvLocked(env, key)) {
-      // env-locked: an explicit env var overrides the file, so persisting this
-      // would mislead the operator (the runner would ignore it). Refuse it.
       rejected.push(key);
       continue;
     }
+    const value = rawValue.trim();
     if (settingValueProblem(def, value, env) !== null) {
       invalid.push(key);
       continue;
     }
-    merged[key] = value;
+    if (value === "") delete merged[key];
+    else merged[key] = value;
     written.push(key);
   }
-
-  // Only touch the disk when something actually changed.
   if (written.length > 0) {
     atomicWriteJson(path, merged);
-    // Take effect in THIS process immediately (its own gates read env): drop what
-    // was derived earlier so a cleared key falls back to its preset, then re-apply.
-    for (const k of written) {
-      if (derivedOf(env).has(k)) {
-        delete env[k];
-        derivedOf(env).delete(k);
-      }
-    }
-    // A mode change re-derives every preset key that is not stored explicitly.
-    if (written.includes("GAFFER_MODE")) {
-      for (const k of [...derivedOf(env).keys()]) {
-        if (derivedOf(env).get(k) === "mode") {
-          delete env[k];
-          derivedOf(env).delete(k);
-        }
-      }
-    }
     applySettingsToEnv(env, path);
   }
-
   return { written, rejected, ignored, invalid };
 }
 
-/** One value {@link writeSettings} would refuse, with the reason in words. */
-export interface SettingProblem {
-  readonly key: string;
-  readonly label: string;
-  readonly problem: string;
-}
-
 /**
- * Why `value` cannot be stored for `def`, or null when it can. An empty value is
- * always allowed: it clears the override back to the built-in default.
- *   - an enum only accepts a listed choice;
- *   - an `int` is a whole number of at least `min` (0 unless the setting says), a
- *     `number` a decimal of 0 or more, a `boolean` 0/1/true/false/yes/no. Previously
- *     any string was persisted for any type, so a typo'd cap silently became "unset"
- *     at runtime (bash `[ "$x" -ge … ]` on "abc"), and a non-numeric daily budget
- *     satisfied the "a live run needs a dollar cap" guard while every cap check read
- *     it as off;
- *   - an outbound URL (notify webhook / Slack) must pass the notify URL policy: http(s)
- *     only and no loopback / link-local / private destination unless the env opts in.
- *     The dashboard token would otherwise let anyone aim the factory's POSTs at an
- *     internal service (SSRF) from the settings panel.
+ * The person's removal act: rewrite settings.json keeping only the fourteen (stored
+ * values trimmed; an out-of-range one clamped or cleared), atomically. `expected` is
+ * the plan the page showed: when the file changed since (the plan differs), nothing is
+ * written and a CONFLICT is thrown, so nothing is removed that the person did not see.
  */
-export function settingValueProblem(
-  def: SettingDef,
-  value: string,
+export function removeOldKeys(
+  expected: { drop: readonly string[]; rewrite: readonly string[] },
   env: NodeJS.ProcessEnv = process.env,
-): string | null {
-  if (value === "") return null;
-  if (def.choices !== undefined) {
-    return def.choices.includes(value) ? null : `must be one of ${def.choices.join(", ")}`;
+  path: string = resolveSettingsPath(env),
+): CleanupPlan {
+  const plan = cleanupPlan(env, path);
+  const same = (a: readonly string[], b: readonly string[]) =>
+    JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());
+  if (
+    !same(
+      plan.drop.map((d) => d.key),
+      expected.drop,
+    ) ||
+    !same(
+      plan.rewrite.map((r) => r.key),
+      expected.rewrite,
+    )
+  ) {
+    throw new DispatchError(
+      "STATE_CONFLICT",
+      "settings.json changed since the page showed what would be removed; reload the Settings page and look again.",
+      { plan },
+    );
   }
-  const v = value.trim();
-  switch (def.type) {
-    case "int": {
-      const min = def.min ?? 0;
-      if (!/^\d+$/.test(v) || Number(v) < min)
-        return min > 0 ? `must be a whole number of ${min} or more` : "must be a whole number";
-      break;
-    }
-    case "number":
-      // Plain decimal only (what the runner's awk reads): no sign, exponent, unit or
-      // currency symbol, and no surrounding spaces.
-      if (!/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(value))
-        return "must be a number of 0 or more, such as 5 or 2.50";
-      break;
-    case "boolean":
-      if (!/^(0|1|true|false|yes|no)$/i.test(v)) return "must be on or off (1 or 0)";
-      break;
-    default:
-      break;
+  if (plan.drop.length === 0 && plan.rewrite.length === 0) return plan;
+  const raw = readSettingsFileRaw(path);
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(raw)) {
+    const def = DEF_BY_KEY.get(k);
+    if (!def || !def.writable) continue;
+    const to = storedRewrite(def, v, env);
+    const value = to === null ? v : to;
+    if (value !== "") out[k] = value;
   }
-  if (def.key.endsWith("_URL")) {
-    const problem = notifyUrlProblem(value, { allowPrivate: notifyAllowsPrivate(env) });
-    if (problem !== null) return "is not an allowed webhook address";
-  }
-  if (def.key === "GAFFER_DOD_ENV_PASS") {
-    const names = value.split(/[\s,]+/).filter((n) => n !== "");
-    if (names.some((n) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(n)))
-      return "must be variable names separated by commas";
-  }
-  return null;
-}
-
-/**
- * Every value in `updates` that {@link writeSettings} would refuse as invalid (unknown
- * and env-locked keys are not problems: they are ignored / rejected as before). POST
- * /api/settings refuses the whole write with a 422 naming these, so one bad field is
- * never half-saved beside the good ones.
- */
-export function settingProblems(
-  updates: Record<string, string>,
-  env: NodeJS.ProcessEnv = process.env,
-): SettingProblem[] {
-  const out: SettingProblem[] = [];
-  for (const [key, value] of Object.entries(updates)) {
-    const def = DEF_BY_KEY.get(key);
-    if (def === undefined || isEnvLocked(env, key)) continue;
-    const problem = settingValueProblem(def, value, env);
-    if (problem !== null) out.push({ key, label: def.label, problem });
-  }
-  return out;
+  atomicWriteJson(path, out);
+  applySettingsToEnv(env, path);
+  return plan;
 }
 
 /** Serialise `data` to `path` atomically (temp file in the same dir + rename). */
@@ -1281,8 +932,6 @@ function atomicWriteJson(path: string, data: Record<string, string>): void {
     writeFileSync(tmp, body, { encoding: "utf8", mode: 0o600 });
     renameSync(tmp, path);
   } catch (err) {
-    // A failed rename (cross-device, permissions) must not leave the temp file
-    // littering the data dir — clean it up best-effort, then surface the error.
     try {
       unlinkSync(tmp);
     } catch {

@@ -181,59 +181,61 @@ gaffer_dashboard_pidfile_state() {
   echo "stale ${pid:-?}"
 }
 
-# Env flags (`-u KEY …`) that strip CONFIG-DERIVED setting values from the dashboard
-# process's environment. `gaffer dashboard` sources factory.config.sh, which exports
-# settings.json values and `:=` defaults for many UI-editable keys; inherited as env,
-# the dashboard reported every one of them "set by env" and refused UI edits (15
-# settings were locked that way). Only a key the OPERATOR had in the environment
-# before the config ran (_GAFFER_ENV_AT_SOURCE) is a real override and stays. The
-# dashboard re-applies settings.json to its own env at startup (applySettingsToEnv),
-# so nothing is lost — it just stops mistaking its own defaults for locks. The six
-# tick-only knobs are always unset, as before. With no dispatch dist the list is just
-# those six (there is no server to launch either). A dist that IS there but cannot be
-# read is NOT silently skipped: that regression (a static `import … from
-# process.argv[1]`, a syntax error swallowed by `|| true`) left 18 settings locked and
-# made every saved setting read-only after the next restart. It now warns on stderr.
+# Env flags (`-u KEY ...`) that strip CONFIG-DERIVED values from the dashboard process's
+# environment. `gaffer dashboard` sources factory.config.sh, which exports settings.json
+# values and, for a non-default preset, the values the fourteen settings derive.
+# Inherited as env, the dashboard would read them as the operator's own (locked in the
+# UI, and frozen at the launch value after a person changes a setting). So every name
+# in the settings schema (the fourteen and every value they derive,
+# runner/config/settings-schema.json, the one list) is unset unless the OPERATOR had it
+# in the environment before the config ran (_GAFFER_ENV_AT_SOURCE): a real override
+# stays. The dashboard derives the rest itself through the runner's own config
+# (packages/dispatch/src/api/settings.ts applySettingsToEnv).
+#
+# The operator record _GAFFER_OPERATOR_ENV is KEPT (P-B1 of the fourteen-settings review):
+# the dashboard passes it to every runner it starts, with a re-source record for each
+# value it derived, so such a run derives those values from settings.json exactly as a
+# run started from the command line does, and an old settings.json key never arrives as
+# if the operator had exported it. A schema that cannot be read is NOT silently skipped
+# (the server would then show derived values as env-locked): it warns on stderr.
 gaffer_dashboard_setting_keys() {
-  local _settings_js="${1:?settings.js path}"
-  # A dynamic import: a static `import` needs a string-literal specifier.
-  node --input-type=module -e '
-    import { pathToFileURL } from "node:url";
-    const { SETTING_DEFS } = await import(pathToFileURL(process.argv[1]).href);
-    if (!Array.isArray(SETTING_DEFS) || SETTING_DEFS.length === 0) {
-      console.error("SETTING_DEFS is empty");
+  local _schema="${1:?settings-schema.json path}"
+  node -e '
+    const s = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+    if (!Array.isArray(s.settings) || s.settings.length === 0) {
+      console.error("the schema lists no settings");
       process.exit(3);
     }
-    for (const d of SETTING_DEFS) console.log(d.key);
-  ' "$_settings_js"
+    for (const x of s.settings) {
+      console.log(x.name);
+      for (const d of x.derives) console.log(d.name);
+    }
+  ' "$_schema"
 }
 
 gaffer_dashboard_env_unset_flags() {
   local _flags="-u GAFFER_TICK_TIMEOUT -u GAFFER_MAX_TURNS -u GAFFER_PLAN_DEBATE -u GAFFER_PLAN_DEBATE_MODELS -u GAFFER_PLAN_DEBATE_MAX_ROUNDS -u GAFFER_PLAN_DEBATE_MIN_ESTIMATE"
-  local _settings_js="${DISPATCH_DIR:-}/dist/api/settings.js" _k _keys
-  if [ -f "$_settings_js" ] && command -v node >/dev/null 2>&1; then
-    if ! _keys="$(gaffer_dashboard_setting_keys "$_settings_js")" || [ -z "$_keys" ]; then
-      printf 'gaffer: could not read the setting keys from %s — settings the config defaulted will show as env-locked in the dashboard (rebuild: pnpm -C packages/dispatch build)\n' "$_settings_js" >&2
-      _keys=""
-    fi
-    while IFS= read -r _k; do
-      [ -n "$_k" ] || continue
-      case " ${_GAFFER_ENV_AT_SOURCE:-} " in *" $_k "*) continue ;; esac   # operator override → keep
-      case "$_flags" in *" -u $_k"*|*"-u $_k "*) continue ;; esac
-      _flags="$_flags -u $_k"
-    done <<< "$_keys"
+  local _schema="${RUNNER_DIR:-}/config/settings-schema.json" _k _keys=""
+  if ! _keys="$(gaffer_dashboard_setting_keys "$_schema")" || [ -z "$_keys" ]; then
+    printf 'gaffer: could not read the setting names from %s; values the config derived will show as env-locked in the dashboard (regenerate it: node scripts/config-reference.mjs)\n' "$_schema" >&2
+    _keys=""
   fi
-  # Bounds the config DERIVED from those tick-only knobs (attempts × GAFFER_TICK_TIMEOUT
+  while IFS= read -r _k; do
+    [ -n "$_k" ] || continue
+    case "$_k" in GAFFER_DATA) continue ;; esac   # where the server finds its state
+    case " ${_GAFFER_ENV_AT_SOURCE:-} " in *" $_k "*) continue ;; esac   # operator override: keep
+    case "$_flags" in *" -u $_k"*|*"-u $_k "*) continue ;; esac
+    _flags="$_flags -u $_k"
+  done <<< "$_keys"
+  # Bounds the config DERIVED from those tick-only knobs (attempts x GAFFER_TICK_TIMEOUT
   # + margin) go too, unless the operator set them: inherited, they kept the
-  # launcher's figure while the knob they came from was dropped — an operator's
-  # GAFFER_TICK_TIMEOUT=120 left every dashboard-spawned tick with a 480s outer bound
-  # under a 1800s per-call cap, so the deadline guard refused every in-tick rework.
+  # launcher's figure while the knob they came from was dropped.
   for _k in GAFFER_TICK_OUTER_TIMEOUT GAFFER_CLAIM_TTL; do
     case " ${_GAFFER_ENV_AT_SOURCE:-} " in *" $_k "*) ;; *) _flags="$_flags -u $_k" ;; esac
   done
-  # The re-source bookkeeping (factory.config.sh) is the launcher's, not the
-  # server's: the dashboard is a fresh root for the processes it spawns.
-  _flags="$_flags -u _GAFFER_OPERATOR_ENV -u _GAFFER_MODE_WARNED -u _GAFFER_STRICT_OPTOUT_WARNED"
+  # The launcher's warn-once marks and its own re-source records go (the dashboard writes
+  # records for what it derives itself); the operator record stays (see above).
+  _flags="$_flags -u _GAFFER_MODE_WARNED -u _GAFFER_STRICT_OPTOUT_WARNED"
   # The config's own exported internals (a child that sources it sets them again).
   _flags="$_flags -u _GAFFER_ESTIMATE_LIB -u _GAFFER_DEPRECATED_SAID"
   while IFS= read -r _k; do

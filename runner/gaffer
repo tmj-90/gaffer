@@ -540,30 +540,11 @@ config)
   for a in "$@"; do
     case "$a" in --all | --json) _cfg_flags+=("$a") ;; *) bad_arg config "unknown option '$a'" ;; esac
   done
-  _cfg_clean() { local v="${1//$'\t'/ }"; printf '%s' "${v//$'\n'/ }"; }
-  # The old settings.json keys that still apply (stricter), from the migration log.
-  _cfg_kept=" "
-  while IFS=$'\t' read -r _k _ _ _ _d; do
-    [ "$_d" = kept ] && _cfg_kept="$_cfg_kept$_k "
-  done <<<"$_GAFFER_MIGRATION_LOG"
+  # The records come from the one printer the dashboard also reads (lib/config-records.sh).
+  # shellcheck source=lib/config-records.sh
+  source "$RUNNER_DIR/lib/config-records.sh"
   {
-    for _n in $_GAFFER_SETTINGS_KEYS; do
-      case "$_GAFFER_OPERATOR_ENV" in
-        *" $_n "*) _o=environment ;;
-        *) case "$_GAFFER_FROM_FILE" in *" $_n "*) _o=settings.json ;; *) _o=default ;; esac ;;
-      esac
-      printf 'S\t%s\t%s\t%s\n' "$_n" "$_o" "$(_cfg_clean "${!_n-}")"
-    done
-    while IFS= read -r _n; do
-      [ -n "$_n" ] || continue
-      case "$_GAFFER_OPERATOR_ENV" in
-        *" $_n "*) _o=environment ;;
-        *) case "$_cfg_kept" in *" $_n "*) _o=settings.json ;; *) _o=derived ;; esac ;;
-      esac
-      _s=0; [ -n "${!_n+x}" ] && _s=1
-      printf 'D\t%s\t%s\t%s\t%s\n' "$_n" "$_o" "$_s" "$(_cfg_clean "${!_n-}")"
-    done < <(node -e 'for (const s of require(process.argv[1]).settings) for (const d of s.derives) console.log(d.name)' "$RUNNER_DIR/config/settings-schema.json")
-    [ -z "$_GAFFER_MIGRATION_LOG" ] || printf '%s' "$_GAFFER_MIGRATION_LOG" | sed 's/^/M\t/'
+    gaffer_config_records
   } | node "$RUNNER_DIR/bin/config-show.mjs" ${_cfg_flags[@]+"${_cfg_flags[@]}"}
   exit "${PIPESTATUS[1]}"
   ;;

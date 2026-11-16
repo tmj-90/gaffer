@@ -23,14 +23,8 @@
 #   4  a repair commit on the delivery branch (re-delivered, re-tested, re-approved with --commit,
 #      re-tested) lands; the assertion passes on the landed candidate, the replay record
 #      names that landed sha, and the epic counts as accepted exactly once.
-#   5  external review #7, the same steps in a repo whose registered test command is
-#      FILE-SCOPED (`node --test test/label.test.mjs`): the tester's
-#      test/acceptance.test.mjs was never executed by it, the landing recorded it as
-#      passed and the epic counted as accepted while the assertion failed on what landed.
-#      Now the replay runs the tester's file BY PATH on the candidate: the landing is held
-#      (tester_replay_red, the file named), no record, the epic is not counted; after the
-#      repair the file runs and passes on the landed candidate, is recorded, and the
-#      second epic counts.
+#   (5, the same steps behind a FILE-SCOPED registered command:
+#   e2e-release-gate-tester-replay-scoped.test.sh, on its own copy of the world)
 # Real dispatch + tick.sh (merge lane, live tester lane bin/tester-run.mjs --live), a stub
 # claude, a fixture repo.
 # Run: bash runner/test/e2e-release-gate-tester-replay.test.sh
@@ -40,91 +34,8 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
 ROOT="$(cd "$RUNNER_DIR/.." && pwd)"
-[ -f "$ROOT/packages/dispatch/dist/cli/index.js" ] || { echo "SKIP: dispatch CLI not built"; exit 0; }
-[ -f "$ROOT/packages/crew/dist/runtime/context/renderPromptCli.js" ] || { echo "SKIP: crew not built"; exit 0; }
-PASS=0; FAILURES=()
-ok()   { PASS=$((PASS + 1)); printf '  ok   %s\n' "$1"; }
-fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
-
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/rg-tester-replay.XXXXXX")"
-gaffer_test_check_tmp "$WORK" || exit 70
-WORK="$(cd "$WORK" && pwd -P)"
-[ "${KEEP:-0}" = 1 ] || trap 'gaffer_test_rm_work "$WORK"' EXIT
-mkdir -p "$WORK/data" "$WORK/bin"
-R="$WORK/repo"; mkdir -p "$R/src" "$R/test"
-gitc() { git -c user.email=t@t -c user.name=t "$@"; }
-( cd "$R" && git init -q -b main
-  printf '{ "name": "r", "version": "0.1.0", "private": true, "type": "module", "scripts": { "test": "node --test", "lint": "node -e 0" } }\n' > package.json
-  printf 'export function profile() {\n  return { name: "Ada", displayName: "Ada" };\n}\n' > src/profile.js
-  printf 'import { profile } from "./profile.js";\nexport function label() {\n  return profile().name;\n}\n' > src/label.js
-  # The registered smoke suite: it stays green at every step of this test.
-  printf 'import test from "node:test";\nimport assert from "node:assert/strict";\nimport { profile } from "../src/profile.js";\nimport { label } from "../src/label.js";\ntest("smoke", () => { assert.equal(profile().name, "Ada"); assert.equal(typeof label, "function"); });\n' > test/smoke.test.js
-  gitc add -A && gitc commit -qm init )
-
-# Stub agent.
-#   TESTER turn: the black-box assertion "the label returns Ada", then a PASS token.
-#   ACCEPTANCE delivery: the label reads displayName (first delivery); the REPAIR on a
-#     re-delivery reads displayName, falling back to name. Its own acceptance test asserts
-#     only what stays true after main moves (the smoke-level shape), so the repository's
-#     suite never sees the break.
-#   IMPLEMENTATION delivery: a profile doc.
-cat > "$WORK/bin/claude" <<'STUB'
-#!/usr/bin/env bash
-prompt=""; prev=""; for a in "$@"; do [ "$prev" = "-p" ] && prompt="$a"; prev="$a"; done
-case "$prompt" in
-  *"INDEPENDENT TESTER"*)
-    mkdir -p test
-    # repo2 (a file-scoped registered command): the reviewer's test/acceptance.test.mjs.
-    tf=test/bb-label.test.js; [ -f test/label.test.mjs ] && tf=test/acceptance.test.mjs
-    printf 'import test from "node:test";\nimport assert from "node:assert/strict";\nimport { label } from "../src/label.js";\ntest("the label returns Ada", () => { assert.equal(label(), "Ada"); });\n' > "$tf"
-    printf '{"type":"result","subtype":"success","is_error":false,"result":"The label returns Ada; npm test passes.\\n\\n{\\"verdict\\":\\"PASS\\"}","total_cost_usd":0.01,"num_turns":2}\n'; exit 0 ;;
-esac
-if [ -e .git ]; then
-  case "$prompt" in
-    *"ACCEPTANCE TICKET"*)
-      if grep -q 'profile().displayName;' src/label.js; then
-        sed -i.bak 's/profile().displayName;/profile().displayName ?? profile().name;/' src/label.js
-      else
-        sed -i.bak 's/profile().name;/profile().displayName;/' src/label.js
-      fi
-      rm -f src/*.bak
-      [ -f test/smoke.test.js ] && printf 'import test from "node:test";\nimport assert from "node:assert/strict";\nimport { label } from "../src/label.js";\ntest("acceptance: the label is exported", () => { assert.equal(typeof label, "function"); });\n' > test/acceptance.test.js ;;
-    *)
-      mkdir -p docs; printf '# Profile\nname and displayName\n' > docs/profile.md ;;
-  esac
-  git -c user.email=s@s -c user.name=s add -A >/dev/null; git -c user.email=s@s -c user.name=s commit -qm "feat: delivery" >/dev/null 2>&1 || true
-  printf '{"type":"result","subtype":"success","is_error":false,"result":"done.\\n\\nSmallest-change note: one line.","total_cost_usd":0.01,"num_turns":1}\n'; exit 0
-fi
-printf '{"type":"result","subtype":"success","is_error":false,"result":"ok"}\n'
-STUB
-chmod +x "$WORK/bin/claude"
-export GAFFER_DATA="$WORK/data" CLAUDE_BIN="$WORK/bin/claude" CLAUDE_FLAGS="" \
-       GAFFER_MAX_TURNS=3 GAFFER_TICK_TIMEOUT=60 GAFFER_ROLE_MODELS=card=stub GAFFER_PLAN_MODEL=stub GAFFER_IMPL_MODEL=stub \
-       REVIEW_MODE=human DRY_RUN=0 GAFFER_MAINTENANCE=0 GAFFER_STRICT_REQUIRE=0 GAFFER_SECURITY_REVIEW=0 GAFFER_TESTING=0 \
-       MAX_OPEN_AGENT_BRANCHES_PER_REPO=10 MAX_OPEN_AGENT_PRS_PER_REPO=10 MAX_IN_REVIEW_PER_REPO=10 GAFFER_DIGEST_DISABLE=1
-unset GAFFER_DOD_TYPECHECK_CMD GAFFER_TESTER_REPLAY
-# shellcheck source=../factory.config.sh
-source "$RUNNER_DIR/factory.config.sh" >/dev/null 2>&1
-wg init >/dev/null 2>&1; lg init >/dev/null 2>&1
-wg repo add -n repo --path "$R" --branch main --stack node --test "npm test" --lint "npm run lint" >/dev/null 2>&1
-run_tick() { ( cd "$RUNNER_DIR" && bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" ) | grep '^TICK_RESULT=' ; }
-st() { wg ticket show "$1" 2>/dev/null | jget 'd.ticket.status'; }
-approve_heads() { wg ticket diff "$1" --heads 2>/dev/null | sed 's/^/--commit /' | tr '\n' ' '; }
-approve() {
-  # shellcheck disable=SC2046  # one --commit <repo>=<sha> word pair per head
-  wg review approve "$1" $(approve_heads "$1") --reviewer human1 >/dev/null 2>&1
-}
-branch_of() { wg ticket show "$1" 2>/dev/null | jget 'd.ticket.branch_name || ""'; }
-tree_of() { git -C "$R" rev-parse "$1^{tree}"; }
-suite_on() { local wt="$WORK/check-$$"; git -C "$R" worktree add -q --detach "$wt" "$1" >/dev/null 2>&1; ( cd "$wt" && npm test >/dev/null 2>&1 ); local rc=$?; git -C "$R" worktree remove --force "$wt" >/dev/null 2>&1; return $rc; }
-# The repository's suite plus the tester's saved assertion, on a revision.
-with_tester_on() { local wt="$WORK/tcheck-$$"; git -C "$R" worktree add -q --detach "$wt" "$1" >/dev/null 2>&1; git -C "$wt" checkout -q "gaffer-tests/ticket-$ACC" -- test/bb-label.test.js >/dev/null 2>&1; ( cd "$wt" && npm test >/dev/null 2>&1 ); local rc=$?; git -C "$R" worktree remove --force "$wt" >/dev/null 2>&1; return $rc; }
-accepted() { wg stats --json 2>/dev/null | jget 'String(d.acceptance.accepted)'; }
-epic_field() { wg stats --json 2>/dev/null | jget "String(((d.acceptance.epics || [])[0] || {}).$1 ?? '')"; }
-replay_rec() { wg ticket show "$1" | jget '((d.evidence || []).filter(e => e.recorded_by_actor_type === "system" && (e.uri || "").startsWith("gaffer-tester-replayed:")).map(e => e.uri.slice(23) + " " + JSON.stringify(JSON.parse(e.payload_json || "{}").files || [])).join("\n"))' 2>/dev/null; }
-LOGF="$GAFFER_DATA/factory.log"
-# The tests commit the tester's latest PASS is bound to (bin/tester-run.mjs records it).
-bound_tests() { wg ticket show "$1" | jget '((d.evidence || []).filter(e => e.evidence_type === "test_output" && /"verdict":"pass"/.test(e.payload_json || "")).map(e => JSON.parse(e.payload_json).tests_commit || "").pop()) || ""' 2>/dev/null; }
+# shellcheck source=lib/release-gate-tester-replay-world.sh
+source "$HERE/lib/release-gate-tester-replay-world.sh"
 
 echo "== 1: an epic; the acceptance delivery reads displayName; the tester's assertion passes =="
 printf '%s\n' '{"epic":{"name":"Profile label","description":"label() shows the profile name","brief":"The label shows the display name: label() returns Ada"},"tickets":[{"title":"Document the profile","description":"docs/profile.md","acceptanceCriteria":["a doc exists"],"dependsOn":[],"repo":"repo","access":"write"}]}' > "$WORK/plan.json"
@@ -219,74 +130,6 @@ STATUS_OUT="$(bash "$RUNNER_DIR/status.sh" 2>/dev/null)"
 case "$STATUS_OUT" in *"tester assertions passed on the landed revision ${LANDED:0:12}: test/bb-label.test.js"*) ok "gaffer status reads the same record" ;; *) fail "gaffer status: $(printf '%s' "$STATUS_OUT" | grep -i 'acceptance #' | head -2)" ;; esac
 AUTO_MERGE=0 run_tick >/dev/null; GAFFER_MODE=autonomous AUTO_MERGE=1 run_tick >/dev/null
 [ "$(accepted)" = "1" ] && [ "$(wg stats --json | jget 'String(d.acceptance.epics.length)')" = "1" ] && ok "counted exactly once (still 1 accepted, one epic row, after more ticks)" || fail "accepted=$(accepted) after more ticks"
-
-echo "== 5: a FILE-SCOPED registered command (external review #7) — the tester's file must run =="
-R2="$WORK/repo2"; mkdir -p "$R2/src" "$R2/test"
-( cd "$R2" && git init -q -b main
-  printf '{ "name": "r2", "version": "0.1.0", "private": true, "type": "module" }\n' > package.json
-  printf 'export function profile() {\n  return { name: "Ada", displayName: "Ada" };\n}\n' > src/profile.js
-  printf 'import { profile } from "./profile.js";\nexport function label() {\n  return profile().name;\n}\n' > src/label.js
-  # The registered command runs this one file, which stays green at every step.
-  printf 'import test from "node:test";\nimport assert from "node:assert/strict";\nimport { label } from "../src/label.js";\ntest("label is a function", () => { assert.equal(typeof label, "function"); });\n' > test/label.test.mjs
-  gitc add -A && gitc commit -qm init )
-wg repo add -n repo2 --path "$R2" --branch main --stack node --test "node --test test/label.test.mjs" >/dev/null 2>&1
-printf '%s\n' '{"epic":{"name":"Profile label, file-scoped","description":"label() shows the profile name","brief":"The label shows the display name: label() returns Ada"},"tickets":[{"title":"Document the profile in repo2","description":"docs/profile.md","acceptanceCriteria":["a doc exists"],"dependsOn":[],"repo":"repo2","access":"write"}]}' > "$WORK/plan2.json"
-EPIC2="$(wg epic create "$WORK/plan2.json" 2>/dev/null)"
-IMPL2="$(printf '%s' "$EPIC2" | jget 'd.ticket_numbers[0]')"; ACC2="$(printf '%s' "$EPIC2" | jget 'String(d.acceptance_ticket_number)')"
-[ -n "$IMPL2" ] && [ -n "$ACC2" ] && ok "5: a second epic in repo2: implementation #$IMPL2 + acceptance #$ACC2" || fail "5: epic create: $EPIC2"
-wg ticket repo-access set "$IMPL2" repo2 --access write --relation confirmed >/dev/null 2>&1
-wg ticket repo-access set "$ACC2" repo2 --access write --relation confirmed >/dev/null 2>&1
-wg ticket ready "$IMPL2" >/dev/null 2>&1; wg ticket ready "$ACC2" >/dev/null 2>&1
-AUTO_MERGE=0 run_tick >/dev/null
-approve "$IMPL2"
-rm -f "$GAFFER_DATA/.merge-held-tickets"
-GAFFER_MODE=autonomous AUTO_MERGE=1 run_tick >/dev/null
-[ "$(st "$IMPL2")" = "done" ] && ok "5: #$IMPL2 landed" || fail "5: #$IMPL2 status=$(st "$IMPL2")"
-[ "$(st "$ACC2")" = in_testing ] || AUTO_MERGE=0 run_tick >/dev/null
-BR2="$(branch_of "$ACC2")"
-grep -q 'profile().displayName;' <<<"$(git -C "$R2" show "refs/heads/$BR2:src/label.js" 2>/dev/null)" && ok "5: the acceptance delivery reads displayName" || fail "5: acceptance #$ACC2 status=$(st "$ACC2") label: $(git -C "$R2" show "refs/heads/$BR2:src/label.js" 2>/dev/null | tr '\n' ' ')"
-AUTO_MERGE=0 run_tick >/dev/null
-approve "$ACC2"
-[ "$(st "$ACC2")" = ready_for_merge ] && ok "5: the tester's PASS, then the approval of the tested commit → ready_for_merge" || fail "5: acceptance after the tester: $(st "$ACC2")"
-git -C "$R2" show "gaffer-tests/ticket-$ACC2:test/acceptance.test.mjs" >/dev/null 2>&1 && ok "5: the tester saved test/acceptance.test.mjs" || fail "5: no test/acceptance.test.mjs on gaffer-tests/ticket-$ACC2"
-sed -i.bak 's/, displayName: "Ada"//' "$R2/src/profile.js" && rm -f "$R2/src/profile.js.bak"
-gitc -C "$R2" commit -qam "refactor: drop the unused displayName"
-MAIN2="$(git -C "$R2" rev-parse main)"; TREE2="$(git -C "$R2" rev-parse 'main^{tree}')"
-C2="$WORK/cand2"; git -C "$R2" worktree add -q --detach "$C2" main >/dev/null 2>&1
-gitc -C "$C2" merge -q --no-edit "$(git -C "$R2" rev-parse "refs/heads/$BR2")" >/dev/null 2>&1
-( cd "$C2" && node --test test/label.test.mjs >/dev/null 2>&1 ) && ok "5: the registered file-scoped command passes on the merge candidate" || fail "5: fixture: the registered command is red on the candidate"
-git -C "$C2" checkout -q "gaffer-tests/ticket-$ACC2" -- test/acceptance.test.mjs
-( cd "$C2" && node --test test/acceptance.test.mjs >/dev/null 2>&1 ) && fail "5: fixture: the tester's file passes on the candidate" || ok "5: running test/acceptance.test.mjs on the candidate fails (undefined !== 'Ada')"
-git -C "$R2" worktree remove --force "$C2" >/dev/null 2>&1
-rm -f "$GAFFER_DATA/.merge-held-tickets"
-GAFFER_MODE=autonomous AUTO_MERGE=1 run_tick >/dev/null
-[ "$(git -C "$R2" rev-parse main)" = "$MAIN2" ] && [ "$(git -C "$R2" rev-parse 'main^{tree}')" = "$TREE2" ] && ok "5: repo2's main untouched (head and tree)" || fail "5: the broken combination landed: $(git -C "$R2" log --oneline -2 main | tr '\n' '|')"
-HOLD2="$(node -e '
-  const { Dispatch } = await import(process.argv[1]);
-  const d = Dispatch.open(process.argv[2]);
-  const i = d.humanQueue().items.find((x) => x.ticket && x.ticket.number === Number(process.argv[3]));
-  process.stdout.write(i ? `${i.reasonCode}|${i.reason}` : "none");' --input-type=module "$ROOT/packages/dispatch/dist/core.js" "$DISPATCH_DB" "$ACC2" 2>/dev/null || echo none)"
-case "$HOLD2" in "tester_replay_red|"*"test/acceptance.test.mjs"*) ok "5: held for a human (tester_replay_red) naming test/acceptance.test.mjs" ;; *) fail "5: acceptance #$ACC2 status=$(st "$ACC2") queue item: ${HOLD2:0:300}" ;; esac
-grep -q "MERGE: #$ACC2 TESTER REPLAY — running the tester's 1 test file(s) (test/acceptance.test.mjs) on the merge candidate .* (node-test, by path)" "$LOGF" && ok "5: the tester's file ran by path, not through the file-scoped command" || fail "5: no by-path replay line for #$ACC2"
-[ -z "$(replay_rec "$ACC2")" ] && ok "5: no replay record names the file" || fail "5: a replay was recorded: $(replay_rec "$ACC2")"
-[ "$(accepted)" = "1" ] && ok "5: wg stats: the second epic is NOT counted as accepted (still 1)" || fail "5: wg stats accepted=$(accepted) — the epic counted on a file that never ran on what landed"
-wg ticket move "$ACC2" ready >/dev/null 2>&1
-AUTO_MERGE=0 run_tick >/dev/null
-REP2="$(git -C "$R2" rev-parse "refs/heads/$BR2")"
-AUTO_MERGE=0 run_tick >/dev/null
-approve "$ACC2"
-rm -f "$GAFFER_DATA/.merge-held-tickets"
-GAFFER_MODE=autonomous AUTO_MERGE=1 run_tick >/dev/null
-[ "$(st "$ACC2")" = "done" ] && git -C "$R2" merge-base --is-ancestor "$REP2" main && ok "5: the repaired candidate landed (done)" || fail "5: acceptance #$ACC2 status=$(st "$ACC2") $(grep "#$ACC2" "$LOGF" | tail -3 | tr '\n' '|' | cut -c1-500)"
-REC2="$(replay_rec "$ACC2")"
-[ "${REC2%% *}" = "$(git -C "$R2" rev-parse main)" ] && case "$REC2" in *'["test/acceptance.test.mjs"]'*) true ;; *) false ;; esac \
-  && ok "5: the record names the landed sha and test/acceptance.test.mjs, which ran and passed there" || fail "5: record '$REC2' vs main $(git -C "$R2" rev-parse main)"
-# TEST IDENTITIES (external review 10): the registered command is file-scoped, so the
-# tester lane's clean replay also ran the tester's file appended to it and bound the
-# tests that passed there; the record proves every one.
-EVID2="$(wg ticket show "$ACC2" | jget '((d.evidence || []).filter(e => e.recorded_by_actor_type === "system" && (e.uri || "").startsWith("gaffer-tester-replayed:")).map(e => { const p = JSON.parse(e.payload_json || "{}"); return p.evidence + " " + (p.tests || []).length; }).join(""))' 2>/dev/null)"
-case "$EVID2" in "identities "[1-9]*) ok "5: the record proves the test identities the PASS bound ($EVID2)" ;; *) fail "5: record evidence '$EVID2'" ;; esac
-[ "$(accepted)" = "2" ] && ok "5: wg stats: the second epic is accepted (2)" || fail "5: wg stats accepted=$(accepted)"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "e2e-release-gate-tester-replay: ALL $PASS checks passed"; exit 0; fi

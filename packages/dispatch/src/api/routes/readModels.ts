@@ -744,7 +744,7 @@ export function routeReadModels(
     return;
   }
 
-  // THE AUTONOMY LADDER: GET /api/autonomy/ladder[?repo=] — every repo x risk x gate with
+  // THE AUTONOMY LADDER: GET /api/autonomy/ladder[?repo=], every repo x risk x gate with
   // its rung, the evidence, the distance to the next rung and any step-down in force. A
   // scoped principal reads only the repos in its repo scope (scopeGate lets the read
   // through; the facade filters).

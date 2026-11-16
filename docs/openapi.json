@@ -1256,7 +1256,7 @@
           "Configuration"
         ],
         "summary": "Enable or disable an autonomy policy",
-        "description": "Security-critical. Enabling (`mode` other than `off`) requires `confirm: true`, the operator's explicit acknowledgement; disabling is always permitted.",
+        "description": "Security-critical. Enabling (`mode` other than `off`) requires `confirm: true`, the operator's explicit acknowledgement; disabling is always permitted. Enabling any mode at `risk_level: critical` for the approve or merge gate is refused (422, reason `autonomy_ceiling`): a person always decides critical changes.",
         "requestBody": {
           "required": true,
           "content": {
@@ -1334,7 +1334,7 @@
           "Configuration"
         ],
         "summary": "Give autonomy back after a step-down",
-        "description": "A person's act only: the shared operator token, or an active human or admin principal with full capability (an agent principal is refused with 403 `ACTOR_NOT_PERMITTED`; MCP has no such tool). `how: reenable` needs the evidence since the step-down to clear the bar again (409 `STATE_CONFLICT` with the distance otherwise); `how: override` needs a `reason`. A merge row cannot be lifted while a lower risk's merge row in the same repository is still stepped down. Recorded as `autonomy.step_down_lifted` on the event chain.",
+        "description": "A person's act only: the shared operator token, or an admin principal with full capability (a read-only or non-admin principal is refused with 403; an actor that is not a person with 403 `ACTOR_NOT_PERMITTED`; MCP has no such tool). `how: reenable` needs the evidence since the step-down to clear the bar again (409 `STATE_CONFLICT` with the distance otherwise); `how: override` needs a `reason`. A merge row cannot be lifted while a lower risk's merge row in the same repository is still stepped down. Recorded as `autonomy.step_down_lifted` on the event chain.",
         "requestBody": {
           "required": true,
           "content": {

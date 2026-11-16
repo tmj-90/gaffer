@@ -393,9 +393,8 @@ export function assertMergeGateNotHeld(
   if (!resolve) return;
   const by = approval
     ? (
-        internals.db
-          .prepare(`SELECT actor_type FROM work_events WHERE id = ?`)
-          .get(approval) as { actor_type: string } | undefined
+        internals.db.prepare(`SELECT actor_type FROM work_events WHERE id = ?`).get(approval) as
+          { actor_type: string } | undefined
       )?.actor_type
     : undefined;
   if (by === "human" || by === "admin") return;

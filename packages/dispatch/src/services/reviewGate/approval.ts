@@ -381,16 +381,12 @@ export function assertNoAutonomyHold(
     hold = { kind: "stepped_down", repoId: "unknown" };
   }
   if (!hold) return;
-  throw new DispatchError(
-    "ACTOR_NOT_PERMITTED",
-    `Held for a person: ${holdMessage(hold, gate)}`,
-    {
-      reason: hold.kind === "ceiling" ? "autonomy_ceiling" : "autonomy_stepped_down",
-      gate,
-      risk_level: ticket.risk_level,
-      ...(hold.repoId ? { repo_id: hold.repoId } : {}),
-    },
-  );
+  throw new DispatchError("ACTOR_NOT_PERMITTED", `Held for a person: ${holdMessage(hold, gate)}`, {
+    reason: hold.kind === "ceiling" ? "autonomy_ceiling" : "autonomy_stepped_down",
+    gate,
+    risk_level: ticket.risk_level,
+    ...(hold.repoId ? { repo_id: hold.repoId } : {}),
+  });
 }
 
 /**

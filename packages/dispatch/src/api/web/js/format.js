@@ -5,10 +5,14 @@
 
 import { clockTime } from "./freshness.js";
 
-/** Compact, human-friendly duration from milliseconds (e.g. "2d 3h", "45m"). */
+/**
+ * Compact, human-friendly duration from milliseconds (e.g. "2d 3h", "45m"). Anything
+ * under half a second reads "<1s": a measured "0s" reads as nothing measured.
+ */
 function fmtDuration(ms) {
   if (ms == null || !Number.isFinite(ms) || ms < 0) return "—";
   const sec = Math.round(ms / 1000);
+  if (sec < 1) return "<1s";
   if (sec < 60) return `${sec}s`;
   const min = Math.floor(sec / 60);
   if (min < 60) return `${min}m`;

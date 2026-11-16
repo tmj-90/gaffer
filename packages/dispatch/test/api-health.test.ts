@@ -150,9 +150,9 @@ describe("GET /api/health", () => {
       const recall = body.recall as { available: boolean };
       expect(recall.available).toBe(false);
       // Delivery flow is always present (ticket-derived, not ledger-derived).
-      const cycle = body.cycle_time as { median_days: number; series: number[] };
+      const cycle = body.cycle_time as { median_days: number | null; series: number[] };
       const thr = body.throughput as { last7: number; prev7: number; series: number[] };
-      expect(cycle.median_days).toBe(0);
+      expect(cycle.median_days).toBeNull();
       expect(cycle.series).toHaveLength(14);
       expect(thr.last7).toBe(0);
       expect(thr.series).toHaveLength(14);
@@ -502,6 +502,62 @@ describe("GET /api/health", () => {
       // Cycle time = median(2, 5) = 3.5 days.
       const cycle = body.cycle_time as { median_days: number };
       expect(cycle.median_days).toBeCloseTo(3.5);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it("?view=summary serves the Overview's figures and leaves the heavy reads out", async () => {
+    const ledger = join(tmpDir, "usage-ledger.jsonl");
+    const today = new Date().toISOString().slice(0, 10);
+    writeFileSync(
+      ledger,
+      JSON.stringify({
+        ts: `${today}T10:00:00Z`,
+        ticket: 1,
+        kind: "delivery",
+        measured: true,
+        total_cost_usd: 0.6,
+      }),
+    );
+    const h = await startHarness({ GAFFER_USAGE_LEDGER: ledger, GAFFER_DATA: undefined });
+    try {
+      const nowMs = h.clock.nowMs();
+      makeDoneTicket(h.wg, nowMs, "shipped a", 4 * DAY, 2 * DAY);
+      const full = await get(h.baseUrl, "/api/health");
+      const { status, body } = await get(h.baseUrl, "/api/health?view=summary");
+      expect(status).toBe(200);
+      expect(body.view).toBe("summary");
+      // What the Overview reads is there, and the same as the full read.
+      for (const k of [
+        "event_log",
+        "total_usd",
+        "shipped_count",
+        "cost_per_shipped_usd",
+        "accepted_change",
+        "coverage",
+        "by_kind",
+        "daily_spend",
+        "rework",
+        "cycle_time",
+        "throughput",
+      ])
+        expect(body[k], k).toEqual(full.body[k]);
+      // The heavy reads are absent (never a zero or an empty stand-in).
+      for (const k of [
+        "review_time",
+        "first_pass",
+        "escaped_defects",
+        "lane_value",
+        "scout",
+        "routing_scorecard",
+        "code_index",
+        "impact_callers",
+        "skills",
+        "recall",
+      ])
+        expect(body, k).not.toHaveProperty(k);
+      expect(full.body).not.toHaveProperty("view");
     } finally {
       await h.close();
     }

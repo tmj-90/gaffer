@@ -145,9 +145,20 @@ export function parseSpendUsd(spend: string | null | undefined): number | null {
   return Number.isFinite(v) ? v : null;
 }
 
+/**
+ * A relayed figure in dollars and cents, as the dashboard's money() says it ("$0.95",
+ * "<$0.01" for a sliver under a cent): the runner relays four decimals ("$0.9500").
+ * Anything that is not a figure stays as relayed.
+ */
+function spendText(spend: string): string {
+  const usd = parseSpendUsd(spend);
+  if (usd == null) return spend;
+  return usd > 0 && usd < 0.005 ? "<$0.01" : `$${usd.toFixed(2)}`;
+}
+
 /** A paused delivery's reason, in the ticket page's words. */
 function pausedReason(p: PausedDelivery | undefined): string {
-  const spend = p && p.spend ? `, ${p.spend} spent so far` : "";
+  const spend = p && p.spend ? `, ${spendText(p.spend)} spent so far` : "";
   const why =
     p?.reason === "budget_cap"
       ? "hit the budget cap"

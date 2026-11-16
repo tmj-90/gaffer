@@ -1226,7 +1226,8 @@ console.log("== buildCardBatchPrompt + validateCardBatch: B files → B cards ==
   const prompt = buildCardBatchPrompt(entries);
   assert(
     "batch prompt lists both files by index",
-    prompt.includes("FILE 0: src/a.ts") && prompt.includes("FILE 1: src/b.ts"),
+    prompt.includes("FILE 0: <untrusted-file-path-0>src/a.ts</untrusted-file-path-0>") &&
+      prompt.includes("FILE 1: <untrusted-file-path-1>src/b.ts</untrusted-file-path-1>"),
   );
   assert(
     "batch prompt sends the skill prefix once",

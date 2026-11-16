@@ -63,9 +63,11 @@ function ensureFile(path: string): void {
 export function audit(record: Omit<AuditRecord, "ts">): void {
   if (process.env["MEMORY_AUDIT_OFF"]) return;
   const path = defaultAuditPath();
-  ensureFile(path);
   const line = JSON.stringify({ ts: new Date().toISOString(), ...record }) + "\n";
   try {
+    // Inside the try: creating the file can fail too (a sandbox that denies writes to
+    // the log, a parent that is not a directory), and that must never fail the tool.
+    ensureFile(path);
     appendFileSync(path, line);
   } catch (err) {
     // An audit write failure must never break a tool call — but it must not be

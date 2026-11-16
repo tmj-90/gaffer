@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { Dispatch } from "../src/core.js";
+import { hostGateKeyring } from "../src/events/gateSeal.js";
 import type { Actor } from "../src/domain/types.js";
 import { listEvents } from "../src/events/eventWriter.js";
 import { nonEmptyDiffRunner } from "./helpers/realDiff.js";
@@ -35,7 +36,10 @@ afterEach(() => {
 function seed() {
   dir = mkdtempSync(join(tmpdir(), "cli-principal-"));
   const db = join(dir, "d.sqlite");
-  const wg = Dispatch.open(db, undefined, nonEmptyDiffRunner, { testingEnabled: false });
+  const wg = Dispatch.open(db, undefined, nonEmptyDiffRunner, {
+    testingEnabled: false,
+    gateKeyring: hostGateKeyring(db),
+  });
   const app = wg.registerRepository({ name: "app", default_branch: "main" }, human);
   const svc = wg.registerRepository({ name: "svc", default_branch: "main" }, human);
   const mk = (title: string, repo: string) => {
@@ -122,7 +126,7 @@ describe("wg whoami", () => {
     });
     expect(r.status).toBe(1);
     expect(r.err).toMatchObject({ code: "UNAUTHORIZED" });
-    const wg = Dispatch.open(w.db);
+    const wg = Dispatch.open(w.db, undefined, undefined, { gateKeyring: hostGateKeyring(w.db) });
     expect(wg.resolveTicket(w.onApp.id).status).toBe("draft");
     wg.db.close();
   });
@@ -169,7 +173,7 @@ describe("wg acting as a scoped principal", () => {
       cli(w.db, ["ticket", "move", String(w.onApp.number), "ready", "--as", "system"], env).err,
     ).toMatchObject({ code: "ACTOR_NOT_PERMITTED" });
 
-    const wg = Dispatch.open(w.db);
+    const wg = Dispatch.open(w.db, undefined, undefined, { gateKeyring: hostGateKeyring(w.db) });
     expect(wg.resolveTicket(w.onApp.id).status).toBe("ready");
     expect(wg.resolveTicket(w.onSvc.id).status).toBe("draft");
     expect(
@@ -188,7 +192,10 @@ describe("wg acting as a scoped principal", () => {
 
   it("approves in scope as itself and is refused out of scope", () => {
     const w = seed();
-    const wg = Dispatch.open(w.db, undefined, undefined, { testingEnabled: false });
+    const wg = Dispatch.open(w.db, undefined, undefined, {
+      testingEnabled: false,
+      gateKeyring: hostGateKeyring(w.db),
+    });
     const heads: Record<string, string> = {};
     for (const [t, name] of [
       [w.onApp, "app"],
@@ -239,7 +246,7 @@ describe("wg acting as a scoped principal", () => {
       env,
     );
     expect(ok.status, ok.stderr).toBe(0);
-    const after = Dispatch.open(w.db);
+    const after = Dispatch.open(w.db, undefined, undefined, { gateKeyring: hostGateKeyring(w.db) });
     expect(after.resolveTicket(w.onApp.id).status).toBe("ready_for_merge");
     expect(after.resolveTicket(w.onSvc.id).status).toBe("in_review");
     const ev = listEvents(after.db, "ticket", w.onApp.id).filter(
@@ -265,7 +272,7 @@ describe("wg acting as a scoped principal", () => {
     const w = seed();
     const r = cli(w.db, ["repo", "hide", "svc"], { GAFFER_PRINCIPAL_TOKEN: w.admin.token });
     expect(r.status, r.stderr).toBe(0);
-    const wg = Dispatch.open(w.db);
+    const wg = Dispatch.open(w.db, undefined, undefined, { gateKeyring: hostGateKeyring(w.db) });
     const row = wg.db.prepare("SELECT hidden FROM repositories WHERE name = 'svc'").get() as {
       hidden: number;
     };
@@ -313,7 +320,7 @@ describe("wg acting as a principal: the merge callbacks are admin acts (REST par
 describe("wg acting as a principal: the runner's and agents' commands", () => {
   it("refuses every command that records the system or an agent, for any principal", () => {
     const w = seed();
-    const wg = Dispatch.open(w.db);
+    const wg = Dispatch.open(w.db, undefined, undefined, { gateKeyring: hostGateKeyring(w.db) });
     const agent = wg.registerAgent({ display_name: "bot-1" }, human);
     wg.markReady(w.onApp.id, human);
     wg.db.close();
@@ -340,7 +347,7 @@ describe("wg acting as a principal: the runner's and agents' commands", () => {
         expect(r.err, args.join(" ")).toMatchObject({ code: "ACTOR_NOT_PERMITTED" });
       }
     }
-    const after = Dispatch.open(w.db);
+    const after = Dispatch.open(w.db, undefined, undefined, { gateKeyring: hostGateKeyring(w.db) });
     const forged = after.db
       .prepare("SELECT COUNT(*) AS n FROM work_events WHERE event_type = 'evidence.recorded'")
       .get() as { n: number };
@@ -356,7 +363,7 @@ describe("wg acting as a principal: the runner's and agents' commands", () => {
 
   it("an admin principal's --admin acts are recorded under its own id, not $USER", () => {
     const w = seed();
-    const wg = Dispatch.open(w.db);
+    const wg = Dispatch.open(w.db, undefined, undefined, { gateKeyring: hostGateKeyring(w.db) });
     wg.markReady(w.onApp.id, human);
     wg.humanClaimTicket(w.onApp.id, { type: "human", id: "someone" });
     wg.db.close();
@@ -364,7 +371,7 @@ describe("wg acting as a principal: the runner's and agents' commands", () => {
       GAFFER_PRINCIPAL_TOKEN: w.admin.token,
     });
     expect(r.status, r.stderr).toBe(0);
-    const after = Dispatch.open(w.db);
+    const after = Dispatch.open(w.db, undefined, undefined, { gateKeyring: hostGateKeyring(w.db) });
     const ev = listEvents(after.db, "ticket", w.onApp.id).pop();
     expect(ev).toMatchObject({ actor_type: "admin", actor_id: "ops" });
     after.db.close();
@@ -372,7 +379,7 @@ describe("wg acting as a principal: the runner's and agents' commands", () => {
 
   it("a ticket's epic and map links are the operator's for a scoped principal", () => {
     const w = seed();
-    const wg = Dispatch.open(w.db);
+    const wg = Dispatch.open(w.db, undefined, undefined, { gateKeyring: hostGateKeyring(w.db) });
     const epic = wg.createScopeNode({ name: "Launch", type: "epic" }, human);
     wg.db.close();
     const env = { GAFFER_PRINCIPAL_TOKEN: w.scoped.token };
@@ -387,7 +394,7 @@ describe("wg acting as a principal: the runner's and agents' commands", () => {
 
   it("ticket show names a dependency outside the scope by number only", () => {
     const w = seed();
-    const wg = Dispatch.open(w.db);
+    const wg = Dispatch.open(w.db, undefined, undefined, { gateKeyring: hostGateKeyring(w.db) });
     wg.addDependency({ ticket: w.onApp.id, depends_on: w.onSvc.id }, human);
     wg.db.close();
     const env = { GAFFER_PRINCIPAL_TOKEN: w.scoped.token };
@@ -422,7 +429,7 @@ describe("wg ticket create --repo", () => {
     expect(none.err).toMatchObject({ code: "SCOPE_DENIED", details: { reason: "no_repos" } });
     const bad = cli(w.db, ["ticket", "create", "-t", "x", "--repo", "nope"]);
     expect(bad.err).toMatchObject({ code: "NOT_FOUND" });
-    const wg = Dispatch.open(w.db);
+    const wg = Dispatch.open(w.db, undefined, undefined, { gateKeyring: hostGateKeyring(w.db) });
     const titles = wg.list().map((t) => t.title);
     expect(titles).toContain("op on svc");
     expect(titles).toContain("mine");

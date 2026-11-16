@@ -899,6 +899,28 @@ export class Dispatch {
     return principalAdmin.revokePrincipal(this, ref, actor);
   }
 
+  /** SEALED PRINCIPALS: every active principal this factory does not honour, and why. */
+  listUnsignedPrincipals(): principalAdmin.UnsignedPrincipalView[] {
+    return principalAdmin.listUnsignedPrincipals(this);
+  }
+
+  /** SEALED PRINCIPALS: the unsigned list a person reviews, with its confirmation code. */
+  reviewUnsignedPrincipals(): principalAdmin.UnsignedPrincipalReview {
+    return principalAdmin.reviewUnsignedPrincipals(this);
+  }
+
+  /** SEALED PRINCIPALS: a person re-signs principals (operator only; see the service). */
+  resignPrincipals(
+    input: {
+      names?: readonly string[] | undefined;
+      all?: boolean | undefined;
+      confirm?: string | undefined;
+    },
+    actor: Actor,
+  ): principalAdmin.ResignResult {
+    return principalAdmin.resignPrincipals(this, input, actor);
+  }
+
   scopeTicket(ref: string): ScopeTicket {
     return principalAdmin.scopeTicket(this, ref);
   }

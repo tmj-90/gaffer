@@ -16,8 +16,14 @@
 // hostile probe paths (so the gate holds even on a clean CI checkout that has no repos/
 // or .env to find).
 //
+// It also gates the Dockerfiles' PINS (F5): every FROM names its image by digest
+// (`image:tag@sha256:<64 hex>`; a FROM of an earlier stage or `scratch` is fine), and
+// every `npm install -g <pkg>` names an exact version (`pkg@1.2.3`, or `pkg@${ARG}` whose
+// ARG default is an exact version), so a release builds what was tested.
+//
 // Usage: node scripts/docker-context-check.mjs [--root <dir>] [--list]
-//   exit 0 clean · 1 a forbidden path is in the context · 2 usage / unreadable ignore file
+//   exit 0 clean · 1 a forbidden path, a missing input or an unpinned Dockerfile line ·
+//   2 usage / unreadable ignore file
 // =====================================================================
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
@@ -182,6 +188,76 @@ export function checkContext(root, { ignoreText } = {}) {
   return { context, violations, missing };
 }
 
+/** The Dockerfiles the pin gate reads (relative to the context root). */
+export const DOCKERFILES = [
+  "Dockerfile",
+  "runner/sandbox/Dockerfile",
+  "runner/sandbox/egress-proxy/Dockerfile",
+];
+
+const EXACT_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+
+/**
+ * The unpinned lines of one Dockerfile's text: a FROM without a digest (unless it names
+ * an earlier stage or scratch), or an `npm install -g` of a package with no exact version.
+ * Returns [{ line, text, why }].
+ */
+export function unpinnedLines(text) {
+  const out = [];
+  const stages = new Set();
+  const args = new Map();
+  const lines = String(text)
+    .replace(/\\\r?\n/g, " ")
+    .split(/\r?\n/);
+  lines.forEach((raw, i) => {
+    const line = raw.trim();
+    const arg = /^ARG\s+([A-Za-z_][A-Za-z0-9_]*)(?:=(\S*))?/i.exec(line);
+    if (arg) args.set(arg[1], (arg[2] ?? "").replace(/^"|"$/g, ""));
+    const from = /^FROM\s+(?:--platform=\S+\s+)?(\S+)(?:\s+AS\s+(\S+))?/i.exec(line);
+    if (from) {
+      const image = from[1];
+      if (from[2]) stages.add(from[2].toLowerCase());
+      if (
+        image !== "scratch" &&
+        !stages.has(image.toLowerCase()) &&
+        !/@sha256:[0-9a-f]{64}$/.test(image)
+      )
+        out.push({ line: i + 1, text: line, why: "FROM without an image digest (@sha256:...)" });
+    }
+    const npm = /\bnpm\s+(?:install|i)\s+(?:-g|--global)\b(.*)$/.exec(line);
+    if (npm) {
+      const pkgs = npm[1]
+        .split(/\s+|&&|;/)
+        .map((t) => t.replace(/^["']|["']$/g, ""))
+        .filter((t) => t && !t.startsWith("-"));
+      for (const pkg of pkgs) {
+        const at = pkg.lastIndexOf("@");
+        let version = at > 0 ? pkg.slice(at + 1) : "";
+        const ref = /^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$/.exec(version);
+        if (ref) version = args.get(ref[1]) ?? "";
+        if (!EXACT_VERSION.test(version))
+          out.push({
+            line: i + 1,
+            text: line,
+            why: `npm install -g ${pkg} without an exact version`,
+          });
+      }
+    }
+  });
+  return out;
+}
+
+/** Every unpinned line of the repo's Dockerfiles under `root` ([{ file, line, text, why }]). */
+export function checkPins(root) {
+  const out = [];
+  for (const f of DOCKERFILES) {
+    const abs = join(root, f);
+    if (!existsSync(abs)) continue;
+    for (const u of unpinnedLines(readFileSync(abs, "utf8"))) out.push({ file: f, ...u });
+  }
+  return out;
+}
+
 function main(argv) {
   const i = argv.indexOf("--root");
   const root = resolve(i >= 0 && argv[i + 1] ? argv[i + 1] : join(HERE, ".."));
@@ -195,9 +271,12 @@ function main(argv) {
     process.stderr.write(`FORBIDDEN in the build context (${v.source}): ${v.path} — ${v.why}\n`);
   for (const m of missing)
     process.stderr.write(`MISSING from the build context (the build needs it): ${m}\n`);
-  if (violations.length || missing.length) process.exit(1);
+  const unpinned = checkPins(root);
+  for (const u of unpinned)
+    process.stderr.write(`UNPINNED in ${u.file}:${u.line}: ${u.why} (${u.text})\n`);
+  if (violations.length || missing.length || unpinned.length) process.exit(1);
   process.stderr.write(
-    `docker-context-check: OK — ${context.length} files in the context, none forbidden, every build input present\n`,
+    `docker-context-check: OK: ${context.length} files in the context, none forbidden, every build input present, every Dockerfile pinned\n`,
   );
 }
 

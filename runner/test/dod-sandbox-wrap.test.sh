@@ -47,7 +47,7 @@ gaffer_dod_run_one "$WT" "$WORK/out" 'echo wrapped-ok; exit 0'; rc=$?
 [ "$rc" -eq 0 ] && grep -q wrapped-ok "$WORK/out" && ok "gate output + rc pass through the wrap" || fail "wrapped gate should pass (rc=$rc)"
 grep -qF " cwd=$(cd "$WT" && pwd -P) " "$WRAP_LOG" \
   && ok "the wrap ran with the delivery worktree as cwd" || fail "wrap cwd was not the worktree: $(cat "$WRAP_LOG")"
-grep -q 'argv=bash -c echo wrapped-ok; exit 0' "$WRAP_LOG" && ok "the wrap received bash -c plus the gate command" || fail "wrap argv unexpected: $(cat "$WRAP_LOG")"
+grep -q 'argv=env -i .* bash -c echo wrapped-ok; exit 0' "$WRAP_LOG" && ok "the wrap received env -i <gate env> bash -c plus the gate command" || fail "wrap argv unexpected: $(cat "$WRAP_LOG")"
 gaffer_dod_run_one "$WT" "$WORK/out" 'echo boom >&2; exit 3'; rc=$?
 [ "$rc" -eq 3 ] && grep -q boom "$WORK/out" && ok "a failing gate's rc + stderr still surface through the wrap" || fail "wrapped failing gate should return 3 (got $rc)"
 
@@ -59,7 +59,7 @@ printf 'repo\t%s\t1\t1\t1\ttrue\t-\ttrue\n' "$WT" | gaffer_run_dod_gates "$RES";
 echo "== 4: docker provider ⇒ the image's HOME/PATH are applied inside the wrap =="
 : > "$WRAP_LOG"; SANDBOX_PROVIDER=docker GAFFER_SANDBOX_HOME=/root GAFFER_SANDBOX_PATH=/usr/bin:/bin \
   gaffer_dod_run_one "$WT" "$WORK/out" 'echo x'
-grep -q 'argv=env HOME=/root PATH=/usr/bin:/bin bash -c echo x' "$WRAP_LOG" \
+grep -q 'argv=env -i HOME=/root PATH=/usr/bin:/bin .*bash -c echo x' "$WRAP_LOG" \
   && ok "docker wrap prepends the image env (host PATH/HOME do not exist inside)" || fail "docker env substitution missing: $(cat "$WRAP_LOG")"
 unset SANDBOX_PROVIDER
 
@@ -147,6 +147,130 @@ gaffer_dod_install_env _hostenv _hosthome
 _hostenv_s="$(printf '%s\n' "${_hostenv[@]}")"
 grep -qx "TMPDIR=${TMPDIR:-/tmp}" <<<"$_hostenv_s" && ok "host install env: the host TMPDIR (unchanged)" || fail "host install env lost the host TMPDIR"
 grep -qE 'egress-proxy|GIT_CONFIG' <<<"$_hostenv_s" && fail "host install env carries the container's settings" || ok "host install env: no container-only settings"
+
+echo "== 8: sandbox-exec: a gate never runs under the AGENT's profile (sandbox audit F1c) =="
+# A stub sandbox-exec (this host may have none) records the profile it was handed, then
+# runs the command. The agent's wrap names an agent profile (databases and ~/.claude
+# writable); the gate must get a fresh VALIDATION profile instead, removed after the run.
+SBIN="$WORK/sbin"; SDATA="$WORK/sdata"; mkdir -p "$SBIN" "$SDATA"
+cat > "$SBIN/sandbox-exec" <<'STUB'
+#!/usr/bin/env bash
+[ "$1" = "-f" ] || exit 64
+cp "$2" "${SBX_SEEN:?}.$(date +%s%N 2>/dev/null || echo 0).$$"; printf '%s\n' "$2" >> "${SBX_SEEN}.paths"
+shift 2; exec "$@"
+STUB
+chmod +x "$SBIN/sandbox-exec"
+export SBX_SEEN="$WORK/seen"
+( export PATH="$SBIN:$PATH" GAFFER_DATA="$SDATA" HOME="/nonexistent-dod-home.$$" STRICT_ALLOW_HOME="/nonexistent-dod-home.$$/.claude"
+  # shellcheck source=../lib/sandbox.sh
+  source "$RUNNER_DIR/lib/sandbox.sh"
+  AGENT_WRAP="$(SANDBOX_PROVIDER=sandbox-exec sandbox_wrap_cmd "$WT" "")"
+  export GAFFER_DOD_WRAP="$AGENT_WRAP" SANDBOX_PROVIDER=sandbox-exec
+  gaffer_dod_run_one "$WT" "$WORK/out8" 'echo gate-ran'; echo "rc=$?" > "$WORK/rc8"
+  printf '%s\n' "${AGENT_WRAP#sandbox-exec -f }" > "$WORK/agentprof8"
+  # A validation profile that cannot be generated: the gate is not run.
+  GAFFER_DATA="$WORK/bad\"data" gaffer_dod_run_one "$WT" "$WORK/out8b" 'echo SHOULD-NOT-RUN'; echo "rc=$?" > "$WORK/rc8b"
+)
+SEEN="$(ls "$WORK"/seen.[0-9]* 2>/dev/null | head -1)"
+grep -q '^rc=0$' "$WORK/rc8" && grep -q gate-ran "$WORK/out8" && ok "the gate ran through sandbox-exec" || fail "gate did not run: $(cat "$WORK/rc8" "$WORK/out8" 2>/dev/null)"
+[ -n "$SEEN" ] && grep -q '^;; variant: validation$' "$SEEN" && ok "the gate's profile is the validation variant" || fail "the gate ran under: $(head -3 "$SEEN" 2>/dev/null)"
+grep -qxF "$(cat "$WORK/agentprof8")" "$WORK/seen.paths" && fail "the gate was handed the agent's own profile file" || ok "the agent's profile file was never handed to the gate"
+V="$(node "$HERE/lib/sbpl-eval.mjs" "$SEEN" write "$SDATA/dispatch.sqlite" "$SDATA/settings.json" "$SDATA/usage-ledger.jsonl" "/nonexistent-dod-home.$$/.claude/projects/x" "$WT/out.txt" 2>&1 | tr '\n' ' ')"
+case "$V" in
+  "deny $SDATA/dispatch.sqlite deny $SDATA/settings.json deny $SDATA/usage-ledger.jsonl deny /nonexistent-dod-home.$$/.claude/projects/x allow $WT/out.txt ")
+    ok "under it the gate can write its worktree but no database, settings, ledger or HOME path" ;;
+  *) fail "validation profile verdicts: $V" ;;
+esac
+GPROF="$(tail -1 "$WORK/seen.paths")"
+[ -n "$GPROF" ] && [ ! -e "$GPROF" ] && ok "the gate's profile file is removed after the run" || fail "gate profile left behind: $GPROF"
+grep -q '^rc=127$' "$WORK/rc8b" && ! grep -q SHOULD-NOT-RUN "$WORK/out8b" && grep -q 'not run' "$WORK/out8b" \
+  && ok "a validation profile that cannot be set up fails the gate without running it (fail closed)" || fail "unbuildable profile: $(cat "$WORK/rc8b" "$WORK/out8b")"
+grep -q 'GAFFER_SANDBOX_PROFILE=validation sandbox_wrap_cmd "$WT"' "$RUNNER_DIR/bin/dod-regate.sh" \
+  && ok "dod-regate.sh (the merge gate, the conflict re-gate, the tester replay) asks for the validation profile" || fail "dod-regate.sh does not ask for the validation profile"
+
+echo "== 9: every gate run starts from env -i (sandbox audit F2) =="
+# The runner's environment carries the operator's credentials; a gate runs agent-written
+# code. Whatever wraps it (nothing, sandbox-exec, docker), the gate sees none of them.
+LEAKS='^(ANTHROPIC_[A-Z_]*|[A-Z_]*_TOKEN|[A-Z_]*_KEY|[A-Z_]*_SECRET|DISPATCH_[A-Z_]*|GAFFER_PRINCIPAL_TOKEN|CLAUDE_CODE_OAUTH_TOKEN|AWS_[A-Z_]*)='
+gate_env() {   # <label> [VAR=value ...]: run `env` as a gate with the operator's secrets exported
+  local label="$1"; shift
+  ( export ANTHROPIC_API_KEY=sk-x ANTHROPIC_AUTH_TOKEN=at-x CLAUDE_CODE_OAUTH_TOKEN=oa-x GITHUB_TOKEN=ghp_x GH_TOKEN=gh-x \
+      DISPATCH_API_TOKEN=dt-x DISPATCH_DB=/x/dispatch.sqlite GAFFER_PRINCIPAL_TOKEN=pt-x AWS_SECRET_ACCESS_KEY=aws-x \
+      NPM_TOKEN=npm-x SOME_SECRET=s-x MY_PRIVATE_KEY=k-x GAFFER_NOTIFY_SLACK_URL=https://hooks.invalid/x \
+      GAFFER_DOD_ENV_PASS="MY_SETTING GITHUB_TOKEN ANTHROPIC_API_KEY DISPATCH_DB SOME_SECRET GAFFER_NOTIFY_SLACK_URL NOT_SET" \
+      MY_SETTING=kept-value
+    for kv in "$@"; do export "${kv?}"; done
+    gaffer_dod_run_one "$WT" "$WORK/env-$label" 'env' >/dev/null 2>"$WORK/err-$label"
+    echo "$?" >"$WORK/rc-$label" )
+}
+# Why a gate_env run produced no usable env file: its exit status and what it wrote to
+# stderr, so a gate that never started is told apart from a name the filter dropped.
+gate_diag() { printf 'rc=%s stderr=%s' "$(cat "$WORK/rc-$1" 2>/dev/null)" "$(head -c 400 "$WORK/err-$1" 2>/dev/null | tr '\n' ' ')"; }
+unset GAFFER_DOD_WRAP
+gate_env none
+grep -E "$LEAKS" "$WORK/env-none" >/dev/null && fail "no wrap: the gate saw $(grep -E "$LEAKS" "$WORK/env-none" | cut -d= -f1 | tr '\n' ' ')" \
+  || ok "no wrap: the gate sees no ANTHROPIC_*, *_TOKEN, *_KEY, *_SECRET, DISPATCH_*, AWS_* or principal token"
+grep -q '^MY_SETTING=kept-value$' "$WORK/env-none" && ok "no wrap: a name in GAFFER_DOD_ENV_PASS passes" || fail "no wrap: GAFFER_DOD_ENV_PASS name missing"
+grep -qE '^(GITHUB_TOKEN|ANTHROPIC_API_KEY|DISPATCH_DB|SOME_SECRET|GAFFER_NOTIFY_SLACK_URL|NOT_SET)=' "$WORK/env-none" \
+  && fail "no wrap: the knob let a credential or factory name through" || ok "no wrap: the knob cannot pass a credential, endpoint, dispatch or unset name"
+grep -q '^CI=1$' "$WORK/env-none" && grep -q '^PATH=' "$WORK/env-none" && ok "no wrap: PATH and CI=1 are there" || fail "no wrap: base env missing"
+GH="$(sed -n 's/^HOME=//p' "$WORK/env-none")"
+[ -n "$GH" ] && [ "$GH" != "$HOME" ] && [ ! -e "$GH" ] && ok "no wrap: HOME is a throwaway dir, removed after the run" || fail "no wrap: HOME=$GH (real HOME $HOME)"
+# The knob never passes a loader-injection or environment-control name, nor a credential
+# spelled in lower case, whatever the operator lists.
+# The filter decides on the NAME alone, so it is asked directly first, on every host.
+NEVER=""
+for n in NODE_OPTIONS BASH_ENV ENV LD_PRELOAD LD_LIBRARY_PATH DYLD_INSERT_LIBRARIES DYLD_LIBRARY_PATH GIT_SSH_COMMAND \
+  GIT_CONFIG_GLOBAL SSH_AUTH_SOCK PYTHONSTARTUP PERL5OPT RUBYOPT github_token my_Api_Key dyld_insert_libraries; do
+  gaffer_env_name_never_for_gates "$n" || NEVER="$NEVER $n"
+done
+[ -z "$NEVER" ] && ok "the filter refuses every loader, environment-control and lower-case credential name by name" \
+  || fail "the filter would pass:$NEVER"
+gaffer_env_name_never_for_gates KEEP_ME && fail "the filter refuses an ordinary name (KEEP_ME)" || ok "the filter passes an ordinary name"
+# Then the live run. The runner's own shell holds these values while it starts the gate, so
+# a value has to be one the host can live with: on macOS a DYLD_INSERT_LIBRARIES naming a
+# library that does not exist aborts every unprotected program the runner itself starts
+# (bash, node, timeout) before any gate runs, which is the loader working, not the filter.
+# There the live run leaves that one value out; its name is still in the knob, and the
+# name check above covers it on every host.
+DYLD_LIVE="DYLD_INSERT_LIBRARIES=/tmp/x.dylib"
+[ "$(uname -s)" = Darwin ] && DYLD_LIVE="KEEP_ME_TOO=unlisted"
+gate_env knob GAFFER_DOD_ENV_PASS="NODE_OPTIONS,BASH_ENV ENV LD_PRELOAD DYLD_INSERT_LIBRARIES GIT_SSH_COMMAND GIT_CONFIG_GLOBAL SSH_AUTH_SOCK PYTHONSTARTUP PERL5OPT RUBYOPT github_token my_Api_Key KEEP_ME" \
+  NODE_OPTIONS="--require /tmp/x.js" BASH_ENV=/tmp/x.sh ENV=/tmp/x.sh LD_PRELOAD=/tmp/x.so "$DYLD_LIVE" \
+  GIT_SSH_COMMAND="sh /tmp/x" GIT_CONFIG_GLOBAL=/tmp/gc SSH_AUTH_SOCK=/tmp/agent.sock PYTHONSTARTUP=/tmp/x.py PERL5OPT=-Mx RUBYOPT=-rx \
+  github_token=gh-lower my_Api_Key=k-lower KEEP_ME=yes
+if grep -qE '^(NODE_OPTIONS|BASH_ENV|ENV|LD_PRELOAD|DYLD_INSERT_LIBRARIES|GIT_SSH_COMMAND|GIT_CONFIG_GLOBAL|SSH_AUTH_SOCK|PYTHONSTARTUP|PERL5OPT|RUBYOPT|github_token|my_Api_Key)=' "$WORK/env-knob"; then
+  fail "the knob passed a loader, environment-control or lower-case credential name: $(grep -E '^(NODE_OPTIONS|BASH_ENV|ENV|LD_|DYLD_|GIT_SSH|GIT_CONFIG_G|SSH_AUTH|PYTHONSTARTUP|PERL5OPT|RUBYOPT|github_token|my_Api_Key)=' "$WORK/env-knob" | cut -d= -f1 | tr '\n' ' ')"
+else
+  grep -q '^KEEP_ME=yes$' "$WORK/env-knob" && ok "the knob refuses loader-injection, environment-control and lower-case credential names, and passes an ordinary one" \
+    || fail "the knob dropped an ordinary name ($(gate_diag knob))"
+fi
+gate_env inv _GAFFER_DOD_INVOCATION_ENV="NODE_OPTIONS GAFFER_REPLAY_PROOF_KEY_FILE GITHUB_TOKEN" NODE_OPTIONS=--no-warnings GAFFER_REPLAY_PROOF_KEY_FILE=/p/k
+grep -q '^NODE_OPTIONS=--no-warnings$' "$WORK/env-inv" && grep -q '^GAFFER_REPLAY_PROOF_KEY_FILE=/p/k$' "$WORK/env-inv" \
+  && ! grep -q '^GITHUB_TOKEN=' "$WORK/env-inv" && ok "the runner's own invocation names (the tester replay's) pass; a credential among them does not" \
+  || fail "invocation env: $(grep -E '^(NODE_OPTIONS|GAFFER_REPLAY|GITHUB)' "$WORK/env-inv" | tr '\n' ' ')"
+gate_env sbx PATH="$SBIN:$PATH" GAFFER_DATA="$SDATA" SANDBOX_PROVIDER=sandbox-exec \
+  GAFFER_DOD_WRAP="sandbox-exec -f $SDATA/agent-profile-placeholder"
+grep -q '^CI=1$' "$WORK/env-sbx" && ok "sandbox-exec wrap: the gate ran" || fail "sandbox-exec wrap: no gate output: $(head -3 "$WORK/env-sbx")"
+grep -E "$LEAKS" "$WORK/env-sbx" >/dev/null && fail "sandbox-exec wrap: the gate saw $(grep -E "$LEAKS" "$WORK/env-sbx" | cut -d= -f1 | tr '\n' ' ')" \
+  || ok "sandbox-exec wrap: the gate sees none of the operator's credentials"
+gate_env dock SANDBOX_PROVIDER=docker GAFFER_DOD_WRAP="$WORK/wrap.sh" GAFFER_SANDBOX_HOME=/root GAFFER_SANDBOX_PATH=/usr/bin:/bin
+grep -q '^HOME=/root$' "$WORK/env-dock" && ok "docker wrap: the gate ran with the image's HOME" || fail "docker wrap: $(head -3 "$WORK/env-dock")"
+grep -E "$LEAKS" "$WORK/env-dock" >/dev/null && fail "docker wrap: the gate saw $(grep -E "$LEAKS" "$WORK/env-dock" | cut -d= -f1 | tr '\n' ' ')" \
+  || ok "docker wrap: the gate sees none of the operator's credentials"
+# An ordinary node test still runs in the stripped environment.
+if command -v node >/dev/null 2>&1; then
+  printf 'const t=require("node:test");const a=require("node:assert");t.test("ok",()=>a.strictEqual(1+1,2));\n' > "$WT/sum.test.js"
+  ( unset GAFFER_DOD_WRAP; gaffer_dod_run_one "$WT" "$WORK/out9" 'node --test sum.test.js' ); rc=$?
+  [ "$rc" -eq 0 ] && grep -q 'pass 1' "$WORK/out9" && ok "an ordinary node --test suite passes in the gate env" || fail "node --test in the gate env: rc=$rc $(tail -5 "$WORK/out9")"
+  rm -f "$WT/sum.test.js"
+fi
+if command -v pnpm >/dev/null 2>&1; then
+  printf '{"name":"g","version":"1.0.0","scripts":{"test":"node -e \\"process.exit(0)\\""}}\n' > "$WT/package.json"
+  ( unset GAFFER_DOD_WRAP; gaffer_dod_run_one "$WT" "$WORK/out9p" 'pnpm test' ); rc=$?
+  [ "$rc" -eq 0 ] && ok "pnpm test runs in the gate env" || fail "pnpm test in the gate env: rc=$rc $(tail -5 "$WORK/out9p")"
+  rm -f "$WT/package.json"
+fi
 
 echo "== 5: source pins — tick.sh hands the agent's wrap to the gates =="
 grep -q 'export GAFFER_DOD_WRAP="$WRAP"' "$RUNNER_DIR/lib/tick-launch.sh" && ok "tick.sh exports GAFFER_DOD_WRAP=\$WRAP under an active provider" || fail "tick.sh should export GAFFER_DOD_WRAP from the agent's WRAP"

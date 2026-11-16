@@ -154,7 +154,7 @@ describe("web: the Overview's loading, failure and match report", () => {
     expect(page!.textContent).toContain("INTERNAL");
     // No figure it could not read: every counter is blank.
     const vals = [...page!.querySelectorAll(".kpi-val")].map((n) => n.textContent);
-    expect(vals).toHaveLength(4);
+    expect(vals).toHaveLength(3);
     for (const v of vals) expect(v).not.toMatch(/\d/);
     const retry = [...page!.querySelectorAll("button")].find((b) => b.textContent === "Try again");
     expect(retry).toBeTruthy();

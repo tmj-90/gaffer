@@ -10,6 +10,7 @@ import {
   setRepoHiddenBody,
 } from "../schemas.js";
 import { DispatchError } from "../../util/errors.js";
+import { requestAgentFilter, requestRepoFilter } from "../scopeGate.js";
 import { apiActor } from "./context.js";
 
 /**
@@ -29,20 +30,28 @@ export async function routeRepos(
   res: ServerResponse,
 ): Promise<boolean> {
   if (segments.length === 1 && segments[0] === "agents" && method === "GET") {
-    sendJson(res, 200, { agents: wg.listAgents() });
+    // PRINCIPAL SCOPES: a scoped principal sees the agents on its tickets only.
+    const seen = requestAgentFilter(wg);
+    const agents = wg.listAgents();
+    sendJson(res, 200, { agents: seen ? agents.filter((a) => seen(a.id)) : agents });
     return true;
   }
 
   if (segments.length === 1 && segments[0] === "repositories" && method === "GET") {
     // WG-006: hidden repos are excluded by default. ?hidden=1 returns the full
     // set; ?hidden=only returns just the hidden ones (the "Hidden repos" page).
+    // PRINCIPAL SCOPES: in every mode a scoped principal sees only the repositories it
+    // reaches (local paths, remotes and gate commands of the rest stay out).
+    const reach = requestRepoFilter(wg);
+    const scoped = <T extends { id: string }>(rows: T[]): T[] =>
+      reach ? rows.filter((r) => reach(r.id)) : rows;
     const hiddenParam = url.searchParams.get("hidden");
     if (hiddenParam === "only") {
-      sendJson(res, 200, { repositories: wg.listHiddenRepos() });
+      sendJson(res, 200, { repositories: scoped(wg.listHiddenRepos()) });
       return true;
     }
     const includeHidden = hiddenParam === "1" || hiddenParam === "true";
-    sendJson(res, 200, { repositories: wg.listRepositories(includeHidden) });
+    sendJson(res, 200, { repositories: scoped(wg.listRepositories(includeHidden)) });
     return true;
   }
 

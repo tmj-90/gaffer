@@ -35,9 +35,13 @@ _gaffer_merge_lane() {
   for _n in $_MNUMS; do
     grep -qx "$_n" "$_HELD_FILE" 2>/dev/null && continue
     _show="$(wg ticket show "$_n" 2>/dev/null)" || continue
-    _repo="$(echo "$_show" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || {}).local_path) || ""' 2>/dev/null)"
-    _def="$(echo "$_show" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || {}).default_branch) || "main"' 2>/dev/null)"
-    _branch="$(echo "$_show" | jget 'd.ticket.branch_name || ""' 2>/dev/null)"
+    # The repo, its default branch, the delivery branch and the partly-landed flag
+    # (below): one read of the view.
+    gaffer_json_vars "$_show" \
+      _repo '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || {}).local_path) || ""' '' \
+      _def '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || {}).default_branch) || "main"' '' \
+      _branch 'd.ticket.branch_name || ""' '' \
+      _partial '(d.landing && d.landing.partial) ? "1" : ""' ''
     # PARTLY LANDED (external review #7): some write repos' approved commits landed, some
     # did not (a dirty checkout, an unavailable branch, a held repo). Finishing it is merge
     # work, decided exactly like any approval below: the remaining repos land (through the
@@ -46,7 +50,6 @@ _gaffer_merge_lane() {
     # an earlier landing happened (AUTO_MERGE turned off, or an agent's merge grant
     # withdrawn, since). Held, it stays partly landed for a human's Merge now. The primary
     # repo's branch may be gone once it landed, so the plan's per-repo branches are checked.
-    _partial="$(printf '%s' "$_show" | jget '(d.landing && d.landing.partial) ? "1" : ""' 2>/dev/null || echo '')"
     if [ "$_partial" = "1" ]; then
       [ -n "$_branch" ] || _branch="$(printf '%s' "$_show" | jget '(((d.landing && d.landing.repos) || []).find(r => !r.landed && r.branch) || {}).branch || ""' 2>/dev/null || echo '')"
     fi

@@ -43,7 +43,7 @@ Test files are under `runner/test/` (`.sh`, `.mjs`) or `packages/*/test/` (`.ts`
 | Agent files in the worktree | The runner's host-side writes into a worktree (settings, brief, skills, `node_modules` links) never follow a symlink or leave it; a committed link parks the ticket with the path; one settings rule for shell and Node | `worktree-write-safety.test.sh`, `worktree-write-safety.test.mjs`, `worktree-link-refusal.test.sh`, `agent-settings-rule.test.mjs` | A path changed between the check and the rename by another process on the host |
 | Runner git | The runner's own git never runs repository hooks, drivers or helpers | `git-hooks-host.test.sh` | |
 | Agent environment | Built from an allowlist; credential env vars stripped; CLI credential stores are secret paths | `agent-env-scrub.test.sh`, `safety-hook-credentials.test.mjs` | Credentials outside the listed stores while `HOME` is shared |
-| Prompt quarantine | Untrusted ticket text reaches the agent inside `<untrusted-*>` envelopes | `prompt-quarantine.test.sh` | A model can still be persuaded by data |
+| Prompt quarantine | Untrusted text reaches every agent inside `<untrusted-*>` envelopes, every `<` escaped; MCP answers too | `prompt-quarantine.test.sh`, `untrusted-escape.test.mjs`, `rework-feedback-quarantine.test.sh`, `mcp-decision-quarantine.test.ts` | A model can still be persuaded by data |
 | Review gate | Human approval by default, reviewer is not the author, approval pins the reviewed commit of every write repo | `review-gate-self-approval.test.ts`, `review-stale-revision-landing.test.ts`, `review-pin-human-approval.test.ts` | The opt-in autonomy flags remove it by design |
 | Definition of Done | The runner runs tests, typecheck, lint and checked criteria; a red gate goes back to rework | `dod-gate.test.sh` | It is a quality gate, not a security boundary |
 | Gate integrity | Base commit recorded at cut; gate scripts read from it; weakened tests flagged and held | `gate-integrity.test.sh`, `gate-integrity-e2e.test.sh` | It flags, it does not fail; see its limits |
@@ -54,12 +54,14 @@ Test files are under `runner/test/` (`.sh`, `.mjs`) or `packages/*/test/` (`.ts`
 | Required CI | No recorded PASS for the exact commit is a hold | `ci-required-before-review.test.ts`, `h3-ci-gate.test.sh` | |
 | Landing | Never overwrites an ignored local file; a revocation stops every landing not yet started | `land-ignored-file.test.sh`, `revocation-safe-landing.test.ts` | A landing already started is reported, not undone |
 | OS sandbox (`docker`) | Read and egress isolation; data plane on the host; private git dir | `sandbox-docker-containment.test.sh`, `sandbox-docker-mounts.test.sh`, `sandbox-docker-git-isolation.test.sh`, `sandbox-docker-delivery.test.sh` | A live agent inside it is proven only where you run it |
-| OS sandbox (`sandbox-exec`) | Writes only in the allowed roots | `strict-mode.test.sh` | Reads, egress, writes under `$GAFFER_DATA` |
+| OS sandbox (`sandbox-exec`) | Writes only in the allowed roots; under `$GAFFER_DATA` only the databases, the crew events log and the hook's ledgers (the agent) or nothing but the worktree (the gates); never `settings.json`, the usage pause, the ledgers, the runner's state, the generated profiles or the agent CLI's user configuration | `strict-mode.test.sh` (macOS), `sandbox-exec-data-plane.test.sh`, `sandbox-exec-agent-config.test.sh` (profile meaning on every host, the kernel on macOS) | Reads, egress, the agent writing the databases directly; hard-link and rename behaviour is proven by the macOS sections only |
+| Settings loader | `settings.json` sets only the keys the dashboard API writes; anything else (NODE_OPTIONS, BASH_ENV, DYLD_*, CLAUDE_BIN, CLAUDE_FLAGS, the gate sandbox opt-out...) is ignored and named | `settings-allowlist.test.sh`, `settings.test.ts` (the two lists pinned) | A person who sets an autonomy or budget key through the dashboard |
+| Gate environment | Every gate run starts from `env -i`: no model key, no `*_TOKEN`/`*_KEY`/`*_SECRET`, no `DISPATCH_*`, no principal token, on every provider and with no sandbox | `dod-sandbox-wrap.test.sh` | What a test reads from the files it can read |
 | Default host isolation | `GAFFER_STRICT_REQUIRE=1` in every mode; no working sandbox means no launch, refused before any claim with the fix | `isolation-default.test.sh`, `strict-require.test.sh`, `autonomy-containment.test.sh` | `GAFFER_STRICT_REQUIRE=0` in the environment (never settings.json) |
 | Planning agents and scout | Read-only tool sets, safety-hook settings verified before spawn | `security-md-planning-agents.test.mjs`, `scout-gather.test.sh` | |
 | Replay manifests and experiments | Manifests hold ids, commits, settings and hashes, never prompt text or credentials (mode 600, 16 KiB cap); the experiment runner is denied to agents in every launch form and its live mode needs a hard USD cap | `replay-manifest.test.sh`, `eval-experiment.test.sh`, `safety-hook-spelling.test.mjs` | |
 | Command worker | Runs only inside the `docker` sandbox with the bridge | `worker-command.test.sh` | Turn and tool caps are hints |
-| Dashboard and API | Bearer token on every data request, loopback by default, named principals with scopes | `api-auth.test.ts`, `api-auth-loopback-hardening.test.ts`, `api-principal-scopes.test.ts` | No TLS; a tokenless CLI is operator trust |
+| Dashboard and API | Bearer token on every data request, loopback by default, named principals with scopes, each signed with the factory key | `api-auth.test.ts`, `api-auth-loopback-hardening.test.ts`, `api-principal-scopes.test.ts`, `principal-seal.test.ts`, `landing-principal-seal.test.ts` | No TLS; a tokenless CLI is operator trust |
 | Claims and logs | Claim tokens stored as hashes; hash-chained event log; content-redacted audit logs | `m2-claims.test.ts`, `event-chain.test.ts`, `audit.test.ts` | The chain has no key |
 | Budget | A live run needs a dollar cap; caps reserved atomically; only the CLI can report a usage limit | `budget-admission.test.sh`, `lifetime-budget-gate.test.sh`, `usage-limit-detect.test.mjs` | One long call can overshoot |
 | Notifications | SSRF policy, redacted bodies, URLs never returned | `notify.test.ts` | Endpoints you choose |
@@ -83,6 +85,26 @@ always gets the same decision. It:
 - scopes writes to the ticket's worktrees (`GAFFER_WRITE_ROOTS`);
 - denies reads of secret files by path, on every read vector, not by a list of reader
   binaries;
+- expands every read operand the way the shell will before judging it: the variables
+  in its environment and those the command assigns, `~`, braces, and globs against the
+  real filesystem (bounded, never through a symlinked directory), each match checked
+  like a literal path. The read vectors covered are the read and copy tools, `<`
+  redirects, `$(< file)`, `find ... -exec` start points, xargs-fed readers, `eval`,
+  `sh -c` and command-substitution bodies. A directory that holds or sits above
+  `GAFFER_DATA`, the MCP config directory or HOME is refused as a read operand; an
+  operand it cannot expand (`read`, `$(...)`, an xargs placeholder) is refused; a glob
+  with no match is judged by its literal directory; and a word anywhere that expands to
+  a secret path is refused unless the command only lists or removes it. `$_` is
+  unknown, extglob groups (`+(.)env`) are globs, CDPATH makes a relative `cd` unknown,
+  and `..` is taken physically, as the kernel takes it: through a symlinked directory
+  `wt/..` is the link target's parent, so file-tool paths, search roots and bash write
+  targets are judged at both their lexical and physical place. A loop or `xargs` that
+  takes file names from a listing of `GAFFER_DATA`, the MCP config directory or HOME
+  (`find $GAFFER_DATA | while read f; do gzip -c "$f"; done`) is refused whatever
+  program reads them, and `7z`, `pax`, `bsdtar`, `cpio -o` and `git grep / diff
+  --no-index` are read vectors. Git's stored text (a commit message may name a
+  control-plane CLI) is never run, also not through a variable (`a=$(git log ...);
+  eval "$a"`);
 - denies the control-plane CLI and raw database access, including a self-spawned
   control-plane MCP (`node .../dispatch/dist/mcp`), `node -e` reaching the dist or the
   database, and reading another process's environment (`ps`, `/proc/*/environ`);
@@ -105,6 +127,61 @@ always gets the same decision. It:
   their own. The words that name what a privileged CLI does (`wg`, `dispatch`, `fg`,
   `crew`, `gaffer`, `memory`) must be plain literals; a `$(...)`, an unassigned
   variable, a glob, or `xargs`/`parallel`/`find -exec` filling one in is refused.
+  A command proven to be data only (plain `git commit` / `log` / `show`, `echo`,
+  `grep`, `cat` and the like, with no variable, substitution, pipe, backslash, newline
+  or here-document) is judged with the CLI in command position, so a commit message
+  or a search that names it is not refused; running git's stored text as a command
+  (`$(git log -1 --format=%s)`, `git log ... | sh`, `eval "$(git ...)"`) is refused. A
+  script file the agent wrote and then runs (`bash x.sh`, `cat x.sh | bash`) is as
+  invisible to the hook as a file the Write tool wrote (see the residual limits);
+- refuses an inline interpreter program (`python -c`, `node -e` / `-p`, `deno eval`,
+  `bun -e`, `ruby -e`, `perl -e`, `php -r`, and the same programs fed on stdin by a
+  here-document, a here-string or `echo` / `printf`, also behind wrappers, `xargs`,
+  `sh -c` and `eval`) unless it is visibly free of file-writing, process, network and
+  dynamic-code capabilities. It reads the program as the interpreter will receive it
+  (the shell's quoting undone, a `cd` before it followed), lexes it per language, and
+  refuses any such capability under any alias or spelling: a capability module imported
+  under any name, a member of `os`, `sys`, `fs`, `process`, `File` and the like outside a
+  read-only list, `eval` / `exec` / `getattr` / `__import__` / dunders, `Function`,
+  `constructor`, computed member names, `send`, string callables, backticks. The one
+  capability it allows is a write whose every path is a literal inside a write root, and
+  that path then gets the checks a Bash write target gets (`.git`, the agent settings,
+  the git execution surface, secret files). A program it cannot see (a command
+  substitution, an xargs placeholder, a variable the command sets at run time, a program
+  piped in from `curl` or `base64 -d`) is refused. The programs inside `$(...)`,
+  backticks, `<(...)` / `>(...)`, an unquoted here-document's expansions, `trap` and
+  `alias` values are read the same way. So are the ways an interpreter is made to run
+  code its program text does not show: interactive mode reading stdin (`python -i`,
+  `node -i`, `php -a`, `perl -d`, `bun repl`), a preload or startup variable set by the
+  command (`NODE_OPTIONS=--require`, `PERL5OPT`, `PERL5DB`, `RUBYOPT -r`, `PHPRC`,
+  `PYTHONSTARTUP`, `LD_PRELOAD`, `BASH_ENV`), `node --import data:...`, `php -d
+  auto_prepend_file=...`, `deno run https://...`; all are refused. A variable that runs
+  code for whatever command reads it is refused in front of any command, not only an
+  interpreter: `NODE_OPTIONS` carrying a `data:` or `/dev/stdin` module (`npm test`
+  starts node), `PERL5OPT=-M...`, `PS4` with a substitution, `PYTHONINSPECT`, a dotted
+  `PYTHONWARNINGS` category, `MAKEFLAGS` / `MAKEFILES` carrying make text,
+  `GIT_CONFIG_*` (the environment form of `git -c`), `GIT_SSH_COMMAND` and the other
+  programs git runs, an editor other than a plain one or a sed script, a pager other
+  than `cat` or `less`, `LESSOPEN`, a JVM `-XX:OnError`; `PYTHONPYCACHEPREFIX` and
+  `NODE_V8_COVERAGE` are judged as writes. A standard-library `python -m` command line
+  is read: `-m timeit` code is judged as a program, the output paths of `-m json.tool`,
+  `-m venv`, `-m cProfile -o`, `-m py_compile`, `-m compileall -l` and `-m zipfile` /
+  `-m tarfile -c` as writes, listing an archive and `-m pydoc NAME` pass, `-m
+  http.server` passes only on the loopback interface serving the worktree, and the
+  other standard-library command lines that can write, run code or serve (`-m pdb`,
+  `-m tarfile -e`, `-m ensurepip`, ...) are refused. awk and sed programs are read for
+  `system()`, pipes, `print >`, `getline <`, `w`, `e` and `r`, with their options as GNU
+  getopt reads them (any unambiguous prefix of a long option); sqlite3 commands for
+  dot-commands in any abbreviation, functions that reach files or code (also behind
+  identifier quotes or comments), `ATTACH` and `VACUUM INTO`, and its database path is
+  judged as a write unless it is opened `-readonly`; make's command line for `--eval`, a
+  makefile on stdin and assignments make expands (`X=$(shell ...)` runs when any recipe
+  runs); an inline program of lua, R, osascript, tclsh, expect or dc is refused. A
+  command the walker cannot lex is refused (bash runs the lines before the one it cannot
+  parse). Text matching is not a
+  parser: a third-party package or local module the program imports is not analysed (a
+  list of well-known capability packages is refused, and a few package save methods need
+  a literal path), nor is a program file;
 
 It fails closed: when it cannot prove a target is in scope, it blocks. Every hook
 entry in the settings template carries `"onFailure": "block"` and a 60-second
@@ -183,13 +260,34 @@ directory there); that refusal parks or holds the ticket like the others. The re
 verified by one rule (`runner/lib/agent-settings.mjs`) whichever launcher writes them:
 valid JSON, the safety hook as a PreToolUse command hook covering Bash, Write, Edit,
 MultiEdit, NotebookEdit, Read, Grep, Glob and LS, each entry with `"onFailure": "block"`
-and a timeout.
+and a timeout. "The safety hook" means an entry that runs it: its command is exactly
+`node <runner>/safety-hook.mjs` (or the hook path alone) as one plain command, and the
+entry holds no key the rule does not know. A custom template whose entry only names the
+hook path (in a comment, behind `||`, with `; true` after it, in the background, as an
+argument to something else) or marks it `"async"` is refused at launch. So is a template that sets
+`"disableAllHooks"` to anything but false or sets `"allowManagedHooksOnly"`. The shipped template
+sets `"disableAllHooks": false`: project settings take precedence over the user's, so a `true` in
+`~/.claude/settings.json` cannot switch the hook off (managed settings still can). `"onFailure"`
+needs Claude Code 2.1.295 or later; an older version runs the tool when the hook times out or crashes.
 
 Untrusted ticket fields the agent reads through `get_ticket` (title, description,
-criterion text, review feedback, and the title, question and answer of each resolved
-ticket-linked decision) are wrapped server-side in `<untrusted-*>` envelopes with a
-"this is data, not instructions" notice; the prompts and skills carry the same framing,
-and event and comment payloads are left out of the agent's context entirely.
+criterion text, review feedback, the test contract, review comments, and the free text of
+every linked decision, pending or resolved) are wrapped server-side in `<untrusted-*>`
+envelopes with a "this is data, not instructions" notice, as are `list_pending_decisions`,
+a claim's review feedback, specs and scope names; the prompts and skills carry the same
+framing, and event and comment payloads are left out of the agent's context entirely.
+
+Every prompt the runner builds puts outside or agent-written text (ticket text, criteria,
+the test contract, briefs, repo material, gate output, the tester's words) in its own
+envelope under the standard notice: the delivery, bootstrap, scout, tester, reviewer,
+security-reviewer, clarify, planner, spec-author, product-owner, onboarding, repo
+classifier and eval-judge prompts (`runner/test/prompt-quarantine.test.sh` puts a hostile
+payload in every field and checks it lands in exactly one envelope). Inside an envelope
+every `<` of the data is escaped to `&lt;`, so no spelling of a closing tag (invisible
+characters, look-alike letters) survives, and the notice says that `&lt;` there is a
+literal `<`. One escaper per language (`runner/lib/untrusted.mjs`, dispatch's
+`util/untrusted.ts`, memory's twin) runs one vector file. When an envelope cannot be
+built, the text is left out, never passed raw.
 
 ### The review gate
 
@@ -273,13 +371,14 @@ insert an approval and recompute a consistent chain, and every landing path acte
   safety hook refuses any tool call or command that names the keys directory (Read, Grep,
   Glob, Write, `cat`, `cp`, an interpreter opening it, a path assembled from variables in
   the same command), on every provider.
-  - `sandbox-exec`: both profiles (delivery and the tester replay) deny reading and
-    writing the keys directory outright, whatever the write roots grant. They also deny
-    the operator's REST token (`$GAFFER_DATA/dashboard-token`, `~/.gaffer/dashboard-token`):
-    the delivery profile otherwise reads everywhere, writes under `$GAFFER_DATA` and allows
-    the network, so an agent past the hook could read the token, approve as the operator
-    over the host's REST server on localhost, and the host would seal that approval.
-    Nothing inside the sandbox needs the token (the MCP servers and the CLI use sqlite).
+  - `sandbox-exec`: every profile (the agent, the gates' validation profile and the
+    tester replay) denies reading and writing the keys directory outright, whatever the
+    write roots grant. They also deny the operator's REST token
+    (`$GAFFER_DATA/dashboard-token`, `~/.gaffer/dashboard-token`) and the runner's
+    acceptance signing key: the agent profile otherwise reads everywhere and allows the
+    network, so an agent past the hook could read the token, approve as the operator over
+    the host's REST server on localhost, and the host would seal that approval. Nothing
+    inside the sandbox needs either (the MCP servers and the CLI use sqlite).
   - `docker`: the keys directory is never mounted; the wrapper refuses a mount at, under
     or above the operator account's keys directory (and one under the current `HOME`
     when it exists). The MCP data plane runs on the host; the dashboard token and the
@@ -287,12 +386,112 @@ insert an approval and recompute a consistent chain, and every landing path acte
   - `none` (`GAFFER_STRICT_REQUIRE=0`): **only the safety hook stands between an agent and
     the key file.** The hook is a string analyser (see the residual limits): a compiled
     binary, or a script the agent writes and runs, can read any file the operator's user
-    can. Under this provider the signature proves less than it does elsewhere: an agent
+    can. An inline program (`python -c`, `node -e`, ...) is refused unless it is visibly
+    free of file-writing, process, network and dynamic-code capabilities, but a program
+    the agent first writes into its worktree and then runs (`python x.py`, a module it
+    imports) is not analysed at all: the write roots apply to the Write tool, not to what
+    a script does when it runs. Under this provider the signature proves less than it does elsewhere: an agent
     that escapes the hook can read the key and sign a forged approval. The hook alone
     also guards the dashboard token (with it, the REST server seals an approval for its
     caller) and the tokenless operator CLI (`wg ticket tester-pass --as system`, `wg
     review approve`), which signs for whoever runs it on the host. Run without an OS
     sandbox only inside a VM or container you trust.
+  - **The tick's helper servers** (`runner/config/17-cli.sh`): the dispatch server is that
+    operator CLI kept running for one tick, and runs whatever command reaches its request
+    pipe, as the operator; the JSON server runs `runner/lib/json-tool.mjs`, which reads
+    files, can run `git show` and evaluates the expression it is given. Their pipes live
+    in 0700 directories under `$GAFFER_DATA/wg-serve`, never on an inherited file
+    descriptor, and they exit with their tick. The 0700 mode stops no process of the
+    operator's user, and an agent is one (with `GAFFER_DATA` in its environment), so each
+    server answers only lines that end with the tick key: 128 random bits the tick makes,
+    keeps only in its shell's memory (never exported, never in an argv or a file) and
+    hands each server through a pipe on its stdin. No call is in flight while the agent
+    runs, so agent code that finds the pipes has nothing to copy the key from; the
+    safety hook also refuses any command that names `wg-serve`. What remains is a process
+    left running past the agent's turn, which could read a request line or swap a
+    request file during a later call; such a process can equally start the operator CLI
+    itself (the `none` residual below). Under `sandbox-exec` every profile denies writing anything there (it is not
+    one of the in-sandbox writers); under `docker` the wrapper creates `wg-serve/` before
+    it masks the entries of `$GAFFER_DATA`, so it is masked; under `none` they are as
+    reachable as the CLI itself. Sandboxed code can still READ a reply file under
+    `sandbox-exec` (reads are open there), which holds nothing the database it can also
+    read does not.
+
+### Signed principals
+
+Signed gate events protect the acts (an approval, a tester verdict) and the event chain.
+They did not protect the rows that decide who may act: a process that could write the
+sqlite file (on the macOS sandbox the in-sandbox MCP servers write it by design) inserted
+an `api_principals` row with a token hash it chose, `admin` and unscoped, called the
+loopback REST API with that token, and the server sealed a real approval for it. Denying
+the operator's token file to the sandbox did not help: the attacker never needed it.
+
+- **What is signed.** Every principal row carries a seal in `row_seals`: HMAC-SHA256 under
+  the factory key over its identity and authority (id, name, token hash, capability, actor
+  type and id, repo and ticket scope, created_at, created_by) and the id and chain hash of
+  the event that last set its state (`principal.created`, or `principal.resigned`), so the
+  seal is bound to its place in the log. `events/rowSeal.ts` is generic: the autonomy
+  policy and a ticket's risk level are meant to use it next.
+- **Verified at every decision point, every time.** The REST auth pipeline, the CLI's
+  `GAFFER_PRINCIPAL_TOKEN` / `--as-principal` path, the live event feed's per-write
+  re-check and a person's tester verdict (re-read inside its transaction) all go through
+  one check: the MAC must verify over the row as it is now (a swapped token hash, a raised
+  capability, a widened scope or another row's seal copied over is refused), the bound
+  event must be on record and be the row's latest lifecycle event, and the event log must
+  still hold the head the host anchored outside the database. A row without a valid seal
+  is refused exactly like an unknown token (401, or the CLI's UNAUTHORIZED), the REST
+  server logs it once, and `dispatch doctor` names it: "principal <name> is not signed by
+  this factory: it was created before signing, restored from a backup, or written outside
+  the factory". Verification never creates a key or a seal; with the key gone every
+  principal is refused. The agent-facing MCP server holds no key and can neither verify
+  nor sign.
+- **The row that is verified is the row that is used.** A database writer can act between
+  two reads of one decision, so each decision reads a principal once. Sign-in reads the row
+  by its token hash, checks the seal over that row's facts and builds the identity,
+  capability and scope it returns from that same row, inside one read snapshot with the
+  seal and the event it names; it never looks the row up again by id. (It used to: a
+  writer that showed a forged row to the first read and put the genuine row back for the
+  second signed in with authority no seal covered.) The unsigned-principal review builds
+  what it shows and the codes a person confirms from one read of each row in one snapshot;
+  a person's tester verdict checks the seal over the row it read. The re-sign itself runs
+  in a write transaction that no other writer can interleave.
+- **Revocation stays revoked.** Revoking writes `principal.revoked` and retires the seal in
+  the same transaction. Flipping `revoked_at` back to NULL, restoring a copy of the old
+  seal, or both, is refused: the revocation event supersedes the seal. Deleting the
+  revocation event as well breaks the chain up to the anchored head (or the anchored row
+  itself), as a removed revocation of an approval does.
+- **Who signs.** Only the trusted host paths that create a principal today (the shared
+  operator token over REST, the operator CLI) and the re-sign below. A principal token,
+  even an admin's, may not create, revoke or re-sign principals, and the safety hook
+  refuses `principal create|revoke|resign` from an agent's shell.
+- **Landing.** An approval's seal now binds the principal it was made through (null for
+  the operator, the runner and agents), and every landing (`landing-begin`,
+  `record-landing`, `mark-merged`, `runner/lib/tester-binding.mjs`) refuses while that
+  principal is not signed (`unsigned_approval`, failure `unsigned_principal`); so does the
+  review that routed a ticket to the tester and a person's waiver (whose verdict row names
+  its principal under the verdict's seal). An approval sealed before this change names no
+  principal, and nothing in the log says which principal made it (checking the rows that
+  speak as its actor is undone by deleting a forged one), so a person's or an admin's such
+  approval is held until it is re-approved; the runner's and an agent's still count.
+  Revoking a principal withholds its approvals that have not landed: re-approve them.
+- **Upgrade and restore.** Nothing is signed on upgrade: that would bless a forged row.
+  Principals created before this change stop working until a person reviews and re-signs
+  them, with one deliberate act: `gaffer wg principal unsigned` lists them (who each acts
+  as, its capability and scope, created_by and created_at, whether a matching
+  `principal.created` event is on record) and prints a confirmation code for exactly that
+  list and a `review_code` for each row; `gaffer wg principal resign <name> --confirm
+  <review_code>` signs one, `gaffer wg principal resign --all --confirm <code>` signs the
+  listed rows whose creation event is on record (operator only), or the callout in Settings (Access), which shows the same list. **The review is
+  the control, not the creation event.** A process that can write the database can also
+  append a `principal.created` event that matches its forged row (the chain has no key),
+  and a forged event written before signing existed cannot be told from a real one: the
+  event check only catches a row inserted with no event at all. So a re-sign signs nothing
+  without a code, and a row added or changed after the review changes the code, so the
+  operator's routine step cannot be made to sign a row the operator never saw, or a row
+  raised to admin after the operator looked at it. Re-sign
+  only the sign-ins you created yourself with the access shown; revoke the rest. Principals are not part of the state export, and row seals are neither
+  exported nor kept by an import: after restoring a backup, run `gaffer wg gate-key
+  reanchor` as before, then re-sign the principals you recognise.
 
 ### Definition of Done, gate integrity and the merge gate
 
@@ -307,6 +506,27 @@ the runner. A gate with no configured or detected command is skipped and logged.
 Coverage, SAST and docs checks are not gates. The Review view shows gate results only
 from rows the `system` actor recorded, and flags an agent-claimed test count the
 runner's own count contradicts (a consistency check, not a gate).
+
+**What a ticket writer can make the runner run.** Anyone who may write a ticket (the
+shared token, the tokenless CLI, or a human or admin principal with write on it, scoped
+or not) can give it `check_command` criteria and a `cli` / `api` acceptance profile
+whose argv lists the runner executes. In the factory an agent can add a
+`check_command` only to a ticket its mount is bound to, or a draft it created, before it
+is claimed (never from a reviewer or tester mount); outside the factory an MCP agent can
+add one to any ticket not yet claimed. An agent may name an acceptance profile for a
+ticket's test contract (`set_test_contract` `profile`, never replacing one a person set)
+but never registers the argv the runner runs for it: a person does. The contract freezes
+once the ticket is claimed. That is
+deliberate and not admin-gated: those commands run only for that ticket, in its own
+worktree or a fresh checkout of its tested commit, through the same gate path as the
+repository's test command (`gaffer_dod_run_one`: the gate sandbox profile with no data
+plane and no model credential when an OS sandbox is present, a timeout, the scrubbed
+agent environment; the acceptance argv also cannot set `HOME`, `TMPDIR`, `LD_PRELOAD`,
+`BASH_ENV` or `GAFFER_*`). A ticket writer can already make the runner execute code of
+its choosing by describing it in the ticket for the delivery agent to write and the test
+gate to run, so a per-ticket command grants nothing a ticket write does not. A
+repository's own gate commands (`POST /repos/:id/commands`) run for every ticket on that
+repository, other people's included, so they need an admin principal.
 
 Gate integrity resists an agent that weakens its own tests:
 
@@ -521,6 +741,29 @@ model credential, and so does the pre-gate dependency install, with `--ignore-sc
 and a stripped environment (a package manager can still run repository code such as a
 `.pnpmfile.cjs`, which is why the install is inside the wrap).
 
+The `sandbox-exec` provider (macOS) is a write filter and nothing more. After this
+release its agent profile denies every write under `$GAFFER_DATA` (also where a temp
+grant contains it, and on every parent directory, so no rename swaps the directory) and
+grants back only what the in-sandbox writers need: the dispatch and memory databases
+with their `-wal`/`-shm`/`-journal` files, the crew events log and the safety hook's two
+ledgers (the same set the docker legacy layout leaves visible, pinned by a test). The
+host-trusted files are denied by name after that: `settings.json` and its temp
+siblings, `usage-pause.json`, every ledger, the per-ticket marker files, `crew.yaml`, the
+MCP runtime configs, the generated profiles, the agent ids and the skills mounts. Every
+profile also denies the agent CLI's user configuration (`~/.claude` settings, `CLAUDE.md`,
+hooks, agents, commands, skills, plugins, and `~/.claude.json`), while its runtime state
+(`projects/`, `todos/`, `statsig/`, `shell-snapshots/`) stays writable. The gates (DoD,
+acceptance checks, the pre-gate install, the merge gate) never run under the agent's
+profile: each run gets a fresh validation profile with no `$GAFFER_DATA` grant beyond
+its worktree and no HOME grant. Every gate run, on every provider and with no sandbox,
+starts from `env -i` plus PATH, a throwaway HOME, locale, CI=1, proxy and CA settings,
+the toolchain homes and the names in `GAFFER_DOD_ENV_PASS`; no credential-shaped name
+ever passes. What `sandbox-exec` still does not contain: reads (the agent can read
+anything your user can, except the keys, the REST token and the acceptance key), egress
+(the network is open), and the agent writing the two databases directly instead of
+through the MCP tools. **`docker` is the stronger provider**: read and egress isolation,
+and with the bridge no database in the container at all.
+
 The wrap is applied inside the single worker seam, so every agent spawn (delivery,
 bootstrap, reviewer, clarify, eval judge, and through the Node seam the planner, Suggest
 work, onboarding, the spec author, the merge resolver and the tester) is contained the
@@ -571,8 +814,15 @@ SHA-256, shown once) carry an actor (`human` or `admin`), a capability (`full` o
 the shared operator token mints or revokes principals; recording a merge and reopening a
 done ticket are admin acts. One evaluation (`accessScope.ts`) decides every scoped
 request on REST, the CLI and the factory MCP mount: a scoped principal sees exactly the
-tickets it may change, everything factory-wide is refused (`403 SCOPE_DENIED`), and
-repository-level writes need an admin principal. A decision is readable only when every
+tickets it may change, everything factory-wide is refused (`403 SCOPE_DENIED`), the
+repository and agent lists (`/repositories` in every hidden mode, `/scope/repos?all=1`,
+`/agents`, `/api/squad`) hold only the repositories it reaches and the agents on its
+tickets (a ticket it reaches that links another repository shows that repository's name
+and access, never its location or gate commands), and repository-level writes need an admin principal (a ticket's own
+runner-executed commands are a ticket write, see "What a ticket writer can make the
+runner run" below). Its own identity
+(`/api/whoami`), the club's name and kit (`/api/club`) and the API description
+(`/api/openapi.json`) stay open to it: none carries ticket or repository content. A decision is readable only when every
 ticket it is linked to is (`decisionInScope`), on every surface that carries one: the
 decision routes, a ticket's detail and claimability, the human queue and `wg ticket
 show` under `GAFFER_PRINCIPAL_TOKEN`. One the holder may not read still shows where it
@@ -588,7 +838,21 @@ decision linked to a ticket its mount is bound to, whatever else it is linked to
 unattached ones; a decision only on other tickets is left out of `list_pending_decisions`
 and shows on another ticket only as the generic blocker. A mount bound to no ticket
 (product owner, planning) lists every pending decision, so it does not file one again.
-Its writes stay bound to its tickets.
+Its writes stay bound to its tickets: every ticket write (criteria, test contract,
+testable flag, decisions, both ends of a dependency) names a ticket the runner bound the
+mount to (claim, `GAFFER_SCOPE_TICKET`, `GAFFER_REVIEW_TICKET`) or a draft that server
+created. Its new drafts (`create_ticket`, `create_epic`) name only repositories its bound
+ticket writes, never under a looser policy pack than that ticket's; the product-owner
+mount (no ticket, `GAFFER_DEFAULT_TICKET_REPO`) drafts on its repository; a planning
+mount bound to neither may draft on any registered repository. Every draft still needs a
+person to ready it. Freezing a spec is a person's act: dispatch refuses it for any agent.
+A spec draft (`create_spec`) stays open to agents. The per-repo delivery record (branch, commit,
+status) that the Review diff, the approval pin, required CI and the landing read is the
+runner's: it records each write repo's branch, commit and `review_ready` at close as the
+system actor. An agent records one only on a ticket it is delivering (claimed or
+in_progress, with an active claim) and never changes a branch, commit or PR already
+recorded; in the factory only the mount holding the delivery claim may, and only progress,
+so a reviewer or tester mount cannot re-point the delivery it judges.
 
 A request's credential is resolved once, before any gate, into a frozen identity that
 every later check and route reads. The shared operator is whoever presented the shared
@@ -650,13 +914,56 @@ a presence boolean, and an argument not on the allowlist is never copied.
 
 - **The safety hook is a string analyser.** It is hardened and fails closed, but a
   compiled binary, a script the agent writes and then runs, a child process's own
-  syscalls and content-only data flows are out of its reach. It shrinks the gap to
+  syscalls and content-only data flows are out of its reach. Inline interpreter programs
+  are refused when they show a file-writing, process, network or dynamic-code capability,
+  judged on their text: a program file (`python x.py`, `node x.js`, `ruby -r ./x`, a
+  local or third-party module an inline program imports, `python -m` of a package or a
+  local module, `node -r ./x`, a directory put on `PYTHONPATH`, `NODE_PATH`, `RUBYLIB`
+  or `PERL5LIB`) is not read, so under `SANDBOX_PROVIDER=none` that remains open, and the
+  autonomy modes require containment (`runner/config/15-modes.sh`). An installed
+  package's own API is not modelled either: beyond the listed capability packages, a
+  package that writes files or compiles strings into code (a build tool, a template
+  engine) does so unseen. In JavaScript a function fetched by a member name computed at
+  run time is refused when it is called directly or through a variable, but not after it
+  passes through an array or an object. Interpreters other than the ones named above
+  (`ed`, `ex`/`vim -c`, `emacs --eval`, `gdb -ex`) are judged only by the rest of the
+  hook. Variables that point a runtime at files the agent wrote (`PYTHONHOME`,
+  `PYTHONUSERBASE`, `BUNDLE_GEMFILE`, `npm_config_script_shell`, `JAVA_TOOL_OPTIONS
+  -javaagent:`, `LD_LIBRARY_PATH`, `CC` for a makefile) are the program-file residual
+  above; `TMPDIR` names where programs put temporary files and is not judged. Bash write
+  targets are read in every command the expansion walk reaches (`( )`, `{ }`, if / for /
+  case bodies, functions, substitutions, `eval`, `trap`, `sh -c`, `echo ... | sh`); a
+  shell program that only exists at run time (`eval "$(tool)"`, a program piped to `sh`
+  from another command, bash evaluating a quoted `a[$(cmd)]` as arithmetic) is not.
+  Environment variables
+  exported by an earlier command, if the agent's shell keeps them, are not seen. A lexer
+  can also misjudge where a string ends in an exotic program; a capability word inside
+  text is refused for that reason, but a determined obfuscation in a language's dark
+  corners is a residual, not a proof. It shrinks the gap to
   dynamic reads and fully dynamic non-secret paths; it does not close it.
-- **`sandbox-exec` still permits writes under `$GAFFER_DATA`**, where `settings.json`,
-  `usage-pause.json` and the ledgers live. The hook refuses every write vector to those
-  paths that `safety-hook.test.mjs` pins, but a child's syscalls are invisible to it.
-  `sandbox-exec` also isolates neither reads nor egress. The default host isolation on
-  macOS is therefore write-only isolation.
+  Globs are expanded when the hook decides: a symlink to a secret created by an earlier
+  step of the same command through a path the hook cannot see (an interpreter, a
+  compiled tool) is not there yet when a later glob is expanded.
+- **`sandbox-exec` still permits writes to the dispatch and memory databases** under
+  `$GAFFER_DATA` (the in-sandbox MCP servers need them), so code the agent runs can change
+  board and memory rows without the MCP tools' checks. `settings.json`, the usage pause,
+  the ledgers and the other control files are no longer writable, and `settings.json`
+  is an allowlist of dashboard keys besides. `sandbox-exec` also isolates neither reads
+  nor egress, so the default host isolation on macOS is write-only isolation. Kernel
+  behaviour (hard links, renames, SQLite's journal files) is proven only by the macOS CI
+  sections of `sandbox-exec-data-plane.test.sh` and `sandbox-exec-agent-config.test.sh`.
+  `~/.cache` stays writable for the agent (not for the gates), and tools there that you
+  run outside the sandbox (corepack's pnpm and yarn, Playwright's browsers) could be
+  replaced by agent code. The MCP servers' audit logs (`audit.jsonl`,
+  `memory-audit.jsonl`) are not writable from the sandbox, so MCP calls on macOS go
+  unaudited (the servers warn and carry on). The files the agent may write (the
+  databases' `-wal`/`-shm`/`-journal` names, the hook's ledgers) can also be replaced by a
+  symlink, which host processes that open them follow. Use `docker` where you can.
+- **Agent launches still read user-level settings.** No launch passes
+  `--setting-sources project,local`: an operator who authenticates through user-level
+  settings (`apiKeyHelper`, `env`) would lose it, and that cannot be proved without the
+  real CLI. Sandboxed code can no longer write those settings, but a person's own user
+  settings still reach every agent.
 - **The factory key is only as safe as the provider.** Signed approvals stop a forged row
   only while the agent cannot read the key. Under `sandbox-exec` and `docker` the OS keeps
   it out of reach; under `SANDBOX_PROVIDER=none` / `GAFFER_STRICT_REQUIRE=0` only the hook

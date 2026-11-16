@@ -132,7 +132,10 @@ gaffer_tick_gather_prompt_inputs() {
   [ -n "$_CARD_REAL_REPO" ] || _CARD_REAL_REPO="$REPO_PATH"
   _CARD_REPO_NAME="$(printf '%s\n' "$WT_ROWS" | grep . | awk -F'\t' 'NR==1{print $2}')"
   [ -n "$_CARD_REPO_NAME" ] || _CARD_REPO_NAME="$(basename "$_CARD_REAL_REPO")"
-  _CARD_DESC="$(echo "$SHOW" | jget '(d.ticket.description || "").slice(0, 600)' 2>/dev/null || echo '')"
+  # (The scout's attempt number below comes from the same read of the view.)
+  gaffer_json_vars "$SHOW" \
+    _CARD_DESC '(d.ticket.description || "").slice(0, 600)' '' \
+    _SCOUT_ATTEMPT 'Math.trunc(Number(d.ticket.attempt_count || 0)) + 1' 1
   _CARD_QUERY="$(printf '%s %s' "$TITLE" "$_CARD_DESC")"
   # Remember the display name + ticket used for THIS delivery's recall, so the
   # outcome-feedback call below (submit / blocked-park) targets the exact
@@ -159,7 +162,6 @@ gaffer_tick_gather_prompt_inputs() {
   # suggestions when GAFFER_SCOUT asks for it. Raw inputs only: deliveryPrompt.ts renders
   # the block. When the scout lists the named code's neighbours, the file-card primer
   # does not repeat them; the scout's index answer feeds delivery-metrics instead.
-  _SCOUT_ATTEMPT="$(echo "$SHOW" | jget 'Math.trunc(Number(d.ticket.attempt_count || 0)) + 1' 2>/dev/null || echo 1)"
   SCOUT_PROMPT=""; SCOUT_RISK=""; SCOUT_RAISED=""; SCOUT_INDEX_FILE=""
   if declare -F gaffer_scout_run >/dev/null 2>&1; then
     gaffer_scout_run "$_CARD_REAL_REPO" "$_CARD_BASE_SHA" "$_SCOUT_ATTEMPT" 2>/dev/null || true
@@ -268,16 +270,18 @@ gaffer_tick_route_model() {
   # "ROUTE #N …" line and echoes the model id; an explicit GAFFER_IMPL_MODEL still
   # wins (backward-compat). With the default registry + a normal ticket this
   # resolves to mid=sonnet — exactly today's implement model.
-  ROUTE_RISK="$(echo "$SHOW" | jget 'd.ticket.risk_level || "medium"' 2>/dev/null || echo medium)"
+  # The ticket's risk, AC count and attempt history: one read of the view.
+  # attempt_count is 0-based (0 = first delivery); the router's attempt is 1-based
+  # so a prior rejection (attempt_count≥1) escalates. Default 0 if absent.
+  gaffer_json_vars "$SHOW" \
+    ROUTE_RISK 'd.ticket.risk_level || "medium"' medium \
+    ROUTE_AC '(d.acceptanceCriteria || []).length' 0 \
+    ROUTE_ATTEMPT_RAW 'Math.trunc(Number(d.ticket.attempt_count || 0))' 0
   # The router sees the EFFECTIVE risk: the scout's classifier can only raise it.
   if [ -n "$SCOUT_RISK" ]; then
     [ -z "$SCOUT_RAISED" ] || log "SCOUT: #$NUM $SCOUT_RAISED — routing on $SCOUT_RISK"
     ROUTE_RISK="$SCOUT_RISK"
   fi
-  ROUTE_AC="$(echo "$SHOW" | jget '(d.acceptanceCriteria || []).length' 2>/dev/null || echo 0)"
-  # attempt_count is 0-based (0 = first delivery); the router's attempt is 1-based
-  # so a prior rejection (attempt_count≥1) escalates. Default 0 if absent.
-  ROUTE_ATTEMPT_RAW="$(echo "$SHOW" | jget 'Math.trunc(Number(d.ticket.attempt_count || 0))' 2>/dev/null || echo 0)"
   ROUTE_ATTEMPT=$(( ${ROUTE_ATTEMPT_RAW:-0} + 1 ))
   # Pass the primary worktree so the router can measure diff size / file count when a
   # worktree with UNCOMMITTED work exists (a resumed delivery); on a first attempt no
@@ -529,6 +533,7 @@ gaffer_tick_create_worktrees() {
     elif git -C "$rpath" worktree add -B "$WORK_BRANCH" "$rwt" "$rbase" >/dev/null 2>&1; then
       _BRANCH_CREATED_THIS_TICK+="$rpath"$'\n'   # this tick owns the branch (BRANCH RETENTION)
       _gaffer_note_branch_cut "$rpath"            # GATE INTEGRITY: the cut commit, now
+      gaffer_tick_branch_ledger cut "$rpath"      # BRANCH LEDGER: this factory cut it
       log "created worktree for ${rname:-repo} ($rpath) at $rwt on branch $WORK_BRANCH off $rbase for #$NUM"
       # GREENFIELD FIRST-RUN: a freshly-bootstrapped repo has a package.json+lockfile
       # but no node_modules, so the symlink below no-ops and the first ticket's test
@@ -982,6 +987,14 @@ gaffer_tick_launch_attempt() {
     gaffer_release_delivery ready "the paid delivery launch was refused by the budget admission (no agent ran); not counted as an attempt" budget_refused
     gaffer_skip_ticket "$NUM"
     log "BUDGET: #$NUM — the paid delivery launch was refused by the budget admission (see the line above); released to ready without counting an attempt"
+    # A refusal of rework attempt 2 or 3 follows a PAID attempt 1 in this same tick: the
+    # tick spent, so it must not read as no_work (loop.sh refunds a no_work tick's day
+    # slot, and MAX_TICKS_PER_DAY then undercounts). It reports error, which keeps the
+    # slot; only a refusal before any paid attempt is no_work.
+    if [ "${_DELIV_ATTEMPT:-1}" -gt 1 ] 2>/dev/null; then
+      log "BUDGET: #$NUM: attempt $_DELIV_ATTEMPT refused after a paid attempt this tick; the tick counts toward the day cap"
+      result error; exit 0
+    fi
     result no_work; exit 0
   fi
   # ── GUARD C: PAUSE-ON-CAP detection (BEFORE the ledger removes the JSON) ─────
@@ -1040,7 +1053,8 @@ gaffer_tick_launch_attempt() {
     _PAUSE_REASON="cap_hit"
     [ "$_TIMEOUT_HIT" = "1" ] && _PAUSE_REASON="timeout"
     [ "$_BUDGET_HIT" = "1" ] && _PAUSE_REASON="budget_cap"
-    gaffer_manifest_finish "paused:$_PAUSE_REASON" "$rc"
+    # (The replay manifest is finished below, once the pause is known to have landed:
+    # a refused pause parks the ticket and the release records that instead.)
     gaffer_usage_record delivery "$NUM" "$rc" "$USAGE_JSON" "" "$_DELIV_ATTEMPT" >>"$GAFFER_LOG" 2>/dev/null || true
     rm -f "$USAGE_JSON"
     # Serialise the full worktree map (one entry per write repo) so a multi-repo
@@ -1052,14 +1066,33 @@ gaffer_tick_launch_attempt() {
     # context (branch, primary worktree, full worktree map, repo, attempt, turns,
     # spend), and notify the human gate (the dispatch notifier carries spend +
     # dashboard URL; GAFFER_NOTIFY_REDACT honoured at the dispatch layer).
-    if wg ticket pause "$NUM" --reason "$_PAUSE_REASON" \
+    # A kill while the pause is being recorded (a hung CLI ended by the outer tick bound,
+    # a Ctrl-C) must not hand the ticket back to `ready` (redelivered from attempt 1 past
+    # a cap meant to wait for a person) nor drop the branch the WIP checkpoint just
+    # committed to: keep the branch from here on, and tell the crash trap a pause was in
+    # flight so it parks the ticket to blocked (pause_failed) instead.
+    GAFFER_KEEP_DELIVERY_BRANCH=1
+    _GAFFER_PAUSE_PENDING=1
+    if gaffer_pause_delivery --reason "$_PAUSE_REASON" \
         --branch "$WORK_BRANCH" --worktree "$PRIMARY_REPO" \
         --worktrees-json "$_WT_JSON" --repo "${REPO_PATH:-}" \
         --attempt "$_DELIV_ATTEMPT" \
-        ${_CAP_TURNS:+--turns "$_CAP_TURNS"} --spend "$_CAP_SPEND" >/dev/null 2>&1; then
+        ${_CAP_TURNS:+--turns "$_CAP_TURNS"} --spend "$_CAP_SPEND"; then
       log "CAP: paused #$NUM (-> paused) — resume context persisted, human gate notified"
+      _GAFFER_PAUSE_PENDING=0
+      gaffer_manifest_finish "paused:$_PAUSE_REASON" "$rc"
+      gaffer_tick_branch_ledger preserved   # BRANCH LEDGER: kept for the resume
     else
-      log "CAP: WARNING — could not pause #$NUM via dispatch; worktree is still kept alive (KEEP flag set) — needs a human"
+      # The pause did not take (gaffer_pause_delivery retried it). Do not claim it:
+      # park the ticket to `blocked` for a person (reason pause_failed) with its
+      # branch kept, like a rework park, and report an error. The WIP checkpoint
+      # above committed any uncommitted work, so the branch holds all of it.
+      log "CAP: could not pause #$NUM via dispatch after 3 attempts (${_GAFFER_PAUSE_ERR:-no error text}); parking it to blocked (pause_failed), branch $WORK_BRANCH kept"
+      GAFFER_KEEP_DELIVERY_BRANCH=1
+      gaffer_cleanup_worktrees
+      gaffer_release_delivery blocked "hit the ${_PAUSE_REASON} cap mid-delivery and the pause could not be recorded (branch $WORK_BRANCH preserved): ${_GAFFER_PAUSE_ERR:-no error text}" pause_failed "$_DELIV_ATTEMPT" "${_MAX_DELIVERY_ATTEMPTS:-}"
+      gaffer_skip_ticket "$NUM"
+      result error; exit 0
     fi
     # THE CRUX: keep the worktree alive past this tick's normal end-of-run cleanup AND
     # any crash/signal. Raise the retention flag so the EXIT/INT/TERM trap's

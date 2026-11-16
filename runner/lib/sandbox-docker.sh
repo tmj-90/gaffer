@@ -413,6 +413,12 @@ _shadow_config() {  # <host-worktree> <private-git-dir>: the ONLY config the pri
 _GIT_PRIV_BASE="${GAFFER_DATA:-${TMPDIR:-/tmp}}/sandbox-git"
 mkdir -p "$_GIT_PRIV_BASE" 2>/dev/null || true
 chmod 700 "$_GIT_PRIV_BASE" 2>/dev/null || true
+# The same for the ticks' dispatch servers (config/17-cli.sh): each tick's request pipes
+# live in $GAFFER_DATA/wg-serve/<pid>.<random>, so this one parent, masked like any
+# entry that exists now, hides a server a sibling tick starts after this container.
+if [ -n "${GAFFER_DATA:-}" ]; then
+  ( umask 077 && mkdir -p "$GAFFER_DATA/wg-serve" ) 2>/dev/null || true
+fi
 for _wr in ${_WRITE_ROOTS[@]+"${_WRITE_ROOTS[@]}"}; do
   [ -f "$_wr/.git" ] || continue          # only LINKED worktrees have a .git FILE
   if ! _verified_linked_worktree "$_wr"; then
@@ -665,6 +671,14 @@ elif [ "$_MODE" = "legacy" ] && [ -n "${GAFFER_DATA:-}" ] && [ -d "$GAFFER_DATA"
     done
     return 1
   }
+  # The masking below covers only files that EXIST. settings.json is the one host-trusted
+  # file whose absence is normal (no dashboard setting saved yet): the agent could create
+  # it in the rw mount and the next runner would apply its keys (autonomy, budget,
+  # webhooks). An empty map is what an absent file means, so create one to be masked.
+  if [ ! -e "$GAFFER_DATA/settings.json" ] && [ ! -L "$GAFFER_DATA/settings.json" ]; then
+    ( umask 077 && printf '{}\n' > "$GAFFER_DATA/settings.json" ) 2>/dev/null \
+      || _die "cannot create $GAFFER_DATA/settings.json to mask it from the container (fail closed)"
+  fi
   for _e in "$GAFFER_DATA"/* "$GAFFER_DATA"/.[!.]*; do
     [ -e "$_e" ] || [ -L "$_e" ] || continue
     _b="$(basename "$_e")"

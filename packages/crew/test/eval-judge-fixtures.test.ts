@@ -71,7 +71,8 @@ function loadFixtures(): Fixture[] {
  * inside the quarantine envelope gets no grading, so a miswired input fails the run.
  */
 function stubJudge(prompt: string, fixtures: Fixture[], diffs: Map<string, string>): string {
-  const title = /^Ticket: (.*)$/m.exec(prompt)?.[1] ?? "";
+  const title =
+    /^Ticket: <untrusted-ticket-title>(.*)<\/untrusted-ticket-title>$/m.exec(prompt)?.[1] ?? "";
   const fx = fixtures.find((f) => f.title === title);
   if (!fx?.judge.reply) return "I cannot grade this.";
   const env = /<untrusted-delivery-diff>\n([\s\S]*?)\n<\/untrusted-delivery-diff>/.exec(prompt);
@@ -174,7 +175,9 @@ describe("eval judge fixture run: known-quality deliveries through the judge's p
         })),
         diff,
       });
-      expect(prompt).toContain(`Ticket: ${f.title}`);
+      expect(prompt).toContain(
+        `Ticket: <untrusted-ticket-title>${f.title}</untrusted-ticket-title>`,
+      );
       const verdict = parseJudgeVerdict(stubJudge(prompt, fixtures, diffs));
       expect(verdict.judged).toBe(true);
       // json-tool judge-record's shape: the verdict plus the delivery's context.

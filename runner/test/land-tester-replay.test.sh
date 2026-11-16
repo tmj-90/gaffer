@@ -15,10 +15,7 @@
 # repo whose suite stays GREEN throughout (only the tester's assertion catches the break):
 #   A  the MERGE LANE holds the ticket (blocked, tester_replay_red, the file named, the
 #      failing output as evidence); main untouched (head and tree);
-#   B  the dashboard's Merge now (bin/merge-ticket.mjs) holds the same way (exit 4);
-#   C  PR mode (lib/land.sh): the gate on the FETCHED remote default replays the tester's
-#      tests; a red replay never asks GitHub to merge;
-#   D  PR mode (bin/merge-ticket.mjs): the same, with a gh stub that would merge;
+#   (B-D, Merge now and both PR-mode landings: land-tester-replay-merge-now.test.sh)
 #   E  a bound tester PASS with no tests on record lands (nothing extra runs); a passing
 #      replay lands; a ticket outside the testing lane lands with nothing replayed.
 #   R  the landing RECORDS which tester assertions passed on which landed revision
@@ -39,24 +36,20 @@ ROOT="$(cd "$RUNNER_DIR/.." && pwd)"
 # shellcheck source=lib/land-replay-world.sh
 source "$HERE/lib/land-replay-world.sh"
 
-echo "== setup: nine deliveries, each green on its own =="
+echo "== setup: five deliveries, each green on its own =="
 NT=($(new_tickets \
   "Label by display name [read-displayName]${TAB}label() reads profile().displayName" \
-  "Label by display name again [read-displayName]${TAB}label() reads profile().displayName" \
-  "Label by display name, PR [read-displayName]${TAB}label() reads profile().displayName" \
-  "Label by display name, PR now [read-displayName]${TAB}label() reads profile().displayName" \
   "Note five [note-5]${TAB}a note" \
   "Note six [note-6]${TAB}a note" \
   "Note seven [note-7]${TAB}a note${TAB}plain" \
-  "Note eight [note-8]${TAB}a note" \
   "Label by display name, tampered [read-displayName]${TAB}label() reads profile().displayName"))
-T1="${NT[0]:-}" T2="${NT[1]:-}" T3="${NT[2]:-}" T4="${NT[3]:-}" T5="${NT[4]:-}" T6="${NT[5]:-}" T7="${NT[6]:-}" T8="${NT[7]:-}" T9="${NT[8]:-}"
-ALL_T="$T1 $T2 $T3 $T4 $T5 $T6 $T7 $T8 $T9"
+T1="${NT[0]:-}" T5="${NT[1]:-}" T6="${NT[2]:-}" T7="${NT[3]:-}" T9="${NT[4]:-}"
+ALL_T="$T1 $T5 $T6 $T7 $T9"
 for _ in $ALL_T; do AUTO_MERGE=0 run_tick >/dev/null; done
 # TESTER FIRST: a testable delivery goes to the tester before review; an ordinary one
 # (T7) waits in review.
 all_lane=1; for n in $ALL_T; do want=in_testing; [ "$n" = "$T7" ] && want=in_review; [ "$(st "$n")" = "$want" ] || all_lane=0; done
-[ "$all_lane" = 1 ] && ok "all nine delivered through their DoD gates (testable ones sent to the tester, the plain one in review)" || fail "statuses: $(for n in $ALL_T; do printf '#%s=%s ' "$n" "$(st "$n")"; done)"
+[ "$all_lane" = 1 ] && ok "all five delivered through their DoD gates (testable ones sent to the tester, the plain one in review)" || fail "statuses: $(for n in $ALL_T; do printf '#%s=%s ' "$n" "$(st "$n")"; done)"
 approve "$T7"
 [ "$(st "$T7")" = ready_for_merge ] && ok "an ordinary approval goes to ready_for_merge" || fail "after approve: T7=$(st "$T7")"
 tester_pass "$T1" "$LABEL_TEST"; tester_pass "$T5"; tester_pass "$T6" "$NAME_TEST"
@@ -103,54 +96,6 @@ case "$R5" in *' []') ok "E: a bound PASS with no tests on record still records 
 [ -z "$(replay_rec "$T1")" ] && ok "A: a held replay records nothing" || fail "A: #$T1 has a replay record"
 MAIN1="$(git -C "$R" rev-parse main)"; TREE1="$(tree_of main)"
 git -C "$R" push -q origin main 2>/dev/null
-
-echo "== B: Merge now (bin/merge-ticket.mjs) replays and holds the same way =="
-tester_pass "$T2" "$LABEL_TEST"; approve "$T2"
-merge_now "$T2"; rc=$?
-[ "$rc" -eq 4 ] && ok "B: Merge now refuses #$T2 (exit 4)" || fail "B: rc=$rc $(tail -c 400 "$WORK/mn.out")"
-grep -q "TESTER REPLAY FAILED" "$WORK/mn.out" && grep -q "test/bb-label.test.js" "$WORK/mn.out" && ok "B: …saying the tester's replay failed, naming the file" || fail "B: output: $(tail -c 400 "$WORK/mn.out")"
-[ "$(git -C "$R" rev-parse main)" = "$MAIN1" ] && [ "$(tree_of main)" = "$TREE1" ] && ok "B: main untouched (head and tree)" || fail "B: main moved"
-[ "$(st "$T2")" = "blocked" ] && case "$(hold_of "$T2")" in *tester_replay_red*) true ;; *) false ;; esac && ok "B: #$T2 held (blocked, tester_replay_red)" || fail "B: #$T2 status=$(st "$T2") hold=$(hold_of "$T2" | cut -c1-200)"
-[ -z "$(replay_rec "$T2")" ] && ok "B: a held replay records nothing" || fail "B: #$T2 has a replay record"
-tester_pass "$T8" "$NAME_TEST"; approve "$T8"
-merge_now "$T8"; rc=$?
-[ "$rc" -eq 0 ] && [ "$(st "$T8")" = "done" ] && ok "B: Merge now lands #$T8 once the tester's assertion passes on the candidate" || fail "B: #$T8 rc=$rc status=$(st "$T8") $(tail -c 300 "$WORK/mn.out")"
-R8="$(replay_rec "$T8")"; S8="${R8%% *}"
-[ -n "$S8" ] && [ "$S8" = "$(git -C "$R" rev-parse main)" ] && case "$R8" in *'["test/bb-label.test.js"]'*) true ;; *) false ;; esac \
-  && ok "B: Merge now's replay record names the landed revision (main) and the tester's file" || fail "B: #$T8 record: '$R8' main=$(git -C "$R" rev-parse main)"
-MAIN1="$(git -C "$R" rev-parse main)"; TREE1="$(tree_of main)"; git -C "$R" push -q origin main 2>/dev/null
-
-echo "== C: PR mode (lib/land.sh) gates the fetched remote default and never asks GitHub =="
-tester_pass "$T3" "$LABEL_TEST"; approve "$T3"
-(
-  # shellcheck source=../lib/land.sh
-  source "$RUNNER_DIR/lib/land.sh"
-  log() { printf '%s\n' "$*" >> "$LOGF"; }
-  gaffer_pr_merge() { printf 'pr_merge %s\n' "$*" >> "$WORK/pr-calls"; return 0; }
-  SHOW="$(wg ticket show "$T3" | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{const d=JSON.parse(s);d.ticket.pr_url="https://github.com/o/r/pull/3";process.stdout.write(JSON.stringify(d))})')"
-  _gaffer_land_one "$T3" "$R" "$(branch_of "$T3")" main "$SHOW" MERGE "" 0
-  echo "rc=$?" > "$WORK/c.rc"
-) >/dev/null 2>&1
-grep -q '^rc=4$' "$WORK/c.rc" 2>/dev/null && ok "C: PR-mode landing held (rc 4)" || fail "C: $(cat "$WORK/c.rc" 2>/dev/null)"
-[ -s "$WORK/pr-calls" ] && fail "C: gh pr merge was asked to merge a red replay" || ok "C: the PR merge was never asked for"
-grep -q "MERGE: #$T3 TESTER REPLAY — running the tester's 1 test file(s)" "$LOGF" && ok "C: the replay ran on the PR-mode candidate" || fail "C: no PR-mode replay line"
-[ "$(git -C "$WORK/origin.git" rev-parse main)" = "$MAIN1" ] && [ "$(git -C "$R" rev-parse main)" = "$MAIN1" ] && ok "C: the remote and local default untouched" || fail "C: a default branch moved"
-[ "$(st "$T3")" = "blocked" ] && ok "C: #$T3 held (blocked)" || fail "C: #$T3 status=$(st "$T3")"
-
-echo "== D: PR mode (bin/merge-ticket.mjs) — the same, with a gh that would merge =="
-tester_pass "$T4" "$LABEL_TEST"; approve "$T4"
-node -e 'const {DatabaseSync}=require("node:sqlite");const d=new DatabaseSync(process.argv[1]);d.prepare("UPDATE tickets SET pr_url=? WHERE number=?").run("https://github.com/o/r/pull/4",Number(process.argv[2]));d.close()' "$DISPATCH_DB" "$T4" 2>/dev/null
-cat > "$WORK/bin/gh" <<GH
-#!/usr/bin/env bash
-printf 'gh %s\n' "\$*" >> "$WORK/gh-calls"
-exit 0
-GH
-chmod +x "$WORK/bin/gh"
-( cd "$RUNNER_DIR" && GAFFER_GH_BIN="$WORK/bin/gh" DISPATCH_DB="$DISPATCH_DB" GAFFER_DATA="$GAFFER_DATA" node bin/merge-ticket.mjs --ticket "$T4" ) >"$WORK/d.out" 2>"$WORK/d.err"; rc=$?
-[ "$rc" -eq 4 ] && grep -q "TESTER REPLAY FAILED" "$WORK/d.out" && ok "D: PR-mode Merge now refuses (exit 4, tester replay failed)" || fail "D: rc=$rc $(tail -c 400 "$WORK/d.out")"
-grep -q "pr merge" "$WORK/gh-calls" 2>/dev/null && fail "D: gh pr merge ran on a red replay" || ok "D: gh pr merge never ran"
-[ "$(git -C "$R" rev-parse main)" = "$MAIN1" ] && ok "D: main untouched" || fail "D: main moved"
-[ "$(st "$T4")" = "blocked" ] && ok "D: #$T4 held (blocked)" || fail "D: #$T4 status=$(st "$T4")"
 
 echo "== F: a tests branch rewritten after the PASS cannot stand in for the bound assertion =="
 tester_pass "$T9" "$LABEL_TEST"; approve "$T9"

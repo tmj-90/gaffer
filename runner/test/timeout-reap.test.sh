@@ -60,12 +60,22 @@ GC
 chmod +x "$GRANDCHILD_SH"; export GRANDCHILD_SH
 gaffer_timeout 1 bash -c 'bash "$GRANDCHILD_SH" & wait' ; rc=$?
 [ "$rc" = "124" ] && ok "gaffer_timeout returns 124 on timeout" || fail "expected 124 (got $rc)"
-# Give the reap's TERM->KILL group escalation its grace window.
-sleep 1
+# The group KILL was sent before gaffer_timeout returned; the kernel still has to
+# take the process down, which a loaded machine can stretch past a fixed second.
+# Poll until it is gone (or a zombie), up to 10 s: a real survivor never goes.
 CHILD_PID="$(cat "$CHILD_PIDFILE" 2>/dev/null || true)"
+grandchild_running() {
+  kill -0 "$CHILD_PID" 2>/dev/null && ! grep -q Z <<<"$(ps -o stat= -p "$CHILD_PID" 2>/dev/null)"
+}
+if [ -n "$CHILD_PID" ]; then
+  for _ in $(seq 1 100); do grandchild_running || break; sleep 0.1; done
+fi
 if [ -z "$CHILD_PID" ]; then
   fail "the grandchild never recorded its PID (test setup)"
-elif kill -0 "$CHILD_PID" 2>/dev/null && ! grep -q Z <<<"$(ps -o stat= -p "$CHILD_PID" 2>/dev/null)"; then
+elif grandchild_running; then
+  # Say what is still there: a survivor outside the process group is a different
+  # fault from one the group KILL missed.
+  ps -o pid=,ppid=,pgid=,stat=,etime=,args= -p "$CHILD_PID" 2>/dev/null | sed 's/^/    survivor: /'
   # A ZOMBIE is dead (the group KILL landed); it only lingers until its new parent reaps
   # it. Its parent (the foreground bash) exited first, so it is reparented to PID 1, and
   # a container whose PID 1 is not a reaping init leaves it as Z — `kill -0` still

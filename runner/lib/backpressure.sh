@@ -1,6 +1,9 @@
 # Gaffer per-repo backpressure (sourced by factory.config.sh).
 # shellcheck shell=bash
 _GAFFER_JSON_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/json-tool.mjs"
+# The JSON server reaches this lib's json-tool calls through gaffer_json_at
+# (config/17-cli.sh); sourced alone (a test), they run json-tool directly.
+declare -F gaffer_json_at >/dev/null 2>&1 || gaffer_json_at() { local t="$1"; shift; node "$t" "$@"; }
 #
 # Before claiming/delivering for a repo, count its OUTSTANDING work and refuse to
 # pile up more than the configured cap. Outstanding work for a repo =
@@ -69,7 +72,7 @@ gaffer_repo_unmerged_branches() {
 gaffer_parked_ticket_numbers() {
   local s
   for s in blocked refining; do
-    _bp_wg_list "$s" 2>/dev/null | node "$_GAFFER_JSON_TOOL" numbers 2>/dev/null
+    _bp_wg_list "$s" 2>/dev/null | gaffer_json_at "$_GAFFER_JSON_TOOL" numbers 2>/dev/null
   done
   return 0
 }
@@ -85,12 +88,12 @@ gaffer_parked_ticket_numbers() {
 #   gaffer_inactive_ticket_numbers
 gaffer_inactive_ticket_numbers() {
   gaffer_parked_ticket_numbers
-  _bp_wg_list cancelled 2>/dev/null | node "$_GAFFER_JSON_TOOL" numbers 2>/dev/null
+  _bp_wg_list cancelled 2>/dev/null | gaffer_json_at "$_GAFFER_JSON_TOOL" numbers 2>/dev/null
   # DONE is terminal too. Its branch is normally merged (and so never listed), but a
   # ticket closed with "I merged it by hand" after a squash or rebase merge — or a
   # hand-applied change — leaves its gaffer/ branch unmerged, and counting it held a
   # slot of the repo's branch cap for good.
-  _bp_wg_list "done" 2>/dev/null | node "$_GAFFER_JSON_TOOL" numbers 2>/dev/null
+  _bp_wg_list "done" 2>/dev/null | gaffer_json_at "$_GAFFER_JSON_TOOL" numbers 2>/dev/null
   return 0
 }
 
@@ -129,49 +132,109 @@ gaffer_repo_active_unmerged_branches() {
   echo "$count"
 }
 
-# Delete ONLY genuinely-abandoned unmerged gaffer/* branches. A "genuinely
-# abandoned" branch is one whose ticket is POSITIVELY cancelled (a terminal,
-# killed ticket) AND which is NOT recorded as a delivery artifact.
-#
-# DATA-LOSS GUARD (the reason this is deny-by-default): a delivery branch is
-# frequently the ONLY copy of committed delivery work. A ticket parked for rework
-# PRESERVES its branch — the rework loop parks to `blocked`, other recovery paths
-# park to `refining`, and both keep the branch alive for the next attempt. The
-# in-flight preserved/live states are therefore NEVER swept:
-#   refining · blocked · in_progress · paused · claimed  (non-terminal preserved)
-#   ready · in_review · done · draft                     (other live tickets)
-# Anything we cannot POSITIVELY confirm abandoned — an unknown status, or a status
-# lookup that fails/returns empty (transient `wg` error) — is KEPT: losing
-# committed work is far worse than a lingering branch. Keeping a PARKED or a
-# CANCELLED-but-delivered branch is cheap because the pressure count excludes
-# blocked/refining/cancelled tickets' branches (gaffer_repo_active_unmerged_branches),
-# so preservation never throttles the repo; a branch kept because its status is
-# UNRESOLVABLE, however, DOES keep counting toward the cap (fail-safe) until the
-# status resolves. Merged branches are left to the normal merged sweep. Echoes each deleted branch name.
-# Best-effort — never fatal.
+# BRANCH LEDGER: the record of the gaffer/ branches THIS factory cut, kept in its own
+# data dir ($GAFFER_DATA/branch-ledger.tsv). A branch name only says "ticket-<n>"; the
+# number is not proof, because ticket numbers restart at 1 when the factory is reset
+# (the data dir deleted) or a second data dir points at the same checkout, and the
+# ticket #n of the CURRENT database is then a different ticket. The ledger ties the
+# branch to the ticket's id (a uuid, never reused) and to the repo it was cut in, and
+# it lives and dies with the database it belongs to, so a reset factory has no row for
+# an old factory's branch and keeps it. This is the strongest proof available: the
+# ticket's own branch_name and its delivery rows are written only after a submit, so a
+# ticket cancelled before it delivered has neither. One tab-separated line per event:
+#   <kind>\t<ticket-id>\t<ticket-number>\t<repo-key>\t<branch>\t<epoch>
+# kind "cut" when a tick creates the branch, "preserved" when a park or a pause keeps
+# it for a later attempt. Appends are single short writes (atomic with O_APPEND).
+gaffer_branch_ledger_file() {
+  [ -n "${GAFFER_DATA:-}" ] || return 1
+  printf '%s/branch-ledger.tsv\n' "$GAFFER_DATA"
+}
+
+# The repo identity a ledger row names: the absolute git common dir, so the main
+# checkout and every worktree of it give the same key. Empty when not a git repo.
+gaffer_branch_ledger_repo_key() {
+  local cd
+  cd="$(git -C "$1" rev-parse --git-common-dir 2>/dev/null)" || return 1
+  [ -n "$cd" ] || return 1
+  (cd "$1" 2>/dev/null && cd "$cd" 2>/dev/null && pwd -P)
+}
+
+#   gaffer_branch_ledger_note <cut|preserved> <ticket-id> <ticket-number> <repo-path> <branch>
+# Best effort: a row that cannot be written only means the sweep keeps that branch.
+gaffer_branch_ledger_note() {
+  local kind="$1" tid="$2" num="$3" repo="$4" branch="$5" f key
+  [ -n "$kind" ] && [ -n "$tid" ] && [ -n "$num" ] && [ -n "$branch" ] || return 0
+  f="$(gaffer_branch_ledger_file)" || return 0
+  key="$(gaffer_branch_ledger_repo_key "$repo")" || return 0
+  [ -n "$key" ] || return 0
+  case "$tid$num$key$branch" in *$'\t'*|*$'\n'*) return 0 ;; esac
+  mkdir -p "$(dirname "$f")" 2>/dev/null || return 0
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$kind" "$tid" "$num" "$key" "$branch" "$(date +%s)" >> "$f" 2>/dev/null || true
+  return 0
+}
+
+# True (0) when the ledger holds a <kind> row for exactly this ticket id, number,
+# repo and branch. A missing or unreadable ledger proves nothing (1).
+#   gaffer_branch_ledger_has <kind> <ticket-id> <ticket-number> <repo-key> <branch>
+gaffer_branch_ledger_has() {
+  local f
+  f="$(gaffer_branch_ledger_file)" || return 1
+  [ -r "$f" ] || return 1
+  awk -F'\t' -v k="$1" -v t="$2" -v n="$3" -v r="$4" -v b="$5" \
+    '$1==k && $2==t && $3==n && $4==r && $5==b {found=1} END {exit found?0:1}' "$f" 2>/dev/null
+}
+
+# Archive (never delete outright) a gaffer/ branch this factory can PROVE it cut for a
+# ticket that is now POSITIVELY cancelled. Every condition must hold, or the branch is
+# kept:
+#   1. it is not merged into the default branch (merged ones are the merged sweep's);
+#   2. the ticket the name points at reads `cancelled` (an unknown or unreadable status,
+#      and every live or parked state, keeps the branch);
+#   3. the branch ledger has a "cut" row for THIS ticket's id, number, repo and branch
+#      (a number collision from a reset factory or a second data dir has none);
+#   4. the ledger has no "preserved" row for it (a delivery parked for rework or paused
+#      kept its branch on purpose; a Won't do on it must not lose that work);
+#   5. it is not a recorded delivery artifact (gaffer_branch_is_delivery_artifact);
+#   6. no worktree has it checked out.
+# Won't do is reversible, so even then the commits are not dropped: the tip is first
+# written to refs/gaffer/abandoned/<branch>-<sha12>, and the branch is removed only
+# when that ref verifiably holds the same commit and the branch did not move. Restore
+# with `git branch <branch> <archive-ref>` (RUNBOOK). Echoes "<branch>\t<archive-ref>"
+# per archived branch; the caller logs each line. Best effort, never fatal.
 #   gaffer_sweep_abandoned_branches <repo-path> <default-branch>
 gaffer_sweep_abandoned_branches() {
   local repo="$1" def="${2:-main}"
   git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 || return 0
-  local b num tstatus merged
+  local b num tstatus merged show tid key sha aref checked
+  key="$(gaffer_branch_ledger_repo_key "$repo")" || return 0
+  [ -n "$key" ] || return 0
   merged="$(git -C "$repo" branch --format='%(refname:short)' --merged "$def" 2>/dev/null | grep -E '^gaffer/' | sort -u)"
+  checked="$(git -C "$repo" worktree list --porcelain 2>/dev/null | sed -n 's#^branch refs/heads/##p')"
   # FINDING B-L1: read branch names line-by-line rather than an unquoted
-  # `for b in $(...)` word-split — a branch name containing an IFS char or a glob
-  # metacharacter would otherwise be split/expanded. Process substitution is
-  # bash-3.2-safe at runtime.
+  # `for b in $(...)` word-split.
   while IFS= read -r b; do
     [ -n "$b" ] || continue
     grep -qxF -- "$b" <<<"$merged" && continue   # merged → not our job
+    grep -qxF -- "$b" <<<"$checked" && continue  # checked out somewhere → in use
     num="$(printf '%s' "$b" | sed -nE 's#^gaffer/ticket-([0-9]+).*#\1#p')"
     [ -n "$num" ] || continue
-    tstatus="$(_bp_wg_show "$num" 2>/dev/null | node "$_GAFFER_JSON_TOOL" ticket-status 2>/dev/null)"
-    # PRESERVE unless the ticket is POSITIVELY cancelled. Every live/preserved
-    # state, and every ambiguous/unresolvable status, keeps the branch.
+    show="$(_bp_wg_show "$num" 2>/dev/null)" || continue
+    tstatus="$(printf '%s' "$show" | gaffer_json_at "$_GAFFER_JSON_TOOL" ticket-status 2>/dev/null)"
     [ "$tstatus" = "cancelled" ] || continue
-    # A cancelled ticket whose branch is a RECORDED delivery artifact is still
-    # kept — never nuke recorded delivery work.
+    tid="$(printf '%s' "$show" | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{try{const v=JSON.parse(s).ticket.id;process.stdout.write(typeof v==="string"?v:"")}catch{}})' 2>/dev/null)"
+    [ -n "$tid" ] || continue
+    gaffer_branch_ledger_has cut "$tid" "$num" "$key" "$b" || continue
+    gaffer_branch_ledger_has preserved "$tid" "$num" "$key" "$b" && continue
     gaffer_branch_is_delivery_artifact "$num" "$b" && continue
-    git -C "$repo" branch -D "$b" >/dev/null 2>&1 && echo "$b"
+    sha="$(git -C "$repo" rev-parse --verify --quiet "refs/heads/$b^{commit}" 2>/dev/null)" || continue
+    [ -n "$sha" ] || continue
+    aref="refs/gaffer/abandoned/$b-${sha:0:12}"
+    if ! git -C "$repo" rev-parse --verify --quiet "$aref" >/dev/null 2>&1; then
+      git -C "$repo" update-ref "$aref" "$sha" "" >/dev/null 2>&1 || continue
+    fi
+    [ "$(git -C "$repo" rev-parse --verify --quiet "$aref^{commit}" 2>/dev/null)" = "$sha" ] || continue
+    git -C "$repo" update-ref -d "refs/heads/$b" "$sha" >/dev/null 2>&1 || continue
+    printf '%s\t%s\n' "$b" "$aref"
   done < <(git -C "$repo" for-each-ref --format='%(refname:short)' 'refs/heads/gaffer/*' 2>/dev/null)
 }
 
@@ -185,7 +248,7 @@ gaffer_branch_is_delivery_artifact() {
   local num="$1" branch="$2" out
   out="$(_bp_wg_deliveries "$num" 2>/dev/null)" || return 0
   # unparseable → fail safe (treat as recorded → keep)
-  printf '%s' "$out" | node "$_GAFFER_JSON_TOOL" branch-recorded "$branch"
+  printf '%s' "$out" | gaffer_json_at "$_GAFFER_JSON_TOOL" branch-recorded "$branch"
 }
 
 # Default Dispatch accessors (overridable by tests). Each appends its argument.
@@ -215,10 +278,10 @@ _bp_wg_deliveries() {
 gaffer_repo_tickets_in_status() {
   local status="$1" target="$2"
   local nums n
-  nums="$(_bp_wg_list "$status" 2>/dev/null | node "$_GAFFER_JSON_TOOL" numbers-joined 2>/dev/null)"
+  nums="$(_bp_wg_list "$status" 2>/dev/null | gaffer_json_at "$_GAFFER_JSON_TOOL" numbers-joined 2>/dev/null)"
   local count=0
   for n in $nums; do
-    if _bp_wg_show "$n" 2>/dev/null | node "$_GAFFER_JSON_TOOL" repo-matches "$target"; then
+    if _bp_wg_show "$n" 2>/dev/null | gaffer_json_at "$_GAFFER_JSON_TOOL" repo-matches "$target"; then
       count=$((count + 1))
     fi
   done

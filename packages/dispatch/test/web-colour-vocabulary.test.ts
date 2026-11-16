@@ -202,16 +202,18 @@ describe("web: chart marks have their own tokens", () => {
       ["components.css", ".chart-bar.is-today", /fill:\s*var\(--viz-accent\)/],
       ["components.css", ".chart-bar.is-zero", /fill:\s*var\(--viz-muted\)/],
       ["components.css", ".chart .cg", /stroke:\s*var\(--viz-grid\)/],
-      ["views/health.css", ".physio-board .kpi-spark", /color:\s*var\(--viz-mark\)/],
-      ["views/health.css", ".df-bar i", /background:\s*var\(--viz-mark\)/],
-      ["views/health.css", ".health-spark", /color:\s*var\(--viz-mark\)/],
+      // Health's ROI sparklines (categories drawn as time) and bar rows are gone (V1);
+      // its diverging lane bar takes the two opposite marks.
+      ["views/health.css", ".dv-left i", /background:\s*var\(--viz-accent\)/],
+      ["views/health.css", ".dv-right i", /background:\s*var\(--viz-mark\)/],
+      ["components.css", ".seg-3", /background:\s*var\(--viz-part-3\)/],
       ["views/overview.css", ".wage-chart .bar", /fill:\s*var\(--viz-mark\)/],
       ["views/overview.css", ".wage-chart .bar-today", /fill:\s*var\(--viz-accent\)/],
       ["views/overview.css", ".kb-1", /background:\s*var\(--viz-accent\)/],
       ["views/overview.css", ".kb-2", /background:\s*var\(--viz-muted\)/],
-      ["views/overview.css", ".pct-bar span", /background:\s*var\(--viz-mark\)/],
-      ["views/ticket.css", ".conf-fill", /background:\s*var\(--viz-mark\)/],
-      ["views/epics.css", ".ep-round-bar i", /background:\s*var\(--viz-mark\)/],
+      // The League table's share bar is the shared meter now (.band-fill above).
+      // The ticket boundary confidence bar is the shared meter now (.band-fill above).
+      // The Epics round bar is the shared meter now (.band-fill above), not its own build.
     ];
     for (const [file, sel, want] of marks) {
       const d = decls(file, sel);
@@ -222,7 +224,7 @@ describe("web: chart marks have their own tokens", () => {
     for (const f of ALL_FILES) {
       const css = strip(read(f));
       for (const m of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
-        if (!/(spark|chart|band-fill|df-bar|kb-\d|pct-bar|conf-fill)/.test(m[1]!)) continue;
+        if (!/(spark|chart|band-fill|df-bar|kb-\d|pct-bar)/.test(m[1]!)) continue;
         expect(m[2], `${f} ${m[1]!.trim()}`).not.toMatch(/var\(--(sky|claret|claret-ink)\)/);
       }
     }
@@ -283,7 +285,7 @@ describe("web: status yellow is only status", () => {
   });
 
   it("the no-go row and the review strip's warn cell do not wear yellow", () => {
-    expect(decls("views/settings.css", ".gng-list .is-nogo .glyph")).not.toMatch(/--yellow/);
+    expect(decls("views/settings.css", ".gng-list .is-nogo .vmark")).not.toMatch(/--yellow/);
     expect(decls("views/review.css", ".vd-cell.vd-warn")).not.toMatch(/--yellow/);
   });
 });

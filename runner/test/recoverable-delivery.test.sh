@@ -199,7 +199,8 @@ if [ -f "$TICK" ]; then
   # PAUSE-ON-CAP: the cap-hit (GUARD C) path must now PAUSE IN PLACE — pause the
   # ticket via dispatch, raise the worktree-retention flag, and NOT tear the worktree
   # down. It must NOT fall back to the old park+teardown (no bare cap-hit cleanup).
-  if grep -q 'PAUSED (cap-hit)' "$RUNNER_DIR/lib/tick-launch.sh" && grep -q 'wg ticket pause' "$RUNNER_DIR/lib/tick-launch.sh" \
+  if grep -q 'PAUSED (cap-hit)' "$RUNNER_DIR/lib/tick-launch.sh" && grep -q 'gaffer_pause_delivery --reason' "$RUNNER_DIR/lib/tick-launch.sh" \
+     && grep -q 'wg ticket pause "$NUM"' "$RUNNER_DIR/lib/tick-gates.sh" \
      && grep -q 'GAFFER_PAUSE_KEEP_WORKTREE=1' "$RUNNER_DIR/lib/tick-launch.sh"; then
     ok "tick.sh cap-hit path PAUSES in place + raises the worktree-keep flag"
   else

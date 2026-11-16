@@ -202,9 +202,11 @@ also names the ticket's other write repos, which the tester never ran in (`not_r
 the tester tests the primary repo only). `wg stats` counts an epic as accepted only on that
 record **with at least one tester test file** (`unreplayed` otherwise: zero tester assertions
 ran on what landed), and `gaffer status` and the dashboard ticket page read it instead of
-guessing from timestamps. Tests: `test/land-tester-replay.test.sh` (every landing path),
-`test/land-tester-replay-proof.test.sh` (what the record names and the proof a file ran) and
-`test/e2e-release-gate-tester-replay.test.sh` (the reviewer's fixture, end to end).
+guessing from timestamps. Tests: `test/land-tester-replay.test.sh` and
+`test/land-tester-replay-merge-now.test.sh` (every landing path),
+`test/land-tester-replay-proof.test.sh` and `test/land-tester-replay-scoped.test.sh` (what
+the record names and the proof a file ran) and `test/e2e-release-gate-tester-replay.test.sh`
+with `-scoped.test.sh` (the reviewer's fixture, end to end).
 
 **Required CI** (`GAFFER_REQUIRE_CI=1`, PR mode): `lib/ci-gate.sh` reads `gh pr checks
 --json name,state,bucket,link` (the real CLI fields; `fixtures/gh` holds the recorded field
@@ -576,8 +578,13 @@ from `lib/hook/`, where the rules live one concern per module:
 | `lib/hook/paths.mjs` | `canonicalize`, the write and read roots, the secret-path families, tilde expansion and `cd` replay |
 | `lib/hook/verbs.mjs` | the effective verb behind assignments, wrappers and package runners; the privileged CLI names; `sh -c` bodies |
 | `lib/hook/deny-list.mjs` | loads `lib/dangerous-commands.mjs` (the deny list) so that a failure blocks |
-| `lib/hook/interpreters.mjs` | the inline-interpreter write and read boundary (`python -c`, `node -e`, heredocs) |
+| `lib/hook/inline-lex.mjs` | a lexer for inline programs: strings decoded, comments dropped, interpolated code read as code |
+| `lib/hook/inline-other.mjs` | awk, sed and sqlite3 programs and make command lines read for commands, reads and writes (the sqlite3 database is a write); inline lua, R, osascript, tcl, expect and dc programs refused |
+| `lib/hook/inline-programs.mjs` | the programs a command hands to an interpreter, as the interpreter receives them (shell dequoting, wrappers, `xargs`, `sh -c`, `eval`, heredocs, stdin, `cd`, command and process substitutions, `trap`), preload variables and the environment variables that run code for any command (`NODE_OPTIONS`, `PS4`, editors, pagers, `GIT_CONFIG_*`), interactive modes, standard-library `python -m` command lines |
+| `lib/hook/interpreters.mjs` | the inline-interpreter write and read boundary (`python -c`, `node -e`, heredocs) and the capability rule: an inline program that can write, start a process, reach the network or run code built at run time is refused, except a write to a literal path in a write root |
 | `lib/hook/reads.mjs` | secret reads and credentials, git secret operations, env templates, Bash read targets |
+| `lib/hook/expand.mjs` | shell-word expansion (variables, `~`, braces, globs) for the read checks |
+| `lib/hook/read-operands.mjs` | the read boundary after expansion: every read operand expanded and judged, unexpandable ones refused, words expanding to secrets |
 | `lib/hook/writes.mjs` | Bash write targets |
 | `lib/hook/installs.mjs` | the bootstrap install allowance and `--ignore-scripts` |
 | `lib/hook/git.mjs` | branch creation, branch ref rewrites, the git execution surface |
@@ -589,8 +596,8 @@ A rule module returns a reason or null; only `decide.mjs` blocks or allows, and 
 module imports only the ones above it in that table. A missing or broken module fails
 the hook closed like a missing core (`test/safety-hook.test.mjs` checks each one),
 `preflight.sh` shows it as a failure, and `tick.sh` refuses to launch an agent when
-`lib/hook/` is missing. Loading twelve modules instead of one adds node start-up time
-to every hook call: on a loaded 4-CPU machine I measured about +5 to +25 ms per call
+`lib/hook/` is missing. Loading the modules instead of one file adds node start-up time
+to every hook call: with twelve modules, on a loaded 4-CPU machine I measured about +5 to +25 ms per call
 (a Read went from a median of about 75 ms to 85 ms), and `NODE_COMPILE_CACHE` did
 not recover it. `test/safety-hook-golden-corpus.test.mjs` pins the verdict
 for every tool call the hook suites make ([`docs/testing.md`](../docs/testing.md) says

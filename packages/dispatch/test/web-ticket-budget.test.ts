@@ -102,7 +102,8 @@ describe("TRACK-3a web: the ticket-detail delivery-budget badge", () => {
     mountShell(BASE_TICKET.id);
     stubFetch({ ...BASE_TICKET, delivery_budget_usd: 2.5 });
     await bootDetail();
-    const head = document.querySelector(".detail-title")?.closest(".card");
+    const head = document.querySelector(".detail-title")?.closest(".tk-head");
+    expect(head, "the ticket head").toBeTruthy();
     expect(head?.textContent ?? "").toContain("budget $2.50");
   });
 
@@ -110,7 +111,8 @@ describe("TRACK-3a web: the ticket-detail delivery-budget badge", () => {
     mountShell(BASE_TICKET.id);
     stubFetch({ ...BASE_TICKET, delivery_budget_usd: null });
     await bootDetail();
-    const head = document.querySelector(".detail-title")?.closest(".card");
+    const head = document.querySelector(".detail-title")?.closest(".tk-head");
+    expect(head, "the ticket head").toBeTruthy();
     expect(head?.textContent ?? "").not.toContain("budget $");
   });
 });

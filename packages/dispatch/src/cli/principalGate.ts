@@ -149,9 +149,11 @@ const RULES: Record<string, Rule> = {
   "repo add": { kind: "write_repo" },
   "decisions resolve": { kind: "decision" },
   decision: { kind: "decision_create" },
-  // A principal never mints or revokes principals (the REST rule: the operator only).
+  // A principal never mints, revokes or re-signs principals (the REST rule: the operator
+  // only).
   "principal create": { kind: "operator_only" },
   "principal revoke": { kind: "operator_only" },
+  "principal resign": { kind: "operator_only" },
   ...Object.fromEntries(
     [
       "repo list",
@@ -176,6 +178,7 @@ const RULES: Record<string, Rule> = {
       "human-queue",
       "export",
       "principal list",
+      "principal unsigned",
       "autonomy list",
       "autonomy policies",
       "club show",
@@ -217,7 +220,7 @@ export function assertPrincipalCommand(
   if (rule.kind === "operator_only") {
     throw new DispatchError(
       "ACTOR_NOT_PERMITTED",
-      "Only the operator (the CLI without a principal token, or the shared API token) may create or revoke principals.",
+      "Only the operator (the CLI without a principal token, or the shared API token) may create, revoke or re-sign principals.",
       { principal: principal.name },
     );
   }

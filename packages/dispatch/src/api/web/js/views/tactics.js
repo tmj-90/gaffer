@@ -19,7 +19,7 @@ import {
   wrapLabel,
 } from "../matchday.js";
 import { appState } from "../state.js";
-import { statusBadge, statusLabel } from "../status.js";
+import { statusBadge, statusLabel, ticketRef } from "../status.js";
 
 // --- The Tactics Board -------------------------------------------------------
 
@@ -921,7 +921,7 @@ function tacticsBoard(f) {
                 el("li", {}, [
                   el("a", { href: `#/ticket/${t.id}`, class: `off-${t.status}` }, [
                     statusBadge(t.status, t.landing_state),
-                    el("b", {}, `#${t.number}`),
+                    ticketRef(t, { size: "s", link: false }),
                     el("span", { class: "off-t" }, t.title),
                   ]),
                 ]),

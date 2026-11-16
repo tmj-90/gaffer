@@ -12,7 +12,11 @@
 # every agent launch otherwise requires (GAFFER_STRICT_REQUIRE=0, the documented
 # environment opt-out); the red-team-gated docker provider is for running the factory
 # on a host with a Docker daemon.
-FROM node:22-bookworm-slim AS build
+# BASE IMAGE PINNED BY DIGEST (the multi-arch index of the tag), so a tag moved or
+# replaced upstream cannot change what is built. Dependabot (docker, .github/dependabot.yml)
+# proposes a new digest; to bump by hand, read the index digest of the tag and replace
+# it here, e.g. `docker buildx imagetools inspect node:22-bookworm-slim` (the Digest line).
+FROM node:22-bookworm-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee AS build
 RUN apt-get update \
   && apt-get install -y --no-install-recommends git ca-certificates python3 \
   && rm -rf /var/lib/apt/lists/*
@@ -30,7 +34,8 @@ RUN pnpm install --frozen-lockfile
 COPY . .
 RUN pnpm -r build
 
-FROM node:22-bookworm-slim
+# Same pinned base as the build stage (bump both together).
+FROM node:22-bookworm-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee
 # Release metadata (set by .github/workflows/release.yml; defaults for local builds).
 ARG VERSION=dev
 ARG REVISION=unknown
@@ -43,9 +48,13 @@ LABEL org.opencontainers.image.title="Gaffer" \
 RUN apt-get update \
   && apt-get install -y --no-install-recommends git ca-certificates ripgrep curl bash \
   && rm -rf /var/lib/apt/lists/*
-# The worker the runner spawns per ticket. Pin the version to the one your
-# safety-hook / MCP contract was tested with when you deploy for real.
-RUN npm install -g @anthropic-ai/claude-code
+# The worker the runner spawns per ticket, PINNED: a release runs the CLI version its
+# safety hook and MCP contract were tested with, never whatever is latest at tag time.
+# To bump: `npm view @anthropic-ai/claude-code version`, run the runner suite against
+# it, then change this default (or pass --build-arg CLAUDE_CODE_VERSION=x.y.z).
+# Dependabot cannot see this pin (it is not in a package.json): bump it by hand.
+ARG CLAUDE_CODE_VERSION=2.1.325
+RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
 WORKDIR /app
 COPY --from=build /app /app
 RUN mkdir -p /data /repos && chown -R node:node /app /data /repos

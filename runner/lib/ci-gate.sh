@@ -74,11 +74,14 @@ gaffer_ci_timeout_proceed() {
 # `bucket` is gh's own classification of `state`: pass | fail | pending | skipping | cancel.
 GAFFER_GH_CHECK_FIELDS="name,state,bucket,link"
 _GAFFER_CI_JSON_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/json-tool.mjs"
+# The JSON server reaches this lib's json-tool calls through gaffer_json_at
+# (config/17-cli.sh); sourced alone (a test), they run json-tool directly.
+declare -F gaffer_json_at >/dev/null 2>&1 || gaffer_json_at() { local t="$1"; shift; node "$t" "$@"; }
 
 # gh pr checks JSON (stdin) → one `<name>\t<state>\t<bucket>\t<link>` row per check.
 # Unparseable input → no rows (the poll reads "no checks data").
 gaffer_ci_checks_rows() {
-  node "$_GAFFER_CI_JSON_TOOL" ci-check-rows 2>/dev/null
+  gaffer_json_at "$_GAFFER_CI_JSON_TOOL" ci-check-rows 2>/dev/null
 }
 
 # The CANDIDATE commit: the delivery branch head in the real repo (what review, the
@@ -91,7 +94,7 @@ gaffer_ci_candidate() {
 # when gh cannot say (no PR yet, offline): the caller treats that as "not yet".
 gaffer_ci_pr_head() {
   ( cd "$1" 2>/dev/null && "$GAFFER_GH_BIN" pr view "$2" --json headRefOid 2>/dev/null ) \
-    | node "$_GAFFER_CI_JSON_TOOL" expr '(d && typeof d.headRefOid === "string") ? d.headRefOid : ""' 2>/dev/null || true
+    | gaffer_json_at "$_GAFFER_CI_JSON_TOOL" expr '(d && typeof d.headRefOid === "string") ? d.headRefOid : ""' 2>/dev/null || true
 }
 
 # Record the CI result for the candidate commit in dispatch (runner-owned, system actor).

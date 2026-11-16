@@ -114,7 +114,12 @@ echo "== generated profile contents =="
 grep -q '(allow default)' "$PROFILE" && ok "profile: (allow default) present (reads broad)" || fail "profile missing (allow default)"
 grep -q '(deny file-write\*)' "$PROFILE" && ok "profile: (deny file-write*) present" || fail "profile missing deny file-write*"
 grep -q "(subpath \"$WORKTREE\")" "$PROFILE" && ok "profile: worktree is a writable subpath" || fail "profile missing worktree subpath"
-grep -q "(subpath \"$GAFFER_DATA\")" "$PROFILE" && ok "profile: GAFFER_DATA is a writable subpath" || fail "profile missing GAFFER_DATA subpath"
+# $GAFFER_DATA is no longer a write grant (sandbox audit F1b): writes there are denied and
+# only the in-sandbox writers' files are granted again (sandbox-exec-data-plane.test.sh).
+grep -q "(literal \"$GAFFER_DATA/dispatch.sqlite\")" "$PROFILE" && ok "profile: the dispatch database is a writable literal" || fail "profile missing the dispatch database grant"
+if sandbox-exec -f "$PROFILE" sh -c "echo x >> '$GAFFER_DATA/settings.json'" 2>/dev/null; then
+  fail "profile: a write to \$GAFFER_DATA/settings.json LEAKED"
+else ok "profile: a write to \$GAFFER_DATA/settings.json is OS-blocked"; fi
 grep -q '(allow network\*)' "$PROFILE" && ok "profile: network allowed (STRICT_ALLOW_NETWORK=1 default)" || fail "profile should allow network by default"
 
 echo "== OS enforcement under the generated profile =="

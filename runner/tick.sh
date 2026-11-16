@@ -177,17 +177,24 @@ gaffer_on_exit() {
   trap - EXIT; trap '' INT TERM
   _GAFFER_EXIT_CAUSE="${_GAFFER_EXIT_CAUSE:-rc=$rc}"
   gaffer_crash_cleanup
+  declare -F gaffer_wg_serve_stop >/dev/null 2>&1 && gaffer_wg_serve_stop
   exit "$rc"
 }
 gaffer_on_signal() {   # $1 = exit code (130 INT, 143 TERM)
   trap - EXIT; trap '' INT TERM
   _GAFFER_EXIT_CAUSE=signal
   gaffer_crash_cleanup
+  declare -F gaffer_wg_serve_stop >/dev/null 2>&1 && gaffer_wg_serve_stop
   exit "$1"
 }
 trap gaffer_on_exit EXIT
 trap 'gaffer_on_signal 130' INT
 trap 'gaffer_on_signal 143' TERM
+# THE TICK'S HELPER SERVERS (config/17-cli.sh): from here on `wg` and `gaffer_json` send
+# their calls to two long-lived processes instead of starting node for each. Started after the
+# traps, which stop them once the crash cleanup (which still calls wg) is done; they also
+# exit by themselves when this process is gone. GAFFER_WG_SERVE=0 keeps every call one-shot.
+declare -F gaffer_wg_serve_start >/dev/null 2>&1 && gaffer_wg_serve_start
 
 # A-1 (parallel execution): the factory log, the per-run skip-file, and the
 # usage ledger are SHARED mutable state. Under GAFFER_CONCURRENCY>1 multiple

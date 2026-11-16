@@ -123,6 +123,12 @@ export interface ApproveReviewOptions {
    * fixtures without git keep working; production callers always pass commits.
    */
   requireCommits?: boolean | undefined;
+  /**
+   * SEALED PRINCIPALS: the principal the approval is made through (REST and the CLI set it
+   * from the authenticated identity; null or absent: none). Its seal binds the id, and a
+   * landing refuses while that principal is not signed by this factory.
+   */
+  principal?: { id: string } | null | undefined;
 }
 
 // ---------------------------------------------------------------------------

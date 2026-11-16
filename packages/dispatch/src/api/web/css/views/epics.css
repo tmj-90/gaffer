@@ -13,57 +13,17 @@
   }
 
   /* --- the table: one line per campaign ------------------------------------ */
-  .ep-table-scroll {
-    overflow-x: auto;
-  }
-  .ep-season {
-    width: 100%;
-    border-collapse: collapse;
-  }
-  .ep-season thead th {
-    font: 700 var(--t12) / 1.2 var(--f-cond);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--ink-2);
-    text-align: left;
-    padding: 10px var(--s4) 6px;
-    border-bottom: var(--frame);
-  }
-  .ep-season tbody th,
-  .ep-season td {
-    padding: 12px var(--s4);
-    border-bottom: var(--hair);
-    vertical-align: middle;
-    text-align: left;
-  }
-  .ep-season tbody tr:last-child > * {
-    border-bottom: 0;
-  }
-  .ep-season .ep-t-num {
-    text-align: right;
-    font: 800 var(--t26) / 1 var(--f-display);
-    width: 1%;
-    white-space: nowrap;
-  }
-  .ep-season thead .ep-t-num {
-    font: 700 var(--t12) / 1.2 var(--f-cond);
-  }
-  .ep-t-name {
-    width: 32%;
-    text-transform: none;
-    letter-spacing: 0;
-  }
-  .ep-t-name a {
-    display: block;
-    max-width: 36ch;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font: 800 var(--t26) / 1.1 var(--f-display);
+  /* The table is the shared dataTable (A-34): the score is its numeric column. The
+     campaign name is the row head and wraps, never truncates (A-52). */
+  .ep-season .ep-t-name {
+    font: 800 var(--t20) / 1.15 var(--f-display);
     color: var(--ink);
     text-decoration: none;
+    /* The shared row head is nowrap; a campaign name wraps instead. */
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
-  .ep-t-name a:hover {
+  .ep-season .ep-t-name:hover {
     text-decoration: underline;
   }
   .ep-mini {
@@ -228,19 +188,8 @@
     font: 700 var(--t14) / 1 var(--f-cond);
     color: var(--ink-2);
   }
-  .ep-round-bar {
+  .ep-round-meter {
     grid-column: 1 / -1;
-    height: 6px;
-    background: var(--paper);
-    box-shadow: inset 0 0 0 1px var(--rule);
-  }
-  .ep-round-bar i {
-    display: block;
-    height: 100%;
-    background: var(--viz-mark);
-  }
-  .ep-round.is-held .ep-round-bar {
-    box-shadow: inset 0 0 0 1.5px var(--red);
   }
   .ep-ties {
     display: grid;
@@ -301,11 +250,10 @@
   }
   .dn-num {
     margin-right: auto;
-    font: 900 var(--t26) / 1 var(--f-stencil);
-    color: var(--claret-ink);
   }
+  /* The title leads the card, the number is the small reference (A-21). */
   .dn-title {
-    font: 600 var(--t16) / 1.25 var(--f-cond);
+    font: 700 var(--t16) / 1.25 var(--f-text);
     display: -webkit-box;
     -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;
@@ -367,33 +315,12 @@
     stroke-dasharray: 7 5;
   }
 
-  @media (max-width: 1180px) {
-    .ep-t-name a {
-      max-width: 24ch;
-    }
-  }
   @media (max-width: 760px) {
     .ep-lede {
       font-size: var(--t16);
     }
     .ep-flag {
       font-size: var(--t16);
-    }
-    /* The table keeps the name, the score and where it stands. */
-    .ep-season .ep-t-rounds,
-    .ep-season thead th:nth-child(2) {
-      display: none;
-    }
-    .ep-season tbody th,
-    .ep-season td {
-      padding: 10px 12px;
-    }
-    .ep-season thead th {
-      padding: 8px 12px 6px;
-    }
-    .ep-t-name a {
-      max-width: 15ch;
-      font-size: var(--t20);
     }
     .ep-where {
       font-size: var(--t14);
@@ -404,6 +331,14 @@
     }
     .ep-round {
       padding: 12px;
+    }
+    /* A long status ("Approved · waiting for Merge now") wraps under the number
+       instead of widening the card past its lane at 320 px. */
+    .ep-ties {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .dn-top {
+      flex-wrap: wrap;
     }
   }
 }

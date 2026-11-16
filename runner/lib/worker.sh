@@ -321,8 +321,8 @@ worker_deliver() {
       _cmd_needs_wrap=1
       # The only boundary that counts for a command worker is the docker sandbox WITH
       # the host-side MCP bridge (lib/worker.mjs commandContainmentProblem):
-      # sandbox-exec leaves $GAFFER_DATA writable (settings.json, the databases, the
-      # ledger) and only claude-code's in-process hook guards it; docker without the
+      # sandbox-exec leaves the databases under $GAFFER_DATA writable (the in-sandbox MCP
+      # servers need them) and only claude-code's in-process hook guards them; docker without the
       # bridge mounts the databases read-write. Refuse before anything is spawned.
       local _why_msg=""
       if ! _why_msg="$(SANDBOX_PROVIDER="${SANDBOX_PROVIDER:-sandbox-exec}" node "$_GAFFER_WORKER_LIB/worker.mjs" command-containment --mcp-config "$mcp_config" 2>/dev/null)"; then

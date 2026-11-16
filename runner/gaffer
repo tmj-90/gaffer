@@ -309,6 +309,17 @@ dashboard)
   # The token the server will use: an operator-set DISPATCH_API_TOKEN wins (the server
   # reads it from the env), else the saved token file.
   dash_token() { if [ -n "$_GAFFER_OP_API_TOKEN" ]; then printf '%s' "$_GAFFER_OP_API_TOKEN"; else tr -d ' \n' < "$TOKFILE" 2>/dev/null; fi; }
+  # dash_login_hint <base-url> <lead>: how to log in. A ?token= link only when stdout is
+  # a terminal: piped, redirected or supervised output (docker compose logs, systemd, a
+  # CI log) would keep the full credential, so there it names the URL and the token file
+  # instead. The token file is 0600 under GAFFER_DATA.
+  dash_login_hint() {
+    if [ -t 1 ]; then
+      printf "    %s, open with your token:\n    ${c_cya}%s/?token=%s${c_off}\n" "$2" "$1" "$(dash_token)"
+    else
+      printf "    %s, open %s and log in with the token in %s\n    (not printed: this output is not a terminal and a log would keep it)\n" "$2" "$1" "$TOKFILE"
+    fi
+  }
   # dash_wait_ready <pid> <startup-log> — the server THIS call started is up: the process
   # is alive, it logged its OWN "listening" line (so it bound the port — a server that
   # died on EADDRINUSE never does), /healthz answers, and an authenticated request with
@@ -378,13 +389,20 @@ dashboard)
     # detached paths below, exec'd in this process so the supervisor owns the lifetime
     # and the logs. Always token-protected (a container binds every interface; the
     # compose file maps the port to loopback on the host). Bind 0.0.0.0 with --lan,
-    # loopback otherwise. Prints the login URL first so `docker compose logs` shows it.
+    # loopback otherwise. Prints how to log in first (the URL and the token file; the
+    # token itself only to a terminal, never into `docker compose logs`).
     dash_log_leaked && { rm -f "$TOKFILE" "$DASH_LOG"; warn "an old dashboard.log held the dashboard token — rotated it"; }
     [ -s "$TOKFILE" ] || { umask 077; (openssl rand -hex 16 2>/dev/null || head -c16 /dev/urandom | od -An -tx1 | tr -d ' \n') > "$TOKFILE"; }
     TOK="$(tr -d ' \n' < "$TOKFILE")"
     fg_host="127.0.0.1"; [ "$want_lan" = 1 ] && fg_host="0.0.0.0"
     export GAFFER_DASHBOARD_URL="${GAFFER_DASHBOARD_URL:-http://127.0.0.1:$DASH_PORT}"
-    say "dashboard (foreground, $fg_host:$DASH_PORT) — open with your token: $GAFFER_DASHBOARD_URL/?token=$TOK"
+    # The login link carries the token, so it is printed only to a terminal: a
+    # supervisor's log (docker compose logs) would keep it otherwise.
+    if [ -t 1 ]; then
+      say "dashboard (foreground, $fg_host:$DASH_PORT): open with your token: $GAFFER_DASHBOARD_URL/?token=$TOK"
+    else
+      say "dashboard (foreground, $fg_host:$DASH_PORT): open $GAFFER_DASHBOARD_URL and log in with the token in $TOKFILE (not printed: this output is not a terminal and a log would keep it)"
+    fi
     exec env $(gaffer_dashboard_env_unset_flags) GAFFER_DATA="$GAFFER_DATA" CREW_DIR="$CREW_DIR" CREW_CONFIG="$CREW_CONFIG" MEMORY_CLI_BIN="$MEMORY_CLI_BIN" MEMORY_DB="$MEMORY_DB" DISPATCH_DB="$DISPATCH_DB" DISPATCH_PRODUCT_OWNER_CMD="$PRODUCT_OWNER_CMD" DISPATCH_PRODUCT_OWNER_REPO="${DISPATCH_PRODUCT_OWNER_REPO:-}" DISPATCH_MERGE_CMD="$MERGE_CMD" DISPATCH_TICK_CMD="$TICK_CMD" DISPATCH_ONBOARD_CMD="$ONBOARD_CMD" DISPATCH_EPIC_FEATURE_CMD="$EPIC_FEATURE_CMD" DISPATCH_API_TOKEN="$TOK" GAFFER_DASHBOARD_URL="$GAFFER_DASHBOARD_URL" node "$DISPATCH_DIR/dist/api/bin.js" --port "$DASH_PORT" --host "$fg_host"
   fi
   # Precise running-detection: a recorded+validated PID (alive AND its command is
@@ -406,7 +424,7 @@ dashboard)
       err "the dashboard is running but its token file ($TOKFILE) is gone — no login URL to print; \`gaffer dashboard --restart\` rotates the token and prints a new one"
       exit 1
     else
-      printf "    open with your token:\n    ${c_cya}%s/?token=%s${c_off}\n" "$_base" "$(dash_token)"
+      dash_login_hint "$_base" "to get back in"
     fi
     dash_log_leaked && warn "dashboard.log holds the running server's token — \`gaffer dashboard --restart\` rotates it"
     exit 0
@@ -458,6 +476,12 @@ dashboard)
     ( umask 077; printf '%s\n' "$GAFFER_DASHBOARD_URL" > "$GAFFER_DATA/dashboard-url" ) 2>/dev/null || true
     _GAFFER_OP_API_TOKEN="$TOK" dash_launch 0.0.0.0 DISPATCH_API_TOKEN="$TOK"
     ok "dashboard up on your LAN (token-protected)"
+    # The token (and the QR that embeds it) only to a terminal: a redirected or
+    # supervised stdout would keep the credential in a log.
+    if [ ! -t 1 ]; then
+      printf "    open:   http://%s:%s\n    token:  in %s  (not printed: this output is not a terminal and a log would keep it)\n" "$LAN" "$DASH_PORT" "$TOKFILE"
+      exit 0
+    fi
     printf "    open:   ${c_cya}http://%s:%s${c_off}\n    token:  ${c_cya}%s${c_off}  (paste at the login prompt)\n" "$LAN" "$DASH_PORT" "$TOK"
     # AFK-LOOP P3: one-scan phone access. The QR encodes the URL WITH the token
     # (the dashboard adopts ?token=… and scrubs it from history), so scanning
@@ -490,7 +514,7 @@ dashboard)
   if [ -n "$_GAFFER_OP_API_TOKEN" ]; then
     printf "    log in with the DISPATCH_API_TOKEN you set\n"
   else
-    printf "    to make changes (onboard · plan · approve), open with your token:\n    ${c_cya}http://127.0.0.1:%s/?token=%s${c_off}\n" "$DASH_PORT" "$(dash_token)"
+    dash_login_hint "http://127.0.0.1:$DASH_PORT" "to make changes (onboard · plan · approve)"
   fi
   ;;
 

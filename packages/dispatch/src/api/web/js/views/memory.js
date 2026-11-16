@@ -225,7 +225,7 @@ async function renderMemory(param) {
     ]),
   );
 
-  if (repo) wrap.appendChild(memoryStats(repo, digestRes, featuresRes, allDrafts, draftsFor));
+  if (repo) wrap.append(...memoryStats(repo, digestRes, featuresRes, allDrafts, draftsFor));
 
   // Lore first (the drafts are the one thing here that needs you), the report
   // and the honours board beside it. The lore card mounts into a slot so a
@@ -277,18 +277,22 @@ function memoryStats(repo, digestRes, featuresRes, allDrafts, draftsFor) {
   const by = (s) => (feats ? feats.filter((f) => f.status === s).length : 0);
   const digest = digestRes && digestRes.available !== false ? digestRes.digest : null;
   const meta = (digest && digest.meta) || {};
-  return el(
+  // Two figures on the board, each a sized statCell (A-33); the scouting report's date
+  // is a line under them, not a stat: a date is not a number to compare.
+  const strip = el(
     "div",
     { class: "kpi-row mem-stats", role: "group", "aria-label": `${repo} in numbers` },
     [
       statCell({
         label: "Drafts await you",
-        value: drafts == null ? "—" : String(drafts),
+        value: drafts == null ? null : String(drafts),
+        reason: "lore unavailable",
+        size: "row",
         needs: !!drafts,
         href: "#lore",
         sub:
           drafts == null
-            ? "lore unavailable"
+            ? null
             : elsewhere
               ? `${elsewhere} more waiting in other repos`
               : drafts
@@ -297,25 +301,33 @@ function memoryStats(repo, digestRes, featuresRes, allDrafts, draftsFor) {
       }),
       statCell({
         label: "Honours",
-        value: feats ? String(by("shipped")) : "—",
+        value: feats ? String(by("shipped")) : null,
+        reason: "ledger unavailable",
+        size: "row",
         unit: feats && feats.length ? `of ${feats.length}` : null,
         sub: !feats
-          ? "ledger unavailable"
+          ? null
           : feats.length
             ? `${by("building")} building · ${by("backlog")} in the backlog`
             : "no features recorded yet",
       }),
-      statCell({
-        label: "Scouting report",
-        value: digest && meta.updatedAt ? fmtDay(meta.updatedAt, { weekday: false }) : "—",
-        sub: digest
-          ? `source: ${meta.source || "—"}`
-          : digestRes && digestRes.available === false
-            ? "memory unavailable"
-            : "not scouted yet",
-      }),
     ],
   );
+  const asOf = el(
+    "p",
+    { class: "mem-asof" },
+    digest && meta.updatedAt
+      ? [
+          "Scouting report of ",
+          el("time", { datetime: meta.updatedAt }, fmtDay(meta.updatedAt, { weekday: false })),
+          meta.source ? `, from ${meta.source}` : "",
+          ".",
+        ]
+      : digestRes && digestRes.available === false
+        ? "Memory is unavailable, so there is no scouting report."
+        : "Not scouted yet.",
+  );
+  return [strip, asOf];
 }
 
 /** Re-read the whole Memory view in place (after a ratification), keeping the scroll. */
@@ -489,7 +501,9 @@ function renderDigestCard(repo, res, repos = []) {
     dataset: { section: "digest" },
     "aria-label": "Scouting report",
   });
-  card.appendChild(panelHead("Scouting report", `Repo Digest · ${repo}`, null, { kit: "claret" }));
+  card.appendChild(
+    panelHead("Scouting report", `Repo Digest · ${repo}`, null, { tone: "reference", level: 2 }),
+  );
   if (!res || res.available === false) {
     card.appendChild(memoryUnavailable(res ? res.reason : ""));
     return card;
@@ -559,7 +573,7 @@ function renderFeatureLedger(repo, res) {
       ["Honours board", ok ? el("span", { class: "count" }, String(features.length)) : null],
       `Feature ledger · ${repo}`,
       null,
-      { kit: "sky" },
+      { level: 2 },
     ),
   );
   if (!ok) {
@@ -611,7 +625,7 @@ function renderFeatureLedger(repo, res) {
     ]);
     const list = el("div", { class: "ledger-list" });
     if (inGroup.length === 0) {
-      list.appendChild(el("p", { class: "ledger-empty" }, "Nothing here."));
+      list.appendChild(emptyState("Nothing here.", null, null, null, { inline: true }));
     } else {
       const byNode = new Map();
       for (const f of inGroup) {
@@ -688,7 +702,8 @@ function renderLoreList(res, repo, opts = {}) {
           ]
         : null,
       null,
-      { kit: "ink" },
+      // Claret only while drafts wait for the viewer's Approve or Reject (A-02).
+      { tone: draftCount > 0 ? "needs" : null, level: 2 },
     ),
   );
 
@@ -1095,7 +1110,9 @@ function loreHistory(l) {
     if (!h || !h.available) {
       loreHistoryRead.delete(l.id); // let a later open try again
       body.replaceChildren(
-        el("p", { class: "dim" }, `History unavailable: ${(h && h.reason) || "no answer"}.`),
+        emptyState(`History unavailable: ${(h && h.reason) || "no answer"}.`, null, null, null, {
+          inline: true,
+        }),
       );
       return;
     }
@@ -1106,7 +1123,9 @@ function loreHistory(l) {
             { class: "lore-versions", "aria-label": `Versions of “${l.title}”, newest first` },
             [line(h.current, true), ...h.versions.map((v) => line(v, false))],
           )
-        : el("p", { class: "dim" }, "No earlier versions: this record has not been edited."),
+        : emptyState("No earlier versions: this record has not been edited.", null, null, null, {
+            inline: true,
+          }),
     );
   };
   box.addEventListener("toggle", () => {

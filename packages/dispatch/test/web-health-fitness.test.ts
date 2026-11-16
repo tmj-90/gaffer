@@ -32,6 +32,7 @@ const HEALTH = {
 };
 
 let tickets: unknown[] = [];
+let healthPatch: Record<string, unknown> = {};
 let bouncing: unknown[] = [];
 function stubFetch(summary: Record<string, unknown>): void {
   vi.stubGlobal(
@@ -43,7 +44,7 @@ function stubFetch(summary: Record<string, unknown>): void {
           status: 200,
           headers: { "content-type": "application/json" },
         });
-      if (url.includes("/api/health")) return json(HEALTH);
+      if (url.includes("/api/health")) return json({ ...HEALTH, ...healthPatch });
       if (url.includes("/api/dashboard")) return json({ summary });
       if (url.includes("/api/cost"))
         return json({ total_usd: 10, today_usd: 4, today_estimated_usd: 0, ticket_count: 2 });
@@ -95,6 +96,7 @@ describe("web: Health — the physio room", () => {
     vi.unstubAllGlobals();
     document.body.innerHTML = "";
     bouncing = [];
+    healthPatch = {};
   });
 
   it("names a recurring injury by its work, the number after it (fix 2 of the UI review)", async () => {
@@ -130,7 +132,28 @@ describe("web: Health — the physio room", () => {
     // One day in the ledger went past $25.
     expect(ftCell("Wage bill", "Days over")?.querySelector(".ft-v")?.textContent).toBe("1");
     expect(ftCell("Deliveries", "Rate")?.querySelector(".ft-v")?.textContent).toBe("3");
-    expect(ftCell("Deliveries", "Reworked")?.querySelector(".ft-v")?.textContent).toBe("1");
+    // Says its window, so it never reads against the referee's 30-day rework rate (F-A5).
+    expect(ftCell("Deliveries", "Sent back (all time)")?.querySelector(".ft-v")?.textContent).toBe(
+      "1",
+    );
+  });
+
+  it("the sent-back cell names the rework share as the wage row does, and no share of no spend", async () => {
+    healthPatch = { rework: { rework_cost_share_pct: 12.3, by_ticket: [] } };
+    stubFetch({ ticketsByStatus: {}, staleClaims: 0 });
+    await loadApp();
+    const sub = () =>
+      ftCell("Deliveries", "Sent back (all time)")?.querySelector(".ft-s")?.textContent;
+    // The same percent format as the wage row's Rework cost cell (pct: 12%, not 12.3%).
+    expect(sub()).toContain("12% of spend");
+    document.body.innerHTML = "";
+    vi.resetModules();
+    mountShell();
+    // Nothing spent: the server's share is 0, which is no figure, not "0% of spend".
+    healthPatch = { total_usd: 0, rework: { rework_cost_share_pct: 0, by_ticket: [] } };
+    await loadApp();
+    expect(sub()).not.toMatch(/% of spend/);
+    expect(sub()).toBe("no spend recorded");
   });
 
   it("collapses all-OK to one sentence and leaves the treatment table out", async () => {
@@ -249,8 +272,10 @@ describe("web: Health — the physio room", () => {
     // The duplicates are gone: one cycle-time chart (inside the form guide), no
     // separate Flow efficiency or Progress by repository pages.
     expect(document.querySelectorAll(".form-guide .fg-chart").length).toBe(1);
-    const titles = Array.from(document.querySelectorAll(".panel-title")).map((h) =>
-      h.firstChild?.textContent?.trim(),
+    // Section heads only (a card's own head): the Form guide's level-3 sub-heads are part
+    // of the form guide, not pages of their own.
+    const titles = Array.from(document.querySelectorAll(".card > .panel-head .panel-title")).map(
+      (h) => h.firstChild?.textContent?.trim(),
     );
     expect(titles).not.toContain("Cycle time");
     expect(titles).not.toContain("Flow efficiency");

@@ -2,8 +2,9 @@
 // Moved verbatim from app.js (the entry); the module map is in app.js.
 
 import { api } from "../api.js";
-import { panelHead } from "../components.js";
+import { emptyState, meter, panelHead } from "../components.js";
 import { clear, el, field } from "../dom.js";
+import { pct } from "../format.js";
 import { badge, kitShirt } from "../icons.js";
 import { closeSheet } from "../sheet.js";
 import { actionSheet, reasonSheet } from "../sheets.js";
@@ -52,6 +53,8 @@ function renderRepoPanel(ticketId, claimBox, { readOnly = false, ticket = null }
       panelHead(
         "The boundary",
         readOnly ? (merged ? "read-only: merged" : "read-only access") : "where agents may play",
+        null,
+        { level: 2 },
       ),
       el(
         "p",
@@ -365,12 +368,17 @@ function renderAccessControl(ticketId, repo, reload, writeCount = 0) {
   return sel;
 }
 
+/** The suggestion's confidence: the shared meter and pct() (A-32, A-35). */
 function confidenceMeter(value) {
-  const pct = Math.round(Math.max(0, Math.min(1, value)) * 100);
-  const tone = pct >= 70 ? "high" : pct >= 40 ? "mid" : "low";
-  return el("span", { class: `confidence conf-${tone}`, title: `Confidence ${pct}%` }, [
-    el("span", { class: "conf-bar" }, el("span", { class: "conf-fill", style: `width:${pct}%` })),
-    el("span", { class: "conf-pct tabnum" }, `${pct}%`),
+  const share = Math.round(Math.max(0, Math.min(1, value)) * 100);
+  const tone = share >= 70 ? "high" : share >= 40 ? "mid" : "low";
+  return el("span", { class: `confidence conf-${tone}`, title: `Confidence ${pct(share)}` }, [
+    el(
+      "span",
+      { class: "conf-meter", style: { display: "inline-block", width: "54px" } },
+      meter({ value: share, max: 100, label: "Confidence", fmt: (v) => pct(v) }),
+    ),
+    el("span", { class: "conf-pct" }, pct(share)),
   ]);
 }
 
@@ -525,7 +533,11 @@ function loadClaimability(ticketId, box) {
         ),
       );
     } else if (!ready) {
-      box.appendChild(el("p", { class: "dim" }, "Blocked, but no specific blockers reported."));
+      box.appendChild(
+        emptyState("Blocked, but no specific blockers reported.", null, null, null, {
+          inline: true,
+        }),
+      );
     }
   })();
 }

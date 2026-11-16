@@ -14,6 +14,9 @@
   }
   .boot-main {
     display: grid;
+    /* One column that may shrink below its content's widest line: an auto track
+       grew to 328 px at 320 with the dial raised and the page scrolled sideways. */
+    grid-template-columns: minmax(0, 1fr);
     gap: var(--s5);
     min-width: 0;
   }
@@ -407,7 +410,8 @@
     align-items: baseline;
     justify-content: space-between;
     gap: 12px;
-    font: 800 var(--t26) / 1 var(--f-display);
+    /* A level-3 head inside its board (A-10). */
+    font: 800 var(--t20) / 1 var(--f-display);
     text-transform: uppercase;
   }
   .gng-n {
@@ -420,7 +424,7 @@
   }
   .gng-list li {
     display: grid;
-    grid-template-columns: 18px 56px minmax(0, 1fr);
+    grid-template-columns: 84px minmax(0, 1fr);
     gap: 8px;
     align-items: start;
     padding: 8px 0;
@@ -430,19 +434,19 @@
   .gng-list li:first-child {
     border-top: 0;
   }
-  .gng-list .glyph {
-    margin-top: 1px;
+  .gng-list .vmark {
+    gap: 6px;
+    color: inherit;
   }
   /* A no-go is advice, not a referee's card: it reads loudest by being full
      white beside the quieter go rows, with its own glyph and word. */
   .gng-list .is-go {
     color: var(--board-ink-2);
   }
-  .gng-list .is-nogo .glyph,
-  .gng-list .is-nogo .gng-word {
+  .gng-list .is-nogo .vmark {
     color: var(--board-ink);
   }
-  .gng-word {
+  .gng-list .vm-word {
     font: 800 var(--t14) / 1.2 var(--f-cond);
     text-transform: uppercase;
     letter-spacing: 0.04em;
@@ -736,11 +740,30 @@
   .ap-item:first-child {
     border-top: 0;
   }
+  /* A suggestion: a level-3 head (20 px), then its evidence and body at 14 px in
+     quiet ink, so the detail never outshouts the head (A-15). */
   .ar-item-head {
     display: flex;
-    align-items: center;
+    align-items: baseline;
     flex-wrap: wrap;
-    gap: 8px;
+    gap: 4px 10px;
+    font: 800 var(--t20) / 1.15 var(--f-display);
+    text-transform: uppercase;
+  }
+  .ar-item-head .ar-risk,
+  .ar-item-head .ar-repo {
+    font: 700 var(--t16) / 1.2 var(--f-text);
+    text-transform: none;
+    color: var(--ink-2);
+  }
+  .ar-headline,
+  .ar-conf {
+    font-size: var(--t14);
+    line-height: 1.4;
+    color: var(--ink-2);
+  }
+  .ar-conf b {
+    color: var(--ink);
   }
   .ar-repo,
   .access-name {
@@ -1035,6 +1058,17 @@
     }
     .boot-fold > summary {
       flex-wrap: wrap;
+    }
+  }
+  /* At 320 px the count, Discard and Save changes do not fit one row (the count
+     slid under Discard): the count takes its own line above the two buttons. */
+  @media (max-width: 359px) {
+    .boot-save {
+      flex-wrap: wrap;
+      row-gap: 4px;
+    }
+    .boot-dirty {
+      flex: 1 0 100%;
     }
   }
 }

@@ -225,9 +225,12 @@ describe("web: the Floor", () => {
     await boot();
     const view = await floorReady();
     expect(view.querySelector(".view-head h1")?.textContent).toBe("Floor");
-    expect(view.querySelector(".view-sub")?.textContent).toBe(
-      "The factory floor: every ticket as a parcel moving station to station, every agent a robot on the one it holds.",
+    // The subtitle is the facts line; the prose is the legend's (A-14).
+    expect(view.querySelector(".view-sub")?.textContent).toMatch(/^\d+ parcels? on the floor · /);
+    expect(view.querySelector(".fl-legend .fl-note")?.textContent).toContain(
+      "Every ticket is a parcel moving station to station",
     );
+    expect(view.querySelector(".fl-facts")).toBeNull();
     const parcels = (status: string) =>
       view.querySelectorAll(`svg.fl-svg a.fl-parcel[data-status="${status}"]`).length;
     for (const s of ["draft", "refining", "ready", "in_progress", "in_review", "in_testing"])
@@ -450,5 +453,43 @@ describe("web: the Floor", () => {
     // A short body has nothing to open.
     expect(rows[1]!.querySelector("button.own-more")).toBeNull();
     expect(rows[1]!.querySelector(".own-reason.is-clamped")).toBeNull();
+  });
+
+  it("on a phone the drawing is a figure a tap zooms, and touch says tap, not hover (A-53)", async () => {
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn((q: string) => ({
+        matches: q === "(hover: none)",
+        media: q,
+        addEventListener() {},
+        removeEventListener() {},
+        addListener() {},
+        removeListener() {},
+      })),
+    );
+    stubFetch(FULL);
+    mountShell("#/floor");
+    await boot();
+    const view = await floorReady();
+    const note = view.querySelector(".fl-legend .fl-note")?.textContent || "";
+    expect(note).toContain("Tap a parcel to open its ticket.");
+    expect(note).not.toMatch(/hover/i);
+    const fig = view.querySelector("figure.fl-figure")!;
+    expect(fig.querySelector(".fl-stage svg.fl-svg")).not.toBeNull();
+    const zoom = fig.querySelector<HTMLButtonElement>("button.fl-zoom")!;
+    expect(zoom.getAttribute("aria-pressed")).toBe("false");
+    zoom.click();
+    const stage = fig.querySelector(".fl-stage")!;
+    expect(stage.classList.contains("is-zoomed")).toBe(true);
+    expect(zoom.getAttribute("aria-pressed")).toBe("true");
+    expect(stage.getAttribute("tabindex")).toBe("0");
+    // The phone layout puts the station list (the legend) before the drawing.
+    const css = readFileSync(
+      path.resolve(process.cwd(), "src/api/web/css/views/floor.css"),
+      "utf8",
+    );
+    const phone = css.slice(css.indexOf("@media (max-width: 760px)"));
+    expect(phone).toMatch(/\.fl-legend \{\s*order: 1;/);
+    expect(phone).toMatch(/\.fl-figure \{\s*order: 2;/);
   });
 });

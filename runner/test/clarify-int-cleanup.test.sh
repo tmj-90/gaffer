@@ -131,6 +131,10 @@ gaffer_on_signal() { trap - EXIT; trap '' INT TERM; gaffer_crash_cleanup; exit "
 # $PPID is this shell — which resolves to the same PID BASHPID would give here.
 worker_deliver() { kill -INT "${BASHPID:-$(exec sh -c 'echo $PPID')}"; sleep 5; return 0; }
 
+# The clarify prompt carries the standing quarantine notice, which tick.sh's library set
+# defines before this one (set -u: without it the lane dies before the agent starts).
+# shellcheck source=../lib/quarantine.sh
+source "$REAL_RUNNER/lib/quarantine.sh"
 # shellcheck source=../lib/clarify.sh
 source "$REAL_RUNNER/lib/clarify.sh"
 

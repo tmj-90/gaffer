@@ -31,6 +31,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setPrincipalResolver, type ResolvedPrincipal } from "../src/api/auth.js";
 import { createApiServer } from "../src/api/server.js";
 import { Dispatch } from "../src/core.js";
+import { hostGateKeyring } from "../src/events/gateSeal.js";
 import type { Actor, Decision, Ticket } from "../src/domain/types.js";
 import { makeHandlers } from "../src/mcp/tools.js";
 import { TestClock } from "../src/util/clock.js";
@@ -357,7 +358,12 @@ describe("the factory MCP mount: every decision on the agent's own ticket", () =
       expect(got.isError).toBeUndefined();
       const text = JSON.stringify(got.structuredContent);
       const blocking = got.structuredContent.blocking_decisions as Blocking;
-      expect(blocking.map((d) => d.title).sort()).toEqual([OWN_TITLE, SHARED_TITLE].sort());
+      // The MCP answer envelopes a pending decision's title (agent-written text).
+      expect(blocking.map((d) => d.title).sort()).toEqual(
+        [OWN_TITLE, SHARED_TITLE]
+          .map((t) => `<untrusted-decision-title>${t}</untrusted-decision-title>`)
+          .sort(),
+      );
       expect(text).not.toContain("outside_scope");
       for (const answer of [ANSWER, ...extra]) expect(text, role).toContain(answer);
       expect((got.structuredContent.resolved_decisions as unknown[]).length).toBe(7);
@@ -468,7 +474,11 @@ describe("one decision-visibility rule (CLI acting as a principal)", () => {
   it("ticket show under an A-only principal hides the shared decision; A+B and the operator see it", () => {
     dir = mkdtempSync(join(tmpdir(), "decision-scope-"));
     const db = join(dir, "d.sqlite");
-    const wg = Dispatch.open(db, undefined, nonEmptyDiffRunner, { testingEnabled: false });
+    // Signed with the factory key, as the real CLI verifies it.
+    const wg = Dispatch.open(db, undefined, nonEmptyDiffRunner, {
+      testingEnabled: false,
+      gateKeyring: hostGateKeyring(db),
+    });
     const w = seed(wg);
     const aOnly = mint(wg, "a-only", [w.a]);
     const both = mint(wg, "both", [w.a, w.b]);

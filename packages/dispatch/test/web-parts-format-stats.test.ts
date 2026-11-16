@@ -32,6 +32,12 @@ describe("format: one duration, one money, one percent", () => {
     expect(fmt.fmtDuration(null)).toBe("\u2014");
   });
 
+  it("fmtDuration: under half a second reads '<1s', never 'Per call 0s'", () => {
+    expect(fmt.fmtDuration(0)).toBe("<1s");
+    expect(fmt.fmtDuration(400)).toBe("<1s");
+    expect(fmt.fmtDuration(1_400)).toBe("1s");
+  });
+
   it("fmtWait is a deprecated alias of fmtDuration (no more '9 h 16 min')", () => {
     expect(typeof fmt.fmtWait).toBe("function");
     const ms = 9 * 3_600_000 + 16 * 60_000;

@@ -35,13 +35,16 @@ import { apiPrincipal } from "./routes/context.js";
  *   - `/tickets`, `/tickets/details`, `/api/board`, `/api/human-queue`, `/claims`,
  *     `/decisions`, `/api/events/stream`  → filtered to its tickets by the route;
  *   - `/api/autonomy/ladder`              → filtered to the repos in its repo scope;
- *   - `/scope/repos?all=1`                → filtered to the repos it reaches by the route;
+ *   - `/scope/repos?all=1` (no node, no repo) → filtered to the repos it reaches by the route;
  *   - `/decisions/:id`                    → a read of every ticket it is linked to (the
  *                                           one decision rule, accessScope.ts
  *                                           decisionInScope, which nested responses
  *                                           apply too: ticket detail, claimability...);
- *   - `/api/whoami`, `/api/squad`, `/api/club`, `/api/openapi.json`, `/repositories`,
- *     `/agents`                           → no ticket content: open;
+ *   - `/repositories` (every hidden mode)  → filtered to the repos it reaches by the route;
+ *   - `/agents`, `/api/squad`             → filtered to the agents on its tickets by the route;
+ *   - `/api/whoami`, `/api/club`, `/api/openapi.json` → no ticket or repo content: open
+ *                                           (its own identity, the club's name and kit,
+ *                                           the public API description);
  *   - everything else                     → a factory-wide read (refused).
  */
 export async function authorizePrincipalRequest(
@@ -70,12 +73,11 @@ export async function authorizePrincipalRequest(
         return;
       case "scope":
         // Every repo's grounds in one read: filtered to the repos it reaches by the route.
-        if (
-          second === "repos" &&
-          segments.length === 2 &&
-          new URL(req.url ?? "/", "http://localhost").searchParams.get("all") === "1"
-        ) {
-          return;
+        // Only the ?all=1 branch: the route answers ?node= and ?repo= BEFORE it looks at
+        // all, so a request naming either is the factory-wide read it is (sec-authz-2 F2).
+        if (second === "repos" && segments.length === 2) {
+          const params = new URL(req.url ?? "/", "http://localhost").searchParams;
+          if (params.get("all") === "1" && !params.has("node") && !params.has("repo")) return;
         }
         break;
       case "claims":
@@ -127,7 +129,7 @@ export async function authorizePrincipalRequest(
             if (r && typeof r.repo_id === "string") names.push(r.repo_id);
           }
         }
-        check({ kind: "create_ticket", repos: names.map((n) => repoId(wg, n)) });
+        check({ kind: "create_ticket", repos: names.flatMap((n) => repoIds(wg, n)) });
         // Placing it on the map or in an epic is the operator's (see scope links below).
         if (Array.isArray(body.scopeNodeIds) && body.scopeNodeIds.length > 0) {
           return scopeLink();
@@ -164,7 +166,7 @@ export async function authorizePrincipalRequest(
           }
         }
         const repos =
-          named.length > 0 ? named.map((n) => repoId(wg, n)) : wg.scopeTicket(second).repos;
+          named.length > 0 ? named.flatMap((n) => repoIds(wg, n)) : wg.scopeTicket(second).repos;
         return check({ kind: "write_repo", repos });
       }
       return;
@@ -186,7 +188,7 @@ export async function authorizePrincipalRequest(
     }
     case "repos": {
       if (second === "onboard") return check({ kind: "write_repo" });
-      if (second !== undefined) return check({ kind: "write_repo", repos: [repoId(wg, second)] });
+      if (second !== undefined) return check({ kind: "write_repo", repos: repoIds(wg, second) });
       return check({ kind: "write_factory" });
     }
     case "api": {
@@ -202,9 +204,17 @@ export async function authorizePrincipalRequest(
   }
 }
 
-/** A repo name or id → its id (an unknown one is kept: it can never be inside a scope). */
-function repoId(wg: Dispatch, ref: string): string {
-  return (wg.repos.findById(ref) ?? wg.repos.findByName(ref))?.id ?? ref;
+/**
+ * A repo name or id → every repo id it can mean (an unknown one is kept: it can never be
+ * inside a scope). Services resolve a ref by id first in some places and by name first
+ * in others (repoService linkRepository), so a repo NAMED after another repo's id would
+ * be checked as one repo here and acted on as the other: both must pass.
+ */
+function repoIds(wg: Dispatch, ref: string): string[] {
+  const ids = [wg.repos.findById(ref)?.id, wg.repos.findByName(ref)?.id].filter(
+    (x): x is string => x !== undefined,
+  );
+  return ids.length > 0 ? [...new Set(ids)] : [ref];
 }
 
 /**
@@ -258,4 +268,52 @@ export function requestRepoFilter(wg: Dispatch): ((repoId: string) => boolean) |
   const ids = new Set<string>(scope.repos ?? []);
   for (const t of scope.tickets ?? []) for (const r of wg.repos.listForTicket(t)) ids.add(r.id);
   return (repoId: string) => ids.has(repoId);
+}
+
+/**
+ * A ticket a scoped principal reaches can link a repository outside its reach (a read
+ * repo the operator added to a ticket on an in-scope repo). The link stays readable
+ * (the repo's id and name, the ticket's access to it: the ticket's contract), but the
+ * repository's location and gate commands are blanked, as GET /repositories leaves the
+ * whole row out. Identity when the caller is not a scoped principal.
+ */
+export function requestRepoRedactor(
+  wg: Dispatch,
+): <T extends { id: string }>(rows: readonly T[]) => T[] {
+  const reach = requestRepoFilter(wg);
+  return <T extends { id: string }>(rows: readonly T[]): T[] =>
+    rows.map((r) =>
+      !reach || reach(r.id)
+        ? r
+        : ({
+            ...r,
+            local_path: null,
+            remote_url: null,
+            test_command: null,
+            lint_command: null,
+            coverage_command: null,
+          } as T),
+    );
+}
+
+/**
+ * The agents a scoped principal may see (GET /agents, GET /api/squad): those that hold
+ * or held a claim on one of its tickets, or acted on one (a reviewer or tester agent),
+ * so its tickets still show who worked them and nothing else of the factory's squad.
+ * Null when the caller is not a scoped principal (no filtering).
+ */
+export function requestAgentFilter(wg: Dispatch): ((agentId: string) => boolean) | null {
+  const visible = requestTicketFilter(wg);
+  if (!visible) return null;
+  const rows = wg.db
+    .prepare(
+      `SELECT DISTINCT ticket_id AS t, agent_id AS a FROM ticket_claims
+       UNION
+       SELECT DISTINCT entity_id AS t, actor_id AS a FROM work_events
+        WHERE entity_type = 'ticket' AND actor_type = 'agent' AND actor_id IS NOT NULL`,
+    )
+    .all() as Array<{ t: string; a: string }>;
+  const ids = new Set<string>();
+  for (const r of rows) if (visible(r.t)) ids.add(r.a);
+  return (agentId: string) => ids.has(agentId);
 }

@@ -510,6 +510,54 @@ describe("acceptance gate: an acceptance ticket always goes to the tester (befor
     expect(a.unaccepted).toBe(0);
   });
 
+  // The runner e2e (e2e-release-gate-tester-replay and its -scoped half) counts one epic per
+  // world: this holds the count across two epics in one database.
+  it("TWO EPICS: a second epic waiting at its landing leaves the first one accepted; once it lands with its record both count", () => {
+    const wg = freshWg({ testingEnabled: false });
+    const { accId } = epicToReview(wg);
+    toTester(wg, accId);
+    wg.testerPass(accId, boundPass(wg, accId), testerAgent);
+    approveTested(wg, accId);
+    expect(recordReplay(wg, accId).recorded).toBe(true);
+    wg.markMerged(accId, systemActor);
+    expect(computeStats(wg.db).acceptance.accepted).toBe(1);
+
+    const res2 = wg.createEpic(
+      {
+        epic: { name: "Link Checker", description: "a link checker" },
+        tickets: [{ title: "Crawler", acceptanceCriteria: ["fetches"], repo: "app" }],
+      },
+      human,
+    );
+    const [m1, mAcc] = res2.ticketNumbers as [number, number];
+    const id = (n: number) => wg.view(String(n)).ticket.id;
+    const agent2 = wg.registerAgent({ display_name: "c" }, human);
+    wg.markReady(id(m1), human);
+    deliverToReview(wg, id(m1), agent2.id);
+    wg.approveReview(id(m1), reviewer);
+    wg.markMerged(id(m1), systemActor);
+    const acc2 = id(mAcc);
+    wg.markReady(acc2, human);
+    deliverToReview(wg, acc2, agent2.id);
+    toTester(wg, acc2);
+    wg.testerPass(acc2, boundPass(wg, acc2), testerAgent);
+    approveTested(wg, acc2);
+    // Approved but not landed (the runner holds it on a red replay): not counted, and the
+    // first epic stays accepted.
+    let a = computeStats(wg.db).acceptance;
+    expect(a.epics).toHaveLength(2);
+    expect(a.accepted).toBe(1);
+    expect(a.epics.filter((e) => e.result === "accepted")).toHaveLength(1);
+
+    expect(recordReplay(wg, acc2).recorded).toBe(true);
+    wg.markMerged(acc2, systemActor);
+    a = computeStats(wg.db).acceptance;
+    expect(a.epics).toHaveLength(2);
+    expect(a.epics.every((e) => e.result === "accepted")).toBe(true);
+    expect(a.accepted).toBe(2);
+    expect(a.unaccepted).toBe(0);
+  });
+
   it("a HUMAN tester-pass is a waiver: allowed without a binding, reported as waived — never as verified", () => {
     const wg = freshWg({ testingEnabled: false });
     const { accId } = epicToReview(wg);

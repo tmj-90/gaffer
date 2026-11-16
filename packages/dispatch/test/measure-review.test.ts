@@ -25,6 +25,7 @@ import { createMemoryReader } from "../src/api/memoryReader.js";
 import { createPlanBuildRunner } from "../src/api/planBuild.js";
 import { createApiServer } from "../src/api/server.js";
 import { Dispatch } from "../src/core.js";
+import { hostGateKeyring } from "../src/events/gateSeal.js";
 import type { Actor } from "../src/domain/types.js";
 import { writeEvent } from "../src/events/eventWriter.js";
 import type { HealthRow } from "../src/health/healthAggregator.js";
@@ -288,7 +289,10 @@ describe.skipIf(!CLI_BUILT)("CLI principals and the measure verbs", () => {
     const dir = mkdtempSync(join(tmpdir(), "measure-review-"));
     try {
       const db = join(dir, "d.sqlite");
-      const wg = Dispatch.open(db, new TestClock());
+      // Signed with the factory key, as the real CLI verifies it.
+      const wg = Dispatch.open(db, new TestClock(), undefined, {
+        gateKeyring: hostGateKeyring(db),
+      });
       const app = wg.registerRepository({ name: "app", default_branch: "main" }, human);
       const svc = wg.registerRepository({ name: "svc", default_branch: "main" }, human);
       const mk = (title: string, repo: string, done = false) => {

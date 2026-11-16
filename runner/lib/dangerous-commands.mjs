@@ -29,6 +29,8 @@
 //
 // Each entry:
 //   re        RegExp tested against the raw command string (the runtime rule).
+//   cmdRe     (optional) the rule with its program word in command position, used by the
+//             hook in place of `re` for a command proven to be data only (see the rule).
 //   why       Human-readable reason surfaced on block.
 //   install   (optional) true tags the package-manager rules the greenfield
 //             bootstrap allowance may relax (install/ci/update into the fresh repo).
@@ -42,7 +44,7 @@
 //             records the gap explicitly rather than letting it pass silently.
 // =====================================================================
 
-/** @typedef {{ re: RegExp, why: string, install?: boolean, example: string, crewFlags: boolean }} DangerousCommandRule */
+/** @typedef {{ re: RegExp, cmdRe?: RegExp, why: string, install?: boolean, example: string, crewFlags: boolean }} DangerousCommandRule */
 
 // COMMAND POSITION prefix shared by the command-name rules below: line start or after
 // ; & | ( ` { ! $( then/do/else, or the start of a shell's `-c "…"` body or of a quoted
@@ -59,6 +61,47 @@
 // and as flag+next wrapper: 2^N backtracking on a failed match, and ~25 pairs ran
 // the hook past its timeout (safety-hook-redos.test.mjs pins this). `cmdAt(name)`
 // builds a rule regex for a command name (or alternation) at that position.
+/**
+ * The inline-node control-plane rule (see DANGEROUS_COMMANDS): on one line, `node` and then
+ * `-e`/`--eval`/`-p`/`--print`/`-r`/`--require` in the same simple command, and after
+ * that flag, on the same line, the Dispatch/Crew/Memory dist (`dispatch` ... `/dist/`), the
+ * DISPATCH_DB / MEMORY_DB name, or a `dispatch`/`memory` word ending in `.sqlite`. Case
+ * insensitive. Linear: the earliest flag on a line leaves the longest rest, so it is the
+ * only one tried.
+ */
+export function nodeInlineControlPlane(s) {
+  for (const line of String(s).split("\n")) {
+    let from = -1;
+    const segRe = /[^|;&]+/g;
+    for (let seg = segRe.exec(line); seg !== null && from < 0; seg = segRe.exec(line)) {
+      const n = /\bnode\b/i.exec(seg[0]);
+      if (!n) continue;
+      const flag = /(?:-e|--eval|-p|--print|-r|--require)\b/gi;
+      flag.lastIndex = n.index + n[0].length;
+      const f = flag.exec(seg[0]);
+      if (f) from = seg.index + f.index + f[0].length;
+    }
+    if (from < 0) continue;
+    const rest = line.slice(from);
+    if (/\b(?:DISPATCH_DB|MEMORY_DB)\b/i.test(rest)) return true;
+    const pkg = /dispatch|crew|memory/i.exec(rest);
+    if (pkg) {
+      const dist = /\/dist\//gi;
+      dist.lastIndex = pkg.index + pkg[0].length;
+      if (dist.test(rest)) return true;
+    }
+    const tokRe = /[^\s'"]+/g;
+    for (let t = tokRe.exec(rest); t !== null; t = tokRe.exec(rest)) {
+      const m = /dispatch|memory/i.exec(t[0]);
+      if (!m) continue;
+      const sq = /\.sqlite/gi;
+      sq.lastIndex = m.index + m[0].length;
+      if (sq.test(t[0])) return true;
+    }
+  }
+  return false;
+}
+
 const TOK = String.raw`[^\s;&|()<>\`"'\\]+`;
 const PATH_QUAL = String.raw`(?:[^\s;&|()<>\`"'\\]*\/)?`;
 const WRAPPERS =
@@ -431,8 +474,8 @@ export const DANGEROUS_COMMANDS = [
     // withdraw-comment|fix`, matched by `review` below): a delivery agent must never write,
     // resolve or withdraw its reviewer's comments, or send a change back with them; it
     // reads them through get_ticket and answers with a reply (agent evidence, a claim).
-    // And the credentials (`principal create|revoke`, `--as-principal`): a principal is
-    // a person's or a bot's delegated access, never an agent's to mint or act as.
+    // And the credentials (`principal create|revoke|resign`, `--as-principal`): a principal
+    // is a person's or a bot's delegated access, never an agent's to mint, re-sign or act as.
     // And the escaped-defect link (`regression-of`): a person's judgement that a change
     // caused a defect, never an agent's (`review-rules propose` is matched by `review`).
     // And the acceptance profile (`acceptance-profile`): the commands the runner runs for a
@@ -447,7 +490,18 @@ export const DANGEROUS_COMMANDS = [
     // root options): the words are too common to match anywhere after `dispatch` (a
     // Redux or WordPress `dispatch( 'core/block-editor' )` search, `dispatch.js --mode
     // block`); the normalised views put a quoted, escaped or wrapped CLI in that shape.
-    re: /\b(wg|dispatch|fg|crew)\b[^\n|;&]*\b(review|regression-of|acceptance-profile|acceptance-evidence|approve|approve-ready|mark-merged|record-landing|landing-begin|record-tester-replay|ci-result|eval-score|lane-verdict|scout-record|tester-route|attach-evidence|reject|repo-access|set-testable|allow-test-changes|set-commands|test-contract|tester-pass|tester-fail|repo-delivery|require-cap|set-reviewer|decisions[ \t]+resolve|agent[ \t]+rename|club[ \t]+set|wont-do|principal[ \t]+(?:create|revoke)|as-principal|reopen-for-review|ticket[ \t]+(?:move|ready|hold)|human-claim|human-release)\b|\b(?:wg|dispatch|fg|crew)[ \t]+(?:-\S*[ \t]+(?:[^\s-]\S*[ \t]+)?)*(?:un)?block\b|\bGAFFER_PRINCIPAL_TOKEN=/,
+    re: /\b(wg|dispatch|fg|crew)\b[^\n|;&]*\b(review|regression-of|acceptance-profile|acceptance-evidence|approve|approve-ready|mark-merged|record-landing|landing-begin|record-tester-replay|ci-result|eval-score|lane-verdict|scout-record|tester-route|attach-evidence|reject|repo-access|set-testable|allow-test-changes|set-commands|test-contract|tester-pass|tester-fail|repo-delivery|require-cap|set-reviewer|decisions[ \t]+resolve|agent[ \t]+rename|club[ \t]+set|wont-do|principal[ \t]+(?:create|revoke|resign)|as-principal|reopen-for-review|ticket[ \t]+(?:move|ready|hold)|human-claim|human-release)\b|\b(?:wg|dispatch|fg|crew)[ \t]+(?:-\S*[ \t]+(?:[^\s-]\S*[ \t]+)?)*(?:un)?block\b|\bGAFFER_PRINCIPAL_TOKEN=/,
+    // The same rule with the CLI in COMMAND position (CMD_POS, as the gaffer rule below).
+    // The hook uses it instead of `re` only for a command that controlPlaneDataOnly()
+    // (lib/hook/control-plane.mjs) proves is data only: every segment a plain git commit /
+    // add / status / diff / log / show, echo / printf (not piped), grep / rg (no --pre),
+    // cat, ls and the like, with no variable, substitution, backslash, pipe, newline or
+    // here-document anywhere. There a word is only ever data (`git commit -m "dispatch:
+    // reject bad events"`, `grep -rn "dispatch.*approve" src`, `echo "fg then approve" >
+    // notes.txt`). Every other command, every evasion included, is judged by `re`.
+    cmdRe: new RegExp(
+      String.raw`${CMD_POS}(?:wg|dispatch|fg|crew)${WORD_END}[^\n|;&]*\b(?:review|regression-of|acceptance-profile|acceptance-evidence|approve|approve-ready|mark-merged|record-landing|landing-begin|record-tester-replay|ci-result|eval-score|lane-verdict|scout-record|tester-route|attach-evidence|reject|repo-access|set-testable|allow-test-changes|set-commands|test-contract|tester-pass|tester-fail|repo-delivery|require-cap|set-reviewer|decisions[ \t]+resolve|agent[ \t]+rename|club[ \t]+set|wont-do|principal[ \t]+(?:create|revoke|resign)|as-principal|reopen-for-review|ticket[ \t]+(?:move|ready|hold)|human-claim|human-release)\b|${CMD_POS}(?:wg|dispatch|fg|crew)[ \t]+(?:-\S*[ \t]+(?:[^\s-]\S*[ \t]+)?)*(?:un)?block\b|\bGAFFER_PRINCIPAL_TOKEN=`,
+    ),
     why: "control-plane CLI write (use the scoped MCP, not the privileged wg/dispatch/fg/crew CLI)",
     example: "wg ticket approve T-1",
     crewFlags: false,
@@ -567,7 +621,12 @@ export const DANGEROUS_COMMANDS = [
     // `\b(?:DISPATCH_DB|MEMORY_DB)\b` covers `$DISPATCH_DB` AND `process.env.DISPATCH_DB` /
     // `process.env["MEMORY_DB"]` — the latter used to be caught only by accident, by
     // the `.env` secret fragment that also refused every `process.env` grep.
-    re: /\bnode\b[^\n|;&]*(?:-e|--eval|-p|--print|-r|--require)\b[^\n]*(?:(?:dispatch|crew|memory)[^\n]*\/dist\/|\b(?:DISPATCH_DB|MEMORY_DB)\b|(?:dispatch|memory)[^\s'"\n]*\.sqlite)/i,
+    //
+    // Not a regular expression any more: written as one, its `\bnode\b[^\n|;&]*` + flag +
+    // `[^\n]*` + `(?:dispatch|crew|memory)[^\n]*\/dist\/` retried every later `node`,
+    // flag and package word (`node -e ` repeated to 63 KB ran the hook past three
+    // minutes). nodeInlineControlPlane answers the same question in one pass per line.
+    re: { source: "nodeInlineControlPlane", flags: "i", test: (s) => nodeInlineControlPlane(s) },
     why: "inline node (-e/--require) reaching the control-plane dist or the Dispatch/Memory DB directly — bypasses the actor/gate system; use the scoped MCP tools",
     example: "node -e \"require('…/dispatch/dist/core.js')\"",
     crewFlags: false,

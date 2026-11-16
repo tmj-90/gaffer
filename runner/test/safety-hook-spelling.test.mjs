@@ -57,6 +57,11 @@ for (const cmd of [
   "eval w''g\\ ticket\\ approve\\ 3",
   "bash -c \"w''g ticket approve 3\"",
   "sh -c 'x=wg; $x principal revoke alice'",
+  // SEALED PRINCIPALS: re-signing a principal is a person's act, like minting one.
+  "wg principal resign --all",
+  "gaffer wg principal resign alice",
+  "wg 'principal' resign alice",
+  "node ../packages/dispatch/dist/cli/index.js principal resign --all",
   "echo d2cgcHJpbmNpcGFsIGNyZWF0ZSB4 | base64 -d | sh",
   "echo d2cgcHJpbmNpcGFsIGNyZWF0ZSB4 | base64 --decode | bash",
   "printf x | xxd -r -p | sh",

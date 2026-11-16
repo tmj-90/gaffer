@@ -6,6 +6,16 @@
 # package to one version and cuts the changelog; the tag must equal that version
 # or the first step fails. Everything below is derived from the tagged commit —
 # nothing is hand-uploaded.
+#
+# Two jobs (F5). `build` holds a READ-ONLY token: it installs, checks the tag, builds,
+# runs the tests and packs the release assets, then hands them on as an artifact.
+# `publish` holds contents: write + packages: write and runs no repository test code
+# and no repository script on its runner: it downloads that artifact, verifies its
+# SHA256SUMS, builds and pushes the image from the Dockerfile and creates the release
+# from the downloaded files. The image build DOES run the Dockerfile's pnpm install
+# (dependency install scripts) and pnpm -r build, but inside BuildKit's build
+# containers, which see neither the token nor the docker login. So a test, an install
+# script or a build script never runs where the write token is reachable.
 name: Release
 
 on:
@@ -20,15 +30,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
-    name: Build, attest, publish
+  build:
+    name: Build, test, pack (read-only)
     runs-on: ubuntu-latest
     timeout-minutes: 40
     permissions:
-      contents: write # create the release + upload assets
-      packages: write # push the image to GHCR
-    env:
-      IMAGE: ghcr.io/${{ github.repository }}
+      contents: read
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -88,6 +97,45 @@ jobs:
           cd ..
           node scripts/provenance.mjs --out "release/gaffer-${{ steps.meta.outputs.version }}.provenance.json" release/*.tgz release/*.cdx.json release/SHA256SUMS
 
+      - name: Hand the assets to the publish job
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-assets
+          path: release/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish image + release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write # create the release + upload assets
+      packages: write # push the image to GHCR
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      # The checkout is the image's build context only: no install, no script, no test
+      # of the repository runs in this job.
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Fetch the assets the build job packed
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: release-assets
+          path: release
+
+      # The assets must be exactly what the build job checksummed.
+      - name: Verify the checksums
+        run: |
+          case "$VERSION" in "" | *[!0-9A-Za-z.+-]*) echo "bad version from the build job: '$VERSION'"; exit 1 ;; esac
+          cd release && sha256sum -c SHA256SUMS
+
       # Container image: plain buildx (no third-party action). --provenance/--sbom
       # make BuildKit attach its own signed-by-registry attestations to the image.
       - name: Log in to GHCR
@@ -100,23 +148,24 @@ jobs:
           docker buildx build \
             --push \
             --provenance=mode=max --sbom=true \
-            --build-arg "VERSION=${{ steps.meta.outputs.version }}" \
+            --build-arg "VERSION=${VERSION}" \
             --build-arg "REVISION=${GITHUB_SHA}" \
             --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
             --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
-            --label "org.opencontainers.image.version=${{ steps.meta.outputs.version }}" \
-            --tag "$IMAGE_LC:${{ steps.meta.outputs.version }}" \
+            --label "org.opencontainers.image.version=${VERSION}" \
+            --tag "$IMAGE_LC:${VERSION}" \
             --tag "$IMAGE_LC:latest" \
             .
-          echo "image=$IMAGE_LC:${{ steps.meta.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "image=$IMAGE_LC:${VERSION}" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Create the GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # shellcheck disable=SC2016 # the backticks are Markdown in the release body
           {
             cat release/NOTES.md
-            printf '\n---\n\n**Container image:** `%s:%s` (BuildKit SBOM + provenance attestations attached)\n' "$(printf '%s' "$IMAGE" | tr '[:upper:]' '[:lower:]')" "${{ steps.meta.outputs.version }}"
+            printf '\n---\n\n**Container image:** `%s:%s` (BuildKit SBOM + provenance attestations attached)\n' "$(printf '%s' "$IMAGE" | tr '[:upper:]' '[:lower:]')" "${VERSION}"
             printf '**Assets:** package tarballs (`npm pack` output), `SHA256SUMS`, a CycloneDX SBOM and an unsigned SLSA v1 provenance statement — see docs/RELEASING.md.\n'
           } > release/BODY.md
           gh release create "${GITHUB_REF_NAME}" \

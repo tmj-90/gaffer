@@ -2,8 +2,10 @@
 # `gaffer dashboard --foreground` — the container / supervisor launch path. It must
 # exec the SAME server with the SAME action-command env as the detached paths (so
 # every dashboard button works), always token-protected, binding loopback by
-# default and every interface with --lan, and print the login URL before exec.
+# default and every interface with --lan, and print how to log in before exec (the
+# token itself only when stdout is a terminal, never into a supervisor log).
 . "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tty.sh"     # gaffer_test_tty: stdout on a pty
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; RUNNER_DIR="$(cd "$HERE/.." && pwd)"
 PASS=0; FAILURES=()
@@ -36,7 +38,18 @@ grep -q "ARGV:.*--port 8787" "$CAP" && ok "passes the port" || fail "port missin
 [ -s "$WORK/d1/dashboard-token" ] && ok "token file created (always token-protected)" || fail "no token file"
 TOK="$(cat "$WORK/d1/dashboard-token")"
 grep -q "^DISPATCH_API_TOKEN=$TOK$" "$CAP" && ok "the server received the token" || fail "server token missing"
-grep -q "?token=$TOK" <<<"$OUT" && ok "login URL with the token printed BEFORE exec (for container logs)" || fail "login URL not printed: $OUT"
+# Not a terminal (a supervisor's log): the URL and the token FILE, never the token.
+grep -qF "$TOK" <<<"$OUT" && fail "the token was printed to a non-terminal stdout (container logs keep it): $OUT" \
+  || ok "the token is not printed when stdout is not a terminal"
+grep -q "http://127.0.0.1:8787" <<<"$OUT" && grep -qF "$WORK/d1/dashboard-token" <<<"$OUT" \
+  && ok "the URL and the token file are printed BEFORE exec" || fail "login hint missing: $OUT"
+# A terminal keeps the one-click login link.
+if gaffer_test_tty_available; then
+  TTY_OUT="$(gaffer_test_tty env PATH="$BINDIR:$PATH" GAFFER_DATA="$WORK/d1" GAFFER_HOME="$RUNNER_DIR/.." bash "$RUNNER_DIR/gaffer" dashboard --foreground 2>&1)"
+  grep -qF "?token=$TOK" <<<"$TTY_OUT" && ok "on a terminal the login link carries the token" || fail "tty: no ?token= link: $TTY_OUT"
+else
+  echo "  SKIP: no script(1) to give the launcher a terminal"
+fi
 for v in DISPATCH_TICK_CMD DISPATCH_MERGE_CMD DISPATCH_ONBOARD_CMD DISPATCH_PRODUCT_OWNER_CMD DISPATCH_EPIC_FEATURE_CMD DISPATCH_DB GAFFER_DASHBOARD_URL; do
   grep -q "^$v=." "$CAP" && ok "action-command env wired: $v" || fail "$v missing from the server env"
 done

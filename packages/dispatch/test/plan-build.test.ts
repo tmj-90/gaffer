@@ -175,11 +175,12 @@ describe("createPlanBuildRunner (spawns the decompose helper)", () => {
 // ===========================================================================
 //  Planning debate reachability + the debate-aware wall-clock cap (B16).
 //
-//  The launcher (`gaffer dashboard`) strips GAFFER_PLAN_DEBATE* from the dashboard
-//  process env so the Settings panel can edit them; the dashboard then re-applies
-//  settings.json to its own env at startup (applySettingsToEnv). decompose.mjs
-//  reads the toggle ONLY from its env, so the value must survive that round trip
-//  into the child planBuild spawns — otherwise the Settings switch is decorative.
+//  GAFFER_PLAN_DEBATE is no longer a setting: GAFFER_MODELS decides it (off in every
+//  preset), and a real environment variable overrides it. The dashboard applies what
+//  the runner derives to its own env (applySettingsToEnv), so decompose.mjs, which
+//  reads the toggle only from its env, sees exactly what a run would: an old
+//  settings.json GAFFER_PLAN_DEBATE=1 (a costlier reading) never turns it on, and
+//  an operator's exported GAFFER_PLAN_DEBATE=1 still does.
 // ===========================================================================
 
 /** A throwaway GAFFER_DATA dir holding a settings.json with the given values. */
@@ -190,45 +191,45 @@ function settingsFile(values: Record<string, string>): string {
   return path;
 }
 
-describe("planning debate reaches the decompose child", () => {
-  it("a settings.json GAFFER_PLAN_DEBATE=1 applied to the API env is seen by decompose", async () => {
-    // Launcher posture: the dashboard env has NO GAFFER_PLAN_DEBATE (it was unset).
-    const env = {
+describe("planning debate reaches the decompose child as the runner derives it", () => {
+  const stubEnv = (extra: Record<string, string> = {}): NodeJS.ProcessEnv =>
+    ({
+      PATH: process.env.PATH,
       GAFFER_DECOMPOSE_BIN: STUB,
       GAFFER_STUB_MODE: "echo-debate",
-    } as NodeJS.ProcessEnv;
+      ...extra,
+    }) as NodeJS.ProcessEnv;
+
+  it("an old settings.json GAFFER_PLAN_DEBATE=1 does not turn the debate on (GAFFER_MODELS decides)", async () => {
+    const env = stubEnv();
     applySettingsToEnv(env, settingsFile({ GAFFER_PLAN_DEBATE: "1" }));
+    const result = await createPlanBuildRunner(env).run({ brief: "x", history: [] });
+    expect(result.phase).toBe("clarify");
+    if (result.phase === "clarify") expect(result.questions[0]).toBe("debate:0");
+  });
+
+  it("an operator's exported GAFFER_PLAN_DEBATE=1 reaches the child", async () => {
+    const env = stubEnv({ GAFFER_PLAN_DEBATE: "1" });
+    applySettingsToEnv(env, settingsFile({}));
     const result = await createPlanBuildRunner(env).run({ brief: "x", history: [] });
     expect(result.phase).toBe("clarify");
     if (result.phase === "clarify") expect(result.questions[0]).toBe("debate:1");
   });
 
-  it("with nothing stored the child sees the toggle absent (single-agent path)", async () => {
-    const env = {
-      GAFFER_DECOMPOSE_BIN: STUB,
-      GAFFER_STUB_MODE: "echo-debate",
-    } as NodeJS.ProcessEnv;
-    applySettingsToEnv(env, settingsFile({}));
-    const result = await createPlanBuildRunner(env).run({ brief: "x", history: [] });
-    expect(result.phase).toBe("clarify");
-    if (result.phase === "clarify") expect(result.questions[0]).toBe("debate:ABSENT");
-  });
-
-  it("re-applying a changed settings.json flips the child's view without a new runner", async () => {
-    // The dashboard applies settings.json again after every POST /api/settings; the
-    // runner holds a reference to the SAME env object, so it must see the change.
-    const env = {
-      GAFFER_DECOMPOSE_BIN: STUB,
-      GAFFER_STUB_MODE: "echo-debate",
-    } as NodeJS.ProcessEnv;
+  it("re-applying a changed settings.json reaches the child without a new runner", async () => {
+    // The dashboard applies settings.json again after every write; the runner holds a
+    // reference to the SAME env object, so it must see the change (here the old key
+    // is removed and the derived value stays the setting's).
+    const env = stubEnv();
     const runner = createPlanBuildRunner(env);
-    applySettingsToEnv(env, settingsFile({}));
-    let result = await runner.run({ brief: "x", history: [] });
-    if (result.phase === "clarify") expect(result.questions[0]).toBe("debate:ABSENT");
     applySettingsToEnv(env, settingsFile({ GAFFER_PLAN_DEBATE: "1" }));
+    let result = await runner.run({ brief: "x", history: [] });
+    if (result.phase === "clarify") expect(result.questions[0]).toBe("debate:0");
+    applySettingsToEnv(env, settingsFile({ GAFFER_MODELS: "economy" }));
     result = await runner.run({ brief: "x", history: [] });
     expect(result.phase).toBe("clarify");
-    if (result.phase === "clarify") expect(result.questions[0]).toBe("debate:1");
+    if (result.phase === "clarify") expect(result.questions[0]).toBe("debate:0");
+    expect(env.GAFFER_MODELS).toBe("economy");
   });
 });
 

@@ -204,28 +204,32 @@ export function readSettingsFile(path: string): Record<string, string> {
 // ── The operator's environment ───────────────────────────────────────────────
 
 const OPERATOR = new WeakMap<object, Set<string>>();
+/** Envs whose operator record this module wrote (no launcher record was there). */
+const SELF_RECORDED = new WeakSet<object>();
 /** The runner's re-source record prefix (runner/factory.config.sh RE-SOURCE HYGIENE). */
 const DV = "_GAFFER_DV_";
 const OPERATOR_RECORD = "_GAFFER_OPERATOR_ENV";
 
 /**
  * The names the OPERATOR set in the real environment. From the launcher's
- * `_GAFFER_OPERATOR_ENV` (runner/gaffer dashboard keeps it for the server) or, when the
- * dashboard was started some other way, the names present the first time this runs.
- * Either way the record is left in `env`, so every runner the dashboard starts knows
- * which values are real environment and which it may derive afresh.
+ * `_GAFFER_OPERATOR_ENV` (runner/gaffer dashboard keeps it for the server); for a
+ * dashboard started some other way, every name in the environment this module did not
+ * put there itself. Either way a record is left in `env`, so every runner the dashboard
+ * starts knows which values are real environment and which it may derive afresh.
  */
 export function operatorNames(env: NodeJS.ProcessEnv): ReadonlySet<string> {
-  let names = OPERATOR.get(env);
-  if (names) return names;
+  const cached = OPERATOR.get(env);
+  if (cached) return cached;
   const rec = env[OPERATOR_RECORD];
-  if (typeof rec === "string") {
-    names = new Set(rec.split(/\s+/).filter((n) => n !== ""));
-  } else {
-    names = new Set(Object.keys(env).filter((n) => !n.startsWith("_GAFFER_")));
-    env[OPERATOR_RECORD] = ` ${[...names].join(" ")} `;
+  if (typeof rec === "string" && !SELF_RECORDED.has(env)) {
+    const names = new Set(rec.split(/\s+/).filter((n) => n !== ""));
+    OPERATOR.set(env, names);
+    return names;
   }
-  OPERATOR.set(env, names);
+  const mine = appliedOf(env);
+  const names = new Set(Object.keys(env).filter((n) => !n.startsWith("_GAFFER_") && !mine.has(n)));
+  env[OPERATOR_RECORD] = ` ${[...names].join(" ")} `;
+  SELF_RECORDED.add(env);
   return names;
 }
 
@@ -345,8 +349,16 @@ export function applySettingsToEnv(
 
 /** Test seam: forget what this process applied (a fresh process). */
 export function resetDerivedSettings(env: NodeJS.ProcessEnv = process.env): void {
+  for (const k of appliedOf(env)) {
+    delete env[k];
+    delete env[DV + k];
+  }
   appliedOf(env).clear();
   OPERATOR.delete(env);
+  if (SELF_RECORDED.has(env)) {
+    delete env[OPERATOR_RECORD];
+    SELF_RECORDED.delete(env);
+  }
 }
 
 // ── Validation (a mirror of the runner's _gaffer_setting_problem) ─────────────

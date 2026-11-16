@@ -1,3 +1,8 @@
+// The settings API carries the fourteen settings and nothing else. Their names, kinds,
+// accepted values, defaults and descriptions come from runner/config/settings-schema.json,
+// a value is validated exactly as the runner's _gaffer_setting_problem validates it, an
+// old key is refused naming the setting that decides it now, the derived and migration
+// blocks come from the runner's own config, and every secret is masked.
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -5,560 +10,459 @@ import { join, resolve } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { loadSchema, RUNNER_DIR } from "../src/api/runnerConfig.js";
 import {
-  isKnownSetting,
+  applyNotifyChange,
   applySettingsToEnv,
-  listSettings,
-  resetDerivedSettings,
-  MODE_PRESETS,
-  presetsFor,
+  cleanupPlan,
+  ENV_ONLY_KEYS,
+  isKnownSetting,
+  keyProblem,
+  PRESENTATION_KEYS,
   readSettingsFile,
+  readSettingsFileRaw,
+  removeOldKeys,
+  resetDerivedSettings,
   resolveSettingsPath,
   SETTING_DEFS,
-  ENV_ONLY_KEYS,
+  settingProblems,
+  settingsReport,
   settingValueProblem,
   writeSettings,
 } from "../src/api/settings.js";
 
-describe("settings module: file contract + env-override semantics", () => {
-  let dir: string;
-  let settingsPath: string;
+const SLACK = "https://hooks.slack.com/services/T0/B0/slack-secret-token";
+const HOOK = "https://hooks.example.com/w/hook-secret-token";
 
-  beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "wg-settings-"));
-    settingsPath = join(dir, "settings.json");
-  });
-  afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
-  });
+let dir: string;
+let settingsPath: string;
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), "wg-settings-"));
+  settingsPath = join(dir, "settings.json");
+});
+afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-  it("resolves the path under $GAFFER_DATA as settings.json", () => {
-    const p = resolveSettingsPath({ GAFFER_DATA: dir });
-    expect(p).toBe(join(dir, "settings.json"));
-  });
+/** A fresh operator environment (as a dashboard started with nothing exported). */
+function op(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, HOME: dir, ...extra };
+  resetDerivedSettings(env);
+  return env;
+}
 
-  it("reports every known setting, value '' when unset, with type + group", () => {
-    const views = listSettings({}, settingsPath);
-    expect(views.length).toBe(SETTING_DEFS.length);
-    const byKey = new Map(views.map((v) => [v.key, v]));
-    const max = byKey.get("MAX_TICKS");
-    expect(max).toBeDefined();
-    expect(max?.value).toBe("");
-    expect(max?.envLocked).toBe(false);
-    expect(max?.type).toBe("int");
-    expect(max?.group).toBe("budget");
-  });
-
-  it("round-trips a non-env key: write persists to settings.json and reads back", () => {
-    const res = writeSettings({ MAX_TICKS: "50" }, {}, settingsPath);
-    expect(res.written).toEqual(["MAX_TICKS"]);
-    expect(res.rejected).toEqual([]);
-
-    // Persisted as a flat JSON map of string values.
-    const onDisk = JSON.parse(readFileSync(settingsPath, "utf8")) as Record<string, string>;
-    expect(onDisk).toEqual({ MAX_TICKS: "50" });
-
-    // And it reads back through the view layer.
-    const views = listSettings({}, settingsPath);
-    expect(views.find((v) => v.key === "MAX_TICKS")?.value).toBe("50");
-  });
-
-  it("reports an env-set key as envLocked and refuses to change it on write", () => {
-    const env = { GAFFER_PLAN_DEBATE: "1" };
-    // Seed the file with a different value to prove the env wins and the write
-    // does not overwrite it.
-    writeFileSync(settingsPath, JSON.stringify({ GAFFER_PLAN_DEBATE: "0" }));
-
-    const views = listSettings(env, settingsPath);
-    const debate = views.find((v) => v.key === "GAFFER_PLAN_DEBATE");
-    expect(debate?.envLocked).toBe(true);
-
-    const res = writeSettings({ GAFFER_PLAN_DEBATE: "1" }, env, settingsPath);
-    expect(res.rejected).toEqual(["GAFFER_PLAN_DEBATE"]);
-    expect(res.written).toEqual([]);
-
-    // File untouched — the env-locked value was not persisted.
-    const onDisk = JSON.parse(readFileSync(settingsPath, "utf8")) as Record<string, string>;
-    expect(onDisk.GAFFER_PLAN_DEBATE).toBe("0");
-  });
-
-  it("treats a set-but-empty env var as locked (env still wins over the file)", () => {
-    const env = { MERGE_ON_AGENT_REVIEW: "" };
-    const views = listSettings(env, settingsPath);
-    expect(views.find((v) => v.key === "MERGE_ON_AGENT_REVIEW")?.envLocked).toBe(true);
-  });
-
-  it("merges onto existing settings rather than replacing the whole file", () => {
-    writeSettings({ MAX_TICKS: "10" }, {}, settingsPath);
-    writeSettings({ GAFFER_MAX_TURNS: "8" }, {}, settingsPath);
-    const onDisk = JSON.parse(readFileSync(settingsPath, "utf8")) as Record<string, string>;
-    expect(onDisk).toEqual({ MAX_TICKS: "10", GAFFER_MAX_TURNS: "8" });
-  });
-
-  it("ignores unknown keys on write (allow-list only)", () => {
-    const res = writeSettings({ NOT_A_SETTING: "x", MAX_TICKS: "3" }, {}, settingsPath);
-    expect(res.ignored).toEqual(["NOT_A_SETTING"]);
-    expect(res.written).toEqual(["MAX_TICKS"]);
-    const onDisk = JSON.parse(readFileSync(settingsPath, "utf8")) as Record<string, string>;
-    expect(onDisk).toEqual({ MAX_TICKS: "3" });
-    expect(isKnownSetting("NOT_A_SETTING")).toBe(false);
-  });
-
-  it("treats a missing file as the empty state", () => {
-    expect(readSettingsFile(join(dir, "nope.json"))).toEqual({});
-  });
-
-  it("drops stale/foreign keys when reading a hand-edited file", () => {
-    writeFileSync(
-      settingsPath,
-      JSON.stringify({ MAX_TICKS: "5", BOGUS: "y", GAFFER_MAX_TURNS: 9 }),
+describe("the fourteen, read from the runner's schema (drift fails here)", () => {
+  it("the writable keys equal the fourteen settings (GAFFER_DATA shown, never written)", () => {
+    const schema = loadSchema();
+    expect(schema.settings.length).toBe(14);
+    expect(SETTING_DEFS.map((d) => d.key)).toEqual(schema.settings.map((s) => s.name));
+    expect([...PRESENTATION_KEYS].sort()).toEqual(schema.settings.map((s) => s.name).sort());
+    const writable = SETTING_DEFS.filter((d) => d.writable).map((d) => d.key);
+    expect(writable).toEqual(
+      schema.settings.map((s) => s.name).filter((n) => n !== "GAFFER_DATA"),
     );
-    // BOGUS isn't known; GAFFER_MAX_TURNS is a number (not a string) → both dropped.
-    expect(readSettingsFile(settingsPath)).toEqual({ MAX_TICKS: "5" });
+    for (const s of schema.settings) {
+      const d = SETTING_DEFS.find((x) => x.key === s.name)!;
+      expect(d.kind).toBe(s.kind);
+      expect(d.values).toEqual(s.values);
+      expect(d.description).toBe(s.description);
+      expect(d.default).toBe(s.default.startsWith("(") ? "" : s.default);
+    }
+  });
+
+  it("the schema is the runner's spec: the same fourteen names as runner/config/01-settings.sh", () => {
+    const out = execFileSync(
+      "bash",
+      [
+        "-c",
+        '_gs_out=""; source "$1/config/01-settings.sh"; echo $_GAFFER_SETTINGS_KEYS',
+        "_",
+        RUNNER_DIR,
+      ],
+      { env: { PATH: process.env.PATH }, encoding: "utf8" },
+    );
+    expect(out.trim().split(/\s+/)).toEqual(SETTING_DEFS.map((d) => d.key));
+  });
+
+  it("validation agrees with the runner's _gaffer_setting_problem, value for value and word for word", () => {
+    // A corpus per kind, including every form the old page stored or a person might type.
+    const corpus: Record<string, string[]> = {
+      choice: [
+        "supervised",
+        "autonomous",
+        "yolo",
+        "Supervised",
+        " lite",
+        "small",
+        "large",
+        "pr",
+        "local",
+        "auto",
+        "docker",
+        "none",
+        "all",
+        "backlog",
+      ],
+      usd: ["5", "5.25", "5.", ".5", "0", "abc", "-1", "1e3", "$5", "5 ", "5,00"],
+      count: ["1", "3", "64", "65", "0", "00", "99", "-1", "3.5", " 3", "abc"],
+      models: [
+        "standard",
+        "economy",
+        "strong",
+        "opus,sonnet,haiku",
+        "a,b",
+        "-x,b,c",
+        "opus, sonnet, haiku",
+        "claude-opus-4@x,b:c,d/e",
+      ],
+      gates: ["standard", "strict", "tests,lint", "tests lint", "lint,foo", "none"],
+      testing: ["auto", "on", "off", "1", "0", "true", "No", "maybe", "AUTO"],
+      notify: [
+        "desktop",
+        `desktop,${SLACK}`,
+        `${HOOK} ${SLACK}`,
+        `${HOOK},${HOOK}`,
+        `${SLACK},${SLACK}`,
+        "ftp://x",
+        "desk",
+      ],
+      port: ["8787", "1", "65535", "65536", "0", "80a"],
+    };
+    const cases: { key: string; value: string }[] = [];
+    for (const d of SETTING_DEFS) {
+      if (!d.writable) continue;
+      for (const v of corpus[d.kind] ?? []) cases.push({ key: d.key, value: v });
+    }
+    const script = [
+      '_gs_out=""; source "$1/config/01-settings.sh"',
+      'while IFS=$(printf "\\t") read -r k v; do _gaffer_setting_problem "$k" "$v" settings.json; printf "%s\\n" "$_GAFFER_SP"; done',
+    ].join("\n");
+    const out = execFileSync("bash", ["-c", script, "_", RUNNER_DIR], {
+      env: { PATH: process.env.PATH },
+      input: cases.map((c) => `${c.key}\t${c.value}`).join("\n") + "\n",
+      encoding: "utf8",
+    }).split("\n");
+    expect(cases.length).toBeGreaterThan(80);
+    cases.forEach((c, i) => {
+      const def = SETTING_DEFS.find((d) => d.key === c.key)!;
+      const runner = out[i] ?? "";
+      const mine = settingValueProblem(def, c.value, {}) ?? "";
+      expect(mine, `${c.key}='${c.value}'`).toBe(runner);
+    });
+  });
+
+  it("every old settings.json key is refused, naming the setting the schema says decides it", () => {
+    for (const o of loadSchema().oldKeys) {
+      const p = keyProblem(o.key);
+      expect(p, o.key).not.toBeNull();
+      expect(p!.decidedBy).toBe(o.setting);
+      expect(p!.problem).toContain(`${o.setting} decides it now`);
+    }
+    expect(keyProblem("GAFFER_ALLOW_UNCAPPED")!.problem).toContain("only the environment");
+    expect(keyProblem("NODE_OPTIONS")!.problem).toContain("is not a setting");
+    expect(keyProblem("GAFFER_DATA")!.problem).toContain("only the environment can move it");
+    expect(isKnownSetting("AUTO_MERGE")).toBe(false);
+  });
+
+  it("ENV_ONLY_KEYS is the runner's _GAFFER_ENV_ONLY_KEYS", () => {
+    const part = readFileSync(resolve(RUNNER_DIR, "config/01-settings.sh"), "utf8");
+    const m = /^_GAFFER_ENV_ONLY_KEYS="([^"]*)"/m.exec(part);
+    expect(m).not.toBeNull();
+    expect(m![1]!.split(/\s+/).filter(Boolean).sort()).toEqual([...ENV_ONLY_KEYS].sort());
   });
 });
 
-describe("settings module: enum choices + value validation", () => {
-  let dir: string;
-  let settingsPath: string;
-
-  beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "wg-settings-enum-"));
-    settingsPath = join(dir, "settings.json");
-  });
-  afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
-  });
-
-  const ENUM_KEYS = [
-    "GAFFER_MODE",
-    "REVIEW_MODE",
-    "GAFFER_IDLE_MODE",
-    "SANDBOX_PROVIDER",
-    "GAFFER_PR_MERGE_METHOD",
-  ];
-
-  it("every enum setting declares a non-empty choices list", () => {
-    for (const key of ENUM_KEYS) {
-      const def = SETTING_DEFS.find((d) => d.key === key);
-      expect(def, `${key} should be a known setting`).toBeDefined();
-      expect(def?.type).toBe("string");
-      expect(Array.isArray(def?.choices) && def!.choices!.length > 0).toBe(true);
-    }
-  });
-
-  it("surfaces choices through listSettings for enums and omits them elsewhere", () => {
-    const views = listSettings({}, settingsPath);
-    const mode = views.find((v) => v.key === "GAFFER_MODE");
-    expect(mode?.choices).toEqual(["supervised", "lite", "graduated", "autonomous", "strict"]);
-    const anInt = views.find((v) => v.key === "MAX_TICKS");
-    expect(anInt?.choices).toBeUndefined();
-  });
-
-  it("REVIEW_MODE offers `both` (documented: agent screens, human confirms) and persists it", () => {
-    // B20c: the runner honoured `both` but the Settings dropdown only offered human/agent,
-    // so the documented mode was unreachable from the dashboard.
-    const def = SETTING_DEFS.find((d) => d.key === "REVIEW_MODE");
-    expect(def?.choices).toEqual(["human", "agent", "both"]);
-    const res = writeSettings({ REVIEW_MODE: "both" }, {}, settingsPath);
-    expect(res.written).toEqual(["REVIEW_MODE"]);
-    expect(res.invalid).toEqual([]);
-    expect(readSettingsFile(settingsPath)).toEqual({ REVIEW_MODE: "both" });
-  });
-
-  it("PR mode: the merge method is an enum and the CI gate declares its PR dependency", () => {
-    // B14: REQUIRE_CI without CREATE_PR polled a PR that never existed; the definitions
-    // now say so, and the merge method (gh pr merge --merge|--squash|--rebase) is a knob.
-    const method = SETTING_DEFS.find((d) => d.key === "GAFFER_PR_MERGE_METHOD");
-    expect(method?.choices).toEqual(["merge", "squash", "rebase"]);
-    expect(method?.group).toBe("delivery");
-    const ci = SETTING_DEFS.find((d) => d.key === "GAFFER_REQUIRE_CI");
-    expect(ci?.help).toMatch(/REQUIRES 'Deliver as a pull request'/);
-    const pr = SETTING_DEFS.find((d) => d.key === "GAFFER_CREATE_PR");
-    expect(pr?.help).toMatch(/merges THROUGH that PR/);
-    const res = writeSettings({ GAFFER_PR_MERGE_METHOD: "squash" }, {}, settingsPath);
-    expect(res.written).toEqual(["GAFFER_PR_MERGE_METHOD"]);
-    expect(writeSettings({ GAFFER_PR_MERGE_METHOD: "yolo" }, {}, settingsPath).invalid).toEqual([
-      "GAFFER_PR_MERGE_METHOD",
-    ]);
-  });
-
-  it("persists a valid enum value", () => {
-    const res = writeSettings({ GAFFER_MODE: "graduated" }, {}, settingsPath);
-    expect(res.written).toEqual(["GAFFER_MODE"]);
-    expect(res.invalid).toEqual([]);
-    expect(readSettingsFile(settingsPath)).toEqual({ GAFFER_MODE: "graduated" });
-  });
-
-  it("rejects an out-of-set enum value without persisting it", () => {
-    const res = writeSettings({ GAFFER_MODE: "yolo" }, {}, settingsPath);
-    expect(res.invalid).toEqual(["GAFFER_MODE"]);
-    expect(res.written).toEqual([]);
-    expect(readSettingsFile(settingsPath)).toEqual({});
-  });
-
-  it("rejects a non-integer for an int setting without persisting it", () => {
-    const res = writeSettings({ MAX_TICKS: "abc" }, {}, settingsPath);
-    expect(res.invalid).toEqual(["MAX_TICKS"]);
-    expect(readSettingsFile(settingsPath)).toEqual({});
-    const ok = writeSettings({ MAX_TICKS: "12" }, {}, settingsPath);
-    expect(ok.written).toEqual(["MAX_TICKS"]);
-  });
-
-  it("the dollar caps are non-negative numbers: 'abc' is refused, 2.50 persists (exploratory finding ui-workflows/F2)", () => {
-    // A non-numeric daily budget used to persist as typed: the uncapped-run guard read
-    // it as set (non-empty) while every cap check read it as off, so paid work ran
-    // with no cap at all.
-    for (const key of [
-      "GAFFER_DAILY_BUDGET_USD",
-      "GAFFER_BUDGET_USD",
-      "GAFFER_BUDGET_LOW_THRESHOLD",
-      "GAFFER_REWORK_BUDGET_USD",
-    ]) {
-      expect(SETTING_DEFS.find((d) => d.key === key)?.type, key).toBe("number");
-      for (const bad of ["abc", "five dollars", "-1", "$5", "1e3", "5 "]) {
-        expect(writeSettings({ [key]: bad }, {}, settingsPath).invalid, `${key}=${bad}`).toEqual([
-          key,
-        ]);
-      }
-    }
-    expect(readSettingsFile(settingsPath)).toEqual({});
-    const ok = writeSettings(
-      { GAFFER_DAILY_BUDGET_USD: "2.50", GAFFER_BUDGET_USD: "0" },
-      {},
+describe("writes", () => {
+  it("trims and validates before storing; a cleared value removes the key", () => {
+    const env = op();
+    const r = writeSettings(
+      { GAFFER_CONCURRENCY: " 3 ", GAFFER_EFFORT: "large" },
+      env,
       settingsPath,
     );
-    expect(ok.written).toEqual(["GAFFER_DAILY_BUDGET_USD", "GAFFER_BUDGET_USD"]);
+    expect(r.written).toEqual(["GAFFER_CONCURRENCY", "GAFFER_EFFORT"]);
+    expect(readSettingsFileRaw(settingsPath)).toEqual({
+      GAFFER_CONCURRENCY: "3",
+      GAFFER_EFFORT: "large",
+    });
+    writeSettings({ GAFFER_EFFORT: "" }, env, settingsPath);
+    expect(readSettingsFileRaw(settingsPath)).toEqual({ GAFFER_CONCURRENCY: "3" });
   });
 
-  it("GAFFER_CONCURRENCY is at least 1 (exploratory finding ui-workflows/F11)", () => {
-    const def = SETTING_DEFS.find((d) => d.key === "GAFFER_CONCURRENCY");
-    expect(def?.min).toBe(1);
-    expect(listSettings({}, settingsPath).find((v) => v.key === "GAFFER_CONCURRENCY")?.min).toBe(1);
-    expect(writeSettings({ GAFFER_CONCURRENCY: "0" }, {}, settingsPath).invalid).toEqual([
+  it("refuses what the runner would refuse: concurrency above 64, a gates list, an unknown mode", () => {
+    const env = op();
+    expect(writeSettings({ GAFFER_CONCURRENCY: "65" }, env, settingsPath).invalid).toEqual([
       "GAFFER_CONCURRENCY",
     ]);
-    expect(writeSettings({ GAFFER_CONCURRENCY: "-3" }, {}, settingsPath).invalid).toEqual([
-      "GAFFER_CONCURRENCY",
+    expect(writeSettings({ GAFFER_GATES: "tests" }, env, settingsPath).invalid).toEqual([
+      "GAFFER_GATES",
     ]);
-    expect(writeSettings({ GAFFER_CONCURRENCY: "2" }, {}, settingsPath).written).toEqual([
-      "GAFFER_CONCURRENCY",
+    expect(writeSettings({ GAFFER_MODE: "yolo" }, env, settingsPath).invalid).toEqual([
+      "GAFFER_MODE",
     ]);
+    expect(writeSettings({ GAFFER_MODELS: "-x,b,c" }, env, settingsPath).invalid).toEqual([
+      "GAFFER_MODELS",
+    ]);
+    expect(readSettingsFileRaw(settingsPath)).toEqual({});
+    const probs = settingProblems({ GAFFER_CONCURRENCY: "99", AUTO_MERGE: "1" }, env);
+    expect(probs.map((p) => p.key)).toEqual(["GAFFER_CONCURRENCY", "AUTO_MERGE"]);
+    expect(probs[1]!.decidedBy).toBe("GAFFER_MODE");
   });
 
-  it("rejects a notify URL that fails the SSRF policy (loopback / link-local / private / non-http)", () => {
-    for (const bad of [
-      "http://127.0.0.1:8787/api/tickets",
-      "http://169.254.169.254/latest/meta-data/",
-      "http://10.1.2.3/hook",
-      "file:///etc/passwd",
-      "nonsense",
-    ]) {
-      const res = writeSettings({ GAFFER_NOTIFY_WEBHOOK_URL: bad }, {}, settingsPath);
-      expect(res.invalid, bad).toEqual(["GAFFER_NOTIFY_WEBHOOK_URL"]);
+  it("an old key or any other name is never written, and keys already in the file are kept", () => {
+    writeFileSync(settingsPath, JSON.stringify({ AUTO_MERGE: "0", FOO: "x" }));
+    const env = op();
+    const r = writeSettings(
+      { AUTO_MERGE: "1", GAFFER_ALLOW_UNCAPPED: "1", GAFFER_DATA: "/x", GAFFER_MODE: "lite" },
+      env,
+      settingsPath,
+    );
+    expect(r.ignored).toEqual(["AUTO_MERGE", "GAFFER_ALLOW_UNCAPPED", "GAFFER_DATA"]);
+    expect(readSettingsFileRaw(settingsPath)).toEqual({
+      AUTO_MERGE: "0",
+      FOO: "x",
+      GAFFER_MODE: "lite",
+    });
+  });
+
+  it("a setting the operator exported is env-locked: reported, never written", () => {
+    const env = op({ GAFFER_MODE: "strict" });
+    const r = writeSettings({ GAFFER_MODE: "autonomous" }, env, settingsPath);
+    expect(r.rejected).toEqual(["GAFFER_MODE"]);
+    const mode = settingsReport(env, settingsPath).settings.find((s) => s.key === "GAFFER_MODE")!;
+    expect(mode).toMatchObject({ envLocked: true, origin: "environment", effective: "strict" });
+  });
+
+  it("notify URLs pass the outbound URL policy too (stricter than the runner, never looser)", () => {
+    const env = op();
+    for (const bad of ["http://127.0.0.1:8787/x", "http://169.254.169.254/", "http://10.1.2.3/h"]) {
+      expect(writeSettings({ GAFFER_NOTIFY: bad }, env, settingsPath).invalid, bad).toEqual([
+        "GAFFER_NOTIFY",
+      ]);
     }
-    expect(readSettingsFile(settingsPath)).toEqual({});
-    const ok = writeSettings(
-      { GAFFER_NOTIFY_SLACK_URL: "https://hooks.slack.com/services/T0/B0/x" },
-      {},
-      settingsPath,
+    expect(
+      writeSettings({ GAFFER_NOTIFY: `desktop,${SLACK}` }, env, settingsPath).written,
+    ).toEqual(["GAFFER_NOTIFY"]);
+  });
+
+  it("a notify change keeps the saved URLs on the server", () => {
+    expect(applyNotifyChange(`desktop,${HOOK},${SLACK}`, { desktop: false })).toBe(
+      `${HOOK},${SLACK}`,
     );
-    expect(ok.written).toEqual(["GAFFER_NOTIFY_SLACK_URL"]);
-  });
-
-  it("GAFFER_NOTIFY_ALLOW_PRIVATE=1 in the env lets a LAN relay URL persist", () => {
-    const res = writeSettings(
-      { GAFFER_NOTIFY_WEBHOOK_URL: "http://192.168.1.20:9000/relay" },
-      { GAFFER_NOTIFY_ALLOW_PRIVATE: "1" },
-      settingsPath,
+    expect(applyNotifyChange(`${HOOK},${SLACK}`, { slack: null })).toBe(HOOK);
+    expect(applyNotifyChange("", { desktop: true, webhook: HOOK })).toBe(`desktop,${HOOK}`);
+    expect(applyNotifyChange(`desktop,${HOOK}`, { webhook: "https://new.example.com/h" })).toBe(
+      "desktop,https://new.example.com/h",
     );
-    expect(res.written).toEqual(["GAFFER_NOTIFY_WEBHOOK_URL"]);
-  });
-
-  it("allows an empty enum value to clear the override back to default", () => {
-    writeSettings({ GAFFER_MODE: "strict" }, {}, settingsPath);
-    const res = writeSettings({ GAFFER_MODE: "" }, {}, settingsPath);
-    expect(res.written).toEqual(["GAFFER_MODE"]);
-    expect(res.invalid).toEqual([]);
-    expect(readSettingsFile(settingsPath)).toEqual({ GAFFER_MODE: "" });
-  });
-
-  it("still enforces env-lock before enum validation (env-locked never invalid)", () => {
-    const res = writeSettings({ GAFFER_MODE: "yolo" }, { GAFFER_MODE: "supervised" }, settingsPath);
-    expect(res.rejected).toEqual(["GAFFER_MODE"]);
-    expect(res.invalid).toEqual([]);
   });
 });
 
-describe("settings bootstrap: settings.json + GAFFER_MODE presets become env DEFAULTS", () => {
-  let dir: string;
-  let settingsPath: string;
-
-  beforeEach(() => {
-    resetDerivedSettings();
-    dir = mkdtempSync(join(tmpdir(), "wg-settings-boot-"));
-    settingsPath = join(dir, "settings.json");
-  });
-  afterEach(() => {
-    resetDerivedSettings();
-    rmSync(dir, { recursive: true, force: true });
-  });
-
-  it("applies stored values to an env that lacks them, and never over a real env var", () => {
-    writeFileSync(settingsPath, JSON.stringify({ MAX_TICKS: "7", REVIEW_MODE: "agent" }), "utf8");
-    const env: NodeJS.ProcessEnv = { REVIEW_MODE: "human" };
-    const { applied } = applySettingsToEnv(env, settingsPath);
-    expect(env.MAX_TICKS).toBe("7");
-    expect(env.REVIEW_MODE).toBe("human"); // operator env wins
-    expect(applied).toContain("MAX_TICKS");
-    expect(applied).not.toContain("REVIEW_MODE");
+describe("GET: origins, derived, migration, overrides, secrets", () => {
+  it("each setting says where it came from: default, dashboard or environment", () => {
+    writeFileSync(settingsPath, JSON.stringify({ GAFFER_EFFORT: "large" }));
+    const env = op({ GAFFER_TESTING: "off" });
+    const byKey = new Map(settingsReport(env, settingsPath).settings.map((s) => [s.key, s]));
+    expect(byKey.get("GAFFER_EFFORT")).toMatchObject({
+      origin: "dashboard",
+      effective: "large",
+      value: "large",
+    });
+    expect(byKey.get("GAFFER_TESTING")).toMatchObject({ origin: "environment", envLocked: true });
+    expect(byKey.get("GAFFER_MODE")).toMatchObject({
+      origin: "default",
+      effective: "supervised",
+      value: "",
+    });
+    expect(byKey.get("GAFFER_DATA")).toMatchObject({ writable: false, effective: dir });
+    expect(byKey.size).toBe(14);
   });
 
-  it("GAFFER_ALLOW_UNCAPPED is environment-only: a settings.json value never reaches env", () => {
-    // A hand-edited settings.json must not lift the live-run dollar-cap requirement:
-    // the dashboard's env is what the Poll button's tick inherits.
+  it("derived: every value the runner derives, with what decided it", () => {
     writeFileSync(
       settingsPath,
-      JSON.stringify({ GAFFER_ALLOW_UNCAPPED: "1", MAX_TICKS: "7" }),
-      "utf8",
+      JSON.stringify({ GAFFER_MODE: "autonomous", GAFFER_EFFORT: "large" }),
     );
-    const env: NodeJS.ProcessEnv = {};
-    const { applied } = applySettingsToEnv(env, settingsPath);
-    expect(env.GAFFER_ALLOW_UNCAPPED).toBeUndefined();
-    expect(applied).not.toContain("GAFFER_ALLOW_UNCAPPED");
-    expect(env.MAX_TICKS).toBe("7"); // the rest of the file still applies
-    // The operator's real environment still opts out.
-    const real: NodeJS.ProcessEnv = { GAFFER_ALLOW_UNCAPPED: "1" };
-    applySettingsToEnv(real, settingsPath);
-    expect(real.GAFFER_ALLOW_UNCAPPED).toBe("1");
+    const rep = settingsReport(op(), settingsPath);
+    expect(rep.configError).toBeUndefined();
+    const am = rep.derived.find((d) => d.name === "AUTO_MERGE")!;
+    expect(am).toMatchObject({
+      value: "1",
+      setting: "GAFFER_MODE",
+      decidedBy: "GAFFER_MODE=autonomous",
+      source: "setting",
+    });
+    const tt = rep.derived.find((d) => d.name === "GAFFER_TICK_TIMEOUT")!;
+    expect(tt.decidedBy).toBe("GAFFER_EFFORT=large");
+    const names = new Set(loadSchema().settings.flatMap((s) => s.derives.map((d) => d.name)));
+    expect(new Set(rep.derived.map((d) => d.name))).toEqual(names);
   });
 
-  it("the worker provider knobs and GAFFER_STRICT_REQUIRE never come from settings.json here", () => {
-    // settings.json lives in $GAFFER_DATA. A file that could flip every agent turn to an
-    // attacker-chosen executable, hand it the repo token or opt the command worker out
-    // of the OS sandbox must not be honoured. The dashboard only applies keys it knows
-    // (SETTING_DEFS), and none of these is one; runner/factory.config.sh skips them
-    // explicitly (runner/test/worker-command.test.sh pins that side).
+  it("migration: each old key, what decides it now, whether it differs and which reading is in force", () => {
     writeFileSync(
       settingsPath,
       JSON.stringify({
-        GAFFER_WORKER_PROVIDER: "command",
-        GAFFER_WORKER_COMMAND: "/tmp/evil",
-        GAFFER_WORKER_COMMAND_ENV: "GITHUB_TOKEN",
-        GAFFER_WORKER_COMMAND_COST_USD: "0",
-        GAFFER_SANDBOX_WORKER_COMMAND: "/tmp/evil",
-        GAFFER_STRICT_REQUIRE: "0",
-        MAX_TICKS: "7",
+        GAFFER_MODE: "autonomous",
+        AUTO_MERGE: "0",
+        REVIEW_MODE: "agent",
+        GAFFER_TICK_TIMEOUT: "99999",
+        FOO: "1",
       }),
-      "utf8",
     );
-    const env: NodeJS.ProcessEnv = { GAFFER_WORKER_PROVIDER: "command" };
-    const { applied } = applySettingsToEnv(env, settingsPath);
-    for (const k of [
-      "GAFFER_WORKER_COMMAND",
-      "GAFFER_WORKER_COMMAND_ENV",
-      "GAFFER_WORKER_COMMAND_COST_USD",
-      "GAFFER_SANDBOX_WORKER_COMMAND",
-      "GAFFER_STRICT_REQUIRE",
-    ]) {
-      expect(env[k]).toBeUndefined();
-      expect(applied).not.toContain(k);
-    }
-    expect(applied).not.toContain("GAFFER_WORKER_PROVIDER");
-    expect(env.MAX_TICKS).toBe("7");
-    // The Settings panel never writes them either (unknown keys are ignored).
-    const res = writeSettings({ GAFFER_WORKER_COMMAND: "/tmp/evil" }, {}, settingsPath);
-    expect(res.written).not.toContain("GAFFER_WORKER_COMMAND");
-    expect(res.ignored).toContain("GAFFER_WORKER_COMMAND");
-    for (const k of ["GAFFER_WORKER_PROVIDER", "GAFFER_WORKER_COMMAND", "GAFFER_STRICT_REQUIRE"])
-      expect(isKnownSetting(k)).toBe(false);
+    const rep = settingsReport(op(), settingsPath);
+    const by = new Map(rep.migration.map((m) => [m.key, m]));
+    expect(by.get("AUTO_MERGE")).toMatchObject({
+      setting: "GAFFER_MODE",
+      decision: "kept",
+      differs: true,
+    });
+    expect(by.get("AUTO_MERGE")!.inForce).toContain("old value is in force");
+    expect(by.get("GAFFER_TICK_TIMEOUT")).toMatchObject({
+      setting: "GAFFER_EFFORT",
+      decision: "stricter-derived",
+    });
+    expect(by.get("REVIEW_MODE")).toMatchObject({ decision: "same", differs: false });
+    expect(by.get("FOO")).toMatchObject({ decision: "not-a-setting" });
+    // The stricter old value is what the derived block shows in force, from the old key.
+    expect(rep.derived.find((d) => d.name === "AUTO_MERGE")).toMatchObject({
+      value: "0",
+      source: "old-key",
+    });
   });
 
-  it("derived keys are NOT env-locked — the UI may still edit them", () => {
-    writeFileSync(settingsPath, JSON.stringify({ MAX_TICKS: "7" }), "utf8");
-    const env: NodeJS.ProcessEnv = { GAFFER_PLAN_DEBATE: "1" };
-    applySettingsToEnv(env, settingsPath);
-    const byKey = new Map(listSettings(env, settingsPath).map((v) => [v.key, v]));
-    expect(byKey.get("MAX_TICKS")?.envLocked).toBe(false);
-    expect(byKey.get("MAX_TICKS")?.effective).toBe("7");
-    expect(byKey.get("MAX_TICKS")?.source).toBe("file");
-    expect(byKey.get("GAFFER_PLAN_DEBATE")?.envLocked).toBe(true);
-    expect(byKey.get("GAFFER_PLAN_DEBATE")?.source).toBe("env");
-    // And a write to the derived key is accepted, not rejected as env-locked.
-    const res = writeSettings({ MAX_TICKS: "9" }, env, settingsPath);
-    expect(res.written).toEqual(["MAX_TICKS"]);
-    expect(env.MAX_TICKS).toBe("9"); // took effect in-process
+  it("overrides: a derived value a real environment variable sets is listed", () => {
+    const rep = settingsReport(
+      op({ GAFFER_MAX_TURNS: "12", GAFFER_NOTIFY_WEBHOOK_URL: HOOK }),
+      settingsPath,
+    );
+    expect(rep.overrides).toContainEqual({
+      name: "GAFFER_MAX_TURNS",
+      value: "12",
+      setting: "GAFFER_EFFORT",
+    });
+    expect(rep.overrides).toContainEqual({
+      name: "GAFFER_NOTIFY_WEBHOOK_URL",
+      value: "(set, hidden)",
+      setting: "GAFFER_NOTIFY",
+    });
   });
 
-  it("GAFFER_MODE=autonomous presets read as effective ON without touching settings.json", () => {
-    writeFileSync(settingsPath, JSON.stringify({ GAFFER_MODE: "autonomous" }), "utf8");
-    const env: NodeJS.ProcessEnv = {};
-    applySettingsToEnv(env, settingsPath);
-    expect(env.AUTO_MERGE).toBe("1");
-    expect(env.DISPATCH_ALLOW_AGENT_APPROVE).toBe("1");
-    const byKey = new Map(listSettings(env, settingsPath).map((v) => [v.key, v]));
-    expect(byKey.get("AUTO_MERGE")?.effective).toBe("1");
-    expect(byKey.get("AUTO_MERGE")?.source).toBe("mode");
-    expect(byKey.get("AUTO_MERGE")?.value).toBe(""); // nothing stored
-    expect(byKey.get("AUTO_MERGE")?.envLocked).toBe(false);
-    // The mirror stays in step with the runner's presets for every mode: the autonomy
-    // cluster plus the sandbox default, which is on in every mode (isolation by default).
-    const cluster = [
-      "AUTO_MERGE",
-      "DISPATCH_ALLOW_AGENT_APPROVE",
-      "GAFFER_AUTO_PUSH",
-      "MEMORY_AUTO_APPROVE",
-      "MERGE_ON_AGENT_REVIEW",
-      "REVIEW_MODE",
-    ];
-    for (const mode of ["autonomous", "strict", "lite", "graduated", "supervised"]) {
-      expect(Object.keys(MODE_PRESETS[mode]!).sort()).toEqual([...cluster, "STRICT_MODE"].sort());
-    }
-  });
-
-  it("the sandbox reads as ON (from the mode) in every mode — as the runner forces it", () => {
-    for (const mode of ["autonomous", "strict", "lite", "supervised", "graduated"]) {
-      resetDerivedSettings();
-      writeFileSync(settingsPath, JSON.stringify({ GAFFER_MODE: mode }), "utf8");
-      const env: NodeJS.ProcessEnv = {};
-      applySettingsToEnv(env, settingsPath);
-      const v = listSettings(env, settingsPath).find((x) => x.key === "STRICT_MODE");
-      expect([mode, v?.effective, v?.source]).toEqual([mode, "1", "mode"]);
-    }
-    // The environment opt-out (GAFFER_STRICT_REQUIRE=0) drops the default outside strict.
-    for (const mode of ["supervised", "graduated"]) {
-      const v = listSettings({ GAFFER_MODE: mode, GAFFER_STRICT_REQUIRE: "0" }, settingsPath).find(
-        (x) => x.key === "STRICT_MODE",
-      );
-      expect([mode, v?.effective, v?.source]).toEqual([mode, "", "default"]);
-    }
-    // An explicit GAFFER_STRICT_REQUIRE=0 opts autonomous/lite out of the default (the
-    // runner honours it, loudly); strict always defaults it on.
-    expect(presetsFor("lite", { GAFFER_STRICT_REQUIRE: "0" })["STRICT_MODE"]).toBeUndefined();
-    expect(
-      presetsFor("autonomous", { GAFFER_STRICT_REQUIRE: "no" })["STRICT_MODE"],
-    ).toBeUndefined();
-    expect(presetsFor("strict", { GAFFER_STRICT_REQUIRE: "0" })["STRICT_MODE"]).toBe("1");
-    expect(presetsFor("lite", { GAFFER_STRICT_REQUIRE: "1" })["STRICT_MODE"]).toBe("1");
-  });
-
-  it("GAFFER_DOD_ENV_PASS takes variable names only", () => {
-    const def = SETTING_DEFS.find((d) => d.key === "GAFFER_DOD_ENV_PASS")!;
-    expect(def).toBeDefined();
-    expect(settingValueProblem(def, "MY_VAR, OTHER_VAR")).toBeNull();
-    expect(settingValueProblem(def, "")).toBeNull();
-    expect(settingValueProblem(def, "MY_VAR=1")).not.toBeNull();
-    expect(settingValueProblem(def, "A;rm -rf /")).not.toBeNull();
-  });
-
-  it("every key this API writes is one of the runner's fourteen settings or an old key it migrates", () => {
-    // runner/config/01-settings.sh takes from settings.json only its fourteen settings
-    // (_GAFFER_SETTINGS_SPEC); an old dashboard key is in its migration map
-    // (_GAFFER_MIGRATION_MAP), so the runner ignores it with a warning naming the setting
-    // that decides it now, unless it is stricter than what that setting derives. Until
-    // the Settings page moves to the fourteen, no key it writes may fall outside both
-    // (the runner would drop it with no word on which setting replaced it).
-    const part = readFileSync(resolve(__dirname, "../../../runner/config/01-settings.sh"), "utf8");
-    const block = (name: string): string[] => {
-      const m = new RegExp(`^${name}='([^']*)'`, "m").exec(part);
-      expect(m, `${name} assignment in 01-settings.sh`).not.toBeNull();
-      return m![1]!
-        .split("\n")
-        .map((l) => l.split("|")[0]!.trim())
-        .filter((w) => w !== "");
-    };
-    const words = (name: string): string[] => {
-      const m = new RegExp(`^${name}="([^"]*)"`, "m").exec(part);
-      expect(m, `${name} assignment in 01-settings.sh`).not.toBeNull();
-      return m![1]!.split(/\s+/).filter((w) => w !== "");
-    };
-    const settings = block("_GAFFER_SETTINGS_SPEC");
-    const oldKeys = block("_GAFFER_MIGRATION_MAP");
-    const shellEnvOnly = words("_GAFFER_ENV_ONLY_KEYS");
-    expect(settings.length).toBe(14);
-    expect(new Set(oldKeys).size).toBe(oldKeys.length);
-    for (const k of oldKeys) expect(settings).not.toContain(k);
-    const apiKeys = SETTING_DEFS.map((d) => d.key).filter((k) => !ENV_ONLY_KEYS.has(k));
-    const outside = apiKeys.filter((k) => !settings.includes(k) && !oldKeys.includes(k));
-    expect(outside).toEqual([]);
-    expect([...shellEnvOnly].sort()).toEqual([...ENV_ONLY_KEYS].sort());
-    for (const k of shellEnvOnly) {
-      expect(settings).not.toContain(k);
-      expect(oldKeys).not.toContain(k);
-    }
-  });
-
-  it("MODE_PRESETS matches what runner/factory.config.sh actually derives for every mode", () => {
-    const config = resolve(__dirname, "../../../runner/factory.config.sh");
-    const keys = [...new Set(Object.values(MODE_PRESETS).flatMap((p) => Object.keys(p)))].sort();
-    for (const mode of Object.keys(MODE_PRESETS)) {
-      const data = mkdtempSync(join(tmpdir(), "wg-settings-mode-"));
-      try {
-        const out = execFileSync(
-          "bash",
-          [
-            "-c",
-            'source "$1" >/dev/null 2>&1; shift; for k in "$@"; do printf "%s=%s\\n" "$k" "${!k:-}"; done',
-            "_",
-            config,
-            ...keys,
-          ],
-          {
-            encoding: "utf8",
-            env: {
-              PATH: process.env["PATH"] ?? "",
-              HOME: data,
-              GAFFER_DATA: data,
-              GAFFER_MODE: mode,
-            },
-            timeout: 60_000,
-          },
-        );
-        const runner = Object.fromEntries(
-          out
-            .trim()
-            .split("\n")
-            .map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]),
-        );
-        for (const k of keys) {
-          // A key the preset leaves out must not be forced on by the runner either.
-          expect([mode, k, runner[k]]).toEqual([mode, k, MODE_PRESETS[mode]![k] ?? runner[k]]);
-          if (MODE_PRESETS[mode]![k] === undefined && k === "STRICT_MODE") {
-            expect([mode, k, runner[k] === "1"]).toEqual([mode, k, false]);
-          }
-        }
-      } finally {
-        rmSync(data, { recursive: true, force: true });
-      }
-    }
-  }, 120_000);
-
-  it("an explicit stored '0' beats the mode preset (the user's choice), and clearing it restores the preset", () => {
+  it("a secret never appears in any block: settings, derived, migration, overrides, cleanup", () => {
     writeFileSync(
       settingsPath,
-      JSON.stringify({ GAFFER_MODE: "autonomous", AUTO_MERGE: "0" }),
-      "utf8",
+      JSON.stringify({
+        GAFFER_NOTIFY: `desktop,${SLACK}`,
+        GAFFER_NOTIFY_WEBHOOK_URL: HOOK,
+        GAFFER_NOTIFY_SLACK_URL: SLACK,
+      }),
     );
-    const env: NodeJS.ProcessEnv = {};
-    applySettingsToEnv(env, settingsPath);
-    expect(env.AUTO_MERGE).toBe("0");
-    expect(listSettings(env, settingsPath).find((v) => v.key === "AUTO_MERGE")?.source).toBe(
-      "file",
-    );
-    writeSettings({ AUTO_MERGE: "" }, env, settingsPath);
-    expect(env.AUTO_MERGE).toBe("1");
-    expect(listSettings(env, settingsPath).find((v) => v.key === "AUTO_MERGE")?.source).toBe(
-      "mode",
-    );
+    const env = op({ GAFFER_NOTIFY_EVENTS: "review_needed", OTHER_WEBHOOK_URL: HOOK });
+    const rep = settingsReport(env, settingsPath);
+    const text = JSON.stringify(rep);
+    expect(text).not.toContain("secret-token");
+    const notify = rep.settings.find((s) => s.key === "GAFFER_NOTIFY")!;
+    expect(notify).toMatchObject({
+      secret: true,
+      configured: true,
+      effective: "desktop, a Slack URL (hooks.slack.com)",
+    });
+    expect(notify.channels).toEqual([
+      { kind: "desktop", host: null },
+      { kind: "slack", host: "hooks.slack.com" },
+    ]);
+    expect(rep.cleanup.drop.map((d) => d.value)).toEqual(["(set, hidden)", "(set, hidden)"]);
   });
 
-  it("changing GAFFER_MODE re-derives every preset that is not stored explicitly", () => {
-    writeFileSync(settingsPath, JSON.stringify({ GAFFER_MODE: "autonomous" }), "utf8");
-    const env: NodeJS.ProcessEnv = {};
+  it("a config the runner refuses is reported, and the dashboard applies no derived value", () => {
+    // A hand edit the runner stops on (the old page could store a padded value).
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({ GAFFER_CONCURRENCY: " 3", AUTO_MERGE: "1", GAFFER_MODE: "autonomous" }),
+    );
+    const env = op();
+    const rep = settingsReport(env, settingsPath);
+    expect(rep.configError).toMatch(/GAFFER_CONCURRENCY/);
     applySettingsToEnv(env, settingsPath);
-    expect(env.AUTO_MERGE).toBe("1");
-    writeSettings({ GAFFER_MODE: "supervised" }, env, settingsPath);
-    expect(env.AUTO_MERGE).toBe("0");
-    expect(env.REVIEW_MODE).toBe("human");
+    expect(env.AUTO_MERGE).toBeUndefined();
+    expect(env.DISPATCH_ALLOW_AGENT_APPROVE).toBeUndefined();
+    expect(env.GAFFER_MODE).toBe("autonomous");
+    expect(env.GAFFER_CONCURRENCY).toBeUndefined();
+  });
+
+  it("environment-only names never come from settings.json into the dashboard's environment", () => {
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        GAFFER_ALLOW_UNCAPPED: "1",
+        GAFFER_WORKER_COMMAND: "/tmp/evil",
+        GAFFER_STRICT_REQUIRE: "0",
+        GAFFER_EFFORT: "small",
+      }),
+    );
+    const env = op();
+    applySettingsToEnv(env, settingsPath);
+    for (const k of ["GAFFER_ALLOW_UNCAPPED", "GAFFER_WORKER_COMMAND", "GAFFER_STRICT_REQUIRE"])
+      expect(env[k]).toBeUndefined();
+    expect(env.GAFFER_EFFORT).toBe("small");
+  });
+
+  it("resolves the path under $GAFFER_DATA", () => {
+    expect(resolveSettingsPath({ GAFFER_DATA: dir })).toBe(join(dir, "settings.json"));
+    expect(readSettingsFile(join(dir, "missing.json"))).toEqual({});
+  });
+});
+
+describe("the removal act", () => {
+  const OLD = {
+    GAFFER_MODE: "lite",
+    GAFFER_CONCURRENCY: " 3",
+    AUTO_MERGE: "1",
+    GAFFER_NOTIFY_SLACK_URL: SLACK,
+    FOO: "x",
+  };
+
+  it("shows exactly what it drops and rewrites, and nothing changes until it is done", () => {
+    writeFileSync(settingsPath, JSON.stringify(OLD));
+    const plan = cleanupPlan(op(), settingsPath);
+    expect(plan.drop.map((d) => d.key).sort()).toEqual([
+      "AUTO_MERGE",
+      "FOO",
+      "GAFFER_NOTIFY_SLACK_URL",
+    ]);
+    expect(plan.rewrite).toEqual([{ key: "GAFFER_CONCURRENCY", from: " 3", to: "3" }]);
+    expect(readSettingsFileRaw(settingsPath)).toEqual(OLD);
+  });
+
+  it("keeps only the fourteen, atomically, with stored values the runner accepts", () => {
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({ ...OLD, GAFFER_BUDGET_USD: "abc", GAFFER_EFFORT: "large" }),
+    );
+    const env = op();
+    const plan = cleanupPlan(env, settingsPath);
+    removeOldKeys(
+      { drop: plan.drop.map((d) => d.key), rewrite: plan.rewrite.map((r) => r.key) },
+      env,
+      settingsPath,
+    );
+    expect(readSettingsFileRaw(settingsPath)).toEqual({
+      GAFFER_MODE: "lite",
+      GAFFER_CONCURRENCY: "3",
+      GAFFER_EFFORT: "large",
+    });
+    expect(settingsReport(env, settingsPath).configError).toBeUndefined();
+  });
+
+  it("clamps a concurrency above 64 (the old page allowed it)", () => {
+    writeFileSync(settingsPath, JSON.stringify({ GAFFER_CONCURRENCY: "99" }));
+    expect(cleanupPlan(op(), settingsPath).rewrite).toEqual([
+      { key: "GAFFER_CONCURRENCY", from: "99", to: "64" },
+    ]);
+  });
+
+  it("refuses when the file changed since the page showed the plan", () => {
+    writeFileSync(settingsPath, JSON.stringify(OLD));
+    const env = op();
+    expect(() => removeOldKeys({ drop: ["AUTO_MERGE"], rewrite: [] }, env, settingsPath)).toThrow(
+      /changed since/,
+    );
+    expect(readSettingsFileRaw(settingsPath)).toEqual(OLD);
   });
 });

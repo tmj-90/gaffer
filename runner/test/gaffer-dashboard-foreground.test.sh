@@ -67,25 +67,26 @@ GAFFER_TICK_OUTER_TIMEOUT=999 run_fg "$WORK/d1b" >/dev/null
 grep -q "^GAFFER_TICK_OUTER_TIMEOUT=999$" "$CAP" && ok "an operator-set GAFFER_TICK_OUTER_TIMEOUT stays" || fail "the operator's GAFFER_TICK_OUTER_TIMEOUT was scrubbed"
 [ -f "$WORK/d1/dashboard.pid" ] && fail "foreground must not write a pid file" || ok "no pid file (the supervisor owns the process)"
 
-echo "== config-derived settings never reach the server as env (else the UI shows them env-locked) =="
-if [ -f "$RUNNER_DIR/../packages/dispatch/dist/api/settings.js" ]; then
-  mkdir -p "$WORK/d3"
-  # A value saved through the dashboard earlier, and one the operator set for real.
-  printf '{"MAX_TICKS_PER_DAY":"7","GAFFER_IDLE_MODE":""}\n' > "$WORK/d3/settings.json"
-  ERR="$(GAFFER_REWORK_BUDGET_USD=3 run_fg "$WORK/d3" 2>&1 >/dev/null)"
-  for k in GAFFER_CONCURRENCY GAFFER_DAILY_BUDGET_USD GAFFER_PAUSE_ON_CAP GAFFER_REQUIRE_CI MAX_TICKS_PER_DAY GAFFER_CI_POLL_ATTEMPTS; do
-    grep -q "^$k=" "$CAP" && fail "$k (a default / settings.json value) leaked into the server env — the UI would lock it" || ok "$k is not in the server env (editable in the UI)"
-  done
-  grep -q "^GAFFER_REWORK_BUDGET_USD=3$" "$CAP" && ok "an operator-set key stays (a real env override locks it)" || fail "the operator's GAFFER_REWORK_BUDGET_USD was scrubbed"
-  grep -q "^_GAFFER_" "$CAP" && fail "the launcher's re-source bookkeeping leaked into the server env: $(grep '^_GAFFER_' "$CAP" | cut -d= -f1 | head -3 | tr '\n' ' ')" || ok "no _GAFFER_* bookkeeping in the server env"
-  grep -q "could not read the setting keys" <<<"$ERR" && fail "the setting-key reader failed: $ERR" || ok "the setting keys were read from the dispatch dist (no warning)"
-  # A dist the reader cannot load is reported, never silently ignored.
-  mkdir -p "$WORK/baddist/dist/api"; printf 'export const SETTING_DEFS = [;\n' > "$WORK/baddist/dist/api/settings.js"
-  ( source "$RUNNER_DIR/lib/dashboard.sh"; DISPATCH_DIR="$WORK/baddist" PATH="$BINDIR:$PATH" gaffer_dashboard_env_unset_flags ) 2>"$WORK/bad.err" >/dev/null
-  grep -q "could not read the setting keys" "$WORK/bad.err" && ok "an unreadable settings dist warns loudly (no silent || true)" || fail "an unreadable settings dist was swallowed: $(cat "$WORK/bad.err")"
-else
-  echo "SKIP: dispatch dist not built (pnpm -C packages/dispatch build)"
-fi
+echo "== config-derived values never reach the server as env (else the UI shows them env-locked) =="
+mkdir -p "$WORK/d3"
+# A value saved through the dashboard earlier (an old key), a setting, and one the
+# operator set for real.
+printf '{"MAX_TICKS_PER_DAY":"7","GAFFER_EFFORT":"large","GAFFER_IDLE":""}\n' > "$WORK/d3/settings.json"
+ERR="$(GAFFER_REWORK_BUDGET_USD=3 run_fg "$WORK/d3" 2>&1 >/dev/null)"
+for k in GAFFER_CONCURRENCY GAFFER_DAILY_BUDGET_USD GAFFER_EFFORT GAFFER_PAUSE_ON_CAP GAFFER_REQUIRE_CI MAX_TICKS_PER_DAY GAFFER_CI_POLL_ATTEMPTS GAFFER_MAX_DELIVERY_ATTEMPTS; do
+  grep -q "^$k=" "$CAP" && fail "$k (a default / settings.json / derived value) leaked into the server env; the UI would lock it" || ok "$k is not in the server env (the dashboard derives it)"
+done
+grep -q "^GAFFER_REWORK_BUDGET_USD=3$" "$CAP" && ok "an operator-set key stays (a real env override locks it)" || fail "the operator's GAFFER_REWORK_BUDGET_USD was scrubbed"
+# The operator record reaches the server (it hands it to every runner it starts, so an
+# old settings.json key never arrives there as operator environment); the launcher's
+# re-source records and warn-once marks do not.
+grep -q "^_GAFFER_OPERATOR_ENV=.* GAFFER_REWORK_BUDGET_USD " "$CAP" && ok "the operator record reaches the server" || fail "the operator record is missing from the server env"
+grep -v "^_GAFFER_OPERATOR_ENV=" "$CAP" | grep -q "^_GAFFER_" && fail "the launcher's re-source bookkeeping leaked into the server env: $(grep '^_GAFFER_' "$CAP" | grep -v OPERATOR | cut -d= -f1 | head -3 | tr '\n' ' ')" || ok "no other _GAFFER_* bookkeeping in the server env"
+grep -q "could not read the setting names" <<<"$ERR" && fail "the setting-name reader failed: $ERR" || ok "the setting names were read from the schema (no warning)"
+# A schema the reader cannot load is reported, never silently ignored.
+mkdir -p "$WORK/badrunner/config"; printf '{ "settings": [' > "$WORK/badrunner/config/settings-schema.json"
+( source "$RUNNER_DIR/lib/dashboard.sh"; RUNNER_DIR="$WORK/badrunner" PATH="$BINDIR:$PATH" gaffer_dashboard_env_unset_flags ) 2>"$WORK/bad.err" >/dev/null
+grep -q "could not read the setting names" "$WORK/bad.err" && ok "an unreadable schema warns loudly (no silent || true)" || fail "an unreadable schema was swallowed: $(cat "$WORK/bad.err")"
 
 echo "== --lan binds every interface =="
 run_fg "$WORK/d2" --lan >/dev/null

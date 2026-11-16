@@ -23,7 +23,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { createApiServer } from "../src/api/server.js";
-import { SETTING_DEFS } from "../src/api/settings.js";
+import { oldKeySetting, SETTING_DEFS } from "../src/api/settings.js";
 import { Dispatch } from "../src/core.js";
 import {
   aggregateRows,
@@ -216,23 +216,18 @@ describe("GET /api/cost — estimated spend is in the envelope", () => {
   });
 });
 
-describe("Settings allow-list — the budget knobs the runner enforces are exposed", () => {
-  it("GAFFER_DAILY_BUDGET_USD is a budget setting (a decimal number of dollars)", () => {
+describe("Settings: the budget the runner enforces is a setting", () => {
+  it("GAFFER_DAILY_BUDGET_USD is a budget setting (a dollar amount per UTC day)", () => {
     const def = SETTING_DEFS.find((d) => d.key === "GAFFER_DAILY_BUDGET_USD");
     expect(def).toBeDefined();
     expect(def!.group).toBe("budget");
-    // Typed "number" (stored as its decimal string) so "abc" is refused on write
-    // (exploratory finding ui-workflows/F2).
-    expect(def!.type).toBe("number");
-    expect(def!.help).toMatch(/UTC/);
+    // A dollar amount, so "abc" is refused on write (exploratory finding ui-workflows/F2).
+    expect(def!.kind).toBe("usd");
+    expect(def!.description).toMatch(/UTC day/);
   });
 
-  it("DISPATCH_MAX_ATTEMPTS is a budget setting (int) whose help names its real semantics", () => {
-    const def = SETTING_DEFS.find((d) => d.key === "DISPATCH_MAX_ATTEMPTS");
-    expect(def).toBeDefined();
-    expect(def!.group).toBe("budget");
-    expect(def!.type).toBe("int");
-    expect(def!.help).toMatch(/reject/i);
-    expect(def!.help).toMatch(/Max delivery attempts/);
+  it("DISPATCH_MAX_ATTEMPTS is not a setting: GAFFER_EFFORT decides it", () => {
+    expect(SETTING_DEFS.find((d) => d.key === "DISPATCH_MAX_ATTEMPTS")).toBeUndefined();
+    expect(oldKeySetting("DISPATCH_MAX_ATTEMPTS")).toBe("GAFFER_EFFORT");
   });
 });

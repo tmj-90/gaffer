@@ -119,9 +119,9 @@ grep -q 'gaffer_day_usd_cap_ok' "$RUNNER_DIR/bin/poll-once.sh" \
   && ok "bin/poll-once.sh (dashboard Poll) consults the day-USD gate" \
   || fail "poll-once.sh should consult gaffer_day_usd_cap_ok"
 # B28(d): the cap is exposed in the dashboard Settings allow-list.
-grep -q '"GAFFER_DAILY_BUDGET_USD"' "$RUNNER_DIR/../packages/dispatch/src/api/settings.ts" \
-  && ok "GAFFER_DAILY_BUDGET_USD is a dashboard Setting (SETTING_DEFS)" \
-  || fail "GAFFER_DAILY_BUDGET_USD should be in SETTING_DEFS"
+grep -q '"name": "GAFFER_DAILY_BUDGET_USD"' "$RUNNER_DIR/config/settings-schema.json" \
+  && ok "GAFFER_DAILY_BUDGET_USD is one of the fourteen settings (the schema the dashboard reads)" \
+  || fail "GAFFER_DAILY_BUDGET_USD should be one of the fourteen settings"
 
 echo "== fail closed: a configured cap with an UNMEASURABLE spend halts (was: read as \$0) =="
 export GAFFER_DAILY_BUDGET_USD=1.00

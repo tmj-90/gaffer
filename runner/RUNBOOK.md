@@ -128,6 +128,23 @@ safety hook). After restoring the database from a backup: `gaffer wg gate-key re
 then re-sign. A lost factory key means every principal must be re-signed under the new
 one (`gaffer setup` creates it), as every approval must be re-approved.
 
+**Sealed autonomy.** Autonomy policy rows, ticket risk levels and lifts of a step-down
+are signed with the factory key too. An unsigned `auto` row grants nothing (the ladder
+says "Not signed: a person decides"), and a ticket whose risk is not signed is decided as
+the highest risk. After an upgrade, a restore or a lost key, review and re-sign the rows
+you turned on yourself:
+
+```bash
+runner/gaffer wg autonomy unsigned                        # each row: repo, risk, gate, mode, who, when; prints codes
+runner/gaffer wg autonomy resign <id> --confirm <its review_code>
+runner/gaffer wg autonomy risk-unsigned                   # open tickets whose risk is not signed, per risk
+runner/gaffer wg autonomy risk-resign --all --confirm <code>
+```
+
+A ticket an agent created through MCP is signed at its first claim, with no act needed.
+Only a person re-signs: an admin principal or the operator, never an agent (the safety
+hook refuses both verbs) and never MCP.
+
 The dashboard's action buttons (Suggest work, Merge, Poll for work, Onboard) need
 their commands in the API's environment; `gaffer dashboard` wires them, and
 [`.env.example`](../.env.example) lists them if you start `api/bin.js` by hand.

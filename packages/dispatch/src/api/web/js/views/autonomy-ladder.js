@@ -7,6 +7,7 @@
 // Autonomy (autonomyLadderPanel, re-exported by autonomy.js) and as one line on the
 // Overview (autonomyStepDownLine).
 
+import { table } from "../lookup.js";
 import { api } from "../api.js";
 import { button, callout, emptyState, meterRow, panelHead } from "../components.js";
 import { clear, el } from "../dom.js";
@@ -15,15 +16,15 @@ import { router } from "../router.js";
 import { runAsyncAction, toast } from "../toast.js";
 
 const GATES = ["approve", "merge"];
-const GATE_WORD = { approve: "Approve", merge: "Merge" };
-const RISK_WORD = { low: "Low", medium: "Medium", high: "High", critical: "Critical" };
-const MEASURE_WORD = { agreement: "Agreement", approved_unchanged: "Approved unchanged" };
-const TRIGGER_WORD = {
+const GATE_WORD = table({ approve: "Approve", merge: "Merge" });
+const RISK_WORD = table({ low: "Low", medium: "Medium", high: "High", critical: "Critical" });
+const MEASURE_WORD = table({ agreement: "Agreement", approved_unchanged: "Approved unchanged" });
+const TRIGGER_WORD = table({
   regression: "a regression",
   reopened: "a reopened change",
   tester_failures: "tester failures",
   cascade: "a lower risk stepped down",
-};
+});
 
 /** The rung a cell shows: a word and a mark. A step-down and the ceiling read as their own. */
 function rungOf(cell) {

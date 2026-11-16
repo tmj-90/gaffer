@@ -378,7 +378,8 @@ export function beginLanding(
 
 /**
  * THE AUTONOMY LADDER: refuse a landing whose approval (the ticket's latest move into
- * ready_for_merge) was not a person's while the merge gate is held for the ticket (a
+ * ready_for_merge, with the review approval on its current path) was not a person's while
+ * the merge gate is held for the ticket (a
  * step-down in force, the critical ceiling). STATE_CONFLICT reason
  * `autonomy_stepped_down` / `autonomy_ceiling`: the runner lands nothing and the ticket
  * waits for a person. A resolver that throws is a hold; an approval that cannot be read is
@@ -397,7 +398,11 @@ export function assertMergeGateNotHeld(
           { actor_type: string } | undefined
       )?.actor_type
     : undefined;
-  if (by === "human" || by === "admin") return;
+  // A person's approval only when the move into ready_for_merge AND the review approval on
+  // the ticket's current path (as the merge lane reads it, json-tool approval-actor) are
+  // both a person's: a person's tester PASS (a waiver) carries an AGENT's approval forward.
+  const isPerson = (t: string | undefined): boolean => t === "human" || t === "admin";
+  if (isPerson(by) && isPerson(reviewApprovalActor(internals.db, ticket.id))) return;
   let hold: AutonomyHold | null;
   try {
     hold = resolve(ticket, "merge");
@@ -405,14 +410,55 @@ export function assertMergeGateNotHeld(
     hold = { kind: "stepped_down", repoId: "unknown" };
   }
   if (!hold) return;
+  // What lands it: a person's own approval (back to review, then approve), or, for a
+  // step-down, a person lifting it. Who pressed Merge is not carried here in a sealed form,
+  // so a person's Merge now on an agent's approval is refused too and says so.
+  const n = ticket.number;
+  const lift =
+    hold.kind === "stepped_down"
+      ? `, or a person lifts the step-down (gaffer wg autonomy lift ${hold.repoId} --risk ${ticket.risk_level} --gate merge)`
+      : "";
   throw new DispatchError(
     "STATE_CONFLICT",
-    `#${ticket.number} was approved without a person and its merge gate is now held. ${holdMessage(hold, "merge")} Nothing may land on that approval.`,
+    `#${n} was approved without a person and its merge gate is now held. ${holdMessage(hold, "merge")} Nothing may land on that approval, Merge now included. To land it, a person approves it: gaffer wg ticket reopen-for-review ${n} --as admin --reason "a person approves it" --resolution "re-review", then gaffer approve ${n}${lift}.`,
     {
       reason: hold.kind === "ceiling" ? "autonomy_ceiling" : "autonomy_stepped_down",
       ...(hold.repoId ? { repo_id: hold.repoId } : {}),
     },
   );
+}
+
+/**
+ * THE AUTONOMY LADDER: the actor type of the review approval that put the ticket on its
+ * current path to merge (the latest `review_approved` / `review_approved_to_testing`
+ * transition after its latest entry into in_review), or undefined when there is none. The
+ * same rule as the merge lane's `approval-actor` (runner/lib/json-tool.mjs).
+ */
+export function reviewApprovalActor(
+  db: LandingInternals["db"],
+  ticketId: string,
+  beforeRowid?: number,
+): string | undefined {
+  const before = beforeRowid === undefined ? "" : " AND rowid < @before";
+  const params = { id: ticketId, ...(beforeRowid === undefined ? {} : { before: beforeRowid }) };
+  const entered = db
+    .prepare(
+      `SELECT rowid AS r FROM work_events
+        WHERE entity_type = 'ticket' AND entity_id = @id AND event_type = 'ticket.transitioned'
+          AND json_extract(payload_json, '$.to') = 'in_review'${before}
+        ORDER BY rowid DESC LIMIT 1`,
+    )
+    .get(params) as { r: number } | undefined;
+  const row = db
+    .prepare(
+      `SELECT actor_type FROM work_events
+        WHERE entity_type = 'ticket' AND entity_id = @id AND event_type = 'ticket.transitioned'
+          AND json_extract(payload_json, '$.reason') IN ('review_approved', 'review_approved_to_testing')
+          AND rowid > @after${before}
+        ORDER BY rowid DESC LIMIT 1`,
+    )
+    .get({ ...params, after: entered?.r ?? 0 }) as { actor_type: string } | undefined;
+  return row?.actor_type;
 }
 
 /**

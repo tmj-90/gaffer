@@ -54,6 +54,7 @@ import {
   type StepDownTrigger,
 } from "./autonomyStepDownStore.js";
 import { LANE_VERDICT_EVENT } from "./reviewTelemetry.js";
+import { reviewApprovalActor } from "./reviewGate/landing.js";
 
 /** What the step-down functions read from the facade. */
 export interface StepDownHost {
@@ -110,10 +111,39 @@ export function automaticGates(
           LIMIT 1`,
       )
       .get(ticketId) as unknown) !== undefined;
+  // Merge was automatic unless BOTH the move into ready_for_merge and the review approval on
+  // the path it landed on were a person's (a person's tester PASS carries an agent's approval
+  // forward; the landing check reads it the same way, reviewGate/landing.ts).
+  const onPath = reviewApprovalActor(db, ticketId, beforeRowid);
   return {
     approve: approval !== undefined && !isPerson(approval.actor_type),
-    merge: landed && toMerge !== undefined && !isPerson(toMerge.actor_type),
+    merge: landed && toMerge !== undefined && (!isPerson(toMerge.actor_type) || !isPerson(onPath)),
   };
+}
+
+/**
+ * Run an act and the step-down it causes in ONE transaction: `act` records the act and
+ * returns its result with `then`, the step-down; a throw from `then` rolls the act back
+ * too. A throw from `act` itself is a REFUSAL that may have recorded evidence of its own
+ * before it threw (a stale tester verdict): it is caught inside the transaction, what was
+ * written commits, and the error is thrown again after (a nested transaction rolled its
+ * own writes back already).
+ */
+export function withRefusalKept<T>(db: Db, act: () => { result: T; then: () => unknown }): T {
+  let refused: { error: unknown } | null = null;
+  const out = inTransaction(db, () => {
+    let done: { result: T; then: () => unknown };
+    try {
+      done = act();
+    } catch (error) {
+      refused = { error };
+      return null;
+    }
+    done.then();
+    return { value: done.result };
+  });
+  if (out === null) throw (refused as { error: unknown } | null)?.error;
+  return out.value;
 }
 
 /** One row a step-down wrote. */

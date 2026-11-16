@@ -56,9 +56,7 @@ describe("the fourteen, read from the runner's schema (drift fails here)", () =>
     expect(SETTING_DEFS.map((d) => d.key)).toEqual(schema.settings.map((s) => s.name));
     expect([...PRESENTATION_KEYS].sort()).toEqual(schema.settings.map((s) => s.name).sort());
     const writable = SETTING_DEFS.filter((d) => d.writable).map((d) => d.key);
-    expect(writable).toEqual(
-      schema.settings.map((s) => s.name).filter((n) => n !== "GAFFER_DATA"),
-    );
+    expect(writable).toEqual(schema.settings.map((s) => s.name).filter((n) => n !== "GAFFER_DATA"));
     for (const s of schema.settings) {
       const d = SETTING_DEFS.find((x) => x.key === s.name)!;
       expect(d.kind).toBe(s.kind);
@@ -238,9 +236,9 @@ describe("writes", () => {
         "GAFFER_NOTIFY",
       ]);
     }
-    expect(
-      writeSettings({ GAFFER_NOTIFY: `desktop,${SLACK}` }, env, settingsPath).written,
-    ).toEqual(["GAFFER_NOTIFY"]);
+    expect(writeSettings({ GAFFER_NOTIFY: `desktop,${SLACK}` }, env, settingsPath).written).toEqual(
+      ["GAFFER_NOTIFY"],
+    );
   });
 
   it("a notify change keeps the saved URLs on the server", () => {

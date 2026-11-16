@@ -805,9 +805,7 @@ function renderIdleLoopsPanel(view, repos, nodes, envSettings = []) {
       if (idleMode === "create_ready_tickets") tone = "warn";
     } else if (maintOn && lanesOn === 0 && !backlogOn) {
       text =
-        (envMaint === "1"
-          ? `${maintBy} turns the lane on, but `
-          : "Maintenance is on but ") +
+        (envMaint === "1" ? `${maintBy} turns the lane on, but ` : "Maintenance is on but ") +
         "no lane is enabled — idle ticks will do nothing (no_work). Enable a lane or use the recommended set.";
       tone = "warn";
     } else if (!maintOn) {

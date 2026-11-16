@@ -42,13 +42,7 @@ import {
 
 /** How the page groups the fourteen (presentation only; the schema holds the rest). */
 export type SettingGroup =
-  | "autonomy"
-  | "budget"
-  | "work"
-  | "safety"
-  | "delivery"
-  | "notify"
-  | "location";
+  "autonomy" | "budget" | "work" | "safety" | "delivery" | "notify" | "location";
 
 /** Static descriptor for one setting: the schema's fields plus a label and a group. */
 export interface SettingDef {
@@ -187,7 +181,7 @@ export function readSettingsFileRaw(path: string): Record<string, string> {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return {};
     throw new DispatchError("INTERNAL_ERROR", `Could not read settings file: ${describe(err)}`);
   }
-  const trimmed = raw.replace(/^﻿/, "").trim();
+  const trimmed = raw.replace(/^\uFEFF/, "").trim();
   if (trimmed === "") return {};
   let parsed: unknown;
   try {
@@ -330,7 +324,7 @@ export function applySettingsToEnv(
       if (d && d.set) want.set(name, d.value);
     }
   } else {
-    let file: Record<string, string> = {};
+    let file: Record<string, string>;
     try {
       file = readSettingsFile(path);
     } catch {
@@ -423,9 +417,7 @@ export function settingValueProblem(
         ? "is a list of gates, which turns the others off; only the environment may do that (settings.json takes standard or strict)"
         : "is not standard, strict or a list of tests, lint, typecheck";
     case "testing":
-      return ["auto", "on", "off", "1", "0", "true", "false", "yes", "no"].includes(
-        v.toLowerCase(),
-      )
+      return ["auto", "on", "off", "1", "0", "true", "false", "yes", "no"].includes(v.toLowerCase())
         ? null
         : "is not one of: auto, on, off";
     case "notify": {

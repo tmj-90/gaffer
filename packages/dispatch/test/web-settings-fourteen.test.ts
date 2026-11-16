@@ -236,9 +236,9 @@ describe("web: the Settings page carries the fourteen", () => {
 
   it("removing the Slack URL sends a notify change, never a URL", async () => {
     await boot(PLAIN);
-    const remove = [
-      ...row("GAFFER_NOTIFY").querySelectorAll('[data-channel="slack"] button'),
-    ].find((b) => b.textContent === "Remove") as HTMLButtonElement;
+    const remove = [...row("GAFFER_NOTIFY").querySelectorAll('[data-channel="slack"] button')].find(
+      (b) => b.textContent === "Remove",
+    ) as HTMLButtonElement;
     remove.click();
     await submit();
     expect(posts[0]!.body).toEqual({ settings: {}, notify: { slack: null } });
@@ -268,7 +268,15 @@ describe("web: the Settings page carries the fourteen", () => {
           error: {
             code: "VALIDATION_ERROR",
             message: "Not saved: Daily budget (USD) is not a dollar amount.",
-            details: { invalid: [{ key: "GAFFER_DAILY_BUDGET_USD", label: "Daily budget (USD)", problem: "is not a dollar amount" }] },
+            details: {
+              invalid: [
+                {
+                  key: "GAFFER_DAILY_BUDGET_USD",
+                  label: "Daily budget (USD)",
+                  problem: "is not a dollar amount",
+                },
+              ],
+            },
           },
         }),
         { status: 422, headers: { "content-type": "application/json" } },
@@ -340,7 +348,9 @@ describe("web: the migration callout and its removal act", () => {
     expect(confirm.hidden).toBe(true);
     start.click();
     expect(confirm.hidden).toBe(false);
-    const dropped = [...confirm.querySelectorAll(".mig-drop code")].map((c) => c.textContent).sort();
+    const dropped = [...confirm.querySelectorAll(".mig-drop code")]
+      .map((c) => c.textContent)
+      .sort();
     expect(dropped).toEqual(OLD.cleanup.drop.map((d) => d.key).sort());
     expect(posts).toHaveLength(0);
     (document.querySelector(".mig-remove") as HTMLButtonElement).click();

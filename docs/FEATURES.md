@@ -634,14 +634,29 @@ environment still overrides it). It is one of the fourteen settings in
 decided it. Whatever the mode, every agent runs
 inside an OS sandbox (`sandbox-exec` on macOS, `docker` where Docker is installed): a
 host without one refuses to launch agents, before anything is claimed, and says what to
-install. Settings shows that posture as a read-only line in its Sandbox group: the
+install. Settings shows that posture as a read-only line in its Safety section: the
 provider, available or missing, required or opted out, and the fix. The opt-out is
 `GAFFER_STRICT_REQUIRE=0` in the environment, for a runner you contain yourself; with a
 ship or mutate flag on as well, the runner warns about it twice
 ([docs/sandbox.md](sandbox.md)). The gates run agent-written code, so each gate run
 starts from an empty environment (PATH, a throwaway HOME, locale, proxy and toolchain
-homes); the Quality group's "Variables the gates may see" (`GAFFER_DOD_ENV_PASS`) names
-any other variable your tests need, and credential-shaped names are never passed.
+homes); `GAFFER_DOD_ENV_PASS`, exported before starting the runner (it is derived from
+`GAFFER_GATES`, not a setting), names any other variable your tests need, and
+credential-shaped names are never passed.
+
+The Settings page (the boot room) carries the fourteen settings and nothing else. The
+Autonomy mode is the dial, the one control that grants autonomy; the others are
+segmented choices with a line each, the two dollar caps with the spend so far, the three
+model slots or a preset, the notify channels (saved URLs are never shown again) and the
+port and data location with how to change them. Every setting says where its value came
+from (default, set here, or the environment, which makes it read-only) and opens "What
+this sets": the values it derives with the figure a run uses now, as the runner's own
+config reports it. A derived value a real environment variable sets is listed under
+"Overridden from the environment". When settings.json still holds keys an older
+dashboard wrote, one callout lists each, the setting that decides it now and which
+reading is in force (the stricter one), with one action that removes them after showing
+exactly what goes; nothing is removed without it. A run the dashboard starts gets
+exactly what a run started from the command line gets from the same settings.json.
 
 ![The boot room: the Team instructions dial on Supervised, who plays each position, and autonomy suggestions drawn from the review record](img/settings.png)
 
@@ -886,11 +901,13 @@ and the tester's passes.*
   No tick claims work and the dashboard's model calls start nothing meanwhile;
   `gaffer status` and Health show "Paused until <time>: usage limit". A spend cap is not
   a pause: those tickets are parked for a person.
-- **Secrets are never shown back.** The Slack and webhook URLs are posting authority
-  on their own: the panel says whether one is set and names its host, with **Replace**
-  and **Remove**.
+- **Secrets are never shown back.** The Slack and webhook URLs in `GAFFER_NOTIFY` are
+  posting authority on their own: every API answer and the page say whether one is set
+  and name its host, with **Replace** and **Remove**.
 - A value that does not fit its setting is not saved: the panel marks the field and the
-  API refuses the write with a 422 naming it. The fourteen settings are in
+  API refuses the write with a 422 naming it, in the runner's own words; a key that is not
+  one of the fourteen is refused naming the setting that decides it now. The fourteen
+  settings are in
   [CONFIG.md](CONFIG.md); every value they derive, and who reads it, in
   [CONFIG-ADVANCED.md](CONFIG-ADVANCED.md).
 

@@ -80,7 +80,10 @@ export async function routeApi(
       const updates: Record<string, string> = { ...body.settings };
       if (body.notify !== undefined) {
         const stored = readSettingsFile(resolveSettingsPath())["GAFFER_NOTIFY"] ?? "";
-        updates["GAFFER_NOTIFY"] = applyNotifyChange(updates["GAFFER_NOTIFY"] ?? stored, body.notify);
+        updates["GAFFER_NOTIFY"] = applyNotifyChange(
+          updates["GAFFER_NOTIFY"] ?? stored,
+          body.notify,
+        );
       }
       // One refused key or value refuses the whole write (422 naming each and why), so a
       // bad field is never half-saved beside good ones and never silently dropped.

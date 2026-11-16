@@ -183,9 +183,7 @@ async function renderSettings() {
 
   if (all.length === 0) {
     wrap.appendChild(note);
-    wrap.appendChild(
-      emptyState("No settings available", "The settings API returned no settings."),
-    );
+    wrap.appendChild(emptyState("No settings available", "The settings API returned no settings."));
     return wrap;
   }
 
@@ -443,11 +441,7 @@ async function renderSettings() {
   const sections = el("details", { class: "boot-sections", open: phone ? null : "" }, [
     el("summary", {}, [
       "Jump to a section",
-      el(
-        "span",
-        { class: "boot-n" },
-        String(groupsUsed.length + 2 + extra.filter(Boolean).length),
-      ),
+      el("span", { class: "boot-n" }, String(groupsUsed.length + 2 + extra.filter(Boolean).length)),
     ]),
     el("ul", { class: "boot-links" }, [
       migrationNode ? el("li", {}, link("settings-migration", "Old settings")) : null,
@@ -511,8 +505,7 @@ function migrationCallout(migration, cleanup) {
       title: n
         ? `${plural(n, "old setting")} in settings.json ${n === 1 ? "is" : "are"} now decided by ${settingsNamed.length ? settingsNamed.join(", ") : "nothing"}: review.`
         : "settings.json holds a stored value the runner reads differently: review.",
-      body:
-        "While the old keys stay in settings.json, an old key that is stricter keeps beating the setting you pick (an old GAFFER_TICK_TIMEOUT=1800 beats Effort large), an old notify URL keeps receiving events after you change Notify, and every runner process prints one warning per old key. Nothing is removed until you choose to.",
+      body: "While the old keys stay in settings.json, an old key that is stricter keeps beating the setting you pick (an old GAFFER_TICK_TIMEOUT=1800 beats Effort large), an old notify URL keeps receiving events after you change Notify, and every runner process prints one warning per old key. Nothing is removed until you choose to.",
     }),
   );
   box.firstChild.id = "settings-migration-t";
@@ -618,11 +611,19 @@ function overridesPanel(overrides) {
     },
     [
       el("div", { class: "panel-head" }, [
-        el("h2", { class: "panel-title", id: "settings-overrides-t" }, "Overridden from the environment"),
+        el(
+          "h2",
+          { class: "panel-title", id: "settings-overrides-t" },
+          "Overridden from the environment",
+        ),
       ]),
       el("p", { class: "section-note" }, [
         "A real environment variable sets these derived values, so the setting that would decide each does not. Unset the variable before starting the runner to hand it back. Every derived value: ",
-        el("a", { href: ADVANCED_DOC, rel: "noopener", target: "_blank" }, "Detailed configuration"),
+        el(
+          "a",
+          { href: ADVANCED_DOC, rel: "noopener", target: "_blank" },
+          "Detailed configuration",
+        ),
         " (docs/CONFIG-ADVANCED.md).",
       ]),
       dataTable({
@@ -911,7 +912,11 @@ function renderNotifyInput(s, editors) {
     );
   const desktop = el("input", { type: "checkbox", role: "switch", "aria-label": "Desktop banner" });
   desktop.checked = !!has("desktop");
-  const desktopWord = el("span", { class: "switch-word", "aria-hidden": "true" }, desktop.checked ? "On" : "Off");
+  const desktopWord = el(
+    "span",
+    { class: "switch-word", "aria-hidden": "true" },
+    desktop.checked ? "On" : "Off",
+  );
   desktop.addEventListener("change", () => {
     desktopWord.textContent = desktop.checked ? "On" : "Off";
   });

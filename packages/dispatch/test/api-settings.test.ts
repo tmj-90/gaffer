@@ -86,8 +86,15 @@ describe("API: GET/POST /api/settings", () => {
     };
     expect(body.settings.map((s) => s.key)).toEqual(SETTING_DEFS.map((d) => d.key));
     const effort = body.settings.find((s) => s.key === "GAFFER_EFFORT");
-    expect(effort).toMatchObject({ value: "", envLocked: false, origin: "default", effective: "standard" });
-    expect(body.derived.find((d) => d.name === "GAFFER_TICK_TIMEOUT")?.setting).toBe("GAFFER_EFFORT");
+    expect(effort).toMatchObject({
+      value: "",
+      envLocked: false,
+      origin: "default",
+      effective: "standard",
+    });
+    expect(body.derived.find((d) => d.name === "GAFFER_TICK_TIMEOUT")?.setting).toBe(
+      "GAFFER_EFFORT",
+    );
     expect(body.migration).toEqual([]);
     expect(body.cleanup).toEqual({ drop: [], rewrite: [] });
   });
@@ -125,7 +132,9 @@ describe("API: GET/POST /api/settings", () => {
     const body = (await res.json()) as {
       error: { message: string; details?: { invalid?: { key: string; decidedBy?: string }[] } };
     };
-    expect(body.error.message).toMatch(/AUTO_MERGE is no longer a setting: GAFFER_MODE decides it now/);
+    expect(body.error.message).toMatch(
+      /AUTO_MERGE is no longer a setting: GAFFER_MODE decides it now/,
+    );
     expect(body.error.details?.invalid).toEqual([
       expect.objectContaining({ key: "AUTO_MERGE", decidedBy: "GAFFER_MODE" }),
     ]);
@@ -159,7 +168,11 @@ describe("API: GET/POST /api/settings", () => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        settings: { GAFFER_EFFORT: "large", GAFFER_DAILY_BUDGET_USD: "abc", GAFFER_CONCURRENCY: "65" },
+        settings: {
+          GAFFER_EFFORT: "large",
+          GAFFER_DAILY_BUDGET_USD: "abc",
+          GAFFER_CONCURRENCY: "65",
+        },
       }),
     });
     expect(res.status).toBe(422);
@@ -177,7 +190,10 @@ describe("API: GET/POST /api/settings", () => {
   });
 
   it("the removal act drops what the page showed, and refuses a stale plan with 409", async () => {
-    writeFileSync(h.settingsPath, JSON.stringify({ GAFFER_MODE: "lite", AUTO_MERGE: "1", FOO: "x" }));
+    writeFileSync(
+      h.settingsPath,
+      JSON.stringify({ GAFFER_MODE: "lite", AUTO_MERGE: "1", FOO: "x" }),
+    );
     const get = (await (await fetch(`${h.baseUrl}/api/settings`)).json()) as {
       cleanup: { drop: { key: string }[]; rewrite: { key: string }[] };
     };

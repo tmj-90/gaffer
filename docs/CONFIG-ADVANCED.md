@@ -439,55 +439,55 @@ is not a mystery; a run needs none of them set.
 | `GAFFER_MERGE_LANE` | dispatch, runner |
 | `GAFFER_CONFLICT_RESOLVER` | runner |
 | `GAFFER_LITE_MAX_DIFF` | runner |
-| `GAFFER_ALLOW_SELF_DELIVERY` | dispatch, runner |
+| `GAFFER_ALLOW_SELF_DELIVERY` | runner |
 | `GAFFER_DAILY_BUDGET_USD` | dispatch, runner |
 | `GAFFER_PAUSE_ON_CAP` | dispatch, runner |
 | `GAFFER_USAGE_PAUSE_DEFAULT_MIN` | dispatch, runner |
 | `GAFFER_KILL_ESTIMATE_USD` | runner |
 | `GAFFER_BUDGET_USD` | dispatch, runner |
-| `GAFFER_BUDGET_LOW_THRESHOLD` | dispatch, runner |
+| `GAFFER_BUDGET_LOW_THRESHOLD` | runner |
 | `GAFFER_REWORK_BUDGET_USD` | dispatch, runner |
 | `GAFFER_MAX_CALL_USD` | runner |
-| `GAFFER_CHEAP_PHASES` | dispatch, runner |
-| `GAFFER_MODELS` | runner |
+| `GAFFER_CHEAP_PHASES` | runner |
+| `GAFFER_MODELS` | dispatch, runner |
 | `GAFFER_PLAN_MODEL` | runner |
 | `GAFFER_IMPL_MODEL` | runner |
 | `GAFFER_MODEL_TIERS` | runner |
-| `GAFFER_PLAN_DEBATE_MODELS` | dispatch, runner |
+| `GAFFER_PLAN_DEBATE_MODELS` | runner |
 | `GAFFER_ROLE_MODELS` | runner |
 | `GAFFER_PLAN_DEBATE` | dispatch, runner |
 | `GAFFER_PLAN_DEBATE_MAX_ROUNDS` | dispatch, runner |
-| `GAFFER_PLAN_DEBATE_MIN_ESTIMATE` | dispatch, runner |
+| `GAFFER_PLAN_DEBATE_MIN_ESTIMATE` | runner |
 | `GAFFER_SCOUT` | runner |
 | `GAFFER_CLAUDE_AUTH_PROBE` | runner |
-| `GAFFER_EFFORT` | runner |
+| `GAFFER_EFFORT` | dispatch, runner |
 | `GAFFER_TICK_TIMEOUT` | dispatch, runner |
 | `GAFFER_MAX_TURNS` | dispatch, runner |
 | `GAFFER_MAX_DELIVERY_ATTEMPTS` | dispatch, runner |
 | `GAFFER_DOD_TIMEOUT` | crew, runner |
-| `GAFFER_CI_POLL_ATTEMPTS` | dispatch, runner |
+| `GAFFER_CI_POLL_ATTEMPTS` | runner |
 | `GAFFER_ROLE_MAX_TURNS` | runner |
 | `GAFFER_RETRY_FRESH_BRANCH` | runner |
 | `GAFFER_TICK_DEADLINE_GUARD` | runner |
 | `DISPATCH_MAX_ATTEMPTS` | dispatch, runner |
-| `GAFFER_MAX_NOCOMMIT_FAILURES` | dispatch, runner |
-| `GAFFER_CI_POLL_INTERVAL_SECS` | dispatch, runner |
+| `GAFFER_MAX_NOCOMMIT_FAILURES` | runner |
+| `GAFFER_CI_POLL_INTERVAL_SECS` | runner |
 | `GAFFER_CONCURRENCY` | crew, dispatch, runner |
-| `MAX_CANDIDATES` | dispatch, runner |
-| `MAX_TICKS` | dispatch, runner |
-| `MAX_TICKS_PER_DAY` | crew, dispatch, runner |
-| `EMPTY_POLL_LIMIT` | dispatch, runner |
-| `TICK_SLEEP` | dispatch, runner |
-| `MAX_CONCURRENT_TICKETS_PER_REPO` | dispatch, runner |
-| `MAX_OPEN_AGENT_BRANCHES_PER_REPO` | dispatch, runner |
-| `MAX_OPEN_AGENT_PRS_PER_REPO` | dispatch, runner |
+| `MAX_CANDIDATES` | runner |
+| `MAX_TICKS` | runner |
+| `MAX_TICKS_PER_DAY` | crew, runner |
+| `EMPTY_POLL_LIMIT` | runner |
+| `TICK_SLEEP` | runner |
+| `MAX_CONCURRENT_TICKETS_PER_REPO` | runner |
+| `MAX_OPEN_AGENT_BRANCHES_PER_REPO` | runner |
+| `MAX_OPEN_AGENT_PRS_PER_REPO` | runner |
 | `GAFFER_WG_SERVE` | runner |
 | `DRY_RUN` | dispatch, runner |
-| `GAFFER_SANDBOX` | runner |
+| `GAFFER_SANDBOX` | dispatch, runner |
 | `SANDBOX_PROVIDER` | dispatch, runner |
 | `STRICT_MODE` | dispatch, runner |
-| `STRICT_ALLOW_NETWORK` | dispatch, runner |
-| `STRICT_ALLOW_HOME` | dispatch, runner |
+| `STRICT_ALLOW_NETWORK` | runner |
+| `STRICT_ALLOW_HOME` | runner |
 | `GAFFER_SANDBOX_IMAGE` | runner |
 | `GAFFER_SANDBOX_LIMITS` | runner |
 | `GAFFER_MCP_BRIDGE` | runner |
@@ -495,26 +495,26 @@ is not a mystery; a run needs none of them set.
 | `GAFFER_EGRESS_ALLOW` | runner |
 | `GAFFER_REGISTRY_PROBE` | runner |
 | `GAFFER_IDLE_HOST_EXEC` | crew, dispatch, runner |
-| `GAFFER_GATES` | runner |
-| `GAFFER_DOD_FLAKY_RERUN` | dispatch, runner |
-| `MINIMALISM_REQUIRE_NOTE` | crew, dispatch, runner |
-| `OVERSIZED_MAX_LINES` | crew, dispatch, runner |
-| `OVERSIZED_MAX_FILES` | crew, dispatch, runner |
+| `GAFFER_GATES` | dispatch, runner |
+| `GAFFER_DOD_FLAKY_RERUN` | runner |
+| `MINIMALISM_REQUIRE_NOTE` | crew, runner |
+| `OVERSIZED_MAX_LINES` | crew, runner |
+| `OVERSIZED_MAX_FILES` | crew, runner |
 | `GAFFER_REVIEW_RULE_REPEAT` | dispatch, runner |
 | `GAFFER_DOD_TESTS` | crew, runner |
 | `GAFFER_DOD_LINT` | crew, runner |
 | `GAFFER_DOD_TYPECHECK` | crew, runner |
 | `GAFFER_DOD_TYPECHECK_CMD` | crew, runner |
-| `GAFFER_DOD_ENV_PASS` | dispatch, runner |
+| `GAFFER_DOD_ENV_PASS` | runner |
 | `GAFFER_DOD` | crew, runner |
 | `GAFFER_DOD_INSTALL` | runner |
 | `GAFFER_ALLOW_NO_DOD` | runner |
-| `HYGIENE_ENFORCE` | dispatch, runner |
+| `HYGIENE_ENFORCE` | runner |
 | `HYGIENE_FORBIDDEN_PATHS` | crew, runner |
 | `GAFFER_SENSITIVE_PATH_RE` | dispatch, runner |
 | `GAFFER_EVAL_JUDGE` | runner |
 | `GAFFER_JUDGE_DENIED_TOOLS` | runner |
-| `GAFFER_LANDING` | runner |
+| `GAFFER_LANDING` | dispatch, runner |
 | `GAFFER_CREATE_PR` | dispatch, runner |
 | `GAFFER_REQUIRE_CI` | dispatch, runner |
 | `GAFFER_PR_MERGE_METHOD` | dispatch, runner |
@@ -524,13 +524,13 @@ is not a mystery; a run needs none of them set.
 | `GAFFER_PROVENANCE_TRAILERS` | runner |
 | `GAFFER_TESTING` | dispatch, runner |
 | `GAFFER_TESTER_REPLAY` | dispatch, runner |
-| `GAFFER_IDLE` | runner |
+| `GAFFER_IDLE` | crew, dispatch, runner |
 | `CLARIFY_DRAFTS_WHEN_IDLE` | dispatch, runner |
 | `IDLE_DRAFT_WHEN_IDLE` | crew, dispatch, runner |
 | `GAFFER_MAINTENANCE` | crew, dispatch, runner |
-| `GAFFER_IDLE_FEATURE_BACKLOG` | crew, dispatch, runner |
+| `GAFFER_IDLE_FEATURE_BACKLOG` | crew, runner |
 | `GAFFER_IDLE_MODE` | crew, dispatch, runner |
-| `GAFFER_NOTIFY` | runner |
+| `GAFFER_NOTIFY` | dispatch, runner |
 | `GAFFER_NOTIFY_WEBHOOK_URL` | dispatch, runner |
 | `GAFFER_NOTIFY_SLACK_URL` | dispatch, runner |
 | `GAFFER_NOTIFY_DESKTOP` | dispatch, runner |

@@ -114,7 +114,9 @@ export default async function s4(t, L) {
     }
   })();
   if (after.status === "done") {
-    t.ok(`under the Autonomous mode, approving #${a.number} landed it through the merge gate (done)`);
+    t.ok(
+      `under the Autonomous mode, approving #${a.number} landed it through the merge gate (done)`,
+    );
   } else {
     t.check(
       settled &&

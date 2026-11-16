@@ -26,7 +26,11 @@ const MODE_DETENTS = [
     name: "Autonomous",
     line: "Agents approve, merge and push; a person still decides critical changes.",
   },
-  { mode: "strict", name: "Strict", line: "Autonomous, and the sandbox stays on even under the opt-out." },
+  {
+    mode: "strict",
+    name: "Strict",
+    line: "Autonomous, and the sandbox stays on even under the opt-out.",
+  },
 ];
 const MODE_NAMES = table(Object.fromEntries(MODE_DETENTS.map((d) => [d.mode, d.name])));
 
@@ -62,8 +66,10 @@ function postureFor(all, derived, mode) {
   const byName = new Map((Array.isArray(derived) ? derived : []).map((d) => [d.name, d]));
   for (const row of (modeSetting && modeSetting.derives) || []) {
     const now = byName.get(row.name);
-    if (now && now.source === "environment") out[row.name] = { value: now.value ?? "", from: "env" };
-    else if (now && now.source === "old-key") out[row.name] = { value: now.value ?? "", from: "old" };
+    if (now && now.source === "environment")
+      out[row.name] = { value: now.value ?? "", from: "env" };
+    else if (now && now.source === "old-key")
+      out[row.name] = { value: now.value ?? "", from: "old" };
     else if (row.byPreset && Object.prototype.hasOwnProperty.call(row.byPreset, mode))
       out[row.name] = { value: row.byPreset[mode] ?? "", from: "mode" };
     else out[row.name] = { value: now && now.value != null ? now.value : "", from: "mode" };
@@ -488,10 +494,7 @@ function whatThisSets(s, derived) {
   const rows = (Array.isArray(derived) ? derived : []).filter((d) => d.setting === s.key);
   if (!rows.length) return null;
   return el("details", { class: "what-sets", dataset: { setting: s.key } }, [
-    el("summary", {}, [
-      "What this sets ",
-      el("span", { class: "boot-n" }, String(rows.length)),
-    ]),
+    el("summary", {}, ["What this sets ", el("span", { class: "boot-n" }, String(rows.length))]),
     el(
       "ul",
       { class: "what-sets-list" },

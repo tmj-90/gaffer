@@ -300,10 +300,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
       "Merges the given settings into settings.json atomically (PUT is the same). Values are trimmed and validated exactly as the runner validates them; an empty value removes the setting (its default applies). Env-locked settings are rejected (the environment always wins). Any other key refuses the whole write with a 422: an old key names the setting that decides it now (`details.invalid[].decidedBy`), so does a derived name; GAFFER_DATA and environment-only names are refused. `notify: { desktop?, webhook?, slack? }` changes GAFFER_NOTIFY while keeping the saved URLs on the server (undefined keeps a channel, null removes it). Old keys already in settings.json are kept; only the removal act drops them.",
     capability: "full",
     body: "settingsBody",
-    responses: [
-      ok("The GET body plus `{ written, rejected, ignored, invalid }`."),
-      invalid,
-    ],
+    responses: [ok("The GET body plus `{ written, rejected, ignored, invalid }`."), invalid],
   },
   {
     method: "PUT",
@@ -313,10 +310,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     description: "The same as POST /api/settings.",
     capability: "full",
     body: "settingsBody",
-    responses: [
-      ok("The GET body plus `{ written, rejected, ignored, invalid }`."),
-      invalid,
-    ],
+    responses: [ok("The GET body plus `{ written, rejected, ignored, invalid }`."), invalid],
   },
   {
     method: "POST",

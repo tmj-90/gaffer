@@ -255,7 +255,9 @@ export default async function s12(t, L) {
   await p.locator(".mig-start").click();
   const confirm = (await p.textContent(".mig-confirm").catch(() => "")) || "";
   t.check(
-    /AUTO_MERGE/.test(confirm) && /FOO_OLD/.test(confirm) && L.readSettingsFile().AUTO_MERGE === "1",
+    /AUTO_MERGE/.test(confirm) &&
+      /FOO_OLD/.test(confirm) &&
+      L.readSettingsFile().AUTO_MERGE === "1",
     "the removal act first shows exactly what it drops, and nothing is removed yet",
     `confirm: '${confirm.slice(0, 200)}'`,
   );

@@ -18,10 +18,11 @@ gaffer_env_name_is_credential() {
 }
 
 # True (rc 0) for the runner's own outbound endpoints (notify webhooks, Slack, *_URL):
-# code that read them could post as the factory.
+# code that read them could post as the factory. GAFFER_NOTIFY (the setting) holds the
+# webhook and Slack URLs with their tokens and matches none of the patterns, so it is named.
 gaffer_env_name_is_endpoint() {
   case "$1" in
-    GAFFER_NOTIFY_*|*_WEBHOOK*|*_SLACK*|*_URL) return 0 ;;
+    GAFFER_NOTIFY|GAFFER_NOTIFY_*|*_WEBHOOK*|*_SLACK*|*_URL) return 0 ;;
   esac
   return 1
 }

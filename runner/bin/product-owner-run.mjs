@@ -636,6 +636,7 @@ export function agentChildEnv(base = process.env) {
     // Outbound endpoint / notify config — runner-only; the agent must not read
     // its own potential exfiltration channel (parity with shell gaffer_agent_env).
     if (
+      key === "GAFFER_NOTIFY" || // the setting: it holds the webhook / Slack URLs
       /^GAFFER_NOTIFY_/.test(key) ||
       /_WEBHOOK/.test(key) ||
       /_SLACK/.test(key) ||

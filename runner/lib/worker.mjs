@@ -357,9 +357,9 @@ export function commandOptOutWarning() {
 
 // Names the runner keeps to itself: never passed to a command worker, even when
 // GAFFER_WORKER_COMMAND_ENV names them (the dispatch API token, the claim token, the
-// repo host tokens, the notify channels).
+// repo host tokens, the notify channels: GAFFER_NOTIFY, the setting, holds their URLs).
 const COMMAND_ENV_NEVER =
-  /^(DISPATCH_API_TOKEN|GAFFER_CLAIM_TOKEN|GAFFER_PRINCIPAL_TOKEN|GITHUB_TOKEN|GH_TOKEN)$|^GAFFER_NOTIFY_|_WEBHOOK|_SLACK/;
+  /^(DISPATCH_API_TOKEN|GAFFER_CLAIM_TOKEN|GAFFER_PRINCIPAL_TOKEN|GITHUB_TOKEN|GH_TOKEN|GAFFER_NOTIFY)$|^GAFFER_NOTIFY_|_WEBHOOK|_SLACK/;
 
 /**
  * A PERSON'S CREDENTIAL (package H1): GAFFER_PRINCIPAL_TOKEN makes the dispatch CLI act

@@ -49,6 +49,7 @@ AGENT_ENV="$(
     DISPATCH_API_TOKEN="bearer-LEAK" DB_PASSWORD="hunter2-LEAK" \
     SOME_API_KEY="generic-LEAK" SOME_SECRET="generic-secret-LEAK" \
     GAFFER_NOTIFY_WEBHOOK_URL="https://hooks.example.com/secret-LEAK" \
+    GAFFER_NOTIFY="https://hooks.slack.com/services/T1/B1/setting-LEAK desktop" \
     GAFFER_NOTIFY_SLACK_URL="https://hooks.slack.com/T123/secret-LEAK" \
     GAFFER_DASHBOARD_URL="http://127.0.0.1:8787-LEAK" \
     GAFFER_SLACK_WEBHOOK="https://hooks.slack.com/legacy-LEAK" \
@@ -85,10 +86,26 @@ echo "== npx auto-download guard is SET (npm assumes --yes without a TTY) =="
 if has npm_config_yes; then ok "npm_config_yes is set for the agent"; else fail "npm_config_yes missing (npx would fetch and run unknown packages)"; fi
 
 echo "== outbound endpoint / notify config is STRIPPED (FIX #1 — exfiltration channel) =="
-for endpoint in GAFFER_NOTIFY_WEBHOOK_URL GAFFER_NOTIFY_SLACK_URL \
+for endpoint in GAFFER_NOTIFY GAFFER_NOTIFY_WEBHOOK_URL GAFFER_NOTIFY_SLACK_URL \
                 GAFFER_DASHBOARD_URL GAFFER_SLACK_WEBHOOK; do
   if has "$endpoint"; then fail "$endpoint leaked into the agent env (outbound channel)"; else ok "$endpoint is stripped"; fi
 done
+
+echo "== the GAFFER_NOTIFY setting (its URLs hold tokens) never reaches a command worker either =="
+# GAFFER_NOTIFY is one of the fourteen settings: a webhook or Slack URL with its token in
+# it. It matches none of GAFFER_NOTIFY_*, *_WEBHOOK*, *_SLACK*, *_URL, so it needs its own
+# name in every list that keeps the notify channels from an agent.
+CMD_PASS="$(env -i PATH="/usr/bin:/bin" HOME="/home/agent" RUNNER_DIR="$RUNNER_DIR" \
+  GAFFER_WORKER_COMMAND_ENV="GAFFER_NOTIFY,GAFFER_NOTIFY_SLACK_URL,FOO" \
+  bash -c 'source "$RUNNER_DIR/factory.config.sh" >/dev/null 2>&1; gaffer_command_env_pass_names | tr "\n" " "')"
+[ "$CMD_PASS" = "FOO " ] && ok "gaffer_command_env_pass_names drops GAFFER_NOTIFY" || fail "the command worker would get: '$CMD_PASS'"
+if command -v node >/dev/null 2>&1; then
+  NODE_PASS="$(WORKER_MJS="$RUNNER_DIR/lib/worker.mjs" node --input-type=module -e '
+    const w = await import(process.env.WORKER_MJS);
+    console.log(w.commandEnvPassNames({ GAFFER_WORKER_COMMAND_ENV: "GAFFER_NOTIFY,GAFFER_NOTIFY_SLACK_URL,GAFFER_NOTIFYX,FOO" }).join(","));
+  ' 2>&1)"
+  [ "$NODE_PASS" = "GAFFER_NOTIFYX,FOO" ] && ok "commandEnvPassNames (lib/worker.mjs) drops GAFFER_NOTIFY" || fail "commandEnvPassNames gave: '$NODE_PASS'"
+fi
 
 echo "== claude -p auth + MCP wiring SURVIVE (don't break the agent) =="
 for keep in PATH HOME ANTHROPIC_API_KEY ANTHROPIC_BASE_URL MCP_CONFIG DISPATCH_DB MEMORY_DB \

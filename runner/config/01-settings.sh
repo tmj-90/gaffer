@@ -44,11 +44,13 @@ done <<<"$_GAFFER_SETTINGS_SPEC"
 _GAFFER_SETTINGS_KEYS="$_GAFFER_SETTINGS_KEYS "
 unset _gk _gkind _gchoices _gdefault _gdesc
 # These names existed before the fourteen, with a looser reading in the environment
-# (GAFFER_MODE=yolo warns and runs supervised, a non-number budget is refused by the
-# spend gate, any other GAFFER_TESTING word is off). Their environment values keep that
-# reading; their settings.json values, and every value of the newer settings, are
-# validated strictly here.
-_GAFFER_SETTINGS_ENV_AS_BEFORE=" GAFFER_MODE GAFFER_DAILY_BUDGET_USD GAFFER_BUDGET_USD GAFFER_CONCURRENCY GAFFER_TESTING GAFFER_DATA DISPATCH_API_PORT "
+# that falls to the safe side (GAFFER_MODE=yolo warns and runs supervised; a budget that
+# is not a number is no cap, and the spend gate refuses a live run with no cap; a
+# concurrency that is not a number runs one ticket). Their environment values keep that
+# reading; their settings.json values, and every value of the other settings, are
+# validated strictly here. GAFFER_TESTING is not among them: any other word used to turn
+# the tester lane OFF (a gate dropped by a typo), so an unknown word stops the config.
+_GAFFER_SETTINGS_ENV_AS_BEFORE=" GAFFER_MODE GAFFER_DAILY_BUDGET_USD GAFFER_BUDGET_USD GAFFER_CONCURRENCY GAFFER_DATA DISPATCH_API_PORT "
 
 # _gaffer_setting_problem <NAME> <value> <from: settings.json | the environment>
 # Sets _GAFFER_SP to what is wrong with the value (empty when it is accepted).
@@ -277,13 +279,19 @@ if [ -n "$_gs_out" ]; then
           printf 'gaffer: ignoring GAFFER_DATA from settings.json: the file lives inside it, so only the environment can move it\n' >&2
           continue
         fi
-        _gaffer_setting_problem "$_sk" "$_sv" settings.json
-        [ -z "$_GAFFER_SP" ] || _gaffer_setting_refuse "$_sk" "$_sv" settings.json
+        # An EMPTY value is "cleared back to the default": the dashboard stores "" when a
+        # person clears a setting (packages/dispatch/src/api/settings.ts writeSettings),
+        # and the loader before the fourteen took it as unset. It is not validated (no
+        # setting value is empty), so a cleared setting never stops the config.
+        if [ -n "$_sv" ]; then
+          _gaffer_setting_problem "$_sk" "$_sv" settings.json
+          [ -z "$_GAFFER_SP" ] || _gaffer_setting_refuse "$_sk" "$_sv" settings.json
+        fi
         # assign-if-unset, no eval, and EXPORT: a setting must reach the processes that
         # read it (the dispatch CLI, the memory server, crew), not only this shell.
         if [ -z "${!_sk:-}" ]; then
           printf -v "$_sk" '%s' "$_sv"; export "${_sk?}"
-          _GAFFER_FROM_FILE="$_GAFFER_FROM_FILE$_sk "
+          [ -z "$_sv" ] || _GAFFER_FROM_FILE="$_GAFFER_FROM_FILE$_sk "
         fi
         continue ;;
     esac

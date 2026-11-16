@@ -76,7 +76,8 @@ file '{"GAFFER_DATA":"/elsewhere"}'; V="$(cfg -- 'printf "%s" "$GAFFER_DATA"')"
 [ "$V" = "$WORK/data" ] && grep -q 'ignoring GAFFER_DATA from settings.json' "$WORK/err" \
   && ok "GAFFER_DATA from settings.json is ignored (the file lives inside it), said once" || fail "GAFFER_DATA from file: $V $(cat "$WORK/err")"
 nofile
-for kv in GAFFER_EFFORT=huge GAFFER_SANDBOX=none GAFFER_GATES=lax GAFFER_LANDING=push GAFFER_IDLE=x GAFFER_MODELS=a,b GAFFER_NOTIFY=mailto:x; do
+for kv in GAFFER_EFFORT=huge GAFFER_SANDBOX=none GAFFER_GATES=lax GAFFER_LANDING=push GAFFER_IDLE=x GAFFER_MODELS=a,b GAFFER_NOTIFY=mailto:x \
+  GAFFER_TESTING=maybe "GAFFER_TESTING= on"; do
   OUT="$(cfg "$kv" -- 'echo REACHED')"; RC=$?
   [ "$RC" != 0 ] && [[ "$OUT" != *REACHED* ]] && grep -q "gaffer: the environment sets ${kv%%=*}=" "$WORK/err" \
     && ok "environment $kv stops the config" || fail "environment $kv: rc=$RC $OUT $(cat "$WORK/err")"
@@ -88,6 +89,14 @@ V="$(cfg GAFFER_TESTING=No GAFFER_DAILY_BUDGET_USD=abc -- 'printf "%s|%s" "$GAFF
 [ "$V" = "No|abc" ] && ok "older names keep their environment reading (the tester lane and the spend gate judge them, as before)" || fail "older env names: $V"
 V="$(cfg GAFFER_GATES="tests, lint" -- "$(vals GAFFER_DOD_TESTS GAFFER_DOD_LINT GAFFER_DOD_TYPECHECK)")"
 [ "$V" = "GAFFER_DOD_TESTS=1 GAFFER_DOD_LINT=1 GAFFER_DOD_TYPECHECK=0 " ] && ok "a gate list in the environment runs only the gates it names" || fail "env gate list: $V"
+
+# A setting the dashboard cleared is stored as "" (writeSettings): it is the default,
+# never a value that stops the config.
+file '{"GAFFER_MODE":"","GAFFER_TESTING":"","GAFFER_CONCURRENCY":"","GAFFER_EFFORT":"","GAFFER_MODELS":"","DISPATCH_API_PORT":"","GAFFER_GATES":"","GAFFER_SANDBOX":""}'
+V="$(cfg -- "$(vals GAFFER_MODE GAFFER_TICK_TIMEOUT GAFFER_IMPL_MODEL REVIEW_MODE)")"; RC=$?
+[ "$RC" = 0 ] && [ "$V" = "GAFFER_MODE=supervised GAFFER_TICK_TIMEOUT=1800 GAFFER_IMPL_MODEL=sonnet REVIEW_MODE=human " ] \
+  && ok "a cleared setting (\"\" in settings.json) is the default, it does not stop the config" || fail "cleared settings: rc=$RC $V $(cat "$WORK/err")"
+nofile
 
 echo "== B: precedence =="
 file '{"GAFFER_EFFORT":"large"}'

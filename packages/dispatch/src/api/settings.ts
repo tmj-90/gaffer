@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -283,15 +283,51 @@ function appliedOf(env: NodeJS.ProcessEnv): Set<string> {
 }
 
 /**
- * The names the dashboard takes into its own environment: the fourteen, and every
- * name an old settings.json key used to carry (the dashboard's own readers: the approve
- * floor, auto merge, PR mode, the tester lane, notifications, budgets) with the value
- * the RUNNER derives for it, which is never more permissive than the setting.
+ * The names the dashboard takes into its own environment: the fourteen, and every value
+ * they derive, with the value the RUNNER derives for it (never more permissive than the
+ * setting). The dashboard's own readers need them (the approve floor, auto merge, PR
+ * mode, the tester lane, notifications, budgets), and so do the helpers it starts that
+ * are not runner scripts and never re-source the config: the Plan a build planner and
+ * the spec author read GAFFER_PLAN_MODEL, the worker seam the kill estimate and the MCP
+ * bridge. Every old key is a derived name, so it is covered too.
  */
 const DASHBOARD_NAMES: readonly string[] = [
-  ...SETTING_DEFS.map((d) => d.key).filter((k) => k !== "GAFFER_DATA"),
-  ...loadSchema().oldKeys.map((o) => o.key),
+  ...new Set([
+    ...SETTING_DEFS.map((d) => d.key).filter((k) => k !== "GAFFER_DATA"),
+    ...loadSchema().settings.flatMap((s) => s.derives.map((d) => d.name)),
+    ...loadSchema().oldKeys.map((o) => o.key),
+  ]),
 ];
+
+/** The settings file as last applied to an env (see refreshSettingsEnv). */
+const APPLIED_FILE = new WeakMap<object, { path: string; sig: string }>();
+
+/** Identity of the file's current contents (a rename or an edit in place changes it). */
+function fileSignature(path: string): string {
+  try {
+    const st = statSync(path);
+    return `${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}`;
+  } catch {
+    return "none";
+  }
+}
+
+/**
+ * Re-apply settings.json to `env` when the file changed since it was last applied (a
+ * hand edit, `gaffer` writing it, another dashboard). The server calls this before each
+ * authenticated request, so its own readers (the approve floor, auto merge on a human
+ * approval, PR mode, the tester lane) never decide on values a person has since
+ * tightened. Only for an env applySettingsToEnv has already been applied to; a stat per
+ * request, the runner's config only when the file changed.
+ */
+export function refreshSettingsEnv(env: NodeJS.ProcessEnv = process.env): boolean {
+  const last = APPLIED_FILE.get(env);
+  if (!last) return false;
+  const path = resolveSettingsPath(env);
+  if (path === last.path && fileSignature(path) === last.sig) return false;
+  applySettingsToEnv(env, path);
+  return true;
+}
 
 /**
  * Put the settings and what the runner derives from them in `env` (never over a name
@@ -312,6 +348,8 @@ export function applySettingsToEnv(
 ): { applied: string[]; error?: string } {
   const op = operatorNames(env);
   const want = new Map<string, string>();
+  // Taken before the read: a change while it runs is caught by the next refresh.
+  APPLIED_FILE.set(env, { path, sig: fileSignature(path) });
   const rc = runnerConfigFor(env, path);
   if (rc.ok) {
     for (const name of DASHBOARD_NAMES) {
@@ -347,6 +385,10 @@ export function applySettingsToEnv(
   }
   for (const [k, v] of want) {
     if (op.has(k)) continue;
+    // A value the launcher handed this server on purpose (GAFFER_DASHBOARD_URL: the
+    // --lan address, or the port it really serves on) carries no re-source record: it
+    // stays, as a re-sourcing runner keeps a value its parent changed on purpose.
+    if (env[k] !== undefined && !mine.has(k) && env[DV + k] !== env[k]) continue;
     env[k] = v;
     env[DV + k] = v;
     mine.add(k);
@@ -362,6 +404,7 @@ export function resetDerivedSettings(env: NodeJS.ProcessEnv = process.env): void
     delete env[DV + k];
   }
   appliedOf(env).clear();
+  APPLIED_FILE.delete(env);
   OPERATOR.delete(env);
   if (SELF_RECORDED.has(env)) {
     delete env[OPERATOR_RECORD];

@@ -57,6 +57,7 @@ describe("API: GET/POST /api/settings", () => {
     "GAFFER_DAILY_BUDGET_USD",
     "GAFFER_CONCURRENCY",
     "AUTO_MERGE",
+    "DISPATCH_ALLOW_AGENT_APPROVE",
   ];
 
   beforeEach(async () => {
@@ -216,5 +217,26 @@ describe("API: GET/POST /api/settings", () => {
     });
     expect(ok.status).toBe(200);
     expect(JSON.parse(readFileSync(h.settingsPath, "utf8"))).toEqual({ GAFFER_MODE: "lite" });
+  });
+
+  it("a settings.json changed by hand while the server runs reaches its own readers before the next request", async () => {
+    // The approve floor (services/reviewGate/approval.ts) and auto merge on a human
+    // approval (routes/tickets.ts) read this process's environment. A person who
+    // tightens the mode by editing settings.json must not leave the server deciding on
+    // the looser values until the next save or restart.
+    const post = await fetch(`${h.baseUrl}/api/settings`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ settings: { GAFFER_MODE: "autonomous" } }),
+    });
+    expect(post.status).toBe(200);
+    expect(process.env["AUTO_MERGE"]).toBe("1");
+    expect(process.env["DISPATCH_ALLOW_AGENT_APPROVE"]).toBe("1");
+    writeFileSync(h.settingsPath, JSON.stringify({ GAFFER_MODE: "supervised" }));
+    const res = await fetch(`${h.baseUrl}/api/whoami`);
+    expect(res.status).toBe(200);
+    expect(process.env["AUTO_MERGE"]).toBe("0");
+    expect(process.env["DISPATCH_ALLOW_AGENT_APPROVE"]).toBe("0");
+    expect(process.env["GAFFER_MODE"]).toBe("supervised");
   });
 });

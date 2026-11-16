@@ -13,7 +13,7 @@
 // full of permissive old keys; once for a dashboard started directly and once for one
 // started by `gaffer dashboard` (the launcher's env scrub, runner/lib/dashboard.sh).
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -173,5 +173,73 @@ describe("P-B1: a dashboard-started run gets what a command-line run gets", () =
     );
     applySettingsToEnv(dash, join(dir, "settings.json"));
     expect(records(dash).out).toBe(records(base).out);
+  });
+
+  it("a helper the dashboard starts that is not a runner script gets what a runner's helper gets", () => {
+    // Plan a build (runner/bin/decompose.mjs), the spec author and the worker seam they
+    // share are node programs: they never re-source the config, they read what the
+    // dashboard hands them. A command-line run exports the values the fourteen derive
+    // (GAFFER_PLAN_MODEL for the planner's --model, the model tiers, the kill estimate),
+    // so a helper the dashboard starts must find the same ones. Before, the launcher's
+    // scrub unset every schema name and the dashboard put back only the old keys: the
+    // planner ran with no --model whatever GAFFER_MODELS chose.
+    writeFileSync(
+      join(dir, "settings.json"),
+      JSON.stringify({ GAFFER_MODELS: "economy", GAFFER_EFFORT: "large", GAFFER_MODE: "strict" }),
+    );
+    const dumpEnv = `"${process.execPath}" -e "process.stdout.write(JSON.stringify(process.env))"`;
+    const cliChild = spawnSync(
+      "bash",
+      [
+        "--norc",
+        "--noprofile",
+        "-c",
+        `source "$1/factory.config.sh" 2>/dev/null; ${dumpEnv}`,
+        "_",
+        RUNNER_DIR,
+      ],
+      { env: base, encoding: "utf8" },
+    );
+    const cliEnv = JSON.parse(cliChild.stdout) as NodeJS.ProcessEnv;
+    const launched = spawnSync(
+      "bash",
+      [
+        "--norc",
+        "--noprofile",
+        "-c",
+        `source "$1/factory.config.sh" 2>/dev/null; source "$1/lib/dashboard.sh"; env $(gaffer_dashboard_env_unset_flags) GAFFER_DASHBOARD_URL=http://127.0.0.1:9911 ${dumpEnv}`,
+        "_",
+        RUNNER_DIR,
+      ],
+      { env: base, encoding: "utf8" },
+    );
+    const server = JSON.parse(launched.stdout) as NodeJS.ProcessEnv;
+    resetDerivedSettings(server);
+    applySettingsToEnv(server, join(dir, "settings.json"));
+    const schema = JSON.parse(
+      readFileSync(join(RUNNER_DIR, "config", "settings-schema.json"), "utf8"),
+    ) as { settings: { name: string; derives: { name: string }[] }[] };
+    const differ: string[] = [];
+    for (const s of schema.settings)
+      // The derived values (a setting at its default is left to each reader's default,
+      // which is the setting's own).
+      for (const n of s.derives.map((d) => d.name)) {
+        if (n === "GAFFER_DATA" || n === "GAFFER_DASHBOARD_URL") continue;
+        const want = cliEnv[n];
+        if (want !== undefined && want !== "" && server[n] !== want)
+          differ.push(`${n}: runner helper ${want}, dashboard helper ${server[n] ?? "(unset)"}`);
+      }
+    expect(differ).toEqual([]);
+    expect(server["GAFFER_PLAN_MODEL"]).toBe("sonnet");
+    // The address the launcher handed the server on purpose stays.
+    expect(server["GAFFER_DASHBOARD_URL"]).toBe("http://127.0.0.1:9911");
+    // ...and a run the dashboard starts still derives every value afresh (but the
+    // dashboard address, which the launcher sets on purpose, as before).
+    const noUrl = (o: string) =>
+      o
+        .split("\n")
+        .filter((l) => !l.startsWith("D\tGAFFER_DASHBOARD_URL\t"))
+        .join("\n");
+    expect(noUrl(records(server).out)).toBe(noUrl(records(base).out));
   });
 });

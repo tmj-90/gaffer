@@ -16,6 +16,7 @@ import { createOnboardRunner, type OnboardRunner } from "./onboard.js";
 import { createPlanBuildRunner, type PlanBuildRunner } from "./planBuild.js";
 import { createPollWorkRunner, type PollWorkRunner } from "./pollWork.js";
 import { authorizePrincipalRequest } from "./scopeGate.js";
+import { refreshSettingsEnv } from "./settings.js";
 import { createProductOwnerRunner, type ProductOwnerRunner } from "./productOwner.js";
 import { routeApi } from "./routes/api.js";
 import { runWithAuth } from "./routes/context.js";
@@ -256,6 +257,11 @@ async function route(
 
     // PER-PRINCIPAL CREDENTIALS: attribute everything this request writes to the
     // principal it authenticated as (the shared token keeps the single API actor).
+    // The settings in this process's environment follow settings.json: a file a person
+    // changed by hand (or through `gaffer`) since the last save is applied before any
+    // route reads an autonomy or spend value from it (the approve floor, auto merge on
+    // approval, PR mode). A stat per request; the runner's config only on a change.
+    refreshSettingsEnv(process.env);
     const principal = auth.principal;
     await runWithAuth(auth, async () => {
       // PRINCIPAL SCOPES: a named principal's request is checked against its admin

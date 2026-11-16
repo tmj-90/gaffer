@@ -66,6 +66,7 @@ $D/.workers/w1 $D/crew.yaml $D/mcp-runtime.4242.json $D/mcp-product-owner-runtim
 $D/sandbox-write-roots.4242.x $D/worker-prompt.4242.x $D/dashboard-token $D/dashboard-url $D/dashboard.pid
 $D/acceptance-signing.key $D/agent_id $D/agent_reviewer_id $D/factory.log $D/skills-mounts/k/SKILL.md
 $D/memory-audit.jsonl $D/audit.jsonl $D/locks/l $D/run-state/r $D/manifests/7-1.json
+$D/wg-serve/4242.AbC123/req $D/wg-serve/4242.AbC123/q.1.1.1 $D/wg-serve/new
 $D/worktrees/ticket-2/src/x.js $D $WORK"
 # What the in-sandbox writers need.
 WRITERS="$D/dispatch.sqlite $D/dispatch.sqlite-wal $D/dispatch.sqlite-shm $D/dispatch.sqlite-journal
@@ -110,6 +111,11 @@ GAFFER_SANDBOX_PROFILE="" _sandbox_exec_profile "$WORK" "$PW" ""
 expect "$PW" deny "D1: with a write root containing \$GAFFER_DATA the named control files are still denied" \
   "$D/settings.json" "$D/.settings.9.f.tmp" "$D/usage-pause.json" "$D/usage-ledger.jsonl" "$D/crew.yaml" \
   "$D/mcp-runtime.1.json" "$D/strict-profile.1.x" "$D/dashboard-token" "$D/agent_id" "$D/skills-mounts/x" "$D/.failed-tickets"
+# The host-owned directories too, by name: the tick's helper-server pipes (a request
+# written there is a dispatch command run with the tick's authority) and runner state.
+expect "$PW" deny "D1: ...and so are the host-owned directories (the helper-server pipes, locks, run state, manifests)" \
+  "$D/wg-serve/4242.AbC123/req" "$D/wg-serve/4242.AbC123/q.1.1.1" "$D/wg-serve/4242.AbC123/r.1.1.1" "$D/wg-serve/new" \
+  "$D/locks/l" "$D/run-state/r" "$D/runs/r" "$D/manifests/7-1.json" "$D/sandbox-git/g" "$D/scout/s" "$D/experiments/e"
 expect "$PW" allow "D1: ...and the databases stay writable" "$D/dispatch.sqlite" "$D/memory.sqlite-wal"
 # A database moved out of $GAFFER_DATA is not granted by this profile (nothing loosened).
 PX="$WORK/agent-db-out.sb"

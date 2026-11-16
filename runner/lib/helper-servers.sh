@@ -196,11 +196,16 @@ _gaffer_srv_send() {
   __gwg_end=$(( SECONDS + __gwg_wait ))
   while :; do
     __gwg_part=""
+    # The status is taken in the else branch: after `fi`, `$?` is the if statement's
+    # own status, which is 0 when the read failed and no branch ran. Read there, a
+    # one-second timeout (over 128) looked like a closed reply and failed every call
+    # that took longer than a second.
     if IFS= read -r -t 1 -u "$__gwg_fd" __gwg_part; then
       __gwg_line+="$__gwg_part"
       break
+    else
+      __gwg_rc=$?
     fi
-    __gwg_rc=$?
     __gwg_line+="$__gwg_part"
     if [ "$__gwg_rc" -le 128 ]; then
       exec {__gwg_fd}<&-; _GAFFER_SRV_WHY="closed its reply"; return 0

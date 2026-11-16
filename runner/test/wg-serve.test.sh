@@ -202,6 +202,14 @@ rl.on("line", (raw) => {
   if (line.startsWith("D ")) return;
   const nonce = line;
   if (mode === "hang") return;
+  if (mode === "slow") {
+    // A right answer that takes longer than one poll of the client's reply wait.
+    setTimeout(() => {
+      fs.writeFileSync(`${dir}/s.${nonce}.0`, "slow-ok\n");
+      reply(nonce, `GWG1 ${nonce} R 0 o\n`);
+    }, 2500);
+    return;
+  }
   if (mode === "die") process.exit(3);
   if (mode === "garbage") return reply(nonce, "HTTP/1.1 200 OK\n");
   if (mode === "wrong-nonce") return reply(nonce, "GWG1 9.9.9 R 0 -\n");
@@ -220,8 +228,8 @@ rl.on("line", (raw) => {
   }
 });
 FAKE
-fault() {  # <mode> <label>
-  local mode="$1" label="$2"
+fault() {  # <mode> <label> [<the reason the client must give>]
+  local mode="$1" label="$2" why="${3:-}"
   _GAFFER_WG_SERVE_BIN="$WORK/fake-serve.mjs" FAKE_MODE="$mode" gaffer_wg_serve_start
   local pid="$_GAFFER_WG_PID" dir="$_GAFFER_WG_DIR"
   [ -n "$pid" ] || { fail "W4 $mode: the fake server did not start"; return; }
@@ -232,6 +240,9 @@ fault() {  # <mode> <label>
   else
     fail "W4 $mode: rc=$(cat "$WORK/f.rc") out=$(head -c 80 "$WORK/f.out") err=$(head -c 200 "$WORK/f.err")"
   fi
+  if [ -n "$why" ]; then
+    grep -qF "$why" "$WORK/f.err" && ok "W4 $mode: the reason given is \"$why\"" || fail "W4 $mode: expected \"$why\", got: $(head -c 200 "$WORK/f.err")"
+  fi
   [ -e "$dir/broken" ] || [ ! -d "$dir" ] && ok "W4 $mode: the server is marked broken" || fail "W4 $mode: not marked broken"
   local i; for i in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
   kill -0 "$pid" 2>/dev/null && fail "W4 $mode: the misbehaving server is still running" || ok "W4 $mode: the misbehaving server was stopped"
@@ -240,13 +251,35 @@ fault() {  # <mode> <label>
   [ "$(cat "$WORK/f2.rc")" = 0 ] && [ "$(served_count)" -gt "$b" ] && ok "W4 $mode: the next call ran one-shot and succeeded" || fail "W4 $mode: the next call rc=$(cat "$WORK/f2.rc")"
   gaffer_wg_serve_stop
 }
-fault hang "a hang past GAFFER_WG_SERVE_TIMEOUT=2s"
+# The reason matters: a wait that gives up after its first one-second poll says "closed
+# its reply", not this, and would fail every call slower than a second.
+fault hang "a hang past GAFFER_WG_SERVE_TIMEOUT=2s" "did not answer within 2s"
 fault garbage "a garbage reply"
 fault wrong-nonce "a reply to another call"
 fault die "death during the call"
 fault failed "an F (failed after start) reply"
 fault lost-segment "a reply whose output file is missing"
-fault partial "a reply line that never ends"
+fault partial "a reply line that never ends" "did not answer within 2s"
+
+echo "== W4b: a slow answer inside the budget is an answer =="
+# 2.5 s to answer, 10 s allowed: the call succeeds with the reply's output. The reply
+# wait polls once a second; a slow call must outlive those polls up to the budget.
+_GAFFER_WG_SERVE_BIN="$WORK/fake-serve.mjs" FAKE_MODE=slow gaffer_wg_serve_start
+sleep 0.3
+slow_pid="$_GAFFER_WG_PID"
+GAFFER_WG_SERVE_TIMEOUT=10
+slow_t0=$SECONDS
+capture "$WORK/slow" wg ticket show 2
+slow_took=$(( SECONDS - slow_t0 ))
+GAFFER_WG_SERVE_TIMEOUT=2
+if [ "$(cat "$WORK/slow.rc")" = 0 ] && [ "$(cat "$WORK/slow.out")" = "slow-ok" ]; then
+  ok "W4b: a 2.5 s answer under a 10 s budget is returned (${slow_took}s)"
+else
+  fail "W4b: rc=$(cat "$WORK/slow.rc") out=$(head -c 80 "$WORK/slow.out") err=$(head -c 200 "$WORK/slow.err") after ${slow_took}s"
+fi
+[ "$slow_took" -ge 2 ] && ok "W4b: the call waited for the answer" || fail "W4b: returned after ${slow_took}s, before the answer existed"
+kill -0 "$slow_pid" 2>/dev/null && [ ! -e "$_GAFFER_WG_DIR/broken" ] && ok "W4b: the server is still serving (not marked broken)" || fail "W4b: a slow answer broke the server"
+gaffer_wg_serve_stop
 
 echo "== W5: segment order and a NUL byte =="
 _GAFFER_WG_SERVE_BIN="$WORK/fake-serve.mjs" FAKE_MODE=segments gaffer_wg_serve_start

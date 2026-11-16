@@ -343,8 +343,10 @@ _sandbox_exec_control_file_rules() {
            skills-telemetry.jsonl memory-audit.jsonl audit.jsonl command-worker.jsonl factory.jsonl; do
     _sandbox_literal_rule "$d/$n"
   done
-  # Host-owned directories: skills an agent would load, the docker git dirs, run state.
-  for n in skills-mounts sandbox-git locks run-state runs manifests scout experiments; do
+  # Host-owned directories: skills an agent would load, the docker git dirs, run state,
+  # and the tick's helper-server pipes (a request written there is a dispatch command
+  # run with the tick's authority; the per-tick key is the first guard, this the second).
+  for n in skills-mounts sandbox-git locks run-state runs manifests scout experiments wg-serve; do
     _sandbox_subpath_rule "$d/$n"
   done
   # A usage ledger the operator moved out of $GAFFER_DATA.

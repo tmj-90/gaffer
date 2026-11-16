@@ -672,6 +672,15 @@ Settings > Autonomy, `POST /api/autonomy/lift`, or `gaffer wg autonomy lift <rep
 `--override --reason`). Never an agent: MCP has no such tool and the safety hook refuses
 the command to agent shells.
 
+What the merge gate covers: landing an approval that was not a person's (an agent's, or
+one a person's tester waiver carried forward) with no person pressing Merge. A change a
+person approved is a person's decision: it does not count against the merge gate, and a
+step-down does not hold it (`AUTO_MERGE` still lands it). An approve step-down also holds
+an agent's approval that is still waiting to land. A held landing is refused for Merge now
+too, since the landing cannot tell who pressed it: a person lands it by approving it
+themselves (`gaffer wg ticket reopen-for-review <n> --as admin`, then `gaffer approve
+<n>`), or by lifting the step-down.
+
 ### The independent tester
 
 With `GAFFER_TESTING` unset (the default), the tester lane is on for a ticket whose

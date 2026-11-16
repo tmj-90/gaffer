@@ -18,7 +18,9 @@
 #                                  so the runner ships only what each repo has EARNED at
 #                                  its risk level and holds everything else for a human.
 #   autonomous  (walk-away / AFK) — agents approve; approved work auto-merges + pushes;
-#                                  the OS sandbox is required (containment block below)
+#                                  the OS sandbox is required (containment block below).
+#                                  Never at critical risk (a person always decides those),
+#                                  nor for a repo x risk whose autonomy stepped down.
 #   strict      (same flags as autonomous; the one difference is that STRICT_MODE
 #                                  stays on even with an explicit GAFFER_STRICT_REQUIRE=0)
 #

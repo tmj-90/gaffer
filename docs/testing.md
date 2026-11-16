@@ -151,6 +151,13 @@ Run it from a checkout directory named `gaffer`: the front-door suite names the
 checkout as `~/<its directory name>`, and the corpus records that as `~/gaffer`.
 A normal run never writes the fixture.
 
+`runner/test/fixtures/safety-hook-inline-corpus.json` is a sibling fixture with intent
+instead of recorded verdicts: realistic harmless inline interpreter one-liners that
+must stay allowed and hostile ones that must be refused, asserted by
+`runner/test/safety-hook-inline.test.mjs`. Add a one-liner there when you change the
+inline capability rule (a false refusal of a common harmless form is a regression too).
+The hostile entries are only ever handed to the hook as text: never run them.
+
 ### Linux failures on a Mac
 
 CI runs Linux with GNU coreutils; macOS ships the BSD tools. A runner test can pass on

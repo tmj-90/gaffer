@@ -134,6 +134,24 @@ always gets the same decision. It:
   (`$(git log -1 --format=%s)`, `git log ... | sh`, `eval "$(git ...)"`) is refused. A
   script file the agent wrote and then runs (`bash x.sh`, `cat x.sh | bash`) is as
   invisible to the hook as a file the Write tool wrote (see the residual limits);
+- refuses an inline interpreter program (`python -c`, `node -e` / `-p`, `deno eval`,
+  `bun -e`, `ruby -e`, `perl -e`, `php -r`, and the same programs fed on stdin by a
+  here-document, a here-string or `echo` / `printf`, also behind wrappers, `xargs`,
+  `sh -c` and `eval`) unless it is visibly free of file-writing, process, network and
+  dynamic-code capabilities. It reads the program as the interpreter will receive it
+  (the shell's quoting undone, a `cd` before it followed), lexes it per language, and
+  refuses any such capability under any alias or spelling: a capability module imported
+  under any name, a member of `os`, `sys`, `fs`, `process`, `File` and the like outside a
+  read-only list, `eval` / `exec` / `getattr` / `__import__` / dunders, `Function`,
+  `constructor`, computed member names, `send`, string callables, backticks. The one
+  capability it allows is a write whose every path is a literal inside a write root, and
+  that path then gets the checks a Bash write target gets (`.git`, the agent settings,
+  the git execution surface, secret files). A program it cannot see (a command
+  substitution, an xargs placeholder, a variable the command sets at run time, a program
+  piped in from `curl` or `base64 -d`) is refused. Text matching is not a parser: a
+  third-party package or local module the program imports is not analysed (a list of
+  well-known capability packages is refused, and a few package save methods need a
+  literal path), nor is a program file;
 
 It fails closed: when it cannot prove a target is in scope, it blocks. Every hook
 entry in the settings template carries `"onFailure": "block"` and a 60-second
@@ -338,7 +356,11 @@ insert an approval and recompute a consistent chain, and every landing path acte
   - `none` (`GAFFER_STRICT_REQUIRE=0`): **only the safety hook stands between an agent and
     the key file.** The hook is a string analyser (see the residual limits): a compiled
     binary, or a script the agent writes and runs, can read any file the operator's user
-    can. Under this provider the signature proves less than it does elsewhere: an agent
+    can. An inline program (`python -c`, `node -e`, ...) is refused unless it is visibly
+    free of file-writing, process, network and dynamic-code capabilities, but a program
+    the agent first writes into its worktree and then runs (`python x.py`, a module it
+    imports) is not analysed at all: the write roots apply to the Write tool, not to what
+    a script does when it runs. Under this provider the signature proves less than it does elsewhere: an agent
     that escapes the hook can read the key and sign a forged approval. The hook alone
     also guards the dashboard token (with it, the REST server seals an approval for its
     caller) and the tokenless operator CLI (`wg ticket tester-pass --as system`, `wg
@@ -862,7 +884,15 @@ a presence boolean, and an argument not on the allowlist is never copied.
 
 - **The safety hook is a string analyser.** It is hardened and fails closed, but a
   compiled binary, a script the agent writes and then runs, a child process's own
-  syscalls and content-only data flows are out of its reach. It shrinks the gap to
+  syscalls and content-only data flows are out of its reach. Inline interpreter programs
+  are refused when they show a file-writing, process, network or dynamic-code capability,
+  judged on their text: a program file (`python x.py`, `node x.js`, `ruby -r ./x`, a
+  local or third-party module an inline program imports, `python -m`, `node -r`) is not
+  read, so under `SANDBOX_PROVIDER=none` that remains open, and the autonomy modes
+  require containment (`runner/config/15-modes.sh`). A lexer can also misjudge where a
+  string ends in an exotic program; a capability word inside text is refused for that
+  reason, but a determined obfuscation in a language's dark corners is a residual, not a
+  proof. It shrinks the gap to
   dynamic reads and fully dynamic non-secret paths; it does not close it.
   Globs are expanded when the hook decides: a symlink to a secret created by an earlier
   step of the same command through a path the hook cannot see (an interpreter, a

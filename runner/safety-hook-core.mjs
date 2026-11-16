@@ -44,7 +44,11 @@
  *   verbs.mjs          the effective verb: assignments, wrappers, package runners, the
  *                      privileged CLI names, sh -c bodies
  *   deny-list.mjs      lib/dangerous-commands.mjs, loaded so that a failure blocks
- *   interpreters.mjs   the inline-interpreter write and read boundary
+ *   inline-lex.mjs     a lexer for inline programs (strings, comments, interpolation)
+ *   inline-programs.mjs the programs a command hands to an interpreter, as it receives
+ *                      them (shell dequoting, wrappers, xargs, sh -c, heredocs, stdin)
+ *   interpreters.mjs   the inline-interpreter write and read boundary, and the
+ *                      capability rule (no write, process, network or dynamic code)
  *   reads.mjs          secret reads and credentials, git secret ops, Bash read targets
  *   expand.mjs         shell-word expansion (variables, ~, braces, globs) for the read checks
  *   read-operands.mjs  the read boundary after expansion: every read operand expanded and

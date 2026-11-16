@@ -578,7 +578,9 @@ from `lib/hook/`, where the rules live one concern per module:
 | `lib/hook/paths.mjs` | `canonicalize`, the write and read roots, the secret-path families, tilde expansion and `cd` replay |
 | `lib/hook/verbs.mjs` | the effective verb behind assignments, wrappers and package runners; the privileged CLI names; `sh -c` bodies |
 | `lib/hook/deny-list.mjs` | loads `lib/dangerous-commands.mjs` (the deny list) so that a failure blocks |
-| `lib/hook/interpreters.mjs` | the inline-interpreter write and read boundary (`python -c`, `node -e`, heredocs) |
+| `lib/hook/inline-lex.mjs` | a lexer for inline programs: strings decoded, comments dropped, interpolated code read as code |
+| `lib/hook/inline-programs.mjs` | the programs a command hands to an interpreter, as the interpreter receives them (shell dequoting, wrappers, `xargs`, `sh -c`, `eval`, heredocs, stdin, `cd`) |
+| `lib/hook/interpreters.mjs` | the inline-interpreter write and read boundary (`python -c`, `node -e`, heredocs) and the capability rule: an inline program that can write, start a process, reach the network or run code built at run time is refused, except a write to a literal path in a write root |
 | `lib/hook/reads.mjs` | secret reads and credentials, git secret operations, env templates, Bash read targets |
 | `lib/hook/writes.mjs` | Bash write targets |
 | `lib/hook/installs.mjs` | the bootstrap install allowance and `--ignore-scripts` |
@@ -591,8 +593,8 @@ A rule module returns a reason or null; only `decide.mjs` blocks or allows, and 
 module imports only the ones above it in that table. A missing or broken module fails
 the hook closed like a missing core (`test/safety-hook.test.mjs` checks each one),
 `preflight.sh` shows it as a failure, and `tick.sh` refuses to launch an agent when
-`lib/hook/` is missing. Loading twelve modules instead of one adds node start-up time
-to every hook call: on a loaded 4-CPU machine I measured about +5 to +25 ms per call
+`lib/hook/` is missing. Loading the modules instead of one file adds node start-up time
+to every hook call: with twelve modules, on a loaded 4-CPU machine I measured about +5 to +25 ms per call
 (a Read went from a median of about 75 ms to 85 ms), and `NODE_COMPILE_CACHE` did
 not recover it. `test/safety-hook-golden-corpus.test.mjs` pins the verdict
 for every tool call the hook suites make ([`docs/testing.md`](../docs/testing.md) says

@@ -433,3 +433,7 @@
 118	land-tester-replay-scoped.test.sh
 106	e2e-release-gate-tester-replay-scoped.test.sh
 26	afk-review-hold-moved.test.sh
+# Backlog 58 (Nov 16): the autonomy step-down on real dispatch, 65 s served and 106 s with
+# GAFFER_WG_SERVE=0 alone locally; served times the merge-lane ratio 1.12, rounded up, until CI
+# measures it.
+80	autonomy-step-down.test.sh

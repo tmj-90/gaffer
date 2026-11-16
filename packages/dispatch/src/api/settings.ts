@@ -417,6 +417,14 @@ export function resetDerivedSettings(env: NodeJS.ProcessEnv = process.env): void
 const USD_RE = /^([0-9]+([.][0-9]*)?|[.][0-9]+)$/;
 const MODEL_ID = "[A-Za-z0-9][A-Za-z0-9._:/@-]*";
 const MODELS_RE = new RegExp(`^${MODEL_ID},${MODEL_ID},${MODEL_ID}$`);
+/**
+ * What separates the items of a GAFFER_NOTIFY value, as the runner splits it: a comma or
+ * the shell's word separators (space, tab, newline; the loader turns a carriage return
+ * into a space). Never JavaScript's `\s`, which also splits on a no-break space and other
+ * unicode spaces the runner keeps inside an item: "desktop<no-break space>https://..."
+ * passed here and then stopped every runner process (fail closed).
+ */
+const NOTIFY_SEP = /[ \t\n\r,]+/;
 const GATES_LIST_RE = /^(tests|lint|typecheck)([ ,]+(tests|lint|typecheck))*$/;
 
 /**
@@ -466,7 +474,7 @@ export function settingValueProblem(
     case "notify": {
       let hooks = 0;
       let slack = 0;
-      for (const item of v.split(/[\s,]+/).filter((i) => i !== "")) {
+      for (const item of v.split(NOTIFY_SEP).filter((i) => i !== "")) {
         if (item === "desktop") continue;
         if (item.startsWith("https://hooks.slack.com/")) slack += 1;
         else if (item.startsWith("http://") || item.startsWith("https://")) hooks += 1;
@@ -570,7 +578,7 @@ export interface NotifyChannel {
 /** The channels of a GAFFER_NOTIFY value, masked. */
 export function notifyChannels(value: string): NotifyChannel[] {
   return value
-    .split(/[\s,]+/)
+    .split(NOTIFY_SEP)
     .filter((i) => i !== "")
     .map((i) =>
       i === "desktop"
@@ -896,7 +904,7 @@ export interface NotifyChange {
 
 /** The GAFFER_NOTIFY value a {@link NotifyChange} makes from the stored one. */
 export function applyNotifyChange(stored: string, change: NotifyChange): string {
-  const items = stored.split(/[\s,]+/).filter((i) => i !== "");
+  const items = stored.split(NOTIFY_SEP).filter((i) => i !== "");
   let desktop = items.includes("desktop");
   let slack = items.find((i) => i.startsWith("https://hooks.slack.com/")) ?? "";
   let webhook =

@@ -3,7 +3,7 @@
 // a value is validated exactly as the runner's _gaffer_setting_problem validates it, an
 // old key is refused naming the setting that decides it now, the derived and migration
 // blocks come from the runner's own config, and every secret is masked.
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -239,6 +239,34 @@ describe("writes", () => {
     expect(writeSettings({ GAFFER_NOTIFY: `desktop,${SLACK}` }, env, settingsPath).written).toEqual(
       ["GAFFER_NOTIFY"],
     );
+  });
+
+  it("a value the API stores always loads in the runner: unicode spaces in a notify value", () => {
+    // JavaScript's \s splits on a no-break space (and other unicode spaces); the
+    // runner's word splitting does not. "desktop<NBSP>https://..." was stored, and then
+    // every runner process refused the config.
+    const hostile = [
+      "desktop\u00a0https://hooks.example.com/w/x",
+      "https://hooks.example.com/w/x\u2003desktop",
+      "desktop\u2028desktop",
+      "desktop\u3000",
+      `desktop,${HOOK}`,
+      "desktop https://hooks.example.com/w/x",
+    ];
+    for (const v of hostile) {
+      const env = op();
+      rmSync(settingsPath, { force: true });
+      const res = writeSettings({ GAFFER_NOTIFY: v }, env, settingsPath);
+      if (!res.written.includes("GAFFER_NOTIFY")) continue;
+      const run = spawnSync("bash", [join(RUNNER_DIR, "lib", "config-records.sh")], {
+        env: { PATH: process.env.PATH, HOME: dir, GAFFER_DATA: dir },
+        encoding: "utf8",
+      });
+      expect(run.status, `stored ${JSON.stringify(v)}: ${run.stderr.slice(-300)}`).toBe(0);
+    }
+    expect(writeSettings({ GAFFER_NOTIFY: hostile[0]! }, op(), settingsPath).invalid).toEqual([
+      "GAFFER_NOTIFY",
+    ]);
   });
 
   it("a notify change keeps the saved URLs on the server", () => {

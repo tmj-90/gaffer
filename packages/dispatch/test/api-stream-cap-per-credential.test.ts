@@ -25,9 +25,15 @@ const human: Actor = { type: "human", id: "tom" };
 
 const saved = process.env.DISPATCH_API_TOKEN;
 const aborts: AbortController[] = [];
+// Every open stream's Response is held until the test ends. fetch cancels the body of a
+// Response that is garbage-collected, which closes the connection and frees its slot on
+// the server: a collection in the middle of a test then let one stream more than the cap
+// through (seen once on a macOS CI runner: "expected 200 to be 503").
+const held: Response[] = [];
 let close: (() => Promise<void>) | undefined;
 afterEach(async () => {
   for (const a of aborts.splice(0)) a.abort();
+  held.length = 0;
   endEventStreams("test over");
   await close?.();
   close = undefined;
@@ -60,6 +66,7 @@ async function start() {
       signal: ac.signal,
     });
     if (res.status !== 200) await res.text();
+    else held.push(res);
     return res.status;
   };
   return { wg, open };

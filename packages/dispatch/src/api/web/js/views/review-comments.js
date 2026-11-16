@@ -1,6 +1,7 @@
 // Review comments (A1), Fix these (A2), since your review (A3), the DoD and AC checklists.
 // Moved verbatim from app.js (the entry); the module map is in app.js.
 
+import { table } from "../lookup.js";
 import { agentWho, readOnly, roLock } from "../access.js";
 import { api } from "../api.js";
 import { agentNames, squad } from "../club.js";
@@ -28,12 +29,12 @@ function commentWhere(c) {
 /** The git-derived anchor tag of a comment written on an earlier revision. */
 // "Anchor changed" is a fact from git, not something the reviewer must act on: a neutral
 // info chip, never the needs treatment "Must fix" wears (A-26).
-const ANCHOR_TAGS = {
+const ANCHOR_TAGS = table({
   changed: ["anchor changed in this revision", "info"],
   untouched: ["anchor untouched", "no-dot"],
   current: ["written on this revision", "no-dot"],
   unknown: ["anchor not checkable here", "no-dot"],
-};
+});
 
 /**
  * Who someone is, the one way: a known agent wears its shirt (agentChip), anyone else is

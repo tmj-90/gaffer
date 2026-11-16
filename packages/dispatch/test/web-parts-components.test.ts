@@ -144,6 +144,48 @@ describe("measureTile: the measure spec", () => {
     expect(down.querySelector(".mt-n")!.textContent).toBe("n 12");
   });
 
+  it("two identical periods read no change, never '+0 pts better' or '+0 pts worse'", () => {
+    // This period's rate is k / n in full (83.333...), the one before arrives rounded
+    // by the server (83.3): compared raw they differed by 0.03.
+    const up = C.measureTile({
+      ...base,
+      k: 10,
+      n: 12,
+      delta: { prev: 83.3, prevN: 12, goodWhen: "up" },
+    }).querySelector(".mt-delta")!;
+    expect(up.classList.contains("is-same")).toBe(true);
+    expect(up.textContent).toContain("no change");
+    expect(up.textContent).not.toMatch(/better|worse/);
+    const down = C.measureTile({
+      ...base,
+      k: 1,
+      n: 12,
+      delta: { prev: 8.33, prevN: 12, goodWhen: "down" },
+    }).querySelector(".mt-delta")!;
+    expect(down.classList.contains("is-same")).toBe(true);
+    expect(down.textContent).not.toMatch(/better|worse/);
+    // A real change of one displayed step still reads as a change.
+    const moved = C.measureTile({
+      ...base,
+      k: 10,
+      n: 12,
+      delta: { prev: 83.2, prevN: 12, goodWhen: "up" },
+    }).querySelector(".mt-delta")!;
+    expect(moved.classList.contains("is-better")).toBe(true);
+    expect(moved.textContent).toContain("+0.1 pts");
+    // A formatted figure: a difference its format prints as nothing is no change.
+    const usd = (v: number) => `$${v.toFixed(2)}`;
+    const cost = C.measureTile({
+      label: "Cost per accepted change",
+      value: 1.004,
+      n: 12,
+      format: usd,
+      delta: { prev: 1.001, prevN: 12, goodWhen: "down" },
+    }).querySelector(".mt-delta")!;
+    expect(cost.classList.contains("is-same")).toBe(true);
+    expect(cost.textContent).not.toMatch(/better|worse/);
+  });
+
   it("below minN: no delta, the rate greys", () => {
     const t = C.measureTile({ ...base, k: 4, n: 4, delta: { prev: 50, prevN: 30 } });
     expect(t.querySelector(".mt-delta")).toBeNull();

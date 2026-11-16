@@ -113,8 +113,38 @@ describe("deliveryFlow: the cycle series never invents a value (F-B2, F-E2)", ()
     expect(flow.cycle_time.series_n).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 1, 0]);
     // Sorted cycles [1, 3, 4]: median 3, p75 = 3 + 0.5 * 1 = 3.5, p90 = 3 + 0.8 * 1 = 3.8.
     expect(flow.cycle_time.median_days).toBeCloseTo(3);
-    expect(flow.cycle_time.p75_days).toBe(3.5);
-    expect(flow.cycle_time.p90_days).toBe(3.8);
+    expect(flow.cycle_time.p75_days).toBeCloseTo(3.5, 9);
+    expect(flow.cycle_time.p90_days).toBeCloseTo(3.8, 9);
+  });
+
+  it("a percentile is never below the median, at any precision the page shows", () => {
+    // One ticket that took 217 minutes (0.1507 days). The median was served in full and
+    // the percentiles rounded to 0.01, so one decimal read 0.2 for the median and 0.1
+    // for p75 and p90.
+    const minsAgo = (m: number): string => new Date(NOW - m * 60_000).toISOString();
+    const flow = deliveryFlow(
+      [{ status: "done", created_at: minsAgo(60 + 217), updated_at: minsAgo(60) }],
+      NOW,
+    );
+    const { median_days: med, p75_days: p75, p90_days: p90 } = flow.cycle_time;
+    expect(med).toBeCloseTo(217 / 1440, 9);
+    expect(p75).toBe(med);
+    expect(p90).toBe(med);
+    expect([med!.toFixed(1), p75!.toFixed(1), p90!.toFixed(1)]).toEqual(["0.2", "0.2", "0.2"]);
+    // And on a spread: median <= p75 <= p90 once each is rounded for display.
+    const spread = deliveryFlow(
+      [217, 230, 260, 900, 2000].map((m) => ({
+        status: "done",
+        created_at: minsAgo(60 + m),
+        updated_at: minsAgo(60),
+      })),
+      NOW,
+    ).cycle_time;
+    const shown = [spread.median_days!, spread.p75_days!, spread.p90_days!].map((v) =>
+      Number(v.toFixed(1)),
+    );
+    expect(shown[0]!).toBeLessThanOrEqual(shown[1]!);
+    expect(shown[1]!).toBeLessThanOrEqual(shown[2]!);
   });
 });
 

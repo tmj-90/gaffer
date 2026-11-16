@@ -1,6 +1,7 @@
 // Settings: the formation, modes, gates, go / no-go and team instructions.
 // Moved verbatim from app.js (the entry); the module map is in app.js.
 
+import { table } from "../lookup.js";
 import { api } from "../api.js";
 import { panelHead } from "../components.js";
 import { clear, el, svgEl } from "../dom.js";
@@ -16,7 +17,7 @@ import { formationLaneRepos } from "./settings.js";
  * src/api/settings.ts (itself a mirror of runner/factory.config.sh). A value in
  * settings.json or the environment wins over the mode, as on the server.
  */
-const MODE_PRESETS = {
+const MODE_PRESETS = table({
   supervised: {
     REVIEW_MODE: "human",
     DISPATCH_ALLOW_AGENT_APPROVE: "0",
@@ -57,7 +58,7 @@ const MODE_PRESETS = {
     GAFFER_AUTO_PUSH: "1",
     MEMORY_AUTO_APPROVE: "1",
   },
-};
+});
 /** The dial's detents, least to most autonomy (the server's own order). */
 const MODE_DETENTS = [
   { mode: "supervised", name: "Supervised", line: "You sign off every merge." },
@@ -156,14 +157,14 @@ const FORMATION_GATES = [
     who: (p) => (isOnValue(p.MEMORY_AUTO_APPROVE?.value) ? "squad" : "you"),
   },
 ];
-const WHO_WORDS = {
+const WHO_WORDS = table({
   squad: "the squad",
   you: "you",
   both: "squad, then you",
   none: "not played",
-};
+});
 /** The autonomy-policy gate behind a formation position (per-repo × risk grants). */
-const FORMATION_POLICY_GATE = { approve: "approve", merge: "merge", lore: "memory" };
+const FORMATION_POLICY_GATE = table({ approve: "approve", merge: "merge", lore: "memory" });
 /** Enabled auto grants for a formation position (0 when it has none or no policy gate). */
 function formationGrants(policies, gateId, posture) {
   const gate = FORMATION_POLICY_GATE[gateId];

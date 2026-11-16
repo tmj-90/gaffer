@@ -1,6 +1,7 @@
 // The club and its squad (GET /api/club, GET /api/squad): agent names, display names, capability.
 // Moved verbatim from app.js (the entry); the module map is in app.js.
 
+import { table } from "./lookup.js";
 import { learnWhoami, paintReadOnly, scoped } from "./access.js";
 import { api } from "./api.js";
 import { app } from "./dom.js";
@@ -58,12 +59,12 @@ const squad = {
   loaded: null, // the in-flight or settled first read
   whoamiFailed: false, // the gate's whoami failed (not 401): the first squad read skips it
 };
-const ROLE_LABELS = {
+const ROLE_LABELS = table({
   delivery: "Delivery",
   reviewer: "Reviewer",
   security_reviewer: "Security reviewer",
   tester: "Tester",
-};
+});
 function learnDisplay(d) {
   if (!d || typeof d !== "object" || !d.agent_id || !d.display_name_effective) return;
   squad.byId.set(d.agent_id, { ...(squad.byId.get(d.agent_id) || {}), ...d });

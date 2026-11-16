@@ -1,6 +1,7 @@
 // The programme pages: cup runs, injuries, league table, wage bill, form, full time, fixtures, match report.
 // Moved verbatim from app.js (the entry); the module map is in app.js.
 
+import { table } from "../lookup.js";
 import { agentTitle, agentWho, roLock } from "../access.js";
 import { actorName, agentNames, squad } from "../club.js";
 import { dataTable, emptyState, panelHead } from "../components.js";
@@ -703,7 +704,7 @@ const REPORT_QUIET = new Set([
   "ticket.repo_delivery_recorded",
   "ticket.acceptance_criteria_reset",
 ]);
-const PITCH_WORD = { ready_for_merge: "To merge" };
+const PITCH_WORD = table({ ready_for_merge: "To merge" });
 function reportLine(f, e) {
   const det = f.details.get(e.entity_id);
   const full = det?.events?.find((x) => x.id === e.id);

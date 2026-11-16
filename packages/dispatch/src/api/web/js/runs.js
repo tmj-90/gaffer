@@ -1,6 +1,7 @@
 // Running now (RUN-ACTIVITY): run rows, run logs and run detail.
 // Moved verbatim from app.js (the entry); the module map is in app.js.
 
+import { table } from "./lookup.js";
 import { api, authToken } from "./api.js";
 import { emptyState, panelHead } from "./components.js";
 import { clear, el } from "./dom.js";
@@ -11,13 +12,13 @@ import { closeSheet, openSheet } from "./sheet.js";
 // --- "Running now" panel (RUN-ACTIVITY) -------------------------------------
 
 /** Human label for a run kind (the backend's snake_case → a readable noun). */
-const RUN_KIND_LABELS = {
+const RUN_KIND_LABELS = table({
   product_owner: "Suggest work",
   onboard: "Onboard repo",
   poll_work: "Poll for work",
   merge: "Merge",
   other: "Run",
-};
+});
 function runKindLabel(kind) {
   return RUN_KIND_LABELS[kind] || kind || "Run";
 }

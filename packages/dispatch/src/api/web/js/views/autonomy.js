@@ -1,6 +1,7 @@
 // Settings: autonomy policies and recommendations, access (principals), idle loops.
 // Moved verbatim from app.js (the entry); the module map is in app.js.
 
+import { table } from "../lookup.js";
 import { api } from "../api.js";
 import { actorName } from "../club.js";
 import { emptyState, meterRow, panelHead } from "../components.js";
@@ -463,7 +464,7 @@ function accessPanel(whoami, principals) {
 }
 
 /** The known idle scan loops, in display order, with copy for the panel. */
-const IDLE_LOOP_LABELS = {
+const IDLE_LOOP_LABELS = table({
   idle_security_hotspot: "Security hotspots",
   idle_coverage: "Coverage",
   idle_test_quality: "Test quality",
@@ -472,7 +473,7 @@ const IDLE_LOOP_LABELS = {
   idle_documentation: "Documentation",
   idle_dependencies: "Dependencies",
   idle_feature_backlog: "Feature backlog",
-};
+});
 
 /**
  * Idle-loops control panel. For each scan loop: an enable toggle + a multi-select

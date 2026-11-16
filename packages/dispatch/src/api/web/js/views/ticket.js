@@ -1,6 +1,7 @@
 // View: Ticket detail.
 // Moved verbatim from app.js (the entry); the module map is in app.js.
 
+import { table } from "../lookup.js";
 import { readOnly, roLock, roLockAll, scopeTitle } from "../access.js";
 import { api } from "../api.js";
 import { ensureAgents } from "../club.js";
@@ -269,12 +270,12 @@ function ticketLede(t, trail, events, doneAt, evidence = []) {
 }
 
 /** A policy pack said as house rules ("Solo · loose rules"), the raw key in the title. */
-const POLICY_WORDS = {
+const POLICY_WORDS = table({
   solo_loose: "Solo · loose rules",
   team_light: "Team · light rules",
   factory_strict: "Factory · strict rules",
   regulated: "Regulated rules",
-};
+});
 function policyChip(pack) {
   const b = badge(POLICY_WORDS[pack] || String(pack).replace(/_/g, " "), "no-dot");
   b.title = `Policy pack: ${pack}`;

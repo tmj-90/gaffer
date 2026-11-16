@@ -1,6 +1,7 @@
 // The Tactics Board: the pitch.
 // Moved verbatim from app.js (the entry); the module map is in app.js.
 
+import { table } from "../lookup.js";
 import { agentWho } from "../access.js";
 import { el, prefersReducedMotion } from "../dom.js";
 import { fmtTime, money } from "../format.js";
@@ -64,7 +65,7 @@ function arrowWindow(f) {
  * at the size it is seen (k = viewBox units per CSS px); tags and arrows are laid
  * out at those sizes, so nothing collides.
  */
-const PITCH_VW = { landscape: 14 + 1050 + 104, portrait: 14 + 680 + 14 };
+const PITCH_VW = table({ landscape: 14 + 1050 + 104, portrait: 14 + 680 + 14 });
 function pitchBoard(f, orientation, k = orientation === "portrait" ? 2 : 1.26) {
   const P = orientation === "portrait";
   const { channels, other } = pitchChannels(f);

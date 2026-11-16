@@ -1,6 +1,7 @@
 // Ticket acceptance: the acceptance profile, runtime acceptance, tester provenance, add an AC.
 // Moved verbatim from app.js (the entry); the module map is in app.js.
 
+import { table } from "../lookup.js";
 import { api } from "../api.js";
 import { el, field } from "../dom.js";
 import { fmtTime } from "../format.js";
@@ -11,15 +12,15 @@ import { guard, toast } from "../toast.js";
 // ACCEPTANCE PROFILES (Release C): how the tester's PASS is proven. The runner runs the
 // commands a person registers for the cli and api profiles; web, migration and
 // performance are defined but not run yet (a PASS there is a person's verdict).
-const ACCEPTANCE_PROFILE_HELP = {
+const ACCEPTANCE_PROFILE_HELP = table({
   unit: "The tester's tests, replayed on a clean checkout of the tested commit (the default).",
   cli: "The runner also runs the commands you register on the clean checkout and records a transcript: argv, exit code, stdout, stderr, files changed. A PASS needs every expectation to hold.",
   api: "The runner also boots the service with your command on a free port, waits for its health path and runs each probe, recording the responses. A PASS needs every probe to answer as expected.",
   web: "Defined, not run by the runner yet: the tester's PASS is held for your verdict.",
   migration: "Defined, not run by the runner yet: the tester's PASS is held for your verdict.",
   performance: "Defined, not run by the runner yet: the tester's PASS is held for your verdict.",
-};
-const ACCEPTANCE_SPEC_EXAMPLE = {
+});
+const ACCEPTANCE_SPEC_EXAMPLE = table({
   cli: {
     cases: [{ argv: ["node", "bin/cli.mjs", "--version"], expect: { exit: 0, stdout: ["1.0"] } }],
   },
@@ -28,7 +29,7 @@ const ACCEPTANCE_SPEC_EXAMPLE = {
     health_path: "/health",
     probes: [{ method: "GET", path: "/items", expect: { status: 200 } }],
   },
-};
+});
 const TEST_CONTRACT_EDITABLE = [
   "draft",
   "refining",

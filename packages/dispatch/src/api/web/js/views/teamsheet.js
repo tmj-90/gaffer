@@ -1,6 +1,7 @@
 // The Team Sheet: what needs you, ranked, each with one real action.
 // Moved verbatim from app.js (the entry); the module map is in app.js.
 
+import { table } from "../lookup.js";
 import { roLock } from "../access.js";
 import { emptyState, panelHead } from "../components.js";
 import { el } from "../dom.js";
@@ -21,7 +22,7 @@ import { integrityFlagOf } from "./review-packet.js";
 // --- The Team Sheet: what needs you, ranked, each with one real action -------
 
 /** The verb on each row. Every one is a real button or link (never a decoration). */
-const OWN_VERB = {
+const OWN_VERB = table({
   review: "Review",
   decision: "Answer…",
   parked: "Unblock…",
@@ -31,17 +32,17 @@ const OWN_VERB = {
   dependency_cancelled: "Re-plan…",
   paused: "Continue…",
   lore_drafts: "Open Memory",
-};
+});
 /** The word each kind of row leads with (the referee's call, not the queue's jargon). */
-const OWN_WORD = {
+const OWN_WORD = table({
   parked: "Blocked",
   decision: "Decision",
   review: "Review sign-off",
   awaiting_merge: "Approved, not merged",
   paused: "Paused",
   lore_drafts: "Lore drafts",
-};
-const OWN_GLYPH = {
+});
+const OWN_GLYPH = table({
   review: "in_review",
   decision: "decision",
   parked: "blocked",
@@ -49,7 +50,7 @@ const OWN_GLYPH = {
   ready_approval: "ready",
   dependency_cancelled: "cancelled",
   paused: "paused",
-};
+});
 
 function whatIOwnPanel(queue, f) {
   const items = (queue && queue.items) || [];

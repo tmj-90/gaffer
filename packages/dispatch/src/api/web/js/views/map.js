@@ -1,6 +1,7 @@
 // View: Map (UI-000 / UI-001 / UI-002 / UI-003).
 // Moved verbatim from app.js (the entry); the module map is in app.js.
 
+import { table } from "../lookup.js";
 import { roLock } from "../access.js";
 import { api } from "../api.js";
 import { dataTable, emptyState, panelHead, viewHead } from "../components.js";
@@ -79,7 +80,7 @@ function mapTone(status) {
   if (ON_PITCH.has(status)) return "play";
   return null;
 }
-const MAP_TONE_RANK = { red: 0, yellow: 1, paused: 2, play: 3 };
+const MAP_TONE_RANK = table({ red: 0, yellow: 1, paused: 2, play: 3 });
 /**
  * The scope the server records for a ticket that targets a repo with no ground:
  * an external_dependency node named "repo:<name>". It is the free agent playing
@@ -480,7 +481,7 @@ function renderFactoryFooter() {
 }
 
 /** Column names from what stands in them (the club, its products, its services…). */
-const MAP_COL_WORD = {
+const MAP_COL_WORD = table({
   factory: "The club",
   domain: "Domains",
   product: "Products",
@@ -491,14 +492,14 @@ const MAP_COL_WORD = {
   component: "Components",
   external_dependency: "Outside the ground",
   epic: "Campaigns",
-};
+});
 /**
  * The map's columns, by what a ground IS, so a column's name is always true and
  * outside grounds always stand at the far touchline: the club and its campaigns,
  * domains, products, services (and the other parts that run), outside the ground.
  * Empty tiers are dropped.
  */
-const MAP_TIER = {
+const MAP_TIER = table({
   factory: 0,
   epic: 0,
   domain: 1,
@@ -509,7 +510,7 @@ const MAP_TIER = {
   library: 3,
   component: 3,
   external_dependency: 4,
-};
+});
 const mapTierOf = (n) => MAP_TIER[n.type] ?? 3;
 
 /**

@@ -1,6 +1,7 @@
 // Routing and IA: the view table, the hash router, in-page jumps, error pages, tab titles.
 // Moved verbatim from app.js (the entry); the module map is in app.js.
 
+import { table } from "./lookup.js";
 import { scoped } from "./access.js";
 import { skeleton } from "./components.js";
 import { app, clear, el, prefersReducedMotion } from "./dom.js";
@@ -29,7 +30,7 @@ import { renderWork } from "./views/work.js";
 // 8 tabs folded to 5 areas. Legacy hashes are aliased so deep links and the
 // previous IA keep working: every prior view is still reachable.
 
-const VIEWS = {
+const VIEWS = table({
   overview: renderOverview,
   health: renderHealth,
   work: renderWork,
@@ -46,26 +47,26 @@ const VIEWS = {
   node: renderNode,
   repo: renderRepo,
   hidden: renderHidden,
-};
+});
 
 // Map old view names onto the new IA so existing links never break.
-const VIEW_ALIASES = {
+const VIEW_ALIASES = table({
   dashboard: "overview",
   decisions: "overview",
   board: "work",
   backlog: "work",
   claims: "work",
   map: "factory",
-};
+});
 
 // Sub-views highlight their parent area in the nav.
-const AREA_FOR_VIEW = {
+const AREA_FOR_VIEW = table({
   ticket: "work",
   node: "factory",
   repo: "factory",
   create: "epics",
   hidden: "factory",
-};
+});
 
 /** Parse the hash into { view, param, query }. e.g. #/ticket/abc -> ticket. */
 function parseHash() {
@@ -194,7 +195,7 @@ function carryOpenForms(from, to) {
  * router uses it only for a navigation; a failed background refresh keeps the
  * view on screen, and a later refresh that succeeds replaces the failure page.
  */
-const VIEW_ERROR_PAGES = { overview: (e) => overviewError(e) };
+const VIEW_ERROR_PAGES = table({ overview: (e) => overviewError(e) });
 
 /**
  * The error page in the club's language: the fourth official's board held up
@@ -370,7 +371,7 @@ function digitValues(root) {
 
 // Human-facing browser-tab title per view, so several open tabs (Review, a
 // ticket, Settings) are distinguishable in the tab strip, history and bookmarks.
-const VIEW_TITLES = {
+const VIEW_TITLES = table({
   overview: "Overview",
   health: "Health",
   work: "Work",
@@ -387,7 +388,7 @@ const VIEW_TITLES = {
   node: "Map",
   create: "Plan a build",
   hidden: "Hidden repos",
-};
+});
 /**
  * Set the tab title. `detail` (a detail view's own label, e.g. "#12 Add login") wins;
  * an unknown view is plain "Gaffer". A detail title is applied only while its route is

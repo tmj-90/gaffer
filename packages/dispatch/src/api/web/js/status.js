@@ -2,12 +2,13 @@
 // statusBadge, verdictMark, priorityTag, reasonText), and the state-aware ticket action
 // sets (single source of truth).
 
+import { table } from "./lookup.js";
 import { el, svgEl } from "./dom.js";
 import { badge, glyph } from "./icons.js";
 
 // --- Shared status vocabulary ----------------------------------------------
 
-const STATUS_LABELS = {
+const STATUS_LABELS = table({
   draft: "Draft",
   refining: "Refining",
   ready: "Ready",
@@ -23,7 +24,7 @@ const STATUS_LABELS = {
   failed: "Failed",
   cancelled: "Cancelled",
   paused: "Paused",
-};
+});
 /**
  * A status's word. An approved (ready_for_merge) or held ticket passes the server's
  * `landing_state`, so the word says where the landing really is ("Approved · waiting
@@ -36,7 +37,7 @@ function statusLabel(status, landing) {
   return STATUS_LABELS[status] || status;
 }
 /** Glyph px per statusBadge size. */
-const BADGE_GLYPH = { s: 14, m: 16, l: 20 };
+const BADGE_GLYPH = table({ s: 14, m: 16, l: 20 });
 /**
  * A status: its §6 glyph + its word, together (never colour alone). `size` "s" (a
  * board card), "m" (default) or "l"; one build for every status mark on a ticket.
@@ -107,7 +108,7 @@ function ticketHead(
  * glyphs so a passed check never reads as "done" nor an open one as "draft". 16px
  * grid, currentColor.
  */
-const VERDICT_GLYPHS = {
+const VERDICT_GLYPHS = table({
   pass: [["path", { d: "M3.2 8.6 L6.6 12 L12.8 4.6", fill: "none" }]],
   fail: [["path", { d: "M4.2 4.2 L11.8 11.8 M11.8 4.2 L4.2 11.8", fill: "none" }]],
   flag: [
@@ -116,14 +117,14 @@ const VERDICT_GLYPHS = {
   ],
   skip: [["path", { d: "M3.8 8 H12.2", fill: "none" }]],
   open: [["rect", { x: 3.5, y: 3.5, width: 9, height: 9, rx: 1, fill: "none" }]],
-};
-const VERDICT_WORDS = {
+});
+const VERDICT_WORDS = table({
   pass: "passed",
   fail: "failed",
   flag: "flagged",
   skip: "skipped",
   open: "open",
-};
+});
 /**
  * A verdict: its own glyph and a word, together ("passed", "failed", "flagged",
  * "skipped", "open"). `word` replaces the default word; `size` is the glyph px.
@@ -163,7 +164,7 @@ function priorityTag(p) {
 }
 
 /** Plain words for the reason codes the server sends (park reasons, verdicts, advice). */
-const REASON_WORDS = {
+const REASON_WORDS = table({
   rework_exhausted: "Rework ran out of attempts",
   reworking: "Being reworked",
   bootstrap_failed: "Setup failed before work began",
@@ -188,7 +189,7 @@ const REASON_WORDS = {
   refine: "Refine it",
   cancel: "Cancel it",
   continue: "Continue it",
-};
+});
 /**
  * A server reason code in plain words ("rework_exhausted" reads "Rework ran out of
  * attempts", "risk=low" reads "Low risk"); an unknown code is de-snaked ("some_new_code"
@@ -259,7 +260,7 @@ function repoLink(repo, { className = "", stop = false } = {}) {
  * development-flow strip (the old shared name broke its overflow on phones).
  */
 const LIFECYCLE = ["draft", "ready", "in_progress", "in_review", "done"];
-const STAGE_FOR_STATUS = {
+const STAGE_FOR_STATUS = table({
   draft: 0,
   refining: 0,
   ready: 1,
@@ -278,7 +279,7 @@ const STAGE_FOR_STATUS = {
   done: 4,
   failed: 4,
   cancelled: 4,
-};
+});
 function pipelineDots(status) {
   const stage = STAGE_FOR_STATUS[status] ?? 0;
   const failed = status === "failed" || status === "cancelled";
@@ -316,7 +317,7 @@ function stageCaption(status) {
 // Each action is a stable key; the renderers map a key to a concrete button. The
 // backend remains the source of truth (an illegal call still comes back as an
 // error); this map only decides what to OFFER.
-const TICKET_ACTION_KEYS = {
+const TICKET_ACTION_KEYS = table({
   draft: ["mark_ready", "wont_do"],
   refining: ["mark_ready", "wont_do"],
   // A queued ticket nobody has claimed yet can still be closed (ready -> cancelled).
@@ -345,7 +346,7 @@ const TICKET_ACTION_KEYS = {
   // the existing worktree) or Stop (cancel; the next tick removes the worktree). The banner above the bar
   // surfaces the reason + spend-so-far.
   paused: ["pause_continue", "pause_stop"],
-};
+});
 function ticketActionKeys(status) {
   return TICKET_ACTION_KEYS[status] || [];
 }

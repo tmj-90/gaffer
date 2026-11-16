@@ -1,6 +1,7 @@
 // The review packet: gate integrity, human asks, verdicts, impact, backing, the verdict strip.
 // Moved verbatim from app.js (the entry); the module map is in app.js.
 
+import { table } from "../lookup.js";
 import { roLock } from "../access.js";
 import { api } from "../api.js";
 import { actorName } from "../club.js";
@@ -419,14 +420,14 @@ function factoryNorms() {
   return p;
 }
 
-const VD_WORD = { PASS: "passed", FAIL: "failed", FLAG: "flagged", SKIPPED: "skipped" };
+const VD_WORD = table({ PASS: "passed", FAIL: "failed", FLAG: "flagged", SKIPPED: "skipped" });
 /** A runner gate status as a verdict (a FLAG is the "!" mark, never a skip). */
-const GATE_VERDICT = { PASS: "pass", FAIL: "fail", FLAG: "flag", SKIPPED: "skip" };
+const GATE_VERDICT = table({ PASS: "pass", FAIL: "fail", FLAG: "flag", SKIPPED: "skip" });
 /**
  * A cell's tone as its verdict mark: ok passed, bad failed, warn worth a look; a fact
  * that is not a verdict (cost, the attempt, the pin) reads with the dash.
  */
-const TONE_VERDICT = { ok: "pass", bad: "fail", warn: "flag" };
+const TONE_VERDICT = table({ ok: "pass", bad: "fail", warn: "flag" });
 /** The verdict line of a cell: its mark and its one word (a control stays itself). */
 function verdictValue(value, tone) {
   if (value && value.nodeType === 1 && value.tagName === "BUTTON") return value;
@@ -503,14 +504,14 @@ function acEvidenceWords(a) {
   return "No machine evidence: nothing recorded";
 }
 
-const JUDGE_DIM_LABEL = {
+const JUDGE_DIM_LABEL = table({
   ac_coverage: "Acceptance criteria",
   correctness: "Correctness",
   minimalism: "Smallest change",
   test_adequacy: "Tests",
   security: "Security",
-};
-const JUDGE_WORD = { pass: "Pass", borderline: "Borderline", fail: "Fail" };
+});
+const JUDGE_WORD = table({ pass: "Pass", borderline: "Borderline", fail: "Fail" });
 /**
  * BLINDING: the judge's cell starts collapsed behind "Show the judge's view", with no
  * verdict, score or tone, so a reviewer who decides without opening it decides blind and
@@ -1027,7 +1028,7 @@ function ciCell(ci) {
 }
 
 /** Where a backing row's fact is shown: its strip cell, the criteria table or the evidence. */
-const BACKING_TARGET = {
+const BACKING_TARGET = table({
   candidate: ".vd-cell.vd-candidate",
   gates: ".vd-cell.vd-gates",
   integrity: ".vd-cell.vd-gates",
@@ -1036,7 +1037,7 @@ const BACKING_TARGET = {
   criteria: ".rv-ac-table, .rv-checks",
   evidence: ".rv-evid",
   impact: ".rv-impact",
-};
+});
 
 /**
  * INSPECTABLE CONFIDENCE: "What backs this / What is not backed", the server's backing rows

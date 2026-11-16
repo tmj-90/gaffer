@@ -1,6 +1,7 @@
 // Shared panels: the development flow, what is needed, waiting notes, the event vocabulary and feed rows.
 // Moved verbatim from app.js (the entry); the module map is in app.js.
 
+import { table } from "./lookup.js";
 import { actorName } from "./club.js";
 import { panelHead } from "./components.js";
 import { el } from "./dom.js";
@@ -357,7 +358,7 @@ function waitingNote(w) {
  * verb; everything else is derived by dropping the entity prefix and
  * sentence-casing the remainder, so new event types degrade gracefully.
  */
-const EVENT_LABELS = {
+const EVENT_LABELS = table({
   "ticket.created": "Ticket created",
   "ticket.transitioned": "Ticket moved",
   "ticket.claimed": "Ticket claimed",
@@ -368,7 +369,7 @@ const EVENT_LABELS = {
   "ticket.unblocked": "Unblocked",
   "ac.edited": "Criterion edited",
   "ac.removed": "Criterion removed",
-};
+});
 function humanizeEvent(type) {
   if (!type) return "Event";
   if (EVENT_LABELS[type]) return EVENT_LABELS[type];

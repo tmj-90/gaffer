@@ -1,6 +1,7 @@
 // View: Floor (#/floor), the factory floor.
 // Moved verbatim from app.js (the entry); the module map is in app.js.
 
+import { table } from "../lookup.js";
 import { agentTitle, agentWho } from "../access.js";
 import { viewHead } from "../components.js";
 import { clear, el, prefersReducedMotion, svgEl } from "../dom.js";
@@ -307,7 +308,7 @@ function fPlaceTags(tags, obstacles, bounds) {
 }
 
 /* ---- stations ------------------------------------------------------------ */
-const FLOOR_STATIONS = {
+const FLOOR_STATIONS = table({
   drawing: { name: "Drawing office", statuses: ["draft", "refining"], hue: "var(--fl-draft)" },
   stores: { name: "Stores", statuses: ["ready"], hue: "var(--fl-ready)" },
   assembly: { name: "Assembly", statuses: ["claimed", "in_progress"], hue: "var(--fl-build)" },
@@ -316,7 +317,7 @@ const FLOOR_STATIONS = {
   loading: { name: "Loading bay", statuses: ["ready_for_merge"], hue: "var(--fl-inspect)" },
   despatch: { name: "Despatch", statuses: ["done"], hue: "var(--fl-done)" },
   jam: { name: "Jam bay", statuses: ["blocked", "paused", "failed"], hue: "var(--red)" },
-};
+});
 /** Lifecycle order: the stations along the line, then the bay off it. */
 const FLOOR_ORDER = [
   "drawing",
@@ -328,11 +329,11 @@ const FLOOR_ORDER = [
   "despatch",
   "jam",
 ];
-const FLOOR_STATION_OF = {};
+const FLOOR_STATION_OF = table({});
 for (const [k, st] of Object.entries(FLOOR_STATIONS))
   for (const s of st.statuses) FLOOR_STATION_OF[s] = k;
 /** Each ticket status as the floor says it in a sentence. */
-const FLOOR_WORDS = {
+const FLOOR_WORDS = table({
   draft: "a draft",
   refining: "refining",
   ready: "ready",
@@ -345,7 +346,7 @@ const FLOOR_WORDS = {
   blocked: "blocked",
   paused: "paused",
   failed: "failed",
-};
+});
 /** The sheds: footprint in tiles, height, and the direction the roof teeth run. */
 const FLOOR_SHEDS = {
   drawing: { x: 0.3, y: 0.1, w: 2.75, d: 1.0, h: 1.05, along: "x" },

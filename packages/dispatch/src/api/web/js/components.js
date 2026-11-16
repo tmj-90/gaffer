@@ -4,6 +4,7 @@
 // sheets lay them out without restyling them. Older APIs (panelHead's `kit`, kpiCard,
 // band) are thin wrappers kept for the views not yet moved.
 
+import { table } from "./lookup.js";
 import { sparkline, svgSpark } from "./charts.js";
 import { el } from "./dom.js";
 import { MISSING, pct } from "./format.js";
@@ -71,8 +72,8 @@ function skeleton(kind = "list") {
 }
 
 /** The old `kit` values, as tones (what the block MEANS, not what colour it is). */
-const KIT_TONE = { claret: "needs", ink: "reference", sky: "drawing", red: "broken" };
-const TONE_BLOCK = { needs: "claret", reference: "ink", drawing: "sky", broken: "red" };
+const KIT_TONE = table({ claret: "needs", ink: "reference", sky: "drawing", red: "broken" });
+const TONE_BLOCK = table({ needs: "claret", reference: "ink", drawing: "sky", broken: "red" });
 
 /**
  * A section header on a programme page, on the one heading scale: `level` 2 | 3 | 4
@@ -187,7 +188,7 @@ function kpiCard({ label, value, unit, series }) {
 // --- the measure tile ------------------------------------------------------
 
 /** Glyph and word for a delta's verdict (never colour alone). */
-const DELTA_GLYPH = { up: "▲", down: "▼", flat: "=" };
+const DELTA_GLYPH = table({ up: "▲", down: "▼", flat: "=" });
 
 /**
  * A quality measure, one per tile, all the same size (audit B's spec):
@@ -247,14 +248,41 @@ function measureTile({
 
   let deltaNode = null;
   if (delta && !missing) {
+    // Both periods are compared at the precision the tile shows. This period's rate is
+    // k / n in full, the one before arrives rounded by the server: compared raw, 10 of
+    // 12 against 10 of 12 differed by a few hundredths and read "+0 pts better".
+    const shown = (x) =>
+      typeof x !== "number" || !Number.isFinite(x)
+        ? x
+        : pctUnit
+          ? Math.round(x * 10) / 10
+          : deltaFormat || format
+            ? x
+            : Math.round(x * 100) / 100;
     const d = periodDelta(
-      { value: v, n },
-      { value: delta.prev, n: delta.prevN },
+      { value: shown(v), n },
+      { value: shown(delta.prev), n: delta.prevN },
       {
         goodWhen: delta.goodWhen || "up",
         minN: typeof delta.minN === "number" ? delta.minN : minN,
       },
     );
+    // A custom format rounds for itself: a difference it prints the same as none is
+    // no change, whatever the raw figures say.
+    if (
+      d.verdict &&
+      d.verdict !== "same" &&
+      !pctUnit &&
+      (deltaFormat
+        ? deltaFormat(d.value) === deltaFormat(0)
+        : format
+          ? format(Math.abs(d.value)) === format(0)
+          : false)
+    ) {
+      d.value = 0;
+      d.direction = "flat";
+      d.verdict = "same";
+    }
     if (d.verdict) {
       const sign = d.value > 0 ? "+" : d.value < 0 ? "−" : "±";
       const mag = Math.abs(d.value);

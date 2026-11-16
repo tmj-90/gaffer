@@ -1,6 +1,7 @@
 // View: Specs (coverage and traceability).
 // Moved verbatim from app.js (the entry); the module map is in app.js.
 
+import { table } from "../lookup.js";
 import { roLock } from "../access.js";
 import { api } from "../api.js";
 import { button, emptyState, panelHead, viewHead } from "../components.js";
@@ -18,18 +19,18 @@ import { openSpecBuild } from "./spec-build.js";
 
 // --- Specs (Spec-Driven Development, Phase 3: coverage & traceability) -------
 
-const SPEC_STATUS_LABEL = { draft: "Draft", frozen: "Frozen", superseded: "Superseded" };
-const CLAUSE_KIND_LABEL = {
+const SPEC_STATUS_LABEL = table({ draft: "Draft", frozen: "Frozen", superseded: "Superseded" });
+const CLAUSE_KIND_LABEL = table({
   requirement: "Requirement",
   "non-goal": "Non-goal",
   decision: "Decision",
-};
-const LORE_STATUS_LABEL = {
+});
+const LORE_STATUS_LABEL = table({
   active: "reaching agents",
   draft: "unratified",
   absent: "not seeded",
   unknown: "",
-};
+});
 
 /** Count clauses on a spec row without throwing on a malformed clauses_json. */
 function specClauseCount(spec) {

@@ -1,6 +1,7 @@
 // View: Work, one ticket surface, board and list, filters kept in the URL.
 // Moved verbatim from app.js (the entry); the module map is in app.js.
 
+import { table } from "../lookup.js";
 import { readOnly, roLock } from "../access.js";
 import { api } from "../api.js";
 import { ensureSquad, learnAgents } from "../club.js";
@@ -39,7 +40,7 @@ const TICKET_STATUSES = [
   "paused",
 ];
 const RISK_LEVELS = ["low", "medium", "high", "critical"];
-const BOARD_COLUMN_LABELS = {
+const BOARD_COLUMN_LABELS = table({
   draft: "Draft",
   ready: "Ready",
   in_progress: "In progress",
@@ -49,7 +50,7 @@ const BOARD_COLUMN_LABELS = {
   // The comp's lane head; one line at 1440, and the header line's own words.
   ready_for_merge: "Ready for merge",
   done: "Done",
-};
+});
 
 // Work-view state, seeded from the URL query so filters/mode are shareable.
 const workState = { mode: "board", status: "", repo: "", risk: "", q: "" };
@@ -460,7 +461,7 @@ async function workReference() {
 // refresh. The list is a league table, most urgent first.
 
 /** Urgency, the list's sort (the phone's lane order is the same, in CSS): paused with blocked, refining with draft … */
-const STATUS_URGENCY = {
+const STATUS_URGENCY = table({
   blocked: 0,
   paused: 0,
   failed: 0,
@@ -474,7 +475,7 @@ const STATUS_URGENCY = {
   refining: 6,
   done: 7,
   cancelled: 8,
-};
+});
 /** True at phone width (≤760px); false where matchMedia is absent (tests). */
 function isPhoneWidth() {
   return typeof window.matchMedia === "function" && window.matchMedia("(max-width: 760px)").matches;
@@ -957,7 +958,7 @@ function renderWorkToolbar(repos, onQuery) {
 // source of truth and an illegal move is rolled back with an error toast.
 //
 // Column key → canonical status it represents. (claimed/in_progress collapse.)
-const MOVE_TARGETS_BY_STATUS = {
+const MOVE_TARGETS_BY_STATUS = table({
   draft: ["ready"],
   refining: ["ready", "draft"],
   ready: ["draft"],
@@ -971,7 +972,7 @@ const MOVE_TARGETS_BY_STATUS = {
   // human board move — a card in these states is not draggable. ready_for_merge in
   // particular has NO board target: marking merged is a guarded system action and
   // rework/reopen go through the review surface, never a drag.
-};
+});
 function legalTargetColumns(status) {
   return MOVE_TARGETS_BY_STATUS[status] || [];
 }

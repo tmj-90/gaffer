@@ -1,6 +1,7 @@
 // Auto refresh and the live event stream: re-reading the current view, nav badges, going quiet behind the login gate.
 // Moved verbatim from app.js (the entry); the module map is in app.js.
 
+import { table } from "./lookup.js";
 import { api, authToken } from "./api.js";
 import { BOTTOM_NAV_IDS, fitNav, navCounts, navMenuEl } from "./chrome.js";
 import { refreshSquad, squad } from "./club.js";
@@ -175,7 +176,7 @@ async function startLiveStream() {
  * the view on screen was rendered from, the view is left alone: no detail or diff
  * re-fetches, no DOM swap, nothing moves (review-n-plus-one-refresh).
  */
-const VIEW_SIGNATURES = {
+const VIEW_SIGNATURES = table({
   // A ticket page follows its own ticket: a landing that completes (status to Done, the
   // actions gone), a hold, a criterion checked. One read of the ticket says whether.
   ticket: async (param) => {
@@ -189,7 +190,7 @@ const VIEW_SIGNATURES = {
     const all = (await allTickets()).tickets;
     return clearDeskSignature(all);
   },
-};
+});
 /** What the clear Review desk draws from: the tickets past and before the sign-off. */
 const CLEAR_DESK_STATUSES = new Set([
   "claimed",

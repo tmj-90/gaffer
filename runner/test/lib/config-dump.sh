@@ -38,6 +38,8 @@ _gd_before=" $(compgen -v | tr "\n" " ") "
 _gd_fbefore=" $(compgen -A function | tr "\n" " ") "
 _gd_sp_preset="${SANDBOX_PROVIDER+x}"
 source "$_GD_CFG" >/dev/null 2>&1 || { echo "SOURCE-FAILED rc=$?"; exit 1; }
+_gd_exp=" $(compgen -e | tr "\n" " ") "
+_gd_arr=" $(compgen -A arrayvar | tr "\n" " ") "
 for _gd_n in $(compgen -v); do
   case "$_gd_n" in
     _gd_* | _GD_* | _GAFFER_DV_* | _GAFFER_OPERATOR_ENV | _GAFFER_ENV_AT_SOURCE) continue ;;
@@ -46,8 +48,8 @@ for _gd_n in $(compgen -v); do
   case "$_gd_before" in *" $_gd_n "*) [ "$_gd_n" = GAFFER_DATA ] || [ "$_gd_n" = HOME ] || [ "$_gd_n" = PATH ] || continue ;; esac
   [ "$_gd_n" = PATH ] && continue
   [ "$_gd_n" = HOME ] && continue
-  _gd_x=-; case " $(compgen -e | tr "\n" " ") " in *" $_gd_n "*) _gd_x=x ;; esac
-  if declare -p "$_gd_n" 2>/dev/null | grep -q "^declare -[a-zA-Z]*a"; then
+  _gd_x=-; case "$_gd_exp" in *" $_gd_n "*) _gd_x=x ;; esac
+  if case "$_gd_arr" in *" $_gd_n "*) true ;; *) false ;; esac; then
     eval "_gd_v=\"\${$_gd_n[*]-}\""
   else
     _gd_v="${!_gd_n-}"

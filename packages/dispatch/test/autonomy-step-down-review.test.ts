@@ -19,7 +19,7 @@ import type { AddressInfo } from "node:net";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { setPrincipalResolver } from "../src/api/auth.js";
+import { deriveReadToken, setPrincipalResolver } from "../src/api/auth.js";
 import { createApiServer } from "../src/api/server.js";
 
 import { Dispatch } from "../src/core.js";
@@ -447,6 +447,39 @@ describe("the Overview line reads the recent step-downs alone", () => {
     setPrincipalResolver(null);
     if (savedToken === undefined) delete process.env.DISPATCH_API_TOKEN;
     else process.env.DISPATCH_API_TOKEN = savedToken;
+  });
+
+  it("POST /api/autonomy/lift with the shared READ token is refused (guard)", async () => {
+    process.env.DISPATCH_AUDIT_OFF = "1";
+    process.env.DISPATCH_API_TOKEN = FULL;
+    const wg = Dispatch.open(":memory:");
+    const api = repoNamed(wg, "api");
+    stepDown(wg, api, "low", "merge");
+    const server = createApiServer(wg);
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    try {
+      const res = await fetch(`${base}/api/autonomy/lift`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${deriveReadToken(FULL)}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          repo_id: api,
+          risk_level: "low",
+          gate: "merge",
+          how: "override",
+          reason: "the read token tries",
+        }),
+      });
+      expect(res.status).toBeGreaterThanOrEqual(401);
+      expect(res.status).toBeLessThan(500);
+      expect(wg.autonomyPolicy.stepDownInForce(api, "low", "merge")).toBe(true);
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+      wg.db.close();
+    }
   });
 
   it("GET /api/autonomy/ladder?recent=1: no review record read, scoped to the viewer's repos", async () => {

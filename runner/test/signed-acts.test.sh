@@ -248,6 +248,9 @@ approve; MT; rc=$?
 
 echo "== S8: gate-key ensure (gaffer setup) =="
 world s8
+# Sealed autonomy: the world's ticket was created by the host CLI, which signed its risk and
+# so created the key. Remove it to see `gate-key ensure` create one.
+K0="$(keyfile)"; [ -n "$K0" ] && rm -f "$K0"
 out="$(wgd gate-key ensure)"
 K="$(keyfile)"
 [ -n "$K" ] && [ "$(printf '%s' "$out" | jf 'String(d.created)')" = true ] && ok "S8: ensure creates the key" || fail "S8: $out"

@@ -260,6 +260,12 @@ export const AUTONOMY_LIFT_SEAL_KIND = "autonomy_lift";
 const STEPPED_DOWN = "autonomy.stepped_down";
 const LIFTED = "autonomy.step_down_lifted";
 
+/** The claim history the claim rule reads (a chain track, never a seal's lifecycle). */
+export const CLAIM_TRACK: Pick<RowSealSubject, "entityType" | "lifecycleEvents"> = {
+  entityType: "ticket",
+  lifecycleEvents: ["claim.created", "ticket.human_claimed"],
+};
+
 /** The chain track every "is a step-down in force" answer checks. */
 export const STEP_DOWN_TRACK: Pick<RowSealSubject, "entityType" | "lifecycleEvents"> = {
   entityType: "repository",
@@ -388,7 +394,7 @@ export function sealedStepDownInForce(
       if (String(r.event_type) === STEPPED_DOWN) return true;
       if (liftSealed(db, keyring, String(r.id))) break;
     }
-    return !verifyLifecycleChain(db, keyring, STEP_DOWN_TRACK).ok;
+    return !verifyLifecycleChain(db, keyring, STEP_DOWN_TRACK, repoId).ok;
   } catch {
     return true;
   }

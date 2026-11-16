@@ -187,6 +187,9 @@ describe("the factory key", () => {
   it("is created (32 bytes, mode 0600) by the first approval; verification alone never creates it", () => {
     const w = world();
     const { id } = inReview(w.wg);
+    // SEALED AUTONOMY: the host's ticket creation already signed the ticket's risk (and so
+    // created the key). Remove it to see the first approval create it again.
+    rmSync(w.keyPath, { force: true });
     // A verification with no key: refused as missing, and no key appears.
     const v = verifyLandingActs(w.wg.db, w.keyring, id, {});
     expect(v.ok).toBe(false);
@@ -306,9 +309,12 @@ describe("attacks main accepted", () => {
       .prepare("UPDATE work_events SET actor_id = 'someone-else', payload_json = ? WHERE id = ?")
       .run(JSON.stringify({ ...p, reason: "edited" }), approval);
     rechainFrom(w.wg, approval);
-    expect(
-      refusal(() => w.wg.beginLanding(id, { repo: "repoA", commit: FAKE_HEAD }, system)),
-    ).toMatchObject({ reason: "unsigned_approval" });
+    // Refused either way: the edit makes the approval no longer a person's review approval,
+    // and the rechain breaks the anchor, so SEALED AUTONOMY's check of the ticket's risk
+    // (reached first for an approval that is not a person's) refuses before the seal check.
+    const r = refusal(() => w.wg.beginLanding(id, { repo: "repoA", commit: FAKE_HEAD }, system));
+    expect(r.code).toBe("STATE_CONFLICT");
+    expect(["unsigned_approval", "autonomy_risk_unsigned"]).toContain(r.reason);
   });
 
   it("the approved commit swapped (the review pin rewritten) under a genuine signature: refused", () => {

@@ -11,22 +11,18 @@ import { RISK_LEVELS, type Actor, type Ticket } from "../domain/types.js";
 import { writeEvent } from "../events/eventWriter.js";
 import {
   AUTONOMY_POLICY_RESIGNED_EVENT,
+  CLAIM_TRACK,
   TICKET_RISK_SET_EVENT,
   firstClaimMaySeal,
+  ticketRiskSubject,
   recordTicketRisk,
   sealPolicy,
   verifyPolicyRow,
   verifyTicketRisk,
   type PolicySealRow,
 } from "../events/autonomySeal.js";
-import {
-  GateKeyError,
-  anchorRowPresent,
-  chainVerifiesUpTo,
-  eventLogHead,
-  type GateKeyring,
-} from "../events/gateSeal.js";
-import { anchorReadFirst, reviewCode } from "../events/rowSeal.js";
+import { GateKeyError, eventLogHead, type GateKeyring } from "../events/gateSeal.js";
+import { anchorReadFirst, reviewCode, verifyLifecycleChain } from "../events/rowSeal.js";
 import type { PrincipalView } from "../repositories/principalRepository.js";
 import { DispatchError } from "../util/errors.js";
 import type { Dispatch } from "../core.js";
@@ -81,16 +77,20 @@ export function sealRiskAtCreation(host: AutonomySealHost, ticket: Ticket, actor
   });
 }
 
-/** The event log verifies from genesis to its head, and the head the host anchored is there. */
-function wholeLogVerifies(host: AutonomySealHost): boolean {
+/**
+ * The event log verifies up to the head the host anchored, and this ticket's risk records
+ * and claim history are exactly as the chain recorded them (none deleted, moved or
+ * rewritten, before or after the chain checkpoint).
+ */
+function claimHistoryVerifies(host: AutonomySealHost, ticketId: string): boolean {
   try {
-    const keyring = host.gateKeyring;
-    const anchor = keyring.readAnchor ? keyring.readAnchor() : { missing: "no anchor" };
-    if ("missing" in anchor || "broken" in anchor) return false;
-    if (!anchorRowPresent(host.db, anchor)) return false;
-    const head = eventLogHead(host.db);
-    if (!head) return false;
-    return chainVerifiesUpTo(host.db, head.seq).ok;
+    // Up to the head, not only the anchor: rows a keyless process wrote since the last
+    // anchor are linked and re-hashed too.
+    const head = eventLogHead(host.db)?.seq ?? 0;
+    return (
+      verifyLifecycleChain(host.db, host.gateKeyring, ticketRiskSubject(ticketId), ticketId, head)
+        .ok && verifyLifecycleChain(host.db, host.gateKeyring, CLAIM_TRACK, ticketId, head).ok
+    );
   } catch {
     return false;
   }
@@ -102,8 +102,8 @@ function wholeLogVerifies(host: AutonomySealHost): boolean {
  * source `claim`), in the claim's transaction. Never on a later claim, never for a ticket
  * in flight before this change, imported, or whose seal was removed (a person re-signs
  * those), never in a process that cannot sign (the MCP server, an agent's sandboxed CLI),
- * and only when the whole event log verifies (a deleted earlier claim or risk record must
- * not pass for a first one). Before the claim the stated risk is the creator's own claim;
+ * and only when the event log verifies with this ticket's claim history and risk records
+ * intact (a deleted or rewritten earlier claim or risk record must not pass for a first one). Before the claim the stated risk is the creator's own claim;
  * from here on a change to it is caught.
  */
 export function sealRiskAtClaim(
@@ -119,7 +119,7 @@ export function sealRiskAtClaim(
     if (!row) return;
     // A process that cannot sign is told so by the keyring before the whole walk is paid.
     host.gateKeyring.verifyMac("gaffer-claim-probe");
-    if (!wholeLogVerifies(host)) return;
+    if (!claimHistoryVerifies(host, ticketId)) return;
     trySign(host, () => {
       recordTicketRisk(
         host.db,

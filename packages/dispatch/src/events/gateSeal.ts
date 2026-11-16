@@ -127,6 +127,20 @@ export interface GateKeyring {
   readAnchor?(): AnchorRead;
   /** A person's deliberate act: record this database's current head, whatever was before. */
   reanchor?(db: SealDb): EventAnchor | null;
+  /**
+   * VERIFIED CHECKPOINT (events/rowSeal.ts): the body a trusted host process recorded beside
+   * the anchor, MAC verified, saying "the chain verified up to row N with hash H" (and the
+   * digests of the lifecycle rows up to N), so a new process verifies only the tail.
+   * `missing`: none recorded; `broken`: one is there and does not verify (fail closed).
+   * Never creates anything. Absent on a keyring that keeps none.
+   */
+  readCheckpoint?(): { body: string } | { missing: string } | { broken: string };
+  /** Record a checkpoint body (a trusted host process, after it verified the chain). */
+  writeCheckpoint?(body: string): void;
+}
+
+function checkpointMaterial(keyId: string, body: string): string {
+  return ["gaffer-chain-checkpoint", "1", keyId, body].join("\n");
 }
 
 /** The event log's head as a trusted host process last saw it after a commit. */
@@ -138,6 +152,9 @@ export interface EventAnchor {
 export type AnchorRead = EventAnchor | { missing: string } | { broken: string };
 
 const KEY_BYTES = 32;
+/** The verified checkpoint's file, beside the anchors (events/rowSeal.ts). */
+const CHECKPOINT_NAME = "chain-checkpoint.json";
+const CHECKPOINT_MAX_BYTES = 64 * 1024 * 1024;
 
 function hmacHex(key: Buffer, material: string): string {
   return createHmac("sha256", key).update(material).digest("hex");
@@ -245,7 +262,9 @@ export function fileGateKeyring(opts: {
       return;
     }
     for (const n of names) {
-      if (/^\d{16}\.json$/.test(n)) unlinkSync(join(keysDir, `${keyId}.anchor`, n));
+      if (/^\d{16}\.json$/.test(n) || n === CHECKPOINT_NAME) {
+        unlinkSync(join(keysDir, `${keyId}.anchor`, n));
+      }
     }
   };
 
@@ -424,6 +443,66 @@ export function fileGateKeyring(opts: {
   };
   const clearAnchors = rmAnchorsUnderOldKey;
 
+  // VERIFIED CHECKPOINT: one file beside the anchors, same protection, MAC under the key.
+  // Replaced atomically (write a temporary file, rename). A re-anchor or a new key clears it.
+  const checkpointPath = join(anchorDir, CHECKPOINT_NAME);
+  const readCheckpoint = (): { body: string } | { missing: string } | { broken: string } => {
+    let raw: string;
+    try {
+      const fd = openSync(checkpointPath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+      try {
+        const size = fstatSync(fd).size;
+        if (size > CHECKPOINT_MAX_BYTES) return { broken: "the checkpoint is too large" };
+        const buf = Buffer.alloc(size);
+        readSync(fd, buf, 0, size, 0);
+        raw = buf.toString("utf8");
+      } finally {
+        closeSync(fd);
+      }
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") return { missing: "no checkpoint" };
+      return {
+        broken: `the checkpoint cannot be read (${(e as NodeJS.ErrnoException).code ?? "error"})`,
+      };
+    }
+    const key = load();
+    if (!key) return { broken: "the factory key does not exist" };
+    let parsed: { body?: unknown; mac?: unknown };
+    try {
+      parsed = JSON.parse(raw) as typeof parsed;
+    } catch {
+      return { broken: "the checkpoint is not readable JSON" };
+    }
+    const body = typeof parsed.body === "string" ? parsed.body : "";
+    const want = Buffer.from(hmacHex(key, checkpointMaterial(keyId, body)), "hex");
+    const got = Buffer.from(String(parsed.mac ?? ""), "hex");
+    if (body === "" || want.length !== got.length || !timingSafeEqual(want, got)) {
+      return { broken: "the checkpoint does not verify under the factory key" };
+    }
+    return { body };
+  };
+  const writeCheckpoint = (body: string): void => {
+    const key = load();
+    if (!key) return;
+    mkdirSync(anchorDir, { recursive: true, mode: 0o700 });
+    const tmp = join(anchorDir, `.cp.${process.pid}.${randomBytes(4).toString("hex")}`);
+    const fd = openSync(
+      tmp,
+      fsConstants.O_WRONLY |
+        fsConstants.O_CREAT |
+        fsConstants.O_EXCL |
+        (fsConstants.O_NOFOLLOW ?? 0),
+      0o600,
+    );
+    try {
+      writeSync(fd, JSON.stringify({ body, mac: hmacHex(key, checkpointMaterial(keyId, body)) }));
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(tmp, checkpointPath);
+  };
+
   return {
     description: "the factory key",
     keyPath,
@@ -434,6 +513,14 @@ export function fileGateKeyring(opts: {
     readAnchor() {
       assertOutsideData();
       return readAnchor();
+    },
+    readCheckpoint() {
+      assertOutsideData();
+      return readCheckpoint();
+    },
+    writeCheckpoint(body: string) {
+      assertOutsideData();
+      writeCheckpoint(body);
     },
     reanchor(db: SealDb) {
       assertOutsideData();
@@ -475,8 +562,14 @@ export function ephemeralGateKeyring(): GateKeyring {
   const key = randomBytes(KEY_BYTES);
   const keyId = `ephemeral-${createHash("sha256").update(key).digest("hex").slice(0, 12)}`;
   let anchored: EventAnchor | null = null;
+  let checkpoint: string | null = null;
   return {
     description: "a process-local key",
+    readCheckpoint: () =>
+      checkpoint === null ? { missing: "no checkpoint" } : { body: checkpoint },
+    writeCheckpoint: (body) => {
+      checkpoint = body;
+    },
     signMac: (material) => ({ mac: hmacHex(key, material), keyId }),
     verifyMac: (material) => ({ mac: hmacHex(key, material), keyId }),
     anchor: (db) =>
@@ -488,7 +581,10 @@ export function ephemeralGateKeyring(): GateKeyring {
         },
       ),
     readAnchor: () => anchored ?? { missing: "no anchor recorded" },
-    reanchor: (db) => (anchored = eventLogHead(db)),
+    reanchor: (db) => {
+      checkpoint = null;
+      return (anchored = eventLogHead(db));
+    },
   };
 }
 
@@ -510,6 +606,7 @@ export function refusingGateKeyring(who: string): GateKeyring {
     verifyMac: refuse,
     readAnchor: refuse,
     reanchor: refuse,
+    readCheckpoint: refuse,
   };
 }
 

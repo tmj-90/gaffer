@@ -141,45 +141,134 @@ function changedFacts(signedJson: string, liveJson: string): string[] {
 
 /**
  * The chain verifies up to `seq`, as far as a sealed row's lifecycle depends on it.
- * A REST server checks a principal on every request, and walking a 100k-event log from
- * genesis costs most of a second, so the walk is INCREMENTAL per database handle:
- *  - the first check walks the whole log from genesis (as {@link chainVerifiesUpTo}) and
- *    remembers the verified head and every LIFECYCLE row of the subject's entity type
- *    (its `entityType` and one of its `lifecycleEvents`; rowid and hash), so a part B
- *    subject on `ticket` events remembers its few risk events, not every ticket event;
+ * A REST server checks a principal on every request, and the runner asks for an autonomy
+ * decision in short-lived CLI processes; walking a 100k-event log from genesis costs most
+ * of a second, so the walk is INCREMENTAL per database handle and, across processes,
+ * starts from a VERIFIED CHECKPOINT:
+ *  - every walk re-hashes and links each row it reads, and remembers every LIFECYCLE row
+ *    of every known track (an entity type and its lifecycle event types; rowid and hash)
+ *    and a running digest of them per entity;
  *  - a later check walks only the rows appended since, linking from the remembered head;
  *  - when another connection has committed since (PRAGMA data_version moved), it first
- *    re-reads the remembered head and re-hashes every remembered lifecycle row: a
- *    rechain changes the head, and a lifecycle event deleted or rewritten in place (a
- *    revocation removed or turned into something else, without a rechain) is missing or no
- *    longer hashes to what was verified. Any doubt falls back to the full walk.
+ *    re-reads the remembered head and re-hashes every remembered lifecycle row: a rechain
+ *    changes the head, and a lifecycle event deleted or rewritten in place (a revocation
+ *    removed or turned into something else, without a rechain) is missing or no longer
+ *    hashes to what was verified. Any doubt falls back to a fresh start.
+ *  - THE CHECKPOINT: a key holder that verified the chain records, beside the anchor and
+ *    under the factory key (GateKeyring.writeCheckpoint), "the chain verified up to row N
+ *    with hash H", with the digest of every entity's lifecycle rows up to N. A new process
+ *    starts from it: the row at N must still carry H and N may not be past the anchor
+ *    (else it is refused, fail closed), it walks only the rows after N, and for the
+ *    entity a check is about it re-reads that entity's lifecycle rows up to N, re-hashes
+ *    each, and compares their digest with the recorded one (a lifecycle row deleted,
+ *    inserted, moved to or from the entity, retyped or rewritten before N is caught). A
+ *    checkpoint that does not verify under the key is refused, never skipped. Without one,
+ *    the first check walks from genesis and (a key holder) records one.
  * Any other row rewritten in place without a rechain is not re-read here: it decides
- * nothing about a sealed row (turned INTO a lifecycle event, it is newer than the seal's
- * event and supersedes it: refused). The landing check walks the whole log itself.
+ * nothing about a sealed row (turned INTO a lifecycle event of the entity, it is caught by
+ * the digest). The landing check walks the whole log itself.
  */
-interface ChainMemo {
-  dataVersion: string;
-  ok: boolean;
-  /** The verified head (ok only). */
-  seq: number;
-  hash: string;
-  /** Every verified lifecycle row: rowid -> hash. */
-  rows: Map<number, string>;
-}
-const CHAIN_MEMO = new WeakMap<object, Map<string, ChainMemo>>();
-
 type ChainRow = ChainedEventFields & { seq: number; prev_hash: string | null; hash: string | null };
 const CHAIN_COLUMNS =
   "rowid AS seq, id, entity_type, entity_id, actor_type, actor_id, event_type, " +
   "payload_json, correlation_id, created_at, prev_hash, hash";
 
+/** The lifecycle rows a chain memo remembers. */
+type Tracked = Pick<RowSealSubject, "entityType" | "lifecycleEvents">;
+
+/**
+ * Every lifecycle track a check may ask about (the sealed subjects, and the claim history
+ * the trusted host reads before it seals a ticket's risk at its first claim). One list for
+ * every process, so a checkpoint one process records covers what another asks.
+ */
+const KNOWN_TRACKS: readonly Tracked[] = [
+  {
+    entityType: "principal",
+    lifecycleEvents: ["principal.created", "principal.resigned", "principal.revoked"],
+  },
+  {
+    entityType: "autonomy_policy",
+    lifecycleEvents: [
+      "autonomy_policy.enabled",
+      "autonomy_policy.changed",
+      "autonomy_policy.disabled",
+      "autonomy_policy.resigned",
+    ],
+  },
+  { entityType: "ticket", lifecycleEvents: ["ticket.risk_set"] },
+  { entityType: "ticket", lifecycleEvents: ["claim.created", "ticket.human_claimed"] },
+  {
+    entityType: "repository",
+    lifecycleEvents: ["autonomy.stepped_down", "autonomy.step_down_lifted"],
+  },
+];
+
+function trackKey(t: Tracked): string {
+  return `${t.entityType}\n${[...t.lifecycleEvents].sort().join(",")}`;
+}
+
+/** entity_type -> event_type -> the keys of the tracks that row belongs to. */
+const TRACK_INDEX = new Map<string, Map<string, string[]>>();
+const TRACK_KEYS: string[] = [];
+function addTrack(t: Tracked): void {
+  const key = trackKey(t);
+  if (TRACK_KEYS.includes(key)) return;
+  TRACK_KEYS.push(key);
+  let byEvent = TRACK_INDEX.get(t.entityType);
+  if (!byEvent) {
+    byEvent = new Map();
+    TRACK_INDEX.set(t.entityType, byEvent);
+  }
+  for (const ev of t.lifecycleEvents) byEvent.set(ev, [...(byEvent.get(ev) ?? []), key]);
+}
+for (const t of KNOWN_TRACKS) addTrack(t);
+
+/** The running digest of one entity's lifecycle rows (rowid order). */
+function foldDigest(prev: string, rowid: number, eventType: string, hash: string): string {
+  return createHash("sha256")
+    .update(`${prev}\n${rowid}\n${eventType}\n${hash}`)
+    .digest("hex")
+    .slice(0, 32);
+}
+
+type Digests = Map<string, Map<string, string>>;
+
+function cloneDigests(d: Digests): Digests {
+  return new Map([...d].map(([k, v]) => [k, new Map(v)]));
+}
+
+/** A checkpoint as recorded: the verified head and every entity's lifecycle digest. */
+interface Checkpoint {
+  seq: number;
+  id: string;
+  hash: string;
+  tracks: Record<string, Record<string, string>>;
+}
+
+interface ChainMemo {
+  dataVersion: string;
+  ok: boolean;
+  /** Why it is not ok. */
+  failure?: { kind: "chain" | "checkpoint"; detail: string };
+  /** The verified head (ok only). */
+  seq: number;
+  hash: string;
+  /** The checkpoint this walk started from (null: genesis). */
+  base: Checkpoint | null;
+  /** Every verified lifecycle row after the base: rowid -> hash. */
+  rows: Map<number, string>;
+  /** Every entity's lifecycle digest up to `seq` (the base's, then the rows after it). */
+  digests: Digests;
+}
+const CHAIN_MEMO = new WeakMap<object, ChainMemo>();
+
+/** How many rows past the checkpoint before a key holder records a new one. */
+const CHECKPOINT_STRIDE = 512;
+
 function dataVersion(db: SealDb): string {
   const dv = db.prepare("PRAGMA data_version").get() as Record<string, unknown> | undefined;
   return String(dv ? Object.values(dv)[0] : "");
 }
-
-/** The lifecycle rows a chain memo remembers. */
-type Tracked = Pick<RowSealSubject, "entityType" | "lifecycleEvents">;
 
 /** Walk rows (from, to] linking from `prev`; record the lifecycle rows. Null: broken. */
 function walk(
@@ -187,8 +276,8 @@ function walk(
   from: number,
   to: number,
   prev: string,
-  track: Tracked,
   rows: Map<number, string>,
+  digests: Digests,
 ): { seq: number; hash: string } | null {
   const list = db
     .prepare(
@@ -202,11 +291,21 @@ function walk(
     if (row.prev_hash !== expected || eventHash(row.prev_hash, row) !== row.hash) return null;
     expected = row.hash;
     last = Number(row.seq);
-    if (
-      String(row.entity_type) === track.entityType &&
-      track.lifecycleEvents.includes(String(row.event_type))
-    ) {
+    const keys = TRACK_INDEX.get(String(row.entity_type))?.get(String(row.event_type));
+    if (keys) {
       rows.set(last, row.hash);
+      for (const key of keys) {
+        let perEntity = digests.get(key);
+        if (!perEntity) {
+          perEntity = new Map();
+          digests.set(key, perEntity);
+        }
+        const entity = String(row.entity_id);
+        perEntity.set(
+          entity,
+          foldDigest(perEntity.get(entity) ?? "", last, String(row.event_type), row.hash),
+        );
+      }
     }
   }
   if (last !== to) return null;
@@ -219,13 +318,36 @@ export function rowSealFullWalks(): number {
   return fullWalks;
 }
 
-function fullWalk(db: SealDb, seq: number, track: Tracked, dv: string): ChainMemo {
+function fullWalk(db: SealDb, seq: number, dv: string): ChainMemo {
   fullWalks += 1;
   const rows = new Map<number, string>();
-  const head = walk(db, 0, seq, EVENT_CHAIN_GENESIS, track, rows);
+  const digests: Digests = new Map();
+  const head = walk(db, 0, seq, EVENT_CHAIN_GENESIS, rows, digests);
   return head
-    ? { dataVersion: dv, ok: true, seq: head.seq, hash: head.hash, rows }
-    : { dataVersion: dv, ok: false, seq: 0, hash: "", rows };
+    ? { dataVersion: dv, ok: true, seq: head.seq, hash: head.hash, base: null, rows, digests }
+    : {
+        dataVersion: dv,
+        ok: false,
+        failure: { kind: "chain", detail: "the hash chain does not verify" },
+        seq: 0,
+        hash: "",
+        base: null,
+        rows,
+        digests,
+      };
+}
+
+function refused(dv: string, detail: string): ChainMemo {
+  return {
+    dataVersion: dv,
+    ok: false,
+    failure: { kind: "checkpoint", detail },
+    seq: 0,
+    hash: "",
+    base: null,
+    rows: new Map(),
+    digests: new Map(),
+  };
 }
 
 /** The remembered head and lifecycle rows are still exactly as verified. */
@@ -243,36 +365,188 @@ function memoStillHolds(db: SealDb, memo: ChainMemo, foreignWrite: boolean): boo
   return true;
 }
 
-function chainOkUpTo(db: SealDb, seq: number, track: Tracked): boolean {
-  const key = `${track.entityType}\n${[...track.lifecycleEvents].sort().join(",")}`;
+/** The recorded checkpoint, verified under the key; a throw or a bad MAC is `broken`. */
+function readCheckpoint(
+  keyring: GateKeyring,
+): { cp: Checkpoint } | { missing: true } | { broken: string } {
+  if (!keyring.readCheckpoint) return { missing: true };
+  let read: ReturnType<NonNullable<GateKeyring["readCheckpoint"]>>;
+  try {
+    read = keyring.readCheckpoint();
+  } catch (e) {
+    return { broken: e instanceof Error ? e.message : String(e) };
+  }
+  if ("missing" in read) return { missing: true };
+  if ("broken" in read) return { broken: read.broken };
+  try {
+    const v = JSON.parse(read.body) as Partial<Checkpoint> & { v?: unknown };
+    if (
+      v.v !== 1 ||
+      !Number.isSafeInteger(v.seq) ||
+      typeof v.id !== "string" ||
+      typeof v.hash !== "string" ||
+      !v.tracks ||
+      typeof v.tracks !== "object"
+    ) {
+      return { broken: "the checkpoint does not have the expected shape" };
+    }
+    return { cp: { seq: Number(v.seq), id: v.id, hash: v.hash, tracks: v.tracks } };
+  } catch {
+    return { broken: "the checkpoint body is not readable" };
+  }
+}
+
+/** A key holder records the memo's head as the new checkpoint (best effort). */
+function maybeRecordCheckpoint(
+  db: SealDb,
+  keyring: GateKeyring,
+  memo: ChainMemo,
+  anchorSeq: number,
+): ChainMemo {
+  if (!memo.ok || !keyring.writeCheckpoint || memo.seq === 0) return memo;
+  if (memo.seq > anchorSeq) return memo; // only rows the anchor already vouches for
+  if (memo.base && memo.seq - memo.base.seq < CHECKPOINT_STRIDE) return memo;
+  try {
+    const at = db.prepare("SELECT id FROM work_events WHERE rowid = ?").get(memo.seq) as
+      { id: string } | undefined;
+    if (!at) return memo;
+    const tracks: Record<string, Record<string, string>> = {};
+    for (const key of TRACK_KEYS) {
+      tracks[key] = Object.fromEntries(memo.digests.get(key) ?? new Map<string, string>());
+    }
+    const cp: Checkpoint = { seq: memo.seq, id: String(at.id), hash: memo.hash, tracks };
+    keyring.writeCheckpoint(JSON.stringify({ v: 1, ...cp }));
+    // Re-based on it: rows before it are covered by the per-entity check from now on.
+    return { ...memo, base: cp, rows: new Map() };
+  } catch {
+    return memo; // a checkpoint is a shortcut, never a reason to refuse
+  }
+}
+
+/**
+ * The verified chain state of this handle, up to at least `seq`, using (and keeping fresh)
+ * the checkpoint. `anchorSeq` is the head the factory anchored outside the database.
+ */
+function chainState(db: SealDb, keyring: GateKeyring, seq: number, anchorSeq: number): ChainMemo {
   const dv = dataVersion(db);
-  let perDb = CHAIN_MEMO.get(db);
-  if (!perDb) {
-    perDb = new Map();
-    CHAIN_MEMO.set(db, perDb);
+  const memo = CHAIN_MEMO.get(db);
+  let next: ChainMemo | null = null;
+  if (memo && !memo.ok && memo.dataVersion === dv) {
+    // A broken chain or refused checkpoint stays so until another connection commits.
+    next = memo;
+  } else if (memo && memo.ok && memoStillHolds(db, memo, memo.dataVersion !== dv)) {
+    if (seq <= memo.seq) {
+      const at = db.prepare("SELECT 1 AS x FROM work_events WHERE rowid = ?").get(seq);
+      if (at) next = { ...memo, dataVersion: dv };
+    } else {
+      const rows = new Map(memo.rows);
+      const digests = cloneDigests(memo.digests);
+      const head = walk(db, memo.seq, seq, memo.hash, rows, digests);
+      if (head) next = { ...memo, dataVersion: dv, seq: head.seq, hash: head.hash, rows, digests };
+    }
   }
-  const memo = perDb.get(key);
-  let next: ChainMemo;
-  if (!memo) {
-    next = fullWalk(db, seq, track, dv);
-  } else if (!memo.ok) {
-    // A broken chain stays broken until the file changes under another connection.
-    next = memo.dataVersion === dv ? memo : fullWalk(db, seq, track, dv);
-  } else if (!memoStillHolds(db, memo, memo.dataVersion !== dv)) {
-    next = fullWalk(db, seq, track, dv);
-  } else if (seq <= memo.seq) {
-    // Already verified: the row at `seq` must still be there (a check that names it).
-    const at = db.prepare("SELECT 1 AS x FROM work_events WHERE rowid = ?").get(seq);
-    next = at ? { ...memo, dataVersion: dv } : fullWalk(db, seq, track, dv);
-  } else {
-    const rows = new Map(memo.rows);
-    const head = walk(db, memo.seq, seq, memo.hash, track, rows);
-    next = head
-      ? { dataVersion: dv, ok: true, seq: head.seq, hash: head.hash, rows }
-      : fullWalk(db, seq, track, dv);
+  if (!next) {
+    const read = readCheckpoint(keyring);
+    if ("broken" in read) {
+      next = refused(dv, `the chain checkpoint is refused: ${read.broken}`);
+    } else if ("missing" in read || TRACK_KEYS.some((k) => !(k in read.cp.tracks))) {
+      next = fullWalk(db, seq, dv);
+    } else {
+      const cp = read.cp;
+      const at = db.prepare("SELECT id, hash FROM work_events WHERE rowid = ?").get(cp.seq) as
+        { id: string; hash: string | null } | undefined;
+      if (cp.seq > anchorSeq) {
+        next = refused(
+          dv,
+          `the chain checkpoint names row ${cp.seq}, past the anchored head ${anchorSeq}`,
+        );
+      } else if (!at || String(at.id) !== cp.id || String(at.hash ?? "") !== cp.hash) {
+        next = refused(
+          dv,
+          `the event log no longer holds row ${cp.seq} as the chain checkpoint recorded it (rows were deleted, rewritten or rolled back)`,
+        );
+      } else {
+        const digests: Digests = new Map(
+          Object.entries(cp.tracks).map(([k, v]) => [k, new Map(Object.entries(v))]),
+        );
+        const rows = new Map<number, string>();
+        const head = walk(db, cp.seq, Math.max(seq, cp.seq), cp.hash, rows, digests);
+        next = head
+          ? { dataVersion: dv, ok: true, seq: head.seq, hash: head.hash, base: cp, rows, digests }
+          : {
+              ...refused(dv, "the hash chain does not verify after the checkpoint"),
+              failure: { kind: "chain", detail: "the hash chain does not verify" },
+            };
+      }
+    }
   }
-  perDb.set(key, next);
-  return next.ok && next.seq >= seq;
+  if (next.ok) next = maybeRecordCheckpoint(db, keyring, next, anchorSeq);
+  CHAIN_MEMO.set(db, next);
+  return next;
+}
+
+/**
+ * The entity's lifecycle rows up to the checkpoint are exactly those it recorded: each one
+ * re-hashes to its stored hash, and their digest matches.
+ */
+function entityMatchesCheckpoint(
+  db: SealDb,
+  cp: Checkpoint,
+  track: Tracked,
+  entityId: string,
+): boolean {
+  const key = trackKey(track);
+  const marks = track.lifecycleEvents.map(() => "?").join(", ");
+  const rows = db
+    .prepare(
+      `SELECT ${CHAIN_COLUMNS} FROM work_events WHERE entity_type = ? AND entity_id = ? AND event_type IN (${marks}) AND rowid <= ? ORDER BY rowid ASC`,
+    )
+    .all(track.entityType, entityId, ...track.lifecycleEvents, cp.seq) as ChainRow[];
+  let d = "";
+  for (const row of rows) {
+    if (row.hash === null || row.prev_hash === null) return false;
+    if (eventHash(row.prev_hash, row) !== row.hash) return false;
+    d = foldDigest(d, Number(row.seq), String(row.event_type), row.hash);
+  }
+  return d === (cp.tracks[key]?.[entityId] ?? "");
+}
+
+function chainOkUpTo(
+  db: SealDb,
+  keyring: GateKeyring,
+  seq: number,
+  anchorSeq: number,
+  track: Tracked,
+  entityId: string,
+): { ok: true } | { ok: false; failure: "chain"; detail: string } {
+  addTrack(track);
+  const memo = chainState(db, keyring, seq, anchorSeq);
+  if (!memo.ok) {
+    return {
+      ok: false,
+      failure: "chain",
+      detail:
+        memo.failure?.kind === "checkpoint"
+          ? memo.failure.detail
+          : "the event log's hash chain does not verify up to the head this factory recorded",
+    };
+  }
+  if (memo.seq < seq) {
+    return {
+      ok: false,
+      failure: "chain",
+      detail: "the event log's hash chain does not verify up to the head this factory recorded",
+    };
+  }
+  if (memo.base && !entityMatchesCheckpoint(db, memo.base, track, entityId)) {
+    return {
+      ok: false,
+      failure: "chain",
+      detail:
+        "a lifecycle event of this row before the chain checkpoint was deleted, moved or rewritten",
+    };
+  }
+  return { ok: true };
 }
 
 /**
@@ -307,6 +581,11 @@ export function anchorReadFirst(keyring: GateKeyring): GateKeyring {
       if ("error" in read) throw read.error;
       return read.anchor;
     },
+    // The chain checkpoint is read (and kept fresh) by the verification itself.
+    ...(keyring.readCheckpoint ? { readCheckpoint: () => keyring.readCheckpoint!() } : {}),
+    ...(keyring.writeCheckpoint
+      ? { writeCheckpoint: (body: string) => keyring.writeCheckpoint!(body) }
+      : {}),
   };
 }
 
@@ -422,7 +701,7 @@ function verifyRowSealInner(
       detail: `a later ${latest ? String(latest.event_type) : "event"} undoes the state it signed`,
     };
   }
-  const chain = verifyLifecycleChain(db, keyring, subject, Number(ev.seq));
+  const chain = verifyLifecycleChain(db, keyring, subject, subject.rowId, Number(ev.seq));
   if (!chain.ok) return chain;
   return { ok: true, eventId };
 }
@@ -439,6 +718,7 @@ export function verifyLifecycleChain(
   db: SealDb,
   keyring: GateKeyring,
   track: Pick<RowSealSubject, "entityType" | "lifecycleEvents">,
+  entityId: string,
   atLeastSeq = 0,
 ): { ok: true } | { ok: false; failure: RowSealFailure; detail: string } {
   let anchor: AnchorRead;
@@ -467,14 +747,7 @@ export function verifyLifecycleChain(
       detail: `the event log no longer holds event ${anchor.seq} as this factory recorded it outside the database (rows were deleted or rewritten; a revocation may have been removed)`,
     };
   }
-  if (!chainOkUpTo(db, Math.max(anchor.seq, atLeastSeq), track)) {
-    return {
-      ok: false,
-      failure: "chain",
-      detail: "the event log's hash chain does not verify up to the head this factory recorded",
-    };
-  }
-  return { ok: true };
+  return chainOkUpTo(db, keyring, Math.max(anchor.seq, atLeastSeq), anchor.seq, track, entityId);
 }
 
 /**

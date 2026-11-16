@@ -576,7 +576,7 @@ function renderIdleLoopsPanel(view, repos, nodes, envSettings = []) {
         { class: "dim" },
         "The master switch. Off: an idle factory polls and stops. On: each idle tick runs the one enabled lane " +
           "below that is most due (security first, then tests, types, tech debt, docs, dependencies). " +
-          "GAFFER_MAINTENANCE=0 in the runner's env is the emergency kill switch.",
+          "When idle set to off (GAFFER_IDLE, in Settings) is the kill switch.",
       ),
       el("div", { class: "btn-row" }, [recommendBtn]),
     ]),
@@ -724,13 +724,17 @@ function renderIdleLoopsPanel(view, repos, nodes, envSettings = []) {
   ]);
   card.appendChild(status);
 
-  // The effective runner env the panel cannot see from crew.yaml alone: the
-  // GAFFER_MAINTENANCE override, the idle MODE override and the legacy every-loop
-  // scan. `effective` is what the factory will use (env → settings.json → preset).
+  // What the runner will use that the panel cannot see from crew.yaml alone, derived
+  // from the When idle setting (GAFFER_IDLE) or set in the environment: the maintenance
+  // override, the idle MODE override and the every-loop scan (GET /api/settings derived).
   const envOf = (key) => {
     const row = (envSettings || []).find((s) => s && s.key === key);
     const v = row ? (row.effective !== undefined ? row.effective : row.value) : "";
     return String(v === undefined || v === null ? "" : v).trim();
+  };
+  const fromEnv = (key) => {
+    const row = (envSettings || []).find((s) => s && s.key === key);
+    return !!(row && row.envLocked);
   };
   const flagOn = (v) => ["1", "true", "yes", "on"].includes(String(v).toLowerCase());
   const reposWithCoverage = (repos || []).filter((r) => r && r.coverage_command).map((r) => r.name);
@@ -740,9 +744,16 @@ function renderIdleLoopsPanel(view, repos, nodes, envSettings = []) {
     const lanesOn = lanes.length;
     const envMaint = envOf("GAFFER_MAINTENANCE");
     const panelOn = maint.input.checked;
-    // GAFFER_MAINTENANCE wins over the panel switch: 0 kills the lane, 1 forces it.
+    // The derived GAFFER_MAINTENANCE wins over the panel switch: 0 kills the lane, 1 forces it.
     const maintOn = envMaint === "0" ? false : envMaint === "1" ? true : panelOn;
     const legacyScan = flagOn(envOf("IDLE_DRAFT_WHEN_IDLE"));
+    // Who decided it: the When idle setting, or a variable exported for the runner.
+    const maintBy = fromEnv("GAFFER_MAINTENANCE")
+      ? `GAFFER_MAINTENANCE=${envMaint} in the environment`
+      : "When idle (GAFFER_IDLE)";
+    const scanBy = fromEnv("IDLE_DRAFT_WHEN_IDLE")
+      ? "IDLE_DRAFT_WHEN_IDLE=1 in the environment"
+      : "When idle (GAFFER_IDLE=all)";
     const idleMode = envOf("GAFFER_IDLE_MODE") || view.mode || "create_draft_tickets";
     const siOn = siSwitch.input.checked;
     const backlog = editors.get("idle_feature_backlog");
@@ -765,8 +776,8 @@ function renderIdleLoopsPanel(view, repos, nodes, envSettings = []) {
         : `runs ALL ${lanesOn} enabled lane${lanesOn === 1 ? "" : "s"} in one pass (plus ingest and the memory loops)`;
     if (envMaint === "0" && !legacyScan) {
       text =
-        "GAFFER_MAINTENANCE=0 in the runner's settings is the kill switch: idle ticks skip maintenance " +
-        "entirely, whatever this panel says.";
+        `${maintBy} turns maintenance off: idle ticks skip it entirely, whatever this panel says.` +
+        (fromEnv("GAFFER_MAINTENANCE") ? "" : " Set When idle to auto to let this panel decide.");
       tone = "warn";
     } else if (!maintOn && lanesOn === 0 && !legacyScan && backlogOn) {
       // The feature backlog has its own switch and runs BEFORE the maintenance lane
@@ -778,24 +789,24 @@ function renderIdleLoopsPanel(view, repos, nodes, envSettings = []) {
         "Idle ticks poll and stop. Turn on maintenance and at least one lane to work the backlog while idle.";
       tone = "dim";
     } else if (!maintOn && legacyScan) {
-      // GAFFER_MAINTENANCE=0 only skips the maintenance lane: tick.sh still falls
-      // through to the legacy scan when IDLE_DRAFT_WHEN_IDLE=1.
+      // A derived GAFFER_MAINTENANCE=0 only skips the maintenance lane: tick.sh still
+      // falls through to the every-loop scan when IDLE_DRAFT_WHEN_IDLE=1.
       text =
         (envMaint === "0"
-          ? "GAFFER_MAINTENANCE=0 skips the maintenance lane, but IDLE_DRAFT_WHEN_IDLE=1 (legacy) is on: each idle tick "
-          : "IDLE_DRAFT_WHEN_IDLE=1 (legacy): with maintenance off, each idle tick ") +
+          ? `${maintBy} skips the maintenance lane, but ${scanBy} runs the every-loop scan: each idle tick `
+          : `${scanBy} runs the every-loop scan: with maintenance off, each idle tick `) +
         `${legacyPass}; ${filing}.`;
       tone = "warn";
     } else if (maintOn && lanesOn === 0 && backlogOn) {
       text =
         "No scan lane is enabled, so each idle tick runs only the feature backlog (plus ingest and the lore-gap loop when on)" +
-        (envMaint === "1" ? " (forced on by GAFFER_MAINTENANCE=1)" : "") +
+        (envMaint === "1" ? ` (${maintBy} turns maintenance on)` : "") +
         `; ${filing}.`;
       if (idleMode === "create_ready_tickets") tone = "warn";
     } else if (maintOn && lanesOn === 0 && !backlogOn) {
       text =
         (envMaint === "1"
-          ? "GAFFER_MAINTENANCE=1 forces the lane on, but "
+          ? `${maintBy} turns the lane on, but `
           : "Maintenance is on but ") +
         "no lane is enabled — idle ticks will do nothing (no_work). Enable a lane or use the recommended set.";
       tone = "warn";
@@ -805,7 +816,7 @@ function renderIdleLoopsPanel(view, repos, nodes, envSettings = []) {
     } else {
       text =
         `Each idle tick runs ONE of the ${lanesOn} enabled lane${lanesOn === 1 ? "" : "s"}, rotating by priority` +
-        (envMaint === "1" ? " (forced on by GAFFER_MAINTENANCE=1)" : "") +
+        (envMaint === "1" ? ` (${maintBy} turns maintenance on)` : "") +
         `; ${filing}.`;
       if (idleMode === "create_ready_tickets") tone = "warn";
     }

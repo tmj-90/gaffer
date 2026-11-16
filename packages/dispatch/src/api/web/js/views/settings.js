@@ -1,12 +1,13 @@
-// View: Settings (UI-editable factory config, env-override semantics).
-// Moved verbatim from app.js (the entry); the module map is in app.js.
+// View: Settings, the fourteen settings a factory has (everything else follows from them).
+// The module map is in app.js.
 
 import { roLockAll } from "../access.js";
 import { api } from "../api.js";
-import { emptyState, viewHead } from "../components.js";
+import { button, callout, dataTable, emptyState, viewHead } from "../components.js";
 import { clear, el, field } from "../dom.js";
-import { plural } from "../format.js";
+import { moneyW, plural } from "../format.js";
 import { icon } from "../icons.js";
+import { table } from "../lookup.js";
 import { routeSignal, router } from "../router.js";
 import { runAsyncAction, toast } from "../toast.js";
 import {
@@ -19,80 +20,96 @@ import {
 import {
   autonomyPoliciesInert,
   inertPoliciesNote,
-  isOnValue,
   teamInstructions,
-  testingLaneOff,
+  whatThisSets,
 } from "./formation.js";
 import { principalSignaturesCallout } from "./principal-signatures.js";
 
-// ===========================================================================
-//  View: Create ticket
-// ===========================================================================
-
-// --- Settings (UI-editable factory config, env-override semantics) ----------
+// --- Settings -----------------------------------------------------------------
 //
-// GET /api/settings reports every known setting (file value + envLocked + group);
-// the panel groups them into sections of toggles / number / text inputs.
-// env-locked settings (set in the process env, which always wins over the file)
-// render read-only with a "set by env" badge. Save POSTs the changed,
-// non-locked values back and reflects the server's fresh state.
+// GET /api/settings reports the fourteen settings (value, where it came from, whether
+// the environment locks it), what the runner derives from them (`derived`), the old
+// settings.json keys (`migration`), derived values the environment overrides
+// (`overrides`) and what the removal act would do (`cleanup`). The names, kinds,
+// choices, defaults and descriptions come from the runner's schema through the API;
+// this page only lays them out. Save POSTs the changed values and re-renders.
 
+/** The page's sections, in the order of the design's table (GAFFER_MODE is the dial). */
 const SETTINGS_GROUPS = [
+  { id: "budget", label: "Budget", note: "The two dollar caps. A live run needs one of them." },
   {
-    id: "autonomy",
-    label: "Autonomy",
-    note: "How much the factory may do without a human in the loop.",
+    id: "work",
+    label: "Models and effort",
+    note: "Which models play, how much work one ticket may take, how many at once, and what happens when nothing is ready.",
   },
   {
-    id: "delivery",
-    label: "Delivery",
-    note: "What happens once a ticket is approved — merge, push, PR, CI.",
+    id: "safety",
+    label: "Safety",
+    note: "The OS sandbox, the gates every delivery passes, and the independent tester.",
   },
+  { id: "delivery", label: "Delivery", note: "How approved work lands." },
+  { id: "notify", label: "Notify", note: "Where to tell a person when the factory needs one." },
   {
-    id: "execution",
-    label: "Execution",
-    note: "How the loop schedules and paces work — concurrency, cadence, ceilings.",
-  },
-  {
-    id: "idle-loops",
-    label: "Idle overrides",
-    note: "Run-wide overrides for what the squad does between tickets. The per-lane switches live in Idle loops, further down.",
-  },
-  {
-    id: "budget",
-    label: "Budget & caps",
-    note: "Hard limits on a run — ticks, timeouts, turns, retries, spend.",
-  },
-  {
-    id: "planning-debate",
-    label: "Planning debate",
-    note: "Multi-model plan critique before decomposing.",
-  },
-  {
-    id: "quality",
-    label: "Quality gates",
-    note: "The runner's definition-of-done guards on every delivery.",
-  },
-  {
-    id: "sandbox",
-    label: "Sandbox",
-    note: "OS-level execution confinement: every agent runs inside it unless GAFFER_STRICT_REQUIRE=0 is set in the environment.",
-  },
-  {
-    id: "notifications",
-    label: "Notifications",
-    note: "Opt-in pings when the factory needs a human.",
+    id: "location",
+    label: "Where it runs",
+    note: "Shown here; how to change each is under it.",
   },
 ];
 
+/** One line per choice: what picking it changes (the figures are under What this sets). */
+const CHOICE_LINES = table({
+  GAFFER_EFFORT: table({
+    small: "Shorter agent calls, fewer turns and delivery attempts.",
+    standard: "The built-in limits.",
+    large: "Longer agent calls, more turns and attempts.",
+  }),
+  GAFFER_SANDBOX: table({
+    auto: "sandbox-exec on macOS, docker elsewhere.",
+    docker: "Read, write and network isolation (needs Docker).",
+    "sandbox-exec": "macOS only: write containment.",
+  }),
+  GAFFER_GATES: table({
+    standard: "Tests, lint and typecheck must pass.",
+    strict: "Also a smallest-change note, tighter size flags and no flaky rerun.",
+  }),
+  GAFFER_LANDING: table({
+    local: "Merged into the default branch on this machine.",
+    pr: "A pull request per delivery; review waits for green checks.",
+  }),
+  GAFFER_TESTING: table({
+    auto: "On where a repository has a test command.",
+    on: "Every testable ticket is tested before review.",
+    off: "Only an epic's acceptance ticket is tested.",
+  }),
+  GAFFER_IDLE: table({
+    auto: "The Idle loops panel decides.",
+    off: "Nothing runs between tickets.",
+    maintenance: "The maintenance lanes.",
+    backlog: "Plan the next feature from the backlog.",
+    all: "Everything, also clarifying and drafting tickets.",
+  }),
+});
+const CHOICE_WORDS = table({
+  "sandbox-exec": "sandbox-exec",
+});
+
+/** Where a value came from, as a word (never colour alone). */
+const ORIGIN_WORDS = table({
+  default: "default",
+  dashboard: "set here",
+  environment: "set by the environment",
+});
+
+const ADVANCED_DOC = "https://github.com/tmj-90/gaffer/blob/main/docs/CONFIG-ADVANCED.md";
+
 async function renderSettings() {
-  // Load the env-override settings plus the crew idle-loop config + the repos and
-  // scope nodes the idle-loop target picker needs. Best-effort on the extras: a
-  // failure there must not blank the whole Settings page.
+  // The settings plus the crew idle-loop config, the repos and scope nodes its target
+  // picker needs, the autonomy panels and the spend so far. Best-effort on the extras:
+  // a failure there must not blank the whole Settings page.
   const signal = routeSignal();
   const get = (p) => api("GET", p, undefined, { signal });
   const [
-    { settings, isolation },
+    report,
     idleLoopsRes,
     reposRes,
     nodesRes,
@@ -100,23 +117,24 @@ async function renderSettings() {
     autonomyPolRes,
     whoamiRes,
     principalsRes,
+    costRes,
   ] = await Promise.all([
     get("/api/settings"),
     get("/api/idle-loops").catch(() => null),
     get("/repositories").catch(() => ({ repositories: [], unread: true })),
     get("/scope/nodes").catch(() => ({ nodes: [] })),
-    // GRADUATED-AUTONOMY (Spec 2): advisory recommendations — best-effort, must never
-    // blank the page if the endpoint is unavailable.
     get("/api/autonomy/recommendations").catch(() => null),
-    // GRADUATED-AUTONOMY (Spec 2, Phase 3): the currently-enabled policies.
     get("/api/autonomy/policies").catch(() => null),
-    // PER-PRINCIPAL CREDENTIALS: who this session is + the named credentials.
     get("/api/whoami").catch(() => null),
     get("/api/principals").catch(() => null),
+    get("/api/cost").catch(() => null),
   ]);
-  const all = Array.isArray(settings) ? settings : [];
-  const modeRow = all.find((x) => x.key === "GAFFER_MODE");
-  settingsModeName = (modeRow && (modeRow.effective || modeRow.value)) || "supervised";
+  const all = Array.isArray(report.settings) ? report.settings : [];
+  const derived = Array.isArray(report.derived) ? report.derived : [];
+  const migration = Array.isArray(report.migration) ? report.migration : [];
+  const overrides = Array.isArray(report.overrides) ? report.overrides : [];
+  const cleanup = report.cleanup || { drop: [], rewrite: [] };
+  const isolation = report.isolation;
   const idleLoops = idleLoopsRes && idleLoopsRes.idle_loops ? idleLoopsRes.idle_loops : null;
   const repos = reposRes.repositories || [];
   // The formation and Go/No-Go read whether any repository has a test command (the `auto`
@@ -135,102 +153,77 @@ async function renderSettings() {
       : [];
   const autonomyPolicies =
     autonomyPolRes && Array.isArray(autonomyPolRes.policies) ? autonomyPolRes.policies : [];
+  // The derived values as read-only rows, for the panels that read one by name (the
+  // idle loops panel, the inert-grants note): the value a run uses, never editable.
+  const derivedViews = derived.map((d) => ({
+    key: d.name,
+    value: "",
+    effective: d.value == null ? "" : String(d.value),
+    envLocked: d.source === "environment",
+    setting: d.setting,
+  }));
+  const views = [...all, ...derivedViews];
 
   const wrap = el("div", { class: "view settings-view" });
-  const groupsUsed = SETTINGS_GROUPS.filter((g) => all.some((s) => s.group === g.id));
-  const fromFile = all.filter((s) => s.source === "file").length;
+  const here = all.filter((s) => s.origin === "dashboard").length;
   const locked = all.filter((s) => s.envLocked).length;
 
-  // Standing note: edits land in settings.json; the runner reads it on its NEXT
-  // tick, so nothing restarts live.
   const note = el("p", { class: "settings-note" }, [
     icon("clock", "settings-note-ico", 16),
-    el("span", {}, "Changes apply on the next tick — no live restart."),
+    el("span", {}, "Changes apply on the next tick; no live restart."),
   ]);
   wrap.appendChild(
     viewHead(
       "The boot room",
       all.length
-        ? `${plural(all.length, "setting")} in ${plural(groupsUsed.length, "group")} · ${fromFile} set in settings.json · ${locked} set by the environment`
+        ? `${plural(all.length, "setting")} · ${here} set here · ${locked} set by the environment`
         : null,
     ),
   );
 
-  // Empty/abnormal state: the allow-list is static server-side, so an empty list
-  // means the API answered oddly. Surface it rather than render a blank page.
   if (all.length === 0) {
     wrap.appendChild(note);
     wrap.appendChild(
-      emptyState("No settings available", "The config API returned no known settings."),
+      emptyState("No settings available", "The settings API returned no settings."),
     );
     return wrap;
   }
 
-  // Two columns: a sticky index (search, sections, unsaved count) and the room.
   const main = el("div", { class: "boot-main" });
   const index = el("nav", { class: "boot-index", "aria-label": "Boot room sections" });
-  const layout = el("div", { class: "boot-room" }, [index, main]);
-  wrap.appendChild(layout);
+  wrap.appendChild(el("div", { class: "boot-room" }, [index, main]));
   main.appendChild(note);
 
-  // edit registry: key → { def, read() } for non-locked inputs, so Save collects
-  // only the values the operator can actually change.
+  // The runner refuses to load this settings.json: say so first, in its own words.
+  if (report.configError) {
+    main.appendChild(
+      callout({
+        tone: "bad",
+        cls: "settings-config-error",
+        role: "alert",
+        title: "The runner refuses this settings.json, so no run starts.",
+        body: `${report.configError}. Fix the setting below (or use the removal act in the callout under this one, which also rewrites a stored value the runner refuses).`,
+      }),
+    );
+  }
+  const migrationNode = migrationCallout(migration, cleanup);
+  if (migrationNode) main.appendChild(migrationNode);
+
   const editors = new Map();
-  // novalidate: Save checks every field itself and says which one is wrong (the
-  // browser's own bubble blocked Save for every field and named none of them).
   const form = el("form", { class: "settings-form", id: "settings-form", novalidate: "" });
 
-  for (const grp of SETTINGS_GROUPS) {
-    const inGroup = all.filter((s) => s.group === grp.id);
-    if (inGroup.length === 0) continue;
-    // Each group folds (the room ran 12,000px): the first opens, the index jumps.
-    const changed = inGroup.filter((x) => x.source === "file").length;
-    const card = el("details", {
-      class: "card settings-group",
-      id: `grp-${grp.id}`,
-      open: grp.id === SETTINGS_GROUPS[0].id ? "" : null,
-    });
-    card.appendChild(
-      el("summary", { class: "panel-head" }, [
-        el("h2", { class: "panel-title" }, grp.label),
-        el(
-          "span",
-          { class: "panel-aux" },
-          `${plural(inGroup.length, "setting")}${changed ? ` · ${changed} set in settings.json` : ""}`,
-        ),
-        el("span", { class: "grp-dirty", hidden: true }),
-      ]),
-    );
-    card.appendChild(el("p", { class: "section-note" }, grp.note));
-    if (grp.id === "sandbox") card.appendChild(isolationLine(isolation));
-    const rows = el("div", { class: "settings-rows" });
-    for (const s of inGroup) rows.appendChild(renderSettingRow(s, editors));
-    card.appendChild(rows);
-    form.appendChild(card);
-  }
-  const noMatch = el("p", { class: "boot-nomatch", hidden: true });
-  form.appendChild(noMatch);
-
-  // The headline: the team's instructions (GAFFER_MODE as a five-detent dial) and
-  // the formation it plays (who takes each gate on a delivery's way to main).
-  const instructions = teamInstructions(all, editors, autonomyPolicies);
+  // The headline: the Autonomy mode (GAFFER_MODE) as the five-detent dial.
+  const instructions = teamInstructions(all, editors, autonomyPolicies, derived, isolation);
   main.appendChild(instructions.node);
 
-  // GRADUATED-AUTONOMY (Spec 2, Phase 3): the currently-enabled policies, each with a
-  // one-click reversible OFF, above the suggestions so the active posture comes first.
-  // B17: those policies are consulted ONLY by the agent review pass. Under
-  // REVIEW_MODE=human (supervised, the default) no reviewer agent runs, so an enabled
-  // grant showed "Enabled" here and never acted. Say so wherever a grant is shown.
   main.appendChild(autonomyLadderPanel()); // THE AUTONOMY LADDER (js/views/autonomy-ladder.js)
-  const inertCount = autonomyPoliciesInert(autonomyPolicies, all);
+  const inertCount = autonomyPoliciesInert(autonomyPolicies, views);
   if (inertCount > 0) main.appendChild(inertPoliciesNote(inertCount));
   const polPanel = autonomyPoliciesPanel(autonomyPolicies, { inert: inertCount > 0 });
   if (polPanel) {
     polPanel.id = "autonomy-policies";
     main.appendChild(polPanel);
   }
-  // GRADUATED-AUTONOMY (Spec 2, Phase 3): advisory recommendations backed by the review
-  // track record — each is an ENABLE action (evidence + explicit confirm → POST).
   const recPanel = autonomyRecommendationsPanel(autonomyRecs, autonomyPolicies, {
     inert: inertCount > 0,
   });
@@ -239,28 +232,50 @@ async function renderSettings() {
     main.appendChild(recPanel);
   }
 
+  const groupsUsed = SETTINGS_GROUPS.filter((g) => all.some((s) => s.group === g.id));
+  for (const grp of groupsUsed) {
+    const inGroup = all.filter((s) => s.group === grp.id);
+    const card = el("section", {
+      class: "card settings-group",
+      id: `grp-${grp.id}`,
+      "aria-labelledby": `grp-${grp.id}-t`,
+    });
+    card.appendChild(
+      el("div", { class: "panel-head" }, [
+        el("h2", { class: "panel-title", id: `grp-${grp.id}-t` }, grp.label),
+        el("span", { class: "grp-dirty", hidden: true }),
+      ]),
+    );
+    card.appendChild(el("p", { class: "section-note" }, grp.note));
+    if (grp.id === "safety") card.appendChild(isolationLine(isolation));
+    const rows = el("div", { class: "settings-rows" });
+    for (const s of inGroup) rows.appendChild(renderSettingRow(s, editors, derived, costRes));
+    card.appendChild(rows);
+    form.appendChild(card);
+  }
   main.appendChild(form);
 
-  // Crew idle-loop scan loops — enable + repo/scope scoping. These live in
-  // crew.yaml (not settings.json), so they save through their own endpoint.
+  // Derived values a real environment variable sets: read-only, at the bottom of the room.
+  if (overrides.length) main.appendChild(overridesPanel(overrides));
+
   if (idleLoops) {
-    const loops = renderIdleLoopsPanel(idleLoops, repos, nodes, all);
-    const fold = el("details", { class: "boot-fold", id: "idle-loops" }, [
-      el("summary", {}, [
-        el("span", { class: "boot-fold-t" }, "Idle loops"),
-        el(
-          "span",
-          { class: "panel-aux" },
-          "what the squad does when no ticket is ready · crew.yaml",
-        ),
+    const loops = renderIdleLoopsPanel(idleLoops, repos, nodes, views);
+    main.appendChild(
+      el("details", { class: "boot-fold", id: "idle-loops" }, [
+        el("summary", {}, [
+          el("span", { class: "boot-fold-t" }, "Idle loops"),
+          el(
+            "span",
+            { class: "panel-aux" },
+            "what the squad does when no ticket is ready · crew.yaml",
+          ),
+        ]),
+        loops,
       ]),
-      loops,
-    ]);
-    main.appendChild(fold);
+    );
   }
 
   main.appendChild(principalSignaturesCallout(whoamiRes)); // SEALED PRINCIPALS: unsigned sign-ins
-  // PER-PRINCIPAL CREDENTIALS: who is signed in, the named credentials, mint/revoke.
   const acc = accessPanel(
     whoamiRes,
     principalsRes && Array.isArray(principalsRes.principals) ? principalsRes.principals : [],
@@ -288,7 +303,6 @@ async function renderSettings() {
   main.appendChild(saveBar);
   const idxDirty = el("span", { class: "boot-n" }, "none");
   const labelOf = new Map(all.map((s) => [s.key, s.label || s.key]));
-  // Which switches differ from what was loaded (the same test Save uses).
   const dirtyKeys = () => {
     const out = [];
     for (const [key, ed] of editors) {
@@ -316,7 +330,6 @@ async function renderSettings() {
     } else dirtyNote.textContent = "No unsaved changes.";
     dirtyNote.classList.toggle("is-dirty", n > 0);
     discardBtn.disabled = n === 0;
-    // Nothing to save, nothing to press: the primary waits for a change.
     saveBtn.disabled = n === 0;
     saveBar.classList.toggle("is-clean", n === 0);
     idxDirty.textContent = n ? String(n) : "none";
@@ -330,36 +343,32 @@ async function renderSettings() {
       const tag = g.querySelector(".grp-dirty");
       tag.hidden = !c;
       tag.textContent = c ? `${c} unsaved` : "";
-      const link = index.querySelector(`a[href="#${g.id}"]`);
-      const tagEl = link && link.querySelector(".unsaved-tag");
-      if (link && c && !tagEl) link.appendChild(el("span", { class: "unsaved-tag" }, "Unsaved"));
-      else if (tagEl && !c) tagEl.remove();
     }
     instructions.sync();
   };
-  form.addEventListener("input", paintDirty);
-  form.addEventListener("change", paintDirty);
+  main.addEventListener("input", paintDirty);
+  main.addEventListener("change", paintDirty);
   instructions.onPick = paintDirty;
 
   form.addEventListener("submit", (e) => {
     e.preventDefault();
-    // Collect only editable (non-locked) values the user actually CHANGED. Sending
-    // every editor used to persist an explicit "0" for each untouched switch, which
-    // then out-ranked the GAFFER_MODE presets in the runner (a save silently turned
-    // autonomy off). The server is the final gate: it re-checks env-lock and drops
-    // unknown keys, so this is just the payload.
-    const payload = {};
+    // Only what the person changed. The server is the final gate: it validates every
+    // value as the runner does, refuses any key that is not a setting and re-checks
+    // env-lock, so this is just the payload.
+    const settings = {};
+    let notify;
     for (const [key, ed] of editors) {
-      const v = ed.read();
-      if (ed.initial === undefined || v !== ed.initial) payload[key] = v;
+      if (ed.initial === undefined || ed.read() === ed.initial) continue;
+      if (ed.notify) notify = ed.notify();
+      else settings[key] = ed.read();
     }
-    // A value the server would refuse is shown on its own row, and Save says which
-    // field holds it back; nothing is posted until it is fixed (or put back).
-    const bad = [];
+    for (const ed of editors.values()) {
+      if (ed.row) for (const old of ed.row.querySelectorAll(".setting-error")) old.remove();
+      if (ed.input) ed.input.removeAttribute("aria-invalid");
+    }
     const markBad = (key, problem) => {
       const ed = editors.get(key);
       const label = labelOf.get(key) || key;
-      bad.push(`${label} ${problem}`);
       if (!ed) return;
       if (ed.input) ed.input.setAttribute("aria-invalid", "true");
       if (ed.row) {
@@ -367,63 +376,41 @@ async function renderSettings() {
         ctl.appendChild(
           el("p", { class: "form-error setting-error", role: "alert" }, `${label} ${problem}.`),
         );
-        const grp = ed.row.closest("details");
-        if (grp) grp.open = true;
       }
     };
-    const focusFirstBad = () => {
-      const first = [...editors.values()].find(
-        (ed) => ed.input && ed.input.getAttribute("aria-invalid") === "true",
-      );
-      if (first) first.input.focus();
-    };
-    for (const [key, ed] of editors) {
-      if (ed.row) for (const old of ed.row.querySelectorAll(".setting-error")) old.remove();
-      if (ed.input) ed.input.removeAttribute("aria-invalid");
-      const problem = key in payload && ed.check ? ed.check() : null;
-      if (problem) markBad(key, problem);
-    }
-    if (bad.length) {
-      toast(`Not saved: ${bad.join("; ")}.`, {});
-      focusFirstBad();
-      return;
-    }
-    // A submit is the intent (the primary only rests disabled while clean).
     saveBtn.disabled = false;
     runAsyncAction(saveBtn, "Saving…", async () => {
       let res;
       try {
-        res = await api("POST", "/api/settings", { settings: payload });
+        res = await api("POST", "/api/settings", notify ? { settings, notify } : { settings });
       } catch (err) {
-        // A value only the server can judge (a webhook address, a choice it no longer
-        // lists): the 422 names each field, so mark them on their rows like the rest.
+        // The 422 names each refused value (in the runner's words): mark its row.
         const invalid = err && err.details && err.details.invalid;
         if (Array.isArray(invalid) && invalid.length) {
           for (const p of invalid) if (p && p.key) markBad(p.key, p.problem || "is not valid");
-          focusFirstBad();
+          const first = [...editors.values()].find(
+            (ed) => ed.input && ed.input.getAttribute("aria-invalid") === "true",
+          );
+          if (first) first.input.focus();
         }
         throw err;
       }
       const written = (res.written || []).length;
       const rejected = (res.rejected || []).length;
-      const invalid = (res.invalid || []).length;
-      const skips = [
-        rejected ? `${rejected} skipped (set by env)` : null,
-        invalid ? `${invalid} rejected (invalid value)` : null,
-      ].filter(Boolean);
       toast(
-        skips.length
-          ? `Saved ${written} setting${written === 1 ? "" : "s"} — ${skips.join(", ")}.`
-          : `Saved ${written} setting${written === 1 ? "" : "s"}.`,
-        { ok: !invalid },
+        rejected
+          ? `Saved ${plural(written, "setting")}; ${rejected} skipped (set by the environment).`
+          : `Saved ${plural(written, "setting")}.`,
+        { ok: true },
       );
-      // Re-render from the server's fresh state so values + locks reflect reality.
       router();
     });
   });
 
-  // The index: find a setting by name, key or help; jump to any section.
+  // The index: find a setting by name, key or description; jump to any section.
   const findCount = el("span", { class: "boot-find-n", role: "status" });
+  const noMatch = el("p", { class: "boot-nomatch", hidden: true });
+  form.appendChild(noMatch);
   const find = el("input", {
     type: "search",
     class: "boot-find",
@@ -437,13 +424,10 @@ async function renderSettings() {
         row.hidden = !hit;
         if (hit) shown++;
       }
-      for (const g of form.querySelectorAll(".settings-group")) {
+      for (const g of form.querySelectorAll(".settings-group"))
         g.hidden = !!q && !g.querySelector(".setting-row:not([hidden])");
-        if (q && !g.hidden) g.open = true;
-      }
       findCount.textContent = q ? `${plural(shown, "match", "matches")}` : "";
       noMatch.hidden = !q || shown > 0;
-      // While finding, the rows are the page: the panels above step aside.
       main.classList.toggle("is-finding", !!q);
       noMatch.textContent = q && !shown ? `No setting matches “${e.target.value.trim()}”.` : "";
     },
@@ -453,32 +437,34 @@ async function renderSettings() {
       el("span", {}, label),
       n != null ? el("span", { class: "boot-n" }, String(n)) : null,
     ]);
-  // The section links. On a phone they fold behind one line (the find box stays
-  // open), so the room starts with the team instructions, not a wall of links.
   const phone =
     typeof window.matchMedia === "function" && window.matchMedia("(max-width: 760px)").matches;
+  const extra = [migrationNode, polPanel, recPanel, idleLoops, overrides.length ? 1 : null];
   const sections = el("details", { class: "boot-sections", open: phone ? null : "" }, [
     el("summary", {}, [
       "Jump to a section",
       el(
         "span",
         { class: "boot-n" },
-        String(groupsUsed.length + 2 + [polPanel, recPanel, idleLoops].filter(Boolean).length),
+        String(groupsUsed.length + 2 + extra.filter(Boolean).length),
       ),
     ]),
     el("ul", { class: "boot-links" }, [
-      el("li", {}, link("instructions", "Team instructions")),
+      migrationNode ? el("li", {}, link("settings-migration", "Old settings")) : null,
+      el("li", {}, link("instructions", "Autonomy mode")),
       polPanel ? el("li", {}, link(polPanel.id, "Active autonomy")) : null,
       recPanel ? el("li", {}, link(recPanel.id, "Suggested autonomy")) : null,
       ...groupsUsed.map((g) =>
         el("li", {}, link(`grp-${g.id}`, g.label, all.filter((x) => x.group === g.id).length)),
       ),
+      overrides.length
+        ? el("li", {}, link("settings-overrides", "Overridden", overrides.length))
+        : null,
       idleLoops ? el("li", {}, link("idle-loops", "Idle loops")) : null,
       el("li", {}, link("access", "Access")),
     ]),
   ]);
   sections.addEventListener("click", (e) => {
-    // Picking a section on a phone folds the list away again.
     if (e.target.closest("a") && phone) sections.open = false;
   });
   index.append(
@@ -493,6 +479,7 @@ async function renderSettings() {
   roLockAll(main, "repo");
   return wrap;
 }
+
 /**
  * The registered repositories as the Settings view last read them: how many, and how many
  * have a registered test command. Null when unread. Under `auto` the tester runs only where
@@ -501,13 +488,163 @@ async function renderSettings() {
 let formationLaneRepos = null;
 
 /**
- * One setting row: a label + help on the left, a control on the right. Locked
- * settings render their value read-only with a "set by env" badge; editable ones
- * get a toggle (boolean), number input (int) or text input (csv/string), and
- * register a reader into `editors` so Save can collect the value.
+ * The migration callout: settings.json still holds keys that are no longer settings (or
+ * a stored value the runner refuses). One callout lists each old key, the setting that
+ * decides it now and, where the old value differs, which reading is in force (the
+ * stricter one). Its one action removes them: a person's act behind a confirm step that
+ * shows exactly what goes. Nothing is removed without it.
  */
+function migrationCallout(migration, cleanup) {
+  const drop = Array.isArray(cleanup.drop) ? cleanup.drop : [];
+  const rewrite = Array.isArray(cleanup.rewrite) ? cleanup.rewrite : [];
+  if (!migration.length && !drop.length && !rewrite.length) return null;
+  const n = migration.length;
+  const settingsNamed = [...new Set(migration.map((m) => m.setting).filter(Boolean))];
+  const box = el("section", {
+    class: "card settings-migration",
+    id: "settings-migration",
+    "aria-labelledby": "settings-migration-t",
+  });
+  box.appendChild(
+    callout({
+      tone: "needs",
+      title: n
+        ? `${plural(n, "old setting")} in settings.json ${n === 1 ? "is" : "are"} now decided by ${settingsNamed.length ? settingsNamed.join(", ") : "nothing"}: review.`
+        : "settings.json holds a stored value the runner reads differently: review.",
+      body:
+        "While the old keys stay in settings.json, an old key that is stricter keeps beating the setting you pick (an old GAFFER_TICK_TIMEOUT=1800 beats Effort large), an old notify URL keeps receiving events after you change Notify, and every runner process prints one warning per old key. Nothing is removed until you choose to.",
+    }),
+  );
+  box.firstChild.id = "settings-migration-t";
+  if (n) {
+    box.appendChild(
+      dataTable({
+        caption: "Old keys and the setting that decides each now",
+        stackOnPhone: true,
+        columns: [
+          { key: "key", label: "Old key", format: (v) => el("code", { class: "mono" }, v) },
+          {
+            key: "setting",
+            label: "Decided by",
+            format: (v) => (v ? el("code", { class: "mono" }, v) : "nothing"),
+            missing: "never a setting",
+          },
+          { key: "old", label: "Old value", missing: "empty" },
+          {
+            key: "inForce",
+            label: "In force",
+            format: (v, row) =>
+              el("span", { class: `mig-${row.decision}` }, [
+                row.differs ? el("strong", {}, "Differs: ") : null,
+                v,
+              ]),
+          },
+        ],
+        rows: migration,
+      }),
+    );
+  }
+  const confirm = el("div", { class: "mig-confirm", hidden: true, role: "group" });
+  const start = button("Remove the old keys from settings.json", { cls: "mig-start" });
+  start.addEventListener("click", () => {
+    confirm.hidden = false;
+    start.hidden = true;
+    const first = confirm.querySelector("button");
+    if (first) first.focus();
+  });
+  const removeBtn = button(`Remove ${plural(drop.length, "key")} now`, {
+    kind: "danger",
+    cls: "mig-remove",
+  });
+  const cancelBtn = button("Cancel", { kind: "ghost" });
+  cancelBtn.addEventListener("click", () => {
+    confirm.hidden = true;
+    start.hidden = false;
+  });
+  removeBtn.addEventListener("click", () =>
+    runAsyncAction(removeBtn, "Removing…", async () => {
+      await api("POST", "/api/settings/remove-old-keys", {
+        drop: drop.map((d) => d.key),
+        rewrite: rewrite.map((r) => r.key),
+      });
+      toast(`Removed ${plural(drop.length, "old key")} from settings.json.`, { ok: true });
+      router();
+    }),
+  );
+  confirm.append(
+    el("p", { class: "mig-confirm-lede" }, [
+      el("strong", {}, "This rewrites settings.json keeping only the fourteen settings. "),
+      "It removes:",
+    ]),
+    el(
+      "ul",
+      { class: "mig-drop" },
+      drop.map((d) =>
+        el("li", {}, [
+          el("code", { class: "mono" }, d.key),
+          d.value !== "" ? ` = ${d.value}` : " (empty)",
+        ]),
+      ),
+    ),
+    rewrite.length
+      ? el("p", {}, "And rewrites these stored values so the runner accepts them:")
+      : null,
+    rewrite.length
+      ? el(
+          "ul",
+          { class: "mig-rewrite" },
+          rewrite.map((r) =>
+            el("li", {}, [
+              el("code", { class: "mono" }, r.key),
+              ` “${r.from}” becomes ${r.to === "" ? "cleared (the default)" : `“${r.to}”`}`,
+            ]),
+          ),
+        )
+      : null,
+    el("div", { class: "mig-actions" }, [removeBtn, cancelBtn]),
+  );
+  box.append(el("div", { class: "mig-act" }, [start]), confirm);
+  return box;
+}
+
+/** Derived values a real environment variable sets (read-only, values masked). */
+function overridesPanel(overrides) {
+  return el(
+    "section",
+    {
+      class: "card settings-overrides",
+      id: "settings-overrides",
+      "aria-labelledby": "settings-overrides-t",
+    },
+    [
+      el("div", { class: "panel-head" }, [
+        el("h2", { class: "panel-title", id: "settings-overrides-t" }, "Overridden from the environment"),
+      ]),
+      el("p", { class: "section-note" }, [
+        "A real environment variable sets these derived values, so the setting that would decide each does not. Unset the variable before starting the runner to hand it back. Every derived value: ",
+        el("a", { href: ADVANCED_DOC, rel: "noopener", target: "_blank" }, "Detailed configuration"),
+        " (docs/CONFIG-ADVANCED.md).",
+      ]),
+      dataTable({
+        caption: "Derived values the environment sets",
+        stackOnPhone: true,
+        columns: [
+          { key: "name", label: "Variable", format: (v) => el("code", { class: "mono" }, v) },
+          { key: "value", label: "Value", missing: "unset" },
+          {
+            key: "setting",
+            label: "Otherwise decided by",
+            format: (v) => el("code", { class: "mono" }, v),
+          },
+        ],
+        rows: overrides,
+      }),
+    ],
+  );
+}
+
 /**
- * The agent isolation posture as one read-only line in the Sandbox group (GET
+ * The agent isolation posture as one read-only line in the Safety group (GET
  * /api/settings `isolation`, from runner/gaffer sandbox-status): the provider, whether
  * this host can supply it, whether it is required or opted out, and the fix when it is
  * missing. data-state is available, missing, opted-out or unknown.
@@ -526,7 +663,7 @@ function isolationLine(iso) {
   let text = `Isolation: ${iso.provider}, ${avail}. `;
   if (iso.optedOut)
     text +=
-      "Opted out: GAFFER_STRICT_REQUIRE=0 is set in the environment, so agents run without an OS sandbox.";
+      "Opted out: GAFFER_STRICT_REQUIRE=0 is set in the environment, so agents run without an OS sandbox (only the environment can do that).";
   else if (iso.available) text += "Required: every agent runs inside it.";
   else text += "Required: live runs refuse to launch agents until it is fixed.";
   if (!iso.available && iso.fix) text += ` Fix: ${iso.fix}.`;
@@ -537,266 +674,333 @@ function isolationLine(iso) {
   );
 }
 
-/** A setting's help: the first sentence, the rest folded behind "More" (pages ran 12,000px). */
+/** A setting's description: the first sentence, the rest folded behind "More". */
 function settingHelp(text) {
   const t = String(text);
-  const m = t.match(/^(.{40,180}?[.!?])\s+(.+)$/s);
+  const m = t.match(/^(.{40,180}?[.!?:])\s+(.+)$/s);
   if (!m) return el("p", { class: "setting-help dim" }, t);
   return el("div", { class: "setting-help dim" }, [
     el("p", {}, m[1]),
     el("details", { class: "setting-more" }, [el("summary", {}, "More"), el("p", {}, m[2])]),
   ]);
 }
-function renderSettingRow(s, editors) {
-  const mode = settingsModeName;
-  const src =
-    s.source === "file"
-      ? "set in settings.json"
-      : s.source === "mode"
-        ? `from the ${mode || "supervised"} mode`
-        : s.source === "env"
-          ? null
-          : "default";
+
+/**
+ * One setting row: its label, name, where its value came from (a word), the
+ * description, the control, and "What this sets" (the derived values with their
+ * figures). An env-locked setting shows its value read-only with the lock and why.
+ */
+function renderSettingRow(s, editors, derived, costRes) {
+  const origin = ORIGIN_WORDS[s.origin] || s.origin;
   const meta = el("div", { class: "setting-meta" }, [
     el("div", { class: "setting-label" }, [
       el("span", {}, s.label || s.key),
       s.envLocked
         ? el("span", { class: "badge env-locked no-dot" }, [
             icon("lock", "lock-ico", 12),
-            "set by env",
+            "set by the environment",
           ])
         : null,
     ]),
     el("div", { class: "setting-id" }, [
       el("code", { class: "mono setting-key" }, s.key),
-      src ? el("span", { class: `setting-src src-${s.source}` }, src) : null,
+      s.envLocked ? null : el("span", { class: `setting-src src-${s.origin}` }, origin),
       el("span", { class: "setting-unsaved" }, "unsaved"),
     ]),
-    s.help ? settingHelp(s.help) : null,
+    s.description ? settingHelp(s.description) : null,
   ]);
-
-  const control = el("div", { class: "setting-control" }, renderSettingInput(s, editors));
-
+  const control = el("div", { class: "setting-control" }, renderSettingInput(s, editors, costRes));
   const row = el(
     "div",
     {
       class: `setting-row${s.envLocked ? " is-locked" : ""}`,
       id: `set-${s.key}`,
-      dataset: { find: `${s.label || ""} ${s.key} ${s.help || ""}`.toLowerCase() },
+      dataset: {
+        key: s.key,
+        find: `${s.label || ""} ${s.key} ${s.description || ""}`.toLowerCase(),
+      },
     },
-    [meta, control],
+    [meta, control, whatThisSets(s, derived)],
   );
   const ed = editors.get(s.key);
   if (ed) ed.row = row;
   return row;
 }
 
-/** The mode the settings on screen were read under (for "from the graduated mode"). */
-let settingsModeName = "";
+/** The read-only value of a setting the dashboard does not edit (env-locked, or data). */
+function readOnlyValue(s, how) {
+  return el("div", { class: "setting-readonly" }, [
+    el(
+      "output",
+      { class: "mono setting-locked-value", "aria-label": `${s.label}: ${s.effective || "unset"}` },
+      s.effective !== "" ? s.effective : "(unset)",
+    ),
+    how ? el("p", { class: "setting-how dim" }, how) : null,
+  ]);
+}
 
-/** Sentinel an untouched secret editor reads as (never sent: it equals `initial`). */
-const SECRET_UNCHANGED = "\u0000unchanged";
-
-/**
- * A SECRET-BEARING setting (a webhook URL is posting authority): the server never sends
- * its value, only whether it is set and its host. Show that, masked, with Replace (a new
- * value is typed in, never the old one shown) and Remove. Untouched, the editor reads as
- * the sentinel and nothing is sent.
- */
-function renderSecretSettingInput(s, editors) {
-  const state = s.configured ? `Set${s.host ? ` · ${s.host}` : ""}` : "Not set";
-  const masked = el(
-    "span",
-    {
-      class: `setting-secret mono${s.configured ? " is-set" : ""}`,
-      "aria-label": s.configured
-        ? `${s.label} is set${s.host ? ` for ${s.host}` : ""}; the value is hidden.`
-        : `${s.label} is not set.`,
-    },
-    [s.configured ? "•••••••• " : "", state],
-  );
-  if (s.envLocked) return el("div", { class: "setting-secret-row" }, [masked]);
-  let mode = "keep"; // keep | replace | remove
-  const input = el("input", {
-    type: "password",
-    autocomplete: "off",
-    spellcheck: "false",
-    placeholder: "Paste the new URL",
-    "aria-label": `New value for ${s.label}`,
-    hidden: "",
-  });
-  const replace = el("button", { type: "button", class: "btn small ghost" }, "Replace");
-  const remove = s.configured
-    ? el("button", { type: "button", class: "btn small ghost" }, "Remove")
-    : null;
-  replace.addEventListener("click", () => {
-    mode = "replace";
-    input.hidden = false;
-    input.focus();
-  });
-  if (remove)
-    remove.addEventListener("click", () => {
-      mode = mode === "remove" ? "keep" : "remove";
-      remove.textContent = mode === "remove" ? "Keep" : "Remove";
-      masked.classList.toggle("is-removing", mode === "remove");
-      remove.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+/** A segmented choice: one radio per value, each with its one line. */
+function segmented(s, editors, values, words, lines, current) {
+  const name = `seg-${s.key}`;
+  const group = el("fieldset", { class: "seg-choice", "aria-label": s.label }, [
+    el("legend", { class: "sr-only" }, s.label),
+  ]);
+  const radios = [];
+  for (const v of values) {
+    const input = el("input", { type: "radio", name, value: v, class: "seg-input" });
+    input.checked = v === current;
+    radios.push(input);
+    group.appendChild(
+      el("label", { class: "seg-opt", dataset: { value: v } }, [
+        input,
+        el("span", { class: "seg-word" }, (words && words[v]) || v),
+        lines && lines[v] ? el("span", { class: "seg-line dim" }, lines[v]) : null,
+        v === current ? el("span", { class: "seg-now" }, "Now") : null,
+      ]),
+    );
+  }
+  const picked = () => {
+    const r = radios.find((x) => x.checked);
+    return r ? r.value : current;
+  };
+  // Picking the value in force again restores what is stored (no false "unsaved").
   editors.set(s.key, {
-    read: () =>
-      mode === "remove"
-        ? ""
-        : mode === "replace" && input.value.trim() !== ""
-          ? input.value.trim()
-          : SECRET_UNCHANGED,
-    initial: SECRET_UNCHANGED,
-    input,
+    read: () => (picked() === current ? s.value : picked()),
+    initial: s.value,
+    input: radios[0],
   });
-  return el("div", { class: "setting-secret-row" }, [masked, replace, remove, input]);
+  return group;
 }
 
-/**
- * Why `value` cannot be saved for setting `s`, or null when it can: the same rules
- * POST /api/settings applies (api/settings.ts settingValueProblem), so Save can say
- * which field is wrong instead of posting a value the server refuses. Empty clears.
- */
-function settingValueProblem(s, value) {
-  if (value === "") return null;
-  if (s.type === "int") {
-    const min = s.min || 0;
-    if (!/^\d+$/.test(value) || Number(value) < min)
-      return min > 0 ? `must be a whole number of ${min} or more` : "must be a whole number";
-  }
-  if (s.type === "number" && !/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(value))
-    return "must be a number of 0 or more, such as 5 or 2.50";
-  return null;
+/** The value a testing setting reads as (stored 1/0/true/... read as on/off). */
+function testingWord(v) {
+  const t = String(v || "")
+    .trim()
+    .toLowerCase();
+  if (["1", "true", "yes", "on"].includes(t)) return "on";
+  if (["0", "false", "no", "off"].includes(t)) return "off";
+  return "auto";
 }
 
-/** Build the right-hand control for a setting (or a read-only value when locked). */
-function renderSettingInput(s, editors) {
-  if (s.secret) return renderSecretSettingInput(s, editors);
-  if (s.envLocked) {
-    // Read-only: show the env-driven value if known, else a muted placeholder.
-    // The actual env value isn't exposed by the API (it could be a secret), so we
-    // only confirm it's locked; the file value (if any) is shown for context.
-    const shown = s.value !== "" ? s.value : "—";
-    return el("input", {
-      type: "text",
-      class: "setting-locked-input",
-      value: shown,
-      readonly: "",
-      disabled: "",
-      "aria-label": `${s.label} (read-only, set by env)`,
-    });
-  }
-
-  if (s.type === "boolean") {
-    // Show the value the factory will USE (env → file → GAFFER_MODE preset), not
-    // only what settings.json stores; an autonomous mode's presets read as on.
-    const eff = s.effective !== undefined ? s.effective : s.value;
-    const checked = eff === "1" || eff === "true" || eff === "yes" || eff === "on";
-    // The tester lane's default is neither on nor off: unset (or "auto") runs the tester
-    // where a test command is registered. The switch says Auto until it is moved; moving
-    // it writes an explicit on or off (testingLaneOff below reads the same values).
-    const auto =
-      s.key === "GAFFER_TESTING" && !checked && !testingLaneOff(eff) && !isOnValue(s.value);
-    let touched = false;
-    const input = el("input", { type: "checkbox", role: "switch", "aria-label": s.label });
-    input.checked = checked;
-    // `initial` lets Save send only what the user changed: an untouched switch
-    // that merely reflects a mode preset must not be written as an explicit "0".
-    editors.set(s.key, {
-      read: () => (input.checked ? "1" : auto && !touched ? "" : "0"),
-      initial: checked ? "1" : auto ? "" : "0",
-    });
-    const wordFor = () => (input.checked ? "On" : auto && !touched ? "Auto" : "Off");
-    const word = el("span", { class: "switch-word", "aria-hidden": "true" }, wordFor());
-    input.addEventListener("change", () => {
-      touched = true;
-      word.textContent = wordFor();
-    });
-    return el("label", { class: "switch switch-worded" }, [
-      input,
-      el("span", { class: "switch-track" }, el("span", { class: "switch-thumb" })),
-      word,
-    ]);
-  }
-
-  if (s.type === "int") {
-    const input = el("input", {
-      type: "number",
-      inputmode: "numeric",
-      step: "1",
-      min: String(s.min || 0),
-      value: s.value,
-      placeholder: s.effective && s.effective !== s.value ? s.effective : "default",
-      "aria-label": s.label,
-    });
-    editors.set(s.key, {
-      read: () => input.value.trim(),
-      initial: s.value,
-      input,
-      // A number box reads "" for text it cannot parse ("1e", "--"): that is not a clear.
-      check: () =>
-        input.validity && input.validity.badInput
-          ? settingValueProblem(s, "x")
-          : settingValueProblem(s, input.value.trim()),
-    });
-    return input;
-  }
-
-  // A dollar figure: a text box (so what was typed is what is checked, never a
-  // browser-sanitised "") with the decimal keypad, checked like the server checks it.
-  if (s.type === "number") {
+/** Build the control for a setting (or a read-only value when the dashboard cannot edit it). */
+function renderSettingInput(s, editors, costRes) {
+  if (s.key === "GAFFER_DATA")
+    return readOnlyValue(
+      s,
+      "Only the environment moves it (settings.json lives inside it): export GAFFER_DATA=/path before gaffer dashboard and gaffer run.",
+    );
+  if (s.secret) return renderNotifyInput(s, editors);
+  if (s.envLocked)
+    return readOnlyValue(
+      s,
+      `The environment sets ${s.key}, which always wins over settings.json; unset it before starting the dashboard to edit it here.`,
+    );
+  const lines = CHOICE_LINES[s.key];
+  if (s.kind === "choice" || s.kind === "gates")
+    return segmented(s, editors, s.values, CHOICE_WORDS, lines, s.effective || s.default);
+  if (s.kind === "testing")
+    return segmented(s, editors, ["auto", "on", "off"], null, lines, testingWord(s.effective));
+  if (s.kind === "models") return renderModelsInput(s, editors);
+  if (s.kind === "usd") {
     const input = el("input", {
       type: "text",
       inputmode: "decimal",
       value: s.value,
-      placeholder: s.effective && s.effective !== s.value ? s.effective : "default",
+      placeholder: "no cap",
       "aria-label": s.label,
     });
-    editors.set(s.key, {
-      read: () => input.value.trim(),
-      initial: s.value,
+    editors.set(s.key, { read: () => input.value.trim(), initial: s.value, input });
+    const spent =
+      costRes && s.key === "GAFFER_DAILY_BUDGET_USD" && typeof costRes.today_usd === "number"
+        ? `Spent today (UTC): ${moneyW(costRes.today_usd)}.`
+        : costRes && s.key === "GAFFER_BUDGET_USD" && typeof costRes.total_usd === "number"
+          ? `Spent so far: ${moneyW(costRes.total_usd)}.`
+          : "Spend so far: not known (the usage ledger could not be read).";
+    return el("div", { class: "setting-usd" }, [
+      el("span", { class: "usd-prefix", "aria-hidden": "true" }, "$"),
       input,
-      check: () => settingValueProblem(s, input.value.trim()),
+      el("p", { class: "setting-spent dim" }, spent),
+    ]);
+  }
+  if (s.kind === "count" || s.kind === "port") {
+    const max = s.kind === "count" ? "64" : "65535";
+    const input = el("input", {
+      type: "number",
+      inputmode: "numeric",
+      step: "1",
+      min: "1",
+      max,
+      value: s.value,
+      placeholder: s.effective || s.default,
+      "aria-label": s.label,
     });
-    return input;
+    editors.set(s.key, { read: () => input.value.trim(), initial: s.value, input });
+    return el("div", {}, [
+      input,
+      s.kind === "port"
+        ? el(
+            "p",
+            { class: "setting-how dim" },
+            "Takes effect when the dashboard restarts: gaffer dashboard --restart.",
+          )
+        : el("p", { class: "setting-how dim" }, "1 to 64."),
+    ]);
   }
-
-  // Enum string → a dropdown of the allowed choices. A leading empty option
-  // clears the override back to the built-in default.
-  if (Array.isArray(s.choices) && s.choices.length > 0) {
-    const select = el("select", { class: "setting-select", "aria-label": s.label });
-    const optDefault = el("option", { value: "" }, "— default —");
-    if (s.value === "") optDefault.selected = true;
-    select.appendChild(optDefault);
-    for (const choice of s.choices) {
-      const opt = el("option", { value: choice }, choice);
-      if (s.value === choice) opt.selected = true;
-      select.appendChild(opt);
-    }
-    editors.set(s.key, { read: () => select.value, initial: s.value });
-    return select;
-  }
-
-  // csv / free string → a plain text input.
-  const input = el("input", {
-    type: "text",
-    value: s.value,
-    // The same "default" placeholder every blank control shows (a sample list
-    // read like a real value); a list says how to write it.
-    placeholder:
-      s.effective && s.effective !== s.value
-        ? s.effective
-        : s.type === "csv"
-          ? "default · comma-separated"
-          : "default",
-    "aria-label": s.label,
-  });
-  // `initial` makes a text edit count as unsaved (and an untouched one stay out of
-  // the payload), the same as every other control.
-  editors.set(s.key, { read: () => input.value.trim(), initial: s.value });
+  const input = el("input", { type: "text", value: s.value, "aria-label": s.label });
+  editors.set(s.key, { read: () => input.value.trim(), initial: s.value, input });
   return input;
+}
+
+/** Models: a named preset, or three slots (strong, standard, cheap). */
+function renderModelsInput(s, editors) {
+  const current = s.effective || s.default;
+  const isPreset = s.values.includes(current);
+  const slots = isPreset ? ["", "", ""] : current.split(",");
+  const select = el("select", { class: "setting-select", "aria-label": `${s.label}: preset` }, [
+    ...s.values.map((v) => {
+      const o = el("option", { value: v }, v);
+      if (isPreset && v === current) o.selected = true;
+      return o;
+    }),
+    (() => {
+      const o = el("option", { value: "custom" }, "three models of my own");
+      if (!isPreset) o.selected = true;
+      return o;
+    })(),
+  ]);
+  const names = ["strong", "standard", "cheap"];
+  const inputs = names.map((n, i) =>
+    el("input", {
+      type: "text",
+      value: slots[i] || "",
+      placeholder: `${n} model id`,
+      "aria-label": `${s.label}: ${n}`,
+      spellcheck: "false",
+    }),
+  );
+  const custom = el(
+    "div",
+    { class: "models-slots", hidden: isPreset ? "" : null },
+    names.map((n, i) => field(n, inputs[i])),
+  );
+  select.addEventListener("change", () => {
+    custom.hidden = select.value !== "custom";
+  });
+  const read = () => {
+    const v =
+      select.value === "custom" ? inputs.map((x) => x.value.trim()).join(",") : select.value;
+    return v === current ? s.value : v;
+  };
+  editors.set(s.key, { read, initial: s.value, input: select });
+  return el("div", { class: "setting-models" }, [select, custom]);
+}
+
+/**
+ * Notify: desktop on or off, and the webhook and Slack URLs. A saved URL is a credential:
+ * the server never sends it, only its host, so it shows masked with Replace and Remove,
+ * and Save sends what to change (the server keeps the stored URLs). Check delivery with
+ * `gaffer wg notify test` in a terminal.
+ */
+function renderNotifyInput(s, editors) {
+  const channels = Array.isArray(s.channels) ? s.channels : [];
+  const has = (k) => channels.find((c) => c.kind === k);
+  if (s.envLocked)
+    return readOnlyValue(
+      s,
+      "The environment sets GAFFER_NOTIFY, which always wins over settings.json.",
+    );
+  const desktop = el("input", { type: "checkbox", role: "switch", "aria-label": "Desktop banner" });
+  desktop.checked = !!has("desktop");
+  const desktopWord = el("span", { class: "switch-word", "aria-hidden": "true" }, desktop.checked ? "On" : "Off");
+  desktop.addEventListener("change", () => {
+    desktopWord.textContent = desktop.checked ? "On" : "Off";
+  });
+  const urlRow = (kind, label, placeholder) => {
+    const c = has(kind);
+    let mode = "keep"; // keep | replace | remove
+    const state = el(
+      "span",
+      {
+        class: `setting-secret mono${c ? " is-set" : ""}`,
+        "aria-label": c
+          ? `${label} is set${c.host ? ` for ${c.host}` : ""}; the address is hidden.`
+          : `${label} is not set.`,
+      },
+      c ? `•••••••• Set${c.host ? ` · ${c.host}` : ""}` : "Not set",
+    );
+    const input = el("input", {
+      type: "password",
+      autocomplete: "off",
+      spellcheck: "false",
+      placeholder,
+      "aria-label": `New ${label}`,
+      hidden: "",
+    });
+    const replace = button(c ? "Replace" : "Add", { kind: "ghost", size: "small" });
+    const remove = c ? button("Remove", { kind: "ghost", size: "small" }) : null;
+    replace.addEventListener("click", () => {
+      mode = "replace";
+      input.hidden = false;
+      input.focus();
+    });
+    if (remove)
+      remove.addEventListener("click", () => {
+        mode = mode === "remove" ? "keep" : "remove";
+        remove.textContent = mode === "remove" ? "Keep" : "Remove";
+        state.classList.toggle("is-removing", mode === "remove");
+        remove.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+    return {
+      node: el("div", { class: "setting-secret-row", dataset: { channel: kind } }, [
+        el("span", { class: "secret-label" }, label),
+        state,
+        replace,
+        remove,
+        input,
+      ]),
+      change: () =>
+        mode === "remove"
+          ? null
+          : mode === "replace" && input.value.trim() !== ""
+            ? input.value.trim()
+            : undefined,
+      input,
+    };
+  };
+  const hook = urlRow("webhook", "Webhook URL", "https://…");
+  const slack = urlRow("slack", "Slack URL", "https://hooks.slack.com/…");
+  const word = (c) => (c === undefined ? "~keep" : c === null ? "~remove" : c);
+  const sig = () => JSON.stringify([desktop.checked, word(hook.change()), word(slack.change())]);
+  const initial = sig();
+  editors.set(s.key, {
+    read: sig,
+    initial,
+    input: hook.input,
+    notify: () => {
+      const out = {};
+      if (desktop.checked !== !!has("desktop")) out.desktop = desktop.checked;
+      const w = hook.change();
+      const k = slack.change();
+      if (w !== undefined) out.webhook = w;
+      if (k !== undefined) out.slack = k;
+      return out;
+    },
+  });
+  return el("div", { class: "setting-notify" }, [
+    el("label", { class: "switch switch-worded" }, [
+      desktop,
+      el("span", { class: "switch-track" }, el("span", { class: "switch-thumb" })),
+      desktopWord,
+      el("span", { class: "switch-label" }, "Desktop banner"),
+    ]),
+    hook.node,
+    slack.node,
+    el(
+      "p",
+      { class: "setting-how dim" },
+      "Saved addresses are never shown again (anyone holding one can post as the factory). Check delivery with gaffer wg notify test.",
+    ),
+  ]);
 }
 
 export { renderSettings, formationLaneRepos };

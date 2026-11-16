@@ -1,8 +1,9 @@
-/* Settings — the boot room. Team instructions first (GAFFER_MODE as a
-   five-detent dial, the formation it plays on a drawn pitch, what moving it
-   changes and the Go/No-Go before raising it), then every knob as a labelled
-   row with its key, where its value comes from, short help and its control,
-   under a sticky index and a sticky save bar with the unsaved count. */
+/* Settings: the boot room. The migration callout when settings.json holds old keys,
+   then the Autonomy mode (GAFFER_MODE as a five-detent dial, the formation it plays
+   on a drawn pitch, what moving it changes and the Go/No-Go before raising it), then
+   the other thirteen settings as labelled rows with their name, where the value comes
+   from, short help, the control and "What this sets", then the values the environment
+   overrides, under a sticky index and a sticky save bar with the unsaved count. */
 
 @layer views {
   /* Two columns: the sticky index, then the room. */
@@ -1069,6 +1070,237 @@
     }
     .boot-dirty {
       flex: 1 0 100%;
+    }
+  }
+
+  /* A row whose control needs the width (a segmented choice with a line per value,
+     the three model slots, the notify channels) stacks: label above, control below. */
+  .setting-row:has(.seg-choice),
+  .setting-row:has(.setting-models),
+  .setting-row:has(.setting-notify),
+  .setting-row:has(.setting-readonly) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .setting-row:has(.seg-choice) .setting-control,
+  .setting-row:has(.setting-models) .setting-control,
+  .setting-row:has(.setting-notify) .setting-control,
+  .setting-row:has(.setting-readonly) .setting-control {
+    justify-content: flex-start;
+  }
+  .setting-src.src-dashboard {
+    color: var(--ink);
+    font-weight: 800;
+  }
+  .seg-choice {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s2);
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
+  }
+  .seg-opt {
+    position: relative;
+    display: grid;
+    gap: 2px;
+    flex: 1 1 150px;
+    min-width: 0;
+    min-height: var(--tap);
+    padding: 8px 12px;
+    border: var(--hair);
+    background: var(--paper);
+    cursor: pointer;
+  }
+  .seg-opt:hover {
+    background: var(--paper-2);
+  }
+  .seg-input {
+    position: absolute;
+    opacity: 0;
+    inset: 0;
+    margin: 0;
+    cursor: pointer;
+  }
+  .seg-opt:has(.seg-input:checked) {
+    border: var(--frame);
+    background: var(--sky-wash);
+  }
+  .seg-opt:has(.seg-input:focus-visible) {
+    outline: 3px solid var(--focus, var(--ink));
+    outline-offset: 2px;
+  }
+  .seg-word {
+    font: 800 var(--t14) / 1.2 var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  /* The picked value says so in a word, not only by its frame. */
+  .seg-opt:has(.seg-input:checked) .seg-word::after {
+    content: " · picked";
+    font-weight: 600;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  .seg-line {
+    font-size: var(--t14);
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+  }
+  .seg-now {
+    font: 700 var(--t12) / 1.2 var(--f-cond);
+    color: var(--ink-2);
+  }
+  .setting-usd {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 4px 6px;
+    width: 100%;
+    max-width: 260px;
+  }
+  .setting-usd .setting-spent {
+    grid-column: 1 / -1;
+  }
+  .usd-prefix {
+    font: 700 var(--t16) / 1 var(--f-text);
+  }
+  .setting-spent,
+  .setting-how {
+    font-size: var(--t14);
+    margin: 4px 0 0;
+  }
+  .setting-models {
+    display: grid;
+    gap: var(--s2);
+    width: 100%;
+    max-width: 560px;
+  }
+  .models-slots {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--s2);
+  }
+  .setting-notify {
+    display: grid;
+    gap: var(--s2);
+    width: 100%;
+    max-width: 560px;
+  }
+  .setting-notify .setting-secret-row {
+    justify-content: flex-start;
+  }
+  .secret-label {
+    font: 700 var(--t14) / 1.2 var(--f-text);
+    min-width: 7.5em;
+  }
+  .switch-label {
+    font: 600 var(--t14) / 1.2 var(--f-text);
+  }
+  .setting-readonly {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+  }
+  .setting-locked-value {
+    font-size: var(--t14);
+    overflow-wrap: anywhere;
+  }
+  /* What this sets: every value the setting derives, the figure in force and why. */
+  .what-sets {
+    grid-column: 1 / -1;
+    min-width: 0;
+  }
+  .what-sets > summary {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 32px;
+    font: 700 var(--t12) / 1.6 var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+  }
+  .what-sets-list {
+    display: grid;
+    gap: 2px;
+    margin: 4px 0 0;
+    padding: 0;
+    list-style: none;
+  }
+  .what-sets-list li {
+    display: grid;
+    grid-template-columns: minmax(0, 16em) minmax(0, 8em) minmax(0, 1fr);
+    gap: 2px 12px;
+    padding: 4px 0;
+    border-top: var(--hair);
+    font-size: var(--t14);
+  }
+  .what-sets-list code {
+    overflow-wrap: anywhere;
+  }
+  .ws-value {
+    font-variant-numeric: tabular-nums;
+    overflow-wrap: anywhere;
+  }
+  .ws-why {
+    color: var(--ink-2);
+    overflow-wrap: anywhere;
+  }
+  .ws-why.ws-environment,
+  .ws-why.ws-old-key {
+    color: var(--ink);
+    font-weight: 700;
+  }
+  .ws-note {
+    grid-column: 1 / -1;
+    font-size: var(--t12);
+    font-weight: 600;
+  }
+  .ti-setting {
+    margin: 0;
+    font-size: var(--t14);
+  }
+  /* The migration callout and the removal act. */
+  .settings-migration {
+    display: grid;
+    gap: var(--s3);
+  }
+  .mig-confirm {
+    display: grid;
+    gap: var(--s2);
+    padding: var(--s3);
+    border: var(--frame);
+    background: var(--paper);
+  }
+  .mig-drop,
+  .mig-rewrite {
+    margin: 0;
+    padding-left: 1.2em;
+    font-size: var(--t14);
+    overflow-wrap: anywhere;
+  }
+  .mig-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s2);
+  }
+  .settings-overrides {
+    display: grid;
+    gap: var(--s3);
+  }
+  @media (max-width: 760px) {
+    .what-sets-list li {
+      grid-template-columns: minmax(0, 1fr) minmax(0, auto);
+    }
+    .ws-why {
+      grid-column: 1 / -1;
+    }
+    .models-slots {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .seg-opt {
+      flex-basis: 100%;
     }
   }
 }

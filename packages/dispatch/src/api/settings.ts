@@ -90,6 +90,20 @@ const PRESENTATION: Readonly<Record<string, { label: string; group: SettingGroup
   DISPATCH_API_PORT: { label: "Dashboard port", group: "location" },
 };
 
+/** The schema's table rows for a setting, cells reduced to a value or null. */
+const DERIVES_OF: ReadonlyMap<string, readonly SettingDerive[]> = new Map(
+  loadSchema().settings.map((s) => [
+    s.name,
+    s.derives.map((d): SettingDerive => {
+      if (!d.byPreset) return { name: d.name, note: d.note };
+      const byPreset: Record<string, string | null> = {};
+      for (const [k, c] of Object.entries(d.byPreset))
+        byPreset[k] = c.how === "value" ? (c.value ?? "") : null;
+      return { name: d.name, note: d.note, byPreset };
+    }),
+  ]),
+);
+
 function defOf(s: SchemaSetting): SettingDef {
   const p = PRESENTATION[s.name] ?? { label: s.name, group: "work" as SettingGroup };
   return {
@@ -602,6 +616,19 @@ export interface SettingView {
   readonly channels?: readonly NotifyChannel[];
   /** A secret only: true when a value is in force. */
   readonly configured?: boolean;
+  /**
+   * What this setting derives, from the schema: each name with its note and, where the
+   * value follows the choice, what each choice derives (null: left unset or computed).
+   * The page's "what changes if you pick X" reads this; nothing is re-typed there.
+   */
+  readonly derives: readonly SettingDerive[];
+}
+
+/** One row of a setting's table as the page reads it. */
+export interface SettingDerive {
+  readonly name: string;
+  readonly note: string;
+  readonly byPreset?: Readonly<Record<string, string | null>>;
 }
 
 /** One derived value: what a run uses and what decided it (secrets masked). */
@@ -742,6 +769,7 @@ export function settingsReport(
       description: def.description,
       writable: def.writable,
       envLocked: locked,
+      derives: DERIVES_OF.get(def.key) ?? [],
     };
     if (def.secret) {
       return {

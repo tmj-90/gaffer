@@ -132,7 +132,10 @@ gaffer_tick_gather_prompt_inputs() {
   [ -n "$_CARD_REAL_REPO" ] || _CARD_REAL_REPO="$REPO_PATH"
   _CARD_REPO_NAME="$(printf '%s\n' "$WT_ROWS" | grep . | awk -F'\t' 'NR==1{print $2}')"
   [ -n "$_CARD_REPO_NAME" ] || _CARD_REPO_NAME="$(basename "$_CARD_REAL_REPO")"
-  _CARD_DESC="$(echo "$SHOW" | jget '(d.ticket.description || "").slice(0, 600)' 2>/dev/null || echo '')"
+  # (The scout's attempt number below comes from the same read of the view.)
+  gaffer_json_vars "$SHOW" \
+    _CARD_DESC '(d.ticket.description || "").slice(0, 600)' '' \
+    _SCOUT_ATTEMPT 'Math.trunc(Number(d.ticket.attempt_count || 0)) + 1' 1
   _CARD_QUERY="$(printf '%s %s' "$TITLE" "$_CARD_DESC")"
   # Remember the display name + ticket used for THIS delivery's recall, so the
   # outcome-feedback call below (submit / blocked-park) targets the exact
@@ -159,7 +162,6 @@ gaffer_tick_gather_prompt_inputs() {
   # suggestions when GAFFER_SCOUT asks for it. Raw inputs only: deliveryPrompt.ts renders
   # the block. When the scout lists the named code's neighbours, the file-card primer
   # does not repeat them; the scout's index answer feeds delivery-metrics instead.
-  _SCOUT_ATTEMPT="$(echo "$SHOW" | jget 'Math.trunc(Number(d.ticket.attempt_count || 0)) + 1' 2>/dev/null || echo 1)"
   SCOUT_PROMPT=""; SCOUT_RISK=""; SCOUT_RAISED=""; SCOUT_INDEX_FILE=""
   if declare -F gaffer_scout_run >/dev/null 2>&1; then
     gaffer_scout_run "$_CARD_REAL_REPO" "$_CARD_BASE_SHA" "$_SCOUT_ATTEMPT" 2>/dev/null || true
@@ -268,16 +270,18 @@ gaffer_tick_route_model() {
   # "ROUTE #N …" line and echoes the model id; an explicit GAFFER_IMPL_MODEL still
   # wins (backward-compat). With the default registry + a normal ticket this
   # resolves to mid=sonnet — exactly today's implement model.
-  ROUTE_RISK="$(echo "$SHOW" | jget 'd.ticket.risk_level || "medium"' 2>/dev/null || echo medium)"
+  # The ticket's risk, AC count and attempt history: one read of the view.
+  # attempt_count is 0-based (0 = first delivery); the router's attempt is 1-based
+  # so a prior rejection (attempt_count≥1) escalates. Default 0 if absent.
+  gaffer_json_vars "$SHOW" \
+    ROUTE_RISK 'd.ticket.risk_level || "medium"' medium \
+    ROUTE_AC '(d.acceptanceCriteria || []).length' 0 \
+    ROUTE_ATTEMPT_RAW 'Math.trunc(Number(d.ticket.attempt_count || 0))' 0
   # The router sees the EFFECTIVE risk: the scout's classifier can only raise it.
   if [ -n "$SCOUT_RISK" ]; then
     [ -z "$SCOUT_RAISED" ] || log "SCOUT: #$NUM $SCOUT_RAISED — routing on $SCOUT_RISK"
     ROUTE_RISK="$SCOUT_RISK"
   fi
-  ROUTE_AC="$(echo "$SHOW" | jget '(d.acceptanceCriteria || []).length' 2>/dev/null || echo 0)"
-  # attempt_count is 0-based (0 = first delivery); the router's attempt is 1-based
-  # so a prior rejection (attempt_count≥1) escalates. Default 0 if absent.
-  ROUTE_ATTEMPT_RAW="$(echo "$SHOW" | jget 'Math.trunc(Number(d.ticket.attempt_count || 0))' 2>/dev/null || echo 0)"
   ROUTE_ATTEMPT=$(( ${ROUTE_ATTEMPT_RAW:-0} + 1 ))
   # Pass the primary worktree so the router can measure diff size / file count when a
   # worktree with UNCOMMITTED work exists (a resumed delivery); on a first attempt no

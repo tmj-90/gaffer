@@ -34,10 +34,11 @@
 _gaffer_review_wanted() {
   local n="$1" st repo branch head v gate why
   RSHOW="$(wg ticket show "$n" 2>/dev/null)" || return 1
-  st="$(printf '%s' "$RSHOW" | jget 'd.ticket.status || ""' 2>/dev/null || echo '')"
+  gaffer_json_vars "$RSHOW" \
+    st 'd.ticket.status || ""' '' \
+    repo '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || {}).local_path) || ""' '' \
+    branch 'd.ticket.branch_name || ""' ''
   [ "$st" = "in_review" ] || return 1
-  repo="$(printf '%s' "$RSHOW" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || {}).local_path) || ""' 2>/dev/null || echo '')"
-  branch="$(printf '%s' "$RSHOW" | jget 'd.ticket.branch_name || ""' 2>/dev/null || echo '')"
   head=""
   [ -n "$repo" ] && [ -d "$repo" ] && [ -n "$branch" ] \
     && head="$(git -C "$repo" rev-parse --verify --quiet "refs/heads/$branch^{commit}" 2>/dev/null || true)"
@@ -178,16 +179,18 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
     # every access row is role "primary", so [0] was simply the alphabetically first
     # repo — a read-only context repo on a multi-repo ticket, whose branch does not
     # exist, so `git worktree add` failed and the ticket could never be agent-reviewed.
-    RREPO="$(echo "$RSHOW" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || {}).local_path) || ""' 2>/dev/null)"
+    # One read of the view for the repo, the delivered branch (RBRANCH: persisted by
+    # delivery-artifact; the reviewer trusts the recorded branch_name, and falls back to
+    # the git-branch grep only if it was never recorded) and the repo's default branch
+    # (RDEFAULT: the diff base in the reviewer prompt, never a hardcoded 'main').
+    gaffer_json_vars "$RSHOW" \
+      RREPO '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || {}).local_path) || ""' '' \
+      _RBRANCH_RECORDED 'd.ticket.branch_name || ""' '' \
+      _RDEFAULT_READ '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || {}).default_branch) || "main"' ''
     if [ -n "$RREPO" ] && [ -d "$RREPO" ]; then
-      # Resolve the delivered branch from Dispatch (persisted by delivery-artifact)
-      # rather than grepping local git — the reviewer trusts the recorded branch_name.
-      # Fall back to the git-branch grep only if branch_name was never recorded.
-      RBRANCH="$(echo "$RSHOW" | jget 'd.ticket.branch_name || ""' 2>/dev/null)"
+      RBRANCH="$_RBRANCH_RECORDED"
       [ -n "$RBRANCH" ] || RBRANCH="$(git -C "$RREPO" branch 2>/dev/null | grep -oE "gaffer/ticket-$RNUM-[a-z0-9-]*" | head -1)"
-      # The repo's default branch — used as the diff base in the reviewer prompt so
-      # we never hardcode 'main' for repos whose default is master/develop/etc.
-      RDEFAULT="$(echo "$RSHOW" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || {}).default_branch) || "main"')"
+      RDEFAULT="$_RDEFAULT_READ"
       log "review_mode=$REVIEW_MODE → agent-reviewing in_review #$RNUM in $RREPO (branch ${RBRANCH:-unknown}, base $RDEFAULT)"
       if [ "$DRY_RUN" = "1" ]; then log "DRY_RUN: would run a reviewer agent on #$RNUM (branch ${RBRANCH:-unknown})"; result reviewed; exit 0; fi
       # BLOCKING 1 fix: run the reviewer in a THROWAWAY git worktree so the
@@ -406,8 +409,9 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
       # before it inspects the diff. FAIL-SOFT via gaffer_prime_context_block.
       # Cards are keyed off the REAL repo ($RREPO) canonical identity, not the
       # throwaway worktree, so they match what onboard indexed.
-      _RSHOW_TITLE="$(echo "$RSHOW" | jget 'd.ticket.title' 2>/dev/null || echo '')"
-      _RDESC="$(echo "$RSHOW" | jget '(d.ticket.description || "").slice(0, 400)' 2>/dev/null || echo '')"
+      gaffer_json_vars "$RSHOW" \
+        _RSHOW_TITLE 'd.ticket.title' '' \
+        _RDESC '(d.ticket.description || "").slice(0, 400)' ''
       _REVIEW_CARDS="$(gaffer_prime_context_block "$RREPO" "$(basename "$RREPO")" \
         "$(printf '%s %s' "$_RSHOW_TITLE" "$_RDESC")" 2>/dev/null || true)"
       read -r -d '' RPROMPT <<EOF || true
@@ -486,8 +490,9 @@ $(gaffer_quarantine tester-outcome "$_RTESTER_NOTE" single)
       # one does not drop — a wrong APPROVE is the expensive mistake). The decision is
       # logged as a ROUTE line. An explicit GAFFER_IMPL_MODEL still wins (the router
       # honours it), and the static flag is the fallback when routing yields nothing.
-      RRISK="$(echo "$RSHOW" | jget 'd.ticket.risk_level || "medium"' 2>/dev/null || echo medium)"
-      RAC="$(echo "$RSHOW" | jget '(d.acceptanceCriteria || []).length' 2>/dev/null || echo 0)"
+      gaffer_json_vars "$RSHOW" \
+        RRISK 'd.ticket.risk_level || "medium"' medium \
+        RAC '(d.acceptanceCriteria || []).length' 0
       REVIEW_MODEL="$(gaffer_route_model review "$RRISK" "${RAC:-0}" "" 1 "$RNUM" 2>/dev/null || true)"
       REVIEW_MODEL_FLAG="${GAFFER_IMPL_MODEL_FLAG:-}"
       [ -n "$REVIEW_MODEL" ] && REVIEW_MODEL_FLAG="--model $REVIEW_MODEL"
@@ -495,7 +500,10 @@ $(gaffer_quarantine tester-outcome "$_RTESTER_NOTE" single)
       # moment the reviewer starts. A person may merge (or send back) a ticket between the
       # pick and here (seen live): nothing is reviewed and nothing is held then.
       _RSHOW_NOW="$(wg ticket show "$RNUM" 2>/dev/null || echo '{}')"
-      _rstat_now="$(printf '%s' "$_RSHOW_NOW" | jget 'd.ticket.status || ""' 2>/dev/null || echo '')"
+      # (Its transitions so far, _RTRANS0, come from the same read; see below.)
+      gaffer_json_vars "$_RSHOW_NOW" \
+        _rstat_now 'd.ticket.status || ""' '' \
+        _RTRANS0 '(d.events||[]).filter(e => e && e.event_type === "ticket.transitioned").length' ''
       _rhead_now="$(git -C "$RREPO" rev-parse --verify --quiet "refs/heads/$RBRANCH^{commit}" 2>/dev/null || true)"
       if [ "$_rstat_now" != "in_review" ] || [ "$_rhead_now" != "$RSHA" ]; then
         _rhead_word="gone"; [ -n "$_rhead_now" ] && _rhead_word="at ${_rhead_now:0:12}"
@@ -515,7 +523,6 @@ $(gaffer_quarantine tester-outcome "$_RTESTER_NOTE" single)
       fi
       # The ticket's transitions so far: one more after the review means it left review
       # during it (a merge, a send-back), which is never the reviewer's act.
-      _RTRANS0="$(printf '%s' "$_RSHOW_NOW" | jget '(d.events||[]).filter(e => e && e.event_type === "ticket.transitioned").length' 2>/dev/null || echo '')"
       # Role turn cap (GAFFER_ROLE_MAX_TURNS review=, clamped to GAFFER_MAX_TURNS) — not the
       # 200-turn delivery cap: a read-and-judge pass that loops is stopped early. A cap
       # hit is named in the hold reason below.
@@ -670,8 +677,9 @@ EOF
       # still checked below; a change there is the reviewer's whatever else happened.
       _R_TAMPER=""; _R_LEFT=""
       _RSHOW_AFTER="$(wg ticket show "$RNUM" 2>/dev/null || echo '{}')"
-      _rstat_after="$(printf '%s' "$_RSHOW_AFTER" | jget 'd.ticket.status || ""' 2>/dev/null || echo '')"
-      _rtrans_after="$(printf '%s' "$_RSHOW_AFTER" | jget '(d.events||[]).filter(e => e && e.event_type === "ticket.transitioned").length' 2>/dev/null || echo '')"
+      gaffer_json_vars "$_RSHOW_AFTER" \
+        _rstat_after 'd.ticket.status || ""' '' \
+        _rtrans_after '(d.events||[]).filter(e => e && e.event_type === "ticket.transitioned").length' ''
       # Only a ticket view that was READ can say the ticket left: an unreadable one (a
       # dispatch hiccup) proves nothing, so the reviewer checks below then apply in full.
       if [ -n "$_rstat_after" ] && { [ "$_rstat_after" != "in_review" ] || { [ -n "$_RTRANS0" ] && [ "$_rtrans_after" != "$_RTRANS0" ]; }; }; then

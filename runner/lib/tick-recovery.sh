@@ -160,13 +160,14 @@ gaffer_resume_abort() {
   _RESUME_ABORTED=1
   ctx="$(wg ticket paused-context "$NUM" 2>/dev/null || echo '{}')"
   local _r _b _w _wj _repo _a _sp
-  _r="$(printf '%s' "$ctx" | jget '(d.context && d.context.reason) || "timeout"' 2>/dev/null || echo timeout)"
-  _b="$(printf '%s' "$ctx" | jget '(d.context && d.context.branch_name) || ""' 2>/dev/null || true)"
-  _w="$(printf '%s' "$ctx" | jget '(d.context && d.context.worktree_path) || ""' 2>/dev/null || true)"
-  _wj="$(printf '%s' "$ctx" | jget '(d.context && d.context.worktrees_json) || ""' 2>/dev/null || true)"
-  _repo="$(printf '%s' "$ctx" | jget '(d.context && d.context.repo) || ""' 2>/dev/null || true)"
-  _a="$(printf '%s' "$ctx" | jget 'String((d.context && d.context.attempt) || 0)' 2>/dev/null || echo 0)"
-  _sp="$(printf '%s' "$ctx" | jget '(d.context && d.context.spend) || ""' 2>/dev/null || true)"
+  gaffer_json_vars "$ctx" \
+    _r '(d.context && d.context.reason) || "timeout"' timeout \
+    _b '(d.context && d.context.branch_name) || ""' '' \
+    _w '(d.context && d.context.worktree_path) || ""' '' \
+    _wj '(d.context && d.context.worktrees_json) || ""' '' \
+    _repo '(d.context && d.context.repo) || ""' '' \
+    _a 'String((d.context && d.context.attempt) || 0)' 0 \
+    _sp '(d.context && d.context.spend) || ""' ''
   if wg ticket pause "$NUM" --reason "$_r" --attempt "${_a:-0}" \
       ${_b:+--branch "$_b"} ${_w:+--worktree "$_w"} ${_wj:+--worktrees-json "$_wj"} \
       ${_repo:+--repo "$_repo"} ${_sp:+--spend "$_sp"} >/dev/null 2>&1; then
@@ -191,9 +192,10 @@ if [ -n "$RESUME_NUM" ]; then
   # path, then link 0). Links sort by role then name and every access row is role
   # primary, so a bare repositories[0] was merely the alphabetically first repo.
   SHOW="$(wg ticket show "$NUM" 2>/dev/null)"
-  REPO_PATH="$(echo "$SHOW" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || (d.repositories||[])[0] || {}).local_path) || ""' 2>/dev/null)"
-  STACK="$(echo "$SHOW" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || (d.repositories||[])[0] || {}).stack) || ""' 2>/dev/null)"
-  TITLE="$(echo "$SHOW" | jget 'd.ticket.title' 2>/dev/null)"
+  gaffer_json_vars "$SHOW" \
+    REPO_PATH '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || (d.repositories||[])[0] || {}).local_path) || ""' '' \
+    STACK '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || (d.repositories||[])[0] || {}).stack) || ""' '' \
+    TITLE 'd.ticket.title' ''
   # PREVIEW IS PREVIEW (external review #8): a dry run reports the resume and changes
   # NOTHING — no resume-begin, so no lease, no paused → in_progress, and the human's
   # resume request stays queued for the live tick. Checked BEFORE the lease is taken.

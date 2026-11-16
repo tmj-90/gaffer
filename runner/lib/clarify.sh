@@ -190,8 +190,9 @@ EOF
       # high-risk draft climbs). Logged as a ROUTE line. An explicit GAFFER_PLAN_MODEL
       # still wins (the router honours it for plan-class phases); the static PLAN flag
       # is the fallback when routing yields nothing.
-      CRISK="$(echo "$CSHOW" | jget 'd.ticket.risk_level || "medium"' 2>/dev/null || echo medium)"
-      CAC="$(echo "$CSHOW" | jget '(d.acceptanceCriteria || []).length' 2>/dev/null || echo 0)"
+      gaffer_json_vars "$CSHOW" \
+        CRISK 'd.ticket.risk_level || "medium"' medium \
+        CAC '(d.acceptanceCriteria || []).length' 0
       CLARIFY_MODEL="$(gaffer_route_model clarify "$CRISK" "${CAC:-0}" "" 1 "$CNUM" 2>/dev/null || true)"
       CLARIFY_MODEL_FLAG="${GAFFER_PLAN_MODEL_FLAG:-}"
       [ -n "$CLARIFY_MODEL" ] && CLARIFY_MODEL_FLAG="--model $CLARIFY_MODEL"

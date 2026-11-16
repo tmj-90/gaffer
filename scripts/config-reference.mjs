@@ -549,7 +549,7 @@ export const REMOVED = [
   ],
   [
     "GAFFER_BUDGET_LOW_FRACTION",
-    "the low-budget threshold is 20% of the ceiling (set GAFFER_BUDGET_LOW_THRESHOLD to change it)",
+    "the low-budget threshold is 20% of the ceiling (export GAFFER_BUDGET_LOW_THRESHOLD to change it)",
   ],
   ["GAFFER_INHERIT_PLAN_TIMEOUT", "the inherit planner gets 60 seconds"],
   ["GAFFER_INHERIT_AMB_TIMEOUT", "the inherit ambiguity call gets 300 seconds"],

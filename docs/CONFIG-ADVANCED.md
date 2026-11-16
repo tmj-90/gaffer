@@ -398,7 +398,7 @@ code. A set one is ignored, and the config says so once on stderr.
 | `GAFFER_ACCEPTANCE_TIMEOUT_MS` | one acceptance profile run gets 5 minutes |
 | `GAFFER_AGENT_NAME` | the factory agent registers as gaffer-factory |
 | `GAFFER_AGENT_EMAIL` | a greenfield repo's first commit is by gaffer-factory@users.noreply.invalid |
-| `GAFFER_BUDGET_LOW_FRACTION` | the low-budget threshold is 20% of the ceiling (set GAFFER_BUDGET_LOW_THRESHOLD to change it) |
+| `GAFFER_BUDGET_LOW_FRACTION` | the low-budget threshold is 20% of the ceiling (export GAFFER_BUDGET_LOW_THRESHOLD to change it) |
 | `GAFFER_INHERIT_PLAN_TIMEOUT` | the inherit planner gets 60 seconds |
 | `GAFFER_INHERIT_AMB_TIMEOUT` | the inherit ambiguity call gets 300 seconds |
 | `GAFFER_ONBOARD_TIMEOUT` | onboarding calls follow GAFFER_TICK_TIMEOUT |

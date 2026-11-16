@@ -523,7 +523,7 @@ gaffer_tick_create_worktrees() {
     fi
     if [ -n "$_KEPT_COMMITS" ] && [ "$_KEPT_COMMITS" -gt 0 ] 2>/dev/null \
        && git -C "$rpath" worktree add "$rwt" "$WORK_BRANCH" >/dev/null 2>&1; then
-      log "reused worktree for ${rname:-repo} ($rpath) at $rwt on EXISTING branch $WORK_BRANCH for #$NUM — $_KEPT_COMMITS prior commit(s) kept (set GAFFER_RETRY_FRESH_BRANCH=1 for a clean-slate retry)"
+      log "reused worktree for ${rname:-repo} ($rpath) at $rwt on EXISTING branch $WORK_BRANCH for #$NUM — $_KEPT_COMMITS prior commit(s) kept (export GAFFER_RETRY_FRESH_BRANCH=1 for a clean-slate retry)"
       _pm_primed="$(gaffer_ensure_node_modules "$rpath")"
       case "$_pm_primed" in
         FAILED:*) log "greenfield: WARN — ${_pm_primed#FAILED:} install did not prime ${rname:-repo} deps (retry); test gate may fail #$NUM (see the diagnostic above)" ;;
@@ -795,7 +795,7 @@ gaffer_tick_prepare_launch() {
       # required (factory.config.sh defaults GAFFER_STRICT_REQUIRE=1 for it): say so.
       _SR_WHY=""
       [ "${GAFFER_WORKER_PROVIDER:-claude-code}" = command ] \
-        && _SR_WHY=" (GAFFER_WORKER_PROVIDER=command has no in-process safety hook, so it needs one: set SANDBOX_PROVIDER=docker with a running daemon, or GAFFER_STRICT_REQUIRE=0 in the environment if the runner is contained out-of-band)"
+        && _SR_WHY=" (GAFFER_WORKER_PROVIDER=command has no in-process safety hook, so it needs one: set GAFFER_SANDBOX=docker with a running daemon, or GAFFER_STRICT_REQUIRE=0 in the environment if the runner is contained out-of-band)"
       log "STRICT_REQUIRE: no OS sandbox provider available on this host — refusing to launch the agent (fail closed)$_SR_WHY"
       wg attach-evidence "$NUM" --type manual_note \
         --summary "PARKED (strict_require_unavailable): GAFFER_STRICT_REQUIRE=1 but no OS sandbox provider is available on this host — the agent was NOT launched (fail closed)$_SR_WHY" >/dev/null 2>&1 || true

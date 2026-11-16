@@ -256,7 +256,7 @@ export function strictRequireOptedOut(env = process.env) {
  */
 export function commandSandboxRefusalMessage(why = "none") {
   const fix =
-    "Fix: set SANDBOX_PROVIDER=docker with a running docker daemon on a host where the MCP bridge works (GAFFER_MCP_BRIDGE on: the default on Linux), " +
+    "Fix: set GAFFER_SANDBOX=docker with a running docker daemon on a host where the MCP bridge works (GAFFER_MCP_BRIDGE on: the default on Linux), " +
     "or set GAFFER_STRICT_REQUIRE=0 in the environment if you contain the whole runner out-of-band (a VM or container)";
   const head = {
     none: "has no in-process safety hook, so it needs the docker sandbox and no OS sandbox is available on this host",

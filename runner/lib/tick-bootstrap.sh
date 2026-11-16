@@ -30,7 +30,7 @@ gaffer_tick_bootstrap() {
     if [ "${GAFFER_ALLOW_SELF_DELIVERY:-0}" != "1" ] && gaffer_is_self_target "$B_DIR"; then
       log "SELF-OP: refusing bootstrap #$NUM — target '$B_DIR' is (or is inside) a Gaffer component; the factory must not scaffold over its own source. Set GAFFER_ALLOW_SELF_DELIVERY=1 to override (first-party dogfooding only)."
       wg attach-evidence "$NUM" --type manual_note \
-        --summary "SELF-OP BAN: refused bootstrap — target '$B_DIR' is a Gaffer component (factory's own source). Override with GAFFER_ALLOW_SELF_DELIVERY=1." >/dev/null 2>&1 || true
+        --summary "SELF-OP BAN: refused bootstrap — target '$B_DIR' is a Gaffer component (factory's own source). Override with GAFFER_ALLOW_SELF_DELIVERY=1 in the environment (no setting turns it on)." >/dev/null 2>&1 || true
       # RUNNER-OWNED-BOOKKEEPING: the runner holds the claim now, so release it first
       # (claimed → ready), THEN un-ready (ready -> draft) so the loop won't re-select it.
       gaffer_release_delivery ready "self-op: bootstrap target is a Gaffer component"
@@ -173,7 +173,7 @@ gaffer_tick_bootstrap() {
       _B_KEPT="$(git -C "$B_DIR" rev-list --count "$B_DEFAULT_BRANCH..$B_WORK_BRANCH" 2>/dev/null || echo 0)"
     fi
     if [ "${_B_KEPT:-0}" -gt 0 ] 2>/dev/null && git -C "$B_DIR" checkout "$B_WORK_BRANCH" >/dev/null 2>&1; then
-      log "BOOTSTRAP #$NUM: re-entered EXISTING branch $B_WORK_BRANCH — $_B_KEPT prior commit(s) kept (set GAFFER_RETRY_FRESH_BRANCH=1 for a clean-slate retry)"
+      log "BOOTSTRAP #$NUM: re-entered EXISTING branch $B_WORK_BRANCH — $_B_KEPT prior commit(s) kept (export GAFFER_RETRY_FRESH_BRANCH=1 for a clean-slate retry)"
     elif ! git -C "$B_DIR" checkout -B "$B_WORK_BRANCH" >/dev/null 2>&1; then
       log "BOOTSTRAP: #$NUM could not create delivery branch $B_WORK_BRANCH — failing"
       gaffer_skip_ticket "$NUM"; result error; exit 0

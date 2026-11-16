@@ -526,7 +526,7 @@ gaffer_sandbox_probe() {
         GAFFER_SBX_FIX="put /usr/bin (where macOS keeps sandbox-exec) back on PATH"
       elif command -v docker >/dev/null 2>&1; then
         GAFFER_SBX_MISSING="SANDBOX_PROVIDER=sandbox-exec, which exists only on macOS, and this is $os"
-        GAFFER_SBX_FIX="unset SANDBOX_PROVIDER (or set it to docker) to use the Docker you have, and build its images once with \`$_SBX_BUILD_CMD\` (gaffer setup does this)"
+        GAFFER_SBX_FIX="set GAFFER_SANDBOX=docker or auto (and unset any SANDBOX_PROVIDER override) to use the Docker you have, and build its images once with \`$_SBX_BUILD_CMD\` (gaffer setup does this)"
       else
         GAFFER_SBX_MISSING="this is $os, where sandbox-exec does not exist, and Docker is not installed"
         GAFFER_SBX_FIX="install Docker, then run \`gaffer setup\` again (it builds the sandbox images with \`$_SBX_BUILD_CMD\`)"
@@ -546,10 +546,10 @@ gaffer_sandbox_probe() {
       fi ;;
     none)
       GAFFER_SBX_MISSING="SANDBOX_PROVIDER=none turns the OS sandbox off"
-      GAFFER_SBX_FIX="unset SANDBOX_PROVIDER to auto-detect one (sandbox-exec on macOS, docker on Linux)" ;;
+      GAFFER_SBX_FIX="unset SANDBOX_PROVIDER (an environment override) so GAFFER_SANDBOX picks one (auto: sandbox-exec on macOS, docker on Linux)" ;;
     *)
       GAFFER_SBX_MISSING="SANDBOX_PROVIDER=$GAFFER_SBX_PROVIDER is not a provider"
-      GAFFER_SBX_FIX="set SANDBOX_PROVIDER to docker (any host with Docker) or sandbox-exec (macOS), or unset it to auto-detect" ;;
+      GAFFER_SBX_FIX="unset the SANDBOX_PROVIDER override and set GAFFER_SANDBOX to docker (any host with Docker), sandbox-exec (macOS) or auto" ;;
   esac
   return 0
 }

@@ -109,7 +109,7 @@ export function approveReview(
   if (actor.type !== "human" && actor.type !== "admin" && !agentApproveAllowed) {
     throw new DispatchError(
       "ACTOR_NOT_PERMITTED",
-      "Only a human or admin may approve a review (set DISPATCH_ALLOW_AGENT_APPROVE=1 to allow autonomous agent approval).",
+      "Only a human or admin may approve a review (GAFFER_MODE=lite or autonomous allows autonomous agent approval).",
       { actor_type: actor.type },
     );
   }

@@ -103,7 +103,7 @@ _gaffer_worker_unsupported_msg() {
 # so both seams speak with one voice).
 _gaffer_worker_command_refusal_msg() {
   node "$_GAFFER_WORKER_LIB/worker.mjs" command-refusal "${1:-none}" 2>/dev/null \
-    || printf '%s\n' "worker: GAFFER_WORKER_PROVIDER=command needs the docker sandbox and cannot get it here — refusing to spawn the worker (fail closed). Fix: set SANDBOX_PROVIDER=docker, or GAFFER_STRICT_REQUIRE=0 in the environment if you contain the whole runner out-of-band"
+    || printf '%s\n' "worker: GAFFER_WORKER_PROVIDER=command needs the docker sandbox and cannot get it here — refusing to spawn the worker (fail closed). Fix: set GAFFER_SANDBOX=docker, or GAFFER_STRICT_REQUIRE=0 in the environment if you contain the whole runner out-of-band"
 }
 _gaffer_worker_command_optout_msg() {
   printf '%s\n' "WARNING: GAFFER_WORKER_PROVIDER=command with GAFFER_STRICT_REQUIRE=0 — the command worker runs with no OS sandbox requirement and no in-process safety hook. Only safe if you contain the runner out-of-band (a VM or container)."

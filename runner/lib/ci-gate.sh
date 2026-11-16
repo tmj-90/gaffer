@@ -293,9 +293,9 @@ gaffer_ci_gate() {
   else
     # Default strict mode: fail closed so delivery is not waved through.
     wg attach-evidence "$num" --type test_output \
-      --summary "H3 CI BLOCKED (strict): $timeout_reason — set GAFFER_CI_TIMEOUT_POLICY=proceed to override" \
+      --summary "H3 CI BLOCKED (strict): $timeout_reason — export GAFFER_CI_TIMEOUT_POLICY=proceed to override" \
       >/dev/null 2>&1 || true
-    log "H3: strict mode — failing closed for #$num (set GAFFER_CI_TIMEOUT_POLICY=proceed to override)"
+    log "H3: strict mode — failing closed for #$num (export GAFFER_CI_TIMEOUT_POLICY=proceed to override)"
     gaffer_ci_record "$num" "$candidate" fail "$timeout_reason"
     return 2
   fi
@@ -344,7 +344,7 @@ gaffer_ci_gate_warn_needs_pr() {
   if [ -n "$marker" ] && [ -f "$marker" ]; then
     return 0
   fi
-  log "H3: WARNING — GAFFER_REQUIRE_CI is on but GAFFER_CREATE_PR is off: CI checks are read from the delivery PR, and no PR is created, so the CI gate is SKIPPED for #$num (and every delivery this run). Turn on 'Deliver as a pull request' (GAFFER_CREATE_PR=1) to gate on CI, or turn GAFFER_REQUIRE_CI off."
+  log "H3: WARNING — GAFFER_REQUIRE_CI is on but GAFFER_CREATE_PR is off (GAFFER_LANDING=pr turns both on): CI checks are read from the delivery PR, and no PR is created, so the CI gate is SKIPPED for #$num (and every delivery this run). Turn on 'Deliver as a pull request' (GAFFER_CREATE_PR=1) to gate on CI, or turn GAFFER_REQUIRE_CI off."
   [ -n "$marker" ] && : > "$marker" 2>/dev/null
   return 0
 }

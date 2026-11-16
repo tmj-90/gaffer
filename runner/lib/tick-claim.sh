@@ -546,7 +546,7 @@ gaffer_tick_plan_worktrees() {
     if [ -n "$SELF_HIT" ]; then
       log "SELF-OP: refusing to deliver #$NUM — target '$SELF_HIT' is (or is inside) a Gaffer component; the factory must not edit its own source. Set GAFFER_ALLOW_SELF_DELIVERY=1 to override (first-party dogfooding only)."
       wg attach-evidence "$NUM" --type manual_note \
-        --summary "SELF-OP BAN: refused delivery — target '$SELF_HIT' is a Gaffer component (factory's own source). Override with GAFFER_ALLOW_SELF_DELIVERY=1." >/dev/null 2>&1 || true
+        --summary "SELF-OP BAN: refused delivery — target '$SELF_HIT' is a Gaffer component (factory's own source). Override with GAFFER_ALLOW_SELF_DELIVERY=1 in the environment (no setting turns it on)." >/dev/null 2>&1 || true
       # Set aside for a human. RUNNER-OWNED-BOOKKEEPING: the runner holds the claim
       # now, so release it first (claimed → ready), THEN un-ready it (ready -> draft)
       # so the candidate loop never re-selects it — the "set aside, don't re-claim

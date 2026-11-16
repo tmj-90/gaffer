@@ -27,7 +27,7 @@ export function buildOracleSet(
   if (idleHostExecRefused(opts.env ?? process.env)) {
     opts.events?.record("oracles_refused", {
       reason:
-        "GAFFER_STRICT_REQUIRE is on and the oracles run unsandboxed on the host; set GAFFER_IDLE_HOST_EXEC=1 to allow",
+        "GAFFER_STRICT_REQUIRE is on and the oracles run unsandboxed on the host; export GAFFER_IDLE_HOST_EXEC=1 to allow",
     });
     return undefined;
   }

@@ -2970,7 +2970,7 @@ function landSecondaryPr({
       kind: "held",
       reason:
         `it has PR ${r.prUrl} but '${ghBin}' is not available (GAFFER_GH_BIN) — held: merge the PR by hand, ` +
-        `or set GAFFER_PR_LOCAL_FALLBACK=1 to land locally instead`,
+        `or export GAFFER_PR_LOCAL_FALLBACK=1 to land locally instead`,
     };
   }
   const remote = String(process.env.GAFFER_PR_REMOTE || "origin");
@@ -3932,7 +3932,7 @@ function main() {
         // sits open and the remote default branch never gets the change. Hold.
         fail(
           `PR merge for #${resolved.number} failed — ${pr.reason}; ticket HELD in ready_for_merge for a human ` +
-            `(merge ${resolved.prUrl} by hand, or set GAFFER_PR_LOCAL_FALLBACK=1 to land locally instead)`,
+            `(merge ${resolved.prUrl} by hand, or export GAFFER_PR_LOCAL_FALLBACK=1 to land locally instead)`,
         );
         return;
       }

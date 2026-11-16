@@ -589,7 +589,7 @@ if [ "${GAFFER_SANDBOX_PROFILE:-}" = "validation" ] || [ "${GAFFER_SANDBOX_PROFI
 elif [ -n "${GAFFER_MCP_BRIDGE_SOCKET:-}" ]; then _MODE=bridge
 elif [ "${GAFFER_SANDBOX_DATA_PLANE:-}" = "none" ] || [ "$_HAS_MCP" = 0 ]; then _MODE=none
 elif _bridge_wanted; then
-  _die "the command carries an MCP config but GAFFER_MCP_BRIDGE_SOCKET is unset — the host-side MCP bridge is not up (GAFFER_MCP_BRIDGE=${GAFFER_MCP_BRIDGE:-auto}); refusing to run with the databases mounted (set GAFFER_MCP_BRIDGE=0 to accept the legacy layout)"
+  _die "the command carries an MCP config but GAFFER_MCP_BRIDGE_SOCKET is unset — the host-side MCP bridge is not up (GAFFER_MCP_BRIDGE=${GAFFER_MCP_BRIDGE:-auto}); refusing to run with the databases mounted (export GAFFER_MCP_BRIDGE=0 to accept the legacy layout)"
 else _MODE=legacy
 fi
 _BRIDGED=0
@@ -641,7 +641,7 @@ elif [ "$_MODE" = "legacy" ] && [ -n "${GAFFER_DATA:-}" ] && [ -d "$GAFFER_DATA"
   # Only when the bridge is OFF (GAFFER_MCP_BRIDGE=0, or macOS Docker Desktop, which
   # cannot bind-mount a host unix socket). Say so loudly: the databases are reachable
   # from the worker's shell here (SECURITY.md, residual limits).
-  printf 'sandbox-docker: WARNING — MCP data plane runs INSIDE the container (GAFFER_MCP_BRIDGE off): %s is mounted rw with the dispatch/memory databases reachable by the worker; set GAFFER_MCP_BRIDGE=1 on a Linux host to keep them out (SECURITY.md)\n' "$GAFFER_DATA" >&2
+  printf 'sandbox-docker: WARNING — MCP data plane runs INSIDE the container (GAFFER_MCP_BRIDGE off): %s is mounted rw with the dispatch/memory databases reachable by the worker; export GAFFER_MCP_BRIDGE=1 on a Linux host to keep them out (SECURITY.md)\n' "$GAFFER_DATA" >&2
   _add_mount "$GAFFER_DATA" rw
   _keep=()
   for _db in "${DISPATCH_DB:-$GAFFER_DATA/dispatch.sqlite}" "${MEMORY_DB:-$GAFFER_DATA/memory.sqlite}"; do

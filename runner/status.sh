@@ -105,7 +105,7 @@ notify() {
     printf '%s\n' "$msg" | sh -c "$GAFFER_NOTIFY_CMD" >/dev/null 2>&1 && sent="${sent:+$sent + }GAFFER_NOTIFY_CMD"
   fi
   if [ -n "$sent" ]; then warn "$msg — notified via $sent"
-  else warn "$msg — set GAFFER_NOTIFY_WEBHOOK_URL / GAFFER_NOTIFY_SLACK_URL / GAFFER_NOTIFY_DESKTOP (or legacy GAFFER_NOTIFY_CMD) to be alerted"; fi
+  else warn "$msg — set GAFFER_NOTIFY (a webhook or Slack URL, or desktop; or legacy GAFFER_NOTIFY_CMD) to be alerted"; fi
 }
 
 say "factory status"

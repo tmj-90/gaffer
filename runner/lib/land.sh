@@ -571,7 +571,7 @@ _gaffer_land_one() {
         if _gaffer_flag_on "${GAFFER_PR_LOCAL_FALLBACK:-0}"; then
           log "$_WHO: #$RNUM has PR $_RPR but the PR merge did not run (rc=$_prc: '${GAFFER_GH_BIN:-gh}' failed or unavailable) — GAFFER_PR_LOCAL_FALLBACK=1: falling back to a LOCAL merge; the PR stays open, close it by hand"
         else
-          log "$_WHO: #$RNUM has PR $_RPR but the PR merge FAILED (rc=$_prc: '${GAFFER_GH_BIN:-gh}' failed, unauthenticated or the PR is not mergeable) — HELD in ready_for_merge for a human; merge the PR by hand (or set GAFFER_PR_LOCAL_FALLBACK=1 to land locally instead)"
+          log "$_WHO: #$RNUM has PR $_RPR but the PR merge FAILED (rc=$_prc: '${GAFFER_GH_BIN:-gh}' failed, unauthenticated or the PR is not mergeable) — HELD in ready_for_merge for a human; merge the PR by hand (or export GAFFER_PR_LOCAL_FALLBACK=1 to land locally instead)"
           return 4
         fi ;;
     esac

@@ -635,7 +635,7 @@ eval)
   if [ ! -s "$_ledger" ]; then
     if [ "${1:-}" != "--json" ]; then _accepted_line; fi
     echo "eval: no judged deliveries yet ($_ledger is empty)."
-    echo "Enable post-submit judging with GAFFER_EVAL_JUDGE=1 — see docs/eval-harness.md."
+    echo "Enable post-submit judging: export GAFFER_EVAL_JUDGE=1 before starting the runner (no setting turns it on) — see docs/eval-harness.md."
     exit 0
   fi
   if [ "${1:-}" = "--json" ]; then

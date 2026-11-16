@@ -189,7 +189,7 @@ run_cmd "${BASE[@]}" SANDBOX_PROVIDER=none
 [ "$RC" = "75" ] && ok "no sandbox available → rc 75 (fail closed)" || fail "expected rc 75 without a sandbox (got $RC; $ERR)"
 [ "$RAN" = "0" ] && ok "…the command worker was NOT spawned" || fail "the command worker ran without a sandbox"
 [ "$OUT_SIZE" = "0" ] && ok "…no envelope written" || fail "an envelope was written ($OUT_SIZE bytes)"
-case "$ERR" in *"GAFFER_WORKER_PROVIDER=command"*"SANDBOX_PROVIDER=docker"*"GAFFER_STRICT_REQUIRE=0"*) ok "…the refusal names the cause and the fix" ;;
+case "$ERR" in *"GAFFER_WORKER_PROVIDER=command"*"GAFFER_SANDBOX=docker"*"GAFFER_STRICT_REQUIRE=0"*) ok "…the refusal names the cause and the fix" ;;
   *) fail "the refusal does not name the cause and the fix (got: $ERR)" ;; esac
 
 run_cmd "${BASE[@]}" SANDBOX_PROVIDER=none GAFFER_STRICT_REQUIRE=1
@@ -213,7 +213,7 @@ case "$ERR" in *"WARNING: GAFFER_WORKER_PROVIDER=command"*"no OS sandbox"*) ok "
 run_cmd "${BASE[@]}" SANDBOX_PROVIDER=sandbox-exec
 [ "$RC" = "75" ] && [ "$RAN" = "0" ] && ok "SANDBOX_PROVIDER=sandbox-exec (available) → rc 75, the command worker NOT spawned" \
   || fail "sandbox-exec must not count as containment for the command worker (rc=$RC ran=$RAN; $ERR)"
-case "$ERR" in *sandbox-exec*GAFFER_DATA*SANDBOX_PROVIDER=docker*) ok "…the refusal says why (sandbox-exec leaves \$GAFFER_DATA writable) and names docker" ;;
+case "$ERR" in *sandbox-exec*GAFFER_DATA*GAFFER_SANDBOX=docker*) ok "…the refusal says why (sandbox-exec leaves \$GAFFER_DATA writable) and names docker" ;;
   *) fail "the sandbox-exec refusal does not explain itself (got: $ERR)" ;; esac
 [ ! -s "$SBX_LOG" ] && ok "…and nothing ran under sandbox-exec" || fail "something ran under sandbox-exec: $(cat "$SBX_LOG")"
 run_cmd "${BASE[@]}" SANDBOX_PROVIDER=sandbox-exec RC_WRAP="$WORK/bin/sandbox-exec -f /dev/null"

@@ -157,14 +157,14 @@ if [ "${GAFFER_MAINTENANCE:-}" != "0" ] && [ -f "$CREW_DIR/dist/cli/index.js" ] 
   elif [ "$MSTATUS" = "disabled" ]; then
     # The switch is off: say so once per idle tick (it is the most common reason an
     # operator sees "no_work" with lanes enabled) and fall through to the legacy scan.
-    log "maintenance lane is OFF in crew.yaml (loops.maintenance.enabled=false) — turn it on in Settings → Idle loops, or GAFFER_MAINTENANCE=1 to force"
+    log "maintenance lane is OFF in crew.yaml (loops.maintenance.enabled=false) — turn it on in Settings → Idle loops, or set GAFFER_IDLE=maintenance to force"
   else
     log "maintenance lane chose '$MCHOSEN' ($MREASON) → status=$MSTATUS, filed=$MDRAFTS"
     rm -f "$_merr"
     if [ "$MCHOSEN" = "none" ] && [ "$MDRAFTS" -eq 0 ] && [ "$MOTHER" != 1 ]; then
       # The switch (or GAFFER_MAINTENANCE=1) only turns the lane ON; it rotates through
       # the idle loops you enabled, and with none enabled there is nothing to run.
-      log "maintenance lane: no maintenance loop is enabled — turn on at least one lane in Settings → Idle loops (GAFFER_MAINTENANCE=1 only overrides the master switch)"
+      log "maintenance lane: no maintenance loop is enabled — turn on at least one lane in Settings → Idle loops (GAFFER_IDLE=maintenance only overrides the master switch)"
     elif [ "$MCHOSEN" = "coverage" ] && [ "$MSTATUS" = "no_repos" ]; then
       log "maintenance lane: the coverage lane needs a repo coverage_command — set one with \`wg repo set-commands <repo> --coverage '<cmd>'\` (or in the dashboard's repo settings)"
     fi

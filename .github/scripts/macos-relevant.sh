@@ -49,6 +49,17 @@ from_paths() {
   echo false
 }
 
+# The same on NUL-separated paths (git diff -z): a name git would quote (non-ASCII, a
+# tab, a quote) arrives as itself, so "runner/<any name>" still counts.
+from_paths_z() {
+  local p
+  while IFS= read -r -d '' p; do
+    [ -n "$p" ] || continue
+    if relevant_path "$p"; then echo true; return 0; fi
+  done
+  echo false
+}
+
 case "${1:-}" in
   --paths) from_paths; exit 0 ;;
   --event) ;;
@@ -80,8 +91,14 @@ fi
 if ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
   why "base $BASE is not reachable (force push or failed fetch): run them"; echo true; exit 0
 fi
-if ! changed="$(git diff --name-only "$BASE" "$HEAD_REF" 2>/dev/null)"; then
+# --no-renames: a rename is its old name deleted and its new name added, so a file moved
+# OUT of runner/ still counts (with rename detection --name-only prints only the new
+# name), and a name-only diff never reads a blob (inexact rename detection would, and a
+# blob-less checkout without credentials cannot fetch one). -z: names come unquoted.
+# Under pipefail a failed diff fails the pipeline (an early "true" may SIGPIPE git:
+# that answer is true either way).
+if ! answer="$(git diff --no-renames --name-only -z "$BASE" "$HEAD_REF" 2>/dev/null | from_paths_z)"; then
   why "git diff $BASE $HEAD_REF failed: run them"; echo true; exit 0
 fi
-why "$(printf '%s\n' "$changed" | grep -c .) changed path(s) since ${BASE:0:12}"
-printf '%s\n' "$changed" | from_paths
+why "$(git diff --no-renames --name-only "$BASE" "$HEAD_REF" 2>/dev/null | grep -c .) changed path(s) since ${BASE:0:12}"
+echo "$answer"

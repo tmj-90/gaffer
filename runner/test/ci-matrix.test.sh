@@ -22,7 +22,9 @@
 #   C4  every `uses:` is a local workflow or an action pinned by a full commit sha
 #   C6  the macOS gate: .github/scripts/macos-relevant.sh answers true for the paths
 #       that can behave differently on macOS and for anything it cannot decide, false
-#       for the rest; `runner-macos` needs `changes` and runs only on its "true";
+#       for the rest, on the whole pushed range (several commits, a merge), counting a
+#       renamed file's old name and a name git would quote; `runner-macos` needs
+#       `changes` and runs only on its "true";
 #       ci-result always runs, needs every other job and passes only when each passed
 #       or runner-macos was skipped by that rule (.github/scripts/ci-result.sh); a newer
 #       push to the same ref cancels the older run
@@ -175,6 +177,21 @@ if [ -n "$G6" ]; then
   [ "$(ev --event push --base "")" = true ] && ok "C6 no base: true" || fail "C6 no base"
   [ "$(ev --event push --base 1234567890123456789012345678901234567890)" = true ] && ok "C6 an unreachable base (force push): true" || fail "C6 unreachable base"
   [ "$(ev --event schedule --base "$B0")" = true ] && ok "C6 any other event: true" || fail "C6 other event"
+  # A push of several commits is judged on the whole range, not its last commit.
+  echo d >> "$G6/docs/a.md"; gc commit -qam d; B3="$(git -C "$G6" rev-parse HEAD)"
+  [ "$(ev --event push --base "$B1" --head "$B3")" = true ] && ok "C6 a two-commit push whose runner change is in the first commit: true" || fail "C6 multi-commit push: $(ev --event push --base "$B1" --head "$B3")"
+  # A rename counts its OLD name: a file moved out of runner/ changes the runner.
+  mkdir -p "$G6/packages/x"; printf 'one\ntwo\nthree\n' > "$G6/runner/m.sh"; gc add -A; gc commit -qm m; B4="$(git -C "$G6" rev-parse HEAD)"
+  gc mv runner/m.sh packages/x/m.sh; gc commit -qm mv; B5="$(git -C "$G6" rev-parse HEAD)"
+  [ "$(ev --event push --base "$B4" --head "$B5")" = true ] && ok "C6 a file renamed out of runner/: true (the old name counts)" || fail "C6 rename out of runner/: $(ev --event push --base "$B4" --head "$B5")"
+  # A name git would quote (non-ASCII, a space) still counts under runner/.
+  printf 'x\n' > "$G6/runner/l$(printf '\303\251') t.sh"; gc add -A; gc commit -qm q; B6="$(git -C "$G6" rev-parse HEAD)"
+  [ "$(ev --event push --base "$B5" --head "$B6")" = true ] && ok "C6 a non-ASCII name with a space under runner/: true" || fail "C6 quoted name: $(ev --event push --base "$B5" --head "$B6")"
+  # A merge commit pushed onto main: the runner change it brings from the merged side counts.
+  gc checkout -q -b side "$B0"; mkdir -p "$G6/runner"; printf 's\n' > "$G6/runner/s.sh"; gc add -A; gc commit -qm s
+  gc checkout -q main; echo e >> "$G6/docs/a.md"; gc commit -qam e; B7="$(git -C "$G6" rev-parse HEAD)"
+  gc merge -q --no-ff --no-edit side; B8="$(git -C "$G6" rev-parse HEAD)"
+  [ "$(ev --event push --base "$B7" --head "$B8")" = true ] && ok "C6 a pushed merge whose merged side touches runner/: true" || fail "C6 merge push: $(ev --event push --base "$B7" --head "$B8")"
 fi
 cr() { NEEDS="$1" MACOS="$2" bash "$CR" >/dev/null 2>&1; }
 OKJ='"changes":{"result":"success"},"checks":{"result":"success"}'
@@ -182,6 +199,7 @@ cr "{$OKJ,\"runner-macos\":{\"result\":\"success\"}}" true && ok "C6 ci-result: 
 cr "{$OKJ,\"runner-macos\":{\"result\":\"skipped\"}}" false && ok "C6 ci-result: macOS skipped by the rule is a pass" || fail "C6 ci-result fails a rule skip"
 cr "{$OKJ,\"runner-macos\":{\"result\":\"skipped\"}}" true && fail "C6 ci-result passes a macOS skip the rule did not ask for" || ok "C6 ci-result: macOS skipped although wanted is a failure"
 cr "{$OKJ,\"runner-macos\":{\"result\":\"skipped\"}}" "" && fail "C6 ci-result passes a macOS skip with no rule answer" || ok "C6 ci-result: macOS skipped with no answer is a failure"
+cr '{"changes":{"result":"failure"},"checks":{"result":"success"},"runner-macos":{"result":"skipped"}}' "" && fail "C6 ci-result passes a failed changes job (macOS skipped behind it)" || ok "C6 ci-result: a failed changes job, macOS skipped behind it, is a failure"
 cr "{$OKJ,\"runner\":{\"result\":\"skipped\"}}" false && fail "C6 ci-result passes another skipped job" || ok "C6 ci-result: any other skipped job is a failure"
 cr "{$OKJ,\"runner\":{\"result\":\"failure\"}}" false && fail "C6 ci-result passes a failed job" || ok "C6 ci-result: a failed job is a failure"
 cr "{$OKJ,\"runner\":{\"result\":\"cancelled\"}}" false && fail "C6 ci-result passes a cancelled job" || ok "C6 ci-result: a cancelled job is a failure"

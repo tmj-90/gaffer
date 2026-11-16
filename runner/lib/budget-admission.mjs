@@ -116,7 +116,7 @@ const RESERVATION_ID_RE = /^r-[A-Za-z0-9-]{4,64}$/;
 
 /** The one-line fix, word for word lib/budget.sh gaffer_spend_cap_hint. */
 export const SPEND_CAP_HINT =
-  "no dollar cap is set: set GAFFER_DAILY_BUDGET_USD (try 5) or GAFFER_BUDGET_USD in your environment or the dashboard's Settings → Budget & caps; GAFFER_ALLOW_UNCAPPED=1 runs without one";
+  "no dollar cap is set: set GAFFER_DAILY_BUDGET_USD (try 5) or GAFFER_BUDGET_USD in your environment or the dashboard's Settings → Budget; GAFFER_ALLOW_UNCAPPED=1 runs without one";
 
 // MONEY IN INTEGER MICRO-DOLLARS: a running float sum of decimal dollars is not exact
 // (ten $0.10 calls sum to 0.9999999999999999), and a "below the cap" test on it admitted

@@ -273,11 +273,13 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     method: "GET",
     path: "/api/settings",
     tag: T.config,
-    summary: "List factory settings",
+    summary: "List the fourteen settings and what they derive",
     description:
-      "Every known setting with its file value, whether the environment locks it, and its group (`SettingView[]`). A secret-bearing key (`secret: true`, e.g. a webhook URL) never carries its value to any principal: `value` and `effective` are empty, `configured` says whether one is set and `host` names the URL's host. `isolation` is the agent isolation posture (`runner/gaffer sandbox-status`, probed on each load): `{ provider, available, required, optedOut, missing, fix }`, plus `error` when the probe could not answer.",
+      "The fourteen settings (runner/config/settings-schema.json) as `settings: SettingView[]`: `key`, `label`, `group`, `kind`, `values`, `default`, `description`, `writable` (false for GAFFER_DATA), `value` (stored in settings.json), `effective` (what a run uses), `origin` (default | dashboard | environment), `envLocked` (the operator's real environment sets it: read-only) and `derives` (the setting's table from the schema). GAFFER_NOTIFY is secret: `value` and `effective` are masked (channel kinds and hosts only), `channels` and `configured` say what is in force. Read-only blocks from the runner's own config (the printer behind `gaffer config show`): `derived` (every derived value: `name`, `value`, `decidedBy`, `setting`, `source` setting | environment | old-key), `migration` (old settings.json keys: `key`, `setting`, `old`, `derived`, `differs`, `decision`, `inForce`), `overrides` (derived values a real environment variable sets), `cleanup` (what the removal act would drop and rewrite) and `configError` when the runner refuses the file. Every secret in every block is masked. `isolation` is the agent isolation posture (`runner/gaffer sandbox-status`).",
     capability: "read",
-    responses: [ok("`{ settings: SettingView[], isolation }`.")],
+    responses: [
+      ok("`{ settings, derived, migration, overrides, cleanup, configError?, isolation }`."),
+    ],
   },
   {
     method: "GET",
@@ -285,7 +287,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.config,
     summary: "Read a secret setting back (admin)",
     description:
-      "The in-force value of one secret-bearing setting, for an ADMIN principal only (the operator token, or an admin principal with full capability); 403 for a read token or a human principal.",
+      "The in-force value of the secret setting (GAFFER_NOTIFY), for an ADMIN principal only (the operator token, or an admin principal with full capability); 403 for a read token or a human principal.",
     capability: "full",
     responses: [ok("`{ key, value, source }`."), notFound],
   },
@@ -293,12 +295,47 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     method: "POST",
     path: "/api/settings",
     tag: T.config,
-    summary: "Write factory settings",
+    summary: "Write settings (the fourteen only)",
     description:
-      "Merges the given keys into settings.json atomically. Env-locked keys are rejected (the environment always wins); unknown keys are ignored. A value that does not fit its setting (a non-numeric dollar figure, an int below its minimum, an unlisted choice, a refused webhook URL) refuses the whole write with a 422 whose `details.invalid` names each field and why; nothing is written.",
+      "Merges the given settings into settings.json atomically (PUT is the same). Values are trimmed and validated exactly as the runner validates them; an empty value removes the setting (its default applies). Env-locked settings are rejected (the environment always wins). Any other key refuses the whole write with a 422: an old key names the setting that decides it now (`details.invalid[].decidedBy`), so does a derived name; GAFFER_DATA and environment-only names are refused. `notify: { desktop?, webhook?, slack? }` changes GAFFER_NOTIFY while keeping the saved URLs on the server (undefined keeps a channel, null removes it). Old keys already in settings.json are kept; only the removal act drops them.",
     capability: "full",
     body: "settingsBody",
-    responses: [ok("`{ settings, isolation, written, rejected, ignored, invalid }`."), invalid],
+    responses: [
+      ok("The GET body plus `{ written, rejected, ignored, invalid }`."),
+      invalid,
+    ],
+  },
+  {
+    method: "PUT",
+    path: "/api/settings",
+    tag: T.config,
+    summary: "Write settings (the fourteen only)",
+    description: "The same as POST /api/settings.",
+    capability: "full",
+    body: "settingsBody",
+    responses: [
+      ok("The GET body plus `{ written, rejected, ignored, invalid }`."),
+      invalid,
+    ],
+  },
+  {
+    method: "POST",
+    path: "/api/settings/remove-old-keys",
+    tag: T.config,
+    summary: "Remove the old keys from settings.json",
+    description:
+      "The person's removal act: rewrites settings.json atomically keeping only the fourteen settings (a stored value the runner would refuse is trimmed, clamped or cleared). `drop` and `rewrite` repeat the keys GET /api/settings `cleanup` showed; when the file changed since, nothing is written and the answer is 409 (`STATE_CONFLICT`). Same authority as writing settings.",
+    capability: "full",
+    body: "removeOldKeysBody",
+    responses: [
+      ok("The GET body plus `removed` (the plan that was applied)."),
+      invalid,
+      {
+        status: 409,
+        description: "settings.json changed since the plan was shown (`STATE_CONFLICT`).",
+        content: "json",
+      },
+    ],
   },
   {
     method: "GET",

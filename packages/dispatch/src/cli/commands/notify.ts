@@ -11,8 +11,8 @@ export function registerNotify(program: Command): void {
   notify
     .command("test")
     .description(
-      "Fire a synthetic human-gate event through the sinks configured via the " +
-        "GAFFER_NOTIFY_* env vars (webhook · slack · desktop) and wait for each. " +
+      "Fire a synthetic human-gate event through the sinks the Notify setting " +
+        "configures (GAFFER_NOTIFY: webhook · slack · desktop) and wait for each. " +
         "Reports every sink's outcome; ok is false (exit 1) when any sink failed or " +
         "the kind is filtered out by GAFFER_NOTIFY_EVENTS. With nothing configured " +
         "the notifier is a no-op and this reports 'disabled'.",

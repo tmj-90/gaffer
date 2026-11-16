@@ -250,15 +250,15 @@ export default async function s1(t, L) {
 
   // ── the isolation posture: every agent launch needs an OS sandbox by default, and
   //    this world opts out in its environment (scripts/ui-regression/setup.sh: every
-  //    agent here is a stub), so Settings must say so in the Sandbox group's read-only
+  //    agent here is a stub), so Settings must say so in the Safety section's read-only
   //    line, fed by the real probe (runner/gaffer sandbox-status). ──
   await t.visit("settings");
-  const isoSel = "#grp-sandbox .settings-isolation";
+  const isoSel = "#grp-safety .settings-isolation";
   const isoText = (await p.textContent(isoSel).catch(() => "")) || "";
   const isoState = (await p.getAttribute(isoSel, "data-state").catch(() => "")) || "";
   t.check(
     isoState === "opted-out" && /GAFFER_STRICT_REQUIRE=0 is set in the environment/.test(isoText),
-    "Settings → Sandbox shows the isolation posture read-only: opted out in the environment, agents run without an OS sandbox",
+    "Settings → Safety shows the isolation posture read-only: opted out in the environment, agents run without an OS sandbox",
     `isolation line: state=${isoState} '${isoText.slice(0, 200)}'`,
   );
   // The refusal itself (no OS sandbox and no opt-out: nothing claimed, no agent, the fix

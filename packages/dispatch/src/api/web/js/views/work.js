@@ -236,7 +236,7 @@ function openSpendCapSheet(onSaved) {
           });
           if (!(res.written || []).includes("GAFFER_DAILY_BUDGET_USD")) {
             err.textContent =
-              "The daily budget was not saved. It may be set in the environment: check Settings → Budget & caps.";
+              "The daily budget was not saved. It may be set in the environment: check Settings → Budget.";
             err.hidden = false;
             return;
           }
@@ -262,7 +262,7 @@ function openSpendCapSheet(onSaved) {
       el(
         "p",
         { class: "act-hint", id: "spend-cap-hint" },
-        "Change it any time in Settings → Budget & caps. A lifetime ceiling there also counts.",
+        "Change it any time in Settings → Budget. A lifetime ceiling there also counts.",
       ),
       err,
       el("div", { class: "btn-row act-actions" }, [

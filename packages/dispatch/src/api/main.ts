@@ -85,9 +85,11 @@ program
     // $GAFFER_DATA/dashboard-token, and exported into the process env — so the
     // human operator can authenticate while the delivery agent (whose child env
     // the runner scrubs of the token) structurally cannot approve its own work.
-    // Settings the dashboard stores (and the GAFFER_MODE presets) become this
-    // process's env DEFAULTS — the same precedence the runner gives them — so the
-    // API's own gates and the values it reports agree with the tick.
+    // The fourteen settings and what the runner's own config derives from them become
+    // this process's env (never over the operator's real environment, never an old
+    // settings.json key as it stands), each with the runner's re-source record, so the
+    // API's own gates agree with the tick and every runner this server starts derives
+    // them from settings.json itself, as a run from the command line does.
     applySettingsToEnv(process.env);
     // The agent isolation posture the Settings page shows, probed once at startup
     // (and again on each settings load). Never blocks the start: it runs in the background.

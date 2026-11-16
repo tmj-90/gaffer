@@ -499,7 +499,8 @@ async function loadMatchDay() {
     health,
     budget: setting("GAFFER_DAILY_BUDGET_USD"),
     slots: setting("GAFFER_CONCURRENCY"),
-    autoMerge: (settings?.settings || []).find((x) => x.key === "AUTO_MERGE")?.effective,
+    // Auto merge is derived (the Autonomy mode decides it): what the runner will use.
+    autoMerge: (settings?.derived || []).find((x) => x.name === "AUTO_MERGE")?.value ?? undefined,
     decisions: (decs && decs.decisions) || [],
     events: (activity && activity.events) || [],
     clubName: (squad.club && squad.club.name) || summary.clubName || factoryNode?.name || null,

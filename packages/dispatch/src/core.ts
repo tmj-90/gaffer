@@ -406,9 +406,9 @@ export class Dispatch {
    * per-instance for tests via the constructor option.
    */
   get maxAttempts(): number {
-    // Read per use, not once at startup: DISPATCH_MAX_ATTEMPTS saved from Settings
-    // lands in this process's env (writeSettings), and a long-running dashboard must
-    // enforce the cap the operator just saved.
+    // Read per use, not once at startup: DISPATCH_MAX_ATTEMPTS follows the Effort
+    // setting, and a change saved from Settings lands in this process's env
+    // (writeSettings), so a long-running dashboard enforces the cap the operator chose.
     return this.maxAttemptsOverride ?? resolveMaxAttempts();
   }
   private readonly maxAttemptsOverride: number | undefined;

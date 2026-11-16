@@ -49,11 +49,14 @@ export default async function s12(t, L) {
   // ── env-locked: only the operator's export ────────────────────────────────
   const head = (await p.textContent(".view").catch(() => "")) || "";
   const locked = [...(await L.settingsMap()).values()].filter((s) => s.envLocked).map((s) => s.key);
+  // The world's operator environment: GAFFER_SANDBOX (run-suites.sh), and the data dir
+  // and port setup.sh exports for every world. Nothing saved in settings.json is locked.
+  const exported = ["GAFFER_SANDBOX", "GAFFER_DATA", "DISPATCH_API_PORT"];
   t.check(
-    locked.length === 1 &&
-      locked[0] === "GAFFER_SANDBOX" &&
-      /· 1 set by the environment/.test(head),
-    "only the operator-exported setting is env-locked (GAFFER_SANDBOX; header says '1 set by the environment')",
+    locked.includes("GAFFER_SANDBOX") &&
+      locked.every((k) => exported.includes(k)) &&
+      new RegExp(`· ${locked.length} set by the environment`).test(head),
+    "only what the operator exported is env-locked (GAFFER_SANDBOX, plus the world's data dir and port; the header counts them)",
     `env-locked: ${JSON.stringify(locked)}; header: ${head.match(/\d+ set by the environment/)?.[0]}`,
   );
   const lockedRow = p.locator("#set-GAFFER_SANDBOX");

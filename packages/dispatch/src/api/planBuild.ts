@@ -95,9 +95,10 @@ function positiveInt(raw: string | undefined): number | null {
  *      a single-turn budget.
  *   3. Otherwise the single-agent default (200 s).
  *
- * Read per request (not once at startup) so a settings.json edit that flips the
- * debate on — applied to this process's env by `applySettingsToEnv` — takes
- * effect on the next plan-build without a restart.
+ * Read per request (not once at startup) so a change that turns the debate on (the
+ * value the runner derives from GAFFER_MODELS, or an exported GAFFER_PLAN_DEBATE,
+ * applied to this process's env by `applySettingsToEnv`) takes effect on the next
+ * plan-build without a restart.
  */
 export function resolvePlanBuildTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
   const explicit = positiveInt(env["GAFFER_PLAN_BUILD_TIMEOUT_MS"]);

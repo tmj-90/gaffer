@@ -382,7 +382,7 @@ gaffer_spend_cap_ok() {
 # paid work starts at $0 headroom"), and "abc" is not a number — both used to read "no
 # dollar cap is set", which sent the operator looking for a setting they had made.
 gaffer_spend_cap_hint() {
-  local fix="set GAFFER_DAILY_BUDGET_USD (try 5) or GAFFER_BUDGET_USD in your environment or the dashboard's Settings → Budget & caps; GAFFER_ALLOW_UNCAPPED=1 runs without one"
+  local fix="set GAFFER_DAILY_BUDGET_USD (try 5) or GAFFER_BUDGET_USD in your environment or the dashboard's Settings → Budget; GAFFER_ALLOW_UNCAPPED=1 runs without one"
   local k v why=""
   for k in GAFFER_DAILY_BUDGET_USD GAFFER_BUDGET_USD; do
     v="${!k:-}"

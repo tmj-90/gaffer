@@ -817,7 +817,7 @@ async function renderReview(param) {
         packet.tester_expected
           ? "The runner will not send this ticket to the tester, and approval waits for a PASS."
           : "The runner sends tickets like this to the tester, but this dashboard lets you approve without a PASS."
-      } Set GAFFER_TESTING the same for both (Settings, with neither environment overriding it).`,
+      } Set Independent testing (GAFFER_TESTING) in Settings and export it in neither environment.`,
       "Derived from the runner's recorded tester lane (runner.tester_lane) and this dashboard's GAFFER_TESTING",
     ]);
   if (ac.length && satisfied < ac.length)

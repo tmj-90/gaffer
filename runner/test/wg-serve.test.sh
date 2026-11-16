@@ -150,7 +150,6 @@ done
 [ ! -e "$_GAFFER_WG_DIR/broken" ] && ok "W2: ...and the server is still trusted" || fail "W2: the server was marked broken"
 
 echo "== W3: the environment, per call =="
-same_as_oneshot "a read-only principal's write (token in the env)" ticket move 1 refining
 GAFFER_PRINCIPAL_TOKEN="$TOKEN" capture "$WORK/p" wg ticket move 1 refining
 GAFFER_PRINCIPAL_TOKEN="$TOKEN" capture "$WORK/q" oneshot ticket move 1 refining
 cmp -s "$WORK/p.err" "$WORK/q.err" && [ "$(cat "$WORK/p.rc")" = "$(cat "$WORK/q.rc")" ] && [ "$(cat "$WORK/p.rc")" != 0 ] \

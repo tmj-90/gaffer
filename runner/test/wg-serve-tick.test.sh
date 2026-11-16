@@ -11,7 +11,7 @@
 #   T2  no server outlives a tick: after a normal end, after SIGTERM and SIGINT
 #       mid-delivery (the trap stops it), and after SIGKILL of the tick alone (the
 #       server notices its owner is gone and exits, removing its dir);
-#   T3  two ticks at once each run their own server, and both deliver;
+#   T3  two ticks at once each run their own servers (and one delivers: one repo);
 #   T4  GAFFER_WG_SERVE=0: the same tick runs every call one-shot and starts no server.
 # Run: bash runner/test/wg-serve-tick.test.sh
 # =====================================================================
@@ -92,7 +92,13 @@ done
 wait "$PA" "$PB" 2>/dev/null
 echo "    results: $(grep -h '^TICK_RESULT=' "$WORK/t3-a.out" "$WORK/t3-b.out" | tr '\n' ' ') (servers seen at once: $peak)"
 [ "$peak" -ge 3 ] && ok "T3: the two ticks' servers ran at once ($peak)" || fail "T3: at most $peak servers at once"
-[ "$(st "$A")" = "in_review" ] && [ "$(st "$B")" = "in_review" ] && ok "T3: both tickets delivered" || fail "T3: A=$(st "$A") B=$(st "$B")"
+# One repo: its per-repo concurrency cap lets one of the two deliver; the other tick finds
+# nothing it may claim, exactly as two one-shot ticks would.
+RS="$(grep -h '^TICK_RESULT=' "$WORK/t3-a.out" "$WORK/t3-b.out" | sort | tr '\n' ' ')"
+case "$RS" in *TICK_RESULT=worked*) ok "T3: a tick delivered ($RS)" ;; *) fail "T3: results $RS" ;; esac
+ns=0; for t in "$A" "$B"; do [ "$(st "$t")" = "in_review" ] && ns=$((ns + 1)); done
+[ "$ns" -ge 1 ] && ok "T3: $ns of the two tickets reached in_review" || fail "T3: A=$(st "$A") B=$(st "$B")"
+for t in "$A" "$B"; do [ "$(st "$t")" = "ready" ] && retire "$t"; done
 [ "$(servers_alive)" = 0 ] && [ "$(dirs_left)" = 0 ] && ok "T3: no server or dir left" || fail "T3: $(servers_alive) servers, $(dirs_left) dirs"
 
 echo "== T4: GAFFER_WG_SERVE=0 =="

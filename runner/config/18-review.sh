@@ -188,7 +188,7 @@ gaffer_lite_trivial_reason() {
   printf 'trivial\n'
 }
 
-# LITE MODE trivial classifier — I/O wrapper. Gathers the ticket risk (dispatch's decided
+# LITE MODE trivial classifier, the I/O wrapper. Gathers the ticket risk (dispatch's decided
 # risk, as `wg ticket auto-decision` reports it) + the
 # delivered diff's size and paths (git, from the review worktree's branch vs base) and runs
 # the pure core. Returns 0 (trivial → runner may auto-approve) / 1 (non-trivial → hold for a

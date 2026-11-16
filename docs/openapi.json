@@ -1425,6 +1425,288 @@
         "x-capability": "full"
       }
     },
+    "/api/autonomy/signatures": {
+      "get": {
+        "operationId": "getApiAutonomySignatures",
+        "tags": [
+          "Configuration"
+        ],
+        "summary": "Autonomy policy rows this factory does not honour",
+        "description": "Every policy row that grants something (mode other than `off`) without a valid signature under the factory key (written before signing, restored from a backup, or written outside the factory), with what a person reviews (repo, risk, gate, mode, `enabled_by`, `enabled_at`) and why (`failure`, `detail`). Such a row grants nothing: every decision reads it as absent (a person decides) until a person re-signs it. `fingerprint` identifies exactly this list and each row's `review_code` that row.",
+        "responses": {
+          "200": {
+            "description": "`{ unsigned: UnsignedPolicy[], fingerprint }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The Host/Origin is not permitted for a token-less request (`FORBIDDEN_HOST`). A named principal acted outside its scope (`SCOPE_DENIED`: `details.scope` names its repos and tickets, `details.reason` is `outside_repo_scope`, `outside_ticket_scope`, `no_repos`, `factory_wide` or `admin_required`, with `details.ticket`, `details.outside_repos` or `details.required` saying what put it outside).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "read"
+      }
+    },
+    "/api/autonomy/signatures/resign": {
+      "post": {
+        "operationId": "postApiAutonomySignaturesResign",
+        "tags": [
+          "Configuration"
+        ],
+        "summary": "Re-sign autonomy policy rows (a person's act)",
+        "description": "Signs the reviewed rows: `ids` with `confirm` their own `review_code` (or the list's `fingerprint`), or `all` with `confirm` the `fingerprint` of the list from GET /api/autonomy/signatures, with an `autonomy_policy.resigned` event each. A row or list changed since the review is refused (409) and nothing is signed. A person's act only: the shared operator token, or an active, unscoped admin principal with full capability (a read-only or non-admin principal is refused with 403; an actor that is not a person with 403 `ACTOR_NOT_PERMITTED`; MCP has no such tool). Nothing is ever signed on upgrade or on a read.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/resignAutonomyPoliciesBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "`{ resigned: [{ id, repo, risk_level, gate, event_id }] }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The calling principal may not do this (`ACTOR_NOT_PERMITTED`). The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`). A named principal acted outside its scope (`SCOPE_DENIED`: `details.scope` names its repos and tickets, `details.reason` is `outside_repo_scope`, `outside_ticket_scope`, `no_repos`, `factory_wide` or `admin_required`, with `details.ticket`, `details.outside_repos` or `details.required` saying what put it outside).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The state machine or a claim refused the change (`ILLEGAL_TRANSITION`, `STATE_CONFLICT`, `CLAIM_REQUIRED`, …).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body or query failed validation (`VALIDATION_ERROR`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "full"
+      }
+    },
+    "/api/autonomy/risk-signatures": {
+      "get": {
+        "operationId": "getApiAutonomyRiskSignatures",
+        "tags": [
+          "Configuration"
+        ],
+        "summary": "Open tickets whose risk this factory does not honour",
+        "description": "Every open ticket (not done, cancelled or failed) whose risk level carries no valid signature under the factory key (in flight before signing, imported, or changed outside the factory), with `sealed_at_claim` (never claimed: the host seals it at its first claim), the counts per risk (`by_risk`) and `fingerprint`, the code of exactly this list. Such a ticket is decided as the highest risk (a person decides).",
+        "responses": {
+          "200": {
+            "description": "`{ unsigned: UnsignedRisk[], by_risk, fingerprint }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The Host/Origin is not permitted for a token-less request (`FORBIDDEN_HOST`). A named principal acted outside its scope (`SCOPE_DENIED`: `details.scope` names its repos and tickets, `details.reason` is `outside_repo_scope`, `outside_ticket_scope`, `no_repos`, `factory_wide` or `admin_required`, with `details.ticket`, `details.outside_repos` or `details.required` saying what put it outside).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "read"
+      }
+    },
+    "/api/autonomy/risk-signatures/resign": {
+      "post": {
+        "operationId": "postApiAutonomyRiskSignaturesResign",
+        "tags": [
+          "Configuration"
+        ],
+        "summary": "Re-sign ticket risks (a person's act)",
+        "description": "Signs the risk of the reviewed tickets: `tickets` (ids or numbers) with `confirm` their code (or the list's `fingerprint`), or `all` with the `fingerprint` from GET /api/autonomy/risk-signatures, with a `ticket.risk_set` event each (source `resigned`). A list changed since the review is refused (409). The same person-only rule as re-signing policy rows.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/resignTicketRisksBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "`{ resigned: [{ id, number, risk_level, event_id }] }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The calling principal may not do this (`ACTOR_NOT_PERMITTED`). The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`). A named principal acted outside its scope (`SCOPE_DENIED`: `details.scope` names its repos and tickets, `details.reason` is `outside_repo_scope`, `outside_ticket_scope`, `no_repos`, `factory_wide` or `admin_required`, with `details.ticket`, `details.outside_repos` or `details.required` saying what put it outside).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource (`NOT_FOUND`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The state machine or a claim refused the change (`ILLEGAL_TRANSITION`, `STATE_CONFLICT`, `CLAIM_REQUIRED`, …).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body or query failed validation (`VALIDATION_ERROR`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "full"
+      }
+    },
     "/api/autonomy/ladder": {
       "get": {
         "operationId": "getApiAutonomyLadder",
@@ -15456,6 +15738,31 @@
         "additionalProperties": false,
         "description": "The Behavioural surface of one repo's delivery (`?include=impact`), read from the diff and the tree at `headSha`. Advisory: nothing gates on it."
       },
+      "resignAutonomyPoliciesBody": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "maxItems": 500
+          },
+          "all": {
+            "type": "boolean"
+          },
+          "confirm": {
+            "type": "string",
+            "maxLength": 64
+          }
+        },
+        "required": [
+          "confirm"
+        ],
+        "additionalProperties": false
+      },
       "resignPrincipalsBody": {
         "type": "object",
         "properties": {
@@ -15477,6 +15784,39 @@
           }
         },
         "description": "Additional validation rule applies (not expressible in JSON Schema)."
+      },
+      "resignTicketRisksBody": {
+        "type": "object",
+        "properties": {
+          "tickets": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                {
+                  "type": "integer",
+                  "exclusiveMinimum": 0
+                }
+              ]
+            },
+            "maxItems": 5000
+          },
+          "all": {
+            "type": "boolean"
+          },
+          "confirm": {
+            "type": "string",
+            "maxLength": 64
+          }
+        },
+        "required": [
+          "confirm"
+        ],
+        "additionalProperties": false
       },
       "resolveDecisionBody": {
         "type": "object",

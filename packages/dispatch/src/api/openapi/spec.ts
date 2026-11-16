@@ -406,6 +406,59 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
   },
   {
     method: "GET",
+    path: "/api/autonomy/signatures",
+    tag: T.config,
+    summary: "Autonomy policy rows this factory does not honour",
+    description:
+      "Every policy row that grants something (mode other than `off`) without a valid signature under the factory key (written before signing, restored from a backup, or written outside the factory), with what a person reviews (repo, risk, gate, mode, `enabled_by`, `enabled_at`) and why (`failure`, `detail`). Such a row grants nothing: every decision reads it as absent (a person decides) until a person re-signs it. `fingerprint` identifies exactly this list and each row's `review_code` that row.",
+    capability: "read",
+    responses: [ok("`{ unsigned: UnsignedPolicy[], fingerprint }`.")],
+  },
+  {
+    method: "POST",
+    path: "/api/autonomy/signatures/resign",
+    tag: T.config,
+    summary: "Re-sign autonomy policy rows (a person's act)",
+    description:
+      "Signs the reviewed rows: `ids` with `confirm` their own `review_code` (or the list's `fingerprint`), or `all` with `confirm` the `fingerprint` of the list from GET /api/autonomy/signatures, with an `autonomy_policy.resigned` event each. A row or list changed since the review is refused (409) and nothing is signed. A person's act only: the shared operator token, or an active, unscoped admin principal with full capability (a read-only or non-admin principal is refused with 403; an actor that is not a person with 403 `ACTOR_NOT_PERMITTED`; MCP has no such tool). Nothing is ever signed on upgrade or on a read.",
+    capability: "full",
+    body: "resignAutonomyPoliciesBody",
+    responses: [
+      ok("`{ resigned: [{ id, repo, risk_level, gate, event_id }] }`."),
+      invalid,
+      forbidden,
+      conflict,
+    ],
+  },
+  {
+    method: "GET",
+    path: "/api/autonomy/risk-signatures",
+    tag: T.config,
+    summary: "Open tickets whose risk this factory does not honour",
+    description:
+      "Every open ticket (not done, cancelled or failed) whose risk level carries no valid signature under the factory key (in flight before signing, imported, or changed outside the factory), with `sealed_at_claim` (never claimed: the host seals it at its first claim), the counts per risk (`by_risk`) and `fingerprint`, the code of exactly this list. Such a ticket is decided as the highest risk (a person decides).",
+    capability: "read",
+    responses: [ok("`{ unsigned: UnsignedRisk[], by_risk, fingerprint }`.")],
+  },
+  {
+    method: "POST",
+    path: "/api/autonomy/risk-signatures/resign",
+    tag: T.config,
+    summary: "Re-sign ticket risks (a person's act)",
+    description:
+      "Signs the risk of the reviewed tickets: `tickets` (ids or numbers) with `confirm` their code (or the list's `fingerprint`), or `all` with the `fingerprint` from GET /api/autonomy/risk-signatures, with a `ticket.risk_set` event each (source `resigned`). A list changed since the review is refused (409). The same person-only rule as re-signing policy rows.",
+    capability: "full",
+    body: "resignTicketRisksBody",
+    responses: [
+      ok("`{ resigned: [{ id, number, risk_level, event_id }] }`."),
+      invalid,
+      forbidden,
+      conflict,
+      notFound,
+    ],
+  },
+  {
+    method: "GET",
     path: "/api/autonomy/ladder",
     tag: T.read,
     summary: "The autonomy ladder",

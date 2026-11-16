@@ -62,6 +62,7 @@ Test files are under `runner/test/` (`.sh`, `.mjs`) or `packages/*/test/` (`.ts`
 | Replay manifests and experiments | Manifests hold ids, commits, settings and hashes, never prompt text or credentials (mode 600, 16 KiB cap); the experiment runner is denied to agents in every launch form and its live mode needs a hard USD cap | `replay-manifest.test.sh`, `eval-experiment.test.sh`, `safety-hook-spelling.test.mjs` | |
 | Command worker | Runs only inside the `docker` sandbox with the bridge | `worker-command.test.sh` | Turn and tool caps are hints |
 | Dashboard and API | Bearer token on every data request, loopback by default, named principals with scopes, each signed with the factory key | `api-auth.test.ts`, `api-auth-loopback-hardening.test.ts`, `api-principal-scopes.test.ts`, `principal-seal.test.ts`, `landing-principal-seal.test.ts` | No TLS; a tokenless CLI is operator trust |
+| Sealed autonomy | A policy row, a ticket's risk and a lift of a step-down count only with a seal under the factory key; an unsigned row grants nothing, an unsigned risk is decided as the highest; re-signing is a person's act; a verified checkpoint bounds the cost | `autonomy-seal.test.ts`, `autonomy-seal-resign.test.ts`, `autonomy-seal-checkpoint.test.ts`, `autonomy-sealed.test.sh`, `safety-hook-spelling.test.mjs` | A low risk stated by the ticket's creator before its first claim; events a keyless process wrote since the last anchor |
 | Claims and logs | Claim tokens stored as hashes; hash-chained event log; content-redacted audit logs | `m2-claims.test.ts`, `event-chain.test.ts`, `audit.test.ts` | The chain has no key |
 | Budget | A live run needs a dollar cap; caps reserved atomically; only the CLI can report a usage limit | `budget-admission.test.sh`, `lifetime-budget-gate.test.sh`, `usage-limit-detect.test.mjs` | One long call can overshoot |
 | Notifications | SSRF policy, redacted bodies, URLs never returned | `notify.test.ts` | Endpoints you choose |
@@ -492,6 +493,71 @@ the operator's token file to the sandbox did not help: the attacker never needed
   only the sign-ins you created yourself with the access shown; revoke the rest. Principals are not part of the state export, and row seals are neither
   exported nor kept by an import: after restoring a backup, run `gaffer wg gate-key
   reanchor` as before, then re-sign the principals you recognise.
+
+### Sealed autonomy
+
+The rows that decide what may happen without a person were plain rows: a process that
+could write the sqlite file inserted an `autonomy_policy` row (repo, risk, gate, mode
+`auto`), or lowered a ticket's `risk_level` to one such a row covered, or appended an
+`autonomy.step_down_lifted` event, and the runner then approved and merged on its own.
+Each of them now counts only with a seal under the factory key (`events/autonomySeal.ts`,
+on the same `events/rowSeal.ts` as signed principals):
+
+- **Policy rows.** Enabling, changing or re-signing a row writes an
+  `autonomy_policy.enabled` / `.changed` / `.resigned` event and seals the row's authority
+  (id, repo, risk, gate, mode, who enabled it and when, created_at) against that event, in
+  one transaction; turning it off writes `autonomy_policy.disabled` and retires the seal.
+  Every decision that can answer "automatic" (the runner's `wg ticket auto-decision`, an
+  agent's approve, the landing check, the landing facts, the ladder, the
+  recommendations' "already automatic") reads a row whose seal does not verify as ABSENT:
+  a person decides. The ladder cell says "Not signed: a person decides" and Settings and
+  `dispatch doctor` say how many automatic rows are off until a person signs them. A
+  mode's env floor (the operator's own configuration) is unchanged.
+- **Ticket risk.** A `ticket.risk_set` event and a seal over {ticket, risk} record the
+  risk a ticket is decided at. An unsigned risk reads as the HIGHEST risk for every
+  autonomy decision (with the critical ceiling: a person decides; the hold reason is
+  `autonomy_risk_unsigned`), and the observed-risk comparison treats it as indeterminate
+  (held), never the stored value. Who seals: a KEY HOLDER at creation (the REST server,
+  the host CLI); the trusted host at a ticket's FIRST claim when nothing sealed it before
+  (a ticket created through the agent-facing MCP server, which holds no key, or an agent's
+  sandboxed CLI, which cannot read it). The claim rule seals only a ticket that has no
+  risk record, no seal and no earlier claim, and only after checking that its claim
+  history and risk records are intact in the chain; a later claim never re-signs a changed
+  value, and nothing else repairs a missing or broken seal.
+- **Lifts.** A lift of a step-down is a person's act, sealed with the lift event (its id,
+  chain hash, the row it gives back, how and by whom). A lift without a valid seal is
+  ignored: the step-down stays in force, and its evidence count does not restart. A
+  step-down needs no seal (a forged one only takes autonomy away). Every "not stepped
+  down" answer also checks the anchor and the chain over the step-down and lift events,
+  so a deleted or rewritten step-down does not lift anything.
+- **Re-signing is a person's act.** `gaffer wg autonomy unsigned` / `risk-unsigned` (and
+  Settings, and `GET /api/autonomy/signatures`, `/api/autonomy/risk-signatures`) list what
+  is not signed with a code for exactly that list and for each row; `gaffer wg autonomy
+  resign` / `risk-resign` (and the POST routes) sign only what the code covers. Refused
+  for an agent or the runner, for a read-only, scoped, non-admin or revoked principal,
+  and absent from MCP; the safety hook's control-plane rules deny both verbs to an
+  agent's shell.
+- **The verified checkpoint.** A new process used to walk the whole chain once (about
+  2.2 s on a 100k-event log for one autonomy decision). A key holder that verified the
+  chain now records beside the anchor, under the factory key, the head it verified and a
+  digest of every entity's lifecycle rows up to it. A new process walks only the rows
+  after it (one decision costs 12 to 18 ms on that log), and for the row a decision is
+  about it re-reads that row's lifecycle events before the checkpoint, re-hashes each and
+  compares their digest. A checkpoint that does not verify under the key, names a row the
+  log no longer holds as recorded, or lies past the anchored head is refused (a person
+  decides), never skipped. A re-anchor or a new key clears it.
+- **Upgrade.** Nothing is signed on upgrade. Existing policy rows grant nothing until a
+  person re-signs them; tickets not yet claimed are sealed at their first claim; tickets
+  already in flight read as the highest risk until a person re-signs them.
+
+What a database writer can still do: take autonomy away (forge a step-down, break a seal,
+delete rows: every such change is a hold for a person, a denial of service it had
+anyway); state a low risk for a ticket it creates through MCP, which the first claim then
+seals (the observed-risk comparison at approval is the defence, as before); rewrite events
+written by a keyless process after the last anchor, before a key holder's next write moves
+the anchor (the claim rule checks up to the head, but a deletion with a rechain of that
+unanchored tail is not detectable); and anything that needs the factory key, which it does
+not hold.
 
 ### Definition of Done, gate integrity and the merge gate
 
@@ -959,6 +1025,11 @@ a presence boolean, and an argument not on the allowlist is never copied.
   unaudited (the servers warn and carry on). The files the agent may write (the
   databases' `-wal`/`-shm`/`-journal` names, the hook's ledgers) can also be replaced by a
   symlink, which host processes that open them follow. Use `docker` where you can.
+  What such a write cannot do any more: grant itself a principal (signed principals) or
+  automatic approval or merge (sealed autonomy: a policy row, a lowered risk or a lift it
+  writes counts for nothing). It can still state a low risk for a ticket it creates
+  through MCP before that ticket's first claim seals it (the observed-risk comparison at
+  approval is the defence), and take autonomy away.
 - **Agent launches still read user-level settings.** No launch passes
   `--setting-sources project,local`: an operator who authenticates through user-level
   settings (`apiKeyHelper`, `env`) would lose it, and that cannot be proved without the

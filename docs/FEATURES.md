@@ -681,6 +681,21 @@ too, since the landing cannot tell who pressed it: a person lands it by approvin
 themselves (`gaffer wg ticket reopen-for-review <n> --as admin`, then `gaffer approve
 <n>`), or by lifting the step-down.
 
+### Sealed autonomy
+
+The rows that decide what may happen without a person are signed with the factory key:
+an autonomy policy row (signed when you turn it on), a ticket's risk level (signed when a
+person or the host creates the ticket, or at the ticket's first claim when an agent
+created it through MCP), and a person's lift of a step-down. A row that is not signed
+grants nothing: the ladder shows it as "Not signed: a person decides" with a Review and
+sign action, Settings > Autonomy marks it "auto · not signed", and `dispatch doctor`
+says how many automatic rows are off until you sign them. A ticket whose risk is not
+signed is decided as the highest risk (a person decides). Nothing is signed on upgrade:
+review and sign your automatic rows with `gaffer wg autonomy unsigned` and `gaffer wg
+autonomy resign`, and the risks of tickets already in flight with `gaffer wg autonomy
+risk-unsigned` and `gaffer wg autonomy risk-resign` (each signs only the list you
+reviewed, with its code). Signing is a person's act: never an agent, the runner or MCP.
+
 ### The independent tester
 
 With `GAFFER_TESTING` unset (the default), the tester lane is on for a ticket whose

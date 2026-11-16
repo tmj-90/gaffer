@@ -34,7 +34,9 @@ if [ -z "${GAFFER_IMPL_MODEL_EXPLICIT+x}" ]; then
   [ -n "${GAFFER_IMPL_MODEL+x}" ] && GAFFER_IMPL_MODEL_EXPLICIT=1 || GAFFER_IMPL_MODEL_EXPLICIT=0
 fi
 export GAFFER_PLAN_MODEL_EXPLICIT GAFFER_IMPL_MODEL_EXPLICIT
-# GAFFER_MODELS (a setting) picks the three models: a preset column below, or three
+# GAFFER_MODELS (a setting) picks the three models: a preset column below (economy moves
+# only the strong tier down to sonnet: implementation and the reviewer agent, whose
+# APPROVE ships work in the autonomous modes, stay on the standard model), or three
 # model ids "strong,standard,cheap", which fill the same names here (each only where
 # nothing set it before: a real GAFFER_PLAN_MODEL still pins, as above). A model a
 # setting derived is NOT an explicit pin: the router still routes, over the tiers
@@ -50,11 +52,11 @@ case "${GAFFER_MODELS:-standard}" in
     unset _gm_s _gm_m _gm_c ;;
 esac
 _gaffer_derive GAFFER_MODELS <<'_GAFFER_TABLE_'
-#                           standard     economy                           strong
-?GAFFER_PLAN_MODEL          opus         sonnet                            opus      # the strong tier: planning, the final rework attempt, the eval judge
-?GAFFER_IMPL_MODEL          sonnet       haiku                             opus      # the implement tier: delivery when the router does not pick, review, the tester
-GAFFER_MODEL_TIERS          -            strong=sonnet,mid=haiku,cheap=haiku  strong=opus,mid=opus,cheap=sonnet   # the router's tiers over model-registry.json (strong, mid, cheap); unset = the registry's own (opus, sonnet, haiku)
-GAFFER_PLAN_DEBATE_MODELS   opus,sonnet  sonnet,haiku                      opus,opus # the planning debate's proposer and critic
+#                           standard     economy                            strong
+?GAFFER_PLAN_MODEL          opus         sonnet                             opus      # the strong tier: planning, the final rework attempt, the eval judge
+?GAFFER_IMPL_MODEL          sonnet       sonnet                             opus      # the implement tier: delivery when the router does not pick, review, the tester
+GAFFER_MODEL_TIERS          -            strong=sonnet,mid=sonnet,cheap=haiku  strong=opus,mid=opus,cheap=sonnet   # the router's tiers over model-registry.json (strong, mid, cheap); unset = the registry's own (opus, sonnet, haiku)
+GAFFER_PLAN_DEBATE_MODELS   opus,sonnet  sonnet,sonnet                      opus,opus # the planning debate's proposer and critic
 GAFFER_ROLE_MODELS          ~            # per-role models as "role=model" pairs (rework, scout, judge, tester, card, synth, inherit); an unnamed role keeps its default, which follows the tiers
 GAFFER_PLAN_DEBATE          ~            # 1 turns on the two-model planning debate for a big epic (it multiplies planning cost); 0 = one planner
 GAFFER_PLAN_DEBATE_MAX_ROUNDS ~          # plan-producing rounds of a debate (the draft is round 1)

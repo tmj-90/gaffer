@@ -23,12 +23,12 @@ _GAFFER_SETTINGS_SPEC='
 GAFFER_MODE|choice|supervised lite graduated autonomous strict|supervised|Who approves and merges agent work: supervised (a person approves every merge), lite (trivial work is approved by the reviewer agent, a person merges), graduated (only what each repository earned ships on its own), autonomous (agents approve, merge and push inside the OS sandbox), strict (autonomous, and the sandbox wraps the agent even under the environment opt-out).
 GAFFER_DAILY_BUDGET_USD|usd||(none)|The most the factory may spend in one UTC day, in dollars; empty is no daily cap. A live run needs this or GAFFER_BUDGET_USD.
 GAFFER_BUDGET_USD|usd||(none)|The most the factory may spend in its lifetime (the whole usage ledger), in dollars; empty is no lifetime cap.
-GAFFER_MODELS|models|standard economy strong|standard|The three models, as "strong,standard,cheap" (each a model id), or a preset: standard (opus,sonnet,haiku), economy (sonnet,haiku,haiku), strong (opus,opus,sonnet).
+GAFFER_MODELS|models|standard economy strong|standard|The three models, as "strong,standard,cheap" (each a model id), or a preset: standard (opus,sonnet,haiku), economy (sonnet,sonnet,haiku: the strong tier moves to sonnet; implementation and review stay on sonnet), strong (opus,opus,sonnet).
 GAFFER_EFFORT|choice|small standard large|standard|How much work one ticket may take: small, standard or large (time per agent call, turns, delivery attempts, gate and CI time).
 GAFFER_CONCURRENCY|count||1|How many tickets the factory delivers at once (1 to 64).
 GAFFER_SANDBOX|choice|auto docker sandbox-exec|auto|Which OS sandbox contains every agent: auto (sandbox-exec on macOS, else docker), docker or sandbox-exec. Running with none is only the environment opt-out GAFFER_STRICT_REQUIRE=0.
 GAFFER_GATES|gates|standard strict|standard|The Definition-of-Done gates: standard (tests, lint and typecheck must pass) or strict (also a smallest-change note, tighter size flags, no flaky rerun). In the environment only, a list such as "tests,lint" runs only those.
-GAFFER_LANDING|choice|local pr|local|How approved work lands: local (merged into the default branch of the repository on this machine) or pr (a pull request per delivery, merged through it once its CI is green).
+GAFFER_LANDING|choice|local pr|local|How approved work lands: local (merged into the default branch of the repository on this machine) or pr (a pull request per delivery: it enters review once its checks are green, and an approved one is merged through the pull request).
 GAFFER_TESTING|testing|auto on off|auto|The independent tester lane: auto (on where a repository has a test command), on (every testable ticket) or off (only the acceptance ticket of an epic).
 GAFFER_IDLE|choice|auto off maintenance backlog all|auto|What the factory does when nothing is ready: auto (the Idle loops page decides), off, maintenance, backlog (plan the next feature) or all (also clarify and draft tickets).
 GAFFER_NOTIFY|notify||(none)|Where to tell a person: a webhook URL, a Slack incoming-webhook URL and/or "desktop", separated by commas or spaces; empty sends nothing.
@@ -78,9 +78,11 @@ _gaffer_setting_problem() {
       _GAFFER_SP="is not an absolute path" ;;
     models)
       case " $choices " in *" $v "*) [ -n "$v" ] && return 0 ;; esac
-      re='^[A-Za-z0-9._:/@-]+,[A-Za-z0-9._:/@-]+,[A-Za-z0-9._:/@-]+$'
+      # Each id starts with a letter or a digit: it is put after --model on the agent's
+      # command line, so a leading dash would read as another flag.
+      re='^[A-Za-z0-9][A-Za-z0-9._:/@-]*,[A-Za-z0-9][A-Za-z0-9._:/@-]*,[A-Za-z0-9][A-Za-z0-9._:/@-]*$'
       [[ "$v" =~ $re ]] && return 0
-      _GAFFER_SP="is not a preset (${choices// /, }) or three model ids as strong,standard,cheap" ;;
+      _GAFFER_SP="is not a preset (${choices// /, }) or three model ids as strong,standard,cheap (each starting with a letter or digit)" ;;
     gates)
       [ -n "$v" ] && case " $choices " in *" $v "*) return 0 ;; esac
       re='^(tests|lint|typecheck)([ ,]+(tests|lint|typecheck))*$'
@@ -133,9 +135,13 @@ _gaffer_setting_refuse() {
 # the stricter reading wins, so a settings.json written before this change never
 # silently widens autonomy or spend. One line per old key:
 #   KEY|the setting that decides it now|how to compare the old value with the derived one
-# off: 0 is stricter (a ship or spend switch); on: 1 is stricter (a gate); less: a
-# lower number is stricter, 0 or empty is no limit; less0: a lower number is stricter
-# and 0 is a real 0; more: a higher number is stricter; rank a b c: later is stricter
+# off: 0 is stricter (a ship or spend switch); on: 1 is stricter (a gate; GAFFER_CREATE_PR
+# is one, because GAFFER_REQUIRE_CI reads its checks from the pull request, so dropping an
+# old 1 would skip the CI gate); a value of either that is not a plain 1/true/yes/on or
+# 0/false/no/off (any case, no padding) is not comparable, so it is ignored, never kept;
+# less: a lower number is stricter, 0 or empty is no limit; less0: a lower number is
+# stricter and 0 is a real 0 (MAX_TICKS=0 runs no tick; GAFFER_MAX_DELIVERY_ATTEMPTS=0
+# is one attempt); more: a higher number is stricter; rank a b c: later is stricter
 # (a/b are one level, - is empty or unset; a value on no level is not comparable); keep: the old value applies while the
 # setting leaves the name empty (a person's alert channel); drop: not comparable, the
 # derived value applies.
@@ -157,7 +163,7 @@ GAFFER_MAINTENANCE|GAFFER_IDLE|rank 1/true/yes/on - 0/false/no/off
 GAFFER_IDLE_MODE|GAFFER_IDLE|rank create_ready_tickets/create_ready/- create_draft_tickets/create_draft observe_only
 CLARIFY_DRAFTS_WHEN_IDLE|GAFFER_IDLE|off
 IDLE_DRAFT_WHEN_IDLE|GAFFER_IDLE|off
-MAX_TICKS|GAFFER_CONCURRENCY|less
+MAX_TICKS|GAFFER_CONCURRENCY|less0
 MAX_TICKS_PER_DAY|GAFFER_CONCURRENCY|less
 TICK_SLEEP|GAFFER_CONCURRENCY|drop
 EMPTY_POLL_LIMIT|GAFFER_CONCURRENCY|drop
@@ -167,7 +173,7 @@ MAX_OPEN_AGENT_BRANCHES_PER_REPO|GAFFER_CONCURRENCY|less
 MAX_OPEN_AGENT_PRS_PER_REPO|GAFFER_CONCURRENCY|less
 GAFFER_TICK_TIMEOUT|GAFFER_EFFORT|less
 GAFFER_MAX_TURNS|GAFFER_EFFORT|less
-GAFFER_MAX_DELIVERY_ATTEMPTS|GAFFER_EFFORT|less
+GAFFER_MAX_DELIVERY_ATTEMPTS|GAFFER_EFFORT|less0
 DISPATCH_MAX_ATTEMPTS|GAFFER_EFFORT|less
 GAFFER_MAX_NOCOMMIT_FAILURES|GAFFER_EFFORT|less
 GAFFER_CI_POLL_ATTEMPTS|GAFFER_EFFORT|drop
@@ -184,9 +190,9 @@ GAFFER_PLAN_DEBATE_MIN_ESTIMATE|GAFFER_MODELS|more
 GAFFER_NOTIFY_WEBHOOK_URL|GAFFER_NOTIFY|keep
 GAFFER_NOTIFY_SLACK_URL|GAFFER_NOTIFY|keep
 GAFFER_NOTIFY_DESKTOP|GAFFER_NOTIFY|keep
-GAFFER_NOTIFY_EVENTS|GAFFER_NOTIFY|drop
+GAFFER_NOTIFY_EVENTS|GAFFER_NOTIFY|keep
 GAFFER_NOTIFY_FULL_PAYLOAD|GAFFER_NOTIFY|off
-GAFFER_CREATE_PR|GAFFER_LANDING|drop
+GAFFER_CREATE_PR|GAFFER_LANDING|on
 GAFFER_PR_MERGE_METHOD|GAFFER_LANDING|drop
 GAFFER_REQUIRE_CI|GAFFER_LANDING|on
 HYGIENE_ENFORCE|GAFFER_GATES|on
@@ -404,21 +410,34 @@ _gaffer_truthy() {
   case "$1" in 1 | [Tt][Rr][Uu][Ee] | [Yy][Ee][Ss] | [Oo][Nn]) return 0 ;; esac
   return 1
 }
+# _gaffer_bool01 <value>: sets _GAFFER_B to 1 (1/true/yes/on), 0 (empty, 0/false/no/off),
+# any case, or "" for anything else (padded, a typo, garbage): a value no switch reads the
+# same way everywhere (bash readers do not trim, Node readers do) is never compared.
+_gaffer_bool01() {
+  _GAFFER_B=""
+  case "$1" in
+    1 | [Tt][Rr][Uu][Ee] | [Yy][Ee][Ss] | [Oo][Nn]) _GAFFER_B=1 ;;
+    '' | 0 | [Ff][Aa][Ll][Ss][Ee] | [Nn][Oo] | [Oo][Ff][Ff]) _GAFFER_B=0 ;;
+  esac
+}
 # _gaffer_stricter <policy words...> -- <old> <derived>: which reading is stricter.
 # Sets _GAFFER_ST to old (the old value is stricter), new (the derived one is: the old
-# was more permissive or costlier), same, or other (not comparable / not a number).
+# was more permissive or costlier), same, or other (not comparable / not a number), and
+# _GAFFER_ST_VALUE to the value to apply when it is old (a switch is applied as 0 or 1).
 _gaffer_stricter() {
   local -a pol=()
   while [ "$#" -gt 0 ] && [ "$1" != -- ]; do pol+=("$1"); shift; done
   shift
   local o="$1" d="$2" lvl i=0 ro=-1 rd=-1 a re='^[0-9]+([.][0-9]+)?$'
-  _GAFFER_ST=other
-  [ "$o" = "$d" ] && { _GAFFER_ST=same; return 0; }
+  _GAFFER_ST=other; _GAFFER_ST_VALUE="$o"
+  case "${pol[0]}" in off | on) ;; *) [ "$o" = "$d" ] && { _GAFFER_ST=same; return 0; } ;; esac
   case "${pol[0]}" in
     off | on)
-      local to=0 td=0
-      _gaffer_truthy "$o" && to=1
-      _gaffer_truthy "$d" && td=1
+      local to td
+      _gaffer_bool01 "$o"; to="$_GAFFER_B"
+      _gaffer_bool01 "$d"; td="$_GAFFER_B"
+      [ -n "$to" ] && [ -n "$td" ] || return 0
+      _GAFFER_ST_VALUE="$to"
       if [ "$to" = "$td" ]; then _GAFFER_ST=same
       elif { [ "${pol[0]}" = off ] && [ "$to" = 0 ]; } || { [ "${pol[0]}" = on ] && [ "$to" = 1 ]; }; then _GAFFER_ST=old
       else _GAFFER_ST=new; fi ;;
@@ -478,7 +497,7 @@ _gaffer_old_key() {
       # shellcheck disable=SC2086  # the policy's words
       _gaffer_stricter $policy -- "$old" "$cur"
       case "$_GAFFER_ST" in
-        old) dec=kept; printf -v "$name" '%s' "$old"; export "${name?}" ;;
+        old) dec=kept; printf -v "$name" '%s' "$_GAFFER_ST_VALUE"; export "${name?}" ;;
         new) dec=stricter-derived ;;
         same) dec=same ;;
         *) dec=ignored ;;

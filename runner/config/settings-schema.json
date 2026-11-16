@@ -328,7 +328,7 @@
         "strong"
       ],
       "default": "standard",
-      "description": "The three models, as \"strong,standard,cheap\" (each a model id), or a preset: standard (opus,sonnet,haiku), economy (sonnet,haiku,haiku), strong (opus,opus,sonnet).",
+      "description": "The three models, as \"strong,standard,cheap\" (each a model id), or a preset: standard (opus,sonnet,haiku), economy (sonnet,sonnet,haiku: the strong tier moves to sonnet; implementation and review stay on sonnet), strong (opus,opus,sonnet).",
       "table": "runner/config/04-models.sh",
       "presets": [
         "standard",
@@ -365,7 +365,7 @@
             },
             "economy": {
               "how": "value",
-              "value": "haiku"
+              "value": "sonnet"
             },
             "strong": {
               "how": "value",
@@ -383,7 +383,7 @@
             },
             "economy": {
               "how": "value",
-              "value": "strong=sonnet,mid=haiku,cheap=haiku"
+              "value": "strong=sonnet,mid=sonnet,cheap=haiku"
             },
             "strong": {
               "how": "value",
@@ -401,7 +401,7 @@
             },
             "economy": {
               "how": "value",
-              "value": "sonnet,haiku"
+              "value": "sonnet,sonnet"
             },
             "strong": {
               "how": "value",
@@ -1072,7 +1072,7 @@
         "pr"
       ],
       "default": "local",
-      "description": "How approved work lands: local (merged into the default branch of the repository on this machine) or pr (a pull request per delivery, merged through it once its CI is green).",
+      "description": "How approved work lands: local (merged into the default branch of the repository on this machine) or pr (a pull request per delivery: it enters review once its checks are green, and an approved one is merged through the pull request).",
       "table": "runner/config/20-gates.sh",
       "presets": [
         "local",
@@ -1529,8 +1529,8 @@
     {
       "key": "MAX_TICKS",
       "setting": "GAFFER_CONCURRENCY",
-      "compare": "less",
-      "stillApplies": "an old lower limit still applies (0 or empty is no limit)"
+      "compare": "less0",
+      "stillApplies": "an old lower number still applies"
     },
     {
       "key": "MAX_TICKS_PER_DAY",
@@ -1589,8 +1589,8 @@
     {
       "key": "GAFFER_MAX_DELIVERY_ATTEMPTS",
       "setting": "GAFFER_EFFORT",
-      "compare": "less",
-      "stillApplies": "an old lower limit still applies (0 or empty is no limit)"
+      "compare": "less0",
+      "stillApplies": "an old lower number still applies"
     },
     {
       "key": "DISPATCH_MAX_ATTEMPTS",
@@ -1691,8 +1691,8 @@
     {
       "key": "GAFFER_NOTIFY_EVENTS",
       "setting": "GAFFER_NOTIFY",
-      "compare": "drop",
-      "stillApplies": "never: the setting decides it"
+      "compare": "keep",
+      "stillApplies": "the old value still applies while the setting leaves it empty"
     },
     {
       "key": "GAFFER_NOTIFY_FULL_PAYLOAD",
@@ -1703,8 +1703,8 @@
     {
       "key": "GAFFER_CREATE_PR",
       "setting": "GAFFER_LANDING",
-      "compare": "drop",
-      "stillApplies": "never: the setting decides it"
+      "compare": "on",
+      "stillApplies": "an old 1 (on) still applies where the setting derives 0"
     },
     {
       "key": "GAFFER_PR_MERGE_METHOD",

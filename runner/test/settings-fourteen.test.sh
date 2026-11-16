@@ -130,12 +130,22 @@ V="$(cfg GAFFER_IDLE=backlog -- "$(exported GAFFER_IDLE_FEATURE_BACKLOG)")"
 [ "$V" = "GAFFER_IDLE_FEATURE_BACKLOG:x " ] && ok "the backlog switch is exported for crew" || fail "backlog export: $V"
 pre GAFFER_SANDBOX=docker "SANDBOX_PROVIDER=docker " SANDBOX_PROVIDER
 pre GAFFER_SANDBOX=sandbox-exec "SANDBOX_PROVIDER=sandbox-exec " SANDBOX_PROVIDER
-pre GAFFER_MODELS=economy "GAFFER_PLAN_MODEL=sonnet GAFFER_IMPL_MODEL=haiku GAFFER_MODEL_TIERS=strong=sonnet,mid=haiku,cheap=haiku GAFFER_PLAN_DEBATE_MODELS=sonnet,haiku GAFFER_PLAN_MODEL_EXPLICIT=0 _GAFFER_REWORK_MODEL=sonnet " \
+# economy moves only the strong tier: implementation and the reviewer agent (its APPROVE
+# ships work in the autonomous modes) stay on the standard model.
+pre GAFFER_MODELS=economy "GAFFER_PLAN_MODEL=sonnet GAFFER_IMPL_MODEL=sonnet GAFFER_MODEL_TIERS=strong=sonnet,mid=sonnet,cheap=haiku GAFFER_PLAN_DEBATE_MODELS=sonnet,sonnet GAFFER_PLAN_MODEL_EXPLICIT=0 _GAFFER_REWORK_MODEL=sonnet " \
   GAFFER_PLAN_MODEL GAFFER_IMPL_MODEL GAFFER_MODEL_TIERS GAFFER_PLAN_DEBATE_MODELS GAFFER_PLAN_MODEL_EXPLICIT _GAFFER_REWORK_MODEL
 pre GAFFER_MODELS=strong "GAFFER_PLAN_MODEL=opus GAFFER_IMPL_MODEL=opus GAFFER_MODEL_TIERS=strong=opus,mid=opus,cheap=sonnet GAFFER_PLAN_DEBATE_MODELS=opus,opus " \
   GAFFER_PLAN_MODEL GAFFER_IMPL_MODEL GAFFER_MODEL_TIERS GAFFER_PLAN_DEBATE_MODELS
 pre GAFFER_MODELS=m-strong,m-mid,m-cheap "GAFFER_PLAN_MODEL=m-strong GAFFER_IMPL_MODEL=m-mid GAFFER_MODEL_TIERS=strong=m-strong,mid=m-mid,cheap=m-cheap GAFFER_PLAN_DEBATE_MODELS=m-strong,m-mid GAFFER_IMPL_MODEL_EXPLICIT=0 " \
   GAFFER_PLAN_MODEL GAFFER_IMPL_MODEL GAFFER_MODEL_TIERS GAFFER_PLAN_DEBATE_MODELS GAFFER_IMPL_MODEL_EXPLICIT
+V="$(cd "$RUNNER_DIR" && env -i PATH="$PATH" GAFFER_MODEL_TIERS=strong=sonnet,mid=sonnet,cheap=haiku node bin/route-model.mjs --phase review --json | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>process.stdout.write(JSON.parse(s).model))')"
+[ "$V" = sonnet ] && ok "under economy the reviewer agent stays on sonnet (review -> the mid tier)" || fail "economy review tier: $V"
+for kv in "GAFFER_MODELS=--settings,x,y" "GAFFER_MODELS=a,-b,c"; do
+  OUT="$(cfg "$kv" -- 'echo REACHED')"; RC=$?
+  [ "$RC" != 0 ] && [[ "$OUT" != *REACHED* ]] && ok "a model id that starts with a dash is refused ($kv): it would read as a flag after --model" || fail "dash model id: $kv rc=$RC $OUT"
+done
+V="$(cd "$RUNNER_DIR" && env -i PATH="$PATH" GAFFER_MODEL_TIERS="mid=--dangerously-skip-permissions" node bin/route-model.mjs --phase implement --json | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>process.stdout.write(JSON.parse(s).model))')"
+[ "$V" = sonnet ] && ok "the router skips a tier model that starts with a dash" || fail "router dash tier: $V"
 V="$(cd "$RUNNER_DIR" && env -i PATH="$PATH" GAFFER_MODEL_TIERS="strong=m-strong,mid=m-mid,cheap=m-cheap" node bin/route-model.mjs --phase implement --json | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>process.stdout.write(JSON.parse(s).model))')"
 [ "$V" = m-mid ] && ok "the router routes over the tiers GAFFER_MODELS names (implement -> m-mid)" || fail "router tiers: $V"
 pre GAFFER_CONCURRENCY=3 "MAX_CANDIDATES=75 MAX_CONCURRENT_TICKETS_PER_REPO=1 MAX_TICKS_PER_DAY=50 " MAX_CANDIDATES MAX_CONCURRENT_TICKETS_PER_REPO MAX_TICKS_PER_DAY
@@ -156,7 +166,7 @@ file '{"GAFFER_MODE":"autonomous","DISPATCH_ALLOW_AGENT_APPROVE":"0","REVIEW_MOD
  "MAX_CONCURRENT_TICKETS_PER_REPO":"2","GAFFER_CONCURRENCY":"2","GAFFER_PLAN_DEBATE":"1","HYGIENE_ENFORCE":"0",
  "GAFFER_TESTING":"1","GAFFER_IDLE_FEATURE_BACKLOG":"1","GAFFER_MAINTENANCE":"0","GAFFER_REWORK_BUDGET_USD":"40"}'
 V="$(cfg -- "$(vals GAFFER_MODE DISPATCH_ALLOW_AGENT_APPROVE AUTO_MERGE REVIEW_MODE MAX_TICKS_PER_DAY GAFFER_DAILY_BUDGET_USD GAFFER_TICK_TIMEOUT GAFFER_MAX_TURNS GAFFER_MAX_TURNS_FLAG GAFFER_NOTIFY_SLACK_URL GAFFER_NOTIFY_DESKTOP GAFFER_CREATE_PR GAFFER_REQUIRE_CI MAX_CONCURRENT_TICKETS_PER_REPO GAFFER_CONCURRENCY GAFFER_PLAN_DEBATE HYGIENE_ENFORCE GAFFER_TESTING GAFFER_IDLE_FEATURE_BACKLOG GAFFER_MAINTENANCE GAFFER_REWORK_BUDGET_USD GAFFER_STRICT_REQUIRE)")"
-WANT="GAFFER_MODE=autonomous DISPATCH_ALLOW_AGENT_APPROVE=0 AUTO_MERGE=1 REVIEW_MODE=both MAX_TICKS_PER_DAY=20 GAFFER_DAILY_BUDGET_USD=25 GAFFER_TICK_TIMEOUT=1800 GAFFER_MAX_TURNS=150 GAFFER_MAX_TURNS_FLAG=--max-turns 150 GAFFER_NOTIFY_SLACK_URL=https://hooks.slack.com/services/T0/B0/tok3n GAFFER_NOTIFY_DESKTOP=1 GAFFER_CREATE_PR=0 GAFFER_REQUIRE_CI=1 MAX_CONCURRENT_TICKETS_PER_REPO=1 GAFFER_CONCURRENCY=2 GAFFER_PLAN_DEBATE=0 HYGIENE_ENFORCE=1 GAFFER_TESTING=1 GAFFER_IDLE_FEATURE_BACKLOG=<unset> GAFFER_MAINTENANCE=0 GAFFER_REWORK_BUDGET_USD=40 GAFFER_STRICT_REQUIRE=1 "
+WANT="GAFFER_MODE=autonomous DISPATCH_ALLOW_AGENT_APPROVE=0 AUTO_MERGE=1 REVIEW_MODE=both MAX_TICKS_PER_DAY=20 GAFFER_DAILY_BUDGET_USD=25 GAFFER_TICK_TIMEOUT=1800 GAFFER_MAX_TURNS=150 GAFFER_MAX_TURNS_FLAG=--max-turns 150 GAFFER_NOTIFY_SLACK_URL=https://hooks.slack.com/services/T0/B0/tok3n GAFFER_NOTIFY_DESKTOP=1 GAFFER_CREATE_PR=1 GAFFER_REQUIRE_CI=1 MAX_CONCURRENT_TICKETS_PER_REPO=1 GAFFER_CONCURRENCY=2 GAFFER_PLAN_DEBATE=0 HYGIENE_ENFORCE=1 GAFFER_TESTING=1 GAFFER_IDLE_FEATURE_BACKLOG=<unset> GAFFER_MAINTENANCE=0 GAFFER_REWORK_BUDGET_USD=40 GAFFER_STRICT_REQUIRE=1 "
 [ "$V" = "$WANT" ] && ok "the stricter reading wins for every old key (settings apply; nothing widens autonomy or spend)" || fail "old file: got  $V
                  want $WANT"
 grep -q 'GAFFER_REWORK_BUDGET_USD' "$WORK/err" && ok "an old key with no derived ceiling (rework budget, nothing derives one without GAFFER_BUDGET_USD) is still a stricter reading and applies" || fail "rework budget not said"
@@ -176,7 +186,7 @@ grep -q 'tok3n' "$WORK/err" && fail "a webhook token was printed: $(grep tok3n "
 cfg -- 'bash --norc --noprofile -c "source \"\$0\"" "$0" 2>"$ERRF.child"' >/dev/null
 ! grep -q 'no longer a setting' "$WORK/err.child" && ok "a child that sources the config again is quiet (one warning per process tree)" || fail "child repeats: $(cat "$WORK/err.child")"
 V="$(cfg -- 'printf "%s" "$_GAFFER_MIGRATION_LOG" | awk -F"\t" '"'"'$1=="DISPATCH_ALLOW_AGENT_APPROVE"||$1=="GAFFER_TICK_TIMEOUT"||$1=="GAFFER_CREATE_PR" {print $1 ":" $3 ":" $5}'"'"' | sort | tr "\n" " "')"
-[ "$V" = "DISPATCH_ALLOW_AGENT_APPROVE:GAFFER_MODE:kept GAFFER_CREATE_PR:GAFFER_LANDING:ignored GAFFER_TICK_TIMEOUT:GAFFER_EFFORT:stricter-derived " ] \
+[ "$V" = "DISPATCH_ALLOW_AGENT_APPROVE:GAFFER_MODE:kept GAFFER_CREATE_PR:GAFFER_LANDING:kept GAFFER_TICK_TIMEOUT:GAFFER_EFFORT:stricter-derived " ] \
   && ok "the machine-readable migration log records each decision" || fail "migration log: $V"
 V="$(cfg DISPATCH_ALLOW_AGENT_APPROVE=1 -- "$(vals DISPATCH_ALLOW_AGENT_APPROVE)")"
 [ "$V" = "DISPATCH_ALLOW_AGENT_APPROVE=1 " ] && grep 'key DISPATCH_ALLOW_AGENT_APPROVE ' "$WORK/err" | grep -q 'the environment sets' \
@@ -185,6 +195,28 @@ file '{"AUTO_MERGE":"1","MERGE_ON_AGENT_REVIEW":"1","GAFFER_AUTO_PUSH":"1","MEMO
 V="$(cfg -- "$(vals AUTO_MERGE MERGE_ON_AGENT_REVIEW GAFFER_AUTO_PUSH MEMORY_AUTO_APPROVE)")"
 [ "$V" = "AUTO_MERGE=0 MERGE_ON_AGENT_REVIEW=0 GAFFER_AUTO_PUSH=0 MEMORY_AUTO_APPROVE=0 " ] \
   && ok "old ship flags turned on in settings.json do not ship anything under supervised" || fail "old ship flags: $V"
+# An old pull-request delivery with CI required keeps its pull request: the CI gate reads
+# its checks from the pull request, so dropping GAFFER_CREATE_PR would skip the gate.
+file '{"GAFFER_CREATE_PR":"1","GAFFER_REQUIRE_CI":"1"}'
+V="$(cfg -- "$(vals GAFFER_CREATE_PR GAFFER_REQUIRE_CI)")"
+[ "$V" = "GAFFER_CREATE_PR=1 GAFFER_REQUIRE_CI=1 " ] && ok "an old file with pull requests and CI required keeps both (the CI gate is not skipped)" || fail "old PR + CI: $V"
+# A 0 that is the strictest value is never read as "no limit".
+file '{"MAX_TICKS":"0","GAFFER_MAX_DELIVERY_ATTEMPTS":"0"}'
+V="$(cfg -- "$(vals MAX_TICKS GAFFER_MAX_DELIVERY_ATTEMPTS)")"
+[ "$V" = "MAX_TICKS=0 GAFFER_MAX_DELIVERY_ATTEMPTS=0 " ] && ok "MAX_TICKS=0 (no tick) and GAFFER_MAX_DELIVERY_ATTEMPTS=0 (one attempt) from an old file still apply" || fail "zero caps: $V"
+# An old event filter keeps limiting what is sent to the webhook (GAFFER_NOTIFY has none).
+file '{"GAFFER_NOTIFY_EVENTS":"gate_failed"}'
+V="$(cfg -- "$(vals GAFFER_NOTIFY_EVENTS)")"
+[ "$V" = "GAFFER_NOTIFY_EVENTS=gate_failed " ] && ok "an old GAFFER_NOTIFY_EVENTS filter still applies" || fail "notify events: $V"
+# A switch value no reader takes the same way (padded, a typo) is never kept as "stricter":
+# bash readers do not trim it (off) while the dispatch server does (on).
+file '{"DISPATCH_ALLOW_AGENT_APPROVE":" 1","AUTO_MERGE":"1;x","MEMORY_AUTO_APPROVE":"TRUE ","HYGIENE_ENFORCE":"off","GAFFER_AUTO_PUSH":"False"}'
+V="$(cfg -- "$(vals DISPATCH_ALLOW_AGENT_APPROVE AUTO_MERGE MEMORY_AUTO_APPROVE HYGIENE_ENFORCE GAFFER_AUTO_PUSH)")"
+[ "$V" = "DISPATCH_ALLOW_AGENT_APPROVE=0 AUTO_MERGE=0 MEMORY_AUTO_APPROVE=0 HYGIENE_ENFORCE=1 GAFFER_AUTO_PUSH=0 " ] \
+  && ok "padded or garbage switch values from an old file are ignored; plain ones compare (False reads as 0)" || fail "switch values: $V"
+V="$(cfg GAFFER_MODE=autonomous -- "$(vals DISPATCH_ALLOW_AGENT_APPROVE AUTO_MERGE GAFFER_AUTO_PUSH)")"
+[ "$V" = "DISPATCH_ALLOW_AGENT_APPROVE=1 AUTO_MERGE=1 GAFFER_AUTO_PUSH=0 " ] \
+  && ok "under autonomous a plain old False still turns auto push off (applied as 0); the garbage ones are ignored" || fail "switch values autonomous: $V"
 nofile
 
 echo "== E: autonomy is never widened by accident =="

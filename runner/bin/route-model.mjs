@@ -162,7 +162,8 @@ export function scoreDifficulty(signals = {}) {
 export function tiersFromEnv(raw) {
   const out = {};
   for (const pair of String(raw ?? "").split(/[\s,]+/)) {
-    const m = pair.match(/^([a-z][a-z0-9_-]*)=([A-Za-z0-9._:/@-]+)$/);
+    // A model id starts with a letter or digit: it goes after --model on a command line.
+    const m = pair.match(/^([a-z][a-z0-9_-]*)=([A-Za-z0-9][A-Za-z0-9._:/@-]*)$/);
     if (m) out[m[1]] = m[2];
   }
   return out;

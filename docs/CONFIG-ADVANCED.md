@@ -80,16 +80,16 @@ Accepted: usd. Default: (none). Its table: `runner/config/05-budget.sh`.
 
 ## `GAFFER_MODELS`
 
-The three models, as "strong,standard,cheap" (each a model id), or a preset: standard (opus,sonnet,haiku), economy (sonnet,haiku,haiku), strong (opus,opus,sonnet).
+The three models, as "strong,standard,cheap" (each a model id), or a preset: standard (opus,sonnet,haiku), economy (sonnet,sonnet,haiku: the strong tier moves to sonnet; implementation and review stay on sonnet), strong (opus,opus,sonnet).
 
 Accepted: standard, economy, strong. Default: standard. Its table: `runner/config/04-models.sh`.
 
 | Derived value | standard (default) | economy | strong | Note |
 |---|---|---|---|---|
 | `GAFFER_PLAN_MODEL` | `opus` | `sonnet` | `opus` | the strong tier: planning, the final rework attempt, the eval judge |
-| `GAFFER_IMPL_MODEL` | `sonnet` | `haiku` | `opus` | the implement tier: delivery when the router does not pick, review, the tester |
-| `GAFFER_MODEL_TIERS` | _(unset)_ | `strong=sonnet,mid=haiku,cheap=haiku` | `strong=opus,mid=opus,cheap=sonnet` | the router's tiers over model-registry.json (strong, mid, cheap); unset = the registry's own (opus, sonnet, haiku) |
-| `GAFFER_PLAN_DEBATE_MODELS` | `opus,sonnet` | `sonnet,haiku` | `opus,opus` | the planning debate's proposer and critic |
+| `GAFFER_IMPL_MODEL` | `sonnet` | `sonnet` | `opus` | the implement tier: delivery when the router does not pick, review, the tester |
+| `GAFFER_MODEL_TIERS` | _(unset)_ | `strong=sonnet,mid=sonnet,cheap=haiku` | `strong=opus,mid=opus,cheap=sonnet` | the router's tiers over model-registry.json (strong, mid, cheap); unset = the registry's own (opus, sonnet, haiku) |
+| `GAFFER_PLAN_DEBATE_MODELS` | `opus,sonnet` | `sonnet,sonnet` | `opus,opus` | the planning debate's proposer and critic |
 | `GAFFER_ROLE_MODELS` | _(empty)_ | _(empty)_ | _(empty)_ | per-role models as "role=model" pairs (rework, scout, judge, tester, card, synth, inherit); an unnamed role keeps its default, which follows the tiers |
 | `GAFFER_PLAN_DEBATE` | `0` | `0` | `0` | 1 turns on the two-model planning debate for a big epic (it multiplies planning cost); 0 = one planner |
 | `GAFFER_PLAN_DEBATE_MAX_ROUNDS` | `2` | `2` | `2` | plan-producing rounds of a debate (the draft is round 1) |
@@ -192,7 +192,7 @@ Accepted: standard, strict. Default: standard. Its table: `runner/config/07-limi
 
 ## `GAFFER_LANDING`
 
-How approved work lands: local (merged into the default branch of the repository on this machine) or pr (a pull request per delivery, merged through it once its CI is green).
+How approved work lands: local (merged into the default branch of the repository on this machine) or pr (a pull request per delivery: it enters review once its checks are green, and an approved one is merged through the pull request).
 
 Accepted: local, pr. Default: local. Its table: `runner/config/20-gates.sh`.
 
@@ -293,7 +293,7 @@ would never widen autonomy or spend): then it still applies, and the warning say
 | `GAFFER_IDLE_MODE` | `GAFFER_IDLE` | an old value further along create_ready_tickets/create_ready/(unset) < create_draft_tickets/create_draft < observe_only still applies |
 | `CLARIFY_DRAFTS_WHEN_IDLE` | `GAFFER_IDLE` | an old 0 (off) still applies where the setting derives 1 |
 | `IDLE_DRAFT_WHEN_IDLE` | `GAFFER_IDLE` | an old 0 (off) still applies where the setting derives 1 |
-| `MAX_TICKS` | `GAFFER_CONCURRENCY` | an old lower limit still applies (0 or empty is no limit) |
+| `MAX_TICKS` | `GAFFER_CONCURRENCY` | an old lower number still applies |
 | `MAX_TICKS_PER_DAY` | `GAFFER_CONCURRENCY` | an old lower limit still applies (0 or empty is no limit) |
 | `TICK_SLEEP` | `GAFFER_CONCURRENCY` | never: the setting decides it |
 | `EMPTY_POLL_LIMIT` | `GAFFER_CONCURRENCY` | never: the setting decides it |
@@ -303,7 +303,7 @@ would never widen autonomy or spend): then it still applies, and the warning say
 | `MAX_OPEN_AGENT_PRS_PER_REPO` | `GAFFER_CONCURRENCY` | an old lower limit still applies (0 or empty is no limit) |
 | `GAFFER_TICK_TIMEOUT` | `GAFFER_EFFORT` | an old lower limit still applies (0 or empty is no limit) |
 | `GAFFER_MAX_TURNS` | `GAFFER_EFFORT` | an old lower limit still applies (0 or empty is no limit) |
-| `GAFFER_MAX_DELIVERY_ATTEMPTS` | `GAFFER_EFFORT` | an old lower limit still applies (0 or empty is no limit) |
+| `GAFFER_MAX_DELIVERY_ATTEMPTS` | `GAFFER_EFFORT` | an old lower number still applies |
 | `DISPATCH_MAX_ATTEMPTS` | `GAFFER_EFFORT` | an old lower limit still applies (0 or empty is no limit) |
 | `GAFFER_MAX_NOCOMMIT_FAILURES` | `GAFFER_EFFORT` | an old lower limit still applies (0 or empty is no limit) |
 | `GAFFER_CI_POLL_ATTEMPTS` | `GAFFER_EFFORT` | never: the setting decides it |
@@ -320,9 +320,9 @@ would never widen autonomy or spend): then it still applies, and the warning say
 | `GAFFER_NOTIFY_WEBHOOK_URL` | `GAFFER_NOTIFY` | the old value still applies while the setting leaves it empty |
 | `GAFFER_NOTIFY_SLACK_URL` | `GAFFER_NOTIFY` | the old value still applies while the setting leaves it empty |
 | `GAFFER_NOTIFY_DESKTOP` | `GAFFER_NOTIFY` | the old value still applies while the setting leaves it empty |
-| `GAFFER_NOTIFY_EVENTS` | `GAFFER_NOTIFY` | never: the setting decides it |
+| `GAFFER_NOTIFY_EVENTS` | `GAFFER_NOTIFY` | the old value still applies while the setting leaves it empty |
 | `GAFFER_NOTIFY_FULL_PAYLOAD` | `GAFFER_NOTIFY` | an old 0 (off) still applies where the setting derives 1 |
-| `GAFFER_CREATE_PR` | `GAFFER_LANDING` | never: the setting decides it |
+| `GAFFER_CREATE_PR` | `GAFFER_LANDING` | an old 1 (on) still applies where the setting derives 0 |
 | `GAFFER_PR_MERGE_METHOD` | `GAFFER_LANDING` | never: the setting decides it |
 | `GAFFER_REQUIRE_CI` | `GAFFER_LANDING` | an old 1 (on) still applies where the setting derives 0 |
 | `HYGIENE_ENFORCE` | `GAFFER_GATES` | an old 1 (on) still applies where the setting derives 0 |

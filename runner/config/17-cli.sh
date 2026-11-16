@@ -322,7 +322,8 @@ _gaffer_json_reads_stdin() {
     ac-check-rows|accepted-change|approval-actor|bootstrap-repo-name|branch-recorded|ci-check-rows|\
 cleanup-owner|context-file-cards|context-primed|context-product|delivery-metric|diagnostics-warn|\
 dod-cmd-map|entered-status-at|eval-summary|fields|inherit-amb-argv|inherit-amb-bin|inherit-amb-count|\
-inherit-amb-field|inherit-links|loop-count|lore-drafts|numbers|numbers-joined|partition|pick-unskipped|\
+inherit-amb-field|inherit-links|latest-claim-id|loop-count|lore-drafts|numbers|numbers-joined|partition|\
+pick-unskipped|\
 quarantine|repo-matches|resolved-decisions|resume-pick|review-comments|review-feedback|\
 smallest-change-note|status-acceptance-rows|status-count|status-hq-count|status-hq-lines|\
 status-replay-holds|status-repo-lines|status-tester-counts|status-tester-holds|ticket-named-code|\
@@ -382,6 +383,14 @@ gaffer_json() {
   node "$RUNNER_DIR/lib/json-tool.mjs" "$@"
 }
 jget() { gaffer_json expr "$1"; }
+# The runner libs name json-tool by their own path (_GAFFER_JSON_TOOL and friends) so a
+# test can source one alone; through this they reach the JSON server like gaffer_json.
+#   gaffer_json_at <path to json-tool.mjs> <subcommand> [args]
+gaffer_json_at() {
+  local __gja_tool="$1"
+  shift
+  if [ "$__gja_tool" -ef "$RUNNER_DIR/lib/json-tool.mjs" ]; then gaffer_json "$@"; else node "$__gja_tool" "$@"; fi
+}
 # Several jget reads of ONE document in one node process:
 #   gaffer_json_vars "$JSON" VAR1 '<expr>' '<default>' [VAR2 '<expr>' '<default>']...
 # sets each VAR to exactly what `VAR="$(printf '%s' "$JSON" | jget '<expr>' 2>/dev/null

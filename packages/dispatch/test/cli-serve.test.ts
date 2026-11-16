@@ -18,7 +18,9 @@ import {
   DispatchServer,
   isStartupEnvName,
   leafCommandPath,
+  namesInputFile,
   parseRequest,
+  READS_STDIN_WITHOUT_FILE,
   replyLine,
   SERVED_COMMANDS,
   splitFields,
@@ -70,6 +72,15 @@ describe("serve: the request format", () => {
         ],
       }),
     ).toBe("GWG1 1.2.3 R 1 eO");
+  });
+
+  it("knows when a command names an input file other than stdin", () => {
+    expect(namesInputFile(["ticket", "eval-score", "1", "--file", "/x.json"])).toBe(true);
+    expect(namesInputFile(["--file=/x.json"])).toBe(true);
+    expect(namesInputFile(["--file", "-"])).toBe(false);
+    expect(namesInputFile(["--file="])).toBe(false);
+    expect(namesInputFile(["--file"])).toBe(false);
+    expect(namesInputFile(["ticket", "eval-score", "1"])).toBe(false);
   });
 
   it("names the start-up environment Node reads once", () => {
@@ -306,6 +317,7 @@ describe.skipIf(SKIP)("serve: a served call equals the one-shot call", () => {
         agent: { id: string };
       }
     ).agent.id;
+    writeFileSync(join(dir, "in.json"), '{"verdict":"pass","score":0.9}');
     readToken = (
       JSON.parse(setup(["principal", "create", "reader", "--read"])) as { token: string }
     ).token;
@@ -406,6 +418,13 @@ describe.skipIf(SKIP)("serve: a served call equals the one-shot call", () => {
     ]) {
       expect((await client.run(b, args)).reply, args.join(" ")).toMatch(/^GWG1 \S+ N command$/);
     }
+    // A command that would read the caller's stdin (no --file, or --file -).
+    for (const args of [
+      ["ticket", "eval-score", "1"],
+      ["ticket", "scout-record", "1", "--file", "-"],
+    ]) {
+      expect((await client.run(b, args)).reply, args.join(" ")).toMatch(/ N stdin$/);
+    }
     expect((await client.run(b, ["ticket", "show", "1"], { NODE_OPTIONS: "--x" })).reply).toMatch(
       / N startup-env$/,
     );
@@ -439,7 +458,10 @@ describe.skipIf(SKIP)("serve: a served call equals the one-shot call", () => {
       let cmd = program;
       for (const t of path.split(" ")) cmd = cmd.commands.find((c) => c.name() === t)!;
       const positional = cmd.registeredArguments.filter((a) => a.required).map(() => "1");
-      const args = [...path.split(" "), ...positional];
+      // A command that reads stdin without --file is answered NOT-RUN (tested above):
+      // here it gets a file, as the tick always passes one.
+      const file = READS_STDIN_WITHOUT_FILE.has(path) ? ["--file", join(dir, "in.json")] : [];
+      const args = [...path.split(" "), ...positional, ...file];
       const { a, b } = copyPair();
       const one = oneShot(a, args);
       const served = await client.run(b, args);

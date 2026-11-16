@@ -4,6 +4,9 @@
 # sourced standalone (tests, the gate replay) resolves the workspace default itself.
 [ -n "${CREW_DIR:-}" ] || CREW_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../packages/crew" 2>/dev/null && pwd)"
 _GAFFER_JSON_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/json-tool.mjs"
+# The JSON server reaches this lib's json-tool calls through gaffer_json_at
+# (config/17-cli.sh); sourced alone (a test), they run json-tool directly.
+declare -F gaffer_json_at >/dev/null 2>&1 || gaffer_json_at() { local t="$1"; shift; node "$t" "$@"; }
 _GAFFER_DOD_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 #
 # The single biggest "factory, not vibe" lever: a configurable, deterministically
@@ -350,7 +353,7 @@ gaffer_dod_typecheck_cmd() {
   if [ -n "${GAFFER_DOD_TYPECHECK_CMD:-}" ] && [ -n "${GAFFER_DOD_TYPECHECK_CMD// /}" ]; then
     printf '%s\n' "$GAFFER_DOD_TYPECHECK_CMD"; return 0
   fi
-  node "$_GAFFER_JSON_TOOL" dod-typecheck-detect "$wt" "$base" 2>/dev/null || true
+  gaffer_json_at "$_GAFFER_JSON_TOOL" dod-typecheck-detect "$wt" "$base" 2>/dev/null || true
 }
 
 # Run ONE gate command in a worktree, bounded by gaffer_timeout. Writes the
@@ -905,7 +908,7 @@ gaffer_dod_evidence_summary() {
   local results="$1" overall="$2"
   # JSON line: {"dod":"PASS|FAIL","gates":[{"gate","repo","status","rc","note"}...]}
   local out
-  out="$(node "$_GAFFER_JSON_TOOL" dod-evidence-summary "$results" "$overall" 2>/dev/null)"
+  out="$(gaffer_json_at "$_GAFFER_JSON_TOOL" dod-evidence-summary "$results" "$overall" 2>/dev/null)"
   # Fallback if the node render produced nothing: still emit the verdict
   # line + a built JSON object via awk + the raw results, so the evidence — and the
   # next attempt's feedback — is never totally lost. The dashboard parses the JSON

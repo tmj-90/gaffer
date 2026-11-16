@@ -51,7 +51,7 @@ NODE_LOG="$WORK/node.log"; : > "$NODE_LOG"
 printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s"\nexec "%s" "$@"\n' "$NODE_LOG" "$REAL_NODE" > "$WORK/bin/node"
 chmod +x "$WORK/bin/node"
 export PATH="$WORK/bin:$PATH"
-export GAFFER_DATA="$WORK/data" GAFFER_WG_SERVE=1 GAFFER_WG_SERVE_TIMEOUT=5
+export GAFFER_DATA="$WORK/data" GAFFER_WG_SERVE=1 GAFFER_WG_SERVE_TIMEOUT=2
 unset DISPATCH_DB MEMORY_DB GAFFER_PRINCIPAL_TOKEN
 # shellcheck source=../factory.config.sh
 source "$RUNNER_DIR/factory.config.sh" >/dev/null 2>&1
@@ -60,8 +60,10 @@ oneshot() { "$REAL_NODE" "$CLI" --db "$DISPATCH_DB" "$@"; }
 
 wg init >/dev/null 2>&1
 wg repo add -n repo --path "$WORK" --branch main >/dev/null 2>&1
-HOSTILE=$'A "quoted" $HOME `id` \'single\'\ttab\nsecond line\\ back'
-wg ticket create -t "$HOSTILE" -d "$HOSTILE" --risk low >/dev/null 2>&1
+# A title is one line (the CLI refuses control characters); the description carries the rest.
+HOSTILE='A "quoted" $HOME $(touch pwned) `id` '"'single'"' back\slash'
+HOSTILE_DESC="$HOSTILE"$'\ttab\nsecond line\n\n'
+wg ticket create -t "$HOSTILE" -d "$HOSTILE_DESC" --risk low >/dev/null 2>&1 || { echo "FAIL setup: the hostile ticket was refused"; exit 1; }
 wg ticket create -t "Second" -d "plain" >/dev/null 2>&1
 TOKEN="$(oneshot principal create reader --read 2>/dev/null | "$REAL_NODE" -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>process.stdout.write(JSON.parse(s).token))')"
 
@@ -122,7 +124,7 @@ same_as_oneshot "empty argument" ticket list -s ""
 before="$(served_count)"
 capture "$WORK/n" wg ticket create -t "made one-shot" -d x
 after="$(served_count)"
-[ "$(cat "$WORK/n.rc")" = 0 ] && [ "$after" -gt "$before" ] && grep -q '"made one-shot"' "$WORK/n.out" \
+[ "$(cat "$WORK/n.rc")" = 0 ] && [ "$after" -gt "$before" ] && [ "$(oneshot ticket show 3 | jget 'd.ticket.title')" = "made one-shot" ] \
   && ok "W1: a command the server does not run (ticket create) went one-shot and worked" || fail "W1: not-run fallback rc=$(cat "$WORK/n.rc")"
 
 echo "== W2: \$(...), pipelines, subshells and background jobs =="
@@ -130,11 +132,14 @@ t="$(wg ticket show 2 | jget 'd.ticket.title')"
 [ "$t" = "Second" ] && ok "W2: \$(wg | jget) got its reply" || fail "W2: pipeline got '$t'"
 t="$( ( wg ticket show 1 ) | jget 'd.ticket.title')"
 [ "$t" = "$HOSTILE" ] && ok "W2: a subshell's call got its own reply (hostile title intact)" || fail "W2: subshell got '$t'"
+PIDS=()
 for i in 1 2 3 4 5 6 7 8; do
   ( if [ $((i % 2)) = 0 ]; then n=1; else n=2; fi
     wg ticket show "$n" > "$WORK/par.$i.out" 2>&1; echo $? > "$WORK/par.$i.rc" ) &
+  PIDS+=($!)
 done
-wait
+# (Never a bare `wait`: it would wait for the servers, which are children of this shell too.)
+wait "${PIDS[@]}"
 bad=0
 for i in 1 2 3 4 5 6 7 8; do
   if [ $((i % 2)) = 0 ]; then want="$HOSTILE"; else want="Second"; fi
@@ -229,7 +234,7 @@ fault() {  # <mode> <label>
   [ "$(cat "$WORK/f2.rc")" = 0 ] && [ "$(served_count)" -gt "$b" ] && ok "W4 $mode: the next call ran one-shot and succeeded" || fail "W4 $mode: the next call rc=$(cat "$WORK/f2.rc")"
   gaffer_wg_serve_stop
 }
-fault hang "a hang past GAFFER_WG_SERVE_TIMEOUT=5s"
+fault hang "a hang past GAFFER_WG_SERVE_TIMEOUT=2s"
 fault garbage "a garbage reply"
 fault wrong-nonce "a reply to another call"
 fault die "death during the call"
@@ -250,7 +255,8 @@ gaffer_wg_serve_stop
 echo "== W8: the JSON server =="
 # The client captures stdin only for the subcommands that read it: its list must be
 # exactly json-tool's (a case whose body calls readStdin/parseStdin).
-SRC_LIST="$(awk '/^  case "/{name=$2; gsub(/[":]/,"",name)} /readStdin\(|parseStdin\(/{if(name!="") print name}' "$RUNNER_DIR/lib/json-tool.mjs" | sort -u)"
+# (Consecutive case labels share one body: a read marks every label of the group.)
+SRC_LIST="$(awk '/^  case "/{name=$2; gsub(/[":]/,"",name); if (prevcase) grp=grp" "name; else grp=name; prevcase=1; next} {prevcase=0} /readStdin\(|parseStdin\(/{n=split(grp,a," "); for(i=1;i<=n;i++) print a[i]}' "$RUNNER_DIR/lib/json-tool.mjs" | sort -u)"
 ALL_LIST="$(awk '/^  case "/{name=$2; gsub(/[":]/,"",name); print name}' "$RUNNER_DIR/lib/json-tool.mjs" | sort -u)"
 CLIENT_LIST="$(for c in $ALL_LIST; do _gaffer_json_reads_stdin "$c" && echo "$c"; done | sort -u)"
 [ -n "$SRC_LIST" ] && [ "$SRC_LIST" = "$CLIENT_LIST" ] && ok "W8: the stdin-reading subcommands the client knows are exactly json-tool's ($(echo "$SRC_LIST" | wc -l | tr -d ' '))" \

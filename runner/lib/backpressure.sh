@@ -1,6 +1,9 @@
 # Gaffer per-repo backpressure (sourced by factory.config.sh).
 # shellcheck shell=bash
 _GAFFER_JSON_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/json-tool.mjs"
+# The JSON server reaches this lib's json-tool calls through gaffer_json_at
+# (config/17-cli.sh); sourced alone (a test), they run json-tool directly.
+declare -F gaffer_json_at >/dev/null 2>&1 || gaffer_json_at() { local t="$1"; shift; node "$t" "$@"; }
 #
 # Before claiming/delivering for a repo, count its OUTSTANDING work and refuse to
 # pile up more than the configured cap. Outstanding work for a repo =
@@ -69,7 +72,7 @@ gaffer_repo_unmerged_branches() {
 gaffer_parked_ticket_numbers() {
   local s
   for s in blocked refining; do
-    _bp_wg_list "$s" 2>/dev/null | node "$_GAFFER_JSON_TOOL" numbers 2>/dev/null
+    _bp_wg_list "$s" 2>/dev/null | gaffer_json_at "$_GAFFER_JSON_TOOL" numbers 2>/dev/null
   done
   return 0
 }
@@ -85,12 +88,12 @@ gaffer_parked_ticket_numbers() {
 #   gaffer_inactive_ticket_numbers
 gaffer_inactive_ticket_numbers() {
   gaffer_parked_ticket_numbers
-  _bp_wg_list cancelled 2>/dev/null | node "$_GAFFER_JSON_TOOL" numbers 2>/dev/null
+  _bp_wg_list cancelled 2>/dev/null | gaffer_json_at "$_GAFFER_JSON_TOOL" numbers 2>/dev/null
   # DONE is terminal too. Its branch is normally merged (and so never listed), but a
   # ticket closed with "I merged it by hand" after a squash or rebase merge — or a
   # hand-applied change — leaves its gaffer/ branch unmerged, and counting it held a
   # slot of the repo's branch cap for good.
-  _bp_wg_list "done" 2>/dev/null | node "$_GAFFER_JSON_TOOL" numbers 2>/dev/null
+  _bp_wg_list "done" 2>/dev/null | gaffer_json_at "$_GAFFER_JSON_TOOL" numbers 2>/dev/null
   return 0
 }
 
@@ -216,7 +219,7 @@ gaffer_sweep_abandoned_branches() {
     num="$(printf '%s' "$b" | sed -nE 's#^gaffer/ticket-([0-9]+).*#\1#p')"
     [ -n "$num" ] || continue
     show="$(_bp_wg_show "$num" 2>/dev/null)" || continue
-    tstatus="$(printf '%s' "$show" | node "$_GAFFER_JSON_TOOL" ticket-status 2>/dev/null)"
+    tstatus="$(printf '%s' "$show" | gaffer_json_at "$_GAFFER_JSON_TOOL" ticket-status 2>/dev/null)"
     [ "$tstatus" = "cancelled" ] || continue
     tid="$(printf '%s' "$show" | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{try{const v=JSON.parse(s).ticket.id;process.stdout.write(typeof v==="string"?v:"")}catch{}})' 2>/dev/null)"
     [ -n "$tid" ] || continue
@@ -245,7 +248,7 @@ gaffer_branch_is_delivery_artifact() {
   local num="$1" branch="$2" out
   out="$(_bp_wg_deliveries "$num" 2>/dev/null)" || return 0
   # unparseable → fail safe (treat as recorded → keep)
-  printf '%s' "$out" | node "$_GAFFER_JSON_TOOL" branch-recorded "$branch"
+  printf '%s' "$out" | gaffer_json_at "$_GAFFER_JSON_TOOL" branch-recorded "$branch"
 }
 
 # Default Dispatch accessors (overridable by tests). Each appends its argument.
@@ -275,10 +278,10 @@ _bp_wg_deliveries() {
 gaffer_repo_tickets_in_status() {
   local status="$1" target="$2"
   local nums n
-  nums="$(_bp_wg_list "$status" 2>/dev/null | node "$_GAFFER_JSON_TOOL" numbers-joined 2>/dev/null)"
+  nums="$(_bp_wg_list "$status" 2>/dev/null | gaffer_json_at "$_GAFFER_JSON_TOOL" numbers-joined 2>/dev/null)"
   local count=0
   for n in $nums; do
-    if _bp_wg_show "$n" 2>/dev/null | node "$_GAFFER_JSON_TOOL" repo-matches "$target"; then
+    if _bp_wg_show "$n" 2>/dev/null | gaffer_json_at "$_GAFFER_JSON_TOOL" repo-matches "$target"; then
       count=$((count + 1))
     fi
   done

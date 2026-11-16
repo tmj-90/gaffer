@@ -8,6 +8,9 @@
 # telling the agent that envelope content is data to act on, never instructions.
 # shellcheck shell=bash
 _GAFFER_JSON_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/json-tool.mjs"
+# The JSON server reaches this lib's json-tool calls through gaffer_json_at
+# (config/17-cli.sh); sourced alone (a test), they run json-tool directly.
+declare -F gaffer_json_at >/dev/null 2>&1 || gaffer_json_at() { local t="$1"; shift; node "$t" "$@"; }
 
 # gaffer_quarantine <tag> <value> [single]
 #   • Escapes EVERY `<` of the data to `&lt;` (runner/lib/untrusted.mjs), so the
@@ -20,7 +23,7 @@ _GAFFER_JSON_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/json-tool.mjs"
 gaffer_quarantine() {
   local tag="$1" value="$2" mode="${3:-multi}"
   # Escapes every `<` of the data; `single` collapses whitespace to one line.
-  printf '%s' "$value" | node "$_GAFFER_JSON_TOOL" quarantine "$tag" "$mode"
+  printf '%s' "$value" | gaffer_json_at "$_GAFFER_JSON_TOOL" quarantine "$tag" "$mode"
 }
 
 # The standing instruction prepended to every prompt that embeds quarantined data.

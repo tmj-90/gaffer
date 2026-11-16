@@ -1,6 +1,9 @@
 # Gaffer greenfield "create-a-repo" delivery mode (sourced by factory.config.sh).
 # shellcheck shell=bash
 _GAFFER_JSON_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/json-tool.mjs"
+# The JSON server reaches this lib's json-tool calls through gaffer_json_at
+# (config/17-cli.sh); sourced alone (a test), they run json-tool directly.
+declare -F gaffer_json_at >/dev/null 2>&1 || gaffer_json_at() { local t="$1"; shift; node "$t" "$@"; }
 _GAFFER_GREENFIELD_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 #
 # A `bootstrap` ticket (dispatch `ticket.bootstrap == 1`) has NO existing repo to
@@ -30,7 +33,7 @@ _GAFFER_GREENFIELD_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 gaffer_bootstrap_repo_name() {
   local show_json="$1"
   # Slug: lowercase, non-alnum → "-", collapse, trim, ≤64 chars.
-  printf '%s' "$show_json" | node "$_GAFFER_JSON_TOOL" bootstrap-repo-name 2>/dev/null
+  printf '%s' "$show_json" | gaffer_json_at "$_GAFFER_JSON_TOOL" bootstrap-repo-name 2>/dev/null
 }
 
 # Compute the absolute target directory for a new bootstrap repo: <root>/<name>.
@@ -548,15 +551,15 @@ gaffer_bootstrap_remote_decision() {
 # Kept tiny + isolated so the spawn/parse logic stays out of gaffer_inherit_repo.
 
 _gaffer_inherit_links() {  # stdin: plan JSON → "ticket<TAB>repo<TAB>reason" per link
-  node "$_GAFFER_JSON_TOOL" inherit-links 2>/dev/null
+  gaffer_json_at "$_GAFFER_JSON_TOOL" inherit-links 2>/dev/null
 }
 
 _gaffer_inherit_ambiguous_count() {  # stdin: plan JSON → count of ambiguous siblings
-  node "$_GAFFER_JSON_TOOL" inherit-amb-count 2>/dev/null
+  gaffer_json_at "$_GAFFER_JSON_TOOL" inherit-amb-count 2>/dev/null
 }
 
 _gaffer_inherit_amb_field() {  # stdin: plan JSON; args: <idx> <ticket|candidates>
-  node "$_GAFFER_JSON_TOOL" inherit-amb-field "$1" "$2" 2>/dev/null
+  gaffer_json_at "$_GAFFER_JSON_TOOL" inherit-amb-field "$1" "$2" 2>/dev/null
 }
 
 # Spawn the planned claude argv for ambiguous sibling <idx> and echo its answer text.
@@ -570,11 +573,11 @@ _gaffer_inherit_amb_spawn() {  # stdin: plan JSON; args: <idx> [ticket] → answ
   payload="$(cat)"
   # Pull the binary + argv as NUL-separated tokens to survive spaces in the prompt.
   local bin
-  bin="$(printf '%s' "$payload" | node "$_GAFFER_JSON_TOOL" inherit-amb-bin "$idx" 2>/dev/null)"
+  bin="$(printf '%s' "$payload" | gaffer_json_at "$_GAFFER_JSON_TOOL" inherit-amb-bin "$idx" 2>/dev/null)"
   [ -n "$bin" ] || bin="${CLAUDE_BIN:-claude}"
   # Build the argv array from the JSON and exec it.
   local -a argv=()
-  while IFS= read -r -d '' tok; do argv+=("$tok"); done < <(printf '%s' "$payload" | node "$_GAFFER_JSON_TOOL" inherit-amb-argv "$idx" 2>/dev/null)
+  while IFS= read -r -d '' tok; do argv+=("$tok"); done < <(printf '%s' "$payload" | gaffer_json_at "$_GAFFER_JSON_TOOL" inherit-amb-argv "$idx" 2>/dev/null)
   [ "${#argv[@]}" -gt 0 ] || return 0
   # Bound this ambiguous-multi-app inherit decision like every other live `claude -p`:
   # it runs AFTER a fast delivery where the outer per-tick timer may have hours of

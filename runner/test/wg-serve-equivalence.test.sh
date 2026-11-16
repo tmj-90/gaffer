@@ -4,9 +4,10 @@
 # ---------------------------------------------------------------------
 # The same scenario runs twice through the REAL tick.sh with a stub agent
 # (lib/stub-tick.sh), each in its own world: once with GAFFER_WG_SERVE=1 (one
-# long-lived dispatch process per tick) and once with GAFFER_WG_SERVE=0 (every `wg`
-# call its own process, as before). Scenario: a delivery tick, an agent-review tick,
-# then a second delivery that a person approves and the next tick's merge lane lands.
+# long-lived dispatch process and one JSON process per tick) and once with
+# GAFFER_WG_SERVE=0 (every `wg` and JSON helper call its own process, as before).
+# Scenario: a delivery tick, an agent-review tick, a second delivery, then a tick whose
+# merge lane lands the agent-approved ticket.
 #   E1  each tick prints the same TICK_RESULT in both worlds;
 #   E2  both databases hold the same rows in every table, the event log included,
 #       once ids, tokens, hashes, commit ids, timestamps, durations and the world's
@@ -43,8 +44,9 @@ if [ "${1:-}" = "--world" ]; then
   B="$(new_ready "Equivalent landing" "deliver a helper")"
   rm -f "$GAFFER_DATA/.failed-tickets"
   echo "deliver2: $(tick 3)" >> "$OUT.results"
-  wg review approve "$B" >/dev/null 2>&1
-  echo "land: $(tick 4 AUTO_MERGE=1)" >> "$OUT.results"
+  # The agent-approved first ticket is ready_for_merge; the merge lane lands it when the
+  # merge gate lets an agent's approval ship.
+  echo "land: $(tick 4 AUTO_MERGE=1 MERGE_ON_AGENT_REVIEW=1)" >> "$OUT.results"
   echo "status: #$A $(st "$A") #$B $(st "$B")" >> "$OUT.results"
   cat > "$WORK/dump.mjs" <<'DUMP'
 // Every row of every table, in rowid order, with what differs by construction normalised.
@@ -103,8 +105,8 @@ else
   fail "E1: results differ: $(diff "$OUTD/served.results" "$OUTD/oneshot.results" | tr '\n' ' ')"
 fi
 grep -q '^deliver: TICK_RESULT=worked$' "$OUTD/served.results" && grep -q '^land: ' "$OUTD/served.results" \
-  && grep -qE '^status: #[0-9]+ [a-z_]+ #[0-9]+ done$' "$OUTD/served.results" \
-  && ok "E1: the scenario delivered, reviewed and landed (the second ticket is done)" \
+  && grep -qE '^status: #[0-9]+ done #[0-9]+ [a-z_]+$' "$OUTD/served.results" \
+  && ok "E1: the scenario delivered, reviewed and landed (the first ticket is done)" \
   || fail "E1: the scenario did not reach a landing: $(tr '\n' ' ' < "$OUTD/served.results")"
 
 echo "== E2: the same rows, the event log included =="

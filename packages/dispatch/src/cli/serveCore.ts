@@ -112,6 +112,28 @@ export const SERVED_COMMANDS: ReadonlySet<string> = new Set([
   "unblock",
 ]);
 
+/** Served commands that read stdin when no `--file <path>` is given (or `--file -`). */
+export const READS_STDIN_WITHOUT_FILE: ReadonlySet<string> = new Set([
+  "ticket eval-score",
+  "ticket scout-record",
+]);
+
+/** True when argv names an input file other than stdin: `--file <path>` / `--file=<path>`. */
+export function namesInputFile(args: readonly string[]): boolean {
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (a === "--file") {
+      const v = args[i + 1];
+      return v !== undefined && v !== "-" && v !== "";
+    }
+    if (a.startsWith("--file=")) {
+      const v = a.slice("--file=".length);
+      return v !== "-" && v !== "";
+    }
+  }
+  return false;
+}
+
 /**
  * Environment Node reads once at start-up (the module loader, the ICU locale, the
  * time zone, OpenSSL, the dynamic loader). A request that changes one of these from
@@ -303,6 +325,9 @@ export class DispatchServer {
   ): string | null {
     const leaf = leafCommandPath(program, req.args);
     if (leaf === null || !SERVED_COMMANDS.has(leaf)) return "command";
+    // These read their JSON from stdin unless --file names a file; the caller's stdin
+    // does not reach this process (the tick always passes --file).
+    if (READS_STDIN_WITHOUT_FILE.has(leaf) && !namesInputFile(req.args)) return "stdin";
     const names = new Set([...Object.keys(this.startEnv), ...Object.keys(env)]);
     for (const name of names) {
       if (isStartupEnvName(name) && this.startEnv[name] !== env[name]) return "startup-env";

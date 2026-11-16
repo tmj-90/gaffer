@@ -2,6 +2,9 @@
 # `check_command` in the delivery worktree and records the verdict.
 # shellcheck shell=bash
 _GAFFER_JSON_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/json-tool.mjs"
+# The JSON server reaches this lib's json-tool calls through gaffer_json_at
+# (config/17-cli.sh); sourced alone (a test), they run json-tool directly.
+declare -F gaffer_json_at >/dev/null 2>&1 || gaffer_json_at() { local t="$1"; shift; node "$t" "$@"; }
 #
 # WHY. Acceptance criteria were prose: the agent wrote whatever evidence it liked via
 # record_ac_evidence and the done gate only required a non-empty diff + a passing
@@ -33,7 +36,7 @@ _GAFFER_JSON_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/json-tool.mjs"
 # base64 so the row stays one line WITHOUT rewriting it (a TAB→space collapse once
 # turned a failing criterion into a pass). Empty output ⇒ none.
 _gaffer_ac_check_rows() {
-  printf '%s' "$1" | node "$_GAFFER_JSON_TOOL" ac-check-rows 2>/dev/null
+  printf '%s' "$1" | gaffer_json_at "$_GAFFER_JSON_TOOL" ac-check-rows 2>/dev/null
 }
 
 gaffer_ac_check_count() {

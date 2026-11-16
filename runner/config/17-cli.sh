@@ -81,7 +81,10 @@ wg() {
 # variables, never exported: a child script sources this file again and runs its own
 # calls one-shot.
 : "${GAFFER_WG_SERVE:=1}"   # 1 = a tick sends its dispatch CLI (`wg`) and JSON helper calls to two long-lived processes instead of starting node for each; 0 runs every call as its own process (troubleshooting).
-: "${GAFFER_WG_SERVE_TIMEOUT:=120}"   # Seconds a served call waits for its reply. A `wg` call then fails (closed), a JSON helper call runs again one-shot, and the rest of the tick runs one-shot.
+# Seconds a served call waits for its reply. A `wg` call then fails (closed), a JSON
+# helper call runs again one-shot, and the rest of the tick runs one-shot. Not an operator
+# knob (GAFFER_WG_SERVE=0 is the switch); a test shortens it.
+GAFFER_WG_SERVE_TIMEOUT="${GAFFER_WG_SERVE_TIMEOUT:-120}"
 _GAFFER_WG_PID="${_GAFFER_WG_PID:-}"   # (both kept if this file is sourced again in the same shell)
 _GAFFER_JS_PID="${_GAFFER_JS_PID:-}"
 

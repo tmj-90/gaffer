@@ -23,15 +23,15 @@ child, test seams) and deprecated names are listed at the end, not in the tables
 
 | Metric | Count |
 |---|---|
-| Knobs with a default line | 97 |
+| Knobs with a default line | 96 |
 | Knobs with no default line (the fallback is where they are read) | 16 |
 | Knobs editable in the dashboard | 59 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
 | Env reads in code with no default and no UI entry | 0 |
-| Rows in the tables | 122 |
+| Rows in the tables | 121 |
 | Deprecated names (still work for one release) | 37 |
 | Removed names (ignored, with a warning) | 18 |
-| Internal names and test seams (not knobs) | 99 |
+| Internal names and test seams (not knobs) | 100 |
 
 ## Knobs, by area of `runner/config`
 
@@ -220,7 +220,6 @@ servers stop with their tick, and exit by themselves when the tick is gone.
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
 | `GAFFER_WG_SERVE` | `1` |  | runner | 1 = a tick sends its dispatch CLI (`wg`) and JSON helper calls to two long-lived processes instead of starting node for each; 0 runs every call as its own process (troubleshooting). |
-| `GAFFER_WG_SERVE_TIMEOUT` | `120` |  | runner | Seconds a served call waits for its reply. A `wg` call then fails (closed), a JSON helper call runs again one-shot, and the rest of the tick runs one-shot. |
 
 ### Review and landing
 
@@ -357,4 +356,4 @@ the code is not a mystery; a run needs none of them set.
 - **plumbing**: Set by the runner for a child process, the dashboard, an MCP server or the safety hook, never by you. `DISPATCH_PRODUCT_OWNER_CMD`, `DISPATCH_ONBOARD_CMD`, `DISPATCH_EPIC_FEATURE_CMD`, `DISPATCH_ONBOARD_NAME`, `DISPATCH_CORRELATION_ID`, `GAFFER_CLAIM_TOKEN`, `GAFFER_REVIEW_TICKET`, `GAFFER_DEFAULT_TICKET_REPO`, `GAFFER_TICKET`, `GAFFER_SANDBOX_PROFILE`.
 - **packages**: Read inside the dispatch, memory and crew packages from their own environment; the runner never sets them. A few tune those packages, each read where it is named (an extra sensitive-path or test-path regex for the reviewer's risk flags and the gate-integrity check, the deletion size that is flagged, a hard observed-risk ceiling, the audit switches): set one in the environment that starts the package. `DISPATCH_AGENT_ID`, `DISPATCH_AUDIT`, `DISPATCH_AUDIT_OFF`, `DISPATCH_PID_FILE`, `DISPATCH_SENSITIVE_PATH_RE`, `DISPATCH_LARGE_DELETION_LINES`, `DISPATCH_OBSERVED_RISK_CEILING`, `GAFFER_ACCEPTANCE_PROFILE_SEED`, `GAFFER_TEST_PATH_RE`, `MEMORY_AUDIT_OFF`, `MEMORY_NO_COLOR`, `MEMORY_REVIEW_NUDGE_EVERY_TIME`.
 - **sandbox**: Inside-the-image details of the docker sandbox provider (runner/lib/sandbox-docker.sh, docs/sandbox.md). `GAFFER_SANDBOX_CLAUDE_BIN`, `GAFFER_SANDBOX_CLAUDE_CREDENTIALS`, `GAFFER_SANDBOX_HOME`, `GAFFER_SANDBOX_PATH`, `GAFFER_SANDBOX_NET_INT`, `GAFFER_SANDBOX_NET_UP`, `GAFFER_SANDBOX_PROXY`, `GAFFER_SANDBOX_PROXY_IMAGE`.
-- **test seams**: read only so a test can shorten a wait, stub a command, skip slow bookkeeping or fix the clock; keep the built-in value. `GAFFER_DOD_OUTPUT_TAIL`, `GAFFER_DOD_RERUN_WAIT`, `GAFFER_DAEMON_MAX_CYCLES`, `GAFFER_DAEMON_SETUP_BACKOFF_MAX`, `GAFFER_TICK_DEADLINE_MARGIN`, `GAFFER_REAP_GRACE`, `GAFFER_LOCK_TIMEOUT`, `GAFFER_LOCK_STALE`, `GAFFER_REGISTRY_PROBE_TIMEOUT`, `GAFFER_DIGEST_DISABLE`, `GAFFER_USAGE_PAUSE_POLL_SECS`, `GAFFER_TODAY_OVERRIDE`, `GAFFER_CONTEXT_DUMP_DIR`, `GAFFER_WG_LIST_CMD`, `GAFFER_WG_SHOW_CMD`, `GAFFER_WG_DELIVERIES_CMD`, `GAFFER_TRUST_LOCK_TRIES`, `GAFFER_TRUST_LOCK_SLEEP_MS`, `GAFFER_TRUST_LOCK_STALE_MS`, `GAFFER_TRUST_WORKTREE_ROOT`, `GAFFER_CARD_BATCH`, `GAFFER_CARD_SNIPPET_CHARS`, `GAFFER_MERGE_TIMEOUT_MS`, `GAFFER_REAPPROVAL_BACKOFF_MS`, `GAFFER_DECOMPOSE_TIMEOUT_MS`, `GAFFER_PLAN_BUILD_TIMEOUT_MS`, `GAFFER_TESTER_TIMEOUT_MS`, `GAFFER_ACCEPTANCE_PORT_BASE`, `GAFFER_REDACTION_MODULE`, `DISPATCH_TESTER_VERDICT_CMD`, `DISPATCH_LANE_VERDICT_CMD`, `DISPATCH_ACCEPTANCE_EVIDENCE_CMD`, `GAFFER_KEEP_DELIVERY_BRANCH`, `GAFFER_PAUSE_KEEP_WORKTREE`, `GAFFER_UNIVERSAL_SKILLS`, `GAFFER_CLAUDE_VERSION`, `GAFFER_BP_FILE`, `DAILY_COUNTER_FILE`, `GAFFER_CLAIM_TTL`, `GAFFER_DOD_INSTALL_TIMEOUT`, `GAFFER_TEST_MERGE_CRASH_AFTER_LAND`.
+- **test seams**: read only so a test can shorten a wait, stub a command, skip slow bookkeeping or fix the clock; keep the built-in value. `GAFFER_DOD_OUTPUT_TAIL`, `GAFFER_DOD_RERUN_WAIT`, `GAFFER_DAEMON_MAX_CYCLES`, `GAFFER_DAEMON_SETUP_BACKOFF_MAX`, `GAFFER_TICK_DEADLINE_MARGIN`, `GAFFER_REAP_GRACE`, `GAFFER_LOCK_TIMEOUT`, `GAFFER_LOCK_STALE`, `GAFFER_REGISTRY_PROBE_TIMEOUT`, `GAFFER_DIGEST_DISABLE`, `GAFFER_USAGE_PAUSE_POLL_SECS`, `GAFFER_TODAY_OVERRIDE`, `GAFFER_CONTEXT_DUMP_DIR`, `GAFFER_WG_LIST_CMD`, `GAFFER_WG_SERVE_TIMEOUT`, `GAFFER_WG_SHOW_CMD`, `GAFFER_WG_DELIVERIES_CMD`, `GAFFER_TRUST_LOCK_TRIES`, `GAFFER_TRUST_LOCK_SLEEP_MS`, `GAFFER_TRUST_LOCK_STALE_MS`, `GAFFER_TRUST_WORKTREE_ROOT`, `GAFFER_CARD_BATCH`, `GAFFER_CARD_SNIPPET_CHARS`, `GAFFER_MERGE_TIMEOUT_MS`, `GAFFER_REAPPROVAL_BACKOFF_MS`, `GAFFER_DECOMPOSE_TIMEOUT_MS`, `GAFFER_PLAN_BUILD_TIMEOUT_MS`, `GAFFER_TESTER_TIMEOUT_MS`, `GAFFER_ACCEPTANCE_PORT_BASE`, `GAFFER_REDACTION_MODULE`, `DISPATCH_TESTER_VERDICT_CMD`, `DISPATCH_LANE_VERDICT_CMD`, `DISPATCH_ACCEPTANCE_EVIDENCE_CMD`, `GAFFER_KEEP_DELIVERY_BRANCH`, `GAFFER_PAUSE_KEEP_WORKTREE`, `GAFFER_UNIVERSAL_SKILLS`, `GAFFER_CLAUDE_VERSION`, `GAFFER_BP_FILE`, `DAILY_COUNTER_FILE`, `GAFFER_CLAIM_TTL`, `GAFFER_DOD_INSTALL_TIMEOUT`, `GAFFER_TEST_MERGE_CRASH_AFTER_LAND`.

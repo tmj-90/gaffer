@@ -17,6 +17,7 @@ import { notTestedMessage, runnerLaneSafe } from "./tester.js";
 import type {
   ReviewGateService,
   ApproveReviewOptions,
+  ReviewedHead,
   UnavailableWriteRepo,
 } from "../reviewGateService.js";
 import { assertCiPassed, approveCiCandidate } from "./ci.js";
@@ -128,9 +129,10 @@ export function approveReview(
   // no delivery diff) and the coverage refusal is the last gate before the pins.
   const covered = internals.ticketSvc.resolveTicket(ticketRef);
   const unavailable = host.unavailableWriteRepos(covered);
+  let observed: ObservedRisk | null = null;
   if (agentApproveAllowed) {
     assertWriteReposAvailable(covered, unavailable);
-    enforceObservedRiskCeiling(internals, ticketRef, actor);
+    observed = enforceObservedRiskCeiling(internals, ticketRef, actor);
   }
   const ticket = internals.ticketSvc.resolveTicket(ticketRef);
   // REQUIRED CI (server-side, like the other holds): when the runner has recorded CI
@@ -191,6 +193,7 @@ export function approveReview(
   // HUMAN approval pins the current heads, as before; an agent approval without commits
   // is pinned by the runner (lib/review.sh) only.
   const heads = resolveReviewedHeads(internals, ticket);
+  if (agentApproveAllowed) bindObservedHeads(ticket, observed, heads);
   const pins = checkShownCommits(ticket, heads, actor, opts, unavailable);
   // TESTER FIRST: when the independent tester gates this ticket (an epic's acceptance
   // ticket always; a testable one while its lane is on), it tests the candidate BEFORE
@@ -264,6 +267,37 @@ export function approveReview(
     sealApprovalEvent(internals, ticket, result.eventId, pinsOf(pins), principalId(opts));
     return result;
   });
+}
+
+/**
+ * THE AUTO-SHIP GATE under a moving branch (independent review of external review 20):
+ * the observed risk was read from the diff at the heads it records; the approval pins
+ * the heads resolved after it. A commit that landed in between was never judged, so the
+ * approval is refused (the runner retries and judges the new diff). Only refuses; a
+ * resolver that records no heads (a test double) is not bound.
+ */
+function bindObservedHeads(
+  ticket: Ticket,
+  observed: ObservedRisk | null,
+  heads: readonly ReviewedHead[],
+): void {
+  if (!observed?.heads) return;
+  const moved = heads.filter((h) => {
+    const o = observed.heads!.find((x) => (x.repoId ?? null) === h.repoId || x.repo === h.repo);
+    return !o || o.sha === null || o.sha.toLowerCase() !== h.sha.toLowerCase();
+  });
+  if (moved.length === 0) return;
+  throw new DispatchError(
+    "STATE_CONFLICT",
+    `The delivery branch moved while its risk was being observed (${moved
+      .map((h) => `${h.repo} is now at ${h.sha.slice(0, 12)}`)
+      .join(", ")}): an automatic approval covers only a diff whose risk was judged. Nothing was approved; approve again to judge the new diff.`,
+    {
+      reason: "stale_revision",
+      ticket_number: ticket.number,
+      current: moved.map((h) => ({ repo: h.repo, repo_id: h.repoId, sha: h.sha })),
+    },
+  );
 }
 
 function notPermittedToApprove(actor: Actor): DispatchError {
@@ -439,8 +473,8 @@ export function enforceObservedRiskCeiling(
   internals: Pick<ApprovalInternals, "db" | "observedRiskResolver" | "ticketSvc">,
   ticketRef: string,
   actor: Actor,
-): void {
-  if (!internals.observedRiskResolver) return;
+): ObservedRisk | null {
+  if (!internals.observedRiskResolver) return null;
   const ticket = internals.ticketSvc.resolveTicket(ticketRef);
   let observed: ObservedRisk | null;
   try {
@@ -450,7 +484,7 @@ export function enforceObservedRiskCeiling(
   }
   // A missing observation is indeterminate ⇒ escalate (hold for a human).
   const escalate = !observed || shouldEscalate(observed, ticket.risk_level);
-  if (!escalate) return;
+  if (!escalate) return observed;
   const observedLevel = observed?.level ?? "unknown";
   const reasons = observed?.reasons.length ? observed.reasons : ["diff unavailable to observe"];
   // Record the reason on the EXISTING append-only event log (no new mutation surface).

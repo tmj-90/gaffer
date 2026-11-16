@@ -42,14 +42,16 @@
 # else runs the command unbounded (best-effort — never breaks the call).
 # GAFFER_EFFORT (a setting): how much work one ticket may take. Its table sets the
 # per-call bounds, the attempts and the gate and CI time together; a real environment
-# variable for any of these names still wins.
+# variable for any of these names still wins. small never shortens the gate and CI time:
+# how long a repository's test suite or CI takes does not shrink with the ticket, and a
+# gate that times out sends the delivery back to a paid rework attempt.
 _gaffer_derive GAFFER_EFFORT <<'_GAFFER_TABLE_'
 #                               small  standard  large
 GAFFER_TICK_TIMEOUT             900    1800      3600   # wall-clock seconds one agent call may run before it is stopped
 GAFFER_MAX_TURNS                100    200       300    # agent turns per delivery call (claude --max-turns), and the ceiling for every role
 GAFFER_MAX_DELIVERY_ATTEMPTS    2      3         4      # agent attempts per delivery in one tick (the rework ladder); 1 = no rework
-GAFFER_DOD_TIMEOUT              600    900       1800   # seconds each Definition-of-Done gate and each acceptance check command may run
-GAFFER_CI_POLL_ATTEMPTS         10     20        40     # CI status polls before the CI gate calls the checks still pending
+GAFFER_DOD_TIMEOUT              900    900       1800   # seconds each Definition-of-Done gate and each acceptance check command may run
+GAFFER_CI_POLL_ATTEMPTS         20     20        40     # CI status polls before the CI gate calls the checks still pending
 GAFFER_ROLE_MAX_TURNS           ~      # per-role turn caps as "role=N" pairs (review, security_review, clarify, judge, tester, merge, po, scout, onboard, decompose, spec_author), each clamped to GAFFER_MAX_TURNS
 GAFFER_RETRY_FRESH_BRANCH       ~      # 1 = a ticket re-entered by a later tick starts again from its base branch; 0 keeps its commits
 GAFFER_TICK_DEADLINE_GUARD      ~      # 1 = a tick starts no attempt that its outer time bound would kill; 0 = off

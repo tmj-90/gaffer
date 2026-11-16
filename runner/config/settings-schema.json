@@ -542,7 +542,7 @@
           "byPreset": {
             "small": {
               "how": "value",
-              "value": "600"
+              "value": "900"
             },
             "standard": {
               "how": "value",
@@ -560,7 +560,7 @@
           "byPreset": {
             "small": {
               "how": "value",
-              "value": "10"
+              "value": "20"
             },
             "standard": {
               "how": "value",

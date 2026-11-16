@@ -80,8 +80,12 @@ export default async function s12(t, L) {
       agentEnv: true,
       argv: ["--max-turns", "37"],
     },
-    { group: "Delivery", key: "GAFFER_PR_MERGE_METHOD", value: "squash", agentEnv: true },
-    { group: "Quality", key: "OVERSIZED_MAX_LINES", value: "900", agentEnv: false },
+    // The page still edits the old keys (until it moves to the fourteen settings); the
+    // runner applies an old key only where it is stricter than what the settings derive
+    // (runner/config/01-settings.sh), so each value here is a stricter one: the turn cap
+    // 37 under 200, CI required, a size flag at 300 lines under 400.
+    { group: "Delivery", key: "GAFFER_REQUIRE_CI", value: "1", agentEnv: true },
+    { group: "Quality", key: "OVERSIZED_MAX_LINES", value: "300", agentEnv: false },
   ];
   for (const g of groups) {
     await t.visit("settings");

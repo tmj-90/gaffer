@@ -1,7 +1,9 @@
 #!/usr/bin/env node
-// scripts/config-reference.mjs — the generated docs/CONFIG.md must be derived
-// from the code, not hand-maintained. Pin the parser rules that make the
-// reference honest, then prove the committed file is current.
+// scripts/config-reference.mjs: docs/CONFIG.md (the fourteen settings),
+// docs/CONFIG-ADVANCED.md (every derived value, by the setting that decides it) and
+// runner/config/settings-schema.json are derived from the code, not hand-maintained.
+// Pin the parser rules that make them honest, the checks that keep the tables and the
+// code together, then prove the committed files are current.
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -12,7 +14,10 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "..", "..");
 const {
   parseConfigDefaults,
-  generate,
+  parseTables,
+  parseSettingsSpec,
+  generateAll,
+  model,
   readSiteDefault,
   firstSentence,
   verifyExtraKnobs,
@@ -22,7 +27,7 @@ const {
   TEST_SEAMS,
   DEPRECATED,
   REMOVED,
-  AREAS,
+  ENV_ONLY,
 } = await import(path.join(ROOT, "scripts", "config-reference.mjs"));
 
 let passed = 0;
@@ -138,45 +143,147 @@ ok(
   "TS computed fallback → null (not a literal)",
 );
 
-console.log("== generated reference is current ==");
-const text = await generate();
-const committed = readFileSync(path.join(ROOT, "docs", "CONFIG.md"), "utf8");
+console.log("== the derivation tables are read as _gaffer_derive reads them ==");
+const tfix = `x
+_gaffer_derive GAFFER_EFFORT <<'_GAFFER_TABLE_'
+#                  small standard large
+GAFFER_A           1     2        3      # a note, with # inside
+?GAFFER_B          @GAFFER_A            # follows A
+GAFFER_C           ~                    # a constant line
+_GAFFER_TABLE_
+_gaffer_derive GAFFER_MODE --no-export <<'_GAFFER_TABLE_'
+REVIEW_MODE human agent agent agent agent   # who reviews
+_GAFFER_TABLE_
+`;
+const tt = parseTables(tfix);
+ok(tt.length === 2 && tt[0].setting === "GAFFER_EFFORT" && tt[1].noExport, "two tables, the second --no-export");
 ok(
-  text === committed,
-  "docs/CONFIG.md matches the generator output (run: node scripts/config-reference.mjs)",
+  JSON.stringify(tt[0].rows.map((r) => [r.name, r.unsetOnly, r.cells.join(" "), r.note])) ===
+    JSON.stringify([
+      ["GAFFER_A", false, "1 2 3", "a note, with # inside"],
+      ["GAFFER_B", true, "@GAFFER_A", "follows A"],
+      ["GAFFER_C", false, "~", "a constant line"],
+    ]),
+  "rows: name (?name keeps an explicit empty), cells, and the note after the first #",
+);
+
+console.log("== generated files are current ==");
+const all = await generateAll();
+const text = all.config;
+const adv = all.advanced;
+for (const [k, rel] of [
+  ["config", "docs/CONFIG.md"],
+  ["advanced", "docs/CONFIG-ADVANCED.md"],
+  ["schema", "runner/config/settings-schema.json"],
+]) {
+  ok(
+    all[k] === readFileSync(path.join(ROOT, rel), "utf8"),
+    `${rel} matches the generator output (run: node scripts/config-reference.mjs)`,
+  );
+}
+
+console.log("== CONFIG.md is the fourteen settings ==");
+const settingsText = readFileSync(path.join(ROOT, "runner", "config", "01-settings.sh"), "utf8");
+const spec = parseSettingsSpec(settingsText);
+ok(spec.length === 14, `the spec holds fourteen settings (${spec.length})`);
+const tableRows = text
+  .slice(0, text.indexOf("## Credentials"))
+  .split("\n")
+  .filter((l) => l.startsWith("| `"));
+ok(
+  tableRows.length === 14 && spec.every((s, i) => tableRows[i].startsWith(`| \`${s.name}\` |`)),
+  "its settings table has exactly the fourteen rows, in the spec's order",
 );
 ok(
-  /\| `GAFFER_MODE` \| `supervised` \| yes \(string: supervised/.test(text),
-  "GAFFER_MODE row shows the real default + UI choices",
+  /\| `GAFFER_MODE` \| `supervised` · `lite` · `graduated` · `autonomous` · `strict` \| `supervised` \|/.test(text),
+  "GAFFER_MODE shows its accepted values and its default",
+);
+for (const n of ENV_ONLY)
+  ok(new RegExp(`^\\| \`${n}\` \\|`, "m").test(text), `${n} is listed as environment-only`);
+ok(
+  (text.match(/CONFIG-ADVANCED\.md/g) ?? []).length === 1 &&
+    text.trimEnd().endsWith("[Detailed configuration](CONFIG-ADVANCED.md)."),
+  "the detailed document is linked once, at the bottom",
+);
+ok(text.split("\n").length < 80, `short: ${text.split("\n").length} lines`);
+const readme = readFileSync(path.join(ROOT, "README.md"), "utf8");
+ok(!readme.includes("CONFIG-ADVANCED"), "the README never links the detailed document");
+
+console.log("== CONFIG-ADVANCED.md: every derived value, by its setting ==");
+const m = model();
+for (const s of spec) {
+  const at = adv.indexOf(`## \`${s.name}\``);
+  ok(at > 0, `${s.name} has a section`);
+  const sec = adv.slice(at, adv.indexOf("\n## ", at + 5));
+  for (const r of m.tableOf.get(s.name).rows)
+    ok(new RegExp(`^\\| \`${r.name}\` \\|`, "m").test(sec), `${r.name} is a row under ${s.name}`);
+}
+ok(
+  /\| Derived value \| small \| standard \(default\) \| large \| Note \|/.test(adv) &&
+    /\| `GAFFER_TICK_TIMEOUT` \| `900` \| `1800` \| `3600` \|/.test(adv),
+  "a preset table shows what each choice derives (GAFFER_EFFORT: 900 / 1800 / 3600)",
+);
+ok(adv.includes("export NAME=value"), "it says how to override: export NAME=value");
+for (const o of m.oldKeys)
+  ok(
+    new RegExp(`^\\| \`${o.key}\` \\| \`${o.setting}\` \\|`, "m").test(adv),
+    `old key ${o.key} -> ${o.setting} is listed`,
+  );
+const schema = JSON.parse(all.schema);
+ok(
+  schema.settings.length === 14 &&
+    schema.settings.find((x) => x.name === "GAFFER_EFFORT").derives.find((d) => d.name === "GAFFER_MAX_TURNS")
+      .byPreset.large.value === "300",
+  "the JSON carries the tables (GAFFER_EFFORT large -> GAFFER_MAX_TURNS 300)",
+);
+
+console.log("== the generator refuses tables that drift from the code ==");
+async function refusal(file, edit) {
+  const f = path.join(ROOT, file);
+  const before = readFileSync(f, "utf8");
+  try {
+    writeFileSync(f, edit(before));
+    try {
+      await generateAll();
+      return "";
+    } catch (err) {
+      return err.message;
+    }
+  } finally {
+    writeFileSync(f, before);
+  }
+}
+ok(
+  /GAFFER_NEW_KNOB has a default but no setting decides it/.test(
+    await refusal("runner/config/13-stop.sh", (t) =>
+      t.replace(': "${DRY_RUN:=1}"', ': "${DRY_RUN:=1}"\n: "${GAFFER_NEW_KNOB:=1}"   # new'),
+    ),
+  ),
+  "a new default line no setting decides fails the generator",
 );
 ok(
-  /\| `REVIEW_MODE` \| `human` \|/.test(text),
-  "REVIEW_MODE shows the top-level default, not the autonomous-mode fill",
+  /GAFFER_TICK_TIMEOUT has a table value in GAFFER_EFFORT and a default line too/.test(
+    await refusal("runner/config/07-limits.sh", (t) =>
+      t.replace(": \"${GAFFER_ROLE_MAX_TURNS:=}\"", ': "${GAFFER_TICK_TIMEOUT:=1800}"\n: "${GAFFER_ROLE_MAX_TURNS:=}"'),
+    ),
+  ),
+  "a derived value written twice (table and default line) fails the generator",
 );
 ok(
-  /\| `SANDBOX_PROVIDER` \| string: sandbox-exec/.test(text),
-  "dashboard-only section lists SANDBOX_PROVIDER",
+  /old key TICK_SLEEP says GAFFER_EFFORT decides it, but it is a row of GAFFER_CONCURRENCY/.test(
+    await refusal("runner/config/01-settings.sh", (t) =>
+      t.replace("TICK_SLEEP|GAFFER_CONCURRENCY|drop", "TICK_SLEEP|GAFFER_EFFORT|drop"),
+    ),
+  ),
+  "an old key whose setting does not own it fails the generator",
 );
 ok(
-  /\| `GAFFER_DOD_TIMEOUT` \| `900` \|/.test(text) &&
-    !/\| `GAFFER_DOD_TIMEOUT` \| `900` \| `runner/.test(text),
-  "GAFFER_DOD_TIMEOUT is a documented runner default now (not an undocumented read)",
-);
-ok(
-  /### Budget\n[^#]*\| `GAFFER_ALLOW_UNCAPPED` \|/.test(text),
-  "a knob defaulted in runner/lib/*.sh is listed under its area (lib/budget.sh -> Budget)",
-);
-ok(
-  !/\| `GAFFER_DOD_INSTALL_TIMEOUT` \| [^|]*\| `runner\/lib\/dod\.sh`/.test(text),
-  "a lib-defaulted knob is not reported as an undocumented read",
-);
-ok(
-  /## Env reads without a default or UI entry\n\nNone: /.test(text),
-  "every env read is documented: a knob, a dashboard setting, a deprecated or an internal name",
-);
-ok(
-  !/\| `GAFFER_STRICT_REQUIRE` \| `runner/.test(text),
-  "a variable the config assigns itself is not reported as undocumented",
+  /GAFFER_CI_POLL_ATTEMPTS: runner\/lib\/ci-gate\.sh falls back to "20" but GAFFER_EFFORT=standard derives "25"/.test(
+    await refusal("runner/config/07-limits.sh", (t) =>
+      t.replace("GAFFER_CI_POLL_ATTEMPTS         10     20        40", "GAFFER_CI_POLL_ATTEMPTS         10     25        40"),
+    ),
+  ),
+  "a lib fallback that disagrees with the default preset fails the generator",
 );
 
 // Exploratory finding fresh-user/CONFIG drift: knobs read only where they are used
@@ -218,13 +325,10 @@ for (const name of [
   "CLAUDE_CODE_OAUTH_TOKEN",
   "CLAUDE_CONFIG_DIR",
 ]) {
-  ok(new RegExp(`^\\| \`${name}\` \\|`, "m").test(text), `${name} has a row`);
+  ok(new RegExp(`^\\| \`${name}\` \\|`, "m").test(text + adv), `${name} has a row`);
 }
-ok(/\| `GAFFER_DOD_INSTALL` \| `1` \|/.test(text), "GAFFER_DOD_INSTALL shows its real default (1)");
-ok(
-  /\| `GAFFER_CI_TIMEOUT_POLICY` \| `block` \|/.test(text),
-  "GAFFER_CI_TIMEOUT_POLICY defaults to block",
-);
+ok(/\| `GAFFER_DOD_INSTALL` \| `1` _\(read in/.test(adv), "GAFFER_DOD_INSTALL shows its real default (1)");
+ok(/\| `GAFFER_CI_TIMEOUT_POLICY` \| `block` _\(read in/.test(adv), "GAFFER_CI_TIMEOUT_POLICY defaults to block");
 
 console.log("== the read-site table fails when it drifts from the code ==");
 ok(verifyExtraKnobs(ROOT) === undefined, "every EXTRA_KNOBS entry matches its read site today");
@@ -274,8 +378,8 @@ try {
   rmSync(drift, { recursive: true, force: true });
 }
 ok(
-  EXTRA_KNOBS.every((k) => new RegExp(`^\\| \`${k.name}\` \\|`, "m").test(text)),
-  "every EXTRA_KNOBS entry has a row in docs/CONFIG.md",
+  EXTRA_KNOBS.every((k) => new RegExp(`^\\| \`${k.name}\` \\|`, "m").test(text + adv)),
+  "every EXTRA_KNOBS entry has a row in docs/CONFIG.md or docs/CONFIG-ADVANCED.md",
 );
 
 console.log("== internal names and test seams are named once, never as rows ==");
@@ -283,14 +387,15 @@ ok(
   verifyInternalNames(ROOT) === undefined,
   "every INTERNAL_NAMES / TEST_SEAMS entry still occurs in the source",
 );
-const internalSection = text.slice(text.indexOf("## Internal names (not knobs)"));
+const internalSection = adv.slice(adv.indexOf("## Internal names (not knobs)"), adv.indexOf("## Who reads what"));
 ok(
-  internalSection.length > 0 && text.includes("## Internal names (not knobs)"),
-  "CONFIG.md has the Internal names section",
+  internalSection.length > 0 && adv.includes("## Internal names (not knobs)"),
+  "CONFIG-ADVANCED.md has the Internal names section",
 );
 for (const name of [...INTERNAL_NAMES.flatMap((g) => g.names), ...TEST_SEAMS]) {
   ok(
-    !new RegExp(`^\\| \`${name}\` \\|`, "m").test(text) && internalSection.includes(`\`${name}\``),
+    !new RegExp(`^\\| \`${name}\` \\|`, "m").test(text + adv.slice(0, adv.indexOf("## Internal names"))) &&
+      internalSection.includes(`\`${name}\``),
     `${name} is in the Internal names section and has no table row`,
   );
 }
@@ -311,7 +416,7 @@ for (const name of [
     );
     let msg = "";
     try {
-      await generate();
+      await generateAll();
     } catch (err) {
       msg = err.message;
     }
@@ -324,76 +429,29 @@ for (const name of [
   }
 }
 
-console.log(
-  "== the tables follow the areas of runner/config; deprecated names have their own table ==",
-);
+console.log("== deprecated and removed names have their own tables ==");
 {
-  const headings = [
-    ...text.slice(0, text.indexOf("## Dashboard-only")).matchAll(/^### (.+)$/gm),
-  ].map((m) => m[1]);
-  const areas = [...new Set(Object.values(AREAS))];
-  ok(
-    headings.length > 0 && headings.every((h) => areas.includes(h)),
-    `every section heading is an area of runner/config (${headings.join(" / ")})`,
-  );
-  ok(
-    headings.join("|") === areas.filter((a) => headings.includes(a)).join("|"),
-    "the sections come in the parts' order",
-  );
-  ok(
-    /### Pausing on a cap, and the dashboard\n[^#]*\| `DISPATCH_API_PORT` \| `8787` \|/.test(text),
-    "a knob read where it is used sits in its area's table (DISPATCH_API_PORT under the dashboard)",
-  );
-  const dep = text.slice(text.indexOf("## Deprecated"), text.indexOf("## Internal names"));
-  ok(text.includes("## Deprecated"), "CONFIG.md has the Deprecated table");
-  for (const d of DEPRECATED) {
+  const dep = adv.slice(adv.indexOf("## Deprecated"), adv.indexOf("## Internal names"));
+  for (const d of DEPRECATED)
     ok(
       new RegExp(`^\\| \`${d.name}\` \\|`, "m").test(dep) &&
-        !new RegExp(`^\\| \`${d.name}\` \\|`, "m").test(
-          text.slice(0, text.indexOf("## Deprecated")),
-        ),
+        !new RegExp(`^\\| \`${d.name}\` \\|`, "m").test(text + adv.slice(0, adv.indexOf("## Deprecated"))),
       `${d.name} is in the Deprecated table only`,
     );
-  }
-  const removedAt = text.indexOf("### Removed");
-  ok(removedAt > text.indexOf("## Deprecated"), "CONFIG.md lists the removed names under Removed");
-  const rem = text.slice(removedAt, text.indexOf("## Internal names"));
-  for (const d of REMOVED) {
-    ok(
-      new RegExp(`^\\| \`${d.name}\` \\|`, "m").test(rem) &&
-        !new RegExp(`^\\| \`${d.name}\` \\|`, "m").test(text.slice(0, removedAt)),
-      `${d.name} is in the Removed table only`,
-    );
-  }
-  const rowsInTables = text
-    .slice(0, text.indexOf("## Deprecated"))
-    .split("\n")
-    .filter((l) => l.startsWith("| `")).length;
-  // 122: GAFFER_DOD_ENV_PASS (the gates' environment pass-through, sandbox audit F2) and
-  // GAFFER_WG_SERVE (the off switch for the tick's helper servers) are the two knobs
-  // added since the diet set this cap.
-  ok(rowsInTables < 122, `the tables hold fewer than 122 rows (${rowsInTables})`);
-  ok(
-    new RegExp(`\\| Rows in the tables \\| ${rowsInTables} \\|`).test(text),
-    "the metrics say the same row count",
-  );
+  const rem = adv.slice(adv.indexOf("### Removed"), adv.indexOf("## Internal names"));
+  for (const d of REMOVED)
+    ok(new RegExp(`^\\| \`${d.name}\` \\|`, "m").test(rem), `${d.name} is in the Removed table`);
 }
 
 console.log("== rows describe the behaviour ==");
-const row = (k) => rows.find((l) => l.startsWith(`| \`${k}\` |`)) ?? "";
+const srow = (k) => text.split("\n").find((l) => l.startsWith(`| \`${k}\` |`)) ?? "";
 ok(
-  !/on top of autonomous/i.test(row("GAFFER_MODE")),
+  !/on top of autonomous/i.test(srow("GAFFER_MODE")),
   "GAFFER_MODE does not say strict adds a sandbox on top",
 );
 ok(
-  /same flags/i.test(row("GAFFER_MODE")),
-  "GAFFER_MODE says strict and autonomous set the same flags",
+  /strict \(autonomous, and the sandbox wraps the agent even under the environment opt-out\)/.test(srow("GAFFER_MODE")),
+  "GAFFER_MODE says strict is autonomous plus the sandbox under the opt-out",
 );
-const attempts = row("GAFFER_MAX_DELIVERY_ATTEMPTS");
-ok(
-  /gate/i.test(attempts) && /GAFFER_MAX_NOCOMMIT_FAILURES/.test(attempts),
-  "MAX_DELIVERY_ATTEMPTS: gate rework + the no-commit cap",
-);
-ok(/identical/i.test(attempts), "MAX_DELIVERY_ATTEMPTS: the two-identical-failures early stop");
 
 console.log(`\nconfig-reference: ALL ${passed} checks passed`);

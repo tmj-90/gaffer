@@ -1,22 +1,25 @@
 #!/usr/bin/env node
-// Config reference generator — one source of truth for every factory knob.
+// Config reference generator: one source of truth for the fourteen settings and every
+// value they derive.
 //
-// The factory is configured by environment variables. Their defaults live in
-// runner/factory.config.sh (`: "${NAME:=default}"` lines), the dashboard's
-// UI-editable subset lives in packages/dispatch/src/api/settings.ts
-// (SETTING_DEFS), and the code that consumes them is spread over runner/ and
-// packages/*. Nothing joined those three views, so the docs drifted from the
-// code. This script derives docs/CONFIG.md from the code and fails CI (--check)
-// when the committed reference no longer matches.
+// A factory has fourteen settings (runner/config/01-settings.sh, _GAFFER_SETTINGS_SPEC);
+// every other knob is derived from them by one table per setting (`_gaffer_derive` in
+// the runner/config part of its area), and a real environment variable overrides a
+// derived value. This script reads the spec and the tables and writes:
+//   docs/CONFIG.md                    the fourteen, short (the only config the README links)
+//   docs/CONFIG-ADVANCED.md           every derived value, by the setting that decides it
+//   runner/config/settings-schema.json the same, as JSON for the dashboard and
+//                                     `gaffer config show`
+// and fails (--check) when a committed one no longer matches, or when the tables and the
+// code drift apart (a knob no setting decides, a row written twice, an old key whose
+// setting does not own it).
 //
-//   node scripts/config-reference.mjs           # write docs/CONFIG.md
-//   node scripts/config-reference.mjs --check   # exit 1 if docs/CONFIG.md is stale
-//
-// Requires packages/dispatch to be built (reads dist/api/settings.js).
+//   node scripts/config-reference.mjs           # write the three files
+//   node scripts/config-reference.mjs --check   # exit 1 if one is stale
 
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG_SH = path.join(ROOT, "runner", "factory.config.sh");
@@ -62,82 +65,6 @@ export function configSources(root = ROOT) {
     ranges,
   };
 }
-/**
- * docs/CONFIG.md's sections are the areas of runner/config: a knob is listed under
- * the part that defaults it (factory.config.sh's own prologue holds the locations).
- * A knob a runner lib defaults, or one read where it is used (EXTRA_KNOBS), is listed
- * under the area it belongs to. A part or lib that defines a knob without an area here
- * fails the generator, so a new knob always lands under a heading.
- */
-export const AREAS = {
-  "factory.config.sh": "Locations",
-  "02-paths": "Locations",
-  "03-wiring": "The agent CLI and the worker provider",
-  "04-models": "Models",
-  "05-budget": "Budget",
-  "06-routing": "Model routing, the planning debate and the scout",
-  "07-limits": "Limits, the Definition of Done and rework",
-  "08-guards": "Pausing on a cap, and the dashboard",
-  "13-stop": "Stop conditions and concurrency",
-  "14-usage": "The usage ledger",
-  "15-modes": "Autonomy modes",
-  "16-sandbox": "The sandbox, hygiene and backpressure",
-  "17-cli": "Troubleshooting: the tick's dispatch server",
-  "18-review": "Review and landing",
-  "20-gates": "Idle lanes, pull requests, CI and the eval judge",
-};
-/**
- * A short paragraph printed under an area's heading, before its table: the contract a
- * group of knobs keeps together, which no single knob's note can say.
- */
-export const AREA_NOTES = {
-  Budget: [
-    "**Budget admission and reservations.** Every paid agent launch asks one admission",
-    "check right before it starts (`runner/lib/budget-admission.mjs`). A dollar cap is a",
-    "ceiling, so the calls already running hold their worst case against it: under any cap",
-    "an admitted launch books a `reservation` row in the usage ledger before the call",
-    "starts, for its `GAFFER_MAX_CALL_USD` per-call cap where set, else",
-    "`GAFFER_KILL_ESTIMATE_USD`, else $0.05. Reading the spend and booking the reservation",
-    "happen under one lock beside the ledger, so two launches never see the same headroom.",
-    "Spend plus open reservations must stay below the cap, and while other calls are in",
-    "flight a new call starts only if its own worst case fits beside them. When the call",
-    "books its real cost (measured or estimated) that row settles the reservation. A",
-    "reservation whose call died without booking keeps holding both caps until a crash",
-    "path books its kill estimate, the next launch on the same host settles it (with the",
-    "same labelled kill estimate, and only once its launcher is provably gone: a live pid",
-    "that may be the launcher, or another host's reservation, is never touched), or you run",
-    "`node runner/lib/usage-ledger.mjs --reconcile --usd <amount>` (`--open-reservations`",
-    "lists them). A reservation is never a reading:",
-    "it carries no cost and no view counts it as spend or as a call. Only the per-call",
-    "cap bounds a call: without `GAFFER_MAX_CALL_USD` the reservation (its row's",
-    "`reserve_basis` reads `kill-estimate`, or `floor` for the $0.05 used when the kill",
-    "estimate is 0) is a floor, not a bound, and a call can cost more than it held.",
-  ],
-  "Troubleshooting: the tick's dispatch server": [
-    "**Two helper processes per tick.** A tick runs its dispatch CLI calls (`wg`) through",
-    "one long-lived dispatch process (`packages/dispatch/dist/cli/serve.js`) and its JSON",
-    "helper calls (`gaffer_json`, `jget`) through one long-lived JSON process",
-    "(`runner/lib/json-serve.mjs`), over named pipes in `$GAFFER_DATA/wg-serve/<tick",
-    "pid>.<random>`, instead of starting node for each call. Each call runs the same code",
-    "as the one-shot call and prints the same output; a call a server cannot run",
-    "identically (another command, a terminal on stdout or stderr, a changed PATH or",
-    "start-up environment, bash older than 4.4) runs one-shot. A dispatch server that dies,",
-    "hangs or answers garbage fails that call (a `WG_SERVER_FAILED` line on stderr); a JSON",
-    "call is simply run again one-shot. Either way the rest of the tick runs one-shot. The",
-    "servers stop with their tick, and exit by themselves when the tick is gone.",
-  ],
-};
-/** The area of each runner lib that defaults a knob. */
-export const LIB_AREAS = {
-  "automerge.sh": "18-review",
-  "budget.sh": "05-budget",
-  "ci-gate.sh": "20-gates",
-  "claude-auth.sh": "03-wiring",
-  "dod.sh": "07-limits",
-  "pr-create.sh": "20-gates",
-  "registry-probe.sh": "16-sandbox",
-  "scout.sh": "06-routing",
-};
 
 /** The runner libs (runner/lib/*.sh), sorted. */
 function libFiles(root = ROOT) {
@@ -157,8 +84,6 @@ function defaultFiles(root = ROOT) {
     ...libFiles(root),
   ];
 }
-const SETTINGS_JS = path.join(ROOT, "packages", "dispatch", "dist", "api", "settings.js");
-const OUT = path.join(ROOT, "docs", "CONFIG.md");
 
 // A config default line: `: "${NAME:=default}"   # trailing comment`
 const DEFAULT_RE = /^\s*:\s*"\$\{([A-Za-z_][A-Za-z0-9_]*):?=(.*)\}"\s*(?:#\s*(.*))?$/;
@@ -281,42 +206,36 @@ export function firstSentence(block) {
  */
 export const EXTRA_KNOBS = [
   {
-    group: AREAS["08-guards"],
     name: "DISPATCH_API_PORT",
     default: "8787",
     file: "runner/gaffer",
     doc: "The dashboard's port: `gaffer dashboard` serves it there, and the default dashboard link (GAFFER_DASHBOARD_URL) points at it.",
   },
   {
-    group: AREAS["08-guards"],
     name: "DISPATCH_ALLOWED_HOSTS",
     default: "",
     file: "packages/dispatch/src/api/security.ts",
     doc: "Extra hostnames (comma-separated) the dashboard's Host / Origin check accepts, for a reverse proxy or a DNS name in front of it (SECURITY.md).",
   },
   {
-    group: AREAS["08-guards"],
     name: "GAFFER_DASHBOARD_START_TIMEOUT",
     default: "30",
     file: "runner/gaffer",
     doc: "Seconds a new dashboard server gets to come up before it is stopped and its log kept; raise it on a slow machine.",
   },
   {
-    group: AREAS["16-sandbox"],
     name: "GAFFER_EGRESS_ALLOW",
     default: "",
     file: "runner/lib/egress-allowlist.mjs",
     doc: "Extra hosts the docker sandbox's default-deny egress proxy lets through, on top of the model endpoint and the package registries ($GAFFER_DATA/egress-allow.txt adds more; docs/sandbox.md).",
   },
   {
-    group: AREAS["18-review"],
     name: "GAFFER_TESTER_REPLAY",
     default: "1",
     file: "runner/bin/tester-run.mjs",
     doc: "1 = the runner replays the tester's tests in a clean, contained checkout before a PASS counts; 0 turns the replay off and every PASS is held for a person.",
   },
   {
-    group: AREAS["20-gates"],
     name: "GAFFER_JUDGE_DENIED_TOOLS",
     default:
       "Bash,Edit,Write,MultiEdit,NotebookEdit,Read,Grep,Glob,LS,WebFetch,WebSearch,Task,TodoWrite",
@@ -324,49 +243,42 @@ export const EXTRA_KNOBS = [
     doc: "The tools the eval judge is denied by name, on top of its empty tool set (it grades text and needs none).",
   },
   {
-    group: AREAS["16-sandbox"],
     name: "GAFFER_STRICT_REQUIRE",
     default: "1",
     file: "runner/lib/sandbox.sh",
     doc: "1 (the default, in every mode) = every agent launch runs inside the OS sandbox or is refused (fail closed): `gaffer run`, the loop, a tick and the dashboard's Poll for work refuse before claiming anything, with the fix. 0 (or false/no/off) in the ENVIRONMENT is the opt-out, for a runner you contain yourself (a VM or container): agents then run unwrapped, and it is said once per process. settings.json cannot set 0.",
   },
   {
-    group: AREAS["16-sandbox"],
     name: "GAFFER_SANDBOX_IMAGE",
     default: "gaffer-sandbox:latest",
     file: "runner/lib/sandbox-docker.sh",
     doc: "The image the docker sandbox provider runs each delivery in (`docker compose --profile sandbox build` builds it).",
   },
   {
-    group: AREAS["07-limits"],
     name: "GAFFER_DOD",
     default: "1",
     file: "runner/lib/dod.sh",
     doc: "0 turns every Definition-of-Done gate off, the only way to land a delivery ungated (the merge gate is off too).",
   },
   {
-    group: AREAS["07-limits"],
     name: "GAFFER_DOD_INSTALL",
     default: "1",
     file: "runner/lib/dod.sh",
     doc: "1 = install the delivery worktree's dependencies (from its lockfile) before the test gate, and a new greenfield repo's; a no-op when node_modules exists. 0 to manage dependencies yourself.",
   },
   {
-    group: AREAS["07-limits"],
     name: "GAFFER_ALLOW_NO_DOD",
     default: "0",
     file: "runner/lib/tick-gates.sh",
     doc: "1 = let a delivery pass when no gate ran at all (a repo with no test or lint command). Otherwise that is a failure and the ticket parks.",
   },
   {
-    group: AREAS["07-limits"],
     name: "GAFFER_CI_TIMEOUT_POLICY",
     default: "block",
     file: "runner/lib/ci-gate.sh",
     doc: "With GAFFER_REQUIRE_CI=1: what happens when the checks time out, there is no PR or no checks exist. block rejects the delivery; proceed lets it through with a note.",
   },
   {
-    group: AREAS["15-modes"],
     name: "GAFFER_MEMORY_AUTO_PROMOTE",
     default: "MEMORY_AUTO_APPROVE",
     verify: false,
@@ -374,25 +286,28 @@ export const EXTRA_KNOBS = [
     doc: "1 = a requirement distilled from a delivered ticket goes live at once; 0 = it lands as a draft for `memory review`. Unset, it follows MEMORY_AUTO_APPROVE.",
   },
   {
-    group: AREAS["03-wiring"],
     name: "ANTHROPIC_API_KEY",
     default: "",
     file: "runner/preflight.sh",
     doc: "An API key for the worker CLI (`claude`). One of this, CLAUDE_CODE_OAUTH_TOKEN or a logged-in CLAUDE_CONFIG_DIR is needed for a live run; the container reads only these two variables.",
   },
   {
-    group: AREAS["03-wiring"],
     name: "CLAUDE_CODE_OAUTH_TOKEN",
     default: "",
     file: "runner/preflight.sh",
     doc: "The subscription token `claude setup-token` prints, used instead of an API key.",
   },
   {
-    group: AREAS["03-wiring"],
     name: "CLAUDE_CONFIG_DIR",
     default: "$HOME/.claude",
     file: "runner/lib/claude-auth.sh",
     doc: "Where the worker CLI keeps its login (`.credentials.json`); preflight looks there for a credential.",
+  },
+  {
+    name: "GAFFER_PRINCIPAL_TOKEN",
+    default: "",
+    file: "runner/factory.config.sh",
+    doc: "A person's credential: makes `gaffer wg` act as a human or admin principal (a tester verdict needs one). The runner takes it out of its own environment at start, so no agent or child ever sees it.",
   },
 ];
 
@@ -806,16 +721,153 @@ export function readSiteDefault(text, index, name, isShell) {
   return m[1].replace(/^["']|["']$/g, "");
 }
 
-async function loadSettingDefs() {
-  if (!existsSync(SETTINGS_JS)) {
-    throw new Error(`${path.relative(ROOT, SETTINGS_JS)} missing — run \`pnpm -r build\` first`);
+// ─── The fourteen settings and their tables ──────────────────────────────────
+
+/**
+ * A short paragraph printed under a setting in docs/CONFIG-ADVANCED.md, before its
+ * table: a contract a group of derived values keeps together, which no single note can say.
+ */
+export const SETTING_NOTES = {
+  GAFFER_DAILY_BUDGET_USD: [
+    "**Budget admission and reservations.** Every paid agent launch asks one admission",
+    "check right before it starts (`runner/lib/budget-admission.mjs`). A dollar cap is a",
+    "ceiling, so the calls already running hold their worst case against it: under any cap",
+    "an admitted launch books a `reservation` row in the usage ledger before the call",
+    "starts, for its `GAFFER_MAX_CALL_USD` per-call cap where set, else",
+    "`GAFFER_KILL_ESTIMATE_USD`, else $0.05. Reading the spend and booking the reservation",
+    "happen under one lock beside the ledger, so two launches never see the same headroom.",
+    "Spend plus open reservations must stay below the cap, and while other calls are in",
+    "flight a new call starts only if its own worst case fits beside them. When the call",
+    "books its real cost (measured or estimated) that row settles the reservation. A",
+    "reservation whose call died without booking keeps holding both caps until a crash",
+    "path books its kill estimate, the next launch on the same host settles it (with the",
+    "same labelled kill estimate, and only once its launcher is provably gone), or you run",
+    "`node runner/lib/usage-ledger.mjs --reconcile --usd <amount>` (`--open-reservations`",
+    "lists them). A reservation is never a reading: it carries no cost and no view counts",
+    "it as spend or as a call. Only the per-call cap bounds a call: without",
+    "`GAFFER_MAX_CALL_USD` the reservation is a floor, not a bound.",
+  ],
+  GAFFER_CONCURRENCY: [
+    "**Two helper processes per tick.** A tick runs its dispatch CLI calls (`wg`) through",
+    "one long-lived dispatch process and its JSON helper calls through one long-lived JSON",
+    "process, over named pipes in `$GAFFER_DATA/wg-serve/`, instead of starting node for",
+    "each call. A call a server cannot run identically runs one-shot; a dispatch server",
+    "that dies or answers garbage fails that call (a `WG_SERVER_FAILED` line on stderr).",
+    "`GAFFER_WG_SERVE=0` runs every call one-shot (troubleshooting).",
+  ],
+};
+
+/**
+ * Names that are never settings and never derived: credentials, the locations of the
+ * checkout, and the security boundaries only the operator's real environment may move
+ * (settings.json cannot set any of them). docs/CONFIG.md lists them under
+ * "Credentials and environment-only names", as before.
+ */
+export const ENV_ONLY = [
+  "ANTHROPIC_API_KEY",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "CLAUDE_CONFIG_DIR",
+  "GAFFER_PRINCIPAL_TOKEN",
+  "GAFFER_HOME",
+  "GAFFER_STRICT_REQUIRE",
+  "GAFFER_ALLOW_UNCAPPED",
+  "GAFFER_WORKER_PROVIDER",
+  "GAFFER_WORKER_COMMAND",
+  "GAFFER_WORKER_COMMAND_ENV",
+  "GAFFER_WORKER_COMMAND_COST_USD",
+  "GAFFER_SANDBOX_WORKER_COMMAND",
+  "CLAUDE_BIN",
+  "CLAUDE_FLAGS",
+];
+
+/** The text between `NAME='` and the closing `'` of a block assignment in a part. */
+function quotedBlock(text, name) {
+  const m = new RegExp(`^${name}='([^']*)'`, "m").exec(text);
+  if (!m) throw new Error(`runner/config/01-settings.sh: no ${name}='...' block`);
+  return m[1].split("\n").filter((l) => l.trim() !== "");
+}
+
+/** The fourteen settings, from 01-settings.sh's _GAFFER_SETTINGS_SPEC. */
+export function parseSettingsSpec(text) {
+  return quotedBlock(text, "_GAFFER_SETTINGS_SPEC").map((l) => {
+    const [name, kind, values, dflt, ...desc] = l.split("|");
+    return {
+      name,
+      kind,
+      values: values ? values.split(" ") : [],
+      default: dflt,
+      description: desc.join("|"),
+    };
+  });
+}
+
+/** The old settings.json keys and how each meets its derived value (_GAFFER_MIGRATION_MAP). */
+export function parseMigrationMap(text) {
+  return quotedBlock(text, "_GAFFER_MIGRATION_MAP").map((l) => {
+    const [key, setting, compare] = l.split("|");
+    return { key, setting, compare };
+  });
+}
+
+/**
+ * Every `_gaffer_derive SETTING <<'_GAFFER_TABLE_'` table in the config text, with its
+ * rows: { setting, noExport, line, rows: [{ name, unsetOnly, cells, note }] }. A row is
+ * read exactly as _gaffer_derive reads it: everything from the first `#` is the note,
+ * the rest is whitespace-separated words.
+ */
+export function parseTables(text) {
+  const lines = text.split("\n");
+  const tables = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(/^_gaffer_derive ([A-Z_][A-Z0-9_]*)( --no-export)? <<'_GAFFER_TABLE_'$/);
+    if (!m) continue;
+    const t = { setting: m[1], noExport: Boolean(m[2]), line: i + 1, rows: [] };
+    for (i++; i < lines.length && lines[i] !== "_GAFFER_TABLE_"; i++) {
+      const hash = lines[i].indexOf("#");
+      const body = hash >= 0 ? lines[i].slice(0, hash) : lines[i];
+      const note = hash >= 0 ? lines[i].slice(hash + 1).trim() : "";
+      const words = body.trim().split(/\s+/).filter(Boolean);
+      if (words.length === 0) continue;
+      let name = words[0];
+      const unsetOnly = name.startsWith("?");
+      if (unsetOnly) name = name.slice(1);
+      t.rows.push({ name, unsetOnly, cells: words.slice(1), note });
+    }
+    if (i >= lines.length) throw new Error(`the ${m[1]} table has no _GAFFER_TABLE_ end`);
+    tables.push(t);
   }
-  const mod = await import(pathToFileURL(SETTINGS_JS).href);
-  return mod.SETTING_DEFS;
+  return tables;
+}
+
+/** How a cell reads in the docs (`~` is resolved by the caller). */
+function cellText(c) {
+  if (c === '""') return "_(empty)_";
+  if (c === "-") return "_(unset)_";
+  if (c.startsWith("@?_") || c.startsWith("@_")) return "_from the setting (see note)_";
+  if (c.startsWith("@?")) return `_follows_ \`${c.slice(2)}\` _(unset when empty)_`;
+  if (c.startsWith("@")) return `_follows_ \`${c.slice(1)}\``;
+  return code(c);
+}
+
+/** The JSON form of one cell: what part B's dashboard shows. */
+function cellJson(c, constant) {
+  if (c === "~") return constant;
+  if (c === '""') return { how: "value", value: "" };
+  if (c === "-") return { how: "unset" };
+  if (c.startsWith("@?_") || c.startsWith("@_")) return { how: "from-setting" };
+  if (c.startsWith("@?")) return { how: "follows", name: c.slice(2), unsetWhenEmpty: true };
+  if (c.startsWith("@")) return { how: "follows", name: c.slice(1) };
+  return { how: "value", value: c };
+}
+
+/** A `${NAME:-x}` / `$NAME` default names another knob it follows. */
+function followsOf(def) {
+  const m = String(def).match(/^\$\{([A-Z_][A-Z0-9_]*)(?::-[^}]*)?\}$|^\$([A-Z_][A-Z0-9_]*)$/);
+  return m ? (m[1] ?? m[2]) : null;
 }
 
 function code(s) {
-  return s === "" ? "_(empty)_" : `\`${s.replace(/`/g, "\\`")}\``;
+  return s === "" ? "_(empty)_" : `\`${String(s).replace(/`/g, "\\`")}\``;
 }
 
 function cell(s) {
@@ -824,150 +876,310 @@ function cell(s) {
     .replace(/\n/g, " ");
 }
 
-export function render({
-  knobs,
-  defs,
-  consumers,
-  undocumented,
-  defaults = new Map(),
-  extras = [],
-  internal = [],
-  seams = [],
-  deprecated = [],
-  removed = [],
-}) {
-  const defByKey = new Map(defs.map((d) => [d.key, d]));
-  const knobByName = new Map(knobs.map((k) => [k.name, k]));
+/**
+ * Read everything the three documents are made from, and check that it holds together:
+ * one table per setting, rows that fit their setting, every knob decided by exactly one
+ * setting (or environment-only, or not a knob at all), every old key a row of the table
+ * of the setting it names.
+ */
+export function model(root = ROOT) {
+  const src = configSources(root);
+  const settingsText = readFileSync(path.join(root, "runner", "config", "01-settings.sh"), "utf8");
+  const settings = parseSettingsSpec(settingsText);
+  const oldKeys = parseMigrationMap(settingsText);
+  const tables = parseTables(src.text);
+  const partOf = (line) => src.ranges.find((x) => line >= x.from && line <= x.to)?.part ?? "?";
+  const problems = [];
+  const byName = new Map(settings.map((s) => [s.name, s]));
+  // Default lines: the config's (first wins) and the libs' (a fallback when a lib is
+  // sourced on its own).
+  const defaults = new Map();
+  for (const k of parseConfigDefaults(src.text)) defaults.set(k.name, { ...k, file: "config" });
+  const libDefaults = new Map();
+  for (const f of libFiles(root)) {
+    for (const k of parseConfigDefaults(readFileSync(f, "utf8"), { fixedSection: "lib" })) {
+      if (!libDefaults.has(k.name)) libDefaults.set(k.name, { ...k, file: path.basename(f) });
+    }
+  }
+  const extras = new Map(EXTRA_KNOBS.map((k) => [k.name, k]));
+  const rowOwner = new Map();
+  const tableOf = new Map();
+  for (const t of tables) {
+    const s = byName.get(t.setting);
+    if (!s) {
+      problems.push(`a table for ${t.setting}, which is not one of the fourteen settings`);
+      continue;
+    }
+    if (tableOf.has(t.setting)) problems.push(`${t.setting} has two tables`);
+    tableOf.set(t.setting, t);
+    t.part = partOf(t.line);
+    const cols = ["choice", "gates", "models"].includes(s.kind) ? s.values : [];
+    for (const r of t.rows) {
+      if (rowOwner.has(r.name))
+        problems.push(`${r.name} is a row of both ${rowOwner.get(r.name)} and ${t.setting}`);
+      rowOwner.set(r.name, t.setting);
+      if (byName.has(r.name)) problems.push(`${r.name} is a setting and a row of ${t.setting}`);
+      if (r.cells.length !== 1 && r.cells.length !== cols.length)
+        problems.push(
+          `${t.setting} row ${r.name}: ${r.cells.length} values, not 1 or ${cols.length}`,
+        );
+      if (!r.note) problems.push(`${t.setting} row ${r.name}: no note (a trailing # comment)`);
+      const constant = r.cells.length === 1 && r.cells[0] === "~";
+      if (constant) {
+        if (!defaults.has(r.name) && !libDefaults.has(r.name) && !extras.has(r.name))
+          problems.push(
+            `${t.setting} row ${r.name} is ~ but has no default line and no EXTRA_KNOBS entry`,
+          );
+      } else {
+        if (r.cells.includes("~"))
+          problems.push(`${t.setting} row ${r.name}: ~ must be the row's only value`);
+        if (defaults.has(r.name))
+          problems.push(
+            `${r.name} has a table value in ${t.setting} and a default line too (written twice)`,
+          );
+        // A lib's own fallback must agree with what the setting's default derives.
+        const lib = libDefaults.get(r.name);
+        const dcol = cols.length ? cols.indexOf(s.default) : 0;
+        const dcell = r.cells.length === 1 ? r.cells[0] : r.cells[dcol];
+        if (lib && !lib.derived && /^[^@~"-]/.test(dcell) && lib.default !== dcell)
+          problems.push(
+            `${r.name}: runner/lib/${lib.file} falls back to ${JSON.stringify(lib.default)} but ${t.setting}=${s.default} derives ${JSON.stringify(dcell)}`,
+          );
+      }
+    }
+  }
+  for (const s of settings) if (!tableOf.has(s.name)) problems.push(`${s.name} has no table`);
+  const envOnly = new Set(ENV_ONLY);
+  const notKnobs = notKnobNames();
+  const known = (n) => byName.has(n) || rowOwner.has(n) || envOnly.has(n) || notKnobs.has(n);
+  for (const n of [...defaults.keys(), ...libDefaults.keys(), ...extras.keys()]) {
+    if (!known(n))
+      problems.push(
+        `${n} has a default but no setting decides it: add it as a row of a setting's table, or to ENV_ONLY / INTERNAL_NAMES / TEST_SEAMS`,
+      );
+  }
+  for (const n of ENV_ONLY) {
+    if (rowOwner.has(n) || byName.has(n)) problems.push(`${n} is environment-only and a setting or row`);
+    if (!defaults.has(n) && !libDefaults.has(n) && !extras.has(n))
+      problems.push(`${n} is environment-only but has no default line and no EXTRA_KNOBS entry`);
+  }
+  const stillDefaulted = [...defaults.keys()].filter((n) => notKnobs.has(n));
+  if (stillDefaulted.length > 0) {
+    // A `: "${X:=v}"` line is how the config says "this is a knob"; an internal name
+    // assigns itself plainly (X="${X:-v}") so code and reference agree.
+    problems.push(
+      `listed as internal but still defaulted with \`: "\${X:=...}"\`: ${stillDefaulted.join(", ")}`,
+    );
+  }
+  for (const o of oldKeys) {
+    if (byName.has(o.key)) problems.push(`old key ${o.key} is a setting`);
+    if (!byName.has(o.setting)) problems.push(`old key ${o.key} names ${o.setting}, not a setting`);
+    if (rowOwner.get(o.key) !== o.setting)
+      problems.push(
+        `old key ${o.key} says ${o.setting} decides it, but it is a row of ${rowOwner.get(o.key) ?? "no table"}`,
+      );
+    if (!/^(off|on|less|less0|more|keep|drop|rank( \S+)+)$/.test(o.compare))
+      problems.push(`old key ${o.key}: unknown comparison ${JSON.stringify(o.compare)}`);
+  }
+  if (problems.length > 0)
+    throw new Error(`the fourteen settings and their tables do not hold together:\n  ${problems.join("\n  ")}`);
+  // What a ~ row stands for: its default line, else its lib fallback, else its read site.
+  const constantOf = (name) => {
+    const d = defaults.get(name) ?? libDefaults.get(name);
+    if (d) {
+      const f = followsOf(d.default);
+      if (f) return { how: "follows", name: f, text: `_follows_ \`${f}\`` };
+      if (d.derived) return { how: "computed", value: d.default, text: `_computed_ (${code(d.default)})` };
+      return { how: "value", value: d.default, text: code(d.default) };
+    }
+    const x = extras.get(name);
+    if (!x) return null;
+    if (x.verify === false)
+      return { how: "follows", name: x.default, text: `_follows_ \`${x.default}\`` };
+    return { how: "value", value: x.default, readIn: x.file, text: `${code(x.default)} _(read in ${x.file})_` };
+  };
+  return { settings, oldKeys, tables, tableOf, rowOwner, constantOf, defaults, libDefaults, extras };
+}
+
+/** The setting's preset columns ([] for a setting whose table has one column). */
+function columnsOf(s) {
+  return ["choice", "gates", "models"].includes(s.kind) ? s.values : [];
+}
+
+/** docs/CONFIG.md: the fourteen, short. */
+export function renderConfig(m) {
   const out = [];
-  out.push("# Configuration reference");
-  out.push("");
+  out.push("# Configuration", "");
   out.push(
-    "<!-- GENERATED by scripts/config-reference.mjs from runner/factory.config.sh and",
-    "     packages/dispatch/src/api/settings.ts — do not edit by hand. CI runs",
+    "<!-- GENERATED by scripts/config-reference.mjs from runner/config/01-settings.sh and the",
+    "     derivation tables in runner/config/*.sh. Do not edit by hand. CI runs",
     "     `node scripts/config-reference.mjs --check`; regenerate with the same command",
     "     without the flag. -->",
     "",
   );
   out.push(
-    "Every factory knob is an environment variable. Precedence, highest first:",
-    "",
-    "1. a real environment variable exported before the runner starts;",
-    "2. an explicit key in `$GAFFER_DATA/settings.json` (the dashboard Settings panel);",
-    "3. the default the selected `GAFFER_MODE` fills in for its autonomy cluster;",
-    '4. the built-in default, listed below: a `: "${NAME:=default}"` line in the',
-    "   `runner/config/NN-area.sh` part of its area (or a runner lib), or, for a knob",
-    "   with no default line, the fallback where it is read (its notes say where).",
-    "",
-    "The tables follow the areas of `runner/config`. **UI** marks a knob the dashboard",
-    "Settings panel can edit (it persists to `settings.json`; an exported env var locks",
-    "it read-only). **Read by** names the components whose source mentions the",
-    "identifier. A default shown as _derived_ is computed from other knobs at runtime.",
-    "Names that are not settings (paths the runner derives, plumbing it sets for a",
-    "child, test seams) and deprecated names are listed at the end, not in the tables.",
+    "A factory has fourteen settings, and everything else follows from them. Most people set",
+    "three: `GAFFER_MODE`, a budget (`GAFFER_DAILY_BUDGET_USD` or `GAFFER_BUDGET_USD`) and",
+    "`GAFFER_MODELS`. Set one in the dashboard (Settings), in `$GAFFER_DATA/settings.json`,",
+    "or as an environment variable; the environment wins over the file, and the file over",
+    "the default. An unknown value stops the runner with a message naming the accepted ones.",
     "",
   );
-
-  // Summary counts on their own lines
-  const uiKnobs = defs.length;
-  const uiOnly = defs.filter((d) => !knobByName.has(d.key));
-  out.push("| Metric | Count |", "|---|---|");
-  out.push(`| Knobs with a default line | ${knobs.length} |`);
-  out.push(
-    `| Knobs with no default line (the fallback is where they are read) | ${extras.length} |`,
-  );
-  out.push(`| Knobs editable in the dashboard | ${uiKnobs} |`);
-  out.push(
-    `| Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | ${uiOnly.length} |`,
-  );
-  out.push(`| Env reads in code with no default and no UI entry | ${undocumented.size} |`);
-  out.push(
-    `| Rows in the tables | ${knobs.length + extras.length + uiOnly.length + undocumented.size} |`,
-  );
-  out.push(`| Deprecated names (still work for one release) | ${deprecated.length} |`);
-  out.push(`| Removed names (ignored, with a warning) | ${removed.length} |`);
-  out.push(
-    `| Internal names and test seams (not knobs) | ${internal.reduce((n, g) => n + g.names.length, 0) + seams.length} |`,
-  );
-  out.push("");
-
-  // One table per area of runner/config, in the parts' order; a knob read where it is
-  // used sits in its area's table, its notes naming the file.
-  const order = [...new Set(Object.values(AREAS))];
-  const sections = [];
-  const rows = [
-    ...knobs.map((k) => ({ ...k, kind: "default" })),
-    ...extras.map((k) => ({ ...k, section: k.group, kind: "extra" })),
-  ];
-  for (const k of rows) {
-    let s = sections.find((x) => x.title === k.section);
-    if (!s) sections.push((s = { title: k.section, knobs: [] }));
-    s.knobs.push(k);
+  out.push("| Setting | Values | Default | What it decides |", "|---|---|---|---|");
+  for (const s of m.settings) {
+    const values =
+      s.kind === "choice" || s.kind === "testing"
+        ? s.values.map((v) => code(v)).join(" · ")
+        : {
+            usd: "dollars, or empty",
+            count: "1 to 64",
+            models: `${s.values.map((v) => code(v)).join(" · ")} or \`strong,standard,cheap\``,
+            gates: `${s.values.map((v) => code(v)).join(" · ")} (or a list, environment only)`,
+            notify: "URLs and/or `desktop`",
+            path: "a path (environment only)",
+            port: "a port",
+          }[s.kind];
+    const dflt = s.default.startsWith("(") ? `_${s.default.slice(1, -1)}_` : code(s.default);
+    out.push(`| \`${s.name}\` | ${cell(values)} | ${cell(dflt)} | ${cell(s.description)} |`);
   }
-  const rank = (title) => (order.includes(title) ? order.indexOf(title) : order.length);
-  sections.sort((a, b) => rank(a.title) - rank(b.title));
-  out.push("## Knobs, by area of `runner/config`", "");
-  for (const s of sections) {
-    out.push(`### ${s.title}`, "");
-    if (AREA_NOTES[s.title]) out.push(...AREA_NOTES[s.title], "");
-    out.push("| Variable | Default | UI | Read by | Notes |", "|---|---|---|---|---|");
-    for (const k of s.knobs) {
-      const def = defByKey.get(k.name);
-      const ui = def ? `yes (${def.type}${def.choices ? `: ${def.choices.join(" / ")}` : ""})` : "";
-      const readBy = [...(consumers.get(k.name) ?? [])].sort().join(", ");
-      if (k.kind === "extra") {
-        const dflt = k.verify === false ? `_follows_ \`${k.default}\`` : code(k.default);
-        const note = `${k.doc} (No default line: read in \`${k.file}\`.)`;
-        out.push(`| \`${k.name}\` | ${cell(dflt)} | ${ui} | ${readBy} | ${cell(note)} |`);
-        continue;
-      }
-      const note = def?.help ? def.help : k.doc;
-      let dflt = k.derived ? `_derived_ (${code(k.default)})` : code(k.default);
-      if (k.defaultArm) dflt += " _(the default; other modes/branches can set it)_";
-      else if (!k.topLevel) dflt += " _(set by branch/mode logic)_";
-      out.push(`| \`${k.name}\` | ${cell(dflt)} | ${ui} | ${readBy} | ${cell(note)} |`);
+  out.push("");
+  out.push(
+    "`gaffer config show` prints the fourteen with their values and where each came from;",
+    "`--all` adds every value they derive and what decided it; `--json` prints both as JSON.",
+    "",
+  );
+  out.push("## Credentials and environment-only names", "");
+  out.push(
+    "These are never settings: settings.json cannot set them, only the environment the runner",
+    "starts in. The worker provider is a security boundary with its own page",
+    "([worker-providers.md](worker-providers.md)); the sandbox opt-out and the uncapped switch",
+    "are in [SECURITY.md](../SECURITY.md).",
+    "",
+  );
+  out.push("| Variable | Default | Notes |", "|---|---|---|");
+  for (const n of ENV_ONLY) {
+    const d = m.defaults.get(n) ?? m.libDefaults.get(n);
+    const x = m.extras.get(n);
+    const dflt = d ? (d.derived ? `_computed_ (${code(d.default)})` : code(d.default)) : code(x.default);
+    const note = firstSentence([d?.doc || x?.doc || ""]);
+    out.push(`| \`${n}\` | ${cell(dflt)} | ${cell(note)} |`);
+  }
+  out.push("");
+  out.push("---", "");
+  out.push(
+    "Every value the settings derive, what each choice sets, and how to override one from the",
+    "environment: [Detailed configuration](CONFIG-ADVANCED.md).",
+    "",
+  );
+  return out.join("\n");
+}
+
+const COMPARE_TEXT = {
+  off: "an old 0 (off) still applies where the setting derives 1",
+  on: "an old 1 (on) still applies where the setting derives 0",
+  less: "an old lower limit still applies (0 or empty is no limit)",
+  less0: "an old lower number still applies",
+  more: "an old higher number still applies",
+  keep: "the old value still applies while the setting leaves it empty",
+  drop: "never: the setting decides it",
+};
+function compareText(c) {
+  if (c.startsWith("rank ")) {
+    const levels = c
+      .slice(5)
+      .split(" ")
+      .map((l) => l.replace(/(^|\/)-(\/|$)/, "$1(unset)$2"));
+    return `an old value further along ${levels.join(" < ")} still applies`;
+  }
+  return COMPARE_TEXT[c];
+}
+
+/** docs/CONFIG-ADVANCED.md: every derived value, by the setting that decides it. */
+export function renderAdvanced(m, { consumers, undocumented, defaults }) {
+  const out = [];
+  out.push("# Detailed configuration", "");
+  out.push(
+    "<!-- GENERATED by scripts/config-reference.mjs from the derivation tables in",
+    "     runner/config/*.sh. Do not edit by hand. CI runs `node scripts/config-reference.mjs",
+    "     --check`. -->",
+    "",
+  );
+  out.push(
+    "This is not a supported surface: it lists every value the fourteen settings",
+    "([CONFIG.md](CONFIG.md)) derive, for the person who wants to see or change one. Each is",
+    "grouped under the setting that decides it, with what each of its choices derives.",
+    "",
+    "**Override any of them** with a real environment variable: `export NAME=value` before",
+    "starting the runner. That is the one way; settings.json does not take these names. An",
+    "override is honoured as it always was, and `gaffer config show --all` marks it as coming",
+    "from the environment. A value marked _follows_ takes another value's; one marked",
+    "_from the setting_ is worked out from the setting's own value (its note says how).",
+    "",
+  );
+  for (const s of m.settings) {
+    const t = m.tableOf.get(s.name);
+    const cols = columnsOf(s);
+    out.push(`## \`${s.name}\``, "");
+    out.push(s.description, "");
+    const accepted = s.values.length ? s.values.join(", ") : s.kind;
+    out.push(
+      `Accepted: ${accepted}. Default: ${s.default}. Its table: \`runner/config/${t.part}.sh\`.`,
+      "",
+    );
+    if (SETTING_NOTES[s.name]) out.push(...SETTING_NOTES[s.name], "");
+    if (cols.length > 0) {
+      out.push(
+        `| Derived value | ${cols.map((c) => (c === s.default ? `${c} (default)` : c)).join(" | ")} | Note |`,
+        `|---|${cols.map(() => "---|").join("")}---|`,
+      );
+    } else {
+      out.push("| Derived value | Value | Note |", "|---|---|---|");
+    }
+    for (const r of t.rows) {
+      const n = Math.max(cols.length, 1);
+      const cells =
+        r.cells.length === 1 && r.cells[0] === "~"
+          ? Array(n).fill(m.constantOf(r.name).text)
+          : r.cells.length === 1
+            ? Array(n).fill(cellText(r.cells[0]))
+            : r.cells.map(cellText);
+      out.push(`| \`${r.name}\` | ${cells.map(cell).join(" | ")} | ${cell(r.note)} |`);
     }
     out.push("");
   }
-
-  out.push("## Dashboard-only settings", "");
+  out.push("## Old settings.json keys", "");
   out.push(
-    "These have a Settings-panel entry but no `factory.config.sh` default: the",
-    "consuming component applies its own default when the variable is unset.",
+    "Before the fourteen, the dashboard wrote these to settings.json. Each is now decided by",
+    "the setting named here: the runner ignores the key with one warning naming that",
+    "setting, except where the old value is stricter than what the setting derives (it",
+    "would never widen autonomy or spend): then it still applies, and the warning says so.",
+    "`gaffer config show --json` lists what happened to each (`migration`).",
     "",
   );
-  out.push("| Variable | Type | Group | Read by | Help |", "|---|---|---|---|---|");
-  for (const d of uiOnly) {
-    const readBy = [...(consumers.get(d.key) ?? [])].sort().join(", ");
-    const type = `${d.type}${d.choices ? `: ${d.choices.join(" / ")}` : ""}`;
-    out.push(`| \`${d.key}\` | ${type} | ${d.group} | ${readBy} | ${cell(d.help ?? d.label)} |`);
-  }
+  out.push("| Old key | Decided now by | When the old value still applies |", "|---|---|---|");
+  for (const o of m.oldKeys)
+    out.push(`| \`${o.key}\` | \`${o.setting}\` | ${cell(compareText(o.compare))} |`);
   out.push("");
-
-  out.push("## Env reads without a default or UI entry", "");
+  out.push("## Env reads without a default", "");
   if (undocumented.size === 0) {
     out.push(
-      "None: every environment variable the code reads is a knob above, a dashboard",
-      "setting, a deprecated name or an internal name below. A new read with neither a",
-      "default line nor a Settings entry shows up here until it gets one or is listed.",
+      "None: every environment variable the code reads is a setting, a derived value, an",
+      "environment-only name, a deprecated name or an internal name. A new read with none of",
+      "those shows up here until it gets one.",
     );
   } else {
     out.push(
-      "Factory-prefixed identifiers the code reads from the environment and never",
-      "assigns itself, with neither a `factory.config.sh` default nor a Settings-panel",
-      "entry — so only an operator (or a test) can set them. Each is either a",
-      "deliberate advanced/test-only override or a knob missing its default line or",
-      "`SETTING_DEFS` entry. **Default in code** is the fallback literal at the read",
-      "site (`${X:-…}` / `?? …`); two values means the read sites disagree.",
+      "Factory-prefixed names the code reads from the environment and never assigns, with no",
+      "setting deciding them: only an operator (or a test) can set them. **Default in code**",
+      "is the fallback at the read site.",
       "",
+      "| Variable | Default in code | Read in |",
+      "|---|---|---|",
     );
-    out.push("| Variable | Default in code | Read in |", "|---|---|---|");
-    for (const [name, files] of [...undocumented.entries()].sort(([a], [b]) =>
-      a.localeCompare(b),
-    )) {
+    for (const [name, files] of [...undocumented.entries()].sort(([a], [b]) => a.localeCompare(b))) {
       const d = [...(defaults.get(name) ?? [])].sort();
-      const dflt = d.length ? d.map((v) => code(v)).join(" / ") : "";
       out.push(
-        `| \`${name}\` | ${cell(dflt)} | ${[...files]
+        `| \`${name}\` | ${cell(d.map((v) => code(v)).join(" / "))} | ${[...files]
           .sort()
           .map((f) => `\`${f}\``)
           .join(", ")} |`,
@@ -975,129 +1187,141 @@ export function render({
     }
   }
   out.push("");
-
-  if (deprecated.length > 0) {
-    out.push("## Deprecated", "");
-    out.push(
-      "These still work for one release: each is mapped onto its replacement and says so",
-      "once on stderr. Set the replacement instead. With both set, the replacement wins; an",
-      "old per-role or per-cap name still applies to a role or cap the new knob does not name.",
-      "",
-    );
-    out.push("| Old name | Use instead |", "|---|---|");
-    for (const d of deprecated) out.push(`| \`${d.name}\` | ${cell(d.use)} |`);
-    out.push("");
-  }
-  if (removed.length > 0) {
-    out.push("### Removed", "");
-    out.push(
-      "Nothing in Gaffer set these, so each held its built-in value, which is now fixed in",
-      "the code. A set one is ignored, and the config says so once on stderr.",
-      "",
-    );
-    out.push("| Removed name | What happens now |", "|---|---|");
-    for (const d of removed) out.push(`| \`${d.name}\` | ${cell(d.now)} |`);
-    out.push("");
-  }
-
-  if (internal.length > 0 || seams.length > 0) {
-    out.push("## Internal names (not knobs)", "");
-    out.push(
-      "The code reads these too, but they are not settings: another component or a test",
-      "sets them, or they follow from a knob above. They are listed so a name you meet in",
-      "the code is not a mystery; a run needs none of them set.",
-      "",
-    );
-    for (const g of internal) {
-      out.push(`- **${g.group}**: ${g.title}. ${g.names.map((n) => `\`${n}\``).join(", ")}.`);
+  out.push("## Deprecated", "");
+  out.push(
+    "These still work: each is mapped onto its replacement and says so once on stderr. With",
+    "both set, the replacement wins; an old per-role or per-cap name still applies to a role",
+    "or cap the new name does not name.",
+    "",
+    "| Old name | Use instead |",
+    "|---|---|",
+  );
+  for (const d of DEPRECATED) out.push(`| \`${d.name}\` | ${cell(d.use)} |`);
+  out.push("");
+  out.push("### Removed", "");
+  out.push(
+    "Nothing in Gaffer set these, so each held its built-in value, which is now fixed in the",
+    "code. A set one is ignored, and the config says so once on stderr.",
+    "",
+    "| Removed name | What happens now |",
+    "|---|---|",
+  );
+  for (const d of REMOVED) out.push(`| \`${d.name}\` | ${cell(d.now)} |`);
+  out.push("");
+  out.push("## Internal names (not knobs)", "");
+  out.push(
+    "The code reads these too, but they are not settings: another component or a test sets",
+    "them, or they follow from a value above. They are listed so a name you meet in the code",
+    "is not a mystery; a run needs none of them set.",
+    "",
+  );
+  for (const g of INTERNAL_NAMES)
+    out.push(`- **${g.group}**: ${g.title}. ${g.names.map((n) => `\`${n}\``).join(", ")}.`);
+  out.push(
+    `- **test seams**: read only so a test can shorten a wait, stub a command, skip slow bookkeeping or fix the clock; keep the built-in value. ${TEST_SEAMS.map((n) => `\`${n}\``).join(", ")}.`,
+  );
+  out.push("");
+  // Which components read each name, so a reader can follow one into the code.
+  out.push("## Who reads what", "");
+  out.push("| Name | Read by |", "|---|---|");
+  for (const s of m.settings) {
+    for (const n of [s.name, ...m.tableOf.get(s.name).rows.map((r) => r.name)]) {
+      out.push(`| \`${n}\` | ${[...(consumers.get(n) ?? [])].sort().join(", ")} |`);
     }
-    if (seams.length > 0) {
-      out.push(
-        `- **test seams**: read only so a test can shorten a wait, stub a command, skip slow bookkeeping or fix the clock; keep the built-in value. ${seams.map((n) => `\`${n}\``).join(", ")}.`,
-      );
-    }
-    out.push("");
   }
+  out.push("");
   return out.join("\n");
 }
 
-export async function generate(root = ROOT) {
-  const seen = new Set();
-  const knobs = [];
-  const src = configSources(root);
-  const areaOf = (part, where) => {
-    const title = AREAS[part];
-    if (!title) throw new Error(`${where} defines a knob but has no area in AREAS / LIB_AREAS`);
-    return title;
+/** runner/config/settings-schema.json: the fourteen and their tables, for the dashboard. */
+export function renderSchema(m) {
+  const doc = {
+    $comment:
+      "GENERATED by scripts/config-reference.mjs from runner/config/01-settings.sh and the derivation tables in runner/config/*.sh. Do not edit by hand; `node scripts/config-reference.mjs --check` fails when it is stale.",
+    settings: m.settings.map((s) => {
+      const t = m.tableOf.get(s.name);
+      const cols = columnsOf(s);
+      return {
+        name: s.name,
+        kind: s.kind,
+        values: s.values,
+        default: s.default,
+        description: s.description,
+        table: `runner/config/${t.part}.sh`,
+        presets: cols,
+        derives: t.rows.map((r) => {
+          const one = (c) => cellJson(c, c === "~" ? m.constantOf(r.name) : null);
+          const row = { name: r.name, note: r.note };
+          if (r.cells.length === 1) row.all = one(r.cells[0]);
+          else row.byPreset = Object.fromEntries(cols.map((c, i) => [c, one(r.cells[i])]));
+          if (r.unsetOnly) row.keepsExplicitEmpty = true;
+          return row;
+        }),
+      };
+    }),
+    oldKeys: m.oldKeys.map((o) => ({
+      key: o.key,
+      setting: o.setting,
+      compare: o.compare,
+      stillApplies: compareText(o.compare),
+    })),
+    environmentOnly: ENV_ONLY,
   };
-  for (const file of [CONFIG_SH, ...libFiles(root)]) {
-    const isConfig = file === CONFIG_SH;
-    const text = isConfig ? src.text : readFileSync(file, "utf8");
-    for (const k of parseConfigDefaults(text, isConfig ? {} : { fixedSection: "?" })) {
-      if (seen.has(k.name)) continue; // factory.config.sh wins over a lib re-default
-      seen.add(k.name);
-      if (isConfig) {
-        const r = src.ranges.find((x) => k.line >= x.from && k.line <= x.to);
-        k.section = areaOf(r?.part ?? "factory.config.sh", `runner/config/${r?.part}.sh`);
-      } else {
-        const lib = path.basename(file);
-        k.section = areaOf(LIB_AREAS[lib], `runner/lib/${lib}`);
-      }
-      knobs.push(k);
-    }
-  }
-  const defs = await loadSettingDefs();
+  return `${JSON.stringify(doc, null, 2)}\n`;
+}
+
+const OUTS = {
+  config: path.join(ROOT, "docs", "CONFIG.md"),
+  advanced: path.join(ROOT, "docs", "CONFIG-ADVANCED.md"),
+  schema: path.join(ROOT, "runner", "config", "settings-schema.json"),
+};
+
+/** The three generated files' text, keyed like OUTS. */
+export async function generateAll(root = ROOT) {
+  const m = model(root);
   verifyExtraKnobs(root);
   verifyInternalNames(root);
-  const notKnobs = notKnobNames();
-  const stillDefaulted = knobs.filter((k) => notKnobs.has(k.name)).map((k) => k.name);
-  if (stillDefaulted.length > 0) {
-    // A `: "${X:=v}"` line is how the config says "this is a knob"; an internal name
-    // assigns itself plainly (X="${X:-v}") so code and reference agree.
-    throw new Error(
-      `listed as internal but still defaulted with \`: "\${X:=...}"\`: ${stillDefaulted.join(", ")}`,
-    );
-  }
-  const extras = EXTRA_KNOBS.filter(
-    (k) => !seen.has(k.name) && !defs.some((d) => d.key === k.name),
-  );
   const names = [
     ...new Set([
-      ...knobs.map((k) => k.name),
-      ...defs.map((d) => d.key),
-      ...extras.map((k) => k.name),
-      ...notKnobs,
+      ...m.settings.map((s) => s.name),
+      ...m.tables.flatMap((t) => t.rows.map((r) => r.name)),
+      ...ENV_ONLY,
+      ...EXTRA_KNOBS.map((k) => k.name),
+      ...m.oldKeys.map((o) => o.key),
+      ...notKnobNames(),
     ]),
   ];
-  const { consumers, undocumented, defaults } = scanConsumers(root, names);
-  return render({
-    knobs,
-    defs,
-    consumers,
-    undocumented,
-    defaults,
-    extras,
-    internal: INTERNAL_NAMES,
-    seams: TEST_SEAMS,
-    deprecated: DEPRECATED,
-    removed: REMOVED,
-  });
+  const scan = scanConsumers(root, names);
+  return {
+    config: renderConfig(m),
+    advanced: renderAdvanced(m, scan),
+    schema: renderSchema(m),
+  };
+}
+
+/** docs/CONFIG.md's text (kept for callers of the one-document generator). */
+export async function generate(root = ROOT) {
+  return (await generateAll(root)).config;
 }
 
 async function main(argv) {
   const check = argv.includes("--check");
-  const text = await generate();
-  if (check) {
-    const current = existsSync(OUT) ? readFileSync(OUT, "utf8") : "";
-    if (current !== text) {
-      console.error(`docs/CONFIG.md is stale — regenerate with: node scripts/config-reference.mjs`);
-      process.exit(1);
+  const texts = await generateAll();
+  let stale = false;
+  for (const [k, file] of Object.entries(OUTS)) {
+    const rel = path.relative(ROOT, file);
+    if (check) {
+      const current = existsSync(file) ? readFileSync(file, "utf8") : "";
+      if (current !== texts[k]) {
+        console.error(`${rel} is stale; regenerate with: node scripts/config-reference.mjs`);
+        stale = true;
+      } else console.log(`${rel} is up to date`);
+    } else {
+      writeFileSync(file, texts[k]);
+      console.log(`wrote ${rel}`);
     }
-    console.log("docs/CONFIG.md is up to date");
-    return;
   }
-  writeFileSync(OUT, text);
-  console.log(`wrote ${path.relative(ROOT, OUT)}`);
+  if (stale) process.exit(1);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

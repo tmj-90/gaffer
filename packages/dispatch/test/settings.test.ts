@@ -451,24 +451,41 @@ describe("settings bootstrap: settings.json + GAFFER_MODE presets become env DEF
     expect(settingValueProblem(def, "A;rm -rf /")).not.toBeNull();
   });
 
-  it("the runner's settings.json allowlist is exactly SETTING_DEFS minus ENV_ONLY_KEYS", () => {
-    // runner/config/01-settings.sh takes from settings.json only the keys this API can
-    // write; a key on one side and not the other is either a dashboard setting the runner
-    // silently ignores or a file key the runner obeys that no person can set through the
-    // API. Both lists are literal words between the quotes of their assignment.
+  it("every key this API writes is one of the runner's fourteen settings or an old key it migrates", () => {
+    // runner/config/01-settings.sh takes from settings.json only its fourteen settings
+    // (_GAFFER_SETTINGS_SPEC); an old dashboard key is in its migration map
+    // (_GAFFER_MIGRATION_MAP), so the runner ignores it with a warning naming the setting
+    // that decides it now, unless it is stricter than what that setting derives. Until
+    // the Settings page moves to the fourteen, no key it writes may fall outside both
+    // (the runner would drop it with no word on which setting replaced it).
     const part = readFileSync(resolve(__dirname, "../../../runner/config/01-settings.sh"), "utf8");
+    const block = (name: string): string[] => {
+      const m = new RegExp(`^${name}='([^']*)'`, "m").exec(part);
+      expect(m, `${name} assignment in 01-settings.sh`).not.toBeNull();
+      return m![1]!
+        .split("\n")
+        .map((l) => l.split("|")[0]!.trim())
+        .filter((w) => w !== "");
+    };
     const words = (name: string): string[] => {
       const m = new RegExp(`^${name}="([^"]*)"`, "m").exec(part);
       expect(m, `${name} assignment in 01-settings.sh`).not.toBeNull();
       return m![1]!.split(/\s+/).filter((w) => w !== "");
     };
-    const shellAllow = words("_GAFFER_SETTINGS_KEYS");
+    const settings = block("_GAFFER_SETTINGS_SPEC");
+    const oldKeys = block("_GAFFER_MIGRATION_MAP");
     const shellEnvOnly = words("_GAFFER_ENV_ONLY_KEYS");
+    expect(settings.length).toBe(14);
+    expect(new Set(oldKeys).size).toBe(oldKeys.length);
+    for (const k of oldKeys) expect(settings).not.toContain(k);
     const apiKeys = SETTING_DEFS.map((d) => d.key).filter((k) => !ENV_ONLY_KEYS.has(k));
-    expect(new Set(shellAllow).size).toBe(shellAllow.length);
-    expect([...shellAllow].sort()).toEqual([...apiKeys].sort());
+    const outside = apiKeys.filter((k) => !settings.includes(k) && !oldKeys.includes(k));
+    expect(outside).toEqual([]);
     expect([...shellEnvOnly].sort()).toEqual([...ENV_ONLY_KEYS].sort());
-    for (const k of shellEnvOnly) expect(shellAllow).not.toContain(k);
+    for (const k of shellEnvOnly) {
+      expect(settings).not.toContain(k);
+      expect(oldKeys).not.toContain(k);
+    }
   });
 
   it("MODE_PRESETS matches what runner/factory.config.sh actually derives for every mode", () => {

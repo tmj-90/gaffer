@@ -34,12 +34,12 @@ A ticket can't be marked ready until it has at least one acceptance criterion; t
 3. **Gates.** When the agent says it's finished, the runner runs the repo's tests, typecheck and lint in the worktree, then every criterion's check command, and flags a delivery that weakened the tests. A failure goes back for rework with the output attached. After three attempts (`GAFFER_MAX_DELIVERY_ATTEMPTS`), or sooner if two attempts fail in exactly the same way, the ticket is parked as blocked and waits for me.
 4. **Tester first.** Where the independent tester gates a ticket (an Acceptance ticket, or a testable one in a repo with a registered test command; a planned build's tickets are created testable), it writes black-box tests against the criteria before any person reads the change. Its PASS only counts once the runner has replayed those tests on a clean checkout of the tested commit with the repo's own test command, and it is bound to the test names that replay saw pass. A ticket with an [acceptance profile](docs/FEATURES.md#acceptance-profiles) (`cli` or `api`) also has the commands you registered run on that checkout, and their transcript is kept. A FAIL goes back to rework with the tester's observation in the next prompt.
 5. **Your review.** The diff you approve is computed by the control plane from git, so it shows what actually changed, whatever the agent says. Above it, the review packet puts what the runner recorded before what the agent wrote: each gate and its command, the tester's verdict and the commit it tested, what backs the change and what doesn't, and the behavioural surface (the exported symbols it changes, with their callers and tests from the code index). You can comment on a line, a file or the whole change; **Fix these** sends it back with your must-fix comments as numbered requirements, and the next attempt opens on what changed since your review. You approve the commit the tester passed, and only that commit: an approval of a branch that moved after the diff loaded is refused. With CI required, nothing is approved until CI has passed for that commit.
-6. **Landing.** Merging is a separate click unless you turn on `AUTO_MERGE`. Before anything lands, Gaffer builds the merge of the approved commit onto your current default branch and runs your repo's gates on it, and replays the tester's tests on that merge candidate: every test the PASS named has to run and pass. Only a passing combination lands, and only while the default branch is still the one it tested; a failing one waits for you with the output, and your default branch is untouched. A ticket that spans several repositories lands one gated merge per repository and is done only when every repository's change has landed. Landing also refreshes what Gaffer knows about the repo.
+6. **Landing.** Merging is a separate click unless your `GAFFER_MODE` merges approved work for you (`autonomous`, `strict`). Before anything lands, Gaffer builds the merge of the approved commit onto your current default branch and runs your repo's gates on it, and replays the tester's tests on that merge candidate: every test the PASS named has to run and pass. Only a passing combination lands, and only while the default branch is still the one it tested; a failing one waits for you with the output, and your default branch is untouched. A ticket that spans several repositories lands one gated merge per repository and is done only when every repository's change has landed. Landing also refreshes what Gaffer knows about the repo.
 7. **Escaped defects.** When a later bug turns out to come from a change that landed, you link the two on the bug's ticket page (or `wg ticket regression-of <ticket> --of <change>`). Gaffer never guesses a link. Health counts escaped defects against accepted changes, and the routing scorecard counts them per model and work class, next to first pass, rework and the cost of each accepted change.
 
-By default no agent reviews anything (`REVIEW_MODE=human`). If you do let agents approve, the control plane still refuses an approval from the agent that did the work.
+By default no agent reviews anything (`GAFFER_MODE=supervised`). If you do let agents approve, the control plane still refuses an approval from the agent that did the work.
 
-Models are tiered in [runner/model-registry.json](runner/model-registry.json), which maps each tier to a model. Planning runs on the strong tier and implementation on the mid tier by default. A low-risk ticket with at most one criterion, or one measured as a small change, is implemented and tested on the cheap tier; a high-risk ticket or one with a lot of criteria is routed a tier up.
+`GAFFER_MODELS` names the three tiers (strong, standard, cheap; by default opus, sonnet and haiku from [runner/model-registry.json](runner/model-registry.json)). Planning runs on the strong tier and implementation on the mid tier by default. A low-risk ticket with at most one criterion, or one measured as a small change, is implemented and tested on the cheap tier; a high-risk ticket or one with a lot of criteria is routed a tier up.
 
 ### Planning a build
 
@@ -67,7 +67,7 @@ Out of the box Gaffer is supervised, and these jobs stay with a person:
 - linking an escaped defect to the change it came from
 - approving or rejecting lore drafts
 
-Every flag that hands one of these to an agent is off by default. `GAFFER_MODE` sets them as a group (`supervised`, `lite`, `graduated`, `autonomous`, `strict`) and the individual flags override it. [docs/CONFIG.md](docs/CONFIG.md) lists every setting and its default.
+Every flag that hands one of these to an agent is off by default. `GAFFER_MODE` sets them as a group (`supervised`, `lite`, `graduated`, `autonomous`, `strict`); see [Configuration](#configuration).
 
 ## Getting started
 
@@ -116,11 +116,21 @@ runner/gaffer approve 1 --reviewer <you>   # the human gate, or use the Review s
 runner/gaffer merge 1
 ```
 
-`runner/gaffer run --daemon` repeats the pass every 30 seconds (`--interval` changes that) until you stop it. If the model's usage window runs out, the ticket goes back to Ready without counting an attempt and the daemon sleeps until the window resets (`gaffer status` says until when). A one-shot `gaffer run` doesn't sleep: it prints `paused until <time>` and exits 75, and the dashboard's Poll for work refuses with the same line. Read `runner/factory.config.sh` before the first live run. It's where the defaults live, and a live run spends real money.
+`runner/gaffer run --daemon` repeats the pass every 30 seconds (`--interval` changes that) until you stop it. If the model's usage window runs out, the ticket goes back to Ready without counting an attempt and the daemon sleeps until the window resets (`gaffer status` says until when). A one-shot `gaffer run` doesn't sleep: it prints `paused until <time>` and exits 75, and the dashboard's Poll for work refuses with the same line. Read [Configuration](#configuration) before the first live run: a live run spends real money.
 
 To run it in a container instead, export `ANTHROPIC_API_KEY` (or `CLAUDE_CODE_OAUTH_TOKEN`), run `mkdir -p repos` and put the repos you want worked on under `./repos` (create it yourself: on Linux, Docker creates a missing one owned by root, and the container's user can't write to it), then run `docker compose up -d`. The dashboard comes up on `127.0.0.1:8787` (`GAFFER_PORT` changes the host side, and it falls back to `DISPATCH_API_PORT`) and `docker compose logs dashboard` shows the login link.
 
 [quickstart.md](quickstart.md) is the long version, including the greenfield path and what Gaffer does on a greenfield run.
+
+## Configuration
+
+A factory has fourteen settings, and everything else follows from them. Most people set three:
+
+- `GAFFER_MODE`: who approves and merges (`supervised` by default: a person approves every merge)
+- a budget: `GAFFER_DAILY_BUDGET_USD` for the day, or `GAFFER_BUDGET_USD` for the factory's lifetime (a live run needs one)
+- `GAFFER_MODELS`: the strong, standard and cheap models (`standard` by default: opus, sonnet, haiku)
+
+The other ten are `GAFFER_EFFORT`, `GAFFER_CONCURRENCY`, `GAFFER_SANDBOX`, `GAFFER_GATES`, `GAFFER_LANDING`, `GAFFER_TESTING`, `GAFFER_IDLE`, `GAFFER_NOTIFY`, `GAFFER_DATA` and `DISPATCH_API_PORT`. Set them in the dashboard's Settings, in `.gaffer/settings.json`, or as environment variables (the environment wins; `GAFFER_DATA` only there). An unknown value stops the runner with a message naming the accepted ones. `runner/gaffer config show` prints yours and where each came from. [docs/CONFIG.md](docs/CONFIG.md) has the list with every accepted value.
 
 ## The dashboard
 
@@ -180,7 +190,7 @@ On the command line, `wg` records writes as `$USER` and checks nothing, because 
 
 The worker doesn't have to be `claude -p`. `GAFFER_WORKER_PROVIDER=command` runs your own program (`GAFFER_WORKER_COMMAND`) for every agent turn, under a small contract: the prompt and the MCP config come in as environment variables, a JSON envelope with the result, turns and cost goes back on stdout, and the budget caps, the scrubbed environment and the gates apply as before. The safety hook only exists inside `claude -p`, so a command worker always runs inside the docker sandbox with the host-side MCP bridge (on a Linux host by default) and refuses anywhere else, `sandbox-exec` included, unless you set `GAFFER_STRICT_REQUIRE=0` in the environment because you contain the whole runner yourself. Its knobs are environment-only, its program must live where no agent can rewrite it, and each call is booked at no less than a per-call floor, because the cost it reports is its own word. [docs/worker-providers.md](docs/worker-providers.md) has the contract.
 
-Work is capped at 50 ticks a day (`MAX_TICKS_PER_DAY`), and a live run won't start without a dollar cap: set `GAFFER_DAILY_BUDGET_USD` for the day or `GAFFER_BUDGET_USD` for the factory's lifetime (no new paid work starts at $0 headroom). `gaffer run`, the loop and the dashboard's Poll for work all refuse until one is set, and the dashboard's first Poll asks for a daily budget, prefilled at $5. Every other paid launch follows the same rule: onboarding analysis, Plan a build, Suggest work, the spec author, the merge resolver and the tester refuse with the same message, and an onboard without a cap writes the mechanical digest and cards and says why. `GAFFER_ALLOW_UNCAPPED=1` opts out. `GAFFER_MAX_CALL_USD` caps a single agent call. [SECURITY.md](SECURITY.md) has the threat model and the limits in full.
+Work is capped at 50 ticks a day, and a live run won't start without a dollar cap: set `GAFFER_DAILY_BUDGET_USD` for the day or `GAFFER_BUDGET_USD` for the factory's lifetime (no new paid work starts at $0 headroom). `gaffer run`, the loop and the dashboard's Poll for work all refuse until one is set, and the dashboard's first Poll asks for a daily budget, prefilled at $5. Every other paid launch follows the same rule: onboarding analysis, Plan a build, Suggest work, the spec author, the merge resolver and the tester refuse with the same message, and an onboard without a cap writes the mechanical digest and cards and says why. `GAFFER_ALLOW_UNCAPPED=1` in the environment opts out. [SECURITY.md](SECURITY.md) has the threat model and the limits in full.
 
 ## Layout
 
@@ -203,7 +213,7 @@ gaffer/
 
 - [quickstart.md](quickstart.md): the guided first run
 - [docs/FEATURES.md](docs/FEATURES.md): each surface in more detail
-- [docs/CONFIG.md](docs/CONFIG.md): every setting, generated from the code
+- [docs/CONFIG.md](docs/CONFIG.md): the fourteen settings, generated from the code
 - [SECURITY.md](SECURITY.md): threat model and residual limits
 - [docs/worker-providers.md](docs/worker-providers.md): running your own worker program instead of `claude -p`
 - [ARCHITECTURE.md](ARCHITECTURE.md): how the pieces fit together

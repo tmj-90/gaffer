@@ -658,11 +658,11 @@ reading is in force (the stricter one), with one action that removes them after 
 exactly what goes; nothing is removed without it. A run the dashboard starts gets
 exactly what a run started from the command line gets from the same settings.json.
 
-![The boot room: the Team instructions dial on Supervised, who plays each position, and autonomy suggestions drawn from the review record](img/settings.png)
+![The boot room: the Autonomy mode dial on Supervised, who plays each position, and the autonomy ladder below it](img/settings.png)
 
-*The boot room (`#/settings`): the Team instructions dial on Supervised, and below it
-suggestions for what could be handed over, from your own review record. Nothing
-changes until you enable one.*
+*The boot room (`#/settings`): the Autonomy mode (`GAFFER_MODE`) as the dial on
+Supervised, with what it sets folded under it, and the autonomy ladder below. The
+other thirteen settings follow, each with where its value came from and what it sets.*
 
 ### The autonomy ladder and the step-down
 

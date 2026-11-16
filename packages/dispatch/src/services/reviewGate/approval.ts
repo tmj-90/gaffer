@@ -107,11 +107,7 @@ export function approveReview(
     (envFlagOn(process.env.DISPATCH_ALLOW_AGENT_APPROVE) ||
       policyGrantsAgentApprove(internals, ticketRef));
   if (actor.type !== "human" && actor.type !== "admin" && !agentApproveAllowed) {
-    throw new DispatchError(
-      "ACTOR_NOT_PERMITTED",
-      "Only a human or admin may approve a review (set DISPATCH_ALLOW_AGENT_APPROVE=1 to allow autonomous agent approval).",
-      { actor_type: actor.type },
-    );
+    throw notPermittedToApprove(actor);
   }
   // OBSERVED-RISK ESCALATION (Trust & Autonomy, security-critical): this runs ONLY on
   // the AUTO-SHIP path — an agent whose approve+merge was permitted WITHOUT a human
@@ -220,6 +216,7 @@ export function approveReview(
   }
   if (coverage && !coverage.covered) {
     return inTransaction(internals.db, () => {
+      recheckAgentApproval(internals, ticket, actor);
       const result = internals.transitions.transition({
         ticketId: ticket.id,
         actor,
@@ -248,6 +245,7 @@ export function approveReview(
   // The done gate's git runs HERE, before transition() takes the write lock.
   const deliveryDiff = internals.transitions.deliveryDiffProof(ticket.id);
   return inTransaction(internals.db, () => {
+    recheckAgentApproval(internals, ticket, actor);
     const result = internals.transitions.transition({
       ticketId: ticket.id,
       actor,
@@ -266,6 +264,37 @@ export function approveReview(
     sealApprovalEvent(internals, ticket, result.eventId, pinsOf(pins), principalId(opts));
     return result;
   });
+}
+
+function notPermittedToApprove(actor: Actor): DispatchError {
+  return new DispatchError(
+    "ACTOR_NOT_PERMITTED",
+    "Only a human or admin may approve a review (set DISPATCH_ALLOW_AGENT_APPROVE=1 to allow autonomous agent approval).",
+    { actor_type: actor.type },
+  );
+}
+
+/**
+ * THE AUTONOMY LADDER under a concurrent writer (external review 20): an agent's approval
+ * is decided again INSIDE the write transaction that records it, before the ticket moves.
+ * The checks at the top of approveReview run before the Git reads (which stay outside the
+ * write lock), so another connection could commit an approve step-down, turn the approve
+ * policy off or change the ticket's risk in between, and the approval still committed.
+ * Inside the transaction (BEGIN IMMEDIATE) every commit made before our write lock is
+ * seen: the hold (ceiling, step-down, unsigned risk) and the allow-path (the env flag or
+ * a signed mode='auto' approve row) are read again from the ticket as it is now. (The
+ * risk level is frozen from the claim on and sealed, so the observed-risk comparison made
+ * before the Git window still holds; a raw edit of it is the unsigned-risk hold.) Can only
+ * refuse; a person's approval is not an autonomy decision and is not rechecked here.
+ */
+function recheckAgentApproval(internals: ApprovalInternals, before: Ticket, actor: Actor): void {
+  if (actor.type === "human" || actor.type === "admin") return;
+  assertNoAutonomyHold(internals, before.id, "approve");
+  const allowed =
+    actor.type === "agent" &&
+    (envFlagOn(process.env.DISPATCH_ALLOW_AGENT_APPROVE) ||
+      policyGrantsAgentApprove(internals, before.id));
+  if (!allowed) throw notPermittedToApprove(actor);
 }
 
 /** SEALED PRINCIPALS: the principal an approval is made through, as its seal binds it. */

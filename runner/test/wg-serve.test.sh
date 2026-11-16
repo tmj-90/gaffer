@@ -21,6 +21,9 @@
 #   W7  sandboxed code cannot write the server's pipes: the sandbox-exec agent and
 #       validation profiles deny every path under $GAFFER_DATA/wg-serve, it is not one of
 #       the in-sandbox writers, and the docker wrapper creates its parent before masking.
+#   W9  only the tick can speak to its servers: it holds a 128-bit key that is in no
+#       environment, argv or file; a well-formed request without it (what agent code that
+#       found the pipes would send) gets no answer and runs nothing.
 # The tick-level checks (no server outlives a tick, spawns per tick, the same rows and
 # events as one-shot ticks) are in wg-serve-tick.test.sh.
 # Run: bash runner/test/wg-serve.test.sh
@@ -190,7 +193,11 @@ const reply = (nonce, line) => {
   fs.writeSync(o, line);
   fs.closeSync(o);
 };
-rl.on("line", (line) => {
+// The tick key arrives on stdin (helper-servers.sh); every line ends with it.
+const key = fs.readFileSync(0, "latin1").trim();
+rl.on("line", (raw) => {
+  if (!raw.endsWith(` ${key}`)) return;
+  const line = raw.slice(0, -key.length - 1);
   if (line === "Q") process.exit(0);
   if (line.startsWith("D ")) return;
   const nonce = line;
@@ -309,6 +316,43 @@ for mode in hang garbage die; do
   gaffer_wg_serve_stop
 done
 
+echo "== W9: only the tick can speak to its servers (the tick key) =="
+gaffer_wg_serve_start
+for _ in $(seq 1 50); do [ -e "$_GAFFER_WG_DIR/ready" ] && [ -e "$_GAFFER_JS_DIR/ready" ] && break; sleep 0.1; done
+K="${_GAFFER_WG_KEY:-}"
+[[ "$K" =~ ^[0-9a-f]{32}$ ]] && ok "W9: the tick holds a 128-bit key" || fail "W9: key '$K'"
+if [ -n "$K" ] && ! grep -qF "$K" <<< "$(env)"; then ok "W9: the key is not in the environment a child gets"; else fail "W9: the key is exported"; fi
+leak=""
+for p in "$_GAFFER_WG_PID" "$_GAFFER_JS_PID"; do
+  if [ -n "$K" ] && [ -r "/proc/$p/cmdline" ]; then
+    grep -qF "$K" <<< "$(tr '\0' '\n' < "/proc/$p/cmdline")" && leak="$leak cmdline:$p"
+    grep -qF "$K" <<< "$(tr '\0' '\n' < "/proc/$p/environ")" && leak="$leak environ:$p"
+  fi
+done
+[ -n "$K" ] && grep -rqsF --devices=skip "$K" "$GAFFER_DATA" && leak="$leak file:$(grep -rlsF --devices=skip "$K" "$GAFFER_DATA" | head -1)"
+[ -n "$K" ] && [ -z "$leak" ] && ok "W9: the key is in no server argv or environment and in no file under \$GAFFER_DATA" || fail "W9: key leaked:$leak"
+# What agent code can do: it finds the dir and writes a well-formed request for a write.
+before="$(oneshot ticket show 2 | jget 'd.ticket.status')"
+attack() {  # <dir> <nonce> <line>: write q.<nonce>, send <line>, print the reply (empty: none)
+  local d="$1" n="$2" line=""
+  printf '%s\0' GWG1 "$n" "$WORK" 0022 0 0 6 --db "$DISPATCH_DB" ticket move 2 refining > "$d/q.$n"
+  mkfifo "$d/r.$n"; exec 8<>"$d/r.$n"
+  printf '%s\n' "$3" 1<>"$d/req"
+  read -r -t 2 line <&8; exec 8<&-
+  printf '%s' "$line"
+}
+r1="$(attack "$_GAFFER_WG_DIR" 9.9.1 "9.9.1")"
+r2="$(attack "$_GAFFER_WG_DIR" 9.9.2 "9.9.2 ffffffffffffffffffffffffffffffff")"
+r3="$(attack "$_GAFFER_JS_DIR" 9.9.3 "9.9.3")"
+[ -z "$r1$r2$r3" ] && ok "W9: a request without the key, or with a wrong one, gets no answer from either server" || fail "W9: answered: '$r1' '$r2' '$r3'"
+after="$(oneshot ticket show 2 | jget 'd.ticket.status')"
+[ "$before" = "$after" ] && ok "W9: and ran nothing (#2 still $after)" || fail "W9: #2 moved $before -> $after"
+b="$(served_count)"
+v="$(wg ticket show 2 | jget 'd.ticket.number')"
+[ "$v" = 2 ] && [ "$(served_count)" = "$b" ] && kill -0 "$_GAFFER_WG_PID" 2>/dev/null \
+  && ok "W9: the tick's own calls are still served" || fail "W9: v=$v one-shot=$(( $(served_count) - b ))"
+gaffer_wg_serve_stop
+
 echo "== W6: the switch and the sweep =="
 GAFFER_WG_SERVE=0 gaffer_wg_serve_start
 [ -z "$_GAFFER_WG_PID" ] && ok "W6: GAFFER_WG_SERVE=0 starts no server" || { fail "W6: a server started with GAFFER_WG_SERVE=0"; gaffer_wg_serve_stop; }
@@ -334,9 +378,9 @@ echo "== W7: sandboxed code cannot write the server's pipes =="
     prof="$WORK/profile-${variant:-agent}.sb"
     GAFFER_SANDBOX_PROFILE="$variant" _sandbox_exec_profile "$WT" "$prof" "" || { echo "FAIL profile ${variant:-agent} refused"; continue; }
     out="$(node "$HERE/lib/sbpl-eval.mjs" "$prof" write "$P/req" "$P/q.1.2.3" "$P/r.1.2.3" "$P/s.1.2.3.0" "$P" "$GAFFER_DATA/wg-serve" 2>&1)"
-    if [ -n "$out" ] && ! printf '%s\n' "$out" | grep -qv '^deny '; then echo "OK ${variant:-agent}"; else echo "FAIL ${variant:-agent}: $out"; fi
+    if [ -n "$out" ] && ! grep -qv '^deny ' <<< "$out"; then echo "OK ${variant:-agent}"; else echo "FAIL ${variant:-agent}: $out"; fi
   done
-  if gaffer_sandbox_data_writers | grep -qF "$GAFFER_DATA/wg-serve"; then echo "FAIL writers"; else echo "OK writers"; fi
+  if grep -qF "$GAFFER_DATA/wg-serve" <<< "$(gaffer_sandbox_data_writers)"; then echo "FAIL writers"; else echo "OK writers"; fi
 ) > "$WORK/w7.out" 2>&1
 grep -q '^OK agent$' "$WORK/w7.out" && ok "W7: the sandbox-exec agent profile denies writing anything under \$GAFFER_DATA/wg-serve" || fail "W7: agent profile: $(tr '\n' ' ' < "$WORK/w7.out")"
 grep -q '^OK validation$' "$WORK/w7.out" && ok "W7: so does the validation profile (the gates)" || fail "W7: validation profile: $(tr '\n' ' ' < "$WORK/w7.out")"

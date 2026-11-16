@@ -551,6 +551,75 @@ describe.skipIf(SKIP)("serve: nothing carries over from one request to the next"
 // ---------------------------------------------------------------------------------------
 
 describe.skipIf(SKIP || process.platform === "win32")("serve: the FIFO transport", () => {
+  // The tick key (runner/lib/helper-servers.sh): the server reads it from its stdin and
+  // answers only request-FIFO lines that end with it.
+  const KEY = "0123456789abcdef0123456789abcdef";
+
+  it("runs nothing for a line without the tick key, and refuses to start without one", () => {
+    const d = mkdtempSync(join(tmpdir(), "wg-serve-key-"));
+    try {
+      const db = join(d, "d.sqlite");
+      spawnSync(process.execPath, [CLI_BIN, "--db", db, "init"]);
+      spawnSync(process.execPath, [
+        CLI_BIN,
+        "--db",
+        db,
+        "ticket",
+        "create",
+        "-t",
+        "Victim",
+        "-d",
+        "x",
+      ]);
+      const script = join(d, "drive.sh");
+      // Each attempt: a well-formed request for a write (`ticket move 1 refining`), sent
+      // as a bare nonce (the protocol before the key), with a wrong key of the right
+      // length, with the key's prefix, and with the key glued to the nonce.
+      writeFileSync(
+        script,
+        [
+          "set -u",
+          `D="${d}/s"; mkdir -m 700 "$D"; mkfifo "$D/req"`,
+          `"${process.execPath}" "${SERVE_BIN}" --fifo "$D" --owner-pid $$ < <(echo ${KEY}) & P=$!`,
+          'for i in $(seq 1 100); do [ -e "$D/ready" ] && break; sleep 0.1; done',
+          "send() {  # <nonce> <line>",
+          `  printf '%s\\0' GWG1 "$1" "${d}" 0022 0 0 6 --db "${db}" ticket move 1 refining > "$D/q.$1"`,
+          '  mkfifo "$D/r.$1"; exec 7<>"$D/r.$1"',
+          '  printf \'%s\\n\' "$2" 1<>"$D/req"',
+          '  line=""; read -r -t 2 line <&7; echo "REPLY $1=[$line]"; exec 7<&-',
+          "}",
+          'send 1.1.1 "1.1.1"',
+          'send 1.1.2 "1.1.2 ffffffffffffffffffffffffffffffff"',
+          `send 1.1.3 "1.1.3 ${KEY.slice(0, 31)}"`,
+          `send 1.1.4 "1.1.4${KEY}"`,
+          `printf 'Q\\n' 1<>"$D/req"; sleep 1.5; kill -0 $P 2>/dev/null && echo "ALIVE AFTER BARE Q"`,
+          `printf 'Q %s\\n' ${KEY} 1<>"$D/req"; wait $P; echo "EXIT=$?"`,
+          // No key on stdin (/dev/null, a file): the server exits 2 and never says ready.
+          `D2="${d}/t"; mkdir -m 700 "$D2"; mkfifo "$D2/req"`,
+          `"${process.execPath}" "${SERVE_BIN}" --fifo "$D2" --owner-pid $$ </dev/null; echo "NOKEY=$?"`,
+          `echo short > "${d}/k"; "${process.execPath}" "${SERVE_BIN}" --fifo "$D2" --owner-pid $$ <"${d}/k"; echo "SHORTKEY=$?"`,
+          '[ -e "$D2/ready" ] && echo "READY WITHOUT KEY"',
+        ].join("\n"),
+      );
+      const r = spawnSync("bash", [script], { encoding: "utf8", timeout: 60_000 });
+      for (const n of ["1.1.1", "1.1.2", "1.1.3", "1.1.4"]) {
+        expect(r.stdout).toContain(`REPLY ${n}=[]`);
+      }
+      expect(r.stdout).toContain("ALIVE AFTER BARE Q");
+      expect(r.stdout).toMatch(/^EXIT=0$/m);
+      expect(r.stdout).toMatch(/^NOKEY=2$/m);
+      expect(r.stdout).toMatch(/^SHORTKEY=2$/m);
+      expect(r.stdout).not.toContain("READY WITHOUT KEY");
+      // None of the requests ran: the ticket never moved.
+      const show = spawnSync(process.execPath, [CLI_BIN, "--db", db, "ticket", "show", "1"], {
+        encoding: "utf8",
+      });
+      expect(JSON.parse(show.stdout).ticket.status).toBe("draft");
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+
   it("answers a request, removes its files on D, and exits on Q", () => {
     const d = mkdtempSync(join(tmpdir(), "wg-serve-fifo-"));
     try {
@@ -562,17 +631,18 @@ describe.skipIf(SKIP || process.platform === "win32")("serve: the FIFO transport
         [
           "set -u",
           `D="${d}/s"; mkdir -m 700 "$D"; mkfifo "$D/req"`,
-          `"${process.execPath}" "${SERVE_BIN}" --fifo "$D" --owner-pid $$ & P=$!`,
+          `K=${KEY}`,
+          `"${process.execPath}" "${SERVE_BIN}" --fifo "$D" --owner-pid $$ < <(echo "$K") & P=$!`,
           'for i in $(seq 1 100); do [ -e "$D/ready" ] && break; sleep 0.1; done',
           '[ -e "$D/ready" ] && echo READY',
           `printf '%s\\0' GWG1 1.1.1 "${d}" 0022 0 0 4 --db "${db}" ticket list > "$D/q.1.1.1"`,
           'mkfifo "$D/r.1.1.1"; exec 7<>"$D/r.1.1.1"',
-          "printf '1.1.1\\n' 1<>\"$D/req\"",
+          'printf \'1.1.1 %s\\n\' "$K" 1<>"$D/req"',
           'read -r -t 30 line <&7; echo "REPLY=$line"',
           'cat "$D/s.1.1.1.0"',
-          "printf 'D 1.1.1\\n' 1<>\"$D/req\"; sleep 0.5",
+          'printf \'D 1.1.1 %s\\n\' "$K" 1<>"$D/req"; sleep 0.5',
           'ls "$D"',
-          'printf \'Q\\n\' 1<>"$D/req"; wait $P; echo "EXIT=$?"',
+          'printf \'Q %s\\n\' "$K" 1<>"$D/req"; wait $P; echo "EXIT=$?"',
           '[ -e "$D" ] && echo LEFT || echo GONE',
         ].join("\n"),
       );
@@ -600,14 +670,15 @@ describe.skipIf(SKIP || process.platform === "win32")("serve: the FIFO transport
         [
           `D="${d}/s"; mkdir -m 700 "$D"; mkfifo "$D/req"`,
           "sleep 30 & OWNER=$!",
-          `"${process.execPath}" "${SERVE_BIN}" --fifo "$D" --owner-pid $OWNER & P=$!`,
-          "sleep 1; kill -KILL $OWNER",
+          `"${process.execPath}" "${SERVE_BIN}" --fifo "$D" --owner-pid $OWNER < <(echo ${KEY}) & P=$!`,
+          "sleep 1; kill -0 $P 2>/dev/null && echo SERVING",
+          "kill -KILL $OWNER",
           "for i in $(seq 1 50); do kill -0 $P 2>/dev/null || break; sleep 0.1; done",
           "kill -0 $P 2>/dev/null && echo ALIVE || echo STOPPED",
         ].join("\n"),
       );
       const r = spawnSync("bash", [script], { encoding: "utf8", timeout: 60_000 });
-      expect(r.stdout.trim()).toBe("STOPPED");
+      expect(r.stdout.trim()).toBe("SERVING\nSTOPPED");
       expect(readFileSync(script, "utf8")).toContain("--owner-pid");
     } finally {
       rmSync(d, { recursive: true, force: true });

@@ -17,7 +17,8 @@
 // environment. The wire protocol is the dispatch server's (packages/dispatch/src/cli/
 // serveCore.ts), plus <dir>/i.<nonce>: the call's stdin, removed on `D <nonce>`.
 //
-//   node json-serve.mjs --fifo <dir> --owner-pid <pid>
+//   node json-serve.mjs --fifo <dir> --owner-pid <pid>   (the tick key on stdin: serveFifo)
+import crypto from "node:crypto";
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import net from "node:net";
@@ -284,8 +285,40 @@ async function answer(server, dir, nonce) {
   return { line: replyLine(nonce, reply), segments: reply.segments.length };
 }
 
-/** Serve the FIFO protocol in `dir` until `Q`, or until the owner process is gone. */
-export async function serveFifo(dir, ownerPid) {
+/** A tick key: at least 128 bits as lower-case hex (lib/helper-servers.sh makes it). */
+const KEY_RE = /^[0-9a-f]{32,128}$/;
+
+/** The tick key the tick wrote on fd 0 (one line, then EOF), or null. */
+export function readTickKey() {
+  let text;
+  try {
+    text = fs.readFileSync(0, "latin1");
+  } catch {
+    return null;
+  }
+  const key = text.endsWith("\n") ? text.slice(0, -1) : text;
+  return KEY_RE.test(key) ? key : null;
+}
+
+/** The message of a request-FIFO line that ends with the tick key, else null (constant time). */
+export function authenticLine(line, key) {
+  const sp = line.lastIndexOf(" ");
+  if (sp < 1) return null;
+  const given = Buffer.from(line.slice(sp + 1), "latin1");
+  const want = Buffer.from(key, "latin1");
+  if (given.length !== want.length || !crypto.timingSafeEqual(given, want)) return null;
+  return line.slice(0, sp);
+}
+
+/**
+ * Serve the FIFO protocol in `dir` until `Q`, or until the owner process is gone. As the
+ * dispatch server (serveCore.ts serveFifo): every line must end with the tick key, which
+ * this process got on fd 0 and the tick holds only in its shell's memory; any other
+ * line is ignored. json-tool evaluates the expression it is given, so a caller without
+ * the key must never reach it.
+ */
+export async function serveFifo(dir, ownerPid, key) {
+  if (!KEY_RE.test(key ?? "")) throw new Error("serveFifo: no tick key");
   const server = new JsonServer();
   // As the dispatch server: the tick stops it (Q); a group signal must not kill a call
   // the tick's cleanup is waiting on. The tick's death is noticed below.
@@ -309,8 +342,11 @@ export async function serveFifo(dir, ownerPid) {
     if (!isAlive(ownerPid) || !fs.existsSync(dir)) stop();
   }, 1000);
   const written = new Map();
-  for await (const line of lines) {
-    if (stopping || line === "Q") break;
+  for await (const raw of lines) {
+    if (stopping) break;
+    const line = authenticLine(raw, key);
+    if (line === null) continue;
+    if (line === "Q") break;
     if (line.startsWith("D ")) {
       const nonce = line.slice(2);
       if (!NONCE_RE.test(nonce)) continue;
@@ -354,9 +390,14 @@ if (isMain) {
   if (argv.length === 4 && argv[0] === "--fifo" && argv[2] === "--owner-pid") {
     const pid = Number(argv[3]);
     if (!Number.isInteger(pid) || pid <= 1) process.exit(2);
-    await serveFifo(argv[1], pid);
+    const key = readTickKey();
+    if (key === null) {
+      process.stderr.write("json-serve.mjs: no tick key on stdin; refusing to serve\n");
+      process.exit(2);
+    }
+    await serveFifo(argv[1], pid, key);
     process.exit(0);
   }
-  process.stderr.write("usage: json-serve.mjs --fifo <dir> --owner-pid <pid>\n");
+  process.stderr.write("usage: json-serve.mjs --fifo <dir> --owner-pid <pid> (key on stdin)\n");
   process.exit(2);
 }

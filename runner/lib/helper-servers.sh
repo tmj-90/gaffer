@@ -32,14 +32,34 @@ _gaffer_wg_close_fds() {
   return 0
 }
 
+# THE TICK KEY. The pipe directories are 0700, which stops no process of the same user,
+# and the agent runs as the tick's user: without more, agent code that finds a request
+# FIFO (GAFFER_DATA is in its environment) could have the dispatch server run a
+# control-plane command, with a one-liner the safety hook does not recognise as a write.
+# So every message on a request FIFO ends with this key: 128 bits from /dev/urandom, made
+# once per tick, kept ONLY in this shell's memory (a plain variable, never exported, so
+# no child gets it in its environment; never in an argv or a file) and handed to each
+# server through a pipe on its stdin. The servers ignore any line without it. Requests
+# are only in flight while the tick itself makes a call, never while the agent runs.
+# Sets _GAFFER_WG_KEY; returns 1 (no servers start) when there is no randomness.
+_gaffer_wg_new_key() {
+  local _k=""
+  _k="$(od -An -N16 -tx1 /dev/urandom 2>/dev/null)" || return 1
+  _k="${_k//[!0-9a-f]/}"
+  [ "${#_k}" -eq 32 ] || return 1
+  _GAFFER_WG_KEY="$_k"
+}
+
 # Start one server: <script> <dir var> <pid var>. Prints nothing; on any failure the
-# vars stay empty and those calls run one-shot.
+# vars stay empty and those calls run one-shot. The server reads the tick key from its
+# stdin (a process substitution: a pipe, never a file) and refuses to serve without it.
 _gaffer_srv_start() {
   local _bin="$1" _dirvar="$2" _pidvar="$3" _dir
   [ -f "$_bin" ] || return 0
+  [ "${#_GAFFER_WG_KEY}" -eq 32 ] || return 0
   _dir="$(mktemp -d "$GAFFER_DATA/wg-serve/$$.XXXXXX" 2>/dev/null)" || return 0
   chmod 700 "$_dir" 2>/dev/null && mkfifo -m 600 "$_dir/req" 2>/dev/null || { rm -rf "$_dir"; return 0; }
-  ( _gaffer_wg_close_fds; exec "$_GAFFER_WG_NODE" "$_bin" --fifo "$_dir" --owner-pid "$$" ) </dev/null >/dev/null 2>&1 &
+  ( _gaffer_wg_close_fds; exec "$_GAFFER_WG_NODE" "$_bin" --fifo "$_dir" --owner-pid "$$" < <(printf '%s\n' "$_GAFFER_WG_KEY") ) </dev/null >/dev/null 2>&1 &
   printf -v "$_pidvar" '%s' "$!"
   printf -v "$_dirvar" '%s' "$_dir"
   return 0
@@ -59,6 +79,8 @@ gaffer_wg_serve_start() {
   ( umask 077 && mkdir -p "$GAFFER_DATA/wg-serve" ) 2>/dev/null || return 0
   chmod 700 "$GAFFER_DATA/wg-serve" 2>/dev/null || return 0
   _gaffer_wg_serve_sweep
+  _GAFFER_WG_KEY=""
+  _gaffer_wg_new_key || return 0
   # The environment the servers start with; each request sends its change from this.
   declare -gA _GAFFER_WG_ENV0=()
   for _n in $(compgen -e); do [ "$_n" = _ ] || _GAFFER_WG_ENV0[$_n]="${!_n}"; done
@@ -75,7 +97,7 @@ gaffer_wg_serve_start() {
 _gaffer_srv_stop() {
   local _pid="$1" _dir="$2" _i
   [ -n "$_pid" ] || return 0
-  [ -p "$_dir/req" ] && printf 'Q\n' 2>/dev/null 1<>"$_dir/req"
+  [ -p "$_dir/req" ] && printf 'Q %s\n' "$_GAFFER_WG_KEY" 2>/dev/null 1<>"$_dir/req"
   for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
     kill -0 "$_pid" 2>/dev/null || break
     sleep 0.1
@@ -165,7 +187,7 @@ _gaffer_srv_send() {
   mkfifo -m 600 "$__gwg_dir/r.$__gwg_nonce" 2>/dev/null || return 0
   [ -p "$__gwg_dir/r.$__gwg_nonce" ] || return 0
   exec {__gwg_fd}<>"$__gwg_dir/r.$__gwg_nonce" || return 0
-  if ! printf '%s\n' "$__gwg_nonce" 2>/dev/null 1<>"$__gwg_dir/req"; then
+  if ! printf '%s %s\n' "$__gwg_nonce" "$_GAFFER_WG_KEY" 2>/dev/null 1<>"$__gwg_dir/req"; then
     exec {__gwg_fd}<&-
     return 0
   fi
@@ -230,7 +252,7 @@ _gaffer_srv_print() {
 
 # Tell the server the caller is done with request _GAFFER_SRV_NONCE (it removes the files).
 _gaffer_srv_done() {
-  printf 'D %s\n' "$_GAFFER_SRV_NONCE" 2>/dev/null 1<>"$1/req"
+  printf 'D %s %s\n' "$_GAFFER_SRV_NONCE" "$_GAFFER_WG_KEY" 2>/dev/null 1<>"$1/req"
   return 0
 }
 

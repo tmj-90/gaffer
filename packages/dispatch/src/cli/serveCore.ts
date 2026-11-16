@@ -9,6 +9,7 @@ import {
   writeFileSync,
   writeSync,
 } from "node:fs";
+import { timingSafeEqual } from "node:crypto";
 import { Socket } from "node:net";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -39,7 +40,8 @@ import { internalErrorBody } from "./stdio.js";
 //
 // Wire protocol (all of it written and read by bash builtins, so a call starts no
 // process but one mkfifo):
-//   <dir>/req          a FIFO; one line per message:
+//   <dir>/req          a FIFO; one line per message, each ending with " <key>", the
+//                      tick key (serveFifo says why; a line without it is ignored):
 //                        <nonce>      run the request in <dir>/q.<nonce>
 //                        D <nonce>    the caller has read the reply: remove its files
 //                        Q            stop
@@ -503,8 +505,49 @@ async function answer(
   return { line: replyLine(nonce, reply), segments: reply.segments.length };
 }
 
-/** Serve the FIFO protocol in `dir` until `Q`, or until the owner process is gone. */
-export async function serveFifo(dir: string, ownerPid: number): Promise<void> {
+/** A tick key: at least 128 bits as lower-case hex (runner/lib/helper-servers.sh makes it). */
+const KEY_RE = /^[0-9a-f]{32,128}$/;
+
+/**
+ * The tick key on fd 0: the tick writes one line into a pipe and closes it. Null when
+ * there is none (stdin a terminal, /dev/null, a file, anything but one key line).
+ */
+export function readTickKey(): string | null {
+  let text: string;
+  try {
+    text = readFileSync(0, "latin1");
+  } catch {
+    return null;
+  }
+  const key = text.endsWith("\n") ? text.slice(0, -1) : text;
+  return KEY_RE.test(key) ? key : null;
+}
+
+/**
+ * Split a request-FIFO line into its message and the tick key it carries (the last
+ * space-separated word) and check the key in constant time. Null: not from the tick.
+ */
+export function authenticLine(line: string, key: string): string | null {
+  const sp = line.lastIndexOf(" ");
+  if (sp < 1) return null;
+  const given = Buffer.from(line.slice(sp + 1), "latin1");
+  const want = Buffer.from(key, "latin1");
+  if (given.length !== want.length || !timingSafeEqual(given, want)) return null;
+  return line.slice(0, sp);
+}
+
+/**
+ * Serve the FIFO protocol in `dir` until `Q`, or until the owner process is gone.
+ *
+ * WHO MAY ASK. The directory is 0700, which stops no process of the same user, and an
+ * agent runs as the tick's user. So every line on the request FIFO must end with the
+ * tick key: 128 random bits the tick made, holds only in its shell's memory (never
+ * exported, never in an argv, never in a file) and handed to this process through a
+ * pipe on fd 0 (`key`). A line without it is ignored: an agent that finds the FIFO
+ * cannot have a command run, and this process runs nothing without a key.
+ */
+export async function serveFifo(dir: string, ownerPid: number, key: string): Promise<void> {
+  if (!KEY_RE.test(key)) throw new Error("serveFifo: no tick key");
   const server = new DispatchServer();
   // The tick stops this process itself (Q). A signal to the tick's process group (the
   // pool's TERM, a Ctrl-C) must not kill a command half-way while the tick's cleanup
@@ -535,8 +578,11 @@ export async function serveFifo(dir: string, ownerPid: number): Promise<void> {
     if (!isAlive(ownerPid) || !existsSync(dir)) stop();
   }, 1000);
   const written = new Map<string, number>();
-  for await (const line of lines) {
-    if (stopping || line === "Q") break;
+  for await (const raw of lines) {
+    if (stopping) break;
+    const line = authenticLine(raw, key);
+    if (line === null) continue;
+    if (line === "Q") break;
     if (line.startsWith("D ")) {
       const nonce = line.slice(2);
       if (!NONCE_RE.test(nonce)) continue;
@@ -625,9 +671,15 @@ export async function main(argv: readonly string[]): Promise<number> {
   if (argv.length === 4 && argv[0] === "--fifo" && argv[2] === "--owner-pid") {
     const pid = Number(argv[3]);
     if (!Number.isInteger(pid) || pid <= 1) return 2;
-    await serveFifo(argv[1]!, pid);
+    // No key on fd 0: never serve (the tick then runs every call one-shot).
+    const key = readTickKey();
+    if (key === null) {
+      process.stderr.write("serve.js: no tick key on stdin; refusing to serve\n");
+      return 2;
+    }
+    await serveFifo(argv[1]!, pid, key);
     return 0;
   }
-  process.stderr.write("usage: serve.js --fifo <dir> --owner-pid <pid> | --stdio\n");
+  process.stderr.write("usage: serve.js --fifo <dir> --owner-pid <pid> (key on stdin) | --stdio\n");
   return 2;
 }

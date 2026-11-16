@@ -39,4 +39,4 @@ export {
   resolveRegistryPath,
 } from "../health/routingRecommend.js";
 export { resolveLedgerPath } from "../cost/costAggregator.js";
-export { open } from "./shared.js";
+export { closeOpenedHandles, open } from "./shared.js";

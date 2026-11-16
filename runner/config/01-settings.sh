@@ -74,10 +74,6 @@ _gaffer_setting_problem() {
       [[ "$v" =~ $re ]] && [ "$v" -le 65535 ] && return 0
       _GAFFER_SP="is not a port number (1 to 65535)" ;;
     path)
-      if [ "$from" = settings.json ]; then
-        _GAFFER_SP="cannot come from settings.json, which lives inside it; export it before starting the runner"
-        return 0
-      fi
       case "$v" in /*) return 0 ;; esac
       _GAFFER_SP="is not an absolute path" ;;
     models)
@@ -140,7 +136,7 @@ _gaffer_setting_refuse() {
 # off: 0 is stricter (a ship or spend switch); on: 1 is stricter (a gate); less: a
 # lower number is stricter, 0 or empty is no limit; less0: a lower number is stricter
 # and 0 is a real 0; more: a higher number is stricter; rank a b c: later is stricter
-# (a/b are one level; unset is the first level); keep: the old value applies while the
+# (a/b are one level, - is empty or unset; a value on no level is not comparable); keep: the old value applies while the
 # setting leaves the name empty (a person's alert channel); drop: not comparable, the
 # derived value applies.
 # `gaffer config show --json` prints what happened to each one (the "migration" list).
@@ -156,9 +152,9 @@ STRICT_MODE|GAFFER_SANDBOX|on
 STRICT_ALLOW_NETWORK|GAFFER_SANDBOX|off
 SANDBOX_PROVIDER|GAFFER_SANDBOX|rank none sandbox-exec docker
 STRICT_ALLOW_HOME|GAFFER_SANDBOX|drop
-GAFFER_IDLE_FEATURE_BACKLOG|GAFFER_IDLE|off
-GAFFER_MAINTENANCE|GAFFER_IDLE|off
-GAFFER_IDLE_MODE|GAFFER_IDLE|rank create_ready_tickets/create_ready create_draft_tickets/create_draft observe_only
+GAFFER_IDLE_FEATURE_BACKLOG|GAFFER_IDLE|rank 1/true/yes/on - 0/false/no/off
+GAFFER_MAINTENANCE|GAFFER_IDLE|rank 1/true/yes/on - 0/false/no/off
+GAFFER_IDLE_MODE|GAFFER_IDLE|rank create_ready_tickets/create_ready/- create_draft_tickets/create_draft observe_only
 CLARIFY_DRAFTS_WHEN_IDLE|GAFFER_IDLE|off
 IDLE_DRAFT_WHEN_IDLE|GAFFER_IDLE|off
 MAX_TICKS|GAFFER_CONCURRENCY|less
@@ -271,12 +267,12 @@ if [ -n "$_gs_out" ]; then
     case "$_GAFFER_SETTINGS_KEYS" in
       *" $_sk "*)
         # One of the fourteen: validated (fail closed), then a default under the env.
-        _gaffer_setting_problem "$_sk" "$_sv" settings.json
-        [ -z "$_GAFFER_SP" ] || _gaffer_setting_refuse "$_sk" "$_sv" settings.json
         if [ "$_sk" = GAFFER_DATA ]; then
-          printf 'gaffer: ignoring GAFFER_DATA from settings.json: %s\n' "$_GAFFER_SP" >&2
+          printf 'gaffer: ignoring GAFFER_DATA from settings.json: the file lives inside it, so only the environment can move it\n' >&2
           continue
         fi
+        _gaffer_setting_problem "$_sk" "$_sv" settings.json
+        [ -z "$_GAFFER_SP" ] || _gaffer_setting_refuse "$_sk" "$_sv" settings.json
         # assign-if-unset, no eval, and EXPORT: a setting must reach the processes that
         # read it (the dispatch CLI, the memory server, crew), not only this shell.
         if [ -z "${!_sk:-}" ]; then
@@ -442,13 +438,15 @@ _gaffer_stricter() {
       fi
       _GAFFER_ST="${a:-other}" ;;
     rank)
-      i=0; rd=0
+      i=0
       for lvl in "${pol[@]:1}"; do
-        case "/$lvl/" in *"/$o/"*) ro=$i ;; esac
-        case "/$lvl/" in *"/$d/"*) rd=$i ;; esac
+        case "/$lvl/" in *"/${o:--}/"*) ro=$i ;; esac
+        case "/$lvl/" in *"/${d:--}/"*) rd=$i ;; esac
         i=$((i + 1))
       done
-      [ "$ro" -ge 0 ] || return 0
+      # An empty derived value on no level reads as the first (most permissive) one.
+      [ "$rd" -ge 0 ] || { [ -z "$d" ] && rd=0; }
+      [ "$ro" -ge 0 ] && [ "$rd" -ge 0 ] || return 0
       if [ "$ro" -gt "$rd" ]; then _GAFFER_ST=old
       elif [ "$ro" -lt "$rd" ]; then _GAFFER_ST=new
       else _GAFFER_ST=same; fi ;;

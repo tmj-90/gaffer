@@ -224,3 +224,62 @@ describe("a landed delivery with no approval on record", () => {
     ]);
   });
 });
+
+// Independent review: mixed histories, read from the history before each reopen.
+describe("mixed histories (independent review)", () => {
+  it("agent approves, sent back before landing, a person approves and it lands: no step-down", () => {
+    const wg = freshWg();
+    const { id, repoId } = delivered(wg, "low");
+    enable(wg, repoId, "low", "approve");
+    enable(wg, repoId, "low", "merge");
+    expect(wg.approveReview(id, agent, shown).ticket.status).toBe("ready_for_merge");
+    // Sent back by a person before landing: not a verdict on a landed change.
+    const back = wg.reopenForReview(id, { reason: "look again", resolution: "re-review" }, admin);
+    expect(back.stepped_down).toEqual([]);
+    expect(wg.approveReview(id, human, shown).ticket.status).toBe("ready_for_merge");
+    land(wg, id);
+    const r = wg.reopenForReview(id, { reason: "x", resolution: "y" }, admin);
+    expect({ returned: r.stepped_down, recorded: stepDowns(wg) }).toEqual({
+      returned: [],
+      recorded: [],
+    });
+  });
+
+  it("a second reopen is classified from the delivery that landed last", () => {
+    const wg = freshWg();
+    const { id, repoId } = delivered(wg, "low");
+    enable(wg, repoId, "low", "approve");
+    enable(wg, repoId, "low", "merge");
+    // First delivery: an agent's, landed, reopened by a person: steps down.
+    expect(wg.approveReview(id, agent, shown).ticket.status).toBe("ready_for_merge");
+    land(wg, id);
+    onDefault = false;
+    const first = wg.reopenForReview(id, { reason: "x", resolution: "y" }, admin);
+    expect(first.stepped_down.length).toBeGreaterThan(0);
+    const recorded = stepDowns(wg).length;
+    // The redo: a person's approval, landed, reopened again: nothing new.
+    expect(wg.approveReview(id, human, shown).ticket.status).toBe("ready_for_merge");
+    land(wg, id);
+    const second = wg.reopenForReview(id, { reason: "x", resolution: "y" }, admin);
+    expect(second.stepped_down).toEqual([]);
+    expect(stepDowns(wg).length).toBe(recorded);
+  });
+
+  it("a person's first delivery, an agent's redo landed: the second reopen steps down", () => {
+    const wg = freshWg();
+    const { id, repoId } = delivered(wg, "low");
+    expect(wg.approveReview(id, human, shown).ticket.status).toBe("ready_for_merge");
+    land(wg, id);
+    onDefault = false;
+    expect(wg.reopenForReview(id, { reason: "x", resolution: "y" }, admin).stepped_down).toEqual(
+      [],
+    );
+    enable(wg, repoId, "low", "approve");
+    enable(wg, repoId, "low", "merge");
+    expect(wg.approveReview(id, agent, shown).ticket.status).toBe("ready_for_merge");
+    land(wg, id);
+    const r = wg.reopenForReview(id, { reason: "x", resolution: "y" }, admin);
+    expect(r.stepped_down.map((s) => `${s.riskLevel}/${s.gate}`)).toContain("low/merge");
+    expect(r.stepped_down.map((s) => `${s.riskLevel}/${s.gate}`)).toContain("low/approve");
+  });
+});

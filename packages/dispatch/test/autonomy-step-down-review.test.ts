@@ -15,7 +15,12 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import type { AddressInfo } from "node:net";
+
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+
+import { setPrincipalResolver } from "../src/api/auth.js";
+import { createApiServer } from "../src/api/server.js";
 
 import { Dispatch } from "../src/core.js";
 import type { Actor, RiskLevel } from "../src/domain/types.js";
@@ -430,6 +435,63 @@ describe("a step-down read that fails holds every decision point", () => {
         ),
       ).toMatchObject({ code: "STATE_CONFLICT", reason: "autonomy_stepped_down" });
     } finally {
+      wg.db.close();
+    }
+  });
+});
+
+describe("the Overview line reads the recent step-downs alone", () => {
+  const FULL = "shared-full-token-for-r58-review-0123456789abcdef";
+  const savedToken = process.env.DISPATCH_API_TOKEN;
+  afterEach(() => {
+    setPrincipalResolver(null);
+    if (savedToken === undefined) delete process.env.DISPATCH_API_TOKEN;
+    else process.env.DISPATCH_API_TOKEN = savedToken;
+  });
+
+  it("GET /api/autonomy/ladder?recent=1: no review record read, scoped to the viewer's repos", async () => {
+    process.env.DISPATCH_AUDIT_OFF = "1";
+    process.env.DISPATCH_API_TOKEN = FULL;
+    const wg = Dispatch.open(":memory:");
+    const api = repoNamed(wg, "api");
+    const web = repoNamed(wg, "web");
+    stepDown(wg, api, "low", "merge");
+    stepDown(wg, web, "medium", "approve");
+    const { token } = wg.createPrincipal(
+      { name: "web-only", actorType: "human", actorId: "ann", repos: ["web"] },
+      human,
+    );
+    let decisionReads = 0;
+    const read = wg.events.reviewDecisions.bind(wg.events);
+    wg.events.reviewDecisions = () => {
+      decisionReads += 1;
+      return read();
+    };
+    const server = createApiServer(wg);
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    try {
+      const get = async (tok: string) => {
+        const res = await fetch(`${base}/api/autonomy/ladder?recent=1`, {
+          headers: { authorization: `Bearer ${tok}` },
+        });
+        return {
+          status: res.status,
+          body: (await res.json()) as {
+            repos?: unknown;
+            recent_step_downs: Array<{ repo_name: string }>;
+          },
+        };
+      };
+      const all = await get(FULL);
+      expect(all.status).toBe(200);
+      expect(all.body.repos).toBeUndefined();
+      expect(all.body.recent_step_downs.map((r) => r.repo_name).sort()).toEqual(["api", "web"]);
+      const scoped = await get(token);
+      expect(scoped.body.recent_step_downs.map((r) => r.repo_name)).toEqual(["web"]);
+      expect(decisionReads).toBe(0);
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
       wg.db.close();
     }
   });

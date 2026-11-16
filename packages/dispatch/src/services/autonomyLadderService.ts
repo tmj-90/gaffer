@@ -399,10 +399,38 @@ export function computeLadder(input: LadderInput): AutonomyLadder {
     }
     repos.push({ repo_id: repo.id, repo_name: repo.name, rows });
   }
-  const nowMs = Date.parse(input.now);
+  return {
+    generated_at: input.now,
+    rules: {
+      min_samples: MIN_SAMPLES,
+      agreement_threshold: AGREEMENT_THRESHOLD,
+      unchanged_threshold: UNCHANGED_THRESHOLD,
+      ceiling_risk: AUTONOMY_CEILING_RISK,
+      ceiling_message: CEILING_MESSAGE,
+      high_needs_same_repo_evidence: true,
+      step_down_tester_fails: input.stepDownTesterFails,
+      step_down_window_days: input.stepDownWindowDays,
+      cascade:
+        "a merge step-down at one risk also steps down merge at every higher risk in the repo",
+    },
+    repos,
+    recent_step_downs: recentStepDowns(input.now, input.repos, input.stepDowns),
+  };
+}
+
+/**
+ * The step-downs of the last 7 days on these repos, newest first: the Overview line. Reads
+ * only the step-down fold (no review record), so the Overview can ask for it alone.
+ */
+export function recentStepDowns(
+  now: string,
+  repos: ReadonlyArray<{ id: string; name: string }>,
+  stepDowns: ReadonlyMap<string, StepDownState>,
+): RecentStepDown[] {
+  const nowMs = Date.parse(now);
   const recent: RecentStepDown[] = [];
-  const names = new Map(input.repos.map((r) => [r.id, r.name]));
-  for (const state of input.stepDowns.values()) {
+  const names = new Map(repos.map((r) => [r.id, r.name]));
+  for (const state of stepDowns.values()) {
     const sd = state.lastStepDown;
     if (!sd || !names.has(sd.repoId)) continue;
     const at = Date.parse(sd.at);
@@ -419,23 +447,7 @@ export function computeLadder(input: LadderInput): AutonomyLadder {
     });
   }
   recent.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
-  return {
-    generated_at: input.now,
-    rules: {
-      min_samples: MIN_SAMPLES,
-      agreement_threshold: AGREEMENT_THRESHOLD,
-      unchanged_threshold: UNCHANGED_THRESHOLD,
-      ceiling_risk: AUTONOMY_CEILING_RISK,
-      ceiling_message: CEILING_MESSAGE,
-      high_needs_same_repo_evidence: true,
-      step_down_tester_fails: input.stepDownTesterFails,
-      step_down_window_days: input.stepDownWindowDays,
-      cascade:
-        "a merge step-down at one risk also steps down merge at every higher risk in the repo",
-    },
-    repos,
-    recent_step_downs: recent,
-  };
+  return recent;
 }
 
 function priorK(rec: AutonomyRecommendation, gate: AutonomyGate): number {

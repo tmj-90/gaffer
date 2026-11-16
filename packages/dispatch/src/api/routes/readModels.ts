@@ -750,6 +750,11 @@ export function routeReadModels(
   // through; the facade filters).
   if (segments.length === 3 && segments[1] === "autonomy" && segments[2] === "ladder") {
     if (method !== "GET") return methodNotAllowed(res);
+    // `?recent=1`: the Overview line's narrow read (the recent step-downs alone).
+    if (url.searchParams.get("recent") === "1") {
+      sendJson(res, 200, wg.autonomyRecentStepDowns(apiPrincipal()));
+      return;
+    }
     const repo = url.searchParams.get("repo");
     sendJson(res, 200, wg.autonomyLadder(apiPrincipal(), repo ?? undefined));
     return;

@@ -232,7 +232,8 @@ function stepDownLines(ladder) {
 /** The Overview's line: hidden until a step-down of the last 7 days is on record. */
 function autonomyStepDownLine() {
   const box = el("div", { class: "al-overview", hidden: true, role: "status" });
-  api("GET", "/api/autonomy/ladder")
+  // The narrow read: the recent step-downs alone, not the whole ladder.
+  api("GET", "/api/autonomy/ladder?recent=1")
     .then((ladder) => {
       const lines = stepDownLines(ladder);
       if (lines.length === 0) return;

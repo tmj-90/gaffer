@@ -211,6 +211,11 @@ describe("web: the autonomy ladder", () => {
     await tick();
     expect(box.hidden).toBe(false);
     expect(box.textContent).toContain("Autonomy stepped down on api");
+    // The line asks for the narrow read (the recent step-downs alone), not the ladder.
+    const asked = (globalThis.fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls.map(
+      (c) => String(c[0]),
+    );
+    expect(asked.some((u) => u.includes("/api/autonomy/ladder?recent=1"))).toBe(true);
     // No step-down on record: the line stays hidden.
     stubFetch({ ...ladder, recent_step_downs: [] });
     const quiet = mod.autonomyStepDownLine() as HTMLElement;

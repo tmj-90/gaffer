@@ -199,7 +199,11 @@ import type { JudgeRevealResult, ReviewOpenResult } from "./services/ticketRecor
 import * as gate from "./services/gateNotifications.js";
 import * as ticketGit from "./services/ticketGitService.js";
 import * as autonomyGate from "./services/autonomyGateService.js";
-import { computeLadder, type AutonomyLadder } from "./services/autonomyLadderService.js";
+import {
+  computeLadder,
+  recentStepDowns,
+  type AutonomyLadder,
+} from "./services/autonomyLadderService.js";
 import { readStepDowns, stepDownKey } from "./services/autonomyStepDownStore.js";
 import * as stepDown from "./services/autonomyStepDownService.js";
 import { notFound } from "./util/errors.js";
@@ -788,10 +792,8 @@ export class Dispatch {
    * repo's autonomy), and no cross-repo counts. Read-only.
    */
   autonomyLadder(viewer: PrincipalView | null = null, repo?: string): AutonomyLadder {
-    const scope = viewer ? principalAccessScope(viewer) : null;
-    const scoped = isScopedAccess(scope);
-    const reach = scoped ? new Set(scope.repos ?? []) : null;
-    let repos = this.listRepositories().filter((r) => !reach || reach.has(r.id));
+    const { scoped, reach, repos: visible } = this.ladderRepos(viewer);
+    let repos = visible;
     if (repo !== undefined) {
       const want = this.repos.findById(repo) ?? this.repos.findByName(repo);
       if (!want || (reach && !reach.has(want.id))) throw notFound("repository", repo);
@@ -810,6 +812,40 @@ export class Dispatch {
       stepDownTesterFails: STEP_DOWN_TESTER_FAILS,
       stepDownWindowDays: STEP_DOWN_WINDOW_DAYS,
     });
+  }
+
+  /** The repos a viewer's ladder covers (a scoped principal: its repo scope only). */
+  private ladderRepos(viewer: PrincipalView | null): {
+    scoped: boolean;
+    reach: Set<string> | null;
+    repos: Array<{ id: string; name: string }>;
+  } {
+    const scope = viewer ? principalAccessScope(viewer) : null;
+    const scoped = isScopedAccess(scope);
+    const reach = scoped ? new Set(scope.repos ?? []) : null;
+    const repos = this.listRepositories().filter((r) => !reach || reach.has(r.id));
+    return { scoped, reach, repos };
+  }
+
+  /**
+   * THE AUTONOMY LADDER, the Overview line's narrow read: only the step-downs of the last 7
+   * days on the repos the viewer reaches. Folds the step-down events alone (no review
+   * record, no recommendations), so the Overview pays a few milliseconds, not a ladder.
+   */
+  autonomyRecentStepDowns(viewer: PrincipalView | null = null): {
+    generated_at: string;
+    recent_step_downs: AutonomyLadder["recent_step_downs"];
+  } {
+    const now = this.clock.now();
+    const { repos } = this.ladderRepos(viewer);
+    return {
+      generated_at: now,
+      recent_step_downs: recentStepDowns(
+        now,
+        repos.map((r) => ({ id: r.id, name: r.name })),
+        readStepDowns(this.db),
+      ),
+    };
   }
 
   /** What the step-down triggers and the lift read (services/autonomyStepDownService.ts). */

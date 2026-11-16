@@ -414,6 +414,10 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     capability: "read",
     query: {
       repo: { description: "One repository (id or name)." },
+      recent: {
+        description:
+          "`1`: only `{ generated_at, recent_step_downs }`, the step-downs of the last 7 days (the Overview line's narrow read).",
+      },
     },
     responses: [ok("`AutonomyLadder`."), notFound],
   },

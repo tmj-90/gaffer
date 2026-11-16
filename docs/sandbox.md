@@ -142,7 +142,7 @@ a line break in `$GAFFER_DATA` or `$HOME`) refuses the profile, and the launch w
 | `strict-profile.*`, `sandbox-*-roots.*`, `worker-prompt.*` | the runner | the sandbox's own configuration | denied |
 | `dashboard-token`, `acceptance-signing.key` | the dashboard, the runner | credentials | denied, reads too |
 | `dashboard-url`, `dashboard.pid`, `*.log`, `agent_id`, `agent_reviewer_id` | the runner (agent output reaches the log through an inherited descriptor) | facts and identity | denied |
-| `skills-mounts/`, `sandbox-git/`, `locks/`, `run-state/`, `runs/`, `manifests/`, `scout/`, `experiments/`, `wg-serve/` | the runner | skills agents load, runner state, the tick's dispatch server pipes | denied |
+| `skills-mounts/`, `sandbox-git/`, `locks/`, `run-state/`, `runs/`, `manifests/`, `scout/`, `experiments/`, `wg-serve/` | the runner | skills agents load, runner state, the tick's helper server pipes | denied |
 | `worktrees/<this call's>` | the agent | the code under review | writable (a write root) |
 | `worktrees/<another call's>` | other agents | their code | denied |
 

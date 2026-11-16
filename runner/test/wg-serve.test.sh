@@ -104,7 +104,9 @@ else
 
 echo "== W1: a served call equals the one-shot call =="
 gaffer_wg_serve_start
-[ -n "$_GAFFER_WG_PID" ] && kill -0 "$_GAFFER_WG_PID" 2>/dev/null && ok "W1: the server started (pid $_GAFFER_WG_PID)" || fail "W1: no server"
+# Until the server holds its request pipe (`ready`), calls run one-shot.
+for _ in $(seq 1 100); do [ -e "$_GAFFER_WG_DIR/ready" ] && break; sleep 0.1; done
+[ -n "$_GAFFER_WG_PID" ] && kill -0 "$_GAFFER_WG_PID" 2>/dev/null && [ -e "$_GAFFER_WG_DIR/ready" ] && ok "W1: the server started and is ready (pid $_GAFFER_WG_PID)" || fail "W1: no server"
 case "$_GAFFER_WG_DIR" in "$GAFFER_DATA/wg-serve/$$."*) ok "W1: its dir is \$GAFFER_DATA/wg-serve/<tick pid>.<random>" ;; *) fail "W1: dir=$_GAFFER_WG_DIR" ;; esac
 [ "$(stat -c %a "$_GAFFER_WG_DIR" 2>/dev/null || stat -f %Lp "$_GAFFER_WG_DIR")" = 700 ] && ok "W1: the dir is 0700" || fail "W1: dir mode"
 same_as_oneshot "ticket show (hostile title)" ticket show 1
@@ -176,6 +178,7 @@ import readline from "node:readline";
 const dir = process.argv[3];
 const mode = process.env.FAKE_MODE;
 const fd = fs.openSync(`${dir}/req`, fs.constants.O_RDWR | fs.constants.O_NONBLOCK);
+fs.writeFileSync(`${dir}/ready`, "");
 const rl = readline.createInterface({ input: new net.Socket({ fd, readable: true, writable: false }) });
 for (const s of ["SIGINT", "SIGTERM"]) process.on(s, () => undefined);
 const reply = (nonce, line) => {
@@ -244,6 +247,63 @@ wg ticket show 2 2>/dev/null > "$WORK/seg.out"
 printf 'out-2\n' | cmp -s - "$WORK/seg.out" && ok "W5: stdout alone holds only the stdout segment" || fail "W5: stdout got $(od -c "$WORK/seg.out" | head -2 | tr '\n' ' ')"
 gaffer_wg_serve_stop
 
+echo "== W8: the JSON server =="
+# The client captures stdin only for the subcommands that read it: its list must be
+# exactly json-tool's (a case whose body calls readStdin/parseStdin).
+SRC_LIST="$(awk '/^  case "/{name=$2; gsub(/[":]/,"",name)} /readStdin\(|parseStdin\(/{if(name!="") print name}' "$RUNNER_DIR/lib/json-tool.mjs" | sort -u)"
+ALL_LIST="$(awk '/^  case "/{name=$2; gsub(/[":]/,"",name); print name}' "$RUNNER_DIR/lib/json-tool.mjs" | sort -u)"
+CLIENT_LIST="$(for c in $ALL_LIST; do _gaffer_json_reads_stdin "$c" && echo "$c"; done | sort -u)"
+[ -n "$SRC_LIST" ] && [ "$SRC_LIST" = "$CLIENT_LIST" ] && ok "W8: the stdin-reading subcommands the client knows are exactly json-tool's ($(echo "$SRC_LIST" | wc -l | tr -d ' '))" \
+  || fail "W8: stdin list drift: $(diff <(echo "$SRC_LIST") <(echo "$CLIENT_LIST") | tr '\n' ' ')"
+_gaffer_json_reads_stdin expr 'd.a' --file x && fail "W8: expr --file captures stdin" || ok "W8: expr --file does not capture stdin"
+gaffer_wg_serve_start
+for _ in $(seq 1 100); do [ -e "${_GAFFER_JS_DIR:-/x}/ready" ] && break; sleep 0.1; done
+[ -n "$_GAFFER_JS_PID" ] && [ -e "$_GAFFER_JS_DIR/ready" ] && ok "W8: the JSON server started and is ready" || fail "W8: no JSON server"
+js_count() { grep -c 'lib/json-tool.mjs' "$NODE_LOG" 2>/dev/null || true; }
+SHOW1="$(oneshot ticket show 1)"
+# json_same <label> <stdin> <json-tool args...>: the served call equals the one-shot call.
+json_same() {
+  local label="$1" in="$2"; shift 2
+  local b a
+  b="$(js_count)"
+  printf '%s' "$in" | gaffer_json "$@" > "$WORK/js.out" 2> "$WORK/js.err"; echo $? > "$WORK/js.rc"
+  a="$(js_count)"
+  printf '%s' "$in" | "$REAL_NODE" "$RUNNER_DIR/lib/json-tool.mjs" "$@" > "$WORK/jo.out" 2> "$WORK/jo.err"; echo $? > "$WORK/jo.rc"
+  if cmp -s "$WORK/js.out" "$WORK/jo.out" && cmp -s "$WORK/js.err" "$WORK/jo.err" && cmp -s "$WORK/js.rc" "$WORK/jo.rc"; then
+    [ "$a" = "$b" ] && ok "W8: $label: same bytes and exit code ($(cat "$WORK/js.rc")), no node started" \
+      || ok "W8: $label: same bytes and exit code ($(cat "$WORK/js.rc")), run one-shot by design"
+    JS_LAST_ONESHOT=$(( a - b ))
+  else
+    fail "W8: $label: differ: rc $(cat "$WORK/js.rc")/$(cat "$WORK/jo.rc") out $(diff "$WORK/js.out" "$WORK/jo.out" | head -3 | tr '\n' ' ') err $(diff "$WORK/js.err" "$WORK/jo.err" | head -3 | tr '\n' ' ')"
+  fi
+}
+json_same "expr on a hostile title" "$SHOW1" expr 'd.ticket.title'
+[ "${JS_LAST_ONESHOT:-1}" = 0 ] && ok "W8: ...served (no json-tool process)" || fail "W8: a plain expr was not served"
+json_same "expr on bad JSON (exit 1, no output)" "not json" expr 'd.a'
+json_same "expr --default" "not json" expr 'd.a' --default fallback
+json_same "fields with hostile values" "$SHOW1" fields 'd.ticket.title' '' 'd.ticket.description' '' 'd.nope.x' 'dflt'
+json_same "an unknown subcommand (exit 2, stderr)" "" nosuch
+json_same "partition" "$SHOW1" partition
+json_same "a file-only subcommand (realpath)" "" realpath "$WORK"
+json_same "a crash (pick-unskipped with no skip file: node's report, from the one-shot rerun)" "[]" pick-unskipped "$WORK/no-such-skip-file"
+[ "${JS_LAST_ONESHOT:-0}" = 1 ] && ok "W8: ...the crash was answered NOT-RUN and run one-shot" || fail "W8: the crash was not rerun one-shot ($JS_LAST_ONESHOT)"
+# A server killed between calls: the next call runs one-shot, from its captured stdin.
+kill -KILL "$_GAFFER_JS_PID" 2>/dev/null; sleep 0.3
+v="$(printf '%s' "$SHOW1" | jget 'd.ticket.number')"
+[ "$v" = 1 ] && ok "W8: with the JSON server gone, jget still answers (one-shot)" || fail "W8: got '$v'"
+gaffer_wg_serve_stop
+# A JSON server that misbehaves during a call: the call is run again one-shot, and its
+# stdin (already read) reaches that run.
+for mode in hang garbage die; do
+  _GAFFER_WG_SERVE_BIN=/nonexistent _GAFFER_JS_SERVE_BIN="$WORK/fake-serve.mjs" FAKE_MODE="$mode" gaffer_wg_serve_start
+  sleep 0.3
+  t0=$SECONDS
+  v="$(printf '%s' "$SHOW1" | jget 'd.ticket.number' 2>"$WORK/jf.err")"; rc=$?
+  [ "$v" = 1 ] && [ "$rc" = 0 ] && [ ! -s "$WORK/jf.err" ] && ok "W8 $mode: the call was run again one-shot and answered (in $((SECONDS - t0))s)" || fail "W8 $mode: rc=$rc v='$v' err=$(head -c 200 "$WORK/jf.err")"
+  [ -e "$_GAFFER_JS_DIR/broken" ] || [ ! -d "$_GAFFER_JS_DIR" ] && ok "W8 $mode: the JSON server is marked broken" || fail "W8 $mode: not marked broken"
+  gaffer_wg_serve_stop
+done
+
 echo "== W6: the switch and the sweep =="
 GAFFER_WG_SERVE=0 gaffer_wg_serve_start
 [ -z "$_GAFFER_WG_PID" ] && ok "W6: GAFFER_WG_SERVE=0 starts no server" || { fail "W6: a server started with GAFFER_WG_SERVE=0"; gaffer_wg_serve_stop; }
@@ -271,7 +331,7 @@ echo "== W7: sandboxed code cannot write the server's pipes =="
     out="$(node "$HERE/lib/sbpl-eval.mjs" "$prof" write "$P/req" "$P/q.1.2.3" "$P/r.1.2.3" "$P/s.1.2.3.0" "$P" "$GAFFER_DATA/wg-serve" 2>&1)"
     if [ -n "$out" ] && ! printf '%s\n' "$out" | grep -qv '^deny '; then echo "OK ${variant:-agent}"; else echo "FAIL ${variant:-agent}: $out"; fi
   done
-  if gaffer_sandbox_data_writers | grep -q 'wg-serve'; then echo "FAIL writers"; else echo "OK writers"; fi
+  if gaffer_sandbox_data_writers | grep -qF "$GAFFER_DATA/wg-serve"; then echo "FAIL writers"; else echo "OK writers"; fi
 ) > "$WORK/w7.out" 2>&1
 grep -q '^OK agent$' "$WORK/w7.out" && ok "W7: the sandbox-exec agent profile denies writing anything under \$GAFFER_DATA/wg-serve" || fail "W7: agent profile: $(tr '\n' ' ' < "$WORK/w7.out")"
 grep -q '^OK validation$' "$WORK/w7.out" && ok "W7: so does the validation profile (the gates)" || fail "W7: validation profile: $(tr '\n' ' ' < "$WORK/w7.out")"

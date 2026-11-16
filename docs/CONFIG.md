@@ -205,20 +205,22 @@ estimate is 0) is a floor, not a bound, and a call can cost more than it held.
 
 ### Troubleshooting: the tick's dispatch server
 
-**One dispatch process per tick.** A tick runs its dispatch CLI calls (`wg`) through
-one long-lived dispatch process (`packages/dispatch/dist/cli/serve.js`) over named
-pipes in `$GAFFER_DATA/wg-serve/<tick pid>.<random>`, instead of starting node for
-each call. Each call runs through the same code as the one-shot CLI and prints the same
-output; a call the server cannot run identically (another command, a terminal on
-stdout or stderr, a changed PATH or start-up environment, bash older than 4.4) runs
-one-shot. A server that dies, hangs or answers garbage fails that call (a
-`WG_SERVER_FAILED` line on stderr) and the rest of the tick runs one-shot. The server
-stops with its tick, and exits by itself when the tick is gone.
+**Two helper processes per tick.** A tick runs its dispatch CLI calls (`wg`) through
+one long-lived dispatch process (`packages/dispatch/dist/cli/serve.js`) and its JSON
+helper calls (`gaffer_json`, `jget`) through one long-lived JSON process
+(`runner/lib/json-serve.mjs`), over named pipes in `$GAFFER_DATA/wg-serve/<tick
+pid>.<random>`, instead of starting node for each call. Each call runs the same code
+as the one-shot call and prints the same output; a call a server cannot run
+identically (another command, a terminal on stdout or stderr, a changed PATH or
+start-up environment, bash older than 4.4) runs one-shot. A dispatch server that dies,
+hangs or answers garbage fails that call (a `WG_SERVER_FAILED` line on stderr); a JSON
+call is simply run again one-shot. Either way the rest of the tick runs one-shot. The
+servers stop with their tick, and exit by themselves when the tick is gone.
 
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
-| `GAFFER_WG_SERVE` | `1` |  | runner | 1 = a tick sends its dispatch CLI (`wg`) calls to one long-lived dispatch process instead of starting node for each; 0 runs every call as its own process (troubleshooting). |
-| `GAFFER_WG_SERVE_TIMEOUT` | `120` |  | runner | Seconds a served `wg` call waits for its reply before it fails (closed) and the rest of the tick runs one-shot. |
+| `GAFFER_WG_SERVE` | `1` |  | runner | 1 = a tick sends its dispatch CLI (`wg`) and JSON helper calls to two long-lived processes instead of starting node for each; 0 runs every call as its own process (troubleshooting). |
+| `GAFFER_WG_SERVE_TIMEOUT` | `120` |  | runner | Seconds a served call waits for its reply. A `wg` call then fails (closed), a JSON helper call runs again one-shot, and the rest of the tick runs one-shot. |
 
 ### Review and landing
 

@@ -3,9 +3,10 @@
 # THE TICK'S DISPATCH SERVER, through the REAL tick.sh with a stub agent
 # (lib/stub-tick.sh).
 # ---------------------------------------------------------------------
-#   T1  a delivery tick uses ONE server: at most 2 one-shot dispatch CLI processes
-#       and at most 30 node processes in all for a stub delivery tick (it was ~25 and
-#       ~85); the tick reaches in_review as before;
+#   T1  a delivery tick starts one dispatch server and one JSON server, then at most 2
+#       one-shot dispatch CLI calls and 5 one-shot JSON helper calls (it was ~35 and ~50)
+#       and at most 30 node processes in all for a stub delivery tick (it was ~150 with
+#       the gates' own); the tick reaches in_review as before;
 #   T2  no server outlives a tick: after a normal end, after SIGTERM and SIGINT
 #       mid-delivery (the trap stops it), and after SIGKILL of the tick alone (the
 #       server notices its owner is gone and exits, removing its dir);
@@ -40,9 +41,9 @@ mkdir -p "$WORK/shim"
 printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "$NODE_LOG"\nexec "%s" "$@"\n' "$REAL_NODE" > "$WORK/shim/node"
 chmod +x "$WORK/shim/node"
 
-servers_alive() {  # how many servers of THIS world run now
+servers_alive() {  # how many servers (dispatch + JSON) of THIS world run now
   local n=0 p
-  for p in $(pgrep -f "serve.js --fifo $GAFFER_DATA/wg-serve/" 2>/dev/null); do n=$((n + 1)); done
+  for p in $(pgrep -f -- "--fifo $GAFFER_DATA/wg-serve/" 2>/dev/null); do n=$((n + 1)); done
   printf '%s' "$n"
 }
 dirs_left() { ls -A "$GAFFER_DATA/wg-serve" 2>/dev/null | wc -l | tr -d ' '; }
@@ -66,8 +67,11 @@ R="$( cd "$RUNNER_DIR" && PATH="$WORK/shim:$PATH" bash ./tick.sh 2>>"$GAFFER_DAT
 NODES="$(wc -l < "$NODE_LOG" | tr -d ' ')"
 WG1="$(grep -c 'dispatch/dist/cli/index.js' "$NODE_LOG" || true)"
 SRV="$(grep -c 'dispatch/dist/cli/serve.js' "$NODE_LOG" || true)"
-echo "    node starts: $NODES (one-shot dispatch: $WG1, servers: $SRV)"
-[ "$SRV" = 1 ] && ok "T1: the tick started exactly one dispatch server" || fail "T1: $SRV servers started"
+JS1="$(grep -c 'lib/json-tool.mjs' "$NODE_LOG" || true)"
+JSRV="$(grep -c 'lib/json-serve.mjs' "$NODE_LOG" || true)"
+echo "    node starts: $NODES (one-shot dispatch: $WG1, one-shot json-tool: $JS1, servers: $SRV + $JSRV)"
+[ "$SRV" = 1 ] && [ "$JSRV" = 1 ] && ok "T1: the tick started exactly one dispatch server and one JSON server" || fail "T1: $SRV dispatch / $JSRV JSON servers started"
+[ "$JS1" -le 5 ] && ok "T1: at most 5 one-shot JSON helper calls ($JS1; it was ~50)" || fail "T1: $JS1 one-shot json-tool calls: $(grep 'lib/json-tool.mjs' "$NODE_LOG" | sed 's|.*json-tool.mjs ||' | cut -c1-30 | sort | uniq -c | tr '\n' ';')"
 [ "$WG1" -le 2 ] && ok "T1: at most 2 one-shot dispatch CLI calls ($WG1; it was ~25)" || fail "T1: $WG1 one-shot dispatch calls: $(grep 'dispatch/dist/cli/index.js' "$NODE_LOG" | sed 's|.*index.js --db [^ ]* ||' | cut -c1-40 | sort | uniq -c | tr '\n' ';')"
 [ "$NODES" -le 30 ] && ok "T1: at most 30 node processes for a stub delivery tick ($NODES; it was ~85)" || fail "T1: $NODES node processes"
 ! grep -q WG_SERVER_FAILED "$GAFFER_DATA/tick.stderr.log" "$GAFFER_DATA/factory.log" 2>/dev/null && ok "T1: no served call failed" || fail "T1: a served call failed: $(grep -h WG_SERVER_FAILED "$GAFFER_DATA/tick.stderr.log" | head -2)"
@@ -80,7 +84,7 @@ for sig in TERM INT; do
   echo hang > "$MODE"
   bg_tick "$WORK/t2-$sig.out"
   if wait_hanging; then
-    [ "$(servers_alive)" = 1 ] && ok "T2 $sig: the server runs while the agent does" || fail "T2 $sig: $(servers_alive) servers during the tick"
+    [ "$(servers_alive)" = 2 ] && ok "T2 $sig: the two servers run while the agent does" || fail "T2 $sig: $(servers_alive) servers during the tick"
     kill -"$sig" -- "-$TP"; wait "$TP"
     wait_gone && [ "$(dirs_left)" = 0 ] && ok "T2 $sig: after the signal: no server, no dir" || fail "T2 $sig: $(servers_alive) servers, $(dirs_left) dirs left"
     # The crash cleanup's own wg calls ran (served or one-shot): the claim is released.
@@ -118,7 +122,7 @@ while kill -0 "$PA" 2>/dev/null || kill -0 "$PB" 2>/dev/null; do
 done
 wait "$PA" "$PB" 2>/dev/null
 echo "    results: $(grep -h '^TICK_RESULT=' "$WORK/t3-a.out" "$WORK/t3-b.out" | tr '\n' ' ') (servers seen at once: $peak)"
-[ "$peak" -ge 2 ] && ok "T3: two servers ran at once (one per tick)" || fail "T3: at most $peak server at once"
+[ "$peak" -ge 3 ] && ok "T3: the two ticks' servers ran at once ($peak)" || fail "T3: at most $peak servers at once"
 [ "$(st "$A")" = "in_review" ] && [ "$(st "$B")" = "in_review" ] && ok "T3: both tickets delivered" || fail "T3: A=$(st "$A") B=$(st "$B")"
 [ "$(servers_alive)" = 0 ] && [ "$(dirs_left)" = 0 ] && ok "T3: no server or dir left" || fail "T3: $(servers_alive) servers, $(dirs_left) dirs"
 

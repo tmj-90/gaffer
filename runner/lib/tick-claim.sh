@@ -323,7 +323,7 @@ gaffer_tick_classify_ticket() {
   # HARD-fail is EXEMPTED for bootstrap (a fresh scaffold is legitimately larger)
   # — the note is still required and recorded, oversized is flagged not failed.
   # ACCEPTANCE GATE (IS_ACCEPTANCE): the epic's build-level acceptance ticket
-  # (lib/acceptance.sh) — a normal delivery on the integrated default branch, with an
+  # (lib/acceptance.sh): a normal delivery on the integrated default branch, with an
   # acceptance prompt block. Both flags come from one read of the view.
   gaffer_json_vars "$SHOW" \
     IS_BOOTSTRAP '[1, true].includes(d.ticket.bootstrap) ? 1 : 0' 0 \

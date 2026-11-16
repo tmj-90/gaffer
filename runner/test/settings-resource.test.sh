@@ -130,8 +130,14 @@ n="$(grep -c '^tick' "$STUB_CALLS")"
 # Apply every edit due by now, not only the one numbered exactly n: two pool
 # workers can both append before either counts, so neither sees n=1 and the
 # edit is never applied. Idempotent: the highest due edit wins, as in sequence.
+# Written as the Settings panel writes it (a temp file, then a rename): a plain cp
+# truncates first, and a worker that re-reads the file in that instant sees an empty
+# one, which means "nothing configured", so the cap is the default and a tick the
+# lowered cap forbids is admitted (seen once on a loaded machine).
 i=1; while [ "$i" -le "$n" ]; do
-  [ -f "$SEQ/$i.json" ] && cp "$SEQ/$i.json" "$GAFFER_DATA/settings.json"
+  if [ -f "$SEQ/$i.json" ]; then
+    cp "$SEQ/$i.json" "$GAFFER_DATA/settings.json.tmp.$" && mv -f "$GAFFER_DATA/settings.json.tmp.$" "$GAFFER_DATA/settings.json"
+  fi
   i=$((i + 1))
 done
 # STUB_COST: each tick "spends" this many dollars in today's usage ledger.

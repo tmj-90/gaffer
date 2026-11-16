@@ -290,8 +290,8 @@ ok(
   /GAFFER_CI_POLL_ATTEMPTS: runner\/lib\/ci-gate\.sh falls back to "20" but GAFFER_EFFORT=standard derives "25"/.test(
     await refusal("runner/config/07-limits.sh", (t) =>
       t.replace(
-        "GAFFER_CI_POLL_ATTEMPTS         10     20        40",
-        "GAFFER_CI_POLL_ATTEMPTS         10     25        40",
+        "GAFFER_CI_POLL_ATTEMPTS         20     20        40",
+        "GAFFER_CI_POLL_ATTEMPTS         20     25        40",
       ),
     ),
   ),

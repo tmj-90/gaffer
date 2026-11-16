@@ -305,9 +305,8 @@ function lexShell(cmd) {
       if (word && /^[0-9]+$/.test(word.text) && !word.quoted)
         word = null; // an fd number
       else endWord();
-      let op = "";
       const m = /^(?:<<<|<<-|<<|<>|<&|<|>>|>&|>\||>|&>>|&>)/.exec(cmd.slice(i, i + 3));
-      op = m[0];
+      const op = m[0];
       i += op.length;
       if (op === "<(" || (op === "<" && cmd[i] === "(")) {
         // Process substitution: a command of its own (judged by the other rules).

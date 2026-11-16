@@ -20,7 +20,7 @@ const MAX_NESTING = 24;
 const ID_START = /[A-Za-z_\u0080-￿]/;
 const ID_PART = /[A-Za-z0-9_\u0080-￿]/;
 const DIGIT = /[0-9]/;
-const SPACE = /[ \t\r\f\v ﻿]/;
+const SPACE = /[ \t\r\f\v\u00a0\ufeff]/;
 
 // Perl and Ruby punctuation variables: `$'`, `$"`, `` $` ``, `$;` and friends are
 // variables, never the start of a string.
@@ -527,7 +527,7 @@ class Lexer {
       c === "%" &&
       this.expectOperand() &&
       next &&
-      /[qQwWiIrsx(\[{<|!\/^]/.test(next)
+      /[qQwWiIrsx([{<|!/^]/.test(next)
     ) {
       return this.rubyPercent(i);
     }

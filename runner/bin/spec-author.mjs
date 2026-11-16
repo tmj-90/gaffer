@@ -442,7 +442,12 @@ export function agentChildEnv(base = process.env) {
     if (
       key === "DISPATCH_API_TOKEN" ||
       key === "AWS_ACCESS_KEY_ID" ||
-      /(_TOKEN|_SECRET|_KEY|_PASSWORD|_PASSWD)$/.test(key)
+      /(_TOKEN|_SECRET|_KEY|_PASSWORD|_PASSWD)$/.test(key) ||
+      // The notify channels: GAFFER_NOTIFY (the setting holds the webhook / Slack URLs),
+      // every name it derives (GAFFER_NOTIFY_*_URL ...) and the re-source record of
+      // either (_GAFFER_DV_GAFFER_NOTIFY*): the dashboard that starts this planner keeps
+      // them in its own environment for its notifier, and an agent must never read them.
+      /GAFFER_NOTIFY/.test(key)
     ) {
       delete env[key];
     }

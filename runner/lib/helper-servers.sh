@@ -281,7 +281,14 @@ _gaffer_json_served() {
   _gaffer_srv_nonce
   if _gaffer_json_reads_stdin "$@" && [ ! -t 0 ]; then
     __gjs_in="$_GAFFER_JS_DIR/i.$_GAFFER_SRV_NONCE"
-    cat > "$__gjs_in" 2>/dev/null || { node "$RUNNER_DIR/lib/json-tool.mjs" "$@" < "$__gjs_in"; return; }
+    if ! cat > "$__gjs_in" 2>/dev/null; then
+      # The file could not be made: cat never ran and stdin is untouched, so the
+      # one-shot call reads it. Made but not filled (a full disk): stdin is partly
+      # consumed and no call can see what it held, so fail as a read of bad input
+      # does (no output, exit 1), never answer from a truncated document.
+      if [ -e "$__gjs_in" ]; then rm -f "$__gjs_in"; return 1; fi
+      node "$RUNNER_DIR/lib/json-tool.mjs" "$@"; return
+    fi
   fi
   _gaffer_srv_send "$_GAFFER_JS_DIR" "$_GAFFER_JS_PID" "$GAFFER_WG_SERVE_TIMEOUT" "$@"
   case "$_GAFFER_SRV_STATE" in

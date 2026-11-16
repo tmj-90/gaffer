@@ -316,6 +316,27 @@ for mode in hang garbage die; do
   gaffer_wg_serve_stop
 done
 
+# The stdin file of a JSON call: if it cannot be made, cat never read stdin and the
+# one-shot call must get it whole; if it is made but cannot be filled (a full disk), stdin
+# is partly gone and the call must fail (no output, exit 1), never answer from a part.
+# The call runs in this shell (no pipe, no $(...)) so its nonce is known: RANDOM is seeded.
+gaffer_wg_serve_start
+for _ in $(seq 1 50); do [ -e "$_GAFFER_JS_DIR/ready" ] && break; sleep 0.1; done
+printf '%s' "$SHOW1" > "$WORK/show1.json"
+next_nonce() { RANDOM=4242; local r=$RANDOM; RANDOM=4242; printf '%s.%s.%s' "$$" "$(( ${_GAFFER_WG_N:-0} + 1 ))" "$r"; }
+n="$(next_nonce)"; RANDOM=4242
+ln -s "$WORK/no-such-dir/x" "$_GAFFER_JS_DIR/i.$n"
+jget 'd.ticket.number' < "$WORK/show1.json" > "$WORK/jro.out" 2>"$WORK/jro.err"; rc=$?
+[ "$(cat "$WORK/jro.out")" = 1 ] && [ "$rc" = 0 ] && ok "W8: a stdin file that cannot be made: the call runs one-shot on the whole stdin" || fail "W8: unmakeable stdin file: rc=$rc out=$(head -c 80 "$WORK/jro.out") err=$(head -c 200 "$WORK/jro.err")"
+rm -f "$_GAFFER_JS_DIR/i.$n"
+if [ -w /dev/full ]; then
+  n="$(next_nonce)"; RANDOM=4242
+  ln -s /dev/full "$_GAFFER_JS_DIR/i.$n"
+  jget 'd.ticket.number' < "$WORK/show1.json" > "$WORK/jfull.out" 2>"$WORK/jfull.err"; rc=$?
+  [ "$rc" = 1 ] && [ ! -s "$WORK/jfull.out" ] && [ ! -e "$_GAFFER_JS_DIR/i.$n" ] && ok "W8: a stdin file that cannot be filled: the call fails with no output" || fail "W8: full disk: rc=$rc out=$(head -c 80 "$WORK/jfull.out")"
+fi
+gaffer_wg_serve_stop
+
 echo "== W9: only the tick can speak to its servers (the tick key) =="
 gaffer_wg_serve_start
 for _ in $(seq 1 50); do [ -e "$_GAFFER_WG_DIR/ready" ] && [ -e "$_GAFFER_JS_DIR/ready" ] && break; sleep 0.1; done

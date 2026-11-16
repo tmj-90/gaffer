@@ -310,7 +310,7 @@ off (the image sets `SANDBOX_PROVIDER=none` and the opt-out `GAFFER_STRICT_REQUI
 
 Read [SECURITY.md](SECURITY.md) before going live: it has the threat model, what each
 gate enforces and the residual limits. Full autonomy is opt-in and off by default, and
-every setting is in [docs/CONFIG.md](docs/CONFIG.md).
+the fourteen settings are in [docs/CONFIG.md](docs/CONFIG.md).
 
 ## Aside: readying a ticket under the stricter policy packs
 
@@ -362,4 +362,4 @@ The reviewer is who owns the gate; the agent still cannot approve or merge its o
 | `packages/memory` | durable gated memory: digest, feature ledger, lore (`memory-mcp`) |
 | `runner/` | the orchestrator, the skill library, the safety hook |
 | `.gaffer/` | your factory state (databases, agent id, config, token), git-ignored |
-| `docs/CONFIG.md` | every configuration knob, its default, whether the dashboard can edit it and which component reads it (generated) |
+| `docs/CONFIG.md` | the fourteen settings, their accepted values and defaults (generated); `docs/CONFIG-ADVANCED.md` has every value they derive |

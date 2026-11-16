@@ -627,7 +627,11 @@ hand over, and every autonomy flag is off until you turn it on:
 | `MEMORY_AUTO_APPROVE` | Let the memory the runner itself files (the requirement distilled from each delivered ticket, onboarding induction lore, CLI `memory suggest`) go live without a human review step. Lore a delivery agent suggests over MCP always stays a draft, and a draft is invisible to other agents (search, duplicate hints, fetch by id) until you approve it. |
 
 `GAFFER_MODE` sets the whole cluster at once (supervised, lite, graduated, autonomous,
-strict); [CONFIG.md](CONFIG.md) lists what each sets. Whatever the mode, every agent runs
+strict): the flags above are what it derives, and
+[CONFIG-ADVANCED.md](CONFIG-ADVANCED.md) lists what each mode sets (a flag exported in the
+environment still overrides it). It is one of the fourteen settings in
+[CONFIG.md](CONFIG.md); `gaffer config show --all` prints every value they derive and what
+decided it. Whatever the mode, every agent runs
 inside an OS sandbox (`sandbox-exec` on macOS, `docker` where Docker is installed): a
 host without one refuses to launch agents, before anything is claimed, and says what to
 install. Settings shows that posture as a read-only line in its Sandbox group: the
@@ -886,8 +890,9 @@ and the tester's passes.*
   on their own: the panel says whether one is set and names its host, with **Replace**
   and **Remove**.
 - A value that does not fit its setting is not saved: the panel marks the field and the
-  API refuses the write with a 422 naming it. Every knob, its default and who reads it
-  is in [CONFIG.md](CONFIG.md).
+  API refuses the write with a 422 naming it. The fourteen settings are in
+  [CONFIG.md](CONFIG.md); every value they derive, and who reads it, in
+  [CONFIG-ADVANCED.md](CONFIG-ADVANCED.md).
 
 ### Idle work
 

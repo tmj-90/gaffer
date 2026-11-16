@@ -54,9 +54,16 @@ export function parseRecords(text) {
   for (const line of text.split("\n")) {
     const f = line.split("\t");
     if (f[0] === "S") settings.set(f[1], { origin: f[2], value: f[3] ?? "" });
-    else if (f[0] === "D") derived.set(f[1], { origin: f[2], set: f[3] === "1", value: f[4] ?? "" });
+    else if (f[0] === "D")
+      derived.set(f[1], { origin: f[2], set: f[3] === "1", value: f[4] ?? "" });
     else if (f[0] === "M")
-      migration.push({ key: f[1], old: f[2] ?? "", setting: f[3], derived: f[4] ?? "", decision: f[5] });
+      migration.push({
+        key: f[1],
+        old: f[2] ?? "",
+        setting: f[3],
+        derived: f[4] ?? "",
+        decision: f[5],
+      });
   }
   return { settings, derived, migration };
 }
@@ -156,7 +163,8 @@ export function renderText(rep) {
       lines.push(`  ${m.key} -> ${m.setting}: ${DECISION[m.decision] ?? m.decision}`);
     }
   }
-  if (!rep.derived) lines.push("", "gaffer config show --all adds every derived value and what decided it.");
+  if (!rep.derived)
+    lines.push("", "gaffer config show --all adds every derived value and what decided it.");
   return `${lines.join("\n")}\n`;
 }
 

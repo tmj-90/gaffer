@@ -571,8 +571,8 @@ in the worktree, each under a timeout: tests, typecheck, lint, and each acceptan
 criterion's `check_command`, executed byte for byte as stored (dispatch refuses a
 result whose command differs, and the done gate refuses a checked criterion the runner
 has not passed). A red gate sends the delivery back to rework with the gate name and an
-output tail as evidence. The gates are toggled only by environment (`GAFFER_DOD_*`, see
-[docs/CONFIG.md](docs/CONFIG.md)); crew.yaml's `definition_of_done` block is not read by
+output tail as evidence. The gates follow `GAFFER_GATES` and are turned off only by the
+environment (`GAFFER_DOD_*`, see [docs/CONFIG-ADVANCED.md](docs/CONFIG-ADVANCED.md)); crew.yaml's `definition_of_done` block is not read by
 the runner. A gate with no configured or detected command is skipped and logged.
 Coverage, SAST and docs checks are not gates. The Review view shows gate results only
 from rows the `system` actor recorded, and flags an agent-claimed test count the

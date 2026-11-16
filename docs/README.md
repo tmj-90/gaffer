@@ -29,8 +29,9 @@ overview; start there if you're new.
 
 ## Configure
 
-- [CONFIG.md](CONFIG.md): every setting, its default, whether the dashboard can edit
-  it and which component reads it (generated from the code).
+- [CONFIG.md](CONFIG.md): the fourteen settings, their accepted values and defaults
+  (generated from the code); [CONFIG-ADVANCED.md](CONFIG-ADVANCED.md) has every value they
+  derive and how to override one from the environment.
 - [sandbox.md](sandbox.md): the OS sandbox providers, `docker` in detail, and how to
   prove a live delivery on your fork.
 - [worker-providers.md](worker-providers.md): running your own worker program.

@@ -22,7 +22,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const CONFIG_SH = path.join(ROOT, "runner", "factory.config.sh");
 /**
  * factory.config.sh sources its parts (runner/config/NN-area.sh) from one "parts block"
  * in a fixed order. The config's text is that file with the block replaced by the
@@ -819,7 +818,9 @@ export function parseTables(text) {
   const lines = text.split("\n");
   const tables = [];
   for (let i = 0; i < lines.length; i++) {
-    const m = lines[i].match(/^_gaffer_derive ([A-Z_][A-Z0-9_]*)( --no-export)? <<'_GAFFER_TABLE_'$/);
+    const m = lines[i].match(
+      /^_gaffer_derive ([A-Z_][A-Z0-9_]*)( --no-export)? <<'_GAFFER_TABLE_'$/,
+    );
     if (!m) continue;
     const t = { setting: m[1], noExport: Boolean(m[2]), line: i + 1, rows: [] };
     for (i++; i < lines.length && lines[i] !== "_GAFFER_TABLE_"; i++) {
@@ -959,7 +960,8 @@ export function model(root = ROOT) {
       );
   }
   for (const n of ENV_ONLY) {
-    if (rowOwner.has(n) || byName.has(n)) problems.push(`${n} is environment-only and a setting or row`);
+    if (rowOwner.has(n) || byName.has(n))
+      problems.push(`${n} is environment-only and a setting or row`);
     if (!defaults.has(n) && !libDefaults.has(n) && !extras.has(n))
       problems.push(`${n} is environment-only but has no default line and no EXTRA_KNOBS entry`);
   }
@@ -982,23 +984,41 @@ export function model(root = ROOT) {
       problems.push(`old key ${o.key}: unknown comparison ${JSON.stringify(o.compare)}`);
   }
   if (problems.length > 0)
-    throw new Error(`the fourteen settings and their tables do not hold together:\n  ${problems.join("\n  ")}`);
+    throw new Error(
+      `the fourteen settings and their tables do not hold together:\n  ${problems.join("\n  ")}`,
+    );
   // What a ~ row stands for: its default line, else its lib fallback, else its read site.
   const constantOf = (name) => {
     const d = defaults.get(name) ?? libDefaults.get(name);
     if (d) {
       const f = followsOf(d.default);
       if (f) return { how: "follows", name: f, text: `_follows_ \`${f}\`` };
-      if (d.derived) return { how: "computed", value: d.default, text: `_computed_ (${code(d.default)})` };
+      if (d.derived)
+        return { how: "computed", value: d.default, text: `_computed_ (${code(d.default)})` };
       return { how: "value", value: d.default, text: code(d.default) };
     }
     const x = extras.get(name);
     if (!x) return null;
     if (x.verify === false)
       return { how: "follows", name: x.default, text: `_follows_ \`${x.default}\`` };
-    return { how: "value", value: x.default, readIn: x.file, text: `${code(x.default)} _(read in ${x.file})_` };
+    return {
+      how: "value",
+      value: x.default,
+      readIn: x.file,
+      text: `${code(x.default)} _(read in ${x.file})_`,
+    };
   };
-  return { settings, oldKeys, tables, tableOf, rowOwner, constantOf, defaults, libDefaults, extras };
+  return {
+    settings,
+    oldKeys,
+    tables,
+    tableOf,
+    rowOwner,
+    constantOf,
+    defaults,
+    libDefaults,
+    extras,
+  };
 }
 
 /** The setting's preset columns ([] for a setting whose table has one column). */
@@ -1060,7 +1080,11 @@ export function renderConfig(m) {
   for (const n of ENV_ONLY) {
     const d = m.defaults.get(n) ?? m.libDefaults.get(n);
     const x = m.extras.get(n);
-    const dflt = d ? (d.derived ? `_computed_ (${code(d.default)})` : code(d.default)) : code(x.default);
+    const dflt = d
+      ? d.derived
+        ? `_computed_ (${code(d.default)})`
+        : code(d.default)
+      : code(x.default);
     const note = firstSentence([d?.doc || x?.doc || ""]);
     out.push(`| \`${n}\` | ${cell(dflt)} | ${cell(note)} |`);
   }
@@ -1176,7 +1200,9 @@ export function renderAdvanced(m, { consumers, undocumented, defaults }) {
       "| Variable | Default in code | Read in |",
       "|---|---|---|",
     );
-    for (const [name, files] of [...undocumented.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    for (const [name, files] of [...undocumented.entries()].sort(([a], [b]) =>
+      a.localeCompare(b),
+    )) {
       const d = [...(defaults.get(name) ?? [])].sort();
       out.push(
         `| \`${name}\` | ${cell(d.map((v) => code(v)).join(" / "))} | ${[...files]

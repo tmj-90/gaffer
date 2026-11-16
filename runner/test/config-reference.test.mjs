@@ -156,7 +156,10 @@ REVIEW_MODE human agent agent agent agent   # who reviews
 _GAFFER_TABLE_
 `;
 const tt = parseTables(tfix);
-ok(tt.length === 2 && tt[0].setting === "GAFFER_EFFORT" && tt[1].noExport, "two tables, the second --no-export");
+ok(
+  tt.length === 2 && tt[0].setting === "GAFFER_EFFORT" && tt[1].noExport,
+  "two tables, the second --no-export",
+);
 ok(
   JSON.stringify(tt[0].rows.map((r) => [r.name, r.unsetOnly, r.cells.join(" "), r.note])) ===
     JSON.stringify([
@@ -195,7 +198,9 @@ ok(
   "its settings table has exactly the fourteen rows, in the spec's order",
 );
 ok(
-  /\| `GAFFER_MODE` \| `supervised` · `lite` · `graduated` · `autonomous` · `strict` \| `supervised` \|/.test(text),
+  /\| `GAFFER_MODE` \| `supervised` · `lite` · `graduated` · `autonomous` · `strict` \| `supervised` \|/.test(
+    text,
+  ),
   "GAFFER_MODE shows its accepted values and its default",
 );
 for (const n of ENV_ONLY)
@@ -232,8 +237,9 @@ for (const o of m.oldKeys)
 const schema = JSON.parse(all.schema);
 ok(
   schema.settings.length === 14 &&
-    schema.settings.find((x) => x.name === "GAFFER_EFFORT").derives.find((d) => d.name === "GAFFER_MAX_TURNS")
-      .byPreset.large.value === "300",
+    schema.settings
+      .find((x) => x.name === "GAFFER_EFFORT")
+      .derives.find((d) => d.name === "GAFFER_MAX_TURNS").byPreset.large.value === "300",
   "the JSON carries the tables (GAFFER_EFFORT large -> GAFFER_MAX_TURNS 300)",
 );
 
@@ -264,7 +270,10 @@ ok(
 ok(
   /GAFFER_TICK_TIMEOUT has a table value in GAFFER_EFFORT and a default line too/.test(
     await refusal("runner/config/07-limits.sh", (t) =>
-      t.replace(": \"${GAFFER_ROLE_MAX_TURNS:=}\"", ': "${GAFFER_TICK_TIMEOUT:=1800}"\n: "${GAFFER_ROLE_MAX_TURNS:=}"'),
+      t.replace(
+        ': "${GAFFER_ROLE_MAX_TURNS:=}"',
+        ': "${GAFFER_TICK_TIMEOUT:=1800}"\n: "${GAFFER_ROLE_MAX_TURNS:=}"',
+      ),
     ),
   ),
   "a derived value written twice (table and default line) fails the generator",
@@ -280,7 +289,10 @@ ok(
 ok(
   /GAFFER_CI_POLL_ATTEMPTS: runner\/lib\/ci-gate\.sh falls back to "20" but GAFFER_EFFORT=standard derives "25"/.test(
     await refusal("runner/config/07-limits.sh", (t) =>
-      t.replace("GAFFER_CI_POLL_ATTEMPTS         10     20        40", "GAFFER_CI_POLL_ATTEMPTS         10     25        40"),
+      t.replace(
+        "GAFFER_CI_POLL_ATTEMPTS         10     20        40",
+        "GAFFER_CI_POLL_ATTEMPTS         10     25        40",
+      ),
     ),
   ),
   "a lib fallback that disagrees with the default preset fails the generator",
@@ -327,8 +339,14 @@ for (const name of [
 ]) {
   ok(new RegExp(`^\\| \`${name}\` \\|`, "m").test(text + adv), `${name} has a row`);
 }
-ok(/\| `GAFFER_DOD_INSTALL` \| `1` _\(read in/.test(adv), "GAFFER_DOD_INSTALL shows its real default (1)");
-ok(/\| `GAFFER_CI_TIMEOUT_POLICY` \| `block` _\(read in/.test(adv), "GAFFER_CI_TIMEOUT_POLICY defaults to block");
+ok(
+  /\| `GAFFER_DOD_INSTALL` \| `1` _\(read in/.test(adv),
+  "GAFFER_DOD_INSTALL shows its real default (1)",
+);
+ok(
+  /\| `GAFFER_CI_TIMEOUT_POLICY` \| `block` _\(read in/.test(adv),
+  "GAFFER_CI_TIMEOUT_POLICY defaults to block",
+);
 
 console.log("== the read-site table fails when it drifts from the code ==");
 ok(verifyExtraKnobs(ROOT) === undefined, "every EXTRA_KNOBS entry matches its read site today");
@@ -387,15 +405,19 @@ ok(
   verifyInternalNames(ROOT) === undefined,
   "every INTERNAL_NAMES / TEST_SEAMS entry still occurs in the source",
 );
-const internalSection = adv.slice(adv.indexOf("## Internal names (not knobs)"), adv.indexOf("## Who reads what"));
+const internalSection = adv.slice(
+  adv.indexOf("## Internal names (not knobs)"),
+  adv.indexOf("## Who reads what"),
+);
 ok(
   internalSection.length > 0 && adv.includes("## Internal names (not knobs)"),
   "CONFIG-ADVANCED.md has the Internal names section",
 );
 for (const name of [...INTERNAL_NAMES.flatMap((g) => g.names), ...TEST_SEAMS]) {
   ok(
-    !new RegExp(`^\\| \`${name}\` \\|`, "m").test(text + adv.slice(0, adv.indexOf("## Internal names"))) &&
-      internalSection.includes(`\`${name}\``),
+    !new RegExp(`^\\| \`${name}\` \\|`, "m").test(
+      text + adv.slice(0, adv.indexOf("## Internal names")),
+    ) && internalSection.includes(`\`${name}\``),
     `${name} is in the Internal names section and has no table row`,
   );
 }
@@ -435,7 +457,9 @@ console.log("== deprecated and removed names have their own tables ==");
   for (const d of DEPRECATED)
     ok(
       new RegExp(`^\\| \`${d.name}\` \\|`, "m").test(dep) &&
-        !new RegExp(`^\\| \`${d.name}\` \\|`, "m").test(text + adv.slice(0, adv.indexOf("## Deprecated"))),
+        !new RegExp(`^\\| \`${d.name}\` \\|`, "m").test(
+          text + adv.slice(0, adv.indexOf("## Deprecated")),
+        ),
       `${d.name} is in the Deprecated table only`,
     );
   const rem = adv.slice(adv.indexOf("### Removed"), adv.indexOf("## Internal names"));
@@ -450,7 +474,9 @@ ok(
   "GAFFER_MODE does not say strict adds a sandbox on top",
 );
 ok(
-  /strict \(autonomous, and the sandbox wraps the agent even under the environment opt-out\)/.test(srow("GAFFER_MODE")),
+  /strict \(autonomous, and the sandbox wraps the agent even under the environment opt-out\)/.test(
+    srow("GAFFER_MODE"),
+  ),
   "GAFFER_MODE says strict is autonomous plus the sandbox under the opt-out",
 );
 

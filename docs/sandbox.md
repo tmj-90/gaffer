@@ -72,8 +72,9 @@ not: reads, egress, and the agent writing the dispatch and memory databases dire
 | `GAFFER_DOD_SANDBOX` | `1` | Run the DoD gates and criterion checks under the sandbox (the validation profile); they execute agent-written code. |
 | `GAFFER_DOD_ENV_PASS` | empty | Extra variable names every gate run receives; credential-shaped and factory names are refused. |
 
-These are plain environment variables (all of them are in
-[CONFIG.md](CONFIG.md)), so scope them however you scope config:
+These are values `GAFFER_SANDBOX` and `GAFFER_GATES` derive (all of them are in
+[CONFIG-ADVANCED.md](CONFIG-ADVANCED.md)); a real environment variable overrides each, so
+scope them however you scope config:
 
 ```bash
 SANDBOX_PROVIDER=docker runner/gaffer run   # pick docker on a Mac that has both

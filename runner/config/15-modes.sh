@@ -44,8 +44,8 @@
 # process tree (the config is re-sourced by every child script), and the supervised
 # column applies. (A settings.json value is validated in 01-settings.sh and stops the
 # config instead.)
-case " supervised lite graduated autonomous strict " in
-  *" $GAFFER_MODE "*) ;;
+case "$GAFFER_MODE" in
+  supervised | lite | graduated | autonomous | strict) ;;
   *)
     if [ "${_GAFFER_MODE_WARNED:-}" != "$GAFFER_MODE" ]; then
       printf "gaffer: GAFFER_MODE='%s' is not a mode (supervised, graduated, lite, autonomous, strict) — using supervised: a human approves every merge\n" "$GAFFER_MODE" >&2

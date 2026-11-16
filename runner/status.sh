@@ -25,7 +25,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=factory.config.sh
 source "$HERE/factory.config.sh"
-_gaffer_deprecated GAFFER_SLACK_WEBHOOK "set GAFFER_NOTIFY_SLACK_URL (the Slack field in Settings) instead"
+_gaffer_deprecated GAFFER_SLACK_WEBHOOK "put the Slack URL in GAFFER_NOTIFY instead"
 
 # No colour in a pipe / file, under NO_COLOR or TERM=dumb (lib/colour.sh).
 # shellcheck source=lib/colour.sh

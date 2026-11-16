@@ -1090,9 +1090,9 @@ $_trail_q
           if [ "${GAFFER_ALLOW_NO_DOD:-0}" = "1" ]; then
             log "DoD: WARNING — #$NUM passed with ZERO gates executed (GAFFER_ALLOW_NO_DOD=1 waiver active); configure test_command / lint_command to remove this opt-out"
           else
-            log "DoD: FAILING #$NUM — zero DoD gates executed (all skipped); no test_command or lint_command configured. Set GAFFER_ALLOW_NO_DOD=1 to allow deliveries with no runnable gates (see factory.config.sh)"
+            log "DoD: FAILING #$NUM — zero DoD gates executed (all skipped); no test_command or lint_command configured. Export GAFFER_ALLOW_NO_DOD=1 to allow deliveries with no runnable gates (see factory.config.sh)"
             rm -f "$DOD_RESULTS"
-            _recover_or_park "definition-of-done" "Definition of Done: zero gates executed — no test_command or lint_command configured; configure gate commands or set GAFFER_ALLOW_NO_DOD=1"
+            _recover_or_park "definition-of-done" "Definition of Done: zero gates executed — no test_command or lint_command configured; configure gate commands or export GAFFER_ALLOW_NO_DOD=1"
             [ "$_DELIV_OUTCOME" = "retry" ] && continue
             result error; exit 0
           fi

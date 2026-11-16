@@ -365,7 +365,7 @@ or cap the new name does not name.
 | `GAFFER_CARD_MODEL` | `GAFFER_ROLE_MODELS="card=<model>"` |
 | `GAFFER_ONBOARD_SYNTH_MODEL` | `GAFFER_ROLE_MODELS="synth=<model>"` |
 | `GAFFER_INHERIT_MODEL` | `GAFFER_ROLE_MODELS="inherit=<model>"` |
-| `GAFFER_SLACK_WEBHOOK` | `GAFFER_NOTIFY_SLACK_URL` (the Slack field in Settings); status.sh still posts to it |
+| `GAFFER_SLACK_WEBHOOK` | the Slack URL in `GAFFER_NOTIFY`; status.sh still posts to it |
 | `GAFFER_SANDBOX_CPUS` | `GAFFER_SANDBOX_LIMITS="cpus=N"` |
 | `GAFFER_SANDBOX_MEMORY` | `GAFFER_SANDBOX_LIMITS="memory=N"` |
 | `GAFFER_SANDBOX_PIDS` | `GAFFER_SANDBOX_LIMITS="pids=N"` |

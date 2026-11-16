@@ -492,7 +492,7 @@ export const DEPRECATED = [
   ].map(([name, role]) => ({ name, use: `\`GAFFER_ROLE_MODELS="${role}=<model>"\`` })),
   {
     name: "GAFFER_SLACK_WEBHOOK",
-    use: "`GAFFER_NOTIFY_SLACK_URL` (the Slack field in Settings); status.sh still posts to it",
+    use: "the Slack URL in `GAFFER_NOTIFY`; status.sh still posts to it",
   },
   ...[
     ["GAFFER_SANDBOX_CPUS", "cpus"],

@@ -1464,7 +1464,7 @@ export function unverifiedPassReason({ replay, repoName, ticket, acceptance = fa
   const register = /no test command/.test(why)
     ? ` Register one with \`wg repo set-commands ${cmdName} --test "<command>"\` or Test command under Referee's checks on the repo page.`
     : /switched off/.test(why)
-      ? " Set GAFFER_TESTER_REPLAY back to 1 to replay again."
+      ? " Unset GAFFER_TESTER_REPLAY (or export it as 1) to replay again."
       : "";
   return (
     `unverified: ${why}; the PASS was not replayed on a clean checkout, so it is not recorded` +

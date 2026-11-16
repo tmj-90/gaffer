@@ -96,15 +96,15 @@ echo "== the GAFFER_NOTIFY setting (its URLs hold tokens) never reaches a comman
 # it. It matches none of GAFFER_NOTIFY_*, *_WEBHOOK*, *_SLACK*, *_URL, so it needs its own
 # name in every list that keeps the notify channels from an agent.
 CMD_PASS="$(env -i PATH="/usr/bin:/bin" HOME="/home/agent" RUNNER_DIR="$RUNNER_DIR" \
-  GAFFER_WORKER_COMMAND_ENV="GAFFER_NOTIFY,GAFFER_NOTIFY_SLACK_URL,FOO" \
+  GAFFER_WORKER_COMMAND_ENV="GAFFER_NOTIFY,GAFFER_NOTIFY_SLACK_URL,_GAFFER_DV_GAFFER_NOTIFY,_GAFFER_DV_GAFFER_NOTIFY_SLACK_URL,FOO" \
   bash -c 'source "$RUNNER_DIR/factory.config.sh" >/dev/null 2>&1; gaffer_command_env_pass_names | tr "\n" " "')"
-[ "$CMD_PASS" = "FOO " ] && ok "gaffer_command_env_pass_names drops GAFFER_NOTIFY" || fail "the command worker would get: '$CMD_PASS'"
+[ "$CMD_PASS" = "FOO " ] && ok "gaffer_command_env_pass_names drops GAFFER_NOTIFY and its re-source records" || fail "the command worker would get: '$CMD_PASS'"
 if command -v node >/dev/null 2>&1; then
   NODE_PASS="$(WORKER_MJS="$RUNNER_DIR/lib/worker.mjs" node --input-type=module -e '
     const w = await import(process.env.WORKER_MJS);
-    console.log(w.commandEnvPassNames({ GAFFER_WORKER_COMMAND_ENV: "GAFFER_NOTIFY,GAFFER_NOTIFY_SLACK_URL,GAFFER_NOTIFYX,FOO" }).join(","));
+    console.log(w.commandEnvPassNames({ GAFFER_WORKER_COMMAND_ENV: "GAFFER_NOTIFY,GAFFER_NOTIFY_SLACK_URL,_GAFFER_DV_GAFFER_NOTIFY,_GAFFER_OPERATOR_ENV,GAFFER_NOTIFYX,FOO" }).join(","));
   ' 2>&1)"
-  [ "$NODE_PASS" = "GAFFER_NOTIFYX,FOO" ] && ok "commandEnvPassNames (lib/worker.mjs) drops GAFFER_NOTIFY" || fail "commandEnvPassNames gave: '$NODE_PASS'"
+  [ "$NODE_PASS" = "GAFFER_NOTIFYX,FOO" ] && ok "commandEnvPassNames (lib/worker.mjs) drops GAFFER_NOTIFY and its re-source records" || fail "commandEnvPassNames gave: '$NODE_PASS'"
 fi
 
 echo "== claude -p auth + MCP wiring SURVIVE (don't break the agent) =="

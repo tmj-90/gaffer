@@ -78,7 +78,9 @@ gaffer_command_env_pass_names() {
   for n in $(printf '%s' "${GAFFER_WORKER_COMMAND_ENV:-}" | tr ',' ' '); do
     case "$n" in
       *[!A-Za-z0-9_]* | [0-9]*) continue ;;
-      DISPATCH_API_TOKEN | GAFFER_CLAIM_TOKEN | GAFFER_PRINCIPAL_TOKEN | GITHUB_TOKEN | GH_TOKEN | GAFFER_NOTIFY | GAFFER_NOTIFY_* | *_WEBHOOK* | *_SLACK*) continue ;;
+      # _GAFFER_*: the config's internal records (a re-source record such as
+      # _GAFFER_DV_GAFFER_NOTIFY carries the value of the name it records).
+      DISPATCH_API_TOKEN | GAFFER_CLAIM_TOKEN | GAFFER_PRINCIPAL_TOKEN | GITHUB_TOKEN | GH_TOKEN | GAFFER_NOTIFY | GAFFER_NOTIFY_* | _GAFFER_* | *_WEBHOOK* | *_SLACK*) continue ;;
     esac
     printf '%s\n' "$n"
   done

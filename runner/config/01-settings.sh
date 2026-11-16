@@ -492,7 +492,12 @@ _gaffer_old_key() {
   [ -n "$cur" ] || shown_cur="unset"
   case "$dec" in
     environment) msg="ignored: the environment sets $name, and $setting decides it otherwise" ;;
-    kept) msg="the file's $shown_old is stricter than what $setting derives ($shown_cur), so it still applies; choose a $setting value (or export $name) and remove the key" ;;
+    kept)
+      if [ "$policy" = keep ]; then
+        msg="$setting leaves it unset, so the file's $shown_old still applies (an alert channel is never dropped in silence); put it in $setting and remove the key"
+      else
+        msg="the file's $shown_old is stricter than what $setting derives ($shown_cur), so it still applies; choose a $setting value (or export $name) and remove the key"
+      fi ;;
     stricter-derived) msg="ignored: $setting decides it, and the file's $shown_old was more permissive or costlier than what it derives ($shown_cur), so the stricter value applies" ;;
     same) msg="ignored: $setting decides it and derives the same value ($shown_cur); remove the key" ;;
     *) msg="ignored: $setting decides it (now $shown_cur, the file said $shown_old); choose a $setting value, or export $name to override" ;;

@@ -57,6 +57,10 @@
 #                                     settings, paired differences (stub agent unless --live)
 #   gaffer eval agreement [--json]    is the eval judge worth having? each judged delivery paired with
 #                                     its review outcome, and a reading (docs/eval-harness.md)
+#   gaffer config show [--all] [--json]
+#                                     the fourteen settings, their values and where each came from
+#                                     (default, settings.json, environment); --all adds every value
+#                                     they derive and what decided it. Read-only; never prints a secret
 #   gaffer help | --version
 #
 #   Every command takes -h/--help; an unknown command or option exits 2 and does nothing.
@@ -114,6 +118,7 @@ usage() {
     run)       echo "usage: gaffer run [--dry-run|-n] [--daemon] [--interval <seconds>]   (LIVE by default: claims ready tickets and spends model budget)" ;;
     skills)    echo "usage: gaffer skills [list | install [--user|--project] [--force] | add <path|git-url> [--force]]" ;;
     plan)      echo "usage: gaffer plan \"<goal>\" | --file <path> [--repo <name>] [--now]  ·  gaffer plan --answer \"<text>\" | --now  ·  gaffer plan --yes | --show | --discard | --list   (each turn is a paid planner call; only --yes on its own, or a typed y, creates the proposal you were shown, as draft tickets; exit 0 created · 4 nothing created yet · 3 refused by the budget (no dollar cap, or a cap reached) · 75 paused on the usage window)" ;;
+    config)    echo "usage: gaffer config show [--all] [--json]   (the fourteen settings and where each came from; --all adds every derived value and what decided it; read-only, secrets hidden)" ;;
     lore)      echo "usage: gaffer lore [review [--repo <name>] [--offset <n>] [--json] | show <id> | approve <id> | reject <id> [--reason \"<why>\"]]" ;;
   esac
 }
@@ -176,7 +181,7 @@ case "$cmd" in
   *) unset GAFFER_PRINCIPAL_TOKEN _GAFFER_PERSON_TOKEN ;;
 esac
 case "$cmd" in
-  onboard|dashboard|status|sandbox-status|setup|demo|eval|approve|merge|run|skills|plan|lore)
+  onboard|dashboard|status|sandbox-status|setup|demo|eval|approve|merge|run|skills|plan|lore|config)
     if wants_help "$@"; then usage "$cmd"; exit 0; fi ;;
 esac
 case "$cmd" in
@@ -523,6 +528,44 @@ status)
   # notification when a human is needed. Lives in status.sh to keep it testable.
   [ $# -eq 0 ] || bad_arg status "status takes no arguments (got '$1')"
   bash "$HERE/status.sh"
+  ;;
+
+config)
+  # gaffer config show [--all] [--json]: what the config just derived (sourced above),
+  # handed to bin/config-show.mjs as records, with where each value came from. Read-only:
+  # nothing is written or started, and secrets are shown as set, never as their value.
+  [ "${1:-}" = show ] || bad_arg config "config takes one subcommand: show"
+  shift
+  _cfg_flags=()
+  for a in "$@"; do
+    case "$a" in --all | --json) _cfg_flags+=("$a") ;; *) bad_arg config "unknown option '$a'" ;; esac
+  done
+  _cfg_clean() { local v="${1//$'\t'/ }"; printf '%s' "${v//$'\n'/ }"; }
+  # The old settings.json keys that still apply (stricter), from the migration log.
+  _cfg_kept=" "
+  while IFS=$'\t' read -r _k _ _ _ _d; do
+    [ "$_d" = kept ] && _cfg_kept="$_cfg_kept$_k "
+  done <<<"$_GAFFER_MIGRATION_LOG"
+  {
+    for _n in $_GAFFER_SETTINGS_KEYS; do
+      case "$_GAFFER_OPERATOR_ENV" in
+        *" $_n "*) _o=environment ;;
+        *) case "$_GAFFER_FROM_FILE" in *" $_n "*) _o=settings.json ;; *) _o=default ;; esac ;;
+      esac
+      printf 'S\t%s\t%s\t%s\n' "$_n" "$_o" "$(_cfg_clean "${!_n-}")"
+    done
+    while IFS= read -r _n; do
+      [ -n "$_n" ] || continue
+      case "$_GAFFER_OPERATOR_ENV" in
+        *" $_n "*) _o=environment ;;
+        *) case "$_cfg_kept" in *" $_n "*) _o=settings.json ;; *) _o=derived ;; esac ;;
+      esac
+      _s=0; [ -n "${!_n+x}" ] && _s=1
+      printf 'D\t%s\t%s\t%s\t%s\n' "$_n" "$_o" "$_s" "$(_cfg_clean "${!_n-}")"
+    done < <(node -e 'for (const s of require(process.argv[1]).settings) for (const d of s.derives) console.log(d.name)' "$RUNNER_DIR/config/settings-schema.json")
+    [ -z "$_GAFFER_MIGRATION_LOG" ] || printf '%s' "$_GAFFER_MIGRATION_LOG" | sed 's/^/M\t/'
+  } | node "$RUNNER_DIR/bin/config-show.mjs" ${_cfg_flags[@]+"${_cfg_flags[@]}"}
+  exit "${PIPESTATUS[1]}"
   ;;
 
 sandbox-status)

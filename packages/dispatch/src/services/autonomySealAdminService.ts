@@ -32,7 +32,10 @@ import { DispatchError } from "../util/errors.js";
 import type { Dispatch } from "../core.js";
 
 /** What these functions read from the {@link Dispatch} facade they are handed. */
-export type AutonomySealHost = Pick<Dispatch, "db" | "gateKeyring" | "clock" | "repos">;
+export type AutonomySealHost = Pick<Dispatch, "db" | "gateKeyring" | "clock">;
+
+/** What the read-only listings need (doctor runs them on a bare handle). */
+export type AutonomySealReader = Pick<AutonomySealHost, "db" | "gateKeyring">;
 
 /** Statuses where a ticket's risk decides nothing any more. */
 const SETTLED_STATUSES = ["done", "cancelled", "failed"];
@@ -267,7 +270,7 @@ export interface UnsignedPolicyReview {
   fingerprint: string;
 }
 
-export function reviewUnsignedPolicies(host: AutonomySealHost): UnsignedPolicyReview {
+export function reviewUnsignedPolicies(host: AutonomySealReader): UnsignedPolicyReview {
   // ONE READ, ONE SNAPSHOT (the reviewed-list rule): what is shown and the code confirmed
   // are computed from the same rows. The anchor is read first (rowSeal anchorReadFirst).
   const keyring = anchorReadFirst(host.gateKeyring);
@@ -445,7 +448,7 @@ export interface UnsignedRiskReview {
   fingerprint: string;
 }
 
-export function reviewUnsignedRisks(host: AutonomySealHost): UnsignedRiskReview {
+export function reviewUnsignedRisks(host: AutonomySealReader): UnsignedRiskReview {
   const keyring = anchorReadFirst(host.gateKeyring);
   return inReadSnapshot(host.db, () => {
     const unsigned = unsignedRiskRows(host.db, keyring);
@@ -561,7 +564,7 @@ export interface AutonomySealSummary {
   messages: string[];
 }
 
-export function autonomySealSummary(host: AutonomySealHost): AutonomySealSummary {
+export function autonomySealSummary(host: AutonomySealReader): AutonomySealSummary {
   const policies = reviewUnsignedPolicies(host).unsigned;
   const risks = reviewUnsignedRisks(host);
   const auto = policies.filter((p) => p.mode === "auto").length;

@@ -132,6 +132,14 @@ program
           )}): review them with \`gaffer wg principal unsigned\`, then \`gaffer wg principal resign\` (or in the dashboard's Settings).\n`,
       );
     }
+    // SEALED AUTONOMY: what is not signed grants nothing; say so once at start.
+    try {
+      for (const line of wg.autonomySealSummary().messages) {
+        process.stderr.write(`dispatch-api: ${line}.\n`);
+      }
+    } catch {
+      // a startup notice never stops the server
+    }
     // Pass the bind host so the server emits HSTS only for a non-loopback bind.
     const server = createApiServer(wg, undefined, undefined, undefined, undefined, opts.host);
 

@@ -5,6 +5,7 @@ import { SCHEMA_VERSION } from "../db/schema.js";
 import { verifyEventChain } from "../events/eventChain.js";
 import { hostGateKeyring, type GateKeyring } from "../events/gateSeal.js";
 import { unsignedPrincipalMessage, unsignedPrincipals } from "../events/principalSeal.js";
+import { autonomySealSummary } from "../services/autonomySealAdminService.js";
 import { acceptedChangeCost, type AcceptedChangeReport } from "../health/acceptedChange.js";
 import { readReviewMeasures, type ReviewMeasures } from "../health/reviewMeasures.js";
 import { readHealthRows, resolveLedgerPath } from "../health/healthAggregator.js";
@@ -243,6 +244,44 @@ export function runDoctor(
         fix: u.creation_event
           ? `Review it, then \`gaffer wg principal resign ${u.name}\` (or \`resign --all --confirm <code>\` with the code \`gaffer wg principal unsigned\` prints, or the dashboard's Settings), or revoke it.`
           : `No matching principal.created event is on record: if you did not create it, revoke it (\`gaffer wg principal revoke ${u.name}\`); re-sign it by name only if you did.`,
+      });
+    }
+  }
+
+  // 10. SEALED AUTONOMY: a policy row or a ticket risk the factory does not honour grants
+  //     nothing (a person decides); say what is unsigned and what it costs. Read-only.
+  if (principalKeyring && tableExists(db, "autonomy_policy")) {
+    const sum = autonomySealSummary({ db, gateKeyring: principalKeyring });
+    if (sum.messages.length === 0) {
+      checks.push({
+        label:
+          "Autonomy: every policy row that grants something and every open ticket's risk is signed",
+        level: "ok",
+      });
+    }
+    if (sum.policies.unsigned > 0) {
+      const n = sum.policies.auto > 0 ? sum.policies.auto : sum.policies.unsigned;
+      const what = sum.policies.auto > 0 ? "automatic " : "";
+      checks.push({
+        label:
+          n === 1
+            ? `Autonomy: 1 ${what}policy row is not signed: it is off until you sign it`
+            : `Autonomy: ${n} ${what}policy rows are not signed: they are off until you sign them`,
+        level: "warn",
+        detail: sum.messages[0] ?? "",
+        fix: "Review them (`gaffer wg autonomy unsigned`), then `gaffer wg autonomy resign --all --confirm <the code it prints>` (or Settings > Autonomy), or turn them off.",
+      });
+    }
+    const needAct = sum.risks.unsigned - sum.risks.sealed_at_claim;
+    if (needAct > 0) {
+      checks.push({
+        label: `Autonomy: ${needAct} open ticket${needAct === 1 ? "'s risk is" : "s' risks are"} not signed: decided as the highest risk (a person decides)`,
+        level: "warn",
+        detail: Object.entries(sum.risks.by_risk)
+          .filter(([, n]) => n > 0)
+          .map(([r, n]) => `${n} at ${r}`)
+          .join(", "),
+        fix: "Review them (`gaffer wg autonomy risk-unsigned`), then `gaffer wg autonomy risk-resign --all --confirm <the code it prints>`.",
       });
     }
   }

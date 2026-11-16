@@ -1,9 +1,10 @@
 name: runner shard
 
 # One shard of runner/test/run.sh on one os x node cell, called by ci.yml (every push
-# and pull request: ubuntu node 22 and 24, macOS node 22) and by nightly.yml (macOS
-# node 24). The steps live here once, so a cell moved between the two workflows keeps
-# the same strictness, the same caps and the same evidence upload.
+# and pull request: ubuntu node 22; macOS node 22 when the push changes a macOS-relevant
+# path) and by nightly.yml (ubuntu node 24, macOS node 22 and 24). The steps live here
+# once, so a cell moved between the two workflows keeps the same strictness, the same
+# caps and the same evidence upload.
 on:
   workflow_call:
     inputs:

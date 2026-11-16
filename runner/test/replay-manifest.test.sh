@@ -139,7 +139,12 @@ if [ -e .git ]; then
       git -c user.email=s@s -c user.name=s add -A >/dev/null; git -c user.email=s@s -c user.name=s commit -qm "feat: $fn partial" >/dev/null 2>&1 || true
       sleep 30; exit 0 ;;
     hang)
-      : > "__MARK__"; sleep 60; exit 0 ;;
+      # Held until the test has signalled the tick ("__MARK__.release"), then the turn ends
+      # the way the old fixed 60 s sleep ended it: the tick runs its TERM trap once its
+      # foreground agent call returns. Bounded at 60 s (1200 x 0.05 s), as before.
+      : > "__MARK__"; i=0
+      while [ ! -e "__MARK__.release" ] && [ "$i" -lt 1200 ]; do sleep 0.05; i=$((i + 1)); done
+      exit 0 ;;
     *)
       printf 'export function %s(){return 2;}\n' "$fn" >> src/a.js
       git -c user.email=s@s -c user.name=s add -A >/dev/null; git -c user.email=s@s -c user.name=s commit -qm "feat: $fn" >/dev/null 2>&1 || true
@@ -148,7 +153,7 @@ if [ -e .git ]; then
 fi
 printf '{"type":"result","subtype":"success","is_error":false,"result":"ok"}\n'
 STUB
-sed -i.bak "s|__MODE__|$MODE|; s|__MARK__|$MARK|" "$WORK/bin/claude" && rm -f "$WORK/bin/claude.bak"; chmod +x "$WORK/bin/claude"
+sed -i.bak "s|__MODE__|$MODE|; s|__MARK__|$MARK|g" "$WORK/bin/claude" && rm -f "$WORK/bin/claude.bak"; chmod +x "$WORK/bin/claude"
 
 export GAFFER_DATA="$WORK/data" CLAUDE_BIN="$WORK/bin/claude" CLAUDE_FLAGS="" \
        GAFFER_MAX_TURNS=3 GAFFER_TICK_TIMEOUT=60 GAFFER_ROLE_MODELS=card=stub GAFFER_PLAN_MODEL=stub GAFFER_IMPL_MODEL=stub \
@@ -211,12 +216,14 @@ GAFFER_TICK_TIMEOUT=3 GAFFER_REAP_GRACE=1 run_tick >/dev/null
 [ "$(jt "$M/$T3-1.json" 'd.outcome.rc')" = 124 ] && ok "E3: rc 124" || fail "E3: rc $(jt "$M/$T3-1.json" 'd.outcome.rc')"
 
 echo "-- E4 killed --"
-echo hang > "$MODE"; rm -f "$MARK"
+echo hang > "$MODE"; rm -f "$MARK" "$MARK.release"
 T4="$(new_ready "Manifest kill" "deliver a helper")"
 ( cd "$RUNNER_DIR" && exec bash ./tick.sh >>"$GAFFER_DATA/tick.e4.log" 2>&1 ) &
 TPID=$!
 i=0; while [ ! -e "$MARK" ] && [ "$i" -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
-kill -TERM "$TPID" 2>/dev/null; wait "$TPID" 2>/dev/null
+# The signal is delivered before the release file exists, so the tick's TERM trap is
+# already pending when its agent call returns.
+kill -TERM "$TPID" 2>/dev/null; : > "$MARK.release"; wait "$TPID" 2>/dev/null
 [ "$(jt "$M/$T4-1.json" 'd.outcome.result+"/"+d.outcome.exit_cause')" = "killed/signal" ] && ok "E4: killed (signal)" || fail "E4: $(jt "$M/$T4-1.json" 'd.status+" "+JSON.stringify(d.outcome)' 2>/dev/null || echo no manifest)"
 
 echo "-- E5 a manifest write failure never blocks the delivery --"

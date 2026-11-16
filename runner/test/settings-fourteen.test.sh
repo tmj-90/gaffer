@@ -226,6 +226,11 @@ V="$(cfg -- "$(vals DISPATCH_ALLOW_AGENT_APPROVE AUTO_MERGE MEMORY_AUTO_APPROVE 
 V="$(cfg GAFFER_MODE=autonomous -- "$(vals DISPATCH_ALLOW_AGENT_APPROVE AUTO_MERGE GAFFER_AUTO_PUSH)")"
 [ "$V" = "DISPATCH_ALLOW_AGENT_APPROVE=1 AUTO_MERGE=1 GAFFER_AUTO_PUSH=0 " ] \
   && ok "under autonomous a plain old False still turns auto push off (applied as 0); the garbage ones are ignored" || fail "switch values autonomous: $V"
+# A cleared old key ("" in settings.json) was the default before the fourteen (the
+# mode's `:=` filled it): it is not a 0 that turns an autonomous factory's merging off.
+file '{"GAFFER_MODE":"autonomous","AUTO_MERGE":"","GAFFER_AUTO_PUSH":"","MERGE_ON_AGENT_REVIEW":""}'
+V="$(cfg -- "$(vals AUTO_MERGE GAFFER_AUTO_PUSH MERGE_ON_AGENT_REVIEW)")"
+[ "$V" = "AUTO_MERGE=1 GAFFER_AUTO_PUSH=1 MERGE_ON_AGENT_REVIEW=1 " ] && ok "a cleared old switch is the mode's value, as before" || fail "cleared old switch: $V"
 nofile
 
 echo "== E: autonomy is never widened by accident =="

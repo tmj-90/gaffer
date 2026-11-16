@@ -442,6 +442,9 @@ _gaffer_stricter() {
   case "${pol[0]}" in
     off | on)
       local to td
+      # An empty old value is a setting the dashboard cleared back to its default, not
+      # a 0: before the fourteen the default filled it (`:=`), so it is not compared.
+      [ -n "$o" ] || return 0
       _gaffer_bool01 "$o"; to="$_GAFFER_B"
       _gaffer_bool01 "$d"; td="$_GAFFER_B"
       [ -n "$to" ] && [ -n "$td" ] || return 0

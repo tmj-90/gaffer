@@ -645,6 +645,33 @@ any other variable your tests need, and credential-shaped names are never passed
 suggestions for what could be handed over, from your own review record. Nothing
 changes until you enable one.*
 
+### The autonomy ladder and the step-down
+
+Per repository, every risk level (low to critical) and both gates (approve, merge) sit on
+a ladder: a person decides, suggested (your own review record clears the bar), or
+automatic (an `auto` policy row, or the mode's floor). `gaffer wg autonomy ladder`
+(`--repo`, `--json`) and `GET /api/autonomy/ladder` show each rung with its evidence, k
+of n decisions with the rate and its Wilson interval against the bar, and the distance to
+the next rung in plain numbers ("7 of 10 decisions, 100% agreement: 3 more").
+
+Critical is never automatic, for either gate: enabling a policy there is refused, a row
+that already exists is ignored, and nothing is suggested there. High needs its own
+repository's evidence (the cross-repo prior counts at low and medium only).
+
+Autonomy is taken back on its own when the evidence turns bad for a row that worked
+automatically: a regression linked to a change that was approved or landed
+automatically, a person reopening an automatically landed change, or two tester FAILs or
+"cannot be proven here" holds on automatically approved changes at one repo and risk
+within 30 days. The policy row stays, but from that moment a person decides that row
+(whatever the row or the mode's floor says), a merge step-down also covers every higher
+risk in the repository, a landing already under way on an agent's approval stops before
+the default branch moves, the event chain records which trigger, which tickets and who
+caused it, and the suggestion's count starts again. Only a person gives it back: on
+Settings > Autonomy, `POST /api/autonomy/lift`, or `gaffer wg autonomy lift <repo> --risk
+<r> --gate <g>` (once the evidence since the step-down clears the bar again, or
+`--override --reason`). Never an agent: MCP has no such tool and the safety hook refuses
+the command to agent shells.
+
 ### The independent tester
 
 With `GAFFER_TESTING` unset (the default), the tester lane is on for a ticket whose

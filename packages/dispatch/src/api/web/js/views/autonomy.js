@@ -2,6 +2,7 @@
 // Moved verbatim from app.js (the entry); the module map is in app.js.
 
 import { table } from "../lookup.js";
+import { roLockAll } from "../access.js";
 import { api } from "../api.js";
 import { actorName } from "../club.js";
 import { callout, emptyState, meterRow, panelHead } from "../components.js";
@@ -463,7 +464,8 @@ function accessPanel(whoami, principals) {
         if (fresh && Array.isArray(fresh.principals)) {
           const rebuilt = accessPanel(whoami, fresh.principals);
           const freshList = rebuilt.querySelector(".access-list");
-          if (freshList) list.replaceWith(freshList);
+          // The rebuilt Revoke buttons take the same lock as the first render.
+          if (freshList) list.replaceWith(roLockAll(freshList, "repo"));
         }
       });
     });

@@ -1,7 +1,7 @@
 // View: Settings, the fourteen settings a factory has (everything else follows from them).
 // The module map is in app.js.
 
-import { roLockAll } from "../access.js";
+import { lockReason, roLock, roLockAll } from "../access.js";
 import { api } from "../api.js";
 import { button, callout, dataTable, emptyState, viewHead } from "../components.js";
 import { clear, el, field } from "../dom.js";
@@ -471,7 +471,31 @@ async function renderSettings() {
   // A read token sees the room, not its switches: every editor and button in it is
   // off (the index's search still works). The strip under the header says why.
   roLockAll(main, "repo");
+  // ...and so is every control a panel mounts under it LATER (the autonomy ladder fills
+  // itself after its own read, the Access list is rebuilt after a credential is made):
+  // one pass at render would leave those looking usable to a viewer the server refuses.
+  lockLateControls(main, "repo");
   return wrap;
+}
+
+/**
+ * Lock (roLock, the page's one helper: disabled, a title saying why, the read-only or
+ * scope class) every form control added under `root` after it was first locked, for as
+ * long as `root` lives. A no-op for a viewer nothing is locked for.
+ */
+function lockLateControls(root, kind) {
+  if (typeof MutationObserver !== "function") return;
+  const CONTROLS = "button, input, select, textarea";
+  new MutationObserver((records) => {
+    if (!lockReason(kind)) return;
+    for (const r of records)
+      for (const n of r.addedNodes) {
+        if (n.nodeType !== 1) continue;
+        if (n.matches(CONTROLS)) {
+          if (!n.closest("[data-ro-ok]")) roLock(n, kind);
+        } else roLockAll(n, kind);
+      }
+  }).observe(root, { childList: true, subtree: true });
 }
 
 /**

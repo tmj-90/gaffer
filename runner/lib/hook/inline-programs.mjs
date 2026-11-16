@@ -25,7 +25,7 @@
 
 import { basename } from "node:path";
 import { decodeEscapes } from "./inline-lex.mjs";
-import { otherInterpreter, otherInterpreterName } from "./inline-other.mjs";
+import { FD_PATH, otherInterpreter, otherInterpreterName } from "./inline-other.mjs";
 import { replayCd } from "./paths.mjs";
 import { resolveEffectiveTokens } from "./verbs.mjs";
 
@@ -314,9 +314,11 @@ function lexShell(cmd) {
     }
     // Redirections: [n]< > >> << <<- <<< <> >& <& &> &>> >|
     if (c === "<" || c === ">" || (c === "&" && cmd[i + 1] === ">")) {
-      if (word && /^[0-9]+$/.test(word.text) && !word.quoted)
+      let fd = null;
+      if (word && /^[0-9]+$/.test(word.text) && !word.quoted) {
+        fd = word.text;
         word = null; // an fd number
-      else endWord();
+      } else endWord();
       const m = /^(?:<<<|<<-|<<|<>|<&|<|>>|>&|>\||>|&>>|&>)/.exec(cmd.slice(i, i + 3));
       const op = m[0];
       i += op.length;
@@ -330,7 +332,7 @@ function lexShell(cmd) {
         i = end;
         continue;
       }
-      pendingRedir = { op };
+      pendingRedir = { op, fd };
       continue;
     }
     newWord();
@@ -498,7 +500,7 @@ function inlinePrograms(cmd, cwd = process.cwd()) {
   const out = { programs: [], reasons: [] };
   walk(
     cmd,
-    { cwd, vars: new Map(), depth: 0, raw: cmd, sets: new Map(), fileVars: new Set() },
+    { cwd, vars: new Map(), depth: 0, raw: cmd, sets: new Map(), fileVars: new Set(), out },
     out,
   );
   LAST = { cmd, cwd, out };
@@ -620,59 +622,169 @@ function recordAssignments(words, ctx, start = 0) {
 }
 
 // Environment variables that make an interpreter or a shell load or run code its
-// program text does not show (a preload module, a startup file, a debugger, a library,
-// a browser or pager command, interactive mode reading stdin).
+// program text does not show (a preload module, a startup file, a debugger, a library).
+// They refuse an inline program (and a script) of an interpreter run directly; the
+// value-checked ones in notePreload are judged by their value.
 const PRELOAD_VARS = new Set([
   "PERL5OPT",
   "PERL5DB",
   "PERL_JSON_BACKEND",
-  "PERLIO",
-  "RUBYOPT",
   "PHPRC",
   "PHP_INI_SCAN_DIR",
   "PYTHONSTARTUP",
-  "PYTHONINSPECT",
-  "PYTHONBREAKPOINT",
   "NODE_REPL_EXTERNAL_MODULE",
   "LD_PRELOAD",
   "LD_AUDIT",
   "DYLD_INSERT_LIBRARIES",
   "GCONV_PATH",
-  "BROWSER",
   "BASH_ENV",
+]);
+// Names an `export`, `read` or `printf -v` may not give a value the hook cannot see.
+const PRELOAD_NAMES = new Set([
+  ...PRELOAD_VARS,
   "ENV",
+  "PERLIO",
+  "RUBYOPT",
+  "PYTHONBREAKPOINT",
+  "PYTHONINSPECT",
+  "PYTHONWARNINGS",
+  "NODE_OPTIONS",
+  "MAKEFLAGS",
+  "GNUMAKEFLAGS",
+  "MFLAGS",
+  "MAKEFILES",
+  "PS4",
+  "GIT_SSH_COMMAND",
+  "GIT_EDITOR",
+  "GIT_SEQUENCE_EDITOR",
+  "EDITOR",
+  "VISUAL",
+  "GIT_EXTERNAL_DIFF",
+  "GIT_CONFIG_PARAMETERS",
+  "GIT_CONFIG_COUNT",
 ]);
 // NODE_OPTIONS flags that load or expose code (most NODE_OPTIONS uses are memory limits).
 const NODE_OPTIONS_LOADS =
   /(?:^|\s)(?:-r|--require|--import|--loader|--experimental-loader|--experimental-specifier-resolution|--inspect[\w-]*|-i|--interactive)(?:[=\s]|$)/;
+// A NODE_OPTIONS module given as a URL (`--import=data:...`) or read from input: a program
+// in the variable itself, whatever command starts node.
+const NODE_OPTIONS_INLINE =
+  /(?:^|\s)(?:-r|--require|--import|--loader|--experimental-loader)(?:=|\s+)["']?(?:(?!node:)[A-Za-z][\w+.-]*:|\/dev\/|\/proc\/)/;
+// PERLIO layers that load no module of the agent's choosing.
+const PERLIO_LAYER = "(?:raw|crlf|utf8|bytes|unix|perlio|stdio|pop|encoding\\([\\w.-]+\\))";
+// One whitespace run between layers, so a long list cannot backtrack.
+const PERLIO_SAFE = new RegExp(`^\\s*:?${PERLIO_LAYER}(?:\\s*:?${PERLIO_LAYER})*\\s*$`);
+// Editors and pagers that run nothing but themselves; sed and awk scripts are read.
+const EDITOR_SAFE =
+  /^(?:true|false|:|cat|echo|vi|vim|nvim|nano|emacs|code(?: --wait| -w)?|subl(?: -w| --wait)?)$/;
+const PAGER_SAFE = /^(?:|cat|less(?: -[A-Za-z~+]+)*|more)$/;
+const GIT_PROGRAM_VARS = new Set([
+  "GIT_SSH",
+  "GIT_SSH_COMMAND",
+  "GIT_PROXY_COMMAND",
+  "GIT_EXTERNAL_DIFF",
+  "GIT_ASKPASS",
+  "SSH_ASKPASS",
+]);
 
-// Remember why an assignment word makes the interpreters after it unreadable, if it does.
+// Remember why an assignment word makes the interpreters after it unreadable, if it does
+// (`ctx.preload`), and refuse at once a variable that runs code for any command that
+// reads it (`npm test` starts node, `git commit` starts the editor).
 function notePreload(ctx, w) {
   const m = ASSIGN.exec(w.text);
   if (!m) return;
   const name = m[1];
+  const value = m[2];
+  const unseen = w.subst || w.dynamic;
+  const any = (why) => ctx.out?.reasons.push(`the command sets ${name}, ${why}`);
+  if (name === "PERL5OPT" && (unseen || /(?:^|\s)-[A-Za-z]*[Mmd]/.test(value))) {
+    // `-M'strict;system(...)'` is a program in the variable, for any perl it starts.
+    any("which makes any perl the command starts load a module or run code");
+  }
   if (PRELOAD_VARS.has(name)) {
     ctx.preload = `the command sets ${name}, which makes an interpreter load or run code the hook cannot see`;
-  } else if (name === "NODE_OPTIONS") {
-    if (w.subst || w.dynamic || w.vars.length || NODE_OPTIONS_LOADS.test(m[2])) {
+  } else if (name === "ENV") {
+    ctx.preloadShell = "the command sets ENV, which an interactive shell runs";
+  } else if (name === "PERLIO") {
+    if (unseen || w.vars.length || !PERLIO_SAFE.test(value))
+      ctx.preload = "the command sets PERLIO to layers that may load a module";
+  } else if (name === "RUBYOPT") {
+    // -r and -I load libraries, -d and --debug run the debugger; -W0, --disable=gems pass.
+    if (unseen || w.vars.length || /(?:^|\s)-(?:[A-Za-z]*[rIdx]|-(?:debug|require))/.test(value))
+      ctx.preload = "the command sets RUBYOPT to load a library or run the debugger";
+  } else if (name === "PYTHONBREAKPOINT") {
+    if (value !== "0") ctx.preload = "the command sets PYTHONBREAKPOINT to a debugger hook";
+  } else if (name === "PYTHONINSPECT") {
+    any("which makes any python read a program from stdin when it ends");
+  } else if (name === "PYTHONWARNINGS") {
+    // A dotted warning category is imported (`ignore::pkg.Mod`): code the hook cannot see.
+    if (unseen || value.split(",").some((f) => (f.split(":")[2] ?? "").includes(".")))
+      any("whose warning category imports a module");
+  } else if (name === "NODE_OPTIONS" || /^npm_config_node_options$/i.test(name)) {
+    if (unseen || NODE_OPTIONS_INLINE.test(value)) {
+      any("which carries a program for any node the command starts");
+    } else if (NODE_OPTIONS_LOADS.test(value) || w.vars.some((v) => v !== "NODE_OPTIONS")) {
       ctx.preload = "the command sets NODE_OPTIONS to load code the hook cannot see";
     }
-  } else if (name === "MAKEFLAGS" || name === "GNUMAKEFLAGS" || name === "MFLAGS") {
-    // `MAKEFLAGS=--eval=...` runs make text; `-j8` and the like pass.
+  } else if (/^(?:MAKEFLAGS|GNUMAKEFLAGS|MFLAGS)$/.test(name)) {
+    // `MAKEFLAGS=--eval=...` and `MAKEFLAGS='X=$(shell ...)'` run make text; `-j8` passes.
     if (
-      w.subst ||
-      w.dynamic ||
+      unseen ||
       w.vars.length ||
-      /--eval|--file|--makefile|(?:^|\s)-\w*[Ef]/.test(m[2])
+      value.includes("$") ||
+      /!=|(?:^|\s)--(?:e|f|ma)|(?:^|\s)-[A-Za-z]*[Ef]/.test(value)
     ) {
-      ctx.preload = `the command sets ${name} to read make text the hook cannot see`;
+      any("which makes make read or run text the hook cannot see");
+    }
+  } else if (name === "MAKEFILES") {
+    if (unseen || /[$]|\/dev\/|\/proc\/|(?:^|\s)-(?:\s|$)/.test(value))
+      any("which makes make read a makefile the hook cannot see");
+  } else if (name === "PS4") {
+    // Expanded before every traced command (`bash -x`, `set -x`, SHELLOPTS=xtrace).
+    if (unseen || /\$\(|`/.test(value)) any("whose expansion runs a command when tracing is on");
+  } else if (/^GIT_CONFIG_(?:PARAMETERS|COUNT|KEY_\d+|VALUE_\d+)$/.test(name)) {
+    any("which configures git like `git -c` (refused for keys git runs as programs)");
+  } else if (GIT_PROGRAM_VARS.has(name)) {
+    if (unseen || !/^(?:|true|false|cat|echo)$/.test(value))
+      any("a program git or ssh runs (put the setting in the repository's own tooling)");
+  } else if (/^(?:GIT_EDITOR|GIT_SEQUENCE_EDITOR|EDITOR|VISUAL)$/.test(name)) {
+    if (unseen) any("an editor command the hook cannot see");
+    else if (/^(?:sed|gsed|awk|gawk)\s/.test(value)) {
+      // `GIT_SEQUENCE_EDITOR="sed -i 's/pick/fixup/'"`: the script is read like any sed.
+      walk(value, { ...ctx, depth: ctx.depth + 1 }, ctx.out);
+    } else if (!EDITOR_SAFE.test(value.trim())) {
+      any("an editor command git runs (use true, cat or a sed script)");
+    }
+  } else if (/^(?:PAGER|GIT_PAGER|MANPAGER|SYSTEMD_PAGER)$/.test(name)) {
+    if (unseen || !PAGER_SAFE.test(value.trim())) any("a pager command (use cat or less)");
+  } else if (/^LESS(?:OPEN|CLOSE)$/.test(name)) {
+    any("a command less runs on every file");
+  } else if (/(?:^|_)(?:JAVA_TOOL_OPTIONS|JAVA_OPTIONS|JDK_JAVA_OPTIONS|OPTS)$/.test(name)) {
+    if (/-XX:\+?On(?:OutOfMemory)?Error/i.test(value)) any("a JVM option that runs a command");
+  } else if (name === "PYTHONPYCACHEPREFIX" || name === "NODE_V8_COVERAGE") {
+    // Both name a directory the runtime writes into.
+    if (unseen) any("a directory the runtime writes into, which the hook cannot see");
+    else if (value) {
+      ctx.out?.programs.push({
+        lang: "writes",
+        paths: [value],
+        cwd: ctx.cwd,
+        via: name,
+        what: `${name} (the runtime writes there)`,
+      });
     }
   }
 }
 
 // The stdin of a simple command: { kind: "none" | "literal" | "file" | "unknown", texts }.
 function stdinOf(c, prev, ctx) {
-  for (const r of c.redirs) {
+  // The last redirection of fd 0 wins (`prog < f.py <<< 'code'` reads the here-string).
+  const stdinRedirs = c.redirs.filter(
+    (r) =>
+      /^(?:<<<|<<-|<<|<>|<&|<)$/.test(r.op) &&
+      (r.fd === null || r.fd === undefined || r.fd === "0"),
+  );
+  for (const r of stdinRedirs.slice(-1)) {
     if (r.op === "<<" || r.op === "<<-") {
       if (r.subst) return { kind: "unknown", why: "a here-document with a command substitution" };
       const bad = (r.vars ?? []).find(
@@ -743,9 +855,7 @@ function simple(c, prev, ctx, out, feed = null) {
   // given a value the hook does not see.
   if (
     /^(?:export|declare|local|readonly|typeset|read|mapfile|readarray|printf)$/.test(w0) &&
-    words
-      .slice(firstNonAssign + 1)
-      .some((w) => PRELOAD_VARS.has(w.text) || w.text === "NODE_OPTIONS" || w.text === "MAKEFLAGS")
+    words.slice(firstNonAssign + 1).some((w) => PRELOAD_NAMES.has(w.text))
   ) {
     ctx.preload = `the command gives a preload variable a value the hook cannot see (${w0})`;
   }
@@ -913,11 +1023,29 @@ function inspectWords(words, c, prev, ctx, out, feed, guard = 0) {
     );
   }
   first = basename(texts[0]);
+  if (first === "busybox" && texts.length > 1 && !SHELLS.has(texts[1])) {
+    // `busybox awk ...`, `busybox sed ...`: the applet is the command.
+    return inspectWords(words.slice(1), c, prev, ctx, out, feed, guard + 1);
+  }
   const lang = interpreterLang(texts[0]);
+  if (
+    (lang || otherInterpreterName(texts[0]) || SHELLS.has(first)) &&
+    texts.slice(1).some((t) => FD_PATH.test(t))
+  ) {
+    // `python3 /dev/fd/3 3<<'EOF'`, `awk -f /dev/fd/3`: a program on a file descriptor.
+    out.reasons.push(`${first} reads a program from a file descriptor the hook cannot read`);
+    return;
+  }
   if (lang) return interpreter(lang, words, c, prev, ctx, out, feed);
   if (otherInterpreterName(texts[0])) {
     // awk, sed, sqlite3, lua, R, ...: lib/hook/inline-other.mjs.
-    const unseen = words.slice(1).find((w) => argUnseen(w, ctx));
+    // `make -j$(nproc)`: a job count from the processor count is not a program.
+    const jobs = (w) =>
+      (first === "make" || first === "gmake") &&
+      /^-j\$\((?:nproc|getconf _NPROCESSORS_ONLN|sysctl -n hw\.(?:ncpu|logicalcpu))\)$/.test(
+        w.text,
+      );
+    const unseen = words.slice(1).find((w) => argUnseen(w, ctx) && !jobs(w));
     if (unseen || (feed?.placeholder && texts.some((t) => t.includes(feed.placeholder)))) {
       out.reasons.push(`${first} is given a program the hook cannot see`);
       return;
@@ -927,13 +1055,29 @@ function inspectWords(words, c, prev, ctx, out, feed, guard = 0) {
       return;
     }
     if (ctx.preload) out.reasons.push(ctx.preload);
-    otherInterpreter(texts, ctx.cwd, out, () => stdinOf(c, prev, ctx));
+    // make judges a `$` in an assignment as its own expansion: a shell variable (expanded
+    // before make runs, like any environment value) is not one.
+    const given =
+      first === "make" || first === "gmake"
+        ? words.map((w) => {
+            let t = wordText(w, ctx);
+            for (const v of w.vars)
+              t = t
+                .split("${" + v + "}")
+                .join("_")
+                .split("$" + v)
+                .join("_");
+            return t;
+          })
+        : texts;
+    otherInterpreter(given, ctx.cwd, out, () => stdinOf(c, prev, ctx));
     return;
   }
   if (SHELLS.has(first) || (first === "busybox" && SHELLS.has(texts[1] ?? ""))) {
     const ws = first === "busybox" ? words.slice(1) : words;
-    if (ctx.preload && /BASH_ENV|ENV|LD_|DYLD_|GCONV/.test(ctx.preload))
-      out.reasons.push(ctx.preload);
+    if (ctx.preload && /BASH_ENV|LD_|DYLD_|GCONV/.test(ctx.preload)) out.reasons.push(ctx.preload);
+    if (ctx.preloadShell && ws.some((w, idx) => idx > 0 && /^-[A-Za-z]*i/.test(w.text)))
+      out.reasons.push(ctx.preloadShell);
     const ci = ws.findIndex((w, idx) => idx > 0 && /^-[A-Za-z]*c[A-Za-z]*$/.test(w.text));
     if (ci !== -1) {
       const body = ws[ci + 1];
@@ -1279,6 +1423,110 @@ function pythonModule(mod, argv, argWords, cwd, ctx, out, name) {
       opts.filter(([f]) => f === "-o" || f === "--outfile").map(([, v]) => v ?? ""),
       "cProfile -o",
     );
+    return;
+  }
+  if (mod === "compileall") {
+    // Writes `__pycache__` beside every source under the named directories (sys.path
+    // when none is named); `-i FILE` takes the list from a file or stdin. It follows
+    // symlinked directories when it recurses, so only `-l` (no recursion) is judged.
+    const { opts, pos } = split(
+      new Set(["-d", "-s", "-p", "-x", "-i", "-r", "-j", "-o", "-e", "--invalidation-mode"]),
+    );
+    if (opts.some(([f]) => f === "-i") || pos.length === 0 || !opts.some(([f]) => f === "-l")) {
+      out.reasons.push(
+        `${via} recurses into directories the hook cannot see (use compileall -l DIR, or py_compile FILE)`,
+      );
+      return;
+    }
+    writes(pos, "compileall");
+    return;
+  }
+  if (mod === "py_compile") {
+    // Writes `__pycache__` beside each named file; `-` reads the names from stdin.
+    const { pos } = split(new Set());
+    if (pos.length === 0 || pos.includes("-")) {
+      out.reasons.push(`${via} reads the files to compile from stdin`);
+      return;
+    }
+    writes(pos, "py_compile");
+    return;
+  }
+  if (mod === "zipfile" || mod === "tarfile") {
+    // -l / -t only read the archive; -c writes it; -e extracts (zipfile keeps members
+    // under the target; a tar member may name any path, so tarfile -e is refused).
+    const { opts, pos } = split(
+      new Set(["-l", "--list", "-t", "--test", "-e", "--extract", "-c", "--create", "--filter"]),
+    );
+    const flag = (names) => opts.find(([f]) => names.includes(f));
+    if (flag(["-c", "--create"])) {
+      const [, archive] = flag(["-c", "--create"]);
+      writes([archive ?? ""], `${mod} -c`);
+      return;
+    }
+    if (flag(["-e", "--extract"])) {
+      if (mod === "tarfile") {
+        out.reasons.push(`${via} -e extracts members that may name any path`);
+        return;
+      }
+      writes([pos[0] ?? "."], "zipfile -e");
+      return;
+    }
+    if (flag(["-l", "--list", "-t", "--test"])) return;
+    out.reasons.push(`${via} is given a command line the hook does not read`);
+    return;
+  }
+  if (mod === "trace") {
+    // Tracing and listing print; counting writes `.cover` files beside every module run.
+    const PRINT_ONLY = new Set([
+      "-t",
+      "--trace",
+      "-l",
+      "--listfuncs",
+      "-T",
+      "--trackcalls",
+      "-g",
+      "--timing",
+      "--ignore-module",
+      "--ignore-dir",
+      "--module",
+    ]);
+    const { opts } = split(new Set(["--ignore-module", "--ignore-dir"]));
+    const bad = opts.find(([f]) => !PRINT_ONLY.has(f));
+    if (bad || opts.length === 0) {
+      out.reasons.push(`${via} ${bad ? bad[0] : ""} writes coverage files (use -t, -l or -T)`);
+    }
+    return;
+  }
+  if (mod === "http.server") {
+    // A preview server is fine on the loopback interface, serving the worktree; any
+    // other interface publishes the files, `--cgi` runs programs, and a directory outside
+    // the worktree serves what the read rules keep from the agent.
+    const { opts } = split(new Set(["-b", "--bind", "-d", "--directory", "-p", "--protocol"]));
+    const bind = opts.find(([f]) => f === "-b" || f === "--bind")?.[1] ?? "";
+    const dir = opts.find(([f]) => f === "-d" || f === "--directory")?.[1] ?? "";
+    if (
+      !/^(?:127\.0\.0\.1|localhost|::1)$/.test(bind) ||
+      opts.some(([f]) => f === "--cgi") ||
+      dir.startsWith("/") ||
+      dir.startsWith("~") ||
+      dir.split("/").includes("..")
+    ) {
+      out.reasons.push(
+        `${via} serves files beyond the worktree's loopback preview (run python3 -m http.server --bind 127.0.0.1 from the worktree)`,
+      );
+    }
+    return;
+  }
+  if (mod === "pydoc") {
+    // `pydoc NAME` and `pydoc -k WORD` print; -p and -b start a server (and a browser).
+    const { opts } = split(new Set(["-k", "-p", "-n"]));
+    if (opts.some(([f]) => f === "-p" || f === "-b" || f === "-n")) {
+      out.reasons.push(`${via} starts a documentation server: read the docs with pydoc NAME`);
+      return;
+    }
+    // `-w` writes NAME.html for a module or for every module under a directory.
+    if (opts.some(([f]) => f === "-w"))
+      out.reasons.push(`${via} -w writes files the hook cannot name`);
     return;
   }
   if (PY_M_READ_ONLY.has(mod) || PY_M_READ_ONLY.has(top)) return;

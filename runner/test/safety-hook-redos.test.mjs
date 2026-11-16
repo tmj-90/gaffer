@@ -203,6 +203,21 @@ for (const [label, command] of [
     "awk regexes": `awk '${rep("/a/ ")}'`,
     "sed script": `sed '${rep("s/a/b/;")}' f`,
     "sed addresses": `sed '${rep("/a/,")}p' f`,
+    // Added by the second review: long options, SQL comments, getline, make assignments and
+    // the value-checked environment variables.
+    "sed long options": `sed ${rep("--e ")}f`,
+    "awk option clusters": `awk ${rep("-bbbbbbbb ")}1`,
+    "awk getlines": `awk '${rep("getline x ")}'`,
+    "sqlite comments": `sqlite3 :memory: '${rep("/*")}'`,
+    "sqlite strings": `sqlite3 :memory: "${rep("'a")}"`,
+    "sqlite vacuums": `sqlite3 :memory: '${rep("vacuum ")}'`,
+    "sqlite dot-commands": `sqlite3 :memory: '${rep(" .s")}'`,
+    "make assignments": `make ${rep("a=b ")}`,
+    "make option clusters": `make ${rep("-sk ")}`,
+    "PERLIO layers": `PERLIO='${rep("raw ")}x' perl -e 1`,
+    "RUBYOPT switches": `RUBYOPT='${rep("-W ")}' ruby -e 1`,
+    "NODE_OPTIONS imports": `NODE_OPTIONS='${rep("--import a ")}' npm test`,
+    "PYTHONWARNINGS filters": `PYTHONWARNINGS='${rep("ignore::a,")}' pytest`,
   };
   for (const [label, command] of Object.entries(worst)) {
     const start = performance.now();

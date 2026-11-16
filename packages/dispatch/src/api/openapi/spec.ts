@@ -388,10 +388,38 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.config,
     summary: "Enable or disable an autonomy policy",
     description:
-      "Security-critical. Enabling (`mode` other than `off`) requires `confirm: true`, the operator's explicit acknowledgement; disabling is always permitted.",
+      "Security-critical. Enabling (`mode` other than `off`) requires `confirm: true`, the operator's explicit acknowledgement; disabling is always permitted. Enabling any mode at `risk_level: critical` for the approve or merge gate is refused (422, reason `autonomy_ceiling`): a person always decides critical changes.",
     capability: "full",
     body: "autonomyPolicyBody",
     responses: [ok("The resulting policy."), invalid],
+  },
+  {
+    method: "POST",
+    path: "/api/autonomy/lift",
+    tag: T.config,
+    summary: "Give autonomy back after a step-down",
+    description:
+      "A person's act only: the shared operator token, or an admin principal with full capability (a read-only or non-admin principal is refused with 403; an actor that is not a person with 403 `ACTOR_NOT_PERMITTED`; MCP has no such tool). `how: reenable` needs the evidence since the step-down to clear the bar again (409 `STATE_CONFLICT` with the distance otherwise); `how: override` needs a `reason`. A merge row cannot be lifted while a lower risk's merge row in the same repository is still stepped down. Recorded as `autonomy.step_down_lifted` on the event chain.",
+    capability: "full",
+    body: "autonomyLiftBody",
+    responses: [ok("`{ lifted: { event_id, how } }`."), invalid, forbidden, conflict, notFound],
+  },
+  {
+    method: "GET",
+    path: "/api/autonomy/ladder",
+    tag: T.read,
+    summary: "The autonomy ladder",
+    description:
+      "For every repository x risk (low to critical) x gate (approve, merge): the rung (`person`, `suggested`, `automatic`), the evidence behind it (k of n human decisions since the window opened, the rate with its 95% Wilson interval, the threshold and minimum sample), the distance to the next rung in plain words, and any step-down in force (when, why, what lifts it). Critical always reads `ceiling: true`. `?repo=<id|name>` narrows to one repository. A scoped principal sees only the repositories in its repo scope. `recent_step_downs` lists the step-downs of the last 7 days.",
+    capability: "read",
+    query: {
+      repo: { description: "One repository (id or name)." },
+      recent: {
+        description:
+          "`1`: only `{ generated_at, recent_step_downs }`, the step-downs of the last 7 days (the Overview line's narrow read).",
+      },
+    },
+    responses: [ok("`AutonomyLadder`."), notFound],
   },
   {
     method: "GET",

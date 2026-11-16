@@ -1118,6 +1118,21 @@ export const autonomyPolicyBody = z.object({
 });
 export type AutonomyPolicyBody = z.infer<typeof autonomyPolicyBody>;
 
+/**
+ * Body for POST /api/autonomy/lift: give autonomy back for one (repo x risk x gate) after
+ * a step-down. A person's act only (the shared operator token, or an active human or admin
+ * principal with full capability). `how`: `reenable` once the evidence since the
+ * step-down clears the bar again, or `override` with a `reason`.
+ */
+export const autonomyLiftBody = z.object({
+  repo_id: z.string().min(1).max(200),
+  risk_level: z.enum(RISK_LEVELS),
+  gate: z.enum(["approve", "merge"]),
+  how: z.enum(["reenable", "override"]),
+  reason: z.string().max(300).optional(),
+});
+export type AutonomyLiftBody = z.infer<typeof autonomyLiftBody>;
+
 // --- Per-principal API credentials -------------------------------------------
 
 /**

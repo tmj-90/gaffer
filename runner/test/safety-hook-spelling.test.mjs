@@ -161,6 +161,35 @@ for (const cmd of [
   t.deny(`human-only measure verb: ${cmd}`, bash(cmd), opts);
 }
 
+// (h1) the autonomy ladder (backlog 58): giving autonomy back after a step-down is a
+// person's act. An agent that could lift one would hand itself back the autonomy its own
+// failures took away.
+for (const cmd of [
+  "wg autonomy lift api --risk low --gate merge --override --reason flaky",
+  "dispatch autonomy lift api --risk low --gate approve",
+  "gaffer wg autonomy lift api --risk low --gate merge",
+  "node packages/dispatch/dist/cli/index.js autonomy lift api --risk low --gate merge",
+  "wg 'autonomy' lift api --risk low --gate merge",
+  "wg autonomy li''ft api --risk low --gate merge",
+  "W=wg; $W autonomy lift api --risk low --gate merge",
+  "$X autonomy lift api --risk low --gate merge",
+  "eval 'wg autonomy lift api --risk low --gate merge'",
+  "bash -c 'wg autonomy lift api --risk low --gate merge'",
+  "wg --db x.sqlite autonomy lift api --risk low --gate merge",
+]) {
+  t.deny(`autonomy lift: ${cmd}`, bash(cmd), opts);
+}
+// The reads stay open, and a mention is not a command.
+for (const cmd of [
+  "wg autonomy ladder --json",
+  "wg autonomy ladder --repo api",
+  "wg autonomy list",
+  'git commit -m "autonomy lift: a person gives it back"',
+  "grep -rn 'autonomy lift' docs/",
+]) {
+  t.allow(`autonomy read or mention: ${cmd}`, bash(cmd), opts);
+}
+
 // (h2) the acceptance profile (Release C): the commands the runner runs for a ticket's
 // cli/api profile are a person's to register, and the runtime evidence is the runner's
 // to record. An agent that could do either would choose its own acceptance test or

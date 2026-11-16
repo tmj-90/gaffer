@@ -68,7 +68,11 @@ const MODE_DETENTS = [
     name: "Graduated",
     line: "Each repo ships what it has earned; the rest waits for you.",
   },
-  { mode: "autonomous", name: "Autonomous", line: "Agents approve, merge and push." },
+  {
+    mode: "autonomous",
+    name: "Autonomous",
+    line: "Agents approve, merge and push; a person still decides critical changes.",
+  },
   { mode: "strict", name: "Strict", line: "Autonomous, inside an OS sandbox." },
 ];
 

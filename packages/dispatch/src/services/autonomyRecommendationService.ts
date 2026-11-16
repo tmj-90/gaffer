@@ -1,5 +1,6 @@
 import type { ReviewDecisionRow } from "../repositories/eventRepository.js";
 import { RISK_LEVELS, type RiskLevel } from "../domain/types.js";
+import { AUTONOMY_CEILING_RISK, priorAllowedAt } from "./autonomyPolicyService.js";
 
 /**
  * GRADUATED-AUTONOMY (Spec 2, Phase 2) — the read-only, advisory recommendation
@@ -36,6 +37,17 @@ export const UNCHANGED_THRESHOLD = 0.9;
 /** B3: a cross-repo (per-risk) PRIOR is weaker than same-repo evidence — scale its
  *  confidence by this factor so a same-repo recommendation always outranks it. */
 export const CROSS_REPO_CONFIDENCE_FACTOR = 0.8;
+
+/**
+ * AUTONOMY STEP-DOWN, trigger (c): this many tester FAILs or UNPROVABLE holds on
+ * automatically approved changes at one repo x risk, inside the window, take the approve
+ * gate back. A named constant on purpose, not an operator setting: the bar for taking
+ * autonomy back sits beside the bar for suggesting it (MIN_SAMPLES).
+ */
+export const STEP_DOWN_TESTER_FAILS = 2;
+
+/** The window trigger (c) counts in (it also never reaches back past the last step-down or lift). */
+export const STEP_DOWN_WINDOW_DAYS = 30;
 
 /** The two gates a recommendation can concern. Memory is deferred (Phase 3+). */
 export type AutonomyGate = "approve" | "merge";
@@ -138,7 +150,41 @@ function isRiskLevel(value: string): value is RiskLevel {
  * emit the recommendations that clear both the sample floor and the rate threshold.
  * Buckets below the floor, or below the rate bar, produce NO recommendation.
  */
+/**
+ * The recommendations, with each (repo x risk x gate) row's count restarting at its latest
+ * step-down when `opts.since` names one: decisions recorded before it no longer count for
+ * that gate, in the repo's own bucket and in the cross-repo prior. Without step-downs this
+ * is exactly {@link computeRecommendationsAllTime}.
+ */
 export function computeRecommendations(
+  rows: readonly ReviewDecisionRow[],
+  opts: { since?: (repoId: string, riskLevel: string, gate: AutonomyGate) => string | null } = {},
+): AutonomyRecommendation[] {
+  const since = opts.since;
+  if (!since) return computeRecommendationsAllTime(rows);
+  const counts = (gate: AutonomyGate) => (row: ReviewDecisionRow) => {
+    const s = since(row.repoId, row.riskLevel, gate);
+    return s === null || (row.at !== undefined && row.at > s);
+  };
+  const out = [
+    ...computeRecommendationsAllTime(rows.filter(counts("approve"))).filter(
+      (r) => r.gate === "approve",
+    ),
+    ...computeRecommendationsAllTime(rows.filter(counts("merge"))).filter(
+      (r) => r.gate === "merge",
+    ),
+  ];
+  out.sort(
+    (a, x) =>
+      gateRank(x.gate) - gateRank(a.gate) ||
+      x.confidence - a.confidence ||
+      a.repoName.localeCompare(x.repoName),
+  );
+  return out;
+}
+
+/** Every decision on record counts (no step-down restart). */
+export function computeRecommendationsAllTime(
   rows: readonly ReviewDecisionRow[],
 ): AutonomyRecommendation[] {
   const buckets = new Map<string, Bucket>();
@@ -164,6 +210,8 @@ export function computeRecommendations(
   rows.forEach((row, index) => {
     if (!GROUND_TRUTH_ACTORS.has(row.actorType)) return; // only human/admin evidence.
     if (!isRiskLevel(row.riskLevel)) return;
+    // THE CEILING: a person always decides critical changes, so nothing is suggested there.
+    if (row.riskLevel === AUTONOMY_CEILING_RISK) return;
     const outcome = classifyDecision(row);
     if (outcome === "other") return;
     const key = `${row.repoId}\u0000${row.riskLevel}`;
@@ -275,6 +323,8 @@ export function computeRecommendations(
   // requires the varying approve-vs-reject agreement rate (the guard below), so a
   // degenerate approved-unchanged=100% cannot alone grant auto-merge.
   for (const b of perRisk.values()) {
+    // HIGH needs the full evidence bar: the prior never counts there (nor at critical).
+    if (!priorAllowedAt(b.riskLevel)) continue;
     const total = b.approvals + b.rejections;
     if (total < MIN_SAMPLES) continue;
     const agreementRate = b.approvals / total;
@@ -357,6 +407,11 @@ function buildRecommendation(
 /** Dependencies the service reads through — just the work_events review-decision join. */
 export interface AutonomyRecommendationDeps {
   reviewDecisions(): ReviewDecisionRow[];
+  /**
+   * THE AUTONOMY LADDER: a reader of where each row's count restarts (its latest
+   * step-down), or absent (every decision counts).
+   */
+  stepDownSince?(): (repoId: string, riskLevel: string, gate: AutonomyGate) => string | null;
 }
 
 /**
@@ -369,6 +424,7 @@ export class AutonomyRecommendationService {
 
   /** Per-repo/per-risk/per-gate recommendations backed by the review track record. */
   recommend(): AutonomyRecommendation[] {
-    return computeRecommendations(this.deps.reviewDecisions());
+    const since = this.deps.stepDownSince?.();
+    return computeRecommendations(this.deps.reviewDecisions(), since ? { since } : {});
   }
 }

@@ -49,6 +49,7 @@ import { buildRunDetail } from "../runDetail.js";
 import { RUN_LOG_TAIL_BYTES, readLogTail } from "../static.js";
 import { activityQuery, runsQuery } from "../schemas.js";
 import { requestTicketFilter } from "../scopeGate.js";
+import { apiPrincipal } from "./context.js";
 
 /**
  * Lore drafts awaiting approval, for the human queue's one Memory row. Memory is a
@@ -740,6 +741,22 @@ export function routeReadModels(
   if (segments.length === 3 && segments[1] === "autonomy" && segments[2] === "recommendations") {
     if (method !== "GET") return methodNotAllowed(res);
     sendJson(res, 200, { recommendations: wg.autonomyRecommendationsList() });
+    return;
+  }
+
+  // THE AUTONOMY LADDER: GET /api/autonomy/ladder[?repo=], every repo x risk x gate with
+  // its rung, the evidence, the distance to the next rung and any step-down in force. A
+  // scoped principal reads only the repos in its repo scope (scopeGate lets the read
+  // through; the facade filters).
+  if (segments.length === 3 && segments[1] === "autonomy" && segments[2] === "ladder") {
+    if (method !== "GET") return methodNotAllowed(res);
+    // `?recent=1`: the Overview line's narrow read (the recent step-downs alone).
+    if (url.searchParams.get("recent") === "1") {
+      sendJson(res, 200, wg.autonomyRecentStepDowns(apiPrincipal()));
+      return;
+    }
+    const repo = url.searchParams.get("repo");
+    sendJson(res, 200, wg.autonomyLadder(apiPrincipal(), repo ?? undefined));
     return;
   }
 

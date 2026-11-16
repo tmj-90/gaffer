@@ -7,7 +7,7 @@
 import { inTransaction } from "../../db/connection.js";
 import { type Actor, type Ticket } from "../../domain/types.js";
 import { type ObservedRisk, shouldEscalate } from "../observedRisk.js";
-import { envFlagOn } from "../autonomyPolicyService.js";
+import { envFlagOn, holdMessage, type AutonomyHold } from "../autonomyPolicyService.js";
 import { writeEvent } from "../../events/eventWriter.js";
 import type { TransitionResult } from "../transitionService.js";
 import { DispatchError } from "../../util/errors.js";
@@ -38,6 +38,7 @@ export type ApprovalInternals = Pick<
   ReviewGateInternals,
   | "agents"
   | "approvalShaResolver"
+  | "autonomyHoldFn"
   | "clock"
   | "db"
   | "evidence"
@@ -97,6 +98,10 @@ export function approveReview(
   // mode='auto' approve policy covers this ticket's risk × every write repo. The
   // policy is only ever an ADDITIONAL allow-path: with no policy row this reduces to
   // exactly the pure env-flag gate (byte-identical to today). system is never permitted.
+  // THE AUTONOMY LADDER: the critical ceiling and a step-down in force hold an agent's
+  // approve for a person BEFORE either allow-path is asked (the env flag included), so
+  // taking autonomy back holds however it was given. Can only refuse, never allow.
+  if (actor.type === "agent") assertNoAutonomyHold(internals, ticketRef, "approve");
   const agentApproveAllowed =
     actor.type === "agent" &&
     (envFlagOn(process.env.DISPATCH_ALLOW_AGENT_APPROVE) ||
@@ -354,6 +359,34 @@ export function policyGrantsAgentApprove(
   } catch {
     return false;
   }
+}
+
+/**
+ * THE AUTONOMY LADDER: refuse when the ceiling or a step-down holds `gate` for this
+ * ticket. No resolver wired: nothing is held (the ladder is not part of this service).
+ * A resolver that throws is a hold (fail closed).
+ */
+export function assertNoAutonomyHold(
+  internals: Pick<ApprovalInternals, "autonomyHoldFn" | "ticketSvc">,
+  ticketRef: string,
+  gate: "approve" | "merge",
+): void {
+  const resolve = internals.autonomyHoldFn;
+  if (!resolve) return;
+  const ticket = internals.ticketSvc.resolveTicket(ticketRef);
+  let hold: AutonomyHold | null;
+  try {
+    hold = resolve(ticket, gate);
+  } catch {
+    hold = { kind: "stepped_down", repoId: "unknown" };
+  }
+  if (!hold) return;
+  throw new DispatchError("ACTOR_NOT_PERMITTED", `Held for a person: ${holdMessage(hold, gate)}`, {
+    reason: hold.kind === "ceiling" ? "autonomy_ceiling" : "autonomy_stepped_down",
+    gate,
+    risk_level: ticket.risk_level,
+    ...(hold.repoId ? { repo_id: hold.repoId } : {}),
+  });
 }
 
 /**

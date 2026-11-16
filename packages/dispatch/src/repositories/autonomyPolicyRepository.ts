@@ -1,5 +1,35 @@
 import type { Db } from "../db/connection.js";
 
+/** AUTONOMY STEP-DOWN events (services/autonomyStepDownStore.ts folds them). */
+export const AUTONOMY_STEPPED_DOWN_EVENT = "autonomy.stepped_down" as const;
+export const AUTONOMY_STEP_DOWN_LIFTED_EVENT = "autonomy.step_down_lifted" as const;
+
+/**
+ * Is a step-down in force for (repo, risk, gate)? The point read the gate asks on every
+ * decision: the latest step-down or lift for that row decides (an indexed read on
+ * idx_events_entity, never a walk of the chain). Throws on a database error; the gate
+ * treats a throw as "in force" (fail closed).
+ */
+export function stepDownInForce(db: Db, repoId: string, riskLevel: string, gate: string): boolean {
+  const row = db
+    .prepare(
+      `SELECT event_type FROM work_events
+        WHERE entity_type = 'repository' AND entity_id = @repoId
+          AND event_type IN (@down, @lift)
+          AND json_extract(payload_json, '$.risk_level') = @riskLevel
+          AND json_extract(payload_json, '$.gate') = @gate
+        ORDER BY rowid DESC LIMIT 1`,
+    )
+    .get({
+      repoId,
+      riskLevel,
+      gate,
+      down: AUTONOMY_STEPPED_DOWN_EVENT,
+      lift: AUTONOMY_STEP_DOWN_LIFTED_EVENT,
+    }) as { event_type: string } | undefined;
+  return row?.event_type === AUTONOMY_STEPPED_DOWN_EVENT;
+}
+
 /**
  * GRADUATED-AUTONOMY (Spec 2, Phase 3) — data access for the `autonomy_policy`
  * table (SECURITY-CRITICAL enablement store).
@@ -92,6 +122,15 @@ export class AutonomyPolicyRepository {
           WHERE repo_id = @repoId AND risk_level = @riskLevel AND gate = @gate`,
       )
       .get({ repoId, riskLevel, gate }) as AutonomyPolicyRow | undefined;
+  }
+
+  /**
+   * AUTONOMY STEP-DOWN: is a step-down in force for (repo, risk, gate)? Read from the
+   * event chain (services/autonomyStepDownStore.ts); the row itself is never changed by a
+   * step-down. The enforcement treats a throw as in force (fail closed).
+   */
+  stepDownInForce(repoId: string, riskLevel: string, gate: string): boolean {
+    return stepDownInForce(this.db, repoId, riskLevel, gate);
   }
 
   /**

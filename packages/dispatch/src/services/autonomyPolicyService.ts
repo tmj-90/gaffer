@@ -16,6 +16,11 @@ import type { AutonomyMode, AutonomyPolicyGate } from "../repositories/autonomyP
  *   With no policy rows anywhere, {@link isAutonomyAllowed} reduces to exactly the
  *   pre-Phase-3 env check — the proof-of-no-regression the tests pin down.
  *
+ * HOLDS COME FIRST (the autonomy ladder): the critical CEILING and a STEP-DOWN in force
+ * (autonomyStepDownStore.ts) deny before either allow-path is asked, so they can only
+ * ever take autonomy away, never grant it. With no step-down on record and a risk below
+ * critical the decision is exactly the one above.
+ *
  * FAIL-CLOSED specifics:
  *   - a ticket with NO write repos never gets an auto grant (empty set ⇒ false);
  *   - a multi-write-repo ticket needs a mode='auto' row for EVERY write repo — one
@@ -28,6 +33,68 @@ import type { AutonomyMode, AutonomyPolicyGate } from "../repositories/autonomyP
 /** The point lookup the enforcement needs — satisfied by AutonomyPolicyRepository. */
 export interface PolicyLookup {
   get(repoId: string, riskLevel: string, gate: string): { mode: AutonomyMode } | undefined;
+  /**
+   * AUTONOMY STEP-DOWN: is a step-down in force for (repo, risk, gate)? Absent on a bare
+   * lookup (no step-down layer: nothing is held). A throw counts as in force.
+   */
+  stepDownInForce?(repoId: string, riskLevel: string, gate: string): boolean;
+}
+
+/**
+ * THE CEILING (product rule): a critical-risk change is never automatic, at either gate.
+ * Enabling such a policy is refused (setAutonomyPolicy), a row that already exists is
+ * ignored at decision time, and the env floor of a mode does not reach it either: a
+ * person always decides.
+ */
+export const AUTONOMY_CEILING_RISK = "critical";
+
+/** The words every surface uses for the ceiling. */
+export const CEILING_MESSAGE = "Not allowed: a person always decides critical changes.";
+
+/**
+ * HIGH needs the full evidence bar: the cross-repo prior (evidence pooled from other repos)
+ * never counts at high (nor critical). Low and medium may use it.
+ */
+export function priorAllowedAt(riskLevel: string): boolean {
+  return riskLevel === "low" || riskLevel === "medium";
+}
+
+/** Why a decision is held for a person whatever the env floor or a policy row says. */
+export type AutonomyHold =
+  { kind: "ceiling"; repoId: null } | { kind: "stepped_down"; repoId: string };
+
+/**
+ * The holds that come before every allow-path (approve and merge; memory has none):
+ *  - the CEILING: risk=critical is never automatic;
+ *  - a STEP-DOWN in force for ANY of the ticket's write repos at this risk and gate.
+ * FAIL CLOSED: a step-down read that throws counts as in force.
+ */
+export function autonomyHold(
+  lookup: PolicyLookup,
+  repoIds: readonly string[],
+  riskLevel: string,
+  gate: AutonomyPolicyGate,
+): AutonomyHold | null {
+  if (gate === "memory") return null;
+  if (riskLevel === AUTONOMY_CEILING_RISK) return { kind: "ceiling", repoId: null };
+  const read = lookup.stepDownInForce;
+  if (!read) return null;
+  for (const repoId of repoIds) {
+    let held: boolean;
+    try {
+      held = read.call(lookup, repoId, riskLevel, gate);
+    } catch {
+      held = true;
+    }
+    if (held) return { kind: "stepped_down", repoId };
+  }
+  return null;
+}
+
+/** One sentence naming a hold, for a refusal or a log line. */
+export function holdMessage(hold: AutonomyHold, gate: AutonomyPolicyGate): string {
+  if (hold.kind === "ceiling") return CEILING_MESSAGE;
+  return `Autonomy for the ${gate} gate was stepped down for this repo and risk: a person decides until a person lifts it.`;
 }
 
 /**
@@ -44,6 +111,8 @@ export function policyGrantsAuto(
   gate: AutonomyPolicyGate,
 ): boolean {
   if (repoIds.length === 0) return false; // no write repo ⇒ never auto (fail-closed).
+  // The ceiling and a step-down in force hold any row, whatever its mode says.
+  if (autonomyHold(lookup, repoIds, riskLevel, gate)) return false;
   return repoIds.every((repoId) => lookup.get(repoId, riskLevel, gate)?.mode === "auto");
 }
 
@@ -137,5 +206,8 @@ export function isAutonomyAllowed(
   gate: AutonomyPolicyGate,
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
+  // The ceiling and a step-down hold BEFORE either allow-path: taking autonomy back must
+  // hold whether a policy row or the mode's env floor gave it.
+  if (autonomyHold(lookup, repoIds, riskLevel, gate)) return false;
   return envAllowsAuto(gate, env) || policyGrantsAuto(lookup, repoIds, riskLevel, gate);
 }

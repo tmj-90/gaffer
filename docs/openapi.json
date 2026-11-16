@@ -1256,7 +1256,7 @@
           "Configuration"
         ],
         "summary": "Enable or disable an autonomy policy",
-        "description": "Security-critical. Enabling (`mode` other than `off`) requires `confirm: true`, the operator's explicit acknowledgement; disabling is always permitted.",
+        "description": "Security-critical. Enabling (`mode` other than `off`) requires `confirm: true`, the operator's explicit acknowledgement; disabling is always permitted. Enabling any mode at `risk_level: critical` for the approve or merge gate is refused (422, reason `autonomy_ceiling`): a person always decides critical changes.",
         "requestBody": {
           "required": true,
           "content": {
@@ -1325,6 +1325,182 @@
           }
         ],
         "x-capability": "full"
+      }
+    },
+    "/api/autonomy/lift": {
+      "post": {
+        "operationId": "postApiAutonomyLift",
+        "tags": [
+          "Configuration"
+        ],
+        "summary": "Give autonomy back after a step-down",
+        "description": "A person's act only: the shared operator token, or an admin principal with full capability (a read-only or non-admin principal is refused with 403; an actor that is not a person with 403 `ACTOR_NOT_PERMITTED`; MCP has no such tool). `how: reenable` needs the evidence since the step-down to clear the bar again (409 `STATE_CONFLICT` with the distance otherwise); `how: override` needs a `reason`. A merge row cannot be lifted while a lower risk's merge row in the same repository is still stepped down. Recorded as `autonomy.step_down_lifted` on the event chain.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/autonomyLiftBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "`{ lifted: { event_id, how } }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The calling principal may not do this (`ACTOR_NOT_PERMITTED`). The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`). A named principal acted outside its scope (`SCOPE_DENIED`: `details.scope` names its repos and tickets, `details.reason` is `outside_repo_scope`, `outside_ticket_scope`, `no_repos`, `factory_wide` or `admin_required`, with `details.ticket`, `details.outside_repos` or `details.required` saying what put it outside).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource (`NOT_FOUND`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The state machine or a claim refused the change (`ILLEGAL_TRANSITION`, `STATE_CONFLICT`, `CLAIM_REQUIRED`, …).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body or query failed validation (`VALIDATION_ERROR`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "full"
+      }
+    },
+    "/api/autonomy/ladder": {
+      "get": {
+        "operationId": "getApiAutonomyLadder",
+        "tags": [
+          "Read models"
+        ],
+        "summary": "The autonomy ladder",
+        "description": "For every repository x risk (low to critical) x gate (approve, merge): the rung (`person`, `suggested`, `automatic`), the evidence behind it (k of n human decisions since the window opened, the rate with its 95% Wilson interval, the threshold and minimum sample), the distance to the next rung in plain words, and any step-down in force (when, why, what lifts it). Critical always reads `ceiling: true`. `?repo=<id|name>` narrows to one repository. A scoped principal sees only the repositories in its repo scope. `recent_step_downs` lists the step-downs of the last 7 days.",
+        "parameters": [
+          {
+            "name": "repo",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "One repository (id or name)."
+          },
+          {
+            "name": "recent",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "`1`: only `{ generated_at, recent_step_downs }`, the step-downs of the last 7 days (the Overview line's narrow read)."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "`AutonomyLadder`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The Host/Origin is not permitted for a token-less request (`FORBIDDEN_HOST`). A named principal acted outside its scope (`SCOPE_DENIED`: `details.scope` names its repos and tickets, `details.reason` is `outside_repo_scope`, `outside_ticket_scope`, `no_repos`, `factory_wide` or `admin_required`, with `details.ticket`, `details.outside_repos` or `details.required` saying what put it outside).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource (`NOT_FOUND`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "read"
       }
     },
     "/api/autonomy/recommendations": {
@@ -12549,6 +12725,49 @@
         },
         "required": [
           "reviewer"
+        ]
+      },
+      "autonomyLiftBody": {
+        "type": "object",
+        "properties": {
+          "repo_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "risk_level": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ]
+          },
+          "gate": {
+            "type": "string",
+            "enum": [
+              "approve",
+              "merge"
+            ]
+          },
+          "how": {
+            "type": "string",
+            "enum": [
+              "reenable",
+              "override"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 300
+          }
+        },
+        "required": [
+          "repo_id",
+          "risk_level",
+          "gate",
+          "how"
         ]
       },
       "autonomyPolicyBody": {

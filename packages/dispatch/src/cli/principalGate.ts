@@ -46,6 +46,11 @@ const RULES: Record<string, Rule> = {
   whoami: { kind: "whoami" },
   "ticket create": { kind: "create_ticket" },
   "ticket list": { kind: "list_tickets" },
+  // Filtered to the principal's repo scope by the command itself (Dispatch.autonomyLadder).
+  "autonomy ladder": { kind: "open" },
+  // Giving autonomy back after a step-down: a factory-wide repo-level write (admin), the
+  // REST rule for /api/autonomy/* (api/scopeGate.ts).
+  "autonomy lift": { kind: "write_repo" },
   ...Object.fromEntries(
     [
       "ticket show",

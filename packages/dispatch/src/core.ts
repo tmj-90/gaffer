@@ -1,6 +1,6 @@
 import type { AcceptanceProfile } from "./domain/acceptanceProfile.js";
 import type { VerdictPrincipal } from "./services/reviewGate/waiver.js";
-import { type Db, openDatabase } from "./db/connection.js";
+import { type Db, inTransaction, openDatabase } from "./db/connection.js";
 import {
   type AcStatus,
   type AcceptanceCriterion,
@@ -170,7 +170,7 @@ import {
   type AutonomyPolicyView,
   type AutonomyMode,
 } from "./repositories/autonomyPolicyRepository.js";
-import { policyGrantsAuto } from "./services/autonomyPolicyService.js";
+import { autonomyHold, policyGrantsAuto } from "./services/autonomyPolicyService.js";
 import { type LandingFacts, type LandingState } from "./services/landingState.js";
 import { type ApproveOutcome, type ApproveOutcomeFacts } from "./services/approveOutcome.js";
 import {
@@ -199,6 +199,20 @@ import type { JudgeRevealResult, ReviewOpenResult } from "./services/ticketRecor
 import * as gate from "./services/gateNotifications.js";
 import * as ticketGit from "./services/ticketGitService.js";
 import * as autonomyGate from "./services/autonomyGateService.js";
+import {
+  computeLadder,
+  recentStepDowns,
+  type AutonomyLadder,
+} from "./services/autonomyLadderService.js";
+import { readStepDowns, stepDownKey } from "./services/autonomyStepDownStore.js";
+import * as stepDown from "./services/autonomyStepDownService.js";
+import { notFound } from "./util/errors.js";
+import {
+  STEP_DOWN_WINDOW_DAYS,
+  STEP_DOWN_TESTER_FAILS,
+} from "./services/autonomyRecommendationService.js";
+import { isScoped as isScopedAccess } from "./services/accessScope.js";
+import { principalScope as principalAccessScope } from "./services/principalService.js";
 import * as principalAdmin from "./services/principalAdminService.js";
 import * as landing from "./services/landingFactsService.js";
 import * as reviewLifecycle from "./services/reviewLifecycleService.js";
@@ -634,6 +648,15 @@ export class Dispatch {
           ticket.risk_level,
           "approve",
         ),
+      // THE AUTONOMY LADDER: the ceiling and step-down holds, read from the policy store and
+      // the event chain for every write repo at the ticket's risk (fail closed on a throw).
+      autonomyHold: (ticket, gate) =>
+        autonomyHold(
+          this.autonomyPolicy,
+          ticketGit.writeRepoIdsForTicket(this, ticket),
+          ticket.risk_level,
+          gate,
+        ),
       // OBSERVED-RISK ESCALATION (Trust & Autonomy, security-critical): on the AUTO-SHIP
       // path only, resolve the OBSERVED risk from the REAL server-computed diff (reusing
       // computeTicketDiff + the advisory risk-annotation overlay) so the gate can hold for
@@ -654,6 +677,12 @@ export class Dispatch {
     });
     this.autonomyRecommendations = new AutonomyRecommendationService({
       reviewDecisions: () => this.events.reviewDecisions(),
+      // THE AUTONOMY LADDER: a row's count restarts at its latest step-down.
+      stepDownSince: () => {
+        const states = readStepDowns(this.db);
+        return (repoId, risk, gate) =>
+          states.get(stepDownKey(repoId, risk, gate))?.lastStepDown?.at ?? null;
+      },
     });
     this.pauseSvc = new PauseService({
       db,
@@ -751,8 +780,110 @@ export class Dispatch {
     decision: "allow" | "deny";
     risk_level: string;
     write_repo_ids: string[];
+    held: { kind: "ceiling" | "stepped_down"; repo_id: string | null; message: string } | null;
   } {
     return autonomyGate.autonomyGateDecision(this, ticket, gate);
+  }
+
+  /**
+   * THE AUTONOMY LADDER: every repo x risk x gate with its rung, the evidence behind it,
+   * the distance to the next rung and any step-down in force (autonomyLadderService.ts).
+   * A scoped principal sees only the repos in its repo scope (a ticket grant reaches no
+   * repo's autonomy), and no cross-repo counts. Read-only.
+   */
+  autonomyLadder(viewer: PrincipalView | null = null, repo?: string): AutonomyLadder {
+    const { scoped, reach, repos: visible } = this.ladderRepos(viewer);
+    let repos = visible;
+    if (repo !== undefined) {
+      const want = this.repos.findById(repo) ?? this.repos.findByName(repo);
+      if (!want || (reach && !reach.has(want.id))) throw notFound("repository", repo);
+      repos = repos.filter((r) => r.id === want.id);
+      if (repos.length === 0) repos = [want];
+    }
+    return computeLadder({
+      now: this.clock.now(),
+      repos: repos.map((r) => ({ id: r.id, name: r.name })),
+      policies: this.autonomyPolicy.list(),
+      decisions: this.events.reviewDecisions(),
+      recommendations: this.autonomyRecommendationsList(),
+      stepDowns: readStepDowns(this.db),
+      env: process.env,
+      showCrossRepoCounts: !scoped,
+      stepDownTesterFails: STEP_DOWN_TESTER_FAILS,
+      stepDownWindowDays: STEP_DOWN_WINDOW_DAYS,
+    });
+  }
+
+  /** The repos a viewer's ladder covers (a scoped principal: its repo scope only). */
+  private ladderRepos(viewer: PrincipalView | null): {
+    scoped: boolean;
+    reach: Set<string> | null;
+    repos: Array<{ id: string; name: string }>;
+  } {
+    const scope = viewer ? principalAccessScope(viewer) : null;
+    const scoped = isScopedAccess(scope);
+    const reach = scoped ? new Set(scope.repos ?? []) : null;
+    const repos = this.listRepositories().filter((r) => !reach || reach.has(r.id));
+    return { scoped, reach, repos };
+  }
+
+  /**
+   * THE AUTONOMY LADDER, the Overview line's narrow read: only the step-downs of the last 7
+   * days on the repos the viewer reaches. Folds the step-down events alone (no review
+   * record, no recommendations), so the Overview pays a few milliseconds, not a ladder.
+   */
+  autonomyRecentStepDowns(viewer: PrincipalView | null = null): {
+    generated_at: string;
+    recent_step_downs: AutonomyLadder["recent_step_downs"];
+  } {
+    const now = this.clock.now();
+    const { repos } = this.ladderRepos(viewer);
+    return {
+      generated_at: now,
+      recent_step_downs: recentStepDowns(
+        now,
+        repos.map((r) => ({ id: r.id, name: r.name })),
+        readStepDowns(this.db),
+      ),
+    };
+  }
+
+  /** What the step-down triggers and the lift read (services/autonomyStepDownService.ts). */
+  private stepDownHost(): stepDown.StepDownHost {
+    return {
+      db: this.db,
+      writeRepoIds: (ticket) => ticketGit.writeRepoIdsForTicket(this, ticket),
+      resolveTicket: (ref) => this.resolveTicket(ref),
+      reviewDecisions: () => this.events.reviewDecisions(),
+      repoExists: (repoId) => this.repos.findById(repoId) !== undefined,
+    };
+  }
+
+  /**
+   * AUTONOMY STEP-DOWN: give autonomy back for one (repo x risk x gate). A person's act
+   * only (the operator, or an active principal with full capability; never an agent or
+   * the runner); re-enable once the evidence since the step-down clears the bar, or
+   * override with a reason. See services/autonomyStepDownService.ts.
+   */
+  liftAutonomyStepDown(
+    input: {
+      repo: string;
+      riskLevel: RiskLevel;
+      gate: "approve" | "merge";
+      how: "reenable" | "override";
+      reason?: string | null;
+    },
+    actor: Actor,
+    authority: stepDown.LiftAuthority,
+  ): { eventId: string; how: "reenabled" | "override" } {
+    const repo = this.repos.findById(input.repo) ?? this.repos.findByName(input.repo);
+    if (!repo) throw notFound("repository", input.repo);
+    return stepDown.liftStepDown(
+      this.stepDownHost(),
+      { ...input, repoId: repo.id },
+      actor,
+      authority,
+    );
   }
 
   /** Every stored autonomy policy joined to its repo name (Settings surface). */
@@ -1338,7 +1469,18 @@ export class Dispatch {
     /** A PERSON'S VERDICT (package H1): see testerPass. */
     authority: { principal?: VerdictPrincipal | null } = {},
   ): TransitionResult {
-    return this.reviewGateSvc.testerFail(ticketRef, input, actor, authority);
+    // AUTONOMY STEP-DOWN, trigger (c): the FAIL and the step-down it causes commit together,
+    // so a step-down that cannot be written leaves no FAIL on record either (the act is
+    // refused and the runner records it again). A REFUSED verdict (a stale FAIL) keeps the
+    // evidence it records before it throws: its error is caught inside the transaction, the
+    // transaction commits what was written, and the error is thrown again after.
+    return stepDown.withRefusalKept(this.db, () => {
+      const result = this.reviewGateSvc.testerFail(ticketRef, input, actor, authority);
+      return {
+        result,
+        then: () => stepDown.stepDownForTesterVerdict(this.stepDownHost(), result.ticket.id, actor),
+      };
+    });
   }
 
   // --- Black-box testing handover (BBT-001) --------------------------------
@@ -1457,7 +1599,19 @@ export class Dispatch {
     input: Record<string, unknown>,
     actor: Actor,
   ): { ticketId: string; eventId: string; verdict: LaneVerdict } {
-    return ticketRecords.recordLaneVerdict(this, ref, input, actor);
+    // AUTONOMY STEP-DOWN, trigger (c): an UNPROVABLE hold counts like a FAIL; the verdict
+    // and the step-down it causes commit together (as testerFail).
+    return inTransaction(this.db, () => {
+      const res = ticketRecords.recordLaneVerdict(this, ref, input, actor);
+      if (
+        res.verdict.lane === "tester" &&
+        res.verdict.verdict === "held" &&
+        res.verdict.held_code === "tester_unprovable"
+      ) {
+        stepDown.stepDownForTesterVerdict(this.stepDownHost(), res.ticketId, actor);
+      }
+      return res;
+    });
   }
 
   recordScout(
@@ -1473,8 +1627,21 @@ export class Dispatch {
     of: string,
     actor: Actor,
     note?: string | null,
-  ): { ticketId: string; regressionOf: string; recorded: boolean; eventId: string | null } {
-    return regressions.fileRegression(this, ref, of, actor, note);
+  ): {
+    ticketId: string;
+    regressionOf: string;
+    recorded: boolean;
+    eventId: string | null;
+    stepped_down: stepDown.SteppedDownRow[];
+  } {
+    // AUTONOMY STEP-DOWN, trigger (a): the link and the step-down it causes commit together.
+    return inTransaction(this.db, () => {
+      const res = regressions.fileRegression(this, ref, of, actor, note);
+      const stepped = res.recorded
+        ? stepDown.stepDownForRegression(this.stepDownHost(), res.ticketId, res.regressionOf, actor)
+        : [];
+      return { ...res, stepped_down: stepped };
+    });
   }
 
   withdrawRegression(
@@ -1551,8 +1718,24 @@ export class Dispatch {
     ref: string,
     input: { reason: string; resolution: string; cause?: ReopenForReviewCause },
     actor: Actor,
-  ): { ticketId: string; status: string; eventId: string } {
-    return reviewLifecycle.reopenForReview(this, ref, input, actor);
+  ): {
+    ticketId: string;
+    status: string;
+    eventId: string;
+    stepped_down: stepDown.SteppedDownRow[];
+  } {
+    // AUTONOMY STEP-DOWN, trigger (b): a person reopened a change that landed. The reopen
+    // and the step-down it causes commit together. The runner's own reopen (system) is
+    // never a trigger and stays outside this transaction (its hold read may run git).
+    if (actor.type !== "human" && actor.type !== "admin") {
+      return { ...reviewLifecycle.reopenForReview(this, ref, input, actor), stepped_down: [] };
+    }
+    return inTransaction(this.db, () => {
+      const from = this.resolveTicket(ref).status;
+      const res = reviewLifecycle.reopenForReview(this, ref, input, actor);
+      const stepped = stepDown.stepDownForReopen(this.stepDownHost(), res.ticketId, from, actor);
+      return { ...res, stepped_down: stepped };
+    });
   }
 
   rejectReview(

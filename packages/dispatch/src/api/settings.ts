@@ -139,7 +139,9 @@ export const SETTING_DEFS: readonly SettingDef[] = [
       "graduated ships what each repo has EARNED at its risk level and holds " +
       "everything else for you (the reviewer agent runs, but the per-repo/risk autonomy " +
       "policy is the sole allow-path — set grants in the per-repo policy editor); " +
-      "autonomous lets agents approve and auto-merges + pushes approved work. " +
+      "autonomous lets agents approve and auto-merges + pushes approved work, below " +
+      "critical risk: a person always decides critical changes, in every mode, and a " +
+      "repo x risk whose autonomy stepped down waits for a person until a person lifts it. " +
       "Every mode runs agents inside the OS sandbox (GAFFER_STRICT_REQUIRE and " +
       "STRICT_MODE default on: no sandbox, no agent); with the human gate gone, opting " +
       "out with GAFFER_STRICT_REQUIRE=0 in the environment is warned about loudly. " +

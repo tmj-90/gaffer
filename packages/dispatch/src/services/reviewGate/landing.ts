@@ -23,6 +23,7 @@ import { computeApprovedUnchanged } from "./staleness.js";
 import { assertSignedActs } from "./sealing.js";
 import { notTestedMessage } from "./tester.js";
 import { readLatestWaiver } from "./waiver.js";
+import { holdMessage, type AutonomyHold } from "../autonomyPolicyService.js";
 
 /** What these functions read from the {@link ReviewGateService} facade they are handed. */
 export type LandingHost = Pick<
@@ -33,6 +34,7 @@ export type LandingHost = Pick<
 export type LandingInternals = Pick<
   ReviewGateInternals,
   | "approvalShaResolver"
+  | "autonomyHoldFn"
   | "changeOnRefsResolver"
   | "clock"
   | "db"
@@ -307,6 +309,11 @@ export function beginLanding(
         { reason: "approval_changed", started_on: input.approval, current: approval },
       );
     }
+    // THE AUTONOMY LADDER (the in-flight race): an approval that was not a person's lands
+    // only through the merge gate, so a step-down (or the ceiling) recorded while this
+    // landing was being prepared stops it here, exactly like a revocation. A person's
+    // approval is a person's decision and is not held by it.
+    assertMergeGateNotHeld(internals, ticket, approval);
     const landing = computeLandingStatus(internals.db, ticket.id);
     const target = landing.repos.find((r) => r.repoId === input.repo || r.repo === input.repo);
     // A legacy approval (no per-repo pins) has no plan: the status/approval/CI checks
@@ -367,6 +374,103 @@ export function beginLanding(
       eventId,
     };
   });
+}
+
+/**
+ * THE AUTONOMY LADDER: refuse a landing whose approval (the ticket's latest move into
+ * ready_for_merge, with the review approval on its current path) was not a person's while
+ * the merge gate is held for the ticket (a step-down in force, the critical ceiling), or,
+ * for an approval an agent made, while the approve gate is held. STATE_CONFLICT reason
+ * `autonomy_stepped_down` / `autonomy_ceiling`: the runner lands nothing and the ticket
+ * waits for a person. A resolver that throws is a hold; an approval that cannot be read is
+ * treated as not a person's (fail closed).
+ */
+export function assertMergeGateNotHeld(
+  internals: Pick<LandingInternals, "autonomyHoldFn" | "db">,
+  ticket: Ticket,
+  approval: string | null,
+): void {
+  const resolve = internals.autonomyHoldFn;
+  if (!resolve) return;
+  const by = approval
+    ? (
+        internals.db.prepare(`SELECT actor_type FROM work_events WHERE id = ?`).get(approval) as
+          { actor_type: string } | undefined
+      )?.actor_type
+    : undefined;
+  // A person's approval only when the move into ready_for_merge AND the review approval on
+  // the ticket's current path (as the merge lane reads it, json-tool approval-actor) are
+  // both a person's: a person's tester PASS (a waiver) carries an AGENT's approval forward.
+  const isPerson = (t: string | undefined): boolean => t === "human" || t === "admin";
+  const onPath = reviewApprovalActor(internals.db, ticket.id);
+  if (isPerson(by) && isPerson(onPath)) return;
+  const holdOf = (g: "approve" | "merge"): AutonomyHold | null => {
+    try {
+      return resolve(ticket, g);
+    } catch {
+      return { kind: "stepped_down", repoId: "unknown" };
+    }
+  };
+  // The merge gate first; then, for an approval an agent made, the approve gate too: a
+  // step-down of approve says the agent's approvals at this row are not trusted, so one
+  // given before it (still waiting to land) does not land without a person either.
+  let gate: "approve" | "merge" = "merge";
+  let hold = holdOf("merge");
+  if (!hold && !isPerson(onPath)) {
+    gate = "approve";
+    hold = holdOf("approve");
+  }
+  if (!hold) return;
+  // What lands it: a person's own approval (back to review, then approve), or, for a
+  // step-down, a person lifting it. Who pressed Merge is not carried here in a sealed form,
+  // so a person's Merge now on an agent's approval is refused too and says so.
+  const n = ticket.number;
+  const lift =
+    hold.kind === "stepped_down"
+      ? `, or a person lifts the step-down (gaffer wg autonomy lift ${hold.repoId} --risk ${ticket.risk_level} --gate ${gate})`
+      : "";
+  throw new DispatchError(
+    "STATE_CONFLICT",
+    `#${n} was approved without a person and its ${gate} gate is now held. ${holdMessage(hold, gate)} Nothing may land on that approval, Merge now included. To land it, a person approves it: gaffer wg ticket reopen-for-review ${n} --as admin --reason "a person approves it" --resolution "re-review", then gaffer approve ${n}${lift}.`,
+    {
+      reason: hold.kind === "ceiling" ? "autonomy_ceiling" : "autonomy_stepped_down",
+      gate,
+      ...(hold.repoId ? { repo_id: hold.repoId } : {}),
+    },
+  );
+}
+
+/**
+ * THE AUTONOMY LADDER: the actor type of the review approval that put the ticket on its
+ * current path to merge (the latest `review_approved` / `review_approved_to_testing`
+ * transition after its latest entry into in_review), or undefined when there is none. The
+ * same rule as the merge lane's `approval-actor` (runner/lib/json-tool.mjs).
+ */
+export function reviewApprovalActor(
+  db: LandingInternals["db"],
+  ticketId: string,
+  beforeRowid?: number,
+): string | undefined {
+  const before = beforeRowid === undefined ? "" : " AND rowid < @before";
+  const params = { id: ticketId, ...(beforeRowid === undefined ? {} : { before: beforeRowid }) };
+  const entered = db
+    .prepare(
+      `SELECT rowid AS r FROM work_events
+        WHERE entity_type = 'ticket' AND entity_id = @id AND event_type = 'ticket.transitioned'
+          AND json_extract(payload_json, '$.to') = 'in_review'${before}
+        ORDER BY rowid DESC LIMIT 1`,
+    )
+    .get(params) as { r: number } | undefined;
+  const row = db
+    .prepare(
+      `SELECT actor_type FROM work_events
+        WHERE entity_type = 'ticket' AND entity_id = @id AND event_type = 'ticket.transitioned'
+          AND json_extract(payload_json, '$.reason') IN ('review_approved', 'review_approved_to_testing')
+          AND rowid > @after${before}
+        ORDER BY rowid DESC LIMIT 1`,
+    )
+    .get({ ...params, after: entered?.r ?? 0 }) as { actor_type: string } | undefined;
+  return row?.actor_type;
 }
 
 /**

@@ -232,6 +232,13 @@ export class TicketService {
   private readonly transitions: TransitionService;
   private readonly claims: ClaimService;
 
+  /**
+   * SEALED AUTONOMY: called inside the creation transaction once the ticket and its
+   * `ticket.created` event are written, so a key holder seals the stated risk
+   * (services/autonomySealAdminService.ts sealRiskAtCreation). Unset in a bare service.
+   */
+  onCreated: ((ticket: Ticket, actor: Actor) => void) | null = null;
+
   constructor(deps: TicketServiceDeps) {
     this.db = deps.db;
     this.clock = deps.clock;
@@ -296,6 +303,7 @@ export class TicketService {
           ...(ticket.acceptance === 1 ? { acceptance: true } : {}),
         },
       });
+      this.onCreated?.(ticket, actor);
       return ticket;
     });
   }

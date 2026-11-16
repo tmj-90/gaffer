@@ -23,7 +23,7 @@ import { computeApprovedUnchanged } from "./staleness.js";
 import { assertSignedActs } from "./sealing.js";
 import { notTestedMessage } from "./tester.js";
 import { readLatestWaiver } from "./waiver.js";
-import { holdMessage, type AutonomyHold } from "../autonomyPolicyService.js";
+import { holdMessage, holdReason, type AutonomyHold } from "../autonomyPolicyService.js";
 
 /** What these functions read from the {@link ReviewGateService} facade they are handed. */
 export type LandingHost = Pick<
@@ -433,7 +433,7 @@ export function assertMergeGateNotHeld(
     "STATE_CONFLICT",
     `#${n} was approved without a person and its ${gate} gate is now held. ${holdMessage(hold, gate)} Nothing may land on that approval, Merge now included. To land it, a person approves it: gaffer wg ticket reopen-for-review ${n} --as admin --reason "a person approves it" --resolution "re-review", then gaffer approve ${n}${lift}.`,
     {
-      reason: hold.kind === "ceiling" ? "autonomy_ceiling" : "autonomy_stepped_down",
+      reason: holdReason(hold),
       gate,
       ...(hold.repoId ? { repo_id: hold.repoId } : {}),
     },

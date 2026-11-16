@@ -1,7 +1,6 @@
-import { createHash } from "node:crypto";
-
 import type { GateKeyring, SealDb } from "./gateSeal.js";
 import {
+  reviewCode,
   retireRowSeal,
   sealRow,
   verifyRowSeal,
@@ -143,8 +142,9 @@ export function verifyPrincipalRow(
  * confirm must be computed from the same rows (`reviewUnsignedPrincipals`).
  */
 export function principalRowsFingerprint(rows: readonly PrincipalSealRow[]): string {
-  const facts = rows
-    .map((r) => [
+  return reviewCode(
+    "gaffer-unsigned-principals",
+    rows.map((r) => [
       r.id,
       r.name,
       r.token_hash,
@@ -155,12 +155,8 @@ export function principalRowsFingerprint(rows: readonly PrincipalSealRow[]): str
       r.scope_tickets,
       r.created_at,
       r.created_by,
-    ])
-    .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
-  return createHash("sha256")
-    .update(JSON.stringify(["gaffer-unsigned-principals", 1, facts]))
-    .digest("hex")
-    .slice(0, 16);
+    ]),
+  );
 }
 
 /** The operator-facing sentence for a principal that is not signed (logs, doctor). */

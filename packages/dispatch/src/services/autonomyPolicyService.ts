@@ -61,7 +61,21 @@ export function priorAllowedAt(riskLevel: string): boolean {
 
 /** Why a decision is held for a person whatever the env floor or a policy row says. */
 export type AutonomyHold =
-  { kind: "ceiling"; repoId: null } | { kind: "stepped_down"; repoId: string };
+  | { kind: "ceiling"; repoId: null }
+  | { kind: "stepped_down"; repoId: string }
+  /** SEALED AUTONOMY: the ticket's risk carries no valid seal, so it reads as the highest. */
+  | { kind: "risk_unsigned"; repoId: null };
+
+/** The refusal reason code each hold carries (REST, the CLI, the runner's logs). */
+export function holdReason(hold: AutonomyHold): string {
+  if (hold.kind === "ceiling") return "autonomy_ceiling";
+  if (hold.kind === "risk_unsigned") return "autonomy_risk_unsigned";
+  return "autonomy_stepped_down";
+}
+
+/** The words every surface uses for an unsigned risk. */
+export const RISK_UNSIGNED_MESSAGE =
+  "This ticket's risk level is not signed by this factory, so it is decided as the highest risk: a person decides (a person can review and re-sign it: gaffer wg ticket risk-resign).";
 
 /**
  * The holds that come before every allow-path (approve and merge; memory has none):
@@ -94,6 +108,7 @@ export function autonomyHold(
 /** One sentence naming a hold, for a refusal or a log line. */
 export function holdMessage(hold: AutonomyHold, gate: AutonomyPolicyGate): string {
   if (hold.kind === "ceiling") return CEILING_MESSAGE;
+  if (hold.kind === "risk_unsigned") return RISK_UNSIGNED_MESSAGE;
   return `Autonomy for the ${gate} gate was stepped down for this repo and risk: a person decides until a person lifts it.`;
 }
 

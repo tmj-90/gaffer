@@ -543,7 +543,8 @@ describe("REST and CLI lift", () => {
         const ok = runBin(db, args, { env: { GAFFER_PRINCIPAL_TOKEN: undefined } });
         expect(ok.status).toBe(0);
         expect(JSON.parse(ok.stdout)).toMatchObject({ ok: true, how: "override" });
-        const wg2 = Dispatch.open(db);
+        // SEALED AUTONOMY: the lift counts under the factory key it was sealed with.
+        const wg2 = Dispatch.open(db, undefined, undefined, { gateKeyring: hostGateKeyring(db) });
         expect(wg2.autonomyPolicy.stepDownInForce(api, "low", "merge")).toBe(false);
         wg2.db.close();
       } finally {

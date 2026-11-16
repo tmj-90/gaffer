@@ -7,7 +7,7 @@
 import { inTransaction } from "../../db/connection.js";
 import { type Actor, type Ticket } from "../../domain/types.js";
 import { type ObservedRisk, shouldEscalate } from "../observedRisk.js";
-import { envFlagOn, holdMessage, type AutonomyHold } from "../autonomyPolicyService.js";
+import { envFlagOn, holdMessage, holdReason, type AutonomyHold } from "../autonomyPolicyService.js";
 import { writeEvent } from "../../events/eventWriter.js";
 import type { TransitionResult } from "../transitionService.js";
 import { DispatchError } from "../../util/errors.js";
@@ -382,7 +382,7 @@ export function assertNoAutonomyHold(
   }
   if (!hold) return;
   throw new DispatchError("ACTOR_NOT_PERMITTED", `Held for a person: ${holdMessage(hold, gate)}`, {
-    reason: hold.kind === "ceiling" ? "autonomy_ceiling" : "autonomy_stepped_down",
+    reason: holdReason(hold),
     gate,
     risk_level: ticket.risk_level,
     ...(hold.repoId ? { repo_id: hold.repoId } : {}),

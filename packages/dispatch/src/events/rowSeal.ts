@@ -1,4 +1,4 @@
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 
 import { EVENT_CHAIN_GENESIS, eventHash, type ChainedEventFields } from "./eventChain.js";
 import {
@@ -422,9 +422,37 @@ function verifyRowSealInner(
       detail: `a later ${latest ? String(latest.event_type) : "event"} undoes the state it signed`,
     };
   }
-  const anchor: AnchorRead = keyring.readAnchor
-    ? keyring.readAnchor()
-    : { missing: "this keyring records no anchor" };
+  const chain = verifyLifecycleChain(db, keyring, subject, Number(ev.seq));
+  if (!chain.ok) return chain;
+  return { ok: true, eventId };
+}
+
+/**
+ * The event log still holds the head this factory anchored outside the database, and the
+ * hash chain verifies up to it (and at least up to `atLeastSeq`), as far as the lifecycle
+ * rows of `track` depend on it: a lifecycle event deleted or rewritten anywhere before the
+ * head is caught. What a decision that rests on the ABSENCE of a later event (no
+ * revocation, no step-down) must check before it answers. Read-only; any doubt is a
+ * refusal (`truncated`, `chain`, `unreadable`).
+ */
+export function verifyLifecycleChain(
+  db: SealDb,
+  keyring: GateKeyring,
+  track: Pick<RowSealSubject, "entityType" | "lifecycleEvents">,
+  atLeastSeq = 0,
+): { ok: true } | { ok: false; failure: RowSealFailure; detail: string } {
+  let anchor: AnchorRead;
+  try {
+    anchor = keyring.readAnchor
+      ? keyring.readAnchor()
+      : { missing: "this keyring records no anchor" };
+  } catch (e) {
+    return {
+      ok: false,
+      failure: "unreadable",
+      detail: `the record of the event log outside the database could not be read (${e instanceof Error ? e.message : String(e)})`,
+    };
+  }
   if ("missing" in anchor || "broken" in anchor) {
     return {
       ok: false,
@@ -439,12 +467,27 @@ function verifyRowSealInner(
       detail: `the event log no longer holds event ${anchor.seq} as this factory recorded it outside the database (rows were deleted or rewritten; a revocation may have been removed)`,
     };
   }
-  if (!chainOkUpTo(db, Math.max(anchor.seq, Number(ev.seq)), subject)) {
+  if (!chainOkUpTo(db, Math.max(anchor.seq, atLeastSeq), track)) {
     return {
       ok: false,
       failure: "chain",
       detail: "the event log's hash chain does not verify up to the head this factory recorded",
     };
   }
-  return { ok: true, eventId };
+  return { ok: true };
+}
+
+/**
+ * THE REVIEWED-LIST RULE (shared by every re-sign act): the confirmation code of a set of
+ * rows AS HANDED IN, order-independent. `label` names the list (so a code for one kind of
+ * row never confirms another); each row is the array of the facts a person is shown. What
+ * a person is shown and the code they confirm must be computed from the same rows, read
+ * once; the act recomputes it inside its write transaction and signs only on a match.
+ */
+export function reviewCode(label: string, rows: ReadonlyArray<ReadonlyArray<unknown>>): string {
+  const sorted = rows.map((r) => [...r]).sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+  return createHash("sha256")
+    .update(JSON.stringify([label, 1, sorted]))
+    .digest("hex")
+    .slice(0, 16);
 }

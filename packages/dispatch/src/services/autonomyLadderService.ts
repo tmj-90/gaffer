@@ -121,6 +121,11 @@ export interface LadderCell {
   source: "policy" | "mode" | null;
   /** The stored policy row's mode, or null when there is none. */
   policy_mode: AutonomyMode | null;
+  /**
+   * SEALED AUTONOMY: the row's seal verifies (null: no row, or a row in mode off). A row
+   * that is not signed grants nothing: the cell reads "not signed: a person decides".
+   */
+  policy_signed: boolean | null;
   /** True for critical: a person always decides. */
   ceiling: boolean;
   evidence: LadderEvidence;
@@ -168,7 +173,8 @@ export interface AutonomyLadder {
 export interface LadderInput {
   now: string;
   repos: ReadonlyArray<{ id: string; name: string }>;
-  policies: readonly AutonomyPolicyView[];
+  /** The stored rows; `signed: false` marks a row whose seal does not verify. */
+  policies: ReadonlyArray<AutonomyPolicyView & { signed?: boolean }>;
   decisions: readonly ReviewDecisionRow[];
   recommendations: readonly AutonomyRecommendation[];
   stepDowns: ReadonlyMap<string, StepDownState>;
@@ -299,7 +305,7 @@ function liftText(e: LadderEvidence, more: number): string {
 
 /** The ladder for the given repos (the caller has already applied the viewer's scope). */
 export function computeLadder(input: LadderInput): AutonomyLadder {
-  const policyOf = new Map<string, AutonomyPolicyView>();
+  const policyOf = new Map<string, AutonomyPolicyView & { signed?: boolean }>();
   for (const p of input.policies) policyOf.set(stepDownKey(p.repo_id, p.risk_level, p.gate), p);
   const priors = new Map<string, AutonomyRecommendation>();
   for (const r of input.recommendations) {
@@ -325,8 +331,10 @@ export function computeLadder(input: LadderInput): AutonomyLadder {
         const priorUsed = !ceiling && priorAllowedAt(risk) && !sd?.lastStepDown && !!prior;
         let rung: Rung = "person";
         let source: LadderCell["source"] = null;
+        // An unsigned row is ABSENT for every decision; the cell says so (never automatic).
+        const unsigned = !!policy && policy.mode !== "off" && policy.signed === false;
         if (!ceiling && !inForce) {
-          if (policy?.mode === "auto") {
+          if (policy?.mode === "auto" && !unsigned) {
             rung = "automatic";
             source = "policy";
           } else if (envAllowsAuto(gate, input.env)) {
@@ -338,7 +346,12 @@ export function computeLadder(input: LadderInput): AutonomyLadder {
         }
         let distance: LadderCell["distance"];
         if (ceiling) distance = { more: null, text: CEILING_MESSAGE };
-        else if (inForce) {
+        else if (unsigned && rung !== "automatic") {
+          distance = {
+            more: null,
+            text: `Not signed: a person decides. This ${policy?.mode ?? ""} row is not signed by this factory; review it and sign it to turn it on.`,
+          };
+        } else if (inForce) {
           distance = {
             more,
             text:
@@ -370,6 +383,7 @@ export function computeLadder(input: LadderInput): AutonomyLadder {
           rung,
           source,
           policy_mode: policy?.mode ?? null,
+          policy_signed: policy && policy.mode !== "off" ? policy.signed !== false : null,
           ceiling,
           evidence,
           prior: {

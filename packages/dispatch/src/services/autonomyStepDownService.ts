@@ -38,6 +38,8 @@
 import { inTransaction, type Db } from "../db/connection.js";
 import { RISK_LEVELS, type Actor, type RiskLevel, type Ticket } from "../domain/types.js";
 import { writeEvent } from "../events/eventWriter.js";
+import { sealLift } from "../events/autonomySeal.js";
+import { GateKeyError, type GateKeyring } from "../events/gateSeal.js";
 import type { PrincipalView } from "../repositories/principalRepository.js";
 import type { ReviewDecisionRow } from "../repositories/eventRepository.js";
 import { DispatchError, notFound } from "../util/errors.js";
@@ -64,6 +66,10 @@ export interface StepDownHost {
   resolveTicket(ref: string): Ticket;
   reviewDecisions(): ReviewDecisionRow[];
   repoExists(repoId: string): boolean;
+  /** SEALED AUTONOMY: the factory key a lift is sealed with. */
+  readonly gateKeyring: GateKeyring;
+  /** SEALED AUTONOMY: which lift events count (sealed ones). */
+  liftCounts(eventId: string): boolean;
 }
 
 /** The reasons the approve path stamps on a review approval. */
@@ -313,7 +319,7 @@ export function stepDownForTesterVerdict(
   if (!automaticGates(host.db, ticket.id).approve) return [];
   const limit = STEP_DOWN_TESTER_FAILS;
   const windowStart = new Date(Date.now() - STEP_DOWN_WINDOW_DAYS * DAY_MS).toISOString();
-  const states = readStepDowns(host.db);
+  const states = readStepDowns(host.db, (id) => host.liftCounts(id));
   const out: SteppedDownRow[] = [];
   for (const repoId of host.writeRepoIds(ticket)) {
     const state = states.get(stepDownKey(repoId, ticket.risk_level, "approve"));
@@ -437,7 +443,7 @@ export function liftStepDown(
     );
   }
   return inTransaction(host.db, () => {
-    const states = readStepDowns(host.db, input.repoId);
+    const states = readStepDowns(host.db, (id) => host.liftCounts(id), input.repoId);
     const state = states.get(stepDownKey(input.repoId, input.riskLevel, input.gate));
     if (!state?.inForce) {
       throw new DispatchError(
@@ -494,6 +500,20 @@ export function liftStepDown(
         },
       },
     });
+    // SEALED AUTONOMY: a lift counts only with this seal (bound to the event, its place in
+    // the chain and what it gives back). A key this process may not use rolls it back.
+    try {
+      sealLift(host.db, host.gateKeyring, eventId, new Date().toISOString());
+    } catch (e) {
+      if (e instanceof GateKeyError) {
+        throw new DispatchError(
+          "GATE_KEY_REFUSED",
+          `Nothing was lifted: ${e.message}. A lift is signed with the factory key on the host (gaffer setup creates it).`,
+          { reason: e.why },
+        );
+      }
+      throw e;
+    }
     return { eventId, how: done };
   });
 }

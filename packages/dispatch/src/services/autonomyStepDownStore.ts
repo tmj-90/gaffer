@@ -89,6 +89,14 @@ interface Row {
   payload_json: string | null;
 }
 
+function safeCounts(liftCounts: (eventId: string) => boolean, id: string): boolean {
+  try {
+    return liftCounts(id);
+  } catch {
+    return false;
+  }
+}
+
 function payloadOf(raw: string | null): Record<string, unknown> {
   try {
     const v = JSON.parse(raw ?? "{}") as unknown;
@@ -153,10 +161,20 @@ export function stepDownRows(db: Db, repoId?: string): Row[] {
     }) as Row[];
 }
 
-/** Fold the chain into the state of every row that has ever stepped down. */
-export function readStepDowns(db: Db, repoId?: string): Map<string, StepDownState> {
+/**
+ * Fold the chain into the state of every row that has ever stepped down. SEALED
+ * AUTONOMY: `liftCounts` says which lift events count (a lift is a person's act, sealed
+ * under the factory key: Dispatch.liftCounts); a lift it refuses is ignored, so the
+ * step-down before it stays in force and the evidence count does not restart at it.
+ */
+export function readStepDowns(
+  db: Db,
+  liftCounts: (eventId: string) => boolean,
+  repoId?: string,
+): Map<string, StepDownState> {
   const out = new Map<string, StepDownState>();
   for (const r of stepDownRows(db, repoId)) {
+    if (r.event_type !== AUTONOMY_STEPPED_DOWN_EVENT && !safeCounts(liftCounts, r.id)) continue;
     const p = payloadOf(r.payload_json);
     const risk = String(p.risk_level ?? "");
     const gate = String(p.gate ?? "");

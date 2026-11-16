@@ -28,8 +28,12 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const TOOL = fileURLToPath(new URL("./json-tool.mjs", import.meta.url));
 const TOOL_URL = pathToFileURL(TOOL).href;
-/** Each request keeps its module instance; past this many, calls run one-shot. */
-const MAX_REQUESTS = 2000;
+/**
+ * Each request keeps its module instance (an ES module is never unloaded): about 0.3 MB
+ * of RSS apiece, measured. Past this many, calls run one-shot, so one tick's JSON server
+ * stays near 150 MB at worst (a delivery tick makes about 60 calls).
+ */
+export const MAX_REQUESTS = 400;
 const NONCE_RE = /^[0-9]{1,10}\.[0-9]{1,10}\.[0-9]{1,10}$/;
 const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 

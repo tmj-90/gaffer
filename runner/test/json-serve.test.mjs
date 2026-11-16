@@ -11,7 +11,8 @@
 //       start-up environment, a cwd that is gone;
 //   S3  nothing carries over: the environment, the cwd, process.argv and process.exit are
 //       put back, and a later request sees its own environment and cwd;
-//   S4  a request's output never leaks into the next one (a fresh module each time).
+//   S4  a request's output never leaks into the next one (a fresh module each time);
+//   S5  memory is bounded: past MAX_REQUESTS calls the server answers NOT-RUN.
 // Run: node runner/test/json-serve.test.mjs
 // =====================================================================
 import { spawnSync } from "node:child_process";
@@ -25,7 +26,7 @@ import { gafferMkdtemp } from "./lib/tmpdir.mjs";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const RUNNER_DIR = resolve(HERE, "..");
 const TOOL = join(RUNNER_DIR, "lib", "json-tool.mjs");
-const { JsonServer, parseRequest, splitFields } = await import(
+const { JsonServer, MAX_REQUESTS, parseRequest, splitFields } = await import(
   join(RUNNER_DIR, "lib", "json-serve.mjs")
 );
 
@@ -191,6 +192,36 @@ check(
   "format: a malformed request is null",
   parseRequest(["GWG1", "../x", "/", "022", "0", "0", "0"]) === null,
 );
+
+// S5: memory is bounded. Every request leaves a module instance behind (never freed),
+// so the server serves a bounded number and then answers NOT-RUN (the call runs
+// one-shot). The bound keeps the growth near 150 MB (measured ~0.3 MB a request).
+{
+  const cap = new JsonServer();
+  const doc = Buffer.from(JSON.stringify({ ticket: { status: "ready", title: "x".repeat(2000) } }));
+  const req = {
+    nonce: "1.1.1",
+    cwd: WORK,
+    umask: 18,
+    set: [],
+    unset: [],
+    args: ["expr", "d.ticket.status"],
+  };
+  global.gc?.();
+  const rss0 = process.memoryUsage().rss;
+  let last;
+  for (let i = 0; i < MAX_REQUESTS; i++) last = await cap.handle(req, doc);
+  const over = await cap.handle(req, doc);
+  global.gc?.();
+  const grown = (process.memoryUsage().rss - rss0) / 1048576;
+  check(`S5: the cap is at most 500 requests (${MAX_REQUESTS})`, MAX_REQUESTS <= 500);
+  check("S5: the last request under the cap ran", last?.kind === "ran");
+  check(
+    "S5: the request past the cap is NOT-RUN (one-shot)",
+    over.kind === "not-run" && over.reason === "limit",
+  );
+  check(`S5: RSS grew under 250 MB over the cap's requests (${grown.toFixed(0)} MB)`, grown < 250);
+}
 
 rmSync(WORK, { recursive: true, force: true });
 if (failures.length === 0) {

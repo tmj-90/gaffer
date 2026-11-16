@@ -62,6 +62,10 @@ function trySign(host: AutonomySealHost, fn: () => void): boolean {
  * highest risk, and is sealed at its first claim by the trusted host.
  */
 export function sealRiskAtCreation(host: AutonomySealHost, ticket: Ticket, actor: Actor): void {
+  // A process-local key (a library caller that passed none, such as crew's idle loops) on
+  // a database file signs nothing another process accepts, and its `ticket.risk_set` would
+  // keep the host from sealing the ticket at its first claim: leave it for the claim.
+  if (host.gateKeyring.processLocal && !(host.db as { memory?: boolean }).memory) return;
   trySign(host, () => {
     recordTicketRisk(
       host.db,

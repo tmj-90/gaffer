@@ -362,6 +362,28 @@ describe("ticket risk: read only through a verified seal", () => {
     }
   });
 
+  it("a process with only a process-local key (crew's idle loops) on the file leaves the risk to the first claim", () => {
+    const w = world();
+    const lib = Dispatch.open(w.dbPath); // the library default: a key only that process holds
+    try {
+      const t = lib.createTicket({ title: "From an idle loop", description: "x" }, agent);
+      const events = w.wg.db
+        .prepare(
+          "SELECT count(*) AS n FROM work_events WHERE entity_id = ? AND event_type = 'ticket.risk_set'",
+        )
+        .get(t.id) as { n: number };
+      expect(events.n).toBe(0);
+      w.wg.addAcceptanceCriterion({ ticket_id: t.id, text: "ok" }, human);
+      w.wg.markReady(t.id, human);
+      const a = w.wg.registerAgent({ display_name: "a", max_risk: "critical" }, human);
+      w.wg.claimNextTicket({ agentId: a.id, ttlSeconds: 600 }, agentRunner);
+      expect(w.wg.autonomyRisk(w.wg.resolveTicket(t.id)).signed).toBe(true);
+    } finally {
+      lib.db.close();
+      w.wg.db.close();
+    }
+  });
+
   it("a later claim never re-signs: a keyless first claim, or a value changed after the seal", () => {
     const w = world();
     const mcp = keyless(w);

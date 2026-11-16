@@ -107,6 +107,11 @@ export interface GateKeyring {
   /** What this keyring is, for messages. */
   readonly description: string;
   /**
+   * True for a key that lives only in this process (the library default): its seals are
+   * worthless to any other process on the same database file.
+   */
+  readonly processLocal?: boolean;
+  /**
    * The MAC for a SIGNATURE. A file keyring creates the key when it is absent (a trusted
    * host-side recording). Throws {@link GateKeyError} where signing is not allowed.
    */
@@ -565,6 +570,7 @@ export function ephemeralGateKeyring(): GateKeyring {
   let checkpoint: string | null = null;
   return {
     description: "a process-local key",
+    processLocal: true,
     readCheckpoint: () =>
       checkpoint === null ? { missing: "no checkpoint" } : { body: checkpoint },
     writeCheckpoint: (body) => {

@@ -192,7 +192,13 @@ function makeContext(name, repo) {
     });
     const radio = row.locator(`input[type="radio"][value="${String(value)}"]`);
     if (await radio.count()) {
-      await radio.first().check({ force: true });
+      // Pick it the way a click does (checked, then input and change bubble), without a
+      // pointer: a toast can sit over the dial and swallow a click at its centre.
+      await radio.first().evaluate((n) => {
+        n.checked = true;
+        n.dispatchEvent(new Event("input", { bubbles: true }));
+        n.dispatchEvent(new Event("change", { bubbles: true }));
+      });
       return;
     }
     const cb = row.locator('input[type="checkbox"]');

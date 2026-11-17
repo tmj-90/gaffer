@@ -481,13 +481,31 @@ export function findFinding(host: FindingHost, ref: string, fid: string): Findin
   return matches[0]!;
 }
 
-/** Take a finding back (soft, with a reason). Already withdrawn: STATE_CONFLICT. */
+/**
+ * Retire the lesson a finding became (memory: `deprecate`), so it stops reaching later
+ * agents. `absent`: memory no longer holds it. A failure says why (memory unreachable).
+ */
+export type LessonRetirer = (
+  loreId: string,
+) => { ok: true; outcome: "deprecated" | "absent" } | { ok: false; reason: string };
+
+/**
+ * Take a finding back (soft, with a reason). Already withdrawn: STATE_CONFLICT.
+ *
+ * A finding that was proposed as a lesson takes its lesson with it (backlog 59 review: a
+ * withdrawn finding's approved lesson kept reaching every later delivery, reviewer and
+ * tester on its paths). The lesson is retired in memory FIRST, through `retire`; when
+ * memory cannot do it (or no retirer is given) nothing is recorded (NOT_CONFIGURED) so
+ * the person can try again: the finding is never shown as withdrawn while its lesson is
+ * still served. The event records what happened to the lesson.
+ */
 export function withdrawFinding(
   host: FindingHost,
   ref: string,
   fid: string,
   reason: unknown,
   actor: Actor,
+  retire?: LessonRetirer,
 ): { finding: FindingView; eventId: string } {
   assertMayWriteFinding(actor);
   const why = typeof reason === "string" ? reason.replace(/\s+/g, " ").trim() : "";
@@ -500,13 +518,37 @@ export function withdrawFinding(
     throw new DispatchError("STATE_CONFLICT", "That finding was already withdrawn.", {
       finding_id: f.id,
     });
+  let lessonRetired: { lore_id: string; outcome: "deprecated" | "absent" } | null = null;
+  const loreId = f.lesson?.lore_id ?? null;
+  if (loreId) {
+    let res: ReturnType<LessonRetirer>;
+    if (!retire) res = { ok: false, reason: "memory is not reachable from here" };
+    else {
+      try {
+        res = retire(loreId);
+      } catch (e) {
+        res = { ok: false, reason: e instanceof Error ? e.message : String(e) };
+      }
+    }
+    if (!res.ok)
+      throw new DispatchError(
+        "NOT_CONFIGURED",
+        `The finding was not withdrawn: it was proposed as lesson ${loreId}, and withdrawing it retires that lesson so later agents stop seeing it, which memory could not do (${res.reason}). Try again when memory answers.`,
+        { finding_id: f.id, lore_id: loreId },
+      );
+    lessonRetired = { lore_id: loreId, outcome: res.outcome };
+  }
   return inTransaction(host.db, () => {
     const eventId = writeEvent(host.db, {
       entity_type: "ticket",
       entity_id: f.ticket_id,
       actor,
       event_type: FINDING_WITHDRAWN_EVENT,
-      payload: { finding_id: f.id, reason: why.slice(0, FINDING_REASON_MAX) },
+      payload: {
+        finding_id: f.id,
+        reason: why.slice(0, FINDING_REASON_MAX),
+        ...(lessonRetired ? { lesson_retired: lessonRetired } : {}),
+      },
     });
     return { finding: findFinding(host, f.ticket_id, f.id), eventId };
   });

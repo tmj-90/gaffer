@@ -57,7 +57,7 @@ import {
   wontDoBody,
 } from "../schemas.js";
 import { API_ACTOR, apiActor, apiPrincipal, isSharedOperator, operatorActor } from "./context.js";
-import { forgetLoreDrafts } from "./readModels.js";
+import { forgetLoreDrafts, forgetLoreStatus } from "./readModels.js";
 import { routeFindings } from "./findings.js";
 import { requestDecisionFilter, requestRepoRedactor, requestTicketFilter } from "../scopeGate.js";
 import { reviewRuleThreshold } from "../../health/reviewRules.js";
@@ -435,6 +435,10 @@ export async function routeTickets(
     await routeFindings(wg, id, method, segments, req, res, memoryReader, {
       added: () => proposeRulesAfterResponse(res, wg, memoryReader),
       lessonFiled: () => forgetLoreDrafts(memoryReader),
+      lessonRetired: (loreId) => {
+        forgetLoreDrafts(memoryReader);
+        forgetLoreStatus(memoryReader, loreId);
+      },
     })
   )
     return;

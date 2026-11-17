@@ -197,6 +197,74 @@ describe("(b) propose as a lesson now", () => {
     }
   });
 
+  it("withdrawing a finding retires its lesson first; without memory nothing is recorded", () => {
+    const t = landed(wg, "CSV export");
+    const f = wg.addFinding(t.id, { text: REASON }, human).finding;
+    wg.proposeLesson(t.id, f.id, human, () => ({ ok: true as const, id: "less2345" }));
+    // No retirer (memory not reachable) or memory failing: refused, the finding stands.
+    expect(() => wg.withdrawFinding(t.id, f.id, "wrong", human)).toThrow(/not withdrawn.*less2345/);
+    expect(() =>
+      wg.withdrawFinding(t.id, f.id, "wrong", human, () => ({ ok: false, reason: "memory down" })),
+    ).toThrow(/memory down/);
+    expect(wg.findingsOf(t.id)[0]!.withdrawn).toBeNull();
+    const retired: string[] = [];
+    const r = wg.withdrawFinding(t.id, f.id, "wrong", human, (id) => {
+      retired.push(id);
+      return { ok: true, outcome: "deprecated" };
+    });
+    expect(retired).toEqual(["less2345"]);
+    expect(r.finding.withdrawn).toMatchObject({ reason: "wrong" });
+    const payload = wg.db
+      .prepare(`SELECT payload_json FROM work_events WHERE id = ?`)
+      .pluck()
+      .get(r.eventId) as string;
+    expect(JSON.parse(payload)).toMatchObject({
+      lesson_retired: { lore_id: "less2345", outcome: "deprecated" },
+    });
+    // A finding with no lesson never asks memory.
+    const g = wg.addFinding(t.id, { text: "another" }, human).finding;
+    wg.withdrawFinding(t.id, g.id, "dup", human, () => {
+      throw new Error("memory must not be asked");
+    });
+  });
+
+  it("POST .../withdraw retires the lesson through the memory reader", async () => {
+    const retired: string[] = [];
+    const memoryReader: MemoryReader = {
+      ...createMemoryReader({} as NodeJS.ProcessEnv),
+      retireLesson: (id) => {
+        retired.push(id);
+        return { available: true, id, outcome: "deprecated" };
+      },
+    };
+    const noop = { run: () => ({ started: true }) } as never;
+    const server = createApiServer(
+      wg,
+      noop,
+      createPlanBuildRunner(),
+      noop,
+      noop,
+      "127.0.0.1",
+      memoryReader,
+    );
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    try {
+      const t = landed(wg, "CSV export");
+      const f = wg.addFinding(t.id, { text: REASON }, human).finding;
+      wg.proposeLesson(t.id, f.id, human, () => ({ ok: true as const, id: "less2345" }));
+      const res = await fetch(`${base}/tickets/${t.id}/findings/${f.id}/withdraw`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ reason: "it was not a defect" }),
+      });
+      expect(res.status).toBe(200);
+      expect(retired).toEqual(["less2345"]);
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+
   it("no MCP tool proposes or approves a lesson", () => {
     const h = makeHandlers(wg, agent);
     expect(Object.keys(h).filter((k) => /lesson|finding|approve|lore/i.test(k))).toEqual([]);
@@ -243,6 +311,18 @@ describe.skipIf(!CLI_BUILT)("wg ticket finding lesson through the real memory CL
       expect(mem(["approve", loreId]).status).toBe(0);
       expect(serve("src/export/csv.ts").map((l) => l.id)).toEqual([loreId]);
       expect(serve("src/billing/invoice.ts")).toEqual([]);
+      // A person withdraws the finding: its approved lesson is retired and served no more.
+      const w = runBin(
+        db,
+        ["ticket", "finding", "withdraw", String(t.number), f.id, "--reason", "not a defect"],
+        { env },
+      );
+      expect(w.status, w.stderr).toBe(0);
+      expect(serve("src/export/csv.ts")).toEqual([]);
+      const after = JSON.parse(mem(["list", "--status", "deprecated", "--json"]).stdout) as {
+        items: Array<{ id: string; status: string }>;
+      };
+      expect(after.items.find((i) => i.id === loreId)?.status).toBe("deprecated");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

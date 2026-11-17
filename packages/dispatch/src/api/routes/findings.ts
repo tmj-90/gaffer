@@ -31,7 +31,11 @@ export async function routeFindings(
   req: IncomingMessage,
   res: ServerResponse,
   memoryReader: MemoryReader,
-  after?: { added?: () => void; lessonFiled?: () => void },
+  after?: {
+    added?: () => void;
+    lessonFiled?: () => void;
+    lessonRetired?: (loreId: string) => void;
+  },
 ): Promise<boolean> {
   if (segments[2] !== FINDINGS_SUB) return false;
   if (segments.length === 3) {
@@ -59,7 +63,15 @@ export async function routeFindings(
       return true;
     }
     const body = withdrawFindingBody.parse(await readJsonBody(req));
-    const r = wg.withdrawFinding(id, segments[3] as string, body.reason, apiActor());
+    // A finding proposed as a lesson retires its lesson in memory first (findingService).
+    let retired: string | null = null;
+    const r = wg.withdrawFinding(id, segments[3] as string, body.reason, apiActor(), (loreId) => {
+      const out = memoryReader.retireLesson(loreId);
+      if (!out.available) return { ok: false, reason: out.reason };
+      retired = loreId;
+      return { ok: true, outcome: out.outcome };
+    });
+    if (retired) after?.lessonRetired?.(retired);
     sendJson(res, 200, { finding: r.finding, event_id: r.eventId });
     return true;
   }

@@ -1744,14 +1744,18 @@ export class Dispatch {
     return findings.addFinding(this, ref, input, actor);
   }
 
-  /** Take a finding back (soft, with a reason). A person's act. */
+  /**
+   * Take a finding back (soft, with a reason). A person's act. A finding proposed as a
+   * lesson needs `retire` (memory): its lesson is retired first, or nothing is recorded.
+   */
   withdrawFinding(
     ref: string,
     findingId: string,
     reason: unknown,
     actor: Actor,
+    retire?: findings.LessonRetirer,
   ): { finding: findings.FindingView; eventId: string } {
-    return findings.withdrawFinding(this, ref, findingId, reason, actor);
+    return findings.withdrawFinding(this, ref, findingId, reason, actor, retire);
   }
 
   /** "Propose as a lesson now": one finding becomes a lore draft for a person to approve. */

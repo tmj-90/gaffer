@@ -165,13 +165,26 @@ export function registerFindingCommands(ticket: Command): void {
   finding
     .command("withdraw <ref> <findingId>")
     .description(
-      "Take a finding back, with a reason (soft: it stays in the log, marked). A person's act.",
+      "Take a finding back, with a reason (soft: it stays in the log, marked). A finding " +
+        "proposed as a lesson retires that lesson in memory too, so later agents stop " +
+        "seeing it (nothing is recorded when memory cannot). A person's act.",
     )
     .requiredOption("--reason <text>", "why it is withdrawn")
     .action((ref, fid, opts, cmd) => {
-      const wg = open(cmd.optsWithGlobals());
-      const r = wg.withdrawFinding(ref, String(fid), String(opts.reason), cliActor());
-      printJson({ ok: true, finding: r.finding, event_id: r.eventId });
-      wg.db.close();
+      const globals = cmd.optsWithGlobals();
+      const wg = open(globals);
+      try {
+        const r = wg.withdrawFinding(ref, String(fid), String(opts.reason), cliActor(), (id) => {
+          // Memory is reached only when the finding has a lesson to retire.
+          const { createMemoryReader } = heavy();
+          const out = createMemoryReader(lessonMemoryEnv(process.env, globals.db)).retireLesson(id);
+          return out.available
+            ? { ok: true, outcome: out.outcome }
+            : { ok: false, reason: out.reason };
+        });
+        printJson({ ok: true, finding: r.finding, event_id: r.eventId });
+      } finally {
+        wg.db.close();
+      }
     });
 }

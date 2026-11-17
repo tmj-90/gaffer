@@ -291,7 +291,9 @@ function bindObservedHeads(
     "STATE_CONFLICT",
     `The delivery branch moved while its risk was being observed (${moved
       .map((h) => `${h.repo} is now at ${h.sha.slice(0, 12)}`)
-      .join(", ")}): an automatic approval covers only a diff whose risk was judged. Nothing was approved; approve again to judge the new diff.`,
+      .join(
+        ", ",
+      )}): an automatic approval covers only a diff whose risk was judged. Nothing was approved; approve again to judge the new diff.`,
     {
       reason: "stale_revision",
       ticket_number: ticket.number,

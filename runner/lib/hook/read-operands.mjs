@@ -391,7 +391,9 @@ function segDirPlan(segs) {
       const fnHead = /^([A-Za-z_.][\w.:-]*)\(\)(\{?)$/.exec(t);
       if (fnHead || t === "function") {
         // `cd() { :; }`, `function cd { ... }`: a directory verb redefined.
-        const name = fnHead ? fnHead[1] : normalizeVerb(tokens[i + 1] ?? "").replace(/\(\)\{?$/, "");
+        const name = fnHead
+          ? fnHead[1]
+          : normalizeVerb(tokens[i + 1] ?? "").replace(/\(\)\{?$/, "");
         if (DIR_SENSITIVE_NAMES.has(name)) stickAt.add(s);
         fnPending = true;
         i += t === "function" ? 2 : 1;
@@ -470,7 +472,14 @@ function segDirPlan(segs) {
       tokens
         .slice(j + 1)
         .some((w) => DIR_SENSITIVE_NAMES.has(/^([^=]*)=/s.exec(unquote(w))?.[1] ?? ""));
-    if (laterBody || aliasRedefines || dynamicVerb || verb === "source" || verb === "." || verb === "enable") {
+    if (
+      laterBody ||
+      aliasRedefines ||
+      dynamicVerb ||
+      verb === "source" ||
+      verb === "." ||
+      verb === "enable"
+    ) {
       stickAt.add(s);
     }
     if (changesDir || laterBody || dynamicVerb || aliasRedefines || verb === "enable") {

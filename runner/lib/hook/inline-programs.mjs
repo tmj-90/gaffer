@@ -553,7 +553,8 @@ function inlinePrograms(cmd, cwd = process.cwd()) {
       varsUntrusted: dynamicAssignment(cmd),
       // `cd -P`, `set -P` / `set -o physical` (also through SHELLOPTS): `..` may be taken
       // physically. Any `-…P` word or "physical" counts (it only adds a directory).
-      physicalMay: /(?:^|\s)-[A-Za-z]*P|physical/.test(cmd) || /physical/.test(process.env.SHELLOPTS ?? ""),
+      physicalMay:
+        /(?:^|\s)-[A-Za-z]*P|physical/.test(cmd) || /physical/.test(process.env.SHELLOPTS ?? ""),
       substituting: /(?:^|[^\w-])(?:xargs|find|parallel)(?![\w-])/.test(cmd),
       mentions: new Map(),
     },
@@ -676,7 +677,8 @@ function dirPlan(cmds) {
     }
     const w = header ? null : words[j];
     const verb = w ? basename(w.text) : null;
-    const dynamicVerb = Boolean(w) && (w.subst || w.dynamic || w.vars.length > 0 || dynamicWord(w.text));
+    const dynamicVerb =
+      Boolean(w) && (w.subst || w.dynamic || w.vars.length > 0 || dynamicWord(w.text));
     const changesDir = verb !== null && (CD_VERBS.has(verb) || verb === "source" || verb === ".");
     const laterBody =
       verb !== null &&

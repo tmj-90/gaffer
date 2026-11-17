@@ -183,9 +183,15 @@ function dynamicAssignment(cmd) {
   const text = String(cmd);
   if (/\$\{![^}]*=/.test(text)) return true;
   for (const seg of text.split(/[\n;&|]/)) {
-    const m = /(?:^|[^\w-])(declare|typeset|local|export|readonly|printf|read|mapfile|readarray|getopts)(?![\w-])/.exec(seg);
+    const m =
+      /(?:^|[^\w-])(declare|typeset|local|export|readonly|printf|read|mapfile|readarray|getopts)(?![\w-])/.exec(
+        seg,
+      );
     if (!m) continue;
-    const words = seg.slice(m.index + m[0].length).split(/[ \t]+/).filter(Boolean);
+    const words = seg
+      .slice(m.index + m[0].length)
+      .split(/[ \t]+/)
+      .filter(Boolean);
     for (let k = 0; k < words.length; k += 1) {
       const w = words[k];
       if (m[1] === "printf") {

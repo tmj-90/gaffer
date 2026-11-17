@@ -528,3 +528,110 @@ export function assertStanding(f: FindingView): void {
       finding_id: f.id,
     });
 }
+
+/** The lore draft a finding becomes ("Propose as a lesson now"). */
+export interface LessonDraft {
+  readonly title: string;
+  readonly summary: string;
+  readonly body: string;
+  readonly repo: string;
+  readonly paths: readonly string[];
+  readonly tags: readonly string[];
+}
+
+const oneLine = (s: string): string => s.replace(/\s+/g, " ").trim();
+
+/** The draft for finding `f` on ticket `ticket` (pure). */
+export function lessonDraft(
+  f: FindingView,
+  ticket: { number: number | null; title: string },
+): LessonDraft {
+  const ref = `#${ticket.number ?? "?"}`;
+  const cat = f.category ? ` (${FINDING_CATEGORY_LABEL[f.category]})` : "";
+  const text = oneLine(f.text);
+  const by = f.filed_by.id ?? f.filed_by.type;
+  return {
+    title: `Lesson from ${ref}${cat}: ${text}`.slice(0, 190),
+    summary: text.slice(0, 780),
+    body: [
+      `What went wrong after ${ref} "${oneLine(ticket.title)}" was done, in the words of ${by} (${f.filed_at.slice(0, 10)}):`,
+      "",
+      f.text,
+      "",
+      `Category: ${f.category ? FINDING_CATEGORY_LABEL[f.category] : "none given"}.`,
+      ...(f.criteria.length
+        ? [`Acceptance criteria it concerns: ${f.criteria.map((c) => oneLine(c.text)).join("; ")}.`]
+        : []),
+      `Scope: repository ${f.repo ?? "?"}, paths ${f.paths.join(", ")}.`,
+      "Approve it to show it to later changes on these paths in this repository (the delivery, the reviewer and the tester see it as untrusted data); reject it if it is not a lesson.",
+    ]
+      .join("\n")
+      .slice(0, 20_000),
+    repo: f.repo ?? "",
+    paths: f.paths,
+    tags: [LESSON_TAG],
+  };
+}
+
+export type LessonProposer = (
+  draft: LessonDraft,
+) => { ok: true; id: string | null } | { ok: false; reason: string };
+
+/**
+ * "Propose as a lesson now": file ONE standing finding as a lore draft scoped to its repo
+ * and paths, waiting for a person's approval in the Memory view (never auto-approved, and
+ * no agent can approve it). Recorded as `ticket.finding_lesson_proposed` once memory filed
+ * it; a memory failure records nothing (NOT_CONFIGURED, 503) so a person can try again. A
+ * finding becomes at most one lesson.
+ */
+export function proposeLesson(
+  host: FindingHost,
+  ref: string,
+  fid: string,
+  actor: Actor,
+  proposer: LessonProposer,
+): { finding: FindingView; loreId: string | null; eventId: string } {
+  assertMayWriteFinding(actor);
+  const f = findFinding(host, ref, fid);
+  assertStanding(f);
+  if (f.lesson)
+    throw new DispatchError(
+      "STATE_CONFLICT",
+      `That finding was already proposed as a lesson${f.lesson.lore_id ? ` (lore ${f.lesson.lore_id})` : ""}.`,
+      { finding_id: f.id, lore_id: f.lesson.lore_id },
+    );
+  if (!f.repo || f.paths.length === 0)
+    throw new DispatchError(
+      "VALIDATION_ERROR",
+      "A lesson is served to later changes by repository and path, and this finding names no " +
+        (f.repo ? "path" : "repository") +
+        " (its change has no recorded delivery). Write a new finding that names the paths.",
+      { finding_id: f.id },
+    );
+  const ticket = host.resolveTicket(f.ticket_id);
+  let res: ReturnType<LessonProposer>;
+  try {
+    res = proposer(lessonDraft(f, ticket));
+  } catch (e) {
+    res = { ok: false, reason: e instanceof Error ? e.message : String(e) };
+  }
+  if (!res.ok)
+    throw new DispatchError(
+      "NOT_CONFIGURED",
+      `The lesson was not filed (memory did not answer): ${res.reason}`,
+      {
+        finding_id: f.id,
+      },
+    );
+  const loreId = res.id;
+  return inTransaction(host.db, () => {
+    const eventId = writeEvent(host.db, {
+      entity_type: "ticket",
+      entity_id: f.ticket_id,
+      actor,
+      event_type: FINDING_LESSON_EVENT,
+      payload: { finding_id: f.id, lore_id: loreId, repo: f.repo, paths: f.paths },
+    });
+    return { finding: findFinding(host, f.ticket_id, f.id), loreId, eventId };
+  });
+}

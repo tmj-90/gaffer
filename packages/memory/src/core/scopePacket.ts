@@ -45,6 +45,7 @@ import {
 } from "./fileCards.js";
 import { getDigest } from "./repoUnderstanding.js";
 import { searchLore } from "./lore.js";
+import { LESSON_TAG } from "./lessons.js";
 import { PRODUCT_INTENT_KINDS } from "../db/types.js";
 import type { FileCard, LoreSummary, RepoDigest } from "../db/types.js";
 
@@ -399,8 +400,12 @@ export function cardsForScope(db: Database, input: CardsForScopeInput): ScopePac
 
   // ── Tier 5: digest + lore ──────────────────────────────────────────
   const digest = getDigest(db, input.repo) ?? null;
+  // A LESSON (tag post-merge-finding) is served by path overlap only (lessons.ts), never
+  // by text: a text hit here would carry it to a change on other paths.
   const lore: LoreSummary[] = query.trim()
-    ? searchLore(db, { query, repo: input.repo, limit: DEFAULT_LORE_LIMIT })
+    ? searchLore(db, { query, repo: input.repo, limit: DEFAULT_LORE_LIMIT + 5 })
+        .filter((l) => !l.tags.includes(LESSON_TAG))
+        .slice(0, DEFAULT_LORE_LIMIT)
     : [];
 
   // ── Coverage: paths with no active card ───────────────────────────

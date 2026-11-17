@@ -35,6 +35,7 @@ import {
   cmdCard,
   cmdCards,
   cmdCardsForScope,
+  cmdLessons,
   cmdDeleteFileCard,
   cmdGetCardWatermark,
   cmdRepoCanonical,
@@ -66,6 +67,8 @@ COMMANDS
                             unless --title is given.
   suggest                   Same as add but lands as a draft. Used by agents;
                             also handy when you want to triage later.
+                            --path <p> (repeatable) scopes a lesson to the
+                            paths or globs it concerns (served by \`lessons\`).
   suggest --from-commit <sha>
                             Draft a record straight from a commit message
                             (subject -> title, body -> summary/detail).
@@ -303,6 +306,10 @@ COMMANDS
                             onboarded before canonicalisation whose repo_key is
                             an sha256 of an un-normalised URL. --dry-run reports
                             what would move without writing.
+  lessons --repo <r> --paths p1 [--paths p2] [--limit N] [--ticket <id>] [--json]
+                            The approved lessons (lore tagged post-merge-finding)
+                            of repo <r> whose paths overlap the given paths
+                            (prefix on whole segments, or a glob). No path: none.
   cards-for-scope --canonical <c> --repo <r> --query <q>
       [--paths p1 --paths p2] [--important-paths p3]
       [--max-cards N] [--max-tokens N] [--per-card-max-tokens N]
@@ -475,6 +482,8 @@ export async function main(argv: ReadonlyArray<string>): Promise<number> {
         return await cmdGetCardWatermark(parsed);
       case "cards-for-scope":
         return await cmdCardsForScope(parsed);
+      case "lessons":
+        return await cmdLessons(parsed);
       case "index":
         return await cmdIndex(parsed);
       case "recall-feedback":

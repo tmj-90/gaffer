@@ -4,6 +4,7 @@
  *   GET  /tickets/:id/findings                  the ticket's findings (a read)
  *   POST /tickets/:id/findings                  {text, category?, paths?, criteria?}
  *   POST /tickets/:id/findings/:fid/withdraw    {reason}
+ *   POST /tickets/:id/findings/:fid/lesson      propose it as a lesson (a lore draft)
  *
  * Writes are a person's act: the service refuses an agent, the runner and the server, a
  * read-only token never reaches a POST, and the scope gate (scopeGate.ts) checked the
@@ -12,7 +13,8 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import type { Dispatch } from "../../core.js";
-import { methodNotAllowed, readJsonBody, sendCreated, sendJson } from "../http.js";
+import type { MemoryReader } from "../memoryReader.js";
+import { methodNotAllowed, readJsonBody, readNoBody, sendCreated, sendJson } from "../http.js";
 import { addFindingBody, withdrawFindingBody } from "../schemas.js";
 import { apiActor } from "./context.js";
 
@@ -26,7 +28,8 @@ export async function routeFindings(
   segments: readonly string[],
   req: IncomingMessage,
   res: ServerResponse,
-  after?: { added?: () => void },
+  memoryReader: MemoryReader,
+  after?: { added?: () => void; lessonFiled?: () => void },
 ): Promise<boolean> {
   if (segments[2] !== FINDINGS_SUB) return false;
   if (segments.length === 3) {
@@ -56,6 +59,20 @@ export async function routeFindings(
     const body = withdrawFindingBody.parse(await readJsonBody(req));
     const r = wg.withdrawFinding(id, segments[3] as string, body.reason, apiActor());
     sendJson(res, 200, { finding: r.finding, event_id: r.eventId });
+    return true;
+  }
+  if (segments.length === 5 && segments[4] === "lesson") {
+    if (method !== "POST") {
+      methodNotAllowed(res);
+      return true;
+    }
+    await readNoBody(req);
+    const r = wg.proposeLesson(id, segments[3] as string, apiActor(), (d) => {
+      const filed = memoryReader.proposeLesson(d);
+      return filed.available ? { ok: true, id: filed.id } : { ok: false, reason: filed.reason };
+    });
+    after?.lessonFiled?.();
+    sendJson(res, 200, { finding: r.finding, lore_id: r.loreId, event_id: r.eventId });
     return true;
   }
   return false;

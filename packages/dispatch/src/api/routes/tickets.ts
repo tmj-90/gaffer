@@ -428,8 +428,9 @@ export async function routeTickets(
   // POST-MERGE FINDINGS: a person's "what went wrong" on a done ticket (routes/findings.ts).
   // A new finding can complete a repeated-feedback rule, proposed after the response.
   if (
-    await routeFindings(wg, id, method, segments, req, res, {
+    await routeFindings(wg, id, method, segments, req, res, memoryReader, {
       added: () => proposeRulesAfterResponse(res, wg, memoryReader),
+      lessonFiled: () => forgetLoreDrafts(memoryReader),
     })
   )
     return;

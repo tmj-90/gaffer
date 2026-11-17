@@ -39,6 +39,7 @@ import {
 } from "../../core/cardValidation.js";
 import { cardsForScope, primerLore } from "../../core/scopePacket.js";
 import { logRecall } from "../../core/recallFeedback.js";
+import { lessonsForPaths } from "../../core/lessons.js";
 import { openDb } from "../../db/index.js";
 import type { ModelStatus } from "../../db/types.js";
 import { getBool, getString, getStringArray } from "../args.js";
@@ -977,4 +978,57 @@ export async function cmdCards(args: ReturnType<typeof parseArgs>): Promise<numb
   if (sub === "rekey") return await cmdCardsRekey(args);
   process.stderr.write("memory: cards requires a subcommand — `memory cards rekey`\n");
   return 2;
+}
+
+// ── lessons ───────────────────────────────────────────────────────────
+
+/**
+ * `memory lessons --repo <r> --paths p1 [--paths p2] [--limit N] [--ticket <id>] [--json]`
+ *
+ * The active lessons (lore tagged post-merge-finding, approved by a person) of repo <r>
+ * whose paths overlap the given ones (lessons.ts). No path: none. With --ticket the
+ * served ids are logged for the recall-feedback loop, like cards-for-scope. JSON is an
+ * array (`[]` when none).
+ */
+export async function cmdLessons(args: ReturnType<typeof parseArgs>): Promise<number> {
+  const repo = (getString(args.flags, "repo") ?? "").trim();
+  if (!repo) {
+    process.stderr.write("memory: lessons requires --repo <name>\n");
+    return 2;
+  }
+  const paths = getStringArray(args.flags, "paths");
+  const limitRaw = getString(args.flags, "limit");
+  const limit = limitRaw !== undefined ? parseInt(limitRaw, 10) : undefined;
+  if (limit !== undefined && (isNaN(limit) || limit < 1)) {
+    process.stderr.write("memory: --limit must be a positive integer\n");
+    return 2;
+  }
+  const db = openDb();
+  try {
+    const hits = lessonsForPaths(db, { repo, paths, ...(limit ? { limit } : {}) });
+    const ticket = getString(args.flags, "ticket");
+    if (ticket && ticket.trim() && hits.length > 0) {
+      try {
+        logRecall(db, { repo, ticket: ticket.trim(), loreIds: hits.map((h) => h.id) });
+      } catch (err) {
+        process.stderr.write(
+          `memory: WARN recall-log failed for ticket ${ticket}: ${err instanceof Error ? err.message : String(err)}\n`,
+        );
+      }
+    }
+    if (getBool(args.flags, "json")) {
+      process.stdout.write(JSON.stringify(hits, null, 2) + "\n");
+      return 0;
+    }
+    if (hits.length === 0) {
+      process.stdout.write(`No lessons for those paths in '${repo}'.\n`);
+      return 0;
+    }
+    for (const h of hits) {
+      process.stdout.write(`${h.id}  ${h.title}\n  ${h.summary}\n  paths: ${h.paths.join(", ")}\n`);
+    }
+    return 0;
+  } finally {
+    db.close();
+  }
 }

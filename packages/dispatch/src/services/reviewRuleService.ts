@@ -7,6 +7,9 @@
  *    the retry cap's `retry_cap_reached:` prefix dropped; "Fix these:" left out, its
  *    comments count), and a human or admin must-fix review comment that was not
  *    withdrawn. The repo is the comment's repo, else the ticket's first write repo.
+ *  - A person's POST-MERGE FINDING (backlog 59) that was not withdrawn, keyed by its
+ *    category and normalised text: what went wrong after a change was done counts as
+ *    feedback with the same threshold. Its repo is the finding's (the change's write repo).
  *  - `review_rule.proposed` {repo, key, count, tickets, lore_id, threshold} on the
  *    repository: the audit, and the record that this key was proposed in this repo. A key
  *    whose draft could not be filed (memory unavailable) is not recorded, so it is tried
@@ -29,6 +32,7 @@ import {
   type ReviewRuleMeasure,
 } from "../health/reviewRules.js";
 import { isReviewSendBack } from "../health/sendBacks.js";
+import { FINDING_CATEGORY_LABEL, readFindings } from "./findingService.js";
 import { DispatchError } from "../util/errors.js";
 
 export const REVIEW_RULE_PROPOSED_EVENT = "review_rule.proposed" as const;
@@ -143,6 +147,22 @@ export function readFeedbackItems(db: Db): FeedbackItem[] {
       atMs: ms(c.at),
     });
   }
+  for (const f of readFindings(db)) {
+    if (f.withdrawn) continue;
+    const repo = f.repo ?? repoOf.get(f.ticket_id)?.name ?? null;
+    if (!repo) continue;
+    items.push({
+      ticketId: f.ticket_id,
+      ticketNumber: f.number,
+      repo,
+      source: "post_merge_finding",
+      text: f.text,
+      actorType: f.filed_by.type,
+      actorId: f.filed_by.id,
+      atMs: ms(f.filed_at),
+      category: f.category ? FINDING_CATEGORY_LABEL[f.category] : null,
+    });
+  }
   return items;
 }
 
@@ -233,7 +253,11 @@ export interface RuleDraft {
   readonly tags: readonly string[];
 }
 
-const SOURCE_LABEL = { send_back_reason: "send-back reason", must_fix_comment: "must-fix comment" };
+const SOURCE_LABEL = {
+  send_back_reason: "send-back reason",
+  must_fix_comment: "must-fix comment",
+  post_merge_finding: "post-merge finding",
+};
 
 export function ruleDraft(c: ReviewRuleCandidate, threshold: number): RuleDraft {
   const lines = [
@@ -355,7 +379,7 @@ export interface ReviewRulesReport {
 }
 
 export const REVIEW_RULES_NOTE =
-  "Only a person's feedback seeds a rule: their send-back reasons and must-fix comments, never an agent's or the tester's. A rule is a lore draft until a person approves it, and it never auto-approves.";
+  "Only a person's feedback seeds a rule: their send-back reasons, must-fix comments and post-merge findings, never an agent's or the tester's. A rule is a lore draft until a person approves it, and it never auto-approves.";
 
 /** At most this many proposed rules have their lore status read per report. */
 const MAX_LOOKUPS = 20;

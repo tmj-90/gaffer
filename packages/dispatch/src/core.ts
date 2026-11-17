@@ -1488,6 +1488,16 @@ export class Dispatch {
     return findings.withdrawFinding(this, ref, findingId, reason, actor);
   }
 
+  /** "Propose as a lesson now": one finding becomes a lore draft for a person to approve. */
+  proposeLesson(
+    ref: string,
+    findingId: string,
+    actor: Actor,
+    proposer: findings.LessonProposer,
+  ): { finding: findings.FindingView; loreId: string | null; eventId: string } {
+    return findings.proposeLesson(this, ref, findingId, actor, proposer);
+  }
+
   /** The findings on one ticket (withdrawn ones included, marked), oldest first. */
   findingsOf(ref: string): findings.FindingView[] {
     return findings.readFindings(this.db, this.resolveTicket(ref).id);

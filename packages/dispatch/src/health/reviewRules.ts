@@ -23,7 +23,7 @@
  * and after its approval; "not enough data" below five rounds after. Pure.
  */
 
-export type FeedbackSource = "send_back_reason" | "must_fix_comment";
+export type FeedbackSource = "send_back_reason" | "must_fix_comment" | "post_merge_finding";
 
 export interface FeedbackItem {
   readonly ticketId: string;
@@ -34,6 +34,11 @@ export interface FeedbackItem {
   readonly actorType: string;
   readonly actorId: string | null;
   readonly atMs: number;
+  /**
+   * A post-merge finding's category (missed requirement, test gap, ...), or null. Feedback
+   * with a category is keyed by it as well: the same category AND normalised reason.
+   */
+  readonly category?: string | null;
 }
 
 export interface RuleExample {
@@ -92,6 +97,18 @@ export function normaliseFeedback(text: string): string | null {
   return s.split(" ").filter(Boolean).length >= 3 ? s : null;
 }
 
+/**
+ * The aggregation key of one piece of feedback: its normalised text, prefixed with its
+ * category when it has one (a post-merge finding's), so "test gap: ..." and "convention:
+ * ..." with the same words are two rules. Null when the text is too short to be a rule.
+ */
+export function feedbackKey(it: { text: string; category?: string | null }): string | null {
+  const key = normaliseFeedback(it.text);
+  if (key === null) return null;
+  const cat = (it.category ?? "").toLowerCase().replace(/[^a-z]+/g, " ").trim();
+  return cat ? `${cat}: ${key}` : key;
+}
+
 const isPerson = (t: string): boolean => t === "human" || t === "admin";
 const iso = (ms: number): string => new Date(ms).toISOString();
 const oneLine = (t: string): string => t.replace(/\s+/g, " ").trim().slice(0, MAX_TEXT);
@@ -104,7 +121,7 @@ export function reviewRuleCandidates(
   const groups = new Map<string, { repo: string; key: string; items: FeedbackItem[] }>();
   for (const it of items) {
     if (!isPerson(it.actorType) || !it.repo) continue;
-    const key = normaliseFeedback(it.text);
+    const key = feedbackKey(it);
     if (key === null) continue;
     const g = `${it.repo}\u0000${key}`;
     const group = groups.get(g) ?? { repo: it.repo, key, items: [] };
@@ -192,7 +209,7 @@ export function reviewRuleMeasure(input: {
             isPerson(it.actorType) &&
             it.atMs >= lo &&
             (inclusiveHi ? it.atMs <= hi : it.atMs < hi) &&
-            normaliseFeedback(it.text) === input.key,
+            feedbackKey(it) === input.key,
         )
         .map((it) => it.ticketId),
     ).size;

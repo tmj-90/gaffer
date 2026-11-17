@@ -255,6 +255,11 @@ export interface AddLoreInput {
   readonly confidence?: LoreConfidence;
   readonly repos?: ReadonlyArray<string>;
   readonly tags?: ReadonlyArray<string>;
+  /**
+   * Repo-relative paths or globs the record concerns (lore_paths, migration 017). Only a
+   * lesson (tag post-merge-finding) uses them today: it is served by path overlap.
+   */
+  readonly paths?: ReadonlyArray<string>;
   readonly restricted?: boolean;
   /**
    * Structured provenance: the frozen spec + clause this record is seeded from

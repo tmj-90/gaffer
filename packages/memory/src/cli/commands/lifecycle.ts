@@ -111,6 +111,8 @@ export async function cmdAdd(
 
   const repos = getStringArray(args.flags, "repo");
   const tags = getStringArray(args.flags, "tag");
+  // The paths or globs a lesson concerns (--path, repeatable; lore_paths).
+  const paths = getStringArray(args.flags, "path");
   const team = getString(args.flags, "team");
   const author = getString(args.flags, "author") ?? process.env["USER"];
   const source = getString(args.flags, "source");
@@ -132,6 +134,7 @@ export async function cmdAdd(
       body,
       repos,
       tags,
+      ...(paths.length ? { paths } : {}),
       team,
       author,
       source,

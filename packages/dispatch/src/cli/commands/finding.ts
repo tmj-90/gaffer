@@ -9,7 +9,7 @@ import type { Command } from "commander";
 
 import { FINDING_CATEGORY_LABEL, type FindingView } from "../../services/findingService.js";
 import { cliActor, printJson } from "../helpers.js";
-import { open } from "../runtime.js";
+import { heavy, open } from "../runtime.js";
 
 const collect = (v: string, prev: string[]): string[] => [...prev, v];
 
@@ -76,6 +76,28 @@ export function registerFindingCommands(ticket: Command): void {
           all.length ? `${all.map(findingLine).join("\n")}\n` : "No findings on this ticket.\n",
         );
       wg.db.close();
+    });
+
+  finding
+    .command("lesson <ref> <findingId>")
+    .description(
+      "Propose one finding as a lesson now: a lore draft scoped to its repository and " +
+        "paths, waiting for a person's approval in the Memory view (never auto-approved). " +
+        "Once approved, later changes on those paths see it. A person's act.",
+    )
+    .action((ref, fid, _opts, cmd) => {
+      const wg = open(cmd.optsWithGlobals());
+      const { createMemoryReader } = heavy();
+      try {
+        const memory = createMemoryReader(process.env);
+        const r = wg.proposeLesson(ref, String(fid), cliActor(), (d) => {
+          const filed = memory.proposeLesson(d);
+          return filed.available ? { ok: true, id: filed.id } : { ok: false, reason: filed.reason };
+        });
+        printJson({ ok: true, finding: r.finding, lore_id: r.loreId, event_id: r.eventId });
+      } finally {
+        wg.db.close();
+      }
     });
 
   finding

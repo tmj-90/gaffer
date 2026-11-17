@@ -139,7 +139,8 @@ retire "$T6"
 # A person withdraws the first finding (its lesson is retired with it) and retires the
 # second lesson in Memory (deprecate): the next delivery on src/a.js gets neither.
 WJSON="$(person ticket finding withdraw "$T1" "$FID" --reason "it was the caller's bug" 2>&1)"
-printf '%s' "$WJSON" | jget 'd.finding.withdrawn.reason' 2>/dev/null | grep -q "caller" \
+WREASON="$(printf '%s' "$WJSON" | jget 'd.finding.withdrawn.reason' 2>/dev/null || true)"
+[[ "$WREASON" == *caller* ]] \
   && ok "H: the first finding is withdrawn" || fail "H: withdraw failed: $(printf '%s' "$WJSON" | head -c 300)"
 lg deprecate "$L2ID" >/dev/null 2>&1
 T7="$(deliver "Helper seven" "Add a seventh helper to src/a.js")"

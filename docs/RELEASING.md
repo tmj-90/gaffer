@@ -1,6 +1,14 @@
 # Releasing Gaffer
 
-A release is a git tag. Pushing `vX.Y.Z` runs `.github/workflows/release.yml`, which
+> **The release workflow is not in the repository.** Every GitHub Actions workflow was
+> removed (see [testing.md](testing.md#no-hosted-ci-run-the-checks-yourself)), so
+> pushing a tag builds and publishes nothing. This page describes the workflow as it
+> was at commit `ed343df`. To release, bring it back first
+> (`git checkout ed343df -- .github/workflows/release.yml`), or run its steps by hand:
+> the scripts it called (`scripts/version.mjs`, `sbom.mjs`, `provenance.mjs`,
+> `release-notes.mjs`) are all still here.
+
+A release is a git tag. Pushing `vX.Y.Z` ran `.github/workflows/release.yml`, which
 builds and tests the tagged commit and publishes, from that commit alone. It runs as two
 jobs: `build` (a read-only token) installs, tests and packs the assets; `publish` (the
 only job with `contents: write` and `packages: write`) runs no repository test or script
@@ -21,11 +29,11 @@ proposes base digests, the CLI pin is bumped by hand).
 
 ## Before a release
 
-CI covers the state machine, the gates, the bookkeeping and the safety hook
-deterministically. Two things it cannot cover, so I check them by hand:
+The test suites cover the state machine, the gates, the bookkeeping and the safety hook
+deterministically. Two things they cannot cover, so I check them by hand:
 
-- **A clean clone passes.** CI starts from a fresh checkout; a local tree can pass on
-  an uncommitted file or a stale `dist/`. From a throwaway directory:
+- **A clean clone passes.** A local tree can pass on an uncommitted file or a stale
+  `dist/`, and no hosted run starts from a fresh checkout for you. From a throwaway directory:
 
   ```sh
   git clone <repo-url> gaffer-clean && cd gaffer-clean
@@ -46,7 +54,7 @@ deterministically. Two things it cannot cover, so I check them by hand:
 
 ## Cutting a release
 
-1. Make sure `main` is green, the checks above pass, and the `[Unreleased]` section
+1. Make sure the checks in [testing.md](testing.md#no-hosted-ci-run-the-checks-yourself) and the ones above pass, and the `[Unreleased]` section
    of `CHANGELOG.md` says what shipped.
 2. Set the version everywhere and cut the changelog:
 

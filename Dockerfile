@@ -36,7 +36,7 @@ RUN pnpm -r build
 
 # Same pinned base as the build stage (bump both together).
 FROM node:22-bookworm-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee
-# Release metadata (set by .github/workflows/release.yml; defaults for local builds).
+# Release metadata (set by the release build, docs/RELEASING.md; defaults for local builds).
 ARG VERSION=dev
 ARG REVISION=unknown
 LABEL org.opencontainers.image.title="Gaffer" \

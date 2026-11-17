@@ -49,7 +49,7 @@ run every file exactly once, balanced by `runner/test/lib/shard-weights.tsv` (ea
 test file's observed CI seconds, the slowest of the four cells; a file not listed
 counts 10s), so give a new test that takes much longer than that a line there.
 [docs/testing.md](docs/testing.md) covers the caps, the long tests, load scaling,
-the shards, the nightly cell and how to keep a new test fast. In a
+the shards, the exhaustive form and how to keep a new test fast. In a
 new test, skip with `gaffer_skip "<reason>"` from `runner/test/lib/skip.sh` (exit
 77) only for a missing prerequisite; a dispatch CLI call that errors or changes
 shape is a FAIL, never a skip.

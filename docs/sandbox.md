@@ -319,39 +319,35 @@ the host does it, after approval.
   normal suite on every OS with a fake `docker` that runs each container on the host. It
   checks the wiring (what each container mounts and is given), not the isolation.
 
-The delivery test runs in the `sandbox-delivery` CI job on a GitHub Linux runner. No
-daemon means SKIP; on a push to main `GAFFER_SANDBOX_TEST_REQUIRE=1` turns an image that
-cannot be built into a failure; a failed run uploads its logs, the ticket record and the
-git log as `sandbox-delivery-evidence`. No CI job delivers through the macOS Docker
-Desktop fallback.
+The delivery test needs a Docker daemon and is run by hand on Linux
+(`RUN_SANDBOX_DOCKER_TEST=1 bash runner/test/sandbox-docker-delivery.test.sh`). No
+daemon means SKIP; `GAFFER_SANDBOX_TEST_REQUIRE=1` turns an image that cannot be built
+into a failure. Nothing delivers through the macOS Docker Desktop fallback.
 
-## Prove it on your own fork
+## Prove it with a live agent
 
 The stub proves the plumbing; it cannot prove that the real agent CLI behaves inside
 the container. The live variant runs the same delivery with the image's real binary.
-It spends real credits, so it never runs on a push or a pull request.
+It spends real credits, so it only ever runs when you start it.
 
-1. Fork the repository and enable Actions on the fork.
-2. Add one repository secret under Settings > Secrets and variables > Actions:
-   `ANTHROPIC_API_KEY`, or `CLAUDE_CODE_OAUTH_TOKEN` (a subscription token from
-   `claude setup-token`).
-3. In the Actions tab, run **Docker sandbox live delivery**
-   (`.github/workflows/sandbox-live.yml`). Its one input, `max_call_usd` (default 2),
-   is the dollar cap for the agent call, passed as `--max-budget-usd`. The test refuses
-   anything but a positive dollar figure and checks the runner resolves it to the flag
-   before any credit is spent. The run also has a $5 daily budget.
-
-Locally, with a Docker daemon and a credential in the environment:
+With a Docker daemon and one credential in the environment (`ANTHROPIC_API_KEY`, or
+`CLAUDE_CODE_OAUTH_TOKEN`, a subscription token from `claude setup-token`):
 
 ```bash
 pnpm install && pnpm -r build
-GAFFER_LIVE_DOCKER_DELIVERY=1 bash runner/test/sandbox-docker-delivery.test.sh
+RUN_SANDBOX_DOCKER_TEST=1 GAFFER_SANDBOX_TEST_REQUIRE=1 GAFFER_LIVE_DOCKER_DELIVERY=1 \
+  GAFFER_LIVE_MAX_CALL_USD=2 bash runner/test/sandbox-docker-delivery.test.sh
 ```
+
+`GAFFER_LIVE_MAX_CALL_USD` is the dollar cap for the agent call, passed as
+`--max-budget-usd`. The test refuses anything but a positive dollar figure and checks
+the runner resolves it to the flag before any credit is spent. The run also has a $5
+daily budget.
 
 The live run keeps every host-side check (the ticket in review, a commit on the branch,
 a measured cost in the ledger, the gates contained, the canary untouched). It reports,
 but does not require, the agent's own MCP evidence, because a real agent decides what
-it runs. Without a credential it fails at once and names the two secrets.
+it runs. Without a credential it fails at once and names the two variables.
 
 ## Limits
 

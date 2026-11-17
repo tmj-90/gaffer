@@ -28,7 +28,7 @@
 # image's real `claude` (no stub). The host-side assertions stay (in_review, a commit,
 # the envelope booked with a real cost, the canary untouched, the gates contained);
 # the agent's own probes cannot be asserted, because a real agent decides what it
-# runs. CI runs it only from the workflow_dispatch workflow sandbox-live.yml.
+# runs. It only ever runs when a person starts it (docs/sandbox.md).
 #
 # Posture (same as the containment gate): no docker daemon ⇒ SKIP; on CI it runs only
 # in its dedicated job (RUN_SANDBOX_DOCKER_TEST=1); GAFFER_SANDBOX_TEST_REQUIRE=1 turns

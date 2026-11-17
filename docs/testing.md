@@ -93,8 +93,8 @@ time.
 
 Some tests have a quick default form and a full one under
 `GAFFER_TEST_EXHAUSTIVE=1`. `direct-run-isolation.test.sh` re-runs only its quick
-tests directly by default and every listed test under the exhaustive form, which the
-nightly CI run sets.
+tests directly by default and every listed test under the exhaustive form (set it
+yourself before a release; no scheduled run does).
 
 ### Writing a fast runner test
 
@@ -186,48 +186,44 @@ Vitest's default timeout is 5 s. A test that starts a process or runs real git
 and the failure says nothing about the code. A test that needs a port asks the OS
 for a free one (listen on port 0) rather than using a fixed number.
 
-## What CI runs, and when
+## No hosted CI: run the checks yourself
 
-`.github/workflows/ci.yml` runs on every push and pull request; the runner shards'
-steps are in `runner-shard.yml`, which `nightly.yml` calls too.
+This repository has no GitHub Actions workflows: nothing runs on a push, a pull request
+or a schedule, so nothing is billed and nothing tells you a push broke something. The
+workflows (`ci.yml`, `nightly.yml`, `runner-shard.yml`, `codeql.yml`,
+`secret-scan.yml`, `release.yml`, `sandbox-live.yml`) were last present at commit
+`ed343df`; `git checkout ed343df -- .github/workflows .github/scripts` brings them
+back. Where a comment in a test or a script still says "CI" or "nightly", it means
+those workflows.
 
-| cell | when | shards |
-| --- | --- | --- |
-| package tests, ubuntu, node 22 and 24 | every push | (`checks`, `packages`) |
-| runner, ubuntu, node 22 | every push | 3 |
-| runner, macOS, node 22 | a push or pull request that changes a macOS-relevant path (below); nightly | 4 (shard 1 also runs the macOS package tests and the macOS e2e) |
-| runner, ubuntu, node 24 | nightly | 3 |
-| runner, macOS, node 24 | nightly | 3 (shard 1 also runs the package tests) |
+What they ran, as commands, from the repository root:
 
-The macOS-relevant paths are the ones that can behave differently on macOS:
-`runner/**` (lib, config, bin, sandbox, the tests), `scripts/**`, `.github/**`,
-`package.json`, `packages/*/package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`,
-`.npmrc` and `.nvmrc`, except Markdown files anywhere. The `changes` job decides with
-`.github/scripts/macos-relevant.sh`, which diffs the push's previous head (a pull
-request: its base) against the commit under test. When it cannot tell (a new branch, a
-force push, a failed diff) the macOS shards run. A change to package sources or docs
-alone skips them on that push.
+```sh
+pnpm install --frozen-lockfile
+bash .github/scripts/audit-gate.test.sh && bash .github/scripts/audit-gate.sh   # dependency audit
+pnpm lint && pnpm format:check
+node scripts/check-engines.mjs && node scripts/docker-context-check.mjs
+pnpm -r build
+node scripts/config-reference.mjs --check && node scripts/openapi.mjs --check
+pnpm -r typecheck && pnpm -r typecheck:test
+pnpm -r test                      # package tests
+pnpm -r test:coverage             # the coverage floors
+GAFFER_TEST_STRICT=1 pnpm test:runner            # the runner suite (about an hour)
+bash runner/test/maintenance-e2e.sh              # maintenance lane end to end
+bash runner/eval/replay.sh --out /tmp/gate-replay   # gate replay on the golden fixtures
+bash scripts/ui-regression/run.sh                # the browser golden path
+bash scripts/ui-regression/run-suites.sh         # the browser scenario suites
+bash .github/scripts/operator-state-guard.sh     # the tests left no state behind
+```
 
-`ci-result` ("CI result") runs after every other job, whatever happened, and passes
-only when each one passed or the macOS shards were skipped by that rule. It is the one
-check to require if a branch rule is added: a skipped job never leaves it waiting.
-
-The nightly run (03:17 UTC, `nightly.yml`) runs every runner cell a push may leave
-out, with the same strictness, the same caps and the same evidence upload on a
-failure, and `GAFFER_TEST_EXHAUSTIVE=1`. So a regression only a nightly cell catches
-is at most a day old. A failed night is a red run on the Actions tab and the Nightly
-badge. To run the full matrix by hand (before a release, or on a branch whose push
-skipped the macOS shards), start `Nightly` from the Actions tab (`workflow_dispatch`,
-pick the branch).
-
-Why: one push used about 118 Linux and 60 macOS machine-minutes, and macOS minutes
-bill at ten times Linux on a private repository. GitHub also runs at most 5 macOS jobs
-at once; a sixth queued 755 s on run 41338925244. A newer push to the same branch or
-pull request cancels the older run (`concurrency` in `ci.yml`).
-
-The browser suites run as `ui-regression` (the golden path) and `ui-scenarios`, five
-groups of scenario suites; `runner/test/ci-matrix.test.sh` checks that every suite is
-in exactly one group.
+`pnpm check` is the first half in one command (lint, format, build, both typechecks,
+the package tests). The runner suite in parts: `pnpm test:runner -- --shard K/N` runs
+shard K of N, each file in exactly one shard. The workflows also ran the runner suite
+on macOS (bash 3.2, BSD tools, `sandbox-exec`) and on Node 24, with
+`GAFFER_TEST_EXHAUSTIVE=1` at night, and the two Docker tests
+(`sandbox-docker-containment.test.sh`, `sandbox-docker-delivery.test.sh`, each with
+`RUN_SANDBOX_DOCKER_TEST=1`) on Linux. Run those by hand before a release, on the
+machines you have.
 
 ## Browser scenario suites in parallel
 

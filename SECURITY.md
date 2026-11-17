@@ -68,7 +68,7 @@ Test files are under `runner/test/` (`.sh`, `.mjs`) or `packages/*/test/` (`.ts`
 | Notifications | SSRF policy, redacted bodies, URLs never returned | `notify.test.ts` | Endpoints you choose |
 | Memory | Agent suggestions are drafts; drafts invisible to agents; restricted records gated | `mcp-redaction.test.ts`, `memory-auto-approve-docs.test.mjs` | `restricted` is not encryption |
 | Onboarding | Reads stay inside the repo; credentials stripped from remote URLs | `onboard-boundary.test.sh` | |
-| Factory CI | Dependency audit, shellcheck, CodeQL, gitleaks, containment gate, browser regression, config drift; actions pinned by commit | `.github/workflows/` | |
+| Repository checks | Dependency audit, shellcheck, containment gate, browser regression, config drift | run by hand, see `docs/testing.md` | No hosted CI runs them; CodeQL and the gitleaks scan went with the workflows |
 
 The crew safety policy (`safety_policy.yaml`) is **not** enforced at runtime. It
 drives crew's advisory classifier only; see [the safety hook](#the-safety-hook).
@@ -1059,10 +1059,10 @@ a presence boolean, and an argument not on the allowlist is never copied.
   nothing verifies the VM or container it vouches for. On a non-macOS host without Docker
   that is the only way to run, and there `strict` reduces to `autonomous`. The Docker
   image sets it because the container is the boundary.
-- **The docker sandbox is proven with a stub agent.** CI runs one delivery through it on
-  a Linux runner with a deterministic stub; a live agent inside it is proven only where
-  someone runs the opt-in `sandbox-live.yml` workflow with their own credential
-  ([docs/sandbox.md](docs/sandbox.md#prove-it-on-your-own-fork)). On macOS Docker
+- **The docker sandbox is proven with a stub agent.** `sandbox-docker-delivery.test.sh`
+  runs one delivery through it on Linux with a deterministic stub; a live agent inside
+  it is proven only where someone runs that test's live form with their own credential
+  ([docs/sandbox.md](docs/sandbox.md#prove-it-with-a-live-agent)). On macOS Docker
   Desktop the bridge is off and the masked-mount fallback applies, which no CI job
   delivers through. The container runs as root (with only `DAC_OVERRIDE` kept). A
   timeout kills the `docker run` client, and a container that ignores the signal can

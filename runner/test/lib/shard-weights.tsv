@@ -353,7 +353,6 @@
 1	worker-seam-routing.test.sh
 1	worktree-key-golden.test.sh
 10	bootstrap-sandbox-required.test.sh
-10	ci-matrix.test.sh
 10	gaffer-principal-identity.test.sh
 10	gaffer-wg-front-door.test.sh
 10	greenfield-proxy-ca.test.sh

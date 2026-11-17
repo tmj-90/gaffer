@@ -495,7 +495,10 @@ describe("migration 016-code-index", () => {
     for (const m of MIGRATIONS.filter((x) => x.id < "016"))
       d.prepare("INSERT INTO migrations VALUES (?, ?)").run(m.id, "t");
     MIGRATIONS.find((m) => m.id === "016-code-index")!.up(d);
-    expect(runMigrations(d).applied).toEqual(["016-code-index"]);
+    // 016 and every migration after it (a later one, such as 017-lore-paths, applies too).
+    expect(runMigrations(d).applied).toEqual(
+      MIGRATIONS.filter((x) => x.id >= "016").map((x) => x.id),
+    );
     expect(runMigrations(d).applied).toEqual([]);
     const tables = (
       d

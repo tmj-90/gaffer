@@ -82,3 +82,36 @@ describe("a config read whose file changed while it ran is not cached", () => {
     expect(readFileSync(count, "utf8").trim().split("\n")).toHaveLength(1);
   }, 20_000);
 });
+
+describe("a read that did not run to an exit is not cached", () => {
+  it("a config process killed by a signal once does not answer every later load", async () => {
+    const mark = join(dir, "ran-once");
+    // First run: killed by a signal (a transient failure: memory, a stray kill). Later
+    // runs: the file as read.
+    const records = script(
+      "records.sh",
+      `if [ ! -e "${mark}" ]; then : > "${mark}"; kill -9 $$; fi\ncat "$GAFFER_DATA/settings.json"`,
+    );
+    const show = script("show.sh", "cat");
+    setRunnerConfigCommandsForTest({ records: [records], show: [show] });
+    const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", GAFFER_DATA: dir };
+    settings("supervised");
+    expect((await readRunnerConfigAsync(env)).ok).toBe(false);
+    expect(modeOf(await readRunnerConfigAsync(env))).toBe("supervised");
+  }, 20_000);
+
+  it("a config that stops on a value it refuses is cached (the same file stops it again)", async () => {
+    const count = join(dir, "count");
+    const records = script(
+      "records.sh",
+      `echo x >> "${count}"\necho "stop: bad value" >&2\nexit 1`,
+    );
+    setRunnerConfigCommandsForTest({ records: [records], show: [script("show.sh", "cat")] });
+    const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", GAFFER_DATA: dir };
+    settings("supervised");
+    expect((await readRunnerConfigAsync(env)).ok).toBe(false);
+    expect((await readRunnerConfigAsync(env)).ok).toBe(false);
+    const { readFileSync } = await import("node:fs");
+    expect(readFileSync(count, "utf8").trim().split("\n")).toHaveLength(1);
+  }, 20_000);
+});

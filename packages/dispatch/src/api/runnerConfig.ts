@@ -351,6 +351,12 @@ function settle(
   // switching back), with values the file no longer held. Returned, never cached: the
   // caller's refresh sees the file changed and reads again.
   if (settingsBytes(env) !== pre.file) return out;
+  // A PROCESS THAT DID NOT RUN TO AN EXIT (could not start, killed by a signal) says
+  // nothing about the file: cached, one transient failure answered every later load of
+  // the same bytes with "could not be read". Only an exit (a config that stops on a
+  // value, a report that fails) is the file's own answer.
+  const exited = (r: ChildRun | null): boolean => r === null || typeof r.status === "number";
+  if (!exited(rec) || !exited(show) || rec.failed || show?.failed) return out;
   if (cache.size >= CACHE_MAX) cache.delete(cache.keys().next().value as string);
   cache.set(pre.key, out);
   return out;

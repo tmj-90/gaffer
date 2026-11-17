@@ -207,7 +207,7 @@ export function readRunnerConfig(env: Readonly<Record<string, string>>): RunnerC
       failed: show.error !== undefined,
     };
   }
-  return settle(pre.key, recRun, showRun);
+  return settle(pre, env, recRun, showRun);
 }
 
 /**
@@ -235,7 +235,7 @@ export function readRunnerConfigAsync(
       const left = Math.max(1, timeoutMs() - (Date.now() - t0));
       show = await runChild(c.show, env, rec.stdout, left);
     }
-    return settle(pre.key, rec, show);
+    return settle(pre, env, rec, show);
   })().finally(() => inflight.delete(pre.key));
   inflight.set(pre.key, p);
   return p;
@@ -299,31 +299,29 @@ function runChild(
 }
 
 /** The cache key for a read, or the answer when no read is needed (cached, no runner). */
-function prepare(
-  env: Readonly<Record<string, string>>,
-): { done: RunnerConfigRead } | { key: string } {
+function prepare(env: Readonly<Record<string, string>>): { done: RunnerConfigRead } | Prepared {
   if (!commandsOverride && (!existsSync(RECORDS_SH) || !existsSync(SCHEMA_PATH))) {
     return {
       done: { ok: false, error: "the runner's config reader was not found beside the dashboard" },
     };
   }
-  let file = "";
-  try {
-    file = readFileSync(join(env["GAFFER_DATA"] ?? "", "settings.json"), "utf8");
-  } catch {
-    // No file: the defaults.
-  }
+  const file = settingsBytes(env);
   const key = createHash("sha256")
     .update(JSON.stringify(Object.entries(env).sort()))
     .update("\0")
     .update(file)
     .digest("hex");
   const hit = cache.get(key);
-  return hit ? { done: hit } : { key };
+  return hit ? { done: hit } : { key, file };
 }
 
 /** Turn the two runs into the read's answer, and cache it unless it ran out of time. */
-function settle(key: string, rec: ChildRun, show: ChildRun | null): RunnerConfigRead {
+function settle(
+  pre: Prepared,
+  env: Readonly<Record<string, string>>,
+  rec: ChildRun,
+  show: ChildRun | null,
+): RunnerConfigRead {
   let out: RunnerConfigRead;
   if (rec.timedOut || show?.timedOut) {
     return {
@@ -347,9 +345,30 @@ function settle(key: string, rec: ChildRun, show: ChildRun | null): RunnerConfig
       out = { ok: false, error: "the runner's config report could not be read" };
     }
   }
+  // A FILE THAT CHANGED WHILE THE READ RAN (review of external review 21): the config
+  // read the file when it got to it, so the answer may describe the later bytes. Cached
+  // under the bytes the read started with, it was served for those bytes later (a person
+  // switching back), with values the file no longer held. Returned, never cached: the
+  // caller's refresh sees the file changed and reads again.
+  if (settingsBytes(env) !== pre.file) return out;
   if (cache.size >= CACHE_MAX) cache.delete(cache.keys().next().value as string);
-  cache.set(key, out);
+  cache.set(pre.key, out);
   return out;
+}
+
+/** A read about to run: its cache key and the settings.json bytes it started with. */
+interface Prepared {
+  readonly key: string;
+  readonly file: string;
+}
+
+/** settings.json's bytes now ("" when there is none: the defaults). */
+function settingsBytes(env: Readonly<Record<string, string>>): string {
+  try {
+    return readFileSync(join(env["GAFFER_DATA"] ?? "", "settings.json"), "utf8");
+  } catch {
+    return "";
+  }
 }
 
 /** Test seam: forget cached reads. */

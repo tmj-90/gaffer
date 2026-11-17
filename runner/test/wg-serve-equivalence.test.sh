@@ -95,8 +95,23 @@ fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 OUTD="$(gaffer_test_tmpdir wg-equiv-out)" || exit 70
 trap 'gaffer_test_rm_work "$OUTD"' EXIT
 
-bash "$0" --world served "$OUTD/served"
-bash "$0" --world oneshot "$OUTD/oneshot"
+# The two worlds share nothing (each has its own temp dir, repo, database and data
+# folder), so they run side by side: eight real ticks one after the other took 60 to
+# 95 s here and more than the 120 s cap on a loaded CI runner.
+bash "$0" --world served "$OUTD/served" > "$OUTD/served.log" 2>&1 &
+W_SERVED=$!
+bash "$0" --world oneshot "$OUTD/oneshot" > "$OUTD/oneshot.log" 2>&1 &
+W_ONESHOT=$!
+wait "$W_SERVED"; RC_SERVED=$?
+wait "$W_ONESHOT"; RC_ONESHOT=$?
+for w in served oneshot; do
+  [ -s "$OUTD/$w.log" ] && sed "s/^/    [$w] /" "$OUTD/$w.log"
+done
+if [ "$RC_SERVED" = 0 ] && [ "$RC_ONESHOT" = 0 ] && [ -s "$OUTD/served.rows" ] && [ -s "$OUTD/oneshot.rows" ]; then
+  ok "both worlds ran the scenario to the end"
+else
+  fail "a world did not finish: served rc=$RC_SERVED, one-shot rc=$RC_ONESHOT"
+fi
 
 echo "== E1: the same tick results =="
 sed 's/^/    served:  /' "$OUTD/served.results"

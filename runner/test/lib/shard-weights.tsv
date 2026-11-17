@@ -365,7 +365,7 @@
 15	tester-replay-containment.test.mjs
 115	land-tester-replay-contract.test.sh
 108	eval-experiment.test.sh
-60	isolation-default.test.sh
+85	isolation-default.test.sh
 180	landing-recovery.test.sh
 115	signed-acts.test.sh
 100	signed-acts-revocation.test.sh
@@ -412,7 +412,7 @@
 4	safety-hook-factory-key.test.mjs
 1	safety-hook-git-hardening.test.mjs
 4	safety-hook-globs.test.mjs
-14	safety-hook-golden-corpus.test.mjs
+126	safety-hook-golden-corpus.test.mjs
 1	scout-packet.test.mjs
 8	status-features-held.test.mjs
 18	tester-acceptance.test.mjs
@@ -439,3 +439,14 @@
 80	autonomy-step-down.test.sh
 90	autonomy-sealed.test.sh
 100	post-merge-lesson.test.sh
+# CI run 44046790040 (Nov 17, ubuntu node 22, three shards at -j 4): shard 2 took 772 s
+# against 553 s and 582 s, and wg-serve-equivalence was stopped at the 120 s short cap. It
+# had no line here (so 10 s) and neither had the three below it; isolation-default (85 s
+# there, was 60) and safety-hook-golden-corpus (126 s there, was 14) are refreshed above.
+# wg-serve-equivalence now runs its two worlds side by side (40 s alone, was about 60); 90
+# until CI measures it. wg-serve-tick: 66 s on that run. settings-migration-numbers and
+# wg-serve: 45 s and 34 s in a local full run at -j 2, times the 1.3 that wg-serve-tick showed.
+90	wg-serve-equivalence.test.sh
+66	wg-serve-tick.test.sh
+58	settings-migration-numbers.test.sh
+44	wg-serve.test.sh

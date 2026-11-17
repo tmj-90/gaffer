@@ -36,6 +36,7 @@ import {
   LORE_ABSENT,
   reviewRulesReport,
 } from "../../services/reviewRuleService.js";
+import { lessonsReport } from "../../services/lessonReportService.js";
 import { aggregateHealth, readHealthRows, type SendBack } from "../../health/healthAggregator.js";
 import { sendBacksByTicket } from "../../health/sendBacks.js";
 import { isBoardArea } from "../../services/boardService.js";
@@ -438,6 +439,27 @@ export function routeReadModels(
         const h = memoryReader.loreHistory(id);
         if (h.available) return { status: h.current.status, approvedAt: h.approvedAt };
         // The CLI ran and said no (a deleted record): that rule only, not memory down.
+        return /^Memory CLI exited |is not a memory lore id/.test(h.reason) ? LORE_ABSENT : null;
+      }),
+    });
+    return sendJson(res, 200, report);
+  }
+
+  // LESSONS (backlog 59): every lesson proposed from a post-merge finding, its lore status
+  // and its recurrences on its paths before vs after it went live (services/
+  // lessonReportService.ts). A read; memory reads bounded by the same cache as review rules.
+  if (segments.length === 2 && segments[1] === "lessons") {
+    if (method !== "GET") return methodNotAllowed(res);
+    let cache = LORE_STATUS_CACHES.get(memoryReader);
+    if (!cache) {
+      cache = createLoreStatusCache();
+      LORE_STATUS_CACHES.set(memoryReader, cache);
+    }
+    const report = lessonsReport(wg.db, {
+      nowMs: Date.parse(wg.clock.now()) || Date.now(),
+      lookup: cache.lookup((id) => {
+        const h = memoryReader.loreHistory(id);
+        if (h.available) return { status: h.current.status, approvedAt: h.approvedAt };
         return /^Memory CLI exited |is not a memory lore id/.test(h.reason) ? LORE_ABSENT : null;
       }),
     });

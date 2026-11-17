@@ -3376,6 +3376,54 @@
         "x-capability": "read"
       }
     },
+    "/api/lessons": {
+      "get": {
+        "operationId": "getApiLessons",
+        "tags": [
+          "Read models"
+        ],
+        "summary": "Lessons from post-merge findings, and whether they work",
+        "description": "Every lesson a person proposed from a post-merge finding, newest first, with its lore status from memory (`draft` until a person approves it) and its measure: changes that landed on its paths in its repo, and how many of them later had something go wrong (a standing finding or regression link), before vs after it went live over equal windows; no rate below `min_changes` changes on a side. `live`, `drafts_waiting` and `recurrences_after` (each change counted once over every live lesson) are the totals Health shows. Memory unavailable: statuses null (`unknown`). A read.",
+        "responses": {
+          "200": {
+            "description": "The report.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LessonsReport"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The Host/Origin is not permitted for a token-less request (`FORBIDDEN_HOST`). A named principal acted outside its scope (`SCOPE_DENIED`: `details.scope` names its repos and tickets, `details.reason` is `outside_repo_scope`, `outside_ticket_scope`, `no_repos`, `factory_wide` or `admin_required`, with `details.ticket`, `details.outside_repos` or `details.required` saying what put it outside).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "read"
+      }
+    },
     "/tickets": {
       "get": {
         "operationId": "getTickets",
@@ -16418,6 +16466,213 @@
           "event_id",
           "round_entered_at",
           "judge"
+        ],
+        "additionalProperties": false
+      },
+      "LessonsReport": {
+        "type": "object",
+        "properties": {
+          "live": {
+            "type": "integer"
+          },
+          "drafts_waiting": {
+            "type": "integer"
+          },
+          "unknown": {
+            "type": "integer",
+            "description": "Lessons whose status memory could not give."
+          },
+          "recurrences_after": {
+            "type": "object",
+            "properties": {
+              "k": {
+                "type": "integer"
+              },
+              "n": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "k",
+              "n"
+            ],
+            "additionalProperties": false
+          },
+          "min_changes": {
+            "type": "integer"
+          },
+          "lessons": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "lore_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "finding_id": {
+                  "type": "string"
+                },
+                "ticket_id": {
+                  "type": "string"
+                },
+                "number": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "repo": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "paths": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "proposed_at": {
+                  "type": "string"
+                },
+                "proposed_by": {
+                  "type": "string"
+                },
+                "lore_status": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "approved_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "measure": {
+                  "type": "object",
+                  "properties": {
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "not_approved",
+                        "not_enough_data",
+                        "measured"
+                      ]
+                    },
+                    "window_days": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "changes_before": {
+                      "type": "integer"
+                    },
+                    "recurrences_before": {
+                      "type": "integer"
+                    },
+                    "rate_before_pct": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "changes_after": {
+                      "type": "integer"
+                    },
+                    "recurrences_after": {
+                      "type": "integer"
+                    },
+                    "rate_after_pct": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "note": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "window_days",
+                    "changes_before",
+                    "recurrences_before",
+                    "rate_before_pct",
+                    "changes_after",
+                    "recurrences_after",
+                    "rate_after_pct",
+                    "note"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "lore_id",
+                "finding_id",
+                "ticket_id",
+                "number",
+                "repo",
+                "paths",
+                "proposed_at",
+                "proposed_by",
+                "lore_status",
+                "approved_at",
+                "measure"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "note": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "live",
+          "drafts_waiting",
+          "unknown",
+          "recurrences_after",
+          "min_changes",
+          "lessons",
+          "note"
         ],
         "additionalProperties": false
       },

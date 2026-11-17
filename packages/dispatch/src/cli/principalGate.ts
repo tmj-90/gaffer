@@ -188,6 +188,7 @@ const RULES: Record<string, Rule> = {
       "stats routing",
       "routing recommend",
       "review-rules",
+      "lessons",
       "human-queue",
       "export",
       "principal list",

@@ -347,6 +347,7 @@ describe("OpenAPI response schemas match the live routes", () => {
 
     // REVIEW RULES: the read model (no feedback repeated yet).
     await expectContract("GET /api/review-rules", "/api/review-rules");
+    await expectContract("GET /api/lessons", "/api/lessons");
 
     // --- principals ----------------------------------------------------------------
     await expectContract("GET /api/whoami", "/api/whoami");

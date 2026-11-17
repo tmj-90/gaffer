@@ -313,6 +313,50 @@ export const FindingWrite = z.object({ finding: FindingView, event_id: eventId }
 
 export const Findings = z.object({ ticket_id: str, findings: z.array(FindingView) }).strict();
 
+/** LESSONS (backlog 59): one lesson's measure, before vs after it went live. */
+const LessonMeasure = z
+  .object({
+    state: z.enum(["not_approved", "not_enough_data", "measured"]),
+    window_days: z.number().nullable(),
+    changes_before: int,
+    recurrences_before: int,
+    rate_before_pct: z.number().nullable(),
+    changes_after: int,
+    recurrences_after: int,
+    rate_after_pct: z.number().nullable(),
+    note: str,
+  })
+  .strict();
+
+/** GET /api/lessons. */
+export const LessonsReport = z
+  .object({
+    live: int,
+    drafts_waiting: int,
+    unknown: int.describe("Lessons whose status memory could not give."),
+    recurrences_after: z.object({ k: int, n: int }).strict(),
+    min_changes: int,
+    lessons: z.array(
+      z
+        .object({
+          lore_id: nstr,
+          finding_id: str,
+          ticket_id: str,
+          number: int.nullable(),
+          repo: nstr,
+          paths: z.array(str),
+          proposed_at: str,
+          proposed_by: str,
+          lore_status: nstr,
+          approved_at: nstr,
+          measure: LessonMeasure,
+        })
+        .strict(),
+    ),
+    note: str,
+  })
+  .strict();
+
 /** POST-MERGE FINDINGS: what opening a fix ticket would do (the confirm's read). */
 export const FixTicketPreview = z
   .object({

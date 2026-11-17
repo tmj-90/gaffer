@@ -14,6 +14,7 @@ export { readJudgeAgreement, renderJudgeAgreement } from "../health/judgeAgreeme
 export { createMemoryReader } from "../api/memoryReader.js";
 export { reviewRuleThreshold } from "../health/reviewRules.js";
 export { proposeReviewRules, reviewRulesReport } from "../services/reviewRuleService.js";
+export { lessonsReport } from "../services/lessonReportService.js";
 export {
   EXCLUDED_TABLES,
   exportState,

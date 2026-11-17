@@ -777,6 +777,22 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     capability: "read",
     responses: [ok("`{ threshold, candidates, proposed, note }`.", "ReviewRules")],
   },
+  {
+    method: "GET",
+    path: "/api/lessons",
+    tag: T.read,
+    summary: "Lessons from post-merge findings, and whether they work",
+    description:
+      "Every lesson a person proposed from a post-merge finding, newest first, with its lore " +
+      "status from memory (`draft` until a person approves it) and its measure: changes that " +
+      "landed on its paths in its repo, and how many of them later had something go wrong " +
+      "(a standing finding or regression link), before vs after it went live over equal " +
+      "windows; no rate below `min_changes` changes on a side. `live`, `drafts_waiting` and " +
+      "`recurrences_after` (each change counted once over every live lesson) are the totals " +
+      "Health shows. Memory unavailable: statuses null (`unknown`). A read.",
+    capability: "read",
+    responses: [ok("The report.", "LessonsReport")],
+  },
 
   // --- /tickets ------------------------------------------------------------------
   {

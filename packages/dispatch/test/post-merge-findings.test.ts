@@ -166,6 +166,19 @@ describe("the finding record", () => {
     expect(eventsOf(wg, change.id, "ticket.finding_added")).toHaveLength(1);
   });
 
+  it("control bytes, ANSI escapes and bidi overrides never reach the record", () => {
+    const change = landed(wg);
+    const raw =
+      "Header lost\u001b[2J\u001b]0;pwned\u0007 on empty\u0000 export\r\n‮evil‬" +
+      "⁦x⁩\u0085 done\ttab\u007f";
+    const f = wg.addFinding(change.id, { text: raw }, human).finding;
+    expect(f.text).toBe("Header lost[2J]0;pwned on empty export\nevilx done\ttab");
+    // eslint-disable-next-line no-control-regex -- asserting none survive
+    expect(/[\x00-\x08\x0b-\x1f\x7f-\x9f‪-‮⁦-⁩]/.test(f.text)).toBe(false);
+    const w = wg.withdrawFinding(change.id, f.id, "dup\u001b[31m red", human);
+    expect(w.finding.withdrawn!.reason).toBe("dup[31m red");
+  });
+
   it("a regression link's note becomes a finding on the accepted change", () => {
     const change = landed(wg);
     const defect = wg.createTicket({ title: "CSV export broke" }, human);

@@ -58,9 +58,23 @@ export function assertMayWriteFinding(actor: Actor): void {
     );
 }
 
-/** A finding's text: trimmed, 1 to 2000 characters (newlines kept). */
+/**
+ * Control characters a person's text never needs and a terminal or a reader would act on
+ * (backlog 59 review): C0 except newline and tab (ESC starts an ANSI sequence that
+ * `wg ticket finding list` and `memory lessons` would print raw), DEL, C1, and the
+ * bidirectional overrides and isolates that make text read differently from its bytes.
+ */
+// eslint-disable-next-line no-control-regex -- these are exactly the bytes being removed
+const UNSAFE_TEXT_CHARS = /[\x00-\x08\x0b-\x1f\x7f-\x9f‪-‮⁦-⁩]/g;
+
+/** A person's free text with {@link UNSAFE_TEXT_CHARS} removed and line ends as `\n`. */
+export function plainText(v: string): string {
+  return v.replace(/\r\n?/g, "\n").replace(UNSAFE_TEXT_CHARS, "");
+}
+
+/** A finding's text: trimmed, 1 to 2000 characters (newlines kept, control bytes removed). */
 export function findingText(v: unknown): string {
-  const s = typeof v === "string" ? v.replace(/\r\n?/g, "\n").trim() : "";
+  const s = typeof v === "string" ? plainText(v).trim() : "";
   if (!s)
     throw new DispatchError("VALIDATION_ERROR", "Say what went wrong (the finding's text).", {
       field: "text",
@@ -508,7 +522,7 @@ export function withdrawFinding(
   retire?: LessonRetirer,
 ): { finding: FindingView; eventId: string } {
   assertMayWriteFinding(actor);
-  const why = typeof reason === "string" ? reason.replace(/\s+/g, " ").trim() : "";
+  const why = typeof reason === "string" ? plainText(reason).replace(/\s+/g, " ").trim() : "";
   if (!why)
     throw new DispatchError("VALIDATION_ERROR", "Say why the finding is withdrawn.", {
       field: "reason",

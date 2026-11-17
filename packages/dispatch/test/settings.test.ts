@@ -389,14 +389,10 @@ describe("GET: origins, derived, migration, overrides, secrets", () => {
     // A spend cap no old reading accepts stops the runner's config, which the page names.
     writeFileSync(settingsPath, JSON.stringify({ GAFFER_REWORK_BUDGET_USD: "$5" }));
     expect(settingsReport(op(), settingsPath).configError).toMatch(/GAFFER_REWORK_BUDGET_USD/);
-    // A time cap no old reading accepts runs on the setting's limit, said in the block.
+    // So does a time cap no old reading accepts (review of external review 21: the
+    // setting's limit could be looser than the old runner's reading), and the page names it.
     writeFileSync(settingsPath, JSON.stringify({ GAFFER_TICK_TIMEOUT: "abc" }));
-    const rep2 = settingsReport(op(), settingsPath);
-    expect(rep2.configError).toBeUndefined();
-    expect(rep2.migration.find((m) => m.key === "GAFFER_TICK_TIMEOUT")).toMatchObject({
-      decision: "unreadable",
-    });
-    expect(rep2.derived.find((d) => d.name === "GAFFER_TICK_TIMEOUT")!.value).toBe("1800");
+    expect(settingsReport(op(), settingsPath).configError).toMatch(/GAFFER_TICK_TIMEOUT/);
   });
 
   it("overrides: a derived value a real environment variable sets is listed", () => {

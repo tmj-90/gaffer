@@ -105,4 +105,27 @@ describe("formatLessonsBlock", () => {
     expect(inside).toContain("(from an earlier change, lesson id0aaaaa");
     expect(inside.match(/^ {2}- /gm)).toHaveLength(5);
   });
+
+  it("bounds each lesson's size and drops control bytes (a lesson written at the host CLI)", () => {
+    const huge = "x".repeat(200_000);
+    const rows: LessonRow[] = Array.from({ length: 5 }, (_, i) => ({
+      id: `id${i}${huge}`,
+      title: `T${i} ${huge}`,
+      summary: `S${i} esc\u001b[2J nul\u0000 del\u007f c1\u009b ${huge}`,
+      matched: Array.from({ length: 9 }, () => `src/${huge}`),
+      fromTicket: 3,
+    }));
+    const block = formatLessonsBlock(rows);
+    expect(block.length).toBeLessThan(10_000);
+    const { inside } = split(block);
+    expect(inside).toContain(" [cut]");
+    // eslint-disable-next-line no-control-regex -- asserting none survive
+    expect(/[\x00-\x08\x0e-\x1f\x7f-\x9f]/.test(inside)).toBe(false);
+    expect(inside).toContain("S0 esc[2J nul del c1 x");
+    // A lesson made from a finding (title 190, summary 780 at most) is never cut.
+    const filed = formatLessonsBlock([
+      { ...ROW, title: `L ${"t".repeat(188)}`, summary: "s".repeat(780) },
+    ]);
+    expect(filed).not.toContain("[cut]");
+  });
 });

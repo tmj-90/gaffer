@@ -327,6 +327,30 @@ const LESSONS_USE: Record<LessonsAudience, string> = {
 };
 
 /**
+ * The most characters one lesson field puts in a prompt (backlog 59 review: a lesson
+ * written past dispatch, at the host's memory CLI, rendered whole, so one 200 KB summary
+ * made a 200 KB block). Dispatch files a lesson's title at 190 and its summary at 780, so a
+ * lesson made from a finding is never cut. With at most {@link LESSONS_BLOCK_LIMIT}
+ * lessons (five matched paths each) the block stays under about 9 KB.
+ */
+export const LESSON_FIELD_MAX = { title: 200, summary: 800, id: 32, path: 120 } as const;
+
+/**
+ * One lesson field as the prompt shows it: every `<` escaped, control characters dropped
+ * (an ESC or NUL in a record written at the host's CLI), whitespace runs one space, cut
+ * to `max` characters with a visible "[cut]".
+ */
+function lessonField(v: unknown, max: number): string {
+  const s = pyStrip(
+    sanitizeUntrustedField(typeof v === "string" ? v : "")
+      // eslint-disable-next-line no-control-regex -- the bytes being dropped
+      .replace(/[\x00-\x08\x0e-\x1f\x7f-\x9f]/g, "")
+      .replace(/\s+/g, " "),
+  );
+  return s.length > max ? `${s.slice(0, max)} [cut]` : s;
+}
+
+/**
  * Render the "Lessons from earlier changes here" block (backlog 59): the APPROVED lessons
  * whose paths overlap the paths this work touches. A lesson is a person's report of what
  * went wrong after an earlier change, approved by a person, and it is UNTRUSTED text: the
@@ -342,17 +366,17 @@ export function formatLessonsBlock(
   const lines: string[] = [];
   for (const r of rows.slice(0, LESSONS_BLOCK_LIMIT)) {
     if (!r || typeof r !== "object") continue;
-    const title = pyStrip(sanitizeUntrustedField(r.title ?? "")).replace(/\s+/g, " ");
-    const summ = pyStrip(sanitizeUntrustedField(r.summary ?? "")).replace(/\s+/g, " ");
+    const title = lessonField(r.title, LESSON_FIELD_MAX.title);
+    const summ = lessonField(r.summary, LESSON_FIELD_MAX.summary);
     if (!title && !summ) continue;
     const from =
       typeof r.fromTicket === "number" && Number.isInteger(r.fromTicket) && r.fromTicket > 0
         ? `from #${r.fromTicket}`
         : "from an earlier change";
-    const id = pyStrip(sanitizeUntrustedField(r.id ?? "")).replace(/\s+/g, " ");
+    const id = lessonField(r.id, LESSON_FIELD_MAX.id);
     const paths = (Array.isArray(r.matched) ? r.matched : [])
       .slice(0, 5)
-      .map((p) => pyStrip(sanitizeUntrustedField(p)).replace(/\s+/g, " "))
+      .map((p) => lessonField(p, LESSON_FIELD_MAX.path))
       .filter(Boolean);
     lines.push(`  - ${title || summ}`);
     if (summ && title && !title.includes(summ)) lines.push(`    ${summ}`);

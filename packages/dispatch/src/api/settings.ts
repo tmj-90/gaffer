@@ -700,7 +700,7 @@ export interface MigrationView {
   /** What the setting derives (masked likewise). */
   readonly derived: string;
   readonly differs: boolean;
-  /** kept | stricter-derived | same | ignored | environment | not-a-setting */
+  /** kept | stricter-derived | same | ignored | unreadable | environment | not-a-setting */
   readonly decision: string;
   /** In plain words: which reading is in force. */
   readonly inForce: string;
@@ -753,6 +753,8 @@ const IN_FORCE: Readonly<Record<string, string>> = {
   same: "the setting derives the same value",
   ignored: "the setting's value is in force",
   environment: "the environment sets it, so neither applies",
+  unreadable:
+    "the setting's limit is in force: the old value is not a number the old dashboard stored",
   "not-a-setting": "ignored: it was never a setting the runner reads from settings.json",
 };
 

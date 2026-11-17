@@ -353,6 +353,52 @@ describe("GET: origins, derived, migration, overrides, secrets", () => {
     });
   });
 
+  it("migration of old numbers (external review 21): the block and the removal plan show the runner's reading", () => {
+    // Stored by the old dashboard: a dollar cap written ".5" and a padded whole number.
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({ GAFFER_REWORK_BUDGET_USD: ".5", MAX_TICKS_PER_DAY: " 7" }),
+    );
+    const env = op();
+    const rep = settingsReport(env, settingsPath);
+    expect(rep.configError).toBeUndefined();
+    const by = new Map(rep.migration.map((m) => [m.key, m]));
+    expect(by.get("GAFFER_REWORK_BUDGET_USD")).toMatchObject({
+      setting: "GAFFER_BUDGET_USD",
+      decision: "kept",
+    });
+    expect(by.get("MAX_TICKS_PER_DAY")).toMatchObject({ decision: "kept" });
+    // In force: the runner's reading of each, from the old key.
+    expect(rep.derived.find((d) => d.name === "GAFFER_REWORK_BUDGET_USD")).toMatchObject({
+      value: "0.5",
+      source: "old-key",
+    });
+    expect(rep.derived.find((d) => d.name === "MAX_TICKS_PER_DAY")).toMatchObject({
+      value: "7",
+      source: "old-key",
+    });
+    // The removal plan reads the same records: removing either loosens the factory.
+    const drop = new Map(cleanupPlan(env, settingsPath).drop.map((d) => [d.key, d]));
+    expect(drop.get("GAFFER_REWORK_BUDGET_USD")).toMatchObject({
+      loosens: true,
+      setting: "GAFFER_BUDGET_USD",
+      after: "",
+    });
+    expect(drop.get("MAX_TICKS_PER_DAY")).toMatchObject({ loosens: true, after: "50" });
+
+    // A spend cap no old reading accepts stops the runner's config, which the page names.
+    writeFileSync(settingsPath, JSON.stringify({ GAFFER_REWORK_BUDGET_USD: "$5" }));
+    expect(settingsReport(op(), settingsPath).configError).toMatch(/GAFFER_REWORK_BUDGET_USD/);
+    // A time cap no old reading accepts runs on the setting's limit, said in the block.
+    writeFileSync(settingsPath, JSON.stringify({ GAFFER_TICK_TIMEOUT: "abc" }));
+    const rep2 = settingsReport(op(), settingsPath);
+    expect(rep2.configError).toBeUndefined();
+    expect(rep2.migration.find((m) => m.key === "GAFFER_TICK_TIMEOUT")).toMatchObject({
+      decision: "unreadable",
+    });
+    expect(rep2.derived.find((d) => d.name === "GAFFER_TICK_TIMEOUT")!.value).toBe("1800");
+  });
+
   it("overrides: a derived value a real environment variable sets is listed", () => {
     const rep = settingsReport(
       op({ GAFFER_MAX_TURNS: "12", GAFFER_NOTIFY_WEBHOOK_URL: HOOK }),

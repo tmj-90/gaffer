@@ -16,10 +16,14 @@
 # dashboard process reads this output; a person's view goes through config-show.mjs.
 
 gaffer_config_records() {
-  local _n _o _s _k _d _cfg_kept=" "
+  local _n _o _s _k _d _l _cfg_kept=" "
   _cfg_clean() { local v="${1//$'\t'/ }"; printf '%s' "${v//$'\n'/ }"; }
-  # The old settings.json keys that still apply (stricter), from the migration log.
-  while IFS=$'\t' read -r _k _ _ _ _d; do
+  # The old settings.json keys that still apply (stricter), from the migration log. The
+  # line is cut by hand: `read` would merge two tabs around an EMPTY field (a tab is IFS
+  # white space), so a kept key whose setting derives nothing ("" before the old value
+  # applied) lost its decision and read as derived.
+  while IFS= read -r _l; do
+    _k="${_l%%$'\t'*}"; _d="${_l##*$'\t'}"
     [ "$_d" = kept ] && _cfg_kept="$_cfg_kept$_k "
   done <<<"$_GAFFER_MIGRATION_LOG"
   for _n in $_GAFFER_SETTINGS_KEYS; do

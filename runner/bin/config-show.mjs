@@ -74,6 +74,7 @@ const DECISION = {
   same: "ignored (the setting derives the same value)",
   ignored: "ignored (the setting decides it)",
   environment: "ignored (the environment sets it)",
+  unreadable: "ignored (not a number the old dashboard stored; the setting's limit applies)",
 };
 
 /** The report as one object (the --json form). */

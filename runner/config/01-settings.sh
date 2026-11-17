@@ -430,6 +430,43 @@ _gaffer_bool01() {
     '' | 0 | [Ff][Aa][Ll][Ss][Ee] | [Nn][Oo] | [Oo][Ff][Ff]) _GAFFER_B=0 ;;
   esac
 }
+# THE OLD NUMBERS (external review 21). The old dashboard API (bf5e305 api/settings.ts)
+# checked an `int` key's TRIMMED value against digits and stored the raw string (" 3",
+# "3 " and "03" are in real files), and a `number` key (the dollar keys below) against
+# `^(\d+(\.\d*)?|\.\d+)$` (".5" and "5." too). The old runner read both with awk and
+# `[ -ge ]`, which skip the padding and the leading zeros. The migration reads each such
+# string to that same number (_gaffer_old_number) before it compares; a value no old
+# reading accepts is unreadable, and an unreadable cap never becomes "no limit"
+# (_gaffer_old_key: a spend cap refuses to start; a count or time cap runs on its
+# setting's limit, and refuses to start when the setting derives none).
+_GAFFER_OLD_USD_KEYS=" GAFFER_REWORK_BUDGET_USD GAFFER_BUDGET_LOW_THRESHOLD "
+_GAFFER_OLD_SPEND_CAPS=" GAFFER_REWORK_BUDGET_USD "
+# _gaffer_trim <value>: _GAFFER_TRIM = the value without leading or trailing spaces (the
+# settings.json reader turned tabs and newlines into spaces already).
+_gaffer_trim() {
+  local v="$1"
+  v="${v#"${v%%[! ]*}"}"
+  _GAFFER_TRIM="${v%"${v##*[! ]}"}"
+}
+# _gaffer_old_number <NAME> <stored>: _GAFFER_ON = the number the old runner read from a
+# stored old value, written plainly (".5" -> 0.5, "5." -> 5, " 03" -> 3); returns 1 (and
+# _GAFFER_ON empty) when no old reading accepts it (a sign, an exponent, a unit, a
+# decimal for a whole-number key, a non-ASCII digit or space).
+_gaffer_old_number() {
+  local name="$1" v re
+  _GAFFER_ON=""
+  _gaffer_trim "$2"; v="$_GAFFER_TRIM"
+  case "$_GAFFER_OLD_USD_KEYS" in
+    *" $name "*) re='^([0-9]+([.][0-9]*)?|[.][0-9]+)$' ;;
+    *) re='^[0-9]+$' ;;
+  esac
+  [[ "$v" =~ $re ]] || return 1
+  case "$v" in .*) v="0$v" ;; esac
+  v="${v%.}"
+  while [ "${#v}" -gt 1 ] && [ "${v:0:1}" = 0 ] && [ "${v:1:1}" != . ]; do v="${v:1}"; done
+  _GAFFER_ON="$v"
+  return 0
+}
 # _gaffer_stricter <policy words...> -- <old> <derived>: which reading is stricter.
 # Sets _GAFFER_ST to old (the old value is stricter), new (the derived one is: the old
 # was more permissive or costlier), same, or other (not comparable / not a number), and
@@ -497,7 +534,7 @@ _gaffer_stricter() {
 # done) for `gaffer config show --json`. A real environment variable for NAME wins over
 # both. URLs are never printed (a webhook URL holds its token).
 _gaffer_old_key() {
-  local name="$1" om setting policy old cur dec msg shown_old shown_cur
+  local name="$1" om setting policy old cur dec msg shown_old shown_cur cmp
   case "$_GAFFER_OLD_KEYS" in *" $name "*) ;; *) return 0 ;; esac
   case "$_GAFFER_OLD_DONE" in *" $name "*) return 0 ;; esac
   _GAFFER_OLD_DONE="$_GAFFER_OLD_DONE$name "
@@ -507,14 +544,29 @@ _gaffer_old_key() {
   case "$_GAFFER_ENV_AT_SOURCE" in
     *" $name "*) dec=environment ;;
     *)
-      # shellcheck disable=SC2086  # the policy's words
-      _gaffer_stricter $policy -- "$old" "$cur"
-      case "$_GAFFER_ST" in
-        old) dec=kept; printf -v "$name" '%s' "$_GAFFER_ST_VALUE"; export "${name?}" ;;
-        new) dec=stricter-derived ;;
-        same) dec=same ;;
-        *) dec=ignored ;;
-      esac ;;
+      # The old value as the old runner read it: a number in its stored spellings
+      # (_gaffer_old_number), a switch or a level without its padding (the old API
+      # trimmed a boolean before checking it and stored it as typed; the readers it
+      # reached read " 0" as off). An alert channel (keep) is applied as stored.
+      cmp="$old"
+      case "$policy" in
+        less | less0 | more)
+          if [ -n "$old" ] && ! _gaffer_old_number "$name" "$old"; then cmp=$'\x01'; else cmp="$_GAFFER_ON"; fi ;;
+        off | on | rank*) _gaffer_trim "$old"; cmp="$_GAFFER_TRIM" ;;
+      esac
+      if [ "$cmp" = $'\x01' ]; then
+        _gaffer_old_unreadable "$name" "$old" "$setting" "$policy" "$cur"
+        dec=unreadable
+      else
+        # shellcheck disable=SC2086  # the policy's words
+        _gaffer_stricter $policy -- "$cmp" "$cur"
+        case "$_GAFFER_ST" in
+          old) dec=kept; printf -v "$name" '%s' "$_GAFFER_ST_VALUE"; export "${name?}" ;;
+          new) dec=stricter-derived ;;
+          same) dec=same ;;
+          *) dec=ignored ;;
+        esac
+      fi ;;
   esac
   _GAFFER_MIGRATION_LOG="$_GAFFER_MIGRATION_LOG$name	$old	$setting	$cur	$dec
 "
@@ -531,6 +583,7 @@ _gaffer_old_key() {
         msg="the file's $shown_old is stricter than what $setting derives ($shown_cur), so it still applies; choose a $setting value (or export $name) and remove the key"
       fi ;;
     stricter-derived) msg="ignored: $setting decides it, and the file's $shown_old was more permissive or costlier than what it derives ($shown_cur), so the stricter value applies" ;;
+    unreadable) msg="the file's $shown_old could not be read as a number (the old dashboard stored digits, or dollars such as 5 or 0.50), so the limit $setting derives ($shown_cur) applies; fix the key or remove it" ;;
     same) msg="ignored: $setting decides it and derives the same value ($shown_cur); remove the key" ;;
     *) msg="ignored: $setting decides it (now $shown_cur, the file said $shown_old); choose a $setting value, or export $name to override" ;;
   esac
@@ -539,6 +592,29 @@ _gaffer_old_key() {
   export _GAFFER_DEPRECATED_SAID
 }
 
+# _gaffer_old_unreadable <NAME> <stored> <setting> <policy> <derived>: an old numeric
+# value no old reading accepts. It is never read as "no limit": a key that capped spend
+# refuses to start (money is not guessed: the person meant some amount, and the setting's
+# reading may be higher), and so does a count or time cap whose setting derives no limit
+# (the factory would run uncapped where it was capped). A count or time cap whose setting
+# still derives a limit runs on that limit (the caller says the old value could not be
+# read): a factory does not stop for a key whose bound the setting already gives.
+_gaffer_old_unreadable() {
+  local name="$1" stored="$2" setting="$3" policy="$4" cur="$5" why=""
+  case "$_GAFFER_OLD_SPEND_CAPS" in
+    *" $name "*) why="it capped spending, and a dollar cap is never guessed" ;;
+  esac
+  if [ -z "$why" ]; then
+    case "$policy" in
+      less) { [ -z "$cur" ] || awk -v d="$cur" 'BEGIN { exit !(d + 0 == 0) }'; } && why="it was a limit, and $setting derives none" ;;
+      less0) [ -n "$cur" ] || why="it was a limit, and $setting derives none" ;;
+    esac
+  fi
+  [ -n "$why" ] || return 0
+  printf "gaffer: settings.json key %s holds '%s', which is not a number the old dashboard stored (digits, or dollars such as 5 or 0.50); %s. Fix it to the number you meant, or remove it (the limit then comes from %s); refusing to load the config (fail closed)\n" \
+    "$name" "$stored" "$why" "$setting" >&2
+  exit 1
+}
 
 # _gaffer_deprecated <old-name> <what to set instead>: a deprecated variable that is
 # set says so on stderr once per process tree (the parent's mark is exported, so a

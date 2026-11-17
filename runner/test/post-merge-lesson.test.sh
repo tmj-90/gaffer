@@ -18,6 +18,8 @@
 #   E  a delivery naming only package.json does NOT get it;
 #   F  the reviewer agent of the change that touched src/a.js gets it too;
 #   G  the same delivery case with the runner's helper servers off (GAFFER_WG_SERVE=0).
+#   H  a lesson whose finding a person withdrew, and one a person retired in Memory, are
+#      served no more (both were served first).
 # Run: bash runner/test/post-merge-lesson.test.sh
 # =====================================================================
 . "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
@@ -121,6 +123,32 @@ echo "== G. the same with the helper servers off (GAFFER_WG_SERVE=0) =="
 T5="$(GAFFER_WG_SERVE=0 deliver "Helper five" "Add a fifth helper to src/a.js")"
 P5="$(prompt_of "$T5" || true)"
 [[ "$(inside_lessons "$P5")" == *"never tested and broke callers"* ]] && ok "G: unserved, #$T5's prompt carries the lesson" || fail "G: unserved, no lesson in #$T5's prompt"
+retire "$T3"; retire "$T5"
+
+echo "== H. a withdrawn finding's lesson and a lesson retired in Memory are not served =="
+# A second finding on #T1 becomes a second lesson, approved and served alongside the first.
+F2JSON="$(person ticket finding add "$T1" --text "SECOND_LESSON the error path of a() was never logged" --category test_gap 2>&1)"
+F2ID="$(printf '%s' "$F2JSON" | jget 'd.finding.id' 2>/dev/null || true)"
+L2ID="$(person ticket finding lesson "$T1" "$F2ID" 2>/dev/null | jget 'd.lore_id || ""' 2>/dev/null || true)"
+lg approve "$L2ID" >/dev/null 2>&1
+T6="$(deliver "Helper six" "Add a sixth helper to src/a.js")"
+P6="$(inside_lessons "$(prompt_of "$T6" || true)")"
+[[ "$P6" == *"never tested and broke callers"* && "$P6" == *"SECOND_LESSON"* ]] \
+  && ok "H: both approved lessons reach #$T6's prompt" || fail "H: #$T6 did not get both lessons: $(printf '%s' "$P6" | head -c 300)"
+retire "$T6"
+# A person withdraws the first finding (its lesson is retired with it) and retires the
+# second lesson in Memory (deprecate): the next delivery on src/a.js gets neither.
+WJSON="$(person ticket finding withdraw "$T1" "$FID" --reason "it was the caller's bug" 2>&1)"
+printf '%s' "$WJSON" | jget 'd.finding.withdrawn.reason' 2>/dev/null | grep -q "caller" \
+  && ok "H: the first finding is withdrawn" || fail "H: withdraw failed: $(printf '%s' "$WJSON" | head -c 300)"
+lg deprecate "$L2ID" >/dev/null 2>&1
+T7="$(deliver "Helper seven" "Add a seventh helper to src/a.js")"
+P7="$(prompt_of "$T7" || true)"
+[ -n "$P7" ] && ok "H: #$T7's delivery prompt was recorded" || fail "H: no recorded prompt for #$T7"
+[[ "$P7" != *"never tested and broke callers"* ]] \
+  && ok "H: the withdrawn finding's lesson is not in #$T7's prompt" || fail "H: a withdrawn finding's lesson still reached #$T7"
+[[ "$P7" != *"SECOND_LESSON"* && "$P7" != *"Lessons from earlier changes here"* ]] \
+  && ok "H: the lesson retired in Memory is not either (no lessons block at all)" || fail "H: a retired lesson still reached #$T7"
 
 echo ""
 echo "post-merge-lesson: ${PASS} passed, ${#FAILURES[@]} failed"

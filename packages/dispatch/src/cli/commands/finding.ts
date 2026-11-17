@@ -11,7 +11,8 @@ import { fileURLToPath } from "node:url";
 
 import type { Command } from "commander";
 
-import { FINDING_CATEGORY_LABEL, type FindingView } from "../../services/findingService.js";
+import { FINDING_CATEGORY_LABEL } from "../../domain/findingCategories.js";
+import type { FindingView } from "../../services/findingService.js";
 import { resolveDbPath } from "../../util/paths.js";
 import { cliActor, printJson } from "../helpers.js";
 import { heavy, open } from "../runtime.js";

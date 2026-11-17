@@ -35,22 +35,13 @@ export const FINDING_FIX_EVENT = "ticket.finding_fix_opened" as const;
 /** The lore tag a lesson carries (memory keeps it a draft until a person approves it). */
 export const LESSON_TAG = "post-merge-finding";
 
-export const FINDING_CATEGORIES = [
-  "missed_requirement",
-  "wrong_assumption",
-  "test_gap",
-  "convention",
-  "other",
-] as const;
-export type FindingCategory = (typeof FINDING_CATEGORIES)[number];
+import {
+  FINDING_CATEGORIES,
+  FINDING_CATEGORY_LABEL,
+  type FindingCategory,
+} from "../domain/findingCategories.js";
 
-export const FINDING_CATEGORY_LABEL: Record<FindingCategory, string> = {
-  missed_requirement: "missed requirement",
-  wrong_assumption: "wrong assumption",
-  test_gap: "test gap",
-  convention: "convention",
-  other: "other",
-};
+export { FINDING_CATEGORIES, FINDING_CATEGORY_LABEL, type FindingCategory };
 
 export const FINDING_TEXT_MAX = 2_000;
 export const FINDING_REASON_MAX = 500;

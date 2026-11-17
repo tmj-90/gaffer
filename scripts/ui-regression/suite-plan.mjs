@@ -56,6 +56,7 @@ export const ORDER = [
   "s22-tester-first",
   "s23-acceptance-cli",
   "s24-autonomy-ladder",
+  "s25-post-merge-lesson",
 ];
 
 export const available = () =>

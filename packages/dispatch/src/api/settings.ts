@@ -8,6 +8,7 @@ import { DispatchError } from "../util/errors.js";
 import {
   loadSchema,
   readRunnerConfig,
+  readRunnerConfigAsync,
   type RunnerConfigRead,
   type SchemaSetting,
 } from "./runnerConfig.js";
@@ -271,6 +272,19 @@ export function runnerConfigFor(
   return readRunnerConfig(operatorEnv(env, path));
 }
 
+/**
+ * {@link runnerConfigFor} without blocking the event loop (external review 21). Every
+ * request path reads the runner's config through this (GET and POST /api/settings, the
+ * removal act, the per-request refresh, the poll's spend-cap check), then hands the read
+ * to the synchronous builders below as `rc`, so no request ever runs a spawnSync.
+ */
+export function runnerConfigForAsync(
+  env: NodeJS.ProcessEnv = process.env,
+  path: string = resolveSettingsPath(env),
+): Promise<RunnerConfigRead> {
+  return readRunnerConfigAsync(operatorEnv(env, path));
+}
+
 /** Names this process put in an env (with their re-source records). */
 const APPLIED = new WeakMap<object, Set<string>>();
 function appliedOf(env: NodeJS.ProcessEnv): Set<string> {
@@ -331,6 +345,60 @@ export function refreshSettingsEnv(env: NodeJS.ProcessEnv = process.env): boolea
   return true;
 }
 
+/** An asynchronous apply running now, per env: a request that arrives meanwhile waits. */
+const APPLYING = new WeakMap<object, Promise<unknown>>();
+
+/**
+ * {@link refreshSettingsEnv} for the request path (external review 21): the runner's
+ * config is read without blocking the event loop, and the request still waits for it,
+ * so a route never decides on values older than the file (the approve floor, auto merge
+ * on a human approval, PR mode). A request that arrives while an apply is running waits
+ * for that apply, then checks the file again: it never runs on the values from before
+ * the change the running apply is taking in.
+ */
+export async function refreshSettingsEnvAsync(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<boolean> {
+  let changed = false;
+  for (;;) {
+    const running = APPLYING.get(env);
+    if (running) {
+      await running;
+      continue;
+    }
+    const last = APPLIED_FILE.get(env);
+    if (!last) return changed;
+    const path = resolveSettingsPath(env);
+    if (path === last.path && fileSignature(path) === last.sig) return changed;
+    await applySettingsToEnvAsync(env, path);
+    changed = true;
+  }
+}
+
+/**
+ * {@link applySettingsToEnv} without blocking the event loop: the file's signature is
+ * taken before the read (a change while it runs is caught by the next refresh), the
+ * runner's config is read asynchronously, then applied. Applies to one env run one at a
+ * time, in order.
+ */
+export async function applySettingsToEnvAsync(
+  env: NodeJS.ProcessEnv = process.env,
+  path: string = resolveSettingsPath(env),
+): Promise<{ applied: string[]; error?: string }> {
+  for (let running = APPLYING.get(env); running; running = APPLYING.get(env)) await running;
+  const p = (async () => {
+    const sig = fileSignature(path);
+    const rc = await runnerConfigForAsync(env, path);
+    return applyWith(env, path, sig, rc);
+  })();
+  APPLYING.set(env, p);
+  try {
+    return await p;
+  } finally {
+    if (APPLYING.get(env) === p) APPLYING.delete(env);
+  }
+}
+
 /**
  * Put the settings and what the runner derives from them in `env` (never over a name
  * the operator set). Call at API startup and after each write. Each value goes in with
@@ -348,11 +416,21 @@ export function applySettingsToEnv(
   env: NodeJS.ProcessEnv = process.env,
   path: string = resolveSettingsPath(env),
 ): { applied: string[]; error?: string } {
+  // Taken before the read: a change while it runs is caught by the next refresh.
+  const sig = fileSignature(path);
+  return applyWith(env, path, sig, runnerConfigFor(env, path));
+}
+
+/** Apply a read of the runner's config made from the file as it was at `sig`. */
+function applyWith(
+  env: NodeJS.ProcessEnv,
+  path: string,
+  sig: string,
+  rc: RunnerConfigRead,
+): { applied: string[]; error?: string } {
   const op = operatorNames(env);
   const want = new Map<string, string>();
-  // Taken before the read: a change while it runs is caught by the next refresh.
-  APPLIED_FILE.set(env, { path, sig: fileSignature(path) });
-  const rc = runnerConfigFor(env, path);
+  APPLIED_FILE.set(env, { path, sig });
   if (rc.ok) {
     const names = new Set([
       ...DASHBOARD_NAMES,
@@ -800,12 +878,12 @@ function storedRewrite(def: SettingDef, stored: string, env: NodeJS.ProcessEnv):
 export function cleanupPlan(
   env: NodeJS.ProcessEnv = process.env,
   path: string = resolveSettingsPath(env),
+  rc: RunnerConfigRead = runnerConfigFor(env, path),
 ): CleanupPlan {
   const digest = fileDigest(path);
   const raw = readSettingsFileRaw(path);
   // The old keys whose value is in force now (stricter than the setting's reading).
   const kept = new Map<string, { setting: string; derived: string }>();
-  const rc = runnerConfigFor(env, path);
   if (rc.ok)
     for (const m of rc.report.migration)
       if (m.decision === "kept") kept.set(m.key, { setting: m.setting, derived: m.derived });
@@ -842,10 +920,10 @@ export function cleanupPlan(
 export function settingsReport(
   env: NodeJS.ProcessEnv = process.env,
   path: string = resolveSettingsPath(env),
+  rc: RunnerConfigRead = runnerConfigFor(env, path),
 ): SettingsReport {
   const file = readSettingsFile(path);
   const raw = readSettingsFileRaw(path);
-  const rc = runnerConfigFor(env, path);
   const settings = SETTING_DEFS.map((def): SettingView => {
     const locked = isEnvLocked(env, def.key);
     const stored = file[def.key] ?? "";
@@ -935,7 +1013,7 @@ export function settingsReport(
     derived,
     migration,
     overrides,
-    cleanup: cleanupPlan(env, path),
+    cleanup: cleanupPlan(env, path, rc),
     ...(rc.ok ? {} : { configError: rc.error }),
   };
 }
@@ -944,8 +1022,18 @@ export function settingsReport(
 export function listSettings(
   env: NodeJS.ProcessEnv = process.env,
   path: string = resolveSettingsPath(env),
+  rc: RunnerConfigRead = runnerConfigFor(env, path),
 ): SettingView[] {
-  return settingsReport(env, path).settings;
+  return settingsReport(env, path, rc).settings;
+}
+
+/** {@link settingsReport} for the request path: the config read does not block. */
+export async function settingsReportAsync(
+  env: NodeJS.ProcessEnv = process.env,
+  path: string = resolveSettingsPath(env),
+  rcRead: Promise<RunnerConfigRead> = runnerConfigForAsync(env, path),
+): Promise<SettingsReport> {
+  return settingsReport(env, path, await rcRead);
 }
 
 // ── Writes ───────────────────────────────────────────────────────────────────
@@ -997,6 +1085,28 @@ export function writeSettings(
   env: NodeJS.ProcessEnv = process.env,
   path: string = resolveSettingsPath(env),
 ): WriteSettingsResult {
+  const result = writeSettingsFile(updates, env, path);
+  if (result.written.length > 0) applySettingsToEnv(env, path);
+  return result;
+}
+
+/** {@link writeSettings} for the request path: the apply's config read does not block. */
+export async function writeSettingsAsync(
+  updates: Record<string, string>,
+  env: NodeJS.ProcessEnv = process.env,
+  path: string = resolveSettingsPath(env),
+): Promise<WriteSettingsResult> {
+  const result = writeSettingsFile(updates, env, path);
+  if (result.written.length > 0) await applySettingsToEnvAsync(env, path);
+  return result;
+}
+
+/** The file half of a settings write (validate, merge, write atomically). */
+function writeSettingsFile(
+  updates: Record<string, string>,
+  env: NodeJS.ProcessEnv,
+  path: string,
+): WriteSettingsResult {
   const merged: Record<string, string> = { ...readSettingsFileRaw(path) };
   const written: string[] = [];
   const rejected: string[] = [];
@@ -1021,10 +1131,7 @@ export function writeSettings(
     else merged[key] = value;
     written.push(key);
   }
-  if (written.length > 0) {
-    atomicWriteJson(path, merged);
-    applySettingsToEnv(env, path);
-  }
+  if (written.length > 0) atomicWriteJson(path, merged);
   return { written, rejected, ignored, invalid };
 }
 
@@ -1039,7 +1146,31 @@ export function removeOldKeys(
   env: NodeJS.ProcessEnv = process.env,
   path: string = resolveSettingsPath(env),
 ): CleanupPlan {
-  const plan = cleanupPlan(env, path);
+  const { plan, wrote } = removeOldKeysFile(expected, env, path, runnerConfigFor(env, path));
+  if (wrote) applySettingsToEnv(env, path);
+  return plan;
+}
+
+/** {@link removeOldKeys} for the request path: no config read blocks the event loop. */
+export async function removeOldKeysAsync(
+  expected: { drop: readonly string[]; rewrite: readonly string[]; digest: string },
+  env: NodeJS.ProcessEnv = process.env,
+  path: string = resolveSettingsPath(env),
+): Promise<CleanupPlan> {
+  const rc = await runnerConfigForAsync(env, path);
+  const { plan, wrote } = removeOldKeysFile(expected, env, path, rc);
+  if (wrote) await applySettingsToEnvAsync(env, path);
+  return plan;
+}
+
+/** The file half of the removal act, on a read of the runner's config of this file. */
+function removeOldKeysFile(
+  expected: { drop: readonly string[]; rewrite: readonly string[]; digest: string },
+  env: NodeJS.ProcessEnv,
+  path: string,
+  rc: RunnerConfigRead,
+): { plan: CleanupPlan; wrote: boolean } {
+  const plan = cleanupPlan(env, path, rc);
   const same = (a: readonly string[], b: readonly string[]) =>
     JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());
   if (
@@ -1059,7 +1190,7 @@ export function removeOldKeys(
       { plan },
     );
   }
-  if (plan.drop.length === 0 && plan.rewrite.length === 0) return plan;
+  if (plan.drop.length === 0 && plan.rewrite.length === 0) return { plan, wrote: false };
   const raw = readSettingsFileRaw(path);
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(raw)) {
@@ -1070,8 +1201,7 @@ export function removeOldKeys(
     if (value !== "") out[k] = value;
   }
   atomicWriteJson(path, out);
-  applySettingsToEnv(env, path);
-  return plan;
+  return { plan, wrote: true };
 }
 
 /** Serialise `data` to `path` atomically (temp file in the same dir + rename). */

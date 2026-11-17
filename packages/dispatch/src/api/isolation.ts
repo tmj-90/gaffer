@@ -162,7 +162,7 @@ export function refreshIsolationStatus(
  */
 export function isolationStatusForRequest(
   env: NodeJS.ProcessEnv = process.env,
-  opts: { waitMs?: number; fresh?: boolean } = {},
+  opts: { waitMs?: number; fresh?: boolean; alongside?: Promise<unknown> } = {},
 ): Promise<IsolationStatus> {
   const waitMs = opts.waitMs ?? SETTINGS_PROBE_WAIT_MS;
   const probe = refreshIsolationStatus(env);
@@ -170,10 +170,23 @@ export function isolationStatusForRequest(
     (opts.fresh ? null : last) ?? last ?? unknownStatus(PROBING);
   return new Promise((resolve) => {
     let done = false;
-    const timer = setTimeout(() => {
-      if (done) return;
+    // ONE BOUND (external review 21): the load also waits for `alongside` (the runner's
+    // config read it runs beside the probe), so the probe may answer for as long as that
+    // read runs; the two waits overlap and never add up.
+    let alongsideDone = opts.alongside === undefined;
+    let timedOut = false;
+    const giveUp = (): void => {
+      if (done || !timedOut || !alongsideDone) return;
       done = true;
       resolve(fallback());
+    };
+    void opts.alongside?.then(
+      () => ((alongsideDone = true), giveUp()),
+      () => ((alongsideDone = true), giveUp()),
+    );
+    const timer = setTimeout(() => {
+      timedOut = true;
+      giveUp();
     }, waitMs);
     void probe.then((status) => {
       if (done) return;

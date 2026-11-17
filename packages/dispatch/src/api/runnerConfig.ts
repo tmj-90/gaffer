@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -115,6 +115,45 @@ export function parseRunnerRecords(text: string): RunnerRecords {
 
 const cache = new Map<string, RunnerConfigRead>();
 const CACHE_MAX = 16;
+/** Reads running now, by cache key: a request that arrives meanwhile shares the read. */
+const inflight = new Map<string, Promise<RunnerConfigRead>>();
+
+/**
+ * How long one read of the runner's config may take, both of its processes together
+ * (external review 21: it was 30 s per process). A read takes about 0.4 s here and about
+ * 1 s on a macOS runner with bash 3.2; a config that hangs past this is reported as
+ * unreadable (the Settings page's config callout), never waited on.
+ */
+export const RUNNER_CONFIG_TIMEOUT_MS = 8_000;
+
+/** The two commands a read runs (a test seam replaces them; see below). */
+interface ConfigCommands {
+  readonly records: readonly string[];
+  readonly show: readonly string[];
+  /** A shorter bound for a test (default {@link RUNNER_CONFIG_TIMEOUT_MS}). */
+  readonly timeoutMs?: number;
+}
+let commandsOverride: ConfigCommands | null = null;
+function timeoutMs(): number {
+  return commandsOverride?.timeoutMs ?? RUNNER_CONFIG_TIMEOUT_MS;
+}
+function commands(): ConfigCommands {
+  return (
+    commandsOverride ?? {
+      records: ["bash", RECORDS_SH],
+      show: [process.execPath, CONFIG_SHOW_MJS, "--all", "--json"],
+    }
+  );
+}
+/**
+ * Test seam: run these argv instead of the records printer and the report (null puts
+ * the real ones back). Module state, never the environment: nothing a settings.json or
+ * a request can reach picks what the dashboard runs.
+ */
+export function setRunnerConfigCommandsForTest(c: ConfigCommands | null): void {
+  commandsOverride = c;
+  cache.clear();
+}
 
 /** The last line of a stopped config (it names the setting and why), never a URL. */
 function stopReason(stderr: string): string {
@@ -133,8 +172,140 @@ function stopReason(stderr: string): string {
  * file's bytes, so a page load does not source the config twice for the same state.
  */
 export function readRunnerConfig(env: Readonly<Record<string, string>>): RunnerConfigRead {
-  if (!existsSync(RECORDS_SH) || !existsSync(SCHEMA_PATH)) {
-    return { ok: false, error: "the runner's config reader was not found beside the dashboard" };
+  const pre = prepare(env);
+  if ("done" in pre) return pre.done;
+  const c = commands();
+  const t0 = Date.now();
+  const rec = spawnSync(c.records[0]!, c.records.slice(1), {
+    env,
+    encoding: "utf8",
+    timeout: timeoutMs(),
+    killSignal: "SIGKILL",
+  });
+  const recRun: ChildRun = {
+    status: rec.status,
+    stdout: rec.stdout ?? "",
+    stderr: rec.stderr ?? "",
+    timedOut: (rec.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT",
+    failed: rec.error !== undefined,
+  };
+  let showRun: ChildRun | null = null;
+  if (recRun.status === 0 && !recRun.failed) {
+    const left = Math.max(1, timeoutMs() - (Date.now() - t0));
+    const show = spawnSync(c.show[0]!, c.show.slice(1), {
+      env,
+      input: recRun.stdout,
+      encoding: "utf8",
+      timeout: left,
+      killSignal: "SIGKILL",
+    });
+    showRun = {
+      status: show.status,
+      stdout: show.stdout ?? "",
+      stderr: show.stderr ?? "",
+      timedOut: (show.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT",
+      failed: show.error !== undefined,
+    };
+  }
+  return settle(pre.key, recRun, showRun);
+}
+
+/**
+ * {@link readRunnerConfig} without blocking the dashboard's event loop (external review
+ * 21: the read ran two spawnSync calls on the request path, stalling every other request
+ * for its length). The two processes run asynchronously, bounded together by
+ * {@link RUNNER_CONFIG_TIMEOUT_MS}; at most ONE read runs at a time for one cache key
+ * (environment and file bytes), and a caller that arrives meanwhile gets the same
+ * answer. A read that ran out of time is reported, never cached (the next load asks
+ * again).
+ */
+export function readRunnerConfigAsync(
+  env: Readonly<Record<string, string>>,
+): Promise<RunnerConfigRead> {
+  const pre = prepare(env);
+  if ("done" in pre) return Promise.resolve(pre.done);
+  const running = inflight.get(pre.key);
+  if (running) return running;
+  const c = commands();
+  const p = (async (): Promise<RunnerConfigRead> => {
+    const t0 = Date.now();
+    const rec = await runChild(c.records, env, null, timeoutMs());
+    let show: ChildRun | null = null;
+    if (rec.status === 0 && !rec.failed) {
+      const left = Math.max(1, timeoutMs() - (Date.now() - t0));
+      show = await runChild(c.show, env, rec.stdout, left);
+    }
+    return settle(pre.key, rec, show);
+  })().finally(() => inflight.delete(pre.key));
+  inflight.set(pre.key, p);
+  return p;
+}
+
+/** One finished child process. */
+interface ChildRun {
+  readonly status: number | null;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly timedOut: boolean;
+  /** It could not be started, or was stopped (a timeout included). */
+  readonly failed: boolean;
+}
+
+/** Run argv with `input` on stdin, killed (with its process group) after `timeoutMs`. */
+function runChild(
+  argv: readonly string[],
+  env: Readonly<Record<string, string>>,
+  input: string | null,
+  timeoutMs: number,
+): Promise<ChildRun> {
+  return new Promise((resolve) => {
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+    let settled = false;
+    const done = (r: ChildRun): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(r);
+    };
+    let child: ReturnType<typeof spawn>;
+    try {
+      // Its own process group, so a timeout stops the config's own children too.
+      child = spawn(argv[0]!, argv.slice(1), { env, detached: true, stdio: "pipe" });
+    } catch (e) {
+      resolve({ status: null, stdout: "", stderr: String(e), timedOut: false, failed: true });
+      return;
+    }
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try {
+        if (child.pid !== undefined) process.kill(-child.pid, "SIGKILL");
+      } catch {
+        child.kill("SIGKILL");
+      }
+    }, timeoutMs);
+    child.stdout?.setEncoding("utf8").on("data", (d: string) => (stdout += d));
+    child.stderr?.setEncoding("utf8").on("data", (d: string) => (stderr += d));
+    child.on("error", (e) =>
+      done({ status: null, stdout, stderr: stderr + String(e), timedOut, failed: true }),
+    );
+    child.on("close", (code) =>
+      done({ status: code, stdout, stderr, timedOut, failed: timedOut || code === null }),
+    );
+    child.stdin?.on("error", () => undefined);
+    child.stdin?.end(input ?? "");
+  });
+}
+
+/** The cache key for a read, or the answer when no read is needed (cached, no runner). */
+function prepare(
+  env: Readonly<Record<string, string>>,
+): { done: RunnerConfigRead } | { key: string } {
+  if (!commandsOverride && (!existsSync(RECORDS_SH) || !existsSync(SCHEMA_PATH))) {
+    return {
+      done: { ok: false, error: "the runner's config reader was not found beside the dashboard" },
+    };
   }
   let file = "";
   try {
@@ -148,30 +319,32 @@ export function readRunnerConfig(env: Readonly<Record<string, string>>): RunnerC
     .update(file)
     .digest("hex");
   const hit = cache.get(key);
-  if (hit) return hit;
-  const rec = spawnSync("bash", [RECORDS_SH], { env, encoding: "utf8", timeout: 30_000 });
+  return hit ? { done: hit } : { key };
+}
+
+/** Turn the two runs into the read's answer, and cache it unless it ran out of time. */
+function settle(key: string, rec: ChildRun, show: ChildRun | null): RunnerConfigRead {
   let out: RunnerConfigRead;
-  if (rec.status !== 0 || rec.error) {
-    const why = stopReason(rec.stderr ?? "");
-    out = {
+  if (rec.timedOut || show?.timedOut) {
+    return {
       ok: false,
-      error: why !== "" ? why : "the runner's config could not be read",
+      error: `the runner's config did not answer within ${timeoutMs() / 1000} s`,
     };
+  }
+  if (rec.status !== 0 || rec.failed) {
+    const why = stopReason(rec.stderr);
+    out = { ok: false, error: why !== "" ? why : "the runner's config could not be read" };
+  } else if (!show || show.status !== 0 || show.failed) {
+    out = { ok: false, error: "the runner's config report could not be read" };
   } else {
-    const show = spawnSync(process.execPath, [CONFIG_SHOW_MJS, "--all", "--json"], {
-      env,
-      input: rec.stdout,
-      encoding: "utf8",
-      timeout: 30_000,
-    });
-    if (show.status !== 0 || show.error) {
-      out = { ok: false, error: "the runner's config report could not be read" };
-    } else {
+    try {
       out = {
         ok: true,
         records: parseRunnerRecords(rec.stdout),
         report: JSON.parse(show.stdout) as RunnerReport,
       };
+    } catch {
+      out = { ok: false, error: "the runner's config report could not be read" };
     }
   }
   if (cache.size >= CACHE_MAX) cache.delete(cache.keys().next().value as string);

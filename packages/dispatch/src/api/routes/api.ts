@@ -34,11 +34,12 @@ import {
   applyNotifyChange,
   readSecretSetting,
   readSettingsFile,
-  removeOldKeys,
+  removeOldKeysAsync,
   resolveSettingsPath,
+  runnerConfigForAsync,
   settingProblems,
-  settingsReport,
-  writeSettings,
+  settingsReportAsync,
+  writeSettingsAsync,
 } from "../settings.js";
 import { requestAgentFilter } from "../scopeGate.js";
 import { apiActor, apiAuth, apiPrincipal, isSharedOperator } from "./context.js";
@@ -71,8 +72,16 @@ export async function routeApi(
       // The isolation posture rides along (runner/gaffer sandbox-status, probed on each
       // load): the Sandbox control shows it as a read-only line. The load never waits
       // long for the probe (isolation.ts).
-      const isolation = await isolationStatusForRequest();
-      sendJson(res, 200, { ...settingsReport(), isolation });
+      // ONE BOUND (external review 21): the runner's config read and the probe start
+      // together and the load waits for both at once, so a slow probe never adds to a
+      // slow config read (it used to wait up to 1.5 s for the probe, then read the config
+      // with two blocking spawns). The read itself is bounded (runnerConfig.ts).
+      const rcRead = runnerConfigForAsync();
+      const [report, isolation] = await Promise.all([
+        settingsReportAsync(process.env, undefined, rcRead),
+        isolationStatusForRequest(process.env, { alongside: rcRead }),
+      ]);
+      sendJson(res, 200, { ...report, isolation });
       return;
     }
     if (method === "POST" || method === "PUT") {
@@ -95,14 +104,16 @@ export async function routeApi(
           { invalid: problems },
         );
       }
-      const result = writeSettings(updates);
-      // A saved GAFFER_SANDBOX changes the posture: probe again and wait a little longer.
-      const isolation = await isolationStatusForRequest(process.env, {
-        fresh: true,
-        waitMs: 4_000,
-      });
+      const result = await writeSettingsAsync(updates);
+      // A saved GAFFER_SANDBOX changes the posture: probe again and wait a little longer,
+      // alongside the report's config read (one bound, as on a load).
+      const rcRead = runnerConfigForAsync();
+      const [report, isolation] = await Promise.all([
+        settingsReportAsync(process.env, undefined, rcRead),
+        isolationStatusForRequest(process.env, { fresh: true, waitMs: 4_000, alongside: rcRead }),
+      ]);
       sendJson(res, 200, {
-        ...settingsReport(),
+        ...report,
         isolation,
         written: result.written,
         rejected: result.rejected,
@@ -121,8 +132,8 @@ export async function routeApi(
   if (segments.length === 3 && segments[1] === "settings" && segments[2] === "remove-old-keys") {
     if (method !== "POST") return methodNotAllowed(res);
     const body = removeOldKeysBody.parse(await readJsonBody(req));
-    const removed = removeOldKeys(body);
-    sendJson(res, 200, { ...settingsReport(), removed });
+    const removed = await removeOldKeysAsync(body);
+    sendJson(res, 200, { ...(await settingsReportAsync()), removed });
     return;
   }
   // GET /api/settings/secret/:key — an ADMIN principal reads a secret-bearing setting

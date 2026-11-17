@@ -2,7 +2,7 @@ import { DispatchError } from "../util/errors.js";
 
 import { parseCommand } from "./mergeRunner.js";
 import { type RunTracker, spawnTrackedRun } from "./runTracking.js";
-import { listSettings } from "./settings.js";
+import { listSettings, resolveSettingsPath, runnerConfigForAsync } from "./settings.js";
 
 /**
  * Fires a single factory tick on demand — the Work/board view's "Poll for work"
@@ -111,6 +111,29 @@ export function spendCapRefusal(env: NodeJS.ProcessEnv = process.env): string | 
   } catch {
     return null;
   }
+  return capRefusalOf(views);
+}
+
+/**
+ * {@link spendCapRefusal} for the request path (POST /api/work/poll): the runner's config
+ * is read without blocking the event loop (external review 21).
+ */
+export async function spendCapRefusalAsync(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<string | null> {
+  if ((env["DRY_RUN"] ?? "").trim() === "1") return null;
+  if ((env["GAFFER_ALLOW_UNCAPPED"] ?? "").trim() === "1") return null;
+  let views: ReturnType<typeof listSettings>;
+  try {
+    const path = resolveSettingsPath(env);
+    views = listSettings(env, path, await runnerConfigForAsync(env, path));
+  } catch {
+    return null;
+  }
+  return capRefusalOf(views);
+}
+
+function capRefusalOf(views: ReturnType<typeof listSettings>): string | null {
   const capped = SPEND_CAP_KEYS.some((key) => {
     const v = views.find((s) => s.key === key)?.effective ?? "";
     return Number.parseFloat(v) > 0;

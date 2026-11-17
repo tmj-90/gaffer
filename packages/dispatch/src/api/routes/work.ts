@@ -4,7 +4,7 @@ import type { Dispatch } from "../../core.js";
 import { methodNotAllowed, readJsonBody, sendJson } from "../http.js";
 import { readIdleLoops, resolveCrewConfigPath } from "../idleLoops.js";
 import type { PlanBuildRunner } from "../planBuild.js";
-import { spendCapRefusal, type PollWorkRunner } from "../pollWork.js";
+import { spendCapRefusalAsync, type PollWorkRunner } from "../pollWork.js";
 import type { ProductOwnerRunner, ProductOwnerRunResult } from "../productOwner.js";
 import { planBuildBody, runProductOwnerBody, specBuildBody } from "../schemas.js";
 import type { SpecAuthorRunner } from "../specAuthor.js";
@@ -194,7 +194,7 @@ export async function routeWork(
     // The runner refuses a live poll with no dollar cap before any tick runs
     // (bin/poll-once.sh). Spawning it anyway answered "polled" and recorded a
     // "succeeded" run that did nothing, so refuse it here, with the runner's own fix.
-    const capRefusal = spendCapRefusal(process.env);
+    const capRefusal = await spendCapRefusalAsync(process.env);
     if (capRefusal !== null) {
       sendJson(res, 200, {
         polled: false,

@@ -618,7 +618,8 @@ export const DANGEROUS_COMMANDS = [
       String.raw`(?:\bnode\b[^\n;&|]*[\s/]memory(?:\.js)?|${CMD_POS}(?:(?:npx|bunx|pnpx)(?:[ \t]+-${TOK})*[ \t]+|(?:pnpm|npm|yarn)(?:[ \t]+-${TOK})*[ \t]+(?:(?:exec|dlx|x)[ \t]+(?:-${TOK}[ \t]+)*)?)?memory)[ \t]+(?:["']?suggest["']?${WORD_END}|["']?sync["']?(?![ \t]+["']?export["']?${WORD_END}))`,
     ),
     why: "the memory CLI's writes that skip the memory MCP's checks (suggest, sync import / pull): a draft with any repo, tag or path scope, or records upserted from files as active; an agent proposes lore through the memory MCP's suggest_lore",
-    example: "memory suggest --title t --summary s --body b --repo app --tag post-merge-finding --path src",
+    example:
+      "memory suggest --title t --summary s --body b --repo app --tag post-merge-finding --path src",
     crewFlags: false,
   },
   {

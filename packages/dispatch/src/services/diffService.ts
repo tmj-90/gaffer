@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { devNull } from "node:os";
 
 import { isActiveTicketRepoRelation, type Ticket } from "../domain/types.js";
 import { computeRepoImpact, type DownstreamRepo, type RepoImpact } from "./changeImpact.js";
@@ -179,6 +180,12 @@ const SAFE_DIFF_FLAGS = ["--no-ext-diff", "--no-textconv"] as const;
  */
 export const defaultGitRunner: GitRunner = (cwd, args, opts) => {
   const res = spawnSync("git", ["-C", cwd, ...args], {
+    // OBJECTS AS STORED (review of external review 21): a commit id names its content only
+    // while git reads the object itself. A replace ref (`git replace <risky> <safe>`)
+    // showed every read of the risky commit with the safe commit's tree, and a graft file
+    // rewrote parents and so every merge-base; the approval judged one content and pinned
+    // an id whose stored content (what a push sends) is another. Both are off here.
+    env: { ...process.env, GIT_NO_REPLACE_OBJECTS: "1", GIT_GRAFT_FILE: devNull },
     encoding: "utf8",
     maxBuffer: opts?.maxBuffer ?? DEFAULT_GIT_MAX_BUFFER,
     timeout: GIT_TIMEOUT_MS,

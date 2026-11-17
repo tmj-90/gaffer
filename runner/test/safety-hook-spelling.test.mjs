@@ -157,8 +157,43 @@ for (const cmd of [
   "wg 'review-rules' prop''ose",
   "$X review-rules propose",
   "dispatch review-rules propose --repo app",
+  // Post-merge findings (backlog 59): writing, withdrawing or acting on one.
+  "wg ticket finding add 7 --text 'it broke'",
+  "wg ticket finding withdraw 7 1a2b3c4d --reason x",
+  "dispatch ticket finding lesson 7 1a2b3c4d",
+  "wg ticket finding fix-ticket 7 1a2b3c4d",
+  "wg ticket 'finding' a''dd 7 --text x",
+  "$X ticket finding add 7 --text x",
+  "W=wg; $W ticket finding lesson 7 1a2b",
+  "bash -c 'wg ticket finding add 7 --text x'",
 ]) {
   t.deny(`human-only measure verb: ${cmd}`, bash(cmd), opts);
+}
+
+// (g2) the memory CLI writes that would author, rewrite or re-scope a lesson (backlog 59
+// review): `edit` is `update` under another name; `suggest` takes any repo, tag and
+// --path past the memory MCP's checks; `sync import|pull` upsert records as active from
+// files. Every spelling is refused; `memory sync export` and the reads stay open (below).
+for (const cmd of [
+  "memory edit 7vk3qm9b --summary 'rewritten'",
+  "memory edit 7vk3qm9b --repo other",
+  "memory 'ed''it' 7vk3qm9b --summary x",
+  "npx memory edit 7vk3qm9b --summary x",
+  "x=memory; $x edit 7vk3qm9b --summary x",
+  "bash -c 'memory edit 7vk3qm9b --summary x'",
+  "node /opt/gaffer/packages/memory/dist/bin/memory.js edit 7vk3qm9b --summary x",
+  "memory suggest --title t --summary s --body b --repo app --tag post-merge-finding --path src",
+  "memory suggest --title t --summary s --body b --repo app --path=src/**",
+  "MEMORY_AUTO_APPROVE=1 memory suggest --title t --summary s --body b",
+  "pnpm exec memory suggest --title t --summary s --body b",
+  "memory sync import ./lore --force",
+  "memory sync pull . --force",
+  'memory "sync" "import" ./lore',
+  "memory sy''nc import ./lore",
+  "memory sync $SUB ./lore",
+  "memory sync",
+]) {
+  t.deny(`memory CLI write past the MCP: ${cmd}`, bash(cmd), opts);
 }
 
 // (h1) the autonomy ladder (backlog 58): giving autonomy back after a step-down is a
@@ -479,6 +514,16 @@ for (const cmd of [
   'git log --grep "regression-of"',
   "grep -rn regression-of docs/",
   "$PKG regression-of lodash",
+  // Reading findings stays open to an agent.
+  "wg ticket finding list 7",
+  "wg ticket finding list 7 --json",
+  'grep -rn "finding add" docs/',
+  // The memory CLI's reads and export stay open; a mention of its writes is not a command.
+  "memory sync export ./lore",
+  "memory lessons --repo app --paths src/a.ts --json",
+  "memory history 7vk3qm9b",
+  'git commit -m "memory edit and memory suggest are refused"',
+  'grep -rn "memory sync import" docs/',
   // Quoted text keeps its quotes' meaning: no separator inside it starts a command.
   'echo "a | xargs wg"',
   'echo "printenv"',

@@ -25,6 +25,7 @@ import type { Embedder } from "./embedding.js";
 import { newLoreId } from "./ids.js";
 import { MIN_MATCH_FROM, denseQueryText, queryTerms, toFtsMatch } from "./queryTokens.js";
 import { inWriteTx } from "./writeTx.js";
+import { LESSON_TAG, normaliseLorePath } from "./lessons.js";
 
 const LORE_KIND_SET = new Set<string>(LORE_KINDS);
 
@@ -352,6 +353,8 @@ function insertLore(db: Database, input: AddLoreInput, status: LoreStatus): Lore
     for (const r of repos) repoStmt.run(id, r);
     const tagStmt = db.prepare("INSERT OR IGNORE INTO lore_tags (lore_id, tag) VALUES (?, ?)");
     for (const t of tags) tagStmt.run(id, t);
+    const pathStmt = db.prepare("INSERT OR IGNORE INTO lore_paths (lore_id, path) VALUES (?, ?)");
+    for (const p of new Set((input.paths ?? []).map(normaliseLorePath))) if (p) pathStmt.run(id, p);
     db.prepare("INSERT INTO events (lore_id, kind, ts) VALUES (?, ?, ?)").run(
       id,
       status === "draft" ? "suggested" : "created",
@@ -628,8 +631,13 @@ export function suggestLore(
 ): Lore {
   // A REVIEW RULE (tag `review-rule`) is proposed from a person's repeated review feedback
   // (Gaffer's dispatch, D6): the person approves the rule, so auto-approve never applies.
-  const reviewRule = (input.tags ?? []).some((t) => normaliseTag(t) === REVIEW_RULE_TAG);
-  return insertLore(db, input, opts?.autoApprove && !reviewRule ? "active" : "draft");
+  // A LESSON (tag `post-merge-finding`, backlog 59) is a person's finding on a done change:
+  // a person approves it too, so auto-approve never applies either.
+  const gated = (input.tags ?? []).some((t) => {
+    const n = normaliseTag(t);
+    return n === REVIEW_RULE_TAG || n === LESSON_TAG;
+  });
+  return insertLore(db, input, opts?.autoApprove && !gated ? "active" : "draft");
 }
 
 /** The tag that marks a proposed review rule: always a draft until a person approves it. */

@@ -15,6 +15,7 @@ import {
   type RegressionEventRow,
   type RegressionLink,
 } from "./escapedDefects.js";
+import { addFinding } from "./findingService.js";
 import { DispatchError } from "../util/errors.js";
 import type { Dispatch, TicketView } from "../core.js";
 
@@ -38,6 +39,12 @@ export interface RegressionLinkView {
  * on `ref`, the actor columns saying who filed it. Human or admin only; the target must be
  * another ticket that is done (an accepted change). Filing the same standing link again
  * records nothing. A measurement: nothing gates on it, and it never bumps updated_at.
+ *
+ * POST-MERGE FINDINGS (backlog 59): a note on a new link also becomes a finding on the
+ * accepted change (`source: regression`, naming this ticket), so a regression's "what
+ * broke" feeds the same learning path as a finding written on the change itself.
+ * `findingFromNote: false` is for a link opened FROM a finding (the fix ticket), which
+ * must not record that finding twice; `findingId` names it in the link's payload.
  */
 export function fileRegression(
   host: RegressionHost,
@@ -45,6 +52,7 @@ export function fileRegression(
   of: string,
   actor: Actor,
   note: string | null = null,
+  opts: { findingFromNote?: boolean; findingId?: string | null } = {},
 ): { ticketId: string; regressionOf: string; recorded: boolean; eventId: string | null } {
   assertMayFileRegression(actor);
   const ticket = host.resolveTicket(ref);
@@ -74,8 +82,15 @@ export function fileRegression(
         regression_of: target.id,
         regression_of_number: target.number ?? null,
         note: regressionNote(note),
+        ...(opts.findingId ? { finding_id: opts.findingId } : {}),
       },
     });
+    const text = typeof note === "string" ? note.trim() : "";
+    if (text && opts.findingFromNote !== false)
+      addFinding(host, target.id, { text }, actor, {
+        ticketId: ticket.id,
+        number: ticket.number ?? null,
+      });
     return { ticketId: ticket.id, regressionOf: target.id, recorded: true, eventId };
   });
 }

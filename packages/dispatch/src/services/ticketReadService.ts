@@ -35,6 +35,7 @@ import { type LandingState } from "./landingState.js";
 import type { RegressionLinkView } from "./regressionService.js";
 import type { Dispatch } from "../core.js";
 import { regressionLinksOf } from "./regressionService.js";
+import { readFindings, type FindingView } from "./findingService.js";
 
 /** What these functions read from the {@link Dispatch} facade they are handed. */
 export type TicketReadHost = Pick<
@@ -153,6 +154,11 @@ export interface TicketView {
    */
   regression: { regression_of: RegressionLinkView[]; regressed_by: RegressionLinkView[] };
   /**
+   * POST-MERGE FINDINGS (backlog 59): what people said went wrong on this change after it
+   * was done, oldest first; a withdrawn one stays, marked. Untrusted text.
+   */
+  findings: FindingView[];
+  /**
    * A PERSON'S WAIVER (package H1): when the ticket's latest tester verdict is a person's
    * PASS, what it waived and the one sentence every surface shows ("tester verdict waived
    * by <principal> for criteria <...> on <sha>: <summary>", plus "recorded without OS
@@ -191,6 +197,7 @@ export function view(host: TicketReadHost, ref: string): TicketView {
     landing: computeLandingStatus(host.db, ticket.id),
     evalJudgment: currentJudgment(events, enteredReviewAt(ticket.id, events)),
     regression: regressionLinksOf(host, ticket.id),
+    findings: readFindings(host.db, ticket.id),
     testerWaiver: readLatestWaiver(host.db, ticket.id),
   };
 }

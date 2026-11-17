@@ -668,6 +668,25 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
       `);
     },
   },
+  {
+    // LESSON PATHS (Gaffer backlog 59). A lesson (lore tagged post-merge-finding) is scoped
+    // to its repo AND to the repo-relative paths or globs it concerns, and served only to
+    // a change whose paths overlap them. ADDITIVE: a new table, nothing existing changes;
+    // its rows die with their record (trigger, like lore_version in 014).
+    id: "017-lore-paths",
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS lore_paths (
+          lore_id  TEXT NOT NULL,
+          path     TEXT NOT NULL,
+          PRIMARY KEY (lore_id, path)
+        );
+        CREATE TRIGGER IF NOT EXISTS lore_paths_ad AFTER DELETE ON lore BEGIN
+          DELETE FROM lore_paths WHERE lore_id = old.id;
+        END;
+      `);
+    },
+  },
 ];
 
 /**

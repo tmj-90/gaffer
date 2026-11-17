@@ -777,6 +777,22 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     capability: "read",
     responses: [ok("`{ threshold, candidates, proposed, note }`.", "ReviewRules")],
   },
+  {
+    method: "GET",
+    path: "/api/lessons",
+    tag: T.read,
+    summary: "Lessons from post-merge findings, and whether they work",
+    description:
+      "Every lesson a person proposed from a post-merge finding, newest first, with its lore " +
+      "status from memory (`draft` until a person approves it) and its measure: changes that " +
+      "landed on its paths in its repo, and how many of them later had something go wrong " +
+      "(a standing finding or regression link), before vs after it went live over equal " +
+      "windows; no rate below `min_changes` changes on a side. `live`, `drafts_waiting` and " +
+      "`recurrences_after` (each change counted once over every live lesson) are the totals " +
+      "Health shows. Memory unavailable: statuses null (`unknown`). A read.",
+    capability: "read",
+    responses: [ok("The report.", "LessonsReport")],
+  },
 
   // --- /tickets ------------------------------------------------------------------
   {
@@ -1248,6 +1264,114 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
       ok("`{ ticket_id, regression_of, recorded, withdrawn, event_id }`.", "RegressionOf"),
       notFound,
       invalid,
+      forbidden,
+    ],
+  },
+  {
+    method: "GET",
+    path: "/tickets/:id/findings",
+    tag: T.review,
+    summary: "The post-merge findings on a ticket",
+    description:
+      "What people said went wrong on this change after it was done, oldest first; a " +
+      "withdrawn one stays, marked. A read (an agent may read findings).",
+    capability: "read",
+    responses: [ok("`{ ticket_id, findings }`.", "Findings"), notFound],
+  },
+  {
+    method: "POST",
+    path: "/tickets/:id/findings",
+    tag: T.review,
+    summary: "Say what went wrong on a done ticket",
+    description:
+      "A post-merge finding on a ticket that is done: `text`, an optional `category` " +
+      "(missed_requirement, wrong_assumption, test_gap, convention, other), optional " +
+      "`paths` (repo-relative paths or globs; default: the paths the change's recorded " +
+      "delivery touched) and `criteria` (the ticket's acceptance-criterion ids). Recorded " +
+      "as `ticket.finding_added` with who wrote it. It counts as review feedback for the " +
+      "repeated-feedback rules and can become a lesson or a fix ticket. Human or admin " +
+      "principals only; an agent is refused, and a scoped principal only on tickets in scope.",
+    capability: "full",
+    body: "addFindingBody",
+    responses: [created("`{ finding, event_id }`.", "FindingWrite"), notFound, invalid, forbidden],
+  },
+  {
+    method: "POST",
+    path: "/tickets/:id/findings/:findingId/withdraw",
+    tag: T.review,
+    summary: "Withdraw a post-merge finding",
+    description:
+      "Take a finding back with a `reason` (`ticket.finding_withdrawn`). Soft: the finding " +
+      "stays in the log and in the list, marked withdrawn; nothing is deleted. A withdrawn " +
+      "finding no longer counts anywhere. Human or admin principals only.",
+    capability: "full",
+    body: "withdrawFindingBody",
+    responses: [ok("`{ finding, event_id }`.", "FindingWrite"), notFound, invalid, forbidden],
+  },
+  {
+    method: "POST",
+    path: "/tickets/:id/findings/:findingId/lesson",
+    tag: T.review,
+    summary: "Propose a post-merge finding as a lesson",
+    description:
+      '"Propose as a lesson now": files ONE standing finding as a lore draft (kind ' +
+      "`gotcha`, tagged `post-merge-finding` and `from-ticket-<n>`) scoped to the change's " +
+      "repository and the finding's paths, recorded as `ticket.finding_lesson_proposed`. It " +
+      "is a draft until a person approves it in the Memory view (never auto-approved); once " +
+      "approved, later deliveries, reviews and tests whose paths overlap see it as untrusted " +
+      "data. A finding becomes at most one lesson; one with no path or repository is refused. " +
+      "Human or admin principals only.",
+    capability: "full",
+    responses: [
+      ok("`{ finding, lore_id, event_id }`."),
+      notFound,
+      invalid,
+      conflict,
+      forbidden,
+      {
+        status: 503,
+        description: "Memory did not file it (`NOT_CONFIGURED`): nothing recorded.",
+        content: "json",
+      },
+    ],
+  },
+  {
+    method: "GET",
+    path: "/tickets/:id/findings/:findingId/fix-ticket",
+    tag: T.review,
+    summary: "What opening a fix ticket from a finding would do",
+    description:
+      "The confirm's question before a person opens a fix ticket: `{ finding_id, " +
+      "regression_of, steps_down, step_downs, message }`. The fix ticket is linked as a " +
+      "regression of the change, which takes automatic approval back for its repository " +
+      "and risk when an agent approved or landed the change (`steps_down`, each row in " +
+      "`step_downs`, one sentence in `message`); a person's approval steps nothing down. " +
+      "Writes nothing. Human or admin principals only (a person's read for a person's act).",
+    capability: "read",
+    responses: [ok("The preview.", "FixTicketPreview"), notFound, conflict, forbidden],
+  },
+  {
+    method: "POST",
+    path: "/tickets/:id/findings/:findingId/fix-ticket",
+    tag: T.review,
+    summary: "Open a fix ticket from a post-merge finding",
+    description:
+      "Creates a ticket through the normal ticket path (its risk sealed at creation like " +
+      "any person's ticket) at the change's risk, delivering to its write repository, with " +
+      "the finding quoted in its description, and links it as a regression of the change " +
+      "(one link: the escaped-defect numbers count it once). The link steps autonomy down " +
+      "when the change worked automatically, as the GET says. Records " +
+      "`ticket.finding_fix_opened` on the change. One fix ticket per finding. Optional " +
+      "body `{ expect_steps_down }`: the GET's `steps_down` the confirm showed; when the " +
+      "link would now do otherwise (autonomy changed meanwhile), nothing is opened (409). " +
+      "Human or admin principals only.",
+    body: "openFixTicketBody",
+    capability: "full",
+    responses: [
+      created("`{ finding, ticket, stepped_down, event_id }`.", "FixTicketOpened"),
+      notFound,
+      invalid,
+      conflict,
       forbidden,
     ],
   },

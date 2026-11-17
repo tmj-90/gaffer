@@ -68,6 +68,7 @@ const RULES: Record<string, Rule> = {
       "ticket repo-delivery list",
       "ticket paused-context",
       "review comments",
+      "ticket finding list",
     ].map((c) => [c, READ_TICKET]),
   ),
   ...Object.fromEntries(
@@ -142,6 +143,11 @@ const RULES: Record<string, Rule> = {
   // An escaped-defect link (MF5) is a write to the later ticket that names the accepted
   // change (`--of`): a scoped principal must see both (the REST rule).
   "ticket regression-of": { kind: "write_ticket", alsoReadOpt: "of" },
+  // POST-MERGE FINDINGS: a write to the done ticket the finding is about.
+  "ticket finding add": WRITE_TICKET,
+  "ticket finding withdraw": WRITE_TICKET,
+  "ticket finding lesson": WRITE_TICKET,
+  "ticket finding fix-ticket": WRITE_TICKET,
   // A dependency is a write to the first ticket that names the second.
   "ticket dep add": { kind: "write_ticket", alsoRead: 1 },
   "ticket dep rm": { kind: "write_ticket", alsoRead: 1 },
@@ -182,6 +188,7 @@ const RULES: Record<string, Rule> = {
       "stats routing",
       "routing recommend",
       "review-rules",
+      "lessons",
       "human-queue",
       "export",
       "principal list",

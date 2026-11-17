@@ -181,6 +181,27 @@ export interface MemoryReader {
     tags: readonly string[];
   }): MemoryResult<{ id: string | null }>;
   /**
+   * LESSON (backlog 59): file one post-merge finding as a lore `gotcha` DRAFT tagged
+   * `post-merge-finding`, scoped to the repo AND the paths (`--path`), through the memory
+   * CLI `suggest` with MEMORY_AUTO_APPROVE taken out of the child's environment (memory
+   * also keeps that tag a draft): a person approves it in the Memory view. Best-effort.
+   */
+  proposeLesson(input: {
+    title: string;
+    summary: string;
+    body: string;
+    repo: string;
+    paths: readonly string[];
+    tags: readonly string[];
+  }): MemoryResult<{ id: string | null }>;
+  /**
+   * RETIRE A LESSON (backlog 59 review): a person withdrew the finding a lesson came from,
+   * so the lesson must stop reaching later agents: `memory deprecate <id>` (a draft can no
+   * longer be approved, an active lesson is no longer served). An id memory no longer
+   * holds is `absent` (nothing left to serve); anything else is `{ available:false }`.
+   */
+  retireLesson(id: string): MemoryResult<{ id: string; outcome: "deprecated" | "absent" }>;
+  /**
    * Browse lore by lifecycle status / repo / kind with pagination — the dashboard's
    * ratification read (`memory list --json …`). Unlike {@link MemoryReader.lore}
    * (the 50 freshest records, text-parsed) this can ask for ONLY drafts, per repo,
@@ -739,6 +760,40 @@ export function createMemoryReader(env: NodeJS.ProcessEnv = process.env): Memory
       if (!outcome.ok) return unavailable(outcome.reason);
       const m = /\bsuggested\s+([a-z0-9]{4,})\b/i.exec(outcome.stdout ?? "");
       return { available: true, id: m ? m[1]! : null };
+    },
+    proposeLesson(input) {
+      const title = (input.title ?? "").trim();
+      const summary = (input.summary ?? "").trim();
+      const repo = (input.repo ?? "").trim();
+      const paths = (input.paths ?? []).map((p) => String(p).trim()).filter(Boolean);
+      if (title === "" || summary === "" || repo === "" || paths.length === 0) {
+        return unavailable("a lesson needs a title, a summary, a repo and at least one path");
+      }
+      // Discrete argv elements (runCli uses no shell): the finding's text and its paths
+      // cannot become flags. `--path=<p>` keeps a path that starts with `-` a value.
+      const args = ["suggest", "--title", title, "--summary", summary, "--body", input.body];
+      args.push("--kind", "gotcha", "--repo", repo);
+      for (const p of paths) args.push(`--path=${p}`);
+      for (const tag of input.tags) {
+        const t = String(tag).trim();
+        if (t !== "") args.push("--tag", t);
+      }
+      // Never auto-approved: the operator's MEMORY_AUTO_APPROVE does not reach the child.
+      const { MEMORY_AUTO_APPROVE: _auto, ...gated } = env;
+      void _auto;
+      const outcome = runCli(gated, args);
+      if (!outcome.ok) return unavailable(outcome.reason);
+      const m = /\bsuggested\s+([a-z0-9]{4,})\b/i.exec(outcome.stdout ?? "");
+      return { available: true, id: m ? m[1]! : null };
+    },
+    retireLesson(id) {
+      if (!LORE_ID_RE.test(id)) return unavailable(`"${id}" is not a memory lore id.`);
+      const outcome = runCli(env, ["deprecate", id]);
+      if (outcome.ok) return { available: true, id, outcome: "deprecated" };
+      // `memory deprecate` names an unknown id plainly; every other failure is memory down.
+      if (/no record with id/i.test(outcome.reason))
+        return { available: true, id, outcome: "absent" };
+      return unavailable(outcome.reason);
     },
     captureLoreDraft(input) {
       const title = (input.title ?? "").trim();

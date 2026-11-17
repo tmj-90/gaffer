@@ -278,6 +278,108 @@ const RegressionLinkView = z
   })
   .strict();
 
+/** POST-MERGE FINDINGS: one finding as every surface shows it. */
+export const FindingView = z
+  .object({
+    id: str,
+    ticket_id: str,
+    number: int.nullable(),
+    text: str.describe("What went wrong, in the person's words (untrusted text)."),
+    category: z
+      .enum(["missed_requirement", "wrong_assumption", "test_gap", "convention", "other"])
+      .nullable(),
+    paths: z.array(str).describe("Repo-relative paths or globs it concerns."),
+    paths_source: z
+      .enum(["given", "delivery", "none"])
+      .describe("given: the person named them; delivery: the change's recorded delivery."),
+    criteria: z.array(z.object({ id: str, text: str }).strict()),
+    repo: nstr,
+    source: z
+      .enum(["person", "regression"])
+      .describe("regression: a regression link's note on a later ticket."),
+    regression_ticket: z.object({ ticket_id: str, number: int.nullable() }).strict().nullable(),
+    filed_by: z.object({ type: str, id: nstr }).strict(),
+    filed_at: str,
+    withdrawn: z
+      .object({ by: z.object({ type: str, id: nstr }).strict(), at: str, reason: str })
+      .strict()
+      .nullable(),
+    lesson: z.object({ lore_id: nstr, proposed_at: str, proposed_by: str }).strict().nullable(),
+    fix_ticket: z.object({ ticket_id: str, number: int.nullable() }).strict().nullable(),
+  })
+  .strict();
+
+export const FindingWrite = z.object({ finding: FindingView, event_id: eventId }).strict();
+
+export const Findings = z.object({ ticket_id: str, findings: z.array(FindingView) }).strict();
+
+/** LESSONS (backlog 59): one lesson's measure, before vs after it went live. */
+const LessonMeasure = z
+  .object({
+    state: z.enum(["not_approved", "not_enough_data", "measured"]),
+    window_days: z.number().nullable(),
+    changes_before: int,
+    recurrences_before: int,
+    rate_before_pct: z.number().nullable(),
+    changes_after: int,
+    recurrences_after: int,
+    rate_after_pct: z.number().nullable(),
+    note: str,
+  })
+  .strict();
+
+/** GET /api/lessons. */
+export const LessonsReport = z
+  .object({
+    live: int,
+    drafts_waiting: int,
+    unknown: int.describe("Lessons whose status memory could not give."),
+    recurrences_after: z.object({ k: int, n: int }).strict(),
+    min_changes: int,
+    lessons: z.array(
+      z
+        .object({
+          lore_id: nstr,
+          finding_id: str,
+          ticket_id: str,
+          number: int.nullable(),
+          repo: nstr,
+          paths: z.array(str),
+          proposed_at: str,
+          proposed_by: str,
+          lore_status: nstr,
+          approved_at: nstr,
+          measure: LessonMeasure,
+        })
+        .strict(),
+    ),
+    note: str,
+  })
+  .strict();
+
+/** POST-MERGE FINDINGS: what opening a fix ticket would do (the confirm's read). */
+export const FixTicketPreview = z
+  .object({
+    finding_id: str,
+    regression_of: z.object({ ticket_id: str, number: int.nullable() }).strict(),
+    steps_down: z.boolean().describe("The link takes automatic approval or merge back."),
+    step_downs: z.array(
+      z.object({ repo: str, risk_level: str, gate: str, cascade: z.boolean() }).strict(),
+    ),
+    message: str.describe("One sentence for the confirm."),
+  })
+  .strict();
+
+/** POST-MERGE FINDINGS: a fix ticket opened from a finding. */
+export const FixTicketOpened = z
+  .object({
+    finding: FindingView,
+    ticket: z.object({ id: str, number: int.nullable() }).strict(),
+    stepped_down: z.array(z.record(z.string(), z.unknown())),
+    event_id: eventId,
+  })
+  .strict();
+
 export const TicketDetail = z
   .object({
     ticket: TicketRow,
@@ -305,6 +407,9 @@ export const TicketDetail = z
       .describe(
         "Escaped defects: the accepted changes a person linked this ticket to as their regression, and the later tickets linked to this one.",
       ),
+    findings: z
+      .array(FindingView)
+      .describe("Post-merge findings: what people said went wrong after it was done."),
     agent_display: z
       .record(z.string(), AgentDisplayView)
       .describe("Every agent the ticket's claims and events name, keyed by agent id."),

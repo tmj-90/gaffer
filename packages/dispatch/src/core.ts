@@ -221,6 +221,7 @@ import * as ticketLifecycle from "./services/ticketLifecycleService.js";
 import * as testerLane from "./services/testerLaneService.js";
 import * as ticketRecords from "./services/ticketRecordsService.js";
 import * as regressions from "./services/regressionService.js";
+import * as findings from "./services/findingService.js";
 import * as ticketLinks from "./services/ticketLinksService.js";
 import * as planning from "./services/planningService.js";
 import * as runRegistry from "./services/runRegistryService.js";
@@ -268,6 +269,7 @@ export type {
   TicketView,
 } from "./services/ticketReadService.js";
 export type { RegressionLinkView } from "./services/regressionService.js";
+export type { FindingView } from "./services/findingService.js";
 
 /**
  * The execution boundary for a ticket, partitioned by access (WG-002). Only
@@ -1738,6 +1740,85 @@ export class Dispatch {
 
   regressionLinkRows(): RegressionLink[] {
     return regressions.regressionLinkRows(this);
+  }
+
+  /** POST-MERGE FINDINGS: a person says what went wrong on a done ticket. */
+  addFinding(
+    ref: string,
+    input: findings.AddFindingInput,
+    actor: Actor,
+  ): { finding: findings.FindingView; eventId: string } {
+    return findings.addFinding(this, ref, input, actor);
+  }
+
+  /**
+   * Take a finding back (soft, with a reason). A person's act. A finding proposed as a
+   * lesson needs `retire` (memory): its lesson is retired first, or nothing is recorded.
+   */
+  withdrawFinding(
+    ref: string,
+    findingId: string,
+    reason: unknown,
+    actor: Actor,
+    retire?: findings.LessonRetirer,
+  ): { finding: findings.FindingView; eventId: string } {
+    return findings.withdrawFinding(this, ref, findingId, reason, actor, retire);
+  }
+
+  /** "Propose as a lesson now": one finding becomes a lore draft for a person to approve. */
+  proposeLesson(
+    ref: string,
+    findingId: string,
+    actor: Actor,
+    proposer: findings.LessonProposer,
+  ): { finding: findings.FindingView; loreId: string | null; eventId: string } {
+    return findings.proposeLesson(this, ref, findingId, actor, proposer);
+  }
+
+  /** "Open a fix ticket", asked first: what its regression link would step down. */
+  fixTicketPreview(ref: string, findingId: string, actor: Actor): findings.FixTicketPreview {
+    return findings.fixTicketPreview(this, ref, findingId, actor, (of) =>
+      stepDown.previewStepDownForRegression(this.stepDownHost(), of),
+    );
+  }
+
+  /**
+   * "Open a fix ticket" from a finding: the normal ticket create, the regression link and
+   * the step-down it causes, and the finding's record of it, in ONE transaction. With
+   * `expect` (what the confirm said), an act that would step down otherwise rolls back.
+   */
+  openFixTicket(
+    ref: string,
+    findingId: string,
+    actor: Actor,
+    expect?: findings.FixTicketExpectation,
+  ): ReturnType<typeof findings.openFixTicket> {
+    return inTransaction(this.db, () =>
+      findings.openFixTicket(this, ref, findingId, actor, {
+        ...(expect ? { expect } : {}),
+        create: (raw, links) => this.createTicketWithLinks(raw, links, actor),
+        link: (fixId, originalId, note, fid) => {
+          const res = regressions.fileRegression(this, fixId, originalId, actor, note, {
+            findingFromNote: false,
+            findingId: fid,
+          });
+          const steppedDown = res.recorded
+            ? stepDown.stepDownForRegression(
+                this.stepDownHost(),
+                res.ticketId,
+                res.regressionOf,
+                actor,
+              )
+            : [];
+          return { recorded: res.recorded, steppedDown };
+        },
+      }),
+    );
+  }
+
+  /** The findings on one ticket (withdrawn ones included, marked), oldest first. */
+  findingsOf(ref: string): findings.FindingView[] {
+    return findings.readFindings(this.db, this.resolveTicket(ref).id);
   }
 
   ciStatus(

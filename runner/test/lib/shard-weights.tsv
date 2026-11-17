@@ -438,3 +438,4 @@
 # measures it.
 80	autonomy-step-down.test.sh
 90	autonomy-sealed.test.sh
+100	post-merge-lesson.test.sh

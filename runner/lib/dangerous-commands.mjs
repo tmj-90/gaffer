@@ -478,6 +478,9 @@ export const DANGEROUS_COMMANDS = [
     // is a person's or a bot's delegated access, never an agent's to mint, re-sign or act as.
     // And the escaped-defect link (`regression-of`): a person's judgement that a change
     // caused a defect, never an agent's (`review-rules propose` is matched by `review`).
+    // And a post-merge finding (`ticket finding add|withdraw|lesson|fix-ticket`): what
+    // went wrong on a done change, and the lesson or fix ticket made from it, are a
+    // person's word; an agent reads findings (`finding list`, get_ticket) and never writes one.
     // And giving autonomy back after a step-down (`autonomy lift`): a person's act; an
     // agent would hand itself back the autonomy its own failures took away. So is signing
     // what decides autonomy (`autonomy resign`, `autonomy risk-resign`): an agent would
@@ -494,7 +497,7 @@ export const DANGEROUS_COMMANDS = [
     // root options): the words are too common to match anywhere after `dispatch` (a
     // Redux or WordPress `dispatch( 'core/block-editor' )` search, `dispatch.js --mode
     // block`); the normalised views put a quoted, escaped or wrapped CLI in that shape.
-    re: /\b(wg|dispatch|fg|crew)\b[^\n|;&]*\b(review|regression-of|acceptance-profile|acceptance-evidence|approve|approve-ready|mark-merged|record-landing|landing-begin|record-tester-replay|ci-result|eval-score|lane-verdict|scout-record|tester-route|attach-evidence|reject|repo-access|set-testable|allow-test-changes|set-commands|test-contract|tester-pass|tester-fail|repo-delivery|require-cap|set-reviewer|decisions[ \t]+resolve|agent[ \t]+rename|club[ \t]+set|wont-do|principal[ \t]+(?:create|revoke|resign)|autonomy[ \t]+(?:lift|resign|risk-resign)|as-principal|reopen-for-review|ticket[ \t]+(?:move|ready|hold)|human-claim|human-release)\b|\b(?:wg|dispatch|fg|crew)[ \t]+(?:-\S*[ \t]+(?:[^\s-]\S*[ \t]+)?)*(?:un)?block\b|\bGAFFER_PRINCIPAL_TOKEN=/,
+    re: /\b(wg|dispatch|fg|crew)\b[^\n|;&]*\b(review|regression-of|acceptance-profile|acceptance-evidence|approve|approve-ready|mark-merged|record-landing|landing-begin|record-tester-replay|ci-result|eval-score|lane-verdict|scout-record|tester-route|attach-evidence|reject|repo-access|set-testable|allow-test-changes|set-commands|test-contract|tester-pass|tester-fail|repo-delivery|require-cap|set-reviewer|decisions[ \t]+resolve|finding[ \t]+(?:add|withdraw|lesson|fix-ticket)|agent[ \t]+rename|club[ \t]+set|wont-do|principal[ \t]+(?:create|revoke|resign)|autonomy[ \t]+(?:lift|resign|risk-resign)|as-principal|reopen-for-review|ticket[ \t]+(?:move|ready|hold)|human-claim|human-release)\b|\b(?:wg|dispatch|fg|crew)[ \t]+(?:-\S*[ \t]+(?:[^\s-]\S*[ \t]+)?)*(?:un)?block\b|\bGAFFER_PRINCIPAL_TOKEN=/,
     // The same rule with the CLI in COMMAND position (CMD_POS, as the gaffer rule below).
     // The hook uses it instead of `re` only for a command that controlPlaneDataOnly()
     // (lib/hook/control-plane.mjs) proves is data only: every segment a plain git commit /
@@ -504,7 +507,7 @@ export const DANGEROUS_COMMANDS = [
     // reject bad events"`, `grep -rn "dispatch.*approve" src`, `echo "fg then approve" >
     // notes.txt`). Every other command, every evasion included, is judged by `re`.
     cmdRe: new RegExp(
-      String.raw`${CMD_POS}(?:wg|dispatch|fg|crew)${WORD_END}[^\n|;&]*\b(?:review|regression-of|acceptance-profile|acceptance-evidence|approve|approve-ready|mark-merged|record-landing|landing-begin|record-tester-replay|ci-result|eval-score|lane-verdict|scout-record|tester-route|attach-evidence|reject|repo-access|set-testable|allow-test-changes|set-commands|test-contract|tester-pass|tester-fail|repo-delivery|require-cap|set-reviewer|decisions[ \t]+resolve|agent[ \t]+rename|club[ \t]+set|wont-do|principal[ \t]+(?:create|revoke|resign)|autonomy[ \t]+(?:lift|resign|risk-resign)|as-principal|reopen-for-review|ticket[ \t]+(?:move|ready|hold)|human-claim|human-release)\b|${CMD_POS}(?:wg|dispatch|fg|crew)[ \t]+(?:-\S*[ \t]+(?:[^\s-]\S*[ \t]+)?)*(?:un)?block\b|\bGAFFER_PRINCIPAL_TOKEN=`,
+      String.raw`${CMD_POS}(?:wg|dispatch|fg|crew)${WORD_END}[^\n|;&]*\b(?:review|regression-of|acceptance-profile|acceptance-evidence|approve|approve-ready|mark-merged|record-landing|landing-begin|record-tester-replay|ci-result|eval-score|lane-verdict|scout-record|tester-route|attach-evidence|reject|repo-access|set-testable|allow-test-changes|set-commands|test-contract|tester-pass|tester-fail|repo-delivery|require-cap|set-reviewer|decisions[ \t]+resolve|finding[ \t]+(?:add|withdraw|lesson|fix-ticket)|agent[ \t]+rename|club[ \t]+set|wont-do|principal[ \t]+(?:create|revoke|resign)|autonomy[ \t]+(?:lift|resign|risk-resign)|as-principal|reopen-for-review|ticket[ \t]+(?:move|ready|hold)|human-claim|human-release)\b|${CMD_POS}(?:wg|dispatch|fg|crew)[ \t]+(?:-\S*[ \t]+(?:[^\s-]\S*[ \t]+)?)*(?:un)?block\b|\bGAFFER_PRINCIPAL_TOKEN=`,
     ),
     why: "control-plane CLI write (use the scoped MCP, not the privileged wg/dispatch/fg/crew CLI)",
     example: "wg ticket approve T-1",
@@ -589,11 +592,34 @@ export const DANGEROUS_COMMANDS = [
     // lore through the memory MCP, as a draft. Command position only (also through npx /
     // pnpm exec / yarn, and `node …/memory.js`), so `git add memory.ts` or a commit
     // message that says "memory approve" are unaffected; `memory search|show|list` stay.
+    // `edit` is the CLI's other name for `update` (backlog 59 review: it rewrote an
+    // approved lesson's text and repo while `update` was refused).
     re: new RegExp(
-      String.raw`(?:\bnode\b[^\n;&|]*[\s/]memory(?:\.js)?|${CMD_POS}(?:(?:npx|bunx|pnpx)(?:[ \t]+-${TOK})*[ \t]+|(?:pnpm|npm|yarn)(?:[ \t]+-${TOK})*[ \t]+(?:(?:exec|dlx|x)[ \t]+(?:-${TOK}[ \t]+)*)?)?memory)[ \t]+["']?(?:approve|reject|review|add|supersede|deprecate|delete|update)["']?${WORD_END}`,
+      String.raw`(?:\bnode\b[^\n;&|]*[\s/]memory(?:\.js)?|${CMD_POS}(?:(?:npx|bunx|pnpx)(?:[ \t]+-${TOK})*[ \t]+|(?:pnpm|npm|yarn)(?:[ \t]+-${TOK})*[ \t]+(?:(?:exec|dlx|x)[ \t]+(?:-${TOK}[ \t]+)*)?)?memory)[ \t]+["']?(?:approve|reject|review|add|supersede|deprecate|delete|update|edit)["']?${WORD_END}`,
     ),
-    why: "the memory CLI's human verbs (approve / reject / review / add / supersede / deprecate / delete / update) — ratifying lore is the human's job; an agent proposes lore as a draft through the memory MCP",
+    why: "the memory CLI's human verbs (approve / reject / review / add / supersede / deprecate / delete / update / edit): ratifying lore is the human's job; an agent proposes lore as a draft through the memory MCP",
     example: "node packages/memory/dist/bin/memory.js approve 7vk3qm9b",
+    crewFlags: false,
+  },
+  {
+    // The memory CLI's OTHER WRITES that skip the memory MCP's checks (backlog 59 review):
+    // `suggest` files a draft with any repo, tag and `--path` (the MCP refuses a repo
+    // outside the ticket's scope and takes no paths), so an agent could file a draft
+    // shaped exactly like a person's lesson (tag post-merge-finding, from-ticket-<n>, a
+    // path scope) that one approval serves to every later delivery, reviewer and tester on
+    // those paths; `sync import` / `sync pull` upsert records from files with whatever
+    // status, tags and text the file says, by id (`--force` past a newer local copy), so
+    // they rewrite an approved lesson's text or write ACTIVE lore with no approval at all.
+    // `memory sync export` stays open (it only writes files); any other `memory sync`
+    // word, a runtime-built one included, is refused (fail closed). An agent proposes
+    // lore through the memory MCP's suggest_lore. Command position, same spellings as the
+    // human verbs above.
+    re: new RegExp(
+      String.raw`(?:\bnode\b[^\n;&|]*[\s/]memory(?:\.js)?|${CMD_POS}(?:(?:npx|bunx|pnpx)(?:[ \t]+-${TOK})*[ \t]+|(?:pnpm|npm|yarn)(?:[ \t]+-${TOK})*[ \t]+(?:(?:exec|dlx|x)[ \t]+(?:-${TOK}[ \t]+)*)?)?memory)[ \t]+(?:["']?suggest["']?${WORD_END}|["']?sync["']?(?![ \t]+["']?export["']?${WORD_END}))`,
+    ),
+    why: "the memory CLI's writes that skip the memory MCP's checks (suggest, sync import / pull): a draft with any repo, tag or path scope, or records upserted from files as active; an agent proposes lore through the memory MCP's suggest_lore",
+    example:
+      "memory suggest --title t --summary s --body b --repo app --tag post-merge-finding --path src",
     crewFlags: false,
   },
   {

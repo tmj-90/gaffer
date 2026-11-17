@@ -152,6 +152,9 @@ gaffer_tick_gather_prompt_inputs() {
   # "stale" instead when the index describes another commit. Gathered here, rendered by
   # the crew seam. The index's answer lands in a temp file for delivery-metrics.jsonl.
   _CARD_NAMED="$(printf '%s' "$SHOW" | gaffer_json ticket-named-code 2>/dev/null || true)"
+  # LESSONS (backlog 59) match on the paths the ticket names, kept here: the file-card
+  # primer's copy is cleared below when the scout lists the named code's neighbours.
+  _LESSON_NAMED="$_CARD_NAMED"
   _CARD_BASE="$(printf '%s\n' "$WT_ROWS" | grep . | awk -F'\t' 'NR==1{print $4}')"
   _CARD_BASE_SHA="$(git -C "$_CARD_REAL_REPO" rev-parse --verify --quiet "${_CARD_BASE:-main}^{commit}" 2>/dev/null || true)"
   # PRE-WORK SCOUT (lib/scout.sh, delta roadmap gap 3): before the agent starts, the
@@ -217,6 +220,30 @@ gaffer_tick_gather_prompt_inputs() {
   PRODUCT_CONTEXT_BLOCK="$(gaffer_product_context_block "$_CARD_REPO_NAME" 2>/dev/null || true)"
   if [ -n "$PRODUCT_CONTEXT_BLOCK" ]; then
     log "product-context: primed delivery #$NUM with product-intent lore"
+  fi
+  # LESSONS FROM EARLIER CHANGES HERE (backlog 59): the approved lessons of this repo whose
+  # paths overlap what this delivery is about to touch: the paths the ticket names and the
+  # scout's file selection (its items and the model scout's checked files). Rendered by
+  # crew (gaffer_lessons_block, lib/context-primer.sh) inside <untrusted-lessons>, and
+  # carried in the product-context slot after the intent records (the slot the acceptance
+  # block shares; no renderer input changes). FAIL-SOFT: none / memory unavailable → no
+  # block. No path to match on → no lesson (a lesson is never served by text).
+  _LESSON_PATHS="$(printf '%s\n' "$_LESSON_NAMED" | awk -F'\t' '$1 == "P" && $2 != "" { print $2 }')"
+  if [ -n "${SCOUT_PACKET_FILE:-}" ] && [ -s "$SCOUT_PACKET_FILE" ]; then
+    _LESSON_PATHS="$_LESSON_PATHS
+$(gaffer_json expr '[...(d.items || []).map((i) => i && i.path), ...((d.model_scout && d.model_scout.files) || []).map((f) => f && f.path)].filter((p) => typeof p === "string" && p).join("\n")' --file "$SCOUT_PACKET_FILE" 2>/dev/null || true)"
+  fi
+  _LESSON_ARGS=()
+  while IFS= read -r _LESSON_P; do
+    [ -n "$_LESSON_P" ] && _LESSON_ARGS+=("$_LESSON_P")
+  done < <(printf '%s\n' "$_LESSON_PATHS" | awk 'NF && !seen[$0]++' | head -50)
+  LESSONS_BLOCK=""
+  if [ "${#_LESSON_ARGS[@]}" -gt 0 ]; then
+    LESSONS_BLOCK="$(gaffer_lessons_block "$_CARD_REPO_NAME" delivery "${_LESSON_ARGS[@]}" 2>/dev/null || true)"
+  fi
+  if [ -n "$LESSONS_BLOCK" ]; then
+    PRODUCT_CONTEXT_BLOCK="${PRODUCT_CONTEXT_BLOCK}${LESSONS_BLOCK}"
+    log "lessons: primed delivery #$NUM with $(printf '%s\n' "$LESSONS_BLOCK" | grep -c '^    (from ' || true) lesson(s) from earlier changes on its paths"
   fi
   # ACCEPTANCE GATE: the acceptance ticket's instructions ride ahead of the product
   # context (same prompt slot, no renderer change): write the brief-level suite, fix

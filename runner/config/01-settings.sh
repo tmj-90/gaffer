@@ -436,18 +436,43 @@ _gaffer_bool01() {
 # `^(\d+(\.\d*)?|\.\d+)$` (".5" and "5." too). The old runner read both with awk and
 # `[ -ge ]`, which skip the padding and the leading zeros. The migration reads each such
 # string to that same number (_gaffer_old_number) before it compares; a value no old
-# reading accepts is unreadable, and an unreadable cap never becomes "no limit"
-# (_gaffer_old_key: a spend cap refuses to start; a count or time cap runs on its
-# setting's limit, and refuses to start when the setting derives none).
+# reading accepts is unreadable, and an unreadable cap never becomes "no limit" nor the
+# setting's limit (_gaffer_old_unreadable: the config refuses to start, naming the key).
 _GAFFER_OLD_USD_KEYS=" GAFFER_REWORK_BUDGET_USD GAFFER_BUDGET_LOW_THRESHOLD "
 _GAFFER_OLD_SPEND_CAPS=" GAFFER_REWORK_BUDGET_USD "
-# _gaffer_trim <value>: _GAFFER_TRIM = the value without leading or trailing spaces (the
-# settings.json reader turned tabs and newlines into spaces already).
+# _gaffer_trim <value>: _GAFFER_TRIM = the value without leading or trailing ASCII white
+# space (the settings.json reader turned tabs, newlines and CRs into spaces already; a
+# vertical tab or form feed is left, and awk, `[ -ge ]` and parseInt all skip it, so it
+# is trimmed here too: review of external review 21).
 _gaffer_trim() {
-  local v="$1"
-  v="${v#"${v%%[! ]*}"}"
-  _GAFFER_TRIM="${v%"${v##*[! ]}"}"
+  local v="$1" ws=$' \v\f'
+  v="${v#"${v%%[!$ws]*}"}"
+  _GAFFER_TRIM="${v%"${v##*[!$ws]}"}"
 }
+# _gaffer_trim_js <value>: _GAFFER_TRIM = the value without the white space JavaScript's
+# trim() removes (what the old dashboard API trimmed before it checked a boolean): ASCII
+# white space and the Unicode spaces, as UTF-8 bytes. Bash 3.2 safe (no ${x,,}, no
+# arrays of patterns).
+_gaffer_trim_js() {
+  local v="$1" p changed=1
+  while [ "$changed" = 1 ]; do
+    changed=0
+    _gaffer_trim "$v"; [ "$_GAFFER_TRIM" = "$v" ] || changed=1; v="$_GAFFER_TRIM"
+    for p in $'\xc2\xa0' $'\xe1\x9a\x80' $'\xe2\x80\x80' $'\xe2\x80\x81' $'\xe2\x80\x82' \
+      $'\xe2\x80\x83' $'\xe2\x80\x84' $'\xe2\x80\x85' $'\xe2\x80\x86' $'\xe2\x80\x87' \
+      $'\xe2\x80\x88' $'\xe2\x80\x89' $'\xe2\x80\x8a' $'\xe2\x80\xa8' $'\xe2\x80\xa9' \
+      $'\xe2\x80\xaf' $'\xe2\x81\x9f' $'\xe3\x80\x80' $'\xef\xbb\xbf'; do
+      case "$v" in "$p"*) v="${v#"$p"}"; changed=1 ;; esac
+      case "$v" in *"$p") v="${v%"$p"}"; changed=1 ;; esac
+    done
+  done
+  _GAFFER_TRIM="$v"
+}
+# The ship switches whose old readers took exactly "1" (memory's auto-approve, the idle
+# drafters, the sandbox network switch, the self-delivery ban): any other spelling was off
+# there, so the migration reads it as off. The rest of the off switches were read by the
+# runner's _gaffer_flag_on (a 1/true/yes/on word, any case, no padding).
+_GAFFER_OLD_EXACT_ONE=" MEMORY_AUTO_APPROVE CLARIFY_DRAFTS_WHEN_IDLE IDLE_DRAFT_WHEN_IDLE STRICT_ALLOW_NETWORK GAFFER_ALLOW_SELF_DELIVERY GAFFER_NOTIFY_FULL_PAYLOAD "
 # _gaffer_old_number <NAME> <stored>: _GAFFER_ON = the number the old runner read from a
 # stored old value, written plainly (".5" -> 0.5, "5." -> 5, " 03" -> 3); returns 1 (and
 # _GAFFER_ON empty) when no old reading accepts it (a sign, an exponent, a unit, a
@@ -552,7 +577,22 @@ _gaffer_old_key() {
       case "$policy" in
         less | less0 | more)
           if [ -n "$old" ] && ! _gaffer_old_number "$name" "$old"; then cmp=$'\x01'; else cmp="$_GAFFER_ON"; fi ;;
-        off | on | rank*) _gaffer_trim "$old"; cmp="$_GAFFER_TRIM" ;;
+        # A SHIP SWITCH (off: 0 is stricter) is read as the strictest of its old readers
+        # (review of external review 21): the runner's flag check took a word with no
+        # padding, some readers took exactly "1", and the dashboard trimmed; so " 1" was
+        # off in the runner and on in the dashboard, and is off here. A GATE (on: 1 is
+        # stricter) is read the way its most generous reader did (JavaScript's trim), so
+        # a padded 1 a reader honoured is never dropped.
+        off)
+          if [ -z "$old" ]; then cmp=""
+          else
+            case "$_GAFFER_OLD_EXACT_ONE" in
+              *" $name "*) if [ "$old" = 1 ]; then cmp=1; else cmp=0; fi ;;
+              *) _gaffer_bool01 "$old"; if [ "$_GAFFER_B" = 1 ]; then cmp=1; else cmp=0; fi ;;
+            esac
+          fi ;;
+        on) _gaffer_trim_js "$old"; cmp="$_GAFFER_TRIM" ;;
+        rank*) _gaffer_trim "$old"; cmp="$_GAFFER_TRIM" ;;
       esac
       if [ "$cmp" = $'\x01' ]; then
         _gaffer_old_unreadable "$name" "$old" "$setting" "$policy" "$cur"
@@ -593,26 +633,24 @@ _gaffer_old_key() {
 }
 
 # _gaffer_old_unreadable <NAME> <stored> <setting> <policy> <derived>: an old numeric
-# value no old reading accepts. It is never read as "no limit": a key that capped spend
-# refuses to start (money is not guessed: the person meant some amount, and the setting's
-# reading may be higher), and so does a count or time cap whose setting derives no limit
-# (the factory would run uncapped where it was capped). A count or time cap whose setting
-# still derives a limit runs on that limit (the caller says the old value could not be
-# read): a factory does not stop for a key whose bound the setting already gives.
+# value no old reading accepts. It is never read as "no limit", and never replaced by the
+# setting's limit either (review of external review 21): the old runner's readers did
+# not agree on such a string (`[ -lt ]` stops on it, so MAX_TICKS ran no tick at all;
+# awk reads a leading NBSP as 0; parseInt skips it), so the setting's limit could be
+# looser than what the old runner enforced. The config refuses to start and names the
+# key and what to write; only a value the old dashboard could not normally store (a
+# hand edit, a non-ASCII space pasted in) reaches this.
 _gaffer_old_unreadable() {
-  local name="$1" stored="$2" setting="$3" policy="$4" cur="$5" why=""
+  local name="$1" stored="$2" setting="$3" why
   case "$_GAFFER_OLD_SPEND_CAPS" in
     *" $name "*) why="it capped spending, and a dollar cap is never guessed" ;;
+    *) why="it was a limit, and what the old runner enforced from it cannot be known" ;;
   esac
-  if [ -z "$why" ]; then
-    case "$policy" in
-      less) { [ -z "$cur" ] || awk -v d="$cur" 'BEGIN { exit !(d + 0 == 0) }'; } && why="it was a limit, and $setting derives none" ;;
-      less0) [ -n "$cur" ] || why="it was a limit, and $setting derives none" ;;
-    esac
-  fi
-  [ -n "$why" ] || return 0
-  printf "gaffer: settings.json key %s holds '%s', which is not a number the old dashboard stored (digits, or dollars such as 5 or 0.50); %s. Fix it to the number you meant, or remove it (the limit then comes from %s); refusing to load the config (fail closed)\n" \
-    "$name" "$stored" "$why" "$setting" >&2
+  local shown="'$stored'"
+  # A character a person cannot see (a non-ASCII space pasted in) is shown escaped.
+  case "$stored" in *[!\ -~]*) shown="$shown (as bytes: $(printf '%q' "$stored"))" ;; esac
+  printf "gaffer: settings.json key %s holds %s, which is not a number the old dashboard stored (digits, or dollars such as 5 or 0.50); %s. Write the plain number you meant (for example \"%s\": \"3\"), or remove the key (the limit then comes from %s); refusing to load the config (fail closed)\n" \
+    "$name" "$shown" "$why" "$name" "$setting" >&2
   exit 1
 }
 

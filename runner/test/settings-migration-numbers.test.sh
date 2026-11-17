@@ -144,17 +144,36 @@ V="$(cfg 'printf started')"; rc=$?
 [ "$rc" != 0 ] && grep -q "GAFFER_REWORK_BUDGET_USD" "$WORK/err" \
   && ok "spend cap unreadable beside a lifetime budget: still refuses to start" \
   || fail "spend cap unreadable with a budget: rc=$rc out='$V'"
-for s in "abc" "1.5" "-2" "1e3" " 3 4" "３"; do
-  row MAX_TICKS_PER_DAY "$s" "50" unreadable
-  row GAFFER_TICK_TIMEOUT "$s" "1800" unreadable
+# refuses KEY STORED: the config refuses to start and names the key (review of external
+# review 21: a count or time cap no old reading accepts used to run on its setting's
+# limit, which is looser than the old runner where its reader stopped on the value:
+# `[ "$ticks" -lt "<NBSP>3" ]` ran no tick at all).
+refuses() {
+  local key="$1" stored="$2" V rc
+  settings "{\"$key\": $(json_str "$stored")}"
+  V="$(cfg 'printf "started:%s" "${'"$key"'-}"')"; rc=$?
+  if [ "$rc" != 0 ] && [ -z "$V" ] && grep -q "key $key holds" "$WORK/err"; then
+    ok "$key stored $(json_str "$stored"): the config refuses to start, naming the key"
+  else
+    fail "$key stored $(json_str "$stored"): rc=$rc out='$V' err=$(tr '\n' ' ' < "$WORK/err" | cut -c1-200)"
+  fi
+}
+for s in "abc" "1.5" "-2" "1e3" " 3 4" "３" $'\xc2\xa03' $'3\xe3\x80\x80' $'\xef\xbb\xbf3'; do
+  refuses MAX_TICKS_PER_DAY "$s"
+  refuses GAFFER_TICK_TIMEOUT "$s"
+  refuses MAX_TICKS "$s"
 done
-row GAFFER_PLAN_DEBATE_MIN_ESTIMATE "abc" "0" unreadable
-row GAFFER_BUDGET_LOW_THRESHOLD "abc" "0" unreadable
-settings '{"GAFFER_TICK_TIMEOUT": "abc"}'
+refuses GAFFER_PLAN_DEBATE_MIN_ESTIMATE "abc"
+refuses GAFFER_BUDGET_LOW_THRESHOLD "abc"
+# A non-ASCII space a person cannot see is shown as bytes in the refusal.
+settings "{\"MAX_TICKS\": $(json_str $'\xc2\xa03')}"
 cfg ':' >/dev/null
-grep -q "GAFFER_TICK_TIMEOUT.*could not be read" "$WORK/err" \
-  && ok "an unreadable count or time cap is named on stderr (could not be read)" \
-  || fail "unreadable warning: $(cat "$WORK/err")"
+grep -q "MAX_TICKS holds .*as bytes: " "$WORK/err" \
+  && ok "a refusal shows an invisible non-ASCII space as bytes" \
+  || fail "refusal does not show the bytes: $(cat "$WORK/err")"
+# A vertical tab or form feed (the old API trimmed it; awk, [ -lt ] and parseInt skip it).
+row MAX_TICKS $'\v3' "3" kept
+row MAX_TICKS $'3\f' "3" kept
 # An empty value is a setting the dashboard cleared: the default, never unreadable.
 row GAFFER_REWORK_BUDGET_USD "" "" same
 row MAX_TICKS "" "5" ignored
@@ -170,6 +189,30 @@ for s in " 0" "False " " no" "0"; do
   [ "$V" = "0|kept" ] && ok "AUTO_MERGE stored $(json_str "$s") under autonomous -> in force '0' (kept)" \
     || fail "AUTO_MERGE stored $(json_str "$s") under autonomous: $V $(tr '\n' ' ' < "$WORK/err" | cut -c1-160)"
 done
+# A ship switch is read as the strictest of its old readers (review of external review
+# 21): the runner's _gaffer_flag_on took an unpadded word, so " 1" and a non-ASCII-padded
+# value were off there; the old dashboard trimmed a NBSP-padded 0 to off as well. Under
+# autonomous (derived 1) each must stay off, never on.
+for s in " 1" "1 " $'\xc2\xa00' $'\v0' $'\xc2\xa01' $'0\xe3\x80\x80'; do
+  settings "{\"GAFFER_MODE\": \"autonomous\", \"AUTO_MERGE\": $(json_str "$s")}"
+  V="$(cfg 'printf "%s|" "$AUTO_MERGE"; K=AUTO_MERGE; '"$DECISION")"
+  [ "$V" = "0|kept" ] && ok "AUTO_MERGE stored $(json_str "$s") under autonomous -> in force '0' (kept)" \
+    || fail "AUTO_MERGE stored $(json_str "$s") under autonomous: $V $(tr '\n' ' ' < "$WORK/err" | cut -c1-160)"
+done
+# Readers that took exactly "1": "true" was off there (memory's auto-approve, the idle
+# drafters, the sandbox network switch).
+for k in MEMORY_AUTO_APPROVE STRICT_ALLOW_NETWORK; do
+  settings "{\"GAFFER_MODE\": \"autonomous\", \"$k\": \"true\"}"
+  V="$(cfg 'printf "%s" "${'"$k"'-}"')"
+  [ "$V" = "0" ] && ok "$k stored \"true\" (its old reader took only \"1\"): in force '0'" \
+    || fail "$k stored true under autonomous: '$V'"
+done
+# The control: a plain "1" under autonomous is the derived 1 (same), never forced off.
+settings '{"GAFFER_MODE": "autonomous", "AUTO_MERGE": "1"}'
+V="$(cfg 'printf "%s|" "$AUTO_MERGE"; K=AUTO_MERGE; '"$DECISION")"
+[ "$V" = "1|same" ] && ok "AUTO_MERGE stored \"1\" under autonomous: same as derived" || fail "AUTO_MERGE 1 control: $V"
+# A gate (1 is stricter) honours a 1 any old reader honoured: worker.mjs trimmed a NBSP.
+row GAFFER_CREATE_PR $'\xc2\xa01' "1" kept
 # rank: the idle switches, an old 0 is the strictest level.
 row GAFFER_IDLE_FEATURE_BACKLOG " 0" "0" kept
 

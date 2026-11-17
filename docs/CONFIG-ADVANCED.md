@@ -275,8 +275,10 @@ setting, except where the old value is stricter than what the setting derives (i
 would never widen autonomy or spend): then it still applies, and the warning says so.
 An old value is read the way the old runner read it (padding and leading zeros, and
 dollars written ".5" or "5."). A number no old reading accepts is never read as no
-limit: a spend cap refuses to start, naming the key; a count or time cap runs on the
-limit its setting derives (and refuses to start when the setting derives none).
+limit and never replaced by the setting's limit: the runner refuses to start, naming
+the key (the old runner's readers disagreed on such a value). A switch is read as the
+strictest of its old readers: a ship switch counts as on only if every reader took it
+as on, a gate as on if any reader did.
 `gaffer config show --json` lists what happened to each (`migration`).
 
 | Old key | Decided now by | When the old value still applies |

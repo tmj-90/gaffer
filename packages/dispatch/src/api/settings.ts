@@ -360,20 +360,39 @@ export async function refreshSettingsEnvAsync(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<boolean> {
   let changed = false;
+  // BOUNDED (review of external review 21): a file rewritten faster than one read takes
+  // held the request for ever (every apply found the file changed again). After a few
+  // rounds (an apply this request ran, or one it waited for) that each ended with the
+  // file already changed, the request is refused: it never runs on values older than the
+  // file, and it is never held without end.
+  let rounds = 0;
   for (;;) {
+    const last = APPLIED_FILE.get(env);
     const running = APPLYING.get(env);
+    if (!running) {
+      if (!last) return changed;
+      const path = resolveSettingsPath(env);
+      if (path === last.path && fileSignature(path) === last.sig) return changed;
+    }
+    if (rounds >= REFRESH_MAX_ROUNDS) {
+      throw new DispatchError(
+        "STATE_CONFLICT",
+        "settings.json kept changing while the dashboard read it, so this request was not run on settings older than the file. Try again once it stops changing.",
+        { reason: "settings_changing" },
+      );
+    }
+    rounds += 1;
     if (running) {
       await running;
       continue;
     }
-    const last = APPLIED_FILE.get(env);
-    if (!last) return changed;
-    const path = resolveSettingsPath(env);
-    if (path === last.path && fileSignature(path) === last.sig) return changed;
-    await applySettingsToEnvAsync(env, path);
+    await applySettingsToEnvAsync(env, resolveSettingsPath(env));
     changed = true;
   }
 }
+
+/** How many applies one request's refresh may run or wait for before it is refused. */
+const REFRESH_MAX_ROUNDS = 4;
 
 /**
  * {@link applySettingsToEnv} without blocking the event loop: the file's signature is

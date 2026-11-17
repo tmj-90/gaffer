@@ -231,3 +231,37 @@ describe("the config read is shared and the refresh keeps its guarantee", () => 
     expect(env["DISPATCH_ALLOW_AGENT_APPROVE"]).toBe("0");
   }, 30_000);
 });
+
+describe("the per-request refresh is bounded (review of external review 21)", () => {
+  it("a settings.json that changes continuously does not hold a request for ever", async () => {
+    const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, HOME: dir, GAFFER_DATA: dir };
+    const settings = join(dir, "settings.json");
+    writeFileSync(settings, JSON.stringify({ GAFFER_MODE: "supervised" }));
+    applySettingsToEnv(env, settings);
+    setRunnerConfigCommandsForTest({
+      records: ["sh", "-c", `sleep 0.3; exec bash "${RECORDS_SH}"`],
+      show: [process.execPath, SHOW_MJS, "--all", "--json"],
+    });
+    // A writer that rewrites the file faster than one read takes.
+    let n = 0;
+    const writer = setInterval(() => {
+      n += 1;
+      // Never the same bytes twice, so no read is answered from the cache.
+      writeFileSync(settings, JSON.stringify({ GAFFER_MODE: "lite", NOTE: String(n) }));
+    }, 100);
+    try {
+      await new Promise((r) => setTimeout(r, 150)); // the file has changed once already
+      const outcome = await Promise.race([
+        refreshSettingsEnvAsync(env).then(
+          () => "resolved",
+          (e: unknown) => `refused:${(e as { code?: string }).code ?? String(e)}`,
+        ),
+        new Promise<string>((r) => setTimeout(() => r("starved"), 8_000)),
+      ]);
+      // Bounded, and never by running on values older than the file: it is refused.
+      expect(outcome).toBe("refused:STATE_CONFLICT");
+    } finally {
+      clearInterval(writer);
+    }
+  }, 30_000);
+});

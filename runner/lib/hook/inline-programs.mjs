@@ -26,7 +26,18 @@
 import { basename } from "node:path";
 import { decodeEscapes } from "./inline-lex.mjs";
 import { FD_PATH, otherInterpreter, otherInterpreterName } from "./inline-other.mjs";
-import { replayCd } from "./paths.mjs";
+import { physicalPath } from "./expand.mjs";
+import { canonicalize, expandTildeWord, replayCd } from "./paths.mjs";
+import {
+  CD_VERBS,
+  CwdFlow,
+  DIR_SENSITIVE_NAMES,
+  cdpathMaySet,
+  cwdUnion,
+  dynamicAssignment,
+  dynamicWord,
+  textMayChangeDir,
+} from "./cwd-flow.mjs";
 import { resolveEffectiveTokens } from "./verbs.mjs";
 
 const MAX_DEPTH = 6;
@@ -152,10 +163,36 @@ function lexShell(cmd) {
     } else words.push(word);
     word = null;
   };
+  // THE DIRECTORY FLOW (cwd-flow.mjs) reads, for each command, the separator in front of
+  // it (`sep`: an empty `(` keeps the one before it, so `a && (b)` runs b after a) and
+  // how many subshell parentheses are open around it (`parenDepth`). `f (` with words
+  // in front is a function header (`fnHeader`), whose `)` closes no subshell.
+  let pendingSep = "";
+  let parenDepth = 0;
+  const parens = [];
+  const closeParen = () => {
+    if (parens.pop() === "sub") parenDepth = Math.max(0, parenDepth - 1);
+  };
   const endCmd = (op) => {
     endWord();
-    if (words.length || redirs.length) cmds.push({ words, redirs, op });
-    else if (cmds.length && (op === "|" || op === "|&")) cmds[cmds.length - 1].op = op;
+    if (words.length || redirs.length) {
+      cmds.push({ words, redirs, op, sep: pendingSep, parenDepth, fnHeader: op === "(" });
+      pendingSep = op;
+      if (op === "(") parens.push("fn");
+      else if (op === ")") closeParen();
+    } else if (cmds.length && (op === "|" || op === "|&")) {
+      cmds[cmds.length - 1].op = op;
+      pendingSep = op;
+    } else if (op === "(") {
+      parens.push("sub");
+      parenDepth += 1;
+    } else if (op === ")") {
+      closeParen();
+      pendingSep = ")";
+    } else if (!(op === "\n" && /^(?:&&|\|\||\||\|&)$/.test(pendingSep))) {
+      // A newline after `&&` / `||` / `|` continues the list.
+      pendingSep = op;
+    }
     words = [];
     redirs = [];
   };
@@ -490,8 +527,10 @@ function readHeredoc(cmd, i, h) {
 const ASSIGN = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s;
 
 /**
- * The inline programs of `cmd`: { programs: [{ lang, text, cwd, via }], reasons: [] }.
- * `cwd` is where the program runs (null when a `cd` the hook cannot follow came first).
+ * The inline programs of `cmd`: { programs: [{ lang, text, cwd, cwds, via }], reasons: [] }.
+ * `cwds` is every directory the program may run in (cwd-flow.mjs; a null element: one
+ * the hook cannot know), `cwd` the one directory when there is exactly one known, else
+ * null.
  */
 let LAST = { cmd: null, cwd: null, out: null };
 function inlinePrograms(cmd, cwd = process.cwd()) {
@@ -500,11 +539,199 @@ function inlinePrograms(cmd, cwd = process.cwd()) {
   const out = { programs: [], reasons: [] };
   walk(
     cmd,
-    { cwd, vars: new Map(), depth: 0, raw: cmd, sets: new Map(), fileVars: new Set(), out },
+    {
+      cwds: [cwd],
+      vars: new Map(),
+      depth: 0,
+      raw: cmd,
+      sets: new Map(),
+      fileVars: new Set(),
+      out,
+      // Whether CDPATH may be set, and whether a variable may be assigned under a name
+      // the hook cannot see (cwd-flow.mjs): read once for the whole command.
+      cdpathMay: cdpathMaySet(cmd),
+      varsUntrusted: dynamicAssignment(cmd),
+      // `cd -P`, `set -P` / `set -o physical` (also through SHELLOPTS): `..` may be taken
+      // physically. Any `-…P` word or "physical" counts (it only adds a directory).
+      physicalMay:
+        /(?:^|\s)-[A-Za-z]*P|physical/.test(cmd) || /physical/.test(process.env.SHELLOPTS ?? ""),
+      substituting: /(?:^|[^\w-])(?:xargs|find|parallel)(?![\w-])/.test(cmd),
+      mentions: new Map(),
+    },
     out,
   );
   LAST = { cmd, cwd, out };
   return out;
+}
+
+/** The one directory a program runs in, or null when it may run in several or one unknown. */
+function oneCwd(ctx) {
+  return ctx.cwds && ctx.cwds.length === 1 && ctx.cwds[0] !== null ? ctx.cwds[0] : null;
+}
+
+const OPEN_KEYWORDS = new Set(["if", "while", "until", "for", "select", "case", "{"]);
+const LOOP_KEYWORDS = new Set(["while", "until", "for", "select"]);
+const CLOSE_KEYWORDS = new Set(["fi", "done", "esac", "}"]);
+const MID_KEYWORDS = new Set(["then", "do", "else", "elif", "time", "nohup"]);
+const AND_OR_PIPE = new Set(["&&", "||", "|", "|&"]);
+
+/**
+ * THE DIRECTORY FLOW of one lexed command list (cwd-flow.mjs): for each simple command,
+ * the separators around it, whether a `cd` in it can be relied on, and where the flow
+ * becomes unknown. Linear in the number of commands.
+ */
+function dirPlan(cmds) {
+  const n = cmds.length;
+  const meta = new Array(n);
+  const poisonAt = new Set();
+  // Where the directory becomes unknown for good (CwdFlow.stick): a definition whose body
+  // runs later and may change directory, a redefined directory verb, `source`.
+  const stickAt = new Set();
+  // A command named by an expansion (the index of that word): stick() unless the walk
+  // can read the name it expands to (safeDynamicVerb).
+  const dynAt = new Map();
+  const frames = [];
+  let fnPending = false;
+  let anyCd = false;
+  let broken = false;
+  // The separator that ends each command's and-or list (a backgrounded list is scoped).
+  const term = new Array(n);
+  for (let k = n - 1; k >= 0; k -= 1) {
+    term[k] = AND_OR_PIPE.has(cmds[k].op) && k + 1 < n ? term[k + 1] : cmds[k].op;
+  }
+  const kw = (w) =>
+    w && !w.quoted && !w.subst && !w.dynamic && w.vars.length === 0 ? w.text : null;
+  for (let k = 0; k < n; k += 1) {
+    const words = cmds[k].words;
+    let i = 0;
+    let negate = false;
+    let coproc = false;
+    let header = false;
+    for (;;) {
+      const t = kw(words[i]);
+      if (t === null) break;
+      if (OPEN_KEYWORDS.has(t)) {
+        const kind = t === "{" && fnPending ? "fn" : LOOP_KEYWORDS.has(t) ? "loop" : "block";
+        if (fnPending && t !== "{") broken = true; // a body that is not `{ }`: not followed
+        fnPending = false;
+        frames.push({ kind, start: k, hasCd: false });
+        i += 1;
+        if (t === "for" || t === "select" || t === "case") {
+          header = true; // the rest of the words are a list or a subject, not a command
+          break;
+        }
+        continue;
+      }
+      if (CLOSE_KEYWORDS.has(t)) {
+        const f = frames.pop();
+        if (!f) broken = true;
+        else if (f.hasCd && f.kind === "fn") {
+          // A `cd` in a function runs wherever and whenever it is called, also after a
+          // later `cd` the hook follows: unknown for good from the definition on.
+          stickAt.add(f.start);
+          for (const g of frames) g.hasCd = true;
+        } else if (f.hasCd && f.kind === "loop") {
+          // A `cd` in a loop repeats.
+          poisonAt.add(f.start);
+          for (const g of frames) g.hasCd = true;
+        } else if (f.hasCd) for (const g of frames) g.hasCd = true;
+        i += 1;
+        continue;
+      }
+      if (MID_KEYWORDS.has(t)) {
+        i += 1;
+        continue;
+      }
+      if (t === "!") {
+        negate = !negate;
+        i += 1;
+        continue;
+      }
+      if (t === "coproc") {
+        coproc = true;
+        i += 1;
+        continue;
+      }
+      if (t === "function") {
+        fnPending = true;
+        header = true;
+        // `function cd { ... }` redefines a directory verb.
+        if (DIR_SENSITIVE_NAMES.has(words[i + 1]?.text ?? "")) stickAt.add(k);
+        break;
+      }
+      break;
+    }
+    if (cmds[k].fnHeader) {
+      fnPending = true;
+      header = true;
+      // `cd() { :; }`: a `cd` after it no longer does what the analysis reads.
+      if (DIR_SENSITIVE_NAMES.has(words[words.length - 1]?.text ?? "")) stickAt.add(k);
+    }
+    // Does this command change directory (or may it, through a body it runs later)?
+    let j = i;
+    while (j < words.length && ASSIGN.test(words[j].text)) j += 1;
+    // `command -p cd`, `builtin cd`: the options of the two wrappers are skipped.
+    while (j < words.length && /^(?:command|builtin)$/.test(words[j].text)) {
+      j += 1;
+      while (j < words.length && /^-/.test(words[j].text)) j += 1;
+    }
+    const w = header ? null : words[j];
+    const verb = w ? basename(w.text) : null;
+    const dynamicVerb =
+      Boolean(w) && (w.subst || w.dynamic || w.vars.length > 0 || dynamicWord(w.text));
+    const changesDir = verb !== null && (CD_VERBS.has(verb) || verb === "source" || verb === ".");
+    const laterBody =
+      verb !== null &&
+      (verb === "trap" || verb === "alias" || verb === "eval") &&
+      words
+        .slice(j + 1)
+        .some((x) => x.subst || x.dynamic || x.vars.length > 0 || textMayChangeDir(x.text));
+    // `alias cd=:` redefines a directory verb (with expand_aliases on).
+    const aliasRedefines =
+      verb === "alias" &&
+      words.slice(j + 1).some((x) => DIR_SENSITIVE_NAMES.has(/^([^=]*)=/s.exec(x.text)?.[1] ?? ""));
+    // A command named by an expansion may be `cd`, `eval`, `trap` or a function that
+    // changes directory; `source` runs a file that may define any of them; `enable -n cd`
+    // turns the builtin off.
+    if (laterBody || aliasRedefines || verb === "source" || verb === "." || verb === "enable") {
+      stickAt.add(k);
+    } else if (dynamicVerb) {
+      // Unknown for good unless the walk can read the name (safeDynamicVerb).
+      dynAt.set(k, j);
+    }
+    if (changesDir || laterBody || dynamicVerb || aliasRedefines || verb === "enable") {
+      anyCd = true;
+      for (const f of frames) f.hasCd = true;
+    }
+    meta[k] = {
+      sep: cmds[k].sep,
+      nextSep: cmds[k].op,
+      scoped: frames.length > 0 || cmds[k].parenDepth > 0 || coproc || term[k] === "&",
+      negate,
+      fnBody: frames.some((f) => f.kind === "fn"),
+      // A trap or an alias body that may change directory runs when the hook cannot see.
+      unknownAfter: laterBody && verb !== "eval",
+    };
+  }
+  if (frames.length || fnPending) broken = true;
+  return { meta, poisonAt, stickAt, dynAt, anyCd, broken };
+}
+
+/**
+ * Whether a command named by an expansion surely names a program that cannot change
+ * this shell's directory: one variable the hook vouches for (trustedCdText) holding a
+ * plain name that is not a directory verb, `eval`, `trap`, `source` and the like.
+ * `PY=python3; $PY -c ...` is; `C=cd; $C /x`, `"$@"` and `$(...)` are not.
+ */
+function safeDynamicVerb(word, ctx) {
+  if (!word) return false;
+  const t = trustedCdText(word, ctx);
+  return (
+    t !== undefined &&
+    t !== "$" &&
+    /^[A-Za-z0-9_./+-]+$/.test(t) &&
+    !DIR_SENSITIVE_NAMES.has(basename(t))
+  );
 }
 
 function walk(text, ctx, out) {
@@ -534,10 +761,50 @@ function walk(text, ctx, out) {
     if (!body) continue;
     walk(body, { ...ctx, vars: new Map(ctx.vars), depth: ctx.depth + 1 }, out);
   }
+  // THE DIRECTORY FLOW: every command is read with every directory the shell may be in
+  // when it runs (cwd-flow.mjs). A function body runs where it is called: while the
+  // command changes directory anywhere, that is unknown. A structure the plan cannot
+  // follow (an unclosed block, a stray `fi`, a function body that is not `{ }`) leaves
+  // the directory unknown for a command that changes directory.
+  const plan = dirPlan(cmds);
+  ctx.anyCd = Boolean(ctx.anyCd) || plan.anyCd;
+  // A body that runs later or elsewhere (a trap, an alias) assigns nothing for certain.
+  const outerIndefinite = Boolean(ctx.indefinite);
+  const flow = new CwdFlow(ctx.cwds ?? [null]);
+  if (plan.broken && plan.anyCd) flow.poison();
   for (let k = 0; k < cmds.length; k += 1) {
     const prev = k > 0 && (cmds[k - 1].op === "|" || cmds[k - 1].op === "|&") ? cmds[k - 1] : null;
+    if (plan.stickAt.has(k)) flow.stick();
+    if (plan.dynAt.has(k) && !safeDynamicVerb(cmds[k].words[plan.dynAt.get(k)], ctx)) {
+      flow.stick();
+    }
+    if (plan.poisonAt.has(k)) flow.poison();
+    const m = plan.meta[k];
+    if (m.fnBody) {
+      // Not run here: read as it runs when called, and it does not move this flow.
+      ctx.cwds = ctx.anyCd ? [null] : flow.input(";");
+      ctx.definite = false;
+      simple(cmds[k], prev, ctx, out);
+      continue;
+    }
+    const before = flow.input(m.sep);
+    ctx.cwds = before;
+    // An assignment that certainly happened, here and in this shell (not in a block, a
+    // pipeline, a backgrounded list, after `&&` / `||`, nor in a body that runs later):
+    // only then does a `cd` operand trust the value it gave (trustedCdText).
+    ctx.definite =
+      !outerIndefinite &&
+      !m.scoped &&
+      !AND_OR_PIPE.has(m.sep) &&
+      !["|", "|&", "&"].includes(m.nextSep);
     simple(cmds[k], prev, ctx, out);
+    let after = ctx.cwds ?? [null];
+    if (m.unknownAfter) after = cwdUnion(after, [null]);
+    flow.step(m.sep, m.nextSep, before, after, { scoped: m.scoped, negate: m.negate });
   }
+  flow.endList();
+  // What follows this text (an eval's caller) starts wherever it may leave the shell.
+  ctx.cwds = flow.outer;
 }
 
 function interpreterMentioned(text) {
@@ -612,13 +879,64 @@ function setsName(raw, v) {
   }
 }
 
+// How many times the command names `v` other than as an expansion (`v=x`, `read v`,
+// `for v in`, `declare -n r=v`, `((v=1))`), cached per command.
+function mentionCount(ctx, v) {
+  if (ctx.mentions?.has(v)) return ctx.mentions.get(v);
+  const raw = ctx.raw;
+  let count = 0;
+  let from = 0;
+  for (;;) {
+    const at = raw.indexOf(v, from);
+    if (at === -1) break;
+    from = at + v.length;
+    const before = raw[at - 1] ?? "";
+    const after = raw[at + v.length] ?? "";
+    if (/[A-Za-z0-9_]/.test(after) || /[A-Za-z0-9_]/.test(before)) continue;
+    if (before === "$" || (before === "{" && raw[at - 2] === "$")) continue;
+    count += 1;
+  }
+  ctx.mentions?.set(v, count);
+  return count;
+}
+
+/**
+ * The text of a `cd` operand word, or "$" (a text replayCd refuses: unknown) when it
+ * takes text the hook cannot vouch for. A variable counts only when the command
+ * assigned it exactly once, for certain, before this point (recordAssignments with
+ * ctx.definite) and names it nowhere else: then no subshell, pipeline, conditional,
+ * loop, function, `read`, `printf -v`, nameref or later assignment can have given it
+ * another value. An assignment under a name the hook cannot see (`declare "$n=v"`) makes
+ * every variable untrusted.
+ */
+function trustedCdText(word, ctx) {
+  if (!word) return undefined;
+  if (word.subst || word.dynamic) return "$";
+  for (const v of word.vars) {
+    if (
+      ctx.varsUntrusted ||
+      !/^[A-Za-z_]\w*$/.test(v) ||
+      typeof ctx.vars.get(v) !== "string" ||
+      mentionCount(ctx, v) !== 1
+    ) {
+      return "$";
+    }
+  }
+  return wordText(word, ctx);
+}
+
 function recordAssignments(words, ctx, start = 0) {
   let k = start;
   while (k < words.length) {
     const m = ASSIGN.exec(words[k].text);
     if (!m) break;
     const w = words[k];
-    ctx.vars.set(m[1], w.subst || w.dynamic || w.vars.length ? null : m[2]);
+    // ctx.definite is false for an assignment that may not have happened here (see
+    // walk): its name then stands for a value the hook does not know.
+    ctx.vars.set(
+      m[1],
+      w.subst || w.dynamic || w.vars.length || ctx.definite === false ? null : m[2],
+    );
     notePreload(ctx, w);
     k += 1;
   }
@@ -772,7 +1090,8 @@ function notePreload(ctx, w) {
       ctx.out?.programs.push({
         lang: "writes",
         paths: [value],
-        cwd: ctx.cwd,
+        cwd: oneCwd(ctx),
+        cwds: ctx.cwds,
         via: name,
         what: `${name} (the runtime writes there)`,
       });
@@ -968,7 +1287,13 @@ function inspectWords(words, c, prev, ctx, out, feed, guard = 0) {
     if (texts[k] !== undefined) {
       const why = unreadableWhy(words[k], ctx);
       if (why) out.reasons.push(`${why} (trap)`);
-      walk(texts[k], { ...ctx, depth: ctx.depth + 1 }, out);
+      // It runs when the signal comes: wherever the shell is then, unknown once the
+      // command changes directory.
+      walk(
+        texts[k],
+        { ...ctx, depth: ctx.depth + 1, cwds: ctx.anyCd ? [null] : ctx.cwds, indefinite: true },
+        out,
+      );
     }
     return;
   }
@@ -976,27 +1301,72 @@ function inspectWords(words, c, prev, ctx, out, feed, guard = 0) {
     // An alias runs its value where it is used (with expand_aliases on).
     for (let k = 1; k < texts.length; k += 1) {
       const m = /^[^=]+=(.*)$/s.exec(texts[k]);
-      if (m) walk(m[1], { ...ctx, depth: ctx.depth + 1 }, out);
+      if (m) {
+        walk(
+          m[1],
+          { ...ctx, depth: ctx.depth + 1, cwds: ctx.anyCd ? [null] : ctx.cwds, indefinite: true },
+          out,
+        );
+      }
     }
     return;
   }
   if (first === "cd" || first === "pushd" || first === "popd") {
-    const arg = texts.slice(1).find((t) => !/^-[LPe@]+$/.test(t));
+    let argAt = 1;
+    while (argAt < texts.length && /^-[LPe@]+$/.test(texts[argAt])) argAt += 1;
+    if (texts[argAt] === "--") argAt += 1;
+    // The operand as the shell will see it, or "$" (unknown) when it takes text from a
+    // variable the hook cannot vouch for (trustedCdText).
+    const arg = argAt < texts.length ? trustedCdText(words[argAt], ctx) : undefined;
     const relative = arg !== undefined && !arg.startsWith("/") && !arg.startsWith("~");
     ctx.cds = (ctx.cds ?? 0) + 1;
     if (
+      // The directory stack is unknown to a stateless hook. (`pushd DIR` could be read as
+      // `cd DIR`; it stays unknown here because bf5e305 refused it and this review only
+      // narrows.)
       first !== "cd" ||
-      ctx.cwd === null ||
+      // A body run by xargs, find or parallel has text substituted into it.
+      (ctx.depth > 0 && ctx.substituting) ||
+      ctx.cwds === null ||
       ctx.cds > 32 || // past this many, the directory is unknown (bounded work)
-      (relative && (process.env.CDPATH || /CDPATH/.test(ctx.raw)))
+      (relative && !/^\.\.?(?:\/|$)/.test(arg) && ctx.cdpathMay)
     ) {
-      ctx.cwd = null; // the directory stack and CDPATH are unknown to a stateless hook
+      ctx.cwds = [null]; // the directory stack and CDPATH are unknown to a stateless hook
     } else {
-      try {
-        ctx.cwd = replayCd({ verb: "cd", rest: texts }, ctx.cwd);
-      } catch {
-        ctx.cwd = null; // a path too deep to resolve: unknown
+      // From every directory the shell may be in (the flow decides what that replaces).
+      const rest = arg === undefined ? ["cd"] : ["cd", "--", arg];
+      const next = [];
+      for (const from of ctx.cwds) {
+        let to;
+        try {
+          to = from === null && relative ? null : replayCd({ verb: "cd", rest }, from);
+        } catch {
+          to = null; // a path too deep to resolve: unknown
+        }
+        if (!next.includes(to)) next.push(to);
+        // `cd -P`, `set -P`: `..` taken physically. Through a symlink the two differ; when
+        // the command may ask for the physical one (ctx.physicalMay) both are kept.
+        if (
+          ctx.physicalMay &&
+          arg !== undefined &&
+          to !== null &&
+          /(?:^|\/)\.\.(?:\/|$)/.test(arg)
+        ) {
+          let phys = null;
+          try {
+            const p = expandTildeWord(arg, from);
+            if (typeof p === "string" && (p.startsWith("/") || from !== null)) {
+              const raw = p.startsWith("/") ? p : `${from}/${p}`;
+              const pp = physicalPath(raw);
+              phys = pp === null ? null : canonicalize(pp);
+            }
+          } catch {
+            phys = null;
+          }
+          if (!next.includes(phys)) next.push(phys);
+        }
       }
+      ctx.cwds = cwdUnion(next);
     }
     return;
   }
@@ -1018,7 +1388,7 @@ function inspectWords(words, c, prev, ctx, out, feed, guard = 0) {
         );
       }
       if (t === "-C" || t === "--chdir" || /^-C./.test(t) || t.startsWith("--chdir="))
-        ctx.cwd = null;
+        ctx.cwds = [null];
       if (t === "-u" || t === "--unset" || t === "-C" || t === "--chdir") {
         k += 2;
         continue;
@@ -1094,7 +1464,7 @@ function inspectWords(words, c, prev, ctx, out, feed, guard = 0) {
             return t;
           })
         : texts;
-    otherInterpreter(given, ctx.cwd, out, () => stdinOf(c, prev, ctx));
+    otherInterpreter(given, oneCwd(ctx), out, () => stdinOf(c, prev, ctx));
     return;
   }
   if (SHELLS.has(first) || (first === "busybox" && SHELLS.has(texts[1] ?? ""))) {
@@ -1147,7 +1517,7 @@ function inspectWords(words, c, prev, ctx, out, feed, guard = 0) {
     return;
   }
   if (first === "source" || first === ".") {
-    ctx.cwd = null; // a sourced file can change directory
+    ctx.cwds = [null]; // a sourced file can change directory
     return;
   }
   if (first === "xargs") {
@@ -1572,7 +1942,8 @@ function interpreter(lang, words, c, prev, ctx, out, feed) {
   const texts = words.map((w) => wordText(w, ctx));
   const programs = []; // words (or { text }) that hold program text
   let script = null; // the first operand: a script file (or the end of the options)
-  let cwd = ctx.cwd;
+  let cwd = oneCwd(ctx);
+  let cwds = ctx.cwds;
   let sawModule = false;
   const preload = []; // ruby -r LIB, perl -M MODULE
   let perlSplit = null; // perl -F PATTERN
@@ -1788,7 +2159,10 @@ function interpreter(lang, words, c, prev, ctx, out, feed) {
         }
         if (VALUE_LETTERS[lang]?.has(ch)) {
           const rest = t.slice(j + 1);
-          if (lang === "ruby" && ch === "C") cwd = null;
+          if (lang === "ruby" && ch === "C") {
+            cwd = null;
+            cwds = [null];
+          }
           if ((lang === "ruby" && ch === "r") || (lang === "perl" && (ch === "M" || ch === "m"))) {
             preload.push(rest || texts[k + 1] || "");
           }
@@ -1827,9 +2201,11 @@ function interpreter(lang, words, c, prev, ctx, out, feed) {
   if (texts2.length) {
     // Ruby and Perl run every -e together, one per line; node and php the last one.
     const joined = lang === "ruby" || lang === "perl" ? [texts2.join("\n")] : texts2;
-    for (const t of joined) out.programs.push({ lang: progLang, text: t, cwd, via, preload });
+    for (const t of joined) {
+      out.programs.push({ lang: progLang, text: t, cwd, cwds, via, preload });
+    }
   } else if (preload.length && (lang === "ruby" || lang === "perl")) {
-    out.programs.push({ lang: progLang, text: "", cwd, via, preload });
+    out.programs.push({ lang: progLang, text: "", cwd, cwds, via, preload });
   }
   if (programs.length || sawModule) return;
   if (script !== null && /^\/(?:dev\/stdin|dev\/fd\/0|proc\/self\/fd\/0)$/.test(script))
@@ -1850,7 +2226,7 @@ function interpreter(lang, words, c, prev, ctx, out, feed) {
   const sin = stdinOf(c, prev, ctx);
   if (sin.kind === "literal") {
     for (const t of sin.texts)
-      out.programs.push({ lang: progLang, text: t, cwd, via: `${via} (stdin)`, preload });
+      out.programs.push({ lang: progLang, text: t, cwd, cwds, via: `${via} (stdin)`, preload });
   } else if (sin.kind === "unknown") {
     out.reasons.push(
       `${via} reads its program from stdin, from ${sin.why ?? "a source the hook cannot read"}`,

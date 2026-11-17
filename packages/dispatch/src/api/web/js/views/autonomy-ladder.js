@@ -6,8 +6,13 @@
 // Self-contained: it reads GET /api/autonomy/ladder itself. Mounted on Settings >
 // Autonomy (autonomyLadderPanel, re-exported by autonomy.js) and as one line on the
 // Overview (autonomyStepDownLine).
+//
+// PERMISSION LOCKS: the panel loads after the page's lock pass has run, so each control
+// that would change something is locked when it is created (access.js roLock, kind
+// "repo": a repository-level write), with the title and class the rest of the page uses.
 
 import { table } from "../lookup.js";
+import { roLock, scopeRefuses } from "../access.js";
 import { api } from "../api.js";
 import { button, callout, emptyState, meterRow, panelHead } from "../components.js";
 import { clear, el } from "../dom.js";
@@ -58,7 +63,11 @@ function liftForm(repo, cell) {
     maxlength: "300",
     placeholder: ready ? "Why (optional)" : "Why give it back now",
   });
-  const go = button(ready ? "Re-enable" : "Override and give back", { size: "small" });
+  roLock(reason, "repo");
+  const go = roLock(
+    button(ready ? "Re-enable" : "Override and give back", { size: "small" }),
+    "repo",
+  );
   go.addEventListener("click", () =>
     runAsyncAction(go, "Giving back…", async () => {
       const why = reason.value.trim();
@@ -95,6 +104,8 @@ function liftForm(repo, cell) {
 function signForm(repo, cell) {
   const box = el("div", { class: "al-sign" });
   const review = button("Review and sign", { size: "small" });
+  // Reviewing is a read; it is switched off only where the server refuses that read too.
+  if (scopeRefuses("GET", "/api/autonomy/signatures")) roLock(review, "repo");
   review.addEventListener("click", () =>
     runAsyncAction(review, "Reading…", async () => {
       const res = await api("GET", "/api/autonomy/signatures");
@@ -107,7 +118,7 @@ function signForm(repo, cell) {
         box.appendChild(el("p", { class: "dim" }, "Nothing to sign here any more."));
         return;
       }
-      const sign = button("Sign this row", { size: "small" });
+      const sign = roLock(button("Sign this row", { size: "small" }), "repo");
       sign.addEventListener("click", () =>
         runAsyncAction(sign, "Signing…", async () => {
           await api("POST", "/api/autonomy/signatures/resign", {

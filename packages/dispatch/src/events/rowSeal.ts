@@ -5,6 +5,7 @@ import {
   anchorRowPresent,
   GateKeyError,
   type AnchorRead,
+  type EventAnchor,
   type GateKeyring,
   type SealDb,
 } from "./gateSeal.js";
@@ -251,6 +252,13 @@ interface Checkpoint {
 
 interface ChainMemo {
   dataVersion: string;
+  /**
+   * The external records a REFUSAL was computed from (the anchor it was checked against
+   * and the checkpoint it read). A refusal is reused only while these AND data_version are
+   * unchanged: SQLite's data_version moves only on another connection's commit, never when
+   * a file outside the database changes, so it alone cannot say a refusal still holds.
+   */
+  external: string;
   ok: boolean;
   /** Why it is not ok. */
   failure?: { kind: "chain" | "checkpoint"; detail: string };
@@ -322,15 +330,25 @@ export function rowSealFullWalks(): number {
   return fullWalks;
 }
 
-function fullWalk(db: SealDb, seq: number, dv: string): ChainMemo {
+function fullWalk(db: SealDb, seq: number, dv: string, external: string): ChainMemo {
   fullWalks += 1;
   const rows = new Map<number, string>();
   const digests: Digests = new Map();
   const head = walk(db, 0, seq, EVENT_CHAIN_GENESIS, rows, digests);
   return head
-    ? { dataVersion: dv, ok: true, seq: head.seq, hash: head.hash, base: null, rows, digests }
+    ? {
+        dataVersion: dv,
+        external,
+        ok: true,
+        seq: head.seq,
+        hash: head.hash,
+        base: null,
+        rows,
+        digests,
+      }
     : {
         dataVersion: dv,
+        external,
         ok: false,
         failure: { kind: "chain", detail: "the hash chain does not verify" },
         seq: 0,
@@ -341,9 +359,10 @@ function fullWalk(db: SealDb, seq: number, dv: string): ChainMemo {
       };
 }
 
-function refused(dv: string, detail: string): ChainMemo {
+function refused(dv: string, external: string, detail: string): ChainMemo {
   return {
     dataVersion: dv,
+    external,
     ok: false,
     failure: { kind: "checkpoint", detail },
     seq: 0,
@@ -369,19 +388,29 @@ function memoStillHolds(db: SealDb, memo: ChainMemo, foreignWrite: boolean): boo
   return true;
 }
 
-/** The recorded checkpoint, verified under the key; a throw or a bad MAC is `broken`. */
-function readCheckpoint(
-  keyring: GateKeyring,
-): { cp: Checkpoint } | { missing: true } | { broken: string } {
-  if (!keyring.readCheckpoint) return { missing: true };
-  let read: ReturnType<NonNullable<GateKeyring["readCheckpoint"]>>;
+/** What the keyring returned for the checkpoint (a throw is kept as `broken`). */
+type RawCheckpoint = { body: string } | { missing: string } | { broken: string };
+
+/** Read the recorded checkpoint from the keyring, once; a throw is `broken`. */
+function readRawCheckpoint(keyring: GateKeyring): RawCheckpoint {
+  if (!keyring.readCheckpoint) return { missing: "this keyring keeps no checkpoint" };
   try {
-    read = keyring.readCheckpoint();
+    return keyring.readCheckpoint();
   } catch (e) {
     return { broken: e instanceof Error ? e.message : String(e) };
   }
+}
+
+/** One parse of the last body seen (a REST server reads the same checkpoint per request). */
+let lastParsed: { body: string; cp: Checkpoint } | null = null;
+
+/** The recorded checkpoint, verified under the key (the MAC was checked by the keyring). */
+function parseCheckpoint(
+  read: RawCheckpoint,
+): { cp: Checkpoint } | { missing: true } | { broken: string } {
   if ("missing" in read) return { missing: true };
   if ("broken" in read) return { broken: read.broken };
+  if (lastParsed && lastParsed.body === read.body) return { cp: lastParsed.cp };
   try {
     const v = JSON.parse(read.body) as Partial<Checkpoint> & { v?: unknown };
     if (
@@ -394,10 +423,23 @@ function readCheckpoint(
     ) {
       return { broken: "the checkpoint does not have the expected shape" };
     }
-    return { cp: { seq: Number(v.seq), id: v.id, hash: v.hash, tracks: v.tracks } };
+    const cp: Checkpoint = { seq: Number(v.seq), id: v.id, hash: v.hash, tracks: v.tracks };
+    lastParsed = { body: read.body, cp };
+    return { cp };
   } catch {
     return { broken: "the checkpoint body is not readable" };
   }
+}
+
+/** The identity of the external records a refusal is computed from (see ChainMemo). */
+function externalKey(anchor: EventAnchor, read: RawCheckpoint): string {
+  const cp =
+    "body" in read
+      ? `body\n${read.body}`
+      : "missing" in read
+        ? "missing"
+        : `broken\n${read.broken}`;
+  return `${anchor.seq}\n${anchor.id}\n${anchor.hash}\n${cp}`;
 }
 
 /** A key holder records the memo's head as the new checkpoint (best effort). */
@@ -429,44 +471,68 @@ function maybeRecordCheckpoint(
 
 /**
  * The verified chain state of this handle, up to at least `seq`, using (and keeping fresh)
- * the checkpoint. `anchorSeq` is the head the factory anchored outside the database.
+ * the checkpoint. `anchor` is the head the factory anchored outside the database and
+ * `cpRead` the checkpoint, read BEFORE that anchor (see verifyLifecycleChain).
  */
-function chainState(db: SealDb, keyring: GateKeyring, seq: number, anchorSeq: number): ChainMemo {
+function chainState(
+  db: SealDb,
+  keyring: GateKeyring,
+  seq: number,
+  anchor: EventAnchor,
+  cpRead: RawCheckpoint,
+): ChainMemo {
+  const anchorSeq = anchor.seq;
   const dv = dataVersion(db);
+  const external = externalKey(anchor, cpRead);
   const memo = CHAIN_MEMO.get(db);
   let next: ChainMemo | null = null;
-  if (memo && !memo.ok && memo.dataVersion === dv) {
-    // A broken chain or refused checkpoint stays so until another connection commits.
+  if (memo && !memo.ok && memo.dataVersion === dv && memo.external === external) {
+    // A broken chain or refused checkpoint stays so until another connection commits or
+    // the external records it was computed from change.
     next = memo;
   } else if (memo && memo.ok && memoStillHolds(db, memo, memo.dataVersion !== dv)) {
     if (seq <= memo.seq) {
       const at = db.prepare("SELECT 1 AS x FROM work_events WHERE rowid = ?").get(seq);
-      if (at) next = { ...memo, dataVersion: dv };
+      if (at) next = { ...memo, dataVersion: dv, external };
     } else {
       const rows = new Map(memo.rows);
       const digests = cloneDigests(memo.digests);
       const head = walk(db, memo.seq, seq, memo.hash, rows, digests);
-      if (head) next = { ...memo, dataVersion: dv, seq: head.seq, hash: head.hash, rows, digests };
+      if (head) {
+        next = {
+          ...memo,
+          dataVersion: dv,
+          external,
+          seq: head.seq,
+          hash: head.hash,
+          rows,
+          digests,
+        };
+      }
     }
   }
   if (!next) {
-    const read = readCheckpoint(keyring);
+    const read = parseCheckpoint(cpRead);
     if ("broken" in read) {
-      next = refused(dv, `the chain checkpoint is refused: ${read.broken}`);
+      next = refused(dv, external, `the chain checkpoint is refused: ${read.broken}`);
     } else if ("missing" in read || TRACK_KEYS.some((k) => !(k in read.cp.tracks))) {
-      next = fullWalk(db, seq, dv);
+      next = fullWalk(db, seq, dv, external);
     } else {
       const cp = read.cp;
       const at = db.prepare("SELECT id, hash FROM work_events WHERE rowid = ?").get(cp.seq) as
         { id: string; hash: string | null } | undefined;
       if (cp.seq > anchorSeq) {
+        // Read before the anchor, a genuine checkpoint is never past it (verifyLifecycleChain):
+        // this one was rolled back under, or the anchor was.
         next = refused(
           dv,
+          external,
           `the chain checkpoint names row ${cp.seq}, past the anchored head ${anchorSeq}`,
         );
       } else if (!at || String(at.id) !== cp.id || String(at.hash ?? "") !== cp.hash) {
         next = refused(
           dv,
+          external,
           `the event log no longer holds row ${cp.seq} as the chain checkpoint recorded it (rows were deleted, rewritten or rolled back)`,
         );
       } else {
@@ -476,9 +542,18 @@ function chainState(db: SealDb, keyring: GateKeyring, seq: number, anchorSeq: nu
         const rows = new Map<number, string>();
         const head = walk(db, cp.seq, Math.max(seq, cp.seq), cp.hash, rows, digests);
         next = head
-          ? { dataVersion: dv, ok: true, seq: head.seq, hash: head.hash, base: cp, rows, digests }
+          ? {
+              dataVersion: dv,
+              external,
+              ok: true,
+              seq: head.seq,
+              hash: head.hash,
+              base: cp,
+              rows,
+              digests,
+            }
           : {
-              ...refused(dv, "the hash chain does not verify after the checkpoint"),
+              ...refused(dv, external, "the hash chain does not verify after the checkpoint"),
               failure: { kind: "chain", detail: "the hash chain does not verify" },
             };
       }
@@ -519,12 +594,13 @@ function chainOkUpTo(
   db: SealDb,
   keyring: GateKeyring,
   seq: number,
-  anchorSeq: number,
+  anchor: EventAnchor,
+  cpRead: RawCheckpoint,
   track: Tracked,
   entityId: string,
 ): { ok: true } | { ok: false; failure: "chain"; detail: string } {
   addTrack(track);
-  const memo = chainState(db, keyring, seq, anchorSeq);
+  const memo = chainState(db, keyring, seq, anchor, cpRead);
   if (!memo.ok) {
     return {
       ok: false,
@@ -554,8 +630,9 @@ function chainOkUpTo(
 }
 
 /**
- * The keyring `keyring` with its event-log anchor read NOW, once, for a verification that
- * runs inside a read snapshot opened AFTER this call ({@link import("../db/connection.js").inReadSnapshot}).
+ * The keyring `keyring` with its chain checkpoint and then its event-log anchor read NOW,
+ * once each, for a verification that runs inside a read snapshot opened AFTER this call
+ * ({@link import("../db/connection.js").inReadSnapshot}).
  *
  * The anchor lives outside the database and a writer moves it on only after its commit,
  * so every row it names is visible to a snapshot that starts after it was read. Read the
@@ -565,13 +642,30 @@ function chainOkUpTo(
  * cut off) whenever the factory wrote an event mid sign-in. The landing check reads its
  * anchor before any row for the same reason.
  *
+ * The checkpoint is pinned too, and read FIRST: a writer records one only at a row an
+ * anchor already named, so a checkpoint read before the anchor is never past it. Left
+ * live, it was read during the check, after the pinned anchor: a writer that moved the
+ * anchor and the checkpoint on in between showed a checkpoint past the pinned anchor, and
+ * a genuine principal was refused (external review 20). See verifyLifecycleChain.
+ *
  * Verification only: the result signs nothing new on its own behalf and cannot move or
- * reset the anchor (`anchor` and `reanchor` are left out). An anchor that could not be
- * read fails each check that asks for it, as it would have at the time.
+ * reset the anchor (`anchor` and `reanchor` are left out). An anchor or checkpoint that
+ * could not be read fails each check that asks for it, as it would have at the time.
  */
 export function anchorReadFirst(keyring: GateKeyring): GateKeyring {
   if (!keyring.readAnchor) return keyring;
+  let cp: { read: ReturnType<NonNullable<GateKeyring["readCheckpoint"]>> } | { error: unknown };
   let read: { anchor: AnchorRead } | { error: unknown };
+  const pinCheckpoint = !!keyring.readCheckpoint;
+  if (pinCheckpoint) {
+    try {
+      cp = { read: keyring.readCheckpoint!() };
+    } catch (e) {
+      cp = { error: e };
+    }
+  } else {
+    cp = { error: new Error("this keyring keeps no checkpoint") };
+  }
   try {
     read = { anchor: keyring.readAnchor() };
   } catch (e) {
@@ -585,8 +679,14 @@ export function anchorReadFirst(keyring: GateKeyring): GateKeyring {
       if ("error" in read) throw read.error;
       return read.anchor;
     },
-    // The chain checkpoint is read (and kept fresh) by the verification itself.
-    ...(keyring.readCheckpoint ? { readCheckpoint: () => keyring.readCheckpoint!() } : {}),
+    ...(pinCheckpoint
+      ? {
+          readCheckpoint: () => {
+            if ("error" in cp) throw cp.error;
+            return cp.read;
+          },
+        }
+      : {}),
     ...(keyring.writeCheckpoint
       ? { writeCheckpoint: (body: string) => keyring.writeCheckpoint!(body) }
       : {}),
@@ -725,6 +825,15 @@ export function verifyLifecycleChain(
   entityId: string,
   atLeastSeq = 0,
 ): { ok: true } | { ok: false; failure: RowSealFailure; detail: string } {
+  // ORDER: THE CHECKPOINT BEFORE THE ANCHOR. A writer moves the anchor on only after its
+  // commit, and records a checkpoint only at a row an anchor it had already read names
+  // (maybeRecordCheckpoint); anchors only move forward. So a checkpoint read before the
+  // anchor names a row at or before that anchor, whatever a legitimate writer does between
+  // the two reads, and "past the anchored head" stays evidence of a rollback. Read the
+  // other way round, one ordinary commit between the reads moved both on and refused a
+  // genuine row (external review 20). A keyring pinned by anchorReadFirst returns the two
+  // records it read, in this same order, before the read snapshot opened.
+  const cpRead = readRawCheckpoint(keyring);
   let anchor: AnchorRead;
   try {
     anchor = keyring.readAnchor
@@ -751,7 +860,15 @@ export function verifyLifecycleChain(
       detail: `the event log no longer holds event ${anchor.seq} as this factory recorded it outside the database (rows were deleted or rewritten; a revocation may have been removed)`,
     };
   }
-  return chainOkUpTo(db, keyring, Math.max(anchor.seq, atLeastSeq), anchor.seq, track, entityId);
+  return chainOkUpTo(
+    db,
+    keyring,
+    Math.max(anchor.seq, atLeastSeq),
+    anchor,
+    cpRead,
+    track,
+    entityId,
+  );
 }
 
 /**

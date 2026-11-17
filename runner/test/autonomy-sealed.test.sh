@@ -94,7 +94,8 @@ out="$(agent_approve "$T2")"
 [ "$(st "$T2")" = in_review ] && ok "B: an agent's approve is refused: #$T2 waits for a person" || fail "B: agent approve accepted: status=$(st "$T2") out=$out"
 SIGNED="$(wg autonomy policies --mode auto 2>/dev/null | jget '(d.policies || []).filter(p => p.signed === false).length')"
 [ "$SIGNED" = 2 ] && ok "B: the policy listing marks both forged rows as not signed" || fail "B: unsigned rows listed=$SIGNED"
-wg doctor 2>/dev/null | grep -q "2 automatic policy rows are not signed: they are off until you sign them" \
+DOCTOR="$(wg doctor 2>/dev/null)"
+grep -q "2 automatic policy rows are not signed: they are off until you sign them" <<<"$DOCTOR" \
   && ok "B: doctor says the forged rows are off until a person signs them" || fail "B: doctor: $(wg doctor 2>/dev/null | grep -i autonomy | head -3 | tr '\n' '|')"
 
 echo "== C. the signed low/merge row edited in place: the lane holds; put back, it lands =="

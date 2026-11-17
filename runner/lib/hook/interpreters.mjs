@@ -445,26 +445,38 @@ function kwName(toks, a, b) {
 const isP = (t, v) => Boolean(t) && t.t === "p" && t.v === v;
 const isDot = (t) => Boolean(t) && t.t === "p" && (t.v === "." || t.v === "?.");
 
-// Classify each literal path of a write against the write roots where the program runs.
-function writePathsReason(paths, cwd, roots, what, targets = []) {
+/**
+ * Every directory a program may run in (inline-programs.mjs `cwds`, cwd-flow.mjs), or
+ * null when one of them is unknown. A program recorded with only `cwd` runs there.
+ */
+function programDirs(prog) {
+  const dirs = Array.isArray(prog.cwds) ? prog.cwds : [prog.cwd ?? null];
+  return dirs.length === 0 || dirs.includes(null) ? null : dirs;
+}
+
+// Classify each literal path of a write against the write roots where the program runs:
+// from EVERY directory it may run in (`dirs`, null: one is unknown).
+function writePathsReason(paths, dirs, roots, what, targets = []) {
   for (const raw of paths) {
     if (typeof raw !== "string" || raw === "" || /[$`]|#\{/.test(raw)) {
       return `writes through ${what} to a path that is not a plain literal`;
     }
-    if (!raw.startsWith("/") && cwd === null) {
+    if (!raw.startsWith("/") && dirs === null) {
       return `writes through ${what} to a relative path after a directory change the hook cannot follow`;
     }
-    let abs;
-    try {
-      abs = canonicalize(resolve(cwd ?? "/", raw));
-    } catch {
-      return `writes through ${what} to a path too deep to resolve`;
+    for (const cwd of raw.startsWith("/") ? ["/"] : dirs) {
+      let abs;
+      try {
+        abs = canonicalize(resolve(cwd, raw));
+      } catch {
+        return `writes through ${what} to a path too deep to resolve`;
+      }
+      const access = classifyRootAccess(abs, roots);
+      if (access !== "write") {
+        return `writes through ${what} to ${raw}, which is ${access === "read" ? "in a read-only root" : "outside the write roots"}${dirs && dirs.length > 1 && !raw.startsWith("/") ? " from one of the directories the command may be in" : ""}`;
+      }
+      targets.push(abs);
     }
-    const access = classifyRootAccess(abs, roots);
-    if (access !== "write") {
-      return `writes through ${what} to ${raw}, which is ${access === "read" ? "in a read-only root" : "outside the write roots"}`;
-    }
-    targets.push(abs);
   }
   return null;
 }
@@ -2431,7 +2443,9 @@ const ANALYSERS = {
 function programReason(prog, roots, targets) {
   const lang = prog.lang;
   // Output paths of a command line the shell layer read (`python -m venv DIR`).
-  if (lang === "writes") return writePathsReason(prog.paths, prog.cwd, roots, prog.what, targets);
+  if (lang === "writes") {
+    return writePathsReason(prog.paths, programDirs(prog), roots, prog.what, targets);
+  }
   const variants = lang === "perl" ? [{ perlTick: false }, { perlTick: true }] : [{}];
   for (const opts of variants) {
     const lexed = lexProgram(lang, prog.text, opts);
@@ -2443,7 +2457,7 @@ function programReason(prog, roots, targets) {
     const textWhy = textWordReason(lang, prog.text, lexed.mask);
     if (textWhy) return textWhy;
     for (const w of writes) {
-      const why = writePathsReason(w.paths, prog.cwd, roots, w.what, targets);
+      const why = writePathsReason(w.paths, programDirs(prog), roots, w.what, targets);
       if (why) return why;
     }
   }
@@ -2502,15 +2516,22 @@ function inlineProgramReadReason(cmd, roots) {
         for (const m of prog.text.matchAll(global)) {
           const raw = m[1] ? stripQuotes(m[1]) : "";
           if (!raw || /[$`]|\$\{|#\{/.test(raw)) continue;
-          if (!raw.startsWith("/") && prog.cwd === null) continue;
-          let abs;
-          try {
-            abs = canonicalize(resolve(prog.cwd ?? "/", raw));
-          } catch {
-            return `inline interpreter reads a path too deep to resolve: ${raw.slice(0, 80)}`;
+          const dirs = programDirs(prog);
+          if (!raw.startsWith("/") && dirs === null) {
+            // Where the program runs is unknown (cwd-flow.mjs): a relative read is not
+            // judged in the agent's favour.
+            return `inline interpreter reads a relative path after a directory change the hook cannot follow: ${raw.slice(0, 80)} (use an absolute path)`;
           }
-          if (classifyRootAccess(abs, roots) === "outside") {
-            return `inline interpreter reads a file outside allowed roots: ${raw} [write-roots: ${roots.writeRoots.join(", ")}; read-roots: ${roots.readRoots.join(", ")}]`;
+          for (const cwd of raw.startsWith("/") ? ["/"] : dirs) {
+            let abs;
+            try {
+              abs = canonicalize(resolve(cwd, raw));
+            } catch {
+              return `inline interpreter reads a path too deep to resolve: ${raw.slice(0, 80)}`;
+            }
+            if (classifyRootAccess(abs, roots) === "outside") {
+              return `inline interpreter reads a file outside allowed roots: ${raw} [write-roots: ${roots.writeRoots.join(", ")}; read-roots: ${roots.readRoots.join(", ")}]`;
+            }
           }
         }
       }

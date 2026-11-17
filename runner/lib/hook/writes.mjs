@@ -138,7 +138,11 @@ const GIT_READ_ONLY_SUBCOMMANDS = new Set([
   "help",
 ]);
 
-function extractBashWriteTargets(cmd) {
+// `startCwd`: the directory the command starts in (null: one the hook cannot know). The
+// expansion walk (read-operands.mjs) calls this for each segment with every directory
+// the shell may be in there (cwd-flow.mjs), so the targets only this extractor knows
+// (sed -i, awk redirects, rsync, curl -o, git clone, ...) are judged from all of them.
+function extractBashWriteTargets(cmd, startCwd = process.cwd()) {
   const targets = [];
   // Effective cwd for resolving RELATIVE targets. Updated as the segment loop
   // replays `cd`/`pushd` left-to-right, so a `cd <outside> && echo x > rel`
@@ -148,7 +152,7 @@ function extractBashWriteTargets(cmd) {
   // `popd`): the effective dir is unprovable, so any subsequent RELATIVE target
   // fails closed (UNVERIFIABLE). Absolute targets are unaffected by cd and stay
   // exactly resolvable.
-  let effectiveCwd = process.cwd();
+  let effectiveCwd = startCwd;
   const add = (raw) => {
     if (!raw) return;
     // Expand an unquoted leading `~` the way bash will (see expandTildeWord); an

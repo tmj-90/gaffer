@@ -285,8 +285,10 @@ the usage ledger and the transition log, and says only what those can show:
   paths overlap see it under *Lessons from earlier changes here*, quoted as untrusted data,
   never as instructions. *Open a fix ticket* (`wg ticket finding fix-ticket`) creates a
   ticket linked as a regression of the change, and first says when that link takes
-  automatic approval back. Writing, withdrawing, proposing and opening are a person's acts:
-  an agent may only read findings. Health's *Lessons from findings* (and `wg lessons`)
+  automatic approval back. Withdrawing a finding also retires the lesson made from it, so
+  later agents stop seeing it. Writing, withdrawing, proposing and opening are a person's
+  acts: an agent may only read findings, and its shell may not write lore past the memory
+  MCP (`memory edit`, `memory suggest` and `memory sync import|pull` are refused). Health's *Lessons from findings* (and `wg lessons`)
   shows lessons live, drafts waiting, and how often something still went wrong on a
   lesson's paths before and after it went live.
 

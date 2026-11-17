@@ -971,7 +971,15 @@ a presence boolean, and an argument not on the allowlist is never copied.
   default search, and an MCP fetch of one is refused unless
   `MEMORY_ALLOW_RESTRICTED_MCP=1`; `report_conflict` against one is always refused.
   `record_absence` over MCP is off unless `MEMORY_ALLOW_MCP_ABSENCE=1`, and its markers
-  expire. The memory server uses stdio only and makes no outbound calls. Don't store
+  expire. The memory server uses stdio only and makes no outbound calls. An agent's shell
+  may not write lore past the MCP: the safety hook refuses the memory CLI's human verbs
+  (`approve`, `reject`, `review`, `add`, `update` and its other name `edit`, `supersede`,
+  `deprecate`, `delete`) and its other writes (`suggest`, `sync import`, `sync pull`).
+  A lesson (lore tagged `post-merge-finding`, served by path to later deliveries,
+  reviewers and testers) is filed by dispatch from a person's finding, approved by a
+  person, and retired when that person withdraws the finding. The hook judges command
+  text: a script file the agent wrote, or other code it runs, could still write the
+  memory database where the sandbox lets it (the `sandbox-exec` limit below). Don't store
   secrets in lore: `restricted` is a retrieval guard, not encryption, and anyone who can
   read the database file reads every record.
 - **Onboarding** resolves every file it reads to its real path and refuses one outside

@@ -369,6 +369,10 @@ const timedCpu = (command) => {
     ["2500 conditional cds, then a touch", `${"if true; then cd a; fi; ".repeat(2500)}touch x`],
     ["2500 function bodies with cd, then a touch", `${"f() { cd a; }; ".repeat(2500)}touch x`],
     ["6000 cds in an && chain, then a redirect", `${"cd .. && ".repeat(6000)}echo 1 > x`],
+    // The factory front-door rule replayed every `cd` and resolved each word under a path
+    // that grew with each one (independent review: 500 took 20 s, refused by the budget).
+    // Past factory.mjs MAX_CD_REPLAYS it refuses at once.
+    ["4000 subshell cds, then nothing else", `${"(cd a); ".repeat(4000)}true`],
   ]) {
     const { status, ms, cpu } = timedCpu(command);
     t.assert(

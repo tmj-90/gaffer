@@ -275,6 +275,20 @@ the usage ledger and the transition log, and says only what those can show:
   draft; it never approves itself, `MEMORY_AUTO_APPROVE=1` included. Only a person's
   feedback counts. `wg review-rules` lists the candidates and each rule's measure
   (rejections citing it before and after approval, or "not enough data").
+- **Learn from what went wrong after a ticket is done.** On a done ticket, *Something was
+  wrong with this?* (or `wg ticket finding add <ticket> --text ...`) records what the issue
+  was, with an optional category and the paths it concerns (by default, the paths the
+  change touched). A regression link's note becomes a finding on the change it names. A
+  finding counts as review feedback for the rules above. *Propose as a lesson*
+  (`wg ticket finding lesson`) turns one finding into a lore draft scoped to its repository
+  and paths; once you approve it in Memory, the next delivery, reviewer and tester whose
+  paths overlap see it under *Lessons from earlier changes here*, quoted as untrusted data,
+  never as instructions. *Open a fix ticket* (`wg ticket finding fix-ticket`) creates a
+  ticket linked as a regression of the change, and first says when that link takes
+  automatic approval back. Writing, withdrawing, proposing and opening are a person's acts:
+  an agent may only read findings. Health's *Lessons from findings* (and `wg lessons`)
+  shows lessons live, drafts waiting, and how often something still went wrong on a
+  lesson's paths before and after it went live.
 
 ![The four measures on Health: first-pass acceptance, human review time, the cost of an accepted change and the escaped-defect rate, each with its n](img/health-measures.png)
 

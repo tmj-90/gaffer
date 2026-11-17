@@ -20,6 +20,7 @@ import {
   sandboxStatusArgv,
 } from "../src/api/isolation.js";
 import { createApiServer } from "../src/api/server.js";
+import { runnerConfigForAsync } from "../src/api/settings.js";
 
 const MISSING = {
   provider: "docker",
@@ -101,6 +102,12 @@ describe("isolation probe", () => {
     await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
     try {
       const { port } = server.address() as AddressInfo;
+      // The load also reads the runner's config, beside the probe wait and for as long
+      // as that read takes (about 1.5 s on a macOS runner under bash 3.2, more on a
+      // loaded one). Read it first: the load below then finds it cached, so the bound
+      // times the probe wait, which is this test's subject, and not this host's bash.
+      // settings-load-nonblocking.test.ts covers the two waits running together.
+      expect((await runnerConfigForAsync()).ok).toBe(true);
       const t0 = Date.now();
       const res = await fetch(`http://127.0.0.1:${port}/api/settings`);
       const elapsed = Date.now() - t0;

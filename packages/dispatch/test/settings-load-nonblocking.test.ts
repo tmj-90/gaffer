@@ -9,10 +9,11 @@
  *
  * Pinned here:
  *  1. a config read slowed to macOS speed (a `bash` on PATH that sleeps before the
- *     config printer) beside a probe that takes 3 s: the load stays under the 2,500 ms
- *     the isolation test allows, and GET /api/health, asked from other processes while
- *     the read runs, answers promptly;
- *  2. a slow config read (a stub that sleeps) does not add to the probe wait;
+ *     config printer) beside a probe that takes 3 s: the read starts at once, not after
+ *     the probe wait, and GET /api/health, asked from other processes while the read
+ *     runs, answers promptly;
+ *  2. a slow config read (a stub that sleeps) does not add to the probe wait: it starts
+ *     beside the probe and the load answers when the later of the two is over;
  *  3. a hung config is bounded: the load answers, saying the config could not be read;
  *  4. at most one read runs at a time for one file and environment;
  *  5. the per-request refresh still never lets a request run on values older than the
@@ -117,15 +118,36 @@ function timedGetElsewhere(url: string, delayMs: number): Promise<number> {
   });
 }
 
+/**
+ * A shell command that writes the clock (ms) to `file`. The timing checks below read
+ * WHEN the config read started and ended from these, relative to the request: a CI
+ * runner reads the config several times slower than a laptop (and a real macOS one
+ * takes about 1.5 s under bash 3.2), so a fixed number of milliseconds for the whole
+ * load measured the host, not whether the two waits overlap.
+ */
+function stamp(file: string): string {
+  const code = 'require("fs").writeFileSync(process.argv[1], String(Date.now()))';
+  return `"${process.execPath}" -e '${code}' "${file}"`;
+}
+function stamped(file: string): number {
+  return Number(readFileSync(file, "utf8"));
+}
+/** The probe wait a settings load allows (isolation.ts SETTINGS_PROBE_WAIT_MS). */
+const PROBE_WAIT_MS = 1_500;
+
 describe("GET /api/settings reads the runner's config without blocking", () => {
-  it("a config read at macOS speed beside a 3 s probe: under 2,500 ms, and other requests answer meanwhile", async () => {
+  it("a config read at macOS speed beside a 3 s probe starts at once, and other requests answer meanwhile", async () => {
     // A `bash` first on PATH that takes one more second for the config printer only
     // (what the read costs on a macOS runner with bash 3.2); everything else is bash.
     const realBash = await new Promise<string>((r) =>
       execFile("sh", ["-c", "command -v bash"], (_e, out) => r(String(out).trim())),
     );
     const shim = join(dir, "shim");
-    script("shim-bash", `case "$1" in *config-records.sh) sleep 1 ;; esac\nexec ${realBash} "$@"`);
+    const started = join(dir, "read-started");
+    script(
+      "shim-bash",
+      `case "$1" in *config-records.sh) ${stamp(started)}; sleep 1 ;; esac\nexec ${realBash} "$@"`,
+    );
     await new Promise((r) => execFile("mkdir", ["-p", shim], r));
     await new Promise((r) => execFile("mv", [join(dir, "shim-bash"), join(shim, "bash")], r));
     process.env.PATH = `${shim}${delimiter}${process.env.PATH ?? ""}`;
@@ -145,7 +167,10 @@ describe("GET /api/settings reads the runner's config without blocking", () => {
       const body = (await res.json()) as { configError?: string; derived: unknown[] };
       expect(body.configError).toBeUndefined();
       expect(body.derived.length).toBeGreaterThan(0);
-      expect(elapsed).toBeLessThan(2_500);
+      // The read ran BESIDE the probe wait: it started before that wait was over (the
+      // old code started it only afterwards), and the load took at least its second.
+      expect(stamped(started) - t0).toBeLessThan(PROBE_WAIT_MS);
+      expect(elapsed).toBeGreaterThanOrEqual(1_000);
       const times = await health;
       expect(Math.max(...times)).toBeLessThan(500);
     } finally {
@@ -154,9 +179,15 @@ describe("GET /api/settings reads the runner's config without blocking", () => {
   }, 30_000);
 
   it("a slow config read does not add to the probe wait (they run together)", async () => {
+    const started = join(dir, "read-started");
+    const ended = join(dir, "read-ended");
     setRunnerConfigCommandsForTest({
-      records: ["sh", "-c", `sleep 1.2; exec bash "${RECORDS_SH}"`],
-      show: [process.execPath, SHOW_MJS, "--all", "--json"],
+      records: ["sh", "-c", `${stamp(started)}; sleep 1.2; exec bash "${RECORDS_SH}"`],
+      show: [
+        "sh",
+        "-c",
+        `"${process.execPath}" "${SHOW_MJS}" --all --json; rc=$?; ${stamp(ended)}; exit $rc`,
+      ],
     });
     slowProbe(3);
     const s = await serve();
@@ -166,9 +197,13 @@ describe("GET /api/settings reads the runner's config without blocking", () => {
       const elapsed = Date.now() - t0;
       const body = (await res.json()) as { configError?: string };
       expect(body.configError).toBeUndefined();
-      // The probe wait (1.5 s) and the read (1.2 s + the real read) overlap: well under
-      // their sum (about 3 s).
-      expect(elapsed).toBeLessThan(2_400);
+      // The probe wait (1.5 s) and the read (1.2 s + the real read) overlap: the read
+      // started before the probe wait was over, and the load answered once the later
+      // of the two had ended (it never goes on to wait for the probe's 3 s).
+      const readStart = stamped(started) - t0;
+      const readEnd = stamped(ended) - t0;
+      expect(readStart).toBeLessThan(PROBE_WAIT_MS);
+      expect(elapsed).toBeLessThan(Math.max(PROBE_WAIT_MS, readEnd) + 700);
       expect(elapsed).toBeGreaterThanOrEqual(1_200);
     } finally {
       await s.close();

@@ -127,6 +127,38 @@ export function registerFindingCommands(ticket: Command): void {
     });
 
   finding
+    .command("fix-ticket <ref> <findingId>")
+    .description(
+      "Open a fix ticket from a finding: a new ticket at the change's risk, delivering to " +
+        "its repository, the finding quoted in its description, linked as a regression of " +
+        "the change. When the change was approved or landed automatically, the link also " +
+        "takes that automatic approval back (--preview says so without opening anything). " +
+        "A person's act.",
+    )
+    .option("--preview", "say what opening it would do, and open nothing")
+    .action((ref, fid, opts, cmd) => {
+      const wg = open(cmd.optsWithGlobals());
+      try {
+        const preview = wg.fixTicketPreview(ref, String(fid), cliActor());
+        if (opts.preview) {
+          printJson({ ok: true, preview });
+          return;
+        }
+        const r = wg.openFixTicket(ref, String(fid), cliActor());
+        printJson({
+          ok: true,
+          finding: r.finding,
+          ticket: r.ticket,
+          stepped_down: r.stepped_down,
+          message: preview.message,
+          event_id: r.eventId,
+        });
+      } finally {
+        wg.db.close();
+      }
+    });
+
+  finding
     .command("withdraw <ref> <findingId>")
     .description(
       "Take a finding back, with a reason (soft: it stays in the log, marked). A person's act.",

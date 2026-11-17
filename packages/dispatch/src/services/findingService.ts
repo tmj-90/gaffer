@@ -637,3 +637,193 @@ export function proposeLesson(
     return { finding: findFinding(host, f.ticket_id, f.id), loreId, eventId };
   });
 }
+
+// ── "Open a fix ticket" (backlog 59, part 4) ─────────────────────────────────
+
+/** One row a fix ticket's regression link would step down, with the repo's name. */
+export interface FixStepDownRow {
+  readonly repo: string;
+  readonly risk_level: string;
+  readonly gate: string;
+  readonly cascade: boolean;
+}
+
+/** What opening a fix ticket from a finding would do, asked before a person confirms. */
+export interface FixTicketPreview {
+  readonly finding_id: string;
+  readonly regression_of: { ticket_id: string; number: number | null };
+  /** True when the link takes automatic approval or merge back (an agent's change). */
+  readonly steps_down: boolean;
+  readonly step_downs: readonly FixStepDownRow[];
+  /** One sentence for the confirm: what the link does to autonomy. */
+  readonly message: string;
+}
+
+/** The step-down rows a regression link of a change would write (autonomyStepDownService). */
+export type StepDownPreviewer = (
+  ofTicketId: string,
+) => ReadonlyArray<{ repoId: string; riskLevel: string; gate: string; cascade: boolean }>;
+
+function repoName(db: Db, repoId: string): string {
+  const r = db.prepare("SELECT name FROM repositories WHERE id = ?").get(repoId) as
+    { name: string } | undefined;
+  return r?.name ?? repoId;
+}
+
+/** The confirm's sentence for these rows (grouped by repo and risk, plain words). */
+export function fixStepDownMessage(
+  ref: string,
+  rows: readonly FixStepDownRow[],
+): string {
+  if (rows.length === 0)
+    return `Linking it as a regression of ${ref} takes no automatic approval back: a person approved and landed ${ref}, or it is already taken back.`;
+  const groups = new Map<string, { repo: string; risk: string; gates: string[] }>();
+  for (const r of rows) {
+    const k = `${r.repo}\u0000${r.risk_level}`;
+    const g = groups.get(k) ?? { repo: r.repo, risk: r.risk_level, gates: [] };
+    if (!g.gates.includes(r.gate)) g.gates.push(r.gate);
+    groups.set(k, g);
+  }
+  const parts = [...groups.values()].map(
+    (g) =>
+      `${g.repo} at ${g.risk} risk (${g.gates.map((x) => (x === "approve" ? "approval" : "merge")).join(" and ")})`,
+  );
+  return `This also takes automatic approval back for ${parts.join("; ")}, because ${ref} was approved or landed automatically. A person can give it back on Settings, Autonomy.`;
+}
+
+/** The finding must be standing and have no fix ticket yet. */
+function assertNoFixYet(f: FindingView): void {
+  assertStanding(f);
+  if (f.fix_ticket)
+    throw new DispatchError(
+      "STATE_CONFLICT",
+      `A fix ticket was already opened from that finding (#${f.fix_ticket.number ?? "?"}).`,
+      { finding_id: f.id, fix_ticket_id: f.fix_ticket.ticket_id },
+    );
+}
+
+/**
+ * What "Open a fix ticket" would do to autonomy, written nowhere. A person's read before a
+ * person's act (the confirm), so it is refused for an agent like the act itself.
+ */
+export function fixTicketPreview(
+  host: FindingHost,
+  ref: string,
+  fid: string,
+  actor: Actor,
+  preview: StepDownPreviewer,
+): FixTicketPreview {
+  assertMayWriteFinding(actor);
+  const f = findFinding(host, ref, fid);
+  assertNoFixYet(f);
+  const original = host.resolveTicket(f.ticket_id);
+  const rows: FixStepDownRow[] = preview(original.id).map((r) => ({
+    repo: repoName(host.db, r.repoId),
+    risk_level: r.riskLevel,
+    gate: r.gate,
+    cascade: r.cascade,
+  }));
+  return {
+    finding_id: f.id,
+    regression_of: { ticket_id: original.id, number: original.number ?? null },
+    steps_down: rows.length > 0,
+    step_downs: rows,
+    message: fixStepDownMessage(`#${original.number ?? "?"}`, rows),
+  };
+}
+
+/** The fix ticket's title and description, the finding quoted (pure). */
+export function fixTicketDraft(
+  f: FindingView,
+  ticket: { number: number | null; title: string },
+): { title: string; description: string } {
+  const ref = `#${ticket.number ?? "?"}`;
+  const quoted = f.text
+    .split("\n")
+    .map((l) => `> ${l}`)
+    .join("\n");
+  const by = f.filed_by.id ?? f.filed_by.type;
+  return {
+    title: `Fix after ${ref}: ${oneLine(f.text)}`.slice(0, 200),
+    description: [
+      `Something was wrong with ${ref} "${oneLine(ticket.title)}" after it was done. ${by} wrote (${f.filed_at.slice(0, 10)}):`,
+      "",
+      quoted,
+      "",
+      `Category: ${f.category ? FINDING_CATEGORY_LABEL[f.category] : "none given"}.`,
+      ...(f.paths.length ? [`Paths it concerns: ${f.paths.join(", ")}.`] : []),
+      ...(f.criteria.length
+        ? [`Acceptance criteria of ${ref} it concerns: ${f.criteria.map((c) => oneLine(c.text)).join("; ")}.`]
+        : []),
+      `This ticket is linked as a regression of ${ref}. The quoted text is a person's report of what went wrong: the acceptance criteria of this ticket say what to deliver.`,
+    ]
+      .join("\n")
+      .slice(0, 20_000),
+  };
+}
+
+/** What the facade hands openFixTicket: the normal ticket create and the regression link. */
+export interface FixTicketActs {
+  create(
+    raw: { title: string; description: string; risk_level: string; priority: number },
+    links: { repoAccess?: ReadonlyArray<{ repo_id: string; access: string }> },
+  ): Ticket;
+  link(
+    fixTicketId: string,
+    originalId: string,
+    note: string,
+    findingId: string,
+  ): { recorded: boolean; steppedDown: ReadonlyArray<{ repoId: string; riskLevel: string; gate: string }> };
+}
+
+/**
+ * "Open a fix ticket" from a standing finding: a new ticket through the normal ticket
+ * service (its risk sealed at creation like any ticket a person creates), at the original's
+ * risk, delivering to the original's write repo, the finding quoted in its description, and
+ * linked as a regression of the original through the regression service (one link, so the
+ * escaped-defect numbers count it once; the link records no second finding). The link steps
+ * autonomy down when the original worked automatically (the preview says so first). The
+ * caller runs this in one transaction. A person's act.
+ */
+export function openFixTicket(
+  host: FindingHost,
+  ref: string,
+  fid: string,
+  actor: Actor,
+  acts: FixTicketActs,
+): {
+  finding: FindingView;
+  ticket: { id: string; number: number | null };
+  stepped_down: ReadonlyArray<{ repoId: string; riskLevel: string; gate: string }>;
+  eventId: string;
+} {
+  assertMayWriteFinding(actor);
+  const f = findFinding(host, ref, fid);
+  assertNoFixYet(f);
+  const original = host.resolveTicket(f.ticket_id);
+  const draft = fixTicketDraft(f, original);
+  const repo = writeRepoOf(host.db, original.id);
+  const fix = acts.create(
+    {
+      title: draft.title,
+      description: draft.description,
+      risk_level: original.risk_level,
+      priority: original.priority ?? 0,
+    },
+    repo ? { repoAccess: [{ repo_id: repo.id, access: "write" }] } : {},
+  );
+  const linked = acts.link(fix.id, original.id, f.text, f.id);
+  const eventId = writeEvent(host.db, {
+    entity_type: "ticket",
+    entity_id: f.ticket_id,
+    actor,
+    event_type: FINDING_FIX_EVENT,
+    payload: { finding_id: f.id, fix_ticket_id: fix.id, fix_ticket_number: fix.number ?? null },
+  });
+  return {
+    finding: findFinding(host, f.ticket_id, f.id),
+    ticket: { id: fix.id, number: fix.number ?? null },
+    stepped_down: linked.steppedDown,
+    eventId,
+  };
+}

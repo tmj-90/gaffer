@@ -5,6 +5,8 @@
  *   POST /tickets/:id/findings                  {text, category?, paths?, criteria?}
  *   POST /tickets/:id/findings/:fid/withdraw    {reason}
  *   POST /tickets/:id/findings/:fid/lesson      propose it as a lesson (a lore draft)
+ *   GET  /tickets/:id/findings/:fid/fix-ticket  what opening a fix ticket would do (the confirm)
+ *   POST /tickets/:id/findings/:fid/fix-ticket  open a fix ticket linked as a regression
  *
  * Writes are a person's act: the service refuses an agent, the runner and the server, a
  * read-only token never reaches a POST, and the scope gate (scopeGate.ts) checked the
@@ -73,6 +75,26 @@ export async function routeFindings(
     });
     after?.lessonFiled?.();
     sendJson(res, 200, { finding: r.finding, lore_id: r.loreId, event_id: r.eventId });
+    return true;
+  }
+  if (segments.length === 5 && segments[4] === "fix-ticket") {
+    // The confirm asks first (a person's read: the service refuses an agent), then acts.
+    if (method === "GET") {
+      sendJson(res, 200, wg.fixTicketPreview(id, segments[3] as string, apiActor()));
+      return true;
+    }
+    if (method !== "POST") {
+      methodNotAllowed(res);
+      return true;
+    }
+    await readNoBody(req);
+    const r = wg.openFixTicket(id, segments[3] as string, apiActor());
+    sendCreated(res, `/tickets/${r.ticket.id}`, {
+      finding: r.finding,
+      ticket: r.ticket,
+      stepped_down: r.stepped_down,
+      event_id: r.eventId,
+    });
     return true;
   }
   return false;

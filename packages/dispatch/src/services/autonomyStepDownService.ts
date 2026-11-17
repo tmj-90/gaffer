@@ -320,6 +320,51 @@ export function stepDownForRegression(
   );
 }
 
+/** One row a regression link WOULD step down (see {@link previewStepDownForRegression}). */
+export interface StepDownPreviewRow {
+  readonly repoId: string;
+  readonly riskLevel: string;
+  readonly gate: AutonomyGate;
+  /** True for a merge row at a higher risk that follows the merge step-down (cascade). */
+  readonly cascade: boolean;
+}
+
+/**
+ * What linking a regression of the accepted change `ofRef` WOULD step down, written
+ * nowhere: the same gates, risk levels and merge cascade as {@link stepDownForRegression}
+ * and {@link recordStepDowns}, less the rows already stepped down. Empty when a person
+ * approved and landed the change (nothing worked automatically). Backlog 59: the "Open a
+ * fix ticket" confirm asks this before a person commits to the link.
+ */
+export function previewStepDownForRegression(
+  host: StepDownHost,
+  ofRef: string,
+): StepDownPreviewRow[] {
+  const original = host.resolveTicket(ofRef);
+  const gates = automaticGates(host.db, original.id);
+  if (!gates.approve && !gates.merge) return [];
+  const out: StepDownPreviewRow[] = [];
+  const seen = new Set<string>();
+  const add = (repoId: string, risk: string, gate: AutonomyGate, cascade: boolean): void => {
+    const k = stepDownKey(repoId, risk, gate);
+    if (seen.has(k) || stepDownInForce(host.db, repoId, risk, gate)) return;
+    seen.add(k);
+    out.push({ repoId, riskLevel: risk, gate, cascade });
+  };
+  for (const riskLevel of stepDownLevels(host, original)) {
+    for (const repoId of host.writeRepoIds(original)) {
+      for (const gate of gatesOf(gates)) {
+        add(repoId, riskLevel, gate, false);
+        if (gate !== "merge") continue;
+        const at = (RISK_LEVELS as readonly string[]).indexOf(riskLevel);
+        if (at < 0) continue;
+        for (const higher of RISK_LEVELS.slice(at + 1)) add(repoId, higher, "merge", true);
+      }
+    }
+  }
+  return out;
+}
+
 /**
  * Trigger (b): a person reopened `ref` for review; `fromStatus` is where it was and
  * `gates` what was automatic for it, classified from its history BEFORE the reopen was

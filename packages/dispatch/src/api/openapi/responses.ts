@@ -313,6 +313,29 @@ export const FindingWrite = z.object({ finding: FindingView, event_id: eventId }
 
 export const Findings = z.object({ ticket_id: str, findings: z.array(FindingView) }).strict();
 
+/** POST-MERGE FINDINGS: what opening a fix ticket would do (the confirm's read). */
+export const FixTicketPreview = z
+  .object({
+    finding_id: str,
+    regression_of: z.object({ ticket_id: str, number: int.nullable() }).strict(),
+    steps_down: z.boolean().describe("The link takes automatic approval or merge back."),
+    step_downs: z.array(
+      z.object({ repo: str, risk_level: str, gate: str, cascade: z.boolean() }).strict(),
+    ),
+    message: str.describe("One sentence for the confirm."),
+  })
+  .strict();
+
+/** POST-MERGE FINDINGS: a fix ticket opened from a finding. */
+export const FixTicketOpened = z
+  .object({
+    finding: FindingView,
+    ticket: z.object({ id: str, number: int.nullable() }).strict(),
+    stepped_down: z.array(z.record(z.string(), z.unknown())),
+    event_id: eventId,
+  })
+  .strict();
+
 export const TicketDetail = z
   .object({
     ticket: TicketRow,

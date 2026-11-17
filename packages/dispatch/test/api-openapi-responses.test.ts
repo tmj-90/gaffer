@@ -231,6 +231,19 @@ describe("OpenAPI response schemas match the live routes", () => {
       201,
     );
     await expectContract("GET /tickets/:id/findings", `/tickets/${t1.id}/findings`);
+    // FIX TICKET: from a second finding, the confirm's read and then the act.
+    const second = await call("POST", `/tickets/${t1.id}/findings`, { text: "the header row is lost" });
+    const fid2 = (second.body as { finding: { id: string } }).finding.id;
+    await expectContract(
+      "GET /tickets/:id/findings/:findingId/fix-ticket",
+      `/tickets/${t1.id}/findings/${fid2}/fix-ticket`,
+    );
+    await expectContract(
+      "POST /tickets/:id/findings/:findingId/fix-ticket",
+      `/tickets/${t1.id}/findings/${fid2}/fix-ticket`,
+      undefined,
+      201,
+    );
     await expectContract(
       "POST /tickets/:id/findings/:findingId/withdraw",
       `/tickets/${t1.id}/findings/${(added.body as { finding: { id: string } }).finding.id}/withdraw`,

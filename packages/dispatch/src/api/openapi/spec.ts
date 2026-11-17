@@ -1294,6 +1294,66 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
   },
   {
     method: "POST",
+    path: "/tickets/:id/findings/:findingId/lesson",
+    tag: T.review,
+    summary: "Propose a post-merge finding as a lesson",
+    description:
+      "\"Propose as a lesson now\": files ONE standing finding as a lore draft (kind " +
+      "`gotcha`, tagged `post-merge-finding` and `from-ticket-<n>`) scoped to the change's " +
+      "repository and the finding's paths, recorded as `ticket.finding_lesson_proposed`. It " +
+      "is a draft until a person approves it in the Memory view (never auto-approved); once " +
+      "approved, later deliveries, reviews and tests whose paths overlap see it as untrusted " +
+      "data. A finding becomes at most one lesson; one with no path or repository is refused. " +
+      "Human or admin principals only.",
+    capability: "full",
+    responses: [
+      ok("`{ finding, lore_id, event_id }`."),
+      notFound,
+      invalid,
+      conflict,
+      forbidden,
+      { status: 503, description: "Memory did not file it (`NOT_CONFIGURED`): nothing recorded.", content: "json" },
+    ],
+  },
+  {
+    method: "GET",
+    path: "/tickets/:id/findings/:findingId/fix-ticket",
+    tag: T.review,
+    summary: "What opening a fix ticket from a finding would do",
+    description:
+      "The confirm's question before a person opens a fix ticket: `{ finding_id, " +
+      "regression_of, steps_down, step_downs, message }`. The fix ticket is linked as a " +
+      "regression of the change, which takes automatic approval back for its repository " +
+      "and risk when an agent approved or landed the change (`steps_down`, each row in " +
+      "`step_downs`, one sentence in `message`); a person's approval steps nothing down. " +
+      "Writes nothing. Human or admin principals only (a person's read for a person's act).",
+    capability: "read",
+    responses: [ok("The preview.", "FixTicketPreview"), notFound, conflict, forbidden],
+  },
+  {
+    method: "POST",
+    path: "/tickets/:id/findings/:findingId/fix-ticket",
+    tag: T.review,
+    summary: "Open a fix ticket from a post-merge finding",
+    description:
+      "Creates a ticket through the normal ticket path (its risk sealed at creation like " +
+      "any person's ticket) at the change's risk, delivering to its write repository, with " +
+      "the finding quoted in its description, and links it as a regression of the change " +
+      "(one link: the escaped-defect numbers count it once). The link steps autonomy down " +
+      "when the change worked automatically, as the GET says. Records " +
+      "`ticket.finding_fix_opened` on the change. One fix ticket per finding. Human or " +
+      "admin principals only.",
+    capability: "full",
+    responses: [
+      created("`{ finding, ticket, stepped_down, event_id }`.", "FixTicketOpened"),
+      notFound,
+      invalid,
+      conflict,
+      forbidden,
+    ],
+  },
+  {
+    method: "POST",
     path: "/tickets/:id/review-raw-opened",
     tag: T.review,
     summary: "Record that a person opened a raw view of a ticket in review",

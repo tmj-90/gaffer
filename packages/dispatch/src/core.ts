@@ -1764,6 +1764,39 @@ export class Dispatch {
     return findings.proposeLesson(this, ref, findingId, actor, proposer);
   }
 
+  /** "Open a fix ticket", asked first: what its regression link would step down. */
+  fixTicketPreview(ref: string, findingId: string, actor: Actor): findings.FixTicketPreview {
+    return findings.fixTicketPreview(this, ref, findingId, actor, (of) =>
+      stepDown.previewStepDownForRegression(this.stepDownHost(), of),
+    );
+  }
+
+  /**
+   * "Open a fix ticket" from a finding: the normal ticket create, the regression link and
+   * the step-down it causes, and the finding's record of it, in ONE transaction.
+   */
+  openFixTicket(
+    ref: string,
+    findingId: string,
+    actor: Actor,
+  ): ReturnType<typeof findings.openFixTicket> {
+    return inTransaction(this.db, () =>
+      findings.openFixTicket(this, ref, findingId, actor, {
+        create: (raw, links) => this.createTicketWithLinks(raw, links, actor),
+        link: (fixId, originalId, note, fid) => {
+          const res = regressions.fileRegression(this, fixId, originalId, actor, note, {
+            findingFromNote: false,
+            findingId: fid,
+          });
+          const steppedDown = res.recorded
+            ? stepDown.stepDownForRegression(this.stepDownHost(), res.ticketId, res.regressionOf, actor)
+            : [];
+          return { recorded: res.recorded, steppedDown };
+        },
+      }),
+    );
+  }
+
   /** The findings on one ticket (withdrawn ones included, marked), oldest first. */
   findingsOf(ref: string): findings.FindingView[] {
     return findings.readFindings(this.db, this.resolveTicket(ref).id);

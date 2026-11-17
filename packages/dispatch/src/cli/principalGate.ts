@@ -147,6 +147,7 @@ const RULES: Record<string, Rule> = {
   "ticket finding add": WRITE_TICKET,
   "ticket finding withdraw": WRITE_TICKET,
   "ticket finding lesson": WRITE_TICKET,
+  "ticket finding fix-ticket": WRITE_TICKET,
   // A dependency is a write to the first ticket that names the second.
   "ticket dep add": { kind: "write_ticket", alsoRead: 1 },
   "ticket dep rm": { kind: "write_ticket", alsoRead: 1 },

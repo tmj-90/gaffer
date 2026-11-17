@@ -228,15 +228,18 @@ V="$(cfg -- "$(vals MAX_TICKS GAFFER_MAX_DELIVERY_ATTEMPTS)")"
 file '{"GAFFER_NOTIFY_EVENTS":"gate_failed"}'
 V="$(cfg -- "$(vals GAFFER_NOTIFY_EVENTS)")"
 [ "$V" = "GAFFER_NOTIFY_EVENTS=gate_failed " ] && ok "an old GAFFER_NOTIFY_EVENTS filter still applies" || fail "notify events: $V"
-# A switch value no reader takes the same way (padded, a typo) is never kept as "stricter":
-# bash readers do not trim it (off) while the dispatch server does (on).
+# A switch value no reader takes the same way (padded, a typo): bash readers do not trim
+# it (off) while the dispatch server does (on); a ship switch takes the off reading.
 file '{"DISPATCH_ALLOW_AGENT_APPROVE":" 1","AUTO_MERGE":"1;x","MEMORY_AUTO_APPROVE":"TRUE ","HYGIENE_ENFORCE":"off","GAFFER_AUTO_PUSH":"False"}'
 V="$(cfg -- "$(vals DISPATCH_ALLOW_AGENT_APPROVE AUTO_MERGE MEMORY_AUTO_APPROVE HYGIENE_ENFORCE GAFFER_AUTO_PUSH)")"
 [ "$V" = "DISPATCH_ALLOW_AGENT_APPROVE=0 AUTO_MERGE=0 MEMORY_AUTO_APPROVE=0 HYGIENE_ENFORCE=1 GAFFER_AUTO_PUSH=0 " ] \
   && ok "padded or garbage switch values from an old file are ignored; plain ones compare (False reads as 0)" || fail "switch values: $V"
 V="$(cfg GAFFER_MODE=autonomous -- "$(vals DISPATCH_ALLOW_AGENT_APPROVE AUTO_MERGE GAFFER_AUTO_PUSH)")"
-[ "$V" = "DISPATCH_ALLOW_AGENT_APPROVE=1 AUTO_MERGE=1 GAFFER_AUTO_PUSH=0 " ] \
-  && ok "under autonomous a plain old False still turns auto push off (applied as 0); the garbage ones are ignored" || fail "switch values autonomous: $V"
+# Under autonomous (derived 1) a ship switch is read as the strictest of its old readers
+# (review of external review 21): " 1" was off in the runner's _gaffer_flag_on and "1;x"
+# off in every reader, so both stay off rather than taking the derived 1.
+[ "$V" = "DISPATCH_ALLOW_AGENT_APPROVE=0 AUTO_MERGE=0 GAFFER_AUTO_PUSH=0 " ] \
+  && ok "under autonomous a padded, garbage or False old ship switch stays off (applied as 0)" || fail "switch values autonomous: $V"
 # A cleared old key ("" in settings.json) was the default before the fourteen (the
 # mode's `:=` filled it): it is not a 0 that turns an autonomous factory's merging off.
 file '{"GAFFER_MODE":"autonomous","AUTO_MERGE":"","GAFFER_AUTO_PUSH":"","MERGE_ON_AGENT_REVIEW":""}'

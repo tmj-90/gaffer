@@ -227,3 +227,33 @@ gaffer_product_context_block() {
   [ -f "$CREW_DIR/dist/runtime/context/renderContextPrimerCli.js" ] || return 1
   printf '%s' "$_pc_json" | node "$CREW_DIR/dist/runtime/context/renderContextPrimerCli.js" --kind product-context
 }
+
+# gaffer_lessons_block <repo_display> <audience> [path...]
+#
+# LESSONS (backlog 59): the APPROVED lessons of the repo whose paths overlap the given
+# paths (`memory lessons`: a person's post-merge finding a person approved, matched by
+# path prefix or glob, never by text), rendered as the "Lessons from earlier changes
+# here" block through the typed CLI (renderContextPrimerCli.js --kind lessons). The
+# lesson text is UNTRUSTED: crew quotes it inside <untrusted-lessons>; the framing stays
+# outside. <audience> is delivery, review or tester (one framing line differs).
+#
+# Paths are passed as `--paths=<p>` so none can read as a flag. No repo, no path, no
+# memory CLI, an error or no match: empty output (FAIL-SOFT, like the blocks above).
+# Never logged for recall feedback: a lesson is a person's word, retired by a person.
+gaffer_lessons_block() {
+  local _ls_display="${1:-}" _ls_aud="${2:-delivery}"
+  shift 2 2>/dev/null || return 0
+  [ -n "$_ls_display" ] || return 0
+  declare -f lg >/dev/null 2>&1 || return 0
+  local _ls_argv=(lessons --repo "$_ls_display" --json) _ls_p _ls_n=0
+  for _ls_p in "$@"; do
+    [ -n "$_ls_p" ] || continue
+    _ls_argv+=("--paths=$_ls_p"); _ls_n=$((_ls_n + 1))
+  done
+  [ "$_ls_n" -gt 0 ] || return 0
+  local _ls_json
+  _ls_json="$(lg "${_ls_argv[@]}" 2>/dev/null)" || return 0
+  case "$_ls_json" in ''|'[]'|'[]'$'\n') return 0 ;; esac
+  [ -f "$CREW_DIR/dist/runtime/context/renderContextPrimerCli.js" ] || return 1
+  printf '%s' "$_ls_json" | node "$CREW_DIR/dist/runtime/context/renderContextPrimerCli.js" --kind lessons --audience "$_ls_aud"
+}

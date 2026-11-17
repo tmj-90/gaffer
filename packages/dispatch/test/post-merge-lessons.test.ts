@@ -133,7 +133,7 @@ describe("(b) propose as a lesson now", () => {
       summary: REASON,
       repo: "app",
       paths: ["src/export/csv.ts"],
-      tags: ["post-merge-finding"],
+      tags: ["post-merge-finding", `from-ticket-${t.number}`],
     });
     expect(filed[0]!.body).toMatch(/Approve it to show it to later changes on these paths/);
     expect(() => wg.proposeLesson(t.id, f.id, human, proposer)).toThrow(/already proposed/);

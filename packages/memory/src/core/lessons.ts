@@ -19,6 +19,12 @@ import type { Database } from "better-sqlite3";
 /** The tag every lesson carries (a post-merge finding turned into lore). */
 export const LESSON_TAG = "post-merge-finding";
 
+/**
+ * The tag that names the change a lesson came from: `from-ticket-<number>` (lore's own
+ * `source` column takes an http URL only). Read back as {@link LessonHit.fromTicket}.
+ */
+export const LESSON_FROM_PREFIX = "from-ticket-";
+
 /** Most lessons one call serves. */
 export const LESSONS_LIMIT_DEFAULT = 5;
 const LESSONS_LIMIT_MAX = 20;
@@ -95,7 +101,20 @@ export interface LessonHit {
   readonly paths: readonly string[];
   /** The lesson paths that overlapped the given paths. */
   readonly matched: readonly string[];
+  /** The number of the change the lesson came from (its from-ticket-<n> tag), or null. */
+  readonly fromTicket: number | null;
   readonly updatedAt: string;
+}
+
+/** The change a lesson came from, read from its tags (null when none or not a number). */
+export function lessonFromTicket(db: Database, loreId: string): number | null {
+  const row = db
+    .prepare(
+      "SELECT tag FROM lore_tags WHERE lore_id = ? AND tag LIKE ? ORDER BY tag LIMIT 1",
+    )
+    .get(loreId, `${LESSON_FROM_PREFIX}%`) as { tag: string } | undefined;
+  const m = row ? /^from-ticket-(\d{1,9})$/.exec(row.tag) : null;
+  return m ? Number(m[1]) : null;
 }
 
 /** Every stored path of a lore record (sorted). */
@@ -152,6 +171,7 @@ export function lessonsForPaths(
       repo,
       paths,
       matched,
+      fromTicket: lessonFromTicket(db, r.id),
       updatedAt: r.updated_at,
     });
     if (out.length >= limit) break;

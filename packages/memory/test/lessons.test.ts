@@ -38,7 +38,7 @@ const lesson = (db: Database, paths: string[], over: Record<string, unknown> = {
       body: "From #12.",
       kind: "gotcha",
       repos: ["app"],
-      tags: [LESSON_TAG],
+      tags: [LESSON_TAG, "from-ticket-12"],
       paths,
       ...over,
     },
@@ -80,6 +80,7 @@ describe("lessons in memory", () => {
       paths: ["src/export/csv.ts"],
       matched: ["src/export/csv.ts"],
       repo: "app",
+      fromTicket: 12,
     });
   });
 

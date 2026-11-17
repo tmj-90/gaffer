@@ -20,6 +20,8 @@
 //   node renderContextPrimerCli.js --kind file-cards      [--out <path>]  < packet.json
 //        [--neighbours '<memory index neighbours --json>']
 //   node renderContextPrimerCli.js --kind product-context [--out <path>]  < rows.json
+//   node renderContextPrimerCli.js --kind lessons [--audience delivery|review|tester]
+//        [--out <path>]  < lessons.json   (`memory lessons --json`, backlog 59)
 // The stdin payload is the EXACT memory-CLI output the bash primer already
 // captures — for file-cards the `memory cards-for-scope --json` packet, for
 // product-context the `memory search --json` rows array — so the primer pipes it
@@ -44,9 +46,12 @@ import { readFileSync, writeFileSync } from "node:fs";
 
 import {
   formatFileCardsBlock,
+  formatLessonsBlock,
   formatProductContextBlock,
   type CardsForScopePacket,
   type CodeNeighbours,
+  type LessonRow,
+  type LessonsAudience,
   type ProductContextRow,
 } from "./contextPrimer.js";
 
@@ -83,6 +88,12 @@ function main(): void {
       // memory search --json → ProductContextRow[]; a non-array is treated as
       // empty (fail-soft), matching gaffer_product_context_block.
       rendered = formatProductContextBlock(Array.isArray(doc) ? (doc as ProductContextRow[]) : []);
+    } else if (kind === "lessons") {
+      // memory lessons --json -> LessonRow[]; the audience picks one framing line. An
+      // unknown audience is the delivery framing (fail-soft, never an unframed block).
+      const aud = parseFlag(argv, "--audience");
+      const audience: LessonsAudience = aud === "review" || aud === "tester" ? aud : "delivery";
+      rendered = formatLessonsBlock(Array.isArray(doc) ? (doc as LessonRow[]) : [], audience);
     } else if (kind === "file-cards") {
       // memory cards-for-scope --json → CardsForScopePacket; a non-object packet
       // renders empty (fail-soft), matching gaffer_prime_context_block.
@@ -93,7 +104,7 @@ function main(): void {
     } else {
       // Unknown/absent kind: nothing sensible to render — fail soft to empty.
       process.stderr.write(
-        `render-context-primer: unknown --kind "${kind}" (expected file-cards|product-context)\n`,
+        `render-context-primer: unknown --kind "${kind}" (expected file-cards|product-context|lessons)\n`,
       );
       rendered = "";
     }

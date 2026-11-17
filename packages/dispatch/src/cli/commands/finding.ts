@@ -1,15 +1,40 @@
 /**
- * POST-MERGE FINDINGS (backlog 59): `wg ticket finding add|list|withdraw`.
+ * POST-MERGE FINDINGS (backlog 59): `wg ticket finding add|list|withdraw|lesson|fix-ticket`.
  *
  * A person says what went wrong on a done ticket; `list` reads them (an agent may read);
  * `add` and `withdraw` are a person's acts (the service refuses an agent, and the safety
  * hook denies the write verbs to an agent shell).
  */
+import { existsSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import type { Command } from "commander";
 
 import { FINDING_CATEGORY_LABEL, type FindingView } from "../../services/findingService.js";
+import { resolveDbPath } from "../../util/paths.js";
 import { cliActor, printJson } from "../helpers.js";
 import { heavy, open } from "../runtime.js";
+
+/**
+ * The memory CLI and database `finding lesson` files the draft through. The environment's
+ * MEMORY_CLI_BIN / MEMORY_DB win (the dashboard and the runner set them); a person's
+ * `gaffer wg` passes neither, so the factory's own layout is the fallback: the memory
+ * package beside this one, and memory.sqlite beside the dispatch database (both under
+ * GAFFER_DATA). Only this command reads them: no other command changes.
+ */
+export function lessonMemoryEnv(env: NodeJS.ProcessEnv, dbOpt: unknown): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = { ...env };
+  if (!(env["MEMORY_CLI_BIN"] ?? "").trim()) {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const bin = resolve(here, "../../../../memory/dist/bin/memory.js");
+    if (existsSync(bin)) out["MEMORY_CLI_BIN"] = bin;
+  }
+  if (!(env["MEMORY_DB"] ?? "").trim()) {
+    out["MEMORY_DB"] = resolve(dirname(resolveDbPath(dbOpt as string | undefined)), "memory.sqlite");
+  }
+  return out;
+}
 
 const collect = (v: string, prev: string[]): string[] => [...prev, v];
 
@@ -86,10 +111,11 @@ export function registerFindingCommands(ticket: Command): void {
         "Once approved, later changes on those paths see it. A person's act.",
     )
     .action((ref, fid, _opts, cmd) => {
-      const wg = open(cmd.optsWithGlobals());
+      const globals = cmd.optsWithGlobals();
+      const wg = open(globals);
       const { createMemoryReader } = heavy();
       try {
-        const memory = createMemoryReader(process.env);
+        const memory = createMemoryReader(lessonMemoryEnv(process.env, globals.db));
         const r = wg.proposeLesson(ref, String(fid), cliActor(), (d) => {
           const filed = memory.proposeLesson(d);
           return filed.available ? { ok: true, id: filed.id } : { ok: false, reason: filed.reason };

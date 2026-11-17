@@ -569,7 +569,9 @@ export function lessonDraft(
       .slice(0, 20_000),
     repo: f.repo ?? "",
     paths: f.paths,
-    tags: [LESSON_TAG],
+    // from-ticket-<n> names the change it came from (memory reads it back for the
+    // "Lessons from earlier changes here" block; lore's source column takes a URL only).
+    tags: ticket.number !== null ? [LESSON_TAG, `from-ticket-${ticket.number}`] : [LESSON_TAG],
   };
 }
 

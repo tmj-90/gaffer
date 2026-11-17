@@ -414,6 +414,20 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
         _RDESC '(d.ticket.description || "").slice(0, 400)' ''
       _REVIEW_CARDS="$(gaffer_prime_context_block "$RREPO" "$(basename "$RREPO")" \
         "$(printf '%s %s' "$_RSHOW_TITLE" "$_RDESC")" 2>/dev/null || true)"
+      # LESSONS FROM EARLIER CHANGES HERE (backlog 59): the approved lessons whose paths
+      # overlap the paths this delivery CHANGED (the runner's own diff of the reviewed head
+      # against the base), keyed by the registered repo name. Quarantined by crew; fail-soft.
+      _REVIEW_LESSONS=""
+      if [ -n "${RSHA:-}" ] && [ -n "$_BIND_NAME" ]; then
+        _RL_ARGS=()
+        while IFS= read -r _RL_P; do
+          [ -n "$_RL_P" ] && _RL_ARGS+=("$_RL_P")
+        done < <(git -C "$RREPO" diff --name-only --no-renames "$RDEFAULT...$RSHA" 2>/dev/null | head -50)
+        if [ "${#_RL_ARGS[@]}" -gt 0 ]; then
+          _REVIEW_LESSONS="$(gaffer_lessons_block "$_BIND_NAME" review "${_RL_ARGS[@]}" 2>/dev/null || true)"
+        fi
+        [ -z "$_REVIEW_LESSONS" ] || log "lessons: the reviewer of #$RNUM sees lessons from earlier changes on the paths it changed"
+      fi
       read -r -d '' RPROMPT <<EOF || true
 You are a REVIEWER agent. You did NOT implement this ticket, so you may JUDGE it — but
 your verdict is ADVISORY ONLY: an agent review is NOT a human approval and MUST NOT
@@ -475,7 +489,7 @@ so do not re-run them; you still judge the diff against every AC):
 $(gaffer_quarantine tester-outcome "$_RTESTER_NOTE" single)
 "
       fi
-      RPROMPT="${RPROMPT}${_RTESTER_BLOCK}${_REVIEW_CARDS}"
+      RPROMPT="${RPROMPT}${_RTESTER_BLOCK}${_REVIEW_CARDS}${_REVIEW_LESSONS}"
       # Repo-access boundary (FG-007): the reviewer works only in the throwaway
       # worktree ($WT). The registered repo's working tree is never a write root.
       R_USAGE_JSON="$GAFFER_DATA/.usage-$RNUM.json"; : > "$R_USAGE_JSON"

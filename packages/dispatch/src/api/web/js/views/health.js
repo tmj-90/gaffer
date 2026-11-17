@@ -21,6 +21,7 @@ import { glyph, icon } from "../icons.js";
 import { hlWork } from "../matchday.js";
 import { waitingNote } from "../panels.js";
 import { fitnessRoomPanels } from "./fitness.js";
+import { lessonsPanel } from "./findings.js";
 
 // --- Health / ROI view ------------------------------------------------------
 
@@ -1497,6 +1498,7 @@ async function renderHealth() {
   if (usagePause) wrap.appendChild(usagePauseNote(usagePause));
   // Behind the four measures, then the comparison tables: the rest of the quality story.
   wrap.appendChild(detailHost);
+  wrap.appendChild(lessonsPanel());
   for (const card of [routingCard(health), laneValueCard(health), scoutCard(health)])
     if (card) wrap.appendChild(card);
   if (bouncing) bouncing.id = "health-injuries";

@@ -1,0 +1,85 @@
+/* Post-merge findings and lessons (js/views/findings.js): the findings card on the Ticket
+   page of a done ticket ("Something was wrong with this?", the list, the per-finding
+   actions and the fix-ticket confirm) and the lessons section on Health. State is said in
+   words (Withdrawn, Proposed as a lesson, Fix ticket); colour only supports it. Everything
+   wraps: nothing scrolls sideways at 390 px. */
+
+@layer views {
+  .fd-card,
+  .fd-lessons {
+    display: grid;
+    gap: var(--s3);
+    min-width: 0;
+  }
+  .fd-list {
+    display: grid;
+    gap: var(--s3);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .fd-item {
+    display: grid;
+    gap: var(--s2);
+    padding-top: var(--s3);
+    border-top: var(--hair);
+    min-width: 0;
+  }
+  .fd-item:first-child {
+    padding-top: 0;
+    border-top: 0;
+  }
+  .fd-meta,
+  .fd-text,
+  .fd-paths,
+  .fd-state,
+  .fd-foot,
+  .fd-summary,
+  .fd-note {
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+  .fd-text {
+    white-space: pre-wrap;
+  }
+  .fd-state b {
+    font-weight: 700;
+  }
+  .fd-withdrawn {
+    color: var(--ink-2, inherit);
+  }
+  .fd-withdrawn b::before {
+    content: "\2715\00a0";
+  }
+  .fd-actions,
+  .fd-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s2);
+    align-items: center;
+    min-width: 0;
+  }
+  .fd-row > * {
+    flex: 1 1 12rem;
+    min-width: 0;
+  }
+  .fd-form,
+  .fd-inline-form,
+  .fd-confirm {
+    display: grid;
+    gap: var(--s2);
+    min-width: 0;
+  }
+  .fd-text-input {
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    resize: vertical;
+  }
+  .fd-summary {
+    font-weight: 700;
+  }
+  .fd-lessons-table {
+    max-width: 100%;
+  }
+}

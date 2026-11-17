@@ -50,6 +50,7 @@ import {
   ticketRunsPanel,
 } from "./ticket-cards.js";
 import { renderWork } from "./work.js";
+import { findingsCard } from "./findings.js";
 
 // ===========================================================================
 //  View: Ticket detail
@@ -1521,6 +1522,7 @@ async function renderTicket(id) {
         brief,
         acCard,
         regressionCard(t, view.regression),
+        findingsCard(t, view.findings),
         timeline,
         sideFields,
       ]),

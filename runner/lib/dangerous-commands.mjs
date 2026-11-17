@@ -597,7 +597,7 @@ export const DANGEROUS_COMMANDS = [
     re: new RegExp(
       String.raw`(?:\bnode\b[^\n;&|]*[\s/]memory(?:\.js)?|${CMD_POS}(?:(?:npx|bunx|pnpx)(?:[ \t]+-${TOK})*[ \t]+|(?:pnpm|npm|yarn)(?:[ \t]+-${TOK})*[ \t]+(?:(?:exec|dlx|x)[ \t]+(?:-${TOK}[ \t]+)*)?)?memory)[ \t]+["']?(?:approve|reject|review|add|supersede|deprecate|delete|update|edit)["']?${WORD_END}`,
     ),
-    why: "the memory CLI's human verbs (approve / reject / review / add / supersede / deprecate / delete / update / edit) — ratifying lore is the human's job; an agent proposes lore as a draft through the memory MCP",
+    why: "the memory CLI's human verbs (approve / reject / review / add / supersede / deprecate / delete / update / edit): ratifying lore is the human's job; an agent proposes lore as a draft through the memory MCP",
     example: "node packages/memory/dist/bin/memory.js approve 7vk3qm9b",
     crewFlags: false,
   },

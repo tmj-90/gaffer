@@ -110,10 +110,13 @@ echo "== AC6: by default (MINIMALISM_REQUIRE_NOTE unset/0) a missing note is a f
   || fail "MINIMALISM_ENFORCE is still referenced on the live path"
 
 echo "== AC7: config keys present + commented =="
-for k in 'MINIMALISM_REQUIRE_NOTE:=0' 'OVERSIZED_MAX_LINES:=400' 'OVERSIZED_MAX_FILES:=12'; do
-  grep -Eq "^: \"\\\$\{$k\}\"" "$RUNNER_DIR/config/16-sandbox.sh" \
-    && ok "$k default present in factory.config.sh" \
-    || fail "$k default missing from factory.config.sh"
+# The values the real config gives with nothing set (they sit in the GAFFER_GATES table
+# now, so the check reads what the config derives, not the text of a default line).
+CFG_DUMP="$(bash "$HERE/lib/config-dump.sh")"
+for k in 'MINIMALISM_REQUIRE_NOTE 0' 'OVERSIZED_MAX_LINES 400' 'OVERSIZED_MAX_FILES 12'; do
+  grep -Eq "^V ${k% *} [x-] ${k#* }\$" <<<"$CFG_DUMP" \
+    && ok "${k% *} defaults to ${k#* } with nothing set" \
+    || fail "${k% *} should default to ${k#* }: $(grep "^V ${k% *} " <<<"$CFG_DUMP")"
 done
 
 echo "== AC8: the verdict is per-process — concurrent workers never read each other's =="

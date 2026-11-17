@@ -45,10 +45,10 @@ slow_ticket() { local n; n="$(wg ticket create -t "$1" -d "deliver a helper" --r
 # release and teardown get before the bound reaps the tick; 5s was not enough on a
 # loaded macOS runner running three tests at once (nightly, 7ad41e2), where the tick
 # handed off and was then killed mid-teardown (D1 rc=124 with every D2 check passing).
-bounded_tick() {  # [NAME=value]
-  local out rc
+bounded_tick() {  # [NAME=value ...]
+  local out rc kv
   out="$( cd "$RUNNER_DIR" && export GAFFER_TICK_TIMEOUT=10 GAFFER_TICK_OUTER_TIMEOUT=42 GAFFER_TICK_DEADLINE_MARGIN=10 \
-          GAFFER_REAP_GRACE=3 GAFFER_DOD_INSTALL=0 && { [ -z "${1:-}" ] || export "$1"; } \
+          GAFFER_REAP_GRACE=3 GAFFER_DOD_INSTALL=0 && { for kv in "$@"; do export "$kv"; done; } \
           && gaffer_timeout 42 bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" )"; rc=$?
   printf 'rc=%s %s\n' "$rc" "$(printf '%s\n' "$out" | grep '^TICK_RESULT=' | tail -1)"
 }
@@ -68,7 +68,11 @@ retire "$D"
 echo "== D3. GAFFER_TICK_DEADLINE_GUARD=0 keeps the old behaviour (the outer bound kills the tick) =="
 rm -f "$GAFFER_DATA/.failed-tickets"
 D3="$(slow_ticket "Slow gate unguarded")"
-R3="$(bounded_tick GAFFER_TICK_DEADLINE_GUARD=0)"
+# Five attempts, so the gate's own sleeps (5 x 10 s) outlast the 42 s bound whatever the
+# machine's speed. With three, the bound fired only because each attempt's overhead
+# pushed 30 s of sleep past 42 s: a tick that starts fewer processes on a faster host
+# finished all three inside the bound and parked, and this check failed.
+R3="$(bounded_tick GAFFER_TICK_DEADLINE_GUARD=0 GAFFER_MAX_DELIVERY_ATTEMPTS=5)"
 case "$R3" in "rc=124 "*) ok "D3: with the guard off the outer bound reaped the tick ($R3)" ;; *) fail "D3: expected the outer bound to fire, got '$R3'" ;; esac
 grep -qx "$D3" "$GAFFER_DATA/.failed-tickets" && ok "D3: a ticket the outer bound killed is skipped for the rest of the run (no immediate re-claim)" || fail "D3: killed ticket #$D3 not in the skip file"
 

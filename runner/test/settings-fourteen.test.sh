@@ -191,14 +191,17 @@ for k in DISPATCH_ALLOW_AGENT_APPROVE REVIEW_MODE MAX_TICKS_PER_DAY GAFFER_TICK_
   GAFFER_NOTIFY_DESKTOP GAFFER_CREATE_PR GAFFER_REQUIRE_CI SANDBOX_PROVIDER STRICT_ALLOW_NETWORK MAX_CONCURRENT_TICKETS_PER_REPO \
   GAFFER_PLAN_DEBATE HYGIENE_ENFORCE GAFFER_IDLE_FEATURE_BACKLOG GAFFER_MAINTENANCE; do
   [ "$(grep -c "settings.json key $k is no longer a setting" "$WORK/err")" = 1 ] && ok "$k: one warning" || fail "$k: not exactly one warning: $(grep "$k" "$WORK/err")"
+# warned <which line> <text>: a warning line matching the first holds the second. Not a
+# pipe into grep -q (an early-exiting grep under pipefail can turn a match into a miss).
+warned() { local lines; lines="$(grep "$1" "$WORK/err" || true)"; grep -q "$2" <<<"$lines"; }
 done
 for pair in "DISPATCH_ALLOW_AGENT_APPROVE:GAFFER_MODE" "REVIEW_MODE:GAFFER_MODE" "MAX_TICKS_PER_DAY:GAFFER_CONCURRENCY" "GAFFER_TICK_TIMEOUT:GAFFER_EFFORT" \
   "GAFFER_NOTIFY_SLACK_URL:GAFFER_NOTIFY" "GAFFER_CREATE_PR:GAFFER_LANDING" "SANDBOX_PROVIDER:GAFFER_SANDBOX" "HYGIENE_ENFORCE:GAFFER_GATES" "GAFFER_IDLE_FEATURE_BACKLOG:GAFFER_IDLE"; do
-  grep "settings.json key ${pair%%:*} " "$WORK/err" | grep -q "${pair#*:}" && ok "${pair%%:*}: the warning names ${pair#*:}" || fail "${pair%%:*}: $(grep "${pair%%:*}" "$WORK/err")"
+  warned "settings.json key ${pair%%:*} " "${pair#*:}" && ok "${pair%%:*}: the warning names ${pair#*:}" || fail "${pair%%:*}: $(grep "${pair%%:*}" "$WORK/err")"
 done
-grep 'key DISPATCH_ALLOW_AGENT_APPROVE ' "$WORK/err" | grep -q 'stricter than what GAFFER_MODE derives' && ok "a stricter old value says it still applies" || fail "kept wording: $(grep DISPATCH_ALLOW "$WORK/err")"
-grep 'key GAFFER_TICK_TIMEOUT ' "$WORK/err" | grep -q 'more permissive or costlier' && ok "a costlier old value says the stricter derived one applies" || fail "costlier wording: $(grep TICK_TIMEOUT "$WORK/err")"
-grep 'key SANDBOX_PROVIDER ' "$WORK/err" | grep -q 'more permissive or costlier' && ok "SANDBOX_PROVIDER=none from the file is never applied (the sandbox stays)" || fail "none: $(grep SANDBOX_PROVIDER "$WORK/err")"
+warned 'key DISPATCH_ALLOW_AGENT_APPROVE ' 'stricter than what GAFFER_MODE derives' && ok "a stricter old value says it still applies" || fail "kept wording: $(grep DISPATCH_ALLOW "$WORK/err")"
+warned 'key GAFFER_TICK_TIMEOUT ' 'more permissive or costlier' && ok "a costlier old value says the stricter derived one applies" || fail "costlier wording: $(grep TICK_TIMEOUT "$WORK/err")"
+warned 'key SANDBOX_PROVIDER ' 'more permissive or costlier' && ok "SANDBOX_PROVIDER=none from the file is never applied (the sandbox stays)" || fail "none: $(grep SANDBOX_PROVIDER "$WORK/err")"
 grep -q 'tok3n' "$WORK/err" && fail "a webhook token was printed: $(grep tok3n "$WORK/err")" || ok "no warning prints a URL"
 cfg -- 'bash --norc --noprofile -c "source \"\$0\"" "$0" 2>"$ERRF.child"' >/dev/null
 ! grep -q 'no longer a setting' "$WORK/err.child" && ok "a child that sources the config again is quiet (one warning per process tree)" || fail "child repeats: $(cat "$WORK/err.child")"
@@ -206,7 +209,7 @@ V="$(cfg -- 'printf "%s" "$_GAFFER_MIGRATION_LOG" | awk -F"\t" '"'"'$1=="DISPATC
 [ "$V" = "DISPATCH_ALLOW_AGENT_APPROVE:GAFFER_MODE:kept GAFFER_CREATE_PR:GAFFER_LANDING:kept GAFFER_TICK_TIMEOUT:GAFFER_EFFORT:stricter-derived " ] \
   && ok "the machine-readable migration log records each decision" || fail "migration log: $V"
 V="$(cfg DISPATCH_ALLOW_AGENT_APPROVE=1 -- "$(vals DISPATCH_ALLOW_AGENT_APPROVE)")"
-[ "$V" = "DISPATCH_ALLOW_AGENT_APPROVE=1 " ] && grep 'key DISPATCH_ALLOW_AGENT_APPROVE ' "$WORK/err" | grep -q 'the environment sets' \
+[ "$V" = "DISPATCH_ALLOW_AGENT_APPROVE=1 " ] && warned 'key DISPATCH_ALLOW_AGENT_APPROVE ' 'the environment sets' \
   && ok "a real environment variable still wins over an old key (and the warning says so)" || fail "env over old key: $V $(grep DISPATCH "$WORK/err")"
 file '{"AUTO_MERGE":"1","MERGE_ON_AGENT_REVIEW":"1","GAFFER_AUTO_PUSH":"1","MEMORY_AUTO_APPROVE":"1"}'
 V="$(cfg -- "$(vals AUTO_MERGE MERGE_ON_AGENT_REVIEW GAFFER_AUTO_PUSH MEMORY_AUTO_APPROVE)")"

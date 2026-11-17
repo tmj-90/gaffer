@@ -81,7 +81,8 @@ grep -q "^GAFFER_REWORK_BUDGET_USD=3$" "$CAP" && ok "an operator-set key stays (
 # old settings.json key never arrives there as operator environment); the launcher's
 # re-source records and warn-once marks do not.
 grep -q "^_GAFFER_OPERATOR_ENV=.* GAFFER_REWORK_BUDGET_USD " "$CAP" && ok "the operator record reaches the server" || fail "the operator record is missing from the server env"
-grep -v "^_GAFFER_OPERATOR_ENV=" "$CAP" | grep -q "^_GAFFER_" && fail "the launcher's re-source bookkeeping leaked into the server env: $(grep '^_GAFFER_' "$CAP" | grep -v OPERATOR | cut -d= -f1 | head -3 | tr '\n' ' ')" || ok "no other _GAFFER_* bookkeeping in the server env"
+OTHER_RECORDS="$(grep -v "^_GAFFER_OPERATOR_ENV=" "$CAP" | grep "^_GAFFER_" || true)"
+[ -n "$OTHER_RECORDS" ] && fail "the launcher's re-source bookkeeping leaked into the server env: $(grep '^_GAFFER_' "$CAP" | grep -v OPERATOR | cut -d= -f1 | head -3 | tr '\n' ' ')" || ok "no other _GAFFER_* bookkeeping in the server env"
 grep -q "could not read the setting names" <<<"$ERR" && fail "the setting-name reader failed: $ERR" || ok "the setting names were read from the schema (no warning)"
 # A schema the reader cannot load is reported, never silently ignored.
 mkdir -p "$WORK/badrunner/config"; printf '{ "settings": [' > "$WORK/badrunner/config/settings-schema.json"

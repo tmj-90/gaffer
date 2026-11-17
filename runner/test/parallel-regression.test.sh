@@ -35,8 +35,10 @@ grep -Eq '^\s*:\s*"\$\{GAFFER_CONCURRENCY:=1\}"' "$RUNNER_DIR/config/13-stop.sh"
 echo "== AC5: config knobs present + exported =="
 grep -Eq '^\s*:\s*"\$\{MAX_CONCURRENT_TICKETS_PER_REPO:=1\}"' "$RUNNER_DIR/config/13-stop.sh" \
   && ok "MAX_CONCURRENT_TICKETS_PER_REPO default present" || fail "MAX_CONCURRENT_TICKETS_PER_REPO default missing"
-grep -Eq '^\s*:\s*"\$\{MAX_CANDIDATES:=' "$RUNNER_DIR/config/13-stop.sh" \
-  && ok "MAX_CANDIDATES default present" || fail "MAX_CANDIDATES default missing"
+# MAX_CANDIDATES sits in the GAFFER_CONCURRENCY table: check the value the config gives.
+CAND_DFLT="$(bash "$HERE/lib/config-dump.sh" | grep '^V MAX_CANDIDATES ')"
+[ "$CAND_DFLT" = "V MAX_CANDIDATES x 25" ] \
+  && ok "MAX_CANDIDATES defaults to 25, exported" || fail "MAX_CANDIDATES default should be 25 (got: $CAND_DFLT)"
 grep -Eq 'export GAFFER_CONCURRENCY MAX_CONCURRENT_TICKETS_PER_REPO MAX_CANDIDATES' "$RUNNER_DIR/config/13-stop.sh" \
   && ok "all three knobs exported" || fail "knobs not all exported"
 

@@ -27,8 +27,10 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CFG="$(cd "$HERE/../.." && pwd)/factory.config.sh"
 if [ "${1:-}" = "--config" ]; then CFG="$2"; shift 2; fi
 ROOT="$(cd "$(dirname "$CFG")/.." && pwd)"
-SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/gaffer-config-dump.XXXXXX")" || exit 70
-trap 'rm -rf "$SCRATCH"' EXIT
+# shellcheck source=tmpdir.sh
+. "$HERE/tmpdir.sh"  # mktemp guard + safe temp removal
+SCRATCH="$(gaffer_test_tmpdir gaffer-config-dump)" || exit 70
+trap 'gaffer_test_rm_work "$SCRATCH"' EXIT
 mkdir -p "$SCRATCH/home" "$SCRATCH/data"
 # The snippet runs in the configured shell. It lists variables before and after the
 # source, so only what the config set is printed.

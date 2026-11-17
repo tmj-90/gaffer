@@ -207,9 +207,11 @@ grep -q 'not converging' <<<"$RP_SRC" \
 grep -q 'GAFFER_MAX_DELIVERY_ATTEMPTS:-3' "$RUNNER_DIR/lib/tick-gates.sh" \
   && ok "C the attempt cap default is raised to 3 (room for the ladder)" \
   || fail "C tick.sh default GAFFER_MAX_DELIVERY_ATTEMPTS should be 3"
-grep -qE 'GAFFER_MAX_DELIVERY_ATTEMPTS:=3' "$RUNNER_DIR/config/07-limits.sh" \
-  && ok "C factory.config.sh documents/defaults the attempt cap to 3" \
-  || fail "C factory.config.sh default GAFFER_MAX_DELIVERY_ATTEMPTS should be 3"
+# The value the real config gives with nothing set (it sits in the GAFFER_EFFORT table).
+ATTEMPTS_DFLT="$(bash "$HERE/lib/config-dump.sh" | grep '^V GAFFER_MAX_DELIVERY_ATTEMPTS ')"
+[ "$ATTEMPTS_DFLT" = "V GAFFER_MAX_DELIVERY_ATTEMPTS x 3" ] \
+  && ok "C the config defaults the attempt cap to 3, exported" \
+  || fail "C the config's default GAFFER_MAX_DELIVERY_ATTEMPTS should be 3 (got: $ATTEMPTS_DFLT)"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

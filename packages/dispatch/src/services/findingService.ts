@@ -794,8 +794,15 @@ export function fixTicketDraft(
   };
 }
 
+/** What the confirm showed a person: whether the regression link steps autonomy down. */
+export interface FixTicketExpectation {
+  readonly stepsDown: boolean;
+}
+
 /** What the facade hands openFixTicket: the normal ticket create and the regression link. */
 export interface FixTicketActs {
+  /** What the confirm said (optional): an act that would do otherwise is refused. */
+  readonly expect?: FixTicketExpectation;
   create(
     raw: { title: string; description: string; risk_level: string; priority: number },
     links: { repoAccess?: ReadonlyArray<{ repo_id: string; access: string }> },
@@ -848,6 +855,17 @@ export function openFixTicket(
     repo ? { repoAccess: [{ repo_id: repo.id, access: "write" }] } : {},
   );
   const linked = acts.link(fix.id, original.id, f.text, f.id);
+  // The confirm said what the link would do; if it now does otherwise (a step-down was
+  // lifted or written meanwhile, the policy changed), refuse: the caller's transaction
+  // rolls the ticket and the link back, and the person is asked again.
+  if (acts.expect && linked.steppedDown.length > 0 !== acts.expect.stepsDown)
+    throw new DispatchError(
+      "STATE_CONFLICT",
+      acts.expect.stepsDown
+        ? "Nothing was opened: the confirm said this would take automatic approval back, and now it would not (autonomy changed meanwhile). Ask again."
+        : "Nothing was opened: the confirm said this takes no automatic approval back, and now it would (autonomy changed meanwhile). Ask again.",
+      { finding_id: f.id, expected_steps_down: acts.expect.stepsDown },
+    );
   const eventId = writeEvent(host.db, {
     entity_type: "ticket",
     entity_id: f.ticket_id,

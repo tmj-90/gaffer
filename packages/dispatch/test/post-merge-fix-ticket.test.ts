@@ -109,6 +109,34 @@ describe("open a fix ticket", () => {
     expect(() => wg.fixTicketPreview(change.id, f.id, human)).toThrow(/already opened/);
   });
 
+  it("the act refuses when autonomy changed after the confirm was shown, and opens nothing", () => {
+    // Two findings on one change an agent approved: both confirms say "steps down".
+    const { change, f } = changeWithFinding(wg);
+    // A confirm that said "no step-down" never steps one down: refused, nothing opened.
+    expect(() => wg.openFixTicket(change.id, f.id, human, { stepsDown: false })).toThrow(
+      /Nothing was opened.*now it would\b/,
+    );
+    expect(linksOf(wg, change.id)).toHaveLength(0);
+    const g = wg.addFinding(change.id, { text: "a second thing went wrong" }, human).finding;
+    expect(wg.fixTicketPreview(change.id, f.id, human).steps_down).toBe(true);
+    expect(wg.fixTicketPreview(change.id, g.id, human).steps_down).toBe(true);
+    // The first fix ticket takes the automatic approval back...
+    const first = wg.openFixTicket(change.id, f.id, human, { stepsDown: true });
+    expect(first.stepped_down.length).toBeGreaterThan(0);
+    // ...so the second confirm is stale: opening it as shown is refused, nothing written.
+    const tickets = () => wg.db.prepare("SELECT COUNT(*) FROM tickets").pluck().get() as number;
+    const before = tickets();
+    expect(() => wg.openFixTicket(change.id, g.id, human, { stepsDown: true })).toThrow(
+      /Nothing was opened.*now it would not/,
+    );
+    expect(tickets()).toBe(before);
+    expect(linksOf(wg, change.id)).toHaveLength(1);
+    expect(wg.findingsOf(change.id).find((x) => x.id === g.id)!.fix_ticket).toBeNull();
+    // Asked again, the confirm says no step-down, and that act goes through.
+    expect(wg.fixTicketPreview(change.id, g.id, human).steps_down).toBe(false);
+    expect(wg.openFixTicket(change.id, g.id, human, { stepsDown: false }).stepped_down).toEqual([]);
+  });
+
   it("refuses an agent, the runner and the server, a withdrawn finding and a second fix ticket", () => {
     const { change, f } = changeWithFinding(wg, human);
     for (const who of [agent, system])
@@ -193,6 +221,26 @@ describe("REST", () => {
     expect(o.body.finding.fix_ticket.ticket_id).toBe(o.body.ticket.id);
     const again = await call("POST", `/tickets/${change.id}/findings/${f.id}/fix-ticket`);
     expect(again.status).toBe(409);
+  });
+
+  it("POST with the confirm's expect_steps_down: 409 and nothing opened when it no longer holds", async () => {
+    const { change, f } = changeWithFinding(wg);
+    const g = wg.addFinding(change.id, { text: "a second thing went wrong" }, human).finding;
+    const post = (fid: string, body: unknown) =>
+      fetch(`${baseUrl}/tickets/${change.id}/findings/${fid}/fix-ticket`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${FULL}`, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    expect(
+      (await call("GET", `/tickets/${change.id}/findings/${g.id}/fix-ticket`)).body.steps_down,
+    ).toBe(true);
+    expect((await post(f.id, { expect_steps_down: true })).status).toBe(201);
+    const stale = await post(g.id, { expect_steps_down: true });
+    expect(stale.status).toBe(409);
+    expect(linksOf(wg, change.id)).toHaveLength(1);
+    expect((await post(g.id, { expect_steps_down: false })).status).toBe(201);
+    expect((await post(g.id, { surprise: 1 })).status).toBe(422);
   });
 });
 

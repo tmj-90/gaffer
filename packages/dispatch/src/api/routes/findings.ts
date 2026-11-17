@@ -17,7 +17,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Dispatch } from "../../core.js";
 import type { MemoryReader } from "../memoryReader.js";
 import { methodNotAllowed, readJsonBody, readNoBody, sendCreated, sendJson } from "../http.js";
-import { addFindingBody, withdrawFindingBody } from "../schemas.js";
+import { addFindingBody, openFixTicketBody, withdrawFindingBody } from "../schemas.js";
 import { apiActor } from "./context.js";
 
 export const FINDINGS_SUB = "findings";
@@ -99,8 +99,14 @@ export async function routeFindings(
       methodNotAllowed(res);
       return true;
     }
-    await readNoBody(req);
-    const r = wg.openFixTicket(id, segments[3] as string, apiActor());
+    // What the confirm showed (optional): the act refuses when it would now do otherwise.
+    const body = openFixTicketBody.parse((await readJsonBody(req)) ?? {});
+    const r = wg.openFixTicket(
+      id,
+      segments[3] as string,
+      apiActor(),
+      body.expect_steps_down === undefined ? undefined : { stepsDown: body.expect_steps_down },
+    );
     sendCreated(res, `/tickets/${r.ticket.id}`, {
       finding: r.finding,
       ticket: r.ticket,

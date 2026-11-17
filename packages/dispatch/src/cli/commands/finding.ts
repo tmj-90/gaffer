@@ -148,7 +148,10 @@ export function registerFindingCommands(ticket: Command): void {
           printJson({ ok: true, preview });
           return;
         }
-        const r = wg.openFixTicket(ref, String(fid), cliActor());
+        // The message printed is the preview's: the act must do what it says, or nothing.
+        const r = wg.openFixTicket(ref, String(fid), cliActor(), {
+          stepsDown: preview.steps_down,
+        });
         printJson({
           ok: true,
           finding: r.finding,

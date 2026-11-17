@@ -118,7 +118,10 @@ export async function fixTicketConfirm(t, f, host) {
         "Open the fix ticket",
         () =>
           guard(async () => {
-            const r = await api("POST", `/tickets/${t.id}/findings/${f.id}/fix-ticket`);
+            // What this confirm said: the server opens nothing (409) if autonomy changed since.
+            const r = await api("POST", `/tickets/${t.id}/findings/${f.id}/fix-ticket`, {
+              expect_steps_down: !!p.steps_down,
+            });
             const n = r && r.ticket ? r.ticket.number : null;
             toast(`Opened fix ticket #${n ?? "?"}.`, { ok: true });
             if (r && r.ticket && r.ticket.id) location.hash = `#/ticket/${r.ticket.id}`;

@@ -7120,7 +7120,7 @@
           "Review & delivery"
         ],
         "summary": "Open a fix ticket from a post-merge finding",
-        "description": "Creates a ticket through the normal ticket path (its risk sealed at creation like any person's ticket) at the change's risk, delivering to its write repository, with the finding quoted in its description, and links it as a regression of the change (one link: the escaped-defect numbers count it once). The link steps autonomy down when the change worked automatically, as the GET says. Records `ticket.finding_fix_opened` on the change. One fix ticket per finding. Human or admin principals only.",
+        "description": "Creates a ticket through the normal ticket path (its risk sealed at creation like any person's ticket) at the change's risk, delivering to its write repository, with the finding quoted in its description, and links it as a regression of the change (one link: the escaped-defect numbers count it once). The link steps autonomy down when the change worked automatically, as the GET says. Records `ticket.finding_fix_opened` on the change. One fix ticket per finding. Optional body `{ expect_steps_down }`: the GET's `steps_down` the confirm showed; when the link would now do otherwise (autonomy changed meanwhile), nothing is opened (409). Human or admin principals only.",
         "parameters": [
           {
             "name": "id",
@@ -7141,6 +7141,16 @@
             "description": "findingId."
           }
         ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/openFixTicketBody"
+              }
+            }
+          }
+        },
         "responses": {
           "201": {
             "description": "`{ finding, ticket, stepped_down, event_id }`. The Location header names the created resource.",
@@ -7184,6 +7194,16 @@
           },
           "409": {
             "description": "The state machine or a claim refused the change (`ILLEGAL_TRANSITION`, `STATE_CONFLICT`, `CLAIM_REQUIRED`, …).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -16791,6 +16811,15 @@
         "required": [
           "repo"
         ]
+      },
+      "openFixTicketBody": {
+        "type": "object",
+        "properties": {
+          "expect_steps_down": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
       },
       "planBuildBody": {
         "type": "object",

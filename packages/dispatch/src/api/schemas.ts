@@ -338,6 +338,18 @@ export const withdrawFindingBody = z.object({
 });
 export type WithdrawFindingBody = z.infer<typeof withdrawFindingBody>;
 
+/**
+ * Open a fix ticket: optionally what the confirm said the regression link would do
+ * (`steps_down` from the GET). When given and the act would now do otherwise (a step-down
+ * lifted, the policy changed), nothing is opened (409) and the confirm asks again.
+ */
+export const openFixTicketBody = z
+  .object({
+    expect_steps_down: z.boolean().optional(),
+  })
+  .strict();
+export type OpenFixTicketBody = z.infer<typeof openFixTicketBody>;
+
 export const setTestContractBody = z.object({
   changed_surfaces: z.array(z.string().trim().min(1).max(500)).max(100).default([]),
   runtime_deps: z.array(z.string().trim().min(1).max(500)).max(100).default([]),

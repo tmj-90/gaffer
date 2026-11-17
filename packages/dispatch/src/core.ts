@@ -1777,15 +1777,18 @@ export class Dispatch {
 
   /**
    * "Open a fix ticket" from a finding: the normal ticket create, the regression link and
-   * the step-down it causes, and the finding's record of it, in ONE transaction.
+   * the step-down it causes, and the finding's record of it, in ONE transaction. With
+   * `expect` (what the confirm said), an act that would step down otherwise rolls back.
    */
   openFixTicket(
     ref: string,
     findingId: string,
     actor: Actor,
+    expect?: findings.FixTicketExpectation,
   ): ReturnType<typeof findings.openFixTicket> {
     return inTransaction(this.db, () =>
       findings.openFixTicket(this, ref, findingId, actor, {
+        ...(expect ? { expect } : {}),
         create: (raw, links) => this.createTicketWithLinks(raw, links, actor),
         link: (fixId, originalId, note, fid) => {
           const res = regressions.fileRegression(this, fixId, originalId, actor, note, {

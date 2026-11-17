@@ -1361,8 +1361,11 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
       "the finding quoted in its description, and links it as a regression of the change " +
       "(one link: the escaped-defect numbers count it once). The link steps autonomy down " +
       "when the change worked automatically, as the GET says. Records " +
-      "`ticket.finding_fix_opened` on the change. One fix ticket per finding. Human or " +
-      "admin principals only.",
+      "`ticket.finding_fix_opened` on the change. One fix ticket per finding. Optional " +
+      "body `{ expect_steps_down }`: the GET's `steps_down` the confirm showed; when the " +
+      "link would now do otherwise (autonomy changed meanwhile), nothing is opened (409). " +
+      "Human or admin principals only.",
+    body: "openFixTicketBody",
     capability: "full",
     responses: [
       created("`{ finding, ticket, stepped_down, event_id }`.", "FixTicketOpened"),

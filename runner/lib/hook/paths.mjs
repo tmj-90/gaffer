@@ -38,9 +38,22 @@ function canonicalize(p, depth = 0) {
     // Refuse to resolve a path we cannot bound safely — fail CLOSED via throw.
     throw new Error("canonicalize: path too long or too deeply nested to resolve safely");
   }
+  // A path under /proc names the process that looks: `/proc/self/cwd` is the HOOK's
+  // directory here and the command's directory when it runs (`cd /ro && touch
+  // /proc/self/cwd/x` wrote /ro/x while the hook judged <its cwd>/x). It is kept as
+  // written, under /proc, which no root holds.
+  const lexical = resolve(p);
+  if (isProcPath(lexical)) return lexical;
   try {
     // realpathSync resolves ALL symlinks when the whole path exists.
-    return realpathSync(p);
+    const real = realpathSync(p);
+    // A link into /proc on the way (`/dev/fd`, `/dev/stdin`, or one the agent made):
+    // the same, kept in its /proc form.
+    if (real !== lexical) {
+      const viaProc = procForm(lexical);
+      if (viaProc !== null) return viaProc;
+    }
+    return real;
   } catch {
     // p does not fully exist yet. If its FINAL component is a symlink (including a
     // dangling one), follow the link to its target and canonicalise THAT so an
@@ -57,6 +70,48 @@ function canonicalize(p, depth = 0) {
     if (parent === p) return p;
     return resolve(canonicalize(parent, depth + 1), basename(p));
   }
+}
+
+function isProcPath(p) {
+  return p === "/proc" || p.startsWith("/proc/");
+}
+
+/**
+ * The /proc path that an existing absolute path reaches through its symlinks, or null
+ * when its resolution never enters /proc. The links are followed one step at a time the
+ * way the kernel does (`..` after a link leaves the link's target), at most 40 of them.
+ */
+function procForm(abs) {
+  let rest = abs.split("/").filter(Boolean);
+  let cur = "/";
+  let hops = 0;
+  while (rest.length) {
+    const comp = rest.shift();
+    if (comp === ".") continue;
+    const next = comp === ".." ? dirname(cur) : cur === "/" ? `/${comp}` : `${cur}/${comp}`;
+    if (isProcPath(next)) return rest.length ? `${next}/${rest.join("/")}` : next;
+    let st;
+    try {
+      st = lstatSync(next);
+    } catch {
+      return null;
+    }
+    if (!st.isSymbolicLink()) {
+      cur = next;
+      continue;
+    }
+    hops += 1;
+    if (hops > 40) return null;
+    let target;
+    try {
+      target = readlinkSync(next);
+    } catch {
+      return null;
+    }
+    if (target.startsWith("/")) cur = "/";
+    rest = [...target.split("/").filter(Boolean), ...rest];
+  }
+  return null;
 }
 
 // =====================================================================
@@ -246,6 +301,13 @@ const CLI_CREDENTIAL_PATHS = String.raw`\.config\/gh\/.*|\.config\/gcloud\/.*|\.
 const FACTORY_KEYS_PATH = String.raw`gaffer\/keys(?:\/.*)?|\.config\/gaffer(?:\/.*)?`;
 // The same for matching anywhere in a raw command (not end-anchored).
 const FACTORY_KEYS_FRAGMENT = String.raw`gaffer\/keys(?![\w.-])|\.config\/gaffer(?![\w.-])`;
+// THE TICK'S HELPER SERVERS (runner/lib/helper-servers.sh): their request pipes live in
+// $GAFFER_DATA/wg-serve/<pid>.<random>. The servers run what reaches them with the
+// runner's authority and answer only lines that carry the tick's key, which agent code
+// never sees; this second guard refuses any tool call or command that names the
+// directory at all (reading, writing, listing, globbing), on every provider.
+const TICK_SERVERS_PATH = String.raw`wg-serve(?:\/.*)?`;
+const TICK_SERVERS_FRAGMENT = String.raw`(?<![\w.-])wg-serve(?![\w.-])`;
 // Same families for matching anywhere in a raw command (not end-anchored).
 const CLI_CREDENTIAL_FRAGMENT = String.raw`credentials\.tfrc\.json|\.config\/gh\/|\.config\/gcloud\/|\.docker\/config\.json\b|\.kube\/|\.azure\/|\.pypirc\b|\.pgpass\b|\.claude\.json\b`;
 // ENV-FILE and CREDENTIAL-NAME fragments (false-positive fix). The old `\.env\b` and
@@ -275,7 +337,7 @@ const CRED_NAME_FRAGMENT = String.raw`(?<![\w$.-])(?:\w[\w-]*[_-]|\.)?credential
 // could be a renamed real `.env`, so it stays a secret; see isTrackedEnvTemplate.
 const ENV_TEMPLATE = /(^|\/)\.env\.(?:example|sample|template|dist|defaults)$/i;
 const SECRET_PATH = new RegExp(
-  String.raw`(^|\/)(\.env([._-][\w-]+)?|[\w-][\w.-]*\.env|\.netrc|\.npmrc|\.git-credentials|${CLI_CREDENTIAL_PATHS}|${FACTORY_KEYS_PATH}|id_[a-z0-9]+|.*\.pem|.*\.key|.*\.p12|(\.|\w[\w-]*[_-])?credentials(\.(json|toml|ya?ml|ini|txt))?|(\w[\w-]*[_-])?secrets?\.(json|ya?ml|txt|toml|ini)|client_secret[\w.-]*\.json|${MCP_RUNTIME_FILE}|${PROC_ENVIRON}|dashboard-token(\.[\w-]+)?|[\w.-]*[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}(\.[\w-]+)?)$`,
+  String.raw`(^|\/)(\.env([._-][\w-]+)?|[\w-][\w.-]*\.env|\.netrc|\.npmrc|\.git-credentials|${CLI_CREDENTIAL_PATHS}|${FACTORY_KEYS_PATH}|${TICK_SERVERS_PATH}|id_[a-z0-9]+|.*\.pem|.*\.key|.*\.p12|(\.|\w[\w-]*[_-])?credentials(\.(json|toml|ya?ml|ini|txt))?|(\w[\w-]*[_-])?secrets?\.(json|ya?ml|txt|toml|ini)|client_secret[\w.-]*\.json|${MCP_RUNTIME_FILE}|${PROC_ENVIRON}|dashboard-token(\.[\w-]+)?|[\w.-]*[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}(\.[\w-]+)?)$`,
   "i",
 );
 const GIT_INTERNAL = /(^|\/)\.git(\/|$)/;
@@ -338,6 +400,36 @@ function expandTildePath(filePath) {
  * skips): `cd -`, `pushd`/`pushd +N` (dir stack), `~user` / `~-`, and a `$`, backtick
  * or glob destination. An absolute destination resolves even after an unknown cwd.
  */
+/**
+ * Where a path a tool or a command names can land: its lexical resolution (`..`
+ * collapsed first, as `path.resolve` and a logical `cd` do) and its physical one (the
+ * kernel's: `..` leaves the directory a symlink points at, so with `wt ->
+ * $GAFFER_DATA/worktrees` the path `wt/../settings.json` is the data directory's
+ * settings file). The two differ only through a symlink; a boundary judges both.
+ */
+function canonicalCandidates(base, p) {
+  const lexical = canonicalize(resolve(base, p));
+  const raw = String(p).startsWith("/") ? String(p) : `${base}/${p}`;
+  if (!/(^|\/)\.\.(\/|$)/.test(raw)) return [lexical];
+  // Step by step: realpathSync normalises `..` lexically before it resolves links, so
+  // each `..` leaves the realpath of the directory reached so far.
+  let cur = "/";
+  for (const step of raw.split("/")) {
+    if (step === "" || step === ".") continue;
+    if (step === "..") {
+      let real = cur;
+      try {
+        real = realpathSync(cur);
+      } catch {
+        /* not there (yet): the kernel would refuse it; the lexical place stands */
+      }
+      cur = dirname(real);
+    } else cur = cur === "/" ? `/${step}` : `${cur}/${step}`;
+  }
+  const physical = canonicalize(cur);
+  return physical === lexical ? [lexical] : [lexical, physical];
+}
+
 function replayCd(effective, cwd) {
   const args = effective.rest.slice(1);
   let k = 0;
@@ -363,7 +455,9 @@ export {
   MCP_RUNTIME_FILE,
   PROC_ENVIRON,
   SECRET_PATH,
+  TICK_SERVERS_FRAGMENT,
   TOKEN_SOURCE_EXT_GUARD,
+  canonicalCandidates,
   canonicalize,
   classifyRootAccess,
   expandTildePath,

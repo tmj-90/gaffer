@@ -102,6 +102,111 @@ const TABLE = {
     }),
     false,
   ],
+  // External review 18: the rule recognised the hook by its path appearing anywhere in the
+  // command. Each of these names the hook and runs something else (or nothing that blocks).
+  "the hook path in a comment after another command": [
+    JSON.stringify({ hooks: { PreToolUse: [entry(ALL, { command: `true # ${HOOK}` })] } }),
+    false,
+  ],
+  "a command that is only a comment": [
+    JSON.stringify({ hooks: { PreToolUse: [entry(ALL, { command: `# ${HOOK}` })] } }),
+    false,
+  ],
+  "the hook behind ||": [
+    JSON.stringify({ hooks: { PreToolUse: [entry(ALL, { command: `true || ${HOOK}` })] } }),
+    false,
+  ],
+  "the hook with its verdict discarded (; true)": [
+    JSON.stringify({ hooks: { PreToolUse: [entry(ALL, { command: `${HOOK}; true` })] } }),
+    false,
+  ],
+  "the hook in the background (&)": [
+    JSON.stringify({ hooks: { PreToolUse: [entry(ALL, { command: `${HOOK} &` })] } }),
+    false,
+  ],
+  "the hook path as an argument to echo": [
+    JSON.stringify({
+      hooks: { PreToolUse: [entry(ALL, { command: "echo ${RUNNER_DIR}/safety-hook.mjs" })] },
+    }),
+    false,
+  ],
+  "the hook path as an argument to node -e": [
+    JSON.stringify({
+      hooks: {
+        PreToolUse: [entry(ALL, { command: "node -e 0 ${RUNNER_DIR}/safety-hook.mjs" })],
+      },
+    }),
+    false,
+  ],
+  "the hook piped into something that exits 0": [
+    JSON.stringify({ hooks: { PreToolUse: [entry(ALL, { command: `${HOOK} | cat` })] } }),
+    false,
+  ],
+  "the hook inside a command substitution": [
+    JSON.stringify({ hooks: { PreToolUse: [entry(ALL, { command: `echo $(${HOOK})` })] } }),
+    false,
+  ],
+  "a different file whose name ends like the hook's": [
+    JSON.stringify({
+      hooks: {
+        PreToolUse: [entry(ALL, { command: "node ${RUNNER_DIR}/safety-hook.mjs.bak" })],
+      },
+    }),
+    false,
+  ],
+  "an asynchronous hook (its verdict blocks nothing)": [
+    JSON.stringify({ hooks: { PreToolUse: [entry(ALL, { async: true })] } }),
+    false,
+  ],
+  "a key the rule does not know": [
+    JSON.stringify({ hooks: { PreToolUse: [entry(ALL, { background: true })] } }),
+    false,
+  ],
+  "a real entry beside one that only names the hook": [
+    JSON.stringify({
+      hooks: { PreToolUse: [entry(ALL), entry("Bash", { command: `true # ${HOOK}` })] },
+    }),
+    false,
+  ],
+  "the hook path quoted, node by absolute path, a status message": [
+    JSON.stringify({
+      hooks: {
+        PreToolUse: [
+          entry(ALL, {
+            command: '/usr/bin/node "${RUNNER_DIR}/safety-hook.mjs"',
+            statusMessage: "checking",
+          }),
+        ],
+      },
+    }),
+    true,
+  ],
+  "the hook path alone (run by its own first line)": [
+    JSON.stringify({
+      hooks: { PreToolUse: [entry(ALL, { command: "${RUNNER_DIR}/safety-hook.mjs" })] },
+    }),
+    true,
+  ],
+  // Review 18 follow-up: a settings file switches every hook off without touching
+  // PreToolUse. Claude Code honours "disableAllHooks" from any settings source, so the
+  // template may only set it to false (which also overrides a true in the user's own
+  // settings: project settings take precedence).
+  "disableAllHooks: true beside a correct entry": [
+    JSON.stringify({ disableAllHooks: true, hooks: { PreToolUse: [entry(ALL)] } }),
+    false,
+  ],
+  'disableAllHooks: "true" (a string)': [
+    JSON.stringify({ disableAllHooks: "true", hooks: { PreToolUse: [entry(ALL)] } }),
+    false,
+  ],
+  "disableAllHooks: false (what the shipped template writes)": [
+    JSON.stringify({ disableAllHooks: false, hooks: { PreToolUse: [entry(ALL)] } }),
+    true,
+  ],
+  "allowManagedHooksOnly: true (drops project hooks)": [
+    JSON.stringify({ allowManagedHooksOnly: true, hooks: { PreToolUse: [entry(ALL)] } }),
+    false,
+  ],
   "not JSON": ['{"hooks": {"PreToolUse": [ ' + HOOK, false],
   "no hooks at all": [JSON.stringify({ permissions: {} }), false],
 };
@@ -189,6 +294,31 @@ for (const [label, [text, expected]] of Object.entries(TABLE)) {
     ok = false;
   }
   assert("a runner dir with a trailing slash: the Node writer accepts the shipped template", ok);
+}
+
+// The shipped template quotes the hook path, so a runner directory with a blank in it
+// still launches (it used to be refused: the shell would split the path), and the
+// command bash runs is still exactly node and the hook.
+{
+  const { renderAgentSettings, validateAgentSettings } = await import("../lib/agent-settings.mjs");
+  const blank = "/opt/my factory/runner";
+  const rendered = renderAgentSettings(shipped, blank);
+  assert(
+    "a runner dir with a blank: the shipped template is accepted",
+    validateAgentSettings(rendered, blank).ok === true,
+  );
+  const cmd = JSON.parse(rendered).hooks.PreToolUse[0].hooks[0].command;
+  const words = spawnSync("bash", ["-c", `set -- ${cmd}; printf '<%s>' "$@"`], {
+    encoding: "utf8",
+  }).stdout;
+  assert(
+    `bash splits the shipped command into node and the hook path (${words})`,
+    words === `<node><${blank}/safety-hook.mjs>`,
+  );
+  assert(
+    "the shipped template sets disableAllHooks to false",
+    JSON.parse(shipped).disableAllHooks === false,
+  );
 }
 
 rmSync(T, { recursive: true, force: true });

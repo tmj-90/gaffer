@@ -69,7 +69,8 @@ have a minute; the answers become lore drafts for review.
 runner/gaffer dashboard
 ```
 
-Setup already started it; this prints the `http://127.0.0.1:8787/?token=...` link again.
+Setup already started it; this prints the `http://127.0.0.1:8787/?token=...` link again
+(in a terminal: piped or logged output names the token file, `.gaffer/dashboard-token`, instead).
 Open it on this machine (or paste the token at the login prompt). The dashboard binds
 loopback only, and every data request needs that token.
 
@@ -295,7 +296,7 @@ If you would rather not install Node, pnpm and the agent CLI on the machine:
 export ANTHROPIC_API_KEY=…            # or CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token`
 mkdir -p repos                        # the repos you want the factory to work on
 docker compose up -d                  # builds the image, starts the dashboard on 127.0.0.1:8787
-docker compose logs dashboard | grep token=   # the login URL, token included
+docker compose exec dashboard cat /data/dashboard-token   # the login token (the logs never carry it)
 ```
 
 State lives in the `gaffer-data` volume; repos under `./repos` appear at `/repos` inside
@@ -309,7 +310,7 @@ off (the image sets `SANDBOX_PROVIDER=none` and the opt-out `GAFFER_STRICT_REQUI
 
 Read [SECURITY.md](SECURITY.md) before going live: it has the threat model, what each
 gate enforces and the residual limits. Full autonomy is opt-in and off by default, and
-every setting is in [docs/CONFIG.md](docs/CONFIG.md).
+the fourteen settings are in [docs/CONFIG.md](docs/CONFIG.md).
 
 ## Aside: readying a ticket under the stricter policy packs
 
@@ -361,4 +362,4 @@ The reviewer is who owns the gate; the agent still cannot approve or merge its o
 | `packages/memory` | durable gated memory: digest, feature ledger, lore (`memory-mcp`) |
 | `runner/` | the orchestrator, the skill library, the safety hook |
 | `.gaffer/` | your factory state (databases, agent id, config, token), git-ignored |
-| `docs/CONFIG.md` | every configuration knob, its default, whether the dashboard can edit it and which component reads it (generated) |
+| `docs/CONFIG.md` | the fourteen settings, their accepted values and defaults (generated); `docs/CONFIG-ADVANCED.md` has every value they derive |

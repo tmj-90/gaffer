@@ -1,17 +1,29 @@
-// S4 autonomy flags, asserted by ticket STATUS only (Review markup is held while it
-// is reworked). This shared server opts out of the OS sandbox in its environment
-// (scripts/ui-regression/setup.sh: every agent is a stub), so the flags that let an
-// AGENT ship are exercised where no agent has to launch under them:
-//   • AUTO_MERGE ('Auto-merge on approval') saved in Settings: a human approval in
-//     Review lands the branch at once (done) — no Merge now;
-//   • REVIEW_MODE=both: the reviewer agent's APPROVE screens the delivery and leaves
-//     it in Review for the human to confirm;
+// S4 autonomy, asserted by ticket STATUS only (Review markup is held while it is
+// reworked). Autonomy is granted ONE way: the Autonomy mode setting (GAFFER_MODE, the
+// dial in Settings), or a variable in the runner's own environment. This suite runs on
+// its OWN server whose environment sets REVIEW_MODE=both (no mode derives `both`), and
+// opts out of the OS sandbox like every world (every agent is a stub), so the paths
+// that let an AGENT ship are exercised where no agent has to launch under them:
+//   • an OLD settings.json key never grants: AUTO_MERGE=1 written into settings.json by
+//     hand (as the old Settings page did) leaves a human approval waiting at
+//     ready_for_merge under the supervised mode (P-B1 of the fourteen-settings review:
+//     the dashboard used to hand the old key to the merge runner as environment);
+//   • the Autonomy mode set to Autonomous on the dial and saved: a human approval in
+//     Review lands the branch at once (done), or the merge gate holds it on this
+//     unsandboxed host; no Merge now;
+//   • REVIEW_MODE=both from the environment: the reviewer agent's APPROVE screens the
+//     delivery and leaves it in Review for the human to confirm;
 //   • the dial: choosing Autonomous shows the Go/No-Go with the containment check
 //     before anything is saved.
-// The agent-ships paths (DISPATCH_ALLOW_AGENT_APPROVE, MERGE_ON_AGENT_REVIEW, the
-// merge lane after an agent approval, graduated policies) belong on a server with an
-// OS sandbox; they are SKIPPED here with that reason rather than half-tested. PR mode with required CI is s4b-pr-mode, which runs
-// on its own server with a fake `gh` on PATH.
+// The agent-ships paths (agent approval, merge on an agent review, the merge lane after
+// an agent approval, graduated policies) belong on a server with an OS sandbox; they are
+// SKIPPED here with that reason rather than half-tested. PR mode with required CI is
+// s4b-pr-mode, which runs on its own server with a fake `gh` on PATH.
+import { readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
+
+export const server = { env: { REVIEW_MODE: "both" }, fixtures: [] };
+
 export default async function s4(t, L) {
   const p = t.page;
   const deliver = async (title) => {
@@ -33,22 +45,59 @@ export default async function s4(t, L) {
     return tk;
   };
 
-  // ── AUTO_MERGE: a human approval lands at once ────────────────────────────
-  const a = await deliver("Auto-merge on approval");
+  const settingsFile = path.join(L.GAFFER_DATA, "settings.json");
+  const readFile = () => {
+    try {
+      return JSON.parse(readFileSync(settingsFile, "utf8"));
+    } catch {
+      return {};
+    }
+  };
+
+  // ── an old settings.json key never grants autonomy (P-B1) ─────────────────
+  const z = await deliver("Old auto-merge key");
+  const before = readFile();
+  writeFileSync(settingsFile, JSON.stringify({ ...before, AUTO_MERGE: "1" }, null, 2));
+  // Any save makes the dashboard read settings.json again into its own environment
+  // (before the fix it copied the old key there too, and every runner it started,
+  // the merge runner included, read it as the operator's).
+  await L.putSettings({ GAFFER_LANDING: "local" });
+  const dm = await L.derivedMap();
+  const mig = ((await L.api("GET", "/api/settings")).json.migration || []).find(
+    (m) => m.key === "AUTO_MERGE",
+  );
+  t.check(
+    dm.get("AUTO_MERGE")?.value === "0" && mig?.setting === "GAFFER_MODE",
+    "an old AUTO_MERGE=1 in settings.json: the runner's reading is the mode's 0, and the migration callout names GAFFER_MODE",
+    `derived AUTO_MERGE=${JSON.stringify(dm.get("AUTO_MERGE"))} migration=${JSON.stringify(mig)}`,
+  );
+  const hz = await t.approve(z);
+  await L.sleep(5000);
+  const zNow = await L.ticketOf(z.id);
+  t.check(
+    hz?.status === "ready_for_merge" && zNow.status === "ready_for_merge",
+    `with an old AUTO_MERGE=1 in settings.json and the supervised mode, approving #${z.number} does NOT merge it (it waits at ready_for_merge)`,
+    `after approval #${z.number} is '${zNow.status}' (first ${hz?.status}): the old key reached the merge runner`,
+  );
+  writeFileSync(settingsFile, JSON.stringify(before, null, 2));
+
+  // ── the Autonomy mode: a human approval lands at once ─────────────────────
+  const a = await deliver("Autonomous mode, human approval");
   await t.visit("settings");
-  await t.setSetting("AUTO_MERGE", "1");
+  await t.setSetting("GAFFER_MODE", "autonomous");
   const sv = await t.saveSettings();
   t.check(
     sv.status < 300 &&
-      sv.sent.AUTO_MERGE === "1" &&
-      (await L.settingsMap()).get("AUTO_MERGE")?.effective === "1",
-    "Settings: 'Auto-merge on approval' saved and effective",
-    `AUTO_MERGE save: ${sv.status} ${JSON.stringify(sv.sent)}`,
+      sv.sent.GAFFER_MODE === "autonomous" &&
+      Object.keys(sv.sent).length === 1 &&
+      (await L.derivedMap()).get("AUTO_MERGE")?.value === "1",
+    "Settings: the Autonomy mode dial saved Autonomous (GAFFER_MODE only), and the runner derives AUTO_MERGE=1 from it",
+    `GAFFER_MODE save: ${sv.status} ${JSON.stringify(sv.sent)}`,
   );
   const ap = await t.approve(a);
   // Landing is gated: the merge of the branch onto the CURRENT target is built and the
   // repo's Definition-of-Done gates run on that combined code before anything lands.
-  // AUTO_MERGE is an autonomy flag, so the gate runs under strict containment; on a
+  // Auto merge (from the mode) is an autonomy flag, so the gate runs under strict containment; on a
   // host with no OS sandbox (this shared server: provider none, no sandbox-exec) the
   // gate cannot run and fails CLOSED: the ticket is HELD (blocked, merge_gate_red) with
   // the merge-gate evidence, and main is untouched. That is the promise under test.
@@ -65,17 +114,19 @@ export default async function s4(t, L) {
     }
   })();
   if (after.status === "done") {
-    t.ok(`with AUTO_MERGE on, approving #${a.number} landed it through the merge gate (done)`);
+    t.ok(
+      `under the Autonomous mode, approving #${a.number} landed it through the merge gate (done)`,
+    );
   } else {
     t.check(
       settled &&
         after.status === "blocked" &&
         /merge gate|merge_gate|fails its gates|sandbox/i.test(blockedReason),
-      `with AUTO_MERGE on and no OS sandbox, approving #${a.number} did NOT land it: the merge gate held it (blocked) with its reason recorded`,
-      `after approval with AUTO_MERGE on #${a.number} is '${after.status}' (first ${ap?.status}); blocked reason: ${blockedReason.slice(0, 200)}`,
+      `under the Autonomous mode and no OS sandbox, approving #${a.number} did NOT land it: the merge gate held it (blocked) with its reason recorded`,
+      `after approval under the Autonomous mode #${a.number} is '${after.status}' (first ${ap?.status}); blocked reason: ${blockedReason.slice(0, 200)}`,
     );
     t.note(
-      `AUTO_MERGE landing (done) needs a contained runner (OS sandbox); this host holds at the merge gate instead`,
+      `an Autonomous landing (done) needs a contained runner (OS sandbox); this host holds at the merge gate instead`,
     );
   }
   if (after.status === "blocked" && L.REPO_PATH) {
@@ -90,14 +141,17 @@ export default async function s4(t, L) {
     );
   }
   await t.visit("settings");
-  await t.setSetting("AUTO_MERGE", "0");
+  await t.setSetting("GAFFER_MODE", "supervised");
   await t.saveSettings();
 
-  // ── REVIEW_MODE=both: the agent screens, the human confirms ───────────────
+  // ── REVIEW_MODE=both (this server's environment): the agent screens, the human confirms
+  const rm = (await L.derivedMap()).get("REVIEW_MODE");
+  t.check(
+    rm?.value === "both" && rm?.source === "environment",
+    "REVIEW_MODE=both comes from the environment and Settings lists it as overridden",
+    `derived REVIEW_MODE: ${JSON.stringify(rm)}`,
+  );
   const b = await deliver("Review mode both");
-  await t.visit("settings");
-  await t.setSetting("REVIEW_MODE", "both");
-  await t.saveSettings();
   await t.visit("work");
   const toast = await t.poll();
   await L.maybe(
@@ -139,7 +193,7 @@ export default async function s4(t, L) {
       `the dial's Go/No-Go after choosing Autonomous: '${ti.slice(0, 200)}'`,
     );
     t.check(
-      L.readSettingsFile().GAFFER_MODE === undefined,
+      L.readSettingsFile().GAFFER_MODE === "supervised",
       "nothing is saved by moving the dial alone",
       `GAFFER_MODE in settings.json: ${L.readSettingsFile().GAFFER_MODE}`,
     );
@@ -150,6 +204,6 @@ export default async function s4(t, L) {
   } else t.bad("the Team instructions dial has no Autonomous stop");
 
   t.skip(
-    "agent approval / MERGE_ON_AGENT_REVIEW / the merge lane after an agent approval / graduated policies: need a runner with an OS sandbox, not this opted-out shared server — scaffold for an own-server shard",
+    "agent approval / merge on an agent review / the merge lane after an agent approval / graduated policies: need a runner with an OS sandbox, not this opted-out server; scaffold for a sandboxed shard",
   );
 }

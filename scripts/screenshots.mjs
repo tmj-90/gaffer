@@ -111,6 +111,9 @@ function boot() {
      export PATH="${OUT}/bin:$PATH"
      source "${ROOT}/scripts/ui-regression/setup.sh" >/dev/null
      export GAFFER_IMPL_MODEL=mid GAFFER_PLAN_MODEL=strong GAFFER_ROLE_MODELS=card=cheap
+     # A demo run makes far more ticks in an hour than a day's cap allows and keeps more
+     # branches open: derived values, so the world's environment overrides them.
+     export MAX_TICKS_PER_DAY=1000 MAX_OPEN_AGENT_BRANCHES_PER_REPO=8
      ${STUB_GUARD}
      export -p | grep -v -E ' (ANTHROPIC_[A-Z_]*|CLAUDE_CODE_OAUTH_TOKEN|BASH_[A-Z_]*|SHLVL|PWD|OLDPWD|_)=' > "${ENV_FILE}"
      bash "${ROOT}/runner/gaffer" dashboard --restart >/dev/null 2>&1`,
@@ -404,15 +407,15 @@ async function drive(k) {
   const flow = spec.flow;
   log(`#${number} ${spec.title} → ${flow}`);
   if (flow === "done_reviewed") {
-    // The reviewer agent reads it as well (REVIEW_MODE both: a person still signs off),
-    // and a diff under .github brings in the security reviewer after it.
-    await must("POST", "/api/settings", { settings: { REVIEW_MODE: "both" } });
+    // The reviewer agent reads it as well (the graduated mode runs it, and with no grant a
+    // person still signs off), and a diff under .github brings in the security reviewer.
+    await must("POST", "/api/settings", { settings: { GAFFER_MODE: "graduated" } });
     setStub(number, stubFor(spec));
     const st = (await ticketOf(byKey[k].id)).status;
     if (st === "draft") await ready(k);
     if (st !== "in_review") await pollUntil(k, ["in_review"]);
     for (let i = 0; i < 4 && !(await hasEvent(k, "ticket.lane_verdict")); i++) await poll();
-    await must("POST", "/api/settings", { settings: { REVIEW_MODE: "human" } });
+    await must("POST", "/api/settings", { settings: { GAFFER_MODE: "supervised" } });
     // The reviewer agent has read it; back under human review, the next polls send it
     // to the tester first.
     for (let i = 0; i < 6 && !(await testerPassed(k)); i++) await poll();
@@ -1065,7 +1068,7 @@ async function capture() {
   await pageShot("memory", "Memory", 1600);
   await go("health", ".routing-panel");
   await pageShot("health", "Health", 2400);
-  await elShot("health-measures", "Health: the four measures", ".measures-panel", 16);
+  await elShot("health-measures", "Health: the four measures", ".measures-board", 16);
   await elShot("health-routing", "Health: routing scorecard", ".routing-panel", 16);
   await go("settings");
   await pageShot("settings", "Settings", 1500);
@@ -1159,11 +1162,9 @@ if (FROM !== "world") {
 }
 if (run("world")) {
   boot();
-  // A demo run makes far more ticks in an hour than a day's cap allows, and spends
-  // more than a day's budget; both go back to their usual values after the run.
-  await must("POST", "/api/settings", {
-    settings: { GAFFER_DAILY_BUDGET_USD: "500", MAX_TICKS_PER_DAY: "1000" },
-  });
+  // A demo run spends more than a day's budget; it goes back after the run (the tick and
+  // branch caps are the world's environment, boot()).
+  await must("POST", "/api/settings", { settings: { GAFFER_DAILY_BUDGET_USD: "500" } });
   await makeRepos();
   await makeTickets();
   saveState("world");
@@ -1181,21 +1182,9 @@ if (run("move")) {
   saveState("move");
 }
 if (run("hand")) {
-  await must("POST", "/api/settings", {
-    settings: {
-      GAFFER_DAILY_BUDGET_USD: "500",
-      MAX_TICKS_PER_DAY: "1000",
-      MAX_OPEN_AGENT_BRANCHES_PER_REPO: "8",
-    },
-  });
+  await must("POST", "/api/settings", { settings: { GAFFER_DAILY_BUDGET_USD: "500" } });
   await handWork();
-  await must("POST", "/api/settings", {
-    settings: {
-      GAFFER_DAILY_BUDGET_USD: "25",
-      MAX_TICKS_PER_DAY: "50",
-      MAX_OPEN_AGENT_BRANCHES_PER_REPO: "3",
-    },
-  });
+  await must("POST", "/api/settings", { settings: { GAFFER_DAILY_BUDGET_USD: "25" } });
   await padLedger();
   saveState("hand");
 }

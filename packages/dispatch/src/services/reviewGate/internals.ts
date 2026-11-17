@@ -40,6 +40,8 @@ export interface ReviewGateInternals {
   readonly landedOnDefaultResolver: ReviewGateServiceDeps["landedOnDefaultResolver"];
   readonly changeOnRefsResolver: ReviewGateServiceDeps["changeOnRefsResolver"];
   readonly policyAllowsAgentApprove: ((ticket: Ticket) => boolean) | undefined;
+  /** THE AUTONOMY LADDER: the ceiling and step-down holds (see ReviewGateServiceDeps). */
+  readonly autonomyHoldFn: ReviewGateServiceDeps["autonomyHold"];
   readonly observedRiskResolver: ((ticket: Ticket) => ObservedRisk | null) | undefined;
   /** A person's waiver records the factory's isolation ("none" or the provider). */
   readonly isolationFn: (() => string) | undefined;

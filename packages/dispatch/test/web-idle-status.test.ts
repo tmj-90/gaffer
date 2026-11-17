@@ -25,7 +25,10 @@ interface Loop {
 interface Scenario {
   maintenance: boolean;
   loops: Loop[];
+  /** Derived idle values the runner reports (GET /api/settings `derived`). */
   settings?: Record<string, string>;
+  /** True: they come from the When idle setting; else a variable exported for the runner. */
+  fromSetting?: boolean;
   repos?: Array<{ id: string; name: string; coverage_command?: string | null }>;
 }
 
@@ -37,19 +40,32 @@ function lane(key: string, label: string, enabled: boolean, extra: Partial<Loop>
 
 function stubFetch(sc: Scenario): void {
   // renderSettings shows an empty state (and no idle panel) when the settings list
-  // is empty, so every scenario carries one harmless baseline row.
-  const settings = Object.entries({ MAX_TICKS: "5", ...(sc.settings ?? {}) }).map(
-    ([key, effective]) => ({
-      key,
-      label: key,
-      group: "idle-loops",
-      type: "string",
+  // is empty, so every scenario carries one setting; the idle values arrive as derived
+  // values (the When idle setting, GAFFER_IDLE, or the environment decides them).
+  const settings = [
+    {
+      key: "GAFFER_IDLE",
+      label: "When idle",
+      group: "work",
+      kind: "choice",
+      values: ["auto", "off", "maintenance", "backlog", "all"],
+      default: "auto",
+      description: "What the factory does when nothing is ready.",
+      writable: true,
       value: "",
-      effective,
-      source: "env",
-      envLocked: true,
-    }),
-  );
+      effective: "auto",
+      origin: "default",
+      envLocked: false,
+      derives: [],
+    },
+  ];
+  const derived = Object.entries(sc.settings ?? {}).map(([name, value]) => ({
+    name,
+    value,
+    setting: "GAFFER_IDLE",
+    decidedBy: sc.fromSetting ? "GAFFER_IDLE=off" : "environment",
+    source: sc.fromSetting ? "setting" : "environment",
+  }));
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -68,7 +84,7 @@ function stubFetch(sc: Scenario): void {
           },
         };
       } else if (url.includes("/api/settings")) {
-        body = { settings };
+        body = { settings, derived };
       } else if (url.includes("/scope/nodes")) {
         body = { nodes: [] };
       } else if (url.includes("/repositories")) {
@@ -122,14 +138,26 @@ describe("web: Idle loops status line reflects the runner's effective behaviour"
     expect(text).not.toMatch(/will run 2 lanes/);
   });
 
+  it("Settings has one primary: Save changes; the idle loops save is secondary (A-43)", async () => {
+    await render({ maintenance: true, loops: [lane("idle_tech_debt", "Tech debt", true)] });
+    const primaries = [...document.querySelectorAll("#app .btn.primary")].map((b) =>
+      (b.textContent || "").trim(),
+    );
+    expect(primaries).toEqual(["Save changes"]);
+    const idle = [...document.querySelectorAll("#app button")].find((b) =>
+      /Save idle loops/.test(b.textContent ?? ""),
+    )!;
+    expect(idle.className).toBe("btn");
+  });
+
   it("GAFFER_MAINTENANCE=0 is the kill switch whatever the panel says", async () => {
     const text = await render({
       maintenance: true,
       loops: [lane("idle_security_hotspot", "Security hotspots", true)],
       settings: { GAFFER_MAINTENANCE: "0" },
     });
-    expect(text).toMatch(/GAFFER_MAINTENANCE=0/);
-    expect(text).toMatch(/skip maintenance/);
+    expect(text).toMatch(/GAFFER_MAINTENANCE=0 in the environment turns maintenance off/);
+    expect(text).toMatch(/idle ticks skip it entirely/);
   });
 
   it("GAFFER_MAINTENANCE=0 with IDLE_DRAFT_WHEN_IDLE=1 says the legacy scan still runs every lane", async () => {
@@ -143,7 +171,7 @@ describe("web: Idle loops status line reflects the runner's effective behaviour"
       ],
       settings: { GAFFER_MAINTENANCE: "0", IDLE_DRAFT_WHEN_IDLE: "1" },
     });
-    expect(text).toMatch(/GAFFER_MAINTENANCE=0 skips the maintenance lane/);
+    expect(text).toMatch(/GAFFER_MAINTENANCE=0 in the environment skips the maintenance lane/);
     expect(text).toMatch(/IDLE_DRAFT_WHEN_IDLE=1/);
     expect(text).toMatch(/runs ALL 2 enabled lanes in one pass/);
     expect(text).toMatch(/filed as drafts/);
@@ -177,7 +205,7 @@ describe("web: Idle loops status line reflects the runner's effective behaviour"
       loops: [lane("idle_security_hotspot", "Security hotspots", false)],
       settings: { GAFFER_MAINTENANCE: "1" },
     });
-    expect(text).toMatch(/GAFFER_MAINTENANCE=1 forces the lane on/);
+    expect(text).toMatch(/GAFFER_MAINTENANCE=1 in the environment turns the lane on/);
     expect(text).toMatch(/no lane is enabled/);
   });
 
@@ -203,6 +231,18 @@ describe("web: Idle loops status line reflects the runner's effective behaviour"
     expect(text).toMatch(/IDLE_DRAFT_WHEN_IDLE=1/);
     expect(text).toMatch(/ALL 2 enabled lanes/);
     expect(text).not.toMatch(/will not run until you turn it on/);
+  });
+
+  it("When idle (GAFFER_IDLE) turning maintenance off names the setting, not a knob", async () => {
+    const text = await render({
+      maintenance: true,
+      loops: [lane("idle_security_hotspot", "Security hotspots", true)],
+      settings: { GAFFER_MAINTENANCE: "0" },
+      fromSetting: true,
+    });
+    expect(text).toMatch(/When idle \(GAFFER_IDLE\) turns maintenance off/);
+    expect(text).toMatch(/Set When idle to auto to let this panel decide/);
+    expect(text).not.toMatch(/GAFFER_MAINTENANCE=0/);
   });
 
   it("names the coverage lane's missing coverage_command, and clears it when a repo has one", async () => {

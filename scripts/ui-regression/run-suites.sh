@@ -23,8 +23,9 @@
 # throwaway GAFFER_DATA, the taskflow-mini sample repo, the stub worker, the dashboard
 # via `gaffer dashboard --restart`), plus two canned planning bins for the suites that
 # plan or author (GAFFER_DECOMPOSE_BIN, GAFFER_SPEC_AUTHOR_BIN → suites/bin/) and one
-# operator-exported setting (GAFFER_NOTIFY_DESKTOP=0) so the Settings suite can
-# prove an env-locked row is read-only. A suite that declares `server = { env,
+# operator-exported setting (GAFFER_SANDBOX=auto) so the Settings suite can prove an
+# env-locked row is read-only, and one derived value (GAFFER_NOTIFY_DESKTOP=0) for its
+# Overridden-from-the-environment list. A suite that declares `server = { env,
 # fixtures }` (suite-plan.mjs) gets its OWN world after the shared one: a fresh out
 # dir ($UI_REGRESS_OUT-<suite>), port ($UI_REGRESS_PORT + n), data dir, sample repo
 # and dashboard started with that env and those fixtures (own-env.sh). Every world,
@@ -84,8 +85,10 @@ ui_world() {
       # spawn these instead of `claude`.
       export GAFFER_DECOMPOSE_BIN="$HERE/suites/bin/decompose-stub.mjs"
       export GAFFER_SPEC_AUTHOR_BIN="$HERE/suites/bin/spec-author-stub.mjs"
-      # An operator override the Settings suite asserts is env-locked (read-only).
-      export GAFFER_NOTIFY_DESKTOP=0
+      # Operator environment the Settings suite asserts on: a SETTING the environment
+      # sets (env-locked, read-only; auto is the default, so nothing else changes) and a
+      # DERIVED value it overrides (listed under Overridden from the environment).
+      export GAFFER_SANDBOX=auto GAFFER_NOTIFY_DESKTOP=0
       [ -n "$own" ] || return 0
       ui_run_fixtures before "${fixtures[@]+"${fixtures[@]}"}" || return 1
       local k v

@@ -17,6 +17,10 @@
 #   S6  a forged tester PASS beside a genuine approval: held `unsigned_tester_verdict`
 #   S7  the way back: reopen-for-review from the hold, approve again, it lands
 #   S8  `gate-key ensure` (what gaffer setup runs): creates a 0600 key, then keeps it
+#   S9  SEALED PRINCIPALS: an approval made through a principal whose row is no longer
+#       signed by this factory (its seal removed in the database) does not land; a person's
+#       `wg principal resign` (with the review code `principal unsigned` printed) puts it back
+#       and it lands
 # Run: bash runner/test/run.sh -j 1 runner/test/signed-acts.test.sh   (bash 3.2 safe)
 # =====================================================================
 . "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
@@ -244,6 +248,9 @@ approve; MT; rc=$?
 
 echo "== S8: gate-key ensure (gaffer setup) =="
 world s8
+# Sealed autonomy: the world's ticket was created by the host CLI, which signed its risk and
+# so created the key. Remove it to see `gate-key ensure` create one.
+K0="$(keyfile)"; [ -n "$K0" ] && rm -f "$K0"
 out="$(wgd gate-key ensure)"
 K="$(keyfile)"
 [ -n "$K" ] && [ "$(printf '%s' "$out" | jf 'String(d.created)')" = true ] && ok "S8: ensure creates the key" || fail "S8: $out"
@@ -252,6 +259,22 @@ size="$(node -e 'console.log(require("fs").statSync(process.argv[1]).size)' "$K"
 [ "$mode" = 600 ] && [ "$size" = 32 ] && ok "S8: 32 bytes, mode 0600" || fail "S8: mode=$mode size=$size"
 case "$K" in "$GAFFER_DATA"/*) fail "S8: the key is inside GAFFER_DATA" ;; *) ok "S8: the key is outside GAFFER_DATA ($HOME/.config/gaffer/keys)" ;; esac
 [ "$(wgd gate-key ensure | jf 'String(d.created)')" = false ] && ok "S8: a second ensure keeps it" || fail "S8: second ensure"
+
+echo "== S9: an approval through a principal the factory no longer signs =="
+world s9
+PTOK="$(wgd principal create alice 2>/dev/null | jf 'd.token')"
+GAFFER_PRINCIPAL_TOKEN="$PTOK" wgd review approve 1 --commit "repo=$HEAD" >/dev/null 2>&1 \
+  && [ "$(status)" = ready_for_merge ] && ok "S9: alice approves through her principal" || fail "S9: approve status=$(status)"
+sqlrun 'd.prepare("DELETE FROM row_seals").run();'   # her row is now unsigned (restored, forged)
+MT; rc=$?
+refused_and_held "S9 unsigned principal" unsigned_approval "$rc" "$D/mt.log"
+grep -q "principal alice is not signed by this factory" "$D/mt.log" && ok "S9: the refusal names the principal" || fail "S9: $(tail -2 "$D/mt.log")"
+CODE="$(wgd principal unsigned 2>/dev/null | jf 'd.unsigned.find((u) => u.name === "alice").review_code')"
+wgd principal resign alice --confirm "$CODE" >/dev/null 2>&1 && ok "S9: the operator reviews and re-signs alice" || fail "S9: resign (code=$CODE)"
+wgd ticket reopen-for-review 1 --as admin --reason unsigned_approval --resolution re-approve >/dev/null 2>&1
+GAFFER_PRINCIPAL_TOKEN="$PTOK" wgd review approve 1 --commit "repo=$HEAD" >/dev/null 2>&1
+MT; rc=$?
+[ "$rc" -eq 0 ] && [ "$(status)" = done ] && ok "S9: re-signed and re-approved, it lands" || fail "S9: rc=$rc status=$(status) $(tail -3 "$D/mt.log" | tr '\n' '|')"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "signed-acts: ALL $PASS checks passed"; exit 0

@@ -85,7 +85,7 @@ J='{"ticketsByStatus":{"in_review":0},"acceptance":{"unaccepted":2,"testing":1,"
 [ "$(printf '{"ticketsByStatus":{}}' | node "$RUNNER_DIR/lib/json-tool.mjs" status-count acceptance_unaccepted)" = "0" ] && ok "absent summary → 0 (older dispatch)" || fail "absent summary not 0"
 
 echo "== 5: WIRING — tick.sh reads ticket.acceptance and prepends the prompt block =="
-grep -q "IS_ACCEPTANCE=\"\$(echo \"\$SHOW\" | jget '\[1, true\].includes(d.ticket.acceptance)" "$RUNNER_DIR/lib/tick-claim.sh" && ok "tick.sh derives IS_ACCEPTANCE from the ticket" || fail "IS_ACCEPTANCE not derived"
+grep -qF "IS_ACCEPTANCE '[1, true].includes(d.ticket.acceptance) ? 1 : 0' 0" "$RUNNER_DIR/lib/tick-claim.sh" && ok "tick.sh derives IS_ACCEPTANCE from the ticket" || fail "IS_ACCEPTANCE not derived"
 grep -q 'PRODUCT_CONTEXT_BLOCK="$(gaffer_acceptance_prompt_block)' "$RUNNER_DIR/lib/tick-launch.sh" && ok "the acceptance block is prepended to the product-context slot" || fail "acceptance block not wired"
 # shellcheck source=../lib/acceptance.sh
 source "$RUNNER_DIR/lib/acceptance.sh"

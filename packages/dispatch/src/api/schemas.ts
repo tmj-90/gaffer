@@ -1000,13 +1000,36 @@ export type RejectLoreBody = z.infer<typeof rejectLoreBody>;
 export const settingsBody = z.object({
   settings: z
     .record(z.string(), z.string().max(4_000))
-    // Bound the key count so a single POST can't hand the write loop a
-    // huge-cardinality object (unknown keys are dropped later, but the loop
-    // still iterates every key on this single-threaded process).
+    // Bound the key count so a single write can't hand the loop a huge-cardinality
+    // object. Only the fourteen settings are accepted; any other key refuses the write.
     .refine((r) => Object.keys(r).length <= 100, { error: "Too many settings keys." })
     .default({}),
+  // A change to GAFFER_NOTIFY that keeps the saved URLs on the server (the page never
+  // holds them): undefined keeps a channel, null or "" removes it, a string replaces it.
+  notify: z
+    .object({
+      desktop: z.boolean().optional(),
+      webhook: z.string().max(4_000).nullable().optional(),
+      slack: z.string().max(4_000).nullable().optional(),
+    })
+    .optional(),
 });
 export type SettingsBody = z.infer<typeof settingsBody>;
+
+/**
+ * Body for POST /api/settings/remove-old-keys: the removal act. `drop` and `rewrite`
+ * repeat the keys the page showed (GET /api/settings `cleanup`) and `digest` the file it
+ * was made from, so a file that changed since is refused (409) and nothing the person did
+ * not see is removed or rewritten.
+ */
+export const removeOldKeysBody = z.object({
+  drop: z.array(z.string().max(200)).max(500),
+  rewrite: z.array(z.string().max(200)).max(50),
+  // The plan's digest (GET /api/settings `cleanup.digest`): a file that changed in any
+  // way since the page showed the plan, a value included, is refused (409).
+  digest: z.string().max(128),
+});
+export type RemoveOldKeysBody = z.infer<typeof removeOldKeysBody>;
 
 // --- Plan sessions (H9 — durable async plan-build chat) --------------------
 
@@ -1135,6 +1158,50 @@ export const autonomyPolicyBody = z.object({
 });
 export type AutonomyPolicyBody = z.infer<typeof autonomyPolicyBody>;
 
+/**
+ * Body for POST /api/autonomy/lift: give autonomy back for one (repo x risk x gate) after
+ * a step-down. A person's act only (the shared operator token, or an active human or admin
+ * principal with full capability). `how`: `reenable` once the evidence since the
+ * step-down clears the bar again, or `override` with a `reason`.
+ */
+export const autonomyLiftBody = z.object({
+  repo_id: z.string().min(1).max(200),
+  risk_level: z.enum(RISK_LEVELS),
+  gate: z.enum(["approve", "merge"]),
+  how: z.enum(["reenable", "override"]),
+  reason: z.string().max(300).optional(),
+});
+export type AutonomyLiftBody = z.infer<typeof autonomyLiftBody>;
+
+/**
+ * Body for POST /api/autonomy/signatures/resign: SEALED AUTONOMY, a person re-signs policy
+ * rows the factory does not honour. `ids` (exactly those rows) or `all` (the reviewed list);
+ * `confirm` is the code GET /api/autonomy/signatures printed for what the person reviewed.
+ */
+export const resignAutonomyPoliciesBody = z
+  .object({
+    ids: z.array(z.string().min(1).max(200)).max(500).optional(),
+    all: z.boolean().optional(),
+    confirm: z.string().max(64),
+  })
+  .strict();
+
+/**
+ * Body for POST /api/autonomy/risk-signatures/resign: a person re-signs the risk of open
+ * tickets the factory does not honour. `tickets` (ids or numbers) or `all`; `confirm` is the
+ * code GET /api/autonomy/risk-signatures printed.
+ */
+export const resignTicketRisksBody = z
+  .object({
+    tickets: z
+      .array(z.union([z.string().min(1).max(200), z.number().int().positive()]))
+      .max(5000)
+      .optional(),
+    all: z.boolean().optional(),
+    confirm: z.string().max(64),
+  })
+  .strict();
+
 // --- Per-principal API credentials -------------------------------------------
 
 /**
@@ -1164,6 +1231,24 @@ export const createPrincipalBody = z.object({
     .optional(),
 });
 export type CreatePrincipalBody = z.infer<typeof createPrincipalBody>;
+
+/**
+ * Body for POST /api/principal-signatures/resign: SEALED PRINCIPALS, a person re-signs
+ * principals the factory does not honour. `names` (ids or names) or `all` (the unsigned
+ * principals whose creation is on record, of the list the person reviewed), not both.
+ * `confirm` is what the person reviewed, from GET /api/principal-signatures: the list's
+ * `fingerprint`, or for one named row its `review_code`.
+ */
+export const resignPrincipalsBody = z
+  .object({
+    names: z.array(z.string().trim().min(1).max(200)).max(200).optional(),
+    all: z.boolean().optional(),
+    confirm: z.string().trim().max(64).optional(),
+  })
+  .refine((b) => (b.all === true) !== (b.names?.length ?? 0) > 0, {
+    message: "pass names or all, exactly one",
+  });
+export type ResignPrincipalsBody = z.infer<typeof resignPrincipalsBody>;
 
 // --- Squad (club identity + agent display names; presentation only) --------
 

@@ -19,6 +19,7 @@ import {
   MCP_RUNTIME_FILE,
   PROC_ENVIRON,
   SECRET_PATH,
+  TICK_SERVERS_FRAGMENT,
   TOKEN_SOURCE_EXT_GUARD,
   canonicalize,
   expandTildeWord,
@@ -68,7 +69,7 @@ import { effectiveVerbAfter, extractShellDashCBodies, resolveEffectiveTokens } f
 // (`npx prettier --write src/design-tokens.json`) is not flagged; the exact
 // `dashboard-token` alternative is guard-free and always fires.
 const SECRET_PATH_FRAGMENT = new RegExp(
-  String.raw`(${ENV_FILE_FRAGMENT}|${FACTORY_KEYS_FRAGMENT}|[\w./-]*\.pem\b|[\w./-]*\.key\b|[\w./-]*\.p12\b|id_rsa\b|id_ed25519\b|id_[a-z0-9]+\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|\.gnupg\/|${CLI_CREDENTIAL_FRAGMENT}|${CRED_NAME_FRAGMENT}|${MCP_RUNTIME_FILE}\b|${PROC_ENVIRON}\b|dashboard-token\b|[\w./-]*[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}\b)`,
+  String.raw`(${ENV_FILE_FRAGMENT}|${FACTORY_KEYS_FRAGMENT}|${TICK_SERVERS_FRAGMENT}|[\w./-]*\.pem\b|[\w./-]*\.key\b|[\w./-]*\.p12\b|id_rsa\b|id_ed25519\b|id_[a-z0-9]+\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|\.gnupg\/|${CLI_CREDENTIAL_FRAGMENT}|${CRED_NAME_FRAGMENT}|${MCP_RUNTIME_FILE}\b|${PROC_ENVIRON}\b|dashboard-token\b|[\w./-]*[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}\b)`,
   "i",
 );
 
@@ -124,7 +125,7 @@ const FILE_READ_PRIMITIVE =
 // SOURCE file is legitimate; `f=.gaffer/dashboard-token` and extensionless
 // token files stay denied.
 const SECRET_ASSIGNMENT = new RegExp(
-  String.raw`\b[\w]+=["']?[\w./~$-]*(${FACTORY_KEYS_FRAGMENT}|${ENV_FILE_FRAGMENT}|\.pem\b|\.key\b|\.p12\b|id_rsa\b|id_ed25519\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|${CLI_CREDENTIAL_FRAGMENT}|${CRED_NAME_FRAGMENT}|${MCP_RUNTIME_FILE}\b|${PROC_ENVIRON}\b|dashboard-token\b|[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}\b)`,
+  String.raw`\b[\w]+=["']?[\w./~$-]*(${FACTORY_KEYS_FRAGMENT}|${TICK_SERVERS_FRAGMENT}|${ENV_FILE_FRAGMENT}|\.pem\b|\.key\b|\.p12\b|id_rsa\b|id_ed25519\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|${CLI_CREDENTIAL_FRAGMENT}|${CRED_NAME_FRAGMENT}|${MCP_RUNTIME_FILE}\b|${PROC_ENVIRON}\b|dashboard-token\b|[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}\b)`,
   "i",
 );
 
@@ -210,6 +211,20 @@ const GIT_ADD_ALL = /^git\s+add\s+(?:-A\b|--all\b|\.(?:\s|$))/i;
 const GIT_COMMIT = /^git\s+commit\b/i;
 
 /**
+ * Every git the hook spawns runs with the hardening lib/hook/git.mjs gitLookup passes: no
+ * fsmonitor and no hooks. A repo's own config (`core.fsmonitor` names a program git runs
+ * on `status`) must not make the safety hook execute repository code.
+ */
+const HOOK_GIT_HARDENING = ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null"];
+function hookGit(dir, args) {
+  return spawnSync("git", ["-C", dir, ...HOOK_GIT_HARDENING, ...args], {
+    encoding: "utf8",
+    timeout: 4000,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+}
+
+/**
  * Best-effort repo inspection: does the repo at `cwd` currently have an
  * untracked/modified secret file (staged is included)? Used to decide `git
  * add .`/`-A`. Returns true (deny) if so. On any failure (git missing, not a
@@ -217,10 +232,7 @@ const GIT_COMMIT = /^git\s+commit\b/i;
  */
 function repoHasUnstagedOrModifiedSecret(cwd) {
   try {
-    const res = spawnSync("git", ["-C", cwd, "status", "--porcelain", "-uall"], {
-      encoding: "utf8",
-      timeout: 4000,
-    });
+    const res = hookGit(cwd, ["status", "--porcelain", "-uall"]);
     if (res.status !== 0 || typeof res.stdout !== "string") return false;
     return (
       res.stdout
@@ -245,10 +257,7 @@ function repoHasUnstagedOrModifiedSecret(cwd) {
  */
 function repoHasStagedSecret(cwd) {
   try {
-    const res = spawnSync("git", ["-C", cwd, "diff", "--cached", "--name-only"], {
-      encoding: "utf8",
-      timeout: 4000,
-    });
+    const res = hookGit(cwd, ["diff", "--cached", "--name-only"]);
     if (res.status !== 0 || typeof res.stdout !== "string") return false;
     return (
       res.stdout
@@ -315,10 +324,7 @@ function gitSecretReason(segment, cwd) {
  * fallback (deny when we cannot prove the repo is secret-free). */
 function gitInspectionAvailable(cwd) {
   try {
-    const res = spawnSync("git", ["-C", cwd, "rev-parse", "--is-inside-work-tree"], {
-      encoding: "utf8",
-      timeout: 4000,
-    });
+    const res = hookGit(cwd, ["rev-parse", "--is-inside-work-tree"]);
     return res.status === 0 && String(res.stdout).trim() === "true";
   } catch {
     return false;
@@ -362,11 +368,7 @@ function isTrackedEnvTemplate(abs) {
   if (!ENV_TEMPLATE.test(abs)) return false;
   try {
     if (lstatSync(abs).isSymbolicLink()) return false;
-    const res = spawnSync(
-      "git",
-      ["-C", dirname(abs), "ls-files", "--error-unmatch", "--", basename(abs)],
-      { encoding: "utf8", timeout: 4000 },
-    );
+    const res = hookGit(dirname(abs), ["ls-files", "--error-unmatch", "--", basename(abs)]);
     return res.status === 0;
   } catch {
     return false;
@@ -666,9 +668,8 @@ const XARGS_READ_VERBS = new Set([...READ_TOOL_VERBS]);
  *
  * Conservative on purpose: we only return operands that look like real path
  * literals (no globs, no `$`/`` ` `` interpolation, no flags, no fd/dev nodes).
- * Dynamic reads are intentionally NOT surfaced here — the secret-path guard
- * already covers the high-value case and fail-closing reads would be too
- * aggressive (the honest residual: a runtime-built read path can still slip).
+ * Globs, braces and variables are expanded and judged by lib/hook/read-operands.mjs,
+ * which also refuses an operand it cannot expand.
  */
 function extractBashReadTargets(cmd) {
   const targets = [];
@@ -734,8 +735,10 @@ function extractBashReadTargets(cmd) {
         continue;
       }
       if (!raw) continue;
-      // Skip non-path-literals: globs, interpolation, fds, sed scripts
-      // like `1,5p` / `s/a/b/`, and bare option-ish tokens.
+      // Skip non-path-literals here: globs, interpolation, fds, sed scripts
+      // like `1,5p` / `s/a/b/`, and bare option-ish tokens. A glob or a variable is NOT
+      // left unchecked: lib/hook/read-operands.mjs expands every read operand as the
+      // shell would and judges each match (or refuses what it cannot expand).
       if (/[*?$`]|\$\{/.test(raw)) continue;
       if (/^[&\d]+$/.test(raw)) continue; // fd redirections, not paths
       if (!everyOperand && !raw.includes("/") && !raw.includes(".")) continue; // not path-shaped
@@ -759,10 +762,14 @@ function extractBashReadTargets(cmd) {
 }
 
 export {
+  COPY_READ_VERBS,
+  READ_TOOL_VERBS,
+  SEARCH_VERBS,
   SECRET_GLOB,
   extractBashReadTargets,
   isTrackedEnvTemplate,
   maskTrackedEnvTemplates,
+  searchFileOperands,
   secretBoundaryReason,
   stripSearchPatterns,
 };

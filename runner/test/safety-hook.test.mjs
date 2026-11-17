@@ -954,6 +954,50 @@ rootCase(
   "allow",
 );
 
+// --- Write verbs inside compound commands --------------------------------------
+// The segment extractor split only on `;`, `&&`, `|` and newlines, so a write verb
+// behind `(`, `{`, a keyword, a case pattern, a substitution, eval, trap or a pipe into
+// sh was never judged (a second review of 63C: `(touch /etc/x)` was allowed). The
+// expansion walk (lib/hook/read-operands.mjs expandedWriteTargets) now names them.
+for (const [label, command] of [
+  ["subshell", `(touch ${OUTSIDE}/a)`],
+  ["group", `{ chmod +x ${OUTSIDE}/a; }`],
+  ["if body", `if true; then mkdir ${OUTSIDE}/d; fi`],
+  ["case branch", `case a in a) cp f ${OUTSIDE}/a;; esac`],
+  ["exec", `exec cp f ${OUTSIDE}/a`],
+  ["for over a literal", `for f in ${OUTSIDE}/a; do rm "$f"; done`],
+  ["command substitution", `echo $(touch ${OUTSIDE}/a)`],
+  ["backticks", `echo \`rm ${OUTSIDE}/a\``],
+  ["assignment substitution", `x=$(rm ${OUTSIDE}/a)`],
+  ["eval", `eval touch ${OUTSIDE}/a`],
+  ["trap", `trap 'cp f ${OUTSIDE}/a' EXIT`],
+  ["echo piped into sh", `echo 'touch ${OUTSIDE}/a' | sh`],
+  ["read loop", `while read f; do rm "$f"; done < list`],
+]) {
+  rootCase(
+    `write verb in a ${label} outside the roots → DENY`,
+    bash(command),
+    ROOT_ENV,
+    WRITE_ROOT,
+    "deny",
+  );
+}
+for (const [label, command] of [
+  ["subshell", "(touch out.txt)"],
+  ["if body", "if true; then mkdir -p build; fi"],
+  ["for over a glob", 'for f in *.txt; do touch "$f"; done'],
+  ["trap cleanup", "trap 'rm -f build/tmp.txt' EXIT"],
+  ["case branch", "case a in a) cp f build/f;; esac"],
+]) {
+  rootCase(
+    `write verb in a ${label} inside the write root → ALLOW`,
+    bash(command),
+    ROOT_ENV,
+    WRITE_ROOT,
+    "allow",
+  );
+}
+
 // --- Multiple write-roots (colon- and newline-separated) ---------------------
 rootCase(
   "second write-root in colon-separated list → ALLOW",

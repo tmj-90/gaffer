@@ -225,9 +225,11 @@ gaffer_tick_claim_candidate() {
       break
     fi
     _cshow="$(wg ticket show "$_cand" 2>/dev/null)"
-    _crepo="$(echo "$_cshow" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || (d.repositories||[])[0] || {}).local_path) || ""' 2>/dev/null)"
-    _cdef="$(echo "$_cshow" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || (d.repositories||[])[0] || {}).default_branch) || "main"' 2>/dev/null)"
-    _cname="$(echo "$_cshow" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || (d.repositories||[])[0] || {}).name) || ""' 2>/dev/null)"
+    # The primary repo's path, default branch and name: one read of the view.
+    gaffer_json_vars "$_cshow" \
+      _crepo '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || (d.repositories||[])[0] || {}).local_path) || ""' '' \
+      _cdef '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || (d.repositories||[])[0] || {}).default_branch) || "main"' '' \
+      _cname '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || (d.repositories||[])[0] || {}).name) || ""' ''
     if [ -n "$_crepo" ] && git -C "$_crepo" rev-parse --git-dir >/dev/null 2>&1; then
       # Sweep genuinely-abandoned branches (POSITIVELY cancelled tickets with no
       # delivery record) first so they don't count against the cap. Parked
@@ -235,7 +237,11 @@ gaffer_tick_claim_candidate() {
       # instead excluded from the pressure count itself, and the candidate's own
       # preserved branch is bypassed (it gets reused, not added) — so parked work
       # never starves the repo. Then measure pressure.
-      gaffer_sweep_abandoned_branches "$_crepo" "${_cdef:-main}" >/dev/null 2>&1 || true
+      # Every archived branch is logged with the ref that keeps its commits.
+      while IFS=$'\t' read -r _swb _swref; do
+        [ -n "$_swb" ] || continue
+        log "SWEEP: archived abandoned branch $_swb of a cancelled ticket in '${_cname:-$_crepo}' to $_swref (restore: git branch $_swb $_swref)"
+      done < <(gaffer_sweep_abandoned_branches "$_crepo" "${_cdef:-main}" 2>/dev/null || true)
       read -r _pb _pr _pc <<< "$(gaffer_repo_pressure "$_crepo" "${_cdef:-main}" "$_cname" "$_cand")"
       if gaffer_repo_in_backpressure "${_pb:-0}" "${_pr:-0}" "${_pc:-0}"; then
         _gaffer_locked .bp.lock _gaffer_bp_record "$BP_FILE" "${_cname:-$_crepo}" "$_pb/$_pr/$_pc" "$GAFFER_BACKPRESSURE_REASON"
@@ -269,8 +275,9 @@ gaffer_tick_claim_candidate() {
       declare -F gaffer_note_own_claim >/dev/null 2>&1 && gaffer_note_own_claim "$_cand"
     fi
     NUM="$_cand"; SHOW="$_cshow"; REPO_PATH="$_crepo"
-    STACK="$(echo "$_cshow" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || (d.repositories||[])[0] || {}).stack) || ""' 2>/dev/null)"
-    TITLE="$(echo "$_cshow" | jget 'd.ticket.title' 2>/dev/null)"
+    gaffer_json_vars "$_cshow" \
+      STACK '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || (d.repositories||[])[0] || {}).stack) || ""' '' \
+      TITLE 'd.ticket.title' ''
     break
   done <<< "$CANDIDATES"
   if [ -z "$NUM" ]; then
@@ -315,10 +322,12 @@ gaffer_tick_classify_ticket() {
   # bootstrap unblocks its dependent feature tickets. The oversized minimalism
   # HARD-fail is EXEMPTED for bootstrap (a fresh scaffold is legitimately larger)
   # — the note is still required and recorded, oversized is flagged not failed.
-  IS_BOOTSTRAP="$(echo "$SHOW" | jget '[1, true].includes(d.ticket.bootstrap) ? 1 : 0' 2>/dev/null || echo 0)"
-  # ACCEPTANCE GATE: the epic's build-level acceptance ticket (lib/acceptance.sh) — a
-  # normal delivery on the integrated default branch, with an acceptance prompt block.
-  IS_ACCEPTANCE="$(echo "$SHOW" | jget '[1, true].includes(d.ticket.acceptance) ? 1 : 0' 2>/dev/null || echo 0)"
+  # ACCEPTANCE GATE (IS_ACCEPTANCE): the epic's build-level acceptance ticket
+  # (lib/acceptance.sh): a normal delivery on the integrated default branch, with an
+  # acceptance prompt block. Both flags come from one read of the view.
+  gaffer_json_vars "$SHOW" \
+    IS_BOOTSTRAP '[1, true].includes(d.ticket.bootstrap) ? 1 : 0' 0 \
+    IS_ACCEPTANCE '[1, true].includes(d.ticket.acceptance) ? 1 : 0' 0
   # A resume always re-enters the worktree delivery flow (pause-on-cap only fires in
   # the normal delivery path, never bootstrap), so never route a resume through the
   # create-a-repo bootstrap branch.
@@ -429,9 +438,10 @@ gaffer_tick_resolve_scope() {
   if [ -z "$(printf '%s' "$WRITE_ROOTS" | tr -d '[:space:]')" ]; then
     WRITE_ROOTS="$REPO_PATH"
     READ_ROOTS=""
-    DEFAULT_BRANCH_FALLBACK="$(echo "$SHOW" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || (d.repositories||[])[0] || {}).default_branch) || "main"' 2>/dev/null || echo main)"
-    REPO_NAME_FALLBACK="$(echo "$SHOW" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || (d.repositories||[])[0] || {}).name) || ""' 2>/dev/null || echo '')"
-    REPO_ID_FALLBACK="$(echo "$SHOW" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || (d.repositories||[])[0] || {}).id) || ""' 2>/dev/null || echo '')"
+    gaffer_json_vars "$SHOW" \
+      DEFAULT_BRANCH_FALLBACK '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || (d.repositories||[])[0] || {}).default_branch) || "main"' main \
+      REPO_NAME_FALLBACK '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || (d.repositories||[])[0] || {}).name) || ""' '' \
+      REPO_ID_FALLBACK '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || (d.repositories||[])[0] || {}).id) || ""' ''
     WRITE_ROWS="$(printf '%s\t%s\t%s\t%s' "$REPO_ID_FALLBACK" "$REPO_NAME_FALLBACK" "$REPO_PATH" "$DEFAULT_BRANCH_FALLBACK")"
     MULTI_REPO=0
   else
@@ -461,13 +471,16 @@ gaffer_tick_resolve_scope() {
   # off-domain pack the ticket plainly calls for (a Terraform module, an SEO audit, a
   # runbook) is mounted too — those packs were otherwise unreachable from any runner
   # path. An argv, never a shell string: the untrusted text cannot inject flags.
-  _SKILL_TEXT="$(printf '%s\n%s' "${TITLE:-}" "$(echo "$SHOW" | jget '(d.ticket.description || "").slice(0, 600)' 2>/dev/null || true)")"
+  gaffer_json_vars "$SHOW" \
+    _SKILL_DESC_HEAD '(d.ticket.description || "").slice(0, 600)' '' \
+    _SKILL_DESC '(d.ticket.description || "")' ''
+  _SKILL_TEXT="$(printf '%s\n%s' "${TITLE:-}" "$_SKILL_DESC_HEAD")"
   # PER-PATH ROUTING: file paths the ticket NAMES narrow the stack to their ecosystems on a
   # mixed repo ("… in api/Shop.Api/Controllers/TasksController.cs" → the C# pack, not the
   # React bar). No path named → the repo's full stack. The full description is scanned
   # (paths are often below the 600-char head the text relevance uses).
   _SKILL_PATHS="$(mktemp "${TMPDIR:-/tmp}/skill-paths.XXXXXX")"
-  printf '%s\n%s' "${TITLE:-}" "$(echo "$SHOW" | jget '(d.ticket.description || "")' 2>/dev/null || true)" \
+  printf '%s\n%s' "${TITLE:-}" "$_SKILL_DESC" \
     | grep -oE '[A-Za-z0-9_][A-Za-z0-9_./-]*\.(cs|csproj|sln|razor|cshtml|ts|tsx|js|jsx|mjs|cjs|vue|svelte|py|go|rs|java|kt|kts|swift|rb|sh|bash|html|css|scss)\b' \
     > "$_SKILL_PATHS" 2>/dev/null || : > "$_SKILL_PATHS"
   SKILLS="$(node "$HERE/bin/select-skills.mjs" --stack "$SKILL_STACKS" ${SKILL_AREA:+--area "$SKILL_AREA"} --text "$_SKILL_TEXT" --paths-file "$_SKILL_PATHS" --skills-dir "$SKILLS_DIR" 2>/dev/null || true)"
@@ -531,9 +544,9 @@ gaffer_tick_plan_worktrees() {
       if gaffer_is_self_target "$__self_c"; then SELF_HIT="$__self_c"; break; fi
     done <<< "$__self_cands"
     if [ -n "$SELF_HIT" ]; then
-      log "SELF-OP: refusing to deliver #$NUM — target '$SELF_HIT' is (or is inside) a Gaffer component; the factory must not edit its own source. Set GAFFER_ALLOW_SELF_DELIVERY=1 to override (first-party dogfooding only)."
+      log "SELF-OP: refusing to deliver #$NUM: target '$SELF_HIT' is (or is inside) a Gaffer component; the factory must not edit its own source. Export GAFFER_ALLOW_SELF_DELIVERY=1 before starting the runner to override (first-party dogfooding only; it is not a setting)."
       wg attach-evidence "$NUM" --type manual_note \
-        --summary "SELF-OP BAN: refused delivery — target '$SELF_HIT' is a Gaffer component (factory's own source). Override with GAFFER_ALLOW_SELF_DELIVERY=1." >/dev/null 2>&1 || true
+        --summary "SELF-OP BAN: refused delivery — target '$SELF_HIT' is a Gaffer component (factory's own source). Override with GAFFER_ALLOW_SELF_DELIVERY=1 in the environment (no setting turns it on)." >/dev/null 2>&1 || true
       # Set aside for a human. RUNNER-OWNED-BOOKKEEPING: the runner holds the claim
       # now, so release it first (claimed → ready), THEN un-ready it (ready -> draft)
       # so the candidate loop never re-selects it — the "set aside, don't re-claim

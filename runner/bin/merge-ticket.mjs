@@ -1399,6 +1399,9 @@ function replayOnMergeCandidate({
       env: {
         ...env,
         ...inv.env,
+        // The gate starts from env -i (lib/dod.sh gaffer_dod_gate_env): the invocation's own
+        // names are the ones it passes on (never a credential-shaped one).
+        _GAFFER_DOD_INVOCATION_ENV: Object.keys(inv.env || {}).join(" "),
         GAFFER_DOD: "1",
         GAFFER_DOD_TESTS: "1",
         GAFFER_DOD_TYPECHECK: "0",
@@ -2967,7 +2970,7 @@ function landSecondaryPr({
       kind: "held",
       reason:
         `it has PR ${r.prUrl} but '${ghBin}' is not available (GAFFER_GH_BIN) — held: merge the PR by hand, ` +
-        `or set GAFFER_PR_LOCAL_FALLBACK=1 to land locally instead`,
+        `or export GAFFER_PR_LOCAL_FALLBACK=1 to land locally instead`,
     };
   }
   const remote = String(process.env.GAFFER_PR_REMOTE || "origin");
@@ -3929,7 +3932,7 @@ function main() {
         // sits open and the remote default branch never gets the change. Hold.
         fail(
           `PR merge for #${resolved.number} failed — ${pr.reason}; ticket HELD in ready_for_merge for a human ` +
-            `(merge ${resolved.prUrl} by hand, or set GAFFER_PR_LOCAL_FALLBACK=1 to land locally instead)`,
+            `(merge ${resolved.prUrl} by hand, or export GAFFER_PR_LOCAL_FALLBACK=1 to land locally instead)`,
         );
         return;
       }
@@ -4102,17 +4105,23 @@ function main() {
       return;
     }
     // Flip the ticket ready_for_merge → done now that the branch is actually merged.
-    // Non-fatal: the merge already landed; a failure just leaves it in ready_for_merge
-    // (a human can run `wg ticket mark-merged <n> --as system`).
+    // A failure is not a merge to report: the ticket is still ready_for_merge and its
+    // dependents stay blocked. Exit 4 (held) BEFORE the digest / feature step (which
+    // would read the feature as shipped) and the branch deletion. The landing is on
+    // record, so the next merge run skips the git work and marks it done.
     const mm = runDispatch(["ticket", "mark-merged", String(resolved.number), "--as", "system"]);
     if (mm.error || mm.status !== 0) {
-      log(
-        `WARNING: #${resolved.number} merged but mark-merged failed (exit ${mm.status ?? "spawn-error"}` +
-          `${mm.stderr ? ": " + mm.stderr.trim().slice(0, 120) : ""}) — flip to done manually`,
+      fail(
+        `LANDED but NOT marked done: #${resolved.number} is on ${repo.name}'s ${repo.defaultBranch} but ` +
+          `mark-merged failed (exit ${mm.status ?? "spawn-error"}` +
+          `${mm.stderr ? ": " + mm.stderr.trim().slice(0, 200) : ""}); the ticket stays ready_for_merge, ` +
+          `the digest step and the branch deletion did not run, and the next merge run marks it done ` +
+          `from the recorded landing`,
+        4,
       );
-    } else {
-      log(`marked #${resolved.number} merged → done`);
+      return;
     }
+    log(`marked #${resolved.number} merged → done`);
     // POST-REVIEW digest refresh + feature → shipped — deterministic, NO agent.
     // The delivery agent PREPARED the delta as recorded evidence; we APPLY it here
     // (or fall back to a minimal stamp). Best-effort + fully swallowed: this can

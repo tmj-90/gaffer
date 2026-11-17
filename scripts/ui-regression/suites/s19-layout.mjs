@@ -23,20 +23,73 @@ const VIEWS = (w, t) =>
     ["overview", "overview"],
     ["work", "work"],
     ["work?mode=list", "work list"],
+    ["review", "review"],
     [`review/${w.review.id}`, "review/:id"],
     [`ticket/${w.held.id}`, "ticket"],
     ["epics", "epics"],
     w.epicId ? [`epics/${w.epicId}`, "epics/:id"] : null,
     ["create", "create"],
     ["factory", "map"],
+    w.node ? [`node/${w.node.id}`, "node/:id"] : null,
     ["specs", "specs"],
+    w.spec ? [`specs/${w.spec.id}`, "specs/:id"] : null,
     ["memory", "memory"],
     ["squad", "squad"],
     ["floor", "floor"],
     ["health", "health"],
     ["settings", "settings"],
     [`repo/${encodeURIComponent(t.repo.id)}`, "repo/:id"],
+    ["hidden", "hidden"],
   ].filter(Boolean);
+
+// The block budget (audit A-02, A-03): a view leads with at most two block heads
+// (claret, ink, sky or red panel heads, and the Tactics board's dark head), and a
+// claret head, "needs you", sits only on a section with something to act on. Every
+// view is held to it (Health, Review and Ticket too, since their packages merged).
+const BLOCK_BUDGET_SKIP = new Set([]);
+function blockAudit() {
+  const heads = [...document.querySelectorAll("#app .panel-head.block, #app .tactics-head")].filter(
+    (h) => h.getBoundingClientRect().width > 0,
+  );
+  const said = (h) => (h.textContent || "").replace(/\s+/g, " ").trim().slice(0, 32);
+  const idleClaret = heads
+    .filter((h) => h.classList.contains("block-claret"))
+    .filter((h) => {
+      const sec = h.closest("section, article, .card") || h.parentElement;
+      return !sec.querySelector(
+        "button:not([disabled]), a.btn, input:not([type=hidden]):not([disabled]), select, textarea",
+      );
+    })
+    .map(said);
+  return { heads: heads.map(said), idleClaret };
+}
+
+// A head, a table or an empty line that sits straight in a card keeps the card's inset: its first
+// text starts at least 8 px inside the card's border (a programme card has no padding
+// of its own, so a plain level-2 head once ran flush against the frame).
+function insetAudit() {
+  const out = [];
+  for (const c of document.querySelectorAll("#app .card")) {
+    const cb = c.getBoundingClientRect();
+    if (!cb.width) continue;
+    const bl = parseFloat(getComputedStyle(c).borderLeftWidth) || 0;
+    for (const k of c.querySelectorAll(
+      ":scope > .panel-head, :scope > .dt-wrap, :scope > .empty-inline, :scope > .empty-state",
+    )) {
+      if (!k.getBoundingClientRect().width) continue;
+      const walk = document.createTreeWalker(k, 4 /* NodeFilter.SHOW_TEXT */, {
+        acceptNode: (n) => (n.textContent.trim() ? 1 : 3),
+      });
+      const tx = walk.nextNode();
+      if (!tx) continue;
+      const rg = document.createRange();
+      rg.selectNodeContents(tx);
+      const inset = Math.round(rg.getBoundingClientRect().left - cb.left - bl);
+      if (inset < 8) out.push(`"${tx.textContent.trim().slice(0, 24)}" ${inset}px`);
+    }
+  }
+  return out;
+}
 
 /** Relative luminance contrast of two rgb() strings (alpha ignored). */
 function contrast(a, b) {
@@ -61,6 +114,9 @@ export default async function s19(t, L) {
   );
 
   // ── the sweep: four widths, every view ────────────────────────────────────
+  const budget = [];
+  let budgetViews = 0;
+  const flush = [];
   for (const [vw, vh] of [
     [375, 812],
     [768, 1024],
@@ -80,6 +136,18 @@ export default async function s19(t, L) {
         .catch(() => null);
       await L.sleep(900);
       problems.push(...(await L.layoutProblems(pg, label)));
+      if (vw === 375 || vw === 1280) {
+        const f = await pg.evaluate(insetAudit);
+        if (f.length) flush.push(`${label}@${vw}: ${f.join(", ")}`);
+      }
+      if (vw === 1280 && !BLOCK_BUDGET_SKIP.has(label)) {
+        const b = await pg.evaluate(blockAudit);
+        if (b.heads.length > 2)
+          budget.push(`${label}: ${b.heads.length} block heads (${b.heads.join(" | ")})`);
+        if (b.idleClaret.length)
+          budget.push(`${label}: claret with nothing to act on (${b.idleClaret.join(" | ")})`);
+        budgetViews += 1;
+      }
       const m = await pg.evaluate((heldId) => {
         const over = [...document.querySelectorAll(".board-card")]
           .filter((c) => c.getBoundingClientRect().width > 0 && c.scrollWidth > c.clientWidth + 1)
@@ -129,6 +197,105 @@ export default async function s19(t, L) {
           `layout @${vw}px: ${VIEWS(w, t).length} views fit with a live claim, a 39-char agent name and a 200-char title (no sideways scroll, cards hold their content, the title clamps to 3 lines)`,
         );
     if (vw === 375) await L.shot(pg, "s19-work-375");
+    await pg.context().close();
+  }
+
+  budget.length
+    ? t.bad(`block budget @1280: ${budget.join("; ").slice(0, 1200)}`)
+    : t.ok(
+        `block budget @1280: ${budgetViews} views lead with at most two block heads, and every claret head sits on a section with an action`,
+      );
+
+  flush.length
+    ? t.bad(
+        `card inset @375 and @1280: heads or tables flush with the frame: ${flush.join("; ").slice(0, 1200)}`,
+      )
+    : t.ok(
+        "card inset @375 and @1280: every head and table in a card starts 8 px or more inside its frame",
+      );
+
+  // ── Settings at 320 px with the dial raised (P1 review follow-up) ─────────
+  {
+    const pg = await L.openPage(t.browser, { width: 320, height: 700 });
+    await pg.goto(`${L.BASE}/#/settings`, { waitUntil: "load" });
+    const dial = await pg
+      .waitForSelector('.dial-input[value="autonomous"]', { timeout: 15000, state: "attached" })
+      .catch(() => null);
+    await pg.evaluate(() => {
+      const up = document.querySelector('.dial-input[value="autonomous"]');
+      if (up) {
+        up.checked = true;
+        up.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    });
+    await pg.waitForSelector(".gng", { timeout: 5000 }).catch(() => null);
+    const sw = await pg.evaluate(() => document.documentElement.scrollWidth);
+    t.check(
+      Boolean(dial) && sw <= 320,
+      "Settings at 320 px with the dial raised fits the screen (no sideways scroll)",
+      `Settings @320 with the dial raised: dial=${Boolean(dial)} scrollWidth=${sw}`,
+    );
+    // The unsaved bar's count, Discard and Save changes sit side by side or wrap,
+    // never on top of each other ("1 unsaDiscard" at 320 px).
+    const clash = await pg.evaluate(() => {
+      const bar = document.querySelector(".boot-save");
+      if (!bar || !bar.getBoundingClientRect().width) return "no unsaved bar";
+      const box = (e) => {
+        const r = document.createRange();
+        r.selectNodeContents(e);
+        return r.getBoundingClientRect();
+      };
+      const parts = [...bar.children].filter((c) => c.getBoundingClientRect().width);
+      const out = [];
+      for (let i = 0; i < parts.length; i++)
+        for (let j = i + 1; j < parts.length; j++) {
+          const a = box(parts[i]);
+          const b = box(parts[j]);
+          if (
+            a.right > b.left + 1 &&
+            b.right > a.left + 1 &&
+            a.bottom > b.top + 1 &&
+            b.bottom > a.top + 1
+          )
+            out.push(`${parts[i].textContent.trim()} / ${parts[j].textContent.trim()}`);
+        }
+      return out.join("; ");
+    });
+    t.check(
+      clash === "",
+      "Settings at 320 px: the unsaved bar's count, Discard and Save changes do not overlap",
+      `Settings @320 unsaved bar overlaps: ${clash}`,
+    );
+    await pg.context().close();
+  }
+
+  // ── Health at 320 px: a stacked table fits its card (V3 review) ────────────
+  // A row head kept the table's nowrap when the table stacked into label/value cards,
+  // so "Ready to decision (clock)" and "still maturing" ran 25 and 34 px past the card.
+  {
+    const pg = await L.openPage(t.browser, { width: 320, height: 700 });
+    await pg.goto(`${L.BASE}/#/health`, { waitUntil: "load" });
+    await pg.waitForSelector(".dt-stack", { timeout: 20000 }).catch(() => null);
+    await L.sleep(900);
+    const st = await pg.evaluate(() => {
+      const all = [...document.querySelectorAll(".dt-wrap.dt-stack")].filter(
+        (e) => e.getBoundingClientRect().width > 0,
+      );
+      return {
+        n: all.length,
+        over: all
+          .filter((e) => e.scrollWidth > e.clientWidth + 1)
+          .map(
+            (e) =>
+              `${(e.querySelector("caption")?.textContent || "table").slice(0, 40)} +${e.scrollWidth - e.clientWidth}px`,
+          ),
+      };
+    });
+    t.check(
+      st.n > 0 && st.over.length === 0,
+      `Health at 320 px: its ${st.n} stacked tables fit their cards (no sideways scroll inside a card)`,
+      `Health @320 stacked tables: ${st.n} seen, scrolling sideways: ${st.over.join(" | ") || "none"}`,
+    );
     await pg.context().close();
   }
 
@@ -318,6 +485,14 @@ export default async function s19(t, L) {
   await p.goto(`${L.BASE}/#/review/${w.review.id}`, { waitUntil: "load" });
   await p.waitForSelector(".vd-gate, .dod-item", { timeout: 20000 }).catch(() => null);
   await L.sleep(1200);
+  // The notes live behind the Gates cell's Detail disclosure: open it, as a reviewer
+  // does, and measure them there. Chromium lays out a closed <details> body
+  // (content-visibility: hidden) at the closed cell's width, so a closed note read as
+  // "73 px" although nobody can see it; an open cell takes the whole row.
+  await p.evaluate(() => {
+    for (const d of document.querySelectorAll(".vd-cell.vd-gates details.vd-more")) d.open = true;
+  });
+  await L.sleep(300);
   const gates = await p.evaluate(() => {
     const red = getComputedStyle(document.documentElement).getPropertyValue("--red").trim();
     const probe = document.createElement("span");
@@ -329,18 +504,29 @@ export default async function s19(t, L) {
       (n) => getComputedStyle(n).color,
     );
     // A note squeezed into a column a few characters wide wraps every few letters.
-    const narrow = [...document.querySelectorAll(".vd-cmd, .vd-note")]
-      .filter((n) => n.getBoundingClientRect().width > 0)
+    const notes = [...document.querySelectorAll(".vd-cmd, .vd-note")].filter(
+      (n) => !n.closest("details:not([open])") && n.getBoundingClientRect().width > 0,
+    );
+    const narrow = notes
       .filter((n) => n.getBoundingClientRect().width < 120 && n.textContent.length > 12)
       .map(
         (n) => `${n.textContent.slice(0, 30)} (${Math.round(n.getBoundingClientRect().width)}px)`,
       );
-    return { redRgb, passNotes, narrow, rows: document.querySelectorAll(".vd-gate").length };
+    return {
+      redRgb,
+      passNotes,
+      narrow,
+      seen: notes.length,
+      rows: document.querySelectorAll(".vd-gate").length,
+    };
   });
   t.check(
-    gates.rows > 0 && gates.narrow.length === 0 && gates.passNotes.every((c) => c !== gates.redRgb),
-    `the sign-off's ${gates.rows} gate rows give each note room (none squeezed), and a passing gate's note is not red (${gates.passNotes.length} checked)`,
-    `gate notes: squeezed=${gates.narrow.join(" | ")} pass-note colours=${gates.passNotes.join(",")} (red ${gates.redRgb}) rows=${gates.rows}`,
+    gates.rows > 0 &&
+      gates.seen > 0 &&
+      gates.narrow.length === 0 &&
+      gates.passNotes.every((c) => c !== gates.redRgb),
+    `the sign-off's ${gates.rows} gate rows give each of their ${gates.seen} notes room once the Gates detail is open (none squeezed), and a passing gate's note is not red (${gates.passNotes.length} checked)`,
+    `gate notes: seen=${gates.seen} squeezed=${gates.narrow.join(" | ")} pass-note colours=${gates.passNotes.join(",")} (red ${gates.redRgb}) rows=${gates.rows}`,
   );
   await L.shot(p, "s19-review-gates");
   await p.context().close();

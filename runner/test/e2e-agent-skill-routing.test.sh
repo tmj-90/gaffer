@@ -99,10 +99,12 @@ env | grep -E '^(GAFFER_|DISPATCH_|MEMORY_)' | sort > "$D/env"
 # only on an allow does the "agent" read the file. Records "<skill> <hook exit>".
 hook_read() {
   local cmd f rc
-  cmd="$(grep -o 'node [^"]*safety-hook.mjs' .claude/settings.json 2>/dev/null | head -1)"
+  # The command as the settings hold it (the hook path is quoted there), run through a
+  # shell as Claude Code runs a hook command.
+  cmd="$(node -e 'const s=JSON.parse(require("fs").readFileSync(".claude/settings.json","utf8"));const h=((s.hooks||{}).PreToolUse||[]).flatMap((m)=>m.hooks||[]).find((x)=>/safety-hook\.mjs/.test(x.command||""));process.stdout.write(h?h.command:"")' 2>/dev/null)"
   f="$PWD/.claude/skills/$1/SKILL.md"
   if [ -z "$cmd" ]; then echo "$1 nohook" >> "$D/hookreads"; return 0; fi
-  printf '{"tool_name":"Read","tool_input":{"file_path":"%s"}}' "$f" | $cmd >/dev/null 2>>"$D/hook.err"; rc=$?
+  printf '{"tool_name":"Read","tool_input":{"file_path":"%s"}}' "$f" | sh -c "$cmd" >/dev/null 2>>"$D/hook.err"; rc=$?
   echo "$1 $rc" >> "$D/hookreads"
   if [ "$rc" = 0 ]; then head -1 "$f" > "$D/read.$1" 2>/dev/null; fi
   return 0
@@ -381,6 +383,7 @@ if [ -z "$K1" ]; then fail "5: no intake agent spawn"; else
     "clarify,record-evidence,user-story,prd,typescript-conventions" \
     "create-branch,run-coverage,add-api-endpoint,review-ticket,black-box-test,python-conventions,mobile-ui"
   prompt_has "$K1" "#$C1" && ok "5: intake prompt targets draft #$C1" || fail "5: intake prompt does not name #$C1"
+  prompt_has "$K1" "$QUARANTINE_NOTICE" && ok "5: intake prompt carries the quarantine notice" || fail "5: intake prompt lacks the quarantine notice"
   grep -q "\"GAFFER_SCOPE_TICKET\": *\"$C1\"" "$K1/mcp.json" 2>/dev/null && ok "5: intake's dispatch MCP scoped to GAFFER_SCOPE_TICKET=$C1" || fail "5: intake's dispatch MCP lacks GAFFER_SCOPE_TICKET=$C1"
   [ "$(st "$C1")" = "draft" ] && ok "5: the draft stays a draft (intake never marks ready)" || fail "5: #$C1 is '$(st "$C1")'"
 fi
@@ -391,6 +394,7 @@ echo "== 6. PRODUCT OWNER: the product role, not the whole library =="
 P1="$(last_call po)"
 if [ -z "$P1" ]; then fail "6: the product-owner agent did not run: $(tail -2 "$GAFFER_DATA/po.log" | tr '\n' '|' | cut -c1-300)"; else
   ok "6: the product-owner agent ran"
+  prompt_has "$P1" "$QUARANTINE_NOTICE" && ok "6: the product-owner prompt carries the quarantine notice" || fail "6: the product-owner prompt lacks the quarantine notice"
   assert_skills "6: product-owner/alpha" "$P1" \
     "product-owner,product-discovery,rice,user-story,prd,copywriting,seo-audit" \
     "create-branch,run-tests,add-api-endpoint,review-ticket,black-box-test,csharp-conventions,terraform-patterns"

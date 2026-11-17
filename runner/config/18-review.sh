@@ -118,6 +118,12 @@ gaffer_afk_ship_plan() {
   fi
 }
 
+# GAFFER_TESTING (a setting) is read as it is (on, off, or the auto default) by
+# lib/tester.sh and by dispatch; its table names what it decides beside the lane.
+_gaffer_derive GAFFER_TESTING <<'_GAFFER_TABLE_'
+GAFFER_TESTER_REPLAY  ~   # 1 = the runner replays the tester tests in a clean, contained checkout before a PASS counts; 0 holds every PASS for a person (read in runner/bin/tester-run.mjs)
+_GAFFER_TABLE_
+
 # The lite bounds: how small a diff must be to count as trivial.
 : "${GAFFER_LITE_MAX_DIFF:=}"   # lite mode's trivial-diff bounds as "lines=60 files=4" (the defaults); a bound not named keeps its default.
 _gaffer_deprecated GAFFER_LITE_MAX_LINES 'set GAFFER_LITE_MAX_DIFF="lines=N" instead'
@@ -188,7 +194,8 @@ gaffer_lite_trivial_reason() {
   printf 'trivial\n'
 }
 
-# LITE MODE trivial classifier — I/O wrapper. Gathers the ticket risk (dispatch) + the
+# LITE MODE trivial classifier, the I/O wrapper. Gathers the ticket risk (dispatch's decided
+# risk, as `wg ticket auto-decision` reports it) + the
 # delivered diff's size and paths (git, from the review worktree's branch vs base) and runs
 # the pure core. Returns 0 (trivial → runner may auto-approve) / 1 (non-trivial → hold for a
 # human). Sets GAFFER_LITE_REASON / _LINES / _FILES for the caller's log + evidence marker.
@@ -196,7 +203,9 @@ gaffer_lite_trivial_reason() {
 #   $1 ticket#   $2 repo-path   $3 base-ref   $4 delivery-branch
 gaffer_ticket_is_trivial() {
   local _num="$1" _repo="$2" _base="$3" _branch="$4" _risk _stat _lines _files _paths _r
-  _risk="$(wg ticket show "$_num" 2>/dev/null | jget 'd.ticket.risk_level || "medium"' 2>/dev/null || echo medium)"
+  # SEALED AUTONOMY: the risk the autonomy decision uses (the signed one; an unsigned risk
+  # reads as the highest), never the stored column a database writer could lower.
+  _risk="$(wg ticket auto-decision "$_num" --gate approve 2>/dev/null | jget 'd.risk_level || "medium"' 2>/dev/null || echo medium)"
   _stat="$(git -C "$_repo" diff "$_base"..."$_branch" --numstat 2>/dev/null)"
   _lines="$(printf '%s\n' "$_stat" | awk 'NF{a+=($1 ~ /^[0-9]+$/ ? $1 : 0)+($2 ~ /^[0-9]+$/ ? $2 : 0)} END{print a+0}')"
   _files="$(printf '%s\n' "$_stat" | awk 'NF' | grep -c . || true)"

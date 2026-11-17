@@ -164,7 +164,9 @@ if [ "${CLARIFY_DRAFTS_WHEN_IDLE:-0}" = "1" ] && [ "${DRAFT_COUNT:-0}" -gt 0 ]; 
       _CLARIFY_CARDS="$(gaffer_prime_context_block "$CREPO" "$(basename "$CREPO")" \
         "$(printf '%s %s' "$CTITLE" "$_CDESC")" 2>/dev/null || true)"
       read -r -d '' CPROMPT <<EOF || true
-You are an INTAKE agent — do NOT implement anything and do NOT write code. Use the
+You are an INTAKE agent — do NOT implement anything and do NOT write code.
+$QUARANTINE_NOTICE
+Use the
 clarify skill on DRAFT ticket #$CNUM: call get_ticket (dispatch) and search_lore
 (memory), read the repo read-only, then find the load-bearing ambiguities (the
 gaps whose answer would change the implementation, scope, or acceptance). For each,
@@ -188,8 +190,9 @@ EOF
       # high-risk draft climbs). Logged as a ROUTE line. An explicit GAFFER_PLAN_MODEL
       # still wins (the router honours it for plan-class phases); the static PLAN flag
       # is the fallback when routing yields nothing.
-      CRISK="$(echo "$CSHOW" | jget 'd.ticket.risk_level || "medium"' 2>/dev/null || echo medium)"
-      CAC="$(echo "$CSHOW" | jget '(d.acceptanceCriteria || []).length' 2>/dev/null || echo 0)"
+      gaffer_json_vars "$CSHOW" \
+        CRISK 'd.ticket.risk_level || "medium"' medium \
+        CAC '(d.acceptanceCriteria || []).length' 0
       CLARIFY_MODEL="$(gaffer_route_model clarify "$CRISK" "${CAC:-0}" "" 1 "$CNUM" 2>/dev/null || true)"
       CLARIFY_MODEL_FLAG="${GAFFER_PLAN_MODEL_FLAG:-}"
       [ -n "$CLARIFY_MODEL" ] && CLARIFY_MODEL_FLAG="--model $CLARIFY_MODEL"

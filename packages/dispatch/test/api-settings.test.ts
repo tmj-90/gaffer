@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { Dispatch } from "../src/core.js";
 import { createApiServer } from "../src/api/server.js";
+import { resetDerivedSettings, SETTING_DEFS } from "../src/api/settings.js";
 
 interface Harness {
   baseUrl: string;
@@ -19,7 +20,8 @@ interface SettingView {
   value: string;
   envLocked: boolean;
   group: string;
-  type: string;
+  origin: string;
+  effective: string;
 }
 
 async function startHarness(): Promise<Harness> {
@@ -50,86 +52,129 @@ describe("API: GET/POST /api/settings", () => {
   const savedEnv: Record<string, string | undefined> = {};
   const TOUCHED = [
     "GAFFER_DATA",
-    "GAFFER_PLAN_DEBATE",
-    "MAX_TICKS",
+    "GAFFER_EFFORT",
+    "GAFFER_MODE",
     "GAFFER_DAILY_BUDGET_USD",
     "GAFFER_CONCURRENCY",
+    "AUTO_MERGE",
+    "DISPATCH_ALLOW_AGENT_APPROVE",
   ];
 
   beforeEach(async () => {
     for (const k of TOUCHED) savedEnv[k] = process.env[k];
     for (const k of TOUCHED) delete process.env[k];
+    resetDerivedSettings(process.env);
     h = await startHarness();
   });
   afterEach(async () => {
     await h.close();
+    resetDerivedSettings(process.env);
     for (const k of TOUCHED) {
       if (savedEnv[k] === undefined) delete process.env[k];
       else process.env[k] = savedEnv[k];
     }
   });
 
-  it("GET reports every known setting with value/envLocked/group", async () => {
+  it("GET reports the fourteen settings and the read-only derived and migration blocks", async () => {
     const res = await fetch(`${h.baseUrl}/api/settings`);
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { settings: SettingView[] };
-    expect(body.settings.length).toBeGreaterThan(0);
-    const max = body.settings.find((s) => s.key === "MAX_TICKS");
-    expect(max).toBeDefined();
-    expect(max?.value).toBe("");
-    expect(max?.envLocked).toBe(false);
-    expect(max?.group).toBe("budget");
+    const body = (await res.json()) as {
+      settings: SettingView[];
+      derived: { name: string; setting: string }[];
+      migration: unknown[];
+      overrides: unknown[];
+      cleanup: { drop: unknown[]; rewrite: unknown[]; digest: string };
+    };
+    expect(body.settings.map((s) => s.key)).toEqual(SETTING_DEFS.map((d) => d.key));
+    const effort = body.settings.find((s) => s.key === "GAFFER_EFFORT");
+    expect(effort).toMatchObject({
+      value: "",
+      envLocked: false,
+      origin: "default",
+      effective: "standard",
+    });
+    expect(body.derived.find((d) => d.name === "GAFFER_TICK_TIMEOUT")?.setting).toBe(
+      "GAFFER_EFFORT",
+    );
+    expect(body.migration).toEqual([]);
+    expect(body.cleanup).toMatchObject({ drop: [], rewrite: [] });
+    expect(body.cleanup.digest).toMatch(/^[0-9a-f]{32}$/);
   });
 
-  it("POST persists a non-env key to settings.json and reflects it back", async () => {
+  it("POST (and PUT) persists a setting to settings.json and reflects it back", async () => {
     const res = await fetch(`${h.baseUrl}/api/settings`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ settings: { MAX_TICKS: "42" } }),
+      body: JSON.stringify({ settings: { GAFFER_EFFORT: "large" } }),
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { settings: SettingView[]; written: string[] };
-    expect(body.written).toContain("MAX_TICKS");
-    expect(body.settings.find((s) => s.key === "MAX_TICKS")?.value).toBe("42");
-
-    // Round-trips on a fresh GET.
-    const after = (await (await fetch(`${h.baseUrl}/api/settings`)).json()) as {
-      settings: SettingView[];
-    };
-    expect(after.settings.find((s) => s.key === "MAX_TICKS")?.value).toBe("42");
-
-    // Written as a flat JSON map of strings.
+    expect(body.written).toEqual(["GAFFER_EFFORT"]);
+    expect(body.settings.find((s) => s.key === "GAFFER_EFFORT")).toMatchObject({
+      value: "large",
+      origin: "dashboard",
+    });
+    const put = await fetch(`${h.baseUrl}/api/settings`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ settings: { GAFFER_CONCURRENCY: " 2 " } }),
+    });
+    expect(put.status).toBe(200);
     const onDisk = JSON.parse(readFileSync(h.settingsPath, "utf8")) as Record<string, string>;
-    expect(onDisk).toEqual({ MAX_TICKS: "42" });
+    expect(onDisk).toEqual({ GAFFER_EFFORT: "large", GAFFER_CONCURRENCY: "2" });
   });
 
-  it("reports an env-set key as envLocked and POST will not change it", async () => {
-    process.env.GAFFER_PLAN_DEBATE = "1";
-
-    const get = (await (await fetch(`${h.baseUrl}/api/settings`)).json()) as {
-      settings: SettingView[];
-    };
-    expect(get.settings.find((s) => s.key === "GAFFER_PLAN_DEBATE")?.envLocked).toBe(true);
-
+  it("an old key is refused whole with a 422 naming the setting that decides it now", async () => {
     const res = await fetch(`${h.baseUrl}/api/settings`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ settings: { GAFFER_PLAN_DEBATE: "0" } }),
+      body: JSON.stringify({ settings: { AUTO_MERGE: "1", GAFFER_EFFORT: "large" } }),
     });
-    const body = (await res.json()) as { rejected: string[]; written: string[] };
-    expect(body.rejected).toContain("GAFFER_PLAN_DEBATE");
-    expect(body.written).not.toContain("GAFFER_PLAN_DEBATE");
+    expect(res.status).toBe(422);
+    const body = (await res.json()) as {
+      error: { message: string; details?: { invalid?: { key: string; decidedBy?: string }[] } };
+    };
+    expect(body.error.message).toMatch(
+      /AUTO_MERGE is no longer a setting: GAFFER_MODE decides it now/,
+    );
+    expect(body.error.details?.invalid).toEqual([
+      expect.objectContaining({ key: "AUTO_MERGE", decidedBy: "GAFFER_MODE" }),
+    ]);
+    expect(() => readFileSync(h.settingsPath, "utf8")).toThrow();
+    // ...and the dashboard's own auto merge does not move.
+    expect(process.env.AUTO_MERGE ?? "0").toBe("0");
   });
 
-  it("POST refuses an invalid value with a 422 that names the field, and writes nothing (exploratory finding ui-workflows/F2)", async () => {
-    // "abc" as the daily budget used to be saved (200, written) and then read as no cap.
-    // A payload with one bad value is refused whole, so a valid key beside it is not
-    // half-applied either.
+  it("reports an env-set setting as envLocked and POST will not change it", async () => {
+    process.env.GAFFER_MODE = "strict";
+    resetDerivedSettings(process.env);
+    const get = (await (await fetch(`${h.baseUrl}/api/settings`)).json()) as {
+      settings: SettingView[];
+    };
+    expect(get.settings.find((s) => s.key === "GAFFER_MODE")).toMatchObject({
+      envLocked: true,
+      origin: "environment",
+    });
+    const res = await fetch(`${h.baseUrl}/api/settings`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ settings: { GAFFER_MODE: "autonomous" } }),
+    });
+    const body = (await res.json()) as { rejected: string[]; written: string[] };
+    expect(body.rejected).toEqual(["GAFFER_MODE"]);
+    expect(body.written).toEqual([]);
+  });
+
+  it("POST refuses an invalid value with a 422 that names the field, and writes nothing", async () => {
     const res = await fetch(`${h.baseUrl}/api/settings`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        settings: { MAX_TICKS: "7", GAFFER_DAILY_BUDGET_USD: "abc", GAFFER_CONCURRENCY: "0" },
+        settings: {
+          GAFFER_EFFORT: "large",
+          GAFFER_DAILY_BUDGET_USD: "abc",
+          GAFFER_CONCURRENCY: "65",
+        },
       }),
     });
     expect(res.status).toBe(422);
@@ -137,18 +182,66 @@ describe("API: GET/POST /api/settings", () => {
       error: { code: string; message: string; details?: { invalid?: { key: string }[] } };
     };
     expect(body.error.code).toBe("VALIDATION_ERROR");
-    expect(body.error.message).toMatch(/Daily budget \(USD\)/);
-    expect(body.error.message).toMatch(/Concurrent ticks/);
+    expect(body.error.message).toMatch(/Daily budget \(USD\) is not a dollar amount/);
+    expect(body.error.message).toMatch(/Tickets at once is not a whole number from 1 to 64/);
     expect((body.error.details?.invalid ?? []).map((i) => i.key).sort()).toEqual([
       "GAFFER_CONCURRENCY",
       "GAFFER_DAILY_BUDGET_USD",
     ]);
     expect(() => readFileSync(h.settingsPath, "utf8")).toThrow();
-    const ok = await fetch(`${h.baseUrl}/api/settings`, {
+  });
+
+  it("the removal act drops what the page showed, and refuses a stale plan with 409", async () => {
+    writeFileSync(
+      h.settingsPath,
+      JSON.stringify({ GAFFER_MODE: "lite", AUTO_MERGE: "1", FOO: "x" }),
+    );
+    const get = (await (await fetch(`${h.baseUrl}/api/settings`)).json()) as {
+      cleanup: { drop: { key: string }[]; rewrite: { key: string }[]; digest: string };
+    };
+    expect(get.cleanup.drop.map((d) => d.key).sort()).toEqual(["AUTO_MERGE", "FOO"]);
+    const stale = await fetch(`${h.baseUrl}/api/settings/remove-old-keys`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ settings: { GAFFER_DAILY_BUDGET_USD: "5" } }),
+      body: JSON.stringify({ drop: ["AUTO_MERGE"], rewrite: [], digest: get.cleanup.digest }),
+    });
+    expect(stale.status).toBe(409);
+    expect(JSON.parse(readFileSync(h.settingsPath, "utf8"))).toEqual({
+      GAFFER_MODE: "lite",
+      AUTO_MERGE: "1",
+      FOO: "x",
+    });
+    const ok = await fetch(`${h.baseUrl}/api/settings/remove-old-keys`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        drop: ["AUTO_MERGE", "FOO"],
+        rewrite: [],
+        digest: get.cleanup.digest,
+      }),
     });
     expect(ok.status).toBe(200);
+    expect(JSON.parse(readFileSync(h.settingsPath, "utf8"))).toEqual({ GAFFER_MODE: "lite" });
+  });
+
+  it("a settings.json changed by hand while the server runs reaches its own readers before the next request", async () => {
+    // The approve floor (services/reviewGate/approval.ts) and auto merge on a human
+    // approval (routes/tickets.ts) read this process's environment. A person who
+    // tightens the mode by editing settings.json must not leave the server deciding on
+    // the looser values until the next save or restart.
+    const post = await fetch(`${h.baseUrl}/api/settings`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ settings: { GAFFER_MODE: "autonomous" } }),
+    });
+    expect(post.status).toBe(200);
+    expect(process.env["AUTO_MERGE"]).toBe("1");
+    expect(process.env["DISPATCH_ALLOW_AGENT_APPROVE"]).toBe("1");
+    writeFileSync(h.settingsPath, JSON.stringify({ GAFFER_MODE: "supervised" }));
+    const res = await fetch(`${h.baseUrl}/api/whoami`);
+    expect(res.status).toBe(200);
+    expect(process.env["AUTO_MERGE"]).toBe("0");
+    expect(process.env["DISPATCH_ALLOW_AGENT_APPROVE"]).toBe("0");
+    expect(process.env["GAFFER_MODE"]).toBe("supervised");
   });
 });

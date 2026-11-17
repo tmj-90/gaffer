@@ -10,6 +10,7 @@ import {
   scoped,
 } from "./access.js";
 import { learnDisplaysFrom, squad } from "./club.js";
+import { el } from "./dom.js";
 import { freshness } from "./freshness.js";
 import { learnKits } from "./icons.js";
 import { renderLogin } from "./login.js";
@@ -28,13 +29,19 @@ const clearAuthToken = () => localStorage.removeItem(TOKEN_KEY);
  * the token and immediately scrub it from the URL (history + query) so it never
  * lingers in browser history. A malformed URL must never block boot — the login
  * gate is always the safe fallback.
+ *
+ * A link must never replace a sign-in silently (F4): when a DIFFERENT token is already
+ * stored, the stored one is kept, the URL is still scrubbed, and a small prompt asks
+ * "This link carries a different sign-in. Switch to it?" with Keep current as the
+ * default and primary action. Only Switch stores the link's token (and reloads, so
+ * nothing already loaded under the old sign-in stays on the page). With no token
+ * stored, or the same one, it behaves as before.
  */
 function adoptTokenFromUrl() {
   try {
     const params = new URLSearchParams(location.search || "");
-    const t = params.get("token");
-    if (!t) return;
-    setAuthToken(t.trim());
+    const t = (params.get("token") || "").trim();
+    if (!params.has("token")) return;
     params.delete("token");
     const qs = params.toString();
     history.replaceState(
@@ -42,9 +49,63 @@ function adoptTokenFromUrl() {
       "",
       location.pathname + (qs ? `?${qs}` : "") + (location.hash || ""),
     );
+    if (!t) return;
+    const stored = authToken();
+    if (!stored || stored === t) {
+      setAuthToken(t);
+      return;
+    }
+    askToSwitchToken(t);
   } catch {
     // Ignore — fall through to the normal (paste-a-token) login gate.
   }
+}
+
+/** The prompt for a link that carries a different sign-in; Keep current is the default. */
+function askToSwitchToken(linkToken) {
+  document.getElementById("token-switch")?.remove();
+  const close = () => box.remove();
+  const keep = el(
+    "button",
+    { class: "btn primary", type: "button", onclick: close },
+    "Keep current",
+  );
+  const swap = el(
+    "button",
+    {
+      class: "btn",
+      type: "button",
+      onclick: () => {
+        setAuthToken(linkToken);
+        close();
+        location.reload();
+      },
+    },
+    "Switch",
+  );
+  const box = el(
+    "div",
+    {
+      id: "token-switch",
+      class: "toast",
+      role: "alertdialog",
+      "aria-modal": "false",
+      "aria-labelledby": "token-switch-msg",
+      onkeydown: (e) => {
+        if (e.key === "Escape") close();
+      },
+    },
+    [
+      el(
+        "span",
+        { class: "toast-msg", id: "token-switch-msg" },
+        "This link carries a different sign-in. Switch to it?",
+      ),
+      el("span", { class: "btn-row" }, [keep, swap]),
+    ],
+  );
+  document.body.appendChild(box);
+  keep.focus();
 }
 
 /**

@@ -19,6 +19,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 
 import { EVENT_CHAIN_GENESIS, eventHash, type ChainedEventFields } from "./eventChain.js";
+import { unsignedPrincipalMessage, verifyPrincipal } from "./principalSeal.js";
 
 /**
  * SIGNED GATE EVENTS. The approval a landing acts on (the ticket's latest transition into
@@ -106,6 +107,11 @@ export interface GateKeyring {
   /** What this keyring is, for messages. */
   readonly description: string;
   /**
+   * True for a key that lives only in this process (the library default): its seals are
+   * worthless to any other process on the same database file.
+   */
+  readonly processLocal?: boolean;
+  /**
    * The MAC for a SIGNATURE. A file keyring creates the key when it is absent (a trusted
    * host-side recording). Throws {@link GateKeyError} where signing is not allowed.
    */
@@ -126,6 +132,20 @@ export interface GateKeyring {
   readAnchor?(): AnchorRead;
   /** A person's deliberate act: record this database's current head, whatever was before. */
   reanchor?(db: SealDb): EventAnchor | null;
+  /**
+   * VERIFIED CHECKPOINT (events/rowSeal.ts): the body a trusted host process recorded beside
+   * the anchor, MAC verified, saying "the chain verified up to row N with hash H" (and the
+   * digests of the lifecycle rows up to N), so a new process verifies only the tail.
+   * `missing`: none recorded; `broken`: one is there and does not verify (fail closed).
+   * Never creates anything. Absent on a keyring that keeps none.
+   */
+  readCheckpoint?(): { body: string } | { missing: string } | { broken: string };
+  /** Record a checkpoint body (a trusted host process, after it verified the chain). */
+  writeCheckpoint?(body: string): void;
+}
+
+function checkpointMaterial(keyId: string, body: string): string {
+  return ["gaffer-chain-checkpoint", "1", keyId, body].join("\n");
 }
 
 /** The event log's head as a trusted host process last saw it after a commit. */
@@ -137,6 +157,9 @@ export interface EventAnchor {
 export type AnchorRead = EventAnchor | { missing: string } | { broken: string };
 
 const KEY_BYTES = 32;
+/** The verified checkpoint's file, beside the anchors (events/rowSeal.ts). */
+const CHECKPOINT_NAME = "chain-checkpoint.json";
+const CHECKPOINT_MAX_BYTES = 64 * 1024 * 1024;
 
 function hmacHex(key: Buffer, material: string): string {
   return createHmac("sha256", key).update(material).digest("hex");
@@ -244,7 +267,9 @@ export function fileGateKeyring(opts: {
       return;
     }
     for (const n of names) {
-      if (/^\d{16}\.json$/.test(n)) unlinkSync(join(keysDir, `${keyId}.anchor`, n));
+      if (/^\d{16}\.json$/.test(n) || n === CHECKPOINT_NAME) {
+        unlinkSync(join(keysDir, `${keyId}.anchor`, n));
+      }
     }
   };
 
@@ -423,6 +448,66 @@ export function fileGateKeyring(opts: {
   };
   const clearAnchors = rmAnchorsUnderOldKey;
 
+  // VERIFIED CHECKPOINT: one file beside the anchors, same protection, MAC under the key.
+  // Replaced atomically (write a temporary file, rename). A re-anchor or a new key clears it.
+  const checkpointPath = join(anchorDir, CHECKPOINT_NAME);
+  const readCheckpoint = (): { body: string } | { missing: string } | { broken: string } => {
+    let raw: string;
+    try {
+      const fd = openSync(checkpointPath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+      try {
+        const size = fstatSync(fd).size;
+        if (size > CHECKPOINT_MAX_BYTES) return { broken: "the checkpoint is too large" };
+        const buf = Buffer.alloc(size);
+        readSync(fd, buf, 0, size, 0);
+        raw = buf.toString("utf8");
+      } finally {
+        closeSync(fd);
+      }
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") return { missing: "no checkpoint" };
+      return {
+        broken: `the checkpoint cannot be read (${(e as NodeJS.ErrnoException).code ?? "error"})`,
+      };
+    }
+    const key = load();
+    if (!key) return { broken: "the factory key does not exist" };
+    let parsed: { body?: unknown; mac?: unknown };
+    try {
+      parsed = JSON.parse(raw) as typeof parsed;
+    } catch {
+      return { broken: "the checkpoint is not readable JSON" };
+    }
+    const body = typeof parsed.body === "string" ? parsed.body : "";
+    const want = Buffer.from(hmacHex(key, checkpointMaterial(keyId, body)), "hex");
+    const got = Buffer.from(String(parsed.mac ?? ""), "hex");
+    if (body === "" || want.length !== got.length || !timingSafeEqual(want, got)) {
+      return { broken: "the checkpoint does not verify under the factory key" };
+    }
+    return { body };
+  };
+  const writeCheckpoint = (body: string): void => {
+    const key = load();
+    if (!key) return;
+    mkdirSync(anchorDir, { recursive: true, mode: 0o700 });
+    const tmp = join(anchorDir, `.cp.${process.pid}.${randomBytes(4).toString("hex")}`);
+    const fd = openSync(
+      tmp,
+      fsConstants.O_WRONLY |
+        fsConstants.O_CREAT |
+        fsConstants.O_EXCL |
+        (fsConstants.O_NOFOLLOW ?? 0),
+      0o600,
+    );
+    try {
+      writeSync(fd, JSON.stringify({ body, mac: hmacHex(key, checkpointMaterial(keyId, body)) }));
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(tmp, checkpointPath);
+  };
+
   return {
     description: "the factory key",
     keyPath,
@@ -433,6 +518,14 @@ export function fileGateKeyring(opts: {
     readAnchor() {
       assertOutsideData();
       return readAnchor();
+    },
+    readCheckpoint() {
+      assertOutsideData();
+      return readCheckpoint();
+    },
+    writeCheckpoint(body: string) {
+      assertOutsideData();
+      writeCheckpoint(body);
     },
     reanchor(db: SealDb) {
       assertOutsideData();
@@ -474,8 +567,15 @@ export function ephemeralGateKeyring(): GateKeyring {
   const key = randomBytes(KEY_BYTES);
   const keyId = `ephemeral-${createHash("sha256").update(key).digest("hex").slice(0, 12)}`;
   let anchored: EventAnchor | null = null;
+  let checkpoint: string | null = null;
   return {
     description: "a process-local key",
+    processLocal: true,
+    readCheckpoint: () =>
+      checkpoint === null ? { missing: "no checkpoint" } : { body: checkpoint },
+    writeCheckpoint: (body) => {
+      checkpoint = body;
+    },
     signMac: (material) => ({ mac: hmacHex(key, material), keyId }),
     verifyMac: (material) => ({ mac: hmacHex(key, material), keyId }),
     anchor: (db) =>
@@ -487,7 +587,10 @@ export function ephemeralGateKeyring(): GateKeyring {
         },
       ),
     readAnchor: () => anchored ?? { missing: "no anchor recorded" },
-    reanchor: (db) => (anchored = eventLogHead(db)),
+    reanchor: (db) => {
+      checkpoint = null;
+      return (anchored = eventLogHead(db));
+    },
   };
 }
 
@@ -509,6 +612,7 @@ export function refusingGateKeyring(who: string): GateKeyring {
     verifyMac: refuse,
     readAnchor: refuse,
     reanchor: refuse,
+    readCheckpoint: refuse,
   };
 }
 
@@ -535,6 +639,12 @@ export interface ApprovalPin {
 export interface ApprovalBinds {
   ticket: string;
   pins: ApprovalPin[];
+  /**
+   * SEALED PRINCIPALS: the principal the approval was made through (its id), or null (the
+   * operator, the runner, an agent). Absent only on a seal made before principals were
+   * sealed: the landing then holds a human's or admin's approval until it is re-approved.
+   */
+  principal?: string | null;
 }
 export interface TesterPassBinds {
   ticket: string;
@@ -637,6 +747,7 @@ function bindsJson(binds: ApprovalBinds | TesterPassBinds): string {
     return JSON.stringify({
       ticket: binds.ticket,
       pins: binds.pins.map((p) => ({ repo_id: p.repo_id, sha: p.sha })),
+      ...(binds.principal !== undefined ? { principal: binds.principal } : {}),
     });
   }
   return JSON.stringify({
@@ -694,6 +805,7 @@ export function sealApproval(
   ticketId: string,
   now: string,
   pins?: readonly ApprovalPin[],
+  principal: string | null = null,
 ): void {
   sealEvent(
     db,
@@ -703,6 +815,7 @@ export function sealApproval(
     {
       ticket: ticketId,
       pins: pins ? normalizePins(pins) : currentApprovalPins(db, ticketId),
+      principal,
     },
     now,
   );
@@ -719,6 +832,19 @@ export function routedApprovalPins(
   keyring: GateKeyring,
   ticketId: string,
 ): ApprovalPin[] {
+  return routingApproval(db, keyring, ticketId)?.pins ?? [];
+}
+
+/**
+ * The sealed approval that routed `ticketId` to the tester (see {@link routedApprovalPins}):
+ * its event, the commits it named and the principal it was made through (undefined: a
+ * seal from before principals were sealed). Null when there is none.
+ */
+export function routingApproval(
+  db: SealDb,
+  keyring: GateKeyring,
+  ticketId: string,
+): { eventId: string; pins: ApprovalPin[]; principal: string | null | undefined } | null {
   const entered = db
     .prepare(
       "SELECT max(rowid) AS seq FROM work_events WHERE entity_type = 'ticket' AND entity_id = ? " +
@@ -736,10 +862,51 @@ export function routedApprovalPins(
   for (const r of rows) {
     const v = verifyGateSeal(db, keyring, String(r.id), "approval");
     if (v.ok && v.binds.ticket === ticketId && Array.isArray(v.binds.pins)) {
-      return normalizePins(v.binds.pins as ApprovalPin[]);
+      return {
+        eventId: String(r.id),
+        pins: normalizePins(v.binds.pins as ApprovalPin[]),
+        principal: principalOf(v.binds),
+      };
     }
   }
-  return [];
+  return null;
+}
+
+/** The principal an approval seal names: an id, null, or undefined (a seal from before). */
+export function principalOf(binds: Record<string, unknown>): string | null | undefined {
+  if (!("principal" in binds)) return undefined;
+  return typeof binds.principal === "string" ? binds.principal : null;
+}
+
+/**
+ * SEALED PRINCIPALS at landing: the principal an approving act was made through must still
+ * be signed by this factory. A seal that names one: that principal. A seal from before
+ * principals were sealed (no `principal`) made by a human or admin actor is held: it could
+ * have been made through a principal row written into the database, and nothing in the log
+ * says which principal made it (a check of the rows speaking as its actor is undone by
+ * deleting the forged row), so a person re-approves it. The runner's and an agent's legacy
+ * approvals name no principal and still count. Null when it holds, else why not.
+ */
+function approvingPrincipalProblem(
+  db: SealDb,
+  keyring: GateKeyring,
+  eventId: string,
+  principal: string | null | undefined,
+): string | null {
+  if (principal === null) return null;
+  if (typeof principal === "string") {
+    const v = verifyPrincipal(db, keyring, principal);
+    if (v.ok) return null;
+    const row = db.prepare("SELECT name FROM api_principals WHERE id = ?").get(principal) as
+      { name: string } | undefined;
+    return unsignedPrincipalMessage(row?.name ?? principal, v);
+  }
+  const ev = db
+    .prepare("SELECT actor_type, actor_id FROM work_events WHERE id = ?")
+    .get(eventId) as { actor_type: string; actor_id: string | null } | undefined;
+  if (!ev) return "the approving event is not on record";
+  if (ev.actor_type !== "human" && ev.actor_type !== "admin") return null;
+  return `the approval by ${ev.actor_type}:${ev.actor_id ?? ""} was signed before principals were, so this factory cannot tell which principal made it (one written into the database looks the same); a person re-approves it`;
 }
 
 /** Seal a `ticket.tester_passed` event with the verdict row it names. */
@@ -871,7 +1038,13 @@ export type LandingActsCheck =
       ok: false;
       code: "unsigned_approval" | "unsigned_tester_verdict";
       reason: string;
-      failure: SealFailure | "no_approval" | "not_covered" | "revoked" | "truncated";
+      failure:
+        | SealFailure
+        | "no_approval"
+        | "not_covered"
+        | "revoked"
+        | "truncated"
+        | "unsigned_principal";
     };
 
 /** The latest transition into ready_for_merge (the approval every landing acts on). */
@@ -886,9 +1059,15 @@ export function latestApprovalEvent(db: SealDb, ticketId: string): string | null
   return row?.id ?? null;
 }
 
-type LandingFailure = SealFailure | "no_approval" | "not_covered" | "revoked" | "truncated";
+type LandingFailure =
+  SealFailure | "no_approval" | "not_covered" | "revoked" | "truncated" | "unsigned_principal";
 
 function remedy(failure: LandingFailure, verdict: boolean): string {
+  if (failure === "unsigned_principal") {
+    return verdict
+      ? "If the principal named is genuine, a person re-signs it (gaffer wg principal resign <name>) and the landing goes ahead; otherwise revoke it and record the verdict again through the tester or a signed principal's waiver."
+      : "If the principal named is genuine, a person re-signs it (gaffer wg principal resign <name>) and the landing goes ahead. Otherwise revoke it; then, as for an approval signed before principals were, re-approve: gaffer wg ticket reopen-for-review <n> --as admin --reason unsigned_approval --resolution re-approve, then gaffer approve <n>.";
+  }
   if (failure === "truncated") {
     return (
       "Nothing lands until a person checks the factory: if the database was restored from a backup on purpose, " +
@@ -985,6 +1164,33 @@ export function verifyLandingActs(
     }
     if (a.binds.ticket !== ticketId) {
       return fail("unsigned_approval", "mismatch", "Its signature is for another ticket.");
+    }
+    // SEALED PRINCIPALS: the principal the approval was made through must still be signed
+    // by this factory; for a tester PASS that approves, so must the approval that routed
+    // the ticket to the tester (the person's review the PASS carries).
+    const approvedVia = principalOf(a.binds);
+    const approver = approvingPrincipalProblem(db, keyring, approval, approvedVia);
+    if (approver) {
+      return fail(
+        "unsigned_approval",
+        "unsigned_principal",
+        approvedVia === undefined
+          ? `Nothing lands on this approval: ${approver}.`
+          : `Nothing lands on this approval: it was made through a principal this factory does not trust: ${approver}.`,
+      );
+    }
+    const routing = routingApproval(db, keyring, ticketId);
+    if (routing && routing.eventId !== approval) {
+      const router = approvingPrincipalProblem(db, keyring, routing.eventId, routing.principal);
+      if (router) {
+        return fail(
+          "unsigned_approval",
+          "unsigned_principal",
+          routing.principal === undefined
+            ? `Nothing lands on this approval: the review that sent it to the tester: ${router}.`
+            : `Nothing lands on this approval: the review that sent it to the tester was made through a principal this factory does not trust: ${router}.`,
+        );
+      }
     }
     if (revocation) {
       // An approval stands only while it is the ticket's latest move: a reopen, a hold, a
@@ -1085,6 +1291,19 @@ export function verifyLandingActs(
           detail: "the verdict row is not the one its signature covers",
         };
       }
+      if (good) {
+        // SEALED PRINCIPALS: a person's waiver names its principal in the verdict row the
+        // seal covers; that principal must still be signed by this factory.
+        const waiver = waiverPrincipalId(pass.payloadJson);
+        const problem = waiver ? approvingPrincipalProblem(db, keyring, "", waiver) : null;
+        if (problem) {
+          return fail(
+            "unsigned_tester_verdict",
+            "unsigned_principal",
+            `The waiver this landing relies on was recorded through a principal this factory does not trust: ${problem}.`,
+          );
+        }
+      }
       if (!good) {
         const failure: SealFailure = last && !last.ok ? last.failure : "unsigned";
         const detail = last && !last.ok ? last.detail : "it carries no signature";
@@ -1097,6 +1316,17 @@ export function verifyLandingActs(
     }
     return { ok: true, approval };
   });
+}
+
+/** The principal id a waiver's verdict row names, or null (an agent tester's PASS). */
+function waiverPrincipalId(payloadJson: string): string | null {
+  try {
+    const p = JSON.parse(payloadJson) as { waiver?: { principal?: { id?: unknown } } };
+    const id = p?.waiver?.principal?.id;
+    return typeof id === "string" && id.length > 0 ? id : null;
+  } catch {
+    return null;
+  }
 }
 
 /**

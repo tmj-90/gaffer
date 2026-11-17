@@ -96,8 +96,8 @@ export interface FlowWaitMs {
 /** The authoritative cycle-time + throughput + flow-efficiency read model. */
 export interface DeliveryFlow {
   cycle_time: {
-    /** Median created→done time in days over shipped tickets (0 when none). */
-    median_days: number;
+    /** Median created→done time in days over shipped tickets; null when none shipped. */
+    median_days: number | null;
     /** 75th percentile of the same, in days (linear interpolation); null when none. */
     p75_days: number | null;
     /** 90th percentile of the same, in days; null when none. */
@@ -192,13 +192,17 @@ function median(values: number[]): number {
   return sorted.length % 2 === 1 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
 }
 
-/** Linear-interpolated quantile of a sample, rounded to 0.01; null when empty. */
+/**
+ * Linear-interpolated quantile of a sample; null when empty. Full precision, like the
+ * median beside it: rounded here to 0.01 and again to one decimal by the page, a single
+ * 217 minute ticket (0.1507 days) read "median 0.2 days, p75 0.1d", a percentile below
+ * the median. Whoever shows the figure rounds it, once.
+ */
 function quantileDays(values: readonly number[], q: number): number | null {
-  const v = quantileSorted(
+  return quantileSorted(
     [...values].sort((a, b) => a - b),
     q,
   );
-  return v === null ? null : Math.round(v * 100) / 100;
 }
 
 /** The completion timestamp to use for a done ticket: `done_at`, else `updated_at`. */
@@ -298,7 +302,8 @@ export function deliveryFlow(
 
   return {
     cycle_time: {
-      median_days: median(cycleVals),
+      // Nothing shipped is no figure, never a zero-day cycle time.
+      median_days: cycleVals.length === 0 ? null : median(cycleVals),
       p75_days: quantileDays(cycleVals, 0.75),
       p90_days: quantileDays(cycleVals, 0.9),
       series: cycleSeries,

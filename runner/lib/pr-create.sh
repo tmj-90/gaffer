@@ -1,6 +1,9 @@
 # Gaffer H4 — real PR creation (sourced by factory.config.sh).
 # shellcheck shell=bash
 _GAFFER_JSON_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/json-tool.mjs"
+# The JSON server reaches this lib's json-tool calls through gaffer_json_at
+# (config/17-cli.sh); sourced alone (a test), they run json-tool directly.
+declare -F gaffer_json_at >/dev/null 2>&1 || gaffer_json_at() { local t="$1"; shift; node "$t" "$@"; }
 #
 # When GAFFER_CREATE_PR=1 AND the primary write repo has a GitHub remote, runs
 # `gh pr create` with a body assembled from the ticket's evidence bundle (AC list
@@ -46,7 +49,7 @@ gaffer_has_github_remote() {
 # Prints the body to stdout. Best-effort; never fatal.
 gaffer_build_pr_body() {
   local ticket_num="$1"
-  node "$_GAFFER_JSON_TOOL" pr-body "$ticket_num" 2>/dev/null || printf 'Delivered ticket #%s\n' "$ticket_num"
+  gaffer_json_at "$_GAFFER_JSON_TOOL" pr-body "$ticket_num" 2>/dev/null || printf 'Delivered ticket #%s\n' "$ticket_num"
 }
 
 # Create a PR for a ticket delivery. Returns 0 on success (and prints the PR URL

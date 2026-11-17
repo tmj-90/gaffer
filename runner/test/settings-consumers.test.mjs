@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// Every dashboard setting must be READ by something. A key in SETTING_DEFS that only
-// settings.ts (the allow-list) and factory.config.sh (the default + export) mention is
+// Every setting must be READ by something. One of the fourteen settings
+// (runner/config/settings-schema.json, the list the dashboard reads) that only
+// settings.ts and factory.config.sh (the default + export) mention is
 // a dead knob: the Settings panel offers it, CONFIG.md documents it, and changing it
 // does nothing. GAFFER_MAX_RESUMES_PER_TICK was exactly that (a tick re-enters at most
 // one Continue'd ticket whatever it said). This scans the live sources — the runner,
@@ -25,9 +26,10 @@ const CONFIG_FILES = [
 ];
 const CONFIG_TEXT = CONFIG_FILES.map((f) => readFileSync(f, "utf8")).join("\n");
 
-const keys = [...readFileSync(SETTINGS_TS, "utf8").matchAll(/^\s*key: "([A-Z0-9_]+)",$/gm)].map(
-  (m) => m[1],
-);
+// The fourteen, from the schema the generator keeps current (the dashboard reads it too).
+const keys = JSON.parse(
+  readFileSync(join(ROOT, "runner/config/settings-schema.json"), "utf8"),
+).settings.map((s) => s.name);
 
 const SRC_DIRS = ["runner", "packages/dispatch/src", "packages/crew/src", "packages/memory/src"];
 const SKIP_DIRS = new Set(["node_modules", "dist", "test", ".git", "eval"]);
@@ -53,8 +55,8 @@ const corpus = files.map((f) => readFileSync(f, "utf8"));
 
 let passed = 0;
 const failures = [];
-if (keys.length < 20)
-  failures.push(`parsed only ${keys.length} keys from settings.ts — the key regex is stale`);
+if (keys.length !== 14)
+  failures.push(`read ${keys.length} settings from settings-schema.json, not the fourteen`);
 for (const k of keys) {
   const re = new RegExp(`(^|[^A-Za-z0-9_])${k}([^A-Za-z0-9_]|$)`);
   // factory.config.sh may itself be the consumer (GAFFER_MODE, the autonomy cluster):
@@ -62,8 +64,10 @@ for (const k of keys) {
   const configReads = new RegExp(`\\$\\{?${k}\\b(?![:=]?=)`).test(
     CONFIG_TEXT.replace(new RegExp(`: "\\$\\{${k}:=[^}]*\\}"`, "g"), ""),
   );
+  // A setting's derivation table (`_gaffer_derive <SETTING>`) reads it as well.
+  const derives = new RegExp(`_gaffer_derive ${k}\\b`).test(CONFIG_TEXT);
   const users = files.filter((_, i) => re.test(corpus[i]));
-  if (users.length > 0 || configReads) passed += 1;
+  if (users.length > 0 || configReads || derives) passed += 1;
   else
     failures.push(
       `${k}: offered in the Settings panel but nothing reads it (only settings.ts / factory.config.sh name it)`,

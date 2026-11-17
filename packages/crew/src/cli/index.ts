@@ -499,7 +499,7 @@ program
   )
   .option(
     "--force",
-    "run even when loops.maintenance.enabled is false (the GAFFER_MAINTENANCE=1 override)",
+    "run even when loops.maintenance.enabled is false (what When idle, GAFFER_IDLE=maintenance or all, sets)",
     false,
   )
   .action(async (opts, cmd) => {

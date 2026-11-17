@@ -1,12 +1,13 @@
 // Icons and glyphs: the line icons, status glyphs, kit shirts, agent chips, the crest and badges.
 // Moved verbatim from app.js (the entry); the module map is in app.js.
 
+import { table } from "./lookup.js";
 import { agentTitle, agentWho } from "./access.js";
 import { SVGNS, el, svgEl } from "./dom.js";
 import { appState } from "./state.js";
 
 /** Inline SVG icon (24x24 stroke icons, currentColor). */
-const ICONS = {
+const ICONS = table({
   overview: '<path d="M3 13h8V3H3zM13 21h8V3h-8zM3 21h8v-6H3z"/>',
   work: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16M15 4v16"/>',
   review:
@@ -68,7 +69,7 @@ const ICONS = {
   back: '<path d="M15 6 9 12l6 6"/>',
   external: '<path d="M10 4H4v16h16v-6M14 4h6v6M20 4l-9 9"/>',
   logout: '<path d="M15 4h4v16h-4M10 8l-4 4 4 4M6 12h10"/>',
-};
+});
 /**
  * Inline SVG icon (24×24 stroke icons, currentColor). Always carries width and
  * height attributes (default 20px) so a class that sets only colour can never
@@ -97,7 +98,7 @@ function icon(name, cls, size = 20) {
  * stroke). The status WORD is always adjacent (statusBadge) or in the accessible
  * name (pass `label`). Squares are blocked, triangles failed, bars paused.
  */
-const GLYPHS = {
+const GLYPHS = table({
   draft: '<circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="1.75"/>',
   refining:
     '<circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="1.75" stroke-dasharray="1.6 2.6" stroke-linecap="round"/>',
@@ -122,7 +123,7 @@ const GLYPHS = {
     '<circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="1.75"/><path d="M5 15 L15 5" stroke="currentColor" stroke-width="1.75"/>',
   decision:
     '<path d="M10 2.5 L17.5 10 L10 17.5 L2.5 10 Z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/><circle cx="10" cy="10" r="2" fill="currentColor"/>',
-};
+});
 function glyph(status, size = 16, label) {
   const svg = document.createElementNS(SVGNS, "svg");
   svg.setAttribute("viewBox", "0 0 20 20");

@@ -2,8 +2,10 @@
 # `gaffer dashboard --foreground` — the container / supervisor launch path. It must
 # exec the SAME server with the SAME action-command env as the detached paths (so
 # every dashboard button works), always token-protected, binding loopback by
-# default and every interface with --lan, and print the login URL before exec.
+# default and every interface with --lan, and print how to log in before exec (the
+# token itself only when stdout is a terminal, never into a supervisor log).
 . "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tty.sh"     # gaffer_test_tty: stdout on a pty
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; RUNNER_DIR="$(cd "$HERE/.." && pwd)"
 PASS=0; FAILURES=()
@@ -36,7 +38,18 @@ grep -q "ARGV:.*--port 8787" "$CAP" && ok "passes the port" || fail "port missin
 [ -s "$WORK/d1/dashboard-token" ] && ok "token file created (always token-protected)" || fail "no token file"
 TOK="$(cat "$WORK/d1/dashboard-token")"
 grep -q "^DISPATCH_API_TOKEN=$TOK$" "$CAP" && ok "the server received the token" || fail "server token missing"
-grep -q "?token=$TOK" <<<"$OUT" && ok "login URL with the token printed BEFORE exec (for container logs)" || fail "login URL not printed: $OUT"
+# Not a terminal (a supervisor's log): the URL and the token FILE, never the token.
+grep -qF "$TOK" <<<"$OUT" && fail "the token was printed to a non-terminal stdout (container logs keep it): $OUT" \
+  || ok "the token is not printed when stdout is not a terminal"
+grep -q "http://127.0.0.1:8787" <<<"$OUT" && grep -qF "$WORK/d1/dashboard-token" <<<"$OUT" \
+  && ok "the URL and the token file are printed BEFORE exec" || fail "login hint missing: $OUT"
+# A terminal keeps the one-click login link.
+if gaffer_test_tty_available; then
+  TTY_OUT="$(gaffer_test_tty env PATH="$BINDIR:$PATH" GAFFER_DATA="$WORK/d1" GAFFER_HOME="$RUNNER_DIR/.." bash "$RUNNER_DIR/gaffer" dashboard --foreground 2>&1)"
+  grep -qF "?token=$TOK" <<<"$TTY_OUT" && ok "on a terminal the login link carries the token" || fail "tty: no ?token= link: $TTY_OUT"
+else
+  echo "  SKIP: no script(1) to give the launcher a terminal"
+fi
 for v in DISPATCH_TICK_CMD DISPATCH_MERGE_CMD DISPATCH_ONBOARD_CMD DISPATCH_PRODUCT_OWNER_CMD DISPATCH_EPIC_FEATURE_CMD DISPATCH_DB GAFFER_DASHBOARD_URL; do
   grep -q "^$v=." "$CAP" && ok "action-command env wired: $v" || fail "$v missing from the server env"
 done
@@ -54,25 +67,27 @@ GAFFER_TICK_OUTER_TIMEOUT=999 run_fg "$WORK/d1b" >/dev/null
 grep -q "^GAFFER_TICK_OUTER_TIMEOUT=999$" "$CAP" && ok "an operator-set GAFFER_TICK_OUTER_TIMEOUT stays" || fail "the operator's GAFFER_TICK_OUTER_TIMEOUT was scrubbed"
 [ -f "$WORK/d1/dashboard.pid" ] && fail "foreground must not write a pid file" || ok "no pid file (the supervisor owns the process)"
 
-echo "== config-derived settings never reach the server as env (else the UI shows them env-locked) =="
-if [ -f "$RUNNER_DIR/../packages/dispatch/dist/api/settings.js" ]; then
-  mkdir -p "$WORK/d3"
-  # A value saved through the dashboard earlier, and one the operator set for real.
-  printf '{"MAX_TICKS_PER_DAY":"7","GAFFER_IDLE_MODE":""}\n' > "$WORK/d3/settings.json"
-  ERR="$(GAFFER_REWORK_BUDGET_USD=3 run_fg "$WORK/d3" 2>&1 >/dev/null)"
-  for k in GAFFER_CONCURRENCY GAFFER_DAILY_BUDGET_USD GAFFER_PAUSE_ON_CAP GAFFER_REQUIRE_CI MAX_TICKS_PER_DAY GAFFER_CI_POLL_ATTEMPTS; do
-    grep -q "^$k=" "$CAP" && fail "$k (a default / settings.json value) leaked into the server env — the UI would lock it" || ok "$k is not in the server env (editable in the UI)"
-  done
-  grep -q "^GAFFER_REWORK_BUDGET_USD=3$" "$CAP" && ok "an operator-set key stays (a real env override locks it)" || fail "the operator's GAFFER_REWORK_BUDGET_USD was scrubbed"
-  grep -q "^_GAFFER_" "$CAP" && fail "the launcher's re-source bookkeeping leaked into the server env: $(grep '^_GAFFER_' "$CAP" | cut -d= -f1 | head -3 | tr '\n' ' ')" || ok "no _GAFFER_* bookkeeping in the server env"
-  grep -q "could not read the setting keys" <<<"$ERR" && fail "the setting-key reader failed: $ERR" || ok "the setting keys were read from the dispatch dist (no warning)"
-  # A dist the reader cannot load is reported, never silently ignored.
-  mkdir -p "$WORK/baddist/dist/api"; printf 'export const SETTING_DEFS = [;\n' > "$WORK/baddist/dist/api/settings.js"
-  ( source "$RUNNER_DIR/lib/dashboard.sh"; DISPATCH_DIR="$WORK/baddist" PATH="$BINDIR:$PATH" gaffer_dashboard_env_unset_flags ) 2>"$WORK/bad.err" >/dev/null
-  grep -q "could not read the setting keys" "$WORK/bad.err" && ok "an unreadable settings dist warns loudly (no silent || true)" || fail "an unreadable settings dist was swallowed: $(cat "$WORK/bad.err")"
-else
-  echo "SKIP: dispatch dist not built (pnpm -C packages/dispatch build)"
-fi
+echo "== config-derived values never reach the server as env (else the UI shows them env-locked) =="
+mkdir -p "$WORK/d3"
+# A value saved through the dashboard earlier (an old key), a setting, and one the
+# operator set for real.
+printf '{"MAX_TICKS_PER_DAY":"7","GAFFER_EFFORT":"large","GAFFER_IDLE":""}\n' > "$WORK/d3/settings.json"
+ERR="$(GAFFER_REWORK_BUDGET_USD=3 run_fg "$WORK/d3" 2>&1 >/dev/null)"
+for k in GAFFER_CONCURRENCY GAFFER_DAILY_BUDGET_USD GAFFER_EFFORT GAFFER_PAUSE_ON_CAP GAFFER_REQUIRE_CI MAX_TICKS_PER_DAY GAFFER_CI_POLL_ATTEMPTS GAFFER_MAX_DELIVERY_ATTEMPTS; do
+  grep -q "^$k=" "$CAP" && fail "$k (a default / settings.json / derived value) leaked into the server env; the UI would lock it" || ok "$k is not in the server env (the dashboard derives it)"
+done
+grep -q "^GAFFER_REWORK_BUDGET_USD=3$" "$CAP" && ok "an operator-set key stays (a real env override locks it)" || fail "the operator's GAFFER_REWORK_BUDGET_USD was scrubbed"
+# The operator record reaches the server (it hands it to every runner it starts, so an
+# old settings.json key never arrives there as operator environment); the launcher's
+# re-source records and warn-once marks do not.
+grep -q "^_GAFFER_OPERATOR_ENV=.* GAFFER_REWORK_BUDGET_USD " "$CAP" && ok "the operator record reaches the server" || fail "the operator record is missing from the server env"
+OTHER_RECORDS="$(grep -v "^_GAFFER_OPERATOR_ENV=" "$CAP" | grep "^_GAFFER_" || true)"
+[ -n "$OTHER_RECORDS" ] && fail "the launcher's re-source bookkeeping leaked into the server env: $(grep '^_GAFFER_' "$CAP" | grep -v OPERATOR | cut -d= -f1 | head -3 | tr '\n' ' ')" || ok "no other _GAFFER_* bookkeeping in the server env"
+grep -q "could not read the setting names" <<<"$ERR" && fail "the setting-name reader failed: $ERR" || ok "the setting names were read from the schema (no warning)"
+# A schema the reader cannot load is reported, never silently ignored.
+mkdir -p "$WORK/badrunner/config"; printf '{ "settings": [' > "$WORK/badrunner/config/settings-schema.json"
+( source "$RUNNER_DIR/lib/dashboard.sh"; RUNNER_DIR="$WORK/badrunner" PATH="$BINDIR:$PATH" gaffer_dashboard_env_unset_flags ) 2>"$WORK/bad.err" >/dev/null
+grep -q "could not read the setting names" "$WORK/bad.err" && ok "an unreadable schema warns loudly (no silent || true)" || fail "an unreadable schema was swallowed: $(cat "$WORK/bad.err")"
 
 echo "== --lan binds every interface =="
 run_fg "$WORK/d2" --lan >/dev/null

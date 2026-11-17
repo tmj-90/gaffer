@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 //
 // DOM test for the SPA Health / ROI view (src/api/web/app.js renderHealth):
-//   - renders the ROI KPI row from /api/health (cost/feature, skill hit-rate,
-//     spend-by-kind, rework-cost share, measured-coverage %),
+//   - renders the wage bill's quiet row of ledger figures from /api/health (skill
+//     hit-rate, spend-by-kind, rework-cost share, measured-coverage %; the cost per
+//     shipped ticket is gone: the accepted-change tile carries the price, F-A4),
 //   - surfaces the two newly-wired sources (skill hit-rate detail + recall trend),
 //   - degrades gracefully when a source is unavailable (skills empty + recall
 //     available:false) — clean "—" / "not wired" cells, never a broken card.
@@ -148,7 +149,7 @@ describe("web: Health view", () => {
     healthPayload = FULL_HEALTH;
   });
 
-  it("renders the ROI KPI row and both wired-source detail panels", async () => {
+  it("renders the wage bill's ledger row and both wired-source detail panels", async () => {
     healthPayload = FULL_HEALTH;
     await loadApp();
 
@@ -158,26 +159,40 @@ describe("web: Health view", () => {
       /fit to play|treatment table|ledger/i,
     );
 
-    // ROI KPI row: five headline metrics from /api/health.
-    // One money format everywhere: dollars and cents.
-    expect(kpiValue("Cost / feature")).toBe("$1.00");
-    // "%" is part of the value now (statCell joins it, no "70 %" gap: audit A-32).
+    // The ledger figures left the scoreboard (F-A1): one quiet row in "Where the wages
+    // go", no sparkline (they are categories, not time: F-B1), no cost per shipped (F-A4).
+    const row = document.querySelector(".wages-panel .roi-row")!;
+    expect(row).not.toBeNull();
+    expect(document.querySelector(".physio-board .kpi")).toBeNull();
+    expect(kpiValue("Cost / feature")).toBeNull();
+    expect(document.body.textContent).not.toContain("per shipped");
     expect(kpiValue("Skill hit-rate")).toBe("70%");
     expect(kpiValue("Spend by kind")).toBe("70%"); // delivery 1.4 / 2.0 = 70%
     expect(kpiValue("Rework cost")).toBe("15%");
     expect(kpiValue("Measured coverage")).toBe("80%");
+    expect(row.querySelector(".spark, .spark-svg, .kpi-spark")).toBeNull();
 
-    // Skill hit-rate detail lists the per-skill rows.
-    const skillRows = document.querySelectorAll(".hrow");
-    const names = Array.from(skillRows).map((r) => r.querySelector(".hrow-name")?.textContent);
-    expect(names).toContain("run-tests");
-    expect(names).toContain("frontend-component");
+    // Skill hit-rate: rate rows sorted by applied (F-D1); under 10 selected the counts,
+    // greyed, never a rate.
+    const skillRows = [...document.querySelectorAll(".skill-panel .meter-row")];
+    expect(skillRows.map((r) => (r as HTMLElement).dataset.skill)).toEqual([
+      "run-tests",
+      "frontend-component",
+    ]);
+    expect(skillRows.map((r) => r.querySelector(".mr-fig")?.textContent)).toEqual([
+      "4 of 4",
+      "3 of 6",
+    ]);
+    expect(skillRows.every((r) => r.classList.contains("is-small"))).toBe(true);
 
-    // Recall-effectiveness panel is present with its figures + trend spark.
-    const body = document.body.textContent ?? "";
-    expect(body).toContain("Recall effectiveness");
-    expect(body).toContain("Effectiveness");
-    expect(document.querySelector(".health-spark svg")).not.toBeNull();
+    // Recall effectiveness is one measure tile (F-D4) with a segmented bar of the outcomes;
+    // two days of history is no sparkline.
+    const recall = document.querySelector(".recall-panel")!;
+    expect(recall.querySelector(".mt-recall .mt-val")?.textContent).toBe("75%");
+    expect(recall.querySelector(".mt-recall .mt-n")?.textContent).toBe("3 of 4 clean");
+    expect(recall.querySelector(".seg-bar")?.getAttribute("aria-label")).toContain("Clean 3");
+    expect(recall.querySelector(".spark")).toBeNull();
+    expect(document.querySelector(".health-spark")).toBeNull();
   });
 
   it("shows 'Paused until <time>: usage limit' when the runner is paused on a usage window", async () => {
@@ -206,7 +221,7 @@ describe("web: Health view", () => {
     expect(text).toContain("You've hit your session limit");
     expect(text).toContain("the reset the model reported");
     // The rest of the page still renders under it.
-    expect(kpiValue("Cost / feature")).toBe("$1.00");
+    expect(kpiValue("Skill hit-rate")).toBe("70%");
   });
 
   it("says 'rate limit' for a rate-limit pause, and the default wait when no reset was reported", async () => {
@@ -261,18 +276,28 @@ describe("web: Health view", () => {
     healthPayload = DEGRADED_HEALTH;
     await loadApp();
 
-    // Cost/feature has no shipped divisor and skill hit-rate has no telemetry —
-    // both render a clean em dash, not a broken card.
-    expect(kpiValue("Cost / feature")).toBe("—");
-    expect(kpiValue("Skill hit-rate")).toBe("—");
-    expect(kpiValue("Spend by kind")).toBe("—");
+    // No telemetry, no spend, no ledger rows: each a dash with its reason, never a zero
+    // (F-E3: rework share and coverage used to read 0%).
+    expect(kpiValue("Skill hit-rate")).toBe("\u2014");
+    expect(kpiValue("Spend by kind")).toBe("\u2014");
+    expect(kpiValue("Rework cost")).toBe("\u2014");
+    expect(kpiValue("Measured coverage")).toBe("\u2014");
+    const reasons = [...document.querySelectorAll(".roi-row .kpi-reason")].map(
+      (r) => r.textContent,
+    );
+    expect(reasons).toEqual([
+      "no skill telemetry yet",
+      "no spend recorded",
+      "no spend recorded",
+      "no ledger rows yet",
+    ]);
 
     // The recall panel shows the "not wired" reason, never a crash.
     const body = document.body.textContent ?? "";
     expect(body).toContain("Recall effectiveness");
     expect(body).toMatch(/not wired|not configured/i);
     // No skill rows rendered; the empty-state note stands in.
-    expect(document.querySelectorAll(".hrow").length).toBe(0);
+    expect(document.querySelectorAll(".skill-panel .meter-row").length).toBe(0);
     expect(body).toMatch(/No skill telemetry/i);
   });
 });

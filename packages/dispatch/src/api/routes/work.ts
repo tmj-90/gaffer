@@ -261,8 +261,8 @@ export interface PollablePending {
  * is registered; an epic's acceptance ticket is tested with it off too), the intake clarify
  * pass CLARIFY_DRAFTS_WHEN_IDLE (default off; it runs only when nothing is ready), the
  * merge lane AUTO_MERGE (default off; GAFFER_MERGE_LANE=0 turns the lane off), partly
- * landed tickets included. The dashboard's env
- * carries the operator's real overrides plus settings.json and the mode preset
+ * landed tickets included. The dashboard's env carries the operator's real overrides
+ * plus the fourteen settings and the values the runner's own config derives from them
  * (applySettingsToEnv), so these agree with what the spawned tick will see.
  */
 export function pollablePending(wg: Dispatch, env: NodeJS.ProcessEnv): PollablePending {

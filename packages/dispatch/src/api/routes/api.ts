@@ -15,17 +15,32 @@ import { buildOpenApiDocument } from "../openapi/spec.js";
 import { adminAuth, resolveRequestAuth } from "../auth.js";
 import { DispatchError, notFound } from "../../util/errors.js";
 import {
+  autonomyLiftBody,
   autonomyPolicyBody,
   createPrincipalBody,
+  resignPrincipalsBody,
+  resignAutonomyPoliciesBody,
+  resignTicketRisksBody,
   idleLoopsBody,
   memoryLoreQuery,
   rejectLoreBody,
   settingsBody,
+  removeOldKeysBody,
   updateClubBody,
   updateSquadAgentBody,
 } from "../schemas.js";
 import { isolationStatusForRequest } from "../isolation.js";
-import { listSettings, readSecretSetting, settingProblems, writeSettings } from "../settings.js";
+import {
+  applyNotifyChange,
+  readSecretSetting,
+  readSettingsFile,
+  removeOldKeys,
+  resolveSettingsPath,
+  settingProblems,
+  settingsReport,
+  writeSettings,
+} from "../settings.js";
+import { requestAgentFilter } from "../scopeGate.js";
 import { apiActor, apiAuth, apiPrincipal, isSharedOperator } from "./context.js";
 import { forgetLoreDrafts, forgetLoreStatus, routeReadModels } from "./readModels.js";
 
@@ -45,26 +60,34 @@ export async function routeApi(
   req: IncomingMessage,
   res: ServerResponse,
 ): Promise<void> {
-  // GET/POST /api/settings — the UI-editable factory config layer. GET reports
-  // every known setting (file value + envLocked + group); POST merges + writes
-  // settings.json atomically, refusing env-locked keys (env always wins) and
-  // dropping anything outside the known allow-list. Behind the same bearer
-  // gate + security headers as the rest of the control plane (checked above).
+  // GET /api/settings: the fourteen settings (value, origin, env-lock) and what the
+  // runner's own config derives from them (derived, migration, overrides, the removal
+  // plan); secrets masked. POST (or PUT) writes settings.json atomically: only the
+  // fourteen, validated as the runner validates them; any other key refuses the whole
+  // write, naming the setting that decides it now. Behind the same bearer gate, scope
+  // gate (an admin-level write) and security headers as the rest of the control plane.
   if (segments.length === 2 && segments[1] === "settings") {
     if (method === "GET") {
       // The isolation posture rides along (runner/gaffer sandbox-status, probed on each
-      // load): the Sandbox group shows it as a read-only line. The load never waits
-      // long for the probe: it answers with the posture it has and the fresh probe
-      // shows on the next load (isolation.ts).
+      // load): the Sandbox control shows it as a read-only line. The load never waits
+      // long for the probe (isolation.ts).
       const isolation = await isolationStatusForRequest();
-      sendJson(res, 200, { settings: listSettings(), isolation });
+      sendJson(res, 200, { ...settingsReport(), isolation });
       return;
     }
-    if (method === "POST") {
+    if (method === "POST" || method === "PUT") {
       const body = settingsBody.parse(await readJsonBody(req));
-      // One invalid value refuses the whole write (422 naming each field and why), so
-      // a bad field is never half-saved beside good ones and never silently dropped.
-      const problems = settingProblems(body.settings);
+      const updates: Record<string, string> = { ...body.settings };
+      if (body.notify !== undefined) {
+        const stored = readSettingsFile(resolveSettingsPath())["GAFFER_NOTIFY"] ?? "";
+        updates["GAFFER_NOTIFY"] = applyNotifyChange(
+          updates["GAFFER_NOTIFY"] ?? stored,
+          body.notify,
+        );
+      }
+      // One refused key or value refuses the whole write (422 naming each and why), so a
+      // bad field is never half-saved beside good ones and never silently dropped.
+      const problems = settingProblems(updates);
       if (problems.length > 0) {
         throw new DispatchError(
           "VALIDATION_ERROR",
@@ -72,15 +95,14 @@ export async function routeApi(
           { invalid: problems },
         );
       }
-      const result = writeSettings(body.settings);
-      // A saved SANDBOX_PROVIDER changes the posture: probe again with the new env and
-      // wait a little longer for that answer, since the person just changed it.
+      const result = writeSettings(updates);
+      // A saved GAFFER_SANDBOX changes the posture: probe again and wait a little longer.
       const isolation = await isolationStatusForRequest(process.env, {
         fresh: true,
         waitMs: 4_000,
       });
       sendJson(res, 200, {
-        settings: listSettings(),
+        ...settingsReport(),
         isolation,
         written: result.written,
         rejected: result.rejected,
@@ -90,6 +112,18 @@ export async function routeApi(
       return;
     }
     return methodNotAllowed(res);
+  }
+  // POST /api/settings/remove-old-keys: the person's removal act. Rewrites settings.json
+  // keeping only the fourteen, after the page showed exactly what goes (the body repeats
+  // those keys; a file that changed since is refused with 409 and nothing is written).
+  // Same authority as editing settings (the full token; an admin-level write for a
+  // principal, scopeGate.ts).
+  if (segments.length === 3 && segments[1] === "settings" && segments[2] === "remove-old-keys") {
+    if (method !== "POST") return methodNotAllowed(res);
+    const body = removeOldKeysBody.parse(await readJsonBody(req));
+    const removed = removeOldKeys(body);
+    sendJson(res, 200, { ...settingsReport(), removed });
+    return;
   }
   // GET /api/settings/secret/:key — an ADMIN principal reads a secret-bearing setting
   // back (external review #5). Every other principal sees only configured + host in
@@ -181,6 +215,28 @@ export async function routeApi(
     sendJson(res, 200, { principal });
     return;
   }
+  // SEALED PRINCIPALS: GET /api/principal-signatures lists the active principals this
+  // factory does not honour (created before signing, restored from a backup, or written
+  // outside the factory), with why, and the fingerprint of that list; POST
+  // /api/principal-signatures/resign is a person's deliberate re-sign, operator only like
+  // minting (a principal token is refused); `all` needs the fingerprint of the list the
+  // person reviewed.
+  if (segments.length === 2 && segments[1] === "principal-signatures") {
+    if (method !== "GET") return methodNotAllowed(res);
+    sendJson(res, 200, wg.reviewUnsignedPrincipals());
+    return;
+  }
+  if (segments.length === 3 && segments[1] === "principal-signatures" && segments[2] === "resign") {
+    if (method !== "POST") return methodNotAllowed(res);
+    if (refuseIfPrincipal(req, res)) return;
+    const body = resignPrincipalsBody.parse(await readJsonBody(req));
+    sendJson(
+      res,
+      200,
+      wg.resignPrincipals({ names: body.names, all: body.all, confirm: body.confirm }, apiActor()),
+    );
+    return;
+  }
   // SQUAD — the operator's team identity for the dashboard's Match Day view.
   //   GET   /api/club                — the club (name / short name / kit; "Gaffer" default).
   //   PATCH /api/club                — partial update; null or "" clears a field.
@@ -205,7 +261,13 @@ export async function routeApi(
   }
   if (segments.length === 2 && segments[1] === "squad") {
     if (method !== "GET") return methodNotAllowed(res);
-    sendJson(res, 200, { club: wg.getClub(), agents: wg.listSquad() });
+    // PRINCIPAL SCOPES: a scoped principal sees the agents on its tickets only.
+    const seen = requestAgentFilter(wg);
+    const agents = wg.listSquad();
+    sendJson(res, 200, {
+      club: wg.getClub(),
+      agents: seen ? agents.filter((a) => seen(a.agent_id)) : agents,
+    });
     return;
   }
   if (segments.length === 4 && segments[1] === "squad" && segments[2] === "agents") {
@@ -280,6 +342,93 @@ export async function routeApi(
       apiActor(),
     );
     sendJson(res, 200, { policy });
+    return;
+  }
+
+  // SEALED AUTONOMY: what is not signed, and a person's re-sign.
+  //   GET  /api/autonomy/signatures             policy rows not signed (off until signed)
+  //   POST /api/autonomy/signatures/resign      a person re-signs reviewed rows
+  //   GET  /api/autonomy/risk-signatures        open tickets whose risk is not signed
+  //   POST /api/autonomy/risk-signatures/resign a person re-signs reviewed ticket risks
+  // scopeGate.ts asks a repo-level write (admin, unscoped) of a principal; the service also
+  // refuses any actor that is not a person and any principal that is not an active,
+  // unscoped admin with full capability. No MCP tool reaches them.
+  if (segments.length === 3 && segments[1] === "autonomy" && segments[2] === "signatures") {
+    if (method !== "GET") return methodNotAllowed(res);
+    sendJson(res, 200, wg.reviewUnsignedAutonomyPolicies());
+    return;
+  }
+  if (
+    segments.length === 4 &&
+    segments[1] === "autonomy" &&
+    segments[2] === "signatures" &&
+    segments[3] === "resign"
+  ) {
+    if (method !== "POST") return methodNotAllowed(res);
+    const body = resignAutonomyPoliciesBody.parse(await readJsonBody(req));
+    sendJson(
+      res,
+      200,
+      wg.resignAutonomyPolicies(
+        {
+          ...(body.ids ? { ids: body.ids } : {}),
+          ...(body.all !== undefined ? { all: body.all } : {}),
+          confirm: body.confirm,
+        },
+        apiActor(),
+        isSharedOperator() ? null : apiPrincipal(),
+      ),
+    );
+    return;
+  }
+  if (segments.length === 3 && segments[1] === "autonomy" && segments[2] === "risk-signatures") {
+    if (method !== "GET") return methodNotAllowed(res);
+    sendJson(res, 200, wg.reviewUnsignedTicketRisks());
+    return;
+  }
+  if (
+    segments.length === 4 &&
+    segments[1] === "autonomy" &&
+    segments[2] === "risk-signatures" &&
+    segments[3] === "resign"
+  ) {
+    if (method !== "POST") return methodNotAllowed(res);
+    const body = resignTicketRisksBody.parse(await readJsonBody(req));
+    sendJson(
+      res,
+      200,
+      wg.resignTicketRisks(
+        {
+          ...(body.tickets ? { tickets: body.tickets } : {}),
+          ...(body.all !== undefined ? { all: body.all } : {}),
+          confirm: body.confirm,
+        },
+        apiActor(),
+        isSharedOperator() ? null : apiPrincipal(),
+      ),
+    );
+    return;
+  }
+
+  // AUTONOMY STEP-DOWN: POST /api/autonomy/lift, a person gives autonomy back for one
+  // (repo x risk x gate). scopeGate.ts asks a repo-level write (admin) of a principal; the
+  // service refuses any actor that is not a person and any principal that is revoked or
+  // read-only. No MCP tool reaches it.
+  if (segments.length === 3 && segments[1] === "autonomy" && segments[2] === "lift") {
+    if (method !== "POST") return methodNotAllowed(res);
+    const body = autonomyLiftBody.parse(await readJsonBody(req));
+    const lifted = wg.liftAutonomyStepDown(
+      {
+        repo: body.repo_id,
+        riskLevel: body.risk_level,
+        gate: body.gate,
+        how: body.how,
+        reason: body.reason ?? null,
+      },
+      apiActor(),
+      { principal: isSharedOperator() ? null : apiPrincipal() },
+    );
+    sendJson(res, 200, { lifted: { event_id: lifted.eventId, how: lifted.how } });
     return;
   }
 
@@ -407,15 +556,35 @@ const STREAM_POLL_MS = 1000;
 const STREAM_HEARTBEAT_MS = 15_000;
 /** Max events flushed per tick — a burst is drained across ticks, never unbounded. */
 const STREAM_BATCH = 200;
-/** Concurrent stream cap: this is a single-operator control plane, not a broadcast bus. */
-const STREAM_MAX_CLIENTS = 16;
+/**
+ * Concurrent stream caps: this is a single-operator control plane, not a broadcast bus.
+ * The cap is PER CREDENTIAL with a ceiling on everyone else, so a holder of the read
+ * token (the one handed to phones) or of a principal token cannot starve the operator's
+ * live feed: the shared full token (or a server with auth off) has its own
+ * {@link STREAM_MAX_OPERATOR} slots that no other credential counts against; every other
+ * credential gets {@link STREAM_MAX_PER_CREDENTIAL}, and all of them together
+ * {@link STREAM_MAX_OTHERS}.
+ */
+const STREAM_MAX_OPERATOR = 16;
+const STREAM_MAX_PER_CREDENTIAL = 4;
+const STREAM_MAX_OTHERS = 16;
 /**
  * Hard lifetime of one stream (ms). The credential is re-checked on every tick, so
  * this is the backstop that forces a periodic re-authentication; the dashboard
  * reconnects with ?since=<last seq> and loses nothing.
  */
 const STREAM_MAX_LIFETIME_MS = 60 * 60 * 1000;
-let streamClients = 0;
+/** Open streams per credential key ("operator", "read", "principal:<id>"). */
+const streamsByCredential = new Map<string, number>();
+let otherStreams = 0;
+
+/** The stream-cap key of the request's credential. */
+function streamCredential(): string {
+  const auth = apiAuth();
+  if (!auth || auth.via === "disabled" || auth.via === "shared_full") return "operator";
+  if (auth.via === "principal" && auth.principal) return `principal:${auth.principal.principal.id}`;
+  return auth.via === "shared_read" ? "read" : `other:${auth.via}`;
+}
 /** How to end each open stream (see {@link endEventStreams}). */
 const openStreams = new Set<(note: string) => void>();
 
@@ -433,7 +602,14 @@ export function endEventStreams(note = "server shutting down"): number {
 }
 
 function streamEvents(wg: Dispatch, url: URL, req: IncomingMessage, res: ServerResponse): void {
-  if (streamClients >= STREAM_MAX_CLIENTS) {
+  const credential = streamCredential();
+  const operator = credential === "operator";
+  const mine = streamsByCredential.get(credential) ?? 0;
+  if (
+    operator
+      ? mine >= STREAM_MAX_OPERATOR
+      : mine >= STREAM_MAX_PER_CREDENTIAL || otherStreams >= STREAM_MAX_OTHERS
+  ) {
     sendJson(res, 503, errorBody("STREAM_BUSY", "Too many concurrent event streams."));
     return;
   }
@@ -459,7 +635,8 @@ function streamEvents(wg: Dispatch, url: URL, req: IncomingMessage, res: ServerR
   const beyond = requested > latest;
   let cursor = beyond ? latest : requested;
 
-  streamClients += 1;
+  streamsByCredential.set(credential, (streamsByCredential.get(credential) ?? 0) + 1);
+  if (!operator) otherStreams += 1;
   res.writeHead(200, {
     "content-type": "text/event-stream; charset=utf-8",
     "cache-control": "no-cache, no-transform",
@@ -478,7 +655,10 @@ function streamEvents(wg: Dispatch, url: URL, req: IncomingMessage, res: ServerR
   const stop = (note?: string): void => {
     if (closed) return;
     closed = true;
-    streamClients -= 1;
+    const left = (streamsByCredential.get(credential) ?? 1) - 1;
+    if (left > 0) streamsByCredential.set(credential, left);
+    else streamsByCredential.delete(credential);
+    if (!operator) otherStreams -= 1;
     openStreams.delete(stop);
     clearInterval(poll);
     clearInterval(beat);
@@ -555,7 +735,7 @@ function refuseIfPrincipal(_req: IncomingMessage, res: ServerResponse): boolean 
     403,
     errorBody(
       "PRINCIPAL_ADMIN_REQUIRED",
-      "Only the shared operator token (or the local CLI) may create or revoke principals.",
+      "Only the shared operator token (or the local CLI) may create, revoke or re-sign principals.",
     ),
   );
   return true;

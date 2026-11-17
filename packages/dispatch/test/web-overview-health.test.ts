@@ -153,15 +153,35 @@ describe("web: Overview cycle-time/throughput from /api/health", () => {
     };
   });
 
+  it("the Overview asks for the lighter summary read; Health asks for its window", async () => {
+    const urls = () =>
+      (fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls
+        .map((c) => String(c[0]))
+        .filter((u) => u.includes("/api/health"));
+    await loadApp();
+    expect(urls().length).toBeGreaterThan(0);
+    // The Overview reads the ledger figures and the event log only: never the full payload.
+    expect(urls().every((u) => u.includes("view=summary"))).toBe(true);
+
+    vi.resetModules();
+    document.body.innerHTML = "";
+    stubFetch();
+    mountShell("#/health");
+    await loadApp();
+    // Health sends the window its four measures and the Referee's record cover.
+    expect(urls().length).toBeGreaterThan(0);
+    expect(urls().every((u) => /window_days=30\b/.test(u) && !u.includes("view="))).toBe(true);
+  });
+
   it("falls back to a zeroed shape when /api/health is unavailable", async () => {
     healthPayload = null;
     ticketsPayload = { tickets: [] };
     location.hash = "#/health";
     await loadApp();
 
-    // With no health payload the cards still render (zeroed), never crashing.
-    expect(kpiValue("Cycle time")).toBe("0.0");
-    expect(kpiValue("Throughput")).toBe("0");
+    // With no health payload the cells still render, as dashes, never a zero (F-E3).
+    expect(kpiValue("Cycle time")).toBe("\u2014");
+    expect(kpiValue("Throughput")).toBe("\u2014");
 
     // Restore for other tests.
     healthPayload = {
@@ -170,5 +190,39 @@ describe("web: Overview cycle-time/throughput from /api/health", () => {
       throughput: { last7: 9, prev7: 3, series: zeros14() },
     };
     ticketsPayload = { tickets: [] };
+  });
+
+  it("reads the summary over Health's 30-day window and labels the accepted-change price", async () => {
+    healthPayload = {
+      total_usd: 12,
+      cost_per_shipped_usd: 3,
+      shipped_count: 4,
+      accepted_change: {
+        window_days: 30,
+        accepted_changes: 4,
+        cost_per_accepted_change_usd: 2.5,
+        attempts_per_accepted_change: 1.5,
+      },
+      cycle_time: { median_days: 3.5, series: zeros14() },
+      throughput: { last7: 9, prev7: 3, series: zeros14() },
+    };
+    await loadApp();
+    for (let i = 0; i < 8; i++) await tick();
+    const urls = (fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls.map((c) =>
+      String(c[0]),
+    );
+    const health = urls.filter((u) => u.includes("/api/health"));
+    expect(health.length).toBeGreaterThan(0);
+    for (const u of health) {
+      expect(u).toContain("view=summary");
+      expect(u).toContain("window_days=30");
+    }
+    const facts = [...document.querySelectorAll(".wage-facts > div")].find(
+      (d) => d.querySelector("dt")?.textContent === "Per accepted change",
+    )!;
+    expect(facts.querySelector("dd")?.textContent).toContain("$2.50");
+    expect(facts.querySelector("small")?.textContent).toBe(
+      "last 30 days · 4 accepted · 1.5 attempts each, every attempt counted",
+    );
   });
 });

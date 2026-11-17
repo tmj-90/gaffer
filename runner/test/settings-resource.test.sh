@@ -50,7 +50,7 @@ CFG="$RUNNER_DIR/factory.config.sh"
 cat > "$WORK/probe.sh" <<'PROBESH'
 #!/usr/bin/env bash
 n="${1:-1}"; while [ "$n" -gt 0 ]; do source "$CFG" >/dev/null 2>&1; n=$((n - 1)); done
-printf '%s|%s|%s|%s|%s|%s|%s\n' "${GAFFER_DAILY_BUDGET_USD:-}" "${MAX_TICKS_PER_DAY:-}" "${GAFFER_MAX_TURNS:-}" "${REVIEW_MODE:-}" "${GAFFER_CONCURRENCY:-}" "${DRY_RUN:-}" "${GAFFER_REWORK_BUDGET_USD:-}"
+printf '%s|%s|%s|%s|%s|%s|%s\n' "${GAFFER_DAILY_BUDGET_USD:-}" "${MAX_TICKS_PER_DAY:-}" "${GAFFER_MAX_TURNS:-}" "${GAFFER_TICK_TIMEOUT:-}" "${GAFFER_CONCURRENCY:-}" "${DRY_RUN:-}" "${GAFFER_REWORK_BUDGET_USD:-}"
 PROBESH
 cat > "$WORK/mode.sh" <<'MODESH'
 #!/usr/bin/env bash
@@ -58,12 +58,15 @@ source "$CFG" >/dev/null 2>&1; echo "$REVIEW_MODE ${STRICT_MODE:-} ${GAFFER_STRI
 MODESH
 
 echo "== 1-3. parent → child re-source =="
-printf '{"GAFFER_DAILY_BUDGET_USD":"5","MAX_TICKS_PER_DAY":"40","GAFFER_MAX_TURNS":"30","REVIEW_MODE":"human","GAFFER_REWORK_BUDGET_USD":"4"}\n' > "$WORK/data/settings.json"
+# MAX_TICKS_PER_DAY, GAFFER_MAX_TURNS and GAFFER_REWORK_BUDGET_USD are old keys now: each
+# is stricter than what the settings derive (50, 200, none), so the stricter reading still
+# applies it. GAFFER_EFFORT is a setting; GAFFER_TICK_TIMEOUT is what it derives.
+printf '{"GAFFER_DAILY_BUDGET_USD":"5","MAX_TICKS_PER_DAY":"40","GAFFER_MAX_TURNS":"30","GAFFER_EFFORT":"small","GAFFER_REWORK_BUDGET_USD":"4"}\n' > "$WORK/data/settings.json"
 OUT="$(env -i PATH="$PATH" HOME="$HOME" GAFFER_DATA="$WORK/data" GAFFER_MAX_TURNS=55 CFG="$CFG" W="$WORK" bash -c '
   source "$CFG" >/dev/null 2>&1
   echo "P:$(bash "$W/probe.sh" 0)"
   # The dashboard edits the file while the parent keeps running.
-  printf "{\"GAFFER_DAILY_BUDGET_USD\":\"1\",\"MAX_TICKS_PER_DAY\":\"3\",\"GAFFER_MAX_TURNS\":\"10\",\"REVIEW_MODE\":\"agent\",\"GAFFER_CONCURRENCY\":\"2\"}\n" > "$GAFFER_DATA/settings.json"
+  printf "{\"GAFFER_DAILY_BUDGET_USD\":\"1\",\"MAX_TICKS_PER_DAY\":\"3\",\"GAFFER_MAX_TURNS\":\"10\",\"GAFFER_EFFORT\":\"large\",\"GAFFER_CONCURRENCY\":\"2\"}\n" > "$GAFFER_DATA/settings.json"
   echo "C:$(bash "$W/probe.sh")"
   echo "O:$(DRY_RUN=0 bash "$W/probe.sh")"
   echo "G:$(bash -c "source \"\$CFG\" >/dev/null 2>&1; bash \"\$W/probe.sh\" 2")"
@@ -73,12 +76,12 @@ OUT="$(env -i PATH="$PATH" HOME="$HOME" GAFFER_DATA="$WORK/data" GAFFER_MAX_TURN
 P="$(sed -n 's/^P://p' <<<"$OUT")"; C="$(sed -n 's/^C://p' <<<"$OUT")"; O="$(sed -n 's/^O://p' <<<"$OUT")"
 G="$(sed -n 's/^G://p' <<<"$OUT")"; M="$(sed -n 's/^M://p' <<<"$OUT")"
 IFS='|' read -r p_day p_max p_turns p_rev _ _ p_rework <<<"$P"
-[ "$p_day|$p_max|$p_rev|$p_rework" = "5|40|human|4" ] && ok "parent applied settings.json" || fail "parent: $P"
+[ "$p_day|$p_max|$p_rev|$p_rework" = "5|40|900|4" ] && ok "parent applied settings.json" || fail "parent: $P"
 [ "$p_turns" = 55 ] && ok "parent: the operator's GAFFER_MAX_TURNS wins over the file" || fail "parent turns: $P"
 IFS='|' read -r c_day c_max c_turns c_rev c_conc _ c_rework <<<"$C"
 [ "$c_day" = 1 ] && ok "child sees the edited daily USD cap (5 → 1)" || fail "child daily cap stale: $C"
 [ "$c_max" = 3 ] && ok "child sees the edited MAX_TICKS_PER_DAY (40 → 3)" || fail "child MAX_TICKS_PER_DAY stale: $C"
-[ "$c_rev" = agent ] && ok "child sees the edited REVIEW_MODE (human → agent)" || fail "child REVIEW_MODE stale: $C"
+[ "$c_rev" = 3600 ] && ok "child sees what the edited GAFFER_EFFORT derives (small → large: GAFFER_TICK_TIMEOUT 900 → 3600)" || fail "child derived value stale: $C"
 [ "$c_conc" = 2 ] && ok "a key the parent held at an EXPORTED default (GAFFER_CONCURRENCY) takes the new file value" || fail "child concurrency stale: $C"
 [ "$c_rework" != 4 ] && ok "a key removed from settings.json falls back to its default (rework budget no longer 4)" || fail "child kept the removed GAFFER_REWORK_BUDGET_USD: $C"
 [ "$c_turns" = 55 ] && ok "child: the operator's GAFFER_MAX_TURNS still wins over the file" || fail "child turns: $C"
@@ -130,8 +133,14 @@ n="$(grep -c '^tick' "$STUB_CALLS")"
 # Apply every edit due by now, not only the one numbered exactly n: two pool
 # workers can both append before either counts, so neither sees n=1 and the
 # edit is never applied. Idempotent: the highest due edit wins, as in sequence.
+# Written as the Settings panel writes it (a temp file, then a rename): a plain cp
+# truncates first, and a worker that re-reads the file in that instant sees an empty
+# one, which means "nothing configured", so the cap is the default and a tick the
+# lowered cap forbids is admitted (seen once on a loaded machine).
 i=1; while [ "$i" -le "$n" ]; do
-  [ -f "$SEQ/$i.json" ] && cp "$SEQ/$i.json" "$GAFFER_DATA/settings.json"
+  if [ -f "$SEQ/$i.json" ]; then
+    cp "$SEQ/$i.json" "$GAFFER_DATA/settings.json.tmp.$" && mv -f "$GAFFER_DATA/settings.json.tmp.$" "$GAFFER_DATA/settings.json"
+  fi
   i=$((i + 1))
 done
 # STUB_COST: each tick "spends" this many dollars in today's usage ledger.
@@ -189,13 +198,15 @@ printf '{"MAX_TICKS_PER_DAY":"1"}\n' > "$S/1.json"
 run_loop "$L" "$S" MAX_TICKS=3 MAX_TICKS_PER_DAY=40 >/dev/null
 [ "$(ticks_run)" = 3 ] && ok "an operator-env MAX_TICKS_PER_DAY is not overridden by a mid-run file edit" || fail "operator env lost: ran $(ticks_run)"
 
-# 5e. Fail closed: a cap that cannot be re-read as an integer stops the run.
+# 5e. Fail closed: a cap that cannot be re-read stops the run. (An old MAX_TICKS_PER_DAY
+# key that is not a number is ignored now, the derived 50 applies; a setting with an
+# unknown value stops the config, so the loop cannot re-read its caps.)
 L="$WORK/l5"; S="$WORK/s5"; mkdir -p "$L" "$S"
 printf '{"MAX_TICKS_PER_DAY":"40"}\n' > "$L/settings.json"
-printf '{"MAX_TICKS_PER_DAY":"lots"}\n' > "$S/1.json"
+printf '{"GAFFER_DAILY_BUDGET_USD":"lots"}\n' > "$S/1.json"
 OUT5="$(run_loop "$L" "$S" MAX_TICKS=4)"
 [ "$(ticks_run)" = 1 ] && grep -q 'could not re-read the per-day caps' <<<"$OUT5" \
-  && ok "an unreadable cap (MAX_TICKS_PER_DAY=lots) stops the loop, logged (fail closed)" \
+  && ok "an unreadable cap (GAFFER_DAILY_BUDGET_USD=lots) stops the loop, logged (fail closed)" \
   || fail "unreadable cap: ran $(ticks_run): $(tail -3 <<<"$OUT5")"
 
 # 5f. Pool path (GAFFER_CONCURRENCY=2): each worker re-reads the cap before admission.

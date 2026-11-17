@@ -6,6 +6,7 @@
 //  - #/create hosts the same Plan-a-build panel inline (not a modal), beside the
 //    one-ticket form, and gives it back to its sheet when the operator leaves.
 
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -45,7 +46,7 @@ const DEPS: Record<string, { depends_on_ticket_id: string; number: number; satis
     "t-4": [{ depends_on_ticket_id: "t-2", number: 2, satisfied: false }],
   };
 
-function stubFetch(): void {
+function stubFetch(nodes: unknown[] = [EPIC]): void {
   vi.stubGlobal(
     "fetch",
     vi.fn(
@@ -68,7 +69,7 @@ function stubFetch(): void {
             events: [],
           });
         }
-        if (url.includes("/scope/nodes")) return json({ nodes: [EPIC] });
+        if (url.includes("/scope/nodes")) return json({ nodes });
         if (url.includes("/tickets")) return json({ tickets: TICKETS });
         if (url.includes("/repositories")) return json({ repositories: [] });
         if (url.includes("/plan-sessions")) return json({ session: null });
@@ -119,6 +120,8 @@ describe("web: Match Day season and Plan-a-build page", () => {
       (b) => b.textContent === "Unblock #2…",
     );
     expect(unblock).toBeTruthy();
+    // A draw card's number is the shared ticketRef at card size (A-20, A-21).
+    expect(document.querySelector(".dag-node .dn-num .tref")?.className).toBe("tref tref-s");
     // One ticket card per ticket (the phone layout no longer duplicates them).
     expect(document.querySelectorAll(".dag-node").length).toBe(5);
     // Next fixture: only a ready ticket whose dependencies are all done. #4 is
@@ -126,6 +129,25 @@ describe("web: Match Day season and Plan-a-build page", () => {
     const next = document.querySelector(".epic-next")?.textContent || "";
     expect(next).toContain("#5 Remind the shopper");
     expect(next).not.toContain("#4");
+  });
+
+  it("an empty season has one primary: Plan a build in the head, a link in the empty line", async () => {
+    vi.unstubAllGlobals();
+    stubFetch([]);
+    mountShell("#/epics");
+    await import(`${pathToFileURL(APP_JS).href}?t=${Date.now()}`);
+    await settle();
+
+    const empty = document.querySelector("#app .empty-state")!;
+    expect(empty.querySelector(".es-title")?.textContent).toBe("No campaigns on the fixture list.");
+    // One primary button per view (A-43): the view head's Plan a build.
+    const primaries = [...document.querySelectorAll("#app .btn.primary")];
+    expect(primaries.map((b) => b.textContent)).toEqual(["Plan a build"]);
+    expect(empty.querySelector(".btn.primary")).toBeNull();
+    const plan = [...empty.querySelectorAll("button")].find(
+      (b) => b.textContent === "Plan a build",
+    );
+    expect(plan?.className).toBe("btn-link");
   });
 
   it("hosts Plan a build inline on #/create and hands it back to the sheet on leaving", async () => {
@@ -161,5 +183,54 @@ describe("web: Match Day season and Plan-a-build page", () => {
     trigger.click();
     await tick();
     expect(back.closest(".pb-scrim")!.classList.contains("open")).toBe(true);
+  });
+
+  it("the table of campaigns is the shared dataTable: names wrap, the score is numeric", async () => {
+    mountShell("#/epics");
+    const mod = await import(
+      `${pathToFileURL(path.join(path.dirname(APP_JS), "js/views/epics.js")).href}?t=${Date.now()}`
+    );
+    const season = (id: string, name: string, done: number, n: number) => ({
+      epic: { id, name },
+      members: Array.from({ length: n }, (_, i) => ({ id: `${id}-${i}`, number: i + 1 })),
+      byPhase: new Map(),
+      phases: [],
+      done,
+      held: [],
+      heldIds: new Set(),
+      waits: [],
+      needs: [],
+      nextUp: [],
+      liveIdx: 0,
+      won: false,
+    });
+    const long = "Due dates and reminders for every shared list in the household";
+    const card = mod.seasonTable([season("e1", long, 3, 6), season("e2", "Labels", 0, 0)]);
+    const table = card.querySelector("table.data-table")!;
+    expect(table).not.toBeNull();
+    expect(table.querySelector("caption")?.textContent).toMatch(/campaign/i);
+    const nums = [...table.querySelectorAll("tbody td.dt-num")].map((n) => n.textContent);
+    // "3 of 6" with its count; a campaign with no tickets is a dash with the reason.
+    expect(nums[0]).toBe("3 of 6");
+    expect(table.querySelectorAll("tbody td.dt-num .dt-missing")).toHaveLength(1);
+    // The whole name is the row head's text: nothing cuts it.
+    expect(table.querySelector("tbody th[scope='row'] a.ep-t-name")?.textContent).toBe(long);
+    const css = readFileSync(
+      path.resolve(process.cwd(), "src/api/web/css/views/epics.css"),
+      "utf8",
+    );
+    expect(css).not.toMatch(/ep-t-name[^{]*\{[^}]*text-overflow: ellipsis/);
+    // The shared table's row head is nowrap; the campaign name opts back into wrapping,
+    // or a long name ran past a phone's stacked card and was cut by its scroll box.
+    const nameRule = /\.ep-season \.ep-t-name \{([^}]*)\}/.exec(css)![1]!;
+    expect(nameRule).toMatch(/white-space:\s*normal/);
+    // On a phone a draw card's long status wraps under its number, inside its lane.
+    const phone = css.slice(css.indexOf("@media (max-width: 760px)"));
+    expect(/\.ep-ties \{([^}]*)\}/.exec(phone)?.[1]).toMatch(
+      /grid-template-columns:\s*minmax\(0, 1fr\)/,
+    );
+    expect(/\.dn-top \{([^}]*)\}/.exec(phone)?.[1]).toMatch(/flex-wrap:\s*wrap/);
+    // A reference table: a plain head, no block (A-02, A-03).
+    expect(card.querySelector(".panel-head.block")).toBeNull();
   });
 });

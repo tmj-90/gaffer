@@ -1,15 +1,17 @@
 // Review comments (A1), Fix these (A2), since your review (A3), the DoD and AC checklists.
 // Moved verbatim from app.js (the entry); the module map is in app.js.
 
+import { table } from "../lookup.js";
 import { agentWho, readOnly, roLock } from "../access.js";
 import { api } from "../api.js";
 import { agentNames, squad } from "../club.js";
 import { safeHttpUrl, splitDiffFiles } from "../diff.js";
 import { el } from "../dom.js";
-import { fmtTime, plural } from "../format.js";
+import { fmtTime, money, plural } from "../format.js";
 import { clockTime } from "../freshness.js";
-import { badge, glyph, ycard } from "../icons.js";
+import { agentChip, badge, ycard } from "../icons.js";
 import { appState } from "../state.js";
+import { verdictMark } from "../status.js";
 import { toast } from "../toast.js";
 
 // ===========================================================================
@@ -25,12 +27,24 @@ function commentWhere(c) {
 }
 
 /** The git-derived anchor tag of a comment written on an earlier revision. */
-const ANCHOR_TAGS = {
-  changed: ["anchor changed in this revision", "warn"],
+// "Anchor changed" is a fact from git, not something the reviewer must act on: a neutral
+// info chip, never the needs treatment "Must fix" wears (A-26).
+const ANCHOR_TAGS = table({
+  changed: ["anchor changed in this revision", "info"],
   untouched: ["anchor untouched", "no-dot"],
   current: ["written on this revision", "no-dot"],
   unknown: ["anchor not checkable here", "no-dot"],
-};
+});
+
+/**
+ * Who someone is, the one way: a known agent wears its shirt (agentChip), anyone else is
+ * their name as text (A-26). `fallback` names an id nobody registered.
+ */
+function whoChip(id, fallback) {
+  const raw = id == null ? "" : String(id);
+  if (raw && (squad.byId.has(raw) || agentNames.has(raw))) return agentChip(raw, null, 20);
+  return el("span", { class: "who-name" }, fallback || raw || "someone");
+}
 
 /**
  * One comment: severity, where it points, the body (a text node), its state, the git
@@ -67,10 +81,11 @@ function reviewCommentItem(c, { attempt = 0, onAct } = {}) {
     },
     [
       el("p", { class: "rc-head" }, [
-        badge(
-          c.severity === "must_fix" ? "Must fix" : "Consider",
-          c.severity === "must_fix" ? "warn" : "no-dot",
-        ),
+        // Must fix is something the reviewer sends back: the needs treatment (the yellow
+        // card and the mark wash); Consider is a plain note.
+        c.severity === "must_fix"
+          ? el("span", { class: "badge needs rc-sev rc-sev-must" }, [ycard(12), "Must fix"])
+          : badge("Consider", "no-dot rc-sev"),
         " ",
         el("code", { class: "mono rc-id" }, c.short_id || String(c.id).slice(0, 8)),
         " ",
@@ -100,7 +115,7 @@ function reviewCommentItem(c, { attempt = 0, onAct } = {}) {
         ]),
       ),
       el("p", { class: "rc-meta dim" }, [
-        c.author_id ? `${c.author_id} · ` : "",
+        c.author_id ? [whoChip(c.author_id), " · "] : "",
         earlier ? `written on attempt ${c.round + 1}` : "this attempt",
         c.sent_round != null ? " · sent back with Fix these" : "",
       ]),
@@ -260,7 +275,12 @@ function pausedInfo(events) {
     return out;
   }
   if (payload.reason) out.reason = payload.reason;
-  if (payload.spend != null) out.spend = payload.spend;
+  // The runner writes the spend preformatted ("$2.5600"): read it as a figure and say
+  // it the one money way ("$2.56", A-31); anything else ("unknown") stays as written.
+  if (payload.spend != null) {
+    const m = /^\$?\s*(\d+(?:\.\d+)?)$/.exec(String(payload.spend).trim());
+    out.spend = m ? money(Number(m[1])) : payload.spend;
+  }
   if (payload.turns != null) out.turns = payload.turns;
   if (payload.branch_name != null) out.branch = payload.branch_name;
   return out;
@@ -313,16 +333,12 @@ function dodChecklist(evidence) {
           : g.status === "FLAG"
             ? "flag"
             : "skip";
-    const mark = { pass: "✓", fail: "✗", flag: "!", skip: "–" }[status];
+    // A gate's verdict is a verdictMark (its own glyph and its word), never a text
+    // character nor a ticket lifecycle glyph (A-23).
     const children = [
-      el("span", { class: `dod-mark dod-${status}`, "aria-hidden": "true" }, mark),
+      verdictMark(status),
       el("span", { class: "dod-gate" }, String(g.gate || "gate")),
       el("span", { class: "dod-repo ac-meta" }, String(g.repo || "")),
-      el(
-        "span",
-        { class: `dod-word dod-w-${status}` },
-        { pass: "passed", fail: "failed", flag: "flagged", skip: "skipped" }[status],
-      ),
     ];
     // A tests gate that passed only on its rerun at concurrency 1 (lib/dod.sh): a yellow
     // card for the reviewer, and the note names both runs.
@@ -355,16 +371,24 @@ function dodChecklist(evidence) {
   ]);
 }
 
-/** Acceptance criteria as a checklist: glyph · the criterion · its state. */
+/** A criterion's status as a verdict: satisfied passed, failed failed, else open. */
+function acVerdict(status) {
+  return status === "satisfied" ? "pass" : status === "failed" ? "fail" : "open";
+}
+/**
+ * Acceptance criteria as a checklist: the criterion, then its verdictMark with the
+ * status in words (a met criterion is not a "done" ticket: A-23).
+ */
 function acChecklist(acList) {
   return el(
     "ul",
     { class: "ac-list" },
     acList.map((a) =>
       el("li", { class: `ac-row ac-${a.status}` }, [
-        glyph(a.status === "satisfied" ? "done" : a.status === "failed" ? "failed" : "draft", 16),
         el("span", { class: "ac-row-t" }, a.text),
-        el("span", { class: "ac-state" }, String(a.status || "").replace(/_/g, " ")),
+        verdictMark(acVerdict(a.status), {
+          word: String(a.status || "open").replace(/_/g, " "),
+        }),
       ]),
     ),
   );
@@ -396,10 +420,8 @@ function reviewEvidenceList(evidence, acList, { repos, asks, onRawOpen } = {}) {
       // inferred from an absence, and no "trusted" label is fabricated. `created_by`
       // renders through el() as a text node, so it can never inject markup.
       const raw = ev.created_by ? String(ev.created_by) : "—";
-      const who =
-        squad.byId.get(raw)?.display_name_effective ||
-        agentNames.get(raw) ||
-        (raw === "system" ? "the runner" : raw);
+      // A known agent wears its shirt (agentChip); the runner and people are words.
+      const who = whoChip(raw, raw === "system" ? "the runner" : raw);
       const provBadge =
         ev.recorded_by_agent === true ? badge("agent-reported", "no-dot prov-agent") : null;
       const asking = asks && asks.has(ev.id);
@@ -719,6 +741,8 @@ export {
   parseDodEvidence,
   dodChecklist,
   acChecklist,
+  acVerdict,
+  whoChip,
   evidenceKind,
   reviewEvidenceList,
   REJECT_REASON_PRESETS,

@@ -25,7 +25,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=factory.config.sh
 source "$HERE/factory.config.sh"
-_gaffer_deprecated GAFFER_SLACK_WEBHOOK "set GAFFER_NOTIFY_SLACK_URL (the Slack field in Settings) instead"
+_gaffer_deprecated GAFFER_SLACK_WEBHOOK "put the Slack URL in GAFFER_NOTIFY instead"
 
 # No colour in a pipe / file, under NO_COLOR or TERM=dumb (lib/colour.sh).
 # shellcheck source=lib/colour.sh
@@ -105,7 +105,7 @@ notify() {
     printf '%s\n' "$msg" | sh -c "$GAFFER_NOTIFY_CMD" >/dev/null 2>&1 && sent="${sent:+$sent + }GAFFER_NOTIFY_CMD"
   fi
   if [ -n "$sent" ]; then warn "$msg — notified via $sent"
-  else warn "$msg — set GAFFER_NOTIFY_WEBHOOK_URL / GAFFER_NOTIFY_SLACK_URL / GAFFER_NOTIFY_DESKTOP (or legacy GAFFER_NOTIFY_CMD) to be alerted"; fi
+  else warn "$msg — set GAFFER_NOTIFY (a webhook or Slack URL, or desktop; or legacy GAFFER_NOTIFY_CMD) to be alerted"; fi
 }
 
 say "factory status"

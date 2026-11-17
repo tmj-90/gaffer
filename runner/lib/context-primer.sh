@@ -12,6 +12,9 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 _GAFFER_JSON_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/json-tool.mjs"
+# The JSON server reaches this lib's json-tool calls through gaffer_json_at
+# (config/17-cli.sh); sourced alone (a test), they run json-tool directly.
+declare -F gaffer_json_at >/dev/null 2>&1 || gaffer_json_at() { local t="$1"; shift; node "$t" "$@"; }
 # The typed renderer lives in packages/crew; factory.config.sh exports CREW_DIR, and a
 # standalone source (tests) resolves the workspace default itself.
 [ -n "${CREW_DIR:-}" ] || CREW_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../packages/crew" 2>/dev/null && pwd)"
@@ -101,7 +104,7 @@ gaffer_prime_context_block() {
   # stderr (the runner log) — NEVER into the agent prompt (stdout).  A silent
   # empty packet when cards demonstrably exist under a different key is exactly
   # the bug this guards against.
-  printf '%s' "$_gpc_json" | node "$_GAFFER_JSON_TOOL" diagnostics-warn 2>/dev/null || true
+  printf '%s' "$_gpc_json" | gaffer_json_at "$_GAFFER_JSON_TOOL" diagnostics-warn 2>/dev/null || true
 
   # Render the packet into a compact, agent-facing block (json-tool.mjs
   # context-file-cards, pinned to the checked-in golden). Fail-soft: bad JSON or
@@ -112,7 +115,7 @@ gaffer_prime_context_block() {
   # Stripping here is belt-and-suspenders — gaffer_quarantine below also
   # strips the specific file-cards envelope tag when it wraps the body.
   local _gpc_body
-  _gpc_body="$(printf '%s' "$_gpc_json" | node "$_GAFFER_JSON_TOOL" context-file-cards 2>/dev/null)" || return 0
+  _gpc_body="$(printf '%s' "$_gpc_json" | gaffer_json_at "$_GAFFER_JSON_TOOL" context-file-cards 2>/dev/null)" || return 0
 
   # CODE INDEX: the callers and tests of what the ticket names (see the header). The
   # names are identifier / path characters only (ticket-named-code), passed as
@@ -148,7 +151,7 @@ gaffer_prime_context_block() {
   # what it primed) + FAIL-SOFT — a recording failure never affects the prime/delivery.
   if [ -n "${GAFFER_RECALL_TICKET:-}" ] && command -v wg >/dev/null 2>&1; then
     local _gpc_primed
-    _gpc_primed="$(printf '%s' "$_gpc_json" | node "$_GAFFER_JSON_TOOL" context-primed 2>/dev/null)"
+    _gpc_primed="$(printf '%s' "$_gpc_json" | gaffer_json_at "$_GAFFER_JSON_TOOL" context-primed 2>/dev/null)"
     if [ -n "$_gpc_primed" ]; then
       wg attach-evidence "$GAFFER_RECALL_TICKET" --type memory_primed \
         --summary "Memory primed into the delivery agent — $_gpc_primed" >/dev/null 2>&1 || true
@@ -213,7 +216,7 @@ gaffer_product_context_block() {
   # tags so a record's text cannot close the envelope early (belt-and-suspenders
   # with gaffer_quarantine below).
   local _pc_body
-  _pc_body="$(printf '%s' "$_pc_json" | node "$_GAFFER_JSON_TOOL" context-product 2>/dev/null)" || return 0
+  _pc_body="$(printf '%s' "$_pc_json" | gaffer_json_at "$_GAFFER_JSON_TOOL" context-product 2>/dev/null)" || return 0
   [ -n "$_pc_body" ] || return 0
 
   # QUARANTINE the rendered intent in the untrusted envelope. The outer framing

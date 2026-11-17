@@ -149,6 +149,14 @@ export class ClaimService {
   private readonly reworkAttempts: ReworkAttemptRepository;
   private readonly pausedDeliveries: PausedDeliveryRepository;
 
+  /**
+   * SEALED AUTONOMY: called inside the claim's transaction once a claim is recorded (the
+   * claim id, or null for a ticket taken by hand), so the trusted host can seal the risk
+   * of a ticket at its FIRST claim (services/autonomySealAdminService.ts sealRiskAtClaim).
+   * Must not throw for a claim to fail; unset in a bare service.
+   */
+  onClaimed: ((ticketId: string, claimId: string | null, actor: Actor) => void) | null = null;
+
   constructor(
     private readonly db: Db,
     private readonly clock: Clock,
@@ -447,6 +455,7 @@ export class ClaimService {
       event_type: "claim.created",
       payload: { claim_id: claim.id, agent_id: agent.id, expires_at: claim.expires_at },
     });
+    this.onClaimed?.(ticket.id, claim.id, actor);
     return {
       ticketId: ticket.id,
       number: ticket.number ?? 0,
@@ -508,6 +517,7 @@ export class ClaimService {
         event_type: "ticket.human_claimed",
         payload: { owner: actor.id ?? "human" },
       });
+      this.onClaimed?.(ticket.id, null, actor);
       return { ticketId: ticket.id, number: ticket.number ?? 0 };
     });
   }

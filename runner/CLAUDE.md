@@ -80,7 +80,7 @@ parts before it set, so the order is the old top-to-bottom order of the one file
 
 | Part | Holds |
 |---|---|
-| `01-settings.sh` | `settings.json` values applied as defaults (env wins); the environment-only keys |
+| `01-settings.sh` | the fourteen settings (spec, strict validation, the `settings.json` loader), `_gaffer_derive`, the old-key migration, the environment-only keys |
 | `02-paths.sh` | product locations, databases, memory audit log, code index, ledger reader |
 | `03-wiring.sh` | the agent CLI wiring; the worker provider knobs |
 | `04-models.sh` | plan / implement models, `*_EXPLICIT`, `gaffer_model_flag`, the router registry |
@@ -101,29 +101,61 @@ parts before it set, so the order is the old top-to-bottom order of the one file
 | `19-libs.sh` | the `runner/lib/*.sh` helper libs (sandbox, worker, budget, ...) |
 | `20-gates.sh` | idle-lane knobs, PR creation, CI gate, eval judge, experiments, review rules, their libs, git hardening |
 
-Order rules a change must keep: `01` runs before every default (env, then
-`settings.json`, then the mode, then the default); the `GAFFER_MODE` arms in `15` fill
-before the plain defaults after them; a knob defaulted from another (`: "${B:=$A}"`)
-stays after `A`; a function called while the config loads (`gaffer_model_flag`, the
-autonomy checks in `15`, `gaffer_git_harden`) is defined above its call; the libs load
-last. Add a knob to the part of its area, never a new part for one knob; a new part
-needs its line in the parts block, its header and marker
-(`runner/test/config-parts.test.sh` checks all of it).
+Order rules a change must keep: `01` runs before every default (the settings are read
+and validated there); a setting's table (`_gaffer_derive`) runs at the place in its part
+where the values it assigns were defaulted, before anything reads them; a knob defaulted
+from another (`: "${B:=$A}"`, or a table value `@A`) stays after `A`; a function called
+while the config loads (`gaffer_model_flag`, the autonomy checks in `15`,
+`gaffer_git_harden`) is defined above its call; the libs load last. Add a knob to the part
+of its area, never a new part for one knob; a new part needs its line in the parts block,
+its header and marker (`runner/test/config-parts.test.sh` checks all of it).
 `scripts/config-reference.mjs` reads the parts in the block's order.
 
-What `docs/CONFIG.md` lists follows from the code, so keep these when you add a name:
+## The fourteen settings and their tables
 
-- A `: "${NAME:=default}"` line marks an operator knob; `docs/CONFIG.md` lists it
-  under its part's area (`AREAS` in `scripts/config-reference.mjs`; a new part or lib
-  that defaults a knob needs an entry there, or the generator fails). Give it a
-  trailing comment: that is its note.
-- A name the runner derives or sets for a child, a test seam, or a package's own
-  variable is not a knob: assign it plainly (`NAME="${NAME:-default}"`) and add it to
-  `INTERNAL_NAMES` or `TEST_SEAMS`. The generator fails if a listed name still has a
-  `:=` line or no longer occurs in the source. A runner-only file path is better as a
+A person sets FOURTEEN things (`_GAFFER_SETTINGS_SPEC` in `01-settings.sh`: name, kind,
+accepted values, default, one line); `settings.json`, the README and `docs/CONFIG.md`
+know only them. Every other knob is derived from exactly one setting by that setting's
+table, `_gaffer_derive <SETTING> <<'_GAFFER_TABLE_'`, in the part of its area:
+
+- A row that changes with the setting holds one value per accepted value (spec order),
+  and its `: "${NAME:=...}"` line is removed: the table is where the value is written.
+  Values: a literal, `""`, `-` (left unset), `@NAME` (another value), `@?NAME` (unset when
+  that is empty). `?NAME` keeps an explicit empty value (`=` instead of `:=`).
+- A value that does not change keeps its `: "${NAME:=default}"` line (with its trailing
+  comment) and gets a `~` row in its setting's table, so the documents and the dashboard
+  know which setting it belongs to. A value read where it is used (`EXTRA_KNOBS`) gets a
+  `~` row too.
+- The rule that cannot bend: with no settings, and with each setting at its default,
+  every derived value equals what it was. `runner/test/config-defaults.test.sh` checks the
+  real config against `runner/test/fixtures/config-defaults/*.txt` (made by
+  `test/lib/config-dump.sh` before the settings existed). A new knob extends the dump by
+  itself; a changed default needs the fixture regenerated on purpose, said in the commit.
+- A real environment variable for a derived name always wins (the one override, kept for
+  good). A non-default preset's values are exported (the mode table is `--no-export`, as
+  the mode always was).
+- An old `settings.json` key (`_GAFFER_MIGRATION_MAP`: the key, the setting that decides
+  it now, how to compare) is ignored with one warning, unless it is stricter than the
+  derived value; then it still applies. A new dashboard key is never added there: a new
+  person-facing choice is a setting value, not a key.
+
+What the documents list follows from the code. `node scripts/config-reference.mjs` writes
+`docs/CONFIG.md` (the fourteen), `docs/CONFIG-ADVANCED.md` (every derived value by setting)
+and `runner/config/settings-schema.json` (the same for the dashboard and
+`gaffer config show`), and fails when a default line has no setting deciding it, a value
+is written in a table and a default line, an old key's setting does not own it, or a lib's
+fallback disagrees with the default preset:
+
+- A name the runner derives or sets for a child, a test seam, or a package's own variable
+  is not a knob: assign it plainly (`NAME="${NAME:-default}"`) and add it to
+  `INTERNAL_NAMES` or `TEST_SEAMS`. The generator fails if a listed name still has a `:=`
+  line or no longer occurs in the source. A runner-only file path is better as a
   `_GAFFER_` name, which also keeps it out of the agent env and the re-source record
-  (never for a value derived from a `settings.json` knob: a `_GAFFER_` export is not
-  re-derived by a child).
+  (never for a value derived from a setting: a `_GAFFER_` export is not re-derived by a
+  child).
+- A name only the operator's real environment may set (a credential, the worker
+  provider, the sandbox opt-out, the uncapped switch) is in `ENV_ONLY` there and in
+  `_GAFFER_ENV_ONLY_KEYS`.
 - A family of knobs that only make sense together is one knob (`GAFFER_ROLE_MAX_TURNS`,
   `GAFFER_ROLE_MODELS`, `GAFFER_SANDBOX_LIMITS`, `GAFFER_LITE_MAX_DIFF`). An old name
   replaced by one stays honoured for a release: its reader still reads it after the new

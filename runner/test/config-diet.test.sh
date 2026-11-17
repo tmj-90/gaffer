@@ -84,8 +84,8 @@ warned GAFFER_JUDGE_MODEL_FLAG && grep -q 'a model id, not a flag' "$WORK/err" &
 V="$(cd "$RUNNER_DIR" && env -i PATH="$PATH" GAFFER_CARD_MODEL=c1 node --input-type=module -e 'import { roleModel } from "./lib/worker.mjs"; process.stdout.write([roleModel("card"), roleModel("card", { GAFFER_CARD_MODEL: "c1", GAFFER_ROLE_MODELS: "card=c2" }), roleModel("synth", {}) || "-"].join(" "))')"
 [ "$V" = "c1 c2 -" ] && ok "the .mjs reader agrees: deprecated name, then the knob wins, then the caller's default" || fail "F3 mjs: $V"
 
-echo "== F4: GAFFER_SLACK_WEBHOOK -> GAFFER_NOTIFY_SLACK_URL =="
-grep -q '_gaffer_deprecated GAFFER_SLACK_WEBHOOK "set GAFFER_NOTIFY_SLACK_URL' "$RUNNER_DIR/status.sh" \
+echo "== F4: GAFFER_SLACK_WEBHOOK -> the Slack URL in GAFFER_NOTIFY =="
+grep -q '_gaffer_deprecated GAFFER_SLACK_WEBHOOK "put the Slack URL in GAFFER_NOTIFY' "$RUNNER_DIR/status.sh" \
   && grep -qF '"$GAFFER_SLACK_WEBHOOK" >/dev/null' "$RUNNER_DIR/status.sh" \
   && ok "status.sh still posts to GAFFER_SLACK_WEBHOOK and says it is deprecated" || fail "F4: status.sh legacy channel"
 V="$(cfg GAFFER_SLACK_WEBHOOK=https://hooks.invalid/x -- '_gaffer_deprecated GAFFER_SLACK_WEBHOOK "set GAFFER_NOTIFY_SLACK_URL instead" 2>>"$ERRF"')"
@@ -222,12 +222,12 @@ mkdir -p "$WORK/sj"
 cat > "$WORK/sj/settings.json" <<'SJ'
 {"_GAFFER_USAGE_PAUSE_MJS":"/tmp/evil.mjs","_GAFFER_USAGE_WORKER_MJS":"/tmp/evil.mjs","_GAFFER_DEPRECATED_SAID":" GAFFER_PO_MAX_TURNS ",
  "GAFFER_WG_LIST_CMD":"touch /tmp/pwned","GAFFER_WG_SHOW_CMD":"x","GAFFER_WG_DELIVERIES_CMD":"x","GAFFER_REDACTION_MODULE":"/tmp/evil.mjs",
- "DISPATCH_TESTER_VERDICT_CMD":"x","DISPATCH_LANE_VERDICT_CMD":"x","DISPATCH_ACCEPTANCE_EVIDENCE_CMD":"x","MAX_TICKS":"9"}
+ "DISPATCH_TESTER_VERDICT_CMD":"x","DISPATCH_LANE_VERDICT_CMD":"x","DISPATCH_ACCEPTANCE_EVIDENCE_CMD":"x","GAFFER_CONCURRENCY":"3"}
 SJ
-V="$(cfg GAFFER_DATA="$WORK/sj" GAFFER_PO_MAX_TURNS=30 -- 'printf "%s|" "$MAX_TICKS"; for n in _GAFFER_USAGE_WORKER_MJS GAFFER_WG_LIST_CMD GAFFER_WG_SHOW_CMD GAFFER_WG_DELIVERIES_CMD GAFFER_REDACTION_MODULE DISPATCH_TESTER_VERDICT_CMD DISPATCH_LANE_VERDICT_CMD DISPATCH_ACCEPTANCE_EVIDENCE_CMD; do printf "%s=%s|" "$n" "${!n:-}"; done; printf "%s" "$_GAFFER_USAGE_PAUSE_MJS"')"
+V="$(cfg GAFFER_DATA="$WORK/sj" GAFFER_PO_MAX_TURNS=30 -- 'printf "%s|" "$GAFFER_CONCURRENCY"; for n in _GAFFER_USAGE_WORKER_MJS GAFFER_WG_LIST_CMD GAFFER_WG_SHOW_CMD GAFFER_WG_DELIVERIES_CMD GAFFER_REDACTION_MODULE DISPATCH_TESTER_VERDICT_CMD DISPATCH_LANE_VERDICT_CMD DISPATCH_ACCEPTANCE_EVIDENCE_CMD; do printf "%s=%s|" "$n" "${!n:-}"; done; printf "%s" "$_GAFFER_USAGE_PAUSE_MJS"')"
 case "$V" in
-  "9|_GAFFER_USAGE_WORKER_MJS="*"/runner/lib/worker.mjs|GAFFER_WG_LIST_CMD=|GAFFER_WG_SHOW_CMD=|GAFFER_WG_DELIVERIES_CMD=|GAFFER_REDACTION_MODULE=|DISPATCH_TESTER_VERDICT_CMD=|DISPATCH_LANE_VERDICT_CMD=|DISPATCH_ACCEPTANCE_EVIDENCE_CMD=|"*"/runner/lib/usage-pause.mjs")
-    ok "settings.json: a plain key applies, but no _ name and no command/module seam does (the runner keeps its own modules)" ;;
+  "3|_GAFFER_USAGE_WORKER_MJS="*"/runner/lib/worker.mjs|GAFFER_WG_LIST_CMD=|GAFFER_WG_SHOW_CMD=|GAFFER_WG_DELIVERIES_CMD=|GAFFER_REDACTION_MODULE=|DISPATCH_TESTER_VERDICT_CMD=|DISPATCH_LANE_VERDICT_CMD=|DISPATCH_ACCEPTANCE_EVIDENCE_CMD=|"*"/runner/lib/usage-pause.mjs")
+    ok "settings.json: a setting applies, but no _ name and no command/module seam does (the runner keeps its own modules)" ;;
   *) fail "settings.json internal/seam keys applied: $V" ;;
 esac
 [ "$(grep -c 'from settings.json: an internal name, never a setting' "$WORK/err")" = "3" ] \

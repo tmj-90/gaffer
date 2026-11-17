@@ -5,7 +5,8 @@
 // same sheet; once the ticket is back in the queue the next delivery's
 // prompt quotes that answer and its get_ticket (the agent's first call over MCP)
 // returns it. A second question is rejected from the Team Sheet. Then the
-// intake clarify pass (CLARIFY_DRAFTS_WHEN_IDLE, saved in Settings) files criteria and
+// intake clarify pass (When idle set to all in Settings, GAFFER_IDLE, which turns on
+// CLARIFY_DRAFTS_WHEN_IDLE) files criteria and
 // a decision on a vague draft through the same MCP server, without wedging on a
 // repo-less draft.
 import { readFileSync } from "node:fs";
@@ -203,12 +204,14 @@ export default async function s6(t, L) {
 
   // ── the intake clarify pass on idle ticks ─────────────────────────────────
   await t.visit("settings");
-  await t.setSetting("CLARIFY_DRAFTS_WHEN_IDLE", "1");
+  await t.setSetting("GAFFER_IDLE", "all");
   const sv = await t.saveSettings();
   t.check(
-    sv.status < 300 && sv.sent.CLARIFY_DRAFTS_WHEN_IDLE === "1",
-    "Settings: 'Clarify vague drafts when idle' switched on and saved",
-    `clarify save: ${sv.status} ${JSON.stringify(sv.sent)}`,
+    sv.status < 300 &&
+      sv.sent.GAFFER_IDLE === "all" &&
+      (await L.derivedMap()).get("CLARIFY_DRAFTS_WHEN_IDLE")?.value === "1",
+    "Settings: When idle set to all (GAFFER_IDLE) and saved; the runner derives clarify-when-idle from it",
+    `idle save: ${sv.status} ${JSON.stringify(sv.sent)}`,
   );
   const orphan = await L.seedTicket(t, { title: `Repo-less draft (${L.tag("s6")})`, repo: false });
   const vague = await L.seedTicket(t, {

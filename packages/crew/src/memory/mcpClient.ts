@@ -119,15 +119,18 @@ export function memoryServerEnv(
  * Memory serves agent-derived feature text inside an `<untrusted-feature>…`
  * quarantine envelope (memory/src/mcp/quarantine.ts) so it reaches an AGENT as
  * data. Crew is not an agent: it files that text into ticket titles and epic
- * descriptions a human reads, so it unwraps the outer envelope. The envelope's
- * inner text already had any embedded delimiter neutralised by memory, and the
- * idle loop re-wraps it before the text goes anywhere a model reads it.
+ * descriptions a human reads and de-duplicates new features against it, so it
+ * unwraps the outer envelope AND undoes memory's serve-time escape (every `<`
+ * became `&lt;`): otherwise "Map<K>" was filed as "Map&lt;K>" and never matched
+ * the stored name again. The idle loop re-wraps (and re-escapes) the text before
+ * it goes anywhere a model reads it, and dispatch envelopes it again for agents.
+ * Text without the envelope is returned untouched (nothing was escaped).
  */
 export function unwrapEnvelope(tag: string, value: string): string {
   const open = `<untrusted-${tag}>`;
   const close = `</untrusted-${tag}>`;
   return value.startsWith(open) && value.endsWith(close)
-    ? value.slice(open.length, value.length - close.length)
+    ? value.slice(open.length, value.length - close.length).replace(/&lt;/g, "<")
     : value;
 }
 

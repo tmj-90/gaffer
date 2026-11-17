@@ -41,11 +41,26 @@
  *   shell.mjs          tokenizing, quoting, segments, redirects, variable substitution
  *   paths.mjs          canonicalize, write and read roots, the secret-path families,
  *                      tilde expansion and cd replay
+ *   cwd-flow.mjs       the directories the shell may be in at each command (subshells,
+ *                      pipelines, conditionals, a cd that may fail): a relative path is
+ *                      judged from every one of them
  *   verbs.mjs          the effective verb: assignments, wrappers, package runners, the
  *                      privileged CLI names, sh -c bodies
  *   deny-list.mjs      lib/dangerous-commands.mjs, loaded so that a failure blocks
- *   interpreters.mjs   the inline-interpreter write and read boundary
+ *   inline-lex.mjs     a lexer for inline programs (strings, comments, interpolation)
+ *   inline-other.mjs   awk, sed and sqlite3 programs and make command lines read for
+ *                      writes, reads and commands; lua, R, osascript, tcl, expect and dc
+ *                      inline programs refused
+ *   inline-programs.mjs the programs a command hands to an interpreter, as it receives
+ *                      them (shell dequoting, wrappers, xargs, sh -c, heredocs, stdin,
+ *                      command and process substitutions, trap, preload variables and
+ *                      variables that run code for any command, python -m command lines)
+ *   interpreters.mjs   the inline-interpreter write and read boundary, and the
+ *                      capability rule (no write, process, network or dynamic code)
  *   reads.mjs          secret reads and credentials, git secret ops, Bash read targets
+ *   expand.mjs         shell-word expansion (variables, ~, braces, globs) for the read checks
+ *   read-operands.mjs  the read boundary after expansion: every read operand expanded and
+ *                      judged, unexpandable ones refused, words expanding to secrets
  *   writes.mjs         Bash write targets
  *   installs.mjs       the bootstrap install allowance, --ignore-scripts
  *   git.mjs            branch creation, branch ref rewrites, the git execution surface

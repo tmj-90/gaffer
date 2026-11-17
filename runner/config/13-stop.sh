@@ -80,9 +80,10 @@ gaffer_is_self_target() {
 : "${MAX_TICKS:=5}"           # hard cap on ticks per loop run (cost guard)
 : "${EMPTY_POLL_LIMIT:=2}"    # stop after this many consecutive empty polls (no_work, or an idle maintenance tick that filed nothing)
 : "${TICK_SLEEP:=30}"         # seconds between ticks
-# Per-CALENDAR-DAY tick cap across loop.sh runs (overnight cost guard): MAX_TICKS
+# Per-CALENDAR-DAY (UTC) tick cap across loop.sh runs (overnight cost guard): MAX_TICKS
 # bounds one run, but launchd re-runs loop.sh, so this bounds the whole day's
-# spend. The count persists in DAILY_COUNTER_FILE and resets each day. 0 = off.
+# spend. The count persists in DAILY_COUNTER_FILE and resets each UTC day, the same
+# day the USD cap below uses. 0 = off.
 : "${MAX_TICKS_PER_DAY:=50}"
 DAILY_COUNTER_FILE="${DAILY_COUNTER_FILE:-$GAFFER_DATA/.daily-ticks}"
 # Per-CALENDAR-DAY (UTC) USD spend ceiling (Part B). MAX_TICKS_PER_DAY bounds the
@@ -130,7 +131,29 @@ export GAFFER_DAILY_BUDGET_USD
 # and yielding no_work. Bounds the per-tick candidate walk (each candidate costs a
 # `ticket show` + pressure probe) so a large ready queue can't make every tick do
 # O(queue) work. 0 = unlimited (scan the whole ready list, the pre-A-1 behaviour).
-: "${MAX_CANDIDATES:=25}"
+# GAFFER_CONCURRENCY (a setting) decides the stop and throttle values of this part.
+# Only the candidate scan grows with it (25 per worker, at most 100): the tick, day and
+# per-repo caps stay as they are, so more workers never means more spend on their own
+# (the dollar caps and MAX_TICKS_PER_DAY still bound the day).
+_GAFFER_CANDIDATES=25
+case "${GAFFER_CONCURRENCY:-1}" in
+  '' | *[!0-9]*) ;;
+  *) [ "$GAFFER_CONCURRENCY" -gt 1 ] && _GAFFER_CANDIDATES=$((GAFFER_CONCURRENCY * 25))
+     [ "$_GAFFER_CANDIDATES" -gt 100 ] && _GAFFER_CANDIDATES=100 ;;
+esac
+_gaffer_derive GAFFER_CONCURRENCY <<'_GAFFER_TABLE_'
+MAX_CANDIDATES                   @_GAFFER_CANDIDATES   # ready candidates one tick scans before it reports no work: 25 per worker, at most 100 (0 = the whole list)
+MAX_TICKS                        ~   # ticks per loop run (a cost guard)
+MAX_TICKS_PER_DAY                ~   # ticks per UTC day across loop runs; 0 = off
+EMPTY_POLL_LIMIT                 ~   # the loop stops after this many empty polls in a row
+TICK_SLEEP                       ~   # seconds between ticks
+MAX_CONCURRENT_TICKETS_PER_REPO  ~   # tickets in flight for one repository at once
+MAX_OPEN_AGENT_BRANCHES_PER_REPO ~   # unmerged gaffer/* branches a repository may hold before new claims for it wait (0 = no limit)
+MAX_OPEN_AGENT_PRS_PER_REPO      ~   # tickets in review for a repository before new claims for it wait (0 = no limit)
+GAFFER_WG_SERVE                  ~   # 1 = a tick sends its dispatch CLI and JSON helper calls to two long-lived processes; 0 runs each as its own process (troubleshooting)
+DRY_RUN                          ~   # 1 = print what would happen and never call an agent; `gaffer run` passes 0
+_GAFFER_TABLE_
+unset _GAFFER_CANDIDATES
 export GAFFER_CONCURRENCY MAX_CONCURRENT_TICKETS_PER_REPO MAX_CANDIDATES
 
 _GAFFER_CONFIG_PART=13-stop

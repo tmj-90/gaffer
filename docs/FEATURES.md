@@ -199,6 +199,12 @@ waiting for Merge now, and the done lane.*
   factory-wide control switched off. Repository-level changes need an admin principal.
   A decision shared with a ticket outside its scope shows on its ticket only as "A
   decision outside this token's scope" (it still blocks), never its question.
+- **Signed sign-ins.** Every principal is signed with the factory key; one that is not
+  (created before signing, restored from a backup, or written outside the factory) cannot
+  sign in. Settings says "N sign-ins were created before signing. Review and re-sign."
+  with the list (who each acts as, what it may do, where, who created it and when) and
+  Re-sign buttons for the operator; `wg principal unsigned` and `wg principal resign
+  <name>|--all --confirm <code>` (the codes `unsigned` prints) do the same on the CLI.
 - **Who the CLI is.** `wg whoami` says who writes are recorded as: `$USER`, asserted,
   without a token; with `GAFFER_PRINCIPAL_TOKEN=<token>`, `wg`, `gaffer approve` and
   `gaffer merge` act as that principal, its read-only flag and scope enforced as on the
@@ -209,15 +215,19 @@ waiting for Merge now, and the done lane.*
 **The Team sheet** on the Overview lists everything waiting on you, one action a row:
 decisions, sign-offs, approved changes to merge, blocked tickets, a delivery paused at
 a cap (Continue offers Continue and Stop) and one row for the lore drafts awaiting
-approval. *Delivered today* counts the tickets that landed since midnight UTC. The
-scoreboard headline leads with the work, not the number ("Webhook delivery #10 is
-blocked by a failing test.").
+approval. *Delivered today* counts the tickets that landed since midnight UTC, with a
+usual day beside it (the median of the days before). The scoreboard headline leads
+with the work, not the number ("Webhook delivery #10 is blocked by a failing test."),
+and says how many things need you once: the scoreboard's cells are the agents on the
+pitch, the deliveries and the wage bill. On a phone it names one blocked ticket, then
+"and N more blocked".
 
 **The Floor** (`#/floor`) draws the live factory as an isometric floor: stations along
 a conveyor in lifecycle order, one parcel per open ticket, a robot in the agent's shirt
 number on every live claim, a jam bay for blocked, paused and failed tickets, a spend
 tank against the daily budget and a lorry carrying what was done today. Everything on
-it is a link, and the stations are listed as text under the drawing.
+it is a link, and the stations are listed as text under the drawing. On a phone the
+station list comes first and the drawing is a figure you tap to zoom.
 
 **Health** (`#/health`, `GET /api/health`, and `gaffer wg stats` in the terminal) reads
 the usage ledger and the transition log, and says only what those can show:
@@ -240,6 +250,13 @@ the usage ledger and the transition log, and says only what those can show:
   (`GET /api/health?window_days=N`), and then all four use it. Each also serves the same figures over the equal window before
   and twelve weeks of history (the escaped-defect rate six monthly cohorts, the recent
   ones marked as still maturing); an empty week is shown as empty, never as zero.
+- **On the page, the four measures are the scoreboard**: one tile each with its count
+  (a rate under 10 greys and shows no change), its window, the change against the window
+  before, a sparkline of its weeks (UTC weeks; months for escaped defects) and its 95%
+  interval. The Referee's record window select sets the window for all four. Under them,
+  *Behind the four measures* shows who approved, review time split into waiting to be
+  opened and deciding, spend by how each ticket ended (with the accepted tickets' own
+  price for reference) and the monthly cohorts, each history also as a table.
 - **Lane verdicts and what each lane changed.** The reviewer agent, the security
   reviewer, the tester and the eval judge each record their verdict
   (`ticket.lane_verdict`, runner-recorded only). Health counts how often each differed
@@ -273,12 +290,21 @@ wrote. How each of these is enforced, and its limits, is in
 
 ### What the Review view shows
 
-- **What was asked**: the ticket's description, above everything else.
-- **The verdict strip: the runner's facts, not the agent's words.** Each
+The decision comes first: the ticket header (the title, then its number, status, who
+delivered it and how long it has waited), one row of verdict cells, then the sign-off
+with Approve, Fix these and Send back, all on the first screen of a laptop. On a phone
+those three actions stay in a bar above the tab bar while you read the diff.
+
+- **What was asked**: the ticket's description, a quote in the header, folded after a
+  few lines.
+- **The verdict strip: the runner's facts, not the agent's words.** One row of cells,
+  each a label, a pass, fail or flag mark and one word; open a cell's *Detail* for the
+  rest. Each
   Definition-of-Done gate (passed, failed or skipped, with the command it ran), the
   test count the runner saw in the gate's own output, the independent tester's verdict
-  and the commit it tested, cost and turns so far, the attempt and who sent it back
-  before, the risk level with its reasons, and the reviewed-commit pin. The
+  and the commit it tested, cost and turns so far (beside what an accepted change
+  typically costs here), the attempt and who sent it back before, the risk level with
+  its reasons, and the reviewed-commit pin. The
   acceptance-criteria table shows each criterion's check command and the runner's
   exit code, or **no machine evidence** when only the agent's word backs it. When the
   agent's summary claims a whole-suite count the runner's output contradicts, a flag
@@ -601,20 +627,93 @@ hand over, and every autonomy flag is off until you turn it on:
 | `MEMORY_AUTO_APPROVE` | Let the memory the runner itself files (the requirement distilled from each delivered ticket, onboarding induction lore, CLI `memory suggest`) go live without a human review step. Lore a delivery agent suggests over MCP always stays a draft, and a draft is invisible to other agents (search, duplicate hints, fetch by id) until you approve it. |
 
 `GAFFER_MODE` sets the whole cluster at once (supervised, lite, graduated, autonomous,
-strict); [CONFIG.md](CONFIG.md) lists what each sets. Whatever the mode, every agent runs
+strict): the flags above are what it derives, and
+[CONFIG-ADVANCED.md](CONFIG-ADVANCED.md) lists what each mode sets (a flag exported in the
+environment still overrides it). It is one of the fourteen settings in
+[CONFIG.md](CONFIG.md); `gaffer config show --all` prints every value they derive and what
+decided it. Whatever the mode, every agent runs
 inside an OS sandbox (`sandbox-exec` on macOS, `docker` where Docker is installed): a
 host without one refuses to launch agents, before anything is claimed, and says what to
-install. Settings shows that posture as a read-only line in its Sandbox group: the
+install. Settings shows that posture as a read-only line in its Safety section: the
 provider, available or missing, required or opted out, and the fix. The opt-out is
 `GAFFER_STRICT_REQUIRE=0` in the environment, for a runner you contain yourself; with a
 ship or mutate flag on as well, the runner warns about it twice
-([docs/sandbox.md](sandbox.md)).
+([docs/sandbox.md](sandbox.md)). The gates run agent-written code, so each gate run
+starts from an empty environment (PATH, a throwaway HOME, locale, proxy and toolchain
+homes); `GAFFER_DOD_ENV_PASS`, exported before starting the runner (it is derived from
+`GAFFER_GATES`, not a setting), names any other variable your tests need, and
+credential-shaped names are never passed.
 
-![The boot room: the Team instructions dial on Supervised, who plays each position, and autonomy suggestions drawn from the review record](img/settings.png)
+The Settings page (the boot room) carries the fourteen settings and nothing else. The
+Autonomy mode is the dial, the one control that grants autonomy; the others are
+segmented choices with a line each, the two dollar caps with the spend so far, the three
+model slots or a preset, the notify channels (saved URLs are never shown again) and the
+port and data location with how to change them. Every setting says where its value came
+from (default, set here, or the environment, which makes it read-only) and opens "What
+this sets": the values it derives with the figure a run uses now, as the runner's own
+config reports it. A derived value a real environment variable sets is listed under
+"Overridden from the environment". When settings.json still holds keys an older
+dashboard wrote, one callout lists each, the setting that decides it now and which
+reading is in force (the stricter one), with one action that removes them after showing
+exactly what goes; nothing is removed without it. A run the dashboard starts gets
+exactly what a run started from the command line gets from the same settings.json.
 
-*The boot room (`#/settings`): the Team instructions dial on Supervised, and below it
-suggestions for what could be handed over, from your own review record. Nothing
-changes until you enable one.*
+![The boot room: the Autonomy mode dial on Supervised, who plays each position, and the autonomy ladder below it](img/settings.png)
+
+*The boot room (`#/settings`): the Autonomy mode (`GAFFER_MODE`) as the dial on
+Supervised, with what it sets folded under it, and the autonomy ladder below. The
+other thirteen settings follow, each with where its value came from and what it sets.*
+
+### The autonomy ladder and the step-down
+
+Per repository, every risk level (low to critical) and both gates (approve, merge) sit on
+a ladder: a person decides, suggested (your own review record clears the bar), or
+automatic (an `auto` policy row, or the mode's floor). `gaffer wg autonomy ladder`
+(`--repo`, `--json`) and `GET /api/autonomy/ladder` show each rung with its evidence, k
+of n decisions with the rate and its Wilson interval against the bar, and the distance to
+the next rung in plain numbers ("7 of 10 decisions, 100% agreement: 3 more").
+
+Critical is never automatic, for either gate: enabling a policy there is refused, a row
+that already exists is ignored, and nothing is suggested there. High needs its own
+repository's evidence (the cross-repo prior counts at low and medium only).
+
+Autonomy is taken back on its own when the evidence turns bad for a row that worked
+automatically: a regression linked to a change that was approved or landed
+automatically, a person reopening an automatically landed change, or two tester FAILs or
+"cannot be proven here" holds on automatically approved changes at one repo and risk
+within 30 days. The policy row stays, but from that moment a person decides that row
+(whatever the row or the mode's floor says), a merge step-down also covers every higher
+risk in the repository, a landing already under way on an agent's approval stops before
+the default branch moves, the event chain records which trigger, which tickets and who
+caused it, and the suggestion's count starts again. Only a person gives it back: on
+Settings > Autonomy, `POST /api/autonomy/lift`, or `gaffer wg autonomy lift <repo> --risk
+<r> --gate <g>` (once the evidence since the step-down clears the bar again, or
+`--override --reason`). Never an agent: MCP has no such tool and the safety hook refuses
+the command to agent shells.
+
+What the merge gate covers: landing an approval that was not a person's (an agent's, or
+one a person's tester waiver carried forward) with no person pressing Merge. A change a
+person approved is a person's decision: it does not count against the merge gate, and a
+step-down does not hold it (`AUTO_MERGE` still lands it). An approve step-down also holds
+an agent's approval that is still waiting to land. A held landing is refused for Merge now
+too, since the landing cannot tell who pressed it: a person lands it by approving it
+themselves (`gaffer wg ticket reopen-for-review <n> --as admin`, then `gaffer approve
+<n>`), or by lifting the step-down.
+
+### Sealed autonomy
+
+The rows that decide what may happen without a person are signed with the factory key:
+an autonomy policy row (signed when you turn it on), a ticket's risk level (signed when a
+person or the host creates the ticket, or at the ticket's first claim when an agent
+created it through MCP), and a person's lift of a step-down. A row that is not signed
+grants nothing: the ladder shows it as "Not signed: a person decides" with a Review and
+sign action, Settings > Autonomy marks it "auto · not signed", and `dispatch doctor`
+says how many automatic rows are off until you sign them. A ticket whose risk is not
+signed is decided as the highest risk (a person decides). Nothing is signed on upgrade:
+review and sign your automatic rows with `gaffer wg autonomy unsigned` and `gaffer wg
+autonomy resign`, and the risks of tickets already in flight with `gaffer wg autonomy
+risk-unsigned` and `gaffer wg autonomy risk-resign` (each signs only the list you
+reviewed, with its code). Signing is a person's act: never an agent, the runner or MCP.
 
 ### The independent tester
 
@@ -802,12 +901,15 @@ and the tester's passes.*
   No tick claims work and the dashboard's model calls start nothing meanwhile;
   `gaffer status` and Health show "Paused until <time>: usage limit". A spend cap is not
   a pause: those tickets are parked for a person.
-- **Secrets are never shown back.** The Slack and webhook URLs are posting authority
-  on their own: the panel says whether one is set and names its host, with **Replace**
-  and **Remove**.
+- **Secrets are never shown back.** The Slack and webhook URLs in `GAFFER_NOTIFY` are
+  posting authority on their own: every API answer and the page say whether one is set
+  and name its host, with **Replace** and **Remove**.
 - A value that does not fit its setting is not saved: the panel marks the field and the
-  API refuses the write with a 422 naming it. Every knob, its default and who reads it
-  is in [CONFIG.md](CONFIG.md).
+  API refuses the write with a 422 naming it, in the runner's own words; a key that is not
+  one of the fourteen is refused naming the setting that decides it now. The fourteen
+  settings are in
+  [CONFIG.md](CONFIG.md); every value they derive, and who reads it, in
+  [CONFIG-ADVANCED.md](CONFIG-ADVANCED.md).
 
 ### Idle work
 

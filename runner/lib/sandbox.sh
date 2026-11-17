@@ -79,43 +79,152 @@ _sandbox_subpath_rule() {
   printf '  (subpath "%s")\n' "$esc"
 }
 
+# Emit a single SBPL `(literal "...")` line for a path, canonicalised + escaped.
+_sandbox_literal_rule() {
+  local p="$1"
+  [ -n "$(printf '%s' "$p" | tr -d '[:space:]')" ] || return 0
+  local real esc
+  real="$(_sandbox_realpath "$p")"
+  [ -n "$real" ] || return 0
+  esc="$(printf '%s' "$real" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
+  printf '  (literal "%s")\n' "$esc"
+}
+
+# A canonical path made safe as the start of an SBPL regex: every regex metacharacter
+# escaped. A path holding a double quote or a line break cannot be written into a
+# #"..." literal faithfully: the caller must refuse the profile (fail closed).
+#   _sandbox_regex_prefix <path> → the escaped canonical path, or rc 1
+_sandbox_regex_prefix() {
+  local real
+  real="$(_sandbox_realpath "$1")"
+  [ -n "$real" ] || return 1
+  case "$real" in *'"'* | *$'\n'*) return 1 ;; esac
+  printf '%s' "$real" | sed -e 's/[][\\.*^$+?(){}|]/\\&/g'
+}
+
+# An escaped regex fragment made case-insensitive: each ASCII letter becomes a two-letter
+# bracket ([cC]); an escape (a backslash and the character after it) is kept as it is.
+# WHY: macOS volumes are case-insensitive by default, and a path the kernel checks for a
+# file being CREATED is the path as typed (no vnode exists yet). A case-sensitive deny
+# for ~/.claude/CLAUDE.md does not match ~/.claude/CLAUDE.MD, the grant on ~/.claude
+# allows it, and the CLI later opens CLAUDE.md and finds the planted file. Letters the
+# volume folds from non-ASCII characters (U+017F for s, U+212A for k, ligatures) are
+# handled by a separate non-ASCII deny (_sandbox_exec_agent_config_rules).
+#   _sandbox_regex_ci <escaped fragment>  → the case-insensitive fragment
+_sandbox_regex_ci() {
+  local in="$1" lc uc out="" i=0 n c l u
+  lc="$(printf '%s' "$in" | tr 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' 'abcdefghijklmnopqrstuvwxyz')"
+  uc="$(printf '%s' "$in" | tr 'abcdefghijklmnopqrstuvwxyz' 'ABCDEFGHIJKLMNOPQRSTUVWXYZ')"
+  n=${#in}
+  while [ "$i" -lt "$n" ]; do
+    c="${in:$i:1}"
+    if [ "$c" = "\\" ]; then
+      out="$out$c${in:$((i + 1)):1}"
+      i=$((i + 2))
+      continue
+    fi
+    l="${lc:$i:1}"; u="${uc:$i:1}"
+    if [ "$l" != "$u" ]; then out="${out}[${l}${u}]"; else out="$out$c"; fi
+    i=$((i + 1))
+  done
+  printf '%s' "$out"
+}
+
+# Literal rules for every ancestor of a path (canonical), "/" excluded. A literal rule
+# matches the directory itself only, never what is inside it: denying writes to the
+# ancestors stops a rename (or removal) of a parent that would swap in a whole new
+# directory under a denied path, while files can still be created inside them.
+_sandbox_ancestor_rules() {
+  local real head
+  real="$(_sandbox_realpath "$1")"
+  case "$real" in /?*) ;; *) return 0 ;; esac
+  head="${real%/*}"
+  while [ -n "$head" ]; do
+    _sandbox_literal_rule "$head"
+    head="${head%/*}"
+  done
+}
+
 # ── sandbox-exec provider: generate an SBPL profile ──────────────────────────
 # SBPL is LAST-MATCH-WINS, so the order is deliberate:
 #   1. (allow default)        → reads (and everything) broadly permitted
 #   2. (deny file-write*)     → revoke ALL writes
-#   3. (allow file-write* …)  → re-grant writes ONLY to the explicit subpaths
-# Writes are allowed to: each write-root (worktree), $GAFFER_DATA (MCP dbs +
-# agent files + this profile + the mcp runtime), the temp dirs, each
-# $STRICT_ALLOW_HOME entry, and the std streams. process-exec + network are
-# allowed (network gated on $STRICT_ALLOW_NETWORK). READ-roots need no rule —
-# reads are broadly allowed by (allow default).
+#   3. (allow file-write* …)  → re-grant writes to the write roots (worktrees), the temp
+#                               dirs, each $STRICT_ALLOW_HOME entry (the agent variant
+#                               only) and the std streams
+#   4. $GAFFER_DATA           → every write under it denied again (a temp-dir or HOME grant
+#                               that contains it included), its ancestors too (no rename of
+#                               a parent swaps the directory), then re-granted: the write
+#                               roots that live under it and, for the agent variant only,
+#                               the files the in-sandbox MCP servers and the safety hook
+#                               write (gaffer_sandbox_data_writers: the dispatch and memory
+#                               databases with their -wal/-shm/-journal files, the crew
+#                               events log, the hook's two ledgers). The same keep list as
+#                               the docker provider's legacy layout (lib/sandbox-docker.sh),
+#                               pinned by runner/test/sandbox-exec-data-plane.test.sh.
+#   5. control-file denies    → settings.json and its temp siblings, the usage pause and
+#                               ledgers, the runner's state files and dirs, the generated
+#                               profiles and MCP configs, the agent ids (defence in depth
+#                               for a write root that contains $GAFFER_DATA)
+#   6. agent CLI config       → ~/.claude settings*.json, CLAUDE.md, hooks/, agents/, ... and
+#                               ~/.claude.json: a planted user setting or hook would run in
+#                               every later agent and in the operator's own CLI
+#   7. factory key, REST token and acceptance signing key (read and write)
+# process-exec + network are allowed (network gated on $STRICT_ALLOW_NETWORK). READ-roots
+# need no rule: reads are broadly allowed by (allow default).
+# Who writes what under $GAFFER_DATA, and who trusts it: the table in docs/sandbox.md.
 #
-# THE REPLAY VARIANT (GAFFER_SANDBOX_PROFILE=replay: the tester lane's clean replay of the
-# tester's own test files, bin/tester-run.mjs). The validation profile above stays as it
-# is for the gates and acceptance profiles; the replay gets it with three changes, each
-# appended after the write grant so it wins (last match):
-#   • $GAFFER_DATA is NOT a write root, and writes into it are denied (a temp-dir grant
-#     that contains it included), then the write roots (the replay checkout and its
-#     scratch dirs, which may live under it) are granted again;
-#   • READS of file contents under $GAFFER_DATA are denied (the databases, settings, the
-#     dashboard token, other worktrees, the factory log), then allowed again for the write
-#     roots and the read roots (the dependency links and the repo's git directory);
-#   • HOME's secret folders and files (_SANDBOX_REPLAY_HOME_SECRETS: .ssh, .aws, the gh
-#     and gcloud configs, .claude, .npmrc, .netrc, .git-credentials, cargo's credentials,
-#     .gnupg, ...) cannot be read or written at all, and $STRICT_ALLOW_HOME is not
-#     granted (the replay's HOME is a scratch directory).
-# Only file-read-data is denied under $GAFFER_DATA (metadata stays readable, so resolving
-# the checkout's own path through it still works).
+# THREE VARIANTS (GAFFER_SANDBOX_PROFILE):
+#   (unset/other) the AGENT profile above.
+#   validation    the gates (DoD tests/typecheck/lint, acceptance checks, the merge gate,
+#                 the pre-gate install): agent-modified code with no hook. No $GAFFER_DATA
+#                 grant beyond the write roots (no database, no ledger) and no HOME grant.
+#   replay        the tester lane's clean replay of the tester's own test files
+#                 (bin/tester-run.mjs): the validation profile plus
+#     • READS of file contents under $GAFFER_DATA are denied (the databases, settings, the
+#       dashboard token, other worktrees, the factory log), then allowed again for the write
+#       roots and the read roots (the dependency links and the repo's git directory);
+#     • HOME's secret folders and files (_SANDBOX_REPLAY_HOME_SECRETS: .ssh, .aws, the gh
+#       and gcloud configs, .claude, .npmrc, .netrc, .git-credentials, cargo's credentials,
+#       .gnupg, ...) cannot be read or written at all.
+#     Only file-read-data is denied under $GAFFER_DATA (metadata stays readable, so
+#     resolving the checkout's own path through it still works).
+# Returns non-zero (the profile file emptied) when a path cannot be written into the
+# profile faithfully: the caller then refuses the launch (fail closed).
 #   _sandbox_exec_profile <write-roots> <profile-path> [read-roots]
 _sandbox_exec_profile() {
   local write_roots="$1"
   local profile_path="$2"
   local read_roots="${3:-}"
-  local replay=0
-  [ "${GAFFER_SANDBOX_PROFILE:-}" = "replay" ] && replay=1
+  local variant=agent
+  case "${GAFFER_SANDBOX_PROFILE:-}" in
+    replay) variant=replay ;;
+    validation) variant=validation ;;
+  esac
+  # Every path a regex rule is built on must be representable; refuse before writing.
+  local data_rx="" home_rx="" cfg
+  if [ -n "${GAFFER_DATA:-}" ]; then
+    data_rx="$(_sandbox_regex_prefix "$GAFFER_DATA")" || {
+      printf 'strict-mode: GAFFER_DATA=%s cannot be written into a sandbox-exec profile (a quote or a line break in the path); refusing (fail closed)\n' "$GAFFER_DATA" >&2
+      : > "$profile_path"; return 1; }
+  fi
+  if [ -n "${HOME:-}" ]; then
+    home_rx="$(_sandbox_regex_prefix "$HOME")" || {
+      printf 'strict-mode: HOME=%s cannot be written into a sandbox-exec profile (a quote or a line break in the path); refusing (fail closed)\n' "$HOME" >&2
+      : > "$profile_path"; return 1; }
+  fi
+  while IFS= read -r cfg; do
+    [ -n "$cfg" ] || continue
+    _sandbox_regex_prefix "$cfg" >/dev/null || {
+      printf 'strict-mode: the agent CLI config dir %s cannot be written into a sandbox-exec profile; refusing (fail closed)\n' "$cfg" >&2
+      : > "$profile_path"; return 1; }
+  done <<CFGDIRS
+$(_sandbox_agent_config_dirs)
+CFGDIRS
   {
     printf '(version 1)\n'
-    printf ';; Gaffer strict-mode profile — generated, do not edit. Best-effort only.\n'
+    printf ';; Gaffer strict-mode profile, generated, do not edit. Best-effort only.\n'
+    printf ';; variant: %s\n' "$variant"
     printf '(allow default)\n'
     printf '(allow process-exec*)\n'
     printf '(allow process-fork)\n'
@@ -128,29 +237,24 @@ _sandbox_exec_profile() {
       printf '(deny network*)\n'
     fi
     printf '(deny file-write*)\n'
-    # Re-grant writes ONLY to the explicit subpaths, as a SINGLE allow form (all
-    # the (subpath …)/(literal …) clauses must be children of one `(allow
-    # file-write* …)` — bare (subpath …) expressions grant nothing in SBPL).
+    # Re-grant writes ONLY to the explicit subpaths, as a SINGLE allow form (all the
+    # (subpath ...)/(literal ...) clauses must be children of one `(allow file-write* ...)`:
+    # bare (subpath ...) expressions grant nothing in SBPL).
     printf '(allow file-write*\n'
     # Each write-root (the worktree(s)).
     while IFS= read -r root; do
       _sandbox_subpath_rule "$root"
-    done <<EOF
+    done <<ROOTS
 $write_roots
-EOF
-    # GAFFER_DATA: MCP sqlite dbs, agent id/log, the mcp runtime, and this profile.
-    # (Not for the replay variant: its test code never writes the factory's state.)
-    [ "$replay" = 1 ] || _sandbox_subpath_rule "${GAFFER_DATA:-}"
+ROOTS
     # Temp dirs: many tools (python tempfile, pytest, build caches) write here.
     _sandbox_subpath_rule "${TMPDIR:-/tmp}"
     _sandbox_subpath_rule "/private/var/folders"
     _sandbox_subpath_rule "/tmp"
-    # Operator-allowed HOME paths (e.g. Claude's own state/cache dirs). Not for the
-    # replay variant: its test code runs with a scratch HOME and must never write the
-    # runner's real one (a planted ~/.claude/settings.json hook would run outside the
-    # sandbox on the next agent start).
+    # Operator-allowed HOME paths (the agent CLI's state and cache dirs), for the agent
+    # only. A gate or a replay runs with a scratch HOME and never writes the runner's.
     local home_entry
-    if [ "$replay" != 1 ]; then
+    if [ "$variant" = agent ]; then
       for home_entry in ${STRICT_ALLOW_HOME:-}; do
         _sandbox_subpath_rule "$home_entry"
       done
@@ -159,14 +263,151 @@ EOF
     printf '  (literal "/dev/null")\n'
     printf '  (literal "/dev/stdout")\n'
     printf '  (literal "/dev/stderr"))\n'
-    if [ "$replay" = 1 ]; then _sandbox_exec_replay_rules "$write_roots" "$read_roots"; fi
+    if [ -n "${GAFFER_DATA:-}" ]; then _sandbox_exec_data_rules "$variant" "$write_roots"; fi
+    if [ "$variant" = replay ]; then _sandbox_exec_replay_rules "$write_roots" "$read_roots"; fi
+    if [ -n "${GAFFER_DATA:-}" ]; then _sandbox_exec_control_file_rules "$data_rx"; fi
+    _sandbox_exec_agent_config_rules "$home_rx"
     # THE FACTORY KEY (signed gate events), LAST so it wins over every grant above: no
-    # read, no write, no listing of the keys directory, in both profiles.
+    # read, no write, no listing of the keys directory, in every profile.
     _sandbox_exec_factory_key_rules
     # THE OPERATOR'S REST TOKEN, also last: an agent that read it could approve as the
     # operator over the host's REST server, which then SEALS that approval.
     _sandbox_exec_operator_token_rules
   } > "$profile_path"
+}
+
+# The files under $GAFFER_DATA the in-sandbox writers need (the agent variant only): the
+# dispatch and memory databases (when they live under it) with their SQLite siblings, the
+# crew events log the MCP servers append to, and the safety hook's two ledgers. One path
+# per line, not canonicalised. lib/sandbox-docker.sh's legacy layout keeps the same set.
+gaffer_sandbox_data_writers() {
+  local d="${GAFFER_DATA:-}" db
+  [ -n "$d" ] || return 0
+  for db in "${DISPATCH_DB:-$d/dispatch.sqlite}" "${MEMORY_DB:-$d/memory.sqlite}"; do
+    case "$db" in
+      "$d"/?*) printf '%s\n%s-wal\n%s-shm\n%s-journal\n' "$db" "$db" "$db" "$db" ;;
+    esac
+  done
+  case "${GAFFER_CREW_EVENTS:-}" in "$d"/?*) printf '%s\n' "$GAFFER_CREW_EVENTS" ;; esac
+  printf '%s\n%s\n' "$d/safety-blocks.jsonl" "$d/tool-metrics.jsonl"
+}
+
+# Step 4 above: $GAFFER_DATA denied, its ancestors denied, then the write roots (and, for
+# the agent variant, the in-sandbox writers' files) re-granted.
+#   _sandbox_exec_data_rules <variant> <write-roots>
+_sandbox_exec_data_rules() {
+  local variant="$1" write_roots="$2" root f
+  printf '(deny file-write*\n'
+  _sandbox_subpath_rule "$GAFFER_DATA"
+  _sandbox_ancestor_rules "$GAFFER_DATA"
+  # $GAFFER_DATA spelled in any letter case (a case-insensitive volume): where a temp or
+  # HOME grant contains it, /private/tmp/GDATA/settings.json must not slip past the
+  # subpath above. The re-grants below are exact, so a variant spelling stays denied.
+  if [ -n "${data_rx:-}" ]; then printf '  (regex #"^%s(/|$)")\n' "$(_sandbox_regex_ci "$data_rx")"; fi
+  printf ')\n'
+  printf '(allow file-write*\n'
+  while IFS= read -r root; do _sandbox_subpath_rule "$root"; done <<ROOTS
+$write_roots
+ROOTS
+  if [ "$variant" = agent ]; then
+    while IFS= read -r f; do [ -n "$f" ] && _sandbox_literal_rule "$f"; done <<WRITERS
+$(gaffer_sandbox_data_writers)
+WRITERS
+  fi
+  printf '  (literal "/dev/null"))\n'
+}
+
+# Step 5 above: the host-trusted files under $GAFFER_DATA, denied by name even where a
+# write root would cover them. Who writes each and who trusts it: docs/sandbox.md.
+#   _sandbox_exec_control_file_rules <escaped $GAFFER_DATA regex prefix>
+_sandbox_exec_control_file_rules() {
+  local rx="$1" d="${GAFFER_DATA:-}" n
+  [ -n "$rx" ] && [ -n "$d" ] || return 0
+  printf '(deny file-write*\n'
+  # settings.json and its temp / rename siblings (.settings.<pid>.<hex>.tmp, backups).
+  printf '  (regex #"^%s/\\.?settings[^/]*$")\n' "$rx"
+  # Every dot entry: the per-ticket marker files (.failed-tickets, .reviewed-tickets,
+  # .tester-held, .merge-held-tickets, .daily-ticks, ...), .route/, .workers/, the locks
+  # (.usage-pause.lock, .ledger.lock), .usage-<n>.json, .dod-serial/.
+  printf '  (regex #"^%s/\\.")\n' "$rx"
+  # Every ledger (usage-ledger.jsonl, usage-ledger.held.jsonl, eval-ledger.jsonl, ...).
+  printf '  (regex #"^%s/[^/]*ledger[^/]*$")\n' "$rx"
+  # Top-level config, keys, pids, logs, profiles and anything runnable: usage-pause.json,
+  # crew.yaml, acceptance-signing.key, dashboard.pid, factory.log, strict-profile.sb, ...
+  printf '  (regex #"^%s/[^/]*\\.(json|yaml|yml|key|pid|log|sb|mjs|cjs|js|sh|sock|md|txt)$")\n' "$rx"
+  # The generated per-call files the host reads back (profiles, roots, prompts, MCP configs).
+  printf '  (regex #"^%s/(strict-profile|sandbox-write-roots|sandbox-read-roots|worker-prompt|mcp-)[^/]*$")\n' "$rx"
+  # The principal / agent id files the host trusts.
+  printf '  (regex #"^%s/agent_[^/]*$")\n' "$rx"
+  for n in dashboard-token dashboard-url delivery-metrics.jsonl context-selection.jsonl \
+           skills-telemetry.jsonl memory-audit.jsonl audit.jsonl command-worker.jsonl factory.jsonl; do
+    _sandbox_literal_rule "$d/$n"
+  done
+  # Host-owned directories: skills an agent would load, the docker git dirs, run state,
+  # and the tick's helper-server pipes (a request written there is a dispatch command
+  # run with the tick's authority; the per-tick key is the first guard, this the second).
+  for n in skills-mounts sandbox-git locks run-state runs manifests scout experiments wg-serve; do
+    _sandbox_subpath_rule "$d/$n"
+  done
+  # A usage ledger the operator moved out of $GAFFER_DATA.
+  if [ -n "${GAFFER_USAGE_LEDGER:-}" ]; then _sandbox_literal_rule "$GAFFER_USAGE_LEDGER"; fi
+  printf ')\n'
+}
+
+# The agent CLI's user configuration directories: ~/.claude, and CLAUDE_CONFIG_DIR when
+# set (the CLI reads its settings, memory, hooks, agents, commands and skills there).
+_sandbox_agent_config_dirs() {
+  if [ -n "${HOME:-}" ]; then printf '%s\n' "$HOME/.claude"; fi
+  if [ -n "${CLAUDE_CONFIG_DIR:-}" ] && [ "${CLAUDE_CONFIG_DIR%/}" != "${HOME:-}/.claude" ]; then
+    printf '%s\n' "${CLAUDE_CONFIG_DIR%/}"
+  fi
+  return 0
+}
+
+# Step 6 above: the agent CLI's configuration surface is never writable, whatever
+# STRICT_ALLOW_HOME or a temp grant covers. What the CLI writes at runtime (projects/,
+# todos/, statsig/, shell-snapshots/, session state, history.jsonl) stays writable under
+# the ~/.claude grant. Denied: the directory itself and its ancestors (no rename swaps it),
+# every top-level *.json (settings.json, settings.local.json, keybindings.json, a
+# CLAUDE_CONFIG_DIR's .claude.json) and *.md (CLAUDE.md), and the hooks, agents, commands,
+# skills, plugins, output-styles, rules, local (the CLI's own local install) and bin
+# directories; ~/.claude.json and its siblings (backups, locks) at the HOME level.
+#   _sandbox_exec_agent_config_rules <escaped $HOME regex prefix>
+_sandbox_exec_agent_config_rules() {
+  local home_rx="$1" cfg rx sub cx alt
+  printf '(deny file-write*\n'
+  while IFS= read -r cfg; do
+    [ -n "$cfg" ] || continue
+    rx="$(_sandbox_regex_prefix "$cfg")" || continue   # refused earlier, before any output
+    _sandbox_literal_rule "$cfg"
+    _sandbox_ancestor_rules "$cfg"
+    printf '  (regex #"^%s/[^/]*\\.(json|md)$")\n' "$rx"
+    for sub in hooks agents commands skills plugins output-styles rules local bin; do
+      _sandbox_subpath_rule "$cfg/$sub"
+    done
+    # The same surface in any letter case (a case-insensitive volume opens CLAUDE.MD for
+    # CLAUDE.md, Skills/ for skills/), the directory itself in any case, and any name under
+    # it holding a non-ASCII byte (the volume folds U+017F to s, U+212A to k, ...; the
+    # CLI's own runtime names are ASCII). Also the per-project auto-memory directory,
+    # which the CLI loads into every later session in that project.
+    cx="$(_sandbox_regex_ci "$rx")"
+    printf '  (regex #"^%s$")\n' "$cx"
+    printf '  (regex #"^%s/[^/]*\\.(%s|%s)$")\n' "$cx" "$(_sandbox_regex_ci json)" "$(_sandbox_regex_ci md)"
+    alt=""
+    for sub in hooks agents commands skills plugins output-styles rules local bin; do
+      alt="$alt${alt:+|}$(_sandbox_regex_ci "$sub")"
+    done
+    printf '  (regex #"^%s/(%s)(/|$)")\n' "$cx" "$alt"
+    printf '  (regex #"^%s/%s/[^/]+/%s(/|$)")\n' "$cx" "$(_sandbox_regex_ci projects)" "$(_sandbox_regex_ci memory)"
+    printf '  (regex #"^%s/.*[^ -~]")\n' "$cx"
+  done <<CFGDIRS
+$(_sandbox_agent_config_dirs)
+CFGDIRS
+  if [ -n "$home_rx" ]; then
+    printf '  (regex #"^%s/\\.claude\\.json")\n' "$home_rx"
+    printf '  (regex #"^%s/\\.%s\\.%s")\n' "$(_sandbox_regex_ci "$home_rx")" "$(_sandbox_regex_ci claude)" "$(_sandbox_regex_ci json)"
+  fi
+  printf ')\n'
 }
 
 # The factory signing key's directory (packages/dispatch/src/events/gateSeal.ts
@@ -201,6 +442,9 @@ _sandbox_exec_operator_token_rules() {
   printf '(deny file-read* file-write*\n'
   [ -n "${GAFFER_DATA:-}" ] && _sandbox_subpath_rule "${GAFFER_DATA}/dashboard-token"
   [ -n "${HOME:-}" ] && _sandbox_subpath_rule "${HOME}/.gaffer/dashboard-token"
+  # The runner's acceptance signing key (lib/acceptance-profiles.mjs): with it a row typed
+  # in by an agent would carry the runner's signature. Nothing inside a sandbox needs it.
+  [ -n "${GAFFER_DATA:-}" ] && _sandbox_subpath_rule "${GAFFER_DATA}/acceptance-signing.key"
   printf ')\n'
 }
 
@@ -213,18 +457,12 @@ _sandbox_exec_replay_rules() {
   local write_roots="$1" read_roots="$2" data_rule root secret
   data_rule="$(_sandbox_subpath_rule "${GAFFER_DATA:-}")"
   if [ -n "$data_rule" ]; then
-    printf '(deny file-write*\n%s)\n' "$data_rule"
-    printf '(allow file-write*\n'
-    while IFS= read -r root; do _sandbox_subpath_rule "$root"; done <<EOF
-$write_roots
-EOF
-    printf '  (literal "/dev/null"))\n'
     printf '(deny file-read-data\n%s)\n' "$data_rule"
     printf '(allow file-read-data\n'
-    while IFS= read -r root; do _sandbox_subpath_rule "$root"; done <<EOF
+    while IFS= read -r root; do _sandbox_subpath_rule "$root"; done <<ROOTS
 $write_roots
 $read_roots
-EOF
+ROOTS
     printf '  (literal "/dev/null"))\n'
   fi
   if [ -n "${HOME:-}" ]; then
@@ -288,7 +526,7 @@ gaffer_sandbox_probe() {
         GAFFER_SBX_FIX="put /usr/bin (where macOS keeps sandbox-exec) back on PATH"
       elif command -v docker >/dev/null 2>&1; then
         GAFFER_SBX_MISSING="SANDBOX_PROVIDER=sandbox-exec, which exists only on macOS, and this is $os"
-        GAFFER_SBX_FIX="unset SANDBOX_PROVIDER (or set it to docker) to use the Docker you have, and build its images once with \`$_SBX_BUILD_CMD\` (gaffer setup does this)"
+        GAFFER_SBX_FIX="set GAFFER_SANDBOX=docker or auto (and unset any SANDBOX_PROVIDER override) to use the Docker you have, and build its images once with \`$_SBX_BUILD_CMD\` (gaffer setup does this)"
       else
         GAFFER_SBX_MISSING="this is $os, where sandbox-exec does not exist, and Docker is not installed"
         GAFFER_SBX_FIX="install Docker, then run \`gaffer setup\` again (it builds the sandbox images with \`$_SBX_BUILD_CMD\`)"
@@ -308,10 +546,10 @@ gaffer_sandbox_probe() {
       fi ;;
     none)
       GAFFER_SBX_MISSING="SANDBOX_PROVIDER=none turns the OS sandbox off"
-      GAFFER_SBX_FIX="unset SANDBOX_PROVIDER to auto-detect one (sandbox-exec on macOS, docker on Linux)" ;;
+      GAFFER_SBX_FIX="unset SANDBOX_PROVIDER (an environment override) so GAFFER_SANDBOX picks one (auto: sandbox-exec on macOS, docker on Linux)" ;;
     *)
       GAFFER_SBX_MISSING="SANDBOX_PROVIDER=$GAFFER_SBX_PROVIDER is not a provider"
-      GAFFER_SBX_FIX="set SANDBOX_PROVIDER to docker (any host with Docker) or sandbox-exec (macOS), or unset it to auto-detect" ;;
+      GAFFER_SBX_FIX="unset the SANDBOX_PROVIDER override and set GAFFER_SANDBOX to docker (any host with Docker), sandbox-exec (macOS) or auto" ;;
   esac
   return 0
 }
@@ -427,7 +665,10 @@ sandbox_wrap_cmd() {
         printf 'strict-mode: sandbox-exec provider could not create the per-call profile file under %s\n' "${GAFFER_DATA:-/tmp}" >&2
         return 1
       }
-      _sandbox_exec_profile "$write_roots" "$profile_path" "$read_roots"
+      if ! _sandbox_exec_profile "$write_roots" "$profile_path" "$read_roots"; then
+        rm -f "$profile_path"
+        return 1
+      fi
       printf 'sandbox-exec -f %s' "$profile_path"
       return 0
       ;;

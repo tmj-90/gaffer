@@ -248,7 +248,8 @@ describe("API: read-model surfaces (board + activity + dashboard)", () => {
       h.clock.advanceSeconds(10);
     }
     const total = (await call(h.baseUrl, "GET", "/api/activity")).body.total as number;
-    expect(total).toBe(5);
+    // Each creation records the ticket and its signed risk (ticket.risk_set).
+    expect(total).toBe(10);
 
     const page = await call(h.baseUrl, "GET", "/api/activity?limit=2&offset=1");
     expect((page.body.events as unknown[]).length).toBe(2);

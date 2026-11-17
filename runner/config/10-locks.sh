@@ -29,6 +29,24 @@ GAFFER_LOCK_STALE="${GAFFER_LOCK_STALE:-120}"      # mkdir-lock older than this 
 _gaffer_can_flock() {
   command -v flock >/dev/null 2>&1
 }
+# Take a lock DIRECTORY atomically: create it and, inside it, the pid file. One taker
+# wins; every other gets rc 1.
+#   _gaffer_lock_take_dir <dir> [<pid>]      (<pid> defaults to this shell's)
+# mkdir(1) alone is not create-or-fail on every host. uutils coreutils (the default
+# `mkdir` on Ubuntu 25.10 and later) asks "does it exist?" and then creates, and reports
+# success when the directory appeared in between, so two racers both "create" the same
+# lock and both hold it (seen on CI: two lanes held one review claim). The take is
+# therefore decided by the pid file: it is created with O_EXCL (bash's noclobber
+# redirect, no external program), which exactly one racer can do. A racer whose mkdir
+# "succeeded" but whose pid create lost does not hold the lock and leaves the directory
+# alone. A directory that exists (pid file or not) is never taken here: the callers'
+# liveness and age rules decide whether it is reaped first.
+_gaffer_lock_take_dir() {
+  local d="$1" pid="${2:-$$}"
+  mkdir "$d" 2>/dev/null || return 1
+  ( set -o noclobber; printf '%s\n' "$pid" > "$d/pid" ) 2>/dev/null
+}
+
 gaffer_with_lock() {
   local lockfile="$1"; shift
   [ -n "$lockfile" ] || { "$@"; return $?; }
@@ -62,7 +80,7 @@ gaffer_with_lock() {
   # outlives both the holder's death AND the staleness window would still be a bug.
   local lockdir="${lockfile}.d"
   local waited=0
-  while ! mkdir "$lockdir" 2>/dev/null; do
+  while ! _gaffer_lock_take_dir "$lockdir"; do
     # Reap an ABANDONED lock — but only when its holder is provably gone. Staleness
     # alone (mtime, set once at mkdir and never refreshed) wrongly reaps a live but
     # slow holder, breaking mutual exclusion. Liveness, by holder PID, is
@@ -94,8 +112,7 @@ gaffer_with_lock() {
       return 1
     fi
   done
-  # Record the holder PID so waiters can tell a live-but-slow holder from a dead one.
-  echo $$ > "$lockdir/pid" 2>/dev/null || true
+  # The take wrote the holder PID (waiters tell a live-but-slow holder from a dead one).
   # Hold the lock for the duration of the command; always release, even on failure.
   "$@"; local rc=$?
   rmdir "$lockdir" 2>/dev/null || rm -rf "$lockdir" 2>/dev/null || true
@@ -123,7 +140,7 @@ _gaffer_lock_age() {
 #   _gaffer_lock_reap <lockdir> <seen-pid> [<min-age-seconds>]
 # Two waiters that both read the dead holder's pid used to both `rm -rf` the lock: the
 # second removed the lock the first had just taken, and both held it. The removal now
-# runs under a reap guard (<lockdir>.reap, an atomic mkdir held for a few syscalls), and
+# runs under a reap guard (<lockdir>.reap, taken atomically and held for a few syscalls), and
 # under it the reap condition is checked AGAIN: the pid file must still read <seen-pid>
 # (the dead pid the caller saw, or "" for a lock with no pid) and, when <min-age> is
 # given, the lock dir must be at least that old. A waiter that lost the race finds the
@@ -132,9 +149,9 @@ _gaffer_lock_age() {
 # A guard older than 10 s belongs to a reaper that died inside it and is cleared.
 _gaffer_lock_reap() {
   local d="$1" seen="$2" min="${3:-0}" g="$1.reap" cur age rc=1
-  if ! mkdir "$g" 2>/dev/null; then
+  if ! _gaffer_lock_take_dir "$g"; then
     age="$(_gaffer_lock_age "$g")"
-    [ "${age:-0}" -ge 10 ] 2>/dev/null && rmdir "$g" 2>/dev/null
+    [ "${age:-0}" -ge 10 ] 2>/dev/null && rm -rf "$g" 2>/dev/null
     return 1
   fi
   if [ -d "$d" ]; then
@@ -147,7 +164,7 @@ _gaffer_lock_reap() {
       fi
     fi
   fi
-  rmdir "$g" 2>/dev/null || true
+  rm -rf "$g" 2>/dev/null || true
   return "$rc"
 }
 

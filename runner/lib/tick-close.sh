@@ -115,87 +115,17 @@ gaffer_distill_ticket_intent() {
   fi
 }
 
-# Submit, records, PR / CI gate, tester route; exits worked. Moved verbatim from tick.sh; called from tick.sh.
-gaffer_tick_close_delivery() {
-  # ── RUNNER-OWNED-BOOKKEEPING: submit for review (the runner, not the agent) ──
-  # Every gate passed. The runner (which holds the claim) now submits the ticket for
-  # review — deterministic + token-free from the agent's perspective. A normal
-  # delivery uses the claim-gated `wg submit` (claimed → in_review, completing the
-  # claim; a leased resume uses it too); a tokenless resume fallback is moved
-  # in_progress → in_review.
-  # The delivery-artifact / diff_summary / per-repo records BELOW run as a SYSTEM actor
-  # and are status-independent, so submitting first (matching the old agent-submit
-  # ordering) keeps the done-gate's PR/diff evidence attached to an in_review ticket.
-  #
-  # R-6 (data-loss window): SUBMIT itself is the review-visibility point — it moves the
-  # ticket claimed → in_review AND resolves the claim (GAFFER_CLAIM_RESOLVED=1). If a
-  # signal (the routine outer per-tick timeout SIGTERM, launchd stop, Ctrl-C) lands in
-  # the gap between submit and the first delivery record, the crash trap sees
-  # KEEP=0 + COMPLETE=0 and runs `drop-branch` — DELETING the review-worthy branch —
-  # while CLAIM_RESOLVED=1 suppresses the claim re-release, stranding the ticket
-  # in_review with its branch gone and no branch_name recorded yet. Raise retention
-  # BEFORE submit: past GUARD B the branch is guaranteed to hold delivered commits, so
-  # keeping it is always correct, and the trap now preserves it from the visibility
-  # point onward. (Redundantly re-raised on the record path + the submit-fail park.)
-  GAFFER_KEEP_DELIVERY_BRANCH=1
-  # REQUIRED CI IS RECORDED BEFORE REVIEW (external review #9, finding 4): when CI gates
-  # this delivery (GAFFER_REQUIRE_CI with PR creation on), dispatch learns that before the
-  # ticket is exposed for review, so an approval in the window before the gate reports
-  # (or when it never can: no gh, no GitHub remote) is refused, not waved through.
-  declare -F gaffer_ci_require_mark >/dev/null 2>&1 && gaffer_ci_require_mark "$NUM"
-  if gaffer_submit_delivery "delivered on branch $WORK_BRANCH; gates passed"; then
-    log "submitted #$NUM for review (→ in_review) — runner-owned submit"
-    gaffer_manifest_finish submit 0
-    # FINDING-3: this delivery attempt SUCCEEDED — reset the cross-run no-commit
-    # failure counter so a flaky-then-fixed ticket is never permanently poisoned.
-    gaffer_nocommit_clear "$NUM"
-    # MEMORY FEEDBACK LOOP: the delivery shipped for review. Reward the served
-    # knowledge when it shipped CLEAN (first attempt, no prior review rejection);
-    # otherwise it shipped only after rework — a weaker signal, so demote + flag.
-    # _DELIV_ATTEMPT counts in-tick attempts (≥2 ⇒ reworked here); ROUTE_ATTEMPT_RAW
-    # is the dispatch attempt_count (≥1 ⇒ a PRIOR review rejection sent it back).
-    if [ "${_DELIV_ATTEMPT:-1}" -ge 2 ] || [ "${ROUTE_ATTEMPT_RAW:-0}" -ge 1 ]; then
-      gaffer_recall_feedback reworked
-    else
-      gaffer_recall_feedback clean
-    fi
-    # TICKET → LORE DISTILLATION (Track 1c): harvest the closed ticket's product
-    # intent (title + AC) into a human-gated REQUIREMENT DRAFT so the "why"
-    # survives the ticket. Additive + fail-soft; the delivery is already submitted.
-    gaffer_distill_ticket_intent
-    # EVAL JUDGE (quality telemetry, GAFFER_EVAL_JUDGE=1 opt-in): score the
-    # just-submitted delivery against its ACs on the crew rubric and append the
-    # verdict + real spend to the eval ledger. memoryPresent = whether durable
-    # product-context primed this delivery (the memory score gap's arm flag).
-    # Additive + fail-soft telemetry — never gates or delays the submitted work.
-    # The judge gets the DoD checklist this delivery passed (GAFFER_EVAL_TEST_OUTPUT)
-    # and the REPO NAME for the ledger record ($PRIMARY_REPO is the worktree path,
-    # whose basename is a per-ticket key, not the repo).
-    if type gaffer_eval_judge_delivery >/dev/null 2>&1; then
-      GAFFER_EVAL_TEST_OUTPUT="${_DOD_JUDGE_TESTS:-}" \
-        gaffer_eval_judge_delivery "$NUM" "$PRIMARY_REPO" "$DEFAULT_BRANCH" "$WORK_BRANCH" \
-        "$([ -n "${PRODUCT_CONTEXT_BLOCK:-}" ] && echo 1 || echo 0)" "${_DELIVERY_SPEND_USD:-}" "${_CARD_REPO_NAME:-}" || true
-    fi
-  else
-    # M1 (data-loss path): the submit FAILED. We must NOT fall through to record the
-    # delivery artifacts and exit "worked" — that leaves the ticket `claimed` with
-    # recorded evidence, and on TTL expiry a second tick reclaims it and runs
-    # `git worktree add -B …`, RESETTING the branch and discarding THIS delivery's
-    # commits while the recorded evidence points at now-absent commits. Instead, park
-    # the runner-held claim to `refining` (which preserves the branch AND blocks the
-    # blind reclaim-and-reset), skip the ticket for this run, and fail the tick for a
-    # manual review handoff — BEFORE any delivery-artifact recording below. Raise the
-    # branch-retention flag FIRST so the exit/crash trap tears down only the throwaway
-    # worktree and never the review-worthy branch.
-    GAFFER_KEEP_DELIVERY_BRANCH=1
-    gaffer_release_delivery refining "runner submit failed — needs manual review handoff"
-    # FINDING-3: leaves the delivery pipeline — reset the cross-run no-commit counter.
-    gaffer_nocommit_clear "$NUM"
-    gaffer_skip_ticket "$NUM"
-    log "WARNING — submit FAILED for #$NUM; parked → refining (branch $WORK_BRANCH PRESERVED), NOT recording delivery — needs a human / claim-recovery"
-    result error; exit 0
-  fi
-
+# DELIVERY RECORDS BEFORE THE SUBMIT (audit finding 6). They used to be written after
+# the submit, the memory feedback, the intent distillation and the eval judge (a paid
+# call): a kill in that window (the outer tick bound lands there when the judge is on)
+# left the ticket in_review with no per-repo row and no branch_name, and the done gate
+# then refuses approval in every policy pack (PR_OR_DIFF_REQUIRED: no recorded branch, so
+# no recomputed diff; factory_strict / regulated also BRANCH_REQUIRED and the per-repo
+# check). Its only exit was a reject and a full re-delivery of work that had passed every
+# gate. The records run as the system actor and dispatch accepts them on a claimed
+# ticket, so they are written first; a submit that then fails parks the ticket to
+# refining with its branch kept, and the next delivery records afresh.
+gaffer_record_delivery_rows() {
   # Per-repo delivery recording (FG-008 / WG-005): for EACH write repo, persist a
   # per-repo delivery artifact (branch + diffstat as the evidence note). Single-repo
   # fallback → exactly one repo-delivery row; multi-repo → one per write repo. This
@@ -268,6 +198,93 @@ gaffer_tick_close_delivery() {
         || log "delivery-artifact for #$NUM did not record (non-fatal)"
     fi
   fi
+}
+
+# Submit, records, PR / CI gate, tester route; exits worked. Moved verbatim from tick.sh; called from tick.sh.
+gaffer_tick_close_delivery() {
+  # ── RUNNER-OWNED-BOOKKEEPING: submit for review (the runner, not the agent) ──
+  # Every gate passed. The runner (which holds the claim) now submits the ticket for
+  # review — deterministic + token-free from the agent's perspective. A normal
+  # delivery uses the claim-gated `wg submit` (claimed → in_review, completing the
+  # claim; a leased resume uses it too); a tokenless resume fallback is moved
+  # in_progress → in_review.
+  # The delivery-artifact / diff_summary / per-repo records BELOW run as a SYSTEM actor
+  # and are status-independent, so submitting first (matching the old agent-submit
+  # ordering) keeps the done-gate's PR/diff evidence attached to an in_review ticket.
+  #
+  # R-6 (data-loss window): SUBMIT itself is the review-visibility point — it moves the
+  # ticket claimed → in_review AND resolves the claim (GAFFER_CLAIM_RESOLVED=1). If a
+  # signal (the routine outer per-tick timeout SIGTERM, launchd stop, Ctrl-C) lands in
+  # the gap between submit and the first delivery record, the crash trap sees
+  # KEEP=0 + COMPLETE=0 and runs `drop-branch` — DELETING the review-worthy branch —
+  # while CLAIM_RESOLVED=1 suppresses the claim re-release, stranding the ticket
+  # in_review with its branch gone and no branch_name recorded yet. Raise retention
+  # BEFORE submit: past GUARD B the branch is guaranteed to hold delivered commits, so
+  # keeping it is always correct, and the trap now preserves it from the visibility
+  # point onward. (Redundantly re-raised on the record path + the submit-fail park.)
+  GAFFER_KEEP_DELIVERY_BRANCH=1
+  # REQUIRED CI IS RECORDED BEFORE REVIEW (external review #9, finding 4): when CI gates
+  # this delivery (GAFFER_REQUIRE_CI with PR creation on), dispatch learns that before the
+  # ticket is exposed for review, so an approval in the window before the gate reports
+  # (or when it never can: no gh, no GitHub remote) is refused, not waved through.
+  declare -F gaffer_ci_require_mark >/dev/null 2>&1 && gaffer_ci_require_mark "$NUM"
+  # The per-repo rows, the diff_summary and branch_name, before the ticket is exposed
+  # for review (gaffer_record_delivery_rows says why).
+  gaffer_record_delivery_rows
+  if gaffer_submit_delivery "delivered on branch $WORK_BRANCH; gates passed"; then
+    log "submitted #$NUM for review (→ in_review) — runner-owned submit"
+    gaffer_manifest_finish submit 0
+    # FINDING-3: this delivery attempt SUCCEEDED — reset the cross-run no-commit
+    # failure counter so a flaky-then-fixed ticket is never permanently poisoned.
+    gaffer_nocommit_clear "$NUM"
+    # MEMORY FEEDBACK LOOP: the delivery shipped for review. Reward the served
+    # knowledge when it shipped CLEAN (first attempt, no prior review rejection);
+    # otherwise it shipped only after rework — a weaker signal, so demote + flag.
+    # _DELIV_ATTEMPT counts in-tick attempts (≥2 ⇒ reworked here); ROUTE_ATTEMPT_RAW
+    # is the dispatch attempt_count (≥1 ⇒ a PRIOR review rejection sent it back).
+    if [ "${_DELIV_ATTEMPT:-1}" -ge 2 ] || [ "${ROUTE_ATTEMPT_RAW:-0}" -ge 1 ]; then
+      gaffer_recall_feedback reworked
+    else
+      gaffer_recall_feedback clean
+    fi
+    # TICKET → LORE DISTILLATION (Track 1c): harvest the closed ticket's product
+    # intent (title + AC) into a human-gated REQUIREMENT DRAFT so the "why"
+    # survives the ticket. Additive + fail-soft; the delivery is already submitted.
+    gaffer_distill_ticket_intent
+    # EVAL JUDGE (quality telemetry, GAFFER_EVAL_JUDGE=1 opt-in): score the
+    # just-submitted delivery against its ACs on the crew rubric and append the
+    # verdict + real spend to the eval ledger. memoryPresent = whether durable
+    # product-context primed this delivery (the memory score gap's arm flag).
+    # Additive + fail-soft telemetry — never gates or delays the submitted work.
+    # The judge gets the DoD checklist this delivery passed (GAFFER_EVAL_TEST_OUTPUT)
+    # and the REPO NAME for the ledger record ($PRIMARY_REPO is the worktree path,
+    # whose basename is a per-ticket key, not the repo).
+    if type gaffer_eval_judge_delivery >/dev/null 2>&1; then
+      GAFFER_EVAL_TEST_OUTPUT="${_DOD_JUDGE_TESTS:-}" \
+        gaffer_eval_judge_delivery "$NUM" "$PRIMARY_REPO" "$DEFAULT_BRANCH" "$WORK_BRANCH" \
+        "$([ -n "${PRODUCT_CONTEXT_BLOCK:-}" ] && echo 1 || echo 0)" "${_DELIVERY_SPEND_USD:-}" "${_CARD_REPO_NAME:-}" || true
+    fi
+  else
+    # M1 (data-loss path): the submit FAILED. We must NOT exit "worked" — that leaves
+    # the ticket `claimed` with recorded evidence, and on TTL expiry a second tick
+    # reclaims it and could reset the branch while the recorded evidence points at
+    # now-absent commits. Instead, park the runner-held claim to `refining` (which
+    # preserves the branch AND blocks the blind reclaim-and-reset), skip the ticket for
+    # this run, and fail the tick for a manual review handoff. The delivery rows written
+    # before the submit name the kept branch, which is where the commits are. Raise the
+    # branch-retention flag FIRST so the exit/crash trap tears down only the throwaway
+    # worktree and never the review-worthy branch.
+    GAFFER_KEEP_DELIVERY_BRANCH=1
+    gaffer_release_delivery refining "runner submit failed — needs manual review handoff"
+    # FINDING-3: leaves the delivery pipeline — reset the cross-run no-commit counter.
+    gaffer_nocommit_clear "$NUM"
+    gaffer_skip_ticket "$NUM"
+    log "WARNING — submit FAILED for #$NUM; parked → refining (branch $WORK_BRANCH PRESERVED, its delivery rows already recorded) — needs a human / claim-recovery"
+    result error; exit 0
+  fi
+
+  # The delivery rows were recorded BEFORE the submit (gaffer_record_delivery_rows).
+
 
   # Success: the delivery is RECORDED and the gaffer/ branch now holds work that
   # must survive for review/merge. Tear down the throwaway worktrees FIRST, THEN mark

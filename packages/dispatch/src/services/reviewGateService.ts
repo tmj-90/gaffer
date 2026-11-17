@@ -30,6 +30,7 @@ import {
   type Ticket,
 } from "../domain/types.js";
 import { type ObservedRisk } from "./observedRisk.js";
+import type { AutonomyHold } from "./autonomyPolicyService.js";
 import { AcRepository } from "../repositories/acRepository.js";
 import { EvidenceRepository } from "../repositories/evidenceRepository.js";
 import { TicketRepository } from "../repositories/ticketRepository.js";
@@ -122,6 +123,12 @@ export interface ApproveReviewOptions {
    * fixtures without git keep working; production callers always pass commits.
    */
   requireCommits?: boolean | undefined;
+  /**
+   * SEALED PRINCIPALS: the principal the approval is made through (REST and the CLI set it
+   * from the authenticated identity; null or absent: none). Its seal binds the id, and a
+   * landing refuses while that principal is not signed by this factory.
+   */
+  principal?: { id: string } | null | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -229,6 +236,15 @@ export interface ReviewGateServiceDeps {
    */
   readonly policyAllowsAgentApprove?: (ticket: Ticket) => boolean;
   /**
+   * THE AUTONOMY LADDER: the holds that come before every allow-path (the critical ceiling,
+   * a step-down in force for one of the ticket's write repos at its risk). An agent's
+   * approve is refused while the approve gate is held, whatever the env flag says; a
+   * landing that acts on an approval that was not a person's is refused while the merge
+   * gate is held (the in-flight race). `undefined` means no ladder is wired (nothing held).
+   * A throw counts as held (fail closed). See services/autonomyPolicyService.ts.
+   */
+  readonly autonomyHold?: (ticket: Ticket, gate: "approve" | "merge") => AutonomyHold | null;
+  /**
    * OBSERVED-RISK ESCALATION (Trust & Autonomy, security-critical): resolves the OBSERVED
    * risk of a ticket from its REAL server-computed diff (the advisory risk-annotation
    * overlay + diff size). Used ONLY on the AUTO-SHIP path (an agent approving because an
@@ -276,6 +292,7 @@ export class ReviewGateService {
       landedOnDefaultResolver: deps.landedOnDefaultResolver,
       changeOnRefsResolver: deps.changeOnRefsResolver,
       policyAllowsAgentApprove: deps.policyAllowsAgentApprove,
+      autonomyHoldFn: deps.autonomyHold,
       observedRiskResolver: deps.observedRiskResolver,
       isolationFn: deps.isolation ?? (() => factoryIsolation()),
     };

@@ -1226,7 +1226,8 @@ console.log("== buildCardBatchPrompt + validateCardBatch: B files → B cards ==
   const prompt = buildCardBatchPrompt(entries);
   assert(
     "batch prompt lists both files by index",
-    prompt.includes("FILE 0: src/a.ts") && prompt.includes("FILE 1: src/b.ts"),
+    prompt.includes("FILE 0: <untrusted-file-path-0>src/a.ts</untrusted-file-path-0>") &&
+      prompt.includes("FILE 1: <untrusted-file-path-1>src/b.ts</untrusted-file-path-1>"),
   );
   assert(
     "batch prompt sends the skill prefix once",
@@ -2067,6 +2068,7 @@ console.log("== agentChildEnv: credentials AND outbound-endpoint vars are stripp
     DB_PASSWORD: "hunter2",
     GAFFER_NOTIFY_WEBHOOK_URL: "https://hooks.example.com/secret",
     GAFFER_NOTIFY_SLACK_URL: "https://hooks.slack.com/services/T/B/secret",
+    GAFFER_NOTIFY: "https://hooks.slack.com/services/T/B/setting-secret desktop",
     MY_WEBHOOK_URL: "https://corp.example.com/webhook",
     SLACK_WEBHOOK_TOKEN: "xoxb-leak",
     FOO_URL: "https://internal.corp/endpoint",
@@ -2082,6 +2084,7 @@ console.log("== agentChildEnv: credentials AND outbound-endpoint vars are stripp
     "DB_PASSWORD",
     "GAFFER_NOTIFY_WEBHOOK_URL",
     "GAFFER_NOTIFY_SLACK_URL",
+    "GAFFER_NOTIFY",
     "MY_WEBHOOK_URL",
     "SLACK_WEBHOOK_TOKEN",
     "FOO_URL",

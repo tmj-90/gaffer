@@ -1,10 +1,11 @@
 // S1 rework loop. A delivery whose first attempt breaks a test is reworked inside the
 // same tick with the REAL failure fed back to the agent; the ticket page shows the
 // attempt trail; a human Send back… from Review (chip reason) resets the criteria; an
-// agent reviewer's CHANGES verdict (REVIEW_MODE=agent saved through Settings) sends
-// it back to the queue with the reviewer's words, and the redelivery prompt carries
-// them; Dispatch's own reject cap (DISPATCH_MAX_ATTEMPTS, saved through Settings)
-// parks a rejected delivery for a human.
+// agent reviewer's CHANGES verdict (the reviewer agent runs once the Autonomy mode is
+// graduated, saved on the Settings dial: REVIEW_MODE=agent, nothing ships on its own)
+// is recorded for the human; Dispatch's own reject cap (DISPATCH_MAX_ATTEMPTS, which
+// follows Effort: small allows two rejections) parks a twice-rejected delivery for a
+// human, the server honouring the saved setting without a restart.
 export default async function s1(t, L) {
   const p = t.page;
 
@@ -137,23 +138,25 @@ export default async function s1(t, L) {
     `after send back: status=${back?.status} ACs=${JSON.stringify(acsAfter.map((a) => a.status))}`,
   );
 
-  // ── an agent reviewer's CHANGES verdict under REVIEW_MODE=agent (saved through
-  //    Settings). Supervised: the verdict is advisory, the ticket waits for a human ──
+  // ── an agent reviewer's CHANGES verdict under the graduated mode (saved on the
+  //    Settings dial). No grant: the verdict is advisory, the ticket waits for a human ──
   await t.visit("settings");
-  await t.setSetting("REVIEW_MODE", "agent");
+  await t.setSetting("GAFFER_MODE", "graduated");
   const saved = await t.saveSettings();
   t.check(
     saved.status < 300 &&
-      saved.sent.REVIEW_MODE === "agent" &&
+      saved.sent.GAFFER_MODE === "graduated" &&
       Object.keys(saved.sent).length === 1,
-    "Settings: Save changes posted only the changed key (REVIEW_MODE=agent)",
+    "Settings: Save changes posted only the changed setting (GAFFER_MODE=graduated)",
     `Settings save: ${saved.status} ${JSON.stringify(saved.sent)}`,
   );
-  const sm = await L.settingsMap();
+  const dm = await L.derivedMap();
   t.check(
-    sm.get("REVIEW_MODE")?.effective === "agent" && sm.get("REVIEW_MODE")?.source === "file",
-    "GET /api/settings reports REVIEW_MODE effective=agent from settings.json",
-    `after save: ${JSON.stringify(sm.get("REVIEW_MODE"))}`,
+    dm.get("REVIEW_MODE")?.value === "agent" &&
+      dm.get("REVIEW_MODE")?.decidedBy === "GAFFER_MODE=graduated" &&
+      dm.get("DISPATCH_ALLOW_AGENT_APPROVE")?.value === "0",
+    "GET /api/settings: the graduated mode derives REVIEW_MODE=agent and no agent approval",
+    `after save: ${JSON.stringify(dm.get("REVIEW_MODE"))}`,
   );
 
   L.setStubMode(tk.number, "changes_verdict");
@@ -181,8 +184,8 @@ export default async function s1(t, L) {
   const toastR = await t.poll();
   t.check(
     /review/i.test(toastR),
-    `with REVIEW_MODE=agent a Poll on an in_review ticket runs the reviewer agent ("${toastR.slice(0, 70)}")`,
-    `Poll toast with a ticket in Review under REVIEW_MODE=agent: "${toastR}"`,
+    `under the graduated mode a Poll on an in_review ticket runs the reviewer agent ("${toastR.slice(0, 70)}")`,
+    `Poll toast with a ticket in Review under the graduated mode: "${toastR}"`,
   );
   const rv = await L.maybe(
     async () => {
@@ -247,15 +250,15 @@ export default async function s1(t, L) {
 
   // ── the isolation posture: every agent launch needs an OS sandbox by default, and
   //    this world opts out in its environment (scripts/ui-regression/setup.sh: every
-  //    agent here is a stub), so Settings must say so in the Sandbox group's read-only
+  //    agent here is a stub), so Settings must say so in the Safety section's read-only
   //    line, fed by the real probe (runner/gaffer sandbox-status). ──
   await t.visit("settings");
-  const isoSel = "#grp-sandbox .settings-isolation";
+  const isoSel = "#grp-safety .settings-isolation";
   const isoText = (await p.textContent(isoSel).catch(() => "")) || "";
   const isoState = (await p.getAttribute(isoSel, "data-state").catch(() => "")) || "";
   t.check(
     isoState === "opted-out" && /GAFFER_STRICT_REQUIRE=0 is set in the environment/.test(isoText),
-    "Settings → Sandbox shows the isolation posture read-only: opted out in the environment, agents run without an OS sandbox",
+    "Settings → Safety shows the isolation posture read-only: opted out in the environment, agents run without an OS sandbox",
     `isolation line: state=${isoState} '${isoText.slice(0, 200)}'`,
   );
   // The refusal itself (no OS sandbox and no opt-out: nothing claimed, no agent, the fix
@@ -269,16 +272,16 @@ export default async function s1(t, L) {
     "CHANGES → rework with the reviewer's feedback (the AFK loop) is an agent-ships path: left to an own-server shard with an OS sandbox, like the ones suites/s4-autonomy.mjs skips",
   );
 
-  // ── Dispatch's reject cap, lowered from Settings ──────────────────────────
+  // ── Dispatch's reject cap, lowered from Settings (Effort small) ────────────
   await t.visit("settings");
-  await t.setSetting("REVIEW_MODE", "human");
-  await t.setSetting("DISPATCH_ALLOW_AGENT_APPROVE", "0");
-  await t.setSetting("DISPATCH_MAX_ATTEMPTS", "1");
+  await t.setSetting("GAFFER_MODE", "supervised");
+  await t.setSetting("GAFFER_EFFORT", "small");
   const saved2 = await t.saveSettings();
+  const cap = (await L.derivedMap()).get("DISPATCH_MAX_ATTEMPTS")?.value;
   t.check(
-    saved2.status < 300 && saved2.sent.DISPATCH_MAX_ATTEMPTS === "1",
-    "Settings: DISPATCH_MAX_ATTEMPTS=1 saved from the Budget group",
-    `save of DISPATCH_MAX_ATTEMPTS: ${saved2.status} ${JSON.stringify(saved2.sent)}`,
+    saved2.status < 300 && saved2.sent.GAFFER_EFFORT === "small" && cap === "2",
+    "Settings: Effort small saved; the runner derives a reject cap of 2 (DISPATCH_MAX_ATTEMPTS)",
+    `save of GAFFER_EFFORT: ${saved2.status} ${JSON.stringify(saved2.sent)} cap=${cap}`,
   );
   const capped = await L.seedTicket(t, {
     title: `Reject cap ticket (${L.tag("s1")})`,
@@ -304,17 +307,34 @@ export default async function s1(t, L) {
       `reject-cap ticket delivery ended in '${capDelivered?.status}' · ${await L.whyStuck(capped, pollCap)}`,
     );
   else {
-    await t.visit(`review/${capped.id}`, { label: "review/:id" });
-    await p.locator('button:has-text("Send back…")').first().click();
-    await p
-      .locator(".reject-dialog .reject-reason-input")
-      .fill("first rejection under a cap of one");
-    await p.locator(".reject-dialog .reject-submit").click();
-    const parked = await L.waitStatus(capped.id, ["blocked", "refining"], 15000, 500);
+    const sendBack = async (why) => {
+      await t.visit(`review/${capped.id}`, { label: "review/:id" });
+      await p.locator('button:has-text("Send back…")').first().click();
+      await p.locator(".reject-dialog .reject-reason-input").fill(why);
+      await p.locator(".reject-dialog .reject-submit").click();
+      return L.waitStatus(capped.id, ["blocked", "refining"], 15000, 500);
+    };
+    const first = await sendBack("first rejection under a cap of two");
     t.check(
-      parked?.status === "blocked",
-      `with DISPATCH_MAX_ATTEMPTS=1 saved in Settings, the first send back parks #${capped.number} for a human (blocked) — the server honours the saved cap without a restart`,
-      `with DISPATCH_MAX_ATTEMPTS=1 saved in Settings, the first send back moved #${capped.number} to '${parked?.status}' instead of parking it`,
+      first?.status === "refining",
+      `under Effort small (a reject cap of 2) the first send back returns #${capped.number} to Refining`,
+      `the first send back moved #${capped.number} to '${first?.status}'`,
     );
+    await t.visit(`ticket/${capped.id}`);
+    await p.locator('button:has-text("Mark ready")').first().click();
+    await L.waitStatus(capped.id, ["ready"], 15000, 500);
+    await t.visit("work");
+    await t.poll();
+    const again = await L.waitStatus(capped.id, L.SETTLED, 240000);
+    if (again?.status !== "in_review")
+      t.bad(`the second delivery of #${capped.number} ended in '${again?.status}'`);
+    else {
+      const parked = await sendBack("second rejection under a cap of two");
+      t.check(
+        parked?.status === "blocked",
+        `with Effort small saved in Settings, the second send back parks #${capped.number} for a human (blocked): the server honours the saved setting without a restart`,
+        `with Effort small saved in Settings, the second send back moved #${capped.number} to '${parked?.status}' instead of parking it`,
+      );
+    }
   }
 }

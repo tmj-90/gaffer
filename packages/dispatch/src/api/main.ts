@@ -6,6 +6,7 @@ import { Command } from "commander";
 import { authConfigured, deriveReadToken, describeApiToken, ensureApiToken } from "./auth.js";
 import { Dispatch } from "../core.js";
 import { hostGateKeyring } from "../events/gateSeal.js";
+import { setUnsignedPrincipalLog } from "../services/principalAdminService.js";
 import { resolveDbPath } from "../util/paths.js";
 import { DEFAULT_API_PORT, assertSafeBind, createApiServer, endEventStreams } from "./server.js";
 import { refreshIsolationStatus } from "./isolation.js";
@@ -84,9 +85,11 @@ program
     // $GAFFER_DATA/dashboard-token, and exported into the process env — so the
     // human operator can authenticate while the delivery agent (whose child env
     // the runner scrubs of the token) structurally cannot approve its own work.
-    // Settings the dashboard stores (and the GAFFER_MODE presets) become this
-    // process's env DEFAULTS — the same precedence the runner gives them — so the
-    // API's own gates and the values it reports agree with the tick.
+    // The fourteen settings and what the runner's own config derives from them become
+    // this process's env (never over the operator's real environment, never an old
+    // settings.json key as it stands), each with the runner's re-source record, so the
+    // API's own gates agree with the tick and every runner this server starts derives
+    // them from settings.json itself, as a run from the command line does.
     applySettingsToEnv(process.env);
     // The agent isolation posture the Settings page shows, probed once at startup
     // (and again on each settings load). Never blocks the start: it runs in the background.
@@ -117,6 +120,27 @@ program
     const swept = wg.sweepStaleRuns();
     if (swept.length > 0) {
       process.stdout.write(`dispatch-api: reconciled ${swept.length} orphaned run(s)\n`);
+    }
+    // SEALED PRINCIPALS: a sign-in refused because the principal is not signed by this
+    // factory is logged here (once per principal and reason), beside the 401 it gets.
+    setUnsignedPrincipalLog((line) => process.stderr.write(`${line}\n`));
+    const unsigned = wg.listUnsignedPrincipals();
+    if (unsigned.length > 0) {
+      process.stderr.write(
+        `dispatch-api: ${unsigned.length} principal(s) are not signed by this factory and cannot sign in (${unsigned
+          .map((u) => u.name)
+          .join(
+            ", ",
+          )}): review them with \`gaffer wg principal unsigned\`, then \`gaffer wg principal resign\` (or in the dashboard's Settings).\n`,
+      );
+    }
+    // SEALED AUTONOMY: what is not signed grants nothing; say so once at start.
+    try {
+      for (const line of wg.autonomySealSummary().messages) {
+        process.stderr.write(`dispatch-api: ${line}.\n`);
+      }
+    } catch {
+      // a startup notice never stops the server
     }
     // Pass the bind host so the server emits HSTS only for a non-loopback bind.
     const server = createApiServer(wg, undefined, undefined, undefined, undefined, opts.host);

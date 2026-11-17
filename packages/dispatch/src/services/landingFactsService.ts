@@ -31,6 +31,7 @@ export type LandingFactsHost = Pick<
   Dispatch,
   | "approveOutcomeFacts"
   | "autonomyPolicy"
+  | "autonomyRisk"
   | "db"
   | "evidence"
   | "landingFacts"
@@ -120,7 +121,7 @@ export function approveOutcomeFacts(
     mergeGateEarned: isAutonomyAllowed(
       host.autonomyPolicy,
       writeRepoIdsForTicket(host, ticket),
-      ticket.risk_level,
+      host.autonomyRisk(ticket).level,
       "merge",
       env,
     ),
@@ -326,7 +327,7 @@ export function landingFacts(
     mergeGateEarned: isAutonomyAllowed(
       host.autonomyPolicy,
       writeRepoIdsForTicket(host, ticket),
-      ticket.risk_level,
+      host.autonomyRisk(ticket).level,
       "merge",
       env,
     ),

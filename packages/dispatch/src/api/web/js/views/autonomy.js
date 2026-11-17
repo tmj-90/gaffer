@@ -1,20 +1,37 @@
 // Settings: autonomy policies and recommendations, access (principals), idle loops.
 // Moved verbatim from app.js (the entry); the module map is in app.js.
 
+import { table } from "../lookup.js";
+import { roLockAll } from "../access.js";
 import { api } from "../api.js";
 import { actorName } from "../club.js";
-import { emptyState, panelHead } from "../components.js";
+import { callout, emptyState, meterRow, panelHead } from "../components.js";
 import { clear, el, field } from "../dom.js";
+import { pct } from "../format.js";
 import { icon } from "../icons.js";
 import { router } from "../router.js";
+import { reasonText } from "../status.js";
 import { runAsyncAction, toast } from "../toast.js";
 import { autonomyGateLabel, isPolicyActive, submitAutonomyPolicy } from "./formation.js";
 import { resolveTargetRepos, targetPicker } from "./plan.js";
 
+/** Confidence is full once a bucket holds twice the server's 10-decision floor. */
+const CONFIDENCE_FULL_N = 20;
+/** The server's headline in plain words: "for risk=low" reads "for low risk". */
+function reasonPlain(text) {
+  return String(text)
+    .replace(/\brisk=(\w+)/g, (_m, v) => `${v} risk`)
+    .replace(/\s+\u2014\s+/g, ": ");
+}
+
 function autonomyRecommendationsPanel(recs, policies, { inert = false } = {}) {
   if (!Array.isArray(recs) || recs.length === 0) return null;
   return el("div", { class: "card panel autonomy-recs" }, [
-    panelHead("Autonomy suggestions", "from your review track record", null, { kit: "sky" }),
+    panelHead("Autonomy suggestions", "from your review track record", null, {
+      // A suggestion waits for the viewer's Turn on: the one claret block (A-02).
+      tone: "needs",
+      level: 2,
+    }),
     el(
       "p",
       { class: "section-note" },
@@ -31,6 +48,7 @@ function autonomyRecommendationsPanel(recs, policies, { inert = false } = {}) {
 /** One recommendation row with its inline evidence + explicit enable/confirm flow. */
 function autonomyRecItem(r, policies, { inert = false } = {}) {
   const confPct = Math.round((Number(r.confidence) || 0) * 100);
+  const risk = reasonText(`risk=${r.riskLevel}`);
   const reasons = Array.isArray(r.reasons) ? r.reasons : [];
   const active = isPolicyActive(policies, r.repoId, r.riskLevel, r.gate);
 
@@ -65,7 +83,7 @@ function autonomyRecItem(r, policies, { inert = false } = {}) {
           mode: "auto",
           confirm: true,
         },
-        `Enabled ${autonomyGateLabel(r.gate).toLowerCase()} for risk=${r.riskLevel} in ${r.repoName || "repo"}.`,
+        `Enabled ${autonomyGateLabel(r.gate).toLowerCase()} for ${risk.toLowerCase()} in ${r.repoName || "repo"}.`,
       ),
     );
     action.appendChild(
@@ -73,7 +91,7 @@ function autonomyRecItem(r, policies, { inert = false } = {}) {
         el(
           "p",
           { class: "ar-confirm-note" },
-          `This grants ${autonomyGateLabel(r.gate).toLowerCase()} for risk=${r.riskLevel} in ${r.repoName || "this repo"}. Reversible any time.`,
+          `This grants ${autonomyGateLabel(r.gate).toLowerCase()} for ${risk.toLowerCase()} in ${r.repoName || "this repo"}. Reversible any time.`,
         ),
         el("div", { class: "btn-row" }, [confirmBtn, cancelBtn]),
       ]),
@@ -96,18 +114,49 @@ function autonomyRecItem(r, policies, { inert = false } = {}) {
     renderEnable();
   }
 
+  // The evidence as a rate with its count and a Wilson 95% whisker (F-E1): "approved 12
+  // of 12", never a bare percentage. The merge gate rests on approvals left unedited.
+  const sample = r.sample || {};
+  const merge = r.gate === "merge";
+  const k = merge ? sample.unchanged : sample.approvals;
+  const n = merge ? sample.unchangedKnown : sample.total;
+  const evidence =
+    typeof k === "number" && typeof n === "number"
+      ? el(
+          "div",
+          { class: "meter-list ar-evidence" },
+          meterRow({
+            name: merge ? "Approved unedited" : "Approved",
+            k,
+            n,
+            whisker: true,
+            fmt: (kk, nn) => `${merge ? "approved unedited" : "approved"} ${kk} of ${nn}`,
+          }),
+        )
+      : null;
   return el("li", { class: "ar-item" }, [
-    el("div", { class: "ar-item-head" }, [
+    // A level-3 row head (20 px) over body text at the body's small size (A-15).
+    el("h3", { class: "ar-item-head" }, [
       el("span", { class: `ar-gate ar-gate-${r.gate}` }, autonomyGateLabel(r.gate)),
-      el("span", { class: "ar-risk" }, `risk=${r.riskLevel}`),
+      el("span", { class: "ar-risk" }, risk),
       el("span", { class: "ar-repo" }, r.repoName || ""),
-      el("span", { class: "ar-conf dim tabnum", title: "confidence" }, `${confPct}%`),
     ]),
-    el("p", { class: "ar-headline" }, r.headline || ""),
+    evidence,
+    // Confidence stays, labelled and defined (F-E1).
+    el("p", { class: "ar-conf" }, [
+      el("span", { class: "ar-conf-label" }, "Confidence "),
+      el("b", {}, pct(confPct)),
+      el(
+        "span",
+        { class: "ar-conf-def" },
+        `: the approval rate scaled by how much evidence there is (full from ${CONFIDENCE_FULL_N} decisions${r.reasons && r.reasons.some((x) => /other repo|across all repos|cross/i.test(x)) ? ", and lower for evidence from other repositories" : ""}).`,
+      ),
+    ]),
+    el("p", { class: "ar-headline" }, r.headline ? reasonPlain(r.headline) : ""),
     reasons.length
       ? el(
           "ul",
-          { class: "ar-reasons dim" },
+          { class: "ar-reasons" },
           reasons.map((reason) => el("li", {}, reason)),
         )
       : null,
@@ -123,8 +172,16 @@ function autonomyRecItem(r, policies, { inert = false } = {}) {
 function autonomyPoliciesPanel(policies, { inert = false } = {}) {
   const active = (Array.isArray(policies) ? policies : []).filter((p) => p.mode === "auto");
   if (active.length === 0) return null;
+  // SEALED AUTONOMY: rows this factory has not signed are off until a person signs them.
+  const unsigned = active.filter((p) => p.signed === false).length;
   return el("div", { class: `card panel autonomy-policies${inert ? " is-inert" : ""}` }, [
-    panelHead(inert ? "Active autonomy (inert)" : "Active autonomy", null, null, { kit: "sky" }),
+    panelHead(inert ? "Active autonomy (inert)" : "Active autonomy", null, null, { level: 2 }),
+    unsigned > 0
+      ? callout({
+          tone: "bad",
+          body: `${unsigned} automatic ${unsigned === 1 ? "row is" : "rows are"} not signed: ${unsigned === 1 ? "it is" : "they are"} off until you sign ${unsigned === 1 ? "it" : "them"}. Review and sign each one on the ladder below, or turn it off.`,
+        })
+      : null,
     el(
       "p",
       { class: "section-note" },
@@ -146,13 +203,13 @@ function autonomyPoliciesPanel(policies, { inert = false } = {}) {
             offBtn,
             "Turning off…",
             { repo_id: p.repo_id, risk_level: p.risk_level, gate: p.gate, mode: "off" },
-            `Turned off ${autonomyGateLabel(p.gate).toLowerCase()} for risk=${p.risk_level} in ${p.repo_name || "repo"}.`,
+            `Turned off ${autonomyGateLabel(p.gate).toLowerCase()} for ${reasonText(`risk=${p.risk_level}`).toLowerCase()} in ${p.repo_name || "repo"}.`,
           ),
         );
         return el("li", { class: "ar-item ap-item" }, [
           el("div", { class: "ar-item-head" }, [
             el("span", { class: `ar-gate ar-gate-${p.gate}` }, autonomyGateLabel(p.gate)),
-            el("span", { class: "ar-risk" }, `risk=${p.risk_level}`),
+            el("span", { class: "ar-risk" }, reasonText(`risk=${p.risk_level}`)),
             el("span", { class: "ar-repo" }, p.repo_name || ""),
             inert
               ? el(
@@ -164,7 +221,16 @@ function autonomyPoliciesPanel(policies, { inert = false } = {}) {
                   },
                   "auto · inert",
                 )
-              : el("span", { class: "ap-mode" }, "auto"),
+              : p.signed === false
+                ? el(
+                    "span",
+                    {
+                      class: "ap-mode inert",
+                      title: "Not signed by this factory: it grants nothing.",
+                    },
+                    "auto · not signed",
+                  )
+                : el("span", { class: "ap-mode" }, "auto"),
           ]),
           p.enabled_by
             ? el(
@@ -209,7 +275,7 @@ function accessPanel(whoami, principals) {
         ? "the shared token"
         : "unknown";
   const card = el("div", { class: "card panel access-panel" }, [
-    panelHead("Access", "the keys to the ground", null, { kit: "ink" }),
+    panelHead("Access", "the keys to the ground", null, { level: 2 }),
     el(
       "p",
       { class: "section-note" },
@@ -398,7 +464,8 @@ function accessPanel(whoami, principals) {
         if (fresh && Array.isArray(fresh.principals)) {
           const rebuilt = accessPanel(whoami, fresh.principals);
           const freshList = rebuilt.querySelector(".access-list");
-          if (freshList) list.replaceWith(freshList);
+          // The rebuilt Revoke buttons take the same lock as the first render.
+          if (freshList) list.replaceWith(roLockAll(freshList, "repo"));
         }
       });
     });
@@ -416,7 +483,7 @@ function accessPanel(whoami, principals) {
 }
 
 /** The known idle scan loops, in display order, with copy for the panel. */
-const IDLE_LOOP_LABELS = {
+const IDLE_LOOP_LABELS = table({
   idle_security_hotspot: "Security hotspots",
   idle_coverage: "Coverage",
   idle_test_quality: "Test quality",
@@ -425,7 +492,7 @@ const IDLE_LOOP_LABELS = {
   idle_documentation: "Documentation",
   idle_dependencies: "Dependencies",
   idle_feature_backlog: "Feature backlog",
-};
+});
 
 /**
  * Idle-loops control panel. For each scan loop: an enable toggle + a multi-select
@@ -511,7 +578,7 @@ function renderIdleLoopsPanel(view, repos, nodes, envSettings = []) {
         { class: "dim" },
         "The master switch. Off: an idle factory polls and stops. On: each idle tick runs the one enabled lane " +
           "below that is most due (security first, then tests, types, tech debt, docs, dependencies). " +
-          "GAFFER_MAINTENANCE=0 in the runner's env is the emergency kill switch.",
+          "When idle set to off (GAFFER_IDLE, in Settings) is the kill switch.",
       ),
       el("div", { class: "btn-row" }, [recommendBtn]),
     ]),
@@ -659,13 +726,17 @@ function renderIdleLoopsPanel(view, repos, nodes, envSettings = []) {
   ]);
   card.appendChild(status);
 
-  // The effective runner env the panel cannot see from crew.yaml alone: the
-  // GAFFER_MAINTENANCE override, the idle MODE override and the legacy every-loop
-  // scan. `effective` is what the factory will use (env → settings.json → preset).
+  // What the runner will use that the panel cannot see from crew.yaml alone, derived
+  // from the When idle setting (GAFFER_IDLE) or set in the environment: the maintenance
+  // override, the idle MODE override and the every-loop scan (GET /api/settings derived).
   const envOf = (key) => {
     const row = (envSettings || []).find((s) => s && s.key === key);
     const v = row ? (row.effective !== undefined ? row.effective : row.value) : "";
     return String(v === undefined || v === null ? "" : v).trim();
+  };
+  const fromEnv = (key) => {
+    const row = (envSettings || []).find((s) => s && s.key === key);
+    return !!(row && row.envLocked);
   };
   const flagOn = (v) => ["1", "true", "yes", "on"].includes(String(v).toLowerCase());
   const reposWithCoverage = (repos || []).filter((r) => r && r.coverage_command).map((r) => r.name);
@@ -675,9 +746,16 @@ function renderIdleLoopsPanel(view, repos, nodes, envSettings = []) {
     const lanesOn = lanes.length;
     const envMaint = envOf("GAFFER_MAINTENANCE");
     const panelOn = maint.input.checked;
-    // GAFFER_MAINTENANCE wins over the panel switch: 0 kills the lane, 1 forces it.
+    // The derived GAFFER_MAINTENANCE wins over the panel switch: 0 kills the lane, 1 forces it.
     const maintOn = envMaint === "0" ? false : envMaint === "1" ? true : panelOn;
     const legacyScan = flagOn(envOf("IDLE_DRAFT_WHEN_IDLE"));
+    // Who decided it: the When idle setting, or a variable exported for the runner.
+    const maintBy = fromEnv("GAFFER_MAINTENANCE")
+      ? `GAFFER_MAINTENANCE=${envMaint} in the environment`
+      : "When idle (GAFFER_IDLE)";
+    const scanBy = fromEnv("IDLE_DRAFT_WHEN_IDLE")
+      ? "IDLE_DRAFT_WHEN_IDLE=1 in the environment"
+      : "When idle (GAFFER_IDLE=all)";
     const idleMode = envOf("GAFFER_IDLE_MODE") || view.mode || "create_draft_tickets";
     const siOn = siSwitch.input.checked;
     const backlog = editors.get("idle_feature_backlog");
@@ -700,8 +778,8 @@ function renderIdleLoopsPanel(view, repos, nodes, envSettings = []) {
         : `runs ALL ${lanesOn} enabled lane${lanesOn === 1 ? "" : "s"} in one pass (plus ingest and the memory loops)`;
     if (envMaint === "0" && !legacyScan) {
       text =
-        "GAFFER_MAINTENANCE=0 in the runner's settings is the kill switch: idle ticks skip maintenance " +
-        "entirely, whatever this panel says.";
+        `${maintBy} turns maintenance off: idle ticks skip it entirely, whatever this panel says.` +
+        (fromEnv("GAFFER_MAINTENANCE") ? "" : " Set When idle to auto to let this panel decide.");
       tone = "warn";
     } else if (!maintOn && lanesOn === 0 && !legacyScan && backlogOn) {
       // The feature backlog has its own switch and runs BEFORE the maintenance lane
@@ -713,25 +791,23 @@ function renderIdleLoopsPanel(view, repos, nodes, envSettings = []) {
         "Idle ticks poll and stop. Turn on maintenance and at least one lane to work the backlog while idle.";
       tone = "dim";
     } else if (!maintOn && legacyScan) {
-      // GAFFER_MAINTENANCE=0 only skips the maintenance lane: tick.sh still falls
-      // through to the legacy scan when IDLE_DRAFT_WHEN_IDLE=1.
+      // A derived GAFFER_MAINTENANCE=0 only skips the maintenance lane: tick.sh still
+      // falls through to the every-loop scan when IDLE_DRAFT_WHEN_IDLE=1.
       text =
         (envMaint === "0"
-          ? "GAFFER_MAINTENANCE=0 skips the maintenance lane, but IDLE_DRAFT_WHEN_IDLE=1 (legacy) is on: each idle tick "
-          : "IDLE_DRAFT_WHEN_IDLE=1 (legacy): with maintenance off, each idle tick ") +
+          ? `${maintBy} skips the maintenance lane, but ${scanBy} runs the every-loop scan: each idle tick `
+          : `${scanBy} runs the every-loop scan: with maintenance off, each idle tick `) +
         `${legacyPass}; ${filing}.`;
       tone = "warn";
     } else if (maintOn && lanesOn === 0 && backlogOn) {
       text =
         "No scan lane is enabled, so each idle tick runs only the feature backlog (plus ingest and the lore-gap loop when on)" +
-        (envMaint === "1" ? " (forced on by GAFFER_MAINTENANCE=1)" : "") +
+        (envMaint === "1" ? ` (${maintBy} turns maintenance on)` : "") +
         `; ${filing}.`;
       if (idleMode === "create_ready_tickets") tone = "warn";
     } else if (maintOn && lanesOn === 0 && !backlogOn) {
       text =
-        (envMaint === "1"
-          ? "GAFFER_MAINTENANCE=1 forces the lane on, but "
-          : "Maintenance is on but ") +
+        (envMaint === "1" ? `${maintBy} turns the lane on, but ` : "Maintenance is on but ") +
         "no lane is enabled — idle ticks will do nothing (no_work). Enable a lane or use the recommended set.";
       tone = "warn";
     } else if (!maintOn) {
@@ -740,7 +816,7 @@ function renderIdleLoopsPanel(view, repos, nodes, envSettings = []) {
     } else {
       text =
         `Each idle tick runs ONE of the ${lanesOn} enabled lane${lanesOn === 1 ? "" : "s"}, rotating by priority` +
-        (envMaint === "1" ? " (forced on by GAFFER_MAINTENANCE=1)" : "") +
+        (envMaint === "1" ? ` (${maintBy} turns maintenance on)` : "") +
         `; ${filing}.`;
       if (idleMode === "create_ready_tickets") tone = "warn";
     }
@@ -789,7 +865,9 @@ function renderIdleLoopsPanel(view, repos, nodes, envSettings = []) {
   refreshStatus();
 
   // ── Save ──────────────────────────────────────────────────────────────────
-  const saveBtn = el("button", { class: "btn primary", type: "button" }, [
+  // A secondary save: the idle loops live in crew.yaml, apart from the settings form,
+  // and the form's Save changes is the view's one primary (A-43).
+  const saveBtn = el("button", { class: "btn", type: "button" }, [
     icon("check"),
     el("span", {}, "Save idle loops"),
   ]);
@@ -840,3 +918,4 @@ function renderIdleLoopsPanel(view, repos, nodes, envSettings = []) {
 }
 
 export { autonomyRecommendationsPanel, autonomyPoliciesPanel, accessPanel, renderIdleLoopsPanel };
+export { autonomyLadderPanel } from "./autonomy-ladder.js";

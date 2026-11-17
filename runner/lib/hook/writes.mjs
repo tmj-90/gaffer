@@ -8,6 +8,7 @@
 
 import { basename, resolve } from "node:path";
 import {
+  canonicalCandidates,
   canonicalize,
   expandTildeWord,
   isInsideAny,
@@ -81,7 +82,7 @@ function extractAwkRedirectTargets(awkBody) {
     // A quoted literal, or a bare path-shaped token, is a resolvable destination.
     if (quoted || raw.includes("/") || raw.includes(".") || raw.startsWith("~")) {
       sawLiteral = true;
-      targets.push(canonicalize(resolve(process.cwd(), raw)));
+      targets.push(...canonicalCandidates(process.cwd(), raw));
     }
     // Otherwise the destination is a bare identifier (a variable) → dynamic.
   }
@@ -137,7 +138,11 @@ const GIT_READ_ONLY_SUBCOMMANDS = new Set([
   "help",
 ]);
 
-function extractBashWriteTargets(cmd) {
+// `startCwd`: the directory the command starts in (null: one the hook cannot know). The
+// expansion walk (read-operands.mjs) calls this for each segment with every directory
+// the shell may be in there (cwd-flow.mjs), so the targets only this extractor knows
+// (sed -i, awk redirects, rsync, curl -o, git clone, ...) are judged from all of them.
+function extractBashWriteTargets(cmd, startCwd = process.cwd()) {
   const targets = [];
   // Effective cwd for resolving RELATIVE targets. Updated as the segment loop
   // replays `cd`/`pushd` left-to-right, so a `cd <outside> && echo x > rel`
@@ -147,7 +152,7 @@ function extractBashWriteTargets(cmd) {
   // `popd`): the effective dir is unprovable, so any subsequent RELATIVE target
   // fails closed (UNVERIFIABLE). Absolute targets are unaffected by cd and stay
   // exactly resolvable.
-  let effectiveCwd = process.cwd();
+  let effectiveCwd = startCwd;
   const add = (raw) => {
     if (!raw) return;
     // Expand an unquoted leading `~` the way bash will (see expandTildeWord); an
@@ -188,7 +193,9 @@ function extractBashWriteTargets(cmd) {
     //     wrongly surface a legitimate device write as an out-of-root target.
     const lexical = resolve(effectiveCwd ?? "/", p);
     if (lexical === "/dev" || lexical.startsWith("/dev/")) return;
-    targets.push(canonicalize(lexical));
+    // The kernel takes `..` physically: through a symlinked directory the write lands
+    // beside the link's target (canonicalCandidates), so both places are judged.
+    targets.push(...canonicalCandidates(effectiveCwd ?? "/", p));
   };
 
   // FAIL-CLOSED gate (S-1/S-4): if the WHOLE command has quoting we cannot

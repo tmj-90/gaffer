@@ -1,6 +1,7 @@
 // Shared panels: the development flow, what is needed, waiting notes, the event vocabulary and feed rows.
 // Moved verbatim from app.js (the entry); the module map is in app.js.
 
+import { table } from "./lookup.js";
 import { actorName } from "./club.js";
 import { panelHead } from "./components.js";
 import { el } from "./dom.js";
@@ -70,7 +71,7 @@ function devFlowPanel(_tickets, byStatus, _now) {
   }));
 
   return el("div", { class: "card panel pipeline-panel" }, [
-    el("div", { class: "panel-head" }, [
+    el("div", { class: "panel-head ph-l2" }, [
       el("h2", { class: "panel-title" }, [
         "Phases of play",
         el("span", { class: "panel-aux" }, "bench to net"),
@@ -292,8 +293,9 @@ function needsPanel({ tickets = [], byStatus = {}, summary = {}, decisions = [],
     : el("div", { class: "needs-empty" }, [icon("check"), "All clear: nothing is waiting on you."]);
 
   const card = el("div", { class: "card panel needs-hero" }, [
+    // A plain level-2 head: Health keeps its blocks for the four measures (A-03).
     panelHead("Treatment table", items.length ? plural(total, "thing") : "all clear", null, {
-      kit: items.length ? "red" : "sky",
+      level: 2,
     }),
     body,
   ]);
@@ -356,7 +358,7 @@ function waitingNote(w) {
  * verb; everything else is derived by dropping the entity prefix and
  * sentence-casing the remainder, so new event types degrade gracefully.
  */
-const EVENT_LABELS = {
+const EVENT_LABELS = table({
   "ticket.created": "Ticket created",
   "ticket.transitioned": "Ticket moved",
   "ticket.claimed": "Ticket claimed",
@@ -367,7 +369,7 @@ const EVENT_LABELS = {
   "ticket.unblocked": "Unblocked",
   "ac.edited": "Criterion edited",
   "ac.removed": "Criterion removed",
-};
+});
 function humanizeEvent(type) {
   if (!type) return "Event";
   if (EVENT_LABELS[type]) return EVENT_LABELS[type];

@@ -26,6 +26,7 @@ type Kit = {
   kitClashes: (p: string | null, s: string | null) => Array<{ which: string; card: string }>;
   kitClashNote: (p: string | null, s: string | null) => string;
   kitTokens: (p: string | null, s: string | null) => Tokens;
+  crestInk: (bg: number[]) => string;
 };
 let kit: Kit;
 
@@ -245,5 +246,66 @@ describe("web: club colours and the referee's cards", () => {
     // #3b82f6 reads 4.6:1 on --board but 4.4:1 on --board-2: the board's quiet ink instead.
     expect(kit.kitTokens(SAFE_BLUE, "#3b82f6")["--sky-on-board"]).toBe("var(--board-ink-2)");
     expect(kit.kitTokens(SAFE_BLUE, "#95cdeb")["--sky-on-board"]).toBe("var(--sky)");
+  });
+});
+
+describe("web: kit text colours (P1 review follow-ups)", () => {
+  const hx = (h: string) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+  const lum = (c: number[]) => {
+    const f = (x: number) => {
+      const v = x / 255;
+      return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+    };
+    return 0.2126 * f(c[0]!) + 0.7152 * f(c[1]!) + 0.0722 * f(c[2]!);
+  };
+  const ratio = (a: number[], b: number[]) => {
+    const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p);
+    return (x! + 0.05) / (y! + 0.05);
+  };
+  const parse = (v: string) => {
+    if (v === "#ffffff") return [255, 255, 255];
+    if (v === "var(--counter-ink)") return [14, 23, 38];
+    const m = /^rgb\((\d+) (\d+) (\d+)\)$/.exec(v);
+    if (!m) throw new Error(`not a colour: ${v}`);
+    return [Number(m[1]), Number(m[2]), Number(m[3])];
+  };
+
+  it("crest letters read at 4.5:1 on mid-tone first colours (white gave 4.26 to 4.30)", () => {
+    for (const first of [
+      "#7a7a7a",
+      "#8a5cf5",
+      "#6666ff",
+      "#d9480f",
+      "#2f7fbf",
+      "#1d4ed8",
+      "#f4f4f4",
+    ]) {
+      const on = kit.kitTokens(first, null)["--on-kit-1"]!;
+      expect(ratio(parse(on), hx(first)), `${first}: ${on}`).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+
+  it("a stepped claret ink near a status colour falls back to the house ink (#009900)", () => {
+    const t = kit.kitTokens("#009900", null);
+    expect(kit.cardClash("#009900")).toBeNull();
+    const m = /^light-dark\((rgb\([^)]+\)), (rgb\([^)]+\))\)$/.exec(t["--claret-ink"] ?? "")!;
+    expect(m).not.toBeNull();
+    const day = parse(m[1]!);
+    const night = parse(m[2]!);
+    // Each side is the house ink (the house's own pair, never flagged) or clear of every card.
+    const house = [
+      [122, 22, 49],
+      [232, 180, 196],
+    ];
+    for (const c of [day, night].filter((x) => !house.some((h) => h.join() === x.join())))
+      for (const card of [
+        [31, 107, 58],
+        [127, 212, 154],
+        [200, 16, 46],
+        [255, 123, 123],
+        [255, 204, 31],
+      ])
+        expect(kit.okDistance(c, card)).toBeGreaterThanOrEqual(15);
+    expect(day).toEqual([122, 22, 49]);
   });
 });

@@ -12,6 +12,7 @@ import {
 } from "../schemas.js";
 import { requestRepoFilter } from "../scopeGate.js";
 import { apiActor } from "./context.js";
+import { DispatchError } from "../../util/errors.js";
 
 /**
  * Factory Map scope graph (FG-001 + FG-002). Routes:
@@ -120,11 +121,25 @@ export async function routeScope(
         const params = new URL(req.url ?? "/", "http://localhost").searchParams;
         const node = params.get("node");
         const repo = params.get("repo");
+        // PRINCIPAL SCOPES: every branch answers a scoped principal only with the repos it
+        // reaches (the gate admits it only to ?all=1; this holds if the two ever drift).
+        const reach = requestRepoFilter(wg);
         if (node) {
-          sendJson(res, 200, { repos: wg.reposForScope(node) });
+          const repos = wg.reposForScope(node);
+          sendJson(res, 200, { repos: reach ? repos.filter((r) => reach(r.id)) : repos });
           return;
         }
         if (repo) {
+          if (reach) {
+            const found = wg.listRepositories(true).find((r) => r.id === repo || r.name === repo);
+            if (!found || !reach(found.id)) {
+              throw new DispatchError(
+                "SCOPE_DENIED",
+                "This principal's scope does not reach that repository.",
+                { repo },
+              );
+            }
+          }
           sendJson(res, 200, { scopes: wg.scopesForRepo(repo) });
           return;
         }
@@ -133,7 +148,6 @@ export async function routeScope(
         if (params.get("all") === "1") {
           const byRepo: Record<string, ReturnType<Dispatch["scopesForRepo"]>> = {};
           // PRINCIPAL SCOPES: a scoped principal reads the grounds of the repos it reaches.
-          const reach = requestRepoFilter(wg);
           for (const r of wg.listRepositories(true)) {
             if (reach && !reach(r.id)) continue;
             byRepo[r.id] = wg.scopesForRepo(r.id);

@@ -1,11 +1,14 @@
 // S10 pause / continue, poll refusals and caps. A delivery that hits the turn cap
 // PAUSES in place (worktree kept); the ticket page says why and offers Continue and
 // Stop; Continue + Poll resumes it in its worktree; Stop abandons it and the next
-// tick's sweep reaps its worktree. Then the caps a Poll honours, each lowered from Settings: the
-// per-day tick cap, the per-day USD cap and the lifetime budget each refuse the poll
-// with the runner's reason in a toast and launch no agent; an empty queue with the
-// idle loops off says there is nothing to do.
-import { existsSync } from "node:fs";
+// tick's sweep reaps its worktree. Then the caps a Poll honours: the per-day USD cap and
+// the lifetime budget (settings, lowered from Settings) and the per-day tick cap (no
+// longer a setting: an OLD settings.json key that is stricter than what GAFFER_CONCURRENCY
+// derives still applies until a person removes it, and the migration callout says so)
+// each refuse the poll with the runner's reason in a toast and launch no agent; an empty
+// queue with the idle loops off says there is nothing to do.
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
 
 export default async function s10(t, L) {
   const p = t.page;
@@ -111,15 +114,29 @@ export default async function s10(t, L) {
     acs: ["covered by a test"],
     ready: true,
   });
-  const refusedPoll = async (key, value, re, what) => {
+  const settingsFile = path.join(L.GAFFER_DATA, "settings.json");
+  const refusedPoll = async (key, value, re, what, { oldKey = false } = {}) => {
     // Put the setting back as it was, not blank: the world's daily budget is what
     // lets every later poll run (a live tick needs a dollar cap).
     const prev = L.readSettingsFile()[key] ?? "";
-    await t.visit("settings");
-    await t.setSetting(key, value);
-    const sv = await t.saveSettings();
-    if (!(sv.status < 300 && sv.sent[key] === value))
-      t.bad(`Settings: ${key}=${value} not saved (${sv.status} ${JSON.stringify(sv.sent)})`);
+    const fileBefore = readFileSync(settingsFile, "utf8");
+    if (oldKey) {
+      // An old key written into settings.json by hand (as the old Settings page did).
+      writeFileSync(settingsFile, JSON.stringify({ ...JSON.parse(fileBefore), [key]: value }));
+      await t.visit("settings");
+      const mig = (await p.textContent("#settings-migration").catch(() => "")) || "";
+      t.check(
+        new RegExp(key).test(mig) && /old value is in force/.test(mig),
+        `Settings: the migration callout lists the old ${key} as still in force (it is stricter)`,
+        `migration callout: '${mig.slice(0, 240)}'`,
+      );
+    } else {
+      await t.visit("settings");
+      await t.setSetting(key, value);
+      const sv = await t.saveSettings();
+      if (!(sv.status < 300 && sv.sent[key] === value))
+        t.bad(`Settings: ${key}=${value} not saved (${sv.status} ${JSON.stringify(sv.sent)})`);
+    }
     const before = L.stubCalls({ kind: "delivery", ticket: victim.number }).length;
     await t.visit("work");
     await t.poll();
@@ -137,6 +154,10 @@ export default async function s10(t, L) {
       `${what}: Poll refused with the runner's reason ("${(toast || "").slice(0, 110)}") — no agent launched, #${victim.number} still ready`,
       `${what}: toast=${toast} agent calls ${before}→${after} status=${st}`,
     );
+    if (oldKey) {
+      writeFileSync(settingsFile, fileBefore);
+      return;
+    }
     await t.visit("settings");
     await t.setSetting(key, prev);
     await t.saveSettings();
@@ -145,7 +166,8 @@ export default async function s10(t, L) {
     "MAX_TICKS_PER_DAY",
     "1",
     /per-day cap \(MAX_TICKS_PER_DAY=1/,
-    "per-day tick cap lowered to 1",
+    "an old per-day tick cap of 1 still in settings.json",
+    { oldKey: true },
   );
   await refusedPoll(
     "GAFFER_DAILY_BUDGET_USD",

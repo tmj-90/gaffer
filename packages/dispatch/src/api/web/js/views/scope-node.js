@@ -3,13 +3,13 @@
 
 import { roLock, roLockAll } from "../access.js";
 import { api } from "../api.js";
-import { panelHead, statCell, viewHead } from "../components.js";
+import { emptyState, panelHead, statCell, viewHead } from "../components.js";
 import { clear, el, field } from "../dom.js";
 import { fmtTime, plural } from "../format.js";
 import { kitShirt, learnKits } from "../icons.js";
 import { navigate, routeSignal, router, setDocTitle } from "../router.js";
 import { confirmSheet } from "../sheets.js";
-import { accessBadge, riskBadge, statusBadge } from "../status.js";
+import { accessBadge, riskBadge, statusBadge, ticketRef } from "../status.js";
 import { guard, toast } from "../toast.js";
 import {
   SCOPE_EDGE_RELATIONS_ADVANCED,
@@ -37,7 +37,7 @@ import { RISK_LEVELS } from "./work.js";
  * you), its title and its status. Links to the ticket.
  */
 function fixtureList(list, { empty, limit = 8, byTime = false } = {}) {
-  if (!list || !list.length) return el("p", { class: "quiet" }, empty);
+  if (!list || !list.length) return emptyState(empty, null, null, null, { inline: true });
   const rows = byTime
     ? [...list].sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")))
     : list;
@@ -56,7 +56,8 @@ function fixtureList(list, { empty, limit = 8, byTime = false } = {}) {
                   el("span", { class: "sr-only" }, "#"),
                   mapCounter(t, { link: false }),
                 ])
-              : el("span", { class: "num" }, t.number != null ? `#${t.number}` : t.id.slice(0, 8)),
+              : // The one ticket number build (A-20); the row is the link.
+                ticketRef(t, { size: "s", link: false }),
             el("span", { class: "repo-ticket-title" }, t.title),
             el("span", { class: "repo-ticket-side" }, [
               statusBadge(t.status, t.landing_state),
@@ -199,7 +200,7 @@ async function renderNode(id) {
   wrap.appendChild(
     el("header", { class: `gr-head is-node type-${node.type}` }, [
       el("div", { class: "gr-head-main" }, [
-        el("div", { class: "tk-meta" }, [
+        el("div", { class: "gr-meta" }, [
           el("span", { class: "gr-type" }, typeLabel(node.type)),
           riskBadge(node.risk_level),
           node.owner ? el("span", { class: "gr-owner" }, `Run by @${node.owner}`) : null,
@@ -254,7 +255,7 @@ async function renderNode(id) {
       "Fixtures",
       book ? (live.length ? `${live.length} live, worst first` : "nothing live") : "",
       null,
-      { kit: "claret" },
+      { tone: "reference", level: 2 },
     ),
     book
       ? fixtureList(live, {
@@ -265,7 +266,9 @@ async function renderNode(id) {
               ? "Nothing in play here. The repos that play here have no live ticket."
               : "Nothing in play here. Link a repo, or put a ticket on this ground from its page.",
         })
-      : el("p", { class: "quiet" }, "The board did not answer, so the fixtures are unknown."),
+      : emptyState("The board did not answer, so the fixtures are unknown.", null, null, null, {
+          inline: true,
+        }),
   ]);
   const resultsCard = book
     ? el("section", { class: "card gr-card", "aria-label": "Results" }, [
@@ -273,14 +276,14 @@ async function renderNode(id) {
           "Results",
           results.length ? `latest ${Math.min(8, results.length)} of ${results.length} done` : "",
           null,
-          { kit: "ink" },
+          { level: 2 },
         ),
         fixtureList(results, { byTime: true, empty: "Nothing shipped from here yet." }),
       ])
     : null;
 
   const repoCard = el("section", { class: "card gr-card", "aria-label": "Who plays here" }, [
-    panelHead("Who plays here", plural(repos.length, "repo"), null, { kit: "sky" }),
+    panelHead("Who plays here", plural(repos.length, "repo"), null, { level: 2 }),
     isClub
       ? el(
           "p",
@@ -309,7 +312,7 @@ async function renderNode(id) {
             ),
           ),
         )
-      : el("p", { class: "quiet" }, "No repo plays here yet. Link one below."),
+      : emptyState("No repo plays here yet. Link one below.", null, null, null, { inline: true }),
     el("h3", { class: "gr-sub" }, "Link a repo"),
     roLockAll(renderLinkRepoForm(node.id)),
   ]);
@@ -341,11 +344,11 @@ function renderNewGround(allNodes) {
   wrap.appendChild(
     el("div", { class: "detail-grid" }, [
       el("section", { class: "card gr-card", "aria-label": "The ground" }, [
-        panelHead("The ground", "name, type, owner, risk", null, { kit: "claret" }),
+        panelHead("The ground", "name, type, owner, risk", null, { tone: "reference", level: 2 }),
         renderNodeForm(null, allNodes),
       ]),
       el("section", { class: "card gr-card gr-types", "aria-label": "Which type" }, [
-        panelHead("Which type", "where it stands on the map", null, { kit: "sky" }),
+        panelHead("Which type", "where it stands on the map", null, { level: 2 }),
         el(
           "dl",
           { class: "kv gr-kv gr-typekey" },
@@ -505,11 +508,13 @@ function renderConnectionsCard(node, allNodes, allEdges) {
           ...outgoing.map((e) => edgeRow(e, "out")),
           ...incoming.map((e) => edgeRow(e, "in")),
         ])
-      : el("p", { class: "quiet" }, "No connections yet: this ground stands alone on the map.");
+      : emptyState("No connections yet: this ground stands alone on the map.", null, null, null, {
+          inline: true,
+        });
   return roLockAll(
     el("section", { class: "card gr-card", "aria-label": "Neighbours" }, [
       panelHead("Neighbours", `${outgoing.length + incoming.length} on the map`, null, {
-        kit: "sky",
+        level: 2,
       }),
       list,
       el("h3", { class: "gr-sub" }, "Add a connection"),

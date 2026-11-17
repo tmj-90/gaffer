@@ -16,6 +16,7 @@ import {
   squadForm,
   wageBill,
 } from "./programme.js";
+import { autonomyStepDownLine } from "./autonomy-ladder.js";
 import { pitchBoard, tacticsBoard } from "./tactics.js";
 import { whatIOwnPanel } from "./teamsheet.js";
 import { hashText } from "./work.js";
@@ -84,7 +85,6 @@ function overviewSkeleton() {
           ]),
           el("div", { class: "sb-side" }, [
             el("div", { class: "sb-cells kpi-row" }, [
-              cell("Need you"),
               cell("On the pitch"),
               cell("Delivered today"),
               cell("Wage bill"),
@@ -94,7 +94,7 @@ function overviewSkeleton() {
       ]),
       el("div", { class: "ov-main", "aria-hidden": "true" }, [
         el("div", { class: "card what-i-own" }, [
-          panelHead("Team sheet", null, null, { kit: "claret" }),
+          panelHead("Team sheet", null, null, { tone: "needs", level: 2 }),
           el("ol", { class: "own-well" }, [row(), row(), row()]),
         ]),
         el("section", { class: "tactics" }, [
@@ -142,7 +142,7 @@ function overviewError(e) {
           el(
             "div",
             { class: "sb-cells kpi-row sb-off", role: "group", "aria-label": "Today (not read)" },
-            ["Need you", "On the pitch", "Delivered today", "Wage bill"].map((label) =>
+            ["On the pitch", "Delivered today", "Wage bill"].map((label) =>
               el("div", { class: "kpi" }, [
                 el("div", { class: "kpi-top" }, el("span", { class: "kpi-label" }, label)),
                 el("span", { class: "kpi-val sk-digits" }, [
@@ -176,6 +176,7 @@ async function renderOverview() {
   // the pitch mostly empty: Squad & form moves up into it, as in the idle comp.
   const idle = f.items.length <= 2;
   wrap.appendChild(overviewScoreboard(f));
+  wrap.appendChild(autonomyStepDownLine()); // THE AUTONOMY LADDER: a step-down of the last 7 days
   const sheet = whatIOwnPanel(f.queue, f);
   const board = tacticsBoard(f);
   const squad = squadForm(f);

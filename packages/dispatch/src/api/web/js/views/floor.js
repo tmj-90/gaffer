@@ -1,14 +1,15 @@
 // View: Floor (#/floor), the factory floor.
 // Moved verbatim from app.js (the entry); the module map is in app.js.
 
+import { table } from "../lookup.js";
 import { agentTitle, agentWho } from "../access.js";
 import { viewHead } from "../components.js";
 import { clear, el, prefersReducedMotion, svgEl } from "../dom.js";
-import { money, moneyW, plural } from "../format.js";
+import { money, moneyW, pct, plural } from "../format.js";
 import { clockTime, freshness } from "../freshness.js";
 import { agentTag, glyph } from "../icons.js";
 import { loadMatchDay } from "../matchday.js";
-import { statusLabel } from "../status.js";
+import { statusLabel, ticketRef } from "../status.js";
 import { deliveredBy, sinceStatus } from "./review-comments.js";
 import { hashText } from "./work.js";
 
@@ -307,7 +308,7 @@ function fPlaceTags(tags, obstacles, bounds) {
 }
 
 /* ---- stations ------------------------------------------------------------ */
-const FLOOR_STATIONS = {
+const FLOOR_STATIONS = table({
   drawing: { name: "Drawing office", statuses: ["draft", "refining"], hue: "var(--fl-draft)" },
   stores: { name: "Stores", statuses: ["ready"], hue: "var(--fl-ready)" },
   assembly: { name: "Assembly", statuses: ["claimed", "in_progress"], hue: "var(--fl-build)" },
@@ -316,7 +317,7 @@ const FLOOR_STATIONS = {
   loading: { name: "Loading bay", statuses: ["ready_for_merge"], hue: "var(--fl-inspect)" },
   despatch: { name: "Despatch", statuses: ["done"], hue: "var(--fl-done)" },
   jam: { name: "Jam bay", statuses: ["blocked", "paused", "failed"], hue: "var(--red)" },
-};
+});
 /** Lifecycle order: the stations along the line, then the bay off it. */
 const FLOOR_ORDER = [
   "drawing",
@@ -328,11 +329,11 @@ const FLOOR_ORDER = [
   "despatch",
   "jam",
 ];
-const FLOOR_STATION_OF = {};
+const FLOOR_STATION_OF = table({});
 for (const [k, st] of Object.entries(FLOOR_STATIONS))
   for (const s of st.statuses) FLOOR_STATION_OF[s] = k;
 /** Each ticket status as the floor says it in a sentence. */
-const FLOOR_WORDS = {
+const FLOOR_WORDS = table({
   draft: "a draft",
   refining: "refining",
   ready: "ready",
@@ -345,7 +346,7 @@ const FLOOR_WORDS = {
   blocked: "blocked",
   paused: "paused",
   failed: "failed",
-};
+});
 /** The sheds: footprint in tiles, height, and the direction the roof teeth run. */
 const FLOOR_SHEDS = {
   drawing: { x: 0.3, y: 0.1, w: 2.75, d: 1.0, h: 1.05, along: "x" },
@@ -994,7 +995,7 @@ function floorScene(m) {
       today == null
         ? "Spend tank: no spend recorded today."
         : budget
-          ? `Spend tank: ${money(today)} of today's ${moneyW(budget)} budget (${Math.round((today / budget) * 100)}%).`
+          ? `Spend tank: ${money(today)} of today's ${moneyW(budget)} budget (${pct((today / budget) * 100)}).`
           : `Spend tank: ${money(today)} spent today. No daily budget is set, so the tank has no scale.`;
     const g = svgEl("g", {
       class: `fl-tank${hot ? " is-hot" : ""}`,
@@ -1369,13 +1370,8 @@ async function renderFloor() {
         ? `${money(m.today)} of the ${moneyW(m.budget)} wage bill`
         : `${money(m.today)} wage bill today`,
   ];
-  wrap.appendChild(
-    viewHead(
-      "Floor",
-      "The factory floor: every ticket as a parcel moving station to station, every agent a robot on the one it holds.",
-    ),
-  );
-  wrap.appendChild(el("p", { class: "fl-facts" }, facts.join(" · ")));
+  // The subtitle is the facts line; what the drawing is goes in its legend (A-14).
+  wrap.appendChild(viewHead("Floor", facts.join(" · ")));
 
   // The stream line lives outside the data signature: it follows the tracker.
   const streamP = el("p", { class: "fl-stream", hidden: true });
@@ -1421,6 +1417,38 @@ async function renderFloor() {
   const tip = el("div", { class: "fl-tip", "aria-hidden": "true", hidden: true });
   const stage = el("div", { class: "fl-stage" }, [svg, tip]);
   wireFloorTips(stage, tip);
+  // On a phone the drawing is a figure you tap to zoom (A-53): at the screen's width its
+  // labels are a few pixels high, so a tap draws it at its own size, scrolling sideways
+  // inside the figure. The button only shows at phone width.
+  const zoom = el(
+    "button",
+    { class: "btn small fl-zoom", type: "button", "aria-pressed": "false" },
+    "Zoom the drawing",
+  );
+  zoom.addEventListener("click", () => {
+    const on = !stage.classList.contains("is-zoomed");
+    stage.classList.toggle("is-zoomed", on);
+    zoom.setAttribute("aria-pressed", String(on));
+    // A zoomed drawing scrolls: a focusable, named region, so keys can scroll it too.
+    if (on) {
+      stage.setAttribute("tabindex", "0");
+      stage.setAttribute("role", "region");
+      stage.setAttribute("aria-label", "The floor, drawn at full size");
+      stage.scrollLeft = 0;
+    } else {
+      stage.removeAttribute("tabindex");
+      stage.removeAttribute("role");
+      stage.removeAttribute("aria-label");
+    }
+  });
+  const figure = el("figure", { class: "fl-figure" }, [
+    stage,
+    el("figcaption", { class: "fl-zoom-bar" }, [zoom]),
+  ]);
+  // Touch has no hover: say "tap" there (A-53).
+  const touch =
+    typeof window.matchMedia === "function" &&
+    (window.matchMedia("(hover: none)").matches || window.matchMedia("(pointer: coarse)").matches);
 
   // The key and the text of the floor: stations in lifecycle order with their
   // tickets, and who is on the benches (shirt, name, ticket).
@@ -1475,7 +1503,11 @@ async function renderFloor() {
           m.robots.map((p) =>
             el("li", {}, [
               agentTag(p.who.name, 22, p.who.no, agentTitle(p.who)),
-              el("a", { href: `#/ticket/${p.id}` }, [el("b", {}, `#${p.number}`), " ", p.title]),
+              el("a", { href: `#/ticket/${p.id}` }, [
+                ticketRef(p, { size: "s", link: false }),
+                " ",
+                p.title,
+              ]),
               el(
                 "span",
                 { class: "fl-bench-st" },
@@ -1493,14 +1525,16 @@ async function renderFloor() {
           "The floor",
           el("span", { class: "panel-aux" }, `${m.open.length} in play`),
         ]),
-        el(
-          "p",
-          { class: "fl-note" },
-          "The line runs from the drawing office to the lorry; the jam bay is off it. Hover or focus a parcel for its ticket.",
-        ),
       ]),
-      stage,
-      el("div", { class: "fl-legend" }, [key, el("div", { class: "fl-lists" }, [stations, bench])]),
+      figure,
+      el("div", { class: "fl-legend" }, [
+        el("p", { class: "fl-note" }, [
+          "Every ticket is a parcel moving station to station, every agent a robot on the one it holds. The line runs from the drawing office to the lorry; the jam bay is off it. ",
+          touch ? "Tap a parcel to open its ticket." : "Hover or focus a parcel for its ticket.",
+        ]),
+        key,
+        el("div", { class: "fl-lists" }, [stations, bench]),
+      ]),
     ]),
   );
 

@@ -136,17 +136,19 @@ if [ "${GAFFER_MAINTENANCE:-}" != "0" ] && [ -f "$CREW_DIR/dist/cli/index.js" ] 
   # MSTATUS is "invalid" unless MOUT is crew's `{ok:true, report}` with either no
   # outcome (nothing was due: no_op) or a status from the registry's outcome enum
   # (IdleLoopRunOutcome in packages/crew/src/loops/idleRegistry.ts).
-  MSTATUS="$(echo "$MOUT" | jget '(() => { const r = d && d.ok === true ? d.report : null; if (!r || typeof r !== "object") return "invalid"; const o = r.outcome; if (o == null) return "no_op"; return ["skipped_tickets_ready", "no_repos", "no_findings", "draft_created", "ready_created", "observed", "suggested", "disabled"].includes(o.status) ? o.status : "invalid"; })()' 2>/dev/null || echo invalid)"
+  # One read of MOUT. MDRAFTS: `filed` = everything this tick produced (the lane's
+  # drafts + ingested issues + a backlog epic + lore suggestions); older crews only had
+  # the lane's draftCount. MOTHER: did anything besides the scan lane run (ingest, lore
+  # gap, feature backlog)?
+  gaffer_json_vars "$MOUT" \
+    MSTATUS '(() => { const r = d && d.ok === true ? d.report : null; if (!r || typeof r !== "object") return "invalid"; const o = r.outcome; if (o == null) return "no_op"; return ["skipped_tickets_ready", "no_repos", "no_findings", "draft_created", "ready_created", "observed", "suggested", "disabled"].includes(o.status) ? o.status : "invalid"; })()' invalid \
+    MCHOSEN '(d.report || {}).chosen || "none"' none \
+    MREASON '(d.report || {}).reason ?? ""' '' \
+    MDRAFTS 'd.filed ?? ((d.report || {}).outcome || {}).draftCount ?? 0' 0 \
+    MSPENT 'd.spent === true ? 1 : 0' 0 \
+    MOTHER 'd.ingest || d.jira || d.loreGap || d.featureBacklog ? 1 : 0' 0
   [ "$_mrc" -eq 0 ] || MSTATUS=invalid
-  MCHOSEN="$(echo "$MOUT" | jget '(d.report || {}).chosen || "none"' 2>/dev/null || echo none)"
-  MREASON="$(echo "$MOUT" | jget '(d.report || {}).reason ?? ""' 2>/dev/null || echo '')"
-  # `filed` = everything this tick produced (the lane's drafts + ingested issues + a
-  # backlog epic + lore suggestions); older crews only had the lane's draftCount.
-  MDRAFTS="$(echo "$MOUT" | jget 'd.filed ?? ((d.report || {}).outcome || {}).draftCount ?? 0' 2>/dev/null || echo 0)"
   case "$MDRAFTS" in ''|*[!0-9]*) MDRAFTS=0 ;; esac
-  MSPENT="$(echo "$MOUT" | jget 'd.spent === true ? 1 : 0' 2>/dev/null || echo 0)"
-  # Did anything besides the scan lane run (ingest, lore gap, feature backlog)?
-  MOTHER="$(echo "$MOUT" | jget 'd.ingest || d.jira || d.loreGap || d.featureBacklog ? 1 : 0' 2>/dev/null || echo 0)"
   if [ "$MSTATUS" = "invalid" ]; then
     # FAILED, not ran: log it loudly and fall through to the legacy scan + the final
     # `no_work`, so workers still drain on EMPTY_POLL_LIMIT and the tick does not
@@ -155,14 +157,14 @@ if [ "${GAFFER_MAINTENANCE:-}" != "0" ] && [ -f "$CREW_DIR/dist/cli/index.js" ] 
   elif [ "$MSTATUS" = "disabled" ]; then
     # The switch is off: say so once per idle tick (it is the most common reason an
     # operator sees "no_work" with lanes enabled) and fall through to the legacy scan.
-    log "maintenance lane is OFF in crew.yaml (loops.maintenance.enabled=false) — turn it on in Settings → Idle loops, or GAFFER_MAINTENANCE=1 to force"
+    log "maintenance lane is OFF in crew.yaml (loops.maintenance.enabled=false) — turn it on in Settings → Idle loops, or set GAFFER_IDLE=maintenance to force"
   else
     log "maintenance lane chose '$MCHOSEN' ($MREASON) → status=$MSTATUS, filed=$MDRAFTS"
     rm -f "$_merr"
     if [ "$MCHOSEN" = "none" ] && [ "$MDRAFTS" -eq 0 ] && [ "$MOTHER" != 1 ]; then
       # The switch (or GAFFER_MAINTENANCE=1) only turns the lane ON; it rotates through
       # the idle loops you enabled, and with none enabled there is nothing to run.
-      log "maintenance lane: no maintenance loop is enabled — turn on at least one lane in Settings → Idle loops (GAFFER_MAINTENANCE=1 only overrides the master switch)"
+      log "maintenance lane: no maintenance loop is enabled — turn on at least one lane in Settings → Idle loops (GAFFER_IDLE=maintenance only overrides the master switch)"
     elif [ "$MCHOSEN" = "coverage" ] && [ "$MSTATUS" = "no_repos" ]; then
       log "maintenance lane: the coverage lane needs a repo coverage_command — set one with \`wg repo set-commands <repo> --coverage '<cmd>'\` (or in the dashboard's repo settings)"
     fi

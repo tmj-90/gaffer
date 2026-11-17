@@ -54,6 +54,19 @@ if [ -f "$P" ] && grep -q "TESTER OUTCOME" "$P" && grep -q "PASS on this exact c
 else
   fail "1: the review packet lacks the tester's PASS: $(grep -o 'TESTER OUTCOME[^.]*' "$P" 2>/dev/null | head -2 | tr '\n' '|')"
 fi
+# The tester's own words (the stub's summary carries a closing tag and a SYSTEM line) sit
+# inside exactly one <untrusted-tester-outcome> envelope of the RENDERED packet, and the
+# packet carries the standing quarantine notice.
+_ENV="$(node --input-type=module -e '
+  import { readFileSync } from "node:fs";
+  const { checkEnvelope } = await import(process.argv[1]);
+  const p = readFileSync(process.argv[2], "utf8");
+  const probs = checkEnvelope(p, "testernote", "tester-outcome");
+  if (!p.includes("&lt; inside these tags is a literal <.")) probs.push("no quarantine notice");
+  process.stdout.write(probs.join("; "));
+' "$HERE/lib/prompt-envelopes.mjs" "$P" 2>&1)"
+[ -f "$P" ] && [ -z "$_ENV" ] && ok "1: the tester's words sit in one <untrusted-tester-outcome> envelope, with the notice" \
+  || fail "1: tester-outcome envelope: ${_ENV:-no packet}"
 grep -q "tests_commit\|tests are kept on\|gaffer-tests/ticket-$N" "$P" 2>/dev/null \
   && ok "1: the packet names where the tester's tests are kept" || fail "1: the packet does not name the tester's tests"
 [ "$(st "$N")" = in_review ] && ok "1: #$N waits in_review for a person (advisory)" || fail "1: #$N is $(st "$N")"

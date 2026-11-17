@@ -1,16 +1,17 @@
 // The programme pages: cup runs, injuries, league table, wage bill, form, full time, fixtures, match report.
 // Moved verbatim from app.js (the entry); the module map is in app.js.
 
+import { table } from "../lookup.js";
 import { agentTitle, agentWho, roLock } from "../access.js";
 import { actorName, agentNames, squad } from "../club.js";
-import { panelHead } from "../components.js";
+import { dataTable, emptyState, panelHead } from "../components.js";
 import { el } from "../dom.js";
-import { WEEKDAYS, fmtDay, fmtTime, money, moneyW, parseJsonSafe, plural } from "../format.js";
+import { WEEKDAYS, fmtDay, fmtTime, money, moneyW, parseJsonSafe, pct, plural } from "../format.js";
 import { clockTime } from "../freshness.js";
 import { agentShirt, glyph, repoTag } from "../icons.js";
 import { OFF_PITCH, benchedCampaignLine, svgS } from "../matchday.js";
 import { humanizeEvent, renderFeedRow } from "../panels.js";
-import { statusBadge, statusLabel } from "../status.js";
+import { statusBadge, statusLabel, ticketRef } from "../status.js";
 import { computePhases } from "./epics.js";
 import { openPlanBuild } from "./plan.js";
 import { pausedInfo } from "./review-comments.js";
@@ -18,18 +19,38 @@ import { repoRelative } from "./ticket.js";
 
 // --- The programme pages -----------------------------------------------------
 
-/** A programme page: a kit-colour title block over a 2px ink frame. */
-function progPage(cls, kit, title, aux, body) {
+/**
+ * A programme page: a level-2 head over a 2px ink frame. `tone` (a panelHead tone:
+ * "needs" | "reference" | "drawing" | "broken") paints the head as a block; most pages
+ * pass null, since a view leads with at most two blocks and claret is only for what
+ * the viewer must act on (A-02, A-03, A-10).
+ */
+function progPage(cls, tone, title, aux, body) {
   return el("section", { class: `card prog ${cls}`, "aria-label": title }, [
-    panelHead(title, aux, null, { kit }),
+    panelHead(title, aux, null, { tone: tone || undefined, level: 2 }),
     ...[].concat(body),
   ]);
+}
+
+/** "last 30 days · 4 accepted · 2 attempts each": the accepted-change price's period and count. */
+function acceptedChangeNote(ac) {
+  if (!ac) return "";
+  const period = typeof ac.window_days === "number" ? `last ${ac.window_days} days` : "all time";
+  return [
+    period,
+    typeof ac.accepted_changes === "number" ? `${ac.accepted_changes} accepted` : null,
+    ac.attempts_per_accepted_change != null
+      ? `${ac.attempts_per_accepted_change} attempts each, every attempt counted`
+      : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 /** Cup runs: every epic as rounds (dependency depth); the acceptance ticket is the Final. */
 function cupRuns(f) {
   if (!f.epics.length) {
-    return progPage("campaigns", "sky", "Cup runs", "epics, by phase", [
+    return progPage("campaigns", null, "Cup runs", "epics, by phase", [
       el("p", { class: "quiet" }, [
         "No cup runs yet. ",
         roLock(
@@ -45,7 +66,7 @@ function cupRuns(f) {
   }
   return progPage(
     "campaigns",
-    "sky",
+    null,
     "Cup runs",
     "epics, by phase",
     // A held campaign leads: it is the one that needs a look.
@@ -113,7 +134,7 @@ function cupRuns(f) {
                           },
                           [
                             glyph(t.status, 16),
-                            el("b", {}, `#${t.number}`),
+                            ticketRef(t, { size: "s", link: false }),
                             el("span", { class: "tie-t" }, t.title),
                           ],
                         ),
@@ -162,7 +183,7 @@ function injuryList(f) {
   const list = f.tickets.filter((t) => t.status === "failed" || t.status === "paused");
   return progPage(
     "injuries",
-    "red",
+    null,
     "Injury list",
     "failed or paused",
     list.length
@@ -182,7 +203,7 @@ function injuryList(f) {
             ]),
           ),
         )
-      : el("p", { class: "quiet" }, "No failed or paused tickets."),
+      : emptyState("No failed or paused tickets.", null, null, null, { inline: true }),
   );
 }
 
@@ -191,54 +212,40 @@ function leagueTable(f) {
   const rows = (f.summary.repoProgress || [])
     .slice()
     .sort((a, b) => b.pct - a.pct || b.done - a.done);
-  const head = ["Pos", "Repo", "Tickets", "Done", "In play", "Blocked", "Spend", "Done %"];
   return progPage(
     "league",
-    "claret",
+    null,
     "League table",
     "repos by share done",
     rows.length
-      ? el("div", { class: "lt-wrap" }, [
-          el("table", { class: "lt" }, [
-            el(
-              "thead",
-              {},
-              el(
-                "tr",
-                {},
-                head.map((h, i) => el("th", { scope: "col", class: i > 1 ? "num" : null }, h)),
-              ),
-            ),
-            el(
-              "tbody",
-              {},
-              rows.map((r, i) =>
-                el("tr", {}, [
-                  el("td", { class: "pos" }, String(i + 1)),
-                  el("th", { scope: "row" }, repoTag(r.repo, 20)),
-                  el("td", { class: "num" }, String(r.total)),
-                  el("td", { class: "num" }, String(r.done)),
-                  el("td", { class: "num" }, String(r.inFlight ?? 0)),
-                  el(
-                    "td",
-                    { class: `num${r.blocked ? " is-red" : ""}` },
-                    r.blocked ? [glyph("blocked", 12), " ", String(r.blocked)] : "0",
-                  ),
-                  el("td", { class: "num" }, spend.has(r.repo) ? money(spend.get(r.repo)) : "—"),
-                  el("td", { class: "num" }, [
-                    el(
-                      "span",
-                      { class: "pct-bar", "aria-hidden": "true" },
-                      el("span", { style: { width: `${r.pct}%` } }),
-                    ),
-                    `${r.pct}%`,
-                  ]),
-                ]),
-              ),
-            ),
-          ]),
-        ])
-      : el("p", { class: "quiet" }, "No repos with tickets yet."),
+      ? // The one table part (A-34, A-36): counts are numeric columns, the share done
+        // is pct() with its count (A-32).
+        dataTable({
+          caption: "Repos by share of their tickets done",
+          cls: "lt-table",
+          stackOnPhone: true,
+          columns: [
+            { key: "repo", label: "Repo" },
+            { key: "total", label: "Tickets", numeric: true },
+            { key: "inFlight", label: "In play", numeric: true },
+            { key: "blocked", label: "Blocked", numeric: true },
+            { key: "spend", label: "Spend", numeric: true, missing: "no spend recorded" },
+            { key: "done", label: "Done", numeric: true },
+          ],
+          // The rows run in league order; the position needs no column of its own.
+          rows: rows.map((r) => ({
+            repo: repoTag(r.repo, 20),
+            total: r.total,
+            inFlight: r.inFlight ?? 0,
+            blocked: r.blocked
+              ? el("span", { class: "is-red" }, [glyph("blocked", 12), " ", String(r.blocked)])
+              : 0,
+            spend: spend.has(r.repo) ? money(spend.get(r.repo)) : null,
+            // The count and the share; a bar beside them did not fit the card's column.
+            done: el("span", { class: "lt-done" }, `${r.done} of ${r.total} · ${pct(r.pct)}`),
+          })),
+        })
+      : emptyState("No repos with tickets yet.", null, null, null, { inline: true }),
   );
 }
 
@@ -338,7 +345,8 @@ function wageSvg(f, W) {
               "text-anchor": anchor,
               class: today ? "val val-today" : "val",
             },
-            full ? money(v) : v >= 9.5 ? `$${Math.round(v)}` : `$${v.toFixed(1)}`,
+            // The shared money formats (A-31): whole dollars when the bar is narrow.
+            full || v < 9.5 ? money(v) : moneyW(Math.round(v)),
           ),
         );
       }
@@ -387,7 +395,7 @@ function wageBill(f) {
   const est = f.cost && f.cost.estimated_usd > 0 ? f.cost.estimated_usd : 0;
   const sec = progPage(
     "wage",
-    "ink",
+    null,
     "Wage bill",
     f.cost && typeof f.cost.total_usd === "number"
       ? `${money(f.cost.total_usd)} this season`
@@ -413,13 +421,8 @@ function wageBill(f) {
           el("dt", {}, "Per accepted change"),
           el("dd", {}, [
             money(h.accepted_change?.cost_per_accepted_change_usd),
-            el(
-              "small",
-              {},
-              h.accepted_change && h.accepted_change.attempts_per_accepted_change != null
-                ? `every attempt counted · ${h.accepted_change.attempts_per_accepted_change} attempts each`
-                : "",
-            ),
+            // The one windowed figure here says its period and its count (A-32, F-E4).
+            el("small", {}, acceptedChangeNote(h.accepted_change)),
           ]),
         ]),
         el("div", {}, [
@@ -432,7 +435,7 @@ function wageBill(f) {
               // Rework = delivery spend on the attempts after a reviewer, the tester
               // or a failed gate sent the ticket back (the ledger's attempt timeline).
               h.rework?.rework_cost_share_pct != null
-                ? `${h.rework.rework_cost_share_pct}% of spend, on attempts after a send-back`
+                ? `${pct(h.rework.rework_cost_share_pct)} of spend, on attempts after a send-back`
                 : "",
             ),
           ]),
@@ -514,7 +517,7 @@ function squadForm(f) {
   const onPitch = f.claims.length;
   return progPage(
     "squad",
-    "sky",
+    null,
     "Squad & form",
     f.slots ? `${onPitch} of ${f.slots} on the pitch` : `${onPitch} on the pitch`,
     agents.length
@@ -599,7 +602,7 @@ function squadForm(f) {
             "Form: the tickets each agent claimed recently, oldest first, with where each one is now.",
           ),
         ]
-      : el("p", { class: "quiet" }, "No agents registered yet."),
+      : emptyState("No agents registered yet.", null, null, null, { inline: true }),
   );
 }
 
@@ -613,7 +616,7 @@ function fullTime(f) {
   );
   return progPage(
     "results",
-    "ink",
+    null,
     "Full time",
     "recently done",
     done.length
@@ -624,7 +627,11 @@ function fullTime(f) {
             el("li", {}, [
               el("span", { class: "res-ft", "aria-hidden": "true" }, "FT"),
               el("time", { datetime: t.updated_at }, fmtDay(t.updated_at, { weekday: false })),
-              el("a", { href: `#/ticket/${t.id}` }, [el("b", {}, `#${t.number}`), " ", t.title]),
+              el("a", { href: `#/ticket/${t.id}` }, [
+                ticketRef(t, { size: "s", link: false }),
+                " ",
+                t.title,
+              ]),
               el(
                 "span",
                 { class: "res-cost" },
@@ -633,7 +640,7 @@ function fullTime(f) {
             ]),
           ),
         )
-      : el("p", { class: "quiet" }, "Nothing delivered yet."),
+      : emptyState("Nothing delivered yet.", null, null, null, { inline: true }),
   );
 }
 
@@ -643,7 +650,7 @@ function fixtures(f) {
     .sort((a, b) => (b.priority || 0) - (a.priority || 0) || a.number - b.number);
   return progPage(
     "fixtures",
-    "sky",
+    null,
     "Fixtures",
     `${ready.length} ready`,
     ready.length
@@ -657,7 +664,11 @@ function fixtures(f) {
             const red = deps.some((d) => OFF_PITCH.has(d.status));
             return el("li", {}, [
               glyph("ready", 16),
-              el("a", { href: `#/ticket/${t.id}` }, [el("b", {}, `#${t.number}`), " ", t.title]),
+              el("a", { href: `#/ticket/${t.id}` }, [
+                ticketRef(t, { size: "s", link: false }),
+                " ",
+                t.title,
+              ]),
               el(
                 "span",
                 { class: red ? "fx-gate is-red" : "fx-gate" },
@@ -668,7 +679,7 @@ function fixtures(f) {
             ]);
           }),
         )
-      : el("p", { class: "quiet" }, "No ticket is ready to be claimed."),
+      : emptyState("No ticket is ready to be claimed.", null, null, null, { inline: true }),
   );
 }
 
@@ -693,7 +704,7 @@ const REPORT_QUIET = new Set([
   "ticket.repo_delivery_recorded",
   "ticket.acceptance_criteria_reset",
 ]);
-const PITCH_WORD = { ready_for_merge: "To merge" };
+const PITCH_WORD = table({ ready_for_merge: "To merge" });
 function reportLine(f, e) {
   const det = f.details.get(e.entity_id);
   const full = det?.events?.find((x) => x.id === e.id);
@@ -815,7 +826,7 @@ function matchReport(f) {
   const evs = f.events.slice(0, 30);
   return progPage(
     "report",
-    "ink",
+    null,
     "Match report",
     f.events.length ? `the latest ${plural(lines.length, "event")}` : null,
     lines.length || evs.length

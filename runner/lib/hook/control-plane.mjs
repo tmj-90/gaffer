@@ -11,6 +11,7 @@
 import { basename } from "node:path";
 import { XARGS_VALUE_FLAGS } from "./factory.mjs";
 import {
+  commandQuotingAmbiguous,
   normalizeWord,
   shellWord,
   splitSegmentsQuoteAware,
@@ -19,7 +20,13 @@ import {
   tokenizeSegment,
   unquote,
 } from "./shell.mjs";
-import { ASSIGNMENT_TOKEN, PRIV_CLIS, PRIV_CLI_PATHS, resolveEffectiveTokens } from "./verbs.mjs";
+import {
+  ASSIGNMENT_TOKEN,
+  PRIV_CLIS,
+  PRIV_CLI_PATHS,
+  extractShellDashCBodies,
+  resolveEffectiveTokens,
+} from "./verbs.mjs";
 
 // =====================================================================
 // SPELLING NORMALISATION FOR THE DENY LIST
@@ -83,7 +90,7 @@ const CP_SINGLE_VERBS = new Set([
   "human-release",
 ]);
 const CP_PAIRS = [
-  ["principal", /^(?:create|revoke)$/],
+  ["principal", /^(?:create|revoke|resign)$/],
   ["decisions", /^resolve$/],
   ["agent", /^rename$/],
   ["club", /^set$/],
@@ -103,6 +110,9 @@ const CP_PAIRS = [
   // Post-merge findings (backlog 59): what went wrong on a done change, and turning one
   // into a lesson or a fix ticket, are a person's acts; `finding list` stays a read.
   ["finding", /^(?:add|withdraw|lesson|fix-ticket)$/],
+  // The autonomy ladder: giving autonomy back after a step-down is a person's act, and so
+  // is signing the policy rows and ticket risks that decide autonomy (sealed autonomy).
+  ["autonomy", /^(?:lift|resign|risk-resign)$/],
   // Package H1: a board move, ready and a hold change where a ticket stands around the
   // tester's verdict; `block` only as the ticket verb (a word too common to stand alone).
   ["ticket", /^(?:move|ready|hold)$/],
@@ -468,6 +478,357 @@ function cpVerbSlotReason(words, feed = null, depth = 0) {
   return null;
 }
 
+// ---------------------------------------------------------------------
+// STORED TEXT RUN AS A COMMAND (F2 of the 2026-11 hook audit)
+// A commit message that names a control-plane CLI is data (controlPlaneDataOnly below)
+// only while nothing runs it. These shapes run text the hook cannot read as a command,
+// so they are refused whatever the text is:
+//   - a program word that IS a command substitution (`$(git log -1 --format=%s)`,
+//     `` `cat cmd.txt` ``) unless its body only finds a path (`$(which node)`,
+//     `$(npm bin)/eslint`, `$(git rev-parse --show-toplevel)/x`);
+//   - `eval` of a command substitution that reads git's stored text (`eval "$(git log
+//     -1 --format=%s)"`); `eval "$(ssh-agent -s)"` and the like stay allowed;
+//   - a shell reading its program from stdin (`sh`, `bash -s`, `source /dev/stdin`) fed
+//     by a pipe from git, or by a here-string whose substitution reads git;
+//   - xargs or parallel fed by git running what they read (`xargs -I{} sh -c {}`).
+// A script FILE piped or passed to a shell (`cat x.sh | bash`, `bash x.sh`) is not
+// judged here: its text is as invisible as a file the Write tool wrote.
+// The hook reads the bodies of sh -c and of command substitutions the same way.
+// ---------------------------------------------------------------------
+const PATH_PRODUCERS = new Set([
+  "which",
+  "command",
+  "type",
+  "dirname",
+  "basename",
+  "pwd",
+  "realpath",
+  "readlink",
+  "mktemp",
+  "npm",
+  "pnpm",
+  "yarn",
+  "go",
+]);
+const STORED_TEXT_LEADS = new Set([
+  "!",
+  "{",
+  "then",
+  "do",
+  "else",
+  "elif",
+  "if",
+  "while",
+  "until",
+  "time",
+]);
+
+// Top-level segments with the separator in front of each; quotes, $( ) and backticks
+// are kept whole.
+function pipelineSegments(cmd) {
+  const out = [];
+  let cur = "";
+  let sep = "";
+  for (let i = 0; i < cmd.length; i += 1) {
+    const c = cmd[i];
+    if (c === "'" || c === '"' || c === "`") {
+      const close = cmd.indexOf(c, i + 1);
+      const end = close === -1 ? cmd.length : close + 1;
+      cur += cmd.slice(i, end);
+      i = end - 1;
+      continue;
+    }
+    if (c === "\\") {
+      cur += cmd.slice(i, i + 2);
+      i += 1;
+      continue;
+    }
+    if (c === "$" && cmd[i + 1] === "(") {
+      let depth = 0;
+      let k = i + 1;
+      for (; k < cmd.length; k += 1) {
+        if (cmd[k] === "(") depth += 1;
+        else if (cmd[k] === ")" && --depth === 0) break;
+      }
+      cur += cmd.slice(i, k + 1);
+      i = k;
+      continue;
+    }
+    if (c === ";" || c === "\n" || c === "|" || c === "&") {
+      let op = c;
+      if ((c === "|" || c === "&") && cmd[i + 1] === c) op = c + c;
+      out.push({ text: cur, sep });
+      cur = "";
+      sep = op;
+      i += op.length - 1;
+      continue;
+    }
+    cur += c;
+  }
+  out.push({ text: cur, sep });
+  return out;
+}
+
+// The verb of a command-substitution body, and whether it only finds a path.
+function substitutionFindsPath(body) {
+  // The literal first word: `command -v x` is the path lookup, not a wrapper around x.
+  const tokens = tokenizeSegment(body.trim());
+  if (tokens.length === 0) return false;
+  const verb = shellWord(tokens[0]);
+  if (verb === "git") return shellWord(tokens[1] ?? "") === "rev-parse";
+  return PATH_PRODUCERS.has(verb);
+}
+
+// Does a command read text git stores (a commit message, a note, a tag, a config value)?
+// Since F2 lets a commit message name a control-plane CLI, that text is never run.
+function readsGitText(text) {
+  const tokens = tokenizeSegment(String(text).trim());
+  const eff = tokens.length ? resolveEffectiveTokens(tokens) : null;
+  if (!eff || basename(shellWord(eff.verb)) !== "git") return false;
+  let k = 1;
+  while (k < eff.rest.length && shellWord(eff.rest[k]).startsWith("-")) {
+    k += /^-[Cc]$/.test(shellWord(eff.rest[k])) ? 2 : 1;
+  }
+  return shellWord(eff.rest[k] ?? "") !== "rev-parse";
+}
+
+// The bodies of the command substitutions in a word.
+function wordSubstitutions(word) {
+  const out = [];
+  for (const m of word.matchAll(/\$\(([^()]*)\)|`([^`]*)`/g)) out.push(m[1] ?? m[2] ?? "");
+  if (/\$\(|`/.test(word) && out.length === 0) out.push(""); // unbalanced: unknown body
+  return out;
+}
+
+// The words of a segment with quotes, `$(...)` (nested) and backticks kept whole.
+function splitWordsRespectingSubs(text) {
+  const words = [];
+  let cur = "";
+  const n = text.length;
+  let i = 0;
+  const flush = () => {
+    if (cur) words.push(cur);
+    cur = "";
+  };
+  while (i < n) {
+    const c = text[i];
+    if (c === "'" || c === '"' || c === "`") {
+      const close = text.indexOf(c, i + 1);
+      const end = close === -1 ? n : close + 1;
+      cur += text.slice(i, end);
+      i = end;
+      continue;
+    }
+    if (c === "\\") {
+      cur += text.slice(i, i + 2);
+      i += 2;
+      continue;
+    }
+    if ((c === "$" || c === "<" || c === ">") && text[i + 1] === "(") {
+      let depth = 0;
+      let k = i + 1;
+      for (; k < n; k += 1) {
+        if (text[k] === "(") depth += 1;
+        else if (text[k] === ")" && --depth === 0) break;
+      }
+      cur += text.slice(i, k + 1);
+      i = k + 1;
+      continue;
+    }
+    if (/\s/.test(c)) {
+      flush();
+      i += 1;
+      continue;
+    }
+    cur += c;
+    i += 1;
+  }
+  flush();
+  return words;
+}
+
+// The variable names a command assigns from git's stored text (a command substitution
+// that readsGitText, or one the hook cannot parse), so running that variable later is
+// running git's stored text. `a=$(git log -1 --pretty=%B)` taints `a`; so does
+// `read c < <(git log -1 --pretty=%B)`. A substitution that only finds a path/sha
+// (`$(git rev-parse HEAD)`, `$(which node)`) does not taint, exactly as a direct eval of
+// it is allowed.
+function gitTextTaintedVars(cmd) {
+  const tainted = new Set();
+  const taintIf = (name, rhs) => {
+    if (!/^[A-Za-z_]\w*$/.test(name)) return;
+    if (wordSubstitutions(rhs).some((b) => b === "" || readsGitText(b))) tainted.add(name);
+  };
+  for (const seg of pipelineSegments(cmd)) {
+    // Words of the segment with `$(...)`, backticks and quotes kept whole (tokenizeSegment
+    // splits a substitution on its inner spaces, which would read `$(which node)` as an
+    // unbalanced `$(which`).
+    let words = splitWordsRespectingSubs(seg.text.trim());
+    while (words.length && STORED_TEXT_LEADS.has(shellWord(words[0]))) words = words.slice(1);
+    if (words.length && /^\(/.test(words[0]) && !/^\$\(/.test(words[0])) {
+      const stripped = words[0].replace(/^\(+/, "");
+      words = stripped ? [stripped, ...words.slice(1)] : words.slice(1);
+    }
+    let i = 0;
+    if (["export", "declare", "local", "readonly", "typeset"].includes(shellWord(words[0] ?? ""))) {
+      i = 1;
+      while (i < words.length && shellWord(words[i]).startsWith("-")) i += 1;
+    }
+    // Leading assignments, alone or in front of a command.
+    for (; i < words.length; i += 1) {
+      const m = /^([A-Za-z_]\w*)\+?=([\s\S]*)$/.exec(words[i]);
+      if (!m) break;
+      taintIf(m[1], m[2]);
+    }
+    // `read [opts] NAME... < <(git …)` or `read … <<< "$(git …)"`.
+    const eff = words.length ? resolveEffectiveTokens(words) : null;
+    if (eff && basename(shellWord(eff.verb)) === "read") {
+      const psub = /<[ \t]*<\(((?:[^()]|\([^()]*\))*)\)/.exec(seg.text);
+      const here = /<<<[ \t]*(\S+)/.exec(seg.text);
+      const feedsGit =
+        (psub && readsGitText(psub[1])) ||
+        (here && wordSubstitutions(here[1]).some((b) => b === "" || readsGitText(b)));
+      if (feedsGit) {
+        for (const w of eff.rest.slice(1)) {
+          const name = shellWord(w);
+          if (/^[A-Za-z_]\w*$/.test(name)) tainted.add(name);
+        }
+      }
+    }
+  }
+  return tainted;
+}
+
+// The variable names a word references through `$NAME` / `${NAME}` (single-quoted spans
+// are literal, so nothing there expands).
+function wordVarRefs(word) {
+  const out = new Set();
+  for (const m of String(word)
+    .replace(/'[^']*'/g, "")
+    .matchAll(/\$\{?([A-Za-z_]\w*)\}?/g)) {
+    out.add(m[1]);
+  }
+  return out;
+}
+
+function storedTextExecutionReason(cmd, depth = 0) {
+  if (depth > MAX_VIEW_DEPTH || typeof cmd !== "string") return null;
+  const segs = pipelineSegments(cmd);
+  const tainted = gitTextTaintedVars(cmd);
+  const refsTainted = (word) => [...wordVarRefs(word)].some((v) => tainted.has(v));
+  for (let s = 0; s < segs.length; s += 1) {
+    let words = tokenizeSegment(segs[s].text.trim());
+    while (words.length && STORED_TEXT_LEADS.has(shellWord(words[0]))) words = words.slice(1);
+    if (words.length && /^\(/.test(words[0]) && !/^\$\(/.test(words[0])) {
+      const stripped = words[0].replace(/^\(+/, "");
+      words = stripped ? [stripped, ...words.slice(1)] : words.slice(1);
+    }
+    let k = 0;
+    while (k < words.length && ASSIGNMENT_TOKEN.test(words[k])) k += 1;
+    words = words.slice(k);
+    if (words.length === 0) continue;
+    // Rejoin the program word when a substitution in it holds blanks (`$(git log -1)`).
+    const segText = segs[s].text
+      .trim()
+      .replace(/^(?:[!{(]|then|do|else|elif|if|while|until|time)\s+/, "");
+    const lead = /^(?:[A-Za-z_]\w*=\S*\s+)*/.exec(segText)[0];
+    const progText = segText.slice(lead.length);
+    if (/^["']?(?:\$\(|`)/.test(progText)) {
+      const m = /^["']?(?:\$\(((?:[^()]|\([^()]*\))*)\)|`([^`]*)`)/.exec(progText);
+      const body = m ? (m[1] ?? m[2] ?? "") : "";
+      if (!m || !substitutionFindsPath(body)) {
+        return `a command substitution in command position runs text the hook cannot read (${progText.slice(0, 60)}): a commit message, a file or a program's output is not a command; run the command itself`;
+      }
+    }
+    const eff = resolveEffectiveTokens(words);
+    if (!eff) continue;
+    const prog = basename(shellWord(eff.verb));
+    const args = eff.rest.slice(1);
+    if (prog === "eval") {
+      for (const a of args) {
+        for (const body of wordSubstitutions(a)) {
+          if (body === "" || readsGitText(body)) {
+            return `eval of a command substitution runs text the hook cannot read (${a.slice(0, 60)}); run the command itself`;
+          }
+        }
+        if (refsTainted(a)) {
+          return `eval of a variable that holds git's stored text (${a.slice(0, 60)}): a commit message, note or tag is not a command; run the command itself`;
+        }
+      }
+    }
+    const plainArgs = stripRedirects(args);
+    // A shell running a `-c` body that is, or references, git's stored text
+    // (`a=$(git log -1 --pretty=%B); bash -c "$a"`).
+    if (SHELL_NAMES.has(prog)) {
+      const ci = plainArgs.findIndex((a) => /^-[A-Za-z]*c[A-Za-z]*$/.test(shellWord(a)));
+      if (ci !== -1 && refsTainted(plainArgs[ci + 1] ?? "")) {
+        return `a shell running a variable that holds git's stored text (${shellWord(plainArgs[ci + 1] ?? "").slice(0, 60)}); run the command itself`;
+      }
+    }
+    const readsStdin =
+      (SHELL_NAMES.has(prog) &&
+        !plainArgs.some((a) => /^-[A-Za-z]*c[A-Za-z]*$/.test(shellWord(a))) &&
+        (plainArgs.every((a) => shellWord(a).startsWith("-")) ||
+          plainArgs.some((a) => /^-[A-Za-z]*s[A-Za-z]*$/.test(shellWord(a))))) ||
+      ((prog === "source" || prog === ".") &&
+        /^(?:\/dev\/stdin|-)$/.test(shellWord(plainArgs[0] ?? "")));
+    if (readsStdin) {
+      if (segs[s].sep === "|" && s > 0) {
+        // Upstream prints git's stored text, directly or by echoing a tainted variable
+        // (`msg=$(git log -1 --pretty=%B); echo "$msg" | sh`).
+        const up = segs[s - 1].text;
+        if (readsGitText(up) || tokenizeSegment(up.trim()).some((w) => refsTainted(w))) {
+          return `a shell reading its program from git's stored text (a commit message is not a command); run the command itself`;
+        }
+      }
+      const here = eff.rest.findIndex((w) => /^\d*<<<$/.test(w) || /^\d*<<</.test(w));
+      if (here !== -1) {
+        const word = /^\d*<<<$/.test(eff.rest[here]) ? (eff.rest[here + 1] ?? "") : eff.rest[here];
+        if (wordSubstitutions(word).some((b) => b === "" || readsGitText(b)) || refsTainted(word)) {
+          return `a shell reading its program from a here-string that expands something (${word.slice(0, 60)}); run the command itself`;
+        }
+      }
+    }
+    if (prog === "xargs" || prog === "parallel") {
+      const n = args.map(shellWord);
+      let placeholder = prog === "parallel" ? "{}" : null;
+      let at = 0;
+      while (at < n.length && n[at].startsWith("-")) {
+        const m = /^-[0prtx]*[IJ](.*)$/.exec(n[at]) || /^--replace=(.+)$/.exec(n[at]);
+        if (m) {
+          placeholder = m[1] || n[at + 1] || "{}";
+          at += m[1] ? 1 : 2;
+          continue;
+        }
+        if (/^-[0prtx]*i$/.test(n[at])) placeholder = "{}";
+        at += /^-(?:[nLPsdEaSj]|-max-args|-max-procs|-delimiter|-arg-file|-jobs)$/.test(n[at])
+          ? 2
+          : 1;
+      }
+      const inner = n.slice(at);
+      const innerProg = basename(inner[0] ?? "");
+      const runsInput =
+        (placeholder && inner[0]?.includes(placeholder)) ||
+        (SHELL_NAMES.has(innerProg) &&
+          inner.some((w, i) => i > 0 && /^-[A-Za-z]*c[A-Za-z]*$/.test(w)) &&
+          (placeholder ? inner.some((w) => w.includes(placeholder)) : true)) ||
+        innerProg === "eval";
+      if (runsInput && s > 0 && segs[s].sep === "|" && readsGitText(segs[s - 1].text)) {
+        return `${prog} running the text it reads as a command (${inner.join(" ").slice(0, 60)}); run the command itself`;
+      }
+    }
+  }
+  for (const body of extractShellDashCBodies(cmd)) {
+    const why = storedTextExecutionReason(body, depth + 1);
+    if (why) return why;
+  }
+  for (const m of cmd.matchAll(/\$\(([^()]*)\)|`([^`]*)`/g)) {
+    const why = storedTextExecutionReason((m[1] ?? m[2] ?? "").trim(), depth + 1);
+    if (why) return why;
+  }
+  return null;
+}
+
 /**
  * Normalised views of `cmd`: strings the deny-list regexes are run over in addition
  * to the raw text. Returns { views, reasons }: `reasons` are fail-closed refusals
@@ -479,6 +840,10 @@ function normalizedCommandViews(cmd, depth = 0) {
   const reasons = [];
   if (depth > MAX_VIEW_DEPTH || typeof cmd !== "string" || cmd.length === 0) {
     return { views, reasons };
+  }
+  if (depth === 0) {
+    const replay = storedTextExecutionReason(cmd);
+    if (replay) reasons.push(replay);
   }
   const vars = new Map();
   const outSegments = [];
@@ -616,4 +981,80 @@ function normalizedCommandViews(cmd, depth = 0) {
   return { views, reasons };
 }
 
-export { normalizedCommandViews };
+// ---------------------------------------------------------------------
+// DATA-ONLY COMMANDS (F2 of the 2026-11 hook audit)
+// The control-plane rule matches a CLI name and a verb ANYWHERE on a line, so a commit
+// message, a grep pattern or a note that only names them was refused. A command proven
+// here to carry nothing but data is judged by the rule's command-position form (cmdRe)
+// instead. The proof is a strict allow-list, never a list of things to refuse:
+//   - no `$` (variables, $( ), $(( )), $'...'), backtick, backslash, newline, pipe,
+//     here-document or here-string, process substitution, and balanced quotes;
+//   - every segment's program is a plain literal word from DATA_VERBS, or git with a
+//     subcommand from GIT_DATA_SUBCOMMANDS (so no `git -c alias.x='!...'`), rg
+//     without --pre and sort without --compress-program. None of these runs a word it
+//     is given.
+// Anything else (a shell, eval, xargs, a wrapper, an interpreter, a script, a keyword
+// or group, an assignment) is not data only, and the full rule applies as before.
+// ---------------------------------------------------------------------
+const DATA_VERBS = new Set([
+  "echo",
+  "printf",
+  "grep",
+  "egrep",
+  "fgrep",
+  "rg",
+  "cat",
+  "head",
+  "tail",
+  "less",
+  "more",
+  "wc",
+  "ls",
+  "stat",
+  "file",
+  "cd",
+  "pwd",
+  "true",
+  "mkdir",
+  "touch",
+  "cp",
+  "mv",
+  "rm",
+  "diff",
+  "sort",
+]);
+const GIT_DATA_SUBCOMMANDS = new Set([
+  "commit",
+  "add",
+  "status",
+  "diff",
+  "log",
+  "show",
+  "rm",
+  "mv",
+  "restore",
+  "ls-files",
+]);
+
+/** True when every word of `cmd` is provably data: nothing in it can run a word. */
+function controlPlaneDataOnly(cmd) {
+  if (typeof cmd !== "string" || /[\n\\`$|]|<<|<\(|>\(/.test(cmd)) return false;
+  if (commandQuotingAmbiguous(cmd)) return false;
+  for (const segment of splitSegmentsQuoteAware(cmd)) {
+    const words = stripRedirects(tokenizeSegment(segment.trim()));
+    if (words.length === 0) continue;
+    const verb = words[0];
+    if (!/^[A-Za-z][\w.-]*$/.test(verb)) return false;
+    if (verb === "git") {
+      if (!GIT_DATA_SUBCOMMANDS.has(words[1] ?? "")) return false;
+      continue;
+    }
+    if (!DATA_VERBS.has(verb)) return false;
+    if (verb === "rg" && words.some((w) => /^["']?--pre/.test(w))) return false;
+    // GNU sort runs the program named by --compress-program (`--com` abbreviates it).
+    if (verb === "sort" && words.some((w) => /^["']?--com/.test(w))) return false;
+  }
+  return true;
+}
+
+export { controlPlaneDataOnly, normalizedCommandViews };

@@ -2,7 +2,7 @@
  * LANE-SETTING CONSISTENCY (lane-hook R1): the tester lane as the RUNNER used it.
  *
  * The dashboard and the runner each read GAFFER_TESTING from their own environment.
- * settings.json reaches both as a default (api/settings.ts applySettingsToEnv,
+ * The setting in settings.json reaches both (api/settings.ts applySettingsToEnv,
  * runner/factory.config.sh) and an explicit environment value wins in each, so the two
  * differ only when one process has its own value: `GAFFER_TESTING=0` exported in the
  * shell that runs `gaffer run` while the dashboard is unset. Then the dashboard refuses a

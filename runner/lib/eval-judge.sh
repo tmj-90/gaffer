@@ -39,6 +39,9 @@
 # envelope parser).
 # =====================================================================
 _GAFFER_JSON_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/json-tool.mjs"
+# The JSON server reaches this lib's json-tool calls through gaffer_json_at
+# (config/17-cli.sh); sourced alone (a test), they run json-tool directly.
+declare -F gaffer_json_at >/dev/null 2>&1 || gaffer_json_at() { local t="$1"; shift; node "$t" "$@"; }
 
 # gaffer_eval_judge_delivery <num> <repo_dir> <base_branch> <work_branch> <memory_present:0|1> [spend_usd] [repo_name]
 #   Reads the ticket fresh (`wg ticket show <num>`, so the evidence the delivery just
@@ -103,7 +106,7 @@ gaffer_eval_judge_delivery() (
 
   # ── 2. Judge input JSON: title + ACs + evidence from the ticket, diff + tests from files. ──
   SHOW_FILE="$tmp/show.json" FULL_BYTES="$(wc -c < "$tmp/diff.full" 2>/dev/null || echo 0)" CAP="$diff_cap" \
-    node "$_GAFFER_JSON_TOOL" judge-input "$tmp/diff" "$tmp/tests" > "$tmp/input.json" 2>/dev/null || return 0
+    gaffer_json_at "$_GAFFER_JSON_TOOL" judge-input "$tmp/diff" "$tmp/tests" > "$tmp/input.json" 2>/dev/null || return 0
 
   # ── 3. Render the judge prompt (quarantined by the CLI), then ONE model turn
   #      through the worker seam, text-only (no tools, no MCP, empty cwd). ──
@@ -194,7 +197,7 @@ gaffer_eval_judge_delivery() (
   # label", the extraction fails, and judgeModel silently goes unrecorded.)
   judge_model="$(printf '%s' "$judge_flag" | sed -n -E 's/.*--model[= ]+([^ ]+).*/\1/p')"
   VJ="$verdict_json" NUM="$num" REPO="$repo_name" MEM="$mem" SPEND="$spend" JMODEL="$judge_model" \
-    node "$_GAFFER_JSON_TOOL" judge-record > "$tmp/record.json" 2>/dev/null || return 0
+    gaffer_json_at "$_GAFFER_JSON_TOOL" judge-record > "$tmp/record.json" 2>/dev/null || return 0
   # ON THE TICKET TOO: the verdict is recorded as a system event (`wg ticket eval-score`),
   # so the Review view's verdict strip and `wg ticket show` carry it next to the review,
   # and `wg judge-agreement` can pair it with what the reviewer then did. Fail-soft like

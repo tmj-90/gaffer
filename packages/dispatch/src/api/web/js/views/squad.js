@@ -514,7 +514,7 @@ async function renderSquad() {
         "No agents in the squad yet.",
         "An agent joins the squad when it registers with the control plane; it gets a default name like “Delivery 1”.",
       );
-  wrap.appendChild(progPage("squad-sheet", "claret", "The squad", clubName(), body));
+  wrap.appendChild(progPage("squad-sheet", null, "The squad", clubName(), body));
   wrap.appendChild(
     el(
       "p",

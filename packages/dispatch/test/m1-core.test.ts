@@ -93,7 +93,12 @@ describe("M1: transition rules", () => {
       .view(t.id)
       .events.map((e) => e.event_type)
       .filter((type) => type !== "ac.added");
-    expect(events).toEqual(["ticket.created", "ticket.transitioned", "ticket.transitioned"]);
+    expect(events).toEqual([
+      "ticket.created",
+      "ticket.risk_set",
+      "ticket.transitioned",
+      "ticket.transitioned",
+    ]);
   });
 
   it("blocks ready under team_light when a human_required decision is open", () => {

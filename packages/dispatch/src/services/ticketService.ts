@@ -232,6 +232,13 @@ export class TicketService {
   private readonly transitions: TransitionService;
   private readonly claims: ClaimService;
 
+  /**
+   * SEALED AUTONOMY: called inside the creation transaction once the ticket and its
+   * `ticket.created` event are written, so a key holder seals the stated risk
+   * (services/autonomySealAdminService.ts sealRiskAtCreation). Unset in a bare service.
+   */
+  onCreated: ((ticket: Ticket, actor: Actor) => void) | null = null;
+
   constructor(deps: TicketServiceDeps) {
     this.db = deps.db;
     this.clock = deps.clock;
@@ -292,10 +299,15 @@ export class TicketService {
         payload: {
           title: ticket.title,
           policy_pack: ticket.policy_pack,
+          // SEALED AUTONOMY: the risk the creator stated, on the chain. The trusted host
+          // seals an unsigned ticket's risk at its first claim only when the stored column
+          // still says this (events/autonomySeal.ts firstClaimMaySeal).
+          risk_level: ticket.risk_level,
           ...(ticket.bootstrap === 1 ? { bootstrap: true } : {}),
           ...(ticket.acceptance === 1 ? { acceptance: true } : {}),
         },
       });
+      this.onCreated?.(ticket, actor);
       return ticket;
     });
   }
@@ -626,7 +638,9 @@ export class TicketService {
    * Return a blocked ticket to the queue: to `to` when given, else to draft or
    * refining when that is where a person blocked it from, else to ready (the ready
    * gate applies, so a ticket that no longer passes it is refused with POLICY_DENIED;
-   * `to: "refining"` then parks it for triage). Writes `ticket.unblocked`.
+   * `to: "refining"` then parks it for triage). A delivery held from review, testing
+   * or ready_for_merge comes back as a rework round: its attempt is counted and its
+   * criteria are reset, as a review rejection does. Writes `ticket.unblocked`.
    */
   humanUnblockTicket(
     ref: string,
@@ -643,39 +657,32 @@ export class TicketService {
           { status: ticket.status, ticket_id: ticket.id },
         );
       }
-      // Where it was blocked from: the LAST transition into `blocked`, whichever path
-      // took it (a person, an agent's token, the runner's park, a board move). Only a
-      // human block writes `from` on ticket.blocked, so an older human block from draft
-      // must not decide where a later in-flight block goes back to.
-      const row = this.db
-        .prepare(
-          `SELECT payload_json FROM work_events
-            WHERE entity_type = 'ticket' AND entity_id = ? AND event_type = 'ticket.transitioned'
-              AND json_extract(payload_json, '$.to') = 'blocked'
-            ORDER BY created_at DESC, rowid DESC LIMIT 1`,
-        )
-        .get(ticket.id) as { payload_json: string | null } | undefined;
-      let blockedFrom: unknown;
-      try {
-        blockedFrom = (JSON.parse(row?.payload_json ?? "{}") as { from?: unknown }).from;
-      } catch {
-        blockedFrom = undefined;
-      }
+      const blockedFrom = this.blockedFromStatus(ticket.id);
       const target: TicketStatus =
         to ?? (blockedFrom === "draft" || blockedFrom === "refining" ? blockedFrom : "ready");
+      // A HELD DELIVERY back into the queue is a send-back. The runner holds an approved
+      // (or in-review / in-testing) delivery for a person (holdForHuman: merge gate red,
+      // CI red, ...) with neither of the resets rejectReview gives a send-back. Unblocked
+      // to the queue as it was, the ticket was redelivered with its criteria still
+      // satisfied by the previous delivery's evidence and no attempt counted, so the
+      // retry cap never saw the round. Do what the reject path does: bump attempt_count
+      // and reset every criterion to pending.
+      const reworkRound = isHeldDeliveryBlock(blockedFrom);
       this.transitions.transition({
         ticketId: ticket.id,
         actor,
         toStatus: target,
         reason: "unblock",
         humanBlock: true,
+        ...(reworkRound ? { patch: { attempt_count: ticket.attempt_count + 1 } } : {}),
       });
+      if (reworkRound) this.resetAcceptanceCriteria(ticket.id, actor);
       const eventId = writeEvent(this.db, {
         entity_type: "ticket",
         entity_id: ticket.id,
         actor,
         event_type: "ticket.unblocked",
-        payload: { to: target },
+        payload: reworkRound ? { to: target, rework_from: blockedFrom } : { to: target },
       });
       return { ticketId: ticket.id, status: target, eventId };
     });
@@ -859,6 +866,29 @@ export class TicketService {
   }
 
   // --- AC management -------------------------------------------------------
+
+  /**
+   * Where a blocked ticket was blocked from: the `from` of the LAST transition into
+   * `blocked`, whichever path took it (a person, an agent's token, the runner's park or
+   * hold, a board move). Only a human block writes `from` on ticket.blocked, so an older
+   * human block from draft must not decide where a later in-flight block goes back to.
+   * Undefined when it cannot be read.
+   */
+  blockedFromStatus(ticketId: string): unknown {
+    const row = this.db
+      .prepare(
+        `SELECT payload_json FROM work_events
+          WHERE entity_type = 'ticket' AND entity_id = ? AND event_type = 'ticket.transitioned'
+            AND json_extract(payload_json, '$.to') = 'blocked'
+          ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+      )
+      .get(ticketId) as { payload_json: string | null } | undefined;
+    try {
+      return (JSON.parse(row?.payload_json ?? "{}") as { from?: unknown }).from;
+    } catch {
+      return undefined;
+    }
+  }
 
   /**
    * Reset every acceptance criterion on a ticket back to `pending` (NOT satisfied).
@@ -1415,6 +1445,7 @@ export class TicketService {
         );
       }
       const existing = this.repoDeliveries.find(ticket.id, repo.id);
+      if (actor.type === "agent") this.assertAgentRepoDelivery(ticket, repo.name, input, existing);
       // GATE INTEGRITY: the base commit is write-once. Replacing a stored one needs the
       // runner's word that it cut the branch again (`base_recut`); anything else (a retry
       // re-recording after the agent ran, whose branch tip holds the agent's commits)
@@ -1463,6 +1494,61 @@ export class TicketService {
       });
       return { delivery, eventId };
     });
+  }
+
+  /**
+   * RUNNER-OWNED DELIVERY RECORD: the per-repo branch, commit and status are what the
+   * Review diff, the approval pin (writeRepoHeads), required CI (ciCandidateCommits) and
+   * the strict done gate read. The runner records them at close (`wg ticket repo-delivery
+   * record --as system`, tick-close.sh / tick-bootstrap.sh) and crew records them as the
+   * system actor; a person may record them over REST or the CLI. An AGENT may record
+   * only on a ticket it is delivering: claimed or in_progress, with an active claim. Anything past
+   * delivery (in_review, in_testing, ready_for_merge, done, ...) is refused, so a
+   * reviewer or tester agent can never re-point the delivery it judges. And once a
+   * branch, commit or PR is on the row (the runner's record of a round), an agent can
+   * never change it: only a host-side call (system or a person) moves it, for a new
+   * round. Same rule the base commit already follows.
+   */
+  private assertAgentRepoDelivery(
+    ticket: Ticket,
+    repoName: string,
+    input: {
+      branch_name?: string | undefined;
+      commit_sha?: string | undefined;
+      pr_url?: string | undefined;
+    },
+    existing: TicketRepoDelivery | undefined,
+  ): void {
+    const activeClaim =
+      this.db
+        .prepare("SELECT 1 FROM ticket_claims WHERE ticket_id = ? AND status = 'active' LIMIT 1")
+        .get(ticket.id) !== undefined;
+    const delivering = ticket.status === "claimed" || ticket.status === "in_progress";
+    if (!delivering || !activeClaim) {
+      throw new DispatchError(
+        "ACTOR_NOT_PERMITTED",
+        `An agent records a repo delivery only on a ticket it is delivering (claimed or ` +
+          `in_progress, with an active claim); #${ticket.number} is ${ticket.status}. The runner records the ` +
+          "delivery at close.",
+        { ticket_id: ticket.id, status: ticket.status, actor_type: "agent" },
+      );
+    }
+    const pinned: Array<[string, string | null | undefined, string | undefined]> = [
+      ["branch_name", existing?.branch_name, input.branch_name],
+      ["commit_sha", existing?.commit_sha, input.commit_sha],
+      ["pr_url", existing?.pr_url, input.pr_url],
+    ];
+    for (const [field, stored, given] of pinned) {
+      if (given === undefined || stored == null || stored === "") continue;
+      if (stored !== given.trim()) {
+        throw new DispatchError(
+          "ACTOR_NOT_PERMITTED",
+          `Delivery for repo '${repoName}' already records a ${field}; an agent cannot change ` +
+            "it (the runner records each round's delivery).",
+          { ticket_id: ticket.id, field, actor_type: "agent" },
+        );
+      }
+    }
   }
 
   listRepoDeliveries(ticketRef: string): TicketRepoDeliveryWithRepo[] {
@@ -1684,4 +1770,15 @@ export class TicketService {
     // The id, or #N / T-N / N (see TicketRepository.resolveRef).
     return this.tickets.resolveRef(ref);
   }
+}
+
+/**
+ * A ticket blocked from review, testing or ready_for_merge is a HELD DELIVERY: returning
+ * it to the queue (an unblock, or the dashboard's Unblock, which is a board move) is a
+ * send-back, so it gets the reject path's resets (attempt counted, criteria pending).
+ */
+export function isHeldDeliveryBlock(blockedFrom: unknown): boolean {
+  return (
+    blockedFrom === "ready_for_merge" || blockedFrom === "in_testing" || blockedFrom === "in_review"
+  );
 }

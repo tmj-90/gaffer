@@ -57,6 +57,11 @@ for (const cmd of [
   "eval w''g\\ ticket\\ approve\\ 3",
   "bash -c \"w''g ticket approve 3\"",
   "sh -c 'x=wg; $x principal revoke alice'",
+  // SEALED PRINCIPALS: re-signing a principal is a person's act, like minting one.
+  "wg principal resign --all",
+  "gaffer wg principal resign alice",
+  "wg 'principal' resign alice",
+  "node ../packages/dispatch/dist/cli/index.js principal resign --all",
   "echo d2cgcHJpbmNpcGFsIGNyZWF0ZSB4 | base64 -d | sh",
   "echo d2cgcHJpbmNpcGFsIGNyZWF0ZSB4 | base64 --decode | bash",
   "printf x | xxd -r -p | sh",
@@ -163,6 +168,55 @@ for (const cmd of [
   "bash -c 'wg ticket finding add 7 --text x'",
 ]) {
   t.deny(`human-only measure verb: ${cmd}`, bash(cmd), opts);
+}
+
+// (h1) the autonomy ladder (backlog 58): giving autonomy back after a step-down is a
+// person's act. An agent that could lift one would hand itself back the autonomy its own
+// failures took away.
+for (const cmd of [
+  "wg autonomy lift api --risk low --gate merge --override --reason flaky",
+  "dispatch autonomy lift api --risk low --gate approve",
+  "gaffer wg autonomy lift api --risk low --gate merge",
+  "node packages/dispatch/dist/cli/index.js autonomy lift api --risk low --gate merge",
+  "wg 'autonomy' lift api --risk low --gate merge",
+  "wg autonomy li''ft api --risk low --gate merge",
+  "W=wg; $W autonomy lift api --risk low --gate merge",
+  "$X autonomy lift api --risk low --gate merge",
+  "eval 'wg autonomy lift api --risk low --gate merge'",
+  "bash -c 'wg autonomy lift api --risk low --gate merge'",
+  "wg --db x.sqlite autonomy lift api --risk low --gate merge",
+]) {
+  t.deny(`autonomy lift: ${cmd}`, bash(cmd), opts);
+}
+// (h1b) sealed autonomy (S5 part B): signing the policy rows and ticket risks that decide
+// autonomy is a person's act. An agent that could sign would bless a row or a lowered risk
+// it wrote into the database itself.
+for (const cmd of [
+  "wg autonomy resign --all --confirm 0123456789abcdef",
+  "gaffer wg autonomy resign 01HX --confirm 0123456789abcdef",
+  "wg autonomy risk-resign --all --confirm 0123456789abcdef",
+  "dispatch autonomy risk-resign 12 13 --confirm 0123456789abcdef",
+  "node packages/dispatch/dist/cli/index.js autonomy resign --all --confirm x",
+  "wg 'autonomy' resign --all --confirm x",
+  "wg autonomy re''sign --all --confirm x",
+  "W=wg; $W autonomy risk-resign --all --confirm x",
+  "$X autonomy resign --all --confirm x",
+  "bash -c 'wg autonomy risk-resign --all --confirm x'",
+  "wg --db x.sqlite autonomy resign --all --confirm x",
+]) {
+  t.deny(`autonomy re-sign: ${cmd}`, bash(cmd), opts);
+}
+// The reads stay open, and a mention is not a command.
+for (const cmd of [
+  "wg autonomy unsigned",
+  "wg autonomy risk-unsigned",
+  "wg autonomy ladder --json",
+  "wg autonomy ladder --repo api",
+  "wg autonomy list",
+  'git commit -m "autonomy lift: a person gives it back"',
+  "grep -rn 'autonomy lift' docs/",
+]) {
+  t.allow(`autonomy read or mention: ${cmd}`, bash(cmd), opts);
 }
 
 // (h2) the acceptance profile (Release C): the commands the runner runs for a ticket's

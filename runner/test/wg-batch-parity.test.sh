@@ -70,8 +70,9 @@ import { DatabaseSync } from "node:sqlite";
 // Every table's rows. Ids that point at a row are written as what they name (T<number>,
 // R:<repo name>, AC:T<number>:<order>), so a criterion, repo grant or event on the
 // wrong ticket shows up; what differs by construction (row ids, hash chain, times,
-// fresh uuids) is left out or masked.
-const SKIP = /^(id|hash|prev_hash)$|_at$/i;
+// fresh uuids, and a seal's MAC, which is taken over an event id and its chain hash)
+// is left out or masked. A seal row's kind, row, facts and key id are compared.
+const SKIP = /^(id|hash|prev_hash|mac)$|_at$/i;
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g;
 const TS = /\d{4}-\d\d-\d\d[T ][\d:.]+Z?/g;
 const db = new DatabaseSync(process.argv[2], { readOnly: true });

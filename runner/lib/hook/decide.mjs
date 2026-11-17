@@ -11,7 +11,7 @@ import { Buffer } from "node:buffer";
 import { appendFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { normalizedCommandViews } from "./control-plane.mjs";
+import { controlPlaneDataOnly, normalizedCommandViews } from "./control-plane.mjs";
 import { DENY_COMMANDS } from "./deny-list.mjs";
 import { factoryExecutionReason } from "./factory.mjs";
 import {
@@ -21,12 +21,18 @@ import {
   refRewriteReason,
 } from "./git.mjs";
 import { bootstrapInstallDir, bootstrapInstallReason } from "./installs.mjs";
-import { inlineReadBoundaryReason, inlineWriteBoundaryReason } from "./interpreters.mjs";
+import {
+  inlineCapability,
+  inlineProgramReadReason,
+  inlineReadBoundaryReason,
+  inlineWriteBoundaryReason,
+} from "./interpreters.mjs";
 import {
   AGENT_SETTINGS,
   ENV_TEMPLATE,
   GIT_INTERNAL,
   SECRET_PATH,
+  canonicalCandidates,
   canonicalize,
   classifyRootAccess,
   expandTildePath,
@@ -42,6 +48,7 @@ import {
   secretBoundaryReason,
   stripSearchPatterns,
 } from "./reads.mjs";
+import { expandedReadReason, expandedWriteTargets } from "./read-operands.mjs";
 import { UNVERIFIABLE_TARGET } from "./shell.mjs";
 import { extractBashWriteTargets } from "./writes.mjs";
 
@@ -261,15 +268,39 @@ function allow() {
 // input). Set per decision by decideRaw(); the wrapper passes a writeSync(1, …) sink.
 let STDOUT_SINK = null;
 
+// A WALL-CLOCK BUDGET for the deny rules. Several rules are polynomial in the command's
+// length (a long word with a `{` every other character: each command position inside it
+// rescans the word), and the rules run over every resolved view of the command: on 63 KB
+// of `${` the whole hook took about 100 s, past Claude Code's hook timeout, where a version
+// without `onFailure: block` runs the tool unchecked. Past this budget the command is
+// refused as unverifiable, well inside the timeout. A constant, never configurable (a knob
+// could only loosen it); no legitimate command comes near it.
+export const RULE_TIME_BUDGET_MS = 10_000;
+let DECISION_STARTED = 0;
+function withinRuleBudget(cmd) {
+  if (Date.now() - DECISION_STARTED > RULE_TIME_BUDGET_MS) {
+    block(
+      `unverifiable: the hook ran out of time deciding this command (over ${RULE_TIME_BUDGET_MS / 1000}s in its rules); split it into shorter commands (command: "${cmd.slice(0, 120)}")`,
+    );
+  }
+}
+
 function checkCommand(cmd) {
   // A bootstrap tick (GAFFER_BOOTSTRAP_INSTALL=1) may relax ONLY the install-tagged
   // package-manager DENY rules, and ONLY for a command inside the fresh bootstrap dir. Compute it
   // once; every other rule (and the install rule itself, when not a scoped
   // bootstrap install) stays in force.
   const bootDir = bootstrapInstallDir();
-  for (const rule of DENY_COMMANDS) {
+  // A rule with a command-position form (cmdRe: the control-plane CLIs) is judged by it
+  // only when the whole command is provably data (lib/hook/control-plane.mjs), so a
+  // commit message or a grep pattern that names the CLI is not refused; every other
+  // command is judged by the rule's full form.
+  const dataOnly = controlPlaneDataOnly(cmd);
+  const rules = DENY_COMMANDS.map((r) => (r.cmdRe && dataOnly ? { ...r, re: r.cmdRe } : r));
+  for (const rule of rules) {
     // On a bootstrap tick the install-tagged rules are judged per segment below.
     if (rule.install && bootDir) continue;
+    withinRuleBudget(cmd);
     if (rule.re.test(cmd)) block(`${rule.why} — "${cmd.slice(0, 120)}"`);
   }
   // The same rules over the command as the shell would resolve it (quotes, backslashes,
@@ -279,10 +310,11 @@ function checkCommand(cmd) {
   for (const why of normalised.reasons) block(`${why} — "${cmd.slice(0, 120)}"`);
   for (const view of normalised.views) {
     if (view === cmd) continue;
-    for (const rule of DENY_COMMANDS) {
+    for (const rule of rules) {
       // Install rules are judged on the raw text (and per segment on a bootstrap tick);
       // a rule marked `spellings: false` matches mentions anywhere and is raw-only too.
       if (rule.install || rule.spellings === false) continue;
+      withinRuleBudget(cmd);
       if (rule.re.test(view)) {
         block(
           `${rule.why} (as the shell would run it: "${view.slice(0, 100)}") — "${cmd.slice(0, 120)}"`,
@@ -306,7 +338,18 @@ function checkCommand(cmd) {
 
   // Repo-access boundary for bash write ops and branch creation.
   const roots = resolveRoots();
-  for (const target of extractBashWriteTargets(cmd)) {
+  // Each distinct target once: a target can need a git lookup (gitExecSurfaceReason), and
+  // `awk '{print 1>x print 1>x ...}'` named the same one thousands of times (50 s).
+  // The segment extractor, and the expansion walk that also reads `( )`, `{ }`, if / for
+  // / case bodies, substitutions, eval, trap and sh -c bodies with loop variables known.
+  const writeTargets = new Set([
+    ...extractBashWriteTargets(cmd),
+    ...expandedWriteTargets(cmd, roots),
+  ]);
+  for (const target of writeTargets) {
+    // Many distinct targets each cost git lookups: past the budget, refuse rather than
+    // let the hook's own timeout decide.
+    withinRuleBudget(cmd);
     // BASH-vs-WRITE PARITY: a bash write op must obey the SAME `.git` protection
     // the Write tool applies in checkWrite — not just the write-root boundary. A
     // `.git/…` write (e.g. `echo … > .git/hooks/post-commit`, `cp evil
@@ -387,6 +430,46 @@ function checkCommand(cmd) {
   const frontDoor = factoryExecutionReason(cmd, roots);
   if (frontDoor) block(`${frontDoor} — "${cmd.slice(0, 120)}"`);
 
+  // Read boundary after shell expansion (F1): a read operand with a wildcard, a brace or
+  // a variable used to be skipped above. lib/hook/read-operands.mjs expands every read
+  // operand as the shell would and refuses what it cannot expand; it also refuses any
+  // word that expands to a secret path. It only adds refusals.
+  const expandedRead = expandedReadReason(cmd, roots);
+  if (expandedRead) block(`${expandedRead} (command: "${cmd.slice(0, 120)}")`);
+
+  // Inline programs by capability (lib/hook/interpreters.mjs, 63C): a program the hook
+  // cannot see, or one that can write, start a process, reach the network or run code
+  // built at run time (other than a write to a literal path in a write root), is refused.
+  // Last, so a command another rule refuses keeps that rule's reason; it only adds refusals.
+  withinRuleBudget(cmd);
+  const inline = inlineCapability(cmd, roots);
+  if (inline.reason) block(`${inline.reason} (command: "${cmd.slice(0, 120)}")`);
+  // The literal paths an allowed inline program writes get the Bash write-target checks:
+  // `node -e 'fs.writeFileSync(".claude/settings.json", ...)'` used to pass on its root.
+  for (const target of inline.targets) {
+    if (GIT_INTERNAL.test(target)) {
+      block(
+        `inline program write inside .git (hooks / exec-hijack surface): ${target} (command: "${cmd.slice(0, 120)}")`,
+      );
+    }
+    const gitWhy = gitExecSurfaceReason(target, DRIVER_SELECTION.test(cmd) ? null : "");
+    if (gitWhy) block(`inline program ${gitWhy} (command: "${cmd.slice(0, 120)}")`);
+    if (AGENT_SETTINGS.test(target)) {
+      block(
+        `inline program write to the agent settings file (safety-hook removal surface): ${target} (command: "${cmd.slice(0, 120)}")`,
+      );
+    }
+    if (
+      (SECRET_PATH.test(target) || SECRET_PATH.test(target + "/")) &&
+      !ENV_TEMPLATE.test(target)
+    ) {
+      block(`inline program write to a secret file: ${target} (command: "${cmd.slice(0, 120)}")`);
+    }
+  }
+  // The read rules over the same normalised program text.
+  const inlineProgramRead = inlineProgramReadReason(cmd, roots);
+  if (inlineProgramRead) block(`${inlineProgramRead} (command: "${cmd.slice(0, 120)}")`);
+
   allow();
 }
 
@@ -413,7 +496,14 @@ function checkWrite(filePath, tool = "Write", input = null) {
   // `~/.zshrc` is $HOME/.zshrc to the file tools, not <cwd>/~/.zshrc.
   const expanded = expandTildePath(filePath);
   if (expanded === null) block(`write to an unresolvable ~user path (fail closed): ${filePath}`);
-  const abs = canonicalize(resolve(process.cwd(), expanded));
+  // Both the lexical and the physical (kernel) place: through a symlinked directory
+  // `wt/../settings.json` lands beside the link's target (canonicalCandidates).
+  for (const abs of canonicalCandidates(process.cwd(), expanded))
+    checkWriteAt(abs, filePath, tool, input, roots);
+  allow();
+}
+
+function checkWriteAt(abs, filePath, tool, input, roots) {
   // An env TEMPLATE may be written (the agent supplies the content). Edit /
   // MultiEdit / NotebookEdit echo the file back, so they need a TRACKED template.
   const template = ENV_TEMPLATE.test(abs) && (tool === "Write" || isTrackedEnvTemplate(abs));
@@ -434,7 +524,6 @@ function checkWrite(filePath, tool = "Write", input = null) {
       `write outside write-roots (target is ${access === "read" ? "in a read-only root" : "outside all roots"}): ${filePath} [write-roots: ${roots.writeRoots.join(", ")}]`,
     );
   }
-  allow();
 }
 
 function checkRead(filePath) {
@@ -444,20 +533,22 @@ function checkRead(filePath) {
   // `~/.config/gh/hosts.yml` is $HOME/…, not <cwd>/~/…; `~user` fails closed.
   const expanded = expandTildePath(filePath);
   if (expanded === null) block(`read of an unresolvable ~user path (fail closed): ${filePath}`);
-  const abs = canonicalize(resolve(process.cwd(), expanded));
-  // Existing secret-file denial takes precedence and is never weakened.
-  if (SECRET_PATH.test(abs) && !isTrackedEnvTemplate(abs)) {
-    block(`read of a secret file (keeps secrets out of model context): ${filePath}`);
-  }
-  // Repo-access boundary: reads are allowed inside (write-roots ∪ read-roots).
-  // A read fully outside all roots is denied — but ONLY when roots are
-  // explicitly configured. Under the single-repo fallback, reads stay
-  // unrestricted (preserving today's behaviour, never more restrictive).
   const roots = resolveRoots();
-  if (roots.configured && classifyRootAccess(abs, roots) === "outside") {
-    block(
-      `read outside allowed roots: ${filePath} [write-roots: ${roots.writeRoots.join(", ")}; read-roots: ${roots.readRoots.join(", ")}]`,
-    );
+  // Lexical and physical (kernel) place, as for a write (canonicalCandidates).
+  for (const abs of canonicalCandidates(process.cwd(), expanded)) {
+    // Existing secret-file denial takes precedence and is never weakened.
+    if (SECRET_PATH.test(abs) && !isTrackedEnvTemplate(abs)) {
+      block(`read of a secret file (keeps secrets out of model context): ${filePath}`);
+    }
+    // Repo-access boundary: reads are allowed inside (write-roots ∪ read-roots).
+    // A read fully outside all roots is denied, but ONLY when roots are
+    // explicitly configured. Under the single-repo fallback, reads stay
+    // unrestricted (preserving today's behaviour, never more restrictive).
+    if (roots.configured && classifyRootAccess(abs, roots) === "outside") {
+      block(
+        `read outside allowed roots: ${filePath} [write-roots: ${roots.writeRoots.join(", ")}; read-roots: ${roots.readRoots.join(", ")}]`,
+      );
+    }
   }
   allow();
 }
@@ -600,7 +691,10 @@ function checkSearch(tool, input) {
     const expanded = expandTildePath(rawPath);
     if (expanded === null)
       block(`${tool} over an unresolvable ~user path (fail closed): ${rawPath}`);
-    base = canonicalize(resolve(process.cwd(), expanded));
+    // Lexical and physical (kernel) place: ripgrep opens `wt/..` through the link.
+    const candidates = canonicalCandidates(process.cwd(), expanded);
+    for (const c of candidates.slice(1)) checkSearchRoot(tool, c, rawPath, roots);
+    base = candidates[0];
   }
   checkSearchRoot(tool, base, rawPath || base, roots);
 
@@ -617,7 +711,7 @@ function checkSearch(tool, input) {
       if (staticBase) {
         const expanded = expandTildePath(staticBase);
         if (expanded === null) block(`Glob over an unresolvable ~user path (fail closed): ${glob}`);
-        checkSearchRoot(tool, canonicalize(resolve(base, expanded)), glob, roots);
+        for (const c of canonicalCandidates(base, expanded)) checkSearchRoot(tool, c, glob, roots);
       }
     }
   }
@@ -804,6 +898,7 @@ export function decideRaw(raw, { env, cwd, stdout } = {}) {
     CURRENT_TOOL = null;
     CURRENT_TARGET = null;
     TOOL_OBSERVED = false;
+    DECISION_STARTED = Date.now();
     STDOUT_SINK =
       stdout ??
       ((text) => {

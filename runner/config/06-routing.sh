@@ -162,7 +162,8 @@ gaffer_route_phase_of() {
 # OFF by default, SIZE-GATED, and ROUND-CAPPED. With every knob unset, decompose
 # behaviour is byte-for-byte identical to the single-agent path.
 : "${GAFFER_PLAN_DEBATE:=0}"                 # 1/true/yes/on to enable; default OFF
-: "${GAFFER_PLAN_DEBATE_MODELS:=opus,sonnet}" # proposer,critic (empty slot → Claude default)
+# GAFFER_PLAN_DEBATE_MODELS (proposer,critic; an empty slot is the Claude default) is
+# derived from GAFFER_MODELS in 04-models.sh.
 : "${GAFFER_PLAN_DEBATE_MAX_ROUNDS:=2}"      # total plan-producing rounds (draft = round 1)
 # SIZE GATE: only debate when the work is big enough to justify N× the spend.
 # Signal (documented in bin/decompose.mjs sizeGate): the spend estimate when the

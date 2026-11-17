@@ -1,6 +1,7 @@
 {
-  "_comment": "Claude Code settings for the gaffer factory delivery agent. SECURITY: the PreToolUse hook (safety-hook.mjs) is the real boundary — it deterministically blocks force-push, protected-branch pushes, dependency installs, secret-file reads/writes, and out-of-repo writes BEFORE they run. Every file-touching tool in permissions.allow (Bash, Write/Edit, Read, Grep/Glob) MUST have a PreToolUse matcher here — Grep and Glob read file contents too (test/claude-settings.test.mjs pins this). Every hook entry carries onFailure: block and an explicit timeout: Claude Code's default for a hook that times out, crashes or exits other than 0/2 is to report it and RUN the tool, so a hook pushed past its timeout (a pathological command) would otherwise fail open. The Read deny rules are recursive (**/) or absolute (//, ~/) on purpose: Claude Code turns them into ripgrep excludes for Grep/Glob, and a ./-anchored rule only covers the cwd root. The .env.* family is listed by name, not as Read(**/.env.*): a committed template (.env.example) must stay readable, and the hook still refuses every other .env.* file. The permissions.allow list below is intentionally broad so the headless agent isn't stuck on prompts; the hook (not the allow-list) is what keeps it safe. Review/tighten allow for your environment before an unattended run. NOTE: permission/tool-pattern syntax can vary by Claude Code version — verify with `claude --help` and a single supervised run first.",
+  "_comment": "Claude Code settings for the gaffer factory delivery agent. SECURITY: the PreToolUse hook (safety-hook.mjs) is the real boundary — it deterministically blocks force-push, protected-branch pushes, dependency installs, secret-file reads/writes, and out-of-repo writes BEFORE they run. Every file-touching tool in permissions.allow (Bash, Write/Edit, Read, Grep/Glob) MUST have a PreToolUse matcher here — Grep and Glob read file contents too (test/claude-settings.test.mjs pins this). Every hook entry carries onFailure: block and an explicit timeout: Claude Code's default for a hook that times out, crashes or exits other than 0/2 is to report it and RUN the tool, so a hook pushed past its timeout (a pathological command) would otherwise fail open (onFailure needs Claude Code 2.1.295 or later; an older one ignores it). The hook path is quoted so a runner directory with a blank in it still runs the hook. disableAllHooks is false here so a true in the user's own settings cannot switch the hook off (project settings take precedence; managed settings still can). The Read deny rules are recursive (**/) or absolute (//, ~/) on purpose: Claude Code turns them into ripgrep excludes for Grep/Glob, and a ./-anchored rule only covers the cwd root. The .env.* family is listed by name, not as Read(**/.env.*): a committed template (.env.example) must stay readable, and the hook still refuses every other .env.* file. The permissions.allow list below is intentionally broad so the headless agent isn't stuck on prompts; the hook (not the allow-list) is what keeps it safe. Review/tighten allow for your environment before an unattended run. NOTE: permission/tool-pattern syntax can vary by Claude Code version — verify with `claude --help` and a single supervised run first.",
   "enableAllProjectMcpServers": true,
+  "disableAllHooks": false,
   "permissions": {
     "allow": ["Edit", "Write", "Read", "Bash", "Glob", "Grep", "mcp__dispatch", "mcp__memory"],
     "deny": [
@@ -60,7 +61,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${RUNNER_DIR}/safety-hook.mjs",
+            "command": "node \"${RUNNER_DIR}/safety-hook.mjs\"",
             "timeout": 60,
             "onFailure": "block"
           }
@@ -71,7 +72,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${RUNNER_DIR}/safety-hook.mjs",
+            "command": "node \"${RUNNER_DIR}/safety-hook.mjs\"",
             "timeout": 60,
             "onFailure": "block"
           }
@@ -82,7 +83,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${RUNNER_DIR}/safety-hook.mjs",
+            "command": "node \"${RUNNER_DIR}/safety-hook.mjs\"",
             "timeout": 60,
             "onFailure": "block"
           }
@@ -93,7 +94,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${RUNNER_DIR}/safety-hook.mjs",
+            "command": "node \"${RUNNER_DIR}/safety-hook.mjs\"",
             "timeout": 60,
             "onFailure": "block"
           }

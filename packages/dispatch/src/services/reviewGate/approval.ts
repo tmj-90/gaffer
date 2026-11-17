@@ -7,7 +7,7 @@
 import { inTransaction } from "../../db/connection.js";
 import { type Actor, type Ticket } from "../../domain/types.js";
 import { type ObservedRisk, shouldEscalate } from "../observedRisk.js";
-import { envFlagOn } from "../autonomyPolicyService.js";
+import { envFlagOn, holdMessage, holdReason, type AutonomyHold } from "../autonomyPolicyService.js";
 import { writeEvent } from "../../events/eventWriter.js";
 import type { TransitionResult } from "../transitionService.js";
 import { DispatchError } from "../../util/errors.js";
@@ -17,6 +17,7 @@ import { notTestedMessage, runnerLaneSafe } from "./tester.js";
 import type {
   ReviewGateService,
   ApproveReviewOptions,
+  ReviewedHead,
   UnavailableWriteRepo,
 } from "../reviewGateService.js";
 import { assertCiPassed, approveCiCandidate } from "./ci.js";
@@ -38,6 +39,7 @@ export type ApprovalInternals = Pick<
   ReviewGateInternals,
   | "agents"
   | "approvalShaResolver"
+  | "autonomyHoldFn"
   | "clock"
   | "db"
   | "evidence"
@@ -97,16 +99,16 @@ export function approveReview(
   // mode='auto' approve policy covers this ticket's risk × every write repo. The
   // policy is only ever an ADDITIONAL allow-path: with no policy row this reduces to
   // exactly the pure env-flag gate (byte-identical to today). system is never permitted.
+  // THE AUTONOMY LADDER: the critical ceiling and a step-down in force hold an agent's
+  // approve for a person BEFORE either allow-path is asked (the env flag included), so
+  // taking autonomy back holds however it was given. Can only refuse, never allow.
+  if (actor.type === "agent") assertNoAutonomyHold(internals, ticketRef, "approve");
   const agentApproveAllowed =
     actor.type === "agent" &&
     (envFlagOn(process.env.DISPATCH_ALLOW_AGENT_APPROVE) ||
       policyGrantsAgentApprove(internals, ticketRef));
   if (actor.type !== "human" && actor.type !== "admin" && !agentApproveAllowed) {
-    throw new DispatchError(
-      "ACTOR_NOT_PERMITTED",
-      "Only a human or admin may approve a review (set DISPATCH_ALLOW_AGENT_APPROVE=1 to allow autonomous agent approval).",
-      { actor_type: actor.type },
-    );
+    throw notPermittedToApprove(actor);
   }
   // OBSERVED-RISK ESCALATION (Trust & Autonomy, security-critical): this runs ONLY on
   // the AUTO-SHIP path — an agent whose approve+merge was permitted WITHOUT a human
@@ -127,9 +129,10 @@ export function approveReview(
   // no delivery diff) and the coverage refusal is the last gate before the pins.
   const covered = internals.ticketSvc.resolveTicket(ticketRef);
   const unavailable = host.unavailableWriteRepos(covered);
+  let observed: ObservedRisk | null = null;
   if (agentApproveAllowed) {
     assertWriteReposAvailable(covered, unavailable);
-    enforceObservedRiskCeiling(internals, ticketRef, actor);
+    observed = enforceObservedRiskCeiling(internals, ticketRef, actor);
   }
   const ticket = internals.ticketSvc.resolveTicket(ticketRef);
   // REQUIRED CI (server-side, like the other holds): when the runner has recorded CI
@@ -190,6 +193,7 @@ export function approveReview(
   // HUMAN approval pins the current heads, as before; an agent approval without commits
   // is pinned by the runner (lib/review.sh) only.
   const heads = resolveReviewedHeads(internals, ticket);
+  if (agentApproveAllowed) bindObservedHeads(ticket, observed, heads);
   const pins = checkShownCommits(ticket, heads, actor, opts, unavailable);
   // TESTER FIRST: when the independent tester gates this ticket (an epic's acceptance
   // ticket always; a testable one while its lane is on), it tests the candidate BEFORE
@@ -215,6 +219,7 @@ export function approveReview(
   }
   if (coverage && !coverage.covered) {
     return inTransaction(internals.db, () => {
+      recheckAgentApproval(internals, ticket, actor);
       const result = internals.transitions.transition({
         ticketId: ticket.id,
         actor,
@@ -236,13 +241,14 @@ export function approveReview(
       recordApprovalPins(internals, ticket, actor, pins);
       // SIGNED GATE EVENTS: the routing approval is sealed with the commits it approved;
       // the tester PASS that later approves carries them from this seal.
-      sealApprovalEvent(internals, ticket, result.eventId, pinsOf(pins));
+      sealApprovalEvent(internals, ticket, result.eventId, pinsOf(pins), principalId(opts));
       return result;
     });
   }
   // The done gate's git runs HERE, before transition() takes the write lock.
   const deliveryDiff = internals.transitions.deliveryDiffProof(ticket.id);
   return inTransaction(internals.db, () => {
+    recheckAgentApproval(internals, ticket, actor);
     const result = internals.transitions.transition({
       ticketId: ticket.id,
       actor,
@@ -258,9 +264,79 @@ export function approveReview(
     recordApprovalPins(internals, ticket, actor, pins);
     // SIGNED GATE EVENTS: seal the approval with the commits it pinned (a key this
     // process may not use rolls the whole approval back: nothing unsigned is recorded).
-    sealApprovalEvent(internals, ticket, result.eventId, pinsOf(pins));
+    sealApprovalEvent(internals, ticket, result.eventId, pinsOf(pins), principalId(opts));
     return result;
   });
+}
+
+/**
+ * THE AUTO-SHIP GATE under a moving branch (independent review of external review 20):
+ * the observed risk was read from the diff at the heads it records; the approval pins
+ * the heads resolved after it. A commit that landed in between was never judged, so the
+ * approval is refused (the runner retries and judges the new diff). Only refuses; a
+ * resolver that records no heads (a test double) is not bound.
+ */
+function bindObservedHeads(
+  ticket: Ticket,
+  observed: ObservedRisk | null,
+  heads: readonly ReviewedHead[],
+): void {
+  if (!observed?.heads) return;
+  const moved = heads.filter((h) => {
+    const o = observed.heads!.find((x) => (x.repoId ?? null) === h.repoId || x.repo === h.repo);
+    return !o || o.sha === null || o.sha.toLowerCase() !== h.sha.toLowerCase();
+  });
+  if (moved.length === 0) return;
+  throw new DispatchError(
+    "STATE_CONFLICT",
+    `The delivery branch moved while its risk was being observed (${moved
+      .map((h) => `${h.repo} is now at ${h.sha.slice(0, 12)}`)
+      .join(
+        ", ",
+      )}): an automatic approval covers only a diff whose risk was judged. Nothing was approved; approve again to judge the new diff.`,
+    {
+      reason: "stale_revision",
+      ticket_number: ticket.number,
+      current: moved.map((h) => ({ repo: h.repo, repo_id: h.repoId, sha: h.sha })),
+    },
+  );
+}
+
+function notPermittedToApprove(actor: Actor): DispatchError {
+  return new DispatchError(
+    "ACTOR_NOT_PERMITTED",
+    "Only a human or admin may approve a review (GAFFER_MODE=lite or autonomous allows autonomous agent approval).",
+    { actor_type: actor.type },
+  );
+}
+
+/**
+ * THE AUTONOMY LADDER under a concurrent writer (external review 20): an agent's approval
+ * is decided again INSIDE the write transaction that records it, before the ticket moves.
+ * The checks at the top of approveReview run before the Git reads (which stay outside the
+ * write lock), so another connection could commit an approve step-down, turn the approve
+ * policy off or change the ticket's risk in between, and the approval still committed.
+ * Inside the transaction (BEGIN IMMEDIATE) every commit made before our write lock is
+ * seen: the hold (ceiling, step-down, unsigned risk) and the allow-path (the env flag or
+ * a signed mode='auto' approve row) are read again from the ticket as it is now. (The
+ * risk level is frozen from the claim on and sealed, so the observed-risk comparison made
+ * before the Git window still holds; a raw edit of it is the unsigned-risk hold.) Can only
+ * refuse; a person's approval is not an autonomy decision and is not rechecked here.
+ */
+function recheckAgentApproval(internals: ApprovalInternals, before: Ticket, actor: Actor): void {
+  if (actor.type === "human" || actor.type === "admin") return;
+  assertNoAutonomyHold(internals, before.id, "approve");
+  const allowed =
+    actor.type === "agent" &&
+    (envFlagOn(process.env.DISPATCH_ALLOW_AGENT_APPROVE) ||
+      policyGrantsAgentApprove(internals, before.id));
+  if (!allowed) throw notPermittedToApprove(actor);
+}
+
+/** SEALED PRINCIPALS: the principal an approval is made through, as its seal binds it. */
+function principalId(opts: ApproveReviewOptions | undefined): string | null {
+  const id = opts?.principal?.id;
+  return typeof id === "string" && id.length > 0 ? id : null;
 }
 
 /**
@@ -351,6 +427,34 @@ export function policyGrantsAgentApprove(
 }
 
 /**
+ * THE AUTONOMY LADDER: refuse when the ceiling or a step-down holds `gate` for this
+ * ticket. No resolver wired: nothing is held (the ladder is not part of this service).
+ * A resolver that throws is a hold (fail closed).
+ */
+export function assertNoAutonomyHold(
+  internals: Pick<ApprovalInternals, "autonomyHoldFn" | "ticketSvc">,
+  ticketRef: string,
+  gate: "approve" | "merge",
+): void {
+  const resolve = internals.autonomyHoldFn;
+  if (!resolve) return;
+  const ticket = internals.ticketSvc.resolveTicket(ticketRef);
+  let hold: AutonomyHold | null;
+  try {
+    hold = resolve(ticket, gate);
+  } catch {
+    hold = { kind: "stepped_down", repoId: "unknown" };
+  }
+  if (!hold) return;
+  throw new DispatchError("ACTOR_NOT_PERMITTED", `Held for a person: ${holdMessage(hold, gate)}`, {
+    reason: holdReason(hold),
+    gate,
+    risk_level: ticket.risk_level,
+    ...(hold.repoId ? { repo_id: hold.repoId } : {}),
+  });
+}
+
+/**
  * OBSERVED-RISK ESCALATION (Trust & Autonomy, security-critical). Called ONLY on the
  * AUTO-SHIP path (see approveReview). Compares the OBSERVED risk derived from the real
  * server-computed diff against the ticket's DECLARED `risk_level`. When observed exceeds
@@ -371,8 +475,8 @@ export function enforceObservedRiskCeiling(
   internals: Pick<ApprovalInternals, "db" | "observedRiskResolver" | "ticketSvc">,
   ticketRef: string,
   actor: Actor,
-): void {
-  if (!internals.observedRiskResolver) return;
+): ObservedRisk | null {
+  if (!internals.observedRiskResolver) return null;
   const ticket = internals.ticketSvc.resolveTicket(ticketRef);
   let observed: ObservedRisk | null;
   try {
@@ -382,7 +486,7 @@ export function enforceObservedRiskCeiling(
   }
   // A missing observation is indeterminate ⇒ escalate (hold for a human).
   const escalate = !observed || shouldEscalate(observed, ticket.risk_level);
-  if (!escalate) return;
+  if (!escalate) return observed;
   const observedLevel = observed?.level ?? "unknown";
   const reasons = observed?.reasons.length ? observed.reasons : ["diff unavailable to observe"];
   // Record the reason on the EXISTING append-only event log (no new mutation surface).

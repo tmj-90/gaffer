@@ -734,6 +734,7 @@
     --viz-muted: var(--viz-board-muted);
     --viz-grid: var(--viz-board-grid);
     --viz-track: var(--viz-board-track);
+    --viz-part-3: var(--viz-board-part-3);
   }
   .scoreboard-in {
     max-width: 1440px;
@@ -2156,10 +2157,12 @@
     white-space: nowrap;
     pointer-events: none;
   }
+  /* Under the plot, not over the figure: above it the readout covered the cell's unit
+     ("days") while focused. */
   .spark-readout {
-    right: 0;
-    bottom: 100%;
-    margin-bottom: 4px;
+    left: 0;
+    top: 100%;
+    margin-top: 4px;
   }
   .spark:focus-visible {
     outline-offset: 4px;
@@ -2341,6 +2344,11 @@
     font: 700 var(--t12) / 1 var(--f-text);
     color: var(--paper);
   }
+  /* Four parts, four distinct steps, in drawing order: mark, accent, a violet step, then
+     the muted grey (never next to the accent: the two are one colour to a deuteranope in
+     dark). None is the empty track's colour. Checked with the palette validator on paper,
+     paper-2, board and board-2 in both kits (viz/v1/validator-seg.txt): every adjacent
+     pair passes CVD and the normal-vision floor, every part clears 3:1. */
   .seg-1 {
     background: var(--viz-mark, var(--ink));
   }
@@ -2348,14 +2356,14 @@
     background: var(--viz-accent, var(--ink-2));
   }
   .seg-3 {
-    background: var(--viz-muted, var(--rule));
+    background: var(--viz-part-3);
   }
   .seg-4 {
-    background: var(--viz-track, var(--rule-2));
+    background: var(--viz-muted, var(--rule));
   }
   .seg-wrap.is-tall .seg-3,
   .seg-wrap.is-tall .seg-4 {
-    color: var(--ink);
+    color: var(--board);
   }
   .seg-legend {
     display: flex;
@@ -2503,6 +2511,10 @@
       gap: 12px;
       padding: 2px 0;
       border: 0;
+      /* A row head's nowrap is for a scrolling table: stacked, it wraps in its column
+         ("Ready to decision (clock)" ran 25 px past a 320 px card). */
+      white-space: normal;
+      overflow-wrap: anywhere;
     }
     .dt-stack .data-table td::before,
     .dt-stack .data-table tbody th[scope="row"]::before {

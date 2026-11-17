@@ -220,7 +220,7 @@ export function runIdleCoverageLoop(deps: IdleLoopDeps): IdleLoopOutcome {
       events.record("coverage_scan_refused", {
         repoName: repo.name,
         reason:
-          "GAFFER_STRICT_REQUIRE is on and idle commands run unsandboxed on the host; set GAFFER_IDLE_HOST_EXEC=1 to allow",
+          "GAFFER_STRICT_REQUIRE is on and idle commands run unsandboxed on the host; export GAFFER_IDLE_HOST_EXEC=1 to allow",
       });
       continue;
     }

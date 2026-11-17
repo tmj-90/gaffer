@@ -528,7 +528,7 @@ for (const extra of [
   res.status === 75 && !dump() && (res.stdout || "") === ""
     ? ok(`${JSON.stringify(extra)} → status 75, no spawn, no envelope`)
     : bad(`command without a sandbox should refuse (status=${res.status} spawned=${!!dump()})`);
-  /GAFFER_WORKER_PROVIDER=command[\s\S]*SANDBOX_PROVIDER=docker[\s\S]*GAFFER_STRICT_REQUIRE=0/.test(
+  /GAFFER_WORKER_PROVIDER=command[\s\S]*GAFFER_SANDBOX=docker[\s\S]*GAFFER_STRICT_REQUIRE=0/.test(
     res.error?.message || "",
   )
     ? ok("…the refusal names the cause and the fix")
@@ -636,7 +636,7 @@ console.log("== provider=command: only docker with the MCP bridge counts as cont
   });
   res.status === 75 &&
   !dump() &&
-  /sandbox-exec[\s\S]*GAFFER_DATA[\s\S]*SANDBOX_PROVIDER=docker/.test(res.error?.message || "")
+  /sandbox-exec[\s\S]*GAFFER_DATA[\s\S]*GAFFER_SANDBOX=docker/.test(res.error?.message || "")
     ? ok("SANDBOX_PROVIDER=sandbox-exec (available) → status 75, no spawn, the refusal says why")
     : bad(
         `sandbox-exec must not contain the command worker (status=${res.status} spawned=${!!dump()} msg=${res.error?.message})`,

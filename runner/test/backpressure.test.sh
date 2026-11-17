@@ -178,7 +178,7 @@ case "$1" in
   13) s=cancelled ;;  14) s=in_progress ;; 15) s=draft ;;
   *) s="" ;;
 esac
-printf '{"ticket":{"status":"%s"}}' "$s"
+printf '{"ticket":{"id":"t-%s","status":"%s"}}' "$1" "$s"
 EOF
 # Stub `repo-delivery list`: ticket 13's branch IS a recorded delivery artifact;
 # everyone else has none ([]).
@@ -191,6 +191,14 @@ esac
 EOF
 chmod +x "$WORK/wg_show_sweep.sh" "$WORK/wg_deliveries_sweep.sh"
 
+# BRANCH LEDGER: this factory cut every one of these branches (a "cut" row per
+# branch, keyed on the ticket id the show stub returns), so only the status guard and
+# the delivery-record guard decide below.
+export GAFFER_DATA="$WORK/data"; mkdir -p "$GAFFER_DATA"
+for n in 10 11 12 13 14 15; do
+  gaffer_branch_ledger_note cut "t-$n" "$n" "$SREPO" "gaffer/ticket-$n"
+done
+SHA12="$(git -C "$SREPO" rev-parse gaffer/ticket-12)"
 SWEPT="$(GAFFER_WG_SHOW_CMD="$WORK/wg_show_sweep.sh" \
          GAFFER_WG_DELIVERIES_CMD="$WORK/wg_deliveries_sweep.sh" \
          gaffer_sweep_abandoned_branches "$SREPO" main)"
@@ -198,11 +206,15 @@ SWEPT="$(GAFFER_WG_SHOW_CMD="$WORK/wg_show_sweep.sh" \
 branch_exists() { git -C "$SREPO" show-ref --verify --quiet "refs/heads/$1"; }
 
 # Only the genuinely-abandoned branch (cancelled + no delivery record) is swept.
-[ "$SWEPT" = "gaffer/ticket-12" ] \
+SWEPT_AREF="refs/gaffer/abandoned/gaffer/ticket-12-${SHA12:0:12}"
+[ "$SWEPT" = "gaffer/ticket-12"$'\t'"$SWEPT_AREF" ] \
   && ok "swept ONLY the cancelled, no-delivery branch (gaffer/ticket-12)" \
   || fail "sweep deleted the wrong set: '$SWEPT' (expected only gaffer/ticket-12)"
-! branch_exists gaffer/ticket-12 && ok "cancelled+abandoned branch actually deleted" \
-  || fail "genuinely-abandoned branch should have been deleted"
+! branch_exists gaffer/ticket-12 && ok "cancelled+abandoned branch removed from refs/heads" \
+  || fail "genuinely-abandoned branch should have been swept"
+[ "$(git -C "$SREPO" rev-parse "$SWEPT_AREF" 2>/dev/null)" = "$SHA12" ] \
+  && ok "the swept branch's commits are ARCHIVED under refs/gaffer/abandoned/ (Won't do is reversible)" \
+  || fail "the swept branch's commits were not archived: DATA LOSS"
 # PRESERVED states survive — the data-loss guard.
 branch_exists gaffer/ticket-10 && ok "refining branch PRESERVED (rework park)" || fail "refining branch was wrongly swept — DATA LOSS"
 branch_exists gaffer/ticket-11 && ok "blocked branch PRESERVED (rework park)"  || fail "blocked branch was wrongly swept — DATA LOSS"
@@ -220,6 +232,104 @@ SWEPT2="$(GAFFER_WG_SHOW_CMD="/bin/false" GAFFER_WG_DELIVERIES_CMD="/bin/false" 
           gaffer_sweep_abandoned_branches "$SREPO" main)"
 branch_exists gaffer/ticket-99 && ok "ambiguous-status branch PRESERVED (fail-safe)" || fail "ambiguous-status branch was wrongly swept"
 grep -q 'ticket-99' <<<"$SWEPT2" && fail "ticket-99 must not be reported swept" || ok "no PRESERVED branch reported swept under wg failure"
+
+echo "== SWEEP-PROOF: only a branch this factory can PROVE it cut is ever swept =="
+# Audit finding 1. The sweep used to map a branch to a ticket by the number in its name
+# alone, so a reset factory (ticket numbers restart at 1) or a second data dir on the
+# same checkout deleted another factory's unmerged work when ITS ticket #n was cancelled.
+XREPO="$WORK/proofrepo"
+git init -q -b main "$XREPO"
+git -C "$XREPO" config user.email gaffer@test; git -C "$XREPO" config user.name gaffer-test
+printf 'base\n' > "$XREPO/f.txt"; git -C "$XREPO" add -A && git -C "$XREPO" commit -q -m base
+mkb() { git -C "$XREPO" checkout -q -b "$1" main; printf '%s\n' "$1" >> "$XREPO/f.txt"; git -C "$XREPO" commit -q -am "$1"; git -C "$XREPO" checkout -q main; }
+xbranch() { git -C "$XREPO" show-ref --verify --quiet "refs/heads/$1"; }
+# Every ticket reads cancelled, id "new-<n>", no delivery row: only the ledger decides.
+cat > "$WORK/wg_show_newfactory.sh" <<'EOF2'
+#!/usr/bin/env bash
+printf '{"ticket":{"id":"new-%s","number":%s,"status":"cancelled","title":"a different, new ticket"}}' "$1" "$1"
+EOF2
+chmod +x "$WORK/wg_show_newfactory.sh"
+xsweep() { GAFFER_WG_SHOW_CMD="$WORK/wg_show_newfactory.sh" GAFFER_WG_DELIVERIES_CMD="$WORK/wg_deliveries_sweep.sh" gaffer_sweep_abandoned_branches "$XREPO" main; }
+# (a) the auditor's repro: an old factory's branch, no ledger row in THIS data dir.
+mkb gaffer/ticket-3-old-factory-work
+OUT="$(xsweep)"
+xbranch gaffer/ticket-3-old-factory-work && [ -z "$OUT" ] \
+  && ok "number collision (reset factory / second data dir): the old factory's branch is KEPT" \
+  || fail "a number collision swept another factory's unmerged branch: '$OUT' (DATA LOSS)"
+# (b) a ledger row for the same number and branch but ANOTHER ticket id (a database
+#     replaced inside the same data dir) proves nothing either.
+gaffer_branch_ledger_note cut "old-3" 3 "$XREPO" gaffer/ticket-3-old-factory-work
+OUT="$(xsweep)"
+xbranch gaffer/ticket-3-old-factory-work && [ -z "$OUT" ] \
+  && ok "a cut row for a different ticket id does not prove ownership: branch KEPT" \
+  || fail "a cut row for another ticket id let the sweep take the branch: '$OUT'"
+# (c) parked for rework (branch PRESERVED), then Won't do: kept although cut here.
+mkb gaffer/ticket-4-parked-work
+gaffer_branch_ledger_note cut "new-4" 4 "$XREPO" gaffer/ticket-4-parked-work
+gaffer_branch_ledger_note preserved "new-4" 4 "$XREPO" gaffer/ticket-4-parked-work
+OUT="$(xsweep)"
+xbranch gaffer/ticket-4-parked-work && [ -z "$OUT" ] \
+  && ok "parked (branch PRESERVED for rework) then Won't do: the branch is KEPT" \
+  || fail "a preserved branch was swept after Won't do: '$OUT' (DATA LOSS)"
+# (d) a branch checked out in a worktree is in use: kept.
+mkb gaffer/ticket-6-checked-out
+gaffer_branch_ledger_note cut "new-6" 6 "$XREPO" gaffer/ticket-6-checked-out
+git -C "$XREPO" worktree add -q "$WORK/proof-wt6" gaffer/ticket-6-checked-out 2>/dev/null
+OUT="$(xsweep)"
+xbranch gaffer/ticket-6-checked-out && [ -z "$OUT" ] \
+  && ok "a branch checked out in a worktree is KEPT" || fail "a checked-out branch was swept: '$OUT'"
+git -C "$XREPO" worktree remove --force "$WORK/proof-wt6" 2>/dev/null
+git -C "$XREPO" branch -q -D gaffer/ticket-6-checked-out
+# (e) the legitimate sweep still works: cut here for this ticket id, cancelled, not
+#     preserved, no delivery row. The ledger row was written through a WORKTREE path,
+#     which must key the same repo as the main checkout.
+mkb gaffer/ticket-5-cut-here
+git -C "$XREPO" worktree add -q "$WORK/proof-wt5" main --detach 2>/dev/null
+gaffer_branch_ledger_note cut "new-5" 5 "$WORK/proof-wt5" gaffer/ticket-5-cut-here
+git -C "$XREPO" worktree remove --force "$WORK/proof-wt5" 2>/dev/null
+SHA5="$(git -C "$XREPO" rev-parse gaffer/ticket-5-cut-here)"
+OUT="$(xsweep)"
+AREF5="refs/gaffer/abandoned/gaffer/ticket-5-cut-here-${SHA5:0:12}"
+! xbranch gaffer/ticket-5-cut-here && [ "$OUT" = "gaffer/ticket-5-cut-here"$'\t'"$AREF5" ] \
+  && [ "$(git -C "$XREPO" rev-parse "$AREF5" 2>/dev/null)" = "$SHA5" ] \
+  && ok "a branch proven cut here for the cancelled ticket is swept and archived at $AREF5" \
+  || fail "the legitimate sweep did not archive gaffer/ticket-5-cut-here (out='$OUT')"
+xbranch gaffer/ticket-3-old-factory-work && xbranch gaffer/ticket-4-parked-work \
+  && ok "the legitimate sweep left the unproven and the preserved branches alone" \
+  || fail "the legitimate sweep took an unproven or preserved branch"
+# (f) no data dir at all: nothing can be proven, nothing is swept.
+mkb gaffer/ticket-7-no-data
+gaffer_branch_ledger_note cut "new-7" 7 "$XREPO" gaffer/ticket-7-no-data
+OUT="$(GAFFER_DATA="" xsweep)"
+xbranch gaffer/ticket-7-no-data && [ -z "$OUT" ] \
+  && ok "no GAFFER_DATA: no ledger, no proof, branch KEPT" || fail "swept without a ledger: '$OUT'"
+# (g) the live path writes the ledger and logs each sweep.
+grep -qF 'gaffer_tick_branch_ledger cut "$rpath"' "$RUNNER_DIR/lib/tick-launch.sh" \
+  && ok "tick-launch records a cut row when worktree add -B cuts the branch" \
+  || fail "tick-launch does not record the branches it cuts"
+grep -qF 'gaffer_tick_branch_ledger preserved' "$RUNNER_DIR/lib/tick-gates.sh" \
+  && grep -qF 'gaffer_tick_branch_ledger preserved' "$RUNNER_DIR/lib/tick-launch.sh" \
+  && ok "a park (tick-gates) and a pause (tick-launch) record a preserved row" \
+  || fail "parks / pauses do not mark the branch preserved"
+grep -qF 'SWEEP: archived abandoned branch' "$RUNNER_DIR/lib/tick-claim.sh" \
+  && ! grep -q 'gaffer_sweep_abandoned_branches.*>/dev/null 2>&1' "$RUNNER_DIR/lib/tick-claim.sh" \
+  && ok "the call site logs every archived branch (output no longer discarded)" \
+  || fail "the call site still discards the sweep's output"
+# (h) gaffer_tick_branch_ledger: the real helper, fed a tick's globals.
+( jget() { node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{const d=JSON.parse(s);process.stdout.write(String(eval(process.argv[1])))})' "$1"; }
+  log() { :; }
+  # shellcheck source=../lib/tick-helpers.sh
+  source "$RUNNER_DIR/lib/tick-helpers.sh"
+  mkb gaffer/ticket-8-helper
+  NUM=8 WORK_BRANCH=gaffer/ticket-8-helper SHOW='{"ticket":{"id":"new-8","number":8}}'
+  WRITE_ROWS="r1"$'\t'"repo"$'\t'"$XREPO"$'\t'"main"
+  gaffer_tick_branch_ledger cut
+  gaffer_tick_branch_ledger preserved
+  K="$(gaffer_branch_ledger_repo_key "$XREPO")"
+  gaffer_branch_ledger_has cut new-8 8 "$K" gaffer/ticket-8-helper \
+    && gaffer_branch_ledger_has preserved new-8 8 "$K" gaffer/ticket-8-helper ) \
+  && ok "gaffer_tick_branch_ledger writes cut and preserved rows from the tick's globals" \
+  || fail "gaffer_tick_branch_ledger did not write the ledger rows"
 
 echo "== PARKED-1: parked tickets' preserved branches must NOT starve the repo =="
 # FINDING-4: a ticket parked for a human (rework loop → blocked, other recovery

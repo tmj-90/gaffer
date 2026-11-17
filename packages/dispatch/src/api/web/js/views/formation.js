@@ -1,62 +1,17 @@
 // Settings: the formation, modes, gates, go / no-go and team instructions.
 // Moved verbatim from app.js (the entry); the module map is in app.js.
 
+import { table } from "../lookup.js";
 import { api } from "../api.js";
 import { panelHead } from "../components.js";
 import { clear, el, svgEl } from "../dom.js";
 import { moneyW, plural } from "../format.js";
-import { agentShirt, glyph, icon, ycard } from "../icons.js";
+import { agentShirt, icon, ycard } from "../icons.js";
 import { router } from "../router.js";
+import { verdictMark } from "../status.js";
 import { runAsyncAction, toast } from "../toast.js";
 import { formationLaneRepos } from "./settings.js";
 
-/**
- * The autonomy posture each GAFFER_MODE implies: a MIRROR of MODE_PRESETS in
- * src/api/settings.ts (itself a mirror of runner/factory.config.sh). A value in
- * settings.json or the environment wins over the mode, as on the server.
- */
-const MODE_PRESETS = {
-  supervised: {
-    REVIEW_MODE: "human",
-    DISPATCH_ALLOW_AGENT_APPROVE: "0",
-    MERGE_ON_AGENT_REVIEW: "0",
-    AUTO_MERGE: "0",
-    GAFFER_AUTO_PUSH: "0",
-    MEMORY_AUTO_APPROVE: "0",
-  },
-  lite: {
-    REVIEW_MODE: "agent",
-    DISPATCH_ALLOW_AGENT_APPROVE: "1",
-    MERGE_ON_AGENT_REVIEW: "0",
-    AUTO_MERGE: "0",
-    GAFFER_AUTO_PUSH: "0",
-    MEMORY_AUTO_APPROVE: "0",
-  },
-  graduated: {
-    REVIEW_MODE: "agent",
-    DISPATCH_ALLOW_AGENT_APPROVE: "0",
-    MERGE_ON_AGENT_REVIEW: "0",
-    AUTO_MERGE: "0",
-    GAFFER_AUTO_PUSH: "0",
-    MEMORY_AUTO_APPROVE: "0",
-  },
-  autonomous: {
-    REVIEW_MODE: "agent",
-    DISPATCH_ALLOW_AGENT_APPROVE: "1",
-    MERGE_ON_AGENT_REVIEW: "1",
-    AUTO_MERGE: "1",
-    GAFFER_AUTO_PUSH: "1",
-    MEMORY_AUTO_APPROVE: "1",
-  },
-  strict: {
-    REVIEW_MODE: "agent",
-    DISPATCH_ALLOW_AGENT_APPROVE: "1",
-    MERGE_ON_AGENT_REVIEW: "1",
-    AUTO_MERGE: "1",
-    GAFFER_AUTO_PUSH: "1",
-    MEMORY_AUTO_APPROVE: "1",
-  },
-};
 /** The dial's detents, least to most autonomy (the server's own order). */
 const MODE_DETENTS = [
   { mode: "supervised", name: "Supervised", line: "You sign off every merge." },
@@ -66,9 +21,18 @@ const MODE_DETENTS = [
     name: "Graduated",
     line: "Each repo ships what it has earned; the rest waits for you.",
   },
-  { mode: "autonomous", name: "Autonomous", line: "Agents approve, merge and push." },
-  { mode: "strict", name: "Strict", line: "Autonomous, inside an OS sandbox." },
+  {
+    mode: "autonomous",
+    name: "Autonomous",
+    line: "Agents approve, merge and push; a person still decides critical changes.",
+  },
+  {
+    mode: "strict",
+    name: "Strict",
+    line: "Autonomous, and the sandbox stays on even under the opt-out.",
+  },
 ];
+const MODE_NAMES = table(Object.fromEntries(MODE_DETENTS.map((d) => [d.mode, d.name])));
 
 const isOnValue = (v) => v === true || v === "true" || v === "1" || v === "on" || v === "yes";
 /**
@@ -88,21 +52,27 @@ const testingPlaysNowhere = (v) =>
   (!isOnValue(v) && formationLaneRepos !== null && formationLaneRepos.withTest === 0);
 
 /**
- * The value each key would take under `mode`, given what is saved and what the
- * operator has changed on this page but not saved: env → pending edit → file →
- * the mode's preset → default. Returns { value, from } per key.
+ * The value each name GAFFER_MODE derives would take under `mode`, from what the runner
+ * reports now (GET /api/settings `derived`) and the mode's table (the setting's
+ * `derives[].byPreset`, read from the runner's schema: nothing is re-typed here):
+ * a real environment variable wins, an old settings.json key the runner kept (it is
+ * stricter) stays until it is removed, else the mode's own value. Plus the settings
+ * themselves, so the gates can read the tester lane and the budget. { value, from }.
  */
-function postureFor(all, editors, mode) {
-  const presets = MODE_PRESETS[mode] || MODE_PRESETS.supervised;
+function postureFor(all, derived, mode) {
+  const modeSetting = all.find((s) => s.key === "GAFFER_MODE");
   const out = {};
-  for (const s of all) {
-    const ed = editors.get(s.key);
-    const pending = ed && ed.initial !== undefined && ed.read() !== ed.initial;
-    if (s.envLocked) out[s.key] = { value: s.effective ?? s.value ?? "", from: "env" };
-    else if (pending && s.key !== "GAFFER_MODE") out[s.key] = { value: ed.read(), from: "edit" };
-    else if (s.value !== "" && s.value != null) out[s.key] = { value: s.value, from: "file" };
-    else if (presets[s.key] !== undefined) out[s.key] = { value: presets[s.key], from: "mode" };
-    else out[s.key] = { value: "", from: "default" };
+  for (const s of all) out[s.key] = { value: s.effective ?? s.value ?? "", from: "setting" };
+  const byName = new Map((Array.isArray(derived) ? derived : []).map((d) => [d.name, d]));
+  for (const row of (modeSetting && modeSetting.derives) || []) {
+    const now = byName.get(row.name);
+    if (now && now.source === "environment")
+      out[row.name] = { value: now.value ?? "", from: "env" };
+    else if (now && now.source === "old-key")
+      out[row.name] = { value: now.value ?? "", from: "old" };
+    else if (row.byPreset && Object.prototype.hasOwnProperty.call(row.byPreset, mode))
+      out[row.name] = { value: row.byPreset[mode] ?? "", from: "mode" };
+    else out[row.name] = { value: now && now.value != null ? now.value : "", from: "mode" };
   }
   return out;
 }
@@ -111,7 +81,8 @@ function postureFor(all, editors, mode) {
  * The gates a delivery passes on its way to main, left to right like the tactics
  * board: who plays each one under a posture. "squad" = an agent does it, "you" =
  * the gaffer makes the call, "both" = the squad reviews and you still sign,
- * "none" = nobody plays it (no independent tester).
+ * "none" = nobody plays it (no independent tester). Every position links to the
+ * setting that decides it.
  */
 const FORMATION_GATES = [
   {
@@ -123,7 +94,7 @@ const FORMATION_GATES = [
   {
     id: "review",
     label: "Review",
-    key: "REVIEW_MODE",
+    key: "GAFFER_MODE",
     who: (p) => {
       const v = String(p.REVIEW_MODE?.value || "human");
       return v === "agent" ? "squad" : v === "both" ? "both" : "you";
@@ -132,37 +103,37 @@ const FORMATION_GATES = [
   {
     id: "approve",
     label: "Approve",
-    key: "DISPATCH_ALLOW_AGENT_APPROVE",
+    key: "GAFFER_MODE",
     who: (p) => (isOnValue(p.DISPATCH_ALLOW_AGENT_APPROVE?.value) ? "squad" : "you"),
   },
   {
     id: "merge",
     label: "Merge",
-    key: "AUTO_MERGE",
+    key: "GAFFER_MODE",
     who: (p) =>
       isOnValue(p.AUTO_MERGE?.value) || isOnValue(p.MERGE_ON_AGENT_REVIEW?.value) ? "squad" : "you",
   },
   {
     id: "push",
     label: "Push",
-    key: "GAFFER_AUTO_PUSH",
+    key: "GAFFER_MODE",
     who: (p) => (isOnValue(p.GAFFER_AUTO_PUSH?.value) ? "squad" : "you"),
   },
   {
     id: "lore",
     label: "Lore",
-    key: "MEMORY_AUTO_APPROVE",
+    key: "GAFFER_MODE",
     who: (p) => (isOnValue(p.MEMORY_AUTO_APPROVE?.value) ? "squad" : "you"),
   },
 ];
-const WHO_WORDS = {
+const WHO_WORDS = table({
   squad: "the squad",
   you: "you",
   both: "squad, then you",
   none: "not played",
-};
+});
 /** The autonomy-policy gate behind a formation position (per-repo × risk grants). */
-const FORMATION_POLICY_GATE = { approve: "approve", merge: "merge", lore: "memory" };
+const FORMATION_POLICY_GATE = table({ approve: "approve", merge: "merge", lore: "memory" });
 /** Enabled auto grants for a formation position (0 when it has none or no policy gate). */
 function formationGrants(policies, gateId, posture) {
   const gate = FORMATION_POLICY_GATE[gateId];
@@ -174,9 +145,9 @@ function formationGrants(policies, gateId, posture) {
 
 /**
  * Go/No-Go before raising the dial: checks read from the posture the new mode
- * would run with. They advise; Save still applies the mode.
+ * would run with and the other settings. They advise; Save still applies the mode.
  */
-function goNoGo(posture, mode, policies) {
+function goNoGo(posture, mode, policies, isolation) {
   const v = (k) => (posture[k] ? posture[k].value : "");
   const checks = [
     {
@@ -196,19 +167,21 @@ function goNoGo(posture, mode, policies) {
       nogo: "No daily budget: nothing caps the wage bill.",
     },
     {
-      key: "GAFFER_REQUIRE_CI",
-      ok: isOnValue(v("GAFFER_REQUIRE_CI")),
-      go: "CI must be green before review.",
-      nogo: "CI is not required before review.",
+      key: "GAFFER_LANDING",
+      ok: v("GAFFER_LANDING") === "pr",
+      go: "Landing is pr: CI must be green before review.",
+      nogo: "Landing is local: no CI gate runs before review.",
     },
   ];
-  if (mode === "lite" || mode === "strict") {
-    const p = v("SANDBOX_PROVIDER");
+  if (mode === "lite" || mode === "strict" || mode === "autonomous") {
+    const known = isolation && isolation.provider && isolation.provider !== "unknown";
     checks.push({
-      key: "SANDBOX_PROVIDER",
-      ok: p === "docker" || p === "sandbox-exec",
-      go: `The squad runs inside an OS sandbox (${p}).`,
-      nogo: `No OS sandbox is chosen: ${mode} needs one.`,
+      key: "GAFFER_SANDBOX",
+      ok: !!(known && isolation.available && !isolation.optedOut),
+      go: `The squad runs inside an OS sandbox (${known ? isolation.provider : "auto"}).`,
+      nogo: known
+        ? `The OS sandbox (${isolation.provider}) is not available here: ${mode} needs one.`
+        : `Whether this host has an OS sandbox is not known: ${mode} needs one.`,
     });
   }
   if (mode === "graduated") {
@@ -225,29 +198,27 @@ function goNoGo(posture, mode, policies) {
 }
 
 /**
- * Team instructions: GAFFER_MODE as a five-detent dial, the formation it plays
- * (a pitch where each gate is a position: a claret shirt where the squad plays
- * it, a yellow card where the gaffer makes the call), what moving the dial would
- * change, and the Go/No-Go checks before raising it. The dial drives the
- * GAFFER_MODE select in the form, so it saves (and counts as unsaved) with the rest.
+ * Team instructions: the Autonomy mode setting (GAFFER_MODE) as a five-detent dial,
+ * the ONE control for it (there are no separate switches: the mode is the one place
+ * autonomy is granted), the formation it plays (a pitch where each gate is a position:
+ * a claret shirt where the squad plays it, a yellow card where the gaffer makes the
+ * call), what moving the dial would change, and the Go/No-Go checks before raising it.
+ * The dial registers the GAFFER_MODE editor, so it saves (and counts as unsaved) with
+ * the rest of the room.
  */
-function teamInstructions(all, editors, policies) {
+function teamInstructions(all, editors, policies, derived, isolation) {
   const modeSetting = all.find((s) => s.key === "GAFFER_MODE");
-  const modeEd = editors.get("GAFFER_MODE");
-  const modeSelect = modeEd && modeEd.row ? modeEd.row.querySelector("select") : null;
   const savedMode = String((modeSetting && (modeSetting.effective || modeSetting.value)) || "");
-  const current = MODE_PRESETS[savedMode] ? savedMode : "supervised";
+  const current = MODE_NAMES[savedMode] ? savedMode : "supervised";
   const lockedMode = !!(modeSetting && modeSetting.envLocked);
   const rank = (m) => MODE_DETENTS.findIndex((d) => d.mode === m);
-  const picked = () => {
-    const v = modeSelect ? modeSelect.value : savedMode;
-    return MODE_PRESETS[v] ? v : "supervised";
-  };
 
   const head = el("div", { class: "ti-head" });
-  const dial = el("fieldset", { class: "dial", disabled: lockedMode ? "" : null }, [
-    el("legend", { class: "sr-only" }, "Autonomy mode"),
-  ]);
+  const dial = el(
+    "fieldset",
+    { class: "dial", id: "set-GAFFER_MODE", disabled: lockedMode ? "" : null },
+    [el("legend", { class: "sr-only" }, "Autonomy mode (GAFFER_MODE)")],
+  );
   const radios = [];
   for (const d of MODE_DETENTS) {
     const input = el("input", {
@@ -258,10 +229,8 @@ function teamInstructions(all, editors, policies) {
     });
     input.checked = d.mode === current;
     input.addEventListener("change", () => {
-      if (!input.checked || !modeSelect) return;
-      // Choosing the saved mode again restores the stored value (no false "unsaved").
-      modeSelect.value = d.mode === current ? modeEd.initial : d.mode;
-      modeSelect.dispatchEvent(new Event("change", { bubbles: true }));
+      if (!input.checked) return;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
       if (typeof api_.onPick === "function") api_.onPick();
     });
     radios.push(input);
@@ -275,26 +244,53 @@ function teamInstructions(all, editors, policies) {
       ]),
     );
   }
+  const picked = () => {
+    const r = radios.find((x) => x.checked);
+    return r && MODE_NAMES[r.value] ? r.value : current;
+  };
+  if (modeSetting && !lockedMode) {
+    // The dial IS the setting: picking the mode in force again restores what is stored
+    // (no false "unsaved"); any other detent is saved as GAFFER_MODE.
+    editors.set("GAFFER_MODE", {
+      read: () => (picked() === current ? modeSetting.value : picked()),
+      initial: modeSetting.value,
+      input: radios[0],
+    });
+  }
   const board = el("div", { class: "formation-board" });
   const changes = el("div", { class: "ti-changes", "aria-live": "polite" });
+  const origin = modeSetting
+    ? modeSetting.origin === "environment"
+      ? "set by the environment"
+      : modeSetting.origin === "dashboard"
+        ? "set here"
+        : "the default"
+    : "the default";
   const node = el(
     "section",
     { class: "card boot-page instructions", id: "instructions", "aria-label": "Team instructions" },
     [
-      panelHead("Team instructions", null, null, { kit: "claret" }),
+      panelHead("Team instructions", null, null, { tone: "reference", level: 2 }),
+      el("p", { class: "ti-setting" }, [
+        el("strong", {}, "Autonomy mode "),
+        el("code", { class: "mono" }, "GAFFER_MODE"),
+        ` · ${MODE_NAMES[current]} · ${origin}`,
+      ]),
       head,
       dial,
       board,
       changes,
-      el("p", { class: "ti-foot" }, [
+      el(
+        "p",
+        { class: "ti-foot" },
         lockedMode
-          ? "The mode is set by the environment, so the dial is locked here. "
-          : "The dial is the Autonomy mode setting below and saves with the rest of the room. ",
-        "A switch you set yourself always beats the mode. ",
-        el("a", { href: "#set-GAFFER_MODE" }, "Autonomy mode"),
-      ]),
+          ? "The mode is set by the environment, so the dial is locked here."
+          : "The dial is the Autonomy mode setting and saves with the rest of the room. It is the one place autonomy is granted: review, approval, merge, push and memory all follow from it (What this sets, below the dial).",
+      ),
     ],
   );
+  const modeSets = modeSetting ? whatThisSets(modeSetting, derived) : null;
+  if (modeSets) node.appendChild(modeSets);
 
   const drawFormation = (now, next) => {
     clear(board);
@@ -378,11 +374,10 @@ function teamInstructions(all, editors, policies) {
     onPick: null,
     sync() {
       const next = picked();
-      for (const r of radios) r.checked = r.value === next;
       for (const lab of dial.querySelectorAll(".dial-stop"))
         lab.classList.toggle("is-picked", lab.dataset.mode === next);
-      const now = postureFor(all, new Map(), current);
-      const after = postureFor(all, editors, next);
+      const now = postureFor(all, derived, current);
+      const after = postureFor(all, derived, next);
       const squadCount = (p) => FORMATION_GATES.filter((g) => g.who(p) === "squad").length;
       clear(head);
       const d = MODE_DETENTS[rank(next)];
@@ -406,39 +401,38 @@ function teamInstructions(all, editors, policies) {
       drawFormation(now, after);
       clear(changes);
       if (next === current) return;
-      // What moving the dial changes, key by key, and what it cannot change.
-      const rows = Object.keys(MODE_PRESETS.supervised).map((k) => {
-        const s = all.find((x) => x.key === k);
-        const a = now[k];
-        const b = after[k];
-        const same = String(a.value) === String(b.value);
-        const show = (v) =>
-          s && s.type === "boolean" ? (isOnValue(v.value) ? "On" : "Off") : v.value || "default";
-        return el("tr", { class: same ? "is-same" : "is-change" }, [
-          el("th", { scope: "row" }, el("a", { href: `#set-${k}` }, (s && s.label) || k)),
-          el("td", {}, show(a)),
-          el("td", {}, [
-            show(b),
-            b.from === "file" || b.from === "env" || b.from === "edit"
-              ? el(
-                  "span",
-                  { class: "ti-kept" },
-                  b.from === "env"
-                    ? " · set by the environment"
-                    : b.from === "edit"
-                      ? " · your unsaved edit"
-                      : " · kept from settings.json",
-                )
-              : null,
-          ]),
-        ]);
-      });
+      // What moving the dial changes, value by value (the mode's table), and what it
+      // cannot change (an environment override, an old stricter settings.json key).
+      const rows = ((modeSetting && modeSetting.derives) || [])
+        .filter((row) => row.byPreset)
+        .map((row) => {
+          const a = now[row.name] || { value: "" };
+          const b = after[row.name] || { value: "" };
+          const same = String(a.value) === String(b.value);
+          const show = (v) => (v.value === "" || v.value == null ? "(unset)" : String(v.value));
+          return el("tr", { class: same ? "is-same" : "is-change" }, [
+            el("th", { scope: "row" }, el("code", { class: "mono" }, row.name)),
+            el("td", {}, show(a)),
+            el("td", {}, [
+              show(b),
+              b.from === "env" || b.from === "old"
+                ? el(
+                    "span",
+                    { class: "ti-kept" },
+                    b.from === "env"
+                      ? " · set by the environment"
+                      : " · an old settings.json key, stricter, still applies",
+                  )
+                : null,
+            ]),
+          ]);
+        });
       changes.appendChild(
         el("table", { class: "ti-table" }, [
-          el("caption", {}, `Moving from ${MODE_DETENTS[rank(current)].name} to ${d.name}`),
+          el("caption", {}, `Moving from ${MODE_NAMES[current]} to ${d.name}`),
           el("thead", {}, [
             el("tr", {}, [
-              el("th", { scope: "col" }, "Switch"),
+              el("th", { scope: "col" }, "Value"),
               el("th", { scope: "col" }, "Now"),
               el("th", { scope: "col" }, "After save"),
             ]),
@@ -447,7 +441,7 @@ function teamInstructions(all, editors, policies) {
         ]),
       );
       if (rank(next) > rank(current)) {
-        const checks = goNoGo(after, next, policies);
+        const checks = goNoGo(after, next, policies, isolation);
         const go = checks.filter((c) => c.ok).length;
         changes.appendChild(
           el("div", { class: "gng" }, [
@@ -460,8 +454,9 @@ function teamInstructions(all, editors, policies) {
               { class: "gng-list" },
               checks.map((c) =>
                 el("li", { class: c.ok ? "is-go" : "is-nogo" }, [
-                  glyph(c.ok ? "done" : "failed", 18),
-                  el("span", { class: "gng-word" }, c.ok ? "Go" : "No-go"),
+                  // Advice, not a referee's card: the verdict glyph set with its word
+                  // (a flag for No-go), never the lifecycle "failed" cross.
+                  verdictMark(c.ok ? "pass" : "flag", { word: c.ok ? "Go" : "No-go", size: 18 }),
                   el("span", { class: "gng-text" }, [
                     c.ok ? c.go : c.nogo,
                     " ",
@@ -483,6 +478,42 @@ function teamInstructions(all, editors, policies) {
   return api_;
 }
 
+/** How a derived value's origin reads ("GAFFER_EFFORT=large", "environment", ...). */
+function decidedWords(d) {
+  if (d.source === "environment") return "set by the environment";
+  if (d.source === "old-key") return "an old settings.json key (stricter than the setting)";
+  return d.decidedBy;
+}
+
+/**
+ * "What this sets": a disclosure under a setting listing every value it derives, with
+ * the figure a run uses now and what decided it (GET /api/settings `derived`, from the
+ * runner's own config; secrets arrive masked).
+ */
+function whatThisSets(s, derived) {
+  const rows = (Array.isArray(derived) ? derived : []).filter((d) => d.setting === s.key);
+  if (!rows.length) return null;
+  return el("details", { class: "what-sets", dataset: { setting: s.key } }, [
+    el("summary", {}, ["What this sets ", el("span", { class: "boot-n" }, String(rows.length))]),
+    el(
+      "ul",
+      { class: "what-sets-list" },
+      rows.map((d) =>
+        el("li", { dataset: { name: d.name, source: d.source } }, [
+          el("code", { class: "mono" }, d.name),
+          el(
+            "span",
+            { class: "ws-value" },
+            d.value === null ? "(unset)" : d.value === "" ? "(empty)" : String(d.value),
+          ),
+          el("span", { class: `ws-why ws-${d.source}` }, decidedWords(d)),
+          d.note ? el("span", { class: "ws-note dim" }, d.note) : null,
+        ]),
+      ),
+    ),
+  ]);
+}
+
 /** Human label for an autonomy gate. */
 function autonomyGateLabel(g) {
   if (g === "merge") return "Auto-merge";
@@ -496,7 +527,12 @@ function isPolicyActive(policies, repoId, riskLevel, gate) {
     Array.isArray(policies) &&
     policies.some(
       (p) =>
-        p.repo_id === repoId && p.risk_level === riskLevel && p.gate === gate && p.mode === "auto",
+        p.repo_id === repoId &&
+        p.risk_level === riskLevel &&
+        p.gate === gate &&
+        p.mode === "auto" &&
+        // SEALED AUTONOMY: an unsigned row is off, so it is not "already automatic".
+        p.signed !== false,
     )
   );
 }
@@ -549,9 +585,9 @@ function inertPoliciesNote(n) {
     icon("alert", "settings-note-ico"),
     el("span", {}, [
       el("strong", {}, `${n} autonomy grant${n === 1 ? " is" : "s are"} inert. `),
-      "Review mode is human, so no reviewer agent runs and the per-repo policies are never " +
-        "consulted. Set Review mode to agent or both (or Autonomy mode to graduated) for them " +
-        "to act, or turn them off below.",
+      "The autonomy mode is supervised, so no reviewer agent runs and the per-repo policies " +
+        "are never consulted. Set the Autonomy mode (GAFFER_MODE) to graduated or above for " +
+        "them to act, or turn them off below.",
     ]),
   ]);
 }
@@ -560,6 +596,8 @@ export {
   isOnValue,
   testingLaneOff,
   teamInstructions,
+  whatThisSets,
+  decidedWords,
   autonomyGateLabel,
   isPolicyActive,
   submitAutonomyPolicy,

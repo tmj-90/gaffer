@@ -153,17 +153,44 @@ export function scoreDifficulty(signals = {}) {
   return { label: "medium", reasons: [] };
 }
 
-/** Load + validate the registry. A bad file falls back; it never throws. */
+/**
+ * The tier models GAFFER_MODEL_TIERS names ("strong=opus,mid=sonnet,cheap=haiku", commas
+ * or spaces), as an object; GAFFER_MODELS derives it (runner/config/04-models.sh). An
+ * entry that is not `tier=model` with a plain model id is skipped, so a malformed value
+ * changes nothing.
+ */
+export function tiersFromEnv(raw) {
+  const out = {};
+  for (const pair of String(raw ?? "").split(/[\s,]+/)) {
+    // A model id starts with a letter or digit: it goes after --model on a command line.
+    const m = pair.match(/^([a-z][a-z0-9_-]*)=([A-Za-z0-9][A-Za-z0-9._:/@-]*)$/);
+    if (m) out[m[1]] = m[2];
+  }
+  return out;
+}
+
+/**
+ * Load + validate the registry. A bad file falls back; it never throws. The tier
+ * models GAFFER_MODEL_TIERS names replace the registry's for those tiers.
+ */
 export function loadRegistry(
   registryPath = process.env.GAFFER_MODEL_REGISTRY || DEFAULT_REGISTRY_PATH,
+  env = process.env,
 ) {
-  let raw;
+  let reg;
   try {
-    raw = JSON.parse(readFileSync(registryPath, "utf8"));
+    reg = normaliseRegistry(JSON.parse(readFileSync(registryPath, "utf8")));
   } catch {
-    return { ...FALLBACK_REGISTRY };
+    reg = { ...FALLBACK_REGISTRY };
   }
-  return normaliseRegistry(raw);
+  const over = tiersFromEnv(env.GAFFER_MODEL_TIERS);
+  if (Object.keys(over).length === 0) return reg;
+  const tiers = { ...reg.tiers, ...over };
+  const escalationOrder = [
+    ...reg.escalationOrder,
+    ...Object.keys(over).filter((t) => !reg.escalationOrder.includes(t)),
+  ];
+  return { ...reg, tiers, escalationOrder };
 }
 
 /**

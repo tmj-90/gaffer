@@ -1,6 +1,7 @@
 // The Tactics Board: the pitch.
 // Moved verbatim from app.js (the entry); the module map is in app.js.
 
+import { table } from "../lookup.js";
 import { agentWho } from "../access.js";
 import { el, prefersReducedMotion } from "../dom.js";
 import { fmtTime, money } from "../format.js";
@@ -19,7 +20,7 @@ import {
   wrapLabel,
 } from "../matchday.js";
 import { appState } from "../state.js";
-import { statusBadge, statusLabel } from "../status.js";
+import { statusBadge, statusLabel, ticketRef } from "../status.js";
 
 // --- The Tactics Board -------------------------------------------------------
 
@@ -64,7 +65,7 @@ function arrowWindow(f) {
  * at the size it is seen (k = viewBox units per CSS px); tags and arrows are laid
  * out at those sizes, so nothing collides.
  */
-const PITCH_VW = { landscape: 14 + 1050 + 104, portrait: 14 + 680 + 14 };
+const PITCH_VW = table({ landscape: 14 + 1050 + 104, portrait: 14 + 680 + 14 });
 function pitchBoard(f, orientation, k = orientation === "portrait" ? 2 : 1.26) {
   const P = orientation === "portrait";
   const { channels, other } = pitchChannels(f);
@@ -921,7 +922,7 @@ function tacticsBoard(f) {
                 el("li", {}, [
                   el("a", { href: `#/ticket/${t.id}`, class: `off-${t.status}` }, [
                     statusBadge(t.status, t.landing_state),
-                    el("b", {}, `#${t.number}`),
+                    ticketRef(t, { size: "s", link: false }),
                     el("span", { class: "off-t" }, t.title),
                   ]),
                 ]),

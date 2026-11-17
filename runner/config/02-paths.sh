@@ -29,6 +29,12 @@ export MEMORY_AUDIT_LOG
 # runner's builds and the file-card lines (an index already built is then left as it is).
 : "${GAFFER_CODE_INDEX:=1}"   # 1 builds the code index at onboard / merge and primes callers into file cards; 0 off
 export GAFFER_CODE_INDEX
+# GAFFER_DATA (a setting, set in factory.config.sh: environment only, settings.json lives
+# in it) and what is kept beside it.
+_gaffer_derive GAFFER_DATA <<'_GAFFER_TABLE_'
+GAFFER_CODE_INDEX      ~   # 1 builds the code index at onboard and after each merge and primes callers into file cards; 0 off
+GAFFER_BOOTSTRAP_ROOT  ~   # the folder a greenfield (create-a-repo) ticket creates its repository under
+_GAFFER_TABLE_
 
 # Shared usage-ledger READER (lib/estimate.mjs parseLedger). Every inline-node
 # consumer of the JSONL ledger imports this ONE parser instead of hand-rolling a

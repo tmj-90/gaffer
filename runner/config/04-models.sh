@@ -34,8 +34,36 @@ if [ -z "${GAFFER_IMPL_MODEL_EXPLICIT+x}" ]; then
   [ -n "${GAFFER_IMPL_MODEL+x}" ] && GAFFER_IMPL_MODEL_EXPLICIT=1 || GAFFER_IMPL_MODEL_EXPLICIT=0
 fi
 export GAFFER_PLAN_MODEL_EXPLICIT GAFFER_IMPL_MODEL_EXPLICIT
-: "${GAFFER_PLAN_MODEL=opus}"     # the strong tier: planning, the final rework attempt, the eval judge
-: "${GAFFER_IMPL_MODEL=sonnet}"   # the implement tier: delivery (when the router does not pick), review, the tester
+# GAFFER_MODELS (a setting) picks the three models: a preset column below (economy moves
+# only the strong tier down to sonnet: implementation and the reviewer agent, whose
+# APPROVE ships work in the autonomous modes, stay on the standard model), or three
+# model ids "strong,standard,cheap", which fill the same names here (each only where
+# nothing set it before: a real GAFFER_PLAN_MODEL still pins, as above). A model a
+# setting derived is NOT an explicit pin: the router still routes, over the tiers
+# GAFFER_MODEL_TIERS names (bin/route-model.mjs reads it over model-registry.json).
+case "${GAFFER_MODELS:-standard}" in
+  standard | economy | strong) ;;
+  *)
+    IFS=, read -r _gm_s _gm_m _gm_c <<<"$GAFFER_MODELS"
+    [ -n "${GAFFER_PLAN_MODEL+x}" ] || { GAFFER_PLAN_MODEL="$_gm_s"; }
+    [ -n "${GAFFER_IMPL_MODEL+x}" ] || { GAFFER_IMPL_MODEL="$_gm_m"; }
+    [ -n "${GAFFER_MODEL_TIERS:-}" ] || { GAFFER_MODEL_TIERS="strong=$_gm_s,mid=$_gm_m,cheap=$_gm_c"; export GAFFER_MODEL_TIERS; }
+    [ -n "${GAFFER_PLAN_DEBATE_MODELS:-}" ] || { GAFFER_PLAN_DEBATE_MODELS="$_gm_s,$_gm_m"; }
+    unset _gm_s _gm_m _gm_c ;;
+esac
+_gaffer_derive GAFFER_MODELS <<'_GAFFER_TABLE_'
+#                           standard     economy                            strong
+?GAFFER_PLAN_MODEL          opus         sonnet                             opus      # the strong tier: planning, the final rework attempt, the eval judge
+?GAFFER_IMPL_MODEL          sonnet       sonnet                             opus      # the implement tier: delivery when the router does not pick, review, the tester
+GAFFER_MODEL_TIERS          -            strong=sonnet,mid=sonnet,cheap=haiku  strong=opus,mid=opus,cheap=sonnet   # the router's tiers over model-registry.json (strong, mid, cheap); unset = the registry's own (opus, sonnet, haiku)
+GAFFER_PLAN_DEBATE_MODELS   opus,sonnet  sonnet,sonnet                      opus,opus # the planning debate's proposer and critic
+GAFFER_ROLE_MODELS          ~            # per-role models as "role=model" pairs (rework, scout, judge, tester, card, synth, inherit); an unnamed role keeps its default, which follows the tiers
+GAFFER_PLAN_DEBATE          ~            # 1 turns on the two-model planning debate for a big epic (it multiplies planning cost); 0 = one planner
+GAFFER_PLAN_DEBATE_MAX_ROUNDS ~          # plan-producing rounds of a debate (the draft is round 1)
+GAFFER_PLAN_DEBATE_MIN_ESTIMATE ~        # the size signal a plan must reach before it is debated; 0 = any size
+GAFFER_SCOUT                ~            # the pre-work scout: off (the free deterministic packet only), auto (plus one read-only cheap model call where it helps), none
+GAFFER_CLAUDE_AUTH_PROBE    ~            # 1 = preflight asks the worker CLI whether its login works; 0 skips the probe
+_GAFFER_TABLE_
 export GAFFER_PLAN_MODEL GAFFER_IMPL_MODEL
 # Per-role model overrides, one knob for all of them: GAFFER_ROLE_MODELS="card=haiku
 # judge=opus" (commas or spaces). A role not named keeps its own default: rework (the

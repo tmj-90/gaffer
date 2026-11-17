@@ -174,8 +174,13 @@ describe("chartFigure", () => {
     btn.click();
     expect(table.hidden).toBe(false);
     expect((f.querySelector(".cf-chart") as HTMLElement).hidden).toBe(true);
-    expect(btn.textContent).toBe("Show as chart");
+    // A toggle keeps its name; aria-pressed alone says it is on (REVIEW-P2 follow-up).
+    expect(btn.textContent).toBe("Show as table");
     expect(btn.getAttribute("aria-pressed")).toBe("true");
+    btn.click();
+    expect(btn.textContent).toBe("Show as table");
+    expect(btn.getAttribute("aria-pressed")).toBe("false");
+    expect(table.hidden).toBe(true);
     expect(table.querySelector("table th[scope=col]")!.textContent).toBe("Day");
   });
 });

@@ -75,27 +75,36 @@ check("FEATURES.md has a Specs section", spec.length > 0);
 check("no 'in progress' in the Specs section", !/in progress/i.test(spec));
 
 console.log("== D4: the two autonomy flags are off by default in the docs ==");
-const config = read("docs/CONFIG.md");
+// Neither is a setting any more: GAFFER_MODE decides both, and the default mode
+// (supervised) derives 0. The generated detailed document, the schema the dashboard
+// reads and the config's own table must all say so.
+const schema = JSON.parse(read("runner/config/settings-schema.json"));
+const mode = schema.settings.find((x) => x.name === "GAFFER_MODE") || { derives: [] };
+check("the default mode is supervised", mode.default === "supervised", String(mode.default));
+const advanced = read("docs/CONFIG-ADVANCED.md");
+const modeTable = read("runner/config/15-modes.sh");
 for (const k of ["DISPATCH_ALLOW_AGENT_APPROVE", "MEMORY_AUTO_APPROVE"]) {
-  const row = config.split("\n").find((l) => l.startsWith(`| \`${k}\` |`)) || "";
+  const row = advanced.split("\n").find((l) => l.startsWith(`| \`${k}\` |`)) || "";
   const dflt = row.split("|")[2] || "";
-  check(`CONFIG.md: ${k} defaults to 0`, /^\s*`0`/.test(dflt), dflt.trim());
-  check(`CONFIG.md: ${k}'s notes say off by default`, /off by default/i.test(row));
+  check(
+    `CONFIG-ADVANCED.md: ${k} is 0 under the default mode`,
+    /^\s*`0`\s*$/.test(dflt),
+    dflt.trim(),
+  );
+  const d = mode.derives.find((x) => x.name === k);
+  const cell = d && d.byPreset ? d.byPreset.supervised : null;
+  check(
+    `the settings schema derives ${k}=0 under supervised`,
+    !!cell && cell.how === "value" && cell.value === "0",
+    JSON.stringify(cell),
+  );
+  check(
+    `${k} is not a writable setting`,
+    !schema.settings.some((x) => x.name === k) &&
+      schema.oldKeys.some((o) => o.key === k || o.name === k),
+  );
+  check(`the mode table in 15-modes.sh names ${k}`, modeTable.includes(k));
 }
-const settings = read("packages/dispatch/src/api/settings.ts");
-for (const k of ["DISPATCH_ALLOW_AGENT_APPROVE", "MEMORY_AUTO_APPROVE"]) {
-  const at = settings.indexOf(`key: "${k}"`);
-  const block = settings.slice(at, settings.indexOf("},", at));
-  check(`settings help for ${k} says off by default`, /Off by default/.test(block));
-}
-// The fill the docs report is the one the config applies when GAFFER_MODE is unset.
-const cfg = read("runner/config/15-modes.sh");
-const arm = cfg.slice(
-  cfg.indexOf("  *)   # supervised (default)"),
-  cfg.indexOf("esac", cfg.indexOf("  *)   # supervised (default)")),
-);
-for (const k of ["DISPATCH_ALLOW_AGENT_APPROVE", "MEMORY_AUTO_APPROVE"])
-  check(`factory.config.sh's supervised arm sets ${k}:=0`, arm.includes(`: "\${${k}:=0}"`));
 
 console.log("== D5: every image the docs show exists, and every image is shown ==");
 const docFiles = [

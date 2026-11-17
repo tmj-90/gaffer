@@ -57,3 +57,26 @@ updates:
         update-types:
           - minor
           - patch
+
+  # BASE IMAGES pinned by digest (F5): the release image, the delivery sandbox image and
+  # the egress proxy. Dependabot proposes the new digest of the same tag (and a newer
+  # tag) so the pins do not rot. The Claude Code CLI pin (ARG CLAUDE_CODE_VERSION in
+  # Dockerfile and runner/sandbox/Dockerfile) is not in a package.json, so Dependabot
+  # cannot see it: it is bumped by hand (see the comment above the ARG).
+  - package-ecosystem: docker
+    directories:
+      - /
+      - /runner/sandbox
+      - /runner/sandbox/egress-proxy
+    schedule:
+      interval: weekly
+    groups:
+      base-images:
+        patterns:
+          - "*"
+    ignore:
+      # The image runs the declared runtime floor (engines: node 22); a new Node major is
+      # raised with the engines floor, not by a digest bot.
+      - dependency-name: "node"
+        update-types:
+          - "version-update:semver-major"

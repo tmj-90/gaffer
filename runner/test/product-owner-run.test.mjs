@@ -291,6 +291,8 @@ console.log("== M3: agentChildEnv strips outbound-endpoint vars; keeps ANTHROPIC
     GAFFER_NOTIFY_WEBHOOK_URL: "https://hooks.example.com/secret-webhook",
     GAFFER_NOTIFY_SLACK_URL: "https://hooks.slack.com/services/TXXXXX/BXXXXX/secret",
     GAFFER_NOTIFY_EXTRA: "extra-notify-var",
+    // The GAFFER_NOTIFY setting holds the same URLs (with their tokens):
+    GAFFER_NOTIFY: "https://hooks.slack.com/services/T1/B1/setting-secret desktop",
     MY_WEBHOOK_URL: "https://corp.example.com/webhook",
     SLACK_WEBHOOK_TOKEN: "xoxb-slack-token",
     FOO_URL: "https://internal.corp/endpoint",
@@ -304,6 +306,7 @@ console.log("== M3: agentChildEnv strips outbound-endpoint vars; keeps ANTHROPIC
   assert("M3: removes GAFFER_NOTIFY_WEBHOOK_URL", !("GAFFER_NOTIFY_WEBHOOK_URL" in childEnv));
   assert("M3: removes GAFFER_NOTIFY_SLACK_URL", !("GAFFER_NOTIFY_SLACK_URL" in childEnv));
   assert("M3: removes GAFFER_NOTIFY_EXTRA", !("GAFFER_NOTIFY_EXTRA" in childEnv));
+  assert("M3: removes GAFFER_NOTIFY (the setting)", !("GAFFER_NOTIFY" in childEnv));
   assert("M3: removes *_WEBHOOK* var (MY_WEBHOOK_URL)", !("MY_WEBHOOK_URL" in childEnv));
   assert("M3: removes *_SLACK* var", !("SLACK_WEBHOOK_TOKEN" in childEnv));
   assert("M3: removes generic *_URL var (FOO_URL)", !("FOO_URL" in childEnv));

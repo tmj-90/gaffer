@@ -107,6 +107,14 @@ describe("web: Memory view, the club-wide read", () => {
     const cell = document.querySelector(".mem-stats .kpi") as HTMLElement;
     expect(cell.querySelector(".kpi-val")?.textContent).toBe("2");
     expect(cell.textContent).toContain("1 more waiting in other repos");
+    // Two sized figures; the scouting report's date is a line, not a stat (A-33).
+    const cells = Array.from(document.querySelectorAll(".mem-stats .kpi"));
+    expect(cells.map((c) => c.querySelector(".kpi-label")?.textContent)).toEqual([
+      "Drafts await you",
+      "Honours",
+    ]);
+    for (const c of cells) expect(c.classList.contains("kpi--row")).toBe(true);
+    expect(document.querySelector(".mem-asof")).not.toBeNull();
     // Drafts are grouped first; only the first Approve is the primary.
     const groups = Array.from(document.querySelectorAll(".lore-group")).map((g) =>
       g.firstChild?.textContent?.trim(),

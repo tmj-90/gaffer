@@ -44,6 +44,12 @@ export interface ObservedRisk {
    * literal still type-checks; absent ⇒ no hold.
    */
   holds?: string[];
+  /**
+   * The delivery-branch head each write repo's diff was read at (null: not resolved).
+   * An agent's approval pins heads it resolves LATER: they must be these, or the risk was
+   * judged on a diff the approval does not cover (approval.ts bindObservedHeads).
+   */
+  heads?: Array<{ repo: string; repoId: string | null; sha: string | null }>;
 }
 
 /** Parse a positive-int env knob, falling back to `fallback` when absent/invalid. */
@@ -137,7 +143,12 @@ export function observedRisk(
     );
   }
 
-  return { level, determinate, reasons, files, lines, holds };
+  const heads = repos.map((r) => ({
+    repo: r.repo,
+    repoId: r.repoId ?? null,
+    sha: r.headSha ?? null,
+  }));
+  return { level, determinate, reasons, files, lines, holds, heads };
 }
 
 /**

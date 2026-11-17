@@ -40,8 +40,25 @@
 # alarm(): `gaffer_timeout <secs> <cmd> [args…]` runs <cmd> and kills it after <secs>.
 # If perl is somehow absent it falls back to GNU `timeout`/`gtimeout` when present,
 # else runs the command unbounded (best-effort — never breaks the call).
-: "${GAFFER_TICK_TIMEOUT:=1800}"   # 30 min hard wall-clock cap per claude -p call
-: "${GAFFER_MAX_TURNS:=200}"        # max agent turns per delivery call; ceiling for every role
+# GAFFER_EFFORT (a setting): how much work one ticket may take. Its table sets the
+# per-call bounds, the attempts and the gate and CI time together; a real environment
+# variable for any of these names still wins. small never shortens the gate and CI time:
+# how long a repository's test suite or CI takes does not shrink with the ticket, and a
+# gate that times out sends the delivery back to a paid rework attempt.
+_gaffer_derive GAFFER_EFFORT <<'_GAFFER_TABLE_'
+#                               small  standard  large
+GAFFER_TICK_TIMEOUT             900    1800      3600   # wall-clock seconds one agent call may run before it is stopped
+GAFFER_MAX_TURNS                100    200       300    # agent turns per delivery call (claude --max-turns), and the ceiling for every role
+GAFFER_MAX_DELIVERY_ATTEMPTS    2      3         4      # agent attempts per delivery in one tick (the rework ladder); 1 = no rework
+GAFFER_DOD_TIMEOUT              900    900       1800   # seconds each Definition-of-Done gate and each acceptance check command may run
+GAFFER_CI_POLL_ATTEMPTS         20     20        40     # CI status polls before the CI gate calls the checks still pending
+GAFFER_ROLE_MAX_TURNS           ~      # per-role turn caps as "role=N" pairs (review, security_review, clarify, judge, tester, merge, po, scout, onboard, decompose, spec_author), each clamped to GAFFER_MAX_TURNS
+GAFFER_RETRY_FRESH_BRANCH       ~      # 1 = a ticket re-entered by a later tick starts again from its base branch; 0 keeps its commits
+GAFFER_TICK_DEADLINE_GUARD      ~      # 1 = a tick starts no attempt that its outer time bound would kill; 0 = off
+DISPATCH_MAX_ATTEMPTS           ~      # follows GAFFER_MAX_DELIVERY_ATTEMPTS: rejections before dispatch parks a ticket for a person
+GAFFER_MAX_NOCOMMIT_FAILURES    ~      # follows GAFFER_MAX_DELIVERY_ATTEMPTS: ticks that end with no commit before the ticket parks
+GAFFER_CI_POLL_INTERVAL_SECS    ~      # seconds between CI status polls
+_GAFFER_TABLE_
 : "${GAFFER_ROLE_MAX_TURNS:=}"   # per-role turn caps as "role=N" pairs (review, security_review, clarify, judge, tester, merge, po, scout, onboard, decompose, spec_author); an unnamed role keeps its built-in cap; all are clamped to GAFFER_MAX_TURNS.
 export GAFFER_ROLE_MAX_TURNS
 
@@ -59,6 +76,44 @@ unset _gd _gr
 # lib/ac-checks.sh) carry the SAME fallbacks, so these lines change nothing at
 # runtime — they exist so the knobs are documented here (docs/CONFIG.md) and
 # settable from one place like every other operator knob.
+# GAFFER_GATES (a setting): standard or strict. In the environment only, a list
+# ("tests,lint") runs the gates it names and turns the others off, as GAFFER_DOD_* =0
+# would (only where nothing set that switch already).
+case "${GAFFER_GATES:-standard}" in
+  standard | strict) ;;
+  *)
+    for _gg in TESTS:tests LINT:lint TYPECHECK:typecheck; do
+      _gv="GAFFER_DOD_${_gg%%:*}"
+      [ -z "${!_gv:-}" ] || continue
+      case " ${GAFFER_GATES//,/ } " in
+        *" ${_gg#*:} "*) printf -v "$_gv" '%s' 1 ;;
+        *) printf -v "$_gv" '%s' 0 ;;
+      esac
+      export "${_gv?}"
+    done
+    unset _gg _gv ;;
+esac
+_gaffer_derive GAFFER_GATES <<'_GAFFER_TABLE_'
+#                               standard  strict
+GAFFER_DOD_FLAKY_RERUN          1         0       # with GAFFER_CONCURRENCY above 1, rerun a red test gate once alone before it counts; 0 = a red gate counts at once
+MINIMALISM_REQUIRE_NOTE         0         1       # 1 = a delivery with no smallest-change note goes back to rework; 0 = it is flagged for the reviewer
+OVERSIZED_MAX_LINES             400       250     # a diff over this many changed lines is flagged oversized_diff for the reviewer (never failed)
+OVERSIZED_MAX_FILES             12        8       # a diff over this many changed files is flagged oversized_diff for the reviewer (never failed)
+GAFFER_REVIEW_RULE_REPEAT       3         2       # how many times the same review feedback must recur before it becomes a standing review rule (2..20)
+GAFFER_DOD_TESTS                ~         # 1 = run the repository test gate on every delivery; 0 skips it
+GAFFER_DOD_LINT                 ~         # 1 = run the lint gate
+GAFFER_DOD_TYPECHECK            ~         # 1 = run the typecheck gate (auto-detected command)
+GAFFER_DOD_TYPECHECK_CMD        ~         # the typecheck command, instead of the auto-detected one
+GAFFER_DOD_ENV_PASS             ~         # extra environment variable names every gate run receives (credential-shaped, factory and loader names are refused whatever is listed)
+GAFFER_DOD                      ~         # 0 turns every Definition-of-Done gate off, the only way to land a delivery ungated (read in lib/dod.sh)
+GAFFER_DOD_INSTALL              ~         # 1 = install the delivery worktree dependencies from its lockfile before the test gate; 0 to manage them yourself (read in lib/dod.sh)
+GAFFER_ALLOW_NO_DOD             ~         # 1 = let a delivery pass when no gate ran at all; otherwise that parks the ticket (read in lib/tick-gates.sh)
+HYGIENE_ENFORCE                 ~         # 1 = a delivery whose diff adds or deletes a forbidden path is parked; 0 only logs it
+HYGIENE_FORBIDDEN_PATHS         ~         # the path fragments a delivery diff may never add or delete
+GAFFER_SENSITIVE_PATH_RE        ~         # the paths that count as sensitive (lite never auto-approves them; they get the security second opinion); empty = the built-in list
+GAFFER_EVAL_JUDGE               ~         # 1 = a model judge scores each delivery against its criteria (advisory, one extra call); 0 = off
+GAFFER_JUDGE_DENIED_TOOLS       ~         # the tools the eval judge is denied by name (read in lib/eval-judge.sh)
+_GAFFER_TABLE_
 : "${GAFFER_DOD_TESTS:=1}"           # 1 = run the repo's test gate on every delivery; 0 skips it
 : "${GAFFER_DOD_LINT:=1}"            # 1 = run the lint gate
 : "${GAFFER_DOD_TYPECHECK:=1}"       # 1 = run the typecheck gate (auto-detected command)
@@ -66,13 +121,18 @@ unset _gd _gr
 # GAFFER_DOD_INSTALL=0 (read in lib/dod.sh and lib/greenfield.sh) is the one switch for
 # managing dependencies yourself; GAFFER_GREENFIELD_INSTALL=0 used to be a second one.
 _gaffer_deprecated GAFFER_GREENFIELD_INSTALL "set GAFFER_DOD_INSTALL=0 instead (it also skips the greenfield install)"
-: "${GAFFER_DOD_TIMEOUT:=900}"       # wall-clock cap (seconds) per gate and per AC check command
 # (GAFFER_TEST_PATH_RE, an extra test-path regex that can only widen the gate-integrity
 # check, is read by crew's integrity CLI and dispatch's risk annotation from their own
 # environment; the empty, unexported default that stood here reached neither.)
 # Run the DoD gates + AC check commands under the SAME OS sandbox wrap as the agent
 # (they execute agent-modified code). 0 opts out (a gate that cannot run inside the
 # image) and is logged; the verdict is always recorded by the runner outside the gate.
+# Every gate run starts from `env -i` plus a short list (lib/dod.sh gaffer_dod_gate_env:
+# PATH, a throwaway HOME, locale, CI=1, proxy and CA, the toolchain homes). A project
+# whose tests need one more variable names it here; a credential-shaped name, an endpoint,
+# ANTHROPIC_*, CLAUDE_*, DISPATCH_*, MEMORY_*, AWS_* or GAFFER_* is never passed, named or not,
+# and neither is a loader or environment-control name (lib/env-scrub.sh).
+: "${GAFFER_DOD_ENV_PASS:=}"   # extra environment variable NAMES (comma or space separated) every gate run receives from the runner's environment; credential-shaped, factory and loader names (NODE_OPTIONS, BASH_ENV, LD_*, DYLD_*, GIT_*, PATH, HOME...) are refused whatever is listed
 : "${GAFFER_DOD_SANDBOX:=1}"   # 1 = run the DoD gates and criterion checks inside the agent's OS sandbox (they run agent-written code); 0 opts out, and the opt-out is logged
 # PR mode: when `gh pr merge` fails or gh is absent, 1 lands the branch LOCALLY (the PR
 # stays open — the previous behaviour). Default 0: HOLD the ticket at ready_for_merge
@@ -161,7 +221,6 @@ gaffer_role_turns() {
 # (re-plan, optionally narrower scope); attempt 3 escalates to a STRONGER model
 # (GAFFER_ROLE_MODELS rework=, the plan tier by default) with the full feedback history. Set to 1 to disable
 # rework entirely (one attempt, then park to `blocked`).
-: "${GAFFER_MAX_DELIVERY_ATTEMPTS:=3}"
 # WASTE CONTROL: a ticket re-entered by a LATER tick (review CHANGES rework, a resumed
 # pause, a re-queued retry) keeps its branch's commits; 1 = reset it to base for that
 # tick (in-tick rework is never reset). In-tick rework — the up to

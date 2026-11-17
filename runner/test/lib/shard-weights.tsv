@@ -46,18 +46,18 @@
 #   measures it.
 #   tester-unprovable-escape: new (package H3 review, the hold in the supervised posture and
 #   every way past it), about 10 real ticks and three tester runs; 200 until CI measures it.
-321	land-tester-replay.test.sh
-297	merge-lane.test.sh
-242	land-tester-replay-proof.test.sh
-237	e2e-release-gate-tester-replay.test.sh
-261	waste-controls.test.sh
+166	land-tester-replay.test.sh
+104	merge-lane.test.sh
+97	land-tester-replay-proof.test.sh
+125	e2e-release-gate-tester-replay.test.sh
+99	waste-controls.test.sh
 187	e2e-agent-skill-routing.test.sh
 176	gate-integrity-e2e-retry.test.sh
 154	e2e-multi-repo-delivery.test.sh
 151	gate-integrity-e2e.test.sh
 148	e2e-per-path-stack-routing.test.sh
 148	review-wedge.test.sh
-133	afk-review-hold.test.sh
+100	afk-review-hold.test.sh
 131	e2e-release-gate-merge-combination.test.sh
 130	branch-retention.test.sh
 129	memory-index-after-merge.test.sh
@@ -72,12 +72,14 @@
 94	branch-switch-fresh.test.sh
 90	poll-overlap-run-state.test.sh
 89	resume-abort.test.sh
-# replay-manifest came in after that run: its slowest LOCAL run (-j 1 on a shared box), until the next refresh.
+# replay-manifest came in after that run: its slowest LOCAL run (-j 1 on a shared box), until the next refresh;
+# 160 -> 95 once its E4 stopped waiting out a fixed 60 s agent sleep (91 s at most in five -j 2 runs).
 #   trust-fail-closed: new, six real tick.sh runs (Linux alone under shared load: 72s); 150, twice that, until the next refresh.
-160	replay-manifest.test.sh
+95	replay-manifest.test.sh
 84	e2e-memory-routing.test.sh
 70	sandbox-docker-delivery-seam.test.sh
 65	rework-final-trail.test.sh
+70	rework-feedback-quarantine.test.sh
 64	e2e-release-gate-ci-required.test.sh
 64	setup-error-circuit.test.sh
 63	e2e-release-gate-epic-verdict.test.sh
@@ -89,6 +91,7 @@
 59	self-op-ban-integration.test.sh
 55	auth-gate-delivery.test.sh
 55	concurrency-bookkeeping.test.sh
+55	lock-takeover-race.test.sh
 49	cli-contract-regression.test.sh
 48	merge-ticket.test.mjs
 47	replay-recovery.test.mjs
@@ -102,7 +105,7 @@
 40	delivery-lifecycle.test.sh
 40	stabilisation-integration.test.sh
 39	demo-isolation.test.sh
-38	dashboard-lifecycle.test.sh
+49	dashboard-lifecycle.test.sh
 38	scan-claimable-first.test.sh
 37	dry-run-preview.test.sh
 36	maintenance-lane.test.sh
@@ -122,7 +125,7 @@
 27	pr-create-e2e.test.sh
 26	tick-parked-result.test.sh
 24	auto-merge.test.sh
-23	budget-refused-delivery.test.sh
+36	budget-refused-delivery.test.sh
 23	model-routing.test.sh
 23	usage-pause.test.sh
 22	bootstrap-hook-fail-closed.test.sh
@@ -132,6 +135,7 @@
 22	recall-feedback.test.sh
 21	gaffer-colour.test.sh
 21	memory-audit-path.test.sh
+20	close-kill-after-submit.test.sh
 20	gaffer-lore.test.sh
 20	onboard-boundary.test.sh
 19	budget-admission.test.sh
@@ -141,6 +145,7 @@
 17	day-cap-no-work.test.sh
 17	direct-run-isolation.test.sh
 17	e2e-lifecycle.test.sh
+17	land-mark-merged-failure.test.sh
 16	parallel-claim.test.sh
 16	registry-probe.test.sh
 15	agent-self-submit.test.sh
@@ -210,7 +215,7 @@
 5	lite-mode.test.sh
 5	minimalism.test.sh
 5	paid-launch-cap-required.test.sh
-5	safety-hook-redos.test.mjs
+25	safety-hook-redos.test.mjs
 5	safety-hook-tilde.test.mjs
 5	skills-mount.test.sh
 5	spec-freeze-seeds-lore.test.sh
@@ -269,6 +274,7 @@
 2	select-skills.test.mjs
 2	skills-dedup.test.sh
 2	skills-wiring.test.sh
+2	budget-dead-reservation.test.mjs
 1	agent-env-scrub.test.sh
 1	agent-env-shell.test.sh
 1	agent-env.test.sh
@@ -367,7 +373,7 @@
 180	review-once-per-head.test.sh
 170	review-once-per-head-races.test.sh
 250	review-once-per-head-resubmit.test.sh
-420	tester-unprovable.test.sh
+61	tester-unprovable.test.sh
 200	tester-unprovable-escape.test.sh
 150	trust-fail-closed.test.sh
 # worktree-link-refusal: new (external review 17), four real tick.sh runs (Linux alone at -j 1 under shared load: 59s); 120, twice that, until the next refresh.
@@ -377,3 +383,58 @@
 # feature-ship-gate, feature-ship-pr-landing: new (external review 17), real Dispatch and Memory CLIs and a PR-mode landing (Linux at -j 2 in the full suite: 19s and 11s); about twice that until the next refresh.
 40	feature-ship-gate.test.mjs
 25	feature-ship-pr-landing.test.sh
+# Measured in the full local run of Nov 15 (main 38680e5, run.sh -j 2 on a 4-CPU box, every test PASS):
+# the tests that run predates or that had no line; dashboard-lifecycle (38 -> 49) from the same run.
+1	budget-day-utc.test.sh
+13	config-diet.test.sh
+1	config-parts.test.sh
+3	context-primer-index.test.sh
+2	gate-key-guards.test.sh
+1	pause-failed.test.sh
+6	preflight-hook-rules.test.sh
+13	preflight-human-verdicts.test.sh
+4	principal-token-agent-env.test.sh
+5	register-retry.test.sh
+3	sandbox-exec-agent-config.test.sh
+5	sandbox-exec-data-plane.test.sh
+7	scout-gather.test.sh
+1	settings-allowlist.test.sh
+3	tester-first.test.sh
+1	tick-phase-libs.test.sh
+78	waiver-principal-e2e.test.sh
+3	worktree-write-safety.test.sh
+2	agent-settings-rule.test.mjs
+1	budget-cap-boundary.test.mjs
+8	budget-concurrency.test.mjs
+1	eval-experiment-interval.test.mjs
+8	hook-glob-matcher.test.mjs
+1	safety-hook-cp-mentions.test.mjs
+4	safety-hook-factory-key.test.mjs
+1	safety-hook-git-hardening.test.mjs
+4	safety-hook-globs.test.mjs
+14	safety-hook-golden-corpus.test.mjs
+1	scout-packet.test.mjs
+8	status-features-held.test.mjs
+18	tester-acceptance.test.mjs
+13	tester-replay-contract.test.mjs
+2	trust-workspace-lock.test.mjs
+2	untrusted-escape.test.mjs
+1	worktree-write-safety.test.mjs
+# The eight files over 150 s at -j 2, split on their independent sections (Nov 16): every
+# half (the parents' lines above too) is its seconds alone in a run.sh -j 2 batch of the
+# halves, times the parent's CI-weight / local-seconds ratio (merge-lane 1.12,
+# land-tester-replay 1.28, -proof 1.22, e2e-release-gate-tester-replay 1.27,
+# waste-controls 1.3, afk-review-hold 0.84, tester-unprovable 1.2), until CI measures them.
+122	merge-lane-conflict.test.sh
+116	tester-unprovable-verdicts.test.sh
+128	tester-unprovable-tokens.test.sh
+106	waste-controls-fresh-branch.test.sh
+114	land-tester-replay-merge-now.test.sh
+118	land-tester-replay-scoped.test.sh
+106	e2e-release-gate-tester-replay-scoped.test.sh
+26	afk-review-hold-moved.test.sh
+# Backlog 58 (Nov 16): the autonomy step-down on real dispatch, 65 s served and 106 s with
+# GAFFER_WG_SERVE=0 alone locally; served times the merge-lane ratio 1.12, rounded up, until CI
+# measures it.
+80	autonomy-step-down.test.sh
+90	autonomy-sealed.test.sh

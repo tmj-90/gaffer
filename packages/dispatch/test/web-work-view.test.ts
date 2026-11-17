@@ -231,6 +231,9 @@ describe("web: the Match Day Work view", () => {
     await loadApp();
     const nums = [...document.querySelectorAll("#app .wl-row .wl-num")].map((n) => n.textContent);
     expect(nums).toEqual(["#7", "#9", "#1", "#2", "#5"]);
+    // The shared parts: the number is ticketRef at row size, the priority the one chip (A-20, A-24).
+    expect(document.querySelector("#app .wl-row .wl-num .tref")?.className).toBe("tref tref-s");
+    expect(document.querySelector("#app .wl-row .c-pri .prio")?.textContent).toMatch(/^P\d$/);
     expect(document.querySelector("#app .wl-row .pdots")).not.toBeNull();
     expect(document.querySelector(".work-mode [aria-pressed='true']")?.textContent).toBe("List");
   });

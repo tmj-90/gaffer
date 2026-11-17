@@ -235,16 +235,51 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     ],
   },
 
+  {
+    method: "GET",
+    path: "/api/principal-signatures",
+    tag: T.config,
+    summary: "Principals this factory does not honour",
+    description:
+      "Every active principal without a valid signature under the factory key (created before signing, restored from a backup, or written outside the factory), with why (`failure`, `detail`), what a person reviews (capability, actor, `scope` resolved to repo names and ticket numbers, `created_by`, `created_at`) and whether a matching `principal.created` event is on record (`creation_event`; a database writer can forge one, so it is a hint, not proof). `fingerprint` identifies exactly this list and each row's `review_code` that row: re-signing needs one of them. Such a principal is refused like an unknown token until a person re-signs it. Never carries token material.",
+    capability: "read",
+    responses: [ok("`{ unsigned: UnsignedPrincipal[], fingerprint }`.")],
+  },
+  {
+    method: "POST",
+    path: "/api/principal-signatures/resign",
+    tag: T.config,
+    summary: "Re-sign principals (a person's act)",
+    description:
+      "Signs the named principals (`names`, ids or names, with `confirm` the one row's `review_code` or the list's `fingerprint`), or (`all` with `confirm`, the `fingerprint` of the list the person reviewed from GET /api/principal-signatures) every principal of that list whose `principal.created` event is on record and matches it (one without is skipped and must be named), with a `principal.resigned` event each. Without `confirm` it is refused (422); a row or list changed since the review is refused (409) and nothing is signed. A revoked principal is refused (409). Shared operator token only: a principal token is refused. Nothing is ever signed on upgrade or on a read.",
+    capability: "full",
+    body: "resignPrincipalsBody",
+    responses: [
+      ok("`{ resigned: [{ id, name, event_id }], skipped: [{ id, name, reason }] }`."),
+      invalid,
+      notFound,
+      principalAdminRequired,
+      {
+        status: 409,
+        description:
+          "A named principal is revoked, or the unsigned list changed since the review `confirm` names (`STATE_CONFLICT`).",
+        content: "json",
+      },
+    ],
+  },
+
   // --- /api configuration ----------------------------------------------------
   {
     method: "GET",
     path: "/api/settings",
     tag: T.config,
-    summary: "List factory settings",
+    summary: "List the fourteen settings and what they derive",
     description:
-      "Every known setting with its file value, whether the environment locks it, and its group (`SettingView[]`). A secret-bearing key (`secret: true`, e.g. a webhook URL) never carries its value to any principal: `value` and `effective` are empty, `configured` says whether one is set and `host` names the URL's host. `isolation` is the agent isolation posture (`runner/gaffer sandbox-status`, probed on each load): `{ provider, available, required, optedOut, missing, fix }`, plus `error` when the probe could not answer.",
+      "The fourteen settings (runner/config/settings-schema.json) as `settings: SettingView[]`: `key`, `label`, `group`, `kind`, `values`, `default`, `description`, `writable` (false for GAFFER_DATA), `value` (stored in settings.json), `effective` (what a run uses), `origin` (default | dashboard | environment), `envLocked` (the operator's real environment sets it: read-only) and `derives` (the setting's table from the schema). GAFFER_NOTIFY is secret: `value` and `effective` are masked (channel kinds and hosts only), `channels` and `configured` say what is in force. Read-only blocks from the runner's own config (the printer behind `gaffer config show`): `derived` (every derived value: `name`, `value`, `decidedBy`, `setting`, `source` setting | environment | old-key), `migration` (old settings.json keys: `key`, `setting`, `old`, `derived`, `differs`, `decision`, `inForce`), `overrides` (derived values a real environment variable sets), `cleanup` (what the removal act would drop and rewrite: each dropped key with its masked value, `loosens` with `setting` and `after` when the old value is stricter and in force now, so removing it makes the factory looser, and a `digest` of the file the plan was made from; the value of a key the runner never read is not shown) and `configError` when the runner refuses the file. Every secret in every block is masked. `isolation` is the agent isolation posture (`runner/gaffer sandbox-status`).",
     capability: "read",
-    responses: [ok("`{ settings: SettingView[], isolation }`.")],
+    responses: [
+      ok("`{ settings, derived, migration, overrides, cleanup, configError?, isolation }`."),
+    ],
   },
   {
     method: "GET",
@@ -252,7 +287,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.config,
     summary: "Read a secret setting back (admin)",
     description:
-      "The in-force value of one secret-bearing setting, for an ADMIN principal only (the operator token, or an admin principal with full capability); 403 for a read token or a human principal.",
+      "The in-force value of the secret setting (GAFFER_NOTIFY), for an ADMIN principal only (the operator token, or an admin principal with full capability); 403 for a read token or a human principal.",
     capability: "full",
     responses: [ok("`{ key, value, source }`."), notFound],
   },
@@ -260,12 +295,41 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     method: "POST",
     path: "/api/settings",
     tag: T.config,
-    summary: "Write factory settings",
+    summary: "Write settings (the fourteen only)",
     description:
-      "Merges the given keys into settings.json atomically. Env-locked keys are rejected (the environment always wins); unknown keys are ignored. A value that does not fit its setting (a non-numeric dollar figure, an int below its minimum, an unlisted choice, a refused webhook URL) refuses the whole write with a 422 whose `details.invalid` names each field and why; nothing is written.",
+      "Merges the given settings into settings.json atomically (PUT is the same). Values are trimmed and validated exactly as the runner validates them; an empty value removes the setting (its default applies). Env-locked settings are rejected (the environment always wins). Any other key refuses the whole write with a 422: an old key names the setting that decides it now (`details.invalid[].decidedBy`), so does a derived name; GAFFER_DATA and environment-only names are refused. `notify: { desktop?, webhook?, slack? }` changes GAFFER_NOTIFY while keeping the saved URLs on the server (undefined keeps a channel, null removes it). Old keys already in settings.json are kept; only the removal act drops them.",
     capability: "full",
     body: "settingsBody",
-    responses: [ok("`{ settings, isolation, written, rejected, ignored, invalid }`."), invalid],
+    responses: [ok("The GET body plus `{ written, rejected, ignored, invalid }`."), invalid],
+  },
+  {
+    method: "PUT",
+    path: "/api/settings",
+    tag: T.config,
+    summary: "Write settings (the fourteen only)",
+    description: "The same as POST /api/settings.",
+    capability: "full",
+    body: "settingsBody",
+    responses: [ok("The GET body plus `{ written, rejected, ignored, invalid }`."), invalid],
+  },
+  {
+    method: "POST",
+    path: "/api/settings/remove-old-keys",
+    tag: T.config,
+    summary: "Remove the old keys from settings.json",
+    description:
+      "The person's removal act: rewrites settings.json atomically keeping only the fourteen settings (a stored value the runner would refuse is trimmed, clamped or cleared). `drop` and `rewrite` repeat the keys GET /api/settings `cleanup` showed and `digest` its digest; when the file changed in any way since (a value included), nothing is written and the answer is 409 (`STATE_CONFLICT`). Same authority as writing settings.",
+    capability: "full",
+    body: "removeOldKeysBody",
+    responses: [
+      ok("The GET body plus `removed` (the plan that was applied)."),
+      invalid,
+      {
+        status: 409,
+        description: "settings.json changed since the plan was shown (`STATE_CONFLICT`).",
+        content: "json",
+      },
+    ],
   },
   {
     method: "GET",
@@ -355,10 +419,91 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.config,
     summary: "Enable or disable an autonomy policy",
     description:
-      "Security-critical. Enabling (`mode` other than `off`) requires `confirm: true`, the operator's explicit acknowledgement; disabling is always permitted.",
+      "Security-critical. Enabling (`mode` other than `off`) requires `confirm: true`, the operator's explicit acknowledgement; disabling is always permitted. Enabling any mode at `risk_level: critical` for the approve or merge gate is refused (422, reason `autonomy_ceiling`): a person always decides critical changes.",
     capability: "full",
     body: "autonomyPolicyBody",
     responses: [ok("The resulting policy."), invalid],
+  },
+  {
+    method: "POST",
+    path: "/api/autonomy/lift",
+    tag: T.config,
+    summary: "Give autonomy back after a step-down",
+    description:
+      "A person's act only: the shared operator token, or an admin principal with full capability (a read-only or non-admin principal is refused with 403; an actor that is not a person with 403 `ACTOR_NOT_PERMITTED`; MCP has no such tool). `how: reenable` needs the evidence since the step-down to clear the bar again (409 `STATE_CONFLICT` with the distance otherwise); `how: override` needs a `reason`. A merge row cannot be lifted while a lower risk's merge row in the same repository is still stepped down. Recorded as `autonomy.step_down_lifted` on the event chain.",
+    capability: "full",
+    body: "autonomyLiftBody",
+    responses: [ok("`{ lifted: { event_id, how } }`."), invalid, forbidden, conflict, notFound],
+  },
+  {
+    method: "GET",
+    path: "/api/autonomy/signatures",
+    tag: T.config,
+    summary: "Autonomy policy rows this factory does not honour",
+    description:
+      "Every policy row that grants something (mode other than `off`) without a valid signature under the factory key (written before signing, restored from a backup, or written outside the factory), with what a person reviews (repo, risk, gate, mode, `enabled_by`, `enabled_at`) and why (`failure`, `detail`). Such a row grants nothing: every decision reads it as absent (a person decides) until a person re-signs it. `fingerprint` identifies exactly this list and each row's `review_code` that row.",
+    capability: "read",
+    responses: [ok("`{ unsigned: UnsignedPolicy[], fingerprint }`.")],
+  },
+  {
+    method: "POST",
+    path: "/api/autonomy/signatures/resign",
+    tag: T.config,
+    summary: "Re-sign autonomy policy rows (a person's act)",
+    description:
+      "Signs the reviewed rows: `ids` with `confirm` their own `review_code` (or the list's `fingerprint`), or `all` with `confirm` the `fingerprint` of the list from GET /api/autonomy/signatures, with an `autonomy_policy.resigned` event each. A row or list changed since the review is refused (409) and nothing is signed. A person's act only: the shared operator token, or an active, unscoped admin principal with full capability (a read-only or non-admin principal is refused with 403; an actor that is not a person with 403 `ACTOR_NOT_PERMITTED`; MCP has no such tool). Nothing is ever signed on upgrade or on a read.",
+    capability: "full",
+    body: "resignAutonomyPoliciesBody",
+    responses: [
+      ok("`{ resigned: [{ id, repo, risk_level, gate, event_id }] }`."),
+      invalid,
+      forbidden,
+      conflict,
+    ],
+  },
+  {
+    method: "GET",
+    path: "/api/autonomy/risk-signatures",
+    tag: T.config,
+    summary: "Open tickets whose risk this factory does not honour",
+    description:
+      "Every open ticket (not done, cancelled or failed) whose risk level carries no valid signature under the factory key (in flight before signing, imported, or changed outside the factory), with `sealed_at_claim` (never claimed: the host seals it at its first claim), the counts per risk (`by_risk`) and `fingerprint`, the code of exactly this list. Such a ticket is decided as the highest risk (a person decides).",
+    capability: "read",
+    responses: [ok("`{ unsigned: UnsignedRisk[], by_risk, fingerprint }`.")],
+  },
+  {
+    method: "POST",
+    path: "/api/autonomy/risk-signatures/resign",
+    tag: T.config,
+    summary: "Re-sign ticket risks (a person's act)",
+    description:
+      "Signs the risk of the reviewed tickets: `tickets` (ids or numbers) with `confirm` their code (or the list's `fingerprint`), or `all` with the `fingerprint` from GET /api/autonomy/risk-signatures, with a `ticket.risk_set` event each (source `resigned`). A list changed since the review is refused (409). The same person-only rule as re-signing policy rows.",
+    capability: "full",
+    body: "resignTicketRisksBody",
+    responses: [
+      ok("`{ resigned: [{ id, number, risk_level, event_id }] }`."),
+      invalid,
+      forbidden,
+      conflict,
+      notFound,
+    ],
+  },
+  {
+    method: "GET",
+    path: "/api/autonomy/ladder",
+    tag: T.read,
+    summary: "The autonomy ladder",
+    description:
+      "For every repository x risk (low to critical) x gate (approve, merge): the rung (`person`, `suggested`, `automatic`), the evidence behind it (k of n human decisions since the window opened, the rate with its 95% Wilson interval, the threshold and minimum sample), the distance to the next rung in plain words, and any step-down in force (when, why, what lifts it). Critical always reads `ceiling: true`. `?repo=<id|name>` narrows to one repository. A scoped principal sees only the repositories in its repo scope. `recent_step_downs` lists the step-downs of the last 7 days.",
+    capability: "read",
+    query: {
+      repo: { description: "One repository (id or name)." },
+      recent: {
+        description:
+          "`1`: only `{ generated_at, recent_step_downs }`, the step-downs of the last 7 days (the Overview line's narrow read).",
+      },
+    },
+    responses: [ok("`AutonomyLadder`."), notFound],
   },
   {
     method: "GET",
@@ -600,13 +745,18 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.read,
     summary: "Factory health and ROI",
     description:
-      "Event-log hash-chain integrity, spend, event-derived cycle time and throughput, flow efficiency, governance, skills and recall. `review_time` is human review time per accepted ticket (median, p75, p90; split into queue wait and decision time where the Review view recorded an open, the full span in review otherwise, named in `basis`), `first_pass` is first-pass acceptance split by approver, `lane_verdicts` counts the judging lanes' verdicts (a tester hold coded tester_unprovable, \"cannot be proven on this host\", counts as `unprovable`, apart from `held`), `lane_value` says what each lane changed (verdicts against the person's decision per attempt, unique catches, ledger cost per attempt; counts only; the eval judge's `blinding` splits its comparisons into blind decisions and decisions made after the person opened the judge's view), `escaped_defects` is escaped accepted changes over accepted changes in the window from the regression links a person filed, `review_time.active` is the approximate last-open-to-decision time capped at two hours, `impact_callers` counts the review opens by what the Behavioural surface's callers row showed (listed, none_changed, not_analysed; `listed_pct` over the opens that recorded it), `code_index` is each repo's code-index coverage from Memory (`available: false` when Memory is not configured), and `scout` is the pre-work scout's coverage from the runner's `ticket.scout_recorded` records (attempts scouted, files the code index added vs named only, risk raised, model scout runs, files kept and dropped and their cost) with first-pass acceptance split by what the ticket's first record found (a report; the arms are observational). `usage_pause` reports the runner's pause after a usage-limit or rate-limit refusal (`{ active, paused_until, kind, basis, message, ticket, lane? }`; `{ active: false }` when not paused). `tester_lane` is `{ mode, repos_without_test_command, notices, runner, runner_differs }`: the GAFFER_TESTING setting (`on`, `off`, or the `auto` default) and, under `auto`, each repository where the independent tester is off because no test command is registered, with its one-line notice; `runner` is the lane the runner last routed under (`{ mode, at }`, from its `runner.tester_lane` record, or null) and `runner_differs` is true when that mode is not this dashboard's, with a *tester lane differs* notice first. `routing_scorecard` is the routing scorecard (a report): per provider x model x role x work class (effective risk, repo stack) from the usage ledger and the runner's replay manifests, the calls and spend (estimates labelled, unknown costs counted as `unknown_rows`), and for the implement role the attempts, submission and rework rates, first-pass acceptance, attempts and cost per accepted change, escaped defects and tester false greens of the tickets that started in the cell, each as `{ value, n }`; a cell under `min_n` (10) has `too_few: true` and no rate, cells are never ranked, and `definitions` lists each figure. `routing` is the one advisory line (`{ available, proposals, line }`) saying whether `wg routing recommend` has a proposed model-registry change to show; nothing is applied. The four quality measures (`first_pass`, `review_time`, `accepted_change`, `escaped_defects`) each name the window they cover in `window_days` (null is all time) and carry `previous`, the same figures over the equal window before with its `since` and `until` (null for an all-time figure), and a history with every bucket present (an empty one has a zero count and a null value, never a carried-forward or zero value): `by_week`, the last 12 ISO weeks (`{ week, start, partial }` plus, for first-pass acceptance by acceptance time, `done, first_pass, rate_pct`; for review time by each accepted ticket's last human decision, `n, median_ms`; for accepted-change cost by the time each ticket's outcome settled, `accepted, spend_usd, cost_per_accepted_change_usd`), and for escaped defects `by_month`, the last 6 months by acceptance time (`{ month, partial, accepted, escaped, rate_pct, maturing }`; `maturing` marks a cohort that ended less than `maturing_days`, 30, ago). Each escaped-defect rate has `upper_95_pct` beside it, its Wilson 95% upper bound (0 of 11 could be up to 25.9%). `cycle_time` is `{ median_days, p75_days, p90_days, series, series_n }`: `series` is the mean cycle time of the tickets completed each day over the last 14 days, null on a day with no completion, and `series_n` the completions behind each day.",
+      "Event-log hash-chain integrity, spend, event-derived cycle time and throughput, flow efficiency, governance, skills and recall. `review_time` is human review time per accepted ticket (median, p75, p90; split into queue wait and decision time where the Review view recorded an open, the full span in review otherwise, named in `basis`), `first_pass` is first-pass acceptance split by approver, `lane_verdicts` counts the judging lanes' verdicts (a tester hold coded tester_unprovable, \"cannot be proven on this host\", counts as `unprovable`, apart from `held`), `lane_value` says what each lane changed (verdicts against the person's decision per attempt, unique catches, ledger cost per attempt; counts only; the eval judge's `blinding` splits its comparisons into blind decisions and decisions made after the person opened the judge's view), `escaped_defects` is escaped accepted changes over accepted changes in the window from the regression links a person filed, `review_time.active` is the approximate last-open-to-decision time capped at two hours, `impact_callers` counts the review opens by what the Behavioural surface's callers row showed (listed, none_changed, not_analysed; `listed_pct` over the opens that recorded it), `code_index` is each repo's code-index coverage from Memory (`available: false` when Memory is not configured), and `scout` is the pre-work scout's coverage from the runner's `ticket.scout_recorded` records (attempts scouted, files the code index added vs named only, risk raised, model scout runs, files kept and dropped and their cost) with first-pass acceptance split by what the ticket's first record found (a report; the arms are observational). `usage_pause` reports the runner's pause after a usage-limit or rate-limit refusal (`{ active, paused_until, kind, basis, message, ticket, lane? }`; `{ active: false }` when not paused). `tester_lane` is `{ mode, repos_without_test_command, notices, runner, runner_differs }`: the GAFFER_TESTING setting (`on`, `off`, or the `auto` default) and, under `auto`, each repository where the independent tester is off because no test command is registered, with its one-line notice; `runner` is the lane the runner last routed under (`{ mode, at }`, from its `runner.tester_lane` record, or null) and `runner_differs` is true when that mode is not this dashboard's, with a *tester lane differs* notice first. `routing_scorecard` is the routing scorecard (a report): per provider x model x role x work class (effective risk, repo stack) from the usage ledger and the runner's replay manifests, the calls and spend (estimates labelled, unknown costs counted as `unknown_rows`), and for the implement role the attempts, submission and rework rates, first-pass acceptance, attempts and cost per accepted change, escaped defects and tester false greens of the tickets that started in the cell, each as `{ value, n }`; a cell under `min_n` (10) has `too_few: true` and no rate, cells are never ranked, and `definitions` lists each figure. `routing` is the one advisory line (`{ available, proposals, line }`) saying whether `wg routing recommend` has a proposed model-registry change to show; nothing is applied. The four quality measures (`first_pass`, `review_time`, `accepted_change`, `escaped_defects`) each name the window they cover in `window_days` (null is all time) and carry `previous`, the same figures over the equal window before with its `since` and `until` (null for an all-time figure), and a history with every bucket present (an empty one has a zero count and a null value, never a carried-forward or zero value): `by_week`, the last 12 ISO weeks (`{ week, start, partial }` plus, for first-pass acceptance by acceptance time, `done, first_pass, rate_pct`; for review time by each accepted ticket's last human decision, `n, median_ms`; for accepted-change cost by the time each ticket's outcome settled, `accepted, spend_usd, cost_per_accepted_change_usd`), and for escaped defects `by_month`, the last 6 months by acceptance time (`{ month, partial, accepted, escaped, rate_pct, maturing }`; `maturing` marks a cohort that ended less than `maturing_days`, 30, ago). Each escaped-defect rate has `upper_95_pct` beside it, its Wilson 95% upper bound (0 of 11 could be up to 25.9%). `cycle_time` is `{ median_days, p75_days, p90_days, series, series_n }` (median and percentiles over every shipped ticket, null when nothing has shipped): `series` is the mean cycle time of the tickets completed each day over the last 14 days, null on a day with no completion, and `series_n` the completions behind each day.",
     capability: "read",
     query: {
       window_days: {
         description:
           "Window, in days (clamped to 1-365), for the governance rates and the four quality measures. Not given: governance and the escaped-defect rate use 30 days, first-pass acceptance, review time and accepted-change cost all time.",
         schema: { type: "integer", minimum: 1 },
+      },
+      view: {
+        description:
+          '`summary` returns the lighter read the Overview uses: the event log, the ledger figures (spend, by kind, coverage, rework, daily spend), the accepted-change cost, cycle time, throughput, flow efficiency and governance, with `view: "summary"`. The review measures, lane value, scout, routing scorecard, code index, skills and recall are absent (not zero).',
+        schema: { type: "string", enum: ["summary"] },
       },
     },
     responses: [ok("`HealthView`.")],

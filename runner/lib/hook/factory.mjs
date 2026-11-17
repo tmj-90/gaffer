@@ -195,6 +195,9 @@ const FACTORY_CODE_TEXT = (() => {
  * /dev/fd/3 approve 3` and `cat <runner>/gaffer | bash -s approve 3` are the same
  * front door.
  */
+/** How many `cd` / `pushd` one command may replay before it is refused (see below). */
+const MAX_CD_REPLAYS = 64;
+
 function factoryExecutionReason(cmd, roots) {
   // An agent whose write-roots contain the live runner can already rewrite it; this
   // guard adds nothing there (and the hook's own test harness runs from RUNNER_DIR).
@@ -202,6 +205,7 @@ function factoryExecutionReason(cmd, roots) {
   const why =
     "approving, merging, ticking and the control plane are the runner's and the human's job, never the agent's";
   let effectiveCwd = process.cwd();
+  let cdReplays = 0;
   const vars = new Map();
   let namesFactory = FACTORY_CODE_TEXT.test(cmd);
   let indirect = null;
@@ -240,6 +244,15 @@ function factoryExecutionReason(cmd, roots) {
     }
     if (!effective) continue;
     if (effective.verb === "cd" || effective.verb === "pushd") {
+      // Each replayed `cd` can lengthen the path every later word is resolved under
+      // (`(cd a); (cd a); ...` is read as a/a/a/...), so the work grew with the square of
+      // the command (500 of them ran past the hook's budget). Past MAX_CD_REPLAYS the
+      // command is refused: following it no further would leave its directory unknown,
+      // and an unknown directory hides a relative path to the factory's code.
+      cdReplays += 1;
+      if (cdReplays > MAX_CD_REPLAYS) {
+        return `changes directory more than ${MAX_CD_REPLAYS} times, more than the hook follows when it looks for the factory's own code: ${why}`;
+      }
       effectiveCwd = replayCd(effective, effectiveCwd);
       continue;
     }

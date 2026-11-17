@@ -1,9 +1,11 @@
 /* Review — the gaffer's sign-off, one change per page. The queue runs across
-   the top as fixture tabs; the claret sign-off block (Approve is the one action
-   fill; Won't do is danger and set apart) sits beside the diff, with the flags
-   as yellow cards, the gates and the evidence under it. The diff file list
-   carries goal-difference bars. The diff styles here are shared with the
-   ticket page. */
+   the top as fixture tabs; the shared ticket head, then one compact row of
+   verdict cells, then the claret sign-off block (Approve is the one action
+   fill; Won't do is danger and set apart) on the first screen beside the diff,
+   with the flags, the gates and the evidence under it as level-2 sections. On
+   a phone the three sign-off actions ride in a bar above the tab bar. No side
+   stripes: a verdict is a mark and a word. The diff styles here are shared
+   with the ticket page. */
 
 @layer views {
   /* --- the queue: one tab per change waiting ------------------------------- */
@@ -48,32 +50,18 @@
     border-top-color: var(--sky);
   }
 
-  /* --- the change: card, number, title, facts ------------------------------ */
+  /* --- the change: the shared ticket head, then the branch and the ask ------ */
   .rv-head {
-    display: grid;
-    gap: 10px;
+    gap: 8px 16px;
   }
-  .rv-title {
-    font: 800 var(--t52) / 1.02 var(--f-display);
-    overflow-wrap: anywhere;
-    text-wrap: balance;
+  .rv-head > .rv-branch,
+  .rv-head > .rv-intent {
+    grid-column: 1 / -1;
   }
   .rv-card {
-    display: inline-block;
-    vertical-align: -2px;
-    margin-right: 12px;
+    display: block;
+    margin-top: 2px;
     transform: rotate(-8deg);
-  }
-  .rv-no {
-    font-family: var(--f-stencil);
-    color: var(--claret-ink);
-  }
-  .rv-meta {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 8px 20px;
-    font-size: var(--t14);
   }
   .rv-by {
     display: inline-flex;
@@ -129,7 +117,7 @@
     margin-top: calc(-1 * var(--s2));
     padding: 10px 12px 12px;
     background: var(--mark-wash);
-    border-left: 6px solid var(--yellow);
+    border: 2px solid var(--ink);
     border-radius: var(--r);
     font: 600 var(--t14) / 1.35 var(--f-text);
   }
@@ -166,30 +154,21 @@
     font-size: var(--t16);
     line-height: 1.45;
   }
-  /* The requests for a human, beside the button: a yellow-card band in the
-     sign-off block, so a reviewer reads them where they sign. */
+  /* The requests for a human, under the buttons: the shared needs callout, its
+     list on the line under its head. */
   .signoff-asks-slot:empty {
     display: none;
   }
-  .signoff-asks {
-    display: grid;
-    gap: 6px;
-    padding: 10px 12px 12px;
-    background: var(--mark-wash);
-    border-left: 6px solid var(--yellow);
-    border-radius: var(--r);
-    font: 400 var(--t14) / 1.45 var(--f-text);
+  .callout.signoff-asks,
+  .callout.integrity-banner {
+    flex-wrap: wrap;
   }
-  .signoff-asks-h {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    margin: 0;
-    font-weight: 700;
-  }
-  .signoff-asks-list {
+  .signoff-asks-list,
+  .integrity-body {
+    flex: 1 1 100%;
     display: grid;
     gap: 4px;
+    padding-left: 26px;
   }
   /* One line under the button: what the click does next (Approve, and Fix these). */
   .signoff-next:not([hidden]),
@@ -200,6 +179,15 @@
   }
   .review-card-actions {
     align-items: center;
+  }
+  /* The three sign-off actions: part of the button row on a wide screen. */
+  .rv-actions {
+    display: contents;
+  }
+  /* The phone bar's own line: what stands between the reviewer and Approve. On a wide
+     screen the card's banners sit right above the buttons, so the line is not drawn. */
+  .rv-bar-note {
+    display: none;
   }
   .review-card-actions .btn.danger {
     margin-left: auto;
@@ -221,11 +209,10 @@
   .rv-done:focus {
     outline: none;
   }
-  /* Focus lands here after Approve so the next Tab is the next-in-review link;
-     the band says it with an ink bar down its edge, not a ring round a box. */
+  /* Focus lands here after Approve so the next Tab is the next-in-review link. */
   .rv-done:focus-visible {
-    outline: none;
-    box-shadow: inset 6px 0 0 var(--ink);
+    outline: 2px solid var(--focus);
+    outline-offset: -2px;
   }
   .rv-done-t {
     flex-basis: 100%;
@@ -265,45 +252,22 @@
       display: none;
     }
   }
-  .rv-h2 {
-    display: flex;
-    align-items: baseline;
-    gap: 10px;
-    font: 800 var(--t34) / 1 var(--f-display);
-    text-transform: uppercase;
-  }
-  .rv-h2 .panel-aux {
-    font-size: var(--t16);
-  }
   .flag-list {
     display: grid;
-    gap: var(--s3);
+    gap: var(--s2);
   }
-  .flag {
-    display: grid;
-    grid-template-columns: 30px minmax(0, 1fr);
-    gap: 12px;
-    padding: 14px 16px;
-    background: var(--paper);
-    border: var(--frame);
-    border-radius: var(--r);
-  }
-  .flag-card {
-    transform: rotate(-8deg);
-    margin-top: 2px;
-  }
+  /* A flag is the shared needs callout: its title in bold, what it means, then who
+     raised it on a line of its own. */
   .flag-title {
-    font: 800 var(--t26) / 1 var(--f-display);
-    text-transform: uppercase;
+    display: block;
   }
   .flag-text {
-    margin-top: 6px;
-    font-size: var(--t14);
-    line-height: 1.45;
+    display: block;
     overflow-wrap: anywhere;
   }
   .flag-src {
-    margin-top: 6px;
+    display: block;
+    margin-top: 4px;
     font: 500 var(--t13) / var(--lh-detail) var(--f-detail);
     color: var(--ink-2);
   }
@@ -311,9 +275,7 @@
     font-size: var(--t14);
     color: var(--ink-2);
   }
-  .rv-h3 {
-    font: 800 var(--t20) / 1.1 var(--f-display);
-    text-transform: uppercase;
+  .rv-checks > .ph-l3 {
     margin-top: var(--s2);
   }
   .ac-list {
@@ -321,7 +283,7 @@
   }
   .ac-row {
     display: grid;
-    grid-template-columns: 18px minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) auto;
     gap: 10px;
     align-items: baseline;
     padding: 8px 0;
@@ -331,13 +293,6 @@
   .ac-row:first-child {
     border-top: 0;
   }
-  .ac-row .glyph {
-    align-self: center;
-  }
-  .ac-satisfied .glyph {
-    color: var(--ok);
-  }
-  .ac-failed .glyph,
   .ac-failed .ac-state {
     color: var(--red);
   }
@@ -391,11 +346,6 @@
   }
   /* A row that asks for a human carries the same yellow edge as the band
      beside the button, so the two read as one thing. */
-  .review-evi.evi-asks {
-    box-shadow: inset 6px 0 0 var(--yellow);
-    margin-left: calc(-1 * var(--s4));
-    padding-left: var(--s4);
-  }
   .evi-time {
     font: 600 var(--t14) / var(--lh-detail) var(--f-detail);
     color: var(--ink-2);
@@ -443,7 +393,8 @@
     font-weight: 700;
   }
 
-  /* Definition-of-Done gates: mark · gate · repo · command · passed/failed. */
+  /* Definition-of-Done gates: verdict (mark and word) · gate · repo, the command or
+     note under them. */
   .review-dod {
     display: grid;
     gap: 6px;
@@ -453,7 +404,7 @@
   }
   .dod-item {
     display: grid;
-    grid-template-columns: 22px 96px minmax(0, max-content) minmax(0, 1fr) auto;
+    grid-template-columns: 6.5rem 96px minmax(0, max-content) minmax(0, 1fr);
     gap: 4px 10px;
     align-items: center;
     padding: 7px 0;
@@ -462,33 +413,6 @@
   }
   .dod-item:first-child {
     border-top: 0;
-  }
-  .dod-mark {
-    display: inline-grid;
-    place-items: center;
-    width: 20px;
-    height: 20px;
-    border-radius: var(--r-round);
-    font: 800 13px / 1 var(--f-text);
-    border: 2px solid currentColor;
-  }
-  .dod-mark.dod-pass {
-    color: var(--ok);
-  }
-  .dod-mark.dod-fail {
-    color: var(--red);
-  }
-  .dod-mark.dod-skip {
-    color: var(--ink-2);
-  }
-  /* Gate integrity: a FLAG is a yellow card, not a red one — it never fails a delivery. */
-  .dod-mark.dod-flag {
-    color: var(--on-yellow);
-    background: var(--yellow);
-    border-color: var(--ycard-edge);
-  }
-  .dod-w-flag {
-    color: var(--ink);
   }
   /* Two classes: the plain .dod-note (red, a failing gate's output) comes later in
      the sheet, and one class each let it paint a passing gate's note red. */
@@ -510,16 +434,8 @@
     min-width: 0;
     overflow-wrap: anywhere;
   }
-  .dod-word {
-    grid-column: 5;
-    grid-row: 1;
-    font: 700 var(--t12) / 1 var(--f-cond);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--ink-2);
-  }
-  .dod-w-fail {
-    color: var(--red);
+  .dod-cmd {
+    grid-column: 4;
   }
   .dod-note {
     grid-column: 2 / -1;
@@ -916,9 +832,24 @@
   .rc-body {
     white-space: pre-wrap;
   }
+  /* Must fix wears the needs treatment (the yellow card, the mark wash); the anchor
+     tag is a neutral info chip: a fact from git, nothing to act on (A-26). */
+  .badge.rc-sev-must {
+    gap: 5px;
+    background: var(--mark-wash);
+    color: var(--ink);
+  }
+  .badge.rc-anchor.info {
+    border-color: var(--rule-2);
+    color: var(--ink-2);
+  }
+  .rc-meta .agent {
+    vertical-align: middle;
+  }
   .rc-reply {
-    padding-left: 8px;
-    border-left: 3px solid var(--ink-2);
+    padding: 6px 8px;
+    border: 1px solid var(--rule);
+    border-radius: var(--r);
   }
   .rc-toolbar {
     margin-bottom: 8px;
@@ -986,14 +917,18 @@
   }
 
   /* --- the verdict strip: the runner's facts under the title ---------------
-     Gates · tester · cost · attempt · risk · pin, each a framed cell. A cell's
-     left edge says its verdict: ok green, bad red, warn yellow. */
+     One compact row (A-11): each cell a caps label, a verdictMark with one word,
+     and its detail behind a disclosure. A fixed column count: every cell in one
+     row on a wide screen, two even rows when narrower, pairs on a phone (an odd
+     last cell spans its row), so no cell is ever stranded. No side stripes
+     (A-41): the mark and the word say the verdict; a failed cell keeps its wash. */
   .rv-verdict {
     min-width: 0;
   }
   .vd-cells {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr));
+    grid-template-columns: repeat(var(--vd-n, 6), minmax(0, 1fr));
+    grid-auto-flow: row dense;
     gap: 0;
     border: var(--frame);
     background: var(--paper);
@@ -1001,25 +936,18 @@
   .vd-cell {
     display: grid;
     align-content: start;
-    gap: 6px;
+    gap: 4px;
     min-width: 0;
-    padding: 12px 14px;
+    padding: 10px 12px;
     border-right: var(--hair);
     border-bottom: var(--hair);
-    box-shadow: inset 6px 0 0 var(--rule);
-    padding-left: 20px;
   }
-  .vd-cell.vd-ok {
-    box-shadow: inset 6px 0 0 var(--ok);
+  /* An open cell's detail takes the whole row under the others. */
+  .vd-cell:has(> .vd-more[open]) {
+    grid-column: 1 / -1;
   }
   .vd-cell.vd-bad {
-    box-shadow: inset 6px 0 0 var(--red);
     background: var(--red-wash);
-  }
-  /* Worth a look, not a referee's card: the stripe is ink, not status yellow
-     (yellow is only for what needs you). */
-  .vd-cell.vd-warn {
-    box-shadow: inset 6px 0 0 var(--ink-2);
   }
   .vd-k {
     font: 700 var(--t12) / 1 var(--f-cond);
@@ -1028,15 +956,39 @@
     color: var(--ink-2);
   }
   .vd-v {
-    font: 800 var(--t26) / 1.05 var(--f-display);
+    display: flex;
+    align-items: center;
+    min-width: 0;
+    font: 700 var(--t16) / 1.2 var(--f-text);
     color: var(--ink);
+  }
+  .vd-v .vmark {
+    font-size: var(--t16);
+    white-space: normal;
+    min-width: 0;
+  }
+  .vd-v .vm-word {
     overflow-wrap: anywhere;
+    color: var(--ink);
   }
   .vd-v .badge {
-    font-size: var(--t14);
+    font-size: var(--t12);
   }
   .vd-v code {
-    font-size: var(--t20);
+    font-size: var(--t14);
+  }
+  .vd-norm:not([hidden]) {
+    font: 500 var(--t13) / 1.3 var(--f-text);
+    color: var(--ink-2);
+  }
+  .vd-more > summary {
+    width: max-content;
+    font: 600 var(--t13) / 1.4 var(--f-text);
+    color: var(--ink-2);
+    cursor: pointer;
+  }
+  .vd-more[open] > summary {
+    margin-bottom: 6px;
   }
   .vd-body {
     display: grid;
@@ -1055,7 +1007,7 @@
   }
   .vd-gate {
     display: grid;
-    grid-template-columns: 22px auto auto minmax(0, 1fr);
+    grid-template-columns: 6.5rem auto minmax(0, 1fr);
     gap: 2px 8px;
     align-items: center;
     padding: 3px 0;
@@ -1067,21 +1019,6 @@
     color: var(--ink-2);
     overflow-wrap: anywhere;
   }
-  .vd-word {
-    font: 700 var(--t12) / 1 var(--f-cond);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--ink-2);
-  }
-  .vd-w-pass {
-    color: var(--ok);
-  }
-  .vd-w-fail {
-    color: var(--red);
-  }
-  .vd-w-flag {
-    color: var(--ink);
-  }
   /* The command or note gets a line of its own under the gate: squeezed into the
      fourth column of a narrow cell it broke mid-word ("no comman / d configure / d"). */
   .vd-cmd,
@@ -1090,18 +1027,6 @@
     min-width: 0;
     color: var(--ink-2);
     overflow-wrap: break-word;
-  }
-  .vd-flag {
-    display: flex;
-    gap: 8px;
-    align-items: flex-start;
-    padding: 6px 8px;
-    background: var(--mark-wash);
-    color: var(--ink);
-    font-weight: 700;
-  }
-  .vd-flag .ycard {
-    flex: none;
   }
   .vd-rework li,
   .vd-reasons li,
@@ -1130,13 +1055,18 @@
     font-weight: 600;
   }
 
-  /* --- what was asked: the ticket's description, above the runner's facts --- */
+  /* --- what was asked: the ticket's description, a plain quote block (A-41) --- */
   .rv-intent {
     display: grid;
     gap: 4px;
     max-width: 80ch;
-    padding: 10px 14px;
-    border-left: 6px solid var(--rule);
+    margin: 0;
+  }
+  .rv-intent-q {
+    margin: 0;
+    padding: 8px 12px;
+    border: 1px solid var(--rule);
+    border-radius: var(--r);
     background: var(--paper);
   }
   .rv-intent-h {
@@ -1150,8 +1080,9 @@
     overflow-wrap: anywhere;
     color: var(--ink);
   }
+  /* Folded after three lines, so the decision stays on the first screen. */
   .rv-intent-t.is-folded {
-    max-height: 9.5em;
+    max-height: 4.5em;
     overflow: hidden;
   }
   .rv-intent-more {
@@ -1221,10 +1152,13 @@
   }
   .rv-backing-row {
     display: grid;
-    grid-template-columns: 22px minmax(0, 1fr) auto;
+    grid-template-columns: 7.5rem minmax(0, 1fr) auto;
     gap: 0 8px;
     align-items: baseline;
     padding: 3px 0;
+  }
+  .rv-backing-row > .vmark {
+    align-self: center;
   }
   .rv-backing-fact {
     overflow-wrap: anywhere;
@@ -1261,35 +1195,15 @@
     border-top: var(--hair);
     overflow-wrap: anywhere;
   }
-  .ac-ev td:first-child {
-    box-shadow: inset 6px 0 0 var(--rule);
-    padding-left: 14px;
-  }
-  .ac-ev-ok td:first-child {
-    box-shadow: inset 6px 0 0 var(--ok);
-  }
-  .ac-ev-bad td:first-child {
-    box-shadow: inset 6px 0 0 var(--red);
-  }
+  /* No side stripes (A-41): each row's evidence says its verdict with a mark and a
+     word; a failed check keeps the red wash. */
   .ac-ev-bad {
     background: var(--red-wash);
   }
-  /* No machine evidence: the row is a yellow card — washed, edged, said in words. */
-  .ac-ev-none {
-    background: var(--mark-wash);
-  }
-  .ac-ev-none td:first-child {
-    box-shadow: inset 6px 0 0 var(--yellow);
-  }
   .ac-ev-t {
     display: grid;
-    gap: 2px;
-  }
-  .ac-ev-t .ac-state {
-    font: 700 var(--t12) / 1 var(--f-cond);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--ink-2);
+    gap: 4px;
+    justify-items: start;
   }
   .ac-ev-cmd {
     width: 28%;
@@ -1305,8 +1219,7 @@
     gap: 8px;
     align-items: flex-start;
   }
-  .ac-ev-in > svg,
-  .ac-ev-in > .dod-mark {
+  .ac-ev-in > .vmark {
     flex: none;
   }
   .ac-ev-word {
@@ -1334,26 +1247,10 @@
     }
     .rv-ac-table tr {
       border-top: var(--hair);
-      box-shadow: inset 6px 0 0 var(--rule);
-      padding-left: 6px;
     }
-    .rv-ac-table tr.ac-ev-ok {
-      box-shadow: inset 6px 0 0 var(--ok);
-    }
-    .rv-ac-table tr.ac-ev-bad {
-      box-shadow: inset 6px 0 0 var(--red);
-    }
-    .rv-ac-table tr.ac-ev-none {
-      box-shadow: inset 6px 0 0 var(--yellow);
-    }
-    .rv-ac-table td,
-    .ac-ev td:first-child {
+    .rv-ac-table td {
       border-top: 0;
-      box-shadow: none;
       padding: 4px 8px;
-    }
-    .vd-v {
-      font-size: var(--t20);
     }
   }
 
@@ -1367,6 +1264,10 @@
        focus order follow), so the code is not a long scroll away on a phone. */
     .rv-grid {
       grid-template-columns: minmax(0, 1fr);
+    }
+    /* The strip in two even rows. */
+    .vd-cells {
+      grid-template-columns: repeat(var(--vd-half, 3), minmax(0, 1fr));
     }
     .rv-right:empty {
       display: none;
@@ -1400,11 +1301,11 @@
   .rv-res:first-child {
     border-top: 0;
   }
+  /* The one you signed: a wash and its "you signed it" words, no side stripe. */
   .rv-res.is-yours {
     margin: 0 calc(-1 * var(--s4));
     padding-inline: var(--s4);
     background: var(--sky-wash);
-    box-shadow: inset 6px 0 0 var(--sky);
   }
   .rv-res-no {
     grid-area: no;
@@ -1452,13 +1353,16 @@
     .rv-res-no {
       font-size: var(--t20);
     }
-    .rv-title {
-      font-size: var(--t34);
-    }
     .rv-card {
-      width: 22px;
-      height: 30px;
-      margin-right: 8px;
+      width: 20px;
+      height: 28px;
+    }
+    /* The strip in pairs; an odd last cell takes its row (never stranded half-empty). */
+    .vd-cells {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .vd-cell:last-child:nth-child(odd) {
+      grid-column: 1 / -1;
     }
     /* On a phone two changes split the strip, each named up to its ellipsis (the
        comp). With three or more only the open change keeps its title; the rest
@@ -1481,11 +1385,77 @@
     .rv-keys {
       display: none;
     }
-    .review-card-actions .btn.primary {
-      flex: 1 1 100%;
+    /* The sticky sign-off bar (A-51): Approve, Fix these and Send back fixed above
+       the tab bar while the page scrolls under it. The page keeps room for it. */
+    .view-review:has(.rv-actions) {
+      padding-bottom: max(150px, calc(var(--rv-bar-h, 150px) + 24px));
     }
-    .review-card-actions .btn:not(.primary) {
-      flex: 1;
+    .rv-actions {
+      position: fixed;
+      z-index: 44;
+      left: 0;
+      right: 0;
+      bottom: calc(60px + env(safe-area-inset-bottom));
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      padding: 8px 16px;
+      background: var(--paper);
+      border-top: var(--frame);
+      box-shadow: 0 -4px 12px rgb(0 0 0 / 0.12);
+    }
+    body:has(#bottomnav[hidden]) .rv-actions {
+      bottom: env(safe-area-inset-bottom);
+    }
+    /* What the card says before Approve (the asks, the tests changed, the moved head,
+       why Approve is off), in the bar itself, so it is on screen when Approve is. */
+    .rv-actions > .rv-bar-note:not([hidden]) {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 44px;
+      margin: 0;
+      padding: 4px 4px 4px 10px;
+      border: 1px solid var(--rule-2);
+      border-radius: var(--r);
+      background: var(--paper-2);
+      color: var(--ink);
+      font: 600 var(--t14) / 1.3 var(--f-text);
+    }
+    .rv-actions > .rv-bar-note.is-needs {
+      border-color: var(--ink);
+      background: var(--mark-wash);
+    }
+    .rv-bar-t {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+    .rv-bar-go {
+      flex: none;
+      min-height: 36px;
+      padding: 0 10px;
+      border: 0;
+      background: none;
+      color: var(--ink);
+      font: inherit;
+      text-decoration: underline;
+      cursor: pointer;
+    }
+    /* A toast rides above the bar, never over Approve. */
+    body:has(.view-review .rv-actions) .toast {
+      bottom: calc(var(--rv-bar-h, 130px) + 76px + env(safe-area-inset-bottom));
+    }
+    .rv-actions .btn {
+      min-width: 0;
+      min-height: 44px;
+    }
+    .rv-actions .btn.primary {
+      grid-column: 1 / -1;
+    }
+    .rv-actions .btn.primary.big {
+      padding-block: 8px;
+      font-size: var(--t20);
     }
     .review-card-actions .btn.danger {
       margin-left: 0;
@@ -1501,13 +1471,14 @@
       gap: 8px;
     }
     .dod-item {
-      grid-template-columns: 22px minmax(0, 1fr) auto;
+      grid-template-columns: 6.5rem minmax(0, 1fr);
     }
     .dod-repo {
       display: none;
     }
-    .dod-word {
-      grid-column: 3;
+    .dod-flaky {
+      grid-column: 2;
+      grid-row: auto;
     }
     .dod-cmd,
     .dod-note {

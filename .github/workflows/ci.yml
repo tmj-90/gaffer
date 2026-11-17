@@ -22,7 +22,11 @@ concurrency:
 #             macOS package tests run inside `runner` shard 1 (see the note there).
 #   runner    runner/test/run.sh — the CPU-bound bulk (~50 CPU-minutes on a 3-core
 #             macOS runner) — split into shards per os × node, so no one job carries
-#             the whole suite.
+#             the whole suite: ubuntu node 22 on every push.
+#   runner-macos  the macOS node 22 shards, on a push or pull request only when
+#             `changes` finds a path that can behave differently on macOS; the
+#             other runner cells run in nightly.yml.
+#   ci-result the one always-running job a branch rule can require.
 #   ui-regression, sandbox-containment, sandbox-delivery: their own jobs.
 #   ui-scenarios  the browser scenario suites (run-suites.sh), sharded by suite group.
 jobs:
@@ -205,8 +209,9 @@ jobs:
   # The package test suites (Vitest) on the os × node cells `checks` does not cover
   # (it is ubuntu/22). The two macOS cells are deliberately NOT in this matrix:
   # GitHub's free/pro plans run at most 5 macOS jobs at once, so every macOS job is
-  # a `runner` shard. Shard 1 of macOS node 22 (every push) and of macOS node 24
-  # (nightly.yml), which build anyway, run `pnpm -r test` instead; see `runner` below.
+  # a `runner` shard. Shard 1 of macOS node 22 (`runner-macos`, and nightly) and of
+  # macOS node 24 (nightly.yml), which build anyway, run `pnpm -r test` instead; see
+  # `runner` below.
   packages:
     name: packages / ${{ matrix.os }} / node ${{ matrix.node }}
     runs-on: ${{ matrix.os }}
@@ -261,44 +266,70 @@ jobs:
           bash .github/scripts/operator-state-guard.test.sh
           bash .github/scripts/operator-state-guard.sh
 
+  # Does this push or pull request need the macOS runner shards? Only when it changes a
+  # path that can behave differently on macOS (runner/**, scripts/**, .github/**, the
+  # package manifests, the lockfile, the Node pin): .github/scripts/macos-relevant.sh
+  # holds the rule and diffs the push's `before` commit (a pull request: its base) against
+  # this commit. Anything it cannot decide (a new branch, a force push, a failed diff)
+  # answers true. The full history comes without file contents (blob:none): a name-only
+  # diff reads trees, never blobs.
+  changes:
+    name: changes (macOS runner shards needed?)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      macos: ${{ steps.rule.outputs.macos }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          filter: blob:none
+
+      - name: Paths that can behave differently on macOS
+        id: rule
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          macos="$(bash .github/scripts/macos-relevant.sh --event "$EVENT" --base "$BASE")"
+          echo "macos=$macos" >> "$GITHUB_OUTPUT"
+          echo "macOS runner shards on this run: $macos (otherwise nightly.yml runs them)" >> "$GITHUB_STEP_SUMMARY"
+
   # Every runner test (runner/test/*.test.sh + *.test.mjs) through the shared
-  # harness, runner/test/run.sh — the same command contributors run locally
-  # (`pnpm test:runner`) — split into shards: GAFFER_RUN_SHARD=K/N runs shard K of
-  # N, and the N shards of one os × node partition the test files exactly (no file
+  # harness, runner/test/run.sh (the same command contributors run locally,
+  # `pnpm test:runner`), split into shards: GAFFER_RUN_SHARD=K/N runs shard K of
+  # N, and the N shards of one os x node partition the test files exactly (no file
   # in two, none in neither), balanced by the observed durations in
   # runner/test/lib/shard-weights.tsv. The steps are in runner-shard.yml, which
   # nightly.yml calls too. The suite is CPU-bound, so more runners is the only real
   # wall-clock cut; the 3-core macOS runners run at -j 3, the 4-core ubuntu ones at -j 4.
   #
   # Which cells run when:
-  #   every push / PR  ubuntu node 22: 3 shards   ubuntu node 24: 3 shards
-  #                    macOS  node 22: 3 shards
-  #   nightly          macOS  node 24: 3 shards (nightly.yml, also on workflow_dispatch)
+  #   every push / PR   ubuntu node 22: 3 shards (`runner`)
+  #                     macOS  node 22: 4 shards (`runner-macos`), only when `changes`
+  #                     says the push touches a path that can behave differently on macOS
+  #   nightly           ubuntu node 24: 3 shards, macOS node 22: 4 shards, macOS node 24:
+  #                     3 shards (nightly.yml, also on workflow_dispatch: the way to run
+  #                     the full matrix by hand)
   #
-  # Why macOS node 24 is nightly: on run 41338925244 (cdff24e) the whole run took
-  # 26.4 min of wall clock, and 755 s of that was the sixth macOS shard queued behind
-  # GitHub's free/pro limit of 5 concurrent macOS jobs before it could start. One run
-  # is 25,234 test-seconds across the four cells (macOS n22 6124, macOS n24 6417,
-  # ubuntu n22 6427, ubuntu n24 6266). With three macOS jobs per push nothing queues.
-  # Expected from that run's per-test times, the cheaper tests since (delivery-
-  # lifecycle, merge-typecheck, direct-run-isolation, the batched ticket setups) and
-  # the shard split below: each macOS node 22 job about 13 min (shard 1: 238 s of
-  # package tests, 46 s of e2e and ~465 s of runner tests; shards 2 and 3 ~740-755 s
-  # of runner tests), each ubuntu job about 9 min, so about 13 min of wall clock per
-  # push instead of 26.4. The node 24 x macOS cell still runs every night
-  # with the same strictness and the same evidence upload, so a regression only it
-  # catches is at most a day old.
+  # Why: one push used about 118 Linux and 60 macOS machine-minutes, and macOS minutes
+  # bill at ten times Linux on a private repository. The runner tests on node 24 differ
+  # from node 22 in almost nothing the package tests on node 24 (the `packages` job,
+  # still on every push) would not catch first, and most macOS-only failures so far were
+  # in the runner's bash (bash 3.2, BSD tools, sandbox-exec, the Keychain). A regression
+  # only a nightly cell catches is at most a day old; a failed night is a red run on the
+  # Actions tab and on the Nightly badge.
   #
   # The macOS package tests are folded into shard 1 of each macOS node version
-  # (`packages: true`) rather than being `packages` jobs of their own. That shard
-  # starts with a head start in the split (`head_start`, weight-seconds, passed to
-  # shard.mjs as GAFFER_RUN_SHARD1_HEAD_START and identical for every shard of a
-  # cell, so the partition stays exact): about the package tests' and e2e's wall
-  # time × the runner's -j, then tuned on the run's per-test times (macOS node 22:
-  # 800 left shard 1 ~60 s longer than the others, 1100 evens them to within ~15 s;
-  # shard.mjs caps it at half a shard's mean load). A cell without the package
-  # tests gets 0. macOS runs four shards (its heaviest shard reached 20 of the job's 25
-  # minutes on three). macOS node 22 shard 1 also
+  # (`packages: true`) rather than being `packages` jobs of their own (GitHub runs at
+  # most 5 macOS jobs at once). That shard starts with a head start in the split
+  # (`head_start`, weight-seconds, passed to shard.mjs as GAFFER_RUN_SHARD1_HEAD_START
+  # and identical for every shard of a cell, so the partition stays exact): about the
+  # package tests' and e2e's wall time x the runner's -j, then tuned on the run's
+  # per-test times. A cell without the package tests gets 0. macOS node 22 shard 1 also
   # runs the OS-sensitive maintenance-lane e2e and gate replay (`e2e: true`) so they
   # keep macOS coverage; on ubuntu they run in `checks`.
   runner:
@@ -310,9 +341,24 @@ jobs:
           - { os: ubuntu-latest, node: "22", shard: 1, shards: 3, head_start: 0 }
           - { os: ubuntu-latest, node: "22", shard: 2, shards: 3, head_start: 0 }
           - { os: ubuntu-latest, node: "22", shard: 3, shards: 3, head_start: 0 }
-          - { os: ubuntu-latest, node: "24", shard: 1, shards: 3, head_start: 0 }
-          - { os: ubuntu-latest, node: "24", shard: 2, shards: 3, head_start: 0 }
-          - { os: ubuntu-latest, node: "24", shard: 3, shards: 3, head_start: 0 }
+    uses: ./.github/workflows/runner-shard.yml
+    with:
+      os: ${{ matrix.os }}
+      node: ${{ matrix.node }}
+      shard: ${{ matrix.shard }}
+      shards: ${{ matrix.shards }}
+      head_start: ${{ matrix.head_start }}
+      packages: ${{ matrix.packages == true }}
+      e2e: ${{ matrix.e2e == true }}
+
+  runner-macos:
+    name: runner / ${{ matrix.os }} / node ${{ matrix.node }} / ${{ matrix.shard }} of ${{ matrix.shards }}
+    needs: changes
+    if: ${{ needs.changes.outputs.macos == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
           # One row per line: runner/test/ci-matrix.test.sh reads them so.
           # prettier-ignore
           - { os: macos-latest, node: "22", shard: 1, shards: 4, head_start: 1100, packages: true, e2e: true }
@@ -403,7 +449,7 @@ jobs:
           # greenfield root, merges that rewrite main) — run-suites.sh builds one world
           # per suite.
           - name: own-server
-            suites: s4b-pr-mode s12b-idle-lanes s7b-greenfield s17-conflict s20-ticket-landing
+            suites: s4b-pr-mode s12b-idle-lanes s7b-greenfield s17-conflict s20-ticket-landing s24-autonomy-ladder
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -515,3 +561,38 @@ jobs:
           path: ${{ runner.temp }}/gaffer-test-artifacts
           if-no-files-found: ignore
           retention-days: 14
+
+  # The one result to require in a branch rule: passes when every job above passed, or
+  # was skipped by the rule that may skip it (runner-macos, when `changes` found no
+  # macOS-relevant path). It always runs, so a skipped job never leaves a required check
+  # waiting (.github/scripts/ci-result.sh).
+  ci-result:
+    name: CI result
+    if: ${{ always() }}
+    needs:
+      [
+        changes,
+        checks,
+        packages,
+        runner,
+        runner-macos,
+        ui-regression,
+        ui-scenarios,
+        sandbox-containment,
+        sandbox-delivery,
+      ]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Every job passed or was skipped by its rule
+        shell: bash
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          MACOS: ${{ needs.changes.outputs.macos }}
+        run: bash .github/scripts/ci-result.sh

@@ -49,6 +49,7 @@ import { buildRunDetail } from "../runDetail.js";
 import { RUN_LOG_TAIL_BYTES, readLogTail } from "../static.js";
 import { activityQuery, runsQuery } from "../schemas.js";
 import { requestTicketFilter } from "../scopeGate.js";
+import { apiPrincipal } from "./context.js";
 
 /**
  * Lore drafts awaiting approval, for the human queue's one Memory row. Memory is a
@@ -482,6 +483,11 @@ export function routeReadModels(
       ? Math.min(WINDOW_MAX, Math.max(WINDOW_MIN, rawWindow))
       : null;
     const windowDays = askedWindow ?? 30;
+    // `?view=summary`: the Overview's read. It shows the ledger figures, the event log
+    // and the accepted-change price only, so the review measures, the routing scorecard,
+    // the scout and lane reads and the Memory and skills reads (each a CLI or file
+    // read) are left out; those fields are absent, never zero.
+    const summaryView = url.searchParams.get("view") === "summary";
     const govRows = wg.db
       .prepare(
         `SELECT entity_id                              AS ticket_id,
@@ -558,6 +564,36 @@ export function routeReadModels(
     // verdict counts, and the escaped-defect rate from the regression links a person filed
     // (accepted changes in the same window as governance). Each carries its window, the
     // equal window before and a weekly (escaped defects: monthly) history.
+    if (summaryView) {
+      sendJson(res, 200, {
+        view: "summary",
+        event_log: eventLogIntegrity(wg),
+        usage_pause: readUsagePause(process.env, nowMs),
+        total_usd: health.total_usd,
+        estimated_usd: health.estimated_usd,
+        ticket_count: health.ticket_count,
+        shipped_count: health.shipped_count,
+        cost_per_shipped_usd: health.cost_per_shipped_usd,
+        accepted_change: acceptedChange,
+        coverage: health.coverage,
+        by_kind: health.by_kind.slice(0, TOP_N),
+        by_model: health.by_model.slice(0, TOP_N),
+        daily_spend: health.daily_spend,
+        rework: {
+          total_rework_cost_usd: health.rework.total_rework_cost_usd,
+          rework_cost_share_pct: health.rework.rework_cost_share_pct,
+          by_ticket: health.rework.by_ticket.slice(0, TOP_N),
+        },
+        duration: health.duration,
+        cycle_time: flow.cycle_time,
+        throughput: flow.throughput,
+        flow_efficiency: flow.flow_efficiency,
+        waiting: flow.waiting,
+        governance,
+        last_record_at: health.last_record_at,
+      });
+      return;
+    }
     const reviewMeasures = readReviewMeasures(wg.db, {
       nowMs,
       ...(askedWindow !== null ? { windowDays: askedWindow } : {}),
@@ -705,6 +741,22 @@ export function routeReadModels(
   if (segments.length === 3 && segments[1] === "autonomy" && segments[2] === "recommendations") {
     if (method !== "GET") return methodNotAllowed(res);
     sendJson(res, 200, { recommendations: wg.autonomyRecommendationsList() });
+    return;
+  }
+
+  // THE AUTONOMY LADDER: GET /api/autonomy/ladder[?repo=], every repo x risk x gate with
+  // its rung, the evidence, the distance to the next rung and any step-down in force. A
+  // scoped principal reads only the repos in its repo scope (scopeGate lets the read
+  // through; the facade filters).
+  if (segments.length === 3 && segments[1] === "autonomy" && segments[2] === "ladder") {
+    if (method !== "GET") return methodNotAllowed(res);
+    // `?recent=1`: the Overview line's narrow read (the recent step-downs alone).
+    if (url.searchParams.get("recent") === "1") {
+      sendJson(res, 200, wg.autonomyRecentStepDowns(apiPrincipal()));
+      return;
+    }
+    const repo = url.searchParams.get("repo");
+    sendJson(res, 200, wg.autonomyLadder(apiPrincipal(), repo ?? undefined));
     return;
   }
 

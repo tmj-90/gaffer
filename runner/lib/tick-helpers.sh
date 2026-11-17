@@ -70,3 +70,22 @@ gaffer_abort_setup() {
   result setup_error
   exit 1
 }
+# BRANCH LEDGER (lib/backpressure.sh): note that this tick cut, or kept for a later
+# attempt, the ticket branch in each write repo where it exists. The abandoned-branch
+# sweep only ever touches a branch with a "cut" row for this ticket's id and no
+# "preserved" row. Best effort: a row not written only means the branch is kept.
+#   gaffer_tick_branch_ledger <cut|preserved> [repo-path]
+gaffer_tick_branch_ledger() {
+  local kind="$1" only="${2:-}" tid _rid _rname _rpath _rdef
+  declare -F gaffer_branch_ledger_note >/dev/null 2>&1 || return 0
+  [ -n "${NUM:-}" ] && [ -n "${WORK_BRANCH:-}" ] || return 0
+  tid="$(printf '%s' "${SHOW:-}" | jget 'd.ticket && typeof d.ticket.id === "string" ? d.ticket.id : ""' 2>/dev/null)"
+  [ -n "$tid" ] || return 0
+  while IFS=$'\t' read -r _rid _rname _rpath _rdef; do
+    [ -n "$_rpath" ] || continue
+    [ -z "$only" ] || [ "$_rpath" = "$only" ] || continue
+    git -C "$_rpath" rev-parse --verify --quiet "refs/heads/$WORK_BRANCH" >/dev/null 2>&1 || continue
+    gaffer_branch_ledger_note "$kind" "$tid" "$NUM" "$_rpath" "$WORK_BRANCH"
+  done <<< "${WRITE_ROWS:-}"
+  return 0
+}

@@ -119,11 +119,11 @@ ANN8="$(cd "$ROOT/packages/dispatch" && node --input-type=module -e '
 [[ "$ANN8" == "high|"*"added package-manager config .npmrc"* ]] && ok "8: dispatch's diff carries test-modified (high) naming .npmrc" \
   || { fail "8: test-modified annotation: $ANN8 (status $(st "$T8"))"; dod_explain "$T8"; }
 if [ "$(st "$T8")" = "in_review" ]; then
-  review_tick >/dev/null
+  RT8="$(review_tick)"
   [ "$(st "$T8")" = "in_review" ] && ok "8: the agent reviewer's approve was HELD — still in_review" \
     || fail "8: status after the agent review: $(st "$T8")"
   [[ "$(ticket_events "$T8")" == *"ticket.autoship_escalated"* ]] && ok "8: an autoship_escalated event records the hold" \
-    || fail "8: events lack the hold"
+    || { fail "8: events lack the hold"; hold_explain "$T8" "$RT8"; }
 else
   ok "8: the delivery did not reach review (status $(st "$T8")), so nothing could ship"
 fi

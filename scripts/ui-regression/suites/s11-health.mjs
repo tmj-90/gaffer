@@ -1,79 +1,108 @@
 // S11 health, from what a live factory leaves behind (no tampered log: the BROKEN
 // event-log chain needs a rewritten row and is left to its unit tests). After one
-// delivery and one parked ticket: the Event log card reads intact with the server's
-// event count; the four measures card shows the server's first-pass and review-time
-// figures and the escaped-defect rate as the server counted it (only what a person
-// filed); the lane card lists every judging lane from lane_value; a ticket page carries the
+// delivery and one parked ticket: the event log line reads intact with the server's
+// event count; the scoreboard's four measure tiles show the server's first-pass figure
+// and the escaped-defect rate as the server counted it (only what a person filed); the
+// lane table lists every judging lane from lane_value; a ticket page carries the
 // Escaped defects card, and filing a link there (when an
 // accepted change exists) moves Health's count; the treatment list names the
 // blocked ticket with a link to it; a finished run's log opens in a sheet with the
 // tick's own output.
 export default async function s11(t, L) {
   const p = t.page;
-  await L.putSettings({ GAFFER_MAX_DELIVERY_ATTEMPTS: "1" });
+  // seed: Effort small (two attempts; GAFFER_EFFORT decides the attempt cap) and a
+  // delivery that fails every one of them, so it parks.
+  await L.putSettings({ GAFFER_EFFORT: "small" });
   const parked = await L.seedTicket(t, {
     title: `Injured ticket (${L.tag("s11")})`,
     acs: ["covered by a test"],
     ready: true,
   });
-  L.setStubMode(parked.number, "fail_first");
+  L.setStubMode(parked.number, "fail_always");
   await t.visit("work");
   await t.poll();
   await L.waitStatus(parked.id, L.SETTLED, 240000);
-  await L.putSettings({ GAFFER_MAX_DELIVERY_ATTEMPTS: "" });
+  await L.putSettings({ GAFFER_EFFORT: "" });
   if ((await L.ticketOf(parked.id)).status !== "blocked")
     t.bad(`seed: #${parked.number} did not park (${(await L.ticketOf(parked.id)).status})`);
 
-  const health = (await L.api("GET", "/api/health")).json;
+  // The page reads its measures over the window the Referee's record shows (30 days).
+  const health = (await L.api("GET", "/api/health?window_days=30")).json;
   await t.visit("health");
+  // Wait for the board's tiles (a hash visit can pass its own check on the old page).
+  await p
+    .waitForSelector(".physio-board .measure-strip > .measure-tile", { timeout: 15000 })
+    .catch(() => null);
   const view = (await p.textContent(".view").catch(() => "")) || "";
   const ev = health.event_log || health.eventLog;
   t.check(
     ev && ev.chain_ok && view.includes("intact") && view.includes(`${ev.events} events chained`),
-    `Health's Event log card reads intact with the server's count (${ev && ev.events} events chained)`,
-    `event log card: api=${JSON.stringify(ev)} page has intact=${view.includes("intact")}`,
+    `Health's event log line reads intact with the server's count (${ev && ev.events} events chained)`,
+    `event log line: api=${JSON.stringify(ev)} page has intact=${view.includes("intact")}`,
   );
-  // The four top-level measures, read from the same /api/health payload: first-pass
-  // acceptance and the median review time as the server computed them (a dash when
-  // nothing is accepted yet), the escaped-defect rate as the server served it, with the
-  // sentence that it counts only what a person filed.
-  const measures = (await p.textContent('[aria-label="The four measures"]').catch(() => "")) || "";
+  // The four top-level measures are the scoreboard's tiles (V1), read from the same
+  // payload: each tile's figure as the server computed it, in the one percent format
+  // (pct: whole at 10 and up, one decimal below) or a dash when nothing is accepted yet;
+  // the escaped-defect rate as the server served it, with its definition saying it
+  // counts only what a person filed. The four tiles are the first thing in the strip.
+  const pct = (v) =>
+    typeof v !== "number"
+      ? "\u2014"
+      : v >= 99.5 && v < 100
+        ? ">99%"
+        : Math.abs(v) >= 10
+          ? `${Math.round(v)}%`
+          : `${Number(v.toFixed(1))}%`;
+  const tiles = await p
+    .$$eval(".physio-board .measure-strip > .measure-tile", (els) =>
+      els.map((e) => ({
+        label: e.getAttribute("aria-label"),
+        value: e.querySelector(".mt-val")?.textContent || "",
+        text: e.textContent || "",
+      })),
+    )
+    .catch(() => []);
+  const tile = (label) => tiles.find((x) => x.label === label) || { value: "", text: "" };
   const fp = health.first_pass;
-  const fpShown = fp && typeof fp.rate_pct === "number" ? `${fp.rate_pct}%` : "—";
+  const fpShown = fp && fp.done ? pct((fp.first_pass / fp.done) * 100) : "\u2014";
   const esc = health.escaped_defects;
-  const escShown = esc && typeof esc.rate_pct === "number" ? `${esc.rate_pct}%` : "—";
+  const escShown =
+    esc && esc.accepted_changes ? pct((esc.escaped / esc.accepted_changes) * 100) : "\u2014";
   t.check(
     fp &&
       health.review_time &&
-      measures.includes("First-pass acceptance") &&
-      measures.includes(fpShown) &&
-      measures.includes("Human review time") &&
-      measures.includes("Accepted-change cost") &&
-      health.escaped_defects &&
-      health.escaped_defects.recorded === true &&
-      new RegExp(`Escaped-defect rate\\s*${escShown.replace("%", "\\%")}`).test(measures) &&
-      measures.includes("Counts only what a person filed"),
-    `Health shows the four measures (first-pass ${fpShown} over ${fp && fp.done} done, review time basis ${health.review_time && health.review_time.basis}, escaped defects ${escShown} of ${health.escaped_defects && health.escaped_defects.accepted_changes} accepted)`,
-    `four measures card: api first_pass=${JSON.stringify(fp)} page='${measures.slice(0, 300)}'`,
+      tiles.map((x) => x.label).join("|") ===
+        "First-pass acceptance|Human review time|Accepted-change cost|Escaped-defect rate" &&
+      tile("First-pass acceptance").value === fpShown &&
+      esc &&
+      esc.recorded === true &&
+      tile("Escaped-defect rate").value === escShown &&
+      tile("Escaped-defect rate").text.includes("Counts only what a person filed"),
+    `Health's scoreboard is the four measures (first-pass ${fpShown} over ${fp && fp.done} done, review time basis ${health.review_time && health.review_time.basis}, escaped defects ${escShown} of ${esc && esc.accepted_changes} accepted)`,
+    `four measures strip: api first_pass=${JSON.stringify(fp)} tiles=${JSON.stringify(tiles.map((x) => [x.label, x.value]))}`,
   );
-  // What each lane changed (D1): one line per lane from the same payload, "no verdicts
-  // recorded" where a lane has none, and the footnote that recommends nothing.
+  // What each lane changed (D1): a table row per lane with verdicts (its verdict count
+  // in the Verdicts cell), the lanes with none on one "No verdicts recorded" line, and
+  // the footnote that recommends nothing.
   const laneCard =
     (await p.textContent('[aria-label="What each lane changed"]').catch(() => "")) || "";
+  const laneRows = await p
+    .$$eval('[aria-label="What each lane changed"] tbody tr', (trs) =>
+      trs.map((tr) => [...tr.children].map((c) => (c.textContent || "").trim())),
+    )
+    .catch(() => []);
   const lv = health.lane_value;
   t.check(
     lv &&
       Array.isArray(lv.lanes) &&
-      lv.lanes.every(
-        (l) =>
-          laneCard.includes(l.label) &&
-          (l.note
-            ? laneCard.includes(l.note)
-            : laneCard.includes(`${l.verdicts_recorded} verdict`)),
+      lv.lanes.every((l) =>
+        l.note
+          ? /No verdicts recorded:/.test(laneCard) && laneCard.includes(l.label)
+          : laneRows.some((r) => r[0].startsWith(l.label) && r[1] === String(l.verdicts_recorded)),
       ) &&
       laneCard.includes("never switched off by telemetry"),
     `Health shows what each lane changed (${lv && lv.attempts} attempts; ${lv && lv.lanes.filter((l) => !l.note).length} lanes with verdicts)`,
-    `lane card: api=${JSON.stringify(lv && lv.lanes.map((l) => [l.lane, l.verdicts_recorded]))} page='${laneCard.slice(0, 300)}'`,
+    `lane card: api=${JSON.stringify(lv && lv.lanes.map((l) => [l.lane, l.verdicts_recorded]))} rows=${JSON.stringify(laneRows)} page='${laneCard.slice(0, 300)}'`,
   );
 
   // ── escaped defects: the ticket page's link control (MF5) ─────────────────

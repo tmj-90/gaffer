@@ -1,8 +1,10 @@
 import type { Command } from "commander";
 
 import { AUTONOMY_MODES } from "../../repositories/autonomyPolicyRepository.js";
+import type { AutonomyLadder } from "../../services/autonomyLadderService.js";
 import { DispatchError } from "../../util/errors.js";
-import { printJson } from "../helpers.js";
+import { RISK_LEVELS, type RiskLevel } from "../../domain/types.js";
+import { cliActor, cliPrincipal, printJson } from "../helpers.js";
 import { open } from "../runtime.js";
 
 /**
@@ -19,11 +21,179 @@ import { open } from "../runtime.js";
  *    when `auto` rows exist but REVIEW_MODE=human: in supervised mode no reviewer
  *    agent runs, so no policy is ever consulted and the grants are inert.
  *
- * No mutation; enable/disable stays on the REST surface behind its explicit-confirm
- * boundary.
+ * Enable/disable stays on the REST surface behind its explicit-confirm boundary. The one
+ * write here is `autonomy lift` (a person gives autonomy back after a step-down).
  */
 export function registerAutonomy(program: Command): void {
-  const autonomy = program.command("autonomy").description("Graduated-autonomy policy (read-only)");
+  const autonomy = program
+    .command("autonomy")
+    .description("Graduated-autonomy policy and the autonomy ladder");
+
+  autonomy
+    .command("ladder")
+    .description(
+      "The autonomy ladder: for every repo x risk x gate (approve, merge) the rung " +
+        "(person / suggested / automatic), the evidence behind it, the distance to the next " +
+        "rung and any step-down in force. A scoped principal sees only its repos. No mutation.",
+    )
+    .option("--repo <repo>", "one repository (id or name)")
+    .option("--json", "print the read model as JSON")
+    .action((opts, cmd) => {
+      const wg = open(cmd.optsWithGlobals());
+      try {
+        const ladder = wg.autonomyLadder(cliPrincipal(), opts.repo as string | undefined);
+        if (opts.json) printJson({ ok: true, ...ladder });
+        else process.stdout.write(renderLadder(ladder));
+      } finally {
+        wg.db.close();
+      }
+    });
+
+  autonomy
+    .command("lift <repo>")
+    .description(
+      "Give autonomy back for one repo x risk x gate after a step-down. A person's act " +
+        "(the operator, or an admin principal with full capability; never --as agent or " +
+        "system, and the safety hook keeps it from agent shells). Without --override the " +
+        "evidence since the step-down must clear the bar again.",
+    )
+    .requiredOption("--risk <risk>", "low | medium | high | critical")
+    .requiredOption("--gate <gate>", "approve | merge")
+    .option("--override", "give it back before the evidence clears the bar (needs --reason)")
+    .option("--reason <text>", "why (required with --override)")
+    .action((repo, opts, cmd) => {
+      const risk = String(opts.risk);
+      const gate = String(opts.gate);
+      if (!(RISK_LEVELS as readonly string[]).includes(risk)) {
+        throw new DispatchError(
+          "VALIDATION_ERROR",
+          `--risk must be one of ${RISK_LEVELS.join(", ")}.`,
+        );
+      }
+      if (gate !== "approve" && gate !== "merge") {
+        throw new DispatchError("VALIDATION_ERROR", "--gate must be approve or merge.");
+      }
+      const wg = open(cmd.optsWithGlobals());
+      try {
+        const lifted = wg.liftAutonomyStepDown(
+          {
+            repo: String(repo),
+            riskLevel: risk as RiskLevel,
+            gate,
+            how: opts.override ? "override" : "reenable",
+            reason: opts.reason ? String(opts.reason) : null,
+          },
+          cliActor(),
+          { principal: cliPrincipal() },
+        );
+        printJson({ ok: true, event_id: lifted.eventId, how: lifted.how });
+      } finally {
+        wg.db.close();
+      }
+    });
+
+  // SEALED AUTONOMY: what is not signed, and a PERSON's re-sign. The re-sign verbs are on
+  // the safety hook's control-plane deny list (an agent's shell never reaches them), MCP
+  // has no such tool, and the service refuses an agent, the runner, and any principal that
+  // is not an active, unscoped admin with full capability.
+  autonomy
+    .command("unsigned")
+    .description(
+      "List the autonomy policy rows this factory does not honour (written before signing, " +
+        "restored from a backup, or written outside the factory): each one is off until a " +
+        "person reviews it and re-signs it (`autonomy resign`). No mutation.",
+    )
+    .action((_opts, cmd) => {
+      const wg = open(cmd.optsWithGlobals());
+      try {
+        const review = wg.reviewUnsignedAutonomyPolicies();
+        if (review.unsigned.length > 0) {
+          process.stderr.write(
+            `Review each row (repo, risk, gate, mode, who enabled it and when). Re-sign one with: gaffer wg autonomy resign <id> --confirm <its review_code>; all of this list with: gaffer wg autonomy resign --all --confirm ${review.fingerprint}\n`,
+          );
+        }
+        printJson({ ok: true, ...review });
+      } finally {
+        wg.db.close();
+      }
+    });
+
+  autonomy
+    .command("resign [ids...]")
+    .description(
+      "A PERSON re-signs autonomy policy rows the factory does not honour, after reviewing " +
+        "them (`autonomy unsigned`). Needs --confirm with the code it printed: a row's " +
+        "review_code to re-sign it by id, the list's code for --all.",
+    )
+    .option("--all", "every row of the reviewed list", false)
+    .option("--confirm <code>", "the code of what you reviewed")
+    .action((ids: string[], opts: { all: boolean; confirm?: string }, cmd) => {
+      const wg = open(cmd.optsWithGlobals());
+      try {
+        const res = wg.resignAutonomyPolicies(
+          {
+            ...(ids.length > 0 ? { ids } : {}),
+            all: opts.all,
+            ...(opts.confirm !== undefined ? { confirm: opts.confirm } : {}),
+          },
+          cliActor(),
+          cliPrincipal(),
+        );
+        printJson({ ok: true, ...res });
+      } finally {
+        wg.db.close();
+      }
+    });
+
+  autonomy
+    .command("risk-unsigned")
+    .description(
+      "List the open tickets whose risk level this factory does not honour (in flight " +
+        "before signing, imported, or changed outside the factory), counted per risk: each " +
+        "is decided as the highest risk (a person decides) until a person re-signs it " +
+        "(`autonomy risk-resign`), or, if it was never claimed, until its first claim. No mutation.",
+    )
+    .action((_opts, cmd) => {
+      const wg = open(cmd.optsWithGlobals());
+      try {
+        const review = wg.reviewUnsignedTicketRisks();
+        if (review.unsigned.length > 0) {
+          process.stderr.write(
+            `Review each ticket's risk. Re-sign some with: gaffer wg autonomy risk-resign <ticket>... --confirm <their code>; all of this list with: gaffer wg autonomy risk-resign --all --confirm ${review.fingerprint}\n`,
+          );
+        }
+        printJson({ ok: true, ...review });
+      } finally {
+        wg.db.close();
+      }
+    });
+
+  autonomy
+    .command("risk-resign [tickets...]")
+    .description(
+      "A PERSON re-signs the risk level of open tickets the factory does not honour, after " +
+        "reviewing them (`autonomy risk-unsigned`). Needs --confirm with the list's code (or " +
+        "the code of exactly the tickets named).",
+    )
+    .option("--all", "every ticket of the reviewed list", false)
+    .option("--confirm <code>", "the code of what you reviewed")
+    .action((tickets: string[], opts: { all: boolean; confirm?: string }, cmd) => {
+      const wg = open(cmd.optsWithGlobals());
+      try {
+        const res = wg.resignTicketRisks(
+          {
+            ...(tickets.length > 0 ? { tickets } : {}),
+            all: opts.all,
+            ...(opts.confirm !== undefined ? { confirm: opts.confirm } : {}),
+          },
+          cliActor(),
+          cliPrincipal(),
+        );
+        printJson({ ok: true, ...res });
+      } finally {
+        wg.db.close();
+      }
+    });
 
   autonomy
     .command("list")
@@ -65,4 +235,50 @@ export function registerAutonomy(program: Command): void {
       printJson({ ok: true, count: policies.length, policies });
       wg.db.close();
     });
+}
+
+const RUNG_WORD: Record<string, string> = {
+  person: "a person decides",
+  suggested: "suggested",
+  automatic: "automatic",
+};
+
+/** The ladder as plain text: one block per repo, one line per risk x gate. */
+export function renderLadder(ladder: AutonomyLadder): string {
+  const lines: string[] = [];
+  if (ladder.repos.length === 0) lines.push("No repositories to show.");
+  for (const repo of ladder.repos) {
+    lines.push(`${repo.repo_name}`);
+    for (const row of repo.rows) {
+      for (const gate of ["approve", "merge"] as const) {
+        const c = row.gates[gate];
+        const word = c.ceiling
+          ? "not allowed"
+          : c.step_down
+            ? "stepped down"
+            : c.policy_signed === false
+              ? "not signed"
+              : (RUNG_WORD[c.rung] ?? c.rung);
+        const ev = c.evidence;
+        const figure = ev.n > 0 ? `${ev.k} of ${ev.n}` : "none yet";
+        lines.push(
+          `  ${row.risk_level.padEnd(8)} ${gate.padEnd(7)} ${word.padEnd(17)} ${figure.padEnd(10)} ${c.distance.text}`,
+        );
+        if (c.step_down) {
+          lines.push(`      why: ${c.step_down.why}`);
+          lines.push(`      lift: ${c.step_down.lift.text}`);
+        }
+      }
+    }
+  }
+  if (ladder.recent_step_downs.length > 0) {
+    lines.push("");
+    lines.push("Step-downs in the last 7 days:");
+    for (const r of ladder.recent_step_downs) {
+      lines.push(
+        `  ${r.at}  ${r.repo_name} ${r.risk_level}/${r.gate}${r.in_force ? "" : " (lifted)"}: ${r.why}`,
+      );
+    }
+  }
+  return lines.join("\n") + "\n";
 }

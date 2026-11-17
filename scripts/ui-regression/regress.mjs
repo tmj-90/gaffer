@@ -608,6 +608,40 @@ try {
     : bad("Review view never rendered the diff");
   await shot(page, "review-diff");
 
+  // ── 4b. (decision first) on a 1440x900 screen Approve is on the first screen; on a
+  //        phone the sign-off actions ride in a bar that stays in view while it scrolls.
+  {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await sleep(300);
+    const top = await page
+      .$eval("button.signoff-btn", (b) => b.getBoundingClientRect().top + window.scrollY)
+      .catch(() => null);
+    top != null && top + 40 <= 900
+      ? ok(`Review: Approve is on the first screen at 1440x900 (top ${Math.round(top)}px)`)
+      : bad(`Review: Approve top ${top}px is below the first 900px at 1440x900`);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight / 2));
+    await sleep(300);
+    const bar = await page
+      .$eval(".rv-actions", (n) => {
+        const r = n.getBoundingClientRect();
+        return {
+          pos: getComputedStyle(n).position,
+          inView: r.top >= 0 && r.bottom <= window.innerHeight,
+          approve: Boolean(n.querySelector("button.signoff-btn")),
+        };
+      })
+      .catch(() => null);
+    bar && bar.pos === "fixed" && bar.inView && bar.approve
+      ? ok("Review @390: the sign-off bar (Approve, Fix these, Send back) stays in view mid-page")
+      : bad(`Review @390: sign-off bar ${JSON.stringify(bar)}`);
+    await shot(page, "review-phone-signbar");
+    await page.setViewportSize({ width: 1400, height: 1000 });
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await sleep(200);
+  }
+
   // ── 5. (review packet) the runner's verdict strip under the title ─────────
   //   One dossier read (?include=packet) draws the gates with their commands, the
   //   tester, cost and turns, the attempt, risk, and the criteria table: the
@@ -1127,16 +1161,17 @@ try {
     // it is set and its host, and cannot read it back.
     {
       await api("POST", "/api/settings", {
-        settings: { GAFFER_NOTIFY_SLACK_URL: "https://hooks.slack.com/services/UI/REGRESS/SECRET" },
+        settings: { GAFFER_NOTIFY: "https://hooks.slack.com/services/UI/REGRESS/SECRET" },
       });
       const asRead = await fetch(`${BASE}/api/settings`, {
         headers: { Authorization: `Bearer ${minted}` },
       });
       const txt = asRead.ok ? await asRead.text() : "";
-      txt && !txt.includes("SECRET") && txt.includes('"host":"hooks.slack.com"')
-        ? ok("API: a read principal sees a webhook as configured + host only")
+      // The path, not the bare word: a setting's help text may say SECRET.
+      txt && !txt.includes("UI/REGRESS") && txt.includes('"host":"hooks.slack.com"')
+        ? ok("API: a read principal sees the notify webhook as its channel and host only")
         : bad(`API: settings leaked a webhook to a read principal (${asRead.status})`);
-      const back = await fetch(`${BASE}/api/settings/secret/GAFFER_NOTIFY_SLACK_URL`, {
+      const back = await fetch(`${BASE}/api/settings/secret/GAFFER_NOTIFY`, {
         headers: { Authorization: `Bearer ${minted}` },
       });
       back.status === 403
@@ -1145,18 +1180,15 @@ try {
       // The page is already on #/settings, so a goto to the same hash would not re-render
       // it: reload to read the settings as saved by the POST above.
       await page.reload({ waitUntil: "load" });
-      await page
-        .waitForSelector("#set-GAFFER_NOTIFY_SLACK_URL .setting-secret", { timeout: 5000 })
-        .catch(() => {});
+      const slackSel = '#set-GAFFER_NOTIFY [data-channel="slack"] .setting-secret';
+      await page.waitForSelector(slackSel, { timeout: 5000 }).catch(() => {});
       await sleep(400);
-      const maskedTxt =
-        (await page.textContent("#set-GAFFER_NOTIFY_SLACK_URL .setting-secret").catch(() => "")) ||
-        "";
+      const maskedTxt = (await page.textContent(slackSel).catch(() => "")) || "";
       maskedTxt.includes("hooks.slack.com") && !maskedTxt.includes("SECRET")
         ? ok("Settings: the Slack webhook shows masked (set · host) with Replace")
         : bad(`Settings: the webhook field is not masked: '${maskedTxt.slice(0, 80)}'`);
       await shot(page, "settings-secret-masked");
-      await api("POST", "/api/settings", { settings: { GAFFER_NOTIFY_SLACK_URL: "" } });
+      await api("POST", "/api/settings", { settings: { GAFFER_NOTIFY: "" } });
     }
     const denied = await fetch(`${BASE}/tickets`, {
       method: "POST",
@@ -1356,7 +1388,17 @@ try {
     const all = await allTicketRows();
     const open = all.filter((t) => !["done", "cancelled"].includes(t.status)).length;
     await page.goto(`${BASE}/#/floor`, { waitUntil: "load" });
-    await sleep(1200);
+    // Wait for the drawing itself (a bounded poll), not a fixed sleep: under load the
+    // Floor's reads can take longer than any sleep chosen here (REVIEW-P3 follow-up 6).
+    await page
+      .waitForFunction(
+        (n) =>
+          Boolean(document.querySelector("svg.fl-svg")) &&
+          (n === 0 || document.querySelectorAll("svg.fl-svg a.fl-parcel").length > 0),
+        open,
+        { timeout: 20000 },
+      )
+      .catch(() => null);
     const fl = await page.evaluate(() => {
       const ps = [...document.querySelectorAll("svg.fl-svg a.fl-parcel:not([data-status='done'])")];
       return {
@@ -1422,7 +1464,15 @@ try {
         const p3 = await c3.newPage();
         await p3.goto(`${BASE}/?token=${TOKEN}#/health`, { waitUntil: "load" });
         await p3.evaluate((t) => document.documentElement.setAttribute("data-theme", t), theme);
-        await sleep(900);
+        // Wait for the note (a bounded poll): Health can still say "Loading..." after a
+        // fixed 900 ms when the machine is busy (REVIEW-P3 follow-up 6).
+        await p3
+          .waitForFunction(
+            () => (document.querySelector(".usage-pause-note")?.textContent || "").trim().length,
+            null,
+            { timeout: 20000 },
+          )
+          .catch(() => null);
         const got = await p3.evaluate(() => {
           const n = document.querySelector(".usage-pause-note");
           return {
@@ -1629,14 +1679,15 @@ try {
             pipeDisplay: pipe ? getComputedStyle(pipe).display : null,
             card: card ? card.getBoundingClientRect().toJSON() : null,
             sheetTop: sheet ? sheet.getBoundingClientRect().top : null,
-            // "N things need you" is said once on a phone: with rows on the Team Sheet,
-            // the headline's count and the scoreboard's Need-you cell are not shown.
-            needYouRepeats:
+            // "N things need you" is said once in the hero (A-13, A-50): with rows on the
+            // Team Sheet the headline's count shows on every width and no scoreboard
+            // cell repeats it. The visible count spots in the scoreboard, by class.
+            needYouShown:
               sheet && sheet.querySelector(".own-row")
                 ? [...document.querySelectorAll(".scoreboard .hl-count, .scoreboard .sc-needs")]
                     .filter((n) => n.getBoundingClientRect().width > 0)
                     .map((n) => n.className)
-                : [],
+                : null,
             // The headline leads with the work: no clause opens on a ticket number.
             hlLeadsWithNumber: [...document.querySelectorAll(".scoreboard .hl-block")]
               .map((n) => n.textContent.trim())
@@ -1680,9 +1731,13 @@ try {
         }
         if (m.grounds.length) problems.push(`${tag} ${m.grounds.join(", ")}`);
         if (m.doubleRules) problems.push(`${tag} ${m.doubleRules} treatment rows ruled twice`);
-        if (v === "overview" && w <= 760 && m.needYouRepeats.length)
+        if (
+          v === "overview" &&
+          m.needYouShown &&
+          (m.needYouShown.length !== 1 || m.needYouShown[0] !== "hl-count")
+        )
           problems.push(
-            `${tag} the need-you count repeats beside the Team Sheet (${m.needYouRepeats.join(", ")})`,
+            `${tag} the need-you count is not said exactly once in the headline (${m.needYouShown.join(", ") || "none shown"})`,
           );
         if (m.hlLeadsWithNumber.length)
           problems.push(`${tag} a headline clause leads with a number: ${m.hlLeadsWithNumber[0]}`);

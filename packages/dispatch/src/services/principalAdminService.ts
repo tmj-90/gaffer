@@ -4,12 +4,28 @@
  * principalService.ts and accessScope.ts (the light modules the CLI's fast paths load); this
  * module is their database side.
  */
-import { inTransaction } from "../db/connection.js";
+import { inReadSnapshot, inTransaction } from "../db/connection.js";
 import { type Actor } from "../domain/types.js";
 import { writeEvent } from "../events/eventWriter.js";
+import { GateKeyError } from "../events/gateSeal.js";
+import { anchorReadFirst, type RowSealCheck } from "../events/rowSeal.js";
+import {
+  matchingCreationEvent,
+  principalRowsFingerprint,
+  readPrincipalRow,
+  retirePrincipalSeal,
+  sealPrincipal,
+  unsignedPrincipalMessage,
+  unsignedPrincipalRows,
+  unsignedPrincipals,
+  verifyPrincipal,
+  verifyPrincipalRow,
+  type UnsignedPrincipal,
+} from "../events/principalSeal.js";
 import {
   type PrincipalActorType,
   type PrincipalCapability,
+  type PrincipalScopeView,
   type PrincipalView,
 } from "../repositories/principalRepository.js";
 import {
@@ -36,8 +52,27 @@ import type { Dispatch } from "../core.js";
 /** What these functions read from the {@link Dispatch} facade they are handed. */
 export type PrincipalAdminHost = Pick<
   Dispatch,
-  "clock" | "db" | "getDecision" | "principals" | "repos" | "resolveTicket" | "tickets"
+  | "clock"
+  | "db"
+  | "gateKeyring"
+  | "getDecision"
+  | "principals"
+  | "repos"
+  | "resolveTicket"
+  | "tickets"
 >;
+
+/** A key this process may not sign with: the whole act rolls back. */
+function refuseSealKey(e: unknown): never {
+  if (e instanceof GateKeyError) {
+    throw new DispatchError(
+      "GATE_KEY_REFUSED",
+      `Nothing was recorded: ${e.message}. Principals are signed with the factory key on the host (gaffer setup creates it).`,
+      { reason: e.why },
+    );
+  }
+  throw e;
+}
 
 /**
  * Mint a named bearer credential bound to an actor identity and a capability.
@@ -127,7 +162,7 @@ export function createPrincipal(
       scopeRepos: scopeRepos?.map((r) => r.id),
       scopeTickets: scopeTickets?.map((t) => t.id),
     });
-    writeEvent(host.db, {
+    const eventId = writeEvent(host.db, {
       entity_type: "principal",
       entity_id: row.id,
       actor,
@@ -141,6 +176,13 @@ export function createPrincipal(
         ...(scopeTickets ? { scope_tickets: scopeTickets.map((t) => t.number) } : {}),
       },
     });
+    // SEALED PRINCIPALS: the row is honoured only with this seal (same transaction: a key
+    // that cannot be used rolls the whole creation back).
+    try {
+      sealPrincipal(host.db, host.gateKeyring, row.id, eventId, now);
+    } catch (e) {
+      refuseSealKey(e);
+    }
     return row;
   });
   return { principal, token };
@@ -169,6 +211,9 @@ export function revokePrincipal(
   const now = host.clock.now();
   return inTransaction(host.db, () => {
     host.principals.revoke(row.id, now);
+    // SEALED PRINCIPALS: the seal is retired with the revocation, and the revocation event
+    // supersedes any copy of it restored later.
+    retirePrincipalSeal(host.db, row.id);
     writeEvent(host.db, {
       entity_type: "principal",
       entity_id: row.id,
@@ -328,8 +373,36 @@ export function resolvePrincipalToken(
   host: PrincipalAdminHost,
   token: string,
 ): { principal: PrincipalView; actor: Actor } | null {
-  const row = host.principals.findActiveByHash(hashPrincipalToken(token));
-  if (!row) return null;
+  const hash = hashPrincipalToken(token);
+  // SEALED PRINCIPALS: an active row is a principal only with a valid seal under the
+  // factory key; anything else is refused exactly like an unknown token. Never creates a
+  // key or a seal.
+  //
+  // ONE READ, ONE SNAPSHOT. The row is read once, by the token hash; the seal is checked
+  // over the facts of THAT row; the identity, capability and scope returned are built
+  // from THAT row. It is never looked up again by id: a writer that showed a forged row
+  // to the first read and put the genuine one back for a second would otherwise sign in
+  // with authority no seal covers. The row, its seal and the event the seal names are
+  // read inside one snapshot, so they agree with each other as well. The event-log anchor
+  // (outside the database) is read BEFORE the snapshot opens (anchorReadFirst), so a
+  // commit by another connection meanwhile is never taken for a truncated log.
+  type Found =
+    | { kind: "signed"; row: PrincipalView }
+    | { kind: "refused"; id: string; name: string; check: RowSealCheck };
+  const keyring = anchorReadFirst(host.gateKeyring);
+  const found = inReadSnapshot(host.db, (): Found | null => {
+    const stored = host.principals.findActiveStoredByHash(hash);
+    if (!stored || stored.token_hash !== hash) return null;
+    const check = verifyPrincipalRow(host.db, keyring, stored);
+    if (!check.ok) return { kind: "refused", id: stored.id, name: stored.name, check };
+    return { kind: "signed", row: host.principals.viewOf(stored) };
+  });
+  if (!found) return null;
+  if (found.kind === "refused") {
+    logUnsignedPrincipal(found.id, found.name, found.check);
+    return null;
+  }
+  const row = found.row;
   const now = host.clock.now();
   if (!row.last_used_at || Date.parse(now) - Date.parse(row.last_used_at) > 60_000) {
     try {
@@ -339,4 +412,242 @@ export function resolvePrincipalToken(
     }
   }
   return { principal: row, actor: principalActor(row) };
+}
+
+/**
+ * Where a refused unsigned principal is reported: the REST server sets a sink (one
+ * server-side line per principal and reason per process, not one per request). The CLI
+ * sets none: its refusal is the same one-line error as an unknown token.
+ */
+let unsignedLog: ((line: string) => void) | null = null;
+export function setUnsignedPrincipalLog(sink: ((line: string) => void) | null): void {
+  unsignedLog = sink;
+}
+const LOGGED_UNSIGNED = new Set<string>();
+function logUnsignedPrincipal(
+  id: string,
+  name: string,
+  check: Parameters<typeof unsignedPrincipalMessage>[1],
+): void {
+  if (!unsignedLog) return;
+  const key = `${id}:${check.ok ? "" : check.failure}`;
+  if (LOGGED_UNSIGNED.has(key)) return;
+  LOGGED_UNSIGNED.add(key);
+  try {
+    unsignedLog(`dispatch: sign-in refused: ${unsignedPrincipalMessage(name, check)}`);
+  } catch {
+    // logging never decides authentication
+  }
+}
+
+/** Every active principal this factory does not honour (doctor, the dashboard callout). */
+export type UnsignedPrincipalView = UnsignedPrincipal;
+export function listUnsignedPrincipals(host: PrincipalAdminHost): UnsignedPrincipal[] {
+  return unsignedPrincipals(host.db, host.gateKeyring);
+}
+
+/**
+ * One unsigned principal as a person reviews it: what it may do, where, made by whom, and
+ * the code of that one row (re-signing it by name needs the code, so a row changed after
+ * the person looked at it is not signed as it now is).
+ */
+export type UnsignedPrincipalReviewRow = UnsignedPrincipal & {
+  scope: PrincipalScopeView | null;
+  review_code: string;
+};
+
+/**
+ * What a person reviews before re-signing with `all`: every active unsigned principal with
+ * its capability, actor, scope (resolved to repo names and ticket numbers), created_by and
+ * created_at, and a FINGERPRINT of exactly that list. `resign --all` signs only when it is
+ * handed the fingerprint of the list as it still is: a row added or changed after the
+ * review is never signed by it.
+ *
+ * Why a review and not a rule: a process that can write the database can also append a
+ * `principal.created` event that matches its forged row (the chain has no key), so "its
+ * creation is on record" cannot tell a forged row from a real one. Only a person who knows
+ * which sign-ins they made can.
+ */
+export interface UnsignedPrincipalReview {
+  unsigned: UnsignedPrincipalReviewRow[];
+  fingerprint: string;
+}
+
+export function reviewUnsignedPrincipals(host: PrincipalAdminHost): UnsignedPrincipalReview {
+  // ONE READ, ONE SNAPSHOT: each row is read once; what the person is shown (its fields,
+  // its scope) and the code they confirm are both computed from that row, never from a
+  // later read of it. A writer that changes a row while this is being built cannot pair
+  // a benign row on screen with the code of another.
+  // The anchor first, as for a sign-in: a genuine row is not listed as unsigned because
+  // another connection committed while the list was being read.
+  const keyring = anchorReadFirst(host.gateKeyring);
+  return inReadSnapshot(host.db, () => {
+    const entries = unsignedPrincipalRows(host.db, keyring);
+    return {
+      unsigned: entries.map(({ row, unsigned }) => ({
+        ...unsigned,
+        scope: host.principals.scopeOf(row),
+        review_code: principalRowsFingerprint([row]),
+      })),
+      fingerprint: principalRowsFingerprint(entries.map((e) => e.row)),
+    };
+  });
+}
+
+/**
+ * The fingerprint of the principal rows `ids` name, as they are stored now. Only for the
+ * re-sign transaction (an IMMEDIATE transaction: one snapshot, no other writer), where the
+ * code a person confirmed is compared with what is about to be signed.
+ */
+function reviewFingerprint(host: PrincipalAdminHost, ids: readonly string[]): string {
+  return principalRowsFingerprint(
+    ids
+      .map((id) => readPrincipalRow(host.db, id))
+      .filter((r): r is NonNullable<typeof r> => r !== null),
+  );
+}
+
+export interface ResignResult {
+  resigned: Array<{ id: string; name: string; event_id: string }>;
+  skipped: Array<{ id: string; name: string; reason: string }>;
+}
+
+/**
+ * RE-SIGN principals the factory does not honour (created before signing, restored from a
+ * backup, or written outside the factory): a PERSON's deliberate act, operator only (the
+ * REST and CLI gates refuse every principal token; the safety hook denies the verb to
+ * agents). Each re-signed row gets a `principal.resigned` event and a fresh seal in one
+ * transaction. Nothing is ever signed on upgrade or on a read.
+ *
+ * `all`: the person reviewed the list ({@link reviewUnsignedPrincipals}) and passes its
+ * fingerprint as `confirm`; without it, or when the list changed since, nothing is signed.
+ * Of that list, a row with no matching `principal.created` event is still skipped and must
+ * be named on purpose (a heuristic for a row inserted straight into the database: a forged
+ * event defeats it, which is why the review is required). `names`: exactly those (a revoked
+ * or unknown one is refused; an already signed one is skipped), with `confirm` the
+ * review code of the one row named, or the fingerprint of the whole list: a row changed
+ * between the person's review and the re-sign (a raised capability, a widened scope, a
+ * swapped token hash) is not signed.
+ */
+export function resignPrincipals(
+  host: PrincipalAdminHost,
+  input: {
+    names?: readonly string[] | undefined;
+    all?: boolean | undefined;
+    confirm?: string | undefined;
+  },
+  actor: Actor,
+): ResignResult {
+  const names = (input.names ?? []).map((n) => String(n).trim()).filter((n) => n !== "");
+  if (!input.all && names.length === 0) {
+    throw new DispatchError(
+      "VALIDATION_ERROR",
+      "Name the principals to re-sign, or pass --all with the confirmation code of the list you reviewed (gaffer wg principal unsigned).",
+    );
+  }
+  if (input.all && names.length > 0) {
+    throw new DispatchError("VALIDATION_ERROR", "Pass names or --all, not both.");
+  }
+  const confirm = String(input.confirm ?? "").trim();
+  const noReview = (): never => {
+    throw new DispatchError(
+      "VALIDATION_ERROR",
+      "Nothing was re-signed: review the unsigned principals first (gaffer wg principal unsigned lists who each one is, what it may do and who created it), then pass the code it prints: gaffer wg principal resign <name> --confirm <its review_code>, or gaffer wg principal resign --all --confirm <the list code>. A row written into the database can carry a forged creation event, so only your review tells it apart.",
+    );
+  };
+  if (input.all && confirm === "") noReview();
+  const result: ResignResult = { resigned: [], skipped: [] };
+  const now = host.clock.now();
+  inTransaction(host.db, () => {
+    const targets: Array<{ id: string; name: string; explicit: boolean }> = [];
+    if (input.all) {
+      const list = unsignedPrincipals(host.db, host.gateKeyring);
+      if (
+        reviewFingerprint(
+          host,
+          list.map((u) => u.id),
+        ) !== confirm
+      ) {
+        throw new DispatchError(
+          "STATE_CONFLICT",
+          "Nothing was re-signed: the unsigned principals changed since you reviewed them (a sign-in was added, changed or removed). Review the list again (gaffer wg principal unsigned) and confirm its new code.",
+          { reason: "review_stale" },
+        );
+      }
+      for (const u of list) targets.push({ id: u.id, name: u.name, explicit: false });
+    } else {
+      for (const ref of names) {
+        const row = host.principals.get(ref) ?? host.principals.getByName(ref);
+        if (!row) throw notFound("principal", ref);
+        if (row.revoked_at) {
+          throw new DispatchError(
+            "STATE_CONFLICT",
+            `Principal '${row.name}' is revoked; a revoked principal is never re-signed (create a new one). Nothing was re-signed.`,
+            { name: row.name },
+          );
+        }
+        targets.push({ id: row.id, name: row.name, explicit: true });
+      }
+      if (confirm === "") noReview();
+      const named = reviewFingerprint(
+        host,
+        targets.map((t) => t.id),
+      );
+      const whole = reviewFingerprint(
+        host,
+        unsignedPrincipals(host.db, host.gateKeyring).map((u) => u.id),
+      );
+      if (confirm !== named && confirm !== whole) {
+        throw new DispatchError(
+          "STATE_CONFLICT",
+          "Nothing was re-signed: the code does not match what you reviewed (the principal was changed since, or the code is another row's). Review it again (gaffer wg principal unsigned) and confirm its new review_code.",
+          { reason: "review_stale" },
+        );
+      }
+    }
+    for (const t of targets) {
+      const before = verifyPrincipal(host.db, host.gateKeyring, t.id);
+      if (before.ok) {
+        result.skipped.push({ id: t.id, name: t.name, reason: "already signed" });
+        continue;
+      }
+      const row = readPrincipalRow(host.db, t.id);
+      if (!row || row.revoked_at !== null) {
+        result.skipped.push({ id: t.id, name: t.name, reason: "revoked" });
+        continue;
+      }
+      const created = matchingCreationEvent(host.db, row);
+      if (!created && !t.explicit) {
+        result.skipped.push({
+          id: t.id,
+          name: t.name,
+          reason:
+            "no matching principal.created event on record (the shape of a row written outside the factory): review it and re-sign it by name, or revoke it",
+        });
+        continue;
+      }
+      const eventId = writeEvent(host.db, {
+        entity_type: "principal",
+        entity_id: t.id,
+        actor,
+        event_type: "principal.resigned",
+        payload: {
+          name: row.name,
+          capability: row.capability,
+          actor_type: row.actor_type,
+          actor_id: row.actor_id,
+          scoped: row.scope_repos !== null || row.scope_tickets !== null,
+          creation_event: created,
+          was: before.failure,
+        },
+      });
+      try {
+        sealPrincipal(host.db, host.gateKeyring, t.id, eventId, now);
+      } catch (e) {
+        refuseSealKey(e);
+      }
+      result.resigned.push({ id: t.id, name: t.name, event_id: eventId });
+    }
+  });
+  return result;
 }

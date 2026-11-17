@@ -1,6 +1,6 @@
 import type { AcceptanceProfile } from "./domain/acceptanceProfile.js";
 import type { VerdictPrincipal } from "./services/reviewGate/waiver.js";
-import { type Db, openDatabase } from "./db/connection.js";
+import { type Db, inTransaction, openDatabase } from "./db/connection.js";
 import {
   type AcStatus,
   type AcceptanceCriterion,
@@ -164,13 +164,14 @@ import {
   type AutonomyRecommendation,
 } from "./services/autonomyRecommendationService.js";
 import {
-  AutonomyPolicyRepository,
   type AutonomyPolicyGate,
   type AutonomyPolicyRow,
-  type AutonomyPolicyView,
   type AutonomyMode,
 } from "./repositories/autonomyPolicyRepository.js";
-import { policyGrantsAuto } from "./services/autonomyPolicyService.js";
+import { autonomyHold, policyGrantsAuto } from "./services/autonomyPolicyService.js";
+import { SealedAutonomyPolicy, type SealedPolicyView } from "./services/autonomySealService.js";
+import * as autonomySeals from "./services/autonomySealAdminService.js";
+import { decidedRisk, liftSealed, type DecidedRisk } from "./events/autonomySeal.js";
 import { type LandingFacts, type LandingState } from "./services/landingState.js";
 import { type ApproveOutcome, type ApproveOutcomeFacts } from "./services/approveOutcome.js";
 import {
@@ -199,6 +200,20 @@ import type { JudgeRevealResult, ReviewOpenResult } from "./services/ticketRecor
 import * as gate from "./services/gateNotifications.js";
 import * as ticketGit from "./services/ticketGitService.js";
 import * as autonomyGate from "./services/autonomyGateService.js";
+import {
+  computeLadder,
+  recentStepDowns,
+  type AutonomyLadder,
+} from "./services/autonomyLadderService.js";
+import { readStepDowns, stepDownKey } from "./services/autonomyStepDownStore.js";
+import * as stepDown from "./services/autonomyStepDownService.js";
+import { notFound } from "./util/errors.js";
+import {
+  STEP_DOWN_WINDOW_DAYS,
+  STEP_DOWN_TESTER_FAILS,
+} from "./services/autonomyRecommendationService.js";
+import { isScoped as isScopedAccess } from "./services/accessScope.js";
+import { principalScope as principalAccessScope } from "./services/principalService.js";
 import * as principalAdmin from "./services/principalAdminService.js";
 import * as landing from "./services/landingFactsService.js";
 import * as reviewLifecycle from "./services/reviewLifecycleService.js";
@@ -355,7 +370,11 @@ export class Dispatch {
   readonly specsRepo: SpecRepository;
   readonly specCoverageRepo: SpecCoverageRepository;
   /** GRADUATED-AUTONOMY (Spec 2, Phase 3): the per-(repo × risk × gate) enablement store. */
-  readonly autonomyPolicy: AutonomyPolicyRepository;
+  /**
+   * The autonomy policy store as every DECISION reads it (SEALED AUTONOMY: an unsigned row
+   * is absent, only sealed lifts end a step-down). services/autonomySealService.ts.
+   */
+  readonly autonomyPolicy: SealedAutonomyPolicy;
   readonly principals: PrincipalRepository;
   /** SQUAD (v27): the club identity row. */
   readonly clubRepo: ClubRepository;
@@ -389,9 +408,9 @@ export class Dispatch {
    * per-instance for tests via the constructor option.
    */
   get maxAttempts(): number {
-    // Read per use, not once at startup: DISPATCH_MAX_ATTEMPTS saved from Settings
-    // lands in this process's env (writeSettings), and a long-running dashboard must
-    // enforce the cap the operator just saved.
+    // Read per use, not once at startup: DISPATCH_MAX_ATTEMPTS follows the Effort
+    // setting, and a change saved from Settings lands in this process's env
+    // (writeSettings), so a long-running dashboard enforces the cap the operator chose.
     return this.maxAttemptsOverride ?? resolveMaxAttempts();
   }
   private readonly maxAttemptsOverride: number | undefined;
@@ -472,7 +491,7 @@ export class Dispatch {
     this.pausedDeliveries = new PausedDeliveryRepository(db);
     this.specsRepo = new SpecRepository(db);
     this.specCoverageRepo = new SpecCoverageRepository(db);
-    this.autonomyPolicy = new AutonomyPolicyRepository(db);
+    this.autonomyPolicy = new SealedAutonomyPolicy(db, () => this.gateKeyring);
     this.principals = new PrincipalRepository(db);
     this.clubRepo = new ClubRepository(db);
     this.squadSvc = new SquadService({
@@ -520,6 +539,12 @@ export class Dispatch {
       transitions: this.transitions,
       claims: this.claims,
     });
+    // SEALED AUTONOMY: a key holder seals a new ticket's risk at creation; the trusted host
+    // seals an unsigned one at its first claim (services/autonomySealAdminService.ts).
+    this.ticketSvc.onCreated = (ticket, actor) =>
+      autonomySeals.sealRiskAtCreation(this, ticket, actor);
+    this.claims.onClaimed = (ticketId, claimId, actor) =>
+      autonomySeals.sealRiskAtClaim(this, ticketId, claimId ?? "", actor);
     this.repoSvc = new RepoService({
       db,
       clock: this.clock,
@@ -629,13 +654,27 @@ export class Dispatch {
       // GRADUATED-AUTONOMY (Spec 2, Phase 3): the pure-policy predicate the P0 gate
       // ORs with the env flag — true iff a mode='auto' approve policy covers every
       // write repo at this ticket's risk. NO env read here (that stays in the gate).
+      // SEALED AUTONOMY: at the SIGNED risk (an unsigned one reads as the highest).
       policyAllowsAgentApprove: (ticket) =>
         policyGrantsAuto(
           this.autonomyPolicy,
           ticketGit.writeRepoIdsForTicket(this, ticket),
-          ticket.risk_level,
+          this.autonomyRisk(ticket).level,
           "approve",
         ),
+      // THE AUTONOMY LADDER: the ceiling and step-down holds, read from the policy store and
+      // the event chain for every write repo at the ticket's risk (fail closed on a throw).
+      // SEALED AUTONOMY: a ticket whose risk is not signed is held for a person.
+      autonomyHold: (ticket, gate) => {
+        const risk = this.autonomyRisk(ticket);
+        if (!risk.signed) return { kind: "risk_unsigned", repoId: null };
+        return autonomyHold(
+          this.autonomyPolicy,
+          ticketGit.writeRepoIdsForTicket(this, ticket),
+          risk.level,
+          gate,
+        );
+      },
       // OBSERVED-RISK ESCALATION (Trust & Autonomy, security-critical): on the AUTO-SHIP
       // path only, resolve the OBSERVED risk from the REAL server-computed diff (reusing
       // computeTicketDiff + the advisory risk-annotation overlay) so the gate can hold for
@@ -644,7 +683,17 @@ export class Dispatch {
       // GATE INTEGRITY: plus the runner's integrity FLAG from the latest trusted DoD
       // record (what the worktree held that the committed diff cannot show, e.g. a
       // git-ignored .npmrc), unless a human allowed test changes on the ticket.
-      observedRiskResolver: (ticket) => this.observedRiskFor(ticket),
+      // SEALED AUTONOMY: the declared side of the comparison is the SIGNED risk; an unsigned
+      // one never passes as the stored value (indeterminate: held for a person).
+      observedRiskResolver: (ticket) => {
+        const observed = this.observedRiskFor(ticket);
+        if (this.autonomyRisk(ticket).signed) return observed;
+        return {
+          ...observed,
+          determinate: false,
+          reasons: [...observed.reasons, "the declared risk is not signed by this factory"],
+        };
+      },
       ...(options.isolation ? { isolation: options.isolation } : {}),
     });
     this.reviewCommentSvc = new ReviewCommentService({
@@ -656,6 +705,12 @@ export class Dispatch {
     });
     this.autonomyRecommendations = new AutonomyRecommendationService({
       reviewDecisions: () => this.events.reviewDecisions(),
+      // THE AUTONOMY LADDER: a row's count restarts at its latest step-down.
+      stepDownSince: () => {
+        const states = readStepDowns(this.db, this.liftCounts());
+        return (repoId, risk, gate) =>
+          states.get(stepDownKey(repoId, risk, gate))?.lastStepDown?.at ?? null;
+      },
     });
     this.pauseSvc = new PauseService({
       db,
@@ -748,18 +803,171 @@ export class Dispatch {
   autonomyGateDecision(
     ticket: Ticket,
     gate: AutonomyPolicyGate,
-  ): {
-    gate: AutonomyPolicyGate;
-    decision: "allow" | "deny";
-    risk_level: string;
-    write_repo_ids: string[];
-  } {
+  ): ReturnType<typeof autonomyGate.autonomyGateDecision> {
     return autonomyGate.autonomyGateDecision(this, ticket, gate);
   }
 
+  /**
+   * THE AUTONOMY LADDER: every repo x risk x gate with its rung, the evidence behind it,
+   * the distance to the next rung and any step-down in force (autonomyLadderService.ts).
+   * A scoped principal sees only the repos in its repo scope (a ticket grant reaches no
+   * repo's autonomy), and no cross-repo counts. Read-only.
+   */
+  autonomyLadder(viewer: PrincipalView | null = null, repo?: string): AutonomyLadder {
+    const { scoped, reach, repos: visible } = this.ladderRepos(viewer);
+    let repos = visible;
+    if (repo !== undefined) {
+      const want = this.repos.findById(repo) ?? this.repos.findByName(repo);
+      if (!want || (reach && !reach.has(want.id))) throw notFound("repository", repo);
+      repos = repos.filter((r) => r.id === want.id);
+      if (repos.length === 0) repos = [want];
+    }
+    return computeLadder({
+      now: this.clock.now(),
+      repos: repos.map((r) => ({ id: r.id, name: r.name })),
+      policies: this.autonomyPolicy.listSealed(),
+      decisions: this.events.reviewDecisions(),
+      recommendations: this.autonomyRecommendationsList(),
+      stepDowns: readStepDowns(this.db, this.liftCounts()),
+      env: process.env,
+      showCrossRepoCounts: !scoped,
+      stepDownTesterFails: STEP_DOWN_TESTER_FAILS,
+      stepDownWindowDays: STEP_DOWN_WINDOW_DAYS,
+    });
+  }
+
+  /** The repos a viewer's ladder covers (a scoped principal: its repo scope only). */
+  private ladderRepos(viewer: PrincipalView | null): {
+    scoped: boolean;
+    reach: Set<string> | null;
+    repos: Array<{ id: string; name: string }>;
+  } {
+    const scope = viewer ? principalAccessScope(viewer) : null;
+    const scoped = isScopedAccess(scope);
+    const reach = scoped ? new Set(scope.repos ?? []) : null;
+    const repos = this.listRepositories().filter((r) => !reach || reach.has(r.id));
+    return { scoped, reach, repos };
+  }
+
+  /**
+   * THE AUTONOMY LADDER, the Overview line's narrow read: only the step-downs of the last 7
+   * days on the repos the viewer reaches. Folds the step-down events alone (no review
+   * record, no recommendations), so the Overview pays a few milliseconds, not a ladder.
+   */
+  autonomyRecentStepDowns(viewer: PrincipalView | null = null): {
+    generated_at: string;
+    recent_step_downs: AutonomyLadder["recent_step_downs"];
+  } {
+    const now = this.clock.now();
+    const { repos } = this.ladderRepos(viewer);
+    return {
+      generated_at: now,
+      recent_step_downs: recentStepDowns(
+        now,
+        repos.map((r) => ({ id: r.id, name: r.name })),
+        readStepDowns(this.db, this.liftCounts()),
+      ),
+    };
+  }
+
+  /** What the step-down triggers and the lift read (services/autonomyStepDownService.ts). */
+  private stepDownHost(): stepDown.StepDownHost {
+    return {
+      db: this.db,
+      writeRepoIds: (ticket) => ticketGit.writeRepoIdsForTicket(this, ticket),
+      resolveTicket: (ref) => this.resolveTicket(ref),
+      reviewDecisions: () => this.events.reviewDecisions(),
+      repoExists: (repoId) => this.repos.findById(repoId) !== undefined,
+      gateKeyring: this.gateKeyring,
+      liftCounts: this.liftCounts(),
+    };
+  }
+
+  /**
+   * SEALED AUTONOMY: which lift events count (a lift is a person's act, sealed under the
+   * factory key; an unsealed one is ignored and its step-down stays in force).
+   */
+  liftCounts(): (eventId: string) => boolean {
+    const keyring = this.gateKeyring;
+    return (eventId) => liftSealed(this.db, keyring, eventId);
+  }
+
+  /**
+   * SEALED AUTONOMY: a ticket's risk as every autonomy decision reads it: the stored level
+   * when its seal verifies, else the HIGHEST (`signed: false`), never the stored column.
+   * Read-only; fail closed.
+   */
+  autonomyRisk(ticket: Pick<Ticket, "id" | "risk_level">): DecidedRisk {
+    return decidedRisk(this.db, this.gateKeyring, ticket);
+  }
+
+  /**
+   * AUTONOMY STEP-DOWN: give autonomy back for one (repo x risk x gate). A person's act
+   * only (the operator, or an active principal with full capability; never an agent or
+   * the runner); re-enable once the evidence since the step-down clears the bar, or
+   * override with a reason. See services/autonomyStepDownService.ts.
+   */
+  liftAutonomyStepDown(
+    input: {
+      repo: string;
+      riskLevel: RiskLevel;
+      gate: "approve" | "merge";
+      how: "reenable" | "override";
+      reason?: string | null;
+    },
+    actor: Actor,
+    authority: stepDown.LiftAuthority,
+  ): { eventId: string; how: "reenabled" | "override" } {
+    const repo = this.repos.findById(input.repo) ?? this.repos.findByName(input.repo);
+    if (!repo) throw notFound("repository", input.repo);
+    return stepDown.liftStepDown(
+      this.stepDownHost(),
+      { ...input, repoId: repo.id },
+      actor,
+      authority,
+    );
+  }
+
   /** Every stored autonomy policy joined to its repo name (Settings surface). */
-  listAutonomyPolicies(): AutonomyPolicyView[] {
-    return this.autonomyPolicy.list();
+  listAutonomyPolicies(): SealedPolicyView[] {
+    return this.autonomyPolicy.listSealed();
+  }
+
+  // --- SEALED AUTONOMY: what is not signed, and a person's re-sign -----------------------
+
+  /** Policy rows that grant something and are not signed, and the code of that list. */
+  reviewUnsignedAutonomyPolicies(): autonomySeals.UnsignedPolicyReview {
+    return autonomySeals.reviewUnsignedPolicies(this);
+  }
+
+  /** A PERSON re-signs reviewed policy rows (never an agent, the runner or MCP). */
+  resignAutonomyPolicies(
+    input: { ids?: readonly string[]; all?: boolean; confirm?: string },
+    actor: Actor,
+    principal: PrincipalView | null,
+  ): autonomySeals.ResignPoliciesResult {
+    return autonomySeals.resignPolicies(this, input, actor, principal);
+  }
+
+  /** Open tickets whose risk is not signed, counted per risk, and the code of that list. */
+  reviewUnsignedTicketRisks(): autonomySeals.UnsignedRiskReview {
+    return autonomySeals.reviewUnsignedRisks(this);
+  }
+
+  /** A PERSON re-signs reviewed ticket risks (never an agent, the runner or MCP). */
+  resignTicketRisks(
+    input: { tickets?: ReadonlyArray<string | number>; all?: boolean; confirm?: string },
+    actor: Actor,
+    principal: PrincipalView | null,
+  ): autonomySeals.ResignRisksResult {
+    return autonomySeals.resignRisks(this, input, actor, principal, (ref) =>
+      this.resolveTicket(ref),
+    );
+  }
+
+  /** What is not signed and what it costs (doctor, Settings, the startup line). */
+  autonomySealSummary(): autonomySeals.AutonomySealSummary {
+    return autonomySeals.autonomySealSummary(this);
   }
 
   setAutonomyPolicy(
@@ -804,6 +1012,28 @@ export class Dispatch {
 
   revokePrincipal(ref: string, actor: Actor): PrincipalView {
     return principalAdmin.revokePrincipal(this, ref, actor);
+  }
+
+  /** SEALED PRINCIPALS: every active principal this factory does not honour, and why. */
+  listUnsignedPrincipals(): principalAdmin.UnsignedPrincipalView[] {
+    return principalAdmin.listUnsignedPrincipals(this);
+  }
+
+  /** SEALED PRINCIPALS: the unsigned list a person reviews, with its confirmation code. */
+  reviewUnsignedPrincipals(): principalAdmin.UnsignedPrincipalReview {
+    return principalAdmin.reviewUnsignedPrincipals(this);
+  }
+
+  /** SEALED PRINCIPALS: a person re-signs principals (operator only; see the service). */
+  resignPrincipals(
+    input: {
+      names?: readonly string[] | undefined;
+      all?: boolean | undefined;
+      confirm?: string | undefined;
+    },
+    actor: Actor,
+  ): principalAdmin.ResignResult {
+    return principalAdmin.resignPrincipals(this, input, actor);
   }
 
   scopeTicket(ref: string): ScopeTicket {
@@ -1318,7 +1548,18 @@ export class Dispatch {
     /** A PERSON'S VERDICT (package H1): see testerPass. */
     authority: { principal?: VerdictPrincipal | null } = {},
   ): TransitionResult {
-    return this.reviewGateSvc.testerFail(ticketRef, input, actor, authority);
+    // AUTONOMY STEP-DOWN, trigger (c): the FAIL and the step-down it causes commit together,
+    // so a step-down that cannot be written leaves no FAIL on record either (the act is
+    // refused and the runner records it again). A REFUSED verdict (a stale FAIL) keeps the
+    // evidence it records before it throws: its error is caught inside the transaction, the
+    // transaction commits what was written, and the error is thrown again after.
+    return stepDown.withRefusalKept(this.db, () => {
+      const result = this.reviewGateSvc.testerFail(ticketRef, input, actor, authority);
+      return {
+        result,
+        then: () => stepDown.stepDownForTesterVerdict(this.stepDownHost(), result.ticket.id, actor),
+      };
+    });
   }
 
   // --- Black-box testing handover (BBT-001) --------------------------------
@@ -1437,7 +1678,19 @@ export class Dispatch {
     input: Record<string, unknown>,
     actor: Actor,
   ): { ticketId: string; eventId: string; verdict: LaneVerdict } {
-    return ticketRecords.recordLaneVerdict(this, ref, input, actor);
+    // AUTONOMY STEP-DOWN, trigger (c): an UNPROVABLE hold counts like a FAIL; the verdict
+    // and the step-down it causes commit together (as testerFail).
+    return inTransaction(this.db, () => {
+      const res = ticketRecords.recordLaneVerdict(this, ref, input, actor);
+      if (
+        res.verdict.lane === "tester" &&
+        res.verdict.verdict === "held" &&
+        res.verdict.held_code === "tester_unprovable"
+      ) {
+        stepDown.stepDownForTesterVerdict(this.stepDownHost(), res.ticketId, actor);
+      }
+      return res;
+    });
   }
 
   recordScout(
@@ -1453,8 +1706,21 @@ export class Dispatch {
     of: string,
     actor: Actor,
     note?: string | null,
-  ): { ticketId: string; regressionOf: string; recorded: boolean; eventId: string | null } {
-    return regressions.fileRegression(this, ref, of, actor, note);
+  ): {
+    ticketId: string;
+    regressionOf: string;
+    recorded: boolean;
+    eventId: string | null;
+    stepped_down: stepDown.SteppedDownRow[];
+  } {
+    // AUTONOMY STEP-DOWN, trigger (a): the link and the step-down it causes commit together.
+    return inTransaction(this.db, () => {
+      const res = regressions.fileRegression(this, ref, of, actor, note);
+      const stepped = res.recorded
+        ? stepDown.stepDownForRegression(this.stepDownHost(), res.ticketId, res.regressionOf, actor)
+        : [];
+      return { ...res, stepped_down: stepped };
+    });
   }
 
   withdrawRegression(
@@ -1565,8 +1831,33 @@ export class Dispatch {
     ref: string,
     input: { reason: string; resolution: string; cause?: ReopenForReviewCause },
     actor: Actor,
-  ): { ticketId: string; status: string; eventId: string } {
-    return reviewLifecycle.reopenForReview(this, ref, input, actor);
+  ): {
+    ticketId: string;
+    status: string;
+    eventId: string;
+    stepped_down: stepDown.SteppedDownRow[];
+  } {
+    // AUTONOMY STEP-DOWN, trigger (b): a person reopened a change that landed. The reopen
+    // and the step-down it causes commit together. The runner's own reopen (system) is
+    // never a trigger and stays outside this transaction (its hold read may run git).
+    if (actor.type !== "human" && actor.type !== "admin") {
+      return { ...reviewLifecycle.reopenForReview(this, ref, input, actor), stepped_down: [] };
+    }
+    return inTransaction(this.db, () => {
+      const before = this.resolveTicket(ref);
+      // What was automatic is classified from the history as it stands BEFORE the reopen
+      // is written (the reopen starts a new review path with no approval on it).
+      const gates = stepDown.automaticGates(this.db, before.id);
+      const res = reviewLifecycle.reopenForReview(this, ref, input, actor);
+      const stepped = stepDown.stepDownForReopen(
+        this.stepDownHost(),
+        res.ticketId,
+        before.status,
+        gates,
+        actor,
+      );
+      return { ...res, stepped_down: stepped };
+    });
   }
 
   rejectReview(

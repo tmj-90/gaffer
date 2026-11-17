@@ -90,7 +90,7 @@ const SPEND_CAP_KEYS = ["GAFFER_DAILY_BUDGET_USD", "GAFFER_BUDGET_USD"] as const
  */
 export const NO_SPEND_CAP_MESSAGE =
   "no dollar cap is set: set GAFFER_DAILY_BUDGET_USD (try 5) or GAFFER_BUDGET_USD in your " +
-  "environment or the dashboard's Settings → Budget & caps; GAFFER_ALLOW_UNCAPPED=1 runs without one";
+  "environment or the dashboard's Settings → Budget; GAFFER_ALLOW_UNCAPPED=1 runs without one";
 
 /**
  * Would the runner refuse this poll for want of a dollar cap? Returns the refusal

@@ -1,9 +1,10 @@
 // View: Map (UI-000 / UI-001 / UI-002 / UI-003).
 // Moved verbatim from app.js (the entry); the module map is in app.js.
 
+import { table } from "../lookup.js";
 import { roLock } from "../access.js";
 import { api } from "../api.js";
-import { emptyState, panelHead, viewHead } from "../components.js";
+import { dataTable, emptyState, panelHead, viewHead } from "../components.js";
 import { el, field } from "../dom.js";
 import { plural } from "../format.js";
 import { clockTime } from "../freshness.js";
@@ -79,7 +80,7 @@ function mapTone(status) {
   if (ON_PITCH.has(status)) return "play";
   return null;
 }
-const MAP_TONE_RANK = { red: 0, yellow: 1, paused: 2, play: 3 };
+const MAP_TONE_RANK = table({ red: 0, yellow: 1, paused: 2, play: 3 });
 /**
  * The scope the server records for a ticket that targets a repo with no ground:
  * an external_dependency node named "repo:<name>". It is the free agent playing
@@ -480,7 +481,7 @@ function renderFactoryFooter() {
 }
 
 /** Column names from what stands in them (the club, its products, its services…). */
-const MAP_COL_WORD = {
+const MAP_COL_WORD = table({
   factory: "The club",
   domain: "Domains",
   product: "Products",
@@ -491,14 +492,14 @@ const MAP_COL_WORD = {
   component: "Components",
   external_dependency: "Outside the ground",
   epic: "Campaigns",
-};
+});
 /**
  * The map's columns, by what a ground IS, so a column's name is always true and
  * outside grounds always stand at the far touchline: the club and its campaigns,
  * domains, products, services (and the other parts that run), outside the ground.
  * Empty tiers are dropped.
  */
-const MAP_TIER = {
+const MAP_TIER = table({
   factory: 0,
   epic: 0,
   domain: 1,
@@ -509,7 +510,7 @@ const MAP_TIER = {
   library: 3,
   component: 3,
   external_dependency: 4,
-};
+});
 const mapTierOf = (n) => MAP_TIER[n.type] ?? 3;
 
 /**
@@ -591,7 +592,8 @@ function renderScopeGraph(nodes, edges, ov, readAt = Date.now()) {
         .filter(Boolean)
         .join(" · "),
       null,
-      { kit: "ink" },
+      // The map is the drawing the view leads with: its one block (A-03).
+      { tone: "drawing", level: 2 },
     ),
   ]);
   const search = el("input", {
@@ -874,7 +876,7 @@ function renderRepoRegister(repos, unmapped, ov) {
   const free = new Set(unmapped.map((r) => r.id));
   const mapped = repos.filter((r) => !free.has(r.id));
   const head = panelHead("Who plays where", `${plural(mapped.length, "repo")} at a ground`, null, {
-    kit: "claret",
+    level: 2,
   });
   if (!mapped.length)
     return el("section", { class: "card prog map-register", "aria-label": "Who plays where" }, [
@@ -892,60 +894,65 @@ function renderRepoRegister(repos, unmapped, ov) {
   const rows = mapped.map((r) => {
     const t = mapTally(ov.liveOfRepo.get(r.id));
     const grounds = ov.groundsOf.get(r.id) || [];
-    return el("tr", { class: "repo-row", dataset: { kind: "repo", repoId: r.id } }, [
-      el("th", { scope: "row", class: "reg-repo" }, [
+    return {
+      repo: [
         el("a", { href: `#/repo/${r.id}` }, repoTag(r.name, 22)),
         el(
           "span",
           { class: "reg-sub" },
           [r.stack, r.default_branch].filter(Boolean).join(" · ") || null,
         ),
-      ]),
-      regCell(
-        "Grounds",
-        el(
-          "span",
-          { class: "reg-grounds" },
-          grounds.map((g) =>
-            el("span", { class: "reg-ground" }, [
-              el("a", { href: `#/node/${g.node.id}` }, g.node.name),
-              el("span", { class: "reg-acc" }, [g.relation, g.access].filter(Boolean).join(" · ")),
-            ]),
-          ),
+      ],
+      grounds: el(
+        "span",
+        { class: "reg-grounds" },
+        grounds.map((g) =>
+          el("span", { class: "reg-ground" }, [
+            el("a", { href: `#/node/${g.node.id}` }, g.node.name),
+            el("span", { class: "reg-acc" }, [g.relation, g.access].filter(Boolean).join(" · ")),
+          ]),
         ),
       ),
-      regCell("Blocked", regCount(t.red, "red"), "reg-num"),
-      regCell("To review", regCount(t.yellow, "yellow"), "reg-num"),
-      anyPaused ? regCell("Paused", regCount(t.paused, "paused"), "reg-num") : null,
-      regCell("In play", regCount(t.play), "reg-num"),
-      regCell("Gates", regGates(r), "reg-gc"),
-    ]);
+      red: regCount(t.red, "red"),
+      yellow: regCount(t.yellow, "yellow"),
+      paused: regCount(t.paused, "paused"),
+      play: regCount(t.play),
+      gates: regGates(r),
+    };
+  });
+  // The counts are numeric columns of the one table part (A-34): 16 px tabular,
+  // right-aligned, never the display face.
+  const table = dataTable({
+    caption: "Every repo at a ground: where it plays and what is live in it",
+    columns: [
+      { key: "repo", label: "Repo" },
+      { key: "grounds", label: "Plays at" },
+      { key: "red", label: "Blocked", numeric: true },
+      { key: "yellow", label: "To review", numeric: true },
+      anyPaused ? { key: "paused", label: "Paused", numeric: true } : null,
+      { key: "play", label: "In play", numeric: true },
+      { key: "gates", label: "Gates" },
+    ].filter(Boolean),
+    rows,
+    stackOnPhone: true,
+    cls: "map-reg",
+  });
+  // The filter above the map hides rows by their text (applyFactoryFilter).
+  table.querySelectorAll("tbody tr").forEach((tr, i) => {
+    tr.classList.add("repo-row");
+    tr.dataset.kind = "repo";
+    tr.dataset.repoId = mapped[i].id;
   });
   return el("section", { class: "card prog map-register", "aria-label": "Who plays where" }, [
     head,
-    el("table", { class: "reg-table" }, [
-      el(
-        "thead",
-        {},
-        el("tr", {}, [
-          el("th", { scope: "col" }, "Repo"),
-          el("th", { scope: "col" }, "Plays at"),
-          el("th", { scope: "col", class: "reg-num" }, "Blocked"),
-          el("th", { scope: "col", class: "reg-num" }, "To review"),
-          anyPaused ? el("th", { scope: "col", class: "reg-num" }, "Paused") : null,
-          el("th", { scope: "col", class: "reg-num" }, "In play"),
-          el("th", { scope: "col" }, "Gates"),
-        ]),
-      ),
-      el("tbody", {}, rows),
-    ]),
+    table,
   ]);
 }
 
 /** Free agents: repos with no ground, each playing as its own single-repo scope. */
 function renderUnmappedSection(unmapped, repos = [], hiddenN = 0, { ov = null, grounds = 0 } = {}) {
   const head = panelHead("Free agents", `${plural(unmapped.length, "repo")} with no ground`, null, {
-    kit: "sky",
+    level: 2,
   });
   const card = el(
     "section",
@@ -1217,7 +1224,7 @@ async function renderHidden() {
     ]),
   );
   wrap.appendChild(
-    progPage("map-free", "ink", "Left out of the squad", plural(repos.length, "repo"), [
+    progPage("map-free", null, "Left out of the squad", plural(repos.length, "repo"), [
       el("table", { class: "reg-table reg-free" }, [
         el(
           "thead",

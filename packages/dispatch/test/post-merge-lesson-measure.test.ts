@@ -3,7 +3,7 @@
  * and how many later had something go wrong, before vs after it went live; no rate below
  * the minimum n; the report's totals (live, drafts waiting, recurrences after: k of n).
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -41,6 +41,69 @@ describe("lessonPathOverlaps (the rule memory serves lessons by)", () => {
     ["./src/a.ts", "src/a.ts", true],
   ])("%s vs %s -> %s", (l, t, want) => {
     expect(lessonPathOverlaps(l, t)).toBe(want);
+  });
+
+  // The review's hostile set (backlog 59 review): this copy and memory's own rule must
+  // agree on every pair, or the measure counts changes memory never served the lesson to.
+  const HOSTILE = [
+    "src/a/x.ts",
+    "src/a",
+    "src/a/",
+    "src/ab.ts",
+    "./src/a/x.ts",
+    "/src/a/x.ts",
+    "src//a/x.ts",
+    "src\\a\\x.ts",
+    "SRC/a/x.ts",
+    "src/../src/a/x.ts",
+    "..",
+    "../x",
+    ".",
+    "./",
+    "/",
+    "",
+    " ",
+    "**",
+    "*",
+    "**/*",
+    "src/**",
+    "src/*",
+    "src/a/*.ts",
+    "src/**/x.ts",
+    "?",
+    "[",
+    "src/[a]/x.ts",
+    "src/a b/x.ts",
+    "src/a\nb.ts",
+    "src/a\u0000.ts",
+    "src/(a)/x.ts",
+    "src/a.ts/",
+    "a".repeat(501),
+    " src/a/x.ts",
+    "./././src/a",
+    "src/./a/x.ts",
+    "src/a/..",
+    "src/é.ts",
+  ];
+  const MEMORY_LESSONS = join(__dirname, "..", "..", "memory", "dist", "core", "lessons.js");
+  it.skipIf(!existsSync(MEMORY_LESSONS))(
+    "agrees with memory's pathsOverlap on every pair",
+    async () => {
+      const memory = (await import(MEMORY_LESSONS)) as {
+        pathsOverlap: (l: string, t: string) => boolean;
+      };
+      const differ: string[] = [];
+      for (const l of HOSTILE)
+        for (const t of HOSTILE)
+          if (memory.pathsOverlap(l, t) !== lessonPathOverlaps(l, t))
+            differ.push(`${JSON.stringify(l).slice(0, 40)} ~ ${JSON.stringify(t).slice(0, 40)}`);
+      expect(differ).toEqual([]);
+    },
+  );
+  it("refuses what memory refuses: `.`, control characters, over 500 characters", () => {
+    expect(lessonPathOverlaps(".", ".")).toBe(false);
+    expect(lessonPathOverlaps("**", "src/a\u0000.ts")).toBe(false);
+    expect(lessonPathOverlaps("*", "a".repeat(501))).toBe(false);
   });
 });
 
@@ -217,6 +280,8 @@ describe("lessonsReport", () => {
     });
     expect(r.lessons.find((l) => l.lore_id === "draft001")!.measure.state).toBe("not_approved");
     expect(r.lessons.find((l) => l.lore_id === "gone0001")!.lore_status).toBeNull();
+    // The panel says what the measure cannot see: paths come from the diff summary.
+    expect(r.note).toMatch(/Counts can read low: .*recorded diff summary/);
   });
 
   it("a regression link on a later change counts as a recurrence; a withdrawn finding does not", () => {

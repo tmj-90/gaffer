@@ -73,15 +73,28 @@ const norm = (p: string): string =>
     .replace(/^\/+/, "");
 
 /**
+ * A path memory would match on, or null: memory's normaliseLorePath refuses an empty path,
+ * `.`, a `..` segment, a control character and anything over 500 characters, and so does
+ * this copy (backlog 59 review: the two disagreed on those, so the measure counted changes
+ * memory never served the lesson to).
+ */
+function matchable(p: string): string | null {
+  const s = norm(p);
+  // eslint-disable-next-line no-control-regex -- control bytes never belong in a path
+  if (!s || s === "." || s.length > 500 || /[\x00-\x1f]/.test(s)) return null;
+  return s.split("/").includes("..") ? null : s;
+}
+
+/**
  * Does a lesson path overlap a touched path? The same rule memory serves lessons by
  * (packages/memory/src/core/lessons.ts pathsOverlap): a glob matches the path, or its
  * literal stem lies under a touched directory; a plain path overlaps when one is the other
  * or a directory holding it, on whole segments.
  */
 export function lessonPathOverlaps(lessonPath: string, touched: string): boolean {
-  const l = norm(lessonPath);
-  const t = norm(touched);
-  if (!l || !t || l.split("/").includes("..") || t.split("/").includes("..")) return false;
+  const l = matchable(lessonPath);
+  const t = matchable(touched);
+  if (!l || !t) return false;
   if (isGlob(l)) {
     if (globRegex(l).test(t.replace(/\/$/, ""))) return true;
     const stem = l.slice(0, l.search(/[*?[]/)).replace(/[^/]*$/, "");

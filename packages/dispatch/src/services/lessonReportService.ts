@@ -57,9 +57,20 @@ export interface LessonsReport {
   readonly note: string;
 }
 
+/**
+ * What the measure cannot see (backlog 59 review): a change's paths are read from its
+ * recorded diff summary (`git diff --stat`, its last 14 file lines, names shortened to fit
+ * 80 columns), which leaves out shortened names and the files of a large change. On this
+ * repository's last 200 commits it missed 176 of 926 paths, in 62 commits. Both windows lose
+ * the same kind of change, so counts read low rather than in the lesson's favour.
+ */
+export const LESSONS_PATHS_CAVEAT =
+  "Counts can read low: each change's paths come from its recorded diff summary, which leaves out long, shortened file names and the files of a large change.";
+
 export const LESSONS_NOTE =
   "A lesson is a person's post-merge finding a person approved; later changes on its paths see it. A recurrence is a later change on those paths that had something go wrong after it was done (a finding or a regression link). No rate below " +
-  `${LESSON_MEASURE_MIN_CHANGES} changes.`;
+  `${LESSON_MEASURE_MIN_CHANGES} changes. ` +
+  LESSONS_PATHS_CAVEAT;
 
 /** Every landed change with its paths and whether something went wrong after it. */
 export function landedChanges(db: Db): LandedChange[] {

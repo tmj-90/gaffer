@@ -70,7 +70,9 @@ describe("open a fix ticket", () => {
       `Fix after #${change.number}: The empty export lost its header row. Nobody tested the empty case.`,
     );
     expect(fix.ticket.risk_level).toBe("low");
-    expect(fix.ticket.description).toContain("> The empty export lost its header row.\n> Nobody tested the empty case.");
+    expect(fix.ticket.description).toContain(
+      "> The empty export lost its header row.\n> Nobody tested the empty case.",
+    );
     expect(fix.ticket.description).toContain(`linked as a regression of #${change.number}`);
     expect(fix.repositories.map((x) => `${x.name}/${x.access}`)).toEqual(["api/write"]);
     // One link, carrying the finding; the escaped-defect count reads links, so once.
@@ -130,7 +132,9 @@ describe("open a fix ticket", () => {
     // The original is no longer done: the regression link refuses, the create rolls back.
     wg.db.prepare(`UPDATE tickets SET status='in_review' WHERE id=?`).run(change.id);
     expect(() => wg.openFixTicket(change.id, f.id, human)).toThrow(/not an accepted change/);
-    expect((wg.db.prepare("SELECT COUNT(*) AS n FROM tickets").get() as { n: number }).n).toBe(before);
+    expect((wg.db.prepare("SELECT COUNT(*) AS n FROM tickets").get() as { n: number }).n).toBe(
+      before,
+    );
     expect(wg.findingsOf(change.id)[0]!.fix_ticket).toBeNull();
   });
 
@@ -201,7 +205,14 @@ describe.skipIf(!CLI_BUILT)("wg ticket finding fix-ticket", () => {
       const { change, f } = changeWithFinding(wg, human);
       wg.db.close();
       const ref = String(change.number);
-      const pv = runBin(db, ["ticket", "finding", "fix-ticket", ref, f.id.slice(0, 8), "--preview"]);
+      const pv = runBin(db, [
+        "ticket",
+        "finding",
+        "fix-ticket",
+        ref,
+        f.id.slice(0, 8),
+        "--preview",
+      ]);
       expect(pv.status, pv.stderr).toBe(0);
       expect(JSON.parse(pv.stdout).preview.steps_down).toBe(false);
       const op = runBin(db, ["ticket", "finding", "fix-ticket", ref, f.id.slice(0, 8)]);

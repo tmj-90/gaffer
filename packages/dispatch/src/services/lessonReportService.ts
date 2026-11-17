@@ -14,8 +14,18 @@ import {
   type LandedChange,
   type LessonMeasure,
 } from "../health/lessons.js";
-import { currentRegressionLinks, DEFECT_ESCAPED_EVENT, DEFECT_ESCAPED_WITHDRAWN_EVENT, type RegressionEventRow } from "./escapedDefects.js";
-import { FINDING_LESSON_EVENT, readFindings, recordedDiffPaths, writeRepoOf } from "./findingService.js";
+import {
+  currentRegressionLinks,
+  DEFECT_ESCAPED_EVENT,
+  DEFECT_ESCAPED_WITHDRAWN_EVENT,
+  type RegressionEventRow,
+} from "./escapedDefects.js";
+import {
+  FINDING_LESSON_EVENT,
+  readFindings,
+  recordedDiffPaths,
+  writeRepoOf,
+} from "./findingService.js";
 
 /** At most this many lessons have their lore status read per report (as review rules). */
 const MAX_LOOKUPS = 20;
@@ -123,7 +133,7 @@ export function lessonsReport(
   const afterAll = new Set<string>();
   const afterRecurred = new Set<string>();
   const lessons = rows.map((r, i): LessonView => {
-    let p: Record<string, unknown> = {};
+    let p: Record<string, unknown>;
     try {
       p = JSON.parse(r.payload_json ?? "{}") as Record<string, unknown>;
     } catch {
@@ -131,7 +141,9 @@ export function lessonsReport(
     }
     const loreId = typeof p.lore_id === "string" && p.lore_id ? p.lore_id : null;
     const repo = typeof p.repo === "string" && p.repo ? p.repo : null;
-    const paths = Array.isArray(p.paths) ? p.paths.filter((x): x is string => typeof x === "string") : [];
+    const paths = Array.isArray(p.paths)
+      ? p.paths.filter((x): x is string => typeof x === "string")
+      : [];
     const found = loreId && i < MAX_LOOKUPS ? opts.lookup(loreId) : null;
     if (!found) unknown += 1;
     else if (found.status === "active") live += 1;

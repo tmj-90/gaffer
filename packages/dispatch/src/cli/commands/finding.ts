@@ -31,7 +31,10 @@ export function lessonMemoryEnv(env: NodeJS.ProcessEnv, dbOpt: unknown): NodeJS.
     if (existsSync(bin)) out["MEMORY_CLI_BIN"] = bin;
   }
   if (!(env["MEMORY_DB"] ?? "").trim()) {
-    out["MEMORY_DB"] = resolve(dirname(resolveDbPath(dbOpt as string | undefined)), "memory.sqlite");
+    out["MEMORY_DB"] = resolve(
+      dirname(resolveDbPath(dbOpt as string | undefined)),
+      "memory.sqlite",
+    );
   }
   return out;
 }

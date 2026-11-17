@@ -671,10 +671,7 @@ function repoName(db: Db, repoId: string): string {
 }
 
 /** The confirm's sentence for these rows (grouped by repo and risk, plain words). */
-export function fixStepDownMessage(
-  ref: string,
-  rows: readonly FixStepDownRow[],
-): string {
+export function fixStepDownMessage(ref: string, rows: readonly FixStepDownRow[]): string {
   if (rows.length === 0)
     return `Linking it as a regression of ${ref} takes no automatic approval back: a person approved and landed ${ref}, or it is already taken back.`;
   const groups = new Map<string, { repo: string; risk: string; gates: string[] }>();
@@ -753,7 +750,9 @@ export function fixTicketDraft(
       `Category: ${f.category ? FINDING_CATEGORY_LABEL[f.category] : "none given"}.`,
       ...(f.paths.length ? [`Paths it concerns: ${f.paths.join(", ")}.`] : []),
       ...(f.criteria.length
-        ? [`Acceptance criteria of ${ref} it concerns: ${f.criteria.map((c) => oneLine(c.text)).join("; ")}.`]
+        ? [
+            `Acceptance criteria of ${ref} it concerns: ${f.criteria.map((c) => oneLine(c.text)).join("; ")}.`,
+          ]
         : []),
       `This ticket is linked as a regression of ${ref}. The quoted text is a person's report of what went wrong: the acceptance criteria of this ticket say what to deliver.`,
     ]
@@ -773,7 +772,10 @@ export interface FixTicketActs {
     originalId: string,
     note: string,
     findingId: string,
-  ): { recorded: boolean; steppedDown: ReadonlyArray<{ repoId: string; riskLevel: string; gate: string }> };
+  ): {
+    recorded: boolean;
+    steppedDown: ReadonlyArray<{ repoId: string; riskLevel: string; gate: string }>;
+  };
 }
 
 /**

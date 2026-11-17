@@ -37,7 +37,10 @@ const PATH_MAX = 500;
  */
 export function normaliseLorePath(p: unknown): string | null {
   if (typeof p !== "string") return null;
-  let s = p.trim().replace(/\\/g, "/").replace(/\/{2,}/g, "/");
+  let s = p
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/\/{2,}/g, "/");
   while (s.startsWith("./")) s = s.slice(2);
   s = s.replace(/^\/+/, "");
   // eslint-disable-next-line no-control-regex -- control bytes never belong in a path
@@ -109,9 +112,7 @@ export interface LessonHit {
 /** The change a lesson came from, read from its tags (null when none or not a number). */
 export function lessonFromTicket(db: Database, loreId: string): number | null {
   const row = db
-    .prepare(
-      "SELECT tag FROM lore_tags WHERE lore_id = ? AND tag LIKE ? ORDER BY tag LIMIT 1",
-    )
+    .prepare("SELECT tag FROM lore_tags WHERE lore_id = ? AND tag LIKE ? ORDER BY tag LIMIT 1")
     .get(loreId, `${LESSON_FROM_PREFIX}%`) as { tag: string } | undefined;
   const m = row ? /^from-ticket-(\d{1,9})$/.exec(row.tag) : null;
   return m ? Number(m[1]) : null;

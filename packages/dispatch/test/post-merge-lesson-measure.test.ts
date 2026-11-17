@@ -253,7 +253,9 @@ describe.skipIf(!CLI_BUILT)("wg lessons", () => {
       wg.db.close();
       const text = runBin(db, ["lessons"]);
       expect(text.status, text.stderr).toBe(0);
-      expect(text.stdout).toMatch(/^Lessons: 0 live, 0 drafts waiting, recurrences after: 0 of 0\./);
+      expect(text.stdout).toMatch(
+        /^Lessons: 0 live, 0 drafts waiting, recurrences after: 0 of 0\./,
+      );
       const json = runBin(db, ["lessons", "--json"]);
       const r = JSON.parse(json.stdout) as { unknown: number; lessons: Array<{ lore_id: string }> };
       expect(r.unknown).toBe(1);

@@ -1314,7 +1314,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.review,
     summary: "Propose a post-merge finding as a lesson",
     description:
-      "\"Propose as a lesson now\": files ONE standing finding as a lore draft (kind " +
+      '"Propose as a lesson now": files ONE standing finding as a lore draft (kind ' +
       "`gotcha`, tagged `post-merge-finding` and `from-ticket-<n>`) scoped to the change's " +
       "repository and the finding's paths, recorded as `ticket.finding_lesson_proposed`. It " +
       "is a draft until a person approves it in the Memory view (never auto-approved); once " +
@@ -1328,7 +1328,11 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
       invalid,
       conflict,
       forbidden,
-      { status: 503, description: "Memory did not file it (`NOT_CONFIGURED`): nothing recorded.", content: "json" },
+      {
+        status: 503,
+        description: "Memory did not file it (`NOT_CONFIGURED`): nothing recorded.",
+        content: "json",
+      },
     ],
   },
   {

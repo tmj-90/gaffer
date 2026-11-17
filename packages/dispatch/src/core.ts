@@ -1789,7 +1789,12 @@ export class Dispatch {
             findingId: fid,
           });
           const steppedDown = res.recorded
-            ? stepDown.stepDownForRegression(this.stepDownHost(), res.ticketId, res.regressionOf, actor)
+            ? stepDown.stepDownForRegression(
+                this.stepDownHost(),
+                res.ticketId,
+                res.regressionOf,
+                actor,
+              )
             : [];
           return { recorded: res.recorded, steppedDown };
         },

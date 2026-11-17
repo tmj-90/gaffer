@@ -39,7 +39,11 @@ const system: Actor = { type: "system" };
 
 const REASON = "Empty exports must keep the header row";
 
-function landed(wg: Dispatch, title: string, paths = "src/export/csv.ts"): { id: string; number: number } {
+function landed(
+  wg: Dispatch,
+  title: string,
+  paths = "src/export/csv.ts",
+): { id: string; number: number } {
   const r = wg.repos.findByName("app") ?? wg.registerRepository({ name: "app" }, human);
   const t = wg.createTicketWithLinks(
     { title, description: "" },
@@ -168,13 +172,23 @@ describe("(b) propose as a lesson now", () => {
       },
     };
     const noop = { run: () => ({ started: true }) } as never;
-    const server = createApiServer(wg, noop, createPlanBuildRunner(), noop, noop, "127.0.0.1", memoryReader);
+    const server = createApiServer(
+      wg,
+      noop,
+      createPlanBuildRunner(),
+      noop,
+      noop,
+      "127.0.0.1",
+      memoryReader,
+    );
     await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
     const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
     try {
       const t = landed(wg, "CSV export");
       const f = wg.addFinding(t.id, { text: REASON }, human).finding;
-      const res = await fetch(`${base}/tickets/${t.id}/findings/${f.id}/lesson`, { method: "POST" });
+      const res = await fetch(`${base}/tickets/${t.id}/findings/${f.id}/lesson`, {
+        method: "POST",
+      });
       expect(res.status).toBe(200);
       expect(await res.json()).toMatchObject({ lore_id: "less2345", finding: { id: f.id } });
       expect(filed[0]!.paths).toEqual(["src/export/csv.ts"]);

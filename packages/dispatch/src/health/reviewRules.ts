@@ -105,7 +105,10 @@ export function normaliseFeedback(text: string): string | null {
 export function feedbackKey(it: { text: string; category?: string | null }): string | null {
   const key = normaliseFeedback(it.text);
   if (key === null) return null;
-  const cat = (it.category ?? "").toLowerCase().replace(/[^a-z]+/g, " ").trim();
+  const cat = (it.category ?? "")
+    .toLowerCase()
+    .replace(/[^a-z]+/g, " ")
+    .trim();
   return cat ? `${cat}: ${key}` : key;
 }
 

@@ -81,7 +81,11 @@ function withdrawForm(t, f, host) {
     [
       reason,
       roLock(el("button", { class: "btn small", type: "submit" }, "Withdraw"), "ticket"),
-      el("button", { class: "btn small quiet", type: "button", onclick: () => form.remove() }, "Cancel"),
+      el(
+        "button",
+        { class: "btn small quiet", type: "button", onclick: () => form.remove() },
+        "Cancel",
+      ),
     ],
   );
   host.appendChild(form);
@@ -122,7 +126,11 @@ export async function fixTicketConfirm(t, f, host) {
           }),
         "btn small primary",
       ),
-      el("button", { class: "btn small quiet", type: "button", onclick: () => box.remove() }, "Cancel"),
+      el(
+        "button",
+        { class: "btn small quiet", type: "button", onclick: () => box.remove() },
+        "Cancel",
+      ),
     ]),
   );
   host.appendChild(box);
@@ -164,11 +172,7 @@ function findingItem(t, f) {
     f.fix_ticket
       ? el("p", { class: "fd-state fd-fix" }, [
           el("b", {}, "Fix ticket "),
-          el(
-            "a",
-            { href: `#/ticket/${f.fix_ticket.ticket_id}` },
-            `#${f.fix_ticket.number ?? "?"}`,
-          ),
+          el("a", { href: `#/ticket/${f.fix_ticket.ticket_id}` }, `#${f.fix_ticket.number ?? "?"}`),
         ])
       : null,
   ]);
@@ -266,7 +270,11 @@ function addForm(t, host) {
       el("div", { class: "fd-row" }, [cat, paths]),
       el("div", { class: "fd-actions" }, [
         roLock(el("button", { class: "btn small primary", type: "submit" }, "Record it"), "ticket"),
-        el("button", { class: "btn small quiet", type: "button", onclick: () => form.remove() }, "Cancel"),
+        el(
+          "button",
+          { class: "btn small quiet", type: "button", onclick: () => form.remove() },
+          "Cancel",
+        ),
       ]),
     ],
   );
@@ -289,7 +297,13 @@ export function findingsCard(t, findings) {
     [panelHead("What went wrong after it was done", null, null, { level: 3 })],
   );
   if (list.length)
-    section.appendChild(el("ul", { class: "fd-list" }, list.map((f) => findingItem(t, f))));
+    section.appendChild(
+      el(
+        "ul",
+        { class: "fd-list" },
+        list.map((f) => findingItem(t, f)),
+      ),
+    );
   if (done) {
     const host = el("div", { class: "fd-add" });
     host.appendChild(
@@ -342,14 +356,19 @@ export function renderLessons(r) {
             {
               key: "lore_status",
               label: "Status",
-              format: (v) => (v ? LORE_STATUS_LABEL[v] || String(v) : "Unknown (memory did not say)"),
+              format: (v) =>
+                v ? LORE_STATUS_LABEL[v] || String(v) : "Unknown (memory did not say)",
             },
             { key: "paths", label: "Paths", format: (v) => (Array.isArray(v) ? v.join(", ") : "") },
             {
               key: "before",
               label: "Before",
               format: (_v, l) =>
-                kOfN(l.measure.recurrences_before, l.measure.changes_before, l.measure.rate_before_pct),
+                kOfN(
+                  l.measure.recurrences_before,
+                  l.measure.changes_before,
+                  l.measure.rate_before_pct,
+                ),
             },
             {
               key: "after",
@@ -357,21 +376,33 @@ export function renderLessons(r) {
               format: (_v, l) =>
                 l.measure.state === "not_approved"
                   ? "not live yet"
-                  : kOfN(l.measure.recurrences_after, l.measure.changes_after, l.measure.rate_after_pct),
+                  : kOfN(
+                      l.measure.recurrences_after,
+                      l.measure.changes_after,
+                      l.measure.rate_after_pct,
+                    ),
             },
           ],
           rows: lessons,
         })
-      : el("p", { class: "dim" }, "No lesson yet: one is proposed from a finding on a done ticket."),
+      : el(
+          "p",
+          { class: "dim" },
+          "No lesson yet: one is proposed from a finding on a done ticket.",
+        ),
     r && r.note ? el("p", { class: "dim fd-note" }, String(r.note)) : null,
   ];
 }
 
 /** Health's lessons section: drawn now, filled when GET /api/lessons answers. */
 export function lessonsPanel() {
-  const body = el("div", { class: "fd-lessons-body" }, [el("p", { class: "dim" }, "Reading lessons.")]);
+  const body = el("div", { class: "fd-lessons-body" }, [
+    el("p", { class: "dim" }, "Reading lessons."),
+  ]);
   const section = el("section", { class: "card panel fd-lessons", "aria-label": "Lessons" }, [
-    panelHead("Lessons from findings", "what went wrong after a change was done", null, { level: 2 }),
+    panelHead("Lessons from findings", "what went wrong after a change was done", null, {
+      level: 2,
+    }),
     body,
   ]);
   api("GET", "/api/lessons")

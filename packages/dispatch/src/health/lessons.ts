@@ -65,7 +65,12 @@ function globRegex(glob: string): RegExp {
 }
 
 const norm = (p: string): string =>
-  p.trim().replace(/\\/g, "/").replace(/\/{2,}/g, "/").replace(/^(\.\/)+/, "").replace(/^\/+/, "");
+  p
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/\/{2,}/g, "/")
+    .replace(/^(\.\/)+/, "")
+    .replace(/^\/+/, "");
 
 /**
  * Does a lesson path overlap a touched path? The same rule memory serves lessons by

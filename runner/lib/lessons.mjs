@@ -51,7 +51,14 @@ export function lessonsBlock(o) {
   const render = resolve(o.crewDir || "", "dist/runtime/context/renderContextPrimerCli.js");
   if (!o.memoryCliBin || !existsSync(o.memoryCliBin) || !existsSync(render)) return "";
   // `--paths=<p>`: a path that starts with `-` stays a value.
-  const argv = [o.memoryCliBin, "lessons", "--repo", repo, "--json", ...paths.map((p) => `--paths=${p}`)];
+  const argv = [
+    o.memoryCliBin,
+    "lessons",
+    "--repo",
+    repo,
+    "--json",
+    ...paths.map((p) => `--paths=${p}`),
+  ];
   const got = spawnSync(process.execPath, argv, {
     encoding: "utf8",
     timeout: 20_000,

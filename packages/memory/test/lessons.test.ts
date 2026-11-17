@@ -162,7 +162,16 @@ describe("memory lessons (CLI)", () => {
       ]);
       const id = /suggested (\S+)/.exec(out.join(""))![1]!;
       out.length = 0;
-      await main(["node", "memory", "lessons", "--repo", "app", "--paths", "src/export/csv.ts", "--json"]);
+      await main([
+        "node",
+        "memory",
+        "lessons",
+        "--repo",
+        "app",
+        "--paths",
+        "src/export/csv.ts",
+        "--json",
+      ]);
       expect(JSON.parse(out.join(""))).toEqual([]);
       await main(["node", "memory", "approve", id]);
       out.length = 0;
@@ -170,7 +179,16 @@ describe("memory lessons (CLI)", () => {
       const hits = JSON.parse(out.join("")) as Array<{ id: string; title: string }>;
       expect(hits.map((h) => h.id)).toEqual([id]);
       out.length = 0;
-      await main(["node", "memory", "lessons", "--repo", "app", "--paths", "src/other.ts", "--json"]);
+      await main([
+        "node",
+        "memory",
+        "lessons",
+        "--repo",
+        "app",
+        "--paths",
+        "src/other.ts",
+        "--json",
+      ]);
       expect(JSON.parse(out.join(""))).toEqual([]);
     } finally {
       process.stdout.write = write;

@@ -125,7 +125,10 @@ function stubFetch(): void {
       if (method === "GET" && url.includes("/fix-ticket")) return json(PREVIEW);
       if (method === "GET" && url.includes("/api/lessons")) return json(REPORT);
       if (method === "POST" && url.includes("/fix-ticket"))
-        return json({ ticket: { id: "tkt-9", number: 9 }, finding: FINDING, stepped_down: [] }, 201);
+        return json(
+          { ticket: { id: "tkt-9", number: 9 }, finding: FINDING, stepped_down: [] },
+          201,
+        );
       if (method === "POST") return json({ ok: true }, 201);
       return json({});
     }),
@@ -152,8 +155,7 @@ const buttons = (root: Element) =>
   [...root.querySelectorAll("button")].map((b) => (b.textContent || "").trim());
 const byText = (root: Element, text: string) =>
   [...root.querySelectorAll("button")].find((b) => (b.textContent || "").trim() === text) as
-    | HTMLButtonElement
-    | undefined;
+    HTMLButtonElement | undefined;
 
 describe("web: the findings card on the Ticket page", () => {
   beforeEach(() => {
@@ -179,9 +181,11 @@ describe("web: the findings card on the Ticket page", () => {
     open.click();
     const form = card.querySelector(".fd-form") as HTMLFormElement;
     expect(form).not.toBeNull();
-    (form.querySelector("textarea") as HTMLTextAreaElement).value = "Header row lost on empty export";
+    (form.querySelector("textarea") as HTMLTextAreaElement).value =
+      "Header row lost on empty export";
     (form.querySelector("select") as HTMLSelectElement).value = "test_gap";
-    (form.querySelector("input") as HTMLInputElement).value = "src/export/csv.ts, test/export.test.ts";
+    (form.querySelector("input") as HTMLInputElement).value =
+      "src/export/csv.ts, test/export.test.ts";
     form.dispatchEvent(new Event("submit", { cancelable: true }));
     await settle();
     const post = sent.find((s) => s.method === "POST")!;
@@ -219,12 +223,16 @@ describe("web: the findings card on the Ticket page", () => {
       "Paths (from the delivery): src/export/csv.ts",
     );
     expect(card.querySelector("img")).toBeNull();
-    expect(items[0]!.querySelector(".fd-text")!.textContent).toContain('<img src=x onerror="alert(1)">');
+    expect(items[0]!.querySelector(".fd-text")!.textContent).toContain(
+      '<img src=x onerror="alert(1)">',
+    );
     // A category the page does not know (even "constructor") reads as a word, not a function.
     expect(items[1]!.querySelector(".fd-cat")!.textContent).toBe("Other");
     expect(items[1]!.querySelector(".fd-withdrawn")!.textContent).toContain("Withdrawn by ann");
     expect(buttons(items[1]!)).toEqual([]); // nothing to do on a withdrawn finding
-    expect(items[2]!.querySelector(".fd-lesson")!.textContent).toContain("Proposed as a lesson (abcd2345)");
+    expect(items[2]!.querySelector(".fd-lesson")!.textContent).toContain(
+      "Proposed as a lesson (abcd2345)",
+    );
     expect(items[2]!.querySelector(".fd-fix a")!.getAttribute("href")).toBe("#/ticket/tkt-9");
     expect(buttons(items[2]!)).toEqual(["Withdraw"]);
     expect(buttons(items[0]!)).toEqual(["Propose as a lesson", "Open a fix ticket", "Withdraw"]);

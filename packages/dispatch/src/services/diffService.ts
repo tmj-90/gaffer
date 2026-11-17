@@ -551,7 +551,19 @@ export function computeTicketDiff(
         headSha: null,
       };
     }
-    const t = pin.pinned;
+    // AN APPROVAL OBSERVES FROM THE RECORDED CUT (review of external review 21): the base
+    // branch is as mutable as the delivery branch. Parked on a commit that already holds
+    // the risky part of the delivery, `baseTip...head` showed only the harmless rest, and
+    // the observed risk passed a change whose sensitive paths would land once the base
+    // moved back. An approval (`at` given) reads the diff from the commit the runner
+    // recorded as the cut point when there is one, as the integrity scan already does.
+    // Identical to `baseTip...head` while the base has not absorbed delivery commits.
+    // The done gate (deliveryDiffProof) keeps `baseTip...head`: it only asks "is there a
+    // diff", and a wider range there would let an already-landed delivery pass it.
+    const t: PinnedTarget =
+      opts.at !== undefined && !pin.pinned.isBootstrap && pin.pinned.baseSha
+        ? { ...pin.pinned, diffArgs: [`${pin.pinned.baseSha}...${pin.pinned.head}`] }
+        : pin.pinned;
     const headSha = t.isBootstrap ? null : t.head;
     const ids = { repoId: t.repoId, headSha };
     const withIds = (r: RepoDiff): RepoDiff => ({ ...r, ...ids });

@@ -252,9 +252,7 @@ export function approveReview(
     });
   }
   // The done gate's git runs HERE, before transition() takes the write lock, at the
-  // commits resolved once above. A write repo with no resolved commit has nothing for the
-  // done gate to read, so its refusal (repo_unavailable, the remedy named) comes first.
-  assertWriteReposAvailable(ticket, unavailable);
+  // commits resolved once above (a write repo with no resolved commit shows no diff).
   const deliveryDiff = internals.transitions.deliveryDiffProof(ticket.id, headsAt(heads));
   return inTransaction(internals.db, () => {
     recheckAgentApproval(internals, ticket, actor);

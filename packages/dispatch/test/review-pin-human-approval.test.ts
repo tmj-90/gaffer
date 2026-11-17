@@ -101,13 +101,23 @@ describe("approveReview pins the commit a HUMAN approved", () => {
   it("refuses the approval when the branch head cannot be resolved: nothing approved, no pin (external review #7)", () => {
     const d = Dispatch.open(":memory:", undefined, runner(null));
     const ticketId = inReview(d);
-    let reason = "";
+    let code = "";
+    let failures: string[] = [];
     try {
       d.approveReview(ticketId, human);
     } catch (e) {
-      reason = String((e as { details?: { reason?: string } }).details?.reason ?? "");
+      const err = e as { code?: string; details?: { policy?: { failures?: { code: string }[] } } };
+      code = String(err.code ?? "");
+      failures = (err.details?.policy?.failures ?? []).map((f) => f.code);
     }
-    expect(reason).toBe("repo_unavailable");
+    // THE COMMIT AN APPROVAL PINS (external review 21): the done gate reads the delivery
+    // at the commits the approval resolved, and a repo with none shows no diff. A human's
+    // policy refusals come before the coverage one (review-close.test.ts), so a ticket
+    // whose only write repo has no readable head is refused for its missing diff, as a
+    // real checkout whose branch is gone always was; with another repo carrying the diff
+    // the refusal names the unavailable one (review-stale-revision-landing.test.ts).
+    expect(code).toBe("POLICY_DENIED");
+    expect(failures).toContain("PR_OR_DIFF_REQUIRED");
     expect(d.view(ticketId).ticket.status).toBe("in_review");
     expect(pins(d, ticketId)).toHaveLength(0);
   });

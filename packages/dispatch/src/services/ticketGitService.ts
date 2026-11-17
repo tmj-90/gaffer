@@ -80,8 +80,11 @@ export function observedRiskFor(
   host: TicketGitHost,
   ticket: Ticket,
   repos?: readonly RepoDiff[],
+  heads?: readonly ReviewedHead[],
 ): ObservedRisk {
-  const observed = observedRisk(repos ?? host.ticketDiff(ticket.id).repos);
+  // An approval passes the heads it resolved once: every read of the diff takes them.
+  const at = heads ? new Map(heads.map((h) => [h.repoId, h.sha.toLowerCase()])) : undefined;
+  const observed = observedRisk(repos ?? host.ticketDiff(ticket.id, at ? { at } : {}).repos);
   if (ticket.allow_test_changes === 1) return observed;
   return withRunnerIntegrityHolds(observed, runnerIntegrityHolds(host.latestDodSummary(ticket.id)));
 }
@@ -187,6 +190,7 @@ export function resolveApprovalShas(
   host: Pick<TicketGitHost, "repoDeliveries" | "repos">,
   internals: Pick<TicketGitInternals, "gitRunner">,
   ticket: Ticket,
+  heads?: readonly ReviewedHead[],
 ): ApprovalShas | null {
   // Fall back to a real `git` spawn when no runner was injected — EVERY production
   // entrypoint (api/bin, cli, mcp/server) opens Dispatch without one, so gating this on
@@ -207,6 +211,10 @@ export function resolveApprovalShas(
       delivery?.branch_name ??
       host.repos.ticketRepoBranch(ticket.id, repo.id) ??
       ticket.branch_name;
+    if (heads) {
+      // The approval's heads, resolved once: no second read of the branch.
+      return { deliverySha, mergeSha: heads.find((h) => h.repoId === repo.id)?.sha ?? null };
+    }
     if (!deliverySha || !branch || !repo.local_path || !existsSync(repo.local_path)) {
       return { deliverySha, mergeSha: null };
     }

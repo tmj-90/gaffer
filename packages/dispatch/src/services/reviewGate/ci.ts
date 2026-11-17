@@ -21,10 +21,11 @@ export function approveCiCandidate(
   host: Pick<CiHost, "ciStatus">,
   internals: Pick<CiInternals, "reviewedHeadsResolver">,
   ticket: Ticket,
+  heads?: readonly ReviewedHead[],
 ): string | null {
-  return host.ciStatus(ticket.id, null).required
-    ? (ciCandidateHead(internals, ticket)?.sha ?? null)
-    : null;
+  if (!host.ciStatus(ticket.id, null).required) return null;
+  // An approval passes the heads it resolved once: the primary write repo's is first.
+  return (heads ? heads[0] : ciCandidateHead(internals, ticket))?.sha ?? null;
 }
 
 /**

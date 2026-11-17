@@ -69,8 +69,14 @@ export interface ApprovalShas {
   mergeSha: string | null;
 }
 
-/** Resolves the delivery-vs-merge SHAs for a ticket at approve time (git + DB read). */
-export type ApprovalShaResolver = (ticket: Ticket) => ApprovalShas | null;
+/**
+ * Resolves the delivery-vs-merge SHAs for a ticket at approve time (DB read; git only
+ * when `heads`, the commits the approval resolved once, are not given).
+ */
+export type ApprovalShaResolver = (
+  ticket: Ticket,
+  heads?: readonly ReviewedHead[],
+) => ApprovalShas | null;
 
 /** The current head of one write repo's delivery branch (see reviewedHeadsResolver). */
 export interface ReviewedHead {
@@ -207,6 +213,17 @@ export interface ReviewGateServiceDeps {
    */
   readonly unavailableWriteReposResolver?: (ticket: Ticket) => readonly UnavailableWriteRepo[];
   /**
+   * THE COMMIT AN APPROVAL PINS (external review 21): every write repo's delivery head
+   * and the write repos whose head cannot be read, from ONE read. approveReview resolves
+   * the heads once with it and hands those commits to every Git read behind the decision
+   * (the observed risk, the done gate's diff, the CI candidate, the pins). `undefined`
+   * falls back to reviewedHeadsResolver and unavailableWriteReposResolver (fixtures).
+   */
+  readonly writeRepoHeadsResolver?: (ticket: Ticket) => {
+    heads: readonly ReviewedHead[];
+    unavailable: readonly UnavailableWriteRepo[];
+  };
+  /**
    * PER-REPOSITORY LANDING: true when `sha` is already contained in the repo's default
    * branch (`git merge-base --is-ancestor`). markMerged uses it as POSITIVE evidence for a
    * pending repo a merge path landed without recording it (a configured
@@ -253,7 +270,10 @@ export interface ReviewGateServiceDeps {
    * byte-identical to today. A resolver throw degrades to "indeterminate" (fail toward
    * human). It can only ever DENY an auto-ship; it never grants one. See observedRisk.ts.
    */
-  readonly observedRiskResolver?: (ticket: Ticket) => ObservedRisk | null;
+  readonly observedRiskResolver?: (
+    ticket: Ticket,
+    heads?: readonly ReviewedHead[],
+  ) => ObservedRisk | null;
   /**
    * A PERSON'S WAIVER (package H1) records whether the factory's agents run without OS
    * isolation: "none", or the OS sandbox provider that wraps them. The default asks the
@@ -289,6 +309,7 @@ export class ReviewGateService {
       approvalShaResolver: deps.approvalShaResolver,
       reviewedHeadsResolver: deps.reviewedHeadsResolver,
       unavailableWriteReposResolver: deps.unavailableWriteReposResolver,
+      writeRepoHeadsResolver: deps.writeRepoHeadsResolver,
       landedOnDefaultResolver: deps.landedOnDefaultResolver,
       changeOnRefsResolver: deps.changeOnRefsResolver,
       policyAllowsAgentApprove: deps.policyAllowsAgentApprove,

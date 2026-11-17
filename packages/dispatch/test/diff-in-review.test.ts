@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { describe, expect, it } from "vitest";
 
 import { Dispatch } from "../src/core.js";
@@ -5,6 +7,20 @@ import { computeTicketDiff, MAX_DIFF_BYTES, type GitRunner } from "../src/servic
 import type { Actor } from "../src/domain/types.js";
 
 const human: Actor = { type: "human", id: "tom" };
+
+/**
+ * THE COMMIT AN APPROVAL PINS (external review 21): the diff resolves the delivery branch
+ * and the base branch to commits ONCE and every read takes the commits. The fakes answer
+ * `rev-parse --verify --quiet refs/heads/<b>^{commit}` (and `HEAD^{commit}`) with a fixed
+ * commit per name, and the scripted reads are keyed on those commits.
+ */
+const sha = (name: string): string => createHash("sha1").update(name).digest("hex");
+const range = (base: string, branch: string): string => `${sha(base)}...${sha(branch)}`;
+function revParse(args: readonly string[]): string | null {
+  if (args[0] !== "rev-parse") return null;
+  const m = /^refs\/heads\/(.+)\^\{commit\}$|^(HEAD)\^\{commit\}$/.exec(String(args.at(-1)));
+  return m ? sha(m[1] ?? m[2]!) : null;
+}
 
 /**
  * A scripted git runner: returns a canned result per (cwd, joined-args) so a test
@@ -17,6 +33,8 @@ function scriptedGit(
   const runGit: GitRunner = (cwd, args) => {
     calls.push({ cwd, args });
     const key = args.join(" ");
+    const resolved = revParse(args);
+    if (resolved && !(key in script)) return { status: 0, stdout: `${resolved}\n`, stderr: "" };
     // GATE INTEGRITY resolves the merge-base before its scan; an unscripted one answers a
     // fixed commit so the scan reads (empty) output instead of flagging "incomplete".
     const fallback: { status: number | null; stdout?: string; stderr?: string } =
@@ -75,11 +93,11 @@ describe("diff-in-review: branch resolution + git", () => {
       ticketBranch: "ignored-because-repo-branch-wins",
     });
     const { runGit, calls } = scriptedGit({
-      "diff --numstat --no-ext-diff --no-textconv main...feat/x": {
+      [`diff --numstat --no-ext-diff --no-textconv ${range("main", "feat/x")}`]: {
         status: 0,
         stdout: "10\t2\tsrc/a.ts\n4\t0\tsrc/b.ts\n",
       },
-      "diff --no-ext-diff --no-textconv main...feat/x": {
+      [`diff --no-ext-diff --no-textconv ${range("main", "feat/x")}`]: {
         status: 0,
         stdout: "diff --git a/src/a.ts b/src/a.ts\n+added line\n-removed line\n",
       },
@@ -113,12 +131,12 @@ describe("diff-in-review: branch resolution + git", () => {
       repoBranch: "feat/risky",
     });
     const { runGit } = scriptedGit({
-      "diff --numstat --no-ext-diff --no-textconv main...feat/risky": {
+      [`diff --numstat --no-ext-diff --no-textconv ${range("main", "feat/risky")}`]: {
         status: 0,
         // a migration (sensitive), a lockfile (dependency), and 200 deletions
         stdout: "5\t3\tdb/migrations/007_x.sql\n2\t0\tpnpm-lock.yaml\n1\t200\tsrc/old.ts\n",
       },
-      "diff --no-ext-diff --no-textconv main...feat/risky": {
+      [`diff --no-ext-diff --no-textconv ${range("main", "feat/risky")}`]: {
         status: 0,
         stdout: "diff --git a/x b/x\n+y\n",
       },
@@ -143,11 +161,11 @@ describe("diff-in-review: branch resolution + git", () => {
       ticketBranch: "feat/from-ticket",
     });
     const { runGit } = scriptedGit({
-      "diff --numstat --no-ext-diff --no-textconv main...feat/from-ticket": {
+      [`diff --numstat --no-ext-diff --no-textconv ${range("main", "feat/from-ticket")}`]: {
         status: 0,
         stdout: "1\t0\tx\n",
       },
-      "diff --no-ext-diff --no-textconv main...feat/from-ticket": {
+      [`diff --no-ext-diff --no-textconv ${range("main", "feat/from-ticket")}`]: {
         status: 0,
         stdout: "diff\n+a\n",
       },
@@ -177,11 +195,11 @@ describe("diff-in-review: branch resolution + git", () => {
     );
     const EMPTY = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
     const { runGit, calls } = scriptedGit({
-      [`diff --numstat --no-ext-diff --no-textconv ${EMPTY} HEAD`]: {
+      [`diff --numstat --no-ext-diff --no-textconv ${EMPTY} ${sha("HEAD")}`]: {
         status: 0,
         stdout: "10\t0\tpackage.json\n5\t0\tREADME.md\n",
       },
-      [`diff --no-ext-diff --no-textconv ${EMPTY} HEAD`]: {
+      [`diff --no-ext-diff --no-textconv ${EMPTY} ${sha("HEAD")}`]: {
         status: 0,
         stdout: "diff --git a/package.json b/package.json\n+everything new\n",
       },
@@ -197,10 +215,14 @@ describe("diff-in-review: branch resolution + git", () => {
     expect(rd.files).toBe(2);
     expect(rd.additions).toBe(15);
     expect(rd.diff).toContain("+everything new");
-    // It diffed the empty tree against HEAD — never a base...branch range.
+    // It diffed the empty tree against the commit HEAD named (resolved once): never a
+    // base...branch range, and never HEAD by name.
     expect(
-      calls.some((c) => c.args.join(" ") === `diff --no-ext-diff --no-textconv ${EMPTY} HEAD`),
+      calls.some(
+        (c) => c.args.join(" ") === `diff --no-ext-diff --no-textconv ${EMPTY} ${sha("HEAD")}`,
+      ),
     ).toBe(true);
+    expect(calls.some((c) => c.args.slice(1).includes("HEAD"))).toBe(false);
     wg.db.close();
   });
 
@@ -255,8 +277,11 @@ describe("diff-in-review: branch resolution + git", () => {
       repoBranch: "feat/x",
     });
     const { runGit } = scriptedGit({
-      "diff --numstat --no-ext-diff --no-textconv main...feat/x": { status: 0, stdout: "" },
-      "diff --no-ext-diff --no-textconv main...feat/x": { status: 0, stdout: "" },
+      [`diff --numstat --no-ext-diff --no-textconv ${range("main", "feat/x")}`]: {
+        status: 0,
+        stdout: "",
+      },
+      [`diff --no-ext-diff --no-textconv ${range("main", "feat/x")}`]: { status: 0, stdout: "" },
     });
     const out = computeTicketDiff(
       { repos: wg.repos, tickets: wg.tickets, repoDeliveries: wg.repoDeliveries, runGit },
@@ -273,7 +298,7 @@ describe("diff-in-review: branch resolution + git", () => {
       repoBranch: "feat/x",
     });
     const { runGit } = scriptedGit({
-      "diff --numstat --no-ext-diff --no-textconv main...feat/x": {
+      [`diff --numstat --no-ext-diff --no-textconv ${range("main", "feat/x")}`]: {
         status: 128,
         stderr: "fatal: bad revision 'main...feat/x'",
       },
@@ -295,11 +320,11 @@ describe("diff-in-review: branch resolution + git", () => {
     });
     const big = "+".repeat(MAX_DIFF_BYTES + 5000);
     const { runGit } = scriptedGit({
-      "diff --numstat --no-ext-diff --no-textconv main...feat/x": {
+      [`diff --numstat --no-ext-diff --no-textconv ${range("main", "feat/x")}`]: {
         status: 0,
         stdout: "1\t0\tx\n",
       },
-      "diff --no-ext-diff --no-textconv main...feat/x": { status: 0, stdout: big },
+      [`diff --no-ext-diff --no-textconv ${range("main", "feat/x")}`]: { status: 0, stdout: big },
     });
     const out = computeTicketDiff(
       { repos: wg.repos, tickets: wg.tickets, repoDeliveries: wg.repoDeliveries, runGit },
@@ -332,11 +357,14 @@ describe("diff-in-review: branch resolution + git", () => {
     );
     wg.recordRepoDelivery({ ticket_id: t.id, repo_id: write.id, branch_name: "feat/x" }, human);
     const { runGit } = scriptedGit({
-      "diff --numstat --no-ext-diff --no-textconv main...feat/x": {
+      [`diff --numstat --no-ext-diff --no-textconv ${range("main", "feat/x")}`]: {
         status: 0,
         stdout: "1\t0\tx\n",
       },
-      "diff --no-ext-diff --no-textconv main...feat/x": { status: 0, stdout: "diff\n+a\n" },
+      [`diff --no-ext-diff --no-textconv ${range("main", "feat/x")}`]: {
+        status: 0,
+        stdout: "diff\n+a\n",
+      },
     });
     const out = computeTicketDiff(
       { repos: wg.repos, tickets: wg.tickets, repoDeliveries: wg.repoDeliveries, runGit },
@@ -351,9 +379,11 @@ describe("Dispatch.ticketDiff via injected git runner", () => {
   it("resolves the ticket and uses the constructor git runner", () => {
     const runGit: GitRunner = (_cwd, args) => {
       const key = args.join(" ");
-      if (key === "diff --numstat --no-ext-diff --no-textconv main...feat/y")
+      const resolved = revParse(args);
+      if (resolved) return { status: 0, stdout: `${resolved}\n`, stderr: "" };
+      if (key === `diff --numstat --no-ext-diff --no-textconv ${range("main", "feat/y")}`)
         return { status: 0, stdout: "2\t1\ta\n", stderr: "" };
-      if (key === "diff --no-ext-diff --no-textconv main...feat/y")
+      if (key === `diff --no-ext-diff --no-textconv ${range("main", "feat/y")}`)
         return { status: 0, stdout: "diff\n+x\n-y\n", stderr: "" };
       return { status: 0, stdout: "", stderr: "" };
     };

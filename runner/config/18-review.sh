@@ -200,16 +200,24 @@ gaffer_lite_trivial_reason() {
 # the pure core. Returns 0 (trivial → runner may auto-approve) / 1 (non-trivial → hold for a
 # human). Sets GAFFER_LITE_REASON / _LINES / _FILES for the caller's log + evidence marker.
 # FAIL-CLOSED: a missing risk defaults to 'medium' (non-trivial); unreadable diff → large.
-#   $1 ticket#   $2 repo-path   $3 base-ref   $4 delivery-branch
+# THE COMMIT AN APPROVAL PINS (external review 21): the caller passes the two ends as
+# COMMITS (lib/review.sh: the base branch's tip and the reviewed head, each resolved once),
+# never branch names, so a branch moved away and back cannot make this read describe a
+# different commit from the one approved. An empty end or a diff git cannot give holds.
+#   $1 ticket#   $2 repo-path   $3 base commit   $4 delivery commit
 gaffer_ticket_is_trivial() {
   local _num="$1" _repo="$2" _base="$3" _branch="$4" _risk _stat _lines _files _paths _r
   # SEALED AUTONOMY: the risk the autonomy decision uses (the signed one; an unsigned risk
   # reads as the highest), never the stored column a database writer could lower.
   _risk="$(wg ticket auto-decision "$_num" --gate approve 2>/dev/null | jget 'd.risk_level || "medium"' 2>/dev/null || echo medium)"
-  _stat="$(git -C "$_repo" diff "$_base"..."$_branch" --numstat 2>/dev/null)"
+  if [ -z "$_base" ] || [ -z "$_branch" ] \
+     || ! _stat="$(git -C "$_repo" diff --numstat "$_base...$_branch" -- 2>/dev/null)" \
+     || ! _paths="$(git -C "$_repo" diff --name-only "$_base...$_branch" -- 2>/dev/null)"; then
+    GAFFER_LITE_REASON="nontrivial:diff-unreadable"; GAFFER_LITE_LINES=0; GAFFER_LITE_FILES=0
+    return 1
+  fi
   _lines="$(printf '%s\n' "$_stat" | awk 'NF{a+=($1 ~ /^[0-9]+$/ ? $1 : 0)+($2 ~ /^[0-9]+$/ ? $2 : 0)} END{print a+0}')"
   _files="$(printf '%s\n' "$_stat" | awk 'NF' | grep -c . || true)"
-  _paths="$(git -C "$_repo" diff "$_base"..."$_branch" --name-only 2>/dev/null)"
   _r="$(gaffer_lite_trivial_reason "$_risk" "${_lines:-0}" "${_files:-0}" "$_paths")"
   GAFFER_LITE_REASON="$_r"; GAFFER_LITE_LINES="${_lines:-0}"; GAFFER_LITE_FILES="${_files:-0}"
   case "$_r" in trivial) return 0 ;; *) return 1 ;; esac
@@ -221,7 +229,9 @@ gaffer_ticket_is_trivial() {
 # path (auth, secrets, migrations, CI, Dockerfiles, lockfiles, the factory's own guards —
 # GAFFER_SENSITIVE_PATH_RE, operator-tunable; the same paths the lite classifier holds). GAFFER_SECURITY_REVIEW=0 disables the lane; empty/1 = on. Sets
 # GAFFER_SECURITY_REVIEW_REASON for the log. Returns 0 (needs it) / 1 (does not).
-#   $1 ticket number  $2 repo path  $3 base branch  $4 delivery branch
+# The two ends are COMMITS resolved once by the caller (external review 21), and a diff git
+# cannot give (or an empty end) runs the second opinion rather than reading as no paths.
+#   $1 ticket number  $2 repo path  $3 base commit  $4 delivery commit
 : "${GAFFER_SECURITY_REVIEW:=1}"
 # MERGE LANE (lib/merge-lane.sh): at the start of every tick, land every ready_for_merge
 # ticket the merge policy permits (a human's approve, the tester's PASS, a merge gate
@@ -251,7 +261,11 @@ gaffer_needs_security_review() {
   _risk="$(wg ticket show "$_num" 2>/dev/null | jget 'd.ticket.risk_level || "medium"' 2>/dev/null || echo medium)"
   if [ "$_risk" = "high" ]; then GAFFER_SECURITY_REVIEW_REASON="risk=high"; return 0; fi
   _re="${GAFFER_SENSITIVE_PATH_RE:-${GAFFER_SECURITY_REVIEW_RE:-${GAFFER_LITE_SENSITIVE_RE:-$_GAFFER_SENSITIVE_PATH_RE}}}"
-  _paths="$(git -C "$_repo" diff "$_base"..."$_branch" --name-only 2>/dev/null)"
+  if [ -z "$_base" ] || [ -z "$_branch" ] \
+     || ! _paths="$(git -C "$_repo" diff --name-only "$_base...$_branch" -- 2>/dev/null)"; then
+    GAFFER_SECURITY_REVIEW_REASON="the delivered diff could not be read: reviewing to be safe"
+    return 0
+  fi
   local _grc=0
   grep -qE -- "$_re" <<<"$_paths" 2>/dev/null || _grc=$?   # here-string: no SIGPIPE false miss under pipefail
   case "$_grc" in

@@ -120,6 +120,13 @@ export interface DiffServiceDeps {
 export interface TicketDiffOptions {
   /** Add each repo's {@link RepoDiff.impact} (the Review view asks for it). */
   impact?: boolean;
+  /**
+   * THE COMMIT AN APPROVAL PINS (external review 21): the delivery head of each write
+   * repo (repo id to full commit id) as the caller resolved it ONCE. Every Git read of
+   * the diff then takes that commit, never the branch name; a write repo missing from
+   * the map is reported as a `git_error` (nothing to observe), never read by name.
+   */
+  at?: ReadonlyMap<string, string>;
 }
 
 export interface GitResult {
@@ -381,6 +388,64 @@ export function resolveBranchHead(
   return /^[0-9a-f]{40}$|^[0-9a-f]{64}$/.test(sha) ? sha : null;
 }
 
+/** The full commit id `rev` names now (`HEAD`, a sha), or null. */
+function resolveCommit(runGit: GitRunner, localPath: string, rev: string): string | null {
+  const res = runGit(localPath, ["rev-parse", "--verify", "--quiet", `${rev}^{commit}`]);
+  const sha = res.status === 0 ? res.stdout.trim().toLowerCase() : "";
+  return /^[0-9a-f]{40}$|^[0-9a-f]{64}$/.test(sha) ? sha : null;
+}
+
+/**
+ * A diff target with both ends resolved to commits, ONCE (external review 21): every
+ * Git read of the target (the numstat, the patch, the integrity scan's file list,
+ * patches, file reads and merge-bases) takes these two ids and never a branch name or
+ * HEAD, so a branch moved away and back while they run cannot give two reads two
+ * different commits.
+ */
+interface PinnedTarget extends DiffTarget {
+  /** The delivery head (for a bootstrap, the commit HEAD named once). */
+  head: string;
+  /** The base branch's tip (for a bootstrap, git's empty tree). */
+  baseTip: string;
+}
+
+/**
+ * Resolve a target's two ends to commits: the head from `at` when the caller pinned it
+ * (an approval), else the branch now; the base branch's tip now. Null with the reason
+ * when either cannot be resolved: the caller reports a `git_error`, never a by-name read.
+ */
+function pinTarget(
+  runGit: GitRunner,
+  t: DiffTarget,
+  at: ReadonlyMap<string, string> | undefined,
+): { pinned: PinnedTarget } | { why: string } {
+  if (t.isBootstrap) {
+    const head = resolveCommit(runGit, t.localPath, "HEAD");
+    if (!head) return { why: "git could not resolve the initial commit (HEAD)." };
+    return {
+      pinned: { ...t, head, baseTip: GIT_EMPTY_TREE, diffArgs: [GIT_EMPTY_TREE, head] },
+    };
+  }
+  const given = at ? at.get(t.repoId) : undefined;
+  const head =
+    at !== undefined
+      ? given && /^[0-9a-f]{40}$|^[0-9a-f]{64}$/.test(given.toLowerCase())
+        ? given.toLowerCase()
+        : null
+      : resolveBranchHead(runGit, t.localPath, t.branch!);
+  if (!head) {
+    return {
+      why:
+        at !== undefined
+          ? `no delivery commit of ${t.branch} was resolved for this approval.`
+          : `git could not resolve the delivery branch ${t.branch}.`,
+    };
+  }
+  const baseTip = resolveBranchHead(runGit, t.localPath, t.baseBranch);
+  if (!baseTip) return { why: `git could not resolve the base branch ${t.baseBranch}.` };
+  return { pinned: { ...t, head, baseTip, diffArgs: [`${baseTip}...${head}`] } };
+}
+
 /** Run `git diff --numstat` for a target; a truncated read drops its partial last line. */
 function runNumstat(runGit: GitRunner, t: DiffTarget): GitResult {
   const res = runGit(t.localPath, ["diff", "--numstat", ...SAFE_DIFF_FLAGS, ...t.diffArgs], {
@@ -405,14 +470,14 @@ function runNumstat(runGit: GitRunner, t: DiffTarget): GitResult {
  * and the delivery branch. A git failure is an `incomplete` finding — it flags, never
  * passes silently.
  */
-function testIntegrityFor(runGit: GitRunner, t: DiffTarget): TestIntegrityFindings {
+function testIntegrityFor(runGit: GitRunner, t: PinnedTarget): TestIntegrityFindings {
   const git = (args: readonly string[], opts?: { maxBuffer?: number }): GitResult =>
     runGit(t.localPath, args, opts);
   const opts = {
     gateScriptNames: gateScriptNamesOf(t.gateCommands),
     extraTestPathRe: extraTestPathRe(process.env.GAFFER_TEST_PATH_RE),
   };
-  if (t.isBootstrap) return collectTestIntegrity(git, GIT_EMPTY_TREE, "HEAD", opts);
+  if (t.isBootstrap) return collectTestIntegrity(git, GIT_EMPTY_TREE, t.head, opts);
   const incompleteOnly = (why: string): TestIntegrityFindings => ({
     deleted: [],
     renamed: [],
@@ -429,7 +494,7 @@ function testIntegrityFor(runGit: GitRunner, t: DiffTarget): TestIntegrityFindin
       );
     }
     const extra: string[] = [];
-    const anc = runGit(t.localPath, ["merge-base", "--is-ancestor", t.baseSha, t.baseBranch]);
+    const anc = runGit(t.localPath, ["merge-base", "--is-ancestor", t.baseSha, t.baseTip]);
     if (anc.status !== 0) {
       extra.push(
         anc.status === 1
@@ -437,15 +502,15 @@ function testIntegrityFor(runGit: GitRunner, t: DiffTarget): TestIntegrityFindin
           : `could not check that ${t.baseBranch} still contains ${short}, the commit ${t.branch} was cut from`,
       );
     }
-    const f = collectTestIntegrity(git, t.baseSha, t.branch!, opts);
+    const f = collectTestIntegrity(git, t.baseSha, t.head, opts);
     return extra.length ? { ...f, incomplete: [...f.incomplete, ...extra] } : f;
   }
-  const mb = runGit(t.localPath, ["merge-base", t.baseBranch, t.branch!]);
+  const mb = runGit(t.localPath, ["merge-base", t.baseTip, t.head]);
   const base = mb.status === 0 ? mb.stdout.trim() : "";
   if (!/^[0-9a-f]{40,64}$/.test(base)) {
     return incompleteOnly(`could not find where ${t.branch} branched from ${t.baseBranch}`);
   }
-  return collectTestIntegrity(git, base, t.branch!, opts);
+  return collectTestIntegrity(git, base, t.head, opts);
 }
 
 /**
@@ -468,16 +533,26 @@ export function computeTicketDiff(
   const repos: RepoDiff[] = resolveDiffTargets(deps, ticket).map((entry) => {
     if ("unavailable" in entry) return entry.unavailable;
     const resolved = entry.target;
-    // Pin the range to the branch's CURRENT commit, resolved once: the stats and the patch
-    // below then describe exactly `headSha`, and the approval can be checked against it.
-    // An unresolvable head (fake runner, odd ref) keeps the by-name range and reports null.
-    const headSha =
-      resolved.isBootstrap || !resolved.branch
-        ? null
-        : resolveBranchHead(runGit, resolved.localPath, resolved.branch);
-    const t: DiffTarget = headSha
-      ? { ...resolved, diffArgs: [`${resolved.baseBranch}...${headSha}`] }
-      : resolved;
+    // Pin both ends to commits, resolved ONCE (the head an approval passes in `at`, else
+    // the branch's current commit): the stats, the patch, the integrity scan and the
+    // impact below then all describe exactly `headSha`, and the approval is checked
+    // against it. An end that does not resolve is a git_error, never a by-name read.
+    const pin = pinTarget(runGit, resolved, opts.at);
+    if ("why" in pin) {
+      return {
+        ...unavailableRepo(
+          resolved.repo,
+          resolved.label,
+          resolved.baseBranch,
+          "git_error",
+          pin.why,
+        ),
+        repoId: resolved.repoId,
+        headSha: null,
+      };
+    }
+    const t = pin.pinned;
+    const headSha = t.isBootstrap ? null : t.head;
     const ids = { repoId: t.repoId, headSha };
     const withIds = (r: RepoDiff): RepoDiff => ({ ...r, ...ids });
 
@@ -559,18 +634,15 @@ export function computeTicketDiff(
             impact: computeRepoImpact({
               diff,
               truncated,
-              headSha: headSha ?? (t.isBootstrap ? "HEAD" : null),
+              headSha: t.head,
               runGit,
               localPath: t.localPath,
               downstream: downstreamOf(deps, t.repoId),
               paths,
               codeIndex: deps.codeIndex ?? null,
               baseBranch: t.baseBranch,
-              // The index describes the base branch's tip; resolved only when it is asked.
-              baseSha:
-                deps.codeIndex && !t.isBootstrap
-                  ? resolveBranchHead(runGit, t.localPath, t.baseBranch)
-                  : null,
+              // The index describes the base branch's tip (resolved once, above).
+              baseSha: deps.codeIndex && !t.isBootstrap ? t.baseTip : null,
             }),
           }
         : {}),
@@ -592,6 +664,8 @@ export function computeTicketDiff(
 export interface DeliveryDiffProof {
   hasDiff: boolean;
   fingerprint: string;
+  /** The delivery commits the proof read (an approval's pinned heads), if any. */
+  at?: ReadonlyMap<string, string>;
 }
 
 /**
@@ -613,15 +687,26 @@ export function deliveryDiffFingerprint(deps: DiffServiceDeps, ticket: Ticket): 
  * repo — the gate only needs "is the diff non-empty", never the patch text — and a
  * repo qualifies only when git succeeded and reported at least one changed path.
  */
-export function deliveryDiffProof(deps: DiffServiceDeps, ticket: Ticket): DeliveryDiffProof {
+export function deliveryDiffProof(
+  deps: DiffServiceDeps,
+  ticket: Ticket,
+  at?: ReadonlyMap<string, string>,
+): DeliveryDiffProof {
   const runGit = deps.runGit ?? defaultGitRunner;
   const entries = resolveDiffTargets(deps, ticket);
   const hasDiff = entries.some((entry) => {
     if ("unavailable" in entry) return false;
-    const stat = runNumstat(runGit, entry.target);
+    // Both ends as commits (an approval's pinned head when given), resolved once.
+    const pin = pinTarget(runGit, entry.target, at);
+    if ("why" in pin) return false;
+    const stat = runNumstat(runGit, pin.pinned);
     return stat.status === 0 && parseNumstat(stat.stdout).files > 0;
   });
-  return { hasDiff, fingerprint: deliveryDiffFingerprint(deps, ticket) };
+  return {
+    hasDiff,
+    fingerprint: deliveryDiffFingerprint(deps, ticket),
+    ...(at ? { at } : {}),
+  };
 }
 
 /** The scope graph's dependents of a repo, or none when unreadable. */

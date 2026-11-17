@@ -636,13 +636,16 @@ export class Dispatch {
       },
       // GRADUATED-AUTONOMY (Spec 2, Phase 1): resolve delivery-vs-merge SHAs so the
       // approve path can emit `approved_unchanged`. Pure read; degrades to unknown.
-      approvalShaResolver: (ticket) => ticketGit.resolveApprovalShas(this, this.internals, ticket),
+      approvalShaResolver: (ticket, heads) =>
+        ticketGit.resolveApprovalShas(this, this.internals, ticket, heads),
       // REVIEW PIN for a HUMAN approval: the commit the human approved (the primary write
       // repo's delivery-branch head at approve time), recorded as system evidence so every
       // landing path holds a branch that moved past it. Pure read; null when unknown.
       reviewedHeadsResolver: (ticket) => ticketGit.resolveApprovedHeads(this, ticket),
       // APPROVAL COVERS EVERY WRITE REPO: the write repos whose head cannot be read now.
       unavailableWriteReposResolver: (ticket) => this.writeRepoHeads(ticket).unavailable,
+      // THE COMMIT AN APPROVAL PINS: both from one read, resolved once per approval.
+      writeRepoHeadsResolver: (ticket) => this.writeRepoHeads(ticket),
       // PER-REPOSITORY LANDING: git ancestry as positive evidence of a landing.
       landedOnDefaultResolver: (repoId, sha) =>
         ticketGit.commitOnDefaultBranch(this, this.internals, repoId, sha),
@@ -683,8 +686,8 @@ export class Dispatch {
       // git-ignored .npmrc), unless a human allowed test changes on the ticket.
       // SEALED AUTONOMY: the declared side of the comparison is the SIGNED risk; an unsigned
       // one never passes as the stored value (indeterminate: held for a person).
-      observedRiskResolver: (ticket) => {
-        const observed = this.observedRiskFor(ticket);
+      observedRiskResolver: (ticket, heads) => {
+        const observed = this.observedRiskFor(ticket, undefined, heads);
         if (this.autonomyRisk(ticket).signed) return observed;
         return {
           ...observed,
@@ -764,8 +767,12 @@ export class Dispatch {
     return ticketGit.latestDodSummary(this, ticketId);
   }
 
-  observedRiskFor(ticket: Ticket, repos?: readonly RepoDiff[]): ObservedRisk {
-    return ticketGit.observedRiskFor(this, ticket, repos);
+  observedRiskFor(
+    ticket: Ticket,
+    repos?: readonly RepoDiff[],
+    heads?: readonly ReviewedHead[],
+  ): ObservedRisk {
+    return ticketGit.observedRiskFor(this, ticket, repos, heads);
   }
 
   ticketDiff(ref: string, opts?: TicketDiffOptions): TicketDiff {

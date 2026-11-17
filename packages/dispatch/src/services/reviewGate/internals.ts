@@ -13,7 +13,6 @@ import type { TransitionService } from "../transitionService.js";
 import type { TicketService } from "../ticketService.js";
 import type { Clock } from "../../util/clock.js";
 import type { Ticket } from "../../domain/types.js";
-import type { ObservedRisk } from "../observedRisk.js";
 import type { ApprovalShaResolver, ReviewGateServiceDeps } from "../reviewGateService.js";
 
 export interface ReviewGateInternals {
@@ -37,12 +36,13 @@ export interface ReviewGateInternals {
   readonly approvalShaResolver: ApprovalShaResolver | undefined;
   readonly reviewedHeadsResolver: ReviewGateServiceDeps["reviewedHeadsResolver"];
   readonly unavailableWriteReposResolver: ReviewGateServiceDeps["unavailableWriteReposResolver"];
+  readonly writeRepoHeadsResolver: ReviewGateServiceDeps["writeRepoHeadsResolver"];
   readonly landedOnDefaultResolver: ReviewGateServiceDeps["landedOnDefaultResolver"];
   readonly changeOnRefsResolver: ReviewGateServiceDeps["changeOnRefsResolver"];
   readonly policyAllowsAgentApprove: ((ticket: Ticket) => boolean) | undefined;
   /** THE AUTONOMY LADDER: the ceiling and step-down holds (see ReviewGateServiceDeps). */
   readonly autonomyHoldFn: ReviewGateServiceDeps["autonomyHold"];
-  readonly observedRiskResolver: ((ticket: Ticket) => ObservedRisk | null) | undefined;
+  readonly observedRiskResolver: ReviewGateServiceDeps["observedRiskResolver"];
   /** A person's waiver records the factory's isolation ("none" or the provider). */
   readonly isolationFn: (() => string) | undefined;
 }

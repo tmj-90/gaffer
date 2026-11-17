@@ -108,15 +108,18 @@ describe("big-diff-blocks-approval: a diff over the runner's output cap", () => 
   it("an injected runner that flags truncated output yields a truncated diff", () => {
     const wg = Dispatch.open(":memory:");
     const ticketId = deliveredTicket(wg, process.cwd(), "feat/x");
+    // The diff resolves both ends to commits once (rev-parse), then reads at them.
     const runGit: GitRunner = (_cwd, args) =>
-      args.includes("--numstat")
-        ? { status: 0, stdout: "3\t0\tsrc/a.ts\n", stderr: "" }
-        : {
-            status: 0,
-            stdout: "diff --git a/src/a.ts b/src/a.ts\n+partial",
-            stderr: "",
-            truncated: true,
-          };
+      args[0] === "rev-parse"
+        ? { status: 0, stdout: `${"c".repeat(40)}\n`, stderr: "" }
+        : args.includes("--numstat")
+          ? { status: 0, stdout: "3\t0\tsrc/a.ts\n", stderr: "" }
+          : {
+              status: 0,
+              stdout: "diff --git a/src/a.ts b/src/a.ts\n+partial",
+              stderr: "",
+              truncated: true,
+            };
     const out = computeTicketDiff(
       { repos: wg.repos, tickets: wg.tickets, repoDeliveries: wg.repoDeliveries, runGit },
       ticketId,

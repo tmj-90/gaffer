@@ -640,12 +640,13 @@ export class TransitionService {
   /**
    * The done gate's real-diff proof for a ticket, for a caller to compute BEFORE it
    * opens a write transaction and hand to {@link transition} as `deliveryDiff`. Spawns
-   * git; never call it inside a transaction.
+   * git; never call it inside a transaction. `at` (repo id to commit) is the delivery
+   * heads an approval resolved once: the diff is read at those commits.
    */
-  deliveryDiffProof(ticketId: string): DeliveryDiffProof {
+  deliveryDiffProof(ticketId: string, at?: ReadonlyMap<string, string>): DeliveryDiffProof {
     const ticket = this.tickets.findById(ticketId);
     if (!ticket) throw notFound("ticket", ticketId);
-    return deliveryDiffProof(this.diffDeps(), ticket);
+    return deliveryDiffProof(this.diffDeps(), ticket, at);
   }
 
   transition(input: TransitionInput): TransitionResult {
@@ -853,7 +854,8 @@ export class TransitionService {
     if (proof && proof.fingerprint === deliveryDiffFingerprint(deps, ticket)) {
       return proof.hasDiff;
     }
-    return deliveryDiffProof(deps, ticket).hasDiff;
+    // Recomputed at the same commits the stale proof was read at, when it had some.
+    return deliveryDiffProof(deps, ticket, proof?.at).hasDiff;
   }
 
   private diffDeps(): DiffServiceDeps {

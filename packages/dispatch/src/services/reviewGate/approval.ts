@@ -52,6 +52,7 @@ export type ApprovalInternals = Pick<
   | "ticketSvc"
   | "transitions"
   | "unavailableWriteReposResolver"
+  | "writeRepoHeadsResolver"
 >;
 
 /**
@@ -127,19 +128,24 @@ export function approveReview(
   // gate reads the diff, which an unavailable repo cannot show, so for an agent the
   // refusal comes first; a human's approval keeps its policy refusals (unresolved ACs,
   // no delivery diff) and the coverage refusal is the last gate before the pins.
+  // THE COMMIT AN APPROVAL PINS (external review 21): each write repo's head is resolved
+  // to a commit ONCE, here, and every Git read behind the decision takes that commit (the
+  // observed risk's diff, file list, patches and integrity scan, the CI candidate, the
+  // done gate's diff, the pins). A branch moved away and back between two reads used to
+  // let the integrity scan judge one commit while the approval pinned another.
   const covered = internals.ticketSvc.resolveTicket(ticketRef);
-  const unavailable = host.unavailableWriteRepos(covered);
+  const { heads, unavailable } = resolveApprovalHeads(host, internals, covered);
   let observed: ObservedRisk | null = null;
   if (agentApproveAllowed) {
     assertWriteReposAvailable(covered, unavailable);
-    observed = enforceObservedRiskCeiling(internals, ticketRef, actor);
+    observed = enforceObservedRiskCeiling(internals, ticketRef, actor, heads);
   }
   const ticket = internals.ticketSvc.resolveTicket(ticketRef);
   // REQUIRED CI (server-side, like the other holds): when the runner has recorded CI
   // results for this ticket (GAFFER_REQUIRE_CI), approval needs a PASS for the
   // CANDIDATE commit — the head being approved. A CLI approve used to go through while
   // the CI poll was still open, and the late red result could no longer stop it.
-  assertCiPassed(host, ticket, approveCiCandidate(host, internals, ticket));
+  assertCiPassed(host, ticket, approveCiCandidate(host, internals, ticket, heads));
   // REVIEWER ≠ AUTHOR (server-side, not by convention). Even on an autonomy-permitted
   // agent approve, the approving principal must not be the agent that DELIVERED the
   // ticket: the id on the ticket's most recent claim. Before this the "agent cannot
@@ -183,7 +189,7 @@ export function approveReview(
   // GRADUATED-AUTONOMY (Spec 2, Phase 1): capture whether this delivery is being
   // approved UNCHANGED vs edited, emitted on the transition below. Best-effort — a
   // resolver throw or absence yields `null` (unknown) and never blocks the approve.
-  const approvedUnchanged = computeApprovedUnchanged(internals, ticket);
+  const approvedUnchanged = computeApprovedUnchanged(internals, ticket, heads);
   // REVIEW PIN + STALE REVISION (external review #2). The heads are resolved before the
   // transition (git runs outside the write lock). When the approver names the commits
   // they saw, every write repo's head must still BE that commit — a branch that moved
@@ -191,8 +197,8 @@ export function approveReview(
   // The pins recorded below are the commits the approver saw, one per repo, written in
   // the SAME transaction as the transition. Without named commits (library callers) a
   // HUMAN approval pins the current heads, as before; an agent approval without commits
-  // is pinned by the runner (lib/review.sh) only.
-  const heads = resolveReviewedHeads(internals, ticket);
+  // is pinned by the runner (lib/review.sh) only. The heads are the ones resolved once
+  // at the top: the commits the observed risk was read at.
   if (agentApproveAllowed) bindObservedHeads(ticket, observed, heads);
   const pins = checkShownCommits(ticket, heads, actor, opts, unavailable);
   // TESTER FIRST: when the independent tester gates this ticket (an epic's acceptance
@@ -245,8 +251,11 @@ export function approveReview(
       return result;
     });
   }
-  // The done gate's git runs HERE, before transition() takes the write lock.
-  const deliveryDiff = internals.transitions.deliveryDiffProof(ticket.id);
+  // The done gate's git runs HERE, before transition() takes the write lock, at the
+  // commits resolved once above. A write repo with no resolved commit has nothing for the
+  // done gate to read, so its refusal (repo_unavailable, the remedy named) comes first.
+  assertWriteReposAvailable(ticket, unavailable);
+  const deliveryDiff = internals.transitions.deliveryDiffProof(ticket.id, headsAt(heads));
   return inTransaction(internals.db, () => {
     recheckAgentApproval(internals, ticket, actor);
     const result = internals.transitions.transition({
@@ -300,6 +309,48 @@ function bindObservedHeads(
       current: moved.map((h) => ({ repo: h.repo, repo_id: h.repoId, sha: h.sha })),
     },
   );
+}
+
+/**
+ * THE COMMIT AN APPROVAL PINS: every write repo's head and the unavailable ones, from one
+ * read when the facade wires it (writeRepoHeadsResolver), so the heads and the coverage
+ * refusal describe the same moment. A throw resolves no head and an unknown repo (fails
+ * toward the human, like unavailableWriteRepos).
+ */
+export function resolveApprovalHeads(
+  host: Pick<ApprovalHost, "unavailableWriteRepos">,
+  internals: Pick<
+    ApprovalInternals,
+    "reviewedHeadsResolver" | "unavailableWriteReposResolver" | "writeRepoHeadsResolver"
+  >,
+  ticket: Ticket,
+): { heads: readonly ReviewedHead[]; unavailable: readonly UnavailableWriteRepo[] } {
+  if (!internals.writeRepoHeadsResolver) {
+    return {
+      unavailable: host.unavailableWriteRepos(ticket),
+      heads: resolveReviewedHeads(internals, ticket),
+    };
+  }
+  try {
+    const r = internals.writeRepoHeadsResolver(ticket);
+    return { heads: r.heads, unavailable: r.unavailable };
+  } catch (e) {
+    return {
+      heads: [],
+      unavailable: [
+        {
+          repoId: "",
+          repo: "(unknown)",
+          why: `the ticket's write repositories could not be read (${e instanceof Error ? e.message : String(e)})`,
+        },
+      ],
+    };
+  }
+}
+
+/** The heads as the repo id to commit map the Git readers take. */
+export function headsAt(heads: readonly ReviewedHead[]): ReadonlyMap<string, string> {
+  return new Map(heads.map((h) => [h.repoId, h.sha.toLowerCase()]));
 }
 
 function notPermittedToApprove(actor: Actor): DispatchError {
@@ -475,12 +526,14 @@ export function enforceObservedRiskCeiling(
   internals: Pick<ApprovalInternals, "db" | "observedRiskResolver" | "ticketSvc">,
   ticketRef: string,
   actor: Actor,
+  heads?: readonly ReviewedHead[],
 ): ObservedRisk | null {
   if (!internals.observedRiskResolver) return null;
   const ticket = internals.ticketSvc.resolveTicket(ticketRef);
   let observed: ObservedRisk | null;
   try {
-    observed = internals.observedRiskResolver(ticket);
+    // At the commits the approval resolved once (never the branch names again).
+    observed = internals.observedRiskResolver(ticket, heads);
   } catch {
     observed = null; // a probe failure must fail toward a human, never silently ship.
   }

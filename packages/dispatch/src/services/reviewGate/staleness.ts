@@ -229,10 +229,11 @@ export function recordRejectPins(
 export function computeApprovedUnchanged(
   internals: Pick<StalenessInternals, "approvalShaResolver">,
   ticket: Ticket,
+  heads?: readonly ReviewedHead[],
 ): boolean | null {
   if (!internals.approvalShaResolver) return null;
   try {
-    const shas = internals.approvalShaResolver(ticket);
+    const shas = internals.approvalShaResolver(ticket, heads);
     if (!shas) return null;
     return approvalUnchanged(shas.deliverySha, shas.mergeSha);
   } catch {

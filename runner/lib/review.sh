@@ -593,7 +593,7 @@ $(gaffer_quarantine tester-outcome "$_RTESTER_NOTE" single)
       # GAFFER_SECURITY_REVIEW=0 disables the lane; the routed model is the review
       # phase's at the ticket's risk (high → strong).
       R_SECURITY=""
-      if [ "$R_VERDICT" = "approve" ] && gaffer_needs_security_review "$RNUM" "$RREPO" "$RDEFAULT" "$RBRANCH"; then
+      if [ "$R_VERDICT" = "approve" ] && gaffer_needs_security_review "$RNUM" "$RREPO" "$RDEF_SHA" "$RSHA"; then
         log "SECURITY-REVIEW: #$RNUM qualifies for a second-opinion security review ($GAFFER_SECURITY_REVIEW_REASON) — spawning the security reviewer"
         read -r -d '' SPROMPT <<EOF || true
 You are a SECURITY REVIEWER agent — the SECOND, independent opinion on a change another
@@ -776,7 +776,7 @@ EOF
         # so a human always lands the change. DoD + hygiene already gated the delivery, and
         # the reviewer AGENT still had to return APPROVE (R_VERDICT) to reach approve_hold.
         if [ "$GAFFER_MODE" = "lite" ]; then
-          if gaffer_ticket_is_trivial "$RNUM" "$RREPO" "$RDEFAULT" "$RBRANCH"; then
+          if gaffer_ticket_is_trivial "$RNUM" "$RREPO" "$RDEF_SHA" "$RSHA"; then
             _SHIP_APPROVE=allow; _SHIP_MERGE=deny; _LITE_TRIVIAL=1
           else
             _SHIP_APPROVE=deny

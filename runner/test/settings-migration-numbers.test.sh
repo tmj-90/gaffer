@@ -122,7 +122,7 @@ gaffer_test_check_tmp "$GATE" file || exit 70
   awk '/^gaffer_budget_exhausted\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$RUNNER_DIR/lib/tick-gates.sh"
   grep -E '^_num_(pos|ge|le)\(\)' "$RUNNER_DIR/lib/tick-gates.sh"
 } > "$GATE"
-V="$(GATE="$GATE" EXTRA="GATE=$GATE" cfg 'source "$GATE"; SHOW="{\"ticket\":{}}"; gaffer_ticket_rework_spend() { echo 1.00; }; if gaffer_budget_exhausted 7; then printf "blocked ceil=%s spent=%s" "$GAFFER_BUDGET_CEIL" "$GAFFER_BUDGET_SPENT"; else printf allowed; fi')"
+V="$(EXTRA="GATE=$GATE" cfg 'source "$GATE"; SHOW="{\"ticket\":{}}"; gaffer_ticket_rework_spend() { echo 1.00; }; if gaffer_budget_exhausted 7; then printf "blocked ceil=%s spent=%s" "$GAFFER_BUDGET_CEIL" "$GAFFER_BUDGET_SPENT"; else printf allowed; fi')"
 rm -f "$GATE"
 [ "$V" = "blocked ceil=0.5 spent=1.00" ] && ok "stored .5 and spend \$1.00: the pre-spawn budget gate blocks further work" \
   || fail "spending gate with stored .5: $V"

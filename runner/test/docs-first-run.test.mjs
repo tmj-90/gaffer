@@ -15,8 +15,8 @@
 //   F-19 README says how to put `gaffer` on PATH
 //   F-20 the docs use the UI's sentence case for the Match Day panels
 //   F-24 the quickstart's screen list names every nav entry
-//   F-25 the README's Docker paragraph creates ./repos first
-//   UI F-15 the README says how to get a read-only token
+//   F-25 the quickstart's Docker section creates ./repos first
+//   UI F-15 the feature tour says how to get a read-only token
 // Run: node runner/test/docs-first-run.test.mjs
 // =====================================================================
 import { readdirSync, readFileSync } from "node:fs";
@@ -190,40 +190,45 @@ const labels = [...navBlock.matchAll(/label:\s*"([^"]+)"/g)].map((m) => m[1]);
 check(`the nav has labels (${labels.length})`, labels.length > 0);
 for (const l of labels) check(`quickstart lists **${l}**`, quick.includes(`**${l}**`));
 
-console.log("== F-25: the README's Docker paragraph creates ./repos ==");
-check("README has mkdir -p repos", /mkdir -p repos/.test(readme));
+console.log("== F-25: the quickstart's Docker section creates ./repos ==");
+check("quickstart has mkdir -p repos", /mkdir -p repos/.test(quick));
 
-console.log("== Team sheet: the README lists only rows the human queue builds ==");
+console.log("== Team sheet: the feature tour lists only rows the human queue builds ==");
 // The Team sheet is the human queue (humanQueueService.ts, plus the one lore-drafts
-// row routes/readModels.ts adds from Memory). The README's sentence lists paused
-// deliveries and lore drafts because the queue builds them; it must keep both, and
-// never promise a row the queue does not build.
+// row routes/readModels.ts adds from Memory). The feature tour's paragraph (the short
+// README no longer lists the rows) names paused deliveries and lore drafts because the
+// queue builds them; it must keep both, and never promise a row the queue does not build.
 const queueSrc = read("packages/dispatch/src/services/humanQueueService.ts");
 const queueRoute = read("packages/dispatch/src/api/routes/readModels.ts");
-const sheetMatch = readme.match(/Beside it is the Team sheet[^\n]*?\.(?= The Tactics)/);
+const sheetMatch = features.match(
+  /\*\*The Team sheet\*\* on the Overview lists[\s\S]*?\.(?= \*Delivered today\*)/,
+);
 const sheetSentence = sheetMatch ? sheetMatch[0] : "";
-check("README has the Team sheet sentence", sheetSentence.length > 0);
+check("FEATURES.md has the Team sheet sentence", sheetSentence.length > 0);
 check(
-  "README promises paused tickets only if the queue lists them",
+  "FEATURES.md promises paused tickets only if the queue lists them",
   !/paused/i.test(sheetSentence) || /kind: "paused"/.test(queueSrc),
 );
 check(
-  "README promises lore drafts only if the queue lists them",
+  "FEATURES.md promises lore drafts only if the queue lists them",
   !/lore/i.test(sheetSentence) || /kind: "lore_drafts"/.test(queueRoute),
 );
 check(
-  "the queue builds paused rows, and the README's Team sheet sentence lists them",
+  "the queue builds paused rows, and the Team sheet sentence lists them",
   /kind: "paused"/.test(queueSrc) && /paused/i.test(sheetSentence),
 );
 check(
-  "the queue builds the lore-drafts row, and the README's Team sheet sentence lists it",
+  "the queue builds the lore-drafts row, and the Team sheet sentence lists it",
   /kind: "lore_drafts"/.test(queueRoute) && /lore drafts/i.test(sheetSentence),
 );
 
 console.log("== UI F-15: how to get a read-only token ==");
-check("README names print-read-token", /print-read-token/.test(readme));
-check("README names `principal create … --read`", /principal create \S+ --read/.test(readme));
-check("README names Settings → Access", /Settings → Access/.test(readme));
+check("FEATURES.md names print-read-token", /print-read-token/.test(features));
+check(
+  "FEATURES.md names `principal create … --read`",
+  /principal create \S+ --read/.test(features),
+);
+check("FEATURES.md names Settings → Access", /Settings → Access/.test(features));
 // print-read-token derives from $GAFFER_DATA/dashboard-token (~/.gaffer without it,
 // not the checkout's .gaffer), so every command shown for it must set GAFFER_DATA.
 for (const [f, text] of [

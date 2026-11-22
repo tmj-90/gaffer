@@ -1,8 +1,20 @@
 # Testing
 
-How I run Gaffer's tests, what CI runs and when, and the knobs that keep the runner
-suite fast and honest. The commands themselves are in [CONTRIBUTING.md](../CONTRIBUTING.md);
-this page is the reference behind them.
+How I run Gaffer's tests and the knobs that keep the runner suite fast and honest.
+
+```bash
+pnpm install && pnpm -r build
+pnpm check                            # lint, format, build, both typechecks, package tests
+pnpm test:runner                      # every runner test, in parallel; exits 1 on any failure
+pnpm test:runner -j 2                 # fewer parallel jobs
+bash runner/test/run.sh runner/test/parallel-claim.test.sh   # just the ones named
+pnpm test:runner --shard 2/3          # one of three disjoint slices
+```
+
+Two rules a change has to keep: never weaken the safety hook (`runner/safety-hook.mjs`,
+its rules in `runner/safety-hook-core.mjs`, `runner/lib/hook/` and
+`runner/lib/dangerous-commands.mjs`), and never let anything an agent writes to memory
+become trusted without a person approving it.
 
 ## The three test layers
 

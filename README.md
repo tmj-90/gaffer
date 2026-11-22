@@ -1,84 +1,27 @@
-<!--
-  Canonical GitHub repo topics (set these under repo → About → Topics for discoverability).
-  Keep in sync with the "keywords" field in package.json.
-  Apply with: gh repo edit tmj-90/gaffer --add-topic <topic> (one --add-topic per entry)
-  ai-agent, coding-agent, ai-coding-assistant, agentic-ai, autonomous-agents, llm,
-  claude, anthropic, developer-tools, local-first, self-hosted, human-in-the-loop,
-  code-review, automation, typescript, cli
--->
-
 # Gaffer
-
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
 ![The Overview headline and scoreboard: eight things need you, the blocked ticket that leads them, three agents on the pitch, six tickets delivered today and the wage bill against a $25 daily budget](docs/img/match-day-scoreboard.png)
 
-Gaffer is a software factory I run on my own machine. I give it tickets, or a one-line idea that it breaks into tickets, and it works through them in throwaway git worktrees while I get on with something else. When I come back there's a short list of diffs waiting for me, each with evidence that the tests really ran. Nothing merges until I've read the diff and approved it.
+Gaffer is a software factory I run on my own machine. I give it tickets, or a one-line idea that it breaks into tickets, and it works through them in throwaway git worktrees while I get on with something else. When I come back there's a short list of diffs waiting, each with evidence that the tests really ran. Nothing merges until I've read the diff and approved it.
 
-I built it for my side-project backlog. Every project I have carries a pile of tickets that are worth doing and never urgent: the flaky test I keep re-running, or docs that drifted months ago. I wanted to hand that pile to something that would plod through it carefully and stop to ask when it got stuck.
+Claude Code does the coding. Gaffer is the rest of the job: the queue, the checks the agent can't mark itself, what it remembers about each repo, and the gate where a person decides what lands.
 
-Claude Code does the coding. Gaffer is the rest of the job: the queue and the order things happen in, the checks the agent can't mark itself, what it remembers about each repo, and the gate where a person decides what lands.
-
-It's alpha. It gives an agent a shell inside the repos you point it at, so keep it to repos you trust and read [SECURITY.md](SECURITY.md) before you loosen any of its defaults.
+It's alpha, and it gives an agent a shell inside the repos you point it at. Keep it to repos you trust, and read [SECURITY.md](SECURITY.md) before you loosen a default.
 
 ## How a ticket gets done
 
-A ticket can't be marked ready until it has at least one acceptance criterion; the stricter policy packs (`team_light` and up) also require a repo it's allowed to write to. Under the default `solo_loose` pack a ticket with no repo linked at all goes ready with a warning, and the runner parks it as blocked for you (reason `no_write_repo`) instead of delivering it; a ticket whose only linked repos are read-only is refused at ready, as in the stricter packs. A criterion can carry a check command (`--check "npm test"`), which the runner runs itself rather than taking the agent's word for it.
+1. **Scout.** Before any agent starts, the runner works out where the change probably lands and how risky it is.
+2. **Delivery.** An agent works in a fresh worktree on its own branch. Your checkout is never touched.
+3. **Gates.** The runner runs the repo's tests, typecheck and lint itself. A failure goes back for rework, and after three attempts the ticket is parked for you.
+4. **Tester.** Where it applies, an independent tester writes black-box tests against the ticket's criteria, and the runner replays them on a clean checkout.
+5. **Review.** You read the real git diff, with what the runner recorded above it, and approve it or send it back.
+6. **Landing.** Merging is a separate step. Gaffer builds the merge onto your current default branch and runs the gates on that before anything lands.
 
-`gaffer run` makes one pass over the ready queue and then exits. There's no daemon unless you ask for one. Each pass takes a ticket through these steps, and your own checkout is never touched:
-
-1. **Scout.** The runner claims the ticket and, before any agent starts, works out where the change probably lands, with no model: the files the ticket names, the files in a stack trace it quotes, and what the [code index](docs/FEATURES.md#the-code-index) says imports or tests them. The same pass reads deterministic risk signals (an auth path, a migration, race words, a symbol with many callers, a module no test imports) and can raise the ticket's declared risk, never lower it. The router picks the model tier on the raised level, and the review packet shows what raised it.
-2. **Delivery.** The runner creates a worktree on a `gaffer/ticket-<n>-<slug>` branch, and starts a headless agent session there with the skills that suit the ticket and the scout's file list. The agent reaches the control plane and the memory store over MCP, and the safety hook sees every tool call it makes.
-3. **Gates.** When the agent says it's finished, the runner runs the repo's tests, typecheck and lint in the worktree, then every criterion's check command, and flags a delivery that weakened the tests. A failure goes back for rework with the output attached. After three attempts (`GAFFER_MAX_DELIVERY_ATTEMPTS`), or sooner if two attempts fail in exactly the same way, the ticket is parked as blocked and waits for me.
-4. **Tester first.** Where the independent tester gates a ticket (an Acceptance ticket, or a testable one in a repo with a registered test command; a planned build's tickets are created testable), it writes black-box tests against the criteria before any person reads the change. Its PASS only counts once the runner has replayed those tests on a clean checkout of the tested commit with the repo's own test command, and it is bound to the test names that replay saw pass. A ticket with an [acceptance profile](docs/FEATURES.md#acceptance-profiles) (`cli` or `api`) also has the commands you registered run on that checkout, and their transcript is kept. A FAIL goes back to rework with the tester's observation in the next prompt.
-5. **Your review.** The diff you approve is computed by the control plane from git, so it shows what actually changed, whatever the agent says. Above it, the review packet puts what the runner recorded before what the agent wrote: each gate and its command, the tester's verdict and the commit it tested, what backs the change and what doesn't, and the behavioural surface (the exported symbols it changes, with their callers and tests from the code index). You can comment on a line, a file or the whole change; **Fix these** sends it back with your must-fix comments as numbered requirements, and the next attempt opens on what changed since your review. You approve the commit the tester passed, and only that commit: an approval of a branch that moved after the diff loaded is refused. With CI required, nothing is approved until CI has passed for that commit.
-6. **Landing.** Merging is a separate click unless your `GAFFER_MODE` merges approved work for you (`autonomous`, `strict`). Before anything lands, Gaffer builds the merge of the approved commit onto your current default branch and runs your repo's gates on it, and replays the tester's tests on that merge candidate: every test the PASS named has to run and pass. Only a passing combination lands, and only while the default branch is still the one it tested; a failing one waits for you with the output, and your default branch is untouched. A ticket that spans several repositories lands one gated merge per repository and is done only when every repository's change has landed. Landing also refreshes what Gaffer knows about the repo.
-7. **Escaped defects.** When a later bug turns out to come from a change that landed, you link the two on the bug's ticket page (or `wg ticket regression-of <ticket> --of <change>`). Gaffer never guesses a link. Health counts escaped defects against accepted changes, and the routing scorecard counts them per model and work class, next to first pass, rework and the cost of each accepted change.
-
-By default no agent reviews anything (`GAFFER_MODE=supervised`). If you do let agents approve, the control plane still refuses an approval from the agent that did the work.
-
-`GAFFER_MODELS` names the three tiers (strong, standard, cheap; by default opus, sonnet and haiku from [runner/model-registry.json](runner/model-registry.json)). Planning runs on the strong tier and implementation on the mid tier by default. A low-risk ticket with at most one criterion, or one measured as a small change, is implemented and tested on the cheap tier; a high-risk ticket or one with a lot of criteria is routed a tier up.
-
-### Planning a build
-
-In the dashboard, "Plan a build" takes a one-line brief and has a short conversation about it. It usually asks a few clarifying questions first, then proposes an epic of tickets, each with its own criteria, target repo and `dependsOn` edges, so the API can wait for the data model and the docs can come last. Nothing is created until you confirm, and you can create the tickets as drafts to look them over first. If there's no repo yet, the plan starts with a bootstrap ticket that creates one under `GAFFER_BOOTSTRAP_ROOT` (`~/git` by default), registers and onboards it, and links the rest of the epic to it, so nothing needs setting up first. Before the bootstrap agent starts, Gaffer checks it can reach the package registry from the agent's environment (an offline machine with a warm npm cache goes ahead from the cache) and that there's an OS sandbox; either problem parks the ticket with the fix on the Team sheet before anything is created. Unless the independent tester is switched off, the planned tickets are created testable. In PR mode, a repo with no remote gets one decision asking where it lives, and its tickets wait for the answer.
-
-From a terminal, `runner/gaffer plan "a habit tracker with streaks"` has the same conversation with the same planner, under the same dollar cap. It prints the planner's questions; answer with `runner/gaffer plan --answer "…"`, or plan with what it has with `--now`. Then it prints the proposed epic, its tickets and the Acceptance ticket the factory adds, and creates nothing until you type y or run `runner/gaffer plan --yes`, which creates the plan you were shown as drafts. `--yes` runs on its own, never with a goal or an answer, so nothing is planned and created in one step you didn't see, and each planner turn is a paid call like a dashboard turn. `--repo <name>` extends a registered repo instead of starting a new one, `--file <path>` reads a longer brief, and `--show`, `--discard` and `--list` show the pending proposal, drop it, and list the epics.
-
-Every epic also gets an Acceptance ticket that depends on all the others. An independent tester checks the brief end to end against the merged build, working from the brief and the criteria without seeing the diff. Its pass is bound to the commit it tested, so a build where every ticket merged still isn't reported as accepted until that pass exists.
-
-### What it remembers
-
-Onboarding a repo writes a digest of it (overview, structure, conventions, stack), a feature ledger, and draft lore, which is notes on conventions and gotchas cited back to the code. Each merge moves the ledger on and refreshes the digest, so the next ticket starts from what the last one learned. Every delivery prompt is primed from that memory: the file cards that match the ticket, the repo's approved conventions and gotchas recalled for it, and its product decisions, requirements and non-goals. The agent can pull more cards and lore over its memory MCP server. Lore an agent suggests lands as a draft, and delivery agents can't see drafts until a human approves them, in the dashboard's Memory view or with `runner/gaffer lore review`, `runner/gaffer lore approve <id>` and `runner/gaffer lore reject <id> --reason "…"`. The digest is only a summary, and the tool that hands it to an agent says to check the code before high-stakes work.
-
-## What still needs you
-
-Out of the box Gaffer is supervised, and these jobs stay with a person:
-
-- reading and approving each diff, then merging it
-- commenting on a change and resolving those comments, or sending it back with Fix these
-- answering decisions, including the intake questions onboarding files about each repo
-- writing tickets, or confirming the ones a plan proposes, and marking them ready
-- registering the commands an acceptance profile runs
-- unblocking tickets that ran out of attempts, and continuing or stopping a paused one
-- allowing a ticket to change its tests
-- linking an escaped defect to the change it came from
-- approving or rejecting lore drafts
-
-Every flag that hands one of these to an agent is off by default. `GAFFER_MODE` sets them as a group (`supervised`, `lite`, `graduated`, `autonomous`, `strict`); see [Configuration](#configuration).
+[docs/FEATURES.md](docs/FEATURES.md) covers each step, the dashboard, planning a build from a one-line brief, and what Gaffer remembers about a repo.
 
 ## Getting started
 
-You'll need:
-
-- macOS or Linux; I don't test Windows. The tests are written for both, on Node 22 and 24, and are run by hand: this repository has no hosted CI ([docs/testing.md](docs/testing.md#no-hosted-ci-run-the-checks-yourself)).
-- Node 22.22.1 or newer. That's the floor in `package.json`, and `.npmrc` sets `engine-strict=true`, so pnpm refuses anything older. Node 22.22.0 is one patch short, and setup says so before it installs anything.
-- pnpm 10.33.0, pinned in `packageManager`
-- git
-- an OS sandbox for any live run, because every agent runs inside one. macOS has `sandbox-exec` already. Linux needs Docker with a running daemon: `setup` builds the sandbox images for you when it finds one. Without either, live runs refuse to launch agents and say what to install; set `GAFFER_STRICT_REQUIRE=0` in your environment to run agents unwrapped on a host you contain yourself (a VM or a container). Setup, the dashboard, the demo and dry runs work without a sandbox.
-- the Claude Code CLI (`claude`), installed and logged in, for any live run. Setup, the demo and dry runs work without it, and onboarding falls back to a mechanical scan. A live run looks for a credential before it claims anything and refuses with `claude is not logged in: run \`claude /login\``; a call that still fails to authenticate puts the ticket back in Ready without counting an attempt and stops the run.
-
-Set up, start the dashboard and onboard a repo:
+You need macOS or Linux, Node 22.22.1 or newer, pnpm 10.33.0 and git. A live run also needs the Claude Code CLI (`claude`), logged in, and an OS sandbox: `sandbox-exec` on macOS (already there), Docker on Linux.
 
 ```bash
 git clone https://github.com/tmj-90/gaffer && cd gaffer
@@ -87,108 +30,44 @@ runner/gaffer onboard ~/code/your-repo    # register it, scan it, write its dige
 runner/gaffer status                      # what's registered, and anything waiting on you
 ```
 
-`setup` prints a `http://127.0.0.1:8787/?token=…` link. The dashboard listens on loopback unless you start it with `runner/gaffer dashboard --lan`, and every data request needs that token either way. `--lan` is plain HTTP, so on a LAN the token travels unencrypted; [SECURITY.md](SECURITY.md) says what to do instead. To use another port, export `DISPATCH_API_PORT=9000` before `runner/gaffer dashboard --restart` (and in the shells you run `gaffer` from). `runner/gaffer dashboard --restart` starts it afresh with a new token, and `--stop` stops it. Factory state, including the databases and that token, lives in `.gaffer/` inside the checkout. Delete it to start again.
+`setup` prints the dashboard link (`http://127.0.0.1:8787/?token=…`). For another port, `export DISPATCH_API_PORT=9000` first. To type `gaffer` instead of `runner/gaffer`, add `alias gaffer="$PWD/runner/gaffer"` to your shell profile.
 
-The CLI's own messages say `gaffer …`. To type it that way, add `alias gaffer="$PWD/runner/gaffer"` (run from the checkout) to your shell profile. A symlink to `runner/gaffer` on your PATH works too: the script follows it back to the checkout.
-
-Give it a first ticket. `runner/gaffer wg` is the control-plane CLI pointed at this factory's database:
+Give it a ticket:
 
 ```bash
 runner/gaffer wg ticket create -t "Add listNotes" -d "Export listNotes(notes) from src/notes.js, newest first, input untouched."
-runner/gaffer wg ac add 1 -t "listNotes returns a new array sorted newest-first"
 runner/gaffer wg ac add 1 -t "the test suite passes" --check "npm test"
 runner/gaffer wg ticket repo-access set 1 your-repo   # the name onboard registered
 runner/gaffer wg ticket ready 1
 ```
 
-If **ready** is refused, the refusal names what's missing, and `wg ticket edit 1` (title, description, policy) or `wg ac edit 1 <ac>` / `wg ac rm 1 <ac>` fixes it. A ticket's contract is editable until it is claimed; after that the review and the tester are held to it.
-
-Then watch it, and let it go when you're happy:
+Then run it:
 
 ```bash
-runner/gaffer demo                         # one dry tick over a showcase repo, in a fresh temp dir
-runner/gaffer run --dry-run                # preview each ready ticket once; nothing claimed or spent
+runner/gaffer run --dry-run                # preview each ready ticket; nothing claimed or spent
 export GAFFER_DAILY_BUDGET_USD=5           # a live run refuses to start without a dollar cap
-runner/gaffer run                          # live: one pass, delivers ready tickets to review
-runner/gaffer approve 1 --reviewer <you>   # the human gate, or use the Review screen
+runner/gaffer run                          # one pass: delivers ready tickets to review
+runner/gaffer approve 1 --reviewer <you>   # or use the Review screen
 runner/gaffer merge 1
 ```
 
-`runner/gaffer run --daemon` repeats the pass every 30 seconds (`--interval` changes that) until you stop it. If the model's usage window runs out, the ticket goes back to Ready without counting an attempt and the daemon sleeps until the window resets (`gaffer status` says until when). A one-shot `gaffer run` doesn't sleep: it prints `paused until <time>` and exits 75, and the dashboard's Poll for work refuses with the same line. Read [Configuration](#configuration) before the first live run: a live run spends real money.
-
-To run it in a container instead, export `ANTHROPIC_API_KEY` (or `CLAUDE_CODE_OAUTH_TOKEN`), run `mkdir -p repos` and put the repos you want worked on under `./repos` (create it yourself: on Linux, Docker creates a missing one owned by root, and the container's user can't write to it), then run `docker compose up -d`. The dashboard comes up on `127.0.0.1:8787` (`GAFFER_PORT` changes the host side, and it falls back to `DISPATCH_API_PORT`) and `docker compose logs dashboard` shows the login link.
-
-[quickstart.md](quickstart.md) is the long version, including the greenfield path and what Gaffer does on a greenfield run.
+A live run spends real money. [quickstart.md](quickstart.md) is the long version, including Docker and starting from an idea instead of a repo.
 
 ## Configuration
 
-A factory has fourteen settings, and everything else follows from them. Most people set three:
+A factory has fourteen settings. Most people set three:
 
 - `GAFFER_MODE`: who approves and merges (`supervised` by default: a person approves every merge)
-- a budget: `GAFFER_DAILY_BUDGET_USD` for the day, or `GAFFER_BUDGET_USD` for the factory's lifetime (a live run needs one)
-- `GAFFER_MODELS`: the strong, standard and cheap models (`standard` by default: opus, sonnet, haiku)
+- a budget: `GAFFER_DAILY_BUDGET_USD` for the day, or `GAFFER_BUDGET_USD` for the factory's lifetime
+- `GAFFER_MODELS`: the strong, standard and cheap models (opus, sonnet and haiku by default)
 
-The other ten are `GAFFER_EFFORT`, `GAFFER_CONCURRENCY`, `GAFFER_SANDBOX`, `GAFFER_GATES`, `GAFFER_LANDING`, `GAFFER_TESTING`, `GAFFER_IDLE`, `GAFFER_NOTIFY`, `GAFFER_DATA` and `DISPATCH_API_PORT`. Set them in the dashboard's Settings, in `.gaffer/settings.json`, or as environment variables (the environment wins; `GAFFER_DATA` only there). An unknown value stops the runner with a message naming the accepted ones. `runner/gaffer config show` prints yours and where each came from. [docs/CONFIG.md](docs/CONFIG.md) has the list with every accepted value.
-
-## The dashboard
-
-A gaffer is the manager, so the dashboard is match day. The Overview opens on a scoreboard showing how many things need you, how many agents are on the pitch, what's been delivered today (the tickets that landed since midnight UTC, the same ones the Floor's lorry shows) and the wage bill against the daily budget. Beside it is the Team sheet, a numbered list of everything waiting on you with one action on each row: deliveries to sign off, decisions to answer, blocked tickets, approved work waiting to merge, strict-pack tickets that need a reviewer or a ready approval, tickets whose dependency was cancelled, deliveries paused at a cap (Continue… offers Continue and Stop) and, as one row, the lore drafts awaiting your approval (it opens Memory). The Tactics board is a drawn pitch with the ticket lifecycle running left to right and one channel per repo. Each agent is a numbered shirt standing on the ticket it holds, and chalk arrows show the moves of the last three hours. Review becomes The gaffer's sign-off, with the flags, the gates, the acceptance criteria and the diff on one screen. Under the title, a verdict strip puts what the runner recorded above what the agent wrote: each gate and the command it ran, the test count the runner saw, the tester's verdict, cost and turns, the attempt and its rework, the risk reasons and the reviewed-commit pin. Each acceptance criterion shows the runner's exit code or "no machine evidence", and an agent summary that claims a whole-suite test count the runner didn't see is flagged.
-
-![The Overview: the Team sheet with sign-offs, an approved change, a blocked and a paused ticket beside the Tactics board, where numbered shirts stand on the tickets the agents hold](docs/img/match-day-overview.png)
-
-![The Tactics board: the lifecycle from Ready to Done drawn as a pitch with one channel per repo, three agents' shirts on claimed tickets and chalk arrows for the last three hours' moves](docs/img/match-day-tactics-board.png)
-
-![The review packet: gates passed with their commands, the tester's PASS on the tested commit, one commit across gates, diff and tester, cost, attempt 2 after a Fix-these round, and the Behavioural surface listing completeTask's caller and test](docs/img/review-packet.png)
-
-*The review packet of a ticket on its second attempt, after a Fix-these round: what the runner recorded, then the Behavioural surface worked out from the diff and the code index.*
-
-![The gaffer's sign-off: the packet, the sign-off box with Approve and Fix these, the flags, the open review comments and the diff since your review](docs/img/match-day-review.png)
-
-*The whole sign-off for the same ticket: the flags and open comments on the left, the changes since your review on the right.*
-
-You can name the club and the squad. With the full token, click the crest at the top left to open Name your club: the club name, the crest's short name (up to four characters) and the two kit colours, with a preview of the crest and a shirt. The kit colours dress the header, the crest and every agent's shirt, and a kit too light for white text gets dark text on it instead. The Squad page (after Memory in the nav, or under More when the header is full) lists every agent with its shirt number, name, role, the name it registered with, status and when it was last seen. Rename on a row sets a display name of up to 40 characters and a shirt number from 1 to 99, and a number another agent wears is refused with that agent's name. Until you rename one, an agent goes by a default such as "Delivery 1" or "Reviewer". The Tactics board, the Team sheet, the work board, Review, a ticket's timeline, Squad & form and Health all show an agent by that name and number. From a terminal, `runner/gaffer wg club set --name "…" --short ABC --kit-primary "#7a1f3d" --kit-secondary "#8ec5e8"` does what the crest does, `runner/gaffer wg agent list` shows each agent's id, and `runner/gaffer wg agent rename <id> --name "…" --number 9` does what Rename does. The same data is served at `/api/club` and `/api/squad`. A read-only token sees the names and the crest but gets no editors. To get one, mint a named token under Settings → Access (choose "read"; it's shown once) or with `runner/gaffer wg principal create phone --read`, or print the shared read token that goes with the dashboard's own: `GAFFER_DATA=.gaffer node packages/dispatch/dist/api/bin.js print-read-token`. Anywhere else in the dashboard a read-only token sees one "Read-only access" strip under the header, and the controls that would change something are switched off with a title that says why: Settings' editors and Save, Poll for work and Suggest work, a card's Move, a ticket's actions, the Team sheet's buttons, Review's Approve, Send back and Won't do, Revoke and Reopen on the Work board, New ground, Onboard a repo, the ground and repo editors, Author a spec and Freeze, and the Plan a build composer and the one-ticket form. The page never sends such a token's write, so nothing comes back refused. Names are only for show. An agent's id, which is what claims and the event log record, never changes, and agents can't rename themselves or the club.
-
-The Floor (after Squad in the nav, or under More) draws the factory as an isometric factory floor, live. A conveyor runs past the stations in lifecycle order: the drawing office (drafts and refining), Stores (ready), Assembly (claimed and in progress), Inspection (in review), the test rig, the loading bay (approved, waiting to merge) and Despatch, where a lorry carries what was done today. Every open ticket is a parcel at its station, and every live claim is a robot wearing its agent's shirt number, the same number and name as on the Tactics board. Blocked, paused and failed tickets sit in a hazard-taped jam bay whose beacon lights while anything is in it, and a spend tank is filled to today's wage bill against the daily budget. It reads the same data as the Overview and redraws on the live stream. Every parcel, robot and station is a link, a parcel's label reads as a sentence ("#12 Fix the login redirect, in review, delivered by Kev (No. 9)"), and hovering or focusing one shows its number and title. Under the drawing, each station's tickets and who is on the benches are listed as text.
-
-![The Floor: stations from the drawing office to despatch, parcels for every open ticket, three robots on claimed tickets, two tickets in the jam bay and the spend tank against a $25 budget](docs/img/match-day-floor.png)
-
-The other screens, each in [docs/FEATURES.md](docs/FEATURES.md):
-
-![The work board: lanes from Draft to Done with counts, cards showing repo, risk and criteria met, claimed cards wearing their agent's shirt, and a blocked card in red](docs/img/board.png)
-
-*The work board: every lifecycle lane, with the whole-board counts above it.*
-
-![The Independent testing card: the test contract, the cli acceptance profile with its two registered commands, the runner's runtime acceptance result on each tested commit and the tester's passes](docs/img/ticket-testing.png)
-
-*A ticket's Independent testing card: the acceptance profile, what the runner recorded when it ran those commands, and the tester's results.*
-
-![Health: the four measures (first-pass acceptance, human review time, accepted-change cost, escaped-defect rate), what each lane changed, the code index, the pre-work scout and the routing scorecard](docs/img/health.png)
-
-*Health: what the usage ledger and the event log can show, and nothing they can't.*
-
-![Club history for one repo: approved lore and a draft awaiting signature, the repo digest, and the feature ledger as shipped, building and backlog](docs/img/memory.png)
-
-*Memory: a repo's digest, its feature ledger and the lore delivery agents read.*
-
-FEATURES.md also shows the epics as dependency-ordered rounds, the Factory Map, Plan a build, the routing scorecard and Settings.
+Set them in the dashboard's Settings, in `.gaffer/settings.json`, or as environment variables. [docs/CONFIG.md](docs/CONFIG.md) has all fourteen.
 
 ## Safety
 
-Every agent tool call goes through a deterministic PreToolUse hook, [runner/safety-hook.mjs](runner/safety-hook.mjs). It keeps writes inside the ticket's worktree, refuses reads of secret files and credential stores, stops the agent driving the control plane or its databases directly, and blocks when it can't prove a target is in scope. The agent starts from an allowlisted environment with token and key variables stripped. The review gate lives in the control plane, so an agent can't argue its way past it.
+Every agent tool call goes through a deterministic hook that keeps writes inside the ticket's worktree and refuses reads of secrets. Every agent runs inside an OS sandbox or doesn't run at all. The runner decides "done" by running the repo's own tests, and flags a delivery that weakened them. The review gate lives in the control plane, so an agent can't approve its own work.
 
-The runner decides "done" by running the repo's own tests, lint and typecheck, so it also checks the agent hasn't weakened them. Gate commands that call a package.json script run the script from the commit the delivery branched from. A delivery that deletes or renames a test, adds a `.skip`/`.only`/`xfail`/`t.Skip`, or changes a gate script (an added `pretest` hook included) is flagged on the sign-off, and an agent can't approve it. The check compares against the commit the runner recorded when it cut the branch, not the base branch name, and a retry keeps that commit. Only you can allow test changes on a ticket (`gaffer wg ticket allow-test-changes <n>`); that clears the flag but the gate still runs the base commit's scripts. For now it flags and never fails a delivery.
-
-The tester's evidence is held to the same standard: [SECURITY.md](SECURITY.md#the-independent-tester-and-what-its-verdict-proves) says exactly what a PASS proves and what it doesn't. In short, it proves that the tests the tester named executed and passed under your registered test command, on a clean checkout of the tested commit and again on the merge candidate, not that they assert the right thing. The replay's node:test results are signed by its reporter, so printed text that looks like a pass never counts. The clean replay runs the tester's files through the gates' sandbox seam with the `replay` profile, with no model credential, `GAFFER_DATA` or `DISPATCH_DB` in its environment and `wg` shadowed on `PATH`, and the reporter's signing key is a file it unlinks before any test runs, never an environment variable. When strict mode asks for a sandbox the host can't supply, the replay holds and the PASS waits unverified instead of running the tester's files bare. An acceptance profile's commands run with a stripped environment under the gates' sandbox posture, and only a person can register them.
-
-The hook is a string analyser for bash, and a determined agent that builds paths at runtime can get further than I'd like. That's why OS isolation is the default for every agent launch, in every mode: `GAFFER_STRICT_REQUIRE` defaults to 1, so a delivery, a review, the planner, onboarding, the merge resolver, the tester and every other agent runs inside an OS sandbox or doesn't run at all. On a host with no sandbox, `gaffer run`, the loop, a tick and the dashboard's Poll for work refuse before they claim anything, with one message that says what the host is missing, the fix, and the opt-out. Settings shows the same posture as a read-only line in its Sandbox group (`runner/gaffer sandbox-status` prints it as JSON). The provider is picked for you: `sandbox-exec` on macOS, `docker` wherever the docker CLI is installed. The opt-out is `GAFFER_STRICT_REQUIRE=0` in the environment, never settings.json. It means "I contain the whole runner myself": agents then run with only the worktree and the safety hook around them, and the runner says so once each time it starts. The Docker image sets it, because there the container is the boundary. `SANDBOX_PROVIDER=docker` gives read and egress isolation on any host with Docker. Its containment is red-team tested in CI, and a second CI job delivers a real ticket through it end to end on a Linux runner: a stub agent runs inside the container, its MCP calls reach the host through the bridge, the DoD gates run in their own container, and the ticket reaches review without the container seeing the databases, the host home or a canary file. The same delivery with the real `claude` inside the container is a test you start yourself with your own credential ([docs/sandbox.md](docs/sandbox.md#prove-it-with-a-live-agent)); nothing spends a credit on it otherwise. macOS `sandbox-exec` only restricts writes.
-
-People and bots get their own credentials. `runner/gaffer wg principal create <name>` (or Settings → Access) mints a named token, shown once, and every write made with it is recorded under that name. `--read` makes it read-only and `--admin` makes it an admin. `--repo <name>` and `--ticket <n>` (both repeatable) scope it: it then sees only tickets whose write repos are all in its repos, plus the tickets you named, and the API refuses everything else with 403 `SCOPE_DENIED`, saying which scope it holds. A scoped token can't poll, plan, change the map or read factory-wide pages like runs and cost, and on the dashboard it opens on its own tickets with those controls switched off. Repository-level changes (registering, linking or hiding a repo, its branch and gate commands, onboarding, a ticket's repo access, settings) need an admin principal; a scoped admin only gets the repos in its scope. A scope works with `--read` too, for a read-only view of a few tickets. A principal can't take a registered agent's id, and nobody approves a delivery under the id of the agent that delivered it.
-
-On the command line, `wg` records writes as `$USER` and checks nothing, because anyone who can open the database file can change anything in it. That identity is asserted, not authenticated, and `runner/gaffer wg whoami` says so. Set `GAFFER_PRINCIPAL_TOKEN=<token>` (or pass `--as-principal <token>`) and `wg`, `gaffer approve` and `gaffer merge` act as that principal instead: writes are recorded as it, and its read-only flag and scopes apply exactly as they do on the API. A principal only ever writes as itself, so the runner's and agents' own commands (evidence, claims, releases) are refused to it. The safety hook stops an agent minting, revoking or acting as a principal.
-
-The worker doesn't have to be `claude -p`. `GAFFER_WORKER_PROVIDER=command` runs your own program (`GAFFER_WORKER_COMMAND`) for every agent turn, under a small contract: the prompt and the MCP config come in as environment variables, a JSON envelope with the result, turns and cost goes back on stdout, and the budget caps, the scrubbed environment and the gates apply as before. The safety hook only exists inside `claude -p`, so a command worker always runs inside the docker sandbox with the host-side MCP bridge (on a Linux host by default) and refuses anywhere else, `sandbox-exec` included, unless you set `GAFFER_STRICT_REQUIRE=0` in the environment because you contain the whole runner yourself. Its knobs are environment-only, its program must live where no agent can rewrite it, and each call is booked at no less than a per-call floor, because the cost it reports is its own word. [docs/worker-providers.md](docs/worker-providers.md) has the contract.
-
-Work is capped at 50 ticks a day, and a live run won't start without a dollar cap: set `GAFFER_DAILY_BUDGET_USD` for the day or `GAFFER_BUDGET_USD` for the factory's lifetime (no new paid work starts at $0 headroom). `gaffer run`, the loop and the dashboard's Poll for work all refuse until one is set, and the dashboard's first Poll asks for a daily budget, prefilled at $5. Every other paid launch follows the same rule: onboarding analysis, Plan a build, Suggest work, the spec author, the merge resolver and the tester refuse with the same message, and an onboard without a cap writes the mechanical digest and cards and says why. `GAFFER_ALLOW_UNCAPPED=1` in the environment opts out. [SECURITY.md](SECURITY.md) has the threat model and the limits in full.
+None of that makes it safe to point at a repo you don't trust. [SECURITY.md](SECURITY.md) has the threat model and the limits.
 
 ## Layout
 
@@ -203,31 +82,14 @@ gaffer/
 └── quickstart.md
 ```
 
-`runner/gaffer skills install` links the skill library into `.claude/skills` in the current directory (`--user` for `~/.claude/skills`), and `runner/gaffer skills add <path|git-url>` validates an outside skill against the same lint gate the bundled library passes (a known `area`, a trigger-phrased description, a real procedure, real MCP tool names) before adding it to the factory's library.
+## More
 
-## Further reading
-
-[docs/README.md](docs/README.md) lists every doc by what you need. The main ones:
-
-- [quickstart.md](quickstart.md): the guided first run
-- [docs/FEATURES.md](docs/FEATURES.md): each surface in more detail
-- [docs/CONFIG.md](docs/CONFIG.md): the fourteen settings, generated from the code
-- [SECURITY.md](SECURITY.md): threat model and residual limits
-- [docs/worker-providers.md](docs/worker-providers.md): running your own worker program instead of `claude -p`
+- [docs/README.md](docs/README.md): every doc, by what you need
 - [ARCHITECTURE.md](ARCHITECTURE.md): how the pieces fit together
-- [runner/README.md](runner/README.md) and [runner/RUNBOOK.md](runner/RUNBOOK.md): the runner in depth
-- [docs/openapi.json](docs/openapi.json): the REST contract, also served at `GET /api/openapi.json`
-- [docs/RELEASING.md](docs/RELEASING.md): how releases are cut
+- [docs/testing.md](docs/testing.md): running the tests (`pnpm check`, `pnpm test:runner`)
+- [runner/RUNBOOK.md](runner/RUNBOOK.md): the runner in depth
 - [CHANGELOG.md](CHANGELOG.md)
-
-## Contributing
-
-Issues and pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) has the ground rules. The first one is that a change loosening the safety hook gets rejected. `pnpm check` runs the TypeScript side and `pnpm test:runner` runs the runner's tests. No hosted CI runs them for you, so run both before you push; [docs/testing.md](docs/testing.md) lists every check.
-
-## Credits
-
-Some skill packs are adapted from MIT-licensed work: [ui-ux-pro-max-skill](https://github.com/nextlevelbuilder/ui-ux-pro-max-skill) for the design-system, frontend-design and brand packs, [alirezarezvani/claude-skills](https://github.com/alirezarezvani/claude-skills) for devops, marketing, product and docs packs, and [Matt Pocock's skills](https://github.com/mattpocock/skills) for the caveman compressed-communication pattern. Their licence texts are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## Licence
 
-Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE). Gaffer is an independent project and isn't affiliated with or endorsed by Anthropic. Claude and Claude Code are trademarks of Anthropic PBC.
+Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE). Some skill packs are adapted from MIT-licensed work, credited in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Gaffer is an independent project and isn't affiliated with or endorsed by Anthropic. Claude and Claude Code are trademarks of Anthropic PBC.

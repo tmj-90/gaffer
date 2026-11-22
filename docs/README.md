@@ -54,12 +54,11 @@ overview; start there if you're new.
   regression and scenario suites.
 - [runner/eval/README.md](../runner/eval/README.md): the gate replay fixtures.
 
-## Contribute
+## Working on Gaffer
 
-- [CONTRIBUTING.md](../CONTRIBUTING.md): setup, ground rules, commit and PR style.
+- [testing.md](testing.md): the commands, and the two rules a change has to keep.
 - [runner/CLAUDE.md](../runner/CLAUDE.md): the rule that delivery features land on
   the live path.
-- [CODE_OF_CONDUCT.md](../CODE_OF_CONDUCT.md).
 
 ## Release
 

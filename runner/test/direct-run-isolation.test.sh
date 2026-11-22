@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =====================================================================
-# Run DIRECTLY (as CONTRIBUTING documents: `bash runner/test/X.test.sh`), with no
+# Run DIRECTLY (as docs/testing.md documents: `bash runner/test/X.test.sh`), with no
 # run.sh to hand it a private GAFFER_DATA, a test must still neither APPLY the
 # checkout's .gaffer/settings.json nor write the checkout's operator state. On a
 # contributor's machine that checkout is their LIVE factory: its settings change

@@ -222,6 +222,14 @@ and says how many things need you once: the scoreboard's cells are the agents on
 pitch, the deliveries and the wage bill. On a phone it names one blocked ticket, then
 "and N more blocked".
 
+![The Overview headline and scoreboard: eight things need you, the blocked ticket that leads them, three agents on the pitch, six tickets delivered today and the wage bill against a $25 daily budget](img/match-day-scoreboard.png)
+
+**The Tactics board** beside it is a drawn pitch with the ticket lifecycle running left
+to right and one channel per repo. Each agent is a numbered shirt standing on the
+ticket it holds, and chalk arrows show the moves of the last three hours.
+
+![The Tactics board: the lifecycle from Ready to Done drawn as a pitch with one channel per repo, three agents' shirts on claimed tickets and chalk arrows for the last three hours' moves](img/match-day-tactics-board.png)
+
 **The Floor** (`#/floor`) draws the live factory as an isometric floor: stations along
 a conveyor in lifecycle order, one parcel per open ticket, a robot in the agent's shirt
 number on every live claim, a jam bay for blocked, paused and failed tickets, a spend
@@ -229,8 +237,12 @@ tank against the daily budget and a lorry carrying what was done today. Everythi
 it is a link, and the stations are listed as text under the drawing. On a phone the
 station list comes first and the drawing is a figure you tap to zoom.
 
+![The Floor: stations from the drawing office to despatch, parcels for every open ticket, three robots on claimed tickets, two tickets in the jam bay and the spend tank against a $25 budget](img/match-day-floor.png)
+
 **Health** (`#/health`, `GET /api/health`, and `gaffer wg stats` in the terminal) reads
 the usage ledger and the transition log, and says only what those can show:
+
+![Health: the four measures (first-pass acceptance, human review time, accepted-change cost, escaped-defect rate), what each lane changed, the code index, the pre-work scout and the routing scorecard](img/health.png)
 
 - **First-pass acceptance**: the share of done tickets nobody sent back after they
   first entered review and that were never reopened, split by who approved them.
@@ -310,6 +322,8 @@ The decision comes first: the ticket header (the title, then its number, status,
 delivered it and how long it has waited), one row of verdict cells, then the sign-off
 with Approve, Fix these and Send back, all on the first screen of a laptop. On a phone
 those three actions stay in a bar above the tab bar while you read the diff.
+
+![The review packet: gates passed with their commands, the tester's PASS on the tested commit, one commit across gates, diff and tester, cost, attempt 2 after a Fix-these round, and the Behavioural surface listing completeTask's caller and test](img/review-packet.png)
 
 - **What was asked**: the ticket's description, a quote in the header, folded after a
   few lines.

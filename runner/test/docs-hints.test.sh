@@ -18,7 +18,7 @@ ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 
 # The user-facing docs (CHANGELOG.md records history and is left as written).
-DOCS=("$ROOT/README.md" "$ROOT/quickstart.md" "$ROOT/CONTRIBUTING.md" "$RUNNER_DIR"/*.md "$ROOT"/docs/*.md)
+DOCS=("$ROOT/README.md" "$ROOT/quickstart.md" "$RUNNER_DIR"/*.md "$ROOT"/docs/*.md)
 
 echo "== dispatch CLI snippets name a database =="
 bad="$(grep -nH 'dispatch/dist/cli/index\.js' "${DOCS[@]}" 2>/dev/null \

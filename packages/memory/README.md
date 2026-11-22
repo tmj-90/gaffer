@@ -95,7 +95,6 @@ The `memory` CLI is what a human uses to review and approve drafts.
 **Standalone:** nothing here needs the rest of Gaffer. Run `memory init` in any
 directory and you have a trust-gated memory MCP you can wire into any MCP client;
 `memory setup` bootstraps the MCP server, a `CLAUDE.md` retrieval rule,
-and the onboarding skill in one command. See the root
-[`CONTRIBUTING.md`](../../CONTRIBUTING.md#memorys-trust-model-is-the-product) and
+and the onboarding skill in one command. See
 [`docs/`](docs/) (`PRINCIPLES.md`, `DATA-FLOW.md`, `adr/`) for the design and trust
 model.

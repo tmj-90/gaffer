@@ -194,7 +194,7 @@ harness "$T/no-such.test.sh"; rc=$?
   && ok "H8 a missing FILE is a usage error, not a run" || fail "H8 missing file (rc $rc): $(tail -3 "$WORK/out")"
 harness -j x "$T/z-pass.test.sh"; rc=$?
 [ "$rc" -eq 2 ] && ok "H8 a non-numeric -j is a usage error" || fail "H8 -j x (rc $rc): $(tail -3 "$WORK/out")"
-# The real pnpm path (CONTRIBUTING.md documents it), when pnpm is on PATH.
+# The real pnpm path (docs/testing.md documents it), when pnpm is on PATH.
 if command -v pnpm >/dev/null 2>&1; then
   (cd "$ROOT" && env -u GITHUB_STEP_SUMMARY -u GITHUB_ACTIONS -u GAFFER_TEST_STRICT -u GAFFER_RUN_SHARD GAFFER_RUN_STATE_ROOT="$WORK/root" \
     pnpm --silent test:runner -- -j 1 "$T/z-pass.test.sh") >"$WORK/out" 2>&1; rc=$?

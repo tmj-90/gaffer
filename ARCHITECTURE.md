@@ -126,4 +126,4 @@ All runtime knobs live in `runner/factory.config.sh` (sourced by every runner sc
 - [`quickstart.md`](quickstart.md): guided first run
 - [`runner/ONBOARDING.md`](runner/ONBOARDING.md): onboarding a repo
 - [`runner/RUNBOOK.md`](runner/RUNBOOK.md): full operational reference
-- [`CONTRIBUTING.md`](CONTRIBUTING.md): how to contribute
+- [`docs/testing.md`](docs/testing.md): running the tests

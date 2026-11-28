@@ -227,6 +227,140 @@ export function validateAgentSettings(text, runnerDir) {
   return { ok: true, parsed };
 }
 
+/** The only tools the research agent's settings may allow (backlog 69). */
+export const RESEARCH_ALLOWED_TOOLS = Object.freeze(["WebSearch", "WebFetch"]);
+/** Tools the research settings must deny by name (each reaches files, a shell or a sub-agent). */
+export const RESEARCH_REQUIRED_DENY = Object.freeze([
+  "Bash",
+  "Read",
+  "Write",
+  "Edit",
+  "Glob",
+  "Grep",
+  "Task",
+  "Agent",
+  "Skill",
+  "Monitor",
+]);
+
+/**
+ * The research agent's settings rule (runner/claude/research-settings.json, rendered by
+ * runner/bin/research-run.mjs only). Separate from validateAgentSettings, which every
+ * other agent's settings keep passing unchanged:
+ *   * valid JSON; hooks not switched off (`disableAllHooks` false only, no
+ *     `allowManagedHooksOnly`); project MCP servers not enabled;
+ *   * EVERY PreToolUse entry runs `<runner>/research-hook.mjs` and nothing else, and one
+ *     of them has the match-all matcher (`*`, `""` or none), so every tool name reaches
+ *     the research decision; each with `"onFailure": "block"` and a timeout;
+ *   * no entry runs the general safety hook (a template that mixed the two would let a
+ *     delivery-shaped file pass as research or the reverse);
+ *   * permissions.allow names only WebSearch and WebFetch; permissions.deny names at least
+ *     RESEARCH_REQUIRED_DENY.
+ * Returns `{ ok: true, parsed }` or `{ ok: false, why }`.
+ */
+export function validateResearchSettings(text, runnerDir) {
+  const hookPath = resolve(runnerDir, "research-hook.mjs");
+  const generalHook = resolve(runnerDir, "safety-hook.mjs");
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err) {
+    return { ok: false, why: `the rendered research settings are not valid JSON: ${err.message}` };
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { ok: false, why: "the research settings are not an object" };
+  }
+  if (parsed.disableAllHooks !== false) {
+    return { ok: false, why: 'the research settings must set "disableAllHooks": false' };
+  }
+  if ("allowManagedHooksOnly" in parsed && parsed.allowManagedHooksOnly !== false) {
+    return { ok: false, why: 'the research settings set "allowManagedHooksOnly", which drops the hook' };
+  }
+  if (parsed.enableAllProjectMcpServers === true || "enabledMcpjsonServers" in parsed) {
+    return { ok: false, why: "the research settings enable MCP servers; the research agent has none" };
+  }
+  const pre = parsed.hooks?.PreToolUse;
+  if (!Array.isArray(pre) || pre.length === 0) {
+    return { ok: false, why: `no PreToolUse hook runs the research hook (${hookPath})` };
+  }
+  const allEntries = Object.values(parsed.hooks ?? {}).flatMap((v) => (Array.isArray(v) ? v : []));
+  for (const m of allEntries) {
+    for (const h of Array.isArray(m?.hooks) ? m.hooks : []) {
+      if (h && typeof h.command === "string" && h.command.includes(generalHook)) {
+        return { ok: false, why: "the research settings run the general safety hook; they must run only the research hook" };
+      }
+    }
+  }
+  let matchAll = false;
+  for (const m of pre) {
+    if (!m || typeof m !== "object" || !Array.isArray(m.hooks) || m.hooks.length === 0) {
+      return { ok: false, why: "a PreToolUse entry of the research settings has no hook" };
+    }
+    for (const h of m.hooks) {
+      if (!h || h.type !== "command" || typeof h.command !== "string") {
+        return { ok: false, why: "a PreToolUse hook of the research settings is not a command hook" };
+      }
+      const problem = hookCommandProblem(h, hookPath);
+      if (problem) {
+        return { ok: false, why: `a PreToolUse hook of the research settings does not run the research hook: ${problem}` };
+      }
+      if (h.onFailure !== "block" || !(typeof h.timeout === "number" && h.timeout > 0)) {
+        return { ok: false, why: 'the research hook entry lacks "onFailure": "block" and a timeout' };
+      }
+    }
+    if (m.matcher === undefined || m.matcher === null || m.matcher === "" || m.matcher === "*") {
+      matchAll = true;
+    }
+  }
+  if (!matchAll) {
+    return { ok: false, why: "no PreToolUse entry of the research settings matches every tool (*)" };
+  }
+  const allow = parsed.permissions?.allow ?? [];
+  const deny = parsed.permissions?.deny ?? [];
+  if (!Array.isArray(allow) || allow.some((t) => !RESEARCH_ALLOWED_TOOLS.includes(t))) {
+    return { ok: false, why: `the research settings allow a tool other than ${RESEARCH_ALLOWED_TOOLS.join(" and ")}` };
+  }
+  const missing = RESEARCH_REQUIRED_DENY.filter((t) => !Array.isArray(deny) || !deny.includes(t));
+  if (missing.length) {
+    return { ok: false, why: `the research settings do not deny ${missing.join(", ")}` };
+  }
+  return { ok: true, parsed };
+}
+
+/**
+ * Render the research template into `<root>/<rel>`, verify it with
+ * validateResearchSettings, write it without following a link and read it back. Throws an
+ * Error starting "SAFETY:" (or an UnsafePathError) on any refusal, like
+ * writeVerifiedSettings.
+ */
+export function writeVerifiedResearchSettings(root, rel, settingsPath, runnerDir) {
+  const refuse = (why) => {
+    try {
+      safeRemoveFile(root, rel);
+    } catch {
+      /* nothing of ours to remove */
+    }
+    throw new Error(`SAFETY: ${why}; refusing to launch the research agent (fail closed)`);
+  };
+  let rendered;
+  try {
+    rendered = renderAgentSettings(readFileSync(settingsPath, "utf8"), runnerDir);
+  } catch (err) {
+    return refuse(`cannot read the research settings template ${settingsPath}: ${err.message}`);
+  }
+  const v = validateResearchSettings(rendered, runnerDir);
+  if (!v.ok) return refuse(`${settingsPath}: ${v.why}`);
+  let target;
+  try {
+    target = safeWriteFile(root, rel, rendered);
+    if (readFileSync(target, "utf8") !== rendered) throw new Error("read-back mismatch");
+  } catch (err) {
+    if (err instanceof UnsafePathError) throw err;
+    return refuse(`could not write ${resolve(root, rel)}: ${err.message}`);
+  }
+  return target;
+}
+
 /**
  * Render `settingsPath` into `<root>/<rel>`, verify it against the rule, and write it
  * without following a link. Throws an Error starting "SAFETY:" on a rule refusal and an

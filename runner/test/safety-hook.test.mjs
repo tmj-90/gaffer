@@ -2870,7 +2870,23 @@ else failures.push("ALLOW expected: whitespace-only stdin parses as {} and stays
   );
   const lsCall = JSON.stringify(call("Bash", { command: "ls" }));
   const whole = spawnHook(lsCall, { hook: resolve(lone, "safety-hook.mjs") });
-  const modules = readdirSync(resolve(lone, "lib", "hook")).filter((f) => f.endsWith(".mjs"));
+  // The research role's modules (backlog 69) are loaded only by runner/research-hook.mjs,
+  // never by this hook: their own fail-closed loading is proven in research-hook.test.mjs,
+  // and no module of this hook may import them (checked here), so the two decisions stay
+  // apart.
+  const RESEARCH_ONLY = ["research.mjs", "url-rules.mjs"];
+  const modules = readdirSync(resolve(lone, "lib", "hook")).filter(
+    (f) => f.endsWith(".mjs") && !RESEARCH_ONLY.includes(f),
+  );
+  for (const f of [
+    ...modules.map((m) => resolve(lone, "lib", "hook", m)),
+    resolve(lone, "safety-hook-core.mjs"),
+  ]) {
+    const src = readFileSync(f, "utf8");
+    if (RESEARCH_ONLY.some((m) => src.includes(`./${m}`) || src.includes(`/hook/${m}`)))
+      failures.push(`CONTRACT ${f} imports a research-only module`);
+    else passed += 1;
+  }
   if (whole.status === 0 && modules.length >= 12) passed += 1;
   else
     failures.push(

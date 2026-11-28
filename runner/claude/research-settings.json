@@ -1,0 +1,66 @@
+{
+  "_comment": "Claude Code settings for the gaffer RESEARCH agent only (backlog 69), rendered by runner/bin/research-run.mjs into a throwaway home and verified by lib/agent-settings.mjs validateResearchSettings before the spawn. Every tool call goes to runner/research-hook.mjs (matcher *): it allows WebSearch and WebFetch under the URL rules and the run's budget and refuses every other tool name, failing closed. WebFetch is also matched after the call to record that the fetch completed. The launcher's flags are the first layer (--tools WebSearch,WebFetch, an explicit --disallowedTools list, --strict-mcp-config and no --mcp-config); this file is the second; the empty home and scrubbed environment the third. permissions.allow is not relied on: a claude -p run in a folder it has not trusted ignores project allow rules (deny rules and hooks apply), so the launcher passes --allowedTools itself. disableAllHooks is false so a true in the user's own settings cannot switch the hook off. No other launcher renders this file: every other agent's settings run runner/safety-hook.mjs, which refuses both web tools.",
+  "enableAllProjectMcpServers": false,
+  "disableAllHooks": false,
+  "permissions": {
+    "allow": ["WebSearch", "WebFetch"],
+    "deny": [
+      "Bash",
+      "PowerShell",
+      "Monitor",
+      "Read",
+      "Write",
+      "Edit",
+      "MultiEdit",
+      "NotebookEdit",
+      "NotebookRead",
+      "Glob",
+      "Grep",
+      "LS",
+      "LSP",
+      "Task",
+      "Agent",
+      "Agent(web-fetch)",
+      "Skill",
+      "REPL",
+      "Workflow",
+      "Artifact",
+      "SendMessage",
+      "SendUserFile",
+      "PushNotification",
+      "RemoteTrigger",
+      "CronCreate",
+      "EnterWorktree",
+      "ListMcpResourcesTool",
+      "ReadMcpResourceTool"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${RUNNER_DIR}/research-hook.mjs\"",
+            "timeout": 30,
+            "onFailure": "block"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "WebFetch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${RUNNER_DIR}/research-hook.mjs\"",
+            "timeout": 30,
+            "onFailure": "block"
+          }
+        ]
+      }
+    ]
+  }
+}

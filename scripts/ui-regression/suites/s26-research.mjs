@@ -180,8 +180,9 @@ export default async function s26(t, L) {
 
   // A 2x picture of the card for the docs.
   try {
+    // Taller than the card: an element that does not fit the viewport is captured wrongly.
     const ctx = await t.browser.newContext({
-      viewport: { width: 1200, height: 1400 },
+      viewport: { width: 1200, height: 2600 },
       deviceScaleFactor: 2,
     });
     const pg = await ctx.newPage();
@@ -189,6 +190,12 @@ export default async function s26(t, L) {
     await pg.route("https://fonts.gstatic.com/**", (r) => r.abort());
     await pg.goto(`${L.BASE}/?token=${L.TOKEN}#/create`, { waitUntil: "load" });
     await pg.waitForSelector(`${PANEL} .rs-feature`, { timeout: 20000 });
+    // The docs picture shows an ordinary result: the hostile finding is checked above.
+    await pg.evaluate((sel) => {
+      for (const li of document.querySelectorAll(`${sel} .rs-finding`)) {
+        if (li.textContent.includes("hostile-research.dev")) li.remove();
+      }
+    }, PANEL);
     await pg
       .locator(`${PANEL} .rs-card`)
       .screenshot({ path: path.join(L.OUT, "research-card-2x.png") });

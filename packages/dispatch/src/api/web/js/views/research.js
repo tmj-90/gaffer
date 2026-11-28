@@ -56,7 +56,7 @@ export function renderResearchSource(source) {
       ` (${String(source && source.host ? source.host : "unknown host")})`,
     ),
     source && source.fetched === false
-      ? el("span", { class: "rs-mark" }, "not fetched by the run")
+      ? el("span", { class: "rs-mark badge warn" }, "not fetched by the run")
       : null,
   ]);
 }
@@ -81,7 +81,7 @@ function renderFindings(findings) {
         f.opinion
           ? el(
               "div",
-              { class: "rs-mark" },
+              { class: "rs-mark badge warn" },
               "The agent's opinion: no source was fetched by the run.",
             )
           : null,
@@ -164,7 +164,7 @@ function renderFeatures(state, locked, repaint) {
           f.origin === "person" ? "Added by you. " : null,
           f.backed_by && f.backed_by.length ? `Backed by ${f.backed_by.join(", ")}. ` : null,
           f.unsupported && f.origin !== "person"
-            ? el("span", { class: "rs-mark" }, "Only the agent's opinion behind it.")
+            ? el("span", { class: "rs-mark badge warn" }, "Only the agent's opinion behind it.")
             : null,
         ]),
       ],

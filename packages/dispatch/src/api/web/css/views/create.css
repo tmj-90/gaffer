@@ -680,87 +680,155 @@
       padding: 10px;
     }
   }
-}
 
-/* ---------------------------------------------------------------------------
-   Research first (backlog 69): the checkbox on the brief form and the research
-   card. Every value in the card is plain text; links are only safe https sources.
-   --------------------------------------------------------------------------- */
-.pb-research {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin: 6px 0;
-}
-.pb-research[hidden] {
-  display: none;
-}
-.pb-research-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-weight: 600;
-  cursor: pointer;
-}
-.pb-research-label:has(.pb-research-box:disabled) {
-  cursor: not-allowed;
-  opacity: 0.7;
-}
-.pb-research-hint {
-  font-size: 0.85em;
-}
-.rs-card .rs-section {
-  margin-top: 12px;
-}
-.rs-card .rs-h {
-  margin: 0 0 6px;
-  font-size: 0.95em;
-}
-.rs-features,
-.rs-findings,
-.rs-questions,
-.rs-comparables {
-  margin: 0;
-  padding-left: 1.2em;
-}
-.rs-feature {
-  margin-bottom: 10px;
-}
-.rs-feature.rs-dropped .rs-title-input,
-.rs-feature.rs-dropped .rs-desc {
-  opacity: 0.55;
-  text-decoration: line-through;
-}
-.rs-feature-row {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-}
-.rs-title-input {
-  flex: 1;
-  min-width: 0;
-}
-.rs-desc {
-  width: 100%;
-  margin-top: 4px;
-  box-sizing: border-box;
-}
-.rs-mark {
-  display: inline-block;
-  margin-left: 6px;
-  padding: 0 6px;
-  border-radius: 8px;
-  font-size: 0.8em;
-  background: var(--warn-bg, rgba(200, 140, 0, 0.15));
-}
-.rs-source {
-  word-break: break-all;
-}
-.rs-host {
-  font-size: 0.85em;
-}
-.rs-running {
-  display: flex;
-  gap: 8px;
-  align-items: center;
+  /* Research first: the checkbox on the brief form and the research card. Every
+     value in the card is plain text; a link is only ever a safe https source. */
+  .pb-research {
+    display: grid;
+    gap: 2px;
+    margin: 6px 0;
+  }
+  .pb-research[hidden] {
+    display: none;
+  }
+  .pb-research-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .pb-research-label:has(.pb-research-box:disabled) {
+    cursor: not-allowed;
+    color: var(--ink-2);
+  }
+  .pb-research-hint {
+    font-size: var(--t14);
+    color: var(--ink-2);
+  }
+  .rs-card {
+    gap: 14px;
+    padding-bottom: 14px;
+  }
+  .rs-card > :not(.pb-proposal-head, .pb-proposal-actions) {
+    margin: 0 14px;
+  }
+  .rs-card:has(> .pb-proposal-actions) {
+    padding-bottom: 0;
+  }
+  .rs-card > .pb-proposal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: 14px;
+    border-top: var(--frame);
+  }
+  .rs-summary {
+    font: 500 var(--t16) / 1.45 var(--f-text);
+  }
+  .rs-section {
+    display: grid;
+    gap: 8px;
+  }
+  .rs-h {
+    margin: 0;
+    font: 700 var(--t14) / 1.3 var(--f-text);
+  }
+  .rs-features,
+  .rs-findings,
+  .rs-questions,
+  .rs-comparables,
+  .rs-sources {
+    display: grid;
+    gap: 10px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .rs-feature,
+  .rs-finding {
+    display: grid;
+    gap: 6px;
+    padding: 10px;
+    border: 1.5px solid var(--rule);
+    border-radius: var(--r);
+  }
+  .rs-feature.rs-dropped .rs-title-input,
+  .rs-feature.rs-dropped .rs-desc {
+    color: var(--ink-2);
+    text-decoration: line-through;
+  }
+  .rs-feature-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .rs-keep {
+    flex: none;
+    width: 20px;
+    height: 20px;
+    margin: 0;
+  }
+  .rs-title-input {
+    flex: 1;
+    min-width: 0;
+  }
+  .rs-priority {
+    flex: none;
+  }
+  .rs-desc {
+    width: 100%;
+    min-height: 0;
+    box-sizing: border-box;
+    resize: vertical;
+  }
+  .rs-feature-meta,
+  .rs-why,
+  .rs-log {
+    font-size: var(--t14);
+    color: var(--ink-2);
+  }
+  .rs-feature-meta:empty {
+    display: none;
+  }
+  .rs-add {
+    justify-self: start;
+    margin-top: 10px;
+  }
+  .rs-q {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+  }
+  .rs-claim {
+    font-weight: 600;
+  }
+  .rs-id {
+    font: 700 var(--t12) / 1 var(--f-mono);
+    color: var(--ink-2);
+  }
+  .rs-mark {
+    justify-self: start;
+    white-space: normal;
+  }
+  .rs-source {
+    display: flex;
+    gap: 6px;
+    align-items: baseline;
+    flex-wrap: wrap;
+    font-size: var(--t14);
+  }
+  .rs-link {
+    overflow-wrap: anywhere;
+  }
+  .rs-host {
+    font-size: var(--t12);
+    color: var(--ink-2);
+  }
+  .rs-running {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
 }

@@ -153,7 +153,7 @@ function openSpecBuild(opts = {}) {
   // onto that draft (PATCH /specs/:id) before Freeze, the step's usual path.
   const rs = opts && opts.researchSpec;
   if (rs && rs.id && rs.status === "draft") {
-    let clauses = [];
+    let clauses;
     try {
       clauses = JSON.parse(rs.clauses_json || "[]");
     } catch {

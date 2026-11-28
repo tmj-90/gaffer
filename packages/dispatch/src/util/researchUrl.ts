@@ -16,7 +16,8 @@ export interface UrlRefusal {
   readonly code: string;
   readonly reason: string;
 }
-export type UrlVerdict = UrlRefusal | { readonly ok: true; readonly url: string; readonly host: string };
+export type UrlVerdict =
+  UrlRefusal | { readonly ok: true; readonly url: string; readonly host: string };
 
 /** The whole URL, in bytes (UTF-8). Real pages: see URL_MAX_EVIDENCE. */
 export const URL_MAX = 512;
@@ -226,8 +227,9 @@ export const REBINDING_SUFFIXES = Object.freeze([
 
 const FILE_EXTENSION = /\.(?:php[0-9]?|html?|aspx?|jspx?|cgi|do|action|pl|cfm)$/;
 // Whitespace, C0/C1 controls, DEL, the bidi overrides and isolates, zero-width marks.
-// eslint-disable-next-line no-control-regex
-const FORBIDDEN_CHARS = /[\s\u0000-\u001f\u007f-\u009f​-‏‪-‮⁠-⁤⁦-⁩﻿\\]/u;
+const FORBIDDEN_CHARS =
+  // eslint-disable-next-line no-control-regex
+  /[\s\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\\]/u;
 
 /** Known credential shapes, anywhere. */
 const SECRET_PREFIXES = [
@@ -324,7 +326,10 @@ export function hostRefusal(host: string): UrlRefusal | null {
   }
   for (const suffix of REBINDING_SUFFIXES) {
     if (underSuffix(host, suffix)) {
-      return refuse("rebinding", `"${host}" is a wildcard DNS service that answers with any address`);
+      return refuse(
+        "rebinding",
+        `"${host}" is a wildcard DNS service that answers with any address`,
+      );
     }
   }
   // An address written into a name (`10.0.0.1.example.org`, `127-0-0-1.example.org`).
@@ -431,7 +436,10 @@ export function checkResearchUrl(raw: unknown): UrlVerdict {
         n,
       )
     ) {
-      return refuse("credential-param", `the query parameter "${n.slice(0, 40)}" carries a credential`);
+      return refuse(
+        "credential-param",
+        `the query parameter "${n.slice(0, 40)}" carries a credential`,
+      );
     }
     if (secretLike(value) || secretLike(name)) {
       return refuse("secret", "a query value looks like a secret");
@@ -444,4 +452,3 @@ export function checkResearchUrl(raw: unknown): UrlVerdict {
   }
   return { ok: true, url: u.href, host: u.hostname };
 }
-

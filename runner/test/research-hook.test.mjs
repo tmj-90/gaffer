@@ -88,16 +88,28 @@ const run = (raw, state, opts = {}) =>
     `only the allowed calls are logged (${log.fetches.length} fetch, ${log.searches.length} search)`,
     log.fetches.length === 1 && log.searches.length === 1,
   );
-  assert("the log records the URL and host", log.fetches[0].url === "https://github.com/vitejs/vite" && log.fetches[0].host === "github.com");
+  assert(
+    "the log records the URL and host",
+    log.fetches[0].url === "https://github.com/vitejs/vite" && log.fetches[0].host === "github.com",
+  );
   assert("the log records the query", log.searches[0].query === "open source workout tracker");
 }
 
 // --- no way to send a form, a header or a body ----------------------------------------
 {
   const s = freshState();
-  for (const extra of [{ method: "POST" }, { headers: { Cookie: "a=b" } }, { body: "user=x&pass=y" }, { data: "x" }, { cookie: "a" }]) {
+  for (const extra of [
+    { method: "POST" },
+    { headers: { Cookie: "a=b" } },
+    { body: "user=x&pass=y" },
+    { data: "x" },
+    { cookie: "a" },
+  ]) {
     const v = await run(fetchCall("https://github.com/vitejs/vite", extra), s);
-    assert(`WebFetch with ${Object.keys(extra)[0]} is refused`, v.exitCode === 2 && /do not know/.test(v.reason));
+    assert(
+      `WebFetch with ${Object.keys(extra)[0]} is refused`,
+      v.exitCode === 2 && /do not know/.test(v.reason),
+    );
   }
   const v = await run(searchCall({ query: "habit tracker", user_location: "x" }), s);
   assert("WebSearch with an undocumented key is refused", v.exitCode === 2);
@@ -107,17 +119,56 @@ const run = (raw, state, opts = {}) =>
 {
   const s = freshState();
   const names = [
-    "Read", "Grep", "Glob", "LS", "Bash", "BashOutput", "KillShell", "Write", "Edit", "MultiEdit",
-    "NotebookEdit", "NotebookRead", "Task", "Agent", "Skill", "ToolSearch", "TodoWrite", "Monitor",
-    "PowerShell", "REPL", "Workflow", "Artifact", "SendMessage", "PushNotification", "RemoteTrigger",
-    "CronCreate", "AskUserQuestion", "ExitPlanMode", "EnterWorktree", "LSP", "ListMcpResourcesTool",
-    "ReadMcpResourceTool", "mcp__dispatch__get_ticket", "mcp__memory__search", "mcp__fetch__fetch",
-    "mcp__playwright__browser_navigate", "webfetch", "Webfetch", "WebFetch ", "WebFetchX", "",
+    "Read",
+    "Grep",
+    "Glob",
+    "LS",
+    "Bash",
+    "BashOutput",
+    "KillShell",
+    "Write",
+    "Edit",
+    "MultiEdit",
+    "NotebookEdit",
+    "NotebookRead",
+    "Task",
+    "Agent",
+    "Skill",
+    "ToolSearch",
+    "TodoWrite",
+    "Monitor",
+    "PowerShell",
+    "REPL",
+    "Workflow",
+    "Artifact",
+    "SendMessage",
+    "PushNotification",
+    "RemoteTrigger",
+    "CronCreate",
+    "AskUserQuestion",
+    "ExitPlanMode",
+    "EnterWorktree",
+    "LSP",
+    "ListMcpResourcesTool",
+    "ReadMcpResourceTool",
+    "mcp__dispatch__get_ticket",
+    "mcp__memory__search",
+    "mcp__fetch__fetch",
+    "mcp__playwright__browser_navigate",
+    "webfetch",
+    "Webfetch",
+    "WebFetch ",
+    "WebFetchX",
+    "",
     "SomeFutureTool",
   ];
   for (const tool of names) {
     const v = await run(
-      JSON.stringify({ hook_event_name: "PreToolUse", tool_name: tool, tool_input: { url: "https://github.com/" } }),
+      JSON.stringify({
+        hook_event_name: "PreToolUse",
+        tool_name: tool,
+        tool_input: { url: "https://github.com/" },
+      }),
       s,
     );
     assert(`tool ${JSON.stringify(tool)} is refused in the research role`, v.exitCode === 2);
@@ -128,21 +179,37 @@ const run = (raw, state, opts = {}) =>
 // --- name resolution --------------------------------------------------------------------
 {
   const s = freshState();
-  const priv = await run(fetchCall("https://router.github-dummy.org/"), s, { resolve: async () => ["192.168.1.1"] });
-  assert("a public name resolving to a private address is refused", priv.exitCode === 2 && /non-public/.test(priv.reason));
-  const mixed = await run(fetchCall("https://router.github-dummy.org/"), s, { resolve: async () => ["140.82.112.3", "127.0.0.1"] });
+  const priv = await run(fetchCall("https://router.github-dummy.org/"), s, {
+    resolve: async () => ["192.168.1.1"],
+  });
+  assert(
+    "a public name resolving to a private address is refused",
+    priv.exitCode === 2 && /non-public/.test(priv.reason),
+  );
+  const mixed = await run(fetchCall("https://router.github-dummy.org/"), s, {
+    resolve: async () => ["140.82.112.3", "127.0.0.1"],
+  });
   assert("one non-public answer among several is refused", mixed.exitCode === 2);
-  const meta = await run(fetchCall("https://metadata.github-dummy.org/"), s, { resolve: async () => ["169.254.169.254"] });
+  const meta = await run(fetchCall("https://metadata.github-dummy.org/"), s, {
+    resolve: async () => ["169.254.169.254"],
+  });
   assert("a name resolving to the metadata address is refused", meta.exitCode === 2);
-  const mapped = await run(fetchCall("https://mapped.github-dummy.org/"), s, { resolve: async () => ["::ffff:10.0.0.1"] });
+  const mapped = await run(fetchCall("https://mapped.github-dummy.org/"), s, {
+    resolve: async () => ["::ffff:10.0.0.1"],
+  });
   assert("a name resolving to an IPv4-mapped private address is refused", mapped.exitCode === 2);
   const none = await run(fetchCall("https://nowhere.github-dummy.org/"), s, {
     resolve: async () => {
       throw Object.assign(new Error("getaddrinfo ENOTFOUND"), { code: "ENOTFOUND" });
     },
   });
-  assert("a name that does not resolve is refused", none.exitCode === 2 && /does not resolve/.test(none.reason));
-  const empty = await run(fetchCall("https://nowhere.github-dummy.org/"), s, { resolve: async () => [] });
+  assert(
+    "a name that does not resolve is refused",
+    none.exitCode === 2 && /does not resolve/.test(none.reason),
+  );
+  const empty = await run(fetchCall("https://nowhere.github-dummy.org/"), s, {
+    resolve: async () => [],
+  });
   assert("an empty answer is refused", empty.exitCode === 2);
   const proxy = await run(fetchCall("https://nowhere.github-dummy.org/"), s, {
     env: { GAFFER_RESEARCH_RESOLVE: "proxy" },
@@ -150,8 +217,13 @@ const run = (raw, state, opts = {}) =>
       throw new Error("must not be called");
     },
   });
-  assert("under the proxy profile the hook leaves resolution to the egress proxy", proxy.exitCode === 0);
-  const proxyRules = await run(fetchCall("https://127.0.0.1/"), s, { env: { GAFFER_RESEARCH_RESOLVE: "proxy" } });
+  assert(
+    "under the proxy profile the hook leaves resolution to the egress proxy",
+    proxy.exitCode === 0,
+  );
+  const proxyRules = await run(fetchCall("https://127.0.0.1/"), s, {
+    env: { GAFFER_RESEARCH_RESOLVE: "proxy" },
+  });
   assert("the proxy profile still applies the URL rules", proxyRules.exitCode === 2);
 }
 
@@ -165,20 +237,34 @@ const run = (raw, state, opts = {}) =>
   }
   assert(`${BUDGET.fetches} fetches are allowed (${okCount})`, okCount === BUDGET.fetches);
   const over = await run(fetchCall("https://github.com/org/one-more"), s);
-  assert("the 41st fetch is refused and says to write the result now", over.exitCode === 2 && /write your result now/.test(over.reason));
-  assert("the log holds exactly the allowed fetches", readResearchLog(s).fetches.length === BUDGET.fetches);
+  assert(
+    "the 41st fetch is refused and says to write the result now",
+    over.exitCode === 2 && /write your result now/.test(over.reason),
+  );
+  assert(
+    "the log holds exactly the allowed fetches",
+    readResearchLog(s).fetches.length === BUDGET.fetches,
+  );
 }
 {
   const s = freshState();
-  for (let i = 0; i < BUDGET.searches; i += 1) await run(searchCall({ query: `habit tracker ${i}` }), s);
+  for (let i = 0; i < BUDGET.searches; i += 1)
+    await run(searchCall({ query: `habit tracker ${i}` }), s);
   const over = await run(searchCall({ query: "habit tracker more" }), s);
-  assert("the 21st search is refused and says to write the result now", over.exitCode === 2 && /write your result now/.test(over.reason));
+  assert(
+    "the 21st search is refused and says to write the result now",
+    over.exitCode === 2 && /write your result now/.test(over.reason),
+  );
 }
 {
   const s = freshState();
-  for (let i = 0; i < BUDGET.hosts; i += 1) await run(fetchCall(`https://site${i}.github-dummy.org/page`), s);
+  for (let i = 0; i < BUDGET.hosts; i += 1)
+    await run(fetchCall(`https://site${i}.github-dummy.org/page`), s);
   const newHost = await run(fetchCall("https://site-new.github-dummy.org/page"), s);
-  assert("the 26th distinct host is refused", newHost.exitCode === 2 && /different sites/.test(newHost.reason));
+  assert(
+    "the 26th distinct host is refused",
+    newHost.exitCode === 2 && /different sites/.test(newHost.reason),
+  );
   const oldHost = await run(fetchCall("https://site3.github-dummy.org/other"), s);
   assert("a host already visited is still allowed under the fetch cap", oldHost.exitCode === 0);
 }
@@ -206,7 +292,11 @@ const run = (raw, state, opts = {}) =>
   );
   assert("PostToolUse never blocks", post.exitCode === 0);
   const log = readResearchLog(s);
-  assert("PostToolUse records the completed fetch and a final URL that passes", log.fetched.length === 1 && log.fetched[0].final_url === "https://github.com/vitejs/vite/tree/main");
+  assert(
+    "PostToolUse records the completed fetch and a final URL that passes",
+    log.fetched.length === 1 &&
+      log.fetched[0].final_url === "https://github.com/vitejs/vite/tree/main",
+  );
   await run(
     JSON.stringify({
       hook_event_name: "PostToolUse",
@@ -217,27 +307,50 @@ const run = (raw, state, opts = {}) =>
     s,
   );
   const log2 = readResearchLog(s);
-  assert("a final URL that fails the rules is not recorded", log2.fetched.length === 2 && log2.fetched[1].final_url === undefined);
+  assert(
+    "a final URL that fails the rules is not recorded",
+    log2.fetched.length === 2 && log2.fetched[1].final_url === undefined,
+  );
 }
 
 // --- fail closed ----------------------------------------------------------------------------
 {
-  const noState = await decideResearch(fetchCall("https://github.com/vitejs/vite"), { env: {}, resolve: publicResolver });
+  const noState = await decideResearch(fetchCall("https://github.com/vitejs/vite"), {
+    env: {},
+    resolve: publicResolver,
+  });
   assert("no state directory: refused", noState.exitCode === 2);
-  const rel = await decideResearch(fetchCall("https://github.com/vitejs/vite"), { env: { GAFFER_RESEARCH_STATE: "rel/dir" }, resolve: publicResolver });
+  const rel = await decideResearch(fetchCall("https://github.com/vitejs/vite"), {
+    env: { GAFFER_RESEARCH_STATE: "rel/dir" },
+    resolve: publicResolver,
+  });
   assert("a relative state directory: refused", rel.exitCode === 2);
-  const missing = await decideResearch(fetchCall("https://github.com/vitejs/vite"), { env: { GAFFER_RESEARCH_STATE: join(scratch, "nope") }, resolve: publicResolver });
+  const missing = await decideResearch(fetchCall("https://github.com/vitejs/vite"), {
+    env: { GAFFER_RESEARCH_STATE: join(scratch, "nope") },
+    resolve: publicResolver,
+  });
   assert("a state directory that does not exist: refused", missing.exitCode === 2);
   const fileState = join(scratch, "a-file");
   writeFileSync(fileState, "x");
-  const notDir = await decideResearch(fetchCall("https://github.com/vitejs/vite"), { env: { GAFFER_RESEARCH_STATE: fileState }, resolve: publicResolver });
+  const notDir = await decideResearch(fetchCall("https://github.com/vitejs/vite"), {
+    env: { GAFFER_RESEARCH_STATE: fileState },
+    resolve: publicResolver,
+  });
   assert("a state path that is a file: refused", notDir.exitCode === 2);
   const s = freshState();
   assert("an unparseable payload: refused", (await run("{not json", s)).exitCode === 2);
   assert("an empty payload: refused", (await run("", s)).exitCode === 2);
   assert("a non-object payload: refused", (await run("[1]", s)).exitCode === 2);
-  assert("an unknown event: refused", (await run(JSON.stringify({ hook_event_name: "SessionStart", tool_name: "WebFetch" }), s)).exitCode === 2);
-  const crash = await run(fetchCall("https://github.com/vitejs/vite"), s, { resolve: () => { throw new Error("boom"); } });
+  assert(
+    "an unknown event: refused",
+    (await run(JSON.stringify({ hook_event_name: "SessionStart", tool_name: "WebFetch" }), s))
+      .exitCode === 2,
+  );
+  const crash = await run(fetchCall("https://github.com/vitejs/vite"), s, {
+    resolve: () => {
+      throw new Error("boom");
+    },
+  });
   assert("a resolver that throws synchronously: refused, not a crash", crash.exitCode === 2);
 }
 
@@ -280,47 +393,157 @@ const run = (raw, state, opts = {}) =>
     ["REPL", false],
     ["SomeFutureTool", false],
   ]) {
-    const v = decide({ tool_name: tool, tool_input: {} }, { env: { ...process.env }, cwd: scratch });
-    assert(`safety-hook.mjs keeps today's verdict for ${tool} (${allowed ? "allow" : "block"})`, v.allow === allowed);
+    const v = decide(
+      { tool_name: tool, tool_input: {} },
+      { env: { ...process.env }, cwd: scratch },
+    );
+    assert(
+      `safety-hook.mjs keeps today's verdict for ${tool} (${allowed ? "allow" : "block"})`,
+      v.allow === allowed,
+    );
   }
   // The general template still denies both web tools and routes neither to a hook.
   const general = JSON.parse(readFileSync(join(RUNNER, "claude", "settings.json"), "utf8"));
   assert("the general settings deny WebFetch", general.permissions.deny.includes("WebFetch"));
   assert("the general settings deny WebSearch", general.permissions.deny.includes("WebSearch"));
-  assert("the general settings allow neither web tool", !general.permissions.allow.some((t) => /^Web/.test(t)));
+  assert(
+    "the general settings allow neither web tool",
+    !general.permissions.allow.some((t) => /^Web/.test(t)),
+  );
   assert(
     "the general settings run only safety-hook.mjs",
-    JSON.stringify(general.hooks).includes("safety-hook.mjs") && !JSON.stringify(general.hooks).includes("research-hook"),
+    JSON.stringify(general.hooks).includes("safety-hook.mjs") &&
+      !JSON.stringify(general.hooks).includes("research-hook"),
   );
   // Each rule refuses the other's template.
-  const researchText = renderAgentSettings(readFileSync(join(RUNNER, "claude", "research-settings.json"), "utf8"), RUNNER);
-  const generalText = renderAgentSettings(readFileSync(join(RUNNER, "claude", "settings.json"), "utf8"), RUNNER);
-  assert("the research template passes the research rule", validateResearchSettings(researchText, RUNNER).ok);
-  assert("the research template fails the general rule", !validateAgentSettings(researchText, RUNNER).ok);
-  assert("the general template fails the research rule", !validateResearchSettings(generalText, RUNNER).ok);
-  assert("the general template still passes the general rule", validateAgentSettings(generalText, RUNNER).ok);
+  const researchText = renderAgentSettings(
+    readFileSync(join(RUNNER, "claude", "research-settings.json"), "utf8"),
+    RUNNER,
+  );
+  const generalText = renderAgentSettings(
+    readFileSync(join(RUNNER, "claude", "settings.json"), "utf8"),
+    RUNNER,
+  );
+  assert(
+    "the research template passes the research rule",
+    validateResearchSettings(researchText, RUNNER).ok,
+  );
+  assert(
+    "the research template fails the general rule",
+    !validateAgentSettings(researchText, RUNNER).ok,
+  );
+  assert(
+    "the general template fails the research rule",
+    !validateResearchSettings(generalText, RUNNER).ok,
+  );
+  assert(
+    "the general template still passes the general rule",
+    validateAgentSettings(generalText, RUNNER).ok,
+  );
   // Broken research templates are refused.
   const r = JSON.parse(researchText);
   const variants = [
     ["hooks switched off", { ...r, disableAllHooks: true }],
     ["MCP servers enabled", { ...r, enableAllProjectMcpServers: true }],
     ["Bash allowed", { ...r, permissions: { ...r.permissions, allow: ["WebFetch", "Bash"] } }],
-    ["Agent not denied", { ...r, permissions: { ...r.permissions, deny: r.permissions.deny.filter((t) => t !== "Agent") } }],
-    ["matcher narrowed", { ...r, hooks: { ...r.hooks, PreToolUse: [{ ...r.hooks.PreToolUse[0], matcher: "WebFetch|WebSearch" }] } }],
-    ["no onFailure", { ...r, hooks: { ...r.hooks, PreToolUse: [{ matcher: "*", hooks: [{ ...r.hooks.PreToolUse[0].hooks[0], onFailure: undefined }] }] } }],
-    ["async hook", { ...r, hooks: { ...r.hooks, PreToolUse: [{ matcher: "*", hooks: [{ ...r.hooks.PreToolUse[0].hooks[0], async: true }] }] } }],
-    ["hook bypassed with ||", { ...r, hooks: { ...r.hooks, PreToolUse: [{ matcher: "*", hooks: [{ ...r.hooks.PreToolUse[0].hooks[0], command: `true || node "${RUNNER}/research-hook.mjs"` }] }] } }],
-    ["general hook mixed in", { ...r, hooks: { ...r.hooks, PreToolUse: [...r.hooks.PreToolUse, { matcher: "Bash", hooks: [{ type: "command", command: `node "${RUNNER}/safety-hook.mjs"`, timeout: 60, onFailure: "block" }] }] } }],
+    [
+      "Agent not denied",
+      {
+        ...r,
+        permissions: { ...r.permissions, deny: r.permissions.deny.filter((t) => t !== "Agent") },
+      },
+    ],
+    [
+      "matcher narrowed",
+      {
+        ...r,
+        hooks: {
+          ...r.hooks,
+          PreToolUse: [{ ...r.hooks.PreToolUse[0], matcher: "WebFetch|WebSearch" }],
+        },
+      },
+    ],
+    [
+      "no onFailure",
+      {
+        ...r,
+        hooks: {
+          ...r.hooks,
+          PreToolUse: [
+            { matcher: "*", hooks: [{ ...r.hooks.PreToolUse[0].hooks[0], onFailure: undefined }] },
+          ],
+        },
+      },
+    ],
+    [
+      "async hook",
+      {
+        ...r,
+        hooks: {
+          ...r.hooks,
+          PreToolUse: [
+            { matcher: "*", hooks: [{ ...r.hooks.PreToolUse[0].hooks[0], async: true }] },
+          ],
+        },
+      },
+    ],
+    [
+      "hook bypassed with ||",
+      {
+        ...r,
+        hooks: {
+          ...r.hooks,
+          PreToolUse: [
+            {
+              matcher: "*",
+              hooks: [
+                {
+                  ...r.hooks.PreToolUse[0].hooks[0],
+                  command: `true || node "${RUNNER}/research-hook.mjs"`,
+                },
+              ],
+            },
+          ],
+        },
+      },
+    ],
+    [
+      "general hook mixed in",
+      {
+        ...r,
+        hooks: {
+          ...r.hooks,
+          PreToolUse: [
+            ...r.hooks.PreToolUse,
+            {
+              matcher: "Bash",
+              hooks: [
+                {
+                  type: "command",
+                  command: `node "${RUNNER}/safety-hook.mjs"`,
+                  timeout: 60,
+                  onFailure: "block",
+                },
+              ],
+            },
+          ],
+        },
+      },
+    ],
   ];
   for (const [why, obj] of variants) {
-    assert(`the research rule refuses a template with ${why}`, !validateResearchSettings(JSON.stringify(obj), RUNNER).ok);
+    assert(
+      `the research rule refuses a template with ${why}`,
+      !validateResearchSettings(JSON.stringify(obj), RUNNER).ok,
+    );
   }
 }
 
 // --- an agent's shell cannot write research (protection I) -----------------------------------
 {
   const env = { ...process.env, GAFFER_WRITE_ROOTS: scratch };
-  const bash = (command) => decide({ tool_name: "Bash", tool_input: { command } }, { env, cwd: scratch });
+  const bash = (command) =>
+    decide({ tool_name: "Bash", tool_input: { command } }, { env, cwd: scratch });
   for (const cmd of [
     "wg research create --idea 'a tracker'",
     "dispatch research feature 1a2b ft1 --keep",
@@ -360,10 +583,18 @@ const run = (raw, state, opts = {}) =>
       encoding: "utf8",
       env: { PATH: process.env.PATH, ...env },
     });
-  const ok = hook(fetchCall("https://github.com/vitejs/vite"), { GAFFER_RESEARCH_STATE: s, GAFFER_RESEARCH_RESOLVE: "proxy" });
+  const ok = hook(fetchCall("https://github.com/vitejs/vite"), {
+    GAFFER_RESEARCH_STATE: s,
+    GAFFER_RESEARCH_RESOLVE: "proxy",
+  });
   assert(`the wrapper exits 0 on an allowed fetch (${ok.status} ${ok.stderr})`, ok.status === 0);
-  const bad = hook(JSON.stringify({ tool_name: "Bash", tool_input: { command: "ls" } }), { GAFFER_RESEARCH_STATE: s });
-  assert("the wrapper exits 2 on a refused tool, with the reason on stderr", bad.status === 2 && /BLOCKED by gaffer research hook/.test(bad.stderr));
+  const bad = hook(JSON.stringify({ tool_name: "Bash", tool_input: { command: "ls" } }), {
+    GAFFER_RESEARCH_STATE: s,
+  });
+  assert(
+    "the wrapper exits 2 on a refused tool, with the reason on stderr",
+    bad.status === 2 && /BLOCKED by gaffer research hook/.test(bad.stderr),
+  );
   const noState = hook(fetchCall("https://github.com/vitejs/vite"), {});
   assert("the wrapper exits 2 with no state directory", noState.status === 2);
 
@@ -389,7 +620,10 @@ const run = (raw, state, opts = {}) =>
     const src = readFileSync(p, "utf8");
     rmSync(p);
     const missing = loneHook(env);
-    assert(`a missing lib/hook/${m} fails closed (${missing.status})`, missing.status === 2 && /FAILING CLOSED/.test(missing.stderr));
+    assert(
+      `a missing lib/hook/${m} fails closed (${missing.status})`,
+      missing.status === 2 && /FAILING CLOSED/.test(missing.stderr),
+    );
     writeFileSync(p, `${src}\n}{\n`);
     const broken = loneHook(env);
     assert(`a broken lib/hook/${m} fails closed (${broken.status})`, broken.status === 2);

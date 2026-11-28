@@ -106,7 +106,7 @@ describe("web: research results render as inert text", () => {
     expect(text).toContain('<img src="https://evil.example.org/x.png" onerror="alert(3)">');
     expect(text).toContain("[click me](javascript:alert(1))");
     expect(text).toContain("<svg onload=alert(5)>");
-    const links = Array.from(node.querySelectorAll("a"));
+    const links = Array.from((node as HTMLElement).querySelectorAll("a"));
     expect(links.map((a) => a.getAttribute("href"))).toEqual([
       "https://docs.python.org/3/",
       "https://www.strong.app/",
@@ -119,7 +119,9 @@ describe("web: research results render as inert text", () => {
       );
     }
     // The http link, the javascript: URL, the look-alike and the userinfo URL are text.
-    const inert = Array.from(node.querySelectorAll(".rs-inert")).map((s) => s.textContent);
+    const inert = Array.from((node as HTMLElement).querySelectorAll(".rs-inert")).map(
+      (s) => s.textContent,
+    );
     expect(inert).toEqual([
       "http://plain.example.org/",
       "javascript:alert(4)",

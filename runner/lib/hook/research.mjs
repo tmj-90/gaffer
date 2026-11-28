@@ -96,7 +96,9 @@ function verdict(allow, reason) {
 function stateDir(env) {
   const d = env.GAFFER_RESEARCH_STATE;
   if (typeof d !== "string" || d === "" || !isAbsolute(d)) {
-    return { why: "the research run has no state directory (GAFFER_RESEARCH_STATE): every call is refused" };
+    return {
+      why: "the research run has no state directory (GAFFER_RESEARCH_STATE): every call is refused",
+    };
   }
   try {
     const st = lstatSync(d);
@@ -129,7 +131,8 @@ function withLock(dir, fn) {
       } catch {
         /* gone already */
       }
-      if (Date.now() - start > LOCK_WAIT_MS) throw new Error("could not take the research state lock");
+      if (Date.now() - start > LOCK_WAIT_MS)
+        throw new Error("could not take the research state lock", { cause: e });
       sleepMs(20);
     }
   }
@@ -164,7 +167,10 @@ function writeCounts(dir, counts) {
 }
 
 function appendLog(dir, entry) {
-  appendFileSync(join(dir, LOG_FILE), JSON.stringify({ ts: new Date().toISOString(), ...entry }) + "\n");
+  appendFileSync(
+    join(dir, LOG_FILE),
+    JSON.stringify({ ts: new Date().toISOString(), ...entry }) + "\n",
+  );
 }
 
 const WRITE_NOW =
@@ -240,7 +246,10 @@ async function decidePre(payload, env, dir, resolveHost) {
     try {
       addrs = await resolveHost(r.host);
     } catch (e) {
-      return verdict(false, `${r.host} does not resolve (${e && e.message ? e.message : e}); a name that does not resolve is refused`);
+      return verdict(
+        false,
+        `${r.host} does not resolve (${e && e.message ? e.message : e}); a name that does not resolve is refused`,
+      );
     }
     if (!Array.isArray(addrs) || addrs.length === 0) {
       return verdict(false, `${r.host} does not resolve; a name that does not resolve is refused`);
@@ -338,7 +347,7 @@ export async function decideResearch(raw, { env = process.env, resolve = default
  */
 export function readResearchLog(dir) {
   const out = { fetches: [], fetched: [], searches: [] };
-  let text = "";
+  let text;
   try {
     text = readFileSync(join(dir, LOG_FILE), "utf8");
   } catch {

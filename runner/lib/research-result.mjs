@@ -49,8 +49,9 @@ export const RESEARCH_LIMITS = Object.freeze({
 });
 export const PRIORITIES = Object.freeze(["must", "should", "could", "wont"]);
 
-// eslint-disable-next-line no-control-regex
-const STRIP = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f​-‏‪-‮⁠-⁤⁦-⁩﻿]/gu;
+const STRIP =
+  // eslint-disable-next-line no-control-regex
+  /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/gu;
 
 /** Remove control, bidi and zero-width characters; fold line breaks and tabs to spaces. */
 export function cleanText(v) {
@@ -110,9 +111,13 @@ export function validateResearchResult(reply, log) {
   try {
     const r = obj(reply, "the result");
     if (r.phase === "error") {
-      return { ok: false, error: `the research agent reported: ${text(r.error, RESEARCH_LIMITS.error, "error") }` };
+      return {
+        ok: false,
+        error: `the research agent reported: ${text(r.error, RESEARCH_LIMITS.error, "error")}`,
+      };
     }
-    if (r.phase !== "research") refuse(`unknown result phase ${JSON.stringify(String(r.phase)).slice(0, 40)}`);
+    if (r.phase !== "research")
+      refuse(`unknown result phase ${JSON.stringify(String(r.phase)).slice(0, 40)}`);
     const fetched = fetchedSet(log);
     let dropped = 0;
     const source = (u, where) => {
@@ -130,7 +135,8 @@ export function validateResearchResult(reply, log) {
     const findings = list(r.findings, RESEARCH_LIMITS.findings, "findings").map((f, i) => {
       const o = obj(f, `finding ${i + 1}`);
       const id = `f${i + 1}`;
-      if (typeof o.id === "string" && o.id.trim() && !idMap.has(o.id.trim())) idMap.set(o.id.trim(), id);
+      if (typeof o.id === "string" && o.id.trim() && !idMap.has(o.id.trim()))
+        idMap.set(o.id.trim(), id);
       const sources = list(o.sources, RESEARCH_LIMITS.sources, `finding ${i + 1} sources`)
         .map((u, k) => source(u, `finding ${i + 1} source ${k + 1}`))
         .filter(Boolean);
@@ -146,18 +152,20 @@ export function validateResearchResult(reply, log) {
       };
     });
     const byId = new Map(findings.map((f) => [f.id, f]));
-    const comparables = list(r.comparables, RESEARCH_LIMITS.comparables, "comparables").map((c, i) => {
-      const o = obj(c, `comparable ${i + 1}`);
-      const out = {
-        name: text(o.name, RESEARCH_LIMITS.name, `comparable ${i + 1} name`),
-        note: text(o.note, RESEARCH_LIMITS.note, `comparable ${i + 1} note`, { required: false }),
-      };
-      if (o.url !== undefined && o.url !== null && o.url !== "") {
-        const s = source(o.url, `comparable ${i + 1} url`);
-        if (s) out.source = s;
-      }
-      return out;
-    });
+    const comparables = list(r.comparables, RESEARCH_LIMITS.comparables, "comparables").map(
+      (c, i) => {
+        const o = obj(c, `comparable ${i + 1}`);
+        const out = {
+          name: text(o.name, RESEARCH_LIMITS.name, `comparable ${i + 1} name`),
+          note: text(o.note, RESEARCH_LIMITS.note, `comparable ${i + 1} note`, { required: false }),
+        };
+        if (o.url !== undefined && o.url !== null && o.url !== "") {
+          const s = source(o.url, `comparable ${i + 1} url`);
+          if (s) out.source = s;
+        }
+        return out;
+      },
+    );
     const features = list(r.features, RESEARCH_LIMITS.features, "features").map((f, i) => {
       const o = obj(f, `feature ${i + 1}`);
       const priority = typeof o.priority === "string" ? o.priority.trim().toLowerCase() : "";
@@ -171,29 +179,49 @@ export function validateResearchResult(reply, log) {
       return {
         id: `ft${i + 1}`,
         title: text(o.title, RESEARCH_LIMITS.title, `feature ${i + 1} title`),
-        description: text(o.description, RESEARCH_LIMITS.description, `feature ${i + 1} description`, {
-          required: false,
-        }),
+        description: text(
+          o.description,
+          RESEARCH_LIMITS.description,
+          `feature ${i + 1} description`,
+          {
+            required: false,
+          },
+        ),
         priority,
         backed_by: backedBy,
         unsupported: !backedBy.some((b) => byId.get(b) && !byId.get(b).opinion),
       };
     });
-    const questions = list(r.open_questions, RESEARCH_LIMITS.questions, "open_questions").map((q, i) => ({
-      id: `q${i + 1}`,
-      text: text(q, RESEARCH_LIMITS.item, `open question ${i + 1}`),
-    }));
+    const questions = list(r.open_questions, RESEARCH_LIMITS.questions, "open_questions").map(
+      (q, i) => ({
+        id: `q${i + 1}`,
+        text: text(q, RESEARCH_LIMITS.item, `open question ${i + 1}`),
+      }),
+    );
     const risks = list(r.risks, RESEARCH_LIMITS.risks, "risks").map((q, i) => ({
       id: `k${i + 1}`,
       text: text(q, RESEARCH_LIMITS.item, `risk ${i + 1}`),
     }));
-    if (findings.length === 0 && features.length === 0) refuse("the result has no findings and no features");
+    if (findings.length === 0 && features.length === 0)
+      refuse("the result has no findings and no features");
     return {
       ok: true,
-      result: { summary, findings, comparables, features, open_questions: questions, risks, dropped_urls: dropped },
+      result: {
+        summary,
+        findings,
+        comparables,
+        features,
+        open_questions: questions,
+        risks,
+        dropped_urls: dropped,
+      },
     };
   } catch (e) {
-    if (e instanceof Refusal) return { ok: false, error: `the research result was refused: ${e.message}` };
-    return { ok: false, error: `the research result could not be read: ${e && e.message ? e.message : e}` };
+    if (e instanceof Refusal)
+      return { ok: false, error: `the research result was refused: ${e.message}` };
+    return {
+      ok: false,
+      error: `the research result could not be read: ${e && e.message ? e.message : e}`,
+    };
   }
 }

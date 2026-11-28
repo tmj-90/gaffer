@@ -1,1484 +1,1484 @@
 {
- "_comment": "Research URL rules (backlog 69). Hand-written expectations, shared by runner/lib/hook/url-rules.mjs and packages/dispatch/src/util/researchUrl.ts. ok:false rows name the rule (code) that must refuse.",
- "vectors": [
-  {
-   "url": "https://docs.python.org/3/library/urllib.parse.html",
-   "ok": true,
-   "why": "ordinary page"
-  },
-  {
-   "url": "https://developer.mozilla.org/en-US/docs/Web/API/URL",
-   "ok": true,
-   "why": "ordinary page"
-  },
-  {
-   "url": "https://nodejs.org/api/url.html",
-   "ok": true,
-   "why": "ordinary page"
-  },
-  {
-   "url": "https://react.dev/learn",
-   "ok": true,
-   "why": "ordinary page"
-  },
-  {
-   "url": "https://www.typescriptlang.org/docs/handbook/2/everyday-types.html",
-   "ok": true,
-   "why": "ordinary page"
-  },
-  {
-   "url": "https://github.com/vitejs/vite",
-   "ok": true,
-   "why": "ordinary page"
-  },
-  {
-   "url": "https://github.com/facebook/react/blob/main/README.md",
-   "ok": true,
-   "why": "ordinary page"
-  },
-  {
-   "url": "https://github.com/nodejs/node/issues/12345",
-   "ok": true,
-   "why": "ordinary page"
-  },
-  {
-   "url": "https://github.com/rust-lang/rust/commit/0123456789abcdef0123456789abcdef01234567",
-   "ok": true,
-   "why": "ordinary page"
-  },
-  {
-   "url": "https://raw.githubusercontent.com/nodejs/node/main/README.md",
-   "ok": true,
-   "why": "ordinary page"
-  },
-  {
-   "url": "https://www.npmjs.com/package/zod",
-   "ok": true,
-   "why": "ordinary page"
-  },
-  {
-   "url": "https://pypi.org/project/requests/",
-   "ok": true,
-   "why": "ordinary page"
-  },
-  {
-   "url": "https://crates.io/crates/serde",
-   "ok": true,
-   "why": "ordinary page"
-  },
-  {
-   "url": "https://pkg.go.dev/net/http",
-   "ok": true,
-   "why": "ordinary page"
-  },
-  {
-   "url": "https://rubygems.org/gems/rails",
-   "ok": true,
-   "why": "ordinary page"
-  },
-  {
-   "url": "https://stripe.com/pricing",
-   "ok": true,
-   "why": "ordinary page"
-  },
-  {
-   "url": "https://www.notion.so/pricing",
-   "ok": true,
-   "why": "ordinary page"
-  },
-  {
-   "url": "https://linear.app/pricing",
-   "ok": true,
-   "why": "ordinary page"
-  },
-  {
-   "url": "https://www.atlassian.com/software/jira/pricing",
-   "ok": true,
-   "why": "ordinary page"
-  },
-  {
-   "url": "https://news.ycombinator.com/item?id=38000000",
-   "ok": true,
-   "why": "ordinary page"
-  },
-  {
-   "url": "https://www.reddit.com/r/selfhosted/comments/abc123/best_workout_tracker/",
-   "ok": true,
-   "why": "ordinary page"
-  },
-  {
-   "url": "https://stackoverflow.com/questions/111102/how-do-javascript-closures-work",
-   "ok": true,
-   "why": "ordinary page"
-  },
-  {
-   "url": "https://discourse.mozilla.org/t/some-topic/12345",
-   "ok": true,
-   "why": "ordinary page"
-  },
-  {
-   "url": "https://en.wikipedia.org/wiki/Spaced_repetition",
-   "ok": true,
-   "why": "ordinary page"
-  },
-  {
-   "url": "https://arxiv.org/abs/2310.06825",
-   "ok": true,
-   "why": "ordinary page"
-  },
-  {
-   "url": "https://martinfowler.com/articles/microservices.html",
-   "ok": true,
-   "why": "ordinary page"
-  },
-  {
-   "url": "https://blog.cloudflare.com/how-oauth-works/",
-   "ok": true,
-   "why": "ordinary page"
-  },
-  {
-   "url": "https://auth0.com/blog/what-is-oauth-2/",
-   "ok": true,
-   "why": "ordinary page"
-  },
-  {
-   "url": "https://www.smashingmagazine.com/2023/01/design-patterns/",
-   "ok": true,
-   "why": "ordinary page"
-  },
-  {
-   "url": "https://css-tricks.com/snippets/css/a-guide-to-flexbox/",
-   "ok": true,
-   "why": "ordinary page"
-  },
-  {
-   "url": "https://web.dev/articles/vitals",
-   "ok": true,
-   "why": "ordinary page"
-  },
-  {
-   "url": "https://www.producthunt.com/products/strava",
-   "ok": true,
-   "why": "ordinary page"
-  },
-  {
-   "url": "https://www.g2.com/categories/project-management",
-   "ok": true,
-   "why": "ordinary page"
-  },
-  {
-   "url": "https://alternativeto.net/software/trello/",
-   "ok": true,
-   "why": "ordinary page"
-  },
-  {
-   "url": "https://duckduckgo.com/html/?q=gym+workout+tracker",
-   "ok": true,
-   "why": "ordinary page"
-  },
-  {
-   "url": "https://www.bing.com/search?q=open+source+habit+tracker&first=11",
-   "ok": true,
-   "why": "ordinary page"
-  },
-  {
-   "url": "https://docs.github.com/en/rest/repos/repos",
-   "ok": true,
-   "why": "ordinary page"
-  },
-  {
-   "url": "https://kubernetes.io/docs/concepts/overview/",
-   "ok": true,
-   "why": "ordinary page"
-  },
-  {
-   "url": "https://1.bp.blogspot.com/some/image-page.html",
-   "ok": true,
-   "why": "ordinary page"
-  },
-  {
-   "url": "https://about.gitlab.com/pricing/",
-   "ok": true,
-   "why": "ordinary page"
-  },
-  {
-   "url": "http://example.org/",
-   "ok": false,
-   "code": "scheme",
-   "why": "plain http is never relied on to upgrade"
-  },
-  {
-   "url": "http://docs.python.org/3/",
-   "ok": false,
-   "code": "scheme",
-   "why": "http"
-  },
-  {
-   "url": "HTTP://docs.python.org/3/",
-   "ok": false,
-   "code": "scheme",
-   "why": "http upper case"
-  },
-  {
-   "url": "file:///etc/passwd",
-   "ok": false,
-   "code": "scheme",
-   "why": "file"
-  },
-  {
-   "url": "ftp://ftp.gnu.org/gnu/",
-   "ok": false,
-   "code": "scheme",
-   "why": "ftp"
-  },
-  {
-   "url": "data:text/html,<script>alert(1)</script>",
-   "ok": false,
-   "code": "scheme",
-   "why": "data"
-  },
-  {
-   "url": "javascript:alert(1)",
-   "ok": false,
-   "code": "scheme",
-   "why": "javascript"
-  },
-  {
-   "url": "blob:https://github.com/1234",
-   "ok": false,
-   "code": "scheme",
-   "why": "blob"
-  },
-  {
-   "url": "about:blank",
-   "ok": false,
-   "code": "scheme",
-   "why": "about"
-  },
-  {
-   "url": "ws://echo.websocket.org/",
-   "ok": false,
-   "code": "scheme",
-   "why": "ws"
-  },
-  {
-   "url": "wss://echo.websocket.org/",
-   "ok": false,
-   "code": "scheme",
-   "why": "wss"
-  },
-  {
-   "url": "gopher://gopher.floodgap.com/",
-   "ok": false,
-   "code": "scheme",
-   "why": "gopher"
-  },
-  {
-   "url": "//github.com/vitejs/vite",
-   "ok": false,
-   "code": "scheme",
-   "why": "scheme-relative"
-  },
-  {
-   "url": "github.com/vitejs/vite",
-   "ok": false,
-   "code": "scheme",
-   "why": "no scheme"
-  },
-  {
-   "url": "https:github.com/vitejs/vite",
-   "ok": false,
-   "code": "scheme",
-   "why": "https: without //"
-  },
-  {
-   "url": "https:/github.com/vitejs/vite",
-   "ok": false,
-   "code": "scheme",
-   "why": "https: with one slash"
-  },
-  {
-   "url": "HTTPS://GitHub.com/vitejs/vite",
-   "ok": true,
-   "why": "mixed case scheme and host are the same https URL"
-  },
-  {
-   "url": "https://GITHUB.COM/vitejs/vite",
-   "ok": true,
-   "why": "upper case host"
-  },
-  {
-   "url": "https://good.com@evil.com/",
-   "ok": false,
-   "code": "userinfo",
-   "why": "userinfo makes evil.com the host"
-  },
-  {
-   "url": "https://user:pass@github.com/",
-   "ok": false,
-   "code": "userinfo",
-   "why": "credentials"
-  },
-  {
-   "url": "https://github.com:x@evil.com/",
-   "ok": false,
-   "code": "userinfo",
-   "why": "colon and at"
-  },
-  {
-   "url": "https://evil.com\\@good.com/",
-   "ok": false,
-   "code": "input",
-   "why": "backslash parsers disagree on"
-  },
-  {
-   "url": "https://evil.com%40good.com/",
-   "ok": false,
-   "code": "host",
-   "why": "encoded at"
-  },
-  {
-   "url": "https://github%2ecom/vitejs",
-   "ok": false,
-   "code": "host",
-   "why": "encoded dot in the host"
-  },
-  {
-   "url": "https://github.com%2fevil.com/",
-   "ok": false,
-   "code": "host",
-   "why": "encoded slash in the host"
-  },
-  {
-   "url": "https://github.com/a%2fb/c",
-   "ok": false,
-   "code": "parse",
-   "why": "encoded slash in a path segment"
-  },
-  {
-   "url": "https://@github.com/",
-   "ok": false,
-   "code": "userinfo",
-   "why": "empty userinfo"
-  },
-  {
-   "url": "https://github.com:443/vitejs/vite",
-   "ok": false,
-   "code": "port",
-   "why": "explicit default port"
-  },
-  {
-   "url": "https://github.com:8443/",
-   "ok": false,
-   "code": "port",
-   "why": "other port"
-  },
-  {
-   "url": "https://github.com:/",
-   "ok": false,
-   "code": "port",
-   "why": "empty port"
-  },
-  {
-   "url": "https://127.0.0.1/",
-   "ok": false,
-   "code": "ip-literal",
-   "why": "dotted loopback"
-  },
-  {
-   "url": "https://8.8.8.8/",
-   "ok": false,
-   "code": "ip-literal",
-   "why": "public dotted IPv4 is still a literal"
-  },
-  {
-   "url": "https://2130706433/",
-   "ok": false,
-   "code": "ip-literal",
-   "why": "decimal"
-  },
-  {
-   "url": "https://0x7f000001/",
-   "ok": false,
-   "code": "ip-literal",
-   "why": "hex"
-  },
-  {
-   "url": "https://0x7f.0.0.1/",
-   "ok": false,
-   "code": "ip-literal",
-   "why": "hex first octet"
-  },
-  {
-   "url": "https://0177.0.0.1/",
-   "ok": false,
-   "code": "ip-literal",
-   "why": "octal"
-  },
-  {
-   "url": "https://017700000001/",
-   "ok": false,
-   "code": "ip-literal",
-   "why": "octal whole"
-  },
-  {
-   "url": "https://127.1/",
-   "ok": false,
-   "code": "ip-literal",
-   "why": "short form"
-  },
-  {
-   "url": "https://169.254.169.254/latest/meta-data/",
-   "ok": false,
-   "code": "ip-literal",
-   "why": "metadata address"
-  },
-  {
-   "url": "https://[::1]/",
-   "ok": false,
-   "code": "ip-literal",
-   "why": "IPv6 loopback"
-  },
-  {
-   "url": "https://[::ffff:127.0.0.1]/",
-   "ok": false,
-   "code": "ip-literal",
-   "why": "IPv4-mapped IPv6"
-  },
-  {
-   "url": "https://[::ffff:7f00:1]/",
-   "ok": false,
-   "code": "ip-literal",
-   "why": "IPv4-mapped IPv6 hex"
-  },
-  {
-   "url": "https://[fe80::1]/",
-   "ok": false,
-   "code": "ip-literal",
-   "why": "link-local IPv6"
-  },
-  {
-   "url": "https://[2606:4700::1111]/",
-   "ok": false,
-   "code": "ip-literal",
-   "why": "public IPv6 is still a literal"
-  },
-  {
-   "url": "https://10.0.0.1.nip.io/",
-   "ok": false,
-   "code": "rebinding",
-   "why": "wildcard DNS with an address in it"
-  },
-  {
-   "url": "https://127.0.0.1.sslip.io/",
-   "ok": false,
-   "code": "rebinding",
-   "why": "sslip"
-  },
-  {
-   "url": "https://app.localtest.me/",
-   "ok": false,
-   "code": "rebinding",
-   "why": "localtest.me points at 127.0.0.1"
-  },
-  {
-   "url": "https://10.0.0.1.attacker-domain.org/",
-   "ok": false,
-   "code": "ip-literal",
-   "why": "address written in a name"
-  },
-  {
-   "url": "https://127-0-0-1.attacker-domain.org/",
-   "ok": false,
-   "code": "ip-literal",
-   "why": "dashed address in a name"
-  },
-  {
-   "url": "https://localhost/",
-   "ok": false,
-   "code": "single-label",
-   "why": "localhost"
-  },
-  {
-   "url": "https://intranet/",
-   "ok": false,
-   "code": "single-label",
-   "why": "single label"
-  },
-  {
-   "url": "https://router.local/",
-   "ok": false,
-   "code": "internal-name",
-   "why": ".local"
-  },
-  {
-   "url": "https://app.localhost/",
-   "ok": false,
-   "code": "internal-name",
-   "why": ".localhost"
-  },
-  {
-   "url": "https://jira.internal/",
-   "ok": false,
-   "code": "internal-name",
-   "why": ".internal"
-  },
-  {
-   "url": "https://wiki.intranet/",
-   "ok": false,
-   "code": "internal-name",
-   "why": ".intranet"
-  },
-  {
-   "url": "https://nas.lan/",
-   "ok": false,
-   "code": "internal-name",
-   "why": ".lan"
-  },
-  {
-   "url": "https://printer.home/",
-   "ok": false,
-   "code": "internal-name",
-   "why": ".home"
-  },
-  {
-   "url": "https://hub.home.arpa/",
-   "ok": false,
-   "code": "internal-name",
-   "why": ".home.arpa"
-  },
-  {
-   "url": "https://git.corp/",
-   "ok": false,
-   "code": "internal-name",
-   "why": ".corp"
-  },
-  {
-   "url": "https://site.test/",
-   "ok": false,
-   "code": "internal-name",
-   "why": ".test"
-  },
-  {
-   "url": "https://site.invalid/",
-   "ok": false,
-   "code": "internal-name",
-   "why": ".invalid"
-  },
-  {
-   "url": "https://site.example/",
-   "ok": false,
-   "code": "internal-name",
-   "why": ".example"
-  },
-  {
-   "url": "https://www.example.com/",
-   "ok": false,
-   "code": "internal-name",
-   "why": "example.com is reserved"
-  },
-  {
-   "url": "https://duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion/",
-   "ok": false,
-   "code": "internal-name",
-   "why": ".onion"
-  },
-  {
-   "url": "https://1.0.0.127.in-addr.arpa/",
-   "ok": false,
-   "code": "internal-name",
-   "why": "reverse zone"
-  },
-  {
-   "url": "https://metadata.google.internal/computeMetadata/v1/",
-   "ok": false,
-   "code": "internal-name",
-   "why": "GCP metadata (also .internal)"
-  },
-  {
-   "url": "https://metadata.goog/",
-   "ok": false,
-   "code": "metadata",
-   "why": "GCP metadata alias"
-  },
-  {
-   "url": "https://github.com./vitejs",
-   "ok": false,
-   "code": "host",
-   "why": "trailing dot"
-  },
-  {
-   "url": "https://github..com/",
-   "ok": false,
-   "code": "host",
-   "why": "empty label"
-  },
-  {
-   "url": "https://-github.com/",
-   "ok": false,
-   "code": "host",
-   "why": "label starts with a dash"
-  },
-  {
-   "url": "https://github-.com/",
-   "ok": false,
-   "code": "host",
-   "why": "label ends with a dash"
-  },
-  {
-   "url": "https://xn--pple-43d.com/",
-   "ok": false,
-   "code": "idn",
-   "why": "punycode lookalike"
-  },
-  {
-   "url": "https://аpple.com/",
-   "ok": false,
-   "code": "idn",
-   "why": "Cyrillic a, punycoded by the parser"
-  },
-  {
-   "url": "https://github.xn--p1ai/",
-   "ok": false,
-   "code": "idn",
-   "why": "punycode top label"
-  },
-  {
-   "url": "https://under_score.com/",
-   "ok": false,
-   "code": "host",
-   "why": "underscore is not a hostname letter"
-  },
-  {
-   "url": "https://github.com/vitejs vite",
-   "ok": false,
-   "code": "input",
-   "why": "space"
-  },
-  {
-   "url": "https://github.com/vitejs\tvite",
-   "ok": false,
-   "code": "input",
-   "why": "tab"
-  },
-  {
-   "url": "https://github.com/vitejs‮vite",
-   "ok": false,
-   "code": "input",
-   "why": "bidi override"
-  },
-  {
-   "url": "https://github.com/vite​js",
-   "ok": false,
-   "code": "input",
-   "why": "zero width space"
-  },
-  {
-   "url": "https://github.com/vitejs\nvite",
-   "ok": false,
-   "code": "input",
-   "why": "newline"
-  },
-  {
-   "url": "",
-   "ok": false,
-   "code": "input",
-   "why": "empty"
-  },
-  {
-   "url": "https://github.com/login",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment login"
-  },
-  {
-   "url": "https://shop.github-dummy.org/a/LOGIN/b",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment login upper case"
-  },
-  {
-   "url": "https://blog.github-dummy.org/how-login-works-explained",
-   "ok": true,
-   "why": "harmless substring of login"
-  },
-  {
-   "url": "https://github.com/log-in",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment log-in"
-  },
-  {
-   "url": "https://shop.github-dummy.org/a/LOG-IN/b",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment log-in upper case"
-  },
-  {
-   "url": "https://blog.github-dummy.org/how-log-in-works-explained",
-   "ok": true,
-   "why": "harmless substring of log-in"
-  },
-  {
-   "url": "https://github.com/signin",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment signin"
-  },
-  {
-   "url": "https://shop.github-dummy.org/a/SIGNIN/b",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment signin upper case"
-  },
-  {
-   "url": "https://blog.github-dummy.org/how-signin-works-explained",
-   "ok": true,
-   "why": "harmless substring of signin"
-  },
-  {
-   "url": "https://github.com/sign-in",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment sign-in"
-  },
-  {
-   "url": "https://shop.github-dummy.org/a/SIGN-IN/b",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment sign-in upper case"
-  },
-  {
-   "url": "https://blog.github-dummy.org/how-sign-in-works-explained",
-   "ok": true,
-   "why": "harmless substring of sign-in"
-  },
-  {
-   "url": "https://github.com/signup",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment signup"
-  },
-  {
-   "url": "https://shop.github-dummy.org/a/SIGNUP/b",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment signup upper case"
-  },
-  {
-   "url": "https://blog.github-dummy.org/how-signup-works-explained",
-   "ok": true,
-   "why": "harmless substring of signup"
-  },
-  {
-   "url": "https://github.com/sign-up",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment sign-up"
-  },
-  {
-   "url": "https://shop.github-dummy.org/a/SIGN-UP/b",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment sign-up upper case"
-  },
-  {
-   "url": "https://blog.github-dummy.org/how-sign-up-works-explained",
-   "ok": true,
-   "why": "harmless substring of sign-up"
-  },
-  {
-   "url": "https://github.com/register",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment register"
-  },
-  {
-   "url": "https://shop.github-dummy.org/a/REGISTER/b",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment register upper case"
-  },
-  {
-   "url": "https://blog.github-dummy.org/how-register-works-explained",
-   "ok": true,
-   "why": "harmless substring of register"
-  },
-  {
-   "url": "https://github.com/registration",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment registration"
-  },
-  {
-   "url": "https://shop.github-dummy.org/a/REGISTRATION/b",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment registration upper case"
-  },
-  {
-   "url": "https://blog.github-dummy.org/how-registration-works-explained",
-   "ok": true,
-   "why": "harmless substring of registration"
-  },
-  {
-   "url": "https://github.com/join",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment join"
-  },
-  {
-   "url": "https://shop.github-dummy.org/a/JOIN/b",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment join upper case"
-  },
-  {
-   "url": "https://blog.github-dummy.org/how-join-works-explained",
-   "ok": true,
-   "why": "harmless substring of join"
-  },
-  {
-   "url": "https://github.com/auth",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment auth"
-  },
-  {
-   "url": "https://shop.github-dummy.org/a/AUTH/b",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment auth upper case"
-  },
-  {
-   "url": "https://blog.github-dummy.org/how-auth-works-explained",
-   "ok": true,
-   "why": "harmless substring of auth"
-  },
-  {
-   "url": "https://github.com/oauth",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment oauth"
-  },
-  {
-   "url": "https://shop.github-dummy.org/a/OAUTH/b",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment oauth upper case"
-  },
-  {
-   "url": "https://blog.github-dummy.org/how-oauth-works-explained",
-   "ok": true,
-   "why": "harmless substring of oauth"
-  },
-  {
-   "url": "https://github.com/oauth2",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment oauth2"
-  },
-  {
-   "url": "https://shop.github-dummy.org/a/OAUTH2/b",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment oauth2 upper case"
-  },
-  {
-   "url": "https://blog.github-dummy.org/how-oauth2-works-explained",
-   "ok": true,
-   "why": "harmless substring of oauth2"
-  },
-  {
-   "url": "https://github.com/sso",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment sso"
-  },
-  {
-   "url": "https://shop.github-dummy.org/a/SSO/b",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment sso upper case"
-  },
-  {
-   "url": "https://blog.github-dummy.org/how-sso-works-explained",
-   "ok": true,
-   "why": "harmless substring of sso"
-  },
-  {
-   "url": "https://github.com/saml",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment saml"
-  },
-  {
-   "url": "https://shop.github-dummy.org/a/SAML/b",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment saml upper case"
-  },
-  {
-   "url": "https://blog.github-dummy.org/how-saml-works-explained",
-   "ok": true,
-   "why": "harmless substring of saml"
-  },
-  {
-   "url": "https://github.com/openid",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment openid"
-  },
-  {
-   "url": "https://shop.github-dummy.org/a/OPENID/b",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment openid upper case"
-  },
-  {
-   "url": "https://blog.github-dummy.org/how-openid-works-explained",
-   "ok": true,
-   "why": "harmless substring of openid"
-  },
-  {
-   "url": "https://github.com/authorize",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment authorize"
-  },
-  {
-   "url": "https://shop.github-dummy.org/a/AUTHORIZE/b",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment authorize upper case"
-  },
-  {
-   "url": "https://blog.github-dummy.org/how-authorize-works-explained",
-   "ok": true,
-   "why": "harmless substring of authorize"
-  },
-  {
-   "url": "https://github.com/account",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment account"
-  },
-  {
-   "url": "https://shop.github-dummy.org/a/ACCOUNT/b",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment account upper case"
-  },
-  {
-   "url": "https://blog.github-dummy.org/how-account-works-explained",
-   "ok": true,
-   "why": "harmless substring of account"
-  },
-  {
-   "url": "https://github.com/accounts",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment accounts"
-  },
-  {
-   "url": "https://shop.github-dummy.org/a/ACCOUNTS/b",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment accounts upper case"
-  },
-  {
-   "url": "https://blog.github-dummy.org/how-accounts-works-explained",
-   "ok": true,
-   "why": "harmless substring of accounts"
-  },
-  {
-   "url": "https://github.com/password",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment password"
-  },
-  {
-   "url": "https://shop.github-dummy.org/a/PASSWORD/b",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment password upper case"
-  },
-  {
-   "url": "https://blog.github-dummy.org/how-password-works-explained",
-   "ok": true,
-   "why": "harmless substring of password"
-  },
-  {
-   "url": "https://github.com/passwd",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment passwd"
-  },
-  {
-   "url": "https://shop.github-dummy.org/a/PASSWD/b",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment passwd upper case"
-  },
-  {
-   "url": "https://blog.github-dummy.org/how-passwd-works-explained",
-   "ok": true,
-   "why": "harmless substring of passwd"
-  },
-  {
-   "url": "https://github.com/reset",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment reset"
-  },
-  {
-   "url": "https://shop.github-dummy.org/a/RESET/b",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment reset upper case"
-  },
-  {
-   "url": "https://blog.github-dummy.org/how-reset-works-explained",
-   "ok": true,
-   "why": "harmless substring of reset"
-  },
-  {
-   "url": "https://github.com/verify",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment verify"
-  },
-  {
-   "url": "https://shop.github-dummy.org/a/VERIFY/b",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment verify upper case"
-  },
-  {
-   "url": "https://blog.github-dummy.org/how-verify-works-explained",
-   "ok": true,
-   "why": "harmless substring of verify"
-  },
-  {
-   "url": "https://github.com/checkout",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment checkout"
-  },
-  {
-   "url": "https://shop.github-dummy.org/a/CHECKOUT/b",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment checkout upper case"
-  },
-  {
-   "url": "https://blog.github-dummy.org/how-checkout-works-explained",
-   "ok": true,
-   "why": "harmless substring of checkout"
-  },
-  {
-   "url": "https://github.com/cart",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment cart"
-  },
-  {
-   "url": "https://shop.github-dummy.org/a/CART/b",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment cart upper case"
-  },
-  {
-   "url": "https://blog.github-dummy.org/how-cart-works-explained",
-   "ok": true,
-   "why": "harmless substring of cart"
-  },
-  {
-   "url": "https://github.com/billing",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment billing"
-  },
-  {
-   "url": "https://shop.github-dummy.org/a/BILLING/b",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment billing upper case"
-  },
-  {
-   "url": "https://blog.github-dummy.org/how-billing-works-explained",
-   "ok": true,
-   "why": "harmless substring of billing"
-  },
-  {
-   "url": "https://github.com/payment",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment payment"
-  },
-  {
-   "url": "https://shop.github-dummy.org/a/PAYMENT/b",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment payment upper case"
-  },
-  {
-   "url": "https://blog.github-dummy.org/how-payment-works-explained",
-   "ok": true,
-   "why": "harmless substring of payment"
-  },
-  {
-   "url": "https://github.com/subscribe",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment subscribe"
-  },
-  {
-   "url": "https://shop.github-dummy.org/a/SUBSCRIBE/b",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment subscribe upper case"
-  },
-  {
-   "url": "https://blog.github-dummy.org/how-subscribe-works-explained",
-   "ok": true,
-   "why": "harmless substring of subscribe"
-  },
-  {
-   "url": "https://github.com/unsubscribe",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment unsubscribe"
-  },
-  {
-   "url": "https://shop.github-dummy.org/a/UNSUBSCRIBE/b",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment unsubscribe upper case"
-  },
-  {
-   "url": "https://blog.github-dummy.org/how-unsubscribe-works-explained",
-   "ok": true,
-   "why": "harmless substring of unsubscribe"
-  },
-  {
-   "url": "https://github.com/admin",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment admin"
-  },
-  {
-   "url": "https://shop.github-dummy.org/a/ADMIN/b",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment admin upper case"
-  },
-  {
-   "url": "https://blog.github-dummy.org/how-admin-works-explained",
-   "ok": true,
-   "why": "harmless substring of admin"
-  },
-  {
-   "url": "https://github.com/wp-admin",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment wp-admin"
-  },
-  {
-   "url": "https://shop.github-dummy.org/a/WP-ADMIN/b",
-   "ok": false,
-   "code": "auth-step",
-   "why": "segment wp-admin upper case"
-  },
-  {
-   "url": "https://blog.github-dummy.org/how-wp-admin-works-explained",
-   "ok": true,
-   "why": "harmless substring of wp-admin"
-  },
-  {
-   "url": "https://wordpress.github-dummy.org/wp-login.php",
-   "ok": false,
-   "code": "auth-step",
-   "why": "wp-login.php"
-  },
-  {
-   "url": "https://site.github-dummy.org/login.php",
-   "ok": false,
-   "code": "auth-step",
-   "why": "login.php"
-  },
-  {
-   "url": "https://site.github-dummy.org/Login.aspx?ReturnUrl=%2f",
-   "ok": false,
-   "code": "auth-step",
-   "why": "Login.aspx"
-  },
-  {
-   "url": "https://site.github-dummy.org/login;jsessionid=ABC",
-   "ok": false,
-   "code": "auth-step",
-   "why": "matrix params"
-  },
-  {
-   "url": "https://site.github-dummy.org/sign%2Din",
-   "ok": false,
-   "code": "auth-step",
-   "why": "encoded dash"
-  },
-  {
-   "url": "https://site.github-dummy.org/%6c%6f%67%69%6e",
-   "ok": false,
-   "code": "auth-step",
-   "why": "fully encoded login"
-  },
-  {
-   "url": "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
-   "ok": false,
-   "code": "auth-step",
-   "why": "login host label"
-  },
-  {
-   "url": "https://accounts.google.com/",
-   "ok": false,
-   "code": "auth-step",
-   "why": "accounts host label"
-  },
-  {
-   "url": "https://sso.github-dummy.org/",
-   "ok": false,
-   "code": "auth-step",
-   "why": "sso host label"
-  },
-  {
-   "url": "https://auth.github-dummy.org/x",
-   "ok": false,
-   "code": "auth-step",
-   "why": "auth host label"
-  },
-  {
-   "url": "https://authors.github-dummy.org/x",
-   "ok": true,
-   "why": "authors is not auth"
-  },
-  {
-   "url": "https://github.com/topics/authentication-library",
-   "ok": true,
-   "why": "a topic name containing the word"
-  },
-  {
-   "url": "https://docs.github-dummy.org/guides/joining-tables",
-   "ok": true,
-   "why": "joining is not join"
-  },
-  {
-   "url": "https://www.github-dummy.org/carts-and-horses",
-   "ok": true,
-   "why": "plural in a slug"
-  },
-  {
-   "url": "https://api.github-dummy.org/v1/items?token=abc",
-   "ok": false,
-   "code": "credential-param",
-   "why": "query name token"
-  },
-  {
-   "url": "https://api.github-dummy.org/v1/items?access_token=abc",
-   "ok": false,
-   "code": "credential-param",
-   "why": "query name access_token"
-  },
-  {
-   "url": "https://api.github-dummy.org/v1/items?id_token=abc",
-   "ok": false,
-   "code": "credential-param",
-   "why": "query name id_token"
-  },
-  {
-   "url": "https://api.github-dummy.org/v1/items?key=abc",
-   "ok": false,
-   "code": "credential-param",
-   "why": "query name key"
-  },
-  {
-   "url": "https://api.github-dummy.org/v1/items?api_key=abc",
-   "ok": false,
-   "code": "credential-param",
-   "why": "query name api_key"
-  },
-  {
-   "url": "https://api.github-dummy.org/v1/items?apikey=abc",
-   "ok": false,
-   "code": "credential-param",
-   "why": "query name apikey"
-  },
-  {
-   "url": "https://api.github-dummy.org/v1/items?secret=abc",
-   "ok": false,
-   "code": "credential-param",
-   "why": "query name secret"
-  },
-  {
-   "url": "https://api.github-dummy.org/v1/items?password=abc",
-   "ok": false,
-   "code": "credential-param",
-   "why": "query name password"
-  },
-  {
-   "url": "https://api.github-dummy.org/v1/items?passwd=abc",
-   "ok": false,
-   "code": "credential-param",
-   "why": "query name passwd"
-  },
-  {
-   "url": "https://api.github-dummy.org/v1/items?pwd=abc",
-   "ok": false,
-   "code": "credential-param",
-   "why": "query name pwd"
-  },
-  {
-   "url": "https://api.github-dummy.org/v1/items?session=abc",
-   "ok": false,
-   "code": "credential-param",
-   "why": "query name session"
-  },
-  {
-   "url": "https://api.github-dummy.org/v1/items?sessionid=abc",
-   "ok": false,
-   "code": "credential-param",
-   "why": "query name sessionid"
-  },
-  {
-   "url": "https://api.github-dummy.org/v1/items?sid=abc",
-   "ok": false,
-   "code": "credential-param",
-   "why": "query name sid"
-  },
-  {
-   "url": "https://api.github-dummy.org/v1/items?auth=abc",
-   "ok": false,
-   "code": "credential-param",
-   "why": "query name auth"
-  },
-  {
-   "url": "https://api.github-dummy.org/v1/items?code=abc",
-   "ok": false,
-   "code": "credential-param",
-   "why": "query name code"
-  },
-  {
-   "url": "https://api.github-dummy.org/v1/items?state=abc",
-   "ok": false,
-   "code": "credential-param",
-   "why": "query name state"
-  },
-  {
-   "url": "https://api.github-dummy.org/v1/items?signature=abc",
-   "ok": false,
-   "code": "credential-param",
-   "why": "query name signature"
-  },
-  {
-   "url": "https://api.github-dummy.org/v1/items?sig=abc",
-   "ok": false,
-   "code": "credential-param",
-   "why": "query name sig"
-  },
-  {
-   "url": "https://api.github-dummy.org/v1/items?jwt=abc",
-   "ok": false,
-   "code": "credential-param",
-   "why": "query name jwt"
-  },
-  {
-   "url": "https://api.github-dummy.org/v1/items?X-Amz-Signature=abc",
-   "ok": false,
-   "code": "credential-param",
-   "why": "S3 signature, mixed case"
-  },
-  {
-   "url": "https://api.github-dummy.org/v1/items?my_api_token=1",
-   "ok": false,
-   "code": "credential-param",
-   "why": "name with token as a word"
-  },
-  {
-   "url": "https://api.github-dummy.org/v1/items?client_id=1&redirect_uri=https://x.org",
-   "ok": false,
-   "code": "credential-param",
-   "why": "oauth authorize shape"
-  },
-  {
-   "url": "https://api.github-dummy.org/v1/items?keyword=gym",
-   "ok": true,
-   "why": "keyword is not key"
-  },
-  {
-   "url": "https://api.github-dummy.org/v1/items?tokens_per_page=10&statement=1",
-   "ok": true,
-   "why": "token as part of a longer word without separator"
-  },
-  {
-   "url": "https://www.github-dummy.org/search?q=sk-ant-api03-AAAABBBBCCCCDDDD",
-   "ok": false,
-   "code": "secret",
-   "why": "anthropic key in a value"
-  },
-  {
-   "url": "https://www.github-dummy.org/search?q=ghp_abcdefghijklmnopqrstuvwxyz0123",
-   "ok": false,
-   "code": "secret",
-   "why": "github token"
-  },
-  {
-   "url": "https://www.github-dummy.org/search?q=AKIAIOSFODNN7EXAMPLE",
-   "ok": false,
-   "code": "secret",
-   "why": "aws key id"
-  },
-  {
-   "url": "https://www.github-dummy.org/search?q=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.sig",
-   "ok": false,
-   "code": "secret",
-   "why": "a JWT"
-  },
-  {
-   "url": "https://www.github-dummy.org/r?v=a8F3kL9qZ2xW7pR4tY6uI0oP5sD1fG3hJ8kL2zX4",
-   "ok": false,
-   "code": "secret",
-   "why": "opaque value"
-  },
-  {
-   "url": "https://www.github-dummy.org/ghp_abcdefghijklmnopqrstuvwxyz0123/x",
-   "ok": false,
-   "code": "secret",
-   "why": "token in the path"
-  },
-  {
-   "url": "https://www.github-dummy.org/search?q=how+to+build+a+workout+tracker+in+react",
-   "ok": true,
-   "why": "prose query"
-  },
-  {
-   "url": "https://www.github-dummy.org/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-   "ok": true,
-   "why": "exactly 512 bytes"
-  },
-  {
-   "url": "https://www.github-dummy.org/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-   "ok": false,
-   "code": "length",
-   "why": "513 bytes"
-  },
-  {
-   "url": "https://www.github-dummy.org/s?q=word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+abc",
-   "ok": true,
-   "why": "query of exactly 200 bytes"
-  },
-  {
-   "url": "https://www.github-dummy.org/s?q=word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+abcd",
-   "ok": false,
-   "code": "length",
-   "why": "query of 201 bytes"
-  }
- ]
+  "_comment": "Research URL rules (backlog 69). Hand-written expectations, shared by runner/lib/hook/url-rules.mjs and packages/dispatch/src/util/researchUrl.ts. ok:false rows name the rule (code) that must refuse.",
+  "vectors": [
+    {
+      "url": "https://docs.python.org/3/library/urllib.parse.html",
+      "ok": true,
+      "why": "ordinary page"
+    },
+    {
+      "url": "https://developer.mozilla.org/en-US/docs/Web/API/URL",
+      "ok": true,
+      "why": "ordinary page"
+    },
+    {
+      "url": "https://nodejs.org/api/url.html",
+      "ok": true,
+      "why": "ordinary page"
+    },
+    {
+      "url": "https://react.dev/learn",
+      "ok": true,
+      "why": "ordinary page"
+    },
+    {
+      "url": "https://www.typescriptlang.org/docs/handbook/2/everyday-types.html",
+      "ok": true,
+      "why": "ordinary page"
+    },
+    {
+      "url": "https://github.com/vitejs/vite",
+      "ok": true,
+      "why": "ordinary page"
+    },
+    {
+      "url": "https://github.com/facebook/react/blob/main/README.md",
+      "ok": true,
+      "why": "ordinary page"
+    },
+    {
+      "url": "https://github.com/nodejs/node/issues/12345",
+      "ok": true,
+      "why": "ordinary page"
+    },
+    {
+      "url": "https://github.com/rust-lang/rust/commit/0123456789abcdef0123456789abcdef01234567",
+      "ok": true,
+      "why": "ordinary page"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/nodejs/node/main/README.md",
+      "ok": true,
+      "why": "ordinary page"
+    },
+    {
+      "url": "https://www.npmjs.com/package/zod",
+      "ok": true,
+      "why": "ordinary page"
+    },
+    {
+      "url": "https://pypi.org/project/requests/",
+      "ok": true,
+      "why": "ordinary page"
+    },
+    {
+      "url": "https://crates.io/crates/serde",
+      "ok": true,
+      "why": "ordinary page"
+    },
+    {
+      "url": "https://pkg.go.dev/net/http",
+      "ok": true,
+      "why": "ordinary page"
+    },
+    {
+      "url": "https://rubygems.org/gems/rails",
+      "ok": true,
+      "why": "ordinary page"
+    },
+    {
+      "url": "https://stripe.com/pricing",
+      "ok": true,
+      "why": "ordinary page"
+    },
+    {
+      "url": "https://www.notion.so/pricing",
+      "ok": true,
+      "why": "ordinary page"
+    },
+    {
+      "url": "https://linear.app/pricing",
+      "ok": true,
+      "why": "ordinary page"
+    },
+    {
+      "url": "https://www.atlassian.com/software/jira/pricing",
+      "ok": true,
+      "why": "ordinary page"
+    },
+    {
+      "url": "https://news.ycombinator.com/item?id=38000000",
+      "ok": true,
+      "why": "ordinary page"
+    },
+    {
+      "url": "https://www.reddit.com/r/selfhosted/comments/abc123/best_workout_tracker/",
+      "ok": true,
+      "why": "ordinary page"
+    },
+    {
+      "url": "https://stackoverflow.com/questions/111102/how-do-javascript-closures-work",
+      "ok": true,
+      "why": "ordinary page"
+    },
+    {
+      "url": "https://discourse.mozilla.org/t/some-topic/12345",
+      "ok": true,
+      "why": "ordinary page"
+    },
+    {
+      "url": "https://en.wikipedia.org/wiki/Spaced_repetition",
+      "ok": true,
+      "why": "ordinary page"
+    },
+    {
+      "url": "https://arxiv.org/abs/2310.06825",
+      "ok": true,
+      "why": "ordinary page"
+    },
+    {
+      "url": "https://martinfowler.com/articles/microservices.html",
+      "ok": true,
+      "why": "ordinary page"
+    },
+    {
+      "url": "https://blog.cloudflare.com/how-oauth-works/",
+      "ok": true,
+      "why": "ordinary page"
+    },
+    {
+      "url": "https://auth0.com/blog/what-is-oauth-2/",
+      "ok": true,
+      "why": "ordinary page"
+    },
+    {
+      "url": "https://www.smashingmagazine.com/2023/01/design-patterns/",
+      "ok": true,
+      "why": "ordinary page"
+    },
+    {
+      "url": "https://css-tricks.com/snippets/css/a-guide-to-flexbox/",
+      "ok": true,
+      "why": "ordinary page"
+    },
+    {
+      "url": "https://web.dev/articles/vitals",
+      "ok": true,
+      "why": "ordinary page"
+    },
+    {
+      "url": "https://www.producthunt.com/products/strava",
+      "ok": true,
+      "why": "ordinary page"
+    },
+    {
+      "url": "https://www.g2.com/categories/project-management",
+      "ok": true,
+      "why": "ordinary page"
+    },
+    {
+      "url": "https://alternativeto.net/software/trello/",
+      "ok": true,
+      "why": "ordinary page"
+    },
+    {
+      "url": "https://duckduckgo.com/html/?q=gym+workout+tracker",
+      "ok": true,
+      "why": "ordinary page"
+    },
+    {
+      "url": "https://www.bing.com/search?q=open+source+habit+tracker&first=11",
+      "ok": true,
+      "why": "ordinary page"
+    },
+    {
+      "url": "https://docs.github.com/en/rest/repos/repos",
+      "ok": true,
+      "why": "ordinary page"
+    },
+    {
+      "url": "https://kubernetes.io/docs/concepts/overview/",
+      "ok": true,
+      "why": "ordinary page"
+    },
+    {
+      "url": "https://1.bp.blogspot.com/some/image-page.html",
+      "ok": true,
+      "why": "ordinary page"
+    },
+    {
+      "url": "https://about.gitlab.com/pricing/",
+      "ok": true,
+      "why": "ordinary page"
+    },
+    {
+      "url": "http://example.org/",
+      "ok": false,
+      "code": "scheme",
+      "why": "plain http is never relied on to upgrade"
+    },
+    {
+      "url": "http://docs.python.org/3/",
+      "ok": false,
+      "code": "scheme",
+      "why": "http"
+    },
+    {
+      "url": "HTTP://docs.python.org/3/",
+      "ok": false,
+      "code": "scheme",
+      "why": "http upper case"
+    },
+    {
+      "url": "file:///etc/passwd",
+      "ok": false,
+      "code": "scheme",
+      "why": "file"
+    },
+    {
+      "url": "ftp://ftp.gnu.org/gnu/",
+      "ok": false,
+      "code": "scheme",
+      "why": "ftp"
+    },
+    {
+      "url": "data:text/html,<script>alert(1)</script>",
+      "ok": false,
+      "code": "scheme",
+      "why": "data"
+    },
+    {
+      "url": "javascript:alert(1)",
+      "ok": false,
+      "code": "scheme",
+      "why": "javascript"
+    },
+    {
+      "url": "blob:https://github.com/1234",
+      "ok": false,
+      "code": "scheme",
+      "why": "blob"
+    },
+    {
+      "url": "about:blank",
+      "ok": false,
+      "code": "scheme",
+      "why": "about"
+    },
+    {
+      "url": "ws://echo.websocket.org/",
+      "ok": false,
+      "code": "scheme",
+      "why": "ws"
+    },
+    {
+      "url": "wss://echo.websocket.org/",
+      "ok": false,
+      "code": "scheme",
+      "why": "wss"
+    },
+    {
+      "url": "gopher://gopher.floodgap.com/",
+      "ok": false,
+      "code": "scheme",
+      "why": "gopher"
+    },
+    {
+      "url": "//github.com/vitejs/vite",
+      "ok": false,
+      "code": "scheme",
+      "why": "scheme-relative"
+    },
+    {
+      "url": "github.com/vitejs/vite",
+      "ok": false,
+      "code": "scheme",
+      "why": "no scheme"
+    },
+    {
+      "url": "https:github.com/vitejs/vite",
+      "ok": false,
+      "code": "scheme",
+      "why": "https: without //"
+    },
+    {
+      "url": "https:/github.com/vitejs/vite",
+      "ok": false,
+      "code": "scheme",
+      "why": "https: with one slash"
+    },
+    {
+      "url": "HTTPS://GitHub.com/vitejs/vite",
+      "ok": true,
+      "why": "mixed case scheme and host are the same https URL"
+    },
+    {
+      "url": "https://GITHUB.COM/vitejs/vite",
+      "ok": true,
+      "why": "upper case host"
+    },
+    {
+      "url": "https://good.com@evil.com/",
+      "ok": false,
+      "code": "userinfo",
+      "why": "userinfo makes evil.com the host"
+    },
+    {
+      "url": "https://user:pass@github.com/",
+      "ok": false,
+      "code": "userinfo",
+      "why": "credentials"
+    },
+    {
+      "url": "https://github.com:x@evil.com/",
+      "ok": false,
+      "code": "userinfo",
+      "why": "colon and at"
+    },
+    {
+      "url": "https://evil.com\\@good.com/",
+      "ok": false,
+      "code": "input",
+      "why": "backslash parsers disagree on"
+    },
+    {
+      "url": "https://evil.com%40good.com/",
+      "ok": false,
+      "code": "host",
+      "why": "encoded at"
+    },
+    {
+      "url": "https://github%2ecom/vitejs",
+      "ok": false,
+      "code": "host",
+      "why": "encoded dot in the host"
+    },
+    {
+      "url": "https://github.com%2fevil.com/",
+      "ok": false,
+      "code": "host",
+      "why": "encoded slash in the host"
+    },
+    {
+      "url": "https://github.com/a%2fb/c",
+      "ok": false,
+      "code": "parse",
+      "why": "encoded slash in a path segment"
+    },
+    {
+      "url": "https://@github.com/",
+      "ok": false,
+      "code": "userinfo",
+      "why": "empty userinfo"
+    },
+    {
+      "url": "https://github.com:443/vitejs/vite",
+      "ok": false,
+      "code": "port",
+      "why": "explicit default port"
+    },
+    {
+      "url": "https://github.com:8443/",
+      "ok": false,
+      "code": "port",
+      "why": "other port"
+    },
+    {
+      "url": "https://github.com:/",
+      "ok": false,
+      "code": "port",
+      "why": "empty port"
+    },
+    {
+      "url": "https://127.0.0.1/",
+      "ok": false,
+      "code": "ip-literal",
+      "why": "dotted loopback"
+    },
+    {
+      "url": "https://8.8.8.8/",
+      "ok": false,
+      "code": "ip-literal",
+      "why": "public dotted IPv4 is still a literal"
+    },
+    {
+      "url": "https://2130706433/",
+      "ok": false,
+      "code": "ip-literal",
+      "why": "decimal"
+    },
+    {
+      "url": "https://0x7f000001/",
+      "ok": false,
+      "code": "ip-literal",
+      "why": "hex"
+    },
+    {
+      "url": "https://0x7f.0.0.1/",
+      "ok": false,
+      "code": "ip-literal",
+      "why": "hex first octet"
+    },
+    {
+      "url": "https://0177.0.0.1/",
+      "ok": false,
+      "code": "ip-literal",
+      "why": "octal"
+    },
+    {
+      "url": "https://017700000001/",
+      "ok": false,
+      "code": "ip-literal",
+      "why": "octal whole"
+    },
+    {
+      "url": "https://127.1/",
+      "ok": false,
+      "code": "ip-literal",
+      "why": "short form"
+    },
+    {
+      "url": "https://169.254.169.254/latest/meta-data/",
+      "ok": false,
+      "code": "ip-literal",
+      "why": "metadata address"
+    },
+    {
+      "url": "https://[::1]/",
+      "ok": false,
+      "code": "ip-literal",
+      "why": "IPv6 loopback"
+    },
+    {
+      "url": "https://[::ffff:127.0.0.1]/",
+      "ok": false,
+      "code": "ip-literal",
+      "why": "IPv4-mapped IPv6"
+    },
+    {
+      "url": "https://[::ffff:7f00:1]/",
+      "ok": false,
+      "code": "ip-literal",
+      "why": "IPv4-mapped IPv6 hex"
+    },
+    {
+      "url": "https://[fe80::1]/",
+      "ok": false,
+      "code": "ip-literal",
+      "why": "link-local IPv6"
+    },
+    {
+      "url": "https://[2606:4700::1111]/",
+      "ok": false,
+      "code": "ip-literal",
+      "why": "public IPv6 is still a literal"
+    },
+    {
+      "url": "https://10.0.0.1.nip.io/",
+      "ok": false,
+      "code": "rebinding",
+      "why": "wildcard DNS with an address in it"
+    },
+    {
+      "url": "https://127.0.0.1.sslip.io/",
+      "ok": false,
+      "code": "rebinding",
+      "why": "sslip"
+    },
+    {
+      "url": "https://app.localtest.me/",
+      "ok": false,
+      "code": "rebinding",
+      "why": "localtest.me points at 127.0.0.1"
+    },
+    {
+      "url": "https://10.0.0.1.attacker-domain.org/",
+      "ok": false,
+      "code": "ip-literal",
+      "why": "address written in a name"
+    },
+    {
+      "url": "https://127-0-0-1.attacker-domain.org/",
+      "ok": false,
+      "code": "ip-literal",
+      "why": "dashed address in a name"
+    },
+    {
+      "url": "https://localhost/",
+      "ok": false,
+      "code": "single-label",
+      "why": "localhost"
+    },
+    {
+      "url": "https://intranet/",
+      "ok": false,
+      "code": "single-label",
+      "why": "single label"
+    },
+    {
+      "url": "https://router.local/",
+      "ok": false,
+      "code": "internal-name",
+      "why": ".local"
+    },
+    {
+      "url": "https://app.localhost/",
+      "ok": false,
+      "code": "internal-name",
+      "why": ".localhost"
+    },
+    {
+      "url": "https://jira.internal/",
+      "ok": false,
+      "code": "internal-name",
+      "why": ".internal"
+    },
+    {
+      "url": "https://wiki.intranet/",
+      "ok": false,
+      "code": "internal-name",
+      "why": ".intranet"
+    },
+    {
+      "url": "https://nas.lan/",
+      "ok": false,
+      "code": "internal-name",
+      "why": ".lan"
+    },
+    {
+      "url": "https://printer.home/",
+      "ok": false,
+      "code": "internal-name",
+      "why": ".home"
+    },
+    {
+      "url": "https://hub.home.arpa/",
+      "ok": false,
+      "code": "internal-name",
+      "why": ".home.arpa"
+    },
+    {
+      "url": "https://git.corp/",
+      "ok": false,
+      "code": "internal-name",
+      "why": ".corp"
+    },
+    {
+      "url": "https://site.test/",
+      "ok": false,
+      "code": "internal-name",
+      "why": ".test"
+    },
+    {
+      "url": "https://site.invalid/",
+      "ok": false,
+      "code": "internal-name",
+      "why": ".invalid"
+    },
+    {
+      "url": "https://site.example/",
+      "ok": false,
+      "code": "internal-name",
+      "why": ".example"
+    },
+    {
+      "url": "https://www.example.com/",
+      "ok": false,
+      "code": "internal-name",
+      "why": "example.com is reserved"
+    },
+    {
+      "url": "https://duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion/",
+      "ok": false,
+      "code": "internal-name",
+      "why": ".onion"
+    },
+    {
+      "url": "https://1.0.0.127.in-addr.arpa/",
+      "ok": false,
+      "code": "internal-name",
+      "why": "reverse zone"
+    },
+    {
+      "url": "https://metadata.google.internal/computeMetadata/v1/",
+      "ok": false,
+      "code": "internal-name",
+      "why": "GCP metadata (also .internal)"
+    },
+    {
+      "url": "https://metadata.goog/",
+      "ok": false,
+      "code": "metadata",
+      "why": "GCP metadata alias"
+    },
+    {
+      "url": "https://github.com./vitejs",
+      "ok": false,
+      "code": "host",
+      "why": "trailing dot"
+    },
+    {
+      "url": "https://github..com/",
+      "ok": false,
+      "code": "host",
+      "why": "empty label"
+    },
+    {
+      "url": "https://-github.com/",
+      "ok": false,
+      "code": "host",
+      "why": "label starts with a dash"
+    },
+    {
+      "url": "https://github-.com/",
+      "ok": false,
+      "code": "host",
+      "why": "label ends with a dash"
+    },
+    {
+      "url": "https://xn--pple-43d.com/",
+      "ok": false,
+      "code": "idn",
+      "why": "punycode lookalike"
+    },
+    {
+      "url": "https://аpple.com/",
+      "ok": false,
+      "code": "idn",
+      "why": "Cyrillic a, punycoded by the parser"
+    },
+    {
+      "url": "https://github.xn--p1ai/",
+      "ok": false,
+      "code": "idn",
+      "why": "punycode top label"
+    },
+    {
+      "url": "https://under_score.com/",
+      "ok": false,
+      "code": "host",
+      "why": "underscore is not a hostname letter"
+    },
+    {
+      "url": "https://github.com/vitejs vite",
+      "ok": false,
+      "code": "input",
+      "why": "space"
+    },
+    {
+      "url": "https://github.com/vitejs\tvite",
+      "ok": false,
+      "code": "input",
+      "why": "tab"
+    },
+    {
+      "url": "https://github.com/vitejs‮vite",
+      "ok": false,
+      "code": "input",
+      "why": "bidi override"
+    },
+    {
+      "url": "https://github.com/vite​js",
+      "ok": false,
+      "code": "input",
+      "why": "zero width space"
+    },
+    {
+      "url": "https://github.com/vitejs\nvite",
+      "ok": false,
+      "code": "input",
+      "why": "newline"
+    },
+    {
+      "url": "",
+      "ok": false,
+      "code": "input",
+      "why": "empty"
+    },
+    {
+      "url": "https://github.com/login",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment login"
+    },
+    {
+      "url": "https://shop.github-dummy.org/a/LOGIN/b",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment login upper case"
+    },
+    {
+      "url": "https://blog.github-dummy.org/how-login-works-explained",
+      "ok": true,
+      "why": "harmless substring of login"
+    },
+    {
+      "url": "https://github.com/log-in",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment log-in"
+    },
+    {
+      "url": "https://shop.github-dummy.org/a/LOG-IN/b",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment log-in upper case"
+    },
+    {
+      "url": "https://blog.github-dummy.org/how-log-in-works-explained",
+      "ok": true,
+      "why": "harmless substring of log-in"
+    },
+    {
+      "url": "https://github.com/signin",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment signin"
+    },
+    {
+      "url": "https://shop.github-dummy.org/a/SIGNIN/b",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment signin upper case"
+    },
+    {
+      "url": "https://blog.github-dummy.org/how-signin-works-explained",
+      "ok": true,
+      "why": "harmless substring of signin"
+    },
+    {
+      "url": "https://github.com/sign-in",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment sign-in"
+    },
+    {
+      "url": "https://shop.github-dummy.org/a/SIGN-IN/b",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment sign-in upper case"
+    },
+    {
+      "url": "https://blog.github-dummy.org/how-sign-in-works-explained",
+      "ok": true,
+      "why": "harmless substring of sign-in"
+    },
+    {
+      "url": "https://github.com/signup",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment signup"
+    },
+    {
+      "url": "https://shop.github-dummy.org/a/SIGNUP/b",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment signup upper case"
+    },
+    {
+      "url": "https://blog.github-dummy.org/how-signup-works-explained",
+      "ok": true,
+      "why": "harmless substring of signup"
+    },
+    {
+      "url": "https://github.com/sign-up",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment sign-up"
+    },
+    {
+      "url": "https://shop.github-dummy.org/a/SIGN-UP/b",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment sign-up upper case"
+    },
+    {
+      "url": "https://blog.github-dummy.org/how-sign-up-works-explained",
+      "ok": true,
+      "why": "harmless substring of sign-up"
+    },
+    {
+      "url": "https://github.com/register",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment register"
+    },
+    {
+      "url": "https://shop.github-dummy.org/a/REGISTER/b",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment register upper case"
+    },
+    {
+      "url": "https://blog.github-dummy.org/how-register-works-explained",
+      "ok": true,
+      "why": "harmless substring of register"
+    },
+    {
+      "url": "https://github.com/registration",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment registration"
+    },
+    {
+      "url": "https://shop.github-dummy.org/a/REGISTRATION/b",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment registration upper case"
+    },
+    {
+      "url": "https://blog.github-dummy.org/how-registration-works-explained",
+      "ok": true,
+      "why": "harmless substring of registration"
+    },
+    {
+      "url": "https://github.com/join",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment join"
+    },
+    {
+      "url": "https://shop.github-dummy.org/a/JOIN/b",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment join upper case"
+    },
+    {
+      "url": "https://blog.github-dummy.org/how-join-works-explained",
+      "ok": true,
+      "why": "harmless substring of join"
+    },
+    {
+      "url": "https://github.com/auth",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment auth"
+    },
+    {
+      "url": "https://shop.github-dummy.org/a/AUTH/b",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment auth upper case"
+    },
+    {
+      "url": "https://blog.github-dummy.org/how-auth-works-explained",
+      "ok": true,
+      "why": "harmless substring of auth"
+    },
+    {
+      "url": "https://github.com/oauth",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment oauth"
+    },
+    {
+      "url": "https://shop.github-dummy.org/a/OAUTH/b",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment oauth upper case"
+    },
+    {
+      "url": "https://blog.github-dummy.org/how-oauth-works-explained",
+      "ok": true,
+      "why": "harmless substring of oauth"
+    },
+    {
+      "url": "https://github.com/oauth2",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment oauth2"
+    },
+    {
+      "url": "https://shop.github-dummy.org/a/OAUTH2/b",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment oauth2 upper case"
+    },
+    {
+      "url": "https://blog.github-dummy.org/how-oauth2-works-explained",
+      "ok": true,
+      "why": "harmless substring of oauth2"
+    },
+    {
+      "url": "https://github.com/sso",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment sso"
+    },
+    {
+      "url": "https://shop.github-dummy.org/a/SSO/b",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment sso upper case"
+    },
+    {
+      "url": "https://blog.github-dummy.org/how-sso-works-explained",
+      "ok": true,
+      "why": "harmless substring of sso"
+    },
+    {
+      "url": "https://github.com/saml",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment saml"
+    },
+    {
+      "url": "https://shop.github-dummy.org/a/SAML/b",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment saml upper case"
+    },
+    {
+      "url": "https://blog.github-dummy.org/how-saml-works-explained",
+      "ok": true,
+      "why": "harmless substring of saml"
+    },
+    {
+      "url": "https://github.com/openid",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment openid"
+    },
+    {
+      "url": "https://shop.github-dummy.org/a/OPENID/b",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment openid upper case"
+    },
+    {
+      "url": "https://blog.github-dummy.org/how-openid-works-explained",
+      "ok": true,
+      "why": "harmless substring of openid"
+    },
+    {
+      "url": "https://github.com/authorize",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment authorize"
+    },
+    {
+      "url": "https://shop.github-dummy.org/a/AUTHORIZE/b",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment authorize upper case"
+    },
+    {
+      "url": "https://blog.github-dummy.org/how-authorize-works-explained",
+      "ok": true,
+      "why": "harmless substring of authorize"
+    },
+    {
+      "url": "https://github.com/account",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment account"
+    },
+    {
+      "url": "https://shop.github-dummy.org/a/ACCOUNT/b",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment account upper case"
+    },
+    {
+      "url": "https://blog.github-dummy.org/how-account-works-explained",
+      "ok": true,
+      "why": "harmless substring of account"
+    },
+    {
+      "url": "https://github.com/accounts",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment accounts"
+    },
+    {
+      "url": "https://shop.github-dummy.org/a/ACCOUNTS/b",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment accounts upper case"
+    },
+    {
+      "url": "https://blog.github-dummy.org/how-accounts-works-explained",
+      "ok": true,
+      "why": "harmless substring of accounts"
+    },
+    {
+      "url": "https://github.com/password",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment password"
+    },
+    {
+      "url": "https://shop.github-dummy.org/a/PASSWORD/b",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment password upper case"
+    },
+    {
+      "url": "https://blog.github-dummy.org/how-password-works-explained",
+      "ok": true,
+      "why": "harmless substring of password"
+    },
+    {
+      "url": "https://github.com/passwd",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment passwd"
+    },
+    {
+      "url": "https://shop.github-dummy.org/a/PASSWD/b",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment passwd upper case"
+    },
+    {
+      "url": "https://blog.github-dummy.org/how-passwd-works-explained",
+      "ok": true,
+      "why": "harmless substring of passwd"
+    },
+    {
+      "url": "https://github.com/reset",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment reset"
+    },
+    {
+      "url": "https://shop.github-dummy.org/a/RESET/b",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment reset upper case"
+    },
+    {
+      "url": "https://blog.github-dummy.org/how-reset-works-explained",
+      "ok": true,
+      "why": "harmless substring of reset"
+    },
+    {
+      "url": "https://github.com/verify",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment verify"
+    },
+    {
+      "url": "https://shop.github-dummy.org/a/VERIFY/b",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment verify upper case"
+    },
+    {
+      "url": "https://blog.github-dummy.org/how-verify-works-explained",
+      "ok": true,
+      "why": "harmless substring of verify"
+    },
+    {
+      "url": "https://github.com/checkout",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment checkout"
+    },
+    {
+      "url": "https://shop.github-dummy.org/a/CHECKOUT/b",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment checkout upper case"
+    },
+    {
+      "url": "https://blog.github-dummy.org/how-checkout-works-explained",
+      "ok": true,
+      "why": "harmless substring of checkout"
+    },
+    {
+      "url": "https://github.com/cart",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment cart"
+    },
+    {
+      "url": "https://shop.github-dummy.org/a/CART/b",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment cart upper case"
+    },
+    {
+      "url": "https://blog.github-dummy.org/how-cart-works-explained",
+      "ok": true,
+      "why": "harmless substring of cart"
+    },
+    {
+      "url": "https://github.com/billing",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment billing"
+    },
+    {
+      "url": "https://shop.github-dummy.org/a/BILLING/b",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment billing upper case"
+    },
+    {
+      "url": "https://blog.github-dummy.org/how-billing-works-explained",
+      "ok": true,
+      "why": "harmless substring of billing"
+    },
+    {
+      "url": "https://github.com/payment",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment payment"
+    },
+    {
+      "url": "https://shop.github-dummy.org/a/PAYMENT/b",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment payment upper case"
+    },
+    {
+      "url": "https://blog.github-dummy.org/how-payment-works-explained",
+      "ok": true,
+      "why": "harmless substring of payment"
+    },
+    {
+      "url": "https://github.com/subscribe",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment subscribe"
+    },
+    {
+      "url": "https://shop.github-dummy.org/a/SUBSCRIBE/b",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment subscribe upper case"
+    },
+    {
+      "url": "https://blog.github-dummy.org/how-subscribe-works-explained",
+      "ok": true,
+      "why": "harmless substring of subscribe"
+    },
+    {
+      "url": "https://github.com/unsubscribe",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment unsubscribe"
+    },
+    {
+      "url": "https://shop.github-dummy.org/a/UNSUBSCRIBE/b",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment unsubscribe upper case"
+    },
+    {
+      "url": "https://blog.github-dummy.org/how-unsubscribe-works-explained",
+      "ok": true,
+      "why": "harmless substring of unsubscribe"
+    },
+    {
+      "url": "https://github.com/admin",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment admin"
+    },
+    {
+      "url": "https://shop.github-dummy.org/a/ADMIN/b",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment admin upper case"
+    },
+    {
+      "url": "https://blog.github-dummy.org/how-admin-works-explained",
+      "ok": true,
+      "why": "harmless substring of admin"
+    },
+    {
+      "url": "https://github.com/wp-admin",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment wp-admin"
+    },
+    {
+      "url": "https://shop.github-dummy.org/a/WP-ADMIN/b",
+      "ok": false,
+      "code": "auth-step",
+      "why": "segment wp-admin upper case"
+    },
+    {
+      "url": "https://blog.github-dummy.org/how-wp-admin-works-explained",
+      "ok": true,
+      "why": "harmless substring of wp-admin"
+    },
+    {
+      "url": "https://wordpress.github-dummy.org/wp-login.php",
+      "ok": false,
+      "code": "auth-step",
+      "why": "wp-login.php"
+    },
+    {
+      "url": "https://site.github-dummy.org/login.php",
+      "ok": false,
+      "code": "auth-step",
+      "why": "login.php"
+    },
+    {
+      "url": "https://site.github-dummy.org/Login.aspx?ReturnUrl=%2f",
+      "ok": false,
+      "code": "auth-step",
+      "why": "Login.aspx"
+    },
+    {
+      "url": "https://site.github-dummy.org/login;jsessionid=ABC",
+      "ok": false,
+      "code": "auth-step",
+      "why": "matrix params"
+    },
+    {
+      "url": "https://site.github-dummy.org/sign%2Din",
+      "ok": false,
+      "code": "auth-step",
+      "why": "encoded dash"
+    },
+    {
+      "url": "https://site.github-dummy.org/%6c%6f%67%69%6e",
+      "ok": false,
+      "code": "auth-step",
+      "why": "fully encoded login"
+    },
+    {
+      "url": "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+      "ok": false,
+      "code": "auth-step",
+      "why": "login host label"
+    },
+    {
+      "url": "https://accounts.google.com/",
+      "ok": false,
+      "code": "auth-step",
+      "why": "accounts host label"
+    },
+    {
+      "url": "https://sso.github-dummy.org/",
+      "ok": false,
+      "code": "auth-step",
+      "why": "sso host label"
+    },
+    {
+      "url": "https://auth.github-dummy.org/x",
+      "ok": false,
+      "code": "auth-step",
+      "why": "auth host label"
+    },
+    {
+      "url": "https://authors.github-dummy.org/x",
+      "ok": true,
+      "why": "authors is not auth"
+    },
+    {
+      "url": "https://github.com/topics/authentication-library",
+      "ok": true,
+      "why": "a topic name containing the word"
+    },
+    {
+      "url": "https://docs.github-dummy.org/guides/joining-tables",
+      "ok": true,
+      "why": "joining is not join"
+    },
+    {
+      "url": "https://www.github-dummy.org/carts-and-horses",
+      "ok": true,
+      "why": "plural in a slug"
+    },
+    {
+      "url": "https://api.github-dummy.org/v1/items?token=abc",
+      "ok": false,
+      "code": "credential-param",
+      "why": "query name token"
+    },
+    {
+      "url": "https://api.github-dummy.org/v1/items?access_token=abc",
+      "ok": false,
+      "code": "credential-param",
+      "why": "query name access_token"
+    },
+    {
+      "url": "https://api.github-dummy.org/v1/items?id_token=abc",
+      "ok": false,
+      "code": "credential-param",
+      "why": "query name id_token"
+    },
+    {
+      "url": "https://api.github-dummy.org/v1/items?key=abc",
+      "ok": false,
+      "code": "credential-param",
+      "why": "query name key"
+    },
+    {
+      "url": "https://api.github-dummy.org/v1/items?api_key=abc",
+      "ok": false,
+      "code": "credential-param",
+      "why": "query name api_key"
+    },
+    {
+      "url": "https://api.github-dummy.org/v1/items?apikey=abc",
+      "ok": false,
+      "code": "credential-param",
+      "why": "query name apikey"
+    },
+    {
+      "url": "https://api.github-dummy.org/v1/items?secret=abc",
+      "ok": false,
+      "code": "credential-param",
+      "why": "query name secret"
+    },
+    {
+      "url": "https://api.github-dummy.org/v1/items?password=abc",
+      "ok": false,
+      "code": "credential-param",
+      "why": "query name password"
+    },
+    {
+      "url": "https://api.github-dummy.org/v1/items?passwd=abc",
+      "ok": false,
+      "code": "credential-param",
+      "why": "query name passwd"
+    },
+    {
+      "url": "https://api.github-dummy.org/v1/items?pwd=abc",
+      "ok": false,
+      "code": "credential-param",
+      "why": "query name pwd"
+    },
+    {
+      "url": "https://api.github-dummy.org/v1/items?session=abc",
+      "ok": false,
+      "code": "credential-param",
+      "why": "query name session"
+    },
+    {
+      "url": "https://api.github-dummy.org/v1/items?sessionid=abc",
+      "ok": false,
+      "code": "credential-param",
+      "why": "query name sessionid"
+    },
+    {
+      "url": "https://api.github-dummy.org/v1/items?sid=abc",
+      "ok": false,
+      "code": "credential-param",
+      "why": "query name sid"
+    },
+    {
+      "url": "https://api.github-dummy.org/v1/items?auth=abc",
+      "ok": false,
+      "code": "credential-param",
+      "why": "query name auth"
+    },
+    {
+      "url": "https://api.github-dummy.org/v1/items?code=abc",
+      "ok": false,
+      "code": "credential-param",
+      "why": "query name code"
+    },
+    {
+      "url": "https://api.github-dummy.org/v1/items?state=abc",
+      "ok": false,
+      "code": "credential-param",
+      "why": "query name state"
+    },
+    {
+      "url": "https://api.github-dummy.org/v1/items?signature=abc",
+      "ok": false,
+      "code": "credential-param",
+      "why": "query name signature"
+    },
+    {
+      "url": "https://api.github-dummy.org/v1/items?sig=abc",
+      "ok": false,
+      "code": "credential-param",
+      "why": "query name sig"
+    },
+    {
+      "url": "https://api.github-dummy.org/v1/items?jwt=abc",
+      "ok": false,
+      "code": "credential-param",
+      "why": "query name jwt"
+    },
+    {
+      "url": "https://api.github-dummy.org/v1/items?X-Amz-Signature=abc",
+      "ok": false,
+      "code": "credential-param",
+      "why": "S3 signature, mixed case"
+    },
+    {
+      "url": "https://api.github-dummy.org/v1/items?my_api_token=1",
+      "ok": false,
+      "code": "credential-param",
+      "why": "name with token as a word"
+    },
+    {
+      "url": "https://api.github-dummy.org/v1/items?client_id=1&redirect_uri=https://x.org",
+      "ok": false,
+      "code": "credential-param",
+      "why": "oauth authorize shape"
+    },
+    {
+      "url": "https://api.github-dummy.org/v1/items?keyword=gym",
+      "ok": true,
+      "why": "keyword is not key"
+    },
+    {
+      "url": "https://api.github-dummy.org/v1/items?tokens_per_page=10&statement=1",
+      "ok": true,
+      "why": "token as part of a longer word without separator"
+    },
+    {
+      "url": "https://www.github-dummy.org/search?q=sk-ant-api03-AAAABBBBCCCCDDDD",
+      "ok": false,
+      "code": "secret",
+      "why": "anthropic key in a value"
+    },
+    {
+      "url": "https://www.github-dummy.org/search?q=ghp_abcdefghijklmnopqrstuvwxyz0123",
+      "ok": false,
+      "code": "secret",
+      "why": "github token"
+    },
+    {
+      "url": "https://www.github-dummy.org/search?q=AKIAIOSFODNN7EXAMPLE",
+      "ok": false,
+      "code": "secret",
+      "why": "aws key id"
+    },
+    {
+      "url": "https://www.github-dummy.org/search?q=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.sig",
+      "ok": false,
+      "code": "secret",
+      "why": "a JWT"
+    },
+    {
+      "url": "https://www.github-dummy.org/r?v=a8F3kL9qZ2xW7pR4tY6uI0oP5sD1fG3hJ8kL2zX4",
+      "ok": false,
+      "code": "secret",
+      "why": "opaque value"
+    },
+    {
+      "url": "https://www.github-dummy.org/ghp_abcdefghijklmnopqrstuvwxyz0123/x",
+      "ok": false,
+      "code": "secret",
+      "why": "token in the path"
+    },
+    {
+      "url": "https://www.github-dummy.org/search?q=how+to+build+a+workout+tracker+in+react",
+      "ok": true,
+      "why": "prose query"
+    },
+    {
+      "url": "https://www.github-dummy.org/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "ok": true,
+      "why": "exactly 512 bytes"
+    },
+    {
+      "url": "https://www.github-dummy.org/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "ok": false,
+      "code": "length",
+      "why": "513 bytes"
+    },
+    {
+      "url": "https://www.github-dummy.org/s?q=word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+abc",
+      "ok": true,
+      "why": "query of exactly 200 bytes"
+    },
+    {
+      "url": "https://www.github-dummy.org/s?q=word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+word+abcd",
+      "ok": false,
+      "code": "length",
+      "why": "query of 201 bytes"
+    }
+  ]
 }

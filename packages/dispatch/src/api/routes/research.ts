@@ -47,7 +47,10 @@ export async function routeResearch(
       const actor = apiActor();
       // One run per plan session: an existing one is returned, never a second paid run.
       if (typeof body.plan_session_id === "string" && body.plan_session_id.trim()) {
-        const existing = wg.researchSvc.listRuns({ planSessionId: body.plan_session_id.trim(), includeDiscarded: true });
+        const existing = wg.researchSvc.listRuns({
+          planSessionId: body.plan_session_id.trim(),
+          includeDiscarded: true,
+        });
         if (existing.length > 0) {
           sendJson(res, 200, { research: reapStaleResearch(wg, existing[0]!), started: false });
           return true;
@@ -55,9 +58,13 @@ export async function routeResearch(
       }
       // A person's act, checked before anything else is asked or created.
       if (actor.type !== "human" && actor.type !== "admin") {
-        throw new DispatchError("ACTOR_NOT_PERMITTED", "Starting a research run is a person's act.", {
-          actor_type: actor.type,
-        });
+        throw new DispatchError(
+          "ACTOR_NOT_PERMITTED",
+          "Starting a research run is a person's act.",
+          {
+            actor_type: actor.type,
+          },
+        );
       }
       const why = await researchUnavailableReason(process.env);
       if (why !== null) {

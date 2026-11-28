@@ -249,9 +249,15 @@ function readRequest(argv) {
   }
   const idea = typeof req.idea === "string" ? req.idea.trim() : "";
   if (!idea) return fail("an idea is required", "input");
-  if ([...idea].length > IDEA_MAX) return fail(`the idea is longer than ${IDEA_MAX} characters`, "input");
+  if ([...idea].length > IDEA_MAX)
+    return fail(`the idea is longer than ${IDEA_MAX} characters`, "input");
   const out = { idea };
-  if (req.repo && typeof req.repo === "object" && typeof req.repo.name === "string" && req.repo.name.trim()) {
+  if (
+    req.repo &&
+    typeof req.repo === "object" &&
+    typeof req.repo.name === "string" &&
+    req.repo.name.trim()
+  ) {
     out.repo = { name: req.repo.name.trim().slice(0, 120) };
     if (typeof req.repo.overview === "string" && req.repo.overview.trim()) {
       out.repo.overview = req.repo.overview.trim().slice(0, OVERVIEW_MAX);
@@ -271,7 +277,7 @@ function main() {
   const home = join(run, "home");
   const state = join(home, ".research-state");
   let res;
-  let log = { fetches: [], fetched: [], searches: [] };
+  let log;
   const t0 = Date.now();
   try {
     mkdirSync(home, { recursive: true });
@@ -302,20 +308,36 @@ function main() {
   }
 
   if (res.budgetRefused) return fail(res.stderr || "refused by the budget admission", "budget", 3);
-  if (res.usagePaused) return fail(String(res.error?.message ?? "the factory is paused"), "paused", 75);
+  if (res.usagePaused)
+    return fail(String(res.error?.message ?? "the factory is paused"), "paused", 75);
   if (res.status === 75 && !res.stdout) {
-    return fail(String(res.error?.message ?? "refused: no OS sandbox for the research agent"), "sandbox", 75);
+    return fail(
+      String(res.error?.message ?? "refused: no OS sandbox for the research agent"),
+      "sandbox",
+      75,
+    );
   }
   if (res.error) {
     if (res.error.code === "ETIMEDOUT") {
-      recordKilledCall({ kind: "research", reason: "research call timed out", elapsedMs: Date.now() - t0 });
-      return fail(`the research run timed out after ${Math.round(RESEARCH_TIMEOUT_MS_EFFECTIVE() / 1000)} s`, "timeout");
+      recordKilledCall({
+        kind: "research",
+        reason: "research call timed out",
+        elapsedMs: Date.now() - t0,
+      });
+      return fail(
+        `the research run timed out after ${Math.round(RESEARCH_TIMEOUT_MS_EFFECTIVE() / 1000)} s`,
+        "timeout",
+      );
     }
     return fail(`the research run failed to start: ${res.error.message ?? res.error}`, "spawn");
   }
   const json = parseClaudeJson(res.stdout || "");
   if (json === null) {
-    recordKilledCall({ kind: "research", reason: "no parseable --output-format json on stdout", elapsedMs: Date.now() - t0 });
+    recordKilledCall({
+      kind: "research",
+      reason: "no parseable --output-format json on stdout",
+      elapsedMs: Date.now() - t0,
+    });
     return fail("the research run returned no readable result", "result");
   }
   appendUsageRecord(successfulCallRecord({ json, kind: "research" }));
@@ -338,9 +360,7 @@ function main() {
 // A test may shorten the timeout (never lengthen it).
 function RESEARCH_TIMEOUT_MS_EFFECTIVE() {
   const t = parseInt(process.env.GAFFER_RESEARCH_TIMEOUT_MS_TEST_ONLY ?? "", 10);
-  return Number.isFinite(t) && t > 0 && t < RESEARCH_TIMEOUT_MS
-    ? t
-    : RESEARCH_TIMEOUT_MS;
+  return Number.isFinite(t) && t > 0 && t < RESEARCH_TIMEOUT_MS ? t : RESEARCH_TIMEOUT_MS;
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) main();

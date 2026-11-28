@@ -274,10 +274,16 @@ export function validateResearchSettings(text, runnerDir) {
     return { ok: false, why: 'the research settings must set "disableAllHooks": false' };
   }
   if ("allowManagedHooksOnly" in parsed && parsed.allowManagedHooksOnly !== false) {
-    return { ok: false, why: 'the research settings set "allowManagedHooksOnly", which drops the hook' };
+    return {
+      ok: false,
+      why: 'the research settings set "allowManagedHooksOnly", which drops the hook',
+    };
   }
   if (parsed.enableAllProjectMcpServers === true || "enabledMcpjsonServers" in parsed) {
-    return { ok: false, why: "the research settings enable MCP servers; the research agent has none" };
+    return {
+      ok: false,
+      why: "the research settings enable MCP servers; the research agent has none",
+    };
   }
   const pre = parsed.hooks?.PreToolUse;
   if (!Array.isArray(pre) || pre.length === 0) {
@@ -287,7 +293,10 @@ export function validateResearchSettings(text, runnerDir) {
   for (const m of allEntries) {
     for (const h of Array.isArray(m?.hooks) ? m.hooks : []) {
       if (h && typeof h.command === "string" && h.command.includes(generalHook)) {
-        return { ok: false, why: "the research settings run the general safety hook; they must run only the research hook" };
+        return {
+          ok: false,
+          why: "the research settings run the general safety hook; they must run only the research hook",
+        };
       }
     }
   }
@@ -298,14 +307,23 @@ export function validateResearchSettings(text, runnerDir) {
     }
     for (const h of m.hooks) {
       if (!h || h.type !== "command" || typeof h.command !== "string") {
-        return { ok: false, why: "a PreToolUse hook of the research settings is not a command hook" };
+        return {
+          ok: false,
+          why: "a PreToolUse hook of the research settings is not a command hook",
+        };
       }
       const problem = hookCommandProblem(h, hookPath);
       if (problem) {
-        return { ok: false, why: `a PreToolUse hook of the research settings does not run the research hook: ${problem}` };
+        return {
+          ok: false,
+          why: `a PreToolUse hook of the research settings does not run the research hook: ${problem}`,
+        };
       }
       if (h.onFailure !== "block" || !(typeof h.timeout === "number" && h.timeout > 0)) {
-        return { ok: false, why: 'the research hook entry lacks "onFailure": "block" and a timeout' };
+        return {
+          ok: false,
+          why: 'the research hook entry lacks "onFailure": "block" and a timeout',
+        };
       }
     }
     if (m.matcher === undefined || m.matcher === null || m.matcher === "" || m.matcher === "*") {
@@ -313,12 +331,18 @@ export function validateResearchSettings(text, runnerDir) {
     }
   }
   if (!matchAll) {
-    return { ok: false, why: "no PreToolUse entry of the research settings matches every tool (*)" };
+    return {
+      ok: false,
+      why: "no PreToolUse entry of the research settings matches every tool (*)",
+    };
   }
   const allow = parsed.permissions?.allow ?? [];
   const deny = parsed.permissions?.deny ?? [];
   if (!Array.isArray(allow) || allow.some((t) => !RESEARCH_ALLOWED_TOOLS.includes(t))) {
-    return { ok: false, why: `the research settings allow a tool other than ${RESEARCH_ALLOWED_TOOLS.join(" and ")}` };
+    return {
+      ok: false,
+      why: `the research settings allow a tool other than ${RESEARCH_ALLOWED_TOOLS.join(" and ")}`,
+    };
   }
   const missing = RESEARCH_REQUIRED_DENY.filter((t) => !Array.isArray(deny) || !deny.includes(t));
   if (missing.length) {

@@ -255,8 +255,9 @@ export const REBINDING_SUFFIXES = Object.freeze([
 
 const FILE_EXTENSION = /\.(?:php[0-9]?|html?|aspx?|jspx?|cgi|do|action|pl|cfm)$/;
 // Whitespace, C0/C1 controls, DEL, the bidi overrides and isolates, zero-width marks.
-// eslint-disable-next-line no-control-regex
-const FORBIDDEN_CHARS = /[\s\u0000-\u001f\u007f-\u009f​-‏‪-‮⁠-⁤⁦-⁩﻿\\]/u;
+const FORBIDDEN_CHARS =
+  // eslint-disable-next-line no-control-regex
+  /[\s\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\\]/u;
 
 /** Known credential shapes, anywhere. */
 const SECRET_PREFIXES = [
@@ -353,7 +354,10 @@ export function hostRefusal(host) {
   }
   for (const suffix of REBINDING_SUFFIXES) {
     if (underSuffix(host, suffix)) {
-      return refuse("rebinding", `"${host}" is a wildcard DNS service that answers with any address`);
+      return refuse(
+        "rebinding",
+        `"${host}" is a wildcard DNS service that answers with any address`,
+      );
     }
   }
   // An address written into a name (`10.0.0.1.example.org`, `127-0-0-1.example.org`).
@@ -459,7 +463,10 @@ export function checkResearchUrl(raw) {
         n,
       )
     ) {
-      return refuse("credential-param", `the query parameter "${n.slice(0, 40)}" carries a credential`);
+      return refuse(
+        "credential-param",
+        `the query parameter "${n.slice(0, 40)}" carries a credential`,
+      );
     }
     if (secretLike(value) || secretLike(name)) {
       return refuse("secret", "a query value looks like a secret");
@@ -483,12 +490,22 @@ export function checkResearchSearch(input) {
     return refuse("input", "the search query is missing");
   }
   if ([...q].length > SEARCH_QUERY_MAX) {
-    return refuse("length", `the search query is ${[...q].length} characters; the cap is ${SEARCH_QUERY_MAX}`);
+    return refuse(
+      "length",
+      `the search query is ${[...q].length} characters; the cap is ${SEARCH_QUERY_MAX}`,
+    );
   }
   // A query is prose: spaces are fine, controls and bidi overrides are not.
-  // eslint-disable-next-line no-control-regex
-  if (/[\u0000-\u001f\u007f-\u009f​-‏‪-‮⁠-⁤⁦-⁩﻿]/u.test(q)) {
-    return refuse("input", "the search query holds a control, bidirectional or zero-width character");
+  if (
+    // eslint-disable-next-line no-control-regex
+    /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/u.test(
+      q,
+    )
+  ) {
+    return refuse(
+      "input",
+      "the search query holds a control, bidirectional or zero-width character",
+    );
   }
   if (secretLike(q)) return refuse("secret", "the search query looks like it carries a secret");
   for (const key of ["allowed_domains", "blocked_domains"]) {
@@ -496,7 +513,10 @@ export function checkResearchSearch(input) {
     if (list === undefined || list === null) continue;
     if (!Array.isArray(list)) return refuse("input", `${key} is not a list`);
     if (list.length > SEARCH_DOMAINS_MAX) {
-      return refuse("length", `${key} names ${list.length} domains; the cap is ${SEARCH_DOMAINS_MAX}`);
+      return refuse(
+        "length",
+        `${key} names ${list.length} domains; the cap is ${SEARCH_DOMAINS_MAX}`,
+      );
     }
     for (const d of list) {
       if (typeof d !== "string" || !/^[a-z0-9.-]+$/.test(d)) {
@@ -543,13 +563,16 @@ function v4Private(ip) {
   return V4_BLOCKS.some(([base, bits]) => {
     const b = v4ToInt(base);
     const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
-    return ((n & mask) >>> 0) === ((b & mask) >>> 0);
+    return (n & mask) >>> 0 === (b & mask) >>> 0;
   });
 }
 
 /** Expand an IPv6 text to its eight 16-bit groups, or null. */
 function v6Groups(ip) {
-  let s = ip.toLowerCase().replace(/^\[|\]$/g, "").replace(/%.*$/, "");
+  let s = ip
+    .toLowerCase()
+    .replace(/^\[|\]$/g, "")
+    .replace(/%.*$/, "");
   let tail = [];
   const v4 = s.match(/(\d+\.\d+\.\d+\.\d+)$/);
   if (v4) {

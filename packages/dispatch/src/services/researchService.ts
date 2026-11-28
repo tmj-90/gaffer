@@ -63,8 +63,9 @@ export const RESEARCH_CAPS = {
 /** The longest clause text a drafted spec gets (title, a colon and the description). */
 export const RESEARCH_CLAUSE_MAX = 600;
 
-// eslint-disable-next-line no-control-regex
-const STRIP = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f​-‏‪-‮⁠-⁤⁦-⁩﻿]/gu;
+const STRIP =
+  // eslint-disable-next-line no-control-regex
+  /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/gu;
 /** Remove control, bidi and zero-width characters; fold line breaks to spaces. */
 export function cleanResearchText(v: unknown): string {
   return String(v ?? "")
@@ -79,7 +80,11 @@ const text = (max: number) =>
     .transform(cleanResearchText)
     .refine((s) => [...s].length <= max, { message: `at most ${max} characters` });
 
-const sourceIn = z.object({ url: z.string().max(600), host: z.string().optional(), fetched: z.boolean().optional() });
+const sourceIn = z.object({
+  url: z.string().max(600),
+  host: z.string().optional(),
+  fetched: z.boolean().optional(),
+});
 const launcherResult = z.object({
   summary: text(RESEARCH_CAPS.summary).default(""),
   findings: z
@@ -127,7 +132,9 @@ const launcherResult = z.object({
 });
 const launcherLog = z.object({
   fetches: z
-    .array(z.object({ url: z.string().max(600), host: z.string().max(260), ts: z.string().max(40) }))
+    .array(
+      z.object({ url: z.string().max(600), host: z.string().max(260), ts: z.string().max(40) }),
+    )
     .max(RESEARCH_CAPS.log)
     .default([]),
   searches: z
@@ -157,7 +164,9 @@ export const editResearchInput = z
       .array(
         z.object({
           id: z.string().max(20).optional(),
-          title: text(RESEARCH_CAPS.title).refine((s) => s.length > 0, { message: "a feature needs a title" }),
+          title: text(RESEARCH_CAPS.title).refine((s) => s.length > 0, {
+            message: "a feature needs a title",
+          }),
           description: text(RESEARCH_CAPS.description).default(""),
           priority: z.enum(RESEARCH_PRIORITIES),
           kept: z.boolean(),
@@ -219,7 +228,10 @@ export interface ResearchRun {
   readonly features: readonly ResearchFeature[];
   readonly open_questions: readonly ResearchQuestion[];
   readonly risks: ReadonlyArray<{ id: string; text: string }>;
-  readonly log: { fetches: ReadonlyArray<{ url: string; host: string; ts: string }>; searches: ReadonlyArray<{ query: string; ts: string }> };
+  readonly log: {
+    fetches: ReadonlyArray<{ url: string; host: string; ts: string }>;
+    searches: ReadonlyArray<{ query: string; ts: string }>;
+  };
   readonly dropped_urls: number;
   readonly spec_id: string | null;
   readonly created_by: string | null;
@@ -270,17 +282,25 @@ function checkedSource(url: string, fetched: ReadonlySet<string>): ResearchSourc
 function withMarks(row: Row): ResearchRun {
   const log = parseJson<ResearchRun["log"]>(row.log_json, { fetches: [], searches: [] });
   const fetched = new Set((log.fetches ?? []).map((f) => f.url));
-  const findings = parseJson<Array<{ id: string; claim: string; why: string; sources: Array<{ url: string }> }>>(
-    row.findings_json,
-    [],
-  ).map((f) => {
+  const findings = parseJson<
+    Array<{ id: string; claim: string; why: string; sources: Array<{ url: string }> }>
+  >(row.findings_json, []).map((f) => {
     const sources = (f.sources ?? [])
       .map((s) => checkedSource(String(s?.url ?? ""), fetched))
       .filter((s): s is ResearchSource => s !== null);
-    return { id: f.id, claim: f.claim, why: f.why ?? "", sources, opinion: !sources.some((s) => s.fetched) };
+    return {
+      id: f.id,
+      claim: f.claim,
+      why: f.why ?? "",
+      sources,
+      opinion: !sources.some((s) => s.fetched),
+    };
   });
   const byId = new Map(findings.map((f) => [f.id, f]));
-  const features = parseJson<Array<Omit<ResearchFeature, "unsupported">>>(row.features_json, []).map((f) => ({
+  const features = parseJson<Array<Omit<ResearchFeature, "unsupported">>>(
+    row.features_json,
+    [],
+  ).map((f) => ({
     ...f,
     backed_by: (f.backed_by ?? []).filter((b) => byId.has(b)),
     unsupported: !(f.backed_by ?? []).some((b) => byId.get(b) && !byId.get(b)!.opinion),
@@ -345,7 +365,8 @@ export class ResearchService {
   }
 
   private row(id: string): Row {
-    const r = this.db.prepare("SELECT * FROM research_runs WHERE id = ?").get(id) as Row | undefined;
+    const r = this.db.prepare("SELECT * FROM research_runs WHERE id = ?").get(id) as
+      Row | undefined;
     if (!r) throw notFound("research", id);
     return r;
   }
@@ -360,7 +381,9 @@ export class ResearchService {
     const rows = (
       opts.planSessionId !== undefined
         ? this.db
-            .prepare("SELECT * FROM research_runs WHERE plan_session_id = ? ORDER BY created_at DESC")
+            .prepare(
+              "SELECT * FROM research_runs WHERE plan_session_id = ? ORDER BY created_at DESC",
+            )
             .all(opts.planSessionId)
         : this.db.prepare("SELECT * FROM research_runs ORDER BY created_at DESC LIMIT 200").all()
     ) as Row[];
@@ -421,7 +444,10 @@ export class ResearchService {
     const o = (output ?? {}) as { result?: unknown; log?: unknown };
     const parsed = launcherResult.safeParse(o.result);
     if (!parsed.success) {
-      return this.failRun(id, `the research result did not match the stored schema: ${parsed.error.issues[0]?.message ?? "invalid"}`);
+      return this.failRun(
+        id,
+        `the research result did not match the stored schema: ${parsed.error.issues[0]?.message ?? "invalid"}`,
+      );
     }
     const logParsed = launcherLog.safeParse(o.log ?? {});
     const log = logParsed.success ? logParsed.data : { fetches: [], searches: [] };
@@ -466,10 +492,14 @@ export class ResearchService {
     return inTransaction(this.db, () => {
       const row = this.row(id);
       if (row.status !== "running") {
-        throw new DispatchError("STATE_CONFLICT", `research ${id} is '${row.status}', not running`, {
-          research_id: id,
-          status: row.status,
-        });
+        throw new DispatchError(
+          "STATE_CONFLICT",
+          `research ${id} is '${row.status}', not running`,
+          {
+            research_id: id,
+            status: row.status,
+          },
+        );
       }
       const now = this.clock.now();
       this.db
@@ -513,7 +543,8 @@ export class ResearchService {
       const row = this.row(id);
       if (row.status !== "running") return withMarks(row);
       const now = this.clock.now();
-      const msg = cleanResearchText(error).slice(0, RESEARCH_CAPS.error) || "the research run failed";
+      const msg =
+        cleanResearchText(error).slice(0, RESEARCH_CAPS.error) || "the research run failed";
       this.db
         .prepare(
           "UPDATE research_runs SET status = 'failed', error = ?, updated_at = ?, finished_at = ? WHERE id = ?",
@@ -551,7 +582,13 @@ export class ResearchService {
           const known = f.id !== undefined ? byId.get(f.id) : undefined;
           if (known && !used.has(known.id)) {
             used.add(known.id);
-            return { ...known, title: f.title, description: f.description, priority: f.priority, kept: f.kept };
+            return {
+              ...known,
+              title: f.title,
+              description: f.description,
+              priority: f.priority,
+              kept: f.kept,
+            };
           }
           let pid = `p${(n += 1)}`;
           while (byId.has(pid) || used.has(pid)) pid = `p${(n += 1)}`;
@@ -570,10 +607,14 @@ export class ResearchService {
       let questions = parseJson<ResearchQuestion[]>(row.questions_json, []);
       if (input.open_questions !== undefined) {
         const keep = new Map(input.open_questions.map((q) => [q.id, q.kept]));
-        questions = questions.map((q) => (keep.has(q.id) ? { ...q, kept: keep.get(q.id) === true } : q));
+        questions = questions.map((q) =>
+          keep.has(q.id) ? { ...q, kept: keep.get(q.id) === true } : q,
+        );
       }
       this.db
-        .prepare("UPDATE research_runs SET features_json = ?, questions_json = ?, updated_at = ? WHERE id = ?")
+        .prepare(
+          "UPDATE research_runs SET features_json = ?, questions_json = ?, updated_at = ? WHERE id = ?",
+        )
         .run(JSON.stringify(features), JSON.stringify(questions), this.clock.now(), id);
       writeEvent(this.db, {
         entity_type: "research",
@@ -599,7 +640,13 @@ export class ResearchService {
       this.db
         .prepare("UPDATE research_runs SET status = 'discarded', updated_at = ? WHERE id = ?")
         .run(this.clock.now(), id);
-      writeEvent(this.db, { entity_type: "research", entity_id: id, actor, event_type: "research.discarded", payload: {} });
+      writeEvent(this.db, {
+        entity_type: "research",
+        entity_id: id,
+        actor,
+        event_type: "research.discarded",
+        payload: {},
+      });
       return this.getRun(id);
     });
   }
@@ -619,25 +666,50 @@ export class ResearchService {
     assertPerson(actor, "Drafting a spec from research");
     const run = this.getRun(id);
     this.assertEditable(this.row(id));
-    const clause = (base: string, kind: "requirement" | "non-goal" | "decision", body: string, why: string) => ({
+    const clause = (
+      base: string,
+      kind: "requirement" | "non-goal" | "decision",
+      body: string,
+      why: string,
+    ) => ({
       clause_id: `research-${base}`,
       kind,
       text: [...body].slice(0, RESEARCH_CLAUSE_MAX).join(""),
       rationale: why,
     });
-    const featureText = (f: ResearchFeature) => (f.description ? `${f.title}: ${f.description}` : f.title);
+    const featureText = (f: ResearchFeature) =>
+      f.description ? `${f.title}: ${f.description}` : f.title;
     const clauses = [
       ...run.features
         .filter((f) => f.kept && (f.priority === "must" || f.priority === "should"))
         .map((f) =>
-          clause(f.id, "requirement", featureText(f), `From research ${run.id}, feature ${f.id} (${f.priority}${f.origin === "person" ? ", added by a person" : ""}).`),
+          clause(
+            f.id,
+            "requirement",
+            featureText(f),
+            `From research ${run.id}, feature ${f.id} (${f.priority}${f.origin === "person" ? ", added by a person" : ""}).`,
+          ),
         ),
       ...run.features
         .filter((f) => f.kept && f.priority === "wont")
-        .map((f) => clause(f.id, "non-goal", featureText(f), `From research ${run.id}, feature ${f.id} (wont).`)),
+        .map((f) =>
+          clause(
+            f.id,
+            "non-goal",
+            featureText(f),
+            `From research ${run.id}, feature ${f.id} (wont).`,
+          ),
+        ),
       ...run.open_questions
         .filter((q) => q.kept)
-        .map((q) => clause(q.id, "decision", `To decide: ${q.text}`, `From research ${run.id}, open question ${q.id}.`)),
+        .map((q) =>
+          clause(
+            q.id,
+            "decision",
+            `To decide: ${q.text}`,
+            `From research ${run.id}, open question ${q.id}.`,
+          ),
+        ),
     ];
     if (clauses.length === 0) {
       throw new DispatchError(
@@ -668,10 +740,14 @@ export class ResearchService {
 
   private assertEditable(row: Row): void {
     if (row.status !== "ready") {
-      throw new DispatchError("STATE_CONFLICT", `research ${row.id} is '${row.status}': only a finished run can be edited or drafted from`, {
-        research_id: row.id,
-        status: row.status,
-      });
+      throw new DispatchError(
+        "STATE_CONFLICT",
+        `research ${row.id} is '${row.status}': only a finished run can be edited or drafted from`,
+        {
+          research_id: row.id,
+          status: row.status,
+        },
+      );
     }
     if (row.spec_id) {
       throw new DispatchError(

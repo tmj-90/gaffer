@@ -55,7 +55,9 @@ function childEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
  * admission rule every paid launch passes) and a usable OS sandbox (research never runs
  * unwrapped, the opt-out included).
  */
-export async function researchUnavailableReason(env: NodeJS.ProcessEnv = process.env): Promise<string | null> {
+export async function researchUnavailableReason(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<string | null> {
   const cap = await spendCapRefusalAsync(env);
   if (cap !== null) return `Research is a paid run and needs a dollar cap first. ${cap}`;
   const iso = lastIsolationStatus();
@@ -81,7 +83,12 @@ export function launchResearch(
   const payload = JSON.stringify({
     idea: run.idea,
     ...(run.repo
-      ? { repo: { name: run.repo, ...(run.share_overview && opts.overview ? { overview: opts.overview } : {}) } }
+      ? {
+          repo: {
+            name: run.repo,
+            ...(run.share_overview && opts.overview ? { overview: opts.overview } : {}),
+          },
+        }
       : {}),
   });
   live.add(run.id);
@@ -101,9 +108,17 @@ export function launchResearch(
     };
     let child;
     try {
-      child = spawn(process.execPath, [bin], { stdio: ["pipe", "pipe", "pipe"], env: childEnv(env) });
+      child = spawn(process.execPath, [bin], {
+        stdio: ["pipe", "pipe", "pipe"],
+        env: childEnv(env),
+      });
     } catch (e) {
-      finish(() => wg.researchSvc.failRun(run.id, `could not start the research launcher: ${e instanceof Error ? e.message : String(e)}`));
+      finish(() =>
+        wg.researchSvc.failRun(
+          run.id,
+          `could not start the research launcher: ${e instanceof Error ? e.message : String(e)}`,
+        ),
+      );
       return;
     }
     const chunks: Buffer[] = [];
@@ -127,7 +142,9 @@ export function launchResearch(
     });
     child.on("error", (e) => {
       clearTimeout(timer);
-      finish(() => wg.researchSvc.failRun(run.id, `the research launcher failed to run: ${e.message}`));
+      finish(() =>
+        wg.researchSvc.failRun(run.id, `the research launcher failed to run: ${e.message}`),
+      );
     });
     child.on("close", () => {
       clearTimeout(timer);
@@ -136,7 +153,9 @@ export function launchResearch(
       if (obj !== null && obj.phase === "research") {
         finish(() => wg.researchSvc.completeRun(run.id, obj));
       } else if (obj !== null && obj.phase === "error") {
-        finish(() => wg.researchSvc.failRun(run.id, String(obj.error ?? "the research run failed")));
+        finish(() =>
+          wg.researchSvc.failRun(run.id, String(obj.error ?? "the research run failed")),
+        );
       } else {
         finish(() =>
           wg.researchSvc.failRun(
@@ -170,7 +189,10 @@ export function parseLastLine(text: string): { phase?: unknown; error?: unknown 
 export function reapStaleResearch(wg: Dispatch, run: ResearchRun, now = Date.now()): ResearchRun {
   if (run.status !== "running" || live.has(run.id)) return run;
   if (now - Date.parse(run.created_at) < RESEARCH_STALE_MS) return run;
-  return wg.researchSvc.failRun(run.id, "the research run was interrupted (its launcher is gone); start a new one");
+  return wg.researchSvc.failRun(
+    run.id,
+    "the research run was interrupted (its launcher is gone); start a new one",
+  );
 }
 
 /** For tests: is a launcher for this run alive in this process? */

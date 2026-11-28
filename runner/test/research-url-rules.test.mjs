@@ -106,7 +106,10 @@ const searchCases = [
 ];
 for (const [input, want, why] of searchCases) {
   const r = checkResearchSearch(input);
-  assert(`WebSearch ${why}: want ${want ? "ok" : "refused"}, got ${r.ok ? "ok" : r.code}`, r.ok === want);
+  assert(
+    `WebSearch ${why}: want ${want ? "ok" : "refused"}, got ${r.ok ? "ok" : r.code}`,
+    r.ok === want,
+  );
 }
 
 // --- addresses (the resolution check) -----------------------------------------
@@ -139,14 +142,31 @@ const nonPublic = [
   "",
 ];
 for (const ip of nonPublic) assert(`${ip || "(empty)"} is not public`, isNonPublicAddress(ip));
-for (const ip of ["8.8.8.8", "140.82.112.3", "172.32.0.1", "100.128.0.1", "2606:4700::1111", "2a00:1450:4001::200e", "::ffff:8.8.8.8"]) {
+for (const ip of [
+  "8.8.8.8",
+  "140.82.112.3",
+  "172.32.0.1",
+  "100.128.0.1",
+  "2606:4700::1111",
+  "2a00:1450:4001::200e",
+  "::ffff:8.8.8.8",
+]) {
   assert(`${ip} is public`, !isNonPublicAddress(ip));
 }
 
 // --- the secret shapes ---------------------------------------------------------
-assert("a commit id alone is not a query secret false positive in a path", checkResearchUrl("https://github.com/a/b/commit/" + "ab12".repeat(10)).ok);
-assert("a long slug of words is not secret-like", !secretLike("how-to-build-a-workout-tracker-in-react-and-node-2024"));
-assert("an opaque mixed run is secret-like", secretLike("a8F3kL9qZ2xW7pR4tY6uI0oP5sD1fG3hJ8kL2zX4"));
+assert(
+  "a commit id alone is not a query secret false positive in a path",
+  checkResearchUrl("https://github.com/a/b/commit/" + "ab12".repeat(10)).ok,
+);
+assert(
+  "a long slug of words is not secret-like",
+  !secretLike("how-to-build-a-workout-tracker-in-react-and-node-2024"),
+);
+assert(
+  "an opaque mixed run is secret-like",
+  secretLike("a8F3kL9qZ2xW7pR4tY6uI0oP5sD1fG3hJ8kL2zX4"),
+);
 
 if (failures.length) {
   for (const f of failures) console.log(`FAIL ${f}`);

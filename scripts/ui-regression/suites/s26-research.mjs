@@ -191,11 +191,9 @@ export default async function s26(t, L) {
     await pg.goto(`${L.BASE}/?token=${L.TOKEN}#/create`, { waitUntil: "load" });
     await pg.waitForSelector(`${PANEL} .rs-feature`, { timeout: 20000 });
     // The docs picture shows an ordinary result: the hostile finding is checked above.
-    await pg.evaluate((sel) => {
-      for (const li of document.querySelectorAll(`${sel} .rs-finding`)) {
-        if (li.textContent.includes("hostile-research.dev")) li.remove();
-      }
-    }, PANEL);
+    await pg.locator(`${PANEL} .rs-finding`).evaluateAll((items) => {
+      for (const li of items) if (li.textContent.includes("hostile-research.dev")) li.remove();
+    });
     await pg
       .locator(`${PANEL} .rs-card`)
       .screenshot({ path: path.join(L.OUT, "research-card-2x.png") });

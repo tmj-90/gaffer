@@ -392,6 +392,7 @@ describe("dispatch state export", () => {
     expect(INTENTIONALLY_EXCLUDED.sort()).toEqual([
       "api_principals",
       "gate_seals",
+      "research_runs",
       "row_seals",
       "runs",
       "schema_meta",

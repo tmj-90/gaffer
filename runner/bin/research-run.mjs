@@ -338,7 +338,7 @@ function main() {
 // A test may shorten the timeout (never lengthen it).
 function RESEARCH_TIMEOUT_MS_EFFECTIVE() {
   const t = parseInt(process.env.GAFFER_RESEARCH_TIMEOUT_MS_TEST_ONLY ?? "", 10);
-  return process.env.GAFFER_TEST_SEAM === "1" && Number.isFinite(t) && t > 0 && t < RESEARCH_TIMEOUT_MS
+  return Number.isFinite(t) && t > 0 && t < RESEARCH_TIMEOUT_MS
     ? t
     : RESEARCH_TIMEOUT_MS;
 }

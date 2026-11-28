@@ -2060,6 +2060,75 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     responses: [ok("`SpecCoverage`."), notFound],
   },
 
+  {
+    method: "GET",
+    path: "/research",
+    tag: T.epics,
+    summary: "List research runs",
+    description:
+      "Research runs in front of the spec step (backlog 69), newest first; `?plan_session=<id>` gives that Plan a build session's run. A scoped principal is refused (a factory-wide read).",
+    capability: "read",
+    responses: [ok("`{ research: ResearchRun[] }`; every fetched / opinion / unsupported mark is computed from the run's log.")],
+  },
+  {
+    method: "GET",
+    path: "/research/availability",
+    tag: T.epics,
+    summary: "Can a research run start here now",
+    description:
+      "`{ available, reason }`: a research run is a paid launch (needs a dollar cap) that runs only inside an OS sandbox. The dashboard's checkbox reads it.",
+    capability: "read",
+    responses: [ok("`{ available: boolean, reason: string | null }`.")],
+  },
+  {
+    method: "POST",
+    path: "/research",
+    tag: T.epics,
+    summary: "Start a research run (a person's act)",
+    description:
+      "Stores the run `running` and starts the web-only research agent in the background; poll `GET /research/:id`. With a `plan_session_id` that already has a run, that run is returned (`200`, `started: false`): never a second paid run. Refused (409) without a dollar cap or a usable sandbox, to agents and the system, to read tokens and to scoped principals.",
+    capability: "full",
+    body: "startResearchBody",
+    responses: [accepted("`{ research: ResearchRun, started: true }`."), ok("`{ research, started: false }` (the session's run)."), conflict, invalid, forbidden],
+  },
+  {
+    method: "GET",
+    path: "/research/:id",
+    tag: T.epics,
+    summary: "Research run detail",
+    capability: "read",
+    responses: [ok("`{ research: ResearchRun }`."), notFound],
+  },
+  {
+    method: "PATCH",
+    path: "/research/:id",
+    tag: T.epics,
+    summary: "Edit a research run's features and open questions (a person's act)",
+    description:
+      "The whole feature list (keep or drop, reword, re-rank, a feature with no known id is the person's own) and/or which open questions are kept. Only a finished run with no spec drafted from it.",
+    capability: "full",
+    body: "editResearchBody",
+    responses: [ok("`{ research: ResearchRun }`."), notFound, conflict, invalid, forbidden],
+  },
+  {
+    method: "POST",
+    path: "/research/:id/draft-spec",
+    tag: T.epics,
+    summary: "Draft a spec from what was kept (a person's act; no model call)",
+    description:
+      "Kept must and should features become requirement clauses, a kept wont a non-goal, a kept open question a decision; each clause id names its research item. Findings and sources are never carried. The spec is a draft: edit and freeze it as any other.",
+    capability: "full",
+    responses: [created("`{ spec: Spec, research: ResearchRun }`; Location is the spec."), notFound, conflict, forbidden],
+  },
+  {
+    method: "POST",
+    path: "/research/:id/discard",
+    tag: T.epics,
+    summary: "Discard a research run (a person's act)",
+    capability: "full",
+    responses: [ok("`{ research: ResearchRun }`."), notFound, forbidden],
+  },
+
   // --- agents / repositories / repos ----------------------------------------------------------------
   {
     method: "GET",

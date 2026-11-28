@@ -316,6 +316,40 @@ const run = (raw, state, opts = {}) =>
   }
 }
 
+// --- an agent's shell cannot write research (protection I) -----------------------------------
+{
+  const env = { ...process.env, GAFFER_WRITE_ROOTS: scratch };
+  const bash = (command) => decide({ tool_name: "Bash", tool_input: { command } }, { env, cwd: scratch });
+  for (const cmd of [
+    "wg research create --idea 'a tracker'",
+    "dispatch research feature 1a2b ft1 --keep",
+    "wg research feature-add 1a2b --title x --priority must",
+    "wg research question 1a2b q1 --drop",
+    "wg research draft-spec 1a2b",
+    "wg research discard 1a2b",
+    "w\\g research draft-spec 1a2b",
+    "X=wg; $X research draft-spec 1a2b",
+    "bash -c 'wg research create --idea x'",
+    "$CLI research create --idea x",
+    "runner/gaffer research 'an idea'",
+    "gaffer research --discard",
+    "bash runner/gaffer research 'an idea'",
+    "node runner/bin/research-run.mjs --input x.json",
+    "node ./bin/research-run.mjs",
+  ]) {
+    const v = bash(cmd);
+    assert(`an agent shell is refused: ${cmd}`, v.allow === false);
+  }
+  for (const cmd of [
+    'grep -rn "research draft-spec" docs/',
+    "git commit -m 'research: draft-spec from kept items'",
+    "echo research create",
+  ]) {
+    const v = bash(cmd);
+    assert(`a mention stays allowed: ${cmd} (${v.reason})`, v.allow === true);
+  }
+}
+
 // --- the process wrapper -----------------------------------------------------------------------
 {
   const s = freshState();

@@ -123,6 +123,8 @@ const CP_PAIRS = [
   // A matched experiment (`gaffer eval experiment`, routing gap 4): a person starts one;
   // its live mode spends the factory's budget. `eval replay` and `eval agreement` are reads.
   ["eval", /^experiment$/],
+  // A research run's writes (backlog 69): a person starts, edits and drafts from one.
+  ["research", /^(?:create|feature|feature-add|question|draft-spec|discard)$/],
 ];
 function cpVerbNear(words) {
   // words: everything after the program word; the verb sits within the first three.

@@ -493,11 +493,15 @@ export const DANGEROUS_COMMANDS = [
     // `ticket hold`, `block` / `unblock` and the hand claim (`human-claim`,
     // `human-release`): a person's or the runner's acts, never an agent shell's. And the
     // person's credential itself handed to any program (`GAFFER_PRINCIPAL_TOKEN=`).
+    // And a research run's writes (backlog 69: `research create|feature|feature-add|
+    // question|draft-spec|discard`): starting a paid web research run, editing what a
+    // person keeps from it and drafting a spec from it are a person's acts; an agent reads
+    // research (`research list|get`) and never writes it.
     // `block` / `unblock` count only in the verb position (the program word, then its
     // root options): the words are too common to match anywhere after `dispatch` (a
     // Redux or WordPress `dispatch( 'core/block-editor' )` search, `dispatch.js --mode
     // block`); the normalised views put a quoted, escaped or wrapped CLI in that shape.
-    re: /\b(wg|dispatch|fg|crew)\b[^\n|;&]*\b(review|regression-of|acceptance-profile|acceptance-evidence|approve|approve-ready|mark-merged|record-landing|landing-begin|record-tester-replay|ci-result|eval-score|lane-verdict|scout-record|tester-route|attach-evidence|reject|repo-access|set-testable|allow-test-changes|set-commands|test-contract|tester-pass|tester-fail|repo-delivery|require-cap|set-reviewer|decisions[ \t]+resolve|finding[ \t]+(?:add|withdraw|lesson|fix-ticket)|agent[ \t]+rename|club[ \t]+set|wont-do|principal[ \t]+(?:create|revoke|resign)|autonomy[ \t]+(?:lift|resign|risk-resign)|as-principal|reopen-for-review|ticket[ \t]+(?:move|ready|hold)|human-claim|human-release)\b|\b(?:wg|dispatch|fg|crew)[ \t]+(?:-\S*[ \t]+(?:[^\s-]\S*[ \t]+)?)*(?:un)?block\b|\bGAFFER_PRINCIPAL_TOKEN=/,
+    re: /\b(wg|dispatch|fg|crew)\b[^\n|;&]*\b(review|regression-of|acceptance-profile|acceptance-evidence|approve|approve-ready|mark-merged|record-landing|landing-begin|record-tester-replay|ci-result|eval-score|lane-verdict|scout-record|tester-route|attach-evidence|reject|repo-access|set-testable|allow-test-changes|set-commands|test-contract|tester-pass|tester-fail|repo-delivery|require-cap|set-reviewer|decisions[ \t]+resolve|finding[ \t]+(?:add|withdraw|lesson|fix-ticket)|agent[ \t]+rename|club[ \t]+set|wont-do|principal[ \t]+(?:create|revoke|resign)|autonomy[ \t]+(?:lift|resign|risk-resign)|research[ \t]+(?:create|feature|feature-add|question|draft-spec|discard)|as-principal|reopen-for-review|ticket[ \t]+(?:move|ready|hold)|human-claim|human-release)\b|\b(?:wg|dispatch|fg|crew)[ \t]+(?:-\S*[ \t]+(?:[^\s-]\S*[ \t]+)?)*(?:un)?block\b|\bGAFFER_PRINCIPAL_TOKEN=/,
     // The same rule with the CLI in COMMAND position (CMD_POS, as the gaffer rule below).
     // The hook uses it instead of `re` only for a command that controlPlaneDataOnly()
     // (lib/hook/control-plane.mjs) proves is data only: every segment a plain git commit /
@@ -507,7 +511,7 @@ export const DANGEROUS_COMMANDS = [
     // reject bad events"`, `grep -rn "dispatch.*approve" src`, `echo "fg then approve" >
     // notes.txt`). Every other command, every evasion included, is judged by `re`.
     cmdRe: new RegExp(
-      String.raw`${CMD_POS}(?:wg|dispatch|fg|crew)${WORD_END}[^\n|;&]*\b(?:review|regression-of|acceptance-profile|acceptance-evidence|approve|approve-ready|mark-merged|record-landing|landing-begin|record-tester-replay|ci-result|eval-score|lane-verdict|scout-record|tester-route|attach-evidence|reject|repo-access|set-testable|allow-test-changes|set-commands|test-contract|tester-pass|tester-fail|repo-delivery|require-cap|set-reviewer|decisions[ \t]+resolve|finding[ \t]+(?:add|withdraw|lesson|fix-ticket)|agent[ \t]+rename|club[ \t]+set|wont-do|principal[ \t]+(?:create|revoke|resign)|autonomy[ \t]+(?:lift|resign|risk-resign)|as-principal|reopen-for-review|ticket[ \t]+(?:move|ready|hold)|human-claim|human-release)\b|${CMD_POS}(?:wg|dispatch|fg|crew)[ \t]+(?:-\S*[ \t]+(?:[^\s-]\S*[ \t]+)?)*(?:un)?block\b|\bGAFFER_PRINCIPAL_TOKEN=`,
+      String.raw`${CMD_POS}(?:wg|dispatch|fg|crew)${WORD_END}[^\n|;&]*\b(?:review|regression-of|acceptance-profile|acceptance-evidence|approve|approve-ready|mark-merged|record-landing|landing-begin|record-tester-replay|ci-result|eval-score|lane-verdict|scout-record|tester-route|attach-evidence|reject|repo-access|set-testable|allow-test-changes|set-commands|test-contract|tester-pass|tester-fail|repo-delivery|require-cap|set-reviewer|decisions[ \t]+resolve|finding[ \t]+(?:add|withdraw|lesson|fix-ticket)|agent[ \t]+rename|club[ \t]+set|wont-do|principal[ \t]+(?:create|revoke|resign)|autonomy[ \t]+(?:lift|resign|risk-resign)|research[ \t]+(?:create|feature|feature-add|question|draft-spec|discard)|as-principal|reopen-for-review|ticket[ \t]+(?:move|ready|hold)|human-claim|human-release)\b|${CMD_POS}(?:wg|dispatch|fg|crew)[ \t]+(?:-\S*[ \t]+(?:[^\s-]\S*[ \t]+)?)*(?:un)?block\b|\bGAFFER_PRINCIPAL_TOKEN=`,
     ),
     why: "control-plane CLI write (use the scoped MCP, not the privileged wg/dispatch/fg/crew CLI)",
     example: "wg ticket approve T-1",
@@ -517,14 +521,15 @@ export const DANGEROUS_COMMANDS = [
     // The `gaffer` front door: approve records a HUMAN approval, merge lands a branch,
     // wg is the privileged dispatch CLI, run/onboard/dashboard/setup/eval/skills spawn
     // or reconfigure the factory, plan pays for a planner turn and creates an epic on
-    // --yes, lore approves or rejects a lore draft (the human trust gate on memory).
+    // --yes, lore approves or rejects a lore draft (the human trust gate on memory),
+    // research starts a paid web research run (backlog 69).
     // Command position only (incl. `bash …/gaffer`), so
     // `git merge gaffer/ticket-5-add-run-flag` and `git commit -m "gaffer: run tests"`
     // are unaffected. `gaffer status` (read-only) stays allowed. The hook also refuses
     // executing ANY file inside its own RUNNER_DIR, which catches the path forms.
     re: cmdAt(
       String.raw`(?:(?:ba|da|k|z)?sh[ \t]+(?:-[A-Za-z]+[ \t]+)*(?:[^\s;&|()<>\`"'\\]*\/)?)?gaffer`,
-      String.raw`[ \t]+(?:approve|merge|wg|run|onboard|dashboard|setup|eval|skills|demo|plan|lore)\b`,
+      String.raw`[ \t]+(?:approve|merge|wg|run|onboard|dashboard|setup|eval|skills|demo|plan|lore|research)\b`,
     ),
     why: "the gaffer front door (approve/merge/wg/run/onboard/plan/lore/…) — approving, merging, planning, ratifying lore and ticking are the human's and the runner's job, never the agent's",
     example: "runner/gaffer approve 3",
@@ -532,7 +537,7 @@ export const DANGEROUS_COMMANDS = [
   },
   {
     re: new RegExp(
-      String.raw`(?:\bnode\b[^\n;&|]*[\s/]|${CMD_POS})(?:merge-ticket|tester-run|product-owner-run|onboard-run|plan-run|spec-author|decompose|epic-feature|inherit-repo|skill-add|acceptance-profiles)\.mjs${WORD_END}|${CMD_POS}poll-once\.sh${WORD_END}`,
+      String.raw`(?:\bnode\b[^\n;&|]*[\s/]|${CMD_POS})(?:merge-ticket|tester-run|product-owner-run|onboard-run|plan-run|spec-author|research-run|decompose|epic-feature|inherit-repo|skill-add|acceptance-profiles)\.mjs${WORD_END}|${CMD_POS}poll-once\.sh${WORD_END}`,
     ),
     why: "a factory runner entry point (merge-ticket / tester-run / product-owner-run / plan-run / acceptance-profiles / … .mjs) — lands work or spawns agents outside the gates",
     example: "node runner/bin/merge-ticket.mjs --ticket 3",

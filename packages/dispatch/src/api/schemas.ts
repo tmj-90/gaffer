@@ -1295,3 +1295,10 @@ export const updateSquadAgentBody = z.object({
   shirt_number: z.number().int().min(1).max(99).nullable().optional(),
 });
 export type UpdateSquadAgentBody = z.infer<typeof updateSquadAgentBody>;
+
+// Research runs (backlog 69): the bodies of POST /research and PATCH /research/:id, the
+// service's own schemas (services/researchService.ts parses them again on every write).
+export {
+  startResearchInput as startResearchBody,
+  editResearchInput as editResearchBody,
+} from "../services/researchService.js";

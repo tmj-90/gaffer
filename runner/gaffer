@@ -48,6 +48,15 @@
 #                                     4 nothing created yet (questions, a proposal, or a no) ·
 #                                     3 refused by the budget (no dollar cap, or a cap reached) ·
 #                                     75 paused on the usage window
+#   gaffer research "<idea>" [--repo <name>]   ·   --list · --show [<id>] · --discard [<id>]
+#                                     research an idea on the web BEFORE the spec (what the
+#                                     dashboard's "Research this idea on the web first" box does):
+#                                     one paid run of an agent with web search and fetch only; the
+#                                     idea and its searches are seen by the search provider and the
+#                                     sites visited. Edit what it found with gaffer wg research
+#                                     feature / feature-add / question, then gaffer wg research
+#                                     draft-spec <id>. Needs a dollar cap and an OS sandbox.
+#                                     exit 0 a result · 1 failed or refused (the reason is printed)
 #   gaffer lore [review [--json] | show <id> | approve <id> | reject <id> [--reason "…"]]
 #                                     the lore drafts waiting for you, as the Memory view lists
 #                                     them, and the approve / reject it does
@@ -119,6 +128,7 @@ usage() {
     skills)    echo "usage: gaffer skills [list | install [--user|--project] [--force] | add <path|git-url> [--force]]" ;;
     plan)      echo "usage: gaffer plan \"<goal>\" | --file <path> [--repo <name>] [--now]  ·  gaffer plan --answer \"<text>\" | --now  ·  gaffer plan --yes | --show | --discard | --list   (each turn is a paid planner call; only --yes on its own, or a typed y, creates the proposal you were shown, as draft tickets; exit 0 created · 4 nothing created yet · 3 refused by the budget (no dollar cap, or a cap reached) · 75 paused on the usage window)" ;;
     config)    echo "usage: gaffer config show [--all] [--json]   (the fourteen settings and where each came from; --all adds every derived value and what decided it; read-only, secrets hidden)" ;;
+    research)  echo "usage: gaffer research \"<idea>\" [--repo <name>]  ·  gaffer research --list | --show [<id>] | --discard [<id>]   (a paid web research run in front of the spec: the idea and the search queries are seen by the search provider and every site fetched; needs a dollar cap and an OS sandbox; edit with gaffer wg research feature|feature-add|question, then gaffer wg research draft-spec <id>; exit 0 a result · 1 failed or refused)" ;;
     lore)      echo "usage: gaffer lore [review [--repo <name>] [--offset <n>] [--json] | show <id> | approve <id> | reject <id> [--reason \"<why>\"]]" ;;
   esac
 }
@@ -181,7 +191,7 @@ case "$cmd" in
   *) unset GAFFER_PRINCIPAL_TOKEN _GAFFER_PERSON_TOKEN ;;
 esac
 case "$cmd" in
-  onboard|dashboard|status|sandbox-status|setup|demo|eval|approve|merge|run|skills|plan|lore|config)
+  onboard|dashboard|status|sandbox-status|setup|demo|eval|approve|merge|run|skills|plan|research|lore|config)
     if wants_help "$@"; then usage "$cmd"; exit 0; fi ;;
 esac
 case "$cmd" in
@@ -800,6 +810,47 @@ plan)
   exec env GAFFER_DATA="$GAFFER_DATA" DISPATCH_DB="$DISPATCH_DB" DISPATCH_DIR="$DISPATCH_DIR" MEMORY_DB="$MEMORY_DB" \
     MEMORY_CLI_BIN="$MEMORY_CLI_BIN" DISPATCH_EPIC_FEATURE_CMD="$EPIC_FEATURE_CMD" \
     node "$HERE/bin/plan-run.mjs" "$@"
+  ;;
+
+research)
+  # Research an idea on the web before the spec (backlog 69): the dashboard's research
+  # step from a terminal. `create` runs runner/bin/research-run.mjs through the dispatch
+  # CLI (which stores the run) and waits for it; the reads and the discard are the CLI's.
+  # Each run is a paid launch: the budget admission and the OS sandbox apply as for
+  # every agent, and the launcher refuses without them.
+  [ -f "$DISPATCH_DIR/dist/cli/index.js" ] || { err "the dispatch CLI is not built: run pnpm -r build"; exit 1; }
+  _rwg() { env DISPATCH_CLI_NAME="gaffer wg" node "$DISPATCH_DIR/dist/cli/index.js" --db "$DISPATCH_DB" "$@"; }
+  _rsub=create; _rid=""; _ridea=""; _rrepo=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --list) _rsub=list ;;
+      --show|--discard)
+        _rsub="${1#--}"
+        if [ -n "${2:-}" ] && [ "${2#-}" = "$2" ]; then _rid="$2"; shift; fi ;;
+      --repo) shift; [ -n "${1:-}" ] || bad_arg research "--repo needs a repository name"; _rrepo="$1" ;;
+      --repo=*) _rrepo="${1#--repo=}" ;;
+      -*) bad_arg research "unknown option '$1'" ;;
+      *) [ -z "$_ridea" ] || bad_arg research "give the idea as one quoted argument"; _ridea="$1" ;;
+    esac
+    shift
+  done
+  # --show / --discard with no id: the newest run.
+  if { [ "$_rsub" = show ] || [ "$_rsub" = discard ]; } && [ -z "$_rid" ]; then
+    _rid="$(_rwg research list | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{try{const a=JSON.parse(s);process.stdout.write(Array.isArray(a)&&a[0]?String(a[0].id):"")}catch{}})')"
+    [ -n "$_rid" ] || { err "no research run yet: start one with gaffer research \"<idea>\""; exit 1; }
+  fi
+  case "$_rsub" in
+    list) _rwg research list ;;
+    show) _rwg research get "$_rid" ;;
+    discard) _rwg research discard "$_rid" ;;
+    create)
+      [ -n "$_ridea" ] || bad_arg research "say what to research: gaffer research \"<idea>\""
+      if _rwg research create --idea "$_ridea" ${_rrepo:+--repo "$_rrepo"}; then
+        printf '\nNext: keep or drop features with gaffer wg research feature <id> <feature-id> --keep|--drop (or feature-add, question), then gaffer wg research draft-spec <id>.\n' >&2
+      else
+        exit 1
+      fi ;;
+  esac
   ;;
 
 lore)

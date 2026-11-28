@@ -406,6 +406,12 @@ export const INTERNAL_NAMES = [
       "GAFFER_SANDBOX_PROXY_IMAGE",
     ],
   },
+  {
+    group: "research",
+    title:
+      "Set by the research launcher and its sandbox for the research hook only (runner/bin/research-run.mjs, runner/lib/hook/research.mjs; backlog 69)",
+    names: ["GAFFER_RESEARCH_STATE", "GAFFER_RESEARCH_RESOLVE"],
+  },
 ];
 
 /**
@@ -416,6 +422,7 @@ export const INTERNAL_NAMES = [
  * ones the config used to default assign themselves plainly, like the internal names.
  */
 export const TEST_SEAMS = [
+  "GAFFER_RESEARCH_TIMEOUT_MS_TEST_ONLY",
   "GAFFER_DOD_OUTPUT_TAIL",
   "GAFFER_DOD_RERUN_WAIT",
   "GAFFER_DAEMON_MAX_CYCLES",

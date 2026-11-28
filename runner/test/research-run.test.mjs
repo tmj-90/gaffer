@@ -114,7 +114,6 @@ const BASE_ENV = {
   STRICT_MODE: "1",
   GAFFER_STRICT_REQUIRE: "0",
   SANDBOX_PROVIDER: "sandbox-exec",
-  GAFFER_TEST_SEAM: "1",
 };
 
 function launch(scenario, env = {}, input = { idea: "a web app that tracks gym workouts" }) {

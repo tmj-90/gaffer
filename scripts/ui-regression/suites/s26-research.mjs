@@ -81,6 +81,10 @@ export default async function s26(t, L) {
   );
 
   // ── ticked: one research run ───────────────────────────────────────────────────
+  // Every request the page makes from here on: none may go to a host a research result
+  // names (the dashboard never fetches a research URL, an image included).
+  const requests = [];
+  p.on("request", (r) => requests.push(r.url()));
   await p.locator(`${PANEL} .pb-new-plan`).click();
   await L.sleep(800);
   await box.check();
@@ -111,6 +115,67 @@ export default async function s26(t, L) {
     (await p.locator(`${PANEL} .rs-card img, ${PANEL} .rs-card iframe`).count()) === 0,
     "the research card holds no image or embed",
     "an image or embed was rendered from research",
+  );
+  // The hostile finding: its markup is text, no element came from it, nothing ran, and the
+  // only links are https sources that passed the rules.
+  const hostile = await p.locator(`${PANEL} .rs-card`).evaluate((card) => {
+    const tags = new Set();
+    for (const el of card.querySelectorAll("*")) tags.add(el.tagName.toLowerCase());
+    return {
+      text: card.textContent || "",
+      tags: [...tags],
+      pwned: globalThis.__pwned ?? null,
+      hrefs: [...card.querySelectorAll("a")].map((a) => a.getAttribute("href")),
+    };
+  });
+  const allowedTags = new Set([
+    "div",
+    "span",
+    "p",
+    "ul",
+    "ol",
+    "li",
+    "a",
+    "button",
+    "input",
+    "label",
+    "select",
+    "option",
+    "textarea",
+    "h2",
+    "h3",
+    "h4",
+    "strong",
+    "em",
+    "small",
+    "details",
+    "summary",
+    "section",
+    "header",
+    "footer",
+    "form",
+    "fieldset",
+    "legend",
+    "br",
+    "b",
+  ]);
+  const badTags = hostile.tags.filter((tg) => !allowedTags.has(tg));
+  t.check(
+    hostile.text.includes('<img src="https://img.hostile-research.dev/p.png"') &&
+      hostile.text.includes("<script>") &&
+      badTags.length === 0 &&
+      hostile.pwned === null &&
+      hostile.hrefs.every((h) => /^https:\/\/[^@/]+\//.test(h)),
+    "a hostile result renders as inert text: no element from it, nothing runs, only safe https links",
+    `tags beyond the card's own: ${JSON.stringify(badTags)} pwned=${hostile.pwned} hrefs=${JSON.stringify(hostile.hrefs)}`,
+  );
+  const leaked = requests.filter((u) =>
+    /(?:^|\/\/|\.)(?:todoist\.com|reddit\.com|hostile-research\.dev)(?:[:/]|$)/.test(u),
+  );
+  t.check(
+    leaked.length === 0,
+    `the page made no request to any research URL (${requests.length} requests seen)`,
+    `requests to research hosts: ${JSON.stringify(leaked.slice(0, 5))}`,
   );
 
   // A 2x picture of the card for the docs.

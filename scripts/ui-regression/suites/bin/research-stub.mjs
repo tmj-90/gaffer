@@ -37,6 +37,21 @@ setTimeout(() => {
             ],
           },
           { id: "f3", claim: "An archive needs a search to stay useful.", why: "", sources: [] },
+          // A hostile finding (review of backlog 69): markup, a Markdown image and link,
+          // an inline handler and unsafe sources. It must render as inert text, and the
+          // page must never request anything it names.
+          {
+            id: "f4",
+            claim:
+              '<img src="https://img.hostile-research.dev/p.png" onerror="window.__pwned=1"> ![x](https://img.hostile-research.dev/m.png)',
+            why: "[pricing](javascript:window.__pwned=2) <script>window.__pwned=3</script>",
+            sources: [
+              { url: "http://todoist.com/plain" },
+              { url: "https://user:pw@todoist.com/" },
+              { url: "javascript:window.__pwned=4" },
+              { url: "https://hostile-research.dev/article" },
+            ],
+          },
         ],
         comparables: [
           {

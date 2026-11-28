@@ -14,13 +14,13 @@ import { apiActor } from "./context.js";
  * factory-wide planning object: write_factory, and reads are read_factory). No MCP tool
  * reaches any of this.
  *
- *   GET   /research                    — runs newest first (?plan_session=<id> for one session's)
- *   GET   /research/availability       — { available, reason } (the checkbox's state)
- *   POST  /research                    — start a run: { idea, repo?, share_overview?, plan_session_id? }
- *   GET   /research/:id                — one run, marks recomputed
- *   PATCH /research/:id                — edit: { features?: [...], open_questions?: [...] }
- *   POST  /research/:id/draft-spec     — the kept items become a DRAFT spec (no model call)
- *   POST  /research/:id/discard        — discard the run
+ *   GET   /research                    runs newest first (?plan_session=<id> for one session's)
+ *   GET   /research/availability       { available, reason } (the checkbox's state)
+ *   POST  /research                    start a run: { idea, repo?, share_overview?, plan_session_id? }
+ *   GET   /research/:id                one run, marks recomputed
+ *   PATCH /research/:id                edit: { features?: [...], open_questions?: [...] }
+ *   POST  /research/:id/draft-spec     the kept items become a DRAFT spec (no model call)
+ *   POST  /research/:id/discard        discard the run
  */
 export async function routeResearch(
   wg: Dispatch,

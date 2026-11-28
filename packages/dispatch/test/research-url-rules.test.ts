@@ -12,7 +12,10 @@ import { checkResearchUrl, secretLike } from "../src/util/researchUrl.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const { vectors } = JSON.parse(
-  readFileSync(resolve(HERE, "..", "..", "..", "runner", "test", "fixtures", "research-url-vectors.json"), "utf8"),
+  readFileSync(
+    resolve(HERE, "..", "..", "..", "runner", "test", "fixtures", "research-url-vectors.json"),
+    "utf8",
+  ),
 ) as { vectors: Array<{ url: string; ok: boolean; code?: string; why: string }> };
 
 describe("research URL rules (dispatch twin)", () => {

@@ -56,15 +56,38 @@ function launcherOutput() {
             { url: "https://never.fetched.org/x", host: "never.fetched.org", fetched: true },
           ],
         },
-        { id: "f2", claim: "People want offline use.", why: "", sources: [{ url: "https://never.fetched.org/y" }] },
+        {
+          id: "f2",
+          claim: "People want offline use.",
+          why: "",
+          sources: [{ url: "https://never.fetched.org/y" }],
+        },
         { id: "f3", claim: "A bad link.", why: "", sources: [{ url: "http://www.strong.app/" }] },
       ],
       comparables: [{ name: "Strong", note: "iOS", source: { url: "https://www.strong.app/" } }],
       features: [
-        { id: "ft1", title: "Log sets quickly", description: "Two taps per set.", priority: "must", backed_by: ["f1"] },
-        { id: "ft2", title: "Offline mode", description: "Works with no signal.", priority: "should", backed_by: ["f2"] },
+        {
+          id: "ft1",
+          title: "Log sets quickly",
+          description: "Two taps per set.",
+          priority: "must",
+          backed_by: ["f1"],
+        },
+        {
+          id: "ft2",
+          title: "Offline mode",
+          description: "Works with no signal.",
+          priority: "should",
+          backed_by: ["f2"],
+        },
         { id: "ft3", title: "Themes", description: "", priority: "could", backed_by: [] },
-        { id: "ft4", title: "Social feed", description: "Share workouts.", priority: "wont", backed_by: [] },
+        {
+          id: "ft4",
+          title: "Social feed",
+          description: "Share workouts.",
+          priority: "wont",
+          backed_by: [],
+        },
       ],
       open_questions: [
         { id: "q1", text: "Which platforms first?" },
@@ -75,7 +98,9 @@ function launcherOutput() {
       injected: "<script>x</script>",
     },
     log: {
-      fetches: [{ url: "https://www.strong.app/", host: "www.strong.app", ts: "2026-11-28T00:00:00Z" }],
+      fetches: [
+        { url: "https://www.strong.app/", host: "www.strong.app", ts: "2026-11-28T00:00:00Z" },
+      ],
       searches: [{ query: "gym tracker", ts: "2026-11-28T00:00:00Z" }],
     },
   };
@@ -85,8 +110,20 @@ describe("research runs: schema", () => {
   it("creates research_runs at schema_version 35 and leaves it out of the export on purpose", () => {
     const wg = open();
     expect(SCHEMA_VERSION).toBe(35);
-    const cols = (wg.db.prepare("PRAGMA table_info(research_runs)").all() as Array<{ name: string }>).map((c) => c.name);
-    expect(cols).toEqual(expect.arrayContaining(["id", "idea", "status", "features_json", "log_json", "plan_session_id", "spec_id"]));
+    const cols = (
+      wg.db.prepare("PRAGMA table_info(research_runs)").all() as Array<{ name: string }>
+    ).map((c) => c.name);
+    expect(cols).toEqual(
+      expect.arrayContaining([
+        "id",
+        "idea",
+        "status",
+        "features_json",
+        "log_json",
+        "plan_session_id",
+        "spec_id",
+      ]),
+    );
     expect((EXPORT_TABLES as readonly string[]).includes("research_runs")).toBe(false);
     expect(EXCLUDED_TABLES.research_runs).toMatch(/spec drafted from it/);
     wg.db.close();
@@ -113,7 +150,9 @@ describe("research runs: the service", () => {
     expect(done.features.find((f) => f.id === "ft1")!.unsupported).toBe(false);
     expect(done.features.find((f) => f.id === "ft2")!.unsupported).toBe(true);
     expect(done.features.every((f) => f.kept && f.origin === "agent")).toBe(true);
-    expect(JSON.stringify(wg.db.prepare("SELECT * FROM research_runs").all())).not.toContain("<script>");
+    expect(JSON.stringify(wg.db.prepare("SELECT * FROM research_runs").all())).not.toContain(
+      "<script>",
+    );
     expect(done.log.fetches).toHaveLength(1);
     // A second result for the same run is refused.
     expect(() => wg.researchSvc.completeRun(run.id, launcherOutput())).toThrow(/not running/);
@@ -139,10 +178,28 @@ describe("research runs: the service", () => {
       run.id,
       {
         features: [
-          { id: "ft1", title: "Log sets in two taps", description: "Fast.", priority: "must", kept: true },
-          { id: "ft2", title: "Offline mode", description: "Works with no signal.", priority: "should", kept: false },
+          {
+            id: "ft1",
+            title: "Log sets in two taps",
+            description: "Fast.",
+            priority: "must",
+            kept: true,
+          },
+          {
+            id: "ft2",
+            title: "Offline mode",
+            description: "Works with no signal.",
+            priority: "should",
+            kept: false,
+          },
           { id: "ft3", title: "Themes", description: "", priority: "could", kept: true },
-          { id: "ft4", title: "Social feed", description: "Share workouts.", priority: "wont", kept: true },
+          {
+            id: "ft4",
+            title: "Social feed",
+            description: "Share workouts.",
+            priority: "wont",
+            kept: true,
+          },
           { title: "Export CSV", description: "Own your data.", priority: "should", kept: true },
         ],
         open_questions: [{ id: "q2", kept: false }],
@@ -168,16 +225,37 @@ describe("research runs: the service", () => {
 
   it("drafts the spec deterministically from what was kept, with a back-reference", () => {
     const wg = open();
-    const { run } = wg.researchSvc.startRun({ idea: "a gym workout tracker", repo: "gym-app" }, human);
+    const { run } = wg.researchSvc.startRun(
+      { idea: "a gym workout tracker", repo: "gym-app" },
+      human,
+    );
     wg.researchSvc.completeRun(run.id, launcherOutput());
     wg.researchSvc.editRun(
       run.id,
       {
         features: [
-          { id: "ft1", title: "Log sets quickly", description: "Two taps per set.", priority: "must", kept: true },
-          { id: "ft2", title: "Offline mode", description: "Works with no signal.", priority: "should", kept: false },
+          {
+            id: "ft1",
+            title: "Log sets quickly",
+            description: "Two taps per set.",
+            priority: "must",
+            kept: true,
+          },
+          {
+            id: "ft2",
+            title: "Offline mode",
+            description: "Works with no signal.",
+            priority: "should",
+            kept: false,
+          },
           { id: "ft3", title: "Themes", description: "", priority: "could", kept: true },
-          { id: "ft4", title: "Social feed", description: "Share workouts.", priority: "wont", kept: true },
+          {
+            id: "ft4",
+            title: "Social feed",
+            description: "Share workouts.",
+            priority: "wont",
+            kept: true,
+          },
           { title: "Export CSV", description: "", priority: "should", kept: true },
         ],
         open_questions: [{ id: "q2", kept: false }],
@@ -197,12 +275,16 @@ describe("research runs: the service", () => {
       [`${spec.id}:research-q1`, "decision", "To decide: Which platforms first?"],
     ]);
     expect(clauses[0]!.rationale).toBe(`From research ${run.id}, feature ft1 (must).`);
-    expect(clauses[1]!.rationale).toBe(`From research ${run.id}, feature p1 (should, added by a person).`);
+    expect(clauses[1]!.rationale).toBe(
+      `From research ${run.id}, feature p1 (should, added by a person).`,
+    );
     expect(JSON.stringify(clauses)).not.toMatch(/strong\.app|Strong leads|Crowded/);
     expect(research.spec_id).toBe(spec.id);
     // Once drafted, the run is closed for edits; the spec is edited instead.
     expect(() => wg.researchSvc.draftSpec(run.id, human)).toThrow(/already drafted/);
-    expect(() => wg.researchSvc.editRun(run.id, { open_questions: [] }, human)).toThrow(/already drafted/);
+    expect(() => wg.researchSvc.editRun(run.id, { open_questions: [] }, human)).toThrow(
+      /already drafted/,
+    );
     // The existing freeze carries on unchanged.
     expect(wg.freezeSpec(spec.id, human).status).toBe("frozen");
     wg.db.close();
@@ -235,11 +317,15 @@ describe("research runs: the service", () => {
     const { run } = wg.researchSvc.startRun({ idea: "an idea" }, human);
     wg.researchSvc.completeRun(run.id, launcherOutput());
     for (const actor of [agent, system]) {
-      expect(() => wg.researchSvc.editRun(run.id, { open_questions: [] }, actor)).toThrow(/person's act/);
+      expect(() => wg.researchSvc.editRun(run.id, { open_questions: [] }, actor)).toThrow(
+        /person's act/,
+      );
       expect(() => wg.researchSvc.draftSpec(run.id, actor)).toThrow(/person's act/);
       expect(() => wg.researchSvc.discardRun(run.id, actor)).toThrow(/person's act/);
     }
-    expect(wg.researchSvc.discardRun(run.id, { type: "admin", id: "boss" }).status).toBe("discarded");
+    expect(wg.researchSvc.discardRun(run.id, { type: "admin", id: "boss" }).status).toBe(
+      "discarded",
+    );
     wg.db.close();
   });
 
@@ -284,10 +370,7 @@ async function start(): Promise<{ base: string; wg: Dispatch }> {
   process.env.DISPATCH_API_TOKEN = FULL;
   process.env.GAFFER_ALLOW_UNCAPPED = "1";
   const stub = join(stubDir, "research-stub.mjs");
-  writeFileSync(
-    join(stubDir, "out.json"),
-    JSON.stringify(launcherOutput()),
-  );
+  writeFileSync(join(stubDir, "out.json"), JSON.stringify(launcherOutput()));
   writeFileSync(
     stub,
     `import { readFileSync, writeFileSync } from "node:fs";\nconst input = readFileSync(0, "utf8");\nwriteFileSync(${JSON.stringify(join(stubDir, "stdin.json"))}, input);\nprocess.stdout.write(readFileSync(${JSON.stringify(join(stubDir, "out.json"))}, "utf8") + "\\n");\n`,
@@ -310,7 +393,10 @@ async function start(): Promise<{ base: string; wg: Dispatch }> {
 async function call(base: string, method: string, path: string, token: string, body?: unknown) {
   const res = await fetch(`${base}${path}`, {
     method,
-    headers: { authorization: `Bearer ${token}`, ...(body !== undefined ? { "content-type": "application/json" } : {}) },
+    headers: {
+      authorization: `Bearer ${token}`,
+      ...(body !== undefined ? { "content-type": "application/json" } : {}),
+    },
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
   const text = await res.text();
@@ -333,14 +419,20 @@ async function waitReady(base: string, id: string): Promise<Record<string, any>>
 describe("research runs: REST", () => {
   it("starts a run, stores the launcher's result, edits, drafts the spec", async () => {
     const { base } = await start();
-    const s = await call(base, "POST", "/research", FULL, { idea: "a gym workout tracker", plan_session_id: "ps-9" });
+    const s = await call(base, "POST", "/research", FULL, {
+      idea: "a gym workout tracker",
+      plan_session_id: "ps-9",
+    });
     expect(s.status).toBe(202);
     expect(s.body.started).toBe(true);
     const ready = await waitReady(base, s.body.research.id);
     expect(ready.status).toBe("ready");
     expect(ready.findings[0].sources[0].fetched).toBe(true);
     // The same plan session never starts a second paid run.
-    const again = await call(base, "POST", "/research", FULL, { idea: "something else", plan_session_id: "ps-9" });
+    const again = await call(base, "POST", "/research", FULL, {
+      idea: "something else",
+      plan_session_id: "ps-9",
+    });
     expect(again.status).toBe(200);
     expect(again.body.started).toBe(false);
     expect(again.body.research.id).toBe(s.body.research.id);
@@ -372,11 +464,19 @@ describe("research runs: REST", () => {
     expect(ok.status).toBe(202);
     const r = await waitReady(base, ok.body.research.id);
     for (const tok of [readTok, readP, scoped]) {
-      expect((await call(base, "PATCH", `/research/${r.id}`, tok, { open_questions: [] })).status).toBe(403);
+      expect(
+        (await call(base, "PATCH", `/research/${r.id}`, tok, { open_questions: [] })).status,
+      ).toBe(403);
       expect((await call(base, "POST", `/research/${r.id}/draft-spec`, tok)).status).toBe(403);
       expect((await call(base, "POST", `/research/${r.id}/discard`, tok)).status).toBe(403);
     }
-    expect((await call(base, "PATCH", `/research/${r.id}`, admin, { open_questions: [{ id: "q1", kept: false }] })).status).toBe(200);
+    expect(
+      (
+        await call(base, "PATCH", `/research/${r.id}`, admin, {
+          open_questions: [{ id: "q1", kept: false }],
+        })
+      ).status,
+    ).toBe(200);
   });
 
   it("does not start without a dollar cap (the paid-launch admission rule)", async () => {
@@ -392,7 +492,10 @@ describe("research runs: REST", () => {
 
   it("records a launcher error as a failed run", async () => {
     const { base } = await start();
-    writeFileSync(join(stubDir, "out.json"), JSON.stringify({ phase: "error", error: "refused: no OS sandbox", code: "sandbox" }));
+    writeFileSync(
+      join(stubDir, "out.json"),
+      JSON.stringify({ phase: "error", error: "refused: no OS sandbox", code: "sandbox" }),
+    );
     const s = await call(base, "POST", "/research", FULL, { idea: "an idea" });
     const done = await waitReady(base, s.body.research.id);
     expect(done.status).toBe("failed");

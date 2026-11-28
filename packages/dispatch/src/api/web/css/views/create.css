@@ -681,3 +681,86 @@
     }
   }
 }
+
+/* ---------------------------------------------------------------------------
+   Research first (backlog 69): the checkbox on the brief form and the research
+   card. Every value in the card is plain text; links are only safe https sources.
+   --------------------------------------------------------------------------- */
+.pb-research {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 6px 0;
+}
+.pb-research[hidden] {
+  display: none;
+}
+.pb-research-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.pb-research-label:has(.pb-research-box:disabled) {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+.pb-research-hint {
+  font-size: 0.85em;
+}
+.rs-card .rs-section {
+  margin-top: 12px;
+}
+.rs-card .rs-h {
+  margin: 0 0 6px;
+  font-size: 0.95em;
+}
+.rs-features,
+.rs-findings,
+.rs-questions,
+.rs-comparables {
+  margin: 0;
+  padding-left: 1.2em;
+}
+.rs-feature {
+  margin-bottom: 10px;
+}
+.rs-feature.rs-dropped .rs-title-input,
+.rs-feature.rs-dropped .rs-desc {
+  opacity: 0.55;
+  text-decoration: line-through;
+}
+.rs-feature-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.rs-title-input {
+  flex: 1;
+  min-width: 0;
+}
+.rs-desc {
+  width: 100%;
+  margin-top: 4px;
+  box-sizing: border-box;
+}
+.rs-mark {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 8px;
+  font-size: 0.8em;
+  background: var(--warn-bg, rgba(200, 140, 0, 0.15));
+}
+.rs-source {
+  word-break: break-all;
+}
+.rs-host {
+  font-size: 0.85em;
+}
+.rs-running {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}

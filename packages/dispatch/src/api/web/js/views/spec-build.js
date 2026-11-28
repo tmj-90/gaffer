@@ -127,7 +127,7 @@ function ensureSpecBuild() {
   return specBuildEls;
 }
 
-function openSpecBuild() {
+function openSpecBuild(opts = {}) {
   const { scrim, input } = ensureSpecBuild();
   // `history` accumulates clarify turns; `draft` is the editable clause set once
   // the author returns a spec; `createdSpec` is the persisted spec (with id) after
@@ -145,7 +145,34 @@ function openSpecBuild() {
     title: "",
     targetRepo: "",
     repos: [],
+    existingSpecId: null,
   };
+  // RESEARCH FIRST (backlog 69): a draft spec made from a research run's kept items
+  // opens here as an editable draft. Its title and repo were set when it was drafted;
+  // its clauses can still be edited, removed or added to, and "Create spec" saves them
+  // onto that draft (PATCH /specs/:id) before Freeze, the step's usual path.
+  const rs = opts && opts.researchSpec;
+  if (rs && rs.id && rs.status === "draft") {
+    let clauses = [];
+    try {
+      clauses = JSON.parse(rs.clauses_json || "[]");
+    } catch {
+      clauses = [];
+    }
+    specBuildState.existingSpecId = rs.id;
+    specBuildState.brief = rs.brief || null;
+    specBuildState.title = rs.title || "";
+    specBuildState.targetRepo = rs.target_repo || "";
+    specBuildState.history = rs.brief ? [{ role: "user", brief: rs.brief }] : [];
+    specBuildState.draft = {
+      clauses: clauses.map((c) => ({
+        clause_id: c.clause_id,
+        kind: SPEC_CLAUSE_KINDS.includes(c.kind) ? c.kind : "requirement",
+        text: c.text || "",
+        rationale: c.rationale || "",
+      })),
+    };
+  }
   renderSpecBuildLog();
   scrim.classList.add("open");
   document.addEventListener("keydown", specBuildKeydown);
@@ -174,6 +201,7 @@ function startNewSpecBuild() {
     title: "",
     targetRepo: "",
     repos: specBuildState.repos || [],
+    existingSpecId: null,
   };
   renderSpecBuildLog();
   if (specBuildEls) specBuildEls.input.focus();
@@ -317,7 +345,7 @@ function renderSpecDraft(draft) {
     placeholder: "Spec title",
     "aria-label": "Spec title",
     maxlength: "300",
-    disabled: created ? "" : undefined,
+    disabled: created || specBuildState.existingSpecId ? "" : undefined,
   });
   titleInput.addEventListener("input", () => {
     specBuildState.title = titleInput.value;
@@ -335,7 +363,7 @@ function renderSpecDraft(draft) {
     {
       class: "select sb-target-repo",
       "aria-label": "Target repo",
-      disabled: created ? "" : undefined,
+      disabled: created || specBuildState.existingSpecId ? "" : undefined,
     },
     [
       el("option", { value: "" }, repos.length ? "No target repo (org-wide)" : "No repos known"),
@@ -630,15 +658,19 @@ async function createSpecFromDraft() {
   specBuildState.actionError = null;
   renderSpecBuildLog();
   try {
-    const res = await api("POST", "/specs", {
-      title,
-      ...(specBuildState.brief ? { brief: specBuildState.brief } : {}),
-      clauses,
-      // The repo this spec is for. The freeze tags every seeded clause with it so the
-      // delivery primer's per-repo lore search surfaces the clauses to that repo's
-      // agents; omitted (org-wide) when none was picked.
-      ...(specBuildState.targetRepo ? { target_repo: specBuildState.targetRepo } : {}),
-    });
+    const res = specBuildState.existingSpecId
+      ? await api("PATCH", `/specs/${encodeURIComponent(specBuildState.existingSpecId)}`, {
+          clauses,
+        })
+      : await api("POST", "/specs", {
+          title,
+          ...(specBuildState.brief ? { brief: specBuildState.brief } : {}),
+          clauses,
+          // The repo this spec is for. The freeze tags every seeded clause with it so the
+          // delivery primer's per-repo lore search surfaces the clauses to that repo's
+          // agents; omitted (org-wide) when none was picked.
+          ...(specBuildState.targetRepo ? { target_repo: specBuildState.targetRepo } : {}),
+        });
     specBuildState.createdSpec = res.spec || null;
     // Reflect the server-assigned clause ids/order back into the editable draft.
     if (res.spec && Array.isArray(res.spec.clauses)) {

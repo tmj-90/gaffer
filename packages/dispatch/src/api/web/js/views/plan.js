@@ -1,7 +1,7 @@
 // Plan a build: the decompose chat panel (a docked, mobile-first sheet).
 // Moved verbatim from app.js (the entry); the module map is in app.js.
 
-import { readOnly, roLockAll } from "../access.js";
+import { readOnly, roLockAll, scoped, scopeTitle } from "../access.js";
 import { api } from "../api.js";
 import { clear, el, field, prefersReducedMotion } from "../dom.js";
 import { plural } from "../format.js";
@@ -10,6 +10,8 @@ import { allTickets } from "../matchday.js";
 import { navigate, router } from "../router.js";
 import { guard, toast } from "../toast.js";
 import { typeLabel } from "./map.js";
+import { renderResearchRun, researchEditState, saveResearch } from "./research.js";
+import { openSpecBuild } from "./spec-build.js";
 
 // ===========================================================================
 //  Plan a build — the decompose chat panel (a docked, mobile-first sheet)
@@ -75,7 +77,32 @@ function ensurePlanBuild() {
     el("span", { class: "pb-keys" }, "Enter sends · Shift+Enter for a new line"),
     sendBtn,
   ]);
-  const form = el("form", { class: "pb-composer" }, [input, actions]);
+  // RESEARCH FIRST (backlog 69): one checkbox on the brief form, unticked by default.
+  // Unticked, Plan a build is exactly what it was. Ticked, sending the brief starts a
+  // paid web research run first (POST /research); its findings and editable features
+  // then replace the planner's first turn, and "Draft the spec from this" carries on
+  // into the spec step. Disabled, with the reason as its title, where research cannot
+  // start (a read or scoped token, no dollar cap, no usable sandbox).
+  const researchBox = el("input", {
+    type: "checkbox",
+    class: "pb-research-box",
+    id: "pb-research-box",
+    onchange: (e) => {
+      if (planBuildState) planBuildState.researchOn = e.target.checked;
+    },
+  });
+  const researchRow = el("div", { class: "pb-research" }, [
+    el("label", { class: "pb-research-label", for: "pb-research-box" }, [
+      researchBox,
+      " Research this idea on the web first",
+    ]),
+    el(
+      "div",
+      { class: "pb-research-hint dim" },
+      "A paid web research run before the spec: the idea and the search queries are seen by the search provider and by every site the agent visits.",
+    ),
+  ]);
+  const form = el("form", { class: "pb-composer" }, [input, researchRow, actions]);
   const titleEl = el("div", { class: "pb-title" }, "Plan a build");
   const subEl = el("div", { class: "pb-sub" }, "Your brief → the planner's questions → the draw");
   const closeBtn = el(
@@ -139,6 +166,8 @@ function ensurePlanBuild() {
     sendBtn,
     forceBtn,
     form,
+    researchBox,
+    researchRow,
     titleEl,
     subEl,
     closeBtn,
@@ -316,6 +345,7 @@ function startPlanBuild(opts = {}) {
     repos: [],
     sessionId: null,
     spec: Array.isArray(opts.spec) && opts.spec.length ? opts.spec : null,
+    ...freshResearchState(),
   };
   renderPlanBuildLog();
   // Seeded from a spec: pre-fill the brief so the user can immediately "Build the tickets".
@@ -324,12 +354,14 @@ function startPlanBuild(opts = {}) {
   // Best-effort: restore the in-progress session from the server, and populate
   // the "Extend existing" picker. Both are non-blocking; the panel works without them.
   guard(async () => {
-    const [sessionRes, nodesRes, reposRes] = await Promise.all([
+    const [sessionRes, nodesRes, reposRes, availRes] = await Promise.all([
       api("GET", "/plan-sessions/active").catch(() => null),
       api("GET", "/scope/nodes"),
       api("GET", "/repositories"),
+      readOnly() || scoped() ? null : api("GET", "/research/availability").catch(() => null),
     ]);
     if (!planBuildState) return; // panel was closed during the fetch
+    planBuildState.researchAvail = availRes;
     // A spec-driven open is ALWAYS a fresh session — never restore an unrelated
     // in-progress plan over the frozen-spec intent.
     if (planBuildState.spec) {
@@ -337,6 +369,7 @@ function startPlanBuild(opts = {}) {
     } else if (sessionRes && sessionRes.session && planBuildState.history.length === 0) {
       // Restore server session (if one exists and the panel hasn't been interacted with).
       restorePlanBuildSession(sessionRes.session);
+      await restoreResearch(sessionRes.session.id);
     } else if ((!sessionRes || !sessionRes.session) && !readOnly()) {
       // No active session on the server — create one (best-effort). A read token
       // cannot hold one (the server refuses the POST), so it reads without.
@@ -369,6 +402,8 @@ async function startNewPlanBuild() {
     repos: planBuildState ? planBuildState.repos : [],
     sessionId: null,
     spec: null, // "New plan" starts clean — any frozen-spec attachment is dropped
+    ...freshResearchState(),
+    researchAvail: planBuildState ? planBuildState.researchAvail : null,
   };
   renderPlanBuildLog();
   // Create a fresh server-side session.
@@ -491,6 +526,25 @@ function renderPlanBuildLog() {
     }
   }
 
+  if (planBuildState.research) {
+    log.appendChild(
+      renderResearchRun(planBuildState.research, {
+        state: planBuildState.researchEdit,
+        locked: readOnly() || scoped(),
+        lockTitle: readOnly()
+          ? "Read-only token: research can be read, not changed."
+          : scoped()
+            ? scopeTitle()
+            : "",
+        busy: planBuildState.researchBusy,
+        error: planBuildState.researchError,
+        repaint: renderPlanBuildLog,
+        onSave: () => saveResearchEdits(),
+        onDraft: () => draftSpecFromResearch(),
+      }),
+    );
+  }
+
   if (planBuildState.plan) {
     log.appendChild(renderPlanProposal(planBuildState.plan));
   }
@@ -530,8 +584,10 @@ function updatePlanBuildActions() {
   const { forceBtn, form } = planBuildEls;
   const turns = planBuildState.history.filter((t) => t.role === "user").length;
   const hasPlan = !!planBuildState.plan;
-  // Hide the whole composer once a plan is proposed — the create path owns it now.
-  form.hidden = hasPlan;
+  // Hide the whole composer once a plan is proposed — the create path owns it now —
+  // and while a research run owns the step (its card has its own actions).
+  form.hidden = hasPlan || !!planBuildState.research;
+  updateResearchBox(turns);
   if (!hasPlan) {
     planBuildEls.input.placeholder = turns
       ? "Answer the planner, or add anything it should know…"
@@ -1194,6 +1250,12 @@ async function submitPlanBuildTurn(opts = {}) {
     input.style.height = "auto";
   }
 
+  // RESEARCH FIRST: the ticked box turns the first turn into a research run.
+  if (isFirst && text && planBuildState.researchOn && !planBuildState.spec) {
+    await startResearchRun(text);
+    return;
+  }
+
   // Build the extend-existing context once (locked for the whole conversation).
   // The target is either a direct repo ({kind:"repo"}) — its name flows straight
   // through as `repo` — or a scope node ({kind:"node"}) — its id/name/type plus
@@ -1380,3 +1442,156 @@ async function confirmPlanBuild(plan, opts = {}) {
 }
 
 export { openPlanBuild, mountPlanBuildInline, resolveTargetRepos, targetPicker };
+
+// ---------------------------------------------------------------------------
+//  Research first (backlog 69)
+// ---------------------------------------------------------------------------
+
+function freshResearchState() {
+  return {
+    researchOn: false,
+    research: null,
+    researchEdit: null,
+    researchBusy: false,
+    researchError: null,
+    researchAvail: null,
+  };
+}
+
+/** Why the research box is off here, or "" (it may be ticked). */
+function researchLockReason() {
+  if (readOnly())
+    return "Read-only token: research is a person's paid run and cannot be started from here.";
+  if (scoped())
+    return `${scopeTitle()} Research is factory-wide planning and needs an unscoped credential.`;
+  const a = planBuildState && planBuildState.researchAvail;
+  if (!a) return "Checking whether research can run here…";
+  if (!a.available) return String(a.reason || "Research cannot run on this host right now.");
+  return "";
+}
+
+function updateResearchBox(turns) {
+  if (!planBuildEls) return;
+  const { researchBox, researchRow } = planBuildEls;
+  researchRow.hidden = turns > 0 || !!planBuildState.spec || !!planBuildState.research;
+  const why = researchLockReason();
+  researchBox.disabled = !!why;
+  if (why) {
+    researchBox.setAttribute("title", why);
+    researchBox.checked = false;
+    planBuildState.researchOn = false;
+  } else {
+    researchBox.removeAttribute("title");
+    researchBox.checked = !!planBuildState.researchOn;
+  }
+}
+
+function setResearch(run) {
+  const same = planBuildState.research && planBuildState.research.id === run.id;
+  const keepEdits = same && planBuildState.researchEdit && planBuildState.researchEdit.dirty;
+  planBuildState.research = run;
+  if (!keepEdits) planBuildState.researchEdit = researchEditState(run);
+}
+
+/** A reload finds the session's research run again: never a second paid run. */
+async function restoreResearch(sessionId) {
+  try {
+    const res = await api("GET", `/research?plan_session=${encodeURIComponent(sessionId)}`);
+    const run = res && Array.isArray(res.research) ? res.research[0] : null;
+    if (run && planBuildState && planBuildState.sessionId === sessionId) {
+      setResearch(run);
+      if (run.status === "running") pollResearch(run.id);
+    }
+  } catch {
+    // Research is optional; the plan panel works without it.
+  }
+}
+
+async function startResearchRun(idea) {
+  planBuildState.researchBusy = true;
+  planBuildState.researchError = null;
+  renderPlanBuildLog();
+  const target = planBuildState.target;
+  const repo =
+    planBuildState.mode === "extend" && target
+      ? target.kind === "repo"
+        ? target.name
+        : target.repo
+      : undefined;
+  try {
+    const res = await api("POST", "/research", {
+      idea,
+      ...(planBuildState.sessionId ? { plan_session_id: planBuildState.sessionId } : {}),
+      ...(repo ? { repo } : {}),
+    });
+    setResearch(res.research);
+    if (res.research.status === "running") pollResearch(res.research.id);
+  } catch (e) {
+    planBuildState.history.push({
+      role: "assistant",
+      error: `Research did not start: ${e && e.message ? e.message : "the request failed"}`,
+    });
+  } finally {
+    planBuildState.researchBusy = false;
+    renderPlanBuildLog();
+  }
+}
+
+function pollResearch(id) {
+  setTimeout(async () => {
+    if (!planBuildState || !planBuildState.research || planBuildState.research.id !== id) return;
+    try {
+      const res = await api("GET", `/research/${encodeURIComponent(id)}`);
+      if (!planBuildState || !planBuildState.research || planBuildState.research.id !== id) return;
+      setResearch(res.research);
+      renderPlanBuildLog();
+      if (res.research.status === "running") pollResearch(id);
+    } catch {
+      pollResearch(id);
+    }
+  }, 3000);
+}
+
+async function saveResearchEdits() {
+  const st = planBuildState.researchEdit;
+  if (!st || planBuildState.researchBusy) return null;
+  planBuildState.researchBusy = true;
+  planBuildState.researchError = null;
+  renderPlanBuildLog();
+  try {
+    const run = await saveResearch(st);
+    planBuildState.research = run;
+    planBuildState.researchEdit = researchEditState(run);
+    return run;
+  } catch (e) {
+    planBuildState.researchError = e && e.message ? e.message : "Could not save the changes.";
+    return null;
+  } finally {
+    planBuildState.researchBusy = false;
+    renderPlanBuildLog();
+  }
+}
+
+/** "Draft the spec from this": save, draft (no model call), open the spec step on it. */
+async function draftSpecFromResearch() {
+  const run = planBuildState.research;
+  if (!run || planBuildState.researchBusy) return;
+  if (planBuildState.researchEdit && planBuildState.researchEdit.dirty) {
+    if (!(await saveResearchEdits())) return;
+  }
+  planBuildState.researchBusy = true;
+  planBuildState.researchError = null;
+  renderPlanBuildLog();
+  try {
+    const res = await api("POST", `/research/${encodeURIComponent(run.id)}/draft-spec`);
+    planBuildState.research = res.research;
+    planBuildState.researchBusy = false;
+    renderPlanBuildLog();
+    closePlanBuild();
+    openSpecBuild({ researchSpec: res.spec });
+  } catch (e) {
+    planBuildState.researchError = e && e.message ? e.message : "Could not draft the spec.";
+    planBuildState.researchBusy = false;
+    renderPlanBuildLog();
+  }
+}

@@ -14,13 +14,14 @@
  *     launcher's result is stored when it exits;
  *   - MCP: no tool writes (or reads) research.
  */
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { deriveReadToken, setPrincipalResolver } from "../src/api/auth.js";
+import { resetIsolationStatus } from "../src/api/isolation.js";
 import { createApiServer } from "../src/api/server.js";
 import { Dispatch } from "../src/core.js";
 import { SCHEMA_VERSION } from "../src/db/schema.js";
@@ -365,6 +366,16 @@ afterEach(async () => {
   rmSync(stubDir, { recursive: true, force: true });
 });
 
+/** What the isolation probe answers (a stub of `gaffer sandbox-status`), forgetting the last answer. */
+function isolation(status: Record<string, unknown> | null): void {
+  resetIsolationStatus();
+  process.env.GAFFER_SANDBOX_STATUS_CMD = JSON.stringify(
+    status === null
+      ? [process.execPath, "-e", "process.exit(3)"]
+      : [process.execPath, "-e", `console.log(${JSON.stringify(JSON.stringify(status))})`],
+  );
+}
+
 async function start(): Promise<{ base: string; wg: Dispatch }> {
   process.env.DISPATCH_AUDIT_OFF = "1";
   process.env.DISPATCH_API_TOKEN = FULL;
@@ -377,6 +388,7 @@ async function start(): Promise<{ base: string; wg: Dispatch }> {
   );
   chmodSync(stub, 0o755);
   process.env.GAFFER_RESEARCH_BIN = stub;
+  isolation({ provider: "docker", available: true, required: true });
   const wg = Dispatch.open(":memory:", new TestClock());
   const server = createApiServer(wg);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -488,6 +500,81 @@ describe("research runs: REST", () => {
     const r = await call(base, "POST", "/research", FULL, { idea: "an idea" });
     expect(r.status).toBe(409);
     expect(wg.researchSvc.listRuns({ includeDiscarded: true })).toHaveLength(0);
+  });
+
+  // The disabled checkbox is a courtesy: the server refuses on its own, before any run row
+  // or launcher exists, for every case the dashboard disables the box for.
+  for (const [label, status, env] of [
+    [
+      "no usable sandbox",
+      {
+        provider: "docker",
+        available: false,
+        required: true,
+        missing: "docker daemon unavailable",
+      },
+      {},
+    ],
+    ["a probe that cannot answer", null, {}],
+    [
+      "the sandbox opted out",
+      { provider: "sandbox-exec", available: true, required: false, optedOut: true },
+      {},
+    ],
+  ] as const) {
+    it(`refuses to start with ${label}, even when the client sends the request`, async () => {
+      const { base, wg } = await start();
+      isolation(status as Record<string, unknown> | null);
+      Object.assign(process.env, env);
+      const avail = await call(base, "GET", "/research/availability", FULL);
+      expect(avail.body.available).toBe(false);
+      expect(avail.body.reason).toMatch(/OS sandbox/);
+      const r = await call(base, "POST", "/research", FULL, {
+        idea: "an idea",
+        plan_session_id: "ps-x",
+      });
+      expect(r.status).toBe(409);
+      expect(wg.researchSvc.listRuns({ includeDiscarded: true })).toHaveLength(0);
+      expect(existsSync(join(stubDir, "stdin.json"))).toBe(false);
+    });
+  }
+
+  it("refuses an agent principal and the factory agent's credential for every write", async () => {
+    const { base, wg } = await start();
+    // The REST mint refuses agent principals; an agent-typed credential (the factory
+    // agent's, or a forged row) is modelled by resolving a real principal as an agent.
+    const agentTok = await mint(base, { name: "worker-bot" });
+    setPrincipalResolver((token) => {
+      const p = wg.resolvePrincipalToken(token);
+      return p ? { ...p, actor: { type: "agent", id: "agent-1" } } : null;
+    });
+    const r = await call(base, "POST", "/research", agentTok, { idea: "an agent's idea" });
+    expect(r.status).toBe(403);
+    expect(wg.researchSvc.listRuns({ includeDiscarded: true })).toHaveLength(0);
+    expect(existsSync(join(stubDir, "stdin.json"))).toBe(false);
+    const ok = await call(base, "POST", "/research", FULL, { idea: "a person's idea" });
+    const run = await waitReady(base, ok.body.research.id);
+    for (const [method, path, body] of [
+      ["PATCH", `/research/${run.id}`, { open_questions: [] }],
+      ["POST", `/research/${run.id}/draft-spec`, undefined],
+      ["POST", `/research/${run.id}/discard`, undefined],
+    ] as const) {
+      expect((await call(base, method, path, agentTok, body)).status).toBe(403);
+    }
+    expect(wg.researchSvc.getRun(run.id).status).toBe("ready");
+  });
+
+  it("starts exactly one paid run for a double submit of one plan session", async () => {
+    const { base, wg } = await start();
+    const body = { idea: "a gym workout tracker", plan_session_id: "ps-double" };
+    const [a, b] = await Promise.all([
+      call(base, "POST", "/research", FULL, body),
+      call(base, "POST", "/research", FULL, body),
+    ]);
+    expect([a.status, b.status].sort()).toEqual([200, 202]);
+    expect(a.body.research.id).toBe(b.body.research.id);
+    expect(wg.researchSvc.listRuns({ includeDiscarded: true })).toHaveLength(1);
+    await waitReady(base, a.body.research.id);
   });
 
   it("records a launcher error as a failed run", async () => {

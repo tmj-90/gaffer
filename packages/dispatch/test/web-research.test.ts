@@ -164,6 +164,10 @@ interface World {
   scope?: unknown;
   available?: boolean;
   reason?: string | null;
+  /** How long POST /research takes to answer. */
+  researchDelayMs?: number;
+  /** The active plan session the panel restores (a reload), holding a research run. */
+  activeSession?: Record<string, unknown>;
 }
 const calls: string[] = [];
 function stubFetch(w: World): void {
@@ -184,14 +188,17 @@ function stubFetch(w: World): void {
         };
       else if (url.includes("/research/availability"))
         body = { available: w.available ?? true, reason: w.reason ?? null };
-      else if (url.includes("/plan-sessions/active")) body = { session: null };
+      else if (url.includes("/plan-sessions/active")) body = { session: w.activeSession ?? null };
+      else if (url.includes("/research?plan_session="))
+        body = { research: w.activeSession ? [{ ...hostile, id: "r9", status: "ready" }] : [] };
       else if (url.endsWith("/plan-sessions") && method === "POST")
         body = { session: { id: "ps-1" } };
       else if (url.includes("/plan-build"))
         body = { phase: "clarify", questions: ["Which platform?"] };
-      else if (url.endsWith("/research") && method === "POST")
+      else if (url.endsWith("/research") && method === "POST") {
+        if (w.researchDelayMs) await tick(w.researchDelayMs);
         body = { research: { ...hostile, id: "r9", status: "running" }, started: true };
-      else if (url.includes("/research/r9"))
+      } else if (url.includes("/research/r9"))
         body = { research: { ...hostile, id: "r9", status: "running" } };
       else if (url.includes("/scope/nodes")) body = { nodes: [] };
       else if (url.includes("/repositories")) body = { repositories: [] };
@@ -264,6 +271,39 @@ describe("web: the research checkbox on the Plan a build brief form", () => {
     expect((panel.querySelector(".pb-composer") as HTMLElement).hidden).toBe(true);
   });
 
+  it("ticked, a second message typed while the run is starting goes nowhere: one paid run", async () => {
+    stubFetch({ researchDelayMs: 150 });
+    const panel = await openPanel();
+    (panel.querySelector(".pb-research-box") as HTMLInputElement).click();
+    const input = panel.querySelector(".pb-input") as HTMLTextAreaElement;
+    const form = panel.querySelector(".pb-composer") as HTMLFormElement;
+    input.value = "a gym workout tracker";
+    form.requestSubmit();
+    await tick(10);
+    input.value = "and make it offline";
+    form.requestSubmit();
+    form.requestSubmit();
+    await tick(250);
+    expect(calls.filter((c) => c.startsWith("POST /research"))).toHaveLength(1);
+    expect(calls.some((c) => c.startsWith("POST /plan-build"))).toBe(false);
+  });
+
+  it("a reload finds the session's research run again and never starts a second one", async () => {
+    stubFetch({
+      activeSession: {
+        id: "ps-1",
+        brief: "a gym workout tracker",
+        messages_json: JSON.stringify([{ role: "user", content: "a gym workout tracker" }]),
+      },
+    });
+    const panel = await openPanel();
+    await tick(50);
+    expect(calls.some((c) => c.startsWith("GET /research?plan_session=ps-1"))).toBe(true);
+    expect(calls.some((c) => c.startsWith("POST /research"))).toBe(false);
+    expect(calls.some((c) => c.startsWith("POST /plan-build"))).toBe(false);
+    expect(panel.querySelector(".rs-card")).not.toBeNull();
+  });
+
   // The Plan a build page (#/create) holds the panel inline, for every credential.
   async function openInline(w: World): Promise<HTMLInputElement> {
     mountShell("#/create");
@@ -289,6 +329,30 @@ describe("web: the research checkbox on the Plan a build brief form", () => {
     const box = await openInline({ capability: "read" });
     expect(box.disabled).toBe(true);
     expect(box.checked).toBe(false);
+    expect(box.getAttribute("title")).toMatch(/Read-only/);
+  });
+
+  it("is disabled with the reason when the host has no usable sandbox", async () => {
+    const box = await openInline({
+      available: false,
+      reason: "Research runs only inside an OS sandbox, and this host has none right now.",
+    });
+    expect(box.disabled).toBe(true);
+    expect(box.getAttribute("title")).toMatch(/OS sandbox/);
+  });
+
+  it("does not keep the choice anywhere: not in local storage, and unticked on the next panel", async () => {
+    stubFetch({});
+    const panel = await openPanel();
+    const box = panel.querySelector(".pb-research-box") as HTMLInputElement;
+    box.click();
+    expect(box.checked).toBe(true);
+    const stored = JSON.stringify({ ...localStorage }) + JSON.stringify({ ...sessionStorage });
+    expect(stored).not.toMatch(/research/i);
+    vi.resetModules();
+    mountShell();
+    const again = await openPanel();
+    expect((again.querySelector(".pb-research-box") as HTMLInputElement).checked).toBe(false);
   });
 
   it("is disabled for a scoped token, with the scope as the reason", async () => {

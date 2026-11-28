@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import type { Dispatch } from "../core.js";
 import type { ResearchRun } from "../services/researchService.js";
-import { lastIsolationStatus } from "./isolation.js";
+import { isolationStatusForRequest, lastIsolationStatus } from "./isolation.js";
 import { spendCapRefusalAsync } from "./pollWork.js";
 
 /**
@@ -60,14 +60,17 @@ export async function researchUnavailableReason(
 ): Promise<string | null> {
   const cap = await spendCapRefusalAsync(env);
   if (cap !== null) return `Research is a paid run and needs a dollar cap first. ${cap}`;
-  const iso = lastIsolationStatus();
-  if (iso !== null) {
-    if (!iso.available) {
-      return `Research runs only inside an OS sandbox, and this host has none right now${iso.missing ? `: ${iso.missing}` : ""}.`;
-    }
-    if (iso.optedOut && (env["STRICT_MODE"] ?? "").trim() !== "1") {
-      return "Research runs only inside an OS sandbox; GAFFER_STRICT_REQUIRE=0 switched it off for this factory.";
-    }
+  // No answer yet (the startup probe has not run or not finished): ask now, briefly. A
+  // posture that is still unknown refuses: research never starts on a sandbox nobody has
+  // seen (the launcher refuses an unwrapped run too; this keeps the run row and the
+  // launcher process from being created at all).
+  const iso = lastIsolationStatus() ?? (await isolationStatusForRequest(env));
+  if (!iso.available) {
+    const why = iso.missing || iso.error || "";
+    return `Research runs only inside an OS sandbox, and this host has none right now${why ? `: ${why}` : ""}.`;
+  }
+  if (iso.optedOut && (env["STRICT_MODE"] ?? "").trim() !== "1") {
+    return "Research runs only inside an OS sandbox; GAFFER_STRICT_REQUIRE=0 switched it off for this factory.";
   }
   return null;
 }

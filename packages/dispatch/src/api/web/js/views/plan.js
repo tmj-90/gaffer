@@ -1215,8 +1215,10 @@ async function submitPlanBuildTurn(opts = {}) {
   const { input, sendBtn } = planBuildEls;
   const text = input.value.trim();
   // Continue/Send needs text; "Build the tickets" does not — it forces a plan from
-  // whatever has been said so far. Either way, never fire while a turn is in flight.
-  if (planBuildState.busy) return;
+  // whatever has been said so far. Either way, never fire while a turn is in flight,
+  // and never while the research run is being started (a second message then would go
+  // to the planner, a second paid call beside the research run).
+  if (planBuildState.busy || planBuildState.researchBusy) return;
   if (!forcePlan && !text) return;
 
   const isFirst = planBuildState.history.length === 0;

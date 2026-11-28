@@ -877,11 +877,14 @@ code, never a prompt line. What it can and cannot do:
   `--allowedTools` of those two (a `-p` run denies anything that needs approval), an
   explicit `--disallowedTools` list of every other built-in tool and `mcp__*`, and
   `--strict-mcp-config` with no `--mcp-config`, never reading `CLAUDE_FLAGS` or
-  `MCP_CONFIG`. Its home is an empty throwaway under the OS temp dir holding only the
+  `MCP_CONFIG`, and `--setting-sources project`, so the operator's user settings (their
+  hooks, plugins, `env` block and memory files) are not loaded. Its home is an empty
+  throwaway in a private `~/.gaffer-research` (0700, owned, not a link; never the shared
+  temp dir, which every other agent's `sandbox-exec` profile may write) holding only the
   verified settings and the hook's state; its environment is built from an allowlist (no
   `GAFFER_DATA`, no database path, no `DISPATCH_*`, no token but the model credential;
   `DISABLE_TELEMETRY=1`, so the CLI calls WebFetch itself instead of through the web-fetch
-  subagent). The safety hook's research role refuses every other tool name. Neither tool
+  subagent; `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`). The safety hook's research role refuses every other tool name. Neither tool
   sends a form, a body, a header or a cookie, and the hook refuses any input key the two
   tools do not document, so a login or a sign-up has nothing to do it with.
   **How the role is chosen:** by the program the settings run, never by the environment.
@@ -892,7 +895,7 @@ code, never a prompt line. What it can and cannot do:
   by name and whose template denies both. An agent cannot claim the research role for
   itself, and the research agent cannot switch it off (it has no shell and no file tool).
 - **B. The URL rules** (`runner/lib/hook/url-rules.mjs`, pure, and dispatch's twin
-  `util/researchUrl.ts`, one vector file of 260 rows): `https://` on the text itself; no
+  `util/researchUrl.ts`, one vector file of 285 rows): `https://` on the text itself; no
   userinfo, percent sign or port in the authority; a public DNS name (IP literals in every
   spelling, single labels, `.local` / `.internal` / `.lan` / `.home.arpa` / `.corp` /
   `.test` / `.example` / `.onion` and the rest, metadata names, wildcard DNS services and
@@ -901,18 +904,23 @@ code, never a prompt line. What it can and cannot do:
   segment that is a login, sign-up, account, password, checkout, billing, subscribe or admin
   step, as a whole word (so `how-oauth-works` stays readable); no credential-shaped query
   name or secret-looking value; at most 512 bytes in all, 200 in the query, 200 characters
-  in a search query. Where the hook can resolve names, the host must resolve and every
-  address must be public.
+  in a search query. The hook resolves every host and refuses any non-public answer; a
+  name that does not resolve is refused, except under the docker research profile, whose
+  container may have no resolver and whose egress proxy resolves the name (that profile
+  never lets a private answer through).
 - **C. Budgets the hook counts**: 40 fetches, 20 searches, 25 sites per run, in a state
   directory the agent cannot write; past them every call is refused with "write your
-  result now". Plus the admission check (a dollar cap), the per-call cap, an 80-turn cap,
+  result now". The launcher seeds the counts; a missing, unreadable or malformed counts
+  file refuses every call instead of starting the budget again. Plus the admission check (a dollar cap), the per-call cap, an 80-turn cap,
   a 15-minute wall clock and the usage ledger.
 - **D. A record the model cannot write**: every allowed fetch and search is appended to
   the run's log by the hook; the launcher returns it and dispatch stores it with the run.
   A PostToolUse hook records that a fetch completed; the CLI does not document the fetch
   result's shape, so a final URL after a same-host redirect is recorded only when the
   result names one under an obvious key and it passes the rules. A cross-host redirect
-  comes back to the model as a new URL, which must pass B like any other.
+  comes back to the model as a new URL, which must pass B like any other. A source is
+  marked fetched when the hook ALLOWED a fetch of it: the fetch itself may still have
+  failed (a 404, a timeout), which the mark does not say.
 - **E. The sandbox.** The launch goes through the worker seam's `deliverResearch`, which
   requires a real OS sandbox wrap (no wrap, the `GAFFER_STRICT_REQUIRE=0` opt-out
   included, is a refusal) and never runs on the command worker. Under `docker` it gets its
@@ -951,8 +959,10 @@ code, never a prompt line. What it can and cannot do:
   it. The login and account word list is a list, not a proof; the proof of "no login" is
   A, there is nothing to log in with. The name check has a gap between check and use (a
   name whose DNS answer changes after the hook resolved it), and under `docker` the proxy
-  resolves names itself, so a public name that resolves to a private address is not
-  caught there. An installed Claude Code mod can, in some setups (no managed settings
+  resolves names itself, so a public name that resolves to a private address is caught
+  only when the container can resolve it too. `--setting-sources project` keeps the
+  operator's user settings out; whether the CLI then also skips `~/.claude/CLAUDE.md` on
+  the `sandbox-exec` path is not documented and was not confirmed with a live run. An installed Claude Code mod can, in some setups (no managed settings
   and no Team or Enterprise login), approve a call a PreToolUse hook blocked; a tool that
   `--tools` removed does not exist, which is why `--tools` is the first layer. macOS has
   no network sandbox.

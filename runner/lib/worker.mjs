@@ -830,7 +830,55 @@ export function startMcpBridge({ mcpConfig, gafferData, env = process.env }) {
   return { ok: true, socket: sock, bridgedConfig: bridged, dataPlane: "bridge", stop };
 }
 
-export function deliver({ bin, argv, cwd, timeoutMs, maxBuffer, env, kind = "worker" }) {
+// THE RESEARCH EGRESS PROFILE (backlog 69). The research agent's container reaches the
+// public web through its own proxy filter (sandbox-docker.sh, GAFFER_SANDBOX_PROFILE=
+// research). Only deliverResearch below selects it: every other launch through this seam
+// has a research profile, and the research run's own variables, taken out of the env it
+// hands the wrapper, so nothing a caller inherits (an operator export, a leaked variable)
+// can widen a delivery's egress. The wrapper itself also refuses the profile for any
+// command that is not a research invocation (sandbox-docker.sh).
+const RESEARCH_CALL = Symbol("research-call");
+export const RESEARCH_ENV_NAMES = Object.freeze([
+  "GAFFER_SANDBOX_PROFILE",
+  "GAFFER_RESEARCH_STATE",
+  "GAFFER_RESEARCH_RESOLVE",
+]);
+function withoutResearchProfile(env) {
+  if (!env) return env;
+  const out = { ...env };
+  if (out.GAFFER_SANDBOX_PROFILE === "research") delete out.GAFFER_SANDBOX_PROFILE;
+  delete out.GAFFER_RESEARCH_STATE;
+  delete out.GAFFER_RESEARCH_RESOLVE;
+  return out;
+}
+
+/**
+ * The research agent's launch (runner/bin/research-run.mjs only). Like deliver, plus:
+ * it REQUIRES a real OS sandbox wrap (no wrap, the opt-out included, is a refusal, status
+ * 75), selects the research egress profile for the docker wrapper, and gives a
+ * non-docker wrap (sandbox-exec) the caller's env alone, without the factory's paths.
+ */
+export function deliverResearch({ bin, argv, cwd, timeoutMs, maxBuffer, env }) {
+  return deliver({
+    bin,
+    argv,
+    cwd,
+    timeoutMs,
+    maxBuffer,
+    env: { ...env, GAFFER_SANDBOX_PROFILE: "research" },
+    kind: "research",
+    [RESEARCH_CALL]: true,
+  });
+}
+
+export function deliver(opts) {
+  const { bin, argv: argv0, cwd, timeoutMs, maxBuffer, kind: kind0 = "worker" } = opts;
+  let { env } = opts;
+  let argv = argv0;
+  const research = opts[RESEARCH_CALL] === true;
+  // A research profile reaches the wrapper only from deliverResearch.
+  if (!research) env = withoutResearchProfile(env);
+  const kind = research ? "research" : kind0 === "research" ? "worker" : kind0;
   const provider = workerProvider(process.env);
   const isCommand = provider === COMMAND_WORKER_PROVIDER;
   if (provider !== DEFAULT_WORKER_PROVIDER && !isCommand) {
@@ -914,6 +962,15 @@ export function deliver({ bin, argv, cwd, timeoutMs, maxBuffer, env, kind = "wor
   // STRICT_MODE=1 asks for it (degrading like claude-code does). The only boundary that
   // counts for it is the docker sandbox with the host-side MCP bridge
   // (commandContainmentProblem); anything else refuses before a file is written.
+  if (research && (isCommand || !sandboxWanted(process.env))) {
+    const message = isCommand
+      ? "worker: the research agent runs only on the claude-code worker provider, never through a command worker (refused)"
+      : "worker: the research agent needs an OS sandbox and none is in force (GAFFER_STRICT_REQUIRE=0 without STRICT_MODE=1); refusing to start it (fail closed)";
+    process.stderr.write(`${message}\n`);
+    const r = failClosedResult(message);
+    r.status = SANDBOX_REFUSED_STATUS;
+    return unreserve(r, "the research launch was refused before it started");
+  }
   if (!isCommand && !sandboxRequired(process.env)) isolationOptOutNotice(process.env);
   const optedOut = isCommand && strictRequireOptedOut(process.env);
   const commandNeedsWrap = isCommand && !optedOut;
@@ -995,16 +1052,34 @@ export function deliver({ bin, argv, cwd, timeoutMs, maxBuffer, env, kind = "wor
       return refuse(r);
     }
     if (wrapped.diag) process.stderr.write(wrapped.diag + "\n");
+    if (research && wrapped.wrap.length === 0) {
+      // A sandbox that is wanted but not required falls back to no wrap; research never does.
+      const r = failClosedResult(
+        "worker: the research agent needs an OS sandbox and this host supplied none (no wrap); refusing to start it (fail closed)",
+      );
+      r.status = SANDBOX_REFUSED_STATUS;
+      return refuse(r);
+    }
     if (wrapped.wrap.length > 0) {
       // The wrapper script itself (sandbox-docker.sh / sandbox-exec) needs the
       // factory's path vars to build its mounts; they are not secrets. The caller's
       // env wins where it already names them.
-      spawnEnv = {
-        RUNNER_DIR,
-        GAFFER_HOME: process.env.GAFFER_HOME || resolve(RUNNER_DIR, ".."),
-        GAFFER_DATA: process.env.GAFFER_DATA || resolve(RUNNER_DIR, "..", ".gaffer"),
-        ...spawnEnv,
-      };
+      // The research agent under a non-docker wrap (sandbox-exec) runs with exactly the
+      // env its launcher built: no factory paths (its profile is already written).
+      const dockerWrap = wrapped.wrap.some((w) => /(^|\/)sandbox-docker\.sh$/.test(w));
+      if (research && !dockerWrap) {
+        // The profile name is for the docker wrapper only.
+        spawnEnv = { ...spawnEnv };
+        delete spawnEnv.GAFFER_SANDBOX_PROFILE;
+      }
+      if (!research || dockerWrap) {
+        spawnEnv = {
+          RUNNER_DIR,
+          GAFFER_HOME: process.env.GAFFER_HOME || resolve(RUNNER_DIR, ".."),
+          GAFFER_DATA: process.env.GAFFER_DATA || resolve(RUNNER_DIR, "..", ".gaffer"),
+          ...spawnEnv,
+        };
+      }
       // Inside the `docker` provider the HOST's claude path / HOME / PATH do not
       // exist — the image ships `claude` on its own PATH and root's HOME is /root.
       // Substitute ONLY when a docker wrap is active, and only for the command

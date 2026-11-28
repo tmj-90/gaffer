@@ -1,0 +1,33 @@
+# Research egress DENY list (backlog 69): one extended regex per line, matched
+# case-insensitively against the request URL (FilterURLs On). For a CONNECT tunnel the
+# URL is "host:port"; for plain http it is the absolute URL, refused outright below.
+# Keep in step with runner/lib/hook/url-rules.mjs (the hook refuses the same names
+# before the request is made; this is where the request really leaves).
+
+# --- plain http: CONNECT (https) only ---
+^http://
+^ftp://
+
+# --- IP literals: dotted, decimal, hex, octal and short IPv4, and every IPv6 ---
+^(0x[0-9a-f]*|[0-9]+)(\.(0x[0-9a-f]*|[0-9]+))*(:[0-9]+)?$
+^\[
+^[0-9a-f:]+:[0-9a-f:]*(:[0-9]+)?$
+# an address written into a name (127.0.0.1.example.org, 127-0-0-1.example.org)
+(^|[.-])([0-9]{1,3}[.-]){3}[0-9]{1,3}(\.|:|$)
+
+# --- single-label hosts (localhost, intranet) ---
+^[^.:/]+(:[0-9]+)?$
+
+# --- names that never leave a machine or a network ---
+(^|\.)(localhost|local|localdomain|internal|intranet|lan|home|arpa|corp|private|test|invalid|example|onion|i2p|alt)\.?(:[0-9]+)?$
+(^|\.)example\.(com|net|org)\.?(:[0-9]+)?$
+
+# --- cloud metadata names ---
+(^|\.)(metadata\.goog|metadata\.azure\.com|metadata\.platformequinix\.com|metadata\.packet\.net|metadata\.tencentyun\.com)\.?(:[0-9]+)?$
+
+# --- wildcard DNS services that answer with any address ---
+(^|\.)(nip\.io|sslip\.io|xip\.io|nip\.direct|localtest\.me|lvh\.me|vcap\.me|traefik\.me|1u\.ms|rebind\.it|rbndr\.us|localho\.st)\.?(:[0-9]+)?$
+
+# --- a trailing dot, a userinfo or a percent sign in the host ---
+^[^/]*@
+^[^/]*%

@@ -99,6 +99,60 @@ if [ "$_DRY_RUN" != "1" ]; then
   docker info >/dev/null 2>&1 || _die "docker daemon unavailable"
 fi
 
+# --- THE RESEARCH PROFILE (backlog 69) ----------------------------------------------
+# GAFFER_SANDBOX_PROFILE=research is the research agent's container: the public web
+# through its OWN proxy (runner/sandbox/research-proxy: CONNECT to 443 only, IP literals
+# and internal names refused), on its OWN internal network, never the delivery filter
+# widened. Only the worker seam's deliverResearch sets it (every other launch has it
+# stripped), and this wrapper refuses it for any command that is not the research
+# agent: the command must restrict the agent CLI to exactly `--tools WebSearch,WebFetch`
+# with `--strict-mcp-config`, and must carry no `--mcp-config`, no permission bypass
+# and no command-worker contract. A delivery with the profile in its environment (an
+# operator export, a leak) is refused here, not widened. Mounted: the throwaway home
+# (the write root) and the factory's runner/ (read-only: the research hook runs from
+# it). Not mounted: any read root, packages/, node_modules, $GAFFER_DATA, a socket, git
+# metadata. Forwarded: the model credential and the hook's state path only.
+_RESEARCH=0
+_RESEARCH_NET_INT="gaffer-research-int"
+_RESEARCH_PROXY_NAME="gaffer-research-proxy-svc"
+_RESEARCH_PROXY_IMAGE="gaffer-research-proxy"
+if [ "${GAFFER_SANDBOX_PROFILE:-}" = "research" ]; then
+  _rt=0; _rs=0; _prev=""
+  for _a in "$@"; do
+    case "$_a" in
+      --mcp-config|--mcp-config=*|--dangerously-skip-permissions|bypassPermissions|--permission-mode=bypassPermissions|GAFFER_WORKER_CONTRACT=*|--allow-dangerously-skip-permissions)
+        _die "the research profile is only for the research agent: this command carries $_a (refused, fail closed)" ;;
+      --strict-mcp-config) _rs=1 ;;
+    esac
+    [ "$_prev" = "--tools" ] && { [ "$_a" = "WebSearch,WebFetch" ] && _rt=1 || _die "the research profile is only for the research agent: --tools must be exactly WebSearch,WebFetch (got '$_a'; refused)"; }
+    case "$_a" in --tools=*) _die "the research profile is only for the research agent: give --tools as its own word (refused)" ;; esac
+    _prev="$_a"
+  done
+  [ "$_rt" = 1 ] && [ "$_rs" = 1 ] \
+    || _die "the research profile is only for the research agent: the command must carry --tools WebSearch,WebFetch and --strict-mcp-config (refused, fail closed)"
+  [ -s "$_READ_ROOTS_FILE" ] && grep -q '[^[:space:]]' "$_READ_ROOTS_FILE" \
+    && _die "the research profile mounts no read root (refused, fail closed)"
+  _RESEARCH=1
+  unset _rt _rs _prev
+fi
+
+# The research egress: its own network and proxy, the image's own filter (no operator
+# hosts: the research filter is a deny list for the open web, not an allowlist).
+_ensure_research_egress() {
+  docker network inspect "$_NET_UP" >/dev/null 2>&1 || docker network create "$_NET_UP" >/dev/null
+  docker network inspect "$_RESEARCH_NET_INT" >/dev/null 2>&1 || docker network create --internal "$_RESEARCH_NET_INT" >/dev/null
+  if [ -z "$(docker ps --filter "name=^${_RESEARCH_PROXY_NAME}$" --filter status=running -q)" ]; then
+    docker rm -f "$_RESEARCH_PROXY_NAME" >/dev/null 2>&1 || true
+    docker image inspect "$_RESEARCH_PROXY_IMAGE" >/dev/null 2>&1 \
+      || docker build -q -t "$_RESEARCH_PROXY_IMAGE" "$_RUNNER_DIR/sandbox/research-proxy" >/dev/null \
+      || _die "could not build the research egress proxy image"
+    docker run -d --name "$_RESEARCH_PROXY_NAME" --network "$_NET_UP" "$_RESEARCH_PROXY_IMAGE" >/dev/null \
+      || _die "could not start the research egress proxy"
+    docker network connect --alias egress-proxy "$_RESEARCH_NET_INT" "$_RESEARCH_PROXY_NAME" >/dev/null \
+      || _die "could not attach the research egress proxy to its internal network"
+  fi
+}
+
 # --- render the effective egress allowlist (baked default + operator hosts) ---
 # The proxy image bakes a default-deny host filter; this lets an operator permit
 # EXTRA hosts (a private git host / package registry) via GAFFER_EGRESS_ALLOW
@@ -162,7 +216,9 @@ _ensure_egress() {
     [ -n "$sha" ] && printf '%s' "$sha" >"$shafile" 2>/dev/null || true
   fi
 }
-[ "$_DRY_RUN" = "1" ] || _ensure_egress
+if [ "$_DRY_RUN" != "1" ]; then
+  if [ "$_RESEARCH" = 1 ]; then _ensure_research_egress; else _ensure_egress; fi
+fi
 
 # --- assemble mount + env args ---
 _mounts=()
@@ -197,6 +253,40 @@ while IFS= read -r root; do
 done < "$_READ_ROOTS_FILE"
 # The factory's own dir (skills, safety hook, worker seam) — ro, path-mirrored.
 [ -d "$_RUNNER_DIR" ] && _add_mount "$_RUNNER_DIR" ro
+
+# ── THE RESEARCH CONTAINER (see the profile above): its whole run, then exit ─────────
+if [ "$_RESEARCH" = 1 ]; then
+  for _wr in ${_WRITE_ROOTS[@]+"${_WRITE_ROOTS[@]}"}; do
+    { [ -e "$_wr/.git" ] || [ -L "$_wr/.git" ]; } \
+      && _die "the research profile never mounts a repository: $_wr holds .git (refused, fail closed)"
+    case "$_wr" in "${GAFFER_DATA:-/nonexistent-gaffer-data}"|"${GAFFER_DATA:-/nonexistent-gaffer-data}"/*)
+      _die "the research profile never mounts the factory's data folder: $_wr is under \$GAFFER_DATA (refused)" ;;
+    esac
+  done
+  [ "${#_WRITE_ROOTS[@]}" -ge 1 ] || _die "the research profile needs its throwaway home as the write root"
+  # The key directory guard, as for every other container (a home is never above it).
+  _acct="$(node -e 'process.stdout.write(require("node:os").userInfo().homedir)' 2>/dev/null || true)"
+  for _m in "${_mounted_roots[@]}"; do
+    case "$_acct/.config/gaffer/keys/" in "$_m"/*) _die "refusing to mount $_m: it contains the factory key directory" ;; esac
+  done
+  _renvs=()
+  for k in ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN GAFFER_RESEARCH_STATE; do
+    [ -n "${!k:-}" ] && _renvs+=( -e "$k" )
+  done
+  _renvs+=( -e "GAFFER_RESEARCH_RESOLVE=proxy" -e "DISABLE_TELEMETRY=1" )
+  _renvs+=( -e "HTTP_PROXY=http://egress-proxy:8888" -e "HTTPS_PROXY=http://egress-proxy:8888" )
+  _renvs+=( -e "http_proxy=http://egress-proxy:8888" -e "https_proxy=http://egress-proxy:8888" )
+  _renvs+=( -e "NO_PROXY=localhost,127.0.0.1,egress-proxy" -e "no_proxy=localhost,127.0.0.1,egress-proxy" )
+  _cred="${GAFFER_SANDBOX_CLAUDE_CREDENTIALS:-}"
+  [ -n "$_cred" ] && [ -f "$_cred" ] && _mounts+=( -v "$_cred:/root/.claude/.credentials.json:ro" )
+  _rargv=( docker run --rm --network "$_RESEARCH_NET_INT"
+    --cap-drop=ALL --cap-add=DAC_OVERRIDE --security-opt=no-new-privileges
+    --pids-limit "$_SBX_PIDS" --memory "$_SBX_MEMORY" --cpus "$_SBX_CPUS"
+    -w "$(pwd)" "${_mounts[@]}" "${_renvs[@]}" "$_IMAGE" "$@" )
+  if [ "$_DRY_RUN" = "1" ]; then printf '%s\n' "${_rargv[@]}"; exit 0; fi
+  docker image inspect "$_IMAGE" >/dev/null 2>&1 || _die "sandbox image '$_IMAGE' not found — build it first (runner/sandbox/Dockerfile)"
+  exec "${_rargv[@]}"
+fi
 # The factory's BUILT PACKAGES + their dependency tree — ro, path-mirrored. The MCP
 # servers the agent delivers through are `node $GAFFER_HOME/packages/{dispatch,memory}/dist/…`
 # (DISPATCH_MCP_BIN / MEMORY_MCP_BIN) and resolve their imports via the pnpm store in

@@ -962,7 +962,10 @@ code, never a prompt line. What it can and cannot do:
   resolves names itself, so a public name that resolves to a private address is caught
   only when the container can resolve it too. `--setting-sources project` keeps the
   operator's user settings out; whether the CLI then also skips `~/.claude/CLAUDE.md` on
-  the `sandbox-exec` path is not documented and was not confirmed with a live run. An installed Claude Code mod can, in some setups (no managed settings
+  the `sandbox-exec` path is not documented and was not confirmed with a live run. The
+  agent is told its working directory, which lives under the operator's home folder
+  (`~/.gaffer-research/run-*/home`), so the account name in that path is visible to it:
+  the price of a place no other agent's sandbox can write. An installed Claude Code mod can, in some setups (no managed settings
   and no Team or Enterprise login), approve a call a PreToolUse hook blocked; a tool that
   `--tools` removed does not exist, which is why `--tools` is the first layer. macOS has
   no network sandbox.

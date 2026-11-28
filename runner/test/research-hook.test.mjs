@@ -23,7 +23,13 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { BUDGET, decideResearch, readResearchLog } from "../lib/hook/research.mjs";
+import {
+  BUDGET,
+  COUNTS_FILE,
+  decideResearch,
+  readResearchLog,
+  seedResearchState,
+} from "../lib/hook/research.mjs";
 import { decide } from "../safety-hook-core.mjs";
 import {
   renderAgentSettings,
@@ -47,6 +53,7 @@ let n = 0;
 const freshState = () => {
   const d = join(scratch, `state-${(n += 1)}`);
   mkdirSync(d);
+  seedResearchState(d);
   return d;
 };
 const publicResolver = async () => ["140.82.112.3"];
@@ -214,13 +221,42 @@ const run = (raw, state, opts = {}) =>
   const proxy = await run(fetchCall("https://nowhere.github-dummy.org/"), s, {
     env: { GAFFER_RESEARCH_RESOLVE: "proxy" },
     resolve: async () => {
-      throw new Error("must not be called");
+      throw Object.assign(new Error("getaddrinfo EAI_AGAIN"), { code: "EAI_AGAIN" });
     },
   });
   assert(
-    "under the proxy profile the hook leaves resolution to the egress proxy",
+    "under the proxy profile a name the container cannot resolve is left to the egress proxy",
     proxy.exitCode === 0,
   );
+  // The proxy profile never switches the address check off: a private answer is refused
+  // whatever GAFFER_RESEARCH_RESOLVE says (an env var must not widen the hook).
+  for (const addr of ["192.168.1.1", "127.0.0.1", "169.254.169.254", "::1"]) {
+    const v = await run(fetchCall("https://router.github-dummy.org/"), s, {
+      env: { GAFFER_RESEARCH_RESOLVE: "proxy" },
+      resolve: async () => [addr],
+    });
+    assert(
+      `under the proxy profile a name resolving to ${addr} is still refused (${v.exitCode})`,
+      v.exitCode === 2 && /non-public/.test(v.reason),
+    );
+  }
+  // Without the proxy profile (the macOS sandbox-exec path), a resolution failure refuses.
+  for (const resolveEnv of [
+    {},
+    { GAFFER_RESEARCH_RESOLVE: "" },
+    { GAFFER_RESEARCH_RESOLVE: "PROXY" },
+  ]) {
+    const v = await run(fetchCall("https://nowhere.github-dummy.org/"), s, {
+      env: resolveEnv,
+      resolve: async () => {
+        throw new Error("timed out");
+      },
+    });
+    assert(
+      `with ${JSON.stringify(resolveEnv)} a name that does not resolve is refused`,
+      v.exitCode === 2 && /does not resolve/.test(v.reason),
+    );
+  }
   const proxyRules = await run(fetchCall("https://127.0.0.1/"), s, {
     env: { GAFFER_RESEARCH_RESOLVE: "proxy" },
   });
@@ -310,6 +346,55 @@ const run = (raw, state, opts = {}) =>
   assert(
     "a final URL that fails the rules is not recorded",
     log2.fetched.length === 2 && log2.fetched[1].final_url === undefined,
+  );
+}
+
+// --- the counts cannot be reset by deleting or corrupting them ------------------------------
+{
+  for (const [label, mutate] of [
+    ["deleted", (d) => rmSync(join(d, COUNTS_FILE))],
+    ["not JSON", (d) => writeFileSync(join(d, COUNTS_FILE), "{garbage")],
+    ["empty", (d) => writeFileSync(join(d, COUNTS_FILE), "")],
+    [
+      "the wrong shape",
+      (d) => writeFileSync(join(d, COUNTS_FILE), JSON.stringify({ fetches: "0" })),
+    ],
+    [
+      "a negative count",
+      (d) =>
+        writeFileSync(
+          join(d, COUNTS_FILE),
+          JSON.stringify({ fetches: -40, searches: 0, hosts: [] }),
+        ),
+    ],
+    ["null", (d) => writeFileSync(join(d, COUNTS_FILE), "null")],
+  ]) {
+    const s = freshState();
+    const first = await run(fetchCall("https://github.com/vitejs/vite"), s);
+    mutate(s);
+    const f = await run(fetchCall("https://github.com/vitejs/vite"), s);
+    const q = await run(searchCall({ query: "habit tracker" }), s);
+    assert(
+      `counts ${label}: every further call is refused, never counted from zero (${first.exitCode} ${f.exitCode} ${q.exitCode})`,
+      first.exitCode === 0 && f.exitCode === 2 && q.exitCode === 2,
+    );
+  }
+  // A state directory that was never seeded is refused too.
+  const bare = join(scratch, "unseeded");
+  mkdirSync(bare);
+  const v = await run(fetchCall("https://github.com/vitejs/vite"), bare);
+  assert("an unseeded state directory: refused", v.exitCode === 2);
+  assert(
+    "seeding twice is refused (wx)",
+    (() => {
+      try {
+        seedResearchState(bare);
+        seedResearchState(bare);
+        return false;
+      } catch {
+        return true;
+      }
+    })(),
   );
 }
 

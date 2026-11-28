@@ -22,9 +22,10 @@
  *     - the input holds only the keys those tools document (WebFetch: url, prompt,
  *       offset; WebSearch: query, allowed_domains, blocked_domains, mode): a future
  *       method, header or body field is refused, not passed through;
- *     - WebFetch: the URL passes url-rules.mjs checkResearchUrl; where names can be
- *       resolved (GAFFER_RESEARCH_RESOLVE is not "proxy"), the host must resolve and
- *       every address must be public; the prompt is at most PROMPT_MAX characters;
+ *     - WebFetch: the URL passes url-rules.mjs checkResearchUrl; the host is resolved
+ *       and every address must be public; a name that does not resolve is refused,
+ *       except under the docker research profile (GAFFER_RESEARCH_RESOLVE=proxy), where
+ *       the egress proxy resolves it; the prompt is at most PROMPT_MAX characters;
  *     - WebSearch: the input passes checkResearchSearch;
  *     - the run's budget (BUDGET): past it every call is refused with a message telling
  *       the agent to write its result now;
@@ -36,7 +37,9 @@
  * STATE lives in GAFFER_RESEARCH_STATE, a directory the launcher makes beside the
  * agent's home and names in the agent CLI's environment (which the hook inherits).
  * The agent has no tool that writes files, so it cannot reset its counters or edit its
- * log. Concurrent hook processes (parallel tool calls) take a mkdir lock.
+ * log. Concurrent hook processes (parallel tool calls) take a mkdir lock. The launcher
+ * seeds the counts (seedResearchState); a missing, unreadable or malformed counts file
+ * refuses every call instead of starting the budget again.
  *
  * TIME OF CHECK: the name is resolved here, then WebFetch resolves it again when it
  * connects. A name whose answer changes in between (DNS rebinding) passes this check and
@@ -147,17 +150,44 @@ function withLock(dir, fn) {
   }
 }
 
+/** The counts a new run starts from. */
+const ZERO_COUNTS = Object.freeze({ fetches: 0, searches: 0, hosts: Object.freeze([]) });
+
+/**
+ * Seed a new run's state directory with zero counts (the research launcher, before the
+ * spawn). The hook never creates the counts file itself: a missing one means the state
+ * was deleted or never set up, and is refused rather than read as a fresh budget.
+ */
+export function seedResearchState(dir) {
+  writeFileSync(join(dir, COUNTS_FILE), JSON.stringify(ZERO_COUNTS), { flag: "wx" });
+}
+
+/**
+ * The run's counts. Throws when the file is missing, does not parse or does not have the
+ * shape the hook writes: a deleted or corrupted file must refuse, never restart the budget.
+ */
 function readCounts(dir) {
+  let c;
   try {
-    const c = JSON.parse(readFileSync(join(dir, COUNTS_FILE), "utf8"));
-    return {
-      fetches: Number.isInteger(c.fetches) ? c.fetches : 0,
-      searches: Number.isInteger(c.searches) ? c.searches : 0,
-      hosts: Array.isArray(c.hosts) ? c.hosts.filter((h) => typeof h === "string") : [],
-    };
-  } catch {
-    return { fetches: 0, searches: 0, hosts: [] };
+    c = JSON.parse(readFileSync(join(dir, COUNTS_FILE), "utf8"));
+  } catch (e) {
+    throw new Error(
+      `the run's counts (${COUNTS_FILE}) are missing or unreadable (${e && e.code ? e.code : "parse error"})`,
+      { cause: e },
+    );
   }
+  const okCount = (n) => Number.isInteger(n) && n >= 0;
+  if (
+    !c ||
+    typeof c !== "object" ||
+    !okCount(c.fetches) ||
+    !okCount(c.searches) ||
+    !Array.isArray(c.hosts) ||
+    !c.hosts.every((h) => typeof h === "string")
+  ) {
+    throw new Error(`the run's counts (${COUNTS_FILE}) do not have the shape the hook writes`);
+  }
+  return { fetches: c.fetches, searches: c.searches, hosts: [...c.hosts] };
 }
 
 function writeCounts(dir, counts) {
@@ -241,23 +271,29 @@ async function decidePre(payload, env, dir, resolveHost) {
   if (input.offset !== undefined && !(Number.isInteger(input.offset) && input.offset >= 0)) {
     return verdict(false, "WebFetch offset must be a whole number");
   }
-  if (env.GAFFER_RESEARCH_RESOLVE !== "proxy") {
-    let addrs;
-    try {
-      addrs = await resolveHost(r.host);
-    } catch (e) {
-      return verdict(
-        false,
-        `${r.host} does not resolve (${e && e.message ? e.message : e}); a name that does not resolve is refused`,
-      );
-    }
-    if (!Array.isArray(addrs) || addrs.length === 0) {
-      return verdict(false, `${r.host} does not resolve; a name that does not resolve is refused`);
-    }
+  // The name is ALWAYS resolved and every answer must be public. GAFFER_RESEARCH_RESOLVE=
+  // proxy (the docker research profile, whose container may have no resolver) only
+  // tolerates a name that cannot be resolved HERE, because the egress proxy resolves it
+  // and the request leaves only through it; it never lets a private answer through. So
+  // the variable, wherever it comes from, can never switch the address check off.
+  const proxyResolves = env.GAFFER_RESEARCH_RESOLVE === "proxy";
+  let addrs;
+  let resolveError = null;
+  try {
+    addrs = await resolveHost(r.host);
+  } catch (e) {
+    resolveError = e && e.message ? e.message : String(e);
+  }
+  if (resolveError === null && Array.isArray(addrs) && addrs.length > 0) {
     const bad = addrs.find((a) => isNonPublicAddress(a));
     if (bad !== undefined) {
       return verdict(false, `${r.host} resolves to a non-public address (${bad}); refused`);
     }
+  } else if (!proxyResolves) {
+    return verdict(
+      false,
+      `${r.host} does not resolve${resolveError ? ` (${resolveError})` : ""}; a name that does not resolve is refused`,
+    );
   }
   return withLock(dir, () => {
     const c = readCounts(dir);

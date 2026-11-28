@@ -36,15 +36,15 @@
 //      requires a real OS sandbox wrap and selects the research egress profile.
 //   F. What comes back: lib/research-result.mjs (schema, caps, cleaning, computed marks).
 // =====================================================================
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { QUARANTINE_ESCAPE_NOTE, extractLastJsonBlock, quarantine } from "../lib/agent-io.mjs";
 import { writeVerifiedResearchSettings } from "../lib/agent-settings.mjs";
 import { paidLaunchAdmission } from "../lib/budget-admission.mjs";
-import { BUDGET, readResearchLog } from "../lib/hook/research.mjs";
+import { BUDGET, readResearchLog, seedResearchState } from "../lib/hook/research.mjs";
 import { RESEARCH_LIMITS, validateResearchResult } from "../lib/research-result.mjs";
 import {
   appendUsageRecord,
@@ -145,7 +145,40 @@ export function agentEnv(base, { home, state }) {
   // Feature flags off: the CLI then calls WebFetch itself instead of through the
   // web-fetch subagent (an Agent call the hook refuses), and sends no telemetry.
   env.DISABLE_TELEMETRY = "1";
+  // No auto memory: nothing from an earlier session is loaded into this one.
+  env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = "1";
   return env;
+}
+
+/**
+ * Where research runs live: `~/.gaffer-research`, a private (0700) directory of the
+ * operator's own. NOT the OS temp dir: under the sandbox-exec provider every other agent's
+ * profile may write TMPDIR, /tmp and /private/var/folders (build tools need them), so a
+ * delivery could rewrite the hook's counts or log, or plant a CLAUDE.md or a local
+ * settings file the research agent would load. The home folder outside the agent-CLI
+ * directories is not writable by any other agent (sandbox.sh grants only the write roots,
+ * the temp dirs and STRICT_ALLOW_HOME), and docker containers mount only their own
+ * roots. Refuses (throws) when the place is not a real directory of ours.
+ */
+export function researchRunBase(home = homedir()) {
+  if (typeof home !== "string" || !isAbsolute(home)) {
+    throw new Error("the research run needs the operator's home folder (HOME is not set)");
+  }
+  const base = join(home, ".gaffer-research");
+  mkdirSync(base, { recursive: true, mode: 0o700 });
+  const st = lstatSync(base);
+  if (!st.isDirectory() || st.isSymbolicLink()) {
+    throw new Error(`${base} is not a plain directory; refusing to run research there`);
+  }
+  if (typeof process.getuid === "function" && st.uid !== process.getuid()) {
+    throw new Error(`${base} belongs to another user; refusing to run research there`);
+  }
+  if ((st.mode & 0o077) !== 0) {
+    throw new Error(
+      `${base} is open to other users (mode ${(st.mode & 0o777).toString(8)}); refusing`,
+    );
+  }
+  return base;
 }
 
 /** The argv for the one research turn (CLAUDE_FLAGS and MCP_CONFIG are never read). */
@@ -160,6 +193,12 @@ export function researchArgv(prompt, env = process.env) {
     ...(model ? ["--model", model] : []),
     "--permission-mode",
     "default",
+    // Only the project settings (the verified research settings in the throwaway home):
+    // never the operator's user settings, whose hooks, plugins, env block and memory
+    // files would put local data or instructions in front of the one agent that can send
+    // text to the web (the docker profile has no user settings to load; sandbox-exec does).
+    "--setting-sources",
+    "project",
     "--strict-mcp-config",
     "--tools",
     RESEARCH_TOOLS.join(","),
@@ -272,8 +311,14 @@ function main() {
   const admission = paidLaunchAdmission({ kind: "research" });
   if (!admission.ok) return fail(admission.reason, "budget", 3);
 
-  // The run directory: an empty throwaway under the OS temp dir (never GAFFER_DATA).
-  const run = mkdtempSync(join(tmpdir(), "gaffer-research-"));
+  // The run directory: an empty throwaway under researchRunBase() (never GAFFER_DATA,
+  // never the shared temp dir that every other agent's sandbox may write).
+  let run;
+  try {
+    run = mkdtempSync(join(researchRunBase(), "run-"));
+  } catch (e) {
+    return fail(e && e.message ? e.message : String(e), "setup");
+  }
   const home = join(run, "home");
   const state = join(home, ".research-state");
   let res;
@@ -282,6 +327,8 @@ function main() {
   try {
     mkdirSync(home, { recursive: true });
     mkdirSync(state, { recursive: true });
+    // The hook's budget starts here: it refuses a run whose counts file is missing.
+    seedResearchState(state);
     mkdirSync(join(home, ".claude"));
     try {
       writeVerifiedResearchSettings(

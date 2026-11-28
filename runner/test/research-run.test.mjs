@@ -28,6 +28,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -54,6 +55,9 @@ const BIN = join(WORK, "bin");
 mkdirSync(BIN);
 const DATA = join(WORK, "data");
 mkdirSync(DATA);
+// The operator's home for these runs (the launcher keeps its runs in ~/.gaffer-research).
+const RUN_HOME = join(WORK, "operator-home");
+mkdirSync(RUN_HOME);
 const REC = join(WORK, "rec");
 const SCENARIO = join(WORK, "scenario.json");
 
@@ -99,7 +103,7 @@ chmodSync(STUB, 0o755);
 
 const BASE_ENV = {
   PATH: `${BIN}:${process.env.PATH}`,
-  HOME: process.env.HOME,
+  HOME: RUN_HOME,
   GAFFER_DATA: DATA,
   DISPATCH_DB: join(DATA, "dispatch.sqlite"),
   MEMORY_DB: join(DATA, "memory.sqlite"),
@@ -292,10 +296,23 @@ const goodCalls = [
   );
   assert("env: the only write root is the cwd", env.GAFFER_WRITE_ROOTS === cwd);
   assert("cwd: outside GAFFER_DATA", relative(DATA, cwd).startsWith(".."));
+  // Not in the shared temp dir every other agent's sandbox-exec profile may write: under
+  // the operator's private ~/.gaffer-research instead.
+  assert(
+    `cwd: under the private ~/.gaffer-research, not the shared temp dir (${cwd})`,
+    cwd.startsWith(join(RUN_HOME, ".gaffer-research") + "/"),
+  );
+  assert(
+    "cwd: its base is private (0700)",
+    (statSync(join(RUN_HOME, ".gaffer-research")).mode & 0o077) === 0,
+  );
+  assert("argv: only the project settings are loaded", after("--setting-sources") === "project");
+  assert("env: no auto memory", env.CLAUDE_CODE_DISABLE_AUTO_MEMORY === "1");
   const listing = (rec("listing.json") ?? []).sort();
   assert(
     `cwd: holds only the settings and the hook state (${listing.join(",")})`,
-    listing.join(",") === ".claude,.claude/settings.json,.research-state",
+    listing.join(",") ===
+      ".claude,.claude/settings.json,.research-state,.research-state/counts.json",
   );
   assert("cwd: removed after the run", !existsSync(cwd));
 

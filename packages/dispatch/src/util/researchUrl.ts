@@ -170,6 +170,8 @@ export const CREDENTIAL_PARAMS: ReadonlySet<string> = Object.freeze(
     "oauth_verifier",
     "access_key",
     "accesskey",
+    "pw",
+    "passcode",
   ]),
 );
 
@@ -223,6 +225,8 @@ export const REBINDING_SUFFIXES = Object.freeze([
   "rbndr.us",
   "localho.st",
   "fbi.com",
+  "localhost.direct",
+  "lacolhost.com",
 ]);
 
 const FILE_EXTENSION = /\.(?:php[0-9]?|html?|aspx?|jspx?|cgi|do|action|pl|cfm)$/;
@@ -344,6 +348,42 @@ export function hostRefusal(host: string): UrlRefusal | null {
   return null;
 }
 
+/**
+ * Is one `;`-separated part of a decoded, lowercased path segment an authentication or
+ * account step? The part as written, and its stem: leading and trailing punctuation
+ * dropped (`login.`, `login~`, `login%00`), then one file extension of any kind
+ * (`login.json`, `wp-login.php`), then the punctuation again.
+ */
+function segmentIsAuthStep(part: string): boolean {
+  if (AUTH_WORDS.has(part)) return true;
+  const trim = (x: string): string => x.replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, "");
+  const stem = trim(
+    trim(part)
+      .replace(FILE_EXTENSION, "")
+      .replace(/\.[a-z0-9]{1,8}$/, ""),
+  );
+  return AUTH_WORDS.has(stem);
+}
+
+/** The credential words a query parameter name may hold as a word of its own. */
+const CREDENTIAL_WORD =
+  /(?:^|[_.\-[\]\s])(?:token|secret|password|passwd|passcode|signature|apikey|api_key|api-key|authkey|auth|credential|credentials|sessionid)(?:[_.\-[\]\s]|$)/;
+
+/**
+ * Is a query parameter name credential-shaped? Judged on the name lowercased, on the name
+ * with its array or object brackets dropped (`token[]`, `token[0]`), and on the name
+ * with camelCase split into words (`accessToken`, `sessionToken`, `authKey`).
+ */
+function credentialParamName(name: string): boolean {
+  const raw = name.trim();
+  const forms = [
+    raw.toLowerCase(),
+    raw.toLowerCase().replace(/\[[^\]]*\]/g, ""),
+    raw.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase(),
+  ];
+  return forms.some((n) => CREDENTIAL_PARAMS.has(n) || CREDENTIAL_WORD.test(n));
+}
+
 /** The authority part of an `https://` text: up to the first `/`, `?` or `#`. */
 function rawAuthority(text: string): string {
   const rest = text.slice("https://".length);
@@ -409,9 +449,7 @@ export function checkResearchUrl(raw: unknown): UrlVerdict {
     }
     seg = seg.toLowerCase();
     if (/[/\\]/.test(seg)) return refuse("parse", "an encoded slash in a path segment is refused");
-    const first = seg.split(";")[0] ?? "";
-    const bare = first.replace(FILE_EXTENSION, "");
-    if (AUTH_WORDS.has(bare) || AUTH_WORDS.has(first)) {
+    if (seg.split(";").some(segmentIsAuthStep)) {
       return refuse(
         "auth-step",
         `the path segment "${seg.slice(0, 60)}" is a login, sign-up or account step`,
@@ -430,12 +468,7 @@ export function checkResearchUrl(raw: unknown): UrlVerdict {
       return refuse("parse", "a query parameter does not decode");
     }
     const n = name.trim().toLowerCase();
-    if (
-      CREDENTIAL_PARAMS.has(n) ||
-      /(?:^|[_.\-[])(?:token|secret|password|passwd|signature|apikey|api_key|credential)(?:[_.\-\]]|$)/.test(
-        n,
-      )
-    ) {
+    if (credentialParamName(name)) {
       return refuse(
         "credential-param",
         `the query parameter "${n.slice(0, 40)}" carries a credential`,

@@ -26,7 +26,7 @@
 (^|\.)(metadata\.goog|metadata\.azure\.com|metadata\.platformequinix\.com|metadata\.packet\.net|metadata\.tencentyun\.com)\.?(:[0-9]+)?$
 
 # --- wildcard DNS services that answer with any address ---
-(^|\.)(nip\.io|sslip\.io|xip\.io|nip\.direct|localtest\.me|lvh\.me|vcap\.me|traefik\.me|1u\.ms|rebind\.it|rbndr\.us|localho\.st)\.?(:[0-9]+)?$
+(^|\.)(nip\.io|sslip\.io|xip\.io|nip\.direct|localtest\.me|lvh\.me|vcap\.me|traefik\.me|1u\.ms|rebind\.it|rbndr\.us|localho\.st|localhost\.direct|lacolhost\.com)\.?(:[0-9]+)?$
 
 # --- a trailing dot, a userinfo or a percent sign in the host ---
 ^[^/]*@

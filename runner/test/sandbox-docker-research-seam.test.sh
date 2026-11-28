@@ -140,7 +140,7 @@ for u in "http://github.com/" "127.0.0.1:443" "2130706433:443" "0x7f000001:443" 
          "[::1]:443" "::1:443" "localhost:443" "intranet:443" "router.local:443" "jira.internal:443" \
          "nas.lan:443" "hub.home.arpa:443" "metadata.google.internal:443" "metadata.goog:443" \
          "10.0.0.1.nip.io:443" "app.localtest.me:443" "127-0-0-1.attacker-domain.org:443" "www.example.com:443" \
-         "site.onion:443" "user@github.com:443"; do
+         "site.onion:443" "user@github.com:443" "app.localhost.direct:443" "lacolhost.com:443"; do
   denied "$u" && ok "the research filter refuses $u" || fail "the research filter lets $u through"
 done
 for u in "github.com:443" "docs.python.org:443" "www.reddit.com:443" "1.bp.blogspot.com:443" "news.ycombinator.com:443" "api.github.com:443"; do

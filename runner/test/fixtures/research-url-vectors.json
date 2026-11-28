@@ -1479,6 +1479,150 @@
       "ok": false,
       "code": "length",
       "why": "query of 201 bytes"
+    },
+    {
+      "url": "https://shop.acme.dev/login.",
+      "ok": false,
+      "why": "review: a trailing dot on a denied segment",
+      "code": "auth-step"
+    },
+    {
+      "url": "https://shop.acme.dev/login~",
+      "ok": false,
+      "why": "review: trailing punctuation on a denied segment",
+      "code": "auth-step"
+    },
+    {
+      "url": "https://shop.acme.dev/login%00",
+      "ok": false,
+      "why": "review: an encoded NUL after a denied segment",
+      "code": "auth-step"
+    },
+    {
+      "url": "https://shop.acme.dev/login%20",
+      "ok": false,
+      "why": "review: an encoded space after a denied segment",
+      "code": "auth-step"
+    },
+    {
+      "url": "https://shop.acme.dev/login.json",
+      "ok": false,
+      "why": "review: a denied segment with any extension",
+      "code": "auth-step"
+    },
+    {
+      "url": "https://shop.acme.dev/users/sign_in.json",
+      "ok": false,
+      "why": "review: a denied segment with a data extension",
+      "code": "auth-step"
+    },
+    {
+      "url": "https://shop.acme.dev/;login",
+      "ok": false,
+      "why": "review: a denied word as a matrix parameter",
+      "code": "auth-step"
+    },
+    {
+      "url": "https://shop.acme.dev/docs;signup",
+      "ok": false,
+      "why": "review: a denied word after a matrix separator",
+      "code": "auth-step"
+    },
+    {
+      "url": "https://shop.acme.dev/?token[]=abc",
+      "ok": false,
+      "why": "review: array syntax on a credential name",
+      "code": "credential-param"
+    },
+    {
+      "url": "https://shop.acme.dev/?token%5B0%5D=abc",
+      "ok": false,
+      "why": "review: encoded array syntax on a credential name",
+      "code": "credential-param"
+    },
+    {
+      "url": "https://shop.acme.dev/?accessToken=abc",
+      "ok": false,
+      "why": "review: a camelCase credential name",
+      "code": "credential-param"
+    },
+    {
+      "url": "https://shop.acme.dev/?sessionToken=abc",
+      "ok": false,
+      "why": "review: a camelCase session token",
+      "code": "credential-param"
+    },
+    {
+      "url": "https://shop.acme.dev/?authKey=abc",
+      "ok": false,
+      "why": "review: a camelCase auth key",
+      "code": "credential-param"
+    },
+    {
+      "url": "https://shop.acme.dev/?x-api-key=abc",
+      "ok": false,
+      "why": "review: a dashed api key name",
+      "code": "credential-param"
+    },
+    {
+      "url": "https://shop.acme.dev/?pw=hunter2",
+      "ok": false,
+      "why": "review: a short password name",
+      "code": "credential-param"
+    },
+    {
+      "url": "https://shop.acme.dev/?passcode=1234",
+      "ok": false,
+      "why": "review: a passcode",
+      "code": "credential-param"
+    },
+    {
+      "url": "https://localhost.direct/",
+      "ok": false,
+      "why": "review: a wildcard name that answers 127.0.0.1",
+      "code": "rebinding"
+    },
+    {
+      "url": "https://app.localhost.direct/",
+      "ok": false,
+      "why": "review: under a wildcard loopback name",
+      "code": "rebinding"
+    },
+    {
+      "url": "https://lacolhost.com/",
+      "ok": false,
+      "why": "review: a wildcard loopback name",
+      "code": "rebinding"
+    },
+    {
+      "url": "https://shop.acme.dev/joinery",
+      "ok": true,
+      "why": "review: a denied word as a prefix stays readable"
+    },
+    {
+      "url": "https://shop.acme.dev/blog/login-ux-patterns",
+      "ok": true,
+      "why": "review: a denied word inside a slug stays readable"
+    },
+    {
+      "url": "https://shop.acme.dev/?author=ann",
+      "ok": true,
+      "why": "review: author is not auth"
+    },
+    {
+      "url": "https://shop.acme.dev/?tokenizer=bpe",
+      "ok": true,
+      "why": "review: tokenizer is not token"
+    },
+    {
+      "url": "https://shop.acme.dev/?sort_key=date",
+      "ok": true,
+      "why": "review: a key that is not a credential"
+    },
+    {
+      "url": "https://shop.acme.dev/docs/payments.v2-migration",
+      "ok": true,
+      "why": "review: an extension-like slug after a word that is not denied"
     }
   ]
 }

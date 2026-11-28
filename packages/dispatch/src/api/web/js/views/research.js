@@ -13,14 +13,15 @@
 
 import { api } from "../api.js";
 import { clear, el } from "../dom.js";
+import { table } from "../lookup.js";
 
 export const RESEARCH_PRIORITIES = ["must", "should", "could", "wont"];
-const PRIORITY_WORDS = {
+const PRIORITY_WORDS = table({
   must: "Must",
   should: "Should",
   could: "Could",
   wont: "Won't",
-};
+});
 
 /**
  * The href for a research source, or null when it must not be a link: anything that is

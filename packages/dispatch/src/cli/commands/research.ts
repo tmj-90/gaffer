@@ -2,16 +2,14 @@ import { spawnSync } from "node:child_process";
 
 import type { Command } from "commander";
 
-import {
-  DEFAULT_RESEARCH_BIN,
-  GAFFER_RESEARCH_BIN_ENV,
-  RESEARCH_KILL_MS,
-  parseLastLine,
-} from "../../api/research.js";
-import { RESEARCH_PRIORITIES, type ResearchRun } from "../../services/researchService.js";
+import type { ResearchRun } from "../../services/researchService.js";
 import { DispatchError } from "../../util/errors.js";
 import { cliActor, printJson } from "../helpers.js";
-import { open } from "../runtime.js";
+import { heavy, open } from "../runtime.js";
+
+// The priorities a feature may have (services/researchService.ts RESEARCH_PRIORITIES); kept
+// here so `--help` loads no service module.
+const RESEARCH_PRIORITIES = ["must", "should", "could", "wont"] as const;
 
 /**
  * `wg research` (backlog 69): the research runs in front of the spec step, from a
@@ -72,14 +70,15 @@ export function registerResearch(program: Command): void {
           },
           cliActor(),
         );
-        const bin = (process.env[GAFFER_RESEARCH_BIN_ENV] ?? "").trim() || DEFAULT_RESEARCH_BIN;
+        const h = heavy();
+        const bin = (process.env[h.GAFFER_RESEARCH_BIN_ENV] ?? "").trim() || h.DEFAULT_RESEARCH_BIN;
         const r = spawnSync(process.execPath, [bin], {
           input: JSON.stringify({
             idea: run.idea,
             ...(run.repo ? { repo: { name: run.repo } } : {}),
           }),
           encoding: "utf8",
-          timeout: RESEARCH_KILL_MS,
+          timeout: h.RESEARCH_KILL_MS,
           maxBuffer: 4_000_000,
           env: (() => {
             const { DISPATCH_API_TOKEN: _t, GAFFER_PRINCIPAL_TOKEN: _p, ...rest } = process.env;
@@ -88,7 +87,7 @@ export function registerResearch(program: Command): void {
             return rest;
           })(),
         });
-        const out = parseLastLine(String(r.stdout ?? "").trim());
+        const out = h.parseLastLine(String(r.stdout ?? "").trim());
         let stored: ResearchRun;
         if (out !== null && out.phase === "research")
           stored = wg.researchSvc.completeRun(run.id, out);

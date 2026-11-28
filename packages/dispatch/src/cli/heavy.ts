@@ -12,6 +12,12 @@ export { DatabaseOpenError, DatabaseTooNewError } from "../db/connection.js";
 export { GIT_REF_SAFE } from "../domain/schemas.js";
 export { readJudgeAgreement, renderJudgeAgreement } from "../health/judgeAgreement.js";
 export { createMemoryReader } from "../api/memoryReader.js";
+export {
+  DEFAULT_RESEARCH_BIN,
+  GAFFER_RESEARCH_BIN_ENV,
+  RESEARCH_KILL_MS,
+  parseLastLine,
+} from "../api/research.js";
 export { reviewRuleThreshold } from "../health/reviewRules.js";
 export { proposeReviewRules, reviewRulesReport } from "../services/reviewRuleService.js";
 export { lessonsReport } from "../services/lessonReportService.js";

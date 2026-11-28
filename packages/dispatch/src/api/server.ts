@@ -27,6 +27,7 @@ import { routePlanSessions } from "./routes/planSessions.js";
 import { routeRepos } from "./routes/repos.js";
 import { routeScope } from "./routes/scope.js";
 import { routeSpecs } from "./routes/specs.js";
+import { routeResearch } from "./routes/research.js";
 import { routeTickets } from "./routes/tickets.js";
 import { routeWork } from "./routes/work.js";
 import { applySecurityHeaders, isHostHeaderAllowed, isLoopbackHost } from "./security.js";
@@ -336,6 +337,9 @@ async function dispatchResource(
         break;
       case "specs":
         if (await routeSpecs(wg, method, segments, url, req, res)) return;
+        break;
+      case "research":
+        if (await routeResearch(wg, memoryReader, method, segments, url, req, res)) return;
         break;
       case "agents":
       case "repositories":

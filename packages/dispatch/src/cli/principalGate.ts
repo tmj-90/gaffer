@@ -174,6 +174,8 @@ const RULES: Record<string, Rule> = {
       "spec get",
       "spec coverage",
       "spec list",
+      "research list",
+      "research get",
       "scope node list",
       "scope node show",
       "scope edge list",

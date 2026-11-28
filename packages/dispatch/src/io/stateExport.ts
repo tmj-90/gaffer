@@ -65,7 +65,7 @@ export const STATE_FORMAT_VERSION = 1;
  *    (events/rowSeal.ts). The principals are not carried, and a restore of this factory's
  *    own backup must not revive a seal: a restored principal is re-signed by a person.
  *
- * Those five are {@link EXCLUDED_TABLES}, with their reasons. Every other table in
+ * Those five (and `research_runs`, backlog 69: web text a person reads, whose kept part travels as the spec drafted from it) are {@link EXCLUDED_TABLES}, with their reasons. Every other table in
  * SCHEMA_SQL carries durable board state and IS included (`plan_sessions` and
  * `paused_deliveries` were left out while this comment said otherwise: exploratory
  * finding api/F2). The drift guard in state-export.test.ts reads both lists: a table in
@@ -144,6 +144,8 @@ export const EXCLUDED_TABLES: Readonly<Record<string, string>> = {
     "machine-local signatures under this factory's key: an imported approval or tester verdict is re-approved or recorded again here",
   row_seals:
     "machine-local signatures of control rows (principals) under this factory's key: an importing factory signs its own",
+  research_runs:
+    "web research a person reads (page text and links from the open web): what goes forward is the spec drafted from it, which is carried",
 };
 
 /**

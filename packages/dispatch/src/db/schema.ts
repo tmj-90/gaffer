@@ -6,7 +6,7 @@
  * partial unique index (one active claim per ticket) are preserved — SQLite
  * supports both. Enum validation is also enforced in the application layer.
  */
-export const SCHEMA_VERSION = 34;
+export const SCHEMA_VERSION = 35;
 
 /**
  * The schema_meta key holding when this database started hiding the eval judge's grade
@@ -674,6 +674,56 @@ CREATE TABLE IF NOT EXISTS specs (
   frozen_at     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_specs_status ON specs(status, created_at DESC);
+
+-- ============================================================================
+-- Research runs (backlog 69). Additive, schema_version 35.
+--
+-- A research run sits IN FRONT OF the spec step: one headless agent with web search and
+-- web fetch only (runner/bin/research-run.mjs) investigates a person's idea and returns
+-- findings with sources and a ranked feature list. The person edits the features
+-- (keep / drop / reword / re-rank / add their own) and "Draft the spec from this" turns
+-- the KEPT ones into a draft spec deterministically (services/researchService.ts); the
+-- existing spec editor, Freeze and planner carry on unchanged.
+--
+-- Agents only ever READ research, and only through what a person kept: no MCP tool
+-- writes it, the REST writes need a human or admin principal, and the safety hook
+-- refuses the wg research write verbs to an agent's shell. Raw findings never reach an
+-- agent; the spec's clause text is what goes forward.
+--
+-- The JSON columns hold what the launcher validated (schema, caps, cleaned text,
+-- computed marks); the service re-checks every URL when it stores them. log_json is the
+-- research hook's record of every allowed fetch and search (the model never writes it).
+-- plan_session_id ties a run to the Plan a build session that started it: one run per
+-- session (the partial unique index), so a reload never starts a second paid run.
+-- Standalone (no FK), created idempotently by CREATE TABLE IF NOT EXISTS like specs.
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS research_runs (
+  id               TEXT PRIMARY KEY,
+  idea             TEXT NOT NULL,
+  repo             TEXT,
+  share_overview   INTEGER NOT NULL DEFAULT 0 CHECK (share_overview IN (0,1)),
+  plan_session_id  TEXT,
+  status           TEXT NOT NULL DEFAULT 'running'
+                     CHECK (status IN ('running','ready','failed','discarded')),
+  error            TEXT,
+  summary          TEXT NOT NULL DEFAULT '',
+  findings_json    TEXT NOT NULL DEFAULT '[]',
+  comparables_json TEXT NOT NULL DEFAULT '[]',
+  features_json    TEXT NOT NULL DEFAULT '[]',
+  questions_json   TEXT NOT NULL DEFAULT '[]',
+  risks_json       TEXT NOT NULL DEFAULT '[]',
+  log_json         TEXT NOT NULL DEFAULT '{"fetches":[],"searches":[]}',
+  dropped_urls     INTEGER NOT NULL DEFAULT 0,
+  spec_id          TEXT,
+  created_by       TEXT,
+  created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  finished_at      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_research_runs_created ON research_runs(created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_research_runs_session
+  ON research_runs(plan_session_id) WHERE plan_session_id IS NOT NULL;
 
 -- ============================================================================
 -- Graduated Autonomy policy (Spec 2, Phase 3). Additive, schema_version 19.

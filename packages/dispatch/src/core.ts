@@ -138,6 +138,7 @@ import {
   type ReviewPacket,
 } from "./services/reviewPacketService.js";
 import { SpecsService } from "./services/specsService.js";
+import { ResearchService } from "./services/researchService.js";
 import { SpecCoverageService } from "./services/specCoverageService.js";
 import { resolveSpecClauseSeeder } from "./services/specClauseSeeder.js";
 import { resolveSpecLoreReader } from "./services/specLoreReader.js";
@@ -387,6 +388,8 @@ export class Dispatch {
   readonly repoSvc: RepoService;
   readonly epicsSvc: EpicsService;
   readonly specsSvc: SpecsService;
+  /** Research runs in front of the spec step (backlog 69): a person's object; agents only read. */
+  readonly researchSvc: ResearchService;
   readonly specCoverageSvc: SpecCoverageService;
   readonly boardSvc: BoardService;
   readonly dossierSvc: DossierService;
@@ -576,6 +579,7 @@ export class Dispatch {
       // standalone/offline path and unit tests are unaffected.
       clauseSeeder: resolveSpecClauseSeeder(),
     });
+    this.researchSvc = new ResearchService({ db, clock: this.clock, specs: this.specsSvc });
     this.specCoverageSvc = new SpecCoverageService({
       specs: this.specsRepo,
       coverage: this.specCoverageRepo,

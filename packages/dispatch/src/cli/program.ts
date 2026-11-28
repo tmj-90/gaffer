@@ -19,6 +19,7 @@ import { registerRepo } from "./commands/repo.js";
 import { registerReview } from "./commands/review.js";
 import { registerScope } from "./commands/scope.js";
 import { registerSpec } from "./commands/spec.js";
+import { registerResearch } from "./commands/research.js";
 import { registerTicket } from "./commands/ticket.js";
 import { DispatchError } from "../util/errors.js";
 import { type CliFailure, describeCommanderFailure } from "./failure.js";
@@ -194,6 +195,7 @@ export function buildProgram({ name = cliName() }: { name?: string } = {}): Comm
   registerRepo(program);
   registerEpic(program);
   registerSpec(program);
+  registerResearch(program);
   registerScope(program);
   registerDecisions(program);
   registerAgent(program);

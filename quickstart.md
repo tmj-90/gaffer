@@ -232,6 +232,8 @@ repo, which the factory then onboards and delivers into.
    From a terminal: `runner/gaffer plan "a full-stack calculator: ..."`, answer with
    `runner/gaffer plan --answer "..."` (or `--now`), and create the drafts with
    `runner/gaffer plan --yes`. Then ready them as in step 4.
+   To look at the idea on the web first, tick **Research this idea on the web first**
+   before you send it (or run `runner/gaffer research "..."`); see docs/FEATURES.md.
    The plan always ends with **Acceptance: <epic>**, a ticket the factory adds that runs
    last against the integrated build; until the tester passes it, the build is not
    accepted.

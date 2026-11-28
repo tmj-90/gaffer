@@ -81,6 +81,8 @@ to the same version.
 
 ### Dashboard
 
+- **Research an idea on the web before the spec.** Plan a build's brief form has one box, **Research this idea on the web first**, unticked by default (unticked, nothing changes). Ticked, one paid run of an agent with web search and web fetch only returns findings with sources and a ranked feature list; you keep, drop, reword, re-rank and add features, and **Draft the spec from this** turns what you kept into a draft spec with no model call. Also `runner/gaffer research`, `gaffer wg research`, and REST under `/research`. Every protection is code, not a prompt: the launcher's tool flags, a research role in the safety hook (https only, no logins, sign-ups or credential-shaped URLs, a fetch, search and site budget, an append-only record), a separate docker egress profile, a strict result schema, plain-text rendering, person-only writes (SECURITY.md, "Research runs").
+
 - **Match Day.** The dashboard is now a football manager's match day: a scoreboard and Team sheet of what needs you on the Overview, a Tactics board, the Squad with a named club and agents (name, shirt number, kit colours), a claret header with live counts, and light and dark from one token set.
 - **The Floor** (`#/floor`): a live factory floor with one parcel per open ticket and a robot on every live claim.
 - **Health** measures human review time, first-pass acceptance, flow efficiency from agent-working time only, rework including review send-backs, escaped defects you link to the change they escaped from, and what each judging lane said.

@@ -135,7 +135,7 @@ grep -qxF -- "gaffer-research-int" <<<"$OUT" && ok "deliverResearch selects the 
 echo "== (e) the research filter =="
 FILTER="$RUNNER_DIR/sandbox/research-proxy/filter"
 PATTERNS="$WORK/patterns"; grep -v -e '^#' -e '^[[:space:]]*$' "$FILTER" > "$PATTERNS"
-denied() { printf '%s\n' "$1" | grep -qiE -f "$PATTERNS"; }
+denied() { grep -qiE -f "$PATTERNS" <<<"$1"; }
 for u in "http://github.com/" "127.0.0.1:443" "2130706433:443" "0x7f000001:443" "0177.0.0.1:443" "127.1:443" \
          "[::1]:443" "::1:443" "localhost:443" "intranet:443" "router.local:443" "jira.internal:443" \
          "nas.lan:443" "hub.home.arpa:443" "metadata.google.internal:443" "metadata.goog:443" \

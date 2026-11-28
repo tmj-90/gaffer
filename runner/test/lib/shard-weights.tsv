@@ -445,7 +445,13 @@
 # wg-serve-equivalence now runs its two worlds side by side (40 s alone, was about 60); 90
 # until CI measures it. wg-serve-tick: 66 s on that run. settings-migration-numbers and
 # wg-serve: 45 s and 34 s in a local full run at -j 2, times the 1.3 that wg-serve-tick showed.
+#   research-*, sandbox-docker-research-seam, gaffer-research: new (backlog 69), Linux alone 2x.
 90	wg-serve-equivalence.test.sh
 66	wg-serve-tick.test.sh
 58	settings-migration-numbers.test.sh
 44	wg-serve.test.sh
+2	research-url-rules.test.mjs
+3	research-hook.test.mjs
+15	research-run.test.mjs
+3	sandbox-docker-research-seam.test.sh
+16	gaffer-research.test.sh

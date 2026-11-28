@@ -113,6 +113,43 @@ before it is done.
 *The season (`#/epics`): each campaign's rounds, how many of its tickets are done and
 where it stands, with one campaign opened below.*
 
+## Research: look at the idea on the web before the spec
+
+The Plan a build brief form has one box: **Research this idea on the web first**. It is
+unticked by default, and unticked nothing changes: the brief goes to the planner (or
+the spec step) as it always did. Ticked, sending the brief starts one paid research run
+first: an agent whose only tools are web search and web fetch looks for comparable
+products, what people need and complain about, and what is risky, and comes back with
+findings (each with its sources), comparables, a ranked feature list (must, should,
+could, won't), open questions and risks. The line under the box says what ticking it
+means: the idea and the search queries are seen by the search provider and by every
+site the agent visits. The box is switched off, with the reason as its title, for a
+read or scoped token, without a dollar cap and without a usable OS sandbox.
+
+You then edit the feature list: keep or drop a feature, reword it, change its priority,
+add your own, and keep or drop each open question. **Draft the spec from this** turns
+what you kept into a draft spec without another model call: kept must and should
+features become requirement clauses, a kept won't becomes a non-goal, a kept question
+becomes a decision to settle, and each clause names the research item it came from.
+From there the spec step, **Freeze** and the planner run as below. Findings, sources and
+page text never reach an agent: research is what a person reads, a spec is what agents
+read. The run belongs to the plan session, so reloading the page shows it again and
+never starts a second paid run.
+
+![The research card: the summary, the editable feature list with priorities and keep boxes, the open question, the findings with their sources and hosts marked fetched or not, a comparable product, a risk, and Draft the spec from this](img/research.png)
+
+*A research run's card in Plan a build. Each source shows its host; "not fetched by the
+run" and "the agent's opinion" are worked out from the research hook's record of what
+the run actually fetched, never taken from the model.*
+
+From a terminal: `runner/gaffer research "<idea>" [--repo <name>]` runs one and waits,
+`--list`, `--show [<id>]` and `--discard [<id>]` read and discard, and
+`gaffer wg research feature|feature-add|question|draft-spec` are the edits. The REST
+routes are under `/research`; no MCP tool writes research, and the safety hook refuses
+the write verbs to an agent's shell. What protects a research run (the tool surface,
+the URL rules, the budget, the record, the sandbox and what is shown) is in
+[SECURITY.md](../SECURITY.md#research-runs).
+
 ## Specs: a frozen statement of intent in front of the planner
 
 A spec is the optional power path in front of the planner; the one-line brief still

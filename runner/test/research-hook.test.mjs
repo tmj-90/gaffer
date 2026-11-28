@@ -18,7 +18,7 @@
 // Run: node runner/test/research-hook.test.mjs
 // =====================================================================
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,6 +30,7 @@ import {
   validateAgentSettings,
   validateResearchSettings,
 } from "../lib/agent-settings.mjs";
+import { gafferMkdtemp } from "./lib/tmpdir.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const RUNNER = resolve(HERE, "..");
@@ -41,7 +42,7 @@ const assert = (label, cond) => {
   else failures.push(label);
 };
 
-const scratch = mkdtempSync(join(tmpdir(), "research-hook-"));
+const scratch = gafferMkdtemp(join(tmpdir(), "research-hook-"));
 let n = 0;
 const freshState = () => {
   const d = join(scratch, `state-${(n += 1)}`);

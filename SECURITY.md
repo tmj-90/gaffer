@@ -58,6 +58,7 @@ Test files are under `runner/test/` (`.sh`, `.mjs`) or `packages/*/test/` (`.ts`
 | Settings loader | `settings.json` sets only the keys the dashboard API writes; anything else (NODE_OPTIONS, BASH_ENV, DYLD_*, CLAUDE_BIN, CLAUDE_FLAGS, the gate sandbox opt-out...) is ignored and named | `settings-allowlist.test.sh`, `settings.test.ts` (the two lists pinned) | A person who sets an autonomy or budget key through the dashboard |
 | Gate environment | Every gate run starts from `env -i`: no model key, no `*_TOKEN`/`*_KEY`/`*_SECRET`, no `DISPATCH_*`, no principal token, on every provider and with no sandbox | `dod-sandbox-wrap.test.sh` | What a test reads from the files it can read |
 | Default host isolation | `GAFFER_STRICT_REQUIRE=1` in every mode; no working sandbox means no launch, refused before any claim with the fix | `isolation-default.test.sh`, `strict-require.test.sh`, `autonomy-containment.test.sh` | `GAFFER_STRICT_REQUIRE=0` in the environment (never settings.json) |
+| Research runs | The one agent with the web: only WebSearch and WebFetch (launcher flags, a research role in the hook, an empty home); https only, no IP literals or internal names, no login, sign-up or account step, no credential-shaped query, length caps; 40 fetches, 20 searches, 25 sites; an append-only record; its own docker egress profile; a strict result schema; plain-text rendering; person-only writes | `research-url-rules.test.mjs`, `research-hook.test.mjs`, `research-run.test.mjs`, `sandbox-docker-research-seam.test.sh`, `gaffer-research.test.sh`, `research.test.ts`, `research-url-rules.test.ts`, `web-research.test.ts`, the `s26-research` browser suite | The idea and queries go to the search provider and every site fetched; a hostile page can slant the findings; DNS can change between check and use; macOS has no network sandbox |
 | Planning agents and scout | Read-only tool sets, safety-hook settings verified before spawn | `security-md-planning-agents.test.mjs`, `scout-gather.test.sh` | |
 | Replay manifests and experiments | Manifests hold ids, commits, settings and hashes, never prompt text or credentials (mode 600, 16 KiB cap); the experiment runner is denied to agents in every launch form and its live mode needs a hard USD cap | `replay-manifest.test.sh`, `eval-experiment.test.sh`, `safety-hook-spelling.test.mjs` | |
 | Command worker | Runs only inside the `docker` sandbox with the bridge | `worker-command.test.sh` | Turn and tool caps are hints |
@@ -864,6 +865,97 @@ authentication failure. Any other provider value fails closed (exit 70, no spawn
 
   All three are launched with `--disallowedTools Write Edit MultiEdit NotebookEdit Bash`. That is a denylist rather than an allowlist, because an allowlist would cut off their MCP tools; a new write tool in the agent CLI has to be added to it, and the spawn tests pin the current list.
 - **The model scout** (`GAFFER_SCOUT=auto|on`, off by default) reads untrusted ticket text with less than that: one call through the worker seam, built-in tools limited to Read, Grep and Glob (every write, shell, web and sub-agent tool denied by name), an empty MCP config, a turn cap, and an empty scratch cwd as its only write root. Its reply is data: a path is kept only when it exists at the base commit, every list is capped, and what is kept reaches the delivery prompt inside `<untrusted-scout>`. It is skipped under the command worker. Its risk record is the runner's and can only raise the ticket's declared risk.
+
+### Research runs
+
+A research run (docs/FEATURES.md, "Research") is the one agent that reaches the open web.
+It reads an idea a person typed and pages anyone can write, so everything around it is
+code, never a prompt line. What it can and cannot do:
+
+- **A. Two tools, three ways.** The launcher (`runner/bin/research-run.mjs`) passes
+  `--tools WebSearch,WebFetch` (the built-in tool set is exactly those two),
+  `--allowedTools` of those two (a `-p` run denies anything that needs approval), an
+  explicit `--disallowedTools` list of every other built-in tool and `mcp__*`, and
+  `--strict-mcp-config` with no `--mcp-config`, never reading `CLAUDE_FLAGS` or
+  `MCP_CONFIG`. Its home is an empty throwaway under the OS temp dir holding only the
+  verified settings and the hook's state; its environment is built from an allowlist (no
+  `GAFFER_DATA`, no database path, no `DISPATCH_*`, no token but the model credential;
+  `DISABLE_TELEMETRY=1`, so the CLI calls WebFetch itself instead of through the web-fetch
+  subagent). The safety hook's research role refuses every other tool name. Neither tool
+  sends a form, a body, a header or a cookie, and the hook refuses any input key the two
+  tools do not document, so a login or a sign-up has nothing to do it with.
+  **How the role is chosen:** by the program the settings run, never by the environment.
+  Only the research launcher renders `runner/claude/research-settings.json`
+  (`validateResearchSettings`: every PreToolUse entry runs `runner/research-hook.mjs`,
+  matcher `*`, `onFailure: block`); every other agent's settings run
+  `runner/safety-hook.mjs`, which reads no role variable, refuses WebFetch and WebSearch
+  by name and whose template denies both. An agent cannot claim the research role for
+  itself, and the research agent cannot switch it off (it has no shell and no file tool).
+- **B. The URL rules** (`runner/lib/hook/url-rules.mjs`, pure, and dispatch's twin
+  `util/researchUrl.ts`, one vector file of 260 rows): `https://` on the text itself; no
+  userinfo, percent sign or port in the authority; a public DNS name (IP literals in every
+  spelling, single labels, `.local` / `.internal` / `.lan` / `.home.arpa` / `.corp` /
+  `.test` / `.example` / `.onion` and the rest, metadata names, wildcard DNS services and
+  addresses written into a name are refused; internationalised `xn--` hosts are refused
+  because look-alike letters cannot be told apart by reading); no host label or path
+  segment that is a login, sign-up, account, password, checkout, billing, subscribe or admin
+  step, as a whole word (so `how-oauth-works` stays readable); no credential-shaped query
+  name or secret-looking value; at most 512 bytes in all, 200 in the query, 200 characters
+  in a search query. Where the hook can resolve names, the host must resolve and every
+  address must be public.
+- **C. Budgets the hook counts**: 40 fetches, 20 searches, 25 sites per run, in a state
+  directory the agent cannot write; past them every call is refused with "write your
+  result now". Plus the admission check (a dollar cap), the per-call cap, an 80-turn cap,
+  a 15-minute wall clock and the usage ledger.
+- **D. A record the model cannot write**: every allowed fetch and search is appended to
+  the run's log by the hook; the launcher returns it and dispatch stores it with the run.
+  A PostToolUse hook records that a fetch completed; the CLI does not document the fetch
+  result's shape, so a final URL after a same-host redirect is recorded only when the
+  result names one under an obvious key and it passes the rules. A cross-host redirect
+  comes back to the model as a new URL, which must pass B like any other.
+- **E. The sandbox.** The launch goes through the worker seam's `deliverResearch`, which
+  requires a real OS sandbox wrap (no wrap, the `GAFFER_STRICT_REQUIRE=0` opt-out
+  included, is a refusal) and never runs on the command worker. Under `docker` it gets its
+  own egress profile: its own internal network behind its own proxy
+  (`runner/sandbox/research-proxy`: CONNECT to port 443 only, plain http refused, IP
+  literals, internal and metadata names and wildcard DNS refused), mounting only the
+  throwaway home and `runner/` read-only (the hook runs from it): no repository, no
+  `$GAFFER_DATA`, no socket. Every other launch has the research profile stripped, and the
+  wrapper refuses it for any command that is not the research agent, so a delivery can
+  never get the wider filter. On macOS `sandbox-exec` restricts writes only: reads and the
+  network are open there, as for every agent.
+- **F. What comes back** (`runner/lib/research-result.mjs`, and dispatch again when it
+  stores): the exact schema, every count and string capped (over a cap the result is
+  refused, not cut), control, bidirectional and zero-width characters removed, nothing
+  outside the schema kept, every URL through B again. "Not fetched by the run", "the
+  agent's opinion" and "only opinion behind it" are computed from the record (D) on every
+  read; the model cannot set them.
+- **G. What the person sees**: plain text only (no `innerHTML`, no Markdown); a source is
+  a link only when it is https with no credentials and its host is the one the server
+  checked, opened with `rel="noopener noreferrer"` beside its full host; no image,
+  favicon, preview or embed from a result; neither the dashboard nor the server fetches a
+  research URL.
+- **H. What goes on to agents**: only what the person kept, as spec clause text (capped,
+  and wrapped in the planner's quarantine envelope like the brief). Findings, sources and
+  page text never reach the spec author, the planner or a delivery agent.
+- **I. Human acts stay human**: starting a run, editing it and drafting the spec are a
+  person's acts. The service refuses an agent or the system; the REST writes refuse read
+  tokens and scoped principals; no MCP tool touches research; the safety hook refuses `wg
+  research create|feature|feature-add|question|draft-spec|discard`, `gaffer research` and
+  running the launcher to an agent's shell.
+- **J. Honest limits.** The idea text and the search queries go to the search provider
+  (WebSearch runs on Anthropic's search backend) and the hostname of every page to
+  Anthropic's WebFetch domain check; the pages themselves are fetched from the agent's
+  machine or container, so every site fetched sees the request. A hostile page can slant
+  what the agent reports: the person reads every claim with its sources and marks beside
+  it. The login and account word list is a list, not a proof; the proof of "no login" is
+  A, there is nothing to log in with. The name check has a gap between check and use (a
+  name whose DNS answer changes after the hook resolved it), and under `docker` the proxy
+  resolves names itself, so a public name that resolves to a private address is not
+  caught there. An installed Claude Code mod can, in some setups (no managed settings
+  and no Team or Enterprise login), approve a call a PreToolUse hook blocked; a tool that
+  `--tools` removed does not exist, which is why `--tools` is the first layer. macOS has
+  no network sandbox.
 
 ### Replay manifests and the experiment runner
 

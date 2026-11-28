@@ -25,7 +25,6 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
@@ -36,6 +35,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { validateResearchSettings } from "../lib/agent-settings.mjs";
+import { gafferMkdtemp } from "./lib/tmpdir.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const RUNNER = resolve(HERE, "..");
@@ -49,7 +49,7 @@ const assert = (label, cond) => {
   else failures.push(label);
 };
 
-const WORK = mkdtempSync(join(tmpdir(), "research-run-"));
+const WORK = gafferMkdtemp(join(tmpdir(), "research-run-"));
 const BIN = join(WORK, "bin");
 mkdirSync(BIN);
 const DATA = join(WORK, "data");

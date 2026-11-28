@@ -249,5 +249,6 @@ branch does not count toward the branch cap either way.
 | Event-log integrity | `dispatch events verify` (also a `dispatch doctor` check and the Health view's "Event log" card): the sha256 hash chain over `work_events` |
 | One tick's trail | `dispatch events list --correlation <GAFFER_TICK_ID>`: every event the runner and the agent wrote during that tick |
 | Lore history | `memory history <id>`: every earlier version of a record |
+| Research before a spec | `runner/gaffer research "<idea>" [--repo <name>]`, `--list`, `--show [<id>]`, `--discard [<id>]`; edits with `gaffer wg research feature\|feature-add\|question\|draft-spec`. A paid run of `runner/bin/research-run.mjs` (web search and fetch only, a dollar cap and an OS sandbox required; SECURITY.md "Research runs") |
 
 Architecture + status: [`../README.md`](../README.md) · [`runner/README.md`](README.md).

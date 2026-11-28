@@ -17,7 +17,7 @@ It's alpha, and it gives an agent a shell inside the repos you point it at. Keep
 5. **Review.** You read the real git diff, with what the runner recorded above it, and approve it or send it back.
 6. **Landing.** Merging is a separate step. Gaffer builds the merge onto your current default branch and runs the gates on that before anything lands.
 
-[docs/FEATURES.md](docs/FEATURES.md) covers each step, the dashboard, planning a build from a one-line brief, and what Gaffer remembers about a repo.
+[docs/FEATURES.md](docs/FEATURES.md) covers each step, the dashboard, planning a build from a one-line brief (with optional web research first), and what Gaffer remembers about a repo.
 
 ## Getting started
 
